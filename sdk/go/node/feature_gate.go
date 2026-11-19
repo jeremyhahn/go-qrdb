@@ -92,13 +92,16 @@ func (n *Node) startFeatureGate(host leaderReporter, activations featuregate.Act
 // first -- then withdraws the advertisement and stops the gate.
 func (n *Node) stopFeatureGate() error {
 	n.featureWG.Wait()
+	var err error
 	if adv := n.featureAdv.Swap(nil); adv != nil {
-		n.closeAdvertiser(adv, "feature")
+		err = adv.Close()
 	}
 	if n.featureGate != nil {
-		return n.featureGate.Close()
+		if gerr := n.featureGate.Close(); err == nil {
+			err = gerr
+		}
 	}
-	return nil
+	return err
 }
 
 // newConnectedEmbeddedClient builds and connects an in-process client over

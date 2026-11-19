@@ -84,21 +84,10 @@ func (n *Node) startMemberRecord(host leaderReporter, cfg *qrdbconfig.Config) {
 
 // stopMemberRecord waits out startMemberRecord -- Close cancels its context
 // first -- then withdraws the record.
-func (n *Node) stopMemberRecord() {
+func (n *Node) stopMemberRecord() error {
 	n.memberWG.Wait()
 	if adv := n.memberAdv.Swap(nil); adv != nil {
-		n.closeAdvertiser(adv, "member")
+		return adv.Close()
 	}
-}
-
-// closeAdvertiser stops adv and deregisters its record. The deregistration is
-// best-effort shutdown cleanup: the record is lease-backed and lapses on its
-// own once the keepalive stops, so a delete that cannot commit -- the cluster
-// lost its quorum, or this node is the last one standing -- must not fail
-// Close. It is logged and Close carries on tearing the node down.
-func (n *Node) closeAdvertiser(adv *cluster.Advertiser, record string) {
-	if err := adv.Close(); err != nil && n.logger != nil {
-		n.logger.Warn("deregistration at close failed; the record lease lapses on its own",
-			slog.String("record", record), slog.Any("error", err))
-	}
+	return nil
 }

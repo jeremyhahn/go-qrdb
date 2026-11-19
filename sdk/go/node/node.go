@@ -2894,7 +2894,7 @@ func (n *Node) Close() error {
 	// through the storage closed below.
 	n.stopTrustPool()
 	record(n.stopFeatureGate())
-	n.stopMemberRecord()
+	record(n.stopMemberRecord())
 	// Stop the volume-pool Reporter's refresh goroutine before svcNode/host
 	// below: see stopVolumeReporter's doc comment.
 	n.stopVolumeReporter()
