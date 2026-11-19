@@ -317,12 +317,14 @@ func openedToLiveKey(ctx context.Context, strategy SealingStrategy, sealed *Seal
 // strategy's verdict that the credential is wrong, as opposed to a failure
 // to run the unseal at all. The passphrase and software strategies fail a
 // wrong passphrase in the AEAD open (ErrDecryptionFailed) and refuse an
-// empty one with go-quicraft's ErrInvalidPassphrase; ErrInvalidCredentials
+// empty one with go-quicraft's ErrInvalidPassphrase, or, when no secret is
+// given at all, with go-quicraft's ErrEmptyCredentials; ErrInvalidCredentials
 // and this package's ErrInvalidPassphrase are the refusals the remaining
 // and injected strategies return.
 func isRefusedCredential(err error) bool {
 	return errors.Is(err, ErrDecryptionFailed) ||
 		errors.Is(err, ErrInvalidCredentials) ||
 		errors.Is(err, ErrInvalidPassphrase) ||
-		errors.Is(err, quicraftseal.ErrInvalidPassphrase)
+		errors.Is(err, quicraftseal.ErrInvalidPassphrase) ||
+		errors.Is(err, quicraftseal.ErrEmptyCredentials)
 }

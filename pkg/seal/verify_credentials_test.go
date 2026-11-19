@@ -213,6 +213,17 @@ func TestStorageBarrier_VerifyCredentials_UnsealFailureIsNotMismatch(t *testing.
 	})
 }
 
+// An empty credential is a wrong credential: the software strategy refuses
+// it with go-quicraft's ErrEmptyCredentials, which VerifyCredentials reports
+// as a mismatch, not as a failure to run the unseal.
+func TestStorageBarrier_VerifyCredentials_EmptyCredentialIsMismatch(t *testing.T) {
+	b := newVerifyBarrier(t, newFailingBackend(), "verify-credentials-pass")
+	err := b.VerifyCredentials(context.Background(), Credentials{})
+	if !errors.Is(err, ErrCredentialMismatch) || errors.Is(err, ErrUnsealFailed) {
+		t.Fatalf("VerifyCredentials(empty) = %v, want ErrCredentialMismatch and not ErrUnsealFailed", err)
+	}
+}
+
 func TestStorageBarrier_CeremonyDistributor(t *testing.T) {
 	b := newVerifyBarrier(t, NewMemoryBackend(), "distributor-pass")
 	if got := b.CeremonyDistributor(); got != nil {
