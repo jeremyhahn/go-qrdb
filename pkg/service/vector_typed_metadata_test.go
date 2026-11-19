@@ -16,6 +16,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -242,6 +243,40 @@ func TestSearchByMetadata_LegacyJSONLookingStringsStayStrings(t *testing.T) {
 		if !reflect.DeepEqual(ids, tc.want) {
 			t.Fatalf("SearchByMetadata(%#v) matched IDs = %v, want %v", tc.value, ids, tc.want)
 		}
+	}
+}
+
+// TestSearchByMetadata_RefusesNegativeOffset proves a negative offset is an
+// invalid argument, refused before the scan, even when a legacy entry makes
+// the search take the merge path that slices by the offset.
+func TestSearchByMetadata_RefusesNegativeOffset(t *testing.T) {
+	store := vector.NewMemoryVectorStorage()
+	svc, err := NewVectorService(store, newVecTestLogger())
+	if err != nil {
+		t.Fatalf("NewVectorService: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
+		Namespace: "typed", Dimension: 2, DistanceMetric: "COSINE", IndexType: "HNSW",
+	}); err != nil {
+		t.Fatalf("CreateNamespace: %v", err)
+	}
+	if err := store.UpsertVector(ctx, scopedFromContext(ctx, "typed"), &vector.VectorValue{
+		ID: 1, Embedding: []float32{1, 0}, Metadata: map[string]string{"topic": "news"},
+	}); err != nil {
+		t.Fatalf("legacy UpsertVector: %v", err)
+	}
+	if _, err := svc.UpsertVector(ctx, &UpsertVectorRequest{
+		Namespace: "typed", ID: 2, Vector: []float32{0, 1}, Metadata: map[string]interface{}{"topic": "news"},
+	}); err != nil {
+		t.Fatalf("UpsertVector: %v", err)
+	}
+	resp, err := svc.SearchByMetadata(ctx, &SearchByMetadataRequest{
+		Namespace: "typed", Filters: map[string]interface{}{"topic": "news"}, Offset: -1,
+	})
+	var invalid *InvalidVectorError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("SearchByMetadata(offset -1) = %v, %v; want InvalidVectorError", resp, err)
 	}
 }
 

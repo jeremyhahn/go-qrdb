@@ -2687,6 +2687,9 @@ func (v *vectorService) validateSearchByMetadataRequest(req *SearchByMetadataReq
 	if req.Namespace == "" {
 		return &InvalidVectorError{Reason: "namespace is required"}
 	}
+	if req.Offset < 0 {
+		return &InvalidVectorError{Reason: "offset cannot be negative"}
+	}
 	return nil
 }
 
