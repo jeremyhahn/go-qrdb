@@ -246,7 +246,9 @@ type MemberChangeHook func(ctx context.Context, m Member, joined bool)
 // known member. The hook runs on its own goroutine so it never blocks the
 // membership event loop; Close waits for running hooks to return. With a
 // Reconfigurer, a join's hook runs once the join is in the group (the
-// leader's after its AddMember change commits), so it sees the new member.
+// leader's after its AddMember change commits), so it sees the new member,
+// and a leave's hook runs once the removal is in the group (the leader's
+// after its RemoveMember attempt), so it no longer sees the departed one.
 func WithMemberChangeHook(h MemberChangeHook) MembershipOption {
 	return func(m *MembershipManager) {
 		m.onChange = h
@@ -560,13 +562,15 @@ func (m *MembershipManager) fireChange(member Member, joined bool) {
 // its committed roster before it fires the join hook regardless.
 const followerJoinWait = 2 * time.Minute
 
-// fireChangeWhenMember fires a join's member-change hook on a follower once
-// the joiner is in the follower's committed roster (the leader's AddMember
-// has committed and been applied here). It polls the roster on its own
-// goroutine, bounded by the manager's run context; it stops without firing
-// once the member has left, and fires with a warning after
+// fireChangeWhenMember fires a member-change hook on a follower once the
+// change is in the follower's committed roster: for a join (joined true)
+// once the joiner is in it, for a leave once the departed member is gone
+// from it (the leader's AddMember or RemoveMember has committed and been
+// applied here). It polls the roster on its own goroutine, bounded by the
+// manager's run context; it stops without firing once the event is
+// superseded (the joiner left, or the departed member rejoined), and fires with a warning after
 // followerJoinWait, since the hook's reconcile re-reads the roster.
-func (m *MembershipManager) fireChangeWhenMember(member Member) {
+func (m *MembershipManager) fireChangeWhenMember(member Member, joined bool) {
 	if m.onChange == nil {
 		return
 	}
@@ -589,23 +593,25 @@ func (m *MembershipManager) fireChangeWhenMember(member Member) {
 		giveUp := time.NewTimer(followerJoinWait)
 		defer giveUp.Stop()
 		for {
-			if present, err := m.reconfig.IsMember(m.shardID, member.NodeID); err == nil && present {
-				m.onChange(ctx, member, true)
+			if present, err := m.reconfig.IsMember(m.shardID, member.NodeID); err == nil && present == joined {
+				m.onChange(ctx, member, joined)
 				return
 			}
+			// The event was superseded: a joined member left again, or a
+			// departed member rejoined.
 			m.membersMu.RLock()
-			_, still := m.members[member.NodeID]
+			_, listed := m.members[member.NodeID]
 			m.membersMu.RUnlock()
-			if !still {
+			if listed != joined {
 				return
 			}
 			select {
 			case <-ctx.Done():
 				return
 			case <-giveUp.C:
-				m.logger.Warn("joined member not in the committed roster; firing the join hook regardless",
-					"node_id", member.NodeID)
-				m.onChange(ctx, member, true)
+				m.logger.Warn("member change not in the committed roster; firing the member-change hook regardless",
+					"node_id", member.NodeID, "joined", joined)
+				m.onChange(ctx, member, joined)
 				return
 			case <-ticker.C:
 			}
@@ -624,7 +630,11 @@ func (m *MembershipManager) handleLeave(member Member) {
 	}
 	m.logger.Info("member left", "node_id", member.NodeID)
 	if m.reconfig != nil {
+		// With reconfiguration on, the leave hook fires from the
+		// reconfiguration worker once the removal is committed, so a hook
+		// reading the shard's roster no longer sees the departed member.
 		m.enqueueReconfig(reconfigIntent{member: member, remove: true})
+		return
 	}
 	m.fireChange(member, false)
 }
@@ -696,12 +706,15 @@ func (m *MembershipManager) reconfigWorker(runCtx context.Context) {
 // (fireChangeWhenMember), so a follower that leads a tenant home group
 // reconciles against a roster holding the joiner. An add that does not
 // commit fires no hook: the member is not in the group.
+//
+// A leave's hook fires the same way, after the removal: the leader's once
+// its RemoveMember attempt returns, a follower's once the departed member
+// is gone from its own roster, so the reconcile the hook runs (a tenant
+// home group shedding the departed node) reads a roster without it.
 func (m *MembershipManager) applyReconfig(intent reconfigIntent) {
 	if !m.isLeader() {
 		// Only the leader reconfigures; a follower waits for its commit.
-		if !intent.remove {
-			m.fireChangeWhenMember(intent.member)
-		}
+		m.fireChangeWhenMember(intent.member, !intent.remove)
 		return
 	}
 	member := intent.member
@@ -710,17 +723,16 @@ func (m *MembershipManager) applyReconfig(intent reconfigIntent) {
 	if err != nil {
 		m.logger.Warn("membership probe failed; deferring reconfiguration",
 			"node_id", member.NodeID, "error", err)
-		if !intent.remove {
-			// The group's state is unknown: fire the join hook rather
-			// than lose it; its reconcile re-reads the roster.
-			m.fireChange(member, true)
-		}
+		// The group's state is unknown: fire the hook rather than lose
+		// it; its reconcile re-reads the roster.
+		m.fireChange(member, !intent.remove)
 		return
 	}
 
 	if intent.remove {
 		if !present {
-			return // already gone
+			m.fireChange(member, false) // already gone
+			return
 		}
 		// Quorum guard: refuse to shrink below MinQuorum so a transient blip
 		// cannot destroy quorum.
@@ -730,11 +742,16 @@ func (m *MembershipManager) applyReconfig(intent reconfigIntent) {
 		if m.cfg.MinQuorum > 0 && remaining < m.cfg.MinQuorum {
 			m.logger.Warn("skipping auto-removal: would drop below quorum",
 				"node_id", member.NodeID, "remaining", remaining, "min_quorum", m.cfg.MinQuorum)
+			m.fireChange(member, false)
 			return
 		}
+		// The hook fires after the removal attempt, never before it: a
+		// committed removal is in the roster the hook's reconcile reads,
+		// and a failed one leaves that reconcile to keep the member.
 		m.reconfigWithRetry("remove", member, func(ctx context.Context) error {
 			return m.reconfig.RemoveMember(ctx, m.shardID, member.NodeID)
 		})
+		m.fireChange(member, false)
 		return
 	}
 
