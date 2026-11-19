@@ -624,6 +624,8 @@ func (s *Store) RemoveReplica(ctx context.Context, target *Placement, replicaID 
 			return p, nil
 		}
 		next := *p
+		// The removed ID stays used: Raft never readmits it.
+		next.ReplicaIDHighWater = MaxReplicaID(p)
 		next.Replicas = replicas
 		next.RF = len(replicas)
 		swapped, err := s.CompareAndSwapPlacement(ctx, p, &next)

@@ -126,6 +126,45 @@ func TestReconcileTenantHomes_GrowThenShrinkShedsDepartedNodes(t *testing.T) {
 	}
 }
 
+// TestReconcileTenantHomes_RegrowNeverReusesARetiredReplicaID pins that a
+// home group regrown after shedding a replica places the new replica under
+// an ID the group has never used: Raft refuses a removed replica ID for
+// good, so reusing the shed replica's ID would leave the node unadmitted.
+func TestReconcileTenantHomes_RegrowNeverReusesARetiredReplicaID(t *testing.T) {
+	svc, store, topo := homeOnTopology(t, healthyNodes("n1", "n2", "n3"))
+	host := withHomeView(t, svc, store, true)
+	topo.nodes = healthyNodes("n1", "n2", "n3", "n4")
+	if err := svc.ReconcileTenantHomes(context.Background()); err != nil {
+		t.Fatalf("ReconcileTenantHomes (grow): %v", err)
+	}
+	first := homeReplicaOn(t, store, "n4:1")
+	if first == nil {
+		t.Fatal("home has no replica on n4 after the grow")
+	}
+	retired := first.ReplicaID
+	host.members = membersOf(loadHome(t, store))
+
+	topo.nodes = healthyNodes("n1", "n2", "n3")
+	if err := svc.ReconcileTenantHomes(context.Background()); err != nil {
+		t.Fatalf("ReconcileTenantHomes (shrink): %v", err)
+	}
+	if homeReplicaOn(t, store, "n4:1") != nil {
+		t.Fatal("home kept its replica on n4 after n4 left")
+	}
+
+	topo.nodes = healthyNodes("n1", "n2", "n3", "n4")
+	if err := svc.ReconcileTenantHomes(context.Background()); err != nil {
+		t.Fatalf("ReconcileTenantHomes (regrow): %v", err)
+	}
+	again := homeReplicaOn(t, store, "n4:1")
+	if again == nil {
+		t.Fatal("home has no replica on n4 after the regrow")
+	}
+	if again.ReplicaID <= retired {
+		t.Fatalf("regrown replica ID = %d, want above the retired ID %d", again.ReplicaID, retired)
+	}
+}
+
 // Departed replicas are not removed while the replicas on known nodes are
 // not a majority: the removal could not commit.
 func TestReconcileTenantHomes_KeepsDepartedReplicasWithoutQuorum(t *testing.T) {
