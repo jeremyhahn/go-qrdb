@@ -12,6 +12,8 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
@@ -48,7 +50,7 @@ func New(base filesys.FS, barrier barrierKEK) filesys.FS {
 // Create creates a new encrypted file at the given path. If a file
 // already exists at the path it is replaced.
 func (fs *FS) Create(name string) (filesys.File, error) {
-	h, err := newHeader(fs.barrier)
+	h, err := fs.newFileHeader(name)
 	if err != nil {
 		return nil, err
 	}
@@ -64,6 +66,28 @@ func (fs *FS) Create(name string) (filesys.File, error) {
 	return enc, nil
 }
 
+// newFileHeader returns the header for a new file at name: the framed,
+// seal-on-sync layout for an append-and-sync file (isAppendLogName), the
+// fixed-size block layout, which keeps ReadAt arithmetic, for every other.
+func (fs *FS) newFileHeader(name string) (*header, error) {
+	h, err := newHeader(fs.barrier)
+	if err != nil {
+		return nil, err
+	}
+	if isAppendLogName(name) {
+		h.Flags |= headerFlagFramed
+	}
+	return h, nil
+}
+
+// isAppendLogName reports whether name is an append-and-sync file: a Pebble
+// write-ahead log (*.log) or MANIFEST (MANIFEST-*). Such a file is Synced
+// after every append, so a power cut can fall during any write to it.
+func isAppendLogName(name string) bool {
+	base := filepath.Base(name)
+	return strings.HasSuffix(base, ".log") || strings.HasPrefix(base, "MANIFEST-")
+}
+
 // Open opens an existing encrypted file for reading. If the file is
 // not encrypted (no QENC magic), Open transparently returns the base
 // file for passthrough access. This handles Pebble's LOCK and other
@@ -74,7 +98,7 @@ func (fs *FS) Open(name string) (filesys.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	enc, err := fs.openEncryptedRO(base)
+	enc, err := fs.openEncryptedRO(base, isAppendLogName(name))
 	if err != nil {
 		_ = base.Close()
 		return nil, err
@@ -101,7 +125,7 @@ func (fs *FS) OpenReadWrite(name string) (filesys.File, error) {
 	}
 	if fi.Size() == 0 {
 		// Fresh file: write a new header.
-		h, err := newHeader(fs.barrier)
+		h, err := fs.newFileHeader(name)
 		if err != nil {
 			_ = base.Close()
 			return nil, err
@@ -113,7 +137,7 @@ func (fs *FS) OpenReadWrite(name string) (filesys.File, error) {
 		}
 		return enc, nil
 	}
-	enc, err := fs.openEncryptedRW(base, fi.Size())
+	enc, err := fs.openEncryptedRW(base, fi.Size(), isAppendLogName(name))
 	if err != nil {
 		_ = base.Close()
 		return nil, err
@@ -124,7 +148,7 @@ func (fs *FS) OpenReadWrite(name string) (filesys.File, error) {
 // openEncryptedRO reads the header from a base file and returns a
 // read-only encryptedFile. If the magic does not match, the base file
 // is returned directly (passthrough path).
-func (fs *FS) openEncryptedRO(base filesys.File) (filesys.File, error) {
+func (fs *FS) openEncryptedRO(base filesys.File, appendLog bool) (filesys.File, error) {
 	fi, err := base.Stat()
 	if err != nil {
 		return nil, err
@@ -146,7 +170,7 @@ func (fs *FS) openEncryptedRO(base filesys.File) (filesys.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newReadFile(base, h, physicalSize)
+	return newReadFile(base, h, physicalSize, appendLog)
 }
 
 // openEncryptedRW reads the header for a non-empty file opened with
@@ -155,7 +179,7 @@ func (fs *FS) openEncryptedRO(base filesys.File) (filesys.File, error) {
 // current logical end. If the file ends with a partial trailing
 // block, that block is decrypted and reloaded into the in-memory
 // tail so a subsequent Write extends it rather than replacing it.
-func (fs *FS) openEncryptedRW(base filesys.File, physicalSize int64) (*encryptedFile, error) {
+func (fs *FS) openEncryptedRW(base filesys.File, physicalSize int64, appendLog bool) (*encryptedFile, error) {
 	var magic [lenMagic]byte
 	if _, err := base.ReadAt(magic[:], 0); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
@@ -167,11 +191,22 @@ func (fs *FS) openEncryptedRW(base filesys.File, physicalSize int64) (*encrypted
 	if err != nil {
 		return nil, err
 	}
-	rf, err := newReadFile(base, h, physicalSize)
+	rf, err := newReadFile(base, h, physicalSize, appendLog)
 	if err != nil {
 		return nil, err
 	}
 	rf.readOnly = false
+	if rf.framed {
+		// Frames are sealed: appends start a new frame at the end of the
+		// last authentic one. Zero a torn final frame first, so the next
+		// scan reads it as zero fill rather than a frame with bytes after.
+		if torn := physicalSize - rf.physEnd; torn > 0 {
+			if _, err := base.WriteAt(make([]byte, torn), rf.physEnd); err != nil {
+				return nil, err
+			}
+		}
+		return rf, nil
+	}
 	if rem := rf.logicalSize % int64(BlockSize); rem != 0 {
 		blockIndex := rf.logicalSize / int64(BlockSize)
 		cipherBuf := make([]byte, rem+int64(BlockOverhead))

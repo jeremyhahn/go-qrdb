@@ -10,6 +10,7 @@ package encfs
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -354,6 +355,189 @@ func powerCutFileRun(t *testing.T, b *fakeBarrier, name string, seed uint64) {
 	}
 	if !bytes.HasPrefix(written, got) {
 		t.Fatalf("read %d bytes that were never written in that order", len(got))
+	}
+}
+
+// TestPowerCut_FixedLayoutLogOpensAfterTear covers a WAL in the fixed-size
+// layout, written before the framed layout existed (a device's preserved
+// WAL after a qrdb bump). That layout rewrites the trailing block in place
+// on every Sync, so the tear itself destroys that block's previous content;
+// the file must still open, end at the torn block, and replay every block
+// before it.
+func TestPowerCut_FixedLayoutLogOpensAfterTear(t *testing.T) {
+	b := newFakeBarrier(t)
+	for seed := uint64(0); seed < 48; seed++ {
+		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			src, dst := t.TempDir(), t.TempDir()
+			pc := newPowerCutFS(filesys.Default, src)
+			path := filepath.Join(src, "000002.log")
+			rng := rand.New(rand.NewPCG(seed, 11))
+			base, err := pc.Create(path)
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			h, err := newHeader(b) // no framed flag: the fixed-size layout
+			if err != nil {
+				t.Fatalf("newHeader: %v", err)
+			}
+			f, err := newWriteFile(base, h)
+			if err != nil {
+				t.Fatalf("newWriteFile: %v", err)
+			}
+			var written, acked []byte
+			cutDone := false
+			for i := 0; !cutDone && i < 64; i++ {
+				if i == 1+rng.IntN(6) || i == 8 {
+					pc.hook = func(n string, _ int) {
+						if !cutDone {
+							if err := pc.cut(dst, seed, n); err != nil {
+								t.Errorf("cut: %v", err)
+							}
+							cutDone = true
+						}
+					}
+				}
+				rec := powerCutRecord(rng)
+				if _, err := f.Write(rec); err != nil {
+					t.Fatalf("Write: %v", err)
+				}
+				written = append(written, rec...)
+				if err := f.Sync(); err != nil {
+					t.Fatalf("Sync: %v", err)
+				}
+				if !cutDone {
+					acked = bytes.Clone(written)
+				}
+			}
+			pc.hook = nil
+			_ = f.Close()
+
+			g, err := New(filesys.Default, b).Open(filepath.Join(dst, "000002.log"))
+			if err != nil {
+				t.Fatalf("open fixed-layout WAL after power cut: %v", err)
+			}
+			defer func() { _ = g.Close() }()
+			got, err := io.ReadAll(g)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if !bytes.HasPrefix(written, got) {
+				t.Fatalf("read %d bytes that were never written in that order", len(got))
+			}
+			if whole := len(acked) / BlockSize * BlockSize; len(got) < whole {
+				t.Fatalf("blocks before the torn one lost: read %d bytes, %d in whole synced blocks", len(got), whole)
+			}
+		})
+	}
+}
+
+// TestFramed_TamperIsNotATear flips a byte in a frame that has frames after
+// it: that is tamper or corruption, not a power cut, and the open must
+// refuse with ErrAuthFailed rather than end the log early.
+func TestFramed_TamperIsNotATear(t *testing.T) {
+	b := newFakeBarrier(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "000002.log")
+	efs := New(filesys.Default, b)
+	f, err := efs.Create(path)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := f.Write(bytes.Repeat([]byte{byte('a' + i)}, 100)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		if err := f.Sync(); err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+	}
+	ef, ok := f.(*encryptedFile)
+	if !ok || !ef.framed || len(ef.frames) != 3 {
+		t.Fatalf("want a framed file with 3 frames, got %T", f)
+	}
+	second := ef.frames[1].phys
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	raw, err := os.ReadFile(path) // #nosec G304 -- test file under t.TempDir
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flip := range []int64{second + frameLenSize + 20, second} {
+		bad := bytes.Clone(raw)
+		bad[flip] ^= 0x01
+		if err := os.WriteFile(path, bad, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := efs.Open(path); !errors.Is(err, ErrAuthFailed) {
+			t.Errorf("open with byte %d flipped: err = %v, want ErrAuthFailed", flip, err)
+		}
+	}
+
+	// Swapping two equal-length frames must not authenticate either.
+	swapped := bytes.Clone(raw)
+	a, c := ef.frames[0], ef.frames[1]
+	size := int64(frameLenSize + BlockOverhead + a.n)
+	copy(swapped[a.phys:a.phys+size], raw[c.phys:c.phys+size])
+	copy(swapped[c.phys:c.phys+size], raw[a.phys:a.phys+size])
+	if err := os.WriteFile(path, swapped, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := efs.Open(path); !errors.Is(err, ErrAuthFailed) {
+		t.Errorf("open with frames swapped: err = %v, want ErrAuthFailed", err)
+	}
+}
+
+// TestFramed_ReopenAppendsAfterTornTail reopens a framed log whose final
+// frame is torn, appends, and checks the log reads back as the synced
+// prefix followed by the new bytes.
+func TestFramed_ReopenAppendsAfterTornTail(t *testing.T) {
+	b := newFakeBarrier(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "MANIFEST-000003")
+	efs := New(filesys.Default, b)
+	f, err := efs.Create(path)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	first := bytes.Repeat([]byte{'x'}, BlockSize+300)
+	if _, err := f.Write(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A torn frame of garbage after the last authentic one.
+	raw, err := os.ReadFile(path) // #nosec G304 -- test file under t.TempDir
+	if err != nil {
+		t.Fatal(err)
+	}
+	torn := append(bytes.Clone(raw), 0x40, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef)
+	if err := os.WriteFile(path, torn, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g, err := efs.OpenReadWrite(path)
+	if err != nil {
+		t.Fatalf("OpenReadWrite: %v", err)
+	}
+	more := []byte("appended after reopen")
+	if _, err := g.Write(more); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h, err := efs.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = h.Close() }()
+	got, err := io.ReadAll(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := append(bytes.Clone(first), more...); !bytes.Equal(got, want) {
+		t.Fatalf("read %d bytes, want %d", len(got), len(want))
 	}
 }
 

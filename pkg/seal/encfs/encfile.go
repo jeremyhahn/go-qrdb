@@ -9,10 +9,12 @@
 package encfs
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
@@ -40,13 +42,23 @@ type encryptedFile struct {
 	crypto     *blockCrypto
 	headerSize int64
 	readOnly   bool
+	framed     bool // framed, seal-on-sync layout (see the file comment above writeFrameLocked)
 
 	mu          sync.Mutex
 	closed      bool
-	logicalSize int64  // total logical bytes (header excluded)
-	flushedSize int64  // logical bytes whose content is on disk; <= logicalSize
-	seqPos      int64  // logical position for sequential Read
-	tail        []byte // bytes after flushedSize that may still grow before next full-block flush
+	logicalSize int64      // total logical bytes (header excluded)
+	flushedSize int64      // logical bytes whose content is on disk; <= logicalSize
+	seqPos      int64      // logical position for sequential Read
+	tail        []byte     // bytes after flushedSize that may still grow before next full-block flush
+	frames      []frameRef // framed layout: every frame on disk, in order
+	physEnd     int64      // framed layout: physical offset the next frame is written at
+}
+
+// frameRef locates one frame of a framed file.
+type frameRef struct {
+	phys    int64 // physical offset of the frame's length prefix
+	logical int64 // logical offset of the frame's first plaintext byte
+	n       int   // plaintext length
 }
 
 // newWriteFile wraps a freshly-created base file in an encryptedFile
@@ -64,29 +76,161 @@ func newWriteFile(base filesys.File, h *header) (*encryptedFile, error) {
 		base:       base,
 		crypto:     crypto,
 		headerSize: int64(h.totalSize()),
+		framed:     h.framed(),
+		physEnd:    int64(h.totalSize()),
 	}, nil
 }
 
 // newReadFile wraps an existing base file in an encryptedFile
 // configured for read-only access. The header has already been parsed
 // and the base read cursor sits immediately past the header.
-func newReadFile(base filesys.File, h *header, physicalSize int64) (*encryptedFile, error) {
+func newReadFile(base filesys.File, h *header, physicalSize int64, appendLog bool) (*encryptedFile, error) {
 	crypto, err := newBlockCrypto(h.DEK[:])
 	if err != nil {
 		return nil, err
 	}
-	logicalSize, err := physicalToLogicalSize(physicalSize - int64(h.totalSize()))
+	f := &encryptedFile{
+		base:       base,
+		crypto:     crypto,
+		headerSize: int64(h.totalSize()),
+		readOnly:   true,
+		framed:     h.framed(),
+	}
+	payload := physicalSize - f.headerSize
+	switch {
+	case f.framed:
+		if payload < 0 {
+			return nil, &NegativePayloadLengthError{Length: payload}
+		}
+		if err := f.scanFrames(physicalSize); err != nil {
+			return nil, err
+		}
+		return f, nil
+	case appendLog:
+		f.logicalSize, err = f.fixedLogLogicalSize(payload)
+	default:
+		f.logicalSize, err = physicalToLogicalSize(payload)
+	}
 	if err != nil {
 		return nil, err
 	}
-	return &encryptedFile{
-		base:        base,
-		crypto:      crypto,
-		headerSize:  int64(h.totalSize()),
-		readOnly:    true,
-		logicalSize: logicalSize,
-		flushedSize: logicalSize,
-	}, nil
+	f.flushedSize = f.logicalSize
+	return f, nil
+}
+
+// scanFrames indexes and authenticates every frame of a framed file of
+// physicalSize bytes. A torn, short or unauthenticated FINAL frame is the
+// end of the log: a framed file never rewrites a frame a Sync made durable,
+// so the final frame can only hold bytes no Sync acknowledged. A frame that
+// fails authentication with bytes after it (other than zero fill) is tamper
+// or corruption, not a tear, and refuses the open with ErrAuthFailed.
+func (f *encryptedFile) scanFrames(physicalSize int64) error {
+	pos := f.headerSize
+	var logical int64
+	for pos < physicalSize {
+		rem := physicalSize - pos
+		if rem < frameLenSize {
+			break // torn length prefix
+		}
+		var lb [frameLenSize]byte
+		if _, err := f.base.ReadAt(lb[:], pos); err != nil {
+			return err
+		}
+		n := int(binary.LittleEndian.Uint32(lb[:]))
+		if n <= 0 || n > BlockSize {
+			zero, err := f.zeroFrom(pos, physicalSize)
+			if err != nil {
+				return err
+			}
+			if zero {
+				break // zero fill past the last write
+			}
+			return ErrAuthFailed
+		}
+		size := int64(frameLenSize + BlockOverhead + n)
+		if size > rem {
+			break // torn final frame
+		}
+		sealed := make([]byte, BlockOverhead+n)
+		if _, err := f.base.ReadAt(sealed, pos+frameLenSize); err != nil {
+			return err
+		}
+		if _, err := f.crypto.openFrame(sealed, int64(len(f.frames)), n); err != nil {
+			zero, zerr := f.zeroFrom(pos+size, physicalSize)
+			if zerr != nil {
+				return zerr
+			}
+			if zero {
+				break // unauthenticated final frame
+			}
+			return err
+		}
+		f.frames = append(f.frames, frameRef{phys: pos, logical: logical, n: n})
+		logical += int64(n)
+		pos += size
+	}
+	f.logicalSize = logical
+	f.flushedSize = logical
+	f.physEnd = pos
+	return nil
+}
+
+// zeroFrom reports whether every byte of the base file in [from, to) is
+// zero (true for an empty range).
+func (f *encryptedFile) zeroFrom(from, to int64) (bool, error) {
+	buf := make([]byte, 4096)
+	for from < to {
+		n := int64(len(buf))
+		if n > to-from {
+			n = to - from
+		}
+		if _, err := f.base.ReadAt(buf[:n], from); err != nil {
+			return false, err
+		}
+		for _, c := range buf[:n] {
+			if c != 0 {
+				return false, nil
+			}
+		}
+		from += n
+	}
+	return true, nil
+}
+
+// fixedLogLogicalSize is physicalToLogicalSize for a WAL or MANIFEST in the
+// fixed-size block layout, written before the framed layout existed. That
+// layout re-encrypts the trailing partial block and rewrites it in place on
+// every Sync, so a power cut during the rewrite tears a block that already
+// held synced bytes: the tear itself destroyed that block's previous
+// content, and no reader can bring it back (which is why WALs and
+// MANIFESTs are now framed). So that such a file still opens, a torn,
+// short or unauthenticated final block is the end of the log and every
+// earlier block replays; an earlier block that fails authentication still
+// fails its read with ErrAuthFailed.
+func (f *encryptedFile) fixedLogLogicalSize(payload int64) (int64, error) {
+	if payload < 0 {
+		return 0, &NegativePayloadLengthError{Length: payload}
+	}
+	if payload == 0 {
+		return 0, nil
+	}
+	last := payload / int64(CiphertextBlockSize)
+	lastLen := payload % int64(CiphertextBlockSize)
+	if lastLen == 0 {
+		last, lastLen = last-1, int64(CiphertextBlockSize)
+	}
+	if lastLen < int64(BlockOverhead) {
+		return last * int64(BlockSize), nil
+	}
+	buf := make([]byte, lastLen)
+	if _, err := f.base.ReadAt(buf, f.physicalOffsetForBlock(last)); err != nil {
+		return 0, err
+	}
+	pt, err := f.crypto.decrypt(buf)
+	if err != nil {
+		return last * int64(BlockSize), nil
+	}
+	return last*int64(BlockSize) + int64(len(pt)), nil
 }
 
 // physicalToLogicalSize maps the byte length of an encfs payload (the
@@ -163,8 +307,8 @@ func (f *encryptedFile) ReadAt(p []byte, off int64) (int, error) {
 	}
 	logicalSize := f.logicalSize
 	flushedSize := f.flushedSize
-	headerSize := f.headerSize
 	tail := append([]byte(nil), f.tail...)
+	frames := f.frames
 	f.mu.Unlock()
 
 	if off >= logicalSize {
@@ -178,41 +322,19 @@ func (f *encryptedFile) ReadAt(p []byte, off int64) (int, error) {
 
 	written := 0
 	for cursor := off; cursor < end; {
-		blockIndex := cursor / int64(BlockSize)
-		blockStart := blockIndex * int64(BlockSize)
-		intra := cursor - blockStart
 		var plaintext []byte
-
-		// Identify whether this block is on disk or in the in-memory
-		// tail. The tail covers logical range [flushedSize, logicalSize).
-		if blockStart >= flushedSize {
-			tailIntra := blockStart - flushedSize
-			if tailIntra >= int64(len(tail)) {
-				return written, io.EOF
-			}
-			tailEnd := tailIntra + int64(BlockSize)
-			if tailEnd > int64(len(tail)) {
-				tailEnd = int64(len(tail))
-			}
-			plaintext = tail[tailIntra:tailEnd]
+		var start int64
+		if cursor >= flushedSize {
+			// The in-memory tail covers logical range [flushedSize, logicalSize).
+			start, plaintext = flushedSize, tail
 		} else {
-			cipherLen := int64(CiphertextBlockSize)
-			if (blockIndex+1)*int64(BlockSize) > flushedSize {
-				// Trailing partial block already flushed once; its
-				// on-disk size is the partial size + overhead.
-				cipherLen = (flushedSize - blockStart) + int64(BlockOverhead)
-			}
-			cipherBuf := make([]byte, cipherLen)
-			if _, err := f.base.ReadAt(cipherBuf, headerSize+blockIndex*int64(CiphertextBlockSize)); err != nil {
-				return written, err
-			}
-			pt, err := f.crypto.decrypt(cipherBuf)
+			var err error
+			start, plaintext, err = f.readDurable(cursor, flushedSize, frames)
 			if err != nil {
 				return written, err
 			}
-			plaintext = pt
 		}
-
+		intra := cursor - start
 		copyLen := int64(len(plaintext)) - intra
 		if copyLen > end-cursor {
 			copyLen = end - cursor
@@ -228,6 +350,41 @@ func (f *encryptedFile) ReadAt(p []byte, off int64) (int, error) {
 		return written, io.EOF
 	}
 	return written, nil
+}
+
+// readDurable decrypts the on-disk block holding logical offset cursor
+// (cursor < flushedSize) and returns its logical start and plaintext.
+// frames is the framed layout's frame index, as of the caller's snapshot.
+func (f *encryptedFile) readDurable(cursor, flushedSize int64, frames []frameRef) (int64, []byte, error) {
+	if f.framed {
+		i := sort.Search(len(frames), func(i int) bool {
+			return frames[i].logical+int64(frames[i].n) > cursor
+		})
+		if i == len(frames) {
+			return 0, nil, io.ErrUnexpectedEOF
+		}
+		fr := frames[i]
+		sealed := make([]byte, BlockOverhead+fr.n)
+		if _, err := f.base.ReadAt(sealed, fr.phys+frameLenSize); err != nil {
+			return 0, nil, err
+		}
+		pt, err := f.crypto.openFrame(sealed, int64(i), fr.n)
+		return fr.logical, pt, err
+	}
+	blockIndex := cursor / int64(BlockSize)
+	blockStart := blockIndex * int64(BlockSize)
+	cipherLen := int64(CiphertextBlockSize)
+	if (blockIndex+1)*int64(BlockSize) > flushedSize {
+		// Trailing partial block already flushed once; its on-disk size
+		// is the partial size + overhead.
+		cipherLen = (flushedSize - blockStart) + int64(BlockOverhead)
+	}
+	cipherBuf := make([]byte, cipherLen)
+	if _, err := f.base.ReadAt(cipherBuf, f.physicalOffsetForBlock(blockIndex)); err != nil {
+		return 0, nil, err
+	}
+	pt, err := f.crypto.decrypt(cipherBuf)
+	return blockStart, pt, err
 }
 
 // Write implements io.Writer by appending to the file. Plaintext is
@@ -293,6 +450,9 @@ func (f *encryptedFile) flushFullBlockLocked() error {
 	if len(f.tail) != BlockSize {
 		return &FlushBlockSizeError{Expected: BlockSize, Got: len(f.tail)}
 	}
+	if f.framed {
+		return f.writeFrameLocked()
+	}
 	ct, err := f.crypto.encrypt(f.tail)
 	if err != nil {
 		return err
@@ -313,6 +473,9 @@ func (f *encryptedFile) flushTailLocked() error {
 	if len(f.tail) == 0 {
 		return nil
 	}
+	if f.framed {
+		return f.writeFrameLocked()
+	}
 	ct, err := f.crypto.encrypt(f.tail)
 	if err != nil {
 		return err
@@ -324,7 +487,39 @@ func (f *encryptedFile) flushTailLocked() error {
 	// flushedSize is intentionally NOT advanced here: a subsequent
 	// Write may extend the same trailing block, in which case we will
 	// re-encrypt with a fresh inline nonce and overwrite the same disk
-	// region.
+	// region. A power cut during that overwrite tears bytes an earlier
+	// Sync made durable, which is why append-and-sync files (WALs and
+	// MANIFESTs) use the framed layout instead (writeFrameLocked).
+	return nil
+}
+
+// writeFrameLocked seals f.tail as the next frame of a framed file, writes
+// it at the physical end and clears the tail. Caller must hold f.mu.
+//
+// The framed layout (header flag headerFlagFramed) is for append-and-sync
+// files. Each frame is a little-endian uint32 plaintext length followed by
+// the AEAD block (inline nonce, ciphertext, tag), sealed with the frame's
+// index and length as additional data, so frames cannot be reordered,
+// spliced or resized. A frame holds at most BlockSize bytes and is
+// seal-on-sync: once written it is never rewritten, and the Write after a
+// Sync starts a new frame. A power cut can therefore tear only bytes no
+// Sync acknowledged. Logical offsets are found through the frame index
+// built on open (scanFrames), not by fixed-size arithmetic.
+func (f *encryptedFile) writeFrameLocked() error {
+	if len(f.tail) == 0 {
+		return nil
+	}
+	frame, err := f.crypto.sealFrame(f.tail, int64(len(f.frames)))
+	if err != nil {
+		return err
+	}
+	if _, err := f.base.WriteAt(frame, f.physEnd); err != nil {
+		return err
+	}
+	f.frames = append(f.frames, frameRef{phys: f.physEnd, logical: f.flushedSize, n: len(f.tail)})
+	f.physEnd += int64(len(frame))
+	f.flushedSize += int64(len(f.tail))
+	f.tail = f.tail[:0]
 	return nil
 }
 

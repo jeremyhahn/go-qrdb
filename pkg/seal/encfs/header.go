@@ -33,6 +33,16 @@ const (
 
 	maxWrappedDEKSize = 4096
 	maxHeaderSize     = fixedHeaderSize + maxWrappedDEKSize
+
+	// headerFlagFramed marks a file in the framed, seal-on-sync layout
+	// used for append-and-sync files (Pebble WALs and MANIFESTs): each
+	// block carries its plaintext length and is never rewritten once a
+	// Sync made it durable. A file without the flag uses the fixed-size
+	// block layout. See encfile.go.
+	headerFlagFramed uint8 = 0x01
+
+	// knownHeaderFlags is every flag bit this build understands.
+	knownHeaderFlags = headerFlagFramed
 )
 
 var (
@@ -100,6 +110,11 @@ func (h *header) totalSize() int {
 	return fixedHeaderSize + len(h.WrappedDEK)
 }
 
+// framed reports whether the file uses the framed, seal-on-sync layout.
+func (h *header) framed() bool {
+	return h.Flags&headerFlagFramed != 0
+}
+
 // marshal returns the on-disk representation of the header.
 func (h *header) marshal() []byte {
 	buf := make([]byte, h.totalSize())
@@ -134,6 +149,9 @@ func readHeader(r io.Reader, barrier barrierKEK) (*header, error) {
 	}
 	if fixed[offVersion] != headerVersion {
 		return nil, ErrUnsupportedVersion
+	}
+	if fixed[offFlags]&^knownHeaderFlags != 0 {
+		return nil, ErrInvalidHeader
 	}
 	headerSize := int(binary.LittleEndian.Uint16(fixed[offHeaderSize:]))
 	if headerSize < fixedHeaderSize || headerSize > maxHeaderSize {
