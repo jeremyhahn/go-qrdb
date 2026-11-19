@@ -41,6 +41,11 @@ type HostTopologyProvider struct {
 	host      raftadmin.Host
 	rebalance RebalanceServicer
 	timeout   time.Duration
+
+	// rosterShard is the system shard whose members are the roster, when
+	// hasRosterShard (WithRosterShard).
+	rosterShard    uint64
+	hasRosterShard bool
 }
 
 // Compile-time interface check.
@@ -51,8 +56,29 @@ var _ placement.TopologyProvider = (*HostTopologyProvider)(nil)
 // byte and shard load (the primary scheduler signal); when nil, load falls back
 // to the shard counts derivable from the host's NodeHostInfo. host must be
 // non-nil.
-func NewHostTopologyProvider(host raftadmin.Host, rebalance RebalanceServicer) *HostTopologyProvider {
-	return &HostTopologyProvider{host: host, rebalance: rebalance, timeout: topologyReportTimeout}
+func NewHostTopologyProvider(host raftadmin.Host, rebalance RebalanceServicer, opts ...HostTopologyOption) *HostTopologyProvider {
+	p := &HostTopologyProvider{host: host, rebalance: rebalance, timeout: topologyReportTimeout}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
+}
+
+// HostTopologyOption configures a HostTopologyProvider.
+type HostTopologyOption func(*HostTopologyProvider)
+
+// WithRosterShard names the system shard whose membership is the cluster
+// roster: the authoritative member list the membership manager commits
+// joins and leaves to. Nodes then reports only that shard's members, so a
+// node that left the cluster but is still listed in some other shard's
+// membership (a tenant home it was a voter of) is not counted as known, and
+// the cluster size is the roster's. Without it, or while this node does not
+// host the shard, the roster is the union of every local shard's members.
+func WithRosterShard(shardID uint64) HostTopologyOption {
+	return func(p *HostTopologyProvider) {
+		p.rosterShard = shardID
+		p.hasRosterShard = true
+	}
 }
 
 // Nodes returns the current cluster topology and per-node load. Every node that
@@ -81,6 +107,20 @@ func (p *HostTopologyProvider) Nodes() []placement.NodeLoad {
 	// enumerates every shard and its members (replicaID -> raft address), so
 	// the union of member addresses is the cluster roster.
 	info := p.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	var roster map[string]bool
+	if info != nil && p.hasRosterShard {
+		for _, si := range info.ShardInfoList {
+			if si.ShardID != p.rosterShard {
+				continue
+			}
+			roster = make(map[string]bool, len(si.Nodes))
+			for _, addr := range si.Nodes {
+				if addr != "" {
+					roster[addr] = true
+				}
+			}
+		}
+	}
 	if info != nil {
 		if info.RaftAddress != "" {
 			ensure(info.RaftAddress)
@@ -113,7 +153,10 @@ func (p *HostTopologyProvider) Nodes() []placement.NodeLoad {
 	}
 
 	out := make([]placement.NodeLoad, 0, len(nodes))
-	for _, n := range nodes {
+	for addr, n := range nodes {
+		if len(roster) > 0 && !roster[addr] {
+			continue
+		}
 		out = append(out, *n)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })

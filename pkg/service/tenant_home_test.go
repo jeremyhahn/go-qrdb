@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 )
 
 // newHomeDatabaseService returns a placement-wired DatabaseService for the
@@ -101,6 +102,57 @@ func homeOnTopology(t *testing.T, nodes []placement.NodeLoad) (*DatabaseService,
 		t.Fatalf("ProvisionTenantHome: %v", err)
 	}
 	return svc, store, topo
+}
+
+// TestReconcileTenantHomes_ShedsAVoterAbsentFromTheSystemRoster proves the
+// tenant home scheduler judges departure by the system shard's roster: a
+// node that left the cluster is still listed as a member of the home group
+// it was a voter of, so a roster built from every local shard's membership
+// would keep it known forever. With the system roster it is removed.
+func TestReconcileTenantHomes_ShedsAVoterAbsentFromTheSystemRoster(t *testing.T) {
+	svc, store, topo := homeOnTopology(t, healthyNodes("n1", "n2", "n3"))
+	host := withHomeView(t, svc, store, true)
+	topo.nodes = healthyNodes("n1", "n2", "n3", "n4")
+	if err := svc.ReconcileTenantHomes(context.Background()); err != nil {
+		t.Fatalf("ReconcileTenantHomes (grow): %v", err)
+	}
+	home := loadHome(t, store)
+	if homeReplicaOn(t, store, "n4:1") == nil {
+		t.Fatalf("home spans %d nodes after the grow, want one on n4", len(home.Replicas))
+	}
+	host.members = membersOf(home)
+
+	// n4 leaves: the system shard's roster drops it, but the home group's
+	// membership, as this node hosts it, still lists it.
+	const systemShard = 1
+	homeMembers := make(map[uint64]string, len(home.Replicas))
+	for _, r := range home.Replicas {
+		homeMembers[r.ReplicaID] = r.RaftAddr
+	}
+	raftHost := &mockHost{getNodeHostInfoFn: func(quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+		return &quicraft.NodeHostInfo{
+			RaftAddress: "n1:1",
+			ShardInfoList: []quicraft.ShardInfo{
+				{ShardID: systemShard, Nodes: map[uint64]string{1: "n1:1", 2: "n2:1", 3: "n3:1"}},
+				{ShardID: home.ShardID, Nodes: homeMembers},
+			},
+		}
+	}}
+	sched, err := placement.NewScheduler(NewHostTopologyProvider(raftHost, nil, WithRosterShard(systemShard)))
+	if err != nil {
+		t.Fatalf("placement.NewScheduler: %v", err)
+	}
+	svc.placementScheduler = sched
+
+	if err := svc.ReconcileTenantHomes(context.Background()); err != nil {
+		t.Fatalf("ReconcileTenantHomes (n4 left): %v", err)
+	}
+	if homeReplicaOn(t, store, "n4:1") != nil {
+		t.Fatal("home kept its replica on n4, absent from the system roster")
+	}
+	if len(host.removeCalls) != 1 {
+		t.Fatalf("RemoveFollowerNode calls = %d, want 1", len(host.removeCalls))
+	}
 }
 
 // homeReplicaOn returns the home group's replica on addr, or nil.

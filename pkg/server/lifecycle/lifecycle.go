@@ -1116,7 +1116,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		// refused (featuregate.StrictIsolation).
 		strictIsolation := strictIsolationRequired(infra.Host)
 		schedOpts = append(schedOpts, placement.WithServingSet(service.PlacementServingSet(store, strictIsolation)))
-		if scheduler, serr := placement.NewScheduler(service.NewHostTopologyProvider(infra.Host, n.Rebalance), schedOpts...); serr == nil {
+		if scheduler, serr := placement.NewScheduler(service.NewHostTopologyProvider(infra.Host, n.Rebalance, service.WithRosterShard(shard.ShardKV)), schedOpts...); serr == nil {
 			placementOpts = []service.DatabaseServiceOption{
 				service.WithPlacementStore(store),
 				service.WithStrictIsolationGate(strictIsolation),
