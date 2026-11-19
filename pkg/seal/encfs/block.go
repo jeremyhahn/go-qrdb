@@ -101,10 +101,6 @@ func (c *blockCrypto) decrypt(block []byte) ([]byte, error) {
 // framed block (see the framed layout in encfile.go).
 const frameLenSize = 4
 
-// maxFrameSize is the on-disk size of a framed block holding BlockSize
-// plaintext bytes.
-const maxFrameSize = frameLenSize + CiphertextBlockSize
-
 // frameAAD is the additional data a framed block is sealed with: its index
 // in the file and its plaintext length, so frames cannot be reordered,
 // spliced or have their length prefix rewritten.
