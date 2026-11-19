@@ -531,6 +531,42 @@ func TestMoveTenantGroupShard_LeaderRouting_ExecutesLocallyWhenLeader(t *testing
 	}
 }
 
+// TestMoveTenantGroupShard_ServingSetRefusalIsRedacted is the regression for
+// an executed move's serving-set refusal carrying the tenant's database
+// name: execution is platform-scoped like the plan, so the refusal is the
+// redacted *ServingSetMoveError naming the shard and the opaque database id.
+func TestMoveTenantGroupShard_ServingSetRefusalIsRedacted(t *testing.T) {
+	store, p := servingSetStore(t)
+	host := &fakeRaftHost{leaderID: 1, leaderOK: true}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "n1",
+		raftHost:       host,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: p.ShardID, FromNode: "n2", ToNode: "n3"}
+	err := svc.moveTenantGroupShard(context.Background(), move, p)
+	var sme *ServingSetMoveError
+	if !errors.As(err, &sme) {
+		t.Fatalf("move outside the serving set: err = %v, want *ServingSetMoveError", err)
+	}
+	if sme.TenantID != "iso" || sme.DatabaseID != "orders-id" || sme.ShardID != p.ShardID || sme.Node != "n3" {
+		t.Fatalf("ServingSetMoveError = %+v", sme)
+	}
+	var sse *placement.ServingSetError
+	if errors.As(err, &sse) {
+		t.Fatalf("refusal still wraps *placement.ServingSetError: %v", err)
+	}
+	if strings.Contains(err.Error(), `"`+p.Database+`"`) {
+		t.Fatalf("refusal names the database %q: %v", p.Database, err)
+	}
+	if len(host.observerCalls) != 0 {
+		t.Fatalf("AddObserver calls = %d, want 0", len(host.observerCalls))
+	}
+}
+
 // TestMoveTenantGroupShard_LeaderRouting_TransfersAwayWhenSelfIsSource is
 // the direct regression test for the bug this test file's ordering
 // discovered while it was being written: when the LOCAL node is BOTH the

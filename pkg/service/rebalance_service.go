@@ -854,6 +854,14 @@ func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move Rebala
 		if placementFailed {
 			step = "add-placement"
 		}
+		// Execution is platform-scoped like the plan: a serving-set
+		// refusal names the shard and the opaque database id, never the
+		// tenant's database name.
+		var sse *placement.ServingSetError
+		if errors.As(err, &sse) {
+			err = &ServingSetMoveError{TenantID: p.TenantID, DatabaseID: p.DatabaseID,
+				ShardID: move.ShardID, Node: move.ToNode}
+		}
 		return &RebalanceMoveError{ShardID: move.ShardID, TenantID: p.TenantID, Step: step, Err: err}
 	}
 
