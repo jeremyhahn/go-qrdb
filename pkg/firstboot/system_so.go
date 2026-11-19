@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -379,6 +380,15 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 	if err != nil {
 		return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
 	}
+	// A key this enrolment bound once and that has no binding since was
+	// withdrawn by an operator: a retained pending record must not bring it
+	// back. An enrolment that stopped before its binding left no record of
+	// one, and is completed below.
+	if !created && soKeyWithdrawn(soUser, soKey) {
+		deps.Logger.Warn("first-boot: the pending system SO's key was bound and withdrawn since; not binding it again",
+			slog.String("username", so.Username), slog.String("tenant", tenantID))
+		return nil
+	}
 	// The PIN is committed, or proven ours, before any trust anchor or
 	// binding: a run with someone else's PIN must leave no SO credential.
 	if err := commitSystemSOPIN(ctx, deps.SOPINs, tenantID, so); err != nil {
@@ -415,6 +425,9 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 		if err := deps.Binder.BindAdminCert(ctx, tenantID, soUser.ID, thumbprint); err != nil {
 			return &SystemSOEnrollmentError{Op: "binding", Cause: err}
 		}
+		if err := recordSOBoundKey(ctx, deps, soUser, thumbprint); err != nil {
+			return err
+		}
 		result.SOCertPEM = certPEM
 		result.SOCertThumbprint = thumbprint
 		deps.Logger.Info("first-boot: system SO cert bound",
@@ -428,7 +441,11 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 	// the binding (the admin binding is the last write), so the embedder
 	// may hold the SO's key with no login certificate. A CSR is signed
 	// again for the same key, which the standing binding already covers,
-	// and returned; a presented certificate is the embedder's own.
+	// and returned; a presented certificate is the embedder's own. A run
+	// that stopped between the binding and its record records it now.
+	if err := recordSOBoundKey(ctx, deps, soUser, soKey); err != nil {
+		return err
+	}
 	if len(so.CertPEM) > 0 {
 		return nil
 	}
@@ -445,6 +462,49 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 	}
 	result.SOCertPEM = certPEM
 	result.SOCertThumbprint = thumbprint
+	return nil
+}
+
+// soBoundKeyAttribute names the SO account attribute recording the SPKI
+// thumbprint first boot bound to it. It is written after the binding, so an
+// account carrying it with no binding for that key had the key withdrawn,
+// while one without it never finished its enrolment.
+const soBoundKeyAttribute = "qrdb.firstboot.so_bound_key"
+
+// soKeyWithdrawn reports whether soKey was bound to the SO by an earlier
+// first boot and holds no binding now, expired or live: an expired binding
+// is renewed, a removed one stays removed.
+func soKeyWithdrawn(soUser *user.User, soKey string) bool {
+	if soUser == nil || soUser.Attributes[soBoundKeyAttribute] != soKey {
+		return false
+	}
+	for i := range soUser.CertBindings {
+		if soUser.CertBindings[i].Thumbprint == soKey {
+			return false
+		}
+	}
+	return true
+}
+
+// recordSOBoundKey records on the SO account that thumbprint is bound to it,
+// once. It runs after BindAdminCert and before the run can succeed, so a
+// pending record is consumed only once its binding is recorded.
+func recordSOBoundKey(ctx context.Context, deps Dependencies, soUser *user.User, thumbprint string) error {
+	if soUser.Attributes[soBoundKeyAttribute] == thumbprint {
+		return nil
+	}
+	updater, ok := deps.Users.(userUpdater)
+	if !ok {
+		return &MissingSOSeamError{Seam: "Dependencies.Users implementing UpdateUser to record the SO's bound key"}
+	}
+	attrs := maps.Clone(soUser.Attributes)
+	if attrs == nil {
+		attrs = map[string]string{}
+	}
+	attrs[soBoundKeyAttribute] = thumbprint
+	if _, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: soUser.ID, Attributes: attrs}); err != nil {
+		return &SystemSOEnrollmentError{Op: "binding", Cause: err}
+	}
 	return nil
 }
 

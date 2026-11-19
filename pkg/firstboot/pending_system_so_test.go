@@ -629,13 +629,66 @@ func TestInitialize_DeletedPendingSOIsNotRecreatedFromItsRetainedRecord(t *testi
 func TestInitialize_PendingSOWithItsPINAndItsAccountStillEnrols(t *testing.T) {
 	h, store, username := retainedSOHarness(t)
 	soID := h.users.byName[username].ID
+	// Interrupted before its binding: no binding, nor its record.
 	h.users.byName[username].CertBindings = nil
+	h.users.byName[username].Attributes = nil
 
 	result := restartWithRetainedSO(t, h, store)
 	assert.False(t, result.SORetired)
 	assert.Equal(t, soID, result.SOUserID)
 	assert.Equal(t, 2, h.binder.calls[soID], "the unbound SO is bound again")
 	assert.False(t, result.SOCreated, "the standing account is reused, not re-created")
+}
+
+// TestEnrollSystemSO_WithdrawnKeyNotRebound (PR #1579 Codex round 1, P1):
+// the SO was enrolled, its pending record was never consumed, and an
+// operator withdrew its key's binding since. The next start must not bind
+// the key again from the retained record.
+func TestEnrollSystemSO_WithdrawnKeyNotRebound(t *testing.T) {
+	h, store, username := retainedSOHarness(t)
+	soID := h.users.byName[username].ID
+	h.users.byName[username].CertBindings = nil // the operator's withdrawal
+
+	result := restartWithRetainedSO(t, h, store)
+	assert.Equal(t, 1, h.binder.calls[soID], "the withdrawn key was bound again")
+	assert.Empty(t, h.users.byName[username].CertBindings)
+	assert.Empty(t, result.SOCertPEM)
+	assert.False(t, result.SOCreated)
+	assert.Equal(t, soID, result.SOUserID, "the record is still consumed")
+}
+
+// soBindFailer fails BindAdminCert for one account: a node that stops
+// between creating the SO and binding its key.
+type soBindFailer struct {
+	inner *soBinder
+	fail  string
+}
+
+func (b soBindFailer) BindAdminCert(ctx context.Context, tenantID string, userID uint64, thumbprint string) error {
+	if u := b.inner.users.byID(userID); u != nil && u.Username == b.fail {
+		return errors.New("stopped before the binding")
+	}
+	return b.inner.BindAdminCert(ctx, tenantID, userID, thumbprint)
+}
+
+// TestEnrollSystemSO_UnfinishedEnrollmentStillBinds: a run that stopped
+// before the SO's binding left no record of one, so the next run binds it.
+func TestEnrollSystemSO_UnfinishedEnrollmentStillBinds(t *testing.T) {
+	h := newSOHarness(t, true)
+	h.deps.Binder = soBindFailer{inner: h.binder, fail: "officer"}
+	_, err := Initialize(context.Background(), h.deps)
+	require.Error(t, err)
+	so := h.users.byName["officer"]
+	require.NotNil(t, so, "the SO account was created before the binding")
+	require.Empty(t, so.CertBindings)
+
+	h.deps.Binder = h.binder
+	result, err := Initialize(context.Background(), h.deps)
+	require.NoError(t, err)
+	assert.False(t, result.SOCreated)
+	assert.Len(t, so.CertBindings, 1, "the unfinished enrolment was not completed")
+	assert.NotEmpty(t, result.SOCertThumbprint)
+	assert.Equal(t, result.SOCertThumbprint, so.Attributes[soBoundKeyAttribute])
 }
 
 // recordSetterOnlyPINs commits a PIN record but cannot compare one.

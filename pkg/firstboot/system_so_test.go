@@ -23,6 +23,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"maps"
 	"math/big"
 	"slices"
 	"strings"
@@ -63,6 +64,9 @@ func (u *soUsers) UpdateUser(_ context.Context, req *user.UpdateUserRequest) (*u
 	}
 	if req.RoleIDs != nil {
 		existing.RoleIDs = append([]string(nil), req.RoleIDs...)
+	}
+	if req.Attributes != nil {
+		existing.Attributes = maps.Clone(req.Attributes)
 	}
 	return existing, nil
 }
@@ -371,7 +375,9 @@ func TestInitialize_SystemSOReRunBindsAnUnboundSO(t *testing.T) {
 		t.Fatalf("first Initialize: %v", err)
 	}
 	so := h.users.byName["officer"]
-	so.CertBindings = nil // a crash between create and bind
+	// A crash between create and bind: no binding, nor its record.
+	so.CertBindings = nil
+	so.Attributes = nil
 	result, err := Initialize(context.Background(), h.deps)
 	if err != nil {
 		t.Fatalf("re-run Initialize: %v", err)
