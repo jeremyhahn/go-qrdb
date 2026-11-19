@@ -210,7 +210,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Vector | `getNamespaceInfo` | views/user/VectorView.svelte | vector.spec.ts (info stat cards) | *verified* |
 | Vector | `getRebuildProgress` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `getVector` | views/user/VectorView.svelte | vector-advanced.spec.ts | *verified* |
-| Vector | `hybridSearch` | views/user/VectorView.svelte | vector-advanced.spec.ts | *verified* |
+| Vector | `hybridSearch` (similarity search narrowed by a metadata filter; the service ranks by similarity only, so the view has no weight inputs) | views/user/VectorView.svelte | vector-advanced.spec.ts | *verified* |
 | Vector | `listNamespaces` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `listVectors` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `rebuildIndex` | views/user/VectorView.svelte | vector.spec.ts | *verified* |

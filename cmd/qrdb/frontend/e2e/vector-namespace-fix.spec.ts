@@ -195,7 +195,7 @@ async function injectStatefulVectorBinding(
             const info = namespaceStore.get(r.namespace);
             if (info) info.vectorCount = vecs.size;
           }
-          return {};
+          return { deleted_count: r.ids.length, failed_ids: [], timestamp: 1, success: true };
         },
 
         ListVectors: async (req: unknown) => {

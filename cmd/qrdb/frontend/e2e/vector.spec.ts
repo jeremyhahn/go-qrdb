@@ -198,7 +198,8 @@ async function injectStatefulVectorBinding(
             info.vectorCount = vecs.size;
           }
         }
-        return { count: (r.ids ?? []).length };
+        // transport.BatchDeleteVectorsResponse, as the Go binding answers it.
+        return { deleted_count: (r.ids ?? []).length, failed_ids: [], timestamp: 1, success: true };
       },
 
       ListVectors: async (req: unknown) => {

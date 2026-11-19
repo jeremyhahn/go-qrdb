@@ -1260,14 +1260,13 @@ export interface HybridSearchRequest {
     readonly namespace: string;
     /** Query vector for similarity component. */
     readonly vector: readonly number[];
-    /** Metadata filter criteria. */
+    /**
+     * Metadata filter criteria. Results are the nearest vectors whose
+     * metadata matches; the filter narrows, it does not re-rank.
+     */
     readonly metadataFilters: Readonly<Record<string, unknown>>;
     /** Number of results to return. */
     readonly k: number;
-    /** Weight applied to vector similarity score (0-1). */
-    readonly vectorWeight: number;
-    /** Weight applied to metadata match score (0-1). */
-    readonly metadataWeight: number;
     /** Consistency level (0 = default). */
     readonly consistency?: number;
     /** Target shard identifier. */

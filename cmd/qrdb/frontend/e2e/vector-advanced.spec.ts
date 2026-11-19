@@ -147,10 +147,22 @@ async function injectStatefulVectorBinding(
         return {};
       },
 
+      // The Go binding answers transport.GetVectorResponse in snake_case
+      // and, like the service, omits the vector and the metadata unless
+      // include_vector / include_metadata ask for them.
       GetVector: async (req: unknown) => {
         maybeReject("VectorBinding.GetVector");
-        const r = req as { namespace: string; id: string };
-        return { ...lookup(r.namespace, r.id) };
+        const r = req as { namespace: string; id: string; include_vector?: boolean; include_metadata?: boolean };
+        const v = lookup(r.namespace, String(r.id));
+        return {
+          id: v.id,
+          ...(r.include_vector ? { vector: v.vector } : {}),
+          ...(r.include_metadata ? { metadata: v.metadata } : {}),
+          version: v.version,
+          created_at: v.createdAt,
+          updated_at: v.updatedAt,
+          found: true,
+        };
       },
 
       DeleteVector: async (req: unknown) => {
@@ -166,17 +178,16 @@ async function injectStatefulVectorBinding(
           vectors: Array<{ id: string; vector: number[]; metadata?: Record<string, unknown> }>;
         };
         const dim = namespaceStore.get(r.namespace)?.dimension;
-        let succeeded = 0;
-        const errors: Array<{ id: string; error: string }> = [];
+        const ids: string[] = [];
+        const versions: number[] = [];
         for (const v of r.vectors) {
-          if (dim !== undefined && v.vector.length !== dim) {
-            errors.push({ id: v.id, error: `dimension ${v.vector.length} != ${dim}` });
-            continue;
-          }
-          put(r.namespace, v.id, v.vector, v.metadata ?? {});
-          succeeded++;
+          if (dim !== undefined && v.vector.length !== dim) continue;
+          put(r.namespace, String(v.id), v.vector, v.metadata ?? {});
+          ids.push(String(v.id));
+          versions.push(lookup(r.namespace, String(v.id)).version);
         }
-        return { succeeded, failed: errors.length, errors };
+        // transport.BatchUpsertResponse: no succeeded/failed/errors fields.
+        return { ids, versions, timestamp: 1, success: true, inserted_count: ids.length };
       },
 
       BatchDeleteVectors: async (req: unknown) => {
@@ -184,15 +195,16 @@ async function injectStatefulVectorBinding(
         const r = req as { namespace: string; ids: string[] };
         const vecs = vectorStore.get(r.namespace);
         let deleted = 0;
-        const errors: Array<{ id: string; error: string }> = [];
+        const failedIds: string[] = [];
         for (const id of r.ids ?? []) {
-          if (vecs?.delete(id)) {
+          if (vecs?.delete(String(id))) {
             deleted++;
           } else {
-            errors.push({ id, error: "not found" });
+            failedIds.push(String(id));
           }
         }
-        return { deleted, failed: errors.length, errors };
+        // transport.BatchDeleteVectorsResponse.
+        return { deleted_count: deleted, failed_ids: failedIds, timestamp: 1, success: failedIds.length === 0 };
       },
 
       ListVectors: async (req: unknown) => {
@@ -211,33 +223,33 @@ async function injectStatefulVectorBinding(
 
       HybridSearch: async (req: unknown) => {
         maybeReject("VectorBinding.HybridSearch");
-        // The Wails adapter sends the request through toSnake().
+        // transport.HybridSearchRequest reads query_vector and
+        // metadata_filter. The service keeps the vectors whose metadata
+        // matches the filter and ranks them by similarity; it has no weights.
         const r = req as {
           namespace: string;
-          vector: number[];
-          metadata_filters: Record<string, unknown>;
+          query_vector?: number[];
+          metadata_filter?: Record<string, unknown>;
           k: number;
-          vector_weight: number;
-          metadata_weight: number;
+          include_metadata?: boolean;
         };
+        if (!Array.isArray(r.query_vector) || r.query_vector.length === 0) {
+          throw new Error("query_vector is required");
+        }
+        const q = r.query_vector;
         const vecs = vectorStore.get(r.namespace);
-        if (!vecs) return { results: [], took: 0 };
-        const filters = r.metadata_filters ?? {};
-        const keys = Object.keys(filters);
+        if (!vecs) return { results: [], query_duration: 0 };
+        const filter = r.metadata_filter ?? {};
         const results = Array.from(vecs.values())
-          .map((v) => {
-            const match = keys.length > 0 && keys.every(
-              (key) => String(v.metadata[key]) === String(filters[key]),
-            );
-            return {
-              id: v.id,
-              score: r.vector_weight * 0.5 + (match ? r.metadata_weight : 0),
-              metadata: v.metadata,
-            };
-          })
+          .filter((v) => Object.keys(filter).every((key) => String(v.metadata[key]) === String(filter[key])))
+          .map((v) => ({
+            id: v.id,
+            score: v.vector.reduce((acc, x, i) => acc + x * (q[i] ?? 0), 0),
+            ...(r.include_metadata ? { metadata: v.metadata } : {}),
+          }))
           .sort((a, b) => b.score - a.score)
           .slice(0, r.k);
-        return { results, took: 1 };
+        return { results, query_duration: 1 };
       },
     };
   });
@@ -357,6 +369,9 @@ test.describe("Vector View - advanced operations", () => {
     await page.getByText("v1", { exact: true }).first().click();
     const detail = page.getByLabel("Vector Details");
     await expect(detail.getByTestId("vector-detail-version")).toHaveText("1", { timeout: 5_000 });
+    // The detail loads the stored metadata (getVector asks for it).
+    await expect(detail.getByTestId("vector-detail-metadata-json")).toContainText('"label": "first"');
+    await expect(detail.getByTestId("vector-detail-metadata-input")).toHaveValue(/"label": "first"/);
 
     await detail.getByTestId("vector-detail-metadata-input").fill('{"label": "second", "tier": 2}');
     await detail.getByRole("button", { name: "Save metadata" }).click();
@@ -379,7 +394,7 @@ test.describe("Vector View - advanced operations", () => {
     await expect(detail.getByTestId("vector-detail-version")).toHaveText("1");
   });
 
-  test("batch upsert reports succeeded, failed and per-vector errors", async ({ page }) => {
+  test("batch upsert reports succeeded and failed from inserted_count", async ({ page }) => {
     const mixed = JSON.stringify([
       { id: "b1", vector: [0.1, 0.2, 0.3] },
       { id: "b2", vector: [0.4, 0.5, 0.6], metadata: { color: "blue" } },
@@ -388,7 +403,6 @@ test.describe("Vector View - advanced operations", () => {
     const panel = await batchUpsert(page, mixed);
     await expect(panel.getByTestId("batch-upsert-succeeded")).toHaveText("2");
     await expect(panel.getByTestId("batch-upsert-failed")).toHaveText("1");
-    await expect(panel.getByTestId("batch-upsert-errors")).toContainText("bad: dimension 2 != 3");
     await expect(page.getByText("Batch upsert: 2 succeeded, 1 failed.")).toBeVisible();
 
     await panel.getByLabel("Close", { exact: true }).click();
@@ -418,22 +432,22 @@ test.describe("Vector View - advanced operations", () => {
     await expect(page.getByText("b2", { exact: true })).toBeVisible();
   });
 
-  test("hybrid search ranks the metadata match first", async ({ page }) => {
+  test("hybrid search keeps only the metadata matches", async ({ page }) => {
     const panel = await batchUpsert(page, threeVectors);
     await panel.getByLabel("Close", { exact: true }).click();
     await dismissToasts(page);
 
     await page.getByRole("tab", { name: "Search" }).click();
     const card = page.getByTestId("hybrid-search-card");
+    await expect(card.getByLabel("Hybrid vector weight")).toHaveCount(0);
+    await expect(card.getByLabel("Hybrid metadata weight")).toHaveCount(0);
     await card.getByLabel("Hybrid vector", { exact: true }).fill("0.1, 0.2, 0.3");
     await card.getByLabel("Hybrid metadata filter").fill('{"color": "blue"}');
     await card.getByLabel("Hybrid k").fill("2");
-    await card.getByLabel("Hybrid vector weight").fill("0.6");
-    await card.getByLabel("Hybrid metadata weight").fill("0.4");
     await card.getByRole("button", { name: "Hybrid search" }).click();
 
     const rows = page.getByRole("row").filter({ hasText: /^.*b\d/ });
-    await expect(rows).toHaveCount(2, { timeout: 5_000 });
+    await expect(rows).toHaveCount(1, { timeout: 5_000 });
     await expect(rows.first()).toContainText("b2");
   });
 

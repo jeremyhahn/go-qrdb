@@ -413,7 +413,8 @@ async function injectSeededVectorBinding(page: Page): Promise<void> {
         }
         const info = namespaceStore.get(r.namespace);
         if (info && vecs) info.vectorCount = vecs.size;
-        return { deleted, failed: 0 };
+        // transport.BatchDeleteVectorsResponse, as the Go binding answers it.
+        return { deleted_count: deleted, failed_ids: [], timestamp: 1, success: true };
       },
       ListVectors: async (req: unknown) => {
         maybeReject("VectorBinding.ListVectors");

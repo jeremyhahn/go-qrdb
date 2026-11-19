@@ -162,7 +162,7 @@ describe('vector search and list wire names', () => {
         const c = await client();
         mockFetch({ results: [], query_duration: 9 });
         const h = await c.vector!.hybridSearch({
-            namespace: 'ns', vector: [1], metadataFilters: {}, k: 1, vectorWeight: 1, metadataWeight: 0,
+            namespace: 'ns', vector: [1], metadataFilters: {}, k: 1,
         });
         expect(h.took).toBe(9);
         const b = await c.vector!.searchByID({ namespace: 'ns', id: '1', k: 1 });

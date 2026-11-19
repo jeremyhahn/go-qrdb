@@ -279,8 +279,10 @@ import {
     indexTypeToIpcWire,
     normalizeVectorEnumFields,
     normalizeVectorIDField,
+    searchResponseFromWire,
     vectorIDToWire,
 } from './transform.js';
+import type { WireSearchResponse } from './transform.js';
 
 // ---------------------------------------------------------------------------
 // SDK version constant
@@ -953,25 +955,45 @@ export class WailsClient implements Client {
                 return b.UpsertVector(toSnake({ ...req, id: vectorIDToWire(req.id) })) as Promise<UpsertVectorResponse>;
             },
             getVector: async (req: GetVectorRequest): Promise<VectorData> => {
-                const vec = await b.GetVector(toSnake({ ...req, id: vectorIDToWire(req.id) })) as VectorData;
+                // The binding takes transport.GetVectorRequest, whose
+                // include_vector/include_metadata default to false: ask for
+                // both, as the REST route answers them.
+                const vec = await b.GetVector(toSnake({
+                    ...req,
+                    id: vectorIDToWire(req.id),
+                    includeVector: true,
+                    includeMetadata: true,
+                })) as VectorData;
                 return normalizeVectorIDField(vec);
             },
             deleteVector: async (req: DeleteVectorRequest): Promise<void> => {
                 await b.DeleteVector(toSnake({ ...req, id: vectorIDToWire(req.id) }));
             },
             batchUpsert: async (req: BatchUpsertRequest): Promise<BatchUpsertResponse> => {
-                return b.BatchUpsert(toSnake({
+                // The binding answers transport.BatchUpsertResponse
+                // {ids, versions, success, inserted_count}: the upserted
+                // count is inserted_count, the rest failed.
+                const resp = await b.BatchUpsert(toSnake({
                     ...req,
                     vectors: req.vectors.map((v) => ({ ...v, id: vectorIDToWire(v.id) })),
-                })) as Promise<BatchUpsertResponse>;
+                })) as { insertedCount?: number } | null;
+                const succeeded = resp?.insertedCount ?? 0;
+                return { succeeded, failed: Math.max(0, req.vectors.length - succeeded) };
             },
             batchDeleteVectors: async (
                 req: BatchDeleteVectorsRequest,
             ): Promise<BatchDeleteVectorsResponse> => {
-                return b.BatchDeleteVectors(toSnake({
+                // The binding answers {deleted_count, failed_ids, success}.
+                const resp = await b.BatchDeleteVectors(toSnake({
                     ...req,
                     ids: req.ids.map(vectorIDToWire),
-                })) as Promise<BatchDeleteVectorsResponse>;
+                })) as { deletedCount?: number; failedIds?: readonly (number | string)[] | null } | null;
+                const failedIds = resp?.failedIds ?? [];
+                return {
+                    deleted: resp?.deletedCount ?? 0,
+                    failed: failedIds.length,
+                    errors: failedIds.map((id) => ({ id: String(id), error: 'not deleted' })),
+                };
             },
             listVectors: async (req: ListVectorsRequest): Promise<ListVectorsResponse> => {
                 const resp = await b.ListVectors(toSnake(req)) as ListVectorsResponse;
@@ -998,8 +1020,19 @@ export class WailsClient implements Client {
             hybridSearch: async (
                 req: HybridSearchRequest,
             ): Promise<HybridSearchResponse> => {
-                const resp = await b.HybridSearch(toSnake(req)) as HybridSearchResponse;
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                // The binding takes transport.HybridSearchRequest, which reads
+                // query_vector and metadata_filter, and answers query_duration.
+                const resp = await b.HybridSearch(toSnake({
+                    namespace: req.namespace,
+                    queryVector: req.vector,
+                    k: req.k,
+                    metadataFilter: req.metadataFilters,
+                    includeVectors: true,
+                    includeMetadata: true,
+                    consistency: req.consistency,
+                    shardId: req.shardId,
+                })) as WireSearchResponse | null;
+                return searchResponseFromWire(resp ?? {});
             },
             searchByID: async (req: SearchByIDRequest): Promise<SearchSimilarResponse> => {
                 const resp = await b.SearchByID(toSnake({

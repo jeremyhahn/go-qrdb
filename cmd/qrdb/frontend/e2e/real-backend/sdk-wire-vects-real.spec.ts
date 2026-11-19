@@ -142,8 +142,6 @@ test.describe("SDK wire: vector (real backend)", () => {
       vector: [0, 0, 1],
       metadataFilters: { color: "red" },
       k: 5,
-      vectorWeight: 0.5,
-      metadataWeight: 0.5,
     });
     expect(hybrid.results.map((r) => r.id)).toContain("9");
     expect(hybrid.results.map((r) => r.id)).not.toContain("8");

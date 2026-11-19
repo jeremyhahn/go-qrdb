@@ -1742,8 +1742,7 @@ export class RestClient implements Client {
                 req: HybridSearchRequest,
             ): Promise<HybridSearchResponse> => {
                 this.ensureConnected();
-                // The wire reads query_vector and metadata_filter; it has no
-                // weight fields, so vectorWeight/metadataWeight stay client-side.
+                // The wire reads query_vector and metadata_filter.
                 const resp = await this.fetchJSON<WireSearchResponse>('/vector/search/hybrid',
                     {
                         method: 'POST',

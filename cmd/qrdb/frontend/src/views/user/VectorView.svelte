@@ -127,8 +127,6 @@
   let hybridVector: string = $state("");
   let hybridFilters: string = $state("{}");
   let hybridK: string = $state("10");
-  let hybridVectorWeight: string = $state("0.7");
-  let hybridMetadataWeight: string = $state("0.3");
 
   // ---------------------------------------------------------------------------
   // Maintenance state
@@ -739,17 +737,8 @@
     const metadataFilters = parseJsonObjectStrict(hybridFilters, "Metadata filter");
     if (metadataFilters === null) return;
     const k = Number(hybridK);
-    const vectorWeight = Number(hybridVectorWeight);
-    const metadataWeight = Number(hybridMetadataWeight);
     if (!Number.isInteger(k) || k <= 0) {
       showToast("warning", "K must be a positive integer.");
-      return;
-    }
-    if (
-      !Number.isFinite(vectorWeight) || vectorWeight < 0 || vectorWeight > 1 ||
-      !Number.isFinite(metadataWeight) || metadataWeight < 0 || metadataWeight > 1
-    ) {
-      showToast("warning", "Weights must be numbers between 0 and 1.");
       return;
     }
     loading = true;
@@ -759,8 +748,6 @@
         vector,
         metadataFilters,
         k,
-        vectorWeight,
-        metadataWeight,
       });
       searchResults = [...resp.results];
       if (searchResults.length === 0) {
@@ -1166,7 +1153,8 @@
             Hybrid
           </h3>
           <p class="text-base-content/50 text-xs">
-            Combine vector similarity with a metadata match in namespace
+            Nearest vectors by similarity, keeping only those whose metadata
+            matches the filter, in namespace
             <span class="font-semibold">{selectedNamespace || "(none selected)"}</span>.
           </p>
           <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1194,16 +1182,6 @@
               <div class="label"><span class="label-text">K</span></div>
               <input type="number" min="1" class="input input-bordered input-sm w-full" aria-label="Hybrid k" bind:value={hybridK} />
             </label>
-            <div class="grid grid-cols-2 gap-3">
-              <label class="form-control w-full">
-                <div class="label"><span class="label-text">Vector weight</span></div>
-                <input type="number" min="0" max="1" step="0.1" class="input input-bordered input-sm w-full" aria-label="Hybrid vector weight" bind:value={hybridVectorWeight} />
-              </label>
-              <label class="form-control w-full">
-                <div class="label"><span class="label-text">Metadata weight</span></div>
-                <input type="number" min="0" max="1" step="0.1" class="input input-bordered input-sm w-full" aria-label="Hybrid metadata weight" bind:value={hybridMetadataWeight} />
-              </label>
-            </div>
           </div>
           <div class="mt-2 flex justify-end">
             <button class="btn btn-primary btn-sm" onclick={handleHybridSearch} disabled={loading}>
