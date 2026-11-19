@@ -100,19 +100,13 @@ func (s *DatabaseService) RetryCreateRollbacks(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		current, err := s.createRollbackTargetCurrent(k, entry)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if current {
-			dropCtx := database.KeepFenceOnFailure(tenant.WithTenantID(ctx, k.tenantID))
-			if err := s.manager.DropForTenant(dropCtx, k.name); err != nil {
-				var notFound *database.NotFoundError
-				if !errors.As(err, &notFound) {
-					errs = append(errs, err)
-					continue
-				}
+		dropCtx := database.KeepFenceOnFailure(tenant.WithTenantID(ctx, k.tenantID))
+		if err := s.manager.DropIncarnationForTenant(dropCtx, k.name, entry.id, entry.incarnation); err != nil {
+			var notFound *database.NotFoundError
+			var superseded *database.DropSupersededError
+			if !errors.As(err, &notFound) && !errors.As(err, &superseded) {
+				errs = append(errs, err)
+				continue
 			}
 		}
 		l.mu.Lock()
@@ -123,23 +117,4 @@ func (s *DatabaseService) RetryCreateRollbacks(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// createRollbackTargetCurrent reports whether the database the tenant holds
-// under the entry's name is still the refused database the entry records. A
-// database that is gone is not current; any other lookup failure is
-// returned, and the entry stays pending.
-func (s *DatabaseService) createRollbackTargetCurrent(k createRollbackKey, entry createRollbackEntry) (bool, error) {
-	db, err := s.manager.GetOwnedIgnoringFence(k.name, k.tenantID)
-	if err != nil {
-		var notFound *database.NotFoundError
-		if errors.As(err, &notFound) {
-			return false, nil
-		}
-		return false, err
-	}
-	if db == nil {
-		return false, nil
-	}
-	return db.ID() == entry.id && db.Incarnation() == entry.incarnation, nil
 }

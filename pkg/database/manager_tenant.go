@@ -260,6 +260,27 @@ func (m *Manager) DropForTenant(ctx context.Context, name string) error {
 	return m.drop(ctx, keyFor(db.TenantID(), name), db)
 }
 
+// DropIncarnationForTenant drops the context tenant's database name only
+// while it is the database id at incarnation. A name that now holds another
+// database -- the one recorded was dropped and the name created again -- is
+// refused with *DropSupersededError and nothing is dropped. The drop itself
+// is bound to the database it resolved: its catalog claim, store fence,
+// reclamation and record delete all swap from that incarnation only, so a
+// re-creation racing the drop is not touched either.
+func (m *Manager) DropIncarnationForTenant(ctx context.Context, name, id, incarnation string) error {
+	if err := CheckDroppable(name); err != nil {
+		return err
+	}
+	db, err := m.GetOwnedIgnoringFence(name, tenant.FromContext(ctx))
+	if err != nil {
+		return err
+	}
+	if db.ID() != id || db.Incarnation() != incarnation {
+		return &DropSupersededError{Name: name, TenantID: db.TenantID()}
+	}
+	return m.drop(ctx, keyFor(db.TenantID(), name), db)
+}
+
 // UpdateProtocolForTenant updates protocol config after verifying tenant ownership.
 func (m *Manager) UpdateProtocolForTenant(ctx context.Context, name string, protocol ProtocolConfig) error {
 	db, err := m.GetOwned(name, tenant.FromContext(ctx))
