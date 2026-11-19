@@ -27,9 +27,7 @@ import (
 func TestStartMemberRecord_NoFeatureClient(t *testing.T) {
 	n := &Node{}
 	n.startMemberRecord(nil, qrdbconfig.DefaultConfig())
-	if err := n.stopMemberRecord(); err != nil {
-		t.Fatalf("stopMemberRecord: %v", err)
-	}
+	n.stopMemberRecord()
 	if n.memberAdv.Load() != nil {
 		t.Fatal("no advertiser may be published without a feature client")
 	}

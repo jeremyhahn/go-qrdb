@@ -66,3 +66,34 @@ func TestBootPendingRecordStore_NoSOIssuedNeedsNoQuorum(t *testing.T) {
 		t.Fatalf("startup admin hand-off without a quorum: %v", err)
 	}
 }
+
+// TestClose_QuorumLessSurvivorsCloseClean closes every replica of a formed
+// cluster in turn, leader first. The later closes run without a leader or a
+// quorum, so the deregistration each proposes cannot commit; that best-effort
+// cleanup must not fail Close.
+func TestClose_QuorumLessSurvivorsCloseClean(t *testing.T) {
+	ca, replicas := newFormationReplicas(t, 3)
+	nodes, err := bootFormationCluster(t, ca, replicas, func(self uint64) string {
+		return peerIdentitySpecs(t, self, replicas)
+	})
+	if err != nil {
+		t.Fatalf("NewClusteredNode: %v", err)
+	}
+	// Close the leader first, so the followers' deregistrations go out
+	// while the shard has no leader -- the shutdown that failed Close with
+	// "not leader for shard, leader unknown".
+	leader := awaitAgreedLeader(t, nodes)
+	order := make([]int, 0, len(nodes))
+	for i := range nodes {
+		if replicas[i].id == leader {
+			order = append([]int{i}, order...)
+		} else {
+			order = append(order, i)
+		}
+	}
+	for _, i := range order {
+		if err := nodes[i].Close(); err != nil {
+			t.Fatalf("close replica %d: %v", replicas[i].id, err)
+		}
+	}
+}
