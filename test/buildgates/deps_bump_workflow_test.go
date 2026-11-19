@@ -368,3 +368,79 @@ func TestDepsBumpCommitStepDeletesCreatedBranchOnFailure(t *testing.T) {
 		})
 	}
 }
+
+const depsBumpBumpStep = "      - name: make deps-bump, then make deps-check and make build-server build-cli-headless\n"
+
+// TestDepsBumpPatchExportFailureFailsTheStep runs the bump step against
+// stubs: in-toolchain-image.sh runs its command string under sh -c, as the
+// real one does in the container, with no pipefail. A git diff that fails
+// must fail the step, never reach "nothing moved" with an empty patch.
+func TestDepsBumpPatchExportFailureFailsTheStep(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", depsBumpWorkflowName))
+	if err != nil {
+		t.Fatalf("read %s: %v", depsBumpWorkflowName, err)
+	}
+	script := depsBumpStepScript(t, string(b), depsBumpBumpStep)
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	if _, err := exec.LookPath("base64"); err != nil {
+		t.Skip("no base64")
+	}
+	for name, tc := range map[string]struct {
+		diff        string // the stub git diff --binary: "fail", "" (no change) or a patch
+		wantOK      bool
+		wantNothing bool
+		wantChanged string
+	}{
+		"diff fails":    {diff: "fail"},
+		"nothing moved": {wantOK: true, wantNothing: true, wantChanged: "CHANGED=\n"},
+		"a patch":       {diff: "patch", wantOK: true, wantChanged: "CHANGED=go.mod \n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			bin := filepath.Join(dir, "bin")
+			scripts := filepath.Join(dir, "scripts")
+			tmp := filepath.Join(dir, "tmp")
+			for _, d := range []string{bin, scripts, tmp} {
+				if err := os.Mkdir(d, 0o750); err != nil {
+					t.Fatal(err)
+				}
+			}
+			git := "#!/bin/sh\ncase \" $* \" in\n" +
+				"*\" diff --binary \"*) case $GIT_DIFF in fail) echo 'fatal: diff failed' >&2; exit 128 ;; '') exit 0 ;; *) echo \"$GIT_DIFF\" ;; esac ;;\n" +
+				"*\" diff --cached --name-only\"*) echo go.mod ;;\n" +
+				"esac\nexit 0\n"
+			for path, body := range map[string]string{
+				filepath.Join(bin, "make"):                      "#!/bin/sh\nexit 0\n",
+				filepath.Join(bin, "git"):                       git,
+				filepath.Join(scripts, "in-toolchain-image.sh"): "#!/bin/sh\nshift\nexec sh -c \"$1\"\n",
+			} {
+				// 0o700: the step runs these stubs, so they keep the owner's execute bit.
+				if err := os.WriteFile(path, []byte(body), 0o700); err != nil { // #nosec G306 -- executable test stub, owner-only
+					t.Fatal(err)
+				}
+			}
+			env := filepath.Join(dir, "github.env")
+			cmd := exec.Command(bash, "--noprofile", "--norc", "-e", "-c", script) // #nosec G204 -- test runs the workflow step against its own temp-dir stubs
+			cmd.Dir = dir
+			cmd.Env = []string{
+				"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"TOOLCHAIN_IMAGE=toolchain", "RUNNER_TEMP=" + dir, "TMPDIR=" + tmp,
+				"GITHUB_ENV=" + env, "GIT_DIFF=" + tc.diff,
+			}
+			out, runErr := cmd.CombinedOutput()
+			if (runErr == nil) != tc.wantOK {
+				t.Fatalf("step error = %v, want ok=%v\noutput:\n%s", runErr, tc.wantOK, out)
+			}
+			if got := strings.Contains(string(out), "deps-bump: nothing moved"); got != tc.wantNothing {
+				t.Errorf("\"nothing moved\" printed = %v, want %v\noutput:\n%s", got, tc.wantNothing, out)
+			}
+			written, _ := os.ReadFile(env) // #nosec G304 -- the test's own temp file
+			if string(written) != tc.wantChanged {
+				t.Errorf("GITHUB_ENV = %q, want %q", written, tc.wantChanged)
+			}
+		})
+	}
+}
