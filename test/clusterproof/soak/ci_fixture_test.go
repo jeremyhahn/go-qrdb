@@ -89,6 +89,11 @@ func TestCIFixtureLoads(t *testing.T) {
 	if len(inv.Nodes) != 3 || inv.Network != "proof" || inv.Image != "qrdbd:test" {
 		t.Fatalf("inventory = %d nodes on %q of %q, want 3 on proof of qrdbd:test", len(inv.Nodes), inv.Network, inv.Image)
 	}
+	// #1637: an uncapped cluster starved the hosted runner (4 CPUs, 16 GB)
+	// until it lost the server. Three nodes stay within 10 GB and 3 CPUs.
+	if inv.Memory != "3g" || inv.CPUs != "1" {
+		t.Fatalf("inventory caps each node at memory %q cpus %q, want 3g and 1", inv.Memory, inv.CPUs)
+	}
 
 	if _, err := workload.ParseConfig(openFile(t, filepath.Join(dir, "workload.json"))); err != nil {
 		t.Fatalf("ParseConfig: %v", err)

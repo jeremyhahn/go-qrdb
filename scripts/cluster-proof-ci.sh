@@ -51,6 +51,13 @@ readonly network=proof
 readonly subnet=192.0.2.0/24
 readonly nodes=(1 2 3)
 readonly quic_port=63004
+# Each node container's cap. The soak runs beside its own runner (a hosted
+# runner has 4 CPUs and 16 GB): three nodes at 3 GB and 1 CPU each leave
+# the runner, the soak process and the fault containers a CPU and 7 GB, so
+# the cluster cannot starve the runner of the CPU or memory it needs to
+# keep talking to the server.
+readonly node_memory=3g
+readonly node_cpus=1
 # The node certificates name each node by its Raft address in the cluster
 # trust domain (the config default; BOOT-01 sets none), as cluster
 # enrolment does: test/clusterproof/container/inventory.go RaftPort.
@@ -158,6 +165,8 @@ write_inventory() {
 		printf '{\n'
 		printf '  "image": "%s",\n' "$image"
 		printf '  "network": "%s",\n' "$network"
+		printf '  "memory": "%s",\n' "$node_memory"
+		printf '  "cpus": "%s",\n' "$node_cpus"
 		printf '  "credentials": {\n'
 		printf '    "ca_file": "%s/tls/ca.pem",\n' "$dir"
 		printf '    "cert_file": "%s/admin.pem",\n' "$dir"

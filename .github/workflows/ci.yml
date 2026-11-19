@@ -2092,7 +2092,10 @@ jobs:
     if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && needs.preflight.outputs.clusterproof == 'true')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [preflight]
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Image builds ~15 min, boot ~5, the 30 min soak, the check ~5: the
+    # boot/soak/check step's own 60 min cap leaves the logs, upload and
+    # tear-down steps their time inside the job's 100.
+    timeout-minutes: 100
     env:
       CLUSTERPROOF_CI_DIR: ${{ github.workspace }}/build/clusterproof-ci
     steps:
@@ -2138,7 +2141,11 @@ jobs:
       - name: Render the cluster's configuration
         run: scripts/cluster-proof-ci.sh render "$CLUSTERPROOF_CI_DIR" "qrdbd:$(cat VERSION)" "clusterproof-fault:$(cat VERSION)"
 
+      # The node containers are capped (render's inventory: 3 GB, 1 CPU
+      # each) so the hosted runner keeps headroom (#1637), and the step has
+      # its own timeout so a hang still leaves the logs step to run.
       - name: Boot, soak and check (make cluster-proof-ci)
+        timeout-minutes: 60
         run: make cluster-proof-ci CLUSTERPROOF_CI_DIR="$CLUSTERPROOF_CI_DIR" PROOF_DURATION=30m
 
       # A failure past boot (the soak, the check) leaves the containers to
