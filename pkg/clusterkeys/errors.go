@@ -42,4 +42,8 @@ var (
 	// ErrUnknownMode indicates the delivery envelope carries a mode value
 	// not handled by the mode dispatch table.
 	ErrUnknownMode = errors.New("clusterkeys: unknown delivery mode")
+
+	// ErrNoClusterCA indicates the receiver has no cluster CA to verify a
+	// sender's node certificate against, so it accepts no delivery.
+	ErrNoClusterCA = errors.New("clusterkeys: no cluster CA to verify the sender's node certificate")
 )

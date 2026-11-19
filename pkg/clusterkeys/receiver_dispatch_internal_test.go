@@ -20,6 +20,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -31,6 +32,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -64,25 +66,55 @@ func setModeImporterForTest(t *testing.T, mode keydelivery.Mode, fn func(ctx con
 
 // newDispatchReceiver builds a Receiver for nodeID with no CA pool (no SAN
 // gate) and returns it with the node's delivery key.
-func newDispatchReceiver(t *testing.T, nodeID string, p *placement.Placement) (*Receiver, *ecdsa.PrivateKey) {
+func newDispatchReceiver(t *testing.T, nodeID string, p *placement.Placement) (*Receiver, *ecdsa.PrivateKey, *x509.Certificate) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(42),
-		Subject:      pkix.Name{CommonName: nodeID},
+	// The cluster CA: it signs the node delivery certificate and the
+	// sender's node certificate the receiver authenticates.
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(42),
+		Subject:               pkix.Name{CommonName: "dispatch test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate (CA): %v", err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("ParseCertificate (CA): %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+
+	senderURI, _ := url.Parse("spiffe://cluster.local/node/leader-node-1")
+	senderTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(43),
+		Subject:      pkix.Name{CommonName: "leader-node-1"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		URIs:         []*url.URL{senderURI},
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	senderDER, err := x509.CreateCertificate(rand.Reader, senderTmpl, caCert, &key.PublicKey, key)
 	if err != nil {
-		t.Fatalf("CreateCertificate: %v", err)
+		t.Fatalf("CreateCertificate (sender): %v", err)
 	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	sender, err := x509.ParseCertificate(senderDER)
+	if err != nil {
+		t.Fatalf("ParseCertificate (sender): %v", err)
+	}
+
 	dec, err := keydelivery.PrivateKeyFor(keydelivery.KEMP256, key)
 	if err != nil {
 		t.Fatalf("keydelivery.PrivateKeyFor: %v", err)
@@ -92,11 +124,11 @@ func newDispatchReceiver(t *testing.T, nodeID string, p *placement.Placement) (*
 		t.Fatalf("keydelivery.NewReceiver: %v", err)
 	}
 	recv, err := NewReceiver(kd, &dispatchPlacementGetter{p: p}, "cluster.local", nodeID,
-		nil, nil, certPEM, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		pool, nil, certPEM, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
-	return recv, key
+	return recv, key, sender
 }
 
 // A structural Open failure is the sender's fault (400), wrapped or not;
@@ -132,7 +164,7 @@ func TestHandler_ModeDispatch(t *testing.T) {
 			{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower-node-1:9000"},
 		},
 	}
-	recv, key := newDispatchReceiver(t, "follower-node-1", p)
+	recv, key, sender := newDispatchReceiver(t, "follower-node-1", p)
 	meta := keydelivery.Meta{
 		TenantID:     "tenant-1",
 		DatabaseID:   "db-1",
@@ -169,7 +201,9 @@ func TestHandler_ModeDispatch(t *testing.T) {
 			}
 			raw, _ := json.Marshal(env)
 			rec := httptest.NewRecorder()
-			recv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(raw)))
+			req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(raw))
+			req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{sender}}
+			recv.Handler().ServeHTTP(rec, req)
 			if rec.Code != tc.want || !strings.Contains(rec.Body.String(), tc.body) {
 				t.Fatalf("status %d body %q; want %d containing %q", rec.Code, rec.Body.String(), tc.want, tc.body)
 			}
