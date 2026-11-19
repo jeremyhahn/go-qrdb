@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -284,6 +285,47 @@ func TestSendStreamCancelWriteThenCloseSessionDuringSessionGone(t *testing.T) {
 
 	_, err := str.Write([]byte("foo"))
 	requireLocalStreamError(t, err, 42)
+}
+
+// A Write waiting for the session to go away after the peer's STOP_SENDING
+// (WT_SESSION_GONE) must return when Close takes the stream out of the
+// session's map: session shutdown no longer reaches the stream.
+func TestSendStreamCloseReleasesWriteDuringSessionGone(t *testing.T) {
+	str, sm := newSessionGoneSendStream(t)
+	// no deadline: only Close or session shutdown can end the Write
+	require.NoError(t, str.SetWriteDeadline(time.Time{}))
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := str.Write([]byte("foo"))
+		errChan <- err
+	}()
+
+	// wait until the Write waits in handleSessionGoneError
+	waiting := func() bool {
+		str.deadlineMu.Lock()
+		defer str.deadlineMu.Unlock()
+		return str.deadlineNotifyCh != nil
+	}
+	deadline := time.Now().Add(scaleDuration(time.Second))
+	for !waiting() {
+		if time.Now().After(deadline) {
+			t.Fatal("Write didn't wait for the session to go away")
+		}
+		runtime.Gosched()
+	}
+
+	// the peer's STOP_SENDING already cancelled the QUIC stream, so QUIC
+	// refuses the FIN; what matters is that the Write returns
+	_ = str.Close()
+	sm.CloseSession(&SessionError{ErrorCode: 7, Message: "bye"})
+
+	select {
+	case err := <-errChan:
+		require.ErrorContains(t, err, "write on closed stream")
+	case <-time.After(scaleDuration(time.Second)):
+		t.Fatal("Write blocked after Close and session shutdown")
+	}
 }
 
 type blockingHeaderStream struct {

@@ -353,8 +353,16 @@ func (s *SendStream) closeWithSession(err error) {
 // Close closes the write-direction of the stream.
 // Future calls to Write are not permitted after calling Close.
 func (s *SendStream) Close() error {
-	return s.stopAfterHeader(errors.New("write on closed stream"), func() error {
+	errClosed := errors.New("write on closed stream")
+	return s.stopAfterHeader(errClosed, func() error {
 		s.onClose()
+		// onClose takes the stream out of the session's map, so session
+		// shutdown no longer reaches it: end a Write waiting in
+		// handleSessionGoneError here.
+		s.closeOnce.Do(func() {
+			s.closeErr = errClosed
+			close(s.closed)
+		})
 		return maybeConvertStreamError(s.str.Close())
 	})
 }
