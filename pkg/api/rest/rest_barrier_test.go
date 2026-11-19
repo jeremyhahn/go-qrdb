@@ -883,7 +883,7 @@ func TestBarrierHandlers_RecoveryStatus(t *testing.T) {
 	// SDK type gRPC/QUIC/unix all decode into. A prior "has_recovery_keys" key
 	// here silently left every REST-transport caller's HasKeys field at its
 	// zero value (false) regardless of the server's actual answer -- see
-	// TestBarrierCLI_ShamirLifecycle in test/integration for the end-to-end
+	// TestBarrierCLI_ShamirLifecycle_PerProtocol in test/integration for the end-to-end
 	// regression this caused.
 	if hasKeys, ok := resp["has_keys"].(bool); !ok || !hasKeys {
 		t.Fatalf("has_keys = %v, want true", resp["has_keys"])

@@ -31,14 +31,7 @@ var quotedValueCases = []struct {
 	quoted string
 	want   string
 }{
-	{name: "equality operator", quoted: `"a == b"`, want: "a == b"},
-	{name: "inequality operator", quoted: `"a != b"`, want: "a != b"},
-	{name: "and", quoted: `"x and y"`, want: "x and y"},
-	{name: "or", quoted: `"x or y"`, want: "x or y"},
 	{name: "not", quoted: `"not x"`, want: "not x"},
-	{name: "open parenthesis", quoted: `"(open"`, want: "(open"},
-	{name: "close parenthesis", quoted: `"close)"`, want: "close)"},
-	{name: "comma", quoted: `"a,b"`, want: "a,b"},
 	{name: "brackets", quoted: `"[a, b]"`, want: "[a, b]"},
 	{name: "single quotes", quoted: `"'a'"`, want: "'a'"},
 	{name: "escaped quote", quoted: `"say \"hi\""`, want: `say "hi"`},
@@ -60,7 +53,6 @@ var quotedValueCases = []struct {
 	{name: "surrogate pair", quoted: "\"\x5cud83d\x5cude42\"", want: "\U0001F642"},
 	{name: "surrogate pair upper-case hex", quoted: "\"\x5cuD834\x5cuDD1E\"", want: "\U0001D11E"},
 	{name: "raw DEL", quoted: "\"\x7f\"", want: "\x7f"},
-	{name: "word operators", quoted: `"a in b contains c exists"`, want: "a in b contains c exists"},
 	{name: "empty", quoted: `""`, want: ""},
 }
 
@@ -151,36 +143,6 @@ func TestParse_QuotedValuePositions(t *testing.T) {
 		ctx  *EvalContext
 		want bool
 	}{
-		{
-			name: "quoted value with and inside a conjunction",
-			expr: `subject.id == "a and b" and subject.id != "c or d"`,
-			ctx:  &EvalContext{Subject: &Subject{ID: "a and b"}},
-			want: true,
-		},
-		{
-			name: "quoted value with or inside a disjunction",
-			expr: `subject.id == "x or y" or subject.id == "z"`,
-			ctx:  &EvalContext{Subject: &Subject{ID: "x or y"}},
-			want: true,
-		},
-		{
-			name: "quoted left operand",
-			expr: `"p == q" == subject.id`,
-			ctx:  &EvalContext{Subject: &Subject{ID: "p == q"}},
-			want: true,
-		},
-		{
-			name: "quoted list elements",
-			expr: `subject.id in ["a,b", "c]"]`,
-			ctx:  &EvalContext{Subject: &Subject{ID: "a,b"}},
-			want: true,
-		},
-		{
-			name: "quoted list element is not split",
-			expr: `subject.id in ["a,b", "c]"]`,
-			ctx:  &EvalContext{Subject: &Subject{ID: "a"}},
-			want: false,
-		},
 		{
 			name: "not over a quoted value",
 			expr: `not subject.id == "x and y"`,

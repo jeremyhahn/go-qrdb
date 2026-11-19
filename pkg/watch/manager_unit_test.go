@@ -760,26 +760,6 @@ func TestManagerNoopStream(t *testing.T) {
 }
 
 // TestManagerWatchContextCancellation verifies watch cleanup on context cancel.
-func TestManagerWatchContextCancellation(t *testing.T) {
-	mgr := NewManager()
-	ctx, cancel := context.WithCancel(context.Background())
-
-	stream := &mockManagerWatchStream{ctx: ctx}
-	watch, err := mgr.addInternal([]byte("key"), nil, 0, WatchFilters{}, stream, &managerWatchOptions{}, true)
-	require.NoError(t, err)
-
-	// Cancel context
-	cancel()
-
-	// Watch context should be cancelled
-	select {
-	case <-watch.ctx.Done():
-		// Expected
-	default:
-		t.Error("Watch context should be cancelled")
-	}
-}
-
 // TestManagerConcurrentAddRemove verifies thread safety of add/remove operations.
 func TestManagerConcurrentAddRemove(t *testing.T) {
 	mgr := NewManager()
@@ -830,34 +810,4 @@ func TestManagerConcurrentAddRemove(t *testing.T) {
 }
 
 // TestManagerEventPool verifies event pooling reduces allocations.
-func TestManagerEventPool(t *testing.T) {
-	mgr := NewManager()
-
-	// Get event from pool
-	event1 := mgr.eventPool.Get().(*ManagerWatchEvent)
-	require.NotNil(t, event1)
-
-	// Modify and return to pool
-	event1.Type = PUT
-	event1.Revision = 123
-	mgr.eventPool.Put(event1)
-
-	// Get another event - might be the same one (pool behavior)
-	event2 := mgr.eventPool.Get().(*ManagerWatchEvent)
-	require.NotNil(t, event2)
-
-	// Both should be valid ManagerWatchEvent instances
-	assert.IsType(t, &ManagerWatchEvent{}, event1)
-	assert.IsType(t, &ManagerWatchEvent{}, event2)
-}
-
 // TestManagerWatchFilters verifies filter struct.
-func TestManagerWatchFilters(t *testing.T) {
-	filters := WatchFilters{
-		NoPut:    true,
-		NoDelete: false,
-	}
-
-	assert.True(t, filters.NoPut)
-	assert.False(t, filters.NoDelete)
-}

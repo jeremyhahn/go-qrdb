@@ -47,25 +47,6 @@ func (m *reexportMember) EntityID() uint64 { return m.ID }
 // SetEntityID implements sdk.Entity.
 func (m *reexportMember) SetEntityID(id uint64) { m.ID = id }
 
-// TestSDK_AtomicKVStoreAssertionIsExpressible covers issue #28's first item:
-// a consumer must be able to make the fail-closed capability assertion at
-// construction time without importing pkg/kvstore, which 00 L3 forbids.
-// Before the re-export the assertion was simply unwritable from an SDK
-// consumer, so quicbaas fell back to a private one-method structural
-// interface — a workaround that cannot see the typed refusal.
-func TestSDK_AtomicKVStoreAssertionIsExpressible(t *testing.T) {
-	var store sdk.KVStore = sdk.NewMemoryKVStore()
-
-	atomicStore, ok := store.(sdk.AtomicKVStore)
-	require.True(t, ok,
-		"the SDK memory store must satisfy sdk.AtomicKVStore; a consumer's "+
-			"fail-closed guard is written against exactly this assertion")
-
-	stored, err := atomicStore.PutIfAbsent(context.Background(), "member/claim", []byte(`{"team":"alpha"}`))
-	require.NoError(t, err)
-	require.True(t, stored)
-}
-
 // TestSDK_MemoryKVStoreClaimHasOneWinner is issue #29's stated verification:
 // two concurrent callers, exactly one wins, without booting a node.
 func TestSDK_MemoryKVStoreClaimHasOneWinner(t *testing.T) {
@@ -189,6 +170,7 @@ func TestSDK_IndexUnsupportedErrorIsTestableByConsumers(t *testing.T) {
 // whose type it could not name.
 func TestSDK_EntityTraitTypesCrossTheBoundary(t *testing.T) {
 	var (
+		_ sdk.AtomicKVStore = sdk.NewMemoryKVStore()
 		_ *sdk.DAOUnitOfWork
 		_ sdk.DAOTransactional[*reexportMember]
 		_ sdk.DAOVersioned

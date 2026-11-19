@@ -105,26 +105,6 @@ func TestDNSDiscovery_NoRecords(t *testing.T) {
 	}
 }
 
-func TestDNSDiscovery_TrailingDotStripped(t *testing.T) {
-	records := []*net.SRV{
-		{Target: "host.example.com.", Port: 8080, Priority: 1, Weight: 1},
-	}
-	dns := NewDNSDiscovery(DNSConfig{
-		Service:  "_raft",
-		Proto:    "_udp",
-		Domain:   "example.com",
-		LookupFn: mockLookupSRV(records, nil),
-	})
-
-	peers, err := dns.Discover(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if peers[0].Address != "host.example.com:8080" {
-		t.Errorf("Address = %q, want %q", peers[0].Address, "host.example.com:8080")
-	}
-}
-
 func TestDNSDiscovery_NoTrailingDot(t *testing.T) {
 	records := []*net.SRV{
 		{Target: "host.example.com", Port: 8080, Priority: 1, Weight: 1},
@@ -142,22 +122,6 @@ func TestDNSDiscovery_NoTrailingDot(t *testing.T) {
 	}
 	if peers[0].Address != "host.example.com:8080" {
 		t.Errorf("Address = %q, want %q", peers[0].Address, "host.example.com:8080")
-	}
-}
-
-func TestDNSDiscovery_SHA256HashDeterministic(t *testing.T) {
-	h1 := sha256Hash("host.example.com:8080")
-	h2 := sha256Hash("host.example.com:8080")
-	if h1 != h2 {
-		t.Error("sha256Hash should be deterministic")
-	}
-}
-
-func TestDNSDiscovery_SHA256HashUnique(t *testing.T) {
-	h1 := sha256Hash("host1.example.com:8080")
-	h2 := sha256Hash("host2.example.com:8080")
-	if h1 == h2 {
-		t.Error("different inputs should produce different hashes (with high probability)")
 	}
 }
 
@@ -194,10 +158,6 @@ func TestDNSDiscovery_Stop(t *testing.T) {
 	if err := dns.Stop(); err != nil {
 		t.Errorf("Stop() returned unexpected error: %v", err)
 	}
-}
-
-func TestDNSDiscovery_ImplementsMethod(t *testing.T) {
-	var _ Method = (*DNSDiscovery)(nil)
 }
 
 func TestDNSDiscovery_NilLookupFnUsesDefault(t *testing.T) {

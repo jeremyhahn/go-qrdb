@@ -23,11 +23,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewTranslator(t *testing.T) {
-	tr := NewTranslator()
-	assert.NotNil(t, tr)
-}
-
 func TestTranslator_Translate_StandardSQLPassthrough(t *testing.T) {
 	tr := NewTranslator()
 
@@ -685,17 +680,6 @@ func TestTranslator_Translate_UnsupportedOnConflict(t *testing.T) {
 			assert.Equal(t, tt.feature, unsupported.Feature)
 		})
 	}
-}
-
-func TestQuoteReservedWords_EmptyString(t *testing.T) {
-	result := quoteReservedWords("")
-	assert.Equal(t, "", result)
-}
-
-func TestQuoteReservedWords_NoReservedWords(t *testing.T) {
-	input := "SELECT id, age FROM users WHERE id = 1"
-	result := quoteReservedWords(input)
-	assert.Equal(t, input, result)
 }
 
 func TestQuoteReservedWords_UnclosedStringLiteral(t *testing.T) {

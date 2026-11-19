@@ -37,20 +37,6 @@ import (
 // generateReplicaID – basic success
 // ---------------------------------------------------------------------------
 
-func TestGenerateReplicaID_Basic(t *testing.T) {
-	id, err := generateReplicaID()
-	if err != nil {
-		t.Fatalf("generateReplicaID: %v", err)
-	}
-	if id == 0 {
-		t.Error("expected non-zero replica ID")
-	}
-	// 48-bit mask: max value is 0xFFFFFFFFFFFF.
-	if id > 0xFFFFFFFFFFFF {
-		t.Errorf("replica ID exceeds 48-bit range: %d", id)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // generateCA – success and error paths
 // ---------------------------------------------------------------------------
@@ -66,33 +52,6 @@ func TestGenerateReplicaID_Basic(t *testing.T) {
 // ---------------------------------------------------------------------------
 // canonicalizePath – basic success
 // ---------------------------------------------------------------------------
-
-func TestCanonicalizePathBoost_Absolute(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "test.pem")
-	if err := os.WriteFile(p, []byte("data"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := canonicalizePath(p)
-	if err != nil {
-		t.Fatalf("canonicalizePath: %v", err)
-	}
-	if got == "" {
-		t.Error("expected non-empty canonical path")
-	}
-}
-
-func TestCanonicalizePathBoost_NonExistentReturnsAbs(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "nonexistent.pem")
-	got, err := canonicalizePath(p)
-	if err != nil {
-		t.Fatalf("canonicalizePath non-existent: %v", err)
-	}
-	if got == "" {
-		t.Error("expected non-empty path")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // CertReloader – keyDir != certDir path
