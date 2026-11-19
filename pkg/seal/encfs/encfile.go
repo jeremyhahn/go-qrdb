@@ -75,7 +75,16 @@ func newReadFile(base filesys.File, h *header, physicalSize int64) (*encryptedFi
 	if err != nil {
 		return nil, err
 	}
-	logicalSize, err := physicalToLogicalSize(physicalSize - int64(h.totalSize()))
+	payloadBytes := physicalSize - int64(h.totalSize())
+	logicalSize, err := physicalToLogicalSize(payloadBytes)
+	var short *TrailingBlockTooShortError
+	if errors.As(err, &short) {
+		// The trailing bytes are a new block torn before its nonce and tag
+		// landed (ENOSPC or a crash mid-append): end the file at the last
+		// full block, as dropTornTail does for a torn block that is longer.
+		logicalSize = (payloadBytes / int64(CiphertextBlockSize)) * int64(BlockSize)
+		err = nil
+	}
 	if err != nil {
 		return nil, err
 	}

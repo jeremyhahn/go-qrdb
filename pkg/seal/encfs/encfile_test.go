@@ -861,6 +861,59 @@ func TestEncFile_TornFinalBlockIsEndOfFile(t *testing.T) {
 	}
 }
 
+// TestEncFile_TornTailShorterThanOverheadIsEndOfFile covers an append torn
+// before even the nonce and tag of the new block landed: the read-only open
+// ends the file at the last full block instead of failing.
+func TestEncFile_TornTailShorterThanOverheadIsEndOfFile(t *testing.T) {
+	for _, short := range []int{1, BlockOverhead / 2, BlockOverhead - 1} {
+		t.Run(fmt.Sprintf("short=%d", short), func(t *testing.T) {
+			mem := newBaseFS()
+			b := newFakeBarrier(t)
+			full := make([]byte, 2*BlockSize)
+			for i := range full {
+				full[i] = byte(i % 251)
+			}
+			w, err := New(mem, b).Create("short.log")
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if _, err := w.Write(full); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			raw, err := mem.OpenReadWrite("short.log")
+			if err != nil {
+				t.Fatalf("raw open: %v", err)
+			}
+			fi, err := raw.Stat()
+			if err != nil {
+				t.Fatalf("raw Stat: %v", err)
+			}
+			if _, err := raw.WriteAt(bytes.Repeat([]byte{0xA5}, short), fi.Size()); err != nil {
+				t.Fatalf("raw WriteAt: %v", err)
+			}
+			if err := raw.Close(); err != nil {
+				t.Fatalf("raw Close: %v", err)
+			}
+
+			r, err := New(mem, b).Open("short.log")
+			if err != nil {
+				t.Fatalf("Open with %d-byte torn tail: %v", short, err)
+			}
+			defer func() { _ = r.Close() }()
+			got := make([]byte, len(full))
+			if n, err := r.ReadAt(got, 0); err != nil || n != len(full) || !bytes.Equal(got, full) {
+				t.Fatalf("ReadAt full blocks: n=%d err=%v equal=%v", n, err, bytes.Equal(got, full))
+			}
+			if _, err := r.ReadAt(make([]byte, 1), int64(len(full))); !errors.Is(err, io.EOF) {
+				t.Fatalf("ReadAt past full blocks: err = %v, want io.EOF", err)
+			}
+		})
+	}
+}
+
 // TestEncFile_TamperedMiddleBlockStaysFatal: only the final block may be
 // dropped as torn; a non-final block that fails authentication is still
 // ErrAuthFailed.
