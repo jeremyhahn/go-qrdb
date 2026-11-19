@@ -15,7 +15,7 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, EnrolledCert } from "@qrdb/sdk";
+  import { isDesktop, type Client, type EnrolledCert } from "@qrdb/sdk";
   import FormModal from "./FormModal.svelte";
   import { showToast } from "$stores/toast.svelte.ts";
 
@@ -23,7 +23,9 @@
    * RedeemInvitationModal exchanges a one-time invitation token plus a CSR for
    * the invited user's first certificate (invitations.redeem). Redeem is the
    * one operation reachable with no credential at all -- the token is the
-   * authority -- so it dials the server given here, not an active connection.
+   * authority. On the desktop it dials the server given here, not an active
+   * connection; in the browser the REST client is bound to the server that
+   * served the page, so that destination is shown read-only instead.
    */
   let {
     client,
@@ -36,6 +38,8 @@
   } = $props();
 
   const TRANSPORTS = ["rest", "grpc", "quic", "mcp", "unix"] as const;
+  const desktop: boolean = isDesktop();
+  const browserDestination: string = desktop ? "" : window.location.origin;
 
   let server: string = $state("");
   let transport: string = $state("rest");
@@ -65,7 +69,7 @@
 
   async function handleSubmit(): Promise<void> {
     error = "";
-    if (!server.trim()) {
+    if (desktop && !server.trim()) {
       error = "Server address is required.";
       return;
     }
@@ -83,14 +87,16 @@
     }
     try {
       saving = true;
-      enrolled = await client.invitations.redeem(
-        { tenantID: tenantID.trim(), token: token.trim(), csrPEM: csrPEM.trim() },
-        {
-          server: server.trim(),
-          transport,
-          ...(caFile.trim() ? { caFile: caFile.trim() } : {}),
-        },
-      );
+      const req = { tenantID: tenantID.trim(), token: token.trim(), csrPEM: csrPEM.trim() };
+      // The browser's REST client is bound to the server that served this
+      // page and ignores dial options, so it gets none.
+      enrolled = desktop
+        ? await client.invitations.redeem(req, {
+            server: server.trim(),
+            transport,
+            ...(caFile.trim() ? { caFile: caFile.trim() } : {}),
+          })
+        : await client.invitations.redeem(req);
     } catch (err: unknown) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -142,38 +148,52 @@
       </div>
     {:else}
       <div class="flex flex-col gap-3">
-        <label class="form-control w-full" for="redeem-server">
-          <div class="label"><span class="label-text">Server</span></div>
-          <input
-            id="redeem-server"
-            type="text"
-            bind:value={server}
-            class="input input-bordered input-sm w-full"
-            placeholder="qrdb.example.com:8443"
-          />
-        </label>
-        <label class="form-control w-full" for="redeem-transport">
-          <div class="label"><span class="label-text">Transport</span></div>
-          <select
-            id="redeem-transport"
-            bind:value={transport}
-            class="select select-bordered select-sm w-full"
-          >
-            {#each TRANSPORTS as t (t)}
-              <option value={t}>{t}</option>
-            {/each}
-          </select>
-        </label>
-        <label class="form-control w-full" for="redeem-ca-file">
-          <div class="label"><span class="label-text">CA file (optional)</span></div>
-          <input
-            id="redeem-ca-file"
-            type="text"
-            bind:value={caFile}
-            class="input input-bordered input-sm w-full"
-            placeholder="/path/to/ca.pem"
-          />
-        </label>
+        {#if desktop}
+          <label class="form-control w-full" for="redeem-server">
+            <div class="label"><span class="label-text">Server</span></div>
+            <input
+              id="redeem-server"
+              type="text"
+              bind:value={server}
+              class="input input-bordered input-sm w-full"
+              placeholder="qrdb.example.com:8443"
+            />
+          </label>
+          <label class="form-control w-full" for="redeem-transport">
+            <div class="label"><span class="label-text">Transport</span></div>
+            <select
+              id="redeem-transport"
+              bind:value={transport}
+              class="select select-bordered select-sm w-full"
+            >
+              {#each TRANSPORTS as t (t)}
+                <option value={t}>{t}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="form-control w-full" for="redeem-ca-file">
+            <div class="label"><span class="label-text">CA file (optional)</span></div>
+            <input
+              id="redeem-ca-file"
+              type="text"
+              bind:value={caFile}
+              class="input input-bordered input-sm w-full"
+              placeholder="/path/to/ca.pem"
+            />
+          </label>
+        {:else}
+          <label class="form-control w-full" for="redeem-destination">
+            <div class="label"><span class="label-text">Server</span></div>
+            <input
+              id="redeem-destination"
+              type="text"
+              value={browserDestination}
+              readonly
+              data-testid="redeem-destination"
+              class="input input-bordered input-sm w-full"
+            />
+          </label>
+        {/if}
         <label class="form-control w-full" for="redeem-tenant">
           <div class="label"><span class="label-text">Tenant ID</span></div>
           <input
