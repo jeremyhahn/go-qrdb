@@ -276,13 +276,30 @@
     }
   }
 
+  /** Returns the current local time in datetime-local form (YYYY-MM-DDTHH:mm). */
+  function localDateTimeNow(): string {
+    const now = new Date();
+    const pad = (n: number): string => String(n).padStart(2, "0");
+    return (
+      `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+      `T${pad(now.getHours())}:${pad(now.getMinutes())}`
+    );
+  }
+
   /** Binds a certificate thumbprint to the existing user. */
   async function handleAddBinding(): Promise<void> {
     const thumbprint = bindingThumbprint.trim();
     if (thumbprint === "") return;
+    // The server treats notAfterUnix <= 0 as "never expires": send a value
+    // only for a finite future time, and none only for an empty field.
     let notAfterUnix: number | undefined;
     if (bindingExpiry !== "") {
-      notAfterUnix = Math.floor(new Date(bindingExpiry).getTime() / 1000);
+      const ms = new Date(bindingExpiry).getTime();
+      if (!Number.isFinite(ms) || ms <= Date.now()) {
+        showToast("error", "Expiry must be a future date");
+        return;
+      }
+      notAfterUnix = Math.floor(ms / 1000);
     }
     try {
       busy = true;
@@ -513,6 +530,7 @@
                 type="datetime-local"
                 class="input input-bordered input-sm"
                 data-testid="user-binding-expiry"
+                min={localDateTimeNow()}
                 bind:value={bindingExpiry}
               />
             </label>

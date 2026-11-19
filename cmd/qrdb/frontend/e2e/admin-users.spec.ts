@@ -457,6 +457,43 @@ test.describe("Admin - User Management", () => {
       );
     });
 
+    test("refuses a past certificate binding expiry", async ({ page }) => {
+      await navigateToUsers(page);
+      await seedUser(page, "past-bind-user");
+      await openUser(page, "past-bind-user");
+
+      // Count the calls that reach the mock: a refused expiry sends none.
+      await page.evaluate(() => {
+        const w = window as unknown as {
+          go: {
+            main: {
+              UserBinding: { AddCertBinding: (id: string, tp: string, n?: number) => Promise<unknown> };
+            };
+          };
+          addCertBindingCalls: number;
+        };
+        const binding = w.go.main.UserBinding;
+        const add = binding.AddCertBinding.bind(binding);
+        w.addCertBindingCalls = 0;
+        binding.AddCertBinding = (id: string, tp: string, n?: number) => {
+          w.addCertBindingCalls += 1;
+          return add(id, tp, n);
+        };
+      });
+
+      await page.getByTestId("user-binding-thumbprint").fill("tp-past-1");
+      await page.getByTestId("user-binding-expiry").fill("1960-01-01T00:00");
+      await page.getByTestId("user-binding-add").click();
+      await expect(
+        page.locator(".toast .alert.alert-error").filter({ hasText: "Expiry must be a future date" }),
+      ).toBeVisible();
+      expect(
+        await page.evaluate(() => (window as unknown as { addCertBindingCalls: number }).addCertBindingCalls),
+      ).toBe(0);
+      await expect(page.getByTestId("user-binding-row")).toHaveCount(0);
+      await expect(page.getByTestId("user-cert-bindings-empty")).toBeVisible();
+    });
+
     test("removes a certificate binding", async ({ page }) => {
       await navigateToUsers(page);
       await seedUser(page, "unbind-user");

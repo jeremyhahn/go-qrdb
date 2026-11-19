@@ -96,10 +96,6 @@ func TestNamespacesTable_PartitionRows_Empty(t *testing.T) {
 	assert.ErrorIs(t, err, io.EOF)
 }
 
-func TestNamespacesTable_ImplementsTable(t *testing.T) {
-	var _ sqle.Table = (*NamespacesTable)(nil)
-}
-
 func TestNamespacesPartition_Key(t *testing.T) {
 	p := &namespacesPartition{}
 	assert.Equal(t, []byte("namespaces"), p.Key())

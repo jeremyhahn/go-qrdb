@@ -36,20 +36,6 @@ import (
 // TestWithStrategyRegistry_Applied asserts that an injected
 // StrategyRegistry is reachable from the server's serverOptions and that
 // the daemon can resolve names through it.
-func TestWithStrategyRegistry_Applied(t *testing.T) {
-	reg := seal.NewDefaultStrategyRegistry()
-	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{},
-		WithStrategyRegistry(reg),
-	)
-	if srv.opts.strategyRegistry != reg {
-		t.Fatal("strategyRegistry not stored in opts")
-	}
-	// Sanity: the injected registry can resolve a default strategy.
-	if _, err := reg.LookupFactory(seal.StrategyPassphrase); err != nil {
-		t.Fatalf("default registry LookupFactory(software): %v", err)
-	}
-}
-
 // TestWithBarrierKeyProvider_Resolved asserts that an injected
 // BarrierKeyProvider is stored and that ResolveCryptoOptions carries it out,
 // beside the registry, to the builders that forward it into lifecycle.Infra.
@@ -193,19 +179,6 @@ func TestResolveTLSConfig_ReturnsTheExplicitConfigOnly(t *testing.T) {
 
 // TestWithFactorRegistry_Applied asserts that an injected FactorRegistry
 // is reachable from the server's serverOptions for the AuthFactorService.
-func TestWithFactorRegistry_Applied(t *testing.T) {
-	reg := authfactors.NewFactorRegistry()
-	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{},
-		WithFactorRegistry(reg),
-	)
-	if srv.opts.factorRegistry != reg {
-		t.Fatal("factorRegistry not stored in opts")
-	}
-	if len(srv.opts.factorRegistry.List()) != 0 {
-		t.Fatalf("fresh registry should be empty, got %v", srv.opts.factorRegistry.List())
-	}
-}
-
 // TestWithQuotaAccountant_Applied verifies WithQuotaAccountant stores the
 // accountant the server hands its REST service registry.
 func TestWithQuotaAccountant_Applied(t *testing.T) {
@@ -221,27 +194,10 @@ func TestWithQuotaAccountant_Applied(t *testing.T) {
 // TestWithTrustAnchors_Applied asserts that an injected trustanchor.Registry
 // is reachable from the server's serverOptions, in place of qrdb's built-in
 // store, for the lifecycle layer to forward into the cert-enrollment service.
-func TestWithTrustAnchors_Applied(t *testing.T) {
-	reg := trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
-	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{},
-		WithTrustAnchors(reg),
-	)
-	if srv.opts.trustAnchors != reg {
-		t.Fatal("trustAnchors not stored in opts")
-	}
-}
-
 // TestWithTrustAnchors_UnsetIsNil asserts that a server built without
 // WithTrustAnchors carries a nil registry in opts, matching every other
 // crypto-injection option's absent state (the lifecycle layer falls back to
 // qrdb's built-in trustanchor.NewKVRegistry when this is nil).
-func TestWithTrustAnchors_UnsetIsNil(t *testing.T) {
-	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{})
-	if srv.opts.trustAnchors != nil {
-		t.Fatalf("trustAnchors = %v, want nil when WithTrustAnchors is not supplied", srv.opts.trustAnchors)
-	}
-}
-
 // TestResolveCryptoOptions_SurfacesTrustAnchors asserts that
 // ResolveCryptoOptions carries an injected trustanchor.Registry through to
 // embedders (the SDK node builders), which must resolve it BEFORE

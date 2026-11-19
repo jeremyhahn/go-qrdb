@@ -343,13 +343,12 @@ CMD ["sleep", "infinity"]
 # devcontainer, client-build, benchmark and e2e target THIS stage, because they
 # bind-mount the live worktree and never wanted the copy.
 #
-# THE TOKEN STAYS BUILD-TIME. The obvious alternative -- point those four at
-# `toolchain` and let them `go mod download` at run time -- needs
-# MODULE_FORGE_TOKEN in each service's runtime `environment:`, where `docker
+# MODULE CREDENTIALS STAY BUILD-TIME. The obvious alternative -- point those
+# four at `toolchain` and let them `go mod download` at run time -- needs any
+# GOMODAUTH credential in each service's runtime `environment:`, where `docker
 # inspect` and /proc/<pid>/environ can read it for the life of the container.
-# #326 had just finished removing the token from a mode-600 file; widening its
-# runtime exposure from two services to four is the same defect in the other
-# direction. A BuildKit secret is a tmpfs mount for one RUN and survives in no
+# #326 had just finished removing credentials from a mode-600 file; widening
+# their runtime exposure is the same defect in the other direction. A BuildKit secret is a tmpfs mount for one RUN and survives in no
 # image layer, so keeping the download here is both faster and narrower.
 FROM toolchain AS deps
 
