@@ -306,15 +306,26 @@ epoch() {
 lock_file() { printf '%s\n' "${CI_IMAGE_LOCK:-${TMPDIR:-/tmp}/qrdb-ci-image.lock}"; }
 
 # lock -s|-x takes the image lock on fd 9 until the process exits, waiting
-# at most CI_IMAGE_LOCK_WAIT seconds (default 600). It fails when the wait
-# runs out; without flock(1) it returns 2 and holds nothing.
+# at most CI_IMAGE_LOCK_WAIT seconds (default 600). It returns 1 when the
+# wait runs out; without flock(1) it returns 2 and holds nothing. It polls
+# flock -n rather than calling flock -w: the toolchain image's BusyBox flock
+# knows only -s -x -u -n. A flock that fails rather than finds the lock busy
+# (it prints why; a busy -n prints nothing) is an error, never a timeout.
 lock() {
-	local f wait=${CI_IMAGE_LOCK_WAIT:-600}
+	local f err rc wait=${CI_IMAGE_LOCK_WAIT:-600} deadline
 	[[ $wait =~ ^(0|[1-9][0-9]{0,4})$ ]] || die "CI_IMAGE_LOCK_WAIT must be a whole number of seconds (at most 99999)"
 	command -v flock >/dev/null 2>&1 || return 2
 	f=$(lock_file)
 	exec 9>>"$f" || die "cannot open the image lock $f"
-	flock "$1" -w "$wait" 9
+	deadline=$((SECONDS + wait))
+	while :; do
+		rc=0
+		err=$(flock "$1" -n 9 2>&1 >/dev/null) || rc=$?
+		[ "$rc" -ne 0 ] || return 0
+		[ -z "$err" ] || die "flock(1) cannot take the image lock $f (exit $rc): $err"
+		[ "$SECONDS" -lt "$deadline" ] || return 1
+		sleep 0.2 2>/dev/null || sleep 1
+	done
 }
 
 # producer_lock holds the image lock shared for a producer step; a producer

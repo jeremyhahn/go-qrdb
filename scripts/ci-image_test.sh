@@ -566,6 +566,51 @@ if command -v flock >/dev/null 2>&1; then
   if [ "$rc" = 1 ] && grep -q 'still held exclusive' "$D/err" && ! called '^load '; then
     ok "a producer step refuses to run while a prune holds the image lock"
   else bad "a producer step refuses to run while a prune holds the image lock (rc=$rc)"; cat "$D/err"; fi
+  # 12a8. The toolchain image's flock is BusyBox's, which knows only -s -x
+  # -u -n (#1597 Lint Gates: "flock: unrecognized option: w"). A shim that
+  # refuses -w as BusyBox does stands in for it; the lock still works.
+  real_flock=$(command -v flock)
+  mkdir -p "$D/bbflock"
+  cat > "$D/bbflock/flock" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case \$a in -w|-E|--*) echo "flock: unrecognized option: \${a#-}" >&2; exit 1 ;; esac
+done
+exec "$real_flock" "\$@"
+EOF
+  chmod +x "$D/bbflock/flock"
+  reset
+  mkdir -p "$D/state/created"
+  tagimg qrdb-ci-it:aaaaaaaaaaaaaaaa "$id_b"
+  echo "$old" > "$D/state/created/${id_b#sha256:}"
+  run prune 24 -- PATH="$D/bbflock:$D/bin:$PATH"
+  if [ "$rc" = 0 ] && [ ! -e "$D/state/ids/${id_b#sha256:}" ] && ! grep -q 'kept every image' "$D/err" &&
+    ! grep -q 'unrecognized option' "$D/err"; then
+    ok "prune takes the image lock with a BusyBox flock that has no -w"
+  else bad "prune takes the image lock with a BusyBox flock that has no -w (rc=$rc)"; cat "$D/err"; fi
+  # Held exclusive past the wait, the BusyBox-flock producer reports the
+  # timeout, after polling for the whole wait.
+  reset
+  exec 8>>"$D/image.lock"
+  flock -x 8
+  t0=$SECONDS
+  run load "$D/art" "$tc" "$id_a" -- PATH="$D/bbflock:$D/bin:$PATH" CI_IMAGE_LOCK_WAIT=1
+  t1=$SECONDS
+  exec 8>&-
+  if [ "$rc" = 1 ] && grep -q 'still held exclusive (a prune) after 1s' "$D/err" && ! grep -q 'unrecognized option' "$D/err" &&
+    [ $((t1 - t0)) -ge 1 ] && ! called '^load '; then
+    ok "a BusyBox-flock producer times out on a held image lock"
+  else bad "a BusyBox-flock producer times out on a held image lock (rc=$rc)"; cat "$D/err"; fi
+  # A flock that fails to run is an error that says so, not a held lock.
+  mkdir -p "$D/badflock"
+  printf '#!/usr/bin/env bash\necho "flock: unrecognized option: n" >&2\nexit 1\n' > "$D/badflock/flock"
+  chmod +x "$D/badflock/flock"
+  reset
+  run load "$D/art" "$tc" "$id_a" -- PATH="$D/badflock:$D/bin:$PATH" CI_IMAGE_LOCK_WAIT=5
+  if [ "$rc" = 1 ] && grep -q 'flock(1) cannot take the image lock .*unrecognized option: n' "$D/err" &&
+    ! grep -q 'still held' "$D/err" && ! called '^load '; then
+    ok "a flock that cannot run is reported as such, not as a held lock"
+  else bad "a flock that cannot run is reported as such, not as a held lock (rc=$rc)"; cat "$D/err"; fi
 else
   echo "SKIP: flock(1) is not installed, the image lock cases need it"
 fi
