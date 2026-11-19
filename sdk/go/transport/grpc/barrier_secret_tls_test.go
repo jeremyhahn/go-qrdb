@@ -17,6 +17,7 @@ package grpc
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"testing"
 
@@ -34,6 +35,53 @@ import (
 func TestBarrierSecret_RequiresTLS(t *testing.T) {
 	serverTLS, clientTLS := sotest.TLSPair(t)
 	sotest.RunBarrierSecretTLS(t, "grpc", secretTarget(t, nil, nil), secretTarget(t, serverTLS, clientTLS))
+}
+
+// TestBarrierSecret_HTTPAddressIsRefused: an address configured with an
+// explicit http:// scheme refuses every secret-carrying call, whatever the TLS
+// config says (#1639), and the server never sees the call. A call carrying no
+// secret goes through as before.
+func TestBarrierSecret_HTTPAddressIsRefused(t *testing.T) {
+	serverTLS, clientTLS := sotest.TLSPair(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	probe := &sotest.SecretProbe{}
+	probe.Serve(t, lis, serverTLS)
+	tr, err := New(
+		transport.WithAddress("http://"+lis.Addr().String()),
+		transport.WithTimeout(sotest.RequestTimeout),
+		transport.WithTLSConfig(clientTLS),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+	if err := tr.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	ctx := context.Background()
+	calls := map[string]func() error{
+		"BarrierUnseal": func() error {
+			return tr.BarrierUnseal(ctx, &transport.BarrierUnsealRequest{Secret: []byte("unseal key")})
+		},
+		"BarrierQuorumSubmit": func() error {
+			_, err := tr.BarrierQuorumSubmit(ctx, &transport.QuorumSubmitRequest{Share: []byte("share")})
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			var tlsErr *transport.BarrierSecretRequiresTLSError
+			if err := call(); !errors.As(err, &tlsErr) {
+				t.Fatalf("err = %v, want *transport.BarrierSecretRequiresTLSError", err)
+			}
+			if n := probe.Reached(); n != 0 {
+				t.Fatalf("the server saw %d calls, want none", n)
+			}
+		})
+	}
 }
 
 // secretTarget serves a SecretProbe on loopback, over TLS when serverTLS is

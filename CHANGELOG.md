@@ -798,6 +798,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Security
 
+- Barrier secrets and the SO PIN are never resent on any redirect, the same
+  host included (REST, MCP), and an explicit `http://` address makes every
+  secret-carrying gRPC and QUIC call refuse before any request is sent (#1639).
+
 - **Go toolchain 1.27.4 for GO-2026-6859, net/http (#1472).** govulncheck
   reports GO-2026-6859 in the go1.27.3 standard library, fixed in go1.27.4
   (2026-11-02). Every Go version pin moves to 1.27.4: the `go` directive of
