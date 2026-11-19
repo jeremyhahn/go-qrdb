@@ -99,7 +99,9 @@ func (c *Chain) Append(w vlog.Writer, tenantID string, ev AuditEvent) (seq uint6
 	if err := validateEvent(tenantID, ev); err != nil {
 		return 0, err
 	}
-	if token := onceToken(ev); token != "" {
+	once := ev.AppendOnce
+	ev.AppendOnce = false
+	if token := onceToken(ev); once && token != "" {
 		seq, _, err = c.log.AppendOnce(w, tenantID, token, linkEvent(ev), false)
 		return seq, err
 	}
@@ -107,8 +109,9 @@ func (c *Chain) Append(w vlog.Writer, tenantID string, ev AuditEvent) (seq uint6
 }
 
 // ActionTenantOnboard is the action of a tenant's onboarding event. Its
-// emitter retries an append it could not confirm, so the event is appended
-// once per identity (onceToken) at apply time.
+// emitter retries an append it could not confirm, so an event carrying
+// AppendOnce (featuregate.AuditAppendOnce) is appended once per identity
+// (onceToken) at apply time.
 const ActionTenantOnboard = "tenant.onboard"
 
 // onceToken returns the apply-time identity of an event appended at most
@@ -147,7 +150,9 @@ func (c *Chain) AppendToInstance(w vlog.Writer, tenantID string, entries [][]byt
 		}
 	}
 	for _, ev := range events {
-		if token := onceToken(ev); token != "" {
+		once := ev.AppendOnce
+		ev.AppendOnce = false
+		if token := onceToken(ev); once && token != "" {
 			seq, _, err = c.log.AppendOnce(w, tenantID, token, linkEvent(ev), true)
 		} else {
 			seq, err = c.log.AppendAudit(w, tenantID, linkEvent(ev))

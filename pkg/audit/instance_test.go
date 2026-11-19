@@ -128,6 +128,7 @@ func TestChain_OnboardEventAppliedOnceAcrossRetry(t *testing.T) {
 	ev := fixedEvent(0, tenantID)
 	ev.Action = ActionTenantOnboard
 	ev.RequestID = "req-1"
+	ev.AppendOnce = true
 	raw, err := json.Marshal(ev)
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +142,7 @@ func TestChain_OnboardEventAppliedOnceAcrossRetry(t *testing.T) {
 	if _, err := c.Append(store, tenantID, ev); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if _, seq, _ := c.log.Head(tenantID); seq != 1 {
+	if seq, _, _ := c.log.Head(tenantID); seq != 1 {
 		t.Fatalf("head seq = %d after three applies of one event, want 1", seq)
 	}
 
@@ -152,8 +153,52 @@ func TestChain_OnboardEventAppliedOnceAcrossRetry(t *testing.T) {
 	if _, err := restored.Append(store, tenantID, ev); err != nil {
 		t.Fatalf("Append after restore: %v", err)
 	}
-	if _, seq, _ := restored.log.Head(tenantID); seq != 1 {
+	if seq, _, _ := restored.log.Head(tenantID); seq != 1 {
 		t.Fatalf("head seq = %d after restore and a repeat, want 1", seq)
+	}
+}
+
+// TestChain_OnboardEventWithoutMarkerAppendsEachTime pins the old shape: an
+// onboarding event proposed before audit-append-once is active carries no
+// AppendOnce marker, and every binary appends it each time it is applied,
+// through either opcode, so old and new replicas chain the same log alike;
+// a marked event applied twice appends once.
+func TestChain_OnboardEventWithoutMarkerAppendsEachTime(t *testing.T) {
+	const tenantID = "acme"
+	c := NewChain()
+	store := memory.NewStorage()
+	ev := fixedEvent(0, tenantID)
+	ev.Action = ActionTenantOnboard
+	ev.RequestID = "req-1"
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Append(store, tenantID, ev); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	first, _, _ := c.log.Head(tenantID)
+	if _, err := c.AppendToInstance(store, tenantID, [][]byte{raw}); err != nil {
+		t.Fatalf("AppendToInstance: %v", err)
+	}
+	if _, err := c.Append(store, tenantID, ev); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if seq, _, _ := c.log.Head(tenantID); seq != first+2 {
+		t.Fatalf("head seq = %d after three applies of an unmarked event, want %d", seq, first+2)
+	}
+
+	marked := ev
+	marked.RequestID = "req-2"
+	marked.AppendOnce = true
+	if _, err := c.Append(store, tenantID, marked); err != nil {
+		t.Fatalf("Append marked: %v", err)
+	}
+	if _, err := c.Append(store, tenantID, marked); err != nil {
+		t.Fatalf("Append marked again: %v", err)
+	}
+	if seq, _, _ := c.log.Head(tenantID); seq != first+3 {
+		t.Fatalf("head seq = %d after a marked event applied twice, want %d", seq, first+3)
 	}
 }
 

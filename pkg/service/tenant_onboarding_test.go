@@ -803,6 +803,77 @@ func TestEmitPendingOnboardAudit_TwoInstancesAppendOnce(t *testing.T) {
 	}
 }
 
+// uncertainTrail is a tenant trail whose next Emit ends with its outcome
+// unknown (the proposal ran out of time), and which reports whether its
+// group appends a retried onboarding event once (audit-append-once).
+type uncertainTrail struct {
+	*audit.RingBuffer
+	failNext   bool
+	appendOnce bool
+	emits      int
+}
+
+func (u *uncertainTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	u.emits++
+	if u.failNext {
+		u.failNext = false
+		return &ProposeError{Err: context.DeadlineExceeded}
+	}
+	return u.RingBuffer.Emit(ctx, ev)
+}
+
+func (u *uncertainTrail) AppendOnceEnabled(context.Context, string) (bool, error) {
+	return u.appendOnce, nil
+}
+
+// TestEmitPendingOnboardAudit_UncertainAppendWaitsForAppendOnce pins that a
+// pending onboarding record whose append ended with its outcome unknown is
+// not re-sent while the trail's group lacks audit-append-once -- the first
+// append may have committed, and a re-send would chain the event twice --
+// and is re-sent, once, when the feature is enabled.
+func TestEmitPendingOnboardAudit_UncertainAppendWaitsForAppendOnce(t *testing.T) {
+	ctx := context.Background()
+	identity := kvstore.NewMemoryKVStore()
+	trail := &uncertainTrail{RingBuffer: audit.NewRingBuffer(32), failNext: true}
+	deps := newOnboardingDeps(t)
+	deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
+	deps.TenantTrail = trail
+	svc := NewTenantOnboardingService(deps)
+	pendingAudit := tenantadmin.NewAuditKVStore(identity)
+
+	record, err := json.Marshal(audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme", RequestID: "req-1", Timestamp: time.Unix(1700000000, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingAudit.Create(ctx, "acme", record); err != nil {
+		t.Fatalf("pending audit Create: %v", err)
+	}
+
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err == nil {
+		t.Fatal("first EmitPendingOnboardAudit: want the uncertain append's error")
+	}
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry before audit-append-once: %v", err)
+	}
+	if trail.emits != 1 {
+		t.Fatalf("trail saw %d emits before audit-append-once, want 1 (no re-send)", trail.emits)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left == nil {
+		t.Fatalf("pending record before audit-append-once = %q, %v; want it kept", left, err)
+	}
+
+	trail.appendOnce = true
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry after audit-append-once: %v", err)
+	}
+	if trail.emits != 2 {
+		t.Fatalf("trail saw %d emits, want 2", trail.emits)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left != nil {
+		t.Fatalf("pending record after the retry = %q, %v; want none", left, err)
+	}
+}
+
 // queryFailingTrail is a trail that cannot be read.
 type queryFailingTrail struct{ *audit.RingBuffer }
 

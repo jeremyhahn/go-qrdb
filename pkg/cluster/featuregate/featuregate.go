@@ -261,6 +261,20 @@ const PendingUserTTL feature.Feature = "pending-user-ttl"
 // (docs/multi-tenancy/architecture.md "Feature gate and upgrade").
 const VectorStoredCount feature.Feature = "vector-stored-count"
 
+// AuditAppendOnce is the onboarding append-once rule: an OpAuditAppend or
+// audit-instance append of a tenant.onboard event that carries the
+// append-once marker is appended once per identity (its request id and
+// time), so a retried onboarding append whose first outcome was unknown
+// lands once. It changes apply, so a node that predates it would append the
+// retried event again while its peers drop it, and the replicas' chains
+// would diverge. The marker rides on the event (AuditEvent.AppendOnce),
+// set by the proposer only once the feature is enabled on the shard; until
+// then the pending onboarding record is not re-sent after an append whose
+// outcome was unknown, and an event without the marker is appended every
+// time it is applied, on every binary (docs/multi-tenancy/architecture.md
+// "Feature gate and upgrade").
+const AuditAppendOnce feature.Feature = "audit-append-once"
+
 // VectorManhattan is the Manhattan (L1) distance metric on a FLAT or IVF
 // vector namespace: record metric value 3 (pkg/vector DistanceManhattan),
 // which a binary from before it refuses as an unknown metric while its
@@ -289,7 +303,7 @@ const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, StrictIsolation, PendingUserTTL, VectorStoredCount}
+var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, StrictIsolation, PendingUserTTL, VectorStoredCount, AuditAppendOnce}
 
 // Supported returns the features this binary implements.
 func Supported() []feature.Feature {

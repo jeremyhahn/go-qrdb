@@ -19,6 +19,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -638,8 +639,20 @@ func (s *TenantOnboardingService) emitPendingOnboardAudit(ctx context.Context, t
 	if claim != nil && now.Before(claim.ClaimedUntil) {
 		return nil
 	}
+	// An earlier append whose outcome was unknown may have committed. Until
+	// the trail appends a retried onboarding event once, re-sending it could
+	// chain it twice, so the record waits, kept, for the feature.
+	uncertain := claim != nil && claim.Uncertain
+	if uncertain {
+		if reporter, ok := sink.(appendOnceReporter); ok {
+			enabled, gateErr := reporter.AppendOnceEnabled(ctx, tenantID)
+			if gateErr != nil || !enabled {
+				return gateErr
+			}
+		}
+	}
 	until := now.Add(pendingAuditClaimLease)
-	claimed, err := json.Marshal(pendingAuditClaim{ClaimedBy: onboardEventID(), ClaimedUntil: until, Event: raw})
+	claimed, err := json.Marshal(pendingAuditClaim{ClaimedBy: onboardEventID(), ClaimedUntil: until, Event: raw, Uncertain: uncertain})
 	if err != nil {
 		return &tenantadmin.StoreError{Op: "encode", Err: err}
 	}
@@ -660,8 +673,17 @@ func (s *TenantOnboardingService) emitPendingOnboardAudit(ctx context.Context, t
 	}
 	if err != nil {
 		// Release the claim so a retry need not wait out the lease; should
-		// the release fail, the lease running out releases it.
-		_, _ = s.pendingAudit.Replace(context.WithoutCancel(ctx), tenantID, claimed, raw)
+		// the release fail, the lease running out releases it. An append
+		// whose outcome is unknown -- or a retry of one -- is released as an
+		// expired claim marked uncertain, so the retry waits for the trail
+		// to append it once.
+		release := raw
+		if uncertain || onboardAppendUncertain(err) {
+			if marked, markErr := json.Marshal(pendingAuditClaim{ClaimedBy: onboardEventID(), Event: raw, Uncertain: true}); markErr == nil {
+				release = marked
+			}
+		}
+		_, _ = s.pendingAudit.Replace(context.WithoutCancel(ctx), tenantID, claimed, release)
 		return err
 	}
 	_, err = s.pendingAudit.Delete(ctx, tenantID, claimed)
@@ -679,6 +701,19 @@ type pendingAuditClaim struct {
 	ClaimedBy    string          `json:"claimed_by"`
 	ClaimedUntil time.Time       `json:"claimed_until"`
 	Event        json.RawMessage `json:"event"`
+	// Uncertain records an append whose outcome was unknown (it may have
+	// committed). Until the trail appends the event once per identity
+	// (appendOnceReporter), the record is not re-sent: a second append
+	// would chain it twice.
+	Uncertain bool `json:"uncertain,omitempty"`
+}
+
+// appendOnceReporter is a trail that reports whether it appends a retried
+// onboarding event once (ReplicatedLogger.AppendOnceEnabled). A trail
+// without it gates nothing, as a single-binary composition, so a retry of an
+// uncertain append goes ahead.
+type appendOnceReporter interface {
+	AppendOnceEnabled(ctx context.Context, tenantID string) (bool, error)
 }
 
 // decodePendingAudit decodes a pending onboarding record, either as kept or
@@ -697,6 +732,13 @@ func decodePendingAudit(record []byte) (audit.AuditEvent, []byte, *pendingAuditC
 		return ev, nil, nil, &tenantadmin.StoreError{Op: "decode", Err: err}
 	}
 	return ev, record, nil, nil
+}
+
+// onboardAppendUncertain reports whether an onboarding append that failed
+// with err may still have committed: its proposal ran out of time or was
+// cancelled, or the write says outright that its outcome is unknown.
+func onboardAppendUncertain(err error) bool {
+	return errors.Is(err, ErrOutcomeUnknown) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // onboardEventID is a random identity for an onboarding audit record.

@@ -92,6 +92,11 @@ func (l *ReplicatedLogger) Emit(ctx context.Context, ev audit.AuditEvent) error 
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
 	}
+	// The append-once marker changes how apply treats a retried onboarding
+	// event, so it rides on the command only once every replica of the group
+	// applies it (featuregate.AuditAppendOnce). A caller's marker is never
+	// trusted: the gate alone decides.
+	ev.AppendOnce = ev.Action == audit.ActionTenantOnboard && (!isGated || gated.FeatureEnabled(shardID, featuregate.AuditAppendOnce))
 	// Once the group enables featuregate.VerifiableLogAudit, every event is
 	// an AuditAppend to the tenant's audit instance, the log system/audit
 	// (docs/databases/architecture.md §7); before, it is OpAuditAppend, and
@@ -123,6 +128,25 @@ func (l *ReplicatedLogger) Emit(ctx context.Context, ev audit.AuditEvent) error 
 		return &ProposeError{Err: resultErr}
 	}
 	return nil
+}
+
+// AppendOnceEnabled reports whether an onboarding event Emit proposes for
+// tenantID carries the append-once marker: featuregate.AuditAppendOnce is
+// enabled on the group the event routes to, or the host gates nothing. A
+// retry of an onboarding append whose outcome was unknown waits for it, so
+// the retry cannot append the event twice (TenantOnboardingService).
+func (l *ReplicatedLogger) AppendOnceEnabled(ctx context.Context, tenantID string) (bool, error) {
+	target := routingTenant(tenantID)
+	resolve := l.resolver.ResolveAuditShard
+	if appends, ok := l.resolver.(AuditAppendResolver); ok {
+		resolve = appends.ResolveAuditAppend
+	}
+	host, shardID, err := resolve(ctx, target)
+	if err != nil {
+		return false, err
+	}
+	gated, isGated := host.(FeatureGatedHost)
+	return !isGated || gated.FeatureEnabled(shardID, featuregate.AuditAppendOnce), nil
 }
 
 // Query implements audit.AuditLogger. The caller is responsible for
