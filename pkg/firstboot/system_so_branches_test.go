@@ -242,3 +242,30 @@ func TestIssueSOCert_RejectsAnUnusableTrustPool(t *testing.T) {
 	var rejected *AdminCertRejectedError
 	require.ErrorAs(t, err, &rejected)
 }
+
+// resolverOnlyUsers creates and resolves users but cannot update them: it
+// hides the harness double's UpdateUser.
+type resolverOnlyUsers struct{ users *soUsers }
+
+func (u resolverOnlyUsers) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
+	return u.users.CreateUser(ctx, req)
+}
+
+func (u resolverOnlyUsers) GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error) {
+	return u.users.GetUserByUsername(ctx, tenantID, username)
+}
+
+// A distinct-username SO needs UpdateUser too, to record its bound key, so
+// the preflight refuses a Users without it before any write.
+func TestInitialize_DistinctSONeedsAnUpdaterBeforeAnyWrite(t *testing.T) {
+	h := newSOHarness(t, true)
+	h.deps.Users = resolverOnlyUsers{users: h.users}
+	_, err := Initialize(context.Background(), h.deps)
+	var missing *MissingSOSeamError
+	if !errors.As(err, &missing) {
+		t.Fatalf("Initialize = %v, want *MissingSOSeamError", err)
+	}
+	if len(h.users.creates) != 0 || len(h.pins.pins) != 0 || len(h.binder.calls) != 0 {
+		t.Fatalf("writes before the refusal: creates %v, pins %v, binds %v", h.users.creates, h.pins.pins, h.binder.calls)
+	}
+}

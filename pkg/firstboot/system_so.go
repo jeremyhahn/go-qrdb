@@ -209,8 +209,10 @@ func checkSystemSO(ctx context.Context, deps Dependencies) error {
 		return &SOMatchesAdminError{Field: "username"}
 	}
 	switch {
-	case soIsAdmin && !implementsUserUpdater(deps.Users):
-		return &MissingSOSeamError{Seam: "Dependencies.Users implementing UpdateUser to grant the bootstrap admin the SO role"}
+	case !implementsUserUpdater(deps.Users):
+		// Every SO needs UpdateUser to record its bound key; the admin
+		// enrolled as SO also needs it for the SO role grant.
+		return &MissingSOSeamError{Seam: "Dependencies.Users implementing UpdateUser to record the SO's bound key and to grant the bootstrap admin the SO role"}
 	case deps.SOPINs == nil:
 		return &MissingSOSeamError{Seam: "Dependencies.SOPINs to commit its PIN"}
 	case (so.PIN == nil || !so.PIN.IsAlive()) && !implementsPINRecordSetter(deps.SOPINs):

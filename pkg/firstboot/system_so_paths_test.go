@@ -23,7 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
-// soCreateOnly is a user surface with no UserResolver: the SO's create is
+// soCreateOnly is a user surface with no UserResolver (it can update): the SO's create is
 // answered by create, every other account by the harness's users.
 type soCreateOnly struct {
 	users  *soUsers
@@ -36,6 +36,12 @@ func (u *soCreateOnly) CreateUser(ctx context.Context, req *user.CreateUserReque
 		return u.create()
 	}
 	return u.users.CreateUser(ctx, req)
+}
+
+// UpdateUser delegates, so the preflight's updater check passes and the
+// account step is what fails.
+func (u *soCreateOnly) UpdateUser(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error) {
+	return u.users.UpdateUser(ctx, req)
 }
 
 // soLookupMiss adds a resolver that never finds the SO.
