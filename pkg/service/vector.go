@@ -18,7 +18,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1941,8 +1940,8 @@ func (v *vectorService) scanMetadataFilters(ctx context.Context, scoped string, 
 	if err != nil {
 		return nil, err
 	}
-	// A verbatim value that is itself valid JSON (5, true) is a typed value
-	// written after the upgrade, not a legacy string: leave it out.
+	// The legacy scan compares the bare string, which only a legacy entry
+	// (no version byte) can equal; keep exactly those.
 	old := make([]*vector.VectorValue, 0, len(found))
 	for _, vec := range found {
 		if legacyStringMatch(vec, raw) {
@@ -1985,13 +1984,14 @@ func (v *vectorService) scanMetadataFilters(ctx context.Context, scoped string, 
 }
 
 // legacyStringMatch reports whether every string filter value matched vec
-// through a pre-upgrade verbatim entry, one that is not valid JSON.
+// through a pre-upgrade verbatim entry, one without the metadata encoding
+// version byte (whatever its text, "5" and "true" included).
 func legacyStringMatch(vec *vector.VectorValue, raw map[string]interface{}) bool {
 	for field, want := range raw {
 		if _, ok := want.(string); !ok {
 			continue
 		}
-		if json.Valid([]byte(vec.Metadata[field])) {
+		if vector.IsEncodedMetadataValue(vec.Metadata[field]) {
 			return false
 		}
 	}

@@ -31,7 +31,7 @@ func TestMetadataJSONRoundTripKeepsTypes(t *testing.T) {
 		"num": "5",
 	}
 	stored := EncodeMetadata(in)
-	if stored["s"] != `"hello"` || stored["n"] != "42.5" || stored["b"] != "true" {
+	if stored["s"] != "\x01\"hello\"" || stored["n"] != "\x0142.5" || stored["b"] != "\x01true" {
 		t.Fatalf("stored form is not JSON: %v", stored)
 	}
 	out := DecodeMetadata(stored)
@@ -66,5 +66,28 @@ func TestMetadataJSONFilterEquality(t *testing.T) {
 	}
 	if matchesFilter(vec, "n", EncodeMetadataValue("5"), FilterEqual) {
 		t.Fatal("string filter matched stored number")
+	}
+}
+
+// TestMetadataJSONLegacyStringsStayStrings proves a value stored verbatim
+// before metadata was typed reads back as that string even when its text is
+// valid JSON ("5", "true", a quoted string), and that a typed value of the
+// same text is a different stored value.
+func TestMetadataJSONLegacyStringsStayStrings(t *testing.T) {
+	for _, legacy := range []string{"5", "true", `"q"`, "null", "[1]", "plain"} {
+		got := DecodeMetadataValue(legacy)
+		if s, ok := got.(string); !ok || s != legacy {
+			t.Fatalf("legacy %q decoded as %#v, want the string itself", legacy, got)
+		}
+		if IsEncodedMetadataValue(legacy) {
+			t.Fatalf("legacy %q reported as versioned", legacy)
+		}
+		vec := &VectorValue{ID: 1, Metadata: map[string]string{"k": legacy}}
+		if !matchesFilter(vec, "k", legacy, FilterEqual) {
+			t.Fatalf("legacy %q does not match its verbatim string filter", legacy)
+		}
+		if matchesFilter(vec, "k", EncodeMetadataValue(DecodeMetadataValue("\x01"+legacy)), FilterEqual) {
+			t.Fatalf("legacy %q matched the typed filter of the same text", legacy)
+		}
 	}
 }

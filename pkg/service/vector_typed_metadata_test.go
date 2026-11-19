@@ -180,6 +180,71 @@ func TestSearchByMetadata_MatchesPreUpgradePlainStringEntries(t *testing.T) {
 	}
 }
 
+// TestSearchByMetadata_LegacyJSONLookingStringsStayStrings proves a
+// pre-upgrade entry whose verbatim text is itself valid JSON ("5", "true", a
+// quoted string) still reads back as that string and still matches a string
+// filter, while a typed value of the same text matches only its typed filter.
+func TestSearchByMetadata_LegacyJSONLookingStringsStayStrings(t *testing.T) {
+	store := vector.NewMemoryVectorStorage()
+	svc, err := NewVectorService(store, newVecTestLogger())
+	if err != nil {
+		t.Fatalf("NewVectorService: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
+		Namespace: "typed", Dimension: 2, DistanceMetric: "COSINE", IndexType: "HNSW",
+	}); err != nil {
+		t.Fatalf("CreateNamespace: %v", err)
+	}
+	legacy := map[uint64]string{1: "5", 2: "true", 3: `"q"`}
+	for id, text := range legacy {
+		if err := store.UpsertVector(ctx, scopedFromContext(ctx, "typed"), &vector.VectorValue{
+			ID: id, Embedding: []float32{1, 0}, Metadata: map[string]string{"v": text},
+		}); err != nil {
+			t.Fatalf("legacy UpsertVector %d: %v", id, err)
+		}
+	}
+	typed := []*UpsertVectorRequest{
+		{Namespace: "typed", ID: 4, Vector: []float32{0, 1}, Metadata: map[string]interface{}{"v": float64(5)}},
+		{Namespace: "typed", ID: 5, Vector: []float32{0, 1}, Metadata: map[string]interface{}{"v": true}},
+		{Namespace: "typed", ID: 6, Vector: []float32{0, 1}, Metadata: map[string]interface{}{"v": "5"}},
+	}
+	for _, w := range typed {
+		if _, err := svc.UpsertVector(ctx, w); err != nil {
+			t.Fatalf("UpsertVector %d: %v", w.ID, err)
+		}
+	}
+	for _, tc := range []struct {
+		value interface{}
+		want  []uint64
+	}{
+		{"5", []uint64{1, 6}},
+		{"true", []uint64{2}},
+		{`"q"`, []uint64{3}},
+		{float64(5), []uint64{4}},
+		{true, []uint64{5}},
+	} {
+		resp, err := svc.SearchByMetadata(ctx, &SearchByMetadataRequest{
+			Namespace: "typed", Filters: map[string]interface{}{"v": tc.value}, IncludeMetadata: true,
+		})
+		if err != nil {
+			t.Fatalf("SearchByMetadata(%#v): %v", tc.value, err)
+		}
+		var ids []uint64
+		for _, r := range resp.Results {
+			ids = append(ids, r.ID)
+			if text, ok := legacy[r.ID]; ok {
+				if got, isStr := r.Metadata["v"].(string); !isStr || got != text {
+					t.Fatalf("legacy ID %d metadata = %#v, want the string %q", r.ID, r.Metadata["v"], text)
+				}
+			}
+		}
+		if !reflect.DeepEqual(ids, tc.want) {
+			t.Fatalf("SearchByMetadata(%#v) matched IDs = %v, want %v", tc.value, ids, tc.want)
+		}
+	}
+}
+
 // TestUpsertVector_ReportsCreated proves the first upsert of an ID reports
 // created and a second upsert of the same ID does not.
 func TestUpsertVector_ReportsCreated(t *testing.T) {
