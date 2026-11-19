@@ -369,13 +369,13 @@ func powerCutFileRun(t *testing.T, b *fakeBarrier, name string, seed uint64) {
 	}
 }
 
-// TestPowerCut_FixedLayoutLogOpensAfterTear covers a WAL in the fixed-size
+// TestPowerCut_FixedLayoutLogTearOpensOrRefuses covers a WAL in the fixed-size
 // layout, written before the framed layout existed (a device's preserved
 // WAL after a qrdb bump). That layout rewrites the trailing block in place
 // on every Sync, so the tear itself destroys that block's previous content;
 // the file must still open, end at the torn block, and replay every block
 // before it.
-func TestPowerCut_FixedLayoutLogOpensAfterTear(t *testing.T) {
+func TestPowerCut_FixedLayoutLogTearOpensOrRefuses(t *testing.T) {
 	b := newFakeBarrier(t)
 	for seed := uint64(0); seed < 48; seed++ {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
@@ -423,7 +423,13 @@ func TestPowerCut_FixedLayoutLogOpensAfterTear(t *testing.T) {
 			pc.hook = nil
 			_ = f.Close()
 
+			// The fixed layout records no durable boundary, so a final
+			// block the tear left unauthentic refuses the open rather
+			// than open the log short; any other tear opens.
 			g, err := New(filesys.Default, b).Open(filepath.Join(dst, "000002.log"))
+			if errors.Is(err, ErrAuthFailed) {
+				return
+			}
 			if err != nil {
 				t.Fatalf("open fixed-layout WAL after power cut: %v", err)
 			}

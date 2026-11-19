@@ -571,12 +571,15 @@ func TestFixedLog_LogicalSize(t *testing.T) {
 		data []byte
 		cut  int // bytes cut off the end of the file
 		want []byte
+		auth bool // the open must fail with ErrAuthFailed
 	}{
-		{"empty", nil, 0, nil},
-		{"one whole block", block, 0, block},
-		{"block and tail", append(bytes.Clone(block), tail...), 0, append(bytes.Clone(block), tail...)},
-		{"tail torn below the AEAD overhead", append(bytes.Clone(block), tail...), len(tail) + 1, block},
-		{"tail torn inside the ciphertext", append(bytes.Clone(block), tail...), 1, block},
+		{"empty", nil, 0, nil, false},
+		{"one whole block", block, 0, block, false},
+		{"block and tail", append(bytes.Clone(block), tail...), 0, append(bytes.Clone(block), tail...), false},
+		{"tail torn below the AEAD overhead", append(bytes.Clone(block), tail...), len(tail) + 1, block, false},
+		// The old layout records no durable boundary: a final block that
+		// fails authentication may hold synced data, so it refuses.
+		{"tail torn inside the ciphertext", append(bytes.Clone(block), tail...), 1, nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -591,6 +594,12 @@ func TestFixedLog_LogicalSize(t *testing.T) {
 				}
 			}
 			got, err := readAllAt(t, New(filesys.Default, b), path)
+			if tc.auth {
+				if !errors.Is(err, ErrAuthFailed) {
+					t.Fatalf("open err = %v, want ErrAuthFailed", err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}
@@ -599,6 +608,29 @@ func TestFixedLog_LogicalSize(t *testing.T) {
 			}
 		})
 	}
+	t.Run("synced last block with a flipped ciphertext byte", func(t *testing.T) {
+		path := writeFixedLog(t, b, tail)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw[len(raw)-tagSize-1] ^= 0x01
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for open := 1; open <= 2; open++ {
+			if _, err := readAllAt(t, New(filesys.Default, b), path); !errors.Is(err, ErrAuthFailed) {
+				t.Fatalf("open %d: err = %v, want ErrAuthFailed", open, err)
+			}
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, raw) {
+			t.Fatal("a refused open changed the file")
+		}
+	})
 	t.Run("read faults", func(t *testing.T) {
 		path := writeFixedLog(t, b, append(bytes.Clone(block), tail...))
 		sweepReadAtFaults(t, New(filesys.Default, b).(*FS), path, nil)

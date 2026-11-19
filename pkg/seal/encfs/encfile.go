@@ -355,10 +355,12 @@ func (f *encryptedFile) commitLocked() error {
 // every Sync, so a power cut during the rewrite tears a block that already
 // held synced bytes: the tear itself destroyed that block's previous
 // content, and no reader can bring it back (which is why WALs and
-// MANIFESTs are now framed). So that such a file still opens, a torn,
-// short or unauthenticated final block is the end of the log and every
-// earlier block replays; an earlier block that fails authentication still
-// fails its read with ErrAuthFailed.
+// MANIFESTs are now framed). The layout records no durable boundary, so
+// nothing tells a torn rewrite from corruption of synced data: a final
+// block shorter than BlockOverhead (no complete block was ever that short)
+// is the end of the log, but a final block that fails authentication
+// refuses the open with ErrAuthFailed, and an earlier block that fails
+// authentication fails its read with ErrAuthFailed.
 func (f *encryptedFile) fixedLogLogicalSize(payload int64) (int64, error) {
 	if payload < 0 {
 		return 0, &NegativePayloadLengthError{Length: payload}
@@ -380,7 +382,10 @@ func (f *encryptedFile) fixedLogLogicalSize(payload int64) (int64, error) {
 	}
 	pt, err := f.crypto.decrypt(buf)
 	if err != nil {
-		return last * int64(BlockSize), nil
+		// The old layout records no durable boundary, so a full-length
+		// final block that fails authentication may hold synced data:
+		// refuse it rather than open the log short.
+		return 0, fmt.Errorf("%w: final block %d of an old-format log", err, last)
 	}
 	return last*int64(BlockSize) + int64(len(pt)), nil
 }
