@@ -155,6 +155,15 @@ func (fs *FS) openEncryptedRO(base filesys.File, appendLog bool) (filesys.File, 
 	}
 	physicalSize := fi.Size()
 	if physicalSize < int64(fixedHeaderSize) {
+		if appendLog {
+			torn, err := tornHeaderPrefix(base, physicalSize)
+			if err != nil {
+				return nil, err
+			}
+			if torn {
+				return fs.emptyFramedRO(base)
+			}
+		}
 		// Too small to be encrypted; pass through.
 		return base, nil
 	}
@@ -168,9 +177,77 @@ func (fs *FS) openEncryptedRO(base filesys.File, appendLog bool) (filesys.File, 
 	}
 	h, err := readHeader(&offsetReader{base: base, off: 0}, fs.barrier)
 	if err != nil {
+		if appendLog && errors.Is(err, ErrTruncatedHeader) {
+			return fs.emptyFramedRO(base)
+		}
 		return nil, err
 	}
 	return newReadFile(base, h, physicalSize, appendLog)
+}
+
+// tornHeaderPrefix reports whether a file of physicalSize bytes, shorter
+// than the fixed header, holds a prefix of an encfs header: a header torn
+// by a power cut before the file's first Sync returned. An empty file
+// counts as torn.
+func tornHeaderPrefix(base filesys.File, physicalSize int64) (bool, error) {
+	buf := make([]byte, physicalSize)
+	if _, err := base.ReadAt(buf, 0); err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	n := min(len(buf), lenMagic)
+	return string(buf[:n]) == headerMagic[:n], nil
+}
+
+// freshFramedHeader is the header of a new append log (WAL or MANIFEST).
+func (fs *FS) freshFramedHeader() (*header, error) {
+	h, err := newHeader(fs.barrier)
+	if err != nil {
+		return nil, err
+	}
+	h.Flags |= headerFlagFramed
+	return h, nil
+}
+
+// emptyFramedRO opens, read-only and empty, an append log torn inside its
+// header. The header is written before any record, and no record is
+// acknowledged before the file's first Sync, so such a file holds no
+// acknowledged record: it reads as a log of logical size 0.
+func (fs *FS) emptyFramedRO(base filesys.File) (*encryptedFile, error) {
+	h, err := fs.freshFramedHeader()
+	if err != nil {
+		return nil, err
+	}
+	return newReadFile(base, h, int64(h.totalSize()), true)
+}
+
+// freshOverTornHeader reopens for writing an append log torn inside its
+// header (see emptyFramedRO): it writes a fresh header over the torn bytes
+// and zeroes any that run past it, leaving an empty log that takes appends.
+func (fs *FS) freshOverTornHeader(base filesys.File, physicalSize int64) (*encryptedFile, error) {
+	h, err := fs.freshFramedHeader()
+	if err != nil {
+		return nil, err
+	}
+	hdr := h.marshal()
+	if _, err := base.WriteAt(hdr, 0); err != nil {
+		return nil, err
+	}
+	if extra := physicalSize - int64(len(hdr)); extra > 0 {
+		if _, err := base.WriteAt(make([]byte, extra), int64(len(hdr))); err != nil {
+			return nil, err
+		}
+	}
+	crypto, err := newBlockCrypto(h.DEK[:])
+	if err != nil {
+		return nil, err
+	}
+	return &encryptedFile{
+		base:       base,
+		crypto:     crypto,
+		headerSize: int64(len(hdr)),
+		framed:     true,
+		physEnd:    int64(len(hdr)),
+	}, nil
 }
 
 // openEncryptedRW reads the header for a non-empty file opened with
@@ -180,6 +257,15 @@ func (fs *FS) openEncryptedRO(base filesys.File, appendLog bool) (filesys.File, 
 // block, that block is decrypted and reloaded into the in-memory
 // tail so a subsequent Write extends it rather than replacing it.
 func (fs *FS) openEncryptedRW(base filesys.File, physicalSize int64, appendLog bool) (*encryptedFile, error) {
+	if appendLog && physicalSize < int64(fixedHeaderSize) {
+		torn, err := tornHeaderPrefix(base, physicalSize)
+		if err != nil {
+			return nil, err
+		}
+		if torn {
+			return fs.freshOverTornHeader(base, physicalSize)
+		}
+	}
 	var magic [lenMagic]byte
 	if _, err := base.ReadAt(magic[:], 0); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
@@ -189,6 +275,9 @@ func (fs *FS) openEncryptedRW(base filesys.File, physicalSize int64, appendLog b
 	}
 	h, err := readHeader(&offsetReader{base: base, off: 0}, fs.barrier)
 	if err != nil {
+		if appendLog && errors.Is(err, ErrTruncatedHeader) {
+			return fs.freshOverTornHeader(base, physicalSize)
+		}
 		return nil, err
 	}
 	rf, err := newReadFile(base, h, physicalSize, appendLog)
