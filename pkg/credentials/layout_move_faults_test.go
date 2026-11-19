@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -82,6 +83,74 @@ func TestMoveLayout_StoreFaultsMoveNothingTwice(t *testing.T) {
 			keys, err := toMem.List(ctx, LayoutMovedPrefix)
 			require.NoError(t, err)
 			assert.Empty(t, keys, "no marker outlives the move")
+		})
+	}
+}
+
+// batchHookStore runs before once, ahead of the first guarded batch: the
+// window between a move's destination probe and its batch.
+type batchHookStore struct {
+	Store
+	before func()
+}
+
+func (s *batchHookStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if f := s.before; f != nil {
+		s.before = nil
+		f()
+	}
+	return s.Store.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
+// TestMoveLayout_OtherSourceCannotRestoreADeletedCredential: source A's move
+// of db commits and its source delete fails, leaving A's marker; db is then
+// deleted from the destination. Source B's copy of db must not come back,
+// whether B probes the destination after all that or just before it.
+func TestMoveLayout_OtherSourceCannotRestoreADeletedCredential(t *testing.T) {
+	for _, race := range []bool{false, true} {
+		name := "after"
+		if race {
+			name = "between probe and batch"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			memA, memB, toMem := seal.NewMemoryBackend(), seal.NewMemoryBackend(), seal.NewMemoryBackend()
+			keysA := putLayout(t, memA, "db", "old")
+			keysB := putLayout(t, memB, "db", "other")
+			fromA := &faultyStore{Store: memA, op: "delete", key: credentialPrefix + "db"}
+			interruptAndDelete := func() {
+				require.ErrorIs(t, moveLayout(ctx, fromA, toMem), errInjected)
+				requireMarked(t, toMem, layoutFence("db"))
+				for _, k := range keysA {
+					require.NoError(t, toMem.Delete(ctx, k))
+				}
+			}
+			var to Store = toMem
+			if race {
+				to = &batchHookStore{Store: toMem, before: interruptAndDelete}
+			} else {
+				interruptAndDelete()
+			}
+
+			err := moveLayout(ctx, memB, to)
+			var conflict *LayoutConflictError
+			require.ErrorAs(t, err, &conflict)
+			assert.Equal(t, []string{"db"}, conflict.Names)
+			for _, k := range keysB {
+				requireAbsent(t, toMem, k)
+				requireValue(t, memB, k, "other@"+k)
+			}
+
+			// A's next pass only finishes: nothing comes back, and its
+			// marker and the fence go.
+			require.NoError(t, moveLayout(ctx, fromA, toMem))
+			for _, k := range keysA {
+				requireAbsent(t, memA, k)
+				requireAbsent(t, toMem, k)
+			}
+			left, err := toMem.List(ctx, LayoutMovedPrefix)
+			require.NoError(t, err)
+			assert.Empty(t, left, "no marker or fence outlives A's move")
 		})
 	}
 }

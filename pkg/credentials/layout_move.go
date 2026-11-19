@@ -25,7 +25,10 @@ var layoutPrefixes = []string{credentialPrefix, MetaKeyPrefix, VersionKeyPrefix,
 // it says the copy there is this source store's, so a pass that stopped
 // before the source records were deleted is finished, not reported as a
 // conflict. The marker key is LayoutMovedPrefix + <source id> + "/" +
-// <name>, and its value the move id of the pass that wrote it. No layout
+// <name>, and its value the move id of the pass that wrote it. The same
+// batch writes the name's fence, LayoutMovedPrefix + "fence/" + <name>,
+// which every source's batch requires absent, so two sources never both
+// commit a name. No layout
 // prefix matches it, and the marker carries no secret. pkg/service
 // hard-confines it: a forged marker would make a move pass delete the
 // source records without copying them.
@@ -144,6 +147,16 @@ func (m layoutMove) marker(name string) string {
 	return LayoutMovedPrefix + m.source + "/" + name
 }
 
+// layoutFenceSource is the source segment of the name fences under
+// LayoutMovedPrefix. Source identities are hex, so it is never one.
+const layoutFenceSource = "fence"
+
+// layoutFence is the key that fences name across sources while a move of
+// it is committed and not finished. It holds the moving source's identity.
+func layoutFence(name string) string {
+	return LayoutMovedPrefix + layoutFenceSource + "/" + name
+}
+
 // layoutSourceID returns the identity of the store credentials are moved
 // out of, writing a fresh one the first time. A concurrent first write
 // that wins the race is the identity.
@@ -242,10 +255,11 @@ func moveLayout(ctx context.Context, from, to Store) error {
 		return err
 	}
 	for _, marker := range markers {
-		if _, ok := sets[strings.TrimPrefix(marker, markerRoot)]; ok {
+		name := strings.TrimPrefix(marker, markerRoot)
+		if _, ok := sets[name]; ok {
 			continue
 		}
-		if err := to.Delete(ctx, marker); err != nil {
+		if err := clearLayoutMarker(ctx, to, move.source, name); err != nil {
 			return err
 		}
 	}
@@ -261,8 +275,9 @@ func moveLayout(ctx context.Context, from, to Store) error {
 // without its move marker or the guarded write did not apply. When to
 // holds this source's marker, an earlier pass committed the set: its
 // remaining source records and then the marker are deleted, and nothing is
-// copied. Another source's marker on the name is an ordinary conflict:
-// destinationHolds sees that source's records.
+// copied. Another source's marker or fence on the name is an ordinary
+// conflict (destinationHolds), even once that source's moved records were
+// deleted from to.
 func moveLayoutSet(ctx context.Context, from, to Store, move layoutMove, set *layoutSet) (bool, error) {
 	marker := move.marker(set.name)
 	marked, err := holdsKey(ctx, to, marker)
@@ -276,12 +291,12 @@ func moveLayoutSet(ctx context.Context, from, to Store, move layoutMove, set *la
 		// since cannot come back.
 		return true, finishLayoutSet(ctx, from, to, move, set)
 	}
-	held, err := destinationHolds(ctx, to, set)
+	held, err := destinationHolds(ctx, to, move, set)
 	if err != nil || held {
 		return false, err
 	}
-	guards := make([]kvstore.Guard, 0, len(set.keys)+1)
-	writes := make([]kvstore.KV, 0, len(set.keys)+1)
+	guards := make([]kvstore.Guard, 0, len(set.keys)+2)
+	writes := make([]kvstore.KV, 0, len(set.keys)+2)
 	defer func() {
 		for _, w := range writes {
 			clear(w.Value)
@@ -295,8 +310,12 @@ func moveLayoutSet(ctx context.Context, from, to Store, move layoutMove, set *la
 		guards = append(guards, kvstore.Guard{Key: key})
 		writes = append(writes, kvstore.KV{Key: key, Value: value})
 	}
-	guards = append(guards, kvstore.Guard{Key: marker})
-	writes = append(writes, kvstore.KV{Key: marker, Value: []byte(move.id)})
+	// The fence is one key per name for every source: of two sources
+	// moving the same name, the batch that lands second finds it and
+	// writes nothing.
+	fence := layoutFence(set.name)
+	guards = append(guards, kvstore.Guard{Key: marker}, kvstore.Guard{Key: fence})
+	writes = append(writes, kvstore.KV{Key: marker, Value: []byte(move.id)}, kvstore.KV{Key: fence, Value: []byte(move.source)})
 	applied, err := to.PutAllIfAllUnchanged(ctx, guards, writes)
 	if err != nil || !applied {
 		return false, err
@@ -320,7 +339,33 @@ func finishLayoutSet(ctx context.Context, from, to Store, move layoutMove, set *
 			return err
 		}
 	}
-	return to.Delete(ctx, move.marker(set.name))
+	return clearLayoutMarker(ctx, to, move.source, set.name)
+}
+
+// clearLayoutMarker ends source's move of name in to: it lifts the name's
+// fence when source holds it, and then deletes source's marker. The fence
+// goes first, so a stop between the two leaves the marker, which still
+// holds the name against other sources (destinationHolds).
+func clearLayoutMarker(ctx context.Context, to Store, source, name string) error {
+	fence := layoutFence(name)
+	fenced, err := holdsKey(ctx, to, fence)
+	if err != nil {
+		return err
+	}
+	if fenced {
+		holder, err := to.Get(ctx, fence)
+		if err != nil {
+			return err
+		}
+		ours := string(holder) == source
+		clear(holder)
+		if ours {
+			if err := to.Delete(ctx, fence); err != nil {
+				return err
+			}
+		}
+	}
+	return to.Delete(ctx, LayoutMovedPrefix+source+"/"+name)
 }
 
 // holdsKey reports whether st holds exactly key.
@@ -333,8 +378,9 @@ func holdsKey(ctx context.Context, st Store, key string) (bool, error) {
 }
 
 // destinationHolds reports whether to holds any replicated-layout record of
-// the set's credential name, not only the keys the set would write.
-func destinationHolds(ctx context.Context, to Store, set *layoutSet) (bool, error) {
+// the set's credential name, not only the keys the set would write, or
+// another source's move marker or fence for it.
+func destinationHolds(ctx context.Context, to Store, move layoutMove, set *layoutSet) (bool, error) {
 	for _, key := range []string{credentialPrefix + set.name, MetaKeyPrefix + set.name, MigrationClaimPrefix + set.name} {
 		keys, err := to.List(ctx, key)
 		if err != nil {
@@ -350,6 +396,20 @@ func destinationHolds(ctx context.Context, to Store, set *layoutSet) (bool, erro
 			return false, err
 		}
 		if len(keys) > 0 {
+			return true, nil
+		}
+	}
+	// A move of the same name from another source that committed and has
+	// not finished holds the name, even when the credential it moved was
+	// deleted since: this source's copy is older than that delete and
+	// must not bring the credential back. Its fence is one such marker.
+	keys, err := to.List(ctx, LayoutMovedPrefix)
+	if err != nil {
+		return false, err
+	}
+	for _, key := range keys {
+		src, name, ok := strings.Cut(strings.TrimPrefix(key, LayoutMovedPrefix), "/")
+		if ok && name == set.name && src != move.source {
 			return true, nil
 		}
 	}
