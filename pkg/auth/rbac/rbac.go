@@ -302,40 +302,63 @@ func (a *RBACAuthorizer) holdsSystemRole(ctx context.Context, identity *auth.Ide
 }
 
 // holdsSOWithAdmin reports whether identity holds the SO role and the Admin
-// role together, counting both its home-tenant Roles and the RoleBindings
-// (bound) scoped to the call's target tenant. Strict separation of duties
-// (docs/SPEC.md, separation-of-duties) forbids such a combined principal in
-// every tenant, so Authorize refuses it outright: an account a standard
-// posture named both SO and Admin stays unusable after a strict restart
-// whichever tenant it lives in, without a boot-time scan of every tenant.
+// role together, counting both its home-tenant Roles and its own
+// RoleBindings for its home tenant (homeBoundRoleIDs). Strict separation of
+// duties (docs/SPEC.md, separation-of-duties) forbids such a combined
+// principal in every tenant, so Authorize refuses it outright: an account a
+// standard posture named both SO and Admin stays unusable after a strict
+// restart whichever tenant it lives in, without a boot-time scan of every
+// tenant.
+//
+// The invariant is a property of the principal, not of the call: it reads
+// the home-tenant bindings whatever tenant the request targets. Reading only
+// the target-scoped bindings (boundRoleIDs) would see none on a request
+// against another tenant, and a system identity holding Admin in Roles and
+// the system SO by binding would pass there.
 //
 // It also returns the tenant whose SO and Admin roles are combined: the
-// identity's home tenant when both come from its home Roles, else the
-// call's target tenant whose binding supplied one of them.
-func (a *RBACAuthorizer) holdsSOWithAdmin(ctx context.Context, identity *auth.Identity, bound []string, target string) (bool, string, error) {
+// identity's home tenant.
+func holdsSOWithAdmin(identity *auth.Identity) (bool, string) {
 	// SO and Admin are the built-in roles, matched by their canonical
 	// (persisted) IDs only: a tenant may give a custom role the
 	// caller-supplied ID "so" or "admin", and holding it holds no built-in
 	// role, so the assignment gate's combinations are not refused here.
+	home := tenantid.Normalize(identity.TenantID)
+	homeBound := homeBoundRoleIDs(identity)
 	viaBinding := false
 	isSO := hasCanonicalSystemRole(identity.Roles, identity.TenantID, role.RoleNameSO)
-	if !isSO && len(bound) > 0 && hasCanonicalSystemRole(bound, target, role.RoleNameSO) {
+	if !isSO && hasCanonicalSystemRole(homeBound, home, role.RoleNameSO) {
 		isSO, viaBinding = true, true
 	}
 	if !isSO {
-		return false, "", nil
+		return false, ""
 	}
 	isAdmin := hasCanonicalSystemRole(identity.Roles, identity.TenantID, role.RoleNameAdmin)
-	if !isAdmin && len(bound) > 0 && hasCanonicalSystemRole(bound, target, role.RoleNameAdmin) {
+	if !isAdmin && hasCanonicalSystemRole(homeBound, home, role.RoleNameAdmin) {
 		isAdmin, viaBinding = true, true
 	}
 	if !isAdmin {
-		return false, "", nil
+		return false, ""
 	}
 	if viaBinding {
-		return true, target, nil
+		return true, home
 	}
-	return true, identity.TenantID, nil
+	return true, identity.TenantID
+}
+
+// homeBoundRoleIDs returns the RoleID of every identity.RoleBindings entry
+// naming the identity's own (home) tenant, whatever tenant the current
+// request targets. It serves the SO/Admin invariant only; permission
+// resolution keeps boundRoleIDs, which scopes bindings to the target tenant.
+func homeBoundRoleIDs(identity *auth.Identity) []string {
+	home := tenantid.Normalize(identity.TenantID)
+	var out []string
+	for _, b := range identity.RoleBindings {
+		if b.TenantID == home {
+			out = append(out, b.RoleID)
+		}
+	}
+	return out
 }
 
 // roleIDsHoldSystemRole reports whether roleIDs — all belonging to tenantID —
@@ -632,7 +655,7 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 			Reason:   "share-holder certificates cannot be used to log in",
 		}
 	}
-	// Captured BEFORE any tenant rebind below: boundRoleIDs and the SO/
+	// Captured BEFORE any tenant rebind below: boundRoleIDs and the
 	// permission resolution below both need the call's ORIGINAL target
 	// tenant, and every entry boundRoleIDs returns belongs to it.
 	target := tenant.FromContext(ctx)
@@ -642,11 +665,7 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	// Admin is refused every permission, in every tenant, before any grant
 	// is considered (see holdsSOWithAdmin).
 	if a.strictSoD {
-		combined, conflictTenant, err := a.holdsSOWithAdmin(ctx, identity, bound, target)
-		if err != nil {
-			return err
-		}
-		if combined {
+		if combined, conflictTenant := holdsSOWithAdmin(identity); combined {
 			// Carry the typed refusal so the transports report
 			// SO_ROLE_CONFLICT with its tenant and the SDK's errors.As
 			// check holds for a combined caller refused here.
