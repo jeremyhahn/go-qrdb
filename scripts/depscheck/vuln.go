@@ -31,6 +31,8 @@ type govulncheck struct {
 	path   string
 	goPath string
 	tags   string
+	// db is the advisory database URL; empty is govulncheck's default.
+	db string
 }
 
 func (g govulncheck) Scan(dir string) (map[string][]advisory, error) {
@@ -49,6 +51,9 @@ func (g govulncheck) Scan(dir string) (map[string][]advisory, error) {
 	args := []string{"-scan", "module", "-format", "json"}
 	if g.tags != "" {
 		args = append(args, "-tags", g.tags)
+	}
+	if g.db != "" {
+		args = append(args, "-db", g.db)
 	}
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(context.Background(), path, args...) //#nosec G204 -- the scanner and the tags come from the Makefile
