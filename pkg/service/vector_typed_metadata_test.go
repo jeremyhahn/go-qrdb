@@ -85,6 +85,46 @@ func TestListVectors_MetadataKeepsJSONTypes(t *testing.T) {
 	}
 }
 
+func TestUpdateMetadata_MergeKeepsJSONTypes(t *testing.T) {
+	svc := newTypedMetadataService(t)
+	ctx := context.Background()
+	meta := map[string]interface{}{
+		"doc_id": "doc",
+		"score":  float64(5),
+		"live":   true,
+		"drop":   "me",
+	}
+	if _, err := svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "typed", ID: 1, Vector: []float32{1, 0}, Metadata: meta}); err != nil {
+		t.Fatalf("UpsertVector: %v", err)
+	}
+	updates := []*UpdateVectorMetadataRequest{
+		{Namespace: "typed", ID: 1, MergeMetadata: true, Metadata: map[string]interface{}{"extra": float64(1)}},
+		{Namespace: "typed", ID: 1, MergeMetadata: true, DeleteKeys: []string{"drop"}},
+		{Namespace: "typed", ID: 1, MergeMetadata: true, Metadata: map[string]interface{}{"extra": float64(2)}},
+	}
+	for i, u := range updates {
+		if _, err := svc.UpdateMetadata(ctx, u); err != nil {
+			t.Fatalf("UpdateMetadata #%d: %v", i, err)
+		}
+	}
+	resp, err := svc.ListVectors(ctx, &ListVectorsRequest{Namespace: "typed", IncludeMetadata: true})
+	if err != nil {
+		t.Fatalf("ListVectors: %v", err)
+	}
+	if len(resp.Vectors) != 1 {
+		t.Fatalf("ListVectors returned %d vectors, want 1", len(resp.Vectors))
+	}
+	want := map[string]interface{}{
+		"doc_id": "doc",
+		"score":  float64(5),
+		"live":   true,
+		"extra":  float64(2),
+	}
+	if got := resp.Vectors[0].Metadata; !reflect.DeepEqual(got, want) {
+		t.Fatalf("metadata = %#v, want %#v", got, want)
+	}
+}
+
 // TestUpsertVector_ReportsCreated proves the first upsert of an ID reports
 // created and a second upsert of the same ID does not.
 func TestUpsertVector_ReportsCreated(t *testing.T) {

@@ -3179,10 +3179,10 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 	var newMetadata map[string]interface{}
 	if req.MergeMetadata {
 		newMetadata = make(map[string]interface{})
-		if existingVector.Metadata != nil {
-			for k, val := range existingVector.Metadata {
-				newMetadata[k] = val
-			}
+		// Stored metadata is JSON-encoded; decode it so the upsert below
+		// re-encodes the original typed values, not their encodings.
+		for k, val := range vector.DecodeMetadata(existingVector.Metadata) {
+			newMetadata[k] = val
 		}
 		for k, val := range req.Metadata {
 			newMetadata[k] = val
