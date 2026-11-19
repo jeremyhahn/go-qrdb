@@ -18,7 +18,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"time"
 )
 
@@ -58,25 +57,29 @@ func keepFenceOnFailure(ctx context.Context) bool {
 	return keep
 }
 
-// CreateRollbackIncompleteError reports a create that was refused (Cause)
-// and whose rollback drop failed (Err). The database stays fenced -- it
-// refuses every read and write and its catalog record stays marked dropping
-// -- until a retried drop removes it.
-type CreateRollbackIncompleteError struct {
-	Name     string
-	TenantID string
-	Cause    error
-	Err      error
+type createGuardKey struct{}
+
+// CreateGuard is a check a create runs once its catalog record is written
+// and before anything serves the database: before its backend is opened,
+// its keyspace unfenced or the database published. A non-nil error refuses
+// the create, which then removes everything it made, so the database is
+// never readable or writable.
+type CreateGuard func(ctx context.Context) error
+
+// WithCreateGuard marks ctx so a create run under it runs guard between its
+// catalog write and its first serving step. It is for a check that must
+// read state after the catalog record exists -- the create side of the
+// strict-isolation tightening handshake, which a tightening that lists the
+// catalog after the record lands is refused by instead -- yet refuse the
+// database before any request can write to it.
+func WithCreateGuard(ctx context.Context, guard CreateGuard) context.Context {
+	return context.WithValue(ctx, createGuardKey{}, guard)
 }
 
-func (e *CreateRollbackIncompleteError) Error() string {
-	return fmt.Sprintf("database %q of tenant %q: create refused (%v) and its rollback drop failed, the database stays fenced until the drop is retried: %v",
-		e.Name, e.TenantID, e.Cause, e.Err)
+func createGuard(ctx context.Context) CreateGuard {
+	guard, _ := ctx.Value(createGuardKey{}).(CreateGuard)
+	return guard
 }
-
-// Unwrap returns both the refusal and the drop failure, so errors.As finds
-// the refusal's own type.
-func (e *CreateRollbackIncompleteError) Unwrap() []error { return []error{e.Cause, e.Err} }
 
 // NewIncarnation returns a fresh database incarnation: 128 random bits,
 // hex-encoded. Hex is load-bearing -- the dropped tombstone a fence marker

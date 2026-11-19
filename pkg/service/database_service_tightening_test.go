@@ -173,3 +173,59 @@ func TestCreateForTenant_BarrierSharedWALRolledBackUnderATighteningMarker(t *tes
 		t.Fatalf("CreateForTenant(barrier, shared store) under a tightening marker = %v, want *StrictTenantDedicatedWALRequiredError", err)
 	}
 }
+
+// publishedProbeLookup is a tighteningLookup that, when the create reads the
+// tightening markers, records whether the database is already published --
+// resolvable, and so writable, through the manager.
+type publishedProbeLookup struct {
+	tighteningLookup
+	mgr       *database.Manager
+	published bool
+	probed    bool
+}
+
+func (l *publishedProbeLookup) IsolationTightening(ctx context.Context, tenantID string) (bool, error) {
+	l.probed = true
+	if db, err := l.mgr.GetOwned("app", tenantID); err == nil && db != nil {
+		l.published = true
+	}
+	return l.tighteningLookup.IsolationTightening(ctx, tenantID)
+}
+
+// TestCreateForTenant_StrictCheckRunsBeforeTheDatabaseIsWritable is Codex
+// round 2 on #1576: the strict-isolation handshake runs after the catalog
+// write but before the database is opened, unfenced or published, so a
+// create refused under a tightening was never writable -- no concurrent
+// request could land data on the node-keyed log before the refusal.
+func TestCreateForTenant_StrictCheckRunsBeforeTheDatabaseIsWritable(t *testing.T) {
+	for _, info := range []*tenant.TenantInfo{
+		looseRaftTenant(),
+		{ID: "rt", IsolationType: tenant.IsolationBarrier},
+	} {
+		t.Run(string(info.IsolationType), func(t *testing.T) {
+			l := &publishedProbeLookup{tighteningLookup: tighteningLookup{info: info, marker: true}}
+			f := &fakeReplicaQuota{q: &quota.Quotas{MaxTotalReplicas: 10, MaxDedicatedWALGroups: 5}}
+			svc := newReplicaDatabaseService(t, info, f)
+			svc.(*DatabaseService).tenantInfo = l
+			l.mgr = svc.(*DatabaseService).manager
+			ctx := tenant.WithTenantID(context.Background(), "rt")
+
+			cfg := testDBConfig("app")
+			cfg.Backend = database.BackendRaft
+			_, err := svc.CreateForTenant(ctx, cfg)
+			var refused *database.StrictTenantDedicatedWALRequiredError
+			if !errors.As(err, &refused) {
+				t.Fatalf("CreateForTenant under a tightening marker = %v, want *StrictTenantDedicatedWALRequiredError", err)
+			}
+			if !l.probed {
+				t.Fatal("the create never read the tightening markers")
+			}
+			if l.published {
+				t.Fatal("the database was published, and so writable, before the strict-isolation check refused it")
+			}
+			if got, gerr := svc.GetForTenant(ctx, "app"); gerr == nil {
+				t.Fatalf("refused create left %+v in the catalog", got)
+			}
+		})
+	}
+}

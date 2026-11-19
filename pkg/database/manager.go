@@ -442,6 +442,15 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	}
 	undo.catalog, undo.incarnation = cat, incarnation
 
+	// The caller's create guard runs with the record in the catalog and
+	// before the database is opened, unfenced or published: a refusal here
+	// leaves nothing any request could have written to.
+	if guard := createGuard(ctx); guard != nil {
+		if err := guard(ctx); err != nil {
+			return nil, undo.run(ctx, err)
+		}
+	}
+
 	// Open storage backend via factory.
 	backend, err := m.factory.Create(cfg, dataDir)
 	if err != nil {
