@@ -328,7 +328,7 @@ func TestDepsBumpCommitStepDeletesCreatedBranchOnFailure(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			bin := filepath.Join(dir, "bin")
-			if err := os.Mkdir(bin, 0o755); err != nil {
+			if err := os.Mkdir(bin, 0o750); err != nil {
 				t.Fatal(err)
 			}
 			for tool, body := range map[string]string{
@@ -337,15 +337,16 @@ func TestDepsBumpCommitStepDeletesCreatedBranchOnFailure(t *testing.T) {
 				"jq":    "#!/bin/sh\ncase \" $* \" in *\" -n\"*) ;; *) cat >/dev/null ;; esac\necho '{}'\n",
 				"sleep": "#!/bin/sh\nexit 0\n",
 			} {
-				if err := os.WriteFile(filepath.Join(bin, tool), []byte(body), 0o755); err != nil {
+				// 0o700: the step runs these stubs, so they keep the owner's execute bit.
+				if err := os.WriteFile(filepath.Join(bin, tool), []byte(body), 0o700); err != nil { // #nosec G306 -- executable test stub, owner-only
 					t.Fatal(err)
 				}
 			}
-			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			log := filepath.Join(dir, "gh.log")
-			cmd := exec.Command(bash, "--noprofile", "--norc", "-e", "-c", script)
+			cmd := exec.Command(bash, "--noprofile", "--norc", "-e", "-c", script) // #nosec G204 -- test runs the workflow step against its own temp-dir stubs
 			cmd.Dir = dir
 			cmd.Env = []string{
 				"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),

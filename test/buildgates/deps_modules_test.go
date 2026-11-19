@@ -121,13 +121,13 @@ func TestDepsCheckModulesHelpers_CanFail(t *testing.T) {
 
 	root := t.TempDir()
 	for _, d := range []string{".", "sub/m", "x/testdata/t", "vendor/v", "node_modules/n", "sub/noMod"} {
-		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o750); err != nil {
 			t.Fatal(err)
 		}
 		if d == "sub/noMod" {
 			continue
 		}
-		if err := os.WriteFile(filepath.Join(root, d, "go.mod"), []byte("module m\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, d, "go.mod"), []byte("module m\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
