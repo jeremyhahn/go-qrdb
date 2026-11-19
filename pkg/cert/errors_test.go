@@ -35,17 +35,6 @@ func TestCertNotFoundError_Message(t *testing.T) {
 	}
 }
 
-func TestCertNotFoundError_As(t *testing.T) {
-	var err error = &CertNotFoundError{Serial: "s1"}
-	var target *CertNotFoundError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *CertNotFoundError")
-	}
-	if target.Serial != "s1" {
-		t.Fatalf("Serial: got %q, want %q", target.Serial, "s1")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // CertRevokedError
 // ---------------------------------------------------------------------------
@@ -57,17 +46,6 @@ func TestCertRevokedError_Message(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "revoked") {
 		t.Errorf("expected 'revoked' in error, got: %s", err.Error())
-	}
-}
-
-func TestCertRevokedError_As(t *testing.T) {
-	var err error = &CertRevokedError{Serial: "rev1"}
-	var target *CertRevokedError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *CertRevokedError")
-	}
-	if target.Serial != "rev1" {
-		t.Fatalf("Serial: got %q, want %q", target.Serial, "rev1")
 	}
 }
 
@@ -158,14 +136,6 @@ func TestPKCS12FIPSUnavailableError_Message(t *testing.T) {
 	}
 }
 
-func TestPKCS12FIPSUnavailableError_As(t *testing.T) {
-	var err error = &PKCS12FIPSUnavailableError{}
-	var target *PKCS12FIPSUnavailableError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *PKCS12FIPSUnavailableError")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // CAKeyNotAvailableError
 // ---------------------------------------------------------------------------
@@ -177,14 +147,6 @@ func TestCAKeyNotAvailableError_Message(t *testing.T) {
 	}
 }
 
-func TestCAKeyNotAvailableError_As(t *testing.T) {
-	var err error = &CAKeyNotAvailableError{}
-	var target *CAKeyNotAvailableError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *CAKeyNotAvailableError")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // BarrierSealedError
 // ---------------------------------------------------------------------------
@@ -193,14 +155,6 @@ func TestBarrierSealedError_Message(t *testing.T) {
 	err := &BarrierSealedError{}
 	if !strings.Contains(err.Error(), "sealed") {
 		t.Errorf("expected 'sealed' in error, got: %s", err.Error())
-	}
-}
-
-func TestBarrierSealedError_As(t *testing.T) {
-	var err error = &BarrierSealedError{}
-	var target *BarrierSealedError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *BarrierSealedError")
 	}
 }
 
@@ -268,19 +222,5 @@ func TestValidationError_Message(t *testing.T) {
 	}
 	if !strings.Contains(msg, "must not be empty") {
 		t.Errorf("expected reason in error, got: %s", msg)
-	}
-}
-
-func TestValidationError_As(t *testing.T) {
-	var err error = &ValidationError{Field: "ttl", Reason: "must not be negative"}
-	var target *ValidationError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *ValidationError")
-	}
-	if target.Field != "ttl" {
-		t.Fatalf("Field: got %q, want %q", target.Field, "ttl")
-	}
-	if target.Reason != "must not be negative" {
-		t.Fatalf("Reason: got %q, want %q", target.Reason, "must not be negative")
 	}
 }

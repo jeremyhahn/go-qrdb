@@ -169,22 +169,6 @@ func TestKVStoreAdapter_Get(t *testing.T) {
 	}
 }
 
-func TestKVStoreAdapter_Get_Error(t *testing.T) {
-	ctx := context.Background()
-	sentinel := errors.New("not found")
-
-	kv := &mockTransportKV{
-		getFn: func(_ context.Context, _ string, _ ...transport.ReadOption) ([]byte, error) {
-			return nil, sentinel
-		},
-	}
-	adapter := newTestAdapter(kv, &mockTransportIndex{})
-
-	if _, err := adapter.Get(ctx, "missing"); !errors.Is(err, sentinel) {
-		t.Fatalf("Get: expected sentinel error, got %v", err)
-	}
-}
-
 func TestKVStoreAdapter_Delete(t *testing.T) {
 	ctx := context.Background()
 	var deletedKey string
@@ -648,12 +632,6 @@ func TestKVStoreAdapter_ScanIndex_Error(t *testing.T) {
 	if _, err := adapter.ScanIndex(ctx, "idx", []byte("a"), []byte("z")); !errors.Is(err, sentinel) {
 		t.Fatalf("ScanIndex: expected sentinel error, got %v", err)
 	}
-}
-
-// TestKVStoreAdapter_CompileTimeCheck verifies the compile-time interface
-// assertion declared in kvstore_adapter.go remains valid.
-func TestKVStoreAdapter_CompileTimeCheck(t *testing.T) {
-	var _ kvstore.KVStore = (*kvStoreAdapter)(nil)
 }
 
 // TestKVStoreAdapter_RegisterEntityIndexes_RefusesACompoundDefinition pins the

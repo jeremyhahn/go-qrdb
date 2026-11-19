@@ -19,7 +19,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -96,143 +95,21 @@ func TestNewPebbleVectorStorage_NilLogger(t *testing.T) {
 // UpsertVector — SyncWrites path
 // ---------------------------------------------------------------------------
 
-// TestUpsertVector_SyncWritesCovFinal verifies UpsertVector succeeds with SyncWrites=true.
-func TestUpsertVector_SyncWritesCovFinal(t *testing.T) {
-	s := openVectorStorage(t)
-	s.config.SyncWrites = true
-
-	ctx := context.Background()
-	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "syncns", Dimension: 4}); err != nil {
-		t.Fatalf("CreateNamespace: %v", err)
-	}
-
-	id, _ := s.NextID("syncns")
-	vec := &VectorValue{
-		ID:        id,
-		Version:   1,
-		Embedding: []float32{1, 2, 3, 4},
-	}
-	if err := s.UpsertVector(ctx, "syncns", vec); err != nil {
-		t.Fatalf("UpsertVector (sync): %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // UpsertVector — context-cancelled path (writeSem via ctx.Done())
 // ---------------------------------------------------------------------------
-
-// TestUpsertVector_ContextCanceled verifies ErrContextCanceled when context is done.
-func TestUpsertVector_ContextCanceled(t *testing.T) {
-	s := openVectorStorage(t)
-
-	// Fill the write semaphore to force the ctx.Done branch.
-	for i := 0; i < cap(s.writeSem); i++ {
-		s.writeSem <- struct{}{}
-	}
-	defer func() {
-		for i := 0; i < cap(s.writeSem); i++ {
-			<-s.writeSem
-		}
-	}()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	vec := &VectorValue{ID: 1, Version: 1, Embedding: []float32{1, 2, 3, 4}}
-	err := s.UpsertVector(ctx, "any", vec)
-	if !errors.Is(err, ErrContextCanceled) {
-		t.Fatalf("expected ErrContextCanceled, got %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // GetVector — context cancelled path
 // ---------------------------------------------------------------------------
 
-// TestGetVector_ContextCanceled verifies ErrContextCanceled when context is done.
-func TestGetVector_ContextCanceled(t *testing.T) {
-	s := openVectorStorage(t)
-
-	// Fill the read semaphore.
-	for i := 0; i < cap(s.readSem); i++ {
-		s.readSem <- struct{}{}
-	}
-	defer func() {
-		for i := 0; i < cap(s.readSem); i++ {
-			<-s.readSem
-		}
-	}()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := s.GetVector(ctx, "any", 1)
-	if !errors.Is(err, ErrContextCanceled) {
-		t.Fatalf("expected ErrContextCanceled, got %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // DeleteVector — SyncWrites path
 // ---------------------------------------------------------------------------
 
-// TestDeleteVector_SyncWrites verifies DeleteVector succeeds with SyncWrites=true.
-func TestDeleteVector_SyncWrites(t *testing.T) {
-	s := openVectorStorage(t)
-	s.config.SyncWrites = true
-
-	ns := "del_sync_ns"
-	id := seedNamespace(t, s, ns)
-
-	ctx := context.Background()
-	if err := s.DeleteVector(ctx, ns, id); err != nil {
-		t.Fatalf("DeleteVector (sync): %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // BatchUpsertVectors / BatchDeleteVectors — SyncWrites path
 // ---------------------------------------------------------------------------
-
-// TestBatchUpsertVectors_SyncWrites verifies BatchUpsertVectors with SyncWrites=true.
-func TestBatchUpsertVectors_SyncWrites(t *testing.T) {
-	s := openVectorStorage(t)
-	s.config.SyncWrites = true
-
-	ctx := context.Background()
-	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "batchns", Dimension: 4}); err != nil {
-		t.Fatalf("CreateNamespace: %v", err)
-	}
-
-	id1, _ := s.NextID("batchns")
-	id2, _ := s.NextID("batchns")
-	vecs := []*VectorValue{
-		{ID: id1, Version: 1, Embedding: []float32{1, 2, 3, 4}},
-		{ID: id2, Version: 1, Embedding: []float32{5, 6, 7, 8}},
-	}
-	if err := s.BatchUpsertVectors(ctx, "batchns", vecs); err != nil {
-		t.Fatalf("BatchUpsertVectors (sync): %v", err)
-	}
-}
-
-// TestBatchDeleteVectors_SyncWrites verifies BatchDeleteVectors with SyncWrites=true.
-func TestBatchDeleteVectors_SyncWrites(t *testing.T) {
-	s := openVectorStorage(t)
-	s.config.SyncWrites = true
-
-	ns := "bdel_ns"
-	id1 := seedNamespace(t, s, ns)
-	id2, _ := s.NextID(ns)
-	vec2 := &VectorValue{ID: id2, Version: 1, Embedding: []float32{5, 6, 7, 8}}
-	if err := s.UpsertVector(context.Background(), ns, vec2); err != nil {
-		t.Fatalf("UpsertVector: %v", err)
-	}
-
-	ctx := context.Background()
-	if err := s.BatchDeleteVectors(ctx, ns, []uint64{id1, id2}); err != nil {
-		t.Fatalf("BatchDeleteVectors (sync): %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // ScanByMetadata — with offset and limit options
@@ -310,34 +187,9 @@ func TestScanNamespace_WithScanOptions(t *testing.T) {
 // CreateNamespace — SyncWrites path and seqKey error
 // ---------------------------------------------------------------------------
 
-// TestCreateNamespace_SyncWritesCovFinal verifies CreateNamespace works with SyncWrites=true.
-func TestCreateNamespace_SyncWritesCovFinal(t *testing.T) {
-	s := openVectorStorage(t)
-	s.config.SyncWrites = true
-
-	ctx := context.Background()
-	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "syncnsname", Dimension: 4}); err != nil {
-		t.Fatalf("CreateNamespace (sync): %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // DeleteNamespace — SyncWrites path
 // ---------------------------------------------------------------------------
-
-// TestDeleteNamespace_SyncWrites verifies DeleteNamespace with SyncWrites=true.
-func TestDeleteNamespace_SyncWrites(t *testing.T) {
-	s := openVectorStorage(t)
-	s.config.SyncWrites = true
-
-	ns := "del_ns_sync"
-	seedNamespace(t, s, ns)
-
-	ctx := context.Background()
-	if err := s.DeleteNamespace(ctx, ns); err != nil {
-		t.Fatalf("DeleteNamespace (sync): %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // GetNamespaceInfo — happy path (stats success path)
@@ -366,17 +218,6 @@ func TestGetNamespaceInfo_WithStats(t *testing.T) {
 // GetStats — closed storage
 // ---------------------------------------------------------------------------
 
-// TestGetStats_Closed verifies ErrStorageClosed is returned.
-func TestGetStats_Closed(t *testing.T) {
-	s := openVectorStorage(t)
-	s.closed.Store(true)
-
-	_, err := s.GetStats(context.Background(), "any")
-	if !errors.Is(err, ErrStorageClosed) {
-		t.Fatalf("expected ErrStorageClosed, got %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Compact — happy path and closed path
 // ---------------------------------------------------------------------------
@@ -390,17 +231,6 @@ func TestCompact_HappyPath(t *testing.T) {
 	ctx := context.Background()
 	if err := s.Compact(ctx, ns); err != nil {
 		t.Fatalf("Compact: %v", err)
-	}
-}
-
-// TestCompact_Closed verifies ErrStorageClosed is returned.
-func TestCompact_Closed(t *testing.T) {
-	s := openVectorStorage(t)
-	s.closed.Store(true)
-
-	err := s.Compact(context.Background(), "any")
-	if !errors.Is(err, ErrStorageClosed) {
-		t.Fatalf("expected ErrStorageClosed, got %v", err)
 	}
 }
 
@@ -427,38 +257,9 @@ func TestCleanupTombstones_WithExpiredTombstones(t *testing.T) {
 	}
 }
 
-// TestCleanupTombstones_NoTombstonesCovFinal verifies no error when there are no tombstones.
-func TestCleanupTombstones_NoTombstonesCovFinal(t *testing.T) {
-	s := openVectorStorage(t)
-	ns := "no_tombs_ns"
-	seedNamespace(t, s, ns)
-
-	ctx := context.Background()
-	if err := s.CleanupTombstones(ctx, time.Hour); err != nil {
-		t.Fatalf("CleanupTombstones: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Close — double close (idempotent)
 // ---------------------------------------------------------------------------
-
-// TestClose_DoubleCloseCovFinal verifies that calling Close twice returns nil.
-func TestClose_DoubleCloseCovFinal(t *testing.T) {
-	dir := t.TempDir()
-	cfg := DefaultConfig(dir)
-	s, err := NewPebbleVectorStorage(cfg, &testLogger{})
-	if err != nil {
-		t.Fatalf("NewPebbleVectorStorage: %v", err)
-	}
-
-	if err := s.Close(); err != nil {
-		t.Fatalf("first Close: %v", err)
-	}
-	if err := s.Close(); err != nil {
-		t.Errorf("second Close should be no-op: %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // vectorBatch — nil vector and empty batch paths

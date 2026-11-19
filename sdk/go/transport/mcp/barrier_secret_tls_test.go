@@ -170,7 +170,7 @@ func TestCreateTenantSOPIN_RedirectIsRefused(t *testing.T) {
 // TestBarrierSecret_SameHostRedirectIsFollowed: a 307 or 308 of a barrier
 // secret's tool call to another path on the same host is followed, and the
 // secret arrives there.
-func TestBarrierSecret_SameHostRedirectIsFollowed(t *testing.T) {
+func TestBarrierSecret_SameHostRedirectIsRefused(t *testing.T) {
 	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			var movedCalls, movedBytes atomic.Int64
@@ -178,10 +178,8 @@ func TestBarrierSecret_SameHostRedirectIsFollowed(t *testing.T) {
 			mux := http.NewServeMux()
 			mux.Handle("/moved/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body := buffered(r)
-				if isToolCall(body) {
-					movedCalls.Add(1)
-					movedBytes.Add(int64(len(body)))
-				}
+				movedCalls.Add(1)
+				movedBytes.Add(int64(len(body)))
 				session.ServeHTTP(w, withBody(r, body))
 			}))
 			mux.Handle("/", redirectToolCalls(session, status, func(r *http.Request) string {
@@ -191,16 +189,17 @@ func TestBarrierSecret_SameHostRedirectIsFollowed(t *testing.T) {
 			t.Cleanup(srv.Close)
 			tr := connectMCP(t, srv.URL+"/mcp", trustingMCP(srv))
 
-			// The probe server has no tools, so the call itself fails -- after
-			// the redirected request, secret included, has arrived.
 			err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{Secret: []byte("unseal key")})
-			var hostErr *transport.BarrierSecretForeignHostError
-			var tlsErr *transport.BarrierSecretRequiresTLSError
-			if errors.As(err, &hostErr) || errors.As(err, &tlsErr) {
-				t.Fatalf("err = %v, want the same-host redirect followed", err)
+			var redirErr *transport.BarrierSecretRedirectError
+			if !errors.As(err, &redirErr) {
+				t.Fatalf("err = %v, want *transport.BarrierSecretRedirectError", err)
 			}
-			if n, body := movedCalls.Load(), movedBytes.Load(); n != 1 || body == 0 {
-				t.Fatalf("the redirect target saw %d tool calls and %d body bytes, want 1 with a body", n, body)
+			want := transport.BarrierSecretRedirectError{Transport: "mcp", Kind: transport.BarrierSecretUnsealKey, Status: status}
+			if *redirErr != want {
+				t.Fatalf("err = %+v, want %+v", *redirErr, want)
+			}
+			if n, body := movedCalls.Load(), movedBytes.Load(); n != 0 || body != 0 {
+				t.Fatalf("the redirect target saw %d requests and %d body bytes, want none", n, body)
 			}
 		})
 	}

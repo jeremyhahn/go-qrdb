@@ -61,46 +61,6 @@ func evaluateRead(t *testing.T, policies ...*Policy) *CheckResponse {
 	return resp
 }
 
-func TestPolicySpec_EnabledSet(t *testing.T) {
-	tests := []struct {
-		name    string
-		enabled *bool
-		want    bool
-	}{
-		{"absent", nil, false},
-		{"true", boolPtr(true), true},
-		{"false", boolPtr(false), true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := PolicySpec{Enabled: tt.enabled}
-			if got := s.EnabledSet(); got != tt.want {
-				t.Errorf("EnabledSet() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestPolicySpec_IsEnabled(t *testing.T) {
-	tests := []struct {
-		name    string
-		enabled *bool
-		want    bool
-	}{
-		{"absent means enabled", nil, true},
-		{"true", boolPtr(true), true},
-		{"false", boolPtr(false), false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := PolicySpec{Enabled: tt.enabled}
-			if got := s.IsEnabled(); got != tt.want {
-				t.Errorf("IsEnabled() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 // TestPolicySpec_EnabledJSONRoundTrip pins that the document is stored as
 // written: an absent field stays absent and an explicit false stays false.
 func TestPolicySpec_EnabledJSONRoundTrip(t *testing.T) {

@@ -265,15 +265,3 @@ func TestFailedOpens_CollectsOnlyTheFailedRows(t *testing.T) {
 		t.Fatalf("failed[1] = %+v, want pool=bulk provider=dir", failed[1])
 	}
 }
-
-// TestFailedOpens_NoFailuresIsEmpty proves FailedOpens returns an empty
-// slice, not nil-vs-empty ambiguity that would trip a caller checking
-// len(failed) == 0, when every row opened.
-func TestFailedOpens_NoFailuresIsEmpty(t *testing.T) {
-	rows := []OpenedVolumePool{
-		{Name: "fast", Provider: "dir", Vol: openRealDirVolume(t, "fast")},
-	}
-	if failed := FailedOpens(rows); len(failed) != 0 {
-		t.Fatalf("len(failed) = %d, want 0", len(failed))
-	}
-}

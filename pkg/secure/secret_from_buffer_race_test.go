@@ -54,8 +54,8 @@ const secretFromBufferRacePlaintext = "secret-from-buffer-must-hold-the-borrow-0
 //
 // go-enclave v0.7.0-alpha changed WipeAll from a TryLock sweep that SKIPS a
 // held enclave to one that WAITS for its borrow to end before reclaiming it.
-// The race therefore drives WipeAll with a context bounded well short of
-// sealHold, exactly as a real shutdown sweep is given a deadline (see
+// The race therefore drives WipeAll with a bounded context, and sealing
+// holds the borrow until that WipeAll has returned, exactly as a real shutdown sweep is given a deadline (see
 // go-enclave's WipeAll doc and cmd/qrdbd/start.go's recordSecureMemoryWipe):
 // the wait times out before the input buffer's borrow ends, so WipeAll
 // leaves it mapped and counted rather than destroying it once sealing
@@ -85,8 +85,8 @@ func TestNewSecretFromBuffer_SurvivesConcurrentWipeAll(t *testing.T) {
 }
 
 // runSecretFromBufferRaceChild swaps newSealed for a wrapper that records the
-// plaintext it was handed, sleeps well past enclave.WipeAll's own retry
-// budget, then reports whether the plaintext was still intact -- races a real
+// plaintext it was handed, blocks until a bounded enclave.WipeAll has
+// returned, then reports whether the plaintext was still intact -- races a real
 // WipeAll against NewSecretFromBuffer from a second goroutine while it seals
 // -- and checks the resulting Secret opens back to the original content. A
 // crash (this whole process dying) is itself a failure the parent detects via
@@ -103,23 +103,20 @@ func runSecretFromBufferRaceChild() {
 		fail("NewBufferFromBytes: %v", err)
 	}
 
-	// wipeWait bounds the race's WipeAll call well short of sealHold, so the
-	// wait for the input buffer's borrow times out while sealing is still in
-	// flight -- go-enclave v0.7.0-alpha's WipeAll waits for a held enclave's
+	// wipeWait bounds the race's WipeAll call, so its wait for the input
+	// buffer's borrow times out while sealing is still in flight -- go-enclave v0.7.0-alpha's WipeAll waits for a held enclave's
 	// borrow rather than skipping it.
 	const wipeWait = 20 * time.Millisecond
-	// Far longer than wipeWait, so the race's WipeAll call reliably times out
-	// waiting for the input buffer's borrow while sealing is still inside it,
-	// rather than by coincidentally winning a tight race.
-	const sealHold = 200 * time.Millisecond
-
+	// Sealing blocks until the bounded WipeAll has returned, so its wait for
+	// the input buffer's borrow times out while sealing is still inside it.
 	started := make(chan struct{})
+	wiped := make(chan struct{})
 	var observedBefore, observedAfter []byte
 	prevNewSealed := newSealed
 	newSealed = func(ctx context.Context, src []byte) (enclave.Sealed, error) {
 		observedBefore = append([]byte(nil), src...)
 		close(started)
-		time.Sleep(sealHold)
+		<-wiped
 		observedAfter = append([]byte(nil), src...)
 		return prevNewSealed(ctx, src)
 	}
@@ -141,6 +138,7 @@ func runSecretFromBufferRaceChild() {
 	wipeCtx, cancel := context.WithTimeout(context.Background(), wipeWait)
 	defer cancel()
 	remaining, wipeErr := enclave.WipeAll(wipeCtx)
+	close(wiped)
 	// A context that ends while the input buffer's borrow is still held is
 	// not an error (go-enclave's WipeAll doc): it is exactly the "left
 	// mapped and counted" outcome this race means to force.
@@ -159,7 +157,7 @@ func runSecretFromBufferRaceChild() {
 		fail("newSealed's initial view = %q, want %q", observedBefore, want)
 	}
 	if !bytes.Equal(observedAfter, want) {
-		fail("newSealed's view after the sleep = %q, want %q -- "+
+		fail("newSealed's view after the wipe = %q, want %q -- "+
 			"the input pages were mutated or unmapped out from under sealing", observedAfter, want)
 	}
 

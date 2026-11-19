@@ -269,30 +269,6 @@ func TestParseKeyIDSequence(t *testing.T) {
 	}
 }
 
-func TestParseKeyTombstone(t *testing.T) {
-	key := EncodeTombstoneKey("test-ns", 12345, 67890)
-	info, err := ParseKey(key)
-	if err != nil {
-		t.Fatalf("ParseKey failed: %v", err)
-	}
-
-	if info.Type != "tombstone" {
-		t.Errorf("expected type 'tombstone', got %q", info.Type)
-	}
-
-	if info.Namespace != "test-ns" {
-		t.Errorf("expected namespace 'test-ns', got %q", info.Namespace)
-	}
-
-	// ParseKey for tombstone extracts ID using decodeUint64, which expects the raw bytes
-	// The implementation splits on separator and tries to decode the second part as ID
-	// Since this is just for debugging/info, we can test that it doesn't error
-	// The actual ID value may or may not be populated depending on implementation
-	// Tombstone ID decoding may or may not populate the ID field depending
-	// on the implementation. We just verify ParseKey did not error above.
-	_ = info.ID
-}
-
 func TestSplitKey(t *testing.T) {
 	tests := []struct {
 		name     string

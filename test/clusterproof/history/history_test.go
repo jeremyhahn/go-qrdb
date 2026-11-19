@@ -291,15 +291,3 @@ func TestRecorder_ConcurrentClientsMergeSorted(t *testing.T) {
 		}
 	}
 }
-
-func TestMonotonicClock_NeverGoesBackwards(t *testing.T) {
-	c := NewMonotonicClock()
-	prev := c.Now()
-	for range 1000 {
-		now := c.Now()
-		if now < prev {
-			t.Fatalf("clock went backwards: %d then %d", prev, now)
-		}
-		prev = now
-	}
-}

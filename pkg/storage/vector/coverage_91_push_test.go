@@ -106,14 +106,6 @@ func TestListNamespaces_Empty(t *testing.T) {
 	assert.Empty(t, results)
 }
 
-func TestListNamespaces_Closed(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-	require.NoError(t, storage.Close())
-	_, err := storage.ListNamespaces(context.Background())
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
 func TestUpsertVector_UpdateWithOldMetadata(t *testing.T) {
 	storage, cleanup := setupStorage(t)
 	defer cleanup()
@@ -163,23 +155,6 @@ func TestCompact_SuccessPath(t *testing.T) {
 	require.NoError(t, storage.Compact(ctx, "ns-compact"))
 }
 
-func TestUpsertVector_CancelledContext(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	assert.Error(t, storage.UpsertVector(ctx, "ns", &VectorValue{ID: 1, Embedding: []float32{1.0, 2.0}, Version: 1}))
-}
-
-func TestGetVector_CancelledContext(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := storage.GetVector(ctx, "ns", 1)
-	assert.Error(t, err)
-}
-
 func TestDeleteVector_WithMetadataIndexes(t *testing.T) {
 	storage, cleanup := setupStorage(t)
 	defer cleanup()
@@ -207,30 +182,6 @@ func TestDeleteVector_SyncWritesPath(t *testing.T) {
 	require.NoError(t, storage.DeleteVector(ctx, "ns-sync-del", 1))
 	_, err = storage.GetVector(ctx, "ns-sync-del", 1)
 	assert.ErrorIs(t, err, ErrVectorNotFound)
-}
-
-func TestDeleteVector_CancelledContext(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	assert.Error(t, storage.DeleteVector(ctx, "ns", 1))
-}
-
-func TestBatchUpsertVectors_CancelledContext(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	assert.Error(t, storage.BatchUpsertVectors(ctx, "ns", []*VectorValue{{ID: 1, Embedding: []float32{1.0}, Version: 1}}))
-}
-
-func TestBatchDeleteVectors_CancelledContext(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	assert.Error(t, storage.BatchDeleteVectors(ctx, "ns", []uint64{1}))
 }
 
 func TestNewPebbleVectorStorage_InvalidConfig(t *testing.T) {

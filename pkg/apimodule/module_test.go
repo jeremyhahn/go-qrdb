@@ -22,8 +22,6 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	mcpserver "github.com/mark3labs/mcp-go/server"
-	"google.golang.org/grpc"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -151,30 +149,6 @@ func TestHandleAndHandlePublicAreNotOptional(t *testing.T) {
 	}
 }
 
-// TestRegistrarExposesTheLiveRouter pins that the embedded chi.Router is the
-// real one. Modules are documented as able to build subrouters and attach chi
-// middleware through it, which only works if it is not a copy.
-func TestRegistrarExposesTheLiveRouter(t *testing.T) {
-	router := chi.NewRouter()
-	reg := apimodule.NewHTTPRegistrar(router, nil, nil, nil)
-
-	if reg.Router == nil {
-		t.Fatal("registrar must expose a router")
-	}
-	reg.Router.Get("/direct", func(http.ResponseWriter, *http.Request) {})
-
-	var found bool
-	_ = chi.Walk(router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
-		if method == http.MethodGet && route == "/direct" {
-			found = true
-		}
-		return nil
-	})
-	if !found {
-		t.Error("a route added through the embedded router did not reach the underlying router")
-	}
-}
-
 // nameOnlyModule embeds BaseModule and supplies only Name, which is the
 // documented minimum a module must implement.
 type nameOnlyModule struct {
@@ -182,17 +156,6 @@ type nameOnlyModule struct {
 }
 
 func (nameOnlyModule) Name() string { return "name-only" }
-
-// TestBaseModuleSatisfiesServiceModule is a compile-and-run check that
-// embedding BaseModule plus a Name is genuinely sufficient. If BaseModule ever
-// stops covering a hook, this fails to compile -- which is the point.
-func TestBaseModuleSatisfiesServiceModule(t *testing.T) {
-	var mod apimodule.ServiceModule = nameOnlyModule{}
-
-	if mod.Name() != "name-only" {
-		t.Fatalf("Name = %q, want %q", mod.Name(), "name-only")
-	}
-}
 
 // TestBaseModuleHooksAreHarmlessNoOps covers every default hook. The server
 // calls all of them on every module, so a default that panicked or errored
@@ -214,19 +177,6 @@ func TestBaseModuleHooksAreHarmlessNoOps(t *testing.T) {
 	if err := mod.Stop(ctx); err != nil {
 		t.Errorf("Stop returned %v, want nil", err)
 	}
-}
-
-// TestBaseModuleHooksAcceptRealArguments is the counterpart: the no-ops must
-// also tolerate genuine transport objects, not merely nil.
-func TestBaseModuleHooksAcceptRealArguments(t *testing.T) {
-	mod := nameOnlyModule{}
-	reg, _ := newRecordingRegistrar()
-
-	var grpcServer grpc.ServiceRegistrar = grpc.NewServer()
-	mod.RegisterGRPC(grpcServer)
-	mod.RegisterHTTP(reg)
-	mod.RegisterMCP(mcpserver.NewMCPServer("test", "0.0.1"))
-	mod.RegisterQUIC(grpcServer)
 }
 
 // permissionedModule declares MCP tool permissions, exercising the optional

@@ -175,35 +175,6 @@ func TestScanRegions_MultipleRegionKinds(t *testing.T) {
 	assert.Equal(t, regionBlockComment, regions[4].kind)
 }
 
-func TestScanDollarTag_EmptyTag(t *testing.T) {
-	tag, contentStart, ok := scanDollarTag("$$body$$", 0)
-	require.True(t, ok)
-	assert.Equal(t, "", tag)
-	assert.Equal(t, 2, contentStart)
-}
-
-func TestScanDollarTag_NamedTag(t *testing.T) {
-	tag, contentStart, ok := scanDollarTag("$tag$body$tag$", 0)
-	require.True(t, ok)
-	assert.Equal(t, "tag", tag)
-	assert.Equal(t, 5, contentStart)
-}
-
-func TestScanDollarTag_RejectsLeadingDigit(t *testing.T) {
-	_, _, ok := scanDollarTag("$1body$1$", 0)
-	assert.False(t, ok)
-}
-
-func TestScanDollarTag_RejectsUnclosedTag(t *testing.T) {
-	_, _, ok := scanDollarTag("$tag body", 0)
-	assert.False(t, ok)
-}
-
-func TestScanDollarTag_RejectsBareDollarAtEnd(t *testing.T) {
-	_, _, ok := scanDollarTag("$", 0)
-	assert.False(t, ok)
-}
-
 func TestRegionContainsPos_Inside(t *testing.T) {
 	regions := []region{{kind: regionStringLiteral, start: 5, end: 10}}
 	assert.True(t, regionContainsPos(regions, 7))

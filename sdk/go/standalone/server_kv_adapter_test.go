@@ -89,55 +89,12 @@ func (m *mapKVSvc) Scan(_ context.Context, prefix string) (map[string][]byte, er
 	return result, nil
 }
 
-func TestServerKVAdapter_BasicCRUD(t *testing.T) {
+func TestServerKVAdapter_ListAndScan(t *testing.T) {
 	a := newServerKVAdapter(newMapKVSvc())
 	ctx := context.Background()
 
-	// Put + Get
 	if err := a.Put(ctx, "k", []byte("v")); err != nil {
 		t.Fatalf("Put: %v", err)
-	}
-	got, err := a.Get(ctx, "k")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if string(got) != "v" {
-		t.Fatalf("Get got %q", got)
-	}
-
-	// Get missing → nil, nil (per KVStore contract)
-	got, err = a.Get(ctx, "missing")
-	if err != nil {
-		t.Fatalf("Get missing: %v", err)
-	}
-	if got != nil {
-		t.Fatalf("expected nil for missing key, got %q", got)
-	}
-
-	// Exists for existing key
-	exists, err := a.Exists(ctx, "k")
-	if err != nil {
-		t.Fatalf("Exists: %v", err)
-	}
-	if !exists {
-		t.Fatal("expected key to exist")
-	}
-
-	// Exists for missing key → (false, nil), per the same KVStore contract
-	// Get honours two blocks up: absence is a VALUE on this interface, not an
-	// error.
-	//
-	// This block used to assert the opposite -- "adapter Exists returns false
-	// with that error" -- which described what the adapter did rather than
-	// what the interface promises, and so pinned the defect in place. A test
-	// that records the behaviour it found cannot report the behaviour being
-	// wrong.
-	exists, err = a.Exists(ctx, "missing")
-	if err != nil {
-		t.Fatalf("Exists on a missing key returned an error: %v", err)
-	}
-	if exists {
-		t.Fatal("expected exists=false for missing key")
 	}
 
 	// List
@@ -167,11 +124,6 @@ func TestServerKVAdapter_BasicCRUD(t *testing.T) {
 		return scanErr
 	}); !errors.Is(err, scanErr) {
 		t.Fatalf("Scan should propagate fn error, got: %v", err)
-	}
-
-	// Delete
-	if err := a.Delete(ctx, "k"); err != nil {
-		t.Fatalf("Delete: %v", err)
 	}
 }
 

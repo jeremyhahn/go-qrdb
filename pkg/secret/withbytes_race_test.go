@@ -72,9 +72,9 @@ func TestSecretValue_WithBytes_SurvivesConcurrentWipeAll(t *testing.T) {
 }
 
 // runWithBytesRaceChild starts a SecretValue.WithBytes call whose callback
-// sleeps well past enclave.WipeAll's own retry budget, races a WipeAll
-// against it from a second goroutine, and checks the callback's view of the
-// plaintext is identical before and after the sleep -- proof the pages were
+// blocks until a WipeAll run from a second goroutine has returned, and
+// checks the callback's view of the plaintext is identical before and after
+// the wipe -- proof the pages were
 // never unmapped underneath it. A crash (this whole process dying) is itself
 // a failure the parent detects via a non-zero exit / missing PASS line.
 func runWithBytesRaceChild() {
@@ -89,28 +89,26 @@ func runWithBytesRaceChild() {
 	}
 	defer sv.Clear()
 
-	// go-enclave's WipeAll retries a bounded number of passes with a short
-	// backoff (measured worst case ~7.5ms in go-enclave's own test suite)
-	// before giving up on a still-held enclave. Sleeping far longer than that
-	// inside the callback means a WipeAll that runs concurrently is
-	// overwhelmingly likely to return (having found the enclave still held)
-	// well before the callback does, rather than by coincidentally winning a
-	// tight race.
-	const callbackHold = 200 * time.Millisecond
-
+	// go-enclave's WipeAll waits for a held enclave's borrow until its
+	// context ends, then leaves the enclave mapped and counted (not an
+	// error). The callback blocks until that bounded WipeAll has returned,
+	// so the whole wipe attempt lands inside the borrow.
+	wipeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
 	started := make(chan struct{})
+	wiped := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
 		done <- sv.WithBytes(context.Background(), func(b []byte) error {
 			before := string(b)
 			close(started)
-			time.Sleep(callbackHold)
+			<-wiped
 			after := string(b)
 			if before != withBytesRacePlaintext {
 				return fmt.Errorf("callback's initial view = %q, want %q", before, withBytesRacePlaintext)
 			}
 			if after != withBytesRacePlaintext {
-				return fmt.Errorf("callback's view after the sleep = %q, want %q -- "+
+				return fmt.Errorf("callback's view after the wipe = %q, want %q -- "+
 					"the pages were mutated or unmapped out from under it", after, withBytesRacePlaintext)
 			}
 			return nil
@@ -118,7 +116,8 @@ func runWithBytesRaceChild() {
 	}()
 
 	<-started
-	remaining, wipeErr := enclave.WipeAll(context.Background())
+	remaining, wipeErr := enclave.WipeAll(wipeCtx)
+	close(wiped)
 	if wipeErr != nil {
 		fail("enclave.WipeAll: %v", wipeErr)
 	}

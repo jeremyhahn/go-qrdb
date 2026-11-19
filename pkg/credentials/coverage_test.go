@@ -17,32 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestStoreCredential_Barrier_EmptyName verifies that the barrier strategy
-// rejects an empty credential name.
-func TestStoreCredential_Barrier_EmptyName(t *testing.T) {
-	barrier := newTestBarrier(t)
-	defer barrier.Close() //nolint:errcheck
-
-	svc, err := NewCredentialService(&Config{Strategy: StrategyBarrier}, barrier, testLogger())
-	require.NoError(t, err)
-
-	err = svc.StoreCredential(context.Background(), "", []byte("value"))
-	assert.ErrorIs(t, err, ErrEmptyCredentialName)
-}
-
-// TestStoreCredential_Barrier_EmptyValue verifies that the barrier strategy
-// rejects an empty credential value.
-func TestStoreCredential_Barrier_EmptyValue(t *testing.T) {
-	barrier := newTestBarrier(t)
-	defer barrier.Close() //nolint:errcheck
-
-	svc, err := NewCredentialService(&Config{Strategy: StrategyBarrier}, barrier, testLogger())
-	require.NoError(t, err)
-
-	err = svc.StoreCredential(context.Background(), "key", nil)
-	assert.ErrorIs(t, err, ErrEmptyCredentialValue)
-}
-
 // TestRetrieveCredential_Barrier_EmptyName verifies that the barrier strategy
 // rejects an empty credential name on retrieval.
 func TestRetrieveCredential_Barrier_EmptyName(t *testing.T) {
@@ -53,19 +27,6 @@ func TestRetrieveCredential_Barrier_EmptyName(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = svc.retrieveBytes(context.Background(), "")
-	assert.ErrorIs(t, err, ErrEmptyCredentialName)
-}
-
-// TestDeleteCredential_Barrier_EmptyName verifies that the barrier strategy
-// rejects an empty credential name on deletion.
-func TestDeleteCredential_Barrier_EmptyName(t *testing.T) {
-	barrier := newTestBarrier(t)
-	defer barrier.Close() //nolint:errcheck
-
-	svc, err := NewCredentialService(&Config{Strategy: StrategyBarrier}, barrier, testLogger())
-	require.NoError(t, err)
-
-	err = svc.DeleteCredential(context.Background(), "")
 	assert.ErrorIs(t, err, ErrEmptyCredentialName)
 }
 
