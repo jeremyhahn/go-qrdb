@@ -352,6 +352,133 @@ func TestConsumeEnrolledSystemSO_StoreFault(t *testing.T) {
 	assert.False(t, SystemSOConsumed(ctx, store))
 }
 
+// TestConsumeEnrolledSystemSO_NothingToConsume: no store or no SO consumes
+// nothing, and a record that cannot be read is a fault, never a consume.
+func TestConsumeEnrolledSystemSO_NothingToConsume(t *testing.T) {
+	ctx := context.Background()
+	store := newMemPendingAdminCertStore()
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+
+	consumed, err := ConsumeEnrolledSystemSO(ctx, nil, so)
+	require.NoError(t, err)
+	assert.False(t, consumed, "no store")
+	consumed, err = ConsumeEnrolledSystemSO(ctx, store, nil)
+	require.NoError(t, err)
+	assert.False(t, consumed, "no SO")
+	assert.False(t, SystemSOConsumed(ctx, store))
+
+	consumed, err = ConsumeEnrolledSystemSO(ctx, &failingGetStore{memPendingAdminCertStore: newMemPendingAdminCertStore()}, so)
+	require.ErrorIs(t, err, errStoreFault)
+	assert.False(t, consumed)
+}
+
+// TestClearPendingSystemSOIfEnrolled_Faults: a record that cannot be read
+// and a PIN seam that cannot answer are faults that keep the record.
+func TestClearPendingSystemSOIfEnrolled_Faults(t *testing.T) {
+	ctx := context.Background()
+	users := newSOUsers()
+
+	cleared, err := ClearPendingSystemSOIfEnrolled(ctx, &failingGetStore{memPendingAdminCertStore: newMemPendingAdminCertStore()}, users, scriptedPINChecker{})
+	require.ErrorIs(t, err, errStoreFault)
+	assert.False(t, cleared)
+
+	store := newMemPendingAdminCertStore()
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+	_, err = users.CreateUser(ctx, &user.CreateUserRequest{Username: so.Username, TenantID: tenantid.System,
+		RoleIDs: []string{role.SystemRoleID(tenantid.System, role.RoleNameSO)}})
+	require.NoError(t, err)
+
+	cleared, err = ClearPendingSystemSOIfEnrolled(ctx, store, users, scriptedPINChecker{committedErr: errBranchFault})
+	require.ErrorIs(t, err, errBranchFault)
+	assert.False(t, cleared)
+	pending, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	assert.NotNil(t, pending, "a PIN fault keeps the record")
+}
+
+// soNotFoundLookup never finds the SO: its account is gone.
+type soNotFoundLookup struct{}
+
+func (soNotFoundLookup) GetUserByUsername(context.Context, string, string) (*user.User, error) {
+	return nil, &user.UserNotFoundError{}
+}
+
+// TestPendingSOAccountDeleted_Branches: deciding whether an enrolled SO was
+// deleted needs a PIN record matcher and a user lookup, and any fault while
+// deciding is an enrollment error, never "deleted".
+func TestPendingSOAccountDeleted_Branches(t *testing.T) {
+	so := &SOConfig{Username: "so", PINRecord: "record"}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	tests := []struct {
+		name    string
+		ctx     context.Context
+		deps    Dependencies
+		wantErr func(t *testing.T, err error)
+	}{
+		{"no record matcher", context.Background(), Dependencies{SO: so, SOPINs: pinSetterOnly{}}, func(t *testing.T, err error) {
+			var missing *MissingSOSeamError
+			require.ErrorAs(t, err, &missing)
+		}},
+		{"matcher fault", context.Background(), Dependencies{SO: so, SOPINs: recordMatcherPINs{err: errBranchFault}}, func(t *testing.T, err error) {
+			var enrollErr *SystemSOEnrollmentError
+			require.ErrorAs(t, err, &enrollErr)
+			assert.Equal(t, "PIN check", enrollErr.Op)
+			require.ErrorIs(t, err, errBranchFault)
+		}},
+		{"no user resolver", context.Background(), Dependencies{SO: so, SOPINs: recordMatcherPINs{matches: true}}, func(t *testing.T, err error) {
+			var missing *MissingSOSeamError
+			require.ErrorAs(t, err, &missing)
+		}},
+		{"lookup fault", context.Background(), Dependencies{SO: so, SOPINs: recordMatcherPINs{matches: true},
+			UserResolver: failingLookup{err: errBranchFault}}, func(t *testing.T, err error) {
+			var enrollErr *SystemSOEnrollmentError
+			require.ErrorAs(t, err, &enrollErr)
+			assert.Equal(t, "account", enrollErr.Op)
+			require.ErrorIs(t, err, errBranchFault)
+		}},
+		{"cancelled while converging", cancelled, Dependencies{SO: so, SOPINs: recordMatcherPINs{matches: true},
+			UserResolver: soNotFoundLookup{}}, func(t *testing.T, err error) {
+			require.ErrorIs(t, err, context.Canceled)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deleted, err := pendingSOAccountDeleted(tt.ctx, tt.deps, tenantid.System)
+			tt.wantErr(t, err)
+			assert.False(t, deleted)
+
+			var result Result
+			tt.wantErr(t, enrollSystemSO(tt.ctx, tt.deps, tenantid.System, &result))
+			assert.False(t, result.SORetired)
+			assert.False(t, result.SOCreated)
+		})
+	}
+}
+
+// TestCheckSystemSO_AdminAsSONeedsAnUpdater: the bootstrap admin enrolled
+// as SO is granted the role on its own account, which needs UpdateUser.
+func TestCheckSystemSO_AdminAsSONeedsAnUpdater(t *testing.T) {
+	ctx := context.Background()
+	store := newMemPendingAdminCertStore()
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+	so.Username = adminUsername
+
+	err = checkSystemSO(ctx, Dependencies{SO: so, Users: creatorOnlyUsers{}})
+	var missing *MissingSOSeamError
+	require.ErrorAs(t, err, &missing)
+	assert.Contains(t, missing.Seam, "UpdateUser")
+}
+
 // ceremonyCoreOver builds a ceremony core whose system barrier persists in
 // backend, unsealing it when an earlier core has initialised it: the same
 // node, started again.
