@@ -18,10 +18,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1914,6 +1916,88 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 	}, nil
 }
 
+// scanMetadataFilters runs the equality filters of a metadata search. Values
+// are indexed JSON-encoded, but a store written before metadata kept its JSON
+// types indexed a string value verbatim (news, not "news"). When a filter
+// value is a string and the verbatim scan finds records, the result is the
+// union of both scans, de-duplicated and ordered by ID, paged by offset and
+// limit; otherwise it is the JSON-encoded scan unchanged.
+func (v *vectorService) scanMetadataFilters(ctx context.Context, scoped string, raw map[string]interface{},
+	encoded []vector.MetadataFilter, limit, offset int) ([]*vector.VectorValue, error) {
+	legacy := make([]vector.MetadataFilter, 0, len(encoded))
+	hasString := false
+	for _, f := range encoded {
+		if s, ok := raw[f.Field].(string); ok {
+			hasString = true
+			f.Value = s
+		}
+		legacy = append(legacy, f)
+	}
+	if !hasString {
+		return v.storage.ScanByMultipleFilters(ctx, scoped, encoded, &vector.ScanOptions{Limit: limit, Offset: offset})
+	}
+	window := &vector.ScanOptions{Limit: offset + limit}
+	found, err := v.storage.ScanByMultipleFilters(ctx, scoped, legacy, window)
+	if err != nil {
+		return nil, err
+	}
+	// A verbatim value that is itself valid JSON (5, true) is a typed value
+	// written after the upgrade, not a legacy string: leave it out.
+	old := make([]*vector.VectorValue, 0, len(found))
+	for _, vec := range found {
+		if legacyStringMatch(vec, raw) {
+			old = append(old, vec)
+		}
+	}
+	if len(old) == 0 {
+		return v.storage.ScanByMultipleFilters(ctx, scoped, encoded, &vector.ScanOptions{Limit: limit, Offset: offset})
+	}
+	cur, err := v.storage.ScanByMultipleFilters(ctx, scoped, encoded, window)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[uint64]struct{}, len(cur)+len(old))
+	merged := make([]*vector.VectorValue, 0, len(cur)+len(old))
+	for _, vec := range append(cur, old...) {
+		if _, dup := seen[vec.ID]; dup {
+			continue
+		}
+		seen[vec.ID] = struct{}{}
+		merged = append(merged, vec)
+	}
+	slices.SortFunc(merged, func(a, b *vector.VectorValue) int {
+		switch {
+		case a.ID < b.ID:
+			return -1
+		case a.ID > b.ID:
+			return 1
+		}
+		return 0
+	})
+	if offset >= len(merged) {
+		return nil, nil
+	}
+	merged = merged[offset:]
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
+}
+
+// legacyStringMatch reports whether every string filter value matched vec
+// through a pre-upgrade verbatim entry, one that is not valid JSON.
+func legacyStringMatch(vec *vector.VectorValue, raw map[string]interface{}) bool {
+	for field, want := range raw {
+		if _, ok := want.(string); !ok {
+			continue
+		}
+		if json.Valid([]byte(vec.Metadata[field])) {
+			return false
+		}
+	}
+	return true
+}
+
 // SearchByMetadata performs metadata-based vector search.
 func (v *vectorService) SearchByMetadata(ctx context.Context, req *SearchByMetadataRequest) (*SearchByMetadataResponse, error) {
 	start := time.Now()
@@ -1956,12 +2040,7 @@ func (v *vectorService) SearchByMetadata(ctx context.Context, req *SearchByMetad
 		limit = 1000
 	}
 
-	opts := &vector.ScanOptions{
-		Limit:  limit,
-		Offset: req.Offset,
-	}
-
-	vecs, err := v.storage.ScanByMultipleFilters(ctx, scoped, filters, opts)
+	vecs, err := v.scanMetadataFilters(ctx, scoped, req.Filters, filters, limit, req.Offset)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("search_by_metadata", "scan_failed").Inc()

@@ -125,6 +125,61 @@ func TestUpdateMetadata_MergeKeepsJSONTypes(t *testing.T) {
 	}
 }
 
+func TestSearchByMetadata_MatchesPreUpgradePlainStringEntries(t *testing.T) {
+	store := vector.NewMemoryVectorStorage()
+	svc, err := NewVectorService(store, newVecTestLogger())
+	if err != nil {
+		t.Fatalf("NewVectorService: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
+		Namespace: "typed", Dimension: 2, DistanceMetric: "COSINE", IndexType: "HNSW",
+	}); err != nil {
+		t.Fatalf("CreateNamespace: %v", err)
+	}
+	// ID 1 is a record written before metadata kept its JSON types: the
+	// string is stored and indexed verbatim.
+	if err := store.UpsertVector(ctx, scopedFromContext(ctx, "typed"), &vector.VectorValue{
+		ID: 1, Embedding: []float32{1, 0}, Metadata: map[string]string{"topic": "news"},
+	}); err != nil {
+		t.Fatalf("legacy UpsertVector: %v", err)
+	}
+	// ID 2 is written now, JSON-encoded; ID 3 does not match; ID 4 holds the
+	// number 5, which a filter on the string "5" must not match.
+	writes := []*UpsertVectorRequest{
+		{Namespace: "typed", ID: 2, Vector: []float32{0, 1}, Metadata: map[string]interface{}{"topic": "news"}},
+		{Namespace: "typed", ID: 3, Vector: []float32{0, 1}, Metadata: map[string]interface{}{"topic": "sport"}},
+		{Namespace: "typed", ID: 4, Vector: []float32{0, 1}, Metadata: map[string]interface{}{"topic": float64(5)}},
+	}
+	for _, w := range writes {
+		if _, err := svc.UpsertVector(ctx, w); err != nil {
+			t.Fatalf("UpsertVector %d: %v", w.ID, err)
+		}
+	}
+	for _, tc := range []struct {
+		value interface{}
+		want  []uint64
+	}{
+		{"news", []uint64{1, 2}},
+		{"5", nil},
+		{float64(5), []uint64{4}},
+	} {
+		resp, err := svc.SearchByMetadata(ctx, &SearchByMetadataRequest{
+			Namespace: "typed", Filters: map[string]interface{}{"topic": tc.value},
+		})
+		if err != nil {
+			t.Fatalf("SearchByMetadata(%#v): %v", tc.value, err)
+		}
+		var ids []uint64
+		for _, r := range resp.Results {
+			ids = append(ids, r.ID)
+		}
+		if !reflect.DeepEqual(ids, tc.want) {
+			t.Fatalf("SearchByMetadata(%#v) matched IDs = %v, want %v", tc.value, ids, tc.want)
+		}
+	}
+}
+
 // TestUpsertVector_ReportsCreated proves the first upsert of an ID reports
 // created and a second upsert of the same ID does not.
 func TestUpsertVector_ReportsCreated(t *testing.T) {
