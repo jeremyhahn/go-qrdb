@@ -132,6 +132,16 @@ type VectorCommand struct {
 	OwnerUserID string            `msgpack:"owner_user_id,omitempty"`
 	Quotas      *NamespaceQuotas  `msgpack:"quotas,omitempty"`
 	Labels      map[string]string `msgpack:"labels,omitempty"`
+
+	// StoredCount selects the vector-count rule apply uses for an upsert,
+	// batch upsert or delete. Set, VectorCount and the vector quota count
+	// distinct stored ids: a re-upsert of a stored id adds nothing and a
+	// delete of a missing id removes nothing. Unset (every command proposed
+	// before featuregate.VectorStoredCount is active, and every command of
+	// an older binary), apply keeps the old rule: +1 per upserted id, -1 per
+	// deleted id. The proposer sets it only once the feature is enabled on
+	// the shard, so every replica applies the same rule to the same entry.
+	StoredCount bool `msgpack:"stored_count,omitempty"`
 }
 
 // VectorResult represents the result of a vector operation.

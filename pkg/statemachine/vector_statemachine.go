@@ -811,15 +811,19 @@ func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorComm
 		return sm.Result{}, api.NewServiceUnavailableError("vector storage")
 	}
 
-	// Check quota before upsert: a re-upsert of a stored id adds no vector,
-	// so it neither raises VectorCount nor counts against the vector quota.
-	stored, err := vectorStored(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.ID)
-	if err != nil {
-		return sm.Result{}, err
-	}
-	added := 0
-	if !stored {
-		added = 1
+	// Check quota before upsert. Under the stored-count rule a re-upsert of
+	// a stored id adds no vector, so it neither raises VectorCount nor
+	// counts against the vector quota; under the old rule (a command without
+	// StoredCount) every upsert counts one.
+	added := 1
+	if cmd.StoredCount {
+		stored, err := vectorStored(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.ID)
+		if err != nil {
+			return sm.Result{}, err
+		}
+		if stored {
+			added = 0
+		}
 	}
 	estimatedBytes := EstimateVectorBytes(len(cmd.Vector), len(cmd.Metadata))
 	if err := ns.CheckQuota(added, estimatedBytes); err != nil {
@@ -916,10 +920,15 @@ func (vsm *VectorStateMachine) handleDelete(ctx context.Context, cmd *VectorComm
 	// Only an id stored before the delete removes a vector; a missing or
 	// repeated id leaves VectorCount where it is, on every replica. Every
 	// id's existence is read before any is deleted, so a failed read refuses
-	// the whole command before it mutates anything.
+	// the whole command before it mutates anything. A command without
+	// StoredCount keeps the old rule: every successful delete counts one.
 	wasStored := make([]bool, len(idsToDelete))
 	seen := make(map[uint64]struct{}, len(idsToDelete))
 	for i, id := range idsToDelete {
+		if !cmd.StoredCount {
+			wasStored[i] = true
+			continue
+		}
 		if _, dup := seen[id]; dup {
 			continue
 		}
@@ -1029,10 +1038,15 @@ func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *Vecto
 	}
 
 	// Check vector count and storage quotas: only the batch's distinct ids
-	// not yet stored are new vectors.
-	added, err := newVectorIDs(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.IDs)
-	if err != nil {
-		return sm.Result{}, err
+	// not yet stored are new vectors under the stored-count rule; under the
+	// old rule (no StoredCount) every id of the batch counts one.
+	added := len(cmd.IDs)
+	if cmd.StoredCount {
+		var err error
+		added, err = newVectorIDs(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.IDs)
+		if err != nil {
+			return sm.Result{}, err
+		}
 	}
 	if err := ns.CheckQuota(added, totalEstimatedBytes); err != nil {
 		return sm.Result{}, err

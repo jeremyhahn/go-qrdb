@@ -34,8 +34,17 @@ func newCountTestVSM(t *testing.T, maxVectors int64) *VectorStateMachine {
 // and returns the entry's result and error.
 func applyCountCmd(t *testing.T, vsm *VectorStateMachine, index uint64, cmd *VectorCommand) error {
 	t.Helper()
+	return applyCountCmdRule(t, vsm, index, cmd, true)
+}
+
+// applyCountCmdRule applies cmd as committed entry index, carrying the
+// stored-count rule or not, as a proposer before or after
+// featuregate.VectorStoredCount would have sent it.
+func applyCountCmdRule(t *testing.T, vsm *VectorStateMachine, index uint64, cmd *VectorCommand, storedCount bool) error {
+	t.Helper()
 	cmd.Namespace = "ns"
 	cmd.Timestamp = time.Now().UnixNano()
+	cmd.StoredCount = storedCount
 	data, err := cmd.Encode()
 	require.NoError(t, err)
 	return vsm.Update(context.Background(), []sm.Entry{{Index: index, Cmd: data}}, make([]sm.Result, 1))
@@ -91,6 +100,30 @@ func TestVectorCount_TenantAtQuotaCanReUpsertStoredID(t *testing.T) {
 	require.Error(t, applyCountCmd(t, vsm, 5, &VectorCommand{Op: OpUpsertVector, ID: 3, Vector: []float32{1, 1}}),
 		"a new id past the quota is still refused")
 	require.Equal(t, uint64(2), storedCount(vsm))
+}
+
+// TestVectorCount_ReplayKeepsTheCommandsRule replays one committed sequence
+// (MaxVectors=2: insert 1, re-upsert 1, insert 2) twice. Without
+// StoredCount, as an older proposer or one before vector-stored-count is
+// active sends it, apply keeps the old +1-per-upsert rule: the re-upsert
+// counts, so inserting 2 is refused at the quota. With it, the re-upsert
+// adds nothing and 2 is admitted. Every replica replaying the same log
+// therefore reaches the same count, whichever binary it runs.
+func TestVectorCount_ReplayKeepsTheCommandsRule(t *testing.T) {
+	replay := func(storedCount bool) (*VectorStateMachine, error) {
+		vsm := newCountTestVSM(t, 2)
+		require.NoError(t, applyCountCmdRule(t, vsm, 1, &VectorCommand{Op: OpUpsertVector, ID: 1, Vector: []float32{1, 0}}, storedCount))
+		require.NoError(t, applyCountCmdRule(t, vsm, 2, &VectorCommand{Op: OpUpsertVector, ID: 1, Vector: []float32{1, 1}}, storedCount))
+		return vsm, applyCountCmdRule(t, vsm, 3, &VectorCommand{Op: OpUpsertVector, ID: 2, Vector: []float32{0, 1}}, storedCount)
+	}
+
+	old, err := replay(false)
+	require.Error(t, err, "the old rule counts the re-upsert, so a second id is past the quota")
+	require.Equal(t, uint64(2), storedCount(old))
+
+	stored, err := replay(true)
+	require.NoError(t, err, "the stored-count rule admits the second id")
+	require.Equal(t, uint64(2), storedCount(stored))
 }
 
 // A failed existence read is not "absent": with the backing store still

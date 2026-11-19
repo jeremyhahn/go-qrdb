@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	api "github.com/jeremyhahn/go-qrdb/pkg/api"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
@@ -915,6 +916,10 @@ func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.Vec
 		return nil
 	}
 
+	// The stored-count rule changes how apply counts vectors, so a command
+	// carries it only once every replica of the shard applies it alike.
+	cmd.StoredCount = v.vectorStoredCountEnabled()
+
 	cmdBytes, err := cmd.Encode()
 	if err != nil {
 		return &EncodeRequestError{Err: err}
@@ -951,6 +956,17 @@ func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.Vec
 	}
 
 	return nil
+}
+
+// vectorStoredCountEnabled reports whether featuregate.VectorStoredCount is
+// enabled on the shard, through the gates WithFeatureGates set, else the
+// raft node's. A service with neither has every replica running this binary.
+func (v *vectorService) vectorStoredCountEnabled() bool {
+	gates := v.featureGates
+	if gates == nil {
+		gates, _ = v.raftNode.(FeatureGatedHost)
+	}
+	return gates == nil || gates.FeatureEnabled(v.shardID, featuregate.VectorStoredCount)
 }
 
 // =============================================================================

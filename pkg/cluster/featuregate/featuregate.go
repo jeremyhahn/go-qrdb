@@ -249,6 +249,18 @@ const VerifiableLogAudit feature.Feature = "verifiable-log-audit"
 // does not sweep until the feature is active cluster-wide.
 const PendingUserTTL feature.Feature = "pending-user-ttl"
 
+// VectorStoredCount is the stored-id vector count: a vector upsert, batch
+// upsert or delete counts only distinct ids that change what is stored, so
+// a re-upsert of a stored id neither raises VectorCount nor counts against
+// the vector quota, and a delete of a missing id removes nothing. It changes
+// apply, so a node that predates it would count the same committed entry
+// differently and the replicas' counts and quota decisions would diverge.
+// The rule rides on the command (VectorCommand.StoredCount), set by the
+// proposer only once the feature is enabled on the shard; a command without
+// it applies the old +1-per-upsert rule on every binary
+// (docs/multi-tenancy/architecture.md "Feature gate and upgrade").
+const VectorStoredCount feature.Feature = "vector-stored-count"
+
 // VectorManhattan is the Manhattan (L1) distance metric on a FLAT or IVF
 // vector namespace: record metric value 3 (pkg/vector DistanceManhattan),
 // which a binary from before it refuses as an unknown metric while its
@@ -277,7 +289,7 @@ const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, StrictIsolation, PendingUserTTL}
+var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, StrictIsolation, PendingUserTTL, VectorStoredCount}
 
 // Supported returns the features this binary implements.
 func Supported() []feature.Feature {
