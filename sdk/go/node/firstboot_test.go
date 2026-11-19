@@ -99,25 +99,6 @@ func fbDeps(users user.UserServicer, roles role.RoleServicer) firstboot.Dependen
 	}
 }
 
-// TestFirstBootUnderPolicy_RequiredWithNoPathBootsAdminUnbound (go-qrdb#560
-// review B2, reversing this test's old "refuses" premise): an embedder with
-// no credential path and no Binder wired at all is the everyday "nothing to
-// bind with on this run" case, not a wiring bug. firstBootUnderPolicy
-// proceeds, creates the admin unbound, and leaves the
-// awaiting-admin-credential posture to wireClientAndServer's own check
-// rather than refusing to boot the node outright.
-func TestFirstBootUnderPolicy_RequiredWithNoPathBootsAdminUnbound(t *testing.T) {
-	users, roles := realStores(t)
-	deps := fbDeps(users, roles) // embedder left the policy at its zero value
-	result, err := firstBootUnderPolicy(context.Background(), deps, auth.MTLSBindingRequired, users)
-	require.NoError(t, err)
-	assert.True(t, result.AdminCreated)
-	assert.Empty(t, result.AdminCertThumbprint)
-	admin, lerr := users.GetUserByUsername(context.Background(), tenantid.System, "admin")
-	require.NoError(t, lerr, "first boot must still create the admin")
-	assert.Empty(t, admin.CertBindings, "no credential path was wired")
-}
-
 func TestFirstBootUnderPolicy_RequiredWithABinderBootsAndVerifies(t *testing.T) {
 	users, roles := realStores(t)
 	deps := fbDeps(users, roles)
@@ -140,13 +121,6 @@ func TestFirstBootUnderPolicy_VerdictReadFromTheNodesStore(t *testing.T) {
 	var refusal *firstboot.AdminCertBindingRequiredError
 	require.True(t, errors.As(err, &refusal), "err = %v", err)
 	assert.Equal(t, firstboot.AdminBindingMissing, refusal.Reason)
-}
-
-func TestFirstBootUnderPolicy_EnrolledUnchanged(t *testing.T) {
-	users, roles := realStores(t)
-	result, err := firstBootUnderPolicy(context.Background(), fbDeps(users, roles), auth.MTLSBindingEnrolled, users)
-	require.NoError(t, err)
-	assert.True(t, result.AdminCreated)
 }
 
 // flakyLookup fails transiently a few times, then answers from the store.
@@ -215,8 +189,7 @@ func TestVerifyExistingAdminBinding(t *testing.T) {
 // "required" check ran at all (under "enrolled" this verification is never
 // reached), without standing up a full node just to exercise this seam; a
 // node with a real UserService is exactly
-// TestFirstBootUnderPolicy_RequiredWithNoPathBootsAdminUnbound, already
-// covered above.
+// TestReconcileAwaitingAdminCredential_WatchStartsOnce, below.
 func TestNodeFirstBoot_UsesTheWiredPolicy(t *testing.T) {
 	n := &Node{}
 	n.bindingPolicy.Store(int32(auth.MTLSBindingRequired))

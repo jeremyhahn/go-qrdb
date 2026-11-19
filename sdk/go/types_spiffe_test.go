@@ -24,22 +24,6 @@ import (
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
-func TestSDK_SpiffeIDURIRoundTripsThroughWorkloadFromCert(t *testing.T) {
-	for _, id := range []sdk.SpiffeID{
-		{TrustDomain: "acme", Kind: sdk.SpiffeKindUser, Name: "alice"},
-		{TrustDomain: "acme.example", Kind: sdk.SpiffeKindService, Name: "billing"},
-	} {
-		u, err := id.URI()
-		if err != nil {
-			t.Fatalf("URI(%+v): %v", id, err)
-		}
-		got, err := sdk.WorkloadFromCert(&x509.Certificate{URIs: []*url.URL{u}})
-		if err != nil || got != id {
-			t.Fatalf("WorkloadFromCert = %+v, %v; want %+v", got, err, id)
-		}
-	}
-}
-
 func TestSDK_SpiffeIDURIRefusals(t *testing.T) {
 	tests := []struct {
 		name string

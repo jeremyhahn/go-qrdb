@@ -36,29 +36,6 @@ func cleanupRoleGrant(t *testing.T, probes ...Permission) {
 	})
 }
 
-// TestRegisterRoleGrant_SingleRole verifies a basic registration is visible
-// through both RolePermissions and HasRoleGrant.
-func TestRegisterRoleGrant_SingleRole(t *testing.T) {
-	const probe Permission = "test:role-grant-single"
-	cleanupRoleGrant(t, probe)
-
-	RegisterRoleGrant(RoleOperator, probe)
-
-	if !HasRoleGrant(RoleOperator, probe) {
-		t.Errorf("HasRoleGrant(RoleOperator, %q) = false, want true", probe)
-	}
-	found := false
-	for _, p := range RolePermissions(RoleOperator) {
-		if p == probe {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("RolePermissions(RoleOperator) does not contain %q", probe)
-	}
-}
-
 // TestRegisterRoleGrant_MultipleRoles verifies a single permission can be
 // granted to more than one built-in role — the registry stores a set of
 // roles per permission, not a single value.

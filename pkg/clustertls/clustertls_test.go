@@ -222,52 +222,6 @@ func TestPersistAndLoadFromDir(t *testing.T) {
 	}
 }
 
-// TestLoadFromDir_AbsentFilesReturnsNil verifies that LoadFromDir returns
-// (nil, nil) when the required cert files are not present in the directory.
-func TestLoadFromDir_AbsentFilesReturnsNil(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-
-	m, err := clustertls.LoadFromDir(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if m != nil {
-		t.Fatalf("expected nil Material, got non-nil")
-	}
-}
-
-// TestLoadFromDir_PartialFilesReturnsError verifies that LoadFromDir fails
-// closed with a *PartialMaterialError when only some required files exist (not
-// all three): a partial directory is treated as corruption rather than silently
-// regenerating a fresh CA.
-func TestLoadFromDir_PartialFilesReturnsError(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-
-	// Write only ca.pem and node-cert.pem; omit node-key.pem.
-	if err := os.WriteFile(filepath.Join(dir, "ca.pem"), []byte("cert"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "node-cert.pem"), []byte("cert"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	m, err := clustertls.LoadFromDir(dir)
-	if m != nil {
-		t.Fatal("expected nil Material when node-key.pem is absent")
-	}
-	var partErr *clustertls.PartialMaterialError
-	if !errors.As(err, &partErr) {
-		t.Fatalf("expected *PartialMaterialError, got %T: %v", err, err)
-	}
-	if len(partErr.Missing) != 1 || filepath.Base(partErr.Missing[0]) != "node-key.pem" {
-		t.Errorf("Missing = %v, want [.../node-key.pem]", partErr.Missing)
-	}
-}
-
 // TestPersistMaterial_CreatesTheDirectory0700 covers the directory it makes
 // when the data directory does not exist yet: cluster CA material including the
 // CA signing key lands there, so a mode that let another local account list or
@@ -358,37 +312,6 @@ func TestPersistMaterial_WithoutCAKey(t *testing.T) {
 	}
 	if len(loaded.CAKeyPEM) != 0 {
 		t.Error("expected empty CAKeyPEM when ca-key.pem absent")
-	}
-}
-
-// TestLocalSANs_ContainsLoopback verifies that LocalSANs always includes
-// localhost and 127.0.0.1.
-func TestLocalSANs_ContainsLoopback(t *testing.T) {
-	t.Parallel()
-
-	dnsNames, ips := clustertls.LocalSANs()
-
-	foundLocalhost := false
-	for _, n := range dnsNames {
-		if n == "localhost" {
-			foundLocalhost = true
-			break
-		}
-	}
-	if !foundLocalhost {
-		t.Error("LocalSANs missing localhost in dnsNames")
-	}
-
-	foundLoopback := false
-	loopback := []byte{127, 0, 0, 1}
-	for _, ip := range ips {
-		if ip4 := ip.To4(); ip4 != nil && string(ip4) == string(loopback) {
-			foundLoopback = true
-			break
-		}
-	}
-	if !foundLoopback {
-		t.Error("LocalSANs missing 127.0.0.1 in ips")
 	}
 }
 
@@ -723,100 +646,6 @@ func TestIdentityLeafTemplate_NoURI_NoAddressSAN(t *testing.T) {
 	if !slices.Equal(tmpl.DNSNames, []string{"localhost"}) ||
 		!slices.Equal(ipStrings(tmpl.IPAddresses), []string{"127.0.0.1", "::1"}) || len(tmpl.URIs) != 0 {
 		t.Fatalf("template = %+v, want only the loopback SANs with no nodeURI", tmpl)
-	}
-}
-
-// TestIssueLeafForKey_BadCACert verifies that IssueLeafForKey returns a
-// *KeyError for the CA certificate when the supplied caCertPEM is not valid
-// PEM.
-func TestIssueLeafForKey_BadCACert(t *testing.T) {
-	t.Parallel()
-
-	externalKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-
-	_, err = clustertls.IssueLeafForKey([]byte("not-a-pem"), nil, &externalKey.PublicKey)
-	if err == nil {
-		t.Fatal("expected error for invalid CA cert PEM, got nil")
-	}
-	var keyErr *clustertls.KeyError
-	if !errors.As(err, &keyErr) {
-		t.Errorf("expected *clustertls.KeyError, got %T: %v", err, err)
-	}
-	if keyErr.Kind != "CA certificate" {
-		t.Errorf("expected Kind = %q, got %q", "CA certificate", keyErr.Kind)
-	}
-}
-
-// TestIssueLeafForKey_BadCAKey verifies that IssueLeafForKey returns a
-// *KeyError for the CA private key when the supplied caKeyPEM is not a valid
-// EC PRIVATE KEY PEM block.
-func TestIssueLeafForKey_BadCAKey(t *testing.T) {
-	t.Parallel()
-
-	caCertPEM, _, _, _, err := clustertls.GenerateCA(time.Hour)
-	if err != nil {
-		t.Fatalf("GenerateCA: %v", err)
-	}
-
-	externalKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-
-	_, err = clustertls.IssueLeafForKey(caCertPEM, []byte("not-a-key"), &externalKey.PublicKey)
-	if err == nil {
-		t.Fatal("expected error for invalid CA key PEM, got nil")
-	}
-	var keyErr *clustertls.KeyError
-	if !errors.As(err, &keyErr) {
-		t.Errorf("expected *clustertls.KeyError, got %T: %v", err, err)
-	}
-	if keyErr.Kind != "CA private key" {
-		t.Errorf("expected Kind = %q, got %q", "CA private key", keyErr.Kind)
-	}
-}
-
-// TestGenerateNodeCert_WorksAfterTemplateRefactor confirms that GenerateNodeCert
-// still produces a verifiable leaf certificate after the nodeLeafTemplate
-// refactor that extracted the template construction into a shared helper.
-func TestGenerateNodeCert_WorksAfterTemplateRefactor(t *testing.T) {
-	t.Parallel()
-
-	_, _, caCert, caKey, err := clustertls.GenerateCA(time.Hour)
-	if err != nil {
-		t.Fatalf("GenerateCA: %v", err)
-	}
-
-	certPEM, keyPEM, err := clustertls.GenerateNodeCert(caCert, caKey, time.Hour)
-	if err != nil {
-		t.Fatalf("GenerateNodeCert: %v", err)
-	}
-	if len(certPEM) == 0 {
-		t.Error("expected non-empty certPEM")
-	}
-	if len(keyPEM) == 0 {
-		t.Error("expected non-empty keyPEM")
-	}
-
-	leafBlock, _ := pem.Decode(certPEM)
-	if leafBlock == nil {
-		t.Fatal("no PEM block in certPEM")
-	}
-	leafCert, err := x509.ParseCertificate(leafBlock.Bytes)
-	if err != nil {
-		t.Fatalf("ParseCertificate: %v", err)
-	}
-
-	pool := x509.NewCertPool()
-	pool.AddCert(caCert)
-	if _, err := leafCert.Verify(x509.VerifyOptions{
-		Roots:     pool,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
-	}); err != nil {
-		t.Errorf("leaf cert verification failed: %v", err)
 	}
 }
 

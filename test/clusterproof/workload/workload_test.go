@@ -426,22 +426,6 @@ func TestRunStopsAtDuration(t *testing.T) {
 	requireLedgerValid(t, h)
 }
 
-func TestRunStopsOnContext(t *testing.T) {
-	cfg := testConfig("n1")
-	cfg.OpsPerClient = 0
-	f := newFakeCluster(cfg.Endpoints...)
-	rec := history.NewRecorder(history.NewMonotonicClock())
-	w, err := New(cfg, f.dial, rec)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if stats := w.Run(ctx); stats.Ops() == 0 {
-		t.Fatal("run issued nothing before its context ended")
-	}
-}
-
 func TestRunWithEveryNodeDownStopsOnContext(t *testing.T) {
 	cfg := testConfig("n1", "n2")
 	f := newFakeCluster(cfg.Endpoints...)

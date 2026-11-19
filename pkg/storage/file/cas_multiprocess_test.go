@@ -15,11 +15,12 @@
 package file
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -29,14 +30,14 @@ import (
 )
 
 const (
-	casChildEnv = "QRDB_FILE_CAS_CHILD"
-	casGoFile   = "cas-go"
+	casChildEnv  = "QRDB_FILE_CAS_CHILD"
+	casReadyLine = "cas-ready"
 )
 
 // TestCASChildHelper is the child side of TestCompareAndSwap_AcrossProcesses.
-// It opens the store in its working directory, waits for the go file so every
-// contender starts together, swaps "start" for its own id and prints "won" or
-// "lost".
+// It opens the store in its working directory, prints the ready line, waits
+// for the parent to close its stdin so every contender starts together,
+// swaps "start" for its own id and prints "won" or "lost".
 func TestCASChildHelper(t *testing.T) {
 	id := os.Getenv(casChildEnv)
 	if id == "" {
@@ -47,15 +48,9 @@ func TestCASChildHelper(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	defer func() { _ = e.Close() }()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if _, err := os.Stat(casGoFile); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for the go file")
-		}
-		time.Sleep(time.Millisecond)
+	os.Stdout.WriteString(casReadyLine + "\n")
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		t.Fatalf("waiting for the release: %v", err)
 	}
 	swapped, err := e.CompareAndSwap(context.Background(), []byte("k"), []byte("start"), []byte("winner-"+id))
 	if err != nil {
@@ -85,35 +80,67 @@ func TestCompareAndSwap_AcrossProcesses(t *testing.T) {
 
 	const procs = 4
 	outs := make([]bytes.Buffer, procs)
+	stderrs := make([]bytes.Buffer, procs)
 	errs := make([]error, procs)
+	cmds := make([]*exec.Cmd, procs)
+	releases := make([]io.WriteCloser, procs)
+	ready := make(chan int, procs)
 	var wg sync.WaitGroup
 	for i := 0; i < procs; i++ {
 		// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the argument is a compile-time literal. No shell is involved.
 		cmd := exec.Command(os.Args[0], "-test.run=^TestCASChildHelper$")
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(), casChildEnv+"="+strconv.Itoa(i))
-		cmd.Stdout = &outs[i]
-		cmd.Stderr = &outs[i]
+		cmd.Stderr = &stderrs[i]
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatalf("stdout pipe %d: %v", i, err)
+		}
+		if releases[i], err = cmd.StdinPipe(); err != nil {
+			t.Fatalf("stdin pipe %d: %v", i, err)
+		}
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start child %d: %v", i, err)
 		}
+		cmds[i] = cmd
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			sc := bufio.NewScanner(stdout)
+			for sc.Scan() {
+				if sc.Text() == casReadyLine {
+					ready <- i
+					continue
+				}
+				outs[i].WriteString(sc.Text() + "\n")
+			}
 			errs[i] = cmd.Wait()
 		}()
 	}
-	// Let every child open the store and reach the barrier, then release them.
-	time.Sleep(500 * time.Millisecond)
-	if err := os.WriteFile(filepath.Join(dir, casGoFile), nil, 0o600); err != nil {
-		t.Fatal(err)
+	// Release the children together once every one has opened the store.
+	timeout := time.After(30 * time.Second)
+	for n := 0; n < procs; n++ {
+		select {
+		case <-ready:
+		case <-timeout:
+			for _, cmd := range cmds {
+				_ = cmd.Process.Kill()
+			}
+			wg.Wait()
+			t.Fatal("timed out waiting for every child to open the store")
+		}
+	}
+	for i, release := range releases {
+		if err := release.Close(); err != nil {
+			t.Fatalf("release child %d: %v", i, err)
+		}
 	}
 	wg.Wait()
 
 	winner := -1
 	for i := range outs {
 		if errs[i] != nil {
-			t.Fatalf("child %d: %v\n%s", i, errs[i], outs[i].String())
+			t.Fatalf("child %d: %v\n%s%s", i, errs[i], outs[i].String(), stderrs[i].String())
 		}
 		switch {
 		case bytes.Contains(outs[i].Bytes(), []byte("won\n")):
@@ -123,7 +150,7 @@ func TestCompareAndSwap_AcrossProcesses(t *testing.T) {
 			winner = i
 		case bytes.Contains(outs[i].Bytes(), []byte("lost\n")):
 		default:
-			t.Fatalf("child %d reported nothing:\n%s", i, outs[i].String())
+			t.Fatalf("child %d reported nothing:\n%s%s", i, outs[i].String(), stderrs[i].String())
 		}
 	}
 	if winner == -1 {

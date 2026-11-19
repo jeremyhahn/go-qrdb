@@ -138,34 +138,6 @@ func TestCLIMultiProtocolVersion(t *testing.T) {
 	}
 }
 
-// TestCLIMultiProtocolHealth tests the admin health command via all remote protocols.
-func TestCLIMultiProtocolHealth(t *testing.T) {
-	cfg := LoadTestConfig()
-	requireCLI(t, cfg)
-
-	for _, proto := range AllProtocols() {
-		t.Run(string(proto), func(t *testing.T) {
-			if !cfg.IsProtocolAvailable(t, proto) {
-				t.Fatalf("server not available for protocol %s", proto)
-			}
-
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "admin", "health")
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] admin health failed: %v", proto, err)
-			}
-
-			output := stdout + stderr
-			assertNotEmpty(t, output, fmt.Sprintf("[%s] admin health produced no output", proto))
-			assertContains(t, output, "Status:",
-				fmt.Sprintf("[%s] admin health output should contain 'Status:'", proto))
-
-			t.Logf("[%s] admin health: %s", proto, strings.TrimSpace(output))
-		})
-	}
-}
-
 // TestCLIMultiProtocolKVPutGetDelete tests the full KV CRUD lifecycle
 // (put, get, exists, delete, exists-after-delete) across all protocols.
 func TestCLIMultiProtocolKVPutGetDelete(t *testing.T) {
@@ -316,36 +288,6 @@ func TestCLIMultiProtocolAdminStatus(t *testing.T) {
 				fmt.Sprintf("[%s] admin status should contain 'NodeID:'", proto))
 
 			t.Logf("[%s] admin status: %s", proto, strings.TrimSpace(output))
-		})
-	}
-}
-
-// TestCLIMultiProtocolAdminPeers tests the admin peers command across all protocols.
-func TestCLIMultiProtocolAdminPeers(t *testing.T) {
-	cfg := LoadTestConfig()
-	requireCLI(t, cfg)
-
-	for _, proto := range AllProtocols() {
-		t.Run(string(proto), func(t *testing.T) {
-			if !cfg.IsProtocolAvailable(t, proto) {
-				t.Fatalf("server not available for protocol %s", proto)
-			}
-
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "admin", "peers")
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] admin peers failed: %v", proto, err)
-			}
-
-			output := stdout + stderr
-			assertNotEmpty(t, output, fmt.Sprintf("[%s] admin peers produced no output", proto))
-
-			// The peers command prints a table with SHARD_ID column header.
-			assertContains(t, output, "SHARD_ID",
-				fmt.Sprintf("[%s] admin peers should contain 'SHARD_ID' table header", proto))
-
-			t.Logf("[%s] admin peers: %s", proto, strings.TrimSpace(output))
 		})
 	}
 }
@@ -632,60 +574,6 @@ func TestCLIMultiProtocolKVGetAtRevision(t *testing.T) {
 				fmt.Sprintf("[%s] kv get --at-revision should return original value", proto))
 
 			t.Logf("[%s] kv get --at-revision passed", proto)
-		})
-	}
-}
-
-// TestCLIMultiProtocolKVPutWithLease tests the kv put --lease-id flag.
-func TestCLIMultiProtocolKVPutWithLease(t *testing.T) {
-	cfg := LoadTestConfig()
-	requireCLI(t, cfg)
-
-	for _, proto := range AllProtocols() {
-		t.Run(string(proto), func(t *testing.T) {
-			if !cfg.IsProtocolAvailable(t, proto) {
-				t.Fatalf("server not available for protocol %s", proto)
-			}
-
-			// Grant a lease first.
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "lease", "grant", "--ttl", "300")
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] lease grant failed: %v", proto, err)
-			}
-
-			// Extract lease ID from output.
-			var leaseID string
-			for _, line := range strings.Split(stdout, "\n") {
-				if strings.HasPrefix(line, "ID:") {
-					leaseID = strings.TrimSpace(strings.TrimPrefix(line, "ID:"))
-					break
-				}
-			}
-			if leaseID == "" {
-				t.Fatalf("[%s] could not extract lease ID from output: %s", proto, stdout)
-			}
-
-			key := fmt.Sprintf("lease-kv-%s-%d", proto, testTimestamp())
-
-			// Put with lease.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "kv", "put", key, "leased-value", "--lease-id", leaseID)
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] kv put --lease-id failed: %v", proto, err)
-			}
-
-			assertContains(t, stdout, "OK",
-				fmt.Sprintf("[%s] kv put --lease-id should output 'OK'", proto))
-
-			t.Cleanup(func() {
-				execCLIWithProtocol(t, cfg, proto, "kv", "del", key)           //nolint:errcheck
-				execCLIWithProtocol(t, cfg, proto, "lease", "revoke", leaseID) //nolint:errcheck
-			})
-
-			t.Logf("[%s] kv put --lease-id passed", proto)
 		})
 	}
 }

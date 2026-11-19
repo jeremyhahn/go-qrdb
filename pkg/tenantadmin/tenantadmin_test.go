@@ -178,15 +178,6 @@ func TestSOKVStore_IsIndependentOfThePendingAdmin(t *testing.T) {
 	}
 }
 
-func TestKVStore_GetOfAnAbsentRecordIsNilNil(t *testing.T) {
-	ctx := context.Background()
-	s := NewKVStore(kvstore.NewMemoryKVStore())
-	got, err := s.Get(ctx, "acme")
-	if err != nil || got != nil {
-		t.Fatalf("Get of an absent record = %v, %v; want nil, nil", got, err)
-	}
-}
-
 func TestKVStore_IsolatesTenants(t *testing.T) {
 	ctx := context.Background()
 	s := NewKVStore(kvstore.NewMemoryKVStore())

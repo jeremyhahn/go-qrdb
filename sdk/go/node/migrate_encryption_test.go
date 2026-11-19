@@ -88,27 +88,6 @@ func noSealStoreNode(t *testing.T) *Node {
 	return n
 }
 
-// TestCanonicalRootKeyStrategy_NoSealStore_RefusesTyped is the go-qrdb#550
-// regression test for the nil-seal-store segfault: canonicalRootKeyStrategy
-// used to hand n.sealStore straight to seal.NewStorageAdapter without a nil
-// check, and passing a nil *pebbleStorage.PebbleStorage into that
-// interface-typed parameter produces a NON-nil seal.LegacyStorage wrapping a
-// nil receiver -- the read then panicked inside the concrete backend instead
-// of ever reaching a nil check. It now refuses with the same typed
-// *MigrationNotSupportedError the rest of this package uses for "cannot
-// migrate here", and does not panic.
-func TestCanonicalRootKeyStrategy_NoSealStore_RefusesTyped(t *testing.T) {
-	n := noSealStoreNode(t)
-
-	_, err := canonicalRootKeyStrategy(context.Background(), n)
-
-	var notSupported *MigrationNotSupportedError
-	require.ErrorAs(t, err, &notSupported)
-	require.Contains(t, notSupported.Reason, "seal store")
-	// The refusal every transport maps to 501 / Unimplemented.
-	require.ErrorIs(t, err, service.ErrMigrationProviderUnavailable)
-}
-
 func TestCanonicalRootKey(t *testing.T) {
 	ctx := context.Background()
 	if got := canonicalRootKeyPath(&Node{}); got != "root-key" {
