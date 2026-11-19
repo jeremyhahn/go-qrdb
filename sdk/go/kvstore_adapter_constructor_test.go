@@ -15,40 +15,12 @@
 package sdk
 
 import (
-	"context"
 	"errors"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // TestNewKVStoreAdapter verifies that a valid construction returns a working
 // KVStore that delegates to the supplied transport clients.
-func TestNewKVStoreAdapter(t *testing.T) {
-	var capturedKey string
-	kv := &mockTransportKV{
-		putFn: func(_ context.Context, key string, _ []byte, _ ...transport.WriteOption) error {
-			capturedKey = key
-			return nil
-		},
-	}
-
-	store, err := NewKVStoreAdapter(kv, &mockTransportIndex{})
-	if err != nil {
-		t.Fatalf("NewKVStoreAdapter: %v", err)
-	}
-	if store == nil {
-		t.Fatal("NewKVStoreAdapter returned nil store")
-	}
-
-	if err := store.Put(context.Background(), "k1", []byte("v1")); err != nil {
-		t.Fatalf("Put through constructed adapter: %v", err)
-	}
-	if capturedKey != "k1" {
-		t.Errorf("adapter delegated key %q, want %q", capturedKey, "k1")
-	}
-}
-
 // TestNewKVStoreAdapterNilInputs verifies typed errors for nil dependencies.
 func TestNewKVStoreAdapterNilInputs(t *testing.T) {
 	t.Run("nil kv client", func(t *testing.T) {

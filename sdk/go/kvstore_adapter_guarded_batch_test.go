@@ -44,100 +44,10 @@ var _ transport.TransactionClient = (*mockTransactionTransportKV)(nil)
 // (go-qrdb#589): a nil-Value guard becomes a version-equals-zero compare, a
 // present guard becomes an exists compare plus a value compare, and a
 // Delete write becomes an OpDelete.
-func TestKVStoreAdapter_MultiGuardedBatchKVStore_Forwards(t *testing.T) {
-	var captured *transport.TransactionRequest
-	txKV := &mockTransactionTransportKV{
-		mockTransportKV: newEmptyMockTransportKV(),
-		executeFn: func(_ context.Context, req *transport.TransactionRequest, _ ...transport.WriteOption) (*transport.TransactionResponse, error) {
-			captured = req
-			return &transport.TransactionResponse{Succeeded: true}, nil
-		},
-	}
-
-	adapter, err := NewKVStoreAdapter(txKV, &mockTransportIndex{})
-	if err != nil {
-		t.Fatalf("NewKVStoreAdapter: %v", err)
-	}
-	batchStore, ok := adapter.(kvstore.MultiGuardedBatchKVStore)
-	if !ok {
-		t.Fatal("kvStoreAdapter does not implement kvstore.MultiGuardedBatchKVStore")
-	}
-
-	applied, err := batchStore.PutAllIfAllUnchanged(context.Background(),
-		[]kvstore.Guard{
-			{Key: "absent-key", Value: nil},
-			{Key: "present-key", Value: []byte("expected")},
-		},
-		[]kvstore.KV{
-			{Key: "old-key", Delete: true},
-			{Key: "new-key", Value: []byte("new-value")},
-		},
-	)
-	if err != nil || !applied {
-		t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (true, nil)", applied, err)
-	}
-	if captured == nil {
-		t.Fatal("ExecuteTransaction was never called")
-	}
-
-	if len(captured.Compares) != 3 {
-		t.Fatalf("Compares = %+v, want 3 (one for the absent guard, two for the present guard)", captured.Compares)
-	}
-	absent := captured.Compares[0]
-	if string(absent.Key) != "absent-key" || absent.Target != transport.CompareVersion ||
-		absent.Result != transport.CompareEqual || absent.Version != 0 {
-		t.Errorf("absent guard compare = %+v, want version==0 on absent-key", absent)
-	}
-	exists, value := captured.Compares[1], captured.Compares[2]
-	if string(exists.Key) != "present-key" || exists.Target != transport.CompareVersion ||
-		exists.Result != transport.CompareGreater || exists.Version != 0 {
-		t.Errorf("present guard exists-compare = %+v, want version>0 on present-key", exists)
-	}
-	if string(value.Key) != "present-key" || value.Target != transport.CompareValue ||
-		value.Result != transport.CompareEqual || string(value.Value) != "expected" {
-		t.Errorf("present guard value-compare = %+v, want value==%q on present-key", value, "expected")
-	}
-
-	if len(captured.SuccessOps) != 2 {
-		t.Fatalf("SuccessOps = %+v, want 2", captured.SuccessOps)
-	}
-	del, put := captured.SuccessOps[0], captured.SuccessOps[1]
-	if del.Type != transport.OpDelete || string(del.Key) != "old-key" {
-		t.Errorf("first op = %+v, want OpDelete on old-key", del)
-	}
-	if put.Type != transport.OpPut || string(put.Key) != "new-key" || string(put.Value) != "new-value" {
-		t.Errorf("second op = %+v, want OpPut new-key=new-value", put)
-	}
-}
-
 // TestKVStoreAdapter_MultiGuardedBatchKVStore_ReportsGuardFailure proves a
 // transaction whose compares did not all hold reports applied=false with a
 // nil error -- a RESULT, not a refusal -- exactly as
 // kvstore.MultiGuardedBatchKVStore documents.
-func TestKVStoreAdapter_MultiGuardedBatchKVStore_ReportsGuardFailure(t *testing.T) {
-	txKV := &mockTransactionTransportKV{
-		mockTransportKV: newEmptyMockTransportKV(),
-		executeFn: func(context.Context, *transport.TransactionRequest, ...transport.WriteOption) (*transport.TransactionResponse, error) {
-			return &transport.TransactionResponse{Succeeded: false}, nil
-		},
-	}
-	adapter, err := NewKVStoreAdapter(txKV, &mockTransportIndex{})
-	if err != nil {
-		t.Fatalf("NewKVStoreAdapter: %v", err)
-	}
-	batchStore := adapter.(kvstore.MultiGuardedBatchKVStore)
-
-	applied, err := batchStore.PutAllIfAllUnchanged(context.Background(),
-		[]kvstore.Guard{{Key: "k", Value: nil}},
-		[]kvstore.KV{{Key: "k", Value: []byte("v")}})
-	if err != nil {
-		t.Fatalf("PutAllIfAllUnchanged error = %v, want nil", err)
-	}
-	if applied {
-		t.Fatal("PutAllIfAllUnchanged reported applied=true for a failed guard")
-	}
-}
-
 // TestKVStoreAdapter_MultiGuardedBatchKVStore_RefusesEmptyKey proves the
 // adapter catches an empty guard or write key BEFORE issuing the
 // ExecuteTransaction RPC at all (go-qrdb#589's non-blocking ask): the

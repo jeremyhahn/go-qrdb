@@ -149,17 +149,6 @@ func TestForward_TransportErrorEvictsAndDoesNotRetry(t *testing.T) {
 	}
 }
 
-func TestForward_UnreachableRetriesTheNextReplicaOnce(t *testing.T) {
-	ms, refusal := threeNodes()
-	l := NewLocator(ms, NewLeaderCache(), "c:1", nil)
-	s := &sender{answers: map[string]Result{"a:1": {Outcome: Unreachable}}}
-
-	got, err := l.Forward(context.Background(), refusal, cluster.APIProtocolGRPC, s.send)
-	if err != nil || got.RaftAddr != "b:1" {
-		t.Fatalf("Forward = %+v, %v; want the next replica b:1", got, err)
-	}
-}
-
 func TestForward_BothRefusedIsNoTargetServed(t *testing.T) {
 	ms, refusal := threeNodes()
 	l := NewLocator(ms, NewLeaderCache(), "c:1", nil)

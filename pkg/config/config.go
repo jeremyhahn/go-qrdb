@@ -57,6 +57,31 @@ const DefaultInvitationTTLString = "24h"
 // credential, not an invitation.
 const MaxInvitationTTL = 7 * 24 * time.Hour
 
+// DefaultPendingUserSweepInterval is the default
+// auth.pending_user_sweep_interval.
+const DefaultPendingUserSweepInterval = time.Minute
+
+// ParsePendingUserSweepInterval parses auth.pending_user_sweep_interval:
+// empty is DefaultPendingUserSweepInterval, "off" disables the reaper
+// (returned as -1), anything else must be a positive duration.
+func ParsePendingUserSweepInterval(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	switch s {
+	case "":
+		return DefaultPendingUserSweepInterval, nil
+	case "off":
+		return -1, nil
+	}
+	d, err := parseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 {
+		return 0, &ValidationError{Field: "auth.pending_user_sweep_interval", Reason: "must be positive or \"off\""}
+	}
+	return d, nil
+}
+
 // ParseInvitationTTL parses auth.invitation_ttl, treating empty as
 // DefaultInvitationTTLString. It must be positive and at most
 // MaxInvitationTTL.
@@ -1288,6 +1313,11 @@ type AuthConfig struct {
 	// redeemable. The token is a bearer secret, so it is short-lived: a Go
 	// duration, positive and at most MaxInvitationTTL. Default: "24h".
 	InvitationTTL string `yaml:"invitation_ttl"`
+
+	// PendingUserSweepInterval is how often the leader deletes pending
+	// users whose pending TTL has run out: a positive Go duration, or "off"
+	// to disable the reaper. Default: "1m".
+	PendingUserSweepInterval string `yaml:"pending_user_sweep_interval"`
 
 	// InvitationRequireKeyPin refuses any invitation that is not pinned to
 	// the invited user's key (users:invite --pin-key-fingerprint). On, a
@@ -2562,6 +2592,9 @@ func (c *Config) Validate() error {
 	}
 	if _, err := ParseSignedInitTTL(c.Tenant.SignedInitTTL); err != nil {
 		return &ValidationError{Field: "tenant.signed_init_ttl", Reason: "must be a positive Go duration of at most " + MaxSignedInitTTL.String() + " (" + err.Error() + ")"}
+	}
+	if _, err := ParsePendingUserSweepInterval(c.Auth.PendingUserSweepInterval); err != nil {
+		return &ValidationError{Field: "auth.pending_user_sweep_interval", Reason: "must be a positive Go duration or \"off\" (" + err.Error() + ")"}
 	}
 	if _, err := ParseInvitationTTL(c.Auth.InvitationTTL); err != nil {
 		return &ValidationError{Field: "auth.invitation_ttl", Reason: "must be a positive Go duration of at most " + MaxInvitationTTL.String() + " (" + err.Error() + ")"}

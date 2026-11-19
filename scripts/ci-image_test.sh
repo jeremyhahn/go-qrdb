@@ -33,6 +33,12 @@ s=$STUB_STATE
 printf '%s\n' "$*" >> "$s/calls"
 case $1 in
   image)
+    ref=${!#}
+    if [[ $ref == sha256:* ]]; then
+      grep -qxF -- "$ref" "$s/held" 2>/dev/null || exit 1
+      printf '%s\n' "$ref"
+      exit 0
+    fi
     # A pulled image is on the daemon too.
     [ -f "$s/id" ] || [ -f "$s/pulled" ] || exit 1
     case $* in
@@ -45,7 +51,12 @@ case $1 in
       *) cat "$s/id" ;;
     esac ;;
   save) printf 'tar-of-%s' "$(cat "$s/id")" > "$3" ;;
-  load) printf '%s\n' "${STUB_LOAD_ID:-$(sed 's/^tar-of-//' "$3")}" > "$s/id"; echo "Loaded image" ;;
+  load)
+    printf '%s\n' "${STUB_LOAD_ID:-$(sed 's/^tar-of-//' "$3")}" | tee "$s/id" >> "$s/held"
+    # Another run on the same daemon loads its own build under the same
+    # content-hash tag the moment this load returns.
+    [ -z "${STUB_RACE_ID:-}" ] || printf '%s\n' "$STUB_RACE_ID" | tee "$s/id" >> "$s/held"
+    echo "Loaded image" ;;
   login) cat > "$s/password"; printf '%s\n' "${DOCKER_CONFIG:-}" > "$s/config" ;;
   tag) ;;
   pull)
@@ -95,8 +106,12 @@ tc=qrdb-toolchain:0123456789abcdef
 reset() {
   rm -rf "$D/state" "$D/art"
   mkdir -p "$D/state"
-  printf '%s\n' "$id_a" > "$D/state/id"
+  printf '%s\n' "$id_a" | tee "$D/state/id" > "$D/state/held"
 }
+# fresh: the consumer's daemon, which holds no image until the load.
+fresh() { rm -f "$D/state/id" "$D/state/held"; }
+# resolve <ref>: the ID the stub daemon launches for <ref>.
+resolve() { env STUB_STATE="$D/state" "$D/bin/docker" image inspect -f '{{.Id}}' "$1" 2>/dev/null; }
 # run <args...> [-- env...]: the script, its status in $rc, stdout in $D/out,
 # stderr in $D/err.
 run() {
@@ -127,15 +142,17 @@ else bad "save refuses an image that is not a content-hash tag (rc=$rc)"; fi
 # 3. load accepts the image docker-build built and removes the tar.
 reset
 run save "$tc" "$D/art"
-rm -f "$D/state/id"
+fresh
 run load "$D/art" "$tc" "$id_a"
-if [ "$rc" = 0 ] && [ ! -e "$D/art/image.tar" ] && grep -q "is $id_a, the image docker-build built" "$D/err"; then
+if [ "$rc" = 0 ] && [ ! -e "$D/art/image.tar" ] && grep -q "is $id_a, the image docker-build built" "$D/err" &&
+  [ "$(cat "$D/out")" = "$id_a" ]; then
   ok "load accepts the image docker-build built"
 else bad "load accepts the image docker-build built (rc=$rc)"; cat "$D/err"; fi
 
 # 4. load refuses an image whose ID is not the one docker-build recorded.
 reset
 run save "$tc" "$D/art"
+fresh
 run load "$D/art" "$tc" "$id_a" -- STUB_LOAD_ID="$id_b"
 if [ "$rc" = 1 ] && grep -q "loaded as $id_b, not $id_a" "$D/err"; then
   ok "load refuses a substituted image"
@@ -227,6 +244,28 @@ run check-ref "ghcr.io/example-org/go-qrdb-toolchain:0123456789abcdef-main"
 if [ "$rc" = 1 ] && grep -q 'is not a digest reference' "$D/err"; then
   ok "check-ref refuses a tag reference"
 else bad "check-ref refuses a tag reference (rc=$rc)"; fi
+
+# 15a. Two interleaved hand-offs on one daemon, two builds with different IDs
+# under the same content-hash tag: run B loads its image the moment run A's
+# load returns, moving the tag. Each load still passes and hands its consumer
+# its own producer's ID, which the daemon launches as that image while the
+# tag names the other run's.
+reset
+run save "$tc" "$D/art"
+mv "$D/art" "$D/art-a"
+printf '%s\n' "$id_b" > "$D/state/id"
+run save "$tc" "$D/art"
+mv "$D/art" "$D/art-b"
+fresh
+run load "$D/art-a" "$tc" "$id_a" -- STUB_RACE_ID="$id_b"
+rc_a=$rc ref_a=$(cat "$D/out")
+run load "$D/art-b" "$tc" "$id_b"
+rc_b=$rc ref_b=$(cat "$D/out")
+if [ "$rc_a" = 0 ] && [ "$rc_b" = 0 ] && [ "$ref_a" = "$id_a" ] && [ "$ref_b" = "$id_b" ] &&
+  [ "$(resolve "$ref_a")" = "$id_a" ] && [ "$(resolve "$ref_b")" = "$id_b" ] &&
+  [ "$(resolve "$tc")" = "$id_b" ]; then
+  ok "interleaved hand-offs under one tag each launch their own producer's ID"
+else bad "interleaved hand-offs under one tag each launch their own producer's ID (rc=$rc_a/$rc_b, refs $ref_a $ref_b)"; cat "$D/err"; fi
 
 # 16-21. registry-pull and registry-push, the CI image registry path (#1609):
 # docker-build-toolchain and docker-build-it try `registry-pull` before they

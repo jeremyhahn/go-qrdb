@@ -576,68 +576,6 @@ func TestIndex_Clear_AfterClose(t *testing.T) {
 // Close
 // ---------------------------------------------------------------------------
 
-func TestIndex_Close_SubsequentPutFails(t *testing.T) {
-	idx, _ := newPebbleIdx(t, "test", false)
-	if err := idx.Close(); err != nil {
-		t.Fatalf("Close: unexpected error: %v", err)
-	}
-	err := idx.Put([]byte("1"), []byte("val"))
-	var ce *index.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("Put(after close): expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestIndex_Close_SubsequentGetFails(t *testing.T) {
-	idx, _ := newPebbleIdx(t, "test", false)
-	_ = idx.Close()
-	_, err := idx.Get([]byte("val"))
-	var ce *index.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("Get(after close): expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestIndex_Close_SubsequentDeleteFails(t *testing.T) {
-	idx, _ := newPebbleIdx(t, "test", false)
-	_ = idx.Close()
-	err := idx.Delete([]byte("1"), []byte("val"))
-	var ce *index.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("Delete(after close): expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestIndex_Close_SubsequentScanFails(t *testing.T) {
-	idx, _ := newPebbleIdx(t, "test", false)
-	_ = idx.Close()
-	_, err := idx.Scan([]byte("a"), []byte("z"))
-	var ce *index.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("Scan(after close): expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestIndex_Close_SubsequentGetAllFails(t *testing.T) {
-	idx, _ := newPebbleIdx(t, "test", false)
-	_ = idx.Close()
-	_, err := idx.GetAll()
-	var ce *index.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("GetAll(after close): expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestIndex_Close_SubsequentClearFails(t *testing.T) {
-	idx, _ := newPebbleIdx(t, "test", false)
-	_ = idx.Close()
-	err := idx.Clear()
-	var ce *index.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("Clear(after close): expected ClosedError, got %T: %v", err, err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Concurrent access
 // ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -540,6 +541,48 @@ func TestGRPC_CreateUser_Success(t *testing.T) {
 	}
 	if resp.GetUsername() != "alice" {
 		t.Fatalf("expected username 'alice', got %q", resp.GetUsername())
+	}
+}
+
+// TestGRPC_CreateUser_PendingTTL carries pending_ttl_seconds into the domain
+// request and pending_expires_at_unix back out.
+func TestGRPC_CreateUser_PendingTTL(t *testing.T) {
+	expires := testTime.Add(15 * time.Minute)
+	userSvc := &mockUserService{
+		createResult: &user.User{
+			ID: 2, Username: "pam", Lifecycle: user.LifecyclePending,
+			PendingExpiresAt: &expires, CreatedAt: testTime, UpdatedAt: testTime,
+		},
+	}
+	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
+	defer cleanup()
+
+	resp, err := client.CreateUser(context.Background(), &pb.CreateUserRequest{
+		Username: "pam", Email: "pam@example.com", Pending: true, PendingTtlSeconds: 900,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	if got := userSvc.lastCreateReq.PendingTTL; got != 15*time.Minute {
+		t.Fatalf("PendingTTL = %v, want 15m", got)
+	}
+	if !userSvc.lastCreateReq.Pending {
+		t.Fatal("Pending not carried")
+	}
+	if got := resp.GetPendingExpiresAtUnix(); got != expires.Unix() {
+		t.Fatalf("pending_expires_at_unix = %d, want %d", got, expires.Unix())
+	}
+}
+
+func TestPendingTTLFromSeconds(t *testing.T) {
+	if got := pendingTTLFromSeconds(60); got != time.Minute {
+		t.Fatalf("60s = %v", got)
+	}
+	if got := pendingTTLFromSeconds(math.MaxInt64); got <= 0 {
+		t.Fatalf("overflow wrapped to %v", got)
+	}
+	if got := pendingTTLFromSeconds(math.MinInt64); got >= 0 {
+		t.Fatalf("large negative became %v", got)
 	}
 }
 

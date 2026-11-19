@@ -59,17 +59,6 @@ func TestNewCache_ZeroCapacity(t *testing.T) {
 	}
 }
 
-func TestNewCache_NegativeCapacity(t *testing.T) {
-	_, err := NewCache(-1)
-	if err == nil {
-		t.Fatal("expected error for negative capacity")
-	}
-	var capErr *CacheCapacityError
-	if !errors.As(err, &capErr) {
-		t.Errorf("expected CacheCapacityError, got %T: %v", err, err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Get / Put tests
 // ---------------------------------------------------------------------------

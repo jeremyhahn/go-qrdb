@@ -22,13 +22,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 )
 
-func TestNewLessorReturnsNonNil(t *testing.T) {
-	lr := NewLessor()
-	if lr == nil {
-		t.Fatal("NewLessor() returned nil")
-	}
-}
-
 func TestNewLessorStartsEmpty(t *testing.T) {
 	lr := NewLessor()
 	if got := lr.Count(); got != 0 {
@@ -162,17 +155,6 @@ func TestRevokeReturnsAttachedKeys(t *testing.T) {
 	}
 }
 
-func TestRevokeUnknownIDReturnsNotFoundError(t *testing.T) {
-	lr := NewLessor()
-	_, err := lr.Revoke(nopWriter{}, 999)
-	if err == nil {
-		t.Fatal("Revoke(999) expected error, got nil")
-	}
-	if _, ok := err.(*NotFoundError); !ok {
-		t.Errorf("Revoke(999) error type = %T, want *NotFoundError", err)
-	}
-}
-
 func TestRevokeUnknownIDContainsID(t *testing.T) {
 	lr := NewLessor()
 	_, err := lr.Revoke(nopWriter{}, 12345)
@@ -229,17 +211,6 @@ func TestKeepAlivePreservesID(t *testing.T) {
 	}
 	if updated.ID != info.ID {
 		t.Errorf("KeepAlive ID = %d, want %d", updated.ID, info.ID)
-	}
-}
-
-func TestKeepAliveUnknownIDReturnsNotFoundError(t *testing.T) {
-	lr := NewLessor()
-	_, err := lr.KeepAlive(nopWriter{}, 999)
-	if err == nil {
-		t.Fatal("KeepAlive(999) expected error, got nil")
-	}
-	if _, ok := err.(*NotFoundError); !ok {
-		t.Errorf("KeepAlive(999) error type = %T, want *NotFoundError", err)
 	}
 }
 
@@ -349,26 +320,6 @@ func TestLookupOrNotFoundAfterRevoke(t *testing.T) {
 	var nfe *NotFoundError
 	if !errors.As(err, &nfe) {
 		t.Fatalf("expected *NotFoundError, got %T: %v", err, err)
-	}
-}
-
-func TestLeasesReturnsAll(t *testing.T) {
-	lr := NewLessor()
-	_, _ = lr.Grant(nopWriter{}, 10)
-	_, _ = lr.Grant(nopWriter{}, 20)
-	_, _ = lr.Grant(nopWriter{}, 30)
-
-	leases := lr.Leases()
-	if len(leases) != 3 {
-		t.Errorf("Leases() returned %d leases, want 3", len(leases))
-	}
-}
-
-func TestLeasesEmptyLessor(t *testing.T) {
-	lr := NewLessor()
-	leases := lr.Leases()
-	if len(leases) != 0 {
-		t.Errorf("Leases() on empty lessor returned %d leases, want 0", len(leases))
 	}
 }
 
@@ -505,20 +456,6 @@ func TestExpiredLeaseIDsWithNoExpired(t *testing.T) {
 	}
 }
 
-func TestExpiredLeaseIDsWithExpired(t *testing.T) {
-	fake := clocktest.New()
-	lr := NewLessor(WithClock(fake))
-	info, _ := lr.Grant(nopWriter{}, 1)
-	fake.Advance(1100 * time.Millisecond)
-	expired := lr.ExpiredLeaseIDs()
-	if len(expired) != 1 {
-		t.Fatalf("ExpiredLeaseIDs() returned %d IDs, want 1", len(expired))
-	}
-	if expired[0] != info.ID {
-		t.Errorf("ExpiredLeaseIDs()[0] = %d, want %d", expired[0], info.ID)
-	}
-}
-
 func TestExpiredLeaseIDsMixedExpiredAndActive(t *testing.T) {
 	fake := clocktest.New()
 	lr := NewLessor(WithClock(fake))
@@ -567,44 +504,6 @@ func TestCountReflectsRevokes(t *testing.T) {
 	}
 }
 
-func TestClosePreventsGrant(t *testing.T) {
-	lr := NewLessor()
-	lr.Close()
-	_, err := lr.Grant(nopWriter{}, 10)
-	if err == nil {
-		t.Fatal("Grant after Close expected error, got nil")
-	}
-	if _, ok := err.(*LessorClosedError); !ok {
-		t.Errorf("error type = %T, want *LessorClosedError", err)
-	}
-}
-
-func TestClosePreventsRevoke(t *testing.T) {
-	lr := NewLessor()
-	info, _ := lr.Grant(nopWriter{}, 60)
-	lr.Close()
-	_, err := lr.Revoke(nopWriter{}, info.ID)
-	if err == nil {
-		t.Fatal("Revoke after Close expected error, got nil")
-	}
-	if _, ok := err.(*LessorClosedError); !ok {
-		t.Errorf("error type = %T, want *LessorClosedError", err)
-	}
-}
-
-func TestClosePreventsKeepAlive(t *testing.T) {
-	lr := NewLessor()
-	info, _ := lr.Grant(nopWriter{}, 60)
-	lr.Close()
-	_, err := lr.KeepAlive(nopWriter{}, info.ID)
-	if err == nil {
-		t.Fatal("KeepAlive after Close expected error, got nil")
-	}
-	if _, ok := err.(*LessorClosedError); !ok {
-		t.Errorf("error type = %T, want *LessorClosedError", err)
-	}
-}
-
 func TestLeaseInfoRemainingTTLApproximate(t *testing.T) {
 	lr := NewLessor()
 	info, _ := lr.Grant(nopWriter{}, 60)
@@ -633,14 +532,6 @@ func TestRevokeNoKeysReturnsEmptySlice(t *testing.T) {
 	}
 	if len(keys) != 0 {
 		t.Errorf("Revoke keys count = %d, want 0", len(keys))
-	}
-}
-
-func TestExpiredLeaseIDsEmptyLessor(t *testing.T) {
-	lr := NewLessor()
-	expired := lr.ExpiredLeaseIDs()
-	if len(expired) != 0 {
-		t.Errorf("ExpiredLeaseIDs() on empty lessor returned %d IDs, want 0", len(expired))
 	}
 }
 

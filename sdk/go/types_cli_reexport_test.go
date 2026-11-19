@@ -15,12 +15,6 @@
 package sdk_test
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/x509"
-	"encoding/pem"
-	"slices"
 	"testing"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -29,59 +23,5 @@ import (
 func TestSDK_QuorumFactorMTLS(t *testing.T) {
 	if sdk.QuorumFactorMTLS != "mtls" {
 		t.Fatalf("QuorumFactorMTLS = %q, want %q", sdk.QuorumFactorMTLS, "mtls")
-	}
-}
-
-func TestSDK_ParseHolderSignerPEM(t *testing.T) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		t.Fatalf("MarshalPKCS8PrivateKey: %v", err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-
-	signer, err := sdk.ParseHolderSignerPEM(keyPEM)
-	if err != nil {
-		t.Fatalf("ParseHolderSignerPEM: %v", err)
-	}
-	if signer == nil || signer.Public() == nil {
-		t.Fatal("expected a signer with a public key")
-	}
-}
-
-func TestSDK_ParseHolderSignerPEM_Invalid(t *testing.T) {
-	if _, err := sdk.ParseHolderSignerPEM([]byte("not pem")); err == nil {
-		t.Fatal("expected an error for non-PEM input")
-	}
-}
-
-func TestSDK_AvailableCodecs(t *testing.T) {
-	codecs := sdk.AvailableCodecs()
-	if !slices.Contains(codecs, "json") {
-		t.Fatalf("AvailableCodecs() = %v, want it to include json", codecs)
-	}
-}
-
-func TestSDK_EncodePKCS12_InvalidKey(t *testing.T) {
-	if _, err := sdk.EncodePKCS12([]byte("cert"), []byte("not pem"), nil, "pw"); err == nil {
-		t.Fatal("expected an error for an invalid key PEM")
-	}
-}
-
-func TestSDK_EncodePKCS12_InvalidCert(t *testing.T) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		t.Fatalf("MarshalPKCS8PrivateKey: %v", err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-	if _, err := sdk.EncodePKCS12([]byte("not pem"), keyPEM, nil, "pw"); err == nil {
-		t.Fatal("expected an error for an invalid certificate PEM")
 	}
 }

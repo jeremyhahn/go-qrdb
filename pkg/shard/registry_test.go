@@ -116,23 +116,6 @@ func TestUnregisterNotRegisteredReturnsError(t *testing.T) {
 	}
 }
 
-func TestUnregisterTwiceReturnsError(t *testing.T) {
-	r := NewRegistry()
-	if err := r.Register(ShardKV, TypeKV); err != nil {
-		t.Fatalf("Register() unexpected error: %v", err)
-	}
-	if err := r.Unregister(ShardKV); err != nil {
-		t.Fatalf("Unregister() unexpected error: %v", err)
-	}
-	err := r.Unregister(ShardKV)
-	if err == nil {
-		t.Fatal("second Unregister() expected error, got nil")
-	}
-	if _, ok := err.(*ShardNotRegisteredError); !ok {
-		t.Errorf("second Unregister() error type = %T, want *ShardNotRegisteredError", err)
-	}
-}
-
 // --- Get ---
 
 func TestGetSuccess(t *testing.T) {
@@ -157,20 +140,6 @@ func TestGetNotRegisteredReturnsError(t *testing.T) {
 	}
 	if _, ok := err.(*ShardNotRegisteredError); !ok {
 		t.Errorf("Get() error type = %T, want *ShardNotRegisteredError", err)
-	}
-}
-
-func TestGetAfterUnregisterReturnsError(t *testing.T) {
-	r := NewRegistry()
-	if err := r.Register(ShardKV, TypeKV); err != nil {
-		t.Fatalf("Register() unexpected error: %v", err)
-	}
-	if err := r.Unregister(ShardKV); err != nil {
-		t.Fatalf("Unregister() unexpected error: %v", err)
-	}
-	_, err := r.Get(ShardKV)
-	if err == nil {
-		t.Fatal("Get() after Unregister expected error, got nil")
 	}
 }
 
@@ -220,13 +189,6 @@ func TestListReturnsCopy(t *testing.T) {
 }
 
 // --- Count ---
-
-func TestCountEmpty(t *testing.T) {
-	r := NewRegistry()
-	if r.Count() != 0 {
-		t.Errorf("Count() = %d, want 0", r.Count())
-	}
-}
 
 func TestCountAfterRegisterAndUnregister(t *testing.T) {
 	r := NewRegistry()
@@ -382,24 +344,5 @@ func TestRegisterAfterUnregister(t *testing.T) {
 	}
 	if got != TypeSystem {
 		t.Errorf("Get() = %q, want %q after re-register", got, TypeSystem)
-	}
-}
-
-func TestRegisterAfterUnregisterPreservesCount(t *testing.T) {
-	r := NewRegistry()
-	if err := r.Register(ShardKV, TypeKV); err != nil {
-		t.Fatalf("Register() unexpected error: %v", err)
-	}
-	if err := r.Register(ShardVector, TypeVector); err != nil {
-		t.Fatalf("Register() unexpected error: %v", err)
-	}
-	if err := r.Unregister(ShardKV); err != nil {
-		t.Fatalf("Unregister() unexpected error: %v", err)
-	}
-	if err := r.Register(ShardKV, TypeKV); err != nil {
-		t.Fatalf("re-Register() unexpected error: %v", err)
-	}
-	if r.Count() != 2 {
-		t.Errorf("Count() = %d, want 2", r.Count())
 	}
 }

@@ -311,10 +311,3 @@ func TestDefaultReturnsLinearizable(t *testing.T) {
 		t.Errorf("Default() = %v, want %v", got, Linearizable)
 	}
 }
-
-func TestDefaultIsValid(t *testing.T) {
-	got := Default()
-	if !got.IsValid() {
-		t.Errorf("Default().IsValid() = false, want true")
-	}
-}

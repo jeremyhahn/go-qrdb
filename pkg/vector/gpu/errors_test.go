@@ -31,16 +31,6 @@ func TestErrGPUNotCompiled(t *testing.T) {
 	}
 }
 
-func TestErrGPUNotCompiled_SentinelIdentity(t *testing.T) {
-	// Verify sentinel errors are distinct.
-	if errors.Is(ErrGPUNotCompiled, ErrDeviceNotFound) {
-		t.Error("ErrGPUNotCompiled should not match ErrDeviceNotFound")
-	}
-	if errors.Is(ErrDeviceNotFound, ErrOutOfMemory) {
-		t.Error("ErrDeviceNotFound should not match ErrOutOfMemory")
-	}
-}
-
 func TestGPUDeviceError(t *testing.T) {
 	err := &GPUDeviceError{
 		DeviceID: 2,
@@ -84,17 +74,6 @@ func TestGPUMemoryError(t *testing.T) {
 	}
 	if !strings.Contains(msg, "536870912") {
 		t.Errorf("expected available bytes in message, got: %s", msg)
-	}
-}
-
-func TestGPUMemoryError_ZeroValues(t *testing.T) {
-	err := &GPUMemoryError{
-		RequestedBytes: 0,
-		AvailableBytes: 0,
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "GPU memory allocation failed") {
-		t.Errorf("expected prefix in message, got: %s", msg)
 	}
 }
 

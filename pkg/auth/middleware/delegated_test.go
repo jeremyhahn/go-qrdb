@@ -88,6 +88,10 @@ var (
 // dlgUnrevoked answers that no certificate is revoked.
 type dlgUnrevoked struct{}
 
+func (r dlgUnrevoked) IsCertRevokedUncached(ctx context.Context, c *x509.Certificate) (bool, error) {
+	return r.IsCertRevoked(ctx, c)
+}
+
 func (dlgUnrevoked) IsCertRevoked(context.Context, *x509.Certificate) (bool, error) {
 	return false, nil
 }
