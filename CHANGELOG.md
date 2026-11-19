@@ -15,6 +15,8 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- The vector quota's distinct stored-id count is a new vector command rule gated on the `vector-stored-count` feature: the proposer sets it only once every replica of the shard supports it, and a command without it applies the old one-per-upsert count on every binary.
+- The audit chain's apply-time onboarding dedupe is a new event marker gated on the `audit-append-once` feature: the proposer sets it only once every replica of the shard supports it, and an event without it is appended on every apply, on every binary.
 - CI hands the toolchain and integration-test images between jobs through the LAN CI registry (the repository secret secrets.CI_IMAGE_REGISTRY, so every log line masks its address) on self-hosted runners; GitHub artifacts remain the path on GitHub-hosted runners and whenever a pull fails.
 - `make docker-build-toolchain`, `make docker-build-it` and `scripts/in-toolchain-image.sh` pull the content-hash-tagged image from the CI image registry the runner's environment names in `CI_IMAGE_REGISTRY` before they build, and push what they built to it (`scripts/image-registry.sh`, #1609), so a runner host no longer builds every image on its own disk. A failed or hung pull or push falls back to the build and never fails the job; each image logs one line (`pulled`, `miss, built and pushed` or `miss, built, push failed`); unset, nothing changes.
 

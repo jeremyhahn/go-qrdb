@@ -1537,7 +1537,33 @@ feature judged cluster-wide. It adds no Raft command.
   database id is a format change. Nothing is migrated: pre-release tenants are
   re-created.
 
-**`tenant-undo` (`featuregate.TenantUndo`)** is a third activation-based
+**`vector-stored-count` (`featuregate.VectorStoredCount`)** is a per-shard
+feature that changes how a vector command applies.
+
+- **Why it exists.** The vector quota counts distinct stored ids: an upsert
+  of an id already stored adds nothing, and a delete of a missing id removes
+  nothing. A node whose binary predates the rule counts one per upsert, so
+  replicas applying the same committed entry would reach different counts
+  and different quota decisions.
+- **How it is gated.** The rule rides on the command
+  (`VectorCommand.StoredCount`), set by the proposer only once the feature is
+  enabled on the shard. A command without it applies the old one-per-upsert
+  rule on every binary, so a log replayed across versions applies alike.
+
+**`audit-append-once` (`featuregate.AuditAppendOnce`)** is a per-shard
+feature that changes how an audit append applies.
+
+- **Why it exists.** The onboarding event is appended once at apply time,
+  deduplicated by its request id (`vlog.Chain.AppendOnce`). A node whose
+  binary predates the dedupe would append a retried event again while its
+  peers drop it, and the replicas' chains would diverge.
+- **How it is gated.** The marker rides on the event
+  (`AuditEvent.AppendOnce`), set by the proposer only once the feature is
+  enabled on the shard. Until then the pending onboarding record is not
+  re-sent after an append whose outcome was unknown, and an event without
+  the marker is appended every time it is applied, on every binary.
+
+**`tenant-undo` (`featuregate.TenantUndo`)** is another activation-based
 feature. It adds no Raft command: the undone tombstone and the
 acknowledgements are ordinary metadata writes.
 
