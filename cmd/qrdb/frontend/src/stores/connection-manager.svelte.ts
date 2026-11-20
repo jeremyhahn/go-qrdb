@@ -541,25 +541,10 @@ export async function connectProfile(
         connManagerStore.states = new Map(connManagerStore.states).set(profileId, errState);
         return errState;
     }
-    // Point the REST client at the profile's saved server address (the
-    // built-in profile's address is the page origin, where App.svelte's
-    // initialize connects). A client connected to another server is
-    // disconnected first; a transport closed by connection.disconnect()
-    // (Settings' Disconnect) is reopened. Without this the probe below and
-    // every later read would go to whichever server was connected before.
-    const target = profile.external?.address || window.location.origin;
-    const current = webConnectedBase ?? window.location.origin;
-    if (!client.connection.isConnected() || current !== target) {
-        try {
-            if (client.connection.isConnected()) {
-                await client.connection.disconnect();
-            }
-            await client.connection.connect(target);
-            webConnectedBase = target;
-        } catch {
-            // Unreachable: resolveWebConnectionState reports the error state.
-        }
-    }
+    // Point the REST client at the profile's saved server address; without
+    // this the probe below and every later read would go to whichever
+    // server was connected before.
+    await retargetWebClient(client, profile);
     const state = await resolveWebConnectionState(client, profile);
     connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
 
