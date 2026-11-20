@@ -233,7 +233,7 @@ case("D12 an unknown category fails (e)",
      {"ci.yml": wf(PR_ON, job("[self-hosted, bigdisk]  # self-hosted: faster: the hosted runner is slow", name="unit"))}, 1,
      ["ci.yml:unit: (e)"])
 case("D13 codex with the credential category passes in code-review.yml",
-     {"code-review.yml": wf(PR_ON, job("codex  # self-hosted: credential: the reviewer token is on this runner alone", HEAD_GUARD, name="codex"))}, 0)
+     {"code-review.yml": wf(PR_ON, job("codex  # self-hosted: credential: the reviewer token is on this runner alone", HEAD_GUARD, name="review"))}, 0)
 case("D15 codex with a hardware waiver outside code-review.yml fails (f) (go-qrdb #1642)",
      {"ci.yml": wf(PR_ON, job("codex  # self-hosted: hardware: the review host", name="unit"))}, 1,
      ["ci.yml:unit: (f)", "codex"])
@@ -253,10 +253,24 @@ case("D20 qwen with credential: in code-review.yml fails (f)",
      {"code-review.yml": wf(PR_ON, job("qwen  # self-hosted: credential: a key", name="oc"))}, 1,
      ["code-review.yml:oc: (f)"])
 case("D21 qwen with hardware: in code-review.yml passes",
-     {"code-review.yml": wf(PR_ON, job("qwen  # self-hosted: hardware: the GPU host that serves the model", HEAD_GUARD, name="oc"))}, 0)
+     {"code-review.yml": wf(PR_ON, job("qwen  # self-hosted: hardware: the GPU host that serves the model", HEAD_GUARD, name="review-opencode"))}, 0)
 case("D22 credential: on a non-review label fails (f), in any file",
      {"code-review.yml": wf(PR_ON, job("[self-hosted, bigdisk]  # self-hosted: credential: a token", name="x"))}, 1,
      ["code-review.yml:x: (f)", "credential"])
+case("D25 QWEN on a non-review job in code-review.yml fails (f): labels match case-insensitively (go-qrdb #1642)",
+     {"code-review.yml": wf(PR_ON, job("QWEN  # self-hosted: hardware: the GPU host", HEAD_GUARD, name="build"))}, 1,
+     ["code-review.yml:build: (f)", "review-opencode"])
+case("D26 qwen on a non-review job in code-review.yml fails (f): the label is review-opencode's",
+     {"code-review.yml": wf(PR_ON, job("qwen  # self-hosted: hardware: the GPU host", HEAD_GUARD, name="build"))}, 1,
+     ["code-review.yml:build: (f)"])
+case("D27 codex on a job other than review fails (f), even with credential:",
+     {"code-review.yml": wf(PR_ON, job("Codex  # self-hosted: credential: a key", HEAD_GUARD, name="build"))}, 1,
+     ["code-review.yml:build: (f)"])
+case("D28 QWEN on review-opencode passes",
+     {"code-review.yml": wf(PR_ON, job("QWEN  # self-hosted: hardware: the GPU host", HEAD_GUARD, name="review-opencode"))}, 0)
+case("D29 Codex on ci.yml fails (f)",
+     {"ci.yml": wf(PR_ON, job("Codex  # self-hosted: hardware: the review host", HEAD_GUARD, name="unit"))}, 1,
+     ["ci.yml:unit: (f)"])
 case("D23 a label that only contains codex is not the review label",
      {"ci.yml": wf(PR_ON, job("[self-hosted, codex-cache]  # self-hosted: hardware: the cache disk", HEAD_GUARD, name="c"))}, 0, [], ["(f)"])
 case("D24 codex named in the reason text only is not the label",
@@ -312,7 +326,7 @@ case("G10 a runs-on that resolves hosted for a fork's PR (the routing expression
      {"ci.yml": wf(PR_ON, job(ROUTE + "  # self-hosted: oversize: 24 GB stage memory (#2063)", name="image"))}, 0, [], ["(g)"])
 case("G11 a Gitea-only job (github.server_url != github.com) passes",
      {"code-review.yml": wf(PR_ON, job("qwen  # self-hosted: hardware: the GPU host",
-                                       "needs.review.outputs.agent == 'opencode' && github.server_url != 'https://github.com'", name="oc"))},
+                                       "needs.review.outputs.agent == 'opencode' && github.server_url != 'https://github.com'", name="review-opencode"))},
      0, [], ["(g)"])
 
 print(f"{'ALL PASS' if not FAILS else f'{FAILS} FAILED'}")

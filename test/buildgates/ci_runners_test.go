@@ -290,7 +290,8 @@ func reservedLabelProblem(workflow, job, label string) string {
 		// one a pull_request satisfies (github.event.ref is '' there, #1642).
 		return "the " + releaseLabel + " label is the release pool's, which no job here runs on; a waiver does not open it"
 	}
-	owner, ok := reviewRunnerLabels[label]
+	// GitHub matches runner labels case-insensitively, so QWEN is qwen (#1642).
+	owner, ok := reviewRunnerLabels[strings.ToLower(label)]
 	if !ok || (workflow == reviewWorkflow && job == owner) {
 		return ""
 	}
@@ -882,6 +883,11 @@ func TestReviewLabelsReserved(t *testing.T) {
 		{"the Codex review on codex", reviewWorkflow, reviewJob, "codex  # self-hosted: credential: the reviewer token", false},
 		{"review-opencode on qwen", reviewWorkflow, "review-opencode", "qwen  # self-hosted: hardware: a fixture reason", false},
 		{"ci.yml on another label", ciFile, "build", "gpu  # self-hosted: hardware: a fixture reason", false},
+		// GitHub matches runner labels case-insensitively (#1642).
+		{"a non-review job on QWEN", reviewWorkflow, "build", "QWEN  # self-hosted: hardware: a fixture reason", true},
+		{"ci.yml on Codex", ciFile, "build", "Codex  # self-hosted: hardware: a fixture reason", true},
+		{"review on QWEN", reviewWorkflow, reviewJob, "QWEN  # self-hosted: hardware: a fixture reason", true},
+		{"review-opencode on QWEN", reviewWorkflow, "review-opencode", "QWEN  # self-hosted: hardware: a fixture reason", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

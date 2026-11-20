@@ -235,7 +235,8 @@ jobs:
       # v1.47 (ruling 1007): label and category are checked together. The
       # review-only labels codex and qwen run only in code-review.yml, codex
       # with credential: and qwen with hardware:, and credential: is only for
-      # codex; a waiver does not lift it (f). A waiver does not make a fork's
+      # codex; each only on its own job there, codex on review and qwen on
+      # review-opencode, in any letter case; a waiver does not lift it (f). A waiver does not make a fork's
       # code trusted either (go-qrdb #1642): a waived self-hosted job in a
       # workflow a pull_request or pull_request_target triggers keeps a fork's
       # PR off its runner, by a top-level `&& head.repo.full_name ==
@@ -557,6 +558,9 @@ jobs:
           # v1.47 (ruling 1007): a review-only label runs only in code-review.yml, and
           # only with its own category; credential: is the codex job's alone.
           REVIEW = {"codex": "credential", "qwen": "hardware"}
+          # go-qrdb #1642: each review label is its one review job's, never another
+          # job's in code-review.yml; labels match case-insensitively, as on GitHub.
+          REVIEW_JOBS = {"codex": "review", "qwen": "review-opencode"}
           REVIEW_FILES = {"code-review.yml", "code-review.yaml"}
           REVIEW_TOKEN = re.compile(r"(?<![\w.-])['\"]?(codex|qwen)['\"]?(?![\w-])", re.I)
           GH = "https://github.com"
@@ -619,7 +623,7 @@ jobs:
               return sorted(found)
 
 
-          def review_finding(path, where, ro, ro_line):
+          def review_finding(path, job, where, ro, ro_line):
               # v1.47 (ruling 1007): label and category together, whatever the waiver says.
               names = review_labels(ro)
               m = WAIVER.search(ro_line)
@@ -628,6 +632,10 @@ jobs:
               if names and base not in REVIEW_FILES:
                   return (f"{where}: (f) names the review-only label {', '.join(names)}; ruling 1007 reserves codex and "
                           f"qwen to code-review.yml whatever the `# self-hosted:` waiver says")
+              elsewhere = [n for n in names if job != REVIEW_JOBS[n]]
+              if elsewhere:
+                  return (f"{where}: (f) names the review-only label {', '.join(elsewhere)}, reserved to code-review.yml's "
+                          f"{', '.join(REVIEW_JOBS[n] for n in elsewhere)} job; labels match case-insensitively (go-qrdb #1642)")
               if names:
                   wrong = [n for n in names if cat != REVIEW[n]]
                   if len(names) > 1 or wrong:
@@ -729,7 +737,7 @@ jobs:
                               if LARGER.search(ro) and re.search(r"ubuntu|windows|macos", ro):
                                   bad.append(f"{where}: (d) names a larger GitHub-hosted runner ({ro}); it bills on a public repository")
                                   continue
-                              rf = review_finding(path, where, ro, ro_line)
+                              rf = review_finding(path, job, where, ro, ro_line)
                               if rf:
                                   bad.append(rf)
                                   continue
