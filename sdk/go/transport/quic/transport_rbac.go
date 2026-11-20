@@ -77,6 +77,32 @@ func (e rbacEndpoints) ListOwnPermissions(ctx context.Context) ([]transport.Perm
 	return wire.Permissions, nil
 }
 
+// ListPermissionCatalog calls role.ListPermissionCatalog (permissions:list).
+func (e rbacEndpoints) ListPermissionCatalog(ctx context.Context) ([]transport.PermissionInfo, error) {
+	if e.t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	data, err := e.t.call(ctx, "role.ListPermissionCatalog", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListPermissionCatalog", Err: err}
+	}
+	var wire struct {
+		Permissions []transport.PermissionInfo `json:"permissions"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return nil, &transport.RequestError{Method: "ListPermissionCatalog", Err: &UnmarshalError{Err: err}}
+	}
+	return wire.Permissions, nil
+}
+
+var _ transport.PermissionProvider = (*Transport)(nil)
+
+// PermissionClient returns a PermissionClient answered from the server's
+// permission catalog.
+func (t *Transport) PermissionClient() transport.PermissionClient {
+	return transport.NewRemotePermissionClient(rbacEndpoints{t: t})
+}
+
 // EvaluateAuthorization maps to role.Authorize.
 func (e rbacEndpoints) EvaluateAuthorization(ctx context.Context, req *transport.AuthorizeRequest) (*transport.AuthorizeDecision, error) {
 	if e.t.closed.Load() {

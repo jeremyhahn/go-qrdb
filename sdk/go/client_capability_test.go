@@ -106,9 +106,6 @@ func TestClient_OptionalAccessors_NilWhenTransportLacksThem(t *testing.T) {
 	if got := c.UserAuthFactors(); got != nil {
 		t.Fatalf("UserAuthFactors = %v, want nil", got)
 	}
-	if got := c.Permissions(); got != nil {
-		t.Fatalf("Permissions = %v, want nil", got)
-	}
 	if got := c.Audit(); got != nil {
 		t.Fatalf("Audit = %v, want nil", got)
 	}
@@ -124,6 +121,20 @@ func TestClient_OptionalAccessors_NilWhenTransportLacksThem(t *testing.T) {
 	if got := c.Sessions(); got != nil {
 		t.Fatalf("Sessions = %v, want nil", got)
 	}
+}
+
+// TestClient_Permissions_IsARequiredCapability pins that Permissions is
+// routed through capability like every required accessor: every shipped
+// transport implements transport.PermissionProvider, so a transport that
+// does not is a programming error, not a nil client.
+func TestClient_Permissions_IsARequiredCapability(t *testing.T) {
+	c := newPlainClient(t)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Permissions on a transport without PermissionProvider did not panic")
+		}
+	}()
+	_ = c.Permissions()
 }
 
 func TestClient_SQL_UnsupportedTransportRefusesTyped(t *testing.T) {
