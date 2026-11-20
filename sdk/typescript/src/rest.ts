@@ -2769,7 +2769,9 @@ export class RestClient implements Client {
                 interface ValueResponse { readonly value: string }
                 const resp = await this.fetchJSON<ValueResponse>(`/v1/credentials/${encodeURIComponent(name)}/value`,
                 );
-                return resp.value;
+                // The handler's value is a Go []byte, base64 on the wire
+                // (RFC 4648); return the plaintext, as the Wails binding does.
+                return decodeBase64Utf8(resp.value);
             },
             list: async (): Promise<string[]> => {
                 this.ensureConnected();
@@ -2815,7 +2817,9 @@ export class RestClient implements Client {
                 interface ValueResponse { readonly value: string }
                 const resp = await this.fetchJSON<ValueResponse>(`/v1/credentials/${encodeURIComponent(name)}/versions/${encodeURIComponent(String(version))}`,
                 );
-                return resp.value;
+                // The handler's value is a Go []byte, base64 on the wire
+                // (RFC 4648); return the plaintext, as the Wails binding does.
+                return decodeBase64Utf8(resp.value);
             },
             gcExpired: async (name: string): Promise<number> => {
                 this.ensureConnected();
