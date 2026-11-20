@@ -3916,23 +3916,27 @@ func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCf
 		creds = seal.Credentials{}
 	}
 
+	// A single-admin initialization that requested a system SO and never
+	// made its record durable leaves its intent standing. The ceremony
+	// writes the intent before it initializes the barrier, so the intent
+	// can stand on a barrier that is not initialized yet (a crash between
+	// the two) as well as on one that is (a failed record write, or a
+	// crash after the initialization). Initializing or unsealing here would
+	// boot without that SO and skip the sealed window whose initialization
+	// retry completes the handoff, so the barrier stays sealed, as the
+	// daemon's unsealNoneBarrier keeps it. The probe runs before
+	// Initialize, and an unreadable intent is treated as standing (fail
+	// closed).
+	if pending, intentErr := barrier.SystemSOIntent(ctx); intentErr != nil || pending {
+		log.Warn("node: barrier kept sealed: a requested system SO was never recorded; retry the initialization",
+			"intent_read_error", intentErr)
+		return false
+	}
+
 	// Attempt initialize (first boot) then unseal (subsequent boots).
 	if initErr := barrier.Initialize(ctx, creds); initErr != nil {
 		if !errors.Is(initErr, seal.ErrAlreadyInitialized) {
 			log.Warn("node: barrier initialize failed", "error", initErr)
-			return false
-		}
-		// A single-admin initialization that requested a system SO and
-		// never made its record durable (a failed write, or a crash
-		// between the barrier's initialization and the write) leaves its
-		// intent standing. Auto-unsealing here would boot without that SO
-		// and skip the sealed window whose initialization retry completes
-		// the handoff, so the barrier stays sealed, as the daemon's
-		// unsealNoneBarrier keeps it. An unreadable intent is treated as
-		// standing (fail closed).
-		if pending, intentErr := barrier.SystemSOIntent(ctx); intentErr != nil || pending {
-			log.Warn("node: barrier kept sealed: a requested system SO was never recorded; retry the initialization",
-				"intent_read_error", intentErr)
 			return false
 		}
 		// Already initialized: unseal.

@@ -771,6 +771,19 @@ func TestAttemptAutoUnseal_PendingSystemSOIntentKeepsBarrierSealed(t *testing.T)
 			defer cleanup()
 			sealCfg := qrdbconfig.SealConfig{Strategy: string(tc.strategy)}
 
+			// The ceremony writes the intent before it initializes the
+			// barrier: a crash in between leaves an uninitialized barrier
+			// with the intent standing, and the first auto-unseal must
+			// neither initialize nor unseal it.
+			require.NoError(t, barrier.MarkSystemSOIntent(ctx))
+			assert.False(t, attemptAutoUnseal(ctx, barrier, sealCfg, tc.passphrase, slog.Default()),
+				"a pending system SO intent must keep an uninitialized barrier sealed")
+			assert.True(t, barrier.IsSealed())
+			initialized, err := barrier.Initialized(ctx)
+			require.NoError(t, err)
+			assert.False(t, initialized, "auto-unseal must not initialize a barrier whose SO intent stands")
+			require.NoError(t, barrier.ClearSystemSOIntent(ctx))
+
 			require.True(t, attemptAutoUnseal(ctx, barrier, sealCfg, tc.passphrase, slog.Default()))
 			require.NoError(t, barrier.MarkSystemSOIntent(ctx))
 			_ = barrier.Seal()
@@ -784,6 +797,49 @@ func TestAttemptAutoUnseal_PendingSystemSOIntentKeepsBarrierSealed(t *testing.T)
 			assert.False(t, barrier.IsSealed())
 		})
 	}
+}
+
+// intentReadFailingBackend fails every read of the system SO intent record
+// and passes everything else through.
+type intentReadFailingBackend struct {
+	seal.StorageBackend
+}
+
+func (b intentReadFailingBackend) Get(ctx context.Context, path string) ([]byte, error) {
+	if strings.HasSuffix(path, ".system-so-intent") {
+		return nil, errors.New("intent read failed")
+	}
+	return b.StorageBackend.Get(ctx, path)
+}
+
+// TestAttemptAutoUnseal_UnreadableSystemSOIntentKeepsBarrierSealed: an intent
+// that cannot be read is treated as standing (fail closed), on an
+// uninitialized barrier and on an initialized one.
+func TestAttemptAutoUnseal_UnreadableSystemSOIntentKeepsBarrierSealed(t *testing.T) {
+	ctx := context.Background()
+	store, err := pebbleStorage.New(pebbleStorage.DefaultConfig(t.TempDir()))
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+	cfg := seal.BarrierConfig{RootKeyPath: "root-key", PreferenceOrder: []seal.StrategyID{seal.StrategyNone}}
+	sealCfg := qrdbconfig.SealConfig{Strategy: string(seal.StrategyNone)}
+
+	failing, err := seal.NewStorageBarrier(slog.Default(), intentReadFailingBackend{seal.NewStorageAdapter(store)}, cfg, seal.NewNoneStrategy())
+	require.NoError(t, err)
+	assert.False(t, attemptAutoUnseal(ctx, failing, sealCfg, nil, slog.Default()),
+		"an unreadable SO intent must keep an uninitialized barrier sealed")
+	initialized, err := failing.Initialized(ctx)
+	require.NoError(t, err)
+	assert.False(t, initialized, "auto-unseal must not initialize a barrier whose SO intent is unreadable")
+
+	healthy, err := seal.NewStorageBarrier(slog.Default(), seal.NewStorageAdapter(store), cfg, seal.NewNoneStrategy())
+	require.NoError(t, err)
+	require.True(t, attemptAutoUnseal(ctx, healthy, sealCfg, nil, slog.Default()))
+
+	restarted, err := seal.NewStorageBarrier(slog.Default(), intentReadFailingBackend{seal.NewStorageAdapter(store)}, cfg, seal.NewNoneStrategy())
+	require.NoError(t, err)
+	assert.False(t, attemptAutoUnseal(ctx, restarted, sealCfg, nil, slog.Default()),
+		"an unreadable SO intent must keep an initialized barrier sealed")
+	assert.True(t, restarted.IsSealed())
 }
 
 // newNoneTestBarrier returns an uninitialized barrier whose only strategy is
