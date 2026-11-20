@@ -21,19 +21,27 @@ type graphEditor struct {
 	tidied []string
 }
 
-func (g *graphEditor) Get(dir, pathAtVersion string) error {
+func (g *graphEditor) Get(dir, pathAtVersion string) (err error) {
 	g.gets = append(g.gets, pathAtVersion)
 	path, version, _ := strings.Cut(pathAtVersion, "@")
 	moves := map[string]string{path: version}
 	for p, v := range g.graph[pathAtVersion] {
 		moves[p] = v
 	}
-	gomod := filepath.Join(dir, "go.mod")
-	data, err := os.ReadFile(gomod) //#nosec G304 -- a test fixture copied into t.TempDir
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return err
 	}
-	directives, err := parseGoMod(gomod, data)
+	defer func() {
+		if cerr := root.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	data, err := root.ReadFile("go.mod")
+	if err != nil {
+		return err
+	}
+	directives, err := parseGoMod(filepath.Join(dir, "go.mod"), data)
 	if err != nil {
 		return err
 	}
@@ -44,10 +52,10 @@ func (g *graphEditor) Get(dir, pathAtVersion string) error {
 			sum.WriteString(d.Path + " " + v + " h1:fake=\n")
 		}
 	}
-	if err := os.WriteFile(gomod, data, 0o600); err != nil {
+	if err := root.WriteFile("go.mod", data, 0o600); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "go.sum"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //#nosec G304 -- a test fixture copied into t.TempDir
+	f, err := root.OpenFile("go.sum", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -88,13 +96,23 @@ func requiredVersion(t *testing.T, dir, path string) string {
 	return ""
 }
 
+// writeRootFile writes a fixture file named name inside dir through an
+// os.Root, so the write cannot leave dir.
+func writeRootFile(t *testing.T, dir, name string, data []byte) {
+	t.Helper()
+	root, err := os.OpenRoot(dir)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, root.Close()) }()
+	require.NoError(t, root.WriteFile(name, data, 0o600))
+}
+
 func TestBumpNeverMovesAHeldRequirement(t *testing.T) {
 	dir := t.TempDir()
 	fixture, err := os.ReadFile(filepath.Join("testdata", "heldgraph", "go.mod"))
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), fixture, 0o600))
+	writeRootFile(t, dir, "go.mod", fixture)
 	sum := []byte("example.com/a v1.0.0 h1:fake=\n")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.sum"), sum, 0o600))
+	writeRootFile(t, dir, "go.sum", sum)
 
 	// a v1.1.0 requires the held b at v1.1.0; c v1.1.0 requires nothing held.
 	edit := &graphEditor{graph: map[string]map[string]string{
@@ -124,7 +142,7 @@ func TestBumpSkipsAllWhenEveryBumpMovesAHold(t *testing.T) {
 	dir := t.TempDir()
 	fixture, err := os.ReadFile(filepath.Join("testdata", "heldgraph", "go.mod"))
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), fixture, 0o600))
+	writeRootFile(t, dir, "go.mod", fixture)
 
 	edit := &graphEditor{graph: map[string]map[string]string{
 		"example.com/a@v1.1.0": {"example.com/b": "v1.1.0"},
@@ -144,13 +162,13 @@ func TestBumpTidiesALocallyReplacedModuleWithNoBumpOfItsOwn(t *testing.T) {
 	root := t.TempDir()
 	fixture, err := os.ReadFile(filepath.Join("testdata", "heldgraph", "go.mod"))
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), fixture, 0o600))
+	writeRootFile(t, root, "go.mod", fixture)
 	// sdk replaces the root with a local directory and requires nothing the
 	// bump moves directly: only the root's upgrade changes its graph.
 	sdk := filepath.Join(root, "sdk")
 	require.NoError(t, os.Mkdir(sdk, 0o750))
 	sdkMod := "module example.com/root/sdk\n\ngo 1.22\n\nrequire example.com/root v0.0.0\n\nreplace example.com/root => ../\n"
-	require.NoError(t, os.WriteFile(filepath.Join(sdk, "go.mod"), []byte(sdkMod), 0o600))
+	writeRootFile(t, sdk, "go.mod", []byte(sdkMod))
 
 	edit := &graphEditor{graph: map[string]map[string]string{}}
 	var stdout bytes.Buffer

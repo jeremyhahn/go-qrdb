@@ -52,14 +52,14 @@ func TestBumpRunExportsIndependentUpgradesPastAHeldConflict(t *testing.T) {
 	dir := t.TempDir()
 	before, err := os.ReadFile(filepath.Join("testdata", "heldgraph", "go.mod"))
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), before, 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.sum"), []byte("example.com/a v1.0.0 h1:fake=\n"), 0o600))
+	writeRootFile(t, dir, "go.mod", before)
+	writeRootFile(t, dir, "go.sum", []byte("example.com/a v1.0.0 h1:fake=\n"))
 	writeList := func(c string) {
 		t.Helper()
 		list := listing("example.com/a", "v1.0.0", "v1.1.0") +
 			listing("example.com/b", "v1.0.0", "v1.1.0") +
 			listing("example.com/c", c, "v1.1.0")
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "list.json"), []byte(list), 0o600))
+		writeRootFile(t, dir, "list.json", []byte(list))
 	}
 	src := fixtureSource{goproxy: "direct"}
 
