@@ -598,6 +598,15 @@
         showToast("warning", `Batch item ${i + 1} needs a string id and a numeric vector array.`);
         return null;
       }
+      // The transports send all-digit ids as JSON numbers; past 2^53 - 1
+      // Number() rounds them onto a different id, so refuse those here.
+      if (/^\d+$/.test(o.id) && BigInt(o.id) > BigInt(Number.MAX_SAFE_INTEGER)) {
+        showToast(
+          "warning",
+          `Batch item ${i + 1} id ${o.id} exceeds the largest exact numeric id (${Number.MAX_SAFE_INTEGER}).`,
+        );
+        return null;
+      }
       const md = o.metadata;
       if (md !== undefined && (typeof md !== "object" || md === null || Array.isArray(md))) {
         showToast("warning", `Batch item ${i + 1} metadata must be a JSON object.`);

@@ -432,6 +432,29 @@ test.describe("Vector View - advanced operations", () => {
     await expect(page.getByText("bad", { exact: true })).toHaveCount(0);
   });
 
+  test("batch upsert refuses a numeric id the transport would round", async ({ page }) => {
+    // 2^53 + 1 becomes 2^53 through Number(); sending it would overwrite
+    // vector 9007199254740992 while reporting success.
+    const unsafe = JSON.stringify([
+      { id: "b1", vector: [0.1, 0.2, 0.3] },
+      { id: "9007199254740993", vector: [0.4, 0.5, 0.6] },
+    ]);
+    await page.getByRole("button", { name: "Batch upsert" }).click();
+    const panel = page.getByLabel("Batch Upsert");
+    await expect(panel).toBeVisible();
+    await panel.getByTestId("batch-upsert-input").fill(unsafe);
+    await panel.getByRole("button", { name: "Upsert batch" }).click();
+    await expect(
+      page.getByText("Batch item 2 id 9007199254740993 exceeds the largest exact numeric id (9007199254740991)."),
+    ).toBeVisible({ timeout: 5_000 });
+    await expect(panel.getByTestId("batch-upsert-succeeded")).toHaveCount(0);
+
+    await panel.getByLabel("Close", { exact: true }).click();
+    await expect(page.getByText("b1", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("9007199254740992", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("9007199254740993", { exact: true })).toHaveCount(0);
+  });
+
   test("a late getVector response for a closed selection never reaches the editor", async ({ page }) => {
     await upsertVector(page, "v1", "0.1, 0.2, 0.3", '{"label": "first"}');
     await upsertVector(page, "v2", "0.4, 0.5, 0.6", '{"label": "second"}');
