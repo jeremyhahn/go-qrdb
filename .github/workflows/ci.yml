@@ -1,4 +1,4 @@
-# ci-template: v1.35.1 + v1.42 hermetic gate + v1.43 hosted first — canonical CI for all first-party Go repos.
+# ci-template: v1.48 (v1.35.1 + v1.42 hermetic gate + v1.43 hosted first + v1.44 LAN mask + v1.48 hosted or overflow) — canonical CI for all first-party Go repos.
 # v1.43 hosted first (Tenant Agent rulings 833 and 834, which supersede ruling
 # 617's two-pool rule; the owner's 11-07 ruling that GitHub-hosted runners are
 # the default): every job runs on the standard GitHub-hosted ubuntu-latest
@@ -33,6 +33,12 @@
 #     6-hour job limit) it exceeds, and none does; larger hosted runners are
 #     not used; no LAN registry, cache volume, reaper or schedule guard
 #     remains
+#   - v1.48 (ruling 1024 item 1): hosted stays the default, and preflight's
+#     `Hosted or overflow runner (ruling 1024)` step sends lint, lint-gates,
+#     image, the two integration jobs, soak and CI Gate to the Dells' bigdisk
+#     pools when the hosted pool is full; those jobs mask the LAN addresses
+#     (v1.44, scripts/ci-mask-lan.sh), the step has no off-github.com branch,
+#     and v1.45-v1.47 are not taken
 #   - no schedule guard, so preflight merges changes and arch-gates only
 #     (DS-7377)
 #   - pull_request lists `ready_for_review`, ci-template v1.35.3's trigger,
@@ -156,6 +162,15 @@ env:
   # embeds or generates from docs/ or markdown. The gates that read docs/ are
   # lint-class and run in `make lint-gates`, which a docs-only PR still runs.
   DOCS_ONLY_PATTERN: '(\.md$|^docs/)'
+  # v1.48 (Tenant Agent ruling 1024 item 1, queue 250 (a)): the most jobs of
+  # this repository that run on GitHub-hosted runners at once. The preflight
+  # step `Hosted or overflow runner (ruling 1024)` sends the run's jobs to the
+  # Dells' bigdisk pools when this many hosted jobs of the repository are
+  # already in progress, or when one of its hosted jobs has waited in the
+  # queue for HOSTED_QUEUE_GRACE_SECONDS (the hosted pool is full). The
+  # owner's number, not a CUSTOMIZE value.
+  HOSTED_JOBS_PER_REPO: 12
+  HOSTED_QUEUE_GRACE_SECONDS: 60
 
 jobs:
   # v1.24: a PR whose every changed file matches DOCS_ONLY_PATTERN runs lint
@@ -190,8 +205,20 @@ jobs:
     # main and a same-repository PR; hosted otherwise, a fork's PR included.
     runs-on: ubuntu-latest
     timeout-minutes: 15   # CUSTOMIZE (go-qrdb): the template's 10, plus the full-tree gates
+    # v1.48 (ruling 1024): the runner selection reads this repository's
+    # queued and in-progress jobs through the Actions API with the job token;
+    # a job-level permissions block replaces the workflow's, so it names both.
+    permissions:
+      contents: read
+      actions: read
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
+      # v1.48 (ruling 1024): runs-on JSON for the two hosted-capable classes,
+      # read as fromJSON(needs.preflight.outputs.runner_docker) by every job
+      # that builds or runs images and fromJSON(needs.preflight.outputs.runner)
+      # by CI Gate. `"ubuntu-latest"`, or the Dells' overflow label list.
+      runner: ${{ steps.runner.outputs.runner }}
+      runner_docker: ${{ steps.runner.outputs.runner_docker }}
     env:
       # go-qrdb: the objstore storage backend, and the embedded transport's
       # volume pool, which is go-objstore's pool type.
@@ -213,6 +240,111 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # v1.48 (Tenant Agent ruling 1024 item 1, queue 250 (a)): the Dells'
+      # self-hosted runners supplement the 40 GitHub-hosted runners, and
+      # hosted stays the default. This step counts this repository's jobs on
+      # GitHub-hosted runners (a job whose labels name an ubuntu-* image and
+      # not self-hosted) in every queued and in-progress run of every
+      # workflow, through the Actions API with the job token (actions: read).
+      # It outputs `runner` and `runner_docker` as runs-on JSON:
+      # `"ubuntu-latest"`, or, when HOSTED_JOBS_PER_REPO hosted jobs or more
+      # are in progress, or a hosted job of another run has been queued
+      # HOSTED_QUEUE_GRACE_SECONDS or more (the hosted pool is full),
+      # `["self-hosted","linux","x64","bigdisk"]` and
+      # `["self-hosted","linux","x64","bigdisk-docker"]`. A count it cannot
+      # read (a reply that is not 200, a list short of its total_count, a
+      # field missing) picks nothing silently: it prints a ::warning naming
+      # why and outputs the hosted default. One decision per run: every job
+      # of the run takes it.
+      # CUSTOMIZE (go-qrdb): no off-github.com branch. This workflow runs on
+      # github.com alone and names no server URL
+      # (test/buildgates/ci_runners_test.go), so the template's forge check
+      # and its SERVER variable are left out. The step runs right after the
+      # credential mask, which leads every job after its checkout
+      # (test/buildgates/ci_logs_test.go), not before the checkout; it reads
+      # no file of the checkout. The rest is the template's.
+      - name: Hosted or overflow runner (ruling 1024)
+        id: runner
+        env:
+          API: ${{ github.api_url }}/repos/${{ github.repository }}/actions
+          RUN_ID: ${{ github.run_id }}
+          JOB_TOKEN: ${{ github.token }}
+          LIMIT: ${{ env.HOSTED_JOBS_PER_REPO }}
+          GRACE: ${{ env.HOSTED_QUEUE_GRACE_SECONDS }}
+        run: |
+          set -uo pipefail
+          HOSTED='"ubuntu-latest"'
+          overflow() { printf '["self-hosted","linux","x64","%s"]' "$1"; }
+          emit() {
+            echo "runner: $1; runner_docker: $2"
+            { echo "runner=$1"; echo "runner_docker=$2"; } >> "$GITHUB_OUTPUT"
+          }
+          # hosted <why>: no count, so the default, with the reason shown.
+          hosted() {
+            echo "::warning::runner selection: $1; every job of this run takes the GitHub-hosted default, ubuntu-latest, and none overflows to the Dells (ci-template v1.48, ruling 1024)"
+            emit "$HOSTED" "$HOSTED"
+            exit 0
+          }
+          case "$LIMIT:$GRACE" in
+            *[!0-9:]*|:*|*:) hosted "HOSTED_JOBS_PER_REPO='$LIMIT' or HOSTED_QUEUE_GRACE_SECONDS='$GRACE' is not a whole number" ;;
+          esac
+          # get <url> <file>: 0 on a 200 reply, saved in <file>; the answer in
+          # CODE. The token reaches curl as a header from a file descriptor.
+          get() {
+            CODE=$(curl -sS --max-time 30 -o "$2" -w '%{http_code}' \
+              -H @<(printf 'Authorization: Bearer %s\n' "$JOB_TOKEN") \
+              -H 'Accept: application/vnd.github+json' "$1") || CODE="curl exit $?"
+            [ "$CODE" = 200 ]
+          }
+          # pages <url> <key> <out>: every page of a listing, its <key> items
+          # one JSON object per line in <out>. 1, with WHY set, when a reply is
+          # not 200 or the items fall short of total_count.
+          pages() {
+            local p=1 got=0 total n
+            : > "$3"
+            while :; do
+              get "$1&per_page=100&page=$p" "$RUNNER_TEMP/sel-page.json" || { WHY="$1: $CODE"; return 1; }
+              total=$(jq -er '.total_count | numbers' "$RUNNER_TEMP/sel-page.json") || { WHY="$1: 200 with no total_count"; return 1; }
+              n=$(jq -er --arg k "$2" '.[$k] | arrays | length' "$RUNNER_TEMP/sel-page.json") || { WHY="$1: 200 with no $2 list"; return 1; }
+              jq -c --arg k "$2" '.[$k][]' "$RUNNER_TEMP/sel-page.json" >> "$3"
+              got=$((got + n))
+              { [ "$got" -lt "$total" ] && [ "$n" -gt 0 ]; } || break
+              [ "$p" -lt 10 ] || { WHY="$1: more than 1000 entries"; return 1; }
+              p=$((p + 1))
+            done
+            [ "$got" -ge "$total" ] || { WHY="$1: $got of $total entries"; return 1; }
+          }
+          : > "$RUNNER_TEMP/sel-runs.jsonl"
+          for st in queued in_progress; do
+            pages "$API/runs?status=$st" workflow_runs "$RUNNER_TEMP/sel-r.jsonl" || hosted "the Actions API gave no complete run list ($WHY)"
+            cat "$RUNNER_TEMP/sel-r.jsonl" >> "$RUNNER_TEMP/sel-runs.jsonl"
+          done
+          : > "$RUNNER_TEMP/sel-jobs.jsonl"
+          for id in $(jq -r '.id' "$RUNNER_TEMP/sel-runs.jsonl" | sort -u); do
+            pages "$API/runs/$id/jobs?filter=latest" jobs "$RUNNER_TEMP/sel-j.jsonl" || hosted "the Actions API gave no complete job list ($WHY)"
+            cat "$RUNNER_TEMP/sel-j.jsonl" >> "$RUNNER_TEMP/sel-jobs.jsonl"
+          done
+          # In progress: every hosted job, this one included. Queued: a hosted
+          # job of another run (this run's jobs wait on this one) queued for
+          # GRACE seconds or more, so a runner did not take it at once.
+          read -r running queued < <(jq -rs --argjson run "$RUN_ID" --argjson grace "$GRACE" '
+              [.[] | select((.labels // []) | any(startswith("ubuntu-")) and all(. != "self-hosted"))] as $h
+              | ($h | map(select(.status == "in_progress")) | length) as $r
+              | ($h | map(select(.status == "queued" and .run_id != $run
+                    and now - ((.created_at // .started_at) | fromdateiso8601) >= $grace)) | length) as $q
+              | "\($r) \($q)"' "$RUNNER_TEMP/sel-jobs.jsonl") || hosted "the job list could not be counted"
+          echo "this repository: $running hosted job(s) in progress (HOSTED_JOBS_PER_REPO=$LIMIT); $queued hosted job(s) of other runs queued ${GRACE}s or more"
+          if [ "$running" -ge "$LIMIT" ]; then
+            why="$running hosted jobs in progress, HOSTED_JOBS_PER_REPO=$LIMIT"
+          elif [ "$queued" -gt 0 ]; then
+            why="$queued hosted job(s) queued ${GRACE}s or more: the hosted pool is full"
+          else
+            emit "$HOSTED" "$HOSTED"
+            exit 0
+          fi
+          echo "::notice::runner selection: $why; this run's jobs overflow to the Dells (bigdisk, bigdisk-docker) (ci-template v1.48, ruling 1024)"
+          emit "$(overflow bigdisk)" "$(overflow bigdisk-docker)"
 
       - name: Is every changed file docs or markdown?
         id: diff
@@ -567,7 +699,7 @@ jobs:
   lint:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Devcontainer image [lint, gosec, gosec-sdk]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48
     needs: [preflight, docker-build]
     timeout-minutes: 120
     env:
@@ -584,6 +716,11 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -690,7 +827,7 @@ jobs:
   lint-gates:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Lint Gates [toolchain image]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48
     needs: [preflight, docker-build]
     timeout-minutes: 90
     env:
@@ -707,6 +844,11 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
 
       - name: Does the Makefile define lint-gates?
         id: probe
@@ -804,7 +946,7 @@ jobs:
 
   image:
     name: Devcontainer image [build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 90
@@ -822,6 +964,11 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -1582,7 +1729,7 @@ jobs:
   # slowdown it fits the 120-minute limit.
   integration-features:
     name: Integration (shard ${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
@@ -1612,6 +1759,12 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      # CUSTOMIZE (go-qrdb): in the credential mask's own step, as its last
+      # line, not a step of its own: a shard's steps are exactly the mask,
+      # the disk cleanup, the it-image download, the load, the suite and the
+      # teardown (test/buildgates/feature_jobs_gate_test.go).
       - name: Mask the forge credentials
         run: |
           for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
@@ -1620,6 +1773,7 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+          scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -1691,7 +1845,7 @@ jobs:
   # teardown, and `make integration-down` removes the run's image.
   integration-standalone:
     name: Integration (standalone stack)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
@@ -1706,6 +1860,11 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -1987,8 +2146,8 @@ jobs:
   soak:
     name: Soak [integration image]
     if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !github.event.pull_request.draft }}   # ruling 214
-    runs-on: ubuntu-latest
-    needs: [docker-build]
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48
+    needs: [preflight, docker-build]   # v1.48: the runner selection
     timeout-minutes: 90
     env:
       CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
@@ -2006,6 +2165,11 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -2195,7 +2359,7 @@ jobs:
     # Go, no Docker. On the self-hosted bigdisk pool for a push to main and a
     # same-repository PR, so it never waits in the hosted queue; hosted
     # otherwise.
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}   # v1.48
     timeout-minutes: 5
     if: ${{ always() }}
     # CUSTOMIZE: the repo's job list. Add every CUSTOMIZE job here AND as a

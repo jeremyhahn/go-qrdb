@@ -102,7 +102,8 @@ const (
 	// Floors, well under today's counts (7 workflows, 50 jobs).
 	runnerWorkflowFloor = 6
 	runnerJobFloor      = 30
-	// hostedJobFloor, under ci.yml's count (18 jobs, all on ubuntu-latest):
+	// hostedJobFloor, under ci.yml's count (18 jobs, on ubuntu-latest or,
+	// hosted by default since v1.48, on a selectionRunners expression):
 	// a regression of the whole workflow to the pools fails here.
 	hostedJobFloor = 15
 	// selfHostedReason is the line comment a pool job's runs-on carries.
@@ -111,6 +112,27 @@ const (
 
 // poolRunners are poolWorkflow's two runs-on expressions.
 var poolRunners = []string{bigdiskRunner, dockerRunner}
+
+// selectionRunners are ci-template v1.48's runs-on expressions (Tenant Agent
+// ruling 1024 item 1), character for character, each with the pool its
+// overflow names. They read the preflight step `Hosted or overflow runner
+// (ruling 1024)`, which outputs "ubuntu-latest" unless the hosted pool is
+// full, so a job on one is a hosted job by default and needs no
+// `# self-hosted:` reason; it must need preflight, whose output it reads. A
+// job on bigdisk (no Docker daemon) needs no Docker.
+var selectionRunners = map[string]string{
+	"${{ fromJSON(needs.preflight.outputs.runner_docker) }}":               "bigdisk-docker",
+	"${{ fromJSON(needs.preflight.outputs.runner) }}":                      "bigdisk",
+	`${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}`: "bigdisk",
+}
+
+// needsJob reports whether a job's needs: names want, as a scalar or in a list.
+func needsJob(n yaml.Node, want string) bool {
+	if n.Kind == yaml.ScalarNode {
+		return n.Value == want
+	}
+	return slices.ContainsFunc(n.Content, func(c *yaml.Node) bool { return c.Value == want })
+}
 
 // selfHostedWorkflows keep self-hosted runners: the review jobs run where the
 // reviewer's credentials are mounted (conventions/sdlc.md).
@@ -166,6 +188,7 @@ type runnerStep struct {
 
 type runnerJob struct {
 	RunsOn    yaml.Node `yaml:"runs-on"`
+	Needs     yaml.Node `yaml:"needs"`
 	Container yaml.Node `yaml:"container"`
 	Services  yaml.Node `yaml:"services"`
 	If        string    `yaml:"if"`
@@ -260,6 +283,16 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		case pool && runsOn == dockerRunner:
 			if len(dockerNeeds(job)) == 0 {
 				add("job " + name + " runs on the bigdisk-docker pool (dockerRunner) but needs no Docker; a Docker-free job carries bigdiskRunner")
+			}
+		case pool && selectionRunners[runsOn] != "":
+			// v1.48 (ruling 1024): hosted by default, the Dells on overflow.
+			if !needsJob(job.Needs, "preflight") {
+				add("job " + name + " runs on the runner selection " + runsOn + " but does not need preflight, whose output it reads (ruling 1024)")
+			}
+			if selectionRunners[runsOn] == "bigdisk" {
+				for _, p := range dockerNeeds(job) {
+					add("job " + name + " overflows to the Docker-free bigdisk pool (needs.preflight.outputs.runner), and " + p + "; a job that needs Docker reads runner_docker")
+				}
 			}
 		case pool:
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", neither "+hostedRunner+" nor, with a stated reason, exactly bigdiskRunner (Docker-free) or dockerRunner (Docker) (rulings 833 and 834)")
@@ -467,7 +500,7 @@ func TestCIRunners(t *testing.T) {
 	}
 	hosted := 0
 	for _, job := range wf.Jobs {
-		if job.RunsOn.Value == hostedRunner {
+		if job.RunsOn.Value == hostedRunner || selectionRunners[job.RunsOn.Value] != "" {
 			hosted++
 		}
 	}
@@ -851,6 +884,56 @@ func TestRunnerProblems_Pools(t *testing.T) {
 				t.Errorf("a runs-on %q, one character off a pool expression, passed", changed)
 			}
 		}
+	}
+}
+
+// selectionFixture is a ci.yml on ci-template v1.48's runner selection
+// (ruling 1024): an image job on runner_docker and CI Gate on the guarded
+// runner, each needing preflight.
+const selectionFixture = `on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: true
+  lint:
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48
+    needs: preflight
+    timeout-minutes: 30
+    steps:
+      - run: scripts/in-toolchain-image.sh "$IMAGE" "make lint"
+  ci-gate:
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}   # v1.48
+    needs: [preflight, lint]
+    timeout-minutes: 5
+    steps:
+      - run: true
+`
+
+func TestRunnerProblems_Selection(t *testing.T) {
+	if p, jobs := runnerProblems(poolWorkflow, []byte(selectionFixture)); len(p) != 0 || jobs != 3 {
+		t.Fatalf("the v1.48 runner selection must pass with 3 jobs, got %d jobs: %v", jobs, p)
+	}
+	cases := map[string]struct {
+		file, old, new, want string
+	}{
+		"a selection job that does not need preflight": {poolWorkflow, "    needs: preflight\n", "", "does not need preflight"},
+		"the selection outside ci.yml":                 {hostedFile, "", "", "job lint runs on"},
+		"the output without fromJSON":                  {poolWorkflow, "fromJSON(needs.preflight.outputs.runner_docker)", "needs.preflight.outputs.runner_docker", "job lint runs on"},
+		"a Docker job overflowing to bigdisk":          {poolWorkflow, "outputs.runner_docker)", "outputs.runner)", "overflows to the Docker-free bigdisk pool"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			body := strings.Replace(selectionFixture, c.old, c.new, 1)
+			problems, _ := runnerProblems(c.file, []byte(body))
+			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, c.want) }) {
+				t.Fatalf("want a problem containing %q, got %v", c.want, problems)
+			}
+		})
 	}
 }
 
