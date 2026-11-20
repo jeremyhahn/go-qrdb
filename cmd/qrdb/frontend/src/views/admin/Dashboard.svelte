@@ -23,9 +23,10 @@
     CapabilitiesResponse,
     MetricFamily,
   } from "@qrdb/sdk";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { XCircle, RefreshCw, ChevronRight, ChevronDown } from "lucide-svelte";
   import { showToast } from "$stores/toast.svelte.ts";
+  import { connManagerStore } from "$stores/connection-manager.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
 
   let { client }: { client: Client } = $props();
@@ -97,29 +98,67 @@
    * Errors are captured but do not halt polling.
    */
   async function fetchDashboardData(): Promise<void> {
+    const gen = generation;
     try {
       const [h, s, c] = await Promise.all([
         client.admin.health(),
         client.admin.status(),
         client.admin.capabilities(),
       ]);
+      if (gen !== generation) return;
       health = h;
       status = s;
       capabilities = c;
       hasError = false;
 
       try {
-        databases = await client.database.list();
+        const dbs = await client.database.list();
+        if (gen === generation) databases = dbs;
       } catch {
         // Database listing is optional — may not be available
       }
     } catch (err: unknown) {
+      if (gen !== generation) return;
       hasError = true;
       showToast("error", err instanceof Error ? err.message : "Failed to fetch dashboard data");
     } finally {
-      loading = false;
+      if (gen === generation) loading = false;
     }
   }
+
+  /**
+   * Bumped whenever the active connection profile changes. A response
+   * started under an older generation came from the previous server and
+   * is dropped instead of being shown under the new server's breadcrumb.
+   */
+  let generation = 0;
+  let shownProfileId: string = untrack(() => connManagerStore.activeProfileId);
+
+  /** Clears every card's data and reloads it from the newly active server. */
+  function reloadForProfile(): void {
+    generation += 1;
+    health = null;
+    status = null;
+    capabilities = null;
+    databases = [];
+    hasError = false;
+    loading = true;
+    metrics = [];
+    metricsLoaded = false;
+    metricsUnavailable = false;
+    metricsError = null;
+    expandedFamilies = {};
+    void fetchDashboardData();
+    void fetchMetrics();
+    startPolling();
+  }
+
+  $effect(() => {
+    const id = connManagerStore.activeProfileId;
+    if (id === shownProfileId) return;
+    shownProfileId = id;
+    untrack(reloadForProfile);
+  });
 
   /** Starts the 5-second polling interval. */
   function startPolling(): void {
@@ -167,13 +206,17 @@
 
   /** Loads the node's Prometheus metrics; desktop mode has none. */
   async function fetchMetrics(): Promise<void> {
+    const gen = generation;
     metricsLoading = true;
     try {
-      metrics = await client.admin.metrics();
+      const fetched = await client.admin.metrics();
+      if (gen !== generation) return;
+      metrics = fetched;
       metricsError = null;
       metricsUnavailable = false;
       metricsLoaded = true;
     } catch (err: unknown) {
+      if (gen !== generation) return;
       if (isNotImplemented(err)) {
         metricsUnavailable = true;
       } else {
@@ -182,7 +225,7 @@
         showToast("error", `Metrics: ${msg}`);
       }
     } finally {
-      metricsLoading = false;
+      if (gen === generation) metricsLoading = false;
     }
   }
 

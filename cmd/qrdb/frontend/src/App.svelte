@@ -86,20 +86,29 @@
         // The saved active profile's server (page origin for the built-in
         // profile): the label and the REST target never disagree on reload.
         const origin = webStartupTarget();
-        console.debug("[App] initialize: connecting REST client to", origin);
-        await sdk.connection.connect(origin);
-        console.debug("[App] initialize: REST client connected");
+        try {
+          console.debug("[App] initialize: connecting REST client to", origin);
+          await sdk.connection.connect(origin);
+          console.debug("[App] initialize: REST client connected");
 
-        // A sealed server only serves the barrier endpoints. Inspect the seal
-        // state and route to the bootstrap (uninitialized) or unseal
-        // (initialized) flow before attempting to load the full app shell,
-        // which would otherwise fail against a sealed backend.
-        const status = await sdk.seal.status();
-        sealStatus = status;
-        if (status.sealed) {
-          appState = status.initialized ? "unseal" : "init";
-          console.debug("[App] initialize: server sealed, state =", appState);
-          return;
+          // A sealed server only serves the barrier endpoints. Inspect the seal
+          // state and route to the bootstrap (uninitialized) or unseal
+          // (initialized) flow before attempting to load the full app shell,
+          // which would otherwise fail against a sealed backend.
+          const status = await sdk.seal.status();
+          sealStatus = status;
+          if (status.sealed) {
+            appState = status.initialized ? "unseal" : "init";
+            console.debug("[App] initialize: server sealed, state =", appState);
+            return;
+          }
+        } catch (err: unknown) {
+          // The hosting server failing is unrecoverable. A saved external
+          // profile's server being down is not: load the profile picker so
+          // the user can pick This Server, another server, or remove the
+          // failed profile. loadProfiles marks the active profile's error.
+          if (origin === window.location.origin) throw err;
+          console.warn("[App] initialize: saved server unavailable", origin, err);
         }
       }
 

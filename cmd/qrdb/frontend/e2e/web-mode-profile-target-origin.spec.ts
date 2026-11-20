@@ -160,3 +160,139 @@ test("activating another profile retargets the REST client and back", async ({ p
   await expect.poll(() => reads(secondHits.slice(secondAgain)).length, { timeout: 10_000 }).toBeGreaterThan(0);
   expect(reads(firstHits.slice(firstBefore))).toEqual([]);
 });
+
+test("an unavailable saved server still reaches the profile picker", async ({ page, baseURL }) => {
+  const pageOrigin = pageOriginOf(baseURL);
+  const firstHits: string[] = [];
+  await mockServer(page, pageOrigin, firstHits);
+  // The saved active server is down: every request to it fails.
+  await page.route(`${SECOND}/**`, (route) => route.abort("connectionrefused"));
+  await saveProfiles(page, pageOrigin, "second");
+
+  await page.goto("/");
+
+  // The app shell with the profile picker loads instead of the startup
+  // error screen that could only retry the same server.
+  const aside = page.locator("aside");
+  await expect(aside.getByText("This Server", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+  await expect(aside.getByText("Second", { exact: true }).first()).toBeVisible();
+
+  // Select This Server: reads move to the hosting origin.
+  await aside.getByText("This Server", { exact: true }).first().click();
+  await expect.poll(() => reads(firstHits).length, { timeout: 10_000 }).toBeGreaterThan(0);
+  await expect
+    .poll(() => page.evaluate((k) => localStorage.getItem(k), ACTIVE_KEY), { timeout: 10_000 })
+    .toBe("self");
+
+  // Remove the failed profile.
+  await aside.getByTitle("Add server").click();
+  const modal = page.locator(".modal-box");
+  await expect(modal).toBeVisible({ timeout: 10_000 });
+  const card = modal.locator(".card", { has: page.getByText("Second", { exact: true }) });
+  await card.getByTitle("Delete profile").click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(card).toHaveCount(0, { timeout: 10_000 });
+  await expect
+    .poll(() => page.evaluate((k) => localStorage.getItem(k) ?? "", PROFILES_KEY), { timeout: 10_000 })
+    .not.toContain(SECOND);
+});
+
+/** A one-family Prometheus exposition. */
+function exposition(name: string): string {
+  return `# HELP ${name} Test family.\n# TYPE ${name} gauge\n${name} 1\n`;
+}
+
+async function answerMetrics(route: Route, name: string): Promise<void> {
+  await route.fulfill({
+    status: 200,
+    contentType: "text/plain; version=0.0.4",
+    headers: { "access-control-allow-origin": "*" },
+    body: exposition(name),
+  });
+}
+
+/** A gate the test opens to release a held response. */
+function gate(): { wait: Promise<void>; open: () => void } {
+  let open = (): void => {};
+  const wait = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { wait, open };
+}
+
+test("switching servers on the Dashboard reloads metrics and drops the previous server's", async ({
+  page,
+  baseURL,
+}) => {
+  const pageOrigin = pageOriginOf(baseURL);
+  const firstHits: string[] = [];
+  const secondHits: string[] = [];
+  const A_FAMILY = "server_a_family";
+  const B_FAMILY = "server_b_family";
+
+  // Server A answers its first metrics read at once and holds the second.
+  let aCalls = 0;
+  const aLate = gate();
+  let aLateDone: Promise<void> | null = null;
+  await page.route(
+    (url) => url.origin === pageOrigin && url.pathname === "/metrics",
+    async (route) => {
+      aCalls += 1;
+      if (aCalls === 1) {
+        await answerMetrics(route, A_FAMILY);
+        return;
+      }
+      aLateDone = aLate.wait.then(() => answerMetrics(route, A_FAMILY));
+      await aLateDone;
+    },
+  );
+  // Server B holds its first metrics read and answers the rest at once.
+  let bCalls = 0;
+  const bFirst = gate();
+  await page.route(
+    (url) => url.origin === SECOND && url.pathname === "/metrics",
+    async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await route.fallback();
+        return;
+      }
+      bCalls += 1;
+      if (bCalls === 1) await bFirst.wait;
+      await answerMetrics(route, B_FAMILY);
+    },
+  );
+  await mockServer(page, pageOrigin, firstHits);
+  await mockServer(page, SECOND, secondHits);
+  await allowPreflight(page);
+  await saveProfiles(page, pageOrigin, "self");
+
+  const family = (name: string) => page.locator(`[data-testid="metrics-family"][data-family="${name}"]`);
+  const aside = page.locator("aside");
+
+  await page.goto("/");
+  await expect(family(A_FAMILY)).toHaveCount(1, { timeout: 10_000 });
+
+  // A -> B while B's metrics are in flight: A's metrics are gone at once.
+  await aside.getByText("Second", { exact: true }).first().click();
+  await expect.poll(() => bCalls, { timeout: 10_000 }).toBe(1);
+  await expect.poll(() => secondHits.some((p) => p.includes("health")), { timeout: 10_000 }).toBe(true);
+  await expect(family(A_FAMILY)).toHaveCount(0, { timeout: 10_000 });
+  bFirst.open();
+  await expect(family(B_FAMILY)).toHaveCount(1, { timeout: 10_000 });
+
+  // B -> A with A's metrics held, then A -> B: A's late answer is dropped.
+  await aside.getByText("This Server", { exact: true }).first().click();
+  await expect.poll(() => aCalls, { timeout: 10_000 }).toBe(2);
+  await aside.getByText("Second", { exact: true }).first().click();
+  await expect.poll(() => bCalls, { timeout: 10_000 }).toBe(2);
+  await expect(family(B_FAMILY)).toHaveCount(1, { timeout: 10_000 });
+  aLate.open();
+  await expect.poll(() => aLateDone !== null, { timeout: 10_000 }).toBe(true);
+  await aLateDone;
+  // Let the page settle the late response before checking it was dropped.
+  await page.evaluate(
+    () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+  );
+  await expect(family(A_FAMILY)).toHaveCount(0);
+  await expect(family(B_FAMILY)).toHaveCount(1);
+});
