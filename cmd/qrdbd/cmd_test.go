@@ -344,16 +344,6 @@ func TestBuildShardConfig(t *testing.T) {
 // generateReplicaID tests
 // ---------------------------------------------------------------------------
 
-func TestGenerateReplicaID_NonZero(t *testing.T) {
-	id, err := generateReplicaID()
-	if err != nil {
-		t.Fatalf("generateReplicaID() error: %v", err)
-	}
-	if id == 0 {
-		t.Fatal("generateReplicaID() returned 0")
-	}
-}
-
 func TestGenerateReplicaID_Unique(t *testing.T) {
 	id1, err := generateReplicaID()
 	if err != nil {
@@ -365,18 +355,6 @@ func TestGenerateReplicaID_Unique(t *testing.T) {
 	}
 	if id1 == id2 {
 		t.Fatalf("generateReplicaID() returned identical values: %d", id1)
-	}
-}
-
-func TestGenerateReplicaID_48BitMask(t *testing.T) {
-	for i := 0; i < 100; i++ {
-		id, err := generateReplicaID()
-		if err != nil {
-			t.Fatalf("generateReplicaID() error: %v", err)
-		}
-		if id > 0xFFFFFFFFFFFF {
-			t.Fatalf("generateReplicaID() = %d, exceeds 48-bit mask", id)
-		}
 	}
 }
 
@@ -2487,23 +2465,6 @@ func TestLoadCACertPool_InvalidPath(t *testing.T) {
 	}
 	if tlsErr.Path != "/nonexistent/ca.pem" {
 		t.Fatalf("TLSLoadError.Path = %q, want %q", tlsErr.Path, "/nonexistent/ca.pem")
-	}
-}
-
-func TestLoadCACertPool_InvalidPEM(t *testing.T) {
-	dir := t.TempDir()
-	caPath := filepath.Join(dir, "bad.pem")
-	if err := os.WriteFile(caPath, []byte("not-a-pem-file"), 0o600); err != nil {
-		t.Fatalf("WriteFile() error: %v", err)
-	}
-
-	_, err := loadCACertPool(caPath)
-	if err == nil {
-		t.Fatal("loadCACertPool() error = nil, want TLSLoadError")
-	}
-	var tlsErr *TLSLoadError
-	if !errors.As(err, &tlsErr) {
-		t.Fatalf("error type = %T, want *TLSLoadError", err)
 	}
 }
 

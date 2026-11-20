@@ -18,10 +18,11 @@
 <!--
   DatabaseSettingsForms renders the per-database settings forms: SQL
   concurrency (database.updateSQL), scheduled compaction
-  (database.updateCompaction), Raft consensus (database.updateRaft), the
-  encryption barrier (database.updateBarrier) and the remote connection
-  (database.updateConnection). Each form validates its input, saves through
-  the SDK call of the same name, and shows an inline success or error state.
+  (database.updateCompaction), Raft consensus (database.updateRaft) and the
+  remote connection (database.updateConnection). Each form validates its
+  input, saves through the SDK call of the same name, and shows an inline
+  success or error state. The encryption barrier is shown read-only: the
+  server fixes it at creation, and an M-of-N change is a quorum rekey.
   The `sections` prop picks which forms render: the admin detail view shows
   all five, the user settings view only the database-scoped tuning.
 -->
@@ -29,7 +30,6 @@
   import type {
     Client,
     CompactionMode,
-    DatabaseBarrierConfig,
     DatabaseCompactionConfig,
     DatabaseConnectionConfig,
     DatabaseInfo,
@@ -77,6 +77,17 @@
       total += Number(m[1]) * (UNIT_SECONDS[m[2] ?? ""] ?? 0);
     }
     return total;
+  }
+
+  /** An http: or https: URL with a non-empty host (the REST transport's address). */
+  function isHttpUrl(text: string): boolean {
+    let url: URL;
+    try {
+      url = new URL(text);
+    } catch {
+      return false;
+    }
+    return (url.protocol === "http:" || url.protocol === "https:") && url.hostname !== "";
   }
 
   /** A host:port (or [ipv6]:port) address with a port in 1..65535. */
@@ -134,16 +145,26 @@
   let raftPeers: string = $state("");
   let raftLocalNodeCount: number | null = $state(null);
   let raftDiscovery: string = $state("");
+  // Fields of a discovery method the database has no block for yet: asked
+  // for only when the operator picks such a method. A method whose block
+  // the database already holds keeps that block (and its stored secret).
+  let discStaticPeers: string = $state("");
+  let discSecret: string = $state("");
+  let discMulticastGroup: string = $state("");
+  let discDnsDomain: string = $state("");
+  let discDnsService: string = $state("");
+  let discTokenEndpoint: string = $state("");
+  let discToken: string = $state("");
+  let discTokenClusterSize: number | null = $state(null);
   let raftSaving = $state(false);
   let raftOutcome: Outcome = $state(null);
 
-  // Barrier
-  let barrierEnabled: boolean = $state(false);
-  let barrierMode: string = $state("passphrase");
-  let barrierSharesRequired: number | null = $state(null);
-  let barrierSharesTotal: number | null = $state(null);
-  let barrierSaving = $state(false);
-  let barrierOutcome: Outcome = $state(null);
+  // Barrier: fixed at database creation, so shown as the server holds it.
+  // The backend refuses enabling, disabling, a strategy change and a
+  // Shamir M-of-N change (BarrierMigrationNotSupportedError); an M-of-N
+  // change is a quorum rekey, run from the Share Holders panel.
+  let barrierEnabled = $derived(database.barrier?.enabled ?? false);
+  let barrierMode = $derived(database.barrier?.mode || "passphrase");
 
   // Connection
   let connTransport: string = $state("grpc");
@@ -166,16 +187,15 @@
     raftPeers = (db.raft?.peers ?? []).join("\n");
     raftLocalNodeCount = db.raft?.localNodeCount ?? null;
     raftDiscovery = db.raft?.discovery ?? "";
-    barrierEnabled = db.barrier?.enabled ?? false;
-    barrierMode = db.barrier?.mode || "passphrase";
-    barrierSharesRequired = db.barrier?.sharesRequired ?? null;
-    barrierSharesTotal = db.barrier?.sharesTotal ?? null;
+    discStaticPeers = discSecret = discMulticastGroup = discDnsDomain = discDnsService = "";
+    discTokenEndpoint = discToken = "";
+    discTokenClusterSize = null;
     connTransport = db.connection?.transport || "grpc";
     connAddress = db.connection?.address ?? "";
     connCaFile = db.connection?.caFile ?? "";
     connCertFile = db.connection?.certFile ?? "";
     connKeyFile = db.connection?.keyFile ?? "";
-    sqlOutcome = compactionOutcome = raftOutcome = barrierOutcome = connOutcome = null;
+    sqlOutcome = compactionOutcome = raftOutcome = connOutcome = null;
   }
 
   // Plain (non-reactive) marker: reload the fields only when the database
@@ -220,24 +240,91 @@
     if (!isBlank(raftLocalNodeCount) && !isIntAtLeast(raftLocalNodeCount, 1)) {
       return "Local node count must be a whole number of at least 1.";
     }
+    switch (newDiscoveryMethod) {
+      case "static": {
+        const peers = splitList(discStaticPeers);
+        if (peers.length === 0) return "Static discovery needs at least one peer.";
+        const bad = peers.find((p) => !isHostPort(p));
+        if (bad !== undefined) return `Static peer "${bad}" must be host:port.`;
+        break;
+      }
+      case "multicast":
+        if (discSecret.trim() === "") return "Multicast discovery needs a shared secret.";
+        if (discMulticastGroup.trim() !== "" && !isHostPort(discMulticastGroup.trim())) {
+          return "Multicast group must be host:port.";
+        }
+        break;
+      case "dns":
+        if (discDnsDomain.trim() === "") return "DNS discovery needs a domain.";
+        break;
+      case "token":
+        if (discTokenEndpoint.trim() === "") return "Token discovery needs an endpoint.";
+        if (discToken.trim() === "") return "Token discovery needs a token.";
+        if (!isIntAtLeast(discTokenClusterSize, 1)) {
+          return "Cluster size must be a whole number of at least 1.";
+        }
+        break;
+    }
     return "";
   });
 
-  let barrierError = $derived.by((): string => {
-    if (!barrierEnabled || barrierMode !== "shamir") return "";
-    if (!isIntAtLeast(barrierSharesTotal, 2)) {
-      return "Total shares must be a whole number of at least 2.";
+  type DiscoveryKey = "static" | "multicast" | "dns" | "token";
+
+  /**
+   * The discovery method the operator picked that the database holds no
+   * block for, so the form must collect that block; "" when the pick is
+   * none or a method the current configuration already carries.
+   */
+  let newDiscoveryMethod = $derived.by((): "" | DiscoveryKey => {
+    if (raftDiscovery !== "static" && raftDiscovery !== "multicast" && raftDiscovery !== "dns" && raftDiscovery !== "token") {
+      return "";
     }
-    if (!isIntAtLeast(barrierSharesRequired, 1) || barrierSharesRequired > barrierSharesTotal) {
-      return "Required shares must be between 1 and the total shares.";
-    }
-    return "";
+    return database.raft?.[raftDiscovery] === undefined ? raftDiscovery : "";
   });
+
+  /** The discovery block built from the form for a newly picked method. */
+  function newDiscoveryBlock(): Partial<DatabaseRaftConfig> {
+    switch (newDiscoveryMethod) {
+      case "static":
+        return {
+          static: {
+            peers: splitList(discStaticPeers),
+            ...(discSecret.trim() === "" ? {} : { sharedSecret: discSecret.trim() }),
+          },
+        };
+      case "multicast":
+        return {
+          multicast: {
+            sharedSecret: discSecret.trim(),
+            ...(discMulticastGroup.trim() === "" ? {} : { multicastGroup: discMulticastGroup.trim() }),
+          },
+        };
+      case "dns":
+        return {
+          dns: {
+            domain: discDnsDomain.trim(),
+            ...(discDnsService.trim() === "" ? {} : { service: discDnsService.trim() }),
+          },
+        };
+      case "token":
+        return {
+          token: {
+            endpoint: discTokenEndpoint.trim(),
+            token: discToken.trim(),
+            clusterSize: discTokenClusterSize as number,
+          },
+        };
+      default:
+        return {};
+    }
+  }
 
   let connError = $derived.by((): string => {
     const addr = connAddress.trim();
     if (addr === "") return "Address is required.";
-    if (connTransport !== "unix" && !isHostPort(addr)) {
+    if (connTransport === "rest") {
+      if (!isHttpUrl(addr)) return "Address must be an http:// or https:// URL.";
+    } else if (connTransport !== "unix" && !isHostPort(addr)) {
       return "Address must be host:port.";
     }
     if ((connCertFile.trim() === "") !== (connKeyFile.trim() === "")) {
@@ -295,50 +382,25 @@
     }
   }
 
-  /**
-   * The stored discovery blocks this form has no fields for, carried back
-   * unchanged so a save does not delete them (the server keeps the recorded
-   * state storage itself). A response never carries a write-only secret (it reports only
-   * sharedSecretSet / tokenSet), so each block goes back without one and the
-   * server keeps the stored secret.
-   */
-  function storedRaftExtras(info: DatabaseInfo["raft"]): Partial<DatabaseRaftConfig> {
-    if (info === undefined) return {};
-    const { static: st, multicast: mc, dns, token: tk } = info;
-    return {
-      ...(st === undefined ? {} : { static: st.peers === undefined ? {} : { peers: st.peers } }),
-      ...(mc === undefined
-        ? {}
-        : {
-            multicast: {
-              ...(mc.multicastGroup === undefined ? {} : { multicastGroup: mc.multicastGroup }),
-              ...(mc.interface === undefined ? {} : { interface: mc.interface }),
-              ...(mc.minPeers === undefined ? {} : { minPeers: mc.minPeers }),
-              ...(mc.announceInterval === undefined
-                ? {}
-                : { announceInterval: mc.announceInterval }),
-              ...(mc.discoverTimeout === undefined ? {} : { discoverTimeout: mc.discoverTimeout }),
-            },
-          }),
-      ...(dns === undefined ? {} : { dns }),
-      ...(tk === undefined
-        ? {}
-        : {
-            token: {
-              endpoint: tk.endpoint,
-              clusterSize: tk.clusterSize,
-              ...(tk.timeout === undefined ? {} : { timeout: tk.timeout }),
-            },
-          }),
-    };
-  }
-
   async function saveRaft(): Promise<void> {
     if (raftError !== "") return;
     raftOutcome = null;
     const peers = splitList(raftPeers);
+    // The server replaces the whole Raft configuration and drops any
+    // discovery block (with its secret) a request leaves out, so start from
+    // the current configuration and overwrite only the fields this form
+    // edits: unedited blocks pass through as they are.
+    const {
+      replicaId: _replicaId,
+      raftAddress: _raftAddress,
+      peers: _peers,
+      localNodeCount: _localNodeCount,
+      discovery: _discovery,
+      ...unedited
+    } = database.raft ?? { clusterMode: "" };
     const raft: DatabaseRaftConfig = {
-      ...storedRaftExtras(database.raft),
+      ...unedited,
+      ...newDiscoveryBlock(),
       clusterMode: raftClusterMode,
       ...(isBlank(raftReplicaId) ? {} : { replicaId: raftReplicaId as number }),
       ...(raftAddress.trim() === "" ? {} : { raftAddress: raftAddress.trim() }),
@@ -357,34 +419,6 @@
       showToast("error", msg);
     } finally {
       raftSaving = false;
-    }
-  }
-
-  async function saveBarrier(): Promise<void> {
-    if (barrierError !== "") return;
-    barrierOutcome = null;
-    let barrier: DatabaseBarrierConfig = { enabled: false };
-    if (barrierEnabled && barrierMode === "shamir") {
-      barrier = {
-        enabled: true,
-        mode: "shamir",
-        sharesRequired: barrierSharesRequired as number,
-        sharesTotal: barrierSharesTotal as number,
-      };
-    } else if (barrierEnabled) {
-      barrier = { enabled: true, mode: barrierMode };
-    }
-    try {
-      barrierSaving = true;
-      onUpdated(await client.database.updateBarrier(database.name, barrier));
-      barrierOutcome = { kind: "success", message: "Barrier configuration saved." };
-      showToast("success", "Barrier configuration saved");
-    } catch (err: unknown) {
-      const msg = errorMessage(err, "Failed to update barrier configuration");
-      barrierOutcome = { kind: "error", message: msg };
-      showToast("error", msg);
-    } finally {
-      barrierSaving = false;
     }
   }
 
@@ -562,6 +596,48 @@
           <span class="label-text text-xs">Peers (host:port, one per line)</span>
           <textarea class="textarea textarea-bordered textarea-sm font-mono" rows="2" aria-label="Peers" bind:value={raftPeers} disabled={raftSaving}></textarea>
         </label>
+        {#if newDiscoveryMethod === "static"}
+          <label class="form-control md:col-span-2">
+            <span class="label-text text-xs">Static peers (host:port, one per line)</span>
+            <textarea class="textarea textarea-bordered textarea-sm font-mono" rows="2" aria-label="Static peers" bind:value={discStaticPeers} disabled={raftSaving}></textarea>
+          </label>
+        {/if}
+        {#if newDiscoveryMethod === "static" || newDiscoveryMethod === "multicast"}
+          <label class="form-control">
+            <span class="label-text text-xs">Shared secret</span>
+            <input type="password" autocomplete="new-password" class="input input-bordered input-sm" aria-label="Shared secret" bind:value={discSecret} disabled={raftSaving} />
+          </label>
+        {/if}
+        {#if newDiscoveryMethod === "multicast"}
+          <label class="form-control">
+            <span class="label-text text-xs">Multicast group (host:port)</span>
+            <input class="input input-bordered input-sm font-mono" aria-label="Multicast group" bind:value={discMulticastGroup} disabled={raftSaving} />
+          </label>
+        {/if}
+        {#if newDiscoveryMethod === "dns"}
+          <label class="form-control">
+            <span class="label-text text-xs">DNS domain</span>
+            <input class="input input-bordered input-sm font-mono" aria-label="DNS domain" bind:value={discDnsDomain} disabled={raftSaving} />
+          </label>
+          <label class="form-control">
+            <span class="label-text text-xs">SRV service</span>
+            <input class="input input-bordered input-sm font-mono" aria-label="SRV service" bind:value={discDnsService} disabled={raftSaving} />
+          </label>
+        {/if}
+        {#if newDiscoveryMethod === "token"}
+          <label class="form-control">
+            <span class="label-text text-xs">Discovery endpoint</span>
+            <input class="input input-bordered input-sm font-mono" aria-label="Discovery endpoint" bind:value={discTokenEndpoint} disabled={raftSaving} />
+          </label>
+          <label class="form-control">
+            <span class="label-text text-xs">Bootstrap token</span>
+            <input type="password" autocomplete="off" class="input input-bordered input-sm" aria-label="Bootstrap token" bind:value={discToken} disabled={raftSaving} />
+          </label>
+          <label class="form-control">
+            <span class="label-text text-xs">Cluster size</span>
+            <input type="number" min="1" class="input input-bordered input-sm" aria-label="Cluster size" bind:value={discTokenClusterSize} disabled={raftSaving} />
+          </label>
+        {/if}
       </div>
       {@render fieldError(raftError)}
       {@render saveButton(raftSaving, raftError !== "", "Save Raft Configuration")}
@@ -571,42 +647,30 @@
 {/if}
 
 {#if sections.includes("barrier")}
-  <form class="card bg-base-200 shadow" data-testid="db-settings-barrier" onsubmit={submit(saveBarrier)}>
+  <section class="card bg-base-200 shadow" data-testid="db-settings-barrier">
     <div class="card-body gap-3">
       <h3 class="card-title text-base">Encryption Barrier</h3>
-      <p class="text-base-content/70 text-sm">
-        Encrypt this database at rest under a passphrase or an M-of-N Shamir split.
-      </p>
-      <label class="flex cursor-pointer items-center gap-3">
-        <input type="checkbox" class="toggle toggle-sm toggle-primary" aria-label="Barrier enabled" bind:checked={barrierEnabled} disabled={barrierSaving} />
-        <span class="text-sm font-medium">Enabled</span>
-      </label>
-      {#if barrierEnabled}
-        <div class="flex flex-wrap items-end gap-3">
-          <label class="form-control w-full max-w-[12rem]">
-            <span class="label-text text-xs">Mode</span>
-            <select class="select select-bordered select-sm" aria-label="Barrier mode" bind:value={barrierMode} disabled={barrierSaving}>
-              <option value="passphrase">Passphrase</option>
-              <option value="shamir">Shamir</option>
-            </select>
-          </label>
+      <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt class="text-base-content/70">Enabled</dt>
+        <dd data-testid="barrier-enabled">{barrierEnabled ? "Yes" : "No"}</dd>
+        {#if barrierEnabled}
+          <dt class="text-base-content/70">Mode</dt>
+          <dd data-testid="barrier-mode">{barrierMode === "shamir" ? "Shamir" : "Passphrase"}</dd>
           {#if barrierMode === "shamir"}
-            <label class="form-control w-full max-w-[10rem]">
-              <span class="label-text text-xs">Required shares (M)</span>
-              <input type="number" min="1" class="input input-bordered input-sm" aria-label="Required shares" bind:value={barrierSharesRequired} disabled={barrierSaving} />
-            </label>
-            <label class="form-control w-full max-w-[10rem]">
-              <span class="label-text text-xs">Total shares (N)</span>
-              <input type="number" min="2" class="input input-bordered input-sm" aria-label="Total shares" bind:value={barrierSharesTotal} disabled={barrierSaving} />
-            </label>
+            <dt class="text-base-content/70">Shares (M-of-N)</dt>
+            <dd data-testid="barrier-shares">
+              {database.barrier?.sharesRequired ?? "?"} of {database.barrier?.sharesTotal ?? "?"}
+            </dd>
           {/if}
-        </div>
-      {/if}
-      {@render fieldError(barrierError)}
-      {@render saveButton(barrierSaving, barrierError !== "", "Save Barrier Configuration")}
-      {@render outcome(barrierOutcome)}
+        {/if}
+      </dl>
+      <p class="text-base-content/70 text-sm" data-testid="barrier-fixed-note">
+        The barrier is fixed when the database is created: it cannot be enabled, disabled or
+        switched to another mode afterwards. Changing a Shamir barrier's M-of-N is a quorum
+        rekey, run from the Share Holders panel.
+      </p>
     </div>
-  </form>
+  </section>
 {/if}
 
 {#if sections.includes("connection")}
@@ -628,7 +692,7 @@
         </label>
         <label class="form-control">
           <span class="label-text text-xs">Address</span>
-          <input type="text" class="input input-bordered input-sm font-mono" aria-label="Address" placeholder={connTransport === "unix" ? "/run/qrdb/qrdb.sock" : "db.example.com:9090"} bind:value={connAddress} disabled={connSaving} />
+          <input type="text" class="input input-bordered input-sm font-mono" aria-label="Address" placeholder={connTransport === "unix" ? "/run/qrdb/qrdb.sock" : connTransport === "rest" ? "https://db.example.com" : "db.example.com:9090"} bind:value={connAddress} disabled={connSaving} />
         </label>
         <label class="form-control">
           <span class="label-text text-xs">CA file</span>

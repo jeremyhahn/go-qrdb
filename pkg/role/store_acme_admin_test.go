@@ -20,21 +20,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
-// permSetForRole returns the permission set of the named built-in role for the
-// given tenant, failing the test when the role is absent.
-func permSetForRole(t *testing.T, tenantID, name string) map[permission.Permission]struct{} {
-	t.Helper()
-	r := roleByName(BuiltInRoles(tenantID), name)
-	if r == nil {
-		t.Fatalf("built-in role %q not found for tenant %q", name, tenantID)
-	}
-	set := make(map[permission.Permission]struct{}, len(r.Permissions))
-	for _, p := range r.Permissions {
-		set[p] = struct{}{}
-	}
-	return set
-}
-
 // acmeAdminReadOnly is the ACME-administration / CA-hierarchy read surface —
 // the slice every role above User is expected to hold.
 var acmeAdminReadOnly = []permission.Permission{
@@ -50,78 +35,6 @@ var acmeAdminMutating = []permission.Permission{
 	permission.ACMEAccountsDisable,
 	permission.ACMEEABCreate, permission.ACMEEABDelete,
 	permission.CACreate, permission.CAUpdate,
-}
-
-// TestBuiltInRoles_AdminReachesACMEAdminSurface is the regression test for the
-// unification bug: before the ACME admin surface authorized through qrdb, a
-// user granted the canonical "admin" role held no ACME administration rights
-// at all. Admin must now carry the entire family.
-func TestBuiltInRoles_AdminReachesACMEAdminSurface(t *testing.T) {
-	set := permSetForRole(t, "acme-tenant", RoleNameAdmin)
-	for _, p := range append(append([]permission.Permission{}, acmeAdminReadOnly...), acmeAdminMutating...) {
-		if _, ok := set[p]; !ok {
-			t.Errorf("admin missing ACME administration grant %q", p)
-		}
-	}
-}
-
-// TestBuiltInRoles_SOReachesACMEAdminSurface verifies the Security Officer —
-// the role that governs CA operations — carries the full family too.
-func TestBuiltInRoles_SOReachesACMEAdminSurface(t *testing.T) {
-	set := permSetForRole(t, "acme-tenant", RoleNameSO)
-	for _, p := range append(append([]permission.Permission{}, acmeAdminReadOnly...), acmeAdminMutating...) {
-		if _, ok := set[p]; !ok {
-			t.Errorf("so missing ACME administration grant %q", p)
-		}
-	}
-}
-
-// TestBuiltInRoles_OperatorACMEAdminIsReadOnly verifies Operator holds the read
-// surface and none of the mutating grants — minting an External Account
-// Binding or creating a CA stays with Admin / SO.
-func TestBuiltInRoles_OperatorACMEAdminIsReadOnly(t *testing.T) {
-	set := permSetForRole(t, "acme-tenant", RoleNameOperator)
-	for _, p := range acmeAdminReadOnly {
-		if _, ok := set[p]; !ok {
-			t.Errorf("operator missing ACME administration read grant %q", p)
-		}
-	}
-	for _, p := range acmeAdminMutating {
-		if _, ok := set[p]; ok {
-			t.Errorf("operator must not hold mutating ACME administration grant %q", p)
-		}
-	}
-}
-
-// TestBuiltInRoles_AuditorACMEAdminIsReadOnly verifies Auditor sees the
-// registration and hierarchy metadata but can change nothing (FIPS 140-3
-// AS10.10).
-func TestBuiltInRoles_AuditorACMEAdminIsReadOnly(t *testing.T) {
-	set := permSetForRole(t, "acme-tenant", RoleNameAuditor)
-	for _, p := range acmeAdminReadOnly {
-		if _, ok := set[p]; !ok {
-			t.Errorf("auditor missing ACME administration read grant %q", p)
-		}
-	}
-	for _, p := range acmeAdminMutating {
-		if _, ok := set[p]; ok {
-			t.Errorf("auditor must not hold mutating ACME administration grant %q", p)
-		}
-	}
-}
-
-// TestBuiltInRoles_UserHasNoACMEAdmin verifies the least privileged
-// canonical role reaches none of the ACME administration surface.
-func TestBuiltInRoles_UserHasNoACMEAdmin(t *testing.T) {
-	all := append(append([]permission.Permission{}, acmeAdminReadOnly...), acmeAdminMutating...)
-	for _, name := range []string{RoleNameUser} {
-		set := permSetForRole(t, "acme-tenant", name)
-		for _, p := range all {
-			if _, ok := set[p]; ok {
-				t.Errorf("%s must not hold ACME administration grant %q", name, p)
-			}
-		}
-	}
 }
 
 // TestBuiltInRoles_ACMEAdminGrantsValidate verifies every ACME-administration

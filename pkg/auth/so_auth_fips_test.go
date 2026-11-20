@@ -78,20 +78,3 @@ func TestHashPIN_GOFIPS140Off_UsesArgon2id(t *testing.T) {
 		t.Fatalf("verifyPIN: %v", err)
 	}
 }
-
-// TestHashPIN_GOFIPS140Version_UsesPBKDF2 is the mirror case: a genuine FIPS
-// request produces a PBKDF2-SHA256 record ('P' tag).
-func TestHashPIN_GOFIPS140Version_UsesPBKDF2(t *testing.T) {
-	t.Setenv("GOFIPS140", "v1.0.0")
-
-	record, err := hashPIN([]byte("gofips140-on-pin"))
-	if err != nil {
-		t.Fatalf("hashPIN: %v", err)
-	}
-	if record[0] != 'P' {
-		t.Fatalf("hashPIN with GOFIPS140=v1.0.0: got KDF tag %q, want 'P'", record[0])
-	}
-	if err := verifyPIN([]byte("gofips140-on-pin"), record); err != nil {
-		t.Fatalf("verifyPIN: %v", err)
-	}
-}

@@ -43,7 +43,7 @@
   let showInvite: boolean = $state(false);
   let searchThumbprint: string = $state("");
   let searching: boolean = $state(false);
-  let lookupNotFound: boolean = $state(false);
+  let thumbprintNotFound: boolean = $state(false);
 
   // ---------------------------------------------------------------------------
   // Columns
@@ -135,25 +135,27 @@
     void fetchUsers();
   }
 
-  /**
-   * Looks the account up by a bound certificate's thumbprint and opens it.
-   * A 404 means no account holds the binding; other refusals show the
-   * server's message.
-   */
+  /** Looks up the user bound to a certificate thumbprint and opens it. */
   async function handleThumbprintSearch(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     const thumbprint = searchThumbprint.trim();
     if (thumbprint === "") return;
     try {
       searching = true;
-      lookupNotFound = false;
+      thumbprintNotFound = false;
       const user = await client.users.getUserByCertThumbprint(thumbprint);
       searchThumbprint = "";
       detailUserId = user.id;
       showDetail = true;
     } catch (err: unknown) {
-      if (err instanceof TransportError && err.statusCode === 404) {
-        lookupNotFound = true;
+      // HTTP transports answer 404; the Wails runtime rejects with the Go
+      // error's string, which the SDK normalizes to an Error, so a
+      // "not found" message means the same there.
+      if (
+        (err instanceof TransportError && err.statusCode === 404) ||
+        (err instanceof Error && /\bnot found\b/i.test(err.message))
+      ) {
+        thumbprintNotFound = true;
       } else {
         const msg = err instanceof Error ? err.message : "Failed to look up user";
         showToast("error", msg);
@@ -223,7 +225,7 @@
           placeholder="Certificate thumbprint"
           data-testid="user-thumbprint-input"
           bind:value={searchThumbprint}
-          oninput={() => (lookupNotFound = false)}
+          oninput={() => (thumbprintNotFound = false)}
         />
       </label>
       <button
@@ -234,8 +236,8 @@
       >
         Find
       </button>
-      {#if lookupNotFound}
-        <span class="text-warning text-sm" data-testid="user-lookup-not-found">
+      {#if thumbprintNotFound}
+        <span class="text-warning text-sm" data-testid="user-thumbprint-not-found">
           No user holds this certificate binding.
         </span>
       {/if}

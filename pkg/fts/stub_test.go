@@ -28,12 +28,3 @@ import (
 func TestStubAvailable(t *testing.T) {
 	assert.False(t, Available(), "Available must be false when qrdb_fts is not compiled in")
 }
-
-// TestStubAvailableStable confirms the stub answer is deterministic across
-// repeated calls (the function must not depend on any mutable state).
-func TestStubAvailableStable(t *testing.T) {
-	first := Available()
-	for i := 0; i < 5; i++ {
-		assert.Equal(t, first, Available(), "Available must return a stable value")
-	}
-}

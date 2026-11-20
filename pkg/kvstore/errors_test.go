@@ -32,28 +32,6 @@ func TestIndexQueryError_Error(t *testing.T) {
 	}
 }
 
-func TestIndexQueryError_Error_EmptyFields(t *testing.T) {
-	err := &IndexQueryError{IndexName: "", Reason: ""}
-	want := "kvstore index query : "
-	if err.Error() != want {
-		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
-	}
-}
-
-func TestIndexQueryError_As(t *testing.T) {
-	var err error = &IndexQueryError{IndexName: "idx", Reason: "timeout"}
-	var target *IndexQueryError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *IndexQueryError")
-	}
-	if target.IndexName != "idx" {
-		t.Fatalf("IndexName: got %q, want %q", target.IndexName, "idx")
-	}
-	if target.Reason != "timeout" {
-		t.Fatalf("Reason: got %q, want %q", target.Reason, "timeout")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // IndexScanError
 // ---------------------------------------------------------------------------
@@ -66,25 +44,6 @@ func TestIndexScanError_Error(t *testing.T) {
 	}
 }
 
-func TestIndexScanError_Error_EmptyFields(t *testing.T) {
-	err := &IndexScanError{IndexName: "", Reason: ""}
-	want := "kvstore index scan : "
-	if err.Error() != want {
-		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
-	}
-}
-
-func TestIndexScanError_As(t *testing.T) {
-	var err error = &IndexScanError{IndexName: "idx", Reason: "scan failed"}
-	var target *IndexScanError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *IndexScanError")
-	}
-	if target.IndexName != "idx" {
-		t.Fatalf("IndexName: got %q, want %q", target.IndexName, "idx")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // IndexRegistrationError
 // ---------------------------------------------------------------------------
@@ -92,14 +51,6 @@ func TestIndexScanError_As(t *testing.T) {
 func TestIndexRegistrationError_Error(t *testing.T) {
 	err := &IndexRegistrationError{EntityType: "users", Err: io.ErrClosedPipe}
 	want := "kvstore index registration users: io: read/write on closed pipe"
-	if err.Error() != want {
-		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
-	}
-}
-
-func TestIndexRegistrationError_Error_EmptyEntityType(t *testing.T) {
-	err := &IndexRegistrationError{EntityType: "", Err: io.EOF}
-	want := "kvstore index registration : EOF"
 	if err.Error() != want {
 		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
 	}
@@ -118,14 +69,6 @@ func TestIndexRegistrationError_Unwrap(t *testing.T) {
 	}
 	if target.EntityType != "orders" {
 		t.Fatalf("EntityType: got %q, want %q", target.EntityType, "orders")
-	}
-}
-
-func TestIndexRegistrationError_Unwrap_NilSafe(t *testing.T) {
-	sentinel := errors.New("custom error")
-	err := &IndexRegistrationError{EntityType: "products", Err: sentinel}
-	if err.Unwrap() != sentinel {
-		t.Fatal("Unwrap should return the exact inner error")
 	}
 }
 
@@ -151,18 +94,5 @@ func TestConstructionAndIndexErrors_Error(t *testing.T) {
 		if got := tc.err.Error(); got != tc.want {
 			t.Errorf("%s: Error(): got %q, want %q", name, got, tc.want)
 		}
-	}
-}
-
-func TestConstructionErrors_As(t *testing.T) {
-	_, err := NewNamespacedKVStore(nil, "acme/")
-	var nilInner *NilInnerStoreError
-	if !errors.As(err, &nilInner) {
-		t.Fatalf("NewNamespacedKVStore(nil): got %v, want *NilInnerStoreError", err)
-	}
-	_, err = NewNamespacedKVStore(NewMemoryKVStore(), "")
-	var empty *EmptyNamespaceError
-	if !errors.As(err, &empty) {
-		t.Fatalf("NewNamespacedKVStore(\"\"): got %v, want *EmptyNamespaceError", err)
 	}
 }

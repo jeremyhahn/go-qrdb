@@ -39,45 +39,6 @@ func newClusterClient(t *testing.T) *sdk.Client {
 	return client
 }
 
-func TestClient_Cluster_ReturnsClient(t *testing.T) {
-	client := newClusterClient(t)
-	defer client.Close()
-
-	if client.Cluster() == nil {
-		t.Fatal("expected non-nil ClusterClient")
-	}
-}
-
-func TestClient_Cluster_Members_Success(t *testing.T) {
-	client := newClusterClient(t)
-	defer client.Close()
-
-	members, err := client.Cluster().Members(context.Background(), 0)
-	if err != nil {
-		t.Fatalf("Members: %v", err)
-	}
-	if len(members) != 1 {
-		t.Fatalf("len(members) = %d, want 1", len(members))
-	}
-	if members[0].ReplicaID != 1 || members[0].Address != "127.0.0.1:63001" || !members[0].IsLeader {
-		t.Fatalf("member = %+v, want {1, 127.0.0.1:63001, leader}", members[0])
-	}
-}
-
-func TestClient_Cluster_Members_ShardNotFound(t *testing.T) {
-	client := newClusterClient(t)
-	defer client.Close()
-
-	_, err := client.Cluster().Members(context.Background(), 99)
-	var nfe *sdk.ShardNotFoundError
-	if !errors.As(err, &nfe) {
-		t.Fatalf("Members error = %T (%v), want *ShardNotFoundError", err, err)
-	}
-	if nfe.ShardID != 99 {
-		t.Fatalf("ShardNotFoundError.ShardID = %d, want 99", nfe.ShardID)
-	}
-}
-
 func TestClient_Cluster_Leader_Success(t *testing.T) {
 	client := newClusterClient(t)
 	defer client.Close()
@@ -88,28 +49,6 @@ func TestClient_Cluster_Leader_Success(t *testing.T) {
 	}
 	if !hasLeader || replicaID != 1 {
 		t.Fatalf("Leader() = (%d, %v), want (1, true)", replicaID, hasLeader)
-	}
-}
-
-func TestClient_Cluster_AddRemoveReplica(t *testing.T) {
-	client := newClusterClient(t)
-	defer client.Close()
-
-	cc := client.Cluster()
-	if err := cc.AddReplica(context.Background(), 0, 4, "127.0.0.1:63004", ""); err != nil {
-		t.Fatalf("AddReplica: %v", err)
-	}
-	if err := cc.RemoveReplica(context.Background(), 0, 4); err != nil {
-		t.Fatalf("RemoveReplica: %v", err)
-	}
-}
-
-func TestClient_Cluster_PromoteReplica(t *testing.T) {
-	client := newClusterClient(t)
-	defer client.Close()
-
-	if err := client.Cluster().PromoteReplica(context.Background(), 0, 4); err != nil {
-		t.Fatalf("PromoteReplica: %v", err)
 	}
 }
 

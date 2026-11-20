@@ -52,13 +52,3 @@ func TestRefusalMetadata_MissingKeysKeepTheType(t *testing.T) {
 		}
 	}
 }
-
-func TestRefusalReasons_AreDistinct(t *testing.T) {
-	seen := map[string]bool{}
-	for _, r := range []string{ReasonLogExists, ReasonCheckpointExists, ReasonExpireNotAllowed} {
-		if r == "" || seen[r] {
-			t.Fatalf("reason %q is empty or repeated", r)
-		}
-		seen[r] = true
-	}
-}

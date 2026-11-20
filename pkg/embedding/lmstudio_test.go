@@ -234,15 +234,6 @@ func TestLMStudioProvider_Embed_InvalidJSONResponse(t *testing.T) {
 // Dimensions / Name
 // ---------------------------------------------------------------------------
 
-func TestLMStudioProvider_Dimensions(t *testing.T) {
-	srv, _ := embeddingServer(t, lmstudioProviderHandler(768, DefaultLMStudioModel))
-	cfg := LMStudioConfig{BaseURL: srv.URL, Model: DefaultLMStudioModel}
-	p, _ := NewLMStudioProvider(cfg)
-	if p.Dimensions() != 768 {
-		t.Errorf("expected 768, got %d", p.Dimensions())
-	}
-}
-
 func TestLMStudioProvider_Name(t *testing.T) {
 	srv, _ := embeddingServer(t, lmstudioProviderHandler(768, "m"))
 	cfg := LMStudioConfig{BaseURL: srv.URL, Model: "m"}

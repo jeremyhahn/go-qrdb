@@ -10,8 +10,8 @@
  *
  *   1. Create a user (username + email), then change its username, email
  *      and display name in UserDetail; GET /users/{id} returns them.
- *   2. Disable, then enable; after each the server's lifecycle and the UI's
- *      Enable/Disable button agree.
+ *   2. Disable, then enable; after each the server's lifecycle and the UI
+ *      badge agree.
  *   3. Make a self-signed certificate with openssl, compute its SPKI SHA-256
  *      thumbprint, bind it in the UI; the server lists the binding and the
  *      UserManager thumbprint lookup opens this user. Remove the binding;
@@ -25,7 +25,13 @@ import { createHash, X509Certificate } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startDaemon, stopDaemon, UI_BASE_URL, type DomDaemon } from "./fixtures/dom-daemon.ts";
+import {
+  startDaemon,
+  stopDaemon,
+  UI_BASE_URL,
+  waitForHealthy,
+  type DomDaemon,
+} from "./fixtures/dom-daemon.ts";
 
 const LOAD_TIMEOUT = 15_000;
 
@@ -46,6 +52,7 @@ test.beforeEach(async ({ request }) => {
     data: { so_pin: "user-detail-so-pin", user_pin: "user-detail-user-pin", admin_generate: true },
   });
   expect(resp.ok(), `ceremony initialize: ${resp.status()} ${await resp.text()}`).toBeTruthy();
+  await waitForHealthy(daemon);
 });
 
 test.afterEach(async () => {
@@ -80,7 +87,7 @@ async function openUser(page: Page, username: string): Promise<void> {
   await expect(page.getByRole("heading", { name: "Edit User" })).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
-  await expect(page.getByTestId("user-delete")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByTestId("user-lifecycle-badge")).toBeVisible({ timeout: LOAD_TIMEOUT });
 }
 
 interface WireUser {
@@ -152,7 +159,7 @@ test("user update, disable/enable and cert bindings round-trip (UI ↔ live daem
   await page.getByRole("button", { name: "Create User" }).click();
   await expect(page.getByRole("heading", { name: "Create User" })).toBeVisible();
   await page.getByPlaceholder("Enter username").fill(USERNAME);
-  await page.getByTestId("user-email").fill(EMAIL);
+  await page.getByPlaceholder("user@example.com").fill(EMAIL);
   await page.locator("#user-detail-tenant").selectOption("system");
   await page.getByRole("checkbox", { name: /^user system/ }).check();
   await page.getByRole("button", { name: "Create", exact: true }).click();
@@ -163,9 +170,9 @@ test("user update, disable/enable and cert bindings round-trip (UI ↔ live daem
 
   // --- 1. Update --------------------------------------------------------
   await openUser(page, USERNAME);
-  await expect(page.getByTestId("user-email")).toHaveValue(EMAIL);
+  await expect(page.getByPlaceholder("user@example.com")).toHaveValue(EMAIL);
   await page.getByPlaceholder("Enter username").fill(RENAMED);
-  await page.getByTestId("user-email").fill(NEW_EMAIL);
+  await page.getByPlaceholder("user@example.com").fill(NEW_EMAIL);
   await page.getByPlaceholder("Optional display name").fill(DISPLAY_NAME);
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expectToast(page, "success", `User "${RENAMED}" updated`);
@@ -176,14 +183,16 @@ test("user update, disable/enable and cert bindings round-trip (UI ↔ live daem
 
   // --- 2. Disable then enable ------------------------------------------
   await openUser(page, RENAMED);
+  const badge = page.getByTestId("user-lifecycle-badge");
+
   await page.getByTestId("user-disable").click();
   await expectToast(page, "success", `User "${RENAMED}" disabled`);
-  await expect(page.getByTestId("user-enable")).toBeVisible();
+  await expect(badge).toHaveText("disabled");
   expect((await getUser(request, adminUrl, userId)).lifecycle).toBe("disabled");
 
   await page.getByTestId("user-enable").click();
   await expectToast(page, "success", `User "${RENAMED}" enabled`);
-  await expect(page.getByTestId("user-disable")).toBeVisible();
+  await expect(badge).toHaveText("active");
   expect((await getUser(request, adminUrl, userId)).lifecycle).toBe("active");
 
   // --- 4. A refused binding shows the server's error ---------------------
@@ -197,14 +206,14 @@ test("user update, disable/enable and cert bindings round-trip (UI ↔ live daem
   const serverMsg = (refusedBody.message ?? refusedBody.error ?? "").trim();
   expect(serverMsg).not.toBe("");
   await expectToast(page, "error", serverMsg);
-  await expect(page.getByTestId("user-binding-row")).toHaveCount(0);
+  await expect(page.getByTestId("user-cert-bindings-empty")).toBeVisible();
 
   // --- 3. Cert binding: add, list, look up, remove ------------------------
   const thumbprint = selfSignedSpkiThumbprint();
   await page.getByTestId("user-binding-thumbprint").fill(thumbprint);
   await page.getByTestId("user-binding-add").click();
   await expectToast(page, "success", "Certificate binding added");
-  await expect(page.getByTestId("user-binding-row")).toContainText(thumbprint);
+  await expect(page.getByTestId("user-binding-thumbprint-value")).toHaveText(thumbprint);
 
   const bound = await getUser(request, adminUrl, userId);
   expect((bound.cert_bindings ?? []).map((b) => b.thumbprint)).toContain(thumbprint);
@@ -217,12 +226,12 @@ test("user update, disable/enable and cert bindings round-trip (UI ↔ live daem
     timeout: LOAD_TIMEOUT,
   });
   await expect(page.getByPlaceholder("Enter username")).toHaveValue(RENAMED);
-  await expect(page.getByTestId("user-binding-row")).toContainText(thumbprint);
+  await expect(page.getByTestId("user-binding-thumbprint-value")).toHaveText(thumbprint);
 
   // Remove the binding; the server no longer lists it.
-  await page.getByRole("button", { name: `Remove binding ${thumbprint}` }).click();
+  await page.getByRole("button", { name: `Remove binding ${thumbprint}`, exact: true }).click();
   await expectToast(page, "success", "Certificate binding removed");
-  await expect(page.getByTestId("user-binding-row")).toHaveCount(0);
+  await expect(page.getByTestId("user-cert-bindings-empty")).toBeVisible();
   const unbound = await getUser(request, adminUrl, userId);
   expect((unbound.cert_bindings ?? []).map((b) => b.thumbprint)).not.toContain(thumbprint);
 
@@ -230,7 +239,7 @@ test("user update, disable/enable and cert bindings round-trip (UI ↔ live daem
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await page.getByTestId("user-thumbprint-input").fill(thumbprint);
   await page.getByTestId("user-thumbprint-submit").click();
-  await expect(page.getByTestId("user-lookup-not-found")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByTestId("user-thumbprint-not-found")).toBeVisible({ timeout: LOAD_TIMEOUT });
   const gone = await request.get(
     `${adminUrl}/users/by-cert-thumbprint/${encodeURIComponent(thumbprint)}`,
   );

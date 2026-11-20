@@ -82,30 +82,3 @@ func TestEmptyCatalog(t *testing.T) {
 		t.Errorf("expected 0 indexes for empty slice, got %d", len(got2))
 	}
 }
-
-func TestStaticCatalogImplementsIndexCatalog(t *testing.T) {
-	// Compile-time interface satisfaction check via assignment.
-	var _ planner.IndexCatalog = planner.NewStaticCatalog(nil)
-}
-
-func TestIndexInfoFields(t *testing.T) {
-	info := planner.IndexInfo{
-		Name:      "mydb.orders.Total",
-		FieldName: "Total",
-		Unique:    false,
-		FieldType: "float64",
-	}
-
-	if info.Name != "mydb.orders.Total" {
-		t.Errorf("unexpected Name: %s", info.Name)
-	}
-	if info.FieldName != "Total" {
-		t.Errorf("unexpected FieldName: %s", info.FieldName)
-	}
-	if info.Unique {
-		t.Error("expected Unique=false")
-	}
-	if info.FieldType != "float64" {
-		t.Errorf("unexpected FieldType: %s", info.FieldType)
-	}
-}

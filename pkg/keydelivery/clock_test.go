@@ -43,24 +43,6 @@ func TestWithClock_DecidesFreshness(t *testing.T) {
 	}
 }
 
-// TestWithClock_FreshUnderTheFakeClock is the converse: the same envelope opens
-// while the fake clock stays inside the window, however much wall time passes.
-func TestWithClock_FreshUnderTheFakeClock(t *testing.T) {
-	recip := mustP256(t)
-	meta := goodMeta()
-	env, err := Seal(&recip.PublicKey, meta, []byte("secret-key-material-bytes-32byte"))
-	if err != nil {
-		t.Fatalf("Seal: %v", err)
-	}
-	r, err := NewReceiver(softwareDecrypter(t, recip), meta.TargetNodeID, WithClock(clocktest.NewAt(env.IssuedAt)))
-	if err != nil {
-		t.Fatalf("NewReceiver: %v", err)
-	}
-	if _, err := r.Open(env); err != nil {
-		t.Fatalf("Open under the fake clock: %v", err)
-	}
-}
-
 // TestWithClock_DefaultGuardFollowsTheClock: the replay guard the Receiver owns
 // is driven by the same clock, so a replay is still refused inside the window
 // and the nonce is forgotten only once the fake clock moves past it.

@@ -1435,9 +1435,9 @@ export interface User {
     readonly id: string;
     /** Unique username within the tenant. */
     readonly username: string;
-    /** Email login key; absent for a user created without one. */
+    /** Email address (the email login key); absent when the account has none. */
     readonly email?: string;
-    /** Display name; presentation only. */
+    /** Display name; absent when unset. */
     readonly name?: string;
     /** Tenant that owns this user. */
     readonly tenantId: string;
@@ -1473,10 +1473,14 @@ export interface User {
 export interface CreateUserRequest {
     /** Unique username within the tenant. */
     readonly username: string;
-    /** Email address: the user's email login key. The daemon requires it
-     *  unless withoutEmailLoginKey is set. */
+    /**
+     * The account's email address, its email login key. The server refuses
+     * an empty email unless withoutEmailLoginKey is set.
+     */
     readonly email?: string;
-    /** Create the user with no email login key (email may then be empty). */
+    /** Display name. */
+    readonly name?: string;
+    /** Create the account with no email login key (email may then be empty). */
     readonly withoutEmailLoginKey?: boolean;
     /** Target tenant ID (defaults to the caller's tenant). */
     readonly tenantId?: string;
@@ -1510,12 +1514,12 @@ export interface UpdateUserRequest {
     readonly id: string;
     /** New username. */
     readonly username?: string;
+    /** New email address; empty or absent leaves it unchanged. */
+    readonly email?: string;
+    /** New display name; empty or absent leaves it unchanged. */
+    readonly name?: string;
     /** New set of role IDs. */
     readonly roleIds?: readonly string[];
-    /** New email login key; uniqueness is re-checked within the tenant. */
-    readonly email?: string;
-    /** New display name. */
-    readonly name?: string;
     /** Replaces the permitted authentication methods when present; `[]` clears them. */
     readonly authMethods?: readonly string[];
     /** Transitions the account to this lifecycle state when non-empty. */

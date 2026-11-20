@@ -18,6 +18,7 @@
   import type {
     Client,
     User,
+    CertBinding,
     Role,
     ListRolesResponse,
     DatabaseInfo,
@@ -54,8 +55,10 @@
   let saving: boolean = $state(false);
   let busy: boolean = $state(false);
   let confirmDelete: boolean = $state(false);
-  /** Thumbprints bound to the user, as the server lists them. */
-  let certBindings: string[] = $state([]);
+  /** The user's certificate bindings as the server lists them. */
+  let certBindings: readonly CertBinding[] = $derived.by(
+    () => (existingUser as User | null)?.certBindings ?? [],
+  );
   let bindingThumbprint: string = $state("");
   let bindingExpiry: string = $state("");
 
@@ -117,7 +120,6 @@
         // $bindable has a fallback value which throws if bound to undefined.
         tenantId = user.tenantId ?? "default";
         selectedRoleIds = [...user.roleIds];
-        certBindings = boundThumbprints(user);
       }
     } catch (err: unknown) {
       const msg = errorText(err, "Failed to load user data");
@@ -141,15 +143,15 @@
     try {
       saving = true;
 
+      const trimmedEmail = email.trim();
+      const trimmedName = displayName.trim();
       if (isCreate) {
         await client.users.create({
           username: username.trim(),
           // The daemon requires an email login key unless the user is
           // explicitly created without one; a blank field means "none".
-          ...(email.trim() !== ""
-            ? { email: email.trim() }
-            : { withoutEmailLoginKey: true }),
-          ...(displayName.trim() === "" ? {} : { name: displayName.trim() }),
+          ...(trimmedEmail !== "" ? { email: trimmedEmail } : { withoutEmailLoginKey: true }),
+          ...(trimmedName !== "" ? { name: trimmedName } : {}),
           tenantId: tenantId.trim(),
           roleIds: selectedRoleIds,
         });
@@ -158,9 +160,11 @@
         await client.users.update({
           id: userId!,
           username: username.trim(),
-          ...(email.trim() === "" ? {} : { email: email.trim() }),
-          ...(displayName.trim() === "" ? {} : { name: displayName.trim() }),
-          roleIds: selectedRoleIds,
+          ...(trimmedEmail !== "" ? { email: trimmedEmail } : {}),
+          ...(trimmedName !== "" ? { name: trimmedName } : {}),
+          // No roleIds: an existing user's roles change only through
+          // roles.assign / roles.unassign (toggleRole), so a Save racing an
+          // in-flight toggle cannot resend the stale set and undo it.
         });
         showToast("success", `User "${username}" updated`);
       }
@@ -174,13 +178,32 @@
     }
   }
 
+  /** Set while any role assign / unassign request of this user is running. */
+  let roleChangePending = $state(false);
+
   /**
    * Toggles a role ID in the selected roles set. For an existing user the
-   * change is applied at once through roles.assign / roles.unassign.
+   * change is applied at once through roles.assign / roles.unassign. While
+   * any role change is in flight every role toggle waits for it: all role
+   * checkboxes are disabled and a toggle that still arrives is ignored and
+   * its box put back. The server replaces the user's whole role set on each
+   * change, so two concurrent changes (even to different roles) could undo
+   * each other; one at a time keeps them ordered. selectedRoleIds stays the
+   * authoritative state and changes only once the server accepts the
+   * change. On a refusal the checkbox is put back to that state, undoing
+   * the browser's own toggle.
    */
-  async function toggleRole(roleId: string): Promise<void> {
+  async function toggleRole(roleId: string, box?: HTMLInputElement): Promise<void> {
+    const revert = (): void => {
+      if (box !== undefined) box.checked = selectedRoleIds.includes(roleId);
+    };
+    if (roleChangePending) {
+      revert();
+      return;
+    }
     const assigned = selectedRoleIds.includes(roleId);
     if (!isCreate) {
+      roleChangePending = true;
       try {
         if (assigned) {
           await client.roles.unassign(userId!, roleId);
@@ -190,10 +213,12 @@
           showToast("success", "Role assigned");
         }
       } catch (err: unknown) {
-        const msg = errorText(err, "Failed to change role");
-        showToast("error", msg);
+        roleChangePending = false;
+        revert();
+        showToast("error", errorText(err, "Failed to change role"));
         return;
       }
+      roleChangePending = false;
     }
     if (assigned) {
       selectedRoleIds = selectedRoleIds.filter((id) => id !== roleId);
@@ -202,9 +227,20 @@
     }
   }
 
-  /** Thumbprints of the bindings the server lists on a user record. */
-  function boundThumbprints(user: User): string[] {
-    return (user.certBindings ?? []).map((b) => b.thumbprint);
+  /**
+   * The lifecycle states the backend moves to active (EnableUser) and to
+   * disabled (DisableUser), mirroring the transition graph in
+   * pkg/user/lifecycle.go. Deleting is terminal and offers neither.
+   */
+  const ENABLEABLE = new Set(["pending", "suspended", "locked", "disabled"]);
+  const DISABLEABLE = new Set(["pending", "active", "suspended", "locked"]);
+
+  function canEnable(lifecycle: string): boolean {
+    return ENABLEABLE.has(lifecycle);
+  }
+
+  function canDisable(lifecycle: string): boolean {
+    return DISABLEABLE.has(lifecycle);
   }
 
   /** Enables or disables the existing user. */
@@ -246,22 +282,34 @@
     }
   }
 
+  /** Returns the current local time in datetime-local form (YYYY-MM-DDTHH:mm). */
+  function localDateTimeNow(): string {
+    const now = new Date();
+    const pad = (n: number): string => String(n).padStart(2, "0");
+    return (
+      `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+      `T${pad(now.getHours())}:${pad(now.getMinutes())}`
+    );
+  }
+
   /** Binds a certificate thumbprint to the existing user. */
   async function handleAddBinding(): Promise<void> {
     const thumbprint = bindingThumbprint.trim();
     if (thumbprint === "") return;
+    // The server treats notAfterUnix <= 0 as "never expires": send a value
+    // only for a finite future time, and none only for an empty field.
     let notAfterUnix: number | undefined;
     if (bindingExpiry !== "") {
-      notAfterUnix = Math.floor(new Date(bindingExpiry).getTime() / 1000);
+      const ms = new Date(bindingExpiry).getTime();
+      if (!Number.isFinite(ms) || ms <= Date.now()) {
+        showToast("error", "Expiry must be a future date");
+        return;
+      }
+      notAfterUnix = Math.floor(ms / 1000);
     }
     try {
       busy = true;
       existingUser = await client.users.addCertBinding(userId!, thumbprint, notAfterUnix);
-      if (existingUser.certBindings !== undefined) {
-        certBindings = boundThumbprints(existingUser);
-      } else if (!certBindings.includes(thumbprint)) {
-        certBindings = [...certBindings, thumbprint];
-      }
       bindingThumbprint = "";
       bindingExpiry = "";
       showToast("success", "Certificate binding added");
@@ -280,10 +328,6 @@
     try {
       busy = true;
       existingUser = await client.users.removeCertBinding(userId!, tp);
-      certBindings =
-        existingUser.certBindings !== undefined
-          ? boundThumbprints(existingUser)
-          : certBindings.filter((t) => t !== tp);
       if (bindingThumbprint.trim() === tp) bindingThumbprint = "";
       showToast("success", "Certificate binding removed");
     } catch (err: unknown) {
@@ -340,13 +384,13 @@
               />
             </label>
 
-            <!-- Email (the user's email login key; blank at create = none) -->
+            <!-- Email -->
             <label class="form-control w-full">
               <div class="label"><span class="label-text">Email</span></div>
               <input
                 type="email"
                 class="input input-bordered input-sm w-full"
-                placeholder="Enter email (blank: no email login)"
+                placeholder="user@example.com"
                 data-testid="user-email"
                 bind:value={email}
                 disabled={existingUser !== null && existingUser.system}
@@ -360,6 +404,7 @@
                 type="text"
                 class="input input-bordered input-sm w-full"
                 placeholder="Optional display name"
+                data-testid="user-name"
                 bind:value={displayName}
                 disabled={existingUser !== null && existingUser.system}
               />
@@ -385,7 +430,16 @@
             <div class="grid grid-cols-2 gap-2 text-xs">
               <div>
                 <span class="text-base-content/60 font-semibold">Lifecycle</span>
-                <p class="font-mono">{existingUser.lifecycle}</p>
+                <p>
+                  <span
+                    class="badge badge-sm {existingUser.lifecycle === 'active'
+                      ? 'badge-success'
+                      : existingUser.lifecycle === 'disabled'
+                        ? 'badge-error'
+                        : 'badge-warning'}"
+                    data-testid="user-lifecycle-badge">{existingUser.lifecycle}</span
+                  >
+                </p>
               </div>
               <div>
                 <span class="text-base-content/60 font-semibold">Created</span>
@@ -414,8 +468,9 @@
                     type="checkbox"
                     class="checkbox checkbox-sm checkbox-primary"
                     checked={selectedRoleIds.includes(role.id)}
+                    disabled={roleChangePending}
                     data-testid="user-role-{role.name}"
-                    onchange={() => void toggleRole(role.id)}
+                    onchange={(e) => void toggleRole(role.id, e.currentTarget)}
                   />
                   <div class="flex flex-col">
                     <span class="text-sm">{role.name}</span>
@@ -481,6 +536,7 @@
                 type="datetime-local"
                 class="input input-bordered input-sm"
                 data-testid="user-binding-expiry"
+                min={localDateTimeNow()}
                 bind:value={bindingExpiry}
               />
             </label>
@@ -501,16 +557,27 @@
               Remove Binding
             </button>
           </div>
-          {#if certBindings.length > 0}
+          {#if certBindings.length === 0}
+            <p class="text-base-content/50 pt-2 text-sm" data-testid="user-cert-bindings-empty">
+              No certificate bindings.
+            </p>
+          {:else}
             <ul class="flex flex-col gap-1 pt-2">
-              {#each certBindings as tp (tp)}
+              {#each certBindings as binding (binding.thumbprint)}
                 <li class="flex items-center gap-2" data-testid="user-binding-row">
-                  <span class="font-mono text-xs break-all">{tp}</span>
+                  <span
+                    class="font-mono text-xs break-all"
+                    data-testid="user-binding-thumbprint-value">{binding.thumbprint}</span
+                  >
+                  <span class="badge badge-ghost badge-xs">{binding.kind}</span>
+                  <span class="text-base-content/60 text-xs">
+                    {binding.notAfter !== undefined ? `expires ${binding.notAfter}` : "no expiry"}
+                  </span>
                   <button
                     class="btn btn-ghost btn-xs ml-auto"
-                    aria-label="Remove binding {tp}"
+                    aria-label="Remove binding {binding.thumbprint}"
                     disabled={busy}
-                    onclick={() => void handleRemoveBinding(tp)}
+                    onclick={() => void handleRemoveBinding(binding.thumbprint)}
                   >
                     Remove
                   </button>
@@ -538,7 +605,7 @@
         Cancel
       </button>
       {#if existingUser !== null && !existingUser.system}
-        {#if existingUser.lifecycle === "disabled"}
+        {#if canEnable(existingUser.lifecycle)}
           <button
             class="btn btn-outline btn-success btn-sm"
             data-testid="user-enable"
@@ -547,7 +614,8 @@
           >
             Enable
           </button>
-        {:else}
+        {/if}
+        {#if canDisable(existingUser.lifecycle)}
           <button
             class="btn btn-outline btn-warning btn-sm"
             data-testid="user-disable"
