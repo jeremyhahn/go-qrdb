@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 )
 
 // homeViewHost is a RaftHost that also reports local leadership and the
@@ -14,12 +16,17 @@ type homeViewHost struct {
 	*fakeRaftHost
 	leader  bool
 	members map[uint64]string
+	removed map[uint64]struct{}
 }
 
 func (h *homeViewHost) IsLocalShardLeader(uint64) (bool, error) { return h.leader, nil }
 
 func (h *homeViewHost) ShardMembers(context.Context, uint64) (map[uint64]string, error) {
 	return h.members, nil
+}
+
+func (h *homeViewHost) RemovedReplicas(context.Context, uint64) (map[uint64]struct{}, error) {
+	return h.removed, nil
 }
 
 // membersOf returns every replica of the placement as a committed member.
@@ -84,6 +91,119 @@ func TestGrowTenantHome_LeaderReadmitsAnUnadmittedReplica(t *testing.T) {
 	if len(host.observerCalls) != 1 || host.observerCalls[0].replicaID != missing.ReplicaID ||
 		host.observerCalls[0].raftAddr != missing.RaftAddr {
 		t.Fatalf("observer admissions = %+v, want one for replica %d", host.observerCalls, missing.ReplicaID)
+	}
+}
+
+// TestGrowTenantHome_FinishesACommittedRemovalInsteadOfReadmitting covers a
+// removal Raft committed (RemoveFollowerNode) whose placement update then
+// failed: the placed replica is in the group's removed set, so the leader
+// drops it from placement and never asks Raft to readmit the retired ID.
+func TestGrowTenantHome_FinishesACommittedRemovalInsteadOfReadmitting(t *testing.T) {
+	svc, store, _ := homeOnTopology(t, healthyNodes("n1", "n2", "n3"))
+	host := withHomeView(t, svc, store, true)
+	retired := loadHome(t, store).Replicas[2]
+	delete(host.members, retired.ReplicaID)
+	host.removed = map[uint64]struct{}{retired.ReplicaID: {}}
+
+	if _, err := svc.GrowTenantHome(context.Background(), "rt"); err != nil {
+		t.Fatalf("GrowTenantHome: %v", err)
+	}
+	for _, c := range host.observerCalls {
+		if c.replicaID == retired.ReplicaID {
+			t.Fatalf("observer admissions = %+v: the retired replica %d was readmitted", host.observerCalls, retired.ReplicaID)
+		}
+	}
+	for _, r := range loadHome(t, store).Replicas {
+		if r.ReplicaID == retired.ReplicaID {
+			t.Fatalf("placement still holds the retired replica %d after reconcile", retired.ReplicaID)
+		}
+	}
+}
+
+// errReplicaRemoved is the double's stand-in for go-quicraft's ErrNodeRemoved:
+// Raft records a removed replica ID permanently and refuses to admit it again.
+var errReplicaRemoved = errors.New("replica ID was removed from the shard")
+
+// AddObserver refuses a removed ID, as the pinned go-quicraft does.
+func (h *homeViewHost) AddObserver(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+	if _, gone := h.removed[replicaID]; gone {
+		return errReplicaRemoved
+	}
+	return h.fakeRaftHost.AddObserver(ctx, shardID, replicaID, raftAddr)
+}
+
+// casFailingPlacementKV fails every compare-and-swap while failCAS is set.
+type casFailingPlacementKV struct {
+	*memPlacementKV
+	failCAS bool
+}
+
+func (k *casFailingPlacementKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if k.failCAS {
+		return false, errors.New("placement write refused")
+	}
+	return k.memPlacementKV.CompareAndSwap(ctx, key, expected, next)
+}
+
+// TestReconcileTenantHomes_FinishesARemovalWhosePlacementWriteFailed drives
+// the real removal path: shedding a departed home voter commits
+// RemoveFollowerNode, then Store.RemoveReplica fails. The next reconcile
+// must drop the retired replica from placement and never ask Raft to admit
+// the removed ID again.
+func TestReconcileTenantHomes_FinishesARemovalWhosePlacementWriteFailed(t *testing.T) {
+	kv := &casFailingPlacementKV{memPlacementKV: newMemPlacementKV()}
+	nodes := healthyNodes("n1", "n2", "n3")
+	f := &fakeReplicaQuota{q: &quota.Quotas{MaxTotalReplicas: 100}}
+	raw, store := newPlacementDatabaseServiceOn(t, raftTenant(t), f, nodes, kv)
+	svc := raw.(*DatabaseService)
+	topo := &staticTopology{nodes: nodes}
+	sched, err := placement.NewScheduler(topo)
+	if err != nil {
+		t.Fatalf("placement.NewScheduler: %v", err)
+	}
+	svc.placementScheduler = sched
+	if _, err := svc.ProvisionTenantHome(context.Background(), "rt"); err != nil {
+		t.Fatalf("ProvisionTenantHome: %v", err)
+	}
+	host := withHomeView(t, svc, store, true)
+	topo.nodes = healthyNodes("n1", "n2", "n3", "n4")
+	if err := svc.ReconcileTenantHomes(context.Background()); err != nil {
+		t.Fatalf("ReconcileTenantHomes (grow): %v", err)
+	}
+	host.members = membersOf(loadHome(t, store))
+	retired := homeReplicaOn(t, store, "n4:1")
+	if retired == nil {
+		t.Fatal("home has no replica on n4 after the grow")
+	}
+	host.observerCalls = nil // the grow admitted n4; count only later admissions
+	host.removed = map[uint64]struct{}{}
+	host.onRemove = func() {
+		// Raft commits the removal; the placement write after it fails.
+		host.removed[retired.ReplicaID] = struct{}{}
+		delete(host.members, retired.ReplicaID)
+		kv.failCAS = true
+	}
+
+	topo.nodes = healthyNodes("n1", "n2", "n3")
+	if err := svc.ReconcileTenantHomes(context.Background()); err == nil {
+		t.Fatal("ReconcileTenantHomes (shed) succeeded although the placement write failed")
+	}
+	if homeReplicaOn(t, store, "n4:1") == nil {
+		t.Fatal("placement dropped the retired replica although its write failed")
+	}
+
+	kv.failCAS = false
+	host.onRemove = nil
+	if err := svc.ReconcileTenantHomes(context.Background()); err != nil {
+		t.Fatalf("ReconcileTenantHomes (after the failed write): %v", err)
+	}
+	if homeReplicaOn(t, store, "n4:1") != nil {
+		t.Fatal("the committed removal's placement entry is still present")
+	}
+	for _, c := range host.observerCalls {
+		if c.replicaID == retired.ReplicaID {
+			t.Fatalf("observer admissions = %+v: the retired replica %d was readmitted", host.observerCalls, retired.ReplicaID)
+		}
 	}
 }
 

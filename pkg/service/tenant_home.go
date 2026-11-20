@@ -157,9 +157,11 @@ func (s *DatabaseService) growHome(ctx context.Context, home *placement.Placemen
 		if err != nil || !lead {
 			return home, nil
 		}
-		if err := s.readmitHomeReplicas(ctx, view, home); err != nil {
-			return home, err
+		readmitted, err := s.readmitHomeReplicas(ctx, view, home)
+		if err != nil {
+			return readmitted, err
 		}
+		home = readmitted
 	}
 	plan, err := s.placementScheduler.PlaceAdditional(ctx, home, max(s.placementScheduler.ClusterSize(), 1))
 	var short *placement.InsufficientNodesError
@@ -198,30 +200,54 @@ func (s *DatabaseService) growHome(ctx context.Context, home *placement.Placemen
 type HomeGroupView interface {
 	IsLocalShardLeader(shardID uint64) (bool, error)
 	ShardMembers(ctx context.Context, shardID uint64) (map[uint64]string, error)
+	// RemovedReplicas is the set of replica IDs the group's committed
+	// membership has removed. Raft never readmits a removed ID, so a placed
+	// replica in it is a removal whose placement write did not finish.
+	RemovedReplicas(ctx context.Context, shardID uint64) (map[uint64]struct{}, error)
 }
 
 // readmitHomeReplicas re-requests Raft admission for every placed home
 // replica the group's committed membership lacks: a placement recorded
 // before its AddObserver failed (or before a leader change) is otherwise
 // never admitted, and the node never serves the tenant's identity records.
-func (s *DatabaseService) readmitHomeReplicas(ctx context.Context, view HomeGroupView, home *placement.Placement) error {
+func (s *DatabaseService) readmitHomeReplicas(ctx context.Context, view HomeGroupView, home *placement.Placement) (*placement.Placement, error) {
 	members, err := view.ShardMembers(ctx, home.ShardID)
 	if err != nil {
-		return err
+		return home, err
 	}
+	removed, err := view.RemovedReplicas(ctx, home.ShardID)
+	if err != nil {
+		return home, err
+	}
+	current := home
 	for _, r := range home.Replicas {
 		if _, ok := members[r.ReplicaID]; ok {
 			continue
 		}
+		if _, gone := removed[r.ReplicaID]; gone {
+			// A committed removal whose placement write failed, or whose
+			// caller timed out before it: finish it. Raft refuses the ID
+			// forever, so readmitting it would fail on every pass.
+			updated, perr := s.placementStore.RemoveReplica(ctx, current, r.ReplicaID)
+			if perr != nil {
+				return current, perr
+			}
+			current = updated
+			s.logger.Info("finished a committed tenant home replica removal",
+				slog.String("tenant", home.TenantID),
+				slog.Uint64("shard_id", home.ShardID),
+				slog.Uint64("replica_id", r.ReplicaID))
+			continue
+		}
 		if err := s.raftHost.AddObserver(ctx, home.ShardID, r.ReplicaID, r.RaftAddr); err != nil {
-			return err
+			return current, err
 		}
 		s.logger.Info("re-admitted a placed tenant home replica",
 			slog.String("tenant", home.TenantID),
 			slog.Uint64("shard_id", home.ShardID),
 			slog.Uint64("replica_id", r.ReplicaID))
 	}
-	return nil
+	return current, nil
 }
 
 // shedDepartedHomeReplicas removes home replicas whose node has left the
