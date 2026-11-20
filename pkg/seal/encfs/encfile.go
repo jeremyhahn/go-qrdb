@@ -99,6 +99,11 @@ func newWriteFile(base filesys.File, h *header) (*encryptedFile, error) {
 // newReadFile wraps an existing base file in an encryptedFile
 // configured for read-only access. The header has already been parsed
 // and the base read cursor sits immediately past the header.
+// beforeCommitRead, when set by a test, runs in scanFrames between the
+// caller's file-size read and the commit-slot read: the window in which
+// another handle can append and sync a frame.
+var beforeCommitRead func()
+
 func newReadFile(base filesys.File, h *header, physicalSize int64, appendLog bool) (*encryptedFile, error) {
 	crypto, err := newBlockCrypto(h.DEK[:])
 	if err != nil {
@@ -150,12 +155,29 @@ func (f *encryptedFile) scanFrames(physicalSize int64) error {
 		// the slots lost acknowledged bytes: refuse it, never open empty.
 		return fmt.Errorf("%w: framed log ends at %d inside its commit slots (data starts at %d)", ErrTruncatedHeader, physicalSize, start)
 	}
+	if beforeCommitRead != nil {
+		beforeCommitRead()
+	}
 	rec, ok, err := f.readCommit(physicalSize)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return fmt.Errorf("%w: framed log has no authentic commit slot", ErrAuthFailed)
+	}
+	if rec.end > physicalSize {
+		// The size was read before the commit slot: another handle
+		// appended and synced in between. A sync writes its frames before
+		// the slot that counts them, so a size read now covers rec.end.
+		// Re-read it once; a commit past this size is real damage and the
+		// scan below refuses it.
+		fi, err := f.base.Stat()
+		if err != nil {
+			return err
+		}
+		if fi.Size() > physicalSize {
+			physicalSize = fi.Size()
+		}
 	}
 	f.commitSeq, f.durable = rec.seq, rec.count
 	if rec.count == 0 && rec.end != start {
