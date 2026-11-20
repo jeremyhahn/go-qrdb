@@ -398,6 +398,11 @@ type Gate struct {
 	// stands in for a committed member whose advertisement has lapsed.
 	releases atomic.Pointer[map[uint64][]string]
 
+	// stores are the activation KV and advertisement stores Start was
+	// given; admission reads them afresh rather than through view and
+	// releases (see admitRelease). Nil before Start.
+	stores atomic.Pointer[admissionStores]
+
 	// refusal is the activated feature this binary lacks, once
 	// CheckActivated has found one; see Refusal.
 	refusal atomic.Pointer[UnsupportedFeatureError]
@@ -670,7 +675,17 @@ func (g *Gate) admitRelease(raftAddr string) (ConfigBinding, error) {
 	if selfErr == nil && self.Address == raftAddr {
 		return ConfigBinding{}, nil
 	}
-	view := *g.view.Load()
+	// A restart changes a member's release without a configuration change,
+	// so the cached view, refilled only as the watch and refresh catch up,
+	// can hold a release the member no longer runs. Admission reads the
+	// advertisements and recorded releases afresh, and refuses when it
+	// cannot.
+	ctx, cancel := context.WithTimeout(context.Background(), admitReadTimeout)
+	defer cancel()
+	view, err := g.admissionView(ctx)
+	if err != nil {
+		return ConfigBinding{}, err
+	}
 	candidate := ""
 	for _, rec := range view {
 		if rec.Address == raftAddr && rec.ReleaseVersion != "" {
@@ -703,7 +718,10 @@ func (g *Gate) admitRelease(raftAddr string) (ConfigBinding, error) {
 	if err != nil {
 		return ConfigBinding{}, err
 	}
-	recorded := *g.releases.Load()
+	recorded, err := g.admissionReleases(ctx)
+	if err != nil {
+		return ConfigBinding{}, err
+	}
 	for _, m := range committedMembers(system) {
 		if m.id == g.self.ReplicaID || m.addr == raftAddr {
 			continue
@@ -728,6 +746,50 @@ func (g *Gate) admitRelease(raftAddr string) (ConfigBinding, error) {
 	// Required even at ConfigChangeID 0: a bootstrapped membership before
 	// its first change is a checked configuration, not the absence of one.
 	return ConfigBinding{ConfigChangeID: system.ConfigChangeID, Required: true}, nil
+}
+
+// admitReadTimeout bounds admission's fresh read of the advertisements and
+// recorded releases.
+const admitReadTimeout = 10 * time.Second
+
+// admissionStores are the stores a started gate reads at admission.
+type admissionStores struct {
+	kv      ActivationKV
+	adverts []cluster.MembershipStore
+}
+
+// admissionView reads every advertisement store afresh, keyed as view is.
+// Before Start it has no stores and returns the cached view.
+func (g *Gate) admissionView(ctx context.Context) (map[viewKey]cluster.Member, error) {
+	stores := g.stores.Load()
+	if stores == nil {
+		return *g.view.Load(), nil
+	}
+	view := make(map[viewKey]cluster.Member)
+	for i, store := range stores.adverts {
+		members, err := store.ListMembers(ctx)
+		if err != nil {
+			return nil, &StoreError{Op: "list advertisements", Err: err}
+		}
+		for _, m := range members {
+			view[viewKey{source: i, nodeID: m.NodeID}] = m
+		}
+	}
+	return view, nil
+}
+
+// admissionReleases reads the recorded releases afresh. Before Start it
+// has no store and returns the cached records.
+func (g *Gate) admissionReleases(ctx context.Context) (map[uint64][]string, error) {
+	stores := g.stores.Load()
+	if stores == nil {
+		return *g.releases.Load(), nil
+	}
+	keys, err := listReleases(ctx, stores.kv)
+	if err != nil {
+		return nil, err
+	}
+	return parseReleases(keys), nil
 }
 
 // committedMember is one replica or witness of a committed membership.
@@ -1145,6 +1207,7 @@ func (g *Gate) Start(ctx context.Context, kv ActivationKV, adverts ...cluster.Me
 		return err
 	}
 	g.activate(ctx, kv)
+	g.stores.Store(&admissionStores{kv: kv, adverts: slices.Clone(adverts)})
 
 	events := make(chan sourcedEvent, 64)
 	g.started = true
