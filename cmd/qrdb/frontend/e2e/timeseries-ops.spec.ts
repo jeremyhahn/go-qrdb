@@ -417,6 +417,27 @@ test.describe("TimeSeries operations", () => {
     });
   }
 
+  // A JavaScript number holds integers exactly only up to 2^53-1: the
+  // adjacent nanoseconds 1700000000000000000 and 1700000000000000001 both
+  // become 1700000000000000000, share one storage key and the second write
+  // overwrites the first while the UI reports both written.
+  test("batch write rejects a timestamp a number cannot hold exactly", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+
+    await page.getByRole("button", { name: "Write", exact: true }).first().click();
+    await writePanel(page).getByTestId("ts-write-mode-batch").click();
+    await writePanel(page).locator("input[placeholder='cpu.usage']").fill("ops.bad");
+    await writePanel(page)
+      .getByTestId("ts-write-batch")
+      .fill("1700000000000000000,1\n1700000000000000001,2");
+    await writePanel(page).getByRole("button", { name: "Write" }).click();
+    await expect(
+      page.getByText("Line 2: timestamp 1700000000000000001 cannot be represented exactly (nearest is 1700000000000000000)."),
+    ).toBeVisible();
+    expect(await bindingCalls(page)).not.toContain("WriteBatch");
+  });
+
   test("aggregation menus offer only the functions the REST server accepts", async ({ page }) => {
     await injectStatefulTimeSeriesBinding(page);
     await navigateToTimeSeries(page);

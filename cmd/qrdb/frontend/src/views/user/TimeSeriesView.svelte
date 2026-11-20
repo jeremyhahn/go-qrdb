@@ -558,6 +558,8 @@
     showWritePanel = true;
   }
 
+  const INT64_MAX = BigInt("9223372036854775807");
+
   /**
    * Parses batch lines of the form `timestamp,value[,k=v;k=v]`. Returns the
    * points or an error message naming the first bad line.
@@ -574,6 +576,15 @@
       }
       const tsRaw = (parts[0] ?? "").trim();
       if (!/^\d+$/.test(tsRaw)) return `Line ${i + 1}: timestamp must be Unix nanoseconds.`;
+      // The binding sends a JavaScript number, exact only to 2^53: adjacent
+      // nanoseconds can round to one value and overwrite each other in
+      // storage. Reject any timestamp the conversion changes.
+      const exactNs = BigInt(tsRaw);
+      if (exactNs > INT64_MAX) return `Line ${i + 1}: timestamp is out of range.`;
+      const timestampNs = Number(tsRaw);
+      if (BigInt(timestampNs) !== exactNs) {
+        return `Line ${i + 1}: timestamp ${exactNs} cannot be represented exactly (nearest is ${BigInt(timestampNs)}).`;
+      }
       // The whole field must be a finite number: parseFloat would take the
       // prefix of "12oops", and "1e309" overflows to Infinity, which JSON
       // sends as null (stored as 0).
@@ -584,7 +595,7 @@
       points.push({
         metric,
         value,
-        timestampNs: parseInt(tsRaw, 10),
+        timestampNs,
         ...(tags.length > 0 ? { tags } : {}),
       });
     }

@@ -73,7 +73,9 @@ test("batch write, aggregate, rich query and retention round-trip against the li
   await expect(page.getByText("0 metrics")).toBeVisible({ timeout: LOAD_TIMEOUT });
 
   // --- writeBatch: three points, two tagged host=a, one host=b. ----------
-  const baseNs = (Date.now() - 120_000) * 1_000_000;
+  // Whole seconds: a JavaScript number holds these nanosecond values
+  // exactly, which the batch importer requires.
+  const baseNs = Math.floor((Date.now() - 120_000) / 1000) * 1_000_000_000;
   const lines = [
     `${baseNs},10,host=a`,
     `${baseNs + 1_000_000_000},20,host=b`,
