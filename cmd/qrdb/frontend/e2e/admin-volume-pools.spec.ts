@@ -28,6 +28,7 @@ import {
   expect,
   secondLaunchEmbeddedState,
   injectError,
+  clearError,
 } from "./fixtures/wails-mock.ts";
 import type { Page } from "@playwright/test";
 
@@ -193,6 +194,46 @@ test.describe("Admin - Volume Pools", () => {
     await page.locator("main").getByTestId("volume-pool-back").click();
     await openPool(page, "bulk");
     await expect(tenants).toContainText("No tenants are assigned to this pool.");
+  });
+
+  test("a pending tenant listing is not shown as an unassigned pool", async ({ page }) => {
+    await openApp(page);
+    await seedPool(page, { name: "fast" });
+    await assignTenant(page, "fast", "acme", 2048);
+    await gotoVolumePools(page);
+    await page.evaluate(() => {
+      (window as unknown as { __volumePoolHoldTenantPages: (on: boolean) => void }).__volumePoolHoldTenantPages(true);
+    });
+    await openPool(page, "fast");
+
+    const tenants = page.locator("main").getByTestId("volume-pool-tenants");
+    await expect(tenants.getByTestId("volume-pool-tenants-loading")).toBeVisible();
+    await expect(tenants).not.toContainText("No tenants are assigned to this pool.");
+
+    await page.evaluate(() => {
+      (window as unknown as { __volumePoolReleaseTenantPages: () => void }).__volumePoolReleaseTenantPages();
+    });
+    await expect(tenants.getByRole("cell", { name: "acme", exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(tenants.getByTestId("volume-pool-tenants-loading")).toHaveCount(0);
+  });
+
+  test("a failed tenant listing is not shown as an unassigned pool and can be retried", async ({ page }) => {
+    await openApp(page);
+    await seedPool(page, { name: "fast" });
+    await assignTenant(page, "fast", "acme", 2048);
+    await gotoVolumePools(page);
+    await injectError(page, "VolumePoolBinding.ListTenants", "tenant index unavailable");
+    await openPool(page, "fast");
+
+    const tenants = page.locator("main").getByTestId("volume-pool-tenants");
+    const failure = tenants.getByTestId("volume-pool-tenants-error");
+    await expect(failure).toContainText("tenant index unavailable", { timeout: LOAD_TIMEOUT });
+    await expect(tenants).not.toContainText("No tenants are assigned to this pool.");
+
+    await clearError(page, "VolumePoolBinding.ListTenants");
+    await tenants.getByTestId("volume-pool-tenants-retry").click();
+    await expect(tenants.getByRole("cell", { name: "acme", exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(failure).toHaveCount(0);
   });
 
   test("Load more is serialized: a double click fetches the next page once", async ({ page }) => {
