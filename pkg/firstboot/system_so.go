@@ -625,13 +625,35 @@ func activateSystemSO(ctx context.Context, deps Dependencies, soUser *user.User)
 	if !ok {
 		return &MissingSOSeamError{Seam: "Dependencies.Users implementing UpdateUser to activate the enrolled SO"}
 	}
+	// The pending check above is on enrollment's snapshot: the write is
+	// bound to the committed lifecycle by a guard, so an account an
+	// administrator disabled during enrollment is not reinstated, and one
+	// a peer completing the same enrollment activated first is left as is.
+	errAlreadyActive := errors.New("the system SO is already active")
+	guard := func(prior, _ *user.User) error {
+		switch prior.Lifecycle {
+		case user.LifecyclePending:
+			return nil
+		case user.LifecycleActive:
+			return errAlreadyActive
+		default:
+			return &SystemSOEnrollmentError{Op: "activation", Cause: fmt.Errorf("the pending system SO became %q during enrollment; not activating it", prior.Lifecycle)}
+		}
+	}
 	var deadline time.Time
 	for {
-		_, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: soUser.ID, Lifecycle: user.LifecycleActive})
+		_, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: soUser.ID, Lifecycle: user.LifecycleActive, Guard: guard})
 		if err == nil {
 			deps.Logger.Info("first-boot: system SO enrolled and activated",
 				slog.String("tenant", soUser.TenantID), slog.Uint64("user_id", soUser.ID))
 			return nil
+		}
+		if errors.Is(err, errAlreadyActive) {
+			return nil
+		}
+		var refused *SystemSOEnrollmentError
+		if errors.As(err, &refused) {
+			return err
 		}
 		var lost *user.ConcurrentUpdateError
 		if !errors.As(err, &lost) {
