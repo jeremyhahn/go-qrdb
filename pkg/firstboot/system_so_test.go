@@ -68,7 +68,12 @@ func (u *soUsers) UpdateUser(_ context.Context, req *user.UpdateUserRequest) (*u
 	if req.Attributes != nil {
 		existing.Attributes = maps.Clone(req.Attributes)
 	}
-	return existing, nil
+	if req.Lifecycle != "" {
+		existing.Lifecycle = req.Lifecycle
+	}
+	c := *existing
+	c.RoleIDs = slices.Clone(existing.RoleIDs)
+	return &c, nil
 }
 
 func newSOUsers() *soUsers {
@@ -81,7 +86,14 @@ func (s *soUsers) CreateUser(_ context.Context, req *user.CreateUserRequest) (*u
 		return nil, &user.UsernameExistsError{Username: req.Username, TenantID: req.TenantID}
 	}
 	s.nextID++
-	u := &user.User{ID: s.nextID, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs, Lifecycle: user.LifecycleActive}
+	lifecycle := user.LifecycleActive
+	if req.Pending {
+		lifecycle = user.LifecyclePending
+	}
+	if req.Lifecycle != "" {
+		lifecycle = req.Lifecycle
+	}
+	u := &user.User{ID: s.nextID, Username: req.Username, TenantID: req.TenantID, RoleIDs: slices.Clone(req.RoleIDs), Lifecycle: lifecycle}
 	s.byName[req.Username] = u
 	c := *u
 	return &c, nil

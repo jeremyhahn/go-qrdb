@@ -353,7 +353,7 @@ func checkSOCertLogsInAsUsername(so *SOConfig) error {
 // An SO from a retained record whose PIN is committed but whose account is
 // gone was enrolled and deleted since, and is not re-created
 // (pendingSOAccountDeleted).
-func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, result *Result) error {
+func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, result *Result) (err error) {
 	so := deps.SO
 	if so == nil {
 		return nil
@@ -368,7 +368,7 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 			slog.String("username", so.Username), slog.String("tenant", tenantID))
 		return nil
 	}
-	soUser, created, err := createSystemSO(ctx, deps, tenantID)
+	soUser, created, grantRole, err := createSystemSO(ctx, deps, tenantID)
 	if err != nil {
 		return err
 	}
@@ -407,6 +407,30 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 			return &SystemSOEnrollmentError{Op: "PIN commit", Cause: errors.Join(err, ownErr)}
 		}
 	}
+	// Authority comes last: the SO role is granted to an existing account,
+	// and a new account activated, only once the PIN above and the
+	// certificate below have succeeded. A failure after the grant takes
+	// the role back, so a failed enrolment leaves no SO authority.
+	soRoleID := role.SystemRoleID(tenantID, role.RoleNameSO)
+	granted := false
+	grant := func() error {
+		if !grantRole {
+			return nil
+		}
+		updated, gerr := grantAdminSORole(ctx, deps, soUser, soRoleID)
+		if gerr != nil {
+			return gerr
+		}
+		soUser, granted = updated, true
+		return nil
+	}
+	defer func() {
+		if err != nil && granted {
+			if rerr := revokeAdminSORole(context.WithoutCancel(ctx), deps, soUser, soRoleID); rerr != nil {
+				err = errors.Join(err, rerr)
+			}
+		}
+	}()
 	// A live binding for the SO's own key is required: another key's live
 	// binding does not enrol it, and an expired one for its key would leave
 	// its certificate failing User.MatchesCert. Rebinding renews it.
@@ -419,6 +443,9 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 		if err != nil {
 			return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
 		}
+		if err := grant(); err != nil {
+			return err
+		}
 		// Before the binding: a retry repeats this branch until the SO is
 		// bound, so the anchors are installed whenever a binding is.
 		if err := installSOTrustAnchors(ctx, deps, tenantID); err != nil {
@@ -428,6 +455,9 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 			return &SystemSOEnrollmentError{Op: "binding", Cause: err}
 		}
 		if err := recordSOBoundKey(ctx, deps, soUser, thumbprint); err != nil {
+			return err
+		}
+		if err := activateSystemSO(ctx, deps, soUser); err != nil {
 			return err
 		}
 		result.SOCertPEM = certPEM
@@ -445,26 +475,119 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 	// again for the same key, which the standing binding already covers,
 	// and returned; a presented certificate is the embedder's own. A run
 	// that stopped between the binding and its record records it now.
+	var certPEM []byte
+	if len(so.CertPEM) == 0 {
+		issued, err := issueSOCert(ctx, deps, tenantID)
+		if err != nil {
+			return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
+		}
+		thumbprint, err := spkiThumbprintFromCertPEM(issued)
+		if err != nil {
+			return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
+		}
+		if thumbprint != soKey {
+			return &SystemSOEnrollmentError{Op: "certificate", Cause: errors.New("the reissued certificate does not carry the SO's bound key")}
+		}
+		certPEM = issued
+	}
+	if err := grant(); err != nil {
+		return err
+	}
 	if err := recordSOBoundKey(ctx, deps, soUser, soKey); err != nil {
 		return err
 	}
-	if len(so.CertPEM) > 0 {
+	if err := activateSystemSO(ctx, deps, soUser); err != nil {
+		return err
+	}
+	if certPEM != nil {
+		result.SOCertPEM = certPEM
+		result.SOCertThumbprint = soKey
+	}
+	return nil
+}
+
+// revokeAdminSORole takes back the SO role grantAdminSORole added to the
+// bootstrap admin when the enrolment then fails, so the admin holds no SO
+// authority an enrolment never completed. The account is re-read first so
+// a concurrent write to it is not undone.
+func revokeAdminSORole(ctx context.Context, deps Dependencies, admin *user.User, soRoleID string) error {
+	updater, ok := deps.Users.(userUpdater)
+	if !ok {
+		return &MissingSOSeamError{Seam: "Dependencies.Users implementing UpdateUser to take back the SO role"}
+	}
+	var deadline time.Time
+	for {
+		current := admin
+		if users := userResolver(deps); users != nil {
+			fresh, err := users.GetUserByUsername(ctx, admin.TenantID, admin.Username)
+			if err != nil || fresh == nil || fresh.ID != admin.ID {
+				return &SystemSOEnrollmentError{Op: "role rollback", Cause: errors.Join(errors.New("the bootstrap admin could not be re-read"), err)}
+			}
+			current = fresh
+		}
+		if !slices.Contains(current.RoleIDs, soRoleID) {
+			return nil
+		}
+		roleIDs := slices.DeleteFunc(slices.Clone(current.RoleIDs), func(id string) bool { return id == soRoleID })
+		_, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: admin.ID, RoleIDs: roleIDs})
+		if err == nil {
+			deps.Logger.Warn("first-boot: the system SO enrolment failed; the SO role granted to the bootstrap admin was taken back",
+				slog.String("tenant", admin.TenantID), slog.Uint64("user_id", admin.ID))
+			return nil
+		}
+		var lost *user.ConcurrentUpdateError
+		if !errors.As(err, &lost) {
+			return &SystemSOEnrollmentError{Op: "role rollback", Cause: err}
+		}
+		if deadline.IsZero() {
+			deadline = time.Now().Add(adminConvergeWindow)
+		}
+		if !time.Now().Before(deadline) {
+			return &SystemSOEnrollmentError{Op: "role rollback", Cause: err}
+		}
+		select {
+		case <-ctx.Done():
+			return &SystemSOEnrollmentError{Op: "role rollback", Cause: ctx.Err()}
+		case <-time.After(adminConvergeInterval):
+		}
+	}
+}
+
+// activateSystemSO moves an SO account created pending to active once its
+// enrolment has succeeded. Setting the state an account already holds is a
+// no-op, so a write lost to a peer's concurrent update is simply retried.
+func activateSystemSO(ctx context.Context, deps Dependencies, soUser *user.User) error {
+	if soUser.Lifecycle != user.LifecyclePending {
 		return nil
 	}
-	certPEM, err := issueSOCert(ctx, deps, tenantID)
-	if err != nil {
-		return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
+	updater, ok := deps.Users.(userUpdater)
+	if !ok {
+		return &MissingSOSeamError{Seam: "Dependencies.Users implementing UpdateUser to activate the enrolled SO"}
 	}
-	thumbprint, err := spkiThumbprintFromCertPEM(certPEM)
-	if err != nil {
-		return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
+	var deadline time.Time
+	for {
+		_, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: soUser.ID, Lifecycle: user.LifecycleActive})
+		if err == nil {
+			deps.Logger.Info("first-boot: system SO enrolled and activated",
+				slog.String("tenant", soUser.TenantID), slog.Uint64("user_id", soUser.ID))
+			return nil
+		}
+		var lost *user.ConcurrentUpdateError
+		if !errors.As(err, &lost) {
+			return &SystemSOEnrollmentError{Op: "activation", Cause: err}
+		}
+		if deadline.IsZero() {
+			deadline = time.Now().Add(adminConvergeWindow)
+		}
+		if !time.Now().Before(deadline) {
+			return &SystemSOEnrollmentError{Op: "activation", Cause: err}
+		}
+		select {
+		case <-ctx.Done():
+			return &SystemSOEnrollmentError{Op: "activation", Cause: ctx.Err()}
+		case <-time.After(adminConvergeInterval):
+		}
 	}
-	if thumbprint != soKey {
-		return &SystemSOEnrollmentError{Op: "certificate", Cause: errors.New("the reissued certificate does not carry the SO's bound key")}
-	}
-	result.SOCertPEM = certPEM
-	result.SOCertThumbprint = thumbprint
-	return nil
 }
 
 // soBoundKeyAttribute names the SO account attribute recording the SPKI
@@ -627,12 +750,15 @@ func pendingSOAccountDeleted(ctx context.Context, deps Dependencies, tenantID st
 	}
 }
 
-// createSystemSO creates the system SO's account with the so role alone. A
-// collision on its username or generated id is first checked against the
-// account holding the username: this SO is the idempotent re-run, an
-// unresolved holder is a racing create still settling (retried within
-// adminConvergeWindow), and anyone else is *SystemSOConflictError.
-func createSystemSO(ctx context.Context, deps Dependencies, tenantID string) (*user.User, bool, error) {
+// createSystemSO creates the system SO's account with the so role alone,
+// pending until enrollSystemSO activates it. A collision on its username or
+// generated id is first checked against the account holding the username:
+// this SO is the idempotent re-run, the standard-posture bootstrap admin is
+// returned with grantRole set (enrollSystemSO grants the role only once the
+// enrolment has succeeded), an unresolved holder is a racing create still
+// settling (retried within adminConvergeWindow), and anyone else is
+// *SystemSOConflictError.
+func createSystemSO(ctx context.Context, deps Dependencies, tenantID string) (*user.User, bool, bool, error) {
 	so := deps.SO
 	soRoleID := role.SystemRoleID(tenantID, role.RoleNameSO)
 	adminRoleID := role.SystemRoleID(tenantID, role.RoleNameAdmin)
@@ -644,28 +770,31 @@ func createSystemSO(ctx context.Context, deps Dependencies, tenantID string) (*u
 			// The SO authenticates by certificate and PIN, not by an email
 			// login key.
 			WithoutEmailLoginKey: true,
-			Username:             so.Username,
-			TenantID:             tenantID,
-			RoleIDs:              []string{soRoleID},
+			// Pending until its enrolment succeeds: an account whose PIN
+			// or certificate then fails holds no authority.
+			Lifecycle: user.LifecyclePending,
+			Username:  so.Username,
+			TenantID:  tenantID,
+			RoleIDs:   []string{soRoleID},
 		})
 		if createErr == nil {
 			if soUser == nil {
-				return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: errors.New("the user surface created the SO without returning it")}
+				return nil, false, false, &SystemSOEnrollmentError{Op: "account", Cause: errors.New("the user surface created the SO without returning it")}
 			}
-			deps.Logger.Info("first-boot: system SO created",
+			deps.Logger.Info("first-boot: system SO created pending its enrolment",
 				slog.String("username", so.Username),
 				slog.String("tenant", tenantID),
 			)
-			return soUser, true, nil
+			return soUser, true, false, nil
 		}
 		var usernameExists *user.UsernameExistsError
 		var idExists *user.UserIDExistsError
 		usernameTaken := errors.As(createErr, &usernameExists)
 		if !usernameTaken && !errors.As(createErr, &idExists) {
-			return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: createErr}
+			return nil, false, false, &SystemSOEnrollmentError{Op: "account", Cause: createErr}
 		}
 		if users == nil {
-			return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: createErr}
+			return nil, false, false, &SystemSOEnrollmentError{Op: "account", Cause: createErr}
 		}
 		existing, lookupErr := users.GetUserByUsername(ctx, tenantID, so.Username)
 		if lookupErr == nil && existing != nil {
@@ -673,37 +802,39 @@ func createSystemSO(ctx context.Context, deps Dependencies, tenantID string) (*u
 				existing.TenantID == tenantID && slices.Contains(existing.RoleIDs, adminRoleID) &&
 				!slices.Contains(existing.RoleIDs, soRoleID) &&
 				existing.Lifecycle.Valid() && !existing.Lifecycle.Terminal() {
-				updated, err := grantAdminSORole(ctx, deps, existing, soRoleID)
-				if err != nil {
-					return nil, false, err
+				// The bootstrap admin is enrolled as the SO: the role is
+				// granted by enrollSystemSO once the PIN and certificate
+				// have succeeded, never before.
+				if !implementsUserUpdater(deps.Users) {
+					return nil, false, false, &MissingSOSeamError{Seam: "Dependencies.Users implementing UpdateUser to grant the bootstrap admin the SO role"}
 				}
-				return updated, false, nil
+				return existing, false, true, nil
 			}
 			if existing.TenantID != tenantID ||
 				!slices.Contains(existing.RoleIDs, soRoleID) ||
 				(deps.SeparationOfDuties && slices.Contains(existing.RoleIDs, adminRoleID)) ||
 				!existing.Lifecycle.Valid() || existing.Lifecycle.Terminal() {
-				return nil, false, &SystemSOConflictError{Username: so.Username}
+				return nil, false, false, &SystemSOConflictError{Username: so.Username}
 			}
-			return existing, false, nil
+			return existing, false, false, nil
 		}
 		if usernameTaken {
 			if convergeDeadline.IsZero() {
 				convergeDeadline = time.Now().Add(adminConvergeWindow)
 			}
 			if !time.Now().Before(convergeDeadline) {
-				return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: createErr}
+				return nil, false, false, &SystemSOEnrollmentError{Op: "account", Cause: createErr}
 			}
 			select {
 			case <-ctx.Done():
-				return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: ctx.Err()}
+				return nil, false, false, &SystemSOEnrollmentError{Op: "account", Cause: ctx.Err()}
 			case <-time.After(adminConvergeInterval):
 			}
 			continue
 		}
 		idCollisions++
 		if idCollisions >= adminCreateAttempts {
-			return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: createErr}
+			return nil, false, false, &SystemSOEnrollmentError{Op: "account", Cause: createErr}
 		}
 	}
 }
