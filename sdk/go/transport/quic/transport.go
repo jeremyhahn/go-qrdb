@@ -1367,6 +1367,28 @@ func isWireOutOfRange(err error) bool {
 	return errors.As(err, &re) && re.StatusCode == int(wire.StatusOutOfRange)
 }
 
+// requireTLS refuses a request carrying a barrier secret when the configured
+// address names the plaintext http:// scheme explicitly, before the request is
+// built. QUIC itself always runs over TLS; an http:// address is the caller
+// asking for plaintext, so a secret is never sent to it.
+func (t *Transport) requireTLS(req transport.BarrierSecretCarrier) error {
+	return transport.RequireTLSForBarrierSecret("quic", !transport.IsHTTP(t.config.Address), req)
+}
+
+// resolveSOPIN is transport.ResolveSOPIN, refusing a PIN -- the request's own
+// or one bound by transport.WithSOPIN -- when the configured address names the
+// plaintext http:// scheme explicitly.
+func (t *Transport) resolveSOPIN(ctx context.Context, method, explicit string) (string, error) {
+	pin, err := transport.ResolveSOPIN(ctx, method, explicit)
+	if err != nil {
+		return "", err
+	}
+	if pin != "" && transport.IsHTTP(t.config.Address) {
+		return "", &transport.SOPINRequiresTLSError{Transport: "quic"}
+	}
+	return pin, nil
+}
+
 // stripScheme removes http:// or https:// prefixes from addresses so
 // that QUIC DialAddr receives a bare host:port.
 func stripScheme(addr string) string {

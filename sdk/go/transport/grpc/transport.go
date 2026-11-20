@@ -892,8 +892,8 @@ func (t *Transport) buildDialOptions() ([]grpc.DialOption, error) {
 	// Only over TLS credentials: on a plaintext connection a PIN-bound RPC is
 	// refused with *transport.SOPINRequiresTLSError and never sent.
 	opts = append(opts,
-		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor("grpc", t.config.TLSEnabled)),
-		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor("grpc", t.config.TLSEnabled)),
+		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor("grpc", t.secretTLS())),
+		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor("grpc", t.secretTLS())),
 	)
 
 	if t.activeDatabase != "" {
@@ -1022,6 +1022,13 @@ func mapGRPCError(method string, err error) error {
 		Reason:     reason,
 		Metadata:   md,
 	}
+}
+
+// secretTLS reports whether a barrier secret or the SO PIN may be sent on this
+// transport: TLS is enabled and the configured address does not name the
+// plaintext http:// scheme explicitly.
+func (t *Transport) secretTLS() bool {
+	return t.config.TLSEnabled && !transport.IsHTTP(t.config.Address)
 }
 
 // stripScheme removes http:// or https:// prefixes from addresses so

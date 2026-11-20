@@ -508,6 +508,60 @@ describe('database compaction policy', () => {
 });
 
 // ---------------------------------------------------------------------------
+// updateRaft, updateBarrier and updateConnection PATCH the /v1 routes the
+// server registers (/v1/databases/{name}/raft|barrier|connection) with the
+// bare configuration as the body, the shape the REST handlers decode.
+// ---------------------------------------------------------------------------
+
+describe('database settings updates', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('sends PATCH /v1/databases/{name}/raft with the raft config', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ name: 'shop', backend: 'pebble', status: 'open' });
+        const raft = {
+            clusterMode: 'distributed',
+            replicaId: 2,
+            discovery: 'static',
+            static: { peers: ['db4.example.com:63001'], sharedSecret: 'static-secret' },
+        } as const;
+
+        await client.database.updateRaft('shop', raft);
+
+        expect(calls).toHaveLength(1);
+        expect(new URL(calls[0].url).pathname).toBe('/v1/databases/shop/raft');
+        expect(calls[0].method).toBe('PATCH');
+        expect(calls[0].body).toEqual(raft);
+    });
+
+    it('sends PATCH /v1/databases/{name}/barrier with the barrier config', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ name: 'shop', backend: 'pebble', status: 'open' });
+
+        await client.database.updateBarrier('my db', { enabled: true, mode: 'shamir', sharesRequired: 2, sharesTotal: 3 });
+
+        expect(calls).toHaveLength(1);
+        expect(new URL(calls[0].url).pathname).toBe('/v1/databases/my%20db/barrier');
+        expect(calls[0].method).toBe('PATCH');
+        expect(calls[0].body).toEqual({ enabled: true, mode: 'shamir', sharesRequired: 2, sharesTotal: 3 });
+    });
+
+    it('sends PATCH /v1/databases/{name}/connection with the connection config', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ name: 'shop', backend: 'pebble', status: 'open' });
+
+        await client.database.updateConnection('shop', { transport: 'grpc', address: 'db.example.com:63000' });
+
+        expect(calls).toHaveLength(1);
+        expect(new URL(calls[0].url).pathname).toBe('/v1/databases/shop/connection');
+        expect(calls[0].method).toBe('PATCH');
+        expect(calls[0].body).toEqual({ transport: 'grpc', address: 'db.example.com:63000' });
+    });
+});
+
+// ---------------------------------------------------------------------------
 // The platform's node-keyspace compaction policy: GET and PUT
 // /admin/node-compaction with a {"compaction": {...}} body, the request the Go
 // SDK's SetNodeCompaction sends. Omitting the policy turns it off.

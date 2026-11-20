@@ -33,12 +33,15 @@ var _ transport.CeremonyClient = (*Transport)(nil)
 
 // CeremonyInitialize starts the initialization ceremony.
 func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.CeremonyInitializeRequest) (*transport.CeremonyInitializeResponse, error) {
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 	// The SO PIN travels in the request's own so_pin field; it comes from the
 	// PIN bound by transport.WithSOPIN when the request carries none.
-	soPIN, err := transport.ResolveSOPIN(ctx, "CeremonyInitialize", req.SOPin)
+	soPIN, err := t.resolveSOPIN(ctx, "CeremonyInitialize", req.SOPin)
 	if err != nil {
 		return nil, err
 	}
@@ -76,11 +79,14 @@ func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStat
 
 // CeremonySignCSR submits a CSR for signing during or after the ceremony.
 func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 	// QUIC carries the SO PIN in the request message; see transport.WithSOPIN.
-	soPIN, err := transport.ResolveSOPIN(ctx, "CeremonySignCSR", req.SOPin)
+	soPIN, err := t.resolveSOPIN(ctx, "CeremonySignCSR", req.SOPin)
 	if err != nil {
 		return nil, err
 	}

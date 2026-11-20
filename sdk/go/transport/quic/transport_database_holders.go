@@ -160,6 +160,9 @@ func (t *Transport) DatabaseBarrierQuorumBegin(ctx context.Context, req *transpo
 
 // DatabaseBarrierQuorumSubmit submits a database holder's share.
 func (t *Transport) DatabaseBarrierQuorumSubmit(ctx context.Context, req *transport.DatabaseQuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
