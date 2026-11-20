@@ -118,6 +118,14 @@ var giteaOnlyJobs = map[string]map[string]bool{
 // failure-notification steps are its owner's to collapse.
 var serverURLExemptWorkflows = map[string]bool{"batch.yml": true}
 
+// templateHostedExpr is the runs-on of the code-review template's API-only
+// jobs (templateHostedJobs) since v5.12.5, adopted unchanged (ruling 1012): on
+// github.com it is ubuntu-latest. Every other job and workflow names the
+// literal label.
+const templateHostedExpr = "${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}"
+
+var templateHostedJobs = map[string]bool{"scope": true, "gate": true}
+
 // removedScripts are the scripts that implemented the self-hosted CI
 // DS-7377 removed.
 var removedScripts = []string{
@@ -206,6 +214,9 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		switch {
 		case runsOn == hostedRunner:
 			// Owner rulings 999 and 1006: the default.
+		case file == reviewWorkflow && templateHostedJobs[name] && runsOn == templateHostedExpr:
+			// Ruling 1012: the handbook template (v5.12.5), adopted unchanged,
+			// which resolves to ubuntu-latest on github.com.
 		case runsOn == "" || strings.Contains(runsOn, "${{"):
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+" nor one self-hosted label (owner ruling 999)")
 		default:
@@ -565,10 +576,18 @@ func TestRunnerProblems_Exemptions(t *testing.T) {
 		{reviewWorkflow, reviewJob, "codex"},
 		{reviewWorkflow, "build", credential},
 		{ciFile, reviewJob, credential},
-		{reviewWorkflow, reviewJob, "${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}"},
+		{reviewWorkflow, reviewJob, templateHostedExpr},
+		{reviewWorkflow, "build", templateHostedExpr},
+		{ciFile, "gate", templateHostedExpr},
+		{reviewWorkflow, "gate", "${{ 'ubuntu-latest' }}"},
 	} {
 		if p, _ := runnerProblems(c.file, []byte(label(c.job, c.runsOn))); len(p) == 0 {
 			t.Errorf("%s job %s on %q passed", c.file, c.job, c.runsOn)
+		}
+	}
+	for _, job := range []string{"scope", "gate"} {
+		if p, _ := runnerProblems(reviewWorkflow, []byte(label(job, templateHostedExpr))); len(p) != 0 {
+			t.Errorf("code-review.yml's %s job keeps the template's runs-on (ruling 1012), got %v", job, p)
 		}
 	}
 	if p, _ := runnerProblems(ciFile, []byte(label("build", "gpu  # self-hosted: hardware: a fixture reason"))); len(p) != 0 {
