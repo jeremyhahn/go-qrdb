@@ -16,8 +16,8 @@
 /**
  * EmbeddedServerPanel e2e (Wails mock): the desktop-only panel in the
  * Connection Manager drives EmbeddedServerClient — isEmbedded,
- * hasSavedConfig, stopEmbedded, restoreEmbedded and clearSavedConfig —
- * and opens the embedded wizard for a new server.
+ * hasSavedConfig, savedConfig and clearSavedConfig, with Restore starting
+ * the saved configuration through the connection manager — and opens the embedded wizard for a new server.
  */
 
 import {
@@ -162,5 +162,36 @@ test.describe("Embedded server panel - sealed embedded server", () => {
     await panel(page).getByRole("button", { name: "Stop" }).click();
     await expect(panel(page).getByTestId("embedded-running")).toHaveText("Stopped");
     await expect(panel(page).getByTestId("embedded-error")).toHaveCount(0);
+  });
+
+  test("restore starts the saved config, not a profile that differs from it", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("aside").getByTitle("Add server").first().click();
+    await expect(panel(page)).toBeVisible({ timeout: STEP_TIMEOUT });
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running", {
+      timeout: STEP_TIMEOUT,
+    });
+    await panel(page).getByRole("button", { name: "Stop" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Stopped");
+
+    // Another configuration was started last, so it is the saved one; the
+    // listed profile (data dir /mock/data) is not it.
+    await updateMockState(page, {
+      embeddedSavedConfigValue: {
+        storageBackend: "pebble",
+        dataDir: "/mock/other",
+        raftEnabled: false,
+      },
+    } as unknown as Parameters<typeof updateMockState>[1]);
+    await panel(page).getByRole("button", { name: "Restore saved config" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running");
+    await expect(panel(page).getByTestId("embedded-error")).toHaveCount(0);
+
+    // Restore saved a profile for the saved config and connected that one.
+    const connected = await page.evaluate(
+      () => (window as unknown as Record<string, unknown>).__lastConnectProfileId,
+    );
+    expect(connected).not.toBe("mock-profile-1");
+    await expect(page.locator("aside")).toContainText("Embedded server (/mock/other)");
   });
 });

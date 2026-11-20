@@ -2417,6 +2417,9 @@ export class RestClient implements Client {
             restoreEmbedded: async (): Promise<void> => {
                 throw new DesktopOnlyError('embeddedServer.restoreEmbedded');
             },
+            savedConfig: async (): Promise<EmbeddedConfig> => {
+                throw new DesktopOnlyError('embeddedServer.savedConfig');
+            },
             clearSavedConfig: async (): Promise<void> => {
                 throw new DesktopOnlyError('embeddedServer.clearSavedConfig');
             },

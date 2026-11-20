@@ -12,6 +12,11 @@
     connManagerStore,
     connectProfile,
     disconnectProfile,
+    saveProfile,
+  } from "$stores/connection-manager.svelte.ts";
+  import type {
+    ConnectionProfile,
+    EmbeddedConfig,
   } from "$stores/connection-manager.svelte.ts";
 
   let {
@@ -81,12 +86,66 @@
     return run(() => disconnectProfile(client, profileId));
   }
 
+  /**
+   * A config with its empty members dropped (undefined, null, "", false,
+   * empty objects) and its keys sorted, so a profile's embedded config and
+   * the same config after the Go binding's JSON round trip (which fills
+   * zero values) compare equal.
+   */
+  function normalizeConfig(value: unknown): unknown {
+    if (value === null || value === undefined || value === "" || value === false) {
+      return undefined;
+    }
+    if (Array.isArray(value)) {
+      return value.map(normalizeConfig);
+    }
+    if (typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+        const v = normalizeConfig((value as Record<string, unknown>)[key]);
+        if (v !== undefined) out[key] = v;
+      }
+      return Object.keys(out).length === 0 ? undefined : out;
+    }
+    return value;
+  }
+
+  function sameConfig(a: unknown, b: unknown): boolean {
+    return JSON.stringify(normalizeConfig(a)) === JSON.stringify(normalizeConfig(b));
+  }
+
+  /**
+   * The embedded profile whose config is the saved embedded configuration,
+   * creating and saving one when no profile has it (a configuration saved
+   * by a profile since deleted, or by a direct start).
+   */
+  async function profileForSavedConfig(): Promise<ConnectionProfile> {
+    const saved = await client.embeddedServer.savedConfig();
+    const match = connManagerStore.profiles.find(
+      (p) => p.type === "embedded" && sameConfig(p.embedded, saved),
+    );
+    if (match !== undefined) return match;
+    const profile: ConnectionProfile = {
+      id: crypto.randomUUID(),
+      name: saved.dataDir ? `Embedded server (${saved.dataDir})` : "Embedded server",
+      type: "embedded",
+      serverMode: saved.raftEnabled ? "raft" : "standalone",
+      // The whole saved config, so the profile starts exactly what was saved.
+      embedded: saved as unknown as EmbeddedConfig,
+      createdAt: new Date().toISOString(),
+    };
+    await saveProfile(client, profile);
+    return profile;
+  }
+
+  /**
+   * Restore starts the saved embedded configuration through the connection
+   * manager, so the started server is registered there as a managed
+   * connection and the panel follows it.
+   */
   function handleRestore(): Promise<void> {
     return run(async () => {
-      const profile = connManagerStore.profiles.find((p) => p.type === "embedded");
-      if (profile === undefined) {
-        throw new Error("No saved embedded profile to restore");
-      }
+      const profile = await profileForSavedConfig();
       const state = await connectProfile(client, profile.id);
       if (state.status === "error") {
         throw new Error(state.error ?? "Embedded server failed to start");

@@ -549,6 +549,13 @@ func (b *EmbeddedServerBinding) RestoreEmbedded() error {
 	return b.StartEmbedded(cfg)
 }
 
+// SavedConfig returns the saved embedded configuration, the one
+// RestoreEmbedded would start, so the frontend can match it to a profile.
+// Returns NoSavedConfigError when no config file exists.
+func (b *EmbeddedServerBinding) SavedConfig() (*EmbeddedConfig, error) {
+	return b.loadConfig()
+}
+
 // ClearSavedConfig removes the saved embedded configuration from disk.
 func (b *EmbeddedServerBinding) ClearSavedConfig() error {
 	path, err := b.configPath()
