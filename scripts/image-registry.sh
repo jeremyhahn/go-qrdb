@@ -154,35 +154,6 @@ ci_registry_pull() {
 	echo "pulled $repo@$digest" >&2
 }
 
-# ci_registry_pull_id <registry> <ref> <id> pulls <ref> from the LAN CI
-# registry and succeeds only when the daemon then holds it as image <id>, the
-# image pool-images pushed (rulings 876, 879). Concurrent pulls of one image on
-# a containerd-store daemon can lose the layer lock and fail (#1631: two of
-# nine legs on one daemon), so it tries up to three times, about 10 s apart
-# (ruling 915; CI_REGISTRY_PULL_PAUSE for the tests), each pull bounded by the
-# registry timeout with its output discarded. A wrong image is no race and ends
-# the attempts; so does a stalled registry, which leaves the outage marker.
-# After the last attempt it fails, and the pool leg fails closed.
-ci_registry_pull_id() {
-	local reg=$1 ref=$2 id=$3 attempt rc
-	for attempt in 1 2 3; do
-		rc=0
-		timeout -k 10 "$(ci_registry_timeout)" docker pull -q "$ref" >/dev/null 2>&1 || rc=$?
-		if [ "$rc" = 0 ]; then
-			[ "$(docker image inspect -f '{{.Id}}' "$ref" 2>/dev/null)" = "$id" ] && return 0
-			return 1
-		fi
-		case $rc in
-		124 | 137)
-			ci_registry_outage "$reg" "$rc"
-			return 1
-			;;
-		esac
-		[ "$attempt" = 3 ] || sleep "${CI_REGISTRY_PULL_PAUSE:-10}"
-	done
-	return 1 # fail closed
-}
-
 # ci_registry_push <image> [<how>] pushes the image just built as
 # <registry>/<image> and records its repo digest. <how> opens its log line
 # (default "miss, built"; a held image published again passes "held,

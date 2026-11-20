@@ -179,13 +179,6 @@ case $cache_dir in
   "" | /*) ;;
   *) echo "CI_CACHE_DIR must be an absolute path: $cache_dir" >&2; exit 2 ;;
 esac
-# CUSTOMIZE (go-qrdb, Codex P2 on #1631): a pool's Docker daemon runs outside
-# the job container and resolves a bind mount on its own host, where the job's
-# CI_CACHE_DIR does not exist; a pool job takes the named volumes instead.
-if [ -n "$cache_dir" ] && [ "${RUNNER_ENVIRONMENT:-}" = self-hosted ]; then
-  echo "CI_CACHE_DIR is a path on this runner, which a pool's Docker daemon cannot reach: leave it unset on a self-hosted runner and the stage takes the daemon's named volumes (${prefix}cache-*)" >&2
-  exit 2
-fi
 cpus=${IN_IMAGE_CPUS:-}
 if [ -z "$cpus" ]; then
   quota=max period=100000
