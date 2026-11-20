@@ -1000,6 +1000,31 @@ type activationRecord struct {
 	ReplicaID uint64          `json:"activated_by"`
 }
 
+// EnforceRelease refuses -- with *release.GapError, kept for Refusal --
+// when this node is a committed member restarting on a release not
+// adjacent to a member's release or the release it last ran
+// (checkRestartRelease), and otherwise records this binary's release. Start
+// runs it after seeding the advertisement view; a node whose state machine
+// has no leases, and so cannot advertise or Start, runs it on its own: the
+// release history needs no lease, and every node start enforces it. A failed
+// record is logged, not fatal: a started gate retries it on refresh.
+func (g *Gate) EnforceRelease(ctx context.Context, kv ActivationKV) error {
+	if kv == nil {
+		return &ConfigError{Field: "store"}
+	}
+	if err := g.checkRestartRelease(ctx, kv); err != nil {
+		var gap *release.GapError
+		if errors.As(err, &gap) {
+			g.releaseRefusal.Store(gap)
+		}
+		return err
+	}
+	if err := g.recordRelease(ctx, kv); err != nil {
+		g.logger.Warn("feature gate: release record failed; retrying on refresh", "error", err)
+	}
+	return nil
+}
+
 // sourcedEvent is an advertisement event tagged with the store it came from.
 type sourcedEvent struct {
 	source int
@@ -1043,16 +1068,9 @@ func (g *Gate) Start(ctx context.Context, kv ActivationKV, adverts ...cluster.Me
 			return err
 		}
 	}
-	if err := g.checkRestartRelease(ctx, kv); err != nil {
+	if err := g.EnforceRelease(ctx, kv); err != nil {
 		cancel()
-		var gap *release.GapError
-		if errors.As(err, &gap) {
-			g.releaseRefusal.Store(gap)
-		}
 		return err
-	}
-	if err := g.recordRelease(ctx, kv); err != nil {
-		g.logger.Warn("feature gate: release record failed; retrying on refresh", "error", err)
 	}
 	g.activate(ctx, kv)
 

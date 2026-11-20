@@ -197,6 +197,31 @@ func TestStart_RefusesExistingMemberRestartAcrossAGap(t *testing.T) {
 	}
 }
 
+// A node whose state machine has no leases never advertises or Starts its
+// gate; EnforceRelease alone still refuses its restart across a gap, keeps
+// the refusal, and records an adjacent release.
+func TestEnforceRelease_WithoutStartRefusesAGapAndRecordsTheRelease(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	kv := newMemKV()
+	_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+"1/0.58.0-alpha", []byte("n1:7000"))
+	require.NoError(t, err)
+	g := newGate(t, threeNodes())
+
+	var gap *release.GapError
+	require.ErrorAs(t, g.EnforceRelease(context.Background(), kv), &gap)
+	require.ErrorAs(t, g.Refusal(), &gap)
+	assert.False(t, kv.has(ReleasePrefix+"1/0.60.0-alpha"), "a refused binary records no release")
+
+	kv = newMemKV()
+	_, err = kv.PutIfAbsent(context.Background(), ReleasePrefix+"1/0.59.0-alpha", []byte("n1:7000"))
+	require.NoError(t, err)
+	g = newGate(t, threeNodes())
+	require.NoError(t, g.EnforceRelease(context.Background(), kv))
+	assert.True(t, kv.has(ReleasePrefix+"1/0.60.0-alpha"))
+	assert.False(t, kv.has(ReleasePrefix+"1/0.59.0-alpha"))
+	assert.NoError(t, g.Refusal())
+}
+
 // releaseUnreadableKV fails every read of the recorded releases, local or
 // through the leader, while failing is set: a replica whose applied state is
 // briefly unreadable at startup and cannot reach a leader either.

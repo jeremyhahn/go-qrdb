@@ -45,7 +45,10 @@ import (
 // self-advertisement is ever attempted, so a node on such a state machine
 // boots and serves without advertising its own features or watching for
 // newly-activated ones -- exactly as if no gate had been built at all --
-// rather than exiting over an accelerator this build never required.
+// rather than exiting over an accelerator this build never required. The
+// release history is not leased, so such a node still runs the gate's
+// restart release check and records its release (Gate.EnforceRelease): a
+// restart across a release gap is refused on every state machine.
 func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycle.Node, leaders server.LeaderSource, nodeSeal cluster.SealProbe) (io.Closer, error) {
 	if gate == nil {
 		err := server.WhileSystemShardSettling(ctx, leaders, "feature gate activation check", func(actx context.Context) error {
@@ -72,6 +75,13 @@ func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycl
 			slog.Warn("feature-gate self-advertisement unavailable on this state machine; "+
 				"booting without it",
 				slog.String("reason", unsupported.Message))
+			// The advertisement is optional; the release history needs no
+			// lease, so the restart release check and record still run.
+			if err := server.WhileSystemShardSettling(ctx, leaders, "release gap check", func(actx context.Context) error {
+				return gate.EnforceRelease(actx, svc.KV)
+			}); err != nil {
+				return nil, err
+			}
 			return nopCloser{}, nil
 		}
 		return nil, err
