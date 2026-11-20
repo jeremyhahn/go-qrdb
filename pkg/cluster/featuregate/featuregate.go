@@ -751,11 +751,20 @@ func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
 	}
 	own := ReleasePrefix + strconv.FormatUint(self.ReplicaID, 10) + "/"
 	key := own + release.Version()
-	keys, err := kv.ListStale(ctx, ReleasePrefix)
+	keys, err := listReleases(ctx, kv)
 	if err != nil {
-		return &StoreError{Op: "list releases", Err: err}
+		return err
 	}
+	// The running release is persisted before any earlier record of this
+	// member is removed: a crash or a failed write between the two leaves
+	// both on record, never neither, so the history a later restart checks
+	// is never lost.
 	recorded, stale := slices.Contains(keys, key), false
+	if !recorded {
+		if _, err := kv.PutIfAbsent(ctx, key, []byte(self.Address)); err != nil {
+			return &StoreError{Op: "record release", Err: err}
+		}
+	}
 	for _, k := range keys {
 		if k == key || !strings.HasPrefix(k, own) {
 			continue
@@ -765,14 +774,9 @@ func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
 			return &StoreError{Op: "delete release", Err: err}
 		}
 	}
-	if !recorded {
-		if _, err := kv.PutIfAbsent(ctx, key, []byte(self.Address)); err != nil {
-			return &StoreError{Op: "record release", Err: err}
-		}
-	}
 	if !recorded || stale {
-		if keys, err = kv.ListStale(ctx, ReleasePrefix); err != nil {
-			return &StoreError{Op: "list releases", Err: err}
+		if keys, err = listReleases(ctx, kv); err != nil {
+			return err
 		}
 	}
 	releases := parseReleases(keys)
@@ -782,6 +786,18 @@ func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
 
 // parseReleases maps each replica ID to the releases recorded for it by
 // release record keys "{ReleasePrefix}{replicaID}/{release}".
+// listReleases lists the release history from applied state, or through the
+// leader on a replica without readable applied state (a witness).
+func listReleases(ctx context.Context, kv ActivationKV) ([]string, error) {
+	keys, err := kv.ListStale(ctx, ReleasePrefix)
+	if err != nil {
+		if keys, err = kv.ListAll(ctx, ReleasePrefix); err != nil {
+			return nil, &StoreError{Op: "list releases", Err: err}
+		}
+	}
+	return keys, nil
+}
+
 func parseReleases(keys []string) map[uint64][]string {
 	releases := make(map[uint64][]string, len(keys))
 	for _, k := range keys {
@@ -827,11 +843,9 @@ func (g *Gate) checkRestartRelease(ctx context.Context, kv ActivationKV) error {
 	}
 	// A replica without readable applied state (a witness) reads the
 	// history through the leader instead.
-	keys, err := kv.ListStale(ctx, ReleasePrefix)
+	keys, err := listReleases(ctx, kv)
 	if err != nil {
-		if keys, err = kv.ListAll(ctx, ReleasePrefix); err != nil {
-			return &StoreError{Op: "list releases", Err: err}
-		}
+		return err
 	}
 	recorded := parseReleases(keys)
 	view := *g.view.Load()
@@ -1007,7 +1021,8 @@ type activationRecord struct {
 // runs it after seeding the advertisement view; a node whose state machine
 // has no leases, and so cannot advertise or Start, runs it on its own: the
 // release history needs no lease, and every node start enforces it. A failed
-// record is logged, not fatal: a started gate retries it on refresh.
+// record fails the check (a *StoreError): the node does not start on a
+// release the history does not hold.
 func (g *Gate) EnforceRelease(ctx context.Context, kv ActivationKV) error {
 	if kv == nil {
 		return &ConfigError{Field: "store"}
@@ -1019,10 +1034,10 @@ func (g *Gate) EnforceRelease(ctx context.Context, kv ActivationKV) error {
 		}
 		return err
 	}
-	if err := g.recordRelease(ctx, kv); err != nil {
-		g.logger.Warn("feature gate: release record failed; retrying on refresh", "error", err)
-	}
-	return nil
+	// The running release must be on record before the node reports the
+	// check passed: an unrecorded release would let the next binary skip
+	// the gap check against it.
+	return g.recordRelease(ctx, kv)
 }
 
 // sourcedEvent is an advertisement event tagged with the store it came from.

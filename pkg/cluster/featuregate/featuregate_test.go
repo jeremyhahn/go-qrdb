@@ -33,6 +33,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 const (
@@ -527,6 +528,9 @@ func TestGate_ActivationWriteFailureIsNotActivation(t *testing.T) {
 	m := &fakeMembers{groups: map[uint64]GroupMembership{}}
 	m.set(systemShard, 1, map[uint64]string{1: "n1:7000"})
 	kv := newMemKV()
+	// The release is on record already, so only the activation write fails.
+	_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+"1/"+release.Version(), []byte("n1:7000"))
+	require.NoError(t, err)
 	kv.putErr = errors.New("not leader")
 	g := newGate(t, m)
 	require.NoError(t, g.Start(context.Background(), kv, newLeaseStore()))

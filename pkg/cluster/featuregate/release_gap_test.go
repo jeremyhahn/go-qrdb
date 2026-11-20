@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -347,7 +348,15 @@ type releaseFaultKV struct {
 	*memKV
 	failDelete bool
 	failRelist bool
+	failPut    bool
 	lists      atomic.Int32
+}
+
+func (k *releaseFaultKV) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if k.failPut && strings.HasPrefix(key, ReleasePrefix) {
+		return false, errors.New("put refused")
+	}
+	return k.memKV.PutIfAbsent(ctx, key, value)
 }
 
 func (k *releaseFaultKV) Delete(ctx context.Context, key string) error {
@@ -362,6 +371,13 @@ func (k *releaseFaultKV) ListStale(ctx context.Context, prefix string) ([]string
 		return nil, errors.New("list refused")
 	}
 	return k.memKV.ListStale(ctx, prefix)
+}
+
+func (k *releaseFaultKV) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	if k.lists.Load() > 1 && k.failRelist {
+		return nil, errors.New("list refused")
+	}
+	return k.memKV.ListAll(ctx, prefix)
 }
 
 func TestRecordRelease_StoreErrors(t *testing.T) {
@@ -395,6 +411,47 @@ func TestRecordRelease_StoreErrors(t *testing.T) {
 			assert.Equal(t, tc.wantOp, storeErr.Op)
 		})
 	}
+}
+
+// A failed release record never loses the member's history: the new
+// release is written before the previous one is removed, and the
+// enforcement reports the failure instead of passing.
+func TestEnforceRelease_FailedRecordKeepsTheHistoryAndFails(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	prev := ReleasePrefix + "1/0.59.0-alpha"
+	next := ReleasePrefix + "1/0.60.0-alpha"
+	cases := []struct {
+		name     string
+		kv       *releaseFaultKV
+		wantOp   string
+		wantNext bool
+	}{
+		{name: "the new record's write fails", kv: &releaseFaultKV{memKV: newMemKV(), failPut: true}, wantOp: "record release"},
+		{name: "the old record's delete fails", kv: &releaseFaultKV{memKV: newMemKV(), failDelete: true}, wantOp: "delete release", wantNext: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.kv.memKV.PutIfAbsent(context.Background(), prev, []byte("n1:7000"))
+			require.NoError(t, err)
+			g := newGate(t, threeNodes())
+			var storeErr *StoreError
+			require.ErrorAs(t, g.EnforceRelease(context.Background(), tc.kv), &storeErr)
+			assert.Equal(t, tc.wantOp, storeErr.Op)
+			assert.True(t, tc.kv.has(prev), "the previous release stays on record")
+			assert.Equal(t, tc.wantNext, tc.kv.has(next))
+			assert.NoError(t, g.Refusal(), "a store failure is not a release gap")
+		})
+	}
+
+	// After a failed write, the next binary still meets the last-run
+	// release: 0.61 against the kept 0.59 is a gap.
+	kv := &releaseFaultKV{memKV: newMemKV(), failPut: true}
+	_, err := kv.memKV.PutIfAbsent(context.Background(), prev, []byte("n1:7000"))
+	require.NoError(t, err)
+	require.Error(t, newGate(t, threeNodes()).EnforceRelease(context.Background(), kv))
+	t.Cleanup(release.SetForTesting("0.61.0-alpha"))
+	var gap *release.GapError
+	require.ErrorAs(t, newGate(t, threeNodes()).EnforceRelease(context.Background(), kv.memKV), &gap)
 }
 
 func TestEnforceRelease_NilStoreIsAConfigError(t *testing.T) {
