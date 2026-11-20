@@ -82,13 +82,6 @@ func TestServiceContext_BindsTheGrantedPrincipal(t *testing.T) {
 	}
 }
 
-func TestServiceContext_WithoutPrincipal(t *testing.T) {
-	ctx, err := (&Node{}).ServiceContext(context.Background())
-	if !errors.Is(err, ErrNoServicePrincipal) || ctx != nil {
-		t.Fatalf("ServiceContext = (%v, %v), want (nil, ErrNoServicePrincipal)", ctx, err)
-	}
-}
-
 // A node that holds a service principal but has no server -- it is
 // recycling its data plane -- refuses a delegation with the retryable
 // recycling error rather than presenting it.

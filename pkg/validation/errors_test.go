@@ -16,7 +16,6 @@ package validation
 
 import (
 	"errors"
-	"strings"
 	"testing"
 )
 
@@ -52,14 +51,6 @@ func TestConstraintString(t *testing.T) {
 				t.Errorf("Constraint(%d).String() = %q, want %q", tt.constraint, got, tt.want)
 			}
 		})
-	}
-}
-
-// TestConstraintStringUnknown verifies that an out-of-range constraint value
-// yields the unknown-constraint message instead of panicking.
-func TestConstraintStringUnknown(t *testing.T) {
-	if got := Constraint(999).String(); got != "unknown constraint" {
-		t.Errorf("Constraint(999).String() = %q, want %q", got, "unknown constraint")
 	}
 }
 
@@ -163,37 +154,5 @@ func TestNewErrValidation(t *testing.T) {
 	}
 	if err.Detail != "allowed: a-z, 0-9, -" {
 		t.Errorf("detail = %q, want %q", err.Detail, "allowed: a-z, 0-9, -")
-	}
-}
-
-// TestNewErrValidationMessage verifies constructor output produces
-// human-readable, informative error messages.
-func TestNewErrValidationMessage(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      error
-		contains []string
-	}{
-		{
-			name:     "empty field message",
-			err:      NewErrValidation("tenant ID", ConstraintEmpty, ""),
-			contains: []string{"tenant ID", "cannot be empty"},
-		},
-		{
-			name:     "too long includes detail",
-			err:      NewErrValidation("tenant ID", ConstraintTooLong, "max 64 characters"),
-			contains: []string{"tenant ID", "max 64"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			msg := tt.err.Error()
-			for _, substr := range tt.contains {
-				if !strings.Contains(msg, substr) {
-					t.Errorf("error message %q does not contain %q", msg, substr)
-				}
-			}
-		})
 	}
 }

@@ -253,44 +253,9 @@ func TestOpType_String_AllConstants(t *testing.T) {
 	}
 }
 
-func TestOpType_String_CustomValue(t *testing.T) {
-	t.Parallel()
-	op := OpType("custom_op")
-	assert.Equal(t, "custom_op", op.String())
-}
-
 // ---------------------------------------------------------------------------
 // DeltaPayload and FieldChange JSON serialization
 // ---------------------------------------------------------------------------
-
-func TestDeltaPayload_JSON_RoundTrip(t *testing.T) {
-	t.Parallel()
-	now := time.Now().Truncate(time.Millisecond)
-	payload := &DeltaPayload{
-		EntityID:    "entity-1",
-		EntityType:  "testEntity",
-		Version:     2,
-		PrevVersion: 1,
-		Timestamp:   now,
-		Changes: []FieldChange{
-			{Path: "name", Operation: OpSet, Value: "new-name", OldValue: "old-name"},
-		},
-	}
-
-	data, err := json.Marshal(payload)
-	require.NoError(t, err)
-
-	var decoded DeltaPayload
-	require.NoError(t, json.Unmarshal(data, &decoded))
-
-	assert.Equal(t, payload.EntityID, decoded.EntityID)
-	assert.Equal(t, payload.EntityType, decoded.EntityType)
-	assert.Equal(t, payload.Version, decoded.Version)
-	assert.Equal(t, payload.PrevVersion, decoded.PrevVersion)
-	assert.Equal(t, 1, len(decoded.Changes))
-	assert.Equal(t, "name", decoded.Changes[0].Path)
-	assert.Equal(t, OpSet, decoded.Changes[0].Operation)
-}
 
 func TestFieldChange_JSON_DeleteOmitsValue(t *testing.T) {
 	t.Parallel()
@@ -343,13 +308,6 @@ func TestNewDeltaComputer_WithDeltaMaxDepth_IgnoresNonPositive(t *testing.T) {
 
 	dc2 := NewDeltaComputer(log, WithDeltaMaxDepth(-1))
 	assert.Equal(t, defaultDeltaMaxDepth, dc2.maxDepth)
-}
-
-func TestNewDeltaComputer_WithDeltaIgnoreZeroChanges_True(t *testing.T) {
-	t.Parallel()
-	log := newTestLogger(t)
-	dc := NewDeltaComputer(log, WithDeltaIgnoreZeroChanges(true))
-	assert.True(t, dc.ignoreZero)
 }
 
 // ---------------------------------------------------------------------------
@@ -1545,15 +1503,6 @@ func TestComputeBytes_InvalidOldJSON_ReturnsError(t *testing.T) {
 	assert.Contains(t, deser.Cause, "old data")
 }
 
-func TestComputeBytes_EmptyOldData_TreatedAsNewEntity(t *testing.T) {
-	t.Parallel()
-	dc := NewDeltaComputer(newTestLogger(t))
-	newData := []byte(`{"id":"1","name":"alice","age":25}`)
-	payload, err := dc.ComputeBytes([]byte{}, newData, &testEntity{})
-	require.NoError(t, err)
-	assert.GreaterOrEqual(t, len(payload.Changes), 2)
-}
-
 // ---------------------------------------------------------------------------
 // Helper methods - buildPath
 // ---------------------------------------------------------------------------
@@ -1619,29 +1568,6 @@ func TestIsZeroValue_NonZeroInt_ReturnsFalse(t *testing.T) {
 	dc := NewDeltaComputer(newTestLogger(t))
 	v := reflect.ValueOf(42)
 	assert.False(t, dc.isZeroValue(v))
-}
-
-func TestIsZeroValue_EmptyString_ReturnsTrue(t *testing.T) {
-	t.Parallel()
-	dc := NewDeltaComputer(newTestLogger(t))
-	v := reflect.ValueOf("")
-	assert.True(t, dc.isZeroValue(v))
-}
-
-func TestIsZeroValue_NilSlice_ReturnsTrue(t *testing.T) {
-	t.Parallel()
-	dc := NewDeltaComputer(newTestLogger(t))
-	var s []string
-	v := reflect.ValueOf(s)
-	assert.True(t, dc.isZeroValue(v))
-}
-
-func TestIsZeroValue_NilMap_ReturnsTrue(t *testing.T) {
-	t.Parallel()
-	dc := NewDeltaComputer(newTestLogger(t))
-	var m map[string]string
-	v := reflect.ValueOf(m)
-	assert.True(t, dc.isZeroValue(v))
 }
 
 func TestIsZeroValue_NilPtr_ReturnsTrue(t *testing.T) {
@@ -1717,12 +1643,6 @@ func TestIsSpecialType_OtherStruct_ReturnsFalse(t *testing.T) {
 	t.Parallel()
 	dc := NewDeltaComputer(newTestLogger(t))
 	assert.False(t, dc.isSpecialType(reflect.TypeOf(testAddress{})))
-}
-
-func TestIsSpecialType_PrimitiveType_ReturnsFalse(t *testing.T) {
-	t.Parallel()
-	dc := NewDeltaComputer(newTestLogger(t))
-	assert.False(t, dc.isSpecialType(reflect.TypeOf("")))
 }
 
 // ---------------------------------------------------------------------------
@@ -1900,20 +1820,6 @@ func TestIsZeroValue_StructWithUnexportedFieldsOnly(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Edge cases - empty new data ComputeBytes
-// ---------------------------------------------------------------------------
-
-func TestComputeBytes_ZeroLengthNewData_ReturnsError(t *testing.T) {
-	t.Parallel()
-	dc := NewDeltaComputer(newTestLogger(t))
-	_, err := dc.ComputeBytes([]byte(`{}`), []byte{}, &testEntity{})
-	require.Error(t, err)
-
-	var nilErr *DeltaNilInputError
-	require.True(t, errors.As(err, &nilErr))
-}
-
-// ---------------------------------------------------------------------------
 // Nil interface field comparison
 // ---------------------------------------------------------------------------
 
@@ -1947,14 +1853,6 @@ func TestExtractEntityID_NilPointer_ReturnsEmpty(t *testing.T) {
 	var p *testEntity
 	id := dc.extractEntityID(p)
 	assert.Empty(t, id)
-}
-
-func TestExtractEntityID_ValidPointer_ReturnsID(t *testing.T) {
-	t.Parallel()
-	dc := NewDeltaComputer(newTestLogger(t))
-	e := &testEntity{ID: "test-id"}
-	id := dc.extractEntityID(e)
-	assert.Equal(t, "test-id", id)
 }
 
 // ---------------------------------------------------------------------------
@@ -2065,13 +1963,12 @@ func TestExtractAllFields_MapMaxDepthExceeded_InNestedStruct(t *testing.T) {
 func TestCompute_NewEntity_WithVersionMethod(t *testing.T) {
 	t.Parallel()
 	dc := NewDeltaComputer(newTestLogger(t))
-	// ComputeBytes creates addressable values via reflect.New, which enables
-	// the Version() method extraction in computeNewEntity
-	newData := []byte(`{"id":"1","name":"alice"}`)
-	payload, err := dc.ComputeBytes(nil, newData, &testEntityWithVersion{})
+	// A nil old entity takes the new-entity path, which reads Version()
+	// through the addressable value of the new entity.
+	payload, err := dc.Compute(nil, &testEntityWithVersion{ID: "1", Name: "alice", Ver: 5})
 	require.NoError(t, err)
-	// Version is not in JSON so stays 0, but the path is exercised
-	assert.Equal(t, uint64(0), payload.Version)
+	assert.Equal(t, uint64(5), payload.Version)
+	assert.Equal(t, uint64(0), payload.PrevVersion)
 }
 
 // ---------------------------------------------------------------------------

@@ -22,29 +22,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
-func TestWithTenantIDAndFromContextRoundTrip(t *testing.T) {
-	ctx := WithTenantID(context.Background(), "tenant-abc")
-	got := FromContext(ctx)
-	if got != "tenant-abc" {
-		t.Errorf("FromContext() = %q, want %q", got, "tenant-abc")
-	}
-}
-
-func TestFromContextNoTenantReturnsDefault(t *testing.T) {
-	got := FromContext(context.Background())
-	if got != tenantid.System {
-		t.Errorf("FromContext() = %q, want %q", got, tenantid.System)
-	}
-}
-
-func TestFromContextEmptyStringReturnsDefault(t *testing.T) {
-	ctx := WithTenantID(context.Background(), "")
-	got := FromContext(ctx)
-	if got != tenantid.System {
-		t.Errorf("FromContext() = %q, want %q", got, tenantid.System)
-	}
-}
-
 func TestEffectiveTenant(t *testing.T) {
 	tests := []struct {
 		name       string

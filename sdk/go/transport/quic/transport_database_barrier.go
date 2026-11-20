@@ -42,6 +42,9 @@ func (t *Transport) SealDatabase(ctx context.Context, name string) error {
 
 // UnsealDatabase unseals a database's encryption barrier via the QUIC db.Unseal handler.
 func (t *Transport) UnsealDatabase(ctx context.Context, name, secret string) error {
+	if err := t.requireTLS(transport.DatabaseUnsealSecret(secret)); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}

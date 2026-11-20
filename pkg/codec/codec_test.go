@@ -16,7 +16,6 @@ package codec
 
 import (
 	"errors"
-	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -104,71 +103,4 @@ func TestJSONCodec_UnmarshalInvalidData(t *testing.T) {
 	var decErr *DecodeError
 	require.True(t, errors.As(err, &decErr))
 	assert.Equal(t, TypeJSON, decErr.Codec)
-}
-
-// ---------------------------------------------------------------------------
-// Edge cases: large payload round-trip
-// ---------------------------------------------------------------------------
-
-func TestJSONCodec_LargePayload(t *testing.T) {
-	c := &JSONCodec{}
-	tags := make([]string, 1000)
-	for i := range tags {
-		tags[i] = "tag-" + string(rune('A'+i%26))
-	}
-	original := testPayload{
-		Name:  "large",
-		Value: math.MaxInt64,
-		Tags:  tags,
-	}
-
-	data, err := c.Marshal(original)
-	require.NoError(t, err)
-
-	var decoded testPayload
-	err = c.Unmarshal(data, &decoded)
-	require.NoError(t, err)
-	assert.Equal(t, original.Name, decoded.Name)
-	assert.Equal(t, original.Value, decoded.Value)
-	assert.Len(t, decoded.Tags, 1000)
-}
-
-// ---------------------------------------------------------------------------
-// Primitive type round-trips
-// ---------------------------------------------------------------------------
-
-func TestJSONCodec_PrimitiveTypes(t *testing.T) {
-	c := &JSONCodec{}
-
-	t.Run("string", func(t *testing.T) {
-		data, err := c.Marshal("hello")
-		require.NoError(t, err)
-		var out string
-		require.NoError(t, c.Unmarshal(data, &out))
-		assert.Equal(t, "hello", out)
-	})
-
-	t.Run("int", func(t *testing.T) {
-		data, err := c.Marshal(42)
-		require.NoError(t, err)
-		var out int
-		require.NoError(t, c.Unmarshal(data, &out))
-		assert.Equal(t, 42, out)
-	})
-
-	t.Run("bool", func(t *testing.T) {
-		data, err := c.Marshal(true)
-		require.NoError(t, err)
-		var out bool
-		require.NoError(t, c.Unmarshal(data, &out))
-		assert.True(t, out)
-	})
-
-	t.Run("nil_value", func(t *testing.T) {
-		data, err := c.Marshal(nil)
-		require.NoError(t, err)
-		var out any
-		require.NoError(t, c.Unmarshal(data, &out))
-		assert.Nil(t, out)
-	})
 }

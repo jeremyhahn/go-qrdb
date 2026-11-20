@@ -27,7 +27,6 @@
 #   ci-image.sh prune [hours]                      self-hosted retention of the CI images
 #   ci-image.sh check-ref <ref>...                 validates digest references
 #   ci-image.sh lock-file                          prints the image lock file prune and the producers share
-#   ci-image.sh lan-pull <registry> <ref> <id> <image>  pulls <ref> from the LAN CI registry, checks it is <id> and tags it <image>, under the image lock
 #   ci-image.sh registry-pull <image>              pulls <image> from CI_IMAGE_REGISTRY by the digest recorded in CI_IMAGE_DIGEST_DIR (status 1 on a miss)
 #   ci-image.sh registry-push <image>              pushes a build to CI_IMAGE_REGISTRY and records its digest (never fails)
 #   ci-image.sh registry-push --unrecorded <image> the same for a held image, only when CI_IMAGE_DIGEST_DIR has no usable record of it
@@ -375,24 +374,6 @@ producer_lock() {
 	esac
 }
 
-# lan_pull <registry> <ref> <id> <image> pulls <ref> from the LAN CI registry
-# (#1593), checks it is image <id> and tags it <image>, all under the image
-# lock held shared, as load does: prune, which holds it exclusive, cannot
-# remove the pulled image between the pull, the check and the tag (#1597 Codex
-# round 2). The tag refreshes the image's tag time, so it stays younger than
-# any prune bound for the rest of the job. Status 1 when the pull fails or
-# names another image; the caller takes no other (ruling 879).
-lan_pull() {
-	[ $# -eq 4 ] || die "usage: lan-pull <registry> <ref> <id> <image>"
-	local reg=$1 ref=$2 want=$3 image=$4
-	producer_lock
-	check_image "$image"
-	[[ $want =~ $id_re ]] || die "'$want' is not an image ID"
-	ci_registry_pull_id "$reg" "$ref" "$want" || return 1
-	docker tag "$want" "$image" >/dev/null 2>&1 || return 1
-	echo "==> $image is $want, pulled from the LAN CI registry" >&2
-}
-
 # prune is the self-hosted retention of the CI images. A pool daemon outlives
 # every job, and each commit's integration image has its own tag, so without
 # it the images accumulate. It removes each image whose every tag is a CI
@@ -506,7 +487,7 @@ prune() {
 }
 
 main() {
-	[ $# -ge 1 ] || die "usage: ci-image.sh pin|save|load|lan-pull|push|untag|prune|check-ref|registry-pull|registry-push ..."
+	[ $# -ge 1 ] || die "usage: ci-image.sh pin|save|load|push|untag|prune|check-ref|registry-pull|registry-push ..."
 	local cmd=$1
 	shift
 	case $cmd in
@@ -516,7 +497,6 @@ main() {
 	push) push "$@" ;;
 	untag) untag "$@" ;;
 	prune) prune "$@" ;;
-	lan-pull) lan_pull "$@" ;;
 	lock-file)
 		[ $# -eq 0 ] || die "usage: lock-file"
 		lock_file

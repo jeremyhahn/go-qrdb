@@ -51,19 +51,11 @@ func newRegularWithTS(ts TimeSeriesStore) *RegularStateMachine {
 // ---------------------------------------------------------------------------
 
 func TestRegularStateMachine_WithRegularLogger(t *testing.T) {
-	logger := slog.Default()
-	rsm := NewRegularStateMachine(WithRegularLogger(logger))
-	if rsm.logger != logger {
-		t.Fatal("expected logger to be set via WithRegularLogger")
-	}
-}
-
-func TestRegularStateMachine_WithRegularLogger_Custom(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	rsm := NewRegularStateMachine(WithRegularLogger(logger))
 	if rsm.logger != logger {
-		t.Fatal("expected custom logger to be set")
+		t.Fatal("expected logger to be set via WithRegularLogger")
 	}
 }
 
@@ -75,25 +67,11 @@ func TestRegularStateMachine_WithRegularIndexManager(t *testing.T) {
 	}
 }
 
-func TestRegularStateMachine_WithRegularIndexManager_Nil(t *testing.T) {
-	rsm := NewRegularStateMachine()
-	if rsm.indexManager != nil {
-		t.Fatal("expected indexManager to be nil by default")
-	}
-}
-
 func TestRegularStateMachine_WithRegularLeaseManager(t *testing.T) {
 	lm := &mockLeaseManager{}
 	rsm := NewRegularStateMachine(WithRegularLeaseManager(lm))
 	if rsm.leaseManager == nil {
 		t.Fatal("expected leaseManager to be set")
-	}
-}
-
-func TestRegularStateMachine_WithRegularLeaseManager_Nil(t *testing.T) {
-	rsm := NewRegularStateMachine()
-	if rsm.leaseManager != nil {
-		t.Fatal("expected leaseManager to be nil by default")
 	}
 }
 
@@ -105,25 +83,11 @@ func TestRegularStateMachine_WithRegularTimeSeriesStore(t *testing.T) {
 	}
 }
 
-func TestRegularStateMachine_WithRegularTimeSeriesStore_Nil(t *testing.T) {
-	rsm := NewRegularStateMachine()
-	if rsm.tsStore != nil {
-		t.Fatal("expected tsStore to be nil by default")
-	}
-}
-
 func TestRegularStateMachine_WithRegularMVCCStore(t *testing.T) {
 	ms := &mockMVCCStore{}
 	rsm := NewRegularStateMachine(WithRegularMVCCStore(ms))
 	if rsm.mvccStore == nil {
 		t.Fatal("expected mvccStore to be set")
-	}
-}
-
-func TestRegularStateMachine_WithRegularMVCCStore_Nil(t *testing.T) {
-	rsm := NewRegularStateMachine()
-	if rsm.mvccStore != nil {
-		t.Fatal("expected mvccStore to be nil by default")
 	}
 }
 

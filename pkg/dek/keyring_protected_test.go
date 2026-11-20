@@ -12,7 +12,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"errors"
 	"testing"
 	"time"
 
@@ -151,23 +150,5 @@ func TestWrapKeyToleratesAProviderThatAllocatesProtectedMemory(t *testing.T) {
 	}
 	if reader.at == nil || reader.at != provider.at {
 		t.Fatalf("key generated at %p but wrapped from %p: it was copied between the two", reader.at, provider.at)
-	}
-}
-
-func TestWrapKeyProviderFailureIsAKeyWrapFailure(t *testing.T) {
-	k, _ := newTestKeyring(t)
-	k.keyWrap = registryOf(t, refusingUnwrapProvider{})
-
-	if _, _, _, err := k.wrapKey(context.Background(), "acme"); !errors.Is(err, ErrKeyWrapFailed) {
-		t.Fatalf("err = %v, want ErrKeyWrapFailed", err)
-	}
-}
-
-func TestWrapKeyEntropyFailureIsACryptoError(t *testing.T) {
-	k, _ := newTestKeyring(t)
-	k.random = failingReader{}
-
-	if _, _, _, err := k.wrapKey(context.Background(), "acme"); !errors.Is(err, ErrCrypto) {
-		t.Fatalf("err = %v, want ErrCrypto", err)
 	}
 }

@@ -257,13 +257,6 @@ func TestPlanSO_RefusesADeferredAdmin(t *testing.T) {
 	}
 }
 
-func TestPlanSO_NoSOPlansNothing(t *testing.T) {
-	p, err := planSO(TenantProvisionConfig{TenantID: "acme"}, Dependencies{}, AdminEnrollCert, "admin", &adminPlan{}, false)
-	if p != nil || err != nil {
-		t.Fatalf("planSO = %v, %v; want nil, nil", p, err)
-	}
-}
-
 func TestPlanSO_PendingNeedsPendingSOsAndAValidName(t *testing.T) {
 	deps := Dependencies{SOPINs: &fakeSOPINs{}, TrustDomain: onboardingTrustDomain, PendingAdminSigner: &fakeSigner{}}
 	_, err := planSO(TenantProvisionConfig{TenantID: "acme", SO: soConfig(t)}, deps, AdminEnrollCert, "admin", &adminPlan{}, true)

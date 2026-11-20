@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -152,15 +153,39 @@ func TestVerifyHealthyCluster(t *testing.T) {
 func TestVerifyWaitsForLeader(t *testing.T) {
 	fc := newFakeCluster(t)
 	fc.set(func(n *fakeNode) { n.leader = 0 })
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		fc.set(func(n *fakeNode) { n.leader = 2 })
-	}()
+	// The leader is elected once Verify has seen a node that knows none, so
+	// the round that fails on it is the one Verify must wait past.
+	var elect sync.Once
+	b := fc.boot()
+	b.Dial = func(ctx context.Context, protocol, endpoint string) (transport.Transport, error) {
+		tr, err := fc.dial(ctx, protocol, endpoint)
+		if err != nil {
+			return nil, err
+		}
+		return electAfterStatus{fakeTransport: tr.(fakeTransport), elect: func() {
+			elect.Do(func() { fc.set(func(n *fakeNode) { n.leader = 2 }) })
+		}}, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := fc.boot().Verify(ctx); err != nil {
+	if _, err := b.Verify(ctx); err != nil {
 		t.Fatalf("a cluster that elects a leader: %v", err)
 	}
+}
+
+// electAfterStatus runs elect after it answers a Status call that reports no
+// leader.
+type electAfterStatus struct {
+	fakeTransport
+	elect func()
+}
+
+func (e electAfterStatus) Status(ctx context.Context) (*transport.StatusResponse, error) {
+	resp, err := e.fakeTransport.Status(ctx)
+	if err == nil && resp.LeaderID == 0 {
+		e.elect()
+	}
+	return resp, err
 }
 
 func TestVerifyFails(t *testing.T) {

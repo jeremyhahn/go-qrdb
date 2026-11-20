@@ -276,15 +276,6 @@ func TestNew_RefusesInlineCredentialsBeforeARegisteredCreator(t *testing.T) {
 	assert.Zero(t, calls, "the registered creator never received the inline credential")
 }
 
-// TestNew_RefusesInlineCredentialsForAShippedProvider proves the refusal
-// also holds for a provider go-objstore ships, before any store is built.
-func TestNew_RefusesInlineCredentialsForAShippedProvider(t *testing.T) {
-	_, err := New("memory", map[string]string{"secret_key": inlineCredentialValue})
-	var settingErr *CredentialSettingError
-	require.ErrorAs(t, err, &settingErr)
-	assert.Equal(t, "secret_key", settingErr.Setting)
-}
-
 // TestRegisterProvider_RefusesEveryShippedName proves every provider name
 // go-objstore ships is reserved whether or not its build tag compiled it in,
 // so a registration never takes a name whose pinned credential reads would

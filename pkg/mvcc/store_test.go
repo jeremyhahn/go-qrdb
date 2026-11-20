@@ -112,22 +112,6 @@ func TestNew_LoadsPersistedRevision(t *testing.T) {
 // Storage
 // ---------------------------------------------------------------------------
 
-func TestStorage_ReturnsUnderlyingInstance(t *testing.T) {
-	s := newTestStore(t)
-	if s.Storage() == nil {
-		t.Fatal("Storage: returned nil")
-	}
-}
-
-func TestStorage_SameInstance(t *testing.T) {
-	s := newTestStore(t)
-	a := s.Storage()
-	b := s.Storage()
-	if a != b {
-		t.Error("Storage: expected same storage.Storage on repeated calls")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Put - new key
 // ---------------------------------------------------------------------------
@@ -158,17 +142,6 @@ func TestPut_NewKey_ReturnsCorrectMetadata(t *testing.T) {
 	}
 }
 
-func TestPut_NewKey_IncrementsRevision(t *testing.T) {
-	s := newTestStore(t)
-	_, err := s.Put([]byte("a"), []byte("1"), 0)
-	if err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	if s.CurrentRevision() != 1 {
-		t.Errorf("CurrentRevision: got %d, want 1", s.CurrentRevision())
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Put - existing key (update)
 // ---------------------------------------------------------------------------
@@ -195,28 +168,6 @@ func TestPut_ExistingKey_VersionIncrements(t *testing.T) {
 	}
 	if kv2.LeaseID != 10 {
 		t.Errorf("LeaseID: got %d, want 10", kv2.LeaseID)
-	}
-}
-
-func TestPut_ExistingKey_ThreeUpdates(t *testing.T) {
-	s := newTestStore(t)
-	_, err := s.Put([]byte("k"), []byte("v1"), 0)
-	if err != nil {
-		t.Fatalf("Put 1: %v", err)
-	}
-	_, err = s.Put([]byte("k"), []byte("v2"), 0)
-	if err != nil {
-		t.Fatalf("Put 2: %v", err)
-	}
-	kv3, err := s.Put([]byte("k"), []byte("v3"), 0)
-	if err != nil {
-		t.Fatalf("Put 3: %v", err)
-	}
-	if kv3.Version != 3 {
-		t.Errorf("Version: got %d, want 3", kv3.Version)
-	}
-	if kv3.CreateRevision != 1 {
-		t.Errorf("CreateRevision: got %d, want 1", kv3.CreateRevision)
 	}
 }
 
@@ -1109,26 +1060,6 @@ func TestDelete_ThenPut_SameKey(t *testing.T) {
 	}
 }
 
-func TestDelete_ThenGet_ReturnsTombstone(t *testing.T) {
-	s := newTestStore(t)
-	_, err := s.Put([]byte("k"), []byte("v"), 0)
-	if err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	_, err = s.Delete([]byte("k"))
-	if err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	_, err = s.Get([]byte("k"))
-	if err == nil {
-		t.Fatal("Get after Delete: expected error, got nil")
-	}
-	var knf *KeyNotFoundError
-	if !errors.As(err, &knf) {
-		t.Fatalf("Get after Delete: expected *KeyNotFoundError, got %T", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // GetAtRevision with deleted key (historical read)
 // ---------------------------------------------------------------------------
@@ -1752,21 +1683,6 @@ func TestPut_LargeBinaryValue(t *testing.T) {
 	}
 	if !bytes.Equal(kv.Value, largeVal) {
 		t.Error("Get: value mismatch for large binary")
-	}
-}
-
-func TestPut_MultipleLargeKeys(t *testing.T) {
-	s := newTestStore(t)
-	for i := 0; i < 50; i++ {
-		key := bytes.Repeat([]byte{byte(i)}, 100)
-		val := bytes.Repeat([]byte{byte(i + 1)}, 200)
-		_, err := s.Put(key, val, 0)
-		if err != nil {
-			t.Fatalf("Put %d: %v", i, err)
-		}
-	}
-	if s.CurrentRevision() != 50 {
-		t.Errorf("CurrentRevision: got %d, want 50", s.CurrentRevision())
 	}
 }
 

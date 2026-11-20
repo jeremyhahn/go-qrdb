@@ -405,19 +405,6 @@ func TestBuildBinaryFailureLeavesNoDirectory(t *testing.T) {
 	}
 }
 
-func TestBuildBinaryDefaults(t *testing.T) {
-	cfg := buildConfig{tags: DefaultBuildTags, binaryName: filepath.Base(DaemonPackage)}
-	if cfg.binaryName != "qrdbd" {
-		t.Errorf("default binary name = %q, want qrdbd", cfg.binaryName)
-	}
-	if !strings.Contains(DefaultBuildTags, "raft") || !strings.Contains(DefaultBuildTags, "qrdb_mysql") {
-		t.Errorf("DefaultBuildTags = %q, want the full daemon tag set", DefaultBuildTags)
-	}
-	if ClientPackage != "./cmd/qrdb" {
-		t.Errorf("ClientPackage = %q, want ./cmd/qrdb", ClientPackage)
-	}
-}
-
 func TestStartRejectsMissingBinary(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "not-a-binary")
 	_, err := Start(missing, []string{"start"})

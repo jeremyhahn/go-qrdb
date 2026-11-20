@@ -4124,8 +4124,7 @@ DEVCONTAINER_COMPOSE := $(DEVCONTAINER_DIR)/compose.yaml
 DEVCONTAINER_MODULES := . sdk/go sdk/go/gorm/conformance test/clusterproof \
 	test/performance/cmd/kvcompare test/performance/etcd-benchmark \
 	test/performance/qrdb test/performance/tikv test/vanguardprobe
-APK_MIRROR_SCRIPT = scripts/apk-mirror.sh
-TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(APK_MIRROR_SCRIPT) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
+TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
 TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 
 # The integration image and its compose project (#813). The image tag is
@@ -4200,7 +4199,6 @@ DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 	--build-arg TRIVY_IMAGE=$(TRIVY_IMAGE) \
 	--build-arg IT_TAGS="$(INT_FEATURE_TAGS)" \
 	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY="$(GO_BUILD_PROXY)",$(if $(GOPROXY),--build-arg GO_BUILD_PROXY="$$GOPROXY")) \
-	--secret id=apk_mirror,env=DEVCACHE_APK_MIRROR \
 	-f $(DEVCONTAINER_DIR)/Dockerfile
 
 # concurrent-load follows a content-tagged image build. Two builds that miss
@@ -4208,8 +4206,8 @@ DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 # result: the second fails with "image ... already exists" (run 57133). That
 # loser finds the image held once its build fails, and the tag is the
 # content, so it succeeds; any other failed build fails with the build's
-# status. docker-build-toolchain and docker-build-it both use it: pool-images
-# builds on a daemon that independent runs share (#1631).
+# status. docker-build-toolchain and docker-build-it both use it: a daemon
+# may be shared by independent runs (#1631).
 # Its optional second argument is the build's IID file: the loser writes the
 # ID its one check saw (#1597).
 concurrent-load = || { status=$$?; id=$$(docker image inspect -f '{{.Id}}' '$(1)' 2>/dev/null) || exit $$status; echo "==> a concurrent build loaded $(1) first"; $(if $(2),printf '%s\n' "$$id" > '$(2)';) }
@@ -4265,7 +4263,11 @@ docker-build-toolchain:
 
 # docker-build-it builds the integration image only when the daemon does not
 # already hold IT_IMAGE: the tag is the content, so a held image is this
-# tree's. Its build recovers from a concurrent load (concurrent-load).
+# tree's. Two builds that miss together on one daemon both build, and only the
+# first --load can tag the result: the second fails with "image ... already
+# exists" (run 57133). That loser finds the image held once its build fails,
+# and the tag is the content, so it succeeds; any other failed build fails
+# with the build's status.
 docker-build-it:
 	$(REQUIRE_BUILDX)
 	@# CUSTOMIZE (go-qrdb): a digest reference names a pushed image; building one would mint a different image under its name (DS-3516)

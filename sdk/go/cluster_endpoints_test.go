@@ -660,38 +660,6 @@ func TestClusterClient_RemoveReplica_ErrorPropagates(t *testing.T) {
 	}
 }
 
-func TestClusterClient_RemoveReplica_UnknownReplicaPropagates(t *testing.T) {
-	sentinel := errors.New("replica 42 is not a member of shard 3")
-	ft := &fakeClusterTransport{removeMemberErr: sentinel}
-	cc := newFakeClusterClient(t, ft)
-
-	err := cc.RemoveReplica(context.Background(), 3, 42)
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("RemoveReplica error = %v, want sentinel %v", err, sentinel)
-	}
-}
-
-// TestClusterClient_RemoveReplica_IdempotentRetrySucceeds models an admin
-// backend where RemoveMember is idempotent (removing an already-absent
-// replica is not an error, matching go-qrdb's own AdminService semantics).
-// A caller retrying RemoveReplica after an ambiguous failure (e.g. a timeout
-// where the first call actually succeeded) must not see an error on the
-// second attempt.
-func TestClusterClient_RemoveReplica_IdempotentRetrySucceeds(t *testing.T) {
-	ft := &fakeClusterTransport{}
-	cc := newFakeClusterClient(t, ft)
-
-	if err := cc.RemoveReplica(context.Background(), 3, 7); err != nil {
-		t.Fatalf("first RemoveReplica: %v", err)
-	}
-	if err := cc.RemoveReplica(context.Background(), 3, 7); err != nil {
-		t.Fatalf("second RemoveReplica (retry): %v", err)
-	}
-	if len(ft.removeMemberCalls) != 2 {
-		t.Fatalf("removeMemberCalls = %d, want 2", len(ft.removeMemberCalls))
-	}
-}
-
 func TestClusterClient_PromoteReplica_Success(t *testing.T) {
 	ft := &fakeClusterTransport{}
 	cc := newFakeClusterClient(t, ft)

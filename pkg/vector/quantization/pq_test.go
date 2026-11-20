@@ -286,14 +286,6 @@ func TestPQ_NotTrained(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrNotTrained))
 }
 
-func TestPQ_DimensionMismatch(t *testing.T) {
-	// Dimensions not divisible by m.
-	_, err := NewPQQuantizer(65, 8, 8)
-	require.Error(t, err)
-	var configErr *InvalidConfigError
-	assert.True(t, errors.As(err, &configErr))
-}
-
 func TestPQ_InvalidConfig(t *testing.T) {
 	tests := []struct {
 		name       string

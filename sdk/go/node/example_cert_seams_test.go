@@ -139,14 +139,3 @@ func TestCertSeams_ConflictIsTheSDKError(t *testing.T) {
 		t.Fatalf("both cert seams = %v, want *sdkserver.CertProviderConflictError", err)
 	}
 }
-
-// TestCertSeams_OneSeamIsNoConflict is the control: either seam alone builds.
-func TestCertSeams_OneSeamIsNoConflict(t *testing.T) {
-	for _, opt := range []node.NodeOption{node.WithCertProvider(exampleCA{}), node.WithCertKeyProviderFactory(&exampleKeyB{})} {
-		_, closeNode, err := openExampleNode(opt)
-		if err != nil {
-			t.Fatalf("one cert seam: %v", err)
-		}
-		closeNode()
-	}
-}

@@ -181,11 +181,3 @@ func TestAuthenticate_ForeignTrustDomain_FailsClosed(t *testing.T) {
 		t.Fatal("expected fail-closed on foreign trust domain")
 	}
 }
-
-// Sanity check that the verifier package agrees on the canonical string form.
-func TestSPIFFEStringRoundTrip(t *testing.T) {
-	id := spiffe.ID{TrustDomain: "t1", Kind: spiffe.KindUser, Name: "bob"}
-	if got, want := id.String(), "spiffe://t1/user/bob"; got != want {
-		t.Fatalf("String() = %q, want %q", got, want)
-	}
-}

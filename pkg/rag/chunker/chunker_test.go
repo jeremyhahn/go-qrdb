@@ -22,13 +22,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNew_FixedStrategy(t *testing.T) {
-	cfg := &Config{Strategy: "fixed", ChunkSize: 50, Overlap: 5, MinSize: 0}
-	ch, err := New(cfg)
-	require.NoError(t, err)
-	assert.NotNil(t, ch)
-}
-
 func TestNew_EmptyStrategy_DefaultsToFixed(t *testing.T) {
 	cfg := &Config{Strategy: "", ChunkSize: 50, Overlap: 0, MinSize: 0}
 	ch, err := New(cfg)

@@ -313,13 +313,6 @@ func TestProviderCredentials_MatchThePinnedProviders(t *testing.T) {
 	}
 }
 
-func TestNew_UnknownProviderWithCredentialsIsUnsupported(t *testing.T) {
-	e, err := New("no-such-provider", map[string]string{}, WithCredentialFiles(fakeFiles(t)))
-	assert.Nil(t, e)
-	var unsupported *UnsupportedProviderError
-	require.ErrorAs(t, err, &unsupported)
-}
-
 func TestCredentialIgnoredError(t *testing.T) {
 	err := &CredentialIgnoredError{Provider: "gcs", Credential: CredentialSecret, File: "/etc/qrdb/secret"}
 	msg := err.Error()

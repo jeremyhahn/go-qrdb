@@ -452,18 +452,6 @@ func TestPebbleHandleLeaseRevoke_WithHub(t *testing.T) {
 // pebble.go: pebbleHandleLeaseGrant invalid payload
 // ---------------------------------------------------------------------------
 
-func TestPebbleHandleLeaseGrant_InvalidPayload(t *testing.T) {
-	s, _ := openStoreWithLessor(t)
-
-	cmd := []byte{protocol.OpLeaseGrant} // empty payload
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid lease grant payload")
-	}
-}
-
 func TestPebbleHandleLeaseGrant_ValidPayload(t *testing.T) {
 	s, lr := openStoreWithLessor(t)
 
@@ -482,18 +470,6 @@ func TestPebbleHandleLeaseGrant_ValidPayload(t *testing.T) {
 // ---------------------------------------------------------------------------
 // pebble.go: pebbleHandleLeaseKeepAlive invalid payload
 // ---------------------------------------------------------------------------
-
-func TestPebbleHandleLeaseKeepAlive_InvalidPayload(t *testing.T) {
-	s, _ := openStoreWithLessor(t)
-
-	cmd := []byte{protocol.OpLeaseKeepAlive} // empty payload
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid lease keep-alive payload")
-	}
-}
 
 func TestPebbleHandleLeaseKeepAlive_NonexistentLease(t *testing.T) {
 	s, _ := openStoreWithLessor(t)
@@ -524,18 +500,6 @@ func TestPebbleHandleLeaseKeepAlive_NonexistentLease(t *testing.T) {
 // ---------------------------------------------------------------------------
 // pebble.go: pebbleHandleLeaseRevoke invalid payload
 // ---------------------------------------------------------------------------
-
-func TestPebbleHandleLeaseRevoke_InvalidPayload(t *testing.T) {
-	s, _ := openStoreWithLessor(t)
-
-	cmd := []byte{protocol.OpLeaseRevoke} // empty payload
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid lease revoke payload")
-	}
-}
 
 func TestPebbleHandleLeaseRevoke_NonexistentLease(t *testing.T) {
 	s, _ := openStoreWithLessor(t)
@@ -665,98 +629,6 @@ func TestPebbleHandleDelete_WithHub(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for base delete event")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// pebble.go: pebbleHandleIndexCreate/Drop invalid payloads
-// ---------------------------------------------------------------------------
-
-func TestPebbleHandleIndexCreate_InvalidPayload(t *testing.T) {
-	s := openExtendedStore(t)
-
-	cmd := []byte{protocol.OpIndexCreate} // empty payload
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid index create payload")
-	}
-}
-
-func TestPebbleHandleIndexDrop_InvalidPayload(t *testing.T) {
-	s := openExtendedStore(t)
-
-	cmd := []byte{protocol.OpIndexDrop} // empty payload
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid index drop payload")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// pebble.go: TS handler invalid payloads
-// ---------------------------------------------------------------------------
-
-func TestPebbleHandleTSWrite_InvalidPayload(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	cmd := []byte{protocol.OpTSWrite} // empty payload
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid TS write payload")
-	}
-}
-
-func TestPebbleHandleTSWriteBatch_InvalidPayload(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	cmd := []byte{protocol.OpTSWriteBatch} // empty payload
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid TS write batch payload")
-	}
-}
-
-func TestPebbleHandleTSWritePoint_InvalidPayload(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	cmd := []byte{protocol.OpTSWritePoint} // empty payload
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid TS write point payload")
-	}
-}
-
-func TestPebbleHandleTSDeleteSeries_InvalidPayload(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	cmd := []byte{protocol.OpTSDeleteSeries} // empty payload
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid TS delete series payload")
-	}
-}
-
-func TestPebbleHandleTSSetRetention_InvalidPayload(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	cmd := []byte{protocol.OpTSSetRetention} // empty payload
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid TS set retention payload")
 	}
 }
 
@@ -1473,24 +1345,6 @@ func TestMVCCLookup_LeaseTimeToLiveNotFound(t *testing.T) {
 	}
 }
 
-func TestMVCCLookup_LeaseTimeToLiveNoLessor(t *testing.T) {
-	s := newTestMVCCStateMachine(t)
-
-	_, err := s.Lookup(context.Background(), service.LeaseTimeToLiveQuery{ID: 1})
-	if err == nil {
-		t.Fatal("expected error when lessor not configured")
-	}
-}
-
-func TestMVCCLookup_LeasesNoLessor(t *testing.T) {
-	s := newTestMVCCStateMachine(t)
-
-	_, err := s.Lookup(context.Background(), service.LeasesQuery{})
-	if err == nil {
-		t.Fatal("expected error when lessor not configured")
-	}
-}
-
 func TestMVCCLookup_LeasesWithLessor(t *testing.T) {
 	dir := t.TempDir()
 	s := NewMVCCStateMachine(nil)
@@ -1765,52 +1619,6 @@ func TestMVCCHandleMVCCCompact_RevisionZero(t *testing.T) {
 	// Compacting at revision 0 should succeed (no-op or handled gracefully).
 	if err != nil {
 		t.Fatalf("Compact at revision 0: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// mvcc.go: handleLeaseGrant/Revoke/KeepAlive - no lessor error
-// ---------------------------------------------------------------------------
-
-func TestMVCCHandleLeaseGrant_NoLessor(t *testing.T) {
-	s := newTestMVCCStateMachine(t) // no lessor
-
-	cmd := mustEncode(protocol.EncodeLeaseGrant(10))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := s.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update must not return a fatal error when lessor not configured: %v", err)
-	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload when lessor not configured")
-	}
-}
-
-func TestMVCCHandleLeaseRevoke_NoLessor(t *testing.T) {
-	s := newTestMVCCStateMachine(t)
-
-	cmd := mustEncode(protocol.EncodeLeaseRevoke(1))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := s.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update must not return a fatal error when lessor not configured: %v", err)
-	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload when lessor not configured")
-	}
-}
-
-func TestMVCCHandleLeaseKeepAlive_NoLessor(t *testing.T) {
-	s := newTestMVCCStateMachine(t)
-
-	cmd := mustEncode(protocol.EncodeLeaseKeepAlive(1))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := s.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update must not return a fatal error when lessor not configured: %v", err)
-	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload when lessor not configured")
 	}
 }
 

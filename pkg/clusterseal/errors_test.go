@@ -19,7 +19,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestErrorMessagesNameTheBarrierAndUnwrap(t *testing.T) {
@@ -50,27 +49,8 @@ func TestErrorMessagesNameTheBarrierAndUnwrap(t *testing.T) {
 }
 
 func TestBarrierPartsOfOtherKinds(t *testing.T) {
-	if NodeBarrier().Tenant() != "" || NodeBarrier().Database() != "" {
-		t.Fatal("the node barrier has a tenant or database")
-	}
-	if TenantBarrier("acme").Database() != "" {
-		t.Fatal("a tenant barrier has a database")
-	}
 	if Barrier("bogus").Tenant() != "" || Barrier("bogus").Kind() != KindInvalid {
 		t.Fatal("an invalid barrier parsed")
-	}
-}
-
-func TestRealClock(t *testing.T) {
-	c := realClock{}
-	before := time.Now()
-	if c.Now().Before(before) {
-		t.Fatal("realClock.Now went backwards")
-	}
-	select {
-	case <-c.After(time.Millisecond):
-	case <-time.After(5 * time.Second):
-		t.Fatal("realClock.After never fired")
 	}
 }
 

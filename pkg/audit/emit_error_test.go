@@ -62,12 +62,6 @@ var _ AuditLogger = (*failingSink)(nil)
 // The sinks that cannot fail say so
 // ---------------------------------------------------------------------------
 
-func TestNoopLogger_Emit_ReturnsNil(t *testing.T) {
-	if err := NewNoopLogger().Emit(context.Background(), AuditEvent{Actor: "a"}); err != nil {
-		t.Fatalf("NoopLogger.Emit must report success: %v", err)
-	}
-}
-
 // TestNoopLogger_Emit_NilIsTheTruthfulAnswer pins the reasoning, not just the
 // value: an operator who configured no audit backend chose to keep no trail,
 // and a fail-closed middleware over a NoopLogger must still serve requests.
@@ -79,13 +73,6 @@ func TestNoopLogger_Emit_NilIsTheTruthfulAnswer(t *testing.T) {
 		if err := n.Emit(context.Background(), AuditEvent{Actor: "a"}); err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}
-	}
-}
-
-func TestRingBuffer_Emit_ReturnsNil(t *testing.T) {
-	r := NewRingBuffer(4)
-	if err := r.Emit(context.Background(), AuditEvent{Actor: "a"}); err != nil {
-		t.Fatalf("RingBuffer.Emit must report success: %v", err)
 	}
 }
 

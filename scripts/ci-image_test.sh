@@ -598,31 +598,6 @@ if command -v flock >/dev/null 2>&1; then
   if [ "$rc" = 0 ] && [ "$(cat "$D/out")" = "$D/r1tmp/qrdb-ci-image.lock" ]; then
     ok "a hosted runner's image lock is in its temp dir"
   else bad "a hosted runner's image lock is in its temp dir (rc=$rc)"; cat "$D/out" "$D/err"; fi
-  # 12a7c. Codex P1 (#1597 round 2): a pool leg pulls its image from the LAN
-  # CI registry, checks its ID and tags it. Another runner's prune that runs
-  # the moment the pull returns (the stub runs it from inside the pull) finds
-  # the image lock held shared and removes nothing, so the check and the tag
-  # find the pulled image, though it was built past the bound.
-  reset
-  mkdir -p "$D/state/created"
-  echo "$old" > "$D/state/created/${id_b#sha256:}"
-  lanref=registry.test:5000/go-qrdb/toolchain-image:1111111111111111
-  run lan-pull registry.test:5000 "$lanref" "$id_b" "$tc" -- STUB_PULL=hit STUB_PULL_ID="$id_b" \
-    STUB_PULL_THEN_PRUNE=1 STUB_CI_IMAGE="$here/ci-image.sh" CI_IMAGE_LOCK_WAIT=0
-  if [ "$rc" = 0 ] && [ "$(resolve "$tc")" = "$id_b" ] && [ "$(resolve "$lanref")" = "$id_b" ] &&
-    grep -q 'another job holds the image lock' "$D/state/then.err" && ! called '^image rm '; then
-    ok "a LAN registry pull, its ID check and its tag hold the image lock against a concurrent prune"
-  else bad "a LAN registry pull, its ID check and its tag hold the image lock against a concurrent prune (rc=$rc)"; cat "$D/err" "$D/state/then.err" 2>/dev/null; fi
-  # A LAN pull waits for a prune that holds the lock exclusive, and fails
-  # rather than pull unprotected once the wait runs out.
-  reset
-  exec 8>>"$D/image.lock"
-  flock -x 8
-  run lan-pull registry.test:5000 "$lanref" "$id_b" "$tc" -- STUB_PULL=hit STUB_PULL_ID="$id_b" CI_IMAGE_LOCK_WAIT=0
-  exec 8>&-
-  if [ "$rc" = 1 ] && grep -q 'still held exclusive' "$D/err" && ! called '^pull '; then
-    ok "a LAN registry pull refuses to run while a prune holds the image lock"
-  else bad "a LAN registry pull refuses to run while a prune holds the image lock (rc=$rc)"; cat "$D/err"; fi
   # 12a8. The toolchain image's flock is BusyBox's, which knows only -s -x
   # -u -n (#1597 Lint Gates: "flock: unrecognized option: w"). A shim that
   # refuses -w as BusyBox does stands in for it; the lock still works.

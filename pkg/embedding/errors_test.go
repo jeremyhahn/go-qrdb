@@ -153,15 +153,6 @@ func TestCloseError_Error(t *testing.T) {
 	}
 }
 
-func TestCloseError_Unwrap(t *testing.T) {
-	inner := errors.New("inner")
-	e := &CloseError{Errors: []error{inner}}
-	errs := e.Unwrap()
-	if len(errs) != 1 || errs[0] != inner {
-		t.Error("Unwrap should return the inner errors slice")
-	}
-}
-
 func TestCloseError_ErrorsIs(t *testing.T) {
 	inner := errors.New("specific error")
 	e := &CloseError{Errors: []error{inner}}

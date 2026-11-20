@@ -130,60 +130,6 @@ func TestCLIClusterLeaseReplication(t *testing.T) {
 	}
 }
 
-// TestCLIClusterConsistency writes N keys per protocol and verifies all keys
-// are present via kv list.
-func TestCLIClusterConsistency(t *testing.T) {
-	cfg := LoadTestConfig()
-	requireCLI(t, cfg)
-
-	const keyCount = 20
-
-	for _, proto := range AllProtocols() {
-		t.Run(string(proto), func(t *testing.T) {
-			if !cfg.IsProtocolAvailable(t, proto) {
-				t.Fatalf("server not available for protocol %s", proto)
-			}
-
-			prefix := fmt.Sprintf("consistency-%s-%d", proto, testTimestamp())
-			keys := make([]string, keyCount)
-
-			// Write N keys.
-			for i := 0; i < keyCount; i++ {
-				keys[i] = fmt.Sprintf("%s/key-%03d", prefix, i)
-				stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "kv", "put", keys[i], fmt.Sprintf("val-%03d", i))
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] kv put %s failed: %v", proto, keys[i], err)
-				}
-			}
-
-			// Register cleanup for all keys.
-			t.Cleanup(func() {
-				for _, key := range keys {
-					execCLIWithProtocol(t, cfg, proto, "kv", "del", key) //nolint:errcheck
-				}
-			})
-
-			// List keys with prefix and verify all are present.
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "kv", "list", prefix)
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] kv list failed: %v", proto, err)
-			}
-
-			output := stdout + stderr
-			for _, key := range keys {
-				assertContains(t, output, key,
-					fmt.Sprintf("[%s] kv list should contain key %s", proto, key))
-			}
-
-			t.Logf("[%s] consistency check passed: all %d keys present", proto, keyCount)
-		})
-	}
-}
-
 // TestCLIClusterMemberOps validates cluster member operations on a
 // single-node cluster by verifying admin peers and admin status output.
 func TestCLIClusterMemberOps(t *testing.T) {

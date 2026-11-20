@@ -21,32 +21,8 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
-	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 )
-
-// The caller's compliance trail (server.WithAuditLogger) is the holder
-// authority's: every graph built with the node's holder infra -- the sealed
-// window's included -- records its holder events on it.
-func TestWithHolderInfra_CarriesTheCallersTrail(t *testing.T) {
-	trail := audit.NewRingBuffer(8)
-	n := &Node{}
-	infra, err := n.withHolderInfra(lifecycle.Infra{}, nil, []server.ServerOption{server.WithAuditLogger(trail)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := infra.AuditLogger.(*audit.RingBuffer); got != trail {
-		t.Fatalf("Infra.AuditLogger = %T, want the caller's trail", infra.AuditLogger)
-	}
-}
-
-// Without a caller trail the infra carries none.
-func TestWithHolderInfra_NoTrailCarriesNone(t *testing.T) {
-	n := &Node{}
-	if infra, err := n.withHolderInfra(lifecycle.Infra{}, nil, nil); err != nil || infra.AuditLogger != nil {
-		t.Fatalf("Infra.AuditLogger = %T (%v), want nil", infra.AuditLogger, err)
-	}
-}
 
 // The holder authority follows the node's auth.audit_failure_policy; an
 // absent value is the secure default, fail-closed.

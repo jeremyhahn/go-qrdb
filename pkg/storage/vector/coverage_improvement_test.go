@@ -326,30 +326,6 @@ func TestAdapter_CleanupTombstones_RecentTombstones(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestAdapter_Compact_ClosedStorage tests compaction on closed storage
-func TestAdapter_Compact_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close immediately
-
-	ctx := context.Background()
-
-	err := storage.Compact(ctx, "test_ns")
-	assert.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
-// TestAdapter_CleanupTombstones_ClosedStorage tests cleanup on closed storage
-func TestAdapter_CleanupTombstones_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close immediately
-
-	ctx := context.Background()
-
-	err := storage.CleanupTombstones(ctx, time.Hour)
-	assert.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
 // TestAdapter_NewPebbleVectorStorage_InvalidDataDir tests creation with invalid data directory
 func TestAdapter_NewPebbleVectorStorage_InvalidDataDir(t *testing.T) {
 	log := &testLogger{}

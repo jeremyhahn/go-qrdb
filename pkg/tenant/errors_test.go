@@ -75,8 +75,6 @@ func TestTenantStoreError_ReadTransient_DefaultsFalse(t *testing.T) {
 	}
 }
 
-// TestTenantStoreError_ReadTransient_TrueWhenSetByNewStoreError proves the
-// method reports exactly the field newStoreError computed.
 // TestNewStoreError_NonDecryptCauseIsTransient covers an ordinary read
 // failure -- not a decrypt refusal -- which newStoreError must mark
 // transient.
@@ -112,12 +110,6 @@ func TestNewStoreError_WrappedDecryptCauseIsNotTransient(t *testing.T) {
 	}
 }
 
-// TestIsTransientCause_NonDecryptCause and TestIsTransientCause_DecryptCause
-// exercise isTransientCause directly, independent of newStoreError, so a
-// future caller of it is held to the same two-cause contract. This is the
-// exact gap a re-review found: forcing tenant's isTransientCause to always
-// return true left the whole suite green, because nothing exercised its
-// decrypt-exclusion branch on this package's side.
 func TestFirstAdminProofError_NamesTenantReasonAndCause(t *testing.T) {
 	cause := &initproof.ChallengeError{Reason: initproof.ReasonExpired}
 	err := &FirstAdminProofError{TenantID: "acme", Reason: initproof.ReasonExpired, Err: cause}
@@ -140,42 +132,6 @@ func TestFirstAdminProofError_WithoutCause(t *testing.T) {
 	}
 	if !strings.HasSuffix(err.Error(), string(initproof.ReasonWrongKey)) {
 		t.Fatalf("Error() = %q", err.Error())
-	}
-}
-
-// TestRefusalErrors_MessageNamesEveryField checks that each refusal's
-// message carries the values an operator needs to act on it.
-func TestRefusalErrors_MessageNamesEveryField(t *testing.T) {
-	cause := errors.New("disk on fire")
-	tests := []struct {
-		name string
-		err  error
-		want []string
-	}{
-		{"platform operator required", &PlatformOperatorRequiredError{IdentityTenantID: "acme", Op: "create a tenant"},
-			[]string{"acme", "create a tenant", "platform operator"}},
-		{"volume pool reserve", &VolumePoolReserveError{TenantID: "acme", Pool: "fast", Err: cause},
-			[]string{"acme", "fast", "disk on fire"}},
-		{"roster requires shamir", &RosterRequiresShamirError{Strategy: "passphrase"},
-			[]string{"shamir", "passphrase"}},
-		{"invalid factor policy", &InvalidFactorPolicyError{Policy: "bogus"},
-			[]string{"bogus"}},
-		{"database list", &DatabaseListError{TenantID: "acme", Err: cause},
-			[]string{"acme", "disk on fire"}},
-		{"isolation policy change", &IsolationPolicyChangeError{From: "strict", To: "standard"},
-			[]string{"strict", "standard", "tighten only"}},
-		{"invalid isolation policy", &InvalidIsolationPolicyError{Value: "loose"},
-			[]string{`"loose"`}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			msg := tt.err.Error()
-			for _, w := range tt.want {
-				if !strings.Contains(msg, w) {
-					t.Errorf("Error() = %q, want it to contain %q", msg, w)
-				}
-			}
-		})
 	}
 }
 

@@ -155,51 +155,6 @@ func TestIterator_DecodeErrors(t *testing.T) {
 	})
 }
 
-// TestAdapter_CleanupTombstones_Coverage tests cleanup paths
-func TestAdapter_CleanupTombstones_Coverage(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	config := DefaultConfig(tmpDir)
-	storage, err := NewPebbleVectorStorage(config, &testLogger{})
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-
-	// Create multiple namespaces
-	for i := 0; i < 3; i++ {
-		nsInfo := &NamespaceInfo{
-			Name:      string(rune('a' + i)),
-			CreatedAt: time.Now().Unix(),
-		}
-		err = storage.CreateNamespace(ctx, nsInfo)
-		require.NoError(t, err)
-
-		// Insert and delete vectors to create tombstones
-		for j := uint64(1); j <= 3; j++ {
-			vec := &VectorValue{
-				ID:        j,
-				Embedding: []float32{float32(j)},
-				Metadata:  map[string]string{"key": "value"},
-				Version:   1,
-			}
-
-			err = storage.UpsertVector(ctx, string(rune('a'+i)), vec)
-			require.NoError(t, err)
-
-			err = storage.DeleteVector(ctx, string(rune('a'+i)), j)
-			require.NoError(t, err)
-		}
-	}
-
-	// Wait for tombstones to age
-	time.Sleep(10 * time.Millisecond)
-
-	// Cleanup - exercises namespace iteration and tombstone cleanup
-	err = storage.CleanupTombstones(ctx, 1*time.Millisecond)
-	assert.NoError(t, err)
-}
-
 // TestAdapter_Compact_Coverage tests compaction paths
 func TestAdapter_Compact_Coverage(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -348,41 +303,4 @@ func TestAdapter_ScanNamespace_NilOptions(t *testing.T) {
 	results, err := storage.ScanNamespace(ctx, "scan_test", nil)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, results)
-}
-
-// TestAdapter_Close_Coverage tests close with cleanup
-func TestAdapter_Close_Coverage(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	config := DefaultConfig(tmpDir)
-	storage, err := NewPebbleVectorStorage(config, &testLogger{})
-	require.NoError(t, err)
-
-	ctx := context.Background()
-
-	// Create namespace
-	nsInfo := &NamespaceInfo{
-		Name:      "close_test",
-		CreatedAt: time.Now().Unix(),
-	}
-	err = storage.CreateNamespace(ctx, nsInfo)
-	require.NoError(t, err)
-
-	// Insert data
-	vec := &VectorValue{
-		ID:        1,
-		Embedding: []float32{0.1, 0.2},
-		Metadata:  map[string]string{"key": "value"},
-		Version:   1,
-	}
-	err = storage.UpsertVector(ctx, "close_test", vec)
-	require.NoError(t, err)
-
-	// Close - exercises cleanup paths
-	err = storage.Close()
-	assert.NoError(t, err)
-
-	// Verify storage is closed
-	_, err = storage.GetVector(ctx, "close_test", 1)
-	assert.Equal(t, ErrStorageClosed, err)
 }

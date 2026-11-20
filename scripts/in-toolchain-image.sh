@@ -194,30 +194,6 @@ case $cache_dir in
   "" | /*) ;;
   *) echo "CI_CACHE_DIR must be an absolute path: $cache_dir" >&2; exit 2 ;;
 esac
-# CUSTOMIZE (go-qrdb, Codex P2 on #1631): a pool's Docker daemon runs outside
-# the job container and resolves a bind mount on its own host, where the job's
-# CI_CACHE_DIR does not exist; a pool job takes the named volumes instead.
-# The one exception is the shared generation scripts/ci-cache-dir.sh selects
-# on the pool host's data array (#1596, Codex P1 on #1597): an absolute,
-# writable <base>/gen-* directory directly under one of its two bases below
-# CI_CACHE_ROOT, which the host's daemon reaches at the same path. Any other
-# caller-supplied path is refused.
-shared_cache_dir() {
-  local root=${CI_CACHE_ROOT:-/mnt/raid0} gen
-  case $root in /*) ;; *) return 1 ;; esac
-  case $1 in
-    "$root/gh-runner-cache/go-qrdb/ci-cache/gen-"*) gen=${1#"$root/gh-runner-cache/go-qrdb/ci-cache/"} ;;
-    "$root/go-qrdb-ci-cache/gen-"*) gen=${1#"$root/go-qrdb-ci-cache/"} ;;
-    *) return 1 ;;
-  esac
-  case $gen in */* | *..*) return 1 ;; esac
-  case $root in */../* | */.. | */./* | */.) return 1 ;; esac
-  [ -d "$1" ] && [ -w "$1" ]
-}
-if [ -n "$cache_dir" ] && [ "${RUNNER_ENVIRONMENT:-}" = self-hosted ] && ! shared_cache_dir "$cache_dir"; then
-  echo "CI_CACHE_DIR is a path on this runner, which a pool's Docker daemon cannot reach: on a self-hosted runner set it only to the generation scripts/ci-cache-dir.sh selects, or leave it unset and the stage takes the daemon's named volumes (${prefix}cache-*)" >&2
-  exit 2
-fi
 cpus=${IN_IMAGE_CPUS:-}
 if [ -z "$cpus" ]; then
   quota=max period=100000

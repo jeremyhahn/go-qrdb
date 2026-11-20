@@ -106,7 +106,7 @@ func TestBarrierSecret_ForeignHostRedirectIsRefused(t *testing.T) {
 
 // TestBarrierSecret_SameHostRedirectIsFollowed: a 307 or 308 to another path
 // on the same host is followed, and the secret arrives there.
-func TestBarrierSecret_SameHostRedirectIsFollowed(t *testing.T) {
+func TestBarrierSecret_SameHostRedirectIsRefused(t *testing.T) {
 	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			moved := &bodyRecorder{}
@@ -123,11 +123,17 @@ func TestBarrierSecret_SameHostRedirectIsFollowed(t *testing.T) {
 			t.Cleanup(srv.Close)
 			tr := connectREST(t, srv.URL, trusting(srv))
 
-			if err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{Secret: []byte("unseal key")}); err != nil {
-				t.Fatalf("BarrierUnseal through a same-host redirect: %v", err)
+			err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{Secret: []byte("unseal key")})
+			var redirErr *transport.BarrierSecretRedirectError
+			if !errors.As(err, &redirErr) {
+				t.Fatalf("err = %v, want *transport.BarrierSecretRedirectError", err)
 			}
-			if n, body := moved.seen(); n != 1 || body == 0 {
-				t.Fatalf("the redirect target saw %d requests and %d body bytes, want 1 with a body", n, body)
+			want := transport.BarrierSecretRedirectError{Transport: "rest", Kind: transport.BarrierSecretUnsealKey, Status: status}
+			if *redirErr != want {
+				t.Fatalf("err = %+v, want %+v", *redirErr, want)
+			}
+			if n, body := moved.seen(); n != 0 || body != 0 {
+				t.Fatalf("the redirect target saw %d requests and %d body bytes, want none", n, body)
 			}
 		})
 	}

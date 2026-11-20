@@ -161,13 +161,6 @@ func TestVerify_InfrastructureErrorsPropagate(t *testing.T) {
 	}
 }
 
-func TestVerificationUnsupportedError_Error(t *testing.T) {
-	e := &VerificationUnsupportedError{}
-	if e.Error() == "" {
-		t.Fatal("expected a non-empty message")
-	}
-}
-
 // TestVerificationErrors_Error asserts each verification-path error names
 // its origin and, where it has one, the trail it concerns.
 func TestVerificationErrors_Error(t *testing.T) {
@@ -294,12 +287,5 @@ func TestAggregateLogger_VerifyChainSet_AllNestedSinkless(t *testing.T) {
 	var unsupported *VerificationUnsupportedError
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("expected *VerificationUnsupportedError, got %v", err)
-	}
-}
-
-func TestAggregateLogger_ImplementsVerifier(t *testing.T) {
-	var agg AuditLogger = NewAggregateLogger(NewRingBuffer(1))
-	if _, ok := agg.(Verifier); !ok {
-		t.Fatal("expected aggregateLogger to implement Verifier unconditionally")
 	}
 }

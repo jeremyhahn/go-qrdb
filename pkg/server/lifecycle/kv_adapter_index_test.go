@@ -284,13 +284,6 @@ func TestKVStoreAdapter_CompoundQueriesAlwaysRefuse(t *testing.T) {
 // PutIfAbsent at all, so the SYSTEM tenant — the store Resolve returns for
 // SystemTenantID — had no atomic path from the resolver even though the
 // engine underneath has a native compare-and-set.
-func TestKVStoreAdapter_SatisfiesAtomicKVStore(t *testing.T) {
-	var store kvstore.KVStore = newKVStoreAdapter(&mockKVServicer{}, nil)
-	if _, ok := store.(kvstore.AtomicKVStore); !ok {
-		t.Fatal("kvStoreAdapter must satisfy kvstore.AtomicKVStore")
-	}
-}
-
 func TestKVStoreAdapter_PutIfAbsentDelegatesToTheService(t *testing.T) {
 	var gotKey string
 	var gotValue []byte

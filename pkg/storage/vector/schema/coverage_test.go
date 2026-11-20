@@ -88,18 +88,6 @@ func TestParseKey_VectorKeyDecodeError(t *testing.T) {
 	}
 }
 
-// TestParseKey_IDSeqKey verifies that ParseKey handles PrefixIDSeq keys correctly.
-func TestParseKey_IDSeqKey(t *testing.T) {
-	key := EncodeIDSequenceKey("default")
-	info, err := ParseKey(key)
-	if err != nil {
-		t.Fatalf("ParseKey for IDSeq key: %v", err)
-	}
-	if info.Type != "id_sequence" {
-		t.Errorf("expected type %q, got %q", "id_sequence", info.Type)
-	}
-}
-
 // TestParseKey_MetadataKeyDecodeError verifies that ParseKey returns an error
 // when a metadata key is malformed.
 func TestParseKey_MetadataKeyDecodeError(t *testing.T) {

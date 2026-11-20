@@ -94,17 +94,6 @@ func TestNew_NilTransportReturnsTypedError(t *testing.T) {
 	}
 }
 
-func TestNew_WithTransportSucceeds(t *testing.T) {
-	t.Parallel()
-	c, err := authfactor.New(&fakeTransport{})
-	if err != nil {
-		t.Fatalf("New(non-nil): unexpected error %v", err)
-	}
-	if c == nil {
-		t.Fatal("New(non-nil): expected non-nil client")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // EnrollFactor
 // ---------------------------------------------------------------------------

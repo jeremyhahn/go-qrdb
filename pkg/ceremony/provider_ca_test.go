@@ -154,18 +154,6 @@ func TestProviderCA_CACertificate_PrefersCertOnlyAccessor(t *testing.T) {
 	require.False(t, fake.certificateCalled, "CACertificate must never call the auto-establishing Certificate when CertificateOnly is available")
 }
 
-// TestProviderCA_CACertificate_FallsBackWithoutCertOnlyAccessor proves
-// CACertificate still resolves through the ordinary Certificate accessor
-// for a provider that does not implement CertOnlyProvider (cakey.
-// StaticProvider, which newTestProviderCA wraps) -- safe there because
-// StaticProvider's own Certificate never generates anything either.
-func TestProviderCA_CACertificate_FallsBackWithoutCertOnlyAccessor(t *testing.T) {
-	ca := newTestProviderCA(t)
-	cert, err := ca.CACertificate(t.Context())
-	require.NoError(t, err)
-	require.True(t, cert.IsCA)
-}
-
 func TestProviderCA_IssueCertificate(t *testing.T) {
 	ca := newTestProviderCA(t)
 	key := newDeviceSigner(t)

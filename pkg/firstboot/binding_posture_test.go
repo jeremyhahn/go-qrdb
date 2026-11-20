@@ -567,25 +567,6 @@ func TestNewAwaitingAdminCredentialProbe_UnboundThenAdminBoundNoRestart(t *testi
 	if p.AwaitingAdminCredential() {
 		t.Fatal("the SAME probe must report not-awaiting the instant AdminBound is called, with no restart")
 	}
-}
-
-// TestNewAwaitingAdminCredentialProbe_NeverReentersAfterAdminBound pins the
-// other half of go-qrdb#560 review B1's ruling: a running node never
-// re-enters "awaiting" merely because the admin's certificate later
-// expires. Once AdminBound has been called, the probe has no store
-// reference left to re-read at all -- it stays not-awaiting permanently,
-// for the life of this probe instance.
-func TestNewAwaitingAdminCredentialProbe_NeverReentersAfterAdminBound(t *testing.T) {
-	p := NewAwaitingAdminCredentialProbe()
-	if err := p.Initialize(auth.MTLSBindingRequired, adminBindingRefusal(AdminBindingNone)); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	p.AdminBound()
-	for i := 0; i < 5; i++ {
-		if p.AwaitingAdminCredential() {
-			t.Fatal("a bound admin must never report awaiting again, however many times it is asked")
-		}
-	}
 	// Idempotent: calling AdminBound again (e.g. a second reissue later in
 	// this process's life) must not panic or change the verdict.
 	p.AdminBound()

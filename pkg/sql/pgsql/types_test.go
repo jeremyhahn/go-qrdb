@@ -105,10 +105,6 @@ func TestDefaultOID_IsTextOID(t *testing.T) {
 	assert.Equal(t, pgtype.TextOID, DefaultOID)
 }
 
-func TestOIDMapping_NotEmpty(t *testing.T) {
-	assert.Greater(t, len(OIDMapping), 0)
-}
-
 func TestOIDMapping_AllValuesNonZero(t *testing.T) {
 	for typeName, oid := range OIDMapping {
 		t.Run(typeName, func(t *testing.T) {

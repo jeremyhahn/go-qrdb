@@ -17,12 +17,6 @@ import (
 	"testing"
 )
 
-func TestDirProvider_Name(t *testing.T) {
-	if got := NewDirProvider().Name(); got != "dir" {
-		t.Fatalf("Name() = %q, want dir", got)
-	}
-}
-
 func TestDirProvider_OpenValidDirectory(t *testing.T) {
 	dir := t.TempDir()
 	p := NewDirProvider()

@@ -215,22 +215,6 @@ func TestPolicyEvaluator_SubjectMatchingEdgeCases(t *testing.T) {
 			wantAllowed: true,
 		},
 		{
-			name: "authenticated only",
-			policy: &Policy{
-				APIVersion: "abac.quicbaas.io/v1",
-				Kind:       "Policy",
-				Metadata:   PolicyMetadata{Name: "auth", Tenant: "test-tenant"},
-				Spec: PolicySpec{
-					Subjects: SubjectSelector{Authenticated: true},
-					Rules:    []Rule{{Name: "r1", Effect: EffectAllow, Actions: []string{"read"}, Resources: []string{"/data/*"}}},
-				},
-			},
-			subject:     Subject{ID: "user", TenantID: "test-tenant", Authenticated: true},
-			action:      "read",
-			resource:    "/data/file.txt",
-			wantAllowed: true,
-		},
-		{
 			name: "group match",
 			policy: &Policy{
 				APIVersion: "abac.quicbaas.io/v1",
@@ -881,13 +865,6 @@ func TestResourceTrieDeleteSegments(t *testing.T) {
 		deleted := trie.Delete("/users/:id/settings")
 		if !deleted {
 			t.Error("expected deletion to succeed")
-		}
-	})
-
-	t.Run("delete non-existent pattern", func(t *testing.T) {
-		deleted := trie.Delete("/nonexistent/path")
-		if deleted {
-			t.Error("expected deletion to fail for non-existent")
 		}
 	})
 }

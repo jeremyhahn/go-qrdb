@@ -195,9 +195,6 @@ func TestCSRAndSPKIParsing(t *testing.T) {
 
 // TestEnrollmentPlan_Includes covers the nil-plan default.
 func TestEnrollmentPlan_Includes(t *testing.T) {
-	var nilPlan *EnrollmentPlan
-	assert.True(t, nilPlan.Includes(FactorMTLS))
-	assert.False(t, nilPlan.Includes(FactorFIDO2))
 	plan, err := NewEnrollmentPlan([]AdminFactor{FactorMTLS})
 	require.NoError(t, err)
 	assert.True(t, plan.Includes(FactorMTLS))

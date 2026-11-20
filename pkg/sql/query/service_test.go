@@ -423,20 +423,6 @@ func TestExecute_TenantScoping_WritesOwnNamespaceNotSystem(t *testing.T) {
 // unauthenticated / legacy-caller behavior is unchanged: with no identity
 // or tenant bound to ctx, queries still resolve to the system tenant,
 // exactly as before this fix (see TestExecute_SelectSeededKVData).
-func TestExecute_TenantScoping_UnauthenticatedFallsBackToSystem(t *testing.T) {
-	kv := newMockKV()
-	seed(t, kv, "testdb", "greeting", "hello world")
-	svc := NewService(kv, &mockDB{getFn: kvDB})
-
-	result, err := svc.Execute(context.Background(), "testdb", "SELECT * FROM kv")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.RowCount != 1 || result.Rows[0]["key"] != "greeting" {
-		t.Fatalf("result = %+v, want the system-tenant seeded row", result)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Execute: Registry-scoped resolution
 // ---------------------------------------------------------------------------

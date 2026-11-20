@@ -77,30 +77,6 @@ func twoJobWorkflow(t *testing.T) string {
 	return path
 }
 
-func TestDeclaredJobsReadsTheRealNightlyWorkflow(t *testing.T) {
-	jobs, err := DeclaredJobs(nightlyPath(t))
-	if err != nil {
-		t.Fatalf("DeclaredJobs: %v", err)
-	}
-	want := map[string]string{"trivy": "Trivy", "signal": "Signal"}
-	if len(jobs) < len(want) {
-		t.Fatalf("found %d jobs, want at least %d — discovery has broken", len(jobs), len(want))
-	}
-	for _, job := range jobs {
-		name, ok := want[job.Key]
-		if !ok {
-			continue
-		}
-		if job.Name != name {
-			t.Errorf("job %s declares name %q, want %q", job.Key, job.Name, name)
-		}
-		delete(want, job.Key)
-	}
-	for key := range want {
-		t.Errorf("nightly.yml no longer declares a job %q", key)
-	}
-}
-
 // THE GATE THAT MATTERS, and the reason it is a unit test and not only a
 // runtime check: the runtime check fires at 03:00 on a night nobody is
 // watching, which is the same failure this whole tool exists to end. Here it

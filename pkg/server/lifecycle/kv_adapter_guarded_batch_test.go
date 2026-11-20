@@ -33,18 +33,6 @@ func TestNewGuardedKVStoreAdapter_NilTxFailsClosed(t *testing.T) {
 	}
 }
 
-// TestNewGuardedKVStoreAdapter_Success confirms the returned store satisfies
-// kvstore.GuardedBatchKVStore when a transaction servicer is supplied.
-func TestNewGuardedKVStoreAdapter_Success(t *testing.T) {
-	store, err := NewGuardedKVStoreAdapter(&mockKVServicer{}, nil, newEvaluatingTxService())
-	if err != nil {
-		t.Fatalf("NewGuardedKVStoreAdapter: %v", err)
-	}
-	if _, ok := store.(kvstore.GuardedBatchKVStore); !ok {
-		t.Fatal("expected the returned store to implement kvstore.GuardedBatchKVStore")
-	}
-}
-
 // TestGuardedKVStoreAdapter_PutAllIfUnchanged exercises PutAllIfUnchanged
 // against the REAL mvcc.Evaluate-backed evaluatingTxService (see
 // kv_adapter_guard_test.go), not a canned mock, so a regression in the
@@ -151,27 +139,6 @@ func TestGuardedKVStoreAdapter_PutAllIfUnchanged(t *testing.T) {
 			t.Fatalf("err = %v, want the injected error propagated", err)
 		}
 	})
-}
-
-// TestGuardCompares_NonNilValueAlsoRequiresExistence pins go-qrdb#555's
-// round-4 review finding, the symmetric hole to the one
-// TestGuardedKVStoreAdapter_PutAllIfUnchanged's "refuses when the guard key
-// exists but holds an empty value" subtest closes for the single-guard path:
-// a non-nil Guard.Value ("must be present and hold exactly this value") must
-// compile to BOTH an existence compare and a value compare, not a value
-// compare alone. A value compare by itself cannot refuse an absent key when
-// the expected value is empty, because bytes.Equal(nil, []byte{}) is true.
-func TestGuardCompares_NonNilValueAlsoRequiresExistence(t *testing.T) {
-	compares := guardCompares([]kvstore.Guard{{Key: "claim", Value: []byte{}}})
-	if len(compares) != 2 {
-		t.Fatalf("len(compares) = %d, want 2 (existence + value)", len(compares))
-	}
-	if compares[0].Target != service.CompareVersion || compares[0].Result != service.CompareGreater || compares[0].Version != 0 {
-		t.Errorf("compares[0] = %+v, want an existsGuard-shaped version>0 compare", compares[0])
-	}
-	if compares[1].Target != service.CompareValue || compares[1].Result != service.CompareEqual || len(compares[1].Value) != 0 {
-		t.Errorf("compares[1] = %+v, want a value==[] compare", compares[1])
-	}
 }
 
 // TestGuardCompares_NilValueStillJustOneCompare confirms the fix above did

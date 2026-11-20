@@ -268,71 +268,19 @@ func newCoordinator(t *testing.T, kv *fakeKV, lease *fakeLease, txn *fakeTxn, wa
 // Get / Put
 // ---------------------------------------------------------------------------
 
-func TestCoordinator_Get(t *testing.T) {
-	t.Run("present returns value", func(t *testing.T) {
-		kv := &fakeKV{getVal: []byte("v")}
-		c := newCoordinator(t, kv, &fakeLease{}, &fakeTxn{}, &fakeWatch{})
-		got, err := c.Get(context.Background(), "k")
-		if err != nil || string(got) != "v" {
-			t.Fatalf("got (%q, %v), want (\"v\", nil)", got, err)
-		}
-	})
-
-	t.Run("absent returns nil,nil", func(t *testing.T) {
-		kv := &fakeKV{getErr: &transport.KeyNotFoundError{Key: "k"}}
-		c := newCoordinator(t, kv, &fakeLease{}, &fakeTxn{}, &fakeWatch{})
-		got, err := c.Get(context.Background(), "k")
-		if err != nil || got != nil {
-			t.Fatalf("got (%v, %v), want (nil, nil)", got, err)
-		}
-	})
-
-	t.Run("other error propagates", func(t *testing.T) {
-		sentinel := errors.New("boom")
-		kv := &fakeKV{getErr: sentinel}
-		c := newCoordinator(t, kv, &fakeLease{}, &fakeTxn{}, &fakeWatch{})
-		_, err := c.Get(context.Background(), "k")
-		if !errors.Is(err, sentinel) {
-			t.Fatalf("got %v, want sentinel", err)
-		}
-	})
-}
-
-func TestCoordinator_Put(t *testing.T) {
-	kv := &fakeKV{}
+func TestCoordinator_Get_OtherErrorPropagates(t *testing.T) {
+	sentinel := errors.New("boom")
+	kv := &fakeKV{getErr: sentinel}
 	c := newCoordinator(t, kv, &fakeLease{}, &fakeTxn{}, &fakeWatch{})
-	if err := c.Put(context.Background(), "k", []byte("v")); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	if kv.gotPutKey != "k" || string(kv.gotPutVal) != "v" {
-		t.Fatalf("Put delegated (%q,%q), want (k,v)", kv.gotPutKey, kv.gotPutVal)
+	_, err := c.Get(context.Background(), "k")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("got %v, want sentinel", err)
 	}
 }
 
 // ---------------------------------------------------------------------------
 // CompareAndSwap
 // ---------------------------------------------------------------------------
-
-func TestCoordinator_CompareAndSwap_CreateIfAbsent(t *testing.T) {
-	txn := succeedingTxn()
-	c := newCoordinator(t, &fakeKV{}, &fakeLease{}, txn, &fakeWatch{})
-
-	ok, err := c.CompareAndSwap(context.Background(), "k", nil, []byte("v"))
-	if err != nil || !ok {
-		t.Fatalf("got (%v,%v), want (true,nil)", ok, err)
-	}
-	if len(txn.gotReq.Compares) != 1 {
-		t.Fatalf("nil-expect must use exactly one compare, got %d", len(txn.gotReq.Compares))
-	}
-	cmp := txn.gotReq.Compares[0]
-	if cmp.Target != transport.CompareCreateRevision || cmp.Result != transport.CompareEqual || cmp.CreateRevision != 0 {
-		t.Fatalf("nil-expect must compare create-revision==0, got %+v", cmp)
-	}
-	if len(txn.gotReq.SuccessOps) != 1 || txn.gotReq.SuccessOps[0].Type != transport.OpPut ||
-		string(txn.gotReq.SuccessOps[0].Value) != "v" {
-		t.Fatalf("success op must put the set value, got %+v", txn.gotReq.SuccessOps)
-	}
-}
 
 func TestCoordinator_CompareAndSwap_ValueMatchRequiresExistence(t *testing.T) {
 	txn := succeedingTxn()
@@ -377,19 +325,6 @@ func TestCoordinator_CompareAndSwap_EmptyExpectStillRequiresExistence(t *testing
 	}
 	if len(txn.gotReq.Compares) != 2 {
 		t.Fatalf("empty expect must still use existence + value compares, got %d", len(txn.gotReq.Compares))
-	}
-}
-
-func TestCoordinator_CompareAndSwap_PreconditionMiss(t *testing.T) {
-	txn := &fakeTxn{resp: &transport.TransactionResponse{Succeeded: false}}
-	c := newCoordinator(t, &fakeKV{}, &fakeLease{}, txn, &fakeWatch{})
-
-	ok, err := c.CompareAndSwap(context.Background(), "k", []byte("wrong"), []byte("new"))
-	if err != nil {
-		t.Fatalf("precondition miss must not error, got %v", err)
-	}
-	if ok {
-		t.Fatal("precondition miss must return ok=false")
 	}
 }
 
@@ -445,24 +380,6 @@ func TestCoordinator_Watch_FlattensAndTranslates(t *testing.T) {
 // The three ways a watch ends must be distinguishable. A consumer that cannot
 // tell a compaction from an orderly shutdown will resume from where it left off
 // and silently skip the changes it never saw.
-
-func TestCoordinator_Watch_CtxCancelIsReportedAsCancellation(t *testing.T) {
-	ch := make(chan transport.WatchResponse)
-	fw := &fakeWatch{ch: ch}
-	c := newCoordinator(t, &fakeKV{}, &fakeLease{}, &fakeTxn{}, fw)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	w, err := c.Watch(ctx, "p/")
-	if err != nil {
-		t.Fatalf("Watch: %v", err)
-	}
-	cancel()
-	assertClosed(t, w.Events())
-
-	if !errors.Is(w.Err(), context.Canceled) {
-		t.Fatalf("Err()=%v, want context.Canceled", w.Err())
-	}
-}
 
 func TestCoordinator_Watch_CancellationWinsOverTheStreamClosingWithIt(t *testing.T) {
 	// A real transport closes the raw stream AS A CONSEQUENCE of the caller

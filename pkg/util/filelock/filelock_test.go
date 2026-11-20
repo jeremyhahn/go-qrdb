@@ -121,40 +121,43 @@ func TestLock_ReleasedByClose(t *testing.T) {
 }
 
 func TestLock_AfterCloseIsTypedError(t *testing.T) {
-	l, _ := openTemp(t)
+	l, path := openTemp(t)
 	if err := l.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	err := l.Lock()
 	var fe *Error
-	if !errors.As(err, &fe) || fe.Op != "lock" {
-		t.Fatalf("Lock after Close = %v, want *Error with Op lock", err)
+	if !errors.As(err, &fe) || fe.Op != "lock" || fe.Path != path || fe.Unwrap() == nil {
+		t.Fatalf("Lock after Close = %v, want *Error with Op lock, Path %q and a cause", err, path)
 	}
 }
 
 func TestUnlock_AfterCloseIsTypedError(t *testing.T) {
-	l, _ := openTemp(t)
+	l, path := openTemp(t)
 	if err := l.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	err := l.Unlock()
 	var fe *Error
-	if !errors.As(err, &fe) || fe.Op != "unlock" {
-		t.Fatalf("Unlock after Close = %v, want *Error with Op unlock", err)
+	if !errors.As(err, &fe) || fe.Op != "unlock" || fe.Path != path || fe.Unwrap() == nil {
+		t.Fatalf("Unlock after Close = %v, want *Error with Op unlock, Path %q and a cause", err, path)
 	}
 }
 
 func TestClose_Twice_IsTypedError(t *testing.T) {
-	l, _ := openTemp(t)
+	l, path := openTemp(t)
 	if err := l.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
 	}
 	err := l.Close()
 	var fe *Error
-	if !errors.As(err, &fe) || fe.Op != "close" {
-		t.Fatalf("second Close = %v, want *Error with Op close", err)
+	if !errors.As(err, &fe) || fe.Op != "close" || fe.Path != path {
+		t.Fatalf("second Close = %v, want *Error with Op close and Path %q", err, path)
 	}
-	if fe.Error() == "" || fe.Unwrap() == nil {
-		t.Fatal("Error must describe and unwrap its cause")
+	if !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("second Close does not unwrap to os.ErrClosed: %v", err)
+	}
+	if want := "filelock: close " + path + ": " + fe.Err.Error(); err.Error() != want {
+		t.Fatalf("second Close message = %q, want %q", err.Error(), want)
 	}
 }

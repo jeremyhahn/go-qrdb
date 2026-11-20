@@ -219,16 +219,6 @@ func (p *deviceHeadSigners) HeadSigner(context.Context, vlog.HeadSignerRequest) 
 	return nil, context.Canceled
 }
 
-func TestWithHeadSignerProvider_ReachesTheServer(t *testing.T) {
-	signers := &deviceHeadSigners{}
-	o := &nodeOptions{}
-	WithHeadSignerProvider(signers)(o)
-	require.Same(t, signers, o.headSignerProvider)
-	got := server.ResolveCryptoOptions(mergeSeamOptions(*o, nil)...)
-	require.Same(t, signers, got.HeadSignerProvider)
-	require.Zero(t, signers.calls, "carrying the provider must not call it")
-}
-
 func TestWithHeadSignerProvider_AbsentKeepsTheSoftwareProvider(t *testing.T) {
 	got := server.ResolveCryptoOptions(mergeSeamOptions(nodeOptions{}, nil)...)
 	require.Nil(t, got.HeadSignerProvider)

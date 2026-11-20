@@ -100,22 +100,12 @@ const (
 	// the images. Like the credential mask, it runs no make target.
 	freeDiskStepName = "Free the runner's disk"
 
-	// maskLANStepName is the step every pool job runs before it builds
-	// (scripts/ci-mask-lan.sh, ruling 887); like the credential mask it runs no
-	// make target.
-	maskLANStepName = "Mask the LAN addresses"
-
-	// featureLoad is each hosted shard's first step after the artifact
-	// download: it loads docker-build's integration image, checks it against
+	// featureLoad is each shard's first step after the artifact download: it
+	// loads docker-build's integration image, checks it against
 	// docker-build's image ID, and hands that verified ID, never the shared
 	// content-hash tag another run on the daemon can move, to the tests as
-	// IT_IMAGE. A pool shard skips it (featureLoadIf): its LAN pull checks
-	// pool-images' image and hands that ID on instead (ruling 879).
-	featureLoad = "scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"\necho \"IT_IMAGE=$ID\" >> \"$GITHUB_ENV\""
-
-	// featureLoadIf keeps the load on GitHub-hosted runners, where the
-	// artifact is.
-	featureLoadIf = "${{ runner.environment == 'github-hosted' }}"
+	// IT_IMAGE.
+	featureLoad = "[ \"$PULLED\" = true ] || scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"\necho \"IT_IMAGE=$ID\" >> \"$GITHUB_ENV\""
 
 	// featureStep is the one test command each shard runs: every feature in
 	// its list, each the feature's features.mk selection in the integration
@@ -224,7 +214,7 @@ func featureJobProblems(body []byte, want []string) []string {
 		// the shard; the mask's shape is ci_logs_test.go's to check. Only a run
 		// step before any other that runs no make target is taken for one, so
 		// the name cannot carry a narrowed run past this gate.
-		if len(runs) == 0 && (s.Name == maskStepName || s.Name == maskLANStepName || s.Name == freeDiskStepName) && !strings.Contains(s.Run, "make ") {
+		if len(runs) == 0 && (s.Name == maskStepName || s.Name == freeDiskStepName) && !strings.Contains(s.Run, "make ") {
 			continue
 		}
 		// The self-hosted image prune trails the teardown; its shape and
@@ -252,10 +242,10 @@ func featureJobProblems(body []byte, want []string) []string {
 	if !slices.Equal(runs, []string{featureLoad, featureStep, featureTeardown}) {
 		problems = append(problems, featureJob+" runs "+strconv.Quote(strings.Join(runs, "; "))+
 			"; want exactly `"+featureLoad+"`, `"+featureStep+"`, then `"+featureTeardown+"`")
-	} else if !slices.Equal(conds, []string{featureLoadIf, "", "always()"}) {
+	} else if !slices.Equal(conds, []string{"", "", "always()"}) {
 		problems = append(problems, featureJob+"'s steps run under if: "+strconv.Quote(strings.Join(conds, ", "))+
-			"; want the load under "+featureLoadIf+" (a pool shard's pull hands the image on), the tests unconditional "+
-			"and the teardown under always(), so a failed or cancelled shard still removes its stack")
+			"; want the load and the tests unconditional and the teardown under always(), "+
+			"so a failed or cancelled shard still removes its stack")
 	}
 	for _, s := range job.Steps {
 		if strings.TrimSpace(s.Run) != featureLoad {
@@ -472,7 +462,7 @@ func TestIntegrationFeatureCoverage_DownKeepsTheImage(t *testing.T) {
 	}
 }
 
-// buildRaceDocker is a stub docker for docker-build-it and docker-build-toolchain: `buildx version`
+// buildRaceDocker is a stub docker for docker-build-it: `buildx version`
 // succeeds, `buildx build` records that it ran and fails with status 17 the
 // way the second of two concurrent --load builds of one tag does, and `image
 // inspect` finds the image only once a build has run and STUB_LOADED is 1.
@@ -491,27 +481,20 @@ echo "stub docker: unexpected $*" >&2
 exit 99
 `
 
-// Two builds that miss the image together on one daemon both build it, and the
+// Two legs that miss the image together on one daemon both build it, and the
 // second --load fails because the first already tagged it (run 57133). The
 // loser must succeed when the daemon then holds the content-tagged image, and
-// any other failed build must still fail with the build's own status. The
-// toolchain target is held to the same rule: pool-images runs it on a daemon
-// that independent PR and main runs share (#1631).
+// any other failed build must still fail with the build's own status.
 func TestIntegrationFeatureCoverage_BuildSurvivesAConcurrentLoad(t *testing.T) {
 	root := repoRoot(t)
-	type buildCase struct {
+	for _, tc := range []struct {
 		name    string
 		loaded  string
 		wantErr bool
-	}
-	var cases []buildCase
-	for _, target := range []string{"docker-build-it", "docker-build-toolchain"} {
-		cases = append(cases,
-			buildCase{name: target + ": a concurrent build loaded the image", loaded: "1", wantErr: false},
-			buildCase{name: target + ": the build failed and no image is held", loaded: "0", wantErr: true})
-	}
-	for _, tc := range cases {
-		target, _, _ := strings.Cut(tc.name, ":")
+	}{
+		{name: "a concurrent leg loaded the image", loaded: "1", wantErr: false},
+		{name: "the build failed and no image is held", loaded: "0", wantErr: true},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stub := t.TempDir()
 			if err := os.WriteFile(filepath.Join(stub, "docker"), []byte(buildRaceDocker), 0o700); err != nil { // #nosec G306 -- the stub must be executable
@@ -521,7 +504,7 @@ func TestIntegrationFeatureCoverage_BuildSurvivesAConcurrentLoad(t *testing.T) {
 			if err := os.WriteFile(envFile, []byte("GIT_CONFIG_KEY_0=stub\n"), 0o600); err != nil {
 				t.Fatalf("write module env: %v", err)
 			}
-			cmd := exec.Command("make", "-s", target, "IT_IMAGE=qrdb-ci-it:test", "TOOLCHAIN_IMAGE=qrdb-ci-toolchain:test", "MODULE_ENV_FILE="+envFile) // #nosec G204 -- a fixed target and a tempdir path
+			cmd := exec.Command("make", "-s", "docker-build-it", "IT_IMAGE=qrdb-ci-it:test", "MODULE_ENV_FILE="+envFile) // #nosec G204 -- a fixed target and a tempdir path
 			cmd.Dir = root
 			cmd.Env = append(os.Environ(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"STUB_DIR="+stub, "STUB_LOADED="+tc.loaded)
@@ -530,19 +513,19 @@ func TestIntegrationFeatureCoverage_BuildSurvivesAConcurrentLoad(t *testing.T) {
 			cmd.Stderr = &out
 			err := cmd.Run()
 			if _, statErr := os.Stat(filepath.Join(stub, "built")); statErr != nil {
-				t.Fatalf("make %s never ran the build:\n%s", target, out.String())
+				t.Fatalf("make docker-build-it never ran the build:\n%s", out.String())
 			}
 			if !tc.wantErr {
 				if err != nil {
-					t.Fatalf("make %s: %v; want success once a concurrent leg loaded the image:\n%s", target, err, out.String())
+					t.Fatalf("make docker-build-it: %v; want success once a concurrent leg loaded the image:\n%s", err, out.String())
 				}
 				return
 			}
 			if err == nil {
-				t.Fatalf("make %s succeeded with no image held; want the build's failure:\n%s", target, out.String())
+				t.Fatalf("make docker-build-it succeeded with no image held; want the build's failure:\n%s", out.String())
 			}
 			if !strings.Contains(out.String(), "Error 17") {
-				t.Fatalf("make %s failed without the build's status 17:\n%s", target, out.String())
+				t.Fatalf("make docker-build-it failed without the build's status 17:\n%s", out.String())
 			}
 		})
 	}
@@ -582,12 +565,11 @@ jobs:
           name: it-image
           path: ${{ runner.temp }}/it-image
       - name: Load the integration image
-        if: ${{ runner.environment == 'github-hosted' }}
         env:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
           echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
       - name: Integration tests (shard ${{ matrix.shard }})
         run: make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image IT_PROJECT="$IT_PROJECT" IT_PREBUILT=1
@@ -679,8 +661,8 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "docker-build not needed", old: "needs: [docker-build, preflight]", new: "needs: [preflight]"},
 		{name: "no download", old: "      - name: Download the integration image\n        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0\n        with:\n          name: it-image\n          path: ${{ runner.temp }}/it-image\n", new: ""},
 		{name: "the toolchain artifact", old: "          name: it-image\n", new: "          name: toolchain-image\n"},
-		{name: "no load", old: "          scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"\n", new: ""},
-		{name: "the load runs on the pool", old: "        if: ${{ runner.environment == 'github-hosted' }}\n        env:\n          IMAGE", new: "        env:\n          IMAGE"},
+		{name: "no load", old: "          [ \"$PULLED\" = true ] || scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"\n", new: ""},
+		{name: "the load skipped whatever the pull did", old: "[ \"$PULLED\" = true ] || scripts", new: "[ \"$PULLED\" = true ] && scripts"},
 		{name: "a rebuild in place of the load", old: "scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"", new: "docker image inspect \"$IMAGE\" || make docker-build-it"},
 		{name: "a load with no ID check", old: "load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"", new: "load \"$RUNNER_TEMP/it-image\" \"$IMAGE\""},
 		{name: "the retaggable tag handed on", old: "echo \"IT_IMAGE=$ID\"", new: "echo \"IT_IMAGE=$IMAGE\""},
@@ -688,7 +670,7 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "a per-shard image", old: "IMAGE: ${{ needs.docker-build.outputs.it_image }}", new: "IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ matrix.shard }}"},
 		{name: "the toolchain image", old: "outputs.it_image }}", new: "outputs.toolchain_image }}"},
 		{name: "the toolchain ID", old: "outputs.it_id }}", new: "outputs.toolchain_id }}"},
-		{name: "load made conditional", old: "        if: ${{ runner.environment == 'github-hosted' }}\n        env:\n          IMAGE", new: "        if: ${{ runner.environment == 'github-hosted' && env.CI_PUBLISH == 'true' }}\n        env:\n          IMAGE"},
+		{name: "load made conditional", old: "      - name: Load the integration image\n", new: "      - name: Load the integration image\n        if: ${{ env.CI_PUBLISH == 'true' }}\n"},
 		{name: "tests without IT_PREBUILT", old: " IT_PREBUILT=1\n", new: "\n"},
 		{name: "a make run named as the disk cleanup", old: "run: sudo rm -rf /usr/share/dotnet", new: "run: make integration-test-auth"},
 		{name: "project outside the prefix", old: "      IT_PROJECT: qrdb-ci-", new: "      IT_PROJECT: qrdb-it-"},

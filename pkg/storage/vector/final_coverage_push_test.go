@@ -22,8 +22,6 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema"
 )
 
 // TestBatch_UpsertErrors tests batch upsert error paths
@@ -337,43 +335,6 @@ func TestGetStats_WithData(t *testing.T) {
 	assert.Equal(t, ns, stats.Namespace)
 	assert.Greater(t, stats.Count, uint64(0))
 	assert.Greater(t, stats.SizeBytes, uint64(0))
-}
-
-// TestCleanupTombstones_SyncWritePath tests cleanup with sync writes
-func TestCleanupTombstones_SyncWritePath(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = true
-	log := &testLogger{}
-
-	storage, err := NewPebbleVectorStorage(config, log)
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-
-	// Create namespace
-	info := &NamespaceInfo{
-		Name:      "sync_cleanup",
-		Dimension: 3,
-		CreatedAt: time.Now().Unix(),
-		UpdatedAt: time.Now().Unix(),
-	}
-	err = storage.CreateNamespace(ctx, info)
-	require.NoError(t, err)
-
-	// Add old tombstones
-	oldTime := uint64(time.Now().Add(-2 * time.Hour).Unix())
-	for i := 1; i <= 10; i++ {
-		key := schema.EncodeTombstoneKey("sync_cleanup", uint64(i), oldTime)
-		err = storage.db.Set(key, []byte{}, pebble.NoSync)
-		require.NoError(t, err)
-	}
-
-	// Run cleanup with sync writes
-	err = storage.CleanupTombstones(ctx, time.Hour)
-	assert.NoError(t, err)
 }
 
 // TestBatch_UpsertVector_EmptyNamespace tests upsert with empty namespace

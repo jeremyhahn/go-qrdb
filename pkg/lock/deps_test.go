@@ -22,49 +22,6 @@ import (
 // RangeOption helpers
 // ---------------------------------------------------------------------------
 
-func TestWithLimit_SetsLimit(t *testing.T) {
-	var ro RangeOptions
-	WithLimit(50)(&ro)
-	if ro.Limit != 50 {
-		t.Errorf("Limit = %d, want 50", ro.Limit)
-	}
-}
-
-func TestWithRevision_SetsRevision(t *testing.T) {
-	var ro RangeOptions
-	WithRevision(123)(&ro)
-	if ro.Revision != 123 {
-		t.Errorf("Revision = %d, want 123", ro.Revision)
-	}
-}
-
-func TestWithCountOnly_SetsCountOnly(t *testing.T) {
-	var ro RangeOptions
-	WithCountOnly()(&ro)
-	if !ro.CountOnly {
-		t.Error("CountOnly should be true")
-	}
-}
-
-func TestWithKeysOnly_SetsKeysOnly(t *testing.T) {
-	var ro RangeOptions
-	WithKeysOnly()(&ro)
-	if !ro.KeysOnly {
-		t.Error("KeysOnly should be true")
-	}
-}
-
-func TestWithSort_SetsSortOrderAndTarget(t *testing.T) {
-	var ro RangeOptions
-	WithSort(SortDescend, SortByModRevision)(&ro)
-	if ro.SortOrder != SortDescend {
-		t.Errorf("SortOrder = %v, want SortDescend", ro.SortOrder)
-	}
-	if ro.SortTarget != SortByModRevision {
-		t.Errorf("SortTarget = %v, want SortByModRevision", ro.SortTarget)
-	}
-}
-
 func TestApplyRangeOptions_AppliesAllOptions(t *testing.T) {
 	ro := ApplyRangeOptions([]RangeOption{
 		WithLimit(10),
@@ -90,13 +47,6 @@ func TestApplyRangeOptions_AppliesAllOptions(t *testing.T) {
 	}
 	if ro.SortTarget != SortByKey {
 		t.Errorf("SortTarget = %v, want SortByKey", ro.SortTarget)
-	}
-}
-
-func TestApplyRangeOptions_EmptySlice(t *testing.T) {
-	ro := ApplyRangeOptions(nil)
-	if ro.Limit != 0 || ro.Revision != 0 || ro.CountOnly || ro.KeysOnly {
-		t.Errorf("expected zero RangeOptions for nil opts, got %+v", ro)
 	}
 }
 

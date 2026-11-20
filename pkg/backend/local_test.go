@@ -64,14 +64,6 @@ func TestLocalBackend_LeadsItsShard(t *testing.T) {
 	}
 }
 
-func TestLocalBackend_ID_Constant(t *testing.T) {
-	lb := newTestLocalBackend()
-	defer func() { _ = lb.Close() }()
-	if lb.ID() == "" {
-		t.Fatal("ID should return a non-empty string")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // RaftAddress tests
 // ---------------------------------------------------------------------------
@@ -81,14 +73,6 @@ func TestLocalBackend_RaftAddress(t *testing.T) {
 	defer func() { _ = lb.Close() }()
 	if lb.RaftAddress() != "local://embedded" {
 		t.Fatalf("expected 'local://embedded', got %q", lb.RaftAddress())
-	}
-}
-
-func TestLocalBackend_RaftAddress_Constant(t *testing.T) {
-	lb := newTestLocalBackend()
-	defer func() { _ = lb.Close() }()
-	if lb.RaftAddress() == "" {
-		t.Fatal("RaftAddress should return a non-empty string")
 	}
 }
 
@@ -104,16 +88,6 @@ func TestLocalBackend_ShardCount(t *testing.T) {
 	}
 }
 
-func TestLocalBackend_ShardCount_AlwaysOne(t *testing.T) {
-	lb := newTestLocalBackend()
-	defer func() { _ = lb.Close() }()
-	for range 3 {
-		if lb.ShardCount() != 1 {
-			t.Fatal("ShardCount should always be 1")
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // NodeHostInfo tests
 // ---------------------------------------------------------------------------
@@ -124,15 +98,6 @@ func TestLocalBackend_GetNodeHostInfo(t *testing.T) {
 	info := lb.NodeHostInfo(quicraft.NodeHostInfoOption{})
 	if info == nil {
 		t.Fatal("expected non-nil NodeHostInfo")
-	}
-}
-
-func TestLocalBackend_GetNodeHostInfo_SkipLogInfo(t *testing.T) {
-	lb := newTestLocalBackend()
-	defer func() { _ = lb.Close() }()
-	info := lb.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
-	if info == nil {
-		t.Fatal("expected non-nil NodeHostInfo with SkipLogInfo")
 	}
 }
 
@@ -164,14 +129,6 @@ func TestLocalBackend_HealthCheck_DiskOK(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Drain tests
 // ---------------------------------------------------------------------------
-
-func TestLocalBackend_Drain(t *testing.T) {
-	lb := newTestLocalBackend()
-	defer func() { _ = lb.Close() }()
-	if err := lb.Drain(); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-}
 
 func TestLocalBackend_Drain_Idempotent(t *testing.T) {
 	lb := newTestLocalBackend()
@@ -223,28 +180,6 @@ func TestLocalBackend_SyncPropose(t *testing.T) {
 	}
 	if result.Value != uint64(len("v1")) {
 		t.Fatalf("expected result.Value=%d, got %d", len("v1"), result.Value)
-	}
-}
-
-func TestLocalBackend_SyncPropose_ReadBack(t *testing.T) {
-	lb := newTestLocalBackend()
-	defer func() { _ = lb.Close() }()
-	ctx := context.Background()
-
-	cmd, err := kv.EncodePut([]byte("k1"), []byte("v1"))
-	if err != nil {
-		t.Fatalf("EncodePut: %v", err)
-	}
-	if _, err := lb.SyncPropose(ctx, 1, cmd); err != nil {
-		t.Fatalf("SyncPropose: %v", err)
-	}
-
-	val, err := lb.SyncRead(ctx, 1, "k1")
-	if err != nil {
-		t.Fatalf("SyncRead: %v", err)
-	}
-	if !bytes.Equal(val.([]byte), []byte("v1")) {
-		t.Fatalf("expected 'v1', got %q", val)
 	}
 }
 
@@ -505,26 +440,6 @@ func TestLocalBackend_StaleRead(t *testing.T) {
 	}
 }
 
-func TestLocalBackend_StaleRead_SameAsSyncRead(t *testing.T) {
-	lb := newTestLocalBackend()
-	defer func() { _ = lb.Close() }()
-	ctx := context.Background()
-
-	cmd, err := kv.EncodePut([]byte("k1"), []byte("v1"))
-	if err != nil {
-		t.Fatalf("EncodePut: %v", err)
-	}
-	if _, err := lb.SyncPropose(ctx, 1, cmd); err != nil {
-		t.Fatalf("SyncPropose: %v", err)
-	}
-
-	syncVal, _ := lb.SyncRead(ctx, 1, "k1")
-	staleVal, _ := lb.StaleRead(ctx, 1, "k1")
-	if !bytes.Equal(syncVal.([]byte), staleVal.([]byte)) {
-		t.Fatal("StaleRead and SyncRead should return identical results")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // ReadWithConsistency tests
 // ---------------------------------------------------------------------------
@@ -576,22 +491,6 @@ func TestLocalBackend_ReadWithConsistency_AllowStale(t *testing.T) {
 // ---------------------------------------------------------------------------
 // LeaderID tests
 // ---------------------------------------------------------------------------
-
-func TestLocalBackend_GetLeaderID(t *testing.T) {
-	lb := newTestLocalBackend()
-	defer func() { _ = lb.Close() }()
-
-	id, ok, err := lb.LeaderID(1)
-	if err != nil {
-		t.Fatalf("LeaderID: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected leader known")
-	}
-	if id != 1 {
-		t.Fatalf("expected leader ID 1, got %d", id)
-	}
-}
 
 func TestLocalBackend_GetLeaderID_AlwaysLeader(t *testing.T) {
 	lb := newTestLocalBackend()
@@ -669,15 +568,6 @@ func TestLocalBackend_StartShard_OpName(t *testing.T) {
 // StopShard tests
 // ---------------------------------------------------------------------------
 
-func TestLocalBackend_StopShard(t *testing.T) {
-	lb := newTestLocalBackend()
-	defer func() { _ = lb.Close() }()
-
-	if err := lb.StopShard(1); err != nil {
-		t.Fatalf("StopShard: %v", err)
-	}
-}
-
 func TestLocalBackend_StopShard_Idempotent(t *testing.T) {
 	lb := newTestLocalBackend()
 	defer func() { _ = lb.Close() }()
@@ -692,13 +582,6 @@ func TestLocalBackend_StopShard_Idempotent(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Close tests
 // ---------------------------------------------------------------------------
-
-func TestLocalBackend_Close(t *testing.T) {
-	lb := newTestLocalBackend()
-	if err := lb.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-}
 
 func TestLocalBackend_Close_DoubleCloseReturnsError(t *testing.T) {
 	lb := newTestLocalBackend()

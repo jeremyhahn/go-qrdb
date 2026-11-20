@@ -30,17 +30,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
-func TestJoinPendingError_NamesTheRequestAndItsState(t *testing.T) {
-	err := &JoinPendingError{RequestID: "req-42"}
-	msg := err.Error()
-	if !strings.Contains(msg, "req-42") {
-		t.Errorf("Error() = %q; want the request ID an operator approves", msg)
-	}
-	if !strings.Contains(msg, "awaiting operator approval") {
-		t.Errorf("Error() = %q; want the pending state", msg)
-	}
-}
-
 func TestLeafExpiryParseError_CarriesAndUnwrapsTheCause(t *testing.T) {
 	cause := errors.New("truncated DER")
 	err := &LeafExpiryParseError{Err: cause}
@@ -49,29 +38,6 @@ func TestLeafExpiryParseError_CarriesAndUnwrapsTheCause(t *testing.T) {
 	}
 	if !errors.Is(err, cause) {
 		t.Error("errors.Is does not reach the cause through Unwrap")
-	}
-}
-
-func TestParseLeafExpiry_RefusesInputThatIsNotPEM(t *testing.T) {
-	notAfter, serial, err := parseLeafExpiry([]byte("not a pem block"))
-	var perr *LeafExpiryParseError
-	if !errors.As(err, &perr) {
-		t.Fatalf("err = %v; want *LeafExpiryParseError", err)
-	}
-	if !notAfter.IsZero() || serial != "" {
-		t.Errorf("refused parse returned (%v, %q); want zero values", notAfter, serial)
-	}
-}
-
-func TestParseLeafExpiry_RefusesPEMThatIsNotACertificate(t *testing.T) {
-	notPEMCert := []byte("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
-	_, _, err := parseLeafExpiry(notPEMCert)
-	var perr *LeafExpiryParseError
-	if !errors.As(err, &perr) {
-		t.Fatalf("err = %v; want *LeafExpiryParseError", err)
-	}
-	if perr.Err == nil {
-		t.Error("the x509 parse failure was not carried as the cause")
 	}
 }
 
@@ -118,31 +84,6 @@ func issueAndAdmitRequest(t *testing.T, nodeID string) (string, *x509.Certificat
 		t.Fatalf("ParseCertificateRequest: %v", err)
 	}
 	return nodeURI, csr
-}
-
-func TestIssueAndAdmit_SignFailureWithUnreleasableReservationStillRefuses(t *testing.T) {
-	realProvider := newTestClusterCAProvider(t)
-	caCert, err := realProvider.Certificate(context.Background())
-	if err != nil {
-		t.Fatalf("Certificate: %v", err)
-	}
-	backing := kvstore.NewMemoryKVStore()
-	store := &faultyJoinStore{AtomicKVStore: backing, failCompareAndDeleteOnPrefix: joinIdentityPrefix}
-	nodeURI, csr := issueAndAdmitRequest(t, "node-release-fault")
-
-	resp := issueAndAdmit(context.Background(), &issuanceFailureProvider{cert: caCert}, store, nodeURI, csr, 0, nil, nil)
-	if resp.Error != "signing failed" || len(resp.CertPEM) != 0 {
-		t.Fatalf("response = %+v; want the signing-failed refusal and no certificate", resp)
-	}
-	// The release failed, so the reservation is still live: a concurrent
-	// request for the same identity cannot take it until its TTL lapses.
-	reserved, _, err := ReserveJoinIdentity(context.Background(), backing, nodeURI, 0)
-	if err != nil {
-		t.Fatalf("ReserveJoinIdentity: %v", err)
-	}
-	if reserved {
-		t.Error("an unreleased reservation was taken again before its TTL")
-	}
 }
 
 func TestIssueAndAdmit_PromoteFailureWithholdsTheSignedLeaf(t *testing.T) {

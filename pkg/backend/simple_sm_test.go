@@ -99,24 +99,6 @@ func TestSimpleStateMachine_Update_Put_Readable(t *testing.T) {
 	}
 }
 
-func TestSimpleStateMachine_Update_Delete(t *testing.T) {
-	ssm := newTestSSM()
-	defer func() { _ = ssm.Close(context.Background()) }()
-
-	applyPut(t, ssm, "k1", "v1")
-
-	cmd, err := kv.EncodeDelete([]byte("k1"))
-	if err != nil {
-		t.Fatalf("EncodeDelete: %v", err)
-	}
-	entries := []sm.Entry{{Index: 2, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	if err := ssm.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update(delete): %v", err)
-	}
-}
-
 func TestSimpleStateMachine_Update_Delete_KeyGone(t *testing.T) {
 	ssm := newTestSSM()
 	defer func() { _ = ssm.Close(context.Background()) }()
@@ -173,36 +155,6 @@ func TestSimpleStateMachine_Update_MultipleBatch(t *testing.T) {
 
 	if results[0].Value != 1 || results[1].Value != 2 || results[2].Value != 3 {
 		t.Fatalf("unexpected results: %v", results)
-	}
-}
-
-func TestSimpleStateMachine_Update_MultipleBatch_AllReadable(t *testing.T) {
-	ssm := newTestSSM()
-	defer func() { _ = ssm.Close(context.Background()) }()
-
-	cmdA, err := kv.EncodePut([]byte("a"), []byte("1"))
-	if err != nil {
-		t.Fatalf("EncodePut(a): %v", err)
-	}
-	cmdB, err := kv.EncodePut([]byte("b"), []byte("22"))
-	if err != nil {
-		t.Fatalf("EncodePut(b): %v", err)
-	}
-
-	entries := []sm.Entry{
-		{Index: 1, Cmd: cmdA},
-		{Index: 2, Cmd: cmdB},
-	}
-	results := make([]sm.Result, 2)
-
-	if err := ssm.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update batch: %v", err)
-	}
-
-	for _, key := range []string{"a", "b"} {
-		if _, err := ssm.Lookup(context.Background(), key); err != nil {
-			t.Fatalf("Lookup(%q) after batch: %v", key, err)
-		}
 	}
 }
 
@@ -341,22 +293,6 @@ func TestSimpleStateMachine_Lookup_ByteSlice(t *testing.T) {
 	}
 }
 
-func TestSimpleStateMachine_Lookup_String(t *testing.T) {
-	ssm := newTestSSM()
-	defer func() { _ = ssm.Close(context.Background()) }()
-
-	applyPut(t, ssm, "k1", "v1")
-
-	val, err := ssm.Lookup(context.Background(), "k1")
-	if err != nil {
-		t.Fatalf("Lookup(string): %v", err)
-	}
-	got := val.([]byte)
-	if !bytes.Equal(got, []byte("v1")) {
-		t.Fatalf("expected %q, got %q", "v1", got)
-	}
-}
-
 func TestSimpleStateMachine_Lookup_ListQuery(t *testing.T) {
 	ssm := newTestSSM()
 	defer func() { _ = ssm.Close(context.Background()) }()
@@ -406,21 +342,6 @@ func TestSimpleStateMachine_Lookup_UnsupportedType(t *testing.T) {
 	}
 }
 
-func TestSimpleStateMachine_Lookup_UnsupportedType_Struct(t *testing.T) {
-	ssm := newTestSSM()
-	defer func() { _ = ssm.Close(context.Background()) }()
-
-	type custom struct{ X int }
-	_, err := ssm.Lookup(context.Background(), custom{X: 1})
-	if err == nil {
-		t.Fatal("expected error for custom struct lookup")
-	}
-	var lte *LookupTypeError
-	if !errors.As(err, &lte) {
-		t.Fatalf("expected LookupTypeError, got %T: %v", err, err)
-	}
-}
-
 func TestSimpleStateMachine_Lookup_KeyNotFound(t *testing.T) {
 	ssm := newTestSSM()
 	defer func() { _ = ssm.Close(context.Background()) }()
@@ -450,13 +371,6 @@ func TestSimpleStateMachine_Lookup_KeyNotFound_ByteSlice(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Close tests
 // ---------------------------------------------------------------------------
-
-func TestSimpleStateMachine_Close(t *testing.T) {
-	ssm := newTestSSM()
-	if err := ssm.Close(context.Background()); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-}
 
 func TestSimpleStateMachine_Close_EngineClosedAfter(t *testing.T) {
 	ssm := newTestSSM()
@@ -533,37 +447,5 @@ func TestSimpleStateMachine_WatchNotification_Delete(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected notification, got none")
-	}
-}
-
-func TestSimpleStateMachine_NoHub_NoPanic(t *testing.T) {
-	// SimpleStateMachine with nil hub should not panic on Put/Delete.
-	ssm := newTestSSM()
-	defer func() { _ = ssm.Close(context.Background()) }()
-
-	applyPut(t, ssm, "k1", "v1")
-
-	cmd, err := kv.EncodeDelete([]byte("k1"))
-	if err != nil {
-		t.Fatalf("EncodeDelete: %v", err)
-	}
-	entries := []sm.Entry{{Index: 2, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := ssm.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update(delete without hub): %v", err)
-	}
-}
-
-func TestSimpleStateMachine_NoHub_PutSucceeds(t *testing.T) {
-	ssm := NewSimpleStateMachine(memory.NewStorage(), nil)
-	defer func() { _ = ssm.Close(context.Background()) }()
-
-	applyPut(t, ssm, "x", "y")
-	val, err := ssm.Lookup(context.Background(), "x")
-	if err != nil {
-		t.Fatalf("Lookup after put without hub: %v", err)
-	}
-	if !bytes.Equal(val.([]byte), []byte("y")) {
-		t.Fatalf("expected 'y', got %q", val)
 	}
 }

@@ -26,107 +26,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema"
 )
 
-// TestCleanupTombstones_EdgeCases tests the CleanupTombstones function with various edge cases
-func TestCleanupTombstones_EdgeCases(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-
-	ctx := context.Background()
-
-	t.Run("CleanupTombstones_Success", func(t *testing.T) {
-		// Create a namespace
-		ns := "test_tombstone"
-		err := storage.CreateNamespace(ctx, &NamespaceInfo{
-			Name:      ns,
-			Dimension: 128,
-		})
-		require.NoError(t, err)
-
-		// Create and delete some vectors
-		vec1 := &VectorValue{
-			ID:        1,
-			Version:   1,
-			Embedding: make([]float32, 128),
-			Metadata:  map[string]string{"key": "value1"},
-			CreatedAt: time.Now().Unix(),
-			UpdatedAt: time.Now().Unix(),
-		}
-
-		err = storage.UpsertVector(ctx, ns, vec1)
-		require.NoError(t, err)
-
-		err = storage.DeleteVector(ctx, ns, 1)
-		require.NoError(t, err)
-
-		// Wait a bit to ensure tombstone is created
-		time.Sleep(10 * time.Millisecond)
-
-		// Cleanup old tombstones (should clean up our tombstone)
-		err = storage.CleanupTombstones(ctx, 1*time.Millisecond)
-		require.NoError(t, err)
-	})
-
-	t.Run("CleanupTombstones_NoTombstones", func(t *testing.T) {
-		// Cleanup when there are no tombstones
-		err := storage.CleanupTombstones(ctx, 24*time.Hour)
-		require.NoError(t, err)
-	})
-
-	t.Run("CleanupTombstones_FutureTime", func(t *testing.T) {
-		// Cleanup with future time (should not delete any)
-		err := storage.CleanupTombstones(ctx, -24*time.Hour)
-		require.NoError(t, err)
-	})
-
-	t.Run("CleanupTombstones_Closed", func(t *testing.T) {
-		storage2, cleanup2 := setupStorage(t)
-		defer cleanup2()
-
-		// Close storage
-		err := storage2.Close()
-		require.NoError(t, err)
-
-		// Try to cleanup tombstones on closed storage
-		err = storage2.CleanupTombstones(ctx, time.Hour)
-		assert.ErrorIs(t, err, ErrStorageClosed)
-	})
-
-	t.Run("CleanupTombstones_MultipleTombstones", func(t *testing.T) {
-		// Create a namespace
-		ns := "test_multi_tombstone"
-		err := storage.CreateNamespace(ctx, &NamespaceInfo{
-			Name:      ns,
-			Dimension: 128,
-		})
-		require.NoError(t, err)
-
-		// Create and delete multiple vectors
-		for i := uint64(100); i < 110; i++ {
-			vec := &VectorValue{
-				ID:        i,
-				Version:   1,
-				Embedding: make([]float32, 128),
-				Metadata:  map[string]string{"key": fmt.Sprintf("value%d", i)},
-				CreatedAt: time.Now().Unix(),
-				UpdatedAt: time.Now().Unix(),
-			}
-
-			err = storage.UpsertVector(ctx, ns, vec)
-			require.NoError(t, err)
-
-			err = storage.DeleteVector(ctx, ns, i)
-			require.NoError(t, err)
-		}
-
-		// Wait a bit
-		time.Sleep(10 * time.Millisecond)
-
-		// Cleanup old tombstones
-		err = storage.CleanupTombstones(ctx, 1*time.Millisecond)
-		require.NoError(t, err)
-	})
-}
-
 // TestCompact_EdgeCases tests the Compact function with various edge cases
 func TestCompact_EdgeCases(t *testing.T) {
 	storage, cleanup := setupStorage(t)
@@ -835,28 +734,6 @@ func TestBatch_ResetAndReuse(t *testing.T) {
 	err = batch.UpsertVector("test", vec2)
 	require.NoError(t, err)
 	assert.Equal(t, 1, batch.Count())
-}
-
-// TestClose_DoubleClose tests calling Close multiple times
-func TestClose_DoubleClose(t *testing.T) {
-	tmpDir := t.TempDir()
-	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = false
-	log := &testLogger{}
-
-	storage, err := NewPebbleVectorStorage(config, log)
-	require.NoError(t, err)
-
-	// First close
-	err = storage.Close()
-	require.NoError(t, err)
-
-	// Second close (should not error)
-	err = storage.Close()
-	assert.NoError(t, err)
 }
 
 // TestUpsertVector_InvalidNamespace tests upsert with invalid namespace

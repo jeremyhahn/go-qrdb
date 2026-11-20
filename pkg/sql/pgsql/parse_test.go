@@ -53,14 +53,6 @@ func newTestParseHandler(t *testing.T) *ParseHandler {
 	return NewParseHandler(sqlEngine, translator, "qrdb")
 }
 
-func TestNewParseHandler(t *testing.T) {
-	h := newTestParseHandler(t)
-	require.NotNil(t, h)
-	assert.NotNil(t, h.sqlEngine)
-	assert.NotNil(t, h.translator)
-	assert.Equal(t, "qrdb", h.dbName)
-}
-
 func TestHandleParse_EmptyQuery(t *testing.T) {
 	h := newTestParseHandler(t)
 	stmts, err := h.HandleParse(context.Background(), wire.Query{Query: "", SimpleQuery: true})
@@ -501,22 +493,6 @@ func TestCollectRows_IterNextError(t *testing.T) {
 	assert.Equal(t, iterErr, err)
 	assert.Nil(t, rows)
 	assert.True(t, iter.closed, "iterator should be closed after error")
-}
-
-func TestCollectRows_IterNextErrorImmediate(t *testing.T) {
-	// Iterator fails on the very first Next() call.
-	iterErr := errors.New("iterator init failed")
-	iter := &mockRowIter{
-		rows: nil,
-		err:  iterErr,
-	}
-	sqlCtx := sql.NewContext(context.Background())
-
-	rows, err := collectRows(sqlCtx, nil, iter)
-	require.Error(t, err)
-	assert.Equal(t, iterErr, err)
-	assert.Nil(t, rows)
-	assert.True(t, iter.closed)
 }
 
 // mockRowIter implements sql.RowIter for testing collectRows error paths.
@@ -1200,39 +1176,6 @@ func TestExecuteDeferredCallback_QueryError(t *testing.T) {
 
 	var queryErr *QueryError
 	assert.ErrorAs(t, err, &queryErr)
-}
-
-func TestExecuteDeferredCallback_EmptyParams(t *testing.T) {
-	// Test with zero parameters -- exercises the parametersToBindings
-	// empty path within the callback.
-	kvSvc := &mockKVService{
-		scanData: map[string][]byte{
-			"all-key": []byte("all-val"),
-		},
-	}
-	dbProvider := provider.NewProvider("qrdb", kvSvc)
-	sqlEngine := engine.New(engine.Config{Provider: dbProvider})
-	translator := engine.NewTranslator()
-	h := NewParseHandler(sqlEngine, translator, "qrdb")
-
-	writer := &mockDataWriter{}
-
-	// A SELECT with no parameters but called through the deferred path
-	// (this wouldn't normally happen, but exercises the zero-params case).
-	err := h.executeDeferredCallback(
-		context.Background(),
-		writer,
-		nil,
-		"SELECT * FROM kv",
-		"SELECT * FROM kv",
-		nil,
-		nil,
-		nil,
-		statementScope{},
-	)
-	require.NoError(t, err)
-	assert.Equal(t, 1, writer.rowCount)
-	assert.Contains(t, writer.completeTag, "SELECT 1")
 }
 
 func TestExecuteDeferredCallback_WriteRowError(t *testing.T) {

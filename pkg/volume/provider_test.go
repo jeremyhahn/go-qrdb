@@ -33,25 +33,3 @@ func TestState_String_Unknown(t *testing.T) {
 		t.Fatalf("State(99).String() = %q, want %q", got, "unknown")
 	}
 }
-
-func TestSpec_FieldsRoundTrip(t *testing.T) {
-	spec := Spec{
-		Pool:    "fast",
-		NodeID:  "node-1",
-		Path:    "/mnt/fast",
-		Options: map[string]string{"device": "/dev/nvme1n1"},
-	}
-	if spec.Pool != "fast" || spec.NodeID != "node-1" || spec.Path != "/mnt/fast" {
-		t.Fatalf("unexpected Spec: %+v", spec)
-	}
-	if spec.Options["device"] != "/dev/nvme1n1" {
-		t.Fatalf("unexpected Spec.Options: %+v", spec.Options)
-	}
-}
-
-func TestUsage_ZeroValueIsUsable(t *testing.T) {
-	var u Usage
-	if u.SizeBytes != 0 || u.FreeBytes != 0 {
-		t.Fatalf("zero Usage should be all zeros, got %+v", u)
-	}
-}

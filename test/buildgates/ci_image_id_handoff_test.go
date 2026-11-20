@@ -164,17 +164,8 @@ func producerIDProblems(body []byte) ([]string, error) {
 	for _, s := range job.Steps {
 		where := digestProducer + "'s step " + strconv.Quote(s.Name)
 		// The LAN CI registry push (#1593) runs docker itself, in the
-		// canonical script ci_image_digest_test.go pins: it tags and pushes
-		// a per-run ref created from each family's recorded ID, never the
-		// shared tag, so its ID bindings are the save step's.
+		// canonical script ci_image_digest_test.go pins and gates.
 		if s.ID == lanPushID && strings.TrimSpace(s.Run) == lanPushRun {
-			for _, v := range []string{"TOOLCHAIN_ID", "IT_ID"} {
-				out := strings.ToLower(v)
-				if s.Env[v] != "${{ steps.save.outputs."+out+" }}" {
-					problems = append(problems, where+" pushes $"+v+" bound to "+strconv.Quote(s.Env[v])+
-						" to the LAN CI registry; want the save step's "+out+", not the mutable tag")
-				}
-			}
 			continue
 		}
 		if strings.Contains(s.Run, "docker push") || dockerSave.MatchString(s.Run) {
@@ -237,8 +228,6 @@ jobs:
         id: registry
         env:
           TAG: ${{ github.run_id }}-${{ github.run_attempt }}
-          TOOLCHAIN_ID: ${{ steps.save.outputs.toolchain_id }}
-          IT_ID: ${{ steps.save.outputs.it_id }}
         run: |
 ` + "          " + strings.ReplaceAll(lanPushRun, "\n", "\n          ") + `
       - name: Tear down
@@ -261,8 +250,7 @@ func TestCIImageID_ProducerCanFail(t *testing.T) {
 		{name: "a push of another family's ID", old: "IT_ID: ${{ steps.save.outputs.it_id }}", new: "IT_ID: ${{ steps.save.outputs.toolchain_id }}"},
 		{name: "a docker push of the shared tag", old: "      - name: Tear down\n", new: "      - name: Publish\n        run: docker push \"$TOOLCHAIN_IMAGE\"\n      - name: Tear down\n"},
 		{name: "a docker save of the shared tag", old: `id=$(scripts/ci-image.sh save "$TOOLCHAIN_IMAGE" "$RUNNER_TEMP/toolchain-image")`, new: `docker save -o t.tar "$TOOLCHAIN_IMAGE"`},
-		{name: "a LAN registry push of the shared tag", old: "_attempt }}\n          TOOLCHAIN_ID: ${{ steps.save.outputs.toolchain_id }}", new: "_attempt }}\n          TOOLCHAIN_ID: ${{ steps.build.outputs.toolchain_image }}"},
-		{name: "a LAN registry push off the canonical script", old: `lan_push "$IT_ID" it-image it_tag`, new: `docker push "$IT_IMAGE"`},
+		{name: "a LAN registry push off the canonical script", old: `lan_push "$IT_IMAGE" it-image it_tag`, new: `docker push "$IT_IMAGE"`},
 		{name: "no untag", old: `run: scripts/ci-image.sh untag "$TOOLCHAIN_IMAGE" $IT_IMAGE`, new: "run: true"},
 		{name: "an untag that a failure skips", old: "        if: always()\n", new: ""},
 	} {

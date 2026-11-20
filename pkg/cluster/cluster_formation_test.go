@@ -44,19 +44,6 @@ func TestQuorumSize(t *testing.T) {
 	}
 }
 
-func TestHasQuorum_True(t *testing.T) {
-	peers := []discovery.Peer{
-		{NodeID: 1, Address: "10.0.0.1:5000"},
-		{NodeID: 2, Address: "10.0.0.2:5000"},
-		{NodeID: 3, Address: "10.0.0.3:5000"},
-	}
-
-	// 3 peers for minPeers=3 => quorum=2 => 3 >= 2 => true
-	if !HasQuorum(peers, 3) {
-		t.Error("HasQuorum should be true with 3 peers for minPeers=3")
-	}
-}
-
 func TestHasQuorum_False(t *testing.T) {
 	peers := []discovery.Peer{
 		{NodeID: 1, Address: "10.0.0.1:5000"},
@@ -234,31 +221,5 @@ func BenchmarkBuildMemberMap(b *testing.B) {
 	}
 	for b.Loop() {
 		_ = BuildMemberMap(peers)
-	}
-}
-
-func TestDeterministicLeader_AlreadySorted(t *testing.T) {
-	peers := []discovery.Peer{
-		{NodeID: 1, Address: "10.0.0.1:5000"},
-		{NodeID: 2, Address: "10.0.0.2:5000"},
-		{NodeID: 3, Address: "10.0.0.3:5000"},
-	}
-
-	leader := DeterministicLeader(peers)
-	if leader.NodeID != 1 {
-		t.Errorf("DeterministicLeader = NodeID %d, want 1", leader.NodeID)
-	}
-}
-
-func TestDeterministicLeader_ReverseSorted(t *testing.T) {
-	peers := []discovery.Peer{
-		{NodeID: 100, Address: "10.0.0.100:5000"},
-		{NodeID: 50, Address: "10.0.0.50:5000"},
-		{NodeID: 10, Address: "10.0.0.10:5000"},
-	}
-
-	leader := DeterministicLeader(peers)
-	if leader.NodeID != 10 {
-		t.Errorf("DeterministicLeader = NodeID %d, want 10", leader.NodeID)
 	}
 }

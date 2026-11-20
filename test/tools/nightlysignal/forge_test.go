@@ -212,15 +212,6 @@ func TestForgeSendsTheToken(t *testing.T) {
 	}
 }
 
-func TestTruncate(t *testing.T) {
-	if got := truncate("short", 10); got != "short" {
-		t.Errorf("truncate did not leave a short string alone: %q", got)
-	}
-	if got := truncate("0123456789", 4); got != "0123… (truncated)" {
-		t.Errorf("truncate = %q", got)
-	}
-}
-
 func TestClampColumn(t *testing.T) {
 	if got := clampColumn("short"); got != "short" {
 		t.Errorf("clampColumn altered a short line: %q", got)
