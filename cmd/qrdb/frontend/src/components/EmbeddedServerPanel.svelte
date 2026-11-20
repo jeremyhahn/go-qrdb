@@ -29,11 +29,19 @@
   /**
    * The connected embedded profile, if any. The panel follows the profile
    * connection manager so a server started from a profile (or by Restore)
-   * is registered there and shows as running.
+   * is registered there and shows as running. The connection manager starts
+   * the embedded process before it probes the barrier, so a live server can
+   * be sealed or awaiting init: those count as running too, and Stop
+   * disconnects (stops) them.
    */
+  const LIVE_EMBEDDED_STATUSES: ReadonlySet<string> = new Set([
+    "connected",
+    "sealed",
+    "needs-init",
+  ]);
   let runningProfileId: string | null = $derived(
     [...connManagerStore.states.values()].find(
-      (s) => s.isEmbedded && s.status === "connected",
+      (s) => s.isEmbedded && LIVE_EMBEDDED_STATUSES.has(s.status),
     )?.profileId ?? null,
   );
   let running: boolean = $derived(runningProfileId !== null);

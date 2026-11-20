@@ -25,6 +25,8 @@ import {
   expect,
   defaultMockState,
   injectError,
+  secondLaunchEmbeddedState,
+  updateMockState,
 } from "./fixtures/wails-mock.ts";
 import { waitForConnectionManager } from "./fixtures/embedded-wizard-steps.ts";
 import type { Page } from "@playwright/test";
@@ -132,5 +134,33 @@ test.describe("Embedded server panel - saved config", () => {
       "embedded: stop failed",
     );
     await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running");
+  });
+});
+
+test.describe("Embedded server panel - sealed embedded server", () => {
+  test.use({ mockState: { ...secondLaunchEmbeddedState } });
+
+  test("a live sealed embedded server shows running and Stop disconnects it", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("aside").getByTitle("Add server").first().click();
+    await expect(panel(page)).toBeVisible({ timeout: STEP_TIMEOUT });
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running", {
+      timeout: STEP_TIMEOUT,
+    });
+    await panel(page).getByRole("button", { name: "Stop" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Stopped");
+
+    // The connection manager starts the embedded process before probing the
+    // barrier: a restarted server that comes up sealed is live, not stopped.
+    await updateMockState(page, {
+      sealStatus: { ...secondLaunchEmbeddedState.sealStatus, sealed: true },
+    });
+    await panel(page).getByRole("button", { name: "Restore saved config" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running");
+    await expect(panel(page).getByRole("button", { name: "Stop" })).toBeEnabled();
+
+    await panel(page).getByRole("button", { name: "Stop" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Stopped");
+    await expect(panel(page).getByTestId("embedded-error")).toHaveCount(0);
   });
 });

@@ -24,7 +24,7 @@
   import ToastContainer from "./components/ToastContainer.svelte";
   import { showToast } from "./stores/toast.svelte.ts";
   import { initTheme } from "./stores/theme.svelte.ts";
-  import { loadProfiles } from "./stores/connection-manager.svelte.ts";
+  import { loadProfiles, webStartupTarget } from "./stores/connection-manager.svelte.ts";
 
   // ---------------------------------------------------------------------------
   // App state machine
@@ -83,7 +83,9 @@
       // loading profiles so that the connection state probe in loadProfiles
       // can reach the server.
       if (!isDesktop()) {
-        const origin = window.location.origin;
+        // The saved active profile's server (page origin for the built-in
+        // profile): the label and the REST target never disagree on reload.
+        const origin = webStartupTarget();
         console.debug("[App] initialize: connecting REST client to", origin);
         await sdk.connection.connect(origin);
         console.debug("[App] initialize: REST client connected");
