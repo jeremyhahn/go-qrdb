@@ -447,8 +447,9 @@ export class WailsClient implements Client {
      * @inheritdoc
      *
      * The scoped client shares this client's bindings and passes the
-     * database name to the MVCC bindings, which scope the Go SDK client with
-     * DatabaseScoped. `system` and the empty string name the connection's
+     * database name to every binding that reads or writes the KV keyspace
+     * (KV, MVCC, lease, transaction, batch, watch and lock), which scope the
+     * Go SDK client with DatabaseScoped. `system` and the empty string name the connection's
      * default database, as on the REST client.
      */
     databaseScoped(name: string): Client {
@@ -461,7 +462,7 @@ export class WailsClient implements Client {
         return scoped;
     }
 
-    /** The database MVCC calls are scoped to; empty for the default. */
+    /** The database KV-keyspace calls are scoped to; empty for the default. */
     private activeDatabase = '';
 
     // -----------------------------------------------------------------------
@@ -675,6 +676,7 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get transaction(): TransactionClient {
         const b = wrapBindings(getBindings().main.TransactionBinding);
+        const database = this.activeDatabase;
         return {
             execute: async (req: TransactionRequest): Promise<TransactionResponse> => {
                 // TransactionBinding.Execute returns
@@ -682,7 +684,7 @@ export class WailsClient implements Client {
                 // op results carry base64-encoded MVCCKeyValue key/value
                 // over Wails IPC, same as the REST wire. Decode to
                 // plaintext for consistency.
-                const resp = await b.Execute(toSnake(req)) as TransactionResponse;
+                const resp = await b.Execute(database, toSnake(req)) as TransactionResponse;
                 return { ...resp, responses: decodeOpResponses(resp.responses) };
             },
         };
@@ -695,17 +697,18 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get batch(): BatchClient {
         const b = wrapBindings(getBindings().main.BatchBinding);
+        const database = this.activeDatabase;
         return {
             execute: async (ops: readonly Op[]): Promise<BatchResponse> => {
                 // BatchBinding.Execute returns *transport.BatchResponse
                 // unconverted, so Get/Range op results carry base64-encoded
                 // MVCCKeyValue key/value over Wails IPC, same as the REST
                 // wire. Decode to plaintext for consistency.
-                const resp = await b.Execute(toSnake(ops)) as BatchResponse;
+                const resp = await b.Execute(database, toSnake(ops)) as BatchResponse;
                 return { ...resp, responses: decodeOpResponses(resp.responses) };
             },
             importFile: async (filePath: string, opts: ImportOptions): Promise<ImportResult> => {
-                return b.ImportFile(filePath, toSnake(opts)) as Promise<ImportResult>;
+                return b.ImportFile(database, filePath, toSnake(opts)) as Promise<ImportResult>;
             },
             availableCodecs: async (): Promise<readonly string[]> => {
                 return b.AvailableCodecs() as Promise<readonly string[]>;
@@ -749,8 +752,8 @@ export class WailsClient implements Client {
 
         // Invoke the Go binding to start the watch. It returns a watch ID.
         const watchId = isPrefix
-            ? await b.WatchPrefix(keyOrPrefix, toSnake(opts)) as number
-            : await b.Watch(keyOrPrefix, toSnake(opts)) as number;
+            ? await b.WatchPrefix(this.activeDatabase, keyOrPrefix, toSnake(opts)) as number
+            : await b.Watch(this.activeDatabase, keyOrPrefix, toSnake(opts)) as number;
 
         // Subscribe to the Wails runtime event bus for this watch ID.
         // Go emits events via wailsruntime.EventsEmit(ctx, eventName, data)
@@ -835,25 +838,26 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get lock(): LockClient {
         const b = wrapBindings(getBindings().main.LockBinding);
+        const database = this.activeDatabase;
         return {
             acquire: async (req: LockAcquireRequest): Promise<LockInfo> => {
-                return b.Acquire(toSnake(req)) as Promise<LockInfo>;
+                return b.Acquire(database, toSnake(req)) as Promise<LockInfo>;
             },
             tryLock: async (req: LockAcquireRequest): Promise<LockInfo> => {
-                return b.TryLock(toSnake(req)) as Promise<LockInfo>;
+                return b.TryLock(database, toSnake(req)) as Promise<LockInfo>;
             },
             release: async (req: LockReleaseRequest): Promise<void> => {
-                await b.Release(toSnake(req));
+                await b.Release(database, toSnake(req));
             },
             extend: async (req: LockExtendRequest): Promise<LockInfo> => {
-                return b.Extend(toSnake(req)) as Promise<LockInfo>;
+                return b.Extend(database, toSnake(req)) as Promise<LockInfo>;
             },
             status: async (key: string): Promise<LockInfo | null> => {
-                const result = await b.Status(key);
+                const result = await b.Status(database, key);
                 return result as LockInfo | null;
             },
             list: async (prefix?: string): Promise<LockListResponse> => {
-                return b.List(prefix ?? '') as Promise<LockListResponse>;
+                return b.List(database, prefix ?? '') as Promise<LockListResponse>;
             },
         };
     }

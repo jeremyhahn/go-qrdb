@@ -147,3 +147,141 @@ describe('WailsClient databaseScoped KV and lease', () => {
         expect(stores.get('')?.has('k') ?? false).toBe(false);
     });
 });
+
+/**
+ * Cross-tab contract: DatabaseWorkspace hands one databaseScoped() client to
+ * every data tab. The transaction, batch, watch and lock bindings take the
+ * database first, as the KV, MVCC and lease bindings do, so every tab of a
+ * named-database workspace reads and writes that database and never a
+ * same-named key in the default database.
+ */
+describe('WailsClient databaseScoped data-plane operations stay in the database', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    /** Adds the transaction, batch, watch and lock bindings over the same per-database stores. */
+    function installDataPlaneBindings(stores: Map<string, Map<string, string>>): {
+        txExecute: ReturnType<typeof vi.fn<BindingFn>>;
+        batchExecute: ReturnType<typeof vi.fn<BindingFn>>;
+        importFile: ReturnType<typeof vi.fn<BindingFn>>;
+        watch: ReturnType<typeof vi.fn<BindingFn>>;
+        watchPrefix: ReturnType<typeof vi.fn<BindingFn>>;
+        lock: ReturnType<typeof vi.fn<BindingFn>>;
+    } {
+        const storeOf = (database: unknown): Map<string, string> => {
+            const name = database as string;
+            if (!stores.has(name)) stores.set(name, new Map());
+            return stores.get(name) as Map<string, string>;
+        };
+        // Both apply put ops to the named database, as the Go bindings do.
+        const applyPuts = (database: unknown, ops: unknown): void => {
+            for (const op of ops as { type: number; key: string; value?: string }[]) {
+                if (op.type === 0) storeOf(database).set(op.key, op.value ?? '');
+            }
+        };
+        const txExecute = vi.fn<BindingFn>(async (database, req) => {
+            applyPuts(database, (req as { success_ops: unknown }).success_ops);
+            return { succeeded: true, responses: [] };
+        });
+        const batchExecute = vi.fn<BindingFn>(async (database, ops) => {
+            applyPuts(database, ops);
+            return { responses: [] };
+        });
+        const importFile = vi.fn<BindingFn>(async () => ({ total: 0, succeeded: 0, failed: 0, errors: [] }));
+        let nextWatchId = 0;
+        const watch = vi.fn<BindingFn>(async () => ++nextWatchId);
+        const watchPrefix = vi.fn<BindingFn>(async () => ++nextWatchId);
+        const lock = vi.fn<BindingFn>(async () => ({ locks: [] }));
+        const main = (globalThis as unknown as { window: { go: { main: Record<string, unknown> } } }).window.go
+            .main;
+        main.TransactionBinding = { Execute: txExecute };
+        main.BatchBinding = { Execute: batchExecute, ImportFile: importFile };
+        main.WatchBinding = { Watch: watch, WatchPrefix: watchPrefix, CancelWatch: vi.fn<BindingFn>(async () => null) };
+        main.LockBinding = {
+            Acquire: lock,
+            TryLock: lock,
+            Release: lock,
+            Extend: lock,
+            Status: lock,
+            List: lock,
+        };
+        (globalThis as unknown as { window: { runtime: unknown } }).window.runtime = {
+            EventsOnMultiple: () => () => undefined,
+        };
+        return { txExecute, batchExecute, importFile, watch, watchPrefix, lock };
+    }
+
+    const putK = { type: 0 as const, key: 'k', value: 'from-tx' };
+
+    it('a transaction or batch in a named database writes that database, not the default', async () => {
+        const { stores } = installScopedBindings();
+        const { txExecute, batchExecute } = installDataPlaneBindings(stores);
+        const base = new WailsClient();
+        const orders = base.databaseScoped('orders');
+
+        // The default database has its own k; the Data tab of orders reads k.
+        await base.kv.put('k', 'default');
+
+        await orders.transaction.execute({ compares: [], successOps: [putK], failureOps: [] });
+        expect(txExecute.mock.calls[0]?.[0]).toBe('orders');
+        expect(await orders.kv.get('k')).toBe('from-tx');
+
+        await orders.batch.execute([{ type: 0, key: 'k', value: 'from-batch' }]);
+        expect(batchExecute.mock.calls[0]?.[0]).toBe('orders');
+        expect(await orders.kv.get('k')).toBe('from-batch');
+
+        expect(stores.get('')?.get('k')).toBe('default');
+        expect(await base.kv.get('k')).toBe('default');
+    });
+
+    it('import, watch and lock calls carry the named database', async () => {
+        const { stores } = installScopedBindings();
+        const { importFile, watch, watchPrefix, lock } = installDataPlaneBindings(stores);
+        const orders = new WailsClient().databaseScoped('orders');
+
+        await orders.batch.importFile('/data.csv', { format: 'csv', key_field: 'id', value_mode: 'row' });
+        await orders.watch.watch('k', {});
+        await orders.watch.watchPrefix('p/', {});
+        await orders.lock.acquire({ key: 'k', ttl: 1 });
+        await orders.lock.tryLock({ key: 'k', ttl: 1 });
+        await orders.lock.release({ key: 'k', fencing_token: 1 });
+        await orders.lock.extend({ key: 'k', fencing_token: 1 });
+        await orders.lock.status('k');
+        await orders.lock.list('p/');
+
+        expect(importFile.mock.calls[0]?.slice(0, 2)).toEqual(['orders', '/data.csv']);
+        expect(watch.mock.calls[0]?.slice(0, 2)).toEqual(['orders', 'k']);
+        expect(watchPrefix.mock.calls[0]?.slice(0, 2)).toEqual(['orders', 'p/']);
+        expect(lock).toHaveBeenCalledTimes(6);
+        for (const call of lock.mock.calls) {
+            expect(call[0]).toBe('orders');
+        }
+        expect(lock.mock.calls[4]?.[1]).toBe('k');
+        expect(lock.mock.calls[5]?.[1]).toBe('p/');
+    });
+
+    it('the default database (and "system") passes the empty database name', async () => {
+        const { stores } = installScopedBindings();
+        const { txExecute, batchExecute, watch, lock } = installDataPlaneBindings(stores);
+        const base = new WailsClient();
+
+        await base.databaseScoped('system').transaction.execute({
+            compares: [],
+            successOps: [putK],
+            failureOps: [],
+        });
+        await base.batch.execute([putK]);
+        await base.watch.watch('k', {});
+        await base.databaseScoped('system').lock.status('k');
+
+        expect(txExecute.mock.calls[0]?.[0]).toBe('');
+        expect(batchExecute.mock.calls[0]?.[0]).toBe('');
+        expect(watch.mock.calls[0]?.[0]).toBe('');
+        expect(lock.mock.calls[0]?.slice(0, 2)).toEqual(['', 'k']);
+        expect(stores.get('')?.get('k')).toBe('from-tx');
+    });
+});

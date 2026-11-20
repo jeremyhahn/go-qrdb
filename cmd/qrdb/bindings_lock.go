@@ -22,7 +22,8 @@ import (
 )
 
 // LockBinding exposes distributed lock management with fencing tokens to
-// the Wails frontend.
+// the Wails frontend. Every lock call takes the database it runs in first;
+// empty names the connection's default database.
 type LockBinding struct {
 	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
@@ -35,9 +36,9 @@ func NewLockBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *LockBindi
 
 // Acquire acquires a distributed lock, blocking until it becomes available
 // or the request is cancelled.
-func (b *LockBinding) Acquire(req *transport.LockAcquireRequest) (*transport.LockInfo, error) {
+func (b *LockBinding) Acquire(database string, req *transport.LockAcquireRequest) (*transport.LockInfo, error) {
 	b.logger.Debug("Acquire called", "key", req.Key)
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Acquire failed", "error", err)
 		return nil, err
@@ -53,9 +54,9 @@ func (b *LockBinding) Acquire(req *transport.LockAcquireRequest) (*transport.Loc
 
 // TryLock attempts to acquire a lock without blocking, returning an error
 // immediately when the lock is held by another owner.
-func (b *LockBinding) TryLock(req *transport.LockAcquireRequest) (*transport.LockInfo, error) {
+func (b *LockBinding) TryLock(database string, req *transport.LockAcquireRequest) (*transport.LockInfo, error) {
 	b.logger.Debug("TryLock called", "key", req.Key)
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("TryLock failed", "error", err)
 		return nil, err
@@ -70,9 +71,9 @@ func (b *LockBinding) TryLock(req *transport.LockAcquireRequest) (*transport.Loc
 }
 
 // Release releases a held lock identified by key and fencing token.
-func (b *LockBinding) Release(req *transport.LockReleaseRequest) error {
+func (b *LockBinding) Release(database string, req *transport.LockReleaseRequest) error {
 	b.logger.Debug("Release called", "key", req.Key)
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Release failed", "error", err)
 		return err
@@ -86,9 +87,9 @@ func (b *LockBinding) Release(req *transport.LockReleaseRequest) error {
 }
 
 // Extend refreshes the TTL of an existing lock via lease keepalive.
-func (b *LockBinding) Extend(req *transport.LockExtendRequest) (*transport.LockInfo, error) {
+func (b *LockBinding) Extend(database string, req *transport.LockExtendRequest) (*transport.LockInfo, error) {
 	b.logger.Debug("Extend called", "key", req.Key)
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Extend failed", "error", err)
 		return nil, err
@@ -103,9 +104,9 @@ func (b *LockBinding) Extend(req *transport.LockExtendRequest) (*transport.LockI
 }
 
 // Status returns the current lock state for key, or nil when not locked.
-func (b *LockBinding) Status(key string) (*transport.LockInfo, error) {
+func (b *LockBinding) Status(database string, key string) (*transport.LockInfo, error) {
 	b.logger.Debug("Status called", "key", key)
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Status failed", "error", err)
 		return nil, err
@@ -120,9 +121,9 @@ func (b *LockBinding) Status(key string) (*transport.LockInfo, error) {
 }
 
 // List returns all active locks whose keys start with the given prefix.
-func (b *LockBinding) List(prefix string) (*transport.LockListResponse, error) {
+func (b *LockBinding) List(database string, prefix string) (*transport.LockListResponse, error) {
 	b.logger.Debug("List called", "prefix", prefix)
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("List failed", "error", err)
 		return nil, err

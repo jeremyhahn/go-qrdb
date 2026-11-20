@@ -1019,7 +1019,7 @@ func TestTransactionBinding_Execute_Success(t *testing.T) {
 		SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte("tx-key"), Value: []byte("tx-val")}},
 		FailureOps: []transport.Op{},
 	}
-	resp, err := b.Execute(req)
+	resp, err := b.Execute("", req)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1040,7 +1040,7 @@ func TestTransactionBinding_Execute_NotConnected(t *testing.T) {
 		SuccessOps: []transport.Op{},
 		FailureOps: []transport.Op{},
 	}
-	_, err := b.Execute(req)
+	_, err := b.Execute("", req)
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -1067,7 +1067,7 @@ func TestTransactionBinding_Execute_WithCompares(t *testing.T) {
 		SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte("s-key"), Value: []byte("s-val")}},
 		FailureOps: []transport.Op{{Type: transport.OpDelete, Key: []byte("f-key")}},
 	}
-	resp, err := b.Execute(req)
+	resp, err := b.Execute("", req)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1094,7 +1094,7 @@ func TestBatchBinding_Execute_Success(t *testing.T) {
 		{Type: transport.OpPut, Key: "b-key1", Value: "b-val1"},
 		{Type: transport.OpPut, Key: "b-key2", Value: "b-val2"},
 	}
-	resp, err := b.Execute(ops)
+	resp, err := b.Execute("", ops)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1113,7 +1113,7 @@ func TestBatchBinding_Execute_NotConnected(t *testing.T) {
 	ops := []WailsOp{
 		{Type: transport.OpPut, Key: "k", Value: "v"},
 	}
-	_, err := b.Execute(ops)
+	_, err := b.Execute("", ops)
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -1133,7 +1133,7 @@ func TestBatchBinding_Execute_EmptyOps(t *testing.T) {
 	conn := newTestConnectionBinding(t, mvccSvc, newMockAdminService(), opts...)
 	b := NewBatchBinding(testLogger(t), conn)
 
-	resp, err := b.Execute([]WailsOp{})
+	resp, err := b.Execute("", []WailsOp{})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1314,7 +1314,7 @@ func TestWatchBinding_Watch_Success(t *testing.T) {
 	conn := newTestConnectionBinding(t, newMockKVService(), newMockAdminService(), opts...)
 	b := NewWatchBindingWithEmitter(testLogger(t), conn, noopEmitter)
 
-	watchID, err := b.Watch("watched-key", transport.WatchOptions{})
+	watchID, err := b.Watch("", "watched-key", transport.WatchOptions{})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1327,7 +1327,7 @@ func TestWatchBinding_Watch_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewWatchBindingWithEmitter(testLogger(t), conn, noopEmitter)
 
-	_, err := b.Watch("key", transport.WatchOptions{})
+	_, err := b.Watch("", "key", transport.WatchOptions{})
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -1345,7 +1345,7 @@ func TestWatchBinding_WatchPrefix_Success(t *testing.T) {
 	conn := newTestConnectionBinding(t, newMockKVService(), newMockAdminService(), opts...)
 	b := NewWatchBindingWithEmitter(testLogger(t), conn, noopEmitter)
 
-	watchID, err := b.WatchPrefix("watched", transport.WatchOptions{})
+	watchID, err := b.WatchPrefix("", "watched", transport.WatchOptions{})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1358,7 +1358,7 @@ func TestWatchBinding_WatchPrefix_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewWatchBindingWithEmitter(testLogger(t), conn, noopEmitter)
 
-	_, err := b.WatchPrefix("prefix", transport.WatchOptions{})
+	_, err := b.WatchPrefix("", "prefix", transport.WatchOptions{})
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}

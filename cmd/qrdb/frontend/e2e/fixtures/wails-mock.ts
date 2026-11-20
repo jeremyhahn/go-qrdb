@@ -1388,9 +1388,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         BatchBinding: {
-          Execute: async (ops: { type: number | string; key: string; value?: string }[]) => {
+          Execute: async (database: string, ops: { type: number | string; key: string; value?: string }[]) => {
             maybeReject("BatchBinding.Execute");
-            useDatabase("");
+            useDatabase(database);
             const responses = ops.map((op: { type: number | string; key: string; value?: string }) => {
               // Handle both numeric (from SDK) and string op types
               const typeStr = typeof op.type === "number"
@@ -1413,7 +1413,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             });
             return { responses };
           },
-          ImportFile: async (_filePath: string, _opts: unknown) => {
+          ImportFile: async (_database: string, _filePath: string, _opts: unknown) => {
             maybeReject("BatchBinding.ImportFile");
             return { total: 3, succeeded: 3, failed: 0, errors: [] };
           },
@@ -2779,7 +2779,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         LockBinding: {
-          Acquire: async (req: { key: string; holder_id?: string; ttl: number; reentrant?: boolean }) => {
+          Acquire: async (_database: string, req: { key: string; holder_id?: string; ttl: number; reentrant?: boolean }) => {
             maybeReject("LockBinding.Acquire");
             const existing = lockStore.get(req.key);
             if (existing && !(req.reentrant && existing.reentrant && existing.holderId === req.holder_id)) {
@@ -2799,7 +2799,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             lockStore.set(req.key, info);
             return { ...info };
           },
-          TryLock: async (req: { key: string; holder_id?: string; ttl: number; reentrant?: boolean }) => {
+          TryLock: async (_database: string, req: { key: string; holder_id?: string; ttl: number; reentrant?: boolean }) => {
             maybeReject("LockBinding.TryLock");
             if (lockStore.has(req.key)) {
               throw new Error(`lock "${req.key}" is already held`);
@@ -2818,7 +2818,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             lockStore.set(req.key, info);
             return { ...info };
           },
-          Release: async (req: { key: string; fencing_token: number }) => {
+          Release: async (_database: string, req: { key: string; fencing_token: number }) => {
             maybeReject("LockBinding.Release");
             const existing = lockStore.get(req.key);
             if (!existing || existing.fencingToken !== req.fencing_token) {
@@ -2826,7 +2826,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             lockStore.delete(req.key);
           },
-          Extend: async (req: { key: string; fencing_token: number }) => {
+          Extend: async (_database: string, req: { key: string; fencing_token: number }) => {
             maybeReject("LockBinding.Extend");
             const existing = lockStore.get(req.key);
             if (!existing || existing.fencingToken !== req.fencing_token) {
@@ -2835,13 +2835,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             existing.acquiredAt = Math.floor(Date.now() / 1000);
             return { ...existing };
           },
-          Status: async (key: string) => {
+          Status: async (_database: string, key: string) => {
             maybeReject("LockBinding.Status");
             const existing = lockStore.get(key);
             if (!existing) throw new Error(`lock "${key}" not found`);
             return { ...existing };
           },
-          List: async (prefix?: string) => {
+          List: async (_database: string, prefix?: string) => {
             maybeReject("LockBinding.List");
             const all = [...lockStore.values()];
             const filtered = prefix ? all.filter((l) => l.key.startsWith(prefix)) : all;
