@@ -340,3 +340,82 @@ func TestAdmitReplica_ReleaseOnlyChangeReplacesTheView(t *testing.T) {
 		})
 	}
 }
+
+// releaseFaultKV fails the release record's delete, or its re-list after
+// the write, so recordRelease's store errors are observable.
+type releaseFaultKV struct {
+	*memKV
+	failDelete bool
+	failRelist bool
+	lists      atomic.Int32
+}
+
+func (k *releaseFaultKV) Delete(ctx context.Context, key string) error {
+	if k.failDelete {
+		return errors.New("delete refused")
+	}
+	return k.memKV.Delete(ctx, key)
+}
+
+func (k *releaseFaultKV) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	if k.lists.Add(1) > 1 && k.failRelist {
+		return nil, errors.New("list refused")
+	}
+	return k.memKV.ListStale(ctx, prefix)
+}
+
+func TestRecordRelease_StoreErrors(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	cases := []struct {
+		name   string
+		kv     func() *releaseFaultKV
+		wantOp string
+	}{
+		{
+			name: "stale own record delete fails",
+			kv: func() *releaseFaultKV {
+				kv := &releaseFaultKV{memKV: newMemKV(), failDelete: true}
+				_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+"1/0.59.0-alpha", []byte("n1:7000"))
+				require.NoError(t, err)
+				return kv
+			},
+			wantOp: "delete release",
+		},
+		{
+			name:   "re-list after the record fails",
+			kv:     func() *releaseFaultKV { return &releaseFaultKV{memKV: newMemKV(), failRelist: true} },
+			wantOp: "list releases",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGate(t, threeNodes())
+			var storeErr *StoreError
+			require.ErrorAs(t, g.recordRelease(context.Background(), tc.kv()), &storeErr)
+			assert.Equal(t, tc.wantOp, storeErr.Op)
+		})
+	}
+}
+
+func TestEnforceRelease_NilStoreIsAConfigError(t *testing.T) {
+	g := newGate(t, threeNodes())
+	var cfg *ConfigError
+	require.ErrorAs(t, g.EnforceRelease(context.Background(), nil), &cfg)
+	assert.Equal(t, "store", cfg.Field)
+}
+
+func TestParseReleases_SkipsMalformedKeys(t *testing.T) {
+	got := parseReleases([]string{
+		ReleasePrefix + "1/0.60.0-alpha",
+		ReleasePrefix + "x/0.60.0-alpha",
+		ReleasePrefix + "2",
+		ReleasePrefix + "3/",
+		"other/4/0.60.0-alpha",
+	})
+	assert.Equal(t, map[uint64][]string{1: {"0.60.0-alpha"}}, got)
+}
+
+func TestUnknownMemberReleaseError_NamesTheMember(t *testing.T) {
+	err := &UnknownMemberReleaseError{ReplicaID: 2, Address: "n2:7000"}
+	assert.Equal(t, "feature gate: release of system-shard member 2 at n2:7000 cannot be established", err.Error())
+}
