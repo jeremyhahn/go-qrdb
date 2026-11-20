@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -205,6 +207,79 @@ func TestReconcileTenantHomes_FinishesARemovalWhosePlacementWriteFailed(t *testi
 			t.Fatalf("observer admissions = %+v: the retired replica %d was readmitted", host.observerCalls, retired.ReplicaID)
 		}
 	}
+}
+
+// lockedTopology is a placement.Topology a test can change while a watch
+// goroutine reads it.
+type lockedTopology struct {
+	mu    sync.Mutex
+	nodes []placement.NodeLoad
+}
+
+func (l *lockedTopology) Nodes() []placement.NodeLoad {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.nodes
+}
+
+func (l *lockedTopology) set(nodes []placement.NodeLoad) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.nodes = nodes
+}
+
+// tickUntil drives the watch one tick at a time until cond holds.
+func tickUntil(t *testing.T, tick chan<- time.Time, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("roster watch never %s", what)
+		}
+		select {
+		case tick <- time.Now():
+		case <-time.After(time.Until(deadline)):
+		}
+	}
+}
+
+// TestWatchTenantHomes_FollowsAJoinWithoutDynamicMembership covers a node
+// that joins the committed roster with no membership manager running
+// (dynamic membership off, the default): the roster watch alone grows the
+// tenant home onto it, and sheds it again once it leaves.
+func TestWatchTenantHomes_FollowsAJoinWithoutDynamicMembership(t *testing.T) {
+	svc, store := newHomeDatabaseService(t, healthyNodes("n1", "n2", "n3"))
+	topo := &lockedTopology{nodes: healthyNodes("n1", "n2", "n3")}
+	sched, err := placement.NewScheduler(topo)
+	if err != nil {
+		t.Fatalf("placement.NewScheduler: %v", err)
+	}
+	svc.placementScheduler = sched
+	if _, err := svc.ProvisionTenantHome(context.Background(), "rt"); err != nil {
+		t.Fatalf("ProvisionTenantHome: %v", err)
+	}
+	withHomeView(t, svc, store, true)
+
+	tick := make(chan time.Time)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.WatchTenantHomes(ctx, tick)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	topo.set(healthyNodes("n1", "n2", "n3", "n4"))
+	tickUntil(t, tick, "grew the home onto the joined node", func() bool {
+		return homeReplicaOn(t, store, "n4:1") != nil
+	})
+	topo.set(healthyNodes("n1", "n2", "n3"))
+	tickUntil(t, tick, "shed the departed node from the home", func() bool {
+		return homeReplicaOn(t, store, "n4:1") == nil
+	})
 }
 
 // A home grown onto three more nodes sheds each as it retires, so the

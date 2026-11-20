@@ -815,7 +815,9 @@ The built home store differs from the design below in two ways:
 - **Nothing is migrated.** A tenant whose records predate its home store is
   re-created, not moved.
 - **The home group spans the cluster**, not a chosen serving set. A node that
-  joins later receives the home placement from the reconciler, and until its
+  joins later receives the home placement from the reconciler (every node's
+  roster watch reconciles the homes on a committed roster change, with or
+  without dynamic membership), and until its
   replica has caught up it refuses the tenant's requests as retryable
   unavailable (`lifecycle.TenantHomeCatchingUpError`) rather than serve a
   stale replica or proxy, so callers go to the other nodes.

@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -314,6 +316,54 @@ func (s *DatabaseService) ReconcileTenantHomes(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// TenantHomeWatchInterval is how often a node reads the committed cluster
+// roster to notice a join or departure its tenant homes must follow.
+const TenantHomeWatchInterval = 2 * time.Second
+
+// tenantHomeWatchResyncTicks reconciles every so many ticks even with an
+// unchanged roster: a reconcile a follower ran changes nothing, so the node
+// that later leads a home group still repairs it.
+const tenantHomeWatchResyncTicks = 30
+
+// tenantHomeWatchTimeout bounds one reconcile the roster watch runs.
+const tenantHomeWatchTimeout = 2 * time.Minute
+
+// WatchTenantHomes reconciles every tenant home whenever the committed
+// cluster roster changes: the system shard's Raft membership the placement
+// scheduler reads, whatever changed it (an explicit membership command with
+// dynamic membership off, or the dynamic membership manager). It reads the
+// roster on every tick, reconciles on its first read, on a change, after a
+// failed reconcile and every tenantHomeWatchResyncTicks ticks, and returns
+// when ctx ends.
+func (s *DatabaseService) WatchTenantHomes(ctx context.Context, tick <-chan time.Time) {
+	if s.placementScheduler == nil {
+		return
+	}
+	var last map[string]bool
+	settled, idle := false, 0
+	for {
+		roster := s.placementScheduler.KnownRaftAddrs()
+		if !settled || idle >= tenantHomeWatchResyncTicks || !maps.Equal(roster, last) {
+			rctx, cancel := context.WithTimeout(ctx, tenantHomeWatchTimeout)
+			err := s.ReconcileTenantHomes(rctx)
+			cancel()
+			settled, idle = err == nil, 0
+			last = roster
+			if err != nil && ctx.Err() == nil {
+				s.logger.Warn("tenant home reconcile after a roster change failed",
+					slog.Int("roster_size", len(roster)), slog.Any("error", err))
+			}
+		} else {
+			idle++
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick:
+		}
+	}
 }
 
 // RetireTenantHome implements tenant.HomeRetirer: it deletes tenantID's

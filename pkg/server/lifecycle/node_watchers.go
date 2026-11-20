@@ -17,6 +17,9 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // StartNodeWatchers starts every watcher a serving node runs for its whole
@@ -26,7 +29,9 @@ import (
 //     tenant's CA stops being cached and trusted promptly rather than aging
 //     out by TTL alone;
 //   - undone-tenant acknowledgement (startUndoneWatch), so a create of an
-//     undone id is not held until this node's next deleted-tenant reconcile.
+//     undone id is not held until this node's next deleted-tenant reconcile;
+//   - the tenant home roster watch (startTenantHomeWatch), so every tenant
+//     home group follows a node joining or leaving the committed roster.
 //
 // Call once, after BuildServices, with the node's long-lived background
 // context. n.Stop ends every watcher this starts and waits for it, before it
@@ -35,8 +40,34 @@ import (
 // errors are joined. Neither is fatal to the node: an undone id still clears
 // at the next reconcile-deleted-tenants pass, and Key B still ages out.
 func StartNodeWatchers(ctx context.Context, n *Node) error {
+	startTenantHomeWatch(n)
 	return errors.Join(
 		WatchCertProviderEvictions(ctx, n),
 		startUndoneWatch(ctx, n),
 	)
+}
+
+// tenantHomeWatcher is the database service's committed-roster watch
+// (service.DatabaseService.WatchTenantHomes).
+type tenantHomeWatcher interface {
+	WatchTenantHomes(ctx context.Context, tick <-chan time.Time)
+}
+
+// startTenantHomeWatch runs the tenant home roster watch for the node's
+// lifetime, whether or not dynamic Raft membership is enabled: a node added
+// or removed by an explicit membership change must join or leave every
+// tenant home too, not only one the dynamic membership manager admits.
+func startTenantHomeWatch(n *Node) {
+	if n == nil || n.Database == nil {
+		return
+	}
+	w, ok := n.Database.(tenantHomeWatcher)
+	if !ok {
+		return
+	}
+	n.work.start(func(ctx context.Context) {
+		t := time.NewTicker(service.TenantHomeWatchInterval)
+		defer t.Stop()
+		w.WatchTenantHomes(ctx, t.C)
+	})
 }

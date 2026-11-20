@@ -2058,7 +2058,11 @@ Measured against the contract above:
   `clusterkeys` receiver has no mode registered), client fan-out for unseal
   and rekey, per-node tenant bootstrap records and per-replica WAL keys.
 - **Late-joining nodes.** A node that joins after an isolated tenant was
-  created receives the home placement through the reconciler. Until its
+  created receives the home placement through the reconciler: every node
+  runs the tenant home roster watch (`DatabaseService.WatchTenantHomes`,
+  started by `lifecycle.StartNodeWatchers`), which reconciles each home on a
+  committed roster change whether or not dynamic membership is on, and on a
+  departure sheds the node's home replica while quorum holds. Until its
   replica has caught up (the shard's join window has closed) the node refuses
   the tenant's requests with `lifecycle.TenantHomeCatchingUpError`, a
   retryable unavailable, so callers go to the other nodes; it neither serves
