@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
 
@@ -60,23 +61,38 @@ func (n *Node) startFeatureGate(host leaderReporter, activations featuregate.Act
 	n.featureWG.Add(1)
 	go func() {
 		defer n.featureWG.Done()
+		// leaseless is set once the state machine is found to have no
+		// leases: the advertisement, and so Gate.Start, cannot run, but the
+		// release history needs no lease, so the restart release check and
+		// record still run on their own (as the daemon does).
+		leaseless := false
 		for ctx.Err() == nil {
 			if _, ok, err := host.LeaderID(shard.ShardKV); err == nil && ok {
 				// The attempt's deadline bounds the start's reads, which a
 				// leader not yet committed in its term drops unanswered.
 				actx, cancel := context.WithTimeout(ctx, server.StartupReadAttemptTimeout)
-				adv, err := client.StartFeatureGate(actx, gate, activations, cluster.WithAdvertiseSealProbe(n))
+				var adv *cluster.Advertiser
+				if !leaseless {
+					adv, err = client.StartFeatureGate(actx, gate, activations, cluster.WithAdvertiseSealProbe(n))
+					var unsupported *transport.CapabilityUnsupportedError
+					if errors.As(err, &unsupported) {
+						n.featureLogger().Warn("feature-gate self-advertisement unavailable on this state machine; "+
+							"enforcing the release history without it", slog.String("reason", unsupported.Message))
+						leaseless = true
+					}
+				}
+				if leaseless {
+					err = gate.EnforceRelease(actx, activations)
+				}
 				cancel()
 				if err == nil {
-					n.featureAdv.Store(adv)
+					if adv != nil {
+						n.featureAdv.Store(adv)
+					}
 					return
 				}
 				if featureGateRefused(err) {
-					logger := n.logger
-					if logger == nil {
-						logger = slog.Default()
-					}
-					logger.Error("feature gate: this binary cannot run in this cluster", slog.Any("error", err))
+					n.featureLogger().Error("feature gate: this binary cannot run in this cluster", slog.Any("error", err))
 					return
 				}
 			}
@@ -86,6 +102,14 @@ func (n *Node) startFeatureGate(host leaderReporter, activations featuregate.Act
 			}
 		}
 	}()
+}
+
+// featureLogger is the node's logger, or the default one.
+func (n *Node) featureLogger() *slog.Logger {
+	if n.logger == nil {
+		return slog.Default()
+	}
+	return n.logger
 }
 
 // featureGateRefused reports whether a feature gate start failed because
