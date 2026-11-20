@@ -10,6 +10,8 @@ import (
 
 	sm "github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
 
 // newCountTestVSM builds a VectorStateMachine over the mock vector storage
@@ -100,6 +102,74 @@ func TestVectorCount_TenantAtQuotaCanReUpsertStoredID(t *testing.T) {
 	require.Error(t, applyCountCmd(t, vsm, 5, &VectorCommand{Op: OpUpsertVector, ID: 3, Vector: []float32{1, 1}}),
 		"a new id past the quota is still refused")
 	require.Equal(t, uint64(2), storedCount(vsm))
+}
+
+// One log carries commands of both rules, as a rolling upgrade does: two
+// unmarked upserts of id 1 count two under the old rule though one vector is
+// stored. The first marked command rebases the count on the distinct stored
+// ids, so a marked insert of id 2 is admitted at MaxVectors=2, and deleting
+// both leaves an empty namespace counting zero.
+func TestVectorCount_RuleSwitchRebasesOnStoredIDs(t *testing.T) {
+	vsm := newCountTestVSM(t, 2)
+	require.NoError(t, applyCountCmdRule(t, vsm, 1, &VectorCommand{Op: OpUpsertVector, ID: 1, Vector: []float32{1, 0}}, false))
+	require.NoError(t, applyCountCmdRule(t, vsm, 2, &VectorCommand{Op: OpUpsertVector, ID: 1, Vector: []float32{0, 1}}, false))
+	require.Equal(t, uint64(2), storedCount(vsm), "the old rule counts every upsert")
+
+	require.NoError(t, applyCountCmdRule(t, vsm, 3, &VectorCommand{Op: OpUpsertVector, ID: 2, Vector: []float32{1, 1}}, true),
+		"a marked insert of a new id is admitted: one vector is stored, the quota is two")
+	require.Equal(t, uint64(2), storedCount(vsm))
+
+	require.NoError(t, applyCountCmdRule(t, vsm, 4, &VectorCommand{Op: OpDeleteVector, ID: 1}, true))
+	require.Equal(t, uint64(1), storedCount(vsm), "deleting id 1 leaves id 2")
+	require.NoError(t, applyCountCmdRule(t, vsm, 5, &VectorCommand{Op: OpDeleteVector, ID: 2}, true))
+	require.Equal(t, uint64(0), storedCount(vsm), "an empty namespace counts zero")
+}
+
+// A delayed unmarked command applied after the switch follows the stored
+// count rule too: the namespace never returns to the old rule.
+func TestVectorCount_UnmarkedAfterSwitchKeepsStoredRule(t *testing.T) {
+	vsm := newCountTestVSM(t, 0)
+	require.NoError(t, applyCountCmdRule(t, vsm, 1, &VectorCommand{Op: OpUpsertVector, ID: 1, Vector: []float32{1, 0}}, true))
+	require.NoError(t, applyCountCmdRule(t, vsm, 2, &VectorCommand{Op: OpUpsertVector, ID: 1, Vector: []float32{0, 1}}, false))
+	require.Equal(t, uint64(1), storedCount(vsm))
+	require.NoError(t, applyCountCmdRule(t, vsm, 3, &VectorCommand{Op: OpDeleteVector, ID: 7}, false))
+	require.Equal(t, uint64(1), storedCount(vsm), "a delete of a missing id removes nothing")
+}
+
+// pagedScanStore serves ScanNamespace as the stores do: ascending ids from
+// FromID, at most Limit of them.
+type pagedScanStore struct {
+	vector.Storage
+	ids []uint64
+}
+
+func (p *pagedScanStore) ScanNamespace(_ context.Context, _ string, opts *vector.ScanOptions) ([]*vector.VectorValue, error) {
+	var page []*vector.VectorValue
+	for _, id := range p.ids {
+		if id < opts.FromID {
+			continue
+		}
+		if opts.Limit > 0 && len(page) == opts.Limit {
+			break
+		}
+		page = append(page, &vector.VectorValue{ID: id})
+	}
+	return page, nil
+}
+
+func TestStoredVectorCount_PagesPastOneScan(t *testing.T) {
+	ids := make([]uint64, 0, 2*storedCountPage+3)
+	for i := range 2*storedCountPage + 3 {
+		ids = append(ids, uint64(i)*2+1)
+	}
+	got, err := storedVectorCount(context.Background(), &pagedScanStore{ids: ids}, "ns")
+	require.NoError(t, err)
+	require.Equal(t, uint64(len(ids)), got)
+
+	exact := ids[:storedCountPage]
+	got, err = storedVectorCount(context.Background(), &pagedScanStore{ids: exact}, "ns")
+	require.NoError(t, err)
+	require.Equal(t, uint64(storedCountPage), got)
 }
 
 // TestVectorCount_ReplayKeepsTheCommandsRule replays one committed sequence

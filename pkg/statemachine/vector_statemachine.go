@@ -19,6 +19,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"sync"
 	"time"
@@ -160,6 +161,14 @@ type NamespaceState struct {
 
 	// Usage tracking for quota enforcement
 	StorageBytes int64
+
+	// StoredCountRule records that VectorCount counts the namespace's
+	// distinct stored ids (the vector-stored-count rule). The first command
+	// carrying StoredCount switches the namespace over and rebases
+	// VectorCount on its stored ids, at one log index on every replica;
+	// from then on every command, a delayed unmarked one included, follows
+	// the rule. It is kept in the snapshot with the rest of the state.
+	StoredCountRule bool
 
 	mu sync.RWMutex
 }
@@ -760,6 +769,59 @@ func vectorStored(ctx context.Context, store vector.Storage, namespace string, i
 	return vec != nil, nil
 }
 
+// storedCountPage is how many ids storedVectorCount reads per scan.
+const storedCountPage = 1024
+
+// storedVectorCount counts the distinct ids stored in namespace, paging the
+// namespace scan in ascending id order.
+func storedVectorCount(ctx context.Context, store vector.Storage, namespace string) (uint64, error) {
+	var count uint64
+	opts := &vector.ScanOptions{Limit: storedCountPage}
+	for {
+		page, err := store.ScanNamespace(ctx, namespace, opts)
+		if err != nil {
+			return 0, api.NewOperationFailedError("count stored vectors", err)
+		}
+		count += uint64(len(page))
+		if len(page) < storedCountPage {
+			return count, nil
+		}
+		last := page[len(page)-1].ID
+		if last == math.MaxUint64 {
+			return count, nil
+		}
+		opts = &vector.ScanOptions{Limit: storedCountPage, FromID: last + 1}
+	}
+}
+
+// storedCountRule reports whether cmd is counted by the stored-count rule in
+// its namespace. The first command carrying StoredCount switches the
+// namespace over: VectorCount, which the old rule may have left counting
+// re-upserts and missing deletes, is set to the distinct stored ids, the
+// same on every replica, before the command's own quota check. A namespace
+// once switched stays switched (NamespaceState.StoredCountRule).
+func (vsm *VectorStateMachine) storedCountRule(ctx context.Context, store vector.Storage, cmd *VectorCommand) (bool, error) {
+	ns, ok := vsm.namespaces[cmd.Namespace]
+	if !ok {
+		return cmd.StoredCount, nil
+	}
+	ns.mu.RLock()
+	switched := ns.StoredCountRule
+	ns.mu.RUnlock()
+	if switched || !cmd.StoredCount {
+		return switched, nil
+	}
+	count, err := storedVectorCount(ctx, store, cmd.Namespace)
+	if err != nil {
+		return false, err
+	}
+	ns.mu.Lock()
+	ns.VectorCount = count
+	ns.StoredCountRule = true
+	ns.mu.Unlock()
+	return true, nil
+}
+
 // newVectorIDs counts the distinct ids of a batch that store does not yet
 // hold in namespace: the vectors a batch upsert adds to VectorCount.
 func newVectorIDs(ctx context.Context, store vector.Storage, namespace string, ids []uint64) (int, error) {
@@ -815,8 +877,12 @@ func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorComm
 	// a stored id adds no vector, so it neither raises VectorCount nor
 	// counts against the vector quota; under the old rule (a command without
 	// StoredCount) every upsert counts one.
+	storedRule, err := vsm.storedCountRule(ctx, vectorStorage.VectorStorage(), cmd)
+	if err != nil {
+		return sm.Result{}, err
+	}
 	added := 1
-	if cmd.StoredCount {
+	if storedRule {
 		stored, err := vectorStored(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.ID)
 		if err != nil {
 			return sm.Result{}, err
@@ -922,10 +988,14 @@ func (vsm *VectorStateMachine) handleDelete(ctx context.Context, cmd *VectorComm
 	// id's existence is read before any is deleted, so a failed read refuses
 	// the whole command before it mutates anything. A command without
 	// StoredCount keeps the old rule: every successful delete counts one.
+	storedRule, err := vsm.storedCountRule(ctx, vectorStorage.VectorStorage(), cmd)
+	if err != nil {
+		return sm.Result{}, err
+	}
 	wasStored := make([]bool, len(idsToDelete))
 	seen := make(map[uint64]struct{}, len(idsToDelete))
 	for i, id := range idsToDelete {
-		if !cmd.StoredCount {
+		if !storedRule {
 			wasStored[i] = true
 			continue
 		}
@@ -1040,9 +1110,12 @@ func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *Vecto
 	// Check vector count and storage quotas: only the batch's distinct ids
 	// not yet stored are new vectors under the stored-count rule; under the
 	// old rule (no StoredCount) every id of the batch counts one.
+	storedRule, err := vsm.storedCountRule(ctx, vectorStorage.VectorStorage(), cmd)
+	if err != nil {
+		return sm.Result{}, err
+	}
 	added := len(cmd.IDs)
-	if cmd.StoredCount {
-		var err error
+	if storedRule {
 		added, err = newVectorIDs(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.IDs)
 		if err != nil {
 			return sm.Result{}, err
