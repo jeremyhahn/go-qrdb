@@ -1,12 +1,18 @@
 <!--
   EmbeddedServerPanel — desktop-only controls for the in-process embedded
-  server (EmbeddedServerClient): shows whether it runs and whether a saved
-  configuration exists, and offers Stop, Restore saved config and Clear saved
-  config. Starting a new embedded server goes through the embedded wizard
+  server: shows whether an embedded profile is connected (connection
+  manager state) and whether a saved configuration exists, and offers Stop
+  (disconnects the embedded profile), Restore saved config (connects the
+  saved embedded profile) and Clear saved config. Starting a new embedded server goes through the embedded wizard
   (onStartNew); renders nothing when embedded mode is unavailable.
 -->
 <script lang="ts">
   import type { Client } from "@qrdb/sdk";
+  import {
+    connManagerStore,
+    connectProfile,
+    disconnectProfile,
+  } from "$stores/connection-manager.svelte.ts";
 
   let {
     client,
@@ -20,7 +26,17 @@
     onStartNew: () => void;
   } = $props();
 
-  let running: boolean = $state(false);
+  /**
+   * The connected embedded profile, if any. The panel follows the profile
+   * connection manager so a server started from a profile (or by Restore)
+   * is registered there and shows as running.
+   */
+  let runningProfileId: string | null = $derived(
+    [...connManagerStore.states.values()].find(
+      (s) => s.isEmbedded && s.status === "connected",
+    )?.profileId ?? null,
+  );
+  let running: boolean = $derived(runningProfileId !== null);
   let saved: boolean = $state(false);
   let busy: boolean = $state(false);
   let error: string = $state("");
@@ -31,7 +47,6 @@
   }
 
   async function refresh(): Promise<void> {
-    running = client.embeddedServer.isEmbedded();
     try {
       saved = await client.embeddedServer.hasSavedConfig();
     } catch (err: unknown) {
@@ -53,11 +68,22 @@
   }
 
   function handleStop(): Promise<void> {
-    return run(() => client.embeddedServer.stopEmbedded());
+    const profileId = runningProfileId;
+    if (profileId === null) return Promise.resolve();
+    return run(() => disconnectProfile(client, profileId));
   }
 
   function handleRestore(): Promise<void> {
-    return run(() => client.embeddedServer.restoreEmbedded());
+    return run(async () => {
+      const profile = connManagerStore.profiles.find((p) => p.type === "embedded");
+      if (profile === undefined) {
+        throw new Error("No saved embedded profile to restore");
+      }
+      const state = await connectProfile(client, profile.id);
+      if (state.status === "error") {
+        throw new Error(state.error ?? "Embedded server failed to start");
+      }
+    });
   }
 
   async function handleClearConfirm(): Promise<void> {

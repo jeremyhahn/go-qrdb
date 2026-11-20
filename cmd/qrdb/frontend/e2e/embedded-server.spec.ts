@@ -93,6 +93,17 @@ test.describe("Embedded server panel - saved config", () => {
     await expect(panel(page).getByTestId("embedded-error")).toHaveCount(0);
   });
 
+  test("a profile-started embedded server shows running with Stop enabled", async ({ page }) => {
+    await waitForConnectionManager(page);
+    // Restore connects the saved embedded profile through the connection
+    // manager, so the started server is registered there: the panel reads
+    // its state from the profile, not from the global embedded binding.
+    await panel(page).getByRole("button", { name: "Restore saved config" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running");
+    await expect(panel(page).getByRole("button", { name: "Stop" })).toBeEnabled();
+    await expect(panel(page).getByTestId("embedded-error")).toHaveCount(0);
+  });
+
   test("clear saved config asks to confirm", async ({ page }) => {
     await openPanel(page);
     await panel(page).getByRole("button", { name: "Clear saved config" }).click();
@@ -114,7 +125,8 @@ test.describe("Embedded server panel - saved config", () => {
     await panel(page).getByRole("button", { name: "Restore saved config" }).click();
     await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running");
 
-    await injectError(page, "EmbeddedServerBinding.StopEmbedded", "embedded: stop failed");
+    // Stop disconnects the embedded profile through the connection manager.
+    await injectError(page, "ConnectionManagerBinding.Disconnect", "embedded: stop failed");
     await panel(page).getByRole("button", { name: "Stop" }).click();
     await expect(panel(page).getByTestId("embedded-error")).toContainText(
       "embedded: stop failed",
