@@ -103,8 +103,9 @@ const (
 	cachePublishTerm = "env.CI_CACHE_SAVE == 'true'"
 	// cacheSaveAction and cacheAction are the split and the combined cache
 	// actions; the combined one saves in its post step on every event.
-	cacheSaveAction = "actions/cache/save@"
-	cacheAction     = "actions/cache@"
+	cacheSaveAction    = "actions/cache/save@"
+	cacheRestoreAction = "actions/cache/restore@"
+	cacheAction        = "actions/cache@"
 
 	// Floors, well under today's counts (7 workflows, 50 jobs).
 	runnerWorkflowFloor = 6
@@ -278,6 +279,11 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 			for _, s := range job.Steps {
 				if hostWipeStep.MatchString(s.Run) && !strings.Contains(s.If, hostedStepTerm) {
 					add("job "+name+" has a step that wipes a hosted runner's disk under if: ", strconv.Quote(s.If), ", without "+hostedStepTerm+"; on a pool host it deletes what other jobs share")
+				}
+				// A CI image digest record (#1609) is the one cache a pool job
+				// restores; ci_image_digest_test.go holds its condition.
+				if strings.HasPrefix(s.Uses, cacheRestoreAction) && !strings.Contains(s.With["path"], "ci-image-digests") && !strings.Contains(s.If, hostedStepTerm) {
+					add("job "+name+" restores a cache under if: ", strconv.Quote(s.If), ", without "+hostedStepTerm+"; a pool host keeps its caches on its own disk (#1597)")
 				}
 			}
 		}
@@ -827,6 +833,7 @@ func TestRunnerProblems_Pools(t *testing.T) {
 		"a Docker-free job on bigdisk-docker": {poolWorkflow, bigdiskOn, dockerOn, "job coverage-fts runs on the bigdisk-docker pool (dockerRunner) but needs no Docker"},
 		"a disk wipe on a pool host":          {poolWorkflow, wipe, "        run: |\n          sudo rm", "wipes a hosted runner's disk"},
 		"a docker prune on a pool host":       {poolWorkflow, wrapper, "      - run: docker system prune -af\n" + wrapper, "wipes a hosted runner's disk"},
+		"a cache restore on a pool host":      {poolWorkflow, wrapper, "      - uses: actions/cache/restore@0000000000000000000000000000000000000000 # v6\n" + wrapper, "restores a cache"},
 		"a Docker step on the pool":           {poolWorkflow, dockerLoad, "      - run: docker load -i toolchain.tar", "a step that needs Docker"},
 		"a Docker step, pool only":            {poolWorkflow, dockerLoad, "      - if: runner.environment == 'self-hosted'\n        run: docker load -i toolchain.tar", "a step that needs Docker"},
 		"the image wrapper":                   {poolWorkflow, "        run: make coverage-fts", "        run: scripts/in-toolchain-image.sh \"$IMAGE\" \"make coverage-fts\"", "a step that needs Docker"},
