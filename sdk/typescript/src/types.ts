@@ -1478,8 +1478,6 @@ export interface CreateUserRequest {
      * an empty email unless withoutEmailLoginKey is set.
      */
     readonly email?: string;
-    /** Display name. */
-    readonly name?: string;
     /** Create the account with no email login key (email may then be empty). */
     readonly withoutEmailLoginKey?: boolean;
     /** Target tenant ID (defaults to the caller's tenant). */
