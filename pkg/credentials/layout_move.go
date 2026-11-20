@@ -28,7 +28,11 @@ var layoutPrefixes = []string{credentialPrefix, MetaKeyPrefix, VersionKeyPrefix,
 // <name>, and its value the move id of the pass that wrote it. The same
 // batch writes the name's fence, LayoutMovedPrefix + "fence/" + <name>,
 // which every source's batch requires absent, so two sources never both
-// commit a name. No layout
+// commit a name. A name the destination already held when a pass reached
+// it gets a conflict record, LayoutMovedPrefix + "conflict/" + <source id>
+// + "/" + <name>, which outlives a later delete of the destination copy:
+// the source copy is never moved once it lost, so a deleted credential
+// cannot come back from it. No layout
 // prefix matches it, and the marker carries no secret. pkg/service
 // hard-confines it: a forged marker would make a move pass delete the
 // source records without copying them.
@@ -157,6 +161,21 @@ func layoutFence(name string) string {
 	return LayoutMovedPrefix + layoutFenceSource + "/" + name
 }
 
+// layoutConflictSource is the source segment of the conflict records: no
+// source id is a word.
+const layoutConflictSource = "conflict"
+
+// layoutConflictRoot is the prefix of source's conflict records.
+func layoutConflictRoot(source string) string {
+	return LayoutMovedPrefix + layoutConflictSource + "/" + source + "/"
+}
+
+// conflict keys the record that the destination held name when this source's pass
+// reached it, so this source's copy of name is never moved.
+func (m layoutMove) conflict(name string) string {
+	return layoutConflictRoot(m.source) + name
+}
+
 // layoutSourceID returns the identity of the store credentials are moved
 // out of, writing a fresh one the first time. A concurrent first write
 // that wins the race is the identity.
@@ -263,6 +282,21 @@ func moveLayout(ctx context.Context, from, to Store) error {
 			return err
 		}
 	}
+	// A conflict record whose source records are gone has nothing left
+	// to hold back.
+	conflictRoot := layoutConflictRoot(move.source)
+	recorded, err := to.List(ctx, conflictRoot)
+	if err != nil {
+		return err
+	}
+	for _, key := range recorded {
+		if _, ok := sets[strings.TrimPrefix(key, conflictRoot)]; ok {
+			continue
+		}
+		if err := to.Delete(ctx, key); err != nil {
+			return err
+		}
+	}
 	if len(conflicts) > 0 {
 		sort.Strings(conflicts)
 		return &LayoutConflictError{Names: conflicts}
@@ -291,8 +325,19 @@ func moveLayoutSet(ctx context.Context, from, to Store, move layoutMove, set *la
 		// since cannot come back.
 		return true, finishLayoutSet(ctx, from, to, move, set)
 	}
+	// A conflict an earlier pass recorded stands even when the
+	// destination copy that caused it was deleted since: the source copy
+	// is older than that delete and must not bring the credential back.
+	lost, err := holdsKey(ctx, to, move.conflict(set.name))
+	if err != nil || lost {
+		return false, err
+	}
 	held, err := destinationHolds(ctx, to, move, set)
-	if err != nil || held {
+	if err != nil {
+		return false, err
+	}
+	if held {
+		_, err := to.PutIfAbsent(ctx, move.conflict(set.name), []byte(move.id))
 		return false, err
 	}
 	guards := make([]kvstore.Guard, 0, len(set.keys)+2)
@@ -317,7 +362,13 @@ func moveLayoutSet(ctx context.Context, from, to Store, move layoutMove, set *la
 	guards = append(guards, kvstore.Guard{Key: marker}, kvstore.Guard{Key: fence})
 	writes = append(writes, kvstore.KV{Key: marker, Value: []byte(move.id)}, kvstore.KV{Key: fence, Value: []byte(move.source)})
 	applied, err := to.PutAllIfAllUnchanged(ctx, guards, writes)
-	if err != nil || !applied {
+	if err != nil {
+		return false, err
+	}
+	if !applied {
+		// A refused guard is a record of the name that landed in to
+		// since the probe: the same conflict, recorded the same way.
+		_, err := to.PutIfAbsent(ctx, move.conflict(set.name), []byte(move.id))
 		return false, err
 	}
 	return true, finishLayoutSet(ctx, from, to, move, set)
@@ -409,7 +460,7 @@ func destinationHolds(ctx context.Context, to Store, move layoutMove, set *layou
 	}
 	for _, key := range keys {
 		src, name, ok := strings.Cut(strings.TrimPrefix(key, LayoutMovedPrefix), "/")
-		if ok && name == set.name && src != move.source {
+		if ok && name == set.name && src != move.source && src != layoutConflictSource {
 			return true, nil
 		}
 	}

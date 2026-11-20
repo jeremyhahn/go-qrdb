@@ -148,9 +148,17 @@ func TestMoveLayout_OtherSourceCannotRestoreADeletedCredential(t *testing.T) {
 				requireAbsent(t, memA, k)
 				requireAbsent(t, toMem, k)
 			}
+			// B's conflict stands while its copy does, so a later
+			// pass of B does not move it either.
+			srcB, err := layoutSourceID(ctx, memB)
+			require.NoError(t, err)
 			left, err := toMem.List(ctx, LayoutMovedPrefix)
 			require.NoError(t, err)
-			assert.Empty(t, left, "no marker or fence outlives A's move")
+			assert.Equal(t, []string{layoutConflictRoot(srcB) + "db"}, left, "no marker or fence outlives A's move")
+			require.ErrorAs(t, moveLayout(ctx, memB, toMem), &conflict)
+			for _, k := range keysB {
+				requireAbsent(t, toMem, k)
+			}
 		})
 	}
 }

@@ -386,6 +386,39 @@ func TestMoveLayout_UnmarkedDestinationStillConflicts(t *testing.T) {
 	requireAbsent(t, to, markerOf(t, from, "db"))
 }
 
+// TestMoveLayout_ConflictOutlivesDestinationDelete: a name lost to a
+// conflict stays lost. The destination copy is deleted after the conflict
+// and the move runs again, as BindStoreFrom does at the next start: the
+// stale source copy is not moved, so the deleted credential stays deleted.
+// Once the source records are gone the conflict record goes too.
+func TestMoveLayout_ConflictOutlivesDestinationDelete(t *testing.T) {
+	ctx := context.Background()
+	from, to := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	keys := putLayout(t, from, "db", "old")
+	require.NoError(t, to.Put(ctx, credentialPrefix+"db", []byte("new")))
+
+	var conflict *LayoutConflictError
+	require.ErrorAs(t, moveLayout(ctx, from, to), &conflict)
+	require.NoError(t, to.Delete(ctx, credentialPrefix+"db"))
+
+	err := moveLayout(ctx, from, to)
+	require.ErrorAs(t, err, &conflict)
+	assert.Equal(t, []string{"db"}, conflict.Names)
+	requireAbsent(t, to, credentialPrefix+"db")
+	for _, key := range keys {
+		requireAbsent(t, to, key)
+		requireValue(t, from, key, "old@"+key)
+	}
+
+	for _, key := range keys {
+		require.NoError(t, from.Delete(ctx, key))
+	}
+	require.NoError(t, moveLayout(ctx, from, to))
+	left, err := to.List(ctx, LayoutMovedPrefix)
+	require.NoError(t, err)
+	assert.Empty(t, left)
+}
+
 // A credential deleted after a move that stopped before its source records
 // were gone does not come back on the next move pass.
 func TestMoveLayout_DeletedCredentialNotResurrected(t *testing.T) {
