@@ -223,7 +223,7 @@ func checkSystemSO(ctx context.Context, deps Dependencies) error {
 		return &MissingSOSeamError{Seam: "Dependencies.Binder to bind its certificate"}
 	case len(so.CSRPEM) > 0 && deps.Signer == nil:
 		return &MissingSOSeamError{Seam: "Dependencies.Signer to sign its CSR"}
-	case len(so.CertPEM) > 0 && deps.AdminCertPool == nil:
+	case len(so.CertPEM) > 0 && len(so.PoolPEM) == 0 && deps.AdminCertPool == nil:
 		return &MissingSOSeamError{Seam: "Dependencies.AdminCertPool to verify its certificate"}
 	case len(so.CertPEM) > 0 && len(so.PoolPEM) > 0 && deps.TrustAnchors == nil:
 		return &MissingSOSeamError{Seam: "Dependencies.TrustAnchors to persist its trust pool"}
@@ -771,7 +771,8 @@ func recordSOBoundKey(ctx context.Context, deps Dependencies, soUser *user.User,
 }
 
 // issueSOCert signs the SO's CSR through Signer or adopts its certificate
-// against AdminCertPool, exactly as the admin's Path B and Path C do.
+// against its own PoolPEM, else AdminCertPool, as the admin's Path B and
+// Path C do.
 func issueSOCert(ctx context.Context, deps Dependencies, tenantID string) ([]byte, error) {
 	so := deps.SO
 	if len(so.CertPEM) > 0 {

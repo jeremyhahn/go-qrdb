@@ -754,6 +754,31 @@ func TestInitialize_AdoptedSystemSOKeepsItsTrustPoolAcrossTheHandoff(t *testing.
 	}
 }
 
+// An SO hand-off carrying its own trust pool enrols without an
+// AdminCertPool: the pool replaces it, so first boot may have none (a CSR
+// or already-bound admin).
+func TestInitialize_AdoptedSystemSOEnrolsWithItsPoolAndNoAdminPool(t *testing.T) {
+	ctx := context.Background()
+	so, soCert, _ := adoptedSystemSOHandoff(t)
+	if len(so.PoolPEM) == 0 {
+		t.Fatal("the hand-off carries no trust pool")
+	}
+	h := newSOHarness(t, true)
+	h.deps.SO = so
+	h.deps.SOPINs = &recordPINs{records: map[string]string{}}
+	h.deps.AdminCertPool = nil
+	h.deps.TrustDomain = presentedTrustDomain
+	h.deps.TrustAnchors = trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
+	h.deps.ClientTrust = ClientTrustRefreshFunc(func(context.Context) error { return nil })
+	result, err := Initialize(ctx, h.deps)
+	if err != nil {
+		t.Fatalf("first boot with the SO's pool and no admin pool: %v", err)
+	}
+	if want, _ := spkiThumbprintFromCertPEM(soCert); result.SOCertThumbprint != want {
+		t.Fatalf("bound %q, want the adopted certificate %q", result.SOCertThumbprint, want)
+	}
+}
+
 // adoptedSystemSOHandoff runs a ceremony that issues the admin internally
 // and adopts an SO certificate from an external root against
 // AdminCertPoolPEM, and returns the SO record first boot reads back, the SO
