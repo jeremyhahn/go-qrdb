@@ -454,6 +454,29 @@ func TestEnforceRelease_FailedRecordKeepsTheHistoryAndFails(t *testing.T) {
 	require.ErrorAs(t, newGate(t, threeNodes()).EnforceRelease(context.Background(), kv.memKV), &gap)
 }
 
+// A joiner that is not yet a member of the system shard has no release to
+// record: EnforceRelease passes and leaves the record to the refresh after
+// admission, while a store failure for a member stays fatal.
+func TestEnforceRelease_NotAMemberIsRetriedAStoreErrorIsFatal(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	next := ReleasePrefix + "1/0.60.0-alpha"
+
+	t.Run("not a member yet", func(t *testing.T) {
+		m := threeNodes()
+		m.set(systemShard, 4, map[uint64]string{2: "n2:7000"})
+		kv := &releaseFaultKV{memKV: newMemKV(), failPut: true}
+		require.NoError(t, newGate(t, m).EnforceRelease(context.Background(), kv))
+		assert.False(t, kv.has(next), "a non-member records nothing")
+	})
+
+	t.Run("a member whose record fails", func(t *testing.T) {
+		kv := &releaseFaultKV{memKV: newMemKV(), failPut: true}
+		var storeErr *StoreError
+		require.ErrorAs(t, newGate(t, threeNodes()).EnforceRelease(context.Background(), kv), &storeErr)
+		assert.Equal(t, "record release", storeErr.Op)
+	})
+}
+
 func TestEnforceRelease_NilStoreIsAConfigError(t *testing.T) {
 	g := newGate(t, threeNodes())
 	var cfg *ConfigError

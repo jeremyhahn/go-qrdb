@@ -1036,8 +1036,18 @@ func (g *Gate) EnforceRelease(ctx context.Context, kv ActivationKV) error {
 	}
 	// The running release must be on record before the node reports the
 	// check passed: an unrecorded release would let the next binary skip
-	// the gap check against it.
-	return g.recordRelease(ctx, kv)
+	// the gap check against it. A joiner that is not yet a member of the
+	// system shard has no release to record: admission judges it, and the
+	// refresh records its release once it is a member. Every other record
+	// failure refuses the start.
+	if err := g.recordRelease(ctx, kv); err != nil {
+		var notMember *NotAMemberError
+		if errors.As(err, &notMember) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // sourcedEvent is an advertisement event tagged with the store it came from.
