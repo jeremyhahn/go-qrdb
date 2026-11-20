@@ -1078,6 +1078,24 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             nodeCompaction = policy && policy.mode && policy.mode !== "off" ? { ...policy } : null;
             return nodeCompaction;
           },
+          // JoinTokenMintable and MintJoinToken mirror AdminBinding: minting
+          // is offered only when the active profile is an authenticated
+          // external connection (__QRDB_MOCK_REMOTE__), never the embedded
+          // one, and MintJoinToken refuses there just as the Go binding does.
+          JoinTokenMintable: async () => {
+            maybeReject("AdminBinding.JoinTokenMintable");
+            return (window as unknown as Record<string, unknown>).__QRDB_MOCK_REMOTE__ === true;
+          },
+          MintJoinToken: async (nodeId: string, _ttlSeconds: number) => {
+            maybeReject("AdminBinding.MintJoinToken");
+            if ((window as unknown as Record<string, unknown>).__QRDB_MOCK_REMOTE__ !== true) {
+              throw new Error("join tokens are minted only over an authenticated remote connection");
+            }
+            return {
+              token: `mock-join-token-${nodeId}`,
+              expires_at: "2030-01-01T00:00:00Z",
+            };
+          },
           GetTopology: async () => {
             maybeReject("AdminBinding.GetTopology");
             return {

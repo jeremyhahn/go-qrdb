@@ -449,6 +449,24 @@ func (b *ConnectionManagerBinding) ActiveClient() (*sdk.Client, error) {
 	return conn.client, nil
 }
 
+// ActiveRemoteClient returns the active connection's client only when that
+// connection is an authenticated external (remote) one. The embedded
+// server's transport carries no authorization of its own, so platform-only
+// verbs such as minting a cluster join token are refused there with
+// ErrRemoteConnectionRequired.
+func (b *ConnectionManagerBinding) ActiveRemoteClient() (*sdk.Client, error) {
+	cl, err := b.ActiveClient()
+	if err != nil {
+		return nil, err
+	}
+	v, _ := b.connections.Load(b.GetActiveProfileID())
+	conn, _ := v.(*managedConnection)
+	if conn == nil || conn.server != nil || conn.profile.External == nil {
+		return nil, ErrRemoteConnectionRequired
+	}
+	return cl, nil
+}
+
 // activeKeyFile returns the client key file the active external connection
 // was dialed with, or "" when the active connection is embedded or none is.
 func (b *ConnectionManagerBinding) activeKeyFile() string {

@@ -542,17 +542,16 @@ export class WailsClient implements Client {
                 const policy = (await b.SetNodeCompaction(compaction ?? null)) as DatabaseCompactionConfig | null;
                 return policy ?? undefined;
             },
-            mintJoinToken: async (_nodeId: string, _ttlSeconds?: number): Promise<MintJoinTokenResponse> => {
-                // Deliberately unimplemented: the desktop webview talks to
-                // the embedded transport, which carries no authorization of
-                // its own (every AdminServicer verb skips enforcement
-                // there; see docs/embedding.md, "Trust model"). Minting a
-                // cluster join token is ScopeCross and platform-only --
-                // exactly the kind of admin verb that must never be
-                // reachable through a less-trusted binding than the
-                // authenticated remote transports (REST, gRPC, QUIC, Unix,
-                // MCP) it IS implemented on.
-                throw new NotImplementedError('admin.mintJoinToken');
+            mintJoinToken: async (nodeId: string, ttlSeconds?: number): Promise<MintJoinTokenResponse> => {
+                // AdminBinding.MintJoinToken forwards to the active
+                // connection only when it is an authenticated external
+                // (remote) one; the Go binding refuses the embedded server,
+                // whose transport carries no authorization of its own
+                // (docs/embedding.md, "Trust model").
+                return fromSnake<MintJoinTokenResponse>(await b.MintJoinToken(nodeId, ttlSeconds ?? 0));
+            },
+            joinTokenMintable: async (): Promise<boolean> => {
+                return (await b.JoinTokenMintable()) === true;
             },
             addMember: async (
                 shardId: number,
@@ -1492,8 +1491,7 @@ export class WailsClient implements Client {
      * Not yet implemented in desktop (Wails) mode: there is no
      * main.VolumePoolBinding counterpart to the remote transports' volume
      * pool management surface (REST, gRPC, QUIC, Unix, MCP). Every method
-     * throws NotImplementedError, matching admin.mintJoinToken's existing
-     * desktop-mode gap above.
+     * throws NotImplementedError.
      */
     get volumePools(): VolumePoolClient {
         return {
