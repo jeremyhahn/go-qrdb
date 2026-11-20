@@ -45,7 +45,9 @@
 // NewEmbeddedKVStore runs the KV engine in process over a storage.Storage
 // (for example storage.NewPebbleStorage from sdk/go/storage), maintaining
 // secondary indexes atomically on every Put and Delete. One that holds the
-// service layer instead adapts it with NewServiceKVStore. Entities declare
+// service layer instead adapts it with sdk/go/server's NewServiceKVStore,
+// which lives there so a caller of this package alone links no server
+// package. Entities declare
 // compound indexes as CompoundIndexDef values through CompoundIndexRegisterer,
 // and IndexQueryRequest, IndexScanRequest, CompoundIndexQueryRequest and
 // CompoundIndexScanRequest name the index lookups, so an embedder such as

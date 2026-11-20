@@ -16,7 +16,6 @@ package sdk
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
-	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -27,13 +26,6 @@ import (
 
 // KVServicer is the service-layer interface for key-value operations.
 type KVServicer = service.KVServicer
-
-// NewServiceKVStore adapts a KVServicer, with its IndexServicer and
-// TransactionServicer, to the KVStore a DAO runs over, so an embedder that
-// holds the service layer (rather than raw storage) builds DAOs on it with
-// secondary indexes. The transaction servicer is required: without it the
-// constructor returns an error rather than a store that cannot guard writes.
-var NewServiceKVStore = lifecycle.NewGuardedKVStoreAdapter
 
 // AdminServicer is the service-layer interface for admin/cluster operations.
 type AdminServicer = service.AdminServicer
