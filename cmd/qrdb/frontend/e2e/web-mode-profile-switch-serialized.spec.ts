@@ -38,6 +38,7 @@ test.describe("Web mode - profile switches are serialized", () => {
         releaseFirst = resolve;
       });
       let connects = 0;
+      let clientUrl = "";
 
       // Every namespace other than connection answers each call with an
       // empty result, so the probe and topology reads settle at once.
@@ -56,6 +57,7 @@ test.describe("Web mode - profile switches are serialized", () => {
           calls.push(`connect:${String(connects)}:${url}`);
           if (connects === 1) await firstHeld;
           connected = true;
+          clientUrl = url;
         },
       };
       const client = new Proxy(
@@ -67,8 +69,8 @@ test.describe("Web mode - profile switches are serialized", () => {
       );
 
       mod.connManagerStore.profiles = [
-        { id: "profile-a", name: "A", type: "external", external: { url: "https://a.invalid:63012" } },
-        { id: "profile-b", name: "B", type: "external", external: { url: "https://b.invalid:63012" } },
+        { id: "profile-a", name: "A", type: "external", external: { address: "https://a.invalid:63012" } },
+        { id: "profile-b", name: "B", type: "external", external: { address: "https://b.invalid:63012" } },
       ];
 
       const first = mod.connectProfile(client, "profile-a").catch(() => undefined);
@@ -81,14 +83,30 @@ test.describe("Web mode - profile switches are serialized", () => {
 
       releaseFirst();
       await Promise.all([first, second]);
-      return { whileHeld, all: calls };
+      return {
+        whileHeld,
+        all: calls,
+        clientUrl,
+        connected,
+        a: mod.connManagerStore.states.get("profile-a")?.status as string | undefined,
+        b: mod.connManagerStore.states.get("profile-b")?.status as string | undefined,
+      };
     });
 
     // While A's connect is in flight, B must not disconnect or retarget the
     // shared client.
-    expect(result.whileHeld).toHaveLength(1);
-    expect(result.whileHeld[0]).toMatch(/^connect:1:/);
-    // A's switch finished before B's began: nothing B did precedes A's connect.
-    expect(result.all[0]).toBe(result.whileHeld[0]);
+    expect(result.whileHeld).toEqual(["connect:1:https://a.invalid:63012"]);
+    // A's switch finished before B's began, and B really left A's server
+    // for its own: the complete disconnect/connect sequence, both URLs.
+    expect(result.all).toEqual([
+      "connect:1:https://a.invalid:63012",
+      "disconnect",
+      "connect:2:https://b.invalid:63012",
+    ]);
+    // After A is released the client targets B and the store says so.
+    expect(result.clientUrl).toBe("https://b.invalid:63012");
+    expect(result.connected).toBe(true);
+    expect(result.b).toBe("connected");
+    expect(result.a).toBe("disconnected");
   });
 });
