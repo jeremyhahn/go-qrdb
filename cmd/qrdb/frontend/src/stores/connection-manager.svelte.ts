@@ -538,9 +538,27 @@ async function retargetWebClient(
     client: Client,
     profile: ConnectionProfile,
 ): Promise<void> {
+    // Disable and invalidate every other profile's view BEFORE the client
+    // leaves its server. RestClient.connection.connect marks the client
+    // connected after the new server's /health and then awaits its /status;
+    // if the old profile still read "connected" during that window, its
+    // admin view and destructive actions would send requests to the new
+    // server (deleting A's displayed credential could delete B's).
+    let changed = false;
+    const states = new Map(connManagerStore.states);
+    for (const [id, state] of states) {
+        if (id !== profile.id && state.status !== 'disconnected' && state.status !== 'error') {
+            states.set(id, { profileId: id, status: 'disconnected', isEmbedded: false });
+            changed = true;
+        }
+    }
+    if (changed) connManagerStore.states = states;
+
     const target = webProfileTarget(profile);
     const current = webConnectedBase ?? window.location.origin;
     if (!client.connection.isConnected() || current !== target) {
+        // The client no longer names a recorded server until connect succeeds.
+        webConnectedBase = null;
         try {
             if (client.connection.isConnected()) {
                 await client.connection.disconnect();
@@ -551,15 +569,6 @@ async function retargetWebClient(
             // Unreachable: resolveWebConnectionState reports the error state.
         }
     }
-    let changed = false;
-    const states = new Map(connManagerStore.states);
-    for (const [id, state] of states) {
-        if (id !== profile.id && state.status !== 'disconnected' && state.status !== 'error') {
-            states.set(id, { profileId: id, status: 'disconnected', isEmbedded: false });
-            changed = true;
-        }
-    }
-    if (changed) connManagerStore.states = states;
 }
 
 /**
