@@ -310,3 +310,4 @@ embedded via `//go:embed`. No external files are needed at runtime.
 - [Configuration](../12-configuration.md) -- Server configuration reference
 - [Seal Package](../seal/README.md) -- Seal/unseal lifecycle
 - [Authentication](../auth/README.md) -- mTLS identity extraction
+- [UI coverage matrix](coverage-matrix.md) -- every SDK operation and display the UI reaches, its Playwright spec, and the gap groups
