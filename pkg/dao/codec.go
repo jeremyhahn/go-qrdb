@@ -95,7 +95,7 @@ func DocumentCodecs() []CodecType {
 //
 // Build-tag codecs (require -tags flag):
 //   - CodecCBOR: CBOR binary encoding (build tag: codec_cbor)
-//   - CodecProtoBuf: Protocol Buffers (build tag: codec_protobuf, use NewProtoBufCodec[E]())
+//   - CodecProtoBuf: Protocol Buffers (use NewProtoBufCodec[E]())
 //
 // Use SupportedCodecs() to discover available codecs at runtime.
 func NewCodec[E any](ct CodecType) (Codec[E], error) {

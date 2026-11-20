@@ -375,12 +375,6 @@ WITH_QRDB_GPU      ?= 0
 WITH_QRDB_EMBEDDED ?= 1
 WITH_QRDBD_WEBUI   ?= 0
 
-# Optional codec flags (1 = enabled, 0 = disabled; all default ON)
-WITH_CODEC_MSGPACK  ?= 1
-WITH_CODEC_YAML     ?= 1
-WITH_CODEC_BSON     ?= 1
-WITH_CODEC_PROTOBUF ?= 1
-
 # Object-storage (go-objstore) cloud backends, used by the objstore storage
 # backend and the backup/restore targets. These gate code in go-objstore (the
 # SDKs live THERE, never in qrdb's module): qrdb stays cloud-SDK-free and simple
@@ -479,18 +473,6 @@ endif
 ifeq ($(WITH_QRDBD_WEBUI),1)
   BUILD_TAGS += qrdbd_webui
 endif
-ifeq ($(WITH_CODEC_MSGPACK),1)
-  BUILD_TAGS += codec_msgpack
-endif
-ifeq ($(WITH_CODEC_YAML),1)
-  BUILD_TAGS += codec_yaml
-endif
-ifeq ($(WITH_CODEC_BSON),1)
-  BUILD_TAGS += codec_bson
-endif
-ifeq ($(WITH_CODEC_PROTOBUF),1)
-  BUILD_TAGS += codec_protobuf
-endif
 # Object-storage (go-objstore) cloud backends.
 ifeq ($(WITH_AWS_S3),1)
   BUILD_TAGS += awss3
@@ -576,7 +558,6 @@ PKG_SQL_QUERY      := ./pkg/sql/query/...
 PKG_SQL_CATALOG    := ./pkg/sql/catalog/...
 PKG_SQL_PRIVILEGE  := ./pkg/sql/privilege/...
 PKG_SQL_PGCATALOG  := ./pkg/sql/pgcatalog/...
-PKG_CODEC          := ./pkg/codec/...
 PKG_ETCD           := ./pkg/api/etcd/...
 PKG_DATABASE       := ./pkg/database/...
 PKG_QUIC           := ./pkg/api/quic/...
@@ -1285,10 +1266,6 @@ test-sql-privilege:
 .PHONY: test-sql-pgcatalog
 test-sql-pgcatalog:
 	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_PGCATALOG)
-
-.PHONY: test-codec
-test-codec:
-	$(GOTEST) $(TAG_FLAG) $(PKG_CODEC)
 
 .PHONY: test-etcd
 test-etcd:
@@ -2398,10 +2375,6 @@ coverage-sql-pgcatalog: | _cover-dir
 	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-pgcatalog.out $(PKG_SQL_PGCATALOG)
 	$(call check-coverage,$(COVER_DIR)/sql-pgcatalog.out,sql-pgcatalog)
 
-.PHONY: coverage-codec
-coverage-codec: | _cover-dir
-	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/codec.out $(PKG_CODEC)
-	$(call check-coverage,$(COVER_DIR)/codec.out,codec)
 
 .PHONY: coverage-etcd
 coverage-etcd: | _cover-dir
