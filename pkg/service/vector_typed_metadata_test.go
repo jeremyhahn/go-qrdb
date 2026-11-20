@@ -182,6 +182,58 @@ func TestSearchByMetadata_MatchesPreUpgradePlainStringEntries(t *testing.T) {
 	}
 }
 
+// TestSearchByMetadata_EmptyFiltersListLegacyAndJSON checks that an empty
+// filter list matches every record, legacy-format ones included, and that
+// offset and limit page across both formats in ID order.
+func TestSearchByMetadata_EmptyFiltersListLegacyAndJSON(t *testing.T) {
+	store := vector.NewMemoryVectorStorage()
+	svc, err := NewVectorService(store, newVecTestLogger())
+	if err != nil {
+		t.Fatalf("NewVectorService: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
+		Namespace: "typed", Dimension: 2, DistanceMetric: "COSINE", IndexType: "HNSW",
+	}); err != nil {
+		t.Fatalf("CreateNamespace: %v", err)
+	}
+	// ID 1 is a legacy-format record; ID 2 is written now, JSON-encoded.
+	if err := store.UpsertVector(ctx, scopedFromContext(ctx, "typed"), &vector.VectorValue{
+		ID: 1, Embedding: []float32{1, 0}, Metadata: map[string]string{"topic": "news"},
+		MetadataFormat: vector.MetadataFormatLegacy,
+	}); err != nil {
+		t.Fatalf("legacy UpsertVector: %v", err)
+	}
+	if _, err := svc.UpsertVector(ctx, &UpsertVectorRequest{
+		Namespace: "typed", ID: 2, Vector: []float32{0, 1}, Metadata: map[string]interface{}{"topic": "sport"},
+	}); err != nil {
+		t.Fatalf("UpsertVector 2: %v", err)
+	}
+	for _, tc := range []struct {
+		limit, offset int
+		want          []uint64
+	}{
+		{0, 0, []uint64{1, 2}},
+		{1, 0, []uint64{1}},
+		{1, 1, []uint64{2}},
+		{1, 2, nil},
+	} {
+		resp, err := svc.SearchByMetadata(ctx, &SearchByMetadataRequest{
+			Namespace: "typed", Filters: map[string]interface{}{}, Limit: tc.limit, Offset: tc.offset,
+		})
+		if err != nil {
+			t.Fatalf("SearchByMetadata(limit %d, offset %d): %v", tc.limit, tc.offset, err)
+		}
+		var ids []uint64
+		for _, r := range resp.Results {
+			ids = append(ids, r.ID)
+		}
+		if !reflect.DeepEqual(ids, tc.want) {
+			t.Fatalf("SearchByMetadata(limit %d, offset %d) IDs = %v, want %v", tc.limit, tc.offset, ids, tc.want)
+		}
+	}
+}
+
 // TestSearchByMetadata_LegacyJSONLookingStringsStayStrings proves a
 // pre-upgrade entry whose verbatim text is itself valid JSON ("5", "true", a
 // quoted string) still reads back as that string and still matches a string

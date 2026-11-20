@@ -1967,7 +1967,9 @@ func (v *vectorService) scanMetadataFilters(ctx context.Context, scoped string, 
 		}
 		legacy = append(legacy, f)
 	}
-	if hasString {
+	// An empty filter list matches every record, so legacy-format records
+	// written before the JSON format are listed alongside JSON ones.
+	if hasString || len(encoded) == 0 {
 		old, err := v.scanFormat(ctx, scoped, legacy, vector.MetadataFormatLegacy, want)
 		if err != nil {
 			return nil, err
