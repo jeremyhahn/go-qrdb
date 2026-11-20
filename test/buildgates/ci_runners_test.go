@@ -1142,11 +1142,11 @@ func TestCIRunnerSelectionBehaviour(t *testing.T) {
 			dir := t.TempDir()
 			stub, bin := filepath.Join(dir, "stub"), filepath.Join(dir, "bin")
 			for _, d := range []string{stub, bin} {
-				if err := os.Mkdir(d, 0o755); err != nil {
+				if err := os.Mkdir(d, 0o750); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(strings.Replace(stubCurl, "%q", strconv.Quote(stub), 1)), 0o755); err != nil {
+			if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(strings.Replace(stubCurl, "%q", strconv.Quote(stub), 1)), 0o700); err != nil { // #nosec G306 -- the curl stub must be executable; PATH resolves it for the step script
 				t.Fatal(err)
 			}
 			unsafe := regexp.MustCompile(`[^A-Za-z0-9]`)
@@ -1156,10 +1156,10 @@ func TestCIRunnerSelectionBehaviour(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(key+".json", body, 0o644); err != nil {
+				if err := os.WriteFile(key+".json", body, 0o600); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(key+".code", []byte(strconv.Itoa(r.code)), 0o644); err != nil {
+				if err := os.WriteFile(key+".code", []byte(strconv.Itoa(r.code)), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1173,14 +1173,14 @@ func TestCIRunnerSelectionBehaviour(t *testing.T) {
 				}
 			}
 			output := filepath.Join(dir, "github-output")
-			if err := os.WriteFile(output, nil, 0o644); err != nil {
+			if err := os.WriteFile(output, nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			scriptFile := filepath.Join(dir, "step.sh")
-			if err := os.WriteFile(scriptFile, []byte(script), 0o644); err != nil {
+			if err := os.WriteFile(scriptFile, []byte(script), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			cmd := exec.Command(bash, "--noprofile", "--norc", "-eo", "pipefail", scriptFile)
+			cmd := exec.Command(bash, "--noprofile", "--norc", "-eo", "pipefail", scriptFile) // #nosec G204 -- bash is exec.LookPath("bash") and scriptFile is this test's own TempDir copy of the workflow step
 			cmd.Dir = dir
 			cmd.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + dir,
 				"RUNNER_TEMP=" + dir, "GITHUB_OUTPUT=" + output}
