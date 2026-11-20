@@ -25,34 +25,22 @@ import (
 // create or a key rotation featuregate.VerifiableLogKeys) is not yet active on
 // every replica of the tenant's group: a replica that cannot apply a command
 // must never be sent it.
-// BarrierTenantLogNotSupportedError is returned by every LogService call for
-// a tenant whose isolation is barrier. The log registry is applied on the
-// system shard under the system barrier, so the log's entries and its sealed
-// head-signing key would stay readable while the tenant's own barrier is
-// sealed. The tenant is refused until its logs route through storage its
-// barrier protects.
-type BarrierTenantLogNotSupportedError struct {
-	TenantID string
-}
-
-func (e *BarrierTenantLogNotSupportedError) Error() string {
-	return "service: verifiable logs are not available to barrier-isolated tenant " + strconv.Quote(e.TenantID) +
-		": the log registry is not protected by the tenant's barrier"
-}
-
-// BarrierDatabaseLogNotSupportedError is returned by every LogService call
-// naming a database that has its own barrier. The log registry is applied on
-// the system shard under the system barrier, so the log's entries and its
-// sealed head-signing key would stay readable while the database's barrier is
-// sealed. The database is refused before any key is created or log read.
-type BarrierDatabaseLogNotSupportedError struct {
+// BarrierStoreUnavailableError is returned by every LogService call for a
+// barrier tenant, or a barrier-enabled database (Database set), on a node
+// whose composer attached no LogGroupSource: the barrier-sealed group the
+// log lives in cannot be reached here, and the log fails closed rather than
+// falling back to the system shard.
+type BarrierStoreUnavailableError struct {
 	TenantID string
 	Database string
 }
 
-func (e *BarrierDatabaseLogNotSupportedError) Error() string {
-	return "service: verifiable logs are not available in barrier-enabled database " + strconv.Quote(e.Database) +
-		" of tenant " + strconv.Quote(e.TenantID) + ": the log registry is not protected by the database's barrier"
+func (e *BarrierStoreUnavailableError) Error() string {
+	where := "barrier tenant " + strconv.Quote(e.TenantID)
+	if e.Database != "" {
+		where = "barrier database " + strconv.Quote(e.Database) + " of tenant " + strconv.Quote(e.TenantID)
+	}
+	return "service: the barrier-sealed store of " + where + " is not reachable on this node"
 }
 
 type LogFeatureNotActiveError struct {

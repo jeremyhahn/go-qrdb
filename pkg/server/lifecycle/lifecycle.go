@@ -768,6 +768,10 @@ type Node struct {
 	// writer.
 	homeLeader atomic.Pointer[databaseLeadership]
 
+	// logGroups is the verifiable-log service's barrier group source; its
+	// groups are attached by AttachTenantHomes.
+	logGroups *logGroups
+
 	// work is what the node runs on its own behalf; Stop cancels it and
 	// waits for it before any closer runs.
 	work nodeWork
@@ -1018,12 +1022,19 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		bm.SetUnsealGate(databaseUnsealGate(infra.ClusterSealer))
 	}
 
-	// The verifiable-log service routes as the audit chain does, but also
-	// refuses a barrier tenant and a barrier database: its log registry and
-	// sealed signing keys sit under the system barrier, not the tenant's or
-	// the database's. A build without the qrdb_vlog tag has no log service,
-	// which is not a boot failure.
-	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	// The verifiable-log service routes as the audit chain does, except that
+	// a barrier tenant's logs, entries and sealed signing keys are applied in
+	// its home group and a barrier database's in the database's own group,
+	// each under that barrier (n.logGroups, attached with the home groups).
+	// A build without the qrdb_vlog tag has no log service, which is not a
+	// boot failure.
+	n.logGroups = &logGroups{host: infra.Host, barriers: func() logGroupBarriers {
+		if bm := dbManager.BarrierManager(); bm != nil {
+			return bm
+		}
+		return nil
+	}}
+	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n}, n.logGroups)
 	logSvc, err := buildLogService(logResolver, dbManager, infra.HeadSignerProvider)
 	if err != nil {
 		return nil, err
@@ -1537,7 +1548,7 @@ func infraClock(infra Infra) clock.Clock {
 // and the node's databases with the composer's head-signer provider; a nil
 // provider is the software default. It returns a nil service and no error when
 // the build does not carry the qrdb_vlog tag.
-func buildLogService(resolver service.AuditShardResolver, databases service.LogDatabaseLookup, signers vlog.HeadSignerProvider) (service.LogService, error) {
+func buildLogService(resolver service.LogShardResolver, databases service.LogDatabaseLookup, signers vlog.HeadSignerProvider) (service.LogService, error) {
 	svc, err := service.NewLogService(service.LogServiceConfig{Resolver: resolver, Databases: databases, Signers: signers})
 	var notCompiled *vlog.NotCompiledError
 	if errors.As(err, &notCompiled) {

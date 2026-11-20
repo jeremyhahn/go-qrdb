@@ -59,8 +59,10 @@ type SystemShardAuditResolver struct {
 	host      Host
 	shardID   uint64
 	isolation AuditIsolationLookup
-	// refuseBarrier also refuses a barrier tenant; see NewSystemShardLogResolver.
-	refuseBarrier bool
+	// logs routes a barrier tenant to its home group through groups; see
+	// NewSystemShardLogResolver.
+	logs   bool
+	groups LogGroupSource
 }
 
 // NewSystemShardAuditResolver returns a resolver that names (host, shardID)
@@ -75,13 +77,44 @@ func NewSystemShardAuditResolver(host Host, shardID uint64, isolation AuditIsola
 
 // NewSystemShardLogResolver returns the resolver the verifiable-log service
 // routes through: NewSystemShardAuditResolver's, except that a barrier tenant
-// is refused with *BarrierTenantLogNotSupportedError. A log's entries and its
-// sealed head-signing key are applied into the system shard's log registry,
-// which the system barrier protects, not the tenant's: routing a barrier
-// tenant there would keep its private key readable while its own barrier is
-// sealed.
-func NewSystemShardLogResolver(host Host, shardID uint64, isolation AuditIsolationLookup) *SystemShardAuditResolver {
-	return &SystemShardAuditResolver{host: host, shardID: shardID, isolation: isolation, refuseBarrier: true}
+// resolves to its own home group through groups. A log's entries and its
+// sealed head-signing key are then applied into, and read from, the log
+// registry of the tenant's barrier-sealed store, never the system shard's,
+// and a sealed tenant barrier refuses them with the error its other reads
+// return. Snapshot and restore of that group carry the logs with it. A nil
+// groups fails a barrier tenant closed with *BarrierStoreUnavailableError.
+func NewSystemShardLogResolver(host Host, shardID uint64, isolation AuditIsolationLookup, groups LogGroupSource) *SystemShardAuditResolver {
+	return &SystemShardAuditResolver{host: host, shardID: shardID, isolation: isolation, logs: true, groups: groups}
+}
+
+// LogShardResolver resolves the Raft group a verifiable log is applied in and
+// read from: ResolveAuditShard for a log in a database without a barrier of
+// its own, ResolveDatabaseLogShard for one in a barrier-enabled database.
+type LogShardResolver interface {
+	AuditShardResolver
+	ResolveDatabaseLogShard(ctx context.Context, tenantID, database string) (Host, uint64, error)
+}
+
+// LogGroupSource resolves the Raft group of a barrier-sealed store: a barrier
+// tenant's home group (its records, log and snapshots under the tenant's key)
+// or a barrier-enabled database's own group (under the database's key). Each
+// refuses, while the barrier is sealed, with the error that barrier's other
+// reads return.
+type LogGroupSource interface {
+	TenantHomeGroup(ctx context.Context, tenantID string) (Host, uint64, error)
+	DatabaseGroup(ctx context.Context, tenantID, database string) (Host, uint64, error)
+}
+
+// ResolveDatabaseLogShard resolves the group of tenantID's barrier-enabled
+// database: the database's own barrier-sealed group. Without a group source
+// the database's store is unreachable here and the log fails closed with
+// *BarrierStoreUnavailableError, never falling back to the system shard.
+func (r *SystemShardAuditResolver) ResolveDatabaseLogShard(ctx context.Context, tenantID, database string) (Host, uint64, error) {
+	routed := tenantid.Normalize(tenantID)
+	if r.groups == nil {
+		return nil, 0, &BarrierStoreUnavailableError{TenantID: routed, Database: database}
+	}
+	return r.groups.DatabaseGroup(ctx, routed, database)
 }
 
 // ResolveAuditShard implements AuditShardResolver.
@@ -106,8 +139,11 @@ func (r *SystemShardAuditResolver) ResolveAuditShard(ctx context.Context, tenant
 			IsolationType: string(info.EffectiveIsolationType()),
 		}
 	case tenant.IsolationBarrier:
-		if r.refuseBarrier {
-			return nil, 0, &BarrierTenantLogNotSupportedError{TenantID: routed}
+		if r.logs {
+			if r.groups == nil {
+				return nil, 0, &BarrierStoreUnavailableError{TenantID: routed}
+			}
+			return r.groups.TenantHomeGroup(ctx, routed)
 		}
 		return r.host, r.shardID, nil
 	default:

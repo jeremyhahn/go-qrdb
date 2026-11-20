@@ -430,8 +430,7 @@ var vlogRules = []rule{
 	as(&service.LogFeatureNotActiveError{}, Unavailable),
 	// A barrier tenant or database keeps its data under its own barrier; the
 	// log registry sits under the system barrier, so neither is served.
-	as(&service.BarrierTenantLogNotSupportedError{}, Unimplemented),
-	as(&service.BarrierDatabaseLogNotSupportedError{}, Unimplemented),
+	as(&service.BarrierStoreUnavailableError{}, Unavailable),
 }
 
 // collectionRules are the document-collection conditions.

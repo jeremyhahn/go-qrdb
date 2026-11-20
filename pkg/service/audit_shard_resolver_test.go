@@ -98,16 +98,55 @@ func TestSystemShardAuditResolver_RoutesPrefixAndBarrierTenantsToTheSystemShard(
 
 // TestSystemShardLogResolver_RefusesBarrierTenants: the log registry sits
 // under the system barrier, so the log resolver refuses a barrier tenant.
-func TestSystemShardLogResolver_RefusesBarrierTenants(t *testing.T) {
+func TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup(t *testing.T) {
 	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
 		"widgets": {ID: "widgets", IsolationType: tenant.IsolationBarrier},
+		"vault":   {ID: "vault", IsolationType: tenant.IsolationBarrier},
 	}}
-	r := NewSystemShardLogResolver(&mockHost{}, 1, lookup)
-	_, _, err := r.ResolveAuditShard(context.Background(), "widgets")
-	var refused *BarrierTenantLogNotSupportedError
-	if !errors.As(err, &refused) || refused.TenantID != "widgets" {
-		t.Fatalf("ResolveAuditShard = %v, want *BarrierTenantLogNotSupportedError for widgets", err)
+	home := &mockHost{}
+	groups := &fakeLogGroups{host: home, homes: map[string]uint64{"widgets": 9}, sealed: map[string]bool{"vault": true}}
+	r := NewSystemShardLogResolver(&mockHost{}, 1, lookup, groups)
+
+	host, shardID, err := r.ResolveAuditShard(context.Background(), "widgets")
+	if err != nil || shardID != 9 || host != home {
+		t.Fatalf("ResolveAuditShard(widgets) = %v, %d, %v; want the home group 9", host, shardID, err)
 	}
+	if _, _, err := r.ResolveAuditShard(context.Background(), "vault"); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("ResolveAuditShard(vault) = %v, want tenant.ErrTenantSealed", err)
+	}
+	if _, shardID, err := r.ResolveDatabaseLogShard(context.Background(), "acme", "secure"); err != nil || shardID != 11 {
+		t.Fatalf("ResolveDatabaseLogShard(acme, secure) = %d, %v; want the database group 11", shardID, err)
+	}
+
+	// Without a group source a barrier tenant or database fails closed.
+	bare := NewSystemShardLogResolver(&mockHost{}, 1, lookup, nil)
+	var unavailable *BarrierStoreUnavailableError
+	if _, _, err := bare.ResolveAuditShard(context.Background(), "widgets"); !errors.As(err, &unavailable) || unavailable.TenantID != "widgets" {
+		t.Fatalf("no groups: ResolveAuditShard(widgets) = %v, want *BarrierStoreUnavailableError", err)
+	}
+	if _, _, err := bare.ResolveDatabaseLogShard(context.Background(), "acme", "secure"); !errors.As(err, &unavailable) || unavailable.Database != "secure" {
+		t.Fatalf("no groups: ResolveDatabaseLogShard = %v, want *BarrierStoreUnavailableError", err)
+	}
+}
+
+// fakeLogGroups is a LogGroupSource: homes maps a tenant to its home group,
+// a sealed tenant is refused with tenant.ErrTenantSealed, and every database
+// group is shard 11.
+type fakeLogGroups struct {
+	host   Host
+	homes  map[string]uint64
+	sealed map[string]bool
+}
+
+func (g *fakeLogGroups) TenantHomeGroup(_ context.Context, tenantID string) (Host, uint64, error) {
+	if g.sealed[tenantID] {
+		return nil, 0, tenant.ErrTenantSealed
+	}
+	return g.host, g.homes[tenantID], nil
+}
+
+func (g *fakeLogGroups) DatabaseGroup(context.Context, string, string) (Host, uint64, error) {
+	return g.host, 11, nil
 }
 
 // TestSystemShardLogResolver_RoutesOtherTenantsAsTheAuditResolverDoes: only
@@ -117,7 +156,7 @@ func TestSystemShardLogResolver_RoutesOtherTenantsAsTheAuditResolverDoes(t *test
 		"acme":  {ID: "acme", IsolationType: tenant.IsolationPrefix},
 		"vault": {ID: "vault", IsolationType: tenant.IsolationVolume},
 	}}
-	r := NewSystemShardLogResolver(&mockHost{}, 1, lookup)
+	r := NewSystemShardLogResolver(&mockHost{}, 1, lookup, &fakeLogGroups{})
 	for _, id := range []string{tenantid.System, "acme", "ghost"} {
 		if _, shardID, err := r.ResolveAuditShard(context.Background(), id); err != nil || shardID != 1 {
 			t.Fatalf("ResolveAuditShard(%q) = %d, %v; want shard 1", id, shardID, err)

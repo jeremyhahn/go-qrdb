@@ -46,7 +46,7 @@ type LogService interface {
 type LogServiceConfig struct {
 	// Resolver routes a tenant to the group that holds its logs; the log
 	// service shares the audit resolver.
-	Resolver AuditShardResolver
+	Resolver LogShardResolver
 
 	// Databases resolves the database each request names, so a database
 	// with a barrier of its own is refused before any key or log is touched.
