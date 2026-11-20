@@ -117,6 +117,7 @@ The cluster engine and database system for every project in the stack: embedded,
 
 ## Next
 
+- **iam-exposure** — the IAM surface go-xkms is blocked on: device-share permissions, user-bound token roles, sdk re-exports of devices:onboard, HoldsSystemRole and the keys/certs/passwords/ssh/pin/piv permissions, object-owner ABAC, peer-credential identity, a shared-password override permission, a tenant status filter; consumer go-xkms — [#1651](../../issues/1651), [docs/identity-rbac/](docs/identity-rbac/) — open
 - **fips-140-3** — the FIPS 140-3 job (ci.yml `fips`) green and measured; clusterenroll on the P-256 handshake — [#618](../../issues/618), [#608](../../issues/608), [#20](../../issues/20), [#118](../../issues/118), [docs/seal/fips140-mode.md](docs/seal/fips140-mode.md), [docs/clustering/architecture.md](docs/clustering/architecture.md#member-side-csr-join-key-a-cluster-ca) — open
 
 ## Later
