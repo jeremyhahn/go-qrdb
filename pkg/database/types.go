@@ -731,6 +731,14 @@ type DatabaseMeta struct {
 	// Dropping is false.
 	DropClaim string `json:"drop_claim,omitempty"`
 
+	// Provisional is true from the moment Manager.create writes the record
+	// until the caller's create guard accepts the database. A provisional
+	// record serves nothing: no node opens it (Manager.Open, GetOwned,
+	// OpenAll) and RecordedIdentity does not resolve it, so no request can
+	// write to a database the guard may still refuse. A refused create
+	// whose cleanup could not remove the record leaves it provisional.
+	Provisional bool `json:"provisional,omitempty"`
+
 	// ID is the database's opaque, never-reused id (NewDatabaseID),
 	// allocated when the database is created and fixed for its life. The
 	// catalog record is the one place that maps the name to it: every

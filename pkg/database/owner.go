@@ -113,6 +113,10 @@ func (m *Manager) RecordedIdentity(ctx context.Context, tenantID, name string) (
 	if err != nil {
 		return "", "", false, err
 	}
+	// A provisional record is a create not yet accepted: nothing resolves it.
+	if meta.Provisional {
+		return "", "", false, nil
+	}
 	return meta.ID, meta.Incarnation, true, nil
 }
 

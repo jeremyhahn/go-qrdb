@@ -428,6 +428,9 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		return nil, err
 	}
 	meta.OwnerNode = m.ownerFor(cfg, shared)
+	// The record is written provisional: no opener on any node serves it
+	// until the create guard below has accepted the database.
+	meta.Provisional = true
 	if err := cat.Create(ctx, meta); err != nil {
 		// A write that may have committed is settled first: rolling back
 		// around a record it left would orphan the name. A record that
@@ -449,6 +452,15 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		if err := guard(ctx); err != nil {
 			return nil, undo.run(ctx, err)
 		}
+	}
+	// Accepted: promote the record so every node may serve it. A refusal
+	// above never gets here, so a record its cleanup could not remove stays
+	// provisional and is never opened.
+	if err := cat.Update(ctx, cfg.TenantID, cfg.Name, incarnation, func(rec *DatabaseMeta) error {
+		rec.Provisional = false
+		return nil
+	}); err != nil {
+		return nil, undo.run(ctx, err)
 	}
 
 	// Open storage backend via factory.
@@ -561,6 +573,11 @@ func (m *Manager) Open(ctx context.Context, tenantID, name string) (*Database, e
 // has it open already. Concurrent openers of one key do not both build a
 // backend: the loser gets *AlreadyExistsError.
 func (m *Manager) openRecord(key dbKey, meta DatabaseMeta) (*Database, error) {
+	// A provisional record is a create its guard has not accepted (or a
+	// refused one whose cleanup failed): there is no database to open yet.
+	if meta.Provisional {
+		return nil, &NotFoundError{Name: key.name}
+	}
 	if refusal, held := m.ownerRefusal(key, meta); held {
 		return nil, refusal
 	}
@@ -1671,6 +1688,10 @@ func (m *Manager) OpenAll(ctx context.Context) error {
 	}
 	for _, meta := range metas {
 		key := keyFor(meta.TenantID, meta.Name)
+		// A create not yet accepted serves nothing (see Provisional).
+		if meta.Provisional {
+			continue
+		}
 		// Another node holds it: that node opens it, and this one forwards.
 		if _, held := m.ownerRefusal(key, meta); held {
 			continue
