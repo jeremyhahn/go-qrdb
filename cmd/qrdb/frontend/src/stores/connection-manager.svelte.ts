@@ -562,6 +562,25 @@ async function retargetWebClient(
     if (changed) connManagerStore.states = states;
 }
 
+/**
+ * Tail of the web-mode profile switch queue. Every operation that retargets
+ * the shared REST client and then probes or activates a profile runs on this
+ * chain, one at a time: RestClient.connection.connect changes baseUrl before
+ * it awaits /health, so two overlapping switches could otherwise record one
+ * profile as connected while the client points at the other.
+ */
+let webSwitchChain: Promise<unknown> = Promise.resolve();
+
+/**
+ * serializeWebSwitch runs op after every previously queued web profile
+ * switch has settled, whether it succeeded or failed.
+ */
+function serializeWebSwitch<T>(op: () => Promise<T>): Promise<T> {
+    const run = webSwitchChain.then(op, op);
+    webSwitchChain = run.catch(() => undefined);
+    return run;
+}
+
 export async function connectProfile(
     client: Client,
     profileId: string,
@@ -612,17 +631,21 @@ export async function connectProfile(
     }
     // Point the REST client at the profile's saved server address; without
     // this the probe below and every later read would go to whichever
-    // server was connected before.
-    await retargetWebClient(client, profile);
-    const state = await resolveWebConnectionState(client, profile);
-    connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
+    // server was connected before. The connect, probe and topology read run
+    // as one serialized switch so an overlapping connect cannot retarget the
+    // client between them.
+    return serializeWebSwitch(async () => {
+        await retargetWebClient(client, profile);
+        const state = await resolveWebConnectionState(client, profile);
+        connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
 
-    // Probe live topology on a successful connect so cluster surfaces appear
-    // immediately for multi-node servers (mirrors loadWebProfiles).
-    if (state.status === 'connected') {
-        await applyWebServerMode(client, profileId);
-    }
-    return state;
+        // Probe live topology on a successful connect so cluster surfaces appear
+        // immediately for multi-node servers (mirrors loadWebProfiles).
+        if (state.status === 'connected') {
+            await applyWebServerMode(client, profileId);
+        }
+        return state;
+    });
 }
 
 /**
@@ -732,17 +755,30 @@ export async function setActiveProfile(
 ): Promise<void> {
     if (isDesktop()) {
         await client.connectionManager.setActive(profileId);
-    } else {
+        markProfileActive(profileId);
+        return;
+    }
+    // Activation retargets the REST client: reads and destructive operations
+    // must reach the server the UI now labels as active. It runs on the same
+    // serialized switch queue as connectProfile, so the client target, the
+    // probed state and the active label always name one profile.
+    await serializeWebSwitch(async () => {
         webSetActiveProfileId(profileId);
-        // Activation retargets the REST client: reads and destructive
-        // operations must reach the server the UI now labels as active.
         const target = connManagerStore.profiles.find((p) => p.id === profileId);
         if (target !== undefined) {
             await retargetWebClient(client, target);
             const state = await resolveWebConnectionState(client, target);
             connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
         }
-    }
+        markProfileActive(profileId);
+    });
+}
+
+/**
+ * markProfileActive records profileId as the active profile in local state:
+ * the active id, its lastUsed timestamp and its server topology metadata.
+ */
+function markProfileActive(profileId: string): void {
     connManagerStore.activeProfileId = profileId;
 
     // Refresh the lastUsed timestamp on the profile in local state.
