@@ -49,7 +49,8 @@ describe('WailsClient vector wire shapes', () => {
         });
 
         expect(spy).toHaveBeenCalledTimes(1);
-        const sent = spy.mock.calls[0]![0] as Record<string, unknown>;
+        const sent = spy.mock.calls[0]![1] as Record<string, unknown>;
+        expect(spy.mock.calls[0]![0]).toBe('');
         expect(sent).toMatchObject({
             namespace: 'ns',
             query_vector: [0.1, 0.2],
@@ -72,7 +73,8 @@ describe('WailsClient vector wire shapes', () => {
         const vec = await new WailsClient().vector!.getVector({ namespace: 'ns', id: '12' });
 
         expect(spy).toHaveBeenCalledTimes(1);
-        const sent = spy.mock.calls[0]![0] as Record<string, unknown>;
+        const sent = spy.mock.calls[0]![1] as Record<string, unknown>;
+        expect(spy.mock.calls[0]![0]).toBe('');
         expect(sent).toMatchObject({ namespace: 'ns', include_vector: true, include_metadata: true });
         expect(vec.vector).toEqual([0.5]);
         expect(vec.metadata).toEqual({ k: 'v' });
@@ -119,5 +121,43 @@ describe('WailsClient vector wire shapes', () => {
         const resp = await new WailsClient().vector!.batchDeleteVectors({ namespace: 'ns', ids: ['a', 'b'] });
 
         expect(resp).toEqual({ deleted: 2, failed: 0, errors: [] });
+    });
+
+    it("databaseScoped('x') passes 'x' first to every VectorBinding call", async () => {
+        const calls: Array<{ method: string; args: unknown[] }> = [];
+        const record = (method: string, answer: unknown): BindingFn =>
+            async (...args: unknown[]) => {
+                calls.push({ method, args });
+                return answer;
+            };
+        installVectorBinding({
+            HybridSearch: record('HybridSearch', { results: [], took: 0 }),
+            GetVector: record('GetVector', { id: 1, vector: [0.1], metadata: {} }),
+            BatchUpsert: record('BatchUpsert', { ids: [1], inserted_count: 1, success: true }),
+            BatchDeleteVectors: record('BatchDeleteVectors', { deleted_count: 1, success: true }),
+        });
+
+        const vector = new WailsClient().databaseScoped('x').vector!;
+        await vector.hybridSearch({ namespace: 'ns', vector: [0.1], k: 1 });
+        await vector.getVector({ namespace: 'ns', id: '1' });
+        await vector.batchUpsert({ namespace: 'ns', vectors: [{ id: '1', vector: [0.1] }] });
+        await vector.batchDeleteVectors({ namespace: 'ns', ids: ['1'] });
+
+        expect(calls.map((c) => c.method)).toEqual([
+            'HybridSearch', 'GetVector', 'BatchUpsert', 'BatchDeleteVectors',
+        ]);
+        for (const c of calls) {
+            expect(c.args[0]).toBe('x');
+            expect(c.args[1]).toMatchObject({ namespace: 'ns' });
+        }
+    });
+
+    it("databaseScoped('system') targets the default database", async () => {
+        const spy = vi.fn<BindingFn>(async () => ({ id: 1, vector: [0.1], metadata: {} }));
+        installVectorBinding({ GetVector: spy });
+
+        await new WailsClient('x').databaseScoped('system').vector!.getVector({ namespace: 'ns', id: '1' });
+
+        expect(spy.mock.calls[0]![0]).toBe('');
     });
 });
