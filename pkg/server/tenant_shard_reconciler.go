@@ -800,6 +800,12 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 		// one the entry placed while it existed, found by its shard id, so
 		// a recreated database of the same name keeps running.
 		name, shardID := r.forgetName(ev.TenantID, ev.DatabaseID)
+		if shardID == 0 {
+			// This reconciler never cached the entry (it was placed and
+			// started directly in the list/watch gap): the delete's prior
+			// value carries the shard identity.
+			shardID = ev.ShardID
+		}
 		if name == "" && shardID != 0 {
 			// Its name never resolved here, but a shard started under it
 			// (by an earlier name, or opened from the catalog) is found by
