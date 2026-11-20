@@ -16,6 +16,7 @@
 -->
 <script lang="ts">
   import type { Client, EnrolledCert } from "@qrdb/sdk";
+  import { isDesktop } from "@qrdb/sdk";
   import FormModal from "./FormModal.svelte";
   import { showToast } from "$stores/toast.svelte.ts";
 
@@ -23,7 +24,11 @@
    * RedeemInvitationModal exchanges a one-time invitation token plus a CSR for
    * the invited user's first certificate (invitations.redeem). Redeem is the
    * one operation reachable with no credential at all -- the token is the
-   * authority -- so it dials the server given here, not an active connection.
+   * authority. The desktop app dials the server, transport and CA given here.
+   * A browser can only reach the server that served the page (the REST client
+   * posts to its own origin), so there the server is shown read-only and the
+   * transport and CA fields are not offered: the bearer token never goes to a
+   * server other than the one displayed.
    */
   let {
     client,
@@ -37,7 +42,11 @@
 
   const TRANSPORTS = ["rest", "grpc", "quic", "mcp", "unix"] as const;
 
-  let server: string = $state("");
+  /** The browser redeems only with the page's own server (see above). */
+  const browserMode = !isDesktop();
+  const pageServer = browserMode ? globalThis.location?.host ?? "" : "";
+
+  let server: string = $state(pageServer);
   let transport: string = $state("rest");
   let caFile: string = $state("");
   let tenantID: string = $state("");
@@ -48,7 +57,7 @@
   let enrolled: EnrolledCert | null = $state(null);
 
   function reset(): void {
-    server = "";
+    server = pageServer;
     transport = "rest";
     caFile = "";
     tenantID = "";
@@ -83,14 +92,16 @@
     }
     try {
       saving = true;
-      enrolled = await client.invitations.redeem(
-        { tenantID: tenantID.trim(), token: token.trim(), csrPEM: csrPEM.trim() },
-        {
-          server: server.trim(),
-          transport,
-          ...(caFile.trim() ? { caFile: caFile.trim() } : {}),
-        },
-      );
+      const req = { tenantID: tenantID.trim(), token: token.trim(), csrPEM: csrPEM.trim() };
+      // In the browser the REST client posts to the page's own server, the
+      // one the read-only field shows; there is no other destination to name.
+      enrolled = browserMode
+        ? await client.invitations.redeem(req)
+        : await client.invitations.redeem(req, {
+            server: server.trim(),
+            transport,
+            ...(caFile.trim() ? { caFile: caFile.trim() } : {}),
+          });
     } catch (err: unknown) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -148,10 +159,20 @@
             id="redeem-server"
             type="text"
             bind:value={server}
+            readonly={browserMode}
             class="input input-bordered input-sm w-full"
             placeholder="qrdb.example.com:8443"
           />
+          {#if browserMode}
+            <div class="label" data-testid="redeem-browser-note">
+              <span class="label-text-alt">
+                The browser redeems with the server that served this page. Use the desktop app
+                to redeem with another server.
+              </span>
+            </div>
+          {/if}
         </label>
+        {#if !browserMode}
         <label class="form-control w-full" for="redeem-transport">
           <div class="label"><span class="label-text">Transport</span></div>
           <select
@@ -174,6 +195,7 @@
             placeholder="/path/to/ca.pem"
           />
         </label>
+        {/if}
         <label class="form-control w-full" for="redeem-tenant">
           <div class="label"><span class="label-text">Tenant ID</span></div>
           <input

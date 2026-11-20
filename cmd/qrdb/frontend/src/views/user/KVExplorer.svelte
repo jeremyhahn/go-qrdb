@@ -16,12 +16,14 @@
 -->
 <script lang="ts" module>
   /**
-   * Databases whose store answered 501 to GET /kv/revision (no revisions).
-   * Kept in sessionStorage so a reload of the tab does not ask again.
+   * Scopes (server, tenant, database) whose store answered 501 to
+   * GET /kv/revision (no revisions). Kept in sessionStorage so a reload of
+   * the tab does not ask again; keyed by the full scope so one store without
+   * revisions never hides them on another database or server.
    */
-  const NO_REVISION_KEY = "qrdb.noRevisionDatabases";
+  const NO_REVISION_KEY = "qrdb.noRevisionScopes";
 
-  function loadNoRevisionDatabases(): Set<string> {
+  function loadNoRevisionScopes(): Set<string> {
     try {
       const raw = globalThis.sessionStorage?.getItem(NO_REVISION_KEY);
       const parsed: unknown = raw ? JSON.parse(raw) : [];
@@ -31,13 +33,17 @@
     }
   }
 
-  const noRevisionDatabases = loadNoRevisionDatabases();
+  const noRevisionScopes = loadNoRevisionScopes();
 
-  /** Remembers that database's store keeps no revisions. */
-  function rememberNoRevisions(database: string): void {
-    noRevisionDatabases.add(database);
+  /**
+   * Remembers that scope's store keeps no revisions. An empty scope names
+   * no store, so nothing is remembered for it.
+   */
+  function rememberNoRevisions(scope: string): void {
+    if (scope === "") return;
+    noRevisionScopes.add(scope);
     try {
-      globalThis.sessionStorage?.setItem(NO_REVISION_KEY, JSON.stringify([...noRevisionDatabases]));
+      globalThis.sessionStorage?.setItem(NO_REVISION_KEY, JSON.stringify([...noRevisionScopes]));
     } catch {
       // Storage unavailable: the in-memory set still covers this page load.
     }
@@ -80,14 +86,18 @@
     RotateCcw,
   } from "lucide-svelte";
 
-  let { client, database = "" }: { client: Client; database?: string } = $props();
+  /**
+   * scope identifies the store this explorer reads: server, tenant and
+   * database (see kvScope). Revision support is remembered per scope.
+   */
+  let { client, scope = "" }: { client: Client; scope?: string } = $props();
 
-  // Set once the database's store answered 501 to the revision probe.
-  // Bumped when a probe adds the database to noRevisionDatabases, so the
-  // derived flag re-reads the (non-reactive) set.
+  // Set once the scope's store answered 501 to the revision probe.
+  // Bumped when a probe adds the scope to noRevisionScopes, so the derived
+  // flag re-reads the (non-reactive) set.
   let revisionSupportVersion: number = $state(0);
   const revisionsUnsupported: boolean = $derived(
-    revisionSupportVersion >= 0 && noRevisionDatabases.has(database),
+    revisionSupportVersion >= 0 && scope !== "" && noRevisionScopes.has(scope),
   );
 
   // ---------------------------------------------------------------------------
@@ -139,6 +149,16 @@
 
   // Optional lease for a save (mvcc.putWithLease); blank saves through kv.put.
   let modalLeaseId: string = $state("");
+  // True when the edited key's lease could not be read: a blank lease is
+  // then "unknown", not "none", and the form says so before a save that
+  // would release a binding.
+  let modalLeaseUnknown: boolean = $state(false);
+
+  // The selected entry's metadata (and so its lease) is still in flight.
+  // Edit waits for it so the form never snapshots a lease it has not read.
+  const entryMetaPending: boolean = $derived(
+    selectedEntry !== null && entryMeta === null && entryMetaError === "",
+  );
 
   // "Go to key" (kv.exists then kv.get) and the keys-only listing (kv.list).
   let gotoKeyInput: string = $state("");
@@ -276,7 +296,7 @@
     } catch (err: unknown) {
       currentRevision = null;
       if (isNotImplemented(err)) {
-        rememberNoRevisions(database);
+        rememberNoRevisions(scope);
         revisionSupportVersion++;
       }
     }
@@ -410,14 +430,24 @@
     modalKey = "";
     modalValue = "";
     modalLeaseId = "";
+    modalLeaseUnknown = false;
     showCreatePanel = true;
   }
 
+  /**
+   * Opens the edit form for entry once its metadata is known. While the
+   * metadata is in flight the lease is unknown, so nothing is opened (Edit is
+   * disabled then too); if the read failed the form opens with the lease
+   * marked unknown instead of silently treating it as none.
+   */
   function openEditPanel(entry: KVEntry): void {
+    if (entryMetaPending) return;
+    const meta = entryMeta !== null && entryMeta.key === entry.key ? entryMeta : null;
     editMode = true;
     modalKey = entry.key;
     modalValue = entry.value;
-    modalLeaseId = entryMeta && entryMeta.key === entry.key && entryMeta.leaseId ? String(entryMeta.leaseId) : "";
+    modalLeaseId = meta?.leaseId ? String(meta.leaseId) : "";
+    modalLeaseUnknown = meta === null;
     showCreatePanel = true;
   }
 
@@ -451,7 +481,11 @@
         leaseId > 0 ? `${verb} "${modalKey}" with lease ${leaseId}` : `${verb} "${modalKey}"`,
       );
       showCreatePanel = false;
+      const savedKey = modalKey;
+      const savedValue = modalValue;
       await loadEntries();
+      // The open panel's metadata (lease, revision) changed with the save.
+      if (selectedEntry?.key === savedKey) await selectEntry({ key: savedKey, value: savedValue });
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
@@ -897,6 +931,8 @@
         {:else}
           <button
             class="btn btn-sm btn-outline flex-1"
+            disabled={entryMetaPending}
+            title={entryMetaPending ? "Reading the entry's lease..." : undefined}
             onclick={() => openEditPanel(selectedEntry!)}
           >
             <Pencil class="h-4 w-4" />
@@ -957,6 +993,12 @@
           bind:value={modalLeaseId}
         />
       </label>
+      {#if editMode && modalLeaseUnknown}
+        <div class="alert alert-warning text-sm" role="alert" data-testid="kv-lease-unknown">
+          This key's lease could not be read. Enter its lease ID to keep it; saving with the
+          field blank releases any lease the key is bound to.
+        </div>
+      {/if}
     </div>
   {/snippet}
 </FormModal>

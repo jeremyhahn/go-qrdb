@@ -26,6 +26,9 @@ import {
   expect,
   secondLaunchEmbeddedState,
   injectError,
+  clearError,
+  holdCall,
+  releaseCall,
 } from "./fixtures/wails-mock.ts";
 
 const LOAD_TIMEOUT = 10_000;
@@ -164,6 +167,38 @@ test.describe("KV Explorer MVCC operations", () => {
     await expect(panel.getByText("value-a")).toBeVisible();
   });
 
+  test("Edit waits for the entry's metadata and keeps its lease", async ({ page }) => {
+    await navigateToKV(page);
+    await createEntry(page, "lease/edit", "v1", "42");
+    await holdCall(page, "MVCCBinding.GetRevision");
+    const panel = await openRow(page, "lease/edit");
+    const edit = panel.getByRole("button", { name: "Edit" });
+    // The lease is unknown while getRevision is in flight: Edit must not
+    // snapshot an empty lease and release the binding on save.
+    await expect(edit).toBeDisabled();
+    expect(await releaseCall(page, "MVCCBinding.GetRevision")).toBe(1);
+    await expect(panel.getByTestId("kv-lease")).toHaveText("42");
+    await expect(edit).toBeEnabled();
+    await edit.click();
+    const leaseInput = page.locator("input[placeholder='Attach the key to a lease; blank for none']");
+    await expect(leaseInput).toHaveValue("42");
+    await page.locator("textarea[placeholder='Enter value (supports JSON)']").fill("v2");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByText('Updated "lease/edit" with lease 42').last()).toBeVisible({ timeout: 5_000 });
+    const reopened = await openRow(page, "lease/edit");
+    await expect(reopened.getByTestId("kv-lease")).toHaveText("42");
+  });
+
+  test("Edit after a failed metadata read says the lease is unknown", async ({ page }) => {
+    await navigateToKV(page);
+    await createEntry(page, "lease/unknown", "v1", "7");
+    await injectError(page, "MVCCBinding.GetRevision", "revision lookup failed");
+    const panel = await openRow(page, "lease/unknown");
+    await expect(panel.getByTestId("kv-entry-revision-error")).toHaveText("revision lookup failed");
+    await panel.getByRole("button", { name: "Edit" }).click();
+    await expect(page.getByTestId("kv-lease-unknown")).toBeVisible();
+  });
+
   test.describe("Error handling", () => {
     test("a getRevision failure shows in the entry panel", async ({ page }) => {
       await navigateToKV(page);
@@ -182,5 +217,34 @@ test.describe("KV Explorer MVCC operations", () => {
       await page.locator(".modal").getByRole("button", { name: "Compact", exact: true }).click();
       await expect(page.getByText("compaction refused")).toBeVisible({ timeout: 5_000 });
     });
+  });
+});
+
+test.describe("KV Explorer revision support is remembered per database", () => {
+  test.use({
+    mockState: {
+      ...secondLaunchEmbeddedState,
+      databases: [
+        { name: "kv-plain", backend: "memory", status: "open" },
+        { name: "kv-mvcc", backend: "pebble", status: "open" },
+      ],
+    },
+  });
+
+  test("a store without revisions does not disable revisions on another database", async ({ page }) => {
+    await page.goto("/");
+    await injectError(page, "MVCCBinding.CurrentRevision", "501 Not Implemented");
+    await page.locator("aside").getByText("kv-plain").click();
+    await expect(page.getByTestId("kv-revisions-unavailable")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.getByLabel("Compact revision")).toBeDisabled();
+
+    await clearError(page, "MVCCBinding.CurrentRevision");
+    await page.locator("aside").getByText("kv-mvcc").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-mvcc", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(page.getByTestId("kv-current-revision")).toHaveText(/Current revision:\s*0/);
+    await expect(page.getByTestId("kv-revisions-unavailable")).toHaveCount(0);
+    await expect(page.getByLabel("Compact revision")).toBeEnabled();
   });
 });

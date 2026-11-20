@@ -129,7 +129,10 @@ test("invite in Users, redeem in the Connection Manager (UI ↔ live daemon)", a
   // The sidebar's "Add server" opens the Connection Manager.
   await page.getByRole("button", { name: "Add server", exact: true }).click();
   await page.getByRole("button", { name: "Redeem Invitation" }).first().click();
-  await page.locator("#redeem-server").fill(new URL(daemon!.adminUrl).host);
+  // A browser redeems with the server that served the page: the field shows
+  // it read-only, so the token cannot be sent anywhere else.
+  await expect(page.locator("#redeem-server")).toHaveValue(new URL(page.url()).host);
+  await expect(page.locator("#redeem-server")).not.toBeEditable();
   await page.locator("#redeem-tenant").fill(tenantID);
   await page.locator("#redeem-token").fill(token);
   await page.locator("#redeem-csr").fill(csrPEM);

@@ -513,6 +513,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     // Lease store
     const leaseStore = new Map<number, { id: number; ttl: number; granted_ttl: number; remaining_ttl: number }>();
     let leaseIdCounter = 0;
+    // Lease each key is bound to (mvcc.putWithLease); a plain kv.put
+    // releases the binding, as the server does.
+    const kvLeaseBindings = new Map<string, number>();
 
     // Collection and document stores
     const collectionStore = new Map<string, {
@@ -923,6 +926,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           Put: async (key: string, value: string) => {
             maybeReject("KVBinding.Put");
             kvStore.set(key, value);
+            kvLeaseBindings.delete(key);
             recordRevision(key, value);
           },
           Get: async (key: string) => {
@@ -1078,6 +1082,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           PutWithLease: async (key: string, value: string, leaseId?: number) => {
             maybeReject("MVCCBinding.PutWithLease");
             kvStore.set(key, value);
+            if (leaseId) kvLeaseBindings.set(key, leaseId);
+            else kvLeaseBindings.delete(key);
             const rev = recordRevision(key, value);
             return { revision: rev, leaseId: leaseId ?? 0 };
           },
@@ -1090,9 +1096,17 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           // here to round-trip correctly.
           GetRevision: async (key: string) => {
             maybeReject("MVCCBinding.GetRevision");
+            await maybeHold("MVCCBinding.GetRevision");
             const val = kvStore.get(key);
             if (val === undefined) throw new Error(`key "${key}" not found`);
-            return { key: encodeB64(key), value: encodeB64(val), revision: currentModRevision(key), version: 1 };
+            const leaseId = kvLeaseBindings.get(key) ?? 0;
+            return {
+              key: encodeB64(key),
+              value: encodeB64(val),
+              revision: currentModRevision(key),
+              version: 1,
+              ...(leaseId ? { leaseId } : {}),
+            };
           },
           GetAtRevision: async (key: string, revision: number) => {
             maybeReject("MVCCBinding.GetAtRevision");
