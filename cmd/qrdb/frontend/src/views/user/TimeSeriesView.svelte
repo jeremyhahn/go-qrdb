@@ -151,6 +151,13 @@
   let retention: RetentionView | null = $state(null);
   let retentionLoaded: boolean = $state(false);
   let retentionLoading: boolean = $state(false);
+  // The last retention lookup's failure; "" once one succeeds. Distinct from
+  // retention === null, which means the server has no policy.
+  let retentionError: string = $state("");
+  // Bumped whenever the detail view changes metric (open or back): a
+  // response, error or loading update from a request started under an older
+  // generation belongs to a metric no longer shown and is dropped.
+  let metricGen = 0;
   let retDuration: string = $state("7d");
   let retResolution: string = $state("");
   let retAggregation: number = $state(0);
@@ -318,10 +325,13 @@
   // ---------------------------------------------------------------------------
 
   async function loadRetention(metric: string): Promise<void> {
+    const gen = metricGen;
     retentionLoading = true;
     retentionLoaded = false;
+    retentionError = "";
     try {
       const resp = await client.timeSeries!.getRetention({ metric });
+      if (gen !== metricGen) return;
       const p = resp?.policy ?? null;
       retention = p === null
         ? null
@@ -332,10 +342,14 @@
           };
       retentionLoaded = true;
     } catch (err: unknown) {
+      if (gen !== metricGen) return;
+      // Not "no policy": the server may well have one the client could not
+      // read. The card shows the failure with a retry until a lookup succeeds.
       showToast("error", errMessage(err));
       retention = null;
+      retentionError = errMessage(err);
     } finally {
-      retentionLoading = false;
+      if (gen === metricGen) retentionLoading = false;
     }
   }
 
@@ -352,6 +366,7 @@
       return;
     }
     const metric = selectedMetric;
+    const gen = metricGen;
     retentionLoading = true;
     try {
       await client.timeSeries!.setRetention({
@@ -365,18 +380,25 @@
       showToast("success", `Retention set for "${metric}".`);
     } catch (err: unknown) {
       showToast("error", errMessage(err));
-      retentionLoading = false;
+      if (gen === metricGen) retentionLoading = false;
       return;
     }
+    if (gen !== metricGen) return;
     await loadRetention(metric);
   }
 
+  /** Clears the per-metric cards and invalidates every pending request. */
   function resetMetricCards(): void {
+    metricGen++;
     aggResults = [];
     aggRan = false;
+    aggLoading = false;
     rqResult = null;
+    rqLoading = false;
     retention = null;
     retentionLoaded = false;
+    retentionLoading = false;
+    retentionError = "";
   }
 
   async function runRichQuery(): Promise<void> {
@@ -398,6 +420,7 @@
     }
     const tags = parseTags(rqTags);
     const groupBy = rqGroupBy.split(",").map((s) => s.trim()).filter((s) => s !== "");
+    const gen = metricGen;
     rqLoading = true;
     try {
       const resp = await client.timeSeries!.richQuery({
@@ -411,6 +434,7 @@
         ...(limit !== null ? { limit } : {}),
         ...(percentile !== null ? { percentile } : {}),
       });
+      if (gen !== metricGen) return;
       rqResult = {
         points: resp?.points ?? [],
         ...(resp?.aggregatedValue !== undefined ? { aggregatedValue: resp.aggregatedValue } : {}),
@@ -421,10 +445,11 @@
         })),
       };
     } catch (err: unknown) {
+      if (gen !== metricGen) return;
       showToast("error", errMessage(err));
       rqResult = null;
     } finally {
-      rqLoading = false;
+      if (gen === metricGen) rqLoading = false;
     }
   }
 
@@ -435,6 +460,7 @@
       showToast("warning", "Interval must be a duration like 30s, 5m, 1h or 1d.");
       return;
     }
+    const gen = metricGen;
     aggLoading = true;
     try {
       const resp = await client.timeSeries!.aggregate({
@@ -444,6 +470,7 @@
         function: aggFunction as AggFunc,
         ...(intervalNs !== null ? { intervalNs } : {}),
       });
+      if (gen !== metricGen) return;
       aggResults = (resp?.results ?? []).map((r) => ({
         timestampNs: r.timestampNs,
         value: r.value,
@@ -451,10 +478,11 @@
       }));
       aggRan = true;
     } catch (err: unknown) {
+      if (gen !== metricGen) return;
       showToast("error", errMessage(err));
       aggResults = [];
     } finally {
-      aggLoading = false;
+      if (gen === metricGen) aggLoading = false;
     }
   }
 
@@ -487,7 +515,7 @@
   }
 
   async function loadDataPoints(metric: string): Promise<void> {
-
+    const gen = metricGen;
     pointsLoading = true;
     try {
       const resp = await client.timeSeries!.query({
@@ -495,6 +523,7 @@
         startNs: rangeStartMs * 1_000_000,
         endNs: rangeEndMs * 1_000_000,
       });
+      if (gen !== metricGen) return;
       const points = resp?.points ?? [];
       dataPoints = points.map((dp) => ({
         metric: dp.metric,
@@ -503,10 +532,11 @@
         tags: dp.tags ?? [],
       }));
     } catch (err: unknown) {
+      if (gen !== metricGen) return;
       showToast("error", err instanceof Error ? err.message : String(err));
       dataPoints = [];
     } finally {
-      pointsLoading = false;
+      if (gen === metricGen) pointsLoading = false;
     }
   }
 
@@ -514,6 +544,7 @@
     selectedMetric = null;
     dataPoints = [];
     selectedPoint = null;
+    pointsLoading = false;
     resetMetricCards();
   }
 
@@ -1090,6 +1121,17 @@
       <div class="mb-3 text-sm" data-testid="ts-retention-current">
         {#if retentionLoading && !retentionLoaded}
           <span class="loading loading-spinner loading-xs"></span>
+        {:else if retentionError !== ""}
+          <div class="flex items-center gap-2 text-error" data-testid="ts-retention-error">
+            <span>Current policy unavailable: {retentionError}</span>
+            <button
+              class="btn btn-ghost btn-xs"
+              data-testid="ts-retention-retry"
+              onclick={() => { if (selectedMetric !== null) void loadRetention(selectedMetric); }}
+            >
+              Retry
+            </button>
+          </div>
         {:else if retention === null}
           <span data-testid="ts-retention-none">Current policy: none</span>
         {:else}

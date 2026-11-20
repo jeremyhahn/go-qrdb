@@ -470,6 +470,37 @@ test.describe("Admin - Seal Manager: cluster seal, passphrase and ceremony", () 
     },
   };
 
+  // A node the cluster seal holds refuses status with 503 SEALED; the desktop
+  // binding answers {sealed: true, initialized: true, clusterHeld: true} with
+  // no record. The view must offer the cluster unseal, not a local unseal.
+  test.describe("cluster-held node through the desktop binding", () => {
+    test.use({
+      mockState: {
+        ...passphraseState,
+        // The node's own barrier: passphrase-held and unsealed. The mock's
+        // SealBinding.Status withholds all of it while clusterHeld is set.
+        sealStatus: {
+          ...passphraseState.sealStatus,
+          sealed: false,
+          clusterHeld: true,
+        },
+      },
+    });
+
+    test("offers Clear Cluster Seal, not a passphrase unseal", async ({ page }) => {
+      await navigateToSealManager(page);
+      await expect(page.getByTestId("cluster-seal-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("unseal-passphrase")).toHaveCount(0);
+
+      await page.getByTestId("cluster-unseal-btn").click();
+
+      const status = page.getByTestId("cluster-seal-status");
+      await expect(status).toContainText("record clear (epoch 1)", { timeout: LOAD_TIMEOUT });
+      await expect(status).toContainText("this node is serving");
+      await expect(page.getByTestId("cluster-seal-held")).toHaveCount(0);
+    });
+  });
+
   test.describe("cluster seal record", () => {
     test.use({
       mockState: {

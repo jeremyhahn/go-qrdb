@@ -224,25 +224,37 @@
   // Actions
   // ---------------------------------------------------------------------------
 
+  /**
+   * The node barrier is unsealed (a sealed node answers status through its
+   * sealed-window listener), but a cluster seal holds the node or it cannot
+   * confirm the seal records: it answers no status question and admits only
+   * the authenticated cluster unseal. Offer that, with no record: only a
+   * serving node reports one. Reached from a REST 503 SEALED refusal and from
+   * the desktop binding's clusterHeld flag alike.
+   */
+  function enterClusterHeld(): void {
+    sealStore.sealed = false;
+    clusterHeld = true;
+    clusterSeal = { active: true, sealed: true, epoch: 0 };
+    clusterMigration = null;
+  }
+
   /** Fetches the current seal status from the server. */
   async function fetchSealStatus(): Promise<void> {
     try {
       const status = await client.seal.status();
+      if (status.clusterHeld === true) {
+        // The desktop binding turns the 503 SEALED refusal into this flag.
+        enterClusterHeld();
+        return;
+      }
       updateSealStatus(status);
       clusterSeal = status.clusterSeal ?? null;
       clusterMigration = status.clusterMigration ?? null;
       clusterHeld = false;
     } catch (err: unknown) {
       if (isClusterHeldError(err)) {
-        // The node barrier is unsealed (a sealed node answers status through
-        // its sealed-window listener), but a cluster seal holds the node or
-        // it cannot confirm the seal records: it answers no status question
-        // and admits only the authenticated cluster unseal. Offer that, with
-        // no record: only a serving node reports one.
-        sealStore.sealed = false;
-        clusterHeld = true;
-        clusterSeal = { active: true, sealed: true, epoch: 0 };
-        clusterMigration = null;
+        enterClusterHeld();
         return;
       }
       const msg = err instanceof Error ? err.message : "Failed to fetch seal status";

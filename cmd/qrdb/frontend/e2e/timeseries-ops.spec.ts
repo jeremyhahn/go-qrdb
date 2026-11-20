@@ -60,6 +60,17 @@ async function injectStatefulTimeSeriesBinding(
     const calls: string[] = [];
     w.__TS_CALLS__ = calls;
 
+    // A test holds a method (holdTs) to keep its calls in flight until it
+    // releases them (releaseTs), e.g. across a metric switch.
+    const holds: Record<string, { gate: Promise<void>; release: () => void; arrived: number }> = {};
+    w.__TS_HOLDS__ = holds;
+    async function maybeHold(method: string): Promise<void> {
+      const h = holds[method];
+      if (!h) return;
+      h.arrived++;
+      await h.gate;
+    }
+
     function maybeReject(method: string): void {
       calls.push(method);
       const s = w.__QRDB_MOCK_STATE__ as { errors: Record<string, string> };
@@ -146,6 +157,7 @@ async function injectStatefulTimeSeriesBinding(
           return { points: inRange(req) };
         },
         Aggregate: async (req: Req) => {
+          await maybeHold("Aggregate");
           maybeReject("Aggregate");
           return {
             results: bucket(
@@ -157,6 +169,7 @@ async function injectStatefulTimeSeriesBinding(
           };
         },
         RichQuery: async (req: Req) => {
+          await maybeHold("RichQuery");
           maybeReject("RichQuery");
           const filterTags = (req["tags"] as Tag[] | undefined) ?? [];
           let points = inRange(req).filter((p) =>
@@ -214,6 +227,7 @@ async function injectStatefulTimeSeriesBinding(
           return { deleted };
         },
         GetRetention: async (req: Req) => {
+          await maybeHold("GetRetention");
           maybeReject("GetRetention");
           return { policy: retentionStore.get(req["metric"] as string) ?? null };
         },
@@ -282,6 +296,43 @@ async function writeBatchViaUI(page: Page, metric: string, lines: string[]): Pro
 async function openMetric(page: Page, metric: string): Promise<void> {
   await page.locator("[role='button']", { hasText: metric }).first().click();
   await expect(page.getByRole("button", { name: "Back to Metrics" })).toBeVisible({ timeout: LOAD_TIMEOUT });
+}
+
+type TsHolds = Record<string, { gate: Promise<void>; release: () => void; arrived: number }>;
+
+/** Keeps every later call of a TimeSeriesBinding method in flight. */
+async function holdTs(page: Page, method: string): Promise<void> {
+  await page.evaluate((m) => {
+    const holds = (window as unknown as { __TS_HOLDS__: TsHolds }).__TS_HOLDS__;
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    holds[m] = { gate, release, arrived: 0 };
+  }, method);
+}
+
+/** How many calls of a held method are in flight. */
+async function heldCalls(page: Page, method: string): Promise<number> {
+  return page.evaluate(
+    (m) => (window as unknown as { __TS_HOLDS__: TsHolds }).__TS_HOLDS__[m]?.arrived ?? 0,
+    method,
+  );
+}
+
+/** Releases the calls holdTs kept in flight. */
+async function releaseTs(page: Page, method: string): Promise<void> {
+  await page.evaluate((m) => {
+    const holds = (window as unknown as { __TS_HOLDS__: TsHolds }).__TS_HOLDS__;
+    const h = holds[m];
+    delete holds[m];
+    h?.release();
+  }, method);
+}
+
+/** Counts the settled calls of a TimeSeriesBinding method so far. */
+async function callCount(page: Page, method: string): Promise<number> {
+  return (await bindingCalls(page)).filter((c) => c === method).length;
 }
 
 async function bindingCalls(page: Page): Promise<string[]> {
@@ -490,5 +541,49 @@ test.describe("TimeSeries operations", () => {
     await expect(page.getByText("retention denied")).toBeVisible({ timeout: 5_000 });
     await expect(page.getByTestId("ts-retention-none")).toBeVisible();
     await clearError(page, "TimeSeriesBinding.SetRetention");
+  });
+
+  test("an aggregate answered after switching metric is dropped", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+    await writePointViaUI(page, "ops.stale.a", "1", ns(minuteBase()));
+    await expect(page.getByText('Data point written for "ops.stale.a"')).toBeVisible({ timeout: 5_000 });
+    await writePointViaUI(page, "ops.stale.b", "2", ns(minuteBase()));
+    await expect(page.getByText('Data point written for "ops.stale.b"')).toBeVisible({ timeout: 5_000 });
+    await openMetric(page, "ops.stale.a");
+
+    await holdTs(page, "Aggregate");
+    await page.getByTestId("ts-agg-run").click();
+    await expect.poll(() => heldCalls(page, "Aggregate"), { timeout: 5_000 }).toBe(1);
+
+    await page.getByRole("button", { name: "Back to Metrics" }).click();
+    await openMetric(page, "ops.stale.b");
+    await releaseTs(page, "Aggregate");
+    await expect.poll(() => callCount(page, "Aggregate"), { timeout: 5_000 }).toBe(1);
+
+    // Metric A's answer settled while B is shown: B's card stays empty, and
+    // its run button is not left loading.
+    await expect(page.getByTestId("ts-agg-results")).toHaveCount(0);
+    await expect(page.getByTestId("ts-agg-run")).toBeEnabled();
+  });
+
+  test("a failed retention lookup shows an error with retry, not 'none'", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+    await writePointViaUI(page, "ops.reterr", "1", ns(minuteBase()));
+    await expect(page.getByText('Data point written for "ops.reterr"')).toBeVisible({ timeout: 5_000 });
+
+    await injectError(page, "TimeSeriesBinding.GetRetention", "retention backend down");
+    await openMetric(page, "ops.reterr");
+    const card = page.getByTestId("ts-retention-card");
+    await expect(card.getByTestId("ts-retention-error")).toContainText("retention backend down", {
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(card.getByTestId("ts-retention-none")).toHaveCount(0);
+
+    await clearError(page, "TimeSeriesBinding.GetRetention");
+    await card.getByTestId("ts-retention-retry").click();
+    await expect(card.getByTestId("ts-retention-none")).toHaveText("Current policy: none", { timeout: LOAD_TIMEOUT });
+    await expect(card.getByTestId("ts-retention-error")).toHaveCount(0);
   });
 });

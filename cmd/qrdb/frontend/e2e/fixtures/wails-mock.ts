@@ -133,6 +133,13 @@ export interface MockState {
       total: number;
       nodes?: { nodeId: string; step?: string; phase?: string; attempts?: number; detail?: string }[];
     };
+    /**
+     * The desktop binding's answer for a node the cluster seal holds
+     * (SealStatus.clusterHeld): the node refused status with 503 SEALED, so
+     * SealBinding.Status reports {sealed: true, initialized: true,
+     * clusterHeld: true} and nothing else.
+     */
+    clusterHeld?: boolean;
   };
   unsealProgress: {
     sealed: boolean;
@@ -672,7 +679,23 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           Status: async () => {
             maybeReject("SealBinding.Status");
-            return { ...getState().sealStatus };
+            const st = getState().sealStatus;
+            if (st.clusterHeld) {
+              // A held node refuses status with 503 SEALED; the binding
+              // answers with the held flag and nothing of the barrier.
+              return {
+                sealed: true,
+                initialized: true,
+                strategy: "",
+                sharesRequired: 0,
+                sharesProvided: 0,
+                sharesTotal: 0,
+                clusterSeal: null,
+                clusterMigration: null,
+                clusterHeld: true,
+              };
+            }
+            return { ...st };
           },
           // SealBinding.ClusterUnseal(): clears the replicated cluster seal
           // record, written through this node by the caller, and returns it.
@@ -691,6 +714,12 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               local: "serving",
             };
             s.sealStatus.clusterSeal = next;
+            // A held node's own barrier was unsealed all along; once the
+            // record clears it serves, and answers status again.
+            if (s.sealStatus.clusterHeld) {
+              s.sealStatus.clusterHeld = false;
+              s.sealStatus.sealed = false;
+            }
             return { ...next };
           },
         },
