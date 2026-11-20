@@ -339,8 +339,33 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     function maybeReject(method: string): void {
       const s = getState();
       if (s.errors[method]) {
-        throw new Error(s.errors[method]);
+        // The Wails runtime rejects a Go error as its message string, not
+        // an Error; the SDK must normalize it.
+        throw s.errors[method];
       }
+    }
+
+    // maybeHold keeps a call a test holds (holdCall) in flight until the
+    // test releases it (releaseCall), counting every call that arrives.
+    async function maybeHold(method: string): Promise<void> {
+      const w = window as unknown as {
+        __QRDB_MOCK_HOLDS__?: Record<string, { calls: number; gate: Promise<void> }>;
+      };
+      const hold = w.__QRDB_MOCK_HOLDS__?.[method];
+      if (hold === undefined) return;
+      hold.calls += 1;
+      await hold.gate;
+    }
+
+    // settingsEnvelope unwraps a database settings request the way the Go
+    // binding decodes it: the config sits under one key ({raft: {...}}). A
+    // bare config object fails, as it does against the real binding, where
+    // its fields would decode into nothing.
+    function settingsEnvelope(method: string, req: unknown, key: string): unknown {
+      if (typeof req !== "object" || req === null || Object.keys(req).length !== 1 || !(key in req)) {
+        throw new Error(`${method}: request must be {${key}: {...}}`);
+      }
+      return (req as Record<string, unknown>)[key];
     }
 
     // Stateful in-memory stores for CRUD bindings
@@ -463,10 +488,15 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     const userStore = new Map<string, {
       id: string;
       username: string;
+      email?: string;
+      name?: string;
       tenant: string;
       lifecycle: string;
       createdAt: string;
       updatedAt: string;
+      roleIds?: string[];
+      // SDK CertBinding shape, as the server lists it on the User record.
+      certBindings?: { thumbprint: string; kind: string; notAfter?: string }[];
     }>();
     const roleStore = new Map<string, {
       id: string;
@@ -1549,15 +1579,22 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           GetCompactionProgress: async () => ({}),
         },
         UserBinding: {
-          Create: async (req: { username: string; tenant?: string }) => {
+          Create: async (req: { username: string; email?: string; name?: string; tenant?: string; lifecycle?: string }) => {
             maybeReject("UserBinding.Create");
+            // The server creates an account only as pending, active or disabled.
+            const initial = req.lifecycle || "active";
+            if (!["pending", "active", "disabled"].includes(initial)) {
+              throw new Error(`cannot create a user in lifecycle "${initial}"`);
+            }
             const id = fakeUUID();
             const now = new Date().toISOString();
             const user = {
               id,
               username: req.username,
+              ...(req.email ? { email: req.email } : {}),
+              ...(req.name ? { name: req.name } : {}),
               tenant: req.tenant ?? "default",
-              lifecycle: "active",
+              lifecycle: initial,
               createdAt: now,
               updatedAt: now,
             };
@@ -1568,13 +1605,18 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             maybeReject("UserBinding.Get");
             const user = userStore.get(id);
             if (!user) throw new Error(`user "${id}" not found`);
-            return { ...user };
+            return { ...user, roleIds: [...(user.roleIds ?? [])] };
           },
-          Update: async (req: { id: string; username?: string; tenant?: string }) => {
+          Update: async (req: { id: string; username?: string; email?: string; name?: string; tenant?: string; role_ids?: string[] }) => {
             maybeReject("UserBinding.Update");
             const user = userStore.get(req.id);
             if (!user) throw new Error(`user "${req.id}" not found`);
+            // transport.UpdateUserRequest.RoleIDs (role_ids, omitempty): a
+            // non-empty set replaces the user's roles, as the server does.
+            if (req.role_ids !== undefined && req.role_ids.length > 0) user.roleIds = [...req.role_ids];
             if (req.username !== undefined) user.username = req.username;
+            if (req.email) user.email = req.email;
+            if (req.name) user.name = req.name;
             if (req.tenant !== undefined) user.tenant = req.tenant;
             user.updatedAt = new Date().toISOString();
             return { ...user };
@@ -1603,6 +1645,60 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               user.lifecycle = "disabled";
               user.updatedAt = new Date().toISOString();
             }
+          },
+          // Suspend and Unsuspend are narrower than Enable/Disable, as on the
+          // server: only active suspends and only suspended unsuspends.
+          Suspend: async (id: string) => {
+            maybeReject("UserBinding.Suspend");
+            const user = userStore.get(id);
+            if (!user) throw new Error(`user "${id}" not found`);
+            if (user.lifecycle !== "active") {
+              throw new Error(`cannot suspend a user in lifecycle "${user.lifecycle}"`);
+            }
+            user.lifecycle = "suspended";
+            user.updatedAt = new Date().toISOString();
+          },
+          Unsuspend: async (id: string) => {
+            maybeReject("UserBinding.Unsuspend");
+            const user = userStore.get(id);
+            if (!user) throw new Error(`user "${id}" not found`);
+            if (user.lifecycle !== "suspended") {
+              throw new Error(`cannot unsuspend a user in lifecycle "${user.lifecycle}"`);
+            }
+            user.lifecycle = "active";
+            user.updatedAt = new Date().toISOString();
+          },
+          GetByCertThumbprint: async (thumbprint: string) => {
+            maybeReject("UserBinding.GetByCertThumbprint");
+            for (const user of userStore.values()) {
+              if ((user.certBindings ?? []).some((b) => b.thumbprint === thumbprint)) {
+                return { ...user, roleIds: [...(user.roleIds ?? [])] };
+              }
+            }
+            // A string, as the Wails runtime rejects a Go error.
+            throw `user not found: no user bound to thumbprint "${thumbprint}"`;
+          },
+          AddCertBinding: async (id: string, thumbprint: string, notAfterUnix: number) => {
+            maybeReject("UserBinding.AddCertBinding");
+            const user = userStore.get(id);
+            if (!user) throw new Error(`user "${id}" not found`);
+            const bindings = (user.certBindings ?? []).filter((b) => b.thumbprint !== thumbprint);
+            const binding: { thumbprint: string; kind: string; notAfter?: string } = {
+              thumbprint,
+              kind: "spki_sha256",
+            };
+            if (notAfterUnix) binding.notAfter = new Date(notAfterUnix * 1000).toISOString();
+            user.certBindings = [...bindings, binding];
+            user.updatedAt = new Date().toISOString();
+            return { ...user, roleIds: [...(user.roleIds ?? [])] };
+          },
+          RemoveCertBinding: async (id: string, thumbprint: string) => {
+            maybeReject("UserBinding.RemoveCertBinding");
+            const user = userStore.get(id);
+            if (!user) throw new Error(`user "${id}" not found`);
+            user.certBindings = (user.certBindings ?? []).filter((b) => b.thumbprint !== thumbprint);
+            user.updatedAt = new Date().toISOString();
+            return { ...user, roleIds: [...(user.roleIds ?? [])] };
           },
         },
         RoleBinding: {
@@ -1646,11 +1742,20 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             const roles = Array.from(roleStore.values());
             return { roles, total: roles.length };
           },
-          Assign: async () => {
+          Assign: async (userId: string, roleId: string) => {
             maybeReject("RoleBinding.Assign");
+            await maybeHold("RoleBinding.Assign");
+            const user = userStore.get(userId);
+            if (!user) throw new Error(`user "${userId}" not found`);
+            const roleIds = user.roleIds ?? [];
+            if (!roleIds.includes(roleId)) user.roleIds = [...roleIds, roleId];
           },
-          Unassign: async () => {
+          Unassign: async (userId: string, roleId: string) => {
             maybeReject("RoleBinding.Unassign");
+            await maybeHold("RoleBinding.Unassign");
+            const user = userStore.get(userId);
+            if (!user) throw new Error(`user "${userId}" not found`);
+            user.roleIds = (user.roleIds ?? []).filter((id) => id !== roleId);
           },
           ListPermissions: async () => {
             maybeReject("RoleBinding.ListPermissions");
@@ -2008,7 +2113,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             return db;
           },
-          UpdateRaft: async (name: string, raft: unknown) => {
+          UpdateRaft: async (name: string, req: unknown) => {
+            // The binding takes *transport.UpdateDatabaseRaftRequest: {raft: {...}}.
+            const raft = settingsEnvelope("DatabaseBinding.UpdateRaft", req, "raft");
             maybeReject("DatabaseBinding.UpdateRaft");
             const s = getState();
             const db = s.databases.find((d: { name: string }) => d.name === name) as Record<string, unknown> | undefined;
@@ -2016,15 +2123,44 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             db.raft = raft;
             return db;
           },
-          UpdateBarrier: async (name: string, barrier: unknown) => {
+          UpdateBarrier: async (name: string, req: unknown) => {
+            // The binding takes *transport.UpdateDatabaseBarrierRequest: {barrier: {...}}.
+            const barrier = settingsEnvelope("DatabaseBinding.UpdateBarrier", req, "barrier");
             maybeReject("DatabaseBinding.UpdateBarrier");
             const s = getState();
             const db = s.databases.find((d: { name: string }) => d.name === name) as Record<string, unknown> | undefined;
             if (!db) throw new Error(`database "${name}" not found`);
+            // As pkg/database Manager.updateBarrier: the barrier is fixed at
+            // creation; only bookkeeping that keeps it, its strategy and its
+            // M-of-N unchanged is accepted.
+            type Barrier = { enabled?: boolean; mode?: string; shares_required?: number; shares_total?: number };
+            const want = (barrier ?? {}) as Barrier;
+            const have = (db.barrier ?? {}) as Barrier;
+            const modeOf = (b: Barrier): string => b.mode || "passphrase";
+            let direction = "";
+            if (want.enabled && !have.enabled) direction = "enable";
+            else if (!want.enabled && have.enabled) direction = "disable";
+            else if (want.enabled && modeOf(want) !== modeOf(have)) direction = "change the strategy of";
+            else if (
+              want.enabled &&
+              modeOf(want) === "shamir" &&
+              (want.shares_required !== have.shares_required || want.shares_total !== have.shares_total)
+            ) {
+              direction = "change the M-of-N of";
+            }
+            if (direction !== "") {
+              throw (
+                `database: cannot ${direction} the encryption barrier for database ${JSON.stringify(name)} ` +
+                "after creation: no re-encryption migration is available; " +
+                "create the database with the desired barrier configuration instead"
+              );
+            }
             db.barrier = barrier;
             return db;
           },
-          UpdateConnection: async (name: string, connection: unknown) => {
+          UpdateConnection: async (name: string, req: unknown) => {
+            // The binding takes *transport.UpdateDatabaseConnectionRequest: {connection: {...}}.
+            const connection = settingsEnvelope("DatabaseBinding.UpdateConnection", req, "connection");
             maybeReject("DatabaseBinding.UpdateConnection");
             const s = getState();
             const db = s.databases.find((d: { name: string }) => d.name === name) as Record<string, unknown> | undefined;
@@ -2792,6 +2928,38 @@ export async function injectError(
     },
     { m: method, msg: message },
   );
+}
+
+/**
+ * Holds every call of a binding method in flight until releaseCall.
+ */
+export async function holdCall(page: Page, method: string): Promise<void> {
+  await page.evaluate((m: string) => {
+    const w = window as unknown as {
+      __QRDB_MOCK_HOLDS__?: Record<string, { calls: number; gate: Promise<void>; open: () => void }>;
+    };
+    let open = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    w.__QRDB_MOCK_HOLDS__ = { ...(w.__QRDB_MOCK_HOLDS__ ?? {}), [m]: { calls: 0, gate, open } };
+  }, method);
+}
+
+/**
+ * Releases the calls holdCall kept in flight and returns how many arrived.
+ */
+export async function releaseCall(page: Page, method: string): Promise<number> {
+  return page.evaluate((m: string) => {
+    const w = window as unknown as {
+      __QRDB_MOCK_HOLDS__?: Record<string, { calls: number; open: () => void }>;
+    };
+    const hold = w.__QRDB_MOCK_HOLDS__?.[m];
+    if (hold === undefined) return 0;
+    delete w.__QRDB_MOCK_HOLDS__![m];
+    hold.open();
+    return hold.calls;
+  }, method);
 }
 
 /**

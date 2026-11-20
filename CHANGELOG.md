@@ -15,6 +15,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- CI runs every job on the standard GitHub-hosted `ubuntu-latest` runner for every event, a push to `main` and a same-repository pull request included (owner ruling 999). The pool split (ruling 841) and the pool image producer that published the pool legs' images to the LAN CI registry (ruling 879) are removed; a job may run self-hosted only with a `# self-hosted: <reason>` comment naming the hardware it needs or the measured hosted limit it exceeds, and none does. Code review's review jobs keep their self-hosted review hosts.
 - The vector quota's distinct stored-id count is a new vector command rule gated on the `vector-stored-count` feature: the proposer sets it only once every replica of the shard supports it, and a command without it applies the old one-per-upsert count on every binary.
 - The audit chain's apply-time onboarding dedupe is a new event marker gated on the `audit-append-once` feature: the proposer sets it only once every replica of the shard supports it, and an event without it is appended on every apply, on every binary.
 - CI hands the toolchain and integration-test images between jobs through the LAN CI registry (the repository secret secrets.CI_IMAGE_REGISTRY, so every log line masks its address) on self-hosted runners; GitHub artifacts remain the path on GitHub-hosted runners and whenever a pull fails.
