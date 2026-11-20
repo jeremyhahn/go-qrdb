@@ -113,7 +113,7 @@ func TestSOHelpers_FailurePaths(t *testing.T) {
 		}
 	}
 	revoke := func(ctx context.Context, deps Dependencies, u *user.User) error {
-		return revokeAdminSORole(ctx, deps, u, soRoleID)
+		return revokeAdminSORole(ctx, deps, u, soRoleID, "so-key")
 	}
 	record := func(ctx context.Context, deps Dependencies, u *user.User) error {
 		return recordSOBoundKey(ctx, deps, u, "key")

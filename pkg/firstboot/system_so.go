@@ -487,7 +487,7 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 	}
 	defer func() {
 		if err != nil && granted {
-			if rerr := revokeAdminSORole(context.WithoutCancel(ctx), deps, soUser, soRoleID); rerr != nil {
+			if rerr := revokeAdminSORole(context.WithoutCancel(ctx), deps, soUser, soRoleID, soKey); rerr != nil {
 				err = errors.Join(err, rerr)
 			}
 		}
@@ -571,10 +571,17 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 // bootstrap admin when the enrolment then fails, so the admin holds no SO
 // authority an enrolment never completed. The account is re-read first so
 // a concurrent write to it is not undone.
-func revokeAdminSORole(ctx context.Context, deps Dependencies, admin *user.User, soRoleID string) error {
+func revokeAdminSORole(ctx context.Context, deps Dependencies, admin *user.User, soRoleID, soKey string) error {
 	updater, ok := deps.Users.(userUpdater)
 	if !ok {
 		return &MissingSOSeamError{Seam: "Dependencies.Users implementing UpdateUser to take back the SO role"}
+	}
+	// Another enrollment attempt that observed this grant may have bound
+	// and recorded the SO's key since: the role is then that completed
+	// enrollment's and is kept. The completion is checked on the re-read
+	// record and again, by the guard, on the record the write commits over.
+	completed := func(u *user.User) bool {
+		return u.Attributes[soBoundKeyAttribute] == soKey && u.HasCertBinding(soKey)
 	}
 	var deadline time.Time
 	for {
@@ -589,8 +596,20 @@ func revokeAdminSORole(ctx context.Context, deps Dependencies, admin *user.User,
 		if !slices.Contains(current.RoleIDs, soRoleID) {
 			return nil
 		}
+		if completed(current) {
+			deps.Logger.Warn("first-boot: the system SO enrolment failed after another attempt completed it; the SO role is kept",
+				slog.String("tenant", admin.TenantID), slog.Uint64("user_id", admin.ID))
+			return nil
+		}
 		roleIDs := slices.DeleteFunc(slices.Clone(current.RoleIDs), func(id string) bool { return id == soRoleID })
-		_, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: admin.ID, RoleIDs: roleIDs, Guard: snapshotRolesGuard(current.RoleIDs)})
+		rolesGuard := snapshotRolesGuard(current.RoleIDs)
+		guard := func(prior, next *user.User) error {
+			if completed(prior) {
+				return &user.ConcurrentUpdateError{ID: prior.ID}
+			}
+			return rolesGuard(prior, next)
+		}
+		_, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: admin.ID, RoleIDs: roleIDs, Guard: guard})
 		if err == nil {
 			deps.Logger.Warn("first-boot: the system SO enrolment failed; the SO role granted to the bootstrap admin was taken back",
 				slog.String("tenant", admin.TenantID), slog.Uint64("user_id", admin.ID))

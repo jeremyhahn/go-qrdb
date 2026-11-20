@@ -72,7 +72,7 @@ func TestRevokeAdminSORole_KeepsARoleAssignedAfterTheSnapshot(t *testing.T) {
 	})
 	snapshot := *admin
 	snapshot.RoleIDs = slices.Clone(admin.RoleIDs)
-	if err := revokeAdminSORole(context.Background(), deps, &snapshot, soRole); err != nil {
+	if err := revokeAdminSORole(context.Background(), deps, &snapshot, soRole, "so-key"); err != nil {
 		t.Fatalf("revokeAdminSORole: %v", err)
 	}
 	got := users.byName["admin"].RoleIDs
