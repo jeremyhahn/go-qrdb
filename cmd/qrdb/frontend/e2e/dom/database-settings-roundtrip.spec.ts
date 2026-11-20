@@ -136,27 +136,18 @@ test("updateConnection: remote connection round-trips through the daemon", async
 
 // The server changes no barrier after create (enable, disable and a strategy
 // switch are migrations it refuses with 409; only a same-config write is
-// accepted), so the roundtrip is: the form sends the change, shows the
-// server's refusal, and after a reload the form and the daemon still hold
-// the database's barrier as created.
-test("updateBarrier: the form reports the daemon's refusal and the stored barrier is unchanged", async ({
+// accepted), so the form shows the barrier read-only as the daemon holds
+// it and offers no save.
+test("updateBarrier: the barrier is shown read-only as the daemon holds it", async ({
   page,
 }) => {
-  let main = await openDetail(page, BARRIER_DB);
-  let form = main.getByTestId("db-settings-barrier");
-  await expect(form.getByLabel("Barrier enabled")).not.toBeChecked();
-  await form.getByLabel("Barrier enabled").check();
-  await form.getByLabel("Barrier mode").selectOption("passphrase");
-  await form.getByRole("button", { name: "Save Barrier Configuration" }).click();
-  await expect(form.getByTestId("outcome-error")).toContainText(
-    "cannot enable the encryption barrier",
+  const main = await openDetail(page, BARRIER_DB);
+  const section = main.getByTestId("db-settings-barrier");
+  await expect(section.getByTestId("barrier-enabled")).toHaveText("No");
+  await expect(section.getByTestId("barrier-fixed-note")).toContainText(
+    "fixed when the database is created",
   );
-  await expect(form.getByTestId("outcome-success")).toHaveCount(0);
-
-  await page.reload();
-  main = await openDetail(page, BARRIER_DB);
-  form = main.getByTestId("db-settings-barrier");
-  await expect(form.getByLabel("Barrier enabled")).not.toBeChecked();
+  await expect(section.getByRole("button")).toHaveCount(0);
   const stored = (await storedDb(BARRIER_DB)).barrier as { enabled?: boolean } | undefined;
   expect(stored?.enabled ?? false).toBe(false);
 });
@@ -170,6 +161,9 @@ test("updateRaft: raft configuration round-trips through the daemon", async ({ p
   await form.getByLabel("Replica ID").fill("1");
   await form.getByLabel("Raft address").fill("127.0.0.1:7100");
   await form.getByLabel("Discovery").selectOption("static");
+  // Static discovery is new to this database: the form asks for its block.
+  await form.getByLabel("Static peers").fill("127.0.0.1:7101");
+  await form.getByLabel("Shared secret").fill("static-discovery-shared-secret-0123");
   await form.getByRole("button", { name: "Save Raft Configuration" }).click();
   await expect(form.getByTestId("outcome-success")).toHaveText("Raft configuration saved.");
 
