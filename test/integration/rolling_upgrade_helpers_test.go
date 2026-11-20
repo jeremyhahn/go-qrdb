@@ -72,6 +72,10 @@ type upgradeCluster struct {
 	cmds       []*exec.Cmd
 	logs       []*nodeLog
 	nodes      []*multiProtoNode
+	// mysqlPorts and pgsqlPorts are each node's SQL wire listeners
+	// (rolling_upgrade_sql_wire_test.go).
+	mysqlPorts []int
+	pgsqlPorts []int
 }
 
 // startUpgradeCluster starts node i on bins[i] and returns once a leader
@@ -91,6 +95,8 @@ func startUpgradeCluster(t *testing.T, bins []string) *upgradeCluster {
 		cmds:       make([]*exec.Cmd, 3),
 		logs:       make([]*nodeLog, 3),
 		nodes:      make([]*multiProtoNode, 3),
+		mysqlPorts: allocateTCPPorts(t, 3),
+		pgsqlPorts: allocateTCPPorts(t, 3),
 	}
 	grpcPorts := allocateTCPPorts(t, 3)
 	quicPorts := allocateTCPPorts(t, 3)
@@ -144,6 +150,9 @@ func startUpgradeCluster(t *testing.T, bins []string) *upgradeCluster {
 			"--enable-quic", "--quic-port", fmt.Sprintf("%d", quicPorts[i]),
 			"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPorts[i]),
 			"--enable-unix", "--unix-socket-path", unixPaths[i],
+			"--enable-mysql", "--mysql-port", fmt.Sprintf("%d", c.mysqlPorts[i]),
+			"--enable-pgsql", "--pgsql-port", fmt.Sprintf("%d", c.pgsqlPorts[i]),
+			"--sql-database", sqlClusterDatabase,
 			"--tls-ca-file", c.ca.CertPath,
 			"--tls-cert-file", nodeCertPaths[i],
 			"--tls-key-file", nodeKeyPaths[i],

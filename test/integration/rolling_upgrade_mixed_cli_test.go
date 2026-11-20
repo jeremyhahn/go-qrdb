@@ -160,6 +160,20 @@ func TestRollingUpgrade_MixedCluster_CLI(t *testing.T) {
 			}
 			c.requireReadsEverywhere(t, want)
 
+			// The SQL wires serve the mixed cluster too: a row inserted
+			// over MySQL or PostgreSQL on any node, N or N+1, reads back on
+			// every node over both wires.
+			wantSQL := make(map[string]string, 3*len(upgradeSQLWires))
+			for i := range c.nodes {
+				for _, wire := range upgradeSQLWires {
+					key := fmt.Sprintf("mixed/node%d/%s", i+1, wire)
+					value := fmt.Sprintf("v-node%d-%s", i+1, wire)
+					c.sqlPutAcked(t, i, wire, key, value)
+					wantSQL[key] = value
+				}
+			}
+			c.requireSQLReadsEverywhere(t, wantSQL)
+
 			for _, dir := range []struct {
 				name        string
 				leader, via int
@@ -175,10 +189,20 @@ func TestRollingUpgrade_MixedCluster_CLI(t *testing.T) {
 					putAcked(t, c.nodes[dir.via], proto, key, value)
 					fwd[key] = value
 				}
+				// A SQL write on the follower is forwarded to the leader
+				// of the other release over both wires.
+				fwdSQL := make(map[string]string, len(upgradeSQLWires))
+				for _, wire := range upgradeSQLWires {
+					key := fmt.Sprintf("forward/leader%d-via%d/%s", dir.leader+1, dir.via+1, wire)
+					value := "fwd-" + string(wire)
+					c.sqlPutAcked(t, dir.via, wire, key, value)
+					fwdSQL[key] = value
+				}
 				if got := c.shard1Leader(t); got != dir.leader {
 					t.Fatalf("%s: leadership moved to node %d during the writes, want node %d", dir.name, got+1, dir.leader+1)
 				}
 				c.requireReadsEverywhere(t, fwd)
+				c.requireSQLReadsEverywhere(t, fwdSQL)
 			}
 			requireNotActivated(t, c, "in a mixed N/N+1 cluster")
 		})
