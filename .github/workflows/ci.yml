@@ -24,6 +24,9 @@
 # and in-toolchain-image.sh v6, v1.37 timeouts, v1.38 release label, v1.39/
 # v1.40 scoped deps-check and deps-bump, v1.41 PR/main parity and v1.35.2/
 # v1.35.3's signatures.yml move are the full catch-up, still to come.
+# Ruling 640 (ci-template v1.39 deltas, adopted 2026-11-15): a
+# workflow_dispatch on ci/deps-bump is not refused: deps-bump.yml dispatches
+# this workflow there, because the PR it opens starts no pull_request run.
 # go-qrdb deviations from v1.35.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
 #   - every job runs on the standard GitHub-hosted ubuntu-latest runner,
@@ -2214,6 +2217,28 @@ jobs:
         run: |
           scripts/cluster-proof-ci.sh down "$CLUSTERPROOF_CI_DIR"
           rm -f "$RUNNER_TEMP/gomodauth.env"
+
+  # Ruling 640: the daily dependency bump. deps-bump.yml has only
+  # workflow_dispatch (ci.yml's nightly is the one scheduler, rulings 135,
+  # 216(1) and 633), so the nightly schedule run on main dispatches it. A
+  # workflow_dispatch made with GITHUB_TOKEN does start a run. actions: write
+  # is granted to this job alone.
+  deps-bump-dispatch:
+    name: Dispatch deps-bump
+    # Never on workflow_dispatch: deps-bump.yml dispatches ci.yml on
+    # ci/deps-bump, so the two would dispatch each other. Outside ci-gate
+    # for the same reason (test/buildgates/ci_tiers_test.go outsideGate).
+    if: ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' && !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch deps-bump.yml on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: gh workflow run deps-bump.yml --repo "$REPO" --ref main
 
   signatures:
     name: Signatures
