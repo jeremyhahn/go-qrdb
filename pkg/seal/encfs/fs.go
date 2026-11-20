@@ -193,6 +193,20 @@ func (fs *FS) openEncryptedRO(base filesys.File, appendLog bool) (filesys.File, 
 // barrier's wrapped-DEK length is not deterministic, so the size a tear cut
 // from cannot be known: that refuses too, rather than guess.
 func (fs *FS) tornFramedHeader(base filesys.File, physicalSize int64) (*header, error) {
+	// Inspect the on-disk marker before asking the barrier for anything:
+	// only an empty file or one under the pending marker can be an
+	// unfinished Create, so an intact (stamped) log opens without
+	// barrier.Encrypt, which an exhausted or superseded barrier refuses
+	// while it still decrypts.
+	if physicalSize > 0 {
+		_, pending, err := framedMagicState(base, physicalSize)
+		if err != nil {
+			return nil, err
+		}
+		if !pending {
+			return nil, nil
+		}
+	}
 	h, err := fs.freshFramedHeader()
 	if err != nil {
 		return nil, err
