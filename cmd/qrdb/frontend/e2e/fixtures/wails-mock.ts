@@ -157,6 +157,11 @@ export interface MockState {
    * semantics. See wails-mock.ts's MVCCBinding.RestoreToRevision.
    */
   restoreSimulateConflict?: boolean;
+  /**
+   * Databases whose store keeps no revisions: MVCCBinding.CurrentRevision
+   * answers 501 when called with one of them.
+   */
+  noRevisionDatabases?: string[];
   errors: Record<string, string>;
 }
 
@@ -355,6 +360,15 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
       if (hold === undefined) return;
       hold.calls += 1;
       await hold.gate;
+    }
+
+    // noteMvccDatabase records which database each MVCCBinding call was
+    // scoped to ("" is the connection's default database).
+    function noteMvccDatabase(method: string, database: string): void {
+      const w = window as unknown as {
+        __QRDB_MOCK_MVCC_CALLS__?: Array<{ method: string; database: string }>;
+      };
+      (w.__QRDB_MOCK_MVCC_CALLS__ ??= []).push({ method, database });
     }
 
     // settingsEnvelope unwraps a database settings request the way the Go
@@ -1079,7 +1093,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         MVCCBinding: {
-          PutWithLease: async (key: string, value: string, leaseId?: number) => {
+          PutWithLease: async (database: string, key: string, value: string, leaseId?: number) => {
+            noteMvccDatabase("PutWithLease", database);
             maybeReject("MVCCBinding.PutWithLease");
             kvStore.set(key, value);
             if (leaseId) kvLeaseBindings.set(key, leaseId);
@@ -1094,7 +1109,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           // base64-decodes) -- so, unlike KVBinding's plaintext strings,
           // every key/value this binding returns must be base64-encoded
           // here to round-trip correctly.
-          GetRevision: async (key: string) => {
+          GetRevision: async (database: string, key: string) => {
+            noteMvccDatabase("GetRevision", database);
             maybeReject("MVCCBinding.GetRevision");
             await maybeHold("MVCCBinding.GetRevision");
             const val = kvStore.get(key);
@@ -1108,7 +1124,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               ...(leaseId ? { leaseId } : {}),
             };
           },
-          GetAtRevision: async (key: string, revision: number) => {
+          GetAtRevision: async (database: string, key: string, revision: number) => {
+            noteMvccDatabase("GetAtRevision", database);
             maybeReject("MVCCBinding.GetAtRevision");
             if (revision < compactedRevision) {
               throw new Error(`mvcc: required revision ${revision} has been compacted (compacted to ${compactedRevision})`);
@@ -1124,7 +1141,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           // live kvStore, so a caller can browse the keyspace exactly as it
           // looked at that revision -- including keys since deleted, and
           // excluding keys not yet created.
-          Range: async (start: string, end: string, opts?: { revision?: number }) => {
+          Range: async (database: string, start: string, end: string, opts?: { revision?: number }) => {
+            noteMvccDatabase("Range", database);
             maybeReject("MVCCBinding.Range");
             const asOf = opts && typeof opts.revision === "number" && opts.revision > 0 ? opts.revision : null;
             const kvs: { key: string; value: string }[] = [];
@@ -1144,7 +1162,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             return { kvs: kvs.map((kv) => ({ key: encodeB64(kv.key), value: encodeB64(kv.value) })), count: kvs.length };
           },
-          Compact: async (revision: number) => {
+          Compact: async (database: string, revision: number) => {
+            noteMvccDatabase("Compact", database);
             maybeReject("MVCCBinding.Compact");
             if (revision > mvccRevision) {
               throw new Error(`mvcc: required revision ${revision} is a future revision`);
@@ -1152,7 +1171,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             if (revision > compactedRevision) compactedRevision = revision;
             (window as unknown as { __mvccCompactedRevision?: number }).__mvccCompactedRevision = compactedRevision;
           },
-          CurrentRevision: async () => {
+          CurrentRevision: async (database: string) => {
+            noteMvccDatabase("CurrentRevision", database);
+            await maybeHold("MVCCBinding.CurrentRevision");
+            // A store without revisions answers 501, per database.
+            if ((getState().noRevisionDatabases ?? []).includes(database)) {
+              throw new Error("501 Not Implemented");
+            }
             maybeReject("MVCCBinding.CurrentRevision");
             return mvccRevision;
           },
@@ -1169,13 +1194,14 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           // already-camelCase fields here would double-transform nothing
           // (single words are unaffected) but would misrepresent the wire
           // shape this mock exists to stand in for.
-          RestoreToRevision: async (req: {
+          RestoreToRevision: async (database: string, req: {
             revision: number;
             prefix?: string;
             keys?: string[];
             dry_run?: boolean;
             force?: boolean;
           }) => {
+            noteMvccDatabase("RestoreToRevision", database);
             maybeReject("MVCCBinding.RestoreToRevision");
             const revision = Number(req.revision) || 0;
             const dryRun = Boolean(req.dry_run);
@@ -3019,6 +3045,30 @@ export async function holdCall(page: Page, method: string): Promise<void> {
     });
     w.__QRDB_MOCK_HOLDS__ = { ...(w.__QRDB_MOCK_HOLDS__ ?? {}), [m]: { calls: 0, gate, open } };
   }, method);
+}
+
+/**
+ * Returns how many calls of a held binding method have arrived so far.
+ */
+export async function heldCallCount(page: Page, method: string): Promise<number> {
+  return page.evaluate((m: string) => {
+    const w = window as unknown as {
+      __QRDB_MOCK_HOLDS__?: Record<string, { calls: number }>;
+    };
+    return w.__QRDB_MOCK_HOLDS__?.[m]?.calls ?? 0;
+  }, method);
+}
+
+/**
+ * Returns every MVCCBinding call so far with the database it was scoped to.
+ */
+export async function mvccCalls(page: Page): Promise<Array<{ method: string; database: string }>> {
+  return page.evaluate(() => {
+    const w = window as unknown as {
+      __QRDB_MOCK_MVCC_CALLS__?: Array<{ method: string; database: string }>;
+    };
+    return [...(w.__QRDB_MOCK_MVCC_CALLS__ ?? [])];
+  });
 }
 
 /**

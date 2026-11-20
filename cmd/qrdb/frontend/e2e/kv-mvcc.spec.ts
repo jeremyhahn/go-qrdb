@@ -28,6 +28,8 @@ import {
   injectError,
   clearError,
   holdCall,
+  heldCallCount,
+  mvccCalls,
   releaseCall,
 } from "./fixtures/wails-mock.ts";
 
@@ -246,5 +248,60 @@ test.describe("KV Explorer revision support is remembered per database", () => {
     await expect(page.getByTestId("kv-current-revision")).toHaveText(/Current revision:\s*0/);
     await expect(page.getByTestId("kv-revisions-unavailable")).toHaveCount(0);
     await expect(page.getByLabel("Compact revision")).toBeEnabled();
+  });
+});
+
+test.describe("KV Explorer MVCC calls are scoped to the selected database", () => {
+  test.use({
+    mockState: {
+      ...secondLaunchEmbeddedState,
+      databases: [
+        { name: "kv-plain", backend: "memory", status: "open" },
+        { name: "kv-mvcc", backend: "pebble", status: "open" },
+      ],
+      noRevisionDatabases: ["kv-plain"],
+    },
+  });
+
+  test("compaction and the revision probe carry the selected database", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("aside").getByText("kv-mvcc").click();
+    await expect(page.getByTestId("kv-current-revision")).toHaveText(/Current revision:\s*0/, {
+      timeout: LOAD_TIMEOUT,
+    });
+    await createEntry(page, "scoped/key", "v");
+    await page.getByLabel("Compact revision").fill("1");
+    await page.getByRole("button", { name: "Compact to revision" }).click();
+    await page.locator(".modal").getByRole("button", { name: "Compact", exact: true }).click();
+    await expect(page.getByText("Compacted history to revision 1")).toBeVisible({ timeout: 5_000 });
+
+    const calls = await mvccCalls(page);
+    expect(calls.filter((c) => c.method === "Compact")).toEqual([{ method: "Compact", database: "kv-mvcc" }]);
+    expect(calls.some((c) => c.method === "CurrentRevision")).toBe(true);
+    expect(calls.filter((c) => c.database !== "kv-mvcc")).toEqual([]);
+  });
+
+  test("a delayed probe from one database neither answers nor disables the next", async ({ page }) => {
+    const method = "MVCCBinding.CurrentRevision";
+    await page.goto("/");
+    await holdCall(page, method);
+    await page.locator("aside").getByText("kv-plain").click();
+    await expect.poll(() => heldCallCount(page, method), { timeout: LOAD_TIMEOUT }).toBe(1);
+
+    // kv-plain's probe is still in flight: kv-mvcc must ask for itself.
+    await page.locator("aside").getByText("kv-mvcc").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-mvcc", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect.poll(() => heldCallCount(page, method), { timeout: LOAD_TIMEOUT }).toBe(2);
+    await releaseCall(page, method);
+
+    await expect(page.getByTestId("kv-current-revision")).toHaveText(/Current revision:\s*0/);
+    await expect(page.getByTestId("kv-revisions-unavailable")).toHaveCount(0);
+    await expect(page.getByLabel("Compact revision")).toBeEnabled();
+
+    // The late 501 is remembered for the database that answered it.
+    await page.locator("aside").getByText("kv-plain").click();
+    await expect(page.getByTestId("kv-revisions-unavailable")).toBeVisible({ timeout: LOAD_TIMEOUT });
   });
 });

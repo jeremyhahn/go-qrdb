@@ -714,7 +714,7 @@ func TestMVCCBinding_PutWithLease_Success(t *testing.T) {
 	conn, mvccSvc := newTestConnWithMVCC(t)
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	resp, err := b.PutWithLease("lease-key", "lease-val", 42)
+	resp, err := b.PutWithLease("", "lease-key", "lease-val", 42)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -733,7 +733,7 @@ func TestMVCCBinding_PutWithLease_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	_, err := b.PutWithLease("k", "v", 1)
+	_, err := b.PutWithLease("", "k", "v", 1)
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -748,7 +748,7 @@ func TestMVCCBinding_GetRevision_Success(t *testing.T) {
 	mvccSvc.store["rev-key"] = []byte("rev-val")
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	resp, err := b.GetRevision("rev-key")
+	resp, err := b.GetRevision("", "rev-key")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -767,7 +767,7 @@ func TestMVCCBinding_GetRevision_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	_, err := b.GetRevision("k")
+	_, err := b.GetRevision("", "k")
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -781,7 +781,7 @@ func TestMVCCBinding_GetRevision_KeyNotFound(t *testing.T) {
 	conn, _ := newTestConnWithMVCC(t)
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	_, err := b.GetRevision("missing")
+	_, err := b.GetRevision("", "missing")
 	if err == nil {
 		t.Fatal("expected error for missing key")
 	}
@@ -792,7 +792,7 @@ func TestMVCCBinding_GetAtRevision_Success(t *testing.T) {
 	mvccSvc.store["hist-key"] = []byte("hist-val")
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	resp, err := b.GetAtRevision("hist-key", 10)
+	resp, err := b.GetAtRevision("", "hist-key", 10)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -808,7 +808,7 @@ func TestMVCCBinding_GetAtRevision_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	_, err := b.GetAtRevision("k", 1)
+	_, err := b.GetAtRevision("", "k", 1)
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -825,7 +825,7 @@ func TestMVCCBinding_Range_Success(t *testing.T) {
 	mvccSvc.store["c"] = []byte("3")
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	resp, err := b.Range("a", "d", &transport.RangeOptions{Limit: 100})
+	resp, err := b.Range("", "a", "d", &transport.RangeOptions{Limit: 100})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -841,7 +841,7 @@ func TestMVCCBinding_Range_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	_, err := b.Range("a", "z", &transport.RangeOptions{Limit: 10})
+	_, err := b.Range("", "a", "z", &transport.RangeOptions{Limit: 10})
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -855,7 +855,7 @@ func TestMVCCBinding_Compact_Success(t *testing.T) {
 	conn, _ := newTestConnWithMVCC(t)
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	if err := b.Compact(10); err != nil {
+	if err := b.Compact("", 10); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 }
@@ -864,7 +864,7 @@ func TestMVCCBinding_Compact_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	err := b.Compact(10)
+	err := b.Compact("", 10)
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -874,11 +874,50 @@ func TestMVCCBinding_Compact_NotConnected(t *testing.T) {
 	}
 }
 
+// A named database reaches the Go SDK's DatabaseScoped: a connection that
+// cannot scope to it refuses every MVCC call instead of serving the default
+// database under that name, while "" and "system" stay on the default.
+func TestMVCCBinding_ScopesToTheSelectedDatabase(t *testing.T) {
+	conn, _ := newTestConnWithMVCC(t)
+	b := NewMVCCBinding(testLogger(t), conn)
+
+	for _, db := range []string{"", "system"} {
+		if err := b.Compact(db, 10); err != nil {
+			t.Fatalf("Compact(%q): %v", db, err)
+		}
+		if _, err := b.CurrentRevision(db); err != nil {
+			t.Fatalf("CurrentRevision(%q): %v", db, err)
+		}
+	}
+
+	var unsupported *transport.DatabaseScopeUnsupportedError
+	calls := map[string]func() error{
+		"Compact":         func() error { return b.Compact("orders", 10) },
+		"CurrentRevision": func() error { _, err := b.CurrentRevision("orders"); return err },
+		"GetRevision":     func() error { _, err := b.GetRevision("orders", "k"); return err },
+		"GetAtRevision":   func() error { _, err := b.GetAtRevision("orders", "k", 1); return err },
+		"PutWithLease":    func() error { _, err := b.PutWithLease("orders", "k", "v", 1); return err },
+		"Range": func() error {
+			_, err := b.Range("orders", "a", "z", &transport.RangeOptions{Limit: 10})
+			return err
+		},
+		"RestoreToRevision": func() error {
+			_, err := b.RestoreToRevision("orders", &transport.RestoreRevisionRequest{Revision: 3, Prefix: []byte("p")})
+			return err
+		},
+	}
+	for name, call := range calls {
+		if err := call(); !errors.As(err, &unsupported) {
+			t.Errorf("%s(orders): want *transport.DatabaseScopeUnsupportedError, got %T: %v", name, err, err)
+		}
+	}
+}
+
 func TestMVCCBinding_CurrentRevision_Success(t *testing.T) {
 	conn, mvccSvc := newTestConnWithMVCC(t)
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	rev, err := b.CurrentRevision()
+	rev, err := b.CurrentRevision("")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -891,7 +930,7 @@ func TestMVCCBinding_CurrentRevision_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	_, err := b.CurrentRevision()
+	_, err := b.CurrentRevision("")
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -915,7 +954,7 @@ func TestMVCCBinding_RestoreToRevision_Success(t *testing.T) {
 	}
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	resp, err := b.RestoreToRevision(&transport.RestoreRevisionRequest{
+	resp, err := b.RestoreToRevision("", &transport.RestoreRevisionRequest{
 		Revision: 3,
 		Prefix:   []byte("restore-"),
 		DryRun:   true,
@@ -938,7 +977,7 @@ func TestMVCCBinding_RestoreToRevision_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	_, err := b.RestoreToRevision(&transport.RestoreRevisionRequest{Revision: 3, Prefix: []byte("p")})
+	_, err := b.RestoreToRevision("", &transport.RestoreRevisionRequest{Revision: 3, Prefix: []byte("p")})
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -955,7 +994,7 @@ func TestMVCCBinding_RestoreToRevision_ServiceError(t *testing.T) {
 	}
 	b := NewMVCCBinding(testLogger(t), conn)
 
-	_, err := b.RestoreToRevision(&transport.RestoreRevisionRequest{Revision: 3, Prefix: []byte("p")})
+	_, err := b.RestoreToRevision("", &transport.RestoreRevisionRequest{Revision: 3, Prefix: []byte("p")})
 	if err == nil {
 		t.Fatal("expected error to propagate from the service layer")
 	}

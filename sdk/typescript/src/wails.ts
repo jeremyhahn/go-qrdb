@@ -439,20 +439,30 @@ interface WailsRuntime {
 export class WailsClient implements Client {
 
     /** Tracks whether the embedded server is currently running. */
-    private embeddedRunning = false;
+    // Held in an object so a databaseScoped() client, which delegates to
+    // this one, reads and writes the same flag.
+    private readonly embedded = { running: false };
 
     /**
      * @inheritdoc
      *
-     * Desktop/embedded multi-database scoping is out of scope for this stage:
-     * the Wails bindings route per-database through their own mechanism rather
-     * than an HTTP header, so this is a no-op passthrough that returns the same
-     * client. It exists only to satisfy the {@link Client} interface on both
-     * transports.
+     * The scoped client shares this client's bindings and passes the
+     * database name to the MVCC bindings, which scope the Go SDK client with
+     * DatabaseScoped. `system` and the empty string name the connection's
+     * default database, as on the REST client.
      */
-    databaseScoped(_name: string): Client {
-        return this;
+    databaseScoped(name: string): Client {
+        const target = name === 'system' ? '' : name;
+        if (target === this.activeDatabase) {
+            return this;
+        }
+        const scoped = Object.create(this) as WailsClient;
+        scoped.activeDatabase = target;
+        return scoped;
     }
+
+    /** The database MVCC calls are scoped to; empty for the default. */
+    private activeDatabase = '';
 
     // -----------------------------------------------------------------------
     // Connection
@@ -583,6 +593,9 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get mvcc(): MVCCClient {
         const b = wrapBindings(getBindings().main.MVCCBinding);
+        // Every MVCC binding takes the scoped database first; "" is the
+        // connection's default database.
+        const database = this.activeDatabase;
         return {
             putWithLease: async (
                 key: string,
@@ -594,15 +607,15 @@ export class WailsClient implements Client {
                 // key/value fields, same as the REST wire. Decode to
                 // plaintext for consistency with kv.get/kv.scan (see
                 // decodeMVCCKV in transform.ts for the full explanation).
-                const kv = await b.PutWithLease(key, value, leaseId) as MVCCKeyValue;
+                const kv = await b.PutWithLease(database, key, value, leaseId) as MVCCKeyValue;
                 return decodeMVCCKV(kv);
             },
             getRevision: async (key: string): Promise<MVCCKeyValue> => {
-                const kv = await b.GetRevision(key) as MVCCKeyValue;
+                const kv = await b.GetRevision(database, key) as MVCCKeyValue;
                 return decodeMVCCKV(kv);
             },
             getAtRevision: async (key: string, revision: number): Promise<MVCCKeyValue> => {
-                const kv = await b.GetAtRevision(key, revision) as MVCCKeyValue;
+                const kv = await b.GetAtRevision(database, key, revision) as MVCCKeyValue;
                 return decodeMVCCKV(kv);
             },
             range: async (
@@ -610,14 +623,14 @@ export class WailsClient implements Client {
                 end: string,
                 opts: RangeOptions,
             ): Promise<RangeResponse> => {
-                const resp = await b.Range(start, end, toSnake(opts)) as RangeResponse;
+                const resp = await b.Range(database, start, end, toSnake(opts)) as RangeResponse;
                 return { ...resp, kvs: (resp.kvs ?? []).map(decodeMVCCKV) };
             },
             compact: async (revision: number): Promise<void> => {
-                await b.Compact(revision);
+                await b.Compact(database, revision);
             },
             currentRevision: async (): Promise<number> => {
-                return b.CurrentRevision() as Promise<number>;
+                return b.CurrentRevision(database) as Promise<number>;
             },
             restoreToRevision: async (
                 req: RestoreRevisionRequest,
@@ -642,7 +655,7 @@ export class WailsClient implements Client {
                 if (req.force !== undefined) {
                     wireReq.force = req.force;
                 }
-                const result = await b.RestoreToRevision(toSnake(wireReq)) as RestoreRevisionResult;
+                const result = await b.RestoreToRevision(database, toSnake(wireReq)) as RestoreRevisionResult;
                 // Response change/conflict "key" fields carry the same
                 // base64 []byte encoding as MVCCKeyValue; decode to
                 // plaintext for consistency.
@@ -1373,21 +1386,21 @@ export class WailsClient implements Client {
         return {
             startEmbedded: async (config: EmbeddedConfig): Promise<void> => {
                 await b.StartEmbedded(config);
-                this.embeddedRunning = true;
+                this.embedded.running = true;
             },
             stopEmbedded: async (): Promise<void> => {
                 await b.StopEmbedded();
-                this.embeddedRunning = false;
+                this.embedded.running = false;
             },
             isEmbedded: (): boolean => {
-                return this.embeddedRunning;
+                return this.embedded.running;
             },
             hasSavedConfig: async (): Promise<boolean> => {
                 return b.HasSavedConfig() as Promise<boolean>;
             },
             restoreEmbedded: async (): Promise<void> => {
                 await b.RestoreEmbedded();
-                this.embeddedRunning = true;
+                this.embedded.running = true;
             },
             clearSavedConfig: async (): Promise<void> => {
                 await b.ClearSavedConfig();

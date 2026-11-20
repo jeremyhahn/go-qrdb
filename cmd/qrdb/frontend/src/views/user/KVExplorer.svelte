@@ -277,28 +277,43 @@
    * again, and the revision controls show why they are unavailable.
    */
   async function refreshCurrentRevision(): Promise<void> {
+    // The explorer stays mounted across database switches: the probe is
+    // bound to the client and scope it started for, and its answer is
+    // shown only if the user is still on that database.
+    const probeClient = client;
+    const probeScope = scope;
     if (revisionsUnsupported) {
       currentRevision = null;
       return;
     }
-    // Loads that overlap share one request instead of each asking.
-    revisionProbe ??= probeCurrentRevision().finally(() => {
-      revisionProbe = null;
-    });
-    await revisionProbe;
+    // Loads of one database that overlap share one request instead of
+    // each asking; another database asks for itself.
+    let probe = revisionProbes.get(probeClient);
+    if (probe === undefined) {
+      probe = probeCurrentRevision(probeClient, probeScope).finally(() => {
+        revisionProbes.delete(probeClient);
+      });
+      revisionProbes.set(probeClient, probe);
+    }
+    const revision = await probe;
+    if (client === probeClient && scope === probeScope) currentRevision = revision;
   }
 
-  let revisionProbe: Promise<void> | null = null;
+  const revisionProbes = new Map<Client, Promise<number | null>>();
 
-  async function probeCurrentRevision(): Promise<void> {
+  /**
+   * Reads probeClient's current revision; null when it has none. A 501 is
+   * remembered for probeScope, the database the probe was sent to.
+   */
+  async function probeCurrentRevision(probeClient: Client, probeScope: string): Promise<number | null> {
     try {
-      currentRevision = await client.mvcc.currentRevision();
+      return await probeClient.mvcc.currentRevision();
     } catch (err: unknown) {
-      currentRevision = null;
       if (isNotImplemented(err)) {
-        rememberNoRevisions(scope);
+        rememberNoRevisions(probeScope);
         revisionSupportVersion++;
       }
+      return null;
     }
   }
 
