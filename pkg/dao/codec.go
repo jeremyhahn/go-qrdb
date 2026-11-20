@@ -15,6 +15,7 @@ package dao
 
 import (
 	"reflect"
+	"slices"
 
 	"github.com/jeremyhahn/go-codec"
 	"github.com/jeremyhahn/go-codec/pkg/bson"
@@ -63,6 +64,23 @@ func SupportedCodecs() []CodecType {
 // IsCodecSupported returns true if the specified codec is available in the current build.
 func IsCodecSupported(ct CodecType) bool {
 	return codec.IsSupported(ct)
+}
+
+// DocumentCodecs returns, sorted, the storage codecs a document
+// collection or database accepts: every SupportedCodecs entry for which
+// NewCodec[map[string]any] succeeds. ProtoBuf drops out because it cannot
+// encode a generic map. This is the one storage-codec list; the
+// collection service, the database StorageCodec check and the SDK all
+// read it.
+func DocumentCodecs() []CodecType {
+	var out []CodecType
+	for _, ct := range SupportedCodecs() {
+		if _, err := NewCodec[map[string]any](ct); err == nil {
+			out = append(out, ct)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // NewCodec creates a codec for the specified type.

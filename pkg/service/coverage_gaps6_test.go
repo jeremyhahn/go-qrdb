@@ -26,7 +26,6 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 )
 
@@ -35,30 +34,30 @@ import (
 // ---------------------------------------------------------------------------
 
 // mockBinaryCodec is a test double that returns a fixed byte slice and
-// the constant type "mock" so that codec.Type() != codec.TypeJSON.
+// the constant type "mock" so that c.Type() != dao.CodecJSON.
 type mockBinaryCodec struct {
 	marshalFn   func(v any) ([]byte, error)
 	unmarshalFn func(data []byte, v any) error
 }
 
-func (m *mockBinaryCodec) Marshal(v any) ([]byte, error) {
+func (m *mockBinaryCodec) Marshal(v map[string]any) ([]byte, error) {
 	if m.marshalFn != nil {
 		return m.marshalFn(v)
 	}
 	return json.Marshal(v)
 }
 
-func (m *mockBinaryCodec) Unmarshal(data []byte, v any) error {
+func (m *mockBinaryCodec) Unmarshal(data []byte, v *map[string]any) error {
 	if m.unmarshalFn != nil {
 		return m.unmarshalFn(data, v)
 	}
 	return json.Unmarshal(data, v)
 }
 
-func (m *mockBinaryCodec) Type() string { return "mock" }
+func (m *mockBinaryCodec) Type() dao.CodecType { return "mock" }
 
 // Compile-time check.
-var _ codec.Codec = (*mockBinaryCodec)(nil)
+var _ dao.Codec[map[string]any] = (*mockBinaryCodec)(nil)
 
 // ---------------------------------------------------------------------------
 // marshalDocument (25%) – non-JSON codec path
@@ -69,7 +68,7 @@ func TestMarshalDocument_JSONCodec(t *testing.T) {
 		ID:     42,
 		Fields: map[string]interface{}{"name": "Alice"},
 	}
-	c := &codec.JSONCodec{}
+	c := jsonDocumentCodec()
 	data, err := marshalDocument(entity, c)
 	if err != nil {
 		t.Fatalf("marshalDocument with JSON codec: %v", err)
@@ -118,7 +117,7 @@ func TestMarshalDocument_NonJSONCodec_MarshalError(t *testing.T) {
 func TestUnmarshalDocument_JSONCodec(t *testing.T) {
 	entity := &dao.DynamicEntity{}
 	data := []byte(`{"id":55,"fields":{"name":"Bob"}}`)
-	c := &codec.JSONCodec{}
+	c := jsonDocumentCodec()
 	err := unmarshalDocument(data, entity, c)
 	if err != nil {
 		t.Fatalf("unmarshalDocument with JSON codec: %v", err)

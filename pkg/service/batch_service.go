@@ -30,7 +30,6 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"gopkg.in/yaml.v3"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -670,7 +669,7 @@ func (s *BatchService) parseAndImport(ctx context.Context, data []byte, opts Imp
 		if sampleLen > 8192 {
 			sampleLen = 8192
 		}
-		detected, detectErr := codec.DetectFormat(opts.Filename, data[:sampleLen])
+		detected, detectErr := detectImportFormat(opts.Filename, data[:sampleLen])
 		if detectErr != nil {
 			return nil, &ImportParseError{Err: detectErr}
 		}

@@ -27,7 +27,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -380,7 +379,7 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 
 	// Validate the per-collection codec when specified.
 	if req.StorageCodec != "" {
-		if _, err := codec.ResolveCodec(req.StorageCodec); err != nil {
+		if _, err := dao.NewCodec[map[string]any](dao.CodecType(req.StorageCodec)); err != nil {
 			return nil, &CollectionInvalidCodecError{Codec: req.StorageCodec}
 		}
 	}
@@ -798,7 +797,7 @@ func (s *CollectionService) reclaimDocuments(ctx context.Context, info *Collecti
 // storedDocumentBodyBytes measures a stored document the way a write is
 // charged: the JSON encoding of its fields (see DocumentBodyBytes). A document
 // that cannot be decoded is measured as its stored size.
-func storedDocumentBodyBytes(stored []byte, c codec.Codec) int64 {
+func storedDocumentBodyBytes(stored []byte, c dao.Codec[map[string]any]) int64 {
 	var entity dao.DynamicEntity
 	if err := unmarshalDocument(stored, &entity, c); err != nil {
 		return int64(len(stored))
@@ -1457,7 +1456,7 @@ func (s *CollectionService) UpsertDocument(ctx context.Context, req *UpsertDocum
 
 // guardedUpsert decides presence and writes in one guarded write, re-deciding
 // when a concurrent writer wins the guard. See UpsertDocument.
-func (s *CollectionService) guardedUpsert(ctx context.Context, docKey string, docData []byte, ifRevision string, c codec.Codec, conflict error) (*UpsertDocumentResponse, error) {
+func (s *CollectionService) guardedUpsert(ctx context.Context, docKey string, docData []byte, ifRevision string, c dao.Codec[map[string]any], conflict error) (*UpsertDocumentResponse, error) {
 	for attempt := 0; attempt < upsertMaxAttempts; attempt++ {
 		current, err := s.kvSvc.Get(ctx, docKey)
 		absent := current == nil && (err == nil || isKeyNotFound(err))
@@ -1870,19 +1869,29 @@ func extractExplicitID(doc map[string]interface{}) uint64 {
 //  1. Per-collection StorageCodec (set at collection creation time)
 //  2. Per-database default from dbCodecLookup (if configured)
 //  3. JSON (always available, backward-compatible default)
-func (s *CollectionService) resolveCodec(info *CollectionInfo) codec.Codec {
+func (s *CollectionService) resolveCodec(info *CollectionInfo) dao.Codec[map[string]any] {
 	name := info.StorageCodec
 	if name == "" && s.dbCodecLookup != nil {
 		name = s.dbCodecLookup(info.Database)
 	}
 	if name == "" {
-		return &codec.JSONCodec{}
+		return jsonDocumentCodec()
 	}
-	c, err := codec.ResolveCodec(name)
+	c, err := dao.NewCodec[map[string]any](dao.CodecType(name))
 	if err != nil {
 		// Codec name recorded in metadata is not available in this build;
 		// fall back to JSON so existing data remains accessible.
-		return &codec.JSONCodec{}
+		return jsonDocumentCodec()
+	}
+	return c
+}
+
+// jsonDocumentCodec returns the go-codec JSON document codec, the
+// default and fallback storage codec of a collection.
+func jsonDocumentCodec() dao.Codec[map[string]any] {
+	c, err := dao.NewCodec[map[string]any](dao.CodecJSON)
+	if err != nil {
+		panic("dao: JSON document codec unavailable: " + err.Error())
 	}
 	return c
 }
@@ -1890,8 +1899,8 @@ func (s *CollectionService) resolveCodec(info *CollectionInfo) codec.Codec {
 // marshalDocument encodes a DynamicEntity as a flat map so that any codec
 // (not just JSON) can serialize it correctly. The flat map representation
 // is {"id": "<uint64>", "field1": v1, ...}.
-func marshalDocument(entity *dao.DynamicEntity, c codec.Codec) ([]byte, error) {
-	if c.Type() == codec.TypeJSON {
+func marshalDocument(entity *dao.DynamicEntity, c dao.Codec[map[string]any]) ([]byte, error) {
+	if c.Type() == dao.CodecJSON {
 		// Use DynamicEntity's custom JSON marshaling for full compatibility.
 		return json.Marshal(entity)
 	}
@@ -1908,8 +1917,8 @@ func marshalDocument(entity *dao.DynamicEntity, c codec.Codec) ([]byte, error) {
 // unmarshalDocument decodes raw bytes into a DynamicEntity. It first tries
 // the collection's resolved codec and, on failure, falls back to JSON for
 // backward compatibility with documents written before the codec was set.
-func unmarshalDocument(data []byte, entity *dao.DynamicEntity, c codec.Codec) error {
-	if c.Type() == codec.TypeJSON {
+func unmarshalDocument(data []byte, entity *dao.DynamicEntity, c dao.Codec[map[string]any]) error {
+	if c.Type() == dao.CodecJSON {
 		return json.Unmarshal(data, entity)
 	}
 	// Try the configured codec first (decodes into a generic map).
@@ -2123,7 +2132,7 @@ func (s *CollectionService) reserveExplicitDocumentID(ctx context.Context, info 
 // returned and the insert fails. This is deliberately stricter than
 // GetDocument, which treats any read failure as not-found because on a read
 // path there is nothing to destroy.
-func (s *CollectionService) storeNewDocument(ctx context.Context, info *CollectionInfo, req *InsertDocumentRequest, docKey string, docData []byte, id uint64, explicit bool, c codec.Codec) (*InsertDocumentResponse, error) {
+func (s *CollectionService) storeNewDocument(ctx context.Context, info *CollectionInfo, req *InsertDocumentRequest, docKey string, docData []byte, id uint64, explicit bool, c dao.Codec[map[string]any]) (*InsertDocumentResponse, error) {
 	if !mayOverwrite(info.IDStrategy, explicit) {
 		stored, err := s.kvSvc.PutIfAbsent(ctx, docKey, docData)
 		if err != nil {
