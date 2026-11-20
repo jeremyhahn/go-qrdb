@@ -24,7 +24,10 @@ const PROFILE_NAME = "E2E Daemon Profile";
 let daemon: DomDaemon | null = null;
 
 test.beforeEach(async () => {
-  daemon = await startDaemon({ seal: "none" });
+  // The profile targets daemon.adminUrl directly from the page at
+  // UI_BASE_URL: a cross-origin call the browser only lets through when
+  // the daemon allows the UI origin.
+  daemon = await startDaemon({ seal: "none", corsOrigins: [new URL(UI_BASE_URL).origin] });
 });
 
 test.afterEach(async () => {
