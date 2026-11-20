@@ -1,0 +1,1 @@
+[{"path":"example.com/core","vulns":[{"id":"GO-2026-9002","modified":"2026-01-01T00:00:00Z","fixed":"0.0.1"}]},{"path":"example.com/perf","vulns":[{"id":"GO-2026-9001","modified":"2026-01-01T00:00:00Z","fixed":"1.1.0"}]}]
