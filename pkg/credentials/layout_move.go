@@ -32,7 +32,12 @@ var layoutPrefixes = []string{credentialPrefix, MetaKeyPrefix, VersionKeyPrefix,
 // it gets a conflict record, LayoutMovedPrefix + "conflict/" + <source id>
 // + "/" + <name>, which outlives a later delete of the destination copy:
 // the source copy is never moved once it lost, so a deleted credential
-// cannot come back from it. No layout
+// cannot come back from it. The batch also writes the name's settlement
+// record, LayoutMovedPrefix + "settled/" + <name>, which every batch
+// requires absent and which no pass deletes: the fence and marker go when a
+// move finishes, the settlement record stays, so once a name settled no
+// source, the same or a later one, moves its copy in again, even after the
+// credential was deleted from the destination. No layout
 // prefix matches it, and the marker carries no secret. pkg/service
 // hard-confines it: a forged marker would make a move pass delete the
 // source records without copying them.
@@ -168,6 +173,21 @@ const layoutConflictSource = "conflict"
 // layoutConflictRoot is the prefix of source's conflict records.
 func layoutConflictRoot(source string) string {
 	return LayoutMovedPrefix + layoutConflictSource + "/" + source + "/"
+}
+
+// layoutSettledSource is the source segment of the settlement records: no
+// source id is a word.
+const layoutSettledSource = "settled"
+
+// layoutSettled keys name's settlement record. The first move of name to
+// commit writes it, holding the moving source's identity, in the same
+// guarded batch as the records, and no pass ever deletes it: unlike the
+// fence and the marker it outlives the move and a later delete of the
+// credential from the destination. Every later pass of any source finds it
+// (destinationHolds) and every batch requires it absent, so once a name
+// settled in the destination no source copy of it is moved there again.
+func layoutSettled(name string) string {
+	return LayoutMovedPrefix + layoutSettledSource + "/" + name
 }
 
 // conflict keys the record that the destination held name when this source's pass
@@ -340,8 +360,8 @@ func moveLayoutSet(ctx context.Context, from, to Store, move layoutMove, set *la
 		_, err := to.PutIfAbsent(ctx, move.conflict(set.name), []byte(move.id))
 		return false, err
 	}
-	guards := make([]kvstore.Guard, 0, len(set.keys)+2)
-	writes := make([]kvstore.KV, 0, len(set.keys)+2)
+	guards := make([]kvstore.Guard, 0, len(set.keys)+3)
+	writes := make([]kvstore.KV, 0, len(set.keys)+3)
 	defer func() {
 		for _, w := range writes {
 			clear(w.Value)
@@ -357,10 +377,16 @@ func moveLayoutSet(ctx context.Context, from, to Store, move layoutMove, set *la
 	}
 	// The fence is one key per name for every source: of two sources
 	// moving the same name, the batch that lands second finds it and
-	// writes nothing.
+	// writes nothing. The settlement record is the durable form of the
+	// fence: it stays once the move finished, so a name that settled here
+	// is never moved again from any source, even after its delete.
 	fence := layoutFence(set.name)
-	guards = append(guards, kvstore.Guard{Key: marker}, kvstore.Guard{Key: fence})
-	writes = append(writes, kvstore.KV{Key: marker, Value: []byte(move.id)}, kvstore.KV{Key: fence, Value: []byte(move.source)})
+	settled := layoutSettled(set.name)
+	guards = append(guards, kvstore.Guard{Key: marker}, kvstore.Guard{Key: fence}, kvstore.Guard{Key: settled})
+	writes = append(writes,
+		kvstore.KV{Key: marker, Value: []byte(move.id)},
+		kvstore.KV{Key: fence, Value: []byte(move.source)},
+		kvstore.KV{Key: settled, Value: []byte(move.source)})
 	applied, err := to.PutAllIfAllUnchanged(ctx, guards, writes)
 	if err != nil {
 		return false, err
@@ -430,7 +456,8 @@ func holdsKey(ctx context.Context, st Store, key string) (bool, error) {
 
 // destinationHolds reports whether to holds any replicated-layout record of
 // the set's credential name, not only the keys the set would write, or
-// another source's move marker or fence for it.
+// another source's move marker or fence for it, or the name's settlement
+// record.
 func destinationHolds(ctx context.Context, to Store, move layoutMove, set *layoutSet) (bool, error) {
 	for _, key := range []string{credentialPrefix + set.name, MetaKeyPrefix + set.name, MigrationClaimPrefix + set.name} {
 		keys, err := to.List(ctx, key)
@@ -453,7 +480,10 @@ func destinationHolds(ctx context.Context, to Store, move layoutMove, set *layou
 	// A move of the same name from another source that committed and has
 	// not finished holds the name, even when the credential it moved was
 	// deleted since: this source's copy is older than that delete and
-	// must not bring the credential back. Its fence is one such marker.
+	// must not bring the credential back. Its fence is one such marker,
+	// and so is the name's settlement record, which no pass deletes: a
+	// name any source's move committed stays held after that move
+	// finished and after the credential was deleted.
 	keys, err := to.List(ctx, LayoutMovedPrefix)
 	if err != nil {
 		return false, err

@@ -80,9 +80,7 @@ func TestMoveLayout_StoreFaultsMoveNothingTwice(t *testing.T) {
 
 			require.NoError(t, moveLayout(ctx, from, to))
 			requireMovedAndClean(t, from, to, "db", keys)
-			keys, err := toMem.List(ctx, LayoutMovedPrefix)
-			require.NoError(t, err)
-			assert.Empty(t, keys, "no marker outlives the move")
+			assert.Empty(t, transientMoveRecords(t, toMem), "no marker outlives the move")
 		})
 	}
 }
@@ -152,8 +150,7 @@ func TestMoveLayout_OtherSourceCannotRestoreADeletedCredential(t *testing.T) {
 			// pass of B does not move it either.
 			srcB, err := layoutSourceID(ctx, memB)
 			require.NoError(t, err)
-			left, err := toMem.List(ctx, LayoutMovedPrefix)
-			require.NoError(t, err)
+			left := transientMoveRecords(t, toMem)
 			assert.Equal(t, []string{layoutConflictRoot(srcB) + "db"}, left, "no marker or fence outlives A's move")
 			require.ErrorAs(t, moveLayout(ctx, memB, toMem), &conflict)
 			for _, k := range keysB {

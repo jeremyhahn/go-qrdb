@@ -2,6 +2,7 @@ package credentials
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -237,9 +238,20 @@ func requireMovedAndClean(t *testing.T, from, to Store, name string, keys []stri
 		requireValue(t, to, key, "old@"+key)
 		requireAbsent(t, from, key)
 	}
-	markers, err := to.List(context.Background(), LayoutMovedPrefix)
+	assert.Empty(t, transientMoveRecords(t, to), "the move marker of %s is gone", name)
+	settled, err := holdsKey(context.Background(), to, layoutSettled(name))
 	require.NoError(t, err)
-	assert.Empty(t, markers, "the move marker of %s is gone", name)
+	assert.True(t, settled, "the settlement record of %s stays", name)
+}
+
+// transientMoveRecords lists st's move records other than the durable
+// settlement records: the markers, fences and conflict records.
+func transientMoveRecords(t *testing.T, st Store) []string {
+	t.Helper()
+	keys, err := st.List(context.Background(), LayoutMovedPrefix)
+	require.NoError(t, err)
+	settledRoot := LayoutMovedPrefix + layoutSettledSource + "/"
+	return slices.DeleteFunc(keys, func(key string) bool { return strings.HasPrefix(key, settledRoot) })
 }
 
 // markerOf is the move-marker key of name for the source store from.
@@ -442,4 +454,41 @@ func TestMoveLayout_DeletedCredentialNotResurrected(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, left, "the earlier store keeps no record of the name")
 	}
+}
+
+// TestMoveLayout_SettledNameFencesLaterSource covers a later source's first
+// move after an earlier source's move of the same name finished and the
+// credential was deleted from the destination: no marker, fence, conflict
+// or credential record is left there, and the later source's stale copy must
+// still not come back.
+func TestMoveLayout_SettledNameFencesLaterSource(t *testing.T) {
+	ctx := context.Background()
+	a, b, dest := seal.NewMemoryBackend(), seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	svc := newUnboundService(t)
+	values := []string{"from-a", "from-b"}
+	for i, st := range []Store{a, b} {
+		require.NoError(t, svc.BindStore(ctx, st))
+		require.NoError(t, svc.StoreCredential(ctx, "db", []byte(values[i])))
+		// A credential stored after the legacy migration has no claim.
+		claim := MigrationClaimPrefix + "db"
+		held, err := holdsKey(ctx, st, claim)
+		require.NoError(t, err)
+		if held {
+			require.NoError(t, st.Delete(ctx, claim))
+		}
+	}
+
+	require.NoError(t, moveLayout(ctx, a, dest))
+	require.NoError(t, svc.BindStore(ctx, dest))
+	assert.Equal(t, "from-a", retrieveString(t, svc, "db"))
+	require.NoError(t, svc.DeleteCredential(ctx, "db"))
+
+	var conflict *LayoutConflictError
+	require.ErrorAs(t, moveLayout(ctx, b, dest), &conflict)
+	assert.Equal(t, []string{"db"}, conflict.Names)
+	_, err := svc.retrieveBytes(ctx, "db")
+	require.ErrorIs(t, err, ErrCredentialNotFound)
+	kept, err := holdsKey(ctx, b, credentialPrefix+"db")
+	require.NoError(t, err)
+	assert.True(t, kept, "the later source keeps its copy")
 }
