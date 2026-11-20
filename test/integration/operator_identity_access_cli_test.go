@@ -56,6 +56,18 @@ func TestOperatorIdentityAccess_CLI_PerProtocol(t *testing.T) {
 			if err != nil || !strings.Contains(got, "opwrite") {
 				t.Fatalf("[%s] operator users get --tenant-id %s %s = (%v) %s, want the user", proto.name, tenantID, m[1], err, got)
 			}
+			// Certificate bindings: the operator enrols, lists and withdraws a
+			// binding on the tenant's user, each verb tenant-qualified.
+			const thumb = "-mfgDIAA4OnmhPXEgQ0d46rNYBLntyNnLUbId3NJ_eg"
+			if out, err := runCLIProto(t, open, proto, "users", "cert-binding", "add", "--tenant-id", tenantID, "--", m[1], thumb); err != nil || !strings.Contains(out, thumb) {
+				t.Fatalf("[%s] operator users cert-binding add --tenant-id %s %s = (%v) %s, want the binding", proto.name, tenantID, m[1], err, out)
+			}
+			if out, err := runCLIProto(t, open, proto, "users", "cert-binding", "list", "--tenant-id", tenantID, m[1]); err != nil || !strings.Contains(out, thumb) {
+				t.Fatalf("[%s] operator users cert-binding list --tenant-id %s %s = (%v) %s, want the binding", proto.name, tenantID, m[1], err, out)
+			}
+			if out, err := runCLIProto(t, open, proto, "users", "cert-binding", "remove", "--tenant-id", tenantID, "--", m[1], thumb); err != nil || strings.Contains(out, thumb) {
+				t.Fatalf("[%s] operator users cert-binding remove --tenant-id %s %s = (%v) %s, want it withdrawn", proto.name, tenantID, m[1], err, out)
+			}
 			if out, err := runCLIProto(t, open, proto, "users", "disable", "--tenant-id", tenantID, m[1]); err != nil {
 				t.Fatalf("[%s] operator users disable --tenant-id %s %s under operator-access: %v\noutput: %s", proto.name, tenantID, m[1], err, out)
 			}
