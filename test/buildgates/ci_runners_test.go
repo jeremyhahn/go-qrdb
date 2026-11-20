@@ -431,8 +431,32 @@ func TestCIRemovedScriptsStayRemoved(t *testing.T) {
 }
 
 func TestCIServerURLAbsentFromCI(t *testing.T) {
-	if strings.Contains(readCIBody(t), "server_url") {
+	// The Runner labels step (ci-template v1.47, verbatim) evaluates other
+	// workflows' runs-on expressions and so names github.server_url in its
+	// python; that is the lint's text, not a dependency of ci.yml on the host.
+	body := readCIBody(t)
+	if i := strings.Index(body, runnerLabelsStep); i >= 0 {
+		if end := strings.Index(body[i:], "\n          PY\n"); end >= 0 {
+			body = body[:i] + body[i+end:]
+		}
+	}
+	if strings.Contains(body, "server_url") {
 		t.Error("ci.yml names github.server_url; it runs on github.com alone, so nothing in it depends on the host")
+	}
+}
+
+// runnerLabelsStep is ci-template v1.47's step that checks every workflow's
+// runs-on label and waiver category together (Tenant Agent ruling 1007).
+const runnerLabelsStep = "- name: Runner labels (ruling 633)\n"
+
+func TestCIRunnerLabelsStepPresent(t *testing.T) {
+	body := readCIBody(t)
+	if n := strings.Count(body, runnerLabelsStep); n != 1 {
+		t.Errorf("ci.yml has %d %q steps, want exactly one (ci-template v1.47, ruling 1007)", n, strings.TrimSpace(runnerLabelsStep))
+	}
+	const review = `REVIEW = {"codex": "credential", "qwen": "hardware"}`
+	if !strings.Contains(body, review) {
+		t.Errorf("ci.yml's Runner labels step lacks %q: codex and qwen must be reserved to code-review.yml with their own categories (ruling 1007)", review)
 	}
 }
 

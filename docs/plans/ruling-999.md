@@ -25,6 +25,7 @@ is one of:
 The review-only labels `codex` and `qwen` are reserved to code-review.yml's
 `review` and `review-opencode` jobs whatever the waiver category (Tenant
 Agent ruling 1007); `TestReviewLabelsReserved` holds it.
+ci.yml carries ci-template v1.47's `Runner labels (ruling 633)` step, which checks every workflow's label and waiver category together (`TestCIRunnerLabelsStepPresent`, tests in `.github/workflows/testdata/runner-labels-tests.py`).
 
 The reason must not be empty. A `runs-on` that is an expression, a list or a
 label without a valid waiver fails the gate.
