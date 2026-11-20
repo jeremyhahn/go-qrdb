@@ -91,7 +91,10 @@ export interface DomDaemon {
 function writeConfig(path: string, opts: StartDaemonOptions): void {
   const lines = ['codec:', '  storage_codec: "json"', '  wire_codec: "json"', "seal:"];
   if (opts.seal === "none") {
-    lines.push("  enabled: false");
+    // auth.enabled requires seal.enabled (go-qrdb#548) and config
+    // validation runs before the --auth-enabled=false flag applies, so a
+    // seal-disabled daemon must also turn auth off in the file.
+    lines.push("  enabled: false", "auth:", "  enabled: false");
   } else if (opts.seal === "none-committed") {
     lines.push("  enabled: true", '  strategy: "none"');
   } else {
