@@ -62,6 +62,13 @@
   let detailLoading: boolean = $state(false);
   let tenants: VolumePoolTenant[] = $state([]);
   let tenantsNextToken: string = $state("");
+  /** True while a tenant page request is in flight; serializes Load more. */
+  let tenantsLoading: boolean = $state(false);
+  /**
+   * Bumped on every open and close of the detail panel: a response for an
+   * earlier selection is discarded instead of touching the current one.
+   */
+  let detailSelection = 0;
   let editDescription: string = $state("");
   let editCapacity: number | string = $state("");
   let editOvercommit: number | string = $state("");
@@ -178,46 +185,65 @@
     }
   }
 
-  /** Loads one page of the pool's assigned tenants. */
-  async function loadTenants(pool: string, pageToken: string): Promise<void> {
+  /**
+   * Loads one page of the pool's assigned tenants for selection `sel`. The
+   * page is dropped when the selection has changed meanwhile, and a tenant
+   * already listed is never appended twice (the table is keyed by tenantId).
+   */
+  async function loadTenants(sel: number, pool: string, pageToken: string): Promise<void> {
     const page = await client.volumePools.listTenants(pool, {
       pageSize: TENANT_PAGE_SIZE,
       ...(pageToken ? { pageToken } : {}),
     });
-    tenants = pageToken ? [...tenants, ...page.tenants] : [...page.tenants];
+    if (sel !== detailSelection) return;
+    if (pageToken) {
+      const seen = new Set(tenants.map((t) => t.tenantId));
+      tenants = [...tenants, ...page.tenants.filter((t) => !seen.has(t.tenantId))];
+    } else {
+      tenants = [...page.tenants];
+    }
     tenantsNextToken = page.nextPageToken ?? "";
   }
 
   /** Opens the detail panel: get plus the first page of tenants. */
   async function openDetail(name: string): Promise<void> {
+    const sel = ++detailSelection;
+    tenantsLoading = false;
     try {
       detailLoading = true;
       const d = await client.volumePools.get(name);
+      if (sel !== detailSelection) return;
       detail = d;
       editDescription = d.description ?? "";
       editCapacity = String(d.capacityBytes);
       editOvercommit = String(d.overcommit);
-      await loadTenants(name, "");
+      await loadTenants(sel, name, "");
     } catch (err: unknown) {
-      showToast("error", errMessage(err, "Failed to load volume pool"));
+      if (sel === detailSelection) showToast("error", errMessage(err, "Failed to load volume pool"));
     } finally {
-      detailLoading = false;
+      if (sel === detailSelection) detailLoading = false;
     }
   }
 
   async function loadMoreTenants(): Promise<void> {
-    if (!detail || !tenantsNextToken) return;
+    if (!detail || !tenantsNextToken || tenantsLoading) return;
+    const sel = detailSelection;
+    tenantsLoading = true;
     try {
-      await loadTenants(detail.name, tenantsNextToken);
+      await loadTenants(sel, detail.name, tenantsNextToken);
     } catch (err: unknown) {
-      showToast("error", errMessage(err, "Failed to list pool tenants"));
+      if (sel === detailSelection) showToast("error", errMessage(err, "Failed to list pool tenants"));
+    } finally {
+      if (sel === detailSelection) tenantsLoading = false;
     }
   }
 
   function closeDetail(): void {
+    detailSelection++;
     detail = null;
     tenants = [];
     tenantsNextToken = "";
+    tenantsLoading = false;
     void fetchPools();
   }
 
@@ -364,7 +390,7 @@
           </tbody>
         </table>
         {#if tenantsNextToken}
-          <button class="btn btn-sm btn-ghost self-start" data-testid="volume-pool-tenants-more" onclick={loadMoreTenants}>
+          <button class="btn btn-sm btn-ghost self-start" data-testid="volume-pool-tenants-more" disabled={tenantsLoading} onclick={loadMoreTenants}>
             Load more
           </button>
         {/if}

@@ -544,6 +544,23 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
       list.push({ tenantId, reservedBytes });
       volumePoolAssignments.set(pool, list);
     };
+    // ListTenants paginates by offset tokens. A test may hold every page
+    // after the first (a request with a page token) until it releases
+    // them, and read how many tenant pages were requested and answered.
+    const volumePoolTenantHolds: Array<() => void> = [];
+    let volumePoolHoldTenantPages = false;
+    let volumePoolTenantPageCalls = 0;
+    let volumePoolTenantPagesAnswered = 0;
+    (window as unknown as Record<string, unknown>).__volumePoolHoldTenantPages = (on: boolean) => {
+      volumePoolHoldTenantPages = on;
+    };
+    (window as unknown as Record<string, unknown>).__volumePoolReleaseTenantPages = () => {
+      for (const release of volumePoolTenantHolds.splice(0)) release();
+    };
+    (window as unknown as Record<string, unknown>).__volumePoolTenantPageStats = () => ({
+      requested: volumePoolTenantPageCalls,
+      answered: volumePoolTenantPagesAnswered,
+    });
 
     // Lease store
     const leaseStore = new Map<number, { id: number; ttl: number; granted_ttl: number; remaining_ttl: number }>();
@@ -1603,11 +1620,11 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           GetVector: async () => ({}),
           DeleteVector: async () => {},
           // The Go BatchUpsertResponse / BatchDeleteVectorsResponse shapes.
-          BatchUpsert: async (req: { vectors?: unknown[] }) => ({
+          BatchUpsert: async (_database: unknown, req: { vectors?: unknown[] }) => ({
             ids: [], versions: [], timestamp: 0, success: true,
             inserted_count: (req?.vectors ?? []).length,
           }),
-          BatchDeleteVectors: async (req: { ids?: unknown[] }) => ({
+          BatchDeleteVectors: async (_database: unknown, req: { ids?: unknown[] }) => ({
             deleted_count: (req?.ids ?? []).length, failed_ids: [], timestamp: 0, success: true,
           }),
           ListVectors: async () => ({ vectors: [] }),
@@ -1615,7 +1632,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           SearchSimilar: async () => ({ results: [] }),
           SearchByMetadata: async () => ({ results: [] }),
           // transport.HybridSearchRequest: query_vector is required.
-          HybridSearch: async (req: { query_vector?: number[] }) => {
+          HybridSearch: async (_database: unknown, req: { query_vector?: number[] }) => {
             if (!Array.isArray(req?.query_vector) || req.query_vector.length === 0) {
               throw new Error("query vector is required");
             }
@@ -1812,10 +1829,21 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             volumePoolStore.delete(name);
           },
-          ListTenants: async (name: string, _pageSize: number, _pageToken: string) => {
+          ListTenants: async (name: string, pageSize: number, pageToken: string) => {
             maybeReject("VolumePoolBinding.ListTenants");
             if (!volumePoolStore.has(name)) throw new Error(`volume pool "${name}" not found`);
-            return { tenants: [...(volumePoolAssignments.get(name) ?? [])] };
+            volumePoolTenantPageCalls++;
+            if (pageToken && volumePoolHoldTenantPages) {
+              await new Promise<void>((resolve) => volumePoolTenantHolds.push(resolve));
+            }
+            const all = volumePoolAssignments.get(name) ?? [];
+            const start = pageToken ? Number(pageToken) : 0;
+            const end = pageSize > 0 ? start + pageSize : all.length;
+            volumePoolTenantPagesAnswered++;
+            return {
+              tenants: all.slice(start, end),
+              ...(end < all.length ? { nextPageToken: String(end) } : {}),
+            };
           },
         },
         RoleBinding: {

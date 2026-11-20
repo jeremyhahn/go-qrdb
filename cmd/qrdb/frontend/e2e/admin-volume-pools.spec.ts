@@ -195,6 +195,85 @@ test.describe("Admin - Volume Pools", () => {
     await expect(tenants).toContainText("No tenants are assigned to this pool.");
   });
 
+  test("Load more is serialized: a double click fetches the next page once", async ({ page }) => {
+    await openApp(page);
+    await seedPool(page, { name: "fast" });
+    for (let i = 0; i < 55; i++) {
+      await assignTenant(page, "fast", `tenant-${String(i).padStart(2, "0")}`, 1024);
+    }
+    await gotoVolumePools(page);
+    await openPool(page, "fast");
+
+    const main = page.locator("main");
+    const tenants = main.getByTestId("volume-pool-tenants");
+    await expect(tenants.getByRole("cell", { name: "tenant-49", exact: true })).toBeVisible();
+    await expect(tenants.getByRole("cell", { name: "tenant-50", exact: true })).toHaveCount(0);
+
+    await page.evaluate(() => {
+      (window as unknown as { __volumePoolHoldTenantPages: (on: boolean) => void }).__volumePoolHoldTenantPages(true);
+    });
+    const more = main.getByTestId("volume-pool-tenants-more");
+    // Two clicks in the same task: the second lands before the button can
+    // re-render as disabled, so only the handler's own guard stops it.
+    await more.evaluate((el: HTMLElement) => {
+      el.click();
+      el.click();
+    });
+    await expect(more).toBeDisabled();
+    const stats = () =>
+      page.evaluate(() =>
+        (window as unknown as { __volumePoolTenantPageStats: () => { requested: number; answered: number } })
+          .__volumePoolTenantPageStats(),
+      );
+    expect((await stats()).requested).toBe(2);
+
+    await page.evaluate(() => {
+      (window as unknown as { __volumePoolReleaseTenantPages: () => void }).__volumePoolReleaseTenantPages();
+    });
+    await expect(tenants.getByRole("cell", { name: "tenant-54", exact: true })).toHaveCount(1);
+    await expect(tenants.getByRole("cell", { name: "tenant-50", exact: true })).toHaveCount(1);
+    await expect(tenants.getByRole("cell", { name: "tenant-00", exact: true })).toHaveCount(1);
+    await expect(more).toHaveCount(0);
+    expect((await stats()).requested).toBe(2);
+  });
+
+  test("a tenant page for a closed pool does not reach the next pool", async ({ page }) => {
+    await openApp(page);
+    await seedPool(page, { name: "fast" });
+    await seedPool(page, { name: "bulk" });
+    for (let i = 0; i < 55; i++) {
+      await assignTenant(page, "fast", `tenant-${String(i).padStart(2, "0")}`, 1024);
+    }
+    await assignTenant(page, "bulk", "solo", 2048);
+    await gotoVolumePools(page);
+    await openPool(page, "fast");
+
+    const main = page.locator("main");
+    const tenants = main.getByTestId("volume-pool-tenants");
+    await page.evaluate(() => {
+      (window as unknown as { __volumePoolHoldTenantPages: (on: boolean) => void }).__volumePoolHoldTenantPages(true);
+    });
+    await main.getByTestId("volume-pool-tenants-more").click();
+    const stats = () =>
+      page.evaluate(() =>
+        (window as unknown as { __volumePoolTenantPageStats: () => { requested: number; answered: number } })
+          .__volumePoolTenantPageStats(),
+      );
+    await expect.poll(async () => (await stats()).requested).toBe(2);
+
+    await main.getByTestId("volume-pool-back").click();
+    await openPool(page, "bulk");
+    await expect(tenants.getByRole("cell", { name: "solo", exact: true })).toBeVisible();
+
+    await page.evaluate(() => {
+      (window as unknown as { __volumePoolReleaseTenantPages: () => void }).__volumePoolReleaseTenantPages();
+    });
+    // Every requested page has been answered: the held one included.
+    await expect.poll(async () => (await stats()).answered).toBe(3);
+    await expect(tenants.getByRole("cell", { name: "solo", exact: true })).toBeVisible();
+    await expect(tenants.getByRole("cell", { name: /^tenant-/ })).toHaveCount(0);
+  });
+
   test("update changes description and overcommit", async ({ page }) => {
     await openApp(page);
     await seedPool(page, { name: "fast", capacityBytes: 4096 });

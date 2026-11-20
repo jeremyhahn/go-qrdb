@@ -104,7 +104,7 @@ async function injectStatefulVectorBinding(
     };
 
     go.main.VectorBinding = {
-      CreateNamespace: async (req: unknown) => {
+      CreateNamespace: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.CreateNamespace");
         const r = req as { namespace: string; dimension: number };
         if (namespaceStore.has(r.namespace)) {
@@ -115,7 +115,7 @@ async function injectStatefulVectorBinding(
         return {};
       },
 
-      DeleteNamespace: async (req: unknown) => {
+      DeleteNamespace: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.DeleteNamespace");
         const r = req as { namespace: string };
         namespaceStore.delete(r.namespace);
@@ -127,7 +127,7 @@ async function injectStatefulVectorBinding(
         return { namespaces: Array.from(namespaceStore.keys()) };
       },
 
-      GetNamespaceInfo: async (req: unknown) => {
+      GetNamespaceInfo: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.GetNamespaceInfo");
         const r = req as { namespace: string };
         const info = namespaceStore.get(r.namespace);
@@ -140,14 +140,14 @@ async function injectStatefulVectorBinding(
         };
       },
 
-      UpsertVector: async (req: unknown) => {
+      UpsertVector: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.UpsertVector");
         const r = req as { namespace: string; id: string; vector: number[]; metadata?: Record<string, unknown> };
         put(r.namespace, r.id, r.vector, r.metadata ?? {});
         return {};
       },
 
-      GetVector: async (req: unknown) => {
+      GetVector: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.GetVector");
         const r = req as { namespace: string; id: string };
         // A held ID answers only when the test releases it, so a spec can
@@ -170,13 +170,13 @@ async function injectStatefulVectorBinding(
         return out;
       },
 
-      DeleteVector: async (req: unknown) => {
+      DeleteVector: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.DeleteVector");
         const r = req as { namespace: string; id: string };
         vectorStore.get(r.namespace)?.delete(r.id);
       },
 
-      BatchUpsert: async (req: unknown) => {
+      BatchUpsert: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.BatchUpsert");
         const r = req as {
           namespace: string;
@@ -201,7 +201,7 @@ async function injectStatefulVectorBinding(
         };
       },
 
-      BatchDeleteVectors: async (req: unknown) => {
+      BatchDeleteVectors: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.BatchDeleteVectors");
         const r = req as { namespace: string; ids: string[] };
         const vecs = vectorStore.get(r.namespace);
@@ -218,14 +218,14 @@ async function injectStatefulVectorBinding(
         return { deleted_count: deletedCount, failed_ids: failedIds, timestamp: 0, success: true };
       },
 
-      ListVectors: async (req: unknown) => {
+      ListVectors: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.ListVectors");
         const r = req as { namespace: string };
         const vecs = vectorStore.get(r.namespace);
         return { vectors: vecs ? Array.from(vecs.values()) : [] };
       },
 
-      UpdateMetadata: async (req: unknown) => {
+      UpdateMetadata: async (_database: unknown, req: unknown) => {
         const st = w.__QRDB_MOCK_STATE__ as { updateMetadataCalls?: number };
         st.updateMetadataCalls = (st.updateMetadataCalls ?? 0) + 1;
         maybeReject("VectorBinding.UpdateMetadata");
@@ -234,7 +234,7 @@ async function injectStatefulVectorBinding(
         put(r.namespace, r.id, vec.vector, r.metadata);
       },
 
-      HybridSearch: async (req: unknown) => {
+      HybridSearch: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.HybridSearch");
         // transport.HybridSearchRequest: query_vector, k, metadata_filter.
         // The service runs a similarity search, then keeps only the

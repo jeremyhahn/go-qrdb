@@ -344,6 +344,26 @@ function wrapBindings(
 }
 
 /**
+ * Prepends the database scope to every call of a binding whose Go methods
+ * take the target database as their first argument (VectorBinding): the
+ * Go side resolves the connection's client through Client.DatabaseScoped,
+ * so the operation reaches that database and not the connection's default
+ * one. An empty name is the unscoped client.
+ */
+function withDatabaseArg(
+    b: Record<string, (...args: unknown[]) => Promise<unknown>>,
+    database: string,
+): Record<string, (...args: unknown[]) => Promise<unknown>> {
+    return new Proxy(b, {
+        get(target, prop: string) {
+            const fn = target[prop];
+            if (typeof fn !== 'function') return fn;
+            return (...args: unknown[]) => fn(database, ...args);
+        },
+    });
+}
+
+/**
  * Normalizes a binding rejection to an Error. The Wails runtime rejects a
  * Go method's error as its message string, not an Error, so callers that
  * test `instanceof Error` would otherwise lose the server's message.
@@ -442,20 +462,35 @@ interface WailsRuntime {
  */
 export class WailsClient implements Client {
 
-    /** Tracks whether the embedded server is currently running. */
-    private embeddedRunning = false;
+    /**
+     * Tracks whether the embedded server is currently running. Shared with
+     * every database-scoped client derived from this one: there is one
+     * embedded server per process.
+     */
+    private readonly embedded: { running: boolean };
+
+    /**
+     * The database this client targets; empty for the unscoped client
+     * (the connection's default, the `system` database).
+     */
+    private readonly database: string;
+
+    constructor(database = '', embedded?: { running: boolean }) {
+        this.database = database;
+        this.embedded = embedded ?? { running: false };
+    }
 
     /**
      * @inheritdoc
      *
-     * Desktop/embedded multi-database scoping is out of scope for this stage:
-     * the Wails bindings route per-database through their own mechanism rather
-     * than an HTTP header, so this is a no-op passthrough that returns the same
-     * client. It exists only to satisfy the {@link Client} interface on both
-     * transports.
+     * The returned client carries the database into the bindings whose Go
+     * methods take it (the vector operations), so they run against that
+     * database. `system` and the empty string are the unscoped client.
      */
-    databaseScoped(_name: string): Client {
-        return this;
+    databaseScoped(name: string): Client {
+        const target = name === 'system' ? '' : name;
+        if (target === this.database) return this;
+        return new WailsClient(target, this.embedded);
     }
 
     // -----------------------------------------------------------------------
@@ -919,7 +954,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get vector(): VectorClient | null {
-        const b = wrapBindings(getBindings().main.VectorBinding);
+        const b = withDatabaseArg(wrapBindings(getBindings().main.VectorBinding), this.database);
         return {
             createNamespace: async (
                 req: CreateNamespaceRequest,
@@ -1405,21 +1440,21 @@ export class WailsClient implements Client {
         return {
             startEmbedded: async (config: EmbeddedConfig): Promise<void> => {
                 await b.StartEmbedded(config);
-                this.embeddedRunning = true;
+                this.embedded.running = true;
             },
             stopEmbedded: async (): Promise<void> => {
                 await b.StopEmbedded();
-                this.embeddedRunning = false;
+                this.embedded.running = false;
             },
             isEmbedded: (): boolean => {
-                return this.embeddedRunning;
+                return this.embedded.running;
             },
             hasSavedConfig: async (): Promise<boolean> => {
                 return b.HasSavedConfig() as Promise<boolean>;
             },
             restoreEmbedded: async (): Promise<void> => {
                 await b.RestoreEmbedded();
-                this.embeddedRunning = true;
+                this.embedded.running = true;
             },
             clearSavedConfig: async (): Promise<void> => {
                 await b.ClearSavedConfig();
