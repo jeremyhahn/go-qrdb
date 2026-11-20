@@ -254,4 +254,12 @@ func TestHostAdapter_AdmitReplicaAt(t *testing.T) {
 	require.ErrorAs(t, err, &refused)
 	assert.Equal(t, "old:1", refused.Address)
 	assert.Zero(t, id)
+
+	// CheckConfigBinding delegates to the gate; an ungated adapter binds
+	// nothing.
+	stale := featuregate.ConfigBinding{ConfigChangeID: 0, Required: true}
+	require.NoError(t, ungated.CheckConfigBinding(1, stale))
+	var staleErr *featuregate.StaleConfigurationError
+	require.ErrorAs(t, a.CheckConfigBinding(1, stale), &staleErr)
+	require.NoError(t, a.CheckConfigBinding(1, featuregate.ConfigBinding{ConfigChangeID: 1, Required: true}))
 }

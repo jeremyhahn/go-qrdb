@@ -1233,14 +1233,17 @@ func (s *AdminService) Peers(_ context.Context) (*PeersInfo, error) {
 // by replaying the group's log, so a node whose binary cannot apply
 // something already active in the log must never be added to it.
 func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
-	// configChangeID binds the add to the system-shard membership release
-	// admission compared against: go-quicraft refuses it with
+	// binding is the system-shard membership release admission compared
+	// against: the add is proposed only on that configuration, so two
+	// concurrent adds of non-adjacent releases cannot both land. Its change
+	// ID is the add's configChangeIndex, which go-quicraft refuses with
 	// ErrStaleConfigChange when another membership change committed in
-	// between, so two concurrent adds of non-adjacent releases cannot both
-	// land. It is 0 (no ordering check) for any other shard: release
-	// admission is about system-shard membership, and another shard's
-	// configuration change index is a different counter.
-	configChangeID, err := admitReplica(s.host, shardID, raftAddr)
+	// between; it skips that check for 0, so a binding to the initial
+	// configuration is compared before the proposal (checkConfigBinding).
+	// It is not Required for any other shard: release admission is about
+	// system-shard membership, and another shard's configuration change
+	// index is a different counter.
+	binding, err := admitReplica(s.host, shardID, raftAddr)
 	if err != nil {
 		return err
 	}
@@ -1251,16 +1254,27 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 	if err != nil {
 		return err
 	}
-	err = s.requestAdd(ctx, shardID, replicaID, raftAddr, resolved, configChangeID)
-	if configChangeID == 0 || !errors.Is(err, quicraft.ErrStaleConfigChange) {
+	err = s.requestAddBound(ctx, shardID, replicaID, raftAddr, resolved, binding, s.requestAdd)
+	if !binding.Required || !staleConfiguration(err) {
 		return err
 	}
 	// The membership changed after admission: admit once more against the
 	// new configuration (a refusal now is the release gap) and retry once.
-	if configChangeID, err = admitReplica(s.host, shardID, raftAddr); err != nil {
+	if binding, err = admitReplica(s.host, shardID, raftAddr); err != nil {
 		return err
 	}
-	return s.requestAdd(ctx, shardID, replicaID, raftAddr, resolved, configChangeID)
+	return s.requestAddBound(ctx, shardID, replicaID, raftAddr, resolved, binding, s.requestAdd)
+}
+
+// requestAddBound proposes an add through request bound to binding: a
+// binding to change ID 0, which go-quicraft does not compare, is compared
+// first.
+func (s *AdminService) requestAddBound(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, binding featuregate.ConfigBinding,
+	request func(context.Context, uint64, uint64, string, string, uint64) error) error {
+	if err := checkConfigBinding(s.host, shardID, binding); err != nil {
+		return err
+	}
+	return request(ctx, shardID, replicaID, raftAddr, identity, binding.ConfigChangeID)
 }
 
 // requestAdd proposes adding replicaID with its identity, ordered after the
@@ -1291,7 +1305,7 @@ func (s *AdminService) requestAdd(ctx context.Context, shardID, replicaID uint64
 // configuration and retried once, so an observer and a concurrent voter
 // of non-adjacent releases cannot both land.
 func (s *AdminService) AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
-	configChangeID, err := admitReplica(s.host, shardID, raftAddr)
+	binding, err := admitReplica(s.host, shardID, raftAddr)
 	if err != nil {
 		return err
 	}
@@ -1302,16 +1316,16 @@ func (s *AdminService) AddObserverMember(ctx context.Context, shardID, replicaID
 	if err != nil {
 		return err
 	}
-	err = s.requestAddObserver(ctx, shardID, replicaID, raftAddr, resolved, configChangeID)
-	if configChangeID == 0 || !errors.Is(err, quicraft.ErrStaleConfigChange) {
+	err = s.requestAddBound(ctx, shardID, replicaID, raftAddr, resolved, binding, s.requestAddObserver)
+	if !binding.Required || !staleConfiguration(err) {
 		return err
 	}
 	// The membership changed after admission: admit once more against the
 	// new configuration (a refusal now is the release gap) and retry once.
-	if configChangeID, err = admitReplica(s.host, shardID, raftAddr); err != nil {
+	if binding, err = admitReplica(s.host, shardID, raftAddr); err != nil {
 		return err
 	}
-	return s.requestAddObserver(ctx, shardID, replicaID, raftAddr, resolved, configChangeID)
+	return s.requestAddBound(ctx, shardID, replicaID, raftAddr, resolved, binding, s.requestAddObserver)
 }
 
 // requestAddObserver proposes the observer addition bound to configChangeID

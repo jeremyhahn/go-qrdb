@@ -62,6 +62,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -577,36 +578,80 @@ func (g *Gate) AdmitReplica(shardID uint64, raftAddr string) error {
 	return err
 }
 
-// AdmitReplicaAt is AdmitReplica that also returns the configuration change
-// ID of the system-shard membership the release check compared against, for
-// the caller to pass as the add's configChangeIndex: go-quicraft then refuses
-// the add with ErrStaleConfigChange when another membership change committed
-// after admission, and the caller admits again against the new membership.
-// Without that binding two concurrent adds of non-adjacent releases (0.58 and
-// 0.60 into an all-0.59 cluster) both pass, since neither is yet a committed
-// member the other must stay adjacent to.
+// ConfigBinding is the system-shard configuration an admission verdict holds
+// for. Required says the add must land on exactly that configuration;
+// ConfigChangeID is its change ID, which is 0 for a bootstrapped membership
+// before its first change -- a configuration like any other, not "unbound".
+type ConfigBinding struct {
+	ConfigChangeID uint64
+	Required       bool
+}
+
+// StaleConfigurationError is CheckConfigBinding's refusal: the system-shard
+// configuration an admission verdict was bound to is no longer current.
+type StaleConfigurationError struct {
+	ShardID  uint64
+	Admitted uint64
+	Current  uint64
+}
+
+func (e *StaleConfigurationError) Error() string {
+	return fmt.Sprintf("feature gate: shard %d configuration changed since admission (admitted at change %d, now %d)",
+		e.ShardID, e.Admitted, e.Current)
+}
+
+// CheckConfigBinding refuses with *StaleConfigurationError when b is
+// required and the system shard's configuration change ID is no longer the
+// one it was admitted against. It is the comparison go-quicraft cannot make
+// for change ID 0 (its configChangeIndex 0 skips the check), so a caller
+// runs it immediately before proposing an add bound to the initial
+// configuration. An unbound b, or another shard, always passes.
+func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error {
+	if !b.Required || shardID != g.systemShard {
+		return nil
+	}
+	system, err := g.members.GroupMembership(g.systemShard)
+	if err != nil {
+		return err
+	}
+	if system.ConfigChangeID != b.ConfigChangeID {
+		return &StaleConfigurationError{ShardID: shardID, Admitted: b.ConfigChangeID, Current: system.ConfigChangeID}
+	}
+	return nil
+}
+
+// AdmitReplicaAt is AdmitReplica that also returns the system-shard
+// configuration the release check compared against, for the caller to bind
+// the add to: it passes ConfigChangeID as the add's configChangeIndex, so
+// go-quicraft refuses the add with ErrStaleConfigChange when another
+// membership change committed after admission, and, because go-quicraft
+// skips that comparison for index 0, it runs CheckConfigBinding itself
+// before proposing; on either refusal it admits again against the new
+// membership. Without that binding two concurrent adds of non-adjacent
+// releases (0.58 and 0.60 into an all-0.59 cluster) both pass, since neither
+// is yet a committed member the other must stay adjacent to.
 //
-// The ID is 0 -- no binding -- when shardID is not the system shard (release
+// The binding is not Required when shardID is not the system shard (release
 // admission is about system-shard membership; another group's configuration
 // change index is a different counter) or when no membership was compared
 // (the node itself, or a candidate that advertises no release).
-func (g *Gate) AdmitReplicaAt(shardID uint64, raftAddr string) (uint64, error) {
-	configChangeID, err := g.admitRelease(raftAddr)
+func (g *Gate) AdmitReplicaAt(shardID uint64, raftAddr string) (ConfigBinding, error) {
+	binding, err := g.admitRelease(raftAddr)
 	if err != nil {
-		return 0, err
+		return ConfigBinding{}, err
 	}
 	for _, f := range supported {
 		if !g.Activated(f) && !g.decide(shardID, f, false) {
 			continue
 		}
 		if !g.Supports(raftAddr, f) {
-			return 0, &UnsupportedReplicaError{ShardID: shardID, Address: raftAddr, Feature: f}
+			return ConfigBinding{}, &UnsupportedReplicaError{ShardID: shardID, Address: raftAddr, Feature: f}
 		}
 	}
 	if shardID != g.systemShard {
-		return 0, nil
+		return ConfigBinding{}, nil
 	}
-	return configChangeID, nil
+	return binding, nil
 }
 
 // admitRelease refuses the node at raftAddr when its live advertisement
@@ -620,10 +665,10 @@ func (g *Gate) AdmitReplicaAt(shardID uint64, raftAddr string) (uint64, error) {
 // release announcement and is judged by its features alone, both as the
 // candidate and as a member compared against; this node itself is never
 // refused.
-func (g *Gate) admitRelease(raftAddr string) (uint64, error) {
+func (g *Gate) admitRelease(raftAddr string) (ConfigBinding, error) {
 	self, selfErr := g.AdvertisedSelf()
 	if selfErr == nil && self.Address == raftAddr {
-		return 0, nil
+		return ConfigBinding{}, nil
 	}
 	view := *g.view.Load()
 	candidate := ""
@@ -634,15 +679,15 @@ func (g *Gate) admitRelease(raftAddr string) (uint64, error) {
 		}
 	}
 	if candidate == "" {
-		return 0, nil
+		return ConfigBinding{}, nil
 	}
-	refuse := func(err error, member, memberRelease string) (uint64, error) {
+	refuse := func(err error, member, memberRelease string) (ConfigBinding, error) {
 		g.logger.Warn("feature gate: refusing replica on a release gap",
 			"address", raftAddr,
 			"peer_release", candidate,
 			"member", member,
 			"member_release", memberRelease)
-		return 0, err
+		return ConfigBinding{}, err
 	}
 	if err := release.Check(releaseChannel, candidate); err != nil {
 		return refuse(err, "self", release.Version())
@@ -656,7 +701,7 @@ func (g *Gate) admitRelease(raftAddr string) (uint64, error) {
 	// returned to bind the add to it (see AdmitReplicaAt).
 	system, err := g.members.GroupMembership(g.systemShard)
 	if err != nil {
-		return 0, err
+		return ConfigBinding{}, err
 	}
 	recorded := *g.releases.Load()
 	for _, m := range committedMembers(system) {
@@ -680,7 +725,9 @@ func (g *Gate) admitRelease(raftAddr string) (uint64, error) {
 			}
 		}
 	}
-	return system.ConfigChangeID, nil
+	// Required even at ConfigChangeID 0: a bootstrapped membership before
+	// its first change is a checked configuration, not the absence of one.
+	return ConfigBinding{ConfigChangeID: system.ConfigChangeID, Required: true}, nil
 }
 
 // committedMember is one replica or witness of a committed membership.

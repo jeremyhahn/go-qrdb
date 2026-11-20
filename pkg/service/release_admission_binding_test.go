@@ -77,7 +77,11 @@ func (h *bindingHost) AdmitReplica(shardID uint64, raftAddr string) error {
 	return err
 }
 
-func (h *bindingHost) AdmitReplicaAt(shardID uint64, raftAddr string) (uint64, error) {
+func (h *bindingHost) CheckConfigBinding(shardID uint64, b featuregate.ConfigBinding) error {
+	return h.gate.CheckConfigBinding(shardID, b)
+}
+
+func (h *bindingHost) AdmitReplicaAt(shardID uint64, raftAddr string) (featuregate.ConfigBinding, error) {
 	id, err := h.gate.AdmitReplicaAt(shardID, raftAddr)
 	h.mu.Lock()
 	pause := raftAddr == h.pauseAddr && !h.paused
@@ -125,11 +129,19 @@ func (h *bindingHost) member(replicaID uint64) bool {
 // advertising before membership.
 func newBindingHost(t *testing.T, candidates ...cluster.Member) *bindingHost {
 	t.Helper()
+	return newBindingHostAt(t, 7, candidates...)
+}
+
+// newBindingHostAt is newBindingHost whose membership is at configuration
+// change ID configChangeID: 0 is a bootstrapped membership before its first
+// change.
+func newBindingHostAt(t *testing.T, configChangeID uint64, candidates ...cluster.Member) *bindingHost {
+	t.Helper()
 	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
 	h := &bindingHost{
 		mockHost:       &mockHost{},
 		members:        map[uint64]string{1: "n1:1", 2: "n2:1", 3: "n3:1"},
-		configChangeID: 7,
+		configChangeID: configChangeID,
 		admitted:       make(chan struct{}),
 		resume:         make(chan struct{}),
 	}
@@ -285,10 +297,82 @@ func TestAdminService_AddObserverMemberReleaseAdmissionRetriesOnceOnStale(t *tes
 func TestGate_AdmitReplicaAtBindsOnlyTheSystemShard(t *testing.T) {
 	c := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
 	h := newBindingHost(t, c)
-	if id, err := h.gate.AdmitReplicaAt(bindingSystemShard, "n4:1"); err != nil || id != 7 {
-		t.Fatalf("AdmitReplicaAt(system) = %d, %v; want 7, nil", id, err)
+	want := featuregate.ConfigBinding{ConfigChangeID: 7, Required: true}
+	if b, err := h.gate.AdmitReplicaAt(bindingSystemShard, "n4:1"); err != nil || b != want {
+		t.Fatalf("AdmitReplicaAt(system) = %+v, %v; want %+v, nil", b, err, want)
 	}
-	if id, err := h.gate.AdmitReplicaAt(900, "n4:1"); err != nil || id != 0 {
-		t.Fatalf("AdmitReplicaAt(900) = %d, %v; want 0, nil", id, err)
+	if b, err := h.gate.AdmitReplicaAt(900, "n4:1"); err != nil || b.Required {
+		t.Fatalf("AdmitReplicaAt(900) = %+v, %v; want no binding, nil", b, err)
+	}
+}
+
+// A bootstrapped system shard's configuration change ID is 0 until its
+// first membership change. Admission against it is still bound -- Required,
+// at ID 0 -- and the binding is compared: it holds while the configuration
+// is the initial one and is stale once a change commits.
+func TestGate_AdmitReplicaAtBindsTheInitialConfiguration(t *testing.T) {
+	c := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
+	h := newBindingHostAt(t, 0, c)
+	b, err := h.gate.AdmitReplicaAt(bindingSystemShard, "n4:1")
+	if want := (featuregate.ConfigBinding{ConfigChangeID: 0, Required: true}); err != nil || b != want {
+		t.Fatalf("AdmitReplicaAt(system) = %+v, %v; want %+v, nil", b, err, want)
+	}
+	if err := h.gate.CheckConfigBinding(bindingSystemShard, b); err != nil {
+		t.Fatalf("CheckConfigBinding on the initial configuration = %v, want nil", err)
+	}
+	h.mu.Lock()
+	h.configChangeID = 1
+	h.mu.Unlock()
+	var stale *featuregate.StaleConfigurationError
+	if err := h.gate.CheckConfigBinding(bindingSystemShard, b); !errors.As(err, &stale) || stale.Admitted != 0 || stale.Current != 1 {
+		t.Fatalf("CheckConfigBinding after a change = %v, want *featuregate.StaleConfigurationError 0 -> 1", err)
+	}
+	if err := h.gate.CheckConfigBinding(bindingSystemShard, featuregate.ConfigBinding{}); err != nil {
+		t.Fatalf("CheckConfigBinding without a binding = %v, want nil", err)
+	}
+}
+
+// From the initial configuration (change ID 0) two concurrent adds of
+// non-adjacent releases (0.58 and 0.60 into an all-0.59 cluster) are still
+// bound to the configuration admission checked: go-quicraft skips its own
+// comparison for index 0, so the binding is compared before the proposal,
+// the paused add is admitted again against the new configuration and
+// refused on the release gap.
+func TestAdminService_AddMemberReleaseAdmissionBindsTheInitialConfiguration(t *testing.T) {
+	old := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.58.0-alpha"}
+	next := cluster.Member{NodeID: 5, Address: "n5:1", ReleaseVersion: "0.60.0-alpha"}
+	h := newBindingHostAt(t, 0, old, next)
+
+	err := raceAdds(t, h, old, next)
+	var gap *release.GapError
+	if !errors.As(err, &gap) {
+		t.Fatalf("second AddMember = %v, want *release.GapError", err)
+	}
+	if !h.member(4) || h.member(5) {
+		t.Fatalf("members = %v, want n4 added and n5 refused", h.members)
+	}
+	if len(h.indexes) != 1 || h.indexes[0] != 0 {
+		t.Fatalf("configChangeIndex per add = %v, want only the first add, at the initial configuration 0", h.indexes)
+	}
+}
+
+// The observer form of the initial-configuration race: a 0.58 observer
+// paused after admission against configuration 0 is refused once a 0.60
+// voter commits.
+func TestAdminService_AddObserverMemberReleaseAdmissionBindsTheInitialConfiguration(t *testing.T) {
+	voter := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
+	observer := cluster.Member{NodeID: 5, Address: "n5:1", ReleaseVersion: "0.58.0-alpha"}
+	h := newBindingHostAt(t, 0, voter, observer)
+
+	err := raceAddsVia(t, h, voter, observer, (*AdminService).AddMember, (*AdminService).AddObserverMember)
+	var gap *release.GapError
+	if !errors.As(err, &gap) {
+		t.Fatalf("AddObserverMember = %v, want *release.GapError", err)
+	}
+	if !h.member(4) || h.member(5) {
+		t.Fatalf("members = %v, want voter n4 added and observer n5 refused", h.members)
+	}
+	if len(h.indexes) != 1 || h.indexes[0] != 0 {
+		t.Fatalf("configChangeIndex per add = %v, want only the voter add, at the initial configuration 0", h.indexes)
 	}
 }
