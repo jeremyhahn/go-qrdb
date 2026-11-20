@@ -486,6 +486,13 @@ async function resolveWebConnectionState(
  * @param profileId - ID of the profile to connect.
  * @returns The resulting connection state.
  */
+/**
+ * Base address the web-mode REST client was last connected to by
+ * connectProfile. null means App.svelte's initial connect to the page
+ * origin.
+ */
+let webConnectedBase: string | null = null;
+
 export async function connectProfile(
     client: Client,
     profileId: string,
@@ -534,13 +541,21 @@ export async function connectProfile(
         connManagerStore.states = new Map(connManagerStore.states).set(profileId, errState);
         return errState;
     }
-    // A transport closed by connection.disconnect() (Settings' Disconnect)
-    // is reopened here: the REST client always targets the page origin, as
-    // App.svelte's initialize does. Without this the probe below fails with
-    // "not connected" and the profile can only recover by a page reload.
-    if (!client.connection.isConnected()) {
+    // Point the REST client at the profile's saved server address (the
+    // built-in profile's address is the page origin, where App.svelte's
+    // initialize connects). A client connected to another server is
+    // disconnected first; a transport closed by connection.disconnect()
+    // (Settings' Disconnect) is reopened. Without this the probe below and
+    // every later read would go to whichever server was connected before.
+    const target = profile.external?.address || window.location.origin;
+    const current = webConnectedBase ?? window.location.origin;
+    if (!client.connection.isConnected() || current !== target) {
         try {
-            await client.connection.connect(window.location.origin);
+            if (client.connection.isConnected()) {
+                await client.connection.disconnect();
+            }
+            await client.connection.connect(target);
+            webConnectedBase = target;
         } catch {
             // Unreachable: resolveWebConnectionState reports the error state.
         }
