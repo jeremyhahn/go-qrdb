@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"golang.org/x/mod/semver"
 )
 
 // bumpLookupErrors returns every finding whose latest version could not be
@@ -143,6 +145,21 @@ func upgradeModule(edit moduleEditor, dir string, findings []finding, stdout io.
 			}
 			continue
 		}
+		// Every target was planned before any edit, but each get runs on
+		// the graph earlier bumps left: one of them may already have
+		// raised this module to or past its target, and getting the older
+		// target would downgrade it and the module whose bump raised it.
+		current, err := requiredNow(dir, d.Path)
+		if err != nil {
+			return nil, 0, err
+		}
+		if current != d.Version && semver.Compare(current, f.Latest) >= 0 {
+			if _, err := fmt.Fprintf(stdout, "bumped %s %s -> %s\n", d.Path, d.Version, current); err != nil {
+				return nil, 0, err
+			}
+			moved++
+			continue
+		}
 		before, err := snapshotModFiles(dir)
 		if err != nil {
 			return nil, 0, err
@@ -204,6 +221,21 @@ func heldRequirements(dir string) (map[string]string, error) {
 // raisedHolds names, as "held path old -> new" joined by ", ", each held
 // requirement whose version in dir/go.mod is no longer the held one. A held
 // requirement go.mod no longer lists is not raised.
+// requiredNow returns the version dir's go.mod now requires of path,
+// which is the version the build selects once go get has written it.
+func requiredNow(dir, path string) (string, error) {
+	directives, err := readGoMod(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, d := range directives {
+		if d.Kind == kindRequire && d.Path == path {
+			return d.Version, nil
+		}
+	}
+	return "", nil
+}
+
 func raisedHolds(dir string, held map[string]string) (string, error) {
 	directives, err := readGoMod(dir)
 	if err != nil {
