@@ -240,34 +240,49 @@
   // Live / historical browse
   // ---------------------------------------------------------------------------
 
+  // Counts listings started, so only the newest clears the loading flag.
+  let loadSeq = 0;
+
   async function loadEntries(): Promise<void> {
+    // The explorer stays mounted across database switches: a listing is
+    // bound to the client and scope generation it started in, and its
+    // answer (or error) is dropped if the database changed meanwhile, so
+    // one database's keys never show (or get bulk-deleted) under another.
+    const gen = scopeGeneration;
+    const listClient = client;
+    const seq = ++loadSeq;
     loading = true;
     try {
+      let next: KVEntry[];
       if (asOfRevision !== null) {
         const { start, end } = rangeBoundsForPrefix(prefixFilter);
         const resp = await withRetry(() =>
-          client.mvcc.range(start, end, { revision: asOfRevision as number }),
+          listClient.mvcc.range(start, end, { revision: asOfRevision as number }),
         );
-        entries = resp.kvs.map((kv) => ({ key: kv.key, value: kv.value }));
+        next = resp.kvs.map((kv) => ({ key: kv.key, value: kv.value }));
       } else if (keysOnly) {
         // Keys only: kv.list returns names without values; a row's value is
         // fetched with kv.get when it is opened.
-        const keys = await withRetry(() => client.kv.list(prefixFilter));
-        entries = [...keys].sort().map((key) => ({ key, value: "" }));
+        const keys = await withRetry(() => listClient.kv.list(prefixFilter));
+        next = [...keys].sort().map((key) => ({ key, value: "" }));
       } else {
         // Use scan() so we get keys+values in one round trip instead of N+1.
-        const map = await withRetry(() => client.kv.scan(prefixFilter));
-        const next: KVEntry[] = [];
+        const map = await withRetry(() => listClient.kv.scan(prefixFilter));
+        next = [];
         for (const key of Object.keys(map).sort()) {
           next.push({ key, value: map[key] ?? "" });
         }
-        entries = next;
       }
+      if (!isCurrentScope(gen)) return;
+      entries = next;
     } catch (err: unknown) {
+      if (!isCurrentScope(gen)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
       entries = [];
     } finally {
-      loading = false;
+      // Only the newest load clears the spinner; a stale one leaves it to
+      // the load that replaced it.
+      if (seq === loadSeq) loading = false;
     }
     await refreshCurrentRevision();
   }

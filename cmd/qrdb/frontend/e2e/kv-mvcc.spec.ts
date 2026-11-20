@@ -354,4 +354,42 @@ test.describe("KV Explorer MVCC calls are scoped to the selected database", () =
     expect(await releaseCall(page, "MVCCBinding.GetRevision")).toBe(0);
     expect((await mvccCalls(page)).filter((c) => c.method === "GetRevision")).toEqual([]);
   });
+
+  test("a delayed keys-only listing from one database is discarded after a switch", async ({ page }) => {
+    const method = "KVBinding.List@kv-plain";
+    await page.goto("/");
+    await page.locator("aside").getByText("kv-mvcc").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-mvcc", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await createEntry(page, "only/in-mvcc", "b");
+    await page.locator("aside").getByText("kv-plain").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-plain", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await createEntry(page, "only/in-plain", "a");
+
+    // kv-plain's keys-only listing is still in flight when the user
+    // switches to kv-mvcc, and kv-mvcc's own listing completes first.
+    await page.getByLabel("Keys only").check();
+    await expect(page.locator("table").getByText("only/in-plain")).toBeVisible();
+    await holdCall(page, method);
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await expect.poll(() => heldCallCount(page, method), { timeout: LOAD_TIMEOUT }).toBe(1);
+    await page.locator("aside").getByText("kv-mvcc").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-mvcc", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(page.locator("table").getByText("only/in-mvcc")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    // kv-plain's late answer arrives while kv-mvcc is shown.
+    expect(await releaseCall(page, method)).toBe(1);
+    // Let the released listing and any render it causes settle.
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+
+    // kv-mvcc still lists only its own keys: kv-plain's listing never
+    // replaces it, so a bulk delete cannot act on kv-plain's names here.
+    await expect(page.locator("table").getByText("only/in-plain")).toHaveCount(0);
+    await expect(page.locator("table").getByText("only/in-mvcc")).toBeVisible();
+  });
 });

@@ -1010,6 +1010,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             recordRevision(key, null);
           },
           List: async (database: string, prefix: string) => {
+            // Held per database ("KVBinding.List@<database>"), so a test can
+            // delay one database's listing while another's completes.
+            await maybeHold(`KVBinding.List@${database}`);
             useDatabase(database);
             maybeReject("KVBinding.List");
             const keys: string[] = [];
