@@ -9,7 +9,9 @@
 // needs hardware no hosted runner has) or `oversize` (it exceeds a measured
 // hosted limit: disk, memory, the 6-hour job limit), in any workflow; or
 // `credential`, for code-review.yml's Codex review job alone, whose
-// reviewer token is mounted on that runner only. The self-hosted machinery
+// reviewer token is mounted on that runner only. The review-only labels
+// codex and qwen (reviewRunnerLabels) are reserved to their code-review.yml
+// review jobs whatever the waiver category (Tenant Agent ruling 1007). The self-hosted machinery
 // the forge's runners needed -- the bigdisk pools and their routing
 // expressions, the batch and ci-gate labels, the forge registry, the named
 // cache volumes, the stale-stack reaper -- is gone. It fails when:
@@ -95,6 +97,11 @@ const (
 // waiverCategories are the categories any job's waiver may name: hardware
 // no hosted runner has, or a measured hosted limit the job exceeds.
 var waiverCategories = []string{"hardware", "oversize"}
+
+// reviewRunnerLabels maps each review-only runner label to the one
+// code-review.yml job that may run on it (Tenant Agent ruling 1007): codex
+// carries the Codex reviewer, qwen the opencode reviewer's model.
+var reviewRunnerLabels = map[string]string{"codex": reviewJob, "qwen": "review-opencode"}
 
 // hostWipeStep matches a step that frees a hosted runner's disk: a sudo rm
 // of the preinstalled SDKs, or a docker prune that would delete the images
@@ -202,6 +209,9 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		case runsOn == "" || strings.Contains(runsOn, "${{"):
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+" nor one self-hosted label (owner ruling 999)")
 		default:
+			if p := reservedLabelProblem(file, name, runsOn); p != "" {
+				add("job "+name+" runs on ", nodeText(job.RunsOn), ", and "+p)
+			}
 			if p := waiverProblem(file, name, job.RunsOn.LineComment); p != "" {
 				add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+", and "+p)
 			}
@@ -261,6 +271,17 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 // in workflow, holds the waiver `# self-hosted: <category>: <reason>` with
 // a category in waiverCategories, or credentialCategory on reviewJob in
 // reviewWorkflow, and a non-empty reason; otherwise what is wrong with it.
+// reservedLabelProblem says why a job may not run on label, or "" when it
+// may: a label in reviewRunnerLabels serves only its one code-review.yml
+// job, whatever the waiver category (Tenant Agent ruling 1007).
+func reservedLabelProblem(workflow, job, label string) string {
+	owner, ok := reviewRunnerLabels[label]
+	if !ok || (workflow == reviewWorkflow && job == owner) {
+		return ""
+	}
+	return "the " + label + " label is reserved to " + reviewWorkflow + "'s " + owner + " job whatever the waiver (Tenant Agent ruling 1007)"
+}
+
 func waiverProblem(workflow, job, comment string) string {
 	_, waiver, ok := strings.Cut(comment, selfHostedWaiver)
 	if !ok {
@@ -475,6 +496,7 @@ func TestRunnerProblems_CanFail(t *testing.T) {
 		"a GOMAXPROCS step env":         {hostedFile, "      - run: make leg", "      - run: make leg\n        env:\n          GOMAXPROCS: \"8\"", "sets GOMAXPROCS in a step's env"},
 		"a self-hosted label in ci.yml": {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: bigdisk", "carries no `# self-hosted: <category>: <reason>` waiver"},
 		"an expression with a waiver":   {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: ${{ 'bigdisk' }}  # self-hosted: oversize: a fixture reason", "not the literal ubuntu-latest nor one self-hosted label"},
+		"a review label in ci.yml":      {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: codex  # self-hosted: hardware: a fixture reason", "label is reserved to code-review.yml's review job"},
 		"a disk wipe on a waived job":   {hostedFile, "  build:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n", "  build:\n    runs-on: gpu  # self-hosted: hardware: a fixture reason\n    timeout-minutes: 30\n    steps:\n      - run: sudo rm -rf /usr/share/dotnet\n", "wipes a hosted runner's disk"},
 	}
 	for name, c := range cases {
@@ -695,6 +717,43 @@ func TestWaiverProblem(t *testing.T) {
 				t.Fatalf("waiverProblem(%q, %q, %q) = %q, want none", c.workflow, c.job, c.comment, got)
 			case c.want != "" && !strings.Contains(got, c.want):
 				t.Fatalf("waiverProblem(%q, %q, %q) = %q, want one containing %q", c.workflow, c.job, c.comment, got, c.want)
+			}
+		})
+	}
+}
+
+// TestReviewLabelsReserved holds the review-only runner labels to their
+// code-review.yml jobs whatever the waiver category (Tenant Agent ruling
+// 1007): a hardware or oversize waiver does not open codex or qwen to
+// another job or workflow.
+func TestReviewLabelsReserved(t *testing.T) {
+	cases := []struct {
+		name, file, job, runsOn string
+		fail                    bool
+	}{
+		{"ci.yml on codex", ciFile, "build", "codex  # self-hosted: hardware: a fixture reason", true},
+		{"ci.yml on qwen", ciFile, "build", "qwen  # self-hosted: hardware: a fixture reason", true},
+		{"nightly.yml on qwen, oversize", "nightly.yml", "build", "qwen  # self-hosted: oversize: a fixture reason", true},
+		{"another review job on codex", reviewWorkflow, "summary", "codex  # self-hosted: hardware: a fixture reason", true},
+		{"review-opencode on codex", reviewWorkflow, "review-opencode", "codex  # self-hosted: hardware: a fixture reason", true},
+		{"the Codex review on codex", reviewWorkflow, reviewJob, "codex  # self-hosted: credential: the reviewer token", false},
+		{"review-opencode on qwen", reviewWorkflow, "review-opencode", "qwen  # self-hosted: hardware: a fixture reason", false},
+		{"ci.yml on another label", ciFile, "build", "gpu  # self-hosted: hardware: a fixture reason", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := "on: push\njobs:\n  " + c.job + ":\n    runs-on: " + c.runsOn + "\n    timeout-minutes: 30\n    steps:\n      - run: make build\n"
+			problems, jobs := runnerProblems(c.file, []byte(body))
+			if jobs != 1 {
+				t.Fatalf("the fixture parsed to %d jobs, want 1: %v", jobs, problems)
+			}
+			reserved := slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "reserved to") })
+			runsOn := slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "job "+c.job+" runs on ") })
+			switch {
+			case c.fail && !reserved:
+				t.Fatalf("want a problem naming the label reserved to its review job, got %v", problems)
+			case !c.fail && runsOn:
+				t.Fatalf("want no runs-on problem, got %v", problems)
 			}
 		})
 	}

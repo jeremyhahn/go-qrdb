@@ -22,6 +22,10 @@ is one of:
 - `credential`: only code-review.yml's `review` job (the Codex review),
   whose reviewer token is mounted on that runner alone.
 
+The review-only labels `codex` and `qwen` are reserved to code-review.yml's
+`review` and `review-opencode` jobs whatever the waiver category (Tenant
+Agent ruling 1007); `TestReviewLabelsReserved` holds it.
+
 The reason must not be empty. A `runs-on` that is an expression, a list or a
 label without a valid waiver fails the gate.
 
