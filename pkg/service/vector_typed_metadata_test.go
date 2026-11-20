@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
@@ -299,5 +300,146 @@ func TestUpsertVector_ReportsCreated(t *testing.T) {
 	}
 	if second.Created {
 		t.Fatal("second upsert: created = true, want false")
+	}
+}
+
+// TestLegacyControlPrefixedMetadataRoundTrips proves a record written before
+// metadata carried a format version, whose string begins with \u0001, reads
+// back verbatim through get and list and keeps that value through a merge.
+func TestLegacyControlPrefixedMetadataRoundTrips(t *testing.T) {
+	store := vector.NewMemoryVectorStorage()
+	svc, err := NewVectorService(store, newVecTestLogger())
+	if err != nil {
+		t.Fatalf("NewVectorService: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
+		Namespace: "typed", Dimension: 2, DistanceMetric: "COSINE", IndexType: "HNSW",
+	}); err != nil {
+		t.Fatalf("CreateNamespace: %v", err)
+	}
+	if err := store.UpsertVector(ctx, scopedFromContext(ctx, "typed"), &vector.VectorValue{
+		ID: 1, Embedding: []float32{1, 0}, Metadata: map[string]string{"k": "\x01true", "s": "plain"},
+	}); err != nil {
+		t.Fatalf("legacy UpsertVector: %v", err)
+	}
+	want := map[string]interface{}{"k": "\x01true", "s": "plain"}
+
+	got, err := svc.GetVector(ctx, &GetVectorRequest{Namespace: "typed", ID: 1, IncludeMetadata: true})
+	if err != nil {
+		t.Fatalf("GetVector: %v", err)
+	}
+	if !reflect.DeepEqual(got.Metadata, want) {
+		t.Fatalf("get metadata = %#v, want %#v", got.Metadata, want)
+	}
+
+	list, err := svc.ListVectors(ctx, &ListVectorsRequest{Namespace: "typed", IncludeMetadata: true})
+	if err != nil {
+		t.Fatalf("ListVectors: %v", err)
+	}
+	if len(list.Vectors) != 1 || !reflect.DeepEqual(list.Vectors[0].Metadata, want) {
+		t.Fatalf("list = %#v, want one vector with %#v", list.Vectors, want)
+	}
+
+	if _, err := svc.UpdateMetadata(ctx, &UpdateVectorMetadataRequest{
+		Namespace: "typed", ID: 1, MergeMetadata: true, Metadata: map[string]interface{}{"n": 1},
+	}); err != nil {
+		t.Fatalf("UpdateMetadata: %v", err)
+	}
+	merged, err := svc.GetVector(ctx, &GetVectorRequest{Namespace: "typed", ID: 1, IncludeMetadata: true})
+	if err != nil {
+		t.Fatalf("GetVector after merge: %v", err)
+	}
+	wantMerged := map[string]interface{}{"k": "\x01true", "s": "plain", "n": float64(1)}
+	if !reflect.DeepEqual(merged.Metadata, wantMerged) {
+		t.Fatalf("merged metadata = %#v, want %#v", merged.Metadata, wantMerged)
+	}
+}
+
+// TestUpsertVector_ConcurrentCreateReportsOnce proves concurrent upserts of
+// one missing ID report created exactly once.
+func TestUpsertVector_ConcurrentCreateReportsOnce(t *testing.T) {
+	svc := newTypedMetadataService(t)
+	ctx := context.Background()
+	const writers = 16
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		created int
+		errs    []error
+	)
+	start := make(chan struct{})
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			resp, err := svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "typed", ID: 9, Vector: []float32{0, 1}})
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+				return
+			}
+			if resp.Created {
+				created++
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if len(errs) != 0 {
+		t.Fatalf("UpsertVector errors: %v", errs)
+	}
+	if created != 1 {
+		t.Fatalf("created reported %d times, want exactly 1", created)
+	}
+}
+
+// TestUpsertVector_RaceWithDeleteReportsStoredState proves an upsert racing a
+// delete reports created consistently with the order the two writes took:
+// the upsert created the vector exactly when it ran after the delete.
+func TestUpsertVector_RaceWithDeleteReportsStoredState(t *testing.T) {
+	svc := newTypedMetadataService(t)
+	ctx := context.Background()
+	for round := 0; round < 32; round++ {
+		if _, err := svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "typed", ID: 11, Vector: []float32{0, 1}}); err != nil {
+			t.Fatalf("round %d seed UpsertVector: %v", round, err)
+		}
+		var (
+			wg        sync.WaitGroup
+			resp      *UpsertVectorResponse
+			upErr     error
+			deleteErr error
+		)
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			resp, upErr = svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "typed", ID: 11, Vector: []float32{1, 0}})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, deleteErr = svc.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "typed", ID: 11})
+		}()
+		close(start)
+		wg.Wait()
+		if upErr != nil {
+			t.Fatalf("round %d UpsertVector: %v", round, upErr)
+		}
+		if deleteErr != nil {
+			t.Fatalf("round %d DeleteVector: %v", round, deleteErr)
+		}
+		_, getErr := svc.GetVector(ctx, &GetVectorRequest{Namespace: "typed", ID: 11})
+		stored := getErr == nil
+		// Upsert last: the vector is stored and the upsert created it after
+		// the delete. Delete last: the vector is gone and the upsert replaced
+		// the seeded one.
+		if resp.Created != stored {
+			t.Fatalf("round %d: created = %v, stored after both writes = %v (get err %v)",
+				round, resp.Created, stored, getErr)
+		}
 	}
 }

@@ -97,9 +97,14 @@ type VectorCommand struct {
 	Vector    []float32              `msgpack:"vec,omitempty"`
 	Metadata  map[string]interface{} `msgpack:"meta,omitempty"`
 	Merge     bool                   `msgpack:"merge,omitempty"`
-	Version   uint64                 `msgpack:"ver,omitempty"`
-	Timestamp int64                  `msgpack:"ts"`
-	NodeID    string                 `msgpack:"node,omitempty"`
+	// MetadataFormat is the metadata format version of Metadata and
+	// BatchMeta: a command without it (from a node that predates typed
+	// metadata) applies its values as verbatim strings, exactly as before;
+	// vectorStorage.MetadataFormatJSON stores them as canonical JSON.
+	MetadataFormat uint8  `msgpack:"meta_fmt,omitempty"`
+	Version        uint64 `msgpack:"ver,omitempty"`
+	Timestamp      int64  `msgpack:"ts"`
+	NodeID         string `msgpack:"node,omitempty"`
 
 	// Batch operations
 	IDs       []uint64                 `msgpack:"ids,omitempty"`
@@ -378,13 +383,14 @@ func (cmd *VectorCommand) Size() int {
 // NewUpsertCommand creates a new upsert vector command.
 func NewUpsertCommand(namespace string, id uint64, vector []float32, metadata map[string]interface{}, nodeID string) *VectorCommand {
 	return &VectorCommand{
-		Op:        OpUpsertVector,
-		Namespace: namespace,
-		ID:        id,
-		Vector:    vector,
-		Metadata:  metadata,
-		Timestamp: time.Now().UnixNano(),
-		NodeID:    nodeID,
+		Op:             OpUpsertVector,
+		MetadataFormat: commandMetadataFormat,
+		Namespace:      namespace,
+		ID:             id,
+		Vector:         vector,
+		Metadata:       metadata,
+		Timestamp:      time.Now().UnixNano(),
+		NodeID:         nodeID,
 	}
 }
 
@@ -402,25 +408,27 @@ func NewDeleteCommand(namespace string, id uint64, nodeID string) *VectorCommand
 // NewUpdateMetadataCommand creates a new update metadata command.
 func NewUpdateMetadataCommand(namespace string, id uint64, metadata map[string]interface{}, merge bool, nodeID string) *VectorCommand {
 	return &VectorCommand{
-		Op:        OpUpdateMetadata,
-		Namespace: namespace,
-		ID:        id,
-		Metadata:  metadata,
-		Merge:     merge,
-		Timestamp: time.Now().UnixNano(),
-		NodeID:    nodeID,
+		Op:             OpUpdateMetadata,
+		MetadataFormat: commandMetadataFormat,
+		Namespace:      namespace,
+		ID:             id,
+		Metadata:       metadata,
+		Merge:          merge,
+		Timestamp:      time.Now().UnixNano(),
+		NodeID:         nodeID,
 	}
 }
 
 // NewBatchUpsertCommand creates a new batch upsert command.
 func NewBatchUpsertCommand(namespace string, ids []uint64, vectors [][]float32, nodeID string) *VectorCommand {
 	return &VectorCommand{
-		Op:        OpBatchUpsert,
-		Namespace: namespace,
-		IDs:       ids,
-		Vectors:   vectors,
-		Timestamp: time.Now().UnixNano(),
-		NodeID:    nodeID,
+		Op:             OpBatchUpsert,
+		MetadataFormat: commandMetadataFormat,
+		Namespace:      namespace,
+		IDs:            ids,
+		Vectors:        vectors,
+		Timestamp:      time.Now().UnixNano(),
+		NodeID:         nodeID,
 	}
 }
 

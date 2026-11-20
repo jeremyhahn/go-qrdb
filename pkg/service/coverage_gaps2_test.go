@@ -119,13 +119,13 @@ func TestConvertToStringMap_Values(t *testing.T) {
 	if len(result) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(result))
 	}
-	if result["key1"] != "\x01\"val1\"" {
+	if result["key1"] != "\"val1\"" {
 		t.Fatalf("expected the JSON string \"val1\", got %q", result["key1"])
 	}
-	if result["key2"] != "\x0142" {
+	if result["key2"] != "42" {
 		t.Fatalf("expected 42, got %q", result["key2"])
 	}
-	if result["key3"] != "\x01true" {
+	if result["key3"] != "true" {
 		t.Fatalf("expected true, got %q", result["key3"])
 	}
 }
@@ -137,8 +137,8 @@ func TestConvertFromStringMap_Nil(t *testing.T) {
 }
 
 func TestConvertFromStringMap_Values(t *testing.T) {
-	m := map[string]string{"a": "\x011", "b": "\x01\"2\""}
-	result := convertFromStringMap(m)
+	m := map[string]string{"a": "1", "b": "\"2\""}
+	result := convertFromStringMap(&vector.VectorValue{Metadata: m, MetadataFormat: vector.MetadataFormatJSON})
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}

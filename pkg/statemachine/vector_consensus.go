@@ -437,22 +437,25 @@ func (v *VectorConsensusFSM) applyUpsertVector(ctx context.Context, cmd *VectorC
 		"id":        cmd.ID,
 	}).Debug("Applying UpsertVector")
 
+	created := false
 	// Apply to storage if available
 	if v.storage != nil {
-		// Convert metadata from map[string]interface{} to map[string]string
-		metadata := make(map[string]string)
-		for k, val := range cmd.Metadata {
-			metadata[k] = vectorStorage.EncodeMetadataValue(val)
-		}
+		// Raft applies commands one at a time, so this existence read and
+		// the write below are one atomic step: of two upserts of a missing
+		// ID exactly one reports created.
+		_, getErr := v.storage.GetVector(ctx, cmd.Namespace, cmd.ID)
+		created = errors.Is(getErr, vectorStorage.ErrVectorNotFound)
 
 		now := time.Now().UnixNano()
 		vec := &vectorStorage.VectorValue{
 			ID:        cmd.ID,
 			Embedding: cmd.Vector,
-			Metadata:  metadata,
+			Metadata:  commandMetadata(cmd.MetadataFormat, cmd.Metadata),
 			CreatedAt: now,
 			UpdatedAt: now,
 			Version:   1,
+
+			MetadataFormat: cmd.MetadataFormat,
 		}
 
 		if err := v.storage.UpsertVector(ctx, cmd.Namespace, vec); err != nil {
@@ -500,7 +503,7 @@ func (v *VectorConsensusFSM) applyUpsertVector(ctx context.Context, cmd *VectorC
 		"namespace": cmd.Namespace,
 		"id":        cmd.ID,
 	}).Debug("Vector upserted via Raft consensus")
-	return sm.Result{Value: 1}, nil
+	return sm.Result{Value: 1, Data: upsertResultData(created)}, nil
 }
 
 // applyDeleteVector removes a vector from storage and HNSW index.
@@ -676,16 +679,8 @@ func (v *VectorConsensusFSM) applyUpdateMetadata(ctx context.Context, cmd *Vecto
 	}
 
 	// Update metadata
-	if cmd.Merge {
-		for k, val := range cmd.Metadata {
-			vec.Metadata[k] = vectorStorage.EncodeMetadataValue(val)
-		}
-	} else {
-		vec.Metadata = make(map[string]string)
-		for k, val := range cmd.Metadata {
-			vec.Metadata[k] = vectorStorage.EncodeMetadataValue(val)
-		}
-	}
+	vec.Metadata, vec.MetadataFormat = mergeCommandMetadata(vec.Metadata, vec.MetadataFormat,
+		cmd.MetadataFormat, cmd.Metadata, cmd.Merge)
 
 	vec.UpdatedAt = time.Now().UnixNano()
 	vec.Version++

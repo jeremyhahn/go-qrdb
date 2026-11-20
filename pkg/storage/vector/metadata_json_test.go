@@ -17,6 +17,10 @@ package vector
 import (
 	"reflect"
 	"testing"
+
+	"github.com/vmihailenco/msgpack/v5"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema"
 )
 
 // TestMetadataJSONRoundTripKeepsTypes proves a number, a bool, an array, an
@@ -29,12 +33,13 @@ func TestMetadataJSONRoundTripKeepsTypes(t *testing.T) {
 		"obj": map[string]interface{}{"k": "v"},
 		"s":   "hello",
 		"num": "5",
+		"ctl": "\x01true",
 	}
 	stored := EncodeMetadata(in)
-	if stored["s"] != "\x01\"hello\"" || stored["n"] != "\x0142.5" || stored["b"] != "\x01true" {
-		t.Fatalf("stored form is not JSON: %v", stored)
+	if stored["s"] != `"hello"` || stored["n"] != "42.5" || stored["b"] != "true" {
+		t.Fatalf("stored form is not plain JSON text: %v", stored)
 	}
-	out := DecodeMetadata(stored)
+	out := DecodeMetadata(MetadataFormatJSON, stored)
 	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("round trip = %#v, want %#v", out, in)
 	}
@@ -46,13 +51,14 @@ func TestMetadataJSONRoundTripKeepsTypes(t *testing.T) {
 // TestMetadataJSONNilAndRawText covers nil maps and a stored value that is not
 // JSON, which decodes as its own text.
 func TestMetadataJSONNilAndRawText(t *testing.T) {
-	if EncodeMetadata(nil) != nil || DecodeMetadata(nil) != nil {
+	if EncodeMetadata(nil) != nil || DecodeMetadata(MetadataFormatJSON, nil) != nil ||
+		UpgradeMetadata(MetadataFormatLegacy, nil) != nil {
 		t.Fatal("nil map must stay nil")
 	}
-	if got := DecodeMetadataValue("plain text"); got != "plain text" {
-		t.Fatalf("raw text decoded as %#v", got)
+	if got := DecodeMetadataValue(MetadataFormatJSON, "not json"); got != "not json" {
+		t.Fatalf("undecodable JSON-format text decoded as %#v", got)
 	}
-	if got := EncodeMetadataValue(func() {}); DecodeMetadataValue(got) == nil {
+	if got := EncodeMetadataValue(func() {}); DecodeMetadataValue(MetadataFormatJSON, got) == nil {
 		t.Fatalf("unencodable value stored as %q, want a JSON string", got)
 	}
 }
@@ -74,20 +80,58 @@ func TestMetadataJSONFilterEquality(t *testing.T) {
 // valid JSON ("5", "true", a quoted string), and that a typed value of the
 // same text is a different stored value.
 func TestMetadataJSONLegacyStringsStayStrings(t *testing.T) {
-	for _, legacy := range []string{"5", "true", `"q"`, "null", "[1]", "plain"} {
-		got := DecodeMetadataValue(legacy)
+	for _, legacy := range []string{"5", "true", `"q"`, "null", "[1]", "plain", "\x01true", "\x01", "\x01\"a\""} {
+		got := DecodeMetadataValue(MetadataFormatLegacy, legacy)
 		if s, ok := got.(string); !ok || s != legacy {
 			t.Fatalf("legacy %q decoded as %#v, want the string itself", legacy, got)
-		}
-		if IsEncodedMetadataValue(legacy) {
-			t.Fatalf("legacy %q reported as versioned", legacy)
 		}
 		vec := &VectorValue{ID: 1, Metadata: map[string]string{"k": legacy}}
 		if !matchesFilter(vec, "k", legacy, FilterEqual) {
 			t.Fatalf("legacy %q does not match its verbatim string filter", legacy)
 		}
-		if matchesFilter(vec, "k", EncodeMetadataValue(DecodeMetadataValue("\x01"+legacy)), FilterEqual) {
-			t.Fatalf("legacy %q matched the typed filter of the same text", legacy)
+		// Upgrading a legacy record to the JSON format keeps every value the
+		// string it read as, the marker-like control byte included.
+		up := UpgradeMetadata(MetadataFormatLegacy, vec.Metadata)
+		if s, ok := DecodeMetadataValue(MetadataFormatJSON, up["k"]).(string); !ok || s != legacy {
+			t.Fatalf("upgraded legacy %q reads back as %#v", legacy, DecodeMetadataValue(MetadataFormatJSON, up["k"]))
 		}
+		if UpgradeMetadata(MetadataFormatJSON, up)["k"] != up["k"] {
+			t.Fatalf("upgrading a JSON-format map changed %q", up["k"])
+		}
+	}
+}
+
+// TestMetadataFormatSurvivesRecordEncoding: the record's format version is
+// part of the stored record, and a record written before it existed decodes
+// as the legacy format.
+func TestMetadataFormatSurvivesRecordEncoding(t *testing.T) {
+	for _, format := range []uint8{MetadataFormatLegacy, MetadataFormatJSON} {
+		in := &VectorValue{ID: 7, Embedding: []float32{1}, Metadata: map[string]string{"k": "\x01true"}, Version: 1, MetadataFormat: format}
+		data, err := schema.EncodeVectorValue(toSchemaVectorValue(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		dec, err := schema.DecodeVectorValue(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := fromSchemaVectorValue(dec)
+		if out.MetadataFormat != format || out.Metadata["k"] != "\x01true" {
+			t.Fatalf("format %d decoded as %d with %q", format, out.MetadataFormat, out.Metadata["k"])
+		}
+	}
+	old, err := msgpack.Marshal(map[string]interface{}{"id": uint64(7), "meta": map[string]string{"k": "\x01true"}, "ver": uint64(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec, err := schema.DecodeVectorValue(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec.MetadataFormat != MetadataFormatLegacy {
+		t.Fatalf("pre-format record decoded as format %d", dec.MetadataFormat)
+	}
+	if got := DecodeMetadata(dec.MetadataFormat, dec.Metadata)["k"]; got != "\x01true" {
+		t.Fatalf("pre-format record value read as %#v", got)
 	}
 }

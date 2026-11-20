@@ -226,7 +226,8 @@ func (m *MockVectorStorageWrapper) GetVector(ctx context.Context, namespace stri
 	}
 	vec, ok := vectors[id]
 	if !ok {
-		return nil, api.NewNotFoundError("MockVectorStorage", "vector")
+		// The real storage reports a missing vector as ErrVectorNotFound.
+		return nil, vector.ErrVectorNotFound
 	}
 	return vec, nil
 }
