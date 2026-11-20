@@ -785,6 +785,7 @@
               type="password"
               class="input input-bordered input-sm"
               placeholder="Enter passphrase"
+              data-testid="unseal-passphrase"
               bind:value={passphraseInput}
               onkeydown={(e: KeyboardEvent) => {
                 if (e.key === "Enter") void handleSubmitPassphrase();

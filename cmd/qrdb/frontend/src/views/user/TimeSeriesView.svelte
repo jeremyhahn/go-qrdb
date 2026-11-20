@@ -107,6 +107,14 @@
     "Last",
   ] as const;
 
+  // The AggFunc values every transport accepts: the REST handler's aggFuncMap
+  // (pkg/api/rest/handlers_timeseries.go) knows avg, sum, min, max, count and
+  // percentile only, so the menus offer those (First and Last would be a 400).
+  const SUPPORTED_AGG_FUNCS: readonly number[] = [1, 2, 3, 4, 5, 6];
+  // Rich query and retention may also run without an aggregation (0, "None",
+  // which the request omits); the aggregate card always needs one.
+  const OPTIONAL_AGG_FUNCS: readonly number[] = [0, ...SUPPORTED_AGG_FUNCS];
+
   // Aggregate card
   let aggFunction: number = $state(1);
   let aggInterval: string = $state("1m");
@@ -535,8 +543,12 @@
       }
       const tsRaw = (parts[0] ?? "").trim();
       if (!/^\d+$/.test(tsRaw)) return `Line ${i + 1}: timestamp must be Unix nanoseconds.`;
-      const value = parseFloat((parts[1] ?? "").trim());
-      if (Number.isNaN(value)) return `Line ${i + 1}: value must be a valid number.`;
+      // The whole field must be a finite number: parseFloat would take the
+      // prefix of "12oops", and "1e309" overflows to Infinity, which JSON
+      // sends as null (stored as 0).
+      const valueRaw = (parts[1] ?? "").trim();
+      const value = valueRaw === "" ? NaN : Number(valueRaw);
+      if (!Number.isFinite(value)) return `Line ${i + 1}: value must be a valid number.`;
       const tags = parts.length === 3 ? parseTags((parts[2] ?? "").replaceAll(";", ",")) : [];
       points.push({
         metric,
@@ -886,8 +898,8 @@
             bind:value={aggFunction}
             data-testid="ts-agg-function"
           >
-            {#each AGG_FUNC_NAMES as name, i (name)}
-              <option value={i}>{name}</option>
+            {#each SUPPORTED_AGG_FUNCS as fn (fn)}
+              <option value={fn}>{AGG_FUNC_NAMES[fn]}</option>
             {/each}
           </select>
         </label>
@@ -968,8 +980,8 @@
             bind:value={rqAggregation}
             data-testid="ts-rich-aggregation"
           >
-            {#each AGG_FUNC_NAMES as name, i (name)}
-              <option value={i}>{name}</option>
+            {#each OPTIONAL_AGG_FUNCS as fn (fn)}
+              <option value={fn}>{AGG_FUNC_NAMES[fn]}</option>
             {/each}
           </select>
         </label>
@@ -1129,8 +1141,8 @@
             bind:value={retAggregation}
             data-testid="ts-retention-aggregation-input"
           >
-            {#each AGG_FUNC_NAMES as name, i (name)}
-              <option value={i}>{name}</option>
+            {#each OPTIONAL_AGG_FUNCS as fn (fn)}
+              <option value={fn}>{AGG_FUNC_NAMES[fn]}</option>
             {/each}
           </select>
         </label>

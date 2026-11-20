@@ -349,6 +349,44 @@ test.describe("TimeSeries operations", () => {
     expect(await bindingCalls(page)).not.toContain("WriteBatch");
   });
 
+  // parseFloat would read "12oops" as 12 and "1e309" as Infinity (which JSON
+  // turns into null, stored as 0): the whole value must be a finite number.
+  for (const bad of ["12oops", "1e309"]) {
+    test(`batch write rejects the value ${bad}`, async ({ page }) => {
+      await injectStatefulTimeSeriesBinding(page);
+      await navigateToTimeSeries(page);
+
+      await page.getByRole("button", { name: "Write", exact: true }).first().click();
+      await writePanel(page).getByTestId("ts-write-mode-batch").click();
+      await writePanel(page).locator("input[placeholder='cpu.usage']").fill("ops.bad");
+      await writePanel(page).getByTestId("ts-write-batch").fill(`${ns(minuteBase())},1\n${ns(minuteBase())},${bad}`);
+      await writePanel(page).getByRole("button", { name: "Write" }).click();
+      await expect(page.getByText("Line 2: value must be a valid number.")).toBeVisible();
+      expect(await bindingCalls(page)).not.toContain("WriteBatch");
+    });
+  }
+
+  test("aggregation menus offer only the functions the REST server accepts", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+    await writeBatchViaUI(page, "ops.menus", seriesLines(minuteBase()));
+    await openMetric(page, "ops.menus");
+
+    // pkg/api/rest/handlers_timeseries.go aggFuncMap: avg, sum, min, max,
+    // count, percentile. The aggregate card needs a function; the rich query
+    // and retention cards may also run without one ("None" omits it).
+    const supported = ["Avg", "Sum", "Min", "Max", "Count", "Percentile"];
+    await expect(
+      page.getByTestId("ts-aggregate-card").getByTestId("ts-agg-function").locator("option"),
+    ).toHaveText(supported);
+    await expect(
+      page.getByTestId("ts-rich-card").getByTestId("ts-rich-aggregation").locator("option"),
+    ).toHaveText(["None", ...supported]);
+    await expect(
+      page.getByTestId("ts-retention-card").getByTestId("ts-retention-aggregation-input").locator("option"),
+    ).toHaveText(["None", ...supported]);
+  });
+
   test("aggregate buckets by interval and applies the function", async ({ page }) => {
     await injectStatefulTimeSeriesBinding(page);
     await navigateToTimeSeries(page);

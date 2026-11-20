@@ -639,11 +639,9 @@ test.describe("Scenario E2 - passphrase server sealed/unsealed transition", () =
     const main = page.locator("main");
 
     // Submit the passphrase (non-shamir barriers label the action "Unseal").
-    await main
-      .locator("input[type='password'], input[type='text']")
-      .filter({ hasNot: page.locator("[disabled]") })
-      .last()
-      .fill("my-passphrase-share");
+    // The unseal panel's own field: the ceremony card below it carries
+    // password inputs of its own.
+    await main.getByTestId("unseal-passphrase").fill("my-passphrase-share");
 
     await main.getByRole("button", { name: "Unseal", exact: true }).click();
 
@@ -703,11 +701,9 @@ test.describe("Scenario E2 - passphrase server sealed/unsealed transition", () =
     ).toBeVisible({ timeout: TIMEOUT });
 
     // Unseal by submitting the passphrase
-    await main
-      .locator("input[type='password'], input[type='text']")
-      .filter({ hasNot: page.locator("[disabled]") })
-      .last()
-      .fill("passphrase-share");
+    // The unseal panel's own field: the ceremony card below it carries
+    // password inputs of its own.
+    await main.getByTestId("unseal-passphrase").fill("passphrase-share");
 
     await main.getByRole("button", { name: "Unseal", exact: true }).click();
 

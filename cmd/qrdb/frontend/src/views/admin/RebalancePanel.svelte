@@ -55,6 +55,9 @@
   let shardStats: ShardStatsResponse | null = $state(null);
   let shardStatsLoading: boolean = $state(false);
   let shardStatsError: string | null = $state(null);
+  // Identity of the latest shard-stats lookup; Close and a newer lookup bump
+  // it, so a response that settles afterwards changes nothing.
+  let shardStatsRequest = 0;
 
   // ---------------------------------------------------------------------------
   // Columns
@@ -144,20 +147,30 @@
 
   /** Loads the per-shard statistics for the clicked move row. */
   async function loadShardStats(shardId: number): Promise<void> {
+    const request = ++shardStatsRequest;
     selectedShardId = shardId;
     shardStats = null;
     shardStatsError = null;
     shardStatsLoading = true;
     try {
       const stats = await client.rebalance.getShardStats(shardId);
-      if (selectedShardId === shardId) shardStats = stats;
+      if (request === shardStatsRequest) shardStats = stats;
     } catch (err: unknown) {
-      if (selectedShardId === shardId) {
+      if (request === shardStatsRequest) {
         shardStatsError = err instanceof Error ? err.message : String(err);
       }
     } finally {
-      if (selectedShardId === shardId) shardStatsLoading = false;
+      if (request === shardStatsRequest) shardStatsLoading = false;
     }
+  }
+
+  /** Closes the statistics panel and drops any lookup still in flight. */
+  function closeShardStats(): void {
+    shardStatsRequest++;
+    selectedShardId = null;
+    shardStats = null;
+    shardStatsError = null;
+    shardStatsLoading = false;
   }
 
   function handleMoveRowClick(event: RowClickEvent<RebalanceMove>): void {
@@ -294,7 +307,7 @@
         <div class="rounded-box bg-base-100 mt-3 p-4" data-testid="shard-stats-panel">
           <div class="flex items-center justify-between">
             <h4 class="font-semibold">Shard {selectedShardId} Statistics</h4>
-            <button class="btn btn-ghost btn-xs" onclick={() => (selectedShardId = null)}>Close</button>
+            <button class="btn btn-ghost btn-xs" onclick={closeShardStats}>Close</button>
           </div>
           {#if shardStatsLoading}
             <div class="flex justify-center py-4" data-testid="shard-stats-loading">
