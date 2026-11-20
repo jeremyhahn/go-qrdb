@@ -47,7 +47,9 @@
 package buildgates
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -932,6 +934,261 @@ func TestRunnerProblems_Selection(t *testing.T) {
 			problems, _ := runnerProblems(c.file, []byte(body))
 			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, c.want) }) {
 				t.Fatalf("want a problem containing %q, got %v", c.want, problems)
+			}
+		})
+	}
+}
+
+// selectionStep returns the run: script and the env: of the ci.yml step with
+// id runner, the hosted-or-overflow runner selection (ruling 1024).
+func selectionStep(t *testing.T) (script string, env map[string]string) {
+	t.Helper()
+	var wf struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				ID  string            `yaml:"id"`
+				Env map[string]string `yaml:"env"`
+				Run string            `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(readCIBody(t)), &wf); err != nil {
+		t.Fatalf("parse ci.yml: %v", err)
+	}
+	for name, job := range wf.Jobs {
+		for _, s := range job.Steps {
+			if s.ID != "runner" {
+				continue
+			}
+			if script != "" {
+				t.Fatalf("ci.yml has a second step with id runner (job %s)", name)
+			}
+			script, env = s.Run, s.Env
+		}
+	}
+	if script == "" {
+		t.Fatal("ci.yml has no step with id runner, the runner selection")
+	}
+	return script, env
+}
+
+// selectionReply is one recorded Actions API answer: an HTTP code and a body.
+type selectionReply struct {
+	code int
+	body any
+}
+
+// stubCurl is the curl the selection step finds first on PATH: it answers
+// each URL from <dir>/<key>.json (code in <key>.code, else 200), any other
+// URL with 404, and logs every URL in <dir>/calls.log. No request leaves.
+const stubCurl = `#!/usr/bin/env bash
+dir=%q
+out= url=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o|-w|-H|--max-time) [ "$1" = -o ] && out=$2; shift 2 ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
+  esac
+done
+echo "$url" >> "$dir/calls.log"
+key=${url//[^A-Za-z0-9]/_}
+if [ -f "$dir/$key.json" ]; then
+  cp "$dir/$key.json" "$out"
+  code=200
+  [ -f "$dir/$key.code" ] && code=$(< "$dir/$key.code")
+else
+  echo '{}' > "$out"
+  code=404
+fi
+printf '%s' "$code"
+`
+
+// TestCIRunnerSelectionBehaviour runs the selection step's script, as
+// extracted from ci.yml, against a stub curl serving recorded Actions API
+// replies, and checks the runner outputs and the annotation it prints.
+// The clock needs no fixing: queued jobs are recorded far in the past
+// (queued past the grace) or far in the future (not yet past it).
+//
+// There is no "not github.com" case: ci.yml runs on github.com alone and
+// leaves the template's forge check out (its CUSTOMIZE block), so the step
+// has no such branch to test.
+func TestCIRunnerSelectionBehaviour(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed; the runner selection step is a bash script")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is not installed; the runner selection step needs it")
+	}
+	script, stepEnv := selectionStep(t)
+
+	const (
+		api    = "stub://actions"
+		repo   = "owner/repo"
+		hosted = `"ubuntu-latest"`
+		bigdsk = `["self-hosted","linux","x64","bigdisk"]`
+		bigdkr = `["self-hosted","linux","x64","bigdisk-docker"]`
+		past   = "2000-01-01T00:00:00Z"
+		future = "2999-01-01T00:00:00Z"
+	)
+	page := func(path string, n int) string { return api + path + "&per_page=100&page=" + strconv.Itoa(n) }
+	runList := func(ids ...int) selectionReply {
+		list := []map[string]any{}
+		for _, id := range ids {
+			list = append(list, map[string]any{"id": id})
+		}
+		return selectionReply{200, map[string]any{"total_count": len(list), "workflow_runs": list}}
+	}
+	job := func(run int, status, created string) map[string]any {
+		return map[string]any{"run_id": run, "status": status, "created_at": created, "labels": []string{"ubuntu-latest"}}
+	}
+	jobList := func(jobs ...map[string]any) selectionReply {
+		return selectionReply{200, map[string]any{"total_count": len(jobs), "jobs": jobs}}
+	}
+	// world: run 1 (this run) in progress with the given jobs, run 2 queued
+	// with the given jobs (no queued run when there are none).
+	world := func(own []map[string]any, other []map[string]any) map[string]selectionReply {
+		w := map[string]selectionReply{
+			page("/runs?status=in_progress", 1):   runList(1),
+			page("/runs/1/jobs?filter=latest", 1): jobList(own...),
+			page("/runs?status=queued", 1):        runList(),
+		}
+		if other != nil {
+			w[page("/runs?status=queued", 1)] = runList(2)
+			w[page("/runs/2/jobs?filter=latest", 1)] = jobList(other...)
+		}
+		return w
+	}
+	running := func(n int) []map[string]any {
+		var jobs []map[string]any
+		for range n {
+			jobs = append(jobs, job(1, "in_progress", past))
+		}
+		return jobs
+	}
+	short := world(running(1), nil)
+	short[page("/runs?status=in_progress", 1)] = selectionReply{200, map[string]any{"total_count": 3, "workflow_runs": []map[string]any{{"id": 1}}}}
+	short[page("/runs?status=in_progress", 2)] = selectionReply{200, map[string]any{"total_count": 3, "workflow_runs": []map[string]any{}}}
+	failed := world(running(1), nil)
+	failed[page("/runs?status=queued", 1)] = selectionReply{500, map[string]any{"message": "server error"}}
+
+	cases := []struct {
+		name            string
+		limit, headRepo string
+		replies         map[string]selectionReply
+		runner, docker  string
+		notice, warning string // a substring of the one annotation; "" = none
+		say             string // a substring of the plain output
+		noCurl          bool
+	}{
+		{name: "below the threshold stays hosted", limit: "2", replies: world(running(1), nil),
+			runner: hosted, docker: hosted, say: "1 hosted job(s) in progress"},
+		{name: "running at the threshold overflows", limit: "2", headRepo: repo, replies: world(running(2), nil),
+			runner: bigdsk, docker: bigdkr, notice: "2 hosted jobs in progress, HOSTED_JOBS_PER_REPO=2"},
+		{name: "another run queued past the grace overflows", limit: "2", replies: world(running(1), []map[string]any{job(2, "queued", past)}),
+			runner: bigdsk, docker: bigdkr, notice: "1 hosted job(s) queued 60s or more"},
+		{name: "another run queued within the grace stays hosted", limit: "2", replies: world(running(1), []map[string]any{job(2, "queued", future)}),
+			runner: hosted, docker: hosted, say: "0 hosted job(s) of other runs queued"},
+		{name: "a non-200 reply stays hosted with a warning", limit: "2", replies: failed,
+			runner: hosted, docker: hosted, warning: "no complete run list (" + api + "/runs?status=queued: 500)"},
+		{name: "a listing short of total_count stays hosted with a warning", limit: "2", replies: short,
+			runner: hosted, docker: hosted, warning: "1 of 3 entries"},
+		{name: "a non-number threshold stays hosted with a warning", limit: "two", replies: world(running(2), nil),
+			runner: hosted, docker: hosted, warning: "HOSTED_JOBS_PER_REPO='two'", noCurl: true},
+		{name: "a fork pull request at saturation stays hosted", limit: "2", headRepo: "fork/repo", replies: world(running(2), nil),
+			runner: hosted, docker: hosted, say: "fork/repo", noCurl: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stub, bin := filepath.Join(dir, "stub"), filepath.Join(dir, "bin")
+			for _, d := range []string{stub, bin} {
+				if err := os.Mkdir(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(strings.Replace(stubCurl, "%q", strconv.Quote(stub), 1)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			unsafe := regexp.MustCompile(`[^A-Za-z0-9]`)
+			for url, r := range c.replies {
+				key := filepath.Join(stub, unsafe.ReplaceAllString(url, "_"))
+				body, err := json.Marshal(r.body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(key+".json", body, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(key+".code", []byte(strconv.Itoa(r.code)), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env := map[string]string{
+				"API": api, "RUN_ID": "1", "JOB_TOKEN": "stub-token", "LIMIT": c.limit, "GRACE": "60",
+				"HEAD_REPO": c.headRepo, "REPO": repo,
+			}
+			for k := range stepEnv {
+				if _, ok := env[k]; !ok {
+					t.Fatalf("the runner step reads env %s, which this test does not give", k)
+				}
+			}
+			output := filepath.Join(dir, "github-output")
+			if err := os.WriteFile(output, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			scriptFile := filepath.Join(dir, "step.sh")
+			if err := os.WriteFile(scriptFile, []byte(script), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(bash, "--noprofile", "--norc", "-eo", "pipefail", scriptFile)
+			cmd.Dir = dir
+			cmd.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + dir,
+				"RUNNER_TEMP=" + dir, "GITHUB_OUTPUT=" + output}
+			for k, v := range env {
+				cmd.Env = append(cmd.Env, k+"="+v)
+			}
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("the step failed: %v\n%s", err, out)
+			}
+			got, err := os.ReadFile(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := "runner=" + c.runner + "\nrunner_docker=" + c.docker + "\n"; string(got) != want {
+				t.Errorf("GITHUB_OUTPUT is\n%s\nwant\n%s\nstep output:\n%s", got, want, out)
+			}
+			var notices, warnings []string
+			for _, line := range strings.Split(string(out), "\n") {
+				if s, ok := strings.CutPrefix(line, "::notice::"); ok {
+					notices = append(notices, s)
+				}
+				if s, ok := strings.CutPrefix(line, "::warning::"); ok {
+					warnings = append(warnings, s)
+				}
+			}
+			for _, a := range []struct {
+				kind, want string
+				got        []string
+			}{{"notice", c.notice, notices}, {"warning", c.warning, warnings}} {
+				switch {
+				case a.want == "" && len(a.got) != 0:
+					t.Errorf("want no %s, got %q", a.kind, a.got)
+				case a.want != "" && (len(a.got) != 1 || !strings.Contains(a.got[0], a.want)):
+					t.Errorf("want one %s containing %q, got %q", a.kind, a.want, a.got)
+				}
+			}
+			if !strings.Contains(string(out), c.say) {
+				t.Errorf("want the output to contain %q, got\n%s", c.say, out)
+			}
+			calls, err := os.ReadFile(filepath.Join(stub, "calls.log"))
+			if c.noCurl && err == nil {
+				t.Errorf("want no Actions API call, got\n%s", calls)
+			}
+			if !c.noCurl && err != nil {
+				t.Errorf("want Actions API calls, got none: %v", err)
 			}
 		})
 	}

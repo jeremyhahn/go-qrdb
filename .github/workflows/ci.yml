@@ -272,6 +272,8 @@ jobs:
           JOB_TOKEN: ${{ github.token }}
           LIMIT: ${{ env.HOSTED_JOBS_PER_REPO }}
           GRACE: ${{ env.HOSTED_QUEUE_GRACE_SECONDS }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
         run: |
           set -uo pipefail
           HOSTED='"ubuntu-latest"'
@@ -280,6 +282,13 @@ jobs:
             echo "runner: $1; runner_docker: $2"
             { echo "runner=$1"; echo "runner_docker=$2"; } >> "$GITHUB_OUTPUT"
           }
+          # A pull request from a fork never overflows: its code does not run
+          # on the self-hosted Dells. HEAD_REPO is empty on any other event.
+          if [ -n "$HEAD_REPO" ] && [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "runner selection: a pull request from the fork $HEAD_REPO, not $REPO; every job of this run takes the GitHub-hosted default, ubuntu-latest, and never overflows to the Dells (ci-template v1.48, ruling 1024)"
+            emit "$HOSTED" "$HOSTED"
+            exit 0
+          fi
           # hosted <why>: no count, so the default, with the reason shown.
           hosted() {
             echo "::warning::runner selection: $1; every job of this run takes the GitHub-hosted default, ubuntu-latest, and none overflows to the Dells (ci-template v1.48, ruling 1024)"
