@@ -149,6 +149,12 @@ type Event struct {
 	// only the id.
 	Database string
 
+	// ShardID is the entry's immutable shard identity: the placement's
+	// for an EventPut, and the prior value's for an EventDelete whose
+	// prior value was delivered, so a delete can name the shard to tear
+	// down even when its consumer never saw the entry. Zero when unknown.
+	ShardID uint64
+
 	// Placement is the decoded placement for an EventPut; nil for an
 	// EventDelete (or when the prior value could not be decoded).
 	Placement *Placement
@@ -808,7 +814,7 @@ func (s *Store) translateEvent(ctx context.Context, ev WatchEvent) (Event, bool)
 		if len(ev.PrevValue) > 0 {
 			if p, err := decodePlacement(ev.PrevValue); err == nil {
 				s.resolveNames(ctx, p)
-				return Event{Type: EventDelete, TenantID: p.TenantID, DatabaseID: p.DatabaseID, Database: p.Database}, true
+				return Event{Type: EventDelete, TenantID: p.TenantID, DatabaseID: p.DatabaseID, Database: p.Database, ShardID: p.ShardID}, true
 			}
 		}
 		tenantID, databaseID, ok := splitPlacementKey(ev.Key)
@@ -825,7 +831,7 @@ func (s *Store) translateEvent(ctx context.Context, ev WatchEvent) (Event, bool)
 		return Event{}, false
 	}
 	s.resolveNames(ctx, p)
-	return Event{Type: EventPut, TenantID: p.TenantID, DatabaseID: p.DatabaseID, Database: p.Database, Placement: p}, true
+	return Event{Type: EventPut, TenantID: p.TenantID, DatabaseID: p.DatabaseID, Database: p.Database, ShardID: p.ShardID, Placement: p}, true
 }
 
 // splitPlacementKey parses a placement key back into its (tenant, databaseID)

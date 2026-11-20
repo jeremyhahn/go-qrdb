@@ -1360,6 +1360,11 @@ func TestStore_Watch(t *testing.T) {
 	if ev.Type != EventDelete || ev.TenantID != "acme" || ev.Database != "orders" {
 		t.Fatalf("delete event = %+v, want EventDelete acme/orders", ev)
 	}
+	// The prior value's immutable shard identity rides on the delete, so a
+	// consumer that never saw the entry can still tear its shard down.
+	if ev.ShardID != 1000 {
+		t.Fatalf("delete event shard = %d, want the prior value's 1000", ev.ShardID)
+	}
 }
 
 // staticNames is a NameResolver over a fixed tenant -> id -> name table.

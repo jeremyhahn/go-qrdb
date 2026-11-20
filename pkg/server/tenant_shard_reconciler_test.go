@@ -1487,6 +1487,30 @@ func TestTenantShardReconciler_EventDelete_ReclaimsAShardWhoseNameNeverResolved(
 	}
 }
 
+// TestTenantShardReconciler_EventDelete_FirstObservedEventClosesAnIndependentlyStartedShard
+// covers a placement created, started directly (RaftBackendFactory.Services)
+// and deleted in the list/watch gap: the delete is the first event this
+// reconciler sees, so placedNames has no entry, and the shard identity comes
+// from the delete's prior value alone.
+func TestTenantShardReconciler_EventDelete_FirstObservedEventClosesAnIndependentlyStartedShard(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	factory.seedStarted("acme", "orders", 1001)
+	factory.seedStarted("acme", "orders-successor", 1002)
+
+	store, _ := placement.NewStore(newMemKV())
+	r := NewTenantShardReconciler(store, factory, "local:1", nil)
+	r.handleEvent(context.Background(), placement.Event{
+		Type: placement.EventDelete, TenantID: "acme", DatabaseID: "0f4d9c2b7a6e5d4c3b2a19f8e7d6c5b4", ShardID: 1001,
+	})
+
+	if factory.isStarted("acme", "orders") {
+		t.Error("the deleted entry's shard (1001) still runs: a delete as the first observed event left it retained")
+	}
+	if !factory.isStarted("acme", "orders-successor") {
+		t.Error("a shard of another entry was closed")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // JoinObserver / Observer→ObserverReady→Active promotion tests
 // ---------------------------------------------------------------------------
