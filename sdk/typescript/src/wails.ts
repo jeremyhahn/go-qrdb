@@ -968,18 +968,31 @@ export class WailsClient implements Client {
                 await b.DeleteVector(toSnake({ ...req, id: vectorIDToWire(req.id) }));
             },
             batchUpsert: async (req: BatchUpsertRequest): Promise<BatchUpsertResponse> => {
-                return b.BatchUpsert(toSnake({
+                // The binding answers the Go BatchUpsertResponse
+                // {ids, versions, timestamp, success, inserted_count}: the
+                // upserted count is inserted_count, the rest failed.
+                const resp = await b.BatchUpsert(toSnake({
                     ...req,
                     vectors: req.vectors.map((v) => ({ ...v, id: vectorIDToWire(v.id) })),
-                })) as Promise<BatchUpsertResponse>;
+                })) as { insertedCount?: number } | null;
+                const succeeded = resp?.insertedCount ?? 0;
+                return { succeeded, failed: Math.max(0, req.vectors.length - succeeded) };
             },
             batchDeleteVectors: async (
                 req: BatchDeleteVectorsRequest,
             ): Promise<BatchDeleteVectorsResponse> => {
-                return b.BatchDeleteVectors(toSnake({
+                // The binding answers the Go BatchDeleteVectorsResponse
+                // {deleted_count, failed_ids, timestamp, success}.
+                const resp = await b.BatchDeleteVectors(toSnake({
                     ...req,
                     ids: req.ids.map(vectorIDToWire),
-                })) as Promise<BatchDeleteVectorsResponse>;
+                })) as { deletedCount?: number; failedIds?: readonly (number | string)[] } | null;
+                const failedIds = resp?.failedIds ?? [];
+                return {
+                    deleted: resp?.deletedCount ?? 0,
+                    failed: failedIds.length,
+                    errors: failedIds.map((id) => ({ id: String(id), error: 'not deleted' })),
+                };
             },
             listVectors: async (req: ListVectorsRequest): Promise<ListVectorsResponse> => {
                 const resp = await b.ListVectors(toSnake(req)) as ListVectorsResponse;
@@ -1006,7 +1019,16 @@ export class WailsClient implements Client {
             hybridSearch: async (
                 req: HybridSearchRequest,
             ): Promise<HybridSearchResponse> => {
-                const resp = await b.HybridSearch(toSnake(req)) as HybridSearchResponse;
+                // transport.HybridSearchRequest reads query_vector and
+                // metadata_filter, as the REST adapter sends them.
+                const resp = await b.HybridSearch(toSnake({
+                    namespace: req.namespace,
+                    queryVector: req.vector,
+                    k: req.k,
+                    metadataFilter: req.metadataFilters,
+                    consistency: req.consistency,
+                    shardId: req.shardId,
+                })) as HybridSearchResponse;
                 return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
             },
             searchByID: async (req: SearchByIDRequest): Promise<SearchSimilarResponse> => {

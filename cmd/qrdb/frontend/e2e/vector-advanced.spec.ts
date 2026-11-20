@@ -150,6 +150,17 @@ async function injectStatefulVectorBinding(
       GetVector: async (req: unknown) => {
         maybeReject("VectorBinding.GetVector");
         const r = req as { namespace: string; id: string };
+        // A held ID answers only when the test releases it, so a spec can
+        // deliver responses out of order.
+        const s = w.__QRDB_MOCK_STATE__ as {
+          holdGetVector?: Record<string, boolean>;
+          releaseGetVector?: Record<string, () => void>;
+        };
+        if (s.holdGetVector?.[r.id]) {
+          await new Promise<void>((resolve) => {
+            s.releaseGetVector = { ...(s.releaseGetVector ?? {}), [r.id]: resolve };
+          });
+        }
         return { ...lookup(r.namespace, r.id) };
       },
 
@@ -165,34 +176,40 @@ async function injectStatefulVectorBinding(
           namespace: string;
           vectors: Array<{ id: string; vector: number[]; metadata?: Record<string, unknown> }>;
         };
+        // The Go service validates the whole batch first and answers
+        // {ids, versions, timestamp, success, inserted_count}; one bad
+        // dimension refuses the batch.
         const dim = namespaceStore.get(r.namespace)?.dimension;
-        let succeeded = 0;
-        const errors: Array<{ id: string; error: string }> = [];
         for (const v of r.vectors) {
           if (dim !== undefined && v.vector.length !== dim) {
-            errors.push({ id: v.id, error: `dimension ${v.vector.length} != ${dim}` });
-            continue;
+            throw new Error(`service: dimension mismatch: expected ${dim}, got ${v.vector.length}`);
           }
-          put(r.namespace, v.id, v.vector, v.metadata ?? {});
-          succeeded++;
         }
-        return { succeeded, failed: errors.length, errors };
+        for (const v of r.vectors) put(r.namespace, v.id, v.vector, v.metadata ?? {});
+        return {
+          ids: r.vectors.map((v) => v.id),
+          versions: r.vectors.map(() => 1),
+          timestamp: 0,
+          success: true,
+          inserted_count: r.vectors.length,
+        };
       },
 
       BatchDeleteVectors: async (req: unknown) => {
         maybeReject("VectorBinding.BatchDeleteVectors");
         const r = req as { namespace: string; ids: string[] };
         const vecs = vectorStore.get(r.namespace);
-        let deleted = 0;
-        const errors: Array<{ id: string; error: string }> = [];
+        // The Go BatchDeleteVectorsResponse: deleted_count and failed_ids.
+        let deletedCount = 0;
+        const failedIds: string[] = [];
         for (const id of r.ids ?? []) {
           if (vecs?.delete(id)) {
-            deleted++;
+            deletedCount++;
           } else {
-            errors.push({ id, error: "not found" });
+            failedIds.push(id);
           }
         }
-        return { deleted, failed: errors.length, errors };
+        return { deleted_count: deletedCount, failed_ids: failedIds, timestamp: 0, success: true };
       },
 
       ListVectors: async (req: unknown) => {
@@ -211,32 +228,30 @@ async function injectStatefulVectorBinding(
 
       HybridSearch: async (req: unknown) => {
         maybeReject("VectorBinding.HybridSearch");
-        // The Wails adapter sends the request through toSnake().
+        // transport.HybridSearchRequest: query_vector, k, metadata_filter.
+        // The service runs a similarity search, then keeps only the
+        // results whose metadata matches the filter exactly.
         const r = req as {
           namespace: string;
-          vector: number[];
-          metadata_filters: Record<string, unknown>;
+          query_vector?: number[];
+          metadata_filter?: Record<string, unknown>;
           k: number;
-          vector_weight: number;
-          metadata_weight: number;
         };
+        if (!Array.isArray(r.query_vector) || r.query_vector.length === 0) {
+          throw new Error("query vector is required");
+        }
+        const q = r.query_vector;
         const vecs = vectorStore.get(r.namespace);
         if (!vecs) return { results: [], took: 0 };
-        const filters = r.metadata_filters ?? {};
+        const filters = r.metadata_filter ?? {};
         const keys = Object.keys(filters);
+        const dot = (a: number[], b: number[]): number => a.reduce((acc, x, i) => acc + x * (b[i] ?? 0), 0);
+        const norm = (a: number[]): number => Math.sqrt(dot(a, a)) || 1;
         const results = Array.from(vecs.values())
-          .map((v) => {
-            const match = keys.length > 0 && keys.every(
-              (key) => String(v.metadata[key]) === String(filters[key]),
-            );
-            return {
-              id: v.id,
-              score: r.vector_weight * 0.5 + (match ? r.metadata_weight : 0),
-              metadata: v.metadata,
-            };
-          })
+          .map((v) => ({ id: v.id, score: dot(q, v.vector) / (norm(q) * norm(v.vector)), metadata: v.metadata }))
           .sort((a, b) => b.score - a.score)
-          .slice(0, r.k);
+          .slice(0, r.k)
+          .filter((v) => keys.every((key) => String(v.metadata[key]) === String(filters[key])));
         return { results, took: 1 };
       },
     };
@@ -379,22 +394,86 @@ test.describe("Vector View - advanced operations", () => {
     await expect(detail.getByTestId("vector-detail-version")).toHaveText("1");
   });
 
-  test("batch upsert reports succeeded, failed and per-vector errors", async ({ page }) => {
-    const mixed = JSON.stringify([
-      { id: "b1", vector: [0.1, 0.2, 0.3] },
-      { id: "b2", vector: [0.4, 0.5, 0.6], metadata: { color: "blue" } },
-      { id: "bad", vector: [0.1, 0.2] },
-    ]);
-    const panel = await batchUpsert(page, mixed);
-    await expect(panel.getByTestId("batch-upsert-succeeded")).toHaveText("2");
-    await expect(panel.getByTestId("batch-upsert-failed")).toHaveText("1");
-    await expect(panel.getByTestId("batch-upsert-errors")).toContainText("bad: dimension 2 != 3");
-    await expect(page.getByText("Batch upsert: 2 succeeded, 1 failed.")).toBeVisible();
+  test("batch upsert reports the inserted count from the binding", async ({ page }) => {
+    const panel = await batchUpsert(page, threeVectors);
+    await expect(panel.getByTestId("batch-upsert-succeeded")).toHaveText("3");
+    await expect(panel.getByTestId("batch-upsert-failed")).toHaveText("0");
+    await expect(page.getByText("Batch upsert: 3 succeeded.")).toBeVisible();
 
     await panel.getByLabel("Close", { exact: true }).click();
-    await expect(page.getByText("b1", { exact: true })).toBeVisible();
-    await expect(page.getByText("b2", { exact: true })).toBeVisible();
+    for (const id of ["b1", "b2", "b3"]) {
+      await expect(page.getByText(id, { exact: true })).toBeVisible();
+    }
+  });
+
+  test("batch upsert with a wrong dimension is refused whole", async ({ page }) => {
+    const mixed = JSON.stringify([
+      { id: "b1", vector: [0.1, 0.2, 0.3] },
+      { id: "bad", vector: [0.1, 0.2] },
+    ]);
+    await page.getByRole("button", { name: "Batch upsert" }).click();
+    const panel = page.getByLabel("Batch Upsert");
+    await expect(panel).toBeVisible();
+    await panel.getByTestId("batch-upsert-input").fill(mixed);
+    await panel.getByRole("button", { name: "Upsert batch" }).click();
+    await expect(page.getByText("service: dimension mismatch: expected 3, got 2")).toBeVisible({ timeout: 5_000 });
+    await expect(panel.getByTestId("batch-upsert-succeeded")).toHaveCount(0);
+
+    await panel.getByLabel("Close", { exact: true }).click();
+    await expect(page.getByText("b1", { exact: true })).toHaveCount(0);
     await expect(page.getByText("bad", { exact: true })).toHaveCount(0);
+  });
+
+  test("a late getVector response for a closed selection never reaches the editor", async ({ page }) => {
+    await upsertVector(page, "v1", "0.1, 0.2, 0.3", '{"label": "first"}');
+    await upsertVector(page, "v2", "0.4, 0.5, 0.6", '{"label": "second"}');
+    await dismissToasts(page);
+    await page.evaluate(() => {
+      const s = (window as unknown as Record<string, unknown>).__QRDB_MOCK_STATE__ as Record<string, unknown>;
+      s.holdGetVector = { v1: true };
+    });
+
+    // Open v1 (its getVector stays pending), close it, open v2.
+    await page.getByText("v1", { exact: true }).first().click();
+    const detail = page.getByLabel("Vector Details");
+    await expect(detail).toBeVisible();
+    await detail.getByLabel("Close", { exact: true }).click();
+    await page.getByText("v2", { exact: true }).first().click();
+    await expect(detail.getByTestId("vector-detail-metadata-json")).toContainText('"label": "second"', {
+      timeout: 5_000,
+    });
+
+    // Deliver v1's response now, after v2's, and let the page settle.
+    await page.waitForFunction(() => {
+      const s = (window as unknown as Record<string, unknown>).__QRDB_MOCK_STATE__ as {
+        releaseGetVector?: Record<string, () => void>;
+      };
+      return typeof s.releaseGetVector?.v1 === "function";
+    });
+    await page.evaluate(async () => {
+      const s = (window as unknown as Record<string, unknown>).__QRDB_MOCK_STATE__ as {
+        holdGetVector?: Record<string, boolean>;
+        releaseGetVector?: Record<string, () => void>;
+      };
+      s.holdGetVector = {};
+      s.releaseGetVector?.v1?.();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    });
+
+    await expect(detail.getByTestId("vector-detail-metadata-json")).toContainText('"label": "second"');
+    await expect(detail.getByTestId("vector-detail-metadata-input")).toHaveValue(/"second"/);
+
+    // Saving edits v2, the open selection, and leaves v1 as it was.
+    await detail.getByTestId("vector-detail-metadata-input").fill('{"label": "edited"}');
+    await detail.getByRole("button", { name: "Save metadata" }).click();
+    await expect(page.getByText('Metadata of vector "v2" updated.')).toBeVisible({ timeout: 5_000 });
+    await expect(detail.getByTestId("vector-detail-metadata-json")).toContainText('"label": "edited"');
+
+    await detail.getByLabel("Close", { exact: true }).click();
+    await page.getByText("v1", { exact: true }).first().click();
+    await expect(detail.getByTestId("vector-detail-metadata-json")).toContainText('"label": "first"', {
+      timeout: 5_000,
+    });
   });
 
   test("bulk delete removes the selected vectors with batchDeleteVectors", async ({ page }) => {
@@ -418,22 +497,22 @@ test.describe("Vector View - advanced operations", () => {
     await expect(page.getByText("b2", { exact: true })).toBeVisible();
   });
 
-  test("hybrid search ranks the metadata match first", async ({ page }) => {
+  test("hybrid search keeps only the nearest vectors that match the metadata filter", async ({ page }) => {
     const panel = await batchUpsert(page, threeVectors);
     await panel.getByLabel("Close", { exact: true }).click();
     await dismissToasts(page);
 
     await page.getByRole("tab", { name: "Search" }).click();
     const card = page.getByTestId("hybrid-search-card");
-    await card.getByLabel("Hybrid vector", { exact: true }).fill("0.1, 0.2, 0.3");
+    await expect(card.getByLabel("Hybrid vector weight")).toHaveCount(0);
+    await expect(card.getByLabel("Hybrid metadata weight")).toHaveCount(0);
+    await card.getByLabel("Hybrid vector", { exact: true }).fill("0.4, 0.5, 0.6");
     await card.getByLabel("Hybrid metadata filter").fill('{"color": "blue"}');
-    await card.getByLabel("Hybrid k").fill("2");
-    await card.getByLabel("Hybrid vector weight").fill("0.6");
-    await card.getByLabel("Hybrid metadata weight").fill("0.4");
+    await card.getByLabel("Hybrid k").fill("3");
     await card.getByRole("button", { name: "Hybrid search" }).click();
 
-    const rows = page.getByRole("row").filter({ hasText: /^.*b\d/ });
-    await expect(rows).toHaveCount(2, { timeout: 5_000 });
+    const rows = page.getByRole("row").filter({ hasText: /b\d/ });
+    await expect(rows).toHaveCount(1, { timeout: 5_000 });
     await expect(rows.first()).toContainText("b2");
   });
 

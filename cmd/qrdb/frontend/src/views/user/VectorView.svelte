@@ -127,8 +127,6 @@
   let hybridVector: string = $state("");
   let hybridFilters: string = $state("{}");
   let hybridK: string = $state("10");
-  let hybridVectorWeight: string = $state("0.7");
-  let hybridMetadataWeight: string = $state("0.3");
 
   // ---------------------------------------------------------------------------
   // Maintenance state
@@ -740,17 +738,8 @@
     const metadataFilters = parseJsonObjectStrict(hybridFilters, "Metadata filter");
     if (metadataFilters === null) return;
     const k = Number(hybridK);
-    const vectorWeight = Number(hybridVectorWeight);
-    const metadataWeight = Number(hybridMetadataWeight);
     if (!Number.isInteger(k) || k <= 0) {
       showToast("warning", "K must be a positive integer.");
-      return;
-    }
-    if (
-      !Number.isFinite(vectorWeight) || vectorWeight < 0 || vectorWeight > 1 ||
-      !Number.isFinite(metadataWeight) || metadataWeight < 0 || metadataWeight > 1
-    ) {
-      showToast("warning", "Weights must be numbers between 0 and 1.");
       return;
     }
     loading = true;
@@ -760,8 +749,6 @@
         vector,
         metadataFilters,
         k,
-        vectorWeight,
-        metadataWeight,
       });
       searchResults = [...resp.results];
       if (searchResults.length === 0) {
@@ -894,39 +881,56 @@
   function handleVectorRowClick(event: RowClickEvent<VectorRow>): void {
     selectedVector = event.row.raw;
     detailVector = null;
+    detailError = "";
     detailMetadata = JSON.stringify(
       ((event.row.raw as Record<string, unknown>).metadata as Record<string, unknown> | undefined) ?? {},
       null,
       2,
     );
     showVectorDetailPanel = true;
-    void loadVectorDetail(event.row.id);
+    // A new selection invalidates every response still in flight for the
+    // previous one: the editor only ever shows and saves this target.
+    detailGeneration++;
+    const target = { namespace: selectedNamespace, id: event.row.id };
+    detailTarget = target;
+    void loadVectorDetail(detailGeneration, target);
   }
 
   function closeVectorDetail(): void {
+    detailGeneration++;
+    detailTarget = null;
     showVectorDetailPanel = false;
     selectedVector = null;
     detailVector = null;
     detailError = "";
+    detailLoading = false;
   }
 
   // ---------------------------------------------------------------------------
   // Vector detail: getVector + updateMetadata
   // ---------------------------------------------------------------------------
 
-  async function loadVectorDetail(id: string): Promise<void> {
-    if (client.vector === null || selectedNamespace.trim() === "" || id === "") return;
+  // detailGeneration counts detail-panel selections; a getVector or
+  // updateMetadata response applies only while its generation is current.
+  let detailGeneration = 0;
+  let detailTarget: { namespace: string; id: string } | null = null;
+
+  async function loadVectorDetail(gen: number, target: { namespace: string; id: string }): Promise<void> {
+    if (client.vector === null || target.namespace.trim() === "" || target.id === "") return;
+    if (gen !== detailGeneration) return;
     detailLoading = true;
     detailError = "";
     try {
-      const v: VectorData = await client.vector.getVector({ namespace: selectedNamespace, id });
+      const v: VectorData = await client.vector.getVector({ namespace: target.namespace, id: target.id });
+      if (gen !== detailGeneration) return;
       detailVector = v;
       detailMetadata = JSON.stringify(v.metadata ?? {}, null, 2);
     } catch (err: unknown) {
+      if (gen !== detailGeneration) return;
       detailVector = null;
       detailError = err instanceof Error ? err.message : String(err);
     } finally {
-      detailLoading = false;
+      if (gen === detailGeneration) detailLoading = false;
     }
   }
 
@@ -948,8 +952,12 @@
       showToast("error", "Vector operations are not available on this connection.");
       return;
     }
-    const id = detailVector?.id ?? ((selectedVector as Record<string, unknown> | null)?.id as string | undefined) ?? "";
-    if (selectedNamespace.trim() === "" || id === "") {
+    // The target is the selection the editor was opened for, never a
+    // response that arrived for an earlier one.
+    const gen = detailGeneration;
+    const target = detailTarget;
+    const id = target?.id ?? "";
+    if (target === null || target.namespace.trim() === "" || id === "") {
       showToast("warning", "Namespace and vector ID are required.");
       return;
     }
@@ -958,17 +966,17 @@
     detailLoading = true;
     try {
       await client.vector.updateMetadata({
-        namespace: selectedNamespace,
+        namespace: target.namespace,
         id,
         metadata,
       });
       showToast("success", `Metadata of vector "${id}" updated.`);
-      await loadVectorDetail(id);
+      if (gen === detailGeneration) await loadVectorDetail(gen, target);
       await handleVecList();
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      detailLoading = false;
+      if (gen === detailGeneration) detailLoading = false;
     }
   }
 
@@ -1195,16 +1203,6 @@
               <div class="label"><span class="label-text">K</span></div>
               <input type="number" min="1" class="input input-bordered input-sm w-full" aria-label="Hybrid k" bind:value={hybridK} />
             </label>
-            <div class="grid grid-cols-2 gap-3">
-              <label class="form-control w-full">
-                <div class="label"><span class="label-text">Vector weight</span></div>
-                <input type="number" min="0" max="1" step="0.1" class="input input-bordered input-sm w-full" aria-label="Hybrid vector weight" bind:value={hybridVectorWeight} />
-              </label>
-              <label class="form-control w-full">
-                <div class="label"><span class="label-text">Metadata weight</span></div>
-                <input type="number" min="0" max="1" step="0.1" class="input input-bordered input-sm w-full" aria-label="Hybrid metadata weight" bind:value={hybridMetadataWeight} />
-              </label>
-            </div>
           </div>
           <div class="mt-2 flex justify-end">
             <button class="btn btn-primary btn-sm" onclick={handleHybridSearch} disabled={loading}>

@@ -183,19 +183,26 @@ async function injectStatefulVectorBinding(
           }
           const info = namespaceStore.get(r.namespace);
           if (info) info.vectorCount = vecs.size;
-          return { count: r.vectors.length };
+          // The Go BatchUpsertResponse.
+          return { ids: r.vectors.map((v) => v.id), success: true, inserted_count: r.vectors.length };
         },
 
         BatchDeleteVectors: async (req: unknown) => {
           maybeReject("VectorBinding.BatchDeleteVectors");
           const r = req as { namespace: string; ids: string[] };
           const vecs = vectorStore.get(r.namespace);
+          // The Go BatchDeleteVectorsResponse: deleted_count and failed_ids.
+          let deletedCount = 0;
+          const failedIds: string[] = [];
           if (vecs) {
-            for (const id of r.ids) vecs.delete(id);
+            for (const id of r.ids) {
+              if (vecs.delete(id)) deletedCount++;
+              else failedIds.push(id);
+            }
             const info = namespaceStore.get(r.namespace);
             if (info) info.vectorCount = vecs.size;
           }
-          return {};
+          return { deleted_count: deletedCount, failed_ids: failedIds, success: true };
         },
 
         ListVectors: async (req: unknown) => {
@@ -223,7 +230,11 @@ async function injectStatefulVectorBinding(
 
         HybridSearch: async (req: unknown) => {
           maybeReject("VectorBinding.HybridSearch");
-          const r = req as { namespace: string; k?: number };
+          // transport.HybridSearchRequest: query_vector is required.
+          const r = req as { namespace: string; query_vector?: number[]; k?: number };
+          if (!Array.isArray(r.query_vector) || r.query_vector.length === 0) {
+            throw new Error("query vector is required");
+          }
           const vecs = vectorStore.get(r.namespace);
           if (!vecs) return { results: [] };
           return {

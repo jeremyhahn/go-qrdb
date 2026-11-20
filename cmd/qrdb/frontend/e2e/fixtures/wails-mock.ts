@@ -1602,13 +1602,25 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           UpsertVector: async () => ({}),
           GetVector: async () => ({}),
           DeleteVector: async () => {},
-          BatchUpsert: async () => ({}),
-          BatchDeleteVectors: async () => ({}),
+          // The Go BatchUpsertResponse / BatchDeleteVectorsResponse shapes.
+          BatchUpsert: async (req: { vectors?: unknown[] }) => ({
+            ids: [], versions: [], timestamp: 0, success: true,
+            inserted_count: (req?.vectors ?? []).length,
+          }),
+          BatchDeleteVectors: async (req: { ids?: unknown[] }) => ({
+            deleted_count: (req?.ids ?? []).length, failed_ids: [], timestamp: 0, success: true,
+          }),
           ListVectors: async () => ({ vectors: [] }),
           UpdateMetadata: async () => {},
           SearchSimilar: async () => ({ results: [] }),
           SearchByMetadata: async () => ({ results: [] }),
-          HybridSearch: async () => ({ results: [] }),
+          // transport.HybridSearchRequest: query_vector is required.
+          HybridSearch: async (req: { query_vector?: number[] }) => {
+            if (!Array.isArray(req?.query_vector) || req.query_vector.length === 0) {
+              throw new Error("query vector is required");
+            }
+            return { results: [] };
+          },
           SearchByID: async () => ({ results: [] }),
           RebuildIndex: async () => ({}),
           GetRebuildProgress: async () => ({}),
