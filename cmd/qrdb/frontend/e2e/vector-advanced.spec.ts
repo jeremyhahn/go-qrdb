@@ -148,6 +148,8 @@ async function injectStatefulVectorBinding(
       },
 
       GetVector: async (_database: unknown, req: unknown) => {
+        const gs = w.__QRDB_MOCK_STATE__ as { getVectorCalls?: number };
+        gs.getVectorCalls = (gs.getVectorCalls ?? 0) + 1;
         maybeReject("VectorBinding.GetVector");
         const r = req as { namespace: string; id: string };
         // A held ID answers only when the test releases it, so a spec can
@@ -220,6 +222,10 @@ async function injectStatefulVectorBinding(
 
       ListVectors: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.ListVectors");
+        // listVectorsWire is a raw JSON body: JSON.parse decodes uint64
+        // ids as numbers exactly as the transport does, rounding past 2^53.
+        const ls = w.__QRDB_MOCK_STATE__ as { listVectorsWire?: string };
+        if (ls.listVectorsWire !== undefined) return JSON.parse(ls.listVectorsWire);
         const r = req as { namespace: string };
         const vecs = vectorStore.get(r.namespace);
         return { vectors: vecs ? Array.from(vecs.values()) : [] };
@@ -602,5 +608,39 @@ test.describe("Vector View - advanced operations", () => {
       return s.updateMetadataCalls ?? 0;
     });
     expect(calls).toBe(0);
+  });
+
+  test("a listed id above 2^53 never opens the metadata editor", async ({ page }) => {
+    // The list route sends uint64 ids as JSON numbers: 2^53 + 1 arrives as
+    // 2^53, so editing that row would read and overwrite vector 2^53. The
+    // adjacent 2^53 + 2 is representable but just as unverifiable.
+    await page.evaluate(() => {
+      const s = (window as unknown as Record<string, unknown>).__QRDB_MOCK_STATE__ as {
+        listVectorsWire?: string;
+      };
+      s.listVectorsWire =
+        '{"vectors":[{"id":9007199254740993,"metadata":{"row":"a"}},{"id":9007199254740994,"metadata":{"row":"b"}}]}';
+    });
+    // Any write relists the namespace through the wire body above.
+    await upsertVector(page, "v1", "0.1, 0.2, 0.3", '{"keep":true}');
+    await expect(page.getByText("9007199254740992", { exact: true })).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText("9007199254740994", { exact: true })).toBeVisible();
+
+    for (const shown of ["9007199254740992", "9007199254740994"]) {
+      await page.getByText(shown, { exact: true }).first().click();
+      await expect(page.getByText(`Vector id ${shown} exceeds the largest exact numeric id (9007199254740991)`)).toBeVisible({
+        timeout: 5_000,
+      });
+      await expect(page.getByTestId("vector-detail")).toBeHidden();
+      await dismissToasts(page);
+    }
+    const calls = await page.evaluate(() => {
+      const s = (window as unknown as Record<string, unknown>).__QRDB_MOCK_STATE__ as {
+        getVectorCalls?: number;
+        updateMetadataCalls?: number;
+      };
+      return { get: s.getVectorCalls ?? 0, update: s.updateMetadataCalls ?? 0 };
+    });
+    expect(calls).toEqual({ get: 0, update: 0 });
   });
 });

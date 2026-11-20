@@ -887,7 +887,31 @@
     selectedNamespace = event.row.namespace;
   }
 
+  /**
+   * The list route sends uint64 ids as JSON numbers, which JavaScript has
+   * already rounded past 2^53 (9007199254740993 arrives as
+   * 9007199254740992). Such an id may name a different vector, so it never
+   * reaches getVector or updateMetadata.
+   */
+  function unsafeNumericId(id: unknown): string | null {
+    if (typeof id === "number") {
+      return Number.isSafeInteger(id) || !Number.isInteger(id) ? null : String(id);
+    }
+    if (typeof id === "string" && /^\d+$/.test(id) && BigInt(id) > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return id;
+    }
+    return null;
+  }
+
   function handleVectorRowClick(event: RowClickEvent<VectorRow>): void {
+    const unsafe = unsafeNumericId((event.row.raw as Record<string, unknown>).id);
+    if (unsafe !== null) {
+      showToast(
+        "error",
+        `Vector id ${unsafe} exceeds the largest exact numeric id (${Number.MAX_SAFE_INTEGER}); the list cannot identify it exactly, so it cannot be opened for editing.`,
+      );
+      return;
+    }
     selectedVector = event.row.raw;
     detailVector = null;
     detailError = "";
