@@ -328,7 +328,7 @@ func TestFramed_ReadAtFaultsSurface(t *testing.T) {
 		bytes.Repeat([]byte{'x'}, 300), bytes.Repeat([]byte{'y'}, 30))
 	flipLast := bytes.Clone(raw)
 	flipLast[frames[1].phys+frameLenSize+5] ^= 0x01
-	hdr := freshHeaderBytes(t, b, "000003.log")
+	hdr := pendingHeaderBytes(t, b, "000003.log")
 
 	cases := []struct {
 		name    string
@@ -356,7 +356,7 @@ func TestFramed_ReadAtFaultsSurface(t *testing.T) {
 func TestFramed_TornHeaderClassification(t *testing.T) {
 	b := newFakeBarrier(t)
 	fsys := New(filesys.Default, b).(*FS)
-	hdr := freshHeaderBytes(t, b, "000004.log")
+	hdr := pendingHeaderBytes(t, b, "000004.log")
 	fresh, err := fsys.freshFramedHeader()
 	if err != nil {
 		t.Fatal(err)
@@ -376,8 +376,10 @@ func TestFramed_TornHeaderClassification(t *testing.T) {
 		{"magic prefix", hdr[:2], true},
 		{"through the DEK length", hdr[:offWrappedDEKLen+4], true},
 		{"one byte short", hdr[:want-1], true},
-		{"whole header", hdr[:want], false},
-		{"other magic", []byte("QX"), false},
+		{"whole pending header", hdr[:want], true},
+		{"stamped magic prefix", []byte("QE"), false},
+		{"stamped one byte short", append([]byte{headerMagic[0]}, hdr[1:want-1]...), false},
+		{"other magic", []byte("qX"), false},
 		{"header size mismatch", badSize, false},
 		{"wrapped DEK length mismatch", badDEK, false},
 	}
@@ -408,7 +410,7 @@ func TestFramed_TornHeaderClassification(t *testing.T) {
 
 func TestFramed_TornHeaderBarrierFaults(t *testing.T) {
 	fb := newFakeBarrier(t)
-	hdr := freshHeaderBytes(t, fb, "000005.log")
+	hdr := pendingHeaderBytes(t, fb, "000005.log")
 	for _, ok := range []int{0, 1} {
 		for _, cut := range []int{3, fixedHeaderSize + 2} {
 			path := filepath.Join(t.TempDir(), "000005.log")
@@ -436,7 +438,7 @@ func TestFramed_FreshOverTornHeaderRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "000006.log")
-	if err := os.WriteFile(path, []byte("QE"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("qE"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	base, err := filesys.Default.OpenReadWrite(path)
@@ -444,13 +446,13 @@ func TestFramed_FreshOverTornHeaderRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = base.Close() }()
-	if _, err := fsys.freshOverTornHeader(base, h, int64(h.totalSize())); !errors.Is(err, ErrTruncatedHeader) {
-		t.Errorf("file as long as the header: err = %v, want ErrTruncatedHeader", err)
+	if _, err := fsys.freshOverTornHeader(base, h, framedDataStart(h)+1); !errors.Is(err, ErrTruncatedHeader) {
+		t.Errorf("file longer than the header and commit slots: err = %v, want ErrTruncatedHeader", err)
 	}
 	if _, err := fsys.freshOverTornHeader(failWriteFile{base}, h, 2); !errors.Is(err, errInjected) {
 		t.Errorf("header write fault: err = %v, want the injected fault", err)
 	}
-	if got, err := os.ReadFile(path); err != nil || string(got) != "QE" { // #nosec G304 -- test file under t.TempDir
+	if got, err := os.ReadFile(path); err != nil || string(got) != "qE" { // #nosec G304 -- test file under t.TempDir
 		t.Errorf("refused rewrite changed the file: %q (err %v)", got, err)
 	}
 }

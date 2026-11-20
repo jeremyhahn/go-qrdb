@@ -714,6 +714,15 @@ func freshHeaderBytes(t *testing.T, b barrierKEK, name string) []byte {
 	return img[:int(img[offHeaderSize])|int(img[offHeaderSize+1])<<8]
 }
 
+// pendingHeaderBytes is freshHeaderBytes as a crash inside Create leaves it:
+// the first magic byte still carries the pending marker.
+func pendingHeaderBytes(t *testing.T, b barrierKEK, name string) []byte {
+	t.Helper()
+	hdr := bytes.Clone(freshHeaderBytes(t, b, name))
+	hdr[offMagic] = pendingMagic
+	return hdr
+}
+
 // TestPowerCut_FreshFramedHeaderTornOpensEmpty cuts a fresh WAL and a fresh
 // MANIFEST inside their header, at every byte offset. No record can have
 // been acknowledged, so both opens yield an empty file, and a read-write
@@ -721,8 +730,8 @@ func freshHeaderBytes(t *testing.T, b barrierKEK, name string) []byte {
 func TestPowerCut_FreshFramedHeaderTornOpensEmpty(t *testing.T) {
 	b := newFakeBarrier(t)
 	for _, name := range []string{"000007.log", "MANIFEST-000003"} {
-		hdr := freshHeaderBytes(t, b, name)
-		for cut := 0; cut < len(hdr); cut++ {
+		hdr := pendingHeaderBytes(t, b, name)
+		for cut := 0; cut <= len(hdr); cut++ {
 			t.Run(fmt.Sprintf("%s/cut=%d", name, cut), func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), name)
 				if err := os.WriteFile(path, hdr[:cut], 0o600); err != nil {

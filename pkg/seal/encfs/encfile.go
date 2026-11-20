@@ -85,15 +85,13 @@ func newWriteFile(base filesys.File, h *header) (*encryptedFile, error) {
 		// missing, no frames) from a corrupted log.
 		f.headerSize = framedDataStart(h)
 		f.commitSeq = commitSlots - 1
-		hdr = append(hdr, crypto.freshCommitSlots(f.headerSize)...)
-	}
-	if _, err := base.Write(hdr); err != nil {
-		return nil, err
-	}
-	if f.framed {
-		if err := base.Sync(); err != nil {
+		// The real magic is stamped only after both are synced, so a
+		// short stamped file is a truncated log, not a torn Create.
+		if err := writeFramedStart(base, append(hdr, crypto.freshCommitSlots(f.headerSize)...)); err != nil {
 			return nil, err
 		}
+	} else if _, err := base.Write(hdr); err != nil {
+		return nil, err
 	}
 	f.physEnd = f.headerSize
 	return f, nil

@@ -9,6 +9,7 @@
 package encfs
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -151,16 +152,19 @@ func (fs *FS) openEncryptedRO(base filesys.File, appendLog bool) (filesys.File, 
 		return nil, err
 	}
 	physicalSize := fi.Size()
-	if physicalSize < int64(fixedHeaderSize) {
-		if appendLog {
-			fresh, err := fs.tornFramedHeader(base, physicalSize)
-			if err != nil {
-				return nil, err
-			}
-			if fresh != nil {
-				return fs.emptyFramedRO(base, fresh)
-			}
+	if appendLog {
+		fresh, err := fs.tornFramedHeader(base, physicalSize)
+		if err != nil {
+			return nil, err
 		}
+		if fresh != nil {
+			return fs.emptyFramedRO(base, fresh)
+		}
+		if err := refuseDamagedFramedStart(base, physicalSize); err != nil {
+			return nil, err
+		}
+	}
+	if physicalSize < int64(fixedHeaderSize) {
 		// Too small to be encrypted; pass through.
 		return base, nil
 	}
@@ -174,15 +178,6 @@ func (fs *FS) openEncryptedRO(base filesys.File, appendLog bool) (filesys.File, 
 	}
 	h, err := readHeader(&offsetReader{base: base, off: 0}, fs.barrier)
 	if err != nil {
-		if appendLog && errors.Is(err, ErrTruncatedHeader) {
-			fresh, terr := fs.tornFramedHeader(base, physicalSize)
-			if terr != nil {
-				return nil, terr
-			}
-			if fresh != nil {
-				return fs.emptyFramedRO(base, fresh)
-			}
-		}
 		return nil, err
 	}
 	return newReadFile(base, h, physicalSize, appendLog)
@@ -207,15 +202,21 @@ func (fs *FS) tornFramedHeader(base filesys.File, physicalSize int64) (*header, 
 		return nil, err
 	}
 	want := h.totalSize()
-	if again.totalSize() != want || physicalSize >= int64(want) {
+	if again.totalSize() != want || physicalSize > framedDataStart(h) {
 		return nil, nil
+	}
+	if physicalSize == 0 {
+		return h, nil
 	}
 	buf := make([]byte, physicalSize)
 	if _, err := base.ReadAt(buf, 0); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
+	// Only the pending marker is evidence that Create never finished: a
+	// stamped magic means the header and commit slots were synced, so a
+	// short stamped file is a committed log cut short, never a fresh one.
 	n := min(len(buf), lenMagic)
-	if string(buf[:n]) != headerMagic[:n] {
+	if buf[0] != pendingMagic || string(buf[1:n]) != headerMagic[1:n] {
 		return nil, nil
 	}
 	if len(buf) >= offHeaderSize+2 && int(binary.LittleEndian.Uint16(buf[offHeaderSize:])) != want {
@@ -225,6 +226,64 @@ func (fs *FS) tornFramedHeader(base filesys.File, physicalSize int64) (*header, 
 		return nil, nil
 	}
 	return h, nil
+}
+
+// pendingMagic replaces the first magic byte of a framed log until Create
+// has synced its whole header and commit slots; only then is the real magic
+// stamped (and synced). A pending file is therefore an unfinished Create,
+// and a stamped one cut into its header is a truncated committed log.
+const pendingMagic byte = 'q'
+
+// writeFramedStart writes a framed log's header and commit slots (img, at
+// offset 0) under the pending marker, syncs them, then stamps the real
+// magic and syncs again.
+func writeFramedStart(base filesys.File, img []byte) error {
+	pending := bytes.Clone(img)
+	pending[offMagic] = pendingMagic
+	if _, err := base.WriteAt(pending, 0); err != nil {
+		return err
+	}
+	if err := base.Sync(); err != nil {
+		return err
+	}
+	if _, err := base.WriteAt([]byte{headerMagic[0]}, offMagic); err != nil {
+		return err
+	}
+	return base.Sync()
+}
+
+// framedMagicState reports whether a framed log's first bytes are a prefix
+// of the stamped magic or of the pending one.
+func framedMagicState(base filesys.File, physicalSize int64) (stamped, pending bool, err error) {
+	n := min(physicalSize, int64(lenMagic))
+	if n == 0 {
+		return false, false, nil
+	}
+	buf := make([]byte, n)
+	if _, err := base.ReadAt(buf, 0); err != nil && !errors.Is(err, io.EOF) {
+		return false, false, err
+	}
+	if string(buf[1:]) != headerMagic[1:n] {
+		return false, false, nil
+	}
+	return buf[0] == headerMagic[0], buf[0] == pendingMagic, nil
+}
+
+// refuseDamagedFramedStart refuses a framed log that tornFramedHeader did not
+// classify as an unfinished Create: a pending marker on it, or a stamped
+// magic on a file shorter than the fixed header, is corruption.
+func refuseDamagedFramedStart(base filesys.File, physicalSize int64) error {
+	stamped, pending, err := framedMagicState(base, physicalSize)
+	if err != nil {
+		return err
+	}
+	if pending {
+		return ErrInvalidHeader
+	}
+	if stamped && physicalSize < int64(fixedHeaderSize) {
+		return ErrTruncatedHeader
+	}
+	return nil
 }
 
 // freshFramedHeader is the header of a new append log (WAL or MANIFEST).
@@ -245,21 +304,17 @@ func (fs *FS) emptyFramedRO(base filesys.File, h *header) (*encryptedFile, error
 // bytes, which are all shorter than h, so no byte past h exists to zero;
 // the result is an empty log that takes appends.
 func (fs *FS) freshOverTornHeader(base filesys.File, h *header, physicalSize int64) (*encryptedFile, error) {
-	hdr := h.marshal()
-	if physicalSize >= int64(len(hdr)) {
-		// tornFramedHeader passed only a file shorter than the header;
-		// never write over, or past, bytes beyond it.
+	start := framedDataStart(h)
+	if physicalSize > start {
+		// tornFramedHeader passed only a file no longer than the header
+		// and commit slots; never write past the bytes Create wrote.
 		return nil, ErrTruncatedHeader
 	}
 	crypto, err := newBlockCrypto(h.DEK[:])
 	if err != nil {
 		return nil, err
 	}
-	start := framedDataStart(h)
-	if _, err := base.WriteAt(append(hdr, crypto.freshCommitSlots(start)...), 0); err != nil {
-		return nil, err
-	}
-	if err := base.Sync(); err != nil {
+	if err := writeFramedStart(base, append(h.marshal(), crypto.freshCommitSlots(start)...)); err != nil {
 		return nil, err
 	}
 	return &encryptedFile{
@@ -279,13 +334,16 @@ func (fs *FS) freshOverTornHeader(base filesys.File, h *header, physicalSize int
 // block, that block is decrypted and reloaded into the in-memory
 // tail so a subsequent Write extends it rather than replacing it.
 func (fs *FS) openEncryptedRW(base filesys.File, physicalSize int64, appendLog bool) (*encryptedFile, error) {
-	if appendLog && physicalSize < int64(fixedHeaderSize) {
+	if appendLog {
 		fresh, err := fs.tornFramedHeader(base, physicalSize)
 		if err != nil {
 			return nil, err
 		}
 		if fresh != nil {
 			return fs.freshOverTornHeader(base, fresh, physicalSize)
+		}
+		if err := refuseDamagedFramedStart(base, physicalSize); err != nil {
+			return nil, err
 		}
 	}
 	var magic [lenMagic]byte
@@ -297,15 +355,6 @@ func (fs *FS) openEncryptedRW(base filesys.File, physicalSize int64, appendLog b
 	}
 	h, err := readHeader(&offsetReader{base: base, off: 0}, fs.barrier)
 	if err != nil {
-		if appendLog && errors.Is(err, ErrTruncatedHeader) {
-			fresh, terr := fs.tornFramedHeader(base, physicalSize)
-			if terr != nil {
-				return nil, terr
-			}
-			if fresh != nil {
-				return fs.freshOverTornHeader(base, fresh, physicalSize)
-			}
-		}
 		return nil, err
 	}
 	rf, err := newReadFile(base, h, physicalSize, appendLog)
