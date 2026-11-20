@@ -15,6 +15,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- The verifiable log serves barrier-isolated tenants and barrier-enabled databases (#1613). A barrier tenant's logs, entries and sealed head-signing keys are applied into and read from its own barrier-sealed home group, and a barrier database's from the database's own group, so snapshot and restore carry them with that group. A sealed barrier refuses every log call with the error it returns for other reads. A node with no such group (standalone, or a barrier database that is not a dedicated Raft database) refuses with `BarrierStoreUnavailableError` (`Unavailable`). `BarrierTenantLogNotSupportedError` and `BarrierDatabaseLogNotSupportedError` are removed.
 - CI runs every job on the standard GitHub-hosted `ubuntu-latest` runner for every event, a push to `main` and a same-repository pull request included (owner ruling 999). The pool split (ruling 841) and the pool image producer that published the pool legs' images to the LAN CI registry (ruling 879) are removed; a job may run self-hosted only with a `# self-hosted: <reason>` comment naming the hardware it needs or the measured hosted limit it exceeds, and none does. Code review's review jobs keep their self-hosted review hosts.
 - CI hands the toolchain and integration-test images between jobs through the LAN CI registry (the repository secret secrets.CI_IMAGE_REGISTRY, so every log line masks its address) on self-hosted runners; GitHub artifacts remain the path on GitHub-hosted runners and whenever a pull fails.
 - `make docker-build-toolchain`, `make docker-build-it` and `scripts/in-toolchain-image.sh` pull the content-hash-tagged image from the CI image registry the runner's environment names in `CI_IMAGE_REGISTRY` before they build, and push what they built to it (`scripts/image-registry.sh`, #1609), so a runner host no longer builds every image on its own disk. A failed or hung pull or push falls back to the build and never fails the job; each image logs one line (`pulled`, `miss, built and pushed` or `miss, built, push failed`); unset, nothing changes.
@@ -883,12 +884,13 @@ are not reconstructed here — their history is in the git log.
   (a C2SP signed-note checkpoint), rotate the head-signing key and expire
   entry bodies, under the `vlog:*`
   permissions, in the caller's tenant and the request's database; no
-  request names a tenant, on any transport. Every call naming a barrier-isolated
-  tenant or a barrier-enabled database, sealed or not, is refused as
-  `Unimplemented` (`BarrierTenantLogNotSupportedError`,
-  `BarrierDatabaseLogNotSupportedError`): the log registry sits under the
-  system barrier, not theirs, so `service.LogServiceConfig` requires the
-  node's database registry as `Databases`. They are
+  request names a tenant, on any transport. A barrier-isolated
+  tenant's logs live in its own barrier-sealed home group and a
+  barrier-enabled database's in the database's own group, so
+  `service.LogServiceConfig` requires the node's database registry as
+  `Databases`; a sealed barrier refuses every call with its own sealed error,
+  and a node without the group with `BarrierStoreUnavailableError`
+  (`Unavailable`). They are
   served while the node has a log service (`server.WithLogService`, wired by
   `qrdbd` and `sdk/go/node`). REST, QUIC and MCP answer in one JSON shape,
   `sdk/go/transport/vlogwire`'s, with byte fields in standard base64. Every `pkg/vlog` refusal

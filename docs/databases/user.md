@@ -322,11 +322,16 @@ Logs are never created implicitly, as databases are not: create it with
 `qrdb vlog create`, and check `--database`, since each database has its own
 logs.
 
-**`qrdb vlog` says verifiable logs are not available in a barrier-enabled
-database.** A log is kept under the cluster's system barrier, not under a
-database's or tenant's own, so a database with a barrier (sealed or not) and a
-barrier-isolated tenant have no logs; the server answers `501 Not Implemented`
-(`UNIMPLEMENTED`). Keep the log in a database without a barrier.
+**`qrdb vlog` says the barrier is sealed.** A barrier-isolated tenant's logs
+are kept under the tenant's own barrier, and a barrier-enabled database's under
+the database's; while that barrier is sealed every `qrdb vlog` command is
+refused. Unseal it, then retry.
+
+**`qrdb vlog` says the barrier-sealed store is not reachable on this node.**
+The node has no barrier-sealed group for the tenant or database: a standalone
+node, or a barrier-enabled database that is not a dedicated Raft database. The
+server answers `503 Service Unavailable` (`UNAVAILABLE`). Keep the log in a
+database without a barrier, or run the tenant in a Raft deployment.
 
 **`qrdb vlog` is an unknown command.** The client was built without verifiable
 logs (`WITH_QRDB_VLOG=0`); a server built without them answers every vlog call

@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -100,6 +101,13 @@ func (g *logGroups) DatabaseGroup(ctx context.Context, tenantID, db string) (ser
 	if err != nil {
 		if errors.Is(err, seal.ErrSealed) {
 			return nil, 0, &database.SealedError{}
+		}
+		// A barrier database that is not a dedicated Raft database (its
+		// tenant has no barrier of its own, or the database no group) has
+		// no barrier-sealed group a log could be applied in: fail closed.
+		var backend *server.RaftBackendError
+		if errors.Is(err, server.ErrRaftDatabaseUnknown) || (errors.As(err, &backend) && backend.Op == "barrier-lookup") {
+			return nil, 0, &service.BarrierStoreUnavailableError{TenantID: tenantID, Database: db}
 		}
 		return nil, 0, err
 	}

@@ -15,7 +15,7 @@ the row shipped only when every line HOLDS.
 | 5 | TypeScript SDK | HOLDS | `sdk/typescript/test/vlog-contract.test.ts` (REST and Wails clients) |
 | 6 | Tenant isolation | HOLDS | `pkg/service/vlog_log_service_test.go:TestLogService_CreateLog_Refusals` (cross-tenant); `test/integration/vlog_tenant_confinement_cli_test.go:TestVlog_CLI_TenantConfinement_PerProtocol` (closed by step 2a) |
 | 7 | DEK | HOLDS (by design) | `docs/databases/architecture.md` §8: no second key layer; a caller encrypts entries with `DEKService` before appending, the leaf commits to the ciphertext |
-| 8 | Barrier | GAP | The log registry sits in the system shard, under the system barrier; a barrier-isolated tenant (`BarrierTenantLogNotSupportedError`) and a barrier-enabled database (`BarrierDatabaseLogNotSupportedError`) are refused (`pkg/server/lifecycle/seams_vlog_test.go:TestBuildServices_LogServiceRefusesBarrierTenants`, `...BarrierDatabases`). §8 of the architecture says the tenant's or database's barrier encrypts the records; the code does not serve such tenants at all. |
+| 8 | Barrier | PARTIAL | Barrier tenant HOLDS in Raft mode: its logs, entries and sealed signing keys are applied in its home group, under its own key; a sealed barrier refuses with `tenant.ErrTenantSealed` (`pkg/service/audit_shard_resolver_test.go:TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup`; `pkg/server/lifecycle/log_groups_test.go:TestLogGroups_TenantHomeGroup`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierTenant_PerProtocol`, every transport: sealed refused, unsealed create/append/get/prove-inclusion/prove-consistency/head, log unchanged after the unseal). Barrier database: routed to the database's own group and refused with `*database.SealedError` while sealed (`TestLogService_SealedBarrierDatabaseRefusesEveryCall`, `TestLogService_RoutesABarrierDatabaseToItsOwnGroup`, `TestLogGroups_DatabaseGroup`), but only a dedicated Raft database has such a group; any other barrier database, and every barrier tenant on a standalone node, fails closed with `BarrierStoreUnavailableError`. See Remains. |
 | 9 | Replication | HOLDS | `sdk/go/node/clustered_vlog_test.go:TestClusteredCreateFunc_AppliesVerifiableLog`, `...LogRegistryPerReplica`; `pkg/store/vlog_apply_test.go:TestStoreVerifiableLog_SnapshotMidLogMatchesAPeer` |
 | 10 | Standalone and Raft modes | HOLDS | standalone: `pkg/engine/mvcc_vlog_test.go:TestMVCCEngine_VerifiableLog_DispatchesAndAnswersReads`; Raft: `pkg/store/vlog_apply_test.go:TestStoreVerifiableLog_DispatchesAndAnswersReads` |
 | 11 | One apply-time opcode behind a feature gate | HOLDS | `protocol.OpVerifiableLog` (`pkg/protocol/vlog.go`), `featuregate.VerifiableLog`/`VerifiableLogKeys`; `pkg/service/vlog_log_service_test.go:TestLogService_Writes_RefusedBeforeGateActive`, `TestLogService_KeyWrites_RefusedBeforeKeyFeatureActive`; `pkg/store/vlog_apply_test.go:TestStoreAuditInstance_MixedVersionReplay` |
@@ -33,28 +33,48 @@ a. Row 6 (done): `test/integration/vlog_tenant_confinement_cli_test.go`,
    is two logs with their own heads; a log one tenant created is neither
    listed, read nor appended to by the other (the CLI carries no tenant flag:
    the caller's certificate names the tenant). Listed in `INTTEST_databases`.
-b. Row 8 (barrier): not closed in this lane. Serving a barrier tenant or a
-   barrier database needs the log registry and its sealed signing keys moved
-   from the system shard into the tenant's (or database's) own barrier-sealed
-   store, with the apply path, snapshot and restore following it — an
-   architecture change (which store owns a barrier tenant's logs, and how a
-   sealed barrier refuses reads), for the owner to decide. The architecture
-   §8 "Barrier" bullet is corrected to state what the code does.
+b. Row 8 (barrier), lane vl1613c. No new seal domain: the logs go to the
+   barrier-sealed Raft groups the node already runs, whose state machines
+   carry a log registry (snapshot and restore follow the group).
+   - `service.NewSystemShardLogResolver` takes a `service.LogGroupSource`;
+     a barrier tenant routes to `TenantHomeGroup` (its `__home` dedicated
+     group), a barrier-enabled database to `DatabaseGroup` via the new
+     `LogShardResolver.ResolveDatabaseLogShard`.
+   - `pkg/server/lifecycle/log_groups.go` implements the source over the
+     dedicated-Raft services `AttachTenantHomes` attaches (attached lazily:
+     `BuildServices` runs first). Sealed tenant barrier →
+     `tenant.ErrTenantSealed`; sealed or absent database barrier →
+     `*database.SealedError`; no group → `BarrierStoreUnavailableError`
+     (`Unavailable`).
+   - `BarrierTenantLogNotSupportedError`, `BarrierDatabaseLogNotSupportedError`
+     and their errclass rows are deleted.
+   - CLI E2E: `test/integration/vlog_barrier_tenant_cli_test.go`, listed in
+     `INTTEST_databases`.
 
 ## Step 3
 
-Row stays `in progress` while row 8 is a GAP; `pm/rows.md` lists it as
-`in progress` under #1613. The architecture §8 "Barrier" bullet now states
-what the code does. Not done here: ROADMAP.md is a protected path this lane
-may not edit, so moving fsync-stall-leadership, lean-node-build and
-barrier-passphrase-change to Complete (SPEC marks them shipped) is left to a
-lane launched with ROADMAP.md allowed.
+Row 8 is PARTIAL, so the SPEC row stays `in progress` and `pm/rows.md` is
+unchanged: a barrier-enabled database is served only when it is a dedicated
+Raft database, and no barrier tenant or database is served on a standalone
+node. ROADMAP.md is a protected path this lane may not edit, so moving
+fsync-stall-leadership, lean-node-build and barrier-passphrase-change to
+Complete (SPEC marks them shipped) is left to a lane launched with ROADMAP.md
+allowed.
 
 ## Remains
 
-- Row 8, the barrier: an owner decision on where a barrier tenant's (and a
-  barrier database's) logs live, then the move with apply, snapshot, restore
-  and a CLI E2E on a barrier tenant.
+- Row 8, open question for the owner: where does a barrier-enabled database's
+  log live when the database has no Raft group of its own (a database in a
+  prefix or barrier tenant, kept in the shared log through
+  `database.BarrierBackend`)? The database barrier encrypts that database's
+  KV records, but the log registry is state-machine state applied in a group;
+  putting the registry under the database barrier needs either a dedicated
+  group per barrier database or apply-time encryption with the database key,
+  an architecture call. Today such a call fails closed with
+  `BarrierStoreUnavailableError`.
+- Row 8, standalone: barrier homes are `seal.NewTenantBarrierKVStore` KV stores
+  with no log state machine, so a barrier tenant's log fails closed there; the
+  same question (registry in a KV home) applies.
 - The ROADMAP.md moves above.
 
 ## Out of scope

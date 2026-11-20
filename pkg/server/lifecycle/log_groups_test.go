@@ -31,6 +31,7 @@ import (
 type fakeGroupServices struct {
 	shards  map[string]uint64
 	sealed  map[string]bool
+	unknown map[string]bool
 	joining map[uint64]bool
 	asked   []string
 }
@@ -40,6 +41,9 @@ func (f *fakeGroupServices) Services(_ context.Context, tenantID, db string) (*s
 	f.asked = append(f.asked, key)
 	if f.sealed[key] {
 		return nil, &server.RaftBackendError{Op: "resolve", Err: seal.ErrSealed}
+	}
+	if f.unknown[key] {
+		return nil, &server.RaftBackendError{Op: "db-info", Err: server.ErrRaftDatabaseUnknown}
 	}
 	return &server.DatabaseServices{ShardID: f.shards[key]}, nil
 }
@@ -112,6 +116,11 @@ func TestLogGroups_DatabaseGroup(t *testing.T) {
 	if len(svcs.asked) != 0 {
 		t.Fatalf("a sealed database's group was opened: %v", svcs.asked)
 	}
+	svcs.unknown = map[string]bool{"acme/secure": true}
+	if _, _, err := g.DatabaseGroup(ctx, "acme", "secure"); !errors.As(err, &unavailable) || unavailable.Database != "secure" {
+		t.Fatalf("no dedicated group: err = %v, want *service.BarrierStoreUnavailableError", err)
+	}
+	svcs.unknown = nil
 	svcs.sealed = map[string]bool{"acme/secure": true}
 	var sealed *database.SealedError
 	if _, _, err := g.DatabaseGroup(ctx, "acme", "secure"); !errors.As(err, &sealed) {
