@@ -284,4 +284,31 @@ describe('WailsClient databaseScoped data-plane operations stay in the database'
         expect(lock.mock.calls[0]?.slice(0, 2)).toEqual(['', 'k']);
         expect(stores.get('')?.get('k')).toBe('from-tx');
     });
+
+    it('index calls carry the named database, so indexes see the scoped KV writes', async () => {
+        installScopedBindings();
+        const index = vi.fn<BindingFn>(async () => ({ names: [], keys: [], entries: [] }));
+        const main = (globalThis as unknown as { window: { go: { main: Record<string, unknown> } } }).window.go
+            .main;
+        main.IndexBinding = { Create: index, Drop: index, Query: index, Scan: index, List: index };
+        const base = new WailsClient();
+        const orders = base.databaseScoped('orders');
+
+        await orders.index.create({ name: 'by_status', fieldName: 'status', unique: true });
+        await orders.index.query('by_status', 'open');
+        await orders.index.scan('by_status', 'a', 'z');
+        await orders.index.list();
+        await orders.index.drop('by_status');
+        await base.databaseScoped('system').index.list();
+        await base.index.query('by_status', 'open');
+
+        expect(index).toHaveBeenCalledTimes(7);
+        expect(index.mock.calls[0]?.[0]).toBe('orders');
+        expect(index.mock.calls[1]?.slice(0, 3)).toEqual(['orders', 'by_status', 'open']);
+        expect(index.mock.calls[2]?.slice(0, 4)).toEqual(['orders', 'by_status', 'a', 'z']);
+        expect(index.mock.calls[3]?.[0]).toBe('orders');
+        expect(index.mock.calls[4]?.slice(0, 2)).toEqual(['orders', 'by_status']);
+        expect(index.mock.calls[5]?.[0]).toBe('');
+        expect(index.mock.calls[6]?.slice(0, 3)).toEqual(['', 'by_status', 'open']);
+    });
 });

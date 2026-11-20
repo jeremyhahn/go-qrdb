@@ -61,6 +61,39 @@ func TestKVAndLeaseBindings_ScopeToTheSelectedDatabase(t *testing.T) {
 	}
 }
 
+// TestIndexBinding_ScopesToTheSelectedDatabase checks that index calls reach
+// the database the KV writes of the same workspace reach: the default
+// database ("" or "system") is served, and a named database is scoped with
+// the Go SDK's DatabaseScoped, which the test connection refuses.
+func TestIndexBinding_ScopesToTheSelectedDatabase(t *testing.T) {
+	conn, _ := newTestConnWithMVCC(t)
+	idx := NewIndexBinding(testLogger(t), conn)
+
+	// The test connection has no index service, so the default database
+	// answers with that error; what matters is that it is not scoped away.
+	var unsupported *transport.DatabaseScopeUnsupportedError
+	for _, db := range []string{"", "system"} {
+		if _, err := idx.List(db); errors.As(err, &unsupported) {
+			t.Fatalf("Index List(%q) was scoped to a named database: %v", db, err)
+		}
+	}
+
+	calls := map[string]func() error{
+		"Index.Create": func() error {
+			return idx.Create("orders", IndexCreateParams{Name: "by_status", FieldName: "status"})
+		},
+		"Index.Drop":  func() error { return idx.Drop("orders", "by_status") },
+		"Index.Query": func() error { _, err := idx.Query("orders", "by_status", "open"); return err },
+		"Index.Scan":  func() error { _, err := idx.Scan("orders", "by_status", "", ""); return err },
+		"Index.List":  func() error { _, err := idx.List("orders"); return err },
+	}
+	for name, call := range calls {
+		if err := call(); !errors.As(err, &unsupported) {
+			t.Errorf("%s(orders): want *transport.DatabaseScopeUnsupportedError, got %T: %v", name, err, err)
+		}
+	}
+}
+
 // Exists answers false only for a typed key-not-found; every other Get
 // failure (a refusal, a sealed store, a lost connection) reaches the caller.
 func TestKVBinding_Exists_PropagatesLookupFailures(t *testing.T) {

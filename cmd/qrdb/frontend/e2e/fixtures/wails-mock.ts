@@ -1495,7 +1495,10 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           }
 
           return {
-            Create: async (req: { name: string; field_name: string; unique?: boolean; sparse?: boolean; numeric?: boolean }) => {
+            // Every index binding takes the scoped database first, as the Go
+            // binding does; collection indexes already carry the database in
+            // their names, so the mock keeps one index store.
+            Create: async (_database: string, req: { name: string; field_name: string; unique?: boolean; sparse?: boolean; numeric?: boolean }) => {
               maybeReject("IndexBinding.Create");
               const entries = new Map<string, string[]>();
               // Backfill from any documents that already exist in the collection.
@@ -1532,12 +1535,12 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                 entries,
               });
             },
-            Drop: async (name: string) => {
+            Drop: async (_database: string, name: string) => {
               maybeReject("IndexBinding.Drop");
               if (!indexStore.has(name)) throw new Error(`index "${name}" not found`);
               indexStore.delete(name);
             },
-            Query: async (indexName: string, value: string) => {
+            Query: async (_database: string, indexName: string, value: string) => {
               maybeReject("IndexBinding.Query");
               const idx = indexStore.get(indexName);
               if (idx === undefined) return { keys: [] };
@@ -1554,7 +1557,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               const keys = idx.entries.get(value) ?? [];
               return { keys: [...keys] };
             },
-            Scan: async (indexName: string, start: string, end: string) => {
+            Scan: async (_database: string, indexName: string, start: string, end: string) => {
               maybeReject("IndexBinding.Scan");
               const idx = indexStore.get(indexName);
               if (idx === undefined) return { entries: [] };
@@ -1582,7 +1585,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               }
               return { entries: result };
             },
-            List: async () => {
+            List: async (_database: string) => {
               maybeReject("IndexBinding.List");
               return { names: Array.from(indexStore.keys()) };
             },

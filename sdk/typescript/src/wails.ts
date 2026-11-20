@@ -869,25 +869,29 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get index(): IndexClient {
         const b = wrapBindings(getBindings().main.IndexBinding);
+        // Every index binding takes the scoped database first, as KV does, so
+        // an index created in a database workspace indexes (and constrains)
+        // that workspace's KV writes; "" is the connection's default database.
+        const database = this.activeDatabase;
         return {
             create: async (req: IndexCreateRequest): Promise<void> => {
-                await b.Create(toSnake(req));
+                await b.Create(database, toSnake(req));
             },
             drop: async (name: string): Promise<void> => {
-                await b.Drop(name);
+                await b.Drop(database, name);
             },
             query: async (indexName: string, value: string): Promise<IndexQueryResponse> => {
-                return b.Query(indexName, value) as Promise<IndexQueryResponse>;
+                return b.Query(database, indexName, value) as Promise<IndexQueryResponse>;
             },
             scan: async (
                 indexName: string,
                 start: string,
                 end: string,
             ): Promise<IndexScanResponse> => {
-                return b.Scan(indexName, start, end) as Promise<IndexScanResponse>;
+                return b.Scan(database, indexName, start, end) as Promise<IndexScanResponse>;
             },
             list: async (): Promise<IndexListResponse> => {
-                return b.List("") as Promise<IndexListResponse>;
+                return b.List(database) as Promise<IndexListResponse>;
             },
         };
     }
