@@ -559,8 +559,10 @@
       <div class="card-body">
         <h2 class="card-title text-lg">Node Compaction</h2>
         <p class="text-base-content/70 text-sm">
-          The node-wide MVCC history compaction policy, applied to every
-          database without its own policy.
+          The MVCC history compaction policy for the node keyspace: the
+          keys outside every database namespace. Database history is
+          compacted only by each database's own policy; set that on the
+          database.
         </p>
         {#if compactionLoading}
           <div class="flex justify-center py-4">
