@@ -44,6 +44,13 @@ step does; nothing reaches the network.
      code-review.yml, codex with `credential:` and qwen with `hardware:`;
      `credential:` is codex's alone; any other pairing is (f), whatever the
      waiver says.
+  E. Unknown operands stay unknown.
+  G. Fork isolation (go-qrdb #1642's Codex review): a waiver does not make a
+     fork's code trusted. A waived self-hosted job a fork's pull_request or
+     pull_request_target can reach is (g): no `if:`, a head guard under a
+     top-level ||, a label guard alone. A top-level conjunct false for a
+     fork's PR (the head guard, a push guard, another forge) or a runs-on
+     that resolves hosted for it passes.
 
 Run: python3 -I software/templates/github-actions/testdata/runner-labels-tests.py
 """
@@ -102,6 +109,8 @@ def case(label, files, rc, want=(), not_want=()):
 
 PR_ON = "on:\n  pull_request:\n    branches: [main]\n  push:\n    branches: [main]\n"
 GUARD = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
+# (g): a waived self-hosted job keeps a fork's pull request off its runner.
+HEAD_GUARD = "github.event.pull_request.head.repo.full_name == github.repository"
 
 
 def job(runs_on, cond=None, name="pub"):
@@ -138,7 +147,7 @@ case("A5 runs-on mapping form, guarded, with RELEASE_RUNNER",
 case("A6 comparison is case-insensitive, as on the forge",
      {"ci.yml": wf(PR_ON, job(REL, "\"${{ github.event_name == 'PUSH' && github.ref == 'refs/heads/main' }}\""))}, 0)
 case("A7 a label that only starts with release is not release",
-     {"ci.yml": wf(PR_ON, job("[self-hosted, release-notes]  # self-hosted: hardware: the notes host"))}, 0)
+     {"ci.yml": wf(PR_ON, job("[self-hosted, release-notes]  # self-hosted: hardware: the notes host", HEAD_GUARD))}, 0)
 case("A8 a PR workflow with no release job",
      {"ci.yml": wf(PR_ON, job("${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}"))}, 0)
 
@@ -216,7 +225,7 @@ case("D8 a runs-on read from a job output fails (c) unless waived",
      {"ci.yml": wf(PR_ON, job("${{ needs.route.outputs.label }}", name="dyn"))}, 1, ["ci.yml:dyn: (c)"])
 case("D9 a block-list self-hosted runs-on with the waiver on its key line passes",
      {"ci.yml": wf(PR_ON, "  hw:\n    runs-on:  # self-hosted: hardware: the TPM bench\n      - self-hosted\n      - tpm\n"
-                          "    steps:\n      - run: true\n")}, 0)
+                          "    if: " + HEAD_GUARD + "\n    steps:\n      - run: true\n")}, 0)
 case("D11 a v1.43 reason with no category fails (e)",
      {"ci.yml": wf(PR_ON, job("[self-hosted, bigdisk]  # self-hosted: 24 GB stage memory", name="image"))}, 1,
      ["ci.yml:image: (e)"], ["(c)"])
@@ -224,7 +233,7 @@ case("D12 an unknown category fails (e)",
      {"ci.yml": wf(PR_ON, job("[self-hosted, bigdisk]  # self-hosted: faster: the hosted runner is slow", name="unit"))}, 1,
      ["ci.yml:unit: (e)"])
 case("D13 codex with the credential category passes in code-review.yml",
-     {"code-review.yml": wf(PR_ON, job("codex  # self-hosted: credential: the reviewer token is on this runner alone", name="codex"))}, 0)
+     {"code-review.yml": wf(PR_ON, job("codex  # self-hosted: credential: the reviewer token is on this runner alone", HEAD_GUARD, name="codex"))}, 0)
 case("D15 codex with a hardware waiver outside code-review.yml fails (f) (go-qrdb #1642)",
      {"ci.yml": wf(PR_ON, job("codex  # self-hosted: hardware: the review host", name="unit"))}, 1,
      ["ci.yml:unit: (f)", "codex"])
@@ -244,16 +253,16 @@ case("D20 qwen with credential: in code-review.yml fails (f)",
      {"code-review.yml": wf(PR_ON, job("qwen  # self-hosted: credential: a key", name="oc"))}, 1,
      ["code-review.yml:oc: (f)"])
 case("D21 qwen with hardware: in code-review.yml passes",
-     {"code-review.yml": wf(PR_ON, job("qwen  # self-hosted: hardware: the GPU host that serves the model", name="oc"))}, 0)
+     {"code-review.yml": wf(PR_ON, job("qwen  # self-hosted: hardware: the GPU host that serves the model", HEAD_GUARD, name="oc"))}, 0)
 case("D22 credential: on a non-review label fails (f), in any file",
      {"code-review.yml": wf(PR_ON, job("[self-hosted, bigdisk]  # self-hosted: credential: a token", name="x"))}, 1,
      ["code-review.yml:x: (f)", "credential"])
 case("D23 a label that only contains codex is not the review label",
-     {"ci.yml": wf(PR_ON, job("[self-hosted, codex-cache]  # self-hosted: hardware: the cache disk", name="c"))}, 0, [], ["(f)"])
+     {"ci.yml": wf(PR_ON, job("[self-hosted, codex-cache]  # self-hosted: hardware: the cache disk", HEAD_GUARD, name="c"))}, 0, [], ["(f)"])
 case("D24 codex named in the reason text only is not the label",
-     {"ci.yml": wf(PR_ON, job("[self-hosted, bigdisk]  # self-hosted: oversize: shares the codex host disk", name="c"))}, 0, [], ["(f)"])
+     {"ci.yml": wf(PR_ON, job("[self-hosted, bigdisk]  # self-hosted: oversize: shares the codex host disk", HEAD_GUARD, name="c"))}, 0, [], ["(f)"])
 case("D14 a space before the category colon passes",
-     {"ci.yml": wf(PR_ON, job("[self-hosted, gpu-host]  # self-hosted: hardware : the GPU", name="gpu"))}, 0)
+     {"ci.yml": wf(PR_ON, job("[self-hosted, gpu-host]  # self-hosted: hardware : the GPU", HEAD_GUARD, name="gpu"))}, 0)
 case("D10 a release job is the release rule's, not (c)'s",
      {"release.yml": wf("on:\n  push:\n    tags: ['v*']\n",
                         job(REL, "startsWith(github.ref, 'refs/tags/') && github.event_name == 'push'"))}, 0, [], ["(c)"])
@@ -267,6 +276,44 @@ case("E1 an unknown OR left operand with a truthy right one is unknown: MODE=all
 case("E2 an unknown AND left operand with a falsy right one is unknown: MODE='' runs it on a PR",
      {"ci.yml": wf(PR_ON, job(REL, "!contains(vars.MODE && false, 'false')"))}, 1,
      [".github/workflows/ci.yml:pub: (a)"])
+
+# G. fork isolation (go-qrdb #1642's Codex review): a waiver does not make a
+# fork's code trusted. A waived self-hosted job a fork's pull_request or
+# pull_request_target can reach is (g); a top-level conjunct of its if: that
+# is false for a fork's PR, or a runs-on that resolves hosted for it, keeps it.
+GPU = "gpu  # self-hosted: hardware: the GPU bench"
+PRT_ON = "on:\n  pull_request_target:\n"
+CHECKOUT = ("  gpu:\n    runs-on: " + GPU + "\n    steps:\n"
+            "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"
+            "      - run: make test\n")
+case("G1 pull_request_target, a hardware waiver, the PR head checked out and run fails (g)",
+     {"t.yml": wf(PRT_ON, CHECKOUT)}, 1, ["t.yml:gpu: (g)", "pull_request_target"])
+case("G2 pull_request, a waived self-hosted job with no if fails (g)",
+     {"ci.yml": wf(PR_ON, job(GPU, name="gpu"))}, 1, ["ci.yml:gpu: (g)", "pull_request"])
+case("G3 the head guard under a top-level || fails (g)",
+     {"ci.yml": wf(PR_ON, job(GPU, HEAD_GUARD + " || github.event_name == 'pull_request'", name="gpu"))}, 1,
+     ["ci.yml:gpu: (g)"])
+case("G4 a label guard alone on pull_request_target fails (g)",
+     {"t.yml": wf(PRT_ON, job(GPU, "contains(github.event.pull_request.labels.*.name, 'gpu')", name="gpu"))}, 1,
+     ["t.yml:gpu: (g)"])
+case("G5 an oversize waiver on a block list fails (g) too",
+     {"ci.yml": wf(PR_ON, "  hw:\n    runs-on:  # self-hosted: oversize: 24 GB\n      - self-hosted\n      - bigdisk\n"
+                          "    steps:\n      - run: true\n")}, 1, ["ci.yml:hw: (g)"])
+case("G6 the head guard passes",
+     {"ci.yml": wf(PR_ON, job(GPU, HEAD_GUARD, name="gpu"))}, 0, [], ["(g)"])
+case("G7 pull_request_target, the head guard reversed beside an unknown conjunct, folded, passes",
+     {"t.yml": wf(PRT_ON, job(GPU, ">-\n      ${{ github.event.pull_request.state == 'open'\n"
+                                   "      && github.repository == github.event.pull_request.head.repo.full_name }}", name="gpu"))}, 0, [], ["(g)"])
+case("G8 a push guard beside a PR trigger passes",
+     {"ci.yml": wf(PR_ON, job(GPU, "github.event_name == 'push' && github.ref == 'refs/heads/main'", name="gpu"))}, 0, [], ["(g)"])
+case("G9 a workflow with no pull request trigger needs no guard",
+     {"r.yml": wf("on: [push, workflow_dispatch]\n", job(GPU, name="gpu"))}, 0, [], ["(g)"])
+case("G10 a runs-on that resolves hosted for a fork's PR (the routing expression) passes",
+     {"ci.yml": wf(PR_ON, job(ROUTE + "  # self-hosted: oversize: 24 GB stage memory (#2063)", name="image"))}, 0, [], ["(g)"])
+case("G11 a Gitea-only job (github.server_url != github.com) passes",
+     {"code-review.yml": wf(PR_ON, job("qwen  # self-hosted: hardware: the GPU host",
+                                       "needs.review.outputs.agent == 'opencode' && github.server_url != 'https://github.com'", name="oc"))},
+     0, [], ["(g)"])
 
 print(f"{'ALL PASS' if not FAILS else f'{FAILS} FAILED'}")
 sys.exit(1 if FAILS else 0)

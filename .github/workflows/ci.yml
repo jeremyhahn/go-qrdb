@@ -235,7 +235,12 @@ jobs:
       # v1.47 (ruling 1007): label and category are checked together. The
       # review-only labels codex and qwen run only in code-review.yml, codex
       # with credential: and qwen with hardware:, and credential: is only for
-      # codex; a waiver does not lift it (f).
+      # codex; a waiver does not lift it (f). A waiver does not make a fork's
+      # code trusted either (go-qrdb #1642): a waived self-hosted job in a
+      # workflow a pull_request or pull_request_target triggers keeps a fork's
+      # PR off its runner, by a top-level `&& head.repo.full_name ==
+      # github.repository` (or a non-PR event) in its if:, or a runs-on that
+      # resolves hosted for it (g).
       # Its tests: testdata/runner-labels-tests.py, run by the step before it.
       - name: Runner labels tests (go-qrdb #1642)
         run: python3 -I .github/workflows/testdata/runner-labels-tests.py
@@ -649,6 +654,62 @@ jobs:
               return t
 
 
+          # go-qrdb #1642's Codex review: a waiver does not make a fork's code
+          # trusted. A fork's pull request (its event, its ref, its head).
+          FORK_CTX = [("pull_request", "refs/pull/1/merge"), ("pull_request_target", "refs/heads/main")]
+
+
+          def conjuncts(toks):
+              # The top-level && operands; an expression with a top-level || is one.
+              parts, cur, depth = [], [], 0
+              for t in toks:
+                  if t == ("op", "("):
+                      depth += 1
+                  elif t == ("op", ")"):
+                      depth -= 1
+                  elif depth == 0 and t == ("op", "||"):
+                      return [toks]
+                  elif depth == 0 and t == ("op", "&&"):
+                      parts.append(cur)
+                      cur = []
+                      continue
+                  cur.append(t)
+              return parts + [cur]
+
+
+          def fork_runs(ro, cond, ev, ref):
+              # Whether a fork's ev can run the job on a self-hosted runner.
+              try:
+                  got = runs_on_labels(ro, ev, ref, "fork/r")
+              except ValueError:
+                  got = None
+              if got is not None and len(got) == 1 and STANDARD.fullmatch(got[0]):
+                  return False
+              if cond is None:
+                  return True
+              try:
+                  parts = conjuncts(lex(condition(cond)))
+              except ValueError:
+                  return True
+              get = hosted_get(ev, ref, "fork/r")
+              for c in parts:
+                  try:
+                      if truthy(P(c, get).parse()) is False:
+                          return False
+                  except ValueError:
+                      pass
+              return True
+
+
+          def fork_finding(where, on, ro, cond):
+              runs = [ev for ev, ref in FORK_CTX if ev in on and fork_runs(ro, cond, ev, ref)]
+              if not runs:
+                  return None
+              return (f"{where}: (g) runs on a self-hosted runner and a fork's {' or '.join(runs)} can run it; a waiver "
+                      f"does not make a fork's code trusted: AND `github.event.pull_request.head.repo.full_name == "
+                      f"github.repository` into its `if:`")
+
+
           def check(path):
               lines = open(path, encoding="utf-8").read().splitlines()
               on = triggers(lines)
@@ -673,6 +734,9 @@ jobs:
                                   bad.append(rf)
                                   continue
                               if WAIVER.search(ro_line):
+                                  fk = fork_finding(where, on, ro, cond)
+                                  if fk:
+                                      bad.append(fk)
                                   continue
                               off = []
                               for ev, ref, head in HOSTED_CTX:
@@ -729,7 +793,7 @@ jobs:
           for b in bad:
               print(f"::error::{b}")
           if bad:
-              print(f"{len(bad)} runner-label finding(s) in {len(files)} workflow file(s): a `release` job runs only on {ALLOWED}, never for a pull request (ruling 633); every other job runs on a standard GitHub-hosted image, or its runs-on line names a hardware or oversize reason (rulings 833, 999); codex and qwen run only in code-review.yml, with their own category (ruling 1007)")
+              print(f"{len(bad)} runner-label finding(s) in {len(files)} workflow file(s): a `release` job runs only on {ALLOWED}, never for a pull request (ruling 633); every other job runs on a standard GitHub-hosted image, or its runs-on line names a hardware or oversize reason (rulings 833, 999); codex and qwen run only in code-review.yml, with their own category (ruling 1007); a fork's pull request never reaches a self-hosted job (go-qrdb #1642)")
               sys.exit(1)
           print(f"OK: {len(files)} workflow file(s); every job that names `release` runs only on {ALLOWED}, and every other job on a standard GitHub-hosted image or with a hardware or oversize reason")
           PY

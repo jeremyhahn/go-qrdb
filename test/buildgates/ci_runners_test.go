@@ -229,6 +229,9 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 			if p := waiverProblem(file, name, job.RunsOn.LineComment); p != "" {
 				add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+", and "+p)
 			}
+			if p := forkProblem(onTriggers(wf.On), job.If); p != "" {
+				add("job "+name+" runs on ", nodeText(job.RunsOn), ", a self-hosted runner, and "+p)
+			}
 			for _, s := range job.Steps {
 				if hostWipeStep.MatchString(s.Run) && !strings.Contains(s.If, hostedStepTerm) {
 					add("job "+name+" has a step that wipes a hosted runner's disk under if: ", strconv.Quote(s.If), ", without "+hostedStepTerm+"; on a self-hosted runner it deletes what other jobs share")
@@ -324,6 +327,90 @@ func waiverProblem(workflow, job, comment string) string {
 		return "its " + category + " waiver gives no reason"
 	}
 	return ""
+}
+
+// forkPREvents are the triggers whose run a fork's pull request starts.
+var forkPREvents = []string{"pull_request", "pull_request_target"}
+
+// forkSafeEvent matches a top-level `github.event_name == '<event>'` conjunct.
+var forkSafeEvent = regexp.MustCompile(`^github\.event_name == '([a-z_]+)'$|^'([a-z_]+)' == github\.event_name$`)
+
+// forkProblem: a waiver does not make fork code trusted (go-qrdb #1642's
+// Codex review). In a workflow a pull_request or pull_request_target event
+// triggers, a self-hosted job's if: has a top-level conjunct that keeps a
+// fork's pull request off the runner: the head in this repository, an event
+// that is not a pull request's, or a forge that is not github.com.
+func forkProblem(triggers []string, cond string) string {
+	var events []string
+	for _, ev := range forkPREvents {
+		if slices.Contains(triggers, ev) {
+			events = append(events, ev)
+		}
+	}
+	if len(events) == 0 {
+		return ""
+	}
+	for _, c := range topConjuncts(cond) {
+		if forkSafeConjunct(c) {
+			return ""
+		}
+	}
+	return "its workflow runs on " + strings.Join(events, " and ") + ", but its if: has no top-level `&& " + forkGuardTerm +
+		"`: a fork's pull request would run its code on a persistent host, and a hardware or oversize waiver does not make fork code trusted"
+}
+
+// forkGuardTerm is the conjunct that keeps a fork's head off a self-hosted runner.
+const forkGuardTerm = "github.event.pull_request.head.repo.full_name == github.repository"
+
+// forkSafeConjunct reports whether one top-level conjunct of an if: is false
+// for every fork pull request.
+func forkSafeConjunct(c string) bool {
+	switch c {
+	case forkGuardTerm, "github.repository == github.event.pull_request.head.repo.full_name",
+		"github.server_url != 'https://github.com'", "'https://github.com' != github.server_url":
+		return true
+	}
+	m := forkSafeEvent.FindStringSubmatch(c)
+	if m == nil {
+		return false
+	}
+	return !slices.Contains(forkPREvents, m[1]+m[2])
+}
+
+// topConjuncts splits an if: at its top-level && operators, outside
+// parentheses and string literals, each part lower-cased with its
+// whitespace collapsed. An if: with a top-level || has no conjunct every
+// run satisfies: it returns none.
+func topConjuncts(cond string) []string {
+	s := strings.Join(strings.Fields(strings.ToLower(cond)), " ")
+	if inner, ok := strings.CutPrefix(s, "${{"); ok {
+		if inner, ok = strings.CutSuffix(inner, "}}"); ok {
+			s = strings.TrimSpace(inner)
+		}
+	}
+	if s == "" {
+		return nil
+	}
+	var parts []string
+	depth, quoted, start := 0, false, 0
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '\'':
+			quoted = !quoted
+		case quoted:
+		case s[i] == '(':
+			depth++
+		case s[i] == ')':
+			depth--
+		case depth == 0 && strings.HasPrefix(s[i:], "||"):
+			return nil
+		case depth == 0 && strings.HasPrefix(s[i:], "&&"):
+			parts = append(parts, strings.TrimSpace(s[start:i]))
+			start = i + 2
+			i++
+		}
+	}
+	return append(parts, strings.TrimSpace(s[start:]))
 }
 
 // timeoutProblems checks one job's limit: a literal number, or a matrix
@@ -841,6 +928,59 @@ func TestReleaseLabelRefused(t *testing.T) {
 			}
 			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "the "+releaseLabel+" label") }) {
 				t.Fatalf("want a problem refusing the %s label, got %v", releaseLabel, problems)
+			}
+		})
+	}
+}
+
+// TestForkIsolation: a hardware or oversize waiver does not make fork code
+// trusted (go-qrdb #1642's Codex review). A waived self-hosted job in a
+// workflow a pull_request or pull_request_target event triggers keeps a
+// fork's pull request off its runner: a top-level conjunct of its if:
+// requires a head in this repository, a non-PR event, or another forge.
+func TestForkIsolation(t *testing.T) {
+	const steps = "    timeout-minutes: 30\n    steps:\n      - run: gh pr checkout \"$PR\" && make test\n"
+	fixture := func(on, cond string) string {
+		body := "on: " + on + "\njobs:\n  gpu:\n"
+		if cond != "" {
+			body += "    if: " + cond + "\n"
+		}
+		return body + "    runs-on: gpu  # self-hosted: hardware: the GPU bench\n" + steps
+	}
+	refused := []struct{ name, body string }{
+		{"pull_request_target, no if, checks out the PR head", fixture("pull_request_target", "")},
+		{"pull_request, no if", fixture("pull_request", "")},
+		{"pull_request and push, no if", fixture("[pull_request, push]", "")},
+		{"pull_request_target, a label guard alone", fixture("pull_request_target", "contains(github.event.pull_request.labels.*.name, 'gpu')")},
+		{"pull_request, the head guard under a top-level ||", fixture("pull_request", "github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'pull_request'")},
+		{"pull_request, the head guard negated", fixture("pull_request", "github.event.pull_request.head.repo.full_name != github.repository")},
+		{"pull_request, an event guard naming pull_request_target", fixture("pull_request", "github.event_name == 'pull_request_target'")},
+		{"pull_request, the head guard inside a parenthesised ||", fixture("pull_request", "${{ (github.event.pull_request.head.repo.full_name == github.repository || true) && true }}")},
+	}
+	for _, c := range refused {
+		t.Run("refused/"+c.name, func(t *testing.T) {
+			problems, jobs := runnerProblems("gpu.yml", []byte(c.body))
+			if jobs != 1 {
+				t.Fatalf("the fixture parsed to %d jobs, want 1: %v", jobs, problems)
+			}
+			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "fork") }) {
+				t.Fatalf("want a fork-isolation problem, got %v", problems)
+			}
+		})
+	}
+	passed := []struct{ name, file, body string }{
+		{"push only, no if", "gpu.yml", fixture("push", "")},
+		{"pull_request, the head guard", "gpu.yml", fixture("pull_request", "github.event.pull_request.head.repo.full_name == github.repository")},
+		{"pull_request_target, the head guard reversed, folded with another term", "gpu.yml", fixture("pull_request_target", "${{ github.event.pull_request.state == 'open'\n      && github.repository == github.event.pull_request.head.repo.full_name }}")},
+		{"pull_request and push, a push guard", "gpu.yml", fixture("[pull_request, push]", "github.event_name == 'push' && github.ref == 'refs/heads/main'")},
+		// code-review.yml's review-opencode job: Gitea only.
+		{"pull_request, another forge only", reviewWorkflow, fixture("pull_request", "needs.x.outputs.y == 'z' && github.server_url != 'https://github.com'")},
+	}
+	for _, c := range passed {
+		t.Run("passed/"+c.name, func(t *testing.T) {
+			problems, jobs := runnerProblems(c.file, []byte(c.body))
+			if jobs != 1 || len(problems) != 0 {
+				t.Fatalf("want 1 job and no problem, got %d jobs: %v", jobs, problems)
 			}
 		})
 	}
