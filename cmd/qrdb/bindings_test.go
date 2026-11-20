@@ -244,7 +244,7 @@ func TestKVBinding_Put_Success(t *testing.T) {
 	conn := newTestConnectionBinding(t, kvSvc, newMockAdminService())
 	b := NewKVBinding(testLogger(t), conn)
 
-	if err := b.Put("hello", "world"); err != nil {
+	if err := b.Put("", "hello", "world"); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 	if string(kvSvc.store["hello"]) != "world" {
@@ -256,7 +256,7 @@ func TestKVBinding_Put_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewKVBinding(testLogger(t), conn)
 
-	err := b.Put("key", "val")
+	err := b.Put("", "key", "val")
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -272,7 +272,7 @@ func TestKVBinding_Get_Success(t *testing.T) {
 	conn := newTestConnectionBinding(t, kvSvc, newMockAdminService())
 	b := NewKVBinding(testLogger(t), conn)
 
-	val, err := b.Get("greet")
+	val, err := b.Get("", "greet")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestKVBinding_Get_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewKVBinding(testLogger(t), conn)
 
-	_, err := b.Get("key")
+	_, err := b.Get("", "key")
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -300,7 +300,7 @@ func TestKVBinding_Get_KeyNotFound(t *testing.T) {
 	conn := newTestConnectionBinding(t, kvSvc, newMockAdminService())
 	b := NewKVBinding(testLogger(t), conn)
 
-	_, err := b.Get("nonexistent")
+	_, err := b.Get("", "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent key")
 	}
@@ -316,7 +316,7 @@ func TestKVBinding_Delete_Success(t *testing.T) {
 	conn := newTestConnectionBinding(t, kvSvc, newMockAdminService())
 	b := NewKVBinding(testLogger(t), conn)
 
-	if err := b.Delete("del-me"); err != nil {
+	if err := b.Delete("", "del-me"); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 	if _, ok := kvSvc.store["del-me"]; ok {
@@ -328,7 +328,7 @@ func TestKVBinding_Delete_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewKVBinding(testLogger(t), conn)
 
-	err := b.Delete("key")
+	err := b.Delete("", "key")
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -346,7 +346,7 @@ func TestKVBinding_List_Success(t *testing.T) {
 	conn := newTestConnectionBinding(t, kvSvc, newMockAdminService())
 	b := NewKVBinding(testLogger(t), conn)
 
-	keys, err := b.List("app:")
+	keys, err := b.List("", "app:")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestKVBinding_List_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewKVBinding(testLogger(t), conn)
 
-	_, err := b.List("")
+	_, err := b.List("", "")
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -376,7 +376,7 @@ func TestKVBinding_List_EmptyPrefix(t *testing.T) {
 	conn := newTestConnectionBinding(t, kvSvc, newMockAdminService())
 	b := NewKVBinding(testLogger(t), conn)
 
-	keys, err := b.List("")
+	keys, err := b.List("", "")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestKVBinding_Exists_Found(t *testing.T) {
 	conn := newTestConnectionBinding(t, kvSvc, newMockAdminService())
 	b := NewKVBinding(testLogger(t), conn)
 
-	found, err := b.Exists("exists-key")
+	found, err := b.Exists("", "exists-key")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestKVBinding_Exists_NotFound(t *testing.T) {
 	conn := newTestConnectionBinding(t, kvSvc, newMockAdminService())
 	b := NewKVBinding(testLogger(t), conn)
 
-	found, err := b.Exists("missing-key")
+	found, err := b.Exists("", "missing-key")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestKVBinding_Exists_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewKVBinding(testLogger(t), conn)
 
-	_, err := b.Exists("key")
+	_, err := b.Exists("", "key")
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -436,7 +436,7 @@ func TestKVBinding_Scan_Success(t *testing.T) {
 	conn := newTestConnectionBinding(t, kvSvc, newMockAdminService())
 	b := NewKVBinding(testLogger(t), conn)
 
-	result, err := b.Scan("ns:")
+	result, err := b.Scan("", "ns:")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestKVBinding_Scan_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewKVBinding(testLogger(t), conn)
 
-	_, err := b.Scan("")
+	_, err := b.Scan("", "")
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -471,7 +471,7 @@ func TestKVBinding_Scan_EmptyPrefix(t *testing.T) {
 	conn := newTestConnectionBinding(t, kvSvc, newMockAdminService())
 	b := NewKVBinding(testLogger(t), conn)
 
-	result, err := b.Scan("")
+	result, err := b.Scan("", "")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1162,7 +1162,7 @@ func TestLeaseBinding_Grant_Success(t *testing.T) {
 	conn := newTestConnWithLease(t)
 	b := NewLeaseBinding(testLogger(t), conn)
 
-	resp, err := b.Grant(60)
+	resp, err := b.Grant("", 60)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1178,7 +1178,7 @@ func TestLeaseBinding_Grant_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewLeaseBinding(testLogger(t), conn)
 
-	_, err := b.Grant(60)
+	_, err := b.Grant("", 60)
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -1192,7 +1192,7 @@ func TestLeaseBinding_Revoke_Success(t *testing.T) {
 	conn := newTestConnWithLease(t)
 	b := NewLeaseBinding(testLogger(t), conn)
 
-	if err := b.Revoke(1); err != nil {
+	if err := b.Revoke("", 1); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 }
@@ -1201,7 +1201,7 @@ func TestLeaseBinding_Revoke_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewLeaseBinding(testLogger(t), conn)
 
-	err := b.Revoke(1)
+	err := b.Revoke("", 1)
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -1215,7 +1215,7 @@ func TestLeaseBinding_KeepAlive_Success(t *testing.T) {
 	conn := newTestConnWithLease(t)
 	b := NewLeaseBinding(testLogger(t), conn)
 
-	resp, err := b.KeepAlive(1)
+	resp, err := b.KeepAlive("", 1)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1231,7 +1231,7 @@ func TestLeaseBinding_KeepAlive_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewLeaseBinding(testLogger(t), conn)
 
-	_, err := b.KeepAlive(1)
+	_, err := b.KeepAlive("", 1)
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -1245,7 +1245,7 @@ func TestLeaseBinding_TimeToLive_Success(t *testing.T) {
 	conn := newTestConnWithLease(t)
 	b := NewLeaseBinding(testLogger(t), conn)
 
-	resp, err := b.TimeToLive(1)
+	resp, err := b.TimeToLive("", 1)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1261,7 +1261,7 @@ func TestLeaseBinding_TimeToLive_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewLeaseBinding(testLogger(t), conn)
 
-	_, err := b.TimeToLive(1)
+	_, err := b.TimeToLive("", 1)
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}
@@ -1275,7 +1275,7 @@ func TestLeaseBinding_List_Success(t *testing.T) {
 	conn := newTestConnWithLease(t)
 	b := NewLeaseBinding(testLogger(t), conn)
 
-	leases, err := b.List()
+	leases, err := b.List("")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1288,7 +1288,7 @@ func TestLeaseBinding_List_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewLeaseBinding(testLogger(t), conn)
 
-	_, err := b.List()
+	_, err := b.List("")
 	if err == nil {
 		t.Fatal("expected NotConnectedError")
 	}

@@ -16,11 +16,16 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // KVBinding exposes key-value operations to the Wails frontend.
+//
+// Every method takes the database it is scoped to first, as MVCCBinding
+// does; "" and "system" name the connection's default database.
 type KVBinding struct {
 	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
@@ -31,10 +36,20 @@ func NewKVBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *KVBinding {
 	return &KVBinding{logger: log, conn: conn}
 }
 
+// scopedClient returns the connection's client scoped to database with the
+// Go SDK's DatabaseScoped; "" and "system" keep the default database.
+func scopedClient(conn *ConnectionBinding, database string) (*sdk.Client, error) {
+	cl, err := conn.loadClient()
+	if err != nil {
+		return nil, err
+	}
+	return cl.DatabaseScoped(database)
+}
+
 // Put stores a key-value pair through Raft consensus.
-func (b *KVBinding) Put(key string, value string) error {
-	b.logger.Debug("Put called", "key", key)
-	cl, err := b.conn.loadClient()
+func (b *KVBinding) Put(database string, key string, value string) error {
+	b.logger.Debug("Put called", "database", database, "key", key)
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Put failed", "error", err)
 		return err
@@ -48,9 +63,9 @@ func (b *KVBinding) Put(key string, value string) error {
 }
 
 // Get retrieves the value for a key and returns it as a string.
-func (b *KVBinding) Get(key string) (string, error) {
-	b.logger.Debug("Get called", "key", key)
-	cl, err := b.conn.loadClient()
+func (b *KVBinding) Get(database string, key string) (string, error) {
+	b.logger.Debug("Get called", "database", database, "key", key)
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Get failed", "error", err)
 		return "", err
@@ -65,9 +80,9 @@ func (b *KVBinding) Get(key string) (string, error) {
 }
 
 // Delete removes a key through Raft consensus.
-func (b *KVBinding) Delete(key string) error {
-	b.logger.Debug("Delete called", "key", key)
-	cl, err := b.conn.loadClient()
+func (b *KVBinding) Delete(database string, key string) error {
+	b.logger.Debug("Delete called", "database", database, "key", key)
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Delete failed", "error", err)
 		return err
@@ -81,9 +96,9 @@ func (b *KVBinding) Delete(key string) error {
 }
 
 // List returns sorted keys matching the given prefix.
-func (b *KVBinding) List(prefix string) ([]string, error) {
-	b.logger.Debug("List called", "prefix", prefix)
-	cl, err := b.conn.loadClient()
+func (b *KVBinding) List(database string, prefix string) ([]string, error) {
+	b.logger.Debug("List called", "database", database, "prefix", prefix)
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("List failed", "error", err)
 		return nil, err
@@ -97,18 +112,26 @@ func (b *KVBinding) List(prefix string) ([]string, error) {
 	return keys, nil
 }
 
-// Exists returns true when the key exists in the store.
-func (b *KVBinding) Exists(key string) (bool, error) {
-	b.logger.Debug("Exists called", "key", key)
-	cl, err := b.conn.loadClient()
+// Exists returns true when the key exists in the store. Only a typed
+// key-not-found answers false; every other Get failure (a refusal, a sealed
+// store, a lost connection) is returned, so the caller never reports it as a
+// missing key.
+func (b *KVBinding) Exists(database string, key string) (bool, error) {
+	b.logger.Debug("Exists called", "database", database, "key", key)
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Exists failed", "error", err)
 		return false, err
 	}
 	_, err = cl.KV().Get(context.Background(), key)
 	if err != nil {
-		b.logger.Debug("Exists completed", "key", key, "exists", false)
-		return false, nil
+		var knf *transport.KeyNotFoundError
+		if errors.As(err, &knf) {
+			b.logger.Debug("Exists completed", "key", key, "exists", false)
+			return false, nil
+		}
+		b.logger.Error("Exists failed", "key", key, "error", err)
+		return false, err
 	}
 	b.logger.Debug("Exists completed", "key", key, "exists", true)
 	return true, nil
@@ -116,9 +139,9 @@ func (b *KVBinding) Exists(key string) (bool, error) {
 
 // Scan returns all key-value pairs matching the given prefix as a
 // string-to-string map suitable for JS interop.
-func (b *KVBinding) Scan(prefix string) (map[string]string, error) {
-	b.logger.Debug("Scan called", "prefix", prefix)
-	cl, err := b.conn.loadClient()
+func (b *KVBinding) Scan(database string, prefix string) (map[string]string, error) {
+	b.logger.Debug("Scan called", "database", database, "prefix", prefix)
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Scan failed", "error", err)
 		return nil, err

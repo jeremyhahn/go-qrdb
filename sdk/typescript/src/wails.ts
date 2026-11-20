@@ -498,24 +498,28 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get kv(): KVClient {
         const b = wrapBindings(getBindings().main.KVBinding);
+        // Every KV binding takes the scoped database first, as MVCC does, so
+        // browsing, saves and lookups reach the same database; "" is the
+        // connection's default database.
+        const database = this.activeDatabase;
         return {
             put: async (key: string, value: string): Promise<void> => {
-                await b.Put(key, value);
+                await b.Put(database, key, value);
             },
             get: async (key: string): Promise<string> => {
-                return b.Get(key) as Promise<string>;
+                return b.Get(database, key) as Promise<string>;
             },
             delete: async (key: string): Promise<void> => {
-                await b.Delete(key);
+                await b.Delete(database, key);
             },
             list: async (prefix: string): Promise<string[]> => {
-                return b.List(prefix) as Promise<string[]>;
+                return b.List(database, prefix) as Promise<string[]>;
             },
             exists: async (key: string): Promise<boolean> => {
-                return b.Exists(key) as Promise<boolean>;
+                return b.Exists(database, key) as Promise<boolean>;
             },
             scan: async (prefix: string): Promise<Record<string, string>> => {
-                return b.Scan(prefix) as Promise<Record<string, string>>;
+                return b.Scan(database, prefix) as Promise<Record<string, string>>;
             },
         };
     }
@@ -802,21 +806,24 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get lease(): LeaseClient {
         const b = wrapBindings(getBindings().main.LeaseBinding);
+        // Leases live in the scoped database, so a lease granted here binds
+        // the keys mvcc.putWithLease writes there; "" is the default.
+        const database = this.activeDatabase;
         return {
             grant: async (ttl: number): Promise<LeaseInfo> => {
-                return b.Grant(ttl) as Promise<LeaseInfo>;
+                return b.Grant(database, ttl) as Promise<LeaseInfo>;
             },
             revoke: async (leaseId: number): Promise<void> => {
-                await b.Revoke(leaseId);
+                await b.Revoke(database, leaseId);
             },
             keepAlive: async (leaseId: number): Promise<LeaseInfo> => {
-                return b.KeepAlive(leaseId) as Promise<LeaseInfo>;
+                return b.KeepAlive(database, leaseId) as Promise<LeaseInfo>;
             },
             timeToLive: async (leaseId: number): Promise<LeaseInfo> => {
-                return b.TimeToLive(leaseId) as Promise<LeaseInfo>;
+                return b.TimeToLive(database, leaseId) as Promise<LeaseInfo>;
             },
             list: async (): Promise<readonly LeaseInfo[]> => {
-                return b.List() as Promise<readonly LeaseInfo[]>;
+                return b.List(database) as Promise<readonly LeaseInfo[]>;
             },
         };
     }

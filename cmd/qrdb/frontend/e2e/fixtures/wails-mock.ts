@@ -383,7 +383,11 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     }
 
     // Stateful in-memory stores for CRUD bindings
-    const kvStore = new Map<string, string>();
+    // kvStore, revisionHistory, kvLeaseBindings, leaseStore, mvccRevision
+    // and compactedRevision hold the keyspace of the database the current
+    // KV/MVCC/Lease call is scoped to; useDatabase() swaps them, so each
+    // database keeps its own store as it does on a real server.
+    let kvStore = new Map<string, string>();
 
     // The platform's node-keyspace compaction policy, as AdminBinding holds
     // it: null when none is set.
@@ -402,7 +406,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     // Highest revision MVCCBinding.Compact has discarded history up to; a
     // GetAtRevision below it fails as a compacted read does on a real daemon.
     let compactedRevision = 0;
-    const revisionHistory = new Map<string, Array<{ revision: number; value: string | null }>>();
+    let revisionHistory = new Map<string, Array<{ revision: number; value: string | null }>>();
 
     /** Records a write (value !== null) or delete (value === null) for key, bumping the shared revision counter, and returns the new revision. */
     function recordRevision(key: string, value: string | null): number {
@@ -525,11 +529,53 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     }>();
 
     // Lease store
-    const leaseStore = new Map<number, { id: number; ttl: number; granted_ttl: number; remaining_ttl: number }>();
+    let leaseStore = new Map<number, { id: number; ttl: number; granted_ttl: number; remaining_ttl: number }>();
     let leaseIdCounter = 0;
     // Lease each key is bound to (mvcc.putWithLease); a plain kv.put
     // releases the binding, as the server does.
-    const kvLeaseBindings = new Map<string, number>();
+    let kvLeaseBindings = new Map<string, number>();
+
+    // One keyspace per database; "" (and "system") is the connection's
+    // default database, the one every unscoped binding reaches.
+    type Keyspace = {
+      store: Map<string, string>;
+      history: Map<string, Array<{ revision: number; value: string | null }>>;
+      leases: typeof leaseStore;
+      leaseBindings: Map<string, number>;
+      revision: number;
+      compacted: number;
+    };
+    const keyspaces = new Map<string, Keyspace>();
+    let currentDatabase = "";
+    keyspaces.set("", {
+      store: kvStore,
+      history: revisionHistory,
+      leases: leaseStore,
+      leaseBindings: kvLeaseBindings,
+      revision: mvccRevision,
+      compacted: compactedRevision,
+    });
+
+    /** Points the keyspace variables at database's store, creating it empty on first use. */
+    function useDatabase(database: string | undefined): void {
+      const name = !database || database === "system" ? "" : database;
+      if (name === currentDatabase) return;
+      const current = keyspaces.get(currentDatabase) as Keyspace;
+      current.revision = mvccRevision;
+      current.compacted = compactedRevision;
+      let next = keyspaces.get(name);
+      if (!next) {
+        next = { store: new Map(), history: new Map(), leases: new Map(), leaseBindings: new Map(), revision: 0, compacted: 0 };
+        keyspaces.set(name, next);
+      }
+      kvStore = next.store;
+      revisionHistory = next.history;
+      leaseStore = next.leases;
+      kvLeaseBindings = next.leaseBindings;
+      mvccRevision = next.revision;
+      compactedRevision = next.compacted;
+      currentDatabase = name;
+    }
 
     // Collection and document stores
     const collectionStore = new Map<string, {
@@ -936,14 +982,18 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           IsEmbedded: () => getState().embeddedRunning,
         },
+        // Every KVBinding method takes the database it is scoped to first,
+        // as the Go binding does.
         KVBinding: {
-          Put: async (key: string, value: string) => {
+          Put: async (database: string, key: string, value: string) => {
+            useDatabase(database);
             maybeReject("KVBinding.Put");
             kvStore.set(key, value);
             kvLeaseBindings.delete(key);
             recordRevision(key, value);
           },
-          Get: async (key: string) => {
+          Get: async (database: string, key: string) => {
+            useDatabase(database);
             maybeReject("KVBinding.Get");
             const val = kvStore.get(key);
             if (val === undefined) {
@@ -951,12 +1001,14 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             return val;
           },
-          Delete: async (key: string) => {
+          Delete: async (database: string, key: string) => {
+            useDatabase(database);
             maybeReject("KVBinding.Delete");
             kvStore.delete(key);
             recordRevision(key, null);
           },
-          List: async (prefix: string) => {
+          List: async (database: string, prefix: string) => {
+            useDatabase(database);
             maybeReject("KVBinding.List");
             const keys: string[] = [];
             for (const k of kvStore.keys()) {
@@ -966,11 +1018,16 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             return keys;
           },
-          Exists: async (key: string) => {
+          // Exists runs the same Get the Go binding does: only a missing key
+          // answers false, and any other Get failure is the call's error.
+          Exists: async (database: string, key: string) => {
+            useDatabase(database);
             maybeReject("KVBinding.Exists");
+            maybeReject("KVBinding.Get");
             return kvStore.has(key);
           },
-          Scan: async (prefix: string) => {
+          Scan: async (database: string, prefix: string) => {
+            useDatabase(database);
             maybeReject("KVBinding.Scan");
             // Return a Record<string, string> mapping key → value, as expected by
             // the AuditLog component's `client.kv.scan()` call.
@@ -1095,6 +1152,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
         MVCCBinding: {
           PutWithLease: async (database: string, key: string, value: string, leaseId?: number) => {
             noteMvccDatabase("PutWithLease", database);
+            useDatabase(database);
             maybeReject("MVCCBinding.PutWithLease");
             kvStore.set(key, value);
             if (leaseId) kvLeaseBindings.set(key, leaseId);
@@ -1111,6 +1169,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           // here to round-trip correctly.
           GetRevision: async (database: string, key: string) => {
             noteMvccDatabase("GetRevision", database);
+            useDatabase(database);
             maybeReject("MVCCBinding.GetRevision");
             await maybeHold("MVCCBinding.GetRevision");
             const val = kvStore.get(key);
@@ -1126,6 +1185,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           GetAtRevision: async (database: string, key: string, revision: number) => {
             noteMvccDatabase("GetAtRevision", database);
+            useDatabase(database);
             maybeReject("MVCCBinding.GetAtRevision");
             if (revision < compactedRevision) {
               throw new Error(`mvcc: required revision ${revision} has been compacted (compacted to ${compactedRevision})`);
@@ -1143,6 +1203,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           // excluding keys not yet created.
           Range: async (database: string, start: string, end: string, opts?: { revision?: number }) => {
             noteMvccDatabase("Range", database);
+            useDatabase(database);
             maybeReject("MVCCBinding.Range");
             const asOf = opts && typeof opts.revision === "number" && opts.revision > 0 ? opts.revision : null;
             const kvs: { key: string; value: string }[] = [];
@@ -1164,6 +1225,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           Compact: async (database: string, revision: number) => {
             noteMvccDatabase("Compact", database);
+            useDatabase(database);
             maybeReject("MVCCBinding.Compact");
             if (revision > mvccRevision) {
               throw new Error(`mvcc: required revision ${revision} is a future revision`);
@@ -1173,6 +1235,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           CurrentRevision: async (database: string) => {
             noteMvccDatabase("CurrentRevision", database);
+            useDatabase(database);
             await maybeHold("MVCCBinding.CurrentRevision");
             // A store without revisions answers 501, per database.
             if ((getState().noRevisionDatabases ?? []).includes(database)) {
@@ -1202,6 +1265,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             force?: boolean;
           }) => {
             noteMvccDatabase("RestoreToRevision", database);
+            useDatabase(database);
             maybeReject("MVCCBinding.RestoreToRevision");
             const revision = Number(req.revision) || 0;
             const dryRun = Boolean(req.dry_run);
@@ -1324,6 +1388,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
         BatchBinding: {
           Execute: async (ops: { type: number | string; key: string; value?: string }[]) => {
             maybeReject("BatchBinding.Execute");
+            useDatabase("");
             const responses = ops.map((op: { type: number | string; key: string; value?: string }) => {
               // Handle both numeric (from SDK) and string op types
               const typeStr = typeof op.type === "number"
@@ -1526,18 +1591,21 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           };
         })(),
         LeaseBinding: {
-          Grant: async (ttl: number) => {
+          Grant: async (database: string, ttl: number) => {
+            useDatabase(database);
             maybeReject("LeaseBinding.Grant");
             const id = ++leaseIdCounter;
             leaseStore.set(id, { id, ttl, granted_ttl: ttl, remaining_ttl: ttl });
             return { id, ttl, granted_ttl: ttl, remaining_ttl: ttl };
           },
-          Revoke: async (id: number) => {
+          Revoke: async (database: string, id: number) => {
+            useDatabase(database);
             maybeReject("LeaseBinding.Revoke");
             if (!leaseStore.has(id)) throw new Error(`lease ${id} not found`);
             leaseStore.delete(id);
           },
-          KeepAlive: async (id: number) => {
+          KeepAlive: async (database: string, id: number) => {
+            useDatabase(database);
             maybeReject("LeaseBinding.KeepAlive");
             const lease = leaseStore.get(id);
             if (!lease) throw new Error(`lease ${id} not found`);
@@ -1546,13 +1614,15 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             lease.remaining_ttl = lease.granted_ttl;
             return { ...lease };
           },
-          TimeToLive: async (id: number) => {
+          TimeToLive: async (database: string, id: number) => {
+            useDatabase(database);
             maybeReject("LeaseBinding.TimeToLive");
             const lease = leaseStore.get(id);
             if (!lease) throw new Error(`lease ${id} not found`);
             return { ...lease };
           },
-          List: async () => {
+          List: async (database: string) => {
+            useDatabase(database);
             maybeReject("LeaseBinding.List");
             return Array.from(leaseStore.values());
           },
@@ -2296,6 +2366,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               };
             }
             if (/^SELECT\s+\*\s+FROM\s+KV\s*$/i.test(q)) {
+              useDatabase("");
               const kvRows: Record<string, string>[] = [];
               for (const [k, v] of kvStore.entries()) {
                 kvRows.push({ key: k, value: v });

@@ -156,6 +156,18 @@ test.describe("KV Explorer MVCC operations", () => {
     await expect(page.getByText('Key "missing/key" does not exist.')).toBeVisible();
   });
 
+  test("go to key reports a lookup failure instead of a missing key", async ({ page }) => {
+    await navigateToKV(page);
+    await createEntry(page, "goto/sealed", "hidden");
+    // The underlying Get fails (a refusal, a sealed store); Exists must
+    // carry that failure, not answer "does not exist".
+    await injectError(page, "KVBinding.Get", "permission denied: kv read");
+    await page.getByLabel("Go to key").fill("goto/sealed");
+    await page.getByRole("button", { name: "Go", exact: true }).click();
+    await expect(page.getByText("permission denied: kv read")).toBeVisible();
+    await expect(page.getByText('Key "goto/sealed" does not exist.')).toHaveCount(0);
+  });
+
   test("keys only lists names through kv.list and fetches a value on open", async ({ page }) => {
     await navigateToKV(page);
     await createEntry(page, "ko/a", "value-a");
