@@ -449,10 +449,22 @@ func TestCIServerURLAbsentFromCI(t *testing.T) {
 // runs-on label and waiver category together (Tenant Agent ruling 1007).
 const runnerLabelsStep = "- name: Runner labels (ruling 633)\n"
 
+// runnerLabelsTestsStep runs the Python gate's own accepting and rejecting
+// cases before the gate, so CI goes red when the gate stops refusing
+// (go-qrdb #1642's Codex review).
+const runnerLabelsTestsStep = "- name: Runner labels tests (go-qrdb #1642)\n        run: python3 -I .github/workflows/testdata/runner-labels-tests.py\n"
+
 func TestCIRunnerLabelsStepPresent(t *testing.T) {
 	body := readCIBody(t)
 	if n := strings.Count(body, runnerLabelsStep); n != 1 {
 		t.Errorf("ci.yml has %d %q steps, want exactly one (ci-template v1.47, ruling 1007)", n, strings.TrimSpace(runnerLabelsStep))
+	}
+	tests := strings.Index(body, runnerLabelsTestsStep)
+	switch {
+	case tests < 0 || strings.Count(body, runnerLabelsTestsStep) != 1:
+		t.Errorf("ci.yml needs exactly one step %q that runs testdata/runner-labels-tests.py", runnerLabelsTestsStep)
+	case tests > strings.Index(body, runnerLabelsStep):
+		t.Error("ci.yml runs the Runner labels tests after the gate; they must run before it")
 	}
 	const review = `REVIEW = {"codex": "credential", "qwen": "hardware"}`
 	if !strings.Contains(body, review) {

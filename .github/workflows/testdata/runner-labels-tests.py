@@ -248,5 +248,15 @@ case("D10 a release job is the release rule's, not (c)'s",
      {"release.yml": wf("on:\n  push:\n    tags: ['v*']\n",
                         job(REL, "startsWith(github.ref, 'refs/tags/') && github.event_name == 'push'"))}, 0, [], ["(c)"])
 
+# E. unknown operands stay unknown (go-qrdb #1642's Codex review): `a || b`
+# returns a when a is truthy and `a && b` returns a when a is falsy, so an
+# unknown left operand leaves the result unknown whatever b holds.
+case("E1 an unknown OR left operand with a truthy right one is unknown: MODE=allow runs it on a PR",
+     {"ci.yml": wf(PR_ON, job(REL, "(vars.MODE || 'deny') == 'allow'"))}, 1,
+     [".github/workflows/ci.yml:pub: (a)"])
+case("E2 an unknown AND left operand with a falsy right one is unknown: MODE='' runs it on a PR",
+     {"ci.yml": wf(PR_ON, job(REL, "!contains(vars.MODE && false, 'false')"))}, 1,
+     [".github/workflows/ci.yml:pub: (a)"])
+
 print(f"{'ALL PASS' if not FAILS else f'{FAILS} FAILED'}")
 sys.exit(1 if FAILS else 0)

@@ -236,7 +236,9 @@ jobs:
       # review-only labels codex and qwen run only in code-review.yml, codex
       # with credential: and qwen with hardware:, and credential: is only for
       # codex; a waiver does not lift it (f).
-      # Its tests: testdata/runner-labels-tests.py.
+      # Its tests: testdata/runner-labels-tests.py, run by the step before it.
+      - name: Runner labels tests (go-qrdb #1642)
+        run: python3 -I .github/workflows/testdata/runner-labels-tests.py
       - name: Runner labels (ruling 633)
         run: |
           python3 -I - <<'PY'
@@ -365,7 +367,7 @@ jobs:
                       elif ta is False:
                           a = b
                       else:
-                          a = b if truthy(b) is True else U
+                          a = U  # a || b returns a when a is truthy: unknown a, unknown result
                   return a
 
               def andx(self):
@@ -379,7 +381,7 @@ jobs:
                       elif ta is True:
                           a = b
                       else:
-                          a = b if truthy(b) is False else U
+                          a = U  # a && b returns a when a is falsy: unknown a, unknown result
                   return a
 
               def cmp(self):
