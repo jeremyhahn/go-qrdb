@@ -275,7 +275,11 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		reason := poolReason(job.RunsOn.LineComment)
 		switch {
 		case pool && runsOn == hostedRunner:
-			// Rulings 833 and 834: the default.
+			// Rulings 833 and 834: the default. v1.48 (ruling 1024): a job
+			// that waits on preflight reads its runner selection instead.
+			if needsJob(job.Needs, "preflight") {
+				add("job " + name + " needs preflight but runs on the literal " + hostedRunner + "; it reads the runner selection, needs.preflight.outputs.runner or runner_docker (ruling 1024)")
+			}
 		case pool && (runsOn == bigdiskRunner || runsOn == dockerRunner) && reason == "":
 			add("job " + name + " runs on a self-hosted pool with no `# self-hosted: <reason>` on its runs-on line; every job that fits a standard runner runs on " + hostedRunner + " (rulings 833 and 834, which supersede ruling 617)")
 		case pool && runsOn == bigdiskRunner:
@@ -511,6 +515,39 @@ func TestCIRunners(t *testing.T) {
 	}
 }
 
+// TestCIJobsReadPreflightSelection: v1.48 (ruling 1024) on ci.yml. Every job
+// but preflight, which computes the selection, and signatures, which waits on
+// nothing, runs on a selectionRunners expression and needs preflight; a job
+// whose steps need Docker reads runner_docker (Codex review 6000705149).
+func TestCIJobsReadPreflightSelection(t *testing.T) {
+	files := workflowFiles(t)
+	var wf runnerWorkflow
+	if err := yaml.Unmarshal(files[poolWorkflow], &wf); err != nil {
+		t.Fatalf("parse %s: %v", poolWorkflow, err)
+	}
+	exempt := map[string]bool{"preflight": true, "signatures": true}
+	for name, job := range wf.Jobs {
+		runsOn := job.RunsOn.Value
+		if exempt[name] {
+			if runsOn != hostedRunner {
+				t.Errorf("job %s runs on %s, not the literal %s", name, nodeText(job.RunsOn), hostedRunner)
+			}
+			continue
+		}
+		pool := selectionRunners[runsOn]
+		if pool == "" {
+			t.Errorf("job %s runs on %s, not the preflight runner selection (ruling 1024)", name, nodeText(job.RunsOn))
+			continue
+		}
+		if !needsJob(job.Needs, "preflight") {
+			t.Errorf("job %s reads the runner selection but does not need preflight", name)
+		}
+		if len(dockerNeeds(job)) > 0 && pool != "bigdisk-docker" {
+			t.Errorf("job %s needs Docker but runs on %s, not needs.preflight.outputs.runner_docker", name, runsOn)
+		}
+	}
+}
+
 func TestCIRemovedScriptsStayRemoved(t *testing.T) {
 	for _, s := range removedScripts {
 		if _, err := os.Stat(filepath.Join(repoRoot(t), "scripts", s)); err == nil {
@@ -568,27 +605,28 @@ func TestRunnerProblems_CanFail(t *testing.T) {
 	cases := map[string]struct {
 		file, old, new, want string
 	}{
-		"a self-hosted label":           {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: bigdisk", "not the literal ubuntu-latest"},
-		"a runner list":                 {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: [self-hosted, linux]", "not the literal ubuntu-latest"},
-		"an expression":                 {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'batch' }}", "not the literal ubuntu-latest"},
-		"a job server_url split":        {hostedFile, "    timeout-minutes: 30\n", "    timeout-minutes: 30\n    if: github.server_url != 'https://github.com'\n", "splits on github.server_url"},
-		"a step server_url split":       {"nightly.yml", "      - run: make build", "      - if: github.server_url == 'https://github.com'\n        run: make build", "splits on github.server_url"},
-		"the registry credential":       {hostedFile, "make build", "make build RELEASE_REGISTRY=x", "RELEASE_REGISTRY"},
-		"the cache trim":                {hostedFile, "make build", "scripts/trim-ci-caches.sh 32", "trim-ci-caches"},
-		"a cache volume":                {hostedFile, "make build", "docker volume create qrdb-cache", "docker volume"},
-		"the schedule guard":            {hostedFile, "make build", "echo schedule-guard", "schedule-guard"},
-		"the reaper":                    {hostedFile, "make build", "scripts/reap-stale-ci-stacks.sh", "reap-stale-ci-stacks"},
-		"no timeout":                    {hostedFile, "    timeout-minutes: 30\n", "", "has no timeout-minutes"},
-		"a timeout over the ceiling":    {hostedFile, "timeout-minutes: 30", "timeout-minutes: 351", "not a number of minutes from 1 to 350"},
-		"a matrix leg over the ceiling": {hostedFile, "minutes: 350", "minutes: 360", "not a number of minutes from 1 to 350"},
-		"a matrix limit nothing sets":   {hostedFile, "timeout-minutes: ${{ matrix.minutes }}", "timeout-minutes: ${{ matrix.limit }}", "which no matrix entry sets"},
-		"a cache saved on every event":  {hostedFile, "${{ !cancelled() && env.CI_PUBLISH == 'true' }}", "${{ !cancelled() }}", "only a push to main saves one"},
-		"the combined cache action":     {hostedFile, "actions/cache/restore@", "actions/cache@", "combined actions/cache"},
-		"a publish flag on every push":  {hostedFile, "github.event_name == 'push' && github.ref == 'refs/heads/main'", "github.event_name == 'push'", "env.CI_PUBLISH is"},
-		"a written GOMAXPROCS":          {hostedFile, "make leg", "GOMAXPROCS=4 make leg", "GOMAXPROCS or -p count"},
-		"a written -p":                  {hostedFile, "make leg", "go test -p 4 ./...", "GOMAXPROCS or -p count"},
-		"a GOMAXPROCS step env":         {hostedFile, "      - run: make leg", "      - run: make leg\n        env:\n          GOMAXPROCS: \"8\"", "sets GOMAXPROCS in a step's env"},
-		"a self-hosted label in ci.yml": {poolWorkflow, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: [self-hosted, linux]", "neither ubuntu-latest nor"},
+		"a self-hosted label":                                {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: bigdisk", "not the literal ubuntu-latest"},
+		"a runner list":                                      {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: [self-hosted, linux]", "not the literal ubuntu-latest"},
+		"an expression":                                      {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'batch' }}", "not the literal ubuntu-latest"},
+		"a job server_url split":                             {hostedFile, "    timeout-minutes: 30\n", "    timeout-minutes: 30\n    if: github.server_url != 'https://github.com'\n", "splits on github.server_url"},
+		"a step server_url split":                            {"nightly.yml", "      - run: make build", "      - if: github.server_url == 'https://github.com'\n        run: make build", "splits on github.server_url"},
+		"the registry credential":                            {hostedFile, "make build", "make build RELEASE_REGISTRY=x", "RELEASE_REGISTRY"},
+		"the cache trim":                                     {hostedFile, "make build", "scripts/trim-ci-caches.sh 32", "trim-ci-caches"},
+		"a cache volume":                                     {hostedFile, "make build", "docker volume create qrdb-cache", "docker volume"},
+		"the schedule guard":                                 {hostedFile, "make build", "echo schedule-guard", "schedule-guard"},
+		"the reaper":                                         {hostedFile, "make build", "scripts/reap-stale-ci-stacks.sh", "reap-stale-ci-stacks"},
+		"no timeout":                                         {hostedFile, "    timeout-minutes: 30\n", "", "has no timeout-minutes"},
+		"a timeout over the ceiling":                         {hostedFile, "timeout-minutes: 30", "timeout-minutes: 351", "not a number of minutes from 1 to 350"},
+		"a matrix leg over the ceiling":                      {hostedFile, "minutes: 350", "minutes: 360", "not a number of minutes from 1 to 350"},
+		"a matrix limit nothing sets":                        {hostedFile, "timeout-minutes: ${{ matrix.minutes }}", "timeout-minutes: ${{ matrix.limit }}", "which no matrix entry sets"},
+		"a cache saved on every event":                       {hostedFile, "${{ !cancelled() && env.CI_PUBLISH == 'true' }}", "${{ !cancelled() }}", "only a push to main saves one"},
+		"the combined cache action":                          {hostedFile, "actions/cache/restore@", "actions/cache@", "combined actions/cache"},
+		"a publish flag on every push":                       {hostedFile, "github.event_name == 'push' && github.ref == 'refs/heads/main'", "github.event_name == 'push'", "env.CI_PUBLISH is"},
+		"a written GOMAXPROCS":                               {hostedFile, "make leg", "GOMAXPROCS=4 make leg", "GOMAXPROCS or -p count"},
+		"a written -p":                                       {hostedFile, "make leg", "go test -p 4 ./...", "GOMAXPROCS or -p count"},
+		"a GOMAXPROCS step env":                              {hostedFile, "      - run: make leg", "      - run: make leg\n        env:\n          GOMAXPROCS: \"8\"", "sets GOMAXPROCS in a step's env"},
+		"a ci.yml job on ubuntu-latest that needs preflight": {poolWorkflow, "  build:\n    runs-on: ubuntu-latest\n", "  build:\n    runs-on: ubuntu-latest\n    needs: preflight\n", "needs preflight but runs on the literal ubuntu-latest"},
+		"a self-hosted label in ci.yml":                      {poolWorkflow, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: [self-hosted, linux]", "neither ubuntu-latest nor"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

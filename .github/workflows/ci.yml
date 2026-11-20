@@ -26,19 +26,24 @@
 # v1.35.3's signatures.yml move are the full catch-up, still to come.
 # go-qrdb deviations from v1.35.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
-#   - every job runs on the standard GitHub-hosted ubuntu-latest runner,
-#     for every event (owner ruling 999, rulings 833 and 834); a job may name
-#     a pool expression only with a `# self-hosted: <reason>` comment naming
-#     the hardware it needs or the measured hosted limit (disk, memory, the
-#     6-hour job limit) it exceeds, and none does; larger hosted runners are
-#     not used; no LAN registry, cache volume, reaper or schedule guard
-#     remains
+#   - every job but preflight, which computes the runner selection, and
+#     signatures, which waits on no job, reads preflight's selection
+#     (fromJSON(needs.preflight.outputs.runner_docker) for a job that builds,
+#     loads or runs an image, fromJSON(needs.preflight.outputs.runner)
+#     otherwise); preflight and signatures run on the standard GitHub-hosted
+#     ubuntu-latest runner (owner ruling 999, rulings 833 and 834); a job may
+#     name a fixed pool expression only with a `# self-hosted: <reason>`
+#     comment naming the hardware it needs or the measured hosted limit (disk,
+#     memory, the 6-hour job limit) it exceeds, and none does; larger hosted
+#     runners are not used; no LAN registry, cache volume, reaper or schedule
+#     guard remains
 #   - v1.48 (ruling 1024 item 1): hosted stays the default, and preflight's
-#     `Hosted or overflow runner (ruling 1024)` step sends lint, lint-gates,
-#     image, the two integration jobs, soak and CI Gate to the Dells' bigdisk
-#     pools when the hosted pool is full; those jobs mask the LAN addresses
-#     (v1.44, scripts/ci-mask-lan.sh), the step has no off-github.com branch,
-#     and v1.45-v1.47 are not taken
+#     `Hosted or overflow runner (ruling 1024)` step sends every job that
+#     reads the selection to the Dells' bigdisk pools when the hosted pool is
+#     full; the Docker-free jobs run their targets natively there, the hosted
+#     disk-free and image steps stay on runner.environment == 'github-hosted',
+#     the jobs mask the LAN addresses (v1.44, scripts/ci-mask-lan.sh), the
+#     step has no off-github.com branch, and v1.45-v1.47 are not taken
 #   - no schedule guard, so preflight merges changes and arch-gates only
 #     (DS-7377)
 #   - pull_request lists `ready_for_review`, ci-template v1.35.3's trigger,
@@ -431,7 +436,7 @@ jobs:
   docker-build:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Devcontainer images
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48
     needs: [preflight]
     timeout-minutes: 90
     # CUSTOMIZE (go-qrdb): on a push to main this job alone pushes the images
@@ -1141,7 +1146,7 @@ jobs:
   # slowdown, the slowest fits the 180-minute limit.
   coverage:
     name: Unit [make coverage-leg ${{ matrix.leg }}]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 180
@@ -1277,7 +1282,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner) }}   # v1.48
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build, coverage]
     timeout-minutes: 30
@@ -1364,7 +1369,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner) }}   # v1.48
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 20
@@ -1444,7 +1449,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner) }}   # v1.48
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 20
@@ -1520,7 +1525,7 @@ jobs:
 
   test-tags:
     name: Unit [make test-tags]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 90
@@ -1624,7 +1629,7 @@ jobs:
   # TEST_SDK_LEGS or a leg's budget is not the limit less 5 minutes.
   test-sdk:
     name: Unit [make test-sdk-leg ${{ matrix.leg }}]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 150
@@ -1922,9 +1927,9 @@ jobs:
   # repository's cache storage is bounded.
   fips:
     name: FIPS 140-3 (${{ matrix.leg }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
-    needs: [docker-build]
+    needs: [preflight, docker-build]
     strategy:
       fail-fast: false
       # DS-7377: the legs measured 7 to 14.3 minutes (run 76127) on the
@@ -2107,7 +2112,7 @@ jobs:
   # (DS-3160). It needs docker-build only for the code-tier `if:` (v1.29.2).
   test-typescript:
     name: Test (TypeScript SDK + desktop frontend)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner) }}   # v1.48
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 30
