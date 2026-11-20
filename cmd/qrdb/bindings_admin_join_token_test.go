@@ -19,6 +19,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // activateTestConnection registers conn as the manager's active connection,
@@ -122,4 +124,61 @@ func TestAdminBinding_MintJoinToken_RemoteOnly(t *testing.T) {
 			t.Fatalf("admin service got node %q ttl %v; want node-4 90s", gotNode, gotTTL)
 		}
 	})
+}
+
+// TestConnectionManager_ActiveRemoteClient_ProfileSwitch flips the active
+// profile between an embedded and a remote connection while
+// ActiveRemoteClient runs: a successful lookup must always return the remote
+// connection's client, never the embedded one validated against the remote
+// profile.
+func TestConnectionManager_ActiveRemoteClient_ProfileSwitch(t *testing.T) {
+	m := NewConnectionManagerBinding(testLogger(t))
+	embeddedClient, remoteClient := new(sdk.Client), new(sdk.Client)
+	embedded := &managedConnection{
+		profile: ConnectionProfile{ID: "embedded"},
+		client:  embeddedClient,
+		server:  &EmbeddedServerBinding{},
+	}
+	remote := &managedConnection{
+		profile: ConnectionProfile{ID: "remote", External: &ConnectionConfig{}},
+		client:  remoteClient,
+	}
+	m.connections.Store(embedded.profile.ID, embedded)
+	m.connections.Store(remote.profile.ID, remote)
+	m.activeID.Store(embedded.profile.ID)
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if i%2 == 0 {
+				m.activeID.Store(remote.profile.ID)
+			} else {
+				m.activeID.Store(embedded.profile.ID)
+			}
+		}
+	}()
+	defer func() {
+		close(stop)
+		<-done
+	}()
+
+	for i := 0; i < 200_000; i++ {
+		cl, err := m.ActiveRemoteClient()
+		if err != nil {
+			if !errors.Is(err, ErrRemoteConnectionRequired) {
+				t.Fatalf("ActiveRemoteClient err = %v; want nil or ErrRemoteConnectionRequired", err)
+			}
+			continue
+		}
+		if cl != remoteClient {
+			t.Fatalf("iteration %d: ActiveRemoteClient returned the embedded client after validating the remote profile", i)
+		}
+	}
 }

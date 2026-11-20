@@ -455,16 +455,25 @@ func (b *ConnectionManagerBinding) ActiveClient() (*sdk.Client, error) {
 // verbs such as minting a cluster join token are refused there with
 // ErrRemoteConnectionRequired.
 func (b *ConnectionManagerBinding) ActiveRemoteClient() (*sdk.Client, error) {
-	cl, err := b.ActiveClient()
-	if err != nil {
-		return nil, err
+	// Load the active ID and its connection once, then validate and return
+	// that same object: a concurrent SetActive between two reads must not pair
+	// one profile's validation with another profile's client.
+	id := b.GetActiveProfileID()
+	if id == "" {
+		return nil, &NotConnectedError{}
 	}
-	v, _ := b.connections.Load(b.GetActiveProfileID())
+	v, ok := b.connections.Load(id)
+	if !ok {
+		return nil, &NotConnectedError{}
+	}
 	conn, _ := v.(*managedConnection)
-	if conn == nil || conn.server != nil || conn.profile.External == nil {
+	if conn == nil || conn.client == nil {
+		return nil, &NotConnectedError{}
+	}
+	if conn.server != nil || conn.profile.External == nil {
 		return nil, ErrRemoteConnectionRequired
 	}
-	return cl, nil
+	return conn.client, nil
 }
 
 // activeKeyFile returns the client key file the active external connection
