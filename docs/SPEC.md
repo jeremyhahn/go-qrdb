@@ -1,6 +1,6 @@
 # go-qrdb specification
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-20
 > Conflicts with this document are defects. Fix them here first.
 > **Rules of this file.** This project carries `docs/SPEC.md` (what it is, and every feature with its requirements and status) and [`ROADMAP.md`](../ROADMAP.md) (what is complete and what remains). The two agree. A feature listed here, in any status, is never deleted: not its docs, its code or its issues. Removing or re-scoping a feature needs the owner's change to this file. The feature folders `docs/<feature>/` stay the detail behind each row. The owner approves this file and ROADMAP.md before they merge.
 
