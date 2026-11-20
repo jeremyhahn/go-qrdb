@@ -839,6 +839,8 @@ func TestEmitPendingOnboardAudit_UncertainAppendWaitsForAppendOnce(t *testing.T)
 	deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
 	deps.TenantTrail = trail
 	svc := NewTenantOnboardingService(deps)
+	// The uncertain proposal was lost: it is settled the moment it fails.
+	svc.pendingAuditSettle = 0
 	pendingAudit := tenantadmin.NewAuditKVStore(identity)
 
 	record, err := json.Marshal(audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme", RequestID: "req-1", Timestamp: time.Unix(1700000000, 0).UTC()})
@@ -887,6 +889,8 @@ func TestEmitPendingOnboardAudit_OptInWrapperWaitsForAppendOnce(t *testing.T) {
 	deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
 	deps.TenantTrail = wrapped
 	svc := NewTenantOnboardingService(deps)
+	// The uncertain proposal was lost: it is settled the moment it fails.
+	svc.pendingAuditSettle = 0
 	pendingAudit := tenantadmin.NewAuditKVStore(identity)
 
 	record, err := json.Marshal(audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme", RequestID: "req-1", Timestamp: time.Unix(1700000000, 0).UTC()})
@@ -914,6 +918,140 @@ func TestEmitPendingOnboardAudit_OptInWrapperWaitsForAppendOnce(t *testing.T) {
 	}
 	if trail.emits != 2 {
 		t.Fatalf("wrapped trail saw %d emits, want 2", trail.emits)
+	}
+}
+
+// delayedTrail models a replicated trail whose first proposal times out but
+// stays in flight: it applies later, when applyDelayed runs. Each proposal
+// carries the append-once marker the group's gate decides at propose time
+// (ReplicatedLogger.Emit), and apply dedupes a marked event only against the
+// tokens earlier marked events recorded -- an unmarked event records none,
+// as audit.Chain.Append does.
+type delayedTrail struct {
+	*audit.RingBuffer
+	appendOnce bool
+	delayNext  bool
+	delayed    []audit.AuditEvent
+	tokens     map[string]bool
+	emits      int
+}
+
+func (d *delayedTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	d.emits++
+	ev.AppendOnce = d.appendOnce
+	if d.delayNext {
+		d.delayNext = false
+		d.delayed = append(d.delayed, ev)
+		return &ProposeError{Err: context.DeadlineExceeded}
+	}
+	return d.apply(ctx, ev)
+}
+
+func (d *delayedTrail) apply(ctx context.Context, ev audit.AuditEvent) error {
+	if ev.AppendOnce {
+		if d.tokens[ev.RequestID] {
+			return nil
+		}
+		d.tokens[ev.RequestID] = true
+	}
+	return d.RingBuffer.Emit(ctx, ev)
+}
+
+func (d *delayedTrail) applyDelayed(ctx context.Context, t *testing.T) {
+	t.Helper()
+	for _, ev := range d.delayed {
+		if err := d.apply(ctx, ev); err != nil {
+			t.Fatalf("apply delayed proposal: %v", err)
+		}
+	}
+	d.delayed = nil
+}
+
+func (d *delayedTrail) AppendOnceEnabled(context.Context, string) (bool, error) {
+	return d.appendOnce, nil
+}
+
+func (d *delayedTrail) onboardEntries(ctx context.Context, t *testing.T) int {
+	t.Helper()
+	page, err := d.Query(ctx, audit.Filter{TenantID: "acme", Action: ActionTenantOnboard, Limit: 100})
+	if err != nil {
+		t.Fatalf("trail Query: %v", err)
+	}
+	if page == nil {
+		return 0
+	}
+	return len(page.Events)
+}
+
+func newDelayedOnboarding(t *testing.T, appendOnce bool) (*TenantOnboardingService, *delayedTrail, tenantadmin.AuditStore) {
+	t.Helper()
+	identity := kvstore.NewMemoryKVStore()
+	trail := &delayedTrail{RingBuffer: audit.NewRingBuffer(32), appendOnce: appendOnce, delayNext: true, tokens: map[string]bool{}}
+	deps := newOnboardingDeps(t)
+	deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
+	deps.TenantTrail = trail
+	svc := NewTenantOnboardingService(deps)
+	pendingAudit := tenantadmin.NewAuditKVStore(identity)
+	record, err := json.Marshal(audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme", RequestID: "req-1", Timestamp: time.Unix(1700000000, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingAudit.Create(context.Background(), "acme", record); err != nil {
+		t.Fatalf("pending audit Create: %v", err)
+	}
+	return svc, trail, pendingAudit
+}
+
+// An uncertain first append proposed before audit-append-once activated is
+// unmarked: a marked retry cannot dedupe against it. The retry waits for the
+// unmarked proposal to settle, so when the delayed proposal applies, the
+// trail holds the onboarding event once.
+func TestEmitPendingOnboardAudit_UnmarkedUncertainSettlesBeforeRetry(t *testing.T) {
+	ctx := context.Background()
+	svc, trail, pendingAudit := newDelayedOnboarding(t, false)
+
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err == nil {
+		t.Fatal("first EmitPendingOnboardAudit: want the delayed proposal's error")
+	}
+	trail.appendOnce = true
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry after audit-append-once: %v", err)
+	}
+	trail.applyDelayed(ctx, t)
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry after the delayed proposal applied: %v", err)
+	}
+
+	if got := trail.onboardEntries(ctx, t); got != 1 {
+		t.Fatalf("trail holds %d onboarding entries, want 1", got)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left != nil {
+		t.Fatalf("pending record = %q, %v; want it settled and removed", left, err)
+	}
+}
+
+// An uncertain first append proposed with audit-append-once active is
+// marked: its retry goes ahead at once, and apply keeps one of the two.
+func TestEmitPendingOnboardAudit_MarkedUncertainRetriesAtOnce(t *testing.T) {
+	ctx := context.Background()
+	svc, trail, pendingAudit := newDelayedOnboarding(t, true)
+
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err == nil {
+		t.Fatal("first EmitPendingOnboardAudit: want the delayed proposal's error")
+	}
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if trail.emits != 2 {
+		t.Fatalf("trail saw %d emits, want 2 (the marked retry goes ahead)", trail.emits)
+	}
+	trail.applyDelayed(ctx, t)
+
+	if got := trail.onboardEntries(ctx, t); got != 1 {
+		t.Fatalf("trail holds %d onboarding entries, want 1", got)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left != nil {
+		t.Fatalf("pending record = %q, %v; want none", left, err)
 	}
 }
 
