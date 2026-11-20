@@ -993,6 +993,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             recordRevision(key, value);
           },
           Get: async (database: string, key: string) => {
+            // A held Get still reads the database it was sent to.
+            await maybeHold("KVBinding.Get");
             useDatabase(database);
             maybeReject("KVBinding.Get");
             const val = kvStore.get(key);

@@ -66,6 +66,7 @@
     RestoreRevisionRequest,
     RestoreRevisionResult,
   } from "@qrdb/sdk";
+  import { untrack } from "svelte";
   import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
   import { showToast } from "../../stores/toast.svelte.ts";
   import { withRetry } from "../../lib/retry.ts";
@@ -345,8 +346,37 @@
     }
   }
 
+  // The explorer stays mounted across database switches. Every per-key read
+  // captures the generation it started in; a database switch bumps it, so
+  // an answer from the previous database is dropped instead of being shown
+  // (or edited) against the new one.
+  let scopeGeneration = 0;
+
+  /** Reports whether a read started in generation gen is still current. */
+  function isCurrentScope(gen: number): boolean {
+    return gen === scopeGeneration;
+  }
+
+  /** Closes the selected entry and drops its metadata (a database switch). */
+  function resetSelection(): void {
+    scopeGeneration++;
+    selectedEntry = null;
+    entryMeta = null;
+    entryMetaError = "";
+    atRevisionInput = "";
+    atRevisionResult = null;
+    atRevisionError = "";
+    atRevisionBusy = false;
+    showCreatePanel = false;
+    editMode = false;
+    modalLeaseId = "";
+    modalLeaseUnknown = false;
+  }
+
   /** Opens the detail panel for entry and loads its MVCC metadata. */
   async function selectEntry(entry: KVEntry): Promise<void> {
+    const gen = scopeGeneration;
+    const metaClient = client;
     selectedEntry = entry;
     entryMeta = null;
     entryMetaError = "";
@@ -354,10 +384,10 @@
     atRevisionResult = null;
     atRevisionError = "";
     try {
-      const meta = await client.mvcc.getRevision(entry.key);
-      if (selectedEntry?.key === entry.key) entryMeta = meta;
+      const meta = await metaClient.mvcc.getRevision(entry.key);
+      if (isCurrentScope(gen) && selectedEntry?.key === entry.key) entryMeta = meta;
     } catch (err: unknown) {
-      if (selectedEntry?.key === entry.key) {
+      if (isCurrentScope(gen) && selectedEntry?.key === entry.key) {
         entryMetaError = err instanceof Error ? err.message : String(err);
       }
     }
@@ -365,10 +395,16 @@
 
   /** Opens key's panel, fetching its current value with kv.get. */
   async function openKey(key: string): Promise<void> {
+    const gen = scopeGeneration;
+    const readClient = client;
     try {
-      const value = await client.kv.get(key);
+      const value = await readClient.kv.get(key);
+      // The database changed while the read was in flight: its value
+      // belongs to the previous database and is discarded.
+      if (!isCurrentScope(gen)) return;
       await selectEntry({ key, value });
     } catch (err: unknown) {
+      if (!isCurrentScope(gen)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     }
   }
@@ -380,13 +416,17 @@
       showToast("warning", "Enter a key.");
       return;
     }
+    const gen = scopeGeneration;
+    const readClient = client;
     try {
-      const exists = await client.kv.exists(key);
+      const exists = await readClient.kv.exists(key);
+      if (!isCurrentScope(gen)) return;
       if (!exists) {
         showToast("warning", `Key "${key}" does not exist.`);
         return;
       }
     } catch (err: unknown) {
+      if (!isCurrentScope(gen)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
       return;
     }
@@ -409,16 +449,18 @@
       return;
     }
     const key = selectedEntry.key;
+    const gen = scopeGeneration;
+    const readClient = client;
     atRevisionBusy = true;
     try {
-      const kv = await client.mvcc.getAtRevision(key, revision);
-      if (selectedEntry?.key === key) atRevisionResult = kv;
+      const kv = await readClient.mvcc.getAtRevision(key, revision);
+      if (isCurrentScope(gen) && selectedEntry?.key === key) atRevisionResult = kv;
     } catch (err: unknown) {
-      if (selectedEntry?.key === key) {
+      if (isCurrentScope(gen) && selectedEntry?.key === key) {
         atRevisionError = err instanceof Error ? err.message : String(err);
       }
     } finally {
-      atRevisionBusy = false;
+      if (isCurrentScope(gen)) atRevisionBusy = false;
     }
   }
 
@@ -701,6 +743,15 @@
   // between databases) and on initial mount. Using $effect instead of onMount
   // ensures data is fetched even when the component stays mounted but receives
   // a new client prop after a database switch.
+  // A database switch (a new client or scope) closes the open entry and
+  // drops its metadata, and per-key reads still in flight are discarded
+  // (scopeGeneration). Runs before the reload below.
+  $effect.pre(() => {
+    void client;
+    void scope;
+    untrack(resetSelection);
+  });
+
   $effect(() => {
     void client;
     loadEntries();

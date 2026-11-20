@@ -316,4 +316,42 @@ test.describe("KV Explorer MVCC calls are scoped to the selected database", () =
     await page.locator("aside").getByText("kv-plain").click();
     await expect(page.getByTestId("kv-revisions-unavailable")).toBeVisible({ timeout: LOAD_TIMEOUT });
   });
+
+  test("a delayed key read from one database is discarded after a switch", async ({ page }) => {
+    const method = "KVBinding.Get";
+    await page.goto("/");
+    await page.locator("aside").getByText("kv-mvcc").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-mvcc", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await createEntry(page, "shared/key", "from-plain-b");
+    await page.locator("aside").getByText("kv-plain").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-plain", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await createEntry(page, "shared/key", "from-plain-a");
+
+    // A keys-only open in kv-plain: its kv.get is still in flight when the
+    // user switches to kv-mvcc.
+    await page.getByLabel("Keys only").check();
+    await expect(page.locator("table").getByText("shared/key")).toBeVisible();
+    await holdCall(page, method);
+    await page.locator("table").getByText("shared/key", { exact: true }).first().click();
+    await expect.poll(() => heldCallCount(page, method), { timeout: LOAD_TIMEOUT }).toBe(1);
+    await page.locator("aside").getByText("kv-mvcc").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-mvcc", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await holdCall(page, "MVCCBinding.GetRevision");
+    expect(await releaseCall(page, method)).toBe(1);
+    // Let the released read and any render it causes settle.
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+
+    // kv-plain's value never opens in kv-mvcc, and no metadata is fetched
+    // through kv-mvcc's client for it.
+    await expect(page.getByLabel("Details", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("from-plain-a")).toHaveCount(0);
+    expect(await releaseCall(page, "MVCCBinding.GetRevision")).toBe(0);
+    expect((await mvccCalls(page)).filter((c) => c.method === "GetRevision")).toEqual([]);
+  });
 });
