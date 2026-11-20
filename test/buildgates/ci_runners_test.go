@@ -103,6 +103,9 @@ var waiverCategories = []string{"hardware", "oversize"}
 // carries the Codex reviewer, qwen the opencode reviewer's model.
 var reviewRunnerLabels = map[string]string{"codex": reviewJob, "qwen": "review-opencode"}
 
+// releaseLabel is the release pool's runner label, which no job may name.
+const releaseLabel = "release"
+
 // hostWipeStep matches a step that frees a hosted runner's disk: a sudo rm
 // of the preinstalled SDKs, or a docker prune that would delete the images
 // other jobs on a shared self-hosted runner hold.
@@ -286,6 +289,11 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 // may: a label in reviewRunnerLabels serves only its one code-review.yml
 // job, whatever the waiver category (Tenant Agent ruling 1007).
 func reservedLabelProblem(workflow, job, label string) string {
+	if strings.EqualFold(label, releaseLabel) {
+		// This gate reads no if:, so it cannot tell a release job's guard from
+		// one a pull_request satisfies (github.event.ref is '' there, #1642).
+		return "the " + releaseLabel + " label is the release pool's, which no job here runs on; a waiver does not open it"
+	}
 	owner, ok := reviewRunnerLabels[label]
 	if !ok || (workflow == reviewWorkflow && job == owner) {
 		return ""
@@ -809,6 +817,30 @@ func TestReviewLabelsReserved(t *testing.T) {
 				t.Fatalf("want a problem naming the label reserved to its review job, got %v", problems)
 			case !c.fail && runsOn:
 				t.Fatalf("want no runs-on problem, got %v", problems)
+			}
+		})
+	}
+}
+
+// TestReleaseLabelRefused holds the release label shut whatever the waiver:
+// this gate reads no if:, so a waived release job guarded by
+// `github.event.ref == ”` would run on a pull_request, whose payload has no
+// top-level ref (#1642).
+func TestReleaseLabelRefused(t *testing.T) {
+	cases := []struct{ name, file, on, runsOn string }{
+		{"ci.yml, hardware waiver, empty event.ref guard", ciFile, "pull_request", "release  # self-hosted: hardware: a fixture reason"},
+		{"release.yml, oversize waiver, pull_request_target", hostedFile, "pull_request_target", "release  # self-hosted: oversize: a fixture reason"},
+		{"upper case on push", "nightly.yml", "push", "RELEASE  # self-hosted: hardware: a fixture reason"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := "on: " + c.on + "\njobs:\n  pub:\n    if: ${{ github.event.ref == '' }}\n    runs-on: " + c.runsOn + "\n    timeout-minutes: 30\n    steps:\n      - run: make build\n"
+			problems, jobs := runnerProblems(c.file, []byte(body))
+			if jobs != 1 {
+				t.Fatalf("the fixture parsed to %d jobs, want 1: %v", jobs, problems)
+			}
+			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "the "+releaseLabel+" label") }) {
+				t.Fatalf("want a problem refusing the %s label, got %v", releaseLabel, problems)
 			}
 		})
 	}

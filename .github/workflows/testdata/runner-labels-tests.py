@@ -160,6 +160,16 @@ case("B4 pull_request_target with a ref-only guard (its ref is the base branch)"
 case("B5 triggers in a flow mapping",
      {"ci.yml": wf("on: {push: {branches: [main]}, pull_request: {}}\n", job(REL, "github.ref == 'refs/heads/main'"))}, 1,
      ["ci.yml:pub: (b)"], ["(a)"])  # pull_request's ref is refs/pull/N/merge: only (b)
+# A pull_request(_target) payload has no top-level ref: GitHub reads github.event.ref as ''.
+case("B5a pull_request with an empty github.event.ref guard",
+     {"ci.yml": wf("on:\n  pull_request:\n", job(REL, "github.event.ref == ''"))}, 1,
+     ["ci.yml:pub: (a)"])
+case("B5b pull_request_target with an empty github.event.ref guard",
+     {"t.yml": wf("on:\n  pull_request_target:\n", job(REL, "github.event.ref == ''"))}, 1,
+     ["t.yml:pub: (a)"])
+case("A-event-ref push guarded by github.event.ref (the pushed ref)",
+     {"r.yml": wf("on:\n  push:\n    branches: [main]\n",
+                  job(REL, "github.event_name == 'push' && github.event.ref == 'refs/heads/main'"))}, 0)
 
 # C. fails (b)
 case("C1 ref check with no event check: schedule on main runs it; no PR trigger, so no (a)",

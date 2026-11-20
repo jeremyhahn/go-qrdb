@@ -268,7 +268,10 @@ jobs:
           def ctx_get(ev, ref, path):
               p = path.lower()
               name = ref.split("/", 2)[-1]
-              known = {"github.event_name": ev, "github.ref": ref, "github.event.ref": ref,
+              # github.event.ref is a payload field: push/create/delete carry the ref;
+              # other payloads (a pull_request has no top-level ref, read as '') stay unknown.
+              known = {"github.event_name": ev, "github.ref": ref,
+                       "github.event.ref": ref if ev in ("push", "create", "delete") else U,
                        "github.ref_name": name,
                        "github.ref_type": "tag" if ref.startswith("refs/tags/") else "branch",
                        "github.head_ref": "feature" if ev in PR else "",
