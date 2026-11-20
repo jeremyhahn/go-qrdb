@@ -57,7 +57,9 @@ func TestLayoutFlagFlipRefused(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "000002.log")
+			const logName = "000002.log"
+			dir := t.TempDir()
+			path := filepath.Join(dir, logName)
 			tc.write(path)
 			raw, err := os.ReadFile(path) // #nosec G304 -- path is under t.TempDir.
 			if err != nil {
@@ -67,9 +69,7 @@ func TestLayoutFlagFlipRefused(t *testing.T) {
 				t.Fatalf("flags byte already %#x", tc.flags)
 			}
 			raw[offFlags] = tc.flags
-			if err := os.WriteFile(path, raw, 0o600); err != nil {
-				t.Fatalf("WriteFile: %v", err)
-			}
+			writeInRoot(t, dir, logName, raw)
 			opens := map[string]func(string) (filesys.File, error){
 				"Open":          fs.Open,
 				"OpenReadWrite": fs.OpenReadWrite,

@@ -51,10 +51,9 @@ func TestFramed_SyncedLogTruncatedIntoHeaderRefused(t *testing.T) {
 		hdrSize := int(binary.LittleEndian.Uint16(img[offHeaderSize:]))
 		for _, cut := range []int{1, lenMagic, fixedHeaderSize - 1, fixedHeaderSize, offWrappedDEKLen + 4, hdrSize - 1} {
 			t.Run(fmt.Sprintf("%s/cut=%d", name, cut), func(t *testing.T) {
-				cutPath := filepath.Join(t.TempDir(), name)
-				if err := os.WriteFile(cutPath, img[:cut], 0o600); err != nil {
-					t.Fatalf("write truncated log: %v", err)
-				}
+				cutDir := t.TempDir()
+				cutPath := filepath.Join(cutDir, name)
+				writeInRoot(t, cutDir, name, img[:cut])
 				if r, err := fsys.Open(cutPath); !errors.Is(err, ErrTruncatedHeader) {
 					if r != nil {
 						_ = r.Close()
@@ -117,10 +116,9 @@ func TestFramed_SyncedLogTruncatedIntoCommitSlotsRefused(t *testing.T) {
 		}
 		for _, cut := range []int{hdrSize, hdrSize + 1, hdrSize + commitSlotSize - 1, hdrSize + commitSlotSize, start - 1} {
 			t.Run(fmt.Sprintf("%s/cut=%d", name, cut), func(t *testing.T) {
-				cutPath := filepath.Join(t.TempDir(), name)
-				if err := os.WriteFile(cutPath, img[:cut], 0o600); err != nil {
-					t.Fatalf("write truncated log: %v", err)
-				}
+				cutDir := t.TempDir()
+				cutPath := filepath.Join(cutDir, name)
+				writeInRoot(t, cutDir, name, img[:cut])
 				if r, err := fsys.Open(cutPath); !errors.Is(err, ErrTruncatedHeader) {
 					if r != nil {
 						_ = r.Close()
@@ -142,5 +140,19 @@ func TestFramed_SyncedLogTruncatedIntoCommitSlotsRefused(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// writeInRoot writes data to the file name inside dir through an os.Root, so
+// the write cannot leave dir.
+func writeInRoot(t *testing.T, dir, name string, data []byte) {
+	t.Helper()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := root.WriteFile(name, data, 0o600); err != nil {
+		t.Fatalf("write %s: %v", name, err)
 	}
 }
