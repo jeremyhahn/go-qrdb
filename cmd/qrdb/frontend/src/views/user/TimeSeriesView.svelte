@@ -576,14 +576,17 @@
       }
       const tsRaw = (parts[0] ?? "").trim();
       if (!/^\d+$/.test(tsRaw)) return `Line ${i + 1}: timestamp must be Unix nanoseconds.`;
-      // The binding sends a JavaScript number, exact only to 2^53: adjacent
-      // nanoseconds can round to one value and overwrite each other in
-      // storage. Reject any timestamp the conversion changes.
+      // The binding sends a JavaScript number as JSON, exact only to 2^53:
+      // adjacent nanoseconds can round to one value and overwrite each other
+      // in storage, and a value exact in binary (1700000000000000256) can
+      // still serialize to another decimal (1700000000000000300). Compare
+      // the decimal the wire carries with the input and reject any change.
       const exactNs = BigInt(tsRaw);
       if (exactNs > INT64_MAX) return `Line ${i + 1}: timestamp is out of range.`;
       const timestampNs = Number(tsRaw);
-      if (BigInt(timestampNs) !== exactNs) {
-        return `Line ${i + 1}: timestamp ${exactNs} cannot be represented exactly (nearest is ${BigInt(timestampNs)}).`;
+      const wireNs = JSON.stringify(timestampNs);
+      if (wireNs !== exactNs.toString()) {
+        return `Line ${i + 1}: timestamp ${exactNs} cannot be represented exactly (nearest is ${wireNs}).`;
       }
       // The whole field must be a finite number: parseFloat would take the
       // prefix of "12oops", and "1e309" overflows to Infinity, which JSON

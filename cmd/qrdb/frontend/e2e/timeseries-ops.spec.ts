@@ -146,6 +146,8 @@ async function injectStatefulTimeSeriesBinding(
         },
         WriteBatch: async (points: Req[]) => {
           maybeReject("WriteBatch");
+          // The raw request text, as the transport serializes it.
+          (w as unknown as { __TS_BATCH_WIRE__: string }).__TS_BATCH_WIRE__ = JSON.stringify(points);
           for (const p of points) tsPoints.push(toPoint(p));
         },
         WritePoint: async (point: Req) => {
@@ -436,6 +438,40 @@ test.describe("TimeSeries operations", () => {
       page.getByText("Line 2: timestamp 1700000000000000001 cannot be represented exactly (nearest is 1700000000000000000)."),
     ).toBeVisible();
     expect(await bindingCalls(page)).not.toContain("WriteBatch");
+  });
+
+  // 1700000000000000256 is exact as a binary double, but JSON writes its
+  // shortest decimal, 1700000000000000300: the server would store the point
+  // 44 ns late. The wire text, not the parsed-back number, must match.
+  test("batch write rejects a timestamp whose JSON decimal differs from the input", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+
+    await page.getByRole("button", { name: "Write", exact: true }).first().click();
+    await writePanel(page).getByTestId("ts-write-mode-batch").click();
+    await writePanel(page).locator("input[placeholder='cpu.usage']").fill("ops.wire");
+    await writePanel(page).getByTestId("ts-write-batch").fill("1700000000000000256,1");
+    await writePanel(page).getByRole("button", { name: "Write" }).click();
+    await expect(
+      page.getByText("Line 1: timestamp 1700000000000000256 cannot be represented exactly (nearest is 1700000000000000300)."),
+    ).toBeVisible();
+    expect(await bindingCalls(page)).not.toContain("WriteBatch");
+  });
+
+  test("batch write carries the input timestamp text unchanged on the wire", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+
+    await page.getByRole("button", { name: "Write", exact: true }).first().click();
+    await writePanel(page).getByTestId("ts-write-mode-batch").click();
+    await writePanel(page).locator("input[placeholder='cpu.usage']").fill("ops.wire");
+    await writePanel(page).getByTestId("ts-write-batch").fill("1700000000000000000,1");
+    await writePanel(page).getByRole("button", { name: "Write" }).click();
+    await expect.poll(() => bindingCalls(page)).toContain("WriteBatch");
+    const wire = await page.evaluate(
+      () => (window as unknown as { __TS_BATCH_WIRE__: string }).__TS_BATCH_WIRE__,
+    );
+    expect(wire).toMatch(/:1700000000000000000[,}]/);
   });
 
   test("aggregation menus offer only the functions the REST server accepts", async ({ page }) => {
