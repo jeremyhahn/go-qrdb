@@ -248,13 +248,21 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 		return nil, &SealBarrierError{Err: sentinelErr}
 	}
 
-	// Build credential service for ceremony support.
+	// Build credential service for ceremony support. It has no store yet:
+	// lifecycle.BuildServices binds the system shard's replicated KV once it
+	// exists, so every node keeps the same records (docs/credentials/
+	// architecture.md, "Storage"), and until then it fails closed.
 	credStrategy := f.sealConfig.CredentialStrategy
 	if credStrategy == "" {
 		credStrategy = "barrier"
 	}
 	credCoreSvc, credErr := credentials.NewCredentialService(
-		&credentials.Config{Strategy: credStrategy}, sealBarrier, slog.Default())
+		&credentials.Config{Strategy: credStrategy}, nil, slog.Default(),
+		credentials.WithLegacyStore(sealBarrier),
+		// The boot migration runs when BuildServices binds the replicated
+		// store, before runStart reaches its own SetAuditLogger: the trail
+		// is attached here so the migration's events are recorded.
+		credentials.WithAuditLogger(complianceAudit))
 	if credErr != nil {
 		_ = sealStore.Close()
 		return nil, &CredentialServiceError{Err: credErr}
@@ -495,6 +503,14 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 	}
 	if sealNode.Credential != nil {
 		serverOpts = append(serverOpts, server.WithCredentialService(sealNode.Credential))
+		// The sealed-window server runs the rotation scheduler too (it
+		// skips every pass while sealed), on the same configured period
+		// as the started node's server.
+		period, perr := f.sealConfig.CredentialRotationCheckPeriodDuration()
+		if perr != nil {
+			return nil, perr
+		}
+		serverOpts = append(serverOpts, server.WithCredentialRotationPeriod(period))
 	}
 	if sub.BarrierRegistry != nil {
 		serverOpts = append(serverOpts, server.WithBarrierRegistry(sub.BarrierRegistry))

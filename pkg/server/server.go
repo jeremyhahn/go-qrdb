@@ -205,6 +205,9 @@ type Server struct {
 	// retention_scheduler.go); nil when none is running.
 	retentionCancel context.CancelFunc
 
+	// credentialRotationCancel stops the credential rotation scheduler
+	// (see credential_rotation_scheduler.go); nil when none is running.
+	credentialRotationCancel context.CancelFunc
 	// pendingReaperCancel stops the pending-user reaper (see
 	// pending_user_reaper.go); nil when none is running.
 	pendingReaperCancel context.CancelFunc
@@ -308,6 +311,10 @@ type serverOptions struct {
 	// time-series metrics for expired points; zero keeps
 	// DefaultRetentionInterval. See WithRetentionInterval.
 	retentionInterval time.Duration
+	// credentialRotationPeriod is how often the credential rotation
+	// scheduler runs the due rotation policies; zero keeps
+	// credentials.DefaultRotationCheckPeriod.
+	credentialRotationPeriod time.Duration
 
 	// Pending-user reaper (WithPendingUserReaper). A negative interval
 	// disables it; ticks/now are test hooks.
@@ -1990,6 +1997,8 @@ func (s *Server) start() error {
 	// implicitly.
 	s.startRetentionScheduler()
 
+	// Named credentials whose rotation policy is due are rotated on it.
+	s.startCredentialRotationScheduler()
 	// Pending users past their TTL are deleted by the leader.
 	s.startPendingUserReaper()
 
@@ -2067,6 +2076,7 @@ func (s *Server) stopModules() {
 func (s *Server) Stop() {
 	s.stopCompactionScheduler()
 	s.stopRetentionScheduler()
+	s.stopCredentialRotationScheduler()
 	s.stopPendingUserReaper()
 	s.stopCollectionSweeper()
 	s.stopAllEtcd()
