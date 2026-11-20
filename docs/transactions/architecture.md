@@ -67,7 +67,7 @@ Raft commit ordering.
 | Transaction and batch semantics | `pkg/service` | go-qrdb |
 | Compare evaluation against MVCC state (`sm_type: mvcc`) | `pkg/mvcc`, `pkg/engine` | go-qrdb |
 | Compare evaluation against a state machine's own keyspace (every other `sm_type`) | `pkg/store` (`pebble`), `pkg/statemachine` (`native_txn.go`) | go-qrdb |
-| Import parsing (CSV/JSON/NDJSON/YAML/archive) | `pkg/service` (`BatchService.ImportCommit`), `pkg/codec` | go-qrdb, decoding via **go-codec** |
+| Import parsing (CSV/JSON/NDJSON/YAML/archive) | `pkg/service` (`BatchService.ImportCommit`, format detection in `batch_detect.go`) | go-qrdb, decoding via **go-codec** |
 | Import session staging (reserved, lease-bound raw keyspace, every `sm_type`) | `pkg/importstage`, `pkg/service` (`BatchService.Import{Begin,Append,Commit,Abort}`), `pkg/engine` (`mvcc_import_stage.go`), `pkg/statemachine` (`kv_import_stage.go`) | go-qrdb |
 | Session lease (TTL, cascade expiry on abandonment) | `pkg/lease` | go-qrdb |
 | Single-proposal atomicity | — | **go-quicraft** |
