@@ -186,6 +186,13 @@ func ClearPendingSystemSOIfEnrolled(ctx context.Context, store PendingAdminCertS
 		!slices.Contains(account.RoleIDs, role.SystemRoleID(tenantID, role.RoleNameSO)) {
 		return false, nil
 	}
+	// Enrollment activates the account last, after its PIN and binding: a
+	// bound account still pending stopped before activation (a failure, or
+	// a leadership change), and only a boot that still holds this record
+	// finishes it.
+	if account.Lifecycle == user.LifecyclePending {
+		return false, nil
+	}
 	committed, err := pins.SOPINCommitted(ctx, tenantID)
 	if err != nil {
 		return false, err

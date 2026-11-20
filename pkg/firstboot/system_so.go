@@ -267,24 +267,85 @@ func implementsUserUpdater(users UserCreator) bool {
 
 // grantAdminSORole adds soRoleID to the bootstrap admin's account, the
 // standard-posture enrollment of the admin as the system SO.
-func grantAdminSORole(ctx context.Context, deps Dependencies, admin *user.User, soRoleID string) (*user.User, error) {
+func grantAdminSORole(ctx context.Context, deps Dependencies, admin *user.User, soRoleID string) (*user.User, bool, error) {
 	updater, ok := deps.Users.(userUpdater)
 	if !ok {
-		return nil, &MissingSOSeamError{Seam: "Dependencies.Users implementing UpdateUser to grant the bootstrap admin the SO role"}
+		return nil, false, &MissingSOSeamError{Seam: "Dependencies.Users implementing UpdateUser to grant the bootstrap admin the SO role"}
 	}
-	roleIDs := append(slices.Clone(admin.RoleIDs), soRoleID)
-	updated, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: admin.ID, RoleIDs: roleIDs})
-	if err != nil {
-		return nil, &SystemSOEnrollmentError{Op: "account", Cause: err}
+	// The replacement RoleIDs are computed from current and bound to it by
+	// a guard: a role assigned or revoked since current was read refuses
+	// the write, and the grant is recomputed from the record as it now is
+	// rather than restoring what the snapshot held.
+	current := admin
+	var deadline time.Time
+	for {
+		if slices.Contains(current.RoleIDs, soRoleID) {
+			// A peer converging on the same first boot granted it: the
+			// grant is not this run's to take back.
+			return current, false, nil
+		}
+		roleIDs := append(slices.Clone(current.RoleIDs), soRoleID)
+		updated, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{
+			ID: admin.ID, RoleIDs: roleIDs, Guard: snapshotRolesGuard(current.RoleIDs),
+		})
+		if err == nil {
+			if updated == nil {
+				return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: errors.New("the user surface granted the SO role without returning the account")}
+			}
+			deps.Logger.Info("first-boot: bootstrap admin enrolled as the system SO",
+				slog.String("tenant", admin.TenantID),
+				slog.Uint64("user_id", admin.ID),
+			)
+			return updated, true, nil
+		}
+		var lost *user.ConcurrentUpdateError
+		users := userResolver(deps)
+		if !errors.As(err, &lost) || users == nil {
+			return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: err}
+		}
+		if deadline.IsZero() {
+			deadline = time.Now().Add(adminConvergeWindow)
+		}
+		if !time.Now().Before(deadline) {
+			return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: err}
+		}
+		fresh, rerr := users.GetUserByUsername(ctx, admin.TenantID, admin.Username)
+		if rerr != nil || fresh == nil || fresh.ID != admin.ID {
+			return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: errors.Join(err, errors.New("the bootstrap admin could not be re-read"), rerr)}
+		}
+		current = fresh
+		select {
+		case <-ctx.Done():
+			return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: ctx.Err()}
+		case <-time.After(adminConvergeInterval):
+		}
 	}
-	if updated == nil {
-		return nil, &SystemSOEnrollmentError{Op: "account", Cause: errors.New("the user surface granted the SO role without returning the account")}
+}
+
+// snapshotRolesGuard binds a RoleIDs replacement to the snapshot it was
+// computed from. A write committed since that snapshot was read refuses the
+// update as a ConcurrentUpdateError, which the caller answers by re-reading
+// and recomputing, never by overwriting the newer record.
+func snapshotRolesGuard(snapshot []string) user.UpdateGuard {
+	snapshot = slices.Clone(snapshot)
+	return func(prior, _ *user.User) error {
+		if !slices.Equal(prior.RoleIDs, snapshot) {
+			return &user.ConcurrentUpdateError{ID: prior.ID}
+		}
+		return nil
 	}
-	deps.Logger.Info("first-boot: bootstrap admin enrolled as the system SO",
-		slog.String("tenant", admin.TenantID),
-		slog.Uint64("user_id", admin.ID),
-	)
-	return updated, nil
+}
+
+// snapshotAttributesGuard is snapshotRolesGuard for an Attributes
+// replacement.
+func snapshotAttributesGuard(snapshot map[string]string) user.UpdateGuard {
+	snapshot = maps.Clone(snapshot)
+	return func(prior, _ *user.User) error {
+		if !maps.Equal(prior.Attributes, snapshot) {
+			return &user.ConcurrentUpdateError{ID: prior.ID}
+		}
+		return nil
+	}
 }
 
 func implementsPINRecordSetter(pins SOPINSetter) bool {
@@ -417,11 +478,11 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 		if !grantRole {
 			return nil
 		}
-		updated, gerr := grantAdminSORole(ctx, deps, soUser, soRoleID)
+		updated, ours, gerr := grantAdminSORole(ctx, deps, soUser, soRoleID)
 		if gerr != nil {
 			return gerr
 		}
-		soUser, granted = updated, true
+		soUser, granted = updated, ours
 		return nil
 	}
 	defer func() {
@@ -529,7 +590,7 @@ func revokeAdminSORole(ctx context.Context, deps Dependencies, admin *user.User,
 			return nil
 		}
 		roleIDs := slices.DeleteFunc(slices.Clone(current.RoleIDs), func(id string) bool { return id == soRoleID })
-		_, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: admin.ID, RoleIDs: roleIDs})
+		_, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: admin.ID, RoleIDs: roleIDs, Guard: snapshotRolesGuard(current.RoleIDs)})
 		if err == nil {
 			deps.Logger.Warn("first-boot: the system SO enrolment failed; the SO role granted to the bootstrap admin was taken back",
 				slog.String("tenant", admin.TenantID), slog.Uint64("user_id", admin.ID))
@@ -624,9 +685,10 @@ func recordSOBoundKey(ctx context.Context, deps Dependencies, soUser *user.User,
 	}
 	// Every node of a cluster converges on the same system SO record at
 	// first boot, so a peer's binding or record can commit between
-	// UpdateUser's read and its write. That lost race is a
-	// ConcurrentUpdateError whose remedy is to re-read and retry; it is
-	// not a failed enrollment.
+	// UpdateUser's read and its write, or before UpdateUser reads at all.
+	// The replacement is bound by a guard to the snapshot it was computed
+	// from, so either lost race is a ConcurrentUpdateError whose remedy is
+	// to re-read and retry; it is not a failed enrollment.
 	var deadline time.Time
 	for {
 		attrs := maps.Clone(soUser.Attributes)
@@ -634,7 +696,9 @@ func recordSOBoundKey(ctx context.Context, deps Dependencies, soUser *user.User,
 			attrs = map[string]string{}
 		}
 		attrs[soBoundKeyAttribute] = thumbprint
-		_, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: soUser.ID, Attributes: attrs})
+		_, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{
+			ID: soUser.ID, Attributes: attrs, Guard: snapshotAttributesGuard(soUser.Attributes),
+		})
 		if err == nil {
 			return nil
 		}

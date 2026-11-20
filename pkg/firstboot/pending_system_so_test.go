@@ -604,6 +604,34 @@ func restartWithRetainedSO(t *testing.T, h *soHarness, store *memPendingAdminCer
 	return result
 }
 
+// A run whose enrolment bound the SO's PIN and certificate but stopped before
+// activateSystemSO -- the activation failed, or leadership moved -- leaves a
+// bound account still LifecyclePending. That is not an enrolled SO: the
+// background cleanup must keep the pending record, so the next boot finishes
+// the activation.
+func TestClearPendingSystemSOIfEnrolled_KeepsTheRecordUntilTheSOIsActivated(t *testing.T) {
+	ctx := context.Background()
+	h, store, username := retainedSOHarness(t)
+	pins, ok := h.deps.SOPINs.(SOPINChecker)
+	require.True(t, ok)
+	account := h.users.byName[username]
+	require.NotEmpty(t, account.CertBindings, "the enrolment bound the SO")
+	account.Lifecycle = user.LifecyclePending // activateSystemSO did not commit
+
+	cleared, err := ClearPendingSystemSOIfEnrolled(ctx, store, h.users, pins)
+	require.NoError(t, err)
+	assert.False(t, cleared, "a bound but unactivated SO is not enrolled")
+	assert.False(t, SystemSOConsumed(ctx, store))
+
+	restartWithRetainedSO(t, h, store)
+	assert.Equal(t, user.LifecycleActive, h.users.byName[username].Lifecycle, "the next boot finishes the activation")
+
+	cleared, err = ClearPendingSystemSOIfEnrolled(ctx, store, h.users, pins)
+	require.NoError(t, err)
+	assert.True(t, cleared)
+	assert.True(t, SystemSOConsumed(ctx, store))
+}
+
 // TestInitialize_DeletedPendingSOIsNotRecreatedFromItsRetainedRecord (PR
 // #1579 review round 2, P1): the SO was enrolled, its pending record was
 // never consumed, and the SO was deleted since. The next start must not
