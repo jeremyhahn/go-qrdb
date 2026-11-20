@@ -21,10 +21,6 @@ import (
 	vectorStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
 
-// commandMetadataFormat is the metadata format version this node writes on
-// the vector commands it proposes.
-const commandMetadataFormat = vectorStorage.MetadataFormatJSON
-
 // upsertCreatedData is the result data of an upsert apply that created the
 // vector; an upsert that replaced one returns no data.
 var upsertCreatedData = []byte{1}
@@ -49,10 +45,10 @@ func vectorNotFound(err error) bool {
 	return errors.Is(err, vectorStorage.ErrVectorNotFound)
 }
 
-// commandMetadata returns the stored form of a command's metadata in the
+// CommandMetadata returns the stored form of a command's metadata in the
 // command's format: canonical JSON for MetadataFormatJSON, and for a command
 // without a format version the verbatim %v strings it always stored.
-func commandMetadata(format uint8, m map[string]interface{}) map[string]string {
+func CommandMetadata(format uint8, m map[string]interface{}) map[string]string {
 	out := make(map[string]string, len(m))
 	for k, val := range m {
 		if format == vectorStorage.MetadataFormatJSON {
@@ -85,7 +81,7 @@ func mergeCommandMetadata(existing map[string]string, existingFormat, cmdFormat 
 			out[k] = val
 		}
 	}
-	for k, val := range commandMetadata(format, m) {
+	for k, val := range CommandMetadata(format, m) {
 		out[k] = val
 	}
 	return out, format

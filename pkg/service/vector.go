@@ -35,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	api "github.com/jeremyhahn/go-qrdb/pkg/api"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
@@ -1400,8 +1401,9 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 	now := time.Now().UnixNano()
 
+	format := v.metadataFormat()
 	if v.raftNode != nil {
-		cmd := statemachine.NewUpsertCommand(scoped, req.ID, req.Vector, req.Metadata, v.nodeID)
+		cmd := statemachine.NewUpsertCommand(scoped, req.ID, req.Vector, req.Metadata, format, v.nodeID)
 		var applied sm.Result
 		if err := v.proposeToRaftResult(ctx, cmd, &applied); err != nil {
 			if v.metrics != nil {
@@ -1448,12 +1450,12 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 	vecValue := &vector.VectorValue{
 		ID:        req.ID,
 		Embedding: req.Vector,
-		Metadata:  convertToStringMap(req.Metadata),
+		Metadata:  convertToStringMap(format, req.Metadata),
 		CreatedAt: now,
 		UpdatedAt: now,
 		Version:   1,
 
-		MetadataFormat: vector.MetadataFormatJSON,
+		MetadataFormat: format,
 	}
 
 	// The existence read and the write are one step under writeMu, so of
@@ -1668,6 +1670,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 // BatchUpsert inserts or updates multiple vectors atomically.
 func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest) (*BatchUpsertResponse, error) {
 	start := time.Now()
+	format := v.metadataFormat()
 	defer func() {
 		if v.metrics != nil {
 			v.metrics.operationDuration.With("batch_upsert").Observe(time.Since(start).Seconds())
@@ -1733,7 +1736,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 			batchVectors[i] = vec.Vector
 		}
 
-		cmd := statemachine.NewBatchUpsertCommand(scoped, batchIDs, batchVectors, v.nodeID)
+		cmd := statemachine.NewBatchUpsertCommand(scoped, batchIDs, batchVectors, format, v.nodeID)
 		if err := v.proposeToRaft(ctx, cmd); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("batch_upsert", "raft_error").Inc()
@@ -1783,12 +1786,12 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		vecs[i] = &vector.VectorValue{
 			ID:        vec.ID,
 			Embedding: vec.Vector,
-			Metadata:  convertToStringMap(vec.Metadata),
+			Metadata:  convertToStringMap(format, vec.Metadata),
 			CreatedAt: now,
 			UpdatedAt: now,
 			Version:   1,
 
-			MetadataFormat: vector.MetadataFormatJSON,
+			MetadataFormat: format,
 		}
 	}
 
@@ -2769,10 +2772,28 @@ func (v *vectorService) validateGetIndexStatsRequest(req *GetIndexStatsRequest) 
 // Helper Functions
 // =============================================================================
 
-// convertToStringMap returns the JSON-format stored form of vector metadata;
-// the record carries vector.MetadataFormatJSON.
-func convertToStringMap(m map[string]interface{}) map[string]string {
-	return vector.EncodeMetadata(m)
+// convertToStringMap returns the stored form of vector metadata in format:
+// canonical JSON for vector.MetadataFormatJSON, else the verbatim %v strings
+// of a legacy record. The record carries the same format.
+func convertToStringMap(format uint8, m map[string]interface{}) map[string]string {
+	if format == vector.MetadataFormatJSON || m == nil {
+		return vector.EncodeMetadata(m)
+	}
+	return statemachine.CommandMetadata(format, m)
+}
+
+// metadataFormat returns the metadata format this service writes: JSON once
+// featuregate.VectorMetadataJSON is active for the shard's group (or when no
+// feature gates apply), else the legacy format every replica can apply.
+func (v *vectorService) metadataFormat() uint8 {
+	gates := v.featureGates
+	if gates == nil {
+		gates, _ = v.raftNode.(FeatureGatedHost)
+	}
+	if gates == nil || gates.FeatureEnabled(v.shardID, featuregate.VectorMetadataJSON) {
+		return vector.MetadataFormatJSON
+	}
+	return vector.MetadataFormatLegacy
 }
 
 // namespaceMetadataStrings returns namespace metadata as the plain strings a

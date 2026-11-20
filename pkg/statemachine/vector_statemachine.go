@@ -788,7 +788,7 @@ func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorComm
 		MetadataFormat: cmd.MetadataFormat,
 	}
 	if cmd.Metadata != nil {
-		vecValue.Metadata = commandMetadata(cmd.MetadataFormat, cmd.Metadata)
+		vecValue.Metadata = CommandMetadata(cmd.MetadataFormat, cmd.Metadata)
 	}
 
 	// Commands apply one at a time, so this existence read and the write
@@ -1000,7 +1000,7 @@ func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *Vecto
 
 		// Add metadata if provided
 		if cmd.BatchMeta != nil && i < len(cmd.BatchMeta) {
-			vecs[i].Metadata = commandMetadata(cmd.MetadataFormat, cmd.BatchMeta[i])
+			vecs[i].Metadata = CommandMetadata(cmd.MetadataFormat, cmd.BatchMeta[i])
 			vecs[i].MetadataFormat = cmd.MetadataFormat
 		}
 

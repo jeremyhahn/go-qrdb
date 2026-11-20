@@ -459,7 +459,7 @@ func TestConvertToStringMap(t *testing.T) {
 	}
 
 	t.Run("JSON-format command stores canonical JSON", func(t *testing.T) {
-		result := commandMetadata(vector.MetadataFormatJSON, input)
+		result := CommandMetadata(vector.MetadataFormatJSON, input)
 		require.Len(t, result, len(input))
 		assert.Equal(t, `"hello"`, result["string"])
 		decoded := vector.DecodeMetadata(vector.MetadataFormatJSON, result)
@@ -470,13 +470,13 @@ func TestConvertToStringMap(t *testing.T) {
 	})
 
 	t.Run("command without a format version stores the base's verbatim strings", func(t *testing.T) {
-		result := commandMetadata(vector.MetadataFormatLegacy, input)
+		result := CommandMetadata(vector.MetadataFormatLegacy, input)
 		assert.Equal(t, map[string]string{"string": "hello", "int": "42", "bool": "true", "ctl": "\x01true"}, result)
 		assert.Equal(t, "\x01true", vector.DecodeMetadata(vector.MetadataFormatLegacy, result)["ctl"])
 	})
 
 	t.Run("empty map returns empty map", func(t *testing.T) {
-		result := commandMetadata(vector.MetadataFormatJSON, map[string]interface{}{})
+		result := CommandMetadata(vector.MetadataFormatJSON, map[string]interface{}{})
 		assert.NotNil(t, result)
 		assert.Len(t, result, 0)
 	})
@@ -549,7 +549,7 @@ func TestVectorStateMachine_UpsertMetadataFormatAndCreated(t *testing.T) {
 	assert.Equal(t, map[string]string{"n": "5", "ctl": "\x01true"}, stored.Metadata)
 	assert.Equal(t, map[string]interface{}{"n": "5", "ctl": "\x01true"}, convertFromStringMap(stored))
 
-	typed := NewUpsertCommand("test_ns", 1, []float32{0, 1, 0, 0}, meta, "n1")
+	typed := NewUpsertCommand("test_ns", 1, []float32{0, 1, 0, 0}, meta, vector.MetadataFormatJSON, "n1")
 	assert.False(t, UpsertCreated(apply(2, typed).Data), "upsert of an existing ID must not report created")
 	stored, err = adapter.VectorStorage().GetVector(context.Background(), "test_ns", 1)
 	require.NoError(t, err)

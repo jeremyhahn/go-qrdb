@@ -450,7 +450,7 @@ func (v *VectorConsensusFSM) applyUpsertVector(ctx context.Context, cmd *VectorC
 		vec := &vectorStorage.VectorValue{
 			ID:        cmd.ID,
 			Embedding: cmd.Vector,
-			Metadata:  commandMetadata(cmd.MetadataFormat, cmd.Metadata),
+			Metadata:  CommandMetadata(cmd.MetadataFormat, cmd.Metadata),
 			CreatedAt: now,
 			UpdatedAt: now,
 			Version:   1,

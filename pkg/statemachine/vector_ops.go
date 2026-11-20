@@ -380,11 +380,12 @@ func (cmd *VectorCommand) Size() int {
 	return size
 }
 
-// NewUpsertCommand creates a new upsert vector command.
-func NewUpsertCommand(namespace string, id uint64, vector []float32, metadata map[string]interface{}, nodeID string) *VectorCommand {
+// NewUpsertCommand creates a new upsert vector command whose metadata is
+// stored in format (see VectorCommand.MetadataFormat).
+func NewUpsertCommand(namespace string, id uint64, vector []float32, metadata map[string]interface{}, format uint8, nodeID string) *VectorCommand {
 	return &VectorCommand{
 		Op:             OpUpsertVector,
-		MetadataFormat: commandMetadataFormat,
+		MetadataFormat: format,
 		Namespace:      namespace,
 		ID:             id,
 		Vector:         vector,
@@ -405,11 +406,12 @@ func NewDeleteCommand(namespace string, id uint64, nodeID string) *VectorCommand
 	}
 }
 
-// NewUpdateMetadataCommand creates a new update metadata command.
-func NewUpdateMetadataCommand(namespace string, id uint64, metadata map[string]interface{}, merge bool, nodeID string) *VectorCommand {
+// NewUpdateMetadataCommand creates a new update metadata command whose
+// metadata is stored in format (see VectorCommand.MetadataFormat).
+func NewUpdateMetadataCommand(namespace string, id uint64, metadata map[string]interface{}, merge bool, format uint8, nodeID string) *VectorCommand {
 	return &VectorCommand{
 		Op:             OpUpdateMetadata,
-		MetadataFormat: commandMetadataFormat,
+		MetadataFormat: format,
 		Namespace:      namespace,
 		ID:             id,
 		Metadata:       metadata,
@@ -419,11 +421,12 @@ func NewUpdateMetadataCommand(namespace string, id uint64, metadata map[string]i
 	}
 }
 
-// NewBatchUpsertCommand creates a new batch upsert command.
-func NewBatchUpsertCommand(namespace string, ids []uint64, vectors [][]float32, nodeID string) *VectorCommand {
+// NewBatchUpsertCommand creates a new batch upsert command whose metadata is
+// stored in format (see VectorCommand.MetadataFormat).
+func NewBatchUpsertCommand(namespace string, ids []uint64, vectors [][]float32, format uint8, nodeID string) *VectorCommand {
 	return &VectorCommand{
 		Op:             OpBatchUpsert,
-		MetadataFormat: commandMetadataFormat,
+		MetadataFormat: format,
 		Namespace:      namespace,
 		IDs:            ids,
 		Vectors:        vectors,

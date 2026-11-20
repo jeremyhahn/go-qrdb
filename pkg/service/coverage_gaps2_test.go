@@ -101,7 +101,7 @@ func TestTenantRequiredError_Error(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestConvertToStringMap_Nil(t *testing.T) {
-	if convertToStringMap(nil) != nil {
+	if convertToStringMap(vector.MetadataFormatJSON, nil) != nil {
 		t.Fatal("expected nil for nil input")
 	}
 }
@@ -112,7 +112,7 @@ func TestConvertToStringMap_Values(t *testing.T) {
 		"key2": 42,
 		"key3": true,
 	}
-	result := convertToStringMap(m)
+	result := convertToStringMap(vector.MetadataFormatJSON, m)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}

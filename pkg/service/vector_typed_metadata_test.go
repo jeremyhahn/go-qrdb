@@ -21,6 +21,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
 
@@ -231,6 +233,57 @@ func TestSearchByMetadata_EmptyFiltersListLegacyAndJSON(t *testing.T) {
 		if !reflect.DeepEqual(ids, tc.want) {
 			t.Fatalf("SearchByMetadata(limit %d, offset %d) IDs = %v, want %v", tc.limit, tc.offset, ids, tc.want)
 		}
+	}
+}
+
+// TestUpsert_MetadataFormatFollowsTheFeatureGate checks that upserts and
+// batch upserts store legacy-format metadata until
+// featuregate.VectorMetadataJSON is active for the group, and JSON after.
+func TestUpsert_MetadataFormatFollowsTheFeatureGate(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		active bool
+		format uint8
+		stored string
+	}{
+		{"gated off", false, vector.MetadataFormatLegacy, "news"},
+		{"gated on", true, vector.MetadataFormatJSON, `"news"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := vector.NewMemoryVectorStorage()
+			gates := &gatedRaftNode{enabled: map[feature.Feature]bool{featuregate.VectorMetadataJSON: tc.active}}
+			svc, err := NewVectorService(store, newVecTestLogger(), WithFeatureGates(gates))
+			if err != nil {
+				t.Fatalf("NewVectorService: %v", err)
+			}
+			ctx := context.Background()
+			if _, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
+				Namespace: "typed", Dimension: 2, DistanceMetric: "COSINE", IndexType: "HNSW",
+			}); err != nil {
+				t.Fatalf("CreateNamespace: %v", err)
+			}
+			meta := map[string]interface{}{"topic": "news"}
+			if _, err := svc.UpsertVector(ctx, &UpsertVectorRequest{
+				Namespace: "typed", ID: 1, Vector: []float32{1, 0}, Metadata: meta,
+			}); err != nil {
+				t.Fatalf("UpsertVector: %v", err)
+			}
+			if _, err := svc.BatchUpsert(ctx, &BatchUpsertRequest{
+				Namespace: "typed", Vectors: []*VectorData{{ID: 2, Vector: []float32{0, 1}, Metadata: meta}},
+			}); err != nil {
+				t.Fatalf("BatchUpsert: %v", err)
+			}
+			for _, id := range []uint64{1, 2} {
+				rec, err := store.GetVector(ctx, scopedFromContext(ctx, "typed"), id)
+				if err != nil {
+					t.Fatalf("GetVector %d: %v", id, err)
+				}
+				if rec.MetadataFormat != tc.format || rec.Metadata["topic"] != tc.stored {
+					t.Fatalf("record %d: format %d topic %q, want format %d topic %q",
+						id, rec.MetadataFormat, rec.Metadata["topic"], tc.format, tc.stored)
+				}
+			}
+		})
 	}
 }
 
