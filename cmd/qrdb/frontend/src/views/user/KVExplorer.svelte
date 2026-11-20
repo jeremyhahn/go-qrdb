@@ -15,34 +15,6 @@
   limitations under the License.
 -->
 <script lang="ts" module>
-  /**
-   * Databases whose store answered 501 to GET /kv/revision (no revisions).
-   * Kept in sessionStorage so a reload of the tab does not ask again.
-   */
-  const NO_REVISION_KEY = "qrdb.noRevisionDatabases";
-
-  function loadNoRevisionDatabases(): Set<string> {
-    try {
-      const raw = globalThis.sessionStorage?.getItem(NO_REVISION_KEY);
-      const parsed: unknown = raw ? JSON.parse(raw) : [];
-      return new Set(Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : []);
-    } catch {
-      return new Set();
-    }
-  }
-
-  const noRevisionDatabases = loadNoRevisionDatabases();
-
-  /** Remembers that database's store keeps no revisions. */
-  function rememberNoRevisions(database: string): void {
-    noRevisionDatabases.add(database);
-    try {
-      globalThis.sessionStorage?.setItem(NO_REVISION_KEY, JSON.stringify([...noRevisionDatabases]));
-    } catch {
-      // Storage unavailable: the in-memory set still covers this page load.
-    }
-  }
-
   /** Reports whether err is the server's 501 Not Implemented answer. */
   function isNotImplemented(err: unknown): boolean {
     if (typeof err !== "object" || err === null) return false;
@@ -56,6 +28,7 @@
 <script lang="ts">
   import type {
     Client,
+    DatabaseInfo,
     MVCCKeyValue,
     RestoreRevisionRequest,
     RestoreRevisionResult,
@@ -64,6 +37,11 @@
   import { showToast } from "../../stores/toast.svelte.ts";
   import { withRetry } from "../../lib/retry.ts";
   import { rangeBoundsForPrefix } from "../../lib/kvRange.ts";
+  import {
+    revisionSupportCache,
+    revisionSupportFingerprint,
+    type RevisionSupportScope,
+  } from "../../lib/revisionSupportCache.ts";
   import PageHeader from "../../components/PageHeader.svelte";
   import ConfirmModal from "../../components/ConfirmModal.svelte";
   import { CrudTable } from "../../components/core/CrudTable";
@@ -80,14 +58,34 @@
     RotateCcw,
   } from "lucide-svelte";
 
-  let { client, database = "" }: { client: Client; database?: string } = $props();
+  let {
+    client,
+    database = "",
+    profileId = "",
+    databaseInfo,
+  }: {
+    client: Client;
+    database?: string;
+    /** Connection profile the database belongs to (navStore.context.profileId). */
+    profileId?: string;
+    /** The database's record; its tenant and store identity key the revision cache. */
+    databaseInfo?: DatabaseInfo;
+  } = $props();
+
+  // The revision-support cache entry for this database on this connection.
+  const revisionScope: RevisionSupportScope = $derived({
+    profileId,
+    tenant: databaseInfo?.tenantId ?? "",
+    database,
+  });
+  const revisionFingerprint: string = $derived(revisionSupportFingerprint(databaseInfo ?? {}));
 
   // Set once the database's store answered 501 to the revision probe.
-  // Bumped when a probe adds the database to noRevisionDatabases, so the
-  // derived flag re-reads the (non-reactive) set.
+  // Bumped when a probe records the database in revisionSupportCache, so the
+  // derived flag re-reads the (non-reactive) cache.
   let revisionSupportVersion: number = $state(0);
   const revisionsUnsupported: boolean = $derived(
-    revisionSupportVersion >= 0 && noRevisionDatabases.has(database),
+    revisionSupportVersion >= 0 && revisionSupportCache.isUnsupported(revisionScope, revisionFingerprint),
   );
 
   // ---------------------------------------------------------------------------
@@ -276,7 +274,7 @@
     } catch (err: unknown) {
       currentRevision = null;
       if (isNotImplemented(err)) {
-        rememberNoRevisions(database);
+        revisionSupportCache.rememberUnsupported(revisionScope, revisionFingerprint);
         revisionSupportVersion++;
       }
     }
