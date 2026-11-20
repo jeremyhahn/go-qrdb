@@ -99,3 +99,43 @@ func TestCIImagePrune_RemovesExpiredLANRegistryImages(t *testing.T) {
 		t.Fatalf("after prune the daemon holds\n%s\nwant only the foreign image\n%s\nprune said:\n%s", got, want, out)
 	}
 }
+
+// TestCIImagePrune_RegistryCacheTags pins that a registry-cache tag left by
+// scripts/image-registry.sh ci_registry_push (<registry>/qrdb-toolchain:<hash>,
+// <registry>/qrdb-ci-it:<hash>) counts as a CI tag (#1596): an expired image
+// carrying it beside its local CI tag is pruned, and one carrying it beside a
+// foreign tag is kept.
+func TestCIImagePrune_RegistryCacheTags(t *testing.T) {
+	const registry = "registry.example:5000"
+	cachedID := "sha256:" + strings.Repeat("d", 64)
+	mixedID := "sha256:" + strings.Repeat("e", 64)
+	kept := mixedID + " " + registry + "/qrdb-ci-it:fedcba9876543210\n" +
+		mixedID + " debian:12"
+	images := cachedID + " qrdb-toolchain:0123456789abcdef\n" +
+		cachedID + " " + registry + "/qrdb-toolchain:0123456789abcdef\n" +
+		kept + "\n"
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(pruneStubDocker), 0o700); err != nil { // #nosec G306 -- the stub must be executable
+		t.Fatal(err)
+	}
+	state := filepath.Join(dir, "images")
+	if err := os.WriteFile(state, []byte(images), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(repoRoot(t), "scripts", "ci-image.sh")
+	cmd := exec.Command("bash", script, "prune", "24") // #nosec G204 -- the repository's own script
+	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"STUB_DIR="+dir, "CI_IMAGE_LOCK="+filepath.Join(dir, "image.lock"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prune failed: %v\n%s", err, out)
+	}
+	raw, err := os.ReadFile(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(raw)); got != kept {
+		t.Fatalf("after prune the daemon holds\n%s\nwant only the image with a foreign tag\n%s\nprune said:\n%s", got, kept, out)
+	}
+}

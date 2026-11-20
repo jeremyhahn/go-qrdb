@@ -277,11 +277,22 @@ push() {
 # go-qrdb-toolchain or go-qrdb-ci-it tag, or a pool job's pull from the LAN
 # CI registry ($CI_REGISTRY/go-qrdb/toolchain-image or .../it-image, under
 # whatever registry CI_REGISTRY names), which stays beside the local
-# content-hash tag the job adds.
+# content-hash tag the job adds, or a registry-cache tag the pull-or-build
+# path leaves (<registry host[:port]>/qrdb-toolchain or .../qrdb-ci-it).
 ci_ref() {
-	case ${1%:*} in
+	local repo=${1%:*} host
+	case $repo in
 	qrdb-toolchain | qrdb-ci-it | */go-qrdb-toolchain | */go-qrdb-ci-it) return 0 ;;
 	*/go-qrdb/toolchain-image | */go-qrdb/it-image) return 0 ;;
+	esac
+	# A registry-cache tag (scripts/image-registry.sh ci_registry_push) is
+	# the local name under a registry host[:port]/ prefix: the first path
+	# component names a host when it holds a dot or a port, or is localhost.
+	case $repo in */*) ;; *) return 1 ;; esac
+	host=${repo%%/*}
+	case $host in *.* | *:* | localhost) ;; *) return 1 ;; esac
+	case ${repo#*/} in
+	qrdb-toolchain | qrdb-ci-it) return 0 ;;
 	esac
 	return 1
 }
