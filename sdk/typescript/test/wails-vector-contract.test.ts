@@ -90,9 +90,9 @@ describe('WailsClient vector wire shapes', () => {
         const resp = await new WailsClient().vector!.batchUpsert({
             namespace: 'ns',
             vectors: [
-                { id: '1', vector: [0.1] },
-                { id: '2', vector: [0.2] },
-                { id: '3', vector: [0.3] },
+                { id: '1', vector: [0.1], version: 0, createdAt: 0, updatedAt: 0 },
+                { id: '2', vector: [0.2], version: 0, createdAt: 0, updatedAt: 0 },
+                { id: '3', vector: [0.3], version: 0, createdAt: 0, updatedAt: 0 },
             ],
         });
 
@@ -138,9 +138,12 @@ describe('WailsClient vector wire shapes', () => {
         });
 
         const vector = new WailsClient().databaseScoped('x').vector!;
-        await vector.hybridSearch({ namespace: 'ns', vector: [0.1], k: 1 });
+        await vector.hybridSearch({ namespace: 'ns', vector: [0.1], metadataFilters: {}, k: 1 });
         await vector.getVector({ namespace: 'ns', id: '1' });
-        await vector.batchUpsert({ namespace: 'ns', vectors: [{ id: '1', vector: [0.1] }] });
+        await vector.batchUpsert({
+            namespace: 'ns',
+            vectors: [{ id: '1', vector: [0.1], version: 0, createdAt: 0, updatedAt: 0 }],
+        });
         await vector.batchDeleteVectors({ namespace: 'ns', ids: ['1'] });
 
         expect(calls.map((c) => c.method)).toEqual([
