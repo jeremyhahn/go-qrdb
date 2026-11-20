@@ -428,6 +428,9 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		return nil, err
 	}
 	meta.OwnerNode = m.ownerFor(cfg, shared)
+	// The record is written provisional: no opener on any node serves it
+	// until the create guard below accepts it and it is promoted.
+	meta.Provisional = true
 	if err := cat.Create(ctx, meta); err != nil {
 		// A write that may have committed is settled first: rolling back
 		// around a record it left would orphan the name. A record that

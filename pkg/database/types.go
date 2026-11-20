@@ -731,6 +731,15 @@ type DatabaseMeta struct {
 	// Dropping is false.
 	DropClaim string `json:"drop_claim,omitempty"`
 
+	// Provisional is true from the moment Manager.Create writes this
+	// record until the create's guard (WithCreateGuard) accepts it. A
+	// provisional record is not a database yet: every opener on every node
+	// refuses it (*NotFoundError) and the raft resolver does not resolve
+	// it, so nothing can write to a database the guard may still refuse.
+	// A refused create whose cleanup could not remove the record leaves it
+	// provisional, never serving.
+	Provisional bool `json:"provisional,omitempty"`
+
 	// ID is the database's opaque, never-reused id (NewDatabaseID),
 	// allocated when the database is created and fixed for its life. The
 	// catalog record is the one place that maps the name to it: every
