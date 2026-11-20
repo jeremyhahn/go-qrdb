@@ -961,6 +961,13 @@
       showToast("warning", "Namespace and vector ID are required.");
       return;
     }
+    // updateMetadata replaces the stored metadata: only an editor seeded by
+    // a successful getVector of this target may write it. The list row's
+    // metadata is not authoritative (the list omits it by default).
+    if (detailLoading || detailVector === null) {
+      showToast("error", "The vector could not be read; reopen it before saving metadata.");
+      return;
+    }
     const metadata = parseJsonObjectStrict(detailMetadata, "Metadata");
     if (metadata === null) return;
     detailLoading = true;
@@ -1529,7 +1536,8 @@
             <button
               class="btn btn-primary btn-sm mt-2"
               onclick={handleSaveMetadata}
-              disabled={detailLoading}
+              disabled={detailLoading || detailVector === null}
+              data-testid="vector-detail-save-metadata"
             >
               Save metadata
             </button>

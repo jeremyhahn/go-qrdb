@@ -161,7 +161,13 @@ async function injectStatefulVectorBinding(
             s.releaseGetVector = { ...(s.releaseGetVector ?? {}), [r.id]: resolve };
           });
         }
-        return { ...lookup(r.namespace, r.id) };
+        // Like the Go service, the binding returns the values and the
+        // metadata only when the request asks for them.
+        const q = req as { include_vector?: boolean; include_metadata?: boolean };
+        const out: Record<string, unknown> = { ...lookup(r.namespace, r.id) };
+        if (q.include_vector !== true) delete out.vector;
+        if (q.include_metadata !== true) delete out.metadata;
+        return out;
       },
 
       DeleteVector: async (req: unknown) => {
@@ -220,6 +226,8 @@ async function injectStatefulVectorBinding(
       },
 
       UpdateMetadata: async (req: unknown) => {
+        const st = w.__QRDB_MOCK_STATE__ as { updateMetadataCalls?: number };
+        st.updateMetadataCalls = (st.updateMetadataCalls ?? 0) + 1;
         maybeReject("VectorBinding.UpdateMetadata");
         const r = req as { namespace: string; id: string; metadata: Record<string, unknown> };
         const vec = lookup(r.namespace, r.id);
@@ -542,5 +550,34 @@ test.describe("Vector View - advanced operations", () => {
       timeout: 5_000,
     });
     await expect(detail.getByTestId("vector-detail-version")).toHaveCount(0);
+  });
+
+  test("the detail editor is seeded with the stored values and metadata", async ({ page }) => {
+    await upsertVector(page, "v1", "0.1, 0.2, 0.3", '{"color":"red"}');
+    await page.getByText("v1", { exact: true }).first().click();
+    const detail = page.getByLabel("Vector Details");
+    await expect(detail.getByTestId("vector-detail-version")).toBeVisible({ timeout: 5_000 });
+    await expect(detail.getByText("0.1, 0.2, 0.3")).toBeVisible();
+    await expect(detail.getByTestId("vector-detail-metadata-input")).toHaveValue(/"color": "red"/);
+  });
+
+  test("a failed getVector blocks saving metadata", async ({ page }) => {
+    await upsertVector(page, "v1", "0.1, 0.2, 0.3", '{"keep":true}');
+    await injectError(page, "VectorBinding.GetVector", "vector store unavailable");
+    await page.getByText("v1", { exact: true }).first().click();
+    const detail = page.getByLabel("Vector Details");
+    await expect(detail.getByTestId("vector-detail-error")).toContainText("vector store unavailable", {
+      timeout: 5_000,
+    });
+    const save = detail.getByTestId("vector-detail-save-metadata");
+    await expect(save).toBeDisabled();
+    await save.click({ force: true });
+    const calls = await page.evaluate(() => {
+      const s = (window as unknown as Record<string, unknown>).__QRDB_MOCK_STATE__ as {
+        updateMetadataCalls?: number;
+      };
+      return s.updateMetadataCalls ?? 0;
+    });
+    expect(calls).toBe(0);
   });
 });

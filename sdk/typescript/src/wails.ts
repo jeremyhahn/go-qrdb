@@ -961,7 +961,13 @@ export class WailsClient implements Client {
                 return b.UpsertVector(toSnake({ ...req, id: vectorIDToWire(req.id) })) as Promise<UpsertVectorResponse>;
             },
             getVector: async (req: GetVectorRequest): Promise<VectorData> => {
-                const vec = await b.GetVector(toSnake({ ...req, id: vectorIDToWire(req.id) })) as VectorData;
+                // The Go request defaults both include flags to false, which
+                // omits the values and the metadata; a vector read is whole.
+                const vec = await b.GetVector({
+                    ...toSnake({ ...req, id: vectorIDToWire(req.id) }),
+                    include_vector: true,
+                    include_metadata: true,
+                }) as VectorData;
                 return normalizeVectorIDField(vec);
             },
             deleteVector: async (req: DeleteVectorRequest): Promise<void> => {

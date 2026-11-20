@@ -61,6 +61,23 @@ describe('WailsClient vector wire shapes', () => {
         expect(resp.results).toHaveLength(1);
     });
 
+    it('getVector asks the binding for the vector values and the metadata', async () => {
+        // The Go GetVectorRequest defaults include_vector and
+        // include_metadata to false, which omits both from the answer; the
+        // detail editor would then show no values and save {} over the
+        // stored metadata.
+        const spy = vi.fn<BindingFn>(async () => ({ id: 12, vector: [0.5], metadata: { k: 'v' } }));
+        installVectorBinding({ GetVector: spy });
+
+        const vec = await new WailsClient().vector!.getVector({ namespace: 'ns', id: '12' });
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        const sent = spy.mock.calls[0]![0] as Record<string, unknown>;
+        expect(sent).toMatchObject({ namespace: 'ns', include_vector: true, include_metadata: true });
+        expect(vec.vector).toEqual([0.5]);
+        expect(vec.metadata).toEqual({ k: 'v' });
+    });
+
     it('batchUpsert maps inserted_count to succeeded and failed', async () => {
         installVectorBinding({
             BatchUpsert: vi.fn<BindingFn>(async () => ({
