@@ -71,14 +71,10 @@ func (fs *FS) Create(name string) (filesys.File, error) {
 // seal-on-sync layout for an append-and-sync file (isAppendLogName), the
 // fixed-size block layout, which keeps ReadAt arithmetic, for every other.
 func (fs *FS) newFileHeader(name string) (*header, error) {
-	h, err := newHeader(fs.barrier)
-	if err != nil {
-		return nil, err
-	}
 	if isAppendLogName(name) {
-		h.Flags |= headerFlagFramed
+		return newFramedHeader(fs.barrier)
 	}
-	return h, nil
+	return newHeader(fs.barrier)
 }
 
 // isAppendLogName reports whether name is an append-and-sync file: a Pebble
@@ -233,12 +229,7 @@ func (fs *FS) tornFramedHeader(base filesys.File, physicalSize int64) (*header, 
 
 // freshFramedHeader is the header of a new append log (WAL or MANIFEST).
 func (fs *FS) freshFramedHeader() (*header, error) {
-	h, err := newHeader(fs.barrier)
-	if err != nil {
-		return nil, err
-	}
-	h.Flags |= headerFlagFramed
-	return h, nil
+	return newFramedHeader(fs.barrier)
 }
 
 // emptyFramedRO opens, read-only and empty, an append log torn inside its
