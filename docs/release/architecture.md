@@ -219,12 +219,12 @@ progress, so adding `ci:full` starts nothing by
 itself: it takes effect on the PR's next push, an update-branch, or a
 `workflow_dispatch`.
 
-ci.yml's jobs run on the self-hosted pools for a push to `main` and a
-same-repository pull request (CA ruling 617): a job that needs Docker on
-`bigdisk-docker`, a Docker-free job on `bigdisk`. A fork's pull request, a
-schedule and a dispatch run them, and every other workflow but code review
-(which keeps its self-hosted review host) runs, on a GitHub-hosted
-`ubuntu-latest` runner (DS-7377): 4 vCPU, 16 GB of memory, about 14 GB of
+Every workflow's jobs but code review's (which keep their self-hosted review
+hosts) run, for every event, on a standard GitHub-hosted `ubuntu-latest`
+runner (owner ruling 999; rulings 833 and 834). A job may run self-hosted
+only with a `# self-hosted: <reason>` comment on its `runs-on` line naming
+the hardware it needs or the measured hosted limit it exceeds, and no ci.yml
+job does; larger hosted runners are not used. The runner (DS-7377): 4 vCPU, 16 GB of memory, about 14 GB of
 free disk and a 6-hour job limit, a fresh machine per job with no state from
 the last. Every job's limit is at most 350 minutes,
 under the runner's 360, and is planned at four times the job's time measured
