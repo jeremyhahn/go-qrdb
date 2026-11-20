@@ -359,9 +359,9 @@ async function provisionTenantUser(
 function writeConfig(path: string, opts: StartDaemonOptions): void {
   const lines = ['codec:', '  storage_codec: "json"', '  wire_codec: "json"', "auth:", "  enabled: false", "seal:"];
   if (opts.seal === "none") {
-    // auth.enabled requires seal.enabled, so a seal-off daemon runs auth-off.
+    // auth.enabled requires seal.enabled, so a seal-off daemon runs auth-off;
+    // the auth-off block is already in the initial lines.
     lines.push("  enabled: false");
-    lines.push("auth:", "  enabled: false");
   } else if (opts.seal === "none-committed") {
     lines.push("  enabled: true", '  strategy: "none"');
   } else {
