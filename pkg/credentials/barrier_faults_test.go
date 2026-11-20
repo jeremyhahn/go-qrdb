@@ -297,7 +297,9 @@ func TestBarrierFault_DeleteFailures(t *testing.T) {
 		suffix string
 		op     string
 	}{
-		{name: "version", suffix: versionKey("k", 1), op: "delete v1"},
+		// Every record goes in one batch: a failed version delete
+		// fails the batch.
+		{name: "version", suffix: versionKey("k", 1), op: "delete current"},
 		{name: "current", suffix: credentialPrefix + "k", op: "delete current"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

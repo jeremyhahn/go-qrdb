@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -30,7 +33,7 @@ func loseEveryCAS(b *faultBackend, suffix string) {
 	arm(&b.loseCAS, suffix)
 }
 
-func TestDeleteBarrierHead_Faults(t *testing.T) {
+func TestDeleteBarrierAll_Faults(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name  string
@@ -47,7 +50,7 @@ func TestDeleteBarrierHead_Faults(t *testing.T) {
 			seedGraceVersion(t, svc, "k")
 			tc.fault(backend)
 
-			err := svc.deleteBarrierHead(ctx, "k")
+			err := svc.deleteBarrierAll(ctx, "k")
 			requireOperationError(t, err, tc.op)
 			assert.ErrorIs(t, err, tc.cause)
 
@@ -59,13 +62,46 @@ func TestDeleteBarrierHead_Faults(t *testing.T) {
 	}
 }
 
-func TestDeleteBarrierHead_EmptyValueDeleted(t *testing.T) {
+func TestDeleteBarrierAll_EmptyValueDeleted(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newFaultBarrierService(t)
 	require.NoError(t, svc.store.Put(ctx, credentialPrefix+"e", []byte{}))
 
-	require.NoError(t, svc.deleteBarrierHead(ctx, "e"))
+	require.NoError(t, svc.deleteBarrierAll(ctx, "e"))
 	assert.False(t, keyExists(t, svc, credentialPrefix+"e"))
+}
+
+// TestDeleteCredential_RotationBetweenSelectionAndDelete: a scheduled
+// rotation retaining versions lands between the delete's selection and its
+// commit. The delete selects again and removes the retained value with the
+// rest: no version or staged record outlives the metadata that names it.
+func TestDeleteCredential_RotationBetweenSelectionAndDelete(t *testing.T) {
+	ctx := t.Context()
+	svc, backend := newFaultRotationService(t)
+	setFaultPolicy(t, svc, "k", 3)
+	injected := false
+	backend.onBatch = func(writes []kvstore.KV) {
+		if injected {
+			return
+		}
+		for _, w := range writes {
+			if w.Delete && strings.HasSuffix(w.Key, metaKey("k")) {
+				injected = true
+				n, err := svc.RotateDue(ctx, rotationEpoch.Add(time.Hour))
+				require.NoError(t, err)
+				require.Equal(t, 1, n)
+				return
+			}
+		}
+	}
+
+	require.NoError(t, svc.DeleteCredential(ctx, "k"))
+	require.True(t, injected, "the rotation was not injected")
+	for _, prefix := range []string{VersionKeyPrefix, StagedKeyPrefix, MetaKeyPrefix, credentialPrefix + "k"} {
+		keys, err := svc.store.List(ctx, prefix)
+		require.NoError(t, err)
+		assert.Empty(t, keys, "records under %q outlived the delete", prefix)
+	}
 }
 
 func TestDeleteBarrierStaged_ListFailureAndForeignKeys(t *testing.T) {

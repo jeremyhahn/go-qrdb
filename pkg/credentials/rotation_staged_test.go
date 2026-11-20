@@ -306,8 +306,13 @@ func TestDeleteCredential_RemovesAStagedValue(t *testing.T) {
 	backend.failCAS.Store(nil)
 
 	arm(&backend.failDelete, stagedKey("k", next))
-	requireOperationError(t, svc.DeleteCredential(t.Context(), "k"), "delete staged rotation")
+	// The staged value goes in the delete's one batch: its failure
+	// deletes nothing.
+	requireOperationError(t, svc.DeleteCredential(t.Context(), "k"), "delete current")
 	backend.failDelete.Store(nil)
+	if _, err := svc.store.Get(t.Context(), metaKey("k")); err != nil {
+		t.Fatalf("metadata after the failed delete: %v; want it kept", err)
+	}
 	if err := svc.DeleteCredential(t.Context(), "k"); err != nil {
 		t.Fatalf("DeleteCredential: %v", err)
 	}
