@@ -2,9 +2,10 @@ package main
 
 import (
 	"errors"
-	"slices"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/semver"
 )
 
 // forkLatest stands in for the latest version of a replace onto a different
@@ -76,7 +77,7 @@ func assess(dep dependency, mod listedModule, listed bool, firstParty string, no
 		return f
 	}
 	f.Latest = latestVersion(dep, mod, strings.HasPrefix(dep.Path, firstParty))
-	f.Behind = isBehind(dep.Version, f.Latest, mod.Versions)
+	f.Behind = isBehind(dep.Version, f.Latest)
 	if f.Behind && mod.Update != nil && mod.Update.Version == f.Latest {
 		f.Released = mod.Update.Time
 		f.Fresh = isFresh(f.Released, now)
@@ -135,20 +136,18 @@ func latestVersion(dep dependency, mod listedModule, firstParty bool) string {
 	return dep.Version
 }
 
-// isBehind compares positions in the go command's semantic-version ordering
-// of the published versions. A current version that is not a published tag
-// (a pseudo-version) is behind any tag the latest names; a latest that is
-// not in the list came from Update, which the go command reports only when
-// it is newer.
-func isBehind(current, latest string, versions []string) bool {
+// isBehind orders current and latest semantically, so a pseudo-version
+// (absent from the published tag list) built on a commit past the latest tag
+// is not behind it. A latest that is not a semantic version is the fork
+// marker, which is always behind.
+func isBehind(current, latest string) bool {
 	if latest == current {
 		return false
 	}
-	at := slices.Index(versions, latest)
-	if at < 0 {
+	if !semver.IsValid(latest) {
 		return true
 	}
-	return slices.Index(versions, current) < at
+	return semver.Compare(current, latest) < 0
 }
 
 func releasesOnly(versions []string) []string {
