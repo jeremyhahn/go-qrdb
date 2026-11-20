@@ -54,7 +54,6 @@ type encryptedFile struct {
 	physEnd     int64      // framed layout: physical offset the next frame is written at
 	commitSeq   int64      // framed layout: seq of the newest commit slot
 	durable     int64      // framed layout: frames the newest commit slot records as synced
-	freshSlots  bool       // framed layout: Create crashed before its commit slots were on disk
 }
 
 // frameRef locates one frame of a framed file.
@@ -144,18 +143,18 @@ func newReadFile(base filesys.File, h *header, physicalSize int64, appendLog boo
 func (f *encryptedFile) scanFrames(physicalSize int64) error {
 	start := f.headerSize
 	f.physEnd = start
+	if physicalSize < start {
+		// The stamped magic proves Create synced the header with both
+		// commit slots (a crash inside Create leaves the pending marker,
+		// which tornFramedHeader recovers), so a file that ends inside
+		// the slots lost acknowledged bytes: refuse it, never open empty.
+		return fmt.Errorf("%w: framed log ends at %d inside its commit slots (data starts at %d)", ErrTruncatedHeader, physicalSize, start)
+	}
 	rec, ok, err := f.readCommit(physicalSize)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		if physicalSize <= start {
-			// Create syncs the header with its commit slots before it
-			// returns, so slots that are not both on disk mean a crash
-			// inside Create: no frame was ever written.
-			f.freshSlots = true
-			return nil
-		}
 		return fmt.Errorf("%w: framed log has no authentic commit slot", ErrAuthFailed)
 	}
 	f.commitSeq, f.durable = rec.seq, rec.count
@@ -313,21 +312,6 @@ func (f *encryptedFile) readCommit(physicalSize int64) (commitRecord, bool, erro
 		}
 	}
 	return best, found, nil
-}
-
-// writeFreshSlotsLocked writes both commit slots of a framed log with no
-// durable frames and syncs them, for a file whose Create crashed before
-// they were on disk.
-func (f *encryptedFile) writeFreshSlotsLocked() error {
-	if _, err := f.base.WriteAt(f.crypto.freshCommitSlots(f.headerSize), f.headerSize-commitSlots*commitSlotSize); err != nil {
-		return err
-	}
-	if err := f.base.Sync(); err != nil {
-		return err
-	}
-	f.freshSlots = false
-	f.commitSeq, f.durable = commitSlots-1, 0
-	return nil
 }
 
 // commitLocked records every frame on disk as durable in the older commit

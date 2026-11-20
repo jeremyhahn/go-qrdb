@@ -296,7 +296,20 @@ func (fs *FS) freshFramedHeader() (*header, error) {
 // acknowledged before the file's first Sync, so such a file holds no
 // acknowledged record: it reads as a log of logical size 0.
 func (fs *FS) emptyFramedRO(base filesys.File, h *header) (*encryptedFile, error) {
-	return newReadFile(base, h, int64(h.totalSize()), true)
+	crypto, err := newBlockCrypto(h.DEK[:])
+	if err != nil {
+		return nil, err
+	}
+	start := framedDataStart(h)
+	return &encryptedFile{
+		base:       base,
+		crypto:     crypto,
+		headerSize: start,
+		readOnly:   true,
+		framed:     true,
+		physEnd:    start,
+		commitSeq:  commitSlots - 1,
+	}, nil
 }
 
 // freshOverTornHeader reopens for writing an append log torn inside its
@@ -370,11 +383,6 @@ func (fs *FS) openEncryptedRW(base filesys.File, physicalSize int64, appendLog b
 		// refuses a log whose synced frames do not authenticate).
 		if torn := physicalSize - rf.physEnd; torn > 0 {
 			if _, err := base.WriteAt(make([]byte, torn), rf.physEnd); err != nil {
-				return nil, err
-			}
-		}
-		if rf.freshSlots {
-			if err := rf.writeFreshSlotsLocked(); err != nil {
 				return nil, err
 			}
 		}
