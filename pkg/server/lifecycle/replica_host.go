@@ -157,6 +157,21 @@ func (a *replicaHost) ShardMembers(ctx context.Context, shardID uint64) (map[uin
 	return out, nil
 }
 
+// RemovedReplicas reports the replica IDs the shard's committed membership
+// has removed. Raft records a removed ID permanently and refuses to admit
+// it again, so a caller finishes such a replica's removal instead.
+func (a *replicaHost) RemovedReplicas(ctx context.Context, shardID uint64) (map[uint64]struct{}, error) {
+	m, err := a.host.SyncGetShardMembership(ctx, shardID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uint64]struct{}, len(m.Removed))
+	for id := range m.Removed {
+		out[id] = struct{}{}
+	}
+	return out, nil
+}
+
 // RequestLeaderTransfer calls RequestLeaderTransfer on the shared Raft host.
 // Used by service.RemoveFollowerNode's caller (removeReplicaFromGroup, see
 // database_service.go's transferLeadershipAwayFromRemoved) to move

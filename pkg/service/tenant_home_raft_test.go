@@ -14,12 +14,17 @@ type homeViewHost struct {
 	*fakeRaftHost
 	leader  bool
 	members map[uint64]string
+	removed map[uint64]struct{}
 }
 
 func (h *homeViewHost) IsLocalShardLeader(uint64) (bool, error) { return h.leader, nil }
 
 func (h *homeViewHost) ShardMembers(context.Context, uint64) (map[uint64]string, error) {
 	return h.members, nil
+}
+
+func (h *homeViewHost) RemovedReplicas(context.Context, uint64) (map[uint64]struct{}, error) {
+	return h.removed, nil
 }
 
 // membersOf returns every replica of the placement as a committed member.
@@ -84,6 +89,32 @@ func TestGrowTenantHome_LeaderReadmitsAnUnadmittedReplica(t *testing.T) {
 	if len(host.observerCalls) != 1 || host.observerCalls[0].replicaID != missing.ReplicaID ||
 		host.observerCalls[0].raftAddr != missing.RaftAddr {
 		t.Fatalf("observer admissions = %+v, want one for replica %d", host.observerCalls, missing.ReplicaID)
+	}
+}
+
+// TestGrowTenantHome_FinishesACommittedRemovalInsteadOfReadmitting covers a
+// removal Raft committed (RemoveFollowerNode) whose placement update then
+// failed: the placed replica is in the group's removed set, so the leader
+// drops it from placement and never asks Raft to readmit the retired ID.
+func TestGrowTenantHome_FinishesACommittedRemovalInsteadOfReadmitting(t *testing.T) {
+	svc, store, _ := homeOnTopology(t, healthyNodes("n1", "n2", "n3"))
+	host := withHomeView(t, svc, store, true)
+	retired := loadHome(t, store).Replicas[2]
+	delete(host.members, retired.ReplicaID)
+	host.removed = map[uint64]struct{}{retired.ReplicaID: {}}
+
+	if _, err := svc.GrowTenantHome(context.Background(), "rt"); err != nil {
+		t.Fatalf("GrowTenantHome: %v", err)
+	}
+	for _, c := range host.observerCalls {
+		if c.replicaID == retired.ReplicaID {
+			t.Fatalf("observer admissions = %+v: the retired replica %d was readmitted", host.observerCalls, retired.ReplicaID)
+		}
+	}
+	for _, r := range loadHome(t, store).Replicas {
+		if r.ReplicaID == retired.ReplicaID {
+			t.Fatalf("placement still holds the retired replica %d after reconcile", retired.ReplicaID)
+		}
 	}
 }
 
