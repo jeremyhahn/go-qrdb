@@ -2,115 +2,184 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Regression test: retargeting the shared REST client invalidates the old
- * profile's view first.
+ * Regression test: switching servers unmounts the old server's workspace
+ * before the shared REST client retargets (#1478, Codex on #1607).
  *
- * RestClient.connection.connect marks the client connected after the new
- * server's /health and then awaits its /status. When A was active and the
- * user connected B from the sidebar, A stayed "connected" (so its admin
- * view, breadcrumb and destructive actions stayed usable) while the client
- * already sent every request to B: deleting a credential from A's detail
- * panel could delete B's credential of the same name.
+ * RestClient.connection.connect marks the client connected once the new
+ * server's /health answers and then awaits its /status. A's credential
+ * detail, with its Delete button, used to stay mounted in that window while
+ * every request already went to B: deleting A's displayed credential could
+ * delete B's credential of the same name.
  *
- * The test drives connectProfile with a client double whose connect to B
- * marks the client connected and then holds (B's /status in flight), and
- * asserts that A's view is already disabled when the client is retargeted
- * and while B's connect is held: the app's admin views render only while
- * the active profile's state is "connected".
+ * Driven through the bundled UI only: the user opens a credential on This
+ * Server (A), then clicks the Second server (B) in the sidebar while B's
+ * /status response is held. While it is held, A's Delete control is gone
+ * and no DELETE reaches B; once B answers, B's own workspace opens.
  */
-
 import { webTest as test, expect } from "./fixtures/web-mode-mock.ts";
+import type { Page, Route } from "@playwright/test";
 
 const LOAD_TIMEOUT = 10_000;
+const SECOND = "https://second-server.test:9443";
+const PROFILES_KEY = "qrdb:profiles:v1";
+const ACTIVE_KEY = "qrdb:active-profile:v1";
+const UNPREFIXED = /^\/(health|healthz|livez|readyz|ready|version)$/;
+const CORS = { "access-control-allow-origin": "*" };
 
-test.describe("Web mode - profile switch invalidates the old view", () => {
-  test("A's view is disabled before the client retargets to B and while B's status is held", async ({ page }) => {
-    await page.goto("/");
-    await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: LOAD_TIMEOUT });
+function json(route: Route, body: unknown): Promise<void> {
+  return route.fulfill({ status: 200, contentType: "application/json", headers: CORS, body: JSON.stringify(body) });
+}
 
-    const result = await page.evaluate(async () => {
-      const storePath = "/src/stores/connection-manager.svelte.ts";
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mod: any = await import(/* @vite-ignore */ storePath);
-
-      // The view the app renders for the active profile is usable only while
-      // that profile's state is "connected" (MainApp's connected gate).
-      const activeViewUsable = (): boolean =>
-        mod.connManagerStore.states.get(mod.connManagerStore.activeProfileId)?.status === "connected";
-
-      const calls: string[] = [];
-      let connected = true;
-      let releaseStatus: () => void = () => undefined;
-      const statusHeld = new Promise<void>((resolve) => {
-        releaseStatus = resolve;
-      });
-      let markStatusPending: () => void = () => undefined;
-      const statusPending = new Promise<void>((resolve) => {
-        markStatusPending = resolve;
-      });
-
-      const anyNamespace = new Proxy(
-        {},
-        { get: () => async () => ({}) },
-      );
-      const connection = {
-        isConnected: (): boolean => connected,
-        disconnect: async (): Promise<void> => {
-          calls.push(`disconnect:viewUsable=${String(activeViewUsable())}`);
-          connected = false;
-        },
-        connect: async (url: string): Promise<void> => {
-          calls.push(`connect:${url}:viewUsable=${String(activeViewUsable())}`);
-          // B answered /health: the client now sends requests to B ...
-          connected = true;
-          markStatusPending();
-          // ... while B's /status is still in flight.
-          await statusHeld;
-        },
-      };
-      const client = new Proxy(
-        { connection },
-        {
-          get: (target, prop) =>
-            prop in target ? (target as Record<string | symbol, unknown>)[prop] : anyNamespace,
-        },
-      );
-
-      mod.connManagerStore.profiles = [
-        { id: "profile-a", name: "A", type: "external", external: { address: "https://a.invalid:63012" } },
-        { id: "profile-b", name: "B", type: "external", external: { address: "https://b.invalid:63012" } },
-      ];
-      mod.connManagerStore.activeProfileId = "profile-a";
-      mod.connManagerStore.states = new Map([
-        ["profile-a", { profileId: "profile-a", status: "connected", isEmbedded: false }],
-      ]);
-      const usableBefore = activeViewUsable();
-
-      const switching = mod.connectProfile(client, "profile-b").catch(() => undefined);
-      await statusPending;
-      const usableWhileHeld = activeViewUsable();
-      const aWhileHeld: string | undefined = mod.connManagerStore.states.get("profile-a")?.status;
-
-      releaseStatus();
-      await switching;
-      return {
-        usableBefore,
-        usableWhileHeld,
-        aWhileHeld,
-        calls,
-        bAfter: mod.connManagerStore.states.get("profile-b")?.status as string | undefined,
-      };
-    });
-
-    expect(result.usableBefore).toBe(true);
-    // A's view was disabled before the client left A ...
-    expect(result.calls).toEqual([
-      "disconnect:viewUsable=false",
-      "connect:https://b.invalid:63012:viewUsable=false",
-    ]);
-    // ... and stays disabled while B's /status is held.
-    expect(result.usableWhileHeld).toBe(false);
-    expect(result.aWhileHeld).not.toBe("connected");
-    expect(result.bAfter).toBe("connected");
+/** A gate the test opens to release a held response. */
+function gate(): { wait: Promise<void>; open: () => void } {
+  let open = (): void => {};
+  const wait = new Promise<void>((resolve) => {
+    open = resolve;
   });
+  return { wait, open };
+}
+
+/** Answers every /v1 and unprefixed startup call to origin as a healthy server. */
+async function mockServer(page: Page, origin: string): Promise<void> {
+  await page.route(
+    (url) => url.origin === origin && (url.pathname.startsWith("/v1/") || UNPREFIXED.test(url.pathname)),
+    async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      let body: unknown = { sealed: false, initialized: true };
+      if (path.includes("database")) body = { databases: [] };
+      if (path.includes("health")) body = { status: "ok" };
+      await json(route, body);
+    },
+  );
+}
+
+/** Serves one credential, "shared", on origin. */
+async function mockCredentials(page: Page, origin: string): Promise<void> {
+  await page.route(
+    (url) => url.origin === origin && url.pathname.startsWith("/v1/credentials"),
+    async (route) => {
+      switch (new URL(route.request().url()).pathname) {
+        case "/v1/credentials":
+          await json(route, { names: ["shared"] });
+          return;
+        case "/v1/credentials/strategy":
+          await json(route, { strategy: "manual" });
+          return;
+        case "/v1/credentials/shared/versions":
+          await json(route, {
+            name: "shared",
+            versions: [{ version: 1, is_current: true, created_at_unix: 1_700_000_000 }],
+          });
+          return;
+        default:
+          await json(route, {});
+      }
+    },
+  );
+}
+
+/** Persists the built-in profile (A, the page origin) and SECOND (B), A active. */
+async function saveProfiles(page: Page, pageOrigin: string): Promise<void> {
+  const profiles = [
+    {
+      id: "self",
+      name: "This Server",
+      type: "external",
+      external: { transport: "rest", address: pageOrigin },
+      builtin: true,
+      createdAt: "2026-01-01T00:00:00Z",
+    },
+    {
+      id: "second",
+      name: "Second",
+      type: "external",
+      external: { transport: "rest", address: SECOND },
+      createdAt: "2026-01-01T00:00:00Z",
+    },
+  ];
+  await page.addInitScript(
+    ({ key, activeKey, value }) => {
+      localStorage.setItem(key, value);
+      localStorage.setItem(activeKey, "self");
+    },
+    { key: PROFILES_KEY, activeKey: ACTIVE_KEY, value: JSON.stringify(profiles) },
+  );
+}
+
+test("A's credential Delete control is gone while B's /status is held, and no DELETE reaches B", async ({
+  page,
+  baseURL,
+}) => {
+  const pageOrigin = new URL(baseURL ?? "http://127.0.0.1:5173").origin;
+  const secondRequests: string[] = [];
+
+  // B holds its /status (RestClient.connect's second request) until released.
+  const status = gate();
+  let statusRequested = false;
+  await page.route(
+    (url) => url.origin === SECOND && url.pathname === "/status",
+    async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await route.fallback();
+        return;
+      }
+      statusRequested = true;
+      await status.wait;
+      await json(route, { nodeId: "second-node", status: "ok" });
+    },
+  );
+  await mockServer(page, pageOrigin);
+  await mockServer(page, SECOND);
+  await mockCredentials(page, pageOrigin);
+  await mockCredentials(page, SECOND);
+  // Records every request B receives, then lets the handlers above answer it.
+  await page.route(`${SECOND}/**`, async (route) => {
+    const request = route.request();
+    secondRequests.push(`${request.method()} ${new URL(request.url()).pathname}`);
+    await route.fallback();
+  });
+  // CORS preflights for B; registered last so it runs first.
+  await page.route(`${SECOND}/**`, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({
+        status: 204,
+        headers: {
+          ...CORS,
+          "access-control-allow-headers": "*",
+          "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
+        },
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await saveProfiles(page, pageOrigin);
+
+  // A: open the credential's detail panel with its Delete control.
+  await page.goto("/");
+  await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  const aside = page.locator("aside");
+  await aside.getByText("Credentials", { exact: true }).click();
+  await expect(page.locator(".breadcrumbs").getByText("Credentials")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await page.locator("table tbody tr").first().click();
+  const deleteButton = page.getByRole("button", { name: "Delete", exact: true });
+  await expect(deleteButton).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+  // Switch to B; the client already targets B once B's /health answers.
+  await aside.getByText("Second", { exact: true }).first().click();
+  await expect.poll(() => statusRequested, { timeout: LOAD_TIMEOUT }).toBe(true);
+  expect(secondRequests.some((r) => r.endsWith(" /health"))).toBe(true);
+
+  // While B's /status is held, A's workspace is unmounted: no Delete control,
+  // no credential table, and nothing destructive reaches B.
+  await expect(page.getByTestId("workspace-not-connected")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(deleteButton).toHaveCount(0);
+  await expect(page.locator("table tbody tr")).toHaveCount(0);
+  expect(secondRequests.filter((r) => r.startsWith("DELETE "))).toEqual([]);
+
+  // B answers: its own workspace opens, still without any DELETE sent to it.
+  status.open();
+  await expect(page.getByTestId("workspace-not-connected")).toHaveCount(0, { timeout: LOAD_TIMEOUT });
+  await expect(page.locator(".breadcrumbs").getByText("Second")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  expect(secondRequests.filter((r) => r.startsWith("DELETE "))).toEqual([]);
 });

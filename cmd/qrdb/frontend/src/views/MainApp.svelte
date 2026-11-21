@@ -117,6 +117,27 @@
   );
 
   /**
+   * Whether the server workspace (admin and database views) may be mounted.
+   * In web mode one REST client serves every profile: a switch marks the
+   * old profile disconnected and the new one connecting before the client
+   * leaves the old server, and the client already sends requests to the new
+   * server once its /health answers, while its /status is still in flight.
+   * The old profile's views (a credential's detail and its Delete button,
+   * say) must not stay usable in that window, so the workspace unmounts
+   * while the active profile is switching or disconnected; the {#key} below
+   * remounts it from scratch for the next active profile, so no read the
+   * old view started can land in the new one. Sealed, needs-init and error
+   * states keep the workspace (the Seal Manager unseals a sealed server).
+   * The desktop app routes each profile through the Go connection manager
+   * and is not affected.
+   */
+  const workspaceLive = $derived.by((): boolean => {
+    if (isDesktop()) return true;
+    const status = connManagerStore.states.get(connManagerStore.activeProfileId)?.status;
+    return status !== 'connecting' && status !== 'disconnected';
+  });
+
+  /**
    * Whether the Daemon panel is available for the active profile. Only
    * external profiles have a separate qrdbd OS process to start/stop;
    * embedded ("Local Server") profiles run in-process.
@@ -418,6 +439,10 @@
     <!-- Content area: overflow-y-auto allows long views (e.g. wizard) to scroll. -->
     <main class="content-bg flex-1 overflow-y-auto">
 
+      <!-- Keyed on the active profile: a switch remounts every view, so
+           state and in-flight reads of the previous server's views die
+           with them. -->
+      {#key connManagerStore.activeProfileId}
       {#if connManagerStore.profiles.length === 0 && !connManagerStore.loading}
         <!-- ── First-run: no servers configured ─────────────────────── -->
         <div class="flex h-full items-center justify-center">
@@ -427,6 +452,16 @@
             description="Add a server to get started. Run an embedded database locally or connect to an external qrdbd instance."
             actionLabel="Add Server"
             onaction={() => (showAddServerModal = true)}
+          />
+        </div>
+
+      {:else if !workspaceLive}
+        <!-- ── Switching servers: the previous server's views are gone ── -->
+        <div class="flex h-full items-center justify-center" data-testid="workspace-not-connected">
+          <EmptyState
+            icon={Server}
+            title="Not Connected"
+            description="The active server is connecting or disconnected. Its views open once it answers."
           />
         </div>
 
@@ -503,6 +538,7 @@
           />
         </div>
       {/if}
+      {/key}
 
     </main>
   </div>
