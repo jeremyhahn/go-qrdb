@@ -118,6 +118,7 @@ type Server struct {
 	ragSvc            service.RAGServicer
 	databaseSvc       service.DatabaseServicer
 	barrierSvc        service.BarrierServicer
+	sealStoreSvc      service.SealStoreServicer
 	encMigrator       service.EncryptionMigrator
 	pinBackend        pin.PINBackend
 	ceremonySvc       service.CeremonyServicer
@@ -401,6 +402,12 @@ func WithDatabaseService(svc service.DatabaseServicer) ServerOption {
 // WithBarrierService configures the gRPC server with a barrier management service.
 func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(s *Server) { s.barrierSvc = svc }
+}
+
+// WithSealStoreService attaches the node's seal store, served by the
+// SealStore* RPCs (seal:store_manage).
+func WithSealStoreService(svc service.SealStoreServicer) ServerOption {
+	return func(s *Server) { s.sealStoreSvc = svc }
 }
 
 // WithEncryptionMigrator configures the enable-encryption migrator.
@@ -806,6 +813,7 @@ func (s *Server) Start() error {
 		ragSvc:            s.ragSvc,
 		databaseSvc:       s.databaseSvc,
 		barrierSvc:        s.barrierSvc,
+		sealStoreSvc:      s.sealStoreSvc,
 		encMigrator:       s.encMigrator,
 		pinBackend:        s.pinBackend,
 		ceremonySvc:       s.ceremonySvc,

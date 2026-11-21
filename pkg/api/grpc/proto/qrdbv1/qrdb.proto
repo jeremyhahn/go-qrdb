@@ -1073,6 +1073,42 @@ service QRDBService {
         option (qrdb.v1.permission) = "seal:status";
     }
 
+    // SealStorePut stores a named secret in the node's seal store, the
+    // secret store beneath the node barrier. Requires seal:store_manage.
+    rpc SealStorePut(SealStorePutRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "seal:store_manage";
+    }
+
+    // SealStoreGet returns a named secret from the node's seal store.
+    // Requires seal:store_manage.
+    rpc SealStoreGet(SealStoreNameRequest) returns (SealStoreGetResponse) {
+        option (qrdb.v1.permission) = "seal:store_manage";
+    }
+
+    // SealStoreDelete deletes a named secret from the node's seal store.
+    // Requires seal:store_manage.
+    rpc SealStoreDelete(SealStoreNameRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "seal:store_manage";
+    }
+
+    // SealStoreList lists the names stored in the node's seal store.
+    // Requires seal:store_manage.
+    rpc SealStoreList(google.protobuf.Empty) returns (SealStoreListResponse) {
+        option (qrdb.v1.permission) = "seal:store_manage";
+    }
+
+    // SealStoreReseal reseals a named secret under the current barrier key.
+    // Requires seal:store_manage.
+    rpc SealStoreReseal(SealStoreNameRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "seal:store_manage";
+    }
+
+    // SealStoreStatus returns the node seal store's status. Requires
+    // seal:store_manage.
+    rpc SealStoreStatus(google.protobuf.Empty) returns (SealStoreStatusResponse) {
+        option (qrdb.v1.permission) = "seal:store_manage";
+    }
+
     // BarrierClusterUnseal clears a cluster-wide seal of the node barrier. It
     // unseals nothing: the receiving node must already have unsealed itself.
     rpc BarrierClusterUnseal(BarrierClusterUnsealRequest) returns (ClusterSealState) {
@@ -6871,4 +6907,34 @@ message UserAuthFactorLoginResponse {
 message RemoveCertBindingRequest {
     uint64 user_id = 1;
     string thumbprint = 2;
+}
+
+// SealStorePutRequest stores secret under name in the node's seal store.
+message SealStorePutRequest {
+    string name = 1;
+    bytes secret = 2;
+}
+
+// SealStoreNameRequest names one seal-store secret (Get, Delete, Reseal).
+message SealStoreNameRequest {
+    string name = 1;
+}
+
+// SealStoreGetResponse carries a secret read from the node's seal store.
+message SealStoreGetResponse {
+    string name = 1;
+    bytes secret = 2;
+}
+
+// SealStoreListResponse lists the names stored in the node's seal store.
+message SealStoreListResponse {
+    repeated string names = 1;
+}
+
+// SealStoreStatusResponse is the node seal store's status.
+message SealStoreStatusResponse {
+    bool available = 1;
+    string sealer_id = 2;
+    int32 secret_count = 3;
+    repeated string secret_names = 4;
 }
