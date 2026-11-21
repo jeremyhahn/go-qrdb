@@ -2293,6 +2293,9 @@ func (s *Server) startREST() error {
 	if s.opts.pinBackend != nil {
 		restOpts = append(restOpts, rest.WithPINBackend(s.opts.pinBackend))
 	}
+	if s.opts.sealStoreSvc != nil {
+		restOpts = append(restOpts, rest.WithSealStoreService(s.opts.sealStoreSvc))
+	}
 	if s.opts.ceremonySvc != nil {
 		restOpts = append(restOpts, rest.WithCeremonyService(s.opts.ceremonySvc))
 	}
@@ -2796,6 +2799,9 @@ func (s *Server) startQUIC() error {
 	if s.opts.pinBackend != nil {
 		quicOpts = append(quicOpts, quicapi.WithPINBackend(s.opts.pinBackend))
 	}
+	if s.opts.sealStoreSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithSealStoreService(s.opts.sealStoreSvc))
+	}
 	if s.opts.ceremonySvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithCeremonyService(s.opts.ceremonySvc))
 	}
@@ -3111,6 +3117,9 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.pinBackend != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithPINBackend(s.opts.pinBackend))
+	}
+	if s.opts.sealStoreSvc != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithSealStoreService(s.opts.sealStoreSvc))
 	}
 	if s.opts.ceremonySvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithCeremonyService(s.opts.ceremonySvc))
