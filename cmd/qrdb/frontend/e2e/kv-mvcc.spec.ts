@@ -439,7 +439,8 @@ test.describe("KV Explorer MVCC calls are scoped to the selected database", () =
     await createEntry(page, "same/a", "plain-a");
     await createEntry(page, "same/b", "plain-b");
     await expect(page.getByText("2 entries")).toBeVisible({ timeout: LOAD_TIMEOUT });
-    await expect(page.getByText('Created "same/b"')).not.toBeVisible({ timeout: LOAD_TIMEOUT });
+    // Both databases' "Created" toasts are up (one per create, 5 s each); wait until all have cleared before selecting rows.
+    await expect(page.getByRole("alert").filter({ hasText: 'Created "same/b"' })).toHaveCount(0, { timeout: LOAD_TIMEOUT });
 
     // kv-plain's first delete is still in flight when the user switches.
     await page.getByLabel("Select row 1", { exact: true }).check();
