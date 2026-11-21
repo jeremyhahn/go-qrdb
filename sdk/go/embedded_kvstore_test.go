@@ -16,10 +16,15 @@ package sdk
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
+	"sync"
 	"testing"
 
+	qerrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	sdkstorage "github.com/jeremyhahn/go-qrdb/sdk/go/storage"
 )
 
@@ -214,5 +219,173 @@ func TestEmbeddedKVStore_DAOWithIndexes(t *testing.T) {
 	}
 	if _, err := dao.QueryOneByIndex(ctx, "Name", "beta"); !IsDAONotFound(err) {
 		t.Fatalf("QueryOneByIndex after Delete = %v, want not found", err)
+	}
+}
+
+// registerEmbeddedEmailIndex registers an index on the JSON field "email" of
+// entityType, named entityType+".Email".
+func registerEmbeddedEmailIndex(t *testing.T, store KVStore, entityType string, unique bool) {
+	t.Helper()
+	err := store.RegisterEntityIndexes(entityType, []kvstore.EntityIndex{{
+		FieldName:     "Email",
+		JSONFieldName: "email",
+		Unique:        unique,
+	}})
+	if err != nil {
+		t.Fatalf("RegisterEntityIndexes(%s): %v", entityType, err)
+	}
+}
+
+func embeddedEmailValue(email string) []byte {
+	return []byte(fmt.Sprintf(`{"email":%q}`, email))
+}
+
+func TestEmbeddedKVStore_ConcurrentUpdatesLeaveNoStaleIndexEntry(t *testing.T) {
+	const writers = 16
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	registerEmbeddedEmailIndex(t, store, "acct", false)
+	idx := store
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs <- store.Put(ctx, "acct/1", embeddedEmailValue(fmt.Sprintf("user%d@example.com", i)))
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+
+	raw, err := store.Get(ctx, "acct/1")
+	if err != nil || raw == nil {
+		t.Fatalf("Get = %q, %v", raw, err)
+	}
+	var final struct {
+		Email string `json:"email"`
+	}
+	if err := json.Unmarshal(raw, &final); err != nil {
+		t.Fatalf("decode final value: %v", err)
+	}
+	entries := 0
+	for i := 0; i < writers; i++ {
+		email := fmt.Sprintf("user%d@example.com", i)
+		keys, err := idx.QueryIndex(ctx, "acct.Email", []byte(email))
+		if err != nil {
+			t.Fatalf("QueryIndex(%s): %v", email, err)
+		}
+		if email != final.Email {
+			if len(keys) != 0 {
+				t.Errorf("QueryIndex(%s) = %q, want no stale entry (final %s)", email, keys, final.Email)
+			}
+			continue
+		}
+		if len(keys) != 1 || string(keys[0]) != "acct/1" {
+			t.Errorf("QueryIndex(%s) = %q, want [acct/1]", email, keys)
+		}
+		entries += len(keys)
+	}
+	if entries != 1 {
+		t.Fatalf("index entries for the final value = %d, want 1", entries)
+	}
+}
+
+func TestEmbeddedKVStore_ConcurrentUniqueInsertsAdmitOne(t *testing.T) {
+	const writers = 16
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	registerEmbeddedEmailIndex(t, store, "acct", true)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs <- store.Put(ctx, fmt.Sprintf("acct/%d", i), embeddedEmailValue("shared@example.com"))
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	admitted := 0
+	for err := range errs {
+		if err == nil {
+			admitted++
+			continue
+		}
+		var violation *qerrors.QRDBError
+		if !errors.As(err, &violation) || violation.Code != qerrors.ErrConflict {
+			t.Errorf("Put error = %v, want a unique-constraint violation", err)
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("admitted inserts = %d, want exactly 1", admitted)
+	}
+	keys, err := store.QueryIndex(ctx, "acct.Email", []byte("shared@example.com"))
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("QueryIndex = %q, %v; want one key", keys, err)
+	}
+}
+
+func TestEmbeddedKVStore_ConcurrentRegistrationWithWrites(t *testing.T) {
+	const types = 4
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	idx := store
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, types*3)
+	for i := 0; i < types; i++ {
+		entityType := fmt.Sprintf("kind%d", i)
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- store.RegisterEntityIndexes(entityType, []kvstore.EntityIndex{{
+				FieldName:     "Email",
+				JSONFieldName: "email",
+			}})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- store.Put(ctx, entityType+"/1", embeddedEmailValue(entityType+"@example.com"))
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := idx.QueryIndex(ctx, entityType+".Email", []byte(entityType+"@example.com"))
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent registration/write/query: %v", err)
+		}
+	}
+	for i := 0; i < types; i++ {
+		entityType := fmt.Sprintf("kind%d", i)
+		keys, err := idx.QueryIndex(ctx, entityType+".Email", []byte(entityType+"@example.com"))
+		if err != nil || len(keys) != 1 || string(keys[0]) != entityType+"/1" {
+			t.Fatalf("QueryIndex(%s) = %q, %v; want [%s/1] after registration and write", entityType, keys, err, entityType)
+		}
 	}
 }

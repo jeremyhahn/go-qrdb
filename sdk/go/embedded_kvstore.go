@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -42,6 +43,13 @@ var ErrEmbeddedStorageRequired = errors.New("sdk: embedded KV store needs a stor
 // name, a key prefix other than "{entityType}/", or a numeric index) is
 // refused with ErrKVIndexUnsupported, so a DAO downgrades that query kind to
 // a full scan instead of querying an index nobody built.
+//
+// The store is safe for concurrent use. Put, Delete and RegisterEntityIndexes
+// are serialized, so reading a key's old value, checking unique indexes,
+// committing the batch and backfilling a newly registered index run as one
+// step and two writers never leave a stale or duplicate index entry. Reads
+// share a lock and run concurrently with each other. A Scan callback runs
+// under the read lock and must not write to the store.
 func NewEmbeddedKVStore(stg storage.Storage) (KVStore, error) {
 	if stg == nil {
 		return nil, ErrEmbeddedStorageRequired
@@ -53,12 +61,17 @@ func NewEmbeddedKVStore(stg storage.Storage) (KVStore, error) {
 type embeddedKVStore struct {
 	stg storage.Storage
 	eng *engine.KVEngine
+	// mu serializes writes and index registration against each other and
+	// against reads; see NewEmbeddedKVStore.
+	mu sync.RWMutex
 }
 
 func (s *embeddedKVStore) Put(ctx context.Context, key string, value []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.eng.PutWithIndexes([]byte(key), value)
 }
 
@@ -66,6 +79,8 @@ func (s *embeddedKVStore) Get(ctx context.Context, key string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	value, err := s.stg.Get([]byte(key))
 	if err != nil {
 		var notFound *storage.KeyNotFoundError
@@ -81,10 +96,17 @@ func (s *embeddedKVStore) Delete(ctx context.Context, key string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.eng.DeleteWithIndexes([]byte(key))
 }
 
 func (s *embeddedKVStore) Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	opts := &storage.IteratorOptions{LowerBound: []byte(prefix), UpperBound: prefixUpperBound([]byte(prefix))}
 	it := s.stg.NewIterator(opts)
 	defer func() { _ = it.Close() }()
@@ -105,6 +127,8 @@ func (s *embeddedKVStore) List(ctx context.Context, prefix string) ([]string, er
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	raw, err := s.stg.List([]byte(prefix))
 	if err != nil {
 		return nil, err
@@ -120,6 +144,8 @@ func (s *embeddedKVStore) Exists(ctx context.Context, key string) (bool, error) 
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.stg.Exists([]byte(key))
 }
 
@@ -141,6 +167,8 @@ func (s *embeddedKVStore) RegisterEntityIndexes(entityType string, indexes []kvs
 			CaseSensitive:  def.CaseSensitive,
 		})
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.eng.RegisterEntityType(entityType, defs)
 }
 
@@ -167,18 +195,38 @@ func embeddedIndexSupported(entityType string, def kvstore.EntityIndex) error {
 }
 
 func (s *embeddedKVStore) QueryIndex(ctx context.Context, indexName string, value []byte) ([][]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return embeddedKeys(s.eng.Lookup(ctx, index.IndexQueryRequest{IndexName: indexName, Value: value}))
 }
 
 func (s *embeddedKVStore) ScanIndex(ctx context.Context, indexName string, start, end []byte) (map[string][][]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return embeddedScan(s.eng.Lookup(ctx, index.IndexScanRequest{IndexName: indexName, Start: start, End: end}))
 }
 
 func (s *embeddedKVStore) QueryCompoundIndex(ctx context.Context, indexName string, values [][]byte) ([][]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return embeddedKeys(s.eng.Lookup(ctx, index.CompoundIndexQueryRequest{IndexName: indexName, Values: values}))
 }
 
 func (s *embeddedKVStore) ScanCompoundIndex(ctx context.Context, indexName string, prefixValues [][]byte, rangeStart, rangeEnd []byte) (map[string][][]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return embeddedScan(s.eng.Lookup(ctx, index.CompoundIndexScanRequest{
 		IndexName:    indexName,
 		PrefixValues: prefixValues,
