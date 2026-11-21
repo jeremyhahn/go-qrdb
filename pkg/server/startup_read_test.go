@@ -141,12 +141,7 @@ func TestRunStartupRead_RetriesReadIndexNotReadyThenSucceeds(t *testing.T) {
 // classify it.
 func TestRunStartupRead_DeadlineExhaustedOnReadIndexNotReady(t *testing.T) {
 	logger, logs := captureLogger()
-	// Each attempt returns at once, but under load the budget can run out
-	// between the last attempt's return and RunStartupRead's look at its
-	// context, which counts that attempt as cut off. Only the final attempt
-	// can straddle the deadline (its bound is the budget's end, after which
-	// the read gives up), so that is the one tolerance allowed.
-	var attempts []context.Context
+	calls := 0
 	_, err := RunStartupRead(context.Background(), StartupRead{
 		Op:     "never ready",
 		Budget: 30 * time.Millisecond,
@@ -156,25 +151,16 @@ func TestRunStartupRead_DeadlineExhaustedOnReadIndexNotReady(t *testing.T) {
 		// leaves the retry this test is about.
 		Counts: func(context.Context) bool { return calls >= 2 },
 		Logger: logger,
-	}, func(actx context.Context) (int, error) {
-		attempts = append(attempts, actx)
+	}, func(context.Context) (int, error) {
+		calls++
 		return 0, quicraft.ErrReadIndexNotReady
 	})
 	var sre *StartupReadError
 	if !errors.As(err, &sre) || !errors.Is(err, quicraft.ErrReadIndexNotReady) {
 		t.Fatalf("err = %v (%T), want *StartupReadError unwrapping to ErrReadIndexNotReady", err, err)
 	}
-	calls := len(attempts)
-	if calls < 2 || sre.Attempts != calls || sre.TimedOut > 1 {
-		t.Errorf("calls=%d Attempts=%d TimedOut=%d, want several attempts, at most the final one cut off", calls, sre.Attempts, sre.TimedOut)
-	}
-	for i, actx := range attempts[:max(calls-1, 0)] {
-		if errors.Is(actx.Err(), context.DeadlineExceeded) {
-			t.Errorf("attempt %d of %d reached its deadline; only the final attempt may", i+1, calls)
-		}
-	}
-	if sre.TimedOut == 1 && calls > 0 && !errors.Is(attempts[calls-1].Err(), context.DeadlineExceeded) {
-		t.Errorf("TimedOut=1 but the final attempt's context = %v, want its deadline exceeded", attempts[calls-1].Err())
+	if calls < 2 || sre.Attempts != calls || sre.TimedOut != 0 {
+		t.Errorf("calls=%d Attempts=%d TimedOut=%d, want several attempts, none cut off", calls, sre.Attempts, sre.TimedOut)
 	}
 	if sre.Budget != 30*time.Millisecond || sre.AttemptTimeout != StartupReadAttemptTimeout || sre.Op != "never ready" {
 		t.Errorf("error fields = %+v, want the budget, the default attempt bound and the op", sre)
