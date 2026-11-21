@@ -14,7 +14,7 @@
 
 {
 	"name": "go-qrdb",
-	"dockerComposeFile": "docker-compose.yml",
+	"dockerComposeFile": "build/docker/devcontainer/compose.yaml",
 	"service": "devcontainer",
 	"workspaceFolder": "/workspace/go-qrdb",
 	"customizations": {
