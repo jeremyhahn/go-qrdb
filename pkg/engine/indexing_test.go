@@ -728,6 +728,49 @@ func TestBackfillIndexWithPrefix(t *testing.T) {
 	}
 }
 
+func TestBackfillIndexWithPrefix_PutErrorReturned(t *testing.T) {
+	t.Run("unique violation", func(t *testing.T) {
+		stg := memory.NewStorage()
+		defer func() { _ = stg.Close() }()
+		for _, k := range []string{"users/1", "users/2"} {
+			if err := stg.Set([]byte(k), []byte(`{"email":"a@example.com"}`)); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+		}
+		idx, err := index.NewStoragePebbleIndex(stg, index.IndexConfig{
+			Name: "users.Email", Type: index.IndexTypeUnique, Unique: true, CaseSensitive: true,
+		}, indexTestLogger(t))
+		if err != nil {
+			t.Fatalf("NewStoragePebbleIndex: %v", err)
+		}
+		bErr := BackfillIndexWithPrefix(stg, idx, "email", []byte("users/"))
+		if bErr == nil {
+			t.Fatal("BackfillIndexWithPrefix over duplicate unique values: want error, got nil")
+		}
+		if !strings.Contains(bErr.Error(), "backfill users/2") {
+			t.Errorf("error %q does not name the entity key", bErr)
+		}
+	})
+
+	t.Run("storage write failure", func(t *testing.T) {
+		real := memory.NewStorage()
+		defer func() { _ = real.Close() }()
+		if err := real.Set([]byte("users/1"), []byte(`{"name":"alice"}`)); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		fs := &indexSetFailingStorage{Storage: real, entityPrefix: []byte("users/"), failIndexSet: true}
+		idx, err := index.NewStoragePebbleIndex(fs, index.IndexConfig{
+			Name: "users.Name", Type: index.IndexTypeNormal, CaseSensitive: true,
+		}, indexTestLogger(t))
+		if err != nil {
+			t.Fatalf("NewStoragePebbleIndex: %v", err)
+		}
+		if bErr := BackfillIndexWithPrefix(fs, idx, "name", []byte("users/")); !errors.Is(bErr, errIndexSetInjected) {
+			t.Fatalf("BackfillIndexWithPrefix with failing index writes: want injected error, got %v", bErr)
+		}
+	})
+}
+
 func TestBackfillIndexWithPrefix_NonJSON(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
@@ -1379,6 +1422,49 @@ func TestBackfillCompoundIndexWithPrefix_EmptyValueSkipped(t *testing.T) {
 	if err := BackfillCompoundIndexWithPrefix(stg, idx, []string{"x", "y"}, []byte("parts/")); err != nil {
 		t.Fatalf("BackfillCompoundIndexWithPrefix with empty value: %v", err)
 	}
+}
+
+func TestBackfillCompoundIndexWithPrefix_PutErrorReturned(t *testing.T) {
+	t.Run("unique violation", func(t *testing.T) {
+		stg := memory.NewStorage()
+		defer func() { _ = stg.Close() }()
+		for _, k := range []string{"parts/1", "parts/2"} {
+			if err := stg.Set([]byte(k), []byte(`{"x":"1","y":"2"}`)); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+		}
+		idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+			Name: "parts.X_Y", Type: index.IndexTypeUnique, FieldNames: []string{"X", "Y"}, Unique: true,
+		}, indexTestLogger(t))
+		if err != nil {
+			t.Fatalf("NewCompoundIndex: %v", err)
+		}
+		bErr := BackfillCompoundIndexWithPrefix(stg, idx, []string{"x", "y"}, []byte("parts/"))
+		if bErr == nil {
+			t.Fatal("BackfillCompoundIndexWithPrefix over duplicate unique values: want error, got nil")
+		}
+		if !strings.Contains(bErr.Error(), "backfill parts/2") {
+			t.Errorf("error %q does not name the entity key", bErr)
+		}
+	})
+
+	t.Run("storage write failure", func(t *testing.T) {
+		real := memory.NewStorage()
+		defer func() { _ = real.Close() }()
+		if err := real.Set([]byte("parts/1"), []byte(`{"x":"1","y":"2"}`)); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		fs := &indexSetFailingStorage{Storage: real, entityPrefix: []byte("parts/"), failIndexSet: true}
+		idx, err := index.NewCompoundIndex(fs, index.IndexConfig{
+			Name: "parts.X_Y", FieldNames: []string{"X", "Y"},
+		}, indexTestLogger(t))
+		if err != nil {
+			t.Fatalf("NewCompoundIndex: %v", err)
+		}
+		if bErr := BackfillCompoundIndexWithPrefix(fs, idx, []string{"x", "y"}, []byte("parts/")); !errors.Is(bErr, errIndexSetInjected) {
+			t.Fatalf("BackfillCompoundIndexWithPrefix with failing index writes: want injected error, got %v", bErr)
+		}
+	})
 }
 
 func TestBackfillCompoundIndexWithPrefix_NonJSONSkipped(t *testing.T) {

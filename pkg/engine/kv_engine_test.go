@@ -15,6 +15,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -2650,6 +2651,178 @@ func TestKVEngine_RegisterEntityType_UniqueCompoundIndex(t *testing.T) {
 	}
 	if len(eng.compoundIndexes) != 1 {
 		t.Errorf("expected 1 compound index, got %d", len(eng.compoundIndexes))
+	}
+}
+
+// indexSetFailingStorage wraps storage.Storage and, while failIndexSet is
+// set, fails every Set of a key outside entityPrefix: the index entry
+// writes a backfill makes. Every other call is forwarded unchanged.
+type indexSetFailingStorage struct {
+	storage.Storage
+	entityPrefix []byte
+	failIndexSet bool
+}
+
+var errIndexSetInjected = errors.New("injected index Set failure")
+
+func (f *indexSetFailingStorage) Set(key, value []byte) error {
+	if f.failIndexSet && !bytes.HasPrefix(key, f.entityPrefix) {
+		return errIndexSetInjected
+	}
+	return f.Storage.Set(key, value)
+}
+
+func TestKVEngine_RegisterEntityType_UniqueBackfillDuplicateRefused(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+
+	applyKVEntries(t, eng, []sm.Entry{
+		kvPutEntry(1, "users/1", `{"email":"a@example.com"}`),
+		kvPutEntry(2, "users/2", `{"email":"a@example.com"}`),
+	})
+
+	defs := []EntityIndex{{FieldName: "Email", JSONFieldName: "email", Unique: true}}
+	if err := eng.RegisterEntityType("users", defs); err == nil {
+		t.Fatal("RegisterEntityType over duplicate values: want error, got nil")
+	}
+	if err := eng.RegisterEntityType("users", defs); err == nil {
+		t.Fatal("second RegisterEntityType over duplicate values: want error, got nil")
+	}
+
+	_, err := eng.Lookup(context.Background(), index.IndexQueryRequest{
+		IndexName: "users.Email",
+		Value:     []byte("a@example.com"),
+	})
+	var nf *index.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("Lookup after refused registration: want *index.NotFoundError, got %T: %v", err, err)
+	}
+	if _, ok := eng.entityIndexes["users"]; ok {
+		t.Error("entityIndexes[users] set after refused registration")
+	}
+}
+
+func TestKVEngine_RegisterEntityType_CompoundUniqueBackfillDuplicateRefused(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+
+	applyKVEntries(t, eng, []sm.Entry{
+		kvPutEntry(1, "sessions/1", `{"user_id":"u1","device_id":"d1"}`),
+		kvPutEntry(2, "sessions/2", `{"user_id":"u1","device_id":"d1"}`),
+	})
+
+	defs := []EntityIndex{
+		{FieldName: "UserID", JSONFieldName: "user_id"},
+		{FieldNames: []string{"UserID", "DeviceID"}, JSONFieldNames: []string{"user_id", "device_id"}, Unique: true},
+	}
+	if err := eng.RegisterEntityType("sessions", defs); err == nil {
+		t.Fatal("RegisterEntityType over duplicate compound values: want error, got nil")
+	}
+	if err := eng.RegisterEntityType("sessions", defs); err == nil {
+		t.Fatal("second RegisterEntityType over duplicate compound values: want error, got nil")
+	}
+
+	_, err := eng.Lookup(context.Background(), index.CompoundIndexQueryRequest{
+		IndexName: "sessions.UserID_DeviceID",
+		Values:    [][]byte{[]byte("u1"), []byte("d1")},
+	})
+	var nf *index.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("compound Lookup after refused registration: want *index.NotFoundError, got %T: %v", err, err)
+	}
+	// The single-field index registered earlier in the same call is rolled back.
+	_, err = eng.Lookup(context.Background(), index.IndexQueryRequest{
+		IndexName: "sessions.UserID",
+		Value:     []byte("u1"),
+	})
+	if !errors.As(err, &nf) {
+		t.Fatalf("Lookup of rolled-back index: want *index.NotFoundError, got %T: %v", err, err)
+	}
+	if _, ok := eng.entityIndexes["sessions"]; ok {
+		t.Error("entityIndexes[sessions] set after refused registration")
+	}
+}
+
+func TestKVEngine_RegisterEntityType_BackfillWriteFailureRollsBack(t *testing.T) {
+	real := memory.NewStorage()
+	defer func() { _ = real.Close() }()
+	fs := &indexSetFailingStorage{Storage: real, entityPrefix: []byte("orders/")}
+	eng := NewKVEngine(fs, WithKVLogger(testLogger(t)))
+
+	applyKVEntries(t, eng, []sm.Entry{
+		kvPutEntry(1, "orders/1", `{"cust":"c1","sku":"s1"}`),
+		kvPutEntry(2, "orders/2", `{"cust":"c1","sku":"s2"}`),
+		kvPutEntry(3, "orders/3", `{"cust":"c2","sku":"s1"}`),
+	})
+
+	defs := []EntityIndex{
+		{FieldName: "Cust", JSONFieldName: "cust"},
+		{FieldNames: []string{"Cust", "Sku"}, JSONFieldNames: []string{"cust", "sku"}},
+	}
+
+	fs.failIndexSet = true
+	err := eng.RegisterEntityType("orders", defs)
+	if !errors.Is(err, errIndexSetInjected) {
+		t.Fatalf("RegisterEntityType with failing index writes: want injected error, got %v", err)
+	}
+	if len(eng.indexes) != 0 || len(eng.indexFields) != 0 || len(eng.indexScopes) != 0 {
+		t.Errorf("single-field index left registered: %d indexes", len(eng.indexes))
+	}
+	if len(eng.compoundIndexes) != 0 || len(eng.compoundIndexFields) != 0 || len(eng.compoundIndexScopes) != 0 {
+		t.Errorf("compound index left registered: %d indexes", len(eng.compoundIndexes))
+	}
+	if _, ok := eng.entityIndexes["orders"]; ok {
+		t.Error("entityIndexes[orders] set after failed registration")
+	}
+
+	// Single-field index succeeds, compound fails: both rolled back.
+	fs.failIndexSet = false
+	if err := eng.RegisterEntityType("orders", defs[:1]); err != nil {
+		t.Fatalf("register single-field index: %v", err)
+	}
+	eng2 := NewKVEngine(fs, WithKVLogger(testLogger(t)))
+	fs.failIndexSet = true
+	if err := eng2.RegisterEntityType("orders", defs[1:]); !errors.Is(err, errIndexSetInjected) {
+		t.Fatalf("compound registration with failing index writes: want injected error, got %v", err)
+	}
+	if len(eng2.compoundIndexes) != 0 {
+		t.Errorf("compound index left registered: %d", len(eng2.compoundIndexes))
+	}
+	fs.failIndexSet = false
+
+	// Retry on a fresh engine after the fault is cleared: every record is indexed.
+	eng3 := NewKVEngine(fs, WithKVLogger(testLogger(t)))
+	if err := eng3.RegisterEntityType("orders", defs); err != nil {
+		t.Fatalf("retry RegisterEntityType: %v", err)
+	}
+	got, err := eng3.Lookup(context.Background(), index.IndexQueryRequest{IndexName: "orders.Cust", Value: []byte("c1")})
+	if err != nil {
+		t.Fatalf("Lookup(c1): %v", err)
+	}
+	if ids := got.([][]byte); len(ids) != 2 {
+		t.Errorf("orders.Cust c1: want 2 keys, got %d", len(ids))
+	}
+	for _, v := range [][2]string{{"c1", "s1"}, {"c1", "s2"}, {"c2", "s1"}} {
+		got, err := eng3.Lookup(context.Background(), index.CompoundIndexQueryRequest{
+			IndexName: "orders.Cust_Sku",
+			Values:    [][]byte{[]byte(v[0]), []byte(v[1])},
+		})
+		if err != nil {
+			t.Fatalf("compound Lookup(%v): %v", v, err)
+		}
+		if ids := got.([][]byte); len(ids) != 1 {
+			t.Errorf("orders.Cust_Sku %v: want 1 key, got %d", v, len(ids))
+		}
+	}
+
+	// Retry on the engine whose registration failed also succeeds.
+	if err := eng.RegisterEntityType("orders", defs); err != nil {
+		t.Fatalf("retry on the same engine: %v", err)
+	}
+	if len(eng.compoundIndexes) != 1 {
+		t.Errorf("retry on the same engine: want 1 compound index, got %d", len(eng.compoundIndexes))
 	}
 }
 

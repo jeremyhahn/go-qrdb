@@ -17,6 +17,8 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 
@@ -1273,17 +1275,43 @@ func (e *KVEngine) applyBatchOps(ops []protocol.DecodedOp) (sm.Result, error) {
 // the legacy "{entityType}.{FieldName}" format for backward compatibility.
 // All indexes are maintained atomically during Put/Delete via batch
 // operations.
-func (e *KVEngine) RegisterEntityType(entityType string, indexes []EntityIndex) error {
+//
+// Registration is all-or-nothing: when an index cannot be created or its
+// backfill cannot write an entry (a unique violation among existing records
+// or a storage write failure), every index this call added is cleared and
+// unregistered, the entity type's index list is left unchanged, and the
+// error is returned. A retry after the cause is removed builds the indexes
+// again. Indexes registered by an earlier call are kept.
+func (e *KVEngine) RegisterEntityType(entityType string, indexes []EntityIndex) (retErr error) {
 	log := e.logger
 	if log == nil {
 		log = defaultLogger()
 	}
 
+	// Indexes this call added, so a failure part-way through rolls back
+	// every one of them and registration stays all-or-nothing.
+	var addedSingle, addedCompound []string
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		for _, name := range addedSingle {
+			retErr = errors.Join(retErr, e.unregisterIndex(name))
+		}
+		for _, name := range addedCompound {
+			retErr = errors.Join(retErr, e.unregisterCompoundIndex(name))
+		}
+	}()
+
 	for _, def := range indexes {
 		// Compound indexes: multi-field.
 		if def.IsCompound() {
-			if err := e.registerCompoundIndex(entityType, def, log); err != nil {
+			added, err := e.registerCompoundIndex(entityType, def, log)
+			if err != nil {
 				return err
+			}
+			if added != "" {
+				addedCompound = append(addedCompound, added)
 			}
 			continue
 		}
@@ -1324,11 +1352,12 @@ func (e *KVEngine) RegisterEntityType(entityType string, indexes []EntityIndex) 
 		e.indexes[idxName] = idx
 		e.indexFields[idxName] = def.JSONFieldName
 		e.indexScopes[idxName] = ComposeIndexScope(idxName, entityScope)
+		addedSingle = append(addedSingle, idxName)
 
 		// Backfill from existing keys matching the entity prefix.
 		prefix := []byte(entityScope)
 		if bErr := BackfillIndexWithPrefix(e.stg, idx, def.JSONFieldName, prefix); bErr != nil {
-			return bErr
+			return fmt.Errorf("register index %s: %w", idxName, bErr)
 		}
 	}
 
@@ -1337,12 +1366,12 @@ func (e *KVEngine) RegisterEntityType(entityType string, indexes []EntityIndex) 
 }
 
 // registerCompoundIndex creates and registers a compound (multi-field) index.
-func (e *KVEngine) registerCompoundIndex(entityType string, def EntityIndex, log *logger.Logger) error {
+func (e *KVEngine) registerCompoundIndex(entityType string, def EntityIndex, log *logger.Logger) (string, error) {
 	idxName := e.buildCompoundIndexName(entityType, def.FieldNames)
 
 	// Skip if already registered.
 	if _, exists := e.compoundIndexes[idxName]; exists {
-		return nil
+		return "", nil
 	}
 
 	idxType := index.IndexTypeNormal
@@ -1366,20 +1395,52 @@ func (e *KVEngine) registerCompoundIndex(entityType string, def EntityIndex, log
 
 	idx, err := index.NewCompoundIndex(e.stg, cfg, log)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	e.compoundIndexes[idxName] = idx
 	e.compoundIndexFields[idxName] = def.JSONFieldNames
 	e.compoundIndexScopes[idxName] = ComposeIndexScope(idxName, entityScope)
 
-	// Backfill from existing data.
+	// Backfill from existing data. On failure the index is cleared and
+	// unregistered, so a retry builds it again instead of keeping an
+	// incomplete index behind the "already registered" skip above.
 	prefix := []byte(entityScope)
 	if bErr := BackfillCompoundIndexWithPrefix(e.stg, idx, def.JSONFieldNames, prefix); bErr != nil {
-		return bErr
+		bErr = fmt.Errorf("register compound index %s: %w", idxName, bErr)
+		return "", errors.Join(bErr, e.unregisterCompoundIndex(idxName))
 	}
 
-	return nil
+	return idxName, nil
+}
+
+// unregisterIndex clears the single-field index idxName and removes it from
+// the engine's index maps. It is the rollback of a failed registration.
+func (e *KVEngine) unregisterIndex(idxName string) error {
+	idx, ok := e.indexes[idxName]
+	if !ok {
+		return nil
+	}
+	err := idx.Clear()
+	delete(e.indexes, idxName)
+	delete(e.indexFields, idxName)
+	delete(e.indexScopes, idxName)
+	return err
+}
+
+// unregisterCompoundIndex clears the compound index idxName and removes it
+// from the engine's compound index maps. It is the rollback of a failed
+// registration.
+func (e *KVEngine) unregisterCompoundIndex(idxName string) error {
+	idx, ok := e.compoundIndexes[idxName]
+	if !ok {
+		return nil
+	}
+	err := idx.Clear()
+	delete(e.compoundIndexes, idxName)
+	delete(e.compoundIndexFields, idxName)
+	delete(e.compoundIndexScopes, idxName)
+	return err
 }
 
 // buildCompoundIndexName constructs the index name for a compound index

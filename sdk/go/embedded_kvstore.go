@@ -150,7 +150,10 @@ func (s *embeddedKVStore) Exists(ctx context.Context, key string) (bool, error) 
 }
 
 // RegisterEntityIndexes maps each definition onto the engine's and registers
-// them; see NewEmbeddedKVStore for the definitions it refuses.
+// them; see NewEmbeddedKVStore for the definitions it refuses. Registration
+// is all-or-nothing: when the backfill of any index cannot write an entry (a
+// unique index over existing duplicate values, or a storage write failure),
+// the error is returned and none of the call's indexes is registered.
 func (s *embeddedKVStore) RegisterEntityIndexes(entityType string, indexes []kvstore.EntityIndex) error {
 	defs := make([]engine.EntityIndex, 0, len(indexes))
 	for _, def := range indexes {

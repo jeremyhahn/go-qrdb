@@ -17,6 +17,7 @@ package engine
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -451,6 +452,11 @@ func BackfillIndex(scanner func() ([]*service.KeyValue, error), idx index.Index,
 // and populates the index with entries for any JSON values containing the
 // specified field name. Unlike BackfillIndex, it uses a storage iterator
 // with prefix bounds for efficient scanning of entity-scoped keys.
+// Empty values, non-JSON values and values without the field are skipped;
+// any error from idx.Put (a unique violation among existing records or a
+// storage write failure) stops the backfill and is returned wrapped with
+// the entity key, leaving the index partially populated for the caller to
+// clear.
 func BackfillIndexWithPrefix(stg storage.Storage, idx index.Index, fieldName string, prefix []byte) error {
 	iter := stg.NewIterator(&storage.IteratorOptions{
 		LowerBound: prefix,
@@ -482,7 +488,9 @@ func BackfillIndexWithPrefix(stg storage.Storage, idx index.Index, fieldName str
 		copy(key, iter.Key())
 
 		val := UnquoteJSON(raw)
-		_ = idx.Put(key, val)
+		if err := idx.Put(key, val); err != nil {
+			return fmt.Errorf("backfill %s: %w", key, err)
+		}
 	}
 
 	if err := iter.Error(); err != nil {
@@ -582,7 +590,12 @@ func RemoveCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]
 }
 
 // BackfillCompoundIndexWithPrefix scans key-value pairs matching the given
-// prefix and populates the compound index from JSON field values.
+// prefix and populates the compound index from JSON field values. Empty
+// values, non-JSON values and values missing any of the fields are skipped;
+// any error from idx.PutCompound (a unique violation among existing records
+// or a storage write failure) stops the backfill and is returned wrapped
+// with the entity key, leaving the index partially populated for the caller
+// to clear.
 func BackfillCompoundIndexWithPrefix(stg storage.Storage, idx *index.CompoundIndex, fieldNames []string, prefix []byte) error {
 	iter := stg.NewIterator(&storage.IteratorOptions{
 		LowerBound: prefix,
@@ -612,7 +625,9 @@ func BackfillCompoundIndexWithPrefix(stg storage.Storage, idx *index.CompoundInd
 		key := make([]byte, len(iter.Key()))
 		copy(key, iter.Key())
 
-		_ = idx.PutCompound(key, values)
+		if err := idx.PutCompound(key, values); err != nil {
+			return fmt.Errorf("backfill %s: %w", key, err)
+		}
 	}
 
 	return iter.Error()

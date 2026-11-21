@@ -223,6 +223,51 @@ func TestEmbeddedKVStore_DAOWithIndexes(t *testing.T) {
 	}
 }
 
+// embeddedMember carries a unique index, so a DAO over it registers a
+// unique "member.Email" index at construction.
+type embeddedMember struct {
+	ID    uint64 `json:"id"`
+	Email string `json:"email" index:"unique"`
+}
+
+func (m *embeddedMember) EntityID() uint64      { return m.ID }
+func (m *embeddedMember) SetEntityID(id uint64) { m.ID = id }
+
+// TestEmbeddedKVStore_RegisterUniqueIndexOverDuplicatesFails pins that a
+// unique index whose backfill meets two records with the same value is not
+// registered: the registration fails, the index stays absent, a retry fails
+// again rather than reporting it already registered, and a DAO that needs the
+// index refuses construction instead of advertising it.
+func TestEmbeddedKVStore_RegisterUniqueIndexOverDuplicatesFails(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	const email = "dup@example.com"
+	for _, key := range []string{"member/1", "member/2"} {
+		if err := store.Put(ctx, key, embeddedEmailValue(email)); err != nil {
+			t.Fatalf("Put %s: %v", key, err)
+		}
+	}
+
+	defs := []kvstore.EntityIndex{{FieldName: "Email", JSONFieldName: "email", Unique: true}}
+	err := store.RegisterEntityIndexes("member", defs)
+	if err == nil || errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("RegisterEntityIndexes over duplicates = %v; want a non-unsupported error", err)
+	}
+
+	keys, err := store.QueryIndex(ctx, "member.Email", []byte(email))
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("QueryIndex after failed registration = %q, %v; want no keys, nil", keys, err)
+	}
+
+	if err := store.RegisterEntityIndexes("member", defs); err == nil || errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("second RegisterEntityIndexes over duplicates = %v; want a non-unsupported error", err)
+	}
+
+	if _, err := NewDAO(store, "member", func() *embeddedMember { return &embeddedMember{} }); err == nil {
+		t.Fatal("NewDAO over duplicate unique values succeeded; want a registration error")
+	}
+}
+
 // registerEmbeddedEmailIndex registers an index on the JSON field "email" of
 // entityType, named entityType+".Email".
 func registerEmbeddedEmailIndex(t *testing.T, store KVStore, entityType string, unique bool) {
