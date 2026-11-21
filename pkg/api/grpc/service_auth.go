@@ -578,6 +578,26 @@ func (s *qrdbServiceServer) ListOwnPermissions(ctx context.Context, _ *emptypb.E
 	return &pb.ListOwnPermissionsResponse{Permissions: out}, nil
 }
 
+// ListPermissionCatalog returns every registered permission with its
+// declared scope, sorted by name. The interceptor gates it on
+// permissions:list (the proto option).
+func (s *qrdbServiceServer) ListPermissionCatalog(_ context.Context, _ *emptypb.Empty) (*pb.ListPermissionCatalogResponse, error) {
+	perms, err := transport.PermissionCatalog()
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	out := make([]*pb.OwnPermission, len(perms))
+	for i, p := range perms {
+		out[i] = &pb.OwnPermission{
+			Name:     p.Name,
+			Resource: p.Resource,
+			Action:   p.Action,
+			Scope:    string(p.Scope),
+		}
+	}
+	return &pb.ListPermissionCatalogResponse{Permissions: out}, nil
+}
+
 // Authorize answers whether an identity may perform an action on a resource,
 // decided by the server's auth chain through
 // AuthMiddleware.EvaluateAuthorization. Asking about the caller needs
