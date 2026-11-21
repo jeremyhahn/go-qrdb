@@ -1692,7 +1692,7 @@ acknowledgements are ordinary metadata writes.
 | **S6** | How does a non-serving node reach the serving set? | **B.** Layer-4 passthrough of the still-encrypted connection. Never a redirect; never an on-behalf forward. |
 | **S7** | Where does a tenant's first admin come from? | **B.** From a CSR supplied at tenant create. No operator-held bootstrap credential. |
 | **S8** | May the platform delete a strict tenant? | **A.** Yes, audited. |
-| **S9** | Where does the tenant audit trail live? | **B.** In the tenant's home group, replicated, hash-chained, under the tenant's key: the replicated audit chain ([../audit/](../audit/), `audit.Chain`, `OpAuditAppend`). The platform trail is replicated the same way, in the system shard. No trail is node-local, because a node-local trail is lost with its node and no cluster backup restores it. |
+| **S9** | Where does the tenant audit trail live? | **B.** In the tenant's home group, replicated, hash-chained, under the tenant's key: the replicated audit chain ([../audit/](../audit/), `audit.Chain`, `OpAuditAppend`). The platform trail is replicated the same way, in the system shard. No trail is node-local, because a node-local trail is lost with its node and no cluster backup restores it. A barrier tenant whose chain stayed on the system shard (under the node key) is refused strict isolation, on its own policy and on the cluster floor, and while strict gets no append there (`*tenant.SystemAuditRouteError`). |
 | **S10** | Who backs up a tenant's groups? | **B, else A.** A platform-made archive that only the tenant can open, if it can be built without platform read access; otherwise tenant-only backups. |
 
 Standing rules that also apply:

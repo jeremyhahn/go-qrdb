@@ -495,7 +495,14 @@ What proposes `OpAuditAppend`, and how a caller reads back what it proposed:
   the system shard or `verifiable-log-audit` is off, and `home` otherwise.
   The route never changes after it is recorded and no record ever moves, so an
   existing chain is never split. The route is picked before proposing; apply
-  is unchanged. A home-group write while `verifiable-log-audit` is not active
+  is unchanged. A system route is under the node key, so a barrier tenant
+  whose effective isolation policy is strict (its own policy or the cluster
+  floor) gets no append there: the append is refused with
+  `*tenant.SystemAuditRouteError` (failed precondition) before any route is
+  recorded, while reads stay allowed; and tightening such a tenant to strict
+  (its policy or the floor) is refused with the same error, read through
+  `SystemShardAuditResolver.SystemAuditRoute` (a recorded `system` route, or
+  none recorded and a chain on the system shard). A home-group write while `verifiable-log-audit` is not active
   on every replica is refused as unavailable with
   `*service.AuditHomeNotActiveError`. Without home groups (standalone) a
   barrier tenant stays on the system shard and a dedicated-isolation tenant is

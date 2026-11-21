@@ -59,6 +59,7 @@ func TestTightenToStrict_RefusedWhileDatabasesAreOnTheNodeKeyedWAL(t *testing.T)
 	svc := newRaftTenantForTightening(t, "acme")
 	probe := &markerSeeingProbe{svc: svc, dbs: []string{"orders"}, sawMarker: map[string]bool{}}
 	svc.SetNodeKeyLogProbe(probe)
+	svc.SetAuditRouteProbe(noSystemAuditRoute{})
 
 	_, err := svc.UpdateTenant(ctx, "acme", TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict})
 	var nk *NodeKeyLogsError
@@ -90,6 +91,7 @@ func TestTightenToStrict_CrossTenantRefusalDisclosesNoDatabaseNames(t *testing.T
 		t.Run(name, func(t *testing.T) {
 			svc := newRaftTenantForTightening(t, "acme")
 			svc.SetNodeKeyLogProbe(&fixedProbe{dbs: map[string][]string{"acme": {"orders", "ledger"}}})
+			svc.SetAuditRouteProbe(noSystemAuditRoute{})
 			_, err := svc.UpdateTenant(ctx, "acme", TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict})
 			var nk *NodeKeyLogsError
 			if !errors.As(err, &nk) || nk.TenantID != "acme" {
@@ -112,6 +114,7 @@ func TestTightenToStrict_CommitsWhenNoDatabaseIsOnTheNodeKeyedWAL(t *testing.T) 
 	svc := newRaftTenantForTightening(t, "acme")
 	probe := &markerSeeingProbe{svc: svc, sawMarker: map[string]bool{}}
 	svc.SetNodeKeyLogProbe(probe)
+	svc.SetAuditRouteProbe(noSystemAuditRoute{})
 
 	if _, err := svc.UpdateTenant(ctx, "acme", TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict}); err != nil {
 		t.Fatalf("UpdateTenant(strict): %v", err)
@@ -133,11 +136,76 @@ func TestTightenToStrict_NoProbeFailsClosed(t *testing.T) {
 	}
 }
 
+// noSystemAuditRoute is an AuditRouteProbe reporting every tenant's audit
+// chain on its home group.
+type noSystemAuditRoute struct{}
+
+func (noSystemAuditRoute) SystemAuditRoute(context.Context, string) (bool, error) { return false, nil }
+
+// systemAuditRoute is an AuditRouteProbe reporting the named tenants' audit
+// chains on the system shard.
+type systemAuditRoute map[string]bool
+
+func (s systemAuditRoute) SystemAuditRoute(_ context.Context, id string) (bool, error) {
+	return s[id], nil
+}
+
+// TestTightenToStrict_NoAuditRouteProbeFailsClosed: with the node-key probe
+// wired but no audit-route probe, a tightening fails closed.
+func TestTightenToStrict_NoAuditRouteProbeFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	svc := newRaftTenantForTightening(t, "acme")
+	svc.SetNodeKeyLogProbe(&fixedProbe{})
+	_, err := svc.UpdateTenant(ctx, "acme", TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict})
+	if !errors.Is(err, ErrAuditRouteUnverifiable) {
+		t.Fatalf("UpdateTenant(strict) with no audit-route probe = %v, want ErrAuditRouteUnverifiable", err)
+	}
+}
+
+// TestTightenToStrict_RefusedWhileTheAuditChainIsOnTheSystemShard: a tenant
+// with no node-keyed databases whose audit chain is on the system shard (under
+// the node key) is refused strict, on the tenant's own policy update and on
+// the cluster floor, and stays non-strict.
+func TestTightenToStrict_RefusedWhileTheAuditChainIsOnTheSystemShard(t *testing.T) {
+	ctx := context.Background()
+	for name, tighten := range map[string]func(*TenantService) error{
+		"tenant policy": func(svc *TenantService) error {
+			_, err := svc.UpdateTenant(ctx, "acme", TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict})
+			return err
+		},
+		"cluster floor": func(svc *TenantService) error {
+			return svc.SetClusterIsolationPolicy(ctx, ClusterIsolationPolicyStrict)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, _ := newPlatformService(t, &bookDouble{}, nil)
+			if _, err := svc.CreateTenant(ctx, "acme", "acme", IsolationBarrier); err != nil {
+				t.Fatalf("CreateTenant(acme): %v", err)
+			}
+			svc.SetNodeKeyLogProbe(&fixedProbe{})
+			svc.SetAuditRouteProbe(systemAuditRoute{"acme": true})
+			err := tighten(svc)
+			var sa *SystemAuditRouteError
+			if !errors.As(err, &sa) || sa.TenantID != "acme" {
+				t.Fatalf("tightening = %v, want *SystemAuditRouteError for acme", err)
+			}
+			info, err := svc.GetTenant(ctx, "acme")
+			if err != nil || info.IsolationPolicy == TenantIsolationPolicyStrict {
+				t.Fatalf("tenant after the refusal = (%+v, %v); want not strict", info, err)
+			}
+			if floor, err := svc.ClusterIsolationPolicy(ctx); err != nil || floor == ClusterIsolationPolicyStrict {
+				t.Fatalf("floor after the refusal = (%v, %v); want not strict", floor, err)
+			}
+		})
+	}
+}
+
 func TestTightenFloorToStrict_RefusedWhileARaftTenantHasNodeKeyedLogs(t *testing.T) {
 	ctx := context.Background()
 	svc := newRaftTenantForTightening(t, "acme")
 	probe := &markerSeeingProbe{svc: svc, dbs: []string{"orders"}, sawMarker: map[string]bool{}}
 	svc.SetNodeKeyLogProbe(probe)
+	svc.SetAuditRouteProbe(noSystemAuditRoute{})
 
 	err := svc.SetClusterIsolationPolicy(ctx, ClusterIsolationPolicyStrict)
 	var nk *NodeKeyLogsError
@@ -168,6 +236,7 @@ func TestTightenFloorToStrict_RefusalDisclosesNoDatabaseNames(t *testing.T) {
 	ctx := context.Background()
 	svc := newRaftTenantForTightening(t, "acme")
 	svc.SetNodeKeyLogProbe(&markerSeeingProbe{svc: svc, dbs: []string{"orders", "ledger"}, sawMarker: map[string]bool{}})
+	svc.SetAuditRouteProbe(noSystemAuditRoute{})
 
 	err := svc.SetClusterIsolationPolicy(ctx, ClusterIsolationPolicyStrict)
 	var nk *NodeKeyLogsError
@@ -265,6 +334,7 @@ func TestTightenToStrict_RefusedWhileABarrierTenantHasNodeKeyedLogs(t *testing.T
 	}
 	probe := &markerSeeingProbe{svc: svc, dbs: []string{"orders"}, sawMarker: map[string]bool{}}
 	svc.SetNodeKeyLogProbe(probe)
+	svc.SetAuditRouteProbe(noSystemAuditRoute{})
 
 	_, err := svc.UpdateTenant(ctx, "secure", TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict})
 	var nk *NodeKeyLogsError
@@ -296,6 +366,7 @@ func TestTightenToStrict_GuardJudgesTheRecordTheSwapCommits(t *testing.T) {
 	}
 	probe := &markerSeeingProbe{svc: svc, dbs: []string{"orders"}, sawMarker: map[string]bool{}}
 	svc.SetNodeKeyLogProbe(probe)
+	svc.SetAuditRouteProbe(noSystemAuditRoute{})
 
 	// The update's initial read saw the tenant while it was still volume.
 	stale := &TenantInfo{ID: "secure", IsolationType: IsolationVolume}
@@ -336,6 +407,7 @@ func TestGuardedFloor_MarksBeforeListingTenants(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var g isolationChangeGuard
 			g.SetNodeKeyLogProbe(&fixedProbe{})
+			g.SetAuditRouteProbe(noSystemAuditRoute{})
 			store := newMemMarkerStore()
 			var sawMarker, committed bool
 			list := func(ctx context.Context) ([]TenantInfo, error) {
@@ -371,6 +443,7 @@ func TestGuardedFloor_ProbesATenantCreatedDuringTheList(t *testing.T) {
 	var g isolationChangeGuard
 	probe := &fixedProbe{dbs: map[string][]string{"newcomer": {"orders"}}}
 	g.SetNodeKeyLogProbe(probe)
+	g.SetAuditRouteProbe(noSystemAuditRoute{})
 	list := func(context.Context) ([]TenantInfo, error) {
 		return []TenantInfo{{ID: "newcomer", IsolationType: IsolationBarrier}}, nil
 	}
@@ -425,6 +498,7 @@ func TestIsolationTightening_StaleMarkersExpire(t *testing.T) {
 		store.deleteErr = errors.New("delete boom")
 		var g isolationChangeGuard
 		g.SetNodeKeyLogProbe(&fixedProbe{dbs: map[string][]string{"acme": {"orders"}}})
+		g.SetAuditRouteProbe(noSystemAuditRoute{})
 		err := g.guardedUpdate(ctx, store, &TenantInfo{ID: "acme", IsolationType: IsolationRaft},
 			TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict}, func(context.Context) error { return nil })
 		var nk *NodeKeyLogsError
@@ -453,6 +527,7 @@ func TestTightenToStrict_RefusesACommitPastItsLease(t *testing.T) {
 	setTighteningClock(t, &now)
 	var g isolationChangeGuard
 	g.SetNodeKeyLogProbe(&fixedProbe{during: func() { now = now.Add(tighteningLease) }})
+	g.SetAuditRouteProbe(noSystemAuditRoute{})
 	err := g.guardedUpdate(context.Background(), newMemMarkerStore(), &TenantInfo{ID: "acme", IsolationType: IsolationRaft},
 		TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict}, func(context.Context) error {
 			t.Fatal("tightening committed past its lease")
@@ -473,6 +548,7 @@ func TestTightenToStrict_PolicyWriteFencedOnItsMarker(t *testing.T) {
 	setTighteningClock(t, &now)
 	var g isolationChangeGuard
 	g.SetNodeKeyLogProbe(&fixedProbe{})
+	g.SetAuditRouteProbe(noSystemAuditRoute{})
 	store := newMemKVStore()
 	const policyKey = "policy/acme"
 	store.data[policyKey] = []byte("inherit")

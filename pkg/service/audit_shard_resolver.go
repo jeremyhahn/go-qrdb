@@ -215,7 +215,7 @@ func (r *SystemShardAuditResolver) resolve(ctx context.Context, tenantID string,
 			if !chain {
 				return homes.HomeGroup(ctx, routed)
 			}
-			return r.barrierRoute(ctx, homes, routed, write)
+			return r.barrierRoute(ctx, homes, routed, info, write)
 		case tenant.IsolationVolume, tenant.IsolationRaft:
 			if write && !r.auditInstanceActive() {
 				return nil, 0, &AuditHomeNotActiveError{TenantID: routed}
@@ -241,8 +241,27 @@ func (r *SystemShardAuditResolver) resolve(ctx context.Context, tenantID string,
 }
 
 // barrierRoute resolves a barrier tenant's audit chain with home groups
-// attached; see resolve.
-func (r *SystemShardAuditResolver) barrierRoute(ctx context.Context, homes *auditHomeGroupSource, tenantID string, write bool) (Host, uint64, error) {
+// attached; see resolve. An append to a system route by a tenant whose
+// effective isolation policy is strict is refused
+// (*tenant.SystemAuditRouteError): the system shard's chain is under the
+// node key. The route is read before the append records one, so a strict
+// tenant never records a system route either; reads stay allowed.
+func (r *SystemShardAuditResolver) barrierRoute(ctx context.Context, homes *auditHomeGroupSource, tenantID string, info *tenant.TenantInfo, write bool) (Host, uint64, error) {
+	if write {
+		current, err := r.auditRoute(ctx, homes, tenantID, false)
+		if err != nil {
+			return nil, 0, err
+		}
+		if current == AuditRouteSystem {
+			strict, err := r.strictPolicy(ctx, info)
+			if err != nil {
+				return nil, 0, err
+			}
+			if strict {
+				return nil, 0, &tenant.SystemAuditRouteError{TenantID: tenantID}
+			}
+		}
+	}
 	route, err := r.auditRoute(ctx, homes, tenantID, write)
 	if err != nil {
 		return nil, 0, err
@@ -307,6 +326,54 @@ func (r *SystemShardAuditResolver) auditRoute(ctx context.Context, homes *auditH
 
 // hasSystemChain reports whether tenantID's replicated audit chain already
 // has records on the system shard.
+// strictPolicy reports whether info's effective isolation policy is strict:
+// its own policy, or the cluster floor when the isolation lookup reads one
+// (tenant.ClusterIsolationPolicyReader).
+func (r *SystemShardAuditResolver) strictPolicy(ctx context.Context, info *tenant.TenantInfo) (bool, error) {
+	var floor tenant.ClusterIsolationPolicy
+	if reader, ok := r.isolation.(tenant.ClusterIsolationPolicyReader); ok {
+		var err error
+		if floor, err = reader.ClusterIsolationPolicy(ctx); err != nil {
+			return false, err
+		}
+	}
+	return tenant.EffectiveIsolationPolicy(floor, info.IsolationPolicy) == tenant.ClusterIsolationPolicyStrict, nil
+}
+
+// SystemAuditRoute implements tenant.AuditRouteProbe: it reports whether
+// tenantID is a barrier tenant whose audit chain is routed to the system
+// shard -- a recorded system route or, with none recorded, a chain that
+// already has records there. It only reads: no route is recorded. A tenant
+// that is not a barrier tenant is never on a system route.
+func (r *SystemShardAuditResolver) SystemAuditRoute(ctx context.Context, tenantID string) (bool, error) {
+	routed := tenantid.Normalize(tenantID)
+	if tenantid.IsSystem(routed) || r.isolation == nil {
+		return false, nil
+	}
+	info, err := r.isolation.GetTenant(ctx, routed)
+	if err != nil {
+		if errors.Is(err, tenant.ErrTenantNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if info.EffectiveIsolationType() != tenant.IsolationBarrier {
+		return false, nil
+	}
+	if homes := r.homes.Load(); homes != nil {
+		recorded, err := homes.routes.Get(ctx, AuditRouteKey(routed))
+		if err != nil {
+			return false, err
+		}
+		if recorded != nil {
+			return string(recorded) == AuditRouteSystem, nil
+		}
+	}
+	return r.hasSystemChain(ctx, routed)
+}
+
+var _ tenant.AuditRouteProbe = (*SystemShardAuditResolver)(nil)
+
 func (r *SystemShardAuditResolver) hasSystemChain(ctx context.Context, tenantID string) (bool, error) {
 	result, err := r.host.SyncRead(ctx, r.shardID, audit.VerifyRequest{TenantID: tenantID})
 	if err != nil {

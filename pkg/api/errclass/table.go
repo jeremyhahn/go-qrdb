@@ -1165,6 +1165,12 @@ var tenantRules = []rule{
 	// No probe is wired to list the databases on the node-keyed WAL: the
 	// tightening to strict fails closed.
 	is(tenant.ErrNodeKeyLogsUnverifiable, Unavailable),
+	// The tenant's audit chain is on the system shard, under the node key:
+	// a strict tightening, or a strict tenant's append there, is refused.
+	as(&tenant.SystemAuditRouteError{}, FailedPrecondition),
+	// No probe is wired to read the tenant's audit route: the tightening
+	// to strict fails closed.
+	is(tenant.ErrAuditRouteUnverifiable, Unavailable),
 	is(tenant.ErrTenantNotFound, NotFound),
 	as(&tenant.InvalidTenantIDError{}, InvalidArgument),
 	// A tenant ID no SPIFFE ID could carry as its trust domain.

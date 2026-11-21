@@ -19,6 +19,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -266,5 +267,146 @@ func TestSystemShardAuditResolver_DetachedHomeGroupRestoresTheRefusals(t *testin
 	var refused *BarrierTenantLogNotSupportedError
 	if _, _, err := r.ResolveAuditShard(context.Background(), "widgets"); !errors.As(err, &refused) {
 		t.Fatalf("ResolveAuditShard(widgets) = %v, want *BarrierTenantLogNotSupportedError", err)
+	}
+}
+
+// floorIsolationLookup adds a cluster isolation floor to fakeIsolationLookup.
+type floorIsolationLookup struct {
+	*fakeIsolationLookup
+	floor tenant.ClusterIsolationPolicy
+}
+
+func (f *floorIsolationLookup) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
+	return f.floor, nil
+}
+
+// barrierTenantLookup is a lookup holding one barrier tenant, widgets, with
+// the given policy, under the given cluster floor.
+func barrierTenantLookup(policy tenant.TenantIsolationPolicy, floor tenant.ClusterIsolationPolicy) *floorIsolationLookup {
+	return &floorIsolationLookup{
+		fakeIsolationLookup: &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
+			"acme":    {ID: "acme", IsolationType: tenant.IsolationPrefix},
+			"widgets": {ID: "widgets", IsolationType: tenant.IsolationBarrier, IsolationPolicy: policy},
+		}},
+		floor: floor,
+	}
+}
+
+// TestSystemShardAuditResolver_StrictTenantAppendOnASystemRouteIsRefused: a
+// barrier tenant whose audit route is the system shard (under the node key)
+// gets no append there once its effective policy is strict -- its own policy
+// or the cluster floor -- and its history stays readable.
+func TestSystemShardAuditResolver_StrictTenantAppendOnASystemRouteIsRefused(t *testing.T) {
+	ctx := context.Background()
+	for name, lookup := range map[string]*floorIsolationLookup{
+		"tenant policy": barrierTenantLookup(tenant.TenantIsolationPolicyStrict, ""),
+		"cluster floor": barrierTenantLookup("", tenant.ClusterIsolationPolicyStrict),
+	} {
+		t.Run(name, func(t *testing.T) {
+			system := newChainShard(3, auditActive())
+			homes, homeCmds := homeShard()
+			r := NewSystemShardAuditResolver(system.host, 1, lookup)
+			routes := newMemRouteStore()
+			if _, err := routes.PutIfAbsent(ctx, AuditRouteKey("widgets"), []byte(AuditRouteSystem)); err != nil {
+				t.Fatalf("PutIfAbsent: %v", err)
+			}
+			r.SetHomeGroupSource(homes, routes)
+			logger := NewReplicatedLogger(r)
+
+			err := logger.Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"})
+			var sa *tenant.SystemAuditRouteError
+			if !errors.As(err, &sa) || sa.TenantID != "widgets" {
+				t.Fatalf("Emit = %v, want *tenant.SystemAuditRouteError for widgets", err)
+			}
+			if len(*system.cmds) != 0 || len(*homeCmds) != 0 {
+				t.Fatalf("proposals: system %d, home %d; want none", len(*system.cmds), len(*homeCmds))
+			}
+			if report, err := logger.VerifyTenantChain(ctx, "widgets"); err != nil || report.Head != 3 {
+				t.Fatalf("VerifyTenantChain = %+v, %v; want the system shard's chain readable", report, err)
+			}
+		})
+	}
+}
+
+// TestSystemShardAuditResolver_StrictTenantAppendOnAHomeRouteSucceeds: a
+// strict barrier tenant with no chain on the system shard appends to its
+// home group.
+func TestSystemShardAuditResolver_StrictTenantAppendOnAHomeRouteSucceeds(t *testing.T) {
+	system := newChainShard(0, auditActive())
+	homes, homeCmds := homeShard()
+	r := NewSystemShardAuditResolver(system.host, 1, barrierTenantLookup(tenant.TenantIsolationPolicyStrict, ""))
+	routes := newMemRouteStore()
+	r.SetHomeGroupSource(homes, routes)
+	if err := NewReplicatedLogger(r).Emit(context.Background(), audit.AuditEvent{TenantID: "widgets", Action: "delete"}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if len(*system.cmds) != 0 || len(*homeCmds) != 1 {
+		t.Fatalf("proposals: system %d, home %d; want the event on the home group", len(*system.cmds), len(*homeCmds))
+	}
+	if got := routes.route("widgets"); got != AuditRouteHome {
+		t.Fatalf("recorded route = %q, want %q", got, AuditRouteHome)
+	}
+}
+
+// TestSystemShardAuditResolver_NonStrictTenantAppendOnASystemRouteSucceeds:
+// a barrier tenant that is not strict keeps appending to its system-shard
+// chain.
+func TestSystemShardAuditResolver_NonStrictTenantAppendOnASystemRouteSucceeds(t *testing.T) {
+	ctx := context.Background()
+	system := newChainShard(3, auditActive())
+	homes, homeCmds := homeShard()
+	r := NewSystemShardAuditResolver(system.host, 1, barrierTenantLookup(tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyOperatorAccess))
+	routes := newMemRouteStore()
+	if _, err := routes.PutIfAbsent(ctx, AuditRouteKey("widgets"), []byte(AuditRouteSystem)); err != nil {
+		t.Fatalf("PutIfAbsent: %v", err)
+	}
+	r.SetHomeGroupSource(homes, routes)
+	if err := NewReplicatedLogger(r).Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if len(*system.cmds) != 1 || len(*homeCmds) != 0 {
+		t.Fatalf("proposals: system %d, home %d; want the event on the system shard's chain", len(*system.cmds), len(*homeCmds))
+	}
+}
+
+// TestSystemShardAuditResolver_SystemAuditRoute: the probe reports a
+// recorded system route, and with none recorded a chain already on the
+// system shard; it records no route, and a tenant that is not a barrier
+// tenant is never on a system route.
+func TestSystemShardAuditResolver_SystemAuditRoute(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name     string
+		tenantID string
+		head     uint64
+		recorded string
+		want     bool
+	}{
+		{"recorded system route", "widgets", 0, AuditRouteSystem, true},
+		{"recorded home route", "widgets", 3, AuditRouteHome, false},
+		{"no route, chain on the system shard", "widgets", 3, "", true},
+		{"no route, no chain", "widgets", 0, "", false},
+		{"prefix tenant", "acme", 3, "", false},
+		{"unregistered tenant", "nobody", 3, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			system := newChainShard(tc.head, auditActive())
+			homes, _ := homeShard()
+			r := NewSystemShardAuditResolver(system.host, 1, barrierTenantLookup("", ""))
+			routes := newMemRouteStore()
+			if tc.recorded != "" {
+				if _, err := routes.PutIfAbsent(ctx, AuditRouteKey(tc.tenantID), []byte(tc.recorded)); err != nil {
+					t.Fatalf("PutIfAbsent: %v", err)
+				}
+			}
+			r.SetHomeGroupSource(homes, routes)
+			got, err := r.SystemAuditRoute(ctx, tc.tenantID)
+			if err != nil || got != tc.want {
+				t.Fatalf("SystemAuditRoute(%s) = %v, %v; want %v", tc.tenantID, got, err, tc.want)
+			}
+			if tc.recorded == "" && routes.route(tc.tenantID) != "" {
+				t.Fatalf("SystemAuditRoute recorded route %q, want none", routes.route(tc.tenantID))
+			}
+		})
 	}
 }

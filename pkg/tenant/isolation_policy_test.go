@@ -256,6 +256,7 @@ func TestTenantService_UpdateTenant_IsolationPolicy_TightenOnly(t *testing.T) {
 	// A barrier tenant's raft databases can be on the shared WAL, so its
 	// tightening lists them: wire a probe that finds none.
 	svc.SetNodeKeyLogProbe(&markerSeeingProbe{svc: svc, sawMarker: map[string]bool{}})
+	svc.SetAuditRouteProbe(noSystemAuditRoute{})
 	if _, err := svc.CreateTenant(ctx, "secure", "Secure", IsolationBarrier); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -293,6 +294,7 @@ func TestTenantService_SetClusterIsolationPolicy_StrictOverExistingIsolatedTenan
 	// The floor governs the barrier tenant "loose" anew, so it lists its
 	// databases on the shared WAL: wire a probe that finds none.
 	svc.SetNodeKeyLogProbe(&markerSeeingProbe{svc: svc, sawMarker: map[string]bool{}})
+	svc.SetAuditRouteProbe(noSystemAuditRoute{})
 	if err := svc.SetClusterIsolationPolicy(ctx, ClusterIsolationPolicyOperatorAccess); err != nil {
 		t.Fatalf("SetClusterIsolationPolicy(operator-access): %v", err)
 	}

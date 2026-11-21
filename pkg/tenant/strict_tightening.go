@@ -74,6 +74,53 @@ type StrictTighteningWiring interface {
 	// With none wired, a tightening that affects a raft tenant is refused
 	// (ErrNodeKeyLogsUnverifiable).
 	SetNodeKeyLogProbe(NodeKeyLogProbe)
+	// SetAuditRouteProbe sets the probe a tightening to strict consults for
+	// a governed tenant's audit route. With none wired, a tightening that
+	// affects a governed tenant is refused (ErrAuditRouteUnverifiable).
+	SetAuditRouteProbe(AuditRouteProbe)
+}
+
+// AuditRouteProbe reports whether a tenant's replicated audit chain is
+// routed to the system shard, under the node key, rather than to its home
+// group. service.SystemShardAuditResolver is the implementation.
+type AuditRouteProbe interface {
+	SystemAuditRoute(ctx context.Context, tenantID string) (bool, error)
+}
+
+// ErrAuditRouteUnverifiable refuses a tightening to strict that affects a
+// governed tenant when no AuditRouteProbe is wired to read its audit route.
+var ErrAuditRouteUnverifiable = errors.New("tenant: the audit route cannot be read; tightening to strict is refused")
+
+// SystemAuditRouteError refuses tightening a tenant to strict, and refuses a
+// strict tenant's audit append, while the tenant's audit chain is on the
+// system shard: a strict tenant's every log is under its own key, and the
+// system shard's chain is under the node key.
+type SystemAuditRouteError struct {
+	TenantID string
+}
+
+func (e *SystemAuditRouteError) Error() string {
+	return "tenant: tenant " + strconv.Quote(e.TenantID) + " has its audit chain on the system shard under the node key; " +
+		"a strict tenant's every log is under its own key, so strict isolation is refused"
+}
+
+// auditRouteProbeRef boxes an AuditRouteProbe for atomic storage.
+type auditRouteProbeRef struct{ probe AuditRouteProbe }
+
+// SetAuditRouteProbe implements StrictTighteningWiring. A nil probe unwires
+// it.
+func (g *isolationChangeGuard) SetAuditRouteProbe(p AuditRouteProbe) {
+	if p == nil {
+		g.auditProbe.Store(nil)
+		return
+	}
+	g.auditProbe.Store(&auditRouteProbeRef{probe: p})
+}
+
+// WithAuditRouteProbe injects the audit-route probe a tightening to strict
+// consults. See StrictTighteningWiring.
+func WithAuditRouteProbe(p AuditRouteProbe) TenantServiceOption {
+	return func(s *TenantService) { s.SetAuditRouteProbe(p) }
 }
 
 // IsolationTighteningReader reports whether a tightening to strict that
@@ -269,6 +316,17 @@ func (g *isolationChangeGuard) tightenToStrict(ctx context.Context, store marker
 					nk.Databases = dbs
 				}
 				return nk
+			}
+			audit := g.auditProbe.Load()
+			if audit == nil {
+				return ErrAuditRouteUnverifiable
+			}
+			system, err := audit.probe.SystemAuditRoute(ctx, id)
+			if err != nil {
+				return &TenantDataProbeError{TenantID: id, Err: err}
+			}
+			if system {
+				return &SystemAuditRouteError{TenantID: id}
 			}
 		}
 	}

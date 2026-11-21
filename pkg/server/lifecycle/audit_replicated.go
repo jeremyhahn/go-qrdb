@@ -46,6 +46,18 @@ func (l *nodeAuditIsolationLookup) GetTenant(ctx context.Context, tenantID strin
 	return l.node.Tenant.GetTenant(ctx, tenantID)
 }
 
+// ClusterIsolationPolicy implements tenant.ClusterIsolationPolicyReader, the
+// floor the audit resolver reads a tenant's effective isolation policy
+// against. With no tenant service there is no floor: operator-access.
+func (l *nodeAuditIsolationLookup) ClusterIsolationPolicy(ctx context.Context) (tenant.ClusterIsolationPolicy, error) {
+	if l.node.Tenant == nil {
+		return tenant.ClusterIsolationPolicyOperatorAccess, nil
+	}
+	return l.node.Tenant.ClusterIsolationPolicy(ctx)
+}
+
+var _ tenant.ClusterIsolationPolicyReader = (*nodeAuditIsolationLookup)(nil)
+
 // nodeAuditEntitlementLookup reads n.Tenant lazily, exactly like
 // nodeAuditIsolationLookup above. ReplicatedAuditEnabled is not part of the
 // tenant.TenantServicer interface (it is a concrete-type method on

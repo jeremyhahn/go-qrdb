@@ -67,6 +67,7 @@ var (
 type isolationChangeGuard struct {
 	dataProbe    atomic.Pointer[dataProbeRef]
 	nodeKeyProbe atomic.Pointer[nodeKeyProbeRef]
+	auditProbe   atomic.Pointer[auditRouteProbeRef]
 }
 
 // dataProbeRef boxes a TenantDataProbe for atomic storage.

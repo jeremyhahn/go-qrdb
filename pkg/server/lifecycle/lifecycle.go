@@ -1421,9 +1421,12 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// node-keyed WAL, and fails closed without the probe. It is wired here,
 	// where the tenant service and the database manager are both built, so
 	// it is in place before any composer (qrdbd, the SDK node) writes the
-	// FIPS floor or serves a tenant update.
+	// FIPS floor or serves a tenant update. The audit resolver reports a
+	// governed tenant whose audit chain is on the system shard, under the
+	// node key, which a strict tightening refuses as well.
 	if w, ok := n.Tenant.(tenant.StrictTighteningWiring); ok {
 		w.SetNodeKeyLogProbe(service.NewNodeKeyLogProbe(dbManager))
+		w.SetAuditRouteProbe(auditResolver)
 	}
 
 	// The tenant DEK keyring rides the StoreResolver both branches above

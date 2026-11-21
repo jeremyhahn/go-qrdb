@@ -411,6 +411,8 @@ func TestClassify_TenantLocationRefusals(t *testing.T) {
 		{"rebalance never moves a tenant home group", &service.RebalanceMoveError{ShardID: 7, TenantID: "t", Step: "home-group", Err: &service.HomeGroupMoveError{TenantID: "t", ShardID: 7}}, FailedPrecondition},
 		{"undone tenant id not yet released", &tenant.TenantUndoPendingError{TenantID: "t", Pending: []string{"n"}}, Unavailable},
 		{"deleted tenant id is retired", &tenant.TenantDeletedError{TenantID: "t"}, AlreadyExists},
+		{"strict refused while the audit chain is on the system shard", &tenant.SystemAuditRouteError{TenantID: "t"}, FailedPrecondition},
+		{"strict refused while the audit route cannot be read", tenant.ErrAuditRouteUnverifiable, Unavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for name, e := range map[string]error{"bare": tc.err, "wrapped": wrapped{tc.err}} {
