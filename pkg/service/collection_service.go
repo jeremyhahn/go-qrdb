@@ -384,6 +384,19 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 		return nil, &CollectionInvalidCodecError{Codec: req.StorageCodec}
 	}
 
+	// Secondary indexes are maintained by the engine, which decodes the
+	// stored bytes as JSON: under any other codec a unique index would pass
+	// every document unchecked, so index definitions require JSON.
+	if len(req.Indexes) > 0 {
+		name := req.StorageCodec
+		if name == "" && s.dbCodecLookup != nil {
+			name = s.dbCodecLookup(req.Database)
+		}
+		if name != "" && dao.CodecType(name) != dao.CodecJSON {
+			return nil, &CollectionInvalidIndexError{Reason: "secondary indexes require the json storage codec, collection codec is " + strconv.Quote(name)}
+		}
+	}
+
 	incarnation, err := newCollectionIncarnation()
 	if err != nil {
 		return nil, &CollectionMetadataError{Op: "incarnation", Err: err}
