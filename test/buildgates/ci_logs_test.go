@@ -261,7 +261,7 @@ func TestEnvPrintProblems_CanFail(t *testing.T) {
 		`printenv GIT_CONFIG_KEY_0`,
 		`set -x`,
 		`set -o xtrace`,
-		`cat .devcontainer/.env`,
+		`cat build/docker/devcontainer/.env`,
 		`cat "$RUNNER_TEMP/gomodauth.env"`,
 		`tail "$MODULE_ENV_FILE"`,
 	} {

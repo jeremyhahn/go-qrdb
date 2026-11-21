@@ -84,7 +84,7 @@ go.work.sum
 /.secure-analyzer-probe/
 
 # devcontainer secrets (Gitea module-fetch token)
-.devcontainer/.env
+build/docker/devcontainer/.env
 
 # CI security-scan reports (devops.md §8)
 gosec.sarif

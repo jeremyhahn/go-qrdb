@@ -4,7 +4,7 @@
 # baked into an image layer and recoverable from it. Secrets first, bulk
 # second.
 
-# Credentials. .devcontainer/.env carries the Gitea module-fetch token and is
+# Credentials. build/docker/devcontainer/.env carries the Gitea module-fetch token and is
 # gitignored; without this line the bake-in would put it in a layer.
 #
 # gomodauth* is KEPT although #326 removed the file it was named for -- the
@@ -13,7 +13,7 @@
 # credentials file, which is what it was always for; a line that matches
 # nothing costs nothing, and deleting it would remove the guard exactly when
 # someone is adding the thing it guards against.
-.devcontainer/.env
+build/docker/devcontainer/.env
 gomodauth*
 
 # Runtime state a locally-run daemon leaves behind, including the CA, node and
