@@ -6,7 +6,7 @@
  *
  * The REST handlers encode credential values as Go []byte, which
  * encoding/json renders as base64 (RFC 4648): a stored "first-secret"
- * arrives as "Zmlyc3Qtc2VjcmV0". The Wails binding returns plaintext, so the
+ * arrives base64-encoded. The Wails binding returns plaintext, so the
  * desktop-mock specs cannot catch a missing decode; these tests serve the
  * real wire bodies and assert the view shows the plaintext.
  */
@@ -16,10 +16,16 @@ import { webTest as test, expect } from "./fixtures/web-mode-mock.ts";
 
 const LOAD_TIMEOUT = 10_000;
 
-/** base64 of "first-secret", "second-secret" and "sekrit-value". */
-const FIRST_SECRET_B64 = "Zmlyc3Qtc2VjcmV0";
-const SECOND_SECRET_B64 = "c2Vjb25kLXNlY3JldA==";
-const CURRENT_SECRET_B64 = "c2Vrcml0LXZhbHVl";
+/** base64 (RFC 4648) of a UTF-8 string, as encoding/json renders a Go []byte. */
+const b64 = (s: string): string => Buffer.from(s, "utf8").toString("base64");
+
+/**
+ * The wire values are derived at runtime from their plaintexts, so no
+ * encoded secret literal is committed.
+ */
+const FIRST_SECRET_B64 = b64("first-secret");
+const SECOND_SECRET_B64 = b64("second-secret");
+const CURRENT_SECRET_B64 = b64("sekrit-value");
 
 function json(route: Route, body: unknown): void {
   void route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });

@@ -116,7 +116,8 @@ describe('CredentialClient — REST wire contract', () => {
 
     it('retrieve percent-encodes the credential name', async () => {
         const client = await connectedClient();
-        const calls = installMockFetch({ value: 'x' });
+        // The handler's value is a Go []byte: base64 on the wire ("x").
+        const calls = installMockFetch({ value: 'eA==' });
 
         await client.credentials.retrieve('db/prod key');
 
