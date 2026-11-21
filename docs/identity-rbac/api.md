@@ -78,6 +78,7 @@ see [Status and error mapping](#status-and-error-mapping).
 | Assign role | `POST /roles/assign` | `AssignRole` | `role.Assign` | `qrdb_role_assign` | `AssignRole` | `roles:assign` |
 | Unassign role | `POST /roles/unassign` | `UnassignRole` | `role.Unassign` | `qrdb_role_unassign` | `UnassignRole` | `roles:unassign` |
 | List permissions | `GET /permissions` | `ListPermissions` | `role.ListPermissions` | `qrdb_permissions_list` | `Client.Permissions()` | `permissions:list` |
+| List the permission catalog (with scopes) | `GET /permissions/catalog` | `ListPermissionCatalog` | `role.ListPermissionCatalog` | `qrdb_permissions_catalog` | `Client.Permissions().List` / `Lookup` / `LookupScope` | `permissions:list` |
 | Resolve role permissions | `POST /roles/resolve-permissions` | `ResolveRolePermissions` | `role.ResolvePermissions` | `qrdb_permissions_resolve` | `ResolvePermissions` | `permissions:resolve` |
 | List own effective permissions | `GET /permissions/own` | `ListOwnPermissions` | `role.ListOwnPermissions` | `qrdb_permissions_own` | `Client.RBAC().ListOwnPermissions` | identity-gated |
 | Authorize an identity | `POST /permissions/authorize` | `Authorize` | `role.Authorize` | `qrdb_permissions_authorize` | `Client.RBAC().Authorize` | identity-gated; `permissions:resolve` for another identity |
@@ -122,9 +123,26 @@ caller of another tenant, the `system` tenant's included, is refused with
 permission check. In the standard posture `roles:create` alone decides, as
 before.
 
-`Client.Permissions()` and `Client.RBAC()` return **nil** on a transport that
-does not implement the corresponding provider. Nil-check them; the nil is not
-an error value.
+**Permission catalog.** `ListPermissionCatalog` takes no request and answers
+every registered permission with its resource, action and scope, sorted by
+name:
+
+```json
+{"permissions": [{"name": "kv:get", "resource": "kv", "action": "get", "scope": "self"}]}
+```
+
+`Client.Permissions()` is a required capability: every transport (embedded,
+gRPC, REST, QUIC, Unix, MCP) implements `transport.PermissionProvider`, so it
+never returns nil on an open client (it returns nil only after `Close`). The
+remote transports serve it over `ListPermissionCatalog`. `Lookup` and
+`LookupScope` return `*transport.PermissionNotFoundError` for an unknown name,
+and `LookupScope` returns an error, never `self`, when an entry has an empty
+scope. `Client.RBAC()` still returns **nil** on a transport that does not
+implement `RBACProvider`; nil-check it.
+
+`CustodianGroups()` and `Shares()` are not part of this capability set: they
+were removed when share holders were unified (b53a019c15) and the
+ShareService was deleted (f704da972e).
 
 **Own permissions and Authorize are identity-gated.** Any authenticated
 caller may list its own effective permissions and ask whether it may perform

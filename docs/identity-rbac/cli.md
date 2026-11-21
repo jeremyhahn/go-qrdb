@@ -359,11 +359,18 @@ own-permissions`, run as the holder, lists `devices:onboard` with scope
 
 ### `qrdb roles permissions`
 
-List every registered permission. No flags. This is the authoritative
+List every registered permission. This is the authoritative
 vocabulary — anything not in it will be refused by `roles create`.
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--detail` | `false` | List the catalog through `client.Permissions()` (`ListPermissionCatalog`): every permission with its resource, action and scope, sorted by name. The table has `NAME`, `RESOURCE`, `ACTION` and `SCOPE` columns; `--output json`/`yaml` answers `{"permissions": [{"name", "resource", "action", "scope"}]}`. Needs `permissions:list`. |
+
+Without `--detail` the output is unchanged.
 
 ```bash
 qrdb roles permissions --output json
+qrdb roles permissions --detail
 ```
 
 ### `qrdb roles resolve-permissions <role-id> [role-id...]`

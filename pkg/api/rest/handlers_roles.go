@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -442,6 +443,23 @@ func (s *Server) handleListPermissions(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	writeJSON(w, listPermissionsResponse{Categories: resp})
+}
+
+// permissionCatalogResponse is the body of GET /permissions/catalog.
+type permissionCatalogResponse struct {
+	Permissions []transport.PermissionInfo `json:"permissions"`
+}
+
+// handleListPermissionCatalog handles GET /permissions/catalog -- every
+// registered permission with its declared scope, sorted by name. The route
+// is gated on permissions:list.
+func (s *Server) handleListPermissionCatalog(w http.ResponseWriter, _ *http.Request) {
+	perms, err := transport.PermissionCatalog()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, permissionCatalogResponse{Permissions: perms})
 }
 
 // handleGetRoleByName handles GET /roles/by-name?tenant_id=&name= --

@@ -10,12 +10,14 @@
 ```go
 func (c *Client) Users()       transport.UserClient
 func (c *Client) Roles()       transport.RoleClient
-func (c *Client) Permissions() transport.PermissionClient  // nil if unsupported
+func (c *Client) Permissions() transport.PermissionClient  // every transport; nil only after Close
 func (c *Client) RBAC()        transport.RBACClient        // nil if unsupported
 ```
 
-`Permissions()` and `RBAC()` return **nil** when the transport does not
-implement the corresponding provider interface — nil-check them.
+`Permissions()` is a required capability: every transport implements
+`transport.PermissionProvider` (the remote ones over `ListPermissionCatalog`),
+so it never returns nil on an open client. `RBAC()` returns **nil** when the
+transport does not implement `RBACProvider` — nil-check it.
 
 Built-in role reconciliation, re-exported from `sdk/go` and carried by every
 transport's `RoleClient`:
@@ -1388,7 +1390,7 @@ authenticated value — whether or not the authenticator set one.
 | Policy call naming a tenant other than the caller's own, a system-tenant caller included | `*service.PolicyCrossTenantError` (403 / `PERMISSION_DENIED`) | **yes** |
 | Stored policy record does not decode, or its name does not match its key | `*service.PolicyCorruptError` (500 / `DATA_LOSS`) | **yes** |
 | Tenant store without guarded writes (`kvstore.AtomicKVStore`) | `*service.PolicyStoreUnsupportedError` (501 / `UNIMPLEMENTED`), no unguarded fallback | **yes** |
-| `Permissions()` / `RBAC()` on an unsupporting transport | returns **nil** — callers must nil-check | — |
+| `RBAC()` on an unsupporting transport | returns **nil** — callers must nil-check | — |
 
 **The StaleRead user fallback answers for the system tenant only.** qrdbd
 builds it over a store confined to the system tenant's identity namespace, so

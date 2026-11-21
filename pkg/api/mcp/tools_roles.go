@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // roleTools returns the MCP tool registrations for role management and
@@ -90,6 +91,11 @@ func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer, authMW *aut
 			// resolves in the caller's own tenant.
 			Perm:    permission.IdentityGated,
 			Handler: handlePermissionsOwn(roleSvc, authMW),
+		},
+		{
+			Tool:    toolPermissionsCatalog(),
+			Perm:    permission.PermissionsList,
+			Handler: handlePermissionsCatalog(),
 		},
 		{
 			Tool: toolPermissionsAuthorize(),
@@ -642,6 +648,29 @@ func handlePermissionsOwn(roleSvc role.RoleServicer, authMW *authmw.AuthMiddlewa
 		data, err := json.Marshal(map[string][]role.PermissionInfo{"permissions": perms})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_permissions_own", Err: err}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolPermissionsCatalog defines the qrdb_permissions_catalog tool schema.
+func toolPermissionsCatalog() mcp.Tool {
+	return mcp.NewTool("qrdb_permissions_catalog",
+		mcp.WithDescription("List every registered permission with its resource, action and declared scope, sorted by name."),
+	)
+}
+
+// handlePermissionsCatalog returns a tool handler that answers with the
+// permission catalog (transport.PermissionCatalog).
+func handlePermissionsCatalog() mcpserver.ToolHandlerFunc {
+	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		perms, err := transport.PermissionCatalog()
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_permissions_catalog", Err: err}
+		}
+		data, err := json.Marshal(map[string][]transport.PermissionInfo{"permissions": perms})
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_permissions_catalog", Err: err}
 		}
 		return mcp.NewToolResultText(string(data)), nil
 	}
