@@ -137,7 +137,7 @@ func NewCodec[E any](ct CodecType) (Codec[E], error) {
 	case CodecMsgPack:
 		c = msgpack.New[E]()
 	case CodecBSON:
-		c = bson.New[E]()
+		c = bsonDocumentCodec[E]{Codec: bson.New[E]()}
 	case CodecCBOR:
 		cc, err := newCBORCodec[E]()
 		if err != nil {

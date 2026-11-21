@@ -99,6 +99,15 @@ func TestCollectionCodecCompat_LosslessDocumentRoundTrip(t *testing.T) {
 			require.NoError(t, err)
 			assert.JSONEq(t, string(wantJSON), string(gotJSON))
 
+			// encoding/json also marshals map[interface{}]interface{}, so
+			// the JSON check alone misses a codec that decodes nested
+			// objects with non-string keys or arrays as a named type.
+			assert.IsType(t, map[string]any{}, out.Fields["profile"], "nested object")
+			items, ok := out.Fields["items"].([]any)
+			require.True(t, ok, "array decoded as %T", out.Fields["items"])
+			require.Len(t, items, 2)
+			assert.IsType(t, map[string]any{}, items[0], "object inside an array")
+
 			v, ok := out.Fields["optional"]
 			assert.True(t, ok, "null field dropped")
 			assert.Nil(t, v)
