@@ -20,6 +20,8 @@
   import type { Client, SealStatus } from "@qrdb/sdk";
   import { Lock, XCircle } from "lucide-svelte";
   import MainApp from "./views/MainApp.svelte";
+  import SealManager from "./views/admin/SealManager.svelte";
+  import { isClusterHeldError } from "./lib/clusterHeld.ts";
   import ServerInitWizard from "./components/ServerInitWizard.svelte";
   import ToastContainer from "./components/ToastContainer.svelte";
   import { showToast } from "./stores/toast.svelte.ts";
@@ -38,10 +40,13 @@
    *                   unsealed here; a Shamir barrier opens through a quorum
    *                   of its share holders, who submit from the CLI or the
    *                   desktop app, and this screen waits for them.
+   *   held          - Node barrier unsealed, but a cluster seal holds the node
+   *                   (status refused with 503 SEALED). The Seal Manager is
+   *                   shown alone and offers the cluster unseal.
    *   app           - Fully ready; MainApp handles empty state and connections.
    *   error         - Unrecoverable startup failure.
    */
-  type AppState = "loading" | "init" | "unseal" | "app" | "error";
+  type AppState = "loading" | "init" | "unseal" | "held" | "app" | "error";
 
   let appState: AppState = $state("loading");
   let client: Client | null = $state(null);
@@ -92,8 +97,24 @@
         // state and route to the bootstrap (uninitialized) or unseal
         // (initialized) flow before attempting to load the full app shell,
         // which would otherwise fail against a sealed backend.
-        const status = await sdk.seal.status();
+        let status: SealStatus;
+        try {
+          status = await sdk.seal.status();
+        } catch (err: unknown) {
+          // An unsealed node held by a cluster seal refuses status with 503
+          // SEALED. That is a recoverable state, not a startup failure:
+          // route to the Seal Manager, which offers the cluster unseal.
+          if (isClusterHeldError(err)) {
+            enterClusterHeld();
+            return;
+          }
+          throw err;
+        }
         sealStatus = status;
+        if (status.clusterHeld === true) {
+          enterClusterHeld();
+          return;
+        }
         if (status.sealed) {
           appState = status.initialized ? "unseal" : "init";
           console.debug("[App] initialize: server sealed, state =", appState);
@@ -115,6 +136,18 @@
       showToast("error", msg);
       appState = "error";
     }
+  }
+
+  /**
+   * The node barrier is unsealed but a cluster seal holds the node: it
+   * answers no status question, so the app shell cannot load. Mount the
+   * Seal Manager alone; it detects the hold itself and offers the cluster
+   * unseal, then re-runs initialize once the node serves again.
+   */
+  function enterClusterHeld(): void {
+    sealStatus = null;
+    appState = "held";
+    console.debug("[App] initialize: node held by a cluster seal");
   }
 
   // ---------------------------------------------------------------------------
@@ -279,6 +312,11 @@
       </div>
     </div>
   </div>
+
+{:else if appState === "held" && client !== null}
+  <main class="mx-auto min-h-screen max-w-4xl p-6" data-testid="app-cluster-held">
+    <SealManager {client} onClusterReleased={initialize} />
+  </main>
 
 {:else if appState === "error"}
   <div class="flex min-h-screen items-center justify-center">

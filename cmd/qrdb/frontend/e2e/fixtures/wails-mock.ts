@@ -87,6 +87,11 @@ export interface MockState {
   isFirstRun: boolean;
   wizardState: Record<string, unknown> | null;
   configInitialized: boolean;
+  /**
+   * CeremonyBinding.Status override. Unset reports "operational" with the
+   * mock pin once configured ("awaiting_init" before).
+   */
+  ceremonyStatus?: { state: string; spkiPin?: string };
   /** Server topology mode — controls whether the Cluster nav item is visible. */
   serverMode: 'standalone' | 'raft';
   /**
@@ -108,6 +113,33 @@ export interface MockState {
     sharesProvided: number;
     sharesTotal: number;
     strategy?: string;
+    /** The node barrier's cluster seal state (SealStatus.clusterSeal). */
+    clusterSeal?: {
+      active: boolean;
+      sealed: boolean;
+      epoch: number;
+      principal?: string;
+      principalTenant?: string;
+      node?: string;
+      at?: string;
+      local?: string;
+    };
+    /** The node barrier's cluster migration (SealStatus.clusterMigration). */
+    clusterMigration?: {
+      unconfirmed?: boolean;
+      target?: string;
+      generation?: number;
+      acked: number;
+      total: number;
+      nodes?: { nodeId: string; step?: string; phase?: string; attempts?: number; detail?: string }[];
+    };
+    /**
+     * The desktop binding's answer for a node the cluster seal holds
+     * (SealStatus.clusterHeld): the node refused status with 503 SEALED, so
+     * SealBinding.Status reports {sealed: true, initialized: true,
+     * clusterHeld: true} and nothing else.
+     */
+    clusterHeld?: boolean;
   };
   unsealProgress: {
     sealed: boolean;
@@ -647,7 +679,48 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           Status: async () => {
             maybeReject("SealBinding.Status");
-            return { ...getState().sealStatus };
+            const st = getState().sealStatus;
+            if (st.clusterHeld) {
+              // A held node refuses status with 503 SEALED; the binding
+              // answers with the held flag and nothing of the barrier.
+              return {
+                sealed: true,
+                initialized: true,
+                strategy: "",
+                sharesRequired: 0,
+                sharesProvided: 0,
+                sharesTotal: 0,
+                clusterSeal: null,
+                clusterMigration: null,
+                clusterHeld: true,
+              };
+            }
+            return { ...st };
+          },
+          // SealBinding.ClusterUnseal(): clears the replicated cluster seal
+          // record, written through this node by the caller, and returns it.
+          ClusterUnseal: async () => {
+            maybeReject("SealBinding.ClusterUnseal");
+            const s = getState();
+            const prev = s.sealStatus.clusterSeal;
+            const next = {
+              active: true,
+              sealed: false,
+              epoch: (prev?.epoch ?? 0) + 1,
+              principal: "admin",
+              principalTenant: "system",
+              node: "127.0.0.1:7000",
+              at: "2026-11-12T10:00:00Z",
+              local: "serving",
+            };
+            s.sealStatus.clusterSeal = next;
+            // A held node's own barrier was unsealed all along; once the
+            // record clears it serves, and answers status again.
+            if (s.sealStatus.clusterHeld) {
+              s.sealStatus.clusterHeld = false;
+              s.sealStatus.sealed = false;
+            }
+            return { ...next };
           },
         },
         CeremonyBinding: {
@@ -725,6 +798,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           Status: async () => {
             maybeReject("CeremonyBinding.Status");
+            const override = getState().ceremonyStatus;
+            if (override) return { ...override };
             return {
               state: getState().configInitialized ? "operational" : "awaiting_init",
               spkiPin: "mockpin",
@@ -1002,6 +1077,24 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             maybeReject("AdminBinding.SetNodeCompaction");
             nodeCompaction = policy && policy.mode && policy.mode !== "off" ? { ...policy } : null;
             return nodeCompaction;
+          },
+          // JoinTokenMintable and MintJoinToken mirror AdminBinding: minting
+          // is offered only when the active profile is an authenticated
+          // external connection (__QRDB_MOCK_REMOTE__), never the embedded
+          // one, and MintJoinToken refuses there just as the Go binding does.
+          JoinTokenMintable: async () => {
+            maybeReject("AdminBinding.JoinTokenMintable");
+            return (window as unknown as Record<string, unknown>).__QRDB_MOCK_REMOTE__ === true;
+          },
+          MintJoinToken: async (nodeId: string, _ttlSeconds: number) => {
+            maybeReject("AdminBinding.MintJoinToken");
+            if ((window as unknown as Record<string, unknown>).__QRDB_MOCK_REMOTE__ !== true) {
+              throw new Error("join tokens are minted only over an authenticated remote connection");
+            }
+            return {
+              token: `mock-join-token-${nodeId}`,
+              expires_at: "2030-01-01T00:00:00Z",
+            };
           },
           GetTopology: async () => {
             maybeReject("AdminBinding.GetTopology");
@@ -1461,8 +1554,12 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           const tsRetentionStore = new Map<string, number>();
           const tsDeletedMetrics = new Set<string>();
           return {
-            Write: async (metric: string, value: number, timestampNs: number) => {
+            Write: async (point: Record<string, unknown>) => {
+              // TimeSeriesBinding.Write(point *TSDataPoint): one snake_case object.
               maybeReject("TimeSeriesBinding.Write");
+              const metric = point["metric"] as string;
+              const value = point["value"] as number;
+              const timestampNs = (point["timestamp_ns"] ?? point["timestampNs"] ?? Date.now() * 1_000_000) as number;
               if (!tsDeletedMetrics.has(metric)) {
                 tsPoints.push({ metric, value, timestampNs });
               }
@@ -1534,11 +1631,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             },
             GetRetention: async (req: { metric: string }) => {
               maybeReject("TimeSeriesBinding.GetRetention");
-              return { days: tsRetentionStore.get(req.metric) ?? 0 };
+              // As the Go binding: an unset policy is the engine's non-nil
+              // empty policy (duration 0), not null.
+              return { policy: { durationNs: tsRetentionStore.get(req.metric) ?? 0 } };
             },
-            SetRetention: async (req: { metric: string; days: number }) => {
+            SetRetention: async (req: { metric: string; policy?: { duration_ns?: number } }) => {
               maybeReject("TimeSeriesBinding.SetRetention");
-              tsRetentionStore.set(req.metric, req.days);
+              tsRetentionStore.set(req.metric, req.policy?.duration_ns ?? 0);
             },
             ListMetrics: async (req?: { prefix?: string }) => {
               maybeReject("TimeSeriesBinding.ListMetrics");

@@ -398,9 +398,12 @@ async function loadWebProfiles(client: Client): Promise<void> {
  * standalone/clustered choice). The built-in web "This Server" profile has no
  * such record, so without this probe a browser connected to a real multi-node
  * cluster would always present the standalone UI. We derive the mode from the
- * live topology: a server is "raft" when more than one distinct replica is
- * known across its Raft groups; a single-node deployment (or a minimal
- * embeddable server with no topology endpoint) resolves to "standalone".
+ * live topology: a server whose topology loads with at least one replica is
+ * "raft", so a single-node Raft server still exposes the Cluster surfaces
+ * (minting its first join token is how it grows). Only a server with no
+ * readable topology (a minimal embeddable server, forbidden or unreachable)
+ * resolves to "standalone". The database wizard keys its multi-node steps on
+ * the node count, not on this mode (see isMultiNodeServer).
  *
  * @returns The detected mode and the distinct cluster node count (0 when the
  *   topology could not be read).
@@ -417,12 +420,25 @@ async function detectWebServerMode(
             }
         }
         const nodeCount = replicaIds.size;
-        return { serverMode: nodeCount > 1 ? 'raft' : 'standalone', nodeCount };
+        return { serverMode: nodeCount >= 1 ? 'raft' : 'standalone', nodeCount };
     } catch {
         // No topology endpoint (minimal embeddable server), forbidden, or
         // unreachable → treat as standalone; cluster surfaces stay hidden.
         return { serverMode: 'standalone', nodeCount: 0 };
     }
+}
+
+/**
+ * Reports whether the active server is a multi-node Raft cluster, which is what
+ * the database wizard's Raft steps (replica count, etcd) need. A single-node
+ * Raft server is "raft" for the admin nav but gets the wizard's single-node
+ * steps. A desktop profile recorded as clustered carries no node count (0) and
+ * stays multi-node.
+ */
+export function isMultiNodeServer(): boolean {
+    if (connManagerStore.activeServerMode !== 'raft') return false;
+    const n = connManagerStore.activeClusterNodeCount;
+    return n === 0 || n > 1;
 }
 
 /**

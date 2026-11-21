@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -220,4 +221,54 @@ func (b *AdminBinding) SetNodeCompaction(policy *transport.DatabaseCompactionCon
 	}
 	b.logger.Debug("SetNodeCompaction completed")
 	return inForce, nil
+}
+
+// ErrRemoteConnectionRequired refuses a platform-only admin verb (minting a
+// cluster join token) on a connection that is not an authenticated external
+// one: the embedded server's transport carries no authorization of its own.
+var ErrRemoteConnectionRequired = errors.New("join tokens are minted only over an authenticated remote connection")
+
+// loadRemoteClient returns the active client only when it is an
+// authenticated external (remote) connection. Without a connection manager
+// the binding cannot prove that, so it refuses.
+func (c *ConnectionBinding) loadRemoteClient() (*sdk.Client, error) {
+	if c.manager == nil {
+		return nil, ErrRemoteConnectionRequired
+	}
+	return c.manager.ActiveRemoteClient()
+}
+
+// JoinTokenMintable reports whether the active connection can mint a join
+// token: true only for an authenticated external (remote) connection.
+func (b *AdminBinding) JoinTokenMintable() bool {
+	_, err := b.conn.loadRemoteClient()
+	return err == nil
+}
+
+// MintJoinToken mints a single-use cluster join token for nodeID over the
+// active authenticated remote connection; ttlSeconds 0 takes the server
+// default. It is refused on the embedded connection.
+func (b *AdminBinding) MintJoinToken(nodeID string, ttlSeconds int64) (*transport.MintJoinTokenResponse, error) {
+	b.logger.Debug("MintJoinToken called", "nodeID", nodeID, "ttlSeconds", ttlSeconds)
+	cl, err := b.conn.loadRemoteClient()
+	if err != nil {
+		b.logger.Error("MintJoinToken failed", "error", err)
+		return nil, err
+	}
+	minter, ok := cl.Admin().(transport.ClusterJoinTokenMinter)
+	if !ok {
+		err := &JoinTokenMintUnsupportedError{}
+		b.logger.Error("MintJoinToken failed", "error", err)
+		return nil, err
+	}
+	resp, err := minter.MintJoinToken(context.Background(), &transport.MintJoinTokenRequest{
+		NodeID:     nodeID,
+		TTLSeconds: ttlSeconds,
+	})
+	if err != nil {
+		b.logger.Error("MintJoinToken failed", "error", err)
+		return nil, err
+	}
+	b.logger.Debug("MintJoinToken completed")
+	return resp, nil
 }

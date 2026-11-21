@@ -13,12 +13,12 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Admin | `drain` | views/admin/Cluster.svelte  | admin-dashboard.spec.ts admin-cluster.spec.ts  |  |
 | Admin | `getTopology` | stores/connection-manager.svelte.ts views/admin/Topology.svelte  | real-backend/rebalance-real.spec.ts  |  |
 | Admin | `health` | views/admin/Dashboard.svelte  | setup-wizard.spec.ts admin-views.spec.ts  |  |
-| Admin | `mintJoinToken` | none | none | not in UI; *verified* |
-| Admin | `nodeCompaction` | none | none (mock only: fixtures/wails-mock.ts) | not in UI; *verified* |
+| Admin | `mintJoinToken` | views/admin/Cluster.svelte (web mode; desktop binding is not implemented by design) | admin-cluster.spec.ts web-mode-cluster.spec.ts | *verified* |
+| Admin | `nodeCompaction` | views/admin/Cluster.svelte | admin-cluster.spec.ts web-mode-cluster.spec.ts | *verified* |
 | Admin | `peers` | views/admin/Cluster.svelte  | setup-wizard.spec.ts full-admin-operations.spec.ts  |  |
 | Admin | `removeMember` | views/admin/Cluster.svelte | admin-cluster.spec.ts | *verified* |
 | Admin | `requestSnapshot` | views/admin/Cluster.svelte | admin-cluster.spec.ts | *verified* |
-| Admin | `setNodeCompaction` | none | none | not in UI; *verified* |
+| Admin | `setNodeCompaction` | views/admin/Cluster.svelte | admin-cluster.spec.ts web-mode-cluster.spec.ts | *verified* |
 | Admin | `status` | views/admin/Dashboard.svelte components/ConnectionManager.svelte | admin-dashboard.spec.ts | *verified* |
 | AuditQuery | `query` | views/admin/AuditLog.svelte | admin-audit.spec.ts | *verified* |
 | Backup | `create` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
@@ -32,8 +32,8 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Batch | `execute` | views/user/BatchView.svelte | batch.spec.ts batch-advanced.spec.ts | *verified* |
 | Batch | `importFile` | views/user/BatchView.svelte | batch-import.spec.ts | *verified* |
 | Ceremony | `initialize` | components/ConnectionManager.svelte components/ServerInitWizard.svelte | ceremony-init-wizard.spec.ts | *verified* |
-| Ceremony | `signCSR` | none | none | not in UI; *verified* |
-| Ceremony | `status` | none (hits are `seal.status` / `admin.status`) | none | not in UI; *verified* |
+| Ceremony | `signCSR` | views/admin/SealManager.svelte | admin-seal.spec.ts | *verified* |
+| Ceremony | `status` | views/admin/SealManager.svelte | admin-seal.spec.ts | *verified* |
 | Cert | `enrollCert` | views/admin/CertManager.svelte | admin-certs.spec.ts | *verified* |
 | Cert | `export` | views/admin/CertManager.svelte | admin-certs.spec.ts | *verified* |
 | Cert | `issueCert` | views/admin/CertManager.svelte  | admin-certs.spec.ts  |  |
@@ -144,7 +144,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Rebalance | `createPlan` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts | *verified* |
 | Rebalance | `execute` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts | *verified* |
 | Rebalance | `getImbalanceReport` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts rebalance-panel-web.spec.ts | *verified* |
-| Rebalance | `getShardStats` | none | none (binding-presence smoke only) | not in UI; *verified* |
+| Rebalance | `getShardStats` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts | *verified* |
 | Role | `assign` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
 | Role | `create` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
 | Role | `delete` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
@@ -154,8 +154,8 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Role | `unassign` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
 | Role | `update` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
 | SQL | `query` | views/user/SQLBrowserScoped.svelte | sql-browser.spec.ts dom/sql-browser-roundtrip.spec.ts | *verified* |
-| Seal | `changePassphrase` | none | none | not in UI; *verified* |
-| Seal | `clusterUnseal` | views/admin/SealManager.svelte | none | no e2e; *verified* |
+| Seal | `changePassphrase` | views/admin/SealManager.svelte | admin-seal.spec.ts | *verified* |
+| Seal | `clusterUnseal` | views/admin/SealManager.svelte | admin-seal.spec.ts | *verified* |
 | Seal | `enableEncryption` | views/admin/SealManager.svelte views/admin/TenantManager.svelte | web-mode-enable-encryption.spec.ts web-mode-tenant-enable-encryption.spec.ts | *verified* |
 | Seal | `initialize` | views/admin/SealManager.svelte (re-initialise) | admin-seal.spec.ts | *verified* |
 | Seal | `initializeShamir` | views/admin/SealManager.svelte | admin-seal.spec.ts | UI *verified* |
@@ -177,16 +177,16 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Tenant | `update` | views/admin/TenantDetail.svelte | dom/tenant-management.spec.ts | *verified* |
 | Tenant | `updateEntitlements` | views/admin/TenantDetail.svelte | tenant-multitenancy-web.spec.ts dom/tenant-management.spec.ts | *verified* |
 | Tenant | `updateQuotas` | views/admin/TenantDetail.svelte | tenant-quotas.spec.ts tenant-multitenancy-web.spec.ts | *verified* |
-| TimeSeries | `aggregate` | none | none | not in UI; *verified* |
+| TimeSeries | `aggregate` | views/user/TimeSeriesView.svelte | timeseries-ops.spec.ts | *verified* |
 | TimeSeries | `deleteSeries` | views/user/TimeSeriesView.svelte | timeseries-advanced.spec.ts | *verified* |
-| TimeSeries | `getRetention` | none | none | not in UI; *verified* |
+| TimeSeries | `getRetention` | views/user/TimeSeriesView.svelte | timeseries-ops.spec.ts | *verified* |
 | TimeSeries | `listMetrics` | views/user/TimeSeriesView.svelte  | timeseries.spec.ts  |  |
 | TimeSeries | `query` | views/user/TimeSeriesView.svelte (`client.timeSeries!`) | timeseries-advanced.spec.ts | *verified* |
-| TimeSeries | `richQuery` | none | none | not in UI; *verified* |
-| TimeSeries | `setRetention` | none | none | not in UI; *verified* |
-| TimeSeries | `write` | none | none (spec hits are false name matches) | not in UI; *verified* |
-| TimeSeries | `writeBatch` | none | none | not in UI; *verified* |
-| TimeSeries | `writePoint` | views/user/TimeSeriesView.svelte  | timeseries-operations.spec.ts  |  |
+| TimeSeries | `richQuery` | views/user/TimeSeriesView.svelte | timeseries-ops.spec.ts | *verified* |
+| TimeSeries | `setRetention` | views/user/TimeSeriesView.svelte | timeseries-ops.spec.ts | *verified* |
+| TimeSeries | `write` | views/user/TimeSeriesView.svelte | timeseries-ops.spec.ts | *verified* |
+| TimeSeries | `writeBatch` | views/user/TimeSeriesView.svelte | timeseries-ops.spec.ts | *verified* |
+| TimeSeries | `writePoint` | views/user/TimeSeriesView.svelte (single-point Write) | timeseries-write-point.spec.ts timeseries-ops.spec.ts | *verified* |
 | Transaction | `execute` | views/user/TransactionView.svelte | transaction.spec.ts transaction-operations.spec.ts | *verified* |
 | User | `addCertBinding` | views/admin/UserDetail.svelte | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
 | User | `create` | views/admin/UserDetail.svelte (username, email, display name) | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
@@ -240,8 +240,8 @@ Each row is a read-only surface: the SDK method that returns it, its fields (`sd
 | cluster/raft topology (`admin.getTopology`) | nodeId, raftAddress, shardCount, shards[].shardId, replicaId, leaderId, replicas | views/admin/Topology.svelte (per-shard table) | admin-topology.spec.ts dom/cluster-topology.spec.ts | *verified* |
 | shard balance (`rebalance.getImbalanceReport`) | imbalance score, nodes, hotspots | views/admin/RebalancePanel.svelte (stat cards) | rebalance-panel.spec.ts rebalance-panel-web.spec.ts | *verified* |
 | seal state (`seal.status`) | sealed, initialized, strategy, sharesRequired, sharesProvided, sharesTotal | App.svelte (unseal gate), views/admin/SealManager.svelte (stats) | admin-seal.spec.ts unseal.spec.ts | *verified* |
-| cluster seal (`seal.status().clusterSeal`, `seal.clusterUnseal`) | active, sealed, epoch, principal, principalTenant, node, at, local | views/admin/SealManager.svelte (sealed/clear, epoch, local only) | none | principal, node, at not shown; `clusterMigration` progress not shown; no e2e; *verified* |
-| ceremony state (`ceremony.status`) | state, spkiPin | none | none | not in UI; *verified* |
+| cluster seal (`seal.status().clusterSeal`, `seal.clusterUnseal`) | active, sealed, epoch, principal, principalTenant, node, at, local, clusterMigration (target, generation, owners confirmed/total, per-owner step and phase) | views/admin/SealManager.svelte (all fields) | admin-seal.spec.ts | *verified* |
+| ceremony state (`ceremony.status`) | state, spkiPin | views/admin/SealManager.svelte (ceremony card: state, copyable SPKI pin, "No ceremony" before init, a warning on a load error) | admin-seal.spec.ts | *verified* |
 | daemon status (`daemon.daemonStatus`) | running, pid, logFile | components/admin/DaemonPanel.svelte (Running/Stopped, PID, log file) | admin-daemon.spec.ts | *verified* |
 | user record (`users.get`) | username, email, name, tenantId, roleIds, lifecycle, system, certBindings[].thumbprint, kind, notAfter, createdAt, updatedAt | views/admin/UserDetail.svelte (form fields, lifecycle badge, bindings list) | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
 | metrics (/metrics) | Prometheus exposition | none: the SDK has no metrics method | none | not in SDK, not in UI; *verified* |
@@ -260,9 +260,9 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 | 6 | Volume pools | `volumePools.create`, `delete`, `get`, `list`, `listTenants`, `update` | new views/admin/VolumePoolManager.svelte and sidebar entry; pool picker in views/admin/TenantManager.svelte; new e2e/admin-volume-pools.spec.ts | mocked |
 | 7 | Tenant trust and holders | `tenants.addTrustAnchors`, `listTrustAnchors`, `removeTrustAnchor` (no e2e); `officers.registerTenantOfficer` | views/admin/TenantDetail.svelte, views/admin/TenantManager.svelte; new e2e/tenant-trust-anchors.spec.ts, e2e/tenant-holders.spec.ts | mocked |
 | 8 | Vector | `vector.batchUpsert`, `batchDeleteVectors`, `getVector`, `hybridSearch`, `updateMetadata` | views/user/VectorView.svelte; e2e/vector.spec.ts | mocked |
-| 9 | Time series | `timeSeries.aggregate`, `richQuery`, `getRetention`, `setRetention`, `write`, `writeBatch` | views/user/TimeSeriesView.svelte; e2e/timeseries-advanced.spec.ts | mocked |
-| 10 | Seal and ceremony | `seal.clusterUnseal` (no e2e), `seal.changePassphrase`; `ceremony.status`, `ceremony.signCSR`; displays: cluster seal principal/node/at, `clusterMigration` progress, ceremony state | views/admin/SealManager.svelte; e2e/admin-seal.spec.ts; new real-backend/cluster-seal-real.spec.ts | mocked; real for cluster seal |
-| 11 | Cluster operations | `admin.mintJoinToken`, `nodeCompaction`, `setNodeCompaction`; `rebalance.getShardStats` | views/admin/Cluster.svelte, views/admin/RebalancePanel.svelte; e2e/admin-cluster.spec.ts, e2e/rebalance-panel.spec.ts | mocked; real for join token |
+| 9 | Time series | `timeSeries.aggregate`, `richQuery`, `getRetention`, `setRetention`, `write`, `writeBatch` | views/user/TimeSeriesView.svelte; e2e/timeseries-advanced.spec.ts | mocked; covered |
+| 10 | Seal and ceremony | `seal.clusterUnseal` (no e2e), `seal.changePassphrase`; `ceremony.status`, `ceremony.signCSR`; displays: cluster seal principal/node/at, `clusterMigration` progress, ceremony state | views/admin/SealManager.svelte; e2e/admin-seal.spec.ts; new real-backend/cluster-seal-real.spec.ts | mocked; real for cluster seal; covered |
+| 11 | Cluster operations | `admin.mintJoinToken`, `nodeCompaction`, `setNodeCompaction`; `rebalance.getShardStats` | views/admin/Cluster.svelte, views/admin/RebalancePanel.svelte; e2e/admin-cluster.spec.ts, e2e/rebalance-panel.spec.ts | mocked; real for join token; covered |
 | 12 | Dashboard displays | `status.shards`, `capabilities.index`, metrics (needs an SDK method first) | views/admin/Dashboard.svelte; sdk/typescript/src/interfaces.ts, rest.ts, wails.ts for metrics; e2e/admin-dashboard.spec.ts | mocked; real for metrics |
 | 13 | Connections and embedded server | `connectionManager.deleteProfile`, `disconnect`, `saveProfile`, `setActive` (no e2e); `connection.disconnect`, `isConnected`; `config.initialized`, `isEmbeddedAvailable`; `embeddedServer.*` (6); `batch.availableCodecs` | components/ConnectionManager.svelte, stores/connection-manager.svelte.ts, views/user/BatchView.svelte; e2e/web-mode-connection-manager.spec.ts, new e2e/embedded-server.spec.ts (Wails mock) | mocked |
 | 14 | Detail reads | `backups.get`, `credentials.retrieveVersion`, `collection.getDocument` | views/admin/BackupManager.svelte, views/admin/CredentialManager.svelte, views/user/CollectionView.svelte; e2e/backup-manager.spec.ts, e2e/credential-manager.spec.ts, e2e/collection-advanced.spec.ts | mocked |
@@ -271,7 +271,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 170 | 154 |
-| displays | 12 | 10 | 9 |
+| operations | 218 | 183 | 168 |
+| displays | 12 | 11 | 11 |
 
-Operations not in UI: 48. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 35. In UI without e2e: 15. Displays with a partial field gap: 2 (`/status`, `/capabilities`).

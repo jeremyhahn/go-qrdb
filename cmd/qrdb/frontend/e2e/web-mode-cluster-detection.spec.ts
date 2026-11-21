@@ -18,9 +18,11 @@
  *
  * The built-in "This Server" web profile carries no recorded topology, so the
  * web UI must derive its server mode from the live /admin/topology endpoint
- * (connection-manager.detectWebServerMode): a server reporting more than one
- * distinct Raft node is "raft" and exposes the Cluster / Topology admin nav
- * entries; a single-node server stays standalone and hides them.
+ * (connection-manager.detectWebServerMode): a server whose topology loads is
+ * "raft" and exposes the Cluster / Topology admin nav entries, with three
+ * nodes or with one (a single-node Raft server mints its first join token
+ * from the Cluster view); a server whose topology cannot be read stays
+ * standalone and hides them.
  *
  * This is the mocked counterpart to the real-backend multi-node DOM spec
  * (e2e/dom/cluster-topology.spec.ts) and guards the WebSidebar → AdminNav
@@ -61,7 +63,24 @@ test.describe("Web mode - cluster topology detection", () => {
       webMockState: { ...defaultWebMockState, topology: singleNodeTopology },
     });
 
-    test("hides Cluster + Topology nav when topology reports 1 node", async ({ page }) => {
+    test("exposes Cluster + Topology nav when topology reports 1 node", async ({ page }) => {
+      await page.goto("/");
+      const aside = page.locator("aside");
+
+      await expect(aside.getByText("Topology", { exact: true })).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+      await expect(aside.getByText("Cluster", { exact: true })).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+    });
+  });
+
+  test.describe("server without a readable topology", () => {
+    test("hides Cluster + Topology nav when topology cannot be read", async ({ page }) => {
+      await page.route("**/admin/topology", (route) =>
+        route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' }),
+      );
       await page.goto("/");
 
       // The app shell must be loaded before asserting absence — wait for a

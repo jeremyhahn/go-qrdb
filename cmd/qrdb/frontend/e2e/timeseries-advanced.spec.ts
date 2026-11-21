@@ -56,7 +56,7 @@ async function injectStatefulTimeSeriesBinding(
 
     interface TSSetRetentionRequest {
       metric: string;
-      days: number;
+      policy?: { duration_ns?: number };
     }
 
     interface TSListMetricsRequest {
@@ -85,9 +85,15 @@ async function injectStatefulTimeSeriesBinding(
       clearInterval(waitForGo);
 
       go.main.TimeSeriesBinding = {
-        Write: async (metric: string, value: number, timestampNs: number) => {
+        Write: async (point: Record<string, unknown>) => {
+          // TimeSeriesBinding.Write(point *TSDataPoint): one snake_case object.
           maybeReject("TimeSeriesBinding.Write");
-          tsPoints.push({ metric, value, timestampNs });
+          tsPoints.push({
+            metric: point["metric"] as string,
+            value: point["value"] as number,
+            timestampNs: (point["timestamp_ns"] ?? point["timestampNs"] ?? Date.now() * 1_000_000) as number,
+            tags: point["tags"] as { key: string; value: string }[] | undefined,
+          });
         },
         WriteBatch: async (points: TSDataPoint[]) => {
           maybeReject("TimeSeriesBinding.WriteBatch");
@@ -146,11 +152,12 @@ async function injectStatefulTimeSeriesBinding(
         },
         GetRetention: async (req: TSGetRetentionRequest) => {
           maybeReject("TimeSeriesBinding.GetRetention");
-          return { days: retentionStore.get(req.metric) ?? 0 };
+          // As the Go binding: an unset policy is an empty one, not null.
+          return { policy: { durationNs: retentionStore.get(req.metric) ?? 0 } };
         },
         SetRetention: async (req: TSSetRetentionRequest) => {
           maybeReject("TimeSeriesBinding.SetRetention");
-          retentionStore.set(req.metric, req.days);
+          retentionStore.set(req.metric, req.policy?.duration_ns ?? 0);
         },
         ListMetrics: async (req: TSListMetricsRequest) => {
           maybeReject("TimeSeriesBinding.ListMetrics");

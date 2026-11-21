@@ -240,7 +240,7 @@
         <ul
           class="menu bg-base-200 rounded-box absolute z-50 mt-1 max-h-60 w-full overflow-auto shadow-lg"
         >
-          {#each metricSuggestions as suggestion}
+          {#each metricSuggestions as suggestion, si (si)}
             <li>
               <button
                 type="button"
@@ -262,7 +262,7 @@
       <span class="label-text">Time Range</span>
     </div>
     <div class="flex flex-wrap gap-2">
-      {#each presets as preset}
+      {#each presets as preset (preset.value)}
         <button
           type="button"
           class="btn btn-sm"
@@ -312,7 +312,7 @@
 
     {#if tags.length > 0}
       <div class="mb-2 flex flex-wrap gap-2">
-        {#each tags as tag, index}
+        {#each tags as tag, index (index)}
           <div class="badge badge-lg gap-2">
             <span class="font-mono text-sm">{tag.key}={tag.value}</span>
             <button
@@ -380,7 +380,7 @@
         bind:value={aggregation}
         disabled={loading}
       >
-        {#each aggregations as agg}
+        {#each aggregations as agg (agg.value)}
           <option value={agg.value}>{agg.label}</option>
         {/each}
       </select>
@@ -396,7 +396,7 @@
           bind:value={interval}
           disabled={loading}
         >
-          {#each intervalOptions as opt}
+          {#each intervalOptions as opt (opt)}
             <option value={opt}>{opt}</option>
           {/each}
         </select>
