@@ -115,6 +115,39 @@ test.describe("Backup Manager", () => {
     await clearError(page, "BackupBinding.Create");
   });
 
+  test("clicking a backup row fetches its full detail via backups.get", async ({ page }) => {
+    await navigateToBackups(page);
+
+    await createBackup(page, "/var/backups/qrdb/b-get");
+    await expect(page.getByText(/Backup "backup-\d+" created/)).toBeVisible({ timeout: 5_000 });
+
+    await page.locator("table tbody tr").first().click();
+
+    const detail = page.getByTestId("backup-detail");
+    await expect(detail.getByText("/var/backups/qrdb/b-get")).toBeVisible({ timeout: 5_000 });
+    await expect(detail.getByText("Destination")).toBeVisible();
+    await expect(detail.getByText("Compression")).toBeVisible();
+    await expect(detail.getByText("Encryption")).toBeVisible();
+    await expect(detail.getByText(/^deadbeef\d+$/)).toBeVisible();
+    await expect(page.getByTestId("backup-detail-error")).toHaveCount(0);
+  });
+
+  test("error on backups.get shows the detail error state", async ({ page }) => {
+    await navigateToBackups(page);
+
+    await createBackup(page, "/var/backups/qrdb/b-get-err");
+    await expect(page.getByText(/Backup "backup-\d+" created/)).toBeVisible({ timeout: 5_000 });
+
+    await injectError(page, "BackupBinding.Get", "backup get failed: manifest unreadable");
+    await page.locator("table tbody tr").first().click();
+
+    await expect(page.getByTestId("backup-detail-error")).toContainText("backup get failed: manifest unreadable", {
+      timeout: 5_000,
+    });
+
+    await clearError(page, "BackupBinding.Get");
+  });
+
   test("error on list shows an error toast", async ({ page }) => {
     await navigateToBackups(page);
 

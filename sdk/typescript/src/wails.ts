@@ -106,6 +106,7 @@ import type {
     UpdateDatabaseProtocolRequest,
     UpdateDatabaseSQLRequest,
     MintJoinTokenResponse,
+    MetricFamily,
     CreateNamespaceResponse,
     CreateRoleRequest,
     CreateUserRequest,
@@ -572,6 +573,10 @@ export class WailsClient implements Client {
             },
             capabilities: async (): Promise<CapabilitiesResponse> => {
                 return b.Capabilities() as Promise<CapabilitiesResponse>;
+            },
+            metrics: async (): Promise<MetricFamily[]> => {
+                // The desktop binding exposes no Prometheus gatherer.
+                throw new NotImplementedError('admin.metrics');
             },
         };
     }
@@ -1388,6 +1393,9 @@ export class WailsClient implements Client {
             restoreEmbedded: async (): Promise<void> => {
                 await b.RestoreEmbedded();
                 this.embeddedRunning = true;
+            },
+            savedConfig: async (): Promise<EmbeddedConfig> => {
+                return (await b.SavedConfig()) as EmbeddedConfig;
             },
             clearSavedConfig: async (): Promise<void> => {
                 await b.ClearSavedConfig();

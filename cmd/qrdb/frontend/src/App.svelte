@@ -24,7 +24,7 @@
   import ToastContainer from "./components/ToastContainer.svelte";
   import { showToast } from "./stores/toast.svelte.ts";
   import { initTheme } from "./stores/theme.svelte.ts";
-  import { loadProfiles } from "./stores/connection-manager.svelte.ts";
+  import { loadProfiles, webStartupTarget } from "./stores/connection-manager.svelte.ts";
 
   // ---------------------------------------------------------------------------
   // App state machine
@@ -83,21 +83,32 @@
       // loading profiles so that the connection state probe in loadProfiles
       // can reach the server.
       if (!isDesktop()) {
-        const origin = window.location.origin;
-        console.debug("[App] initialize: connecting REST client to", origin);
-        await sdk.connection.connect(origin);
-        console.debug("[App] initialize: REST client connected");
+        // The saved active profile's server (page origin for the built-in
+        // profile): the label and the REST target never disagree on reload.
+        const origin = webStartupTarget();
+        try {
+          console.debug("[App] initialize: connecting REST client to", origin);
+          await sdk.connection.connect(origin);
+          console.debug("[App] initialize: REST client connected");
 
-        // A sealed server only serves the barrier endpoints. Inspect the seal
-        // state and route to the bootstrap (uninitialized) or unseal
-        // (initialized) flow before attempting to load the full app shell,
-        // which would otherwise fail against a sealed backend.
-        const status = await sdk.seal.status();
-        sealStatus = status;
-        if (status.sealed) {
-          appState = status.initialized ? "unseal" : "init";
-          console.debug("[App] initialize: server sealed, state =", appState);
-          return;
+          // A sealed server only serves the barrier endpoints. Inspect the seal
+          // state and route to the bootstrap (uninitialized) or unseal
+          // (initialized) flow before attempting to load the full app shell,
+          // which would otherwise fail against a sealed backend.
+          const status = await sdk.seal.status();
+          sealStatus = status;
+          if (status.sealed) {
+            appState = status.initialized ? "unseal" : "init";
+            console.debug("[App] initialize: server sealed, state =", appState);
+            return;
+          }
+        } catch (err: unknown) {
+          // The hosting server failing is unrecoverable. A saved external
+          // profile's server being down is not: load the profile picker so
+          // the user can pick This Server, another server, or remove the
+          // failed profile. loadProfiles marks the active profile's error.
+          if (origin === window.location.origin) throw err;
+          console.warn("[App] initialize: saved server unavailable", origin, err);
         }
       }
 

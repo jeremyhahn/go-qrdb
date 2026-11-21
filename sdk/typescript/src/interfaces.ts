@@ -20,6 +20,7 @@ import type {
     TopologyResponse,
     CapabilitiesResponse,
     MintJoinTokenResponse,
+    MetricFamily,
 
     // MVCC
     MVCCKeyValue,
@@ -433,6 +434,13 @@ export interface AdminClient {
 
     /** Returns the compile-time feature set of the QRDB binary. */
     capabilities(): Promise<CapabilitiesResponse>;
+
+    /**
+     * Returns the node's Prometheus metrics, parsed from the text
+     * exposition format into metric families. Maps to GET /metrics. The
+     * desktop (Wails) binding rejects with NotImplementedError.
+     */
+    metrics(): Promise<MetricFamily[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1810,6 +1818,12 @@ export interface EmbeddedServerClient {
      * Throws when no saved config exists.
      */
     restoreEmbedded(): Promise<void>;
+
+    /**
+     * Returns the saved embedded configuration, the one restoreEmbedded
+     * starts. Rejects when no configuration is saved.
+     */
+    savedConfig(): Promise<EmbeddedConfig>;
 
     /** Removes the saved embedded configuration from disk. */
     clearSavedConfig(): Promise<void>;

@@ -104,7 +104,8 @@ describe('CredentialClient — REST wire contract', () => {
 
     it('retrieve GETs /v1/credentials/{name}/value and returns the value', async () => {
         const client = await connectedClient();
-        const calls = installMockFetch({ value: 'secret-value' });
+        // The handler's value is a Go []byte: base64 on the wire.
+        const calls = installMockFetch({ value: 'c2VjcmV0LXZhbHVl' });
 
         const value = await client.credentials.retrieve('api-key');
 
@@ -115,7 +116,8 @@ describe('CredentialClient — REST wire contract', () => {
 
     it('retrieve percent-encodes the credential name', async () => {
         const client = await connectedClient();
-        const calls = installMockFetch({ value: 'x' });
+        // The handler's value is a Go []byte: base64 on the wire ("x").
+        const calls = installMockFetch({ value: 'eA==' });
 
         await client.credentials.retrieve('db/prod key');
 
@@ -226,7 +228,9 @@ describe('CredentialClient — REST wire contract', () => {
 
     it('retrieveVersion GETs /v1/credentials/{name}/versions/{version}', async () => {
         const client = await connectedClient();
-        const calls = installMockFetch({ value: 'old-secret' });
+        // transport.CredentialRetrieveVersionResponse.Value is a Go []byte:
+        // base64 on the wire; the SDK returns the decoded plaintext.
+        const calls = installMockFetch({ value: 'b2xkLXNlY3JldA==' });
 
         const value = await client.credentials.retrieveVersion('db-password', 1);
 

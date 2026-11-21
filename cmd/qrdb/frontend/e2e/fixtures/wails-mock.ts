@@ -904,10 +904,14 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           };
         })(),
         EmbeddedServerBinding: {
-          StartEmbedded: async (_config: unknown) => {
+          StartEmbedded: async (config: unknown) => {
             maybeReject("EmbeddedServerBinding.StartEmbedded");
             const s = getState();
             s.embeddedRunning = true;
+            // The Go binding persists the config it started with.
+            const saved = s as { embeddedSavedConfig?: boolean; embeddedSavedConfigValue?: unknown };
+            saved.embeddedSavedConfig = true;
+            saved.embeddedSavedConfigValue = config;
           },
           StopEmbedded: async () => {
             maybeReject("EmbeddedServerBinding.StopEmbedded");
@@ -915,6 +919,40 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             s.embeddedRunning = false;
           },
           IsEmbedded: () => getState().embeddedRunning,
+          HasSavedConfig: async () => {
+            maybeReject("EmbeddedServerBinding.HasSavedConfig");
+            return (getState() as { embeddedSavedConfig?: boolean }).embeddedSavedConfig === true;
+          },
+          RestoreEmbedded: async () => {
+            maybeReject("EmbeddedServerBinding.RestoreEmbedded");
+            const s = getState();
+            if ((s as { embeddedSavedConfig?: boolean }).embeddedSavedConfig !== true) {
+              throw new Error("no saved embedded server config");
+            }
+            s.embeddedRunning = true;
+          },
+          SavedConfig: async () => {
+            maybeReject("EmbeddedServerBinding.SavedConfig");
+            const s = getState() as {
+              embeddedSavedConfig?: boolean;
+              embeddedSavedConfigValue?: unknown;
+            };
+            if (s.embeddedSavedConfig !== true) {
+              throw new Error("no saved embedded server config");
+            }
+            // A state seeded with only the flag saved a default config.
+            return (
+              s.embeddedSavedConfigValue ?? {
+                storageBackend: "memory",
+                dataDir: "/mock/saved",
+                raftEnabled: false,
+              }
+            );
+          },
+          ClearSavedConfig: async () => {
+            maybeReject("EmbeddedServerBinding.ClearSavedConfig");
+            (getState() as { embeddedSavedConfig?: boolean }).embeddedSavedConfig = false;
+          },
         },
         KVBinding: {
           Put: async (key: string, value: string) => {
@@ -2271,6 +2309,23 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               const s = getState();
               const profile = savedProfiles[profileId];
               const isEmbedded = profile?.type === "embedded";
+              (window as unknown as Record<string, unknown>).__lastConnectProfileId = profileId;
+              // Connecting an embedded profile starts its server, and the Go
+              // binding saves the config it started (StartEmbedded), the
+              // listed mock profile's included.
+              const startedConfig = isEmbedded
+                ? profile?.embedded
+                : profile === undefined &&
+                    profileId === "mock-profile-1" &&
+                    s.configInitialized &&
+                    (s.profileType ?? "embedded") === "embedded"
+                  ? { dataDir: "/mock/data" }
+                  : undefined;
+              if (startedConfig !== undefined) {
+                const saved = s as { embeddedSavedConfig?: boolean; embeddedSavedConfigValue?: unknown };
+                saved.embeddedSavedConfig = true;
+                saved.embeddedSavedConfigValue = startedConfig;
+              }
               // Embedded profiles auto-initialize their in-process seal barrier
               // on Connect (see initEmbeddedBarrier in embedded_barrier.go) —
               // EXCEPT shamir-mode barriers, which the desktop SealBinding

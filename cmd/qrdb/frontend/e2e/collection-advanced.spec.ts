@@ -249,6 +249,78 @@ test.describe("Collection Advanced", () => {
     await clearError(page, "CollectionBinding.DeleteDocument");
   });
 
+  test("clicking a document row fetches it via collection.getDocument", async ({ page }) => {
+    await navigateToCollections(page);
+    await createCollection(page, "get-doc-coll");
+    await selectCollection(page, "get-doc-coll");
+
+    await insertDocumentJson(page, '{"name": "Fetched", "tags": ["a", "b"]}');
+
+    await page.locator("tr").filter({ hasText: "Fetched" }).click();
+
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog.getByText("Document Detail")).toBeVisible({ timeout: 5_000 });
+    const body = dialog.getByTestId("document-detail-body");
+    await expect(body).toContainText('"name": "Fetched"');
+    await expect(body).toContainText('"tags"');
+  });
+
+  test("a document fetched for collection A never opens once collection B is selected", async ({ page }) => {
+    await navigateToCollections(page);
+    await createCollection(page, "race-b");
+    await createCollection(page, "race-a");
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const b = (window as any).go.main.CollectionBinding;
+      await b.InsertDocument("default", "race-a", JSON.stringify({ name: "FromA" }));
+    });
+    await page.getByText("race-a", { exact: true }).first().click();
+    // Hold A's getDocument until B is selected.
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = window as any;
+      const b = w.go.main.CollectionBinding;
+      const orig = b.GetDocument.bind(b);
+      b.GetDocument = (...args: unknown[]) =>
+        new Promise((resolve, reject) => {
+          w.__releaseGetDocument = () =>
+            orig(...args).then(
+              (v: unknown) => resolve(v),
+              (e: unknown) => reject(e),
+            );
+        });
+    });
+    await page.locator("tr").filter({ hasText: "FromA" }).click();
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseGetDocument)).toBe("function");
+
+    await page.getByText("race-b", { exact: true }).first().click();
+    // Resolve A's fetch and wait for it to settle in the page.
+    await page.evaluate(async () => {
+      await (window as any).__releaseGetDocument();
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+
+    // A's response arrived after the switch: no detail panel shows it.
+    await expect(page.getByTestId("document-detail-body")).toHaveCount(0);
+    await expect(page.getByText('"name": "FromA"')).toHaveCount(0);
+  });
+
+  test("error on collection.getDocument shows error toast and keeps the panel closed", async ({ page }) => {
+    await navigateToCollections(page);
+    await createCollection(page, "get-doc-err-coll");
+    await selectCollection(page, "get-doc-err-coll");
+
+    await insertDocumentJson(page, '{"name": "Unfetchable"}');
+
+    await injectError(page, "CollectionBinding.GetDocument", "document fetch failed");
+    await page.locator("tr").filter({ hasText: "Unfetchable" }).click();
+
+    await expect(page.getByText("document fetch failed")).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId("document-detail-body")).toHaveCount(0);
+
+    await clearError(page, "CollectionBinding.GetDocument");
+  });
+
   test("update document field type from string to number", async ({ page }) => {
     await navigateToCollections(page);
     await createCollection(page, "type-change-coll");

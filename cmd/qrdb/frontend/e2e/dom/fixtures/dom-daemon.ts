@@ -80,6 +80,13 @@ export interface StartDaemonOptions {
    * all regular UI traffic.
    */
   tlsClientAuth?: "none" | "request";
+  /**
+   * Origins written to cors.allowed_origins. The daemon sends no CORS
+   * headers when the list is absent, so a spec whose page (at UI_BASE_URL)
+   * calls adminUrl directly, not through the Vite proxy, must allow the UI
+   * origin or the browser rejects every response.
+   */
+  corsOrigins?: readonly string[];
 }
 
 export interface DomDaemon {
@@ -91,7 +98,10 @@ export interface DomDaemon {
 function writeConfig(path: string, opts: StartDaemonOptions): void {
   const lines = ['codec:', '  storage_codec: "json"', '  wire_codec: "json"', "seal:"];
   if (opts.seal === "none") {
-    lines.push("  enabled: false");
+    // auth.enabled requires seal.enabled (go-qrdb#548) and config
+    // validation runs before the --auth-enabled=false flag applies, so a
+    // seal-disabled daemon must also turn auth off in the file.
+    lines.push("  enabled: false", "auth:", "  enabled: false");
   } else if (opts.seal === "none-committed") {
     lines.push("  enabled: true", '  strategy: "none"');
   } else {
@@ -100,6 +110,10 @@ function writeConfig(path: string, opts: StartDaemonOptions): void {
       lines.push(`  shamir_threshold: ${opts.shamirThreshold ?? 2}`);
       lines.push(`  shamir_total: ${opts.shamirTotal ?? 3}`);
     }
+  }
+  if (opts.corsOrigins !== undefined && opts.corsOrigins.length > 0) {
+    lines.push("cors:", "  allowed_origins:");
+    for (const origin of opts.corsOrigins) lines.push(`    - ${JSON.stringify(origin)}`);
   }
   writeFileSync(path, lines.join("\n") + "\n", { mode: 0o600 });
 }
