@@ -273,10 +273,12 @@
           next.push({ key, value: map[key] ?? "" });
         }
       }
-      if (!isCurrentScope(gen)) return;
+      // A newer listing (another database, or the same one with other
+      // options) supersedes this one: its answer and its error are dropped.
+      if (!isCurrentScope(gen) || seq !== loadSeq) return;
       entries = next;
     } catch (err: unknown) {
-      if (!isCurrentScope(gen)) return;
+      if (!isCurrentScope(gen) || seq !== loadSeq) return;
       showToast("error", err instanceof Error ? err.message : String(err));
       entries = [];
     } finally {

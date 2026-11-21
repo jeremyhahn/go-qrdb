@@ -393,6 +393,35 @@ test.describe("KV Explorer MVCC calls are scoped to the selected database", () =
     await expect(page.locator("table").getByText("only/in-mvcc")).toBeVisible();
   });
 
+  test("a superseded keys-only listing does not replace the values", async ({ page }) => {
+    const method = "KVBinding.List@kv-plain";
+    await page.goto("/");
+    await page.locator("aside").getByText("kv-plain").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-plain", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await createEntry(page, "sup/a", "sup-value");
+    await expect(page.locator("table").getByText("sup-value")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    // The keys-only listing is held; turning Keys only off again starts a
+    // scan that answers first.
+    await holdCall(page, method);
+    await page.getByLabel("Keys only").check();
+    await expect.poll(() => heldCallCount(page, method), { timeout: LOAD_TIMEOUT }).toBe(1);
+    await page.getByLabel("Keys only").uncheck();
+    await expect(page.locator("table").getByText("sup-value")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    // The older keys-only answer arrives last.
+    expect(await releaseCall(page, method)).toBe(1);
+    // Let the released listing and any render it causes settle.
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+
+    // The table and the detail panel still show the scanned value.
+    await expect(page.locator("table").getByText("sup-value")).toBeVisible();
+    const panel = await openRow(page, "sup/a");
+    await expect(panel.getByText("sup-value")).toBeVisible();
+  });
+
   test("a bulk delete stays in its database after a switch", async ({ page }) => {
     const method = "KVBinding.Delete@kv-plain";
     await page.goto("/");
