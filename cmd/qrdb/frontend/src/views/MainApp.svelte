@@ -254,6 +254,16 @@
         expandServer(profileId);
         navigateToAdmin(profileId, 'dashboard');
       } else if (state.status === 'sealed') {
+        // Web mode: the switch left the previous profile disconnected, so
+        // activate the sealed server to keep its Seal Manager reachable. It
+        // cannot list databases: its list is empty and owned by it.
+        if (!isDesktop()) await setActiveProfile(client, profileId);
+        if (!isDesktop() && connManagerStore.activeProfileId === profileId) {
+          setDatabases([], profileId);
+          expandServer(profileId);
+          navigateToAdmin(profileId, 'seal-manager');
+          await loadMetadata();
+        }
         showToast('warning', 'Server is sealed. Use Seal Manager to unseal.');
       } else if (state.status === 'needs-init') {
         showToast('warning', 'Server needs initialization. Use the CLI: qrdb barrier init');
