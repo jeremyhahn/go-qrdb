@@ -1410,6 +1410,19 @@ func TestCIRunnerSelectionBehaviour(t *testing.T) {
 	short := world(running(1), nil)
 	short[page("/runs?status=in_progress", 1)] = selectionReply{200, map[string]any{"total_count": 3, "workflow_runs": []map[string]any{{"id": 1}}}}
 	short[page("/runs?status=in_progress", 2)] = selectionReply{200, map[string]any{"total_count": 3, "workflow_runs": []map[string]any{}}}
+	// shortAt: the in_progress listing holds this run (no jobs) and run 3
+	// with 2 running hosted jobs, short of its total_count 3.
+	shortAt := world([]map[string]any{}, nil)
+	shortAt[page("/runs?status=in_progress", 1)] = selectionReply{200, map[string]any{"total_count": 3, "workflow_runs": []map[string]any{{"id": 1}, {"id": 3}}}}
+	shortAt[page("/runs?status=in_progress", 2)] = selectionReply{200, map[string]any{"total_count": 3, "workflow_runs": []map[string]any{}}}
+	shortAt[page("/runs/3/jobs?filter=latest", 1)] = jobList(job(3, "in_progress", past), job(3, "in_progress", past))
+	// shortQueued: short as above, plus run 2 queued with a hosted job past the grace.
+	shortQueued := world(running(1), []map[string]any{job(2, "queued", past)})
+	shortQueued[page("/runs?status=in_progress", 1)] = short[page("/runs?status=in_progress", 1)]
+	shortQueued[page("/runs?status=in_progress", 2)] = short[page("/runs?status=in_progress", 2)]
+	lowerBound := func(got int) string {
+		return " (a lower bound: " + api + "/runs?status=in_progress: " + strconv.Itoa(got) + " of 3 entries)"
+	}
 	failed := world(running(1), nil)
 	failed[page("/runs?status=queued", 1)] = selectionReply{500, map[string]any{"message": "server error"}}
 
@@ -1434,6 +1447,10 @@ func TestCIRunnerSelectionBehaviour(t *testing.T) {
 			runner: hosted, docker: hosted, warning: "no complete run list (" + api + "/runs?status=queued: 500)"},
 		{name: "a listing short of total_count stays hosted with a warning", limit: "2", replies: short,
 			runner: hosted, docker: hosted, warning: "1 of 3 entries"},
+		{name: "a short listing at the threshold overflows", limit: "2", headRepo: repo, replies: shortAt,
+			runner: bigdsk, docker: bigdkr, notice: "2 hosted jobs in progress, HOSTED_JOBS_PER_REPO=2" + lowerBound(2)},
+		{name: "a short listing holding a job queued past the grace overflows", limit: "2", replies: shortQueued,
+			runner: bigdsk, docker: bigdkr, notice: "1 hosted job(s) queued 60s or more: the hosted pool is full" + lowerBound(1)},
 		{name: "a non-number threshold stays hosted with a warning", limit: "two", replies: world(running(2), nil),
 			runner: hosted, docker: hosted, warning: "HOSTED_JOBS_PER_REPO='two'", noCurl: true},
 		{name: "a fork pull request at saturation stays hosted", limit: "2", headRepo: "fork/repo", replies: world(running(2), nil),
