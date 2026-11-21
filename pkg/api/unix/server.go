@@ -78,6 +78,7 @@ type Server struct {
 	invitationSvc     service.InvitationServicer
 	onboarding        service.TenantOnboardingServicer
 	barrierSvc        service.BarrierServicer
+	sealStoreSvc      service.SealStoreServicer
 	encMigrator       service.EncryptionMigrator
 	pinBackend        pin.PINBackend
 	ceremonySvc       service.CeremonyServicer
@@ -323,6 +324,12 @@ func WithTenantOnboarding(svc service.TenantOnboardingServicer) ServerOption {
 // WithBarrierService configures the Unix socket server with a barrier service.
 func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(s *Server) { s.barrierSvc = svc }
+}
+
+// WithSealStoreService attaches the node's seal store, served by the
+// SealStore* RPCs (seal:store_manage).
+func WithSealStoreService(svc service.SealStoreServicer) ServerOption {
+	return func(s *Server) { s.sealStoreSvc = svc }
 }
 
 // WithEncryptionMigrator configures the Unix socket server with the
@@ -744,6 +751,9 @@ func (s *Server) Start() error {
 	}
 	if s.barrierSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterBarrierService(s.barrierSvc))
+	}
+	if s.sealStoreSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterSealStoreService(s.sealStoreSvc))
 	}
 	if s.encMigrator != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterEncryptionMigrator(s.encMigrator))

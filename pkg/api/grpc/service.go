@@ -301,6 +301,7 @@ type qrdbServiceServer struct {
 	ragSvc        service.RAGServicer
 	databaseSvc   service.DatabaseServicer
 	barrierSvc    service.BarrierServicer
+	sealStoreSvc  service.SealStoreServicer
 	encMigrator   service.EncryptionMigrator
 	pinBackend    pin.PINBackend
 	ceremonySvc   service.CeremonyServicer
