@@ -9,6 +9,15 @@
 # Actions API listing is a lower bound. v1.51 and v1.52: the Runner labels
 # step checks pull_request_target, and a fork's pull request stays on
 # GitHub-hosted runners. v1.53: main's concurrency group is `main-{event}`.
+# v1.53 also (Tenant Agent on trusted-firmware #821, handbook 88c10e76,
+# DS-9961): (0) `Runner labels (ruling 633)` lets code-review.yml's API-only
+# jobs take exactly [self-hosted, linux, x64, bigdisk] for a same-repository
+# head under a PR event; a fork's head still takes a standard image. (1) CI
+# Gate runs on !cancelled() off pull_request, so a main run cancelled by a
+# newer push posts a skipped gate, not a failed one; a pull request keeps
+# always(), as a skipped required check counts as passed. (2) Every job that
+# builds on a pool host masks the LAN addresses (scripts/ci-mask-lan.sh,
+# which also masks single-label and private-suffix host names).
 # Before ruling 1087: v1.35.1 + v1.42 hermetic gate + v1.43 hosted first + v1.47.
 # v1.47 runner gate (Tenant Agent ruling 1007, handbook ci-template v1.47): the step Runner labels (ruling 633) checks every workflow's runs-on label and waiver category together; codex and qwen run only in code-review.yml (codex with credential:, qwen with hardware:).
 # v1.43 hosted first (Tenant Agent rulings 833 and 834, which supersede ruling
@@ -761,6 +770,11 @@ jobs:
           # overflow may also be exactly the list its output names. Any other
           # self-hosted value still needs its waiver.
           SEL_FILES = {"ci.yml", "ci.yaml"}
+          # v1.53 (Tenant Agent on trusted-firmware #821): code-review.yml's
+          # API-only guard jobs may take exactly [self-hosted, linux, x64,
+          # bigdisk] for a same-repository head under a PR event; a fork's
+          # head and every other event still take a standard image.
+          REVIEW_FILES = {"code-review.yml", "code-review.yaml"}
           SEL_OUT = {"needs.preflight.outputs.runner": "bigdisk",
                      "needs.preflight.outputs.runner_docker": "bigdisk-docker"}
           OVERFLOW = [["self-hosted", "linux", "x64", v] for v in SEL_OUT.values()]
@@ -982,6 +996,9 @@ jobs:
                                           continue
                                       if sel == "unset" and got == OVERFLOW[0] and not fork_target:
                                           continue
+                                      if (sel is None and got == OVERFLOW[0] and ev in PR and head == "o/r"
+                                              and path.replace("\\", "/").rsplit("/", 1)[-1] in REVIEW_FILES):
+                                          continue  # v1.53: a same-repository head's review guard
                                       if got is None or len(got) != 1 or not STANDARD.fullmatch(got[0]):
                                           what = "an unknown label" if got is None else ", ".join(got)
                                           note = ", runner selection overflow" if sel == "overflow" else ""
@@ -1159,6 +1176,11 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
 
       # CUSTOMIZE (go-qrdb): every compose service that names a build target
       # names a stage its Dockerfile declares, with each overlay resolved by
@@ -1411,6 +1433,11 @@ jobs:
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
 
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
+
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
         run: |
@@ -1534,6 +1561,11 @@ jobs:
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
 
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
+
       - name: Does the Makefile define lint-gates?
         id: probe
         run: |
@@ -1648,6 +1680,11 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -2447,6 +2484,11 @@ jobs:
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
 
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
+
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
         run: |
@@ -2532,6 +2574,11 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -2833,6 +2880,11 @@ jobs:
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
 
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
+
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
         run: |
@@ -3045,7 +3097,16 @@ jobs:
     # otherwise.
     runs-on: ${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}   # v1.48 (ruling 1024)
     timeout-minutes: 5
-    if: ${{ always() }}
+    # v1.53 (Tenant Agent on trusted-firmware #821): with main-{event} a newer
+    # push cancels the older main run, and an always() gate then read the
+    # cancelled needs and failed, so every superseded main commit showed a red
+    # gate. Off pull_request the gate runs on !cancelled(): a cancelled run
+    # posts no gate result (skipped), and a run that is not cancelled still
+    # fails closed on any need that failed. A pull request keeps always(): a
+    # skipped required check counts as passed, so a cancelled PR run must post
+    # a failing gate, never a skip; only an older head of the PR is cancelled
+    # by its group, and the head that merges has its own run.
+    if: ${{ startsWith(github.event_name, 'pull_request') && always() || !cancelled() }}
     # CUSTOMIZE: the repo's job list. Add every CUSTOMIZE job here AND as a
     # check line below; remove none of the template's jobs.
     #
