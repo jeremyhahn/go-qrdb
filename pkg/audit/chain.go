@@ -101,8 +101,12 @@ func (c *Chain) Append(w vlog.Writer, tenantID string, ev AuditEvent) (seq uint6
 	}
 	once := ev.AppendOnce
 	ev.AppendOnce = false
-	if token := onceToken(ev); once && token != "" {
-		seq, _, err = c.log.AppendOnce(w, tenantID, token, linkEvent(ev), false)
+	if token := onceToken(ev); token != "" {
+		if once {
+			seq, _, err = c.log.AppendOnce(w, tenantID, token, linkEvent(ev), false)
+		} else {
+			seq, _, err = c.log.AppendNoting(w, tenantID, token, linkEvent(ev), false)
+		}
 		return seq, err
 	}
 	return c.log.Append(w, tenantID, linkEvent(ev))
@@ -111,7 +115,10 @@ func (c *Chain) Append(w vlog.Writer, tenantID string, ev AuditEvent) (seq uint6
 // ActionTenantOnboard is the action of a tenant's onboarding event. Its
 // emitter retries an append it could not confirm, so an event carrying
 // AppendOnce (featuregate.AuditAppendOnce) is appended once per identity
-// (onceToken) at apply time.
+// (onceToken) at apply time. An unmarked one is appended and its identity
+// noted (vlog.Chain.AppendNoting): it is skipped once a marked event of its
+// identity is on the chain, and a marked retry finds it, so an unmarked
+// proposal and its marked retry leave one event in either apply order.
 const ActionTenantOnboard = "tenant.onboard"
 
 // onceToken returns the apply-time identity of an event appended at most
@@ -152,8 +159,10 @@ func (c *Chain) AppendToInstance(w vlog.Writer, tenantID string, entries [][]byt
 	for _, ev := range events {
 		once := ev.AppendOnce
 		ev.AppendOnce = false
-		if token := onceToken(ev); once && token != "" {
+		if token := onceToken(ev); token != "" && once {
 			seq, _, err = c.log.AppendOnce(w, tenantID, token, linkEvent(ev), true)
+		} else if token != "" {
+			seq, _, err = c.log.AppendNoting(w, tenantID, token, linkEvent(ev), true)
 		} else {
 			seq, err = c.log.AppendAudit(w, tenantID, linkEvent(ev))
 		}

@@ -174,8 +174,6 @@ type TenantOnboardingService struct {
 	pendingSOs  tenantadmin.Store
 	// pendingAudit is TenantOnboardingDeps.PendingAudit.
 	pendingAudit tenantadmin.AuditStore
-	// pendingAuditSettle is pendingAuditSettleWindow (tests shorten it).
-	pendingAuditSettle time.Duration
 	// tenantTrail is the sink a retry of the pending onboarding record
 	// goes to; nil retries through audit.
 	tenantTrail audit.AuditLogger
@@ -325,10 +323,9 @@ func NewTenantOnboardingService(deps TenantOnboardingDeps) *TenantOnboardingServ
 		pendingSOs:  deps.PendingSOs,
 		strictSoD:   deps.SeparationOfDuties,
 
-		pendingAudit:       deps.PendingAudit,
-		pendingAuditSettle: pendingAuditSettleWindow,
-		tenantTrail:        deps.TenantTrail,
-		localTrail:         deps.LocalTrail,
+		pendingAudit: deps.PendingAudit,
+		tenantTrail:  deps.TenantTrail,
+		localTrail:   deps.LocalTrail,
 	}
 	if deps.SOPINs != nil {
 		s.AttachSOPINs(deps.SOPINs)
@@ -642,48 +639,30 @@ func (s *TenantOnboardingService) emitPendingOnboardAudit(ctx context.Context, t
 	if claim != nil && now.Before(claim.ClaimedUntil) {
 		return nil
 	}
-	// An earlier append whose outcome was unknown may have committed. Until
-	// the trail appends a retried onboarding event once, re-sending it could
-	// chain it twice, so the record waits, kept, for the feature. A claim
-	// whose holder stopped mid-append is such an append too.
+	// An earlier append whose outcome was unknown may have committed, or may
+	// still apply. Until the trail appends a retried onboarding event once,
+	// re-sending it could chain it twice, so the record waits, kept, for the
+	// feature. Once it is active the retry carries the append-once marker,
+	// and apply keeps one event whatever the earlier append carried and
+	// whichever of the two applies first: a marked retry finds an earlier
+	// unmarked event's noted identity, and an unmarked proposal applied after
+	// the marked retry is skipped (audit.Chain.Append,
+	// vlog.Chain.AppendNoting). No elapsed time is taken as proof that the
+	// earlier proposal was lost. A claim whose holder stopped mid-append is
+	// such an append too.
 	uncertain := claim != nil && claim.Uncertain
-	reporter, reports := sink.(appendOnceReporter)
-	if uncertain {
-		if reports {
-			enabled, gateErr := reporter.AppendOnceEnabled(ctx, tenantID)
-			if gateErr != nil || !enabled {
-				return gateErr
-			}
-		}
-		// An earlier append proposed before the feature was active carries
-		// no append-once marker, and apply dedupes a marked retry only
-		// against marked events: retrying while it may still apply would
-		// chain the event twice. It is settled first -- the trail holding
-		// it settles it as appended; its settle window running out settles
-		// it as lost -- and only then retried.
-		if !claim.Protected && now.Before(claim.SettleBy) {
-			held, holdErr := trailHolds(ctx, sink, ev)
-			if holdErr != nil || !held {
-				return holdErr
-			}
-		}
-	}
-	// Whether this append carries the append-once marker: the gate is
-	// read before the proposal, and once active it stays active, so an
-	// append judged protected here is marked (ReplicatedLogger.Emit). A
-	// trail that gates nothing appends a retry once by construction.
-	protected := true
-	if reports {
+	if reporter, reports := sink.(appendOnceReporter); uncertain && reports {
 		enabled, gateErr := reporter.AppendOnceEnabled(ctx, tenantID)
-		protected = gateErr == nil && enabled
+		if gateErr != nil || !enabled {
+			return gateErr
+		}
 	}
 	until := now.Add(pendingAuditClaimLease)
 	// The claim records the append it is about to make as uncertain, so an
 	// emitter taking over the claim of a holder that stopped mid-append
-	// settles that append before retrying it.
+	// retries it only under the append-once marker.
 	claimed, err := json.Marshal(pendingAuditClaim{
-		ClaimedBy: onboardEventID(), ClaimedUntil: until, Event: raw,
-		Uncertain: true, Protected: protected, SettleBy: until.Add(s.pendingAuditSettle),
+		ClaimedBy: onboardEventID(), ClaimedUntil: until, Event: raw, Uncertain: true,
 	})
 	if err != nil {
 		return &tenantadmin.StoreError{Op: "encode", Err: err}
@@ -708,15 +687,11 @@ func (s *TenantOnboardingService) emitPendingOnboardAudit(ctx context.Context, t
 		// the release fail, the lease running out releases it. An append
 		// whose outcome is unknown -- or a retry of one -- is released as an
 		// expired claim marked uncertain, so the retry waits for the trail
-		// to append it once, and -- for an append with no append-once
-		// marker -- for it to settle.
+		// to append it once.
 		release := raw
 		if uncertain || onboardAppendUncertain(err) {
-			// Any earlier append was settled before this one was made, so
-			// only this append's marker decides how its retry waits.
 			if marked, markErr := json.Marshal(pendingAuditClaim{
 				ClaimedBy: onboardEventID(), Event: raw, Uncertain: true,
-				Protected: protected, SettleBy: time.Now().Add(s.pendingAuditSettle),
 			}); markErr == nil {
 				release = marked
 			}
@@ -744,22 +719,7 @@ type pendingAuditClaim struct {
 	// (appendOnceReporter), the record is not re-sent: a second append
 	// would chain it twice.
 	Uncertain bool `json:"uncertain,omitempty"`
-	// Protected records that the uncertain append carried the append-once
-	// marker, so apply keeps one of it and its retry: the retry may go at
-	// once. An unprotected one is settled first (see SettleBy).
-	Protected bool `json:"protected,omitempty"`
-	// SettleBy bounds how long an unprotected uncertain append may still
-	// apply: until then its retry waits for the trail to hold it, and past
-	// it the append is settled as lost and retried.
-	SettleBy time.Time `json:"settle_by,omitempty"`
 }
-
-// pendingAuditSettleWindow is how long an onboarding append proposed without
-// the append-once marker, whose outcome was unknown, is held as possibly in
-// flight before it is settled as lost. It is many times any proposal's
-// lifetime (the claim lease bounds the append), so a proposal still queued
-// for the group applies within it.
-const pendingAuditSettleWindow = 30 * time.Minute
 
 // appendOnceReporter is a trail that reports whether it appends a retried
 // onboarding event once (ReplicatedLogger.AppendOnceEnabled). A trail

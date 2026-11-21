@@ -202,6 +202,68 @@ func TestChain_OnboardEventWithoutMarkerAppendsEachTime(t *testing.T) {
 	}
 }
 
+// An onboarding emitter's unmarked proposal, made before audit-append-once
+// was active, timed out but stayed in flight; its retry, made once the
+// feature is active, is marked. Whichever applies first, through either
+// opcode, the trail holds one event -- on a replica restored between the
+// two as well. No time passes in between: the outcome does not rest on the
+// delayed proposal being judged lost.
+func TestChain_UnmarkedProposalAndMarkedRetryAppendOnce(t *testing.T) {
+	const tenantID = "acme"
+	unmarked := fixedEvent(0, tenantID)
+	unmarked.Action = ActionTenantOnboard
+	unmarked.RequestID = "req-1"
+	marked := unmarked
+	marked.AppendOnce = true
+
+	apply := func(t *testing.T, c *Chain, store *memory.MemoryStorage, ev AuditEvent, instance bool) {
+		t.Helper()
+		if !instance {
+			if _, err := c.Append(store, tenantID, ev); err != nil {
+				t.Fatalf("Append: %v", err)
+			}
+			return
+		}
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.AppendToInstance(store, tenantID, [][]byte{raw}); err != nil {
+			t.Fatalf("AppendToInstance: %v", err)
+		}
+	}
+	for _, tc := range []struct {
+		name        string
+		first, then AuditEvent
+		instance    bool
+		restore     bool
+	}{
+		{name: "unmarked then marked", first: unmarked, then: marked},
+		{name: "marked then unmarked", first: marked, then: unmarked},
+		{name: "unmarked then marked, instance", first: unmarked, then: marked, instance: true},
+		{name: "marked then unmarked, instance", first: marked, then: unmarked, instance: true},
+		{name: "unmarked, restore, marked", first: unmarked, then: marked, restore: true},
+		{name: "marked, restore, unmarked", first: marked, then: unmarked, restore: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewChain()
+			store := memory.NewStorage()
+			apply(t, c, store, tc.first, tc.instance)
+			first, _, _ := c.log.Head(tenantID)
+			if tc.restore {
+				c = NewChain()
+				if err := c.Restore(store); err != nil {
+					t.Fatalf("Restore: %v", err)
+				}
+			}
+			apply(t, c, store, tc.then, tc.instance)
+			if seq, _, _ := c.log.Head(tenantID); seq != first {
+				t.Fatalf("head seq = %d after the proposal and its retry applied, want %d (one event)", seq, first)
+			}
+		})
+	}
+}
+
 func TestChain_AppendToInstance_Refusals(t *testing.T) {
 	const tenantID = "acme"
 	zero := fixedEvent(0, tenantID)

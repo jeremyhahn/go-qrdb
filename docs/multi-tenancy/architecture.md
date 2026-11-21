@@ -1549,8 +1549,14 @@ feature that changes how a vector command applies.
   and different quota decisions.
 - **How it is gated.** The rule rides on the command
   (`VectorCommand.StoredCount`), set by the proposer only once the feature is
-  enabled on the shard. A command without it applies the old one-per-upsert
-  rule on every binary, so a log replayed across versions applies alike.
+  enabled on the shard. Until a namespace's first marked command, a command
+  without it applies the old one-per-upsert rule on every binary, so a log
+  replayed across versions applies alike.
+- **The switch.** The first marked command rebases the namespace's count on
+  its distinct stored ids and keeps the namespace on the stored-count rule
+  (`NamespaceState.StoredCountRule`, carried in the snapshot), so a delayed
+  unmarked command after it counts alike on every replica, restored ones
+  included.
 
 **`audit-append-once` (`featuregate.AuditAppendOnce`)** is a per-shard
 feature that changes how an audit append applies.
@@ -1564,6 +1570,14 @@ feature that changes how an audit append applies.
   enabled on the shard. Until then the pending onboarding record is not
   re-sent after an append whose outcome was unknown, and an event without
   the marker is appended every time it is applied, on every binary.
+- **An unmarked proposal and its marked retry.** An unmarked onboarding
+  event is appended and its identity noted (`vlog.Chain.AppendNoting`). A
+  marked retry finds the noted identity and appends nothing; an unmarked
+  event applied after a marked one of its identity is skipped. Either apply
+  order leaves one event, so the retry goes ahead as soon as the feature is
+  active: no elapsed time is taken to mean an unconfirmed proposal was lost.
+  A marked event exists only once every replica supports the feature, so
+  every replica skips the same unmarked entry.
 
 **`tenant-undo` (`featuregate.TenantUndo`)** is another activation-based
 feature. It adds no Raft command: the undone tombstone and the
