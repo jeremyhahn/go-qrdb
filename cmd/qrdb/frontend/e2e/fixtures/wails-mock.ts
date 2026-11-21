@@ -1004,6 +1004,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return val;
           },
           Delete: async (database: string, key: string) => {
+            // Held per database ("KVBinding.Delete@<database>"); a held
+            // Delete still deletes in the database it was sent to.
+            await maybeHold(`KVBinding.Delete@${database}`);
             useDatabase(database);
             maybeReject("KVBinding.Delete");
             kvStore.delete(key);

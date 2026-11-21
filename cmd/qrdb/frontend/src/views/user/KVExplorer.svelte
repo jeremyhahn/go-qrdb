@@ -589,6 +589,11 @@
   }
 
   async function handleBulkDelete(indices: Set<number>): Promise<void> {
+    // The explorer stays mounted across database switches: the keys were
+    // listed in this database, so every delete goes through the client
+    // captured here, never the one a later switch installs.
+    const deleteClient = client;
+    const gen = scopeGeneration;
     loading = true;
     const keysToDelete: string[] = [];
     for (const idx of indices) {
@@ -598,7 +603,7 @@
     let failCount = 0;
     for (const key of keysToDelete) {
       try {
-        await client.kv.delete(key);
+        await deleteClient.kv.delete(key);
         successCount++;
       } catch {
         failCount++;
@@ -609,6 +614,8 @@
     } else {
       showToast("warning", `Deleted ${successCount}, failed ${failCount}`);
     }
+    // After a switch the new database's view is left to its own listing.
+    if (!isCurrentScope(gen) || client !== deleteClient) return;
     selectedEntry = null;
     await loadEntries();
     loading = false;

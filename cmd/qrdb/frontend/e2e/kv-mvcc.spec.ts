@@ -392,4 +392,52 @@ test.describe("KV Explorer MVCC calls are scoped to the selected database", () =
     await expect(page.locator("table").getByText("only/in-plain")).toHaveCount(0);
     await expect(page.locator("table").getByText("only/in-mvcc")).toBeVisible();
   });
+
+  test("a bulk delete stays in its database after a switch", async ({ page }) => {
+    const method = "KVBinding.Delete@kv-plain";
+    await page.goto("/");
+    // Both databases hold the same key names.
+    await page.locator("aside").getByText("kv-mvcc").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-mvcc", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await createEntry(page, "same/a", "mvcc-a");
+    await createEntry(page, "same/b", "mvcc-b");
+    await page.locator("aside").getByText("kv-plain").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-plain", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await createEntry(page, "same/a", "plain-a");
+    await createEntry(page, "same/b", "plain-b");
+    await expect(page.getByText("2 entries")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.getByText('Created "same/b"')).not.toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    // kv-plain's first delete is still in flight when the user switches.
+    await page.getByLabel("Select row 1", { exact: true }).check();
+    await page.getByLabel("Select row 2", { exact: true }).check();
+    await holdCall(page, method);
+    await page.getByRole("button", { name: "Delete 2" }).click();
+    await page.locator(".modal").getByRole("button", { name: "Delete" }).click();
+    await expect.poll(() => heldCallCount(page, method), { timeout: LOAD_TIMEOUT }).toBe(1);
+    await page.locator("aside").getByText("kv-mvcc").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-mvcc", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(page.locator("table").getByText("mvcc-b")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    // The held delete finishes and the second one follows it.
+    expect(await releaseCall(page, method)).toBe(1);
+    await expect(page.getByText("Deleted 2 entries")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    // Both deletes went to kv-plain: kv-mvcc keeps both keys.
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await expect(page.locator("table").getByText("mvcc-a")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.locator("table").getByText("mvcc-b")).toBeVisible();
+    await page.locator("aside").getByText("kv-plain").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-plain", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(page.locator("table").getByText("plain-a")).toHaveCount(0, { timeout: LOAD_TIMEOUT });
+    await expect(page.locator("table").getByText("plain-b")).toHaveCount(0);
+  });
 });
