@@ -47,14 +47,15 @@ import (
 // credentials: a make target, a script, npm or curl. The runner injects the
 // credentials into every job (dependency-resolution.md §6), so each of these
 // masks them in its first step after the checkout.
-var credentialJobs = []string{"docker-build", "pool-images", "lint", "lint-gates", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk", "test-typescript", "preflight", "integration-standalone", "integration-features", "fips", "soak"}
+var credentialJobs = []string{"docker-build", "lint", "lint-gates", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk", "test-typescript", "preflight", "integration-standalone", "integration-features", "fips", "soak"}
 
 // unmaskedJobs are the jobs that hold the credentials but run only inline
 // steps that cannot print them, each with the reason. Every job in ci.yml is
 // in one of the two lists, so a new job fails the gate until it is placed.
 var unmaskedJobs = map[string]string{
-	"ci-gate":    "prints only the jobs' results",
-	"signatures": "uses only the read-only github.token to read commit metadata; prints signers and shas, no credential",
+	"ci-gate":            "prints only the jobs' results",
+	"deps-bump-dispatch": "no checkout and no forge credential; dispatches deps-bump.yml with github.token",
+	"signatures":         "uses only the read-only github.token to read commit metadata; prints signers and shas, no credential",
 }
 
 const maskStepName = "Mask the forge credentials"
