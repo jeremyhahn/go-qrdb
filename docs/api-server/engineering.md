@@ -522,6 +522,8 @@ Invariants:
 
 ### WebTransport
 
+The contract is the SPEC row `webtransport-session` ([SPEC.md](../SPEC.md)).
+
 `pkg/api/rest` serves WebTransport sessions (draft-ietf-webtrans-http3-16,
 `docs/reference/draft-ietf-webtrans-http3-16.txt`) on the HTTP/3 listener
 through `internal/webtransport`, a patched copy of
