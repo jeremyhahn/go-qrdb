@@ -307,6 +307,13 @@ jobs:
       - name: Mask the LAN addresses
         run: scripts/ci-mask-lan.sh
 
+      # code-review.yml v5.12.11 (ruling 1081) carries the handbook template's
+      # regression tests verbatim: testdata/code-review-v51211-tests.py, which
+      # loads the expression evaluator from testdata/code-review-v51210-tests.py.
+      # A fake curl forge serves every API read; nothing reaches the network.
+      - name: Code review workflow tests (v5.12.11)
+        run: python3 -I .github/workflows/testdata/code-review-v51211-tests.py
+
       # reads every .github/workflows/*.yml and *.yaml of the repository as
       # text, takes each job whose runs-on names `release` (plain, in a list,
       # or as a quoted string inside an expression), and evaluates its `if:`
