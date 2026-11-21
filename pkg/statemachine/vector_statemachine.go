@@ -1947,6 +1947,10 @@ func (vsm *VectorStateMachine) PrepareSnapshot() (interface{}, error) {
 			Quotas:       ns.Quotas,
 			Labels:       ns.Labels,
 			StorageBytes: ns.StorageBytes,
+			// The stored-count rule is sticky once a marked command
+			// switched it on; a restored replica must keep it, or a
+			// delayed unmarked command counts by the old rule there.
+			StoredCountRule: ns.StoredCountRule,
 		}
 	}
 
@@ -1987,6 +1991,10 @@ func (vsm *VectorStateMachine) SaveSnapshot(ctx context.Context, snapshotCtx int
 			Quotas:       ns.Quotas,
 			Labels:       ns.Labels,
 			StorageBytes: ns.StorageBytes,
+			// The stored-count rule is sticky once a marked command
+			// switched it on; a restored replica must keep it, or a
+			// delayed unmarked command counts by the old rule there.
+			StoredCountRule: ns.StoredCountRule,
 		}
 	}
 

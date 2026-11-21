@@ -3,6 +3,7 @@
 package statemachine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -134,6 +135,29 @@ func TestVectorCount_UnmarkedAfterSwitchKeepsStoredRule(t *testing.T) {
 	require.Equal(t, uint64(1), storedCount(vsm))
 	require.NoError(t, applyCountCmdRule(t, vsm, 3, &VectorCommand{Op: OpDeleteVector, ID: 7}, false))
 	require.Equal(t, uint64(1), storedCount(vsm), "a delete of a missing id removes nothing")
+}
+
+// A replica restored from a snapshot taken after the rule switch must keep
+// the stored-count rule: a delayed unmarked re-upsert or missing-ID delete
+// then counts the same there as on a replica that kept its state.
+func TestVectorCount_SnapshotKeepsStoredRule(t *testing.T) {
+	vsm := newCountTestVSM(t, 0)
+	require.NoError(t, applyCountCmdRule(t, vsm, 1, &VectorCommand{Op: OpUpsertVector, ID: 1, Vector: []float32{1, 0}}, true))
+
+	prepared, err := vsm.PrepareSnapshot()
+	require.NoError(t, err)
+	require.True(t, prepared.(*VectorSnapshot).Namespaces["ns"].StoredCountRule, "the prepared snapshot keeps the rule")
+
+	var buf bytes.Buffer
+	require.NoError(t, vsm.SaveSnapshot(context.Background(), prepared, &buf, nil))
+	vsm.namespaces = map[string]*NamespaceState{}
+	require.NoError(t, vsm.RecoverFromSnapshot(context.Background(), &buf, nil))
+	require.True(t, vsm.namespaces["ns"].StoredCountRule, "the restored namespace keeps the rule")
+
+	require.NoError(t, applyCountCmdRule(t, vsm, 2, &VectorCommand{Op: OpUpsertVector, ID: 1, Vector: []float32{0, 1}}, false))
+	require.Equal(t, uint64(1), storedCount(vsm), "an unmarked re-upsert after restore adds no vector")
+	require.NoError(t, applyCountCmdRule(t, vsm, 3, &VectorCommand{Op: OpDeleteVector, ID: 7}, false))
+	require.Equal(t, uint64(1), storedCount(vsm), "an unmarked delete of a missing id after restore removes nothing")
 }
 
 // pagedScanStore serves ScanNamespace as the stores do: ascending ids from
