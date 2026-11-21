@@ -18,6 +18,7 @@ are not reconstructed here — their history is in the git log.
 - `Client.Permissions()` is a required capability and never returns nil on an open client: gRPC, REST, QUIC, Unix and MCP now implement `transport.PermissionProvider` over the new `ListPermissionCatalog` RPC (`GET /permissions/catalog`, QUIC `role.ListPermissionCatalog`, MCP `qrdb_permissions_catalog`, gated on `permissions:list`), which answers every registered permission with its scope, sorted by name. `Lookup`/`LookupScope` return `PermissionNotFoundError` for an unknown name and an error for an empty scope. `qrdb roles permissions --detail` lists the catalog with resource, action and scope; the default output is unchanged (docs/18 V12, #1647).
 
 - CI runs every job on the standard GitHub-hosted `ubuntu-latest` runner for every event, a push to `main` and a same-repository pull request included (owner ruling 999). The pool split (ruling 841) and the pool image producer that published the pool legs' images to the LAN CI registry (ruling 879) are removed; a job may run self-hosted only with a `# self-hosted: <reason>` comment naming the hardware it needs or the measured hosted limit it exceeds, and none does. Code review's review jobs keep their self-hosted review hosts.
+- Binding a node to the replicated credential store moves the earlier store's records one credential at a time (#1201): the current value, metadata, version history, staged rotations and migration claim of a name are written in one guarded batch that requires every destination key absent, and the source records go only once that batch applied. A name the new store already holds any record of is not moved: both copies stay as they are and the move reports the names (never values) in a `credentials.LayoutConflictError`, logged as a warning at bind. Every plaintext value the move read is wiped after its write attempt.
 - CI hands the toolchain and integration-test images between jobs through the LAN CI registry (the repository secret secrets.CI_IMAGE_REGISTRY, so every log line masks its address) on self-hosted runners; GitHub artifacts remain the path on GitHub-hosted runners and whenever a pull fails.
 - `make docker-build-toolchain`, `make docker-build-it` and `scripts/in-toolchain-image.sh` pull the content-hash-tagged image from the CI image registry the runner's environment names in `CI_IMAGE_REGISTRY` before they build, and push what they built to it (`scripts/image-registry.sh`, #1609), so a runner host no longer builds every image on its own disk. A failed or hung pull or push falls back to the build and never fails the job; each image logs one line (`pulled`, `miss, built and pushed` or `miss, built, push failed`); unset, nothing changes.
 
@@ -31,12 +32,42 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **Named credentials rotate on a policy, once per interval across the cluster.**
+  A `barrier` credential can carry a rotation policy (enabled, interval,
+  versions retained) in its metadata record; `RotateDue` rotates each due
+  credential once under a guarded claim, with the next value from the
+  embedder's `WithRotationValueSource` (`node.WithCredentialRotationValueSource`).
+  With no source a due credential reports `ErrNoRotationValueSource`, and a
+  policy on a `manual` service is refused with `InvalidRotationPolicyError`.
+  A tenant's credential store of record is now its replicated home store; the
+  tenant barrier is read once, as the migration source of the old layout
+  (part 1 of #1201).
+- **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
+- **Every node rotates due credentials on a ticker, and the rotation policy is
+  set and read on every server transport.** `pkg/server` checks every
+  `seal.credential_rotation_check_period` (default `1m`), skipping the pass
+  while the node is sealed. Rotation-policy set and get, and migration-conflict
+  list and resolve, are served on REST (`PUT`/`GET
+  /v1/credentials/{name}/rotation-policy`, `GET
+  /v1/credentials/migration-conflicts`, `POST
+  /v1/credentials/{name}/migration-resolve`), gRPC and Unix, QUIC and MCP under
+  `credentials:rotate`. A REST name holding `/` or `%` travels as one escaped
+  segment, produced by the Go SDK's REST transport; a segment that does not
+  unescape is a 400 (part 2 of #1201).
+- **Rotation policies and migration conflicts from every SDK transport and the
+  `qrdb` CLI.** `transport.Client`'s credentials surface gains
+  `CredentialSetRotationPolicy`, `CredentialRotationPolicy`,
+  `CredentialMigrationConflicts` and `CredentialResolveMigrationConflict`,
+  implemented by the embedded, gRPC, MCP, QUIC, REST and Unix transports (the
+  embedded one under `credentials:rotate`, `credentials:list` for the
+  conflict list). The CLI adds `qrdb credential rotation-policy set|get` and
+  `qrdb credential migration-conflicts list|resolve`, driven end to end over
+  every transport (part 3 of #1201).
 - **`sdk/go` re-exports the policy mint (#1187).** `sdk.MintDelegationRequest`, `sdk.IssuedDelegation` and `sdk.DelegationPolicyNotFoundError` name `Node.MintDelegation`'s request, result and refusal, so an embedder never imports `pkg/*`; an operation the minted scope does not hold is refused with `sdk.PermissionDeniedError` in the delegating tenant itself, pinned on the SDK and over every CLI transport.
 - **Embedder operations under a policy-minted delegation (#1187).** Role and effective-permission reads for one account (`roles:read`, `users:read`, `permissions:resolve`), role assign/unassign, and `tenant_barrier:officer_list` and `tenant_barrier:seal` run in the delegating tenant under a delegation minted on its standing policy, through the node's authorization middleware: allowed and audited in that tenant, refused in every other tenant and the system tenant, and refused once the policy is deleted and the serial revoked, on the SDK and over every CLI transport (REST, gRPC, QUIC, MCP, Unix). Delegation admission needs a revocation checker that answers uncached (`auth.UncachedRevocationChecker`, as `cert.RevocationCache` does), so a revoke refuses the next call whatever the cache TTL; a checker without it, including a wrapper that embeds `auth.RevocationChecker`, has every delegation refused. See [docs/identity-rbac/user.md](docs/identity-rbac/user.md#letting-it-renew-on-its-own-a-standing-policy).
 - **Pending users with a TTL (#1583).** A pending create may carry a time-to-live: REST `pending_ttl`, gRPC and Unix `CreateUserRequest.pending_ttl_seconds`, QUIC `pendingTTL`, MCP `qrdb_user_create` `pending_ttl`, sdk/go `CreateUserRequest.PendingTTL`, and `qrdb users create --pending --pending-ttl`. User reads carry the expiry (`pending_expires_at`, `pending_expires_at_unix`, `pendingExpiresAt`, `User.PendingExpiresAt`). Activation (`EnableUser`) clears it. A leader-only reaper deletes pending users past their TTL, with their role assignments and factors, and audits `pending_reaped`; it never touches an active user. `auth.pending_user_sweep_interval` sets the sweep period (default `1m`; `off` disables). On a cluster, TTLs need the `pending-user-ttl` cluster feature: until every member advertises it a TTL-bearing create is refused as not active and the reaper does not sweep.
 - **`qrdb ca delegate policy put|list|delete` (#1187).** The CLI writes, lists and deletes the tenant's standing delegation policies over every transport (REST, gRPC, QUIC, MCP, Unix); deleting a policy refuses the next mint for its principal. See [docs/certificate-authority/cli.md](docs/certificate-authority/cli.md#qrdb-ca-delegate-policy).
-- **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
-- **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions. The server answers the three delegation policy RPCs; it answers the four credential rotation RPCs `UNIMPLEMENTED` until their handlers land.
+- **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions, and the server answers all seven.
 - **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
 - **CI verifies commit signatures.** A Signatures job from ci-template
   v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
@@ -802,6 +833,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Security
 
+- **Named credentials are never stored in an unencrypted data plane** (#1201): with seal enabled, a standalone node whose backend is `objstore` (which does not encrypt at rest) and whose credential strategy is `barrier` now binds the system seal barrier, which encrypts every record, as the credential store instead of the data plane (the `manual` strategy writes nothing to the data plane and starts on any backend). A legacy `<name>#meta` value with data after its JSON document now migrates as a credential under its full name, not as `<name>`'s metadata.
 - Barrier secrets and the SO PIN are never resent on any redirect, the same
   host included (REST, MCP), and an explicit `http://` address makes every
   secret-carrying gRPC and QUIC call refuse before any request is sent (#1639).

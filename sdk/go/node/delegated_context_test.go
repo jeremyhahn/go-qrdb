@@ -45,6 +45,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
@@ -241,23 +242,29 @@ func newDelegatingNodeWithTrail(t *testing.T, principal string, opts ...node.Nod
 	return n, cas, trail
 }
 
-// awaitTenantAdmin waits for a barrier tenant's admin account. OnboardTenant
-// answers once the tenant is committed; the admin account is completed
-// after that answer (and retried), so a lookup straight after onboarding
-// can find no user yet.
+// awaitTenantAdmin waits for the account of tenantID's first admin. A
+// system-managed tenant's admin account is completed just after the create
+// answers, not inside it (docs/multi-tenancy/api.md), so until then the
+// account is absent. Only that absence is waited out; any other error fails.
 func awaitTenantAdmin(t *testing.T, n *node.Node, tenantID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(tenant.WithTenantID(context.Background(), tenantID), 30*time.Second)
-	defer cancel()
+	ctx := tenant.WithTenantID(context.Background(), tenantID)
+	deadline := time.After(30 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
 	for {
 		_, err := n.Services().User.GetUserByUsername(ctx, tenantID, tenantID+"-admin")
 		if err == nil {
 			return
 		}
+		var absent *user.UserNotFoundError
+		if !errors.As(err, &absent) {
+			t.Fatalf("GetUserByUsername(%s): %v", tenantID, err)
+		}
 		select {
-		case <-ctx.Done():
-			t.Fatalf("admin account of %s never completed: %v", tenantID, err)
-		case <-time.After(5 * time.Millisecond):
+		case <-deadline:
+			t.Fatalf("the admin account of %s was not completed within 30s: %v", tenantID, err)
+		case <-tick.C:
 		}
 	}
 }
