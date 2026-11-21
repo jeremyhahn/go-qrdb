@@ -18,7 +18,10 @@
 // File format (all multi-byte integers are little-endian):
 //
 //	Offset  Size  Field
-//	0       4     magic         = "QENC"
+//	0       4     magic         = "QENC" ("qENC" while Create of a
+//	                            framed log has not yet synced its header
+//	                            and commit slots; only such a file may be
+//	                            recovered as an empty log)
 //	4       1     version       = 0x01
 //	5       1     flags         (reserved, MUST be 0)
 //	6       2     header_size   = 64 + len(wrapped_dek)

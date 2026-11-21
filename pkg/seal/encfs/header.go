@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -33,6 +34,16 @@ const (
 
 	maxWrappedDEKSize = 4096
 	maxHeaderSize     = fixedHeaderSize + maxWrappedDEKSize
+
+	// headerFlagFramed marks a file in the framed, seal-on-sync layout
+	// used for append-and-sync files (Pebble WALs and MANIFESTs): each
+	// block carries its plaintext length and is never rewritten once a
+	// Sync made it durable. A file without the flag uses the fixed-size
+	// block layout. See encfile.go.
+	headerFlagFramed uint8 = 0x01
+
+	// knownHeaderFlags is every flag bit this build understands.
+	knownHeaderFlags = headerFlagFramed
 )
 
 var (
@@ -73,18 +84,29 @@ type header struct {
 // and wrapping it with the barrier. The returned header has DEK
 // populated for immediate use by the caller.
 func newHeader(barrier barrierKEK) (*header, error) {
+	return newHeaderWithFlags(barrier, 0)
+}
+
+// newFramedHeader is newHeader for the framed, seal-on-sync layout. The
+// layout flag is sealed with the DEK (see wrappedDEKPlaintext), so it is
+// authenticated by the barrier and a flipped header byte refuses the open.
+func newFramedHeader(barrier barrierKEK) (*header, error) {
+	return newHeaderWithFlags(barrier, headerFlagFramed)
+}
+
+func newHeaderWithFlags(barrier barrierKEK, flags uint8) (*header, error) {
 	if barrier == nil {
 		return nil, ErrNilBarrier
 	}
 	h := &header{
 		Version:   headerVersion,
-		Flags:     0,
+		Flags:     flags,
 		BlockSize: BlockSize,
 	}
 	if _, err := rand.Read(h.DEK[:]); err != nil {
 		return nil, err
 	}
-	wrapped, err := barrier.Encrypt(h.DEK[:])
+	wrapped, err := barrier.Encrypt(wrappedDEKPlaintext(h.DEK[:], flags))
 	if err != nil {
 		return nil, err
 	}
@@ -95,9 +117,42 @@ func newHeader(barrier barrierKEK) (*header, error) {
 	return h, nil
 }
 
+// wrappedDEKPlaintext is what the barrier seals into the header: the DEK
+// alone for the fixed-size block layout, the DEK followed by the flags byte
+// for any other. The header's flags byte is plaintext; sealing it with the
+// DEK makes the layout discriminator authentic, so a fixed-size log whose
+// flag is flipped on is never read as an empty framed log (and overwritten),
+// nor a framed log whose flag is flipped off as fixed-size blocks.
+func wrappedDEKPlaintext(dek []byte, flags uint8) []byte {
+	if flags == 0 {
+		return append([]byte(nil), dek...)
+	}
+	return append(append(make([]byte, 0, len(dek)+1), dek...), flags)
+}
+
+// HeaderLayoutMismatchError reports a header whose plaintext flags byte
+// disagrees with the flags sealed with its DEK: the layout discriminator
+// was altered after the file was created. The open is refused; it unwraps
+// to ErrInvalidHeader.
+type HeaderLayoutMismatchError struct {
+	HeaderFlags uint8
+	SealedFlags uint8
+}
+
+func (e *HeaderLayoutMismatchError) Error() string {
+	return fmt.Sprintf("encfs: header flags %#02x disagree with the sealed flags %#02x", e.HeaderFlags, e.SealedFlags)
+}
+
+func (e *HeaderLayoutMismatchError) Unwrap() error { return ErrInvalidHeader }
+
 // totalSize returns the on-disk size of the marshaled header in bytes.
 func (h *header) totalSize() int {
 	return fixedHeaderSize + len(h.WrappedDEK)
+}
+
+// framed reports whether the file uses the framed, seal-on-sync layout.
+func (h *header) framed() bool {
+	return h.Flags&headerFlagFramed != 0
 }
 
 // marshal returns the on-disk representation of the header.
@@ -135,6 +190,9 @@ func readHeader(r io.Reader, barrier barrierKEK) (*header, error) {
 	if fixed[offVersion] != headerVersion {
 		return nil, ErrUnsupportedVersion
 	}
+	if fixed[offFlags]&^knownHeaderFlags != 0 {
+		return nil, ErrInvalidHeader
+	}
 	headerSize := int(binary.LittleEndian.Uint16(fixed[offHeaderSize:]))
 	if headerSize < fixedHeaderSize || headerSize > maxHeaderSize {
 		return nil, ErrInvalidHeader
@@ -168,9 +226,20 @@ func readHeader(r io.Reader, barrier barrierKEK) (*header, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(plaintext) != dekSize {
+	var sealedFlags uint8
+	switch len(plaintext) {
+	case dekSize:
+	case dekSize + 1:
+		sealedFlags = plaintext[dekSize]
+		if sealedFlags == 0 {
+			return nil, ErrCorruptDEK
+		}
+	default:
 		return nil, ErrCorruptDEK
 	}
-	copy(h.DEK[:], plaintext)
+	if sealedFlags != h.Flags {
+		return nil, &HeaderLayoutMismatchError{HeaderFlags: h.Flags, SealedFlags: sealedFlags}
+	}
+	copy(h.DEK[:], plaintext[:dekSize])
 	return h, nil
 }

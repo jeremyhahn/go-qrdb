@@ -96,9 +96,14 @@ const (
 type targetsFile struct {
 	// Exec, Signal and Restart are the nemesis.RemoteConfig templates every
 	// node shares; a node's vars fill them in.
-	Exec    []string `json:"exec"`
-	Signal  []string `json:"signal"`
-	Restart []string `json:"restart"`
+	Exec []string `json:"exec"`
+	// DiskExec is the optional nemesis.RemoteConfig disk_exec template the
+	// disk-full fill and free steps use instead of Exec: it reaches the
+	// node's data directory without its network namespace, so it runs on a
+	// node whose server exited on ENOSPC.
+	DiskExec []string `json:"disk_exec"`
+	Signal   []string `json:"signal"`
+	Restart  []string `json:"restart"`
 	// Unseal is the nemesis.RemoteConfig unseal template; a kill under a
 	// seal type that restarts sealed requires it.
 	Unseal  []string              `json:"unseal"`
@@ -478,7 +483,7 @@ func buildTargets(tf *targetsFile, nodes []Node) (map[string]nemesis.Target, err
 	targets := make(map[string]nemesis.Target, len(nodes))
 	for _, n := range nodes {
 		t, err := nemesis.NewRemoteTarget(nemesis.RemoteConfig{
-			Node: n.Name, Vars: tf.Nodes[n.Name].Vars, Exec: tf.Exec, Signal: tf.Signal, Restart: tf.Restart, Unseal: tf.Unseal,
+			Node: n.Name, Vars: tf.Nodes[n.Name].Vars, Exec: tf.Exec, DiskExec: tf.DiskExec, Signal: tf.Signal, Restart: tf.Restart, Unseal: tf.Unseal,
 		})
 		if err != nil {
 			return nil, &ConfigError{Field: EnvTargets, Reason: "cannot build the target of " + n.Name, Err: err}

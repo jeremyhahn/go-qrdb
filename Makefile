@@ -1021,12 +1021,44 @@ cluster-proof-check: cluster-proof-bin
 # BOOT-01 in container mode: start the inventory's nodes from the release
 # image, take them through first boot and check the admin surface on every
 # transport (docs/cluster-verification/user.md). PROOF_INVENTORY names the
-# inventory; the test fails without one rather than skipping.
+# inventory; the test fails without one rather than skipping. PROOF_KEEP=1
+# leaves the cluster running after a pass, for a soak against it.
 export PROOF_INVENTORY
+export PROOF_KEEP
 
 .PHONY: cluster-proof-boot
 cluster-proof-boot:
 	cd test/clusterproof && $(GOTEST) -tags "$(MIN_TAGS),clusterproof,clusterproof_container" -run '^TestBOOT01$$' ./container/
+
+# The cluster proof on one machine, as the nightly clusterproof-soak job runs
+# it (#1619): boot the three containers `scripts/cluster-proof-ci.sh render`
+# wrote into CLUSTERPROOF_CI_DIR, soak them under PROOF_SEAL=none and check
+# the bundle. The default nemesis is every fault but clock-rate (the nodes
+# share the harness's kernel) and slow-disk (no known block device on a
+# hosted runner). `scripts/cluster-proof-ci.sh down` removes the cluster.
+CLUSTERPROOF_CI_DIR ?= $(CURDIR)/build/clusterproof-ci
+CLUSTERPROOF_CI_NODES := node-1=192.0.2.11:63004,node-2=192.0.2.12:63004,node-3=192.0.2.13:63004
+CLUSTERPROOF_CI_NEMESIS := disk-full,kill,partition-bridge,partition-isolate-leader,partition-majority-minority,pause
+CLUSTERPROOF_CI_PROOF = PROOF_NODES=$(CLUSTERPROOF_CI_NODES) \
+	PROOF_TARGETS=$(CLUSTERPROOF_CI_DIR)/targets.json \
+	PROOF_WORKLOAD=$(CLUSTERPROOF_CI_DIR)/workload.json \
+	PROOF_SEAL=none \
+	PROOF_BUNDLE=$(CLUSTERPROOF_CI_DIR)/bundle \
+	PROOF_DURATION=$(or $(PROOF_DURATION),30m) \
+	PROOF_NEMESIS=$(or $(PROOF_NEMESIS),$(CLUSTERPROOF_CI_NEMESIS))
+
+# The image the CI cluster's faults run in (`scripts/cluster-proof-ci.sh render
+# DIR IMAGE FAULT_IMAGE`): debian with the tools the default partition and
+# disk-full commands run, which the release image does not carry.
+.PHONY: cluster-proof-fault-image
+cluster-proof-fault-image:
+	docker build -f test/clusterproof/fault.Dockerfile -t clusterproof-fault:$(BUILD_VERSION) test/clusterproof
+
+.PHONY: cluster-proof-ci
+cluster-proof-ci:
+	scripts/cluster-proof-ci.sh up $(CLUSTERPROOF_CI_DIR)
+	$(MAKE) cluster-proof $(CLUSTERPROOF_CI_PROOF)
+	$(MAKE) cluster-proof-check $(CLUSTERPROOF_CI_PROOF)
 
 # Run one package's unit tests under the same build tags `make test` uses --
 # the uniform escape hatch for a package that has no named test-<pkg> target

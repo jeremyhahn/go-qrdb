@@ -11,6 +11,7 @@ package encfs
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"encoding/binary"
 	"errors"
 )
 
@@ -90,6 +91,47 @@ func (c *blockCrypto) decrypt(block []byte) ([]byte, error) {
 	// The nonce argument must be empty: the AEAD reads the inline
 	// nonce back off the front of the block.
 	plaintext, err := c.aead.Open(nil, nil, block, nil)
+	if err != nil {
+		return nil, ErrAuthFailed
+	}
+	return plaintext, nil
+}
+
+// frameLenSize is the length of the clear plaintext-length prefix of a
+// framed block (see the framed layout in encfile.go).
+const frameLenSize = 4
+
+// frameAAD is the additional data a framed block is sealed with: its index
+// in the file and its plaintext length, so frames cannot be reordered,
+// spliced or have their length prefix rewritten.
+func frameAAD(index int64, n int) []byte {
+	var aad [12]byte
+	binary.LittleEndian.PutUint64(aad[:8], uint64(index)) // #nosec G115 -- index is a non-negative frame count
+	binary.LittleEndian.PutUint32(aad[8:], uint32(n))     // #nosec G115 -- n is at most BlockSize
+	return aad[:]
+}
+
+// sealFrame returns the framed block for plaintext at position index: a
+// little-endian uint32 plaintext length followed by the AEAD output
+// (inline nonce, ciphertext, tag) over plaintext with frameAAD as
+// additional data.
+func (c *blockCrypto) sealFrame(plaintext []byte, index int64) ([]byte, error) {
+	if len(plaintext) == 0 || len(plaintext) > BlockSize {
+		return nil, ErrBlockTooLarge
+	}
+	out := make([]byte, frameLenSize, frameLenSize+inlineNonceSize+len(plaintext)+tagSize)
+	binary.LittleEndian.PutUint32(out, uint32(len(plaintext))) // #nosec G115 -- at most BlockSize
+	// #nosec G407 -- the nonce argument MUST be nil here: this AEAD is cipher.NewGCMWithRandomNonce, which generates a fresh 96-bit nonce inside the FIPS module on every Seal and prepends it to the ciphertext. gosec reads the nil as a hardcoded IV; passing anything else makes Seal panic.
+	return c.aead.Seal(out, nil, plaintext, frameAAD(index, len(plaintext))), nil
+}
+
+// openFrame authenticates and decrypts the AEAD part of the framed block
+// at position index whose length prefix read n.
+func (c *blockCrypto) openFrame(sealed []byte, index int64, n int) ([]byte, error) {
+	if n <= 0 || n > BlockSize || len(sealed) != n+BlockOverhead {
+		return nil, ErrBlockTooShort
+	}
+	plaintext, err := c.aead.Open(nil, nil, sealed, frameAAD(index, n))
 	if err != nil {
 		return nil, ErrAuthFailed
 	}

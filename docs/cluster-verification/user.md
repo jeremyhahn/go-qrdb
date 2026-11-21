@@ -188,8 +188,9 @@ make cluster-proof-boot PROOF_INVENTORY=$XDG_CONFIG_HOME/clusterproof/inventory.
 ```
 
 A pass prints one line per node and transport, all naming the same leader
-and mode `raft`. The containers are removed at the end, so start the soak's
-cluster the same way. The containers are named `clusterproof-<name>`, and
+and mode `raft`. The containers are removed at the end; with `PROOF_KEEP=1`
+they stay: after a pass the soak can run against that cluster, and after
+a failure their full logs can be saved. The containers are named `clusterproof-<name>`, and
 that is the name the targets file's templates use.
 
 To rehearse on one machine:
@@ -200,6 +201,72 @@ To rehearse on one machine:
 3. Give each node an IP on that subnet as its address.
 
 The harness reaches each container at that IP.
+
+`scripts/cluster-proof-ci.sh` does all of this for you. It runs every fault
+through the local docker, with no ssh and no unseal step:
+
+```sh
+make docker-build-release
+make cluster-proof-fault-image
+scripts/cluster-proof-ci.sh render build/clusterproof-ci qrdbd:$(cat VERSION) clusterproof-fault:$(cat VERSION)
+make cluster-proof-ci PROOF_DURATION=15m
+scripts/cluster-proof-ci.sh down build/clusterproof-ci
+```
+
+- `render DIR IMAGE [FAULT_IMAGE]` writes a throwaway test CA, the node and
+  admin certificates, the PINs and the inventory, targets and workload files
+  into `DIR`. Each node certificate names the node by its Raft address,
+  `spiffe://qrdb.cluster/node/<ip>:63001`, and the admin certificate is
+  `OU=system, CN=admin` with `spiffe://system/user/admin`, the identity the
+  first-boot ceremony adopts as the cluster admin. Its last line is the
+  `PROOF_NODES` value. The faults run in
+  `FAULT_IMAGE` (default `IMAGE`): the release image has no iptables, so
+  pass the image `make cluster-proof-fault-image` builds from
+  `test/clusterproof/fault.Dockerfile`, which carries the tools the default
+  partition and disk-full commands run. The partition, clock and slow-disk
+  faults join the node's network namespace (`exec`); disk-full fills and
+  frees through `disk_exec`, which mounts only the node's data directory, so
+  its heal still runs when the server has exited on a full disk, and then
+  restarts the node with `docker start`.
+- `up DIR` gives each node its own loop-mounted ext4 filesystem of
+  `CLUSTERPROOF_DISK_MB` (default 1024, so 1 GiB) on `DIR/node-N/data`, so
+  disk-full fills only that node and never the runner's disk, then creates
+  the network and runs `cluster-proof-boot` with `PROOF_KEEP=1`. The loop
+  mounts use `sudo` unless you run as root. When `up` fails, BOOT-01
+  included, it writes every node's full `docker logs` to
+  `DIR/logs/node-N.log`, beside `DIR/bundle` and never inside it: the
+  bundle's manifest checksums every file under `bundle/`.
+- `down DIR` removes the containers and the network, then unmounts and
+  deletes the node filesystems.
+- `logs DIR` writes every node's full `docker logs` to
+  `DIR/logs/node-N.log`; the CI job runs it when the soak or the check
+  fails and uploads them as the `clusterproof-node-logs` artifact, beside
+  the `clusterproof-bundle` artifact.
+
+`make cluster-proof-ci` runs `up`, then the soak under `PROOF_SEAL=none`,
+then `cluster-proof-check` on `build/clusterproof-ci/bundle`. Its default
+nemesis is every fault but `clock-rate` and `slow-disk`: on one machine the
+nodes share the harness's kernel, and a hosted runner has no known block
+device to throttle. See [cli.md](cli.md#make-cluster-proof-ci).
+
+### The nightly run
+
+CI runs the same rehearsal every night in the `clusterproof-soak` job (the
+04:00 UTC scheduled run, or a `workflow_dispatch`). It builds the release
+image, soaks the cluster for 30 minutes, and uploads the bundle as the
+`clusterproof-bundle` artifact, pass or fail, beside the run's
+`inventory.json`, `targets.json` and `workload.json`. To replay its verdict
+with no cluster, unpack the artifact into `DIR` and run:
+
+```sh
+make cluster-proof-check PROOF_BUNDLE=DIR/bundle \
+  PROOF_TARGETS=DIR/targets.json PROOF_WORKLOAD=DIR/workload.json \
+  PROOF_SEAL=none \
+  PROOF_NODES=node-1=192.0.2.11:63004,node-2=192.0.2.12:63004,node-3=192.0.2.13:63004
+```
+
+The job log's `make cluster-proof` line carries the run's other `PROOF_*`
+values.
 
 ## First run: a short smoke
 
