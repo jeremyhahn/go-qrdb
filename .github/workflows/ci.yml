@@ -275,7 +275,8 @@ jobs:
       # v1.52 (Tenant Agent order): on a pull request whose head repository is
       # not this repository (a fork, or a fork since deleted), it makes no call
       # and outputs the hosted default with a ::notice: a fork never reaches a
-      # self-hosted runner. Its tests: testdata/runner-select-tests.py.
+      # self-hosted runner. Its tests: .github/workflows/testdata/runner-select-tests.py,
+      # run by the preflight step "Runner select tests".
       - name: Hosted or overflow runner (ruling 1024)
         id: runner
         env:
@@ -443,6 +444,15 @@ jobs:
       # Its tests: testdata/runner-labels-tests.py, run by the step before it.
       - name: Runner labels tests (go-qrdb #1642)
         run: python3 -I .github/workflows/testdata/runner-labels-tests.py
+      # Codex round 1 on #1671: the step "Hosted or overflow runner (ruling
+      # 1024)" run against a stub Actions API (forks, thresholds, grace,
+      # pagination, short listings, unreadable replies, off github.com).
+      - name: Runner select tests (go-qrdb #1671)
+        run: python3 -I .github/workflows/testdata/runner-select-tests.py
+      # Codex round 1 on #1671: scripts/ci-mask-lan.sh masks an entry's
+      # userinfo and classifies the host after it, and every mask step runs it.
+      - name: LAN mask tests (go-qrdb #1671)
+        run: python3 -I .github/workflows/testdata/ci-mask-lan-tests.py
       - name: Runner labels (ruling 633)
         run: |
           python3 -I - <<'PY'

@@ -604,6 +604,29 @@ func TestCIRunnerLabelsStepPresent(t *testing.T) {
 	}
 }
 
+// runnerSelectTestsStep and lanMaskTestsStep run the behavioural tests of
+// the step "Hosted or overflow runner (ruling 1024)" and of
+// scripts/ci-mask-lan.sh in preflight (Codex round 1 on #1671).
+const (
+	runnerSelectTestsStep = "- name: Runner select tests (go-qrdb #1671)\n        run: python3 -I .github/workflows/testdata/runner-select-tests.py\n"
+	lanMaskTestsStep      = "- name: LAN mask tests (go-qrdb #1671)\n        run: python3 -I .github/workflows/testdata/ci-mask-lan-tests.py\n"
+)
+
+func TestCIRunnerSelectAndMaskTestsPresent(t *testing.T) {
+	body := readCIBody(t)
+	for _, step := range []string{runnerSelectTestsStep, lanMaskTestsStep} {
+		if n := strings.Count(body, step); n != 1 {
+			t.Errorf("ci.yml has %d %q steps, want exactly one", n, step)
+		}
+	}
+	for _, name := range []string{"runner-select-tests.py", "ci-mask-lan-tests.py"} {
+		p := filepath.Join(repoRoot(t), ".github", "workflows", "testdata", name)
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("ci.yml runs .github/workflows/testdata/%s, which is missing: %v", name, err)
+		}
+	}
+}
+
 // hostedFile is the workflow name runnerFixture is checked as: one held to
 // the literal ubuntu-latest.
 const hostedFile = "release.yml"
