@@ -376,3 +376,26 @@ func TestAdminService_AddObserverMemberReleaseAdmissionBindsTheInitialConfigurat
 		t.Fatalf("configChangeIndex per add = %v, want only the voter add, at the initial configuration 0", h.indexes)
 	}
 }
+
+// TestAdminService_InitialConfigurationSecondNonAdjacentAddRefused starts the
+// system shard at the initial configuration (change ID 0) in an all-0.59
+// cluster, commits a 0.60 voter, then lets a 0.58 voter that was admitted
+// against the initial configuration resume: the binding to change ID 0 must
+// refuse it with the release-gap error and leave only the 0.60 member added.
+func TestAdminService_InitialConfigurationSecondNonAdjacentAddRefused(t *testing.T) {
+	next := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
+	old := cluster.Member{NodeID: 5, Address: "n5:1", ReleaseVersion: "0.58.0-alpha"}
+	h := newBindingHostAt(t, 0, next, old)
+
+	err := raceAdds(t, h, next, old)
+	var gap *release.GapError
+	if !errors.As(err, &gap) {
+		t.Fatalf("second AddMember = %v, want *release.GapError", err)
+	}
+	if !h.member(4) || h.member(5) {
+		t.Fatalf("members = %v, want n4 added and n5 refused", h.members)
+	}
+	if len(h.indexes) != 1 || h.indexes[0] != 0 {
+		t.Fatalf("configChangeIndex per add = %v, want only the first add, at the initial configuration 0", h.indexes)
+	}
+}
