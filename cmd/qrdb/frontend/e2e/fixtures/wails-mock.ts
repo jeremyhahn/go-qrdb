@@ -1631,11 +1631,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             },
             GetRetention: async (req: { metric: string }) => {
               maybeReject("TimeSeriesBinding.GetRetention");
-              return { days: tsRetentionStore.get(req.metric) ?? 0 };
+              // As the Go binding: an unset policy is the engine's non-nil
+              // empty policy (duration 0), not null.
+              return { policy: { durationNs: tsRetentionStore.get(req.metric) ?? 0 } };
             },
-            SetRetention: async (req: { metric: string; days: number }) => {
+            SetRetention: async (req: { metric: string; policy?: { duration_ns?: number } }) => {
               maybeReject("TimeSeriesBinding.SetRetention");
-              tsRetentionStore.set(req.metric, req.days);
+              tsRetentionStore.set(req.metric, req.policy?.duration_ns ?? 0);
             },
             ListMetrics: async (req?: { prefix?: string }) => {
               maybeReject("TimeSeriesBinding.ListMetrics");

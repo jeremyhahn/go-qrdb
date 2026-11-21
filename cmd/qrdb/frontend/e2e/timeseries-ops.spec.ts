@@ -231,7 +231,9 @@ async function injectStatefulTimeSeriesBinding(
         GetRetention: async (req: Req) => {
           await maybeHold("GetRetention");
           maybeReject("GetRetention");
-          return { policy: retentionStore.get(req["metric"] as string) ?? null };
+          // The Go binding passes the engine's answer through: an unset
+          // policy is a non-nil empty one (duration 0), never null.
+          return { policy: retentionStore.get(req["metric"] as string) ?? { durationNs: 0 } };
         },
         SetRetention: async (req: Req) => {
           maybeReject("SetRetention");
@@ -578,6 +580,22 @@ test.describe("TimeSeries operations", () => {
     const calls = await bindingCalls(page);
     expect(calls.filter((c) => c === "GetRetention").length).toBeGreaterThanOrEqual(2);
     expect(calls).toContain("SetRetention");
+  });
+
+  test("desktop: the binding's empty zero-duration policy reads as none", async ({ page }) => {
+    // Codex #1612 round 2, P2: GetRetentionPolicy answers an unset policy
+    // with {policy: {durationNs: 0}}, which the binding keeps. The card must
+    // show "none", not a 0 ns duration.
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+    await writePointViaUI(page, "ops.retzero", "1", ns(minuteBase()));
+    await expect(page.getByText('Data point written for "ops.retzero"')).toBeVisible({ timeout: 5_000 });
+    await openMetric(page, "ops.retzero");
+
+    const card = page.getByTestId("ts-retention-card");
+    await expect(card.getByTestId("ts-retention-none")).toHaveText("Current policy: none", { timeout: LOAD_TIMEOUT });
+    await expect(card.getByTestId("ts-retention-duration")).toHaveCount(0);
+    expect(await bindingCalls(page)).toContain("GetRetention");
   });
 
   test("aggregate and set retention errors show error toasts", async ({ page }) => {

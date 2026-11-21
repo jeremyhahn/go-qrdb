@@ -332,7 +332,11 @@
     try {
       const resp = await client.timeSeries!.getRetention({ metric });
       if (gen !== metricGen) return;
-      const p = resp?.policy ?? null;
+      // The engine answers an unset policy with an empty one (duration 0),
+      // which the embedded transport and the Wails binding pass through; REST
+      // already reports none. A zero or absent duration is no policy.
+      const raw = resp?.policy ?? null;
+      const p = raw !== null && (raw.durationNs ?? 0) > 0 ? raw : null;
       retention = p === null
         ? null
         : {
