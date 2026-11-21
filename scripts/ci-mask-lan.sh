@@ -14,6 +14,12 @@
 # (a LAN host name) or a name under .internal, .lan, .local, .localdomain,
 # .home.arpa or .corp. Public hosts and keywords (proxy.golang.org, direct,
 # off) are left.
+# v1.53 (Tenant Agent on go-quicbaas #2667): every variable whose name ends
+# in _REGISTRY is scanned (CI_REGISTRY, CI_IMAGE_REGISTRY, RELEASE_REGISTRY,
+# a copy's IT_REGISTRY), and the template's mask step sets
+# VARS_CI_IMAGE_REGISTRY from the repository variable, because a registry a
+# later step takes from `vars` is not in this step's environment otherwise. A
+# _REGISTRY_OWNER or other non-host name is not scanned.
 #
 #   usage: scripts/ci-mask-lan.sh
 set -euo pipefail
@@ -30,7 +36,7 @@ private() {
 
 for v in $(compgen -e); do
 	case $v in
-	DEVCACHE_* | GOPROXY | CI_REGISTRY | CI_IMAGE_REGISTRY | RELEASE_REGISTRY | GITHUB_SERVER_URL) ;;
+	DEVCACHE_* | GOPROXY | *_REGISTRY | GITHUB_SERVER_URL) ;;
 	*) continue ;;
 	esac
 	IFS='|, ' read -ra entries <<<"${!v}"
