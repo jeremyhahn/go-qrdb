@@ -61,6 +61,33 @@ func (e rbacEndpoints) ListOwnPermissions(ctx context.Context) ([]transport.Perm
 	return raw.Permissions, nil
 }
 
+// ListPermissionCatalog calls the qrdb_permissions_catalog tool
+// (permissions:list).
+func (e rbacEndpoints) ListPermissionCatalog(ctx context.Context) ([]transport.PermissionInfo, error) {
+	if e.t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	text, err := e.t.callTool(ctx, "qrdb_permissions_catalog", nil)
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Permissions []transport.PermissionInfo `json:"permissions"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "ListPermissionCatalog", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return raw.Permissions, nil
+}
+
+var _ transport.PermissionProvider = (*Transport)(nil)
+
+// PermissionClient returns a PermissionClient answered from the server's
+// permission catalog.
+func (t *Transport) PermissionClient() transport.PermissionClient {
+	return transport.NewRemotePermissionClient(rbacEndpoints{t: t})
+}
+
 // EvaluateAuthorization maps to the qrdb_permissions_authorize tool.
 func (e rbacEndpoints) EvaluateAuthorization(ctx context.Context, req *transport.AuthorizeRequest) (*transport.AuthorizeDecision, error) {
 	if e.t.closed.Load() {
