@@ -1,4 +1,5 @@
 # ci-template: v1.35.1 + v1.42 hermetic gate + v1.43 hosted first — canonical CI for all first-party Go repos.
+# v1.47 runner gate (Tenant Agent ruling 1007, handbook ci-template v1.47): the step Runner labels (ruling 633) checks every workflow's runs-on label and waiver category together; codex and qwen run only in code-review.yml (codex with credential:, qwen with hardware:).
 # v1.43 hosted first (Tenant Agent rulings 833 and 834, which supersede ruling
 # 617's two-pool rule; the owner's 11-07 ruling that GitHub-hosted runners are
 # the default): every job runs on the standard GitHub-hosted ubuntu-latest
@@ -6,7 +7,8 @@
 # requests and dispatches ran every one there); the pool routing had about
 # 160 of this repository's jobs queued on the fleet while the hosted slots sat
 # idle. A job that cannot fit a standard runner names a pool expression with a
-# `# self-hosted: <reason>` line comment; none does today
+# `# self-hosted: <reason>` line comment naming the hardware or the measured
+# hosted limit it exceeds (owner ruling 999); none does today
 # (test/buildgates/ci_runners_test.go). The steps that test
 # runner.environment (the disk cleanup, the LAN CI registry) keep their
 # conditions, so a waived pool job still takes them.
@@ -23,16 +25,17 @@
 # and in-toolchain-image.sh v6, v1.37 timeouts, v1.38 release label, v1.39/
 # v1.40 scoped deps-check and deps-bump, v1.41 PR/main parity and v1.35.2/
 # v1.35.3's signatures.yml move are the full catch-up, still to come.
+# Ruling 640 (ci-template v1.39 deltas, adopted 2026-11-15): a
+# workflow_dispatch on ci/deps-bump is not refused: deps-bump.yml dispatches
+# this workflow there, because the PR it opens starts no pull_request run.
 # go-qrdb deviations from v1.35.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
-#   - every job runs on a self-hosted pool for a push to main and a
-#     same-repository PR, and on GitHub-hosted ubuntu-latest otherwise, a
-#     fork's PR included (CA ruling 617): a job that needs Docker on the
-#     bigdisk-docker pool, a Docker-free job (preflight, coverage-merge,
-#     test-clusterproof, coverage-fts, test-typescript, signatures, ci-gate;
-#     DS-8233, m2479, m2396) on the bigdisk pool, which has no Docker daemon;
-#     test-typescript leaves no credential in its checkout and installs no apt
-#     package there; no registry, cache volume, reaper or schedule guard
+#   - every job runs on the standard GitHub-hosted ubuntu-latest runner,
+#     for every event (owner ruling 999, rulings 833 and 834); a job may name
+#     a pool expression only with a `# self-hosted: <reason>` comment naming
+#     the hardware it needs or the measured hosted limit (disk, memory, the
+#     6-hour job limit) it exceeds, and none does; larger hosted runners are
+#     not used; no LAN registry, cache volume, reaper or schedule guard
 #     remains
 #   - no schedule guard, so preflight merges changes and arch-gates only
 #     (DS-7377)
@@ -56,8 +59,7 @@
 # Runners (DS-7377, ruling 617). A GitHub-hosted ubuntu-latest runner, a
 # fork's PR's and the schedule's, is an ephemeral VM with 4 vCPUs, 16 GB of
 # memory and about 14 GB of free disk, exclusive to one job, with a 6-hour
-# job limit; the self-hosted pools take the same jobs for this repository's
-# own pushes and PRs. So:
+# job limit, and every job of every event runs on one (owner ruling 999). So:
 #   - nothing a job builds survives into another job: docker-build saves each
 #     image it builds and uploads it as an artifact, and every consumer
 #     downloads and loads it, checking its image ID (scripts/ci-image.sh),
@@ -216,6 +218,597 @@ jobs:
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
 
+      # reads every .github/workflows/*.yml and *.yaml of the repository as
+      # text, takes each job whose runs-on names `release` (plain, in a list,
+      # or as a quoted string inside an expression), and evaluates its `if:`
+      # under every other event: a pull_request or pull_request_target event
+      # in a workflow that has that trigger (a), and the push of another
+      # branch, a dispatch off main or on a tag, schedule, workflow_run,
+      # merge_group, release, create, issue_comment and repository_dispatch
+      # (b). A value it cannot know (vars, needs, secrets, the server) may
+      # hold anything, so the `if:` must be false whatever it holds; an `if:`
+      # it cannot read fails. It prints each file:job and the reason. A lint,
+      # not the gate: the runner side refuses such a job as well.
+      # v1.43 (ruling 833): on github.com every other job runs on a standard
+      # GitHub-hosted image on every event (c), or its runs-on line says why
+      # it cannot, `# self-hosted: <reason>`; a larger runner is refused (d).
+      # v1.46 (ruling 999): the reason names its category, hardware: or
+      # oversize: (credential: for the one Codex review job); a reason with
+      # no category is (e).
+      # v1.47 (ruling 1007): label and category are checked together. The
+      # review-only labels codex and qwen run only in code-review.yml, codex
+      # with credential: and qwen with hardware:, and credential: is only for
+      # codex; each only on its own job there, codex on review and qwen on
+      # review-opencode, in any letter case; a waiver does not lift it (f). A waiver does not make a fork's
+      # code trusted either (go-qrdb #1642): a waived self-hosted job in a
+      # workflow a pull_request or pull_request_target triggers keeps a fork's
+      # PR off its runner, by a top-level `&& head.repo.full_name ==
+      # github.repository` (or a non-PR event) in its if:, or a runs-on that
+      # resolves hosted for it (g).
+      # Its tests: testdata/runner-labels-tests.py, run by the step before it.
+      - name: Runner labels tests (go-qrdb #1642)
+        run: python3 -I .github/workflows/testdata/runner-labels-tests.py
+      - name: Runner labels (ruling 633)
+        run: |
+          python3 -I - <<'PY'
+          import glob, json, re, sys
+
+          # Reads .github/workflows/*.yml|yaml as text (no YAML library): the
+          # top-level `on:` keys, and each job's `runs-on` and `if`. A job names
+          # `release` when that label appears in its runs-on, plain, in a list or as a
+          # quoted string in an expression. Its `if` is evaluated under every event
+          # outside the release allow-list, with every value this step cannot know
+          # (vars, needs, secrets, server_url, ...) unknown; the job passes only when
+          # the `if` is false in each of them whatever the unknowns hold.
+          U = object()  # unknown value
+          OPEN = "$" "{{"  # split, so the runner does not read it as an expression
+          ALLOWED = "push to refs/heads/main or refs/tags/*, or workflow_dispatch on main"
+          PR = {"pull_request", "pull_request_target"}
+          CTX = [  # (event, ref) pairs a release job must never run on
+              ("pull_request", "refs/pull/1/merge"), ("pull_request_target", "refs/heads/main"),
+              ("push", "refs/heads/feature"), ("workflow_dispatch", "refs/heads/feature"),
+              ("workflow_dispatch", "refs/tags/v1.0.0"), ("schedule", "refs/heads/main"),
+              ("workflow_run", "refs/heads/main"), ("merge_group", "refs/heads/gh-readonly-queue/main/pr-1"),
+              ("release", "refs/tags/v1.0.0"), ("create", "refs/tags/v1.0.0"),
+              ("issue_comment", "refs/heads/main"), ("repository_dispatch", "refs/heads/main"),
+          ]
+
+
+          def ctx_get(ev, ref, path):
+              p = path.lower()
+              name = ref.split("/", 2)[-1]
+              # github.event.ref is a payload field: push/create/delete carry the ref;
+              # other payloads (a pull_request has no top-level ref, read as '') stay unknown.
+              known = {"github.event_name": ev, "github.ref": ref,
+                       "github.event.ref": ref if ev in ("push", "create", "delete") else U,
+                       "github.ref_name": name,
+                       "github.ref_type": "tag" if ref.startswith("refs/tags/") else "branch",
+                       "github.head_ref": "feature" if ev in PR else "",
+                       "github.base_ref": "main" if ev in PR else ""}
+              if p in known:
+                  return known[p]
+              if ev not in PR and (p == "github.event.pull_request" or p.startswith("github.event.pull_request.")):
+                  return None
+              return U
+
+
+          TOK = re.compile(r"\s*(?:(?P<s>'(?:[^']|'')*')|(?P<n>-?\d+(?:\.\d+)?)|(?P<op>&&|\|\||==|!=|<=|>=|[!<>()\[\],.])|(?P<id>[A-Za-z_][\w-]*|\*))")
+
+
+          def lex(s):
+              out, i = [], 0
+              while i < len(s):
+                  if s[i:].strip() == "":
+                      break
+                  m = TOK.match(s, i)
+                  if not m:
+                      raise ValueError(f"cannot read the expression at {s[i:i+20]!r}")
+                  i = m.end()
+                  if m.group("s"):
+                      out.append(("s", m.group("s")[1:-1].replace("''", "'")))
+                  elif m.group("n"):
+                      out.append(("v", float(m.group("n"))))
+                  elif m.group("op"):
+                      out.append(("op", m.group("op")))
+                  else:
+                      out.append(("id", m.group("id")))
+              return out
+
+
+          def truthy(v):
+              if v is U:
+                  return U
+              if isinstance(v, float) and v != v:
+                  return False
+              return v not in (None, False, 0, "", 0.0)
+
+
+          def num(v):
+              if v is None or v is False:
+                  return 0.0
+              if v is True:
+                  return 1.0
+              if isinstance(v, (int, float)):
+                  return float(v)
+              if isinstance(v, str):
+                  try:
+                      return float(v.strip() or 0)
+                  except ValueError:
+                      return float("nan")
+              return float("nan")
+
+
+          def eq(a, b):
+              if a is U or b is U:
+                  return U
+              if isinstance(a, str) and isinstance(b, str):
+                  return a.lower() == b.lower()
+              if type(a) is type(b) and not isinstance(a, (int, float)):
+                  return a == b
+              return num(a) == num(b)
+
+
+          class P:
+              def __init__(self, toks, get):
+                  self.t, self.i, self.get = toks, 0, get
+
+              def peek(self):
+                  return self.t[self.i] if self.i < len(self.t) else (None, None)
+
+              def take(self, want=None):
+                  k, v = self.peek()
+                  if want is not None and v != want:
+                      raise ValueError(f"expected {want!r}, found {v!r}")
+                  self.i += 1
+                  return k, v
+
+              def parse(self):
+                  v = self.orx()
+                  if self.i != len(self.t):
+                      raise ValueError(f"unexpected {self.peek()[1]!r}")
+                  return v
+
+              def orx(self):
+                  a = self.andx()
+                  while self.peek() == ("op", "||"):
+                      self.take()
+                      b = self.andx()
+                      ta = truthy(a)
+                      if ta is True:
+                          pass
+                      elif ta is False:
+                          a = b
+                      else:
+                          a = U  # a || b returns a when a is truthy: unknown a, unknown result
+                  return a
+
+              def andx(self):
+                  a = self.cmp()
+                  while self.peek() == ("op", "&&"):
+                      self.take()
+                      b = self.cmp()
+                      ta = truthy(a)
+                      if ta is False:
+                          pass
+                      elif ta is True:
+                          a = b
+                      else:
+                          a = U  # a && b returns a when a is falsy: unknown a, unknown result
+                  return a
+
+              def cmp(self):
+                  a = self.unary()
+                  while self.peek()[0] == "op" and self.peek()[1] in ("==", "!=", "<", "<=", ">", ">="):
+                      op = self.take()[1]
+                      b = self.unary()
+                      if op == "==":
+                          a = eq(a, b)
+                      elif op == "!=":
+                          r = eq(a, b)
+                          a = U if r is U else not r
+                      elif a is U or b is U:
+                          a = U
+                      else:
+                          x, y = (a.lower(), b.lower()) if isinstance(a, str) and isinstance(b, str) else (num(a), num(b))
+                          a = {"<": x < y, "<=": x <= y, ">": x > y, ">=": x >= y}[op]
+                  return a
+
+              def unary(self):
+                  if self.peek() == ("op", "!"):
+                      self.take()
+                      t = truthy(self.unary())
+                      return U if t is U else not t
+                  return self.primary()
+
+              def primary(self):
+                  k, v = self.take()
+                  if k == "s" or k == "v":
+                      return v
+                  if (k, v) == ("op", "("):
+                      r = self.orx()
+                      self.take(")")
+                      return r
+                  if k != "id":
+                      raise ValueError(f"unexpected {v!r}")
+                  lv = v.lower()
+                  if lv in ("true", "false"):
+                      return lv == "true"
+                  if lv == "null":
+                      return None
+                  if self.peek() == ("op", "("):
+                      self.take()
+                      args = []
+                      if self.peek() != ("op", ")"):
+                          args.append(self.orx())
+                          while self.peek() == ("op", ","):
+                              self.take()
+                              args.append(self.orx())
+                      self.take(")")
+                      return self.call(lv, args)
+                  path, exact = v, True
+                  while self.peek() in (("op", "."), ("op", "[")):
+                      if self.take()[1] == ".":
+                          k2, v2 = self.take()
+                          if k2 != "id":
+                              raise ValueError(f"unexpected {v2!r} after '.'")
+                          path += "." + v2
+                          exact = exact and v2 != "*"
+                      else:
+                          idx = self.orx()
+                          self.take("]")
+                          if isinstance(idx, str):
+                              path += "." + idx
+                          else:
+                              exact = False
+                  return self.get(path) if exact else U
+
+              def call(self, f, a):
+                  if f == "always":
+                      return True
+                  if f in ("startswith", "endswith", "contains") and len(a) == 2:
+                      if U in a:
+                          return U
+                      if f == "contains" and isinstance(a[0], list):
+                          return any(eq(x, a[1]) is True for x in a[0])
+                      x, y = (str(s).lower() if s is not None else "" for s in a)
+                      return x.startswith(y) if f == "startswith" else x.endswith(y) if f == "endswith" else y in x
+                  if f == "fromjson" and len(a) == 1 and isinstance(a[0], str):
+                      try:
+                          return json.loads(a[0])
+                      except ValueError:
+                          return U
+                  if f == "format" and a and U not in a and isinstance(a[0], str):
+                      return re.sub(r"\{(\d+)\}", lambda m: str(a[int(m.group(1)) + 1]) if int(m.group(1)) + 1 < len(a) else m.group(0), a[0])
+                  return U  # success(), failure(), hashFiles(), ...: unknown
+
+
+          def unquote(s):
+              s = s.strip()
+              if len(s) >= 2 and s[0] == s[-1] == "'":
+                  return s[1:-1].replace("''", "'")
+              if len(s) >= 2 and s[0] == s[-1] == '"':
+                  return json.loads(s)
+              return s
+
+
+          def strip_comment(s):
+              q = None
+              for i, c in enumerate(s):
+                  if q:
+                      if c == q:
+                          q = None
+                  elif c in "'\"":
+                      q = c
+                  elif c == "#" and (i == 0 or s[i - 1] in " \t"):
+                      return s[:i].rstrip()
+              return s.rstrip()
+
+
+          def ind(line):
+              return len(line) - len(line.lstrip(" "))
+
+
+          def body(lines, i, inline):
+              """The value text of the key on line i: the inline part plus every deeper line."""
+              base, parts = ind(lines[i]), []
+              j = i + 1
+              while j < len(lines) and (not lines[j].strip() or ind(lines[j]) > base):
+                  if lines[j].strip() and not lines[j].lstrip().startswith("#"):
+                      parts.append(strip_comment(lines[j]).strip())
+                  j += 1
+              inline = strip_comment(inline).strip()
+              if inline[:1] in ("|", ">"):
+                  return (" " if inline[0] == ">" else "\n").join(parts)
+              return " ".join([inline] + parts).strip()
+
+
+          def keys_under(lines, i):
+              """(line, key) for each direct child key of the block opened on line i."""
+              base, out, child = ind(lines[i]), [], None
+              for j in range(i + 1, len(lines)):
+                  s = lines[j]
+                  if not s.strip() or s.lstrip().startswith("#"):
+                      continue
+                  if ind(s) <= base:
+                      break
+                  child = ind(s) if child is None else child
+                  if ind(s) == child:
+                      m = re.match(r"\s*(?:-\s+)?(['\"]?)([^'\":#]+)\1\s*(?::\s*(.*))?$", s)
+                      if m:
+                          out.append((j, m.group(2).strip(), m.group(3) or ""))
+              return out
+
+
+          def triggers(lines):
+              for i, s in enumerate(lines):
+                  m = re.match(r"(['\"]?)(on|true)\1\s*:\s*(.*)$", s)
+                  if m:
+                      v = strip_comment(m.group(3)).strip()
+                      if v.startswith("{"):  # a flow mapping: its keys, nested ones too
+                          return set(re.findall(r"([A-Za-z_]+)['\"]?\s*:", v))
+                      if v:
+                          return {unquote(x) for x in re.split(r"[\s,\[\]]+", v) if x}
+                      return {k for _, k, _ in keys_under(lines, i)}
+              return set()
+
+
+          # v1.43 (ruling 833): the standard GitHub-hosted images, free on a public
+          # repository; a larger runner (cores, large, xlarge, gpu) bills even there.
+          STANDARD = re.compile(r"(ubuntu-(latest|24\.04|22\.04)(-arm)?|ubuntu-slim)")
+          LARGER = re.compile(r"(cores|xlarge|large|gpu)", re.I)
+          WAIVER = re.compile(r"#\s*self-hosted:\s*(hardware|oversize|credential)\s*:\s*\S")
+          BARE = re.compile(r"#\s*self-hosted:")  # v1.46: a waiver whose reason names no category
+          # v1.47 (ruling 1007): a review-only label runs only in code-review.yml, and
+          # only with its own category; credential: is the codex job's alone.
+          REVIEW = {"codex": "credential", "qwen": "hardware"}
+          # go-qrdb #1642: each review label is its one review job's, never another
+          # job's in code-review.yml; labels match case-insensitively, as on GitHub.
+          REVIEW_JOBS = {"codex": "review", "qwen": "review-opencode"}
+          REVIEW_FILES = {"code-review.yml", "code-review.yaml"}
+          REVIEW_TOKEN = re.compile(r"(?<![\w.-])['\"]?(codex|qwen)['\"]?(?![\w-])", re.I)
+          GH = "https://github.com"
+          HOSTED_CTX = [  # (event, ref, head repo) on github.com; o/r is this repository
+              ("push", "refs/heads/main", None), ("push", "refs/heads/feature", None),
+              ("pull_request", "refs/pull/1/merge", "o/r"), ("pull_request", "refs/pull/1/merge", "fork/r"),
+              ("workflow_dispatch", "refs/heads/main", None), ("schedule", "refs/heads/main", None),
+          ]
+
+
+          def hosted_get(ev, ref, head):
+              def get(path):
+                  p = path.lower()
+                  if p == "github.server_url":
+                      return GH
+                  if p == "github.repository":
+                      return "o/r"
+                  if p == "github.event.pull_request.head.repo.full_name":
+                      return head if ev in PR else None
+                  if p == "github.event.pull_request.draft":
+                      return False if ev in PR else None
+                  return ctx_get(ev, ref, path)
+              return get
+
+
+          def labels(value):
+              # A runs-on value's labels: a string, a list, or an expression's result.
+              if value is U or value is None:
+                  return None
+              if isinstance(value, list):
+                  return [str(x) for x in value]
+              return [str(value)]
+
+
+          def runs_on_labels(text, ev, ref, head):
+              t = text.strip()
+              if t.startswith("group:") or t.startswith("labels:") or " labels:" in t:
+                  m = re.search(r"labels:\s*(\[[^\]]*\]|\S+)", t)
+                  t = m.group(1) if m else ""
+              m = re.fullmatch(r"\$\{\{(.*)\}\}", unquote(t), re.S)
+              if m:
+                  return labels(P(lex(m.group(1)), hosted_get(ev, ref, head)).parse())
+              if t.startswith("["):
+                  return [unquote(x) for x in re.split(r"\s*,\s*", t.strip("[] ")) if x]
+              if t.startswith("- "):
+                  return [unquote(x) for x in re.split(r"\s*-\s+", " " + t) if x.strip()]
+              return [unquote(t)]
+
+
+          def review_labels(text):
+              # The review-only labels a runs-on names, in its text or in what an
+              # expression there yields on any github.com event.
+              found = {m.lower() for m in REVIEW_TOKEN.findall(text)}
+              for ev, ref, head in HOSTED_CTX:
+                  try:
+                      got = runs_on_labels(text, ev, ref, head)
+                  except ValueError:
+                      continue
+                  found |= {g.lower() for g in got or [] if g.lower() in REVIEW}
+              return sorted(found)
+
+
+          def review_finding(path, job, where, ro, ro_line):
+              # v1.47 (ruling 1007): label and category together, whatever the waiver says.
+              names = review_labels(ro)
+              m = WAIVER.search(ro_line)
+              cat = m.group(1) if m else None
+              base = path.replace("\\", "/").rsplit("/", 1)[-1]
+              if names and base not in REVIEW_FILES:
+                  return (f"{where}: (f) names the review-only label {', '.join(names)}; ruling 1007 reserves codex and "
+                          f"qwen to code-review.yml whatever the `# self-hosted:` waiver says")
+              elsewhere = [n for n in names if job != REVIEW_JOBS[n]]
+              if elsewhere:
+                  return (f"{where}: (f) names the review-only label {', '.join(elsewhere)}, reserved to code-review.yml's "
+                          f"{', '.join(REVIEW_JOBS[n] for n in elsewhere)} job; labels match case-insensitively (go-qrdb #1642)")
+              if names:
+                  wrong = [n for n in names if cat != REVIEW[n]]
+                  if len(names) > 1 or wrong:
+                      return (f"{where}: (f) runs on {', '.join(names)} with the category {cat or 'none'}; ruling 1007 pairs "
+                              f"codex with `credential:` and qwen with `hardware:`, one review label per job")
+                  return None
+              if cat == "credential":
+                  return (f"{where}: (f) uses the `credential:` category without the codex label; ruling 1007 keeps it "
+                          f"for code-review.yml's Codex review job alone")
+              return None
+
+
+          def names_release(text):
+              return re.search(r"(?<![\w.-])['\"]?release['\"]?(?![\w-])", text) is not None
+
+
+          def condition(text):
+              t = unquote(text) if text else ""
+              m = re.fullmatch(r"\s*\$\{\{(.*)\}\}\s*", t, re.S)
+              if m and OPEN not in m.group(1):
+                  return m.group(1)
+              if OPEN in t:
+                  raise ValueError("text around the expression makes it a string, which is always true")
+              return t
+
+
+          # go-qrdb #1642's Codex review: a waiver does not make a fork's code
+          # trusted. A fork's pull request (its event, its ref, its head).
+          FORK_CTX = [("pull_request", "refs/pull/1/merge"), ("pull_request_target", "refs/heads/main")]
+
+
+          def conjuncts(toks):
+              # The top-level && operands; an expression with a top-level || is one.
+              parts, cur, depth = [], [], 0
+              for t in toks:
+                  if t == ("op", "("):
+                      depth += 1
+                  elif t == ("op", ")"):
+                      depth -= 1
+                  elif depth == 0 and t == ("op", "||"):
+                      return [toks]
+                  elif depth == 0 and t == ("op", "&&"):
+                      parts.append(cur)
+                      cur = []
+                      continue
+                  cur.append(t)
+              return parts + [cur]
+
+
+          def fork_runs(ro, cond, ev, ref):
+              # Whether a fork's ev can run the job on a self-hosted runner.
+              try:
+                  got = runs_on_labels(ro, ev, ref, "fork/r")
+              except ValueError:
+                  got = None
+              if got is not None and len(got) == 1 and STANDARD.fullmatch(got[0]):
+                  return False
+              if cond is None:
+                  return True
+              try:
+                  parts = conjuncts(lex(condition(cond)))
+              except ValueError:
+                  return True
+              get = hosted_get(ev, ref, "fork/r")
+              for c in parts:
+                  try:
+                      if truthy(P(c, get).parse()) is False:
+                          return False
+                  except ValueError:
+                      pass
+              return True
+
+
+          def fork_finding(where, on, ro, cond):
+              runs = [ev for ev, ref in FORK_CTX if ev in on and fork_runs(ro, cond, ev, ref)]
+              if not runs:
+                  return None
+              return (f"{where}: (g) runs on a self-hosted runner and a fork's {' or '.join(runs)} can run it; a waiver "
+                      f"does not make a fork's code trusted: AND `github.event.pull_request.head.repo.full_name == "
+                      f"github.repository` into its `if:`")
+
+
+          def check(path):
+              lines = open(path, encoding="utf-8").read().splitlines()
+              on = triggers(lines)
+              bad = []
+              for i, s in enumerate(lines):
+                  if re.match(r"jobs\s*:\s*(#.*)?$", s):
+                      for j, job, _ in keys_under(lines, i):
+                          ro = cond = ro_line = None
+                          for k, key, inline in keys_under(lines, j):
+                              if key == "runs-on":
+                                  ro, ro_line = body(lines, k, inline), lines[k]
+                              elif key == "if":
+                                  cond = body(lines, k, inline)
+                          where = f"{path}:{job}"
+                          if ro is not None and not names_release(ro):
+                              # v1.43 (ruling 833): hosted first.
+                              if LARGER.search(ro) and re.search(r"ubuntu|windows|macos", ro):
+                                  bad.append(f"{where}: (d) names a larger GitHub-hosted runner ({ro}); it bills on a public repository")
+                                  continue
+                              rf = review_finding(path, job, where, ro, ro_line)
+                              if rf:
+                                  bad.append(rf)
+                                  continue
+                              if WAIVER.search(ro_line):
+                                  fk = fork_finding(where, on, ro, cond)
+                                  if fk:
+                                      bad.append(fk)
+                                  continue
+                              off = []
+                              for ev, ref, head in HOSTED_CTX:
+                                  try:
+                                      got = runs_on_labels(ro, ev, ref, head)
+                                  except ValueError as e:
+                                      off.append(f"{ev} ({ref}): cannot be read ({e})")
+                                      continue
+                                  if got is None or len(got) != 1 or not STANDARD.fullmatch(got[0]):
+                                      what = "an unknown label" if got is None else ", ".join(got)
+                                      off.append(f"{ev} ({ref}{', fork' if head == 'fork/r' else ''}): {what}")
+                              if off and BARE.search(ro_line):
+                                  bad.append(f"{where}: (e) its `# self-hosted:` reason names no category; ruling 999 allows a self-hosted job "
+                                             f"only as `# self-hosted: hardware: <reason>` or `# self-hosted: oversize: <reason>`; it runs on " + "; ".join(dict.fromkeys(off)))
+                              elif off:
+                                  bad.append(f"{where}: (c) does not run on a standard GitHub-hosted image on github.com and its runs-on "
+                                             f"line gives no `# self-hosted: hardware|oversize: <reason>`; it runs on " + "; ".join(dict.fromkeys(off)))
+                              continue
+                          if ro is None:
+                              continue
+                          if cond is None:
+                              if on & PR:
+                                  bad.append(f"{where}: (a) names `release` in a workflow with a pull_request trigger, and has no `if:`")
+                              bad.append(f"{where}: (b) names `release` and has no `if:` restricting it to {ALLOWED}")
+                              continue
+                          try:
+                              expr = condition(cond)
+                              toks = lex(expr)
+                              runs = []
+                              for ev, ref in CTX:
+                                  r = truthy(P(toks, lambda p: ctx_get(ev, ref, p)).parse())
+                                  if r is not False:
+                                      runs.append((ev, ref))
+                          except ValueError as e:
+                              bad.append(f"{where}: (b) names `release` and its `if:` cannot be read ({e})")
+                              continue
+                          pr = [c for c in runs if c[0] in PR and c[0] in on]
+                          if pr:
+                              bad.append(f"{where}: (a) names `release` and a {pr[0][0]} event can run it")
+                          rest = [c for c in runs if c not in pr]
+                          if rest:
+                              bad.append(f"{where}: (b) names `release` and its `if:` does not restrict it to {ALLOWED}; it can run on "
+                                         + ", ".join(dict.fromkeys(f"{ev} ({ref})" for ev, ref in rest)))
+              return bad
+
+
+          files = sorted(glob.glob(".github/workflows/*.yml") + glob.glob(".github/workflows/*.yaml"))
+          bad = []
+          for f in files:
+              try:
+                  bad += check(f)
+              except (OSError, UnicodeError) as e:
+                  bad.append(f"{f}: cannot be read ({e})")
+          for b in bad:
+              print(f"::error::{b}")
+          if bad:
+              print(f"{len(bad)} runner-label finding(s) in {len(files)} workflow file(s): a `release` job runs only on {ALLOWED}, never for a pull request (ruling 633); every other job runs on a standard GitHub-hosted image, or its runs-on line names a hardware or oversize reason (rulings 833, 999); codex and qwen run only in code-review.yml, with their own category (ruling 1007); a fork's pull request never reaches a self-hosted job (go-qrdb #1642)")
+              sys.exit(1)
+          print(f"OK: {len(files)} workflow file(s); every job that names `release` runs only on {ALLOWED}, and every other job on a standard GitHub-hosted image or with a hardware or oversize reason")
+          PY
+
       - name: Is every changed file docs or markdown?
         id: diff
         env:
@@ -311,6 +904,14 @@ jobs:
       it_ref: ${{ steps.push.outputs.it_ref }}
       # #1593 (rulings 682/687): the tag each image carries in the LAN CI
       # registry (secrets.CI_IMAGE_REGISTRY), empty when it was not pushed there.
+      # The tag alone crosses jobs: an output naming the masked registry would
+      # be dropped.
+      registry_toolchain_tag: ${{ steps.registry.outputs.toolchain_tag }}
+      registry_it_tag: ${{ steps.registry.outputs.it_tag }}
+    env:
+      # #1593: the LAN CI registry, a repository secret so every log line
+      # masks it; secrets cannot gate a step's if:, the job's env can.
+      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -479,6 +1080,39 @@ jobs:
           compression-level: 1
           if-no-files-found: error
 
+      # #1593 (rulings 682/687): on a self-hosted runner with
+      # secrets.CI_IMAGE_REGISTRY set (CI_REGISTRY in the job's env), push both
+      # images to the LAN CI registry,
+      # tagged <run_id>-<run_attempt>; the consumers pull them from there and
+      # fall back to the artifacts above, which stay the path on GitHub-hosted
+      # runners. The address is a secret, so the runner masks it in every
+      # line; no run: script names it with ${{ }}. A refused
+      # push is a warning: its consumers take the artifact.
+      - name: Push the devcontainer images to the LAN CI registry
+        id: registry
+        if: ${{ env.CI_REGISTRY != '' && runner.environment != 'github-hosted' }}
+        env:
+          TAG: ${{ github.run_id }}-${{ github.run_attempt }}
+          TOOLCHAIN_IMAGE: ${{ steps.build.outputs.toolchain_image }}
+          IT_IMAGE: ${{ steps.build.outputs.it_image }}
+        run: |
+          . scripts/image-registry.sh
+          lan_push() {
+            ref="$CI_REGISTRY/go-qrdb/$2:$TAG"
+            if ! ci_registry_skip "$CI_REGISTRY" "${ref#"$CI_REGISTRY"/}" &&
+               docker tag "$1" "$ref" >/dev/null 2>&1 && timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker push -q "$ref" >/dev/null 2>&1; then
+              echo "$3=$TAG" >> "$GITHUB_OUTPUT"
+            else
+              ci_registry_outage "$CI_REGISTRY" "$?"
+              echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"
+            fi
+            docker rmi "$ref" >/dev/null 2>&1 || true
+          }
+          lan_push "$TOOLCHAIN_IMAGE" toolchain-image toolchain_tag
+          if [ -n "$IT_IMAGE" ]; then
+            lan_push "$IT_IMAGE" it-image it_tag
+          fi
+
       # CUSTOMIZE (go-qrdb): on a push to main alone, push each image once per
       # run, tagged <content-hash>-main, and output its digest reference.
       # scripts/ci-image.sh feeds the login to docker on stdin, into a private
@@ -525,140 +1159,6 @@ jobs:
   # for scans.yml. lint and
   # lint-gates are the PR tier and are all a docs-only PR runs of the stages;
   # image is the code tier (DS-3160).
-  # Ruling 879 (rulings 862 and 841): the pool legs' images. docker-build runs
-  # on a GitHub-hosted runner and hands its images to the hosted legs as
-  # artifacts; a pool leg taking that artifact crossed the owner's WAN at
-  # about 10 MB/s per leg. This job builds the same images on the Docker pool,
-  # from the host's BuildKit cache and through the daemon's LAN Docker Hub
-  # mirror, and pushes them to the LAN CI registry, where the pool legs pull
-  # them and check them against this job's image IDs. Its runs-on sends it to
-  # the pool for exactly the events that send legs there (poolSplit); for a
-  # fork's pull request it lands on a hosted runner, where every step that
-  # builds or reaches the registry is skipped, so it passes with empty outputs
-  # and every leg, hosted then too, takes the artifact. On the pool it fails,
-  # never warns, when the registry is unset or refuses a push: the pool legs
-  # have no other image.
-  pool-images:
-    if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
-    name: Devcontainer images [pool, LAN CI registry]
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}  # self-hosted: the pool legs' images, built on the pool and served from the LAN CI registry, ruling 879
-    needs: [preflight]
-    timeout-minutes: 90
-    permissions:
-      contents: read
-    outputs:
-      toolchain_image: ${{ steps.build.outputs.toolchain_image }}
-      toolchain_id: ${{ steps.build.outputs.toolchain_id }}
-      it_image: ${{ steps.build.outputs.it_image }}
-      it_id: ${{ steps.build.outputs.it_id }}
-      # The tag alone crosses jobs: an output naming the masked registry would
-      # be dropped.
-      registry_toolchain_tag: ${{ steps.registry.outputs.toolchain_tag }}
-      registry_it_tag: ${{ steps.registry.outputs.it_tag }}
-    env:
-      # #1593: the LAN CI registry, a repository secret so every log line
-      # masks it; secrets cannot gate a step's if:, the job's env can.
-      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-
-      # v1.21.1: the forge credentials masked before any other step.
-      - name: Mask the forge credentials
-        run: |
-          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
-            val=${!v:-}
-            [ -n "$val" ] || continue
-            echo "::add-mask::$val"
-            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
-          done
-
-      # Ruling 887: the LAN addresses this runner's environment names, masked
-      # before any step that builds can print one.
-      - name: Mask the LAN addresses
-        run: scripts/ci-mask-lan.sh
-
-      # With no LAN CI registry the pool legs could take no image: fail here,
-      # and say why, rather than leave them to fail one by one.
-      - name: Require the LAN CI registry
-        id: require_registry
-        if: ${{ env.CI_REGISTRY == '' && runner.environment != 'github-hosted' && needs.preflight.outputs.docs_only != 'true' }}
-        run: |
-          echo "::error::secrets.CI_IMAGE_REGISTRY is unset: the pool legs take their images from the LAN CI registry alone (ruling 879)"
-          exit 1
-
-      # The integration image's tag hash takes the Alpine package index
-      # checksum, as in docker-build (ruling 220(5)).
-      - name: Read the Alpine package index
-        if: ${{ runner.environment != 'github-hosted' && needs.preflight.outputs.docs_only != 'true' }}
-        run: |
-          sum=$(make -s apk-index-sum)
-          echo "APK_INDEX_SUM=$sum" >> "$GITHUB_ENV"
-
-      # The same targets docker-build runs, on this host's daemon and its
-      # BuildKit cache. Each image's ID is read at once: the pool daemon is
-      # shared, so the push below and every pool leg go by that ID, never by
-      # the content-hash tag another run can move.
-      - name: Build the devcontainer images
-        id: build
-        if: ${{ runner.environment != 'github-hosted' && needs.preflight.outputs.docs_only != 'true' }}
-        run: |
-          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
-            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
-              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
-            done )
-          # Codex P1 on #1631: make publishes what it builds to the runner's
-          # CI_IMAGE_REGISTRY; here only the push step below, after the image
-          # history check, publishes (ruling 888).
-          CI_IMAGE_REGISTRY='' make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
-          rm -f "$RUNNER_TEMP/gomodauth.env"
-          toolchain_image=$(make -s toolchain-image)
-          it_image=$(make -s it-image)
-          toolchain_id=$(docker image inspect -f '{{.Id}}' "$toolchain_image")
-          it_id=$(docker image inspect -f '{{.Id}}' "$it_image")
-          {
-            echo "toolchain_image=$toolchain_image"
-            echo "toolchain_id=$toolchain_id"
-            echo "it_image=$it_image"
-            echo "it_id=$it_id"
-          } >> "$GITHUB_OUTPUT"
-
-      # Ruling 888: neither image carries a private address in its history or
-      # config. Checked by the IDs the build read, before the push, so no pool
-      # leg runs and no registry holds an image that does.
-      - name: Check the devcontainer images carry no private address
-        if: ${{ runner.environment != 'github-hosted' && needs.preflight.outputs.docs_only != 'true' }}
-        env:
-          TOOLCHAIN_ID: ${{ steps.build.outputs.toolchain_id }}
-          IT_ID: ${{ steps.build.outputs.it_id }}
-        run: scripts/ci-image-history.sh "$TOOLCHAIN_ID" "$IT_ID"
-
-      # #1593 and ruling 879: each image pushed by its ID, tagged
-      # <run_id>-<run_attempt>; a refused or stalled push fails the job.
-      - name: Push the devcontainer images to the LAN CI registry
-        id: registry
-        if: ${{ env.CI_REGISTRY != '' && runner.environment != 'github-hosted' && needs.preflight.outputs.docs_only != 'true' }}
-        env:
-          TAG: ${{ github.run_id }}-${{ github.run_attempt }}
-          TOOLCHAIN_ID: ${{ steps.build.outputs.toolchain_id }}
-          IT_ID: ${{ steps.build.outputs.it_id }}
-        run: |
-          . scripts/image-registry.sh
-          lan_push() {
-            ref="$CI_REGISTRY/go-qrdb/$2:$TAG"
-            if ! ci_registry_skip "$CI_REGISTRY" "${ref#"$CI_REGISTRY"/}" &&
-               docker tag "$1" "$ref" >/dev/null 2>&1 && timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker push -q "$ref" >/dev/null 2>&1; then
-              echo "$3=$TAG" >> "$GITHUB_OUTPUT"
-              docker rmi "$ref" >/dev/null 2>&1 || true
-            else
-              ci_registry_outage "$CI_REGISTRY" "$?"
-              docker rmi "$ref" >/dev/null 2>&1 || true
-              echo "::error::the push of $2 to the LAN CI registry failed: the pool legs take no other image (ruling 879)"
-              exit 1
-            fi
-          }
-          lan_push "$TOOLCHAIN_ID" toolchain-image toolchain_tag
-          lan_push "$IT_ID" it-image it_tag
-
   lint:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Devcontainer image [lint, gosec, gosec-sdk]
@@ -687,8 +1187,31 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Pull the toolchain image from the LAN CI registry
+        id: pull_toolchain
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
+        env:
+          TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
+        run: |
+          . scripts/image-registry.sh
+          REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
+             [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
+             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            ci_registry_outage "$CI_REGISTRY" "$?"
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the toolchain image
         id: download_toolchain
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
         continue-on-error: true
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -696,7 +1219,7 @@ jobs:
           path: ${{ runner.temp }}/toolchain-image
 
       - name: Download the toolchain image (retry)
-        if: ${{ steps.download_toolchain.outcome == 'failure' }}
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -706,8 +1229,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       # CUSTOMIZE (go-qrdb, DS-7377): the build and golangci-lint caches,
@@ -798,9 +1322,31 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Pull the toolchain image from the LAN CI registry
+        id: pull_toolchain
+        if: ${{ steps.probe.outputs.has_target == 'true' && needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
+        env:
+          TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
+        run: |
+          . scripts/image-registry.sh
+          REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
+             [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
+             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            ci_registry_outage "$CI_REGISTRY" "$?"
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the toolchain image
         id: download_toolchain
-        if: ${{ steps.probe.outputs.has_target == 'true' }}
+        if: ${{ steps.probe.outputs.has_target == 'true' && steps.pull_toolchain.outputs.pulled != 'true' }}
         continue-on-error: true
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -808,7 +1354,7 @@ jobs:
           path: ${{ runner.temp }}/toolchain-image
 
       - name: Download the toolchain image (retry)
-        if: ${{ steps.probe.outputs.has_target == 'true' && steps.download_toolchain.outcome == 'failure' }}
+        if: ${{ steps.probe.outputs.has_target == 'true' && steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -819,8 +1365,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
@@ -878,8 +1425,31 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Pull the toolchain image from the LAN CI registry
+        id: pull_toolchain
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
+        env:
+          TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
+        run: |
+          . scripts/image-registry.sh
+          REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
+             [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
+             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            ci_registry_outage "$CI_REGISTRY" "$?"
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the toolchain image
         id: download_toolchain
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
         continue-on-error: true
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -887,7 +1457,7 @@ jobs:
           path: ${{ runner.temp }}/toolchain-image
 
       - name: Download the toolchain image (retry)
-        if: ${{ steps.download_toolchain.outcome == 'failure' }}
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -897,13 +1467,37 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
+
+      # The full tier's trivy step scans the integration image docker-build
+      # built, so the full tier loads it too.
+      - name: Pull the integration image from the LAN CI registry
+        id: pull_it
+        if: ${{ env.CI_FULL_TIER == 'true' && needs.docker-build.outputs.registry_it_tag != '' && env.CI_REGISTRY != '' }}
+        env:
+          TAG: ${{ needs.docker-build.outputs.registry_it_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.it_image }}
+          ID: ${{ needs.docker-build.outputs.it_id }}
+        run: |
+          . scripts/image-registry.sh
+          REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
+             [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
+             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            ci_registry_outage "$CI_REGISTRY" "$?"
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the integration image
         id: download_it
-        if: ${{ env.CI_FULL_TIER == 'true' }}
+        if: ${{ env.CI_FULL_TIER == 'true' && steps.pull_it.outputs.pulled != 'true' }}
         continue-on-error: true
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -911,7 +1505,7 @@ jobs:
           path: ${{ runner.temp }}/it-image
 
       - name: Download the integration image (retry)
-        if: ${{ env.CI_FULL_TIER == 'true' && steps.download_it.outcome == 'failure' }}
+        if: ${{ env.CI_FULL_TIER == 'true' && steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -922,8 +1516,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
+          PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
           echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
@@ -985,16 +1580,9 @@ jobs:
   # slowdown, the slowest fits the 180-minute limit.
   coverage:
     name: Unit [make coverage-leg ${{ matrix.leg }}]
-    # Ruling 841 (phase 2 option C of ruling 834): the 40 hosted slots filled
-    # while the Docker pool had room, so this matrix splits by leg: nine of the
-    # twelve legs run on the bigdisk-docker pool for a push to main and a
-    # same-repository pull request; the three shortest measured legs (tenant,
-    # seal, server), and every leg of a fork's pull request, run on
-    # ubuntu-latest. Tuned from measured queues; coverage
-    # and fips keep one split (test/buildgates TestCISplitsTheLargeMatrices).
-    runs-on: ${{ contains(fromJSON('["tenant-lifecycle","seal-barrier","server-raft","service","auth","rest","api-keys","sdk","sdk-transport"]'), matrix.leg) && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}  # self-hosted: overflow split, ruling 834
+    runs-on: ubuntu-latest
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
-    needs: [preflight, docker-build, pool-images]
+    needs: [preflight, docker-build]
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -1027,11 +1615,6 @@ jobs:
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
 
-      # Ruling 887: the LAN addresses this runner's environment names, masked
-      # before any step that builds can print one.
-      - name: Mask the LAN addresses
-        run: scripts/ci-mask-lan.sh
-
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
         run: |
@@ -1042,27 +1625,28 @@ jobs:
       # #1593: the LAN CI registry first, the artifact when the pull fails.
       - name: Pull the toolchain image from the LAN CI registry
         id: pull_toolchain
-        if: ${{ env.CI_REGISTRY != '' && runner.environment != 'github-hosted' }}
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
         env:
-          TAG: ${{ needs.pool-images.outputs.registry_toolchain_tag }}
-          IMAGE: ${{ needs.pool-images.outputs.toolchain_image }}
-          ID: ${{ needs.pool-images.outputs.toolchain_id }}
+          TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           . scripts/image-registry.sh
-          HANDOFF=TOOLCHAIN_IMAGE
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
           if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
-             ci_registry_pull_id "$CI_REGISTRY" "$REF" "$ID" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
+             [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
-            echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not pool-images's image: a pool leg takes no other (ruling 879)"
-            exit 1
+            ci_registry_outage "$CI_REGISTRY" "$?"
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
         id: download_toolchain
-        if: ${{ runner.environment == 'github-hosted' }}
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
         continue-on-error: true
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -1070,26 +1654,22 @@ jobs:
           path: ${{ runner.temp }}/toolchain-image
 
       - name: Download the toolchain image (retry)
-        if: ${{ runner.environment == 'github-hosted' && steps.download_toolchain.outcome == 'failure' }}
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
           path: ${{ runner.temp }}/toolchain-image
 
       - name: Load the toolchain image
-        if: ${{ runner.environment == 'github-hosted' }}
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
-      # Codex P2 on #1631: the runner-local Go caches are the hosted runner's.
-      # A pool's daemon cannot reach $RUNNER_TEMP, so on a pool leg
-      # scripts/in-toolchain-image.sh takes its named volumes instead.
       - name: Restore the Go caches
-        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -1099,7 +1679,6 @@ jobs:
             go-coverage-${{ matrix.leg }}-
 
       - name: Point the stages at the Go caches
-        if: ${{ runner.environment == 'github-hosted' }}
         run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
 
       # GOTEST_TIMEOUT is go test's per-package budget, the job's limit less 5
@@ -1122,7 +1701,7 @@ jobs:
           if-no-files-found: error
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
+        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -1406,8 +1985,31 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Pull the toolchain image from the LAN CI registry
+        id: pull_toolchain
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
+        env:
+          TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
+        run: |
+          . scripts/image-registry.sh
+          REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
+             [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
+             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            ci_registry_outage "$CI_REGISTRY" "$?"
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the toolchain image
         id: download_toolchain
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
         continue-on-error: true
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -1415,7 +2017,7 @@ jobs:
           path: ${{ runner.temp }}/toolchain-image
 
       - name: Download the toolchain image (retry)
-        if: ${{ steps.download_toolchain.outcome == 'failure' }}
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1425,8 +2027,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
@@ -1492,8 +2095,31 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Pull the toolchain image from the LAN CI registry
+        id: pull_toolchain
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
+        env:
+          TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
+        run: |
+          . scripts/image-registry.sh
+          REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
+             [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
+             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            ci_registry_outage "$CI_REGISTRY" "$?"
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the toolchain image
         id: download_toolchain
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
         continue-on-error: true
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -1501,7 +2127,7 @@ jobs:
           path: ${{ runner.temp }}/toolchain-image
 
       - name: Download the toolchain image (retry)
-        if: ${{ steps.download_toolchain.outcome == 'failure' }}
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1511,8 +2137,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
@@ -1550,12 +2177,9 @@ jobs:
   # slowdown it fits the 120-minute limit.
   integration-features:
     name: Integration (shard ${{ matrix.shard }})
-    # Ruling 841, tuned: the hosted slots sat at the 40-job ceiling while
-    # the Docker pool had room, so this long job runs on the pool for a push
-    # to main and a same-repository pull request (a fork's stays hosted).
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}  # self-hosted: overflow split, ruling 834
+    runs-on: ubuntu-latest
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
-    needs: [docker-build, pool-images, test-typescript, preflight]
+    needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
     env:
       CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
@@ -1592,11 +2216,6 @@ jobs:
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
 
-      # Ruling 887: the LAN addresses this runner's environment names, masked
-      # before any step that builds can print one.
-      - name: Mask the LAN addresses
-        run: scripts/ci-mask-lan.sh
-
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
         run: |
@@ -1607,27 +2226,28 @@ jobs:
       # #1593: the LAN CI registry first, the artifact when the pull fails.
       - name: Pull the integration image from the LAN CI registry
         id: pull_it
-        if: ${{ env.CI_REGISTRY != '' && runner.environment != 'github-hosted' }}
+        if: ${{ needs.docker-build.outputs.registry_it_tag != '' && env.CI_REGISTRY != '' }}
         env:
-          TAG: ${{ needs.pool-images.outputs.registry_it_tag }}
-          IMAGE: ${{ needs.pool-images.outputs.it_image }}
-          ID: ${{ needs.pool-images.outputs.it_id }}
+          TAG: ${{ needs.docker-build.outputs.registry_it_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.it_image }}
+          ID: ${{ needs.docker-build.outputs.it_id }}
         run: |
           . scripts/image-registry.sh
-          HANDOFF=IT_IMAGE
           REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
           if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
-             ci_registry_pull_id "$CI_REGISTRY" "$REF" "$ID" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
+             [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
-            echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not pool-images's image: a pool leg takes no other (ruling 879)"
-            exit 1
+            ci_registry_outage "$CI_REGISTRY" "$?"
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the integration image
         id: download_it
-        if: ${{ runner.environment == 'github-hosted' }}
+        if: ${{ steps.pull_it.outputs.pulled != 'true' }}
         continue-on-error: true
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -1635,19 +2255,19 @@ jobs:
           path: ${{ runner.temp }}/it-image
 
       - name: Download the integration image (retry)
-        if: ${{ runner.environment == 'github-hosted' && steps.download_it.outcome == 'failure' }}
+        if: ${{ steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
           path: ${{ runner.temp }}/it-image
 
       - name: Load the integration image
-        if: ${{ runner.environment == 'github-hosted' }}
         env:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
+          PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
           echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Integration tests (shard ${{ matrix.shard }})
@@ -1666,10 +2286,7 @@ jobs:
   # teardown, and `make integration-down` removes the run's image.
   integration-standalone:
     name: Integration (standalone stack)
-    # Ruling 841, tuned: the hosted slots sat at the 40-job ceiling while
-    # the Docker pool had room, so this long job runs on the pool for a push
-    # to main and a same-repository pull request (a fork's stays hosted).
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}  # self-hosted: overflow split, ruling 834
+    runs-on: ubuntu-latest
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
@@ -1684,11 +2301,6 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
-
-      # Ruling 887: the LAN addresses this runner's environment names, masked
-      # before any step that builds can print one.
-      - name: Mask the LAN addresses
-        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -1737,16 +2349,9 @@ jobs:
   # repository's cache storage is bounded.
   fips:
     name: FIPS 140-3 (${{ matrix.leg }})
-    # Ruling 841 (phase 2 option C of ruling 834): the 40 hosted slots filled
-    # while the Docker pool had room, so this matrix splits by leg: nine of the
-    # twelve legs run on the bigdisk-docker pool for a push to main and a
-    # same-repository pull request; the three shortest measured legs (tenant,
-    # seal, server), and every leg of a fork's pull request, run on
-    # ubuntu-latest. Tuned from measured queues; coverage
-    # and fips keep one split (test/buildgates TestCISplitsTheLargeMatrices).
-    runs-on: ${{ contains(fromJSON('["tenant-lifecycle","seal-barrier","server-raft","service","auth","rest","api-keys","sdk","sdk-transport"]'), matrix.leg) && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}  # self-hosted: overflow split, ruling 834
+    runs-on: ubuntu-latest
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
-    needs: [docker-build, pool-images]
+    needs: [docker-build]
     strategy:
       fail-fast: false
       # DS-7377: the legs measured 7 to 14.3 minutes (run 76127) on the
@@ -1798,11 +2403,6 @@ jobs:
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
 
-      # Ruling 887: the LAN addresses this runner's environment names, masked
-      # before any step that builds can print one.
-      - name: Mask the LAN addresses
-        run: scripts/ci-mask-lan.sh
-
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
         run: |
@@ -1813,27 +2413,28 @@ jobs:
       # #1593: the LAN CI registry first, the artifact when the pull fails.
       - name: Pull the toolchain image from the LAN CI registry
         id: pull_toolchain
-        if: ${{ env.CI_REGISTRY != '' && runner.environment != 'github-hosted' }}
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
         env:
-          TAG: ${{ needs.pool-images.outputs.registry_toolchain_tag }}
-          IMAGE: ${{ needs.pool-images.outputs.toolchain_image }}
-          ID: ${{ needs.pool-images.outputs.toolchain_id }}
+          TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           . scripts/image-registry.sh
-          HANDOFF=TOOLCHAIN_IMAGE
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
           if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
-             ci_registry_pull_id "$CI_REGISTRY" "$REF" "$ID" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
+             [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
-            echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not pool-images's image: a pool leg takes no other (ruling 879)"
-            exit 1
+            ci_registry_outage "$CI_REGISTRY" "$?"
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
         id: download_toolchain
-        if: ${{ runner.environment == 'github-hosted' }}
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
         continue-on-error: true
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -1841,19 +2442,19 @@ jobs:
           path: ${{ runner.temp }}/toolchain-image
 
       - name: Download the toolchain image (retry)
-        if: ${{ runner.environment == 'github-hosted' && steps.download_toolchain.outcome == 'failure' }}
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
           path: ${{ runner.temp }}/toolchain-image
 
       - name: Load the toolchain image
-        if: ${{ runner.environment == 'github-hosted' }}
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       # GODEBUG is a runtime setting and cannot fail a compile, but building
@@ -2008,8 +2609,31 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Pull the integration image from the LAN CI registry
+        id: pull_it
+        if: ${{ needs.docker-build.outputs.registry_it_tag != '' && env.CI_REGISTRY != '' }}
+        env:
+          TAG: ${{ needs.docker-build.outputs.registry_it_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.it_image }}
+          ID: ${{ needs.docker-build.outputs.it_id }}
+        run: |
+          . scripts/image-registry.sh
+          REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
+             [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
+             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            ci_registry_outage "$CI_REGISTRY" "$?"
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the integration image
         id: download_it
+        if: ${{ steps.pull_it.outputs.pulled != 'true' }}
         continue-on-error: true
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -2017,7 +2641,7 @@ jobs:
           path: ${{ runner.temp }}/it-image
 
       - name: Download the integration image (retry)
-        if: ${{ steps.download_it.outcome == 'failure' }}
+        if: ${{ steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -2027,8 +2651,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
+          PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
           echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Soak (integration suite, looped)
@@ -2058,6 +2683,28 @@ jobs:
           if [ -s "$RUNNER_TEMP/soak-project" ]; then read -r p < "$RUNNER_TEMP/soak-project"; fi
           make docker-down-it IT_PROJECT="$p"
           rm -f "$RUNNER_TEMP/soak-project"
+
+  # Ruling 640: the daily dependency bump. deps-bump.yml has only
+  # workflow_dispatch (ci.yml's nightly is the one scheduler, rulings 135,
+  # 216(1) and 633), so the nightly schedule run on main dispatches it. A
+  # workflow_dispatch made with GITHUB_TOKEN does start a run. actions: write
+  # is granted to this job alone.
+  deps-bump-dispatch:
+    name: Dispatch deps-bump
+    # Never on workflow_dispatch: deps-bump.yml dispatches ci.yml on
+    # ci/deps-bump, so the two would dispatch each other. Outside ci-gate
+    # for the same reason (test/buildgates/ci_tiers_test.go outsideGate).
+    if: ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' && !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch deps-bump.yml on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: gh workflow run deps-bump.yml --repo "$REPO" --ref main
 
   signatures:
     name: Signatures
@@ -2176,7 +2823,7 @@ jobs:
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier: pr,
     # code (every event but a docs-only PR, DS-3160), full or nightly. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [preflight, docker-build, pool-images, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak, signatures]
+    needs: [preflight, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak, signatures]
     steps:
       - name: Fail closed on any non-success
         env:
@@ -2184,7 +2831,6 @@ jobs:
           DRAFT: ${{ github.event.pull_request.draft == true }}
           RESULT_PREFLIGHT: ${{ needs.preflight.result }}
           RESULT_DOCKER_BUILD: ${{ needs.docker-build.result }}
-          RESULT_POOL_IMAGES: ${{ needs.pool-images.result }}
           RESULT_LINT: ${{ needs.lint.result }}
           RESULT_LINT_GATES: ${{ needs.lint-gates.result }}
           RESULT_IMAGE: ${{ needs.image.result }}
@@ -2254,7 +2900,6 @@ jobs:
           # (go-qrdb, DS-3160) is code; every other job is pr.
           check preflight "$RESULT_PREFLIGHT" pr
           check docker-build "$RESULT_DOCKER_BUILD" pr
-          check pool-images "$RESULT_POOL_IMAGES" pr
           check lint "$RESULT_LINT" pr
           check lint-gates "$RESULT_LINT_GATES" pr
           check image "$RESULT_IMAGE" code

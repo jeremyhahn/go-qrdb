@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -282,6 +283,25 @@ func (s *Server) handleListOwnPermissions(ctx context.Context, _ []byte) ([]byte
 	}
 
 	data, err := json.Marshal(listOwnPermissionsWireResponse{Permissions: perms})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return data, nil
+}
+
+// permissionCatalogWireResponse is the payload of role.ListPermissionCatalog.
+type permissionCatalogWireResponse struct {
+	Permissions []transport.PermissionInfo `json:"permissions"`
+}
+
+// handleListPermissionCatalog returns every registered permission with its
+// declared scope, sorted by name. Dispatch gates it on permissions:list.
+func (s *Server) handleListPermissionCatalog(_ context.Context, _ []byte) ([]byte, error) {
+	perms, err := transport.PermissionCatalog()
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(permissionCatalogWireResponse{Permissions: perms})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
