@@ -4062,14 +4062,29 @@ security: gosec gosec-sdk vuln mod-verify trivy
 # module proxy, so it needs a network; CI runs it in the toolchain image with
 # IN_IMAGE_NETWORK=bridge.
 .PHONY: deps-check
+# deps-check and deps-bump: the shared depscheck v1.0.0 (handbook
+# templates/deps/depscheck, ruling 640). With DEPS_CHECK_BASE (ci.yml passes
+# the PR base or the push's before) a lag fails only on a go.mod line the
+# change adds or bumps; -vuln fails a vulnerable version of a go.mod
+# requirement. deps-bump moves every failing requirement to latest; the
+# daily deps-bump.yml PR carries it.
+DEPS_CHECK_MODULES ?= . sdk/go sdk/go/gorm/conformance test/clusterproof test/performance/cmd/kvcompare test/performance/etcd-benchmark test/performance/qrdb test/performance/tikv test/vanguardprobe
+DEPS_CHECK_VULN_TAGS ?= gormconformance,clusterproof,benchmark
+
 deps-check:
 	@$(stage-gomodauth) \
 	eval "$${GOMODAUTH:-}"; \
-	GO="$(GO)" ./scripts/deps-check.sh
+	$(GO) run ./scripts/depscheck -go $(GO) $(if $(DEPS_CHECK_BASE),-base $(DEPS_CHECK_BASE)) -vuln -govulncheck $(GOVULNCHECK) $(if $(DEPS_CHECK_VULN_TAGS),-vuln-tags $(DEPS_CHECK_VULN_TAGS)) $(DEPS_CHECK_MODULES)
+
+.PHONY: deps-bump
+deps-bump:
+	@$(stage-gomodauth) \
+	eval "$${GOMODAUTH:-}"; \
+	$(GO) run ./scripts/depscheck -go $(GO) -bump $(DEPS_CHECK_MODULES)
 
 .PHONY: test-deps-check
 test-deps-check:
-	@./scripts/deps-check_test.sh
+	$(GO) test -count=1 ./scripts/depscheck
 
 # ============================================================================
 # Docker
