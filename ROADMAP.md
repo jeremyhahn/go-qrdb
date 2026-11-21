@@ -123,6 +123,8 @@ The cluster engine and database system for every project in the stack: embedded,
 
 ## Next
 
+- **iam-exposure** — the IAM surface go-xkms is blocked on: device-share permissions, user-bound token roles, sdk re-exports of devices:onboard, HoldsSystemRole and the keys/certs/passwords/ssh/pin/piv permissions, object-owner ABAC, peer-credential identity, a shared-password override permission, a tenant status filter; consumer go-xkms — [#1651](../../issues/1651), [docs/identity-rbac/](docs/identity-rbac/) — open
+
 ## Later
 
 - **release-readiness** — release readiness for the public release — [#565](../../issues/565), [docs/release/](docs/release/) — open
