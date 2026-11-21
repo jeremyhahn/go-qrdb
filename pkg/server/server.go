@@ -1627,13 +1627,10 @@ func (s *Server) wireTenantDataProbe() {
 	if reg := s.buildServiceRegistry(); reg != nil {
 		w.SetTenantDataProbe(service.NewTenantDataProbe(reg))
 	}
-	// The same seam carries the probe a tightening to strict consults
-	// (tenant.StrictTighteningWiring): the catalog's databases still on the
-	// node-keyed WAL. With no database manager it stays unset, and such a
-	// tightening fails closed.
-	if sw, ok := s.opts.tenantSvc.(tenant.StrictTighteningWiring); ok && s.opts.dbManager != nil {
-		sw.SetNodeKeyLogProbe(service.NewNodeKeyLogProbe(s.opts.dbManager))
-	}
+	// The probe a tightening to strict consults (tenant.StrictTighteningWiring)
+	// is not wired here: lifecycle.BuildServices wires it where the tenant
+	// service and the database manager are built, before any composer
+	// writes the FIPS strict floor.
 }
 
 // wireTenantStatusAudit gives the tenant service the auditor every status

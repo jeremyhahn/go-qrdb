@@ -1416,6 +1416,16 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		w.SetKeyspaceReclaimer(n.KeyspaceReclaim)
 	}
 
+	// A strict tightening -- a tenant's own policy or the cluster floor --
+	// must see which of the governed tenants' databases still write the
+	// node-keyed WAL, and fails closed without the probe. It is wired here,
+	// where the tenant service and the database manager are both built, so
+	// it is in place before any composer (qrdbd, the SDK node) writes the
+	// FIPS floor or serves a tenant update.
+	if w, ok := n.Tenant.(tenant.StrictTighteningWiring); ok {
+		w.SetNodeKeyLogProbe(service.NewNodeKeyLogProbe(dbManager))
+	}
+
 	// The tenant DEK keyring rides the StoreResolver both branches above
 	// build, so it is served whether or not the seal subsystem is enabled.
 	// An injected DEKProvider does not need the resolver, so it is served too.

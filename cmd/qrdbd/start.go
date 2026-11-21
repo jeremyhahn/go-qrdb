@@ -2095,19 +2095,13 @@ func runStart(f *startFlags) (err error) {
 			// FIPS-140 always tightens the cluster-wide isolation-policy
 			// floor to strict (pkg/tenant/isolation_policy.go); an operator
 			// may also raise it explicitly via the isolation-policy verb.
-			// Best-effort: the floor only ever tightens, so a failure here
-			// (e.g. a peer already moved it, or this node raced another to
-			// the first write) leaves the floor exactly as strict or
-			// stricter than this call asked for, never weaker.
-			if fips140.Enabled() {
-				if setter, ok := svcNode.Tenant.(interface {
-					SetClusterIsolationPolicy(ctx context.Context, next tenant.ClusterIsolationPolicy) error
-				}); ok {
-					if err := setter.SetClusterIsolationPolicy(sigCtx, tenant.ClusterIsolationPolicyStrict); err != nil {
-						slog.Warn("tenant isolation: could not confirm the cluster floor is strict under FIPS-140",
-							slog.Any("error", err))
-					}
-				}
+			// The write may lose to a peer that already moved the floor, so
+			// the floor is read back: a FIPS node whose floor is not strict
+			// refuses to serve (applyFIPSIsolationFloor). The node-key log
+			// probe the tightening consults is wired by BuildServices.
+			if err := applyFIPSIsolationFloor(sigCtx, fips140.Enabled(), svcNode.Tenant); err != nil {
+				_ = shutdownNode(nodeCloser)
+				return err
 			}
 			// The node's long-lived watchers (Key B cache eviction, undone
 			// tenant acknowledgement), composed in one place shared with
@@ -3903,6 +3897,49 @@ func (c localDataPlaneCloser) Close() error {
 		err = serr
 	}
 	return err
+}
+
+// errFIPSFloorNotStrict refuses a FIPS-140 start whose cluster-wide
+// isolation-policy floor is not confirmed strict.
+var errFIPSFloorNotStrict = errors.New("tenant isolation: the cluster isolation floor is not strict under FIPS-140; refusing to serve")
+
+// clusterIsolationFloor is the tenant service's cluster-wide
+// isolation-policy floor (pkg/tenant/isolation_policy.go).
+type clusterIsolationFloor interface {
+	SetClusterIsolationPolicy(ctx context.Context, next tenant.ClusterIsolationPolicy) error
+	ClusterIsolationPolicy(ctx context.Context) (tenant.ClusterIsolationPolicy, error)
+}
+
+// applyFIPSIsolationFloor tightens the cluster isolation floor to strict
+// on a FIPS-140 node and reads it back. The write may lose to a peer that
+// already moved the floor, so only the read decides: a floor that is not
+// strict afterwards -- the tightening was refused (a governed tenant's
+// databases still on the node-keyed WAL, or no way to verify them), the
+// floor cannot be read, or the tenant service holds no floor -- refuses
+// the start, naming the cause. With FIPS off it does nothing.
+func applyFIPSIsolationFloor(ctx context.Context, fipsOn bool, svc any) error {
+	if !fipsOn {
+		return nil
+	}
+	floor, ok := svc.(clusterIsolationFloor)
+	if !ok {
+		return fmt.Errorf("%w: the tenant service (%T) holds no cluster isolation floor", errFIPSFloorNotStrict, svc)
+	}
+	setErr := floor.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicyStrict)
+	got, err := floor.ClusterIsolationPolicy(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: reading the floor back: %w (write: %v)", errFIPSFloorNotStrict, err, setErr)
+	}
+	if got != tenant.ClusterIsolationPolicyStrict {
+		if setErr != nil {
+			return fmt.Errorf("%w: the floor is %q: %w", errFIPSFloorNotStrict, got, setErr)
+		}
+		return fmt.Errorf("%w: the floor is %q after the write", errFIPSFloorNotStrict, got)
+	}
+	if setErr != nil {
+		slog.Info("tenant isolation: the cluster floor was already strict under FIPS-140", slog.Any("write_error", setErr))
+	}
+	return nil
 }
 
 func shutdownNode(node io.Closer) error {
