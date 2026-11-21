@@ -1,4 +1,4 @@
-# ci-template: v1.50 (v1.35.1 + v1.42 hermetic gate + v1.43 hosted first + v1.44 LAN mask + v1.48 hosted or overflow + v1.49 preflight on bigdisk + v1.50 short list is a lower bound) — canonical CI for all first-party Go repos.
+# ci-template: v1.51 (v1.35.1 + v1.42 hermetic gate + v1.43 hosted first + v1.44 LAN mask + v1.48 hosted or overflow + v1.49 preflight on bigdisk + v1.50 short list is a lower bound + v1.51 runs-on under pull_request_target) — canonical CI for all first-party Go repos.
 # v1.47 runner gate (Tenant Agent ruling 1007, handbook ci-template v1.47): the step Runner labels (ruling 633) checks every workflow's runs-on label and waiver category together; codex and qwen run only in code-review.yml (codex with credential:, qwen with hardware:).
 # v1.43 hosted first (Tenant Agent rulings 833 and 834, which supersede ruling
 # 617's two-pool rule; the owner's 11-07 ruling that GitHub-hosted runners are
@@ -58,6 +58,14 @@
 #     template's forge-host split: a fork's PR, a schedule and a
 #     dispatch keep ubuntu-latest, so no fork's code reaches a pool host.
 #     The template's AGENT_TOKEN change does not apply (no schedule guard)
+#   - v1.51 (2026-11-21, ruling 633 hardening): `Runner labels (ruling 633)`
+#     also checks every runs-on under pull_request_target, same-repository
+#     and fork. code-review.yml and signatures.yml run on that base-defined
+#     event, so a runs-on that picks a self-hosted label only there was
+#     never read. In a workflow with that trigger a fork's head gets no
+#     overflow and no unset-variable exemption: a fork never reaches a
+#     self-hosted runner, and its finding says so.
+#     testdata/runner-labels-tests.py part G holds the cases. No other change.
 #   - v1.50 (2026-11-21, rulings 999/1024, defect fix): the overflow never
 #     fired under load. The Actions API's runs?status=queued listing returns
 #     fewer items than its total_count while runs change state ("61 of 62
@@ -634,6 +642,8 @@ jobs:
               ("push", "refs/heads/main", None), ("push", "refs/heads/feature", None),
               ("pull_request", "refs/pull/1/merge", "o/r"), ("pull_request", "refs/pull/1/merge", "fork/r"),
               ("workflow_dispatch", "refs/heads/main", None), ("schedule", "refs/heads/main", None),
+              # v1.51: the base-defined PR event code-review.yml and signatures.yml run on.
+              ("pull_request_target", "refs/heads/main", "o/r"), ("pull_request_target", "refs/heads/main", "fork/r"),
           ]
 
 
@@ -843,6 +853,9 @@ jobs:
                                   continue
                               off = []
                               for ev, ref, head in HOSTED_CTX:
+                                  # v1.51: under pull_request_target, a fork's head never
+                                  # reaches a self-hosted runner.
+                                  fork_target = ev == "pull_request_target" and head == "fork/r" and "pull_request_target" in on
                                   try:
                                       got = runs_on_labels(ro, ev, ref, head)
                                   except ValueError as e:
@@ -850,7 +863,8 @@ jobs:
                                       continue
                                   if got is None or len(got) != 1 or not STANDARD.fullmatch(got[0]):
                                       what = "an unknown label" if got is None else ", ".join(got)
-                                      off.append(f"{ev} ({ref}{', fork' if head == 'fork/r' else ''}): {what}")
+                                      note = ", pull_request_target: a fork never reaches a self-hosted runner" if fork_target and got is not None else ""
+                                      off.append(f"{ev} ({ref}{', fork' if head == 'fork/r' else ''}{note}): {what}")
                               if off and BARE.search(ro_line):
                                   bad.append(f"{where}: (e) its `# self-hosted:` reason names no category; ruling 999 allows a self-hosted job "
                                              f"only as `# self-hosted: hardware: <reason>` or `# self-hosted: oversize: <reason>`; it runs on " + "; ".join(dict.fromkeys(off)))
