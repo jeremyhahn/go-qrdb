@@ -84,6 +84,11 @@ const (
 	// dockerRunner is the runs-on of a job that needs Docker, character for
 	// character.
 	dockerRunner = `${{ ` + poolSplit + ` && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}`
+	// preflightRunner is ci.yml's preflight runs-on since ci-template v1.49
+	// (Tenant Agent ruling 1047 (3)): the bigdisk pool behind poolSplit, so a
+	// fork's PR, a schedule and a dispatch stay hosted, overridden by the
+	// repository variable CI_PREFLIGHT_RUNS_ON. Only the preflight job reads it.
+	preflightRunner = `${{ ` + poolSplit + ` && fromJSON(vars.CI_PREFLIGHT_RUNS_ON || '["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
 	// hostedStepTerm is the conjunct a step carries in its `if:` so that it
 	// never runs on a pool host: a Docker step of a bigdiskRunner job, and a
 	// step that wipes a hosted runner's disk in any pool job.
@@ -104,9 +109,10 @@ const (
 	// Floors, well under today's counts (7 workflows, 50 jobs).
 	runnerWorkflowFloor = 6
 	runnerJobFloor      = 30
-	// hostedJobFloor, under ci.yml's count (18 jobs, on ubuntu-latest or,
-	// hosted by default since v1.48, on a selectionRunners expression):
-	// a regression of the whole workflow to the pools fails here.
+	// hostedJobFloor, under ci.yml's count (17 of its 18 jobs hosted by
+	// default, on ubuntu-latest or, since v1.48, on a selectionRunners
+	// expression; preflight is on the bigdisk pool since v1.49): a
+	// regression of the whole workflow to the pools fails here.
 	hostedJobFloor = 15
 	// selfHostedReason is the line comment a pool job's runs-on carries.
 	selfHostedReason = "self-hosted:"
@@ -299,6 +305,14 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 				for _, p := range dockerNeeds(job) {
 					add("job " + name + " overflows to the Docker-free bigdisk pool (needs.preflight.outputs.runner), and " + p + "; a job that needs Docker reads runner_docker")
 				}
+			}
+		case pool && runsOn == preflightRunner:
+			// v1.49 (ruling 1047 (3)): preflight alone, Docker-free, needs nothing.
+			if name != "preflight" {
+				add("job " + name + " runs on preflight's runs-on, which reads vars.CI_PREFLIGHT_RUNS_ON; only the preflight job may (ci-template v1.49, ruling 1047 (3))")
+			}
+			for _, p := range dockerNeeds(job) {
+				add("job " + name + " runs on the Docker-free bigdisk pool (preflightRunner), and " + p)
 			}
 		case pool:
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", neither "+hostedRunner+" nor, with a stated reason, exactly bigdiskRunner (Docker-free) or dockerRunner (Docker) (rulings 833 and 834)")
@@ -519,18 +533,20 @@ func TestCIRunners(t *testing.T) {
 // but preflight, which computes the selection, and signatures, which waits on
 // nothing, runs on a selectionRunners expression and needs preflight; a job
 // whose steps need Docker reads runner_docker (Codex review 6000705149).
+// Preflight runs on preflightRunner (v1.49, ruling 1047 (3)), signatures on
+// the literal ubuntu-latest.
 func TestCIJobsReadPreflightSelection(t *testing.T) {
 	files := workflowFiles(t)
 	var wf runnerWorkflow
 	if err := yaml.Unmarshal(files[poolWorkflow], &wf); err != nil {
 		t.Fatalf("parse %s: %v", poolWorkflow, err)
 	}
-	exempt := map[string]bool{"preflight": true, "signatures": true}
+	want := map[string]string{"preflight": preflightRunner, "signatures": hostedRunner}
 	for name, job := range wf.Jobs {
 		runsOn := job.RunsOn.Value
-		if exempt[name] {
-			if runsOn != hostedRunner {
-				t.Errorf("job %s runs on %s, not the literal %s", name, nodeText(job.RunsOn), hostedRunner)
+		if w, ok := want[name]; ok {
+			if runsOn != w {
+				t.Errorf("job %s runs on %s, not %s", name, nodeText(job.RunsOn), w)
 			}
 			continue
 		}
@@ -927,16 +943,17 @@ func TestRunnerProblems_Pools(t *testing.T) {
 	}
 }
 
-// selectionFixture is a ci.yml on ci-template v1.48's runner selection
-// (ruling 1024): an image job on runner_docker and CI Gate on the guarded
-// runner, each needing preflight.
+// selectionFixture is a ci.yml on ci-template v1.49: preflight on
+// preflightRunner (ruling 1047 (3)), and v1.48's runner selection (ruling
+// 1024), an image job on runner_docker and CI Gate on the guarded runner,
+// each needing preflight.
 const selectionFixture = `on:
   push:
     branches: [main]
   pull_request:
 jobs:
   preflight:
-    runs-on: ubuntu-latest
+    runs-on: ` + preflightRunner + `   # v1.49
     timeout-minutes: 15
     steps:
       - run: true
@@ -965,15 +982,34 @@ func TestRunnerProblems_Selection(t *testing.T) {
 		"the selection outside ci.yml":                 {hostedFile, "", "", "job lint runs on"},
 		"the output without fromJSON":                  {poolWorkflow, "fromJSON(needs.preflight.outputs.runner_docker)", "needs.preflight.outputs.runner_docker", "job lint runs on"},
 		"a Docker job overflowing to bigdisk":          {poolWorkflow, "outputs.runner_docker)", "outputs.runner)", "overflows to the Docker-free bigdisk pool"},
+		"preflight without the fork split":             {poolWorkflow, " && github.event.pull_request.head.repo.full_name == github.repository", "", "job preflight runs on"},
+		"preflight on any push":                        {poolWorkflow, "github.event_name == 'push' && github.ref == 'refs/heads/main'", "github.event_name == 'push'", "job preflight runs on"},
+		"the variable read by another job":             {poolWorkflow, "    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48", "    runs-on: " + preflightRunner, "only the preflight job may"},
+		"a Docker step on preflight":                   {poolWorkflow, "      - run: true\n  lint:", "      - run: docker load -i toolchain.tar\n  lint:", "Docker-free bigdisk pool (preflightRunner)"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(selectionFixture, c.old) {
+				t.Fatalf("the fixture lacks %q", c.old)
+			}
 			body := strings.Replace(selectionFixture, c.old, c.new, 1)
 			problems, _ := runnerProblems(c.file, []byte(body))
 			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, c.want) }) {
 				t.Fatalf("want a problem containing %q, got %v", c.want, problems)
 			}
 		})
+	}
+	// v1.49: every one-character change to preflight's runs-on is a problem.
+	for i := range len(preflightRunner) {
+		c := byte('x')
+		if preflightRunner[i] == c {
+			c = 'y'
+		}
+		changed := preflightRunner[:i] + string(c) + preflightRunner[i+1:]
+		body := strings.Replace(selectionFixture, preflightRunner, changed, 1)
+		if p, _ := runnerProblems(poolWorkflow, []byte(body)); len(p) == 0 {
+			t.Errorf("a preflight runs-on %q, one character off preflightRunner, passed", changed)
+		}
 	}
 }
 

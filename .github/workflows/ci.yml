@@ -1,4 +1,4 @@
-# ci-template: v1.48 (v1.35.1 + v1.42 hermetic gate + v1.43 hosted first + v1.44 LAN mask + v1.48 hosted or overflow) — canonical CI for all first-party Go repos.
+# ci-template: v1.49 (v1.35.1 + v1.42 hermetic gate + v1.43 hosted first + v1.44 LAN mask + v1.48 hosted or overflow + v1.49 preflight on bigdisk) — canonical CI for all first-party Go repos.
 # v1.43 hosted first (Tenant Agent rulings 833 and 834, which supersede ruling
 # 617's two-pool rule; the owner's 11-07 ruling that GitHub-hosted runners are
 # the default): every job runs on the standard GitHub-hosted ubuntu-latest
@@ -44,6 +44,15 @@
 #     disk-free and image steps stay on runner.environment == 'github-hosted',
 #     the jobs mask the LAN addresses (v1.44, scripts/ci-mask-lan.sh), the
 #     step has no off-github.com branch, and v1.45-v1.47 are not taken
+#   - v1.49 (Tenant Agent ruling 1047 (3) and (2)): preflight, ten seconds
+#     of work every job waits on, runs on the bigdisk pool instead of the
+#     full hosted queue, fromJSON(vars.CI_PREFLIGHT_RUNS_ON || the bigdisk
+#     label list); the repository variable CI_PREFLIGHT_RUNS_ON, runs-on
+#     JSON, is the fallback switch (`"ubuntu-latest"`, quotes included,
+#     while the Dells are down). Taken behind the pool split, not the
+#     template's forge-host split: a fork's PR, a schedule and a
+#     dispatch keep ubuntu-latest, so no fork's code reaches a pool host.
+#     The template's AGENT_TOKEN change does not apply (no schedule guard)
 #   - no schedule guard, so preflight merges changes and arch-gates only
 #     (DS-7377)
 #   - pull_request lists `ready_for_review`, ci-template v1.35.3's trigger,
@@ -208,7 +217,12 @@ jobs:
     # no Go, no Docker (the compose-target check, which runs the docker CLI,
     # is a docker-build step). On the self-hosted bigdisk pool for a push to
     # main and a same-repository PR; hosted otherwise, a fork's PR included.
-    runs-on: ubuntu-latest
+    # v1.49 (Tenant Agent ruling 1047 (3), (2)): the bigdisk pool, so no
+    # run waits in the hosted queue for its first ten seconds of work; the
+    # repository variable CI_PREFLIGHT_RUNS_ON, runs-on JSON, overrides it
+    # (Fleet Ops sets `"ubuntu-latest"`, quotes included, while the Dells
+    # are down). The pool needs git, grep, make, jq and curl on its runner.
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.CI_PREFLIGHT_RUNS_ON || '["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}   # v1.49
     timeout-minutes: 15   # CUSTOMIZE (go-qrdb): the template's 10, plus the full-tree gates
     # v1.48 (ruling 1024): the runner selection reads this repository's
     # queued and in-progress jobs through the Actions API with the job token;
@@ -339,7 +353,8 @@ jobs:
             pages "$API/runs/$id/jobs?filter=latest" jobs "$RUNNER_TEMP/sel-j.jsonl" || hosted "the Actions API gave no complete job list ($WHY)"
             cat "$RUNNER_TEMP/sel-j.jsonl" >> "$RUNNER_TEMP/sel-jobs.jsonl"
           done
-          # In progress: every hosted job, this one included. Queued: a hosted
+          # In progress: every hosted job (this one too, when it runs hosted: a
+          # schedule, a dispatch, or CI_PREFLIGHT_RUNS_ON set; v1.49). Queued: a hosted
           # job of another run (this run's jobs wait on this one) queued for
           # GRACE seconds or more, so a runner did not take it at once.
           read -r running queued < <(jq -rs --argjson run "$RUN_ID" --argjson grace "$GRACE" '
@@ -409,9 +424,9 @@ jobs:
             exit 0
           fi
           umask 077
+          trap 'rm -f "$RUNNER_TEMP/public-release-patterns"' EXIT
           printf '%s\n' "$PUBLIC_RELEASE_PATTERNS" > "$RUNNER_TEMP/public-release-patterns"
           PUBLIC_RELEASE_PATTERNS_FILE="$RUNNER_TEMP/public-release-patterns" make check-public-releasable
-          rm -f "$RUNNER_TEMP/public-release-patterns"
   # v1.21: every stage runs in the project's own devcontainer image and no
   # other (ci-standard.md §2, devcontainer.md §7). This job builds the images
   # once from build/docker/devcontainer/Dockerfile at this commit and hands
