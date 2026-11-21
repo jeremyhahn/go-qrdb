@@ -139,6 +139,32 @@
   let compactProgress: unknown = $state(null);
 
   // ---------------------------------------------------------------------------
+  // Namespace selection generation
+  // ---------------------------------------------------------------------------
+
+  // nsGeneration counts namespace selections. A per-namespace read applies
+  // its response (results, error toast, loading flag) only while its
+  // namespace selection is current: same generation and selectedNamespace
+  // still the namespace the request was sent for.
+  let nsGeneration = 0;
+
+  function nsSelectionCurrent(gen: number, namespace: string): boolean {
+    return gen === nsGeneration && selectedNamespace === namespace;
+  }
+
+  /** A namespace change drops every result shown for the previous one. */
+  function resetNamespaceResults(): void {
+    nsGeneration++;
+    nsInfoResult = null;
+    vecListResults = [];
+    vectorsLoading = false;
+    statsResult = null;
+    rebuildProgress = null;
+    compactProgress = null;
+    searchResults = [];
+  }
+
+  // ---------------------------------------------------------------------------
   // Delete confirmation state
   // ---------------------------------------------------------------------------
 
@@ -420,14 +446,19 @@
       showToast("error", "Vector operations are not available on this connection.");
       return;
     }
-    if (selectedNamespace.trim() === "") return;
+    const namespace = selectedNamespace;
+    if (namespace.trim() === "") return;
+    const gen = nsGeneration;
     loading = true;
     try {
-      nsInfoResult = await client.vector.getNamespaceInfo({ namespace: selectedNamespace });
+      const info = await client.vector.getNamespaceInfo({ namespace });
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      nsInfoResult = info;
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -520,18 +551,24 @@
       showToast("error", "Vector operations are not available on this connection.");
       return;
     }
-    if (selectedNamespace.trim() === "") return;
+    const namespace = selectedNamespace;
+    if (namespace.trim() === "") return;
+    const gen = nsGeneration;
     vectorsLoading = true;
     try {
-      const resp: ListVectorsResponse = await client.vector.listVectors({ namespace: selectedNamespace });
+      const resp: ListVectorsResponse = await client.vector.listVectors({ namespace });
+      if (!nsSelectionCurrent(gen, namespace)) return;
       vecListResults = [...resp.vectors];
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      vectorsLoading = false;
+      if (nsSelectionCurrent(gen, namespace)) vectorsLoading = false;
     }
     // Every write relists; the namespace cards follow the same refresh. A
-    // failed info read reports once, through handleNsInfo.
+    // failed info read reports once, through handleNsInfo. A list for a
+    // superseded selection stops here: the new selection reads its own.
+    if (!nsSelectionCurrent(gen, namespace)) return;
     await handleNsInfo();
   }
 
@@ -671,6 +708,11 @@
       return;
     }
     const { method, options } = event;
+    // The request carries options.namespace; its results apply only while
+    // the selection current at call time still is.
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
+    let results: unknown[] = [];
 
     loading = true;
     try {
@@ -685,7 +727,7 @@
             vector: options.vector,
             k: options.topK ?? 10,
           });
-          searchResults = [...resp.results];
+          results = [...resp.results];
           break;
         }
         case "id": {
@@ -698,7 +740,7 @@
             id: options.vectorId,
             k: options.topK ?? 10,
           });
-          searchResults = [...resp.results];
+          results = [...resp.results];
           break;
         }
         case "metadata": {
@@ -711,18 +753,21 @@
             filters: options.metadataFilter,
             limit: options.topK ?? 10,
           });
-          searchResults = [...resp.results];
+          results = [...resp.results];
           break;
         }
       }
 
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      searchResults = results;
       if (searchResults.length === 0) {
         showToast("info", "No matching vectors found.");
       }
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -751,22 +796,26 @@
       showToast("warning", "K must be a positive integer.");
       return;
     }
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
     loading = true;
     try {
       const resp: HybridSearchResponse = await client.vector.hybridSearch({
-        namespace: selectedNamespace,
+        namespace,
         vector,
         metadataFilters,
         k,
       });
+      if (!nsSelectionCurrent(gen, namespace)) return;
       searchResults = [...resp.results];
       if (searchResults.length === 0) {
         showToast("info", "No matching vectors found.");
       }
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -804,16 +853,21 @@
       showToast("warning", "Select a namespace first.");
       return;
     }
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
     loading = true;
     try {
-      rebuildProgress = await client.vector.getRebuildProgress({
-        namespace: selectedNamespace,
+      const progress = await client.vector.getRebuildProgress({
+        namespace,
         jobId: rebuildJobId,
       });
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      rebuildProgress = progress;
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -826,13 +880,18 @@
       showToast("warning", "Select a namespace first.");
       return;
     }
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
     loading = true;
     try {
-      statsResult = await client.vector.getIndexStats({ namespace: selectedNamespace });
+      const stats = await client.vector.getIndexStats({ namespace });
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      statsResult = stats;
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -866,16 +925,21 @@
       showToast("warning", "Select a namespace first.");
       return;
     }
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
     loading = true;
     try {
-      compactProgress = await client.vector.getCompactionProgress({
-        namespace: selectedNamespace,
+      const progress = await client.vector.getCompactionProgress({
+        namespace,
         jobId: compactJobId,
       });
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      compactProgress = progress;
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -1039,12 +1103,13 @@
   });
 
   $effect(() => {
-    if (selectedNamespace.trim() !== "") {
+    const namespace = selectedNamespace;
+    // Every selection change, to a namespace or to none, invalidates the
+    // reads still in flight for the previous one.
+    resetNamespaceResults();
+    if (namespace.trim() !== "") {
       // handleVecList reads the namespace info after the list.
       handleVecList();
-    } else {
-      nsInfoResult = null;
-      vecListResults = [];
     }
   });
 </script>
