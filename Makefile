@@ -2976,10 +2976,13 @@ test-ci-image: ## Test the CI image hand-off (save, load, GHCR push)
 # script's EXIT trap removed it, so every job killed first left one running
 # (#1264). scripts/in-toolchain-image.sh now configures the stage's own
 # namespace from a one-shot --rm container and traps INT, TERM and HUP. Tested
-# on a stub docker: a real run needs the runner's daemon.
+# on a stub docker: a real run needs the runner's daemon. The same target
+# proves scripts/ci-cache-dir.sh, which picks the stage's CI_CACHE_DIR per
+# runner kind (#1596), on a temp cache root.
 .PHONY: test-in-toolchain-image
 test-in-toolchain-image: ## Test that no stage container outlives its script
 	@./scripts/in-toolchain-image_test.sh
+	@./scripts/ci-cache-dir_test.sh
 
 .PHONY: check-tool-versions
 check-tool-versions:
@@ -4217,13 +4220,16 @@ IT_PROJECT ?= qrdb-it-$(DOCKER_TAG)
 # the stage runs `apk upgrade`, so a rebuild of the same tree can differ. A
 # digest reference, an image pulled from a registry, is held to the same
 # rule. A tag reference, the developer-host default, still builds through
-# docker-build-it.
+# docker-build-it. An image ID (sha256:<hex>), which CI's load step hands on
+# as IT_IMAGE once scripts/ci-image.sh load has verified it (a tag on a shared
+# daemon can be retagged after the check), names exactly one image and is
+# never built either.
 IT_PREBUILT ?=
 it-require-prebuilt = docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || { echo "ERROR: $(IT_IMAGE) is not on this daemon: a prebuilt image is loaded from docker-build's artifact (scripts/ci-image.sh load), never built" >&2; exit 1; }
 # it-image-step is integration-test's image step. It sits in a variable, not in
 # the recipe text, so `make -n` prints the prebuilt path instead of running it:
 # make runs any recipe line that names $(MAKE) directly, even under -n.
-it-image-step = $(if $(filter 1,$(IT_PREBUILT))$(findstring @sha256:,$(IT_IMAGE)),$(it-require-prebuilt),$(MAKE) -s -C $(CURDIR) docker-build-it || exit $$?)
+it-image-step = $(if $(filter 1,$(IT_PREBUILT))$(findstring @sha256:,$(IT_IMAGE))$(filter sha256:%,$(IT_IMAGE)),$(it-require-prebuilt),$(MAKE) -s -C $(CURDIR) docker-build-it || exit $$?)
 
 REQUIRE_BUILDX = @docker buildx version >/dev/null 2>&1 || { echo "docker buildx is required (the Dockerfile mounts the gomodauth BuildKit secret)" >&2; exit 1; }
 
@@ -4242,8 +4248,39 @@ DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY="$(GO_BUILD_PROXY)",$(if $(GOPROXY),--build-arg GO_BUILD_PROXY="$$GOPROXY")) \
 	-f $(DEVCONTAINER_DIR)/Dockerfile
 
+# concurrent-load follows a content-tagged image build. Two builds that miss
+# together on one daemon both build, and only the first --load can tag the
+# result: the second fails with "image ... already exists" (run 57133). That
+# loser finds the image held once its build fails, and the tag is the
+# content, so it succeeds; any other failed build fails with the build's
+# status. docker-build-toolchain and docker-build-it both use it: a daemon
+# may be shared by independent runs (#1631).
+# Its optional second argument is the build's IID file: the loser writes the
+# ID its one check saw (#1597).
+concurrent-load = || { status=$$?; id=$$(docker image inspect -f '{{.Id}}' '$(1)' 2>/dev/null) || exit $$status; echo "==> a concurrent build loaded $(1) first"; $(if $(2),printf '%s\n' "$$id" > '$(2)';) }
+
 .PHONY: docker-build docker-build-toolchain docker-build-it toolchain-image docker-run
 docker-build: docker-build-toolchain docker-build-it
+
+# TOOLCHAIN_IIDFILE and IT_IIDFILE, when set, name the file each build writes
+# its own image ID to (`docker build --iidfile`). CI's docker-build job pins
+# that ID (scripts/ci-image.sh pin), never a later lookup of the shared
+# content-hash tag, which another job on the daemon can retag in between
+# (#1597). A build the daemon already holds writes the ID its one check saw.
+TOOLCHAIN_IIDFILE ?=
+IT_IIDFILE ?=
+
+# ci-image-shared-lock holds scripts/ci-image.sh's image lock shared (fd 9) for
+# the rest of the recipe's shell, so a concurrent `ci-image.sh prune` (which
+# holds it exclusive) cannot remove the image between the target's check, its
+# reuse, pull or build, and its push (#1596). A reused image's tag time is
+# refreshed under it, so the image stays younger than the prune bound for the
+# rest of the job. Without flock(1) or a writable lock file, or when lock-file
+# prints no path, it holds nothing and the recipe goes on: the writability probe
+# runs in a subshell because a failed redirect on the special builtin ':' would
+# exit dash, the recipe shell.
+ci-image-shared-lock = lock=$$(scripts/ci-image.sh lock-file 2>/dev/null) || lock=; \
+	if [ -n "$$lock" ] && command -v flock >/dev/null 2>&1 && (: >>"$$lock") 2>/dev/null; then exec 9>>"$$lock" && flock -s 9; fi;
 
 docker-build-toolchain:
 	$(REQUIRE_BUILDX)
@@ -4256,14 +4293,18 @@ docker-build-toolchain:
 	@# record (an earlier push failed) is pushed again (registry-push
 	@# --unrecorded); no push ever fails the target. Unset, every ci-image.sh
 	@# call does nothing.
-	@if docker image inspect '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1; then \
+	@$(ci-image-shared-lock) $(if $(TOOLCHAIN_IIDFILE),rm -f '$(TOOLCHAIN_IIDFILE)';) \
+	if id=$$(docker image inspect -f '{{.Id}}' '$(TOOLCHAIN_IMAGE)' 2>/dev/null); then \
 		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
+		docker tag '$(TOOLCHAIN_IMAGE)' '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1 || :; \
+		$(if $(TOOLCHAIN_IIDFILE),printf '%s\n' "$$id" > '$(TOOLCHAIN_IIDFILE)';) \
 		scripts/ci-image.sh registry-push --unrecorded '$(TOOLCHAIN_IMAGE)' || :; \
 	elif scripts/ci-image.sh registry-pull '$(TOOLCHAIN_IMAGE)'; then \
-		:; \
+		:; $(if $(TOOLCHAIN_IIDFILE),docker image inspect -f '{{.Id}}' '$(TOOLCHAIN_IMAGE)' > '$(TOOLCHAIN_IIDFILE)';) \
 	else \
 		$(stage-gomodauth) \
-		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) . && \
+		$(DEVCONTAINER_BUILD) $(if $(TOOLCHAIN_IIDFILE),--iidfile '$(TOOLCHAIN_IIDFILE)') \
+			--target toolchain -t $(TOOLCHAIN_IMAGE) . $(call concurrent-load,$(TOOLCHAIN_IMAGE),$(TOOLCHAIN_IIDFILE)); \
 		scripts/ci-image.sh registry-push '$(TOOLCHAIN_IMAGE)'; \
 	fi
 
@@ -4277,20 +4318,20 @@ docker-build-toolchain:
 docker-build-it:
 	$(REQUIRE_BUILDX)
 	@# CUSTOMIZE (go-qrdb): a digest reference names a pushed image; building one would mint a different image under its name (DS-3516)
-	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): a digest reference names a pushed image" >&2; exit 1 ;; esac
-	@if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
+	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): a digest reference names a pushed image" >&2; exit 1 ;; sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): an image ID names a loaded image" >&2; exit 1 ;; esac
+	@$(ci-image-shared-lock) $(if $(IT_IIDFILE),rm -f '$(IT_IIDFILE)';) \
+	if id=$$(docker image inspect -f '{{.Id}}' '$(IT_IMAGE)' 2>/dev/null); then \
 		echo "==> $(IT_IMAGE) is already built on this daemon"; \
+		docker tag '$(IT_IMAGE)' '$(IT_IMAGE)' >/dev/null 2>&1 || :; \
+		$(if $(IT_IIDFILE),printf '%s\n' "$$id" > '$(IT_IIDFILE)';) \
 		scripts/ci-image.sh registry-push --unrecorded '$(IT_IMAGE)' || :; \
 	elif scripts/ci-image.sh registry-pull '$(IT_IMAGE)'; then \
-		:; \
+		:; $(if $(IT_IIDFILE),docker image inspect -f '{{.Id}}' '$(IT_IMAGE)' > '$(IT_IIDFILE)';) \
 	else \
 		$(stage-gomodauth) \
-		$(DEVCONTAINER_BUILD) --build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
-			--target integration -t $(IT_IMAGE) . || { \
-			status=$$?; \
-			docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
-			echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
-		}; \
+		$(DEVCONTAINER_BUILD) $(if $(IT_IIDFILE),--iidfile '$(IT_IIDFILE)') \
+			--build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
+			--target integration -t $(IT_IMAGE) . $(call concurrent-load,$(IT_IMAGE),$(IT_IIDFILE)); \
 		scripts/ci-image.sh registry-push '$(IT_IMAGE)'; \
 	fi
 

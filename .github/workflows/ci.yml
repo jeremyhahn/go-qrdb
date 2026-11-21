@@ -65,10 +65,23 @@
 #     downloads and loads it, checking its image ID (scripts/ci-image.sh),
 #     and launches every stage by that ID, never by the content-hash tag,
 #     which another run on a shared daemon can move;
-#   - the Go build and golangci-lint caches are actions/cache entries under
-#     $RUNNER_TEMP/ci-cache, which scripts/in-toolchain-image.sh bind-mounts
-#     (CI_CACHE_DIR). A job restores main's newest entry; only a push to main
-#     saves one (CI_PUBLISH), so a pull request never writes main's cache;
+#   - the Go build and golangci-lint caches live where the scripts/ci-cache-dir
+#     step ("Point the stages at the Go caches") puts them (CI_CACHE_DIR, which
+#     scripts/in-toolchain-image.sh bind-mounts; #1596). On a hosted runner
+#     they are actions/cache entries under $RUNNER_TEMP/ci-cache: a job
+#     restores main's newest entry, and only the nightly schedule on main
+#     saves one (CI_CACHE_SAVE), so a pull
+#     request never writes main's cache. On a
+#     self-hosted pool host, whose temp dir is on the root filesystem and
+#     outlives the job, they are a generation directory on /mnt/raid0 that
+#     every job shares: past CI_CACHE_MAX_GB (40 GB) a new generation becomes
+#     current, and an old one is deleted only once no job has used it for
+#     CI_CACHE_RECLAIM_HOURS (7, longer than any job), so no running stage
+#     loses its bind mount; or they are the stage's named Docker volumes when
+#     /mnt/raid0 is not writable. actions/cache is skipped there, and every
+#     job removes $RUNNER_TEMP/ci-cache at its end through
+#     scripts/ci-cache-clean.sh, which deletes the stages' uid-10001 files as
+#     root in the toolchain image and only warns when it cannot;
 #   - every job that loads an image first frees a hosted runner's disk (the
 #     preinstalled SDKs it never uses); the step runs on the hosted runner
 #     alone (runner.environment == 'github-hosted'), never on a pool host,
@@ -152,10 +165,13 @@ env:
   # (test/buildgates/ci_tiers_test.go).
   CI_FULL_TIER: ${{ (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
   # CUSTOMIZE (go-qrdb): the one event that publishes, a push to main. It
-  # alone pushes the CI images to GHCR and saves the Go caches; every other
-  # event, a fork's pull request included, writes neither
-  # (test/buildgates/ci_image_digest_test.go, ci_runners_test.go).
+  # alone pushes the CI images to GHCR; every other event, a fork's pull
+  # request included, pushes none (test/buildgates/ci_image_digest_test.go).
   CI_PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  # The one event that saves the hosted Go caches (#1597): the nightly
+  # schedule on main, one entry a day, not one per push; a pull request reads its entries and never writes one
+  # (test/buildgates/ci_runners_test.go).
+  CI_CACHE_SAVE: ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' }}
   # v1.24 (CA m749, m751 (a)): the files a docs-only PR may touch. Nothing
   # embeds or generates from docs/ or markdown. The gates that read docs/ are
   # lint-class and run in `make lint-gates`, which a docs-only PR still runs.
@@ -891,8 +907,9 @@ jobs:
   #     refuses an image whose ID is not this one. The artifact path needs no
   #     registry credential, so a fork's pull request runs it the same way;
   #   - on a push to main (CI_PUBLISH) both are also pushed to GHCR under the
-  #     repository owner with the run's own GITHUB_TOKEN, tagged
-  #     <content-hash>-main, and their digest references are toolchain_ref
+  #     repository owner with the run's own GITHUB_TOKEN, by the image ID the
+  #     save recorded, tagged <content-hash>-main-<run id>-<attempt>
+  #     (#1597), and their digest references are toolchain_ref
   #     and it_ref, for developers and the release workflow. No consumer in
   #     this run pulls them.
   # A consumer never rebuilds: the integration stage upgrades its Alpine
@@ -1037,14 +1054,23 @@ jobs:
             for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
               if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
             done )
+          # Each build writes its own image ID to a file of this job's
+          # (--iidfile), and pin tags that ID under a per-run tag: never a
+          # lookup of the shared content-hash tag, which another job on the
+          # daemon can retag between the build and the pin. save archives
+          # the pin.
+          iids=$(mktemp -d "$RUNNER_TEMP/iid.XXXXXX")
           if [ "$DOCS_ONLY" = true ]; then
-            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
+            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IIDFILE="$iids/toolchain"
             it_image=
           else
-            make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
+            make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IIDFILE="$iids/toolchain" IT_IIDFILE="$iids/it"
             it_image=$(make -s it-image)
           fi
           rm -f "$RUNNER_TEMP/gomodauth.env"
+          scripts/ci-image.sh pin "$(make -s toolchain-image)" "$iids/toolchain" >/dev/null
+          if [ -n "$it_image" ]; then scripts/ci-image.sh pin "$it_image" "$iids/it" >/dev/null; fi
+          rm -rf "$iids"
           echo "toolchain_image=$(make -s toolchain-image)" >> "$GITHUB_OUTPUT"
           echo "it_image=$it_image" >> "$GITHUB_OUTPUT"
           now=$(record "$TOOLCHAIN_RECORD")
@@ -1134,7 +1160,10 @@ jobs:
           fi
 
       # CUSTOMIZE (go-qrdb): on a push to main alone, push each image once per
-      # run, tagged <content-hash>-main, and output its digest reference.
+      # run and output its digest reference. #1597: the push takes the ID the
+      # save step recorded and pushes a per-run tag created from it
+      # (<content-hash>-main-<run id>-<attempt>), never the shared
+      # content-hash tag, which another run can move on a shared daemon.
       # scripts/ci-image.sh feeds the login to docker on stdin, into a private
       # DOCKER_CONFIG it deletes, and validates every reference it prints
       # (check-ref: a digest reference under the repository owner in GHCR).
@@ -1147,18 +1176,32 @@ jobs:
           CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TOOLCHAIN_IMAGE: ${{ steps.build.outputs.toolchain_image }}
           IT_IMAGE: ${{ steps.build.outputs.it_image }}
+          TOOLCHAIN_ID: ${{ steps.save.outputs.toolchain_id }}
+          IT_ID: ${{ steps.save.outputs.it_id }}
         run: |
-          toolchain_ref=$(scripts/ci-image.sh push "$TOOLCHAIN_IMAGE" go-qrdb-toolchain)
+          toolchain_ref=$(scripts/ci-image.sh push "$TOOLCHAIN_IMAGE" go-qrdb-toolchain "$TOOLCHAIN_ID")
           it_ref=
           if [ -n "$IT_IMAGE" ]; then
-            it_ref=$(scripts/ci-image.sh push "$IT_IMAGE" go-qrdb-ci-it)
+            it_ref=$(scripts/ci-image.sh push "$IT_IMAGE" go-qrdb-ci-it "$IT_ID")
           fi
           echo "toolchain_ref=$toolchain_ref" >> "$GITHUB_OUTPUT"
           echo "it_ref=$it_ref" >> "$GITHUB_OUTPUT"
 
       - name: Tear down
         if: always()
-        run: rm -rf "$RUNNER_TEMP/gomodauth.env" "$RUNNER_TEMP/toolchain-image" "$RUNNER_TEMP/it-image" "$RUNNER_TEMP/ci-image-digests"
+        env:
+          TOOLCHAIN_IMAGE: ${{ steps.build.outputs.toolchain_image }}
+          IT_IMAGE: ${{ steps.build.outputs.it_image }}
+        run: |
+          rm -rf "$RUNNER_TEMP/gomodauth.env" "$RUNNER_TEMP/toolchain-image" "$RUNNER_TEMP/it-image" "$RUNNER_TEMP/ci-image-digests"
+          if [ -n "$TOOLCHAIN_IMAGE" ]; then scripts/ci-image.sh untag "$TOOLCHAIN_IMAGE" ${IT_IMAGE:+"$IT_IMAGE"}; fi
+
+      # #1597: a pool daemon outlives the job, and each commit's integration
+      # image has its own tag; drop the CI images neither built nor tagged in
+      # the last 24 h, never one a running container uses.
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   # Every stage below runs its `make` target in the toolchain image as its own
   # step, through scripts/in-toolchain-image.sh, which copies the checkout
@@ -1257,6 +1300,7 @@ jobs:
       # CUSTOMIZE (go-qrdb, DS-7377): the build and golangci-lint caches,
       # restored from main's newest entry and saved on a push to main alone.
       - name: Restore the Go caches
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -1266,7 +1310,7 @@ jobs:
             go-lint-
 
       - name: Point the stages at the Go caches
-        run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
+        run: bash scripts/ci-cache-dir.sh >> "$GITHUB_ENV"
 
       - name: make lint
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
@@ -1295,11 +1339,23 @@ jobs:
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k lint-sweeps GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
+        if: ${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
           key: go-lint-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+
+      # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
+      # remove any cache an older run left there. Its files belong to the
+      # stages' uid, so the helper deletes them as root in the toolchain
+      # image; a failure is a ::warning::, never a failed job.
+      - name: Remove the temp Go caches
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   # v1.27.0 (ruling 211): `make lint-gates` beside `make lint`, on the PR tier.
   lint-gates:
@@ -1391,7 +1447,7 @@ jobs:
           echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
-        if: ${{ steps.probe.outputs.has_target == 'true' }}
+        if: ${{ steps.probe.outputs.has_target == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -1402,7 +1458,7 @@ jobs:
 
       - name: Point the stages at the Go caches
         if: ${{ steps.probe.outputs.has_target == 'true' }}
-        run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
+        run: bash scripts/ci-cache-dir.sh >> "$GITHUB_ENV"
 
       - name: make lint-gates
         if: ${{ !cancelled() && steps.probe.outputs.has_target == 'true' && env.TOOLCHAIN_IMAGE != '' }}
@@ -1411,11 +1467,23 @@ jobs:
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make lint-gates GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && steps.probe.outputs.has_target == 'true' && env.CI_PUBLISH == 'true' }}
+        if: ${{ !cancelled() && steps.probe.outputs.has_target == 'true' && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
           key: go-lint-gates-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+
+      # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
+      # remove any cache an older run left there. Its files belong to the
+      # stages' uid, so the helper deletes them as root in the toolchain
+      # image; a failure is a ::warning::, never a failed job.
+      - name: Remove the temp Go caches
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   image:
     name: Devcontainer image [build]
@@ -1542,6 +1610,7 @@ jobs:
           echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -1551,7 +1620,7 @@ jobs:
             go-image-
 
       - name: Point the stages at the Go caches
-        run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
+        run: bash scripts/ci-cache-dir.sh >> "$GITHUB_ENV"
 
       # v1.9.2: a tag that selects no code is a typo that silently analyses
       # nothing.
@@ -1577,15 +1646,27 @@ jobs:
       # gosec runs in the lint job on every event.
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
+        if: ${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
           key: go-image-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
 
+      # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
+      # remove any cache an older run left there. Its files belong to the
+      # stages' uid, so the helper deletes them as root in the toolchain
+      # image; a failure is a ::warning::, never a failed job.
+      - name: Remove the temp Go caches
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
+
       - name: Tear down
         if: always()
         run: rm -f it-image.tar
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   # CUSTOMIZE (go-qrdb, ruling 211, DS-7377): `make coverage` is ONE
   # repo-wide gate, measured in legs. Each leg is
@@ -1690,6 +1771,7 @@ jobs:
           echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -1699,7 +1781,7 @@ jobs:
             go-coverage-${{ matrix.leg }}-
 
       - name: Point the stages at the Go caches
-        run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
+        run: bash scripts/ci-cache-dir.sh >> "$GITHUB_ENV"
 
       # GOTEST_TIMEOUT is go test's per-package budget, the job's limit less 5
       # minutes, so a hung package reports its goroutines before the runner
@@ -1721,11 +1803,23 @@ jobs:
           if-no-files-found: error
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
+        if: ${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
           key: go-coverage-${{ matrix.leg }}-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+
+      # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
+      # remove any cache an older run left there. Its files belong to the
+      # stages' uid, so the helper deletes them as root in the toolchain
+      # image; a failure is a ::warning::, never a failed job.
+      - name: Remove the temp Go caches
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   # CUSTOMIZE (go-qrdb, DS-7377): the one coverage gate over every leg's
   # profile. It needs coverage, so a failed leg skips it and CI Gate fails on
@@ -2053,6 +2147,7 @@ jobs:
           echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -2062,18 +2157,30 @@ jobs:
             go-test-tags-
 
       - name: Point the stages at the Go caches
-        run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
+        run: bash scripts/ci-cache-dir.sh >> "$GITHUB_ENV"
 
       - name: make test-tags
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-tags GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
+        if: ${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
           key: go-test-tags-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+
+      # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
+      # remove any cache an older run left there. Its files belong to the
+      # stages' uid, so the helper deletes them as root in the toolchain
+      # image; a failure is a ::warning::, never a failed job.
+      - name: Remove the temp Go caches
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   # CUSTOMIZE (go-qrdb, DS-7377): `make test-sdk` in legs, the Makefile's
   # TEST_SDK_LEGS, each `make test-sdk-leg SDK_LEG=<leg>`; together they are
@@ -2163,6 +2270,7 @@ jobs:
           echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -2172,7 +2280,7 @@ jobs:
             go-test-sdk-${{ matrix.leg }}-
 
       - name: Point the stages at the Go caches
-        run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
+        run: bash scripts/ci-cache-dir.sh >> "$GITHUB_ENV"
 
       - name: make test-sdk-leg ${{ matrix.leg }}
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
@@ -2181,11 +2289,23 @@ jobs:
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-sdk-leg SDK_LEG='$SDK_LEG' GOTEST_TIMEOUT=145m GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
+        if: ${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
           key: go-test-sdk-${{ matrix.leg }}-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+
+      # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
+      # remove any cache an older run left there. Its files belong to the
+      # stages' uid, so the helper deletes them as root in the toolchain
+      # image; a failure is a ::warning::, never a failed job.
+      - name: Remove the temp Go caches
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   # CUSTOMIZE (go-qrdb, #674): the self-spawned integration suites, one
   # feature list per shard; `make -s print-integration-features` is every
@@ -2297,6 +2417,10 @@ jobs:
       - name: Tear down (shard ${{ matrix.shard }})
         if: always()
         run: make docker-down-it IT_PROJECT="$IT_PROJECT"
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   # CUSTOMIZE (go-qrdb): the multi-protocol CLI suites against two real qrdbd
   # servers in the Docker stack under test/integration/api, which builds its
@@ -2410,6 +2534,8 @@ jobs:
     env:
       CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
       FIPS_ENV: GOFIPS140=latest GODEBUG=fips140=only
+      # No cache, as the comment above says: the legs mount no Go cache.
+      CI_CACHE: 'off'
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -2544,6 +2670,10 @@ jobs:
           else
             echo "(no completed top-level tests parsed)"
           fi
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   # CUSTOMIZE (go-qrdb): the TypeScript SDK and the desktop frontend, which
   # rotted unseen while they had no CI. `make test-typescript` runs the SDK's
@@ -2703,6 +2833,10 @@ jobs:
           if [ -s "$RUNNER_TEMP/soak-project" ]; then read -r p < "$RUNNER_TEMP/soak-project"; fi
           make docker-down-it IT_PROJECT="$p"
           rm -f "$RUNNER_TEMP/soak-project"
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   # #1619 (rulings 819, 841): the cluster proof itself, nightly. The per-PR
   # test-clusterproof job tests only the harness; this job builds the release
