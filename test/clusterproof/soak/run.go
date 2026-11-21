@@ -17,12 +17,13 @@
 package soak
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"sync"
@@ -210,7 +211,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	run.Stats = WorkloadStats{OK: stats.OK, Fail: stats.Fail, Indeterminate: stats.Indeterminate, DialFailures: stats.DialFailures}
 	run.Ended = time.Now().UTC().Format(time.RFC3339Nano)
 
-	return o.writeBundle(bw, rec.History(), events.snapshot(), run, infos)
+	return o.writeBundle(bw, rec.Take(), events.snapshot(), run, infos)
 }
 
 // writeBundle writes the evidence, decodes it again, derives the verdict from
@@ -219,10 +220,12 @@ func Run(ctx context.Context, o Options) (Result, error) {
 // bundle reproduce the verdict exactly.
 func (o *Options) writeBundle(bw *bundleWriter, h history.History, events []EventRecord, run RunRecord, infos []NodeInfo) (Result, error) {
 	res := Result{Bundle: o.Bundle}
-	historyData, err := encodeHistory(h)
-	if err != nil {
-		return res, &BundleError{Path: o.Bundle, Reason: "cannot encode " + fileHistory, Err: err}
+	if err := bw.writeStream(fileHistory, func(w io.Writer) error { return history.Encode(w, h) }); err != nil {
+		return res, err
 	}
+	// The written member is the evidence from here on: drop the recorded
+	// copy, so the decoded one is the only history this run still holds.
+	h = nil
 	eventData, err := encodeLines(events)
 	if err != nil {
 		return res, &BundleError{Path: o.Bundle, Reason: "cannot encode " + fileNemesis, Err: err}
@@ -234,7 +237,7 @@ func (o *Options) writeBundle(bw *bundleWriter, h history.History, events []Even
 	files := []struct {
 		rel  string
 		data []byte
-	}{{fileHistory, historyData}, {fileNemesis, eventData}, {fileRun, runData}}
+	}{{fileNemesis, eventData}, {fileRun, runData}}
 	for _, info := range infos {
 		data, err := encodeJSON(info)
 		if err != nil {
@@ -251,7 +254,13 @@ func (o *Options) writeBundle(bw *bundleWriter, h history.History, events []Even
 		}
 	}
 
-	ev, err := decodeEvidence(o.Bundle, historyData, eventData, runData)
+	hp := filepath.Join(bw.dir, filepath.FromSlash(fileHistory))
+	hf, err := os.Open(hp)
+	if err != nil {
+		return res, &BundleError{Path: o.Bundle, Reason: "cannot read " + fileHistory, Err: err}
+	}
+	ev, err := decodeEvidence(o.Bundle, hf, eventData, runData)
+	_ = hf.Close()
 	if err != nil {
 		return res, err
 	}
@@ -260,10 +269,13 @@ func (o *Options) writeBundle(bw *bundleWriter, h history.History, events []Even
 	if err != nil {
 		return res, &BundleError{Path: o.Bundle, Reason: "cannot derive the verdict", Err: err}
 	}
+	if err := bw.writeStream(fileTimeline, func(w io.Writer) error { return encodeTimeline(w, d.timeline) }); err != nil {
+		return res, err
+	}
 	for _, f := range []struct {
 		rel  string
 		data []byte
-	}{{fileTimeline, d.timeline}, {fileTimings, d.timings}, {fileVerdict, d.verdict}} {
+	}{{fileTimings, d.timings}, {fileVerdict, d.verdict}} {
 		if err := bw.write(f.rel, f.data); err != nil {
 			return res, err
 		}
@@ -278,9 +290,9 @@ func (o *Options) writeBundle(bw *bundleWriter, h history.History, events []Even
 
 // decodeEvidence reads the recorded evidence back from its bytes, as a check
 // does.
-func decodeEvidence(dir string, historyData, eventData, runData []byte) (evidence, error) {
+func decodeEvidence(dir string, historyR io.Reader, eventData, runData []byte) (evidence, error) {
 	var ev evidence
-	h, err := history.Decode(bytes.NewReader(historyData))
+	h, err := history.Decode(historyR)
 	if err != nil {
 		return ev, &BundleError{Path: dir, Reason: "malformed " + fileHistory, Err: err}
 	}
