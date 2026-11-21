@@ -16,7 +16,7 @@
 -->
 <script lang="ts">
   import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, HolderRole, ClusterSeal, ClusterMigration, CeremonyStatusResponse } from "@qrdb/sdk";
-  import { TransportError } from "@qrdb/sdk";
+  import { isClusterHeldError } from "../../lib/clusterHeld.ts";
   import { onMount } from "svelte";
   import { AlertTriangle, Info, RefreshCw, Lock, UserPlus, CheckCircle, Clock, AlertCircle, Copy, Download } from "lucide-svelte";
   import { sealStore, updateSealStatus, updateOfficers, setOfficersLoading } from "$stores/seal.svelte.ts";
@@ -25,9 +25,15 @@
   import HolderRekeyPanel from "../../components/HolderRekeyPanel.svelte";
   import HolderEnrolmentForms from "../../components/wizard/HolderEnrolmentForms.svelte";
 
-  let { client, onReconfigure }: {
+  let { client, onReconfigure, onClusterReleased }: {
     client: Client;
     onReconfigure?: () => void;
+    /**
+     * Called once a cleared cluster seal lets this node serve again. App
+     * passes it when it mounts this view alone for a node held at startup,
+     * so the full app shell loads once the hold is gone.
+     */
+    onClusterReleased?: () => void;
   } = $props();
 
   let passphraseInput: string = $state("");
@@ -42,17 +48,6 @@
   // True while this node answers status with 503 SEALED: unsealed, but held
   // by a cluster seal (or cut off from the seal records).
   let clusterHeld: boolean = $state(false);
-
-  /** Status refused with 503 SEALED: the gate is closed on an unsealed barrier. */
-  function isClusterHeldError(err: unknown): boolean {
-    // The SDK reduces the server's {"error":"barrier sealed","code":"SEALED"}
-    // body to its error text, so the refusal reads "...: barrier sealed".
-    return (
-      err instanceof TransportError &&
-      err.statusCode === 503 &&
-      (err.message.endsWith(": barrier sealed") || err.message.includes('"code":"SEALED"'))
-    );
-  }
 
   // Change passphrase form state (passphrase-held barriers).
   let cpCurrent: string = $state("");
@@ -334,6 +329,7 @@
       clusterSeal = await client.seal.clusterUnseal();
       showToast("success", "Cluster seal cleared");
       await fetchSealStatus();
+      if (!clusterHeld) onClusterReleased?.();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to clear the cluster seal";
       showToast("error", msg);

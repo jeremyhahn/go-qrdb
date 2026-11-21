@@ -74,6 +74,15 @@ export interface WebMockState {
    * single-node topology: Cluster nav shown, single-node wizard steps.
    */
   topology?: WebMockTopology;
+  /**
+   * A cluster seal holds the node: its barrier is unsealed, but GET
+   * /v1/barrier/status is refused with 503 {"error":"barrier sealed",
+   * "code":"SEALED"}, as the daemon's gate answers. "always" holds it from
+   * the first request; "after-unseal" holds it once POST /v1/barrier/unseal
+   * opened the node barrier (sealStatus is served until then). POST
+   * /v1/barrier/cluster-unseal releases the hold.
+   */
+  clusterHeld?: "always" | "after-unseal";
 }
 
 /** A single-node (standalone) topology. */
@@ -149,14 +158,48 @@ export async function injectWebRestMock(
     });
   });
 
+  // Per-page barrier state: the fixture's state object is shared, so the
+  // unseal and cluster-unseal transitions live here.
+  let sealed = state.sealStatus.sealed;
+  let held = state.clusterHeld === "always";
+  let clusterEpoch = 0;
+
   // Intercept barrier status endpoint (used to probe seal state).
   await page.route("**/v1/barrier/status", (route) => {
+    if (held) {
+      void route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "barrier sealed", code: "SEALED" }),
+      });
+      return;
+    }
     void route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(state.sealStatus),
+      body: JSON.stringify({ ...state.sealStatus, sealed }),
     });
   });
+
+  if (state.clusterHeld !== undefined) {
+    // Passphrase unseal of the node barrier: 204, as the daemon answers.
+    await page.route("**/v1/barrier/unseal", (route) => {
+      sealed = false;
+      if (state.clusterHeld === "after-unseal") held = true;
+      void route.fulfill({ status: 204, body: "" });
+    });
+
+    // Authenticated cluster unseal: clears the record and releases the hold.
+    await page.route("**/v1/barrier/cluster-unseal", (route) => {
+      held = false;
+      clusterEpoch += 1;
+      void route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ active: true, sealed: false, epoch: clusterEpoch, local: "serving" }),
+      });
+    });
+  }
 
   // Intercept database list endpoint.
   await page.route("**/v1/databases/list", (route) => {
