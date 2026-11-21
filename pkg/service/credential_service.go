@@ -104,7 +104,7 @@ func WithCredentialTenantBarriers(tenants CredentialTenantBarriers) CredentialSe
 // CredentialService implements CredentialServicer over one named-credential
 // store per tenant. The system tenant's store is the node-wide
 // credentials.CredentialService it was built with; every other tenant's store
-// is derived from that tenant's barrier (credentials.CredentialService.ForBarrier),
+// is derived from that tenant's barrier (credentials.CredentialService.ForTenant over the tenant barrier),
 // so it lives in the tenant's own data plane, encrypted under its barrier key.
 // Every verb resolves the store from the caller's tenant (tenant.FromContext),
 // which the authorization middleware binds to the authenticated identity.
@@ -160,7 +160,7 @@ func (s *CredentialService) store(ctx context.Context) (*credentials.CredentialS
 	if tb.IsSealed() {
 		return nil, &BarrierSealedError{TenantID: tenantID}
 	}
-	return s.creds.ForBarrier(tb.Barrier())
+	return s.creds.ForTenant(ctx, tb.Barrier(), tb.Barrier())
 }
 
 // CredentialWireValue copies a retrieved credential out of protected memory
