@@ -514,6 +514,22 @@ if [ "$rc" = 0 ] && [ "$(sed -n 1p "$D/state/tags/qrdb-toolchain_aaaaaaaaaaaaaaa
   [ ! -e "$D/state/tags/qrdb-ci-it_aaaaaaaaaaaaaaaa" ] && ! called '^rmi qrdb-'; then
   ok "prune removes an expired image by ID and keeps a content-hash tag moved after its inspect"
 else bad "prune removes an expired image by ID and keeps a content-hash tag moved after its inspect (rc=$rc, left: $(ls "$D/state/tags" | tr '\n' ' '))"; cat "$D/err"; fi
+# 12a7. Codex P1 (#1597, round 1): ci_registry_pull pulls by digest and tags
+# the content hash, leaving a digest-only registry reference the daemon lists
+# as <registry>/<repository>:<none>. That unchanged reference is no tag added
+# since the check, so the expired image goes (by ID, with --force: the daemon
+# refuses a plain removal while the repo digest also names it).
+reset
+mkdir -p "$D/state/created"
+tagimg qrdb-ci-it:aaaaaaaaaaaaaaab "$id_b"
+tagimg "registry.example:5000/go-qrdb/it-image:<none>" "$id_b"
+echo "$old" > "$D/state/created/${id_b#sha256:}"
+run prune 24
+left=""
+for f in "$D"/state/tags/*; do [ -f "$f" ] && [ "$(sed -n 1p "$f")" = "$id_b" ] && left+=" ${f##*/}"; done
+if [ "$rc" = 0 ] && [ ! -e "$D/state/ids/${id_b#sha256:}" ] && [ -z "$left" ] && ! grep -q 'was tagged' "$D/err"; then
+  ok "prune reclaims an expired CI image that also carries a digest-only reference"
+else bad "prune reclaims an expired CI image that also carries a digest-only reference (rc=$rc, left:$left)"; cat "$D/err"; fi
 # 12a4. Codex P1 (fx1597g): load leaves the archive's per-run tag beside the
 # content-hash tag, and a push can leave its run's pushed tag. Two tag
 # references make the daemon refuse a removal by ID, so prune untags the

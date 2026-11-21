@@ -381,9 +381,11 @@ producer_lock() {
 # tags it) in the last <hours> (default 24), skipping every image a running
 # container uses. It removes the image by the immutable ID it checked, never
 # by a tag: another job can move a shared content-hash tag to a fresh image
-# between the check and the removal, and that image must survive. There is
-# no --force, so the daemon refuses an image a container holds, and prune
-# leaves it. Run-unique tags (per-run, pushed) and all but one content-hash
+# between the check and the removal, and that image must survive. The
+# daemon refuses an image a container holds, and prune leaves it. A
+# digest-only reference (a pull by digest, listed as <repository>:<none>)
+# of a CI repository is no tag to untag and never counts as one added since
+# the check; it only makes the removal by ID need --force. Run-unique tags (per-run, pushed) and all but one content-hash
 # tag are untagged by name first, each checked to still name the image, so
 # a tag the daemon counts never keeps an expired image. An image that also
 # carries a tag of any other image family is not touched. All of it runs under
@@ -393,7 +395,7 @@ prune() {
 	[ $# -le 1 ] || die "usage: prune [hours]"
 	local hours=${1:-24} now cutoff running="" c id ref r t created tagged newest added
 	local -a hashed=() force=()
-	local -A refs=() foreign=()
+	local -A refs=() foreign=() digests=()
 	[[ $hours =~ ^[1-9][0-9]{0,3}$ ]] || die "prune bound '$hours' is not a whole number of hours (1-9999)"
 	# Exclusive, or nothing at all: a job acquiring or reusing an image
 	# holds the lock shared, and an image it reuses may be past the bound
@@ -421,7 +423,17 @@ prune() {
 	done < <(docker ps -q --no-trunc)
 	while read -r id ref; do
 		[[ $id =~ $id_re ]] || continue
-		case $ref in *:'<none>') continue ;; esac
+		# A digest-only reference (a pull by digest) is listed with the
+		# tag <none>: it is no tag to untag, but it counts as the
+		# repository's, and it names the ID for the daemon's removal.
+		case $ref in *:'<none>')
+			if ci_ref "$ref"; then
+				digests[$id]=1
+			else
+				foreign[$id]=1
+			fi
+			continue ;;
+		esac
 		if ci_ref "$ref"; then
 			refs[$id]+=" $ref"
 		else
@@ -470,6 +482,8 @@ prune() {
 		added=""
 		while read -r c r; do
 			[ "$c" = "$id" ] || continue
+			# As in the snapshot: a digest-only reference is no tag added.
+			case $r in *:'<none>') continue ;; esac
 			case " $ref " in *" $r "*) ;; *) added+=" $r" ;; esac
 		done < <(docker image ls --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}')
 		if [ -n "$added" ]; then
@@ -477,7 +491,9 @@ prune() {
 			continue
 		fi
 		force=()
-		[ "${#hashed[@]}" -le 1 ] || force=(--force)
+		# The daemon also refuses it while a repo digest of another
+		# repository names the image.
+		[ "${#hashed[@]}" -le 1 ] && [ -z "${digests[$id]:-}" ] || force=(--force)
 		if docker image rm "${force[@]}" "$id" >/dev/null 2>&1 || ! docker image inspect "$id" >/dev/null 2>&1; then
 			echo "==> prune: removed $ref ($id)" >&2
 		else
