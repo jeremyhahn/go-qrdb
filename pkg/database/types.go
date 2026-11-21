@@ -731,8 +731,12 @@ type DatabaseMeta struct {
 	// Dropping is false.
 	DropClaim string `json:"drop_claim,omitempty"`
 
-	// Provisional is true from the moment Manager.create writes the record
-	// until the caller's create guard accepts the database. A provisional
+	// Provisional is true for an API-created record from the moment
+	// Manager.create writes it until the caller's create guard accepts the
+	// database. A provisioned (shared) database created at node boot is
+	// written serving (Provisional false): there is no API create to guard,
+	// and a peer provisioning the same name, or this node's next run, must
+	// find it serving. A provisional
 	// record serves nothing: no node opens it (Manager.Open, GetOwned,
 	// OpenAll) and RecordedIdentity does not resolve it, so no request can
 	// write to a database the guard may still refuse. A refused create
