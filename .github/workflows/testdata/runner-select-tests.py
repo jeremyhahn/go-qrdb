@@ -1,298 +1,274 @@
 #!/usr/bin/env python3
-"""Behavioural tests for ci.yml's step "Hosted or overflow runner (ruling 1024)".
+"""runner-select-tests.py -- runs ci.yml's preflight step `Hosted or overflow
+runner (ruling 1024)` (ci-template v1.48, Tenant Agent ruling 1024 item 1,
+queue 250 (a)) against a fake Actions API and asserts the runs-on JSON it
+outputs.
 
-Run: python3 -I .github/workflows/testdata/runner-select-tests.py (the
-preflight step "Runner select tests (go-qrdb #1671)" runs it). It reads the
-step's run: block out of ../ci.yml, runs it with bash as the runner does
-(bash -eo pipefail), with a stub curl first on PATH that answers from a fixture
-of Actions API replies and logs every URL it is asked for, and checks the
-runner / runner_docker outputs, the ::warning / ::notice lines and the calls
-made. jq must be installed (it is on GitHub-hosted runners).
+The code under test is read out of ci.yml, not copied: the `run: |` block of
+the step named `Hosted or overflow runner (ruling 1024)`, found exactly once
+or the test stops with FATAL (exit 9). It runs under `bash --noprofile
+--norc -eo pipefail`, as the runner runs a step, with a fake `curl` first on
+PATH that answers from canned replies; nothing reaches the network. The fake
+also fails a case whose curl command line carries the token.
 
-Cases (Codex round 1 on #1671): off github.com and a fork's or deleted head's
-pull request (no API call even when the pool is full), the in-progress limit
-and the queued grace, pagination and short listings (v1.50: a lower bound),
-and a reply that is not 200, lacks total_count or its list, or a threshold
-that is not a whole number (the hosted default with a ::warning).
+  A. The default: below HOSTED_JOBS_PER_REPO and no hosted job waiting gives
+     "ubuntu-latest" for both classes; self-hosted jobs, completed jobs, a
+     queued job of this run, and a queued job younger than the grace do not
+     count.
+  B. Overflow: HOSTED_JOBS_PER_REPO hosted jobs in progress, or a hosted job
+     of another run queued for the grace or longer, gives the bigdisk and
+     bigdisk-docker label lists, with a ::notice.
+  C. No silent pick: a reply that is not 200, a reply with no total_count, a
+     list short of its total that reaches no trigger (v1.50), or a threshold
+     that is not a number gives the hosted default with a ::warning naming why.
+     A short list is a lower bound: one that reaches a trigger overflows (B7).
+  D. Off github.com: no call, the default output, the forge labels kept.
+  E. ci-template v1.52 (Tenant Agent order): a pull request whose head
+     repository is not this repository (a fork, or one since deleted) gets the
+     hosted default with a ::notice and no call, even when the hosted pool is
+     full; a same-repository pull request and a push still overflow, and off
+     github.com a fork keeps the forge labels as before.
+
+Run: python3 -I software/templates/github-actions/testdata/runner-select-tests.py
 """
-
-import datetime
 import json
 import os
-import stat
+import pathlib
+import re
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+import time
 
-HERE = Path(__file__).resolve().parent
-CI = HERE.parent / "ci.yml"
+HERE = pathlib.Path(__file__).resolve().parent
+WORKFLOW = HERE.parent / "ci.yml"
 STEP = "      - name: Hosted or overflow runner (ruling 1024)\n"
-
+TOKEN = "<fake-token-0123456789>"
+FAILS = 0
 HOSTED = '"ubuntu-latest"'
 OVER = '["self-hosted","linux","x64","bigdisk"]'
-OVER_DOCKER = '["self-hosted","linux","x64","bigdisk-docker"]'
-REPO = "example-org/example-repo"
-API = f"https://api.github.com/repos/{REPO}/actions"
-RUN_ID = 1000
-TOKEN = "job-token-for-tests"
-
-FAILURES = []
+OVER_D = '["self-hosted","linux","x64","bigdisk-docker"]'
 
 
-def step_script():
-    text = CI.read_text()
+def fatal(msg):
+    print(f"FATAL: {msg}")
+    sys.exit(9)
+
+
+def script():
+    text = WORKFLOW.read_text()
     if text.count(STEP) != 1:
-        sys.exit(f"FAIL ci.yml has {text.count(STEP)} {STEP.strip()!r} steps, want one")
-    rest = text.split(STEP, 1)[1].splitlines()
-    i = rest.index("        run: |")
-    out = []
-    for line in rest[i + 1:]:
-        if line and not line.startswith("          "):
+        fatal("the step `Hosted or overflow runner (ruling 1024)` is not in ci.yml exactly once")
+    rest = text.split(STEP, 1)[1].split("\n")
+    out, inside = [], False
+    for line in rest:
+        if not inside:
+            if line == "        run: |":
+                inside = True
+            elif line.startswith("      - "):
+                break
+            continue
+        if line.strip() and not line.startswith(" " * 10):
             break
         out.append(line[10:])
+    if not out:
+        fatal("the step's run block is not found")
     return "\n".join(out) + "\n"
 
 
-SCRIPT = step_script()
+SCRIPT = script()
 
-STUB = """#!{py} -I
+FAKE_CURL = r'''#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
-with open(os.environ["FAKE_CALLS"], "a") as f:
-    f.write(json.dumps(args) + "\\n")
+if any(os.environ["FAKE_TOKEN"] in a for a in args):
+    print("token on the curl command line", file=sys.stderr)
+    sys.exit(97)
 out = args[args.index("-o") + 1]
 url = args[-1]
-replies = json.load(open(os.environ["FAKE_API"]))
-r = replies.get(url, {{"code": 404, "body": {{"message": "Not Found"}}}})
-if r.get("exit"):
-    sys.exit(r["exit"])
+with open(os.environ["FAKE_LOG"], "a") as f:
+    f.write(url + "\n")
+for key, code, body in json.load(open(os.environ["FAKE_RESP"])):
+    if key in url:
+        with open(out, "w") as f:
+            f.write(body)
+        sys.stdout.write(str(code))
+        sys.exit(0)
 with open(out, "w") as f:
-    f.write(r["body"] if isinstance(r["body"], str) else json.dumps(r["body"]))
-sys.stdout.write(str(r["code"]))
-"""
+    f.write('{"message":"Not Found"}')
+sys.stdout.write("404")
+'''
 
 
 def iso(age):
-    t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=age)
-    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - age))
 
 
-def job(run_id, status, labels=("ubuntu-latest",), age=0):
-    return {"run_id": run_id, "status": status, "labels": list(labels), "created_at": iso(age)}
+def jobj(run, status, labels, age=5):
+    return {"run_id": run, "status": status, "labels": labels, "created_at": iso(age), "started_at": iso(age)}
 
 
-def listing(base, key, items, total=None, per=100):
-    """Replies for every page of a listing of items under key."""
-    total = len(items) if total is None else total
-    replies = {}
-    pages = max(1, -(-len(items) // per))
-    for p in range(1, pages + 1):
-        chunk = items[(p - 1) * per:p * per]
-        replies[f"{base}&per_page=100&page={p}"] = {
-            "code": 200,
-            "body": {"total_count": total, key: chunk},
-        }
-    if len(items) < total:
-        # The API's listing lags total_count: the next page comes back empty.
-        replies[f"{base}&per_page=100&page={pages + 1}"] = {
-            "code": 200,
-            "body": {"total_count": total, key: []},
-        }
-    return replies
+def runs(*ids, total=None):
+    return json.dumps({"total_count": len(ids) if total is None else total, "workflow_runs": [{"id": i} for i in ids]})
 
 
-def api(runs=None, jobs=None, run_totals=None, job_totals=None):
-    """Fixture: runs {status: [ids]}, jobs {run id: [job]}."""
-    runs = runs or {}
-    jobs = jobs or {}
-    run_totals = run_totals or {}
-    job_totals = job_totals or {}
-    replies = {}
-    for st in ("queued", "in_progress"):
-        ids = runs.get(st, [])
-        replies.update(
-            listing(f"{API}/runs?status={st}", "workflow_runs", [{"id": i} for i in ids], run_totals.get(st))
-        )
-    for st_ids in runs.values():
-        for i in st_ids:
-            replies.update(
-                listing(f"{API}/runs/{i}/jobs?filter=latest", "jobs", jobs.get(i, []), job_totals.get(i))
-            )
-    return replies
+def jobs(*js, total=None):
+    return json.dumps({"total_count": len(js) if total is None else total, "jobs": list(js)})
 
 
-def full_pool():
-    """A fixture whose in-progress hosted jobs reach any limit up to 20."""
-    return api(
-        runs={"in_progress": [7]},
-        jobs={7: [job(7, "in_progress") for _ in range(20)]},
-    )
-
-
-def run(replies, event="push", head=REPO, server="https://github.com", limit="5", grace="120"):
+def run(resp, server="https://github.com", limit="12", grace="60", event="push", head=""):
     with tempfile.TemporaryDirectory() as d:
-        d = Path(d)
-        bindir = d / "bin"
-        bindir.mkdir()
-        stub = bindir / "curl"
-        stub.write_text(STUB.format(py=sys.executable))
-        stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-        (d / "api.json").write_text(json.dumps(replies))
+        d = pathlib.Path(d)
+        (d / "bin").mkdir()
+        curl = d / "bin" / "curl"
+        curl.write_text(FAKE_CURL)
+        curl.chmod(0o755)
+        (d / "resp.json").write_text(json.dumps(resp))
+        (d / "out").write_text("")
+        (d / "log").write_text("")
         (d / "tmp").mkdir()
-        out = d / "output"
-        out.write_text("")
-        calls = d / "calls"
-        calls.write_text("")
-        script = d / "step.sh"
-        script.write_text(SCRIPT)
+        (d / "step.sh").write_text(SCRIPT)
         env = {
-            "PATH": f"{bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
-            "FAKE_API": str(d / "api.json"),
-            "FAKE_CALLS": str(calls),
-            "GITHUB_OUTPUT": str(out),
-            "RUNNER_TEMP": str(d / "tmp"),
-            "SERVER": server,
-            "EVENT": event,
-            "HEAD_REPO": head,
-            "REPO": REPO,
-            "API": API,
-            "RUN_ID": str(RUN_ID),
-            "JOB_TOKEN": TOKEN,
-            "LIMIT": limit,
-            "GRACE": grace,
+            "PATH": f"{d / 'bin'}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+            "FAKE_RESP": str(d / "resp.json"), "FAKE_LOG": str(d / "log"), "FAKE_TOKEN": TOKEN,
+            "GITHUB_OUTPUT": str(d / "out"), "RUNNER_TEMP": str(d / "tmp"),
+            "SERVER": server, "API": "https://api.github.com/repos/o/r/actions", "RUN_ID": "100",
+            "JOB_TOKEN": TOKEN, "LIMIT": limit, "GRACE": grace,
+            "EVENT": event, "HEAD_REPO": head, "REPO": "o/r",
         }
-        res = subprocess.run(
-            ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
-            env=env, capture_output=True, text=True, check=False,
-        )
-        outputs = dict(l.split("=", 1) for l in out.read_text().splitlines() if "=" in l)
-        argvs = [json.loads(l) for l in calls.read_text().splitlines() if l]
-        return res, outputs, argvs
+        p = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", str(d / "step.sh")],
+                           env=env, capture_output=True, text=True, timeout=60)
+        outs = dict(l.split("=", 1) for l in (d / "out").read_text().splitlines() if "=" in l)
+        return p.returncode, p.stdout + p.stderr, outs, (d / "log").read_text().splitlines()
 
 
-def case(name, replies, want, kind=None, why=None, calls=None, **kw):
-    """want: "hosted" or "overflow"; kind: "warning"/"notice"/None, the
-    annotation the step must print (None: neither); why: text it must hold;
-    calls: True (some call), False (none) or None (either)."""
-    res, outputs, argvs = run(replies, **kw)
-    errs = []
-    if res.returncode != 0:
-        errs.append(f"exit {res.returncode}: {res.stderr.strip()[-300:]}")
-    exp = (HOSTED, HOSTED) if want == "hosted" else (OVER, OVER_DOCKER)
-    got = (outputs.get("runner"), outputs.get("runner_docker"))
-    if got != exp:
-        errs.append(f"outputs {got}, want {exp}")
-    warn = [l for l in res.stdout.splitlines() if l.startswith("::warning::")]
-    note = [l for l in res.stdout.splitlines() if l.startswith("::notice::")]
-    if kind == "warning" and not warn:
-        errs.append("no ::warning")
-    if kind != "warning" and warn:
-        errs.append(f"unexpected {warn[0][:160]!r}")
-    if kind == "notice" and not note:
-        errs.append("no ::notice")
-    if kind != "notice" and note:
-        errs.append(f"unexpected {note[0][:160]!r}")
-    if why and why not in res.stdout:
-        errs.append(f"output lacks {why!r}")
-    if calls is True and not argvs:
-        errs.append("made no API call")
-    if calls is False and argvs:
-        errs.append(f"made {len(argvs)} API call(s), want none")
-    if any(TOKEN in a for argv in argvs for a in argv):
-        errs.append("the job token reached curl's argv")
-    if errs:
-        FAILURES.append(f"{name}: " + "; ".join(errs))
+def case(label, resp, runner, docker, want=(), not_want=(), calls=None, **kw):
+    global FAILS
+    rc, out, outs, log = run(resp, **kw)
+    ok = (rc == 0 and outs.get("runner") == runner and outs.get("runner_docker") == docker
+          and all(w in out for w in want) and not any(w in out for w in not_want)
+          and (calls is None or len(log) == calls) and TOKEN not in out)
+    print(f"{'PASS' if ok else 'FAIL'}: {label}")
+    if not ok:
+        FAILS += 1
+        print(f"  exit {rc}; outputs {outs}; wanted runner={runner} runner_docker={docker}; calls {len(log)}")
+        print("  " + out.replace("\n", "\n  "))
 
 
-# R1: off github.com no call is made, each job keeps its forge label.
-case("R1 off github.com", full_pool(), "hosted", calls=False, server="https://forge.lan", why="not github.com")
-
-# R2: a fork's pull request, and a pull request whose head repository was
-# deleted (head.repo is null, so the name is empty): no call, hosted, notice,
-# even when the pool is full.
-case("R2 fork pull_request", full_pool(), "hosted", kind="notice", calls=False,
-     event="pull_request", head="someone/fork", why="a fork")
-case("R2b fork pull_request_target", full_pool(), "hosted", kind="notice", calls=False,
-     event="pull_request_target", head="someone/fork")
-case("R2c deleted head", full_pool(), "hosted", kind="notice", calls=False,
-     event="pull_request", head="")
-case("R2d own-repository pull request counts", full_pool(), "overflow", kind="notice", calls=True,
-     event="pull_request", head=REPO)
-# A push carries no head repository: it is not a fork.
-case("R2e push with no head", full_pool(), "overflow", kind="notice", calls=True, head="")
-
-# R3: the in-progress limit.
-def in_progress(n, labels=("ubuntu-latest",)):
-    return api(runs={"in_progress": [7]}, jobs={7: [job(7, "in_progress", labels) for _ in range(n)]})
+U = ["ubuntu-latest"]
+SH = ["self-hosted", "linux", "x64", "bigdisk-docker"]
 
 
-case("R3 below the limit", in_progress(4), "hosted", calls=True)
-case("R3b at the limit", in_progress(5), "overflow", kind="notice", why="5 hosted jobs in progress")
-case("R3c self-hosted jobs not counted", in_progress(9, ("self-hosted", "linux", "x64", "bigdisk")), "hosted")
-case("R3d ubuntu label beside self-hosted not counted", in_progress(9, ("self-hosted", "ubuntu-latest")), "hosted")
-case("R3e queued jobs not counted as running", api(
-    runs={"in_progress": [7]}, jobs={7: [job(7, "queued", age=0) for _ in range(9)]}), "hosted")
+def api(queued, in_progress, per_run):
+    r = [["runs?status=queued", 200, queued], ["runs?status=in_progress", 200, in_progress]]
+    return r + [[f"runs/{i}/jobs", 200, body] for i, body in per_run.items()]
 
-# R4: queued hosted jobs of another run, against the grace.
-case("R4 queued past grace", api(runs={"queued": [8]}, jobs={8: [job(8, "queued", age=600)]}),
-     "overflow", kind="notice", why="queued 120s or more")
-case("R4b queued within grace", api(runs={"queued": [8]}, jobs={8: [job(8, "queued", age=10)]}), "hosted")
-case("R4c this run's queued job", api(runs={"queued": [RUN_ID]}, jobs={RUN_ID: [job(RUN_ID, "queued", age=600)]}),
-     "hosted")
-case("R4d grace 0", api(runs={"queued": [8]}, jobs={8: [job(8, "queued", age=0)]}), "overflow",
-     kind="notice", grace="0")
 
-# R5: pagination: 150 runs over two pages and a run with 120 jobs.
-many = list(range(2000, 2150))
-replies = api(runs={"in_progress": many}, jobs={2149: [job(2149, "in_progress") for _ in range(120)]})
-case("R5 runs and jobs over two pages", replies, "overflow", kind="notice")
-case("R5b every page read", replies, "overflow", kind="notice", limit="120")
-case("R5c pages below the limit", replies, "hosted", limit="121")
-# R5d: more than ten pages of runs is refused.
-case("R5d over 1000 runs", api(runs={"in_progress": list(range(3000, 4001))}), "hosted",
-     kind="warning", why="more than 1000 entries")
+# A. the default
+case("A1 nothing in flight but this run: hosted",
+     api(runs(), runs(100), {100: jobs(jobj(100, "in_progress", U))}), HOSTED, HOSTED,
+     ["1 hosted job(s) in progress"], ["::warning::", "::notice::"])
+case("A2 eleven hosted jobs in progress: hosted",
+     api(runs(), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)),
+                                  101: jobs(*[jobj(101, "in_progress", ["ubuntu-24.04"]) for _ in range(10)])}),
+     HOSTED, HOSTED, ["11 hosted job(s) in progress"])
+case("A3 self-hosted and completed jobs do not count",
+     api(runs(), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)),
+                                  101: jobs(*[jobj(101, "in_progress", SH) for _ in range(20)],
+                                            *[jobj(101, "completed", U) for _ in range(20)],
+                                            jobj(101, "in_progress", ["self-hosted", "ubuntu-latest"]))}),
+     HOSTED, HOSTED, ["1 hosted job(s) in progress"])
+case("A4 a queued job of this run does not count",
+     api(runs(), runs(100), {100: jobs(jobj(100, "in_progress", U), jobj(100, "queued", U, age=600))}),
+     HOSTED, HOSTED, ["0 hosted job(s) of other runs queued"])
+case("A5 a queued hosted job younger than the grace does not count",
+     api(runs(102), runs(100), {100: jobs(jobj(100, "in_progress", U)), 102: jobs(jobj(102, "queued", U, age=5))}),
+     HOSTED, HOSTED, ["0 hosted job(s) of other runs queued"])
+case("A6 a self-hosted job queued long does not count",
+     api(runs(102), runs(100), {100: jobs(jobj(100, "in_progress", U)), 102: jobs(jobj(102, "queued", SH, age=900))}),
+     HOSTED, HOSTED)
 
-# R6 (v1.50, B7): a listing short of its total_count is a lower bound.
-case("R6 short run list, no trigger", api(runs={"in_progress": [7]}, jobs={7: [job(7, "in_progress")]},
-     run_totals={"in_progress": 3}), "hosted", kind="warning", why="1 of 3 entries")
-case("R6b short job list, no trigger", api(runs={"in_progress": [7]}, jobs={7: [job(7, "in_progress")]},
-     job_totals={7: 4}), "hosted", kind="warning", why="fewer entries than its total")
-case("R6c short list, limit reached", api(runs={"in_progress": [7]}, jobs={7: [job(7, "in_progress") for _ in range(5)]},
-     run_totals={"in_progress": 9}), "overflow", kind="notice", why="a lower bound")
+# B. overflow
+case("B1 twelve hosted jobs in progress: overflow",
+     api(runs(), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)),
+                                  101: jobs(*[jobj(101, "in_progress", U) for _ in range(11)])}),
+     OVER, OVER_D, ["::notice::", "12 hosted jobs in progress", "HOSTED_JOBS_PER_REPO=12"])
+case("B2 a hosted job of another run queued past the grace: overflow",
+     api(runs(102), runs(100), {100: jobs(jobj(100, "in_progress", U)), 102: jobs(jobj(102, "queued", U, age=120))}),
+     OVER, OVER_D, ["::notice::", "the hosted pool is full"])
+case("B3 a queued job inside an in-progress run counts",
+     api(runs(), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)),
+                                  101: jobs(jobj(101, "in_progress", U), jobj(101, "queued", U, age=300))}),
+     OVER, OVER_D, ["the hosted pool is full"])
+case("B4 the threshold is HOSTED_JOBS_PER_REPO",
+     api(runs(), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)), 101: jobs(jobj(101, "in_progress", U))}),
+     OVER, OVER_D, ["HOSTED_JOBS_PER_REPO=2"], limit="2")
+case("B5 a run listed as queued and as in progress is counted once",
+     api(runs(101), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)),
+                                     101: jobs(*[jobj(101, "in_progress", U) for _ in range(6)])}),
+     HOSTED, HOSTED, ["7 hosted job(s) in progress"])
+case("B6 a second page is read",
+     [["runs?status=queued", 200, runs()],
+      ["runs?status=in_progress&per_page=100&page=1", 200, runs(100, total=2)],
+      ["runs?status=in_progress&per_page=100&page=2", 200, runs(101, total=2)],
+      ["runs/100/jobs", 200, jobs(jobj(100, "in_progress", U))],
+      ["runs/101/jobs", 200, jobs(*[jobj(101, "in_progress", U) for _ in range(11)])]],
+     OVER, OVER_D, ["12 hosted jobs in progress"])
+case("B7 a queued list short of its total still overflows on what it read (v1.50)",
+     [["runs?status=queued&per_page=100&page=1", 200, runs(102, total=3)],
+      ["runs?status=queued&per_page=100&page=2", 200, runs(total=3)],
+      ["runs?status=in_progress", 200, runs(100)],
+      ["runs/100/jobs", 200, jobs(jobj(100, "in_progress", U))],
+      ["runs/102/jobs", 200, jobs(jobj(102, "queued", U, age=600))]],
+     OVER, OVER_D, ["::notice::", "the hosted pool is full", "a lower bound", "1 of 3 entries"], ["::warning::"])
 
-# R7: a count that cannot be read gives the hosted default with a warning.
-bad = full_pool()
-bad[f"{API}/runs?status=queued&per_page=100&page=1"] = {"code": 403, "body": {"message": "Forbidden"}}
-case("R7 non-200 run list", bad, "hosted", kind="warning", why="403")
-bad = full_pool()
-bad[f"{API}/runs/7/jobs?filter=latest&per_page=100&page=1"] = {"code": 500, "body": "oops"}
-case("R7b non-200 job list", bad, "hosted", kind="warning", why="500")
-bad = full_pool()
-bad[f"{API}/runs?status=in_progress&per_page=100&page=1"] = {"code": 200, "body": {"workflow_runs": [{"id": 7}]}}
-case("R7c missing total_count", bad, "hosted", kind="warning", why="no total_count")
-bad = full_pool()
-bad[f"{API}/runs?status=in_progress&per_page=100&page=1"] = {"code": 200, "body": {"total_count": "1", "workflow_runs": [{"id": 7}]}}
-case("R7d string total_count", bad, "hosted", kind="warning", why="no total_count")
-bad = full_pool()
-bad[f"{API}/runs/7/jobs?filter=latest&per_page=100&page=1"] = {"code": 200, "body": {"total_count": 1}}
-case("R7e missing jobs list", bad, "hosted", kind="warning", why="no jobs list")
-bad = full_pool()
-bad[f"{API}/runs?status=queued&per_page=100&page=1"] = {"exit": 7}
-case("R7f curl failure", bad, "hosted", kind="warning", why="curl exit")
-bad = full_pool()
-bad[f"{API}/runs/7/jobs?filter=latest&per_page=100&page=1"] = {"code": 200, "body": "not json"}
-case("R7g reply not JSON", bad, "hosted", kind="warning")
+# C. no silent pick
+case("C1 a 403 on the run list: hosted, with a warning naming why",
+     [["runs?status=queued", 403, '{"message":"Resource not accessible by integration"}']],
+     HOSTED, HOSTED, ["::warning::runner selection: the Actions API gave no complete run list", "403", "ubuntu-latest"])
+case("C2 a 500 on a job list: hosted, with a warning",
+     api(runs(), runs(100), {}) + [["runs/100/jobs", 500, "{}"]],
+     HOSTED, HOSTED, ["::warning::", "no complete job list", "500"])
+case("C3 a 200 with no total_count: hosted, with a warning",
+     [["runs?status=queued", 200, '{"workflow_runs":[]}']],
+     HOSTED, HOSTED, ["::warning::", "no total_count"])
+case("C4 a list short of its total that reaches no trigger: hosted, with a warning",
+     [["runs?status=queued", 200, runs()],
+      ["runs?status=in_progress&per_page=100&page=1", 200, runs(100, total=5)],
+      ["runs?status=in_progress&per_page=100&page=2", 200, runs(total=5)],
+      ["runs/100/jobs", 200, jobs(jobj(100, "in_progress", U))]],
+     HOSTED, HOSTED, ["::warning::", "1 of 5 entries"])
+case("C5 a threshold that is not a number: hosted, with a warning, no call",
+     [], HOSTED, HOSTED, ["::warning::", "not a whole number"], calls=0, limit="twelve")
+case("C6 an empty threshold: hosted, with a warning",
+     [], HOSTED, HOSTED, ["::warning::", "not a whole number"], calls=0, limit="")
+case("C7 a job with no created_at: hosted, with a warning",
+     api(runs(102), runs(100), {100: jobs(jobj(100, "in_progress", U)),
+                                102: jobs({"run_id": 102, "status": "queued", "labels": U})}),
+     HOSTED, HOSTED, ["::warning::", "could not be counted"])
+case("C8 a route the API does not answer (404): hosted, with a warning",
+     [], HOSTED, HOSTED, ["::warning::", "404"])
 
-# R8: thresholds that are not whole numbers: no call, hosted, warning.
-for name, limit, grace in (("R8 empty limit", "", "120"), ("R8b empty grace", "5", ""),
-                           ("R8c word limit", "five", "120"), ("R8d negative grace", "5", "-1"),
-                           ("R8e fraction", "2.5", "120")):
-    case(name, full_pool(), "hosted", kind="warning", why="is not a whole number", calls=False,
-         limit=limit, grace=grace)
+# D. off github.com
+case("D1 Gitea: no call, the default output",
+     [], HOSTED, HOSTED, ["not github.com"], ["::warning::"], calls=0, server="https://forge.example")
 
-if FAILURES:
-    for f in FAILURES:
-        print("FAIL", f)
-    sys.exit(1)
-print("runner-select tests: all passed")
+# E. a fork's pull request (v1.52)
+FULL = api(runs(), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)),
+                                    101: jobs(*[jobj(101, "in_progress", U) for _ in range(11)])})
+case("E1 a fork's pull request with the hosted pool full: hosted, no call",
+     FULL, HOSTED, HOSTED, ["::notice::", "a fork", "ci-template v1.52"], ["::warning::"], calls=0,
+     event="pull_request", head="fork/r")
+case("E2 a pull request whose head repository is gone: hosted, no call",
+     FULL, HOSTED, HOSTED, ["a fork"], calls=0, event="pull_request", head="")
+case("E3 a fork under pull_request_target: hosted, no call",
+     FULL, HOSTED, HOSTED, ["a fork"], calls=0, event="pull_request_target", head="fork/r")
+case("E4 a same-repository pull request with the hosted pool full still overflows",
+     FULL, OVER, OVER_D, ["::notice::", "12 hosted jobs in progress"], ["a fork"], event="pull_request", head="o/r")
+case("E5 a push with the hosted pool full still overflows",
+     FULL, OVER, OVER_D, ["12 hosted jobs in progress"], ["a fork"])
+case("E6 off github.com a fork keeps the forge labels: no call, no fork notice",
+     [], HOSTED, HOSTED, ["not github.com"], ["a fork"], calls=0, server="gitea", event="pull_request", head="fork/r")
+
+print(f"{'ALL PASS' if not FAILS else f'{FAILS} FAILED'}")
+sys.exit(1 if FAILS else 0)
