@@ -401,7 +401,11 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// different, unencrypted keyspace under the same database name).
 	if svcs, err := r.resolveDedicatedDatabaseBarrier(tenantID, db, info); !errors.Is(err, errNotDedicatedDatabaseBarrier) {
 		if svcs != nil {
-			svcs.Placement = service.StorePlacementNode
+			// svcs can be the cached dedicated-store bundle itself (see
+			// resolveObjstoreDatabase): copy before setting the placement.
+			placed := *svcs
+			placed.Placement = service.StorePlacementNode
+			svcs = &placed
 		}
 		return svcs, err
 	}
@@ -493,9 +497,12 @@ func (r *restServiceRegistry) resolveObjstoreDatabase(tenantID, db string, info 
 	if !ok || dbase.Config().Backend != database.BackendObjstore {
 		return nil, false
 	}
-	svcs := r.applyQuota(r.dedicatedStore.getOrBuild(dbase), tenantID, info)
-	svcs.Placement = service.StorePlacementNode
-	return svcs, true
+	// applyQuota can hand back the cached bundle unchanged (system or
+	// unlimited tenant, no accountant), and that bundle is shared by every
+	// request: set the placement on a copy, never through the cached pointer.
+	out := *r.applyQuota(r.dedicatedStore.getOrBuild(dbase), tenantID, info)
+	out.Placement = service.StorePlacementNode
+	return &out, true
 }
 
 // servesFromNodeLocalStore reports whether a catalogued database is served

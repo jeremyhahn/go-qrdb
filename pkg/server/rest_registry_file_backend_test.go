@@ -18,12 +18,14 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/objstoredb"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -112,6 +114,83 @@ func TestRESTServiceRegistry_ObjstoreDatabaseServedFromItsProvider(t *testing.T)
 	}
 	if got, err := nodeStore.Default().KV.Get(ctx, tenant.ComposeNamespace(tenantid.System, "blobs")+"k"); err == nil && got != nil {
 		t.Fatalf("the write reached the node's shared store: %q, %v", got, err)
+	}
+}
+
+// newObjstoreRegistry returns a system-tenant registry serving one objstore
+// database "blobs" from a local provider, plus that database.
+func newObjstoreRegistry(t *testing.T) (*restServiceRegistry, *database.Database) {
+	t.Helper()
+	mgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(objstoredb.NewBackendFactory()))
+	t.Cleanup(func() { _ = mgr.Close() })
+	db, err := mgr.Create(database.DatabaseConfig{
+		Name:    "blobs",
+		Backend: database.BackendObjstore,
+		Objstore: &database.DatabaseObjstoreConfig{
+			Provider: "local",
+			Settings: map[string]string{"path": filepath.Join(t.TempDir(), "objects")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	reg := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System,
+		WithDatabaseCatalog(newManagerCatalog(mgr)),
+		withDatabaseManager(mgr),
+	)
+	r, ok := reg.(*restServiceRegistry)
+	if !ok {
+		t.Fatalf("NewRESTServiceRegistry returned %T, want *restServiceRegistry", reg)
+	}
+	return r, db
+}
+
+// TestRESTServiceRegistry_ObjstoreResolveDoesNotMutateCachedBundle pins that
+// resolving an objstore database hands back a copy carrying the node
+// placement and leaves the cached dedicated-store bundle untouched.
+func TestRESTServiceRegistry_ObjstoreResolveDoesNotMutateCachedBundle(t *testing.T) {
+	r, db := newObjstoreRegistry(t)
+	got, ok := r.resolveObjstoreDatabase(tenantid.System, "blobs", nil)
+	if !ok || got == nil {
+		t.Fatalf("resolveObjstoreDatabase = %v, %v; want a bundle", got, ok)
+	}
+	if got.Placement != service.StorePlacementNode {
+		t.Fatalf("Placement = %q, want %q", got.Placement, service.StorePlacementNode)
+	}
+	cached := r.dedicatedStore.getOrBuild(db)
+	if cached == got {
+		t.Fatal("resolveObjstoreDatabase returned the cached bundle itself")
+	}
+	if cached.Placement != "" {
+		t.Fatalf("cached bundle Placement = %q, want empty (resolution mutated the shared bundle)", cached.Placement)
+	}
+}
+
+// TestRESTServiceRegistry_ObjstoreConcurrentResolve resolves the same objstore
+// database from many goroutines; under -race it reports any write to the
+// shared cached bundle.
+func TestRESTServiceRegistry_ObjstoreConcurrentResolve(t *testing.T) {
+	r, _ := newObjstoreRegistry(t)
+	const workers, rounds = 16, 50
+	var wg sync.WaitGroup
+	errs := make(chan string, workers)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				svcs, ok := r.resolveObjstoreDatabase(tenantid.System, "blobs", nil)
+				if !ok || svcs.Placement != service.StorePlacementNode {
+					errs <- "resolve did not return a node-placed bundle"
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Fatal(e)
 	}
 }
 
