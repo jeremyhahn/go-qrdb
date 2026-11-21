@@ -99,6 +99,10 @@ func WithCredentialFiles(files CredentialFiles) Option {
 // openCredentials reads the referenced files into handles. The returned
 // release destroys them and is never nil, also on error; a file that cannot
 // be read fails closed with a *CredentialFileError naming it.
+// readFileHandle opens a credential file as a memory handle. It is a
+// variable so a test can observe every handle openCredentials opens.
+var readFileHandle = secure.ReadFileHandle
+
 func openCredentials(files CredentialFiles) (objcommon.Credentials, func(), error) {
 	var creds objcommon.Credentials
 	release := func() {
@@ -109,14 +113,14 @@ func openCredentials(files CredentialFiles) (objcommon.Credentials, func(), erro
 		return objcommon.Credentials{}, release, err
 	}
 	if files.KeyFile != "" {
-		h, err := secure.ReadFileHandle(files.KeyFile)
+		h, err := readFileHandle(files.KeyFile)
 		if err != nil {
 			return objcommon.Credentials{}, release, &CredentialFileError{Credential: CredentialKey, File: files.KeyFile, Err: err}
 		}
 		creds.Key = h
 	}
 	if files.SecretFile != "" {
-		h, err := secure.ReadFileHandle(files.SecretFile)
+		h, err := readFileHandle(files.SecretFile)
 		if err != nil {
 			return objcommon.Credentials{}, release, &CredentialFileError{Credential: CredentialSecret, File: files.SecretFile, Err: err}
 		}

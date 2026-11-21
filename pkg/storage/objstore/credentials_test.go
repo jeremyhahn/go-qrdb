@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-enclave"
 	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
 	objmemory "github.com/jeremyhahn/go-objstore/pkg/memory"
 	"github.com/stretchr/testify/assert"
@@ -52,6 +53,31 @@ func fakeFiles(t *testing.T) CredentialFiles {
 		KeyFile:    writeCredentialFile(t, "key", fakeKey),
 		SecretFile: writeCredentialFile(t, "secret", fakeSecret),
 	}
+}
+
+func TestOpenCredentials_DestroysTheKeyHandleWhenTheSecretReadFails(t *testing.T) {
+	var opened []enclave.ByteAccess
+	orig := readFileHandle
+	t.Cleanup(func() { readFileHandle = orig })
+	readFileHandle = func(path string) (enclave.ByteAccess, error) {
+		h, err := orig(path)
+		if h != nil {
+			opened = append(opened, h)
+		}
+		return h, err
+	}
+
+	files := fakeFiles(t)
+	files.SecretFile = filepath.Join(t.TempDir(), "absent")
+	creds, release, err := openCredentials(files)
+	assert.True(t, creds.IsZero(), "a failed open returns no credentials")
+	var fileErr *CredentialFileError
+	require.True(t, errors.As(err, &fileErr), "got %v", err)
+	assert.Equal(t, CredentialSecret, fileErr.Credential)
+	require.Len(t, opened, 1, "only the key handle opens")
+	assert.True(t, opened[0].IsAlive(), "the key handle lives until release")
+	release()
+	assert.False(t, opened[0].IsAlive(), "release destroys the key handle")
 }
 
 // credProbeProvider is the go-objstore storage provider registerCredentialProbe

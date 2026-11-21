@@ -48,6 +48,13 @@ func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) (err error) {
 			return storage.ErrEmptyKey
 		}
 	}
+	// lifeMu comes before journalMu (see Engine), so Close waits for this
+	// commit and the providers outlive it.
+	leave, err := e.enter()
+	if err != nil {
+		return err
+	}
+	defer leave()
 
 	e.journalMu.Lock()
 	defer e.journalMu.Unlock()

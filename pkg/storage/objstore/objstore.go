@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,6 +51,16 @@ type Engine struct {
 	journal  objcommon.Storage
 	provider string
 	closed   atomic.Bool
+
+	// lifeMu keeps the providers alive while a call uses them: every public
+	// call holds it shared from its closed check to its return (enter), and
+	// Close holds it exclusive while it releases the providers, so Close
+	// waits for the calls in flight and no call reaches a released
+	// provider. providersClosed, under lifeMu, makes the release happen
+	// once. Lock order is lifeMu, then journalMu, then writeMu; a call
+	// holding lifeMu never takes it again (see get and list).
+	lifeMu          sync.RWMutex
+	providersClosed bool
 
 	// journalMu serializes batch commits: the commit journal is a single
 	// object per engine, so two concurrent commits must not interleave
@@ -134,18 +145,22 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	if err != nil {
 		return nil, credentialOpenError(o.credentials, err)
 	}
-	store, journal, err := openStores(provider, resolved.creator, settings, store, creds)
+	// From here every failure releases the providers this open created.
+	data, journal, err := openStores(provider, resolved.creator, settings, store, creds)
 	if err != nil {
+		_ = closeStores(store)
 		return nil, credentialOpenError(o.credentials, err)
 	}
-	e := &Engine{store: store, journal: journal, provider: provider}
+	e := &Engine{store: data, journal: journal, provider: provider}
 	if err := e.ensureFormatMarker(); err != nil {
+		_ = closeStores(e.store, e.journal)
 		return nil, err
 	}
 	// An interrupted batch commit from a previous process is completed here;
 	// a corrupt journal fails the open rather than silently serving a
 	// half-applied batch.
 	if err := e.recoverJournal(); err != nil {
+		_ = closeStores(e.store, e.journal)
 		return nil, err
 	}
 	return e, nil
@@ -191,6 +206,19 @@ func (e *Engine) ensureFormatMarker() error {
 // Get retrieves the value for key. Returns nil, nil when the key does not exist,
 // per the storage.Storage contract.
 func (e *Engine) Get(key []byte) ([]byte, error) {
+	leave, err := e.enter()
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+	return e.get(key)
+}
+
+// get is Get for a caller that has already entered the engine (see enter):
+// CompareAndSwap and scan call it under the shared lifeMu, where a second
+// RLock would deadlock against a waiting Close. It still refuses a closed
+// engine, so a scan Close has begun to wait on stops at its next read.
+func (e *Engine) get(key []byte) ([]byte, error) {
 	if e.closed.Load() {
 		return nil, &storage.ClosedError{}
 	}
@@ -224,9 +252,11 @@ func (e *Engine) Get(key []byte) ([]byte, error) {
 
 // Set stores a key-value pair as an object.
 func (e *Engine) Set(key, value []byte) error {
-	if e.closed.Load() {
-		return &storage.ClosedError{}
+	leave, err := e.enter()
+	if err != nil {
+		return err
 	}
+	defer leave()
 	if len(key) == 0 {
 		return storage.ErrEmptyKey
 	}
@@ -253,9 +283,11 @@ func (e *Engine) CompareAndSwap(ctx context.Context, key, expected, next []byte)
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	if e.closed.Load() {
-		return false, &storage.ClosedError{}
+	leave, err := e.enter()
+	if err != nil {
+		return false, err
 	}
+	defer leave()
 	if len(key) == 0 {
 		return false, storage.ErrEmptyKey
 	}
@@ -267,7 +299,7 @@ func (e *Engine) CompareAndSwap(ctx context.Context, key, expected, next []byte)
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
 
-	current, err := e.Get(key)
+	current, err := e.get(key)
 	if err != nil {
 		return false, err
 	}
@@ -282,9 +314,11 @@ func (e *Engine) CompareAndSwap(ctx context.Context, key, expected, next []byte)
 
 // Delete removes a key. A missing key is not an error (idempotent).
 func (e *Engine) Delete(key []byte) error {
-	if e.closed.Load() {
-		return &storage.ClosedError{}
+	leave, err := e.enter()
+	if err != nil {
+		return err
 	}
+	defer leave()
 	if len(key) == 0 {
 		return storage.ErrEmptyKey
 	}
@@ -309,9 +343,11 @@ func (e *Engine) remove(key []byte) error {
 // Object names do not sort as their keys do, and hashed names not at all, so
 // the range is found by filtering the full key listing.
 func (e *Engine) DeleteRange(start, end []byte) error {
-	if e.closed.Load() {
-		return &storage.ClosedError{}
+	leave, err := e.enter()
+	if err != nil {
+		return err
 	}
+	defer leave()
 	if err := storage.ValidateRange(start, end); err != nil {
 		return err
 	}
@@ -326,7 +362,7 @@ func (e *Engine) DeleteRange(start, end []byte) error {
 // hold it: a committing batch applies its range deletes under the exclusive
 // lock, where the locking DeleteRange would deadlock.
 func (e *Engine) deleteRange(start, end []byte) error {
-	keys, err := e.List(nil)
+	keys, err := e.list(nil)
 	if err != nil {
 		return err
 	}
@@ -350,9 +386,17 @@ func (e *Engine) deleteRange(start, end []byte) error {
 // prefix of every matching key's direct name; the byte-prefix contract of
 // storage.Storage is still enforced on the decoded keys (see scan).
 func (e *Engine) List(prefix []byte) ([][]byte, error) {
-	if e.closed.Load() {
-		return nil, &storage.ClosedError{}
+	leave, err := e.enter()
+	if err != nil {
+		return nil, err
 	}
+	defer leave()
+	return e.list(prefix)
+}
+
+// list is List for a caller that has already entered the engine; deleteRange
+// calls it from DeleteRange and from a batch commit.
+func (e *Engine) list(prefix []byte) ([][]byte, error) {
 	entries, err := e.scan(prefix, false)
 	if err != nil {
 		return nil, err
@@ -384,7 +428,7 @@ func (e *Engine) scan(prefix []byte, withValues bool) ([]kvEntry, error) {
 			}
 			entry := kvEntry{key: key}
 			if withValues {
-				value, err := e.Get(key)
+				value, err := e.get(key)
 				if err != nil {
 					return nil, err
 				}
@@ -430,9 +474,11 @@ func (e *Engine) readHashed(name string, withValue bool) ([]byte, []byte, error)
 
 // Exists reports whether key exists.
 func (e *Engine) Exists(key []byte) (bool, error) {
-	if e.closed.Load() {
-		return false, &storage.ClosedError{}
+	leave, err := e.enter()
+	if err != nil {
+		return false, err
 	}
+	defer leave()
 	if len(key) == 0 {
 		return false, storage.ErrEmptyKey
 	}
@@ -462,20 +508,81 @@ func (e *Engine) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
 	if e.closed.Load() {
 		return storage.NewClosedIterator()
 	}
+	leave, err := e.enter()
+	if err != nil {
+		return storage.NewClosedIterator()
+	}
+	defer leave()
 	return newIterator(e, opts)
 }
 
 // Snapshot creates a point-in-time snapshot for consistent reads.
 func (e *Engine) Snapshot() (storage.Snapshot, error) {
-	if e.closed.Load() {
-		return nil, &storage.ClosedError{}
+	leave, err := e.enter()
+	if err != nil {
+		return nil, err
 	}
+	defer leave()
 	return newSnapshot(e)
 }
 
-// Close marks the engine as closed. The underlying go-objstore Storage exposes
-// no Close, so there is nothing further to release.
+// Close marks the engine as closed, so every later call is refused with a
+// *storage.ClosedError, waits for the calls in flight to return, and then
+// releases each provider once: the data store and, when it is a separate
+// store, the journal. A provider that offers no Close is left as it is. A
+// second Close returns nil.
 func (e *Engine) Close() error {
 	e.closed.Store(true)
-	return nil
+	e.lifeMu.Lock()
+	defer e.lifeMu.Unlock()
+	if e.providersClosed {
+		return nil
+	}
+	e.providersClosed = true
+	return closeStores(e.store, e.journal)
+}
+
+// enter admits a public call: it holds lifeMu shared until leave, so Close
+// cannot release the providers under it, and refuses the call once the
+// engine is closed. A caller already inside must not enter again.
+func (e *Engine) enter() (leave func(), err error) {
+	e.lifeMu.RLock()
+	if e.closed.Load() {
+		e.lifeMu.RUnlock()
+		return nil, &storage.ClosedError{}
+	}
+	return e.lifeMu.RUnlock, nil
+}
+
+// closeStores releases each distinct provider in stores once: one with a
+// Close() error or Close() method is closed, one with neither is left as it
+// is. objcommon.Storage declares no Close, so the method is found by type.
+func closeStores(stores ...objcommon.Storage) error {
+	var errs []error
+	for i, s := range stores {
+		if s == nil || seenStore(stores[:i], s) {
+			continue
+		}
+		switch c := s.(type) {
+		case interface{ Close() error }:
+			errs = append(errs, c.Close())
+		case interface{ Close() }:
+			c.Close()
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// seenStore reports whether s is one of earlier. Values are compared only
+// when both dynamic types are comparable, so no comparison panics.
+func seenStore(earlier []objcommon.Storage, s objcommon.Storage) bool {
+	if s == nil || !reflect.TypeOf(s).Comparable() {
+		return false
+	}
+	for _, p := range earlier {
+		if p != nil && reflect.TypeOf(p) == reflect.TypeOf(s) && p == s {
+			return true
+		}
+	}
+	return false
 }

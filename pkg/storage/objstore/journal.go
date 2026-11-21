@@ -60,14 +60,23 @@ func openStores(provider string, create objfactory.StorageCreator, settings map[
 	if err != nil {
 		return nil, nil, err
 	}
+	// data is the store the engine serves from. A failure releases only what
+	// this function created; the caller releases the store it passed in.
+	data = store
+	defer func() {
+		if err != nil && !seenStore([]objcommon.Storage{store}, data) {
+			_ = closeStores(data)
+		}
+	}()
 	if physical != settings[rootSetting] {
 		dataSettings := maps.Clone(settings)
 		dataSettings[rootSetting] = physical
-		if store, err = create(dataSettings, creds); err != nil {
+		if data, err = create(dataSettings, creds); err != nil {
+			data = store
 			return nil, nil, err
 		}
 	}
-	if err := refuseInTreeJournal(provider, store); err != nil {
+	if err := refuseInTreeJournal(provider, data); err != nil {
 		return nil, nil, err
 	}
 	root, err := journalRoot(physical)
@@ -79,7 +88,11 @@ func openStores(provider string, create objfactory.StorageCreator, settings map[
 	if journal, err = create(journalSettings, creds); err != nil {
 		return nil, nil, err
 	}
-	return store, journal, nil
+	// The store passed in is replaced by the one under the physical root.
+	if !seenStore([]objcommon.Storage{data, journal}, store) {
+		_ = closeStores(store)
+	}
+	return data, journal, nil
 }
 
 // journalRoot names the sibling tree that holds the journal of a store rooted
