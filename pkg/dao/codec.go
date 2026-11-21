@@ -139,7 +139,11 @@ func NewCodec[E any](ct CodecType) (Codec[E], error) {
 	case CodecBSON:
 		c = bson.New[E]()
 	case CodecCBOR:
-		c = newCBORCodec[E]()
+		cc, err := newCBORCodec[E]()
+		if err != nil {
+			return nil, CodecCreationError{CodecType: string(ct), Cause: err}
+		}
+		c = cc
 	case CodecProtoBuf:
 		// ProtoBuf requires special handling - entities must implement proto.Message
 		// Use NewProtoBufCodec[E]() directly for protobuf types

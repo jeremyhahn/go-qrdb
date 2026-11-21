@@ -16,10 +16,24 @@
 package dao
 
 import (
+	"reflect"
+
+	fxcbor "github.com/fxamacker/cbor/v2"
 	"github.com/jeremyhahn/go-codec"
 	"github.com/jeremyhahn/go-codec/pkg/cbor"
 )
 
-func newCBORCodec[E any]() codec.Codec[E] {
-	return cbor.New[E]()
+// newCBORCodec builds the CBOR codec with string-keyed maps as the default
+// map type, so a nested object in a document decodes as map[string]any
+// (fxamacker's default is map[interface{}]interface{}, which JSON documents
+// and the query layer do not handle).
+func newCBORCodec[E any]() (codec.Codec[E], error) {
+	c, err := cbor.NewWithOptions[E](
+		fxcbor.DecOptions{DefaultMapType: reflect.TypeFor[map[string]any]()},
+		fxcbor.EncOptions{},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
