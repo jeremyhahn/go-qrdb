@@ -445,6 +445,15 @@ tenant:
   and `vlog:proof` on its own tenant reads the instance as `--database system
   --log audit`: its head, its entries (each a marshaled audit event) and
   inclusion and consistency proofs that verify against the head.
+- **Append-once onboarding events** (`featuregate.AuditAppendOnce`). An
+  onboarding event carrying the append-once marker is appended once per
+  identity (request id and timestamp, `vlog.Chain.AppendOnce`), its
+  once-record written beside it. An unmarked proposal is appended as before
+  activation, the event, head and tree records and nothing else, so a
+  rolling upgrade leaves the same raw state on every replica. Only marked
+  appends write or consult once-records, so a marked retry of a
+  pre-activation unmarked proposal can leave a second event, identical on
+  every replica ([../multi-tenancy/architecture.md](../multi-tenancy/architecture.md)).
 - Both state-machine families (`pkg/store.PebbleStateMachine`,
   `pkg/engine.MVCCEngine`) dispatch the opcode to `Chain`, restore it on open
   and on snapshot recovery, and resync it after a failed apply, as the lease

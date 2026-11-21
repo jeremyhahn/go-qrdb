@@ -97,11 +97,9 @@ type Chain struct {
 	heads map[string]headState
 	logs  map[LogID]logState
 
-	// requests holds the record kind of every event identity appended
-	// once (AppendOnce, requestMarked) or noted on an unmarked append
-	// (AppendNoting, requestNoted), by key, restored from the table's
-	// request records.
-	requests map[string]byte
+	// requests holds the marker key of every event identity appended once
+	// (AppendOnce), restored from the table's request records.
+	requests map[string]struct{}
 
 	// staged holds every tree node and checkpoint record staged since
 	// BeginUpdate, by key. Apply reads it before storage.
@@ -115,7 +113,7 @@ func NewChain() *Chain {
 	return &Chain{
 		heads:    make(map[string]headState),
 		logs:     make(map[LogID]logState),
-		requests: make(map[string]byte),
+		requests: make(map[string]struct{}),
 		staged:   make(map[string][]byte),
 	}
 }
@@ -228,85 +226,25 @@ func (c *Chain) AppendOnce(w Writer, tenantID, token string, encode Encoder, aud
 	if seq, err = c.appendEvent(w, tenantID, encode, audit); err != nil {
 		return 0, false, err
 	}
-	if err := c.recordRequest(w, key, requestMarked); err != nil {
-		return 0, false, err
-	}
-	return seq, true, nil
-}
-
-// Request record kinds, the value of a request record.
-const (
-	// requestMarked records an identity AppendOnce appended.
-	requestMarked byte = 1
-	// requestNoted records an identity AppendNoting appended.
-	requestNoted byte = 2
-)
-
-// AppendNoting appends an event that does not carry the append-once marker
-// and notes its identity token. It appends exactly as AppendAudit (audit
-// set) or Append does unless an AppendOnce event of the same identity is
-// already on tenantID's chain, in which case it writes nothing and returns
-// the head's sequence with appended false. An unmarked repeat of an
-// unmarked event is still appended, as before the marker existed.
-//
-// Either order of an emitter's unmarked proposal and its marked retry then
-// leaves one event: the marked retry finds the noted identity
-// (AppendOnce), and an unmarked proposal applied after the marked retry
-// finds the marked identity. A marked event exists only once
-// featuregate.AuditAppendOnce is enabled, which every replica supports, so
-// every replica skips the same unmarked entry.
-func (c *Chain) AppendNoting(w Writer, tenantID, token string, encode Encoder, audit bool) (seq uint64, appended bool, err error) {
-	if err := ValidateTenantID(tenantID); err != nil {
-		return 0, false, err
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	key := requestKey(tenantID, token)
-	kind, noted := c.requests[string(key)]
-	if noted && kind == requestMarked {
-		return c.heads[tenantID].seq, false, nil
-	}
-	if seq, err = c.appendEvent(w, tenantID, encode, audit); err != nil {
-		return 0, false, err
-	}
-	if !noted {
-		if err := c.recordRequest(w, key, requestNoted); err != nil {
-			return 0, false, err
-		}
-	}
-	return seq, true, nil
-}
-
-// recordRequest writes an identity's request record of the given kind
-// beside its event. The caller holds c.mu.
-func (c *Chain) recordRequest(w Writer, key []byte, kind byte) error {
-	if err := w.Set(key, []byte{kind}); err != nil {
-		return &TableWriteError{Err: err}
+	if err := w.Set(key, []byte{1}); err != nil {
+		return 0, false, &TableWriteError{Err: err}
 	}
 	if c.requests == nil {
-		c.requests = make(map[string]byte)
+		c.requests = make(map[string]struct{})
 	}
-	c.requests[string(key)] = kind
-	return nil
+	c.requests[string(key)] = struct{}{}
+	return seq, true, nil
 }
 
-// restoreRequests reads every event identity recorded by AppendOnce or
-// AppendNoting, with its kind. A record with no value byte, or one written
-// before the kinds existed, is a marked record.
-func restoreRequests(r storage.Reader) (map[string]byte, error) {
-	requests := make(map[string]byte)
+// restoreRequests reads every event identity recorded by AppendOnce.
+func restoreRequests(r storage.Reader) (map[string]struct{}, error) {
+	requests := make(map[string]struct{})
 	it := r.NewIterator(&storage.IteratorOptions{
 		LowerBound: []byte(requestPrefix),
 		UpperBound: prefixEnd([]byte(requestPrefix)),
 	})
 	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
-		kind := requestMarked
-		if v := it.Value(); len(v) > 0 && v[0] == requestNoted {
-			kind = requestNoted
-		}
-		requests[string(it.Key())] = kind
+		requests[string(it.Key())] = struct{}{}
 	}
 	if err := it.Error(); err != nil {
 		_ = it.Close()

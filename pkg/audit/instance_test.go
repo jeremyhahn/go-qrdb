@@ -25,6 +25,7 @@ import (
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
@@ -208,59 +209,167 @@ func TestChain_OnboardEventWithoutMarkerAppendsEachTime(t *testing.T) {
 // opcode, the trail holds one event -- on a replica restored between the
 // two as well. No time passes in between: the outcome does not rest on the
 // delayed proposal being judged lost.
-func TestChain_UnmarkedProposalAndMarkedRetryAppendOnce(t *testing.T) {
-	const tenantID = "acme"
-	unmarked := fixedEvent(0, tenantID)
-	unmarked.Action = ActionTenantOnboard
-	unmarked.RequestID = "req-1"
-	marked := unmarked
-	marked.AppendOnce = true
+// rawTable returns every key and value of store, in key order.
+func rawTable(t *testing.T, store *memory.MemoryStorage) [][2]string {
+	t.Helper()
+	it := store.NewIterator(&storage.IteratorOptions{})
+	var kv [][2]string
+	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+		kv = append(kv, [2]string{string(it.Key()), string(it.Value())})
+	}
+	if err := it.Error(); err != nil {
+		t.Fatal(err)
+	}
+	if err := it.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return kv
+}
 
-	apply := func(t *testing.T, c *Chain, store *memory.MemoryStorage, ev AuditEvent, instance bool) {
-		t.Helper()
-		if !instance {
-			if _, err := c.Append(store, tenantID, ev); err != nil {
-				t.Fatalf("Append: %v", err)
-			}
-			return
-		}
-		raw, err := json.Marshal(ev)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := c.AppendToInstance(store, tenantID, [][]byte{raw}); err != nil {
-			t.Fatalf("AppendToInstance: %v", err)
+// sameTable fails t unless got and want hold exactly the same keys and
+// values.
+func sameTable(t *testing.T, got, want [][2]string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("table has %d records, want %d:\n got %q\nwant %q", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("record %d = %q, want %q", i, got[i], want[i])
 		}
 	}
-	for _, tc := range []struct {
-		name        string
-		first, then AuditEvent
-		instance    bool
-		restore     bool
-	}{
-		{name: "unmarked then marked", first: unmarked, then: marked},
-		{name: "marked then unmarked", first: marked, then: unmarked},
-		{name: "unmarked then marked, instance", first: unmarked, then: marked, instance: true},
-		{name: "marked then unmarked, instance", first: marked, then: unmarked, instance: true},
-		{name: "unmarked, restore, marked", first: unmarked, then: marked, restore: true},
-		{name: "marked, restore, unmarked", first: marked, then: unmarked, restore: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c := NewChain()
-			store := memory.NewStorage()
-			apply(t, c, store, tc.first, tc.instance)
-			first, _, _ := c.log.Head(tenantID)
-			if tc.restore {
-				c = NewChain()
-				if err := c.Restore(store); err != nil {
-					t.Fatalf("Restore: %v", err)
+}
+
+// onboardingEvents returns an unmarked onboarding event and its marked
+// retry, the same identity.
+func onboardingEvents(tenantID string) (unmarked, marked AuditEvent) {
+	unmarked = fixedEvent(0, tenantID)
+	unmarked.Action = ActionTenantOnboard
+	unmarked.RequestID = "req-1"
+	marked = unmarked
+	marked.AppendOnce = true
+	return unmarked, marked
+}
+
+// applyEvent applies ev to c as the audit-append opcode (instance false)
+// or the verifiable-log opcode (instance true) does.
+func applyEvent(t *testing.T, c *Chain, store *memory.MemoryStorage, tenantID string, ev AuditEvent, instance bool) {
+	t.Helper()
+	if !instance {
+		if _, err := c.Append(store, tenantID, ev); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+		return
+	}
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AppendToInstance(store, tenantID, [][]byte{raw}); err != nil {
+		t.Fatalf("AppendToInstance: %v", err)
+	}
+}
+
+// TestChain_UnmarkedOnboardingReplaysThePreActivationState replays the
+// same unmarked onboarding commands a release without the append-once
+// marker applied and requires the complete raw audit table to be the one
+// that release wrote: the event, head and tree records only.
+func TestChain_UnmarkedOnboardingReplaysThePreActivationState(t *testing.T) {
+	const tenantID = "acme"
+	unmarked, _ := onboardingEvents(tenantID)
+	for _, instance := range []bool{false, true} {
+		t.Run(map[bool]string{false: "audit append", true: "instance"}[instance], func(t *testing.T) {
+			want := memory.NewStorage()
+			legacy := NewChain()
+			for range 2 {
+				var err error
+				if instance {
+					_, err = legacy.log.AppendAudit(want, tenantID, linkEvent(unmarked))
+				} else {
+					_, err = legacy.log.Append(want, tenantID, linkEvent(unmarked))
+				}
+				if err != nil {
+					t.Fatal(err)
 				}
 			}
-			apply(t, c, store, tc.then, tc.instance)
-			if seq, _, _ := c.log.Head(tenantID); seq != first {
-				t.Fatalf("head seq = %d after the proposal and its retry applied, want %d (one event)", seq, first)
+
+			got := memory.NewStorage()
+			c := NewChain()
+			for range 2 {
+				applyEvent(t, c, got, tenantID, unmarked, instance)
 			}
+			sameTable(t, rawTable(t, got), rawTable(t, want))
 		})
+	}
+}
+
+// TestChain_MarkedRetryAfterUnmarkedOriginalIsReplicaIndependent applies an
+// unmarked onboarding proposal and its marked retry on two replicas, one
+// that applied the original before upgrading (the plain append, then a
+// restore) and one that applied both after, and requires the same raw
+// audit table on both, in either order of the two entries.
+func TestChain_MarkedRetryAfterUnmarkedOriginalIsReplicaIndependent(t *testing.T) {
+	const tenantID = "acme"
+	unmarked, marked := onboardingEvents(tenantID)
+	for _, instance := range []bool{false, true} {
+		for _, order := range [][2]AuditEvent{{unmarked, marked}, {marked, unmarked}} {
+			name := map[bool]string{false: "audit append", true: "instance"}[instance]
+			if order[0].AppendOnce {
+				name += ", marked first"
+			}
+			t.Run(name, func(t *testing.T) {
+				upgraded := memory.NewStorage()
+				c := NewChain()
+				applyEvent(t, c, upgraded, tenantID, order[0], instance)
+				applyEvent(t, c, upgraded, tenantID, order[1], instance)
+
+				restarted := memory.NewStorage()
+				before := NewChain()
+				if order[0].AppendOnce {
+					applyEvent(t, before, restarted, tenantID, order[0], instance)
+				} else {
+					var err error
+					if instance {
+						_, err = before.log.AppendAudit(restarted, tenantID, linkEvent(order[0]))
+					} else {
+						_, err = before.log.Append(restarted, tenantID, linkEvent(order[0]))
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				after := NewChain()
+				if err := after.Restore(restarted); err != nil {
+					t.Fatalf("Restore: %v", err)
+				}
+				applyEvent(t, after, restarted, tenantID, order[1], instance)
+
+				sameTable(t, rawTable(t, restarted), rawTable(t, upgraded))
+			})
+		}
+	}
+}
+
+// TestChain_MarkedRetryOfMarkedProposalAppendsOnce: a marked proposal and
+// its marked retry leave one event, restored or not.
+func TestChain_MarkedRetryOfMarkedProposalAppendsOnce(t *testing.T) {
+	const tenantID = "acme"
+	_, marked := onboardingEvents(tenantID)
+	for _, restore := range []bool{false, true} {
+		c := NewChain()
+		store := memory.NewStorage()
+		applyEvent(t, c, store, tenantID, marked, false)
+		first, _, _ := c.log.Head(tenantID)
+		if restore {
+			c = NewChain()
+			if err := c.Restore(store); err != nil {
+				t.Fatalf("Restore: %v", err)
+			}
+		}
+		applyEvent(t, c, store, tenantID, marked, false)
+		if seq, _, _ := c.log.Head(tenantID); seq != first {
+			t.Fatalf("restore=%v: head seq = %d after the marked retry, want %d", restore, seq, first)
+		}
 	}
 }
 

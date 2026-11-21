@@ -1571,11 +1571,14 @@ feature that changes how an audit append applies.
   re-sent after an append whose outcome was unknown, and an event without
   the marker is appended every time it is applied, on every binary.
 - **An unmarked proposal and its marked retry.** An unmarked onboarding
-  event is appended and its identity noted (`vlog.Chain.AppendNoting`). A
-  marked retry finds the noted identity and appends nothing; an unmarked
-  event applied after a marked one of its identity is skipped. Either apply
-  order leaves one event, so the retry goes ahead as soon as the feature is
-  active: no elapsed time is taken to mean an unconfirmed proposal was lost.
+  event is appended exactly as before activation (`vlog.Chain.Append`),
+  writing the event, head and tree records and nothing else, so every
+  replica holds the same raw state for it whichever release applied it.
+  Only a marked event consults and writes the once-record, and it consults
+  only once-records written by marked appends. A marked retry of a
+  pre-activation unmarked proposal can therefore leave a second event, the
+  same on every replica; a marked proposal and its marked retry leave one.
+  No elapsed time is taken to mean an unconfirmed proposal was lost.
   A marked event exists only once every replica supports the feature, so
   every replica skips the same unmarked entry.
 

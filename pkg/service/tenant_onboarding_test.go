@@ -1010,8 +1010,9 @@ func newDelayedOnboarding(t *testing.T, appendOnce bool) (*TenantOnboardingServi
 // unmarked, and it is still in flight when the feature activates. The marked
 // retry goes ahead at once -- no elapsed time is taken to mean the first
 // proposal was lost -- and applies first; the delayed unmarked proposal then
-// applies. The trail holds the onboarding event once.
-func TestEmitPendingOnboardAudit_UnmarkedUncertainThenMarkedRetryKeepsOne(t *testing.T) {
+// applies as before activation (audit.Chain.Append), so the trail holds the
+// onboarding event twice, the same on every replica.
+func TestEmitPendingOnboardAudit_UnmarkedUncertainThenMarkedRetryLeavesTwo(t *testing.T) {
 	ctx := context.Background()
 	svc, trail, pendingAudit := newDelayedOnboarding(t, false)
 
@@ -1033,8 +1034,8 @@ func TestEmitPendingOnboardAudit_UnmarkedUncertainThenMarkedRetryKeepsOne(t *tes
 	}
 	trail.applyDelayed(ctx, t)
 
-	if got := trail.onboardEntries(ctx, t); got != 1 {
-		t.Fatalf("trail holds %d onboarding entries, want 1", got)
+	if got := trail.onboardEntries(ctx, t); got != 2 {
+		t.Fatalf("trail holds %d onboarding entries, want 2 (the unmarked proposal is appended as before activation)", got)
 	}
 	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left != nil {
 		t.Fatalf("pending record = %q, %v; want it settled and removed", left, err)
