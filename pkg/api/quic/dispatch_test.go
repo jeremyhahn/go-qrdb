@@ -163,6 +163,7 @@ var expectedMethods = []string{
 	"role.Assign",
 	"role.Unassign",
 	"role.ListPermissions",
+	"role.ListPermissionCatalog",
 	"role.ResolvePermissions",
 	"role.ListOwnPermissions",
 	"role.Authorize",
@@ -287,8 +288,9 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	// 208 = 206 + cluster.IsolationPolicyGet and cluster.IsolationPolicySet,
-	// the cluster isolation floor (tenants:read, tenants:update:cross).
+	// 209 = 206 + role.ListPermissionCatalog (docs/18 V12) +
+	// cluster.IsolationPolicyGet and cluster.IsolationPolicySet, the cluster
+	// isolation floor (tenants:read, tenants:update:cross).
 	// 206 = 203 + cert.DelegationPolicyPut, cert.DelegationPolicyList and
 	// cert.DelegationPolicyDelete, the tenant's standing delegation policy
 	// under which the node mints delegations (docs/identity-rbac).
@@ -371,7 +373,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 208
+	const wantCount = 209
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -472,7 +474,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"ts":       10,
 		"vector":   21,
 		"user":     14,
-		"role":     14,
+		"role":     15,
 		"cert":     8,
 		"barrier":  22,
 		"ceremony": 3,

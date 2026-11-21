@@ -257,6 +257,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"role.Update": true, "role.Delete": true, "role.List": true,
 		"role.Assign": true, "role.Unassign": true,
 		"role.ListPermissions": true, "role.ResolvePermissions": true,
+		"role.ListPermissionCatalog":      true,
 		"role.ListOwnPermissions":         true,
 		"role.Authorize":                  true,
 		"role.ReconcileBuiltIn":           true,
@@ -545,7 +546,7 @@ func TestBuildHandlers_RoleMethods(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	roleMethods := []string{
 		"role.Create", "role.Get", "role.GetByName", "role.Update", "role.Delete",
-		"role.List", "role.Assign", "role.Unassign", "role.ListPermissions",
+		"role.List", "role.Assign", "role.Unassign", "role.ListPermissions", "role.ListPermissionCatalog",
 		"role.ResolvePermissions",
 		"role.ListOwnPermissions", "role.Authorize",
 		"role.ReconcileBuiltIn",

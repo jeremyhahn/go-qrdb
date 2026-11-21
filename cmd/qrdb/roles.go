@@ -320,11 +320,18 @@ func newRolesUnassignCmd() *cobra.Command {
 
 // newRolesPermissionsCmd creates the "roles permissions" subcommand.
 func newRolesPermissionsCmd() *cobra.Command {
-	return &cobra.Command{
+	var detail bool
+	cmd := &cobra.Command{
 		Use:   "permissions",
 		Short: "List all available permissions",
-		Args:  cobra.NoArgs,
+		Long: "List every registered permission grouped by category. With --detail, list each " +
+			"permission's name, resource, action and declared tenancy scope from the server's " +
+			"permission catalog (permissions:list).",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if detail {
+				return runRolesPermissionsDetail(cmd)
+			}
 			resp, err := client.Roles().ListPermissions(cmd.Context())
 			if err != nil {
 				return err
@@ -345,6 +352,43 @@ func newRolesPermissionsCmd() *cobra.Command {
 				return nil
 			}
 		},
+	}
+	cmd.Flags().BoolVar(&detail, "detail", false, "List name, resource, action and scope of every permission")
+	return cmd
+}
+
+// PermissionClientUnavailableError reports a client with no PermissionClient
+// (a closed client).
+type PermissionClientUnavailableError struct{}
+
+// Error returns a human-readable description.
+func (e *PermissionClientUnavailableError) Error() string {
+	return "permission client unavailable: the client is closed"
+}
+
+// runRolesPermissionsDetail prints the permission catalog through
+// client.Permissions().List: name, resource, action and scope.
+func runRolesPermissionsDetail(cmd *cobra.Command) error {
+	pc := client.Permissions()
+	if pc == nil {
+		return &PermissionClientUnavailableError{}
+	}
+	perms, err := pc.List(cmd.Context())
+	if err != nil {
+		return err
+	}
+	switch outputFormat {
+	case "json":
+		return printJSON(ownPermissionsOutput{Permissions: perms})
+	case "yaml":
+		return printYAML(ownPermissionsOutput{Permissions: perms})
+	default:
+		rows := make([][]string, len(perms))
+		for i, p := range perms {
+			rows[i] = []string{p.Name, p.Resource, p.Action, string(p.Scope)}
+		}
+		printTable([]string{"NAME", "RESOURCE", "ACTION", "SCOPE"}, rows)
+		return nil
 	}
 }
 

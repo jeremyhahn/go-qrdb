@@ -785,6 +785,14 @@ service QRDBService {
         option (qrdb.v1.permission) = "identity:gated";
     }
 
+    // ListPermissionCatalog returns every registered permission with its
+    // declared scope, sorted by name. It is the remote form of the SDK's
+    // PermissionClient: a client answers List, Lookup and LookupScope from
+    // this catalog. Requires permissions:list.
+    rpc ListPermissionCatalog(google.protobuf.Empty) returns (ListPermissionCatalogResponse) {
+        option (qrdb.v1.permission) = "permissions:list";
+    }
+
     // Authorize answers whether an identity may perform an action on a
     // resource in the targeted tenant, decided by the server's auth chain.
     // Asking about the caller (no identity, or the caller's own subject and
@@ -3721,6 +3729,12 @@ message OwnPermission {
 // ListOwnPermissionsResponse holds the caller's effective permissions,
 // sorted and deduplicated.
 message ListOwnPermissionsResponse {
+    repeated OwnPermission permissions = 1;
+}
+
+// ListPermissionCatalogResponse holds every registered permission with its
+// declared scope, sorted by name.
+message ListPermissionCatalogResponse {
     repeated OwnPermission permissions = 1;
 }
 

@@ -162,6 +162,7 @@ const (
 	QRDBService_ListPermissions_FullMethodName                    = "/qrdb.v1.QRDBService/ListPermissions"
 	QRDBService_ResolveRolePermissions_FullMethodName             = "/qrdb.v1.QRDBService/ResolveRolePermissions"
 	QRDBService_ListOwnPermissions_FullMethodName                 = "/qrdb.v1.QRDBService/ListOwnPermissions"
+	QRDBService_ListPermissionCatalog_FullMethodName              = "/qrdb.v1.QRDBService/ListPermissionCatalog"
 	QRDBService_Authorize_FullMethodName                          = "/qrdb.v1.QRDBService/Authorize"
 	QRDBService_ReconcileBuiltInRoles_FullMethodName              = "/qrdb.v1.QRDBService/ReconcileBuiltInRoles"
 	QRDBService_ReconcileBuiltInRolesAllTenants_FullMethodName    = "/qrdb.v1.QRDBService/ReconcileBuiltInRolesAllTenants"
@@ -627,6 +628,11 @@ type QRDBServiceClient interface {
 	// identity is the authenticated one, never a request field, so the RPC
 	// needs authentication only: identity:gated, no permission of its own.
 	ListOwnPermissions(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ListOwnPermissionsResponse, error)
+	// ListPermissionCatalog returns every registered permission with its
+	// declared scope, sorted by name. It is the remote form of the SDK's
+	// PermissionClient: a client answers List, Lookup and LookupScope from
+	// this catalog. Requires permissions:list.
+	ListPermissionCatalog(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ListPermissionCatalogResponse, error)
 	// Authorize answers whether an identity may perform an action on a
 	// resource in the targeted tenant, decided by the server's auth chain.
 	// Asking about the caller (no identity, or the caller's own subject and
@@ -2312,6 +2318,16 @@ func (c *qRDBServiceClient) ListOwnPermissions(ctx context.Context, in *emptypb.
 	return out, nil
 }
 
+func (c *qRDBServiceClient) ListPermissionCatalog(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ListPermissionCatalogResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPermissionCatalogResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ListPermissionCatalog_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) Authorize(ctx context.Context, in *AuthorizeRequest, opts ...grpc.CallOption) (*AuthorizeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AuthorizeResponse)
@@ -3990,6 +4006,11 @@ type QRDBServiceServer interface {
 	// identity is the authenticated one, never a request field, so the RPC
 	// needs authentication only: identity:gated, no permission of its own.
 	ListOwnPermissions(context.Context, *emptypb.Empty) (*ListOwnPermissionsResponse, error)
+	// ListPermissionCatalog returns every registered permission with its
+	// declared scope, sorted by name. It is the remote form of the SDK's
+	// PermissionClient: a client answers List, Lookup and LookupScope from
+	// this catalog. Requires permissions:list.
+	ListPermissionCatalog(context.Context, *emptypb.Empty) (*ListPermissionCatalogResponse, error)
 	// Authorize answers whether an identity may perform an action on a
 	// resource in the targeted tenant, decided by the server's auth chain.
 	// Asking about the caller (no identity, or the caller's own subject and
@@ -4769,6 +4790,9 @@ func (UnimplementedQRDBServiceServer) ResolveRolePermissions(context.Context, *R
 }
 func (UnimplementedQRDBServiceServer) ListOwnPermissions(context.Context, *emptypb.Empty) (*ListOwnPermissionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListOwnPermissions not implemented")
+}
+func (UnimplementedQRDBServiceServer) ListPermissionCatalog(context.Context, *emptypb.Empty) (*ListPermissionCatalogResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListPermissionCatalog not implemented")
 }
 func (UnimplementedQRDBServiceServer) Authorize(context.Context, *AuthorizeRequest) (*AuthorizeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Authorize not implemented")
@@ -7489,6 +7513,24 @@ func _QRDBService_ListOwnPermissions_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).ListOwnPermissions(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ListPermissionCatalog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ListPermissionCatalog(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ListPermissionCatalog_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ListPermissionCatalog(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -10437,6 +10479,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListOwnPermissions",
 			Handler:    _QRDBService_ListOwnPermissions_Handler,
+		},
+		{
+			MethodName: "ListPermissionCatalog",
+			Handler:    _QRDBService_ListPermissionCatalog_Handler,
 		},
 		{
 			MethodName: "Authorize",
