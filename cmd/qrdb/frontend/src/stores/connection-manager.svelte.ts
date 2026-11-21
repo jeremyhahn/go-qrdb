@@ -477,14 +477,40 @@ export function adminViewAllowed(profileId: string, view: string): boolean {
 }
 
 /**
+ * Admin views a delegated role may be granted on its own, without the
+ * topology or the tenant list: the probe ids of {@link adminViewProbes} minus
+ * dashboard, seal-manager and databases, whose read routes a plain user may
+ * reach.
+ */
+const DELEGATED_ADMIN_VIEWS: readonly string[] = [
+    'cluster',
+    'rebalance',
+    'users',
+    'roles',
+    'volume-pools',
+    'certificates',
+    'credentials',
+    'backups',
+    'audit-log',
+];
+
+/**
  * Whether the caller administers anything on this server: a server
- * administrator reads the topology, a tenant administrator its tenant list.
- * A plain user, refused both, is offered no admin view even where a read
- * route (its own databases, the seal status) is open to it.
+ * administrator reads the topology, a tenant administrator its tenant list,
+ * and a delegated role (one allowed the user list or the audit log, say)
+ * one of the {@link DELEGATED_ADMIN_VIEWS}. Only a caller refused the
+ * topology, the tenant list and every delegated view is a plain user, who is
+ * offered no admin view even where a read route (its own databases, the seal
+ * status) is open to it. Each view the section shows is still filtered by
+ * {@link adminViewAllowed}.
  */
 export function hasAdminViews(profileId: string): boolean {
     const refused = connManagerStore.refusedAdminViews[profileId] ?? [];
-    return !(refused.includes('topology') && refused.includes('tenants'));
+    return !(
+        refused.includes('topology') &&
+        refused.includes('tenants') &&
+        DELEGATED_ADMIN_VIEWS.every((view) => refused.includes(view))
+    );
 }
 
 /**
