@@ -105,7 +105,7 @@ func (r *logRoute) resolve(ctx context.Context, tenantID, name string) (Host, ui
 		return r.resolver.ResolveAuditShard(ctx, tenantID)
 	}
 	if db.BarrierEnabled() {
-		return r.resolver.ResolveDatabaseLogShard(ctx, tenantID, name)
+		return nil, 0, &BarrierDatabaseLogNotSupportedError{TenantID: tenantID, Database: name}
 	}
 	return r.resolver.ResolveAuditShard(ctx, tenantID)
 }
@@ -117,7 +117,7 @@ func (r *logRoute) resolve(ctx context.Context, tenantID, name string) (Host, ui
 // routes with its tenant, the fall-through the tenant resolver gives a tenant
 // without metadata; a failed lookup refuses.
 type logRoute struct {
-	resolver  LogShardResolver
+	resolver  AuditShardResolver
 	databases LogDatabaseLookup
 }
 

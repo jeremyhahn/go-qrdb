@@ -208,37 +208,87 @@ func (f failingLogDatabases) GetOwned(string, string) (*database.Database, error
 
 var _ LogDatabaseLookup = failingLogDatabases{}
 
-// TestLogService_RefusesABarrierDatabase pins go-qrdb#912's isolation check:
-// the log registry and its keys live in the system shard under the system
-// barrier, so every log operation naming a barrier-enabled database is
-// refused, before a key is minted or a command proposed or read.
-func TestLogService_SealedBarrierDatabaseRefusesEveryCall(t *testing.T) {
-	ctx := acmeCtx()
-	hsm := newHSMProvider()
-	host, cmds := recordingHost(sm.Result{})
-	reads := 0
-	host.syncReadFn = func(context.Context, uint64, interface{}) (interface{}, error) {
-		reads++
-		return nil, errors.New("unexpected read")
+// TestLogService_RefusesABarrierDatabase: a barrier-enabled database's log has
+// no store under the database's key, so every log operation naming one is
+// refused with *BarrierDatabaseLogNotSupportedError, whatever its backend and
+// although its barrier is unsealed, before a key is minted or a command
+// proposed or read.
+func TestLogService_RefusesABarrierDatabase(t *testing.T) {
+	for name, databases := range unsealedBarrierDatabases(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := acmeCtx()
+			hsm := newHSMProvider()
+			host, cmds := recordingHost(sm.Result{})
+			reads := 0
+			host.syncReadFn = func(context.Context, uint64, interface{}) (interface{}, error) {
+				reads++
+				return nil, errors.New("unexpected read")
+			}
+			svc, err := NewLogService(LogServiceConfig{
+				Resolver:  &fixedShardResolver{host: &gatedHost{mockHost: host, enabled: map[uint64]bool{1: true}}, shardID: 1},
+				Databases: databases,
+				Signers:   hsm,
+			})
+			if err != nil {
+				t.Fatalf("NewLogService: %v", err)
+			}
+			for call, run := range barrierDatabaseCalls(ctx, svc) {
+				var refused *BarrierDatabaseLogNotSupportedError
+				if err := run(); !errors.As(err, &refused) || refused.TenantID != "acme" || refused.Database != "secure" {
+					t.Errorf("%s: err = %v, want *BarrierDatabaseLogNotSupportedError for acme/secure", call, err)
+				}
+			}
+			if len(*cmds) != 0 || reads != 0 || len(hsm.created) != 0 {
+				t.Fatalf("a refused log operation proposed %d commands, read %d times and minted %d keys", len(*cmds), reads, len(hsm.created))
+			}
+		})
 	}
-	sealed := &database.SealedError{}
-	svc, err := NewLogService(LogServiceConfig{
-		Resolver:  &fixedShardResolver{host: &gatedHost{mockHost: host, enabled: map[uint64]bool{1: true}}, shardID: 1, dbErr: sealed},
-		Databases: barrierDatabases(t),
-		Signers:   hsm,
-	})
+}
+
+// unsealedBarrierDatabases is acme's UNSEALED barrier-enabled database secure,
+// as a supported pebble record with a data directory and as a legacy raft
+// record database.Manager.Open still opens barrier-enabled.
+func unsealedBarrierDatabases(t *testing.T) map[string]LogDatabaseLookup {
+	t.Helper()
+	system, _ := newTestSoftwareBarrier(t)
+	ctx := context.Background()
+	if err := system.Initialize(ctx, seal.MustCredentials(ctx, []byte("system-pass"))); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	bm, err := database.NewDatabaseBarrierManager(testLogger(), system)
 	if err != nil {
-		t.Fatalf("NewLogService: %v", err)
+		t.Fatalf("NewDatabaseBarrierManager: %v", err)
 	}
-	for name, call := range barrierDatabaseCalls(ctx, svc) {
-		var refused *database.SealedError
-		if err := call(); !errors.As(err, &refused) {
-			t.Errorf("%s: err = %v, want the sealed database's *database.SealedError", name, err)
-		}
+	pebble := databasetest.NewManager(nil, t.TempDir(), database.WithBarrierManager(bm))
+	t.Cleanup(func() { _ = pebble.Close() })
+	db, err := pebble.CreateWithCredentials(ctx, database.DatabaseConfig{
+		TenantID: "acme", Name: "secure", Backend: database.BackendPebble,
+		DataDir: t.TempDir(),
+		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
+	}, seal.MustCredentials(ctx, []byte("db-pass")))
+	if err != nil {
+		t.Fatalf("create the pebble barrier database: %v", err)
 	}
-	if len(*cmds) != 0 || reads != 0 || len(hsm.created) != 0 {
-		t.Fatalf("a refused log operation proposed %d commands, read %d times and minted %d keys", len(*cmds), reads, len(hsm.created))
+	if !db.BarrierEnabled() || db.Status() == database.StatusSealed {
+		t.Fatalf("pebble barrier database: barrier enabled %v, status %v; want an unsealed barrier database", db.BarrierEnabled(), db.Status())
 	}
+	legacy := database.NewDatabase(database.DatabaseConfig{
+		TenantID: "acme", Name: "secure", Backend: database.BackendRaft,
+		Raft:    &database.DatabaseRaftConfig{ShardID: 7},
+		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
+	}, nil, t.TempDir())
+	legacy.SetBarrierEnabled(true)
+	return map[string]LogDatabaseLookup{"pebble": pebble, "legacy raft": &oneDatabase{db: legacy}}
+}
+
+// oneDatabase is a LogDatabaseLookup holding one database record.
+type oneDatabase struct{ db *database.Database }
+
+func (o *oneDatabase) GetOwned(name, tenantID string) (*database.Database, error) {
+	if name != o.db.Name() || tenantID != o.db.TenantID() {
+		return nil, &database.NotFoundError{Name: name}
+	}
+	return o.db, nil
 }
 
 // barrierDatabaseCalls is every LogService call on acme's barrier database
@@ -286,53 +336,6 @@ func barrierDatabaseCalls(ctx context.Context, svc LogService) map[string]func()
 			_, err := svc.ListLogs(ctx, &ListLogsRequest{Database: "secure"})
 			return err
 		},
-	}
-}
-
-// TestLogService_RoutesABarrierDatabaseToItsOwnGroup pins that a log in a
-// barrier-enabled database is written to and read from the database's own
-// group, and one in a database without a barrier (or with no record) from
-// the tenant's.
-func TestLogService_RoutesABarrierDatabaseToItsOwnGroup(t *testing.T) {
-	ctx := acmeCtx()
-	var proposed, read []uint64
-	host := &mockHost{
-		syncProposeFn: func(_ context.Context, shardID uint64, _ []byte) (sm.Result, error) {
-			proposed = append(proposed, shardID)
-			return sm.Result{}, nil
-		},
-		proposeWithModeFn: func(_ context.Context, shardID uint64, _ []byte, _ writemode.Mode) (sm.Result, error) {
-			proposed = append(proposed, shardID)
-			return sm.Result{}, nil
-		},
-		syncReadFn: func(_ context.Context, shardID uint64, _ interface{}) (interface{}, error) {
-			read = append(read, shardID)
-			return &vlog.Head{}, nil
-		},
-	}
-	svc, err := NewLogService(LogServiceConfig{
-		Resolver:  &fixedShardResolver{host: &gatedHost{mockHost: host, enabled: map[uint64]bool{1: true, 7: true}}, shardID: 1, dbShardID: 7},
-		Databases: barrierDatabases(t),
-		Signers:   &staticSignerProvider{},
-	})
-	if err != nil {
-		t.Fatalf("NewLogService: %v", err)
-	}
-	secure := LogRef{Database: "secure", Log: "events"}
-	if _, err := svc.Append(ctx, &AppendRequest{LogRef: secure, Entries: [][]byte{[]byte("e")}}); err != nil {
-		t.Fatalf("Append to the barrier database: %v", err)
-	}
-	if _, err := svc.Head(ctx, &HeadRequest{LogRef: secure}); err != nil {
-		t.Fatalf("Head of the barrier database's log: %v", err)
-	}
-	if _, err := svc.Append(ctx, &AppendRequest{LogRef: testLogRef, Entries: [][]byte{[]byte("e")}}); err != nil {
-		t.Fatalf("Append to an unrecorded database: %v", err)
-	}
-	if want := []uint64{7, 1}; !slices.Equal(proposed, want) {
-		t.Errorf("proposed to shards %v, want %v", proposed, want)
-	}
-	if want := []uint64{7}; !slices.Equal(read, want) {
-		t.Errorf("read from shards %v, want %v", read, want)
 	}
 }
 

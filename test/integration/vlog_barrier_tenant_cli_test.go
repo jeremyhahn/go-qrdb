@@ -31,6 +31,7 @@ import (
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/vlogwire"
 )
 
@@ -42,6 +43,47 @@ func TestVlog_CLI_BarrierTenant_PerProtocol(t *testing.T) {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
 			testVlogBarrierTenantOverProtocol(t, node, proto)
+		})
+	}
+}
+
+// TestVlog_CLI_BarrierDatabase_PerProtocol pins that a verifiable log in a
+// barrier-enabled database is refused over every transport, although the
+// database's barrier is unsealed: the log has no store under the database's
+// key, and a log kept outside it would stay readable while it is sealed.
+func TestVlog_CLI_BarrierDatabase_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			dbName := fmt.Sprintf("vlogbarrier-%s-%d", proto.name, time.Now().UnixNano())
+			t.Cleanup(func() {
+				_, _ = runCLIProto(t, node, proto, "database", "drop", dbName)
+			})
+			if out, err := runCLIProto(t, node, proto, "database", "create", dbName,
+				"--data-dir", t.TempDir(),
+				"--backend", "pebble", "--barrier-enabled",
+				"--barrier-strategy", "passphrase",
+				"--barrier-passphrase", "vlog-barrier-database-passphrase",
+			); err != nil {
+				t.Fatalf("[%s] database create %s (barrier-enabled): %v\noutput: %s", proto.name, dbName, err, out)
+			}
+
+			// A log outside any database names the caller's routed tenant,
+			// the one the refusal renders.
+			probe := vlogCLIJSON[vlogwire.CreateResult](t, node, proto, "create", "--origin", vlogCLIOrigin, "--log", "probe-"+dbName)
+			want := (&service.BarrierDatabaseLogNotSupportedError{TenantID: probe.TenantID, Database: dbName}).Error()
+
+			logName := "barrier-db-" + proto.name
+			for _, args := range [][]string{
+				{"create", "--origin", vlogCLIOrigin, "--database", dbName, "--log", logName},
+				{"append", "--database", dbName, "--log", logName, "--entry", "e0"},
+				{"head", "--database", dbName, "--log", logName},
+			} {
+				vlogCLIRefused(t, node, proto, want, args...)
+			}
 		})
 	}
 }

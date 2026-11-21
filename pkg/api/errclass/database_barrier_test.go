@@ -51,15 +51,19 @@ func TestClassify_DatabaseBarrierRequestRefusals(t *testing.T) {
 }
 
 // TestClassify_BarrierStoreUnavailable pins that a verifiable-log call whose
-// barrier tenant's or barrier database's sealed store is not reachable on the
-// node is Unavailable on every transport.
+// barrier tenant's sealed store is not reachable on the node is Unavailable on
+// every transport.
 func TestClassify_BarrierStoreUnavailable(t *testing.T) {
-	for _, err := range []error{
-		&service.BarrierStoreUnavailableError{TenantID: "acme"},
-		&service.BarrierStoreUnavailableError{TenantID: "acme", Database: "secure"},
-	} {
-		if got := Classify(err); got != Unavailable {
-			t.Errorf("Classify(%T) = %v, want %v", err, got, Unavailable)
-		}
+	if got := Classify(&service.BarrierStoreUnavailableError{TenantID: "acme"}); got != Unavailable {
+		t.Errorf("Classify(BarrierStoreUnavailableError) = %v, want %v", got, Unavailable)
+	}
+}
+
+// TestClassify_BarrierDatabaseLogNotSupported pins that a verifiable-log call
+// naming a barrier-enabled database is Unimplemented on every transport.
+func TestClassify_BarrierDatabaseLogNotSupported(t *testing.T) {
+	err := &service.BarrierDatabaseLogNotSupportedError{TenantID: "acme", Database: "secure"}
+	if got := Classify(err); got != Unimplemented {
+		t.Errorf("Classify(%T) = %v, want %v", err, got, Unimplemented)
 	}
 }

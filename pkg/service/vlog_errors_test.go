@@ -46,8 +46,11 @@ func TestBarrierStoreUnavailableError_NamesTheStore(t *testing.T) {
 			t.Errorf("Error() = %q, missing %q", msg, want)
 		}
 	}
-	msg = (&BarrierStoreUnavailableError{TenantID: "acme", Database: "secure"}).Error()
-	for _, want := range []string{`"acme"`, `"secure"`, "barrier database", "not reachable"} {
+}
+
+func TestBarrierDatabaseLogNotSupportedError_NamesTheDatabase(t *testing.T) {
+	msg := (&BarrierDatabaseLogNotSupportedError{TenantID: "acme", Database: "secure"}).Error()
+	for _, want := range []string{`"acme"`, `"secure"`, "barrier-enabled database", "not supported"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("Error() = %q, missing %q", msg, want)
 		}

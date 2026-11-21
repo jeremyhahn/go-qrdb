@@ -21,25 +21,16 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
-// logGroupBarriers resolves a barrier-enabled database's barrier;
-// *database.DatabaseBarrierManager implements it.
-type logGroupBarriers interface {
-	GetBarrier(dbName, tenantID string) database.BarrierEncryptor
-}
-
 // logGroups is the node's service.LogGroupSource: the barrier-sealed Raft
-// groups a barrier tenant's and a barrier-enabled database's verifiable logs
-// are applied in. The groups are the dedicated-raft services AttachTenantHomes
+// home groups a barrier tenant's verifiable logs are applied in. The groups are the dedicated-raft services AttachTenantHomes
 // attaches; until they are attached, the log fails closed with
 // *service.BarrierStoreUnavailableError.
 type logGroups struct {
 	host     service.Host
-	barriers func() logGroupBarriers
 	services atomic.Pointer[logGroupServices]
 }
 
@@ -75,41 +66,6 @@ func (g *logGroups) TenantHomeGroup(ctx context.Context, tenantID string) (servi
 	}
 	if box.services.IsShardJoining(svcs.ShardID) {
 		return nil, 0, &TenantHomeCatchingUpError{TenantID: tenantID}
-	}
-	return g.host, svcs.ShardID, nil
-}
-
-// DatabaseGroup implements service.LogGroupSource: the database's own group.
-// A sealed (or absent) database barrier refuses with *database.SealedError,
-// the error the database's other reads return.
-func (g *logGroups) DatabaseGroup(ctx context.Context, tenantID, db string) (service.Host, uint64, error) {
-	var barriers logGroupBarriers
-	if g.barriers != nil {
-		barriers = g.barriers()
-	}
-	if barriers == nil {
-		return nil, 0, &database.SealedError{}
-	}
-	if b := barriers.GetBarrier(db, tenantID); b == nil || b.IsSealed() {
-		return nil, 0, &database.SealedError{}
-	}
-	box := g.services.Load()
-	if box == nil {
-		return nil, 0, &service.BarrierStoreUnavailableError{TenantID: tenantID, Database: db}
-	}
-	svcs, err := box.services.Services(ctx, tenantID, db)
-	if err != nil {
-		if errors.Is(err, seal.ErrSealed) {
-			return nil, 0, &database.SealedError{}
-		}
-		// A barrier database that is not a dedicated Raft database (its
-		// tenant has no barrier of its own, or the database no group) has
-		// no barrier-sealed group a log could be applied in: fail closed.
-		var backend *server.RaftBackendError
-		if errors.Is(err, server.ErrRaftDatabaseUnknown) || (errors.As(err, &backend) && backend.Op == "barrier-lookup") {
-			return nil, 0, &service.BarrierStoreUnavailableError{TenantID: tenantID, Database: db}
-		}
-		return nil, 0, err
 	}
 	return g.host, svcs.ShardID, nil
 }

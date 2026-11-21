@@ -87,34 +87,11 @@ func NewSystemShardLogResolver(host Host, shardID uint64, isolation AuditIsolati
 	return &SystemShardAuditResolver{host: host, shardID: shardID, isolation: isolation, logs: true, groups: groups}
 }
 
-// LogShardResolver resolves the Raft group a verifiable log is applied in and
-// read from: ResolveAuditShard for a log in a database without a barrier of
-// its own, ResolveDatabaseLogShard for one in a barrier-enabled database.
-type LogShardResolver interface {
-	AuditShardResolver
-	ResolveDatabaseLogShard(ctx context.Context, tenantID, database string) (Host, uint64, error)
-}
-
-// LogGroupSource resolves the Raft group of a barrier-sealed store: a barrier
-// tenant's home group (its records, log and snapshots under the tenant's key)
-// or a barrier-enabled database's own group (under the database's key). Each
-// refuses, while the barrier is sealed, with the error that barrier's other
-// reads return.
+// LogGroupSource resolves the Raft group of a barrier tenant's home store: its
+// records, log and snapshots under the tenant's key. It refuses, while the
+// tenant's barrier is sealed, with the error that barrier's other reads return.
 type LogGroupSource interface {
 	TenantHomeGroup(ctx context.Context, tenantID string) (Host, uint64, error)
-	DatabaseGroup(ctx context.Context, tenantID, database string) (Host, uint64, error)
-}
-
-// ResolveDatabaseLogShard resolves the group of tenantID's barrier-enabled
-// database: the database's own barrier-sealed group. Without a group source
-// the database's store is unreachable here and the log fails closed with
-// *BarrierStoreUnavailableError, never falling back to the system shard.
-func (r *SystemShardAuditResolver) ResolveDatabaseLogShard(ctx context.Context, tenantID, database string) (Host, uint64, error) {
-	routed := tenantid.Normalize(tenantID)
-	if r.groups == nil {
-		return nil, 0, &BarrierStoreUnavailableError{TenantID: routed, Database: database}
-	}
-	return r.groups.DatabaseGroup(ctx, routed, database)
 }
 
 // ResolveAuditShard implements AuditShardResolver.

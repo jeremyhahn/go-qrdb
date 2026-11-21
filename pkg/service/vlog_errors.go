@@ -20,29 +20,40 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
 
+// BarrierStoreUnavailableError is returned by every LogService call for a
+// barrier tenant on a node whose composer attached no LogGroupSource: the
+// barrier-sealed home group the tenant's log lives in cannot be reached here,
+// and the log fails closed rather than falling back to the system shard.
+type BarrierStoreUnavailableError struct {
+	TenantID string
+}
+
+func (e *BarrierStoreUnavailableError) Error() string {
+	return "service: the barrier-sealed store of barrier tenant " + strconv.Quote(e.TenantID) + " is not reachable on this node"
+}
+
+// BarrierDatabaseLogNotSupportedError is returned by every LogService call
+// naming a barrier-enabled database, whatever its backend, before any signing
+// key is created, any command is proposed or any read is made. A verifiable
+// log in such a database has no store under the database's own key yet: the
+// tenant's group would hold its entries and signing keys outside that key, and
+// they would stay readable while the database is sealed. The log is refused
+// until it has one.
+type BarrierDatabaseLogNotSupportedError struct {
+	TenantID string
+	Database string
+}
+
+func (e *BarrierDatabaseLogNotSupportedError) Error() string {
+	return "service: verifiable logs are not supported in barrier-enabled database " + strconv.Quote(e.Database) +
+		" of tenant " + strconv.Quote(e.TenantID) + ": the log has no store under the database's key"
+}
+
 // LogFeatureNotActiveError is returned by a LogService write while a cluster
 // feature the write's command needs (featuregate.VerifiableLog, and for a
 // create or a key rotation featuregate.VerifiableLogKeys) is not yet active on
 // every replica of the tenant's group: a replica that cannot apply a command
 // must never be sent it.
-// BarrierStoreUnavailableError is returned by every LogService call for a
-// barrier tenant, or a barrier-enabled database (Database set), on a node
-// whose composer attached no LogGroupSource: the barrier-sealed group the
-// log lives in cannot be reached here, and the log fails closed rather than
-// falling back to the system shard.
-type BarrierStoreUnavailableError struct {
-	TenantID string
-	Database string
-}
-
-func (e *BarrierStoreUnavailableError) Error() string {
-	where := "barrier tenant " + strconv.Quote(e.TenantID)
-	if e.Database != "" {
-		where = "barrier database " + strconv.Quote(e.Database) + " of tenant " + strconv.Quote(e.TenantID)
-	}
-	return "service: the barrier-sealed store of " + where + " is not reachable on this node"
-}
-
 type LogFeatureNotActiveError struct {
 	TenantID string
 	ShardID  uint64

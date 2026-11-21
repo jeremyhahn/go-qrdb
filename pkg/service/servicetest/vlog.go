@@ -44,11 +44,6 @@ func (r logShard) ResolveAuditShard(context.Context, string) (service.Host, uint
 	return r.host, logShardID, nil
 }
 
-// ResolveDatabaseLogShard implements service.LogShardResolver: the one shard.
-func (r logShard) ResolveDatabaseLogShard(context.Context, string, string) (service.Host, uint64, error) {
-	return r.host, logShardID, nil
-}
-
 // NewLogService returns the real LogService over one in-memory state machine
 // that applies the verifiable-log commands, with the software head-signing
 // provider. A transport test driven against it proves the transport's mapping

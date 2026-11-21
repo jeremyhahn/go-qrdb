@@ -54,18 +54,6 @@ func (f *fakeGroupServices) IsShardJoining(shardID uint64) bool { return f.joini
 // is checked.
 type groupHost struct{ service.Host }
 
-// fakeGroupBarrier is a database barrier that is sealed or not.
-type fakeGroupBarrier struct{ sealed bool }
-
-func (b fakeGroupBarrier) Encrypt(dst, p []byte) ([]byte, error) { return append(dst, p...), nil }
-func (b fakeGroupBarrier) Decrypt(dst, c []byte) ([]byte, error) { return append(dst, c...), nil }
-func (b fakeGroupBarrier) IsSealed() bool                        { return b.sealed }
-
-// fakeGroupBarriers maps a database name to its barrier.
-type fakeGroupBarriers map[string]database.BarrierEncryptor
-
-func (m fakeGroupBarriers) GetBarrier(dbName, _ string) database.BarrierEncryptor { return m[dbName] }
-
 func TestLogGroups_TenantHomeGroup(t *testing.T) {
 	ctx := context.Background()
 	g := &logGroups{host: &groupHost{}}
@@ -89,41 +77,5 @@ func TestLogGroups_TenantHomeGroup(t *testing.T) {
 	var catching *TenantHomeCatchingUpError
 	if _, _, err := g.TenantHomeGroup(ctx, "late"); !errors.As(err, &catching) {
 		t.Fatalf("joining: err = %v, want *TenantHomeCatchingUpError", err)
-	}
-}
-
-func TestLogGroups_DatabaseGroup(t *testing.T) {
-	ctx := context.Background()
-	barriers := fakeGroupBarriers{"secure": fakeGroupBarrier{}, "locked": fakeGroupBarrier{sealed: true}}
-	g := &logGroups{host: &groupHost{}, barriers: func() logGroupBarriers { return barriers }}
-	var unavailable *service.BarrierStoreUnavailableError
-	if _, _, err := g.DatabaseGroup(ctx, "acme", "secure"); !errors.As(err, &unavailable) || unavailable.Database != "secure" {
-		t.Fatalf("unattached: err = %v, want *service.BarrierStoreUnavailableError", err)
-	}
-	svcs := &fakeGroupServices{shards: map[string]uint64{"acme/secure": 50}}
-	g.attach(svcs)
-	host, shardID, err := g.DatabaseGroup(ctx, "acme", "secure")
-	if err != nil || shardID != 50 || host != g.host {
-		t.Fatalf("DatabaseGroup(acme, secure) = %v, %d, %v; want the database group 50", host, shardID, err)
-	}
-	svcs.asked = nil
-	for _, db := range []string{"locked", "unknown"} {
-		var sealed *database.SealedError
-		if _, _, err := g.DatabaseGroup(ctx, "acme", db); !errors.As(err, &sealed) {
-			t.Fatalf("%s: err = %v, want *database.SealedError", db, err)
-		}
-	}
-	if len(svcs.asked) != 0 {
-		t.Fatalf("a sealed database's group was opened: %v", svcs.asked)
-	}
-	svcs.unknown = map[string]bool{"acme/secure": true}
-	if _, _, err := g.DatabaseGroup(ctx, "acme", "secure"); !errors.As(err, &unavailable) || unavailable.Database != "secure" {
-		t.Fatalf("no dedicated group: err = %v, want *service.BarrierStoreUnavailableError", err)
-	}
-	svcs.unknown = nil
-	svcs.sealed = map[string]bool{"acme/secure": true}
-	var sealed *database.SealedError
-	if _, _, err := g.DatabaseGroup(ctx, "acme", "secure"); !errors.As(err, &sealed) {
-		t.Fatalf("group sealed: err = %v, want *database.SealedError", err)
 	}
 }

@@ -96,8 +96,8 @@ func TestSystemShardAuditResolver_RoutesPrefixAndBarrierTenantsToTheSystemShard(
 	}
 }
 
-// TestSystemShardLogResolver_RefusesBarrierTenants: the log registry sits
-// under the system barrier, so the log resolver refuses a barrier tenant.
+// TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup: a barrier
+// tenant's log lives in its home group, under the tenant's key.
 func TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup(t *testing.T) {
 	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
 		"widgets": {ID: "widgets", IsolationType: tenant.IsolationBarrier},
@@ -114,18 +114,12 @@ func TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup(t *testing.
 	if _, _, err := r.ResolveAuditShard(context.Background(), "vault"); !errors.Is(err, tenant.ErrTenantSealed) {
 		t.Fatalf("ResolveAuditShard(vault) = %v, want tenant.ErrTenantSealed", err)
 	}
-	if _, shardID, err := r.ResolveDatabaseLogShard(context.Background(), "acme", "secure"); err != nil || shardID != 11 {
-		t.Fatalf("ResolveDatabaseLogShard(acme, secure) = %d, %v; want the database group 11", shardID, err)
-	}
 
-	// Without a group source a barrier tenant or database fails closed.
+	// Without a group source a barrier tenant fails closed.
 	bare := NewSystemShardLogResolver(&mockHost{}, 1, lookup, nil)
 	var unavailable *BarrierStoreUnavailableError
 	if _, _, err := bare.ResolveAuditShard(context.Background(), "widgets"); !errors.As(err, &unavailable) || unavailable.TenantID != "widgets" {
 		t.Fatalf("no groups: ResolveAuditShard(widgets) = %v, want *BarrierStoreUnavailableError", err)
-	}
-	if _, _, err := bare.ResolveDatabaseLogShard(context.Background(), "acme", "secure"); !errors.As(err, &unavailable) || unavailable.Database != "secure" {
-		t.Fatalf("no groups: ResolveDatabaseLogShard = %v, want *BarrierStoreUnavailableError", err)
 	}
 }
 
@@ -143,10 +137,6 @@ func (g *fakeLogGroups) TenantHomeGroup(_ context.Context, tenantID string) (Hos
 		return nil, 0, tenant.ErrTenantSealed
 	}
 	return g.host, g.homes[tenantID], nil
-}
-
-func (g *fakeLogGroups) DatabaseGroup(context.Context, string, string) (Host, uint64, error) {
-	return g.host, 11, nil
 }
 
 // TestSystemShardLogResolver_RoutesOtherTenantsAsTheAuditResolverDoes: only

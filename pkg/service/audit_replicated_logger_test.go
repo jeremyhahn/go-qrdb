@@ -37,24 +37,9 @@ type fixedShardResolver struct {
 	host    Host
 	shardID uint64
 	err     error
-
-	dbShardID uint64
-	dbErr     error
 }
 
 func (r *fixedShardResolver) ResolveAuditShard(context.Context, string) (Host, uint64, error) {
-	return r.host, r.shardID, r.err
-}
-
-// ResolveDatabaseLogShard resolves a barrier database's group: dbShardID
-// where set, else the one shard; dbErr where set refuses it.
-func (r *fixedShardResolver) ResolveDatabaseLogShard(context.Context, string, string) (Host, uint64, error) {
-	if r.dbErr != nil {
-		return nil, 0, r.dbErr
-	}
-	if r.dbShardID != 0 {
-		return r.host, r.dbShardID, r.err
-	}
 	return r.host, r.shardID, r.err
 }
 
