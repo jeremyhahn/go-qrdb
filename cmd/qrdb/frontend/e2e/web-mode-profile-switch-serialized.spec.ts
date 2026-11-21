@@ -97,6 +97,10 @@ test("a second switch waits for a held first switch, then each reaches its own a
   const log: string[] = [];
   const healthOf = (tag: string): number => log.filter((e) => e === `${tag} /health`).length;
 
+  // Playwright runs matching routes newest first, and mockServer fulfils
+  // without falling back: register it before the routes that must run first.
+  await mockServer(page, pageOrigin, "A", log);
+  await mockServer(page, SECOND, "B", log);
   // B holds its first /health (the first switch's connect) until released.
   const firstHealth = gate();
   let secondHealthCalls = 0;
@@ -112,8 +116,6 @@ test("a second switch waits for a held first switch, then each reaches its own a
       await route.fallback();
     },
   );
-  await mockServer(page, pageOrigin, "A", log);
-  await mockServer(page, SECOND, "B", log);
   // CORS preflights for B; registered last so it runs first.
   await page.route(`${SECOND}/**`, async (route) => {
     if (route.request().method() === "OPTIONS") {
