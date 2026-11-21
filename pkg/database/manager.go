@@ -429,8 +429,12 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	}
 	meta.OwnerNode = m.ownerFor(cfg, shared)
 	// The record is written provisional: no opener on any node serves it
-	// until the create guard below has accepted the database.
-	meta.Provisional = true
+	// until the create guard below has accepted the database. A provisioned
+	// (shared) database is the exception: every node creates it at boot under
+	// the one shared incarnation, with no API create to guard, so a peer (or
+	// this node's next run) provisioning the same name must find it serving
+	// rather than see a record it can neither open nor create.
+	meta.Provisional = !shared
 	if err := cat.Create(ctx, meta); err != nil {
 		// A write that may have committed is settled first: rolling back
 		// around a record it left would orphan the name. A record that
@@ -456,11 +460,13 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// Accepted: promote the record so every node may serve it. A refusal
 	// above never gets here, so a record its cleanup could not remove stays
 	// provisional and is never opened.
-	if err := cat.Update(ctx, cfg.TenantID, cfg.Name, incarnation, func(rec *DatabaseMeta) error {
-		rec.Provisional = false
-		return nil
-	}); err != nil {
-		return nil, undo.run(ctx, err)
+	if meta.Provisional {
+		if err := cat.Update(ctx, cfg.TenantID, cfg.Name, incarnation, func(rec *DatabaseMeta) error {
+			rec.Provisional = false
+			return nil
+		}); err != nil {
+			return nil, undo.run(ctx, err)
+		}
 	}
 
 	// Open storage backend via factory.

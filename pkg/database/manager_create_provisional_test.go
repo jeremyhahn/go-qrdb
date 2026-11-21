@@ -87,3 +87,53 @@ func TestManager_Create_GuardRefusalWithFailedCleanupStaysNonServing(t *testing.
 	assert.True(t, meta.Provisional, "a refused record is never promoted")
 	assertNotServing(t, peer, "orders")
 }
+
+// A provisioned database is created on every node at boot under the one
+// shared incarnation, with no API guard to accept it: its record serves at
+// once. A peer provisioning the same name while the first node is still
+// between writing the record and finishing its create finds the database
+// rather than being refused with AlreadyExistsError (a restarted node of a
+// rolling restart exited at boot this way).
+func TestManager_Provision_PeerFindsRecordMidCreate(t *testing.T) {
+	creator, peer, cat := newProvisionalPeers(t)
+	cfg := DatabaseConfig{Name: "system", Backend: BackendMemory}
+	guardRan := false
+	ctx := WithCreateGuard(context.Background(), func(gctx context.Context) error {
+		guardRan = true
+		meta, err := cat.Get(gctx, "", "system")
+		require.NoError(t, err, "the record is in the catalog")
+		assert.False(t, meta.Provisional, "a provisioned record is never provisional")
+		db, err := peer.Provision(gctx, cfg)
+		require.NoError(t, err, "a peer provisioning the name mid-create finds it")
+		assert.NotNil(t, db)
+		return nil
+	})
+
+	_, err := creator.Provision(ctx, cfg)
+	require.NoError(t, err)
+	require.True(t, guardRan)
+}
+
+// A node restarting on the catalog its earlier run provisioned into opens
+// the recorded database again rather than failing with AlreadyExistsError.
+func TestManager_Provision_RestartFindsRecord(t *testing.T) {
+	cat, err := NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
+	require.NoError(t, err)
+	cfg := DatabaseConfig{Name: "system", Backend: BackendMemory}
+
+	first := NewManager(nil, t.TempDir(), WithKeyspaceReclaimer(&spyReclaimer{}))
+	first.SetCatalog(cat)
+	_, err = first.Provision(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NoError(t, first.Close())
+
+	restarted := NewManager(nil, t.TempDir(), WithKeyspaceReclaimer(&spyReclaimer{}))
+	restarted.SetCatalog(cat)
+	t.Cleanup(func() { _ = restarted.Close() })
+	db, err := restarted.Provision(context.Background(), cfg)
+	require.NoError(t, err, "a restarted node finds its provisioned database")
+	assert.NotNil(t, db)
+	meta, err := cat.Get(context.Background(), "", "system")
+	require.NoError(t, err)
+	assert.False(t, meta.Provisional)
+}
