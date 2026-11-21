@@ -20,6 +20,13 @@
 # VARS_CI_IMAGE_REGISTRY from the repository variable, because a registry a
 # later step takes from `vars` is not in this step's environment otherwise. A
 # _REGISTRY_OWNER or other non-host name is not scanned.
+# Userinfo (Codex on go-qrdb #1671): an entry's authority is split at its
+# last "@" before the host is classified, so in
+# http://build.user:password@192.168.1.10:8080 the host is 192.168.1.10, not
+# the user name; a bracketed IPv6 host keeps its brackets. The userinfo and
+# its password are masked whenever present, on a public host too, and an
+# internal host also masks the authority with its userinfo. An "@" in the
+# path is no userinfo.
 #
 #   usage: scripts/ci-mask-lan.sh
 set -euo pipefail
@@ -41,12 +48,27 @@ for v in $(compgen -e); do
 	esac
 	IFS='|, ' read -ra entries <<<"${!v}"
 	for entry in "${entries[@]}"; do
-		hostport=${entry#*://}
-		hostport=${hostport%%/*}
-		host=${hostport%%:*}
+		[ -n "$entry" ] || continue
+		# authority: [userinfo@]host[:port], before the first "/" of the path.
+		authority=${entry#*://}
+		authority=${authority%%/*}
+		hostport=${authority##*@}
+		userinfo=""
+		[ "$hostport" = "$authority" ] || userinfo=${authority%@*}
+		case $hostport in
+		\[*\]*) host=${hostport%%]*}] ;;
+		*) host=${hostport%%:*} ;;
+		esac
+		if [ -n "$userinfo" ]; then
+			echo "::add-mask::$userinfo"
+			password=${userinfo#*:}
+			[ "$password" = "$userinfo" ] || [ -z "$password" ] || echo "::add-mask::$password"
+		fi
 		private "$host" || continue
 		echo "::add-mask::$entry"
-		[ "$hostport" = "$entry" ] || echo "::add-mask::$hostport"
+		[ "$authority" = "$entry" ] || echo "::add-mask::$authority"
+		[ "$hostport" = "$authority" ] || echo "::add-mask::$hostport"
 		[ "$host" = "$hostport" ] || echo "::add-mask::$host"
+		case $host in \[*\]) inner=${host#[}; echo "::add-mask::${inner%]}" ;; esac
 	done
 done
