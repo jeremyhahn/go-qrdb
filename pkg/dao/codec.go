@@ -131,7 +131,7 @@ func NewCodec[E any](ct CodecType) (Codec[E], error) {
 	case CodecJSON:
 		c = json.New[E]()
 	case CodecYAML:
-		c = yaml.New[E]()
+		c = yamlPanicSafeCodec[E]{Codec: yaml.New[E]()}
 	case CodecTOML:
 		c = toml.New[E]()
 	case CodecMsgPack:
