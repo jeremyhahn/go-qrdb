@@ -115,6 +115,15 @@ run "could-not-run is retried once, and says so" "$r" "$work/bin/fakego" reject 
 run "a retry that succeeds passes and says so" "$r" "$work/bin/flakygo" accept \
 	".: tidy on the retry"
 
+# Fixture modules under a testdata/ path segment, at any depth, are
+# deliberately untidy and the go tool ignores them; the gate must too.
+r=$(repo fixtures . testdata/top sub/testdata/deep)
+printf 'example.com/stale v1.0.0 h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n' >"$r/testdata/top/go.sum"
+printf 'example.com/stale v1.0.0 h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n' >"$r/sub/testdata/deep/go.sum"
+git -C "$r" add -A
+run "modules under testdata/ are skipped" "$r" "$REAL_GO" accept \
+	"every module is tidy: go.mod" "testdata"
+
 r=$(repo noroot sub)
 run "discovery without the root go.mod fails" "$r" "$REAL_GO" reject \
 	"module discovery did not find the root go.mod"
