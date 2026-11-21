@@ -16,6 +16,7 @@ package service
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -70,12 +71,63 @@ func TestCollectionCodecCompat_RoundTripEveryDocumentCodec(t *testing.T) {
 	}
 }
 
+// TestCollectionCodecCompat_LosslessDocumentRoundTrip proves every storage
+// codec returns a JSON document unchanged: a null field stays present and
+// null, nested objects come back as string-keyed maps, and the quota charge
+// on write equals the release on delete.
+func TestCollectionCodecCompat_LosslessDocumentRoundTrip(t *testing.T) {
+	for _, ct := range dao.DocumentCodecs() {
+		t.Run(string(ct), func(t *testing.T) {
+			c, err := dao.NewCodec[map[string]any](ct)
+			require.NoError(t, err)
+
+			in := &dao.DynamicEntity{ID: 9, Fields: map[string]any{
+				"name":     "a",
+				"optional": nil,
+				"profile":  map[string]any{"name": "a"},
+				"items":    []any{map[string]any{"k": "v"}, 1.5},
+			}}
+			wantJSON, err := json.Marshal(in.Fields)
+			require.NoError(t, err)
+
+			data, err := marshalDocument(in, c)
+			require.NoError(t, err)
+			var out dao.DynamicEntity
+			require.NoError(t, unmarshalDocument(data, &out, c))
+
+			gotJSON, err := json.Marshal(out.Fields)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(wantJSON), string(gotJSON))
+
+			v, ok := out.Fields["optional"]
+			assert.True(t, ok, "null field dropped")
+			assert.Nil(t, v)
+
+			inBytes := DocumentBodyBytes(in.Fields)
+			assert.Positive(t, inBytes)
+			assert.Equal(t, inBytes, DocumentBodyBytes(out.Fields))
+		})
+	}
+}
+
 func TestCollectionCodecCompat_ProtobufRefused(t *testing.T) {
 	svc := newTestCollectionService()
 	_, err := svc.CreateCollection(context.Background(), &CreateCollectionRequest{
 		Name:         "users",
 		Database:     "mydb",
 		StorageCodec: string(dao.CodecProtoBuf),
+	})
+	assert.IsType(t, &CollectionInvalidCodecError{}, err)
+}
+
+// TestCollectionCodecCompat_TOMLRefused proves a collection cannot store
+// documents as TOML: TOML has no null, so null fields would be lost.
+func TestCollectionCodecCompat_TOMLRefused(t *testing.T) {
+	svc := newTestCollectionService()
+	_, err := svc.CreateCollection(context.Background(), &CreateCollectionRequest{
+		Name:         "users",
+		Database:     "mydb",
+		StorageCodec: string(dao.CodecTOML),
 	})
 	assert.IsType(t, &CollectionInvalidCodecError{}, err)
 }

@@ -97,10 +97,11 @@ func TestNewCodecUnsupported(t *testing.T) {
 func TestDocumentCodecs(t *testing.T) {
 	got := DocumentCodecs()
 	assert.True(t, slices.IsSorted(got), "DocumentCodecs must be sorted: %v", got)
-	for _, want := range []CodecType{CodecJSON, CodecMsgPack, CodecYAML, CodecBSON, CodecTOML} {
+	for _, want := range []CodecType{CodecJSON, CodecMsgPack, CodecYAML, CodecBSON} {
 		assert.Contains(t, got, want)
 	}
 	assert.NotContains(t, got, CodecProtoBuf)
+	assert.NotContains(t, got, CodecTOML, "TOML cannot encode null")
 	for _, ct := range got {
 		_, err := NewCodec[map[string]any](ct)
 		require.NoError(t, err, "codec %s", ct)

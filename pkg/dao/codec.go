@@ -66,15 +66,27 @@ func IsCodecSupported(ct CodecType) bool {
 	return codec.IsSupported(ct)
 }
 
+// nonDocumentCodecs are codecs NewCodec[map[string]any] builds but that
+// cannot store a generic JSON document losslessly. TOML has no null value,
+// so a document field set to null would vanish on write. Typed entity DAOs
+// still use these codecs through NewCodec.
+var nonDocumentCodecs = map[CodecType]struct{}{
+	CodecTOML: {},
+}
+
 // DocumentCodecs returns, sorted, the storage codecs a document
 // collection or database accepts: every SupportedCodecs entry for which
-// NewCodec[map[string]any] succeeds. ProtoBuf drops out because it cannot
-// encode a generic map. This is the one storage-codec list; the
-// collection service, the database StorageCodec check and the SDK all
-// read it.
+// NewCodec[map[string]any] succeeds and that is not in nonDocumentCodecs.
+// ProtoBuf drops out because it cannot encode a generic map; TOML is
+// excluded because it cannot encode null. This is the one storage-codec
+// list; the collection service, the database StorageCodec check and the
+// SDK all read it.
 func DocumentCodecs() []CodecType {
 	var out []CodecType
 	for _, ct := range SupportedCodecs() {
+		if _, excluded := nonDocumentCodecs[ct]; excluded {
+			continue
+		}
 		if _, err := NewCodec[map[string]any](ct); err == nil {
 			out = append(out, ct)
 		}

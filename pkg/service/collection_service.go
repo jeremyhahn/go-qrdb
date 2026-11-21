@@ -377,11 +377,11 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 		return nil, err
 	}
 
-	// Validate the per-collection codec when specified.
-	if req.StorageCodec != "" {
-		if _, err := dao.NewCodec[map[string]any](dao.CodecType(req.StorageCodec)); err != nil {
-			return nil, &CollectionInvalidCodecError{Codec: req.StorageCodec}
-		}
+	// Validate the per-collection codec when specified: it must be one of
+	// the document storage codecs.
+	if req.StorageCodec != "" &&
+		!slices.Contains(dao.DocumentCodecs(), dao.CodecType(req.StorageCodec)) {
+		return nil, &CollectionInvalidCodecError{Codec: req.StorageCodec}
 	}
 
 	incarnation, err := newCollectionIncarnation()
