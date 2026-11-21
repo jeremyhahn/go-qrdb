@@ -18,6 +18,16 @@ package sdk_test
 // nothing here imports a package under go-qrdb/pkg, which is the point. Each
 // test stands for one thing go-signal (docs/18 V38) used to reach into
 // go-qrdb/pkg for.
+//
+// go-signal import          sdk/go equivalent
+//   pkg/dao                 sdk.GenericDAO, sdk.NewDAO, sdk.DAOSortDescending
+//   pkg/kvstore             sdk.KVStore, sdk.EntityIndex (RegisterEntityIndexes)
+//   pkg/index               sdk.CompoundIndexDef, sdk.CompoundIndexRegisterer
+//   pkg/storage             sdkstorage.Storage, sdkstorage.StorageIteratorOptions
+//   pkg/storage/pebble      sdkstorage.NewPebbleStorage, sdkstorage.DefaultPebbleConfig
+//   pkg/service             sdk.KVServicer (service-backed store: sdk/go/server,
+//                           see TestNewServiceKVStore_RequiresTransactionService)
+//   pkg/engine              sdk.NewEmbeddedKVStore
 
 import (
 	"context"
@@ -97,6 +107,53 @@ func TestGoSignalSurface_DAO(t *testing.T) {
 	}
 	if _, err := dao.Get(ctx, 7); !sdk.IsDAONotFound(err) {
 		t.Fatalf("Get after Delete = %v, want not found", err)
+	}
+}
+
+// go-signal pkg/daostore/embedded.go and kvstore_adapter.go hold these types.
+var (
+	_ sdkstorage.Storage                = (sdkstorage.Storage)(nil)
+	_ sdkstorage.StorageIteratorOptions = sdkstorage.StorageIteratorOptions{}
+	_ sdk.EntityIndex                   = sdk.EntityIndex{}
+	_ sdk.KVServicer                    = (sdk.KVServicer)(nil)
+)
+
+// signalSessionStore mirrors go-signal pkg/daostore/factory.go and
+// pkg/desktop/jobs/queue.go, which keep a GenericDAO as a struct field.
+type signalSessionStore struct {
+	sessions sdk.GenericDAO[*signalSession]
+}
+
+func newSignalSessionStore(t *testing.T) *signalSessionStore {
+	t.Helper()
+	d, err := sdk.NewDAO(newSignalStore(t), "session", func() *signalSession { return &signalSession{} })
+	if err != nil {
+		t.Fatalf("NewDAO: %v", err)
+	}
+	return &signalSessionStore{sessions: d}
+}
+
+func TestGoSignalSurface_FindOrderByDescending(t *testing.T) {
+	ctx := context.Background()
+	holder := newSignalSessionStore(t)
+	for i, peer := range []string{"bob", "carol", "alice"} {
+		s := &signalSession{ID: uint64(i + 1), DeviceID: "dev", Peer: peer, Epoch: "1"}
+		if err := holder.sessions.Save(ctx, s); err != nil {
+			t.Fatalf("Save %s: %v", peer, err)
+		}
+	}
+	got, err := holder.sessions.Find(ctx).OrderBy("Peer", sdk.DAOSortDescending).Execute()
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	want := []string{"carol", "bob", "alice"}
+	if len(got) != len(want) {
+		t.Fatalf("Execute returned %d rows, want %d", len(got), len(want))
+	}
+	for i, s := range got {
+		if s.Peer != want[i] {
+			t.Fatalf("row %d Peer = %q, want %q", i, s.Peer, want[i])
+		}
 	}
 }
 
