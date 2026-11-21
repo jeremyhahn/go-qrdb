@@ -27,8 +27,10 @@
 //     their owner;
 //   - a removed script is back in scripts/;
 //   - a job has no timeout-minutes, or one over jobMinutesCeiling;
-//   - an actions/cache entry is saved on any event but a push to main, or by
-//     the combined actions/cache action, which saves on every event;
+//   - an actions/cache entry is saved on any event but the nightly schedule
+//     on main (CI_CACHE_SAVE), off a hosted runner, or by the combined
+//     actions/cache action, which saves on every event (#1597: a push to
+//     main runs on the pool, so a save gated on it never ran);
 //   - a workflow writes a GOMAXPROCS or go -p count instead of letting
 //     scripts/in-toolchain-image.sh derive it from the runner.
 //
@@ -74,12 +76,18 @@ const (
 	playwrightJob = "test-typescript"
 	// ciPublishExpr is when a run publishes: a push to main, and nothing else.
 	ciPublishExpr = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
-	// cachePublishTerm is the conjunct every cache save's `if:` carries.
-	cachePublishTerm = "env.CI_PUBLISH == 'true'"
+	// cacheSaveExpr is when a run saves the hosted Go caches: the nightly
+	// schedule on main, the one main run on a hosted runner (a push to main
+	// runs on the pool, #1597).
+	cacheSaveExpr = "${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' }}"
+	// cachePublishTerm is the conjunct every cache save's `if:` carries,
+	// beside hostedStepTerm.
+	cachePublishTerm = "env.CI_CACHE_SAVE == 'true'"
 	// cacheSaveAction and cacheAction are the split and the combined cache
 	// actions; the combined one saves in its post step on every event.
-	cacheSaveAction = "actions/cache/save@"
-	cacheAction     = "actions/cache@"
+	cacheSaveAction    = "actions/cache/save@"
+	cacheRestoreAction = "actions/cache/restore@"
+	cacheAction        = "actions/cache@"
 
 	// Floors, well under today's counts (7 workflows, 50 jobs).
 	runnerWorkflowFloor = 6
@@ -248,6 +256,11 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 				if hostWipeStep.MatchString(s.Run) && !strings.Contains(s.If, hostedStepTerm) {
 					add("job "+name+" has a step that wipes a hosted runner's disk under if: ", strconv.Quote(s.If), ", without "+hostedStepTerm+"; on a self-hosted runner it deletes what other jobs share")
 				}
+				// A CI image digest record (#1609) is the one cache a pool job
+				// restores; ci_image_digest_test.go holds its condition.
+				if strings.HasPrefix(s.Uses, cacheRestoreAction) && !strings.Contains(s.With["path"], "ci-image-digests") && !strings.Contains(s.If, hostedStepTerm) {
+					add("job "+name+" restores a cache under if: ", strconv.Quote(s.If), ", without "+hostedStepTerm+"; a pool host keeps its caches on its own disk (#1597)")
+				}
 			}
 		}
 		if file == reviewWorkflow {
@@ -268,11 +281,14 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		for _, s := range job.Steps {
 			switch {
 			case strings.HasPrefix(s.Uses, cacheAction):
-				add("job " + name + " uses the combined actions/cache, which saves on every event; restore and save apart, the save on CI_PUBLISH alone")
+				add("job " + name + " uses the combined actions/cache, which saves on every event; restore and save apart, the save on CI_CACHE_SAVE alone")
+			case strings.HasPrefix(s.Uses, cacheSaveAction) && strings.Contains(s.With["path"], "ci-image-digests"):
+				// A CI image digest record (#1609), which only main's own
+				// push writes; ci_image_digest_test.go holds its condition.
 			case strings.HasPrefix(s.Uses, cacheSaveAction):
 				usesCache = true
-				if !strings.Contains(s.If, cachePublishTerm) {
-					add("job "+name+" saves a cache under if: ", strconv.Quote(s.If), "; only a push to main saves one ("+cachePublishTerm+")")
+				if !strings.Contains(s.If, cachePublishTerm) || !strings.Contains(s.If, hostedStepTerm) || strings.Contains(s.If, "||") || strings.Contains(s.If, "env.CI_PUBLISH") {
+					add("job "+name+" saves a cache under if: ", strconv.Quote(s.If), "; only the nightly schedule on main saves one, on a hosted runner ("+cachePublishTerm+" && "+hostedStepTerm+", nothing ORed)")
 				}
 			}
 			if hardcodedParallelism.MatchString(s.Run) {
@@ -290,8 +306,8 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 			}
 		}
 	}
-	if usesCache && wf.Env["CI_PUBLISH"] != ciPublishExpr {
-		add("env.CI_PUBLISH is ", strconv.Quote(wf.Env["CI_PUBLISH"]), ", not ", ciPublishExpr)
+	if usesCache && wf.Env["CI_CACHE_SAVE"] != cacheSaveExpr {
+		add("env.CI_CACHE_SAVE is ", strconv.Quote(wf.Env["CI_CACHE_SAVE"]), ", not ", cacheSaveExpr)
 	}
 	return problems, jobs
 }
@@ -633,15 +649,16 @@ const hostedFile = "release.yml"
 
 // runnerFixture is a hosted workflow that passes every rule.
 const runnerFixture = `env:
-  CI_PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  CI_CACHE_SAVE: ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' }}
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/cache/restore@0000000000000000000000000000000000000000 # v6
+      - if: runner.environment == 'github-hosted'
+        uses: actions/cache/restore@0000000000000000000000000000000000000000 # v6
       - run: make build
-      - if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
+      - if: ${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@0000000000000000000000000000000000000000 # v6
   legs:
     runs-on: ubuntu-latest
@@ -670,25 +687,30 @@ func TestRunnerProblems_CanFail(t *testing.T) {
 	cases := map[string]struct {
 		file, old, new, want string
 	}{
-		"a self-hosted label":           {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: bigdisk", "not the literal ubuntu-latest"},
-		"a runner list":                 {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: [self-hosted, linux]", "not the literal ubuntu-latest"},
-		"an expression":                 {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'batch' }}", "not the literal ubuntu-latest"},
-		"a job server_url split":        {hostedFile, "    timeout-minutes: 30\n", "    timeout-minutes: 30\n    if: github.server_url != 'https://github.com'\n", "splits on github.server_url"},
-		"a step server_url split":       {"nightly.yml", "      - run: make build", "      - if: github.server_url == 'https://github.com'\n        run: make build", "splits on github.server_url"},
-		"no timeout":                    {hostedFile, "    timeout-minutes: 30\n", "", "has no timeout-minutes"},
-		"a timeout over the ceiling":    {hostedFile, "timeout-minutes: 30", "timeout-minutes: 351", "not a number of minutes from 1 to 350"},
-		"a matrix leg over the ceiling": {hostedFile, "minutes: 350", "minutes: 360", "not a number of minutes from 1 to 350"},
-		"a matrix limit nothing sets":   {hostedFile, "timeout-minutes: ${{ matrix.minutes }}", "timeout-minutes: ${{ matrix.limit }}", "which no matrix entry sets"},
-		"a cache saved on every event":  {hostedFile, "${{ !cancelled() && env.CI_PUBLISH == 'true' }}", "${{ !cancelled() }}", "only a push to main saves one"},
-		"the combined cache action":     {hostedFile, "actions/cache/restore@", "actions/cache@", "combined actions/cache"},
-		"a publish flag on every push":  {hostedFile, "github.event_name == 'push' && github.ref == 'refs/heads/main'", "github.event_name == 'push'", "env.CI_PUBLISH is"},
-		"a written GOMAXPROCS":          {hostedFile, "make leg", "GOMAXPROCS=4 make leg", "GOMAXPROCS or -p count"},
-		"a written -p":                  {hostedFile, "make leg", "go test -p 4 ./...", "GOMAXPROCS or -p count"},
-		"a GOMAXPROCS step env":         {hostedFile, "      - run: make leg", "      - run: make leg\n        env:\n          GOMAXPROCS: \"8\"", "sets GOMAXPROCS in a step's env"},
-		"a self-hosted label in ci.yml": {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: bigdisk", "carries no `# self-hosted: <category>: <reason>` waiver"},
-		"an expression with a waiver":   {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: ${{ 'bigdisk' }}  # self-hosted: oversize: a fixture reason", "not the literal ubuntu-latest nor one self-hosted label"},
-		"a review label in ci.yml":      {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: codex  # self-hosted: hardware: a fixture reason", "label is reserved to code-review.yml's review job"},
-		"a disk wipe on a waived job":   {hostedFile, "  build:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n", "  build:\n    runs-on: gpu  # self-hosted: hardware: a fixture reason\n    timeout-minutes: 30\n    steps:\n      - run: sudo rm -rf /usr/share/dotnet\n", "wipes a hosted runner's disk"},
+		"a self-hosted label":            {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: bigdisk", "not the literal ubuntu-latest"},
+		"a runner list":                  {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: [self-hosted, linux]", "not the literal ubuntu-latest"},
+		"an expression":                  {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'batch' }}", "not the literal ubuntu-latest"},
+		"a job server_url split":         {hostedFile, "    timeout-minutes: 30\n", "    timeout-minutes: 30\n    if: github.server_url != 'https://github.com'\n", "splits on github.server_url"},
+		"a step server_url split":        {"nightly.yml", "      - run: make build", "      - if: github.server_url == 'https://github.com'\n        run: make build", "splits on github.server_url"},
+		"no timeout":                     {hostedFile, "    timeout-minutes: 30\n", "", "has no timeout-minutes"},
+		"a timeout over the ceiling":     {hostedFile, "timeout-minutes: 30", "timeout-minutes: 351", "not a number of minutes from 1 to 350"},
+		"a matrix leg over the ceiling":  {hostedFile, "minutes: 350", "minutes: 360", "not a number of minutes from 1 to 350"},
+		"a matrix limit nothing sets":    {hostedFile, "timeout-minutes: ${{ matrix.minutes }}", "timeout-minutes: ${{ matrix.limit }}", "which no matrix entry sets"},
+		"a cache saved on every event":   {hostedFile, "${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}", "${{ !cancelled() }}", "only the nightly schedule on main saves one"},
+		"a cache saved on a push":        {hostedFile, "env.CI_CACHE_SAVE == 'true' && runner", "env.CI_PUBLISH == 'true' && runner", "only the nightly schedule on main saves one"},
+		"a cache saved off hosted":       {hostedFile, " && runner.environment == 'github-hosted' }}\n        uses: actions/cache/save", " }}\n        uses: actions/cache/save", "only the nightly schedule on main saves one"},
+		"a cache save widened":           {hostedFile, "env.CI_CACHE_SAVE == 'true' && runner", "(env.CI_CACHE_SAVE == 'true' || github.event_name == 'pull_request') && runner", "only the nightly schedule on main saves one"},
+		"the combined cache action":      {hostedFile, "actions/cache/restore@", "actions/cache@", "combined actions/cache"},
+		"a save flag on every schedule":  {hostedFile, "github.event_name == 'schedule' && github.ref == 'refs/heads/main'", "github.event_name == 'schedule'", "env.CI_CACHE_SAVE is"},
+		"a save flag on a pull request":  {hostedFile, "github.event_name == 'schedule' && github.ref == 'refs/heads/main'", "github.event_name == 'pull_request'", "env.CI_CACHE_SAVE is"},
+		"a written GOMAXPROCS":           {hostedFile, "make leg", "GOMAXPROCS=4 make leg", "GOMAXPROCS or -p count"},
+		"a written -p":                   {hostedFile, "make leg", "go test -p 4 ./...", "GOMAXPROCS or -p count"},
+		"a GOMAXPROCS step env":          {hostedFile, "      - run: make leg", "      - run: make leg\n        env:\n          GOMAXPROCS: \"8\"", "sets GOMAXPROCS in a step's env"},
+		"a self-hosted label in ci.yml":  {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: bigdisk", "carries no `# self-hosted: <category>: <reason>` waiver"},
+		"an expression with a waiver":    {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: ${{ 'bigdisk' }}  # self-hosted: oversize: a fixture reason", "not the literal ubuntu-latest nor one self-hosted label"},
+		"a review label in ci.yml":       {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: codex  # self-hosted: hardware: a fixture reason", "label is reserved to code-review.yml's review job"},
+		"a disk wipe on a waived job":    {hostedFile, "  build:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n", "  build:\n    runs-on: gpu  # self-hosted: hardware: a fixture reason\n    timeout-minutes: 30\n    steps:\n      - run: sudo rm -rf /usr/share/dotnet\n", "wipes a hosted runner's disk"},
+		"a cache restore on a pool host": {hostedFile, "  build:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n      - if: runner.environment == 'github-hosted'\n", "  build:\n    runs-on: gpu  # self-hosted: hardware: a fixture reason\n    timeout-minutes: 30\n    steps:\n      - if: always()\n", "restores a cache"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

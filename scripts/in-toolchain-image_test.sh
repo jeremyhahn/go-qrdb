@@ -48,6 +48,20 @@ case $1 in
         # STUB_CONFIG_FAILS=n: the first n configurator runs fail as a run
         # whose stage has exited does.
         if [ "$(grep -c configured "$s/events")" -le "${STUB_CONFIG_FAILS:-0}" ]; then exit 125; fi ;;
+      *" --cap-add CHOWN "*)
+        # The ownership walk: STUB_HELPER_ERR fails it with that message;
+        # STUB_HELPER_WALK walks the mounted host directories for real, with
+        # an ownership lookup on every entry, as the helper's find does.
+        if [ -n "${STUB_HELPER_ERR:-}" ]; then echo "$STUB_HELPER_ERR" >&2; exit 1; fi
+        if [ -n "${STUB_HELPER_WALK:-}" ]; then
+          srcs=()
+          prev=
+          for a in "$@"; do
+            if [ "$prev" = -v ]; then srcs+=("${a%%:*}"); fi
+            prev=$a
+          done
+          LC_ALL=C find "${srcs[@]}" -mindepth 1 ! -user 65534 -exec stat -c %u {} + >/dev/null
+        fi ;;
     esac ;;
   volume) [ "$2" = rm ] && echo "volume:$3" >> "$s/removed" ;;
   logs)
@@ -94,7 +108,7 @@ reset() {
 # run [env...]: the script in the foreground, its status in $rc.
 run() {
   rc=0
-  (cd "$D/src" && env PATH="$D/bin:$PATH" STUB_STATE="$D/state" CI_CACHE=off \
+  (cd "$D/src" && env PATH="$D/bin:$PATH" STUB_STATE="$D/state" CI_CACHE=off CI_IMAGE_IDS="$D/no-ids" \
     IN_IMAGE_CPUS=2 CI_STACK_PREFIX=p- GITHUB_RUN_ID=77 GITHUB_JOB=image "$@" \
     "$here/in-toolchain-image.sh" "${img:-img}" make test) > "$D/out" 2>&1 || rc=$?
 }
@@ -102,7 +116,7 @@ run() {
 # its status in $rc. Job control keeps SIGINT deliverable to a background job.
 signalled() {
   set -m
-  (cd "$D/src" && exec env PATH="$D/bin:$PATH" STUB_STATE="$D/state" CI_CACHE=off \
+  (cd "$D/src" && exec env PATH="$D/bin:$PATH" STUB_STATE="$D/state" CI_CACHE=off CI_IMAGE_IDS="$D/no-ids" \
     IN_IMAGE_CPUS=2 CI_STACK_PREFIX=p- STUB_BLOCK="$1" \
     "$here/in-toolchain-image.sh" img make test) > "$D/out" 2>&1 &
   pid=$!
@@ -437,6 +451,92 @@ cpus_are "docker info fails with no output" 128 IN_IMAGE_CPUS=128 STUB_NCPU= STU
 cpus_are "docker info fails printing 0" 128 IN_IMAGE_CPUS=128 STUB_NCPU=0 STUB_NCPU_RC=1
 # A failed lookup that still prints a positive count must not cap: only a zero exit counts.
 cpus_are "docker info fails printing 80" 128 IN_IMAGE_CPUS=128 STUB_NCPU=80 STUB_NCPU_RC=1
+
+# 31. #1597: the ID scripts/ci-image.sh load verified, not the shared tag,
+# reaches every docker create and run: the stage, the configurator and the
+# ownership helper.
+hex=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+rm -rf "$D/ids" "$D/cache"
+mkdir -p "$D/ids"
+printf 'sha256:%s\n' "$hex" > "$D/ids/img"
+reset
+run CI_IMAGE_IDS="$D/ids" CI_CACHE=on CI_CACHE_DIR="$D/cache"
+if [ "$rc" = 0 ] && called "^create .* sha256:$hex sh -c " &&
+  called "^run --rm --name p-tc-[0-9]*-[0-9]*-netns .* sha256:$hex sh -c " &&
+  called "^run --rm --network none --cap-drop ALL --cap-add CHOWN .* sha256:$hex find /c " &&
+  ! called ' img ' && grep -q "img runs as sha256:$hex" "$D/out"; then
+  ok "the verified image ID, not the tag, reaches docker create and run"
+else bad "the verified image ID, not the tag, reaches docker create and run (rc=$rc)"; cat "$D/out" "$D/state/calls"; fi
+
+# 32. A record that is not an image ID is refused before anything runs.
+printf 'img\n' > "$D/ids/img"
+reset
+run CI_IMAGE_IDS="$D/ids"
+if [ "$rc" = 2 ] && grep -q "records 'img' for img, not an image ID" "$D/out" && [ ! -s "$D/state/calls" ]; then
+  ok "a malformed image ID record is refused"
+else bad "a malformed image ID record is refused (rc=$rc)"; cat "$D/out"; fi
+rm -rf "$D/ids"
+
+# 33. The ownership walk tolerates entries that vanish under it, and fails on
+# any other error.
+reset
+rm -rf "$D/cache"
+run CI_CACHE=on CI_CACHE_DIR="$D/cache" STUB_HELPER_ERR="find: /c/gobuild/ab/x-d: No such file or directory"
+if [ "$rc" = 0 ] && called '^create '; then
+  ok "the ownership walk tolerates vanished entries"
+else bad "the ownership walk tolerates vanished entries (rc=$rc)"; cat "$D/out"; fi
+reset
+rm -rf "$D/cache"
+run CI_CACHE=on CI_CACHE_DIR="$D/cache" STUB_HELPER_ERR="chown: /c/gobuild/x: Operation not permitted"
+if [ "$rc" != 0 ] && grep -q 'Operation not permitted' "$D/out" && grep -q 'the cache ownership walk failed' "$D/out" &&
+  [ ! -e "$D/cache/.owner-ready" ]; then
+  ok "the ownership walk fails on any other error"
+else bad "the ownership walk fails on any other error (rc=$rc)"; cat "$D/out"; fi
+
+# 34. The walk runs once per generation: it writes .owner-ready, and a later
+# stage skips it while every mounted directory is the run's; a directory that
+# is not (a restored cache) is walked again.
+if [ "$(id -u)" = 0 ]; then owner=10001; else owner=$(id -u); fi
+reset
+rm -rf "$D/cache"
+run CI_CACHE=on CI_CACHE_DIR="$D/cache" IN_IMAGE_UID="$owner"
+if [ "$(id -u)" = 0 ]; then chown "$owner" "$D/cache/gobuild" "$D/cache/golangci"; fi
+first=$(grep -c -- '--cap-add CHOWN ' "$D/state/calls")
+reset
+run CI_CACHE=on CI_CACHE_DIR="$D/cache" IN_IMAGE_UID="$owner"
+if [ "$first" = 1 ] && [ -e "$D/cache/.owner-ready" ] && [ "$rc" = 0 ] && ! called '--cap-add CHOWN '; then
+  ok "a prepared generation skips the ownership walk"
+else bad "a prepared generation skips the ownership walk (rc=$rc first=$first)"; cat "$D/state/calls"; fi
+reset
+run CI_CACHE=on CI_CACHE_DIR="$D/cache" IN_IMAGE_UID=4242
+if [ "$rc" = 0 ] && called '--cap-add CHOWN '; then
+  ok "a generation not the run's is walked again"
+else bad "a generation not the run's is walked again (rc=$rc)"; cat "$D/state/calls"; fi
+
+# 35. A stage launch walks the generation while a concurrent stage's trim
+# deletes entries from it, and still starts its command.
+rm -rf "$D/cache"
+mkdir -p "$D/cache/gobuild" "$D/cache/golangci"
+for i in $(seq 1 40); do mkdir -p "$D/cache/gobuild/$i"; for j in $(seq 1 50); do : > "$D/cache/gobuild/$i/$j-d"; done; done
+: > "$D/trim-run"
+(
+  while [ -e "$D/trim-run" ]; do
+    for i in $(seq 1 40); do rm -f "$D/cache/gobuild/$i/"*-d; for j in 1 2 3 4 5 6 7 8; do : > "$D/cache/gobuild/$i/$j-d"; done; done
+  done
+) &
+trim=$!
+races=0
+for _ in 1 2 3 4 5; do
+  reset
+  rm -f "$D/cache/.owner-ready"
+  run CI_CACHE=on CI_CACHE_DIR="$D/cache" STUB_HELPER_WALK=1
+  [ "$rc" = 0 ] && called '^start ' || races=$((races + 1))
+done
+rm -f "$D/trim-run"
+wait "$trim"
+if [ "$races" = 0 ]; then
+  ok "a stage launch survives a concurrent trim of its generation"
+else bad "a stage launch survives a concurrent trim of its generation ($races of 5 failed)"; cat "$D/out"; fi
 
 # The CI image registry (#1609): an image not on the daemon is pulled from
 # CI_IMAGE_REGISTRY before the stage starts, by the digest its record in
