@@ -14,8 +14,59 @@
   See the License for the specific language governing permissions and
   limitations under the License.
 -->
+<script lang="ts" module>
+  /**
+   * Scopes (server, tenant, database) whose store answered 501 to
+   * GET /kv/revision (no revisions). Kept in sessionStorage so a reload of
+   * the tab does not ask again; keyed by the full scope so one store without
+   * revisions never hides them on another database or server.
+   */
+  const NO_REVISION_KEY = "qrdb.noRevisionScopes";
+
+  function loadNoRevisionScopes(): Set<string> {
+    try {
+      const raw = globalThis.sessionStorage?.getItem(NO_REVISION_KEY);
+      const parsed: unknown = raw ? JSON.parse(raw) : [];
+      return new Set(Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  const noRevisionScopes = loadNoRevisionScopes();
+
+  /**
+   * Remembers that scope's store keeps no revisions. An empty scope names
+   * no store, so nothing is remembered for it.
+   */
+  function rememberNoRevisions(scope: string): void {
+    if (scope === "") return;
+    noRevisionScopes.add(scope);
+    try {
+      globalThis.sessionStorage?.setItem(NO_REVISION_KEY, JSON.stringify([...noRevisionScopes]));
+    } catch {
+      // Storage unavailable: the in-memory set still covers this page load.
+    }
+  }
+
+  /** Reports whether err is the server's 501 Not Implemented answer. */
+  function isNotImplemented(err: unknown): boolean {
+    if (typeof err !== "object" || err === null) return false;
+    const e = err as { statusCode?: unknown; status?: unknown; message?: unknown };
+    if (e.statusCode === 501 || e.status === 501) return true;
+    const msg = typeof e.message === "string" ? e.message : "";
+    return /\b501\b|not implemented|unimplemented/i.test(msg);
+  }
+</script>
+
 <script lang="ts">
-  import type { Client, RestoreRevisionRequest, RestoreRevisionResult } from "@qrdb/sdk";
+  import type {
+    Client,
+    MVCCKeyValue,
+    RestoreRevisionRequest,
+    RestoreRevisionResult,
+  } from "@qrdb/sdk";
+  import { untrack } from "svelte";
   import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
   import { showToast } from "../../stores/toast.svelte.ts";
   import { withRetry } from "../../lib/retry.ts";
@@ -36,7 +87,19 @@
     RotateCcw,
   } from "lucide-svelte";
 
-  let { client }: { client: Client } = $props();
+  /**
+   * scope identifies the store this explorer reads: server, tenant and
+   * database (see kvScope). Revision support is remembered per scope.
+   */
+  let { client, scope = "" }: { client: Client; scope?: string } = $props();
+
+  // Set once the scope's store answered 501 to the revision probe.
+  // Bumped when a probe adds the scope to noRevisionScopes, so the derived
+  // flag re-reads the (non-reactive) set.
+  let revisionSupportVersion: number = $state(0);
+  const revisionsUnsupported: boolean = $derived(
+    revisionSupportVersion >= 0 && scope !== "" && noRevisionScopes.has(scope),
+  );
 
   // ---------------------------------------------------------------------------
   // Types
@@ -70,6 +133,37 @@
 
   // Detail panel
   let selectedEntry: KVEntry | null = $state(null);
+
+  // Selected entry's MVCC metadata (mvcc.getRevision) and the point-in-time
+  // "value at revision" lookup (mvcc.getAtRevision).
+  let entryMeta: MVCCKeyValue | null = $state(null);
+  let entryMetaError: string = $state("");
+  let atRevisionInput: string = $state("");
+  let atRevisionResult: MVCCKeyValue | null = $state(null);
+  let atRevisionError: string = $state("");
+  let atRevisionBusy: boolean = $state(false);
+
+  // Store-wide revision (mvcc.currentRevision) and compaction (mvcc.compact).
+  let currentRevision: number | null = $state(null);
+  let compactRevisionInput: string = $state("");
+  let compactTarget: number | null = $state(null);
+
+  // Optional lease for a save (mvcc.putWithLease); blank saves through kv.put.
+  let modalLeaseId: string = $state("");
+  // True when the edited key's lease could not be read: a blank lease is
+  // then "unknown", not "none", and the form says so before a save that
+  // would release a binding.
+  let modalLeaseUnknown: boolean = $state(false);
+
+  // The selected entry's metadata (and so its lease) is still in flight.
+  // Edit waits for it so the form never snapshots a lease it has not read.
+  const entryMetaPending: boolean = $derived(
+    selectedEntry !== null && entryMeta === null && entryMetaError === "",
+  );
+
+  // "Go to key" (kv.exists then kv.get) and the keys-only listing (kv.list).
+  let gotoKeyInput: string = $state("");
+  let keysOnly: boolean = $state(false);
 
   // As-of (historical) browse. asOfRevision is the revision currently being
   // viewed; null means "live". Set independently of the input text so a
@@ -122,6 +216,11 @@
 
   const isHistorical = $derived(asOfRevision !== null);
 
+  // Keys-only listing has no values, so the Value column is dropped.
+  const visibleColumns = $derived(
+    keysOnly && asOfRevision === null ? browseColumns.filter((c) => c.id === "key") : browseColumns,
+  );
+
   const restoreModalTitle = $derived(
     restorePhase === "form"
       ? "Restore to Revision"
@@ -141,29 +240,244 @@
   // Live / historical browse
   // ---------------------------------------------------------------------------
 
+  // Counts listings started, so only the newest clears the loading flag.
+  let loadSeq = 0;
+
   async function loadEntries(): Promise<void> {
+    // The explorer stays mounted across database switches: a listing is
+    // bound to the client and scope generation it started in, and its
+    // answer (or error) is dropped if the database changed meanwhile, so
+    // one database's keys never show (or get bulk-deleted) under another.
+    const gen = scopeGeneration;
+    const listClient = client;
+    const seq = ++loadSeq;
     loading = true;
     try {
+      let next: KVEntry[];
       if (asOfRevision !== null) {
         const { start, end } = rangeBoundsForPrefix(prefixFilter);
         const resp = await withRetry(() =>
-          client.mvcc.range(start, end, { revision: asOfRevision as number }),
+          listClient.mvcc.range(start, end, { revision: asOfRevision as number }),
         );
-        entries = resp.kvs.map((kv) => ({ key: kv.key, value: kv.value }));
+        next = resp.kvs.map((kv) => ({ key: kv.key, value: kv.value }));
+      } else if (keysOnly) {
+        // Keys only: kv.list returns names without values; a row's value is
+        // fetched with kv.get when it is opened.
+        const keys = await withRetry(() => listClient.kv.list(prefixFilter));
+        next = [...keys].sort().map((key) => ({ key, value: "" }));
       } else {
         // Use scan() so we get keys+values in one round trip instead of N+1.
-        const map = await withRetry(() => client.kv.scan(prefixFilter));
-        const next: KVEntry[] = [];
+        const map = await withRetry(() => listClient.kv.scan(prefixFilter));
+        next = [];
         for (const key of Object.keys(map).sort()) {
           next.push({ key, value: map[key] ?? "" });
         }
-        entries = next;
       }
+      // A newer listing (another database, or the same one with other
+      // options) supersedes this one: its answer and its error are dropped.
+      if (!isCurrentScope(gen) || seq !== loadSeq) return;
+      entries = next;
     } catch (err: unknown) {
+      if (!isCurrentScope(gen) || seq !== loadSeq) return;
       showToast("error", err instanceof Error ? err.message : String(err));
       entries = [];
     } finally {
-      loading = false;
+      // Only the newest load clears the spinner; a stale one leaves it to
+      // the load that replaced it.
+      if (seq === loadSeq) loading = false;
+    }
+    await refreshCurrentRevision();
+  }
+
+  /**
+   * Reads the store-wide revision. A store without revisions answers 501:
+   * that answer is remembered for the database, so later opens do not ask
+   * again, and the revision controls show why they are unavailable.
+   */
+  async function refreshCurrentRevision(): Promise<void> {
+    // The explorer stays mounted across database switches: the probe is
+    // bound to the client and scope it started for, and its answer is
+    // shown only if the user is still on that database.
+    const probeClient = client;
+    const probeScope = scope;
+    if (revisionsUnsupported) {
+      currentRevision = null;
+      return;
+    }
+    // Loads of one database that overlap share one request instead of
+    // each asking; another database asks for itself.
+    let probe = revisionProbes.get(probeClient);
+    if (probe === undefined) {
+      probe = probeCurrentRevision(probeClient, probeScope).finally(() => {
+        revisionProbes.delete(probeClient);
+      });
+      revisionProbes.set(probeClient, probe);
+    }
+    const revision = await probe;
+    if (client === probeClient && scope === probeScope) currentRevision = revision;
+  }
+
+  const revisionProbes = new Map<Client, Promise<number | null>>();
+
+  /**
+   * Reads probeClient's current revision; null when it has none. A 501 is
+   * remembered for probeScope, the database the probe was sent to.
+   */
+  async function probeCurrentRevision(probeClient: Client, probeScope: string): Promise<number | null> {
+    try {
+      return await probeClient.mvcc.currentRevision();
+    } catch (err: unknown) {
+      if (isNotImplemented(err)) {
+        rememberNoRevisions(probeScope);
+        revisionSupportVersion++;
+      }
+      return null;
+    }
+  }
+
+  /** Asks for confirmation before compacting history up to the entered revision. */
+  function requestCompact(): void {
+    const revision = Number(compactRevisionInput);
+    if (!Number.isInteger(revision) || revision <= 0) {
+      showToast("warning", "Enter a positive revision to compact to.");
+      return;
+    }
+    if (currentRevision !== null && revision > currentRevision) {
+      showToast("warning", `Revision ${revision} is beyond the current revision ${currentRevision}.`);
+      return;
+    }
+    compactTarget = revision;
+  }
+
+  async function confirmCompact(): Promise<void> {
+    if (compactTarget === null) return;
+    const revision = compactTarget;
+    compactTarget = null;
+    try {
+      await client.mvcc.compact(revision);
+      showToast("success", `Compacted history to revision ${revision}`);
+      compactRevisionInput = "";
+      await refreshCurrentRevision();
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // The explorer stays mounted across database switches. Every per-key read
+  // captures the generation it started in; a database switch bumps it, so
+  // an answer from the previous database is dropped instead of being shown
+  // (or edited) against the new one.
+  let scopeGeneration = 0;
+
+  /** Reports whether a read started in generation gen is still current. */
+  function isCurrentScope(gen: number): boolean {
+    return gen === scopeGeneration;
+  }
+
+  /** Closes the selected entry and drops its metadata (a database switch). */
+  function resetSelection(): void {
+    scopeGeneration++;
+    selectedEntry = null;
+    entryMeta = null;
+    entryMetaError = "";
+    atRevisionInput = "";
+    atRevisionResult = null;
+    atRevisionError = "";
+    atRevisionBusy = false;
+    showCreatePanel = false;
+    editMode = false;
+    modalLeaseId = "";
+    modalLeaseUnknown = false;
+  }
+
+  /** Opens the detail panel for entry and loads its MVCC metadata. */
+  async function selectEntry(entry: KVEntry): Promise<void> {
+    const gen = scopeGeneration;
+    const metaClient = client;
+    selectedEntry = entry;
+    entryMeta = null;
+    entryMetaError = "";
+    atRevisionInput = "";
+    atRevisionResult = null;
+    atRevisionError = "";
+    try {
+      const meta = await metaClient.mvcc.getRevision(entry.key);
+      if (isCurrentScope(gen) && selectedEntry?.key === entry.key) entryMeta = meta;
+    } catch (err: unknown) {
+      if (isCurrentScope(gen) && selectedEntry?.key === entry.key) {
+        entryMetaError = err instanceof Error ? err.message : String(err);
+      }
+    }
+  }
+
+  /** Opens key's panel, fetching its current value with kv.get. */
+  async function openKey(key: string): Promise<void> {
+    const gen = scopeGeneration;
+    const readClient = client;
+    try {
+      const value = await readClient.kv.get(key);
+      // The database changed while the read was in flight: its value
+      // belongs to the previous database and is discarded.
+      if (!isCurrentScope(gen)) return;
+      await selectEntry({ key, value });
+    } catch (err: unknown) {
+      if (!isCurrentScope(gen)) return;
+      showToast("error", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** "Go to key": checks the key exists, then opens it. */
+  async function goToKey(): Promise<void> {
+    const key = gotoKeyInput.trim();
+    if (key === "") {
+      showToast("warning", "Enter a key.");
+      return;
+    }
+    const gen = scopeGeneration;
+    const readClient = client;
+    try {
+      const exists = await readClient.kv.exists(key);
+      if (!isCurrentScope(gen)) return;
+      if (!exists) {
+        showToast("warning", `Key "${key}" does not exist.`);
+        return;
+      }
+    } catch (err: unknown) {
+      if (!isCurrentScope(gen)) return;
+      showToast("error", err instanceof Error ? err.message : String(err));
+      return;
+    }
+    await openKey(key);
+  }
+
+  async function toggleKeysOnly(): Promise<void> {
+    selectedEntry = null;
+    await loadEntries();
+  }
+
+  /** Looks up the selected key's value at the entered revision. */
+  async function lookupAtRevision(): Promise<void> {
+    if (selectedEntry === null) return;
+    const revision = Number(atRevisionInput);
+    atRevisionResult = null;
+    atRevisionError = "";
+    if (!Number.isInteger(revision) || revision <= 0) {
+      atRevisionError = "Enter a positive revision.";
+      return;
+    }
+    const key = selectedEntry.key;
+    const gen = scopeGeneration;
+    const readClient = client;
+    atRevisionBusy = true;
+    try {
+      const kv = await readClient.mvcc.getAtRevision(key, revision);
+      if (isCurrentScope(gen) && selectedEntry?.key === key) atRevisionResult = kv;
+    } catch (err: unknown) {
+      if (isCurrentScope(gen) && selectedEntry?.key === key) {
+        atRevisionError = err instanceof Error ? err.message : String(err);
+      }
+    } finally {
+      if (isCurrentScope(gen)) atRevisionBusy = false;
     }
   }
 
@@ -189,13 +503,25 @@
     editMode = false;
     modalKey = "";
     modalValue = "";
+    modalLeaseId = "";
+    modalLeaseUnknown = false;
     showCreatePanel = true;
   }
 
+  /**
+   * Opens the edit form for entry once its metadata is known. While the
+   * metadata is in flight the lease is unknown, so nothing is opened (Edit is
+   * disabled then too); if the read failed the form opens with the lease
+   * marked unknown instead of silently treating it as none.
+   */
   function openEditPanel(entry: KVEntry): void {
+    if (entryMetaPending) return;
+    const meta = entryMeta !== null && entryMeta.key === entry.key ? entryMeta : null;
     editMode = true;
     modalKey = entry.key;
     modalValue = entry.value;
+    modalLeaseId = meta?.leaseId ? String(meta.leaseId) : "";
+    modalLeaseUnknown = meta === null;
     showCreatePanel = true;
   }
 
@@ -209,12 +535,31 @@
       return;
     }
 
+    const leaseText = String(modalLeaseId ?? "").trim();
+    const leaseId = leaseText === "" ? 0 : Number(leaseText);
+    if (!Number.isInteger(leaseId) || leaseId < 0) {
+      showToast("warning", "Lease ID must be a positive integer.");
+      return;
+    }
+
     modalLoading = true;
     try {
-      await client.kv.put(modalKey, modalValue);
-      showToast("success", editMode ? `Updated "${modalKey}"` : `Created "${modalKey}"`);
+      if (leaseId > 0) {
+        await client.mvcc.putWithLease(modalKey, modalValue, leaseId);
+      } else {
+        await client.kv.put(modalKey, modalValue);
+      }
+      const verb = editMode ? "Updated" : "Created";
+      showToast(
+        "success",
+        leaseId > 0 ? `${verb} "${modalKey}" with lease ${leaseId}` : `${verb} "${modalKey}"`,
+      );
       showCreatePanel = false;
+      const savedKey = modalKey;
+      const savedValue = modalValue;
       await loadEntries();
+      // The open panel's metadata (lease, revision) changed with the save.
+      if (selectedEntry?.key === savedKey) await selectEntry({ key: savedKey, value: savedValue });
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
@@ -246,6 +591,11 @@
   }
 
   async function handleBulkDelete(indices: Set<number>): Promise<void> {
+    // The explorer stays mounted across database switches: the keys were
+    // listed in this database, so every delete goes through the client
+    // captured here, never the one a later switch installs.
+    const deleteClient = client;
+    const gen = scopeGeneration;
     loading = true;
     const keysToDelete: string[] = [];
     for (const idx of indices) {
@@ -255,7 +605,7 @@
     let failCount = 0;
     for (const key of keysToDelete) {
       try {
-        await client.kv.delete(key);
+        await deleteClient.kv.delete(key);
         successCount++;
       } catch {
         failCount++;
@@ -266,13 +616,19 @@
     } else {
       showToast("warning", `Deleted ${successCount}, failed ${failCount}`);
     }
+    // After a switch the new database's view is left to its own listing.
+    if (!isCurrentScope(gen) || client !== deleteClient) return;
     selectedEntry = null;
     await loadEntries();
     loading = false;
   }
 
   function handleRowClick(event: RowClickEvent<KVEntry>): void {
-    selectedEntry = event.row;
+    if (keysOnly && !isHistorical) {
+      void openKey(event.row.key);
+    } else {
+      void selectEntry(event.row);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -411,6 +767,15 @@
   // between databases) and on initial mount. Using $effect instead of onMount
   // ensures data is fetched even when the component stays mounted but receives
   // a new client prop after a database switch.
+  // A database switch (a new client or scope) closes the open entry and
+  // drops its metadata, and per-key reads still in flight are discarded
+  // (scopeGeneration). Runs before the reload below.
+  $effect.pre(() => {
+    void client;
+    void scope;
+    untrack(resetSelection);
+  });
+
   $effect(() => {
     void client;
     loadEntries();
@@ -484,6 +849,63 @@
     </div>
   </div>
 
+  <div class="mt-3 flex flex-wrap items-center gap-3 text-sm">
+    <span class="text-base-content/70" data-testid="kv-current-revision">
+      Current revision: <strong class="font-mono">{currentRevision ?? "—"}</strong>
+    </span>
+    {#if revisionsUnsupported}
+      <span class="badge badge-ghost" data-testid="kv-revisions-unavailable">
+        Revisions unavailable: this database's store keeps no revision history
+      </span>
+    {/if}
+
+    <div class="join">
+      <input
+        type="number"
+        min="1"
+        class="input join-item input-bordered input-sm w-28 font-mono"
+        placeholder="revision"
+        aria-label="Compact revision"
+        disabled={revisionsUnsupported}
+        bind:value={compactRevisionInput}
+        onkeydown={(e) => e.key === "Enter" && requestCompact()}
+      />
+      <button
+        class="btn btn-outline btn-sm join-item"
+        disabled={revisionsUnsupported}
+        title={revisionsUnsupported ? "This database's store keeps no revision history" : undefined}
+        onclick={requestCompact}
+      >
+        Compact to revision
+      </button>
+    </div>
+
+    <div class="join">
+      <input
+        type="text"
+        class="input join-item input-bordered input-sm w-48 font-mono"
+        placeholder="Go to key..."
+        aria-label="Go to key"
+        bind:value={gotoKeyInput}
+        disabled={isHistorical}
+        onkeydown={(e) => e.key === "Enter" && goToKey()}
+      />
+      <button class="btn btn-sm join-item" onclick={goToKey} disabled={isHistorical}>Go</button>
+    </div>
+
+    <label class="label cursor-pointer gap-2">
+      <input
+        type="checkbox"
+        class="toggle toggle-sm"
+        aria-label="Keys only"
+        bind:checked={keysOnly}
+        onchange={toggleKeysOnly}
+        disabled={isHistorical}
+      />
+      <span class="label-text">Keys only</span>
+    </label>
+  </div>
+
   {#if isHistorical}
     <div role="alert" class="alert alert-warning mt-3 py-2 text-sm">
       <Clock class="h-4 w-4 shrink-0" />
@@ -501,7 +923,7 @@
   <CrudTable
     title={isHistorical ? `Key-Value Entries (as of revision ${asOfRevision})` : "Key-Value Entries"}
     data={entries}
-    columns={browseColumns}
+    columns={visibleColumns}
     {loading}
     showCreate={!isHistorical}
     showDelete={!isHistorical}
@@ -521,7 +943,6 @@
   title={isHistorical ? "Historical Details" : "Details"}
   onclose={() => (selectedEntry = null)}
 >
-  {#snippet children()}
     {#if selectedEntry}
       <div class="space-y-5">
         {#if isHistorical}
@@ -538,9 +959,54 @@
           <span class="text-sm font-medium text-base-content/70 block mb-1">Value</span>
           <div class="font-mono text-sm bg-base-200 rounded px-3 py-2 break-all max-h-64 overflow-auto whitespace-pre-wrap">{selectedEntry.value}</div>
         </div>
+        <div data-testid="kv-entry-revision">
+          <span class="text-sm font-medium text-base-content/70 block mb-1">Latest revision</span>
+          {#if entryMeta}
+            <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm bg-base-200 rounded px-3 py-2">
+              <dt class="text-base-content/60">Create revision</dt>
+              <dd class="font-mono" data-testid="kv-create-revision">{entryMeta.createRevision ?? "—"}</dd>
+              <dt class="text-base-content/60">Mod revision</dt>
+              <dd class="font-mono" data-testid="kv-mod-revision">{entryMeta.modRevision ?? "—"}</dd>
+              <dt class="text-base-content/60">Version</dt>
+              <dd class="font-mono" data-testid="kv-version">{entryMeta.version ?? "—"}</dd>
+              <dt class="text-base-content/60">Lease</dt>
+              <dd class="font-mono" data-testid="kv-lease">{entryMeta.leaseId ? entryMeta.leaseId : "none"}</dd>
+            </dl>
+          {:else if entryMetaError}
+            <div class="text-error text-xs" data-testid="kv-entry-revision-error">{entryMetaError}</div>
+          {:else}
+            <span class="loading loading-spinner loading-xs"></span>
+          {/if}
+        </div>
+        <div>
+          <label class="text-sm font-medium text-base-content/70 block mb-1" for="kv-at-revision">
+            Value at revision
+          </label>
+          <div class="join w-full">
+            <input
+              id="kv-at-revision"
+              type="number"
+              min="1"
+              class="input join-item input-bordered input-sm w-full font-mono"
+              placeholder="revision"
+              bind:value={atRevisionInput}
+              onkeydown={(e) => e.key === "Enter" && lookupAtRevision()}
+            />
+            <button class="btn btn-sm join-item" onclick={lookupAtRevision} disabled={atRevisionBusy}>
+              Look up
+            </button>
+          </div>
+          {#if atRevisionResult}
+            <div
+              class="mt-2 font-mono text-sm bg-base-200 rounded px-3 py-2 break-all whitespace-pre-wrap"
+              data-testid="kv-at-revision-value"
+            >{atRevisionResult.value}</div>
+          {:else if atRevisionError}
+            <div class="mt-2 text-error text-xs" data-testid="kv-at-revision-error">{atRevisionError}</div>
+          {/if}
+        </div>
       </div>
     {/if}
-  {/snippet}
   {#snippet footer()}
     {#if selectedEntry}
       <div class="flex gap-2">
@@ -555,6 +1021,8 @@
         {:else}
           <button
             class="btn btn-sm btn-outline flex-1"
+            disabled={entryMetaPending}
+            title={entryMetaPending ? "Reading the entry's lease..." : undefined}
             onclick={() => openEditPanel(selectedEntry!)}
           >
             <Pencil class="h-4 w-4" />
@@ -605,6 +1073,22 @@
           bind:value={modalValue}
         ></textarea>
       </label>
+      <label class="form-control w-full">
+        <div class="label"><span class="label-text">Lease ID (optional)</span></div>
+        <input
+          type="text"
+          inputmode="numeric"
+          class="input input-bordered w-full font-mono"
+          placeholder="Attach the key to a lease; blank for none"
+          bind:value={modalLeaseId}
+        />
+      </label>
+      {#if editMode && modalLeaseUnknown}
+        <div class="alert alert-warning text-sm" role="alert" data-testid="kv-lease-unknown">
+          This key's lease could not be read. Enter its lease ID to keep it; saving with the
+          field blank releases any lease the key is bound to.
+        </div>
+      {/if}
     </div>
   {/snippet}
 </FormModal>
@@ -618,6 +1102,17 @@
   variant="error"
   onconfirm={confirmDeleteEntry}
   oncancel={() => (deleteTarget = null)}
+/>
+
+<!-- Compaction confirmation modal -->
+<ConfirmModal
+  open={compactTarget !== null}
+  title="Compact History"
+  message={`Discard every revision older than ${compactTarget ?? ""}? Reads and restores below it will no longer be possible.`}
+  confirmLabel="Compact"
+  variant="warning"
+  onconfirm={confirmCompact}
+  oncancel={() => (compactTarget = null)}
 />
 
 <!-- Restore workflow modal: form -> preview -> result -->

@@ -100,7 +100,9 @@ type activeWatch struct {
 
 // WatchBinding exposes key change event streaming to the Wails frontend.
 // Watches run in background goroutines and emit events to the frontend
-// via the Wails runtime event bus (event name: "qrdb:watch:{id}").
+// via the Wails runtime event bus (event name: "qrdb:watch:{id}"). Watch
+// and WatchPrefix take the database to watch first; empty names the
+// connection's default database.
 type WatchBinding struct {
 	logger  *sdk.ConcreteLogger
 	conn    *ConnectionBinding
@@ -134,9 +136,9 @@ func NewWatchBindingWithEmitter(log *sdk.ConcreteLogger, conn *ConnectionBinding
 
 // Watch creates a watcher for the specified key and returns a watch ID.
 // Events are streamed to the frontend via the Wails event bus.
-func (b *WatchBinding) Watch(key string, opts transport.WatchOptions) (int64, error) {
+func (b *WatchBinding) Watch(database string, key string, opts transport.WatchOptions) (int64, error) {
 	b.logger.Debug("Watch called", "key", key)
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Watch failed", "error", err)
 		return 0, err
@@ -164,9 +166,9 @@ func (b *WatchBinding) Watch(key string, opts transport.WatchOptions) (int64, er
 
 // WatchPrefix creates a watcher for all keys matching the given prefix
 // and returns a watch ID.
-func (b *WatchBinding) WatchPrefix(prefix string, opts transport.WatchOptions) (int64, error) {
+func (b *WatchBinding) WatchPrefix(database string, prefix string, opts transport.WatchOptions) (int64, error) {
 	b.logger.Debug("WatchPrefix called", "prefix", prefix)
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("WatchPrefix failed", "error", err)
 		return 0, err

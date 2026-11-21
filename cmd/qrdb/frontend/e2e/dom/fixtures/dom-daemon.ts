@@ -80,6 +80,12 @@ export interface StartDaemonOptions {
    * all regular UI traffic.
    */
   tlsClientAuth?: "none" | "request";
+  /**
+   * State machine type passed as --sm=<value>. Defaults to the daemon's
+   * default (pebble). MVCC reads (revisions, compaction, as-of reads) need
+   * an MVCC-backed shard, so the KV/MVCC specs boot with "mvcc".
+   */
+  sm?: "mvcc";
 }
 
 export interface DomDaemon {
@@ -91,7 +97,9 @@ export interface DomDaemon {
 function writeConfig(path: string, opts: StartDaemonOptions): void {
   const lines = ['codec:', '  storage_codec: "json"', '  wire_codec: "json"', "seal:"];
   if (opts.seal === "none") {
+    // auth.enabled requires seal.enabled, so a seal-off daemon runs auth-off.
     lines.push("  enabled: false");
+    lines.push("auth:", "  enabled: false");
   } else if (opts.seal === "none-committed") {
     lines.push("  enabled: true", '  strategy: "none"');
   } else {
@@ -165,6 +173,7 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DomDaemon> 
     "--enable-unix=false",
     "--enable-quic=false",
     "--enable-mcp=false",
+    ...(opts.sm !== undefined ? ["--sm", opts.sm] : []),
   ];
 
   const proc = spawn(qrdbdBin(), args, {

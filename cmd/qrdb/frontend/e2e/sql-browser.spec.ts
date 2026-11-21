@@ -86,7 +86,7 @@ test.describe("SQL Browser - default query", () => {
     await page.evaluate(() => {
       const w = window as unknown as Record<string, unknown>;
       const go = w.go as Record<string, Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>>>;
-      return go.main.KVBinding.Put("test-key", "test-value");
+      return go.main.KVBinding.Put("", "test-key", "test-value");
     });
 
     await clickExecute(page);
@@ -102,7 +102,7 @@ test.describe("SQL Browser - default query", () => {
     await page.evaluate(() => {
       const w = window as unknown as Record<string, unknown>;
       const go = w.go as Record<string, Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>>>;
-      return go.main.KVBinding.Put("row-key", "row-value");
+      return go.main.KVBinding.Put("", "row-key", "row-value");
     });
 
     await clickExecute(page);
