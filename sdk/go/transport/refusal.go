@@ -93,6 +93,12 @@ var refusalErrors = map[string]func(md map[string]string) error{
 	auth.ReasonFactorConditionFailed: func(md map[string]string) error {
 		return auth.FactorConditionFailedFromMetadata(md)
 	},
+	auth.ReasonSORoleRequired: func(map[string]string) error {
+		return &auth.SORoleRequiredError{}
+	},
+	auth.ReasonSORoleConflict: func(md map[string]string) error {
+		return auth.SORoleConflictFromMetadata(md)
+	},
 	ReasonUserConcurrentUpdate: func(md map[string]string) error {
 		return UserConcurrentUpdateFromMetadata(md)
 	},

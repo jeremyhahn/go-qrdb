@@ -132,7 +132,37 @@ account exists, which may be moments after `qrdb init` returns rather than
 inside the same call: see Troubleshooting below for what the daemon does
 when that binding has not arrived by the time it finishes starting.
 
+## Naming a system Security Officer
+
+Under strict separation of duties (`auth.separation_of_duties`, always on in
+FIPS 140-3 mode), only a Security Officer separate from the admin can create
+roles or run the built-in role reconciles. The system admin can never hold the
+`so` role. Name that SO in the same `qrdb init` call:
+
+```bash
+qrdb init --so-pin SOPIN --user-pin USERPIN --barrier-strategy none \
+          --admin-csr admin.csr --so-username secofficer --so-csr so.csr
+```
+
+`--so-csr` is a CSR made with the SO's own key, which must not be the admin's
+key. `--so-cert` (with `--so-chain` for intermediates) adopts a certificate the
+SO already holds. It must be a client certificate: its key usage includes
+digital signature and its extended key usage includes client authentication.
+When it chains to `--admin-cert-pool`, first boot stores that pool as system
+tenant trust anchors and refreshes the server's client trust before it binds
+the SO, so the SO can log in over mTLS. First boot creates the SO's account in
+the system tenant with only the `so` role, binds its certificate and records
+`--so-pin` as its PIN. Re-running first boot never creates a second SO. The SO is optional in both
+postures: a strict node booted without one starts and serves, and refuses
+only role create and the built-in role reconciles until an SO is enrolled.
+
 ## Troubleshooting
+
+**"ceremony: system SO rejected".** The SO flags named the admin's username
+or key, no SO PIN, a CSR that does not parse, a certificate that does not
+verify under the system tenant, or a certificate without the client-auth
+profile (`*ceremony.ClientAuthProfileError`). Nothing is created or bound, so
+fix the named input and re-run `qrdb init`.
 
 **"M-of-N requires at least one officer".** `--barrier-strategy shamir`
 needs its share holders named: `--officers`, `--custodians` or

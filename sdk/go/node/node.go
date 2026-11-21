@@ -85,6 +85,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strconv"
@@ -111,6 +112,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
+	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -123,11 +125,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -142,6 +146,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
@@ -997,6 +1002,14 @@ func (n *Node) buildSealServices(ctx context.Context, infra lifecycle.Infra, cfg
 	if err != nil {
 		return nil, err
 	}
+	// The initial ceremony runs in the sealed window: every sealed-window
+	// composition carries the strict posture, so a strict node refuses a
+	// ceremony that names no system SO before any write.
+	configured := false
+	if cfg != nil {
+		configured = cfg.Auth.SeparationOfDuties
+	}
+	infra.SeparationOfDuties = infra.SeparationOfDuties || wiring.ResolveStrictSeparation(configured)
 	return lifecycle.BuildSealServicesOnly(ctx, infra)
 }
 
@@ -3789,6 +3802,66 @@ func resolveNodeSealStrategies(ctx context.Context, cfg *qrdbconfig.Config, nOpt
 //   - StrategyShamir: shares are never persisted server-side; the operator
 //     must submit quorum shares via the barrier API.
 //   - StrategyPassphrase without a supplied passphrase.
+//
+// bootPendingRecordStore is the pending-record store startup reads and
+// writes the ceremony's hand-off records through: the system shard's KV
+// with SyncRead redirected to a local StaleRead (raftbackend.BootstrapAdapter),
+// the same boot store cmd/qrdbd hands firstboot.WriteIssuedSystemSOIfAny.
+// A linearizable read there would block startup until the cluster has a
+// quorum, although a node whose ceremony issued no SO and no admin
+// certificate writes nothing. Writes still go through Raft. A node with no
+// Raft host (standalone) reads its local backend through svcNode.KV.
+func (n *Node) bootPendingRecordStore(svcNode *lifecycle.Node) firstboot.PendingAdminCertStore {
+	host, ok := n.host.(*quicraft.Host)
+	if !ok || host == nil {
+		return PendingAdminCertStore(svcNode.KV)
+	}
+	boot := raftbackend.NewBootstrapAdapter(raftbackend.New(host, raftbackend.WithFeatureGate(n.featureGate)))
+	return PendingAdminCertStore(service.NewKVService(boot, shard.ShardKV))
+}
+
+// bootIdentityServices are the user and role stores the strict startup
+// holder check reads through: the system shard's KV with SyncRead
+// redirected to a local StaleRead (raftbackend.BootstrapAdapter), as
+// cmd/qrdbd's bootUserSvc/bootRoleSvc. The runtime services read
+// linearizably, which blocks a clustered node's startup until it has a
+// quorum, although a strict node without a conflicting holder has nothing
+// to refuse; request-time strict RBAC still refuses a combined principal
+// once the cluster serves. A node with no Raft host (standalone) reads its
+// local backend through the runtime services.
+func (n *Node) bootIdentityServices(svcNode *lifecycle.Node) (user.UserServicer, role.RoleServicer, error) {
+	host, ok := n.host.(*quicraft.Host)
+	if !ok || host == nil {
+		return svcNode.User, svcNode.Role, nil
+	}
+	boot := raftbackend.NewBootstrapAdapter(raftbackend.New(host, raftbackend.WithFeatureGate(n.featureGate)))
+	// The runtime IAM and the daemon's bootstrap keep the system identities
+	// under the system identity namespace; the boot stores must read the
+	// same keys, or the SO name index is never found and the check passes
+	// over an empty keyspace.
+	store, err := kvstore.NewNamespacedKVStore(
+		lifecycle.NewKVStoreAdapter(service.NewKVService(boot, shard.ShardKV)),
+		tenant.IdentityNamespace(tenantid.System),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The check only reads: the generator never issues an identifier.
+	idgen, err := dao.NewSnowflakeGenerator(0)
+	if err != nil {
+		return nil, nil, err
+	}
+	users, err := user.NewStore(store, idgen)
+	if err != nil {
+		return nil, nil, err
+	}
+	roles, err := role.NewStore(store)
+	if err != nil {
+		return nil, nil, err
+	}
+	return users, roles, nil
+}
+
 func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCfg qrdbconfig.SealConfig, passphrase []byte, log *slog.Logger) bool {
 	strategyID := seal.StrategyID(sealCfg.Strategy)
 	if strategyID == "" {
@@ -3841,6 +3914,23 @@ func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCf
 		// fall back to an empty-creds attempt and let the strategy reject if
 		// it cannot auto-unseal.
 		creds = seal.Credentials{}
+	}
+
+	// A single-admin initialization that requested a system SO and never
+	// made its record durable leaves its intent standing. The ceremony
+	// writes the intent before it initializes the barrier, so the intent
+	// can stand on a barrier that is not initialized yet (a crash between
+	// the two) as well as on one that is (a failed record write, or a
+	// crash after the initialization). Initializing or unsealing here would
+	// boot without that SO and skip the sealed window whose initialization
+	// retry completes the handoff, so the barrier stays sealed, as the
+	// daemon's unsealNoneBarrier keeps it. The probe runs before
+	// Initialize, and an unreadable intent is treated as standing (fail
+	// closed).
+	if pending, intentErr := barrier.SystemSOIntent(ctx); intentErr != nil || pending {
+		log.Warn("node: barrier kept sealed: a requested system SO was never recorded; retry the initialization",
+			"intent_read_error", intentErr)
+		return false
 	}
 
 	// Attempt initialize (first boot) then unseal (subsequent boots).
@@ -3915,7 +4005,16 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		// clustered or not: even a standalone node's ceremony may have
 		// issued one, and the record is harmless (never read) when nothing
 		// downstream calls FirstBootWithCeremony.
-		if err := firstboot.WriteIssuedAdminCertIfAny(ctx, core, PendingAdminCertStore(svcNode.KV), service.LeadershipTransient); err != nil {
+		// The ceremony's system SO (go-qrdb#1128) is recorded first, as
+		// cmd/qrdbd does: a replica that sees the admin's record sees it.
+		// Both records are read through the boot store, locally, as
+		// cmd/qrdbd reads them: a node whose ceremony issued nothing
+		// proposes nothing and so needs no quorum to start.
+		bootPending := n.bootPendingRecordStore(svcNode)
+		if err := firstboot.WriteIssuedSystemSOIfAny(ctx, core, bootPending, service.LeadershipTransient); err != nil {
+			return &PendingAdminCertWriteError{Err: err}
+		}
+		if err := firstboot.WriteIssuedAdminCertIfAny(ctx, core, bootPending, service.LeadershipTransient); err != nil {
 			return &PendingAdminCertWriteError{Err: err}
 		}
 	}
@@ -3959,6 +4058,23 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	strictSoD := wiring.ResolveStrictSeparation(cfg.Auth.SeparationOfDuties)
 	n.strictSeparation.Store(strictSoD)
 	n.separationConfigured.Store(cfg.Auth.SeparationOfDuties)
+	// A strict node refuses to start while a system SO holder also holds
+	// Admin (docs/SPEC.md separation-of-duties), as cmd/qrdbd does: an
+	// existing store reopened by NewStandaloneNode/NewClusteredNode reaches
+	// here without FirstBoot, so the check runs before the client is
+	// published or any listener starts. A sealed barrier holds no readable
+	// user store; its wiring pass after unseal runs the check.
+	if strictSoD && (barrier == nil || !barrier.IsSealed()) && svcNode.User != nil && svcNode.Role != nil {
+		// Local reads, as the daemon's boot stores: the check must not make
+		// startup wait for a quorum (see bootIdentityServices).
+		bootUsers, bootRoles, err := n.bootIdentityServices(svcNode)
+		if err != nil {
+			return err
+		}
+		if err := firstboot.CheckStrictSeparationHolders(ctx, bootUsers, bootRoles); err != nil {
+			return err
+		}
+	}
 	embeddedOpts, err := n.buildEmbeddedOpts(svcNode, ceremonySvc, strictSoD, standalone)
 	if err != nil {
 		return err
@@ -4890,13 +5006,20 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	if svcNode.Invitations != nil {
 		opts = append(opts, server.WithInvitations(svcNode.Invitations))
 	}
-	if svcNode.TenantOnboarding != nil {
-		opts = append(opts, server.WithTenantOnboarding(svcNode.TenantOnboarding))
-	}
 	// The SO PIN store the SO gate verifies against is the one tenant create
-	// commits a tenant SO's PIN to, as cmd/qrdbd wires it.
-	if pins := server.ResolveCryptoOptions(callerOpts...).SOAuthenticator; pins != nil {
+	// commits a tenant SO's PIN to, as cmd/qrdbd wires it. Without it a
+	// strict tenant create is refused, and the refusal names the option the
+	// embedder passes.
+	pins := server.ResolveCryptoOptions(callerOpts...).SOAuthenticator
+	if pins != nil {
 		svcNode.AttachSOPINs(pins)
+	}
+	if svcNode.TenantOnboarding != nil {
+		// Node.Services hands the embedder the same wrapped service.
+		if _, wrapped := svcNode.TenantOnboarding.(soPINOptionOnboarding); pins == nil && !wrapped {
+			svcNode.TenantOnboarding = soPINOptionOnboarding{inner: svcNode.TenantOnboarding}
+		}
+		opts = append(opts, server.WithTenantOnboarding(svcNode.TenantOnboarding))
 	}
 	if svcNode.Embedding != nil {
 		opts = append(opts, server.WithEmbedding(svcNode.Embedding))
@@ -4926,6 +5049,30 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	}
 	// Caller opts last: allow overriding any of the above.
 	return append(opts, callerOpts...)
+}
+
+// soPINSeamPrefix opens the bootstrap refusal for a tenant create that names
+// an SO when no SO PIN store is attached.
+const soPINSeamPrefix = "Dependencies.SOPINs"
+
+// soPINOptionOnboarding is tenant onboarding on a node built without
+// server.WithSOAuthenticator. The bootstrap refusal of a strict tenant create
+// names an internal seam; this wraps it so the error names the option the
+// embedder passes, and errors.As still finds the
+// *bootstrap.MissingProvisioningSeamError.
+type soPINOptionOnboarding struct {
+	inner service.TenantOnboardingServicer
+}
+
+// OnboardTenant runs the inner onboarding and names server.WithSOAuthenticator
+// in a missing-SO-PIN-store refusal.
+func (o soPINOptionOnboarding) OnboardTenant(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+	res, err := o.inner.OnboardTenant(ctx, req)
+	var seam *bootstrap.MissingProvisioningSeamError
+	if err != nil && errors.As(err, &seam) && strings.HasPrefix(seam.Seam, soPINSeamPrefix) {
+		return res, fmt.Errorf("node built without server.WithSOAuthenticator, which a strict tenant create needs to commit the tenant SO's PIN: %w", err)
+	}
+	return res, err
 }
 
 // resolveBackend returns the storage backend type and data directory derived

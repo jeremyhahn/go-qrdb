@@ -97,11 +97,11 @@ type OnboardTenantRequest struct {
 // so is the request's SO, or nil when it names none. The PIN is sealed into
 // a *secure.Secret here, at the service boundary, and r.SOPIN is wiped;
 // bootstrap.ProvisionTenant destroys the Secret.
-func (r *OnboardTenantRequest) so(ctx context.Context) (*bootstrap.TenantSOConfig, error) {
+func (r *OnboardTenantRequest) so(ctx context.Context) (*firstboot.SOConfig, error) {
 	if r.SOUsername == "" && len(r.SOCSRPEM) == 0 && len(r.SOCertPEM) == 0 && len(r.SOChainPEM) == 0 && len(r.SOPIN) == 0 {
 		return nil, nil
 	}
-	cfg := &bootstrap.TenantSOConfig{
+	cfg := &firstboot.SOConfig{
 		Username: r.SOUsername,
 		CSRPEM:   r.SOCSRPEM,
 		CertPEM:  r.SOCertPEM,
@@ -168,7 +168,7 @@ type TenantOnboardingService struct {
 	pendingSign firstboot.CertSigner
 	clientTrust ClientTrustRefresher
 	pendingSOs  tenantadmin.Store
-	soPINs      atomic.Pointer[bootstrap.SOPINSetter]
+	soPINs      atomic.Pointer[firstboot.SOPINSetter]
 	// strictSoD is TenantOnboardingDeps.SeparationOfDuties.
 	strictSoD bool
 }
@@ -258,7 +258,7 @@ type TenantOnboardingDeps struct {
 	// SOPINs commits a tenant SO's PIN (bootstrap.Dependencies.SOPINs). A
 	// node whose SO authenticator is built after this service attaches it
 	// with AttachSOPINs. Nil refuses a request that names an SO.
-	SOPINs bootstrap.SOPINSetter
+	SOPINs firstboot.SOPINSetter
 
 	// SeparationOfDuties is the strict separation-of-duties posture, as
 	// wiring.ResolveStrictSeparation resolves it: under it the tenant SO
@@ -300,12 +300,13 @@ func NewTenantOnboardingService(deps TenantOnboardingDeps) *TenantOnboardingServ
 
 // AttachSOPINs sets the seam a tenant SO's PIN is committed through, for a
 // node whose SO authenticator is built after this service.
-func (s *TenantOnboardingService) AttachSOPINs(pins bootstrap.SOPINSetter) {
+func (s *TenantOnboardingService) AttachSOPINs(pins firstboot.SOPINSetter) {
 	s.soPINs.Store(&pins)
 }
 
-// sopins is the attached SO PIN seam, or nil.
-func (s *TenantOnboardingService) sopins() bootstrap.SOPINSetter {
+// SOPINs is the attached SO PIN seam, or nil. First boot commits the system
+// SO's PIN through the same seam.
+func (s *TenantOnboardingService) SOPINs() firstboot.SOPINSetter {
 	if p := s.soPINs.Load(); p != nil {
 		return *p
 	}
@@ -401,7 +402,7 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		TrustDomain:        s.trustDomain,
 		Homes:              s.homes,
 		PendingSOs:         s.pendingSOs,
-		SOPINs:             s.sopins(),
+		SOPINs:             s.SOPINs(),
 		SeparationOfDuties: s.strictSoD,
 		Logger:             s.logger,
 	}

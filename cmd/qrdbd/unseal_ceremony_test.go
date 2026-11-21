@@ -17,9 +17,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -443,6 +448,10 @@ func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret s
 		// text instead, which is not valid base64 and the decoder rejects.
 		"secret":         []byte(secret),
 		"admin_generate": true,
+		// A system SO, always: under FIPS 140-3 separation of duties is
+		// strict, which refuses a ceremony without one.
+		"so_username": "system-so",
+		"so_csr_pem":  systemSOCSRPEM(t),
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -477,4 +486,19 @@ func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret s
 		time.Sleep(signalRetryInterval)
 	}
 	t.Fatalf("ceremony initialize never succeeded within %v: %v", readinessTimeout, lastErr)
+}
+
+// systemSOCSRPEM returns a PEM CSR for the system SO over a fresh P-256 key,
+// a key that is never the admin's.
+func systemSOCSRPEM(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("systemSOCSRPEM: generate key: %v", err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "system-so"}}, key)
+	if err != nil {
+		t.Fatalf("systemSOCSRPEM: create CSR: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 }

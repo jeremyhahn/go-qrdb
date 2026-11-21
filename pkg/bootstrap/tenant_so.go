@@ -22,44 +22,12 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
-
-// TenantSOConfig is tenant create's optional security officer: a second
-// principal, enrolled beside the first admin through the same seams, that
-// holds the tenant's so role alone. Username, exactly one of CSRPEM and
-// CertPEM, and PIN are given together.
-type TenantSOConfig struct {
-	// Username is the SO's login name. It must differ from the admin's.
-	Username string
-
-	// CSRPEM is the SO's certificate signing request, signed through the
-	// same CertSigner seam as the admin's. The SO keeps its key.
-	CSRPEM []byte
-
-	// CertPEM is the SO's own (bring-your-own) certificate, leaf first,
-	// verified against the request's trust anchors like the admin's.
-	CertPEM []byte
-
-	// ChainPEM holds intermediates for CertPEM's chain. Optional.
-	ChainPEM []byte
-
-	// PIN is the SO's second factor, sealed by the caller with
-	// secure.NewSecret and committed through Dependencies.SOPINs.
-	// ProvisionTenant takes it over: it destroys the Secret on return, on
-	// every path, committed, failed or refused.
-	PIN *secure.Secret
-}
-
-// SOPINSetter commits a tenant's SO PIN: the second factor the SO gate
-// (auth.so_dual_factor) asks the tenant's SO for. *auth.SOAuthenticator
-// satisfies it.
-type SOPINSetter interface {
-	SetSOPIN(ctx context.Context, tenantID string, pin []byte) error
-}
 
 // accountKind is what tells one tenant system role's account apart on the
 // shared enrollment path: the typed errors its failures are reported with.
@@ -86,7 +54,7 @@ var accountKinds = map[string]accountKind{
 	},
 }
 
-// soPlan is a judged TenantSOConfig: the SO's name, PIN and credential plan.
+// soPlan is a judged firstboot.SOConfig: the SO's name, PIN and credential plan.
 type soPlan struct {
 	username string
 	pin      *secure.Secret
@@ -97,7 +65,7 @@ type soPlan struct {
 }
 
 // planSO judges cfg.SO before the tenant is created, and returns nil when
-// the request has none. The SO is refused when it is given in part, when its
+// the request has none, in either posture (SPEC row 124). The SO is refused when it is given in part, when its
 // credential would be refused for the reasons the admin's would, under strict
 // separation of duties when it is the admin by name or by key, and outside it
 // when it is the admin by one of name and key but not the other. An SO that
@@ -107,17 +75,18 @@ type soPlan struct {
 func planSO(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmentMode, adminUsername string, admin *adminPlan, pending bool) (*soPlan, error) {
 	so := cfg.SO
 	if so == nil {
+		// The SO is optional in both postures (SPEC row 124): a tenant
+		// created without one refuses only the SO-exclusive operations,
+		// which carry their own gates.
 		return nil, nil
 	}
-	switch {
-	case so.Username == "":
-		return nil, &IncompleteTenantSOError{Field: "so_username"}
-	case len(so.CSRPEM) == 0 && len(so.CertPEM) == 0:
-		return nil, &IncompleteTenantSOError{Field: "so_csr_pem or so_cert_pem"}
-	case so.PIN == nil || !so.PIN.IsAlive():
-		return nil, &IncompleteTenantSOError{Field: "so_pin"}
-	case len(so.CSRPEM) > 0 && len(so.CertPEM) > 0:
-		return nil, &ConflictingSOCredentialError{}
+	if err := so.Validate(); err != nil {
+		return nil, err
+	}
+	// Tenant create is handed the PIN itself; a hashed record is first
+	// boot's hand-off alone.
+	if so.PIN == nil {
+		return nil, &firstboot.IncompleteSOError{Field: "so_pin"}
 	}
 	// The SO is told apart from the admin, or found to be it, by key as well
 	// as by name, and a deferred admin has no key yet to compare.
@@ -126,7 +95,7 @@ func planSO(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmentMo
 	}
 	sameName := strings.EqualFold(so.Username, adminUsername)
 	if sameName && deps.SeparationOfDuties {
-		return nil, &SOMatchesAdminError{Field: "username"}
+		return nil, &firstboot.SOMatchesAdminError{Field: "username"}
 	}
 	if deps.SOPINs == nil {
 		return nil, &MissingProvisioningSeamError{Seam: "Dependencies.SOPINs to commit the tenant SO's PIN"}
@@ -154,7 +123,7 @@ func planSO(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmentMo
 	sameKey := p.thumbprint == admin.thumbprint
 	switch {
 	case sameKey && deps.SeparationOfDuties:
-		return nil, &SOMatchesAdminError{Field: "key"}
+		return nil, &firstboot.SOMatchesAdminError{Field: "key"}
 	case sameName && !sameKey:
 		return nil, &SOPartlyMatchesAdminError{Field: "username"}
 	case sameKey && !sameName:
@@ -376,12 +345,7 @@ func recordAdminAsPendingSO(ctx context.Context, tenantID string, deps Dependenc
 // the tenant, whose id is then retired and never reused. A convergent re-run
 // finds it already committed and keeps it.
 func commitSOPIN(ctx context.Context, cfg TenantProvisionConfig, deps Dependencies, pin *secure.Secret) error {
-	// The PIN is opened for exactly this call; the opened buffer is
-	// destroyed when it returns.
-	err := pin.WithBytes(ctx, func(b []byte) error {
-		return deps.SOPINs.SetSOPIN(ctx, cfg.TenantID, b)
-	})
-	if err != nil {
+	if err := firstboot.CommitSOPIN(ctx, deps.SOPINs, cfg.TenantID, pin); err != nil {
 		if !cfg.Exclusive && errors.Is(err, auth.ErrSOPINAlreadySet) {
 			return nil
 		}

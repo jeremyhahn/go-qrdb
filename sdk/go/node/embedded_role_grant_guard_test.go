@@ -36,18 +36,38 @@ const grantGuardTenant = "acme"
 // memory node with RBAC on, with a custom role holding tenants:read already in
 // the tenant. It returns the node's embedded role client and the custom
 // role's id.
-func tenantAdminContext(t *testing.T) (context.Context, transport.RoleClient, string) {
+func tenantAdminContext(t *testing.T) (adminCtx, soCtx context.Context, roles transport.RoleClient, customRoleID string) {
 	t.Helper()
 	n := newMemoryNodeWithUser(t)
 	svcNode := n.Services()
 	adminRoleID := seedAdminRole(t, svcNode.Role, grantGuardTenant)
-	customRoleID := seedNarrowRole(t, svcNode.Role, grantGuardTenant, "custom", permission.TenantsRead)
-	ctx := tenant.WithTenantID(auth.WithIdentity(context.Background(), &auth.Identity{
+	customRoleID = seedNarrowRole(t, svcNode.Role, grantGuardTenant, "custom", permission.TenantsRead)
+	adminCtx = tenant.WithTenantID(auth.WithIdentity(context.Background(), &auth.Identity{
 		Subject:  "acme-admin",
 		TenantID: grantGuardTenant,
 		Roles:    []string{adminRoleID},
 	}), grantGuardTenant)
-	return ctx, n.Client().Roles(), customRoleID
+	// Role creation is the tenant SO's act under strict separation of
+	// duties (forced under FIPS 140-3), run by a separate SO principal;
+	// the standard posture admits the SO as well.
+	soRoleID := role.SystemRoleID(grantGuardTenant, role.RoleNameSO)
+	for _, r := range role.BuiltInRoles(grantGuardTenant) {
+		if r.Name != role.RoleNameSO {
+			continue
+		}
+		_, err := svcNode.Role.CreateRole(tenant.WithTenantID(context.Background(), grantGuardTenant), &role.CreateRoleRequest{
+			ID: soRoleID, Name: role.RoleNameSO, TenantID: grantGuardTenant, Permissions: r.Permissions,
+		})
+		if err != nil {
+			t.Fatalf("seed the SO role: %v", err)
+		}
+	}
+	soCtx = tenant.WithTenantID(auth.WithIdentity(context.Background(), &auth.Identity{
+		Subject:  "acme-so",
+		TenantID: grantGuardTenant,
+		Roles:    []string{soRoleID},
+	}), grantGuardTenant)
+	return adminCtx, soCtx, n.Client().Roles(), customRoleID
 }
 
 // wantGrantExceeds fails unless err is the grant guard's refusal naming perm.
@@ -67,7 +87,7 @@ func wantGrantExceeds(t *testing.T, err error, perm permission.Permission) {
 // a tenant Admin cannot widen a custom role to keys:sign, which Admin does not
 // hold, and the role keeps the permissions it had.
 func TestEmbeddedUpdateRole_RefusesWideningPastTheCaller(t *testing.T) {
-	ctx, roles, customRoleID := tenantAdminContext(t)
+	ctx, _, roles, customRoleID := tenantAdminContext(t)
 	_, err := roles.UpdateRole(ctx, &transport.UpdateRoleRequest{
 		ID:          customRoleID,
 		Permissions: []string{string(permission.TenantsRead), string(permission.KeysSign)},
@@ -86,7 +106,7 @@ func TestEmbeddedUpdateRole_RefusesWideningPastTheCaller(t *testing.T) {
 // TestEmbeddedCreateRole_RefusesAGrantPastTheCaller proves a tenant Admin
 // cannot create a role carrying keys:sign over the embedded transport.
 func TestEmbeddedCreateRole_RefusesAGrantPastTheCaller(t *testing.T) {
-	ctx, roles, _ := tenantAdminContext(t)
+	_, ctx, roles, _ := tenantAdminContext(t)
 	_, err := roles.CreateRole(ctx, &transport.CreateRoleRequest{
 		Name:        "signer",
 		TenantID:    grantGuardTenant,
@@ -98,9 +118,9 @@ func TestEmbeddedCreateRole_RefusesAGrantPastTheCaller(t *testing.T) {
 // TestEmbeddedRoleWrites_AdmitGrantsTheCallerHolds proves the guard admits a
 // grant within the Admin's own permissions, on create and on update.
 func TestEmbeddedRoleWrites_AdmitGrantsTheCallerHolds(t *testing.T) {
-	ctx, roles, customRoleID := tenantAdminContext(t)
+	ctx, soCtx, roles, customRoleID := tenantAdminContext(t)
 	held := []string{string(permission.TenantsRead), string(permission.RolesList)}
-	if _, err := roles.CreateRole(ctx, &transport.CreateRoleRequest{
+	if _, err := roles.CreateRole(soCtx, &transport.CreateRoleRequest{
 		Name: "reader", TenantID: grantGuardTenant, Permissions: held,
 	}); err != nil {
 		t.Fatalf("CreateRole within the Admin's permissions: %v", err)

@@ -231,13 +231,30 @@ func nodeLeafTemplate(cn string) *x509.Certificate {
 // in; a founder racing for the win has no such guarantee).
 func adminCertTemplate(t *testing.T) *x509.Certificate {
 	t.Helper()
-	uris, err := auth.TenantPrincipalURIs(config.DefaultClusterTrustDomain, "system", spiffe.KindUser, "admin")
+	return systemUserCertTemplate(t, "admin")
+}
+
+// systemSOCertPEM issues the system SO a certificate under the CA at
+// caPath/caKeyPath, for a BYO-TLS founder's ceremony: such a node has no
+// CeremonyCA to sign an SO CSR, and strict separation of duties (forced
+// under FIPS 140-3) refuses a ceremony with no system SO.
+func systemSOCertPEM(t *testing.T, caPath, caKeyPath string) []byte {
+	t.Helper()
+	soKey, _, _ := generateNodeKeypairAndIdentity(t)
+	return signCertWithCA(t, caPath, caKeyPath, systemUserCertTemplate(t, systemSOUsername), &soKey.PublicKey)
+}
+
+// systemUserCertTemplate is a client certificate template for username in
+// the system tenant.
+func systemUserCertTemplate(t *testing.T, username string) *x509.Certificate {
+	t.Helper()
+	uris, err := auth.TenantPrincipalURIs(config.DefaultClusterTrustDomain, "system", spiffe.KindUser, username)
 	if err != nil {
-		t.Fatalf("adminCertTemplate: admin SPIFFE ID: %v", err)
+		t.Fatalf("systemUserCertTemplate: %s SPIFFE ID: %v", username, err)
 	}
 	return &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano() + 1),
-		Subject:      pkix.Name{CommonName: "admin", OrganizationalUnit: []string{"system"}},
+		Subject:      pkix.Name{CommonName: username, OrganizationalUnit: []string{"system"}},
 		URIs:         uris,
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(24 * time.Hour),
@@ -321,7 +338,7 @@ func waitForReachable(t *testing.T, client *http.Client, adminPort int, timeout 
 // holds every presented admin certificate to the authenticator's tenant rule
 // before it brings the barrier up (go-qrdb#777), even on a node whose admin
 // already exists cluster-wide.
-func throwawayAdminCertAndPool(t *testing.T, cn string) (leafPEM, poolPEM []byte) {
+func throwawayAdminCertAndPool(t *testing.T, cn string) (leafPEM, poolPEM, soPEM []byte) {
 	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -345,30 +362,38 @@ func throwawayAdminCertAndPool(t *testing.T, cn string) (leafPEM, poolPEM []byte
 		t.Fatalf("throwawayAdminCertAndPool: parse CA certificate: %v", err)
 	}
 
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("throwawayAdminCertAndPool: generate leaf key: %v", err)
+	issue := func(username string, serial int64) []byte {
+		leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("throwawayAdminCertAndPool: generate %s key: %v", username, err)
+		}
+		uris, err := auth.TenantPrincipalURIs(config.DefaultClusterTrustDomain, "system", spiffe.KindUser, username)
+		if err != nil {
+			t.Fatalf("throwawayAdminCertAndPool: %s SPIFFE ID: %v", username, err)
+		}
+		leafTemplate := &x509.Certificate{
+			SerialNumber: big.NewInt(serial),
+			Subject:      pkix.Name{CommonName: username, OrganizationalUnit: []string{"system"}},
+			URIs:         uris,
+			NotBefore:    time.Now().Add(-time.Hour),
+			NotAfter:     time.Now().Add(24 * time.Hour),
+			KeyUsage:     x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		}
+		leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, caCert, &leafKey.PublicKey, caKey)
+		if err != nil {
+			t.Fatalf("throwawayAdminCertAndPool: create %s certificate: %v", username, err)
+		}
+		return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})
 	}
-	uris, err := auth.TenantPrincipalURIs(config.DefaultClusterTrustDomain, "system", spiffe.KindUser, cn)
-	if err != nil {
-		t.Fatalf("throwawayAdminCertAndPool: admin SPIFFE ID: %v", err)
-	}
-	leafTemplate := &x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano() + 1),
-		Subject:      pkix.Name{CommonName: cn, OrganizationalUnit: []string{"system"}},
-		URIs:         uris,
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	}
-	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, caCert, &leafKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatalf("throwawayAdminCertAndPool: create leaf certificate: %v", err)
-	}
-	leafPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})
+	now := time.Now().UnixNano()
+	leafPEM = issue(cn, now+1)
+	// The system SO, under the same issuer: a BYO-TLS node has no
+	// CeremonyCA to sign an SO CSR, and strict separation of duties (forced
+	// under FIPS 140-3) refuses a ceremony with no system SO.
+	soPEM = issue(systemSOUsername, now+2)
 	poolPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
-	return leafPEM, poolPEM
+	return leafPEM, poolPEM, soPEM
 }
 
 // ceremonyBringUpBarrierHTTP drives POST /v1/ceremony/initialize to bring up
@@ -393,7 +418,7 @@ func throwawayAdminCertAndPool(t *testing.T, cn string) (leafPEM, poolPEM []byte
 // cluster.
 func ceremonyBringUpBarrierHTTP(t *testing.T, client *http.Client, adminPort int, cn string) {
 	t.Helper()
-	leafPEM, poolPEM := throwawayAdminCertAndPool(t, cn)
+	leafPEM, poolPEM, soPEM := throwawayAdminCertAndPool(t, cn)
 	url := fmt.Sprintf("https://127.0.0.1:%d/v1/ceremony/initialize", adminPort)
 	reqBody, err := json.Marshal(map[string]any{
 		"so_pin":              "SOPIN-" + cn,
@@ -401,6 +426,8 @@ func ceremonyBringUpBarrierHTTP(t *testing.T, client *http.Client, adminPort int
 		"admin_cert_pem":      string(leafPEM),
 		"admin_cert_pool_pem": string(poolPEM),
 		"secret":              []byte(""),
+		"so_username":         systemSOUsername,
+		"so_cert_pem":         string(soPEM),
 	})
 	if err != nil {
 		t.Fatalf("marshal ceremony/initialize request: %v", err)
@@ -438,7 +465,7 @@ func ceremonyBringUpBarrierHTTP(t *testing.T, client *http.Client, adminPort int
 // node's own default trust (Key A, via --tls-ca-file), so there is no
 // foreign issuer to vouch for. An "already" response is tolerated exactly
 // as ceremonyBringUpBarrierHTTP's is.
-func ceremonyBringUpBarrierWithCertHTTP(t *testing.T, client *http.Client, adminPort int, certPEM []byte) {
+func ceremonyBringUpBarrierWithCertHTTP(t *testing.T, client *http.Client, adminPort int, certPEM, soCertPEM []byte) {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/v1/ceremony/initialize", adminPort)
 	reqBody, err := json.Marshal(map[string]any{
@@ -446,6 +473,8 @@ func ceremonyBringUpBarrierWithCertHTTP(t *testing.T, client *http.Client, admin
 		"user_pin":       "USERPIN-node2-founder",
 		"admin_cert_pem": string(certPEM),
 		"secret":         []byte(""),
+		"so_username":    systemSOUsername,
+		"so_cert_pem":    string(soCertPEM),
 	})
 	if err != nil {
 		t.Fatalf("marshal ceremony/initialize request: %v", err)
@@ -1015,7 +1044,8 @@ func TestCluster_JoinThroughSurvivingMemberAfterCAGeneratorRemoved(t *testing.T)
 	bootAdminIdentity(t, cli, node1.caPath, node1.adminPort, "SOPIN-node1-anchor", "USERPIN-node1-anchor",
 		filepath.Join(credDir, "admin-cert.pem"), filepath.Join(credDir, "admin-key.pem"), "",
 		"--barrier-strategy", "none")
-	ceremonyBringUpBarrierWithCertHTTP(t, node2.client, node2.adminPort, node2AdminCertPEM)
+	ceremonyBringUpBarrierWithCertHTTP(t, node2.client, node2.adminPort, node2AdminCertPEM,
+		systemSOCertPEM(t, node1.caPath, node1CAKeyPath))
 
 	waitForHealthy(t, node1.dataDir, 90*time.Second)
 	waitForHealthy(t, node2.dataDir, 90*time.Second)

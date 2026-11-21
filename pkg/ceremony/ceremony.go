@@ -78,6 +78,32 @@ type CeremonyService struct {
 
 	// lastAdminSource records which path produced lastAdminCertPEM.
 	lastAdminSource AdminCredentialSource
+
+	// lastSystemSO is the system SO Initialize named, for the composer to
+	// hand to first boot as it does lastAdminCertPEM. Nil when none.
+	lastSystemSO *IssuedSystemSO
+
+	// systemSOInFlight is the system SO an M-of-N Initialize issued, set
+	// while it runs the barrier's Shamir initialization; nil when it
+	// issued none. Distribute writes its record into the freshly unsealed
+	// barrier BEFORE the barrier commits the initialization, so a failed
+	// write rolls the barrier back to sealed and no committed barrier is
+	// ever without the SO record its Initialize issued.
+	systemSOInFlight *IssuedSystemSO
+	// mofnInitInFlight is set while any M-of-N Initialize runs the
+	// barrier's Shamir initialization. Distribute then settles the SO
+	// record in the freshly unsealed barrier: written for
+	// systemSOInFlight, otherwise removed. A failed initialization rolls
+	// the barrier back to sealed with whatever record it wrote still in
+	// storage, where no barrier can delete it; the next initialization's
+	// Distribute is the first point that record is reachable, and an
+	// SO-less ceremony must not inherit it.
+	mofnInitInFlight bool
+
+	// strictSoD is the node's resolved strict separation-of-duties posture
+	// (SetSeparationOfDuties): under it Initialize refuses a ceremony that
+	// names no system SO, before any write.
+	strictSoD bool
 }
 
 // Compile-time checks.
@@ -314,6 +340,25 @@ func (s *CeremonyService) SetAuditFailurePolicy(p audit.FailurePolicy) {
 	s.deps.AuditPolicy = p
 }
 
+// SetSeparationOfDuties sets the node's strict separation-of-duties posture,
+// as wiring.ResolveStrictSeparation resolves it. Under it Initialize refuses,
+// with *SystemSORejectedError and before any write, a ceremony whose options
+// name no system SO: first boot could never enrol one, and the node would be
+// refused at every boot. The posture is the node's, never the caller's: no
+// InitializeOptions field can relax it.
+func (s *CeremonyService) SetSeparationOfDuties(strict bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.strictSoD = strict
+}
+
+// separationOfDuties reports the posture SetSeparationOfDuties set.
+func (s *CeremonyService) separationOfDuties() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.strictSoD
+}
+
 // SetPINBackend installs the PIN backend, decorated with the SO PIN lockout
 // (pin.NewLockoutBackend, idempotent: a backend the composer already
 // decorated keeps its one set of counters). Without one, every PIN-gated
@@ -453,6 +498,9 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	if err := validateAdminCredentialInputs(ca, s.HolderDeps().TrustDomain, opts, caBundle); err != nil {
 		return nil, err
 	}
+	if err := validateSystemSOInputs(ca, s.HolderDeps().TrustDomain, opts, caBundle, s.separationOfDuties()); err != nil {
+		return nil, err
+	}
 
 	// Every officer's CSR, key kind, encryption KEM/key and factor set is
 	// validated as a batch, PURELY, before any of them is enrolled
@@ -499,6 +547,27 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.mu.Unlock()
 		return nil, ErrAlreadyInitialized
 	}
+	// PINs already provisioned (a retry after a failed single-admin init)
+	// are authenticated before any CA signing, so a wrong or locked-out PIN
+	// costs no issuance. Issuance itself stays before barrier initialization.
+	if err := pin.VerifyProvisioned(ctx, s.pins, opts.SOPin, opts.UserPin); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	// The system SO is issued before anything is committed: before the
+	// PINs are provisioned and before the system barrier is initialized and
+	// unsealed. The SO's only durable handoff is the record in that barrier,
+	// so an SO issuance that failed after it came up would leave an unsealed
+	// barrier with no SO, which a composer reads as an initialized node and
+	// boots into a first boot strict separation refuses, with no listener
+	// left to retry the ceremony on. Failing here leaves the barrier
+	// uninitialized and the ceremony awaiting a retry.
+	systemSO, err := issueSystemSO(ctx, ca, s.deps.TrustDomain, opts, caBundle)
+	if err != nil {
+		s.mu.Unlock()
+		s.logger.Error("system SO credential issuance failed", slog.String("error", err.Error()))
+		return nil, err
+	}
 	// Sampled BEFORE Provision, so rollbackOfficerInit can tell whether
 	// THIS call freshly set the SO PIN or merely verified one that already
 	// existed (go-qrdb#591 re-review, non-blocking: rollbackOfficerInit
@@ -537,10 +606,38 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	// shares -- a single operator-supplied secret here would defeat the
 	// quorum requirement that mode exists for.
 	if !isMofN {
+		// The SO intent is the single-admin write-ahead marker (the M-of-N
+		// path needs none: Distribute writes its SO record before the
+		// barrier commits): written before the barrier is initialized, it stands through a
+		// failed SO record write or a crash anywhere before the record is
+		// durable, and a boot that auto-unseals (the none strategy) keeps
+		// the barrier sealed while it stands, so startup never reaches
+		// first boot without the SO the operator asked for.
+		if systemSO != nil {
+			if err := s.barrier.MarkSystemSOIntent(ctx); err != nil {
+				s.mu.Unlock()
+				return nil, &SystemSOPersistError{Op: "write", Cause: err}
+			}
+		}
 		if err := s.initializeSystemBarrierLocked(ctx, opts.Secret); err != nil {
 			s.mu.Unlock()
 			return nil, err
 		}
+	}
+
+	// failAfterUnseal ends the call on an error after the single-admin
+	// barrier was unsealed above. A fresh barrier unsealed here holds no
+	// SO record and no handoff marker yet, so leaving it unsealed would let
+	// HoldsSealedWindow report false and startup go on to first boot
+	// without the SO the operator asked for: every such exit reseals it,
+	// exactly as a failed SO record write does, so the init stays
+	// retryable.
+	failAfterUnseal := func(err error) (*InitResult, error) {
+		if !isMofN {
+			s.abandonSingleAdminInitLocked()
+		}
+		s.mu.Unlock()
+		return nil, err
 	}
 
 	// Resolve the TLS certificate, SPKI pin and CA bundle this call
@@ -564,8 +661,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		// exactly as the key the CA used to generate for it was.
 		tlsKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
-			s.mu.Unlock()
-			return nil, &CertEncodeError{Err: err}
+			return failAfterUnseal(&CertEncodeError{Err: err})
 		}
 		tlsCert, err := ca.IssueCertificate(ctx, &IssueCertRequest{
 			PublicKey:    tlsKey.Public(),
@@ -576,30 +672,26 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 			ValidityDays: 365,
 		})
 		if err != nil {
-			s.mu.Unlock()
 			s.logger.Error("failed to issue TLS certificate", slog.String("error", err.Error()))
-			return nil, ErrInitFailed
+			return failAfterUnseal(ErrInitFailed)
 		}
 		tlsCertPEM = tlsCert.CertPEM
 
 		caCert, err := ca.CACertificate(ctx)
 		if err != nil {
-			s.mu.Unlock()
-			return nil, &CABundleError{Err: err}
+			return failAfterUnseal(&CABundleError{Err: err})
 		}
 		spkiPin, err = computeSPKIPin(caCert)
 		if err != nil {
-			s.mu.Unlock()
-			return nil, err
+			return failAfterUnseal(err)
 		}
 	} else {
 		// serverCert was already resolved and validated up front, before
 		// any side effect ran (see above): reused here, never reparsed.
 		spkiPin, err = computeSPKIPin(serverCert)
 		if err != nil {
-			s.mu.Unlock()
 			s.logger.Error("failed to compute SPKI pin from server certificate", slog.String("error", err.Error()))
-			return nil, ErrInitFailed
+			return failAfterUnseal(ErrInitFailed)
 		}
 		tlsCertPEM = s.config.ServerCertPEM
 	}
@@ -627,12 +719,18 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	// NEVER written anywhere by this package.
 	adminCertPEM, adminKeyPEM, adminSource, err := issueAdminCredential(ctx, ca, s.deps.TrustDomain, opts, caBundle)
 	if err != nil {
-		s.mu.Unlock()
 		s.logger.Error("bootstrap admin credential issuance failed", slog.String("error", err.Error()))
-		return nil, err
+		return failAfterUnseal(err)
 	}
 	s.lastAdminCertPEM = adminCertPEM
 	s.lastAdminSource = adminSource
+	// s.lastSystemSO is published only once the SO record is durable
+	// (below): PendingSystemSO answers from it, and a cached SO whose
+	// write failed would hide the missing record from a retry.
+	if systemSO != nil {
+		result.SOCertPEM = systemSO.CertPEM
+		s.logger.Info("ceremony: system SO credential issued", slog.String("username", systemSO.Username))
+	}
 	result.AdminCertPEM = adminCertPEM
 	result.AdminKeyPEM = adminKeyPEM
 	result.AdminCredentialSource = adminSource
@@ -650,6 +748,24 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	}
 
 	if !isMofN {
+		// The barrier is unsealed by now: record the issued system SO in it
+		// before reporting success, so a crash before the composer copies
+		// it into the replicated store cannot strand strict first boot.
+		if err := s.persistIssuedSystemSOLocked(ctx, systemSO); err != nil {
+			s.abandonSingleAdminInitLocked()
+			s.mu.Unlock()
+			return nil, err
+		}
+		// The SO record is durable: the intent is spent. It is cleared
+		// before the ceremony is marked operational, so a standing intent
+		// always leaves the single-admin retry open. A retry without an SO
+		// clears an intent an earlier, abandoned attempt left too.
+		if err := s.barrier.ClearSystemSOIntent(ctx); err != nil {
+			s.abandonSingleAdminInitLocked()
+			s.mu.Unlock()
+			return nil, &SystemSOPersistError{Op: "write", Cause: err}
+		}
+		s.lastSystemSO = systemSO
 		s.becomeOperationalLocked(ctx)
 		s.mu.Unlock()
 		result.State = StateOperational
@@ -691,8 +807,11 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 			return nil, rerr
 		}
 		registered = append(registered, o.Username)
+		reg.Username = o.Username
 		result.Holders = append(result.Holders, reg)
 	}
+	s.systemSOInFlight = systemSO
+	s.mofnInitInFlight = true
 	s.mu.Unlock()
 
 	// InitializeShamir calls back into this service (the distributor), so
@@ -710,17 +829,34 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		// Without this, a retry after this specific failure could never
 		// re-enroll any of them (their usernames would stay permanently
 		// claimed by a ceremony that never became operational).
+		// A failed system SO record write in PrepareRoster lands here too:
+		// the barrier rolled back to sealed, so nothing is committed and
+		// a fresh Initialize after a restart (seal.ErrRestartRequired)
+		// starts over. A record PrepareRoster did write stays in storage:
+		// the next initialization's PrepareRoster overwrites or removes it
+		// (mofnInitInFlight). So do the officer records PrepareRoster
+		// wrote into the unsealed barrier: rolled back to sealed, the
+		// barrier refuses their deletion here, and the next
+		// initialization's PrepareRoster removes them
+		// (removeAbandonedOfficerRecordsLocked).
 		s.mu.Lock()
+		s.systemSOInFlight = nil
+		s.mofnInitInFlight = false
 		s.rollbackOfficerInit(ctx, registered, pinsProvisionedByThisCall)
 		s.mu.Unlock()
 		return nil, err
 	}
 
 	s.mu.Lock()
-	s.state = StateEnrolling
-	s.mu.Unlock()
+	s.systemSOInFlight = nil
+	s.mofnInitInFlight = false
+	// Distribute wrote the issued system SO record before the barrier
+	// committed the initialization, so it is durable by now.
 	result.ShareCount = params.ShareCount
 	result.State = StateEnrolling
+	s.lastSystemSO = systemSO
+	s.state = StateEnrolling
+	s.mu.Unlock()
 	s.logger.Info("ceremony initialized; share holders must claim their envelopes",
 		slog.Int("threshold", params.Threshold), slog.Int("holders", params.TotalShares))
 	return result, nil
@@ -783,6 +919,10 @@ func (s *CeremonyService) GenerateRecoveryKeys(ctx context.Context, threshold in
 // Must be called with s.mu held, matching every other call site inside
 // Initialize's critical section; it does not unlock.
 func (s *CeremonyService) rollbackOfficerInit(ctx context.Context, registered []string, pinsProvisionedByThisCall bool) {
+	// The admin credential this call issued belongs to an initialization
+	// that did not happen: first boot must not publish it.
+	s.lastAdminCertPEM = nil
+	s.lastAdminSource = ""
 	for i := len(registered) - 1; i >= 0; i-- {
 		username := registered[i]
 		if err := s.system.removeEnrolled(ctx, username, func() error { return nil }); err != nil {
@@ -798,6 +938,26 @@ func (s *CeremonyService) rollbackOfficerInit(ctx context.Context, registered []
 			s.logger.Error("ceremony: failed to roll back SO/User PIN provisioning after a batch officer enrolment failed",
 				slog.Any("error", err))
 		}
+	}
+}
+
+// abandonSingleAdminInitLocked returns a single-admin Initialize whose
+// system SO record could not be written to the state a restart restores:
+// the barrier initialized but sealed, the ceremony awaiting init, nothing
+// cached for the composer. The SO's only durable handoff is that record, so
+// an unsealed barrier without it would let the sealed-window listener tear
+// down and first boot enrol the admin with no SO, which strict separation
+// then cannot recover (go-qrdb#1129). Sealed, the listener stays up and a
+// retried Initialize with the same secret unseals the barrier
+// (initializeSystemBarrierLocked) and writes the record again; the PINs it
+// provisioned are re-verified, not re-set. Must be called with s.mu held.
+func (s *CeremonyService) abandonSingleAdminInitLocked() {
+	s.lastAdminCertPEM = nil
+	s.lastAdminSource = ""
+	s.lastSystemSO = nil
+	if err := s.barrier.Seal(); err != nil {
+		s.logger.Error("ceremony: sealing the system barrier after a failed system SO record write reported an error",
+			slog.String("error", err.Error()))
 	}
 }
 
@@ -1095,12 +1255,75 @@ func (s *CeremonyService) StartRekey(ctx context.Context, domain seal.QuorumDoma
 func (s *CeremonyService) PrepareRoster(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, exclude []string) (*seal.HolderRoster, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.mofnInitInFlight && domain == seal.DomainUnseal && !s.barrier.IsSealed() {
+		// The Shamir initialization has just generated the root key and
+		// unsealed the barrier, and prepares the roster it distributes to
+		// before it distributes and commits: the system SO record is
+		// written here, so a failed write fails the initialization and the
+		// barrier rolls back to sealed. It is the first write into the new
+		// barrier, ahead of the holder scope's sync of the officers
+		// enrolled while sealed, so a failed SO write leaves nothing behind
+		// that a restarted node would have to read under the rolled-back
+		// key. An SO-less initialization removes the record an earlier,
+		// rolled-back initialization left in storage instead.
+		if err := s.persistIssuedSystemSOLocked(ctx, s.systemSOInFlight); err != nil {
+			return nil, err
+		}
+		if err := s.removeAbandonedOfficerRecordsLocked(ctx); err != nil {
+			return nil, err
+		}
+	}
 	h, err := s.scope(domain)
 	if err != nil {
 		return nil, err
 	}
 	return h.prepareRoster(ctx, domain, threshold, policy, exclude)
 }
+
+// removeAbandonedOfficerRecordsLocked deletes every officer record stored
+// under the system scope when an M-of-N initialization has just unsealed a
+// new barrier, before the holder scope's sync writes the officers enrolled
+// for it. A barrier being initialized holds no officer record of its own
+// yet: any record there was written by an earlier initialization that
+// failed at Distribute or later, or crashed, after its PrepareRoster wrote
+// the records into the then-unsealed barrier. That barrier rolled back to
+// sealed, so neither its Initialize error path nor anything else could
+// delete them, and they are encrypted under a root key that no longer
+// exists: the sync would fail reading them ("decryption failed") and no
+// retry could complete. Listing and deleting read no ciphertext.
+//
+// Must be called with s.mu held, on the unsealed barrier.
+func (s *CeremonyService) removeAbandonedOfficerRecordsLocked(ctx context.Context) error {
+	keys, err := s.barrier.List(ctx, officerRegistryPrefix)
+	if err != nil {
+		return &AbandonedOfficerRecordsError{Cause: err}
+	}
+	for _, key := range keys {
+		if err := s.barrier.Delete(ctx, key); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
+			return &AbandonedOfficerRecordsError{Cause: err}
+		}
+		s.logger.Warn("ceremony: removed an officer record a rolled-back initialization left in storage",
+			slog.String("key", key))
+	}
+	return nil
+}
+
+// AbandonedOfficerRecordsError fails an M-of-N initialization that could not
+// remove the officer records an earlier, rolled-back initialization left in
+// storage (removeAbandonedOfficerRecordsLocked). The initialization rolls
+// back; a retry after a restart tries the removal again.
+type AbandonedOfficerRecordsError struct {
+	// Cause is the storage error.
+	Cause error
+}
+
+// Error returns a human-readable description.
+func (e *AbandonedOfficerRecordsError) Error() string {
+	return "ceremony: remove the officer records of a rolled-back initialization: " + e.Cause.Error()
+}
+
+// Unwrap returns the storage error.
+func (e *AbandonedOfficerRecordsError) Unwrap() error { return e.Cause }
 
 // Distribute implements seal.CeremonyDistributor.
 func (s *CeremonyService) Distribute(ctx context.Context, secret *secure.Buffer, roster *seal.HolderRoster, digest []byte) (int, error) {
@@ -1183,10 +1406,59 @@ func (s *CeremonyService) becomeOperationalLocked(ctx context.Context) {
 //     (rekey, recovery) runs on the authenticated listener.
 //
 // It fails closed: an unreadable record is treated as closed.
+//
+// One exception reopens the gate for a single call: a single-admin
+// Initialize whose system SO write failed admits its Initialize retry while
+// the barrier is sealed, or unsealed with the SO intent still standing (an
+// explicit unseal between the failed persist and the retry); see
+// singleAdminSOWriteRetryOpenLocked.
 func (s *CeremonyService) EnrollmentOpen(ctx context.Context) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.enrollmentOpenLocked(ctx)
+	return s.enrollmentOpenLocked(ctx) || s.singleAdminSOWriteRetryOpenLocked(ctx)
+}
+
+// singleAdminSOWriteRetryOpenLocked reports the one state, besides a fresh
+// node, in which the sealed gate must still admit a pre-operational call: a
+// single-admin Initialize whose system SO record write failed. That call
+// provisioned the PINs and initialized the system barrier, then sealed it
+// again (abandonSingleAdminInitLocked), and only its retry -- which proves
+// the same SO PIN and unseals with the same secret -- completes the node.
+// The state is told apart from every other initialized barrier by the SO PIN
+// the failed call provisioned: a barrier initialized without a ceremony holds
+// none, and an M-of-N ceremony restores to StateEnrolling.
+//
+// The barrier is either sealed, or unsealed with the system SO intent still
+// standing (an explicit unseal between the failed persist and the retry):
+// HoldsSealedWindow keeps the listener sealed then, so the retry must still
+// pass its gate. Unsealed, an unreadable intent closes the gate (fail closed).
+//
+// It opens the gate only: enrollmentOpenLocked still answers closed, so
+// officer, recovery-officer and CSR enrollment are refused in this state
+// and the ceremony Initialize retry is the only call it admits.
+func (s *CeremonyService) singleAdminSOWriteRetryOpenLocked(ctx context.Context) bool {
+	if s.state != StateAwaitingInit || s.pins == nil || !s.pins.SOPINSet() {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, enrollmentProbeTimeout)
+	defer cancel()
+	if ctx.Err() != nil {
+		return false
+	}
+	if marked, err := s.barrier.CeremonyOperational(ctx); err != nil || marked {
+		return false
+	}
+	initialized, err := s.barrier.Initialized(ctx)
+	if err != nil || !initialized {
+		return false
+	}
+	if s.barrier.IsSealed() {
+		return true
+	}
+	// Unsealed: only a standing single-admin SO intent (MarkSystemSOIntent,
+	// cleared once the SO record is durable) keeps the retry open.
+	intent, err := s.barrier.SystemSOIntent(ctx)
+	return err == nil && intent
 }
 
 // enrollmentProbeTimeout bounds every boot-time read of the barrier's
