@@ -1029,7 +1029,15 @@ export class RestClient implements Client {
         // over a SharedArrayBuffer.
         const bytes: Uint8Array<ArrayBuffer> =
             data instanceof Uint8Array ? new Uint8Array(data) : new Uint8Array(await data.arrayBuffer());
-        const begin = await this.fetchJSON<{ sessionId: string }>('/batch/import/begin', {
+        // Every session request (begin, append, commit, abort) goes to the
+        // database the options name, through a client scoped to it, so each
+        // carries that database's header; without one the client's own
+        // scope applies.
+        const target: RestClient =
+            typeof opts.database === 'string' && opts.database !== ''
+                ? (this.databaseScoped(opts.database) as RestClient)
+                : this;
+        const begin = await target.fetchJSON<{ sessionId: string }>('/batch/import/begin', {
             method: 'POST',
             ...jsonBody({
                 format: opts.format,
@@ -1048,17 +1056,17 @@ export class RestClient implements Client {
         try {
             let seq = 0;
             for (let off = 0; off < bytes.length; off += IMPORT_CHUNK_BYTES) {
-                await this.fetchVoid(`${base}/append?seq=${seq}`, {
+                await target.fetchVoid(`${base}/append?seq=${seq}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/octet-stream' },
                     body: bytes.subarray(off, Math.min(off + IMPORT_CHUNK_BYTES, bytes.length)),
                 });
                 seq++;
             }
-            return await this.fetchJSON<ImportResult>(`${base}/commit`, { method: 'POST' });
+            return await target.fetchJSON<ImportResult>(`${base}/commit`, { method: 'POST' });
         } catch (err: unknown) {
             try {
-                await this.fetchVoid(`${base}/abort`, { method: 'POST' });
+                await target.fetchVoid(`${base}/abort`, { method: 'POST' });
             } catch {
                 // The session may already be gone (a failed commit ends it);
                 // the original error is the one the caller needs.

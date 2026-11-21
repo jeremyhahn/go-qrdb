@@ -15,6 +15,7 @@ interface Call {
     readonly method: string;
     readonly path: string;
     readonly body?: unknown;
+    readonly headers: Readonly<Record<string, string>>;
 }
 
 function json(status: number, body: unknown): Response {
@@ -32,6 +33,7 @@ function stubServer(route: (c: Call) => Response): Call[] {
             method: init?.method ?? 'GET',
             path: url.replace('https://localhost:63002', ''),
             body: init?.body,
+            headers: (init?.headers ?? {}) as Record<string, string>,
         };
         calls.push(c);
         return route(c);
@@ -76,6 +78,67 @@ describe('batch.importContent', () => {
         expect(begin).toMatchObject({ format: 'csv', filename: 'users.csv', key_field: 'id', value_mode: 'row' });
         const sizes = calls.slice(1, 4).map((c) => (c.body as Uint8Array).byteLength);
         expect(sizes).toEqual([IMPORT_CHUNK_BYTES, IMPORT_CHUNK_BYTES, 5]);
+    });
+
+    it('sends every session request to the database named in the options', async () => {
+        const client = await connected();
+        const calls = stubServer((c) => {
+            if (c.path === '/batch/import/begin') return json(200, { session_id: 's1' });
+            if (c.path.endsWith('/commit')) return json(200, { total: 1, succeeded: 1, failed: 0, errors: [] });
+            return new Response(null, { status: 204 });
+        });
+        const data = new Uint8Array(IMPORT_CHUNK_BYTES + 5).fill(65);
+
+        await client.batch.importContent(data, { ...opts, database: 'orders' });
+
+        expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+            'POST /batch/import/begin',
+            'POST /batch/import/s1/append?seq=0',
+            'POST /batch/import/s1/append?seq=1',
+            'POST /batch/import/s1/commit',
+        ]);
+        for (const c of calls) {
+            expect(c.headers['X-QRDB-Database'], `${c.method} ${c.path}`).toBe('orders');
+        }
+    });
+
+    it('sends the options database rather than the client scope', async () => {
+        const client = (await connected()).databaseScoped('a') as RestClient;
+        const calls = stubServer((c) => {
+            if (c.path === '/batch/import/begin') return json(200, { session_id: 's1' });
+            if (c.path.endsWith('/commit')) return json(200, { total: 1, succeeded: 1, failed: 0, errors: [] });
+            return new Response(null, { status: 204 });
+        });
+        const data = new Uint8Array(IMPORT_CHUNK_BYTES + 5).fill(65);
+
+        await client.batch.importContent(data, { ...opts, database: 'orders' });
+
+        expect(calls).toHaveLength(4);
+        for (const c of calls) {
+            expect(c.headers['X-QRDB-Database'], `${c.method} ${c.path}`).toBe('orders');
+        }
+    });
+
+    it('sends the abort to the database named in the options', async () => {
+        const client = await connected();
+        const calls = stubServer((c) => {
+            if (c.path === '/batch/import/begin') return json(200, { session_id: 's1' });
+            if (c.path.includes('/append')) return json(500, { error: 'disk full' });
+            return new Response(null, { status: 204 });
+        });
+
+        await expect(
+            client.batch.importContent(new Uint8Array(5).fill(65), { ...opts, database: 'orders' }),
+        ).rejects.toBeDefined();
+
+        expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+            'POST /batch/import/begin',
+            'POST /batch/import/s1/append?seq=0',
+            'POST /batch/import/s1/abort',
+        ]);
+        for (const c of calls) {
+            expect(c.headers['X-QRDB-Database'], `${c.method} ${c.path}`).toBe('orders');
+        }
     });
 
     it('accepts a Blob', async () => {
