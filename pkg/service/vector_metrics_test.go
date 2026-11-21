@@ -374,6 +374,58 @@ func TestVectorCountMetric_RestartSeedsTheStoredCount(t *testing.T) {
 		"the gauge seeded after a restart equals the stored vector count")
 }
 
+// TestVectorCountMetric_CloseReopenSameRegistry closes and reopens a vector
+// service on the same storage inside one process and one registry: the
+// process-wide tenant gauges must carry each stored vector and index byte
+// once, so a closed service takes its contributions away and a reopened
+// one seeds them again, never doubling them.
+func TestVectorCountMetric_CloseReopenSameRegistry(t *testing.T) {
+	const tenantID = "tenant-r"
+	ctx := tenant.WithTenantID(context.Background(), tenantID)
+
+	reg := isolatedRegistry(t)
+	store := newRestartVectorStorage(t, t.TempDir())
+	defer func() { _ = store.Close() }()
+
+	svc, err := NewVectorService(store, newMockLogger())
+	require.NoError(t, err)
+	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "reopen", Dimension: 2})
+	require.NoError(t, err)
+	const n = 5
+	for i := 0; i < n; i++ {
+		_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
+			Namespace: "reopen", ID: uint64(i + 1), Vector: []float32{float32(i), 1},
+		})
+		require.NoError(t, err)
+	}
+
+	wantCount := tenantGauge(t, reg, "qrdb_vector_vector_count", tenantID)
+	wantBytes := tenantGauge(t, reg, "qrdb_vector_index_size_bytes", tenantID)
+	require.Equal(t, float64(n), wantCount)
+
+	for round := 0; round < 2; round++ {
+		require.NoError(t, svc.(*vectorService).Close())
+		assert.Equal(t, 0.0, tenantGauge(t, reg, "qrdb_vector_vector_count", tenantID),
+			"round %d: a closed service holds no vector count", round)
+		assert.Equal(t, 0.0, tenantGauge(t, reg, "qrdb_vector_index_size_bytes", tenantID),
+			"round %d: a closed service holds no index bytes", round)
+
+		svc, err = NewVectorService(store, newMockLogger())
+		require.NoError(t, err)
+		assert.Equal(t, wantCount, tenantGauge(t, reg, "qrdb_vector_vector_count", tenantID),
+			"round %d: a reopened service counts each stored vector once", round)
+		assert.Equal(t, wantBytes, tenantGauge(t, reg, "qrdb_vector_index_size_bytes", tenantID),
+			"round %d: a reopened service counts its index bytes once", round)
+	}
+
+	require.NoError(t, svc.(*vectorService).Close())
+	require.NoError(t, svc.(*vectorService).Close())
+	assert.Equal(t, 0.0, tenantGauge(t, reg, "qrdb_vector_vector_count", tenantID),
+		"a repeated Close does not take the contributions away twice")
+	assert.Equal(t, 0.0, tenantGauge(t, reg, "qrdb_vector_index_size_bytes", tenantID),
+		"a repeated Close does not take the index bytes away twice")
+}
+
 // TestVectorCountMetric_SystemTenantLabel verifies that namespaces created
 // without an explicit tenant (pooling into system) carry tenant="system" in
 // the gauge label — not an empty string or \x1f.

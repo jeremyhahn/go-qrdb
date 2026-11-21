@@ -215,6 +215,23 @@ func (m *vectorServiceMetrics) dropNamespace(scoped string) {
 	delete(m.nsIndexBytes, scoped)
 }
 
+// dropAll subtracts every namespace share this service holds from its
+// tenant series and forgets them, so the process-wide gauges no longer
+// carry a closed service. A second call finds the maps empty and subtracts
+// nothing.
+func (m *vectorServiceMetrics) dropAll() {
+	m.nsMu.Lock()
+	defer m.nsMu.Unlock()
+	for scoped, count := range m.nsVectors {
+		m.vectorCount.WithLabels(tenantMetricLabels(scoped)).Sub(count)
+	}
+	for scoped, bytes := range m.nsIndexBytes {
+		m.indexSizeBytes.WithLabels(tenantMetricLabels(scoped)).Sub(bytes)
+	}
+	clear(m.nsVectors)
+	clear(m.nsIndexBytes)
+}
+
 // estimateIndexSizeBytes estimates the in-memory size of an HNSW index from
 // its stats: per node, the fixed node overhead, the float32 vector and the
 // neighbour IDs over every layer. Zero for a nil or empty index.
@@ -559,7 +576,8 @@ var _ io.Closer = (*vectorService)(nil)
 // beneath the service afterwards. It does not close the storage, which the
 // service does not own. Every call, including one concurrent with or after
 // the first, returns only once the jobs have stopped; Close is otherwise
-// idempotent.
+// idempotent. Close takes the service's contributions away from the
+// process-wide tenant vector count and index size gauges, once in total.
 func (v *vectorService) Close() error {
 	v.mu.Lock()
 	v.closed = true
@@ -572,6 +590,13 @@ func (v *vectorService) Close() error {
 	// Waits observe the same drain.
 	v.bgCancel()
 	v.bg.Wait()
+
+	// No background job runs and no write is admitted past closed, so the
+	// gauge shares are final; dropAll takes them away exactly once across
+	// all Close calls.
+	if v.metrics != nil {
+		v.metrics.dropAll()
+	}
 	return nil
 }
 
