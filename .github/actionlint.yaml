@@ -45,9 +45,13 @@
 # does not list it yet, so adopting v5.5 without it took `Lint` red (the v2
 # failure mode above).
 #
-# CUSTOMIZE (go-qrdb, 2026-11-10, Company Agent m2396): `self-hosted`, `linux`,
-# `x64` and `bigdisk`, the labels of the returned worker node, which ci.yml's
-# test-typescript job runs on for push and same-repository pull_request.
+# CUSTOMIZE (go-qrdb, owner ruling 999/1006): every job runs on GitHub-hosted
+# ubuntu-latest except the two review-runner jobs of code-review.yml, whose
+# runs-on lines carry a `# self-hosted: <category>: <reason>` waiver that
+# test/buildgates/ci_runners_test.go enforces. Only their labels, `codex` and
+# `qwen`, are listed; `self-hosted`, `linux`, `x64`, `bigdisk`, `codex-task`,
+# `claude` and `code-review` are removed, since no workflow names them (the
+# v3 reasoning above).
 #
 # Verify against the fleet, not against this comment:
 #   curl -sH "Authorization: token $TOK" \
@@ -56,14 +60,5 @@
 #              | "\(.name)\t\(.labels|map(.name)|join(","))"'
 self-hosted-runner:
   labels:
-    - ubuntu-latest
-    - ubuntu-22.04
     - codex
-    - codex-task
-    - claude
-    - code-review
     - qwen
-    - self-hosted
-    - linux
-    - x64
-    - bigdisk
