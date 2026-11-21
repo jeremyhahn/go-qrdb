@@ -17,8 +17,9 @@ package grpc
 import (
 	"context"
 
-	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"google.golang.org/protobuf/types/known/emptypb"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 )
 
 // The SealStore* RPCs serve the node's seal store. The interceptor gates

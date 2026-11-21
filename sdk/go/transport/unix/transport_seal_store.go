@@ -17,9 +17,10 @@ package unix
 import (
 	"context"
 
+	"google.golang.org/protobuf/types/known/emptypb"
+
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // Compile-time interface assertions.
