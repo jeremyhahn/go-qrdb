@@ -16,7 +16,10 @@ package quic
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
@@ -150,6 +153,130 @@ func TestE2E_CredentialRotate_RoundTrip(t *testing.T) {
 	}
 	if resp.NewVersion != 2 {
 		t.Fatalf("resp = %+v", resp)
+	}
+}
+
+func TestE2E_CredentialSetRotationPolicy_RoundTrip(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("credential.SetRotationPolicy", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, nil
+	})
+	if err := tr.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
+		Name: "db-cred", Enabled: true, Interval: "24h", RetainVersions: 3,
+	}); err != nil {
+		t.Fatalf("CredentialSetRotationPolicy: %v", err)
+	}
+	rec := srv.LastRequest("credential.SetRotationPolicy")
+	if rec == nil {
+		t.Fatal(`no request reached "credential.SetRotationPolicy"`)
+	}
+	var sent pb.CredentialSetRotationPolicyRequest
+	if err := proto.Unmarshal(rec.Payload, &sent); err != nil {
+		t.Fatalf("request payload: %v", err)
+	}
+	if sent.GetName() != "db-cred" || !sent.GetEnabled() || sent.GetInterval() != "24h" || sent.GetRetainVersions() != 3 {
+		t.Fatalf("sent = %v", &sent)
+	}
+}
+
+func TestE2E_CredentialSetRotationPolicy_InvalidArgument(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("credential.SetRotationPolicy", func(_ []byte) (uint16, []byte) {
+		return wire.StatusInvalidArgument, nil
+	})
+	err := tr.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
+		Name: "db-cred", Enabled: true, Interval: "0s", RetainVersions: 1,
+	})
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.StatusCode != int(wire.StatusInvalidArgument) {
+		t.Fatalf("expected an InvalidArgument RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestE2E_CredentialRotationPolicy_RoundTrip(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("credential.RotationPolicy", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, mustMarshal(&pb.CredentialRotationPolicyResponse{
+			Name: "db-cred", Enabled: true, Interval: "1h0m0s", RetainVersions: 2, NextRotation: "2026-10-29T12:00:00Z",
+		})
+	})
+	resp, err := tr.CredentialRotationPolicy(context.Background(), "db-cred")
+	if err != nil {
+		t.Fatalf("CredentialRotationPolicy: %v", err)
+	}
+	if resp.Name != "db-cred" || !resp.Enabled || resp.Interval != "1h0m0s" || resp.RetainVersions != 2 || resp.NextRotation != "2026-10-29T12:00:00Z" {
+		t.Fatalf("resp = %+v", resp)
+	}
+}
+
+func TestE2E_CredentialRotationPolicy_ServerError(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("credential.RotationPolicy", func(_ []byte) (uint16, []byte) {
+		return wire.StatusNotFound, nil
+	})
+	if _, err := tr.CredentialRotationPolicy(context.Background(), "missing"); err == nil {
+		t.Fatal("expected an error for an unknown credential")
+	}
+}
+
+func TestE2E_CredentialMigrationConflicts_RoundTrip(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("credential.MigrationConflicts", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, mustMarshal(&pb.CredentialMigrationConflictsResponse{
+			Conflicts: []*pb.CredentialMigrationConflict{{Name: "db-cred", Value: true, Policy: true}},
+		})
+	})
+	resp, err := tr.CredentialMigrationConflicts(context.Background())
+	if err != nil {
+		t.Fatalf("CredentialMigrationConflicts: %v", err)
+	}
+	want := transport.CredentialMigrationConflict{Name: "db-cred", Value: true, Policy: true}
+	if len(resp.Conflicts) != 1 || resp.Conflicts[0] != want {
+		t.Fatalf("resp = %+v", resp)
+	}
+}
+
+func TestE2E_CredentialMigrationConflicts_ServerError(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("credential.MigrationConflicts", func(_ []byte) (uint16, []byte) {
+		return wire.StatusInvalidArgument, nil
+	})
+	if _, err := tr.CredentialMigrationConflicts(context.Background()); err == nil {
+		t.Fatal("expected an error from a refusing server")
+	}
+}
+
+func TestE2E_CredentialResolveMigrationConflict_RoundTrip(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	// The responder runs on the server's goroutine; the channel orders its
+	// write before the test's read.
+	seen := make(chan *pb.CredentialResolveMigrationConflictRequest, 1)
+	srv.SetResponder("credential.ResolveMigrationConflict", func(payload []byte) (uint16, []byte) {
+		got := &pb.CredentialResolveMigrationConflictRequest{}
+		if err := proto.Unmarshal(payload, got); err != nil {
+			return wire.StatusInvalidArgument, nil
+		}
+		seen <- got
+		return wire.StatusOK, nil
+	})
+	if err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "db-cred", Resolution: "import"}); err != nil {
+		t.Fatalf("CredentialResolveMigrationConflict: %v", err)
+	}
+	got := <-seen
+	if got.GetName() != "db-cred" || got.GetResolution() != "import" {
+		t.Fatalf("server saw %+v", got)
+	}
+}
+
+func TestE2E_CredentialResolveMigrationConflict_ServerError(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("credential.ResolveMigrationConflict", func(_ []byte) (uint16, []byte) {
+		return wire.StatusNotFound, nil
+	})
+	if err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"}); err == nil {
+		t.Fatal("expected an error for a name with no conflict")
 	}
 }
 

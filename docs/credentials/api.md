@@ -1,6 +1,6 @@
 # Credentials — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-13
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -16,13 +16,38 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Retrieve version | `GET /v1/credentials/{name}/versions/{version}` | `CredentialRetrieveVersion` | `credential.RetrieveVersion` | `qrdb_credential_retrieve_version` | `CredentialRetrieveVersionBuffer` | `credentials:retrieve_version` |
 | List versions | `GET /v1/credentials/{name}/versions` | `CredentialListVersions` | `credential.ListVersions` | `qrdb_credential_list_versions` | `CredentialListVersions` | `credentials:list_versions` |
 | Rotate | `POST /v1/credentials/{name}/rotate` | `CredentialRotate` | `credential.Rotate` | `qrdb_credential_rotate` | `CredentialRotate` | `credentials:rotate` |
+| Set rotation policy | `PUT /v1/credentials/{name}/rotation-policy` | `CredentialSetRotationPolicy` | `credential.SetRotationPolicy` | `qrdb_credential_set_rotation_policy` | `CredentialSetRotationPolicy` | `credentials:rotate` |
+| Read rotation policy | `GET /v1/credentials/{name}/rotation-policy` | `CredentialRotationPolicy` | `credential.RotationPolicy` | `qrdb_credential_rotation_policy` | `CredentialRotationPolicy` | `credentials:rotate` |
 | GC expired versions | `POST /v1/credentials/{name}/gc` | `CredentialGCExpired` | `credential.GCExpired` | `qrdb_credential_gc_expired` | `CredentialGCExpired` | `credentials:gc_expired` |
 | Delete | `DELETE /v1/credentials/{name}` | `CredentialDelete` | `credential.Delete` | `qrdb_credential_delete` | `CredentialDelete` | `credentials:delete` |
 | List names | `GET /v1/credentials` | `CredentialList` | `credential.List` | `qrdb_credential_list` | `CredentialList` | `credentials:list` |
 | Active strategy | `GET /v1/credentials/strategy` | `CredentialStrategy` | `credential.Strategy` | `qrdb_credential_strategy` | `CredentialStrategy` | `credentials:strategy` |
+| List migration conflicts | `GET /v1/credentials/migration-conflicts` | `CredentialMigrationConflicts` | `credential.MigrationConflicts` | `qrdb_credential_migration_conflicts` | `CredentialMigrationConflicts` | `credentials:list` |
+| Resolve a migration conflict | `POST /v1/credentials/{name}/migration-resolve` | `CredentialResolveMigrationConflict` | `credential.ResolveMigrationConflict` | `qrdb_credential_resolve_migration_conflict` | `CredentialResolveMigrationConflict` | `credentials:rotate` |
+
+**A REST `{name}` is one path segment, escaped once by default.** The
+server routes and authorizes on the once-decoded path, and by default the
+decoded segment is the name itself: percent-encode the name as a path segment
+(`a%b` as `a%25b`, `a%2Fb` as `a%252Fb`) and the service receives exactly
+that name. A name holding `/` cannot stay one segment that way, so a client
+opts in to the escaped encoding with the query parameter
+`?name_encoding=escaped`: escape `%` as `%25` and `/` as `%2F`, then
+percent-encode the result as a path segment (`db/main` travels as
+`db%252Fmain?name_encoding=escaped`), and the server unescapes the decoded
+segment once more. Under the opt-in a segment that does not unescape is a
+400, and so is any other `name_encoding` value. The Go SDK's REST transport
+always uses the opt-in; the other transports carry the name unchanged.
 
 **Every transport handler routes through the same
 `service.CredentialServicer`**, so behaviour cannot diverge between them.
+
+**Go SDK.** `transport.Client.Credentials()` (sdk/go/transport/client.go)
+carries every row of the matrix, the rotation-policy and migration-conflict
+methods included, and each SDK transport (embedded, gRPC, MCP, QUIC, REST,
+Unix) implements it against the column above. The embedded transport checks
+the same `scp` permission in process. A refused policy surfaces as the typed
+`InvalidRotationPolicyError` text, `credentials: invalid rotation policy:
+<reason>`, on every transport.
 
 **Every operation acts on the caller's own store**, chosen from the tenant of
 the authenticated principal: the platform's store for a system principal, the
@@ -49,6 +74,30 @@ Rotate:
 carries `previous_version`, `new_version` and, with a grace period,
 `grace_until_unix`.
 
+Set rotation policy (the name travels in the path on REST and in the body
+elsewhere):
+
+```json
+{ "name": "smtp-password", "enabled": true, "interval": "720h", "retain_versions": 3 }
+```
+
+`interval` is a Go duration string. An enabled policy needs a positive
+`interval` and `retain_versions` of at least 1; `retain_versions` counts the
+current version, so `3` keeps the current value and two predecessors. A
+disabled policy (`"enabled": false`) clears the schedule. The `manual`
+strategy refuses every policy: it cannot mint a value. Set returns 204 on REST
+and `google.protobuf.Empty` on gRPC.
+
+Read rotation policy returns the same fields plus `next_rotation`, the RFC 3339
+UTC instant of the next scheduled rotation, omitted when nothing is scheduled:
+
+```json
+{ "name": "smtp-password", "enabled": true, "interval": "720h0m0s",
+  "retain_versions": 3, "next_rotation": "2026-11-29T12:00:00Z" }
+```
+
+A credential with no policy reads back `"enabled": false`.
+
 Retrieve version: `version` of **`0` means the current version**.
 
 `CredentialVersionInfo` entries carry `version`, `is_current`,
@@ -59,15 +108,43 @@ List returns **names only**, never values.
 
 Strategy returns `manual` or `barrier`.
 
+List migration conflicts returns the credentials whose copy on the serving
+node differs from the replicated record (architecture.md, "Prefix
+migration"), sorted by name, each with the parts that differ. It never
+carries a value:
+
+```json
+{ "conflicts": [ { "name": "smtp-password", "value": true, "versions": false, "policy": false } ] }
+```
+
+The list is the serving node's own: each node reports only the copies it
+kept, so an operator asks each node in turn.
+
+Resolve a migration conflict (the name travels in the path on REST and in the
+body elsewhere):
+
+```json
+{ "name": "smtp-password", "resolution": "import" }
+```
+
+`resolution` is `import`, which writes the node's kept current value as a new
+version of the replicated record, retaining the version it replaces, or
+`discard`, which keeps the replicated record. Either way the node's kept
+records for the name are deleted. Resolve returns 204 on REST and
+`google.protobuf.Empty` on gRPC.
+
 ## Status and error mapping
 
 | Condition | REST | gRPC / Unix |
 |---|---|---|
-| Success | 200; 204 for store, submit and delete | `OK` |
+| Success | 200; 204 for store, submit, delete, set rotation policy and resolve | `OK` |
+| Resolve of a name with no migration conflict on the serving node | 404 | `NOT_FOUND` — `ErrMigrationConflictNotFound` |
+| Resolution other than `import` or `discard` | 400 | `INVALID_ARGUMENT` — `ErrInvalidMigrationResolution` |
 | Credential not found | 404 | `NOT_FOUND` |
 | Version expired or never existed | 404 | `NOT_FOUND` |
 | Submit of a name already submitted under `manual` | 409 | `ALREADY_EXISTS` — `ErrCredentialAlreadySubmitted` |
 | Empty name, empty value or negative grace period | 400 | `INVALID_ARGUMENT` |
+| Refused rotation policy (non-positive or unparsable interval, `retain_versions` below 1, any policy under `manual`) | 400 | `INVALID_ARGUMENT` — `InvalidRotationPolicyError` |
 | Retrieve under `manual` with nothing submitted | **blocks** until submitted or the context ends | same |
 | Barrier sealed under the `barrier` strategy, or the caller's tenant barrier sealed | 503 | `UNAVAILABLE` |
 | Caller's tenant has no dedicated barrier (`prefix` isolation) | 501 | `UNIMPLEMENTED` — `CapabilityUnsupportedError` |
