@@ -17,6 +17,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ed25519"
 	"errors"
 	"io/fs"
@@ -182,5 +183,35 @@ func TestNewDataPlaneCreateFunc_LogKeysSurviveSnapshotRestore(t *testing.T) {
 	}
 	if _, err := vlog.ReadHead(third.Store().Storage(), id); err == nil {
 		t.Fatal("the sealed recover left the log readable in the third state machine")
+	}
+
+	// Unsealed again, the restored key signs a new checkpoint that the
+	// pre-snapshot public key verifies.
+	if err := tb.Unseal(ctx, seal.Credentials{}); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	apply(t, follower)(protocol.EncodeVerifiableLogAppend(id, [][]byte{[]byte("after restore")}))
+	newHead, err := vlog.ReadHead(follower.Store().Storage(), id)
+	if err != nil || newHead.Size != head.Size+1 {
+		t.Fatalf("follower ReadHead after the append = %+v, %v; want size %d", newHead, err, head.Size+1)
+	}
+	restored, err := vlog.ReadSigningKey(follower.Store().Storage(), id, key.Version)
+	if err != nil {
+		t.Fatalf("follower ReadSigningKey after the unseal: %v", err)
+	}
+	restoredSigner, typ, err := restored.Signer()
+	if err != nil {
+		t.Fatalf("restored Signer: %v", err)
+	}
+	sig, err := restoredSigner.Sign(nil, vlog.CheckpointBody(desc.Origin, newHead.Size, newHead.Root), crypto.Hash(0))
+	if err != nil {
+		t.Fatalf("restored key Sign: %v", err)
+	}
+	signed := vlog.SignedHead{Size: newHead.Size, Root: newHead.Root, KeyVersion: restored.Version, SignatureType: typ, Signature: sig}
+	if err := vlog.VerifyHead(signer.Public(), desc.Origin, signed); err != nil {
+		t.Fatalf("the pre-snapshot public key does not verify the restored key's checkpoint: %v", err)
+	}
+	if err := desc.VerifyHead(signed); err != nil {
+		t.Fatalf("the descriptor does not verify the restored key's checkpoint: %v", err)
 	}
 }

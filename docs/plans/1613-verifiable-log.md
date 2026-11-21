@@ -75,8 +75,10 @@ allowed.
   or a dedicated Raft database's own group) is under the database's key.
   Putting the registry under the database barrier needs either a group sealed
   by the database's barrier or apply-time encryption with the database key, an
-  architecture call. Today every such call is refused with
-  `BarrierDatabaseLogNotSupportedError` (`Unimplemented`).
+  architecture call (Codex round 1, P1 #2, deferred to the owner). Until the
+  owner rules, every log call in a barrier-enabled database fails closed with
+  `BarrierDatabaseLogNotSupportedError` (`Unimplemented`); this row implements
+  no barrier-database routing.
 - Row 8, standalone: barrier homes are `seal.NewTenantBarrierKVStore` KV stores
   with no log state machine, so a barrier tenant's log fails closed there; the
   same question (registry in a KV home) applies.

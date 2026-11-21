@@ -111,11 +111,13 @@ func (r *logRoute) resolve(ctx context.Context, tenantID, name string) (Host, ui
 }
 
 // logRoute resolves the Raft group a log in tenantID's database is applied
-// in and read from: a barrier-enabled database's own barrier-sealed group,
-// else the tenant's group (a barrier tenant's home group, else the system
-// shard). A name with no database record carries no isolation of its own and
-// routes with its tenant, the fall-through the tenant resolver gives a tenant
-// without metadata; a failed lookup refuses.
+// in and read from: the tenant's group (a barrier tenant's home group, else
+// the system shard). A log in a barrier-enabled database is refused with
+// BarrierDatabaseLogNotSupportedError (Unimplemented), never routed, until
+// the log has a store under the database's key. A name with no database
+// record carries no isolation of its own and routes with its tenant, the
+// fall-through the tenant resolver gives a tenant without metadata; a failed
+// lookup refuses.
 type logRoute struct {
 	resolver  AuditShardResolver
 	databases LogDatabaseLookup
