@@ -298,6 +298,12 @@ func (s *Server) buildHandlers() {
 	s.handle("role.Unassign", permission.RolesUnassign, s.handleUnassignRole)
 	s.handle("role.ListPermissions", permission.PermissionsList, s.handleListPermissions)
 	s.handle("role.ListPermissionCatalog", permission.PermissionsList, s.handleListPermissionCatalog)
+	s.handle("sealstore.Put", permission.SealStoreManage, s.handleSealStorePut)
+	s.handle("sealstore.Get", permission.SealStoreManage, s.handleSealStoreGet)
+	s.handle("sealstore.Delete", permission.SealStoreManage, s.handleSealStoreDelete)
+	s.handle("sealstore.List", permission.SealStoreManage, s.handleSealStoreList)
+	s.handle("sealstore.Reseal", permission.SealStoreManage, s.handleSealStoreReseal)
+	s.handle("sealstore.Status", permission.SealStoreManage, s.handleSealStoreStatus)
 	s.handle("role.ResolvePermissions", permission.PermissionsResolve, s.handleResolvePermissions)
 	// The caller's own grants need authentication only: the identity is the
 	// authenticated one, never a payload field.

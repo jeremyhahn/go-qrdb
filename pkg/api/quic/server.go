@@ -78,6 +78,7 @@ type Server struct {
 	logSvc            service.LogService
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
+	sealStoreSvc      service.SealStoreServicer
 	certProv          cert.CertProvider
 	certEnroll        service.CertEnrollmentServicer
 	invitations       service.InvitationServicer
@@ -417,6 +418,12 @@ func WithUserService(svc user.UserServicer) ServerOption {
 // WithRoleService configures the QUIC server with a role management service.
 func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
+}
+
+// WithSealStoreService sets the node seal store served by the sealstore.*
+// methods. Every method requires seal:store_manage.
+func WithSealStoreService(svc service.SealStoreServicer) ServerOption {
+	return func(s *Server) { s.sealStoreSvc = svc }
 }
 
 // WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every method
