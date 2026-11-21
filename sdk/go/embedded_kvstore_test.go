@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	qerrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	sdkstorage "github.com/jeremyhahn/go-qrdb/sdk/go/storage"
 )
@@ -387,5 +388,177 @@ func TestEmbeddedKVStore_ConcurrentRegistrationWithWrites(t *testing.T) {
 		if err != nil || len(keys) != 1 || string(keys[0]) != entityType+"/1" {
 			t.Fatalf("QueryIndex(%s) = %q, %v; want [%s/1] after registration and write", entityType, keys, err, entityType)
 		}
+	}
+}
+
+func TestEmbeddedKVStore_CancelledContextRefusesEveryOperation(t *testing.T) {
+	store, _ := newEmbeddedTestStore(t)
+	if err := store.Put(context.Background(), "c/1", []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cases := map[string]func() error{
+		"Put":    func() error { return store.Put(ctx, "c/2", []byte("v")) },
+		"Get":    func() error { _, err := store.Get(ctx, "c/1"); return err },
+		"Delete": func() error { return store.Delete(ctx, "c/1") },
+		"Scan": func() error {
+			return store.Scan(ctx, "c/", func(string, []byte) error { return nil })
+		},
+		"List":       func() error { _, err := store.List(ctx, "c/"); return err },
+		"Exists":     func() error { _, err := store.Exists(ctx, "c/1"); return err },
+		"QueryIndex": func() error { _, err := store.QueryIndex(ctx, "c.Field", []byte("x")); return err },
+		"ScanIndex":  func() error { _, err := store.ScanIndex(ctx, "c.Field", nil, nil); return err },
+		"QueryCompoundIndex": func() error {
+			_, err := store.QueryCompoundIndex(ctx, "c.A_B", [][]byte{[]byte("x"), []byte("y")})
+			return err
+		},
+		"ScanCompoundIndex": func() error {
+			_, err := store.ScanCompoundIndex(ctx, "c.A_B", [][]byte{[]byte("x")}, nil, nil)
+			return err
+		},
+	}
+	for name, op := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := op(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("%s on a cancelled context = %v, want context.Canceled", name, err)
+			}
+		})
+	}
+	got, err := store.Get(context.Background(), "c/1")
+	if err != nil || string(got) != "v" {
+		t.Fatalf("Get after cancelled Delete = %q, %v; want v (the cancelled Delete must not apply)", got, err)
+	}
+	if ok, err := store.Exists(context.Background(), "c/2"); err != nil || ok {
+		t.Fatalf("Exists c/2 = %v, %v; the cancelled Put must not apply", ok, err)
+	}
+}
+
+func TestEmbeddedKVStore_ScanStopsWhenContextCancelledMidway(t *testing.T) {
+	store, _ := newEmbeddedTestStore(t)
+	for _, k := range []string{"s/1", "s/2", "s/3"} {
+		if err := store.Put(context.Background(), k, []byte(k)); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	visited := 0
+	err := store.Scan(ctx, "s/", func(string, []byte) error {
+		visited++
+		cancel()
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Scan cancelled midway = %v, want context.Canceled", err)
+	}
+	if visited != 1 {
+		t.Fatalf("Scan visited %d keys after cancel, want 1", visited)
+	}
+}
+
+func TestEmbeddedKVStore_ClosedStorageListReturnsError(t *testing.T) {
+	store, stg := newEmbeddedTestStore(t)
+	if err := store.Put(context.Background(), "l/1", []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := stg.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	keys, err := store.List(context.Background(), "l/")
+	if err == nil {
+		t.Fatalf("List on closed storage = %v, nil; want an error", keys)
+	}
+}
+
+func TestEmbeddedKeysAndScanResults(t *testing.T) {
+	boom := errors.New("boom")
+	missing := &index.NotFoundError{Name: "x.Field"}
+	keyCases := []struct {
+		name    string
+		result  interface{}
+		err     error
+		want    int
+		wantErr error
+		anyErr  bool
+	}{
+		{name: "engine error", err: boom, wantErr: boom},
+		{name: "missing index", err: missing, want: 0},
+		{name: "nil result", want: 0},
+		{name: "wrong type", result: "nope", anyErr: true},
+		{name: "keys", result: [][]byte{[]byte("a"), []byte("b")}, want: 2},
+	}
+	for _, tc := range keyCases {
+		t.Run("keys/"+tc.name, func(t *testing.T) {
+			got, err := embeddedKeys(tc.result, tc.err)
+			switch {
+			case tc.wantErr != nil:
+				if !errors.Is(err, tc.wantErr) || got != nil {
+					t.Fatalf("embeddedKeys = %q, %v; want nil, %v", got, err, tc.wantErr)
+				}
+			case tc.anyErr:
+				if err == nil || got != nil {
+					t.Fatalf("embeddedKeys = %q, %v; want nil, a type error", got, err)
+				}
+			default:
+				if err != nil || got == nil || len(got) != tc.want {
+					t.Fatalf("embeddedKeys = %q, %v; want %d keys, nil", got, err, tc.want)
+				}
+			}
+		})
+	}
+	scanCases := []struct {
+		name    string
+		result  interface{}
+		err     error
+		want    int
+		wantErr error
+		anyErr  bool
+	}{
+		{name: "engine error", err: boom, wantErr: boom},
+		{name: "missing index", err: missing, want: 0},
+		{name: "nil result", want: 0},
+		{name: "wrong type", result: [][]byte{}, anyErr: true},
+		{name: "scan", result: map[string][][]byte{"v": {[]byte("k")}}, want: 1},
+	}
+	for _, tc := range scanCases {
+		t.Run("scan/"+tc.name, func(t *testing.T) {
+			got, err := embeddedScan(tc.result, tc.err)
+			switch {
+			case tc.wantErr != nil:
+				if !errors.Is(err, tc.wantErr) || got != nil {
+					t.Fatalf("embeddedScan = %v, %v; want nil, %v", got, err, tc.wantErr)
+				}
+			case tc.anyErr:
+				if err == nil || got != nil {
+					t.Fatalf("embeddedScan = %v, %v; want nil, a type error", got, err)
+				}
+			default:
+				if err != nil || got == nil || len(got) != tc.want {
+					t.Fatalf("embeddedScan = %v, %v; want %d entries, nil", got, err, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestPrefixUpperBound(t *testing.T) {
+	cases := []struct {
+		name   string
+		prefix []byte
+		want   []byte
+	}{
+		{name: "plain", prefix: []byte("a/"), want: []byte("a0")},
+		{name: "trailing 0xff", prefix: []byte{'a', 0xff}, want: []byte("b")},
+		{name: "all 0xff", prefix: []byte{0xff, 0xff}, want: nil},
+		{name: "empty", prefix: nil, want: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := prefixUpperBound(tc.prefix)
+			if string(got) != string(tc.want) || (tc.want == nil) != (got == nil) {
+				t.Fatalf("prefixUpperBound(%q) = %q, want %q", tc.prefix, got, tc.want)
+			}
+		})
 	}
 }
