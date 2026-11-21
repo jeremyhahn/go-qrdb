@@ -768,6 +768,10 @@ type Node struct {
 	// writer.
 	homeLeader atomic.Pointer[databaseLeadership]
 
+	// logGroups is the verifiable-log service's barrier group source; its
+	// groups are attached by AttachTenantHomes.
+	logGroups *logGroups
+
 	// work is what the node runs on its own behalf; Stop cancels it and
 	// waits for it before any closer runs.
 	work nodeWork
@@ -1018,12 +1022,14 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		bm.SetUnsealGate(databaseUnsealGate(infra.ClusterSealer))
 	}
 
-	// The verifiable-log service routes as the audit chain does, but also
-	// refuses a barrier tenant and a barrier database: its log registry and
-	// sealed signing keys sit under the system barrier, not the tenant's or
-	// the database's. A build without the qrdb_vlog tag has no log service,
-	// which is not a boot failure.
-	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	// The verifiable-log service routes as the audit chain does, except that
+	// a barrier tenant's logs, entries and sealed signing keys are applied in
+	// its home group and a barrier database's in the database's own group,
+	// each under that barrier (n.logGroups, attached with the home groups).
+	// A build without the qrdb_vlog tag has no log service, which is not a
+	// boot failure.
+	n.logGroups = &logGroups{host: infra.Host}
+	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n}, n.logGroups)
 	logSvc, err := buildLogService(logResolver, dbManager, infra.HeadSignerProvider)
 	if err != nil {
 		return nil, err

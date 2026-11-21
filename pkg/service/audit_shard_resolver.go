@@ -59,8 +59,10 @@ type SystemShardAuditResolver struct {
 	host      Host
 	shardID   uint64
 	isolation AuditIsolationLookup
-	// refuseBarrier also refuses a barrier tenant; see NewSystemShardLogResolver.
-	refuseBarrier bool
+	// logs routes a barrier tenant to its home group through groups; see
+	// NewSystemShardLogResolver.
+	logs   bool
+	groups LogGroupSource
 }
 
 // NewSystemShardAuditResolver returns a resolver that names (host, shardID)
@@ -75,13 +77,21 @@ func NewSystemShardAuditResolver(host Host, shardID uint64, isolation AuditIsola
 
 // NewSystemShardLogResolver returns the resolver the verifiable-log service
 // routes through: NewSystemShardAuditResolver's, except that a barrier tenant
-// is refused with *BarrierTenantLogNotSupportedError. A log's entries and its
-// sealed head-signing key are applied into the system shard's log registry,
-// which the system barrier protects, not the tenant's: routing a barrier
-// tenant there would keep its private key readable while its own barrier is
-// sealed.
-func NewSystemShardLogResolver(host Host, shardID uint64, isolation AuditIsolationLookup) *SystemShardAuditResolver {
-	return &SystemShardAuditResolver{host: host, shardID: shardID, isolation: isolation, refuseBarrier: true}
+// resolves to its own home group through groups. A log's entries and its
+// sealed head-signing key are then applied into, and read from, the log
+// registry of the tenant's barrier-sealed store, never the system shard's,
+// and a sealed tenant barrier refuses them with the error its other reads
+// return. Snapshot and restore of that group carry the logs with it. A nil
+// groups fails a barrier tenant closed with *BarrierStoreUnavailableError.
+func NewSystemShardLogResolver(host Host, shardID uint64, isolation AuditIsolationLookup, groups LogGroupSource) *SystemShardAuditResolver {
+	return &SystemShardAuditResolver{host: host, shardID: shardID, isolation: isolation, logs: true, groups: groups}
+}
+
+// LogGroupSource resolves the Raft group of a barrier tenant's home store: its
+// records, log and snapshots under the tenant's key. It refuses, while the
+// tenant's barrier is sealed, with the error that barrier's other reads return.
+type LogGroupSource interface {
+	TenantHomeGroup(ctx context.Context, tenantID string) (Host, uint64, error)
 }
 
 // ResolveAuditShard implements AuditShardResolver.
@@ -106,8 +116,11 @@ func (r *SystemShardAuditResolver) ResolveAuditShard(ctx context.Context, tenant
 			IsolationType: string(info.EffectiveIsolationType()),
 		}
 	case tenant.IsolationBarrier:
-		if r.refuseBarrier {
-			return nil, 0, &BarrierTenantLogNotSupportedError{TenantID: routed}
+		if r.logs {
+			if r.groups == nil {
+				return nil, 0, &BarrierStoreUnavailableError{TenantID: routed}
+			}
+			return r.groups.TenantHomeGroup(ctx, routed)
 		}
 		return r.host, r.shardID, nil
 	default:

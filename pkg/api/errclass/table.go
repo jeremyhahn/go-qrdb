@@ -428,9 +428,10 @@ var vlogRules = []rule{
 	as(&vlog.CorruptTableError{}, DataLoss),
 	as(&vlog.NotCompiledError{}, Unimplemented),
 	as(&service.LogFeatureNotActiveError{}, Unavailable),
-	// A barrier tenant or database keeps its data under its own barrier; the
-	// log registry sits under the system barrier, so neither is served.
-	as(&service.BarrierTenantLogNotSupportedError{}, Unimplemented),
+	// A barrier tenant's log lives in its home group, which this node cannot
+	// reach yet.
+	as(&service.BarrierStoreUnavailableError{}, Unavailable),
+	// A barrier-enabled database's log has no store under the database's key.
 	as(&service.BarrierDatabaseLogNotSupportedError{}, Unimplemented),
 }
 

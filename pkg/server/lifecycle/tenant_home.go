@@ -145,6 +145,9 @@ func AttachTenantHomes(n *Node, services TenantHomeServices, served ...tenant.St
 	if !attachHomeSource(n, NewTenantHomes(services, provisioner), served) {
 		return false
 	}
+	// A barrier tenant's and a barrier database's verifiable logs are
+	// applied in the same barrier-sealed groups.
+	n.logGroups.attach(services)
 	// The home group's leader is the one node that completes a tenant's
 	// pending first admin.
 	if leader, ok := services.(databaseLeader); ok {
