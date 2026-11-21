@@ -604,6 +604,21 @@ Invariants:
     never-cached dedicated-raft database stays droppable: the factory's
     fence-ignoring resolution reads the catalog through
     `Manager.GetIgnoringFence`.
+  - **A created catalog record is provisional until its create guard
+    accepts it.** `Manager.create` writes an API-created database's catalog
+    record with `DatabaseMeta.Provisional` set, so no opener on any node
+    serves it (`Manager.Open`, `GetOwned` and `OpenAll` skip it, and
+    `RecordedIdentity` does not resolve it): no request can write to a
+    database the guard may still refuse. Once the strict create guard
+    accepts the database, the record is promoted (`Provisional` cleared)
+    and every node may serve it. A refused create whose cleanup could not
+    remove the record leaves it provisional and never opened. A
+    provisioned (shared) database created at node boot under the one
+    shared incarnation is written serving (`Provisional` false) and skips
+    the promote: there is no API create to guard, and a peer provisioning
+    the same name, or this node's next boot, must find it serving rather
+    than a record it can neither open (`NotFoundError`) nor create
+    (`AlreadyExistsError`).
   - **The marker is claimed, never overwritten.** `UnfenceDatabaseKeyspace`
     marks an incarnation live with `PutIfAbsent`, then
     `CompareAndSwap(tombstone -> incarnation)`, then a read: the incarnation
