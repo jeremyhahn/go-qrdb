@@ -60,6 +60,14 @@ var unmaskedJobs = map[string]string{
 
 const maskStepName = "Mask the forge credentials"
 
+// runnerSelectStepName is preflight's first step since ci-template v1.48
+// (ruling 1024): it runs before the checkout, builds nothing and reads only
+// the Actions API with the job token, so the mask check skips it.
+const (
+	runnerSelectJob      = "preflight"
+	runnerSelectStepName = "Hosted or overflow runner (ruling 1024)"
+)
+
 // envPrint matches a step line that prints the job environment or an env file.
 var envPrint = regexp.MustCompile(`(?m)\bprintenv\b|\bset -x\b|\bset -o xtrace\b|(^|[;&|(]\s*)env\s*($|[|;&>)])|\b(cat|head|tail|less|more)\s+\S*(\.env|gomodauth\S*|MODULE_ENV_FILE)\b`)
 
@@ -110,6 +118,9 @@ func maskProblems(wf ciLogWorkflow) []string {
 			continue
 		}
 		i := 0
+		if name == runnerSelectJob && len(job.Steps) > 0 && job.Steps[0].Name == runnerSelectStepName {
+			i++
+		}
 		for i < len(job.Steps) && strings.HasPrefix(job.Steps[i].Uses, "actions/checkout@") {
 			i++
 		}
