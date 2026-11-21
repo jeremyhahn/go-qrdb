@@ -226,7 +226,10 @@ func TestMatchesMetadataFilter_TypeMismatchSameStringRepresentation(t *testing.T
 
 	result := matchesMetadataFilter(metadata, filter)
 
-	assert.True(t, result, "values with same string representation should match")
+	// Metadata is JSON: the string "42" and the number 42 are different values.
+	assert.False(t, result, "a string must not match a number with the same digits")
+	assert.True(t, matchesMetadataFilter(map[string]interface{}{"count": float64(42)}, filter),
+		"a decoded JSON number must match the same number")
 }
 
 func TestMatchesMetadataFilter_NilMetadata(t *testing.T) {

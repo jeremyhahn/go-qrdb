@@ -200,5 +200,5 @@ func (b *BatchBinding) AvailableCodecs() []string {
 
 // AvailableImportFormats returns the supported import file formats.
 func (b *BatchBinding) AvailableImportFormats() []string {
-	return []string{"auto", "csv", "json", "ndjson", "yaml", "archive"}
+	return sdk.ImportFormats()
 }

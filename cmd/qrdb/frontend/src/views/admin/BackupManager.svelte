@@ -35,6 +35,8 @@
   let loading: boolean = $state(true);
   let selectedBackup: BackupInfo | null = $state(null);
   let lastVerifyResult: VerifyResult | null = $state(null);
+  let detailLoading: boolean = $state(false);
+  let detailError: string | null = $state(null);
 
   // Create-backup form
   let showCreateModal: boolean = $state(false);
@@ -58,6 +60,12 @@
   let restoreLoading: boolean = $state(false);
   let restoreValidateFirst: boolean = $state(true);
   let restoreDecryptionKeyRef: string = $state("");
+  // The server refuses to restore a plaintext backup unless the request
+  // opts in explicitly (allowPlaintext); the operator must tick it, it is
+  // never inferred from the backup's stored metadata.
+  let restoreAllowPlaintext: boolean = $state(false);
+  // Comma-separated shard IDs; blank restores every shard in the backup.
+  let restoreTargetShards: string = $state("");
 
   // Delete confirmation
   let showDeleteConfirm: boolean = $state(false);
@@ -166,20 +174,34 @@
 
   async function handleRestore(): Promise<void> {
     if (selectedBackup === null) return;
+    const shardText = restoreTargetShards.trim();
+    const targetShards = shardText === "" ? [] : shardText.split(/[\s,]+/).filter((s) => s !== "").map(Number);
+    if (targetShards.some((n) => !Number.isInteger(n) || n <= 0)) {
+      showToast("warning", "Target shards must be positive shard IDs separated by commas.");
+      return;
+    }
     restoreLoading = true;
     try {
       const result = await client.backups.restore({
         backupId: selectedBackup.id,
+        ...(targetShards.length > 0 ? { targetShards } : {}),
         validateFirst: restoreValidateFirst,
         ...(restoreDecryptionKeyRef.trim() !== "" ? { decryptionKeyRef: restoreDecryptionKeyRef.trim() } : {}),
+        ...(restoreAllowPlaintext ? { allowPlaintext: true } : {}),
       });
-      const errorCount = (result.errors ?? []).length;
+      const errors = result.errors ?? [];
+      const errorText = errors.map((e) => `shard ${e.shardId}: ${e.message}`).join("; ");
       showToast(
-        errorCount === 0 ? "success" : "warning",
-        `Restore completed: ${result.shardsRestored} shard(s) restored in ${result.duration}${errorCount > 0 ? `, ${errorCount} error(s)` : ""}.`,
+        errors.length === 0 ? "success" : "warning",
+        `Restore completed: ${result.shardsRestored} shard(s) restored in ${result.durationMs} ms${errors.length > 0 ? `, ${errors.length} error(s): ${errorText}` : ""}.`,
       );
       showRestoreModal = false;
       restoreDecryptionKeyRef = "";
+      restoreAllowPlaintext = false;
+      restoreTargetShards = "";
+      // A restore rewrites shard state; reload the list so it shows the
+      // server's view afterwards.
+      await loadBackups();
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
@@ -201,9 +223,31 @@
     }
   }
 
+  // loadDetail fetches the authoritative BackupInfo for one backup through
+  // backups.get, so the detail panel shows what the server holds now (not
+  // the possibly stale list row). detailToken drops a response that a
+  // later row click has superseded.
+  let detailToken = 0;
+  async function loadDetail(id: string): Promise<void> {
+    const token = ++detailToken;
+    detailLoading = true;
+    detailError = null;
+    try {
+      const info = await client.backups.get(id);
+      if (token !== detailToken) return;
+      selectedBackup = info;
+    } catch (err: unknown) {
+      if (token !== detailToken) return;
+      detailError = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (token === detailToken) detailLoading = false;
+    }
+  }
+
   function handleRowClick(event: RowClickEvent<BackupInfo>): void {
     selectedBackup = event.row;
     lastVerifyResult = null;
+    void loadDetail(event.row.id);
   }
 
   // ---------------------------------------------------------------------------
@@ -253,7 +297,18 @@
         <h3 class="card-title text-base font-semibold">Backup Detail</h3>
         {#if selectedBackup !== null}
           <div class="flex flex-col gap-3">
-            <div class="bg-base-300 rounded p-3">
+            {#if detailLoading}
+              <div class="flex items-center gap-2 text-xs" data-testid="backup-detail-loading">
+                <span class="loading loading-spinner loading-xs"></span>
+                Loading backup detail...
+              </div>
+            {/if}
+            {#if detailError !== null}
+              <div class="alert alert-error py-2 text-xs" data-testid="backup-detail-error">
+                <span>Could not load backup detail: {detailError}</span>
+              </div>
+            {/if}
+            <div class="bg-base-300 rounded p-3" data-testid="backup-detail">
               <table class="table table-sm">
                 <tbody>
                   <tr><th class="w-24">ID</th><td class="font-mono text-xs break-all">{selectedBackup.id}</td></tr>
@@ -262,6 +317,20 @@
                   <tr><th>Size</th><td>{formatBytes(selectedBackup.size)}</td></tr>
                   <tr><th>Status</th><td>{selectedBackup.status}</td></tr>
                   <tr><th>Checksum</th><td class="font-mono text-xs break-all">{selectedBackup.checksum}</td></tr>
+                  <tr><th>Destination</th><td class="font-mono text-xs break-all">{selectedBackup.destination}</td></tr>
+                  <tr><th>Compression</th><td>{selectedBackup.compression}</td></tr>
+                  <tr><th>Encryption</th><td>{selectedBackup.encryption}</td></tr>
+                  <tr><th>Key Provider</th><td class="font-mono text-xs break-all">{selectedBackup.keyProviderId ?? ""}</td></tr>
+                  <tr><th>Duration</th><td>{selectedBackup.durationMs} ms</td></tr>
+                  <tr><th>Error</th><td class="text-xs break-all">{selectedBackup.errorMessage}</td></tr>
+                  <tr>
+                    <th>Metadata</th>
+                    <td class="font-mono text-xs break-all">
+                      {#each Object.entries(selectedBackup.metadata ?? {}) as [k, v] (k)}
+                        <div>{k}={v}</div>
+                      {/each}
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -382,6 +451,19 @@
       <label class="label cursor-pointer justify-start gap-2">
         <input type="checkbox" class="checkbox checkbox-sm" bind:checked={restoreValidateFirst} />
         <span class="label-text">Validate backup integrity before restoring</span>
+      </label>
+      <label class="label cursor-pointer justify-start gap-2">
+        <input type="checkbox" class="checkbox checkbox-sm checkbox-warning" bind:checked={restoreAllowPlaintext} />
+        <span class="label-text">Allow restoring a plaintext (unencrypted) backup</span>
+      </label>
+      <label class="form-control w-full">
+        <div class="label"><span class="label-text">Target Shards (optional)</span></div>
+        <input
+          type="text"
+          class="input input-bordered w-full font-mono text-xs"
+          placeholder="Comma-separated shard IDs; blank restores every shard"
+          bind:value={restoreTargetShards}
+        />
       </label>
       <label class="form-control w-full">
         <div class="label"><span class="label-text">Key File Name Override (optional)</span></div>

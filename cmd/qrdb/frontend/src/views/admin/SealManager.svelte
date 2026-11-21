@@ -15,7 +15,8 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, HolderRole, ClusterSeal } from "@qrdb/sdk";
+  import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, HolderRole, ClusterSeal, ClusterMigration, CeremonyStatusResponse } from "@qrdb/sdk";
+  import { TransportError } from "@qrdb/sdk";
   import { onMount } from "svelte";
   import { AlertTriangle, Info, RefreshCw, Lock, UserPlus, CheckCircle, Clock, AlertCircle, Copy, Download } from "lucide-svelte";
   import { sealStore, updateSealStatus, updateOfficers, setOfficersLoading } from "$stores/seal.svelte.ts";
@@ -36,7 +37,40 @@
   let showSealConfirm: boolean = $state(false);
   // The node barrier's cluster seal state; null from a server that reports none.
   let clusterSeal: ClusterSeal | null = $state(null);
+  let clusterMigration: ClusterMigration | null = $state(null);
   let clusterUnsealLoading: boolean = $state(false);
+  // True while this node answers status with 503 SEALED: unsealed, but held
+  // by a cluster seal (or cut off from the seal records).
+  let clusterHeld: boolean = $state(false);
+
+  /** Status refused with 503 SEALED: the gate is closed on an unsealed barrier. */
+  function isClusterHeldError(err: unknown): boolean {
+    // The SDK reduces the server's {"error":"barrier sealed","code":"SEALED"}
+    // body to its error text, so the refusal reads "...: barrier sealed".
+    return (
+      err instanceof TransportError &&
+      err.statusCode === 503 &&
+      (err.message.endsWith(": barrier sealed") || err.message.includes('"code":"SEALED"'))
+    );
+  }
+
+  // Change passphrase form state (passphrase-held barriers).
+  let cpCurrent: string = $state("");
+  let cpNext: string = $state("");
+  let cpConfirm: string = $state("");
+  let cpSoPin: string = $state("");
+  let cpLoading: boolean = $state(false);
+
+  // Ceremony state: the CA's status and the Sign CSR form.
+  let ceremonyStatus: CeremonyStatusResponse | null = $state(null);
+  let ceremonyLoading: boolean = $state(false);
+  let ceremonyError: string = $state("");
+  let csrUsername: string = $state("");
+  let csrSoPin: string = $state("");
+  let csrPem: string = $state("");
+  let csrRole: string = $state("so");
+  let csrLoading: boolean = $state(false);
+  let csrCertPem: string = $state("");
   /**
    * The Security Officer PIN for the seal, required once one is provisioned
    * (`qrdb init` provisions one). Cleared whenever the confirmation closes.
@@ -132,8 +166,16 @@
    * report the M-of-N scheme without echoing the strategy string, so a barrier
    * advertising shares is treated as configured regardless of the strategy
    * field (matching the isShamir fallback above).
+   *
+   * A sealed barrier is configured too: the "none" strategy never seals, and
+   * a sealed server reports an empty strategy (the key material that names
+   * it is behind the barrier), so the unseal panel must still show.
    */
   let encryptionConfigured = $derived(
+    sealStore.sealed ||
+    // Only a keyed barrier can be held by a cluster seal; the held node
+    // reports no strategy.
+    clusterHeld ||
     sealStore.strategy === "passphrase" ||
       sealStore.strategy === "shamir" ||
       sealStore.sharesRequired > 0 ||
@@ -174,6 +216,8 @@
   let enableInProgress: boolean = $state(false);
   let enableSuccess: boolean = $state(false);
   let enableSealedAfter: boolean = $state(false);
+  // Strategy the migration ended on (a sealed server reports no strategy).
+  let enabledStrategy: string = $state("");
   let enablePollTimer: ReturnType<typeof setInterval> | null = null;
 
   // ---------------------------------------------------------------------------
@@ -186,7 +230,21 @@
       const status = await client.seal.status();
       updateSealStatus(status);
       clusterSeal = status.clusterSeal ?? null;
+      clusterMigration = status.clusterMigration ?? null;
+      clusterHeld = false;
     } catch (err: unknown) {
+      if (isClusterHeldError(err)) {
+        // The node barrier is unsealed (a sealed node answers status through
+        // its sealed-window listener), but a cluster seal holds the node or
+        // it cannot confirm the seal records: it answers no status question
+        // and admits only the authenticated cluster unseal. Offer that, with
+        // no record: only a serving node reports one.
+        sealStore.sealed = false;
+        clusterHeld = true;
+        clusterSeal = { active: true, sealed: true, epoch: 0 };
+        clusterMigration = null;
+        return;
+      }
       const msg = err instanceof Error ? err.message : "Failed to fetch seal status";
       showToast("error", msg);
     } finally {
@@ -269,6 +327,109 @@
       showToast("error", msg);
     } finally {
       clusterUnsealLoading = false;
+    }
+  }
+
+  /**
+   * Changes a passphrase-held barrier's passphrase. The SO PIN is sent once
+   * one is entered; the server requires it once one is provisioned.
+   */
+  async function handleChangePassphrase(): Promise<void> {
+    if (cpCurrent === "" || cpNext === "") {
+      showToast("warning", "The current and new passphrases are required");
+      return;
+    }
+    if (cpNext !== cpConfirm) {
+      showToast("error", "Passphrases do not match");
+      return;
+    }
+    if (cpNext.length < 8) {
+      showToast("error", "Passphrase must be at least 8 characters");
+      return;
+    }
+    try {
+      cpLoading = true;
+      await client.seal.changePassphrase(cpCurrent, cpNext, cpSoPin === "" ? undefined : cpSoPin);
+      cpCurrent = "";
+      cpNext = "";
+      cpConfirm = "";
+      cpSoPin = "";
+      showToast("success", "Passphrase changed");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to change the passphrase";
+      showToast("error", msg);
+    } finally {
+      cpLoading = false;
+    }
+  }
+
+  /** Loads the initialization ceremony's state and the CA's SPKI pin. */
+  async function fetchCeremonyStatus(): Promise<void> {
+    try {
+      ceremonyLoading = true;
+      ceremonyError = "";
+      ceremonyStatus = await client.ceremony.status();
+    } catch (err: unknown) {
+      ceremonyStatus = null;
+      ceremonyError = err instanceof Error ? err.message : "Failed to load the ceremony status";
+    } finally {
+      ceremonyLoading = false;
+    }
+  }
+
+  /**
+   * Whether an initialization ceremony exists: a server awaiting `qrdb init`
+   * (or reporting no state) has none, so no CA and no SPKI pin.
+   */
+  function hasCeremony(status: CeremonyStatusResponse): boolean {
+    return status.state !== "" && status.state !== "awaiting_init";
+  }
+
+  /** Copies the ceremony CA's SPKI pin to the clipboard. */
+  async function copySpkiPin(): Promise<void> {
+    const pin = ceremonyStatus?.spkiPin ?? "";
+    if (pin === "") return;
+    try {
+      await navigator.clipboard.writeText(pin);
+      showToast("success", "SPKI pin copied");
+    } catch {
+      showToast("error", "Failed to copy the SPKI pin");
+    }
+  }
+
+  /** Signs a holder CSR through the ceremony CA under the SO PIN. */
+  async function handleSignCSR(): Promise<void> {
+    if (csrUsername.trim() === "" || csrSoPin === "" || csrPem.trim() === "") {
+      showToast("warning", "Username, SO PIN and CSR are required");
+      return;
+    }
+    try {
+      csrLoading = true;
+      csrCertPem = "";
+      const res = await client.ceremony.signCSR({
+        username: csrUsername.trim(),
+        soPin: csrSoPin,
+        csrPem: csrPem,
+        role: csrRole,
+      });
+      csrCertPem = res.certPem;
+      csrSoPin = "";
+      showToast("success", "CSR signed");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to sign the CSR";
+      showToast("error", msg);
+    } finally {
+      csrLoading = false;
+    }
+  }
+
+  /** Copies the signed certificate PEM to the clipboard. */
+  async function copySignedCert(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(csrCertPem);
+      showToast("success", "Certificate copied");
+    } catch {
+      showToast("error", "Failed to copy the certificate");
     }
   }
 
@@ -358,13 +519,13 @@
   /**
    * Polls the seal status until it reports a keyed strategy, signalling that
    * the migration has completed. A system-scope migration recycles the data
-   * plane in-process and comes back SEALED under the new keyed strategy (the
-   * barrier self-describes its persisted strategy while sealed), so
-   * {sealed: true, strategy: "passphrase"|"shamir"} is the real completion
-   * signal — the operator must then unseal with the new credential. A
-   * tenant-scope migration does not seal, so a keyed strategy with
-   * sealed: false is equally terminal. Transient status errors during the
-   * recycle are ignored.
+   * plane in-process and comes back SEALED under the new keyed strategy. A
+   * sealed barrier does not report its strategy (status.strategy is ""), so
+   * {sealed: true} after the migration started is the completion signal and
+   * the requested strategy is shown — the operator must then unseal with the
+   * new credential. A tenant-scope migration does not seal, so a keyed
+   * strategy with sealed: false is equally terminal. Transient status errors
+   * during the recycle are ignored.
    */
   function startEnablePolling(): void {
     stopEnablePolling();
@@ -373,11 +534,13 @@
         try {
           const status = await client.seal.status();
           updateSealStatus(status);
-          if (status.strategy !== "none" && status.strategy !== "") {
+          const keyed = status.strategy !== "none" && status.strategy !== "";
+          if (keyed || status.sealed) {
             stopEnablePolling();
             enableInProgress = false;
             enableSuccess = true;
             enableSealedAfter = status.sealed;
+            enabledStrategy = keyed ? status.strategy : enableStrategy;
             showToast("success", "Encryption enabled successfully");
           }
         } catch {
@@ -534,6 +697,7 @@
       }
     });
     startPolling();
+    void fetchCeremonyStatus();
 
     return () => {
       stopPolling();
@@ -713,10 +877,35 @@
         {#if clusterSeal?.active}
           <div class="divider my-2"></div>
           <div data-testid="cluster-seal-status">
-            <p class="text-sm">
-              Cluster seal: record {clusterSeal.sealed ? "sealed" : "clear"}
-              (epoch {clusterSeal.epoch}); this node is {clusterSeal.local ?? "unknown"}.
-            </p>
+            {#if clusterHeld}
+              <p class="text-sm" data-testid="cluster-seal-held">
+                Cluster seal: this node is unsealed but not serving. A cluster seal holds it, or it cannot
+                confirm the seal records; read the record from a serving node.
+              </p>
+            {:else}
+              <p class="text-sm">
+                Cluster seal: record {clusterSeal.sealed ? "sealed" : "clear"}
+                (epoch {clusterSeal.epoch}); this node is {clusterSeal.local ?? "unknown"}.
+              </p>
+            {/if}
+            {#if clusterSeal.principal || clusterSeal.node || clusterSeal.at}
+              <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm mt-2" data-testid="cluster-seal-record">
+                {#if clusterSeal.principal}
+                  <dt class="text-base-content/70">Written by</dt>
+                  <dd class="font-mono" data-testid="cluster-seal-principal">
+                    {clusterSeal.principal}{clusterSeal.principalTenant ? ` (tenant ${clusterSeal.principalTenant})` : ""}
+                  </dd>
+                {/if}
+                {#if clusterSeal.node}
+                  <dt class="text-base-content/70">Through node</dt>
+                  <dd class="font-mono" data-testid="cluster-seal-node">{clusterSeal.node}</dd>
+                {/if}
+                {#if clusterSeal.at}
+                  <dt class="text-base-content/70">At</dt>
+                  <dd class="font-mono" data-testid="cluster-seal-at">{clusterSeal.at}</dd>
+                {/if}
+              </dl>
+            {/if}
             {#if clusterSeal.sealed}
               <div class="alert alert-info mt-2">
                 <Info class="h-5 w-5 shrink-0" />
@@ -736,6 +925,57 @@
                 {/if}
                 Clear Cluster Seal
               </button>
+            {/if}
+          </div>
+        {/if}
+
+        {#if clusterMigration}
+          <div class="divider my-2"></div>
+          <div data-testid="cluster-migration-status">
+            <p class="text-sm">
+              Cluster migration{clusterMigration.target ? ` to ${clusterMigration.target}` : ""}:
+              <span data-testid="cluster-migration-progress">{clusterMigration.acked} of {clusterMigration.total}</span>
+              owners confirmed.
+            </p>
+            <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm mt-2">
+              {#if clusterMigration.target}
+                <dt class="text-base-content/70">Target</dt>
+                <dd class="font-mono" data-testid="cluster-migration-target">{clusterMigration.target}</dd>
+              {/if}
+              {#if clusterMigration.generation !== undefined}
+                <dt class="text-base-content/70">Generation</dt>
+                <dd class="font-mono" data-testid="cluster-migration-generation">{clusterMigration.generation}</dd>
+              {/if}
+              <dt class="text-base-content/70">Confirmed</dt>
+              <dd class="font-mono" data-testid="cluster-migration-acked">{clusterMigration.acked}</dd>
+              <dt class="text-base-content/70">Owners</dt>
+              <dd class="font-mono" data-testid="cluster-migration-total">{clusterMigration.total}</dd>
+            </dl>
+            {#if clusterMigration.unconfirmed}
+              <div class="alert alert-warning mt-2" data-testid="cluster-migration-unconfirmed">
+                <AlertTriangle class="h-5 w-5 shrink-0" />
+                <span>The migration record could not be read just now; the figures may be stale.</span>
+              </div>
+            {/if}
+            {#if clusterMigration.nodes && clusterMigration.nodes.length > 0}
+              <div class="overflow-x-auto mt-2">
+                <table class="table table-sm" data-testid="cluster-migration-nodes">
+                  <thead>
+                    <tr><th>Node</th><th>Step</th><th>Phase</th><th>Attempts</th><th>Detail</th></tr>
+                  </thead>
+                  <tbody>
+                    {#each clusterMigration.nodes as n (n.nodeId)}
+                      <tr data-testid="cluster-migration-node">
+                        <td class="font-mono">{n.nodeId}</td>
+                        <td>{n.step ?? "—"}</td>
+                        <td>{n.phase ?? "—"}</td>
+                        <td>{n.attempts ?? 0}</td>
+                        <td>{n.detail ?? ""}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
             {/if}
           </div>
         {/if}
@@ -915,7 +1155,7 @@
                 <CheckCircle class="h-5 w-5 shrink-0" />
                 <span class="text-sm">
                   Encryption enabled. This barrier now uses the
-                  <strong>{sealStore.strategy}</strong> strategy.
+                  <strong>{enabledStrategy}</strong> strategy.
                 </span>
               </div>
               {#if enableSealedAfter}
@@ -1472,6 +1712,160 @@
       </div>
     </div>
   {/if}
+
+  <!-- Change passphrase (an unsealed, keyed barrier) -->
+  {#if !sealStore.sealed && sealStore.initialized && encryptionConfigured}
+    <div class="card bg-base-200 shadow" data-testid="change-passphrase-card">
+      <div class="card-body">
+        <h2 class="card-title text-lg">Change Passphrase</h2>
+        <p class="text-base-content/70 text-sm">
+          Re-wraps the barrier's master key under a new passphrase. Stored data
+          is not re-encrypted.
+        </p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
+          <label class="form-control">
+            <span class="label-text">Current passphrase</span>
+            <input type="password" class="input input-bordered input-sm" autocomplete="current-password"
+              bind:value={cpCurrent} data-testid="cp-current" />
+          </label>
+          <label class="form-control">
+            <span class="label-text">New passphrase</span>
+            <input type="password" class="input input-bordered input-sm" autocomplete="new-password"
+              bind:value={cpNext} data-testid="cp-new" />
+          </label>
+          <label class="form-control">
+            <span class="label-text">Confirm new passphrase</span>
+            <input type="password" class="input input-bordered input-sm" autocomplete="new-password"
+              bind:value={cpConfirm} data-testid="cp-confirm" />
+          </label>
+          <label class="form-control">
+            <span class="label-text">
+              Security Officer PIN{sealStore.strategy === "shamir" ? "" : " (once provisioned)"}
+            </span>
+            <input type="password" class="input input-bordered input-sm" autocomplete="off"
+              bind:value={cpSoPin} data-testid="cp-so-pin" />
+          </label>
+        </div>
+        <div class="card-actions justify-end mt-2">
+          <button
+            class="btn btn-primary btn-sm"
+            onclick={() => void handleChangePassphrase()}
+            disabled={cpLoading}
+            data-testid="cp-submit"
+          >
+            {#if cpLoading}
+              <span class="loading loading-spinner loading-xs"></span>
+            {/if}
+            Change Passphrase
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Initialization ceremony: status and holder CSR signing -->
+  <div class="card bg-base-200 shadow" data-testid="ceremony-card">
+    <div class="card-body">
+      <div class="flex items-center justify-between">
+        <h2 class="card-title text-lg">Ceremony</h2>
+        <button
+          class="btn btn-ghost btn-sm"
+          onclick={() => void fetchCeremonyStatus()}
+          disabled={ceremonyLoading}
+          title="Refresh ceremony status"
+          data-testid="ceremony-refresh"
+        >
+          <RefreshCw class={`h-4 w-4 ${ceremonyLoading ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+      {#if ceremonyError}
+        <div role="alert" class="alert alert-warning text-sm" data-testid="ceremony-error">
+          <AlertTriangle class="h-4 w-4 shrink-0" />
+          <span>Ceremony status unavailable: {ceremonyError}</span>
+        </div>
+      {:else if ceremonyStatus && !hasCeremony(ceremonyStatus)}
+        <p class="text-base-content/70 text-sm" data-testid="ceremony-none">
+          No ceremony: this server has not been initialized
+          (<span class="font-mono">qrdb init</span>).
+        </p>
+      {:else if ceremonyStatus}
+        <dl class="grid grid-cols-[max-content_1fr] items-center gap-x-4 gap-y-1 text-sm">
+          <dt class="text-base-content/70">State</dt>
+          <dd class="font-mono" data-testid="ceremony-state">{ceremonyStatus.state}</dd>
+          <dt class="text-base-content/70">CA SPKI pin</dt>
+          <dd class="flex items-center gap-2">
+            <span class="font-mono break-all select-all" data-testid="ceremony-spki-pin">{ceremonyStatus.spkiPin ?? "none"}</span>
+            {#if ceremonyStatus.spkiPin}
+              <button
+                class="btn btn-ghost btn-xs"
+                onclick={() => void copySpkiPin()}
+                aria-label="Copy SPKI pin"
+                title="Copy SPKI pin"
+                data-testid="ceremony-spki-copy"
+              >
+                <Copy class="h-3 w-3" />
+              </button>
+            {/if}
+          </dd>
+        </dl>
+      {/if}
+
+      <div class="divider my-2"></div>
+      <h3 class="font-semibold">Sign CSR</h3>
+      <p class="text-base-content/70 text-sm">
+        Issues a holder certificate (Security Officer or custodian) from the
+        ceremony CA under the SO PIN.
+      </p>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-2">
+        <label class="form-control">
+          <span class="label-text">Username</span>
+          <input type="text" class="input input-bordered input-sm" bind:value={csrUsername} data-testid="csr-username" />
+        </label>
+        <label class="form-control">
+          <span class="label-text">Security Officer PIN</span>
+          <input type="password" class="input input-bordered input-sm" autocomplete="off"
+            bind:value={csrSoPin} data-testid="csr-so-pin" />
+        </label>
+        <label class="form-control">
+          <span class="label-text">Role</span>
+          <select class="select select-bordered select-sm" bind:value={csrRole} data-testid="csr-role">
+            <option value="so">Security Officer</option>
+            <option value="custodian">Custodian</option>
+          </select>
+        </label>
+      </div>
+      <label class="form-control mt-2">
+        <span class="label-text">CSR (PEM)</span>
+        <textarea class="textarea textarea-bordered font-mono text-xs" rows="5"
+          bind:value={csrPem} data-testid="csr-pem"></textarea>
+      </label>
+      <div class="card-actions justify-end mt-2">
+        <button
+          class="btn btn-primary btn-sm"
+          onclick={() => void handleSignCSR()}
+          disabled={csrLoading}
+          data-testid="csr-sign-btn"
+        >
+          {#if csrLoading}
+            <span class="loading loading-spinner loading-xs"></span>
+          {/if}
+          Sign CSR
+        </button>
+      </div>
+      {#if csrCertPem}
+        <div class="mt-2" data-testid="csr-cert">
+          <div class="flex items-center justify-between">
+            <span class="label-text">Issued certificate</span>
+            <button class="btn btn-ghost btn-xs" onclick={() => void copySignedCert()} data-testid="csr-cert-copy">
+              <Copy class="h-3 w-3" />
+              Copy
+            </button>
+          </div>
+          <pre class="bg-base-300 rounded p-2 text-xs overflow-x-auto" data-testid="csr-cert-pem">{csrCertPem}</pre>
+        </div>
+      {/if}
+    </div>
+  </div>
 
   <!-- Reconfigure server -->
   {#if onReconfigure}

@@ -77,29 +77,6 @@ async function fillNameAndAdvance(
  * Step flow: Name → Storage → SQL → Barrier → Summary
  * (Raft Configuration step is skipped for standalone servers.)
  */
-async function navigateToSummary(
-  page: import("@playwright/test").Page,
-  name: string,
-): Promise<void> {
-  await openCreateWizard(page);
-  await fillNameAndAdvance(page, name);
-
-  // Storage Backend step -- Pebble is default
-  await expect(page.getByRole("heading", { name: "Storage Backend" })).toBeVisible();
-  await page.getByRole("button", { name: "Next" }).click();
-
-  // SQL Wire Protocols step -- Raft step is skipped for standalone servers
-  await expect(page.getByRole("heading", { name: "SQL Wire Protocols" })).toBeVisible();
-  await page.getByRole("button", { name: "Next" }).click();
-
-  // Encryption Barrier step -- the default (none)
-  await expect(page.getByRole("heading", { name: "Database Encryption Barrier" })).toBeVisible();
-  await page.getByRole("button", { name: "Next" }).click();
-
-  // Should be on Summary
-  await expect(page.getByRole("heading", { name: "Review Configuration" })).toBeVisible();
-}
-
 // ---------------------------------------------------------------------------
 // Database Creation Wizard Tests
 // ---------------------------------------------------------------------------
@@ -139,8 +116,10 @@ test.describe("Database Creation Wizard", () => {
     await openCreateWizard(page);
     await fillNameAndAdvance(page, "test-pebble-pass");
 
-    // Storage Backend -- Pebble (default)
+    // Storage Backend -- Pebble (default); a per-database barrier needs the
+    // database's own data directory.
     await expect(page.getByRole("heading", { name: "Storage Backend" })).toBeVisible();
+    await page.locator("#data-dir-input").fill("/tmp/qrdb-e2e-test-pebble-pass");
     await page.getByRole("button", { name: "Next" }).click();
 
     // SQL Wire Protocols step -- Raft step skipped for standalone

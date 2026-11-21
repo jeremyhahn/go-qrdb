@@ -178,6 +178,28 @@ const rollingMigrationCamel = {
     ],
 };
 
+describe('rest database client – barrier cluster seal', () => {
+    beforeEach(() => vi.unstubAllGlobals());
+
+    it('barrierStatus() camel-cases the wire cluster_seal into clusterSeal', async () => {
+        const client = await connectedRest();
+        installRouter({
+            'GET /v1/databases/db1/barrier/status': {
+                body: {
+                    sealed: false,
+                    strategy: 'passphrase',
+                    hardware_backed: false,
+                    initialized_at: '2026-11-12T05:14:34Z',
+                    cluster_seal: { active: true, sealed: false, epoch: 0, local: 'sealed' },
+                },
+            },
+        });
+        const status = await client.database.barrierStatus('db1');
+        expect(status.clusterSeal).toEqual({ active: true, sealed: false, epoch: 0, local: 'sealed' });
+        expect(status.initializedAt).toBe('2026-11-12T05:14:34Z');
+    });
+});
+
 describe('rest seal client – cluster migration', () => {
     beforeEach(() => vi.unstubAllGlobals());
 

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	api "github.com/jeremyhahn/go-qrdb/pkg/api"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
@@ -50,16 +52,20 @@ const VectorShardID uint64 = 2
 // vectorService is the concrete implementation of VectorService.
 // It orchestrates vector storage, HNSW indexing, and metadata operations.
 type vectorService struct {
-	storage        vector.Storage
-	raftNode       interfaces.RaftNode
-	featureGates   FeatureGatedHost // cluster feature gates; nil reads the raft node's
-	shardID        uint64
-	nodeID         string
-	hnswIndexes    map[string]interfaces.HNSWIndex // Map scoped-namespace -> HNSW index
-	indexFactory   interfaces.HNSWIndexFactory     // Factory for creating HNSW indexes
-	logger         interfaces.Logger
-	metrics        *vectorServiceMetrics
-	mu             sync.RWMutex
+	storage      vector.Storage
+	raftNode     interfaces.RaftNode
+	featureGates FeatureGatedHost // cluster feature gates; nil reads the raft node's
+	shardID      uint64
+	nodeID       string
+	hnswIndexes  map[string]interfaces.HNSWIndex // Map scoped-namespace -> HNSW index
+	indexFactory interfaces.HNSWIndexFactory     // Factory for creating HNSW indexes
+	logger       interfaces.Logger
+	metrics      *vectorServiceMetrics
+	mu           sync.RWMutex
+	// writeMu serializes the local (non-Raft) vector writes that read
+	// before they write: an upsert's existence check and its write are one
+	// step against a concurrent upsert or delete of the same store.
+	writeMu        sync.Mutex
 	closed         bool
 	indexMu        sync.RWMutex
 	rebuildJobs    map[string]*RebuildJobState
@@ -801,6 +807,13 @@ func vectorStorageError(op, namespace string, id uint64, err error) error {
 
 // proposeToRaft proposes a vector command to Raft for consensus.
 func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.VectorCommand) error {
+	return v.proposeToRaftResult(ctx, cmd, nil)
+}
+
+// proposeToRaftResult is proposeToRaft that also stores the accepted
+// state-machine result in out (when out is non-nil), for a caller that reads
+// what the apply reported, such as whether an upsert created the vector.
+func (v *vectorService) proposeToRaftResult(ctx context.Context, cmd *statemachine.VectorCommand, out *sm.Result) error {
 	if v.raftNode == nil {
 		return nil
 	}
@@ -838,6 +851,9 @@ func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.Vec
 	}
 	if resultErr := checkResultError(smResult); resultErr != nil {
 		return resultErr
+	}
+	if out != nil {
+		*out = smResult
 	}
 
 	return nil
@@ -1070,7 +1086,7 @@ func (v *vectorService) UpdateNamespace(ctx context.Context, req *UpdateNamespac
 		return nil, &DimensionMismatchError{Expected: int(info.Dimension), Actual: int(req.Dimension)}
 	}
 
-	metadata := convertToStringMap(req.Metadata)
+	metadata := namespaceMetadataStrings(req.Metadata)
 	now := time.Now().UnixNano()
 	update, requiresRebuild := vector.MergeNamespaceUpdate(info, req.IndexConfig, metadata, now)
 
@@ -1385,9 +1401,11 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 	now := time.Now().UnixNano()
 
+	format := v.metadataFormat()
 	if v.raftNode != nil {
-		cmd := statemachine.NewUpsertCommand(scoped, req.ID, req.Vector, req.Metadata, v.nodeID)
-		if err := v.proposeToRaft(ctx, cmd); err != nil {
+		cmd := statemachine.NewUpsertCommand(scoped, req.ID, req.Vector, req.Metadata, format, v.nodeID)
+		var applied sm.Result
+		if err := v.proposeToRaftResult(ctx, cmd, &applied); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("upsert_vector", "raft_error").Inc()
 			}
@@ -1425,19 +1443,28 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 			Version:   1,
 			Timestamp: now,
 			Success:   true,
+			Created:   statemachine.UpsertCreated(applied.Data),
 		}, nil
 	}
 
 	vecValue := &vector.VectorValue{
 		ID:        req.ID,
 		Embedding: req.Vector,
-		Metadata:  convertToStringMap(req.Metadata),
+		Metadata:  convertToStringMap(format, req.Metadata),
 		CreatedAt: now,
 		UpdatedAt: now,
 		Version:   1,
+
+		MetadataFormat: format,
 	}
 
-	if err := v.storage.UpsertVector(ctx, scoped, vecValue); err != nil {
+	// The existence read and the write are one step under writeMu, so of
+	// two upserts of a missing ID exactly one reports created.
+	v.writeMu.Lock()
+	created := v.vectorIsNew(ctx, scoped, req.ID)
+	err = v.storage.UpsertVector(ctx, scoped, vecValue)
+	v.writeMu.Unlock()
+	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("upsert_vector", "storage_error").Inc()
 		}
@@ -1473,7 +1500,16 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 		Version:   1,
 		Timestamp: now,
 		Success:   true,
+		Created:   created,
 	}, nil
+}
+
+// vectorIsNew reports whether no vector with id is stored in the scoped
+// namespace yet, so an upsert can say whether it created or replaced one.
+// Only a not-found answer counts as new: a read error leaves it false.
+func (v *vectorService) vectorIsNew(ctx context.Context, scoped string, id uint64) bool {
+	_, err := v.storage.GetVector(ctx, scoped, id)
+	return errors.Is(err, vector.ErrVectorNotFound)
 }
 
 // GetVector retrieves a vector by ID with optional metadata.
@@ -1522,7 +1558,7 @@ func (v *vectorService) GetVector(ctx context.Context, req *GetVectorRequest) (*
 	}
 
 	if req.IncludeMetadata {
-		resp.Metadata = convertFromStringMap(vecValue.Metadata)
+		resp.Metadata = convertFromStringMap(vecValue)
 	}
 
 	return resp, nil
@@ -1591,7 +1627,10 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 		}, nil
 	}
 
-	if err := v.storage.DeleteVector(ctx, scoped, req.ID); err != nil {
+	v.writeMu.Lock()
+	err := v.storage.DeleteVector(ctx, scoped, req.ID)
+	v.writeMu.Unlock()
+	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("delete_vector", "storage_error").Inc()
 		}
@@ -1631,6 +1670,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 // BatchUpsert inserts or updates multiple vectors atomically.
 func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest) (*BatchUpsertResponse, error) {
 	start := time.Now()
+	format := v.metadataFormat()
 	defer func() {
 		if v.metrics != nil {
 			v.metrics.operationDuration.With("batch_upsert").Observe(time.Since(start).Seconds())
@@ -1696,7 +1736,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 			batchVectors[i] = vec.Vector
 		}
 
-		cmd := statemachine.NewBatchUpsertCommand(scoped, batchIDs, batchVectors, v.nodeID)
+		cmd := statemachine.NewBatchUpsertCommand(scoped, batchIDs, batchVectors, format, v.nodeID)
 		if err := v.proposeToRaft(ctx, cmd); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("batch_upsert", "raft_error").Inc()
@@ -1746,10 +1786,12 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		vecs[i] = &vector.VectorValue{
 			ID:        vec.ID,
 			Embedding: vec.Vector,
-			Metadata:  convertToStringMap(vec.Metadata),
+			Metadata:  convertToStringMap(format, vec.Metadata),
 			CreatedAt: now,
 			UpdatedAt: now,
 			Version:   1,
+
+			MetadataFormat: format,
 		}
 	}
 
@@ -1884,7 +1926,7 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 					result.Vector = vec.Embedding
 				}
 				if req.IncludeMetadata {
-					result.Metadata = convertFromStringMap(vec.Metadata)
+					result.Metadata = convertFromStringMap(vec)
 
 					if req.MetadataFilter != nil && !matchesMetadataFilter(result.Metadata, req.MetadataFilter) {
 						continue
@@ -1901,6 +1943,110 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 		Timestamp:     time.Now().UnixNano(),
 		QueryDuration: queryDuration,
 	}, nil
+}
+
+// scanMetadataFilters runs the equality filters of a metadata search. A
+// JSON-format record indexes each value as its canonical JSON text, which the
+// encoded filters match; a legacy-format record, written before metadata kept
+// its JSON types, indexes a string verbatim (news, not "news"). Each scan
+// keeps only the records of its own format, so a legacy "5" never answers the
+// number 5 and a JSON value never answers a verbatim string. When every
+// filter value is a string (or there is no filter), the result is the union
+// of the JSON scan and the verbatim legacy scan, de-duplicated and ordered by
+// ID; a compound filter with any non-string predicate scans JSON records
+// only, since a legacy record holds strings alone. Either way the result is
+// paged by offset and limit.
+func (v *vectorService) scanMetadataFilters(ctx context.Context, scoped string, raw map[string]interface{},
+	encoded []vector.MetadataFilter, limit, offset int) ([]*vector.VectorValue, error) {
+	want := offset + limit
+	merged, err := v.scanFormat(ctx, scoped, encoded, vector.MetadataFormatJSON, want)
+	if err != nil {
+		return nil, err
+	}
+	legacy := make([]vector.MetadataFilter, 0, len(encoded))
+	allStrings := true
+	for _, f := range encoded {
+		s, ok := raw[f.Field].(string)
+		if !ok {
+			allStrings = false
+			break
+		}
+		f.Value = s
+		legacy = append(legacy, f)
+	}
+	// An empty filter list matches every record, so legacy-format records
+	// written before the JSON format are listed alongside JSON ones. A
+	// legacy record holds only strings, so a filter with any non-string
+	// predicate cannot match one.
+	if len(encoded) == 0 || allStrings {
+		old, err := v.scanFormat(ctx, scoped, legacy, vector.MetadataFormatLegacy, want)
+		if err != nil {
+			return nil, err
+		}
+		if len(old) > 0 {
+			merged = mergeByID(merged, old)
+		}
+	}
+	if offset >= len(merged) {
+		return nil, nil
+	}
+	merged = merged[offset:]
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
+}
+
+// scanFormat returns the first want records, in scan order, that match the
+// filters and are stored in the given metadata format. A scan window that
+// records of the other format crowded out is widened until it holds want
+// matches or the scan is exhausted.
+func (v *vectorService) scanFormat(ctx context.Context, scoped string, filters []vector.MetadataFilter,
+	format uint8, want int) ([]*vector.VectorValue, error) {
+	if want <= 0 {
+		return nil, nil
+	}
+	for window := want; ; window *= 2 {
+		found, err := v.storage.ScanByMultipleFilters(ctx, scoped, filters, &vector.ScanOptions{Limit: window})
+		if err != nil {
+			return nil, err
+		}
+		kept := make([]*vector.VectorValue, 0, len(found))
+		for _, vec := range found {
+			if vec.MetadataFormat == format {
+				kept = append(kept, vec)
+			}
+		}
+		if len(kept) >= want || len(found) < window {
+			if len(kept) > want {
+				kept = kept[:want]
+			}
+			return kept, nil
+		}
+	}
+}
+
+// mergeByID returns the union of two scans, de-duplicated and ordered by ID.
+func mergeByID(a, b []*vector.VectorValue) []*vector.VectorValue {
+	seen := make(map[uint64]struct{}, len(a)+len(b))
+	merged := make([]*vector.VectorValue, 0, len(a)+len(b))
+	for _, vec := range append(append([]*vector.VectorValue{}, a...), b...) {
+		if _, dup := seen[vec.ID]; dup {
+			continue
+		}
+		seen[vec.ID] = struct{}{}
+		merged = append(merged, vec)
+	}
+	slices.SortFunc(merged, func(x, y *vector.VectorValue) int {
+		switch {
+		case x.ID < y.ID:
+			return -1
+		case x.ID > y.ID:
+			return 1
+		}
+		return 0
+	})
+	return merged
 }
 
 // SearchByMetadata performs metadata-based vector search.
@@ -1932,7 +2078,7 @@ func (v *vectorService) SearchByMetadata(ctx context.Context, req *SearchByMetad
 	for key, value := range req.Filters {
 		filters = append(filters, vector.MetadataFilter{
 			Field:    key,
-			Value:    fmt.Sprintf("%v", value),
+			Value:    vector.EncodeMetadataValue(value),
 			Operator: vector.FilterEqual,
 		})
 	}
@@ -1945,12 +2091,7 @@ func (v *vectorService) SearchByMetadata(ctx context.Context, req *SearchByMetad
 		limit = 1000
 	}
 
-	opts := &vector.ScanOptions{
-		Limit:  limit,
-		Offset: req.Offset,
-	}
-
-	vecs, err := v.storage.ScanByMultipleFilters(ctx, scoped, filters, opts)
+	vecs, err := v.scanMetadataFilters(ctx, scoped, req.Filters, filters, limit, req.Offset)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("search_by_metadata", "scan_failed").Inc()
@@ -1972,7 +2113,7 @@ func (v *vectorService) SearchByMetadata(ctx context.Context, req *SearchByMetad
 		}
 
 		if req.IncludeMetadata {
-			results[i].Metadata = convertFromStringMap(vec.Metadata)
+			results[i].Metadata = convertFromStringMap(vec)
 		}
 	}
 
@@ -2597,6 +2738,9 @@ func (v *vectorService) validateSearchByMetadataRequest(req *SearchByMetadataReq
 	if req.Namespace == "" {
 		return &InvalidVectorError{Reason: "namespace is required"}
 	}
+	if req.Offset < 0 {
+		return &InvalidVectorError{Reason: "offset cannot be negative"}
+	}
 	return nil
 }
 
@@ -2634,28 +2778,50 @@ func (v *vectorService) validateGetIndexStatsRequest(req *GetIndexStatsRequest) 
 // Helper Functions
 // =============================================================================
 
-// convertToStringMap converts map[string]interface{} to map[string]string.
-func convertToStringMap(m map[string]interface{}) map[string]string {
-	if m == nil {
-		return nil
+// convertToStringMap returns the stored form of vector metadata in format:
+// canonical JSON for vector.MetadataFormatJSON, else the verbatim %v strings
+// of a legacy record. The record carries the same format.
+func convertToStringMap(format uint8, m map[string]interface{}) map[string]string {
+	if format == vector.MetadataFormatJSON || m == nil {
+		return vector.EncodeMetadata(m)
 	}
-	result := make(map[string]string, len(m))
-	for k, val := range m {
-		result[k] = fmt.Sprintf("%v", val)
-	}
-	return result
+	return statemachine.CommandMetadata(format, m)
 }
 
-// convertFromStringMap converts map[string]string to map[string]interface{}.
-func convertFromStringMap(m map[string]string) map[string]interface{} {
+// metadataFormat returns the metadata format this service writes: JSON once
+// featuregate.VectorMetadataJSON is active for the shard's group (or when no
+// feature gates apply), else the legacy format every replica can apply.
+func (v *vectorService) metadataFormat() uint8 {
+	gates := v.featureGates
+	if gates == nil {
+		gates, _ = v.raftNode.(FeatureGatedHost)
+	}
+	if gates == nil || gates.FeatureEnabled(v.shardID, featuregate.VectorMetadataJSON) {
+		return vector.MetadataFormatJSON
+	}
+	return vector.MetadataFormatLegacy
+}
+
+// namespaceMetadataStrings returns namespace metadata as the plain strings a
+// namespace stores and reads back verbatim (nil for nil).
+func namespaceMetadataStrings(m map[string]interface{}) map[string]string {
 	if m == nil {
 		return nil
 	}
-	result := make(map[string]interface{}, len(m))
+	out := make(map[string]string, len(m))
 	for k, val := range m {
-		result[k] = val
+		out[k] = fmt.Sprintf("%v", val)
 	}
-	return result
+	return out
+}
+
+// convertFromStringMap returns the metadata values of a stored vector,
+// read in the record's metadata format.
+func convertFromStringMap(vec *vector.VectorValue) map[string]interface{} {
+	if vec == nil {
+		return nil
+	}
+	return vector.DecodeMetadata(vec.MetadataFormat, vec.Metadata)
 }
 
 // matchesMetadataFilter checks if metadata matches filter criteria.
@@ -2668,7 +2834,7 @@ func matchesMetadataFilter(metadata, filter map[string]interface{}) bool {
 		if !exists {
 			return false
 		}
-		if fmt.Sprintf("%v", metaValue) != fmt.Sprintf("%v", value) {
+		if vector.EncodeMetadataValue(metaValue) != vector.EncodeMetadataValue(value) {
 			return false
 		}
 	}
@@ -3120,10 +3286,7 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 	for i, vec := range vectors {
 		var metadata map[string]interface{}
 		if req.IncludeMetadata && vec.Metadata != nil {
-			metadata = make(map[string]interface{})
-			for k, val := range vec.Metadata {
-				metadata[k] = val
-			}
+			metadata = convertFromStringMap(vec)
 		}
 
 		var embeddingData []float32
@@ -3185,10 +3348,10 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 	var newMetadata map[string]interface{}
 	if req.MergeMetadata {
 		newMetadata = make(map[string]interface{})
-		if existingVector.Metadata != nil {
-			for k, val := range existingVector.Metadata {
-				newMetadata[k] = val
-			}
+		// Stored metadata is JSON-encoded; decode it so the upsert below
+		// re-encodes the original typed values, not their encodings.
+		for k, val := range convertFromStringMap(existingVector) {
+			newMetadata[k] = val
 		}
 		for k, val := range req.Metadata {
 			newMetadata[k] = val

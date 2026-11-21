@@ -77,11 +77,14 @@ async function fillNameAndAdvance(
 async function selectStorageAndAdvance(
   page: import("@playwright/test").Page,
   backend: "Memory" | "File" | "Pebble",
+  dataDir = "",
 ): Promise<void> {
   await expect(page.getByRole("heading", { name: "Storage Backend" })).toBeVisible();
   if (backend !== "Pebble") {
     await page.locator("label").filter({ hasText: backend }).click();
   }
+  // A per-database barrier needs the database's own data directory.
+  if (dataDir !== "") await page.locator("#data-dir-input").fill(dataDir);
   await page.getByRole("button", { name: "Next" }).click();
 }
 
@@ -130,7 +133,11 @@ async function navigateToSummaryWithConfig(
 ): Promise<void> {
   await openCreateWizard(page);
   await fillNameAndAdvance(page, name);
-  await selectStorageAndAdvance(page, backend);
+  await selectStorageAndAdvance(
+    page,
+    backend,
+    barrierMode === "Passphrase" ? `/tmp/qrdb-e2e-${name}` : "",
+  );
   await advanceThroughSQL(page);
   await selectBarrierAndAdvance(page, barrierMode);
   await expect(page.getByRole("heading", { name: "Review Configuration" })).toBeVisible();
@@ -169,14 +176,22 @@ test.describe("Wizard Encryption Combinations", () => {
     await createAndVerifyComplete(page, "enc-mem-none");
   });
 
-  test("Memory + passphrase completes successfully", async ({ page }) => {
-    await navigateToSummaryWithConfig(page, "enc-mem-pass", "Memory", "Passphrase");
+  test("Memory + passphrase is blocked at the barrier step", async ({ page }) => {
+    // A per-database barrier keeps its keys in the database's own store; the
+    // server refuses (422) a barrier database without a data directory, and a
+    // memory backend never has one.
+    await openCreateWizard(page);
+    await fillNameAndAdvance(page, "enc-mem-pass");
+    await selectStorageAndAdvance(page, "Memory");
+    await advanceThroughSQL(page);
 
-    // Verify summary shows correct configuration
-    await expect(page.getByText("Memory", { exact: true })).toBeVisible();
-    await expect(page.getByText("Passphrase", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Database Encryption Barrier" })).toBeVisible();
+    await page.locator("button").filter({ hasText: "Passphrase" }).click();
+    await page.locator("#db-barrier-passphrase").fill("e2e-barrier-passphrase");
+    await page.locator("#db-barrier-passphrase-confirm").fill("e2e-barrier-passphrase");
 
-    await createAndVerifyComplete(page, "enc-mem-pass");
+    await expect(page.getByTestId("db-barrier-datadir-error")).toContainText("File or Pebble backend");
+    await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
   });
 
   // -------------------------------------------------------------------------

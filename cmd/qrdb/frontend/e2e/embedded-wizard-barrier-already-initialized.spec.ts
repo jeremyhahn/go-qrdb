@@ -192,7 +192,6 @@ test.describe("Embedded wizard - barrier already initialized", () => {
       // being refused as already active. We do this by reading the store
       // via a page.evaluate hook.
       const stuckInConnecting = await page.evaluate(() => {
-        const w = window as unknown as Record<string, unknown>;
         // connManagerStore is exported by the bundle; we don't have
         // direct access. Instead, check that no "connecting" spinner
         // remains visible in the sidebar.

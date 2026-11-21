@@ -103,6 +103,32 @@
   let adminCertPoolPem: string = $state("");
 
   // ---------------------------------------------------------------------------
+  // PIN state (collected on the admin step)
+  // ---------------------------------------------------------------------------
+
+  /** Minimum PIN length, mirroring the server's pkg/pin minPINLength. */
+  const MIN_PIN_LENGTH = 6;
+
+  // ceremony.initialize requires both PINs: the server seals the Security
+  // Officer PIN and the user PIN at initialization, exactly as `qrdb init`
+  // prompts for them.
+  let soPin: string = $state("");
+  let soPinConfirm: string = $state("");
+  let userPin: string = $state("");
+  let userPinConfirm: string = $state("");
+
+  /** The first PIN validation failure, or "" when both PINs are valid. */
+  function pinError(label: string, value: string, confirm: string): string {
+    if (value.length < MIN_PIN_LENGTH) return `${label} must be at least ${MIN_PIN_LENGTH} characters.`;
+    if (value !== confirm) return `${label}s do not match.`;
+    return "";
+  }
+
+  let soPinError = $derived(pinError("SO PIN", soPin, soPinConfirm));
+  let userPinError = $derived(pinError("User PIN", userPin, userPinConfirm));
+  let pinsValid = $derived(soPinError === "" && userPinError === "");
+
+  // ---------------------------------------------------------------------------
   // Navigation
   // ---------------------------------------------------------------------------
 
@@ -132,6 +158,10 @@
   }
 
   async function handleAdminNext(): Promise<void> {
+    if (!pinsValid) {
+      applyError = soPinError || userPinError;
+      return;
+    }
     applyError = "";
     currentStep = "applying";
     await initializeCeremony();
@@ -168,7 +198,7 @@
         } :
         { adminGenerate: true };
 
-      const req: CeremonyInitializeRequest = { ...barrierFields, ...adminFields };
+      const req: CeremonyInitializeRequest = { ...barrierFields, ...adminFields, soPin, userPin };
 
       const result = await client.ceremony.initialize(req);
       shareCount = result.shareCount;
@@ -331,6 +361,44 @@
               <span>{applyError}</span>
             </div>
           {/if}
+          <div class="flex flex-col gap-3 mb-6" data-testid="init-pins">
+            <div>
+              <h2 class="text-xl font-bold">PINs</h2>
+              <p class="text-base-content/70 mt-1 text-sm">
+                Initialization seals a Security Officer PIN and a user PIN,
+                each at least {MIN_PIN_LENGTH} characters. The SO PIN
+                authorizes sealing and other officer operations.
+              </p>
+            </div>
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label class="form-control">
+                <span class="label-text">SO PIN</span>
+                <input class="input input-bordered" type="password" autocomplete="new-password" required
+                  placeholder="SO PIN" bind:value={soPin} data-testid="so-pin-input" />
+              </label>
+              <label class="form-control">
+                <span class="label-text">Confirm SO PIN</span>
+                <input class="input input-bordered" type="password" autocomplete="new-password" required
+                  placeholder="Confirm SO PIN" bind:value={soPinConfirm} data-testid="so-pin-confirm-input" />
+              </label>
+              <label class="form-control">
+                <span class="label-text">User PIN</span>
+                <input class="input input-bordered" type="password" autocomplete="new-password" required
+                  placeholder="User PIN" bind:value={userPin} data-testid="user-pin-input" />
+              </label>
+              <label class="form-control">
+                <span class="label-text">Confirm user PIN</span>
+                <input class="input input-bordered" type="password" autocomplete="new-password" required
+                  placeholder="Confirm user PIN" bind:value={userPinConfirm} data-testid="user-pin-confirm-input" />
+              </label>
+            </div>
+            {#if (soPin !== "" || soPinConfirm !== "") && soPinError}
+              <p class="text-error text-sm" data-testid="so-pin-error">{soPinError}</p>
+            {/if}
+            {#if (userPin !== "" || userPinConfirm !== "") && userPinError}
+              <p class="text-error text-sm" data-testid="user-pin-error">{userPinError}</p>
+            {/if}
+          </div>
           <StepAdminCredential
             bind:mode={adminMode}
             bind:csrPem={adminCsrPem}

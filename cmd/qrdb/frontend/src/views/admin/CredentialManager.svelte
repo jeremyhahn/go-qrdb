@@ -50,6 +50,10 @@
   let versionsLoading: boolean = $state(false);
   let revealedValue: string | null = $state(null);
   let revealLoading: boolean = $state(false);
+  // Per-version values fetched through credentials.retrieveVersion, keyed by
+  // version number; masked until revealed, cleared when the selection changes.
+  let revealedVersions: Record<number, string> = $state({});
+  let versionRevealLoading: number | null = $state(null);
 
   // Create modal (store or submit)
   let showCreateModal: boolean = $state(false);
@@ -113,11 +117,38 @@
   function handleRowClick(event: RowClickEvent<CredentialRow>): void {
     selectedName = event.row.name;
     revealedValue = null;
+    revealedVersions = {};
     void loadVersions(selectedName);
+  }
+
+  async function handleRevealVersion(version: number): Promise<void> {
+    if (selectedName === "") return;
+    if (revealedVersions[version] !== undefined) {
+      const rest = { ...revealedVersions };
+      delete rest[version];
+      revealedVersions = rest;
+      return;
+    }
+    const name = selectedName;
+    versionRevealLoading = version;
+    try {
+      const value = await client.credentials.retrieveVersion(name, version);
+      if (name !== selectedName) return;
+      revealedVersions = { ...revealedVersions, [version]: value };
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      versionRevealLoading = null;
+    }
   }
 
   async function handleReveal(): Promise<void> {
     if (selectedName === "") return;
+    // The button reads "Hide" while a value is shown: toggle it off.
+    if (revealedValue !== null) {
+      revealedValue = null;
+      return;
+    }
     revealLoading = true;
     try {
       revealedValue = await client.credentials.retrieve(selectedName);
@@ -176,6 +207,7 @@
       rotateNewValue = "";
       rotateGracePeriod = "0";
       revealedValue = null;
+      revealedVersions = {};
       await loadVersions(selectedName);
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
@@ -204,6 +236,7 @@
       selectedName = "";
       versions = [];
       revealedValue = null;
+      revealedVersions = {};
       await loadCredentials();
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
@@ -306,15 +339,39 @@
               {:else}
                 <table class="table table-xs mt-1">
                   <thead>
-                    <tr><th>Version</th><th>Current</th><th>Created</th><th>Grace Until</th></tr>
+                    <tr><th>Version</th><th>Current</th><th>Created</th><th>Grace Until</th><th>Value</th></tr>
                   </thead>
                   <tbody>
                     {#each versions as v (v.version)}
-                      <tr>
+                      <tr data-testid="credential-version-{v.version}">
                         <td>{v.version}</td>
                         <td>{v.isCurrent ? "yes" : "no"}</td>
                         <td class="text-xs">{formatUnix(v.createdAtUnix)}</td>
                         <td class="text-xs">{formatUnix(v.graceUntilUnix)}</td>
+                        <td>
+                          <div class="flex items-center gap-1">
+                            {#if revealedVersions[v.version] !== undefined}
+                              <span class="font-mono text-xs break-all" data-testid="credential-version-value-{v.version}">{revealedVersions[v.version]}</span>
+                            {:else}
+                              <span class="font-mono text-xs text-base-content/40" data-testid="credential-version-value-{v.version}">•••••</span>
+                            {/if}
+                            <button
+                              class="btn btn-ghost btn-xs"
+                              aria-label="{revealedVersions[v.version] !== undefined ? 'Hide' : 'Reveal'} version {v.version}"
+                              onclick={() => void handleRevealVersion(v.version)}
+                              disabled={versionRevealLoading !== null}
+                            >
+                              {#if versionRevealLoading === v.version}
+                                <span class="loading loading-spinner loading-xs"></span>
+                              {:else if revealedVersions[v.version] !== undefined}
+                                <EyeOff class="h-3 w-3" />
+                              {:else}
+                                <Eye class="h-3 w-3" />
+                              {/if}
+                              {revealedVersions[v.version] !== undefined ? "Hide" : "Reveal"}
+                            </button>
+                          </div>
+                        </td>
                       </tr>
                     {/each}
                   </tbody>

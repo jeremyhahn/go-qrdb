@@ -23,6 +23,10 @@ import (
 // compiled into this build. The set depends on the codec build tags.
 var AvailableCodecs = codec.AvailableCodecs
 
+// ImportFormats returns the batch import file formats, "auto" first: the
+// same list the server reports on GET /batch/import/formats.
+var ImportFormats = codec.ImportFormats
+
 // ---------------------------------------------------------------------------
 // Daemon configuration
 //

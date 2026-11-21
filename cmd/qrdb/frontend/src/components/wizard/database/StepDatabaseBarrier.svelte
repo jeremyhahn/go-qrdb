@@ -111,7 +111,21 @@
     passphraseError !== null && (passphrase.length > 0 || passphraseConfirm.length > 0),
   );
 
-  let isValid = $derived(shamirValid && passphraseError === null);
+  /** A per-database barrier keeps its keys in the database's own store, so the
+   * server refuses (422) a barrier database without an explicit data directory.
+   * A memory backend never sends one. */
+  let hasDataDir = $derived(
+    dbWizardStore.backend !== "memory" && dbWizardStore.dataDir.trim() !== "",
+  );
+  let dataDirError = $derived<string | null>(
+    sealMode === "none" || hasDataDir
+      ? null
+      : dbWizardStore.backend === "memory"
+        ? "A per-database barrier needs a File or Pebble backend with a data directory. Go back to the Storage step to choose one."
+        : "A per-database barrier needs the database's own data directory. Go back to the Storage step and set one.",
+  );
+
+  let isValid = $derived(shamirValid && passphraseError === null && dataDirError === null);
 
   /** Validation error message for Shamir configuration. */
   let validationError = $derived<string | null>(shamirError);
@@ -338,6 +352,12 @@
           Without a per-database barrier, data in this database relies solely on
           the global encryption barrier for protection at rest.
         </span>
+      </div>
+    {/if}
+
+    {#if dataDirError !== null}
+      <div class="alert alert-error" role="alert" data-testid="db-barrier-datadir-error">
+        <span class="text-sm">{dataDirError}</span>
       </div>
     {/if}
   </div>

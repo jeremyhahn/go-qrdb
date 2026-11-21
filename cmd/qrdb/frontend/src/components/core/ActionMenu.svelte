@@ -59,7 +59,7 @@
     tabindex="0"
     class="border-base-content/6 dropdown-content menu z-50 w-48 rounded-lg border bg-base-200 p-1 shadow-lg"
   >
-    {#each items as item}
+    {#each items as item (item.label)}
       <li>
         <button
           class="flex items-center gap-2 text-sm"

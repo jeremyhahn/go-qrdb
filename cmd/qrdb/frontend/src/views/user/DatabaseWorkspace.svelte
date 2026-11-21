@@ -94,6 +94,13 @@
     return (ctx as { tool: DbTool }).tool;
   });
 
+  // The connection profile this database belongs to; keys per-connection
+  // caches (two connections may each hold a database of the same name).
+  const profileId = $derived.by((): string => {
+    const ctx = navStore.context;
+    return ctx.type === 'database' ? ctx.profileId : '';
+  });
+
   const hasSql = $derived(
     (database.protocol?.mysql ?? false) || (database.protocol?.postgresql ?? false),
   );
@@ -136,7 +143,7 @@
   <!-- Tool view -->
   <div class="flex-1 overflow-y-auto p-6" id="tabpanel-{activeTool}" role="tabpanel">
     {#if activeTool === 'data'}
-      <KVExplorer client={dbClient} />
+      <KVExplorer client={dbClient} database={database.name} {profileId} databaseInfo={database} />
     {:else if activeTool === 'collections'}
       <CollectionView {client} {database} />
     {:else if activeTool === 'indexes'}

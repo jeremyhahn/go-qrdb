@@ -51,11 +51,35 @@ const LOAD_TIMEOUT = 20_000;
 
 let cluster: DomCluster | null = null;
 
+// Booting three raft nodes takes longer than the default 30 s test timeout;
+// a beforeEach that times out leaves the nodes on the fixed ports.
+test.describe.configure({ timeout: 180_000 });
+
 test.beforeEach(async () => {
+  // Booting three nodes (certs, raft election) can take most of the 30 s
+  // default on its own; give each test room for the boot plus its steps.
+  test.setTimeout(120_000);
   cluster = await startCluster(3);
 });
 
 test.afterEach(async () => {
+  // stopCluster signals the nodes but does not wait for them to exit; a node
+  // still holding its fixed raft port fails the next test's boot with
+  // "address already in use". Wait for every node to exit first.
+  await Promise.all(
+    (cluster?.procs ?? []).map(
+      (p) =>
+        new Promise<void>((resolve) => {
+          if (p.exitCode !== null || p.signalCode !== null) return resolve();
+          const kill = setTimeout(() => p.kill("SIGKILL"), 15_000);
+          p.once("exit", () => {
+            clearTimeout(kill);
+            resolve();
+          });
+          p.kill("SIGTERM");
+        }),
+    ),
+  );
   await stopCluster(cluster);
   cluster = null;
 });
