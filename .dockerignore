@@ -5,7 +5,9 @@
 # second.
 
 # Credentials. build/docker/devcontainer/.env carries the Gitea module-fetch token and is
-# gitignored; without this line the bake-in would put it in a layer.
+# gitignored; without this line the bake-in would put it in a layer. The old
+# .devcontainer/.env path is excluded too: a checkout from before the move
+# still holds that untracked file.
 #
 # gomodauth* is KEPT although #326 removed the file it was named for -- the
 # secret is now sourced from the environment and nothing is written to disk.
@@ -13,8 +15,11 @@
 # credentials file, which is what it was always for; a line that matches
 # nothing costs nothing, and deleting it would remove the guard exactly when
 # someone is adding the thing it guards against.
+.devcontainer/.env
 build/docker/devcontainer/.env
 gomodauth*
+# Generated VS Code pin overlay (scripts/devcontainer-pins.sh).
+build/docker/devcontainer/compose.pins.yaml
 
 # Runtime state a locally-run daemon leaves behind, including the CA, node and
 # admin keys it issues itself.

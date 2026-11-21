@@ -23,6 +23,9 @@
 #
 # A bare `docker compose build` of them needs GO_IMAGE and TRIVY_IMAGE in the
 # environment (the shared global ARGs have no default); make exports both.
+# VS Code gets the two pins from the generated compose.pins.yaml overlay,
+# written from scripts/tool-pins.sh by scripts/devcontainer-pins.sh (the
+# .devcontainer.json initializeCommand).
 #
 # SECURITY POSTURE (x-posture, both services):
 #
@@ -111,17 +114,20 @@ x-go-scanner-pins: &go-scanner-pins
   GOLANGCI_LINT_VERSION:
   GOSEC_VERSION:
   GOVULNCHECK_VERSION:
-  # The Dockerfile's global FROM ${GO_IMAGE} (the CI stages) has no default;
-  # BuildKit resolves every global FROM even for a dev or gpu target.
+  # The Dockerfile's global FROM ${GO_IMAGE} (the CI stages) and global
+  # FROM ${TRIVY_IMAGE} AS trivy have no default; BuildKit resolves every
+  # global FROM even for a dev or gpu target, so every service needs both.
   GO_IMAGE:
+  TRIVY_IMAGE:
 
 # devcontainer-gpu builds the gpu stage, which runs no security suite and
-# therefore bakes no trivy; passing it TRIVY_VERSION would declare a build arg
-# that stage does not consume.
+# therefore bakes no trivy; only TRIVY_VERSION is withheld from it, since
+# passing it would declare a build arg that stage does not consume.
+# TRIVY_IMAGE is not a stage arg but a global FROM input every target needs,
+# so it lives in go-scanner-pins above.
 x-scanner-pins: &scanner-pins
   <<: *go-scanner-pins
   TRIVY_VERSION:
-  TRIVY_IMAGE:
 
 # Fleet dev-cache passthrough (devops.md §2a). Unset, empty or unreachable
 # means no proxy -- the behaviour without the cache -- so every entry below
