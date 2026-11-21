@@ -80,7 +80,9 @@ merges on that recorded approval of its text, as the rules of
 1. **What "adjacent" means before 1.0.** Recommendation: consecutive minor
    releases, 0.y.z and 0.(y+1).z, with any patch levels. From 1.0 on: consecutive
    minor releases within one major, plus the last minor of major M to the first
-   of M+1.
+   of M+1. The last minor of each major is declared data (`lastMinor` in
+   `pkg/release`), added by the release that cuts M+1; an undeclared major
+   boundary is refused.
 2. **Rollback.** Recommendation: N+1 back to N is supported only while no
    feature that N+1 introduced has been activated. After activation, the N
    binary refuses to start (`UnsupportedFeatureError`, which exists today).

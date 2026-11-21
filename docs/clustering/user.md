@@ -524,12 +524,44 @@ group's committed log, which would already contain the new command. Gating on
 cluster-wide activation rather than a group's current membership is what
 keeps a half-upgraded cluster working and never diverging.
 
+A cluster runs only **adjacent releases**: nodes on the same major.minor
+release (any patch level), on consecutive minor releases of one major, or on
+the last minor of major M and the first minor (`(M+1).0`) of the next. Upgrade
+one minor release at a time; to cross several, roll the whole cluster through
+each in turn. Every `qrdbd` built by `make build` or the Docker image carries
+its release (`qrdbd version` prints it) and announces it when it enrols and in
+its membership advertisement. A node whose release is not adjacent is refused
+at both points with `release.GapError`, which names the channel
+(`enrollment` or `raft-membership`) and both releases: a joining node is
+refused before its join token is consumed, so the same token works once the
+node runs an adjacent release (REST 409; the joiner exits with the error), and
+a membership change that would place a replica on such a node is refused
+(gRPC and QUIC `FAILED_PRECONDITION`). The QUIC API negotiates its frame
+protocol through TLS ALPN from the list a release speaks (today
+`qrdb-quic/3`); a client offering none of them is refused in the handshake
+with TLS alert 120 (`no_application_protocol`, QUIC error `0x178`), and the
+Go SDK reports that as a typed, non-retryable refusal.
+
+While the upgrade is under way the cluster is **mixed**: some nodes run the
+old release (N) and some the new one (N+1). A mixed cluster serves every
+transport (REST, gRPC, QUIC, MCP, Unix socket) on every node, and a write sent
+to a follower is forwarded to the leader whichever release each of them runs:
+an N+1 follower forwards to an N leader and an N follower to an N+1 leader, so
+moving leadership during the upgrade (`qrdb admin member transfer-leadership`)
+is safe. An operation that needs the new feature takes the old path, or is
+refused as not yet active, until activation; nothing the N nodes cannot apply
+is proposed. Tenant barriers keep working too: a raft-isolated tenant created
+while the leader runs either release is served on every node under that node's
+own key.
+
 When every node advertises the feature, the cluster **activates** it, and
 activation is permanent. **After activation, no node may be started or added on
 an older release** -- neither an existing node rolled back nor a new one. A
 release that knows about feature activation refuses to start with an error
-naming the feature, and the cluster refuses to add a replica on a node that does
-not advertise it (see below), but a release without feature activation can do
+naming the feature (`featuregate.UnsupportedFeatureError`: "the cluster has
+activated feature ..., which this binary does not implement"); start the node
+on the new release again and it rejoins with its data. The cluster also
+refuses to add a replica on a node that does not advertise it (see below), but a release without feature activation can do
 neither; roll forward instead.
 
 A new node is added only once it advertises every feature the cluster uses.

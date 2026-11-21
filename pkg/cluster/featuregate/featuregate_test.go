@@ -33,6 +33,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 const (
@@ -197,6 +198,16 @@ func (k *memKV) ListStale(_ context.Context, prefix string) ([]string, error) {
 
 // listLocked lists the keys under prefix, or fails with err when it is set.
 // The caller holds k.mu.
+func (k *memKV) Delete(_ context.Context, key string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.putErr != nil {
+		return k.putErr
+	}
+	delete(k.data, key)
+	return nil
+}
+
 func (k *memKV) listLocked(prefix string, err error) ([]string, error) {
 	if err != nil {
 		return nil, err
@@ -517,6 +528,9 @@ func TestGate_ActivationWriteFailureIsNotActivation(t *testing.T) {
 	m := &fakeMembers{groups: map[uint64]GroupMembership{}}
 	m.set(systemShard, 1, map[uint64]string{1: "n1:7000"})
 	kv := newMemKV()
+	// The release is on record already, so only the activation write fails.
+	_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+"1/"+release.Version(), []byte("n1:7000"))
+	require.NoError(t, err)
 	kv.putErr = errors.New("not leader")
 	g := newGate(t, m)
 	require.NoError(t, g.Start(context.Background(), kv, newLeaseStore()))

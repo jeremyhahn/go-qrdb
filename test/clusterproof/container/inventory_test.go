@@ -152,3 +152,23 @@ func TestReadSecret(t *testing.T) {
 		t.Errorf("empty: got %v", err)
 	}
 }
+
+func TestInventoryNodeImageOverride(t *testing.T) {
+	inv := testInventory(t)
+	inv.Nodes[2].Image = "qrdbd:next"
+	got, err := ParseInventory(strings.NewReader(encode(t, inv)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"qrdbd:test", "qrdbd:test", "qrdbd:next"} {
+		if img := got.ImageOf(got.Nodes[i]); img != want {
+			t.Errorf("node %d image = %q, want %q", i+1, img, want)
+		}
+	}
+	if got.Nodes[0].Image != "" {
+		t.Errorf("unset node image parsed as %q", got.Nodes[0].Image)
+	}
+	if strings.Contains(encode(t, testInventory(t)), `"image":""`) {
+		t.Error("an unset node image is encoded")
+	}
+}

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -123,7 +124,7 @@ func NewFrameForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *FrameFor
 			RootCAs:              cfg.RootCAs,
 			Certificates:         nodeTLS.Certificates,
 			GetClientCertificate: nodeTLS.GetClientCertificate,
-			NextProtos:           []string{wire.ProtocolV3},
+			NextProtos:           slices.Clone(wire.Protocols),
 			MinVersion:           tls.VersionTLS13,
 		},
 		conns: map[string]*targetConn{},

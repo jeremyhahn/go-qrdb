@@ -17,7 +17,9 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,6 +28,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -75,11 +79,11 @@ func (soloSystem) GroupMembership(uint64) (featuregate.GroupMembership, error) {
 	return featuregate.GroupMembership{ConfigChangeID: 1, Replicas: map[uint64]string{1: "n1"}}, nil
 }
 
-func gatedNode(t *testing.T, kv service.KVServicer) *Node {
+func gatedNode(t *testing.T, kv service.KVServicer, opts ...embedded.Option) *Node {
 	t.Helper()
 	gate, err := featuregate.New(featuregate.Config{Self: featuregate.Self{ReplicaID: 1}, SystemShardID: 1, Members: soloSystem{}})
 	require.NoError(t, err)
-	tr, err := embedded.New(kv, struct{ service.AdminServicer }{})
+	tr, err := embedded.New(kv, struct{ service.AdminServicer }{}, opts...)
 	require.NoError(t, err)
 	client, err := sdk.NewClient(tr)
 	require.NoError(t, err)
@@ -103,6 +107,117 @@ func TestNode_StartFeatureGateNeverAdvertisesUnderAnUnknownActivation(t *testing
 	assert.ErrorAs(t, n.featureGate.Refusal(), &unsupported, "the refusal must be kept for the node's health")
 	n.bgCancel()
 	require.NoError(t, n.stopFeatureGate())
+}
+
+// TestFeatureGateRefused_RestartReleaseGapIsTerminal: the start loop stops
+// on a restart across a release gap as it does on an activated feature the
+// binary lacks, however the start wraps it, and retries a store failure.
+func TestFeatureGateRefused_RestartReleaseGapIsTerminal(t *testing.T) {
+	gap := &release.GapError{Channel: "raft-membership", Local: "0.60.0-alpha", Peer: "0.58.0-alpha"}
+	assert.True(t, featureGateRefused(gap))
+	assert.True(t, featureGateRefused(fmt.Errorf("start: %w", gap)))
+	assert.True(t, featureGateRefused(&featuregate.UnsupportedFeatureError{Feature: "future-opcode"}))
+	assert.False(t, featureGateRefused(&featuregate.StoreError{Op: "list releases", Err: errors.New("no leader")}))
+	assert.False(t, featureGateRefused(context.DeadlineExceeded))
+}
+
+// releaseHistoryKV is a store holding the release history whose state
+// machine has no leases (the embedded transport is built without one).
+type releaseHistoryKV struct {
+	service.KVServicer
+	mu   sync.Mutex
+	keys map[string]bool
+}
+
+func (k *releaseHistoryKV) list(prefix string) []string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	var out []string
+	for key := range k.keys {
+		if strings.HasPrefix(key, prefix) {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+func (k *releaseHistoryKV) ListAll(_ context.Context, prefix string) ([]string, error) {
+	return k.list(prefix), nil
+}
+
+func (k *releaseHistoryKV) ListStale(_ context.Context, prefix string) ([]string, error) {
+	return k.list(prefix), nil
+}
+
+func (k *releaseHistoryKV) PutIfAbsent(_ context.Context, key string, _ []byte) (bool, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.keys[key] {
+		return false, nil
+	}
+	k.keys[key] = true
+	return true, nil
+}
+
+func (k *releaseHistoryKV) Delete(_ context.Context, key string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	delete(k.keys, key)
+	return nil
+}
+
+func (k *releaseHistoryKV) has(key string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.keys[key]
+}
+
+// noLeases is the lease service of a state machine without leases (the
+// memory and disk state machines): a grant is refused as unsupported.
+type noLeases struct{ service.LeaseServicer }
+
+func (noLeases) Grant(context.Context, int64) (*lease.Lease, error) {
+	return nil, &service.CapabilityUnsupportedError{Message: "leases need the MVCC state machine"}
+}
+
+// An embedded node whose state machine has no leases cannot advertise, so
+// Gate.Start never runs; the restart release check still does: a recorded
+// release gap is a terminal refusal, and an adjacent restart records the
+// running release.
+func TestNode_StartFeatureGateWithoutLeasesEnforcesTheRelease(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	cases := []struct {
+		name    string
+		last    string
+		refused bool
+	}{
+		{name: "restart across a gap", last: "0.58.0-alpha", refused: true},
+		{name: "restart on the next release", last: "0.59.0-alpha"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			last := featuregate.ReleasePrefix + "1/" + tc.last
+			kv := &releaseHistoryKV{keys: map[string]bool{last: true}}
+			n := gatedNode(t, kv, embedded.WithLeaseService(noLeases{}))
+			l := &leader{}
+			l.known.Store(true)
+
+			n.startFeatureGate(l, kv)
+			n.featureWG.Wait()
+			assert.Nil(t, n.featureAdv.Load(), "a node without leases has no advertisement")
+			var gap *release.GapError
+			if tc.refused {
+				require.ErrorAs(t, n.featureGate.Refusal(), &gap, "the gap refusal must be kept for the node's health")
+				assert.False(t, kv.has(featuregate.ReleasePrefix+"1/0.60.0-alpha"), "a refused binary records no release")
+			} else {
+				require.NoError(t, n.featureGate.Refusal())
+				assert.True(t, kv.has(featuregate.ReleasePrefix+"1/0.60.0-alpha"), "the running release is recorded")
+				assert.False(t, kv.has(last), "the previous release is replaced")
+			}
+			n.bgCancel()
+			require.NoError(t, n.stopFeatureGate())
+		})
+	}
 }
 
 // Each start attempt reads under a deadline: a ReadIndex the leader drops is

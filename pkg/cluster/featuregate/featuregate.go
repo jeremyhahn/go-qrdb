@@ -61,8 +61,12 @@ package featuregate
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,6 +74,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // GuardedWrites is protocol.OpGuarded: a write carried with compares the
@@ -288,6 +293,13 @@ const (
 	// permanent key per feature: "__sys:cluster/features/activated/{feature}".
 	ActivationPrefix = "__sys:cluster/features/activated/"
 
+	// ReleasePrefix is the reserved key prefix of recorded releases: one
+	// replicated key "{ReleasePrefix}{replicaID}/{release}" per system-shard
+	// member, valued with its raft address. A member's gate writes its own
+	// key once it is committed, so its release outlives its advertisement
+	// lease and a joiner is still compared against an offline member.
+	ReleasePrefix = "__sys:cluster/features/releases/"
+
 	// DefaultRefreshInterval is how often the gate re-reads advertisements,
 	// activations and group membership, re-subscribes a lost watch, and
 	// retries activation.
@@ -333,6 +345,7 @@ type ActivationKV interface {
 	PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error)
 	ListAll(ctx context.Context, prefix string) ([]string, error)
 	ListStale(ctx context.Context, prefix string) ([]string, error)
+	Delete(ctx context.Context, key string) error
 }
 
 // Config configures a Gate.
@@ -380,9 +393,23 @@ type Gate struct {
 	mu   sync.Mutex // serializes view replacement
 	view atomic.Pointer[map[viewKey]cluster.Member]
 
+	// releases maps a system-shard replica ID to the releases recorded
+	// under ReleasePrefix for it, replaced whole by recordRelease. It
+	// stands in for a committed member whose advertisement has lapsed.
+	releases atomic.Pointer[map[uint64][]string]
+
+	// stores are the activation KV and advertisement stores Start was
+	// given; admission reads them afresh rather than through view and
+	// releases (see admitRelease). Nil before Start.
+	stores atomic.Pointer[admissionStores]
+
 	// refusal is the activated feature this binary lacks, once
 	// CheckActivated has found one; see Refusal.
 	refusal atomic.Pointer[UnsupportedFeatureError]
+
+	// releaseRefusal is the release gap Start refused a restart with; see
+	// Refusal.
+	releaseRefusal atomic.Pointer[release.GapError]
 
 	// loaded is set once CheckActivated has read the activations without
 	// finding one this binary lacks; see ActivationsLoaded.
@@ -423,6 +450,8 @@ func New(cfg Config) (*Gate, error) {
 	}
 	empty := map[viewKey]cluster.Member{}
 	g.view.Store(&empty)
+	noReleases := map[uint64][]string{}
+	g.releases.Store(&noReleases)
 	return g, nil
 }
 
@@ -550,16 +579,257 @@ func (g *Gate) Supports(raftAddr string, feature feature.Feature) bool {
 // membership change could undo it, and admission on the join path is where
 // that undoing is refused, not discovered later at apply time.
 func (g *Gate) AdmitReplica(shardID uint64, raftAddr string) error {
+	_, err := g.AdmitReplicaAt(shardID, raftAddr)
+	return err
+}
+
+// ConfigBinding is the system-shard configuration an admission verdict holds
+// for. Required says the add must land on exactly that configuration;
+// ConfigChangeID is its change ID, which is 0 for a bootstrapped membership
+// before its first change -- a configuration like any other, not "unbound".
+type ConfigBinding struct {
+	ConfigChangeID uint64
+	Required       bool
+}
+
+// StaleConfigurationError is CheckConfigBinding's refusal: the system-shard
+// configuration an admission verdict was bound to is no longer current.
+type StaleConfigurationError struct {
+	ShardID  uint64
+	Admitted uint64
+	Current  uint64
+}
+
+func (e *StaleConfigurationError) Error() string {
+	return fmt.Sprintf("feature gate: shard %d configuration changed since admission (admitted at change %d, now %d)",
+		e.ShardID, e.Admitted, e.Current)
+}
+
+// CheckConfigBinding refuses with *StaleConfigurationError when b is
+// required and the system shard's configuration change ID is no longer the
+// one it was admitted against. It is the comparison go-quicraft cannot make
+// for change ID 0 (its configChangeIndex 0 skips the check), so a caller
+// runs it immediately before proposing an add bound to the initial
+// configuration. An unbound b, or another shard, always passes.
+func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error {
+	if !b.Required || shardID != g.systemShard {
+		return nil
+	}
+	system, err := g.members.GroupMembership(g.systemShard)
+	if err != nil {
+		return err
+	}
+	if system.ConfigChangeID != b.ConfigChangeID {
+		return &StaleConfigurationError{ShardID: shardID, Admitted: b.ConfigChangeID, Current: system.ConfigChangeID}
+	}
+	return nil
+}
+
+// AdmitReplicaAt is AdmitReplica that also returns the system-shard
+// configuration the release check compared against, for the caller to bind
+// the add to: it passes ConfigChangeID as the add's configChangeIndex, so
+// go-quicraft refuses the add with ErrStaleConfigChange when another
+// membership change committed after admission, and, because go-quicraft
+// skips that comparison for index 0, it runs CheckConfigBinding itself
+// before proposing; on either refusal it admits again against the new
+// membership. Without that binding two concurrent adds of non-adjacent
+// releases (0.58 and 0.60 into an all-0.59 cluster) both pass, since neither
+// is yet a committed member the other must stay adjacent to.
+//
+// The binding is not Required when shardID is not the system shard (release
+// admission is about system-shard membership; another group's configuration
+// change index is a different counter) or when no membership was compared
+// (the node itself, or a candidate that advertises no release).
+func (g *Gate) AdmitReplicaAt(shardID uint64, raftAddr string) (ConfigBinding, error) {
+	binding, err := g.admitRelease(raftAddr)
+	if err != nil {
+		return ConfigBinding{}, err
+	}
 	for _, f := range supported {
 		if !g.Activated(f) && !g.decide(shardID, f, false) {
 			continue
 		}
 		if !g.Supports(raftAddr, f) {
-			return &UnsupportedReplicaError{ShardID: shardID, Address: raftAddr, Feature: f}
+			return ConfigBinding{}, &UnsupportedReplicaError{ShardID: shardID, Address: raftAddr, Feature: f}
+		}
+	}
+	if shardID != g.systemShard {
+		return ConfigBinding{}, nil
+	}
+	return binding, nil
+}
+
+// admitRelease refuses the node at raftAddr when its live advertisement
+// announces a release that is not adjacent (pkg/release.Adjacent) to this
+// binary's release or to the release of EVERY other member in the view:
+// admitting a 0.60 replica through a 0.59 member while a 0.58 member is
+// still in the cluster would leave two non-adjacent releases side by side.
+// It returns the *release.GapError with Channel "raft-membership" whose
+// Local is the release of the first member the candidate is not adjacent
+// to (this node first). A record with an empty ReleaseVersion predates
+// release announcement and is judged by its features alone, both as the
+// candidate and as a member compared against; this node itself is never
+// refused.
+func (g *Gate) admitRelease(raftAddr string) (ConfigBinding, error) {
+	self, selfErr := g.AdvertisedSelf()
+	if selfErr == nil && self.Address == raftAddr {
+		return ConfigBinding{}, nil
+	}
+	// A restart changes a member's release without a configuration change,
+	// so the cached view, refilled only as the watch and refresh catch up,
+	// can hold a release the member no longer runs. Admission reads the
+	// advertisements and recorded releases afresh, and refuses when it
+	// cannot.
+	ctx, cancel := context.WithTimeout(context.Background(), admitReadTimeout)
+	defer cancel()
+	view, err := g.admissionView(ctx)
+	if err != nil {
+		return ConfigBinding{}, err
+	}
+	candidate := ""
+	for _, rec := range view {
+		if rec.Address == raftAddr && rec.ReleaseVersion != "" {
+			candidate = rec.ReleaseVersion
+			break
+		}
+	}
+	if candidate == "" {
+		return ConfigBinding{}, nil
+	}
+	refuse := func(err error, member, memberRelease string) (ConfigBinding, error) {
+		g.logger.Warn("feature gate: refusing replica on a release gap",
+			"address", raftAddr,
+			"peer_release", candidate,
+			"member", member,
+			"member_release", memberRelease)
+		return ConfigBinding{}, err
+	}
+	if err := release.Check(releaseChannel, candidate); err != nil {
+		return refuse(err, "self", release.Version())
+	}
+	// Compare only with committed system-shard members: a pre-membership
+	// advertisement is another candidate, not a member it must stay
+	// adjacent to. A member's release is its live advertisement's; one
+	// that predates announcement is skipped; an offline member's is the
+	// release it recorded, and with neither the candidate is refused.
+	// The verdict holds only for this configuration, so its change ID is
+	// returned to bind the add to it (see AdmitReplicaAt).
+	system, err := g.members.GroupMembership(g.systemShard)
+	if err != nil {
+		return ConfigBinding{}, err
+	}
+	recorded, err := g.admissionReleases(ctx)
+	if err != nil {
+		return ConfigBinding{}, err
+	}
+	for _, m := range committedMembers(system) {
+		if m.id == g.self.ReplicaID || m.addr == raftAddr {
+			continue
+		}
+		if rec := liveRecord(view, m.id, m.addr); rec != nil {
+			if rec.ReleaseVersion != "" && !releasesAdjacent(rec.ReleaseVersion, candidate) {
+				return refuse(&release.GapError{Channel: releaseChannel, Local: rec.ReleaseVersion, Peer: candidate},
+					m.addr, rec.ReleaseVersion)
+			}
+			continue
+		}
+		rels := recorded[m.id]
+		if len(rels) == 0 {
+			return refuse(&UnknownMemberReleaseError{ShardID: g.systemShard, ReplicaID: m.id, Address: m.addr}, m.addr, "")
+		}
+		for _, rel := range rels {
+			if !releasesAdjacent(rel, candidate) {
+				return refuse(&release.GapError{Channel: releaseChannel, Local: rel, Peer: candidate}, m.addr, rel)
+			}
+		}
+	}
+	// Required even at ConfigChangeID 0: a bootstrapped membership before
+	// its first change is a checked configuration, not the absence of one.
+	return ConfigBinding{ConfigChangeID: system.ConfigChangeID, Required: true}, nil
+}
+
+// admitReadTimeout bounds admission's fresh read of the advertisements and
+// recorded releases.
+const admitReadTimeout = 10 * time.Second
+
+// admissionStores are the stores a started gate reads at admission.
+type admissionStores struct {
+	kv      ActivationKV
+	adverts []cluster.MembershipStore
+}
+
+// admissionView reads every advertisement store afresh, keyed as view is.
+// Before Start it has no stores and returns the cached view.
+func (g *Gate) admissionView(ctx context.Context) (map[viewKey]cluster.Member, error) {
+	stores := g.stores.Load()
+	if stores == nil {
+		return *g.view.Load(), nil
+	}
+	view := make(map[viewKey]cluster.Member)
+	for i, store := range stores.adverts {
+		members, err := store.ListMembers(ctx)
+		if err != nil {
+			return nil, &StoreError{Op: "list advertisements", Err: err}
+		}
+		for _, m := range members {
+			view[viewKey{source: i, nodeID: m.NodeID}] = m
+		}
+	}
+	return view, nil
+}
+
+// admissionReleases reads the recorded releases afresh. Before Start it
+// has no store and returns the cached records.
+func (g *Gate) admissionReleases(ctx context.Context) (map[uint64][]string, error) {
+	stores := g.stores.Load()
+	if stores == nil {
+		return *g.releases.Load(), nil
+	}
+	keys, err := listReleases(ctx, stores.kv)
+	if err != nil {
+		return nil, err
+	}
+	return parseReleases(keys), nil
+}
+
+// committedMember is one replica or witness of a committed membership.
+type committedMember struct {
+	id   uint64
+	addr string
+}
+
+// committedMembers lists the replicas, then the witnesses, of system, each
+// in replica-ID order, so a refusal names the same member every time.
+func committedMembers(system GroupMembership) []committedMember {
+	members := make([]committedMember, 0, len(system.Replicas)+len(system.Witnesses))
+	for _, group := range []map[uint64]string{system.Replicas, system.Witnesses} {
+		for _, id := range slices.Sorted(maps.Keys(group)) {
+			members = append(members, committedMember{id: id, addr: group[id]})
+		}
+	}
+	return members
+}
+
+// liveRecord returns the advertisement in view from the member with replica
+// ID id at addr, matched as supportingAddresses matches, or nil.
+func liveRecord(view map[viewKey]cluster.Member, id uint64, addr string) *cluster.Member {
+	for k, rec := range view {
+		if k.nodeID == id && rec.Address == addr {
+			return &rec
 		}
 	}
 	return nil
 }
+
+// releasesAdjacent reports whether two announced releases may run side by
+// side: a development build accepts any peer, as release.Check does.
+func releasesAdjacent(a, b string) bool {
+	return a == release.Dev || b == release.Dev || release.Adjacent(a, b)
+}
+
+// releaseChannel names the cluster-membership channel in a
+// *release.GapError.
+const releaseChannel = "raft-membership"
 
 // AdvertisedSelf returns what the local node advertises: its system-shard
 // replica ID and the raft address the system shard has committed for it --
@@ -577,6 +847,143 @@ func (g *Gate) AdvertisedSelf() (Self, error) {
 		return Self{}, &NotAMemberError{ReplicaID: g.self.ReplicaID, ShardID: g.systemShard}
 	}
 	return Self{ReplicaID: g.self.ReplicaID, Address: addr}, nil
+}
+
+// recordRelease records this node's release under ReleasePrefix once the
+// system shard has committed it, removes any release an earlier binary
+// recorded for it, and reloads the recorded releases of every member. It
+// writes only when the record is missing or stale.
+func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
+	self, err := g.AdvertisedSelf()
+	if err != nil {
+		return err
+	}
+	own := ReleasePrefix + strconv.FormatUint(self.ReplicaID, 10) + "/"
+	key := own + release.Version()
+	keys, err := listReleases(ctx, kv)
+	if err != nil {
+		return err
+	}
+	// The running release is persisted before any earlier record of this
+	// member is removed: a crash or a failed write between the two leaves
+	// both on record, never neither, so the history a later restart checks
+	// is never lost.
+	recorded, stale := slices.Contains(keys, key), false
+	if !recorded {
+		if _, err := kv.PutIfAbsent(ctx, key, []byte(self.Address)); err != nil {
+			return &StoreError{Op: "record release", Err: err}
+		}
+	}
+	for _, k := range keys {
+		if k == key || !strings.HasPrefix(k, own) {
+			continue
+		}
+		stale = true
+		if err := kv.Delete(ctx, k); err != nil {
+			return &StoreError{Op: "delete release", Err: err}
+		}
+	}
+	if !recorded || stale {
+		if keys, err = listReleases(ctx, kv); err != nil {
+			return err
+		}
+	}
+	releases := parseReleases(keys)
+	g.releases.Store(&releases)
+	return nil
+}
+
+// parseReleases maps each replica ID to the releases recorded for it by
+// release record keys "{ReleasePrefix}{replicaID}/{release}".
+// listReleases lists the release history from applied state, or through the
+// leader on a replica without readable applied state (a witness).
+func listReleases(ctx context.Context, kv ActivationKV) ([]string, error) {
+	keys, err := kv.ListStale(ctx, ReleasePrefix)
+	if err != nil {
+		if keys, err = kv.ListAll(ctx, ReleasePrefix); err != nil {
+			return nil, &StoreError{Op: "list releases", Err: err}
+		}
+	}
+	return keys, nil
+}
+
+func parseReleases(keys []string) map[uint64][]string {
+	releases := make(map[uint64][]string, len(keys))
+	for _, k := range keys {
+		idText, rel, ok := strings.Cut(strings.TrimPrefix(k, ReleasePrefix), "/")
+		id, err := strconv.ParseUint(idText, 10, 64)
+		if !ok || err != nil || rel == "" || !strings.HasPrefix(k, ReleasePrefix) {
+			continue
+		}
+		releases[id] = append(releases[id], rel)
+	}
+	return releases
+}
+
+// checkRestartRelease refuses, with the *release.GapError admission
+// returns (Channel "raft-membership", Local this binary's release, Peer the
+// member's), to start this node when it is already a committed system-shard
+// member and its binary's release is not adjacent to the release of every
+// committed member, or to the release this node itself last recorded.
+// Admission judges a node only when it is added; a member restarting its
+// data directory on a new binary -- 0.58 to 0.60 in an all-0.59 cluster, an
+// upgrade that skips a release -- is judged here, before it records its
+// release or serves. Another member's release is its live advertisement's,
+// else the releases it recorded under ReleasePrefix; this node's is every
+// release it recorded or still advertises. A member with neither, or whose record
+// predates release announcement, is skipped: a cold restart of a cluster
+// whose members have not recorded a release yet must still come up. A node
+// that is not yet a member is left to admission. A membership or recorded
+// release history this node cannot read refuses the start (a *StoreError
+// for the history) rather than reading as no history: Start is retried, and
+// a skipped-release restart must not pass on a transient read failure and
+// then replace the release it last recorded.
+func (g *Gate) checkRestartRelease(ctx context.Context, kv ActivationKV) error {
+	if _, err := g.AdvertisedSelf(); err != nil {
+		var notMember *NotAMemberError
+		if errors.As(err, &notMember) {
+			return nil
+		}
+		return err
+	}
+	system, err := g.members.GroupMembership(g.systemShard)
+	if err != nil {
+		return err
+	}
+	// A replica without readable applied state (a witness) reads the
+	// history through the leader instead.
+	keys, err := listReleases(ctx, kv)
+	if err != nil {
+		return err
+	}
+	recorded := parseReleases(keys)
+	view := *g.view.Load()
+	own := release.Version()
+	for _, m := range committedMembers(system) {
+		rels := recorded[m.id]
+		if rec := liveRecord(view, m.id, m.addr); m.id == g.self.ReplicaID {
+			// This node's own record is the release its data directory
+			// last ran: the upgrade itself must be to an adjacent release.
+			if rec != nil && rec.ReleaseVersion != "" {
+				rels = append(slices.Clone(rels), rec.ReleaseVersion)
+			}
+		} else if rec != nil {
+			if rec.ReleaseVersion == "" {
+				continue
+			}
+			rels = []string{rec.ReleaseVersion}
+		}
+		for _, rel := range rels {
+			if !releasesAdjacent(own, rel) {
+				g.logger.Error("feature gate: refusing to start on a release gap to a member",
+					"release", own,
+					"member", m.addr,
+					"member_release", rel)
+				return &release.GapError{Channel: releaseChannel, Local: own, Peer: rel}
+			}
+		}
+	}
+	return nil
 }
 
 // Activated reports whether feature has been activated cluster-wide.
@@ -658,11 +1065,16 @@ func (g *Gate) ActivationsLoaded() bool {
 }
 
 // Refusal returns the *UnsupportedFeatureError CheckActivated found -- the
-// cluster has activated a feature this binary lacks, so this node must not
-// serve -- or nil. A composer that cannot refuse to start reports it as a
-// degraded node.
+// cluster has activated a feature this binary lacks -- or the
+// *release.GapError Start refused a restart with -- this committed member's
+// binary is not adjacent to a member's release or the release it last ran
+// -- or nil. Either way this node must not serve: a composer that cannot
+// refuse to start reports it as a degraded node.
 func (g *Gate) Refusal() error {
 	if r := g.refusal.Load(); r != nil {
+		return r
+	}
+	if r := g.releaseRefusal.Load(); r != nil {
 		return r
 	}
 	return nil
@@ -711,6 +1123,42 @@ type activationRecord struct {
 	ReplicaID uint64          `json:"activated_by"`
 }
 
+// EnforceRelease refuses -- with *release.GapError, kept for Refusal --
+// when this node is a committed member restarting on a release not
+// adjacent to a member's release or the release it last ran
+// (checkRestartRelease), and otherwise records this binary's release. Start
+// runs it after seeding the advertisement view; a node whose state machine
+// has no leases, and so cannot advertise or Start, runs it on its own: the
+// release history needs no lease, and every node start enforces it. A failed
+// record fails the check (a *StoreError): the node does not start on a
+// release the history does not hold.
+func (g *Gate) EnforceRelease(ctx context.Context, kv ActivationKV) error {
+	if kv == nil {
+		return &ConfigError{Field: "store"}
+	}
+	if err := g.checkRestartRelease(ctx, kv); err != nil {
+		var gap *release.GapError
+		if errors.As(err, &gap) {
+			g.releaseRefusal.Store(gap)
+		}
+		return err
+	}
+	// The running release must be on record before the node reports the
+	// check passed: an unrecorded release would let the next binary skip
+	// the gap check against it. A joiner that is not yet a member of the
+	// system shard has no release to record: admission judges it, and the
+	// refresh records its release once it is a member. Every other record
+	// failure refuses the start.
+	if err := g.recordRelease(ctx, kv); err != nil {
+		var notMember *NotAMemberError
+		if errors.As(err, &notMember) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 // sourcedEvent is an advertisement event tagged with the store it came from.
 type sourcedEvent struct {
 	source int
@@ -722,7 +1170,9 @@ type sourcedEvent struct {
 // registrations when dynamic membership keeps them -- and starts the
 // background loop that follows advertisement changes and activates
 // features. It fails -- and the node must not start -- when the cluster has
-// activated a feature this binary lacks.
+// activated a feature this binary lacks, or when this node is a committed
+// member restarting on a release not adjacent to another member's
+// (checkRestartRelease).
 func (g *Gate) Start(ctx context.Context, kv ActivationKV, adverts ...cluster.MembershipStore) error {
 	if kv == nil || len(adverts) == 0 || slices.Contains(adverts, nil) {
 		return &ConfigError{Field: "store"}
@@ -752,7 +1202,12 @@ func (g *Gate) Start(ctx context.Context, kv ActivationKV, adverts ...cluster.Me
 			return err
 		}
 	}
+	if err := g.EnforceRelease(ctx, kv); err != nil {
+		cancel()
+		return err
+	}
 	g.activate(ctx, kv)
+	g.stores.Store(&admissionStores{kv: kv, adverts: slices.Clone(adverts)})
 
 	events := make(chan sourcedEvent, 64)
 	g.started = true
@@ -843,6 +1298,9 @@ func (g *Gate) run(ctx context.Context, kv ActivationKV, adverts []cluster.Membe
 					g.logger.Warn("feature gate: advertisement refresh failed", "error", err)
 				}
 			}
+			if err := g.recordRelease(ctx, kv); err != nil {
+				g.logger.Warn("feature gate: release record failed; retrying on refresh", "error", err)
+			}
 			if err := g.CheckActivated(ctx, kv); err != nil {
 				g.logger.Error("feature gate: activation refresh failed", "error", err)
 			}
@@ -911,7 +1369,7 @@ func sameView(a, b map[viewKey]cluster.Member) bool {
 	}
 	for k, am := range a {
 		bm, ok := b[k]
-		if !ok || am.Address != bm.Address || !slices.Equal(am.Features, bm.Features) {
+		if !ok || am.Address != bm.Address || am.ReleaseVersion != bm.ReleaseVersion || !slices.Equal(am.Features, bm.Features) {
 			return false
 		}
 	}

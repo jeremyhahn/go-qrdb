@@ -22,6 +22,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -154,7 +155,7 @@ func NewPebbleStateMachine(opts *pebble.Options) *PebbleStateMachine {
 // supported opcodes. Base KV opcodes (1-3) and extended protocol opcodes
 // (10+) are registered here for O(1) lookup during Update.
 func (s *PebbleStateMachine) buildUpdateHandlers() map[byte]pebbleUpdateHandler {
-	return map[byte]pebbleUpdateHandler{
+	handlers := map[byte]pebbleUpdateHandler{
 		// Base KV operations.
 		kv.OpPut:         pebbleHandlePut,
 		kv.OpGet:         pebbleHandleGet,
@@ -201,6 +202,10 @@ func (s *PebbleStateMachine) buildUpdateHandlers() map[byte]pebbleUpdateHandler 
 		protocol.OpTSDeleteSeries: s.pebbleHandleTSDeleteSeries,
 		protocol.OpTSSetRetention: s.pebbleHandleTSSetRetention,
 	}
+	// The rolling-upgrade matrix's synthetic N+1 command: present only in
+	// qrdb_upgrade_probe builds (upgrade_probe.go).
+	maps.Copy(handlers, upgradeProbeHandlers())
+	return handlers
 }
 
 // dispatch applies one complete, non-empty command into batch through the

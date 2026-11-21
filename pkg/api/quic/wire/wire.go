@@ -229,6 +229,16 @@ func StatusDeclared(status uint16) bool {
 // proves nothing, and a server cannot tell that FIN from an acknowledgement.
 const ProtocolV3 = "qrdb-quic/3"
 
+// Protocols is the ordered list of TLS ALPN identifiers (RFC 7301) a QUIC
+// peer offers and accepts, current first. It is the version negotiation of
+// the QUIC client and replica-forwarding channels (SPEC row
+// rolling-upgrades): a release that changes the frame protocol prepends its
+// new identifier and keeps exactly the previous one, which the release after
+// deletes (ruling 913, engineering note Q4). A peer that offers none of these
+// is refused by crypto/tls with the no_application_protocol alert (120),
+// never a decode failure. Callers must not modify it.
+var Protocols = []string{ProtocolV3}
+
 // MaxMethodLen is the maximum length of a method name in bytes.
 const MaxMethodLen = 256
 

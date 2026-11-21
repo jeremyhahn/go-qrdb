@@ -62,9 +62,10 @@ const (
 
 // buildConfig holds the resolved BuildOption values.
 type buildConfig struct {
-	tags       string
-	root       string
-	binaryName string
+	tags           string
+	root           string
+	binaryName     string
+	releaseVersion string
 }
 
 // BuildOption customizes a BuildBinary invocation.
@@ -88,6 +89,24 @@ func WithBinaryName(name string) BuildOption {
 		if name != "" {
 			c.binaryName = name
 		}
+	}
+}
+
+// ReleaseVersionVar is the linker symbol that carries a qrdbd binary's
+// release (pkg/release.Version).
+const ReleaseVersionVar = "github.com/jeremyhahn/go-qrdb/pkg/release.version"
+
+// WithReleaseVersion stamps the binary as release v, exactly as the
+// Makefile stamps a release build from the VERSION file
+// (-ldflags -X github.com/jeremyhahn/go-qrdb/pkg/release.version=v). A
+// rolling-upgrade test builds the same tree as N, N+1 and N+2 this way (the
+// engineering note's synthetic higher release). An unstamped binary is
+// release "dev", which accepts and is accepted by every release. The
+// version is part of the build-cache key; give each stamped build its own
+// WithBinaryName when the test also prints which binary ran.
+func WithReleaseVersion(v string) BuildOption {
+	return func(c *buildConfig) {
+		c.releaseVersion = v
 	}
 }
 
@@ -129,7 +148,7 @@ func BuildBinary(pkg string, opts ...BuildOption) (string, error) {
 		cfg.root = root
 	}
 
-	key := cfg.root + "\x00" + pkg + "\x00" + cfg.tags + "\x00" + cfg.binaryName
+	key := cfg.root + "\x00" + pkg + "\x00" + cfg.tags + "\x00" + cfg.binaryName + "\x00" + cfg.releaseVersion
 	entry, _ := builds.LoadOrStore(key, &buildResult{})
 	result, ok := entry.(*buildResult)
 	if !ok {
@@ -178,16 +197,21 @@ func build(pkg string, cfg buildConfig) (string, error) {
 		return "", &BuildError{Package: pkg, Tags: cfg.tags, Err: err}
 	}
 	binary := filepath.Join(dir, cfg.binaryName)
+	args := []string{"build", "-buildvcs=false", "-tags", cfg.tags}
+	if cfg.releaseVersion != "" {
+		args = append(args, "-ldflags", "-X "+ReleaseVersionVar+"="+cfg.releaseVersion)
+	}
+	args = append(args, "-o", binary, pkg)
 	// #nosec G204 -- the program is the literal "go"; every variable argument
 	// is the test's own. cfg.tags comes from DefaultBuildTags or a BuildOption
-	// the test passed, pkg is the package path the test named, and binary is a
-	// path under this package's own MkdirTemp. No request value reaches any of
-	// them, and qrdbdharness is a test harness that only ever runs from a test
-	// binary.
+	// the test passed, cfg.releaseVersion from WithReleaseVersion, pkg is the
+	// package path the test named, and binary is a path under this package's
+	// own MkdirTemp. No request value reaches any of them, and qrdbdharness is a
+	// test harness that only ever runs from a test binary.
 	//
 	// The sibling call in Start carries the same annotation. Both were invisible
 	// until #293 put sdk/go under gosec at all.
-	cmd := exec.Command("go", "build", "-buildvcs=false", "-tags", cfg.tags, "-o", binary, pkg)
+	cmd := exec.Command("go", args...)
 	cmd.Dir = cfg.root
 	out, err := cmd.CombinedOutput()
 	if err != nil {

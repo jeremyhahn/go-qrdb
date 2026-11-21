@@ -858,7 +858,7 @@ func TestDeliverApprovedJoin_AdvertisesTheJoinerOnSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCertificateRequest: %v", err)
 	}
-	record := &pendingJoinRecord{ID: "deliver-advertise", BoundNodeURI: boundNodeURI, ReplicaID: 7, Features: []string{"vector"}}
+	record := &pendingJoinRecord{ID: "deliver-advertise", BoundNodeURI: boundNodeURI, ReplicaID: 7, Features: []string{"vector"}, ReleaseVersion: "0.59.0-alpha"}
 	advertiser := &fakeFeatureAdvertiser{}
 
 	resp := deliverApprovedJoin(ctx, provider, store, record, csr, advertiser)
@@ -870,5 +870,33 @@ func TestDeliverApprovedJoin_AdvertisesTheJoinerOnSuccess(t *testing.T) {
 	}
 	if len(advertiser.features) != 1 || advertiser.features[0] != "vector" {
 		t.Fatalf("advertiser features = %v, want [vector]", advertiser.features)
+	}
+	if advertiser.release != "0.59.0-alpha" {
+		t.Fatalf("advertiser release = %q, want the approved joiner's %q", advertiser.release, "0.59.0-alpha")
+	}
+}
+
+// TestSubmitPendingJoinRequest_StoresTheJoinerRelease: the tokenless
+// queue record keeps the joiner's announced release through the replicated
+// store, so the approval that later advertises the joiner hands it on.
+func TestSubmitPendingJoinRequest_StoresTheJoinerRelease(t *testing.T) {
+	ctx := context.Background()
+	store := kvstore.NewMemoryKVStore()
+	record, err := SubmitPendingJoinRequest(ctx, store, &JoinRequest{
+		CSRDER: []byte("release-carrying-csr"), ReplicaID: 7, ReleaseVersion: "0.59.0-alpha",
+	}, 0)
+	if err != nil {
+		t.Fatalf("SubmitPendingJoinRequest: %v", err)
+	}
+	data, err := store.Get(ctx, pendingJoinKey(record.ID))
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	stored, err := unmarshalPendingJoin(data)
+	if err != nil {
+		t.Fatalf("unmarshalPendingJoin: %v", err)
+	}
+	if stored.ReleaseVersion != "0.59.0-alpha" {
+		t.Fatalf("stored ReleaseVersion = %q, want %q", stored.ReleaseVersion, "0.59.0-alpha")
 	}
 }

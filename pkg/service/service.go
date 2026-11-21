@@ -424,6 +424,9 @@ func (s *KVService) Put(ctx context.Context, key string, value []byte) error {
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
+	if cmd, err = upgradeProbeCommand(s.host, s.shardID, key, value, cmd); err != nil {
+		return &EncodeRequestError{Err: err}
+	}
 	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
@@ -1230,7 +1233,18 @@ func (s *AdminService) Peers(_ context.Context) (*PeersInfo, error) {
 // by replaying the group's log, so a node whose binary cannot apply
 // something already active in the log must never be added to it.
 func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
-	if err := admitReplica(s.host, shardID, raftAddr); err != nil {
+	// binding is the system-shard membership release admission compared
+	// against: the add is proposed only on that configuration, so two
+	// concurrent adds of non-adjacent releases cannot both land. Its change
+	// ID is the add's configChangeIndex, which go-quicraft refuses with
+	// ErrStaleConfigChange when another membership change committed in
+	// between; it skips that check for 0, so a binding to the initial
+	// configuration is compared before the proposal (checkConfigBinding).
+	// It is not Required for any other shard: release admission is about
+	// system-shard membership, and another shard's configuration change
+	// index is a different counter.
+	binding, err := admitReplica(s.host, shardID, raftAddr)
+	if err != nil {
 		return err
 	}
 	if err := s.awaitShardLeader(ctx, "add", shardID); err != nil {
@@ -1240,15 +1254,40 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 	if err != nil {
 		return err
 	}
-	rs, err := s.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, raftAddr, resolved, 0)
+	err = s.requestAddBound(ctx, shardID, replicaID, raftAddr, resolved, binding, s.requestAdd)
+	if !binding.Required || !staleConfiguration(err) {
+		return err
+	}
+	// The membership changed after admission: admit once more against the
+	// new configuration (a refusal now is the release gap) and retry once.
+	if binding, err = admitReplica(s.host, shardID, raftAddr); err != nil {
+		return err
+	}
+	return s.requestAddBound(ctx, shardID, replicaID, raftAddr, resolved, binding, s.requestAdd)
+}
+
+// requestAddBound proposes an add through request bound to binding: a
+// binding to change ID 0, which go-quicraft does not compare, is compared
+// first.
+func (s *AdminService) requestAddBound(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, binding featuregate.ConfigBinding,
+	request func(context.Context, uint64, uint64, string, string, uint64) error) error {
+	if err := checkConfigBinding(s.host, shardID, binding); err != nil {
+		return err
+	}
+	return request(ctx, shardID, replicaID, raftAddr, identity, binding.ConfigChangeID)
+}
+
+// requestAdd proposes adding replicaID with its identity, ordered after the
+// configuration change configChangeID (0 skips the ordering check), and
+// waits for the result.
+func (s *AdminService) requestAdd(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) error {
+	rs, err := s.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, raftAddr, identity, configChangeID)
 	if err != nil {
 		return s.translateMembershipError("add", err)
 	}
-
 	if _, err := rs.Result(); err != nil {
 		return s.translateMembershipError("add", err)
 	}
-
 	return nil
 }
 
@@ -1259,9 +1298,15 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 // -- see admin_join_token.go. An observer added this way is promoted to a
 // voter later with PromoteMember; it is caught up by replaying the group's
 // log exactly as a voter is, so the same feature-advertisement admission
-// check (admitReplica) applies.
+// check (admitReplica) applies. The addition is bound to the system-shard
+// configuration admission checked, exactly as AddMember's: a membership
+// change committed in between makes go-quicraft refuse it with
+// ErrStaleConfigChange, and it is admitted once more against the new
+// configuration and retried once, so an observer and a concurrent voter
+// of non-adjacent releases cannot both land.
 func (s *AdminService) AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
-	if err := admitReplica(s.host, shardID, raftAddr); err != nil {
+	binding, err := admitReplica(s.host, shardID, raftAddr)
+	if err != nil {
 		return err
 	}
 	if err := s.awaitShardLeader(ctx, "add-observer", shardID); err != nil {
@@ -1271,15 +1316,28 @@ func (s *AdminService) AddObserverMember(ctx context.Context, shardID, replicaID
 	if err != nil {
 		return err
 	}
-	rs, err := s.host.RequestAddObserverWithIdentity(ctx, shardID, replicaID, raftAddr, resolved, 0)
+	err = s.requestAddBound(ctx, shardID, replicaID, raftAddr, resolved, binding, s.requestAddObserver)
+	if !binding.Required || !staleConfiguration(err) {
+		return err
+	}
+	// The membership changed after admission: admit once more against the
+	// new configuration (a refusal now is the release gap) and retry once.
+	if binding, err = admitReplica(s.host, shardID, raftAddr); err != nil {
+		return err
+	}
+	return s.requestAddBound(ctx, shardID, replicaID, raftAddr, resolved, binding, s.requestAddObserver)
+}
+
+// requestAddObserver proposes the observer addition bound to configChangeID
+// and waits for its result, as requestAdd does for a voter.
+func (s *AdminService) requestAddObserver(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) error {
+	rs, err := s.host.RequestAddObserverWithIdentity(ctx, shardID, replicaID, raftAddr, identity, configChangeID)
 	if err != nil {
 		return s.translateMembershipError("add-observer", err)
 	}
-
 	if _, err := rs.Result(); err != nil {
 		return s.translateMembershipError("add-observer", err)
 	}
-
 	return nil
 }
 

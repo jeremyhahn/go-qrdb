@@ -69,6 +69,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -3729,7 +3730,7 @@ func startDynamicMembership(
 		// Features: a node that registers here before it is a member is admitted
 		// only if it advertises what the cluster's groups use (see
 		// featuregate.Gate.AdmitReplica).
-		cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints, Features: featuregate.SupportedNames()},
+		cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints, Features: featuregate.SupportedNames(), ReleaseVersion: release.Version()},
 		f.shardID,
 		cluster.MembershipConfig{MinQuorum: cluster.QuorumSize(minPeers)},
 		cluster.WithMembershipSealProbe(nodeSeal),
@@ -3805,7 +3806,7 @@ func startNodeAdvertiser(
 	if err != nil {
 		return nil, err
 	}
-	self := cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints, Features: featuregate.SupportedNames()}
+	self := cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints, Features: featuregate.SupportedNames(), ReleaseVersion: release.Version()}
 	pctx, cancel := context.WithCancel(ctx)
 	p := &memberRecordPublisher{cancel: cancel, done: make(chan struct{})}
 	go func() {

@@ -176,16 +176,18 @@ type fakeFeatureAdvertiser struct {
 	replicaID uint64
 	raftAddr  string
 	features  []string
+	release   string
 	err       error
 }
 
-func (f *fakeFeatureAdvertiser) AdvertiseJoiner(_ context.Context, replicaID uint64, raftAddress string, features []string) error {
+func (f *fakeFeatureAdvertiser) AdvertiseJoiner(_ context.Context, replicaID uint64, raftAddress string, features []string, releaseVersion string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
 	f.replicaID = replicaID
 	f.raftAddr = raftAddress
 	f.features = features
+	f.release = releaseVersion
 	return f.err
 }
 
@@ -202,6 +204,7 @@ func (f *fakeFeatureAdvertiser) callCount() int {
 // for the admission bug: once this record exists, featuregate.Gate.Supports
 // finds it and member add is no longer refused.
 func TestHandleJoinRequest_AdvertisesTheJoinerOnSuccess(t *testing.T) {
+	playJoinerRelease(t, "0.58.0-alpha", "0.59.0-alpha")
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	nodeURI := spiffe.NodeURI(testTrustDomain, "10.0.0.4:63001")
@@ -211,17 +214,21 @@ func TestHandleJoinRequest_AdvertisesTheJoinerOnSuccess(t *testing.T) {
 
 	adv := &fakeFeatureAdvertiser{}
 	resp := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
-		Token:     token,
-		CSRDER:    csrDER,
-		NodeURI:   nodeURI,
-		ReplicaID: 4,
-		Features:  []string{"guarded-writes"},
+		Token:          token,
+		CSRDER:         csrDER,
+		NodeURI:        nodeURI,
+		ReplicaID:      4,
+		Features:       []string{"guarded-writes"},
+		ReleaseVersion: "0.59.0-alpha",
 	}, adv)
 	if resp.Error != "" {
 		t.Fatalf("HandleJoinRequest refused: %s", resp.Error)
 	}
 	if adv.callCount() != 1 {
 		t.Fatalf("AdvertiseJoiner calls = %d, want 1", adv.callCount())
+	}
+	if adv.release != "0.59.0-alpha" {
+		t.Errorf("AdvertiseJoiner release = %q, want the joiner's %q", adv.release, "0.59.0-alpha")
 	}
 	if adv.replicaID != 4 {
 		t.Errorf("AdvertiseJoiner replicaID = %d, want 4", adv.replicaID)
@@ -1215,7 +1222,7 @@ func TestIssueAndAdmit_ReservationStoreFailureRefusesWithoutSigning(t *testing.T
 	nodeURI := spiffe.NodeURI(testTrustDomain, "reserve-failure-node")
 	advertiser := &fakeFeatureAdvertiser{}
 
-	resp := issueAndAdmit(context.Background(), provider, store, nodeURI, parseTestJoinCSR(t, nodeURI), 7, nil, advertiser)
+	resp := issueAndAdmit(context.Background(), provider, store, nodeURI, parseTestJoinCSR(t, nodeURI), 7, nil, "", advertiser)
 	if resp.Error != "join request could not be processed" {
 		t.Fatalf("response = %q, want the generic infrastructure-failure message", resp.Error)
 	}
@@ -1240,7 +1247,7 @@ func TestIssueAndAdmit_SignFailureWithUnreleasableReservationKeepsItHeld(t *test
 	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failCompareAndDeleteOnPrefix: joinIdentityPrefix}
 	nodeURI := spiffe.NodeURI(testTrustDomain, "release-failure-node")
 
-	resp := issueAndAdmit(context.Background(), failingProvider, store, nodeURI, parseTestJoinCSR(t, nodeURI), 0, nil, nil)
+	resp := issueAndAdmit(context.Background(), failingProvider, store, nodeURI, parseTestJoinCSR(t, nodeURI), 0, nil, "", nil)
 	if resp.Error != "signing failed" {
 		t.Fatalf("response = %q, want the signing-failed message", resp.Error)
 	}

@@ -17,7 +17,9 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
@@ -78,11 +80,49 @@ type ReplicaAdmitter interface {
 
 // admitReplica asks h, when it gates features, whether a replica of shardID
 // may be added on raftAddr.
-func admitReplica(h any, shardID uint64, raftAddr string) error {
+func admitReplica(h any, shardID uint64, raftAddr string) (featuregate.ConfigBinding, error) {
+	if a, ok := h.(configBoundAdmitter); ok {
+		return a.AdmitReplicaAt(shardID, raftAddr)
+	}
 	if a, ok := h.(ReplicaAdmitter); ok {
-		return a.AdmitReplica(shardID, raftAddr)
+		return featuregate.ConfigBinding{}, a.AdmitReplica(shardID, raftAddr)
+	}
+	return featuregate.ConfigBinding{}, nil
+}
+
+// checkConfigBinding refuses an add bound to a system-shard configuration
+// that is no longer current. go-quicraft makes the same comparison for a
+// non-zero configChangeIndex but skips it for 0, so a binding to the
+// initial configuration (change ID 0) is compared here, immediately before
+// the proposal.
+func checkConfigBinding(h any, shardID uint64, b featuregate.ConfigBinding) error {
+	if !b.Required || b.ConfigChangeID != 0 {
+		return nil
+	}
+	if a, ok := h.(configBoundAdmitter); ok {
+		return a.CheckConfigBinding(shardID, b)
 	}
 	return nil
+}
+
+// staleConfiguration reports whether err refuses an add because the
+// configuration it was bound to changed after admission.
+func staleConfiguration(err error) bool {
+	var stale *featuregate.StaleConfigurationError
+	return errors.Is(err, quicraft.ErrStaleConfigChange) || errors.As(err, &stale)
+}
+
+// configBoundAdmitter is a ReplicaAdmitter that also returns the
+// system-shard configuration its release check compared against
+// (featuregate.Gate.AdmitReplicaAt; not Required for another shard, or when
+// no membership was compared), and compares a binding with the current
+// configuration (featuregate.Gate.CheckConfigBinding). AddMember passes the
+// binding's change ID as the add's configChangeIndex, so go-quicraft refuses
+// the add as stale when the membership changed after admission, and
+// compares a binding to change ID 0 itself, which go-quicraft cannot.
+type configBoundAdmitter interface {
+	AdmitReplicaAt(shardID uint64, raftAddr string) (featuregate.ConfigBinding, error)
+	CheckConfigBinding(shardID uint64, b featuregate.ConfigBinding) error
 }
 
 // WriteGuard is a precondition carried by every write proposed under a

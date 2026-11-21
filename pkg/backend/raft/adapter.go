@@ -148,6 +148,26 @@ func (a *HostAdapter) AdmitReplica(shardID uint64, raftAddr string) error {
 	return a.gate.AdmitReplica(shardID, raftAddr)
 }
 
+// AdmitReplicaAt is AdmitReplica returning, with the verdict, the
+// system-shard configuration it checked (not Required when none binds; see
+// featuregate.Gate.AdmitReplicaAt), for the add to be bound to.
+func (a *HostAdapter) AdmitReplicaAt(shardID uint64, raftAddr string) (featuregate.ConfigBinding, error) {
+	if a.gate == nil {
+		return featuregate.ConfigBinding{}, nil
+	}
+	return a.gate.AdmitReplicaAt(shardID, raftAddr)
+}
+
+// CheckConfigBinding compares an admission binding with the system shard's
+// current configuration (featuregate.Gate.CheckConfigBinding); an ungated
+// adapter binds nothing.
+func (a *HostAdapter) CheckConfigBinding(shardID uint64, b featuregate.ConfigBinding) error {
+	if a.gate == nil {
+		return nil
+	}
+	return a.gate.CheckConfigBinding(shardID, b)
+}
+
 // FeatureEnabled reports whether every replica of shardID's group can apply
 // commands that use feature. With a feature gate the gate decides. Without
 // one, a host with no transport -- every replica is this process -- and a

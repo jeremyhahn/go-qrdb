@@ -88,3 +88,19 @@ func (e *UnsupportedReplicaError) Error() string {
 		", which the group uses; a joining node's advertisement is published by its enrollment, " +
 		"a member's by its own gate -- enroll or upgrade the node first"
 }
+
+// UnknownMemberReleaseError is returned by AdmitReplica when a committed
+// system-shard member has neither a live advertisement naming its release
+// nor a recorded release, so the candidate's adjacency to it cannot be
+// established.
+type UnknownMemberReleaseError struct {
+	ShardID   uint64
+	ReplicaID uint64
+	Address   string
+}
+
+// Error implements error.
+func (e *UnknownMemberReleaseError) Error() string {
+	return "feature gate: release of system-shard member " + strconv.FormatUint(e.ReplicaID, 10) +
+		" at " + e.Address + " cannot be established"
+}

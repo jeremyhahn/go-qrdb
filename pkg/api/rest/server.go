@@ -2681,9 +2681,14 @@ func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if resp.Error != "" {
+	switch {
+	case resp.ReleaseVersion != "":
+		// A release gap (release.GapError): the joiner's binary, not its
+		// credentials, is refused.
+		w.WriteHeader(http.StatusConflict)
+	case resp.Error != "":
 		w.WriteHeader(http.StatusForbidden)
-	} else {
+	default:
 		w.WriteHeader(http.StatusOK)
 	}
 	_, _ = w.Write(respBody)

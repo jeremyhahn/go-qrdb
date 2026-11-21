@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -181,6 +182,44 @@ func TestStartFeatureGate_DegradesWhenLeaseIsUnavailable(t *testing.T) {
 	require.NoError(t, closer.Close())
 	assert.False(t, g.Activated(featuregate.GuardedWrites),
 		"a degraded gate never started, so it tracks no activation locally")
+}
+
+// TestStartFeatureGate_LeaselessNodeEnforcesTheReleaseGap: a node on a
+// state machine without leases ("memory", "disk") boots without the
+// advertisement, but not without the release check: restarted across a
+// release gap it is refused, and on an adjacent release its release is
+// recorded.
+func TestStartFeatureGate_LeaselessNodeEnforcesTheReleaseGap(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	for name, tc := range map[string]struct {
+		last    string
+		refused bool
+	}{
+		"release gap":      {last: "0.58.0-alpha", refused: true},
+		"adjacent release": {last: "0.59.0-alpha"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := map[string][]byte{featuregate.ReleasePrefix + "1/" + tc.last: []byte("127.0.0.1:63100")}
+			svc := gateServices(store)
+			svc.Lease = &leaseUnsupportedServicer{}
+			g := soloGate(t)
+			t.Cleanup(func() { _ = g.Close() })
+
+			closer, err := startFeatureGate(context.Background(), g, svc, nil, nil)
+			_, recorded := store[featuregate.ReleasePrefix+"1/0.60.0-alpha"]
+			if tc.refused {
+				var gap *release.GapError
+				require.ErrorAs(t, err, &gap)
+				assert.Nil(t, closer)
+				require.ErrorAs(t, g.Refusal(), &gap)
+				assert.False(t, recorded, "a refused binary records no release")
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, closer.Close())
+			assert.True(t, recorded, "the leaseless node records its release")
+		})
+	}
 }
 
 // countingCloser counts withdrawals and fails each one with err.

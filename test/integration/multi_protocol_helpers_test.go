@@ -28,6 +28,7 @@ package integration_test
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -664,54 +665,114 @@ func (l multiProtoListeners) startArgs(cfgPath, dataDir, peers string, replicaID
 func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 	t.Helper()
 	bin := buildBinary(t)
-	cli := buildCLIBinary(t)
+	c := startSelfIssuedCAFounders(t, [3]string{bin, bin, bin})
+	c.startJoiner()
+	c.admitJoiner()
 
-	var listeners [3]multiProtoListeners
-	peerAdminURLs := make(map[string]string, len(listeners))
-	for i := range listeners {
-		listeners[i] = allocateMultiProtoListeners(t, fmt.Sprintf("qrdb-sicac-%d-", i+1))
-		peerAdminURLs[listeners[i].raftAddr()] = listeners[i].adminURL()
-	}
-	// A Noise and a join listener for each node that enables the join path:
-	// --cluster-join-enabled binds both, and their defaults collide between
-	// nodes on one host.
-	bootstrapPorts := allocateTCPPorts(t, 2*len(listeners))
-	joinArgs := func(i int) []string {
-		return []string{
-			"--cluster-join-enabled",
-			"--bootstrap-noise-port", fmt.Sprintf("%d", bootstrapPorts[2*i]),
-			"--bootstrap-noise-host", "127.0.0.1",
-			"--cluster-join-listen-port", fmt.Sprintf("%d", bootstrapPorts[2*i+1]),
-			"--cluster-join-listen-host", "127.0.0.1",
+	for _, n := range c.nodes {
+		for _, proto := range multiProtocols {
+			waitForCLIProtoReady(t, n, proto, 60*time.Second)
 		}
 	}
 
-	var dataDirs [3]string
-	baseArgs := func(i int, peers string) []string {
-		dataDirs[i] = t.TempDir()
-		cfgPath := writeSealYAML(t, tenantEntitlementYAML("none", t.TempDir())+peerAdminURLsYAML(peerAdminURLs))
-		return listeners[i].startArgs(cfgPath, dataDirs[i], peers, uint64(i+1))
+	// See startTenantEntitlementSelfManagedCANode: a tenant is placed through
+	// the pooled registration path, so the pool must exist and be ready on
+	// every node the tenant's groups may land on.
+	createVolumePoolCLI(t, c.cli, c.nodes[0].cliArgsFor(multiProtocols[0]), "default")
+	adminClient := mtlsHTTPClientFromFiles(t, c.ca, c.adminCertPath, c.adminKeyPath, 15*time.Second)
+	waitForVolumePoolReady(t, adminClient, c.listeners[0].restPort, "default", len(c.nodes), 60*time.Second)
+
+	return c.nodes
+}
+
+// sicacCluster is a self-issued-CA multi-protocol cluster under
+// construction: startSelfIssuedCAFounders brings up its two founders,
+// startJoiner starts node 3 with --join and admitJoiner admits it. A test
+// that drives node 3's enrolment itself (a refused joiner) stops after
+// startJoiner.
+type sicacCluster struct {
+	t *testing.T
+	// bins[i] is the qrdbd binary node i+1 runs.
+	bins           [3]string
+	cli            string
+	listeners      [3]multiProtoListeners
+	peerAdminURLs  map[string]string
+	bootstrapPorts []int
+	dataDirs       [3]string
+	peers          string
+
+	founderIdentity, founderPin, node2Identity string
+	adminCertPath, adminKeyPath, caPath        string
+	ca                                         *testCA
+	// nodes[2] is nil until admitJoiner.
+	nodes [3]*multiProtoNode
+}
+
+// joinArgs is a Noise and a join listener for node i, which enables the join
+// path: --cluster-join-enabled binds both, and their defaults collide between
+// nodes on one host.
+func (c *sicacCluster) joinArgs(i int) []string {
+	return []string{
+		"--cluster-join-enabled",
+		"--bootstrap-noise-port", fmt.Sprintf("%d", c.bootstrapPorts[2*i]),
+		"--bootstrap-noise-host", "127.0.0.1",
+		"--cluster-join-listen-port", fmt.Sprintf("%d", c.bootstrapPorts[2*i+1]),
+		"--cluster-join-listen-host", "127.0.0.1",
 	}
+}
+
+func (c *sicacCluster) baseArgs(i int, peers string) []string {
+	c.dataDirs[i] = c.t.TempDir()
+	cfgPath := writeSealYAML(c.t, tenantEntitlementYAML("none", c.t.TempDir())+peerAdminURLsYAML(c.peerAdminURLs))
+	return c.listeners[i].startArgs(cfgPath, c.dataDirs[i], peers, uint64(i+1))
+}
+
+// bringUp runs node i's `qrdb init` in its sealed window, which is REST-only
+// and unauthenticated (see startSelfIssuedCAMultiProtocolNode). The founder
+// generates the bootstrap admin credential; every other node binds that same
+// certificate, which the replicated store then holds once.
+func (c *sicacCluster) bringUp(i int) {
 	const soPin, userPin = "SOPIN-sicac", "USERPIN-sicac"
-	credDir := t.TempDir()
-	adminCertPath := filepath.Join(credDir, "admin-cert.pem")
-	adminKeyPath := filepath.Join(credDir, "admin-key.pem")
-	var caPath string
-	// bringUp runs node i's `qrdb init` in its sealed window, which is
-	// REST-only and unauthenticated (see startSelfIssuedCAMultiProtocolNode).
-	// The founder generates the bootstrap admin credential; every other node
-	// binds that same certificate, which the replicated store then holds once.
-	bringUp := func(i int) {
-		connArgs := []string{"--server", listeners[i].adminURL(), "--transport", "rest", "--ca-file", caPath, "--timeout", "20s"}
-		pollUntilSealedListenerUp(t, cli, connArgs, 30*time.Second)
-		if i == 0 {
-			bootAdminIdentityVia(t, cli, connArgs, soPin, userPin, adminCertPath, adminKeyPath, "",
-				"--barrier-strategy", "none")
-			return
-		}
-		bootAdminIdentityVia(t, cli, connArgs, soPin, userPin, filepath.Join(t.TempDir(), "admin-cert.pem"), "", "",
-			"--admin-cert", adminCertPath, "--barrier-strategy", "none")
+	connArgs := []string{"--server", c.listeners[i].adminURL(), "--transport", "rest", "--ca-file", c.caPath, "--timeout", "20s"}
+	pollUntilSealedListenerUp(c.t, c.cli, connArgs, 30*time.Second)
+	if i == 0 {
+		bootAdminIdentityVia(c.t, c.cli, connArgs, soPin, userPin, c.adminCertPath, c.adminKeyPath, "",
+			"--barrier-strategy", "none")
+		return
 	}
+	bootAdminIdentityVia(c.t, c.cli, connArgs, soPin, userPin, filepath.Join(c.t.TempDir(), "admin-cert.pem"), "", "",
+		"--admin-cert", c.adminCertPath, "--barrier-strategy", "none")
+}
+
+func (c *sicacCluster) nodeFor(i int) *multiProtoNode {
+	return &multiProtoNode{
+		cli:        c.cli,
+		ca:         c.ca,
+		dataDir:    c.dataDirs[i],
+		clientCert: c.adminCertPath,
+		clientKey:  c.adminKeyPath,
+		unixSocket: c.listeners[i].unixSocket,
+		restPort:   c.listeners[i].restPort,
+		grpcPort:   c.listeners[i].grpcPort,
+		mcpPort:    c.listeners[i].mcpPort,
+		quicPort:   c.listeners[i].quicPort,
+	}
+}
+
+// startSelfIssuedCAFounders brings up nodes 1 and 2 of a self-issued-CA
+// multi-protocol cluster, node i+1 running bins[i], and returns once node 1
+// serves the CLI.
+func startSelfIssuedCAFounders(t *testing.T, bins [3]string) *sicacCluster {
+	t.Helper()
+	c := &sicacCluster{t: t, bins: bins, cli: buildCLIBinary(t), peerAdminURLs: make(map[string]string, 3)}
+	for i := range c.listeners {
+		c.listeners[i] = allocateMultiProtoListeners(t, fmt.Sprintf("qrdb-sicac-%d-", i+1))
+		c.peerAdminURLs[c.listeners[i].raftAddr()] = c.listeners[i].adminURL()
+	}
+	c.bootstrapPorts = allocateTCPPorts(t, 2*len(c.listeners))
+	credDir := t.TempDir()
+	c.adminCertPath = filepath.Join(credDir, "admin-cert.pem")
+	c.adminKeyPath = filepath.Join(credDir, "admin-key.pem")
 
 	// A one-peer static founder runs without a Raft transport and grows only
 	// through a restart (TestCluster_OneNodeManagedTLSFounderGrows), so shard
@@ -721,22 +782,23 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 	// is fixed up front by a key generated here; node 2 then brings a leaf
 	// that CA signs.
 	node2Key, node2KeyPEM, node2Identity := generateNodeKeypairAndIdentity(t)
-	peers := fmt.Sprintf("1=%s,2=%s", listeners[0].raftAddr(), listeners[1].raftAddr())
-	startNode(t, bin, append(append(baseArgs(0, peers), joinArgs(0)...),
+	c.node2Identity = node2Identity
+	c.peers = fmt.Sprintf("1=%s,2=%s", c.listeners[0].raftAddr(), c.listeners[1].raftAddr())
+	startNode(t, bins[0], append(append(c.baseArgs(0, c.peers), c.joinArgs(0)...),
 		"--member-identities", fmt.Sprintf("2=%s", node2Identity)), "[sicac-node1] ")
-	caPath = filepath.Join(dataDirs[0], "ca.pem")
-	founderLeaf := filepath.Join(dataDirs[0], "node-cert.pem")
-	caKeyPath := filepath.Join(dataDirs[0], "ca-key.pem")
-	waitForFile(t, caPath, 30*time.Second)
+	c.caPath = filepath.Join(c.dataDirs[0], "ca.pem")
+	founderLeaf := filepath.Join(c.dataDirs[0], "node-cert.pem")
+	caKeyPath := filepath.Join(c.dataDirs[0], "ca-key.pem")
+	waitForFile(t, c.caPath, 30*time.Second)
 	waitForFile(t, founderLeaf, 30*time.Second)
 	waitForFile(t, caKeyPath, 30*time.Second)
 	// ca-key.pem stays on disk until the founder's barrier is up and shard 1
 	// has a leader to persist it through -- neither can happen before node 2
 	// runs -- so both reads below see it.
-	ca := loadDaemonCA(t, dataDirs[0])
-	node2LeafPEM := signCertWithCA(t, caPath, caKeyPath, nodeLeafTemplate("node2"), &node2Key.PublicKey)
-	founderIdentity, founderPin := nodeIdentityAndPin(t, founderLeaf)
-	bringUp(0)
+	c.ca = loadDaemonCA(t, c.dataDirs[0])
+	node2LeafPEM := signCertWithCA(t, c.caPath, caKeyPath, nodeLeafTemplate("node2"), &node2Key.PublicKey)
+	c.founderIdentity, c.founderPin = nodeIdentityAndPin(t, founderLeaf)
+	c.bringUp(0)
 
 	// Node 2 runs the production cluster-CA path, never BYO TLS: its leaf,
 	// the cluster CA certificate and its joined enrollment role sit in its
@@ -744,10 +806,10 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 	// builds the Key A provider and serves every CA operation from the
 	// replicated Key A once it unseals. --tls-ca-file would make it a
 	// BYO-TLS node with no Key A.
-	node2Args := append(baseArgs(1, peers), "--member-identities", fmt.Sprintf("1=%s", founderIdentity))
-	caPEM, err := os.ReadFile(caPath)
+	node2Args := append(c.baseArgs(1, c.peers), "--member-identities", fmt.Sprintf("1=%s", c.founderIdentity))
+	caPEM, err := os.ReadFile(c.caPath)
 	if err != nil {
-		t.Fatalf("startSelfIssuedCAMultiProtocolCluster: read %s: %v", caPath, err)
+		t.Fatalf("startSelfIssuedCAFounders: read %s: %v", c.caPath, err)
 	}
 	for name, content := range map[string][]byte{
 		"ca.pem":               caPEM,
@@ -755,88 +817,72 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 		"node-key.pem":         node2KeyPEM,
 		clusterenroll.RoleFile: []byte(clusterenroll.RoleJoined),
 	} {
-		path := filepath.Join(dataDirs[1], name)
+		path := filepath.Join(c.dataDirs[1], name)
 		if err := os.WriteFile(path, content, 0o600); err != nil {
-			t.Fatalf("startSelfIssuedCAMultiProtocolCluster: write %s: %v", path, err)
+			t.Fatalf("startSelfIssuedCAFounders: write %s: %v", path, err)
 		}
 	}
-	startNode(t, bin, node2Args, "[sicac-node2] ")
-	bringUp(1)
-	waitForHealthy(t, dataDirs[0], 60*time.Second)
-	waitForHealthy(t, dataDirs[1], 60*time.Second)
+	startNode(t, bins[1], node2Args, "[sicac-node2] ")
+	c.bringUp(1)
+	waitForHealthy(t, c.dataDirs[0], 60*time.Second)
+	waitForHealthy(t, c.dataDirs[1], 60*time.Second)
 
-	var nodes [3]*multiProtoNode
-	nodeFor := func(i int) *multiProtoNode {
-		return &multiProtoNode{
-			cli:        cli,
-			ca:         ca,
-			dataDir:    dataDirs[i],
-			clientCert: adminCertPath,
-			clientKey:  adminKeyPath,
-			unixSocket: listeners[i].unixSocket,
-			restPort:   listeners[i].restPort,
-			grpcPort:   listeners[i].grpcPort,
-			mcpPort:    listeners[i].mcpPort,
-			quicPort:   listeners[i].quicPort,
-		}
-	}
-	nodes[0], nodes[1] = nodeFor(0), nodeFor(1)
-	waitForCLIProtoReady(t, nodes[0], multiProtocols[0], 60*time.Second)
+	c.nodes[0], c.nodes[1] = c.nodeFor(0), c.nodeFor(1)
+	waitForCLIProtoReady(t, c.nodes[0], multiProtocols[0], 60*time.Second)
+	return c
+}
 
-	// Node 3 joins through the production path, all of it through the CLI:
-	// a join token minted for its Raft address (never a label -- see
-	// TestCluster_JoinThroughSurvivingMemberAfterCAGeneratorRemoved), a
-	// qrdbd started with --join that fetches the anchor and enrolls over the
-	// founder's SPKI-pinned admin URL, then `admin member add`.
-	joiner := 2
-	joinerAddr := listeners[joiner].raftAddr()
-	out, err := runCLIProto(t, nodes[0], multiProtocols[0], "--output", "json",
+// startJoiner starts node 3 through the production path, all of it through
+// the CLI: a join token minted for its Raft address (never a label -- see
+// TestCluster_JoinThroughSurvivingMemberAfterCAGeneratorRemoved), then a
+// qrdbd started with --join that fetches the anchor and enrolls over the
+// founder's SPKI-pinned admin URL. Its output also goes to tee.
+func (c *sicacCluster) startJoiner(tee ...io.Writer) {
+	t := c.t
+	t.Helper()
+	const joiner = 2
+	joinerAddr := c.listeners[joiner].raftAddr()
+	out, err := runCLIProto(t, c.nodes[0], multiProtocols[0], "--output", "json",
 		"admin", "join-token", "mint", joinerAddr, "--ttl", "1h")
 	if err != nil {
-		t.Fatalf("startSelfIssuedCAMultiProtocolCluster: admin join-token mint %s: %v\noutput: %s", joinerAddr, err, out)
+		t.Fatalf("startJoiner: admin join-token mint %s: %v\noutput: %s", joinerAddr, err, out)
 	}
 	var minted mintJoinTokenCLIResponse
 	decodeJSON(t, out, &minted)
 
-	peers += fmt.Sprintf(",3=%s", joinerAddr)
-	startNode(t, bin, append(append(baseArgs(joiner, peers), joinArgs(joiner)...),
+	peers := c.peers + fmt.Sprintf(",3=%s", joinerAddr)
+	startNode(t, c.bins[joiner], append(append(c.baseArgs(joiner, peers), c.joinArgs(joiner)...),
 		"--join",
-		"--member-identities", fmt.Sprintf("1=%s,2=%s", founderIdentity, node2Identity),
+		"--member-identities", fmt.Sprintf("1=%s,2=%s", c.founderIdentity, c.node2Identity),
 		"--bootstrap-join-token-file", writeTokenFile(t, minted.Token),
-		"--bootstrap-spki-pin", founderPin,
-		"--bootstrap-addr", fmt.Sprintf("127.0.0.1:%d", listeners[0].restPort),
-		"--bootstrap-join-url", listeners[0].adminURL(),
-	), "[sicac-node3] ")
-	joinerLeaf := filepath.Join(dataDirs[joiner], "node-cert.pem")
+		"--bootstrap-spki-pin", c.founderPin,
+		"--bootstrap-addr", fmt.Sprintf("127.0.0.1:%d", c.listeners[0].restPort),
+		"--bootstrap-join-url", c.listeners[0].adminURL(),
+	), "[sicac-node3] ", tee...)
+}
+
+// admitJoiner waits for node 3's enrolled leaf, admits it with `admin member
+// add` and brings its barrier up.
+func (c *sicacCluster) admitJoiner() {
+	t := c.t
+	t.Helper()
+	const joiner = 2
+	joinerAddr := c.listeners[joiner].raftAddr()
+	joinerLeaf := filepath.Join(c.dataDirs[joiner], "node-cert.pem")
 	waitForFile(t, joinerLeaf, 30*time.Second)
-	waitForFile(t, filepath.Join(dataDirs[joiner], "ca.pem"), 30*time.Second)
+	waitForFile(t, filepath.Join(c.dataDirs[joiner], "ca.pem"), 30*time.Second)
 	joinerIdentity, _ := nodeIdentityAndPin(t, joinerLeaf)
 
 	// Admission comes first: the joiner exits if it sees no leader within
 	// its fixed internal budget -- see startJoiningSelfIssuedCANode.
-	out, err = runMemberAddWhenAdvertised(t, nodes[0], multiProtocols[0], joinerAddr,
+	out, err := runMemberAddWhenAdvertised(t, c.nodes[0], multiProtocols[0], joinerAddr,
 		"--shard-id", "1", "--replica-id", "3", "--identity", joinerIdentity)
 	if err != nil {
-		t.Fatalf("startSelfIssuedCAMultiProtocolCluster: admin member add %s: %v\noutput: %s", joinerAddr, err, out)
+		t.Fatalf("admitJoiner: admin member add %s: %v\noutput: %s", joinerAddr, err, out)
 	}
-	bringUp(joiner)
-	waitForHealthy(t, dataDirs[joiner], 60*time.Second)
-	nodes[joiner] = nodeFor(joiner)
-
-	for _, n := range nodes {
-		for _, proto := range multiProtocols {
-			waitForCLIProtoReady(t, n, proto, 60*time.Second)
-		}
-	}
-
-	// See startTenantEntitlementSelfManagedCANode: a tenant is placed through
-	// the pooled registration path, so the pool must exist and be ready on
-	// every node the tenant's groups may land on.
-	createVolumePoolCLI(t, cli, nodes[0].cliArgsFor(multiProtocols[0]), "default")
-	adminClient := mtlsHTTPClientFromFiles(t, ca, adminCertPath, adminKeyPath, 15*time.Second)
-	waitForVolumePoolReady(t, adminClient, listeners[0].restPort, "default", len(nodes), 60*time.Second)
-
-	return nodes
+	c.bringUp(joiner)
+	waitForHealthy(t, c.dataDirs[joiner], 60*time.Second)
+	c.nodes[joiner] = c.nodeFor(joiner)
 }
 
 // memberAddUnadvertisedRefusal is the text of featuregate's
@@ -844,10 +890,16 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 // whose feature advertisement is not yet live.
 const memberAddUnadvertisedRefusal = "no live feature advertisement from that node"
 
+// memberAddUnknownReleaseRefusal is the featuregate refusal while a
+// committed member (a founder still starting) has neither advertised nor
+// recorded its release; it clears once that member's gate starts.
+const memberAddUnknownReleaseRefusal = "cannot be established"
+
 // runMemberAddWhenAdvertised runs `admin member add` with args through node
-// over proto, acting as the operator who retries the featuregate refusal
-// once the joiner advertises. Advertisements refresh every
-// featuregate.DefaultRefreshInterval, so it retries that refusal alone for
+// over proto, acting as the operator who retries the featuregate refusals
+// until the joiner advertises and every member's release is established.
+// Advertisements refresh every featuregate.DefaultRefreshInterval, so it
+// retries those refusals alone for
 // twelve intervals, polling five times per interval, and returns any other
 // outcome at once.
 func runMemberAddWhenAdvertised(t *testing.T, node *multiProtoNode, proto multiProtocol, args ...string) (string, error) {
@@ -857,10 +909,10 @@ func runMemberAddWhenAdvertised(t *testing.T, node *multiProtoNode, proto multiP
 	var err error
 	pollUntil(12*featuregate.DefaultRefreshInterval, featuregate.DefaultRefreshInterval/5, func() bool {
 		out, err = runCLIProto(t, node, proto, cmd...)
-		if err == nil || !strings.Contains(out, memberAddUnadvertisedRefusal) {
+		if err == nil || (!strings.Contains(out, memberAddUnadvertisedRefusal) && !strings.Contains(out, memberAddUnknownReleaseRefusal)) {
 			return true
 		}
-		t.Logf("[%s] %s refused until the joiner advertises, retrying: %s", proto.name, strings.Join(cmd, " "), strings.TrimSpace(out))
+		t.Logf("[%s] %s refused until the joiner and every member advertise, retrying: %s", proto.name, strings.Join(cmd, " "), strings.TrimSpace(out))
 		return false
 	})
 	return out, err

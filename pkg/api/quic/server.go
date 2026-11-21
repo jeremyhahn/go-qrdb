@@ -25,6 +25,7 @@ import (
 	"log/slog"
 	"net"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -745,9 +746,34 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 // and fail the handshake with "tls: server did not select an ALPN protocol"
 // (go-qrdb#560 review, B2-3).
 func quicOnlyTLSConfig(base *tls.Config) *tls.Config {
-	return clienttrust.ReassertListenerTLS(base, func(c *tls.Config) {
-		c.NextProtos = []string{wire.ProtocolV3}
+	cfg := clienttrust.ReassertListenerTLS(base, func(c *tls.Config) {
+		c.NextProtos = slices.Clone(wire.Protocols)
 	})
+	// Observe every ClientHello so a peer refused for offering no
+	// protocol this release speaks (crypto/tls then ends the handshake
+	// with no_application_protocol, alert 120) is logged with both lists.
+	next := cfg.GetConfigForClient
+	cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		if !slices.ContainsFunc(hello.SupportedProtos, func(p string) bool { return slices.Contains(wire.Protocols, p) }) {
+			slog.Warn("quic: refusing a peer that offers no supported ALPN protocol",
+				slog.Any("offered", hello.SupportedProtos),
+				slog.Any("supported", wire.Protocols),
+				slog.String("remote", remoteAddrString(hello)))
+		}
+		if next == nil {
+			return nil, nil
+		}
+		return next(hello)
+	}
+	return cfg
+}
+
+// remoteAddrString names the ClientHello's peer for a log line.
+func remoteAddrString(hello *tls.ClientHelloInfo) string {
+	if hello.Conn == nil || hello.Conn.RemoteAddr() == nil {
+		return ""
+	}
+	return hello.Conn.RemoteAddr().String()
 }
 
 // Start begins listening for QUIC connections and serving requests.

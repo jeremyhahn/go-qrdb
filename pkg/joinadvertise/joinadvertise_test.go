@@ -74,7 +74,7 @@ func TestAdvertiseJoiner_WritesALeaseBackedRecordSupportsReads(t *testing.T) {
 	a := joinadvertise.New(leaseSvc, mvccSvc)
 
 	ctx := context.Background()
-	err := a.AdvertiseJoiner(ctx, 4, "10.0.0.4:63001", featuregate.SupportedNames())
+	err := a.AdvertiseJoiner(ctx, 4, "10.0.0.4:63001", featuregate.SupportedNames(), "0.59.0-alpha")
 	if err != nil {
 		t.Fatalf("AdvertiseJoiner: %v", err)
 	}
@@ -92,6 +92,9 @@ func TestAdvertiseJoiner_WritesALeaseBackedRecordSupportsReads(t *testing.T) {
 	}
 	if member.Address != "10.0.0.4:63001" {
 		t.Errorf("Address = %q, want %q", member.Address, "10.0.0.4:63001")
+	}
+	if member.ReleaseVersion != "0.59.0-alpha" {
+		t.Errorf("ReleaseVersion = %q, want the joiner's release %q", member.ReleaseVersion, "0.59.0-alpha")
 	}
 	for _, f := range featuregate.SupportedNames() {
 		found := false
@@ -113,7 +116,7 @@ func TestAdvertiseJoiner_DropsUnknownFeatureNames(t *testing.T) {
 
 	ctx := context.Background()
 	claimed := append([]string{"a-feature-this-binary-has-never-heard-of"}, featuregate.SupportedNames()...)
-	if err := a.AdvertiseJoiner(ctx, 7, "10.0.0.7:63001", claimed); err != nil {
+	if err := a.AdvertiseJoiner(ctx, 7, "10.0.0.7:63001", claimed, ""); err != nil {
 		t.Fatalf("AdvertiseJoiner: %v", err)
 	}
 
@@ -137,7 +140,7 @@ func TestAdvertiseJoiner_ZeroFeaturesWritesAnEmptyAdvertisement(t *testing.T) {
 	a := joinadvertise.New(leaseSvc, mvccSvc)
 
 	ctx := context.Background()
-	if err := a.AdvertiseJoiner(ctx, 9, "10.0.0.9:63001", nil); err != nil {
+	if err := a.AdvertiseJoiner(ctx, 9, "10.0.0.9:63001", nil, ""); err != nil {
 		t.Fatalf("AdvertiseJoiner: %v", err)
 	}
 
@@ -169,7 +172,7 @@ func TestAdvertiseJoiner_LeaseGrantFailure(t *testing.T) {
 	_, mvccSvc := newTestServices(t)
 	a := joinadvertise.New(&fakeLeaseServicer{}, mvccSvc)
 
-	err := a.AdvertiseJoiner(context.Background(), 4, "10.0.0.4:63001", nil)
+	err := a.AdvertiseJoiner(context.Background(), 4, "10.0.0.4:63001", nil, "")
 	var leaseErr *joinadvertise.LeaseError
 	if !errors.As(err, &leaseErr) {
 		t.Fatalf("error = %T (%v), want *joinadvertise.LeaseError", err, err)
@@ -191,7 +194,7 @@ func TestAdvertiseJoiner_WriteFailureRevokesTheLease(t *testing.T) {
 	leaseSvc, mvccSvc := newTestServices(t)
 	a := joinadvertise.New(leaseSvc, &fakeMVCCServicer{MVCCKVServicer: mvccSvc})
 
-	err := a.AdvertiseJoiner(context.Background(), 4, "10.0.0.4:63001", nil)
+	err := a.AdvertiseJoiner(context.Background(), 4, "10.0.0.4:63001", nil, "")
 	var writeErr *joinadvertise.WriteError
 	if !errors.As(err, &writeErr) {
 		t.Fatalf("error = %T (%v), want *joinadvertise.WriteError", err, err)

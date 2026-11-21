@@ -18,8 +18,10 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,7 +29,9 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // groups is a MembershipSource over fixed groups.
@@ -60,6 +64,8 @@ func (guardedWritesActivatedKV) ListAll(context.Context, string) ([]string, erro
 func (k guardedWritesActivatedKV) ListStale(ctx context.Context, prefix string) ([]string, error) {
 	return k.ListAll(ctx, prefix)
 }
+
+func (guardedWritesActivatedKV) Delete(context.Context, string) error { return nil }
 
 var _ featuregate.ActivationKV = guardedWritesActivatedKV{}
 
@@ -127,6 +133,8 @@ func (k activatedKV) ListStale(ctx context.Context, prefix string) ([]string, er
 	return k.ListAll(ctx, prefix)
 }
 
+func (activatedKV) Delete(context.Context, string) error { return nil }
+
 var _ featuregate.ActivationKV = activatedKV{}
 
 // A node whose binary lacks a feature the cluster activated reports itself
@@ -160,6 +168,48 @@ func TestHostAdapter_HealthIsDegradedUnderARefusal(t *testing.T) {
 	assert.Same(t, ok, New(host).withGateVerdict(ok), "an ungated adapter is unaffected")
 }
 
+// lastRanKV holds only the release member 1 last recorded.
+type lastRanKV struct{ rel string }
+
+func (lastRanKV) PutIfAbsent(context.Context, string, []byte) (bool, error) { return false, nil }
+
+func (k lastRanKV) ListAll(_ context.Context, prefix string) ([]string, error) {
+	if prefix != featuregate.ReleasePrefix {
+		return nil, nil
+	}
+	return []string{featuregate.ReleasePrefix + "1/" + k.rel}, nil
+}
+
+func (k lastRanKV) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return k.ListAll(ctx, prefix)
+}
+
+func (lastRanKV) Delete(context.Context, string) error { return nil }
+
+// noAdverts is a membership store no member advertises in.
+type noAdverts struct{}
+
+func (noAdverts) PutMember(context.Context, uint64, []byte, time.Duration) error { return nil }
+func (noAdverts) DeleteMember(context.Context, uint64) error                     { return nil }
+func (noAdverts) WatchMembers(context.Context) (<-chan cluster.MemberEvent, error) {
+	return nil, errors.New("watch unavailable")
+}
+func (noAdverts) ListMembers(context.Context) ([]cluster.Member, error) { return nil, nil }
+
+// TestHostAdapter_HealthIsDegradedAfterARestartReleaseGap: a member that
+// last ran 0.58 restarted on 0.60 is refused by the gate's start, and the
+// adapter's health reports the refusal rather than an ok node.
+func TestHostAdapter_HealthIsDegradedAfterARestartReleaseGap(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	gate := gateOver(t, groups{1: {ConfigChangeID: 1, Replicas: map[uint64]string{1: "n1"}}})
+	var gap *release.GapError
+	require.ErrorAs(t, gate.Start(context.Background(), lastRanKV{rel: "0.58.0-alpha"}, noAdverts{}), &gap)
+
+	a := New(nil, WithFeatureGate(gate))
+	got := a.withGateVerdict(&quicraft.HealthStatus{Status: "ok", DiskOK: true})
+	assert.Equal(t, "degraded", got.Status)
+}
+
 // The adapter admits a replica only where its gate does; without a gate no
 // feature is ever enabled, so every node is admitted.
 func TestHostAdapter_AdmitReplica(t *testing.T) {
@@ -176,4 +226,40 @@ func TestHostAdapter_AdmitReplica(t *testing.T) {
 	require.ErrorAs(t, a.AdmitReplica(7, "old:1"), &refused)
 	assert.Equal(t, "old:1", refused.Address)
 	assert.NoError(t, a.AdmitReplica(7, "n1"))
+}
+
+func TestHostAdapter_AdmitReplicaAt(t *testing.T) {
+	ungated := NewWithInner(nil, &mockQuicraftHost{})
+	id, err := ungated.AdmitReplicaAt(7, "old:1")
+	require.NoError(t, err)
+	assert.Zero(t, id)
+
+	gate := gateOver(t, groups{
+		1: {ConfigChangeID: 1, Replicas: map[uint64]string{1: "n1"}},
+		7: {ConfigChangeID: 1, Replicas: map[uint64]string{9: "n1"}},
+	})
+	a := NewWithInner(nil, &mockQuicraftHost{})
+	WithFeatureGate(gate)(a)
+
+	for _, shard := range []uint64{1, 7} {
+		wantID, wantErr := gate.AdmitReplicaAt(shard, "n1")
+		require.NoError(t, wantErr)
+		id, err = a.AdmitReplicaAt(shard, "n1")
+		require.NoError(t, err)
+		assert.Equal(t, wantID, id, "shard %d", shard)
+	}
+
+	var refused *featuregate.UnsupportedReplicaError
+	id, err = a.AdmitReplicaAt(7, "old:1")
+	require.ErrorAs(t, err, &refused)
+	assert.Equal(t, "old:1", refused.Address)
+	assert.Zero(t, id)
+
+	// CheckConfigBinding delegates to the gate; an ungated adapter binds
+	// nothing.
+	stale := featuregate.ConfigBinding{ConfigChangeID: 0, Required: true}
+	require.NoError(t, ungated.CheckConfigBinding(1, stale))
+	var staleErr *featuregate.StaleConfigurationError
+	require.ErrorAs(t, a.CheckConfigBinding(1, stale), &staleErr)
+	require.NoError(t, a.CheckConfigBinding(1, featuregate.ConfigBinding{ConfigChangeID: 1, Required: true}))
 }
