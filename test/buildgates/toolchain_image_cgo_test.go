@@ -84,13 +84,11 @@ func dockerInstructions(src string) []string {
 
 // apkAddPackages returns the packages every `apk add` in one RUN installs:
 // the arguments after `add` up to the next shell separator, flags excluded.
-// `apk-mirror add` (scripts/apk-mirror.sh, ruling 886) is the same install
-// through the pool's LAN apk cache.
 func apkAddPackages(run string) []string {
 	var pkgs []string
 	fields := strings.Fields(strings.NewReplacer(";", " ; ", "&&", " && ", "||", " || ", "|", " | ").Replace(run))
 	for i := 0; i+1 < len(fields); i++ {
-		if (fields[i] != "apk" && fields[i] != "apk-mirror") || fields[i+1] != "add" {
+		if fields[i] != "apk" || fields[i+1] != "add" {
 			continue
 		}
 		for _, f := range fields[i+2:] {
@@ -259,14 +257,5 @@ func TestApkAddPackages(t *testing.T) {
 		if got := apkAddPackages(tc.run); !slices.Equal(got, tc.want) {
 			t.Errorf("apkAddPackages(%q) = %q, want %q", tc.run, got, tc.want)
 		}
-	}
-}
-
-// TestApkAddPackages_TheMirrorForm: an install through scripts/apk-mirror.sh
-// counts as the install it is.
-func TestApkAddPackages_TheMirrorForm(t *testing.T) {
-	got := apkAddPackages("apk-mirror upgrade --no-cache; apk-mirror add --no-cache gcc icu-dev; echo done")
-	if strings.Join(got, " ") != "gcc icu-dev" {
-		t.Fatalf("apkAddPackages = %v; want [gcc icu-dev]", got)
 	}
 }
