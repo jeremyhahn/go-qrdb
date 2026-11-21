@@ -43,6 +43,71 @@ async function navigateToKV(page: Page): Promise<void> {
   });
 }
 
+test.describe("KV Explorer revision probe across databases", () => {
+  test.use({
+    mockState: {
+      ...secondLaunchEmbeddedState,
+      databases: [
+        { name: "kv-mvcc", backend: "pebble", status: "open" },
+        { name: "kv-other", backend: "pebble", status: "open" },
+      ],
+    },
+  });
+
+  test("a late 501 for the database left behind does not mark the next one unsupported", async ({ page }) => {
+    await page.goto("/");
+    const aside = page.locator("aside");
+    await expect(aside.getByText("kv-mvcc", { exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    // Hold the next CurrentRevision call (kv-mvcc's probe) until the test
+    // releases it as a "not implemented" refusal; later calls answer as usual.
+    await page.evaluate(() => {
+      type Hold = { held: number; release?: () => void; armed: boolean };
+      const w = window as unknown as {
+        go: { main: { MVCCBinding: { CurrentRevision: () => Promise<number> } } };
+        __revisionHold: Hold;
+      };
+      const binding = w.go.main.MVCCBinding;
+      const original = binding.CurrentRevision.bind(binding);
+      const hold: Hold = { held: 0, armed: true };
+      w.__revisionHold = hold;
+      binding.CurrentRevision = () => {
+        if (!hold.armed) return original();
+        hold.armed = false;
+        hold.held++;
+        return new Promise<number>((_resolve, reject) => {
+          hold.release = () => reject("not implemented");
+        });
+      };
+    });
+
+    await aside.getByText("kv-mvcc", { exact: true }).click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-mvcc", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as { __revisionHold: { held: number } }).__revisionHold.held))
+      .toBe(1);
+
+    await aside.getByText("kv-other", { exact: true }).click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-other", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    const line = page.getByTestId("kv-current-revision");
+    await expect(line).toHaveText(/Current revision:\s*0/);
+
+    await page.evaluate(() => {
+      (window as unknown as { __revisionHold: { release?: () => void } }).__revisionHold.release?.();
+    });
+
+    // kv-other keeps its own revision and its revision controls stay on offer.
+    // A write advances the revision only if the display still follows kv-other.
+    await createEntry(page, "rev/other", "one");
+    await expect(line).toHaveText(/Current revision:\s*1/);
+    await expect(page.getByTestId("kv-revisions-unavailable")).toHaveCount(0);
+  });
+});
+
 /** Creates an entry through the Create form; a lease id saves through putWithLease. */
 async function createEntry(page: Page, key: string, value: string, leaseId?: string): Promise<void> {
   await page.getByRole("button", { name: "Create", exact: true }).first().click();

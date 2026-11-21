@@ -259,25 +259,56 @@
       currentRevision = null;
       return;
     }
-    // Loads that overlap share one request instead of each asking.
-    revisionProbe ??= probeCurrentRevision().finally(() => {
-      revisionProbe = null;
-    });
-    await revisionProbe;
+    // The probe is bound to the connection and database that started it:
+    // a switch to another database during the await must not let this
+    // answer land on the new one.
+    const probeClient = client;
+    const scope = revisionScope;
+    const fingerprint = revisionFingerprint;
+    const key = revisionProbeKey(scope, fingerprint);
+    // Loads of the same database that overlap share one request instead of
+    // each asking; another database never waits on this one's.
+    let probe = revisionProbes.get(key);
+    if (!probe) {
+      probe = probeCurrentRevision(probeClient, scope, fingerprint).finally(() => {
+        revisionProbes.delete(key);
+      });
+      revisionProbes.set(key, probe);
+    }
+    await probe;
   }
 
-  let revisionProbe: Promise<void> | null = null;
+  const revisionProbes = new Map<string, Promise<void>>();
 
-  async function probeCurrentRevision(): Promise<void> {
+  /** The identity a revision probe answers for: connection, tenant, database and its configuration. */
+  function revisionProbeKey(scope: RevisionSupportScope, fingerprint: string): string {
+    return `${scope.profileId}\u0000${scope.tenant}\u0000${scope.database}\u0000${fingerprint}`;
+  }
+
+  async function probeCurrentRevision(
+    probeClient: Client,
+    scope: RevisionSupportScope,
+    fingerprint: string,
+  ): Promise<void> {
+    const key = revisionProbeKey(scope, fingerprint);
+    // Whether the view still shows the database the probe was started for.
+    // The client alone is not enough: a desktop client serves every
+    // database through one instance.
+    const current = (): boolean =>
+      client === probeClient && revisionProbeKey(revisionScope, revisionFingerprint) === key;
+    let revision: number | null = null;
     try {
-      currentRevision = await client.mvcc.currentRevision();
+      revision = await probeClient.mvcc.currentRevision();
     } catch (err: unknown) {
-      currentRevision = null;
       if (isNotImplemented(err)) {
-        revisionSupportCache.rememberUnsupported(revisionScope, revisionFingerprint);
-        revisionSupportVersion++;
+        // The cache records the database that answered, whichever is shown now.
+        revisionSupportCache.rememberUnsupported(scope, fingerprint);
+        if (current()) revisionSupportVersion++;
       }
     }
+    // A stale probe (the view has moved to another database) leaves the
+    // display alone.
+    if (current()) currentRevision = revision;
   }
 
   /** Asks for confirmation before compacting history up to the entered revision. */
