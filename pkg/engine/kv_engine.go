@@ -448,6 +448,18 @@ func kvHandlePut(e *KVEngine, cmd kv.Command) (sm.Result, error) {
 		}
 	}
 
+	// Read-only pre-check before anything is queued: a unique conflict or an
+	// undecodable collection document is a non-fatal declined write.
+	if len(e.indexes) > 0 {
+		if verr := CheckUniqueViolation(batch, e.indexes, e.indexFields, e.indexScopes, cmd.Key, cmd.Value); verr != nil {
+			res, handled, herr := asAppErrResult(verr)
+			if handled {
+				return res, nil
+			}
+			return sm.Result{Value: 1}, herr
+		}
+	}
+
 	// Queue data write.
 	if err := batch.Set(cmd.Key, cmd.Value); err != nil {
 		return sm.Result{Value: 1}, err

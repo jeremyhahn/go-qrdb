@@ -2571,6 +2571,10 @@ func (s *PebbleStateMachine) precheckAndUpdateIndexes(key, oldValue, newValue []
 		if errors.As(verr, &uce) {
 			return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorConflict, uce.Error())}, true, nil
 		}
+		var ide *engine.IndexValueDecodeError
+		if errors.As(verr, &ide) {
+			return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorInvalid, ide.Error())}, true, nil
+		}
 		return sm.Result{}, true, verr
 	}
 	// Uniqueness was pre-validated above, so any error here is a genuine

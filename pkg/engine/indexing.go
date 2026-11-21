@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	qkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
@@ -68,6 +69,44 @@ type uniqueIndexChecker interface {
 	IsUnique() bool
 }
 
+// documentIndexPrefix is the declared key prefix every collection index
+// carries ("__col:{db}:{collection}/"). It must equal pkg/service
+// collectionDataPrefix.
+const documentIndexPrefix = "__col:"
+
+// IndexValueDecodeError is returned by the unique-index pre-checks when a
+// collection document written under a document-scoped index is not a JSON
+// object, so its indexed fields cannot be read. The write is refused rather
+// than letting a unique check pass on bytes it cannot decode.
+type IndexValueDecodeError struct {
+	Index string
+	Key   []byte
+}
+
+// Error implements error.
+func (e *IndexValueDecodeError) Error() string {
+	return "index " + e.Index + ": value of collection document " + strconv.Quote(string(e.Key)) + " is not a JSON object"
+}
+
+// documentScoped reports whether scope (as composed by ComposeIndexScope for
+// the index name) declares a collection-document key prefix.
+func documentScoped(name string, scope []byte) bool {
+	declared := bytes.TrimPrefix(scope, []byte(IndexNamespace(name)))
+	return bytes.HasPrefix(declared, []byte(documentIndexPrefix))
+}
+
+// documentDecodeRefusal returns an *IndexValueDecodeError for the first index
+// (unique or not) whose scope covers key and is document-scoped, else nil.
+func documentDecodeRefusal(indexes map[string]index.Index, indexScopes map[string][]byte, key []byte) error {
+	for idxName := range indexes {
+		scope := indexScopes[idxName]
+		if KeyInScope(scope, key) && documentScoped(idxName, scope) {
+			return &IndexValueDecodeError{Index: idxName, Key: append([]byte(nil), key...)}
+		}
+	}
+	return nil
+}
+
 // CheckUniqueViolation reports the unique-constraint conflict that writing
 // value under key would cause, WITHOUT modifying any index. Only indexes whose
 // key scope covers key are consulted: a unique index outside the key's scope
@@ -80,14 +119,19 @@ type uniqueIndexChecker interface {
 // letting idx.Put return a fatal error from the Raft apply path (which would
 // stall consensus). It returns a *UniqueConstraintError on conflict, a
 // non-typed error if an index read fails (a genuine IO fault the caller may
-// treat as fatal), or nil when the write is admissible.
+// treat as fatal), an *IndexValueDecodeError when a collection document
+// under a document-scoped index is not a JSON object, or nil when the write
+// is admissible.
 func CheckUniqueViolation(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, key, value []byte) error {
 	if len(indexes) == 0 || !anyIndexInScope(indexes, indexScopes, key) {
 		return nil
 	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(value, &fields) != nil {
-		return nil // not JSON; nothing to index, nothing to violate
+		// Not JSON. A collection document under a document-scoped index
+		// is refused: a unique check must never pass on bytes it cannot
+		// read. Any other key has nothing to index, nothing to violate.
+		return documentDecodeRefusal(indexes, indexScopes, key)
 	}
 	for idxName, idx := range indexes {
 		if !KeyInScope(indexScopes[idxName], key) {
@@ -163,7 +207,10 @@ func CheckUniqueViolationsBatch(batch storage.Batch, indexes map[string]index.In
 	for _, p := range puts {
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(p.Value, &fields) != nil {
-			continue // not JSON; nothing to index
+			if err := documentDecodeRefusal(indexes, indexScopes, p.Key); err != nil {
+				return err
+			}
+			continue // not JSON and not a collection document; nothing to index
 		}
 		for idxName, idx := range indexes {
 			if !KeyInScope(indexScopes[idxName], p.Key) {
