@@ -777,15 +777,64 @@ webTest.describe("Web mode - cluster-held node at startup", () => {
       await expect(page.getByTestId("app-cluster-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
       await expect(page.getByTestId("cluster-seal-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
       await expect(page.getByTestId("cluster-unseal-btn")).toBeVisible();
+      // A held node admits only the cluster unseal: no node seal is offered.
+      await expect(page.getByRole("button", { name: "Seal", exact: true })).toHaveCount(0);
       await expect(page.getByText("Connection Error")).toHaveCount(0);
 
       // A reload lands in the same place.
       await page.reload();
       await expect(page.getByTestId("cluster-seal-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("cluster-unseal-btn")).toBeVisible();
+      await expect(page.getByRole("button", { name: "Seal", exact: true })).toHaveCount(0);
       await expect(page.getByText("Connection Error")).toHaveCount(0);
 
       // Clearing the cluster seal lets the node serve: the app shell loads.
       await page.getByTestId("cluster-unseal-btn").click();
+      await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+      await expect(page.getByTestId("app-cluster-held")).toHaveCount(0);
+    });
+
+    webTest("external release loads the app shell", async ({ page }) => {
+      await page.clock.install();
+      await page.goto("/");
+
+      await expect(page.getByTestId("app-cluster-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("cluster-seal-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+      // Another node or the CLI clears the record; this page clicks nothing.
+      await page.evaluate(async () => {
+        await fetch("/__mock/cluster-release", { method: "POST" });
+      });
+      // The next status poll observes the release.
+      await page.clock.runFor(5000);
+
+      await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+      await expect(page.getByTestId("app-cluster-held")).toHaveCount(0);
+    });
+  });
+
+  webTest.describe("released a status read after the clear", () => {
+    webTest.use({
+      webMockState: { ...defaultWebMockState, clusterHeld: "always", clusterHeldReadsAfterClear: 1 },
+    });
+
+    webTest("delayed release after clear", async ({ page }) => {
+      await page.clock.install();
+      await page.goto("/");
+
+      await expect(page.getByTestId("app-cluster-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await page.getByTestId("cluster-unseal-btn").click();
+
+      // The read right after the clear still answers 503 SEALED.
+      await expect(page.getByText("Cluster seal cleared")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("app-cluster-held")).toBeVisible();
+
+      // A later poll sees the release and the app shell loads.
+      await page.clock.runFor(5000);
       await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({
         timeout: LOAD_TIMEOUT,
       });

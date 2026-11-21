@@ -226,15 +226,26 @@
    * the authenticated cluster unseal. Offer that, with no record: only a
    * serving node reports one. Reached from a REST 503 SEALED refusal and from
    * the desktop binding's clusterHeld flag alike.
+   *
+   * A cluster seal can only hold a node with a keyed, initialized barrier, so
+   * the store is marked initialized too: App mounts this view alone for a node
+   * held at startup, where no status read ever filled the store, and the
+   * cluster unseal sits in the Seal card that needs an initialized barrier.
    */
   function enterClusterHeld(): void {
     sealStore.sealed = false;
+    sealStore.initialized = true;
     clusterHeld = true;
     clusterSeal = { active: true, sealed: true, epoch: 0 };
     clusterMigration = null;
   }
 
-  /** Fetches the current seal status from the server. */
+  /**
+   * Fetches the current seal status from the server. A read that is no longer
+   * held after a held one means the cluster seal released this node, whoever
+   * cleared it (this page, another node or the CLI): onClusterReleased fires
+   * once on that transition, never on ordinary polls of a node never held.
+   */
   async function fetchSealStatus(): Promise<void> {
     try {
       const status = await client.seal.status();
@@ -243,10 +254,12 @@
         enterClusterHeld();
         return;
       }
+      const released = clusterHeld;
       updateSealStatus(status);
       clusterSeal = status.clusterSeal ?? null;
       clusterMigration = status.clusterMigration ?? null;
       clusterHeld = false;
+      if (released) onClusterReleased?.();
     } catch (err: unknown) {
       if (isClusterHeldError(err)) {
         enterClusterHeld();
@@ -328,8 +341,8 @@
       clusterUnsealLoading = true;
       clusterSeal = await client.seal.clusterUnseal();
       showToast("success", "Cluster seal cleared");
+      // A read that observes the release hands off to onClusterReleased.
       await fetchSealStatus();
-      if (!clusterHeld) onClusterReleased?.();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to clear the cluster seal";
       showToast("error", msg);
@@ -820,7 +833,10 @@
     <div class="card bg-base-200 shadow">
       <div class="card-body">
         <h2 class="card-title text-lg">Seal</h2>
-        {#if isShamir}
+        <!-- A cluster-held node admits only the cluster unseal: no node seal. -->
+        {#if clusterHeld}
+          <!-- The cluster seal status below offers the clear. -->
+        {:else if isShamir}
           <!-- A single admin cannot seal a Shamir barrier: the server refuses
                it. A quorum of holders seals it from the CLI or the desktop app. -->
           <p class="text-base-content/70 text-sm" data-testid="seal-quorum-note">
