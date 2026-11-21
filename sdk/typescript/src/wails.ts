@@ -471,12 +471,13 @@ export class WailsClient implements Client {
 
     /**
      * The database this client targets; empty for the unscoped client
-     * (the connection's default, the `system` database).
+     * (the connection's default, the `system` database). Named apart from
+     * the `database` getter, which returns the DatabaseClient.
      */
-    private readonly database: string;
+    private readonly scopeDatabase: string;
 
     constructor(database = '', embedded?: { running: boolean }) {
-        this.database = database;
+        this.scopeDatabase = database;
         this.embedded = embedded ?? { running: false };
     }
 
@@ -489,7 +490,7 @@ export class WailsClient implements Client {
      */
     databaseScoped(name: string): Client {
         const target = name === 'system' ? '' : name;
-        if (target === this.database) return this;
+        if (target === this.scopeDatabase) return this;
         return new WailsClient(target, this.embedded);
     }
 
@@ -954,7 +955,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get vector(): VectorClient | null {
-        const b = withDatabaseArg(wrapBindings(getBindings().main.VectorBinding), this.database);
+        const b = withDatabaseArg(wrapBindings(getBindings().main.VectorBinding), this.scopeDatabase);
         return {
             createNamespace: async (
                 req: CreateNamespaceRequest,

@@ -22,6 +22,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WailsClient } from '../src/wails.js';
+import type { Client } from '../src/interfaces.js';
 
 type BindingFn = (...args: unknown[]) => Promise<unknown>;
 
@@ -162,5 +163,17 @@ describe('WailsClient vector wire shapes', () => {
         await new WailsClient('x').databaseScoped('system').vector!.getVector({ namespace: 'ns', id: '1' });
 
         expect(spy.mock.calls[0]![0]).toBe('');
+    });
+
+    it('a scoped client still exposes database as the DatabaseClient', () => {
+        // The scope name lives in a private field; it must not shadow the
+        // `database` getter that implements Client.database.
+        const scoped: Client = new WailsClient('x');
+        const rescoped: Client = new WailsClient().databaseScoped('x');
+        for (const c of [scoped, rescoped]) {
+            expect(typeof c.database).toBe('object');
+            expect(c.database).not.toBe('x');
+            expect(typeof c.database.list).toBe('function');
+        }
     });
 });
