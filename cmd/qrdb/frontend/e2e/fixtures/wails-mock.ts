@@ -557,6 +557,18 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     (window as unknown as Record<string, unknown>).__volumePoolReleaseTenantPages = () => {
       for (const release of volumePoolTenantHolds.splice(0)) release();
     };
+    // The first page (empty pageToken) has its own hold, so a test can
+    // assert the pool's loading state before any tenant page answers; the
+    // later-page hold above stays off the first page for the pagination tests.
+    const volumePoolFirstTenantPageHolds: Array<() => void> = [];
+    let volumePoolHoldFirstTenantPage = false;
+    (window as unknown as Record<string, unknown>).__volumePoolHoldFirstTenantPage = (on: boolean) => {
+      volumePoolHoldFirstTenantPage = on;
+    };
+    (window as unknown as Record<string, unknown>).__volumePoolReleaseFirstTenantPage = () => {
+      volumePoolHoldFirstTenantPage = false;
+      for (const release of volumePoolFirstTenantPageHolds.splice(0)) release();
+    };
     (window as unknown as Record<string, unknown>).__volumePoolTenantPageStats = () => ({
       requested: volumePoolTenantPageCalls,
       answered: volumePoolTenantPagesAnswered,
@@ -1835,6 +1847,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             volumePoolTenantPageCalls++;
             if (pageToken && volumePoolHoldTenantPages) {
               await new Promise<void>((resolve) => volumePoolTenantHolds.push(resolve));
+            }
+            if (!pageToken && volumePoolHoldFirstTenantPage) {
+              await new Promise<void>((resolve) => volumePoolFirstTenantPageHolds.push(resolve));
             }
             const all = volumePoolAssignments.get(name) ?? [];
             const start = pageToken ? Number(pageToken) : 0;

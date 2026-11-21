@@ -202,7 +202,9 @@ test.describe("Admin - Volume Pools", () => {
     await assignTenant(page, "fast", "acme", 2048);
     await gotoVolumePools(page);
     await page.evaluate(() => {
-      (window as unknown as { __volumePoolHoldTenantPages: (on: boolean) => void }).__volumePoolHoldTenantPages(true);
+      (window as unknown as { __volumePoolHoldFirstTenantPage: (on: boolean) => void }).__volumePoolHoldFirstTenantPage(
+        true,
+      );
     });
     await openPool(page, "fast");
 
@@ -211,7 +213,7 @@ test.describe("Admin - Volume Pools", () => {
     await expect(tenants).not.toContainText("No tenants are assigned to this pool.");
 
     await page.evaluate(() => {
-      (window as unknown as { __volumePoolReleaseTenantPages: () => void }).__volumePoolReleaseTenantPages();
+      (window as unknown as { __volumePoolReleaseFirstTenantPage: () => void }).__volumePoolReleaseFirstTenantPage();
     });
     await expect(tenants.getByRole("cell", { name: "acme", exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
     await expect(tenants.getByTestId("volume-pool-tenants-loading")).toHaveCount(0);
