@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // indexQueryKeys runs an IndexQueryRequest and returns the matching entity
@@ -437,6 +438,99 @@ func TestPebbleStateMachine_Batch_UniqueConflictLeavesIndexUntouched(t *testing.
 	}
 	if _, err := s.Lookup(context.Background(), []byte("user/2")); err == nil {
 		t.Fatal("user/2 was readable after its batch was refused")
+	}
+}
+
+// openDocumentIndexedStore opens a store with a unique email index scoped to
+// the db.users collection documents ("__col:db:users/").
+func openDocumentIndexedStore(t *testing.T) *PebbleStateMachine {
+	t.Helper()
+	s := openExtendedStore(t)
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("db.users.email", "email",
+		protocol.IndexCreateOptions{Unique: true, KeyPrefix: "__col:db:users/"}))
+	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
+	return s
+}
+
+// assertDocumentRefusalStagedNothing checks a refused op set left no key,
+// no index entry, and a shard that still applies the next write.
+func assertDocumentRefusalStagedNothing(t *testing.T, s *PebbleStateMachine, res sm.Result, next uint64) {
+	t.Helper()
+	if _, kind, ok := protocol.DecodeAppErrorKind(res.Data); !ok || kind != protocol.AppErrorInvalid {
+		t.Fatalf("result = %q, want an AppErrorInvalid application error", res.Data)
+	}
+	for _, k := range []string{"__col:db:users/1", "__col:db:users/2"} {
+		if _, err := s.Lookup(context.Background(), []byte(k)); err == nil {
+			t.Fatalf("%s was readable after its op set was refused", k)
+		}
+	}
+	if got := indexQueryKeys(t, s, "db.users.email", "a@example.com"); len(got) != 0 {
+		t.Fatalf("IndexQuery(db.users.email, a@example.com) after the refusal = %v, want none", got)
+	}
+	applyExtEntries(t, s, []sm.Entry{{Index: next, Cmd: mustEncode(kv.EncodePut([]byte("__col:db:users/3"), []byte(`{"email":"c@example.com"}`)))}})
+	if got := indexQueryKeys(t, s, "db.users.email", "c@example.com"); len(got) != 1 || !containsKey(got, "__col:db:users/3") {
+		t.Fatalf("IndexQuery(db.users.email, c@example.com) after the follow-up put = %v, want [__col:db:users/3]", got)
+	}
+}
+
+// TestPebbleStateMachine_Batch_DocumentDecodeRefusal pins that a batch
+// holding a non-JSON collection document under a document-scoped index is
+// refused as an application result, staging nothing, instead of failing
+// Update (which fails the shard).
+func TestPebbleStateMachine_Batch_DocumentDecodeRefusal(t *testing.T) {
+	s := openDocumentIndexedStore(t)
+	batch := mustEncode(protocol.EncodeBatch([][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("__col:db:users/1"), []byte(`{"email":"a@example.com"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("__col:db:users/2"), []byte("not json"), nil, 0)),
+	}))
+	results := make([]sm.Result, 1)
+	if err := s.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: batch}}, results); err != nil {
+		t.Fatalf("Update returned an apply error for an undecodable document: %v", err)
+	}
+	assertDocumentRefusalStagedNothing(t, s, results[0], 3)
+}
+
+// TestPebbleStateMachine_Transaction_DocumentDecodeRefusal pins the same
+// refusal for the op set a transaction selects (here the failure branch).
+func TestPebbleStateMachine_Transaction_DocumentDecodeRefusal(t *testing.T) {
+	s := openDocumentIndexedStore(t)
+	cmp := mustEncode(protocol.EncodeCompare(
+		[]byte("txn-key"),
+		byte(service.CompareValue),
+		byte(service.CompareEqual),
+		[]byte("expected"),
+		0, 0, 0,
+	))
+	successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("__col:db:users/1"), []byte(`{"email":"b@example.com"}`), nil, 0))
+	failureOps := [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("__col:db:users/1"), []byte(`{"email":"a@example.com"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("__col:db:users/2"), []byte("not json"), nil, 0)),
+	}
+	txnCmd := mustEncode(protocol.EncodeTransaction([][]byte{cmp}, [][]byte{successOp}, failureOps))
+	results := make([]sm.Result, 1)
+	if err := s.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: txnCmd}}, results); err != nil {
+		t.Fatalf("Update returned an apply error for an undecodable document: %v", err)
+	}
+	assertDocumentRefusalStagedNothing(t, s, results[0], 3)
+}
+
+// TestPebbleStateMachine_Batch_NonJSONOutsideDocumentScopeApplies pins that
+// the refusal is confined to document-scoped keys: a non-JSON value under a
+// key no "__col:" index covers still applies in a batch.
+func TestPebbleStateMachine_Batch_NonJSONOutsideDocumentScopeApplies(t *testing.T) {
+	s := openDocumentIndexedStore(t)
+	batch := mustEncode(protocol.EncodeBatch([][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("plain/1"), []byte("not json"), nil, 0)),
+	}))
+	results := make([]sm.Result, 1)
+	if err := s.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: batch}}, results); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if _, _, ok := protocol.DecodeAppErrorKind(results[0].Data); ok {
+		t.Fatalf("batch outside any document scope was refused: %q", results[0].Data)
+	}
+	if _, err := s.Lookup(context.Background(), []byte("plain/1")); err != nil {
+		t.Fatalf("plain/1 not readable after its batch applied: %v", err)
 	}
 }
 

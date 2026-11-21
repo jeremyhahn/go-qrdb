@@ -106,6 +106,49 @@ func TestCheckUniqueViolation_DocumentScopeRefusesUndecodable(t *testing.T) {
 	}
 }
 
+// TestDocumentDecodeRefusal pins the read-only decode pre-check the
+// Batch/Transaction paths run over every put before staging anything.
+func TestDocumentDecodeRefusal(t *testing.T) {
+	const doc = "t/db/db.users.email"
+	const plain = "t/db/by_email"
+	docIndexes := map[string]index.Index{doc: nil}
+	docScopes := map[string][]byte{doc: ComposeIndexScope(doc, "__col:db:users/")}
+	plainIndexes := map[string]index.Index{plain: nil}
+	plainScopes := map[string][]byte{plain: ComposeIndexScope(plain, "user/")}
+
+	cases := []struct {
+		name    string
+		indexes map[string]index.Index
+		scopes  map[string][]byte
+		key     string
+		value   []byte
+		refused bool
+	}{
+		{"document scope non-JSON", docIndexes, docScopes, "t/db/__col:db:users/1", []byte("not json"), true},
+		{"document scope CBOR", docIndexes, docScopes, "t/db/__col:db:users/1", []byte(cborDocument(t)), true},
+		{"document scope JSON array", docIndexes, docScopes, "t/db/__col:db:users/1", []byte(`["a"]`), true},
+		{"document scope JSON object", docIndexes, docScopes, "t/db/__col:db:users/1", []byte(`{"email":"a@example.com"}`), false},
+		{"non-document scope non-JSON", plainIndexes, plainScopes, "t/db/user/1", []byte("not json"), false},
+		{"key out of scope", docIndexes, docScopes, "t/db/other/1", []byte("not json"), false},
+		{"no indexes", nil, nil, "t/db/__col:db:users/1", []byte("not json"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := DocumentDecodeRefusal(tc.indexes, tc.scopes, []byte(tc.key), tc.value)
+			if !tc.refused {
+				if err != nil {
+					t.Fatalf("DocumentDecodeRefusal = %v, want nil", err)
+				}
+				return
+			}
+			var ide *IndexValueDecodeError
+			if !errors.As(err, &ide) || ide.Index != doc || string(ide.Key) != tc.key {
+				t.Fatalf("DocumentDecodeRefusal = %v, want IndexValueDecodeError for %s", err, doc)
+			}
+		})
+	}
+}
+
 func TestMVCCEngine_DocumentScopeRefusesUndecodableValue(t *testing.T) {
 	eng := newScopedEngine(t)
 	const idxName = "db.users.email"

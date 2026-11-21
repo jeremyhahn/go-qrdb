@@ -107,6 +107,34 @@ func documentDecodeRefusal(indexes map[string]index.Index, indexScopes map[strin
 	return nil
 }
 
+// decodeDocumentFields decodes value as a JSON object, the one shape index
+// maintenance can read. ok=false means the value is not a JSON object.
+// CheckUniqueViolation and DocumentDecodeRefusal share it so the two cannot
+// disagree on what counts as undecodable.
+func decodeDocumentFields(value []byte) (fields map[string]json.RawMessage, ok bool) {
+	if json.Unmarshal(value, &fields) != nil {
+		return nil, false
+	}
+	return fields, true
+}
+
+// DocumentDecodeRefusal is the READ-ONLY decode half of CheckUniqueViolation:
+// it returns the *IndexValueDecodeError CheckUniqueViolation would return
+// for a write of value under key, and nil otherwise (no index in scope of
+// key, or value decodes as a JSON object). Callers that apply several
+// writes as one unit (Batch, Transaction) run it over every write first so
+// an undecodable collection document refuses the whole unit as an
+// application result before anything is staged.
+func DocumentDecodeRefusal(indexes map[string]index.Index, indexScopes map[string][]byte, key, value []byte) error {
+	if len(indexes) == 0 || !anyIndexInScope(indexes, indexScopes, key) {
+		return nil
+	}
+	if _, ok := decodeDocumentFields(value); ok {
+		return nil
+	}
+	return documentDecodeRefusal(indexes, indexScopes, key)
+}
+
 // CheckUniqueViolation reports the unique-constraint conflict that writing
 // value under key would cause, WITHOUT modifying any index. Only indexes whose
 // key scope covers key are consulted: a unique index outside the key's scope
@@ -126,11 +154,12 @@ func CheckUniqueViolation(batch storage.Batch, indexes map[string]index.Index, i
 	if len(indexes) == 0 || !anyIndexInScope(indexes, indexScopes, key) {
 		return nil
 	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(value, &fields) != nil {
-		// Not JSON. A collection document under a document-scoped index
-		// is refused: a unique check must never pass on bytes it cannot
-		// read. Any other key has nothing to index, nothing to violate.
+	fields, ok := decodeDocumentFields(value)
+	if !ok {
+		// Not a JSON object. A collection document under a
+		// document-scoped index is refused: a unique check must never
+		// pass on bytes it cannot read. Any other key has nothing to
+		// index, nothing to violate.
 		return documentDecodeRefusal(indexes, indexScopes, key)
 	}
 	for idxName, idx := range indexes {
