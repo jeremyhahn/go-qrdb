@@ -470,4 +470,51 @@ test.describe("KV Explorer MVCC calls are scoped to the selected database", () =
     await expect(page.locator("table").getByText("plain-a")).toHaveCount(0, { timeout: LOAD_TIMEOUT });
     await expect(page.locator("table").getByText("plain-b")).toHaveCount(0);
   });
+
+  test("a selection made before a switch deletes nothing in the new database", async ({ page }) => {
+    await page.goto("/");
+    // Both databases hold the same key names.
+    await page.locator("aside").getByText("kv-mvcc").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-mvcc", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await createEntry(page, "same/a", "mvcc-a");
+    await createEntry(page, "same/b", "mvcc-b");
+    await page.locator("aside").getByText("kv-plain").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-plain", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await createEntry(page, "same/a", "plain-a");
+    await createEntry(page, "same/b", "plain-b");
+    await expect(page.getByText("2 entries")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    // Both databases' "Created" toasts are up (one per create, 5 s each); wait until all have cleared before selecting rows.
+    await expect(page.getByRole("alert").filter({ hasText: 'Created "same/b"' })).toHaveCount(0, { timeout: LOAD_TIMEOUT });
+
+    // Rows are selected in kv-plain, then the user switches to kv-mvcc.
+    await page.getByLabel("Select row 1", { exact: true }).check();
+    await page.getByLabel("Select row 2", { exact: true }).check();
+    await expect(page.getByRole("button", { name: "Delete 2" })).toBeEnabled();
+    await page.locator("aside").getByText("kv-mvcc").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-mvcc", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(page.locator("table").getByText("mvcc-b")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    // The selection did not follow the switch: nothing is offered for deletion.
+    await expect(page.getByRole("button", { name: "Delete 2" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Delete", exact: true })).toBeDisabled();
+    await expect(page.getByLabel("Select row 1", { exact: true })).not.toBeChecked();
+    await expect(page.getByLabel("Select row 2", { exact: true })).not.toBeChecked();
+
+    // kv-mvcc keeps both keys, and so does kv-plain.
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await expect(page.locator("table").getByText("mvcc-a")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.locator("table").getByText("mvcc-b")).toBeVisible();
+    await page.locator("aside").getByText("kv-plain").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-plain", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(page.locator("table").getByText("plain-a")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.locator("table").getByText("plain-b")).toBeVisible();
+  });
 });

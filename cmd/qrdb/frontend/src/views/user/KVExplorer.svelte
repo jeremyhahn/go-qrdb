@@ -369,6 +369,11 @@
   // (or edited) against the new one.
   let scopeGeneration = 0;
 
+  // The entries table is keyed on this value: a database switch remounts it,
+  // so its row selection (kept inside CrudTable) cannot outlive the database
+  // it was made in.
+  let tableScope: number = $state(0);
+
   /** Reports whether a read started in generation gen is still current. */
   function isCurrentScope(gen: number): boolean {
     return gen === scopeGeneration;
@@ -377,6 +382,7 @@
   /** Closes the selected entry and drops its metadata (a database switch). */
   function resetSelection(): void {
     scopeGeneration++;
+    tableScope = scopeGeneration;
     selectedEntry = null;
     entryMeta = null;
     entryMetaError = "";
@@ -590,7 +596,19 @@
     }
   }
 
-  async function handleBulkDelete(indices: Set<number>): Promise<void> {
+  /**
+   * Returns the bulk-delete handler for a table mounted in generation
+   * selectedIn: row indices selected there are refused once a database
+   * switch has moved on, instead of being resolved against the new
+   * database's entries.
+   */
+  function bulkDeleteIn(selectedIn: number): (indices: Set<number>) => Promise<void> {
+    return (indices) => handleBulkDelete(indices, selectedIn);
+  }
+
+  async function handleBulkDelete(indices: Set<number>, selectedIn: number): Promise<void> {
+    // A selection made in an older database names rows of that listing.
+    if (!isCurrentScope(selectedIn)) return;
     // The explorer stays mounted across database switches: the keys were
     // listed in this database, so every delete goes through the client
     // captured here, never the one a later switch installs.
@@ -920,6 +938,7 @@
 
 <!-- Main Content -->
 <div class="surface-panel rounded-xl overflow-hidden">
+  {#key tableScope}
   <CrudTable
     title={isHistorical ? `Key-Value Entries (as of revision ${asOfRevision})` : "Key-Value Entries"}
     data={entries}
@@ -930,11 +949,12 @@
     createLabel="Create"
     deleteLabel="Delete"
     oncreateclick={openCreatePanel}
-    ondeleteselected={handleBulkDelete}
+    ondeleteselected={bulkDeleteIn(untrack(() => tableScope))}
     onrowclick={handleRowClick}
     rowKey={(row) => row.key}
     pageSize={10}
   />
+  {/key}
 </div>
 
 <!-- Detail SlidePanel -->
