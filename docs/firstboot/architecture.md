@@ -282,8 +282,15 @@ the `admin` role, is the SO. Any other holder of the username is
 `*firstboot.SystemSOEnrollmentError`. An SO given in part is
 `*firstboot.IncompleteSOError`, one with both a CSR and a certificate is
 `*firstboot.ConflictingSOCredentialError`, and an SO that shares the admin's
-username or key is `*firstboot.SOMatchesAdminError`. An SO with no PIN seam
-wired is `*firstboot.MissingSOSeamError`. These helpers moved here from
+username or key is `*firstboot.SOMatchesAdminError`. The pre-flight then
+refuses, before any write and each as `*firstboot.MissingSOSeamError`, an SO
+whose enrolment seams are not wired: `Users` not implementing `UpdateUser`
+(it records the SO's bound key and grants the bootstrap admin the SO role);
+no `SOPINs`; with no live PIN (a PIN record instead), an `SOPINs` that does
+not implement `SOPINRecordSetter`, or `SOPINRecordMatcher`; no `Binder`; a
+CSR with no `Signer`; a `CertPEM` with neither its own `PoolPEM` nor an
+`AdminCertPool`; and a `CertPEM` with a `PoolPEM` but no `TrustAnchors`, or
+no `ClientTrust`. These helpers moved here from
 `pkg/bootstrap`'s tenant SO; tenant create uses the same ones.
 
 **The SO is optional in both postures (SPEC row 124).** With or without
