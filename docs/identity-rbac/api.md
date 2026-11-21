@@ -147,8 +147,15 @@ ShareService was deleted (f704da972e).
 **Own permissions and Authorize are identity-gated.** Any authenticated
 caller may list its own effective permissions and ask whether it may perform
 an action: neither needs a grant of its own, because the answer is about the
-caller. The own-permissions answer is the caller's roles resolved and every
-wildcard expanded, deduplicated and sorted, with each entry's scope:
+caller. A grant admits a required permission when it is the exact
+`resource:action`, `resource:*`, `*:action` or `*:*` (whole-segment wildcards
+only; a glob prefix such as `ke*:sign` admits nothing). That rule is
+`permission.Matches` (one grant) and `permission.Granted` (a resolved set),
+which the RBAC authorizer calls and the Go SDK re-exports as
+`sdk.PermissionMatches` and `sdk.PermissionGranted`, so an embedding service
+decides with the server's own matcher. The own-permissions answer is the
+caller's roles resolved and every wildcard expanded, deduplicated and sorted,
+with each entry's scope:
 
 ```json
 {"permissions": [{"name": "kv:get", "resource": "kv", "action": "get", "scope": "self"}]}
@@ -676,8 +683,9 @@ build no longer defines. It is drift between what the tenant was seeded with and
 what the server now grants — visible on an ordinary listing, **before**
 `POST /roles/reconcile` is run to repair it. It is absent when there is none,
 and a whole-segment wildcard (`keys:*`) never appears in it, because the
-authorizer expands wildcards at authorization time and there is no registry
-entry for one to lose.
+authorizer matches wildcards at authorization time (`permission.Granted`,
+re-exported as `sdk.PermissionGranted`) and there is no registry entry for one
+to lose.
 
 `ReconcileRolesResponse` — the body of `POST /roles/reconcile`:
 
