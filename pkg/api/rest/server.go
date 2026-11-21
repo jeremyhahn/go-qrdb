@@ -2291,6 +2291,7 @@ func (s *Server) registerRoutes() {
 	s.routeIf(rolesOn, http.MethodPost, "/roles/assign", permission.RolesAssign, s.handleAssignRole)
 	s.routeIf(rolesOn, http.MethodPost, "/roles/unassign", permission.RolesUnassign, s.handleUnassignRole)
 	s.routeIf(rolesOn, http.MethodGet, "/permissions", permission.PermissionsList, s.handleListPermissions)
+	s.routeIf(rolesOn, http.MethodGet, "/permissions/catalog", permission.PermissionsList, s.handleListPermissionCatalog)
 	// The caller's own grants need authentication only: the identity is the
 	// authenticated one, never a request parameter.
 	s.routeIf(rolesOn, http.MethodGet, "/permissions/own", permission.IdentityGated, s.handleListOwnPermissions)
