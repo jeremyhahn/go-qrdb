@@ -481,7 +481,7 @@ func TestDocumentBodyBytes_ChargeEqualsRelease(t *testing.T) {
 	}
 	checked := 0
 	for _, name := range []dao.CodecType{dao.CodecJSON, dao.CodecMsgPack, dao.CodecBSON, dao.CodecYAML} {
-		c, err := dao.NewCodec[map[string]any](name)
+		c, err := dao.NewDocumentCodec(name)
 		require.NoError(t, err, "codec %s", name)
 		for i, d := range docs {
 			fields := documentFields(d)

@@ -1890,7 +1890,7 @@ func (s *CollectionService) resolveCodec(info *CollectionInfo) dao.Codec[map[str
 	if name == "" {
 		return jsonDocumentCodec()
 	}
-	c, err := dao.NewCodec[map[string]any](dao.CodecType(name))
+	c, err := dao.NewDocumentCodec(dao.CodecType(name))
 	if err != nil {
 		// Codec name recorded in metadata is not available in this build;
 		// fall back to JSON so existing data remains accessible.
@@ -1902,7 +1902,7 @@ func (s *CollectionService) resolveCodec(info *CollectionInfo) dao.Codec[map[str
 // jsonDocumentCodec returns the go-codec JSON document codec, the
 // default and fallback storage codec of a collection.
 func jsonDocumentCodec() dao.Codec[map[string]any] {
-	c, err := dao.NewCodec[map[string]any](dao.CodecJSON)
+	c, err := dao.NewDocumentCodec(dao.CodecJSON)
 	if err != nil {
 		panic("dao: JSON document codec unavailable: " + err.Error())
 	}

@@ -23,12 +23,18 @@ import (
 	"github.com/jeremyhahn/go-codec/pkg/cbor"
 )
 
-// newCBORCodec builds the CBOR codec with string-keyed maps as the default
-// map type, so a nested object in a document decodes as map[string]any
-// (fxamacker's default is map[interface{}]interface{}, which JSON documents
-// and the query layer do not handle).
+// newCBORCodec builds the CBOR codec for a typed entity with fxamacker's
+// decoding defaults: a map held in an any field decodes as map[any]any.
 func newCBORCodec[E any]() (codec.Codec[E], error) {
-	c, err := cbor.NewWithOptions[E](
+	return cbor.New[E](), nil
+}
+
+// newCBORDocumentCodec builds the CBOR codec for generic documents: nested
+// maps decode as map[string]any, as a JSON document's do, instead of
+// fxamacker's map[any]any default. Typed entities keep the default (see
+// newCBORCodec), so an any field may still hold a map with non-string keys.
+func newCBORDocumentCodec() (codec.Codec[map[string]any], error) {
+	c, err := cbor.NewWithOptions[map[string]any](
 		fxcbor.DecOptions{DefaultMapType: reflect.TypeFor[map[string]any]()},
 		fxcbor.EncOptions{},
 	)

@@ -66,7 +66,7 @@ func IsCodecSupported(ct CodecType) bool {
 	return codec.IsSupported(ct)
 }
 
-// nonDocumentCodecs are codecs NewCodec[map[string]any] builds but that
+// nonDocumentCodecs are codecs NewDocumentCodec builds but that
 // cannot store a generic JSON document losslessly. TOML has no null value,
 // so a document field set to null would vanish on write. Typed entity DAOs
 // still use these codecs through NewCodec.
@@ -76,7 +76,7 @@ var nonDocumentCodecs = map[CodecType]struct{}{
 
 // DocumentCodecs returns, sorted, the storage codecs a document
 // collection or database accepts: every SupportedCodecs entry for which
-// NewCodec[map[string]any] succeeds and that is not in nonDocumentCodecs.
+// NewDocumentCodec succeeds and that is not in nonDocumentCodecs.
 // ProtoBuf drops out because it cannot encode a generic map; TOML is
 // excluded because it cannot encode null. This is the one storage-codec
 // list; the collection service, the database StorageCodec check and the
@@ -87,7 +87,7 @@ func DocumentCodecs() []CodecType {
 		if _, excluded := nonDocumentCodecs[ct]; excluded {
 			continue
 		}
-		if _, err := NewCodec[map[string]any](ct); err == nil {
+		if _, err := NewDocumentCodec(ct); err == nil {
 			out = append(out, ct)
 		}
 	}
@@ -162,4 +162,25 @@ func NewCodec[E any](ct CodecType) (Codec[E], error) {
 		codec:     c,
 		codecType: ct,
 	}, nil
+}
+
+// NewDocumentCodec creates the codec a collection stores its generic
+// documents with. It equals NewCodec[map[string]any] except that CBOR
+// decodes nested maps as map[string]any, as a JSON document's do; typed
+// entity DAOs built by NewCodec keep the codec library's defaults.
+func NewDocumentCodec(ct CodecType) (Codec[map[string]any], error) {
+	if ct != CodecCBOR {
+		return NewCodec[map[string]any](ct)
+	}
+	if !codec.IsSupported(ct) {
+		return nil, CodecCreationError{
+			CodecType: string(ct),
+			Cause:     codec.ErrCodecNotSupported{CodecType: ct},
+		}
+	}
+	c, err := newCBORDocumentCodec()
+	if err != nil {
+		return nil, CodecCreationError{CodecType: string(ct), Cause: err}
+	}
+	return &codecWrapper[map[string]any]{codec: c, codecType: ct}, nil
 }

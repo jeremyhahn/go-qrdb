@@ -26,7 +26,7 @@ import (
 // decodes every nested object, including one inside an array, as
 // map[string]any, so it encodes back to JSON like any other document.
 func TestCBORCodec_NestedObjectsDecodeAsStringKeyedMaps(t *testing.T) {
-	c, err := NewCodec[map[string]any](CodecCBOR)
+	c, err := NewDocumentCodec(CodecCBOR)
 	require.NoError(t, err)
 
 	data, err := c.Marshal(map[string]any{
@@ -48,4 +48,29 @@ func TestCBORCodec_NestedObjectsDecodeAsStringKeyedMaps(t *testing.T) {
 	item, ok := items[0].(map[string]any)
 	require.True(t, ok, "object in array decoded as %T", items[0])
 	assert.Equal(t, "v", item["k"])
+}
+
+// cborAnyEntity is a typed entity whose any field may hold any CBOR value.
+type cborAnyEntity struct {
+	Name  string `cbor:"name"`
+	Extra any    `cbor:"extra"`
+}
+
+// TestCBORCodec_TypedEntityKeepsDefaultMapType proves a typed DAO keeps
+// fxamacker's default map type: an integer-keyed map in an any field round
+// trips as map[any]any instead of failing to decode into map[string]any.
+func TestCBORCodec_TypedEntityKeepsDefaultMapType(t *testing.T) {
+	c, err := NewCodec[cborAnyEntity](CodecCBOR)
+	require.NoError(t, err)
+
+	data, err := c.Marshal(cborAnyEntity{Name: "a", Extra: map[any]any{uint64(1): "one", uint64(2): "two"}})
+	require.NoError(t, err)
+
+	var out cborAnyEntity
+	require.NoError(t, c.Unmarshal(data, &out))
+	assert.Equal(t, "a", out.Name)
+	extra, ok := out.Extra.(map[any]any)
+	require.True(t, ok, "integer-keyed map decoded as %T", out.Extra)
+	assert.Equal(t, "one", extra[uint64(1)])
+	assert.Equal(t, "two", extra[uint64(2)])
 }

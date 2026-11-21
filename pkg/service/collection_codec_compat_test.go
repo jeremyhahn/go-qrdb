@@ -39,7 +39,7 @@ func TestCollectionCodecCompat_GoldenDocumentsDecode(t *testing.T) {
 		t.Run(string(ct), func(t *testing.T) {
 			data, err := hex.DecodeString(golden)
 			require.NoError(t, err)
-			c, err := dao.NewCodec[map[string]any](ct)
+			c, err := dao.NewDocumentCodec(ct)
 			require.NoError(t, err)
 
 			var entity dao.DynamicEntity
@@ -55,7 +55,7 @@ func TestCollectionCodecCompat_GoldenDocumentsDecode(t *testing.T) {
 func TestCollectionCodecCompat_RoundTripEveryDocumentCodec(t *testing.T) {
 	for _, ct := range dao.DocumentCodecs() {
 		t.Run(string(ct), func(t *testing.T) {
-			c, err := dao.NewCodec[map[string]any](ct)
+			c, err := dao.NewDocumentCodec(ct)
 			require.NoError(t, err)
 
 			in := &dao.DynamicEntity{ID: 7, Fields: map[string]any{"name": "a", "n": 1.5}}
@@ -78,7 +78,7 @@ func TestCollectionCodecCompat_RoundTripEveryDocumentCodec(t *testing.T) {
 func TestCollectionCodecCompat_LosslessDocumentRoundTrip(t *testing.T) {
 	for _, ct := range dao.DocumentCodecs() {
 		t.Run(string(ct), func(t *testing.T) {
-			c, err := dao.NewCodec[map[string]any](ct)
+			c, err := dao.NewDocumentCodec(ct)
 			require.NoError(t, err)
 
 			in := &dao.DynamicEntity{ID: 9, Fields: map[string]any{
