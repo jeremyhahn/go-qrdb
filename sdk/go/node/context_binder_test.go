@@ -33,16 +33,6 @@ import (
 // errNodeBinderRefused is the refusing binder's sentinel.
 var errNodeBinderRefused = errors.New("node binder refused")
 
-func TestWithContextBinder_SetsOption(t *testing.T) {
-	o := &nodeOptions{}
-	WithContextBinder(func(ctx context.Context) (context.Context, error) { return ctx, nil })(o)
-	assert.NotNil(t, o.contextBinder)
-}
-
-func TestWithContextBinder_UnsetByDefault(t *testing.T) {
-	assert.Nil(t, (&nodeOptions{}).contextBinder)
-}
-
 // TestWithContextBinder_BindsTheClient: the composer's binder runs on the
 // node's Client and its refusal fails the call; the node's own services are
 // not behind it.

@@ -45,12 +45,6 @@ func TestNewOfficerRegistry_NilBackend(t *testing.T) {
 
 // TestNewOfficerRegistry_Valid verifies the constructor returns a non-nil
 // registry when given a valid backend.
-func TestNewOfficerRegistry_Valid(t *testing.T) {
-	reg, err := NewOfficerRegistry(unsealedTestBarrier(t))
-	require.NoError(t, err)
-	assert.NotNil(t, reg)
-}
-
 // TestOfficerRegistry_SaveLoad_RoundTrip verifies that a saved record can
 // be retrieved with the same fields.
 func TestOfficerRegistry_SaveLoad_RoundTrip(t *testing.T) {

@@ -295,7 +295,7 @@ func TestGate_EveryMemberAdvertisingActivates(t *testing.T) {
 	assert.True(t, kv.has(ActivationPrefix+string(GuardedWrites)))
 
 	store.expire(3)
-	time.Sleep(20 * time.Millisecond)
+	eventually(t, func() bool { return !g.Supports("n3:7000", GuardedWrites) }, "the gate never observed node 3's advertisement lapse")
 	assert.True(t, g.Enabled(systemShard, GuardedWrites), "activation is permanent")
 }
 
@@ -474,11 +474,12 @@ func TestGate_MemberRegistrationsAdmitTheNodesTheyDescribe(t *testing.T) {
 	eventually(t, func() bool { return g.Activated(GuardedWrites) }, "not activated")
 
 	registrations.advertise(t, 4, "n4:7000") // registered by an older binary: no features
-	time.Sleep(20 * time.Millisecond)
-	require.Error(t, g.AdmitReplica(systemShard, "n4:7000"))
 	registrations.advertise(t, 5, "n5:7000", SupportedNames()...)
 	eventually(t, func() bool { return g.AdmitReplica(systemShard, "n5:7000") == nil },
 		"a registration carrying the features did not admit its node")
+	// The registrations watch delivers in order, so node 4's earlier
+	// registration has been observed by the time node 5 is admitted.
+	require.Error(t, g.AdmitReplica(systemShard, "n4:7000"))
 }
 
 // Witnesses apply nothing, so they do not decide whether a group uses a

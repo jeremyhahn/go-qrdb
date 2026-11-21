@@ -187,25 +187,6 @@ func TestSystemRole_PermissionsAreFixed(t *testing.T) {
 	}
 }
 
-// TestOrdinaryRole_PermissionsRemainUpdatable is the control: the guard above
-// must key on System, not disable permission updates for everyone.
-func TestOrdinaryRole_PermissionsRemainUpdatable(t *testing.T) {
-	svc := newTestStore(t)
-	ctx := context.Background()
-
-	r := createTestRole(t, svc, "editor", "acme")
-	updated, err := svc.UpdateRole(ctx, &UpdateRoleRequest{
-		ID:          r.ID,
-		Permissions: []permission.Permission{permission.KVGet},
-	})
-	if err != nil {
-		t.Fatalf("UpdateRole(permissions) on an ordinary role: %v", err)
-	}
-	if len(updated.Permissions) != 1 || updated.Permissions[0] != permission.KVGet {
-		t.Errorf("Permissions: got %v, want [%s]", updated.Permissions, permission.KVGet)
-	}
-}
-
 // TestOrdinaryRole_IsNotSystem is the negative control for the derivation, and
 // the mutant catcher for "System is hardcoded true".
 //

@@ -1,43 +1,39 @@
 // ci_runners_test.go is the gate over where the workflows run (DS-7377;
-// Tenant Agent rulings 833 and 834, which supersede ruling 617's two-pool
-// rule; ci-template v1.43).
+// owner rulings 999 and 1006, which supersede Tenant Agent rulings 833 and
+// 834 and their two-pool rule).
 //
-// GitHub-hosted first: every ci.yml job runs on the standard GitHub-hosted
-// ubuntu-latest runner, free on this public repository, unless it cannot fit
-// one. A job that cannot names one of the two pool expressions and states why
-// on its runs-on line, `# self-hosted: <reason>`; such a job runs on the
-// self-hosted pools for a push to main and a same-repository pull request,
-// and on ubuntu-latest otherwise, so a fork's pull request never reaches a
-// pool host. A pool job that needs Docker goes to the bigdisk-docker pool, a
-// Docker-free one to the bigdisk pool, which has no Docker daemon. Every
-// other workflow runs on ubuntu-latest. The self-hosted machinery the forge's runners needed -- the
-// batch and ci-gate labels, the forge registry and its RELEASE_REGISTRY
-// credential, the named cache volumes and their trim, the stale-stack reaper
-// and the schedule guard -- is gone, and this gate keeps each piece from
-// coming back. It fails when:
+// GitHub-hosted first: every job of every workflow runs on the standard
+// GitHub-hosted ubuntu-latest runner. A job that cannot names one
+// self-hosted label and carries a categorized waiver on its runs-on line,
+// `# self-hosted: <category>: <reason>` (waiverProblem): `hardware` (it
+// needs hardware no hosted runner has) or `oversize` (it exceeds a measured
+// hosted limit: disk, memory, the 6-hour job limit), in any workflow; or
+// `credential`, for code-review.yml's Codex review job alone, whose
+// reviewer token is mounted on that runner only. The review-only labels
+// codex and qwen (reviewRunnerLabels) are reserved to their code-review.yml
+// review jobs whatever the waiver category (Tenant Agent ruling 1007). The self-hosted machinery
+// the forge's runners needed -- the bigdisk pools and their routing
+// expressions, the batch and ci-gate labels, the forge registry, the named
+// cache volumes, the stale-stack reaper -- is gone. It fails when:
 //
-//   - a ci.yml job's runs-on is neither the literal `ubuntu-latest` nor, with
-//     a `# self-hosted: <reason>` line comment, exactly dockerRunner or
-//     bigdiskRunner (poolRunners); or another workflow's is not the literal
-//     `ubuntu-latest`, outside code-review.yml, whose review jobs keep their
-//     self-hosted hosts;
-//   - a job on bigdiskRunner has a container, a service or a Docker step the
-//     pool could reach (dockerNeeds), a job on dockerRunner needs no Docker,
-//     or a pool workflow triggers on pull_request_target;
-//   - a step that wipes a hosted runner's disk (sudo rm, docker prune) may
-//     run on a pool host, whose images and directories other jobs share;
+//   - a job's runs-on is neither the literal `ubuntu-latest` nor one
+//     self-hosted label whose line comment passes waiverProblem;
+//   - a self-hosted job has a step that wipes a hosted runner's disk (sudo
+//     rm, docker prune) not gated to the hosted runner;
 //   - ci.yml's playwrightJob leaves a credential in its checkout or runs an
-//     apt install on the pool (Company Agent m2396);
+//     apt install off the hosted runner (Company Agent m2396);
 //   - an `if:` still splits on github.server_url, outside the jobs that speak
 //     the Gitea API (giteaOnlyJobs) and batch.yml, whose splits are left to
 //     their owner;
-//   - a workflow names a removed script, label or credential, or a removed
-//     script is back in scripts/;
+//   - a removed script is back in scripts/;
 //   - a job has no timeout-minutes, or one over jobMinutesCeiling;
 //   - an actions/cache entry is saved on any event but a push to main, or by
 //     the combined actions/cache action, which saves on every event;
 //   - a workflow writes a GOMAXPROCS or go -p count instead of letting
 //     scripts/in-toolchain-image.sh derive it from the runner.
+//
+// code-review.yml is a copy of the code-review template: its runs-on lines
+// are held to the waiver rule above, and the template keeps its other rules.
 //
 // The discovery floors keep an empty parse from passing: every other
 // assertion is inside a loop, and an empty loop reports success.
@@ -60,32 +56,21 @@ const (
 	// job is killed at 360, and a limit under that names the runaway job
 	// rather than letting the runner cancel it unnamed.
 	jobMinutesCeiling = 350
-	// hostedRunner is the one runs-on a job outside poolWorkflow may name,
-	// and every pool expression's fallback.
+	// hostedRunner is the runs-on every job names unless it carries a waiver.
 	hostedRunner = "ubuntu-latest"
-	// poolWorkflow is the workflow whose jobs may run on the self-hosted pools,
-	// each with a stated reason (rulings 833 and 834; ruling 617 before them).
-	poolWorkflow = "ci.yml"
-	// bigdiskLabel is the Docker-free pool's label (DS-8233): no Docker
-	// daemon, so only a job that needs none may reach it. Its Docker pool's
-	// label, bigdisk-docker, carries it as a prefix.
-	bigdiskLabel = "bigdisk"
-	// poolSplit is the condition both pool expressions share: a push to main
-	// or a pull request whose head is this repository. Anything else, a
-	// fork's pull request, a schedule or a dispatch, gets ubuntu-latest.
-	poolSplit = `((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))`
-	// bigdiskRunner is a Docker-free job's runs-on, character for character.
-	bigdiskRunner = `${{ ` + poolSplit + ` && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
-	// dockerRunner is the runs-on of a job that needs Docker, character for
-	// character.
-	dockerRunner = `${{ ` + poolSplit + ` && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}`
+	// ciFile is the main CI workflow, held to a floor of hosted jobs.
+	ciFile = "ci.yml"
+	// reviewWorkflow is the code-review template's copy, and reviewJob its
+	// Codex review job, the one job a credential waiver may name.
+	reviewWorkflow = "code-review.yml"
+	reviewJob      = "review"
 	// hostedStepTerm is the conjunct a step carries in its `if:` so that it
-	// never runs on a pool host: a Docker step of a bigdiskRunner job, and a
-	// step that wipes a hosted runner's disk in any pool job.
+	// never runs on a self-hosted runner: a step that wipes a hosted
+	// runner's disk.
 	hostedStepTerm = "runner.environment == 'github-hosted'"
-	// playwrightJob runs its make target natively on the bigdisk pool
-	// (Company Agent m2396, 2026-11-10), so it is held to leaving no
-	// credential in its checkout and installing no apt package there.
+	// playwrightJob runs its make target natively (Company Agent m2396,
+	// 2026-11-10), so it is held to leaving no credential in its checkout
+	// and installing no apt package off the hosted runner.
 	playwrightJob = "test-typescript"
 	// ciPublishExpr is when a run publishes: a push to main, and nothing else.
 	ciPublishExpr = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
@@ -100,30 +85,30 @@ const (
 	runnerWorkflowFloor = 6
 	runnerJobFloor      = 30
 	// hostedJobFloor, under ci.yml's count (18 jobs, all on ubuntu-latest):
-	// a regression of the whole workflow to the pools fails here.
+	// a regression of the workflow off the hosted runner fails here.
 	hostedJobFloor = 15
-	// selfHostedReason is the line comment a pool job's runs-on carries.
-	selfHostedReason = "self-hosted:"
+	// selfHostedWaiver opens the waiver a self-hosted runs-on line carries:
+	// `# self-hosted: <category>: <reason>` (owner rulings 999 and 1006).
+	selfHostedWaiver = "# self-hosted: "
+	// credentialCategory is the waiver category reviewJob alone may name.
+	credentialCategory = "credential"
 )
 
-// poolRunners are poolWorkflow's two runs-on expressions.
-var poolRunners = []string{bigdiskRunner, dockerRunner}
+// waiverCategories are the categories any job's waiver may name: hardware
+// no hosted runner has, or a measured hosted limit the job exceeds.
+var waiverCategories = []string{"hardware", "oversize"}
 
-// selfHostedWorkflows keep self-hosted runners: the review jobs run where the
-// reviewer's credentials are mounted (conventions/sdlc.md).
-var selfHostedWorkflows = map[string]bool{"code-review.yml": true}
+// reviewRunnerLabels maps each review-only runner label to the one
+// code-review.yml job that may run on it (Tenant Agent ruling 1007): codex
+// carries the Codex reviewer, qwen the opencode reviewer's model.
+var reviewRunnerLabels = map[string]string{"codex": reviewJob, "qwen": "review-opencode"}
 
-// dockerStep matches a step that needs Docker: the docker or docker-compose
-// CLI, a docker/* action, a make target named docker-* or the compose-stack
-// integration-test-* and integration-down*, or the image wrappers
-// (scripts/in-toolchain-image.sh, scripts/ci-image.sh). A job name such as
-// docker-build, which ci-gate reads the result of, is not a Docker use, so
-// the CLI matches only as a command word.
-var dockerStep = regexp.MustCompile(`(^|[^\w.-])docker(-compose)?(\s|$)|(^|[^\w.-])docker/|\bmake\b[^\n]*[\s'"](docker-|integration-test|integration-down)|in-toolchain-image\.sh|ci-image\.sh`)
+// releaseLabel is the release pool's runner label, which no job may name.
+const releaseLabel = "release"
 
 // hostWipeStep matches a step that frees a hosted runner's disk: a sudo rm
 // of the preinstalled SDKs, or a docker prune that would delete the images
-// other jobs on a shared pool host hold.
+// other jobs on a shared self-hosted runner hold.
 var hostWipeStep = regexp.MustCompile(`\bsudo\s+rm\b|\bdocker\s+(image\s+|system\s+|container\s+|builder\s+)?prune\b`)
 
 // giteaOnlyJobs speak the Gitea API (its issue queue, its merge endpoint) and
@@ -136,14 +121,12 @@ var giteaOnlyJobs = map[string]map[string]bool{
 // failure-notification steps are its owner's to collapse.
 var serverURLExemptWorkflows = map[string]bool{"batch.yml": true}
 
-// removedMachinery is every name the self-hosted CI used that no workflow
-// may carry again.
-var removedMachinery = []string{
-	"ci-registry.sh", "ci-image-cache.sh", "trim-ci-caches", "reap-stale-ci-stacks",
-	"schedule-guard", "RELEASE_REGISTRY", "bigdisk", "docker volume",
-}
+// bigdiskFallback is a runs-on that resolves to ubuntu-latest on github.com
+// and to the persistent bigdisk pool elsewhere; no job may name it unwaived.
+const bigdiskFallback = "${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}"
 
-// removedScripts are the scripts that implemented it.
+// removedScripts are the scripts that implemented the self-hosted CI
+// DS-7377 removed.
 var removedScripts = []string{
 	"ci-registry.sh", "ci-image-cache.sh", "trim-ci-caches.sh",
 	"trim-ci-caches_test.sh", "reap-stale-ci-stacks.sh",
@@ -209,25 +192,8 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 	if err := yaml.Unmarshal(body, &wf); err != nil {
 		return []string{file + ": not parseable YAML: " + err.Error()}, 0
 	}
-	if selfHostedWorkflows[file] {
-		return nil, 0
-	}
 	add := func(format string, a ...string) {
 		problems = append(problems, file+": "+strings.Join(append([]string{format}, a...), ""))
-	}
-	pool := file == poolWorkflow
-	for _, m := range removedMachinery {
-		// The pool workflow names the label in its runs-on and its comments;
-		// the per-job runs-on check below bounds its use.
-		if m == bigdiskLabel && pool {
-			continue
-		}
-		if strings.Contains(string(body), m) {
-			add("names `" + m + "`, part of the self-hosted CI DS-7377 removed")
-		}
-	}
-	if pool && slices.Contains(triggerNames(wf.On), "pull_request_target") {
-		add("the workflow triggers on pull_request_target, which would run a fork's code on a pool host with this repository's secrets")
 	}
 	usesCache := false
 	names := slices.Sorted(func(yield func(string) bool) {
@@ -244,32 +210,30 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		if job.RunsOn.Kind == yaml.ScalarNode {
 			runsOn = job.RunsOn.Value
 		}
-		reason := poolReason(job.RunsOn.LineComment)
 		switch {
-		case pool && runsOn == hostedRunner:
-			// Rulings 833 and 834: the default.
-		case pool && (runsOn == bigdiskRunner || runsOn == dockerRunner) && reason == "":
-			add("job " + name + " runs on a self-hosted pool with no `# self-hosted: <reason>` on its runs-on line; every job that fits a standard runner runs on " + hostedRunner + " (rulings 833 and 834, which supersede ruling 617)")
-		case pool && runsOn == bigdiskRunner:
-			for _, p := range dockerNeeds(job) {
-				add("job " + name + " runs on the Docker-free bigdisk pool (bigdiskRunner), and " + p + "; a job that needs Docker carries dockerRunner")
-			}
-		case pool && runsOn == dockerRunner:
-			if len(dockerNeeds(job)) == 0 {
-				add("job " + name + " runs on the bigdisk-docker pool (dockerRunner) but needs no Docker; a Docker-free job carries bigdiskRunner")
-			}
-		case pool:
-			add("job "+name+" runs on ", nodeText(job.RunsOn), ", neither "+hostedRunner+" nor, with a stated reason, exactly bigdiskRunner (Docker-free) or dockerRunner (Docker) (rulings 833 and 834)")
 		case runsOn == hostedRunner:
+			// Owner rulings 999 and 1006: the default.
+		case runsOn == "" || strings.Contains(runsOn, "${{"):
+			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+" nor one self-hosted label (owner ruling 999)")
 		default:
-			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner)
-		}
-		if pool {
+			if p := reservedLabelProblem(file, name, runsOn); p != "" {
+				add("job "+name+" runs on ", nodeText(job.RunsOn), ", and "+p)
+			}
+			if p := waiverProblem(file, name, job.RunsOn.LineComment); p != "" {
+				add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+", and "+p)
+			}
+			if p := forkProblem(onTriggers(wf.On), job.If); p != "" {
+				add("job "+name+" runs on ", nodeText(job.RunsOn), ", a self-hosted runner, and "+p)
+			}
 			for _, s := range job.Steps {
 				if hostWipeStep.MatchString(s.Run) && !strings.Contains(s.If, hostedStepTerm) {
-					add("job "+name+" has a step that wipes a hosted runner's disk under if: ", strconv.Quote(s.If), ", without "+hostedStepTerm+"; on a pool host it deletes what other jobs share")
+					add("job "+name+" has a step that wipes a hosted runner's disk under if: ", strconv.Quote(s.If), ", without "+hostedStepTerm+"; on a self-hosted runner it deletes what other jobs share")
 				}
 			}
+		}
+		if file == reviewWorkflow {
+			// The code-review template keeps its own rules.
+			continue
 		}
 		problems = append(problems, timeoutProblems(file, name, job)...)
 		if !serverURLExemptWorkflows[file] && !giteaOnlyJobs[file][name] {
@@ -313,50 +277,134 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 	return problems, jobs
 }
 
-// poolReason is the reason a runs-on line comment gives for a pool job, or "".
-func poolReason(comment string) string {
-	c := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(comment), "#"))
-	if !strings.HasPrefix(c, selfHostedReason) {
+// waiverProblem returns "" when comment, the line comment of job's runs-on
+// in workflow, holds the waiver `# self-hosted: <category>: <reason>` with
+// a category in waiverCategories, or credentialCategory on reviewJob in
+// reviewWorkflow, and a non-empty reason; otherwise what is wrong with it.
+// reservedLabelProblem says why a job may not run on label, or "" when it
+// may: a label in reviewRunnerLabels serves only its one code-review.yml
+// job, whatever the waiver category (Tenant Agent ruling 1007).
+func reservedLabelProblem(workflow, job, label string) string {
+	if strings.EqualFold(label, releaseLabel) {
+		// This gate reads no if:, so it cannot tell a release job's guard from
+		// one a pull_request satisfies (github.event.ref is '' there, #1642).
+		return "the " + releaseLabel + " label is the release pool's, which no job here runs on; a waiver does not open it"
+	}
+	// GitHub matches runner labels case-insensitively, so QWEN is qwen (#1642).
+	owner, ok := reviewRunnerLabels[strings.ToLower(label)]
+	if !ok || (workflow == reviewWorkflow && job == owner) {
 		return ""
 	}
-	return strings.TrimSpace(strings.TrimPrefix(c, selfHostedReason))
+	return "the " + label + " label is reserved to " + reviewWorkflow + "'s " + owner + " job whatever the waiver (Tenant Agent ruling 1007)"
 }
 
-// dockerNeeds is every way a job needs Docker on a pool host: a container,
-// services, or a step that needs Docker (dockerStep) and is not gated to the
-// hosted runner (hostedStepTerm). A bigdiskRunner job must have none, since
-// the bigdisk pool has no Docker daemon; a dockerRunner job must have one.
-func dockerNeeds(job runnerJob) (needs []string) {
-	if job.Container.Kind != 0 {
-		needs = append(needs, "it has a container:, which needs Docker")
+func waiverProblem(workflow, job, comment string) string {
+	_, waiver, ok := strings.Cut(comment, selfHostedWaiver)
+	if !ok {
+		return "its runs-on line carries no `" + selfHostedWaiver + "<category>: <reason>` waiver (owner ruling 999)"
 	}
-	if job.Services.Kind != 0 {
-		needs = append(needs, "it has services:, which need Docker")
+	category, reason, ok := strings.Cut(waiver, ":")
+	category = strings.TrimSpace(category)
+	if !ok || category == "" || strings.ContainsAny(category, " \t") {
+		return "its waiver names no category; it reads `" + selfHostedWaiver + "<category>: <reason>`, the category one of " + strings.Join(append(slices.Clone(waiverCategories), credentialCategory), ", ")
 	}
-	for _, s := range job.Steps {
-		if dockerStep.MatchString(s.Uses+"\n"+s.Run) && !strings.Contains(s.If, hostedStepTerm) {
-			needs = append(needs, "a step that needs Docker runs under if: "+strconv.Quote(s.If)+", without "+hostedStepTerm)
+	switch {
+	case slices.Contains(waiverCategories, category):
+	case category == credentialCategory:
+		if workflow != reviewWorkflow || job != reviewJob {
+			return "its waiver names the credential category, which only " + reviewWorkflow + "'s " + reviewJob + " job, the Codex review, may name"
 		}
+	default:
+		return "its waiver names the unknown category " + strconv.Quote(category) + "; the categories are " + strings.Join(append(slices.Clone(waiverCategories), credentialCategory), ", ")
 	}
-	return needs
+	if strings.TrimSpace(reason) == "" {
+		return "its " + category + " waiver gives no reason"
+	}
+	return ""
 }
 
-// triggerNames is the events of a workflow's `on:`, in any of its three
-// forms: one name, a list of names, or a mapping keyed by name.
-func triggerNames(on yaml.Node) (names []string) {
-	switch on.Kind {
-	case yaml.ScalarNode:
-		names = append(names, on.Value)
-	case yaml.SequenceNode:
-		for _, c := range on.Content {
-			names = append(names, c.Value)
-		}
-	case yaml.MappingNode:
-		for i := 0; i+1 < len(on.Content); i += 2 {
-			names = append(names, on.Content[i].Value)
+// forkPREvents are the triggers whose run a fork's pull request starts.
+var forkPREvents = []string{"pull_request", "pull_request_target"}
+
+// forkSafeEvent matches a top-level `github.event_name == '<event>'` conjunct.
+var forkSafeEvent = regexp.MustCompile(`^github\.event_name == '([a-z_]+)'$|^'([a-z_]+)' == github\.event_name$`)
+
+// forkProblem: a waiver does not make fork code trusted (go-qrdb #1642's
+// Codex review). In a workflow a pull_request or pull_request_target event
+// triggers, a self-hosted job's if: has a top-level conjunct that keeps a
+// fork's pull request off the runner: the head in this repository, an event
+// that is not a pull request's, or a forge that is not github.com.
+func forkProblem(triggers []string, cond string) string {
+	var events []string
+	for _, ev := range forkPREvents {
+		if slices.Contains(triggers, ev) {
+			events = append(events, ev)
 		}
 	}
-	return names
+	if len(events) == 0 {
+		return ""
+	}
+	for _, c := range topConjuncts(cond) {
+		if forkSafeConjunct(c) {
+			return ""
+		}
+	}
+	return "its workflow runs on " + strings.Join(events, " and ") + ", but its if: has no top-level `&& " + forkGuardTerm +
+		"`: a fork's pull request would run its code on a persistent host, and a hardware or oversize waiver does not make fork code trusted"
+}
+
+// forkGuardTerm is the conjunct that keeps a fork's head off a self-hosted runner.
+const forkGuardTerm = "github.event.pull_request.head.repo.full_name == github.repository"
+
+// forkSafeConjunct reports whether one top-level conjunct of an if: is false
+// for every fork pull request.
+func forkSafeConjunct(c string) bool {
+	switch c {
+	case forkGuardTerm, "github.repository == github.event.pull_request.head.repo.full_name",
+		"github.server_url != 'https://github.com'", "'https://github.com' != github.server_url":
+		return true
+	}
+	m := forkSafeEvent.FindStringSubmatch(c)
+	if m == nil {
+		return false
+	}
+	return !slices.Contains(forkPREvents, m[1]+m[2])
+}
+
+// topConjuncts splits an if: at its top-level && operators, outside
+// parentheses and string literals, each part lower-cased with its
+// whitespace collapsed. An if: with a top-level || has no conjunct every
+// run satisfies: it returns none.
+func topConjuncts(cond string) []string {
+	s := strings.Join(strings.Fields(strings.ToLower(cond)), " ")
+	if inner, ok := strings.CutPrefix(s, "${{"); ok {
+		if inner, ok = strings.CutSuffix(inner, "}}"); ok {
+			s = strings.TrimSpace(inner)
+		}
+	}
+	if s == "" {
+		return nil
+	}
+	var parts []string
+	depth, quoted, start := 0, false, 0
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '\'':
+			quoted = !quoted
+		case quoted:
+		case s[i] == '(':
+			depth++
+		case s[i] == ')':
+			depth--
+		case depth == 0 && strings.HasPrefix(s[i:], "||"):
+			return nil
+		case depth == 0 && strings.HasPrefix(s[i:], "&&"):
+			parts = append(parts, strings.TrimSpace(s[start:i]))
+			start = i + 2
+			i++
+		}
+	}
+	return append(parts, strings.TrimSpace(s[start:]))
 }
 
 // timeoutProblems checks one job's limit: a literal number, or a matrix
@@ -433,8 +481,9 @@ func nodeText(n yaml.Node) string {
 }
 
 // TestCIRunners runs runnerProblems over every workflow, and holds ci.yml to
-// running on ubuntu-latest (rulings 833 and 834): a floor of hosted jobs, so
-// that a regression of the workflow to the pools fails here too.
+// running on ubuntu-latest (owner rulings 999 and 1006): a floor of hosted
+// jobs, so that a regression of the workflow off the hosted runner fails here
+// too.
 
 func TestCIRunners(t *testing.T) {
 	files := workflowFiles(t)
@@ -459,8 +508,8 @@ func TestCIRunners(t *testing.T) {
 		t.Errorf("checked %d jobs, under the floor of %d", total, runnerJobFloor)
 	}
 	var wf runnerWorkflow
-	if err := yaml.Unmarshal(files[poolWorkflow], &wf); err != nil {
-		t.Fatalf("parse %s: %v", poolWorkflow, err)
+	if err := yaml.Unmarshal(files[ciFile], &wf); err != nil {
+		t.Fatalf("parse %s: %v", ciFile, err)
 	}
 	hosted := 0
 	for _, job := range wf.Jobs {
@@ -469,7 +518,7 @@ func TestCIRunners(t *testing.T) {
 		}
 	}
 	if hosted < hostedJobFloor {
-		t.Errorf("%s has %d jobs on %s, under the floor of %d (rulings 833 and 834)", poolWorkflow, hosted, hostedRunner, hostedJobFloor)
+		t.Errorf("%s has %d jobs on %s, under the floor of %d (owner rulings 999 and 1006)", ciFile, hosted, hostedRunner, hostedJobFloor)
 	}
 }
 
@@ -482,8 +531,44 @@ func TestCIRemovedScriptsStayRemoved(t *testing.T) {
 }
 
 func TestCIServerURLAbsentFromCI(t *testing.T) {
-	if strings.Contains(readCIBody(t), "server_url") {
+	// The Runner labels step (ci-template v1.47, verbatim) evaluates other
+	// workflows' runs-on expressions and so names github.server_url in its
+	// python; that is the lint's text, not a dependency of ci.yml on the host.
+	body := readCIBody(t)
+	if i := strings.Index(body, runnerLabelsStep); i >= 0 {
+		if end := strings.Index(body[i:], "\n          PY\n"); end >= 0 {
+			body = body[:i] + body[i+end:]
+		}
+	}
+	if strings.Contains(body, "server_url") {
 		t.Error("ci.yml names github.server_url; it runs on github.com alone, so nothing in it depends on the host")
+	}
+}
+
+// runnerLabelsStep is ci-template v1.47's step that checks every workflow's
+// runs-on label and waiver category together (Tenant Agent ruling 1007).
+const runnerLabelsStep = "- name: Runner labels (ruling 633)\n"
+
+// runnerLabelsTestsStep runs the Python gate's own accepting and rejecting
+// cases before the gate, so CI goes red when the gate stops refusing
+// (go-qrdb #1642's Codex review).
+const runnerLabelsTestsStep = "- name: Runner labels tests (go-qrdb #1642)\n        run: python3 -I .github/workflows/testdata/runner-labels-tests.py\n"
+
+func TestCIRunnerLabelsStepPresent(t *testing.T) {
+	body := readCIBody(t)
+	if n := strings.Count(body, runnerLabelsStep); n != 1 {
+		t.Errorf("ci.yml has %d %q steps, want exactly one (ci-template v1.47, ruling 1007)", n, strings.TrimSpace(runnerLabelsStep))
+	}
+	tests := strings.Index(body, runnerLabelsTestsStep)
+	switch {
+	case tests < 0 || strings.Count(body, runnerLabelsTestsStep) != 1:
+		t.Errorf("ci.yml needs exactly one step %q that runs testdata/runner-labels-tests.py", runnerLabelsTestsStep)
+	case tests > strings.Index(body, runnerLabelsStep):
+		t.Error("ci.yml runs the Runner labels tests after the gate; they must run before it")
+	}
+	const review = `REVIEW = {"codex": "credential", "qwen": "hardware"}`
+	if !strings.Contains(body, review) {
+		t.Errorf("ci.yml's Runner labels step lacks %q: codex and qwen must be reserved to code-review.yml with their own categories (ruling 1007)", review)
 	}
 }
 
@@ -535,11 +620,6 @@ func TestRunnerProblems_CanFail(t *testing.T) {
 		"an expression":                 {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'batch' }}", "not the literal ubuntu-latest"},
 		"a job server_url split":        {hostedFile, "    timeout-minutes: 30\n", "    timeout-minutes: 30\n    if: github.server_url != 'https://github.com'\n", "splits on github.server_url"},
 		"a step server_url split":       {"nightly.yml", "      - run: make build", "      - if: github.server_url == 'https://github.com'\n        run: make build", "splits on github.server_url"},
-		"the registry credential":       {hostedFile, "make build", "make build RELEASE_REGISTRY=x", "RELEASE_REGISTRY"},
-		"the cache trim":                {hostedFile, "make build", "scripts/trim-ci-caches.sh 32", "trim-ci-caches"},
-		"a cache volume":                {hostedFile, "make build", "docker volume create qrdb-cache", "docker volume"},
-		"the schedule guard":            {hostedFile, "make build", "echo schedule-guard", "schedule-guard"},
-		"the reaper":                    {hostedFile, "make build", "scripts/reap-stale-ci-stacks.sh", "reap-stale-ci-stacks"},
 		"no timeout":                    {hostedFile, "    timeout-minutes: 30\n", "", "has no timeout-minutes"},
 		"a timeout over the ceiling":    {hostedFile, "timeout-minutes: 30", "timeout-minutes: 351", "not a number of minutes from 1 to 350"},
 		"a matrix leg over the ceiling": {hostedFile, "minutes: 350", "minutes: 360", "not a number of minutes from 1 to 350"},
@@ -550,7 +630,10 @@ func TestRunnerProblems_CanFail(t *testing.T) {
 		"a written GOMAXPROCS":          {hostedFile, "make leg", "GOMAXPROCS=4 make leg", "GOMAXPROCS or -p count"},
 		"a written -p":                  {hostedFile, "make leg", "go test -p 4 ./...", "GOMAXPROCS or -p count"},
 		"a GOMAXPROCS step env":         {hostedFile, "      - run: make leg", "      - run: make leg\n        env:\n          GOMAXPROCS: \"8\"", "sets GOMAXPROCS in a step's env"},
-		"a self-hosted label in ci.yml": {poolWorkflow, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: [self-hosted, linux]", "neither ubuntu-latest nor"},
+		"a self-hosted label in ci.yml": {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: bigdisk", "carries no `# self-hosted: <category>: <reason>` waiver"},
+		"an expression with a waiver":   {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: ${{ 'bigdisk' }}  # self-hosted: oversize: a fixture reason", "not the literal ubuntu-latest nor one self-hosted label"},
+		"a review label in ci.yml":      {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: codex  # self-hosted: hardware: a fixture reason", "label is reserved to code-review.yml's review job"},
+		"a disk wipe on a waived job":   {hostedFile, "  build:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n", "  build:\n    runs-on: gpu  # self-hosted: hardware: a fixture reason\n    timeout-minutes: 30\n    steps:\n      - run: sudo rm -rf /usr/share/dotnet\n", "wipes a hosted runner's disk"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -566,16 +649,38 @@ func TestRunnerProblems_CanFail(t *testing.T) {
 	}
 }
 
-// TestRunnerProblems_Exemptions holds the three exemptions to their scope: a
-// review workflow's self-hosted label, a Gitea-API job's server_url guard,
-// and batch.yml's splits.
+// TestRunnerProblems_Exemptions holds the exemptions to their scope: a
+// waived self-hosted label (the credential category on code-review.yml's
+// review job alone), a Gitea-API job's server_url guard, and batch.yml's
+// splits.
 func TestRunnerProblems_Exemptions(t *testing.T) {
-	selfHosted := strings.Replace(runnerFixture, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: codex", 1)
-	if p, _ := runnerProblems("code-review.yml", []byte(selfHosted)); len(p) != 0 {
-		t.Errorf("code-review.yml keeps its self-hosted labels, got %v", p)
+	label := func(job, runsOn string) string {
+		return strings.Replace(runnerFixture, "  build:\n    runs-on: ubuntu-latest", "  "+job+":\n    runs-on: "+runsOn, 1)
 	}
-	if p, _ := runnerProblems("ci.yml", []byte(selfHosted)); len(p) == 0 {
-		t.Error("ci.yml's self-hosted label passed; the exemption is code-review.yml's alone")
+	const credential = "codex  # lab-string-ok: a fixture note # self-hosted: credential: a fixture reason"
+	if p, _ := runnerProblems(reviewWorkflow, []byte(label(reviewJob, credential))); len(p) != 0 {
+		t.Errorf("code-review.yml's review job keeps its credential waiver, got %v", p)
+	}
+	for _, c := range []struct{ file, job, runsOn string }{
+		{reviewWorkflow, reviewJob, "codex"},
+		{reviewWorkflow, "build", credential},
+		{ciFile, reviewJob, credential},
+		// An unwaived bigdisk fallback is the persistent pool on Gitea,
+		// whichever job or workflow names it (owner ruling 999, #1642).
+		{reviewWorkflow, reviewJob, bigdiskFallback},
+		{reviewWorkflow, "build", bigdiskFallback},
+		{reviewWorkflow, "scope", bigdiskFallback},
+		{reviewWorkflow, "gate", bigdiskFallback},
+		{ciFile, "gate", bigdiskFallback},
+		{reviewWorkflow, "gate", "bigdisk"},
+		{reviewWorkflow, "gate", "${{ 'ubuntu-latest' }}"},
+	} {
+		if p, _ := runnerProblems(c.file, []byte(label(c.job, c.runsOn))); len(p) == 0 {
+			t.Errorf("%s job %s on %q passed", c.file, c.job, c.runsOn)
+		}
+	}
+	if p, _ := runnerProblems(ciFile, []byte(label("build", "gpu  # self-hosted: hardware: a fixture reason"))); len(p) != 0 {
+		t.Errorf("a hardware waiver holds in any workflow, got %v", p)
 	}
 	guarded := strings.Replace(runnerFixture, "  build:\n    runs-on: ubuntu-latest", "  signal:\n    if: always() && github.server_url != 'https://github.com'\n    runs-on: ubuntu-latest", 1)
 	if p, _ := runnerProblems("nightly.yml", []byte(guarded)); len(p) != 0 {
@@ -727,127 +832,156 @@ func TestBigdiskStepProblems_CanFail(t *testing.T) {
 	}
 }
 
-// poolFixture is a ci.yml with two jobs that stay on the pools, each with a
-// stated reason (rulings 833 and 834): a Docker-free job on bigdiskRunner,
-// its Docker step gated to the hosted runner and its native step to the pool,
-// beside a Docker job on dockerRunner whose disk wipe runs on the hosted
-// runner alone.
-const poolFixture = `on:
-  push:
-    branches: [main]
-  pull_request:
-jobs:
-  coverage-fts:
-    runs-on: ` + bigdiskRunner + `  # self-hosted: a fixture reason
-    timeout-minutes: 20
-    steps:
-      - if: runner.environment == 'github-hosted'
-        run: docker load -i toolchain.tar
-      - if: runner.environment == 'self-hosted'
-        run: make coverage-fts
-  build:
-    runs-on: ` + dockerRunner + `  # self-hosted: a fixture reason
-    timeout-minutes: 30
-    steps:
-      - name: Free the runner's disk
-        if: runner.environment == 'github-hosted'
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          docker image prune -af >/dev/null
-      - run: scripts/in-toolchain-image.sh "$IMAGE" "make build"
-`
-
-// TestRunnerProblems_Pools holds a ci.yml job that stays on the pools to its
-// stated reason and to the two-pool rule's edges: it carries exactly
-// bigdiskRunner when it needs no Docker and exactly dockerRunner when it
-// does, and every other shape (no reason, another workflow, another
-// expression, a fork or any push on a pool, a label, a Docker step on the
-// Docker-free pool, a Docker-free job on the Docker pool, a disk wipe a pool
-// host could run, pull_request_target) fails. A hosted job needs no reason.
-func TestRunnerProblems_Pools(t *testing.T) {
-	if p, jobs := runnerProblems(poolWorkflow, []byte(poolFixture)); len(p) != 0 || jobs != 2 {
-		t.Fatalf("the fixture must pass with 2 jobs, got %d jobs: %v", jobs, p)
-	}
-	// Rulings 833 and 834: a job on the hosted runner needs no reason.
-	const bigdiskWaived = "    runs-on: " + bigdiskRunner + "  # self-hosted: a fixture reason"
-	const dockerWaived = "    runs-on: " + dockerRunner + "  # self-hosted: a fixture reason"
-	hostedAll := strings.Replace(strings.Replace(poolFixture, bigdiskWaived, "    runs-on: ubuntu-latest", 1), dockerWaived, "    runs-on: ubuntu-latest", 1)
-	if p, _ := runnerProblems(poolWorkflow, []byte(hostedAll)); len(p) != 0 {
-		t.Errorf("ci.yml jobs on ubuntu-latest must pass (rulings 833 and 834), got %v", p)
-	}
-	// ci-gate on the pool (m2479) names docker-build as a job whose result it
-	// reads; that is not a Docker use.
-	gate := strings.Replace(poolFixture, "        run: make coverage-fts", "        run: |\n          check docker-build \"$RESULT_DOCKER_BUILD\" pr\n          echo \"needs.docker-build.result\"", 1)
-	if p, _ := runnerProblems(poolWorkflow, []byte(gate)); len(p) != 0 {
-		t.Errorf("a step that only names the docker-build job may run on the pool, got %v", p)
-	}
-	const bigdiskOn = "    runs-on: " + bigdiskRunner
-	const dockerOn = "    runs-on: " + dockerRunner
-	const sameRepo = " && github.event.pull_request.head.repo.full_name == github.repository"
-	const dockerLoad = "      - if: runner.environment == 'github-hosted'\n        run: docker load -i toolchain.tar"
-	const wipe = "        if: runner.environment == 'github-hosted'\n        run: |\n          sudo rm"
-	const wrapper = "      - run: scripts/in-toolchain-image.sh"
-	cases := map[string]struct {
-		file, old, new, want string
+// TestWaiverProblem holds the waiver to its format and categories (owner
+// rulings 999 and 1006).
+func TestWaiverProblem(t *testing.T) {
+	cases := []struct {
+		name, workflow, job, comment, want string
 	}{
-		"another workflow's job":              {hostedFile, "", "", "job coverage-fts runs on"},
-		"another workflow's Docker job":       {hostedFile, "", "", "job build runs on"},
-		"another workflow's label":            {hostedFile, "", "", "names `bigdisk`"},
-		"a pool job with no reason":           {poolWorkflow, bigdiskOn + "  # self-hosted: a fixture reason", bigdiskOn, "with no `# self-hosted: <reason>`"},
-		"a Docker pool job with no reason":    {poolWorkflow, dockerOn + "  # self-hosted: a fixture reason", dockerOn, "with no `# self-hosted: <reason>`"},
-		"a pool job with a bare marker":       {poolWorkflow, bigdiskOn + "  # self-hosted: a fixture reason", bigdiskOn + "  # self-hosted:", "with no `# self-hosted: <reason>`"},
-		"any push":                            {poolWorkflow, "github.event_name == 'push' && github.ref == 'refs/heads/main'", "github.event_name == 'push'", "job coverage-fts runs on"},
-		"a fork's pull request":               {poolWorkflow, sameRepo, "", "job coverage-fts runs on"},
-		"a fork's pull request, Docker pool":  {poolWorkflow, dockerOn, strings.Replace(dockerOn, sameRepo, "", 1), "job build runs on"},
-		"pull_request_target routed":          {poolWorkflow, "github.event_name == 'pull_request'", "github.event_name == 'pull_request_target'", "job coverage-fts runs on"},
-		"no hosted fallback":                  {poolWorkflow, " || 'ubuntu-latest'", "", "job coverage-fts runs on"},
-		"no hosted fallback, Docker pool":     {poolWorkflow, dockerOn, strings.Replace(dockerOn, " || 'ubuntu-latest'", "", 1), "job build runs on"},
-		"the label list":                      {poolWorkflow, bigdiskOn, "    runs-on: [self-hosted, linux, x64, bigdisk]", "job coverage-fts runs on"},
-		"the Docker label list":               {poolWorkflow, dockerOn, "    runs-on: [self-hosted, linux, x64, bigdisk-docker]", "job build runs on"},
-		"the bare label":                      {poolWorkflow, bigdiskOn, "    runs-on: bigdisk", "job coverage-fts runs on"},
-		"another pool":                        {poolWorkflow, `"bigdisk"]`, `"batch"]`, "job coverage-fts runs on"},
-		"a Docker job on bigdisk":             {poolWorkflow, dockerOn, bigdiskOn, "job build runs on the Docker-free bigdisk pool"},
-		"a Docker-free job on bigdisk-docker": {poolWorkflow, bigdiskOn, dockerOn, "job coverage-fts runs on the bigdisk-docker pool (dockerRunner) but needs no Docker"},
-		"a disk wipe on a pool host":          {poolWorkflow, wipe, "        run: |\n          sudo rm", "wipes a hosted runner's disk"},
-		"a docker prune on a pool host":       {poolWorkflow, wrapper, "      - run: docker system prune -af\n" + wrapper, "wipes a hosted runner's disk"},
-		"a Docker step on the pool":           {poolWorkflow, dockerLoad, "      - run: docker load -i toolchain.tar", "a step that needs Docker"},
-		"a Docker step, pool only":            {poolWorkflow, dockerLoad, "      - if: runner.environment == 'self-hosted'\n        run: docker load -i toolchain.tar", "a step that needs Docker"},
-		"the image wrapper":                   {poolWorkflow, "        run: make coverage-fts", "        run: scripts/in-toolchain-image.sh \"$IMAGE\" \"make coverage-fts\"", "a step that needs Docker"},
-		"a docker action":                     {poolWorkflow, "        run: make coverage-fts", "        uses: docker/login-action@0000000000000000000000000000000000000000 # v4", "a step that needs Docker"},
-		"a docker make target":                {poolWorkflow, "        run: make coverage-fts", "        run: make docker-build", "a step that needs Docker"},
-		"the compose-stack make target":       {poolWorkflow, "        run: make coverage-fts", "        run: make integration-test-standalone INT_PROJECT=\"$P\"", "a step that needs Docker"},
-		"docker compose":                      {poolWorkflow, "        run: make coverage-fts", "        run: (cd stack && docker compose config)", "a step that needs Docker"},
-		"the docker-compose CLI":              {poolWorkflow, "        run: make coverage-fts", "        run: docker-compose up -d", "a step that needs Docker"},
-		"the image loader":                    {poolWorkflow, "        run: make coverage-fts", "        run: scripts/ci-image.sh load \"$DIR\" \"$IMAGE\" \"$ID\"", "a step that needs Docker"},
-		"a container":                         {poolWorkflow, "    timeout-minutes: 20\n", "    timeout-minutes: 20\n    container: golang:1.27.3\n", "has a container:"},
-		"a service":                           {poolWorkflow, "    timeout-minutes: 20\n", "    timeout-minutes: 20\n    services:\n      db:\n        image: postgres:18\n", "has services:"},
-		"pull_request_target":                 {poolWorkflow, "  pull_request:\n", "  pull_request_target:\n", "triggers on pull_request_target"},
-		"pull_request_target, listed":         {poolWorkflow, "on:\n  push:\n    branches: [main]\n  pull_request:\n", "on: [push, pull_request_target]\n", "triggers on pull_request_target"},
+		{"hardware", ciFile, "build", "# self-hosted: hardware: the GPU host", ""},
+		{"oversize", ciFile, "build", "# self-hosted: oversize: 40 GB of disk, measured", ""},
+		{"after another note", reviewWorkflow, "review-opencode", "# CUSTOMIZE: a note # self-hosted: hardware: the GPU host", ""},
+		{"credential on the Codex review job", reviewWorkflow, reviewJob, "# lab-string-ok: a note # self-hosted: credential: the reviewer token", ""},
+		{"credential on another job", reviewWorkflow, "review-opencode", "# self-hosted: credential: the reviewer token", "only code-review.yml's review job"},
+		{"credential in another workflow", ciFile, reviewJob, "# self-hosted: credential: the reviewer token", "only code-review.yml's review job"},
+		{"no category", ciFile, "build", "# self-hosted: the GPU host", "names no category"},
+		{"empty category", ciFile, "build", "# self-hosted: : the GPU host", "names no category"},
+		{"unknown category", ciFile, "build", "# self-hosted: speed: it is faster", "unknown category \"speed\""},
+		{"empty reason", ciFile, "build", "# self-hosted: hardware:", "gives no reason"},
+		{"blank reason", ciFile, "build", "# self-hosted: oversize:   ", "gives no reason"},
+		{"no waiver", ciFile, "build", "", "carries no"},
+		{"another comment only", reviewWorkflow, reviewJob, "# lab-string-ok: a note", "carries no"},
+		{"the bare marker", ciFile, "build", "# self-hosted:", "carries no"},
 	}
-	for name, c := range cases {
-		t.Run(name, func(t *testing.T) {
-			if !strings.Contains(poolFixture, c.old) {
-				t.Fatalf("the fixture lacks %q", c.old)
-			}
-			body := strings.Replace(poolFixture, c.old, c.new, 1)
-			problems, _ := runnerProblems(c.file, []byte(body))
-			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, c.want) }) {
-				t.Fatalf("want a problem containing %q, got %v", c.want, problems)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := waiverProblem(c.workflow, c.job, c.comment)
+			switch {
+			case c.want == "" && got != "":
+				t.Fatalf("waiverProblem(%q, %q, %q) = %q, want none", c.workflow, c.job, c.comment, got)
+			case c.want != "" && !strings.Contains(got, c.want):
+				t.Fatalf("waiverProblem(%q, %q, %q) = %q, want one containing %q", c.workflow, c.job, c.comment, got, c.want)
 			}
 		})
 	}
-	for _, expr := range poolRunners {
-		for i := range len(expr) {
-			c := byte('x')
-			if expr[i] == c {
-				c = 'y'
+}
+
+// TestReviewLabelsReserved holds the review-only runner labels to their
+// code-review.yml jobs whatever the waiver category (Tenant Agent ruling
+// 1007): a hardware or oversize waiver does not open codex or qwen to
+// another job or workflow.
+func TestReviewLabelsReserved(t *testing.T) {
+	cases := []struct {
+		name, file, job, runsOn string
+		fail                    bool
+	}{
+		{"ci.yml on codex", ciFile, "build", "codex  # self-hosted: hardware: a fixture reason", true},
+		{"ci.yml on qwen", ciFile, "build", "qwen  # self-hosted: hardware: a fixture reason", true},
+		{"nightly.yml on qwen, oversize", "nightly.yml", "build", "qwen  # self-hosted: oversize: a fixture reason", true},
+		{"another review job on codex", reviewWorkflow, "summary", "codex  # self-hosted: hardware: a fixture reason", true},
+		{"review-opencode on codex", reviewWorkflow, "review-opencode", "codex  # self-hosted: hardware: a fixture reason", true},
+		{"the Codex review on codex", reviewWorkflow, reviewJob, "codex  # self-hosted: credential: the reviewer token", false},
+		{"review-opencode on qwen", reviewWorkflow, "review-opencode", "qwen  # self-hosted: hardware: a fixture reason", false},
+		{"ci.yml on another label", ciFile, "build", "gpu  # self-hosted: hardware: a fixture reason", false},
+		// GitHub matches runner labels case-insensitively (#1642).
+		{"a non-review job on QWEN", reviewWorkflow, "build", "QWEN  # self-hosted: hardware: a fixture reason", true},
+		{"ci.yml on Codex", ciFile, "build", "Codex  # self-hosted: hardware: a fixture reason", true},
+		{"review on QWEN", reviewWorkflow, reviewJob, "QWEN  # self-hosted: hardware: a fixture reason", true},
+		{"review-opencode on QWEN", reviewWorkflow, "review-opencode", "QWEN  # self-hosted: hardware: a fixture reason", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := "on: push\njobs:\n  " + c.job + ":\n    runs-on: " + c.runsOn + "\n    timeout-minutes: 30\n    steps:\n      - run: make build\n"
+			problems, jobs := runnerProblems(c.file, []byte(body))
+			if jobs != 1 {
+				t.Fatalf("the fixture parsed to %d jobs, want 1: %v", jobs, problems)
 			}
-			changed := expr[:i] + string(c) + expr[i+1:]
-			body := strings.Replace(poolFixture, expr, changed, 1)
-			if p, _ := runnerProblems(poolWorkflow, []byte(body)); len(p) == 0 {
-				t.Errorf("a runs-on %q, one character off a pool expression, passed", changed)
+			reserved := slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "reserved to") })
+			runsOn := slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "job "+c.job+" runs on ") })
+			switch {
+			case c.fail && !reserved:
+				t.Fatalf("want a problem naming the label reserved to its review job, got %v", problems)
+			case !c.fail && runsOn:
+				t.Fatalf("want no runs-on problem, got %v", problems)
 			}
+		})
+	}
+}
+
+// TestReleaseLabelRefused holds the release label shut whatever the waiver:
+// this gate reads no if:, so a waived release job guarded by
+// `github.event.ref == ”` would run on a pull_request, whose payload has no
+// top-level ref (#1642).
+func TestReleaseLabelRefused(t *testing.T) {
+	cases := []struct{ name, file, on, runsOn string }{
+		{"ci.yml, hardware waiver, empty event.ref guard", ciFile, "pull_request", "release  # self-hosted: hardware: a fixture reason"},
+		{"release.yml, oversize waiver, pull_request_target", hostedFile, "pull_request_target", "release  # self-hosted: oversize: a fixture reason"},
+		{"upper case on push", "nightly.yml", "push", "RELEASE  # self-hosted: hardware: a fixture reason"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := "on: " + c.on + "\njobs:\n  pub:\n    if: ${{ github.event.ref == '' }}\n    runs-on: " + c.runsOn + "\n    timeout-minutes: 30\n    steps:\n      - run: make build\n"
+			problems, jobs := runnerProblems(c.file, []byte(body))
+			if jobs != 1 {
+				t.Fatalf("the fixture parsed to %d jobs, want 1: %v", jobs, problems)
+			}
+			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "the "+releaseLabel+" label") }) {
+				t.Fatalf("want a problem refusing the %s label, got %v", releaseLabel, problems)
+			}
+		})
+	}
+}
+
+// TestForkIsolation: a hardware or oversize waiver does not make fork code
+// trusted (go-qrdb #1642's Codex review). A waived self-hosted job in a
+// workflow a pull_request or pull_request_target event triggers keeps a
+// fork's pull request off its runner: a top-level conjunct of its if:
+// requires a head in this repository, a non-PR event, or another forge.
+func TestForkIsolation(t *testing.T) {
+	const steps = "    timeout-minutes: 30\n    steps:\n      - run: gh pr checkout \"$PR\" && make test\n"
+	fixture := func(on, cond string) string {
+		body := "on: " + on + "\njobs:\n  gpu:\n"
+		if cond != "" {
+			body += "    if: " + cond + "\n"
 		}
+		return body + "    runs-on: gpu  # self-hosted: hardware: the GPU bench\n" + steps
+	}
+	refused := []struct{ name, body string }{
+		{"pull_request_target, no if, checks out the PR head", fixture("pull_request_target", "")},
+		{"pull_request, no if", fixture("pull_request", "")},
+		{"pull_request and push, no if", fixture("[pull_request, push]", "")},
+		{"pull_request_target, a label guard alone", fixture("pull_request_target", "contains(github.event.pull_request.labels.*.name, 'gpu')")},
+		{"pull_request, the head guard under a top-level ||", fixture("pull_request", "github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'pull_request'")},
+		{"pull_request, the head guard negated", fixture("pull_request", "github.event.pull_request.head.repo.full_name != github.repository")},
+		{"pull_request, an event guard naming pull_request_target", fixture("pull_request", "github.event_name == 'pull_request_target'")},
+		{"pull_request, the head guard inside a parenthesised ||", fixture("pull_request", "${{ (github.event.pull_request.head.repo.full_name == github.repository || true) && true }}")},
+	}
+	for _, c := range refused {
+		t.Run("refused/"+c.name, func(t *testing.T) {
+			problems, jobs := runnerProblems("gpu.yml", []byte(c.body))
+			if jobs != 1 {
+				t.Fatalf("the fixture parsed to %d jobs, want 1: %v", jobs, problems)
+			}
+			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "fork") }) {
+				t.Fatalf("want a fork-isolation problem, got %v", problems)
+			}
+		})
+	}
+	passed := []struct{ name, file, body string }{
+		{"push only, no if", "gpu.yml", fixture("push", "")},
+		{"pull_request, the head guard", "gpu.yml", fixture("pull_request", "github.event.pull_request.head.repo.full_name == github.repository")},
+		{"pull_request_target, the head guard reversed, folded with another term", "gpu.yml", fixture("pull_request_target", "${{ github.event.pull_request.state == 'open'\n      && github.repository == github.event.pull_request.head.repo.full_name }}")},
+		{"pull_request and push, a push guard", "gpu.yml", fixture("[pull_request, push]", "github.event_name == 'push' && github.ref == 'refs/heads/main'")},
+		// code-review.yml's review-opencode job: Gitea only.
+		{"pull_request, another forge only", reviewWorkflow, fixture("pull_request", "needs.x.outputs.y == 'z' && github.server_url != 'https://github.com'")},
+	}
+	for _, c := range passed {
+		t.Run("passed/"+c.name, func(t *testing.T) {
+			problems, jobs := runnerProblems(c.file, []byte(c.body))
+			if jobs != 1 || len(problems) != 0 {
+				t.Fatalf("want 1 job and no problem, got %d jobs: %v", jobs, problems)
+			}
+		})
 	}
 }
 

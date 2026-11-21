@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -131,6 +132,43 @@ func TestSOPIN_RedirectToAnotherHostNeverCarriesThePIN(t *testing.T) {
 	var hostErr *transport.SOPINForeignHostError
 	if !errors.As(err, &hostErr) {
 		t.Fatalf("err = %v, want *transport.SOPINForeignHostError", err)
+	}
+}
+
+// TestSOPIN_SameHostRedirectNeverCarriesThePIN: a redirect to the configured
+// host itself is refused too (#1639); the redirect target never sees a request.
+func TestSOPIN_SameHostRedirectNeverCarriesThePIN(t *testing.T) {
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			probe := &pinProbe{}
+			session := probe.handler()
+			var moved atomic.Int64
+			mux := http.NewServeMux()
+			mux.Handle("/moved/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				moved.Add(1)
+				session.ServeHTTP(w, r)
+			}))
+			mux.Handle("/", redirectToolCalls(session, status, func(r *http.Request) string {
+				return "/moved" + r.URL.Path
+			}))
+			srv := httptest.NewTLSServer(mux)
+			defer srv.Close()
+
+			err := rekeyWithPIN(t, connectMCP(t, srv.URL+"/mcp", trustingMCP(srv)))
+			if probe.sawPIN() {
+				t.Fatal("the SO PIN followed a same-host redirect")
+			}
+			if n := moved.Load(); n != 0 {
+				t.Fatalf("the redirect target saw %d requests, want none", n)
+			}
+			var redirErr *transport.SOPINRedirectError
+			if !errors.As(err, &redirErr) {
+				t.Fatalf("err = %v, want *transport.SOPINRedirectError", err)
+			}
+			if want := (transport.SOPINRedirectError{Transport: "mcp", Status: status}); *redirErr != want {
+				t.Fatalf("err = %+v, want %+v", *redirErr, want)
+			}
+		})
 	}
 }
 

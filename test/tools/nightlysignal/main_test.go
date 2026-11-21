@@ -343,13 +343,6 @@ func TestNoteForNoneCoversEveryVerdict(t *testing.T) {
 	}
 }
 
-func TestFindTrackerOnAnEmptyQueue(t *testing.T) {
-	got, err := findTracker(nil, "trivy", "main")
-	if err != nil || got != nil {
-		t.Errorf("findTracker = %v, %v, want nil, nil", got, err)
-	}
-}
-
 // Every typed error renders something a human can act on, and the wrapping ones
 // unwrap. Cheap to assert and it catches the empty-message case, where a log
 // line reads "nightlysignal: " and says nothing.

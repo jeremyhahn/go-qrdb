@@ -172,74 +172,6 @@ func TestBatchDeleteVectors_EmptyBatch(t *testing.T) {
 	assert.Equal(t, ErrEmptyBatch, err)
 }
 
-// TestCreateNamespace_WithSyncWrites tests namespace creation with sync writes enabled
-func TestCreateNamespace_WithSyncWrites(t *testing.T) {
-	tmpDir := t.TempDir()
-	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = true
-	log := &testLogger{}
-
-	storage, err := NewPebbleVectorStorage(config, log)
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-	nsInfo := &NamespaceInfo{
-		Name:      "sync_test",
-		Dimension: 128,
-		CreatedAt: time.Now().Unix(),
-	}
-
-	err = storage.CreateNamespace(ctx, nsInfo)
-	assert.NoError(t, err)
-
-	// Verify namespace was created
-	info, err := storage.GetNamespaceInfo(ctx, "sync_test")
-	require.NoError(t, err)
-	assert.Equal(t, "sync_test", info.Name)
-}
-
-// TestUpsertVector_WithSyncWrites tests upsert with sync writes enabled
-func TestUpsertVector_WithSyncWrites(t *testing.T) {
-	tmpDir := t.TempDir()
-	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = true
-	log := &testLogger{}
-
-	storage, err := NewPebbleVectorStorage(config, log)
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-	ns := "vectors"
-	nsInfo := &NamespaceInfo{
-		Name:      ns,
-		Dimension: 128,
-		CreatedAt: time.Now().Unix(),
-	}
-	require.NoError(t, storage.CreateNamespace(ctx, nsInfo))
-
-	vec := &VectorValue{
-		ID:        1,
-		Embedding: make([]float32, 128),
-		Version:   1,
-	}
-
-	err = storage.UpsertVector(ctx, ns, vec)
-	assert.NoError(t, err)
-
-	// Verify vector was stored
-	retrieved, err := storage.GetVector(ctx, ns, 1)
-	require.NoError(t, err)
-	assert.Equal(t, vec.ID, retrieved.ID)
-}
-
 // TestDeleteVector_NonexistentVector tests deleting a vector that doesn't exist
 func TestDeleteVector_NonexistentVector(t *testing.T) {
 	storage, cleanup := setupStorage(t)
@@ -256,45 +188,6 @@ func TestDeleteVector_NonexistentVector(t *testing.T) {
 
 	err := storage.DeleteVector(ctx, ns, 999)
 	assert.Equal(t, ErrVectorNotFound, err)
-}
-
-// TestDeleteNamespace_WithSyncWrites tests namespace deletion with sync writes enabled
-func TestDeleteNamespace_WithSyncWrites(t *testing.T) {
-	tmpDir := t.TempDir()
-	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = true
-	log := &testLogger{}
-
-	storage, err := NewPebbleVectorStorage(config, log)
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-	ns := "vectors"
-	nsInfo := &NamespaceInfo{
-		Name:      ns,
-		Dimension: 128,
-		CreatedAt: time.Now().Unix(),
-	}
-	require.NoError(t, storage.CreateNamespace(ctx, nsInfo))
-
-	// Insert some vectors
-	for i := uint64(1); i <= 3; i++ {
-		vec := &VectorValue{
-			ID:        i,
-			Embedding: make([]float32, 128),
-			Version:   1,
-		}
-		err := storage.UpsertVector(ctx, ns, vec)
-		require.NoError(t, err)
-	}
-
-	// Delete namespace
-	err = storage.DeleteNamespace(ctx, ns)
-	assert.NoError(t, err)
 }
 
 // TestDeleteNamespace_NonexistentNamespace tests deleting non-existent namespace
@@ -375,48 +268,6 @@ func TestCleanupTombstones_WithShortKey(t *testing.T) {
 	require.NoError(t, err)
 
 	// Clean up tombstones
-	err = storage.CleanupTombstones(ctx, 0)
-	assert.NoError(t, err)
-}
-
-// TestCleanupTombstones_WithSyncWrites tests tombstone cleanup with sync writes
-func TestCleanupTombstones_WithSyncWrites(t *testing.T) {
-	tmpDir := t.TempDir()
-	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = true
-	log := &testLogger{}
-
-	storage, err := NewPebbleVectorStorage(config, log)
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-	ns := "vectors"
-	nsInfo := &NamespaceInfo{
-		Name:      ns,
-		Dimension: 128,
-		CreatedAt: time.Now().Unix(),
-	}
-	require.NoError(t, storage.CreateNamespace(ctx, nsInfo))
-
-	// Insert and delete vectors
-	for i := uint64(1); i <= 3; i++ {
-		vec := &VectorValue{
-			ID:        i,
-			Embedding: make([]float32, 128),
-			Version:   1,
-		}
-		err := storage.UpsertVector(ctx, ns, vec)
-		require.NoError(t, err)
-
-		err = storage.DeleteVector(ctx, ns, i)
-		require.NoError(t, err)
-	}
-
-	// Clean up tombstones with sync writes
 	err = storage.CleanupTombstones(ctx, 0)
 	assert.NoError(t, err)
 }

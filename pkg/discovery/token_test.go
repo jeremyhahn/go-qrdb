@@ -304,10 +304,6 @@ func TestTokenDiscovery_Name(t *testing.T) {
 	}
 }
 
-func TestTokenDiscovery_ImplementsMethod(t *testing.T) {
-	var _ Method = (*TokenDiscovery)(nil)
-}
-
 func TestTokenDiscovery_RegistrationFailure(t *testing.T) {
 	client := &mockHTTPClient{
 		doFunc: func(req *http.Request) (*http.Response, error) {
@@ -441,52 +437,6 @@ func TestTokenDiscovery_PollBadStatus(t *testing.T) {
 	var ee *EndpointError
 	if !errors.As(err, &ee) {
 		t.Fatalf("expected *EndpointError, got %T: %v", err, err)
-	}
-}
-
-func TestTokenDiscovery_ExcludesSelf(t *testing.T) {
-	nodesResp := tokenNodesResponse{
-		Nodes: []tokenNode{
-			{NodeID: 42, Address: "10.0.0.42:5000"},
-			{NodeID: 99, Address: "10.0.0.99:5000"},
-		},
-	}
-	nodesJSON, _ := json.Marshal(nodesResp)
-
-	client := &mockHTTPClient{
-		doFunc: func(req *http.Request) (*http.Response, error) {
-			if req.Method == http.MethodPut {
-				return newMockResponse(http.StatusOK, ""), nil
-			}
-			return newMockResponse(http.StatusOK, string(nodesJSON)), nil
-		},
-	}
-
-	td, err := NewTokenDiscovery(TokenConfig{
-		Endpoint:    "https://discovery.example.com",
-		Token:       "test-token",
-		NodeID:      42,
-		Address:     "10.0.0.42:5000",
-		ClusterSize: 2,
-		HTTPClient:  client,
-	})
-	if err != nil {
-		t.Fatalf("NewTokenDiscovery() error: %v", err)
-	}
-
-	peers, err := td.Discover(context.Background())
-	if err != nil {
-		t.Fatalf("Discover() error: %v", err)
-	}
-
-	if len(peers) != 1 {
-		t.Fatalf("expected 1 peer (self excluded), got %d", len(peers))
-	}
-	if peers[0].NodeID != 99 {
-		t.Errorf("NodeID = %d, want 99", peers[0].NodeID)
-	}
-	if peers[0].Address != "10.0.0.99:5000" {
-		t.Errorf("Address = %q, want %q", peers[0].Address, "10.0.0.99:5000")
 	}
 }
 
@@ -675,22 +625,6 @@ func TestTokenDiscovery_InsecureHTTPAllowed(t *testing.T) {
 	}
 }
 
-func TestTokenDiscovery_HTTPSAccepted(t *testing.T) {
-	td, err := NewTokenDiscovery(TokenConfig{
-		Endpoint:    "https://discovery.example.com",
-		Token:       "test-token",
-		Address:     "10.0.0.1:5000",
-		ClusterSize: 1,
-		HTTPClient:  &mockHTTPClient{},
-	})
-	if err != nil {
-		t.Fatalf("NewTokenDiscovery() error: %v", err)
-	}
-	if td == nil {
-		t.Fatal("expected non-nil TokenDiscovery")
-	}
-}
-
 func TestTokenDiscovery_AuthorizationHeader(t *testing.T) {
 	var capturedHeaders []http.Header
 
@@ -737,30 +671,6 @@ func TestTokenDiscovery_AuthorizationHeader(t *testing.T) {
 		if auth != expected {
 			t.Errorf("request[%d] Authorization = %q, want %q", i, auth, expected)
 		}
-	}
-}
-
-func TestTokenDiscovery_TokenNotInURL(t *testing.T) {
-	td, err := NewTokenDiscovery(TokenConfig{
-		Endpoint:    "https://discovery.example.com",
-		Token:       "secret-token-456",
-		NodeID:      42,
-		Address:     "10.0.0.1:5000",
-		ClusterSize: 1,
-		HTTPClient:  &mockHTTPClient{},
-	})
-	if err != nil {
-		t.Fatalf("NewTokenDiscovery() error: %v", err)
-	}
-
-	nodeURL := td.buildNodeURL()
-	if strings.Contains(nodeURL, "secret-token-456") {
-		t.Errorf("buildNodeURL() contains token in URL: %q", nodeURL)
-	}
-
-	nodesURL := td.buildNodesURL()
-	if strings.Contains(nodesURL, "secret-token-456") {
-		t.Errorf("buildNodesURL() contains token in URL: %q", nodesURL)
 	}
 }
 

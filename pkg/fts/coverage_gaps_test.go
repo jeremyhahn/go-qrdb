@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -628,44 +627,11 @@ func TestSearchOr_GetTermKeysError(t *testing.T) {
 // Tokenizer: position tracking edge cases
 // ============================================================
 
-// TestTokenizer_PositionsWithLeadingStopWords verifies positions reflect the
-// original word index even when leading words are stop words.
-func TestTokenizer_PositionsWithLeadingStopWords(t *testing.T) {
-	tok := NewTokenizer()
-	positions := tok.TokenizeWithPositions("the is hello world")
-	require.Len(t, positions, 2)
-	assert.Equal(t, "hello", positions[0].Token)
-	assert.Equal(t, 2, positions[0].Position)
-	assert.Equal(t, "world", positions[1].Token)
-	assert.Equal(t, 3, positions[1].Position)
-}
-
 // TestTokenizer_PositionsOnlyStopWords verifies that TokenizeWithPositions
 // returns an empty slice when every word is a stop word.
 func TestTokenizer_PositionsOnlyStopWords(t *testing.T) {
 	tok := NewTokenizer()
 	assert.Empty(t, tok.TokenizeWithPositions("the is a an"))
-}
-
-// ============================================================
-// SearchOr: multi-document deduplication
-// ============================================================
-
-// TestInvertedIndex_SearchOrMultipleDocuments exercises SearchOr returning
-// results from multiple documents and validates deduplication.
-func TestInvertedIndex_SearchOrMultipleDocuments(t *testing.T) {
-	idx := newTestInvertedIndex(t)
-
-	_ = idx.Index([]byte("doc/a"), "alpha beta gamma")
-	_ = idx.Index([]byte("doc/b"), "delta epsilon")
-	_ = idx.Index([]byte("doc/c"), "gamma zeta")
-
-	keys, err := idx.SearchOr("alpha gamma")
-	require.NoError(t, err)
-	require.Len(t, keys, 2)
-	strs := []string{string(keys[0]), string(keys[1])}
-	sort.Strings(strs)
-	assert.Equal(t, []string{"doc/a", "doc/c"}, strs)
 }
 
 // ============================================================

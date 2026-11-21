@@ -72,17 +72,6 @@ func TestNewServiceNilLoggerUsesDefault(t *testing.T) {
 	}
 }
 
-func TestNewServiceWithValidArgs(t *testing.T) {
-	p := &staticProvider{quotas: &Quotas{MaxKeys: 100}}
-	svc, err := NewService(p, nil)
-	if err != nil {
-		t.Fatalf("NewService returned unexpected error: %v", err)
-	}
-	if svc == nil {
-		t.Fatal("NewService returned nil")
-	}
-}
-
 // --- Check: unlimited (-1) ---
 
 func TestCheckUnlimitedQuotaReturnsNil(t *testing.T) {

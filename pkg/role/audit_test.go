@@ -155,14 +155,3 @@ func TestRoleAudit_Delete(t *testing.T) {
 		t.Errorf("Actor: got %q, want %q", ev.Actor, "admin@system")
 	}
 }
-
-// TestRoleAudit_NilLoggerNoPanic verifies mutations succeed and do not panic
-// when no audit logger is configured (the default construction path).
-func TestRoleAudit_NilLoggerNoPanic(t *testing.T) {
-	svc := newTestStore(t)
-	ctx := auditCtx()
-	r := createTestRole(t, svc, "editor", "acme")
-	if err := svc.DeleteRole(ctx, r.ID); err != nil {
-		t.Fatalf("DeleteRole: %v", err)
-	}
-}

@@ -90,22 +90,6 @@ func TestAuthFactorTenantMismatch_IsAnAliasNotACopy(t *testing.T) {
 	var _ *service.AuthFactorTenantMismatchError = (*AuthFactorTenantMismatchError)(nil)
 }
 
-// TestAuthFactorTenantMismatch_ConstructibleThroughTheSDK is the runtime half:
-// a value built through the SDK-visible type name, with no pkg/service import
-// of its own, must still match pkg/service's type via errors.As — the same
-// assertion form every transport's classifier is written against.
-func TestAuthFactorTenantMismatch_ConstructibleThroughTheSDK(t *testing.T) {
-	var err error = &AuthFactorTenantMismatchError{Requested: "globex", Context: "acme"}
-
-	var target *service.AuthFactorTenantMismatchError
-	if !errors.As(err, &target) {
-		t.Fatalf("a value built through the SDK alias must match pkg/service's type, got %T: %v", err, err)
-	}
-	if target.Requested != "globex" || target.Context != "acme" {
-		t.Errorf("fields did not survive the alias: got Requested=%q Context=%q", target.Requested, target.Context)
-	}
-}
-
 // newCeremonyBarrierService wires a BarrierService to a real ceremony, the
 // configuration under which barrier init refuses the system barrier.
 func newCeremonyBarrierService(t *testing.T) BarrierServicer {

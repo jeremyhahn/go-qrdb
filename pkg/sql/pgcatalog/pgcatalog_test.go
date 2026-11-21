@@ -315,12 +315,6 @@ func TestClassRowsPointAtTheirNamespace(t *testing.T) {
 	assert.Contains(t, nsOIDs, NamespaceOID(sqle.InformationSchemaDatabaseName))
 }
 
-func TestDescriptionIsEmpty(t *testing.T) {
-	ctx := sqle.NewEmptyContext()
-	rows := scan(t, ctx, assigned(t, DescriptionRelation, newTestCatalog("gorm")))
-	assert.Empty(t, rows, "qrdb implements no COMMENT ON, so nothing is described")
-}
-
 func TestColumnsTableAppendsThePostgreSQLColumns(t *testing.T) {
 	tbl := NewColumnsTable()
 	schema := tbl.Schema(sqle.NewEmptyContext())

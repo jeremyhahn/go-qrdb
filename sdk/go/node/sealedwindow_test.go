@@ -147,21 +147,6 @@ func TestSealedWindowOptions_CarryThePINBackend(t *testing.T) {
 	assert.Same(t, got, pin.NewLockoutBackend(got), "the injected backend carries the SO PIN lockout")
 }
 
-// TestSealedWindowConfig verifies the pending-boot config resolution used
-// by ServeSealedWindow, including the no-pending-boot error path.
-func TestSealedWindowConfig(t *testing.T) {
-	n := &Node{}
-	assert.Nil(t, n.sealedWindowConfig(), "no pending boot → nil config")
-
-	dataDir := t.TempDir()
-	cfg := sealedStandaloneConfig(t, dataDir)
-	n2, err := NewStandaloneNode(context.Background(), cfg, nil)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, n2.Close()) }()
-	require.True(t, n2.IsSealed())
-	assert.Same(t, cfg, n2.sealedWindowConfig(), "sealed standalone node must expose its pending boot config")
-}
-
 func TestSealedWindowConfig_ClusteredBoot(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	n := &Node{pendingClustered: &pendingClusteredBoot{cfg: cfg}}

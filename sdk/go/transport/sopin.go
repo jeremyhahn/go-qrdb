@@ -18,6 +18,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -258,6 +259,10 @@ func (rt *soPINRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		secure.Wipe(pin)
 		return nil, &SOPINForeignHostError{Transport: rt.transport, Host: req.URL.Host}
 	}
+	if req.Response != nil {
+		secure.Wipe(pin)
+		return nil, &SOPINRedirectError{Transport: rt.transport, Status: req.Response.StatusCode}
+	}
 	// Clone before mutating headers, per the RoundTripper contract.
 	clone := req.Clone(req.Context())
 	clone.Header.Set(SOPINHeader, string(pin))
@@ -294,4 +299,22 @@ type SOPINForeignHostError struct {
 // Error returns a description that never contains the PIN.
 func (e *SOPINForeignHostError) Error() string {
 	return "transport: " + e.Transport + ": refusing to send the SO PIN to " + e.Host + ", which is not the configured host"
+}
+
+// SOPINRedirectError is returned when a REST or MCP request whose context is
+// bound by WithSOPIN, or whose body carries an SO PIN, is answered with a
+// redirect, to the configured host included. The redirected request is
+// refused before it is sent, so the PIN is never replayed to a path the server
+// names.
+type SOPINRedirectError struct {
+	// Transport names the SDK transport that refused ("rest", "mcp").
+	Transport string
+	// Status is the HTTP status of the redirect response (307, 308, ...).
+	Status int
+}
+
+// Error returns a description that never contains the PIN.
+func (e *SOPINRedirectError) Error() string {
+	return "transport: " + e.Transport + ": the SO PIN is never resent on a redirect; refusing to follow a " +
+		strconv.Itoa(e.Status) + " " + http.StatusText(e.Status)
 }

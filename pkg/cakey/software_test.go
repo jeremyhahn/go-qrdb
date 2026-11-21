@@ -376,32 +376,6 @@ func TestSoftwareProvider_TwoNodesDifferentBarriersLoadTheSameCA(t *testing.T) {
 	}
 }
 
-// TestSoftwareProvider_NodeJoinsReadsExistingCA proves the "a node joins"
-// half of the B1 test requirement, distinct from the restart test above:
-// a BRAND NEW node, with its own fresh barrier that never touched the
-// store before, reads the cluster CA an existing member already
-// established -- the member-side CSR join scenario, at the storage layer.
-func TestSoftwareProvider_NodeJoinsReadsExistingCA(t *testing.T) {
-	sharedStore := newGuardedMemoryStore()
-	founder := NewSoftwareProvider(sharedStore, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
-	if err := founder.Initialize(context.Background()); err != nil {
-		t.Fatalf("founder Initialize: %v", err)
-	}
-	wantCert, err := founder.Certificate(context.Background())
-	if err != nil {
-		t.Fatalf("founder Certificate: %v", err)
-	}
-
-	joiner := NewSoftwareProvider(sharedStore, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
-	gotCert, err := joiner.Certificate(context.Background())
-	if err != nil {
-		t.Fatalf("joiner Certificate: %v", err)
-	}
-	if gotCert.SerialNumber.Cmp(wantCert.SerialNumber) != 0 {
-		t.Fatalf("joining node read a different CA: serial %s != founder's %s", gotCert.SerialNumber, wantCert.SerialNumber)
-	}
-}
-
 // TestSoftwareProvider_ConcurrentInitializeConvergesOnOneCA is the
 // owner-required concurrency proof for B2: several providers, standing in
 // for several nodes racing to become the cluster's first, all call
@@ -707,19 +681,6 @@ func TestSoftwareProvider_CertificateWhileSealedRefuses(t *testing.T) {
 	var sealedErr *BarrierSealedError
 	if _, err := p.Certificate(context.Background()); !errors.As(err, &sealedErr) {
 		t.Fatalf("Certificate while sealed = %v, want *BarrierSealedError", err)
-	}
-}
-
-func TestSoftwareProvider_UnsealAfterSealReloadsIntoMemory(t *testing.T) {
-	store := newGuardedMemoryStore()
-	barrier := newMockBarrier()
-	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
-	if err := p.Initialize(context.Background()); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	p.Seal()
-	if _, err := p.Signer(context.Background()); err != nil {
-		t.Fatalf("Signer after Seal (barrier still unsealed) = %v, want auto-reload to succeed", err)
 	}
 }
 

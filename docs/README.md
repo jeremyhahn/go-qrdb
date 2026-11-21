@@ -78,6 +78,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [backup-restore](backup-restore/) | shard snapshots, verification, selective restore |
 | [clustering](clustering/) | peer discovery, cluster formation, membership, node admin, rebalance |
 | [cluster-verification](cluster-verification/) | what "Raft clustering and storage proven" means: the gate and exit criteria, workload, ledger, history, nemesis faults, the soak and its evidence bundle, `make cluster-proof` |
+| [rolling-upgrades](rolling-upgrades/) | *(planned, review)* mixed-version rolling upgrades between adjacent releases: wire-version negotiation, version-gap refusal, the cross-release compatibility test plan |
 | [run-modes](run-modes/) | standalone vs raft, the three capability gates |
 | [capabilities](capabilities/) | the effective runtime feature profile: build tags, run mode and configuration |
 | [configuration](configuration/) | load order, validation, the flag/YAML mapping |

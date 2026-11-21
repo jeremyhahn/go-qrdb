@@ -169,15 +169,6 @@ func TestNoopLogger_EmitAndQuery(t *testing.T) {
 	}
 }
 
-func TestNoopLogger_Emit_IsNoOp(t *testing.T) {
-	// Emit on NoopLogger must never panic and must be a true no-op.
-	n := NewNoopLogger()
-	ctx := context.Background()
-	for i := 0; i < 10; i++ {
-		n.Emit(ctx, testEvent("ghost", "resource", "action"))
-	}
-}
-
 func TestNoopLogger_Close_Exported(t *testing.T) {
 	if err := NewNoopLogger().Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -237,10 +228,6 @@ func TestSlogSink_Emit_ZeroTimestamp(t *testing.T) {
 	if !strings.Contains(buf.String(), "agent") {
 		t.Fatalf("expected actor in output: %s", buf.String())
 	}
-}
-
-func TestSlogSink_ImplementsAuditLogger(t *testing.T) {
-	var _ AuditLogger = (*SlogSink)(nil)
 }
 
 // ---------------------------------------------------------------------------

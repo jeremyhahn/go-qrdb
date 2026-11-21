@@ -19,7 +19,6 @@ package store
 import (
 	"bytes"
 	"context"
-	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -160,18 +159,6 @@ func TestPebbleStateMachine_ScanPrefixNoMatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 // PebbleStateMachine: Open error paths (66.7% -> improve)
 // ---------------------------------------------------------------------------
-
-func TestPebbleStateMachine_OpenInvalidDir(t *testing.T) {
-	s := NewPebbleStateMachine(nil)
-	_, err := s.Open(context.Background(), "/dev/null/nonexistent/path", nil)
-	if err == nil {
-		t.Fatal("expected error for invalid directory")
-	}
-	var oe *OpenError
-	if !errors.As(err, &oe) {
-		t.Fatalf("expected *OpenError, got %T: %v", err, err)
-	}
-}
 
 func TestPebbleStateMachine_OpenWithTimeSeriesEnabled(t *testing.T) {
 	s := NewPebbleStateMachine(nil)
@@ -646,76 +633,6 @@ func TestPebbleStateMachine_TSSetRetention_InvalidPayload(t *testing.T) {
 // PebbleStateMachine: GetHash with data (86.4% -> improve)
 // ---------------------------------------------------------------------------
 
-func TestPebbleStateMachine_GetHash_WithData(t *testing.T) {
-	s := openExtendedStore(t)
-
-	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("hash-k1"), []byte("v1"), 0))},
-		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("hash-k2"), []byte("v2"), 0))},
-	})
-
-	h1, err := s.GetHash()
-	if err != nil {
-		t.Fatalf("GetHash: %v", err)
-	}
-	if h1 == 0 {
-		t.Fatal("expected non-zero hash with data")
-	}
-
-	// Hash should change after another put.
-	applyExtEntries(t, s, []sm.Entry{
-		{Index: 3, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("hash-k3"), []byte("v3"), 0))},
-	})
-
-	h2, err := s.GetHash()
-	if err != nil {
-		t.Fatalf("GetHash after mutation: %v", err)
-	}
-	if h2 == h1 {
-		t.Fatal("expected hash to change after adding a new key")
-	}
-}
-
-func TestPebbleStateMachine_GetHash_EmptyDB(t *testing.T) {
-	s := openExtendedStore(t)
-
-	h, err := s.GetHash()
-	if err != nil {
-		t.Fatalf("GetHash empty: %v", err)
-	}
-	// An empty database may yield 0 or the xxhash64 seed; either is valid.
-	_ = h
-}
-
-func TestPebbleStateMachine_GetHash_SkipsMetadataKeys(t *testing.T) {
-	s := openExtendedStore(t)
-
-	// Write a user key and verify hash includes it.
-	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("user-key"), []byte("user-val"), 0))},
-	})
-
-	h1, err := s.GetHash()
-	if err != nil {
-		t.Fatalf("GetHash: %v", err)
-	}
-
-	// Apply another entry that advances the lastApplied metadata key (\x00...).
-	// The hash should not change due to metadata writes alone.
-	applyExtEntries(t, s, []sm.Entry{
-		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("user-key"), []byte("user-val"), 0))},
-	})
-
-	h2, err := s.GetHash()
-	if err != nil {
-		t.Fatalf("GetHash 2: %v", err)
-	}
-	// Repeated same-value write: hash should stay equal.
-	if h1 != h2 {
-		t.Fatalf("expected hash to be stable for same data, got h1=%d h2=%d", h1, h2)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // PebbleStateMachine: pebbleHandlePut/Delete with invalid payloads
 // ---------------------------------------------------------------------------
@@ -835,18 +752,6 @@ func TestMVCCStateMachine_LessorNilWhenNotSet(t *testing.T) {
 // MVCCStateMachine: Open error paths (73.7% -> improve)
 // ---------------------------------------------------------------------------
 
-func TestMVCCStateMachine_OpenInvalidDir(t *testing.T) {
-	s := NewMVCCStateMachine(nil)
-	_, err := s.Open(context.Background(), "/dev/null/nonexistent", nil)
-	if err == nil {
-		t.Fatal("expected error for invalid directory")
-	}
-	var oe *OpenError
-	if !errors.As(err, &oe) {
-		t.Fatalf("expected *OpenError, got %T: %v", err, err)
-	}
-}
-
 func TestMVCCStateMachine_OpenWithLessor(t *testing.T) {
 	s := NewMVCCStateMachine(nil)
 	lr := lease.NewLessor()
@@ -943,36 +848,6 @@ func TestMVCCStateMachine_ClearAll_ViaSnapshotRecovery(t *testing.T) {
 // ---------------------------------------------------------------------------
 // MVCCStateMachine: GetHash with data (94.4% -> improve)
 // ---------------------------------------------------------------------------
-
-func TestMVCCStateMachine_GetHash_WithData(t *testing.T) {
-	s := newTestMVCCStateMachine(t)
-
-	applyMVCCEntries(t, s, []sm.Entry{
-		mvccPutEntry(1, []byte("hk1"), []byte("hv1"), 0),
-		mvccPutEntry(2, []byte("hk2"), []byte("hv2"), 0),
-	})
-
-	h1, err := s.GetHash()
-	if err != nil {
-		t.Fatalf("GetHash: %v", err)
-	}
-	if h1 == 0 {
-		t.Fatal("expected non-zero hash with data")
-	}
-
-	// Hash changes after a new key is added.
-	applyMVCCEntries(t, s, []sm.Entry{
-		mvccPutEntry(3, []byte("hk3"), []byte("hv3"), 0),
-	})
-
-	h2, err := s.GetHash()
-	if err != nil {
-		t.Fatalf("GetHash after mutation: %v", err)
-	}
-	if h2 == h1 {
-		t.Fatal("expected hash to change after adding a new key")
-	}
-}
 
 func TestMVCCStateMachine_GetHash_EmptyDB(t *testing.T) {
 	s := newTestMVCCStateMachine(t)

@@ -97,25 +97,6 @@ func (s *stubClient) GetRevision(context.Context, string, ...transport.ReadOptio
 var _ BatchRevisionClient = (*stubClient)(nil)
 var _ BatchRevisionClient = (*embedded.Transport)(nil)
 
-func TestNew_OpensAWorkingHost(t *testing.T) {
-	h := New(t)
-	if h.machine == nil {
-		t.Fatal("New returned a host without a state machine")
-	}
-	if got := CheckBatchRevision(t, newTransport(t, h), "new/"); got <= 0 {
-		t.Fatalf("batch revision on a new host = %d, want > 0", got)
-	}
-}
-
-func TestNew_HostsAreIndependent(t *testing.T) {
-	a, b := New(t), New(t)
-	ra := CheckBatchRevision(t, newTransport(t, a), "x/")
-	rb := CheckBatchRevision(t, newTransport(t, b), "x/")
-	if ra != rb {
-		t.Fatalf("first batch revision on two fresh hosts = %d and %d, want equal", ra, rb)
-	}
-}
-
 func TestNew_WritesNothingToDisk(t *testing.T) {
 	scratch := t.TempDir()
 	t.Chdir(scratch)

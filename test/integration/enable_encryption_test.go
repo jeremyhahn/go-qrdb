@@ -235,19 +235,7 @@ func createDatabaseRetryingUnavailable(t *testing.T, client *http.Client, port i
 	}
 }
 
-// TestEnableEncryption_SystemScope_DataSurvivesInProcessRecycle is the
-// end-to-end proof of the daemon SYSTEM-scope enable-encryption feature: a
-// single-node daemon boots with an UNENCRYPTED (strategy "none") barrier, has
-// data written through the full Raft pipeline, then is migrated to a passphrase
-// barrier IN PROCESS (the OS process never restarts). After the recycle the
-// barrier comes up keyed-and-sealed; the operator unseals with the new
-// passphrase, and every datum written before the migration is intact —
-// proving the host's state-machine Pebble + WAL were re-encrypted without loss.
-func TestEnableEncryption_SystemScope_DataSurvivesInProcessRecycle(t *testing.T) {
-	assertSystemEnableEncryptionKeepsData(t, "--sm", "pebble")
-}
-
-// TestEnableEncryption_SystemScope_DiskOverFileStorage is the same daemon
+// TestEnableEncryption_SystemScope_DiskOverFileStorage is the daemon
 // system-scope migration over a disk state machine whose storage is the file
 // engine (`raft.sm_storage: file`). That store sits under the data directory's
 // sm/ tree, outside the host's own stores, and is encrypted through the

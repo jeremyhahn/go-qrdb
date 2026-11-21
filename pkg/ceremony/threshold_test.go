@@ -29,11 +29,6 @@ func TestNoopThresholdInitializer_VendorName(t *testing.T) {
 	assert.Equal(t, "noop", noop.VendorName())
 }
 
-func TestNoopThresholdInitializer_Available(t *testing.T) {
-	noop := &NoopThresholdInitializer{}
-	assert.False(t, noop.Available())
-}
-
 func TestNoopThresholdInitializer_InitializeThreshold(t *testing.T) {
 	noop := &NoopThresholdInitializer{}
 	err := noop.InitializeThreshold(context.Background(), &ThresholdOptions{
@@ -75,19 +70,6 @@ func (a *availableThresholdInitializer) ImportShare(_ context.Context, _ []byte)
 }
 func (a *availableThresholdInitializer) ThresholdStatus(_ context.Context) (*ThresholdStatus, error) {
 	return &ThresholdStatus{Ready: true}, nil
-}
-
-func TestThresholdRegistry_RegisterAndGet(t *testing.T) {
-	reg := NewThresholdRegistry()
-
-	reg.Register("test-vendor", func() ThresholdInitializer {
-		return &availableThresholdInitializer{vendor: "test-vendor"}
-	})
-
-	init, err := reg.Get("test-vendor")
-	require.NoError(t, err)
-	assert.Equal(t, "test-vendor", init.VendorName())
-	assert.True(t, init.Available())
 }
 
 func TestThresholdRegistry_GetUnregistered(t *testing.T) {

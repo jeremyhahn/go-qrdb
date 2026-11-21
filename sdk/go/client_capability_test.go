@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -107,9 +106,6 @@ func TestClient_OptionalAccessors_NilWhenTransportLacksThem(t *testing.T) {
 	if got := c.UserAuthFactors(); got != nil {
 		t.Fatalf("UserAuthFactors = %v, want nil", got)
 	}
-	if got := c.Permissions(); got != nil {
-		t.Fatalf("Permissions = %v, want nil", got)
-	}
 	if got := c.Audit(); got != nil {
 		t.Fatalf("Audit = %v, want nil", got)
 	}
@@ -125,6 +121,20 @@ func TestClient_OptionalAccessors_NilWhenTransportLacksThem(t *testing.T) {
 	if got := c.Sessions(); got != nil {
 		t.Fatalf("Sessions = %v, want nil", got)
 	}
+}
+
+// TestClient_Permissions_IsARequiredCapability pins that Permissions is
+// routed through capability like every required accessor: every shipped
+// transport implements transport.PermissionProvider, so a transport that
+// does not is a programming error, not a nil client.
+func TestClient_Permissions_IsARequiredCapability(t *testing.T) {
+	c := newPlainClient(t)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Permissions on a transport without PermissionProvider did not panic")
+		}
+	}()
+	_ = c.Permissions()
 }
 
 func TestClient_SQL_UnsupportedTransportRefusesTyped(t *testing.T) {
@@ -283,18 +293,5 @@ func TestTypedErrors_Messages(t *testing.T) {
 	// A key carrying a quote or control byte is quoted, never spliced raw.
 	if got := (&SwapLostError{Key: []byte("a\"b\n")}).Error(); !strings.Contains(got, `"a\"b\n"`) {
 		t.Errorf("SwapLostError did not quote its key: %q", got)
-	}
-}
-
-// TestLeaseExpiredBeforeBindError_MessageCarriesTTL pins the TTL rendering,
-// which the caller needs to choose a longer one.
-func TestLeaseExpiredBeforeBindError_MessageCarriesTTL(t *testing.T) {
-	inner := errors.New("lease not found")
-	err := &LeaseExpiredBeforeBindError{Key: "locks/c", TTL: 2 * time.Second, Err: inner}
-	if want := "sdk: lease expired before the key was bound (ttl 2s): locks/c"; err.Error() != want {
-		t.Fatalf("Error() = %q, want %q", err.Error(), want)
-	}
-	if !errors.Is(err, inner) {
-		t.Fatal("errors.Is did not reach the wrapped bind error")
 	}
 }

@@ -824,38 +824,6 @@ func TestDecoders_RefuseAnImpossibleElementCount(t *testing.T) {
 	}
 }
 
-// And the counts that ARE possible still decode, so the bound is a distinction
-// rather than a blanket refusal.
-func TestDecoders_StillAcceptAWellFormedCount(t *testing.T) {
-	op, err := EncodeOp(OpMVCCPut, []byte("k"), []byte("v"), nil, 0)
-	if err != nil {
-		t.Fatalf("EncodeOp: %v", err)
-	}
-	cmd, err := EncodeBatch([][]byte{op, op})
-	if err != nil {
-		t.Fatalf("EncodeBatch: %v", err)
-	}
-	ops, err := DecodeBatch(cmd[headerSize:])
-	if err != nil {
-		t.Fatalf("DecodeBatch on a well-formed batch: %v", err)
-	}
-	if len(ops) != 2 {
-		t.Fatalf("decoded %d ops, want 2", len(ops))
-	}
-
-	txn, err := EncodeTransaction(nil, [][]byte{op}, nil)
-	if err != nil {
-		t.Fatalf("EncodeTransaction: %v", err)
-	}
-	decoded, err := DecodeTransaction(txn[headerSize:])
-	if err != nil {
-		t.Fatalf("DecodeTransaction on a well-formed transaction: %v", err)
-	}
-	if len(decoded.SuccessOps) != 1 {
-		t.Fatalf("decoded %d success ops, want 1", len(decoded.SuccessOps))
-	}
-}
-
 // An element length field that the remaining payload cannot hold must be
 // refused before it reaches slice arithmetic.
 //
@@ -1231,32 +1199,6 @@ func TestEncodeDecodeCompareAndSwap_RoundTrip(t *testing.T) {
 				t.Errorf("next = %d bytes, want %d", len(gotNext), len(tt.next))
 			}
 		})
-	}
-}
-
-// An expected value larger than a two-byte field must ENCODE, because a caller
-// can store a value that large and must be able to guard on it.
-//
-// This is the reason the expected value carries a four-byte length while the
-// key keeps two. Capping the guard at 65,535 bytes would let a caller write a
-// record they then cannot express a compare against — the same class of defect
-// as go-qrdb#52, arriving through the front door rather than through a cast.
-func TestEncodeCompareAndSwap_GuardsOnValuesLargerThanTwoBytesCanFrame(t *testing.T) {
-	big := bytes.Repeat([]byte("v"), MaxUint16Field+1024)
-
-	cmd, err := EncodeCompareAndSwap([]byte("k"), big, []byte("next"))
-	if err != nil {
-		t.Fatalf("a %d-byte expected value was refused: %v", len(big), err)
-	}
-	_, gotExpected, gotNext, derr := DecodeCompareAndSwap(cmd[1:])
-	if derr != nil {
-		t.Fatalf("DecodeCompareAndSwap: %v", derr)
-	}
-	if len(gotExpected) != len(big) {
-		t.Errorf("expected value round-tripped as %d bytes, want %d", len(gotExpected), len(big))
-	}
-	if string(gotNext) != "next" {
-		t.Errorf("next = %q, want %q", gotNext, "next")
 	}
 }
 

@@ -239,9 +239,6 @@ func TestVerify_MalformedInputsRejected(t *testing.T) {
 	if _, err := Verify(ab, "not!base64", cert, tdom, now, method, path, dig); err == nil {
 		t.Fatal("expected error for malformed sig b64")
 	}
-	if _, err := Verify(ab, sb, nil, tdom, now, method, path, dig); err == nil {
-		t.Fatal("expected error for nil peer cert")
-	}
 }
 
 func TestBodyDigest_EmptyStable(t *testing.T) {

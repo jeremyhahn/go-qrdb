@@ -281,6 +281,22 @@ func TestCADelegatePolicy_CLI_ConsumerOperations_PerProtocol(t *testing.T) {
 				}
 			}
 
+			// Without the grant, in A itself: the bootstrap delegation holds
+			// only certs:delegate, and each operation is refused on
+			// authorization, not on any other failure.
+			for what, args := range map[string][]string{
+				"users get":                   {"users", "get", account},
+				"roles get-by-name":           {"roles", "get-by-name", "auditor", "--tenant-id", delegationTenantA},
+				"roles resolve-permissions":   {"roles", "resolve-permissions", userRole},
+				"roles assign":                {"roles", "assign", "--user", account, "--role", auditor},
+				"roles unassign":              {"roles", "unassign", "--user", account, "--role", auditor},
+				"tenant barrier-officer list": {"tenant", "barrier-officer", "list", "--tenant-id", delegationTenantA},
+				"tenant barrier-seal":         {"tenant", "barrier-seal", "--id", delegationTenantA},
+			} {
+				out, err := run(bootConn, args...)
+				assertCLIAuthorizationRefused(t, proto.name, what+" without the grant", out, err)
+			}
+
 			// Deleting the policy stops the mint; revoking the serial
 			// refuses the next call.
 			must("ca delegate policy delete", admin, "ca", "delegate", "policy", "delete", delegationPrincipal)
@@ -298,6 +314,23 @@ func TestCADelegatePolicy_CLI_ConsumerOperations_PerProtocol(t *testing.T) {
 				"tenant", "barrier-seal", "--id", delegationTenantA)
 		})
 	}
+}
+
+// assertCLIAuthorizationRefused fails unless a CLI call failed with the
+// typed permission refusal every transport renders for it.
+func assertCLIAuthorizationRefused(t *testing.T, proto, what, out string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Errorf("[%s] %s succeeded: %s", proto, what, out)
+		return
+	}
+	lower := strings.ToLower(out + " " + err.Error())
+	for _, marker := range []string{"permission denied", "permissiondenied", "forbidden", "403"} {
+		if strings.Contains(lower, marker) {
+			return
+		}
+	}
+	t.Errorf("[%s] %s failed, but not on authorization: %v\noutput: %s", proto, what, err, out)
 }
 
 // assertCrossTenantPolicyDeleteNotFound: tenant B deleting tenant A's

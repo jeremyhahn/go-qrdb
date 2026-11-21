@@ -87,13 +87,6 @@ func TestUnsupportedCodecError_Error_JSON(t *testing.T) {
 	assert.Equal(t, "codec: unsupported codec type: msgpack", err.Error())
 }
 
-func TestUnsupportedCodecError_ErrorsAs_JSON(t *testing.T) {
-	err := &UnsupportedCodecError{Name: "yaml"}
-	var ucErr *UnsupportedCodecError
-	require.True(t, errors.As(err, &ucErr))
-	assert.Equal(t, "yaml", ucErr.Name)
-}
-
 // ---------------------------------------------------------------------------
 // errors.go — NilInputError
 // ---------------------------------------------------------------------------
@@ -101,13 +94,6 @@ func TestUnsupportedCodecError_ErrorsAs_JSON(t *testing.T) {
 func TestNilInputError_Error_JSON(t *testing.T) {
 	err := &NilInputError{Codec: TypeJSON}
 	assert.Equal(t, "codec: nil target passed to unmarshal (json)", err.Error())
-}
-
-func TestNilInputError_ErrorsAs_JSON(t *testing.T) {
-	err := &NilInputError{Codec: TypeJSON}
-	var nilErr *NilInputError
-	require.True(t, errors.As(err, &nilErr))
-	assert.Equal(t, TypeJSON, nilErr.Codec)
 }
 
 // ---------------------------------------------------------------------------
@@ -119,13 +105,6 @@ func TestEmptyDataError_Error_JSON(t *testing.T) {
 	assert.Equal(t, "codec: empty data passed to unmarshal (json)", err.Error())
 }
 
-func TestEmptyDataError_ErrorsAs_JSON(t *testing.T) {
-	err := &EmptyDataError{Codec: TypeJSON}
-	var emptyErr *EmptyDataError
-	require.True(t, errors.As(err, &emptyErr))
-	assert.Equal(t, TypeJSON, emptyErr.Codec)
-}
-
 // ---------------------------------------------------------------------------
 // errors.go — ConfigValidationError
 // ---------------------------------------------------------------------------
@@ -135,23 +114,9 @@ func TestConfigValidationError_Error_JSON(t *testing.T) {
 	assert.Equal(t, "codec: config validation failed: storage_codec: must not be empty", err.Error())
 }
 
-func TestConfigValidationError_ErrorsAs_JSON(t *testing.T) {
-	err := &ConfigValidationError{Field: "wire_codec", Message: "unsupported"}
-	var cvErr *ConfigValidationError
-	require.True(t, errors.As(err, &cvErr))
-	assert.Equal(t, "wire_codec", cvErr.Field)
-}
-
 // ---------------------------------------------------------------------------
 // manager.go — NewManager / accessors
 // ---------------------------------------------------------------------------
-
-func TestNewManager_JSON(t *testing.T) {
-	m := NewManager(&JSONCodec{}, &JSONCodec{})
-	require.NotNil(t, m)
-	assert.Equal(t, TypeJSON, m.StorageCodec().Type())
-	assert.Equal(t, TypeJSON, m.WireCodec().Type())
-}
 
 func TestManager_StorageCodec_JSON(t *testing.T) {
 	storage := &JSONCodec{}

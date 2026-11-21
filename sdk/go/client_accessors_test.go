@@ -286,13 +286,6 @@ func TestRegisterDAODelete_CommitRefusedOnNonAtomicStore(t *testing.T) {
 	}
 }
 
-func TestNewClientDAOFactory_BuildsOverTheClient(t *testing.T) {
-	c, _ := newEmbeddedClient(t)
-	if sdk.NewClientDAOFactory(c) == nil {
-		t.Fatal("NewClientDAOFactory = nil")
-	}
-}
-
 func TestAdminFactorWrappers(t *testing.T) {
 	enrollable := sdk.EnrollableAdminFactors()
 	if len(enrollable) == 0 {

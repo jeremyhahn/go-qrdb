@@ -134,14 +134,26 @@ func (p *DefaultCertProvider) ListDelegationPolicies(ctx context.Context, tenant
 
 // DeleteDelegationPolicy implements DelegationPolicyStore.
 func (p *DefaultCertProvider) DeleteDelegationPolicy(ctx context.Context, tenantID, principal string) (bool, error) {
-	if _, found, err := p.DelegationPolicy(ctx, tenantID, principal); err != nil || !found {
+	if p.barrier.IsSealed() {
+		return false, &BarrierSealedError{}
+	}
+	if err := checkPolicyKey(tenantID, principal); err != nil {
 		return false, err
 	}
 	store, _, err := p.recordStore(ctx, tenantID)
 	if err != nil {
 		return false, err
 	}
+	// The record is found by its raw value and never decoded, so one that no
+	// longer decodes as a policy can still be removed.
 	key := delegationPolicyKey(tenantID, principal)
+	val, err := store.Get(ctx, key)
+	if err != nil {
+		return false, &StoreError{Op: "get", Detail: key, Err: err}
+	}
+	if val == nil {
+		return false, nil
+	}
 	if err := store.Delete(ctx, key); err != nil {
 		return false, &StoreError{Op: "delete", Detail: key, Err: err}
 	}

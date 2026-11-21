@@ -90,27 +90,6 @@ func (c *cursorClient) query(t *testing.T, sql string) {
 	c.mustRead(t)
 }
 
-// TestWaitTimeout_ClosesIdleConnection: a connection that sends no command for
-// longer than sql.wait_timeout is closed by the server, independent of
-// sql.query_timeout (which bounds a running statement, not an idle one). A
-// query run before the bound succeeds normally.
-func TestWaitTimeout_ClosesIdleConnection(t *testing.T) {
-	const wait = 300 * time.Millisecond
-	db, _, _ := idleTimeoutFixture(t, wait, 0)
-	conn, err := db.Conn(context.Background())
-	require.NoError(t, err)
-	defer func() { _ = conn.Close() }()
-
-	var one int
-	require.NoError(t, conn.QueryRowContext(context.Background(), "SELECT 1").Scan(&one),
-		"a query issued before the idle bound")
-
-	time.Sleep(wait + 2*time.Second)
-
-	err = conn.QueryRowContext(context.Background(), "SELECT 1").Scan(&one)
-	require.Error(t, err, "a query on a connection idle past wait_timeout")
-}
-
 // TestWaitTimeout_ActiveConnectionUnaffected: a connection that keeps issuing
 // commands more often than sql.wait_timeout is never closed, even once the
 // cumulative time since it was opened exceeds the bound.

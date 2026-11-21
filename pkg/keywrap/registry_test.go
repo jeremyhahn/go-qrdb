@@ -170,6 +170,9 @@ func TestNewDefaultRegistry_RefusesUnopenableKeyDir(t *testing.T) {
 	if !errors.As(err, &dirErr) {
 		t.Fatalf("NewDefaultRegistry err = %v, want *KeyDirectoryError", err)
 	}
+	if dirErr.Dir == "" {
+		t.Fatal("KeyDirectoryError.Dir is empty")
+	}
 }
 
 func TestLookup_PropagatesNotRegistered(t *testing.T) {

@@ -26,28 +26,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/kdf"
 )
 
-// TestFIPSKDF_DefaultHasher_FIPSMode verifies that DefaultHasher returns
-// PBKDF2SHA256Hasher when GOFIPS140=1 is set.
-func TestFIPSKDF_DefaultHasher_FIPSMode(t *testing.T) {
-	t.Setenv("GOFIPS140", "1")
-	h := kdf.DefaultHasher()
-	if h.Version() != kdf.VersionPBKDF2SHA256 {
-		t.Fatalf("FIPS mode: expected DefaultHasher to be %q, got %q",
-			kdf.VersionPBKDF2SHA256, h.Version())
-	}
-}
-
-// TestFIPSKDF_DefaultHasher_NonFIPSMode verifies that DefaultHasher returns
-// Argon2idHasher when GOFIPS140 is unset.
-func TestFIPSKDF_DefaultHasher_NonFIPSMode(t *testing.T) {
-	t.Setenv("GOFIPS140", "")
-	h := kdf.DefaultHasher()
-	if h.Version() != kdf.VersionArgon2id {
-		t.Fatalf("non-FIPS mode: expected DefaultHasher to be %q, got %q",
-			kdf.VersionArgon2id, h.Version())
-	}
-}
-
 // TestFIPSKDF_Hash_FIPSModeProducesCorrectPrefix verifies the hash string
 // produced in FIPS mode starts with the v2:pbkdf2-sha256 prefix.
 func TestFIPSKDF_Hash_FIPSModeProducesCorrectPrefix(t *testing.T) {

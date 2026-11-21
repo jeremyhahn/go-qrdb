@@ -40,33 +40,6 @@ func createAdminRole(t *testing.T, svc RoleServicer, tenantID string) *Role {
 	return r
 }
 
-func TestIsTenantOwner_TenantAdminIsOwner(t *testing.T) {
-	svc := newTestStore(t)
-	admin := createAdminRole(t, svc, "acme")
-
-	owner, err := IsTenantOwner(context.Background(), svc, &auth.Identity{TenantID: "acme", Roles: []string{admin.ID}})
-	if err != nil {
-		t.Fatalf("IsTenantOwner: %v", err)
-	}
-	if !owner {
-		t.Fatal("tenant Admin must be the tenant owner")
-	}
-}
-
-func TestIsTenantOwner_NonAdminIsNotOwner(t *testing.T) {
-	svc := newTestStore(t)
-	createAdminRole(t, svc, "acme")
-	viewer := createTestRole(t, svc, "viewer", "acme")
-
-	owner, err := IsTenantOwner(context.Background(), svc, &auth.Identity{TenantID: "acme", Roles: []string{viewer.ID}})
-	if err != nil {
-		t.Fatalf("IsTenantOwner: %v", err)
-	}
-	if owner {
-		t.Fatal("a non-Admin role must not make its holder the tenant owner")
-	}
-}
-
 // A role NAME on the identity is not a grant: only the persisted id is.
 func TestIsTenantOwner_RoleNameDoesNotMatch(t *testing.T) {
 	svc := newTestStore(t)

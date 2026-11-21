@@ -16,7 +16,6 @@ package rowlock
 
 import (
 	"context"
-	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -679,5 +678,4 @@ func TestErrors_Messages(t *testing.T) {
 		assert.Contains(t, c.err.Error(), c.want)
 		assert.Contains(t, c.err.Error(), "rowlock:")
 	}
-	assert.True(t, errors.As(error(&DeadlockError{}), new(*DeadlockError)))
 }

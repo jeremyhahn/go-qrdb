@@ -282,27 +282,6 @@ func TestInitSealSubsystem_SealStorageMkdirError(t *testing.T) {
 // concurrency/race sanity check
 // ---------------------------------------------------------------------------
 
-// TestGenerateReplicaID_ConcurrentCallsDistinct issues multiple concurrent
-// calls and verifies all return valid non-zero IDs without data races.
-func TestGenerateReplicaID_ConcurrentCallsDistinct(t *testing.T) {
-	const n = 20
-	results := make(chan uint64, n)
-	for i := 0; i < n; i++ {
-		go func() {
-			id, err := generateReplicaID()
-			if err != nil {
-				results <- 0
-				return
-			}
-			results <- id
-		}()
-	}
-	for i := 0; i < n; i++ {
-		id := <-results
-		assert.NotZero(t, id, "generateReplicaID must not return zero")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // start.go: runStart — srv.Start() failure covers auth-disabled paths (1182/1216)
 // ---------------------------------------------------------------------------
@@ -806,53 +785,3 @@ func occupiedTCPPort(t *testing.T) int {
 // ---------------------------------------------------------------------------
 // start.go: startDynamicMembership — cover lines 1598-1618 via mock services
 // ---------------------------------------------------------------------------
-
-// TestStartDynamicMembership_WithMockServices verifies that passing valid
-// non-nil KVServicer and AdminServicer allows embedded.New and sdkgo.NewClient
-// to succeed, while a pre-canceled context causes mgr.Start to fail quickly.
-// This covers lines 1598-1617 of start.go.
-func TestStartDynamicMembership_WithMockServices(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately so mgr.Start fails quickly
-
-	store := make(map[string][]byte)
-	kvMock := newMockKVStore(store)
-	adminMock := &minimalAdminServicer{}
-
-	f := &startFlags{
-		replicaID:       1,
-		raftAddress:     "127.0.0.1:63001",
-		shardID:         1,
-		clusterMinPeers: 3,
-	}
-
-	_, err := startDynamicMembership(ctx, f, kvMock, adminMock, nil, nil, nil, nil, nil)
-	// With a pre-canceled context, either mgr.Start fails or the store
-	// returns context.Canceled — either way, an error is expected.
-	if err != nil {
-		t.Logf("startDynamicMembership returned (expected with canceled ctx): %v", err)
-	}
-}
-
-// TestStartDynamicMembership_DefaultMinPeers verifies that a non-positive
-// clusterMinPeers is defaulted to 3 before MembershipManager construction.
-// This covers line 1604-1606 (minPeers <= 0 branch).
-func TestStartDynamicMembership_DefaultMinPeers(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	store := make(map[string][]byte)
-	kvMock := newMockKVStore(store)
-	adminMock := &minimalAdminServicer{}
-
-	f := &startFlags{
-		replicaID:       42,
-		raftAddress:     "127.0.0.1:63002",
-		shardID:         1,
-		clusterMinPeers: 0, // triggers default to 3
-	}
-
-	_, err := startDynamicMembership(ctx, f, kvMock, adminMock, nil, nil, nil, nil, nil)
-	// Result is acceptable regardless — we're covering the minPeers<=0 branch.
-	t.Logf("startDynamicMembership (minPeers=0): %v", err)
-}

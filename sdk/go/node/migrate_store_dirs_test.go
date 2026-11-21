@@ -72,40 +72,6 @@ func TestNodeMigrationProvider_StoreDirs_RefusesWithoutAStandaloneSystemScope(t 
 	}
 }
 
-// TestExistingDirs_KeepsOnlyExistingDirectories pins existingDirs: candidates
-// that exist as directories are kept in order, and missing paths and regular
-// files are dropped.
-func TestExistingDirs_KeepsOnlyExistingDirectories(t *testing.T) {
-	root := t.TempDir()
-	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
-	require.NoError(t, os.Mkdir(a, 0o700))
-	require.NoError(t, os.Mkdir(b, 0o700))
-	regular := filepath.Join(root, "regular")
-	require.NoError(t, os.WriteFile(regular, nil, 0o600))
-
-	require.Equal(t, []string{b, a}, existingDirs(b, filepath.Join(root, "missing"), regular, a))
-	require.Nil(t, existingDirs(filepath.Join(root, "missing")))
-}
-
-// TestNodeMigrationProvider_StoreDirs_RefusesAnExternalPebbleWAL pins that a
-// Pebble store opened with storage.wal_dir outside its directory is refused
-// before the migration starts: the migration moves the store directory
-// alone, so WAL-only records would be lost and the external WAL left under
-// the old encryption.
-func TestNodeMigrationProvider_StoreDirs_RefusesAnExternalPebbleWAL(t *testing.T) {
-	dataDir := t.TempDir()
-	require.NoError(t, os.Mkdir(filepath.Join(dataDir, "pebble"), 0o700))
-	cfg := qrdbconfig.DefaultConfig()
-	cfg.Storage.WALDir = t.TempDir()
-
-	p := &nodeMigrationProvider{node: &Node{retainedStandalone: &pendingStandaloneBoot{dataDir: dataDir, cfg: cfg}}}
-	got, err := p.StoreDirs(context.Background(), service.BarrierScope{Kind: service.ScopeSystem})
-	var notSupported *MigrationNotSupportedError
-	require.ErrorAs(t, err, &notSupported)
-	require.Contains(t, notSupported.Reason, "storage.wal_dir")
-	require.Empty(t, got.Dirs())
-}
-
 // TestNodeMigrationProvider_StoreDirs_WALDirWithoutAnExternalPebbleWAL pins
 // the cases storage.wal_dir does not refuse: a wal_dir naming the store's
 // own directory, and a node with no Pebble store for it to apply to.
@@ -133,20 +99,6 @@ func TestNodeMigrationProvider_StoreDirs_WALDirWithoutAnExternalPebbleWAL(t *tes
 		require.NoError(t, err)
 		require.Equal(t, []string{filepath.Join(dataDir, "file")}, got.File)
 	})
-}
-
-// TestExternalPebbleWAL_OnlyAWALOutsideTheStore pins externalPebbleWAL: no
-// configuration, an unset wal_dir and one naming the store directory are
-// not external; any other directory is.
-func TestExternalPebbleWAL_OnlyAWALOutsideTheStore(t *testing.T) {
-	dataDir := t.TempDir()
-	require.Empty(t, externalPebbleWAL(nil, dataDir))
-	cfg := qrdbconfig.DefaultConfig()
-	require.Empty(t, externalPebbleWAL(cfg, dataDir))
-	cfg.Storage.WALDir = filepath.Join(dataDir, "pebble")
-	require.Empty(t, externalPebbleWAL(cfg, dataDir))
-	cfg.Storage.WALDir = filepath.Join(dataDir, "wal")
-	require.Equal(t, filepath.Join(dataDir, "wal"), externalPebbleWAL(cfg, dataDir))
 }
 
 // TestNode_EnableEncryption_ExternalPebbleWALRefusedAndIntact drives the

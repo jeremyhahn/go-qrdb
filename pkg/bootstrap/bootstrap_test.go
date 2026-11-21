@@ -706,6 +706,17 @@ func TestProvisionTenant_CreatesTenantAdminAndBindsCert(t *testing.T) {
 	if result.AdminUserID == 0 {
 		t.Errorf("AdminUserID = %d, want non-zero", result.AdminUserID)
 	}
+
+	// Cert mode creates the admin active, not pending.
+	if adminReq.Pending {
+		t.Error("cert-mode admin must be created non-pending")
+	}
+	if result.AdminPending {
+		t.Error("result.AdminPending = true in cert mode, want false")
+	}
+	if result.AdminRoleID != wantRoleID {
+		t.Errorf("result.AdminRoleID = %q, want %q", result.AdminRoleID, wantRoleID)
+	}
 }
 
 // TestProvisionTenant_ReportsTheCommittedTenantRecord asserts both admin
@@ -882,39 +893,6 @@ func TestProvisionTenant_DeferredModeCreatesPendingAdmin(t *testing.T) {
 	}
 	if result.AdminRoleID != wantRoleID {
 		t.Errorf("result.AdminRoleID = %q, want %q", result.AdminRoleID, wantRoleID)
-	}
-}
-
-// TestProvisionTenant_CertModeUnchanged asserts the default (empty) mode
-// still enrolls by certificate: the admin is created enabled and the result
-// reports a non-pending admin with the role id populated.
-func TestProvisionTenant_CertModeUnchanged(t *testing.T) {
-	users := &fakeUsers{}
-	signer := &fakeSigner{cert: realCertPEM(t)}
-
-	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
-		TenantID:    "acme",
-		Isolation:   tenant.IsolationPrefix,
-		AdminCSRPEM: validAdminCSR(t),
-	}, Dependencies{
-		Tenants: &fakeTenants{}, Users: users, Roles: &fakeRoles{},
-		Signer: signer, Binder: &fakeBinder{}, Logger: discardLogger(),
-		TrustDomain: onboardingTrustDomain,
-	})
-	if err != nil {
-		t.Fatalf("ProvisionTenant: %v", err)
-	}
-	if len(users.createCalls) != 1 || users.createCalls[0].Pending {
-		t.Error("cert-mode admin must be created non-pending")
-	}
-	if result.AdminPending {
-		t.Error("result.AdminPending = true in cert mode, want false")
-	}
-	if want := role.SystemRoleID("acme", role.RoleNameAdmin); result.AdminRoleID != want {
-		t.Errorf("result.AdminRoleID = %q, want %q", result.AdminRoleID, want)
-	}
-	if result.AdminCertThumbprint == "" {
-		t.Error("cert mode enrolled no cert")
 	}
 }
 

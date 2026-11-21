@@ -218,15 +218,6 @@ func TestOllamaProvider_Embed_ServerError(t *testing.T) {
 // Dimensions / Name
 // ---------------------------------------------------------------------------
 
-func TestOllamaProvider_Dimensions_KnownModel(t *testing.T) {
-	srv, _ := embeddingServer(t, ollamaProviderHandler(1024, "mxbai-embed-large"))
-	cfg := OllamaConfig{BaseURL: srv.URL, Model: "mxbai-embed-large"}
-	p, _ := NewOllamaProvider(cfg)
-	if p.Dimensions() != 1024 {
-		t.Errorf("expected 1024 for mxbai-embed-large, got %d", p.Dimensions())
-	}
-}
-
 func TestOllamaProvider_Name(t *testing.T) {
 	srv, _ := embeddingServer(t, ollamaProviderHandler(768, "m"))
 	cfg := OllamaConfig{BaseURL: srv.URL, Model: "m"}

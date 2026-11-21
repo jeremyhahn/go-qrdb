@@ -10,12 +10,16 @@ The row's PR closes its row issue and marks the row shipped in
 
 | Row | Row issue | Status | Folded | Open PRs |
 |---|---|---|---|---|
-| desktop-gui | #1478 | in progress | 0 | #1497, #1479, #1545, #1509, #1503, #1501 |
-| separation-of-duties | #1129 | in progress | 0 | #1368 |
-| strict-tenant-isolation | #1565 | in progress | 0 | #1498, #1499, #1514, #1517, #1519, #1423 |
-| object-storage-credential-handle | #1566 | planned | 0 | #1404 |
+| desktop-gui | #1478 | in progress | 0 | #1479, #1606, #1607, #1608, #1612 |
+| separation-of-duties | #1129 | in progress | 0 | #1579 |
+| strict-tenant-isolation | #1565 | in progress | 0 | #1576 |
+| object-storage-credential-handle | #1566 | planned | 0 | #1577 |
+| object-storage-provider | none | planned | 0 | none |
+| object-storage-provider-seam | none | planned | 0 | none |
 | arm64-release | #916 | in progress | 0 | none |
+| verifiable-log | #1613 | in progress | 0 | none |
 | release-readiness | #566 | planned | 1 | none |
+| rolling-upgrades | #1628 | planned | 1 | #1638 |
 | multi-model-databases | #923 | future | 0 | none |
 | object-storage-lsm | #924 | future | 0 | none |
 | volume-pool-tenant-moves | #925 | future | 0 | none |
@@ -27,20 +31,18 @@ The row's PR closes its row issue and marks the row shipped in
 |---|---|---|
 | WebTransport on the HTTP/3 listener | #1244 | #1527, #1542 |
 | credential rotation policy | #1201 | #1548, #1552, #1556, #1410 |
-| tenant delegation for embedder work | #1187 | #1412 |
-| QUIC public operations without a client certificate | #1174 | #1475 |
+| tenant delegation for embedder work | #1187 | none (shipped by #1578) |
+| QUIC public operations without a client certificate | #1174 | none (shipped by #1475) |
 
 ## Kept outside the rows
 
 | Issue | Why |
 |---|---|
 | #1218 | Owner questions (cron, per-database objstore engine, watch prefix) |
-| #1331 | Test-suite audit, ruling 273; not a SPEC row; owner decides. Slices #1531-#1541 fold into one PR |
+| #1331 | Test-suite audit, ruling 273; not a SPEC row. Folded into release-readiness and merged (#1541, #1602) |
 
 ## Main-fix and CI PRs (not on a row)
 
 | PR | What |
 |---|---|
-| #1564 | Main-fix: pebble backend on shared-store barrier creates |
-| #1561 | GO-2026-6911 MCP transport fix |
 | #1444 | CI: Docker jobs on the bigdisk-docker pool (ruling 442) |

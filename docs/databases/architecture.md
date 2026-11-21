@@ -1404,12 +1404,19 @@ the upgrade moves no data.
   resolver routes to the tenant's own store; the key prefix contains the tenant,
   so a read never leaves the tenant's range even inside a shared table. In
   strict mode every record is in the tenant's own store.
-- **Barrier.** The tenant's (or the database's) barrier encrypts the records at
-  rest, below apply, as it does for every other record. Apply therefore hashes
-  the entry as appended.
+- **Barrier.** Every log is applied into the log registry of the system
+  shard, so the system barrier encrypts its records at rest, below apply, as
+  it does for every other record there. Apply therefore hashes the entry as
+  appended. A tenant's or a database's own barrier does not cover a log: a
+  barrier-isolated tenant is refused with `BarrierTenantLogNotSupportedError`
+  and a barrier-enabled database with `BarrierDatabaseLogNotSupportedError`
+  (§3, "Isolation"). Serving them needs the registry and its sealed signing
+  keys moved into the tenant's (or database's) barrier-sealed store, with
+  apply, snapshot and restore following it; that is the open gap of the SPEC
+  row ([../plans/1613-verifiable-log.md](../plans/1613-verifiable-log.md)).
 - **The signing key.** The software signer's `k/<version>` record is one of
-  the log's records, so the same barrier seals it at rest; there is no second
-  key layer. A caller that wants entries
+  the log's records, so the system barrier seals it at rest; there is no
+  second key layer. A caller that wants entries
   the platform cannot read encrypts them with `DEKService` before appending; the
   leaf then commits to the ciphertext, which is the caller's choice and the
   standard shape for a confidential transparency log.

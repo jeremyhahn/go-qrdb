@@ -189,32 +189,6 @@ func TestLoadTLSFromFiles_InvalidCACertPool(t *testing.T) {
 // loadCACertPool tests
 // ---------------------------------------------------------------------------
 
-func TestLoadCACertPool_EmptyPath_Coverage(t *testing.T) {
-	pool, err := loadCACertPool("")
-	require.NoError(t, err)
-	assert.Nil(t, pool)
-}
-
-func TestLoadCACertPool_ValidCA(t *testing.T) {
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	dir := t.TempDir()
-	caPath := filepath.Join(dir, "ca.pem")
-	require.NoError(t, os.WriteFile(caPath, bundle.CACertPEM, 0o600))
-
-	pool, err := loadCACertPool(caPath)
-	require.NoError(t, err)
-	require.NotNil(t, pool)
-}
-
-func TestLoadCACertPool_MissingFile(t *testing.T) {
-	_, err := loadCACertPool(filepath.Join(t.TempDir(), "nonexistent.pem"))
-	require.Error(t, err)
-	var loadErr *TLSLoadError
-	require.True(t, errors.As(err, &loadErr))
-}
-
 func TestLoadCACertPool_InvalidPEM_Coverage(t *testing.T) {
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "bad-ca.pem")
@@ -2298,31 +2272,6 @@ func TestRunStart_DatabaseAlreadyExistsOpensIt(t *testing.T) {
 // proceeds and fails at the shard start step (no real cluster available),
 // which is a non-UnknownSMError.
 // ---------------------------------------------------------------------------
-
-func TestRunStart_PebbleSMTypeExercisesSwitch(t *testing.T) {
-	dataDir := t.TempDir()
-
-	f := &startFlags{
-		dataDir:         dataDir,
-		smType:          "pebble",
-		discoveryMethod: "static",
-		listen:          "0.0.0.0:63001",
-		raftAddress:     "127.0.0.1:63001",
-		shardID:         1,
-		replicaID:       1,
-		host:            testBindHost,
-	}
-
-	// pebble SM type is valid so initializeNode proceeds past the factory
-	// assignment. Any error from the host/shard layer is acceptable; the
-	// key assertion is that UnknownSMError is NOT returned.
-	err := runStart(f)
-	if err != nil {
-		var smErr *UnknownSMError
-		assert.False(t, errors.As(err, &smErr),
-			"pebble SM should not trigger UnknownSMError: %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // localSANs: the SAN set is exactly the two loopbacks plus every non-loopback

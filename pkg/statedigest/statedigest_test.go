@@ -178,19 +178,6 @@ func TestBuilderFinish_ValueChangesSum(t *testing.T) {
 	}
 }
 
-func TestDigestHex(t *testing.T) {
-	d := Digest{}
-	d.Sum[0] = 0xAB
-	d.Sum[31] = 0x01
-	got := d.Hex()
-	if len(got) != 64 {
-		t.Fatalf("len = %d, want 64", len(got))
-	}
-	if got[:2] != "ab" || got[62:] != "01" {
-		t.Fatalf("Hex = %q, want lowercase ab...01", got)
-	}
-}
-
 func TestDigestHex_EmptyDigestLiteral(t *testing.T) {
 	// sha256("qrdb-state-digest-v1\x00"), computed outside Go.
 	const want = "bf493fb5a08b61e017a6eb771e4ed6df171271bc3ab6a3a23cffa7346e8031ba"

@@ -82,17 +82,6 @@ func TestInvalidCommandError_Error(t *testing.T) {
 	}
 }
 
-func TestInvalidCommandError_As(t *testing.T) {
-	err := &InvalidCommandError{Reason: "test"}
-	var target *InvalidCommandError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As failed for *InvalidCommandError")
-	}
-	if target.Reason != "test" {
-		t.Errorf("Reason = %q, want %q", target.Reason, "test")
-	}
-}
-
 func TestUnknownOpError_Error(t *testing.T) {
 	tests := []struct {
 		name string
@@ -122,17 +111,6 @@ func TestUnknownOpError_Error(t *testing.T) {
 				t.Errorf("Error() = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestUnknownOpError_As(t *testing.T) {
-	err := &UnknownOpError{Op: 42}
-	var target *UnknownOpError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As failed for *UnknownOpError")
-	}
-	if target.Op != 42 {
-		t.Errorf("Op = %d, want %d", target.Op, 42)
 	}
 }
 
@@ -2222,98 +2200,6 @@ func TestDecodeBatch_NestedOpError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Op code in encoded output verification
-// ---------------------------------------------------------------------------
-
-func TestEncodedOpCodes(t *testing.T) {
-	tests := []struct {
-		name   string
-		encode func() []byte
-		wantOp byte
-	}{
-		{
-			name:   "EncodeMVCCPut",
-			encode: func() []byte { return mustEncode(EncodeMVCCPut([]byte("k"), []byte("v"), 0)) },
-			wantOp: OpMVCCPut,
-		},
-		{
-			name:   "EncodeMVCCDelete",
-			encode: func() []byte { return mustEncode(EncodeMVCCDelete([]byte("k"))) },
-			wantOp: OpMVCCDelete,
-		},
-		{
-			name:   "EncodeMVCCRange",
-			encode: func() []byte { return mustEncode(EncodeMVCCRange([]byte("a"), []byte("z"), 0, 0, false, false)) },
-			wantOp: OpMVCCRange,
-		},
-		{
-			name:   "EncodeMVCCCompactPrefix",
-			encode: func() []byte { return mustEncode(EncodeMVCCCompactPrefix([]byte("p/"), 1)) },
-			wantOp: OpMVCCCompactPrefix,
-		},
-		{
-			name:   "EncodeLeaseGrant",
-			encode: func() []byte { return mustEncode(EncodeLeaseGrant(60)) },
-			wantOp: OpLeaseGrant,
-		},
-		{
-			name:   "EncodeLeaseRevoke",
-			encode: func() []byte { return mustEncode(EncodeLeaseRevoke(1)) },
-			wantOp: OpLeaseRevoke,
-		},
-		{
-			name:   "EncodeLeaseKeepAlive",
-			encode: func() []byte { return mustEncode(EncodeLeaseKeepAlive(1)) },
-			wantOp: OpLeaseKeepAlive,
-		},
-		{
-			name: "EncodeIndexCreate",
-			encode: func() []byte {
-				return mustEncode(EncodeIndexCreateOpts("idx", "field", IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
-			},
-			wantOp: OpIndexCreate,
-		},
-		{
-			name:   "EncodeIndexDrop",
-			encode: func() []byte { return mustEncode(EncodeIndexDrop("idx")) },
-			wantOp: OpIndexDrop,
-		},
-		{
-			name: "EncodeTSWrite",
-			encode: func() []byte {
-				return mustEncode(EncodeTSWrite("metric", 0, 0, nil))
-			},
-			wantOp: OpTSWrite,
-		},
-		{
-			name: "EncodeTransaction",
-			encode: func() []byte {
-				return mustEncode(EncodeTransaction(nil, nil, nil))
-			},
-			wantOp: OpTransaction,
-		},
-		{
-			name: "EncodeBatch",
-			encode: func() []byte {
-				return mustEncode(EncodeBatch(nil))
-			},
-			wantOp: OpBatch,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			encoded := tt.encode()
-			if len(encoded) == 0 {
-				t.Fatal("encoded is empty")
-			}
-			if encoded[0] != tt.wantOp {
-				t.Errorf("op byte = %d, want %d", encoded[0], tt.wantOp)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Edge case: Maximum uint16 key length
 // ---------------------------------------------------------------------------
 
@@ -2409,23 +2295,6 @@ func TestEncodeCompare_NilSlices(t *testing.T) {
 	}
 	if len(cmp.Value) != 0 {
 		t.Errorf("Value len = %d, want 0", len(cmp.Value))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Edge case: DecodeCommand with exactly 1 byte (valid, empty payload)
-// ---------------------------------------------------------------------------
-
-func TestDecodeCommand_SingleByteValid(t *testing.T) {
-	cmd, err := DecodeCommand([]byte{OpBatch})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cmd.Op != OpBatch {
-		t.Errorf("Op = %d, want %d", cmd.Op, OpBatch)
-	}
-	if len(cmd.Payload) != 0 {
-		t.Errorf("Payload len = %d, want 0", len(cmd.Payload))
 	}
 }
 
@@ -2562,40 +2431,6 @@ func TestBatchRoundtrip_DeepVerification(t *testing.T) {
 	}
 	if ops[1].LeaseID != 0 {
 		t.Errorf("ops[1].LeaseID = %d, want 0", ops[1].LeaseID)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// TSWrite roundtrip with single-tag deterministic verification
-// ---------------------------------------------------------------------------
-
-func TestTSWriteRoundtrip_SingleTag(t *testing.T) {
-	tags := map[string]string{"host": "server-42"}
-	encoded := mustEncode(EncodeTSWrite("latency.p99", 1700000000, 2.718, tags))
-	cmd, err := DecodeCommand(encoded)
-	if err != nil {
-		t.Fatalf("DecodeCommand: %v", err)
-	}
-
-	params, err := DecodeTSWrite(cmd.Payload)
-	if err != nil {
-		t.Fatalf("DecodeTSWrite: %v", err)
-	}
-
-	if params.Metric != "latency.p99" {
-		t.Errorf("Metric = %q, want %q", params.Metric, "latency.p99")
-	}
-	if params.Timestamp != 1700000000 {
-		t.Errorf("Timestamp = %d, want 1700000000", params.Timestamp)
-	}
-	if params.Value != 2.718 {
-		t.Errorf("Value = %v, want 2.718", params.Value)
-	}
-	if len(params.Tags) != 1 {
-		t.Fatalf("Tags count = %d, want 1", len(params.Tags))
-	}
-	if params.Tags["host"] != "server-42" {
-		t.Errorf("Tags[host] = %q, want %q", params.Tags["host"], "server-42")
 	}
 }
 

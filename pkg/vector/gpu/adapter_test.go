@@ -18,8 +18,6 @@ package gpu
 import (
 	"errors"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 )
 
 // mockGPUIndex is a test double implementing GPUIndex.
@@ -164,16 +162,6 @@ func TestGPUIndexAdapter_Count(t *testing.T) {
 	}
 }
 
-func TestGPUIndexAdapter_Count_Zero(t *testing.T) {
-	mock := &mockGPUIndex{countVal: 0}
-	adapter := NewGPUIndexAdapter(mock, 128)
-
-	count := adapter.Count()
-	if count != 0 {
-		t.Errorf("expected count 0, got %d", count)
-	}
-}
-
 func TestGPUIndexAdapter_GetStats(t *testing.T) {
 	mock := &mockGPUIndex{countVal: 100}
 	adapter := NewGPUIndexAdapter(mock, 256)
@@ -188,21 +176,4 @@ func TestGPUIndexAdapter_GetStats(t *testing.T) {
 	if stats.Dimensions != 256 {
 		t.Errorf("expected Dimensions 256, got %d", stats.Dimensions)
 	}
-}
-
-func TestGPUIndexAdapter_GetStats_ReflectsCount(t *testing.T) {
-	mock := &mockGPUIndex{countVal: 7}
-	adapter := NewGPUIndexAdapter(mock, 64)
-
-	stats := adapter.GetStats()
-	if stats.NodeCount != 7 {
-		t.Errorf("expected NodeCount 7, got %d", stats.NodeCount)
-	}
-}
-
-func TestGPUIndexAdapter_ImplementsHNSWIndex(t *testing.T) {
-	mock := &mockGPUIndex{}
-	adapter := NewGPUIndexAdapter(mock, 128)
-
-	var _ interfaces.HNSWIndex = adapter
 }

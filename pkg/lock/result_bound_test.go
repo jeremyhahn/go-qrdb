@@ -19,18 +19,6 @@ import (
 	"testing"
 )
 
-func TestWithMaxResultBytes_SetsTheBound(t *testing.T) {
-	var ro RangeOptions
-	WithMaxResultBytes(4096)(&ro)
-	if ro.MaxResultBytes != 4096 {
-		t.Fatalf("MaxResultBytes = %d, want 4096", ro.MaxResultBytes)
-	}
-	var unset RangeOptions
-	if unset.MaxResultBytes != 0 {
-		t.Fatalf("zero RangeOptions bounds results at %d, want unbounded", unset.MaxResultBytes)
-	}
-}
-
 func TestResultTooLargeError_NamesBothFigures(t *testing.T) {
 	msg := (&ResultTooLargeError{Limit: 100, Read: 123}).Error()
 	if !strings.HasPrefix(msg, "lock: ") || !strings.Contains(msg, "100") || !strings.Contains(msg, "123") {

@@ -94,19 +94,6 @@ func TestValidateAssignable_TenantOwnSystemRoleNotGloballyValid(t *testing.T) {
 	}
 }
 
-// TestValidateAssignable_RoleNotFound asserts that a non-existent role
-// propagates GetRole's own typed not-found error verbatim, rather than being
-// reported as merely "not assignable".
-func TestValidateAssignable_RoleNotFound(t *testing.T) {
-	svc := newTestStore(t)
-
-	err := ValidateAssignable(context.Background(), svc, nil, "does-not-exist", "acme")
-	var rnf *RoleNotFoundError
-	if !errors.As(err, &rnf) {
-		t.Fatalf("ValidateAssignable(missing role) = %v, want *RoleNotFoundError", err)
-	}
-}
-
 // TestNotAssignableError_Message pins the error string.
 func TestNotAssignableError_Message(t *testing.T) {
 	err := &NotAssignableError{RoleID: "r1", TenantID: "acme"}

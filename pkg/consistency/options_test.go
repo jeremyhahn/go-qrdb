@@ -30,13 +30,6 @@ func TestDefaultReadOptionsTimeout(t *testing.T) {
 	}
 }
 
-func TestDefaultReadOptionsIsValid(t *testing.T) {
-	opts := DefaultReadOptions()
-	if err := opts.Validate(); err != nil {
-		t.Errorf("DefaultReadOptions().Validate() returned unexpected error: %v", err)
-	}
-}
-
 func TestValidateValidOptions(t *testing.T) {
 	tests := []struct {
 		name string

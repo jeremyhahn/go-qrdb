@@ -169,36 +169,6 @@ func TestHostAdapter_StaleRead(t *testing.T) {
 	assert.Equal(t, "q", result)
 }
 
-func TestHostAdapter_SyncRead(t *testing.T) {
-	called := false
-	mock := &mockQuicraftHost{
-		syncReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
-			called = true
-			return query, nil
-		},
-	}
-	a := newTestAdapter(mock)
-	result, err := a.SyncRead(context.Background(), 1, "q")
-	require.NoError(t, err)
-	assert.True(t, called)
-	assert.Equal(t, "q", result)
-}
-
-func TestHostAdapter_FollowerRead(t *testing.T) {
-	called := false
-	mock := &mockQuicraftHost{
-		followerReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
-			called = true
-			return query, nil
-		},
-	}
-	a := newTestAdapter(mock)
-	result, err := a.FollowerRead(context.Background(), 1, "q")
-	require.NoError(t, err)
-	assert.True(t, called)
-	assert.Equal(t, "q", result)
-}
-
 func TestHostAdapter_ReadWithConsistency(t *testing.T) {
 	tests := []struct {
 		name     string

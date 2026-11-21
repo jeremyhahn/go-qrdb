@@ -32,6 +32,9 @@ var _ transport.DatabaseClient = (*Transport)(nil)
 // storage backend by sending a JSON-encoded request over the QUIC wire
 // protocol to the db.Create handler.
 func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateDatabaseRequest) (*transport.DatabaseInfo, error) {
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -244,6 +247,9 @@ func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDataba
 // UpdateDatabaseBarrier updates the encryption barrier configuration for
 // a database by calling the db.UpdateBarrier handler.
 func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.UpdateDatabaseBarrierRequest) (*transport.DatabaseInfo, error) {
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}

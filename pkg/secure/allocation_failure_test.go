@@ -172,11 +172,6 @@ func runAllocationFailureChild() {
 		fail("live buffer did not survive the refused allocation: %v", err)
 	}
 	fmt.Fprintln(os.Stdout, "PASS: the live buffer survived the refused allocation")
-
-	// Give the child a moment to flush stdout before the parent reads it via
-	// CombinedOutput's pipe; exec.Cmd already waits for the process to exit,
-	// so this is a belt-and-braces margin rather than a requirement.
-	time.Sleep(time.Millisecond)
 }
 
 // sealUnderExhaustedBudgetChildEnv selects the subprocess body for

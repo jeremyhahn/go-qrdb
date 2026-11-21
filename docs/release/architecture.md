@@ -191,7 +191,7 @@ skips the code tier, and the nightly tier carries the soak:
 | PR | every run | `preflight` (the changed-file diff, then the architecture gates, one job since ci-template v1.34), `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`, ci-template v1.28.0), `lint-gates` (`make lint-gates`), `ci-gate` |
 | Code | every run but a docs-only pull request | `image` (the build), the unit-suite jobs `coverage` (`make coverage-leg`, a matrix over `COVER_LEGS`) and `coverage-merge` (`make coverage-merge`, the repo-wide gate), `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk` (a matrix over `TEST_SDK_LEGS`), `test-typescript` |
 | Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3, as parallel legs) |
-| Nightly | `workflow_dispatch` | the full tier, plus `soak` and `clusterproof-soak` |
+| Nightly | `workflow_dispatch` | the full tier, plus `soak` |
 
 ci.yml evaluates the full-tier condition once, into its `CI_FULL_TIER`
 environment variable, which the steps it gates and `ci-gate` read; a job-level
@@ -201,11 +201,6 @@ expression. The nightly tier's condition is a scheduled run or a
 `0 4 * * *`, 04:00 UTC every night, ruling 633; host cron and timers stay
 banned): `soak` loops the `clustering` integration suite, a fresh
 stack each iteration, for 30 minutes and fails on the first red iteration.
-`clusterproof-soak` (#1619) runs the cluster proof itself: it builds the
-release image, boots three nodes from it on the runner
-(`make cluster-proof-ci`), soaks them under the nemesis for 30 minutes,
-checks the evidence bundle and keeps it as the `clusterproof-bundle`
-artifact ([cluster-verification/user.md](../cluster-verification/user.md)).
 
 `ci-gate` is the one required check in every tier. It fails on any result
 other than `success`, with three exceptions: a job tagged `full` that was
@@ -219,12 +214,12 @@ progress, so adding `ci:full` starts nothing by
 itself: it takes effect on the PR's next push, an update-branch, or a
 `workflow_dispatch`.
 
-ci.yml's jobs run on the self-hosted pools for a push to `main` and a
-same-repository pull request (CA ruling 617): a job that needs Docker on
-`bigdisk-docker`, a Docker-free job on `bigdisk`. A fork's pull request, a
-schedule and a dispatch run them, and every other workflow but code review
-(which keeps its self-hosted review host) runs, on a GitHub-hosted
-`ubuntu-latest` runner (DS-7377): 4 vCPU, 16 GB of memory, about 14 GB of
+Every workflow's jobs but code review's (which keep their self-hosted review
+hosts) run, for every event, on a standard GitHub-hosted `ubuntu-latest`
+runner (owner ruling 999; rulings 833 and 834). A job may run self-hosted
+only with a `# self-hosted: <reason>` comment on its `runs-on` line naming
+the hardware it needs or the measured hosted limit it exceeds, and no ci.yml
+job does; larger hosted runners are not used. The runner (DS-7377): 4 vCPU, 16 GB of memory, about 14 GB of
 free disk and a 6-hour job limit, a fresh machine per job with no state from
 the last. Every job's limit is at most 350 minutes,
 under the runner's 360, and is planned at four times the job's time measured

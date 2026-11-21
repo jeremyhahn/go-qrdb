@@ -163,6 +163,23 @@ func (c *RevocationCache) TTL() time.Duration {
 //   - Any other error is a lookup that could have answered and did not (a KV
 //     read failure, a consensus timeout). The caller fails CLOSED on it.
 func (c *RevocationCache) IsCertRevoked(ctx context.Context, peer *x509.Certificate) (bool, error) {
+	return c.isCertRevoked(ctx, peer, false)
+}
+
+// IsCertRevokedUncached is IsCertRevoked without trusting a cached
+// NOT-REVOKED answer: it consults replicated state on every call, so a
+// revocation refuses the very next call whatever the cache TTL. A cached
+// REVOKED answer is still returned, since revocation is a one-way door.
+// The fresh answer is stored, so the ordinary path benefits from it.
+//
+// pkg/auth uses it for delegations (auth.UncachedRevocationChecker), whose
+// revocation is promised to take effect on the next call; ordinary
+// certificates keep the bounded-TTL window.
+func (c *RevocationCache) IsCertRevokedUncached(ctx context.Context, peer *x509.Certificate) (bool, error) {
+	return c.isCertRevoked(ctx, peer, true)
+}
+
+func (c *RevocationCache) isCertRevoked(ctx context.Context, peer *x509.Certificate, fresh bool) (bool, error) {
 	if c == nil || peer == nil {
 		return false, nil
 	}
@@ -175,7 +192,7 @@ func (c *RevocationCache) IsCertRevoked(ctx context.Context, peer *x509.Certific
 		return true, nil
 	}
 
-	if revoked, ok := c.lookup(serial); ok {
+	if revoked, ok := c.lookup(serial); ok && (revoked || !fresh) {
 		return revoked, nil
 	}
 

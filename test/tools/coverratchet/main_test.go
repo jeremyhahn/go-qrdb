@@ -83,12 +83,12 @@ func TestRun_RejectsBadFlags(t *testing.T) {
 	prof := writeProfile(t, 1, 10)
 	for name, args := range map[string][]string{
 		"no profile":         {"-baseline", "b", "-min", "91"},
-		"no baseline":        {"-profile", prof, "-min", "91"},
-		"no min":             {"-profile", prof, "-baseline", "b"},
-		"min above 100":      {"-profile", prof, "-baseline", "b", "-min", "101"},
-		"negative tolerance": {"-profile", prof, "-baseline", "b", "-min", "91", "-tolerance", "-1"},
-		"zero floor":         {"-profile", prof, "-baseline", "b", "-min", "91", "-discovery-floor", "0"},
-		"unknown flag":       {"-profile", prof, "-baseline", "b", "-min", "91", "-nope"},
+		"no baseline":        {"-tags", "t", "-profile", prof, "-min", "91"},
+		"no min":             {"-tags", "t", "-profile", prof, "-baseline", "b"},
+		"min above 100":      {"-tags", "t", "-profile", prof, "-baseline", "b", "-min", "101"},
+		"negative tolerance": {"-tags", "t", "-profile", prof, "-baseline", "b", "-min", "91", "-tolerance", "-1"},
+		"zero floor":         {"-tags", "t", "-profile", prof, "-baseline", "b", "-min", "91", "-discovery-floor", "0"},
+		"unknown flag":       {"-tags", "t", "-profile", prof, "-baseline", "b", "-min", "91", "-nope"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var ce *ConfigError

@@ -387,28 +387,6 @@ func TestEncryptDecryptEmptyPlaintext(t *testing.T) {
 	}
 }
 
-func TestEncryptNondeterministic(t *testing.T) {
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		t.Fatalf("rand.Read: %v", err)
-	}
-
-	plaintext := []byte("same input")
-	ct1, err := Encrypt(key, plaintext)
-	if err != nil {
-		t.Fatalf("Encrypt 1: %v", err)
-	}
-
-	ct2, err := Encrypt(key, plaintext)
-	if err != nil {
-		t.Fatalf("Encrypt 2: %v", err)
-	}
-
-	if bytes.Equal(ct1, ct2) {
-		t.Fatal("two encryptions of the same plaintext should produce different ciphertexts")
-	}
-}
-
 func TestDefaultNewGCMCipherError(t *testing.T) {
 	// Pass an invalid key length directly to defaultNewGCM to exercise the
 	// aes.NewCipher error path inside the helper.

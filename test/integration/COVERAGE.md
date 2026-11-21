@@ -16,7 +16,7 @@ limitations under the License.
 
 # Integration test coverage matrix
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-27
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-11-20
 > Accounting of integration coverage per feature and transport; derived from `test/integration/features.mk`.
 
 CLI-driven, per-transport coverage for every `docs/<feature>/` folder, over
@@ -34,16 +34,15 @@ this feature; `—` means it does not.
 
 ## How CI runs these suites
 
-The push-path cluster stage is `make integration-test-cluster`: every test in
-the package, self-spawned, run by the `integration-cluster` job in
-`.github/workflows/ci.yml` as three legs (`CLUSTER_SHARD=1/3`..`3/3`), each
-selecting its share of `go test -list` by an anchored `-run` expression.
-`make check-cluster-shards` proves the legs partition the package, so no test
-drops out of the gate and none runs twice; `ci-gate` requires the job, so
-every leg. A feature's own selection runs locally with
+The self-spawned suites run in the `integration-features` job of
+`.github/workflows/ci.yml`: the features are split into shards, one feature
+list per shard, and every feature in a shard runs
+`make integration-test IT_FEATURE=<feature>` in the integration container,
+past a failing one; `test/buildgates/feature_jobs_gate_test.go` proves each
+feature sits in exactly one shard, and `ci-gate` requires the job. A
+feature's own selection runs locally with
 `make integration-test-<feature>`, and a test that `features.mk` maps to no
-feature fails `make check-integration-feature-coverage`. The legs are
-described in `docs/release/engineering.md` ("Cluster suite legs"). The
+feature fails `make check-integration-feature-coverage`. The
 Docker-based `test/integration/api` suite runs as `integration-standalone`.
 
 ## The cross-cutting gap: embedded
@@ -106,8 +105,8 @@ itself (it is, deliberately, the CLI-selectable set).
 | [configuration](../../docs/configuration/) | — | — | — | — | — | — | **Gap.** No dedicated integration test; exercised only incidentally through other features' config fixtures. |
 | [deployment](../../docs/deployment/) | — | — | — | — | — | — | **Gap.** The locked-memory budget is a host/kernel property (`RLIMIT_MEMLOCK`); no integration test exercises it. |
 | [release](../../docs/release/) | — | — | — | — | — | — | **Gap**, by nature: a release is a tagging and CI process, not a runtime surface. Its own test coverage is `test/buildgates/release_workflow_test.go` and the `scripts/check-release-alpha_test.sh` / `check-tag-lockstep_test.sh` suites (see `docs/release/engineering.md`), not a CLI integration test. |
-| [api-server](../../docs/api-server/) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | `test/integration/cli_multiprotocol_test.go` is the self-spawned, non-Docker `_PerProtocol` suite for `version`, `--server` flag-format parsing, and `admin health`/`status`/`peers` (including `--output json`/`yaml`) over REST/gRPC/QUIC/MCP/Unix, plus a dedicated embedded-transport subtest per command (the CLI has no `--server`/`--transport` form that selects embedded). `test/integration/api/{rest,grpc,mcp,unix}_test.go` and its own `cli_multiprotocol_test.go` remain the Docker-based suite run by `make integration-test-standalone` for CI; the `kv` command tree itself is covered by [key-value](#data-plane), not duplicated here. `test/integration/metrics_test.go` scrapes `/metrics` on a raft `qrdbd` (REST only; Prometheus has no other transport) and asserts the WAL fsync histogram counted a committed write. A service module's `HandleOptional` route is unit-tested: `pkg/api/rest` `TestModuleOptionalRoute_ServesEveryCase` and `pkg/auth/middleware` `TestRESTMiddleware_OptionalRoute_*` (no credential is anonymous, a bound client certificate is its user, an invalid bearer token or an unbound certificate is refused as on the module's `Handle` route), and `pkg/clienttrust` `TestPool_UntrustedIssuerRefusedAtHandshake` (an untrusted certificate is refused at the handshake). |
-| [replica-forwarding](../../docs/replica-forwarding/) | ✓ | ✓ | ✓ | ✓ | — | ✓ | The one feature with real embedded coverage: the mixed-cluster case (`replica_forwarding_mixed_test.go`) tests an embedded caller specifically, because forwarding has no network hop to itself. The embedded forwarding scope's decisions (forward as the configured caller, return the replica's answer or its denial, refuse a node with no caller) are unit tests in `sdk/go/transport/embedded` (`TestForwardingScope_*`, `TestWithReplicaForwarding_NeedsAForwarderAndACaller`). No Unix-socket forwarding case exists. |
+| [api-server](../../docs/api-server/) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | `test/integration/cli_multiprotocol_test.go` is the self-spawned, non-Docker `_PerProtocol` suite for `version`, `--server` flag-format parsing, and `admin health`/`status`/`peers` (including `--output json`/`yaml`) over REST/gRPC/QUIC/MCP/Unix, plus a dedicated embedded-transport subtest per command (the CLI has no `--server`/`--transport` form that selects embedded). `test/integration/api/rest_test.go` and its own `cli_multiprotocol_test.go` remain the Docker-based suite (the per-transport health and KV round trips over gRPC, MCP and Unix are `TestCLIMultiProtocolAdminStatus` and `TestCLIMultiProtocolKVPutGetDelete` there, which drive every transport) run by `make integration-test-standalone` for CI; the `kv` command tree itself is covered by [key-value](#data-plane), not duplicated here. `test/integration/metrics_test.go` scrapes `/metrics` on a raft `qrdbd` (REST only; Prometheus has no other transport) and asserts the WAL fsync histogram counted a committed write. A service module's `HandleOptional` route is unit-tested: `pkg/api/rest` `TestModuleOptionalRoute_ServesEveryCase` and `pkg/auth/middleware` `TestRESTMiddleware_OptionalRoute_*` (no credential is anonymous, a bound client certificate is its user, an invalid bearer token or an unbound certificate is refused as on the module's `Handle` route), and `pkg/clienttrust` `TestPool_UntrustedIssuerRefusedAtHandshake` (an untrusted certificate is refused at the handshake). |
+| [replica-forwarding](../../docs/replica-forwarding/) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | The one feature with real embedded coverage: the mixed-cluster case (`replica_forwarding_mixed_test.go`) tests an embedded caller specifically, because forwarding has no network hop to itself. The embedded forwarding scope's decisions (forward as the configured caller, return the replica's answer or its denial, refuse a node with no caller) are unit tests in `sdk/go/transport/embedded` (`TestForwardingScope_*`, `TestWithReplicaForwarding_NeedsAForwarderAndACaller`). `replica_forwarding_test.go` drives the Unix socket too: `fwdTransports` carries `grpcFwdTransport{unix: true}`. |
 
 ## Security and identity
 
@@ -118,7 +117,7 @@ itself (it is, deliberately, the CLI-selectable set).
 | [ceremony](../../docs/ceremony/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `TestCeremony_SignCSR_CLI_PerProtocol`, `TestCLI_BarrierOfficerRegister_SealedWindow_CLI_PerProtocol`, and `TestCLI_RecoveryOfficerFlow_CLI_PerProtocol` are `_PerProtocol`; the remaining init/officer regression tests in the same file (bug-specific scenarios) drive REST/Unix only. |
 | [firstboot](../../docs/firstboot/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `TestInit_CLI_EnvVarBinding_PerProtocol`, `_SingleAdmin_PerProtocol`, `_ShamirWithOfficers_PerProtocol` are `_PerProtocol`; local-flag-validation, hostname-SAN and production-boot-proof cases are REST/local only. |
 | [trust-bootstrap](../../docs/trust-bootstrap/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `TestBootstrap_CLI_PerProtocol` — the command is shape-only (always refuses), so this proves the refusal is consistent across transports, not a working bootstrap. |
-| [certificate-authority](../../docs/certificate-authority/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `ca_cli_test.go` and `TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol` are `_PerProtocol`. The original REST-only `TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart` stays as a focused regression test. |
+| [certificate-authority](../../docs/certificate-authority/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `ca_cli_test.go` and `TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol` are `_PerProtocol`. The per-protocol test replaced the original REST-only test. |
 | [trust-anchors](../../docs/trust-anchors/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `tenant_trust_anchors_cli_test.go` is `_PerProtocol`: the add/list/remove lifecycle, the 32-anchor-per-tenant cap, the typed refusals (empty bundle, non-CA certificate, unknown fingerprint), cross-tenant confinement, and the BYOC admit-then-refuse guarantee (a cert is accepted while its anchor is registered, refused the instant the anchor is withdrawn). |
 | [credentials](../../docs/credentials/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `_PerProtocol`. |
 | [key-wrapping](../../docs/key-wrapping/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `key_wrapping_cli_test.go` is `_PerProtocol`: the encrypted-backup envelope round trip (provider recorded and shown by `backup get`, stored key reference resolving on restore, an override naming the right key accepted and the wrong key refused as a decryption failure) and the refusals (unregistered provider, path or `..` instead of a bare key name, missing and wrong-length key files). The offline boot-time restore of an encrypted backup is `backup_restore_test.go`. |

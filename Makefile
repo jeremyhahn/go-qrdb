@@ -1021,44 +1021,12 @@ cluster-proof-check: cluster-proof-bin
 # BOOT-01 in container mode: start the inventory's nodes from the release
 # image, take them through first boot and check the admin surface on every
 # transport (docs/cluster-verification/user.md). PROOF_INVENTORY names the
-# inventory; the test fails without one rather than skipping. PROOF_KEEP=1
-# leaves the cluster running after a pass, for a soak against it.
+# inventory; the test fails without one rather than skipping.
 export PROOF_INVENTORY
-export PROOF_KEEP
 
 .PHONY: cluster-proof-boot
 cluster-proof-boot:
 	cd test/clusterproof && $(GOTEST) -tags "$(MIN_TAGS),clusterproof,clusterproof_container" -run '^TestBOOT01$$' ./container/
-
-# The cluster proof on one machine, as the nightly clusterproof-soak job runs
-# it (#1619): boot the three containers `scripts/cluster-proof-ci.sh render`
-# wrote into CLUSTERPROOF_CI_DIR, soak them under PROOF_SEAL=none and check
-# the bundle. The default nemesis is every fault but clock-rate (the nodes
-# share the harness's kernel) and slow-disk (no known block device on a
-# hosted runner). `scripts/cluster-proof-ci.sh down` removes the cluster.
-CLUSTERPROOF_CI_DIR ?= $(CURDIR)/build/clusterproof-ci
-CLUSTERPROOF_CI_NODES := node-1=192.0.2.11:63004,node-2=192.0.2.12:63004,node-3=192.0.2.13:63004
-CLUSTERPROOF_CI_NEMESIS := disk-full,kill,partition-bridge,partition-isolate-leader,partition-majority-minority,pause
-CLUSTERPROOF_CI_PROOF = PROOF_NODES=$(CLUSTERPROOF_CI_NODES) \
-	PROOF_TARGETS=$(CLUSTERPROOF_CI_DIR)/targets.json \
-	PROOF_WORKLOAD=$(CLUSTERPROOF_CI_DIR)/workload.json \
-	PROOF_SEAL=none \
-	PROOF_BUNDLE=$(CLUSTERPROOF_CI_DIR)/bundle \
-	PROOF_DURATION=$(or $(PROOF_DURATION),30m) \
-	PROOF_NEMESIS=$(or $(PROOF_NEMESIS),$(CLUSTERPROOF_CI_NEMESIS))
-
-# The image the CI cluster's faults run in (`scripts/cluster-proof-ci.sh render
-# DIR IMAGE FAULT_IMAGE`): debian with the tools the default partition and
-# disk-full commands run, which the release image does not carry.
-.PHONY: cluster-proof-fault-image
-cluster-proof-fault-image:
-	docker build -f test/clusterproof/fault.Dockerfile -t clusterproof-fault:$(BUILD_VERSION) test/clusterproof
-
-.PHONY: cluster-proof-ci
-cluster-proof-ci:
-	scripts/cluster-proof-ci.sh up $(CLUSTERPROOF_CI_DIR)
-	$(MAKE) cluster-proof $(CLUSTERPROOF_CI_PROOF)
-	$(MAKE) cluster-proof-check $(CLUSTERPROOF_CI_PROOF)
 
 # Run one package's unit tests under the same build tags `make test` uses --
 # the uniform escape hatch for a package that has no named test-<pkg> target
@@ -4094,14 +4062,29 @@ security: gosec gosec-sdk vuln mod-verify trivy
 # module proxy, so it needs a network; CI runs it in the toolchain image with
 # IN_IMAGE_NETWORK=bridge.
 .PHONY: deps-check
+# deps-check and deps-bump: the shared depscheck v1.0.0 (handbook
+# templates/deps/depscheck, ruling 640). With DEPS_CHECK_BASE (ci.yml passes
+# the PR base or the push's before) a lag fails only on a go.mod line the
+# change adds or bumps; -vuln fails a vulnerable version of a go.mod
+# requirement. deps-bump moves every failing requirement to latest; the
+# daily deps-bump.yml PR carries it.
+DEPS_CHECK_MODULES ?= . sdk/go sdk/go/gorm/conformance test/clusterproof test/performance/cmd/kvcompare test/performance/etcd-benchmark test/performance/qrdb test/performance/tikv test/vanguardprobe
+DEPS_CHECK_VULN_TAGS ?= gormconformance,clusterproof,benchmark
+
 deps-check:
 	@$(stage-gomodauth) \
 	eval "$${GOMODAUTH:-}"; \
-	GO="$(GO)" ./scripts/deps-check.sh
+	$(GO) run ./scripts/depscheck -go $(GO) $(if $(DEPS_CHECK_BASE),-base $(DEPS_CHECK_BASE)) -vuln -govulncheck $(GOVULNCHECK) $(if $(DEPS_CHECK_VULN_TAGS),-vuln-tags $(DEPS_CHECK_VULN_TAGS)) $(DEPS_CHECK_MODULES)
+
+.PHONY: deps-bump
+deps-bump:
+	@$(stage-gomodauth) \
+	eval "$${GOMODAUTH:-}"; \
+	$(GO) run ./scripts/depscheck -go $(GO) -bump $(DEPS_CHECK_MODULES)
 
 .PHONY: test-deps-check
 test-deps-check:
-	@./scripts/deps-check_test.sh
+	$(GO) test -count=1 ./scripts/depscheck
 
 # ============================================================================
 # Docker

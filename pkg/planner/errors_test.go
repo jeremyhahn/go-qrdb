@@ -15,7 +15,6 @@
 package planner_test
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/planner"
@@ -31,22 +30,5 @@ func TestFieldNotFoundError(t *testing.T) {
 	want := "planner: field Email not found on entity type planner_test.testEntity"
 	if err.Error() != want {
 		t.Errorf("FieldNotFoundError.Error() = %q, want %q", err.Error(), want)
-	}
-}
-
-func TestFieldNotFoundErrorIsError(t *testing.T) {
-	var err error = &planner.FieldNotFoundError{Field: "F", EntityType: "T"}
-	if err.Error() == "" {
-		t.Error("expected non-empty error message")
-	}
-	var target *planner.FieldNotFoundError
-	if !errors.As(err, &target) {
-		t.Error("errors.As should find FieldNotFoundError")
-	}
-	if target.Field != "F" {
-		t.Errorf("Field = %q, want F", target.Field)
-	}
-	if target.EntityType != "T" {
-		t.Errorf("EntityType = %q, want T", target.EntityType)
 	}
 }

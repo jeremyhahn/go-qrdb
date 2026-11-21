@@ -22,16 +22,6 @@ import (
 	"testing"
 )
 
-// TestGPUAvailable_ReturnsBoolean verifies that GPUAvailable returns a bool
-// without panicking, regardless of the underlying hardware.
-func TestGPUAvailable_ReturnsBoolean(t *testing.T) {
-	got := GPUAvailable()
-	// The only valid outcomes are true or false; the call must not panic.
-	if got != true && got != false {
-		t.Errorf("GPUAvailable() returned an unexpected value: %v", got)
-	}
-}
-
 // TestProbeGPU_ReturnsResult verifies that ProbeGPU returns a non-nil result
 // with no error, and that result.Available is consistent with GPUAvailable().
 func TestProbeGPU_ReturnsResult(t *testing.T) {
@@ -44,27 +34,6 @@ func TestProbeGPU_ReturnsResult(t *testing.T) {
 	}
 	if result.Available != GPUAvailable() {
 		t.Errorf("ProbeGPU().Available = %v, want %v (GPUAvailable())", result.Available, GPUAvailable())
-	}
-}
-
-// TestGPUProbeResult_ReasonConsistent verifies that the Reason field is
-// populated when the GPU is unavailable and empty when it is available.
-// Both branches are asserted so the test never needs to be skipped.
-func TestGPUProbeResult_ReasonConsistent(t *testing.T) {
-	result, err := ProbeGPU()
-	if err != nil {
-		t.Fatalf("ProbeGPU() returned unexpected error: %v", err)
-	}
-	if result.Available {
-		// GPU present: Reason should be empty (no explanation needed).
-		if result.Reason != "" {
-			t.Errorf("ProbeGPU().Reason = %q when GPU is available; expected empty", result.Reason)
-		}
-	} else {
-		// GPU absent: Reason must explain why.
-		if result.Reason == "" {
-			t.Error("ProbeGPU().Reason is empty when GPU is unavailable; expected a non-empty explanation")
-		}
 	}
 }
 

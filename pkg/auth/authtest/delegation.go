@@ -183,6 +183,9 @@ func (e *IssuerRefusedError) Error() string {
 type unrevoked struct{}
 
 func (unrevoked) IsCertRevoked(context.Context, *x509.Certificate) (bool, error) { return false, nil }
+func (unrevoked) IsCertRevokedUncached(context.Context, *x509.Certificate) (bool, error) {
+	return false, nil
+}
 
 func generateKey(t testing.TB) *ecdsa.PrivateKey {
 	t.Helper()

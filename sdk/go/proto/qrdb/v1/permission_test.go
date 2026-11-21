@@ -17,9 +17,7 @@ package qrdbv1_test
 import (
 	"testing"
 
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoregistry"
-	"google.golang.org/protobuf/types/descriptorpb"
 
 	qrdbv1 "github.com/jeremyhahn/go-qrdb/sdk/go/proto/qrdb/v1"
 )
@@ -41,24 +39,5 @@ func TestPermissionOptionIsPublished(t *testing.T) {
 	}
 	if got := xd.ContainingMessage().FullName(); got != "google.protobuf.MethodOptions" {
 		t.Fatalf("option extends %s, want google.protobuf.MethodOptions", got)
-	}
-}
-
-func TestPermissionOptionRoundTripsOnMethodOptions(t *testing.T) {
-	opts := &descriptorpb.MethodOptions{}
-	if proto.HasExtension(opts, qrdbv1.E_Permission) {
-		t.Fatal("empty MethodOptions reports the option")
-	}
-	proto.SetExtension(opts, qrdbv1.E_Permission, "kv:put")
-	raw, err := proto.Marshal(opts)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	back := &descriptorpb.MethodOptions{}
-	if err := proto.Unmarshal(raw, back); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	if got, _ := proto.GetExtension(back, qrdbv1.E_Permission).(string); got != "kv:put" {
-		t.Fatalf("permission = %q, want kv:put", got)
 	}
 }

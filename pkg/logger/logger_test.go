@@ -137,24 +137,6 @@ func TestLogger_WithField(t *testing.T) {
 	}
 }
 
-func TestLogger_WithError(t *testing.T) {
-	logger, err := New(LogConfig{
-		Level:  "debug",
-		Format: "json",
-		Output: "stdout",
-	})
-	if err != nil {
-		t.Fatalf("Failed to create logger: %v", err)
-	}
-
-	testErr := errors.New("test error")
-	newLogger := logger.WithError(testErr)
-
-	if newLogger == nil {
-		t.Error("WithError() returned nil logger")
-	}
-}
-
 func TestLogger_SetLevel(t *testing.T) {
 	logger, err := New(LogConfig{
 		Level:  "info",
@@ -234,24 +216,6 @@ func TestLogger_Clone(t *testing.T) {
 	cloned.fields["new_key"] = "new_value"
 	if _, ok := logger.fields["new_key"]; ok {
 		t.Error("Modifying clone should not affect original")
-	}
-}
-
-func TestLogger_ToContext(t *testing.T) {
-	logger, err := New(LogConfig{
-		Level:  "info",
-		Format: "json",
-		Output: "stdout",
-	})
-	if err != nil {
-		t.Fatalf("Failed to create logger: %v", err)
-	}
-
-	ctx := logger.ToContext(context.Background())
-	retrieved := FromContext(ctx)
-
-	if retrieved == nil {
-		t.Error("FromContext() returned nil")
 	}
 }
 

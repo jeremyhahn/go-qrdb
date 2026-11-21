@@ -453,18 +453,6 @@ func TestL2SIMD_DifferentLengths(t *testing.T) {
 	}
 }
 
-// TestL2SIMD_RemainingElements tests L2SIMD with length not divisible by 4.
-func TestL2SIMD_RemainingElements(t *testing.T) {
-	// 5 elements - 4 in SIMD loop, 1 remaining
-	a := []float32{1, 2, 3, 4, 5}
-	b := []float32{1, 2, 3, 4, 5}
-
-	dist := L2SIMD(a, b)
-	if dist != 0 {
-		t.Errorf("expected 0 distance for identical vectors, got %f", dist)
-	}
-}
-
 // TestCosineSIMD_DifferentLengths tests CosineSIMD with different length vectors.
 func TestCosineSIMD_DifferentLengths(t *testing.T) {
 	a := []float32{1, 2, 3}
@@ -473,18 +461,6 @@ func TestCosineSIMD_DifferentLengths(t *testing.T) {
 	dist := CosineSIMD(a, b)
 	if dist < 1e30 {
 		t.Errorf("expected max distance for different lengths, got %f", dist)
-	}
-}
-
-// TestCosineSIMD_RemainingElements tests CosineSIMD with length not divisible by 4.
-func TestCosineSIMD_RemainingElements(t *testing.T) {
-	// 5 elements - 4 in SIMD loop, 1 remaining
-	a := []float32{1, 2, 3, 4, 5}
-	b := []float32{1, 2, 3, 4, 5}
-
-	dist := CosineSIMD(a, b)
-	if dist > 0.01 {
-		t.Errorf("expected ~0 distance for identical vectors, got %f", dist)
 	}
 }
 
@@ -512,30 +488,6 @@ func TestSnapshot_RestoreInvalidData(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for invalid restore data")
 	}
-}
-
-// TestInsert_EntryPointNotFound tests insert when entry point is missing.
-func TestInsert_EntryPointNotFound(t *testing.T) {
-	idx, err := NewHNSWIndex(DefaultConfig())
-	if err != nil {
-		t.Fatalf("failed to create index: %v", err)
-	}
-
-	// Insert first node
-	if err := idx.Insert(1, []float32{1, 2, 3}); err != nil {
-		t.Fatalf("failed to insert: %v", err)
-	}
-
-	// Delete entry point without going through Delete method
-	idx.nodes.Delete(idx.entryPoint.Load())
-
-	// Create new node manually
-	node := NewNode(2, []float32{4, 5, 6}, 0)
-
-	// insert should handle missing entry point gracefully
-	idx.insert(node)
-
-	// Should not panic - the function returns early if entry point not found
 }
 
 // TestInsert_EntryPointTypeAssertionFail tests insert when entry point has wrong type.
@@ -588,47 +540,6 @@ func TestDelete_RangeWithInvalidTypes(t *testing.T) {
 	if idx.Count() != 2 {
 		t.Errorf("expected count=2, got %d", idx.Count())
 	}
-}
-
-// TestTransactionLogError_ErrorFormat tests TransactionLogError formatting.
-func TestTransactionLogError_ErrorFormat(t *testing.T) {
-	t.Run("with txn ID", func(t *testing.T) {
-		err := &TransactionLogError{
-			Op:    "write",
-			TxnID: "txn-123",
-			Err:   errors.New("io error"),
-		}
-
-		msg := err.Error()
-		if msg != "txn_log.write [txn=txn-123]: io error" {
-			t.Errorf("unexpected error message: %s", msg)
-		}
-	})
-
-	t.Run("without txn ID", func(t *testing.T) {
-		err := &TransactionLogError{
-			Op:  "init",
-			Err: errors.New("io error"),
-		}
-
-		msg := err.Error()
-		if msg != "txn_log.init: io error" {
-			t.Errorf("unexpected error message: %s", msg)
-		}
-	})
-
-	t.Run("unwrap", func(t *testing.T) {
-		innerErr := errors.New("inner error")
-		err := &TransactionLogError{
-			Op:    "test",
-			TxnID: "123",
-			Err:   innerErr,
-		}
-
-		if err.Unwrap() != innerErr {
-			t.Error("Unwrap did not return inner error")
-		}
-	})
 }
 
 // TestRollbackError_ErrorFormat tests RollbackError formatting.

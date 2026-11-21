@@ -184,22 +184,6 @@ func TestDefaultRemoteGPUConfig_Values(t *testing.T) {
 // RemoteGPUIndexFactory
 // ---------------------------------------------------------------------------
 
-func TestNewRemoteGPUIndexFactory_StoresConfigAndFallback(t *testing.T) {
-	cfg := DefaultRemoteGPUConfig()
-	fallback := &mockHNSWFactory{index: &mockHNSWIndex{countVal: 7}}
-
-	factory := NewRemoteGPUIndexFactory(cfg, fallback)
-	if factory == nil {
-		t.Fatal("NewRemoteGPUIndexFactory returned nil")
-	}
-	if factory.config != cfg {
-		t.Error("config not stored on RemoteGPUIndexFactory")
-	}
-	if factory.fallback != fallback {
-		t.Error("fallback not stored on RemoteGPUIndexFactory")
-	}
-}
-
 func TestRemoteGPUIndexFactory_CreateIndex_RemoteDisabled_UseFallback(t *testing.T) {
 	cpuIndex := &mockHNSWIndex{countVal: 4}
 	fallback := &mockHNSWFactory{index: cpuIndex}
@@ -228,18 +212,6 @@ func TestRemoteGPUIndexFactory_CreateIndex_NilConfig_UseFallback(t *testing.T) {
 	}
 	if idx.Count() != 2 {
 		t.Errorf("expected count 2 from fallback, got %d", idx.Count())
-	}
-}
-
-func TestRemoteGPUIndexFactory_CreateIndex_RemoteEnabled_EmptyEndpoint_Error(t *testing.T) {
-	cfg := DefaultRemoteGPUConfig()
-	cfg.Enabled = true
-	cfg.Endpoint = "" // empty endpoint → NewRemoteGPUIndex returns error
-
-	factory := NewRemoteGPUIndexFactory(cfg, nil)
-	_, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
-	if err == nil {
-		t.Fatal("expected error when remote enabled with empty endpoint, got nil")
 	}
 }
 

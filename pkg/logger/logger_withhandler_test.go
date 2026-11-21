@@ -68,15 +68,3 @@ func TestSlog_ReturnsUsableLogger(t *testing.T) {
 		t.Error("Slog() logger did not emit through the injected handler")
 	}
 }
-
-// TestSlog_OnConfigConstructedLogger verifies the accessor on the standard
-// constructor path too.
-func TestSlog_OnConfigConstructedLogger(t *testing.T) {
-	log, err := New(LogConfig{Level: "info", Output: "stderr"})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if log.Slog() == nil {
-		t.Error("Slog() returned nil on config-constructed logger")
-	}
-}

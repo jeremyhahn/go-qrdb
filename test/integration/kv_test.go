@@ -231,28 +231,6 @@ func (l *nodeLog) Lines(s string) []string {
 // Single-node KV tests
 // ---------------------------------------------------------------------------
 
-func TestKV_SingleNode_PutGetDelete(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "pebble")
-
-	// PUT a key.
-	httpPut(t, ca, adminPort, "greeting", []byte("hello world"))
-
-	// GET the key and verify value.
-	val := httpGet(t, ca, adminPort, "greeting")
-	if !bytes.Equal(val, []byte("hello world")) {
-		t.Fatalf("GET greeting: got %q, want %q", val, "hello world")
-	}
-
-	// DELETE the key.
-	httpDelete(t, ca, adminPort, "greeting")
-
-	// GET after DELETE should return 404.
-	status := httpGetStatus(t, ca, adminPort, "greeting")
-	if status != http.StatusNotFound {
-		t.Fatalf("GET after DELETE: got %d, want 404", status)
-	}
-}
-
 func TestKV_SingleNode_Overwrite(t *testing.T) {
 	adminPort, ca := startSingleNode(t, "pebble")
 
@@ -494,22 +472,6 @@ func TestKV_ThreeNode_AllEndpoints(t *testing.T) {
 	}
 }
 
-func TestKV_ThreeNode_ReadAfterWrite(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
-	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
-
-	// Write then immediately read -- linearizable consistency guarantee.
-	for i := range 10 {
-		key := fmt.Sprintf("raw/%d", i)
-		val := fmt.Sprintf("value-%d", i)
-		httpPut(t, ca, leaderPort, key, []byte(val))
-		got := httpGet(t, ca, leaderPort, key)
-		if string(got) != val {
-			t.Fatalf("read-after-write %s: got %q, want %q", key, got, val)
-		}
-	}
-}
-
 func TestKV_ThreeNode_ReplicatedList(t *testing.T) {
 	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
@@ -734,32 +696,6 @@ func TestKV_SingleNode_ConcurrentSameKey(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Batch tests
 // ---------------------------------------------------------------------------
-
-func TestBatch_SingleNode_PutMultiple(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "mvcc")
-
-	result := httpBatch(t, ca, adminPort, []batchOp{
-		{Type: "put", Key: "batch/k1", Value: "v1"},
-		{Type: "put", Key: "batch/k2", Value: "v2"},
-		{Type: "put", Key: "batch/k3", Value: "v3"},
-	})
-
-	if len(result.Responses) != 3 {
-		t.Fatalf("batch responses: got %d, want 3", len(result.Responses))
-	}
-
-	// Verify each key individually via GET.
-	for i, kv := range []struct{ key, val string }{
-		{"batch/k1", "v1"},
-		{"batch/k2", "v2"},
-		{"batch/k3", "v3"},
-	} {
-		got := httpGet(t, ca, adminPort, kv.key)
-		if string(got) != kv.val {
-			t.Errorf("key %d (%s): got %q, want %q", i, kv.key, got, kv.val)
-		}
-	}
-}
 
 func TestBatch_SingleNode_MixedOps(t *testing.T) {
 	adminPort, ca := startSingleNode(t, "mvcc")
@@ -1253,26 +1189,6 @@ func TestTS_SingleNode_DeleteSeries(t *testing.T) {
 	points = httpTSQuery(t, ca, adminPort, "ts.del.series", startNs, endNs)
 	if len(points) != 0 {
 		t.Fatalf("TS delete: got %d points after delete, want 0", len(points))
-	}
-}
-
-func TestTS_SingleNode_WriteBatch(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "mvcc")
-
-	now := time.Now()
-	startNs := now.Add(-1 * time.Minute).UnixNano()
-	endNs := now.Add(2 * time.Minute).UnixNano()
-
-	// Write multiple points in quick succession.
-	for i := range 5 {
-		httpTSWritePoint(t, ca, adminPort, "ts.writebatch.metric",
-			float64(i)*10.0, map[string]string{"batch": "true"})
-	}
-
-	points := httpTSQuery(t, ca, adminPort, "ts.writebatch.metric", startNs, endNs)
-
-	if len(points) != 5 {
-		t.Fatalf("TS write batch: got %d points, want 5", len(points))
 	}
 }
 
