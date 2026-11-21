@@ -310,7 +310,7 @@ func TestTimeSeriesBinding_Stub_ListMetrics_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_CreateNamespace(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.CreateNamespace(nil)
+	resp, err := b.CreateNamespace("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -329,7 +329,7 @@ func TestVectorBinding_Stub_CreateNamespace(t *testing.T) {
 func TestVectorBinding_Stub_CreateNamespace_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.CreateNamespace(nil)
+	_, err := b.CreateNamespace("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -339,7 +339,7 @@ func TestVectorBinding_Stub_CreateNamespace_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_DeleteNamespace(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.DeleteNamespace(nil)
+	resp, err := b.DeleteNamespace("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -358,7 +358,7 @@ func TestVectorBinding_Stub_DeleteNamespace(t *testing.T) {
 func TestVectorBinding_Stub_DeleteNamespace_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.DeleteNamespace(nil)
+	_, err := b.DeleteNamespace("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -368,7 +368,7 @@ func TestVectorBinding_Stub_DeleteNamespace_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_ListNamespaces(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.ListNamespaces(nil)
+	resp, err := b.ListNamespaces("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -387,7 +387,7 @@ func TestVectorBinding_Stub_ListNamespaces(t *testing.T) {
 func TestVectorBinding_Stub_ListNamespaces_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.ListNamespaces(nil)
+	_, err := b.ListNamespaces("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -397,7 +397,7 @@ func TestVectorBinding_Stub_ListNamespaces_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_GetNamespaceInfo(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.GetNamespaceInfo(nil)
+	resp, err := b.GetNamespaceInfo("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -416,7 +416,7 @@ func TestVectorBinding_Stub_GetNamespaceInfo(t *testing.T) {
 func TestVectorBinding_Stub_GetNamespaceInfo_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.GetNamespaceInfo(nil)
+	_, err := b.GetNamespaceInfo("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -426,7 +426,7 @@ func TestVectorBinding_Stub_GetNamespaceInfo_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_UpsertVector(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.UpsertVector(nil)
+	resp, err := b.UpsertVector("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -445,7 +445,7 @@ func TestVectorBinding_Stub_UpsertVector(t *testing.T) {
 func TestVectorBinding_Stub_UpsertVector_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.UpsertVector(nil)
+	_, err := b.UpsertVector("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -455,7 +455,7 @@ func TestVectorBinding_Stub_UpsertVector_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_GetVector(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.GetVector(nil)
+	resp, err := b.GetVector("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -474,7 +474,7 @@ func TestVectorBinding_Stub_GetVector(t *testing.T) {
 func TestVectorBinding_Stub_GetVector_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.GetVector(nil)
+	_, err := b.GetVector("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -484,7 +484,7 @@ func TestVectorBinding_Stub_GetVector_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_DeleteVector(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.DeleteVector(nil)
+	resp, err := b.DeleteVector("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -503,7 +503,7 @@ func TestVectorBinding_Stub_DeleteVector(t *testing.T) {
 func TestVectorBinding_Stub_DeleteVector_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.DeleteVector(nil)
+	_, err := b.DeleteVector("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -513,7 +513,7 @@ func TestVectorBinding_Stub_DeleteVector_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_BatchUpsert(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.BatchUpsert(nil)
+	resp, err := b.BatchUpsert("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -532,7 +532,7 @@ func TestVectorBinding_Stub_BatchUpsert(t *testing.T) {
 func TestVectorBinding_Stub_BatchUpsert_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.BatchUpsert(nil)
+	_, err := b.BatchUpsert("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -542,7 +542,7 @@ func TestVectorBinding_Stub_BatchUpsert_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_BatchDeleteVectors(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.BatchDeleteVectors(nil)
+	resp, err := b.BatchDeleteVectors("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -561,7 +561,7 @@ func TestVectorBinding_Stub_BatchDeleteVectors(t *testing.T) {
 func TestVectorBinding_Stub_BatchDeleteVectors_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.BatchDeleteVectors(nil)
+	_, err := b.BatchDeleteVectors("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -571,7 +571,7 @@ func TestVectorBinding_Stub_BatchDeleteVectors_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_ListVectors(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.ListVectors(nil)
+	resp, err := b.ListVectors("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -590,7 +590,7 @@ func TestVectorBinding_Stub_ListVectors(t *testing.T) {
 func TestVectorBinding_Stub_ListVectors_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.ListVectors(nil)
+	_, err := b.ListVectors("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -600,7 +600,7 @@ func TestVectorBinding_Stub_ListVectors_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_UpdateMetadata(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.UpdateMetadata(nil)
+	resp, err := b.UpdateMetadata("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -619,7 +619,7 @@ func TestVectorBinding_Stub_UpdateMetadata(t *testing.T) {
 func TestVectorBinding_Stub_UpdateMetadata_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.UpdateMetadata(nil)
+	_, err := b.UpdateMetadata("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -629,7 +629,7 @@ func TestVectorBinding_Stub_UpdateMetadata_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_SearchSimilar(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.SearchSimilar(nil)
+	resp, err := b.SearchSimilar("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -648,7 +648,7 @@ func TestVectorBinding_Stub_SearchSimilar(t *testing.T) {
 func TestVectorBinding_Stub_SearchSimilar_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.SearchSimilar(nil)
+	_, err := b.SearchSimilar("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -658,7 +658,7 @@ func TestVectorBinding_Stub_SearchSimilar_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_SearchByMetadata(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.SearchByMetadata(nil)
+	resp, err := b.SearchByMetadata("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -677,7 +677,7 @@ func TestVectorBinding_Stub_SearchByMetadata(t *testing.T) {
 func TestVectorBinding_Stub_SearchByMetadata_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.SearchByMetadata(nil)
+	_, err := b.SearchByMetadata("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -687,7 +687,7 @@ func TestVectorBinding_Stub_SearchByMetadata_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_HybridSearch(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.HybridSearch(nil)
+	resp, err := b.HybridSearch("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -706,7 +706,7 @@ func TestVectorBinding_Stub_HybridSearch(t *testing.T) {
 func TestVectorBinding_Stub_HybridSearch_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.HybridSearch(nil)
+	_, err := b.HybridSearch("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -716,7 +716,7 @@ func TestVectorBinding_Stub_HybridSearch_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_SearchByID(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.SearchByID(nil)
+	resp, err := b.SearchByID("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -735,7 +735,7 @@ func TestVectorBinding_Stub_SearchByID(t *testing.T) {
 func TestVectorBinding_Stub_SearchByID_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.SearchByID(nil)
+	_, err := b.SearchByID("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -745,7 +745,7 @@ func TestVectorBinding_Stub_SearchByID_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_RebuildIndex(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.RebuildIndex(nil)
+	resp, err := b.RebuildIndex("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -764,7 +764,7 @@ func TestVectorBinding_Stub_RebuildIndex(t *testing.T) {
 func TestVectorBinding_Stub_RebuildIndex_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.RebuildIndex(nil)
+	_, err := b.RebuildIndex("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -774,7 +774,7 @@ func TestVectorBinding_Stub_RebuildIndex_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_GetRebuildProgress(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.GetRebuildProgress(nil)
+	resp, err := b.GetRebuildProgress("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -793,7 +793,7 @@ func TestVectorBinding_Stub_GetRebuildProgress(t *testing.T) {
 func TestVectorBinding_Stub_GetRebuildProgress_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.GetRebuildProgress(nil)
+	_, err := b.GetRebuildProgress("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -803,7 +803,7 @@ func TestVectorBinding_Stub_GetRebuildProgress_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_GetIndexStats(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.GetIndexStats(nil)
+	resp, err := b.GetIndexStats("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -822,7 +822,7 @@ func TestVectorBinding_Stub_GetIndexStats(t *testing.T) {
 func TestVectorBinding_Stub_GetIndexStats_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.GetIndexStats(nil)
+	_, err := b.GetIndexStats("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -832,7 +832,7 @@ func TestVectorBinding_Stub_GetIndexStats_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_CompactNamespace(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.CompactNamespace(nil)
+	resp, err := b.CompactNamespace("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -851,7 +851,7 @@ func TestVectorBinding_Stub_CompactNamespace(t *testing.T) {
 func TestVectorBinding_Stub_CompactNamespace_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.CompactNamespace(nil)
+	_, err := b.CompactNamespace("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -861,7 +861,7 @@ func TestVectorBinding_Stub_CompactNamespace_ErrorMessage(t *testing.T) {
 func TestVectorBinding_Stub_GetCompactionProgress(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	resp, err := b.GetCompactionProgress(nil)
+	resp, err := b.GetCompactionProgress("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -880,7 +880,7 @@ func TestVectorBinding_Stub_GetCompactionProgress(t *testing.T) {
 func TestVectorBinding_Stub_GetCompactionProgress_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewVectorBinding(testLogger(t), conn)
-	_, err := b.GetCompactionProgress(nil)
+	_, err := b.GetCompactionProgress("", nil)
 	expected := "qrdb: feature disabled: vector"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())

@@ -46,6 +46,7 @@
   import { showToast } from "$stores/toast.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
   import HolderRekeyPanel from "../../components/HolderRekeyPanel.svelte";
+  import HolderEnrolmentForms from "../../components/wizard/HolderEnrolmentForms.svelte";
   import TenantDetail from "./TenantDetail.svelte";
 
   let { client }: { client: Client } = $props();
@@ -88,6 +89,22 @@
   // default) uses the tenant's default pool, the first entry of its
   // allowedVolumePools. The field is only shown/sent for volume/raft.
   let newTenantVolumePool: string = $state("");
+  // Pool names from client.volumePools.list(), loaded the first time the
+  // pool field is shown. Empty (no pools, or the list call failed) keeps
+  // the field free text so a pool mapped on the nodes but not yet listed
+  // can still be named.
+  let volumePoolNames: string[] = $state([]);
+  let volumePoolNamesRequested = false;
+
+  /** Loads the pool catalog's names for the create form's pool picker. */
+  async function loadVolumePoolNames(): Promise<void> {
+    try {
+      const resp = await client.volumePools.list();
+      volumePoolNames = (resp.pools ?? []).map((p) => p.name).sort();
+    } catch {
+      volumePoolNames = [];
+    }
+  }
   let createLoading: boolean = $state(false);
 
   // Admin onboarding fields. A tenant is created with its first admin's
@@ -149,6 +166,13 @@
     }
   });
 
+  $effect(() => {
+    if (isVolumePoolEligible && !volumePoolNamesRequested) {
+      volumePoolNamesRequested = true;
+      void loadVolumePoolNames();
+    }
+  });
+
   // Barrier init form fields. Per the platform architecture the tenant admin
   // chooses the per-tenant barrier strategy (none / passphrase / shamir);
   // passphrase is the back-compat default. The Shamir strategy initializes the
@@ -175,11 +199,26 @@
   let holdersTenantId: string = $state("");
   let holders = $state<import("@qrdb/sdk").OfficerStatus[]>([]);
   let holdersLoading: boolean = $state(false);
+  // Holder enrolment on the tenant barrier (registerTenantOfficer).
+  let showEnrol: boolean = $state(false);
+  let enrolRegistered: number = $state(0);
+
+  /** Registers one holder on the open tenant and reloads the holder list. */
+  async function enrolTenantHolder(
+    req: import("@qrdb/sdk").OfficerRegisterRequest,
+  ): Promise<import("@qrdb/sdk").OfficerRegisterResponse> {
+    const tenantId = holdersTenantId;
+    const resp = await client.officers.registerTenantOfficer({ tenantId, ...req });
+    void fetchHolders(tenantId);
+    return resp;
+  }
 
   /** Opens the share-holder panel for a tenant. */
   function handleHolders(tenantId: string): void {
     holdersTenantId = tenantId;
     holders = [];
+    showEnrol = false;
+    enrolRegistered = 0;
     showHoldersPanel = true;
     void fetchHolders(tenantId);
   }
@@ -356,6 +395,8 @@
     newTenantIsolationType = "prefix";
     newTenantBarrierAutoUnseal = false;
     newTenantVolumePool = "";
+    // Re-read the pool catalog the next time the pool field is shown.
+    volumePoolNamesRequested = false;
     newAdminUsername = "";
     newAdminCredentialKind = "csr";
     newAdminCsrPem = "";
@@ -906,14 +947,28 @@
               <span class="label-text font-semibold">Volume Pool</span>
               <span class="label-text-alt text-base-content/50">Optional</span>
             </label>
-            <input
-              id="tenant-volume-pool"
-              type="text"
-              class="input input-bordered w-full"
-              placeholder="fast"
-              data-testid="create-tenant-volume-pool"
-              bind:value={newTenantVolumePool}
-            />
+            {#if volumePoolNames.length > 0}
+              <select
+                id="tenant-volume-pool"
+                class="select select-bordered w-full"
+                data-testid="create-tenant-volume-pool"
+                bind:value={newTenantVolumePool}
+              >
+                <option value="">Default pool</option>
+                {#each volumePoolNames as poolName (poolName)}
+                  <option value={poolName}>{poolName}</option>
+                {/each}
+              </select>
+            {:else}
+              <input
+                id="tenant-volume-pool"
+                type="text"
+                class="input input-bordered w-full"
+                placeholder="fast"
+                data-testid="create-tenant-volume-pool"
+                bind:value={newTenantVolumePool}
+              />
+            {/if}
             <div class="label">
               <span class="label-text-alt text-base-content/60">
                 The named volume pool to place this tenant on. Leave empty to use the tenant's default pool.
@@ -1335,6 +1390,26 @@
             </table>
           </div>
         {/if}
+
+        <div class="border-t border-base-300 pt-4" data-testid="tenant-holder-enrol">
+          <button
+            class="btn btn-outline btn-sm"
+            data-testid="tenant-holder-enrol-toggle"
+            onclick={() => { showEnrol = !showEnrol; enrolRegistered = 0; }}
+          >
+            {showEnrol ? "Cancel enrolment" : "Enrol holder"}
+          </button>
+          {#if showEnrol}
+            <div class="mt-4">
+              <HolderEnrolmentForms
+                {client}
+                count={1}
+                bind:registeredCount={enrolRegistered}
+                enrol={enrolTenantHolder}
+              />
+            </div>
+          {/if}
+        </div>
 
         <div class="border-t border-base-300 pt-4">
           <HolderRekeyPanel

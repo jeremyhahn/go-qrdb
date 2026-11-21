@@ -91,121 +91,121 @@ func TestTimeSeriesBinding_ListMetrics_NotConnected(t *testing.T) {
 
 func TestVectorBinding_CreateNamespace_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.CreateNamespace(nil)
+	_, err := b.CreateNamespace("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_DeleteNamespace_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.DeleteNamespace(nil)
+	_, err := b.DeleteNamespace("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_ListNamespaces_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.ListNamespaces(nil)
+	_, err := b.ListNamespaces("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_GetNamespaceInfo_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.GetNamespaceInfo(nil)
+	_, err := b.GetNamespaceInfo("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_UpsertVector_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.UpsertVector(nil)
+	_, err := b.UpsertVector("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_GetVector_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.GetVector(nil)
+	_, err := b.GetVector("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_DeleteVector_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.DeleteVector(nil)
+	_, err := b.DeleteVector("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_BatchUpsert_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.BatchUpsert(nil)
+	_, err := b.BatchUpsert("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_BatchDeleteVectors_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.BatchDeleteVectors(nil)
+	_, err := b.BatchDeleteVectors("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_ListVectors_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.ListVectors(nil)
+	_, err := b.ListVectors("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_UpdateMetadata_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.UpdateMetadata(nil)
+	_, err := b.UpdateMetadata("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_SearchSimilar_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.SearchSimilar(nil)
+	_, err := b.SearchSimilar("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_SearchByMetadata_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.SearchByMetadata(nil)
+	_, err := b.SearchByMetadata("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_HybridSearch_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.HybridSearch(nil)
+	_, err := b.HybridSearch("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_SearchByID_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.SearchByID(nil)
+	_, err := b.SearchByID("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_RebuildIndex_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.RebuildIndex(nil)
+	_, err := b.RebuildIndex("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_GetRebuildProgress_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.GetRebuildProgress(nil)
+	_, err := b.GetRebuildProgress("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_GetIndexStats_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.GetIndexStats(nil)
+	_, err := b.GetIndexStats("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_CompactNamespace_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.CompactNamespace(nil)
+	_, err := b.CompactNamespace("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestVectorBinding_GetCompactionProgress_NotConnected(t *testing.T) {
 	b := NewVectorBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.GetCompactionProgress(nil)
+	_, err := b.GetCompactionProgress("", nil)
 	assertFeatureNotConnected(t, err)
 }
 

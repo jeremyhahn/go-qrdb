@@ -133,7 +133,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Officer | `registerDatabaseOfficer` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | none | no e2e; *verified* |
 | Officer | `registerOfficer` | views/admin/SealManager.svelte components/wizard/HolderEnrolmentForms.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `registerRecoveryOfficer` | views/admin/SealManager.svelte | admin-seal-recovery-officers.spec.ts | *verified* |
-| Officer | `registerTenantOfficer` | none | none | not in UI; *verified* |
+| Officer | `registerTenantOfficer` | views/admin/TenantManager.svelte | tenant-holders.spec.ts, dom/tenant-trust-roundtrip.spec.ts | *verified* |
 | Officer | `revokeDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
 | Officer | `revokeOfficer` | views/admin/SealManager.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `revokeTenantOfficer` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
@@ -164,7 +164,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Seal | `unseal` | App.svelte views/admin/SealManager.svelte | unseal.spec.ts admin-seal.spec.ts | *verified* |
 | ServerConfig | `initialized` | none | none (spec hits are false name matches) | not in UI; *verified* |
 | ServerConfig | `isEmbeddedAvailable` | none (hit is `connectionManager.isEmbeddedAvailable`) | none | not in UI; *verified* |
-| Tenant | `addTrustAnchors` | views/admin/TenantDetail.svelte | none | no e2e; *verified* |
+| Tenant | `addTrustAnchors` | views/admin/TenantDetail.svelte | tenant-trust-anchors.spec.ts | *verified* |
 | Tenant | `barrierInit` | views/admin/TenantManager.svelte  | real-backend/per-tenant-barrier.spec.ts  |  |
 | Tenant | `barrierStatus` | views/admin/TenantManager.svelte | tenant-barrier-unseal.spec.ts | *verified* |
 | Tenant | `barrierUnseal` | views/admin/TenantManager.svelte | tenant-barrier-unseal.spec.ts | *verified* |
@@ -172,8 +172,8 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Tenant | `delete` | views/admin/TenantManager.svelte | tenant-crud.spec.ts | *verified* |
 | Tenant | `get` | views/admin/TenantDetail.svelte | tenant-crud.spec.ts tenant-quotas.spec.ts | *verified* |
 | Tenant | `list` | views/admin/TenantManager.svelte components/admin/TenantSelect.svelte | tenant-crud.spec.ts | *verified* |
-| Tenant | `listTrustAnchors` | views/admin/TenantDetail.svelte | none | no e2e; *verified* |
-| Tenant | `removeTrustAnchor` | views/admin/TenantDetail.svelte | none | no e2e; *verified* |
+| Tenant | `listTrustAnchors` | views/admin/TenantDetail.svelte | tenant-trust-anchors.spec.ts, dom/tenant-trust-roundtrip.spec.ts | *verified* |
+| Tenant | `removeTrustAnchor` | views/admin/TenantDetail.svelte | tenant-trust-anchors.spec.ts | *verified* |
 | Tenant | `update` | views/admin/TenantDetail.svelte | dom/tenant-management.spec.ts | *verified* |
 | Tenant | `updateEntitlements` | views/admin/TenantDetail.svelte | tenant-multitenancy-web.spec.ts dom/tenant-management.spec.ts | *verified* |
 | Tenant | `updateQuotas` | views/admin/TenantDetail.svelte | tenant-quotas.spec.ts tenant-multitenancy-web.spec.ts | *verified* |
@@ -198,8 +198,8 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | User | `list` | views/admin/UserManager.svelte | admin-users.spec.ts | *verified* |
 | User | `removeCertBinding` | views/admin/UserDetail.svelte | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
 | User | `update` | views/admin/UserDetail.svelte (username, email, display name) | dom/user-detail-roundtrip.spec.ts | *verified* |
-| Vector | `batchDeleteVectors` | none | none | not in UI; *verified* |
-| Vector | `batchUpsert` | none | none | not in UI; *verified* |
+| Vector | `batchDeleteVectors` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
+| Vector | `batchUpsert` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
 | Vector | `compactNamespace` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `createNamespace` | views/user/VectorView.svelte  | vector.spec.ts vector-namespace-fix.spec.ts  |  |
 | Vector | `deleteNamespace` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
@@ -208,22 +208,22 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Vector | `getIndexStats` | views/user/VectorView.svelte | vector.spec.ts (load stats) | *verified* |
 | Vector | `getNamespaceInfo` | views/user/VectorView.svelte | vector.spec.ts (info stat cards) | *verified* |
 | Vector | `getRebuildProgress` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
-| Vector | `getVector` | none | none | not in UI; *verified* |
-| Vector | `hybridSearch` | none | none | not in UI; *verified* |
+| Vector | `getVector` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
+| Vector | `hybridSearch` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
 | Vector | `listNamespaces` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `listVectors` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `rebuildIndex` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `searchByID` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `searchByMetadata` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `searchSimilar` | views/user/VectorView.svelte | vector.spec.ts (search form, input validation) | *verified* |
-| Vector | `updateMetadata` | none | none | not in UI; *verified* |
+| Vector | `updateMetadata` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
 | Vector | `upsertVector` | views/user/VectorView.svelte  | vector.spec.ts  |  |
-| VolumePool | `create` | none (no `volumePools` call in src; tenants take a pool name only) | none | not in UI; *verified* |
-| VolumePool | `delete` | none | none | not in UI; *verified* |
-| VolumePool | `get` | none | none | not in UI; *verified* |
-| VolumePool | `list` | none | none | not in UI; *verified* |
-| VolumePool | `listTenants` | none | none | not in UI; *verified* |
-| VolumePool | `update` | none | none | not in UI; *verified* |
+| VolumePool | `create` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
+| VolumePool | `delete` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
+| VolumePool | `get` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
+| VolumePool | `list` | views/admin/VolumePoolManager.svelte views/admin/TenantManager.svelte (pool picker) | admin-volume-pools.spec.ts | *verified* |
+| VolumePool | `listTenants` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
+| VolumePool | `update` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
 | Watch | `watch` | views/user/WatchView.svelte | watch.spec.ts watch-advanced.spec.ts | *verified* |
 | Watch | `watchPrefix` | views/user/WatchView.svelte | watch-advanced.spec.ts real-backend/watch-events-real.spec.ts | *verified* |
 
@@ -271,7 +271,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 170 | 154 |
+| operations | 218 | 182 | 169 |
 | displays | 12 | 10 | 9 |
 
-Operations not in UI: 48. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 36. In UI without e2e: 13. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).

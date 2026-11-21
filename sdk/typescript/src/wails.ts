@@ -221,6 +221,9 @@ import type {
     VolumePoolDetail,
     ListVolumePoolsResponse,
     ListVolumePoolTenantsResponse,
+    ListVolumePoolTenantsRequest,
+    CreateVolumePoolRequest,
+    UpdateVolumePoolRequest,
     TrustAnchorList,
     ConfigInitializedResponse,
     BackupRequest,
@@ -341,6 +344,26 @@ function wrapBindings(
 }
 
 /**
+ * Prepends the database scope to every call of a binding whose Go methods
+ * take the target database as their first argument (VectorBinding): the
+ * Go side resolves the connection's client through Client.DatabaseScoped,
+ * so the operation reaches that database and not the connection's default
+ * one. An empty name is the unscoped client.
+ */
+function withDatabaseArg(
+    b: Record<string, (...args: unknown[]) => Promise<unknown>>,
+    database: string,
+): Record<string, (...args: unknown[]) => Promise<unknown>> {
+    return new Proxy(b, {
+        get(target, prop: string) {
+            const fn = target[prop];
+            if (typeof fn !== 'function') return fn;
+            return (...args: unknown[]) => fn(database, ...args);
+        },
+    });
+}
+
+/**
  * Normalizes a binding rejection to an Error. The Wails runtime rejects a
  * Go method's error as its message string, not an Error, so callers that
  * test `instanceof Error` would otherwise lose the server's message.
@@ -395,6 +418,7 @@ interface WailsBindings {
         LockBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         CredentialBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         AuditBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
+        VolumePoolBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         VlogBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         ConnectionManagerBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
     };
@@ -438,20 +462,35 @@ interface WailsRuntime {
  */
 export class WailsClient implements Client {
 
-    /** Tracks whether the embedded server is currently running. */
-    private embeddedRunning = false;
+    /**
+     * Tracks whether the embedded server is currently running. Shared with
+     * every database-scoped client derived from this one: there is one
+     * embedded server per process.
+     */
+    private readonly embedded: { running: boolean };
+
+    /**
+     * The database this client targets; empty for the unscoped client
+     * (the connection's default, the `system` database).
+     */
+    private readonly database: string;
+
+    constructor(database = '', embedded?: { running: boolean }) {
+        this.database = database;
+        this.embedded = embedded ?? { running: false };
+    }
 
     /**
      * @inheritdoc
      *
-     * Desktop/embedded multi-database scoping is out of scope for this stage:
-     * the Wails bindings route per-database through their own mechanism rather
-     * than an HTTP header, so this is a no-op passthrough that returns the same
-     * client. It exists only to satisfy the {@link Client} interface on both
-     * transports.
+     * The returned client carries the database into the bindings whose Go
+     * methods take it (the vector operations), so they run against that
+     * database. `system` and the empty string are the unscoped client.
      */
-    databaseScoped(_name: string): Client {
-        return this;
+    databaseScoped(name: string): Client {
+        const target = name === 'system' ? '' : name;
+        if (target === this.database) return this;
+        return new WailsClient(target, this.embedded);
     }
 
     // -----------------------------------------------------------------------
@@ -915,7 +954,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get vector(): VectorClient | null {
-        const b = wrapBindings(getBindings().main.VectorBinding);
+        const b = withDatabaseArg(wrapBindings(getBindings().main.VectorBinding), this.database);
         return {
             createNamespace: async (
                 req: CreateNamespaceRequest,
@@ -957,25 +996,44 @@ export class WailsClient implements Client {
                 return b.UpsertVector(toSnake({ ...req, id: vectorIDToWire(req.id) })) as Promise<UpsertVectorResponse>;
             },
             getVector: async (req: GetVectorRequest): Promise<VectorData> => {
-                const vec = await b.GetVector(toSnake({ ...req, id: vectorIDToWire(req.id) })) as VectorData;
+                // The Go request defaults both include flags to false, which
+                // omits the values and the metadata; a vector read is whole.
+                const vec = await b.GetVector({
+                    ...toSnake({ ...req, id: vectorIDToWire(req.id) }),
+                    include_vector: true,
+                    include_metadata: true,
+                }) as VectorData;
                 return normalizeVectorIDField(vec);
             },
             deleteVector: async (req: DeleteVectorRequest): Promise<void> => {
                 await b.DeleteVector(toSnake({ ...req, id: vectorIDToWire(req.id) }));
             },
             batchUpsert: async (req: BatchUpsertRequest): Promise<BatchUpsertResponse> => {
-                return b.BatchUpsert(toSnake({
+                // The binding answers the Go BatchUpsertResponse
+                // {ids, versions, timestamp, success, inserted_count}: the
+                // upserted count is inserted_count, the rest failed.
+                const resp = await b.BatchUpsert(toSnake({
                     ...req,
                     vectors: req.vectors.map((v) => ({ ...v, id: vectorIDToWire(v.id) })),
-                })) as Promise<BatchUpsertResponse>;
+                })) as { insertedCount?: number } | null;
+                const succeeded = resp?.insertedCount ?? 0;
+                return { succeeded, failed: Math.max(0, req.vectors.length - succeeded) };
             },
             batchDeleteVectors: async (
                 req: BatchDeleteVectorsRequest,
             ): Promise<BatchDeleteVectorsResponse> => {
-                return b.BatchDeleteVectors(toSnake({
+                // The binding answers the Go BatchDeleteVectorsResponse
+                // {deleted_count, failed_ids, timestamp, success}.
+                const resp = await b.BatchDeleteVectors(toSnake({
                     ...req,
                     ids: req.ids.map(vectorIDToWire),
-                })) as Promise<BatchDeleteVectorsResponse>;
+                })) as { deletedCount?: number; failedIds?: readonly (number | string)[] } | null;
+                const failedIds = resp?.failedIds ?? [];
+                return {
+                    deleted: resp?.deletedCount ?? 0,
+                    failed: failedIds.length,
+                    errors: failedIds.map((id) => ({ id: String(id), error: 'not deleted' })),
+                };
             },
             listVectors: async (req: ListVectorsRequest): Promise<ListVectorsResponse> => {
                 const resp = await b.ListVectors(toSnake(req)) as ListVectorsResponse;
@@ -1002,7 +1060,16 @@ export class WailsClient implements Client {
             hybridSearch: async (
                 req: HybridSearchRequest,
             ): Promise<HybridSearchResponse> => {
-                const resp = await b.HybridSearch(toSnake(req)) as HybridSearchResponse;
+                // transport.HybridSearchRequest reads query_vector and
+                // metadata_filter, as the REST adapter sends them.
+                const resp = await b.HybridSearch(toSnake({
+                    namespace: req.namespace,
+                    queryVector: req.vector,
+                    k: req.k,
+                    metadataFilter: req.metadataFilters,
+                    consistency: req.consistency,
+                    shardId: req.shardId,
+                })) as HybridSearchResponse;
                 return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
             },
             searchByID: async (req: SearchByIDRequest): Promise<SearchSimilarResponse> => {
@@ -1373,21 +1440,21 @@ export class WailsClient implements Client {
         return {
             startEmbedded: async (config: EmbeddedConfig): Promise<void> => {
                 await b.StartEmbedded(config);
-                this.embeddedRunning = true;
+                this.embedded.running = true;
             },
             stopEmbedded: async (): Promise<void> => {
                 await b.StopEmbedded();
-                this.embeddedRunning = false;
+                this.embedded.running = false;
             },
             isEmbedded: (): boolean => {
-                return this.embeddedRunning;
+                return this.embedded.running;
             },
             hasSavedConfig: async (): Promise<boolean> => {
                 return b.HasSavedConfig() as Promise<boolean>;
             },
             restoreEmbedded: async (): Promise<void> => {
                 await b.RestoreEmbedded();
-                this.embeddedRunning = true;
+                this.embedded.running = true;
             },
             clearSavedConfig: async (): Promise<void> => {
                 await b.ClearSavedConfig();
@@ -1489,31 +1556,41 @@ export class WailsClient implements Client {
     /**
      * @inheritdoc
      *
-     * Not yet implemented in desktop (Wails) mode: there is no
-     * main.VolumePoolBinding counterpart to the remote transports' volume
-     * pool management surface (REST, gRPC, QUIC, Unix, MCP). Every method
-     * throws NotImplementedError, matching admin.mintJoinToken's existing
-     * desktop-mode gap above.
+     * Served by main.VolumePoolBinding over the active connection's volume
+     * pool client. The Go request structs carry camelCase json tags, so
+     * request objects pass through unconverted; responses go through
+     * wrapBindings, which turns the tenant page's `next_page_token` into
+     * `nextPageToken`.
      */
     get volumePools(): VolumePoolClient {
+        const b = wrapBindings(getBindings().main.VolumePoolBinding);
         return {
             list: async (): Promise<ListVolumePoolsResponse> => {
-                throw new NotImplementedError('volumePools.list');
+                const pools = (await b.List()) as VolumePool[] | null;
+                return { pools: pools ?? [] };
             },
-            get: async (): Promise<VolumePoolDetail> => {
-                throw new NotImplementedError('volumePools.get');
+            get: async (pool: string): Promise<VolumePoolDetail> => {
+                return b.Get(pool) as Promise<VolumePoolDetail>;
             },
-            create: async (): Promise<VolumePool> => {
-                throw new NotImplementedError('volumePools.create');
+            create: async (req: CreateVolumePoolRequest): Promise<VolumePool> => {
+                return b.Create(req) as Promise<VolumePool>;
             },
-            update: async (): Promise<VolumePool> => {
-                throw new NotImplementedError('volumePools.update');
+            update: async (pool: string, req: UpdateVolumePoolRequest): Promise<VolumePool> => {
+                return b.Update(pool, { ...req, name: pool }) as Promise<VolumePool>;
             },
-            delete: async (): Promise<void> => {
-                throw new NotImplementedError('volumePools.delete');
+            delete: async (pool: string): Promise<void> => {
+                await b.Delete(pool);
             },
-            listTenants: async (): Promise<ListVolumePoolTenantsResponse> => {
-                throw new NotImplementedError('volumePools.listTenants');
+            listTenants: async (
+                pool: string,
+                req: ListVolumePoolTenantsRequest = {},
+            ): Promise<ListVolumePoolTenantsResponse> => {
+                const page = (await b.ListTenants(
+                    pool,
+                    req.pageSize ?? 0,
+                    req.pageToken ?? '',
+                )) as ListVolumePoolTenantsResponse | null;
+                return { tenants: page?.tenants ?? [], nextPageToken: page?.nextPageToken || undefined };
             },
         };
     }

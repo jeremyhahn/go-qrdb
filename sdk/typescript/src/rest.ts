@@ -30,6 +30,15 @@ import {
     normalizeVectorEnumFields,
     normalizeVectorIDField,
     vectorIDToWire,
+    indexParamsToWire,
+    rebuildProgressFromWire,
+    compactionProgressFromWire,
+    searchResponseFromWire,
+    type WireSearchResponse,
+    type WireRebuildIndexResponse,
+    type WireRebuildProgress,
+    type WireCompactResponse,
+    type WireCompactionProgress,
 } from './transform.js';
 import type {
     AdminClient,
@@ -1416,7 +1425,7 @@ export class RestClient implements Client {
                 // distance_metric / index_type as canonical service strings,
                 // not the SDK's numeric proto enums, and the index parameters
                 // under index_config.
-                return this.fetchJSON<CreateNamespaceResponse>('/vector/namespace',
+                const resp = await this.fetchJSON<{ success?: boolean; timestamp?: number }>('/vector/namespace',
                     {
                         method: 'POST',
                         ...jsonBody({
@@ -1424,11 +1433,13 @@ export class RestClient implements Client {
                             dimension: req.dimension,
                             distance_metric: distanceMetricToRestWire(req.distanceMetric),
                             index_type: indexTypeToRestWire(req.indexType),
-                            index_config: req.indexParams,
+                            index_config: indexParamsToWire(req.indexParams),
                             shard_id: req.shardId,
                         }),
                     },
                 );
+                // The wire (vectorCreateNamespaceResponse) reports success.
+                return { created: resp.success === true, timestamp: resp.timestamp ?? 0 };
             },
             deleteNamespace: async (req: DeleteNamespaceRequest): Promise<void> => {
                 this.ensureConnected();
@@ -1487,7 +1498,9 @@ export class RestClient implements Client {
             },
             batchUpsert: async (req: BatchUpsertRequest): Promise<BatchUpsertResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<BatchUpsertResponse>('/vector/batch/upsert',
+                // The wire answers {ids, versions, success, inserted_count}:
+                // the upserted count is inserted_count, the rest failed.
+                const resp = await this.fetchJSON<{ insertedCount?: number }>('/vector/batch/upsert',
                     {
                         method: 'POST',
                         ...jsonBody({
@@ -1496,31 +1509,46 @@ export class RestClient implements Client {
                         }),
                     },
                 );
+                const succeeded = resp.insertedCount ?? 0;
+                return { succeeded, failed: Math.max(0, req.vectors.length - succeeded) };
             },
             batchDeleteVectors: async (
                 req: BatchDeleteVectorsRequest,
             ): Promise<BatchDeleteVectorsResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<BatchDeleteVectorsResponse>('/vector/batch/delete',
+                // The wire answers {deleted_count, failed_ids, success}.
+                const resp = await this.fetchJSON<{ deletedCount?: number; failedIds?: readonly (number | string)[] }>(
+                    '/vector/batch/delete',
                     {
                         method: 'POST',
                         ...jsonBody({ ...req, ids: req.ids.map(vectorIDToWire) }),
                     },
                 );
+                const failedIds = resp.failedIds ?? [];
+                return {
+                    deleted: resp.deletedCount ?? 0,
+                    failed: failedIds.length,
+                    errors: failedIds.map((id) => ({ id: String(id), error: 'not deleted' })),
+                };
             },
             listVectors: async (req: ListVectorsRequest): Promise<ListVectorsResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<ListVectorsResponse>(`/vector/list${buildQuery({
+                const resp = await this.fetchJSON<{
+                    vectors?: VectorData[] | null;
+                    nextCursor?: string;
+                    totalCount?: number;
+                }>(`/vector/list${buildQuery({
                         namespace: req.namespace,
                         limit: req.limit,
-                        offset: req.offset,
                         cursor: req.cursor,
                         shard_id: req.shardId,
                     })}`,
                 );
+                // The wire answers the namespace size as total_count.
                 return {
-                    ...resp,
                     vectors: (resp.vectors ?? []).map(normalizeVectorIDField),
+                    nextCursor: resp.nextCursor || undefined,
+                    total: resp.totalCount ?? 0,
                 };
             },
             updateMetadata: async (req: UpdateMetadataRequest): Promise<void> => {
@@ -1534,85 +1562,118 @@ export class RestClient implements Client {
                 req: SearchSimilarRequest,
             ): Promise<SearchSimilarResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<SearchSimilarResponse>('/vector/search/similar',
-                    { method: 'POST', ...jsonBody(req) },
+                // The wire (vectorSearchSimilarRequest) reads query_vector
+                // and answers the search time as query_duration.
+                const { vector, ...rest } = req;
+                const resp = await this.fetchJSON<WireSearchResponse>('/vector/search/similar',
+                    { method: 'POST', ...jsonBody({ ...rest, queryVector: vector }) },
                 );
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                return searchResponseFromWire(resp);
             },
             searchByMetadata: async (
                 req: SearchByMetadataRequest,
             ): Promise<SearchByMetadataResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<SearchByMetadataResponse>('/vector/search/metadata',
+                // The wire answers the match count as total_count.
+                const resp = await this.fetchJSON<{ results?: VectorData[] | null; totalCount?: number }>(
+                    '/vector/search/metadata',
                     { method: 'POST', ...jsonBody(req) },
                 );
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                const results = (resp.results ?? []).map(normalizeVectorIDField);
+                return { results, total: resp.totalCount ?? results.length };
             },
             hybridSearch: async (
                 req: HybridSearchRequest,
             ): Promise<HybridSearchResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<HybridSearchResponse>('/vector/search/hybrid',
-                    { method: 'POST', ...jsonBody(req) },
+                // The wire reads query_vector and metadata_filter.
+                const resp = await this.fetchJSON<WireSearchResponse>('/vector/search/hybrid',
+                    {
+                        method: 'POST',
+                        ...jsonBody({
+                            namespace: req.namespace,
+                            queryVector: req.vector,
+                            k: req.k,
+                            metadataFilter: req.metadataFilters,
+                            consistency: req.consistency,
+                            shardId: req.shardId,
+                        }),
+                    },
                 );
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                return searchResponseFromWire(resp);
             },
             searchByID: async (req: SearchByIDRequest): Promise<SearchSimilarResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<SearchSimilarResponse>('/vector/search/by-id',
+                const resp = await this.fetchJSON<WireSearchResponse>('/vector/search/by-id',
                     {
                         method: 'POST',
                         ...jsonBody({ ...req, id: vectorIDToWire(req.id) }),
                     },
                 );
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                return searchResponseFromWire(resp);
             },
             rebuildIndex: async (
                 req: RebuildIndexRequest,
             ): Promise<RebuildIndexResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<RebuildIndexResponse>('/vector/index/rebuild',
+                // The wire answers {job_id, status, ..., timestamp, success}.
+                const resp = await this.fetchJSON<WireRebuildIndexResponse>('/vector/index/rebuild',
                     { method: 'POST', ...jsonBody(req) },
                 );
+                return { jobId: resp.jobId, started: resp.success, timestamp: resp.timestamp };
             },
             getRebuildProgress: async (
                 req: GetRebuildProgressRequest,
             ): Promise<RebuildProgress> => {
                 this.ensureConnected();
-                return this.fetchJSON<RebuildProgress>(`/vector/index/rebuild/progress${buildQuery({
+                const resp = await this.fetchJSON<WireRebuildProgress>(`/vector/index/rebuild/progress${buildQuery({
                         namespace: req.namespace,
                         job_id: req.jobId,
                         shard_id: req.shardId,
                     })}`,
                 );
+                return rebuildProgressFromWire(resp);
             },
             getIndexStats: async (req: GetIndexStatsRequest): Promise<IndexStats> => {
                 this.ensureConnected();
-                const stats = await this.fetchJSON<IndexStats>(`/vector/index/stats${buildQuery({
+                // The wire (vectorIndexStatsResponse) names the sizes
+                // memory_usage_bytes and index_size_bytes.
+                const stats = await this.fetchJSON<IndexStats & {
+                    memoryUsageBytes?: number;
+                    indexSizeBytes?: number;
+                }>(`/vector/index/stats${buildQuery({
                         namespace: req.namespace,
                         shard_id: req.shardId,
                     })}`,
                 );
-                return normalizeVectorEnumFields(stats);
+                const { memoryUsageBytes, indexSizeBytes, ...rest } = stats;
+                return normalizeVectorEnumFields({
+                    ...rest,
+                    memoryUsage: memoryUsageBytes ?? stats.memoryUsage ?? 0,
+                    diskUsage: indexSizeBytes ?? stats.diskUsage ?? 0,
+                });
             },
             compactNamespace: async (
                 req: CompactNamespaceRequest,
             ): Promise<CompactNamespaceResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<CompactNamespaceResponse>('/vector/compact',
+                // The wire names the job operation_id and reports success.
+                const resp = await this.fetchJSON<WireCompactResponse>('/vector/compact',
                     { method: 'POST', ...jsonBody(req) },
                 );
+                return { jobId: resp.operationId, started: resp.success };
             },
             getCompactionProgress: async (
                 req: GetCompactionProgressRequest,
             ): Promise<CompactionProgress> => {
                 this.ensureConnected();
-                return this.fetchJSON<CompactionProgress>(`/vector/compact/progress${buildQuery({
+                const resp = await this.fetchJSON<WireCompactionProgress>(`/vector/compact/progress${buildQuery({
                         namespace: req.namespace,
-                        job_id: req.jobId,
+                        operation_id: req.jobId,
                         shard_id: req.shardId,
                     })}`,
                 );
+                return compactionProgressFromWire(resp);
             },
         };
     }

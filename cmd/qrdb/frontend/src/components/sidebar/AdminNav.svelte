@@ -41,6 +41,7 @@
     Archive,
     Scale,
     KeyRound,
+    Layers,
     Settings as SettingsIcon,
   } from "lucide-svelte";
   // lucide-svelte icons are legacy Svelte 4 class components.
@@ -112,6 +113,7 @@
         { id: 'tenants',       label: 'Tenants',       icon: Building2 },
         { id: 'users',         label: 'Users',         icon: Users },
         { id: 'roles',         label: 'Roles',         icon: Shield },
+        { id: 'volume-pools',  label: 'Volume Pools',  icon: Layers },
         { id: 'certificates',  label: 'Certificates',  icon: FileText },
         { id: 'credentials' as AdminView, label: 'Credentials', icon: KeyRound },
       ],
