@@ -78,6 +78,10 @@ type Options struct {
 	// the cluster after the last heal, and the final read.
 	HealTimeout     time.Duration
 	RecoveryTimeout time.Duration
+	// PostTimeout bounds the whole post-duration phase (heals, liveness,
+	// final read, replicas) by one deadline; zero derives it from the
+	// two above.
+	PostTimeout time.Duration
 
 	// Seal is the node seal type the cluster runs under, one of sealTypes.
 	Seal string
@@ -138,7 +142,11 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	}
 	infos := o.inspect(ctx)
 
-	events := &eventLog{origin: origin}
+	if o.Progress != nil {
+		// The ticker, the nemesis player and the phases all print.
+		o.Progress = &lockedWriter{w: o.Progress}
+	}
+	events := &eventLog{origin: origin, progress: o.Progress}
 	player := &nemesis.Player{Nemeses: o.Nemeses, Targets: o.Targets, Recorder: events, HealTimeout: o.HealTimeout}
 	loadCtx, stopLoad := context.WithCancel(ctx)
 	defer stopLoad()
@@ -161,25 +169,42 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	if playErr != nil && ctx.Err() == nil && events.failures() == 0 {
 		status.Errors = append(status.Errors, "nemesis: "+playErr.Error())
 	}
-	status.Unhealed = o.healAll(ctx)
+	// One deadline bounds the whole post-duration phase, so the verdict
+	// and the bundle are written however the cluster behaves after the
+	// last heal (#1637: a run that stalled here never wrote either).
+	deadline := time.Now().Add(o.postTimeout())
+	healCtx, cancelHeal := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	defer cancelHeal()
+	pctx, cancelPost := context.WithDeadline(ctx, deadline)
+	defer cancelPost()
+
+	o.phase(origin, "healing")
+	status.Unhealed = o.healAll(healCtx)
 	healedAt := time.Now()
 
+	o.phase(origin, "liveness")
 	switch {
 	case ctx.Err() != nil:
 		run.Liveness = Observation{Status: StatusUnavailable, Detail: "not checked: the run was interrupted"}
 	case len(status.Unhealed) > 0:
 		run.Liveness = Observation{Status: StatusUnavailable, Detail: "not checked: a fault did not heal"}
 	default:
-		run.Liveness = o.liveness(ctx, wcfg.KeyPrefix, healedAt)
+		run.Liveness = o.liveness(pctx, wcfg.KeyPrefix, healedAt)
 	}
-	if ctx.Err() == nil {
-		fctx, cancel := context.WithTimeout(ctx, o.RecoveryTimeout)
+	if ctx.Err() == nil && pctx.Err() == nil {
+		o.phase(origin, "final read")
+		fctx, cancel := context.WithTimeout(pctx, o.RecoveryTimeout)
 		if err := w.FinalRead(fctx); err != nil && ctx.Err() == nil {
 			status.Errors = append(status.Errors, "final read: "+err.Error())
 		}
 		cancel()
 	}
-	run.Replicas = o.replicas(ctx)
+	o.phase(origin, "replicas")
+	run.Replicas = o.replicas(pctx)
+	if ctx.Err() == nil && pctx.Err() != nil {
+		status.Errors = append(status.Errors, "post-run phase: not finished within "+o.postTimeout().String())
+	}
+	o.phase(origin, "writing bundle")
 	status.Interrupted = ctx.Err() != nil
 	run.Status = status
 	run.Stats = WorkloadStats{OK: stats.OK, Fail: stats.Fail, Indeterminate: stats.Indeterminate, DialFailures: stats.DialFailures}
@@ -385,7 +410,10 @@ func (o *Options) inspect(ctx context.Context) []NodeInfo {
 func (o *Options) healAll(ctx context.Context) []string {
 	var unhealed []string
 	for _, name := range slices.Sorted(maps.Keys(o.Nemeses)) {
-		hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), o.HealTimeout)
+		// Run hands in a context that outlives the run's cancellation but
+		// carries the post-run deadline: a heal still runs after an
+		// interrupt, never past the deadline.
+		hctx, cancel := context.WithTimeout(ctx, o.HealTimeout)
 		err := o.Nemeses[name].Heal(hctx)
 		cancel()
 		if err != nil {
@@ -393,6 +421,26 @@ func (o *Options) healAll(ctx context.Context) []string {
 		}
 	}
 	return unhealed
+}
+
+// postTimeout is the one deadline over the post-duration phase: every
+// heal, E4's liveness wait, the final read and the replica comparison.
+// PostTimeout zero is one heal per configured fault plus RecoveryTimeout
+// for each of the three cluster checks.
+func (o *Options) postTimeout() time.Duration {
+	if o.PostTimeout > 0 {
+		return o.PostTimeout
+	}
+	return time.Duration(len(o.Nemeses))*o.HealTimeout + 3*o.RecoveryTimeout
+}
+
+// phase prints the start of a post-duration phase on the progress writer,
+// so a stall is attributable to the phase that did not end.
+func (o *Options) phase(origin time.Time, name string) {
+	if o.Progress == nil {
+		return
+	}
+	fmt.Fprintf(o.Progress, "clusterproof: %s: %s\n", time.Since(origin).Round(time.Second), name)
 }
 
 // liveness is E4: every node reports every shard it hosts led, and takes a
@@ -578,9 +626,24 @@ func (c runClock) Now() int64 { return int64(time.Since(c.origin)) }
 // eventLog records nemesis events on the run's clock.
 type eventLog struct {
 	origin time.Time
+	// progress, when set, receives one line per fault event as it
+	// happens: name, targets and result.
+	progress io.Writer
 
 	mu     sync.Mutex
 	events []EventRecord
+}
+
+// lockedWriter serialises the progress lines of concurrent writers.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 var _ nemesis.Recorder = (*eventLog)(nil)
@@ -593,6 +656,14 @@ func (l *eventLog) Record(e nemesis.Event) {
 	l.mu.Lock()
 	l.events = append(l.events, r)
 	l.mu.Unlock()
+	if l.progress != nil && e.Nemesis != "" {
+		result := "ok"
+		if e.Error != "" {
+			result = "error: " + e.Error
+		}
+		fmt.Fprintf(l.progress, "clusterproof: %s: window %d %s %v %v %v: %s\n",
+			e.Time.Sub(l.origin).Round(time.Second), e.Window, e.Nemesis, e.Op, e.Phase, e.Targets, result)
+	}
 }
 
 func (l *eventLog) snapshot() []EventRecord {
