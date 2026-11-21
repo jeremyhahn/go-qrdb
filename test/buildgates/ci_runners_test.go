@@ -40,7 +40,10 @@
 package buildgates
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -60,6 +63,24 @@ const (
 	hostedRunner = "ubuntu-latest"
 	// ciFile is the main CI workflow, held to a floor of hosted jobs.
 	ciFile = "ci.yml"
+	// poolSplit is the condition preflightRunner holds the bigdisk pool to: a
+	// push to main or a pull request whose head is this repository. Anything
+	// else, a fork's pull request, a schedule or a dispatch, gets ubuntu-latest.
+	poolSplit = `((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))`
+	// forkClause is ci-template v1.52's fork check (Tenant Agent order): on a
+	// pull request event, the head repository must be this one, so a fork's
+	// head, or a deleted fork's, takes ubuntu-latest whatever
+	// CI_PREFLIGHT_RUNS_ON holds.
+	forkClause = `(!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository)`
+	// preflightRunner is ci.yml's preflight runs-on since ci-template v1.49
+	// (Tenant Agent ruling 1047 (3)): the bigdisk pool behind poolSplit and,
+	// since v1.52, forkClause, so a fork's PR (a deleted fork's included), a
+	// schedule and a dispatch stay hosted, overridden by the
+	// repository variable CI_PREFLIGHT_RUNS_ON. Only the preflight job reads it.
+	// It is the one runs-on expression in ci.yml besides selectionRunners, and
+	// like them it carries no `# self-hosted:` waiver: it is held to this
+	// text, character for character, instead.
+	preflightRunner = `${{ ` + poolSplit + ` && ` + forkClause + ` && fromJSON(vars.CI_PREFLIGHT_RUNS_ON || '["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
 	// reviewWorkflow is the code-review template's copy, and reviewJob its
 	// Codex review job, the one job a credential waiver may name.
 	reviewWorkflow = "code-review.yml"
@@ -84,8 +105,10 @@ const (
 	// Floors, well under today's counts (7 workflows, 50 jobs).
 	runnerWorkflowFloor = 6
 	runnerJobFloor      = 30
-	// hostedJobFloor, under ci.yml's count (18 jobs, all on ubuntu-latest):
-	// a regression of the workflow off the hosted runner fails here.
+	// hostedJobFloor, under ci.yml's count (18 of its 19 jobs hosted by
+	// default, on ubuntu-latest or, since v1.48, on a selectionRunners
+	// expression; preflight is on the bigdisk pool since v1.49): a
+	// regression of the workflow off the hosted runner fails here.
 	hostedJobFloor = 15
 	// selfHostedWaiver opens the waiver a self-hosted runs-on line carries:
 	// `# self-hosted: <category>: <reason>` (owner rulings 999 and 1006).
@@ -102,6 +125,54 @@ var waiverCategories = []string{"hardware", "oversize"}
 // code-review.yml job that may run on it (Tenant Agent ruling 1007): codex
 // carries the Codex reviewer, qwen the opencode reviewer's model.
 var reviewRunnerLabels = map[string]string{"codex": reviewJob, "qwen": "review-opencode"}
+
+// selectionRunners are ci-template v1.48's runs-on expressions (Tenant Agent
+// ruling 1024 item 1), character for character, each with the pool its
+// overflow names. They read the preflight step `Hosted or overflow runner
+// (ruling 1024)`, which outputs "ubuntu-latest" unless the hosted pool is
+// full, so a job on one is a hosted job by default and needs no
+// `# self-hosted:` waiver; it must need preflight, whose output it reads. A
+// job on bigdisk (no Docker daemon) needs no Docker.
+var selectionRunners = map[string]string{
+	"${{ fromJSON(needs.preflight.outputs.runner_docker) }}":               "bigdisk-docker",
+	"${{ fromJSON(needs.preflight.outputs.runner) }}":                      "bigdisk",
+	`${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}`: "bigdisk",
+}
+
+// needsJob reports whether a job's needs: names want, as a scalar or in a list.
+func needsJob(n yaml.Node, want string) bool {
+	if n.Kind == yaml.ScalarNode {
+		return n.Value == want
+	}
+	return slices.ContainsFunc(n.Content, func(c *yaml.Node) bool { return c.Value == want })
+}
+
+// dockerStep matches a step that needs Docker: the docker or docker-compose
+// CLI, a docker/* action, a make target named docker-* or the compose-stack
+// integration-test-* and integration-down*, or the image wrappers
+// (scripts/in-toolchain-image.sh, scripts/ci-image.sh). A job name such as
+// docker-build, which ci-gate reads the result of, is not a Docker use, so
+// the CLI matches only as a command word.
+var dockerStep = regexp.MustCompile(`(^|[^\w.-])docker(-compose)?(\s|$)|(^|[^\w.-])docker/|\bmake\b[^\n]*[\s'"](docker-|integration-test|integration-down)|in-toolchain-image\.sh|ci-image\.sh`)
+
+// dockerNeeds is every way a job needs Docker on a bigdisk host: a container,
+// services, or a step that needs Docker (dockerStep) and is not gated to the
+// hosted runner (hostedStepTerm). A job that can overflow to the bigdisk
+// pool, which has no Docker daemon, must have none.
+func dockerNeeds(job runnerJob) (needs []string) {
+	if job.Container.Kind != 0 {
+		needs = append(needs, "it has a container:, which needs Docker")
+	}
+	if job.Services.Kind != 0 {
+		needs = append(needs, "it has services:, which need Docker")
+	}
+	for _, s := range job.Steps {
+		if dockerStep.MatchString(s.Uses+"\n"+s.Run) && !strings.Contains(s.If, hostedStepTerm) {
+			needs = append(needs, "a step that needs Docker runs under if: "+strconv.Quote(s.If)+", without "+hostedStepTerm)
+		}
+	}
+	return needs
+}
 
 // releaseLabel is the release pool's runner label, which no job may name.
 const releaseLabel = "release"
@@ -137,6 +208,7 @@ var hardcodedParallelism = regexp.MustCompile(`GOMAXPROCS\s*[=:]\s*['"]?[0-9]|(^
 
 // runnerStep and runnerJob are the slices of a workflow this gate reads.
 type runnerStep struct {
+	Name string            `yaml:"name"`
 	If   string            `yaml:"if"`
 	Uses string            `yaml:"uses"`
 	Run  string            `yaml:"run"`
@@ -146,6 +218,7 @@ type runnerStep struct {
 
 type runnerJob struct {
 	RunsOn    yaml.Node `yaml:"runs-on"`
+	Needs     yaml.Node `yaml:"needs"`
 	Container yaml.Node `yaml:"container"`
 	Services  yaml.Node `yaml:"services"`
 	If        string    `yaml:"if"`
@@ -212,7 +285,33 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		}
 		switch {
 		case runsOn == hostedRunner:
-			// Owner rulings 999 and 1006: the default.
+			// Owner rulings 999 and 1006: the default. v1.48 (ruling 1024): a
+			// ci.yml job that waits on preflight reads its runner selection.
+			if file == ciFile && needsJob(job.Needs, "preflight") {
+				add("job " + name + " needs preflight but runs on the literal " + hostedRunner + "; it reads the runner selection, needs.preflight.outputs.runner or runner_docker (ruling 1024)")
+			}
+		case file == ciFile && selectionRunners[runsOn] != "":
+			// v1.48 (ruling 1024): hosted by default, the Dells on overflow,
+			// so no `# self-hosted:` waiver; preflight keeps forks hosted.
+			if !needsJob(job.Needs, "preflight") {
+				add("job " + name + " runs on the runner selection " + runsOn + " but does not need preflight, whose output it reads (ruling 1024)")
+			}
+			if selectionRunners[runsOn] == "bigdisk" {
+				for _, p := range dockerNeeds(job) {
+					add("job " + name + " overflows to the Docker-free bigdisk pool (needs.preflight.outputs.runner), and " + p + "; a job that needs Docker reads runner_docker")
+				}
+			}
+			problems = append(problems, wipeProblems(file, name, job)...)
+		case file == ciFile && runsOn == preflightRunner:
+			// v1.49 (ruling 1047 (3)): preflight alone, Docker-free, needs
+			// nothing; poolSplit keeps a fork's PR hosted.
+			if name != "preflight" {
+				add("job " + name + " runs on preflight's runs-on, which reads vars.CI_PREFLIGHT_RUNS_ON; only the preflight job may (ci-template v1.49, ruling 1047 (3))")
+			}
+			for _, p := range dockerNeeds(job) {
+				add("job " + name + " runs on the Docker-free bigdisk pool (preflightRunner), and " + p)
+			}
+			problems = append(problems, wipeProblems(file, name, job)...)
 		case runsOn == "" || strings.Contains(runsOn, "${{"):
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+" nor one self-hosted label (owner ruling 999)")
 		default:
@@ -225,11 +324,7 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 			if p := forkProblem(onTriggers(wf.On), job.If); p != "" {
 				add("job "+name+" runs on ", nodeText(job.RunsOn), ", a self-hosted runner, and "+p)
 			}
-			for _, s := range job.Steps {
-				if hostWipeStep.MatchString(s.Run) && !strings.Contains(s.If, hostedStepTerm) {
-					add("job "+name+" has a step that wipes a hosted runner's disk under if: ", strconv.Quote(s.If), ", without "+hostedStepTerm+"; on a self-hosted runner it deletes what other jobs share")
-				}
-			}
+			problems = append(problems, wipeProblems(file, name, job)...)
 		}
 		if file == reviewWorkflow {
 			// The code-review template keeps its own rules.
@@ -275,6 +370,17 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		add("env.CI_PUBLISH is ", strconv.Quote(wf.Env["CI_PUBLISH"]), ", not ", ciPublishExpr)
 	}
 	return problems, jobs
+}
+
+// wipeProblems is each step of a job that can run on a self-hosted runner
+// and wipes a hosted runner's disk without hostedStepTerm in its if:.
+func wipeProblems(file, name string, job runnerJob) (problems []string) {
+	for _, s := range job.Steps {
+		if hostWipeStep.MatchString(s.Run) && !strings.Contains(s.If, hostedStepTerm) {
+			problems = append(problems, file+": job "+name+" has a step that wipes a hosted runner's disk under if: "+strconv.Quote(s.If)+", without "+hostedStepTerm+"; on a self-hosted runner it deletes what other jobs share")
+		}
+	}
+	return problems
 }
 
 // waiverProblem returns "" when comment, the line comment of job's runs-on
@@ -513,12 +619,50 @@ func TestCIRunners(t *testing.T) {
 	}
 	hosted := 0
 	for _, job := range wf.Jobs {
-		if job.RunsOn.Value == hostedRunner {
+		if job.RunsOn.Value == hostedRunner || selectionRunners[job.RunsOn.Value] != "" {
 			hosted++
 		}
 	}
 	if hosted < hostedJobFloor {
 		t.Errorf("%s has %d jobs on %s, under the floor of %d (owner rulings 999 and 1006)", ciFile, hosted, hostedRunner, hostedJobFloor)
+	}
+}
+
+// TestCIJobsReadPreflightSelection: v1.48 (ruling 1024) on ci.yml. Every job
+// but preflight, which computes the selection, and signatures, which waits on
+// nothing, runs on a selectionRunners expression and needs preflight; a job
+// whose steps need Docker reads runner_docker (Codex review 6000705149).
+// Preflight runs on preflightRunner (v1.49, ruling 1047 (3)), signatures on
+// the literal ubuntu-latest.
+func TestCIJobsReadPreflightSelection(t *testing.T) {
+	files := workflowFiles(t)
+	var wf runnerWorkflow
+	if err := yaml.Unmarshal(files[ciFile], &wf); err != nil {
+		t.Fatalf("parse %s: %v", ciFile, err)
+	}
+	// signatures and deps-bump-dispatch (ruling 640: the nightly's 5-minute
+	// dispatch of deps-bump.yml, outside ci-gate) need no job, so they stay
+	// on the literal hosted runner instead of waiting on preflight.
+	want := map[string]string{"preflight": preflightRunner, "signatures": hostedRunner, "deps-bump-dispatch": hostedRunner}
+	for name, job := range wf.Jobs {
+		runsOn := job.RunsOn.Value
+		if w, ok := want[name]; ok {
+			if runsOn != w {
+				t.Errorf("job %s runs on %s, not %s", name, nodeText(job.RunsOn), w)
+			}
+			continue
+		}
+		pool := selectionRunners[runsOn]
+		if pool == "" {
+			t.Errorf("job %s runs on %s, not the preflight runner selection (ruling 1024)", name, nodeText(job.RunsOn))
+			continue
+		}
+		if !needsJob(job.Needs, "preflight") {
+			t.Errorf("job %s reads the runner selection but does not need preflight", name)
+		}
+		if len(dockerNeeds(job)) > 0 && pool != "bigdisk-docker" {
+			t.Errorf("job %s needs Docker but runs on %s, not needs.preflight.outputs.runner_docker", name, runsOn)
+		}
 	}
 }
 
@@ -615,25 +759,26 @@ func TestRunnerProblems_CanFail(t *testing.T) {
 	cases := map[string]struct {
 		file, old, new, want string
 	}{
-		"a self-hosted label":           {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: bigdisk", "not the literal ubuntu-latest"},
-		"a runner list":                 {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: [self-hosted, linux]", "not the literal ubuntu-latest"},
-		"an expression":                 {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'batch' }}", "not the literal ubuntu-latest"},
-		"a job server_url split":        {hostedFile, "    timeout-minutes: 30\n", "    timeout-minutes: 30\n    if: github.server_url != 'https://github.com'\n", "splits on github.server_url"},
-		"a step server_url split":       {"nightly.yml", "      - run: make build", "      - if: github.server_url == 'https://github.com'\n        run: make build", "splits on github.server_url"},
-		"no timeout":                    {hostedFile, "    timeout-minutes: 30\n", "", "has no timeout-minutes"},
-		"a timeout over the ceiling":    {hostedFile, "timeout-minutes: 30", "timeout-minutes: 351", "not a number of minutes from 1 to 350"},
-		"a matrix leg over the ceiling": {hostedFile, "minutes: 350", "minutes: 360", "not a number of minutes from 1 to 350"},
-		"a matrix limit nothing sets":   {hostedFile, "timeout-minutes: ${{ matrix.minutes }}", "timeout-minutes: ${{ matrix.limit }}", "which no matrix entry sets"},
-		"a cache saved on every event":  {hostedFile, "${{ !cancelled() && env.CI_PUBLISH == 'true' }}", "${{ !cancelled() }}", "only a push to main saves one"},
-		"the combined cache action":     {hostedFile, "actions/cache/restore@", "actions/cache@", "combined actions/cache"},
-		"a publish flag on every push":  {hostedFile, "github.event_name == 'push' && github.ref == 'refs/heads/main'", "github.event_name == 'push'", "env.CI_PUBLISH is"},
-		"a written GOMAXPROCS":          {hostedFile, "make leg", "GOMAXPROCS=4 make leg", "GOMAXPROCS or -p count"},
-		"a written -p":                  {hostedFile, "make leg", "go test -p 4 ./...", "GOMAXPROCS or -p count"},
-		"a GOMAXPROCS step env":         {hostedFile, "      - run: make leg", "      - run: make leg\n        env:\n          GOMAXPROCS: \"8\"", "sets GOMAXPROCS in a step's env"},
-		"a self-hosted label in ci.yml": {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: bigdisk", "carries no `# self-hosted: <category>: <reason>` waiver"},
-		"an expression with a waiver":   {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: ${{ 'bigdisk' }}  # self-hosted: oversize: a fixture reason", "not the literal ubuntu-latest nor one self-hosted label"},
-		"a review label in ci.yml":      {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: codex  # self-hosted: hardware: a fixture reason", "label is reserved to code-review.yml's review job"},
-		"a disk wipe on a waived job":   {hostedFile, "  build:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n", "  build:\n    runs-on: gpu  # self-hosted: hardware: a fixture reason\n    timeout-minutes: 30\n    steps:\n      - run: sudo rm -rf /usr/share/dotnet\n", "wipes a hosted runner's disk"},
+		"a self-hosted label":                                {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: bigdisk", "not the literal ubuntu-latest"},
+		"a runner list":                                      {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: [self-hosted, linux]", "not the literal ubuntu-latest"},
+		"an expression":                                      {hostedFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'batch' }}", "not the literal ubuntu-latest"},
+		"a job server_url split":                             {hostedFile, "    timeout-minutes: 30\n", "    timeout-minutes: 30\n    if: github.server_url != 'https://github.com'\n", "splits on github.server_url"},
+		"a step server_url split":                            {"nightly.yml", "      - run: make build", "      - if: github.server_url == 'https://github.com'\n        run: make build", "splits on github.server_url"},
+		"no timeout":                                         {hostedFile, "    timeout-minutes: 30\n", "", "has no timeout-minutes"},
+		"a timeout over the ceiling":                         {hostedFile, "timeout-minutes: 30", "timeout-minutes: 351", "not a number of minutes from 1 to 350"},
+		"a matrix leg over the ceiling":                      {hostedFile, "minutes: 350", "minutes: 360", "not a number of minutes from 1 to 350"},
+		"a matrix limit nothing sets":                        {hostedFile, "timeout-minutes: ${{ matrix.minutes }}", "timeout-minutes: ${{ matrix.limit }}", "which no matrix entry sets"},
+		"a cache saved on every event":                       {hostedFile, "${{ !cancelled() && env.CI_PUBLISH == 'true' }}", "${{ !cancelled() }}", "only a push to main saves one"},
+		"the combined cache action":                          {hostedFile, "actions/cache/restore@", "actions/cache@", "combined actions/cache"},
+		"a publish flag on every push":                       {hostedFile, "github.event_name == 'push' && github.ref == 'refs/heads/main'", "github.event_name == 'push'", "env.CI_PUBLISH is"},
+		"a written GOMAXPROCS":                               {hostedFile, "make leg", "GOMAXPROCS=4 make leg", "GOMAXPROCS or -p count"},
+		"a written -p":                                       {hostedFile, "make leg", "go test -p 4 ./...", "GOMAXPROCS or -p count"},
+		"a GOMAXPROCS step env":                              {hostedFile, "      - run: make leg", "      - run: make leg\n        env:\n          GOMAXPROCS: \"8\"", "sets GOMAXPROCS in a step's env"},
+		"a ci.yml job on ubuntu-latest that needs preflight": {ciFile, "  build:\n    runs-on: ubuntu-latest\n", "  build:\n    runs-on: ubuntu-latest\n    needs: preflight\n", "needs preflight but runs on the literal ubuntu-latest"},
+		"a self-hosted label in ci.yml":                      {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: bigdisk", "carries no `# self-hosted: <category>: <reason>` waiver"},
+		"an expression with a waiver":                        {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: ${{ 'bigdisk' }}  # self-hosted: oversize: a fixture reason", "not the literal ubuntu-latest nor one self-hosted label"},
+		"a review label in ci.yml":                           {ciFile, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: codex  # self-hosted: hardware: a fixture reason", "label is reserved to code-review.yml's review job"},
+		"a disk wipe on a waived job":                        {hostedFile, "  build:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n", "  build:\n    runs-on: gpu  # self-hosted: hardware: a fixture reason\n    timeout-minutes: 30\n    steps:\n      - run: sudo rm -rf /usr/share/dotnet\n", "wipes a hosted runner's disk"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -832,6 +977,92 @@ func TestBigdiskStepProblems_CanFail(t *testing.T) {
 	}
 }
 
+// credMaskStep and lanMaskRun name the two mask steps a pool-capable job
+// runs before it builds (ruling 887, scripts/ci-mask-lan.sh).
+const (
+	credMaskStep = "Mask the forge credentials"
+	lanMaskRun   = "scripts/ci-mask-lan.sh"
+)
+
+// lanMaskProblems reports a job that masks the forge credentials but not
+// the LAN addresses right after: the next step's run is exactly
+// scripts/ci-mask-lan.sh, or the credential-mask step's own run ends with
+// it. A job with no credential mask (ci-gate: no checkout, no build) has
+// nothing to mask and is not reported.
+func lanMaskProblems(name string, job runnerJob) []string {
+	for i, s := range job.Steps {
+		if s.Name != credMaskStep {
+			continue
+		}
+		if strings.HasSuffix(strings.TrimSpace(s.Run), lanMaskRun) {
+			return nil
+		}
+		if i+1 < len(job.Steps) && strings.TrimSpace(job.Steps[i+1].Run) == lanMaskRun {
+			return nil
+		}
+		return []string{name + ": step " + strconv.Itoa(i) + " (" + credMaskStep + ") is not followed by a step that runs " + lanMaskRun + "; a build on a pool host can print a LAN address"}
+	}
+	return nil
+}
+
+// TestCIPoolJobsMaskLANAddresses holds every job that can run on a pool
+// host (its runs-on reads the preflight selection, or is preflight's own
+// bigdisk default) to masking the LAN addresses right after the
+// credential mask (Codex, #1645 round 2).
+func TestCIPoolJobsMaskLANAddresses(t *testing.T) {
+	files := workflowFiles(t)
+	var wf runnerWorkflow
+	if err := yaml.Unmarshal(files[ciFile], &wf); err != nil {
+		t.Fatalf("parse %s: %v", ciFile, err)
+	}
+	checked := 0
+	for name, job := range wf.Jobs {
+		runsOn := job.RunsOn.Value
+		if _, ok := selectionRunners[runsOn]; !ok && runsOn != preflightRunner {
+			continue
+		}
+		checked++
+		for _, p := range lanMaskProblems(name, job) {
+			t.Error(p)
+		}
+	}
+	if checked == 0 {
+		t.Fatalf("%s: no job runs on a pool-capable runner; the check read nothing", ciFile)
+	}
+}
+
+func TestPoolJobsMaskLAN_CanFail(t *testing.T) {
+	const head = "    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}\n    steps:\n"
+	const cred = "      - name: " + credMaskStep + "\n        run: |\n          echo masked\n"
+	const lan = "      - name: Mask the LAN addresses\n        run: " + lanMaskRun + "\n"
+	const build = "      - run: make check-compose-targets\n"
+	cases := []struct {
+		name  string
+		steps string
+		want  bool
+	}{
+		{"credential mask only", cred + build, true},
+		{"LAN mask after the credential mask", cred + lan + build, false},
+		{"LAN mask inline", "      - name: " + credMaskStep + "\n        run: |\n          echo masked\n          " + lanMaskRun + "\n" + build, false},
+		{"LAN mask after a build step", cred + build + lan, true},
+		{"LAN mask before the credential mask", lan + cred + build, true},
+		{"no credential mask", build, false},
+	}
+	for _, tc := range cases {
+		var wf runnerWorkflow
+		if err := yaml.Unmarshal([]byte("jobs:\n  docker-build:\n"+head+tc.steps), &wf); err != nil {
+			t.Fatalf("%s: parse: %v", tc.name, err)
+		}
+		p := lanMaskProblems("docker-build", wf.Jobs["docker-build"])
+		if got := len(p) != 0; got != tc.want {
+			t.Errorf("%s: problems %v, want a problem: %v", tc.name, p, tc.want)
+		}
+		if tc.want && len(p) != 0 && !strings.HasPrefix(p[0], "docker-build: ") {
+			t.Errorf("%s: problem %q does not name the job", tc.name, p[0])
+		}
+	}
+}
+
 // TestWaiverProblem holds the waiver to its format and categories (owner
 // rulings 999 and 1006).
 func TestWaiverProblem(t *testing.T) {
@@ -983,6 +1214,764 @@ func TestForkIsolation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// selectionFixture is a ci.yml on ci-template v1.49: preflight on
+// preflightRunner (ruling 1047 (3)), and v1.48's runner selection (ruling
+// 1024), an image job on runner_docker and CI Gate on the guarded runner,
+// each needing preflight.
+const selectionFixture = `on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  preflight:
+    runs-on: ` + preflightRunner + `   # v1.49
+    timeout-minutes: 15
+    steps:
+      - run: true
+  lint:
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48
+    needs: preflight
+    timeout-minutes: 30
+    steps:
+      - run: scripts/in-toolchain-image.sh "$IMAGE" "make lint"
+  ci-gate:
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}   # v1.48
+    needs: [preflight, lint]
+    timeout-minutes: 5
+    steps:
+      - run: true
+`
+
+func TestRunnerProblems_Selection(t *testing.T) {
+	if p, jobs := runnerProblems(ciFile, []byte(selectionFixture)); len(p) != 0 || jobs != 3 {
+		t.Fatalf("the v1.48 runner selection must pass with 3 jobs, got %d jobs: %v", jobs, p)
+	}
+	cases := map[string]struct {
+		file, old, new, want string
+	}{
+		"a selection job that does not need preflight": {ciFile, "    needs: preflight\n", "", "does not need preflight"},
+		"the selection outside ci.yml":                 {hostedFile, "", "", "job lint runs on"},
+		"the output without fromJSON":                  {ciFile, "fromJSON(needs.preflight.outputs.runner_docker)", "needs.preflight.outputs.runner_docker", "job lint runs on"},
+		"a Docker job overflowing to bigdisk":          {ciFile, "outputs.runner_docker)", "outputs.runner)", "overflows to the Docker-free bigdisk pool"},
+		"preflight without the fork split":             {ciFile, " && github.event.pull_request.head.repo.full_name == github.repository", "", "job preflight runs on"},
+		"preflight on any push":                        {ciFile, "github.event_name == 'push' && github.ref == 'refs/heads/main'", "github.event_name == 'push'", "job preflight runs on"},
+		"the variable read by another job":             {ciFile, "    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48", "    runs-on: " + preflightRunner, "only the preflight job may"},
+		"a Docker step on preflight":                   {ciFile, "      - run: true\n  lint:", "      - run: docker load -i toolchain.tar\n  lint:", "Docker-free bigdisk pool (preflightRunner)"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(selectionFixture, c.old) {
+				t.Fatalf("the fixture lacks %q", c.old)
+			}
+			body := strings.Replace(selectionFixture, c.old, c.new, 1)
+			problems, _ := runnerProblems(c.file, []byte(body))
+			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, c.want) }) {
+				t.Fatalf("want a problem containing %q, got %v", c.want, problems)
+			}
+		})
+	}
+	// v1.49: every one-character change to preflight's runs-on is a problem.
+	for i := range len(preflightRunner) {
+		c := byte('x')
+		if preflightRunner[i] == c {
+			c = 'y'
+		}
+		changed := preflightRunner[:i] + string(c) + preflightRunner[i+1:]
+		body := strings.Replace(selectionFixture, preflightRunner, changed, 1)
+		if p, _ := runnerProblems(ciFile, []byte(body)); len(p) == 0 {
+			t.Errorf("a preflight runs-on %q, one character off preflightRunner, passed", changed)
+		}
+	}
+}
+
+// selectionStep returns the run: script and the env: of the ci.yml step with
+// id runner, the hosted-or-overflow runner selection (ruling 1024).
+func selectionStep(t *testing.T) (script string, env map[string]string) {
+	t.Helper()
+	var wf struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				ID  string            `yaml:"id"`
+				Env map[string]string `yaml:"env"`
+				Run string            `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(readCIBody(t)), &wf); err != nil {
+		t.Fatalf("parse ci.yml: %v", err)
+	}
+	for name, job := range wf.Jobs {
+		for _, s := range job.Steps {
+			if s.ID != "runner" {
+				continue
+			}
+			if script != "" {
+				t.Fatalf("ci.yml has a second step with id runner (job %s)", name)
+			}
+			script, env = s.Run, s.Env
+		}
+	}
+	if script == "" {
+		t.Fatal("ci.yml has no step with id runner, the runner selection")
+	}
+	return script, env
+}
+
+// selectionReply is one recorded Actions API answer: an HTTP code and a body.
+type selectionReply struct {
+	code int
+	body any
+}
+
+// stubCurl is the curl the selection step finds first on PATH: it answers
+// each URL from <dir>/<key>.json (code in <key>.code, else 200), any other
+// URL with 404, and logs every URL in <dir>/calls.log. No request leaves.
+const stubCurl = `#!/usr/bin/env bash
+dir=%q
+out= url=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o|-w|-H|--max-time) [ "$1" = -o ] && out=$2; shift 2 ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
+  esac
+done
+echo "$url" >> "$dir/calls.log"
+key=${url//[^A-Za-z0-9]/_}
+if [ -f "$dir/$key.json" ]; then
+  cp "$dir/$key.json" "$out"
+  code=200
+  [ -f "$dir/$key.code" ] && code=$(< "$dir/$key.code")
+else
+  echo '{}' > "$out"
+  code=404
+fi
+printf '%s' "$code"
+`
+
+// TestCIRunnerSelectionBehaviour runs the selection step's script, as
+// extracted from ci.yml, against a stub curl serving recorded Actions API
+// replies, and checks the runner outputs and the annotation it prints.
+// The clock needs no fixing: queued jobs are recorded far in the past
+// (queued past the grace) or far in the future (not yet past it).
+//
+// There is no "not github.com" case: ci.yml runs on github.com alone and
+// leaves the template's forge check out (its CUSTOMIZE block), so the step
+// has no such branch to test.
+func TestCIRunnerSelectionBehaviour(t *testing.T) {
+	const (
+		api    = selectionAPI
+		repo   = selectionRepo
+		hosted = `"ubuntu-latest"`
+		bigdsk = `["self-hosted","linux","x64","bigdisk"]`
+		bigdkr = `["self-hosted","linux","x64","bigdisk-docker"]`
+		past   = "2000-01-01T00:00:00Z"
+		future = "2999-01-01T00:00:00Z"
+		// forkNotice is the v1.52 notice for a pull request whose head is not this repository.
+		forkNotice = "this pull request's head repository is not this repository (a fork)"
+	)
+	page, job, world, running := selectionPage, selectionJob, selectionWorld, selectionRunning
+	short := world(running(1), nil)
+	short[page("/runs?status=in_progress", 1)] = selectionReply{200, map[string]any{"total_count": 3, "workflow_runs": []map[string]any{{"id": 1}}}}
+	short[page("/runs?status=in_progress", 2)] = selectionReply{200, map[string]any{"total_count": 3, "workflow_runs": []map[string]any{}}}
+	// shortAt: the in_progress listing holds this run (no jobs) and run 3
+	// with 2 running hosted jobs, short of its total_count 3.
+	shortAt := world([]map[string]any{}, nil)
+	shortAt[page("/runs?status=in_progress", 1)] = selectionReply{200, map[string]any{"total_count": 3, "workflow_runs": []map[string]any{{"id": 1}, {"id": 3}}}}
+	shortAt[page("/runs?status=in_progress", 2)] = selectionReply{200, map[string]any{"total_count": 3, "workflow_runs": []map[string]any{}}}
+	shortAt[page("/runs/3/jobs?filter=latest", 1)] = selectionJobs(job(3, "in_progress", past), job(3, "in_progress", past))
+	// shortQueued: short as above, plus run 2 queued with a hosted job past the grace.
+	shortQueued := world(running(1), []map[string]any{job(2, "queued", past)})
+	shortQueued[page("/runs?status=in_progress", 1)] = short[page("/runs?status=in_progress", 1)]
+	shortQueued[page("/runs?status=in_progress", 2)] = short[page("/runs?status=in_progress", 2)]
+	lowerBound := func(got int) string {
+		return " (a lower bound: " + api + "/runs?status=in_progress: " + strconv.Itoa(got) + " of 3 entries)"
+	}
+	failed := world(running(1), nil)
+	failed[page("/runs?status=queued", 1)] = selectionReply{500, map[string]any{"message": "server error"}}
+	full := world(running(2), nil)
+
+	cases := []struct {
+		name                   string
+		limit, event, headRepo string
+		replies                map[string]selectionReply
+		runner, docker         string
+		notice, warning        string // a substring of the one annotation; "" = none
+		say                    string // a substring of the plain output
+		noCurl                 bool
+	}{
+		{name: "below the threshold stays hosted", limit: "2", replies: world(running(1), nil),
+			runner: hosted, docker: hosted, say: "1 hosted job(s) in progress"},
+		{name: "running at the threshold overflows", limit: "2", event: "pull_request", headRepo: repo, replies: world(running(2), nil),
+			runner: bigdsk, docker: bigdkr, notice: "2 hosted jobs in progress, HOSTED_JOBS_PER_REPO=2"},
+		{name: "another run queued past the grace overflows", limit: "2", replies: world(running(1), []map[string]any{job(2, "queued", past)}),
+			runner: bigdsk, docker: bigdkr, notice: "1 hosted job(s) queued 60s or more"},
+		{name: "another run queued within the grace stays hosted", limit: "2", replies: world(running(1), []map[string]any{job(2, "queued", future)}),
+			runner: hosted, docker: hosted, say: "0 hosted job(s) of other runs queued"},
+		{name: "a non-200 reply stays hosted with a warning", limit: "2", replies: failed,
+			runner: hosted, docker: hosted, warning: "no complete run list (" + api + "/runs?status=queued: 500)"},
+		{name: "a listing short of total_count stays hosted with a warning", limit: "2", replies: short,
+			runner: hosted, docker: hosted, warning: "1 of 3 entries"},
+		{name: "a short listing at the threshold overflows", limit: "2", event: "pull_request", headRepo: repo, replies: shortAt,
+			runner: bigdsk, docker: bigdkr, notice: "2 hosted jobs in progress, HOSTED_JOBS_PER_REPO=2" + lowerBound(2)},
+		{name: "a short listing holding a job queued past the grace overflows", limit: "2", replies: shortQueued,
+			runner: bigdsk, docker: bigdkr, notice: "1 hosted job(s) queued 60s or more: the hosted pool is full" + lowerBound(1)},
+		{name: "a non-number threshold stays hosted with a warning", limit: "two", replies: world(running(2), nil),
+			runner: hosted, docker: hosted, warning: "HOSTED_JOBS_PER_REPO='two'", noCurl: true},
+		// v1.52 (template testdata/runner-select-tests.py part E): a pull
+		// request whose head repository is not this one runs every job
+		// hosted, with a notice and no API call. The template's E6 (off
+		// github.com a fork keeps the forge labels) has no counterpart: this
+		// step has no off-github.com branch (CUSTOMIZE (go-qrdb)).
+		{name: "a fork's pull request with the hosted pool full: hosted, no call", limit: "2", event: "pull_request", headRepo: "fork/repo", replies: full,
+			runner: hosted, docker: hosted, notice: forkNotice, noCurl: true},
+		{name: "a pull request whose head repository is gone: hosted, no call", limit: "2", event: "pull_request", headRepo: "", replies: full,
+			runner: hosted, docker: hosted, notice: forkNotice, noCurl: true},
+		{name: "a fork under pull_request_target: hosted, no call", limit: "2", event: "pull_request_target", headRepo: "fork/repo", replies: full,
+			runner: hosted, docker: hosted, notice: forkNotice, noCurl: true},
+		{name: "a same-repository pull request with the hosted pool full still overflows", limit: "2", event: "pull_request", headRepo: repo, replies: full,
+			runner: bigdsk, docker: bigdkr, notice: "2 hosted jobs in progress, HOSTED_JOBS_PER_REPO=2"},
+		{name: "a push with the hosted pool full still overflows", limit: "2", event: "push", replies: full,
+			runner: bigdsk, docker: bigdkr, notice: "2 hosted jobs in progress, HOSTED_JOBS_PER_REPO=2"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := runSelection(t, selectionEnv(c.limit, c.event, c.headRepo), c.replies)
+			if want := "runner=" + c.runner + "\nrunner_docker=" + c.docker + "\n"; r.output != want {
+				t.Errorf("GITHUB_OUTPUT is\n%s\nwant\n%s\nstep output:\n%s", r.output, want, r.log)
+			}
+			var notices, warnings []string
+			for _, line := range strings.Split(r.log, "\n") {
+				if s, ok := strings.CutPrefix(line, "::notice::"); ok {
+					notices = append(notices, s)
+				}
+				if s, ok := strings.CutPrefix(line, "::warning::"); ok {
+					warnings = append(warnings, s)
+				}
+			}
+			for _, a := range []struct {
+				kind, want string
+				got        []string
+			}{{"notice", c.notice, notices}, {"warning", c.warning, warnings}} {
+				switch {
+				case a.want == "" && len(a.got) != 0:
+					t.Errorf("want no %s, got %q", a.kind, a.got)
+				case a.want != "" && (len(a.got) != 1 || !strings.Contains(a.got[0], a.want)):
+					t.Errorf("want one %s containing %q, got %q", a.kind, a.want, a.got)
+				}
+			}
+			if !strings.Contains(r.log, c.say) {
+				t.Errorf("want the output to contain %q, got\n%s", c.say, r.log)
+			}
+			if c.noCurl && r.calls != "" {
+				t.Errorf("want no Actions API call, got\n%s", r.calls)
+			}
+			if !c.noCurl && r.calls == "" {
+				t.Error("want Actions API calls, got none")
+			}
+		})
+	}
+}
+
+const (
+	// selectionAPI is the Actions API base the selection tests give the
+	// step; stubCurl answers it, so no request leaves.
+	selectionAPI = "stub://actions"
+	// selectionRepo is github.repository in the selection and label tests.
+	selectionRepo = "owner/repo"
+)
+
+func selectionPage(path string, n int) string {
+	return selectionAPI + path + "&per_page=100&page=" + strconv.Itoa(n)
+}
+
+func selectionRuns(ids ...int) selectionReply {
+	list := []map[string]any{}
+	for _, id := range ids {
+		list = append(list, map[string]any{"id": id})
+	}
+	return selectionReply{200, map[string]any{"total_count": len(list), "workflow_runs": list}}
+}
+
+func selectionJob(run int, status, created string) map[string]any {
+	return map[string]any{"run_id": run, "status": status, "created_at": created, "labels": []string{"ubuntu-latest"}}
+}
+
+func selectionJobs(jobs ...map[string]any) selectionReply {
+	return selectionReply{200, map[string]any{"total_count": len(jobs), "jobs": jobs}}
+}
+
+// selectionWorld: run 1 (this run) in progress with the given jobs, run 2
+// queued with the given jobs (no queued run when there are none).
+func selectionWorld(own []map[string]any, other []map[string]any) map[string]selectionReply {
+	w := map[string]selectionReply{
+		selectionPage("/runs?status=in_progress", 1):   selectionRuns(1),
+		selectionPage("/runs/1/jobs?filter=latest", 1): selectionJobs(own...),
+		selectionPage("/runs?status=queued", 1):        selectionRuns(),
+	}
+	if other != nil {
+		w[selectionPage("/runs?status=queued", 1)] = selectionRuns(2)
+		w[selectionPage("/runs/2/jobs?filter=latest", 1)] = selectionJobs(other...)
+	}
+	return w
+}
+
+// selectionRunning is n hosted jobs of this run, in progress.
+func selectionRunning(n int) []map[string]any {
+	var jobs []map[string]any
+	for range n {
+		jobs = append(jobs, selectionJob(1, "in_progress", "2000-01-01T00:00:00Z"))
+	}
+	return jobs
+}
+
+// selectionEnv is the step's env for a run of event whose pull request head
+// is headRepo ("" when the event has none, or the head repository is gone).
+func selectionEnv(limit, event, headRepo string) map[string]string {
+	return map[string]string{
+		"API": selectionAPI, "RUN_ID": "1", "JOB_TOKEN": "stub-token", "LIMIT": limit, "GRACE": "60",
+		"EVENT": event, "HEAD_REPO": headRepo, "REPO": selectionRepo,
+	}
+}
+
+// selectionRun is one run of the selection step: its GITHUB_OUTPUT, its
+// combined output, and the Actions API URLs it asked for ("" = none).
+type selectionRun struct {
+	output, log, calls string
+}
+
+// runSelection runs ci.yml's `Hosted or overflow runner (ruling 1024)` step
+// under env, its curl answered from replies.
+func runSelection(t *testing.T, env map[string]string, replies map[string]selectionReply) selectionRun {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed; the runner selection step is a bash script")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is not installed; the runner selection step needs it")
+	}
+	script, stepEnv := selectionStep(t)
+	for k := range stepEnv {
+		if _, ok := env[k]; !ok {
+			t.Fatalf("the runner step reads env %s, which this test does not give", k)
+		}
+	}
+	dir := t.TempDir()
+	stub, bin := filepath.Join(dir, "stub"), filepath.Join(dir, "bin")
+	for _, d := range []string{stub, bin} {
+		if err := os.Mkdir(d, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(strings.Replace(stubCurl, "%q", strconv.Quote(stub), 1)), 0o700); err != nil { // #nosec G306 -- the curl stub must be executable; PATH resolves it for the step script
+		t.Fatal(err)
+	}
+	unsafe := regexp.MustCompile(`[^A-Za-z0-9]`)
+	for url, r := range replies {
+		key := filepath.Join(stub, unsafe.ReplaceAllString(url, "_"))
+		body, err := json.Marshal(r.body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(key+".json", body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(key+".code", []byte(strconv.Itoa(r.code)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output := filepath.Join(dir, "github-output")
+	if err := os.WriteFile(output, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scriptFile := filepath.Join(dir, "step.sh")
+	if err := os.WriteFile(scriptFile, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bash, "--noprofile", "--norc", "-eo", "pipefail", scriptFile) // #nosec G204 -- bash is exec.LookPath("bash") and scriptFile is this test's own TempDir copy of the workflow step
+	cmd.Dir = dir
+	cmd.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + dir,
+		"RUNNER_TEMP=" + dir, "GITHUB_OUTPUT=" + output}
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the step failed: %v\n%s", err, out)
+	}
+	got, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, err := os.ReadFile(filepath.Join(stub, "calls.log"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return selectionRun{output: string(got), log: string(out), calls: string(calls)}
+}
+
+// ghExprToken splits a GitHub Actions expression into tokens: a quoted
+// string, an operator, a parenthesis, a comma, or a name (a context path, a
+// function, true, false, null).
+var ghExprToken = regexp.MustCompile(`\s*('(?:[^']|'')*'|&&|\|\||==|!=|!|\(|\)|,|[A-Za-z0-9_.*-]+)`)
+
+// ghExpr evaluates the subset of GitHub Actions expressions ci.yml's
+// runs-on use: string literals, context paths (looked up in ctx by their
+// lower-case name, null when ctx does not hold them), !, ==, !=, &&, ||,
+// parentheses, startsWith and fromJSON. && and || yield an operand, as the
+// runner's do; == compares strings case-insensitively.
+type ghExpr struct {
+	toks []string
+	ctx  map[string]any
+}
+
+func ghEval(expr string, ctx map[string]any) (v any, err error) {
+	e := &ghExpr{ctx: ctx}
+	rest := expr
+	for strings.TrimSpace(rest) != "" {
+		m := ghExprToken.FindStringSubmatchIndex(rest)
+		if m == nil || m[0] != 0 {
+			return nil, &exprError{"cannot read " + strconv.Quote(rest)}
+		}
+		e.toks = append(e.toks, rest[m[2]:m[3]])
+		rest = rest[m[1]:]
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			pe, ok := r.(*exprError)
+			if !ok {
+				panic(r)
+			}
+			v, err = nil, pe
+		}
+	}()
+	v = e.or()
+	if len(e.toks) != 0 {
+		return nil, &exprError{"trailing " + strings.Join(e.toks, " ")}
+	}
+	return v, nil
+}
+
+type exprError struct{ msg string }
+
+func (e *exprError) Error() string { return "expression: " + e.msg }
+
+func (e *ghExpr) peek() string {
+	if len(e.toks) == 0 {
+		return ""
+	}
+	return e.toks[0]
+}
+
+func (e *ghExpr) next() string {
+	if len(e.toks) == 0 {
+		panic(&exprError{"unexpected end"})
+	}
+	t := e.toks[0]
+	e.toks = e.toks[1:]
+	return t
+}
+
+func (e *ghExpr) expect(want string) {
+	if got := e.next(); got != want {
+		panic(&exprError{"want " + want + ", got " + got})
+	}
+}
+
+func (e *ghExpr) or() any {
+	v := e.and()
+	for e.peek() == "||" {
+		e.next()
+		r := e.and()
+		if !ghTruthy(v) {
+			v = r
+		}
+	}
+	return v
+}
+
+func (e *ghExpr) and() any {
+	v := e.cmp()
+	for e.peek() == "&&" {
+		e.next()
+		r := e.cmp()
+		if ghTruthy(v) {
+			v = r
+		}
+	}
+	return v
+}
+
+func (e *ghExpr) cmp() any {
+	v := e.unary()
+	for op := e.peek(); op == "==" || op == "!="; op = e.peek() {
+		e.next()
+		r := e.unary()
+		v = ghEqual(v, r) == (op == "==")
+	}
+	return v
+}
+
+func (e *ghExpr) unary() any {
+	if e.peek() == "!" {
+		e.next()
+		return !ghTruthy(e.unary())
+	}
+	return e.primary()
+}
+
+func (e *ghExpr) primary() any {
+	t := e.next()
+	switch {
+	case t == "(":
+		v := e.or()
+		e.expect(")")
+		return v
+	case strings.HasPrefix(t, "'"):
+		return strings.ReplaceAll(t[1:len(t)-1], "''", "'")
+	case t == "true", t == "false":
+		return t == "true"
+	case t == "null":
+		return nil
+	case e.peek() == "(":
+		e.next()
+		var args []any
+		for e.peek() != ")" {
+			args = append(args, e.or())
+			if e.peek() == "," {
+				e.next()
+			}
+		}
+		e.expect(")")
+		return ghCall(t, args)
+	}
+	return e.ctx[strings.ToLower(t)]
+}
+
+func ghCall(name string, args []any) any {
+	switch strings.ToLower(name) {
+	case "startswith":
+		if len(args) == 2 {
+			a, _ := args[0].(string)
+			b, _ := args[1].(string)
+			return strings.HasPrefix(strings.ToLower(a), strings.ToLower(b))
+		}
+	case "fromjson":
+		if s, ok := args[0].(string); ok && len(args) == 1 {
+			var v any
+			if err := json.Unmarshal([]byte(s), &v); err != nil {
+				panic(&exprError{"fromJSON(" + strconv.Quote(s) + "): " + err.Error()})
+			}
+			return v
+		}
+		panic(&exprError{"fromJSON of a non-string"})
+	}
+	panic(&exprError{"unknown function " + name})
+}
+
+func ghTruthy(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case string:
+		return x != ""
+	case float64:
+		return x != 0
+	}
+	return true
+}
+
+// ghEqual is ==: strings case-insensitively, null equal to null and to ”.
+func ghEqual(a, b any) bool {
+	if a == nil || b == nil {
+		return (a == nil || a == "") && (b == nil || b == "")
+	}
+	as, aok := a.(string)
+	bs, bok := b.(string)
+	if aok && bok {
+		return strings.EqualFold(as, bs)
+	}
+	return a == b
+}
+
+// runsOnLabels resolves a runs-on value: an expression, evaluated over ctx,
+// or a literal label.
+func runsOnLabels(t *testing.T, runsOn string, ctx map[string]any) []string {
+	t.Helper()
+	s := strings.TrimSpace(runsOn)
+	inner, ok := strings.CutPrefix(s, "${{")
+	if !ok {
+		return []string{s}
+	}
+	inner, ok = strings.CutSuffix(inner, "}}")
+	if !ok {
+		t.Fatalf("runs-on %q: an unclosed expression", runsOn)
+	}
+	v, err := ghEval(inner, ctx)
+	if err != nil {
+		t.Fatalf("runs-on %q: %v", runsOn, err)
+	}
+	switch x := v.(type) {
+	case string:
+		return []string{x}
+	case []any:
+		var out []string
+		for _, l := range x {
+			out = append(out, fmt.Sprint(l))
+		}
+		return out
+	}
+	t.Fatalf("runs-on %q resolves to %v, neither a label nor a list", runsOn, v)
+	return nil
+}
+
+// labelsCtx is the github.com context of a run of event: on a pull request
+// head is its head repository (nil when it is gone); preflightVar is
+// vars.CI_PREFLIGHT_RUNS_ON (nil = unset); outputs are preflight's
+// runner and runner_docker outputs.
+func labelsCtx(event string, head, preflightVar any, outputs map[string]string) map[string]any {
+	ref := "refs/heads/main"
+	if event == "pull_request" {
+		ref = "refs/pull/1/merge"
+	}
+	ctx := map[string]any{
+		"github.server_url": "https://github.com", "github.event_name": event, "github.ref": ref,
+		"github.repository": selectionRepo, "vars.ci_preflight_runs_on": preflightVar,
+	}
+	if strings.HasPrefix(event, "pull_request") {
+		ctx["github.event.pull_request.head.repo.full_name"] = head
+	}
+	for k, v := range outputs {
+		ctx["needs.preflight.outputs."+k] = v
+	}
+	return ctx
+}
+
+const (
+	// templatePreflightV149 is the template's preflight runs-on of v1.49 to
+	// v1.51: no fork check.
+	templatePreflightV149 = `${{ github.server_url == 'https://github.com' && fromJSON(vars.CI_PREFLIGHT_RUNS_ON || '["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
+	// templatePreflightV152 is the template's preflight runs-on of v1.52.
+	templatePreflightV152 = `${{ github.server_url == 'https://github.com' && ` + forkClause + ` && fromJSON(vars.CI_PREFLIGHT_RUNS_ON || '["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
+)
+
+// forkHeadProblems lists each pull request event and fork head (a fork, a
+// deleted fork) under which a preflight runs-on reaches a runner other than
+// ubuntu-latest, with CI_PREFLIGHT_RUNS_ON unset or set to the bigdisk pool:
+// a fork never reaches a self-hosted runner (ci-template v1.52).
+func forkHeadProblems(t *testing.T, runsOn string) (problems []string) {
+	t.Helper()
+	for _, ev := range []string{"pull_request", "pull_request_target"} {
+		for _, head := range []struct {
+			name string
+			repo any
+		}{{"fork", "fork/repo"}, {"head repository gone", nil}} {
+			for _, v := range []any{nil, `["self-hosted","linux","x64","bigdisk"]`} {
+				got := runsOnLabels(t, runsOn, labelsCtx(ev, head.repo, v, nil))
+				if !slices.Equal(got, []string{hostedRunner}) {
+					problems = append(problems, fmt.Sprintf("%s (%s, CI_PREFLIGHT_RUNS_ON %v): %v; a fork never reaches a self-hosted runner", ev, head.name, v, got))
+				}
+			}
+		}
+	}
+	return problems
+}
+
+// TestCIRunnerLabelsForkHead mirrors the template's
+// testdata/runner-labels-tests.py part H (ci-template v1.52): preflight's
+// runs-on and every job's runs-on, resolved under a fork's pull request and
+// a same-repository one.
+func TestCIRunnerLabelsForkHead(t *testing.T) {
+	files := workflowFiles(t)
+	var wf runnerWorkflow
+	if err := yaml.Unmarshal(files[ciFile], &wf); err != nil {
+		t.Fatalf("parse %s: %v", ciFile, err)
+	}
+	preflight, ok := wf.Jobs["preflight"]
+	if !ok {
+		t.Fatalf("%s has no preflight job", ciFile)
+	}
+	pre := preflight.RunsOn.Value
+	full := selectionWorld(selectionRunning(2), nil)
+	// jobsUnder resolves every job's runs-on under ctx, preflight's outputs
+	// taken from a run of the selection step under the same event and head.
+	jobsUnder := func(t *testing.T, event, head string, headRepo any) map[string][]string {
+		t.Helper()
+		r := runSelection(t, selectionEnv("2", event, head), full)
+		outputs := map[string]string{}
+		for _, line := range strings.Split(strings.TrimSpace(r.output), "\n") {
+			if k, v, ok := strings.Cut(line, "="); ok {
+				outputs[k] = v
+			}
+		}
+		got := map[string][]string{}
+		for name, job := range wf.Jobs {
+			got[name] = runsOnLabels(t, job.RunsOn.Value, labelsCtx(event, headRepo, nil, outputs))
+		}
+		return got
+	}
+	bigdisk := []string{"self-hosted", "linux", "x64", "bigdisk"}
+
+	t.Run("v1.49 preflight runs-on fails for a fork head under pull_request", func(t *testing.T) {
+		p := forkHeadProblems(t, templatePreflightV149)
+		if !slices.ContainsFunc(p, func(s string) bool { return strings.HasPrefix(s, "pull_request (fork,") }) {
+			t.Fatalf("want a problem for a fork's head under pull_request, got %q", p)
+		}
+	})
+	t.Run("v1.51 preflight runs-on fails for a fork head under pull_request_target", func(t *testing.T) {
+		p := forkHeadProblems(t, templatePreflightV149)
+		if !slices.ContainsFunc(p, func(s string) bool { return strings.HasPrefix(s, "pull_request_target (fork,") }) {
+			t.Fatalf("want a problem for a fork's head under pull_request_target, got %q", p)
+		}
+	})
+	t.Run("v1.52 preflight runs-on passes under both events", func(t *testing.T) {
+		if p := forkHeadProblems(t, templatePreflightV152); len(p) != 0 {
+			t.Errorf("the template's v1.52 preflight runs-on: %q", p)
+		}
+		if p := forkHeadProblems(t, pre); len(p) != 0 {
+			t.Errorf("%s preflight runs-on %q: %q", ciFile, pre, p)
+		}
+		if !strings.Contains(pre, " && "+forkClause+" && fromJSON(vars.CI_PREFLIGHT_RUNS_ON") {
+			t.Errorf("%s preflight runs-on %q lacks the v1.52 fork clause %s before the variable", ciFile, pre, forkClause)
+		}
+	})
+	for _, head := range []struct {
+		name, env string
+		repo      any
+	}{{"a fork", "fork/repo", "fork/repo"}, {"a deleted fork", "", nil}} {
+		t.Run("every job of ci.yml resolves to ubuntu-latest for "+head.name+"'s pull request on github.com", func(t *testing.T) {
+			for name, got := range jobsUnder(t, "pull_request", head.env, head.repo) {
+				if !slices.Equal(got, []string{hostedRunner}) {
+					t.Errorf("job %s runs on %v, want %s", name, got, hostedRunner)
+				}
+			}
+		})
+	}
+	t.Run("a same-repository pull request keeps the self-hosted default", func(t *testing.T) {
+		if got := runsOnLabels(t, pre, labelsCtx("pull_request", selectionRepo, nil, nil)); !slices.Equal(got, bigdisk) {
+			t.Errorf("preflight runs on %v, want %v", got, bigdisk)
+		}
+		if got := runsOnLabels(t, pre, labelsCtx("pull_request", selectionRepo, `"ubuntu-latest"`, nil)); !slices.Equal(got, []string{hostedRunner}) {
+			t.Errorf("preflight with CI_PREFLIGHT_RUNS_ON set to \"ubuntu-latest\" runs on %v", got)
+		}
+	})
+	t.Run("a same-repository pull request keeps the overflow labels", func(t *testing.T) {
+		got := jobsUnder(t, "pull_request", selectionRepo, selectionRepo)
+		for name, job := range wf.Jobs {
+			pool := selectionRunners[job.RunsOn.Value]
+			if pool == "" {
+				continue
+			}
+			if want := []string{"self-hosted", "linux", "x64", pool}; !slices.Equal(got[name], want) {
+				t.Errorf("job %s runs on %v, want the overflow %v", name, got[name], want)
+			}
+		}
+	})
 }
 
 func TestMatrixRef(t *testing.T) {
