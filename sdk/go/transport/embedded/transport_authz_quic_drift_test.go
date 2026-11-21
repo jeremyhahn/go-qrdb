@@ -235,6 +235,7 @@ var quicToEmbeddedMethod = map[string]string{
 	"rebalance.GetImbalanceReport":        "GetImbalanceReport",
 	"rebalance.GetShardStats":             "GetShardStats",
 	"role.ListPermissions":                "ListPermissions",
+	"role.ListPermissionCatalog":          "PermissionClient.List",
 	"role.ResolvePermissions":             "ResolvePermissions",
 	"sql.Query":                           "Query",
 	"ts.Aggregate":                        "TSAggregate",

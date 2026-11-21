@@ -111,8 +111,11 @@ func RunStartupRead[T any](ctx context.Context, r StartupRead, read func(context
 		actx, cancel := StartupReadAttemptContext(ctx, giveUpAt, timeout)
 		v, err := read(actx)
 		// The attempt's own bound, not ctx, ended it: ctx is checked first
-		// because a ctx that ended also ends actx.
-		timedOut := err != nil && ctx.Err() == nil && errors.Is(actx.Err(), context.DeadlineExceeded)
+		// because a ctx that ended also ends actx. A read-index-not-ready
+		// answer is the read's own reply, never a cut-off, even when the
+		// bound lapsed between that reply and this check.
+		timedOut := err != nil && ctx.Err() == nil && errors.Is(actx.Err(), context.DeadlineExceeded) &&
+			!errors.Is(err, quicraft.ErrReadIndexNotReady)
 		cancel()
 		if err == nil {
 			return v, nil
