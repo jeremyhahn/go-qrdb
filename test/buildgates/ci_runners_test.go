@@ -92,9 +92,25 @@ const (
 	// Floors, well under today's counts (7 workflows, 50 jobs).
 	runnerWorkflowFloor = 6
 	runnerJobFloor      = 30
-	// hostedJobFloor, under ci.yml's count (18 jobs, all on ubuntu-latest):
-	// a regression of the workflow off the hosted runner fails here.
+	// hostedJobFloor, under ci.yml's count (19 jobs: 10 on the literal
+	// ubuntu-latest, 8 on preflight's runner or runner_docker output, which
+	// is hosted by default and overflows to a self-hosted runner only when
+	// the hosted pool is full, ruling 1024; preflight on its own v1.52
+	// expression): a regression of the workflow off the hosted runner fails
+	// here.
 	hostedJobFloor = 15
+
+	// The three runs-on expressions of ci-template v1.53 (ruling 1087), the
+	// only "${{" runs-on ci.yml may carry, byte-exact. preflightRunsOn picks
+	// the bigdisk runner for this repository on github.com and ubuntu-latest
+	// otherwise (v1.52); the other two read preflight's selection (v1.48,
+	// ruling 1024).
+	preflightRunsOn    = `${{ github.server_url == 'https://github.com' && (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_PREFLIGHT_RUNS_ON || '["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
+	runnerDockerRunsOn = `${{ fromJSON(needs.preflight.outputs.runner_docker) }}`
+	runnerRunsOn       = `${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}`
+	// runnerSelectStep is preflight's step that writes runner and
+	// runner_docker; its env names github.server_url.
+	runnerSelectStep = "- name: Hosted or overflow runner (ruling 1024)\n"
 	// selfHostedWaiver opens the waiver a self-hosted runs-on line carries:
 	// `# self-hosted: <category>: <reason>` (owner rulings 999 and 1006).
 	selfHostedWaiver = "# self-hosted: "
@@ -221,6 +237,9 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		switch {
 		case runsOn == hostedRunner:
 			// Owner rulings 999 and 1006: the default.
+		case file == ciFile && (runsOn == preflightRunsOn || runsOn == runnerDockerRunsOn || runsOn == runnerRunsOn):
+			// ci-template v1.53 (ruling 1087): preflight's v1.52 expression
+			// and the hosted-or-overflow selection (ruling 1024).
 		case runsOn == "" || strings.Contains(runsOn, "${{"):
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+" nor one self-hosted label (owner ruling 999)")
 		default:
@@ -529,7 +548,10 @@ func TestCIRunners(t *testing.T) {
 	}
 	hosted := 0
 	for _, job := range wf.Jobs {
-		if job.RunsOn.Value == hostedRunner {
+		// Hosted by default; preflight's selection overflows only when the
+		// hosted pool is full (ruling 1024).
+		switch job.RunsOn.Value {
+		case hostedRunner, runnerDockerRunsOn, runnerRunsOn:
 			hosted++
 		}
 	}
@@ -550,9 +572,19 @@ func TestCIServerURLAbsentFromCI(t *testing.T) {
 	// The Runner labels step (ci-template v1.47, verbatim) evaluates other
 	// workflows' runs-on expressions and so names github.server_url in its
 	// python; that is the lint's text, not a dependency of ci.yml on the host.
+	// ci-template v1.53 (ruling 1087) also names it in preflight's v1.52
+	// runs-on (preflightRunsOn, exact) and in the env of the step Hosted or
+	// overflow runner (ruling 1024), which selects no self-hosted runner off
+	// github.com. Those three are stripped; any other server_url fails.
 	body := readCIBody(t)
 	if i := strings.Index(body, runnerLabelsStep); i >= 0 {
 		if end := strings.Index(body[i:], "\n          PY\n"); end >= 0 {
+			body = body[:i] + body[i+end:]
+		}
+	}
+	body = strings.Replace(body, "runs-on: "+preflightRunsOn, "", 1)
+	if i := strings.Index(body, runnerSelectStep); i >= 0 {
+		if end := strings.Index(body[i:], "\n      - "); end >= 0 {
 			body = body[:i] + body[i+end:]
 		}
 	}
@@ -585,6 +617,29 @@ func TestCIRunnerLabelsStepPresent(t *testing.T) {
 	const review = `REVIEW = {"codex": "credential", "qwen": "hardware"}`
 	if !strings.Contains(body, review) {
 		t.Errorf("ci.yml's Runner labels step lacks %q: codex and qwen must be reserved to code-review.yml with their own categories (ruling 1007)", review)
+	}
+}
+
+// runnerSelectTestsStep and lanMaskTestsStep run the behavioural tests of
+// the step "Hosted or overflow runner (ruling 1024)" and of
+// scripts/ci-mask-lan.sh in preflight (Codex round 1 on #1671).
+const (
+	runnerSelectTestsStep = "- name: Runner select tests (go-qrdb #1671)\n        run: python3 -I .github/workflows/testdata/runner-select-tests.py\n"
+	lanMaskTestsStep      = "- name: LAN mask tests (go-qrdb #1671)\n        run: python3 -I .github/workflows/testdata/ci-mask-lan-tests.py\n"
+)
+
+func TestCIRunnerSelectAndMaskTestsPresent(t *testing.T) {
+	body := readCIBody(t)
+	for _, step := range []string{runnerSelectTestsStep, lanMaskTestsStep} {
+		if n := strings.Count(body, step); n != 1 {
+			t.Errorf("ci.yml has %d %q steps, want exactly one", n, step)
+		}
+	}
+	for _, name := range []string{"runner-select-tests.py", "ci-mask-lan-tests.py"} {
+		p := filepath.Join(repoRoot(t), ".github", "workflows", "testdata", name)
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("ci.yml runs .github/workflows/testdata/%s, which is missing: %v", name, err)
+		}
 	}
 }
 
