@@ -32,6 +32,8 @@ func TestIsDataPlanePath(t *testing.T) {
 		{"/kv?prefix=x", true},
 		{"/ts/query", true},
 		{"/vector/search", true},
+		{"/vlog/log", true},
+		{"/vlog/append", true},
 		{"/v1/databases", false},
 		{"/v1/tenants", false},
 		{"/health", false},

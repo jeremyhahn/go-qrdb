@@ -988,7 +988,7 @@ The engine half of the log and the replicated audit chain share one mechanism
 | Dispatch | `pkg/engine/mvcc_engine.go` (`handleAuditAppend`, `handleVerifiableLog`), `pkg/store/pebble.go` (`pebbleHandleAuditAppend`, `pebbleHandleVerifiableLog`), `pkg/statemachine/vlog_apply.go` (`ApplyVerifiableLog`) | Both families apply both opcodes, answer `audit.QueryRequest`, `audit.VerifyRequest` and `vlog.Request` (`HeadRequest`, `GetRequest`, `InclusionRequest`, `ConsistencyRequest`) in their read path, restore the registry on open and snapshot recovery, and resync it after a failed apply. |
 | Attachment | `pkg/store/factory.go` (`WithLogs`), `pkg/store/mvcc.go` and `pkg/store/pebble.go` (`SetLogs`), `pkg/engine/mvcc_engine.go` (`WithMVCCLogs`), `cmd/qrdbd/start.go` (`buildSMCreateFunc`), `pkg/server/tenant_host.go` (`newDataPlaneCreateFunc`), `pkg/server/lifecycle/local.go` (`NewLocalEngine`) | Every create function builds a fresh `vlog.Chain` for each state machine it creates, unconditionally: the system shard, every tenant and database group, and every local engine. No two state machines share heads. |
 | Proposer and reader | `pkg/service/audit_replicated_logger.go` (`ReplicatedLogger`), `audit_optin_logger.go`, `audit_shard_resolver.go`, `audit_errors.go` | Routes every audit append to the system shard (`SystemShardAuditResolver`; a dedicated-isolation tenant is refused with `DedicatedTenantAuditNotSupportedError`), checks the gate, sets the timestamp, proposes — `OpVerifiableLog`/`AuditAppend` to the tenant's audit instance (`vlog.AuditLogID`) once `featuregate.VerifiableLog` and `featuregate.VerifiableLogAudit` are enabled for the group, `OpAuditAppend` before (§7); reads back through `SyncRead`. |
-| Log service | `pkg/service/vlog_service.go` (`LogService`, its requests and responses), `vlog_log_service.go` (`qrdb_vlog`), `vlog_log_service_stub.go`, `vlog_errors.go` | Confines each request to the caller's tenant, routes it through `NewSystemShardLogResolver` — the audit resolver's routing, which sends a barrier tenant to its home group — and a barrier-enabled database, looked up in the `LogDatabaseLookup` (the node's `database.Manager`) a composer must pass, to its own group; a sealed barrier refuses with its own error, and a node without the group with `BarrierStoreUnavailableError` (§3), refuses a write with `LogFeatureNotActiveError` until `featuregate.VerifiableLog` is active on the group, and a create or key rotation until `featuregate.VerifiableLogKeys` is too, before any key is minted; proposes `OpVerifiableLog` and answers reads as `vlog.Request` values. `SignHead` reads the descriptor and head, signs through the `vlog.HeadSignerProvider` the log's `KeyRef` names, and proposes the checkpoint. Without `qrdb_vlog`, `NewLogService` refuses with `vlog.NotCompiledError`. Composed by `server.WithLogService` (wired by `qrdbd` and `sdk/go/node`) and by `embedded.WithLogService`. |
+| Log service | `pkg/service/vlog_service.go` (`LogService`, its requests and responses), `vlog_log_service.go` (`qrdb_vlog`), `vlog_log_service_stub.go`, `vlog_errors.go` | Confines each request to the caller's tenant, routes it through `NewSystemShardLogResolver` — the audit resolver's routing, which sends a barrier tenant to its home group; a sealed barrier refuses with its own error, and a node without the group with `BarrierStoreUnavailableError` (§3); refuses a log in a barrier-enabled database, looked up in the `LogDatabaseLookup` (the node's `database.Manager`) a composer must pass, with `BarrierDatabaseLogNotSupportedError` before anything else, refuses a write with `LogFeatureNotActiveError` until `featuregate.VerifiableLog` is active on the group, and a create or key rotation until `featuregate.VerifiableLogKeys` is too, before any key is minted; proposes `OpVerifiableLog` and answers reads as `vlog.Request` values. `SignHead` reads the descriptor and head, signs through the `vlog.HeadSignerProvider` the log's `KeyRef` names, and proposes the checkpoint. Without `qrdb_vlog`, `NewLogService` refuses with `vlog.NotCompiledError`. Composed by `server.WithLogService` (wired by `qrdbd` and `sdk/go/node`) and by `embedded.WithLogService`. |
 | Node-local trail | `pkg/audit/chain_file_logger.go`, `chain_verify.go`, `trail.go`, `trail_dir.go`, `verify.go` | The hash-chained NDJSON file a node writes, its rotation-set verifier and the trail composition. A separate mechanism from the replicated chain. |
 
 ### Design
@@ -1089,16 +1089,16 @@ tenant's logs, entries and sealed head-signing keys are in the tenant's home
 group (`database.TenantHomeName`), whose WAL and snapshots are under the
 tenant's own key; a sealed tenant barrier refuses every log call, read or
 write, with `tenant.ErrTenantSealed`, as it refuses the tenant's other reads.
-A barrier-enabled database is looked up in the node's database registry before
-any call is routed: a sealed database barrier refuses with
-`*database.SealedError`, its other reads' error; an unsealed one routes to the
-database's own dedicated Raft group, under the database's barrier. The groups
-come from the dedicated-Raft services `AttachTenantHomes` attaches
+The groups come from the dedicated-Raft services `AttachTenantHomes` attaches
 (`pkg/server/lifecycle/log_groups.go`). Where there is no such group the call
 fails closed with `BarrierStoreUnavailableError`, classed `Unavailable` by
 `pkg/api/errclass`: on a standalone node, whose barrier homes are KV stores
-with no log state machine, and for a barrier database that is not a dedicated
-Raft database (open: [../plans/1613-verifiable-log.md](../plans/1613-verifiable-log.md)).
+with no log state machine. A database named by a call is looked up in the
+node's database registry before the call is routed; a barrier-enabled database
+is refused with `BarrierDatabaseLogNotSupportedError`, classed `Unimplemented`,
+before any key is created, any proposal is made or anything is read, whatever
+its backend, sealed or not: its log has no store under the database's key
+(open: [../plans/1613-verifiable-log.md](../plans/1613-verifiable-log.md)).
 A database the registry has no record of is served, as a tenant without
 metadata is; a lookup that fails refuses the call. Head signatures are still
 produced outside apply and proposed to the same group. A volume or raft tenant is refused with
@@ -1410,12 +1410,12 @@ the upgrade moves no data.
   barrier of the group they are applied in, as every other record there is,
   so apply hashes the entry as appended. A prefix tenant's logs are under the
   system barrier; a barrier-isolated tenant's are in its home group, under the
-  tenant's own barrier; a barrier-enabled database's are in the database's own
-  dedicated Raft group, under its barrier. A sealed barrier refuses every log
-  call with the error it returns for the store's other reads (§3,
-  "Isolation"). Where the node has no such group the call fails closed with
-  `BarrierStoreUnavailableError` (standalone, and a barrier database that is
-  not a dedicated Raft database).
+  tenant's own barrier. A sealed barrier refuses every log call with the error
+  it returns for the store's other reads (§3, "Isolation"). Where the node has
+  no such group (standalone) the call fails closed with
+  `BarrierStoreUnavailableError`. A log in a barrier-enabled database is refused
+  with `BarrierDatabaseLogNotSupportedError` until it has a store under the
+  database's key.
 - **The signing key.** The software signer's `k/<version>` record is one of
   the log's records, so the barrier of its group seals it at rest; there is no
   second key layer. A caller that wants entries

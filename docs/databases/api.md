@@ -492,14 +492,17 @@ private key is never in an answer. A rotation racing another is a conflict.
 Both are refused, before the provider is asked, while the
 `verifiable-log-keys` feature is not yet active on every replica of the
 tenant's group (`LogFeatureNotActiveError`). A barrier-isolated tenant's logs
-and keys are in its own barrier-sealed home group, and a barrier-enabled
-database's in the database's own group ([architecture.md](architecture.md),
+and keys are in its own barrier-sealed home group ([architecture.md](architecture.md),
 "Isolation"). While that barrier is sealed every log call is refused with the
-error the barrier returns for other reads (the tenant's sealed error, or the
-database's). A node with no such group (standalone, or a barrier database that
-is not a dedicated Raft database) refuses with `BarrierStoreUnavailableError`,
-`Unavailable` on every transport: `503 Service Unavailable` over REST,
-`UNAVAILABLE` over gRPC.
+tenant's sealed error. A node with no such group (standalone) refuses with
+`BarrierStoreUnavailableError`, `Unavailable` on every transport:
+`503 Service Unavailable` over REST, `UNAVAILABLE` over gRPC.
+
+A log in a barrier-enabled database has no store under the database's key yet,
+so every log call that names one is refused, before any key is created, any
+proposal is made or anything is read, whatever the database's backend, with
+`BarrierDatabaseLogNotSupportedError`: `Unimplemented` on every transport,
+`501 Not Implemented` over REST, `UNIMPLEMENTED` over gRPC.
 
 ## Verifiable-log payloads over QUIC and MCP
 

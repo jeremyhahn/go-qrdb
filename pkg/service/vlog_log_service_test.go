@@ -22,7 +22,6 @@ import (
 	"crypto"
 	"errors"
 	"reflect"
-	"slices"
 	"strconv"
 	"testing"
 
@@ -37,7 +36,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
-	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // staticSignerProvider hands out one signer, or fails.
