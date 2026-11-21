@@ -768,3 +768,68 @@ func TestExpandAll_EmptyIsEmpty(t *testing.T) {
 		t.Fatalf("ExpandAll(nil) = %v, want empty", got)
 	}
 }
+
+// TestMatches is the authorization rule itself: one grant admits a concrete
+// required permission when it is the same permission or a whole-segment
+// wildcard over it. Glob prefixes are not wildcards.
+func TestMatches(t *testing.T) {
+	tests := []struct {
+		name     string
+		granted  Permission
+		required Permission
+		want     bool
+	}{
+		{"exact", "keys:sign", "keys:sign", true},
+		{"resource_wildcard", "keys:*", "keys:sign", true},
+		{"action_wildcard", "*:sign", "keys:sign", true},
+		{"full_wildcard", "*:*", "keys:sign", true},
+		{"glob_prefix_refused", "ke*:sign", "keys:sign", false},
+		{"glob_action_prefix_refused", "keys:si*", "keys:sign", false},
+		{"other_resource_refused", "certs:sign", "keys:sign", false},
+		{"other_resource_wildcard_refused", "certs:*", "keys:sign", false},
+		{"other_action_refused", "keys:verify", "keys:sign", false},
+		{"other_action_wildcard_refused", "*:verify", "keys:sign", false},
+		{"multi_colon_exact", "certs:revoke:cross", "certs:revoke:cross", true},
+		{"multi_colon_resource_wildcard", "certs:*", "certs:revoke:cross", true},
+		{"multi_colon_action_wildcard", "*:revoke:cross", "certs:revoke:cross", true},
+		{"multi_colon_prefix_refused", "certs:revoke", "certs:revoke:cross", false},
+		{"empty_grant_refused", "", "keys:sign", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Matches(tt.granted, tt.required); got != tt.want {
+				t.Fatalf("Matches(%q, %q) = %v, want %v", tt.granted, tt.required, got, tt.want)
+			}
+			held := map[Permission]struct{}{tt.granted: {}}
+			if got := Granted(held, tt.required); got != tt.want {
+				t.Fatalf("Granted({%q}, %q) = %v, want %v", tt.granted, tt.required, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGranted_Set covers the set form: any one member admitting the required
+// permission is enough, and an empty or nil set admits nothing.
+func TestGranted_Set(t *testing.T) {
+	held := map[Permission]struct{}{"certs:read": {}, "keys:*": {}, "*:list": {}}
+	for _, tt := range []struct {
+		required Permission
+		want     bool
+	}{
+		{"certs:read", true},
+		{"keys:sign", true},
+		{"vector:list", true},
+		{"certs:issue", false},
+		{"kv:put", false},
+	} {
+		if got := Granted(held, tt.required); got != tt.want {
+			t.Errorf("Granted(held, %q) = %v, want %v", tt.required, got, tt.want)
+		}
+	}
+	if Granted(map[Permission]struct{}{}, "keys:sign") {
+		t.Error("an empty set admitted keys:sign")
+	}
+	if Granted(nil, "keys:sign") {
+		t.Error("a nil set admitted keys:sign")
+	}
+}
