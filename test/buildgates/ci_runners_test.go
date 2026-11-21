@@ -201,6 +201,7 @@ var hardcodedParallelism = regexp.MustCompile(`GOMAXPROCS\s*[=:]\s*['"]?[0-9]|(^
 
 // runnerStep and runnerJob are the slices of a workflow this gate reads.
 type runnerStep struct {
+	Name string            `yaml:"name"`
 	If   string            `yaml:"if"`
 	Uses string            `yaml:"uses"`
 	Run  string            `yaml:"run"`
@@ -965,6 +966,92 @@ func TestBigdiskStepProblems_CanFail(t *testing.T) {
 		p := bigdiskStepProblems(job)
 		if got := len(p) != 0; got != tc.want {
 			t.Errorf("%s: problems %v, want a problem: %v", tc.name, p, tc.want)
+		}
+	}
+}
+
+// credMaskStep and lanMaskRun name the two mask steps a pool-capable job
+// runs before it builds (ruling 887, scripts/ci-mask-lan.sh).
+const (
+	credMaskStep = "Mask the forge credentials"
+	lanMaskRun   = "scripts/ci-mask-lan.sh"
+)
+
+// lanMaskProblems reports a job that masks the forge credentials but not
+// the LAN addresses right after: the next step's run is exactly
+// scripts/ci-mask-lan.sh, or the credential-mask step's own run ends with
+// it. A job with no credential mask (ci-gate: no checkout, no build) has
+// nothing to mask and is not reported.
+func lanMaskProblems(name string, job runnerJob) []string {
+	for i, s := range job.Steps {
+		if s.Name != credMaskStep {
+			continue
+		}
+		if strings.HasSuffix(strings.TrimSpace(s.Run), lanMaskRun) {
+			return nil
+		}
+		if i+1 < len(job.Steps) && strings.TrimSpace(job.Steps[i+1].Run) == lanMaskRun {
+			return nil
+		}
+		return []string{name + ": step " + strconv.Itoa(i) + " (" + credMaskStep + ") is not followed by a step that runs " + lanMaskRun + "; a build on a pool host can print a LAN address"}
+	}
+	return nil
+}
+
+// TestCIPoolJobsMaskLANAddresses holds every job that can run on a pool
+// host (its runs-on reads the preflight selection, or is preflight's own
+// bigdisk default) to masking the LAN addresses right after the
+// credential mask (Codex, #1645 round 2).
+func TestCIPoolJobsMaskLANAddresses(t *testing.T) {
+	files := workflowFiles(t)
+	var wf runnerWorkflow
+	if err := yaml.Unmarshal(files[ciFile], &wf); err != nil {
+		t.Fatalf("parse %s: %v", ciFile, err)
+	}
+	checked := 0
+	for name, job := range wf.Jobs {
+		runsOn := job.RunsOn.Value
+		if _, ok := selectionRunners[runsOn]; !ok && runsOn != preflightRunner {
+			continue
+		}
+		checked++
+		for _, p := range lanMaskProblems(name, job) {
+			t.Error(p)
+		}
+	}
+	if checked == 0 {
+		t.Fatalf("%s: no job runs on a pool-capable runner; the check read nothing", ciFile)
+	}
+}
+
+func TestPoolJobsMaskLAN_CanFail(t *testing.T) {
+	const head = "    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}\n    steps:\n"
+	const cred = "      - name: " + credMaskStep + "\n        run: |\n          echo masked\n"
+	const lan = "      - name: Mask the LAN addresses\n        run: " + lanMaskRun + "\n"
+	const build = "      - run: make check-compose-targets\n"
+	cases := []struct {
+		name  string
+		steps string
+		want  bool
+	}{
+		{"credential mask only", cred + build, true},
+		{"LAN mask after the credential mask", cred + lan + build, false},
+		{"LAN mask inline", "      - name: " + credMaskStep + "\n        run: |\n          echo masked\n          " + lanMaskRun + "\n" + build, false},
+		{"LAN mask after a build step", cred + build + lan, true},
+		{"LAN mask before the credential mask", lan + cred + build, true},
+		{"no credential mask", build, false},
+	}
+	for _, tc := range cases {
+		var wf runnerWorkflow
+		if err := yaml.Unmarshal([]byte("jobs:\n  docker-build:\n"+head+tc.steps), &wf); err != nil {
+			t.Fatalf("%s: parse: %v", tc.name, err)
+		}
+		p := lanMaskProblems("docker-build", wf.Jobs["docker-build"])
+		if got := len(p) != 0; got != tc.want {
+			t.Errorf("%s: problems %v, want a problem: %v", tc.name, p, tc.want)
+		}
+		if tc.want && len(p) != 0 && !strings.HasPrefix(p[0], "docker-build: ") {
+			t.Errorf("%s: problem %q does not name the job", tc.name, p[0])
 		}
 	}
 }
