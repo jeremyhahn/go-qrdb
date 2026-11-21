@@ -352,11 +352,12 @@ func (s *DatabaseService) WatchTenantHomes(ctx context.Context, tick <-chan time
 	settled, idle := false, 0
 	for {
 		roster := s.placementScheduler.KnownRaftAddrs()
-		if s.currentRaftHost() == nil {
+		switch {
+		case s.currentRaftHost() == nil:
 			// Not composed yet: nothing is reconciled, and the first tick
 			// after SetRaftHost reconciles (settled stays false).
 			s.noteNoRaftHost()
-		} else if !settled || idle >= tenantHomeWatchResyncTicks || !maps.Equal(roster, last) {
+		case !settled || idle >= tenantHomeWatchResyncTicks || !maps.Equal(roster, last):
 			rctx, cancel := context.WithTimeout(ctx, tenantHomeWatchTimeout)
 			err := s.ReconcileTenantHomes(rctx)
 			cancel()
@@ -366,7 +367,7 @@ func (s *DatabaseService) WatchTenantHomes(ctx context.Context, tick <-chan time
 				s.logger.Warn("tenant home reconcile after a roster change failed",
 					slog.Int("roster_size", len(roster)), slog.Any("error", err))
 			}
-		} else {
+		default:
 			idle++
 		}
 		select {

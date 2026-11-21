@@ -3928,7 +3928,10 @@ func applyFIPSIsolationFloor(ctx context.Context, fipsOn bool, svc any) error {
 	setErr := floor.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicyStrict)
 	got, err := floor.ClusterIsolationPolicy(ctx)
 	if err != nil {
-		return fmt.Errorf("%w: reading the floor back: %w (write: %v)", errFIPSFloorNotStrict, err, setErr)
+		if setErr != nil {
+			return fmt.Errorf("%w: reading the floor back: %w (write: %w)", errFIPSFloorNotStrict, err, setErr)
+		}
+		return fmt.Errorf("%w: reading the floor back: %w", errFIPSFloorNotStrict, err)
 	}
 	if got != tenant.ClusterIsolationPolicyStrict {
 		if setErr != nil {
