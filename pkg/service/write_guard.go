@@ -91,12 +91,14 @@ func admitReplica(h any, shardID uint64, raftAddr string) (featuregate.ConfigBin
 }
 
 // checkConfigBinding refuses an add bound to a system-shard configuration
-// that is no longer current. go-quicraft makes the same comparison for a
-// non-zero configChangeIndex but skips it for 0, so a binding to the
-// initial configuration (change ID 0) is compared here, immediately before
-// the proposal.
+// that is no longer current, immediately before the proposal. go-quicraft
+// makes the change-ID comparison for a non-zero configChangeIndex but skips
+// it for 0, and makes no release comparison at all, so every Required
+// binding is checked here: the gate compares the change ID (for 0 too) and
+// whether a compared member's release changed since admission (a restart
+// on another release changes no configuration).
 func checkConfigBinding(h any, shardID uint64, b featuregate.ConfigBinding) error {
-	if !b.Required || b.ConfigChangeID != 0 {
+	if !b.Required {
 		return nil
 	}
 	if a, ok := h.(configBoundAdmitter); ok {

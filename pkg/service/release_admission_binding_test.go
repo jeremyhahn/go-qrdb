@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -38,7 +39,8 @@ const bindingSystemShard = 1
 // check; an accepted add commits and advances the ID.
 type bindingHost struct {
 	*mockHost
-	gate *featuregate.Gate
+	gate    *featuregate.Gate
+	adverts *mutableAdverts
 
 	mu             sync.Mutex
 	members        map[uint64]string
@@ -154,17 +156,105 @@ func newBindingHostAt(t *testing.T, configChangeID uint64, candidates ...cluster
 		t.Fatalf("featuregate.New: %v", err)
 	}
 	t.Cleanup(func() { _ = gate.Close() })
-	adverts := fixedAdverts{
+	adverts := []cluster.Member{
 		{NodeID: 1, Address: "n1:1", ReleaseVersion: "0.59.0-alpha"},
 		{NodeID: 2, Address: "n2:1", ReleaseVersion: "0.59.0-alpha"},
 		{NodeID: 3, Address: "n3:1", ReleaseVersion: "0.59.0-alpha"},
 	}
-	adverts = append(adverts, candidates...)
-	if err := gate.Start(context.Background(), noActivations{}, adverts); err != nil {
+	h.adverts = &mutableAdverts{members: append(adverts, candidates...)}
+	if err := gate.Start(context.Background(), noActivations{}, h.adverts); err != nil {
 		t.Fatalf("gate.Start: %v", err)
 	}
 	h.gate = gate
 	return h
+}
+
+// mutableAdverts is a fixed advertisement list a test can change, as a
+// member restart on another release does, without a configuration change.
+type mutableAdverts struct {
+	mu      sync.Mutex
+	members []cluster.Member
+}
+
+func (*mutableAdverts) PutMember(context.Context, uint64, []byte, time.Duration) error { return nil }
+func (*mutableAdverts) DeleteMember(context.Context, uint64) error                     { return nil }
+func (*mutableAdverts) WatchMembers(context.Context) (<-chan cluster.MemberEvent, error) {
+	return nil, errors.New("no watch")
+}
+
+func (a *mutableAdverts) ListMembers(context.Context) ([]cluster.Member, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.members), nil
+}
+
+// restart makes member id advertise rel.
+func (a *mutableAdverts) restart(id uint64, rel string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := range a.members {
+		if a.members[i].NodeID == id {
+			a.members[i].ReleaseVersion = rel
+		}
+	}
+}
+
+// rollbackDuringAdmission adds candidate through add, rolling member 2 back
+// to 0.58 after the gate admitted the candidate and before the add is
+// requested, and returns the add's result.
+func rollbackDuringAdmission(t *testing.T, h *bindingHost, candidate cluster.Member, add func(*AdminService, context.Context, uint64, uint64, string, string) error) error {
+	t.Helper()
+	svc, ok := NewAdminService(h).(*AdminService)
+	if !ok {
+		t.Fatal("NewAdminService did not return *AdminService")
+	}
+	h.pauseAddr = candidate.Address
+	done := make(chan error, 1)
+	go func() {
+		done <- add(svc, context.Background(), bindingSystemShard, candidate.NodeID, candidate.Address, "")
+	}()
+	select {
+	case <-h.admitted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the add never reached admission")
+	}
+	h.adverts.restart(2, "0.58.0-alpha")
+	close(h.resume)
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("the add never returned")
+		return nil
+	}
+}
+
+func assertRollbackRefused(t *testing.T, h *bindingHost, err error) {
+	t.Helper()
+	var gap *release.GapError
+	if !errors.As(err, &gap) || gap.Local != "0.58.0-alpha" || gap.Peer != "0.60.0-alpha" {
+		t.Fatalf("add = %v, want the 0.58/0.60 release-gap refusal", err)
+	}
+	if h.member(4) {
+		t.Fatal("n4 was added across the release gap")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.indexes) != 0 {
+		t.Fatalf("adds requested = %v, want none", h.indexes)
+	}
+}
+
+func TestAdminService_AddMemberRefusedAfterMemberRollbackDuringAdmission(t *testing.T) {
+	candidate := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
+	h := newBindingHost(t, candidate)
+	assertRollbackRefused(t, h, rollbackDuringAdmission(t, h, candidate, (*AdminService).AddMember))
+}
+
+func TestAdminService_AddObserverMemberRefusedAfterMemberRollbackDuringAdmission(t *testing.T) {
+	candidate := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
+	h := newBindingHost(t, candidate)
+	assertRollbackRefused(t, h, rollbackDuringAdmission(t, h, candidate, (*AdminService).AddObserverMember))
 }
 
 // raceAdds adds first and second concurrently, second pausing after its
@@ -223,8 +313,11 @@ func TestAdminService_AddMemberReleaseAdmissionBindsTheCheckedConfiguration(t *t
 	if !h.member(4) || h.member(5) {
 		t.Fatalf("members = %v, want n4 added and n5 refused", h.members)
 	}
-	if len(h.indexes) != 2 || h.indexes[0] != 7 || h.indexes[1] != 7 {
-		t.Fatalf("configChangeIndex per add = %v, want both bound to the admitted configuration 7", h.indexes)
+	// The second add's binding to 7 is refused by the gate's
+	// CheckConfigBinding before any request; only the first add, bound to
+	// 7, and none of the refused one reach go-quicraft.
+	if len(h.indexes) != 1 || h.indexes[0] != 7 {
+		t.Fatalf("configChangeIndex per add = %v, want only the first add, bound to the admitted configuration 7", h.indexes)
 	}
 }
 
@@ -242,8 +335,10 @@ func TestAdminService_AddMemberReleaseAdmissionRetriesOnceOnStale(t *testing.T) 
 	if !h.member(4) || !h.member(5) {
 		t.Fatalf("members = %v, want n4 and n5", h.members)
 	}
-	want := []uint64{7, 7, 8}
-	if len(h.indexes) != len(want) || h.indexes[0] != want[0] || h.indexes[1] != want[1] || h.indexes[2] != want[2] {
+	// The stale binding to 7 is refused by the gate before a request; the
+	// retry, admitted again, is bound to 8.
+	want := []uint64{7, 8}
+	if !slices.Equal(h.indexes, want) {
 		t.Fatalf("configChangeIndex per add = %v, want %v", h.indexes, want)
 	}
 }
@@ -267,8 +362,11 @@ func TestAdminService_AddObserverMemberReleaseAdmissionBindsTheCheckedConfigurat
 	if !h.member(4) || h.member(5) {
 		t.Fatalf("members = %v, want voter n4 added and observer n5 refused", h.members)
 	}
-	if len(h.indexes) != 2 || h.indexes[0] != 7 || h.indexes[1] != 7 {
-		t.Fatalf("configChangeIndex per add = %v, want both bound to the admitted configuration 7", h.indexes)
+	// The second add's binding to 7 is refused by the gate's
+	// CheckConfigBinding before any request; only the first add, bound to
+	// 7, and none of the refused one reach go-quicraft.
+	if len(h.indexes) != 1 || h.indexes[0] != 7 {
+		t.Fatalf("configChangeIndex per add = %v, want only the first add, bound to the admitted configuration 7", h.indexes)
 	}
 }
 
@@ -286,8 +384,10 @@ func TestAdminService_AddObserverMemberReleaseAdmissionRetriesOnceOnStale(t *tes
 	if !h.member(4) || !h.member(5) {
 		t.Fatalf("members = %v, want n4 and n5", h.members)
 	}
-	want := []uint64{7, 7, 8}
-	if len(h.indexes) != len(want) || h.indexes[0] != want[0] || h.indexes[1] != want[1] || h.indexes[2] != want[2] {
+	// The stale binding to 7 is refused by the gate before a request; the
+	// retry, admitted again, is bound to 8.
+	want := []uint64{7, 8}
+	if !slices.Equal(h.indexes, want) {
 		t.Fatalf("configChangeIndex per add = %v, want %v", h.indexes, want)
 	}
 }
@@ -298,7 +398,7 @@ func TestGate_AdmitReplicaAtBindsOnlyTheSystemShard(t *testing.T) {
 	c := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
 	h := newBindingHost(t, c)
 	want := featuregate.ConfigBinding{ConfigChangeID: 7, Required: true}
-	if b, err := h.gate.AdmitReplicaAt(bindingSystemShard, "n4:1"); err != nil || b != want {
+	if b, err := h.gate.AdmitReplicaAt(bindingSystemShard, "n4:1"); err != nil || b.ConfigChangeID != want.ConfigChangeID || !b.Required {
 		t.Fatalf("AdmitReplicaAt(system) = %+v, %v; want %+v, nil", b, err, want)
 	}
 	if b, err := h.gate.AdmitReplicaAt(900, "n4:1"); err != nil || b.Required {
@@ -314,7 +414,7 @@ func TestGate_AdmitReplicaAtBindsTheInitialConfiguration(t *testing.T) {
 	c := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
 	h := newBindingHostAt(t, 0, c)
 	b, err := h.gate.AdmitReplicaAt(bindingSystemShard, "n4:1")
-	if want := (featuregate.ConfigBinding{ConfigChangeID: 0, Required: true}); err != nil || b != want {
+	if want := (featuregate.ConfigBinding{ConfigChangeID: 0, Required: true}); err != nil || b.ConfigChangeID != want.ConfigChangeID || !b.Required {
 		t.Fatalf("AdmitReplicaAt(system) = %+v, %v; want %+v, nil", b, err, want)
 	}
 	if err := h.gate.CheckConfigBinding(bindingSystemShard, b); err != nil {

@@ -84,7 +84,10 @@ func TestAdmitReplicaAt_BindsTheSystemShardConfiguration(t *testing.T) {
 
 	b, err := g.AdmitReplicaAt(systemShard, "n4:7000")
 	require.NoError(t, err)
-	assert.Equal(t, ConfigBinding{ConfigChangeID: 3, Required: true}, b)
+	assert.Equal(t, uint64(3), b.ConfigChangeID)
+	assert.True(t, b.Required)
+	assert.Equal(t, "n4:7000", b.Candidate)
+	assert.NotEmpty(t, b.ReleaseDigest)
 	assert.NoError(t, g.CheckConfigBinding(systemShard, b))
 
 	// Another shard's change index is a different counter: unbound.
@@ -114,7 +117,9 @@ func TestAdmitReplicaAt_InitialConfigurationIsRequired(t *testing.T) {
 
 	b, err := g.AdmitReplicaAt(systemShard, "n4:7000")
 	require.NoError(t, err)
-	assert.Equal(t, ConfigBinding{ConfigChangeID: 0, Required: true}, b)
+	assert.Equal(t, uint64(0), b.ConfigChangeID)
+	assert.True(t, b.Required)
+	assert.NotEmpty(t, b.ReleaseDigest)
 
 	members.set(systemShard, 1, map[uint64]string{1: "n1:7000", 2: "n2:7000", 3: "n3:7000", 4: "n4:7000"})
 	var stale *StaleConfigurationError
@@ -155,4 +160,39 @@ func TestAdmitReplicaAt_RefusalsCarryNoBinding(t *testing.T) {
 		require.ErrorIs(t, err, readErr)
 		assert.Equal(t, ConfigBinding{}, b)
 	})
+}
+
+// A member restart changes its release without a configuration change, so
+// the change ID alone cannot tell that the verdict no longer holds: a
+// member rolled back to 0.58 after a 0.60 candidate was admitted against
+// its 0.59 must make the binding stale, for the caller to admit again.
+func TestCheckConfigBinding_MemberReleaseChangeAfterAdmissionIsStale(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	store, kv := newLeaseStore(), newMemKV()
+	store.advertiseRelease(t, 2, "n2:7000", "0.59.0-alpha")
+	store.advertiseRelease(t, 3, "n3:7000", "0.59.0-alpha")
+	store.advertiseRelease(t, 4, "n4:7000", "0.60.0-alpha")
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.Start(context.Background(), kv, store))
+
+	b, err := g.AdmitReplicaAt(systemShard, "n4:7000")
+	require.NoError(t, err)
+	require.True(t, b.Required)
+	require.NoError(t, g.CheckConfigBinding(systemShard, b))
+
+	store.advertiseRelease(t, 2, "n2:7000", "0.58.0-alpha")
+	_, err = kv.PutIfAbsent(context.Background(), ReleasePrefix+"2/0.58.0-alpha", []byte("n2:7000"))
+	require.NoError(t, err)
+
+	var stale *StaleConfigurationError
+	require.ErrorAs(t, g.CheckConfigBinding(systemShard, b), &stale)
+	assert.True(t, stale.ReleasesChanged)
+	assert.Equal(t, uint64(3), stale.Admitted)
+	assert.Equal(t, uint64(3), stale.Current)
+
+	// Admitting again sees the rollback and refuses the gap.
+	var gap *release.GapError
+	_, err = g.AdmitReplicaAt(systemShard, "n4:7000")
+	require.ErrorAs(t, err, &gap)
+	assert.Equal(t, "0.58.0-alpha", gap.Local)
 }

@@ -59,7 +59,10 @@
 package featuregate
 
 import (
+	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -587,9 +590,20 @@ func (g *Gate) AdmitReplica(shardID uint64, raftAddr string) error {
 // for. Required says the add must land on exactly that configuration;
 // ConfigChangeID is its change ID, which is 0 for a bootstrapped membership
 // before its first change -- a configuration like any other, not "unbound".
+//
+// A member restart changes its release without changing the configuration,
+// so the change ID alone cannot tell that the verdict no longer holds.
+// ReleaseDigest is the release revision the verdict compared: a canonical
+// digest of the candidate's announced releases and of every compared
+// committed member's releases (members in replica-ID order, each member's
+// releases sorted). Candidate is the admitted Raft address, for
+// CheckConfigBinding to recompute that digest. admitRelease sets both on
+// every Required binding it returns.
 type ConfigBinding struct {
 	ConfigChangeID uint64
 	Required       bool
+	Candidate      string
+	ReleaseDigest  string
 }
 
 // StaleConfigurationError is CheckConfigBinding's refusal: the system-shard
@@ -598,19 +612,35 @@ type StaleConfigurationError struct {
 	ShardID  uint64
 	Admitted uint64
 	Current  uint64
+	// ReleasesChanged says the configuration is unchanged but a compared
+	// member's release changed since admission (a restart on another
+	// release changes no configuration).
+	ReleasesChanged bool
 }
 
 func (e *StaleConfigurationError) Error() string {
+	if e.ReleasesChanged {
+		return fmt.Sprintf("feature gate: shard %d member releases changed since admission (configuration change %d)",
+			e.ShardID, e.Current)
+	}
 	return fmt.Sprintf("feature gate: shard %d configuration changed since admission (admitted at change %d, now %d)",
 		e.ShardID, e.Admitted, e.Current)
 }
 
 // CheckConfigBinding refuses with *StaleConfigurationError when b is
 // required and the system shard's configuration change ID is no longer the
-// one it was admitted against. It is the comparison go-quicraft cannot make
-// for change ID 0 (its configChangeIndex 0 skips the check), so a caller
-// runs it immediately before proposing an add bound to the initial
-// configuration. An unbound b, or another shard, always passes.
+// one it was admitted against, or when the releases the verdict compared
+// changed since (ReleasesChanged: a member restarted on another release,
+// which changes no configuration). For the latter it reads the
+// advertisements and recorded releases afresh, bounded by admitReadTimeout,
+// and refuses when it cannot. The change-ID comparison is the one
+// go-quicraft cannot make for change ID 0 (its configChangeIndex 0 skips the
+// check), and go-quicraft makes no release comparison at all, so a caller
+// runs it immediately before proposing a bound add; on the refusal it admits
+// again. An unbound b, or another shard, always passes.
+//
+// The window between this check and the add's commit stays open until
+// go-quicraft offers a proposal-time configuration check (docs/plans/1628.md).
 func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error {
 	if !b.Required || shardID != g.systemShard {
 		return nil
@@ -622,6 +652,23 @@ func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error {
 	if system.ConfigChangeID != b.ConfigChangeID {
 		return &StaleConfigurationError{ShardID: shardID, Admitted: b.ConfigChangeID, Current: system.ConfigChangeID}
 	}
+	if b.ReleaseDigest == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), admitReadTimeout)
+	defer cancel()
+	view, err := g.admissionView(ctx)
+	if err != nil {
+		return err
+	}
+	recorded, err := g.admissionReleases(ctx)
+	if err != nil {
+		return err
+	}
+	members := comparedMembers(view, recorded, system, g.self.ReplicaID, b.Candidate)
+	if releaseDigest(candidateReleases(view, b.Candidate), members) != b.ReleaseDigest {
+		return &StaleConfigurationError{ShardID: shardID, Admitted: b.ConfigChangeID, Current: system.ConfigChangeID, ReleasesChanged: true}
+	}
 	return nil
 }
 
@@ -631,8 +678,9 @@ func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error {
 // go-quicraft refuses the add with ErrStaleConfigChange when another
 // membership change committed after admission, and, because go-quicraft
 // skips that comparison for index 0, it runs CheckConfigBinding itself
-// before proposing; on either refusal it admits again against the new
-// membership. Without that binding two concurrent adds of non-adjacent
+// before proposing, which also refuses when a compared member's release
+// changed since admission (ReleaseDigest); on any of these refusals it
+// admits again against the new membership and releases. Without that binding two concurrent adds of non-adjacent
 // releases (0.58 and 0.60 into an all-0.59 cluster) both pass, since neither
 // is yet a committed member the other must stay adjacent to.
 //
@@ -686,17 +734,14 @@ func (g *Gate) admitRelease(raftAddr string) (ConfigBinding, error) {
 	if err != nil {
 		return ConfigBinding{}, err
 	}
-	candidate := ""
-	for _, rec := range view {
-		if rec.Address == raftAddr && rec.ReleaseVersion != "" {
-			candidate = rec.ReleaseVersion
-			break
-		}
-	}
-	if candidate == "" {
+	// A candidate advertised from several sources may announce several
+	// releases: each must be adjacent, or the verdict depends on which
+	// record map order yields.
+	candidates := candidateReleases(view, raftAddr)
+	if len(candidates) == 0 {
 		return ConfigBinding{}, nil
 	}
-	refuse := func(err error, member, memberRelease string) (ConfigBinding, error) {
+	refuse := func(err error, candidate, member, memberRelease string) (ConfigBinding, error) {
 		g.logger.Warn("feature gate: refusing replica on a release gap",
 			"address", raftAddr,
 			"peer_release", candidate,
@@ -704,16 +749,20 @@ func (g *Gate) admitRelease(raftAddr string) (ConfigBinding, error) {
 			"member_release", memberRelease)
 		return ConfigBinding{}, err
 	}
-	if err := release.Check(releaseChannel, candidate); err != nil {
-		return refuse(err, "self", release.Version())
+	for _, candidate := range candidates {
+		if err := release.Check(releaseChannel, candidate); err != nil {
+			return refuse(err, candidate, "self", release.Version())
+		}
 	}
 	// Compare only with committed system-shard members: a pre-membership
 	// advertisement is another candidate, not a member it must stay
-	// adjacent to. A member's release is its live advertisement's; one
-	// that predates announcement is skipped; an offline member's is the
-	// release it recorded, and with neither the candidate is refused.
-	// The verdict holds only for this configuration, so its change ID is
-	// returned to bind the add to it (see AdmitReplicaAt).
+	// adjacent to. A member's releases are those its live advertisements
+	// announce (every distinct one, when several sources disagree); one
+	// whose advertisements all predate announcement is skipped; an offline
+	// member's are the releases it recorded, and with neither the candidate
+	// is refused. The verdict holds only for this configuration and these
+	// releases, so its change ID and release digest are returned to bind
+	// the add to them (see AdmitReplicaAt).
 	system, err := g.members.GroupMembership(g.systemShard)
 	if err != nil {
 		return ConfigBinding{}, err
@@ -722,30 +771,27 @@ func (g *Gate) admitRelease(raftAddr string) (ConfigBinding, error) {
 	if err != nil {
 		return ConfigBinding{}, err
 	}
-	for _, m := range committedMembers(system) {
-		if m.id == g.self.ReplicaID || m.addr == raftAddr {
-			continue
+	members := comparedMembers(view, recorded, system, g.self.ReplicaID, raftAddr)
+	for _, m := range members {
+		if !m.live && len(m.rels) == 0 {
+			return refuse(&UnknownMemberReleaseError{ShardID: g.systemShard, ReplicaID: m.id, Address: m.addr}, candidates[0], m.addr, "")
 		}
-		if rec := liveRecord(view, m.id, m.addr); rec != nil {
-			if rec.ReleaseVersion != "" && !releasesAdjacent(rec.ReleaseVersion, candidate) {
-				return refuse(&release.GapError{Channel: releaseChannel, Local: rec.ReleaseVersion, Peer: candidate},
-					m.addr, rec.ReleaseVersion)
-			}
-			continue
-		}
-		rels := recorded[m.id]
-		if len(rels) == 0 {
-			return refuse(&UnknownMemberReleaseError{ShardID: g.systemShard, ReplicaID: m.id, Address: m.addr}, m.addr, "")
-		}
-		for _, rel := range rels {
-			if !releasesAdjacent(rel, candidate) {
-				return refuse(&release.GapError{Channel: releaseChannel, Local: rel, Peer: candidate}, m.addr, rel)
+		for _, rel := range m.rels {
+			for _, candidate := range candidates {
+				if !releasesAdjacent(rel, candidate) {
+					return refuse(&release.GapError{Channel: releaseChannel, Local: rel, Peer: candidate}, candidate, m.addr, rel)
+				}
 			}
 		}
 	}
 	// Required even at ConfigChangeID 0: a bootstrapped membership before
 	// its first change is a checked configuration, not the absence of one.
-	return ConfigBinding{ConfigChangeID: system.ConfigChangeID, Required: true}, nil
+	return ConfigBinding{
+		ConfigChangeID: system.ConfigChangeID,
+		Required:       true,
+		Candidate:      raftAddr,
+		ReleaseDigest:  releaseDigest(candidates, members),
+	}, nil
 }
 
 // admitReadTimeout bounds admission's fresh read of the advertisements and
@@ -810,15 +856,92 @@ func committedMembers(system GroupMembership) []committedMember {
 	return members
 }
 
-// liveRecord returns the advertisement in view from the member with replica
-// ID id at addr, matched as supportingAddresses matches, or nil.
-func liveRecord(view map[viewKey]cluster.Member, id uint64, addr string) *cluster.Member {
+// liveRecords returns every advertisement in view from the member with
+// replica ID id at addr, matched as supportingAddresses matches, in viewKey
+// source order: when sources disagree, a caller weighs every record, not an
+// arbitrary one.
+func liveRecords(view map[viewKey]cluster.Member, id uint64, addr string) []cluster.Member {
+	var keys []viewKey
 	for k, rec := range view {
 		if k.nodeID == id && rec.Address == addr {
-			return &rec
+			keys = append(keys, k)
 		}
 	}
-	return nil
+	slices.SortFunc(keys, func(a, b viewKey) int { return cmp.Compare(a.source, b.source) })
+	recs := make([]cluster.Member, len(keys))
+	for i, k := range keys {
+		recs[i] = view[k]
+	}
+	return recs
+}
+
+// announcedReleases returns the distinct non-empty releases recs announce,
+// sorted: a record that predates announcement contributes none.
+func announcedReleases(recs []cluster.Member) []string {
+	var rels []string
+	for _, rec := range recs {
+		if rec.ReleaseVersion != "" {
+			rels = append(rels, rec.ReleaseVersion)
+		}
+	}
+	slices.Sort(rels)
+	return slices.Compact(rels)
+}
+
+// candidateReleases returns every distinct release the live records at
+// raftAddr announce, sorted.
+func candidateReleases(view map[viewKey]cluster.Member, raftAddr string) []string {
+	var recs []cluster.Member
+	for _, rec := range view {
+		if rec.Address == raftAddr {
+			recs = append(recs, rec)
+		}
+	}
+	return announcedReleases(recs)
+}
+
+// comparedMember is a committed system-shard member admission compares a
+// candidate with, and the releases it compares: those its live records
+// announce (live; none when all predate announcement), else those it
+// recorded.
+type comparedMember struct {
+	committedMember
+	rels []string
+	live bool
+}
+
+// comparedMembers returns, in replica-ID order, every committed member of
+// system other than self and the candidate at raftAddr, with its releases.
+func comparedMembers(view map[viewKey]cluster.Member, recorded map[uint64][]string, system GroupMembership, self uint64, raftAddr string) []comparedMember {
+	var out []comparedMember
+	for _, m := range committedMembers(system) {
+		if m.id == self || m.addr == raftAddr {
+			continue
+		}
+		if recs := liveRecords(view, m.id, m.addr); len(recs) > 0 {
+			out = append(out, comparedMember{committedMember: m, rels: announcedReleases(recs), live: true})
+			continue
+		}
+		rels := slices.Clone(recorded[m.id])
+		slices.Sort(rels)
+		out = append(out, comparedMember{committedMember: m, rels: slices.Compact(rels)})
+	}
+	slices.SortStableFunc(out, func(a, b comparedMember) int { return cmp.Compare(a.id, b.id) })
+	return out
+}
+
+// releaseDigest is the canonical digest of the releases an admission
+// compared: the candidate's, then each member's in replica-ID order. Any
+// release a member gains or loses (a restart on another release) changes it.
+func releaseDigest(candidates []string, members []comparedMember) string {
+	var b strings.Builder
+	b.WriteString("candidate=")
+	b.WriteString(strings.Join(candidates, ","))
+	for _, m := range members {
+		fmt.Fprintf(&b, ";%d=%s", m.id, strings.Join(m.rels, ","))
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:])
 }
 
 // releasesAdjacent reports whether two announced releases may run side by
@@ -961,17 +1084,19 @@ func (g *Gate) checkRestartRelease(ctx context.Context, kv ActivationKV) error {
 	own := release.Version()
 	for _, m := range committedMembers(system) {
 		rels := recorded[m.id]
-		if rec := liveRecord(view, m.id, m.addr); m.id == g.self.ReplicaID {
+		// Every release any live record announces is checked: sources
+		// that disagree must not be settled by map order.
+		recs := liveRecords(view, m.id, m.addr)
+		live := announcedReleases(recs)
+		if m.id == g.self.ReplicaID {
 			// This node's own record is the release its data directory
 			// last ran: the upgrade itself must be to an adjacent release.
-			if rec != nil && rec.ReleaseVersion != "" {
-				rels = append(slices.Clone(rels), rec.ReleaseVersion)
-			}
-		} else if rec != nil {
-			if rec.ReleaseVersion == "" {
+			rels = append(slices.Clone(rels), live...)
+		} else if len(recs) > 0 {
+			if len(live) == 0 {
 				continue
 			}
-			rels = []string{rec.ReleaseVersion}
+			rels = live
 		}
 		for _, rel := range rels {
 			if !releasesAdjacent(own, rel) {

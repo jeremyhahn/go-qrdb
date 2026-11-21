@@ -198,6 +198,61 @@ func TestStart_RefusesExistingMemberRestartAcrossAGap(t *testing.T) {
 	}
 }
 
+// A member advertised from two sources with different releases is compared
+// on every release it announces, not on whichever record map order yields.
+func TestAdmitReplica_ConflictingAdvertisementsRefuseConservatively(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	t.Run("member", func(t *testing.T) {
+		a, b, kv := newLeaseStore(), newLeaseStore(), newMemKV()
+		a.advertiseRelease(t, 2, "n2:7000", "0.58.0-alpha")
+		b.advertiseRelease(t, 2, "n2:7000", "0.59.0-alpha")
+		a.advertiseRelease(t, 3, "n3:7000", "0.59.0-alpha")
+		a.advertiseRelease(t, 4, "n4:7000", "0.60.0-alpha")
+		g := newGate(t, threeNodes())
+		require.NoError(t, g.Start(context.Background(), kv, a, b))
+		for range 64 {
+			var gap *release.GapError
+			require.ErrorAs(t, g.AdmitReplica(systemShard, "n4:7000"), &gap)
+			require.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.58.0-alpha", Peer: "0.60.0-alpha"}, *gap)
+		}
+	})
+	t.Run("candidate", func(t *testing.T) {
+		a, b, kv := newLeaseStore(), newLeaseStore(), newMemKV()
+		a.advertiseRelease(t, 2, "n2:7000", "0.59.0-alpha")
+		a.advertiseRelease(t, 3, "n3:7000", "0.59.0-alpha")
+		a.advertiseRelease(t, 4, "n4:7000", "0.58.0-alpha")
+		b.advertiseRelease(t, 4, "n4:7000", "0.60.0-alpha")
+		b.advertiseRelease(t, 5, "n5:7000", "0.60.0-alpha")
+		members := threeNodes()
+		members.set(systemShard, 3, map[uint64]string{1: "n1:7000", 2: "n2:7000", 3: "n3:7000", 5: "n5:7000"})
+		g := newGate(t, members)
+		require.NoError(t, g.Start(context.Background(), kv, a, b))
+		for range 64 {
+			var gap *release.GapError
+			require.ErrorAs(t, g.AdmitReplica(systemShard, "n4:7000"), &gap)
+			require.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.60.0-alpha", Peer: "0.58.0-alpha"}, *gap)
+		}
+	})
+}
+
+// A restart checks every release a member announces from any source.
+func TestStart_ConflictingAdvertisementsRefuseRestart(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	for range 32 {
+		a, b, kv := newLeaseStore(), newLeaseStore(), newMemKV()
+		_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+"1/0.59.0-alpha", []byte("n1:7000"))
+		require.NoError(t, err)
+		a.advertiseRelease(t, 2, "n2:7000", "0.58.0-alpha")
+		b.advertiseRelease(t, 2, "n2:7000", "0.59.0-alpha")
+		a.advertiseRelease(t, 3, "n3:7000", "0.59.0-alpha")
+		g := newGate(t, threeNodes())
+
+		var gap *release.GapError
+		require.ErrorAs(t, g.Start(context.Background(), kv, a, b), &gap)
+		require.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.60.0-alpha", Peer: "0.58.0-alpha"}, *gap)
+	}
+}
+
 // A node whose state machine has no leases never advertises or Starts its
 // gate; EnforceRelease alone still refuses its restart across a gap, keeps
 // the refusal, and records an adjacent release.
