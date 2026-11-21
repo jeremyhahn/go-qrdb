@@ -49,6 +49,11 @@ func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) (err error) {
 		}
 	}
 
+	leave, err := e.enter()
+	if err != nil {
+		return err
+	}
+	defer leave()
 	e.journalMu.Lock()
 	defer e.journalMu.Unlock()
 
@@ -63,6 +68,9 @@ func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) (err error) {
 	// batch over it.
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
+	if e.reclaimed {
+		return &storage.ClosedError{}
+	}
 	// From here a failure may leave this commit's journal published, so the
 	// next write must resolve it before it is accepted.
 	defer func() {

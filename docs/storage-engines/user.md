@@ -179,7 +179,8 @@ for the full design — **nothing in this section is implemented yet**, and
 nothing here is a setting you can use today.
 
 Today a standalone node's `storage.backend: objstore` stores one object per
-key, and a database created with `backend: objstore` is refused when it opens
+key, and a database created with `backend: objstore` opens the same
+one-object-per-key engine from its own provider settings
 (see [../databases/user.md](../databases/user.md)). The proposal moves
 `objstore` to the same sorted-segment layout the `pebble` engine uses, with
 the segments living in an object-storage bucket rather than on local disk.

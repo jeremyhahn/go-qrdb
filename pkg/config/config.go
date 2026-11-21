@@ -599,6 +599,31 @@ type DatabaseConfig struct {
 	// every start -- the file is the declaration -- and a database it is
 	// absent from keeps whatever was last set through UpdateDatabaseSQL.
 	SQL *DatabaseSQLConfig `yaml:"sql,omitempty" json:"sql,omitempty"`
+
+	// Objstore is a `backend: objstore` database's own provider: the
+	// go-objstore provider, its non-secret settings and the files holding
+	// its credential, in the shape of storage.objstore. It is required for
+	// that backend and refused for any other. A credential is never a
+	// setting: qrdbd start refuses one at load, before any database is
+	// provisioned.
+	Objstore *ObjstoreConfig `yaml:"objstore,omitempty" json:"objstore,omitempty"`
+}
+
+// validateObjstore checks the database's objstore block against its
+// backend: a `backend: objstore` database names its provider, and no other
+// backend carries a block it would ignore. field is the block's
+// dot-separated path, for the error.
+func (db DatabaseConfig) validateObjstore(field string) error {
+	if db.Backend != "objstore" {
+		if db.Objstore != nil {
+			return &DatabaseConfigError{Name: db.Name, Message: "objstore is set only for backend objstore"}
+		}
+		return nil
+	}
+	if db.Objstore == nil || db.Objstore.Provider == "" {
+		return &DatabaseConfigError{Name: db.Name, Message: "backend objstore requires objstore.provider"}
+	}
+	return db.Objstore.validate(field)
 }
 
 // DatabaseEtcdConfig is a database's etcd wire protocol configuration in the
@@ -2751,12 +2776,15 @@ func (c *Config) Validate() error {
 
 	// Database validation.
 	seen := make(map[string]struct{}, len(c.Databases))
-	for _, db := range c.Databases {
+	for i, db := range c.Databases {
 		if db.Name == "" {
 			return &DatabaseConfigError{Name: "", Message: "name must not be empty"}
 		}
 		if _, ok := validDatabaseBackends[db.Backend]; !ok {
 			return &DatabaseConfigError{Name: db.Name, Message: "backend must be one of: memory, file, pebble, raft, objstore"}
+		}
+		if err := db.validateObjstore("databases[" + strconv.Itoa(i) + "].objstore"); err != nil {
+			return err
 		}
 		if db.SQL != nil {
 			if _, ok := validDatabaseConcurrencies[db.SQL.Concurrency]; !ok {

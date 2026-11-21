@@ -289,6 +289,15 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 		return nil, err
 	}
 
+	// A `backend: objstore` database is served from its own store whatever
+	// the tenant's isolation (servesFromNodeLocalStore): its data is the
+	// provider's. Resolving it first keeps the volume branch below from
+	// serving it from the tenant's shard, where its writes would land in the
+	// tenant's Host while the database reports objstore.
+	if svcs, ok := r.resolveObjstoreDatabase(tenantID, db, info); ok {
+		return svcs, nil
+	}
+
 	// IsolationVolume tenants are backed by a dedicated per-tenant Raft Host on
 	// their own DataRoot (full engines, encrypted under the tenant DEK). The
 	// per-tenant Host exposes one shard shared by all the tenant's databases;
@@ -475,6 +484,20 @@ func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db strin
 	return r.applyQuota(r.dedicatedStore.getOrBuild(dbase), tenantID, info), nil
 }
 
+// resolveObjstoreDatabase serves a tenant's own `backend: objstore` database
+// from its own store, and reports false for every other database. It runs
+// ahead of the isolation branches in resolve, so no isolation mode routes an
+// objstore database onto a shared or per-tenant store.
+func (r *restServiceRegistry) resolveObjstoreDatabase(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, bool) {
+	dbase, ok := r.ownedDatabase(tenantID, db)
+	if !ok || dbase.Config().Backend != database.BackendObjstore {
+		return nil, false
+	}
+	svcs := r.applyQuota(r.dedicatedStore.getOrBuild(dbase), tenantID, info)
+	svcs.Placement = service.StorePlacementNode
+	return svcs, true
+}
+
 // servesFromNodeLocalStore reports whether a catalogued database is served
 // from its own encrypting store on this node (resolveDedicatedDatabaseBarrier)
 // rather than from the shared replicated store: a barrier-enabled database
@@ -482,7 +505,16 @@ func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db strin
 // never served that way: it comes exclusively from an IsolationRaft tenant's
 // dedicated shard, never from a per-database barrier layered onto a
 // shared/prefix tenant's database.
+//
+// A `backend: objstore` database is always served from its own store, the
+// object-storage engine over its provider: its data is the provider's,
+// never the shared engine's, with or without a barrier. Serving it from the
+// shared store would report objstore while its writes landed in the node's
+// default engine.
 func servesFromNodeLocalStore(cfg *database.DatabaseConfig) bool {
+	if cfg.Backend == database.BackendObjstore {
+		return true
+	}
 	return cfg.Barrier != nil && cfg.Barrier.Enabled && cfg.BarrierOnDataPath()
 }
 

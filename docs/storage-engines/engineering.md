@@ -549,11 +549,33 @@ key, never shared between instances.
   cache keyed by object name. This is a documented performance limitation of
   phase 1, not a silent one: the adapter's doc comment says so, and the real
   fix is the ranged read requested from go-objstore.
-- **The provider credential crosses as go-objstore takes it.** `NewRemote`
-  passes the provider and its settings to go-objstore as `New` does today;
-  when the SPEC row `object-storage-credential-handle` lands, `NewRemote`
-  takes the same protected-memory credential handle and never holds a
-  plaintext copy.
+- **The provider credential crosses as a protected-memory handle.** The
+  adapter reads `storage.objstore.credentials.key_file` and `secret_file`
+  into go-enclave handles (`openCredentials`) and passes them to
+  go-objstore's `Storage.Configure(settings, common.Credentials{Key,
+  Secret})`; the backend copies the bytes out only for the call that builds
+  its SDK credential. Settings never carry a credential: an inline one is
+  refused by name, never by value (`RejectCredentialSettings`, at `qrdbd
+  start` and at every open). The adapter holds no plaintext copy and the
+  `Engine` no handle: `New` destroys both handles before it returns, on
+  success and on every error path, including a key handle already read when
+  the secret read fails (SPEC row `object-storage-credential-handle`).
+  `TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem`
+  proves the consumption end to end: a qrdbd built with `awss3` talks to an
+  in-test S3 endpoint that admits a request only when its SigV4 signature
+  recomputes with the key and secret generated for the run, and neither
+  value then appears in the node's output, its data or configuration
+  directory, or the bucket. The engine formats the empty bucket at open, so
+  the signed PUT of its format marker is the proof; the test then stops the
+  node. A database's own `backend: objstore` opens through the same handle
+  (`openStorage` → `objstoredb.Open`, `objstore.WithCredentialFiles`).
+- **The provider is released once, after the last call.** Every engine call
+  holds the engine's lifetime lock shared from its closed check to its
+  return, and checks closed again once it holds it. `Close` marks the engine
+  closed, waits for the calls already running, then closes each provider it
+  opened exactly once (a provider with a `Close` method); later calls are
+  refused with `storage.ClosedError` and a second `Close` releases nothing.
+  `New` releases every provider it created when the open fails.
 
 ### Configuration (target)
 

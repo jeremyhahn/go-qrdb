@@ -449,10 +449,10 @@ the model itself:
 - **It is outside the barrier.** A standalone `objstore` store starts with
   one WARN and an `unencryptedAtRest` capability entry naming the gap; the
   barrier's encrypting file system does not reach a provider's objects.
-- **It is refused where a database needs it.** A per-database `objstore`
-  backend is refused when the database opens
-  (`database.InvalidBackendError`), and `objstore` is refused as a Raft hot
-  apply path.
+- **It is refused as a Raft hot apply path.** A database's
+  `backend: objstore` opens the engine from its own provider, settings and
+  credential files (`openStorage` through the `objstoredb.Open` opener), but `objstore` is refused as a Raft
+  state machine.
 
 ### Direction this design proposes
 
@@ -794,8 +794,10 @@ encoded-name layout is refused at open (OS-5).
   neither a qrdb key type nor anything key-shaped — only object names.
 
 **Phase 2 — wire a database's `backend: objstore` as a non-replicated binding.**
-Remove the `database.InvalidBackendError` refusal at `openStorage` for
-`backend: objstore`; route it through `pebble.WithRemote` like any other
+The `database.InvalidBackendError` refusal at `openStorage` is gone (owner
+ruling 633(b)): `openStorage` opens the objstore engine directly with the
+credential handle, through the factory's `database.WithObjectStorage` opener
+(`objstoredb.Open`), so a lean embedder links no go-objstore. Phase 2 would instead route it through `pebble.WithRemote` like any other
 non-replicated binding. The surrounding binding resolution is the databases
 feature's ([../databases/architecture.md](../databases/architecture.md));
 this phase owns only the storage side.

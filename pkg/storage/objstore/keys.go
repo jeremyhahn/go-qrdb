@@ -56,6 +56,10 @@ const (
 	// outside both key prefixes, so no key can name it.
 	formatMarkerName = "qrdb-objstore-format"
 
+	// ownerMarkerName is the object that records the namespace's owner
+	// (WithOwner). It too lies outside both key prefixes.
+	ownerMarkerName = "qrdb-objstore-owner"
+
 	// formatVersion is this build's object layout. Bump it, and
 	// FormatVersionMismatchError refuses every store written by the previous
 	// one. Version 1 is the unmarked layout that named each object with its

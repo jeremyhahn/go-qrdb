@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -95,6 +96,9 @@ type Manager struct {
 	// defaults are the node's database_defaults, filled into a new
 	// database's record at create (WithDefaults).
 	defaults Defaults
+	// sealedNode is set by WithSealedNode: create refuses a database whose
+	// store lies outside the seal barrier (objstore).
+	sealedNode bool
 
 	// dropping holds the name of every database with a Drop in flight, so
 	// two concurrent drops of one database cannot both report success. Drop
@@ -151,6 +155,17 @@ func NewManager(logger *slog.Logger, dataDir string, opts ...ManagerOption) *Man
 
 // ManagerOption configures optional Manager behavior.
 type ManagerOption func(*Manager)
+
+// WithSealedNode marks the node as running under the seal barrier. Such a
+// node's manager refuses to create a database whose store lies outside the
+// barrier -- an objstore database, whose objects the barrier's encrypting
+// file system never reaches -- with *SealedNodeBackendError, so no
+// runtime-created database adds an unencrypted-at-rest gap.
+func WithSealedNode(sealed bool) ManagerOption {
+	return func(m *Manager) {
+		m.sealedNode = sealed
+	}
+}
 
 // WithBackendFactory sets a custom BackendFactory for the Manager.
 func WithBackendFactory(f BackendFactory) ManagerOption {
@@ -311,6 +326,12 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	// Whatever the backend, an Objstore block is recorded in the catalog,
+	// so its settings pass the factory's validator (an inline credential is
+	// refused) before any catalog write.
+	if err := validateObjectStorage(m.factory, cfg); err != nil {
+		return nil, err
+	}
 	cat, err := m.catalog("create database")
 	if err != nil {
 		return nil, err
@@ -322,6 +343,12 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		if err := barrierDataPathError(cfg); err != nil {
 			return nil, err
 		}
+	}
+	if m.sealedNode && cfg.Backend == BackendObjstore {
+		return nil, &SealedNodeBackendError{Name: cfg.Name, Backend: cfg.Backend}
+	}
+	if err := m.singleWriterRefusal(cfg.Name, cfg.Backend, m.ownerFor(cfg, shared)); err != nil {
+		return nil, err
 	}
 	// Shard IDs are issued by the cluster. A caller naming one could put a
 	// database on another database's Raft group, or on a reserved shard such
@@ -611,6 +638,7 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 		Barrier:      meta.Barrier,
 		Connection:   meta.Connection,
 		SQL:          meta.SQL,
+		Objstore:     meta.Objstore,
 	}
 	if meta.Barrier != nil && meta.Barrier.Enabled && !cfg.HasDedicatedStore() {
 		return nil, &SharedStoreBarrierUnsupportedError{Name: name, Backend: cfg.Backend}
@@ -630,6 +658,16 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 		m.logger.Warn(BarrierOffDataPathWarning,
 			slog.String("name", name),
 			slog.String("backend", string(cfg.Backend)))
+	}
+	// A sealed node refuses a store outside the seal barrier when it reopens
+	// a record as when it creates one (create): a record written before the
+	// node was sealed, or by another node, must not open an unencrypted-at-
+	// rest store here. OpenAll logs the refusal and opens the rest.
+	if m.sealedNode && cfg.Backend == BackendObjstore {
+		return nil, &SealedNodeBackendError{Name: name, Backend: cfg.Backend}
+	}
+	if err := m.singleWriterRefusal(name, cfg.Backend, meta.OwnerNode); err != nil {
+		return nil, err
 	}
 	if err := m.validateDataDir(key.tenant, name, meta.DataDir); err != nil {
 		return nil, err
@@ -843,6 +881,37 @@ func (m *Manager) Drop(ctx context.Context, name string) error {
 }
 
 // drop drops the open database db, held under key. See Drop.
+// reclaimDatabaseObjects deletes the data a dropped database keeps outside
+// the node's data directory (Manager.drop, step 2), whatever its status. The
+// database's own raw backend is used; it may be the per-database barrier
+// wrapper, which forwards the reclaim to the engine it wraps, so the engine
+// the database writes through is the one reclaimed. A backend that is closed or
+// failed cannot reclaim: an object-storage database's store is then opened
+// again from its configuration, reclaimed and closed, so its objects do not
+// outlive it.
+func (m *Manager) reclaimDatabaseObjects(key dbKey, db *Database) error {
+	if r, ok := db.rawDataBackend().(backendReclaimer); ok {
+		err := r.Reclaim()
+		var closed *storage.ClosedError
+		if !errors.As(err, &closed) {
+			return err
+		}
+	}
+	cfg := db.Config()
+	if cfg.Backend != BackendObjstore {
+		return nil
+	}
+	backend, err := m.factory.Create(cfg, m.dbDir(key.tenant, cfg.Name))
+	if err != nil {
+		return err
+	}
+	var reclaimErr error
+	if r, ok := backend.(backendReclaimer); ok {
+		reclaimErr = r.Reclaim()
+	}
+	return errors.Join(reclaimErr, backend.Close())
+}
+
 func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	name := key.name
 	cat, err := m.catalog("drop database")
@@ -940,6 +1009,16 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    so a database that was already closed (a retry of a drop that got
 	//    this far before failing or crashing) is correctly left alone rather
 	//    than closed twice.
+	//    A store whose data lives outside the node's data directory -- an
+	//    object-storage database's objects, with its provider -- is reclaimed
+	//    first, while it is still open: removing the directory in step 4
+	//    would leave every object behind. A failed reclaim keeps the record
+	//    fenced, so a retry reclaims what is left. The reclaim does not
+	//    depend on the status: a database whose backend is closed or failed
+	//    still owns its objects (reclaimDatabaseObjects).
+	if err := m.reclaimDatabaseObjects(key, db); err != nil {
+		return &DropError{Name: name, Err: err}
+	}
 	if db.Status() == StatusOpen || db.Status() == StatusSealed {
 		if err := db.Close(); err != nil {
 			return &DropError{Name: name, Err: err}
@@ -1403,6 +1482,7 @@ func metaFromConfig(cfg DatabaseConfig, dropping bool, incarnation string) Datab
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,
 		SQL:          cfg.SQL,
+		Objstore:     cfg.Objstore,
 		Dropping:     dropping,
 		Incarnation:  incarnation,
 	}

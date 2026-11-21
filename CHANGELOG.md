@@ -37,6 +37,20 @@ are not reconstructed here — their history is in the git log.
 - **`qrdb ca delegate policy put|list|delete` (#1187).** The CLI writes, lists and deletes the tenant's standing delegation policies over every transport (REST, gRPC, QUIC, MCP, Unix); deleting a policy refuses the next mint for its principal. See [docs/certificate-authority/cli.md](docs/certificate-authority/cli.md#qrdb-ca-delegate-policy).
 - **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
 - **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions. The server answers the three delegation policy RPCs; it answers the four credential rotation RPCs `UNIMPLEMENTED` until their handlers land.
+- **The object-storage credential crosses only as a protected-memory handle**
+  (#1143, SPEC row `object-storage-credential-handle`). The `objstore`
+  backend reads `storage.objstore.credentials.key_file` / `secret_file` into
+  go-enclave handles and passes them to go-objstore's
+  `Storage.Configure(settings, common.Credentials)`; settings never carry a
+  credential, the adapter holds no plaintext copy, and both handles are
+  destroyed when the open returns, on success and on every error path.
+  qrdbd never echoes either value or writes it under its data directory.
+- **`objstore` `Engine.Close` waits for calls in flight and releases its
+  providers once** (#1566). Every engine call holds a lifetime lock from its
+  closed check to its return and rechecks closed under it; `Close` waits for
+  those calls, then closes the data and journal providers once (the local
+  provider's `os.Root` and lifecycle goroutine), and a failed `objstore.New`
+  releases every provider it created.
 - **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
 - **CI verifies commit signatures.** A Signatures job from ci-template
   v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
@@ -266,6 +280,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **go-objstore v0.9.1-alpha → v0.9.1-alpha.0.20261111054905-aed613658de5**
+  (go-objstore #231, #1404): an S3 GET of a missing object returns
+  `ErrKeyNotFound` and a missing bucket `ErrBucketNotFound`, so the
+  objstore backend's journal recovery sees an absent object as absent.
 - **The devcontainer build proxy has no `direct` entry** (ci-template
   v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
   defaults to `https://proxy.golang.org` alone, so a module the proxy cannot

@@ -63,6 +63,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/objstoredb"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -79,7 +80,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -494,12 +494,8 @@ func resolveStartFlags(cmd *cobra.Command, f *startFlags) error {
 		if err := cfg.ValidateCapabilities(); err != nil {
 			return err
 		}
-		if err := objstore.RejectCredentialSettings(cfg.Storage.Objstore.Settings); err != nil {
-			return &qrdbconfig.ValidationError{
-				Field:  "storage.objstore.settings",
-				Reason: "carries a credential inline; reference it by file under storage.objstore.credentials",
-				Err:    err,
-			}
+		if err := rejectInlineObjstoreCredentials(cfg); err != nil {
+			return err
 		}
 		applyConfigToFlags(cmd, f, cfg)
 	} else if f.authEnabled {
@@ -1537,7 +1533,8 @@ func runStart(f *startFlags) (err error) {
 	if f.mode == capabilities.ModeStandalone {
 		dbDefaults.RunMode = database.RunModeStandalone
 	}
-	dbManager := database.NewManager(slog.Default(), f.dataDir, database.WithDefaults(dbDefaults))
+	dbManager := database.NewManager(slog.Default(), f.dataDir, database.WithDefaults(dbDefaults),
+		database.WithSealedNode(f.sealConfig.Enabled), database.WithBackendFactory(objstoredb.NewBackendFactory()))
 	defer func() { _ = dbManager.Close() }()
 
 	// Use default database configs when no YAML config was provided.

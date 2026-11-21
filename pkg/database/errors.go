@@ -55,6 +55,73 @@ func (e *InvalidBackendError) Error() string {
 	return "database: invalid backend type: " + strconv.Quote(e.Backend)
 }
 
+// ObjstoreCredentialSettingError is returned when a database's Objstore
+// settings carry a credential inline, by the factory's
+// ObjectStorageSettingsValidator before the catalog write. It names the
+// offending setting, never its value; the credential is named by key_file and
+// secret_file instead. Err is the validator's cause (go-objstore's refusal
+// for pkg/database/objstoredb.ValidateSettings).
+type ObjstoreCredentialSettingError struct {
+	Setting string
+	Err     error
+}
+
+// Error returns a human-readable description naming the setting.
+func (e *ObjstoreCredentialSettingError) Error() string {
+	return "database: objstore setting " + strconv.Quote(e.Setting) + " carries a credential inline; reference it by key_file and secret_file"
+}
+
+// Unwrap returns the validator's cause.
+func (e *ObjstoreCredentialSettingError) Unwrap() error { return e.Err }
+
+// SealedNodeBackendError is returned when a node running under the seal
+// barrier is asked to create a database whose store lies outside the
+// barrier (backend objstore): the barrier's encrypting file system never
+// reaches a provider's objects, so the database would store its data
+// unencrypted at rest. See WithSealedNode.
+type SealedNodeBackendError struct {
+	Name    string
+	Backend BackendType
+}
+
+func (e *SealedNodeBackendError) Error() string {
+	return "database: " + strconv.Quote(e.Name) + ": backend " + strconv.Quote(string(e.Backend)) +
+		" stores data outside the seal barrier and is refused on a sealed node"
+}
+
+// SingleWriterBackendError is returned when a clustered node (SetLocalNode)
+// is asked to create or open a database whose backend has a single writer
+// (backend objstore) and whose catalog record names no owning node
+// (DatabaseMeta.OwnerNode): a provisioned database, which every node would
+// create and open for itself. Each node would then write one provider
+// namespace with no coordination between them, so the database is refused;
+// a database created through the API records its creator as owner and opens
+// on that node alone.
+type SingleWriterBackendError struct {
+	Name    string
+	Backend BackendType
+}
+
+func (e *SingleWriterBackendError) Error() string {
+	return "database: " + strconv.Quote(e.Name) + ": backend " + strconv.Quote(string(e.Backend)) +
+		" is single-writer and needs an owning node in a cluster"
+}
+
+// ObjectStorageNotWiredError reports a `backend: objstore` database opened by
+// an EmbeddedBackendFactory built without WithObjectStorage, or a database
+// with an Objstore block created through a factory without
+// WithObjectStorageValidator: object storage is
+// not wired into this build (a lean embedder of pkg/database without the node
+// composer, which supplies pkg/database/objstoredb.Open).
+type ObjectStorageNotWiredError struct {
+	Name string
+}
+
+func (e *ObjectStorageNotWiredError) Error() string {
+	return "database: " + strconv.Quote(e.Name) + ": backend \"objstore\" is not wired into this build" +
+		" (the backend factory lacks the WithObjectStorage opener or the WithObjectStorageValidator settings validator)"
+}
+
 // AlreadyExistsError is returned when attempting to create a database with
 // a name that is already in use.
 type AlreadyExistsError struct {

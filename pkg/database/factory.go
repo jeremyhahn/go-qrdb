@@ -38,16 +38,92 @@ type BackendFactory interface {
 
 // EmbeddedBackendFactory creates standalone backends backed by local storage
 // engines (memory, file, pebble).
-type EmbeddedBackendFactory struct{}
+type EmbeddedBackendFactory struct {
+	objectStorage         ObjectStorageOpener
+	objectStorageValidate ObjectStorageSettingsValidator
+}
+
+// ObjectStorageSettingsValidator checks a database's Objstore provider
+// settings before the database is written to the catalog, which replicates
+// them to every node: it refuses an inline credential, returning
+// *ObjstoreCredentialSettingError. pkg/database does not link go-objstore,
+// which owns the set of credential setting names, so the node composer
+// supplies it (pkg/database/objstoredb.ValidateSettings).
+type ObjectStorageSettingsValidator func(settings map[string]string) error
+
+// ObjectStorageOpener opens the storage of a `backend: objstore` database
+// from its DatabaseConfig. pkg/database does not link an object-storage
+// engine itself, so a lean embedder stays free of go-objstore; the node
+// composer supplies the opener (pkg/database/objstoredb.Open).
+type ObjectStorageOpener func(cfg DatabaseConfig) (storage.Storage, error)
+
+// EmbeddedBackendFactoryOption configures an EmbeddedBackendFactory.
+type EmbeddedBackendFactoryOption func(*EmbeddedBackendFactory)
+
+// WithObjectStorage supplies the opener for `backend: objstore` databases.
+// Without it the factory refuses such a database with
+// *ObjectStorageNotWiredError.
+func WithObjectStorage(open ObjectStorageOpener) EmbeddedBackendFactoryOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.objectStorage = open
+	}
+}
+
+// WithObjectStorageValidator supplies the settings validator for a
+// database's Objstore block, whatever its backend. Without it the factory
+// refuses any Objstore block with *ObjectStorageNotWiredError.
+func WithObjectStorageValidator(validate ObjectStorageSettingsValidator) EmbeddedBackendFactoryOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.objectStorageValidate = validate
+	}
+}
+
+// ValidateObjectStorage checks cfg's Objstore block through the
+// WithObjectStorageValidator validator. A config without one is valid; one
+// with a block and no validator wired is refused with
+// *ObjectStorageNotWiredError. The Manager calls it before the catalog write.
+func (f *EmbeddedBackendFactory) ValidateObjectStorage(cfg DatabaseConfig) error {
+	if cfg.Objstore == nil {
+		return nil
+	}
+	if f.objectStorageValidate == nil {
+		return &ObjectStorageNotWiredError{Name: cfg.Name}
+	}
+	return f.objectStorageValidate(cfg.Objstore.Settings)
+}
+
+// objectStorageValidating is a BackendFactory that validates a database's
+// Objstore block (EmbeddedBackendFactory.ValidateObjectStorage).
+type objectStorageValidating interface {
+	ValidateObjectStorage(cfg DatabaseConfig) error
+}
+
+// validateObjectStorage checks cfg's Objstore block through factory. A
+// factory that cannot validate one refuses it with *ObjectStorageNotWiredError,
+// so an unchecked setting never reaches the catalog.
+func validateObjectStorage(factory BackendFactory, cfg DatabaseConfig) error {
+	if cfg.Objstore == nil {
+		return nil
+	}
+	v, ok := factory.(objectStorageValidating)
+	if !ok {
+		return &ObjectStorageNotWiredError{Name: cfg.Name}
+	}
+	return v.ValidateObjectStorage(cfg)
+}
 
 // NewEmbeddedBackendFactory creates a new EmbeddedBackendFactory.
-func NewEmbeddedBackendFactory() *EmbeddedBackendFactory {
-	return &EmbeddedBackendFactory{}
+func NewEmbeddedBackendFactory(opts ...EmbeddedBackendFactoryOption) *EmbeddedBackendFactory {
+	f := &EmbeddedBackendFactory{}
+	for _, opt := range opts {
+		opt(f)
+	}
+	return f
 }
 
 // Create creates a StandaloneBackend for the given configuration.
 func (f *EmbeddedBackendFactory) Create(cfg DatabaseConfig, dataDir string) (Backend, error) {
-	store, err := openStorage(cfg.Name, cfg.Backend, dataDir)
+	store, err := openStorage(cfg, dataDir, f.objectStorage)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +200,8 @@ func (b *RemoteBackend) Close() error {
 }
 
 // openStorage creates a storage.Storage for the given backend type.
-func openStorage(name string, backend BackendType, dataDir string) (storage.Storage, error) {
+func openStorage(cfg DatabaseConfig, dataDir string, objectStorage ObjectStorageOpener) (storage.Storage, error) {
+	name, backend := cfg.Name, cfg.Backend
 	switch backend {
 	case BackendMemory:
 		return memory.NewStorage(), nil
@@ -137,6 +214,18 @@ func openStorage(name string, backend BackendType, dataDir string) (storage.Stor
 	case BackendPebble:
 		cfg := pebble.DefaultConfig(dataDir)
 		store, err := pebble.New(cfg, pebble.WithSyncObserver(storageSyncs(syncwatch.BackendPebble, name, dataDir)))
+		if err != nil {
+			return nil, &StorageCreateError{Name: name, Backend: string(backend), Err: err}
+		}
+		return store, nil
+	case BackendObjstore:
+		// The objstore engine keeps its data in the provider, not under the
+		// database's data root. The opener comes from the node composer, so
+		// a lean embedder without one refuses the database.
+		if objectStorage == nil {
+			return nil, &ObjectStorageNotWiredError{Name: name}
+		}
+		store, err := objectStorage(cfg)
 		if err != nil {
 			return nil, &StorageCreateError{Name: name, Backend: string(backend), Err: err}
 		}
