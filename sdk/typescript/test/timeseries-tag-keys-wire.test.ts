@@ -64,7 +64,7 @@ describe('time-series tag keys (REST)', () => {
             grouped_results: [{ tags: userTagMap, points: [], aggregated_value: 3 }],
         });
 
-        const resp = await client.timeSeries!.richQuery({ metric: 'cpu', tags: userTags });
+        const resp = await client.timeSeries!.richQuery({ metric: 'cpu', startNs: 0, endNs: 10, tags: userTags });
 
         expect(wire.sent().tags).toEqual(userTagMap);
         expect(resp.tags).toEqual(userTags);
