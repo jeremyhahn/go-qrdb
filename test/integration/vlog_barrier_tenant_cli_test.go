@@ -32,6 +32,7 @@ import (
 	"github.com/transparency-dev/merkle/rfc6962"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/vlogwire"
 )
 
@@ -102,13 +103,17 @@ func testVlogBarrierTenantOverProtocol(t *testing.T, node *multiProtoNode, proto
 
 	certPath, keyPath := node.ca.generateClientCertForTenant(t, tenantID)
 	provisionTenantIdentityFor(t, node, tenantID, "vlog-barrier-"+proto.name, append([]string{
-		"tenant_barrier:status", "tenant_barrier:seal", "tenant_barrier:unseal",
+		"tenant_barrier:status", "tenant_barrier:seal", "tenant_barrier:unseal", "vlog:sign_head",
 	}, vlogTenantPermissions...), certPath)
 	conn := tenantCLIArgsForProto(node, proto, certPath, keyPath)
 	logName := "barrier-" + proto.name
 
-	// Unsealed: every verb is served from the tenant's own store.
-	vlogTenantJSON[vlogwire.CreateResult](t, node, proto, conn, "create", "--origin", vlogCLIOrigin, "--log", logName)
+	// Unsealed: every verb is served from the tenant's own store, the
+	// software signing key's sealed record included.
+	created := vlogTenantJSON[vlogwire.CreateResult](t, node, proto, conn, "create", "--origin", vlogCLIOrigin, "--log", logName, "--signing-key-type", "ed25519")
+	if created.Log != logName || created.Key == nil || created.Key.Version != 1 || len(created.Key.PublicKey) == 0 {
+		t.Fatalf("[%s] vlog create = %+v, want log %q with a version-1 key and its public key", proto.name, created, logName)
+	}
 	vlogTenantJSON[vlogwire.AppendResult](t, node, proto, conn, "append", "--log", logName, "--entry", "e0", "--entry", "e1")
 	head2 := vlogTenantJSON[vlogwire.Head](t, node, proto, conn, "head", "--log", logName)
 	vlogTenantJSON[vlogwire.AppendResult](t, node, proto, conn, "append", "--log", logName, "--entry", "e2", "--entry", "e3", "--entry", "e4")
@@ -128,6 +133,8 @@ func testVlogBarrierTenantOverProtocol(t *testing.T, node *multiProtoNode, proto
 	if err := proof.VerifyConsistency(rfc6962.DefaultHasher, cons.Size1, cons.Size2, cons.Hashes, head2.Root, head5.Root); err != nil {
 		t.Fatalf("[%s] prove-consistency 2->5 does not verify against the head roots: %v", proto.name, err)
 	}
+	signed := vlogTenantJSON[vlogwire.SignHeadResult](t, node, proto, conn, "sign-head", "--log", logName)
+	verifyBarrierCheckpoint(t, proto, created, *created.Key, signed.Checkpoint, 5, head5.Root)
 
 	// Sealed: every verb is refused as sealed, and nothing is written.
 	if out, err := runCLI(t, node.cli, append(conn, "tenant", "barrier-seal", "--id", tenantID)...); err != nil {
@@ -140,6 +147,8 @@ func testVlogBarrierTenantOverProtocol(t *testing.T, node *multiProtoNode, proto
 		{"head", "--log", logName},
 		{"prove-inclusion", "--log", logName, "--index", "3", "--size", "5"},
 		{"prove-consistency", "--log", logName, "--size1", "2", "--size2", "5"},
+		{"sign-head", "--log", logName},
+		{"rotate-key", "--log", logName, "--signing-key-type", "ecdsa-p256-sha256"},
 	} {
 		out, err := runQRDB(t, node.cli, conn, append([]string{"vlog"}, args...)...)
 		if err == nil {
@@ -157,5 +166,34 @@ func testVlogBarrierTenantOverProtocol(t *testing.T, node *multiProtoNode, proto
 	after := vlogTenantJSON[vlogwire.Head](t, node, proto, conn, "head", "--log", logName)
 	if after.Size != 5 || string(after.Root) != string(head5.Root) {
 		t.Fatalf("[%s] head after the unseal = size %d root %x; want size 5 root %x", proto.name, after.Size, after.Root, head5.Root)
+	}
+
+	// The signing key read from the tenant's home group rotates, and the
+	// rotated key signs the next checkpoint.
+	rotated := vlogTenantJSON[vlogwire.RotateKeyResult](t, node, proto, conn, "rotate-key", "--log", logName, "--signing-key-type", "ecdsa-p256-sha256")
+	if rotated.Key.Version != 2 || len(rotated.Key.PublicKey) == 0 || string(rotated.Key.PublicKey) == string(created.Key.PublicKey) {
+		t.Fatalf("[%s] vlog rotate-key = %+v, want a new key at version 2", proto.name, rotated.Key)
+	}
+	vlogTenantJSON[vlogwire.AppendResult](t, node, proto, conn, "append", "--log", logName, "--entry", "e5")
+	head6 := vlogTenantJSON[vlogwire.Head](t, node, proto, conn, "head", "--log", logName)
+	resigned := vlogTenantJSON[vlogwire.SignHeadResult](t, node, proto, conn, "sign-head", "--log", logName)
+	verifyBarrierCheckpoint(t, proto, created, rotated.Key, resigned.Checkpoint, 6, head6.Root)
+}
+
+// verifyBarrierCheckpoint verifies note, a checkpoint of created's log, under
+// key, and requires it to commit to size and root.
+func verifyBarrierCheckpoint(t *testing.T, proto multiProtocol, created vlogwire.CreateResult, key vlogwire.HeadKey, note []byte, size uint64, root []byte) {
+	t.Helper()
+	pub, err := vlog.HeadKey{Version: key.Version, PublicKey: key.PublicKey}.Public()
+	if err != nil {
+		t.Fatalf("[%s] key version %d public key: %v", proto.name, key.Version, err)
+	}
+	keyName := vlog.LogID{TenantID: created.TenantID, Database: created.Database, Log: created.Log}.String()
+	got, err := vlog.VerifyCheckpoint(note, vlogCLIOrigin, keyName, pub)
+	if err != nil {
+		t.Fatalf("[%s] checkpoint does not verify under key version %d: %v\n%s", proto.name, key.Version, err, note)
+	}
+	if got.Size != size || string(got.Root) != string(root) {
+		t.Fatalf("[%s] checkpoint = size %d root %x; want size %d root %x", proto.name, got.Size, got.Root, size, root)
 	}
 }
