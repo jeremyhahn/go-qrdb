@@ -26,12 +26,12 @@
   and performs the data-loading side-effects that keep it accurate.
 -->
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import type { Client, SealStatus, DatabaseInfo } from "@qrdb/sdk";
   import { isDesktop } from "@qrdb/sdk";
   import { showToast } from "../stores/toast.svelte.ts";
   import { toggleTheme, themeStore } from "../stores/theme.svelte.ts";
-  import { databaseStore, setDatabases, setLoading } from "../stores/database.svelte.ts";
+  import { clearDatabases, databaseStore, setDatabases, setLoading } from "../stores/database.svelte.ts";
   import { dbWizardStore, resetDatabaseWizard } from "../stores/database-wizard.svelte.ts";
   import { sealStore, updateSealStatus } from "../stores/seal.svelte.ts";
   import { withRetry } from "../lib/retry.ts";
@@ -128,13 +128,57 @@
    * remounts it from scratch for the next active profile, so no read the
    * old view started can land in the new one. Sealed, needs-init and error
    * states keep the workspace (the Seal Manager unseals a sealed server).
+   * The workspace also stays unmounted until both the database list and the
+   * navigation context belong to the active profile: right after a switch
+   * the store still holds the previous server's list and the nav context
+   * still names its view, and a database view mounted from them would show
+   * the old server's settings and submit them to the new server's
+   * same-named database. A sealed server cannot list databases; connecting
+   * to one activates it with an empty list owned by it and opens its Seal
+   * Manager, so the Seal Manager mounts for a sealed active profile.
    * The desktop app routes each profile through the Go connection manager
    * and is not affected.
    */
   const workspaceLive = $derived.by((): boolean => {
     if (isDesktop()) return true;
-    const status = connManagerStore.states.get(connManagerStore.activeProfileId)?.status;
-    return status !== 'connecting' && status !== 'disconnected';
+    const activeId = connManagerStore.activeProfileId;
+    const status = connManagerStore.states.get(activeId)?.status;
+    if (status === 'connecting' || status === 'disconnected') return false;
+    const ctx = navStore.context;
+    if (ctx.type !== 'none' && ctx.profileId !== activeId) return false;
+    return databaseStore.profileId === activeId;
+  });
+
+  /** The profile a database list request is in flight for ('' when none). */
+  let listLoadFor = '';
+
+  /**
+   * Web mode, on every change of the active profile (whichever view made
+   * it): a list loaded for another profile is cleared, a nav context naming
+   * another profile is replaced with the active profile's dashboard, and
+   * the active profile's own list is loaded (a sealed server cannot list,
+   * so it owns an empty one). Until then workspaceLive keeps the workspace
+   * unmounted.
+   */
+  $effect(() => {
+    if (isDesktop()) return;
+    const activeId = connManagerStore.activeProfileId;
+    if (databaseStore.profileId !== '' && databaseStore.profileId !== activeId) {
+      clearDatabases();
+    }
+    if (activeId === '') return;
+    const ctx = navStore.context;
+    if (ctx.type !== 'none' && ctx.profileId !== activeId) {
+      navigateToAdmin(activeId, 'dashboard');
+    }
+    const status = connManagerStore.states.get(activeId)?.status;
+    if (status === undefined || status === 'connecting' || status === 'disconnected') return;
+    if (databaseStore.profileId === activeId || listLoadFor === activeId) return;
+    if (status === 'sealed') {
+      setDatabases([], activeId);
+      return;
+    }
+    untrack(() => void loadDatabases());
   });
 
   /**
@@ -304,23 +348,29 @@
   // ---------------------------------------------------------------------------
 
   async function loadDatabases(): Promise<void> {
+    // The list belongs to the profile active when the request starts. In
+    // web mode a response that lands after a switch is the previous
+    // server's and is dropped.
+    const profileId = connManagerStore.activeProfileId;
+    const stale = (): boolean => !isDesktop() && connManagerStore.activeProfileId !== profileId;
+    listLoadFor = profileId;
     setLoading(true);
     try {
       const list = await withRetry(() => client.database.list());
+      if (stale()) return;
       const databases = list as DatabaseInfo[];
-      setDatabases(databases);
-      if (connManagerStore.activeProfileId !== '') {
-        perServerDatabases = new Map(perServerDatabases).set(
-          connManagerStore.activeProfileId,
-          databases,
-        );
+      setDatabases(databases, profileId);
+      if (profileId !== '') {
+        perServerDatabases = new Map(perServerDatabases).set(profileId, databases);
       }
     } catch (err: unknown) {
-      setDatabases([]);
+      if (stale()) return;
+      setDatabases([], profileId);
       if (connected) {
         showToast('error', err instanceof Error ? err.message : 'Failed to load databases');
       }
     } finally {
+      if (listLoadFor === profileId) listLoadFor = '';
       setLoading(false);
     }
   }
@@ -349,7 +399,8 @@
 
   onMount(() => {
     void loadMetadata();
-    void loadDatabases();
+    // In web mode the active-profile effect may have started the load.
+    if (isDesktop() || listLoadFor === '') void loadDatabases();
 
     // Profiles were loaded by App.svelte before rendering MainApp. React to
     // the already-populated store to set the initial navigation state.
