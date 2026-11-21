@@ -18,7 +18,7 @@ go 1.27.4
 require (
 	github.com/anishathalye/porcupine v1.3.1
 	github.com/jeremyhahn/go-qrdb v0.58.0-alpha
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.58.0-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.58.5-alpha
 	golang.org/x/sys v0.50.0
 	google.golang.org/grpc v1.85.0
 )
