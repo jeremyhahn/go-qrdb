@@ -632,6 +632,20 @@ func ExecuteGuardedBatch(ctx context.Context, tx service.TransactionServicer, gu
 	return resp.Succeeded, nil
 }
 
+// PutAllIfAllUnchanged gives the replicated tenant metadata store the
+// multi-guard batch a tightening to strict needs: the cluster policy write
+// commits only while its tightening marker is still the one the tightening
+// placed (tenant.fencedSwap).
+func (b kvSealBackend) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	return ExecuteGuardedBatch(ctx, b.tx, guards, writes)
+}
+
+// PutAllIfAllUnchanged gives the seal-disabled tenant store the same fenced
+// policy write as kvSealBackend.PutAllIfAllUnchanged.
+func (a *fencedKVStoreAdapter) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	return ExecuteGuardedBatch(ctx, a.tx, guards, writes)
+}
+
 // guardCompares translates each kvstore.Guard into the service.Compare the
 // state machine actually needs to enforce it.
 //

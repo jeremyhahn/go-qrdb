@@ -33,7 +33,7 @@ import (
 // permission operations. Role assignment and unassignment require both
 // the role and user services.
 func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer, authMW *authmw.AuthMiddleware) []serverTool {
-	return []serverTool{
+	return withOperatorTenant(authMW, []serverTool{
 		{
 			Tool:    toolRoleCreate(),
 			Perm:    permission.RolesCreate,
@@ -114,7 +114,7 @@ func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer, authMW *aut
 			Perm:    permission.RolesCreate,
 			Handler: handleRoleReconcile(roleSvc),
 		},
-	}
+	})
 }
 
 // toolRoleReconcile defines the qrdb_role_reconcile_builtin tool schema.
@@ -148,12 +148,12 @@ func handleRoleReconcile(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
 // roleReconcileAllTools returns the all-tenant built-in role reconcile tool.
 // It is a family of its own because it needs the tenant service, which the
 // other role tools do not.
-func roleReconcileAllTools(roleSvc role.RoleServicer, tenants role.TenantLister) []serverTool {
+func roleReconcileAllTools(authMW *authmw.AuthMiddleware, roleSvc role.RoleServicer, tenants role.TenantLister) []serverTool {
 	return []serverTool{
 		{
 			Tool:    toolRoleReconcileAllTenants(),
 			Perm:    permission.RolesReconcileAll,
-			Handler: handleRoleReconcileAllTenants(roleSvc, tenants),
+			Handler: handleRoleReconcileAllTenants(roleSvc, tenants, authMW.OperatorAccessGate(permission.RolesReconcileAll)),
 		},
 	}
 }
@@ -168,9 +168,11 @@ func toolRoleReconcileAllTenants() mcp.Tool {
 
 // handleRoleReconcileAllTenants returns a tool handler that delegates to
 // role.ReconcileAllTenants.
-func handleRoleReconcileAllTenants(roleSvc role.RoleServicer, tenants role.TenantLister) mcpserver.ToolHandlerFunc {
+// Each target tenant passes gate, the operator-access decision of the other
+// cross-tenant identity tools (withOperatorTenant), before its roles are read.
+func handleRoleReconcileAllTenants(roleSvc role.RoleServicer, tenants role.TenantLister, gate role.TenantGate) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		report, err := role.ReconcileAllTenants(ctx, roleSvc, tenants)
+		report, err := role.ReconcileAllTenants(ctx, roleSvc, tenants, gate)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_role_reconcile_builtin_all_tenants", Err: err}
 		}

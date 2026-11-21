@@ -60,6 +60,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,6 +129,21 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, spa
 // that stops one.
 func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiProtoNode, spares []adminClusterSpareReplica) {
 	t.Helper()
+	return startMultiProtocolClusterWithConfig(t, spareCount, nil)
+}
+
+// multiProtoClusterNodeConfig is one genesis node's addition to
+// startMultiProtocolClusterWithConfig's cluster: YAML appended to its config
+// file after the peer admin URLs, and a writer its log is copied to.
+type multiProtoClusterNodeConfig struct {
+	yaml string
+	log  io.Writer
+}
+
+// startMultiProtocolClusterWithConfig is startMultiProtocolCluster whose
+// genesis node i takes nodeConfig(i); a nil nodeConfig adds nothing.
+func startMultiProtocolClusterWithConfig(t *testing.T, spareCount int, nodeConfig func(i int) multiProtoClusterNodeConfig) (nodes [3]*multiProtoNode, spares []adminClusterSpareReplica) {
+	t.Helper()
 
 	n := 3 + spareCount
 	bin := buildBinary(t)
@@ -149,7 +165,12 @@ func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiPro
 	// Every node shares one host on its own admin port, so REST's leader
 	// forwarding needs each peer's admin URL spelled out: its fallback --
 	// the leader's Raft host on THIS node's admin port -- names this node.
-	cfgPath := writeMultiProtocolSealConfig(t, peerAdminURLsYAML(peerAdminURLs))
+	configFor := func(i int) multiProtoClusterNodeConfig {
+		if nodeConfig == nil {
+			return multiProtoClusterNodeConfig{}
+		}
+		return nodeConfig(i)
+	}
 	// Node certificates carry the SPIFFE node ID a follower signs its
 	// on-behalf caller assertion with when it forwards a membership change
 	// to shard 1's leader; without it there is no assertion and the leader
@@ -162,6 +183,8 @@ func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiPro
 
 	for i := range n {
 		dataDirs[i] = t.TempDir()
+		config := configFor(i)
+		cfgPath := writeMultiProtocolSealConfig(t, peerAdminURLsYAML(peerAdminURLs)+config.yaml)
 
 		// Unix socket paths are limited to ~108 bytes by the kernel and
 		// t.TempDir() can exceed that -- see startMultiProtocolNode's
@@ -196,7 +219,11 @@ func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiPro
 		}
 		args = append(args, nodeTLS[i]...)
 
-		cmds[i] = startNode(t, bin, args, fmt.Sprintf("[admincluster-node%d] ", i+1))
+		var tee []io.Writer
+		if config.log != nil {
+			tee = append(tee, config.log)
+		}
+		cmds[i] = startNode(t, bin, args, fmt.Sprintf("[admincluster-node%d] ", i+1), tee...)
 	}
 
 	// "qrdb init" is the only system bootstrap (go-qrdb#548): each node's

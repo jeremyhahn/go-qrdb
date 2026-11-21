@@ -16,8 +16,10 @@ package statemachine
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"sync"
 	"time"
@@ -159,6 +161,14 @@ type NamespaceState struct {
 
 	// Usage tracking for quota enforcement
 	StorageBytes int64
+
+	// StoredCountRule records that VectorCount counts the namespace's
+	// distinct stored ids (the vector-stored-count rule). The first command
+	// carrying StoredCount switches the namespace over and rebases
+	// VectorCount on its stored ids, at one log index on every replica;
+	// from then on every command, a delayed unmarked one included, follows
+	// the rule. It is kept in the snapshot with the rest of the state.
+	StoredCountRule bool
 
 	mu sync.RWMutex
 }
@@ -742,7 +752,99 @@ func (vsm *VectorStateMachine) applyEntry(entry sm.Entry) (sm.Result, error) {
 	}
 }
 
+// vectorStored reports whether store holds vector id in namespace. Apply
+// reads it before a write so that every replica, holding the same applied
+// state, decides the same way whether the write adds or removes a vector.
+// Only a not-found read means absent: any other failed read is returned, so
+// the write is refused before it mutates anything rather than counted as if
+// the vector were absent.
+func vectorStored(ctx context.Context, store vector.Storage, namespace string, id uint64) (bool, error) {
+	vec, err := store.GetVector(ctx, namespace, id)
+	if stderrors.Is(err, vector.ErrVectorNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, api.NewOperationFailedError("read vector", err)
+	}
+	return vec != nil, nil
+}
+
+// storedCountPage is how many ids storedVectorCount reads per scan.
+const storedCountPage = 1024
+
+// storedVectorCount counts the distinct ids stored in namespace, paging the
+// namespace scan in ascending id order.
+func storedVectorCount(ctx context.Context, store vector.Storage, namespace string) (uint64, error) {
+	var count uint64
+	opts := &vector.ScanOptions{Limit: storedCountPage}
+	for {
+		page, err := store.ScanNamespace(ctx, namespace, opts)
+		if err != nil {
+			return 0, api.NewOperationFailedError("count stored vectors", err)
+		}
+		count += uint64(len(page))
+		if len(page) < storedCountPage {
+			return count, nil
+		}
+		last := page[len(page)-1].ID
+		if last == math.MaxUint64 {
+			return count, nil
+		}
+		opts = &vector.ScanOptions{Limit: storedCountPage, FromID: last + 1}
+	}
+}
+
+// storedCountRule reports whether cmd is counted by the stored-count rule in
+// its namespace. The first command carrying StoredCount switches the
+// namespace over: VectorCount, which the old rule may have left counting
+// re-upserts and missing deletes, is set to the distinct stored ids, the
+// same on every replica, before the command's own quota check. A namespace
+// once switched stays switched (NamespaceState.StoredCountRule).
+func (vsm *VectorStateMachine) storedCountRule(ctx context.Context, store vector.Storage, cmd *VectorCommand) (bool, error) {
+	ns, ok := vsm.namespaces[cmd.Namespace]
+	if !ok {
+		return cmd.StoredCount, nil
+	}
+	ns.mu.RLock()
+	switched := ns.StoredCountRule
+	ns.mu.RUnlock()
+	if switched || !cmd.StoredCount {
+		return switched, nil
+	}
+	count, err := storedVectorCount(ctx, store, cmd.Namespace)
+	if err != nil {
+		return false, err
+	}
+	ns.mu.Lock()
+	ns.VectorCount = count
+	ns.StoredCountRule = true
+	ns.mu.Unlock()
+	return true, nil
+}
+
+// newVectorIDs counts the distinct ids of a batch that store does not yet
+// hold in namespace: the vectors a batch upsert adds to VectorCount.
+func newVectorIDs(ctx context.Context, store vector.Storage, namespace string, ids []uint64) (int, error) {
+	seen := make(map[uint64]struct{}, len(ids))
+	added := 0
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		stored, err := vectorStored(ctx, store, namespace, id)
+		if err != nil {
+			return 0, err
+		}
+		if !stored {
+			added++
+		}
+	}
+	return added, nil
+}
+
 // handleUpsert handles vector upsert operations.
+
 func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorCommand) (sm.Result, error) {
 	start := time.Now()
 	defer func() {
@@ -765,16 +867,33 @@ func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorComm
 		return sm.Result{}, api.NewInvalidLengthError("VectorStateMachine.handleUpsert", "vector dimension", int(ns.Dimension), len(cmd.Vector))
 	}
 
-	// Check quota before upsert
-	estimatedBytes := EstimateVectorBytes(len(cmd.Vector), len(cmd.Metadata))
-	if err := ns.CheckQuota(1, estimatedBytes); err != nil {
-		return sm.Result{}, err
-	}
-
 	// Get the underlying vector storage from adapter
 	vectorStorage, ok := vsm.adapter.(interface{ VectorStorage() vector.Storage })
 	if !ok {
 		return sm.Result{}, api.NewServiceUnavailableError("vector storage")
+	}
+
+	// Check quota before upsert. Under the stored-count rule a re-upsert of
+	// a stored id adds no vector, so it neither raises VectorCount nor
+	// counts against the vector quota; under the old rule (a command without
+	// StoredCount) every upsert counts one.
+	storedRule, err := vsm.storedCountRule(ctx, vectorStorage.VectorStorage(), cmd)
+	if err != nil {
+		return sm.Result{}, err
+	}
+	added := 1
+	if storedRule {
+		stored, err := vectorStored(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.ID)
+		if err != nil {
+			return sm.Result{}, err
+		}
+		if stored {
+			added = 0
+		}
+	}
+	estimatedBytes := EstimateVectorBytes(len(cmd.Vector), len(cmd.Metadata))
+	if err := ns.CheckQuota(added, estimatedBytes); err != nil {
+		return sm.Result{}, err
 	}
 
 	// Store vector via vector storage API
@@ -816,7 +935,7 @@ func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorComm
 
 	// Update namespace stats and storage bytes
 	ns.mu.Lock()
-	ns.VectorCount++
+	ns.VectorCount += uint64(added) //nolint:gosec // G115: added is 0 or 1
 	ns.StorageBytes += estimatedBytes
 	ns.UpdatedAt = time.Now().UnixNano()
 	ns.mu.Unlock()
@@ -864,9 +983,38 @@ func (vsm *VectorStateMachine) handleDelete(ctx context.Context, cmd *VectorComm
 	// Get namespace-specific HNSW index (SECURITY FIX: per-namespace isolation)
 	hnswIdx := vsm.getIndex(cmd.Namespace)
 
+	// Only an id stored before the delete removes a vector; a missing or
+	// repeated id leaves VectorCount where it is, on every replica. Every
+	// id's existence is read before any is deleted, so a failed read refuses
+	// the whole command before it mutates anything. A command without
+	// StoredCount keeps the old rule: every successful delete counts one.
+	storedRule, err := vsm.storedCountRule(ctx, vectorStorage.VectorStorage(), cmd)
+	if err != nil {
+		return sm.Result{}, err
+	}
+	wasStored := make([]bool, len(idsToDelete))
+	seen := make(map[uint64]struct{}, len(idsToDelete))
+	for i, id := range idsToDelete {
+		if !storedRule {
+			wasStored[i] = true
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		stored, err := vectorStored(ctx, vectorStorage.VectorStorage(), cmd.Namespace, id)
+		if err != nil {
+			return sm.Result{}, err
+		}
+		wasStored[i] = stored
+	}
+
 	// Delete all vectors
 	deletedCount := 0
-	for _, id := range idsToDelete {
+	for i, id := range idsToDelete {
+		stored := wasStored[i]
+
 		// Delete via vector storage API
 		if err := vectorStorage.VectorStorage().DeleteVector(ctx, cmd.Namespace, id); err != nil {
 			// Log error but continue with other deletes
@@ -895,7 +1043,9 @@ func (vsm *VectorStateMachine) handleDelete(ctx context.Context, cmd *VectorComm
 			_ = vsm.cache.Delete(ctx, []byte(cacheKey))
 		}
 
-		deletedCount++
+		if stored {
+			deletedCount++
+		}
 	}
 
 	// Update namespace stats
@@ -951,15 +1101,28 @@ func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *Vecto
 		totalEstimatedBytes += EstimateVectorBytes(len(cmd.Vectors[i]), metaCount)
 	}
 
-	// Check vector count and storage quotas
-	if err := ns.CheckQuota(len(cmd.IDs), totalEstimatedBytes); err != nil {
-		return sm.Result{}, err
-	}
-
 	// Get the underlying vector storage from adapter
 	vectorStorage, ok := vsm.adapter.(interface{ VectorStorage() vector.Storage })
 	if !ok {
 		return sm.Result{}, api.NewServiceUnavailableError("vector storage")
+	}
+
+	// Check vector count and storage quotas: only the batch's distinct ids
+	// not yet stored are new vectors under the stored-count rule; under the
+	// old rule (no StoredCount) every id of the batch counts one.
+	storedRule, err := vsm.storedCountRule(ctx, vectorStorage.VectorStorage(), cmd)
+	if err != nil {
+		return sm.Result{}, err
+	}
+	added := len(cmd.IDs)
+	if storedRule {
+		added, err = newVectorIDs(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.IDs)
+		if err != nil {
+			return sm.Result{}, err
+		}
+	}
+	if err := ns.CheckQuota(added, totalEstimatedBytes); err != nil {
+		return sm.Result{}, err
 	}
 
 	// Get or create namespace-specific HNSW index (SECURITY FIX: per-namespace isolation)
@@ -1014,7 +1177,7 @@ func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *Vecto
 
 	// Update namespace stats and storage bytes
 	ns.mu.Lock()
-	ns.VectorCount += uint64(len(cmd.IDs))
+	ns.VectorCount += uint64(added) //nolint:gosec // G115: added is non-negative
 	ns.StorageBytes += totalEstimatedBytes
 	ns.UpdatedAt = time.Now().UnixNano()
 	ns.mu.Unlock()
@@ -1784,6 +1947,10 @@ func (vsm *VectorStateMachine) PrepareSnapshot() (interface{}, error) {
 			Quotas:       ns.Quotas,
 			Labels:       ns.Labels,
 			StorageBytes: ns.StorageBytes,
+			// The stored-count rule is sticky once a marked command
+			// switched it on; a restored replica must keep it, or a
+			// delayed unmarked command counts by the old rule there.
+			StoredCountRule: ns.StoredCountRule,
 		}
 	}
 
@@ -1824,6 +1991,10 @@ func (vsm *VectorStateMachine) SaveSnapshot(ctx context.Context, snapshotCtx int
 			Quotas:       ns.Quotas,
 			Labels:       ns.Labels,
 			StorageBytes: ns.StorageBytes,
+			// The stored-count rule is sticky once a marked command
+			// switched it on; a restored replica must keep it, or a
+			// delayed unmarked command counts by the old rule there.
+			StoredCountRule: ns.StoredCountRule,
 		}
 	}
 

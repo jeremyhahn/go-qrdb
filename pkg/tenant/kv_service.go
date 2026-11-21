@@ -66,6 +66,10 @@ type kvTenantService struct {
 	// see SetTenantUndoGate.
 	tenantUndoGate
 
+	// strictIsolationGate refuses the isolation-policy verbs until
+	// strict-isolation is active; see SetStrictIsolationGate.
+	strictIsolationGate
+
 	// undoNode is this node's identity in its undo cleanup acknowledgements;
 	// see SetUndoCleanupRoster.
 	undoNode string
@@ -189,9 +193,17 @@ func (s *kvTenantService) UpdateTenant(ctx context.Context, tenantID string, pat
 		return nil, err
 	}
 
-	swapper, _ := s.store.(tenantRecordSwapper)
-	info, err := updateTenantRecord(ctx, s, swapper, tenantID, patch)
+	_, current, err := s.readTenantRecord(ctx, tenantID)
 	if err != nil {
+		return nil, err
+	}
+	swapper, _ := s.store.(tenantRecordSwapper)
+	var info *TenantInfo
+	if err := s.guardedUpdate(ctx, s.store, current, patch, func(ctx context.Context) error {
+		var uerr error
+		info, uerr = updateTenantRecord(ctx, s, swapper, tenantID, patch)
+		return uerr
+	}); err != nil {
 		return nil, err
 	}
 

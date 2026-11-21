@@ -50,6 +50,9 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 	if req.Replicas != 0 {
 		args["replicas"] = req.Replicas
 	}
+	if req.DedicatedWAL {
+		args["dedicated_wal"] = true
+	}
 	if req.Protocol.MySQL {
 		args["mysql"] = true
 	}

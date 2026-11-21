@@ -545,6 +545,11 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	if cfg.TenantStatusReader != nil {
 		opts = append(opts, middleware.WithTenantStatusReader(
 			middleware.NewTenantStatusCache(cfg.TenantStatusReader, middleware.TenantStatusTTL)))
+		// The operator-access gate reads the tenant's isolation policy
+		// uncached: a tenant that tightens to strict refuses the next access.
+		if r, ok := cfg.TenantStatusReader.(middleware.IsolationPolicyReader); ok {
+			opts = append(opts, middleware.WithIsolationPolicyReader(r))
+		}
 	}
 	if cfg.UserServiceFallback != nil {
 		opts = append(opts, middleware.WithUserServiceFallback(cfg.UserServiceFallback))

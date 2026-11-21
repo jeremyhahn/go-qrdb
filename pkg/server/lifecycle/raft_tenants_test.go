@@ -146,7 +146,6 @@ func newRaftTenantFixture(t *testing.T, host *quicraft.Host) raftTenantFixture {
 			Barriers:      barriers,
 			DedicatedRaft: true,
 			RaftAddr:      "127.0.0.1:63001",
-			PeerAdmin:     lifecycle.NewPeerAdminRegistry(lifecycle.PeerAdminConfig{RaftAddr: "127.0.0.1:63001", AdminPort: 63002}),
 			TrustDomain:   qrdbconfig.DefaultClusterTrustDomain,
 			CACertPool:    pool,
 			Identity:      &pair,
@@ -162,8 +161,8 @@ func newRaftTenantFixture(t *testing.T, host *quicraft.Host) raftTenantFixture {
 func TestComposeRaftTenantCluster_ComposesTheKeyPlane(t *testing.T) {
 	f := newRaftTenantFixture(t, raftharness.NewCluster(t, 1).Hosts[0])
 	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
-	if got.KeyReceiver == nil || got.KeySender == nil {
-		t.Fatalf("composed %+v; want a key receiver and sender", got)
+	if got.KeyReceiver == nil {
+		t.Fatalf("composed %+v; want a key receiver", got)
 	}
 	if opts := got.ServerOptions(); len(opts) != 1 {
 		t.Fatalf("ServerOptions = %d options; want the key receiver's", len(opts))
@@ -194,9 +193,6 @@ func TestComposeRaftTenantCluster_WithoutAPieceTheKeyPlaneIsOff(t *testing.T) {
 			key := c.Identity.PrivateKey.(*ecdsa.PrivateKey)
 			c.Identity = &tls.Certificate{Certificate: c.Identity.Certificate, PrivateKey: &deviceSigner{key: key}}
 		},
-		"no CA pool":       func(c *lifecycle.RaftTenantClusterConfig) { c.CACertPool = nil },
-		"no trust domain":  func(c *lifecycle.RaftTenantClusterConfig) { c.TrustDomain = "" },
-		"no peer registry": func(c *lifecycle.RaftTenantClusterConfig) { c.PeerAdmin = nil },
 		"a mismatched cert": func(c *lifecycle.RaftTenantClusterConfig) {
 			c.Identity = &tls.Certificate{Certificate: [][]byte{[]byte("not a certificate")}, PrivateKey: c.Identity.PrivateKey}
 		},
@@ -224,10 +220,10 @@ func TestComposeRaftTenantCluster_WithoutAPieceTheKeyPlaneIsOff(t *testing.T) {
 			if got == nil {
 				t.Fatal("ComposeRaftTenantCluster returned nil")
 			}
-			if got.KeySender != nil {
-				t.Fatalf("composed a sender without %s", name)
+			if got.KeyReceiver != nil {
+				t.Fatalf("composed a receiver without %s", name)
 			}
-			if got.KeyReceiver == nil && len(got.ServerOptions()) != 0 {
+			if len(got.ServerOptions()) != 0 {
 				t.Fatal("server options without a receiver")
 			}
 		})
@@ -243,7 +239,7 @@ func TestComposeRaftTenantCluster_WithoutARaftAddressTheKeyPlaneIsOff(t *testing
 	f.cfg.RaftAddr = ""
 
 	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
-	if got.KeyReceiver != nil || got.KeySender != nil {
+	if got.KeyReceiver != nil {
 		t.Fatalf("composed %+v without a raft address; want the key plane off", got)
 	}
 	if opts := got.ServerOptions(); len(opts) != 0 {
@@ -259,8 +255,8 @@ func TestComposeRaftTenantCluster_NilLoggerStillComposes(t *testing.T) {
 	f.cfg.Logger = nil
 
 	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
-	if got.KeyReceiver == nil || got.KeySender == nil {
-		t.Fatalf("composed %+v with a nil logger; want a key receiver and sender", got)
+	if got.KeyReceiver == nil {
+		t.Fatalf("composed %+v with a nil logger; want a key receiver", got)
 	}
 }
 
@@ -332,8 +328,8 @@ func TestComposeRaftTenantCluster_DeviceHeldDecrypter(t *testing.T) {
 	f.cfg.Decrypter = newDeviceDecrypter(t, f.key)
 
 	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
-	if got.KeyReceiver == nil || got.KeySender == nil {
-		t.Fatalf("composed %+v with a device-held decrypter; want a key receiver and sender", got)
+	if got.KeyReceiver == nil {
+		t.Fatalf("composed %+v with a device-held decrypter; want a key receiver", got)
 	}
 }
 
@@ -345,8 +341,8 @@ func TestComposeRaftTenantCluster_DeviceHeldIdentity(t *testing.T) {
 	f.cfg.Decrypter = newDeviceDecrypter(t, f.key)
 
 	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
-	if got.KeyReceiver == nil || got.KeySender == nil {
-		t.Fatalf("composed %+v with a device-held identity; want a key receiver and sender", got)
+	if got.KeyReceiver == nil {
+		t.Fatalf("composed %+v with a device-held identity; want a key receiver", got)
 	}
 }
 
@@ -358,14 +354,14 @@ func TestComposeRaftTenantCluster_DeviceKeyThatAgreesKeys(t *testing.T) {
 	f.cfg.Identity = &tls.Certificate{Certificate: f.cfg.Identity.Certificate, PrivateKey: key}
 
 	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
-	if got.KeyReceiver == nil || got.KeySender == nil {
-		t.Fatalf("composed %+v with an ECDH-capable device key; want a key receiver and sender", got)
+	if got.KeyReceiver == nil {
+		t.Fatalf("composed %+v with an ECDH-capable device key; want a key receiver", got)
 	}
 }
 
 // An identity with a certificate but no signer still receives, through the
 // composer's decrypter, but cannot authenticate to peers, so it sends nothing.
-func TestComposeRaftTenantCluster_IdentityWithoutASignerDoesNotSend(t *testing.T) {
+func TestComposeRaftTenantCluster_IdentityWithoutASignerStillReceives(t *testing.T) {
 	f := newRaftTenantFixture(t, raftharness.NewCluster(t, 1).Hosts[0])
 	f.cfg.Identity = &tls.Certificate{Certificate: f.cfg.Identity.Certificate}
 	f.cfg.Decrypter = newDeviceDecrypter(t, f.key)
@@ -373,9 +369,6 @@ func TestComposeRaftTenantCluster_IdentityWithoutASignerDoesNotSend(t *testing.T
 	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
 	if got.KeyReceiver == nil {
 		t.Fatal("no receiver; want one composed on the decrypter")
-	}
-	if got.KeySender != nil {
-		t.Fatal("composed a sender without a signer")
 	}
 }
 

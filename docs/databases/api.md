@@ -491,11 +491,15 @@ private key is never in an answer. A rotation racing another is a conflict.
 
 Both are refused, before the provider is asked, while the
 `verifiable-log-keys` feature is not yet active on every replica of the
-tenant's group (`LogFeatureNotActiveError`), and every log call is refused for
-a barrier-isolated tenant (`BarrierTenantLogNotSupportedError`) and for a
-barrier-enabled database (`BarrierDatabaseLogNotSupportedError`), sealed or
-not: their logs and keys would be stored under the system barrier rather than
-their own ([architecture.md](architecture.md), "Isolation"). Both refusals are
+tenant's group (`LogFeatureNotActiveError`). Every log call is refused for a
+barrier-enabled database (`BarrierDatabaseLogNotSupportedError`), and, on a
+node without tenant home groups (standalone), for a barrier-isolated tenant
+(`BarrierTenantLogNotSupportedError`), sealed or not: their logs and keys would
+be stored under the system barrier rather than their own. On a node with home
+groups, an isolated tenant's logs apply in its home group and are served
+([architecture.md](architecture.md), "Isolation"). An audit-instance write to
+a home group while `verifiable-log-audit` is not yet active on every replica
+is refused as unavailable (`AuditHomeNotActiveError`). Both refusals are
 `Unimplemented` on every transport: `501 Not Implemented` over REST,
 `UNIMPLEMENTED` over gRPC.
 

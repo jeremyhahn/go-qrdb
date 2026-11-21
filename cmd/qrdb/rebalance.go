@@ -250,6 +250,13 @@ func printRebalancePlan(plan *transport.RebalancePlan) error {
 			}
 			printTable(headers, rows)
 		}
+		for _, s := range plan.Skipped {
+			line := fmt.Sprintf("Skipped:           shard %d %s -> %s: %s", s.ShardID, s.FromNode, s.ToNode, s.Reason)
+			if s.Error != "" {
+				line += " (" + s.Error + ")"
+			}
+			_, _ = fmt.Fprintln(outputWriter, line)
+		}
 		return nil
 	}
 }

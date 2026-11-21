@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	pkgmetrics "github.com/jeremyhahn/go-qrdb/pkg/util/metrics"
@@ -79,79 +80,298 @@ func containsControlBytes(s string) bool {
 	return false
 }
 
-// TestVectorCountMetric_LabelsAreLogicalAndTenantOnCreate verifies that after
-// CreateNamespace the qrdb_vector_vector_count gauge is emitted with
-// {namespace=<logical>, tenant=<tenantID>} and contains no control bytes.
-func TestVectorCountMetric_LabelsAreLogicalAndTenantOnCreate(t *testing.T) {
+// TestVectorMetrics_NoNamespaceNameInLabels verifies that a /metrics scrape
+// after vector writes in named namespaces shows no qrdb_vector_* label named
+// "namespace" and no label value carrying a tenant's namespace name
+// (strict-tenant-isolation phase 10).
+func TestVectorMetrics_NoNamespaceNameInLabels(t *testing.T) {
 	reg := isolatedRegistry(t)
 
-	storage := newMockVectorStorage()
-	logger := newMockLogger()
-
-	svc, err := NewVectorService(storage, logger)
+	svc, err := NewVectorService(newMockVectorStorage(), newMockLogger())
 	require.NoError(t, err)
 
 	ctx := tenant.WithTenantID(context.Background(), "acme")
-	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{
-		Namespace: "embeddings",
-		Dimension: 4,
-	})
+	names := []string{"embeddings", "secret-project"}
+	for i, name := range names {
+		_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: name, Dimension: 2})
+		require.NoError(t, err)
+		_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
+			Namespace: name,
+			ID:        uint64(i + 1),
+			Vector:    []float32{1.0, 2.0},
+		})
+		require.NoError(t, err)
+	}
+
+	mfs, err := reg.Gather()
 	require.NoError(t, err)
-
-	mf := gatherGaugeVec(t, reg, "qrdb_vector_vector_count")
-	require.NotNil(t, mf, "qrdb_vector_vector_count metric family must be present")
-	require.NotEmpty(t, mf.GetMetric())
-
-	m := mf.GetMetric()[0]
-	ns := labelValue(m, "namespace")
-	ten := labelValue(m, "tenant")
-
-	assert.Equal(t, "embeddings", ns, "namespace label must be the logical name")
-	assert.Equal(t, "acme", ten, "tenant label must be the tenant ID")
-	assert.False(t, containsControlBytes(ns), "namespace label must not contain control bytes")
-	assert.False(t, containsControlBytes(ten), "tenant label must not contain control bytes")
-	assert.False(t, strings.ContainsRune(ns, '\x1f'), "namespace label must not contain the scoping separator")
+	seen := 0
+	for _, mf := range mfs {
+		if !strings.HasPrefix(mf.GetName(), "qrdb_vector_") {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			seen++
+			for _, lp := range m.GetLabel() {
+				assert.NotEqual(t, "namespace", lp.GetName(), "%s must not carry a namespace label", mf.GetName())
+				for _, name := range names {
+					assert.NotContains(t, lp.GetValue(), name,
+						"%s label %s leaks the tenant's namespace name", mf.GetName(), lp.GetName())
+				}
+			}
+		}
+	}
+	require.NotZero(t, seen, "qrdb_vector_* series must be present")
 }
 
-// TestVectorCountMetric_LabelsAreLogicalAndTenantOnUpsert verifies that after
-// UpsertVector the counter is incremented and carries the correct two-label set.
-func TestVectorCountMetric_LabelsAreLogicalAndTenantOnUpsert(t *testing.T) {
+// TestVectorCountMetric_AggregatesPerTenant verifies that the vector count of
+// every namespace a tenant owns lands in one series labelled only by tenant ID.
+func TestVectorCountMetric_AggregatesPerTenant(t *testing.T) {
 	reg := isolatedRegistry(t)
 
-	storage := newMockVectorStorage()
-	logger := newMockLogger()
-
-	svc, err := NewVectorService(storage, logger)
+	svc, err := NewVectorService(newMockVectorStorage(), newMockLogger())
 	require.NoError(t, err)
 
 	ctx := tenant.WithTenantID(context.Background(), "tenant-x")
-	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{
-		Namespace: "vecs",
-		Dimension: 2,
-	})
-	require.NoError(t, err)
-
-	_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
-		Namespace: "vecs",
-		ID:        42,
-		Vector:    []float32{1.0, 2.0},
-	})
-	require.NoError(t, err)
+	for i, name := range []string{"vecs-a", "vecs-b"} {
+		_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: name, Dimension: 2})
+		require.NoError(t, err)
+		_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
+			Namespace: name,
+			ID:        uint64(i + 1),
+			Vector:    []float32{1.0, 2.0},
+		})
+		require.NoError(t, err)
+	}
 
 	mf := gatherGaugeVec(t, reg, "qrdb_vector_vector_count")
 	require.NotNil(t, mf)
+	require.Len(t, mf.GetMetric(), 1, "one series per tenant, not per namespace")
 
-	found := false
-	for _, m := range mf.GetMetric() {
-		ns := labelValue(m, "namespace")
-		ten := labelValue(m, "tenant")
-		if ns == "vecs" && ten == "tenant-x" {
-			found = true
-			assert.False(t, containsControlBytes(ns), "namespace label must not contain control bytes")
-			assert.False(t, containsControlBytes(ten), "tenant label must not contain control bytes")
+	m := mf.GetMetric()[0]
+	require.Len(t, m.GetLabel(), 1)
+	assert.Equal(t, "tenant-x", labelValue(m, "tenant"))
+	assert.False(t, containsControlBytes(labelValue(m, "tenant")))
+	assert.Equal(t, float64(2), m.GetGauge().GetValue(), "the tenant total sums its namespaces")
+}
+
+// indexSizeOf returns the IndexSizeBytes GetIndexStats reports for a
+// namespace of the tenant in ctx: the same estimate the gauge carries.
+func indexSizeOf(t *testing.T, svc VectorService, ctx context.Context, name string) float64 {
+	t.Helper()
+	stats, err := svc.GetIndexStats(ctx, &GetIndexStatsRequest{Namespace: name})
+	require.NoError(t, err)
+	return float64(stats.IndexSizeBytes)
+}
+
+// tenantGauge returns the value of the single series of a tenant-labelled
+// gauge, failing unless exactly one series exists.
+func tenantGauge(t *testing.T, reg *prometheus.Registry, name, tenantID string) float64 {
+	t.Helper()
+	mf := gatherGaugeVec(t, reg, name)
+	require.NotNil(t, mf, "%s has no series", name)
+	require.Len(t, mf.GetMetric(), 1, "one series per tenant, not per namespace")
+	m := mf.GetMetric()[0]
+	require.Len(t, m.GetLabel(), 1)
+	require.Equal(t, tenantID, labelValue(m, "tenant"))
+	return m.GetGauge().GetValue()
+}
+
+func TestIndexSizeBytesMetric_SumsTenantNamespaces(t *testing.T) {
+	reg := isolatedRegistry(t)
+
+	svc, err := NewVectorService(newMockVectorStorage(), newMockLogger())
+	require.NoError(t, err)
+
+	ctx := tenant.WithTenantID(context.Background(), "tenant-x")
+	names := []string{"size-a", "size-b"}
+	for i, name := range names {
+		_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: name, Dimension: 4})
+		require.NoError(t, err)
+		for j := 0; j <= i+1; j++ {
+			_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
+				Namespace: name,
+				ID:        uint64(j + 1),
+				Vector:    []float32{float32(j), 1, 2, 3},
+			})
+			require.NoError(t, err)
 		}
 	}
-	assert.True(t, found, "expected metric with {namespace=vecs, tenant=tenant-x}")
+	_, err = svc.BatchUpsert(ctx, &BatchUpsertRequest{
+		Namespace: "size-b",
+		Vectors: []*VectorData{
+			{ID: 10, Vector: []float32{4, 5, 6, 7}},
+			{ID: 11, Vector: []float32{5, 6, 7, 8}},
+		},
+	})
+	require.NoError(t, err)
+	_, err = svc.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "size-a", ID: 1})
+	require.NoError(t, err)
+
+	sizeA := indexSizeOf(t, svc, ctx, "size-a")
+	sizeB := indexSizeOf(t, svc, ctx, "size-b")
+	require.Positive(t, sizeA)
+	require.Positive(t, sizeB)
+	assert.Equal(t, sizeA+sizeB,
+		tenantGauge(t, reg, "qrdb_vector_index_size_bytes", "tenant-x"),
+		"the tenant series sums both namespaces' index estimates")
+
+	_, err = svc.DeleteNamespace(ctx, &DeleteNamespaceRequest{Namespace: "size-a"})
+	require.NoError(t, err)
+	assert.Equal(t, sizeB,
+		tenantGauge(t, reg, "qrdb_vector_index_size_bytes", "tenant-x"),
+		"deleting a namespace drops its share")
+}
+
+// TestVectorCountMetric_NamespaceDeleteSubtractsItsVectors checks that
+// deleting a namespace holding N vectors lowers its tenant's vector_count
+// by exactly N, leaving the other namespace's share, both when storage
+// reports the live count and when its stored record count is stale (a
+// count the storage does not maintain): the gauge subtracts the share it
+// tracked for the namespace, not the storage record.
+func TestVectorCountMetric_NamespaceDeleteSubtractsItsVectors(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		staleInfo bool
+	}{
+		{name: "live stored count"},
+		{name: "stale stored count", staleInfo: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := isolatedRegistry(t)
+
+			storage := newMockVectorStorage()
+			if tc.staleInfo {
+				storage.getNamespaceInfoFn = func(_ context.Context, namespace string) (*vector.NamespaceInfo, error) {
+					storage.mu.RLock()
+					defer storage.mu.RUnlock()
+					data, ok := storage.namespaces[namespace]
+					if !ok {
+						return nil, vector.ErrNamespaceNotFound
+					}
+					info := *data.info
+					info.VectorCount = 0
+					return &info, nil
+				}
+			}
+			svc, err := NewVectorService(storage, newMockLogger())
+			require.NoError(t, err)
+
+			ctx := tenant.WithTenantID(context.Background(), "tenant-d")
+			counts := map[string]int{"del-a": 3, "del-b": 2}
+			for _, name := range []string{"del-a", "del-b"} {
+				_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: name, Dimension: 2})
+				require.NoError(t, err)
+				for j := 0; j < counts[name]; j++ {
+					_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
+						Namespace: name,
+						ID:        uint64(j + 1),
+						Vector:    []float32{float32(j), 1},
+					})
+					require.NoError(t, err)
+				}
+			}
+			require.Equal(t, float64(5), tenantGauge(t, reg, "qrdb_vector_vector_count", "tenant-d"))
+
+			_, err = svc.DeleteNamespace(ctx, &DeleteNamespaceRequest{Namespace: "del-a"})
+			require.NoError(t, err)
+			assert.Equal(t, float64(2), tenantGauge(t, reg, "qrdb_vector_vector_count", "tenant-d"),
+				"deleting a namespace of 3 vectors lowers the tenant total by exactly 3")
+		})
+	}
+}
+
+// TestVectorCountMetric_CountsStoredVectorsExactly: the tenant's
+// vector_count series equals the number of vectors stored, across a
+// re-upsert of a stored id, a batch holding a stored id and a duplicate id,
+// and deletes of a stored and a missing id.
+func TestVectorCountMetric_CountsStoredVectorsExactly(t *testing.T) {
+	reg := isolatedRegistry(t)
+	storage := newMockVectorStorage()
+	svc, err := NewVectorService(storage, newMockLogger())
+	require.NoError(t, err)
+
+	ctx := tenant.WithTenantID(context.Background(), "tenant-r")
+	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "reup", Dimension: 2})
+	require.NoError(t, err)
+
+	stored := func() float64 {
+		t.Helper()
+		storage.mu.RLock()
+		defer storage.mu.RUnlock()
+		return float64(len(storage.vectors[scopedFromContext(ctx, "reup")]))
+	}
+	gauge := func() float64 {
+		t.Helper()
+		return tenantGauge(t, reg, "qrdb_vector_vector_count", "tenant-r")
+	}
+
+	for i := 0; i < 2; i++ {
+		_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "reup", ID: 1, Vector: []float32{1, float32(i)}})
+		require.NoError(t, err)
+	}
+	require.Equal(t, float64(1), stored())
+	assert.Equal(t, stored(), gauge(), "a re-upsert of a stored id does not count again")
+
+	_, err = svc.BatchUpsert(ctx, &BatchUpsertRequest{Namespace: "reup", Vectors: []*VectorData{
+		{ID: 1, Vector: []float32{1, 2}},
+		{ID: 2, Vector: []float32{2, 2}},
+		{ID: 2, Vector: []float32{2, 3}},
+		{ID: 3, Vector: []float32{3, 3}},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, float64(3), stored())
+	assert.Equal(t, stored(), gauge(), "a batch counts only ids not stored before, each once")
+
+	_, err = svc.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "reup", ID: 2})
+	require.NoError(t, err)
+	_, _ = svc.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "reup", ID: 99})
+	require.Equal(t, float64(2), stored())
+	assert.Equal(t, stored(), gauge(), "a delete subtracts only an id that was stored")
+
+	_, err = svc.BatchDeleteVectors(ctx, &BatchDeleteVectorsRequest{Namespace: "reup", IDs: []uint64{1, 1, 77}})
+	require.NoError(t, err)
+	require.Equal(t, float64(1), stored())
+	assert.Equal(t, stored(), gauge(), "a batch delete subtracts each stored id once")
+}
+
+// TestVectorCountMetric_RestartSeedsTheStoredCount reopens the on-disk store
+// after re-upserts, a duplicate batch id and a delete of a missing id: the
+// gauge the new service seeds at startup equals the vectors stored.
+func TestVectorCountMetric_RestartSeedsTheStoredCount(t *testing.T) {
+	dir := t.TempDir()
+	ctx := tenant.WithTenantID(context.Background(), "tenant-s")
+
+	isolatedRegistry(t)
+	store1 := newRestartVectorStorage(t, dir)
+	svc1, err := NewVectorService(store1, newMockLogger())
+	require.NoError(t, err)
+	_, err = svc1.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "seed", Dimension: 2})
+	require.NoError(t, err)
+	for i := 0; i < 2; i++ {
+		_, err = svc1.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "seed", ID: 1, Vector: []float32{1, float32(i)}})
+		require.NoError(t, err)
+	}
+	_, err = svc1.BatchUpsert(ctx, &BatchUpsertRequest{Namespace: "seed", Vectors: []*VectorData{
+		{ID: 1, Vector: []float32{1, 2}},
+		{ID: 2, Vector: []float32{2, 2}},
+		{ID: 2, Vector: []float32{2, 3}},
+	}})
+	require.NoError(t, err)
+	_, _ = svc1.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "seed", ID: 99})
+	require.NoError(t, store1.Close())
+
+	reg := isolatedRegistry(t)
+	store2 := newRestartVectorStorage(t, dir)
+	defer func() { _ = store2.Close() }()
+	_, err = NewVectorService(store2, newMockLogger())
+	require.NoError(t, err)
+
+	stats, err := store2.GetStats(context.Background(), scopedFromContext(ctx, "seed"))
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), stats.Count)
+	assert.Equal(t, float64(stats.Count), tenantGauge(t, reg, "qrdb_vector_vector_count", "tenant-s"),
+		"the gauge seeded after a restart equals the stored vector count")
 }
 
 // TestVectorCountMetric_SystemTenantLabel verifies that namespaces created
@@ -178,38 +398,31 @@ func TestVectorCountMetric_SystemTenantLabel(t *testing.T) {
 	require.NotEmpty(t, mf.GetMetric())
 
 	m := mf.GetMetric()[0]
-	ns := labelValue(m, "namespace")
 	ten := labelValue(m, "tenant")
 
-	assert.Equal(t, "global", ns)
+	assert.Empty(t, labelValue(m, "namespace"), "no namespace label")
 	assert.Equal(t, tenantid.System, ten, "system tenant must appear as its canonical ID, not empty string")
-	assert.False(t, containsControlBytes(ns))
 	assert.False(t, containsControlBytes(ten))
 }
 
-// TestNamespaceMetricLabels_NoControlBytes verifies that namespaceMetricLabels
-// never returns label values containing control characters regardless of input.
-func TestNamespaceMetricLabels_NoControlBytes(t *testing.T) {
+// TestTenantMetricLabels_TenantOnly verifies that tenantMetricLabels returns
+// only the control-byte-free tenant ID, never the namespace name.
+func TestTenantMetricLabels_TenantOnly(t *testing.T) {
 	cases := []struct {
-		physical      string
-		wantNamespace string
-		wantTenant    string
+		physical   string
+		wantTenant string
 	}{
-		{"alice\x1fembeddings", "embeddings", "alice"},
-		{"\x1fglobal", "global", tenantid.System},
-		{"tenant-b\x1fmy-vecs", "my-vecs", "tenant-b"},
+		{"alice\x1fembeddings", "alice"},
+		{"\x1fglobal", tenantid.System},
+		{"tenant-b\x1fmy-vecs", "tenant-b"},
 		// Legacy unscoped name (no separator) falls through to system.
-		{"legacy-ns", "legacy-ns", tenantid.System},
+		{"legacy-ns", tenantid.System},
 	}
 
 	for _, tc := range cases {
-		labels := namespaceMetricLabels(tc.physical)
-		ns := labels["namespace"]
-		ten := labels["tenant"]
-
-		assert.Equal(t, tc.wantNamespace, ns, "physical=%q", tc.physical)
-		assert.Equal(t, tc.wantTenant, ten, "physical=%q", tc.physical)
-		assert.False(t, containsControlBytes(ns), "namespace must be control-byte-free for physical=%q", tc.physical)
-		assert.False(t, containsControlBytes(ten), "tenant must be control-byte-free for physical=%q", tc.physical)
+		labels := tenantMetricLabels(tc.physical)
+		assert.Len(t, labels, 1, "physical=%q", tc.physical)
+		assert.Equal(t, tc.wantTenant, labels["tenant"], "physical=%q", tc.physical)
+		assert.False(t, containsControlBytes(labels["tenant"]), "tenant must be control-byte-free for physical=%q", tc.physical)
 	}
 }

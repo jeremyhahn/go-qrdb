@@ -15,46 +15,37 @@
 package clusterkeys_test
 
 import (
-	"context"
+	"bytes"
 	"crypto/tls"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterkeys"
-	"github.com/jeremyhahn/go-qrdb/pkg/placement"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 )
 
-// TestHandler_RealTLS_AuthOff_NodeCertDelivers runs a key delivery over a
+// TestHandler_RealTLS_AuthOff_NodeCertPasses runs a key delivery over a
 // real TLS listener configured the way qrdbd configures its shared listener
 // when user authentication is off: the client certificate is requested and
 // verified against the cluster CA if given (VerifyClientCertIfGiven), never
 // required at the handshake. No peer certificate is injected: the receiver
-// sees exactly what TLS delivered. A sender presenting its node certificate
-// imports the tenant key on the follower; a request without a certificate
-// completes the handshake and is refused 401 by the receiver itself.
-func TestHandler_RealTLS_AuthOff_NodeCertDelivers(t *testing.T) {
-	ctx := context.Background()
-
-	leaderReg, leaderAlloc := newTestRegistry(t)
-	initTestSystemBarrier(t, leaderReg)
-	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, leaderAlloc, "tenant-tls")
-
+// sees exactly what TLS delivered. A request without a certificate completes
+// the handshake and is refused 401 by the receiver itself; a sender
+// presenting its node certificate clears every transport gate and reaches
+// the mode dispatch.
+func TestHandler_RealTLS_AuthOff_NodeCertPasses(t *testing.T) {
 	ca := newTestCA(t)
 	leader := newTestNodeCert(t, ca, "cluster.local", "leader-node-1")
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
-	followerDataRoot := t.TempDir()
-	p := newTestPlacement("tenant-tls", "db-main", 1, 2, "follower-node-1", followerDataRoot)
-	followerReg, followerAlloc := newTestRegistry(t)
-	initTestSystemBarrier(t, followerReg)
-	sealtest.ReserveVolumeTenant(t, followerAlloc, "tenant-tls")
+	p := newTestPlacement("tenant-tls", "db-main", 1, 2, "follower-node-1", t.TempDir())
 
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
 	recv, err := clusterkeys.NewReceiver(
-		kd, followerReg, &staticPlacementGetter{p: p},
+		kd, &staticPlacementGetter{p: p},
 		"cluster.local", "follower-node-1",
 		ca.pool, nil, follower.pem,
 		newTestLogger(),
@@ -63,7 +54,6 @@ func TestHandler_RealTLS_AuthOff_NodeCertDelivers(t *testing.T) {
 		t.Fatalf("clusterkeys.NewReceiver: %v", err)
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/cluster/nodekey", recv.NodeKeyHandler())
 	mux.HandleFunc("/v1/cluster/keydelivery", recv.Handler())
 	srv := httptest.NewUnstartedServer(mux)
 	srv.TLS = &tls.Config{
@@ -86,7 +76,8 @@ func TestHandler_RealTLS_AuthOff_NodeCertDelivers(t *testing.T) {
 		t.Fatalf("delivery without certificate: status %d, want 401", resp.StatusCode)
 	}
 
-	// With the leader's node certificate: the full delivery succeeds.
+	// With the leader's node certificate: the envelope clears the TLS,
+	// node-identity, HPKE and placement gates and reaches the mode dispatch.
 	nodeClient := srv.Client()
 	tr, ok := nodeClient.Transport.(*http.Transport)
 	if !ok {
@@ -99,26 +90,26 @@ func TestHandler_RealTLS_AuthOff_NodeCertDelivers(t *testing.T) {
 	}}
 	nodeClient = &http.Client{Transport: tr}
 
-	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, nodeClient, ca.pool, "cluster.local", nil, newTestLogger())
+	env, err := keydelivery.Seal(&follower.key.PublicKey, keydelivery.Meta{
+		TenantID:     "tenant-tls",
+		DatabaseID:   "db-main",
+		ShardID:      1,
+		ReplicaID:    2,
+		TargetNodeID: "follower-node-1",
+		Mode:         testUnknownMode,
+	}, []byte("not a tenant key"))
 	if err != nil {
-		t.Fatalf("NewSender: %v", err)
+		t.Fatalf("Seal: %v", err)
 	}
-	dist := &placement.Placement{
-		TenantID:        "tenant-tls",
-		Database:        "db-main",
-		ShardID:         1,
-		RF:              2,
-		LeaderReplicaID: 1,
-		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "leader-node-1", RaftAddr: "leader-node-1:9000", DataRoot: leaderDataRoot},
-			{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower-node-1:9000", DataRoot: followerDataRoot},
-		},
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
 	}
-	if err := sender.DistributeTenantKey(ctx, dist, leaderBarrier, "leader-node-1"); err != nil {
-		t.Fatalf("DistributeTenantKey over real TLS with a node certificate: %v", err)
+	resp, err = nodeClient.Post(srv.URL+"/v1/cluster/keydelivery", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("POST with node certificate: %v", err)
 	}
-	if _, err := followerReg.GetTenant("tenant-tls"); err != nil {
-		t.Fatalf("follower tenant barrier not imported: %v", err)
-	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	assertUnknownDeliveryMode(t, resp.StatusCode, string(body))
 }

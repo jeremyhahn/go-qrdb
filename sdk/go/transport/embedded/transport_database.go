@@ -47,11 +47,12 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
 	cfg := database.DatabaseConfig{
-		Name:     req.Name,
-		Backend:  database.BackendType(req.Backend),
-		DataDir:  req.DataDir,
-		Mode:     database.DatabaseMode(req.Mode),
-		Replicas: req.Replicas,
+		Name:         req.Name,
+		Backend:      database.BackendType(req.Backend),
+		DataDir:      req.DataDir,
+		Mode:         database.DatabaseMode(req.Mode),
+		Replicas:     req.Replicas,
+		DedicatedWAL: req.DedicatedWAL,
 		Protocol: database.ProtocolConfig{
 			MySQL:      req.Protocol.MySQL,
 			PostgreSQL: req.Protocol.PostgreSQL,

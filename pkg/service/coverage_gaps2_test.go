@@ -97,7 +97,7 @@ func TestTenantRequiredError_Error(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // vector.go – pure helpers (0%): convertToStringMap, convertFromStringMap,
-//             matchesMetadataFilter, unscopedNamespace, namespaceMetricLabels
+//             matchesMetadataFilter, unscopedNamespace, tenantMetricLabels
 // ---------------------------------------------------------------------------
 
 func TestConvertToStringMap_Nil(t *testing.T) {
@@ -205,20 +205,20 @@ func TestUnscopedNamespace_NoSeparator(t *testing.T) {
 	}
 }
 
-func TestNamespaceMetricLabels_System(t *testing.T) {
-	labels := namespaceMetricLabels("\x1fdocs")
-	if labels["namespace"] != "docs" {
-		t.Fatalf("expected namespace=docs, got %q", labels["namespace"])
+func TestTenantMetricLabels_System(t *testing.T) {
+	labels := tenantMetricLabels("\x1fdocs")
+	if _, ok := labels["namespace"]; ok {
+		t.Fatalf("namespace label must be absent, got %q", labels["namespace"])
 	}
 	if labels["tenant"] != "system" {
 		t.Fatalf("expected tenant=system, got %q", labels["tenant"])
 	}
 }
 
-func TestNamespaceMetricLabels_UserTenant(t *testing.T) {
-	labels := namespaceMetricLabels("acme\x1fvectors")
-	if labels["namespace"] != "vectors" {
-		t.Fatalf("expected namespace=vectors, got %q", labels["namespace"])
+func TestTenantMetricLabels_UserTenant(t *testing.T) {
+	labels := tenantMetricLabels("acme\x1fvectors")
+	if _, ok := labels["namespace"]; ok {
+		t.Fatalf("namespace label must be absent, got %q", labels["namespace"])
 	}
 	if labels["tenant"] != "acme" {
 		t.Fatalf("expected tenant=acme, got %q", labels["tenant"])

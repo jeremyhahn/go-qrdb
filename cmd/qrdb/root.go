@@ -257,6 +257,7 @@ Supported transports:
 	rootCmd.AddCommand(newDEKCmd())
 	rootCmd.AddCommand(newABACCmd())
 	rootCmd.AddCommand(newBarrierCmd())
+	rootCmd.AddCommand(newClusterIsolationPolicyCmd())
 	rootCmd.AddCommand(newCeremonyCmd())
 	rootCmd.AddCommand(newBackupCmd())
 	rootCmd.AddCommand(newRebalanceCmd())

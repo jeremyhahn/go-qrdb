@@ -18,6 +18,8 @@ are not reconstructed here — their history is in the git log.
 - `Client.Permissions()` is a required capability and never returns nil on an open client: gRPC, REST, QUIC, Unix and MCP now implement `transport.PermissionProvider` over the new `ListPermissionCatalog` RPC (`GET /permissions/catalog`, QUIC `role.ListPermissionCatalog`, MCP `qrdb_permissions_catalog`, gated on `permissions:list`), which answers every registered permission with its scope, sorted by name. `Lookup`/`LookupScope` return `PermissionNotFoundError` for an unknown name and an error for an empty scope. `qrdb roles permissions --detail` lists the catalog with resource, action and scope; the default output is unchanged (docs/18 V12, #1647).
 
 - CI runs every job on the standard GitHub-hosted `ubuntu-latest` runner for every event, a push to `main` and a same-repository pull request included (owner ruling 999). The pool split (ruling 841) and the pool image producer that published the pool legs' images to the LAN CI registry (ruling 879) are removed; a job may run self-hosted only with a `# self-hosted: <reason>` comment naming the hardware it needs or the measured hosted limit it exceeds, and none does. Code review's review jobs keep their self-hosted review hosts.
+- The vector quota's distinct stored-id count is a new vector command rule gated on the `vector-stored-count` feature: the proposer sets it only once every replica of the shard supports it, and a command without it applies the old one-per-upsert count on every binary.
+- The audit chain's apply-time onboarding dedupe is a new event marker gated on the `audit-append-once` feature: the proposer sets it only once every replica of the shard supports it, and an event without it is appended on every apply, on every binary.
 - CI hands the toolchain and integration-test images between jobs through the LAN CI registry (the repository secret secrets.CI_IMAGE_REGISTRY, so every log line masks its address) on self-hosted runners; GitHub artifacts remain the path on GitHub-hosted runners and whenever a pull fails.
 - `make docker-build-toolchain`, `make docker-build-it` and `scripts/in-toolchain-image.sh` pull the content-hash-tagged image from the CI image registry the runner's environment names in `CI_IMAGE_REGISTRY` before they build, and push what they built to it (`scripts/image-registry.sh`, #1609), so a runner host no longer builds every image on its own disk. A failed or hung pull or push falls back to the build and never fails the job; each image logs one line (`pulled`, `miss, built and pushed` or `miss, built, push failed`); unset, nothing changes.
 
@@ -62,6 +64,26 @@ are not reconstructed here — their history is in the git log.
   transaction is refused), so no KV writer can forge one. Deleting a tenant
   deletes its policies, and a mint for a tenant that is deleted or retired is
   refused with `TenantNotFoundError`.
+- **Isolation-policy verbs, gated on strict-isolation**
+  (#1423). REST (`GET`/`PUT /v1/cluster/isolation-policy`), gRPC
+  (`Get`/`SetClusterIsolationPolicy`), QUIC (`cluster.IsolationPolicyGet`/
+  `Set`) and MCP (`qrdb_cluster_isolation_policy_get`/`_set`) read and set the
+  cluster floor, and a tenant update carries `isolation_policy`. The Go SDK
+  has `GetClusterIsolationPolicy`/`SetClusterIsolationPolicy` and
+  `UpdateTenantRequest.IsolationPolicy` on every transport, and the CLI has
+  `qrdb cluster-isolation-policy get|set` and
+  `qrdb tenant update --isolation-policy`. Each verb
+  answers `feature.NotActiveError` (HTTP 503, `Unavailable`) and changes
+  nothing until the `strict-isolation` feature (`featuregate.StrictIsolation`)
+  is active: from the start on a standalone node, and on a cluster once it has
+  activated the feature. An unknown policy value is
+  `InvalidArgument` (HTTP 400). The floor now tightens from `operator-access`
+  to `strict` in one compare-and-swap, so a racing writer is refused and the
+  floor is never unset in between. The Go SDK's `TenantInfo` reports the
+  tenant's isolation policy (`IsolationPolicy`) on every transport. A tenant
+  update that changes `isolation_policy` always needs `tenants:update` on the
+  target tenant (and `tenants:update:cross` for another tenant), even when it
+  also carries `status` or `isolation_type`.
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's
@@ -266,6 +288,18 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **An isolated tenant's audit trail applies in its home group in cluster
+  mode.** Once tenant home groups are wired, a dedicated-isolation tenant's
+  replicated audit events go to its home group's `<tenant>/system/audit`
+  instead of being refused, and a barrier tenant's go wherever its audit route
+  says: a recorded fact, written once and first writer wins, that stays on the
+  system shard when the tenant already has a chain there or
+  `verifiable-log-audit` is off, and is the home group otherwise. The route
+  never changes and no record moves, so an existing chain is never split. A
+  home-group write while `verifiable-log-audit` is not active on every replica
+  is refused as unavailable (`AuditHomeNotActiveError`). Standalone nodes are
+  unchanged. This ships in the same release as the replicated-audit
+  verifiable log (#1409); a release must not carry one without the other.
 - **The devcontainer build proxy has no `direct` entry** (ci-template
   v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
   defaults to `https://proxy.golang.org` alone, so a module the proxy cannot

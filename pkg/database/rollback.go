@@ -39,6 +39,48 @@ func DropRollbackContext(ctx context.Context) (context.Context, context.CancelFu
 	return context.WithTimeout(context.WithoutCancel(ctx), DropRollbackTimeout)
 }
 
+type keepFenceKey struct{}
+
+// KeepFenceOnFailure marks ctx so a drop run under it never lifts its fence
+// when it fails: the in-memory Dropping flag and the durable drop claim both
+// stay, and the database stays unservable until a retried drop lands. It is
+// for a rollback that must not leave the database servable even for a
+// moment -- a create refused by the strict-isolation tightening handshake,
+// whose data would otherwise be served from a node-keyed log the tenant's
+// strict policy forbids.
+func KeepFenceOnFailure(ctx context.Context) context.Context {
+	return context.WithValue(ctx, keepFenceKey{}, true)
+}
+
+func keepFenceOnFailure(ctx context.Context) bool {
+	keep, _ := ctx.Value(keepFenceKey{}).(bool)
+	return keep
+}
+
+type createGuardKey struct{}
+
+// CreateGuard is a check a create runs once its catalog record is written
+// and before anything serves the database: before its backend is opened,
+// its keyspace unfenced or the database published. A non-nil error refuses
+// the create, which then removes everything it made, so the database is
+// never readable or writable.
+type CreateGuard func(ctx context.Context) error
+
+// WithCreateGuard marks ctx so a create run under it runs guard between its
+// catalog write and its first serving step. It is for a check that must
+// read state after the catalog record exists -- the create side of the
+// strict-isolation tightening handshake, which a tightening that lists the
+// catalog after the record lands is refused by instead -- yet refuse the
+// database before any request can write to it.
+func WithCreateGuard(ctx context.Context, guard CreateGuard) context.Context {
+	return context.WithValue(ctx, createGuardKey{}, guard)
+}
+
+func createGuard(ctx context.Context) CreateGuard {
+	guard, _ := ctx.Value(createGuardKey{}).(CreateGuard)
+	return guard
+}
+
 // NewIncarnation returns a fresh database incarnation: 128 random bits,
 // hex-encoded. Hex is load-bearing -- the dropped tombstone a fence marker
 // holds starts with a NUL byte, so no incarnation can ever equal it.

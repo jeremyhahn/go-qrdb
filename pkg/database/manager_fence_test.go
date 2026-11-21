@@ -321,3 +321,86 @@ func TestManager_GetForTenantIgnoringFence(t *testing.T) {
 	_, err = mgr.GetForTenantIgnoringFence(context.Background(), "billing")
 	assert.ErrorAs(t, err, &systemNotFound)
 }
+
+// claimFaultCatalog refuses every catalog Update, so a drop's durable claim
+// never commits.
+type claimFaultCatalog struct {
+	Catalog
+	updateErr error
+}
+
+func (c *claimFaultCatalog) Update(context.Context, string, string, string, func(*DatabaseMeta) error) error {
+	return c.updateErr
+}
+
+// TestManager_Drop_KeptFenceSurvivesReconcileAfterAFailedClaim proves a drop
+// run under KeepFenceOnFailure whose durable claim failed to commit keeps
+// the database refused: the catalog still records it live, and the
+// reconcile a GetOwned runs must not lift the pinned fence.
+func TestManager_Drop_KeptFenceSurvivesReconcileAfterAFailedClaim(t *testing.T) {
+	mgr, _ := newReclaimManager(t, "orders")
+	owner := tenant.WithTenantID(context.Background(), "acme")
+	_, err := mgr.CreateForTenant(owner, DatabaseConfig{Name: "billing", Backend: BackendMemory})
+	require.NoError(t, err)
+
+	cat, err := mgr.catalog("test")
+	require.NoError(t, err)
+	mgr.SetCatalog(&claimFaultCatalog{Catalog: cat, updateErr: errors.New("injected: claim refused")})
+	err = mgr.DropForTenant(KeepFenceOnFailure(owner), "billing")
+	require.Error(t, err, "the drop must fail when its claim cannot commit")
+	mgr.SetCatalog(cat)
+
+	meta, err := cat.Get(context.Background(), "acme", "billing")
+	require.NoError(t, err)
+	require.False(t, meta.Dropping, "the claim did not commit: the catalog still records the database live")
+
+	var dropping *DroppingError
+	_, err = mgr.GetOwned("billing", "acme")
+	assert.ErrorAs(t, err, &dropping, "the reconcile must keep the pinned fence until a retried drop lands")
+	_, err = mgr.GetForTenant(owner, "billing")
+	assert.ErrorAs(t, err, &dropping)
+
+	require.NoError(t, mgr.DropForTenant(KeepFenceOnFailure(owner), "billing"), "the retried drop lands")
+	var notFound *NotFoundError
+	_, err = mgr.GetOwned("billing", "acme")
+	assert.ErrorAs(t, err, &notFound)
+}
+
+// TestManager_Drop_KeptFenceSurvivesRestartAfterAFailedClaim pins Codex
+// round at 62983c9a9f, P1: a strict-refused create whose rollback claim
+// fails is fenced on disk as well as in memory, so a node restarted from the
+// catalog's live record reopens it fenced until a retried drop lands, and a
+// database created later under the name opens unfenced.
+func TestManager_Drop_KeptFenceSurvivesRestartAfterAFailedClaim(t *testing.T) {
+	mgr, store := newReclaimManager(t, "orders")
+	owner := tenant.WithTenantID(context.Background(), "acme")
+	_, err := mgr.CreateForTenant(owner, DatabaseConfig{Name: "billing", Backend: BackendMemory})
+	require.NoError(t, err)
+
+	cat, err := mgr.catalog("test")
+	require.NoError(t, err)
+	mgr.SetCatalog(&claimFaultCatalog{Catalog: cat, updateErr: errors.New("injected: claim refused")})
+	err = mgr.DropForTenant(KeepFenceOnFailure(owner), "billing")
+	require.Error(t, err, "the drop must fail when its claim cannot commit")
+	mgr.SetCatalog(cat)
+	require.NoError(t, mgr.Close())
+
+	// The node restarts over its data directory; the shared store and the
+	// catalog are the cluster's and outlive it.
+	restarted := newCatalogManager(nil, mgr.DataDir())
+	restarted.SetKeyspaceReclaimer(store)
+	t.Cleanup(func() { _ = restarted.Close() })
+	require.NoError(t, restarted.OpenAll(context.Background()))
+
+	var dropping *DroppingError
+	_, err = restarted.GetOwned("billing", "acme")
+	require.ErrorAs(t, err, &dropping, "a restart must reopen the refused create fenced")
+	_, err = restarted.GetForTenant(owner, "billing")
+	require.ErrorAs(t, err, &dropping)
+
+	require.NoError(t, restarted.DropForTenant(KeepFenceOnFailure(owner), "billing"), "the retried drop lands")
+	_, err = restarted.CreateForTenant(owner, DatabaseConfig{Name: "billing", Backend: BackendMemory})
+	require.NoError(t, err)
+	_, err = restarted.GetForTenant(owner, "billing")
+	require.NoError(t, err, "a database created after the drop is not fenced")
+}

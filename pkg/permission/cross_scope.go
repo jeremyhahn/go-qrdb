@@ -201,7 +201,7 @@ func crossScopePermissions() []Permission {
 }
 
 func init() {
-	perms := crossScopePermissions()
+	perms := append(crossScopePermissions(), tenantIdentityPermissions()...)
 	Register(perms...)
 	RegisterScope(ScopeCross, perms...)
 }

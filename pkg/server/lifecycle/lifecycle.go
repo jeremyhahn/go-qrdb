@@ -622,6 +622,22 @@ type Node struct {
 	// answer for (it is one node's disk, not Raft-replicated).
 	ReplicatedAudit *service.OptInAuditLogger
 
+	// TenantTrail is the same replicated chain without the opt-in gate:
+	// each tenant's own trail, which an isolated tenant keeps in its home
+	// group. Records a tenant is owed whatever its entitlement -- an
+	// operator's access to its identity records -- go here, and a trail
+	// that is sealed, unavailable or unsupported refuses them.
+	TenantTrail audit.AuditLogger
+
+	// OperatorAccessTrail is where an operator's access to a tenant's
+	// identity records is written for that tenant: TenantTrail, joined with
+	// the node-local trail when the composition has one. The tenant admin's
+	// ordinary audit query reads the node-local trail and, only when the
+	// tenant is entitled, the replicated chain; without the node-local leg a
+	// tenant that has not opted in to replicated audit could never read the
+	// record it is owed. Either leg failing refuses the access (fail-closed).
+	OperatorAccessTrail audit.AuditLogger
+
 	// ClusterCAProv is the cluster CA (Key A) provider: the built-in
 	// cakey.SoftwareProvider over the replicated store, or
 	// Infra.ClusterCAKeyProvider when one was injected. Nil when neither
@@ -678,6 +694,9 @@ type Node struct {
 	// onboarding is TenantOnboarding's concrete service, which AttachSOPINs
 	// gives the SO PIN seam once the node's SO authenticator is built.
 	onboarding *service.TenantOnboardingService
+	// nodeLocalAudit is the node-local audit trail alone, before
+	// BuildServices joins it with ReplicatedAudit.
+	nodeLocalAudit audit.AuditLogger
 
 	// Invitations is the invitation self-enrolment service every transport's
 	// users:invite and (unauthenticated) redemption verbs delegate to. Nil
@@ -768,6 +787,11 @@ type Node struct {
 	// writer.
 	homeLeader atomic.Pointer[databaseLeadership]
 
+	// homeGroupRouters are the audit and log resolvers the node serves
+	// from; AttachTenantHomes attaches the tenant homes to each, so an
+	// isolated tenant's trail and logs apply in its home group.
+	homeGroupRouters []homeGroupRouter
+
 	// work is what the node runs on its own behalf; Stop cancels it and
 	// waits for it before any closer runs.
 	work nodeWork
@@ -830,8 +854,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// composition has one at all -- is already set, so the lookups pick it
 	// up automatically with no restart.
 	auditResolver := service.NewSystemShardAuditResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	n.homeGroupRouters = append(n.homeGroupRouters, auditResolver)
+	n.TenantTrail = service.NewReplicatedLogger(auditResolver)
 	n.ReplicatedAudit = service.NewOptInAuditLogger(
-		service.NewReplicatedLogger(auditResolver),
+		n.TenantTrail,
 		&nodeAuditEntitlementLookup{node: n},
 		infra.ReplicatedAuditPlatformEnabled,
 	)
@@ -842,7 +868,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// passed no node-local logger at all (infra.AuditLogger nil) gets none
 	// here either: introducing a sink where the caller asked for none would
 	// change its behavior, not merely extend it.
+	n.OperatorAccessTrail = n.TenantTrail
 	if infra.AuditLogger != nil {
+		n.nodeLocalAudit = infra.AuditLogger
+		n.OperatorAccessTrail = audit.NewAggregateLogger(infra.AuditLogger, n.TenantTrail)
 		infra.AuditLogger = audit.NewAggregateLogger(infra.AuditLogger, n.ReplicatedAudit)
 	}
 
@@ -1024,6 +1053,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// the database's. A build without the qrdb_vlog tag has no log service,
 	// which is not a boot failure.
 	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	n.homeGroupRouters = append(n.homeGroupRouters, logResolver)
 	logSvc, err := buildLogService(logResolver, dbManager, infra.HeadSignerProvider)
 	if err != nil {
 		return nil, err
@@ -1079,9 +1109,17 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 				}
 			}
 		}
-		if scheduler, serr := placement.NewScheduler(service.NewHostTopologyProvider(infra.Host, n.Rebalance), schedOpts...); serr == nil {
+		// Strict tenant isolation phase 6: an isolated tenant's database
+		// groups are placed only on its serving set (its home group's nodes).
+		// Both are judged by the strict-isolation activation: until then an
+		// isolated tenant is placed nowhere and a strict tenant's create is
+		// refused (featuregate.StrictIsolation).
+		strictIsolation := strictIsolationRequired(infra.Host)
+		schedOpts = append(schedOpts, placement.WithServingSet(service.PlacementServingSet(store, strictIsolation)))
+		if scheduler, serr := placement.NewScheduler(service.NewHostTopologyProvider(infra.Host, n.Rebalance, service.WithRosterShard(shard.ShardKV)), schedOpts...); serr == nil {
 			placementOpts = []service.DatabaseServiceOption{
 				service.WithPlacementStore(store),
+				service.WithStrictIsolationGate(strictIsolation),
 				service.WithPlacementScheduler(scheduler),
 				service.WithDatabaseLogger(log),
 			}
@@ -1303,6 +1341,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			w.SetTenantUndoGate(tenantUndoRequired(infra.Host))
 			w.SetUndoCleanupRoster(nodeIdentity(infra.Host), undoCleanupRoster(infra.Host))
 		}
+		if w, ok := kvTenantSvc.(tenant.StrictIsolationWiring); ok {
+			w.SetStrictIsolationGate(strictIsolationRequired(infra.Host))
+		}
 		n.Tenant = kvTenantSvc
 
 		// Barrier protection none is a valid barrier, not an unconfigured
@@ -1412,6 +1453,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	if err := openDatabaseCatalog(ctx, infra.Host, dbManager, catalog); err != nil {
 		return nil, err
 	}
+	// The placement table records no database name (decision S5): both of
+	// its readers resolve names from the tenant's own catalog.
+	setPlacementNames(n, catalog)
 
 	// ABAC policy documents ride the same StoreResolver.
 	if n.StoreResolver != nil {
@@ -1623,6 +1667,11 @@ func buildDatabaseQuotaOpts(tenantSvc tenant.TenantServicer, log *slog.Logger) [
 	// Route IsolationVolume database storage under the tenant's DataRoot.
 	if lookup, ok := tenantSvc.(service.TenantInfoLookup); ok {
 		opts = append(opts, service.WithTenantInfoLookup(lookup))
+	}
+	// The cluster isolation floor makes every isolated tenant strict
+	// (phase 5 G1: a strict tenant's databases need a dedicated WAL).
+	if reader, ok := tenantSvc.(tenant.ClusterIsolationPolicyReader); ok {
+		opts = append(opts, service.WithDatabaseIsolationPolicyReader(reader))
 	}
 	// Record per-database raft-group usage so MaxRaftGroups is enforced for each
 	// dedicated-raft (IsolationRaft) database.
@@ -1943,20 +1992,32 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 	}
 	n.CertEnrollment = service.NewCertEnrollmentService(n.CertProv, n.User, n.TrustAnchors, enrollmentOpts...)
 	onboardingDeps := service.TenantOnboardingDeps{
-		Tenants:     n.Tenant,
-		Users:       n.User,
-		Roles:       n.Role,
-		Certs:       n.CertProv,
-		Anchors:     n.TrustAnchors,
-		Pending:     n.PendingAdmins,
-		PendingSOs:  n.PendingSOs,
-		TrustDomain: infra.ClusterTrustDomain,
-		Logger:      log,
-		Audit:       infra.AuditLogger,
-		AuditPolicy: infra.AuditFailurePolicy,
-		ClientTrust: service.ClientTrustRefresherFunc(n.refreshClientTrust),
+		Tenants:      n.Tenant,
+		Users:        n.User,
+		Roles:        n.Role,
+		Certs:        n.CertProv,
+		Anchors:      n.TrustAnchors,
+		Pending:      n.PendingAdmins,
+		PendingSOs:   n.PendingSOs,
+		PendingAudit: tenantadmin.NewAuditKVStore(certStore),
+		TrustDomain:  infra.ClusterTrustDomain,
+		Logger:       log,
+		Audit:        infra.AuditLogger,
+		AuditPolicy:  infra.AuditFailurePolicy,
+		ClientTrust:  service.ClientTrustRefresherFunc(n.refreshClientTrust),
 
 		SeparationOfDuties: infra.SeparationOfDuties,
+	}
+	// infra.AuditLogger is the node-local trail and the replicated logger
+	// together (BuildServices). The node-local trail takes the onboarding
+	// record at the first attempt, so a retry goes to the replicated logger
+	// alone. A composition with no audit logger has no retry sink either.
+	// The node-local trail goes in on its own as well, so the first attempt
+	// writes each trail separately and a node-local write failure does not
+	// keep a pending record the replicated logger has already taken.
+	if infra.AuditLogger != nil && n.ReplicatedAudit != nil {
+		onboardingDeps.TenantTrail = n.ReplicatedAudit
+		onboardingDeps.LocalTrail = n.nodeLocalAudit
 	}
 	// The anchor every node verifies a tenant barrier's epoch-1 init statement
 	// against is the first admin onboarding records.
@@ -2127,6 +2188,7 @@ func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
 		tenant.WithNodeID(nodeIdentity(infra.Host)),
 		tenant.WithTenantUndoGate(tenantUndoRequired(infra.Host)),
 		tenant.WithUndoCleanupRoster(undoCleanupRoster(infra.Host)),
+		tenant.WithStrictIsolationGate(strictIsolationRequired(infra.Host)),
 	}
 	// Reserve the node's own data directory so an operator-supplied dedicated
 	// DataRoot (WithDataRoot) can never be placed equal to, above, or below the

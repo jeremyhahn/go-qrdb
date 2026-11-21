@@ -97,11 +97,6 @@ func TestApplyIsolationFloor_EmptyIsNoOp(t *testing.T) {
 	}
 }
 
-func TestApplyIsolationFloor_ServiceWithoutFloorIsIgnored(t *testing.T) {
-	// A tenant service that cannot set the floor is logged and skipped.
-	applyIsolationFloor(context.Background(), struct{ tenant.TenantServicer }{}, "strict")
-}
-
 func TestApplyIsolationFloor_RaceWonByAnotherNodeSucceeds(t *testing.T) {
 	fastFloorRetries(t, time.Second)
 	svc := &fakeFloorService{

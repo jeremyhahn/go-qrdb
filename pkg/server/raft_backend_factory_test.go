@@ -89,6 +89,10 @@ type fakeRaftInfoSource struct {
 	incarnations   map[raftShardKey]string
 	dropped        map[raftShardKey]bool
 	incarnationErr error
+	// databaseIDs, when set for a key, is the database id the catalog
+	// records for it; a key with no entry is recorded with no id, as a
+	// database created before ids existed.
+	databaseIDs map[raftShardKey]string
 }
 
 func newFakeRaftInfoSource() *fakeRaftInfoSource {
@@ -132,15 +136,15 @@ func (s *fakeRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
 	return s.dedicated[raftShardKey{tenantID: tenantID, database: db}]
 }
 
-func (s *fakeRaftInfoSource) recordedIncarnation(_ context.Context, tenantID, db string) (string, bool, error) {
+func (s *fakeRaftInfoSource) recordedIdentity(_ context.Context, tenantID, db string) (string, string, bool, error) {
 	if s.incarnationErr != nil {
-		return "", false, s.incarnationErr
+		return "", "", false, s.incarnationErr
 	}
 	key := raftShardKey{tenantID: tenantID, database: db}
 	if s.dropped[key] {
-		return "", false, nil
+		return "", "", false, nil
 	}
-	return s.incarnations[key], true, nil
+	return s.databaseIDs[key], s.incarnations[key], true, nil
 }
 
 // newRaftFactory wires a RaftBackendFactory over a fresh shared Host and the
@@ -488,6 +492,49 @@ func TestResolver_RoutesRaftTenantToDedicatedShard(t *testing.T) {
 	}
 	if string(raw) != "yes" {
 		t.Errorf("dedicated shard KV value = %q, want yes", raw)
+	}
+}
+
+// TestResolver_BarrierTenantRaftDatabaseServedFromSharedStore pins the data
+// path behind the create-time DedicatedWALOffDataPathError refusal (#1517
+// Codex round 4): a barrier tenant's raft-backed database, which the create
+// path admits only without a dedicated WAL, is resolved to the shared system
+// store under the tenant/database prefix, never to a dedicated group, so its
+// KV writes land there and the raft factory holds no shard for it.
+func TestResolver_BarrierTenantRaftDatabaseServedFromSharedStore(t *testing.T) {
+	host, _ := newSharedTestHost(t)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger())
+	t.Cleanup(func() { _ = f.CloseAll() })
+	registerVolumeTenant(t, reg, "bt")
+
+	shared, sharedSvcs := sharedCollectionStore()
+	dbReg := NewDatabaseServiceRegistry("system")
+	dbReg.Register("system", sharedSvcs)
+	info := &tenant.TenantInfo{ID: "bt", IsolationType: tenant.IsolationBarrier}
+	rr := &restServiceRegistry{
+		dbReg:        dbReg,
+		barrierReg:   reg,
+		tenantSvc:    &fakeRaftTenantSvc{info: info},
+		catalog:      raftCatalogStub{tenantID: "bt", db: "app"},
+		raftBackend:  f,
+		systemTenant: "system",
+	}
+
+	ctx := context.Background()
+	kv, err := rr.KVService("bt", "app")
+	if err != nil {
+		t.Fatalf("KVService(barrier tenant): %v", err)
+	}
+	if err := kv.Put(ctx, "routed", []byte("yes")); err != nil {
+		t.Fatalf("Put via resolver: %v", err)
+	}
+	if got := string(shared.store["bt/app/routed"]); got != "yes" {
+		t.Fatalf("shared store bt/app/routed = %q, want yes; keys = %v", got, storeKeys(shared))
+	}
+	if n := len(f.ListOnHost()); n != 0 {
+		t.Fatalf("raft factory holds %d shards after a barrier tenant's write, want 0", n)
 	}
 }
 
@@ -919,14 +966,14 @@ func TestManagerRaftInfoSource_RecordedIncarnation(t *testing.T) {
 		t.Fatalf("CreateForTenant: %v", err)
 	}
 	src := &managerRaftInfoSource{manager: mgr}
-	if got, ok, err := src.recordedIncarnation(ctx, "owner", "mdb"); err != nil || !ok || got != db.Incarnation() {
-		t.Fatalf("recordedIncarnation() = (%q, %v, %v), want (%q, true, nil)", got, ok, err, db.Incarnation())
+	if id, got, ok, err := src.recordedIdentity(ctx, "owner", "mdb"); err != nil || !ok || got != db.Incarnation() || id == "" || id != db.ID() {
+		t.Fatalf("recordedIdentity() = (%q, %q, %v, %v), want (%q, %q, true, nil)", id, got, ok, err, db.ID(), db.Incarnation())
 	}
 	if err := mgr.DropForTenant(ctx, "mdb"); err != nil {
 		t.Fatalf("DropForTenant: %v", err)
 	}
-	if _, ok, err := src.recordedIncarnation(ctx, "owner", "mdb"); err != nil || ok {
-		t.Fatalf("recordedIncarnation() after the drop = (ok %v, %v), want no record", ok, err)
+	if _, _, ok, err := src.recordedIdentity(ctx, "owner", "mdb"); err != nil || ok {
+		t.Fatalf("recordedIdentity() after the drop = (ok %v, %v), want no record", ok, err)
 	}
 }
 
@@ -935,8 +982,8 @@ func TestManagerRaftInfoSource_RecordedIncarnation(t *testing.T) {
 // reads no record as the incarnation being superseded.
 func TestManagerRaftInfoSource_RecordedIncarnationNilManager(t *testing.T) {
 	src := &managerRaftInfoSource{}
-	if _, ok, err := src.recordedIncarnation(context.Background(), "t", "db"); !errors.Is(err, ErrRaftBackendUnavailable) || ok {
-		t.Fatalf("recordedIncarnation() with no manager = (ok %v, %v), want ErrRaftBackendUnavailable", ok, err)
+	if _, _, ok, err := src.recordedIdentity(context.Background(), "t", "db"); !errors.Is(err, ErrRaftBackendUnavailable) || ok {
+		t.Fatalf("recordedIdentity() with no manager = (ok %v, %v), want ErrRaftBackendUnavailable", ok, err)
 	}
 }
 
@@ -1290,7 +1337,61 @@ func TestRaftBackendFactory_HomeGroup_SharedWALHoldsNoEntry(t *testing.T) {
 	if !mux.IsDedicated(homeShard) {
 		t.Fatalf("the home group's WAL is not registered as dedicated")
 	}
+	held := sharedWALShards(t, f, host, sysBarrier, hostDir)
+	if held[homeShard] {
+		t.Fatalf("the shared host WAL holds an entry of the tenant's home group (shard %d)", homeShard)
+	}
+	if !held[sharedShard] {
+		t.Fatalf("the shared WAL holds no entry of the non-dedicated database (shard %d): the check proves nothing", sharedShard)
+	}
+}
 
+// TestRaftBackendFactory_StrictTenantDatabase_SharedWALHoldsNoEntry is the
+// LogDB half of docs/multi-tenancy/engineering.md phase 5, G1: a strict
+// tenant's database is created DedicatedWAL (the create path refuses it
+// otherwise), so the system shard's shared WAL never holds an entry of its
+// shard, while a non-dedicated database on the same host does.
+func TestRaftBackendFactory_StrictTenantDatabase_SharedWALHoldsNoEntry(t *testing.T) {
+	hostDir := t.TempDir()
+	sysBarrier := newTestSystemBarrier(t)
+	host, mux := newSharedTestHostAt(t, hostDir, sysBarrier)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src,
+		volTestLogger(), WithMultiplexLogDB(mux))
+
+	ctx := context.Background()
+	root, _ := registerVolumeTenant(t, reg, "st")
+	const strictShard, sharedShard = uint64(2410), uint64(2411)
+	src.add("st", "app", strictShard, root)
+	src.setDedicated("st", "app")
+	src.add("st", "plain", sharedShard, root)
+	for _, name := range []string{"app", "plain"} {
+		svcs, err := f.Services(ctx, "st", name)
+		if err != nil {
+			t.Fatalf("Services(%s): %v", name, err)
+		}
+		if err := svcs.KV.Put(ctx, "k", []byte("v")); err != nil {
+			t.Fatalf("Put(%s): %v", name, err)
+		}
+	}
+	if !mux.IsDedicated(strictShard) {
+		t.Fatalf("the strict tenant's database WAL is not registered as dedicated")
+	}
+	held := sharedWALShards(t, f, host, sysBarrier, hostDir)
+	if held[strictShard] {
+		t.Fatalf("the shared host WAL holds an entry of the strict tenant's database (shard %d)", strictShard)
+	}
+	if !held[sharedShard] {
+		t.Fatalf("the shared WAL holds no entry of the non-dedicated database (shard %d): the check proves nothing", sharedShard)
+	}
+}
+
+// sharedWALShards closes the factory and the host, reopens the host's shared
+// WAL under the system barrier and returns the set of shards it holds.
+func sharedWALShards(t *testing.T, f *RaftBackendFactory, host interface{ Close() error }, sysBarrier *seal.StorageBarrier, hostDir string) map[uint64]bool {
+	t.Helper()
+	ctx := context.Background()
 	if err := f.CloseAll(); err != nil {
 		t.Fatalf("CloseAll: %v", err)
 	}
@@ -1321,12 +1422,7 @@ func TestRaftBackendFactory_HomeGroup_SharedWALHoldsNoEntry(t *testing.T) {
 	for _, ni := range infos {
 		held[ni.ShardID] = true
 	}
-	if held[homeShard] {
-		t.Fatalf("the shared host WAL holds an entry of the tenant's home group (shard %d)", homeShard)
-	}
-	if !held[sharedShard] {
-		t.Fatalf("the shared WAL holds no entry of the non-dedicated database (shard %d): the check proves nothing", sharedShard)
-	}
+	return held
 }
 
 // TestRaftBackendFactory_DedicatedWAL_NoMuxRefusesToStart proves that when no

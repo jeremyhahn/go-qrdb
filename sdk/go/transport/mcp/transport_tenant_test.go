@@ -544,6 +544,24 @@ func TestTenantBarrierStatus_Success(t *testing.T) {
 	}
 }
 
+// TestTenantBarrierStatus_NodesUnreadable pins the round trip of a status
+// whose serving-node source failed: the client must decode NodesUnreadable,
+// not a standalone barrier the CLI would act on alone.
+func TestTenantBarrierStatus_NodesUnreadable(t *testing.T) {
+	svc := newMockTenantSvc()
+	svc.statusResp = &tenant.TenantBarrierStatus{TenantID: "acme", Sealed: true, NodesUnreadable: true}
+	tr, cleanup := connectTenantInProcess(t, svc)
+	defer cleanup()
+
+	resp, err := tr.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.NodesUnreadable || len(resp.Nodes) != 0 {
+		t.Fatalf("NodesUnreadable = %v, Nodes = %+v; want true and none", resp.NodesUnreadable, resp.Nodes)
+	}
+}
+
 func TestTenantBarrierStatus_ServiceError(t *testing.T) {
 	svc := newMockTenantSvc()
 	svc.barrierStatusErr = tenant.ErrTenantNotFound

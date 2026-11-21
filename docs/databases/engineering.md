@@ -604,6 +604,21 @@ Invariants:
     never-cached dedicated-raft database stays droppable: the factory's
     fence-ignoring resolution reads the catalog through
     `Manager.GetIgnoringFence`.
+  - **A created catalog record is provisional until its create guard
+    accepts it.** `Manager.create` writes an API-created database's catalog
+    record with `DatabaseMeta.Provisional` set, so no opener on any node
+    serves it (`Manager.Open`, `GetOwned` and `OpenAll` skip it, and
+    `RecordedIdentity` does not resolve it): no request can write to a
+    database the guard may still refuse. Once the strict create guard
+    accepts the database, the record is promoted (`Provisional` cleared)
+    and every node may serve it. A refused create whose cleanup could not
+    remove the record leaves it provisional and never opened. A
+    provisioned (shared) database created at node boot under the one
+    shared incarnation is written serving (`Provisional` false) and skips
+    the promote: there is no API create to guard, and a peer provisioning
+    the same name, or this node's next boot, must find it serving rather
+    than a record it can neither open (`NotFoundError`) nor create
+    (`AlreadyExistsError`).
   - **The marker is claimed, never overwritten.** `UnfenceDatabaseKeyspace`
     marks an incarnation live with `PutIfAbsent`, then
     `CompareAndSwap(tombstone -> incarnation)`, then a read: the incarnation
@@ -697,7 +712,15 @@ Invariants:
     the database's OWN shard (resolved through
     `RaftBackendFactory.FenceServices`, the one resolution that ignores the
     marker, because the drop sets the marker first), is what refuses the
-    writes of handles already resolved.
+    writes of handles already resolved. `FenceServices` reads the placement
+    entry keyed by the catalog record's database id
+    (`placement.Store.GetBound`), never one found by the name: after a drop
+    whose placement delete failed, the name created again and dropped in turn
+    leaves two dropping entries under one name, and a lookup by name would
+    retire the successor's cached shard and fence the predecessor's. An entry
+    under the id that names another database is refused with
+    `placement.IdentityMismatchError` (FailedPrecondition) and the cached
+    shard is left alone.
   - **A failed placement-entry removal is not swallowed.** Deleting the
     placement entry is what removes the replicated fence, so a failure
     there is surfaced rather than logged and ignored: the fence survives

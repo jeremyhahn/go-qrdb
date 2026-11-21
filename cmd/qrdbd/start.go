@@ -2677,7 +2677,6 @@ func runStart(f *startFlags) (err error) {
 				Barriers:      barrierRegistry,
 				DedicatedRaft: raftBackendReg != nil,
 				RaftAddr:      f.raftAddress,
-				PeerAdmin:     registry,
 				TrustDomain:   f.clusterTrustDomain,
 				CACertPool:    bundle.CACertPool,
 				Identity:      nodeIdentity,
@@ -2908,6 +2907,12 @@ func runStart(f *startFlags) (err error) {
 				serverOpts = append(serverOpts,
 					server.WithAuthMiddleware(authResult.authMW),
 				)
+				// An operator's access to a tenant's identity records is
+				// recorded in that tenant's own replicated trail and its
+				// node-local trail (where the tenant's ordinary audit query
+				// reads it), beside the platform decision log the middleware
+				// was built with.
+				authResult.authMW.BindOperatorAccessTenantTrail(svcNode.OperatorAccessTrail)
 				if authResult.soAuthenticator != nil {
 					serverOpts = append(serverOpts, server.WithSOAuthenticator(authResult.soAuthenticator))
 					// Tenant create commits a named SO's PIN through the
@@ -3186,6 +3191,9 @@ func runStart(f *startFlags) (err error) {
 			}
 			switch {
 			case f.dynamicMembership && !standalone:
+				// Tenant homes follow roster changes through the node
+				// watchers' roster watch (lifecycle.StartNodeWatchers),
+				// with or without dynamic membership.
 				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, rnode, nodeSeal)
 				if mErr != nil {
 					srv.Stop()
@@ -3710,6 +3718,7 @@ func startDynamicMembership(
 	watchSvc service.WatchServicer,
 	leaders server.LeaderSource,
 	nodeSeal cluster.SealProbe,
+	opts ...cluster.MembershipOption,
 ) (*cluster.MembershipManager, error) {
 	client, err := newEmbeddedClient(kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
 	if err != nil {
@@ -3732,7 +3741,7 @@ func startDynamicMembership(
 		cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints, Features: featuregate.SupportedNames()},
 		f.shardID,
 		cluster.MembershipConfig{MinQuorum: cluster.QuorumSize(minPeers)},
-		cluster.WithMembershipSealProbe(nodeSeal),
+		append([]cluster.MembershipOption{cluster.WithMembershipSealProbe(nodeSeal)}, opts...)...,
 	)
 	if err != nil {
 		return nil, err

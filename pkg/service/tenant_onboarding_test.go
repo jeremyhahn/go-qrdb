@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"log/slog"
@@ -25,6 +26,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -38,8 +41,12 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -365,21 +372,805 @@ func TestOnboardTenant_EmitsAuditRecordOnSuccess(t *testing.T) {
 		t.Fatalf("OnboardTenant: %v", err)
 	}
 
-	ev := findEvent(ring.Snapshot(), ActionTenantOnboard)
-	if ev == nil {
-		t.Fatal("no tenant.onboard event recorded")
+	var platform, own []audit.AuditEvent
+	for _, ev := range ring.Snapshot() {
+		if ev.Action != ActionTenantOnboard {
+			continue
+		}
+		switch ev.TenantID {
+		case tenantid.System:
+			platform = append(platform, ev)
+		case "acme":
+			own = append(own, ev)
+		default:
+			t.Fatalf("tenant.onboard event on tenant %q, want system or acme: %+v", ev.TenantID, ev)
+		}
 	}
-	if ev.TenantID != "acme" || ev.Resource != "tenant" {
-		t.Fatalf("event = %+v, want TenantID=acme Resource=tenant", ev)
+	if len(platform) != 2 {
+		t.Fatalf("recorded %d platform tenant.onboard events, want the permitted record and its outcome", len(platform))
 	}
-	if ev.Outcome != audit.OutcomeSuccess {
-		t.Fatalf("event Outcome = %q, want success", ev.Outcome)
+	for i, want := range []string{audit.OutcomePermitted, audit.OutcomeSuccess} {
+		ev := platform[i]
+		if ev.Resource != "tenant:acme" || ev.Outcome != want {
+			t.Fatalf("platform event %d = %+v, want Resource=tenant:acme Outcome=%s", i, ev, want)
+		}
+		if ev.Attributes["isolation_type"] != string(tenant.IsolationPrefix) {
+			t.Fatalf("platform event %d isolation_type = %v, want %q", i, ev.Attributes["isolation_type"], tenant.IsolationPrefix)
+		}
+		// The platform trail holds no tenant username: the admin's identity
+		// stays on the tenant's own trail.
+		if _, ok := ev.Attributes["admin_username"]; ok {
+			t.Fatalf("platform event %d carries admin_username: %v", i, ev.Attributes)
+		}
+		for k, v := range ev.Attributes {
+			if v == "admin" {
+				t.Fatalf("platform event %d attribute %s names the tenant admin", i, k)
+			}
+		}
 	}
-	if ev.Attributes["admin_username"] != "admin" {
-		t.Fatalf("event admin_username = %v, want admin", ev.Attributes["admin_username"])
+	if len(own) != 1 || own[0].Outcome != audit.OutcomeSuccess || own[0].Resource != "tenant:acme" ||
+		own[0].Attributes["admin_username"] != "admin" {
+		t.Fatalf("tenant-trail tenant.onboard events = %+v, want one success naming admin_username=admin", own)
 	}
-	if ev.Attributes["isolation_type"] != string(tenant.IsolationPrefix) {
-		t.Fatalf("event isolation_type = %v, want %q", ev.Attributes["isolation_type"], tenant.IsolationPrefix)
+}
+
+// sealedTrailAudit is the audit trail of a node whose tenants' trails live in
+// their home groups: an event on the trail of a tenant whose barrier is
+// sealed is refused, as the home group's Services lookup refuses it, and is
+// never written.
+type sealedTrailAudit struct {
+	*audit.RingBuffer
+	barriers *seal.BarrierRegistry
+}
+
+func (a *sealedTrailAudit) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	if !tenantid.IsSystem(ev.TenantID) {
+		status, err := a.barriers.TenantStatus(ev.TenantID)
+		if err != nil {
+			return &audit.WriteError{Backend: "home-group", Err: err}
+		}
+		if status.Sealed {
+			return &audit.WriteError{Backend: "home-group", Err: tenant.ErrTenantSealed}
+		}
+	}
+	return a.RingBuffer.Emit(ctx, ev)
+}
+
+func (a *sealedTrailAudit) onboardRecords(tenantID string) []audit.AuditEvent {
+	var out []audit.AuditEvent
+	for _, ev := range a.Snapshot() {
+		if ev.Action == ActionTenantOnboard && ev.TenantID == tenantID {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// A self-managed barrier tenant's trail is sealed when its onboarding
+// answers: the onboarding record naming its first admin waits beside the
+// pending admin and lands on the tenant's trail once, when the barrier is
+// first up, and never again on a later unseal.
+func TestOnboardTenant_SealedTenantTrailGetsItsOnboardingRecordAtUnseal(t *testing.T) {
+	ctx := context.Background()
+	log := slog.New(slog.DiscardHandler)
+	strategy, err := seal.NewSoftwareStrategy(ctx, []byte("onboarding-system-passphrase"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	system, err := seal.NewStorageBarrier(log, seal.NewMemoryBackend(), seal.BarrierConfig{RootKeyPath: "system/root-key"}, strategy)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := system.Initialize(ctx, seal.Credentials{}); err != nil {
+		t.Fatalf("Initialize (system): %v", err)
+	}
+	reg, _, _ := sealtest.PooledRegistry(t, system)
+	// The barrier-ready hook is the node's (lifecycle completePendingTenantAdmin):
+	// it files the pending onboarding record once the barrier is up.
+	var svc *TenantOnboardingService
+	tenants, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, log,
+		tenant.WithBarrierReadyHook(func(ctx context.Context, tenantID string, _ tenant.AdminCompletion) error {
+			return svc.EmitPendingOnboardAudit(ctx, tenantID)
+		}))
+	if err != nil {
+		t.Fatalf("NewTenantService: %v", err)
+	}
+	deps := newOnboardingDeps(t)
+	deps.Tenants = tenants
+	identity := kvstore.NewMemoryKVStore()
+	deps.Pending = tenantadmin.NewKVStore(identity)
+	deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
+	trail := &sealedTrailAudit{RingBuffer: audit.NewRingBuffer(32), barriers: reg}
+	deps.Audit = trail
+	svc = NewTenantOnboardingService(deps)
+
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+		ID: "acme", AdminUsername: "admin", AdminCSRPEM: csrPEM,
+		IsolationType: tenant.IsolationBarrier, BarrierAutoUnseal: false,
+	}); err != nil {
+		t.Fatalf("OnboardTenant: %v", err)
+	}
+	onboardRecords := func(tenantID string) []audit.AuditEvent {
+		var out []audit.AuditEvent
+		for _, ev := range trail.Snapshot() {
+			if ev.Action == ActionTenantOnboard && ev.TenantID == tenantID {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+	if own := onboardRecords("acme"); len(own) != 0 {
+		t.Fatalf("sealed tenant trail took tenant.onboard events %+v", own)
+	}
+
+	passphrase := []byte("acme-barrier-passphrase")
+	if _, err := tenants.TenantBarrierInitWithStrategy(ctx, "acme", passphrase, 0, 0, seal.StrategyPassphrase, nil); err != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
+	}
+	// The tenant's own admin seals its barrier and unseals it again.
+	adminCtx := tenant.WithTenantID(ctx, "acme")
+	if err := tenants.TenantBarrierSeal(adminCtx, "acme"); err != nil {
+		t.Fatalf("TenantBarrierSeal: %v", err)
+	}
+	if err := tenants.TenantBarrierUnseal(adminCtx, "acme", passphrase); err != nil {
+		t.Fatalf("TenantBarrierUnseal: %v", err)
+	}
+
+	own := onboardRecords("acme")
+	if len(own) != 1 || own[0].Outcome != audit.OutcomeSuccess || own[0].Resource != "tenant:acme" ||
+		own[0].Attributes["admin_username"] != "admin" {
+		t.Fatalf("tenant-trail tenant.onboard events = %+v, want one success naming admin_username=admin", own)
+	}
+	for _, ev := range onboardRecords(tenantid.System) {
+		if _, ok := ev.Attributes["admin_username"]; ok {
+			t.Fatalf("platform tenant.onboard event names the admin: %+v", ev)
+		}
+	}
+}
+
+// refuseOnceTrail is a tenant trail that refuses the first event of one
+// tenant and takes every event after it.
+type refuseOnceTrail struct {
+	*audit.RingBuffer
+	tenantID string
+	refused  bool
+}
+
+func (a *refuseOnceTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	if ev.TenantID == a.tenantID && !a.refused {
+		a.refused = true
+		return &audit.WriteError{Backend: "home-group", Err: tenant.ErrTenantSealed}
+	}
+	return a.RingBuffer.Emit(ctx, ev)
+}
+
+// failingLocalTrail is a node-local trail whose write fails for every event
+// of one tenant, as the chain file logger fails a write to a full file sink:
+// it returns the error and records nothing. Every other event is recorded.
+type failingLocalTrail struct {
+	*audit.RingBuffer
+	tenantID string
+}
+
+func (a *failingLocalTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	if ev.TenantID == a.tenantID {
+		return &audit.WriteError{Backend: "audit.log", Err: syscall.ENOSPC}
+	}
+	return a.RingBuffer.Emit(ctx, ev)
+}
+
+// The node's audit sink is the node-local trail and the tenant's replicated
+// trail together. When the tenant's trail refuses the onboarding record, the
+// node-local trail has already taken it: the retry of the pending record goes
+// to the tenant's trail alone, so the node-local trail holds it once.
+func TestOnboardTenant_PendingRecordRetryLeavesOneNodeLocalRecord(t *testing.T) {
+	ctx := context.Background()
+	deps := newOnboardingDeps(t)
+	identity := kvstore.NewMemoryKVStore()
+	deps.Pending = tenantadmin.NewKVStore(identity)
+	deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
+	local := audit.NewRingBuffer(32)
+	trail := &refuseOnceTrail{RingBuffer: audit.NewRingBuffer(32), tenantID: "acme"}
+	deps.Audit = audit.NewAggregateLogger(local, trail)
+	deps.TenantTrail = trail
+	svc := NewTenantOnboardingService(deps)
+
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+		ID: "acme", AdminUsername: "admin", AdminCSRPEM: csrPEM,
+	}); err != nil {
+		t.Fatalf("OnboardTenant: %v", err)
+	}
+	onboardRecords := func(ring *audit.RingBuffer) []audit.AuditEvent {
+		var out []audit.AuditEvent
+		for _, ev := range ring.Snapshot() {
+			if ev.Action == ActionTenantOnboard && ev.TenantID == "acme" {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+	if !trail.refused {
+		t.Fatal("the tenant's trail was never offered the onboarding record")
+	}
+	if got := onboardRecords(trail.RingBuffer); len(got) != 0 {
+		t.Fatalf("tenant trail holds %+v before the retry, want nothing", got)
+	}
+
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("EmitPendingOnboardAudit: %v", err)
+	}
+	if got := onboardRecords(trail.RingBuffer); len(got) != 1 {
+		t.Fatalf("tenant trail holds %d tenant.onboard records after the retry, want 1: %+v", len(got), got)
+	}
+	if got := onboardRecords(local); len(got) != 1 {
+		t.Fatalf("node-local trail holds %d tenant.onboard records, want 1: %+v", len(got), got)
+	}
+}
+
+// When the node-local trail fails the write and the tenant's trail takes the
+// onboarding record, the record is done: the pending record is deleted, and a
+// later retry appends nothing, so the tenant's trail holds it exactly once.
+func TestOnboardTenant_NodeLocalRefusalLeavesOneTenantTrailRecord(t *testing.T) {
+	ctx := context.Background()
+	deps := newOnboardingDeps(t)
+	identity := kvstore.NewMemoryKVStore()
+	deps.Pending = tenantadmin.NewKVStore(identity)
+	pendingAudit := tenantadmin.NewAuditKVStore(identity)
+	deps.PendingAudit = pendingAudit
+	local := &failingLocalTrail{RingBuffer: audit.NewRingBuffer(32), tenantID: "acme"}
+	trail := audit.NewRingBuffer(32)
+	deps.Audit = audit.NewAggregateLogger(local, trail)
+	deps.LocalTrail = local
+	deps.TenantTrail = trail
+	svc := NewTenantOnboardingService(deps)
+
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+		ID: "acme", AdminUsername: "admin", AdminCSRPEM: csrPEM,
+	}); err != nil {
+		t.Fatalf("OnboardTenant: %v", err)
+	}
+	onboardRecords := func(ring *audit.RingBuffer) []audit.AuditEvent {
+		var out []audit.AuditEvent
+		for _, ev := range ring.Snapshot() {
+			if ev.Action == ActionTenantOnboard && ev.TenantID == "acme" {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+
+	record, err := pendingAudit.Get(ctx, "acme")
+	if err != nil {
+		t.Fatalf("pending audit Get: %v", err)
+	}
+	if record != nil {
+		t.Fatalf("the pending onboarding record is still kept after the tenant's trail took it: %s", record)
+	}
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("EmitPendingOnboardAudit: %v", err)
+	}
+	if got := onboardRecords(trail); len(got) != 1 {
+		t.Fatalf("tenant trail holds %d tenant.onboard records, want 1: %+v", len(got), got)
+	}
+	if got := onboardRecords(local.RingBuffer); len(got) != 0 {
+		t.Fatalf("node-local trail holds %+v, want nothing: its write failed", got)
+	}
+}
+
+// gatedTrail holds the first Emit until every concurrent caller has started,
+// so the callers that follow it race the pending record's delete.
+type gatedTrail struct {
+	*audit.RingBuffer
+	started *sync.WaitGroup
+	once    sync.Once
+}
+
+func (g *gatedTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	g.once.Do(g.started.Wait)
+	return g.RingBuffer.Emit(ctx, ev)
+}
+
+// Concurrent barrier-ready callbacks for one tenant each retry its pending
+// onboarding audit record: the tenant's trail holds it exactly once, and the
+// pending record is gone.
+func TestEmitPendingOnboardAudit_ConcurrentCallbacksAppendOnce(t *testing.T) {
+	ctx := context.Background()
+	deps := newOnboardingDeps(t)
+	identity := kvstore.NewMemoryKVStore()
+	pendingAudit := tenantadmin.NewAuditKVStore(identity)
+	deps.PendingAudit = pendingAudit
+	const callers = 8
+	var started sync.WaitGroup
+	started.Add(callers)
+	trail := &gatedTrail{RingBuffer: audit.NewRingBuffer(32), started: &started}
+	deps.TenantTrail = trail
+	svc := NewTenantOnboardingService(deps)
+
+	record, err := json.Marshal(audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingAudit.Create(ctx, "acme", record); err != nil {
+		t.Fatalf("pending audit Create: %v", err)
+	}
+
+	errs := make(chan error, callers)
+	var done sync.WaitGroup
+	for range callers {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			started.Done()
+			errs <- svc.EmitPendingOnboardAudit(ctx, "acme")
+		}()
+	}
+	done.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("EmitPendingOnboardAudit: %v", err)
+		}
+	}
+	n := 0
+	for _, ev := range trail.Snapshot() {
+		if ev.Action == ActionTenantOnboard && ev.TenantID == "acme" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("tenant trail holds %d tenant.onboard records, want exactly 1", n)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left != nil {
+		t.Fatalf("pending record after the emits = %q, %v; want none", left, err)
+	}
+}
+
+// heldTrail holds its first Emit, signalling entered, until release closes;
+// later Emits pass straight through.
+type heldTrail struct {
+	*audit.RingBuffer
+	entered chan struct{}
+	release chan struct{}
+	held    atomic.Bool
+}
+
+func (h *heldTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	if h.held.CompareAndSwap(false, true) {
+		close(h.entered)
+		<-h.release
+	}
+	return h.RingBuffer.Emit(ctx, ev)
+}
+
+// Two nodes' onboarding services retry one tenant's pending onboarding
+// record over the same replicated store and trail: while the first holds the
+// record mid-append, the second leaves it to the first, so the tenant's trail
+// holds it exactly once and the pending record is gone.
+func TestEmitPendingOnboardAudit_TwoInstancesAppendOnce(t *testing.T) {
+	ctx := context.Background()
+	identity := kvstore.NewMemoryKVStore()
+	trail := &heldTrail{RingBuffer: audit.NewRingBuffer(32), entered: make(chan struct{}), release: make(chan struct{})}
+	newInstance := func() *TenantOnboardingService {
+		deps := newOnboardingDeps(t)
+		deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
+		deps.TenantTrail = trail
+		return NewTenantOnboardingService(deps)
+	}
+	first, second := newInstance(), newInstance()
+	pendingAudit := tenantadmin.NewAuditKVStore(identity)
+
+	record, err := json.Marshal(audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme", RequestID: "req-1", Timestamp: time.Unix(1700000000, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingAudit.Create(ctx, "acme", record); err != nil {
+		t.Fatalf("pending audit Create: %v", err)
+	}
+
+	firstErr := make(chan error, 1)
+	go func() { firstErr <- first.EmitPendingOnboardAudit(ctx, "acme") }()
+	<-trail.entered
+	if err := second.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("second instance EmitPendingOnboardAudit: %v", err)
+	}
+	close(trail.release)
+	if err := <-firstErr; err != nil {
+		t.Fatalf("first instance EmitPendingOnboardAudit: %v", err)
+	}
+
+	n := 0
+	for _, ev := range trail.Snapshot() {
+		if ev.Action == ActionTenantOnboard && ev.TenantID == "acme" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("tenant trail holds %d tenant.onboard records, want exactly 1", n)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left != nil {
+		t.Fatalf("pending record after the emits = %q, %v; want none", left, err)
+	}
+}
+
+// uncertainTrail is a tenant trail whose next Emit ends with its outcome
+// unknown (the proposal ran out of time), and which reports whether its
+// group appends a retried onboarding event once (audit-append-once).
+type uncertainTrail struct {
+	*audit.RingBuffer
+	failNext   bool
+	appendOnce bool
+	emits      int
+}
+
+func (u *uncertainTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	u.emits++
+	if u.failNext {
+		u.failNext = false
+		return &ProposeError{Err: context.DeadlineExceeded}
+	}
+	return u.RingBuffer.Emit(ctx, ev)
+}
+
+func (u *uncertainTrail) AppendOnceEnabled(context.Context, string) (bool, error) {
+	return u.appendOnce, nil
+}
+
+// TestEmitPendingOnboardAudit_UncertainAppendWaitsForAppendOnce pins that a
+// pending onboarding record whose append ended with its outcome unknown is
+// not re-sent while the trail's group lacks audit-append-once -- the first
+// append may have committed, and a re-send would chain the event twice --
+// and is re-sent, once, when the feature is enabled.
+func TestEmitPendingOnboardAudit_UncertainAppendWaitsForAppendOnce(t *testing.T) {
+	ctx := context.Background()
+	identity := kvstore.NewMemoryKVStore()
+	trail := &uncertainTrail{RingBuffer: audit.NewRingBuffer(32), failNext: true}
+	deps := newOnboardingDeps(t)
+	deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
+	deps.TenantTrail = trail
+	svc := NewTenantOnboardingService(deps)
+	// The uncertain proposal was lost: it is settled the moment it fails.
+	pendingAudit := tenantadmin.NewAuditKVStore(identity)
+
+	record, err := json.Marshal(audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme", RequestID: "req-1", Timestamp: time.Unix(1700000000, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingAudit.Create(ctx, "acme", record); err != nil {
+		t.Fatalf("pending audit Create: %v", err)
+	}
+
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err == nil {
+		t.Fatal("first EmitPendingOnboardAudit: want the uncertain append's error")
+	}
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry before audit-append-once: %v", err)
+	}
+	if trail.emits != 1 {
+		t.Fatalf("trail saw %d emits before audit-append-once, want 1 (no re-send)", trail.emits)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left == nil {
+		t.Fatalf("pending record before audit-append-once = %q, %v; want it kept", left, err)
+	}
+
+	trail.appendOnce = true
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry after audit-append-once: %v", err)
+	}
+	if trail.emits != 2 {
+		t.Fatalf("trail saw %d emits, want 2", trail.emits)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left != nil {
+		t.Fatalf("pending record after the retry = %q, %v; want none", left, err)
+	}
+}
+
+// TestEmitPendingOnboardAudit_OptInWrapperWaitsForAppendOnce pins the
+// production composition: the tenant trail is the OptInAuditLogger wrapping
+// the replicated trail, and the wrapper forwards append-once, so a retry of
+// an uncertain first proposal is held while AuditAppendOnce is disabled.
+func TestEmitPendingOnboardAudit_OptInWrapperWaitsForAppendOnce(t *testing.T) {
+	ctx := context.Background()
+	identity := kvstore.NewMemoryKVStore()
+	trail := &uncertainTrail{RingBuffer: audit.NewRingBuffer(32), failNext: true}
+	wrapped := NewOptInAuditLogger(trail, &fakeEntitlementLookup{enabled: map[string]bool{"acme": true}}, false)
+	deps := newOnboardingDeps(t)
+	deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
+	deps.TenantTrail = wrapped
+	svc := NewTenantOnboardingService(deps)
+	// The uncertain proposal was lost: it is settled the moment it fails.
+	pendingAudit := tenantadmin.NewAuditKVStore(identity)
+
+	record, err := json.Marshal(audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme", RequestID: "req-1", Timestamp: time.Unix(1700000000, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingAudit.Create(ctx, "acme", record); err != nil {
+		t.Fatalf("pending audit Create: %v", err)
+	}
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err == nil {
+		t.Fatal("first EmitPendingOnboardAudit: want the delayed proposal's error")
+	}
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry with audit-append-once disabled: %v", err)
+	}
+	if trail.emits != 1 {
+		t.Fatalf("wrapped trail saw %d emits with audit-append-once disabled, want 1 (no re-send)", trail.emits)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left == nil {
+		t.Fatalf("pending record = %q, %v; want it kept", left, err)
+	}
+	trail.appendOnce = true
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry after audit-append-once: %v", err)
+	}
+	if trail.emits != 2 {
+		t.Fatalf("wrapped trail saw %d emits, want 2", trail.emits)
+	}
+}
+
+// delayedTrail models a replicated trail whose first proposal times out but
+// stays in flight: it applies later, when applyDelayed runs. Each proposal
+// carries the append-once marker the group's gate decides at propose time
+// (ReplicatedLogger.Emit), and apply is the real one: each applied proposal
+// goes through an audit.Chain, and the event reaches the queryable trail only
+// when the chain appended it.
+type delayedTrail struct {
+	*audit.RingBuffer
+	appendOnce bool
+	delayNext  bool
+	delayed    []audit.AuditEvent
+	chain      *audit.Chain
+	store      *memory.MemoryStorage
+	head       uint64
+	emits      int
+}
+
+func (d *delayedTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	d.emits++
+	ev.AppendOnce = d.appendOnce
+	if d.delayNext {
+		d.delayNext = false
+		d.delayed = append(d.delayed, ev)
+		return &ProposeError{Err: context.DeadlineExceeded}
+	}
+	return d.apply(ctx, ev)
+}
+
+func (d *delayedTrail) apply(ctx context.Context, ev audit.AuditEvent) error {
+	seq, err := d.chain.Append(d.store, ev.TenantID, ev)
+	if err != nil {
+		return err
+	}
+	if seq == d.head {
+		return nil
+	}
+	d.head = seq
+	ev.AppendOnce = false
+	return d.RingBuffer.Emit(ctx, ev)
+}
+
+func (d *delayedTrail) applyDelayed(ctx context.Context, t *testing.T) {
+	t.Helper()
+	for _, ev := range d.delayed {
+		if err := d.apply(ctx, ev); err != nil {
+			t.Fatalf("apply delayed proposal: %v", err)
+		}
+	}
+	d.delayed = nil
+}
+
+func (d *delayedTrail) AppendOnceEnabled(context.Context, string) (bool, error) {
+	return d.appendOnce, nil
+}
+
+func (d *delayedTrail) onboardEntries(ctx context.Context, t *testing.T) int {
+	t.Helper()
+	page, err := d.Query(ctx, audit.Filter{TenantID: "acme", Action: ActionTenantOnboard, Limit: 100})
+	if err != nil {
+		t.Fatalf("trail Query: %v", err)
+	}
+	if page == nil {
+		return 0
+	}
+	return len(page.Events)
+}
+
+func newDelayedOnboarding(t *testing.T, appendOnce bool) (*TenantOnboardingService, *delayedTrail, tenantadmin.AuditStore) {
+	t.Helper()
+	identity := kvstore.NewMemoryKVStore()
+	trail := &delayedTrail{RingBuffer: audit.NewRingBuffer(32), appendOnce: appendOnce, delayNext: true, chain: audit.NewChain(), store: memory.NewStorage()}
+	deps := newOnboardingDeps(t)
+	deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
+	deps.TenantTrail = trail
+	svc := NewTenantOnboardingService(deps)
+	pendingAudit := tenantadmin.NewAuditKVStore(identity)
+	record, err := json.Marshal(audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme", RequestID: "req-1", Timestamp: time.Unix(1700000000, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingAudit.Create(context.Background(), "acme", record); err != nil {
+		t.Fatalf("pending audit Create: %v", err)
+	}
+	return svc, trail, pendingAudit
+}
+
+// An uncertain first append proposed before audit-append-once activated is
+// unmarked, and it is still in flight when the feature activates. The marked
+// retry goes ahead at once -- no elapsed time is taken to mean the first
+// proposal was lost -- and applies first; the delayed unmarked proposal then
+// applies. The trail holds the onboarding event once.
+func TestEmitPendingOnboardAudit_UnmarkedUncertainThenMarkedRetryKeepsOne(t *testing.T) {
+	ctx := context.Background()
+	svc, trail, pendingAudit := newDelayedOnboarding(t, false)
+
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err == nil {
+		t.Fatal("first EmitPendingOnboardAudit: want the delayed proposal's error")
+	}
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry before audit-append-once: %v", err)
+	}
+	if trail.emits != 1 {
+		t.Fatalf("trail saw %d emits before audit-append-once, want 1 (the uncertain record waits)", trail.emits)
+	}
+	trail.appendOnce = true
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry after audit-append-once: %v", err)
+	}
+	if trail.emits != 2 {
+		t.Fatalf("trail saw %d emits, want 2 (the marked retry goes ahead)", trail.emits)
+	}
+	trail.applyDelayed(ctx, t)
+
+	if got := trail.onboardEntries(ctx, t); got != 1 {
+		t.Fatalf("trail holds %d onboarding entries, want 1", got)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left != nil {
+		t.Fatalf("pending record = %q, %v; want it settled and removed", left, err)
+	}
+}
+
+// An uncertain first append proposed with audit-append-once active is
+// marked: its retry goes ahead at once, and apply keeps one of the two.
+func TestEmitPendingOnboardAudit_MarkedUncertainRetriesAtOnce(t *testing.T) {
+	ctx := context.Background()
+	svc, trail, pendingAudit := newDelayedOnboarding(t, true)
+
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err == nil {
+		t.Fatal("first EmitPendingOnboardAudit: want the delayed proposal's error")
+	}
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if trail.emits != 2 {
+		t.Fatalf("trail saw %d emits, want 2 (the marked retry goes ahead)", trail.emits)
+	}
+	trail.applyDelayed(ctx, t)
+
+	if got := trail.onboardEntries(ctx, t); got != 1 {
+		t.Fatalf("trail holds %d onboarding entries, want 1", got)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left != nil {
+		t.Fatalf("pending record = %q, %v; want none", left, err)
+	}
+}
+
+// queryFailingTrail is a trail that cannot be read.
+type queryFailingTrail struct{ *audit.RingBuffer }
+
+func (queryFailingTrail) Query(context.Context, audit.Filter) (*audit.Page, error) {
+	return nil, errors.New("trail unreadable")
+}
+
+// A retry after an attempt that appended the record but did not delete it
+// (a failed delete, or a stop between the two) appends nothing more: the
+// trail already holding the record's request id and time is the append. A
+// record kept with no request id is appended, and a trail that cannot be
+// read keeps the record pending.
+func TestEmitPendingOnboardAudit_RetryAfterAppendAppendsNothing(t *testing.T) {
+	ctx := context.Background()
+	ts := time.Date(2026, 11, 14, 12, 0, 0, 123456789, time.UTC)
+	ev := audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme", Timestamp: ts, RequestID: "tenant-onboard-1"}
+
+	newSvc := func(t *testing.T, trail audit.AuditLogger, ev audit.AuditEvent) (*TenantOnboardingService, *tenantadmin.AuditKVStore) {
+		t.Helper()
+		deps := newOnboardingDeps(t)
+		pending := tenantadmin.NewAuditKVStore(kvstore.NewMemoryKVStore())
+		deps.PendingAudit = pending
+		deps.TenantTrail = trail
+		record, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := pending.Create(ctx, "acme", record); err != nil {
+			t.Fatal(err)
+		}
+		return NewTenantOnboardingService(deps), pending
+	}
+	trailEvents := func(t *testing.T, trail audit.AuditLogger) []audit.AuditEvent {
+		t.Helper()
+		page, err := trail.Query(ctx, audit.Filter{TenantID: "acme"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return page.Events
+	}
+
+	t.Run("already appended", func(t *testing.T) {
+		trail := audit.NewRingBuffer(8)
+		if err := trail.Emit(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+		svc, pending := newSvc(t, trail, ev)
+		if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+			t.Fatal(err)
+		}
+		if got := trailEvents(t, trail); len(got) != 1 {
+			t.Fatalf("trail holds %d onboarding records; want 1", len(got))
+		}
+		if rec, _ := pending.Get(ctx, "acme"); rec != nil {
+			t.Fatal("pending record not deleted")
+		}
+	})
+
+	t.Run("another onboarding at the same time is not this one", func(t *testing.T) {
+		trail := audit.NewRingBuffer(8)
+		other := ev
+		other.RequestID = "tenant-onboard-2"
+		if err := trail.Emit(ctx, other); err != nil {
+			t.Fatal(err)
+		}
+		svc, _ := newSvc(t, trail, ev)
+		if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+			t.Fatal(err)
+		}
+		if got := trailEvents(t, trail); len(got) != 2 {
+			t.Fatalf("trail holds %d onboarding records; want 2", len(got))
+		}
+	})
+
+	t.Run("no request id", func(t *testing.T) {
+		trail := audit.NewRingBuffer(8)
+		bare := ev
+		bare.RequestID = ""
+		svc, _ := newSvc(t, trail, bare)
+		if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+			t.Fatal(err)
+		}
+		if got := trailEvents(t, trail); len(got) != 1 {
+			t.Fatalf("trail holds %d onboarding records; want 1", len(got))
+		}
+	})
+
+	t.Run("trail unreadable", func(t *testing.T) {
+		trail := queryFailingTrail{audit.NewRingBuffer(8)}
+		svc, pending := newSvc(t, trail, ev)
+		if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err == nil {
+			t.Fatal("an unreadable trail did not fail the retry")
+		}
+		if rec, _ := pending.Get(ctx, "acme"); rec == nil {
+			t.Fatal("the pending record was dropped")
+		}
+	})
+}
+
+// A filed onboarding record carries a request id, the identity a retry
+// finds it by.
+func TestOnboardEventID_Distinct(t *testing.T) {
+	a, b := onboardEventID(), onboardEventID()
+	if a == b || !strings.HasPrefix(a, "tenant-onboard-") {
+		t.Fatalf("ids %q, %q", a, b)
 	}
 }
 
@@ -458,6 +1249,14 @@ func TestOnboardTenant_SettlesFailureFromProvisioning(t *testing.T) {
 	}
 	if ev.Outcome != audit.OutcomeFailure+":onboard-failed" {
 		t.Fatalf("event Outcome = %q, want %q", ev.Outcome, audit.OutcomeFailure+":onboard-failed")
+	}
+	for _, rec := range ring.Snapshot() {
+		if rec.TenantID != tenantid.System {
+			t.Fatalf("a failed onboarding filed on tenant %q's trail: %+v", rec.TenantID, rec)
+		}
+		if _, ok := rec.Attributes["admin_username"]; ok {
+			t.Fatalf("platform record carries admin_username: %+v", rec)
+		}
 	}
 }
 

@@ -82,6 +82,7 @@ func remoteInfo(meta DatabaseMeta) DatabaseInfo {
 	info := DatabaseInfo{
 		TenantID:     meta.TenantID,
 		Name:         meta.Name,
+		ID:           meta.ID,
 		Backend:      meta.Backend,
 		Status:       status,
 		Protocol:     meta.Protocol,

@@ -118,6 +118,152 @@ func TestChain_AppendToInstance_ContinuesTheChain(t *testing.T) {
 	}
 }
 
+// An onboarding emitter whose append outlived its timeout retries it; the
+// delayed first proposal and the retry both apply. The trail holds one
+// event, on a restored replica too.
+func TestChain_OnboardEventAppliedOnceAcrossRetry(t *testing.T) {
+	const tenantID = "acme"
+	c := NewChain()
+	store := memory.NewStorage()
+	ev := fixedEvent(0, tenantID)
+	ev.Action = ActionTenantOnboard
+	ev.RequestID = "req-1"
+	ev.AppendOnce = true
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The retry and the delayed first proposal, applied in one batch and
+	// then once more through the other opcode.
+	if _, err := c.AppendToInstance(store, tenantID, [][]byte{raw, raw}); err != nil {
+		t.Fatalf("AppendToInstance: %v", err)
+	}
+	if _, err := c.Append(store, tenantID, ev); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if seq, _, _ := c.log.Head(tenantID); seq != 1 {
+		t.Fatalf("head seq = %d after three applies of one event, want 1", seq)
+	}
+
+	restored := NewChain()
+	if err := restored.Restore(store); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if _, err := restored.Append(store, tenantID, ev); err != nil {
+		t.Fatalf("Append after restore: %v", err)
+	}
+	if seq, _, _ := restored.log.Head(tenantID); seq != 1 {
+		t.Fatalf("head seq = %d after restore and a repeat, want 1", seq)
+	}
+}
+
+// TestChain_OnboardEventWithoutMarkerAppendsEachTime pins the old shape: an
+// onboarding event proposed before audit-append-once is active carries no
+// AppendOnce marker, and every binary appends it each time it is applied,
+// through either opcode, so old and new replicas chain the same log alike;
+// a marked event applied twice appends once.
+func TestChain_OnboardEventWithoutMarkerAppendsEachTime(t *testing.T) {
+	const tenantID = "acme"
+	c := NewChain()
+	store := memory.NewStorage()
+	ev := fixedEvent(0, tenantID)
+	ev.Action = ActionTenantOnboard
+	ev.RequestID = "req-1"
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Append(store, tenantID, ev); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	first, _, _ := c.log.Head(tenantID)
+	if _, err := c.AppendToInstance(store, tenantID, [][]byte{raw}); err != nil {
+		t.Fatalf("AppendToInstance: %v", err)
+	}
+	if _, err := c.Append(store, tenantID, ev); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if seq, _, _ := c.log.Head(tenantID); seq != first+2 {
+		t.Fatalf("head seq = %d after three applies of an unmarked event, want %d", seq, first+2)
+	}
+
+	marked := ev
+	marked.RequestID = "req-2"
+	marked.AppendOnce = true
+	if _, err := c.Append(store, tenantID, marked); err != nil {
+		t.Fatalf("Append marked: %v", err)
+	}
+	if _, err := c.Append(store, tenantID, marked); err != nil {
+		t.Fatalf("Append marked again: %v", err)
+	}
+	if seq, _, _ := c.log.Head(tenantID); seq != first+3 {
+		t.Fatalf("head seq = %d after a marked event applied twice, want %d", seq, first+3)
+	}
+}
+
+// An onboarding emitter's unmarked proposal, made before audit-append-once
+// was active, timed out but stayed in flight; its retry, made once the
+// feature is active, is marked. Whichever applies first, through either
+// opcode, the trail holds one event -- on a replica restored between the
+// two as well. No time passes in between: the outcome does not rest on the
+// delayed proposal being judged lost.
+func TestChain_UnmarkedProposalAndMarkedRetryAppendOnce(t *testing.T) {
+	const tenantID = "acme"
+	unmarked := fixedEvent(0, tenantID)
+	unmarked.Action = ActionTenantOnboard
+	unmarked.RequestID = "req-1"
+	marked := unmarked
+	marked.AppendOnce = true
+
+	apply := func(t *testing.T, c *Chain, store *memory.MemoryStorage, ev AuditEvent, instance bool) {
+		t.Helper()
+		if !instance {
+			if _, err := c.Append(store, tenantID, ev); err != nil {
+				t.Fatalf("Append: %v", err)
+			}
+			return
+		}
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.AppendToInstance(store, tenantID, [][]byte{raw}); err != nil {
+			t.Fatalf("AppendToInstance: %v", err)
+		}
+	}
+	for _, tc := range []struct {
+		name        string
+		first, then AuditEvent
+		instance    bool
+		restore     bool
+	}{
+		{name: "unmarked then marked", first: unmarked, then: marked},
+		{name: "marked then unmarked", first: marked, then: unmarked},
+		{name: "unmarked then marked, instance", first: unmarked, then: marked, instance: true},
+		{name: "marked then unmarked, instance", first: marked, then: unmarked, instance: true},
+		{name: "unmarked, restore, marked", first: unmarked, then: marked, restore: true},
+		{name: "marked, restore, unmarked", first: marked, then: unmarked, restore: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewChain()
+			store := memory.NewStorage()
+			apply(t, c, store, tc.first, tc.instance)
+			first, _, _ := c.log.Head(tenantID)
+			if tc.restore {
+				c = NewChain()
+				if err := c.Restore(store); err != nil {
+					t.Fatalf("Restore: %v", err)
+				}
+			}
+			apply(t, c, store, tc.then, tc.instance)
+			if seq, _, _ := c.log.Head(tenantID); seq != first {
+				t.Fatalf("head seq = %d after the proposal and its retry applied, want %d (one event)", seq, first)
+			}
+		})
+	}
+}
+
 func TestChain_AppendToInstance_Refusals(t *testing.T) {
 	const tenantID = "acme"
 	zero := fixedEvent(0, tenantID)

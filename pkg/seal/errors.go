@@ -342,26 +342,6 @@ var (
 	// rejects such ids at creation; this is the fail-closed defense at
 	// the filesystem sink.
 	ErrTenantPathEscapesPool = errors.New("qrdb/seal: tenant path escapes volume pool root")
-
-	// --- Sealed-blob import seam (self-managed tenant Raft replicas) ---.
-
-	// ErrImportSealedBlobNil is returned when a nil blob is passed to
-	// ImportSealedBlob.
-	ErrImportSealedBlobNil = errors.New("qrdb/seal: sealed blob must not be nil")
-
-	// ErrImportSealedBlobInvalid is returned when the blob passed to
-	// ImportSealedBlob cannot be unmarshalled to a structurally valid
-	// SealedRootKey (missing epoch, wrong salt length, epoch absent from
-	// KnownEpochs, or malformed JSON).
-	ErrImportSealedBlobInvalid = errors.New("qrdb/seal: sealed blob is not a valid sealed root key")
-
-	// ErrImportSealedBlobShamir is returned when the blob passed to
-	// ImportSealedBlob is a Shamir root key. A Shamir key unwraps only through
-	// the wrapped-key and holder-roster records of the node that generated it,
-	// which a blob does not carry; every Shamir replica keys itself at its
-	// holders' first quorum instead (ArmShamir), and an imported blob would
-	// block that.
-	ErrImportSealedBlobShamir = errors.New("qrdb/seal: a shamir sealed blob is never imported; the replica keys itself through ArmShamir")
 )
 
 // GetError is returned when a barrier Get operation fails during decryption.

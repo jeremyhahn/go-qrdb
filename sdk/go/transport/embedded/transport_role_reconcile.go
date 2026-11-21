@@ -41,7 +41,7 @@ func (t *Transport) ReconcileBuiltInRoles(ctx context.Context, req *transport.Re
 	// missing from every role seeded before it existed, so nobody could
 	// hold the grant needed to repair that absence. Matches the QUIC
 	// dispatcher's role.ReconcileBuiltIn registration exactly.
-	if err := t.authorizeIdentityTenant(ctx, tenantID, permission.RolesCreate); err != nil {
+	if ctx, err = t.authorizeIdentityTenant(ctx, tenantID, permission.RolesCreate); err != nil {
 		return nil, err
 	}
 
@@ -74,7 +74,7 @@ func (t *Transport) ReconcileBuiltInRolesAllTenants(ctx context.Context) (*trans
 		return nil, err
 	}
 
-	report, err := role.ReconcileAllTenants(ctx, t.roleSvc, t.tenantSvc)
+	report, err := role.ReconcileAllTenants(ctx, t.roleSvc, t.tenantSvc, t.authMW.OperatorAccessGate(permission.RolesReconcileAll))
 	if err != nil {
 		return nil, err
 	}

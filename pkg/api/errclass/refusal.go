@@ -19,9 +19,11 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -42,6 +44,8 @@ var refusals = []refusalEncoder{
 	adminCredentialRequiresCARefusal,
 	vlogRefusal,
 	vectorRefusal,
+	featureNotActiveRefusal,
+	invalidIsolationPolicyRefusal,
 }
 
 // vectorRefusal names a missing vector namespace and a dimension that differs
@@ -145,6 +149,31 @@ func barrierRefusal(err error) (string, map[string]string, bool) {
 func adminCredentialRequiresCARefusal(err error) (string, map[string]string, bool) {
 	if e, ok := errors.AsType[*ceremony.AdminCredentialRequiresCAError](err); ok {
 		return ceremony.ReasonAdminCredentialRequiresCA, e.Metadata(), true
+	}
+	return "", nil, false
+}
+
+// featureNotActiveRefusal carries a *feature.NotActiveError to the client
+// typed. It applies only while the error still classifies Unavailable, so a
+// wrapper that reclassifies it keeps its own wire shape.
+func featureNotActiveRefusal(err error) (string, map[string]string, bool) {
+	if Classify(err) != Unavailable {
+		return "", nil, false
+	}
+	if e, ok := errors.AsType[*feature.NotActiveError](err); ok {
+		return transport.ReasonFeatureNotActive, transport.FeatureNotActiveMetadata(e), true
+	}
+	return "", nil, false
+}
+
+// invalidIsolationPolicyRefusal carries a *tenant.InvalidIsolationPolicyError
+// to the client typed.
+func invalidIsolationPolicyRefusal(err error) (string, map[string]string, bool) {
+	if Classify(err) != InvalidArgument {
+		return "", nil, false
+	}
+	if e, ok := errors.AsType[*tenant.InvalidIsolationPolicyError](err); ok {
+		return transport.ReasonInvalidIsolationPolicy, transport.InvalidIsolationPolicyMetadata(e), true
 	}
 	return "", nil, false
 }

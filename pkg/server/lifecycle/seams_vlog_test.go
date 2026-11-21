@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -89,24 +90,65 @@ func (barrierTenants) GetTenant(_ context.Context, id string) (*tenant.TenantInf
 	return &tenant.TenantInfo{ID: id, IsolationType: tenant.IsolationBarrier}, nil
 }
 
-// TestBuildServices_LogServiceRefusesBarrierTenants: a barrier tenant's log
-// and signing key would be applied under the system barrier, so the composed
-// log service refuses the tenant before any key is created.
-func TestBuildServices_LogServiceRefusesBarrierTenants(t *testing.T) {
+// TestBuildServices_LogServiceRoutesBarrierTenantsToTheirHomeGroup: without a
+// home group a barrier tenant's log and signing key would be applied under
+// the system barrier, so the composed log service refuses the tenant before
+// any key is created; once the tenant homes are attached it routes the
+// tenant to its home group.
+func TestBuildServices_LogServiceRoutesBarrierTenantsToTheirHomeGroup(t *testing.T) {
 	device := &recordingHeadSigners{}
 	node := buildSeamNode(t, lifecycle.Infra{HeadSignerProvider: device})
 	node.Tenant = barrierTenants{}
 	ctx := tenant.WithTenantID(context.Background(), "vault")
-	_, err := node.Log.CreateLog(ctx, &service.CreateLogRequest{
-		LogRef: service.LogRef{Database: "ledger", Log: "events"}, Origin: "db.example.com/events", SigningKeyType: vlog.SignatureEd25519,
+	createLog := func() error {
+		_, err := node.Log.CreateLog(ctx, &service.CreateLogRequest{
+			LogRef: service.LogRef{Database: "ledger", Log: "events"}, Origin: "db.example.com/events", SigningKeyType: vlog.SignatureEd25519,
+		})
+		return err
+	}
+
+	t.Run("refused without a home group", func(t *testing.T) {
+		var refused *service.BarrierTenantLogNotSupportedError
+		if err := createLog(); !errors.As(err, &refused) || refused.TenantID != "vault" {
+			t.Fatalf("CreateLog = %v, want *service.BarrierTenantLogNotSupportedError for vault", err)
+		}
+		if len(device.created) != 0 {
+			t.Fatalf("device asked to create %+v for a refused tenant", device.created)
+		}
 	})
-	var refused *service.BarrierTenantLogNotSupportedError
-	if !errors.As(err, &refused) || refused.TenantID != "vault" {
-		t.Fatalf("CreateLog = %v, want *service.BarrierTenantLogNotSupportedError for vault", err)
-	}
-	if len(device.created) != 0 {
-		t.Fatalf("device asked to create %+v for a refused tenant", device.created)
-	}
+
+	t.Run("routed with one", func(t *testing.T) {
+		homes := &askedHomeGroups{}
+		if !lifecycle.AttachTenantHomes(node, homes) {
+			t.Fatal("AttachTenantHomes = false, want true")
+		}
+		if err := createLog(); !errors.Is(err, errHomeGroupAsked) {
+			t.Fatalf("CreateLog = %v, want the home group's answer", err)
+		}
+		if len(homes.asked) != 1 || homes.asked[0] != "vault" {
+			t.Fatalf("home groups asked for %v, want [vault]", homes.asked)
+		}
+	})
+}
+
+// errHomeGroupAsked is what askedHomeGroups answers every home group with.
+var errHomeGroupAsked = errors.New("home group asked")
+
+// askedHomeGroups is a raft node's tenant homes: it records which tenants'
+// home groups are asked for and answers each with errHomeGroupAsked.
+type askedHomeGroups struct {
+	asked []string
+}
+
+func (*askedHomeGroups) Services(context.Context, string, string) (*server.DatabaseServices, error) {
+	return nil, errHomeGroupAsked
+}
+
+func (*askedHomeGroups) IsShardJoining(uint64) bool { return false }
+
+func (h *askedHomeGroups) HomeGroup(_ context.Context, tenantID string) (service.Host, uint64, error) {
+	h.asked = append(h.asked, tenantID)
+	return nil, 0, errHomeGroupAsked
 }
 
 // TestBuildServices_LogServiceRefusesBarrierDatabases: a barrier database's

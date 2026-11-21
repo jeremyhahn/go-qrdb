@@ -277,6 +277,9 @@ func registerAdminGrants() {
 		// Cross-scope tenant management — only effective for system-tenant Admin.
 		TenantsListCross, TenantsCreateCross, TenantsApprove,
 		TenantsReadCross, TenantsDeleteCross, TenantsUpdateCross,
+		// Tenant-qualified operator access to another tenant's identity
+		// records (tenant_identity.go), gated by that tenant's policy.
+		UsersReadTenant, UsersWriteTenant, RolesReadTenant, RolesWriteTenant,
 		// Tenant provisioning — creating a tenant and setting its plan (quotas,
 		// entitlements, isolation tier). Platform-operator operations,
 		// ScopeCross (tenant_provisioning_scope.go): only effective for

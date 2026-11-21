@@ -37,6 +37,8 @@ func tenantTools(svc tenant.TenantServicer, onboarding service.TenantOnboardingS
 		{Tool: toolTenantGet(), Perm: permission.TenantsRead, Handler: handleTenantGet(svc, mw)},
 		{Tool: toolTenantList(), Perm: permission.TenantsList, Handler: handleTenantList(svc, mw)},
 		{Tool: toolTenantUpdate(), Perm: permission.TenantsUpdate, Handler: handleTenantUpdate(svc, mw)},
+		{Tool: toolClusterIsolationPolicyGet(), Perm: permission.TenantsRead, Handler: handleClusterIsolationPolicyGet(svc)},
+		{Tool: toolClusterIsolationPolicySet(), Perm: permission.TenantsUpdateCross, Handler: handleClusterIsolationPolicySet(svc)},
 		{Tool: toolTenantDelete(), Perm: permission.TenantsDelete, Handler: handleTenantDelete(svc, mw)},
 		{Tool: toolTenantUpdateQuotas(), Perm: permission.TenantsSetQuotas, Handler: handleTenantUpdateQuotas(svc, mw)},
 		{Tool: toolTenantUpdateEntitlements(), Perm: permission.TenantsSetEntitlements, Handler: handleTenantUpdateEntitlements(svc, mw)},
@@ -375,6 +377,9 @@ func toolTenantUpdate() mcp.Tool {
 		mcp.WithBoolean("clear_metadata",
 			mcp.Description("Remove every metadata entry. Ignored when metadata is given."),
 		),
+		mcp.WithString("isolation_policy",
+			mcp.Description("The tenant's isolation policy: 'strict', or an empty string to inherit the cluster floor. Left unchanged when absent; strict back to inherit is refused."),
+		),
 	)
 }
 
@@ -410,6 +415,35 @@ func parseTenantPatchArgs(req mcp.CallToolRequest, patch *tenant.TenantPatch) er
 	return nil
 }
 
+// parseIsolationPolicyArg copies a present isolation_policy argument into
+// the patch. It reports true when the argument asks for inherit (""), which
+// the patch cannot carry: an empty patch field means unchanged.
+func parseIsolationPolicyArg(req mcp.CallToolRequest, patch *tenant.TenantPatch) (bool, error) {
+	raw, present := req.GetArguments()["isolation_policy"]
+	if !present || raw == nil {
+		return false, nil
+	}
+	p, ok := raw.(string)
+	if !ok {
+		return false, &ToolArgumentError{Argument: "isolation_policy", Reason: "must be a string"}
+	}
+	patch.IsolationPolicy = tenant.TenantIsolationPolicy(p)
+	return patch.IsolationPolicy == tenant.TenantIsolationPolicyInherit, nil
+}
+
+// refuseIsolationPolicyLoosening refuses an explicit inherit request on a
+// strict tenant: the tenant policy is tighten-only.
+func refuseIsolationPolicyLoosening(ctx context.Context, svc tenant.TenantServicer, id string) error {
+	info, err := svc.GetTenant(ctx, id)
+	if err != nil {
+		return err
+	}
+	if info.IsolationPolicy == tenant.TenantIsolationPolicyStrict {
+		return &tenant.IsolationPolicyChangeError{From: string(tenant.TenantIsolationPolicyStrict), To: "inherit"}
+	}
+	return nil
+}
+
 // handleTenantUpdate returns a tool handler that applies a partial update to a tenant.
 func handleTenantUpdate(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -424,10 +458,24 @@ func handleTenantUpdate(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mc
 		if err := parseTenantPatchArgs(req, &patch); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		inherit, err := parseIsolationPolicyArg(req, &patch)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		if refusal := tenantRequestRefusal("qrdb_tenant_update", mw, id, func(mw *authmw.AuthMiddleware) error {
 			return mw.AuthorizeTenantUpdate(ctx, id, patch)
 		}); refusal != nil {
 			return refusal, nil
+		}
+		if inherit || patch.IsolationPolicy != "" {
+			if err := tenant.RequireStrictIsolation(svc); err != nil {
+				return nil, &ToolError{Tool: "qrdb_tenant_update", Err: err}
+			}
+		}
+		if inherit {
+			if err := refuseIsolationPolicyLoosening(ctx, svc, id); err != nil {
+				return nil, &ToolError{Tool: "qrdb_tenant_update", Err: err}
+			}
 		}
 
 		info, err := svc.UpdateTenant(ctx, id, patch)
@@ -686,4 +734,61 @@ func tenantRequestRefusal(tool string, mw *authmw.AuthMiddleware, tenantID strin
 		return authzToolError(err)
 	}
 	return nil
+}
+
+// clusterIsolationPolicyJSON is the result of both floor tools.
+type clusterIsolationPolicyJSON struct {
+	Policy tenant.ClusterIsolationPolicy `json:"policy"`
+}
+
+func toolClusterIsolationPolicyGet() mcp.Tool {
+	return mcp.NewTool("qrdb_cluster_isolation_policy_get",
+		mcp.WithDescription("Read the cluster isolation floor: 'operator-access' or 'strict'. An unset floor reads as 'operator-access'."),
+	)
+}
+
+func handleClusterIsolationPolicyGet(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		const tool = "qrdb_cluster_isolation_policy_get"
+		if err := tenant.RequireStrictIsolation(svc); err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
+		return clusterIsolationPolicyResult(ctx, svc, tool)
+	}
+}
+
+func toolClusterIsolationPolicySet() mcp.Tool {
+	return mcp.NewTool("qrdb_cluster_isolation_policy_set",
+		mcp.WithDescription("Set the cluster isolation floor. Tighten-only: strict cannot go back to operator-access."),
+		mcp.WithString("policy",
+			mcp.Required(),
+			mcp.Description("The new floor: 'strict' or 'operator-access'."),
+		),
+	)
+}
+
+func handleClusterIsolationPolicySet(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		const tool = "qrdb_cluster_isolation_policy_set"
+		if err := tenant.RequireStrictIsolation(svc); err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
+		policy := mcp.ParseString(req, "policy", "")
+		if err := svc.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicy(policy)); err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
+		return clusterIsolationPolicyResult(ctx, svc, tool)
+	}
+}
+
+func clusterIsolationPolicyResult(ctx context.Context, svc tenant.TenantServicer, tool string) (*mcp.CallToolResult, error) {
+	policy, err := svc.ClusterIsolationPolicy(ctx)
+	if err != nil {
+		return nil, &ToolError{Tool: tool, Err: err}
+	}
+	data, err := json.Marshal(clusterIsolationPolicyJSON{Policy: policy})
+	if err != nil {
+		return nil, &ToolError{Tool: tool, Err: err}
+	}
+	return mcp.NewToolResultText(string(data)), nil
 }

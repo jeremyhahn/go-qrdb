@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -39,6 +40,7 @@ type fakeHomeServices struct {
 	dbs     []string
 	joining map[uint64]bool
 	asked   []uint64
+	host    service.Host
 }
 
 var _ TenantHomeServices = (*fakeHomeServices)(nil)
@@ -55,6 +57,15 @@ func (f *fakeHomeServices) Services(_ context.Context, _, db string) (*server.Da
 func (f *fakeHomeServices) IsShardJoining(shardID uint64) bool {
 	f.asked = append(f.asked, shardID)
 	return f.joining[shardID]
+}
+
+// HomeGroup mirrors the raft factory's: the home database's shard on host.
+func (f *fakeHomeServices) HomeGroup(ctx context.Context, tenantID string) (service.Host, uint64, error) {
+	svcs, err := f.Services(ctx, tenantID, database.TenantHomeName)
+	if err != nil {
+		return nil, 0, err
+	}
+	return f.host, svcs.ShardID, nil
 }
 
 // fakeHomeProvisioner is a TenantHomeProvisioner recording what it placed.
@@ -159,6 +170,88 @@ func TestTenantHomes_HomeStore_CatchingUpReplicaIsNotServed(t *testing.T) {
 	if _, err := h.HomeStore(ctx, "vault"); err != nil {
 		t.Fatalf("HomeStore after catching up: %v", err)
 	}
+}
+
+// stubHost is a service.Host identified by pointer; HomeGroup only names it.
+type stubHost struct{ service.Host }
+
+func TestTenantHomes_HomeGroup(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("names the home database's shard", func(t *testing.T) {
+		bundle := homeBundle(func() error { return nil })
+		bundle.ShardID = 42
+		host := &stubHost{}
+		svcs := &fakeHomeServices{svcs: bundle, host: host}
+		h := newTestTenantHomes(svcs, &fakeHomeProvisioner{})
+
+		got, shardID, err := h.HomeGroup(ctx, "vault")
+		if err != nil {
+			t.Fatalf("HomeGroup: %v", err)
+		}
+		if got != host || shardID != 42 {
+			t.Fatalf("HomeGroup = (%v, %d), want (the services' host, 42)", got, shardID)
+		}
+		if len(svcs.dbs) != 1 || svcs.dbs[0] != database.TenantHomeName {
+			t.Fatalf("services asked for %v, want [%s]", svcs.dbs, database.TenantHomeName)
+		}
+	})
+
+	t.Run("catching up is refused", func(t *testing.T) {
+		bundle := homeBundle(func() error { return nil })
+		bundle.ShardID = 42
+		svcs := &fakeHomeServices{svcs: bundle, host: &stubHost{}, joining: map[uint64]bool{42: true}}
+		h := newTestTenantHomes(svcs, &fakeHomeProvisioner{})
+
+		_, _, err := h.HomeGroup(ctx, "vault")
+		var catchingUp *TenantHomeCatchingUpError
+		if !errors.As(err, &catchingUp) || catchingUp.TenantID != "vault" {
+			t.Fatalf("err = %v, want *TenantHomeCatchingUpError for vault", err)
+		}
+	})
+
+	t.Run("sealed is returned as is", func(t *testing.T) {
+		h := newTestTenantHomes(&fakeHomeServices{err: seal.ErrSealed}, &fakeHomeProvisioner{})
+		if _, _, err := h.HomeGroup(ctx, "vault"); !errors.Is(err, seal.ErrSealed) {
+			t.Fatalf("err = %v, want seal.ErrSealed", err)
+		}
+	})
+}
+
+// TestTenantHomes_HomeGroup_RefusalsClassifyUnavailable pins what a transport
+// answers when the home group cannot be named: a retryable unavailable, as the
+// HomeStore path answers for the same causes, not an internal error.
+func TestTenantHomes_HomeGroup_RefusalsClassifyUnavailable(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("catching up", func(t *testing.T) {
+		bundle := homeBundle(func() error { return nil })
+		bundle.ShardID = 42
+		svcs := &fakeHomeServices{svcs: bundle, host: &stubHost{}, joining: map[uint64]bool{42: true}}
+		h := newTestTenantHomes(svcs, &fakeHomeProvisioner{})
+
+		_, _, err := h.HomeGroup(ctx, "vault")
+		if got := errclass.Classify(err); got != errclass.Unavailable {
+			t.Fatalf("Classify(%v) = %v, want Unavailable", err, got)
+		}
+		var catchingUp *TenantHomeCatchingUpError
+		if !errors.As(err, &catchingUp) || catchingUp.TenantID != "vault" {
+			t.Fatalf("err = %v, want *TenantHomeCatchingUpError for vault", err)
+		}
+	})
+
+	t.Run("factory error", func(t *testing.T) {
+		factoryErr := errors.New("home services not built")
+		h := newTestTenantHomes(&fakeHomeServices{err: factoryErr}, &fakeHomeProvisioner{})
+
+		_, _, err := h.HomeGroup(ctx, "vault")
+		if got := errclass.Classify(err); got != errclass.Unavailable {
+			t.Fatalf("Classify(%v) = %v, want Unavailable", err, got)
+		}
+		if !errors.Is(err, factoryErr) {
+			t.Fatalf("err = %v, want it to wrap the factory's error", err)
+		}
+	})
 }
 
 func TestTenantHomes_HomeStore_CachedStoreIsNotServedWhileCatchingUp(t *testing.T) {

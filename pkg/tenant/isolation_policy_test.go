@@ -253,6 +253,9 @@ func TestTenantService_CreateTenant_BarrierAllowedUnderStrictFloorWithIsolationP
 func TestTenantService_UpdateTenant_IsolationPolicy_TightenOnly(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newTestService(t)
+	// A barrier tenant's raft databases can be on the shared WAL, so its
+	// tightening lists them: wire a probe that finds none.
+	svc.SetNodeKeyLogProbe(&markerSeeingProbe{svc: svc, sawMarker: map[string]bool{}})
 	if _, err := svc.CreateTenant(ctx, "secure", "Secure", IsolationBarrier); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -287,6 +290,9 @@ func TestTenantService_UpdateTenant_IsolationPolicy_TightenOnly(t *testing.T) {
 func TestTenantService_SetClusterIsolationPolicy_StrictOverExistingIsolatedTenants(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newTestService(t)
+	// The floor governs the barrier tenant "loose" anew, so it lists its
+	// databases on the shared WAL: wire a probe that finds none.
+	svc.SetNodeKeyLogProbe(&markerSeeingProbe{svc: svc, sawMarker: map[string]bool{}})
 	if err := svc.SetClusterIsolationPolicy(ctx, ClusterIsolationPolicyOperatorAccess); err != nil {
 		t.Fatalf("SetClusterIsolationPolicy(operator-access): %v", err)
 	}
@@ -454,7 +460,7 @@ func TestKVTenantService_ClusterIsolationPolicy_NoAtomicCapability(t *testing.T)
 		t.Fatalf("ClusterIsolationPolicy: %v", err)
 	}
 	if got != ClusterIsolationPolicyOperatorAccess {
-		t.Fatalf("got %q, want operator-access (no capability, nothing could have tightened it)", got)
+		t.Fatalf("got %q, want operator-access (no record stored)", got)
 	}
 
 	err = wrapped.SetClusterIsolationPolicy(context.Background(), ClusterIsolationPolicyStrict)

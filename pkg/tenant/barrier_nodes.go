@@ -81,6 +81,7 @@ func (s *TenantService) reportServingNodes(ctx context.Context, status *TenantBa
 	if err != nil {
 		s.logger.Warn("tenant barrier status: serving nodes unreadable",
 			slog.String("tenant_id", status.TenantID), slog.Any("error", err))
+		status.NodesUnreadable = true
 		return
 	}
 	status.Nodes = nodes

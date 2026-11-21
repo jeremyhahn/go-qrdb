@@ -100,7 +100,7 @@ func (r *clusterOwnerResolver) Owners(ctx context.Context, tenantID, database st
 		owners, oerr := r.tenantOwners(ctx, tenantID)
 		return 0, owners, oerr
 	}
-	p, err := r.placements.Get(ctx, tenantID, database)
+	p, err := r.placements.GetByName(ctx, tenantID, database)
 	if err != nil {
 		// No placement entry → meta-managed single-node database. Migrate locally.
 		if errors.Is(err, placement.ErrPlacementNotFound) {

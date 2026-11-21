@@ -80,6 +80,12 @@ type Database struct {
 	// Manager.Drop's own explicit rollback on a failed reclaim.
 	dropping atomic.Bool
 
+	// fenceKept is set when a drop run under KeepFenceOnFailure failed
+	// before its durable claim committed: the catalog still records the
+	// database live, but the in-memory fence must stay up until a retried
+	// drop lands, so the catalog reconcile does not lift it.
+	fenceKept atomic.Bool
+
 	// obsolete is set when the catalog no longer records this incarnation
 	// and the entry could not yet be released. An obsolete entry is never
 	// served: the manager refuses it with StaleDatabaseError until a release
@@ -93,6 +99,12 @@ type Database struct {
 	// published; empty for a database created before incarnations existed
 	// or with no store to mark. See Incarnation.
 	incarnation string
+
+	// id is the database's opaque, never-reused id (DatabaseMeta.ID), the
+	// name it goes by in every record outside its tenant's catalog -- the
+	// placement table above all. Set once, like incarnation, before the
+	// database is published.
+	id string
 
 	// ownerNode is the node the catalog records as holding the database
 	// (DatabaseMeta.OwnerNode). Set once, like incarnation, before the
@@ -257,6 +269,12 @@ func (d *Database) Incarnation() string {
 	return d.incarnation
 }
 
+// ID returns the database's opaque, never-reused id (DatabaseMeta.ID): the
+// key every record outside the tenant's catalog names the database by.
+func (d *Database) ID() string {
+	return d.id
+}
+
 // Dropping reports whether Manager.Drop has fenced this database ahead of
 // reclaiming its keyspace (go-qrdb#482). It is independent of Status: a
 // dropping database's underlying backend may still be open (Drop closes it
@@ -273,6 +291,19 @@ func (d *Database) Dropping() bool {
 // a failed drop is retryable rather than stuck permanently refusing.
 func (d *Database) SetDropping(dropping bool) {
 	d.dropping.Store(dropping)
+}
+
+// keepDropFence pins the drop fence of a database whose KeepFenceOnFailure
+// drop failed: the catalog reconcile never clears it, whatever the catalog
+// records, until a retried drop removes the database.
+func (d *Database) keepDropFence() {
+	d.dropping.Store(true)
+	d.fenceKept.Store(true)
+}
+
+// dropFenceKept reports whether keepDropFence pinned the drop fence.
+func (d *Database) dropFenceKept() bool {
+	return d.fenceKept.Load()
 }
 
 // BarrierEnabled reports whether this database has barrier encryption enabled.
@@ -440,6 +471,7 @@ func (d *Database) Info() DatabaseInfo {
 	info := DatabaseInfo{
 		TenantID:     cfg.TenantID,
 		Name:         cfg.Name,
+		ID:           d.id,
 		Backend:      cfg.Backend,
 		Status:       d.reportedStatus(),
 		Protocol:     cfg.Protocol,

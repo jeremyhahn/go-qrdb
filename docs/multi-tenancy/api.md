@@ -360,10 +360,14 @@ before the change included — with 403 / `PERMISSION_DENIED`. Reactivating it
 restores access on the next request. Principals of other tenants and the
 system administrator's calls on the tenant are unaffected.
 
-Every status change is audited as `tenant.status_change`, keyed by the
-affected tenant and carrying the caller and the `from` and `to` status. A
-`permitted` record is written before the change is stored and a `success` or
-`failure` record once it is. Under the default `fail-closed`
+Every status change is audited as `tenant.status_change`, a platform event
+on the system tenant's trail naming the affected tenant as its resource
+(`tenant:<id>`) and carrying the `from` and `to` status. The platform trail
+holds no tenant username, so it names the caller only when the caller is a
+platform (system-tenant) principal; a change made by one of the tenant's own
+principals also files its outcome, naming that principal, on the tenant's own
+trail. A `permitted` record is written before the change is stored and a
+`success` or `failure` record once it is. Under the default `fail-closed`
 `auth.audit_failure_policy` a change whose record cannot be written is
 refused and nothing is stored. An update that leaves the status as it was
 records nothing.
@@ -529,8 +533,37 @@ leaks to a caller with no access to the tier.
 Every node applies the `tenant.isolation_policy` configuration key (`strict`
 or `operator-access`) to the cluster isolation-policy floor before it serves.
 The floor only tightens, and cannot become `strict` over tenants that are not:
-a refused transition is logged and the stored floor stands. No transport
-reads or sets the floor or a tenant's policy.
+a refused transition is logged and the stored floor stands. The key predates
+the verbs below and is not behind their gate.
+
+The floor and a tenant's policy have transport verbs, refused until the
+`strict-isolation` feature is active. A standalone node is active from the
+start; a cluster is active once it has activated the feature cluster-wide (a
+mixed-version cluster never does). Until then every one of them answers
+`feature.NotActiveError` and changes nothing:
+
+| Verb | REST | gRPC | QUIC | MCP | Go SDK (`Tenants()`, every transport) | CLI |
+|------|------|------|------|-----|------|-----|
+| Read the floor | `GET /v1/cluster/isolation-policy` | `GetClusterIsolationPolicy` | `cluster.IsolationPolicyGet` | `qrdb_cluster_isolation_policy_get` | `GetClusterIsolationPolicy(ctx)` | `qrdb cluster-isolation-policy get` |
+| Set the floor | `PUT /v1/cluster/isolation-policy` `{"policy": "strict"}` | `SetClusterIsolationPolicy` | `cluster.IsolationPolicySet` | `qrdb_cluster_isolation_policy_set` | `SetClusterIsolationPolicy(ctx, policy)`, returning the stored floor | `qrdb cluster-isolation-policy set <operator-access\|strict>` |
+| Set a tenant's policy | a tenant update carrying `isolation_policy` | `TenantUpdate.isolation_policy` | `tenant.Update` `isolation_policy` | `qrdb_tenant_update` `isolation_policy` | `UpdateTenant` with `UpdateTenantRequest.IsolationPolicy` set (`""` is inherit; nil sends nothing and is not gated) | `qrdb tenant update <id> --isolation-policy <inherit\|strict>` |
+
+A tenant read reports the tenant's own policy on every transport: REST and
+MCP `isolation_policy`, protobuf `TenantResponse.isolation_policy`, and the Go
+SDK's `TenantInfo.IsolationPolicy` from `GetTenant`, `ListTenants` and
+`UpdateTenant` (`"strict"`, or empty when the tenant inherits the cluster
+floor). `qrdb tenant get` prints it as an `Isolation policy:` line when set.
+
+| Outcome | HTTP | gRPC / QUIC | Refusal reason |
+|---------|------|-------------|----------------|
+| Feature not active (`feature.NotActiveError`) | 503 | `Unavailable` | `FEATURE_NOT_ACTIVE` (metadata `feature`, `shard_id`) |
+| Unknown policy value (`tenant.InvalidIsolationPolicyError`) | 400 | `InvalidArgument` | `INVALID_ISOLATION_POLICY` (metadata `value`) |
+| A loosening (`tenant.IsolationPolicyChangeError`) | 409 | `FailedPrecondition` | |
+
+The refusal reason travels in the REST error body's `code` and metadata, the
+gRPC `ErrorInfo`, the QUIC error info and the MCP error envelope, so the Go
+SDK returns the typed error (`errors.As`) on every transport, embedded
+included.
 
 ### Capabilities
 

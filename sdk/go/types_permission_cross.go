@@ -87,6 +87,23 @@ const (
 	// definitions in one pass, leaving custom roles untouched.
 	PermissionRolesReconcileAll = permission.RolesReconcileAll
 
+	// PermissionUsersReadTenant ("users:read:tenant") lets an operator read
+	// another tenant's users and their credentials, admitted under the
+	// operator-access isolation policy and audited in both trails.
+	PermissionUsersReadTenant = permission.UsersReadTenant
+
+	// PermissionUsersWriteTenant ("users:write:tenant") lets an operator
+	// write another tenant's users and their certificate bindings.
+	PermissionUsersWriteTenant = permission.UsersWriteTenant
+
+	// PermissionRolesReadTenant ("roles:read:tenant") lets an operator read
+	// another tenant's roles and role bindings.
+	PermissionRolesReadTenant = permission.RolesReadTenant
+
+	// PermissionRolesWriteTenant ("roles:write:tenant") lets an operator
+	// write another tenant's roles and assign or revoke its role bindings.
+	PermissionRolesWriteTenant = permission.RolesWriteTenant
+
 	// PermissionAuditVerify ("audit:verify") verifies the tamper-evidence
 	// hash chain of the node's audit log. The chain is the whole node's
 	// trail, not a tenant-filtered slice, so it is reserved for the system

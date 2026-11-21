@@ -347,7 +347,7 @@ type initHookTrail struct {
 
 func (h *initHookTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
 	if h.hook != nil && ev.Resource == seal.BarrierAuditResource && ev.Action == "initialize" &&
-		ev.Outcome == audit.OutcomeSuccess && ev.TenantID == h.tenantID {
+		ev.Outcome == audit.OutcomeSuccess && ev.Attributes["barrier"] == seal.TenantBarrierAuditName(h.tenantID) {
 		hook := h.hook
 		h.hook = nil
 		hook()

@@ -21,6 +21,8 @@ import (
 	"sync"
 	"testing"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -83,6 +85,127 @@ func TestProvisionTenantHome_Idempotent(t *testing.T) {
 	}
 	if second.ShardID != first.ShardID {
 		t.Fatalf("re-provisioning claimed a new shard %d, want the existing %d", second.ShardID, first.ShardID)
+	}
+}
+
+// homeOnTopology provisions tenant rt's home group over a topology the test
+// can change afterwards, as nodes join or replace one another.
+func homeOnTopology(t *testing.T, nodes []placement.NodeLoad) (*DatabaseService, *placement.Store, *staticTopology) {
+	t.Helper()
+	svc, store := newHomeDatabaseService(t, nodes)
+	topo := &staticTopology{nodes: nodes}
+	sched, err := placement.NewScheduler(topo)
+	if err != nil {
+		t.Fatalf("placement.NewScheduler: %v", err)
+	}
+	svc.placementScheduler = sched
+	if _, err := svc.ProvisionTenantHome(context.Background(), "rt"); err != nil {
+		t.Fatalf("ProvisionTenantHome: %v", err)
+	}
+	return svc, store, topo
+}
+
+// TestReconcileTenantHomes_ShedsAVoterAbsentFromTheSystemRoster proves the
+// tenant home scheduler judges departure by the system shard's roster: a
+// node that left the cluster is still listed as a member of the home group
+// it was a voter of, so a roster built from every local shard's membership
+// would keep it known forever. With the system roster it is removed.
+func TestReconcileTenantHomes_ShedsAVoterAbsentFromTheSystemRoster(t *testing.T) {
+	svc, store, topo := homeOnTopology(t, healthyNodes("n1", "n2", "n3"))
+	host := withHomeView(t, svc, store, true)
+	topo.nodes = healthyNodes("n1", "n2", "n3", "n4")
+	if err := svc.ReconcileTenantHomes(context.Background()); err != nil {
+		t.Fatalf("ReconcileTenantHomes (grow): %v", err)
+	}
+	home := loadHome(t, store)
+	if homeReplicaOn(t, store, "n4:1") == nil {
+		t.Fatalf("home spans %d nodes after the grow, want one on n4", len(home.Replicas))
+	}
+	host.members = membersOf(home)
+
+	// n4 leaves: the system shard's roster drops it, but the home group's
+	// membership, as this node hosts it, still lists it.
+	const systemShard = 1
+	homeMembers := make(map[uint64]string, len(home.Replicas))
+	for _, r := range home.Replicas {
+		homeMembers[r.ReplicaID] = r.RaftAddr
+	}
+	raftHost := &mockHost{getNodeHostInfoFn: func(quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+		return &quicraft.NodeHostInfo{
+			RaftAddress: "n1:1",
+			ShardInfoList: []quicraft.ShardInfo{
+				{ShardID: systemShard, Nodes: map[uint64]string{1: "n1:1", 2: "n2:1", 3: "n3:1"}},
+				{ShardID: home.ShardID, Nodes: homeMembers},
+			},
+		}
+	}}
+	sched, err := placement.NewScheduler(NewHostTopologyProvider(raftHost, nil, WithRosterShard(systemShard)))
+	if err != nil {
+		t.Fatalf("placement.NewScheduler: %v", err)
+	}
+	svc.placementScheduler = sched
+
+	if err := svc.ReconcileTenantHomes(context.Background()); err != nil {
+		t.Fatalf("ReconcileTenantHomes (n4 left): %v", err)
+	}
+	if homeReplicaOn(t, store, "n4:1") != nil {
+		t.Fatal("home kept its replica on n4, absent from the system roster")
+	}
+	if len(host.removeCalls) != 1 {
+		t.Fatalf("RemoveFollowerNode calls = %d, want 1", len(host.removeCalls))
+	}
+}
+
+// homeReplicaOn returns the home group's replica on addr, or nil.
+func homeReplicaOn(t *testing.T, store *placement.Store, addr string) *placement.Replica {
+	t.Helper()
+	home, err := store.Get(context.Background(), "rt", database.TenantHomeID)
+	if err != nil {
+		t.Fatalf("Get home: %v", err)
+	}
+	for i := range home.Replicas {
+		if home.Replicas[i].RaftAddr == addr {
+			return &home.Replicas[i]
+		}
+	}
+	return nil
+}
+
+// A node that joins after the tenant's home group was placed joins the home
+// group observer-first when the home is next ensured, so an isolated
+// tenant's serving set covers it (engineering.md, home-group membership).
+func TestProvisionTenantHome_GrowsOntoLateJoiningNode(t *testing.T) {
+	svc, store, topo := homeOnTopology(t, healthyNodes("n1", "n2", "n3"))
+	if homeReplicaOn(t, store, "n4:1") != nil {
+		t.Fatal("home group already on n4 before it joined")
+	}
+	topo.nodes = healthyNodes("n1", "n2", "n3", "n4")
+
+	if _, err := svc.ProvisionTenantHome(context.Background(), "rt"); err != nil {
+		t.Fatalf("ProvisionTenantHome after join: %v", err)
+	}
+	r := homeReplicaOn(t, store, "n4:1")
+	if r == nil {
+		t.Fatal("home group did not grow onto the late-joining node n4")
+	}
+	if r.State != placement.ReplicaStateObserver {
+		t.Fatalf("n4 joined the home group as %v, want an observer first", r.State)
+	}
+}
+
+// A node that replaces an original home node joins the home group too.
+func TestGrowTenantHome_CoversReplacementNode(t *testing.T) {
+	svc, store, topo := homeOnTopology(t, healthyNodes("n1", "n2", "n3"))
+	topo.nodes = healthyNodes("n1", "n2", "n5")
+
+	if _, err := svc.GrowTenantHome(context.Background(), "rt"); err != nil {
+		t.Fatalf("GrowTenantHome: %v", err)
+	}
+	if homeReplicaOn(t, store, "n5:1") == nil {
+		t.Fatal("home group did not grow onto the replacement node n5")
+	}
+	if err := svc.ReconcileTenantHomes(context.Background()); err != nil {
+		t.Fatalf("ReconcileTenantHomes with nothing to grow: %v", err)
 	}
 }
 

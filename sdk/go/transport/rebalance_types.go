@@ -82,6 +82,22 @@ type RebalancePlan struct {
 	// CurrentImbalance is the current imbalance score before rebalancing.
 	// 0.0 means perfectly balanced; higher values indicate greater imbalance.
 	CurrentImbalance float64 `json:"current_imbalance"`
+
+	// Skipped names the moves the planner considered and refused, each
+	// with its reason (an isolated tenant's serving set or home group).
+	// It is informational: executing a plan ignores it.
+	Skipped []RebalanceSkippedMove `json:"skipped,omitempty"`
+}
+
+// RebalanceSkippedMove is a move the planner considered and refused.
+type RebalanceSkippedMove struct {
+	ShardID  uint64 `json:"shard_id"`
+	FromNode string `json:"from_node"`
+	ToNode   string `json:"to_node"`
+	// Reason names why the planner refused the move.
+	Reason string `json:"reason"`
+	// Error is the refusal's detail; empty when Reason says it all.
+	Error string `json:"error,omitempty"`
 }
 
 // RebalanceResult contains the outcome of an executed rebalance operation.

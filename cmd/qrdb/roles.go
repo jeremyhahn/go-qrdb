@@ -144,14 +144,15 @@ func newRolesCreateCmd() *cobra.Command {
 
 // newRolesGetCmd creates the "roles get" subcommand.
 func newRolesGetCmd() *cobra.Command {
-	return &cobra.Command{
+	var opTenant string
+	cmd := &cobra.Command{
 		Use:   "get <id>",
 		Short: "Retrieve a role by ID",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
 
-			role, err := client.Roles().GetRole(cmd.Context(), id)
+			role, err := client.Roles().GetRole(transport.WithTenantQualifier(cmd.Context(), opTenant), id)
 			if err != nil {
 				return err
 			}
@@ -159,9 +160,10 @@ func newRolesGetCmd() *cobra.Command {
 			return printRole(role)
 		},
 	}
+	addOperatorTenantFlag(cmd, &opTenant)
+	return cmd
 }
 
-// newRolesGetByNameCmd creates the "roles get-by-name" subcommand.
 func newRolesGetByNameCmd() *cobra.Command {
 	var tenantID string
 
@@ -189,6 +191,7 @@ func newRolesGetByNameCmd() *cobra.Command {
 
 // newRolesUpdateCmd creates the "roles update" subcommand.
 func newRolesUpdateCmd() *cobra.Command {
+	var opTenant string
 	var (
 		name        string
 		permissions string
@@ -208,7 +211,7 @@ func newRolesUpdateCmd() *cobra.Command {
 				req.Permissions = splitAndTrim(permissions)
 			}
 
-			role, err := client.Roles().UpdateRole(cmd.Context(), req)
+			role, err := client.Roles().UpdateRole(transport.WithTenantQualifier(cmd.Context(), opTenant), req)
 			if err != nil {
 				return err
 			}
@@ -220,19 +223,21 @@ func newRolesUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "New role name")
 	cmd.Flags().StringVar(&permissions, "permissions", "", "Comma-separated permissions")
 
+	addOperatorTenantFlag(cmd, &opTenant)
 	return cmd
 }
 
 // newRolesDeleteCmd creates the "roles delete" subcommand.
 func newRolesDeleteCmd() *cobra.Command {
-	return &cobra.Command{
+	var opTenant string
+	cmd := &cobra.Command{
 		Use:   "delete <id>",
 		Short: "Delete a role by ID",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
 
-			if err := client.Roles().DeleteRole(cmd.Context(), id); err != nil {
+			if err := client.Roles().DeleteRole(transport.WithTenantQualifier(cmd.Context(), opTenant), id); err != nil {
 				return err
 			}
 
@@ -240,10 +245,12 @@ func newRolesDeleteCmd() *cobra.Command {
 			return nil
 		},
 	}
+	addOperatorTenantFlag(cmd, &opTenant)
+	return cmd
 }
 
-// newRolesAssignCmd creates the "roles assign" subcommand.
 func newRolesAssignCmd() *cobra.Command {
+	var opTenant string
 	var (
 		userID string
 		roleID string
@@ -258,7 +265,7 @@ func newRolesAssignCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := client.Roles().AssignRole(cmd.Context(), uid, roleID); err != nil {
+			if err := client.Roles().AssignRole(transport.WithTenantQualifier(cmd.Context(), opTenant), uid, roleID); err != nil {
 				return err
 			}
 
@@ -272,11 +279,13 @@ func newRolesAssignCmd() *cobra.Command {
 	cmd.Flags().StringVar(&roleID, "role", "", "Role ID")
 	_ = cmd.MarkFlagRequired("role")
 
+	addOperatorTenantFlag(cmd, &opTenant)
 	return cmd
 }
 
 // newRolesUnassignCmd creates the "roles unassign" subcommand.
 func newRolesUnassignCmd() *cobra.Command {
+	var opTenant string
 	var (
 		userID string
 		roleID string
@@ -291,7 +300,7 @@ func newRolesUnassignCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := client.Roles().UnassignRole(cmd.Context(), uid, roleID); err != nil {
+			if err := client.Roles().UnassignRole(transport.WithTenantQualifier(cmd.Context(), opTenant), uid, roleID); err != nil {
 				return err
 			}
 
@@ -305,6 +314,7 @@ func newRolesUnassignCmd() *cobra.Command {
 	cmd.Flags().StringVar(&roleID, "role", "", "Role ID")
 	_ = cmd.MarkFlagRequired("role")
 
+	addOperatorTenantFlag(cmd, &opTenant)
 	return cmd
 }
 

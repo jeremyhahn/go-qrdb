@@ -1080,13 +1080,20 @@ advertises it.
   key, so a refused write mints none. Append, checkpoint and expiry need only
   `verifiable-log`.
 
-**Isolation.** Every log is applied into the log registry of the system shard,
-which the system barrier protects. A barrier-isolated tenant's entries and its
-sealed private signing key would therefore stay readable while the tenant's own
-barrier is sealed, so the log service routes through
-`service.NewSystemShardLogResolver`, which refuses such a tenant with
-`BarrierTenantLogNotSupportedError` before any key is created or any command
-proposed. A barrier-enabled database inside a tenant that is not
+**Isolation.** On a node with a Raft host, the log service's resolver
+(`service.NewSystemShardLogResolver`) has the node's tenant home groups
+attached (`lifecycle.AttachTenantHomes`), and an isolated (`barrier`, `volume`
+or `raft`) tenant's logs apply in the log registry of its home group, under the
+tenant's barrier. The audit instance `<tenant>/system/audit` follows the
+tenant's audit route instead (see [audit architecture](../audit/architecture.md)):
+a `barrier` tenant whose chain was already on the system shard keeps it there.
+Prefix tenants and the system tenant apply in the system shard's registry,
+which the system barrier protects. On a node without a home group (standalone
+today) every log applies in the system shard. A barrier-isolated tenant's
+entries and its sealed private signing key would then stay readable while the
+tenant's own barrier is sealed, so there the resolver refuses such a tenant
+with `BarrierTenantLogNotSupportedError` before any key is created or any
+command is proposed. A barrier-enabled database inside a tenant that is not
 barrier-isolated is the same case one level down: before it routes any log
 call, read or write, the log service looks the database up in the node's
 database registry and refuses it with `BarrierDatabaseLogNotSupportedError`
@@ -1094,9 +1101,9 @@ whether its barrier is sealed or not, since an unsealed barrier would protect
 nothing the log registry holds. A database the registry has no record of is
 served, as a tenant without metadata is; a lookup that fails refuses the call.
 Both refusals are classed `Unimplemented` by `pkg/api/errclass`, so every
-transport answers them alike. A volume or raft tenant is refused with
-`DedicatedTenantAuditNotSupportedError`, as for the audit chain. Prefix tenants
-and the system tenant are served.
+transport answers them alike. On a node without a home group, a volume or raft
+tenant is refused with `DedicatedTenantAuditNotSupportedError`, as for the
+audit chain. Prefix tenants and the system tenant are served.
 
 `OpAuditAppend`'s apply stays in both dispatch tables. Its entries are in
 existing Raft logs and snapshots, and a replica replaying them must apply them

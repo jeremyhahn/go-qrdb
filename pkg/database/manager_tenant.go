@@ -223,6 +223,11 @@ func (m *Manager) release(ctx context.Context, cat Catalog, key dbKey, db *Datab
 // the claim because the listing is a snapshot: a local drop that failed
 // without rolling its fence back may have committed the fence since.
 func (m *Manager) clearDropFence(ctx context.Context, cat Catalog, key dbKey, db *Database) {
+	// A fence a failed KeepFenceOnFailure drop pinned stays until the
+	// retried drop lands, though the catalog records the database live.
+	if db.dropFenceKept() {
+		return
+	}
 	if _, dropping := m.dropping.LoadOrStore(key, struct{}{}); dropping {
 		return
 	}
@@ -252,6 +257,27 @@ func (m *Manager) DropForTenant(ctx context.Context, name string) error {
 		return err
 	}
 
+	return m.drop(ctx, keyFor(db.TenantID(), name), db)
+}
+
+// DropIncarnationForTenant drops the context tenant's database name only
+// while it is the database id at incarnation. A name that now holds another
+// database -- the one recorded was dropped and the name created again -- is
+// refused with *DropSupersededError and nothing is dropped. The drop itself
+// is bound to the database it resolved: its catalog claim, store fence,
+// reclamation and record delete all swap from that incarnation only, so a
+// re-creation racing the drop is not touched either.
+func (m *Manager) DropIncarnationForTenant(ctx context.Context, name, id, incarnation string) error {
+	if err := CheckDroppable(name); err != nil {
+		return err
+	}
+	db, err := m.GetOwnedIgnoringFence(name, tenant.FromContext(ctx))
+	if err != nil {
+		return err
+	}
+	if db.ID() != id || db.Incarnation() != incarnation {
+		return &DropSupersededError{Name: name, TenantID: db.TenantID()}
+	}
 	return m.drop(ctx, keyFor(db.TenantID(), name), db)
 }
 

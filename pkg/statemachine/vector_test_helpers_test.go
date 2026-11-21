@@ -137,6 +137,7 @@ type MockVectorStorageWrapper struct {
 	namespaces  map[string]*vector.NamespaceInfo
 	vectors     map[string]map[uint64]*vector.VectorValue
 	nextID      uint64
+	getErr      error // Error to return from GetVector; writes still succeed
 	createErr   error // Error to return from CreateNamespace
 	deleteNsErr error // Error to return from DeleteNamespace
 }
@@ -220,13 +221,14 @@ func (m *MockVectorStorageWrapper) UpsertVector(ctx context.Context, namespace s
 func (m *MockVectorStorageWrapper) GetVector(ctx context.Context, namespace string, id uint64) (*vector.VectorValue, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	vectors, ok := m.vectors[namespace]
-	if !ok {
-		return nil, api.NewNotFoundError("MockVectorStorage", "namespace")
+	if m.getErr != nil {
+		return nil, m.getErr
 	}
-	vec, ok := vectors[id]
+	// As the real storages do, a missing namespace or id is
+	// vector.ErrVectorNotFound.
+	vec, ok := m.vectors[namespace][id]
 	if !ok {
-		return nil, api.NewNotFoundError("MockVectorStorage", "vector")
+		return nil, vector.ErrVectorNotFound
 	}
 	return vec, nil
 }

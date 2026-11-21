@@ -179,6 +179,21 @@ const LeaseCheckpoint feature.Feature = "lease-checkpoint"
 // refused (docs/multi-tenancy/architecture.md "Feature gate and upgrade").
 const PerNodeBarrierKeys feature.Feature = "per-node-barrier-keys"
 
+// StrictIsolation is strict tenant isolation from phase 5 onward: every
+// database of a strict tenant is a raft group on a dedicated WAL (no log
+// under a node key), and an isolated tenant's database groups are placed
+// only on its serving set (its home group's nodes). It adds no Raft
+// command, but a node that predates it neither refuses a strict tenant's
+// shared-WAL database nor confines its placement, so a mixed-version
+// cluster would serve the tenant unconfined. It is enforced per node, so
+// it is judged by ACTIVATION, cluster-wide (group 0): until then a strict
+// tenant's database create is refused and the scheduler places nothing for
+// an isolated tenant (docs/multi-tenancy/architecture.md "Feature gate and
+// upgrade"). Keying placements and key-delivery envelopes by the opaque
+// database id is NOT gated: it is a format change, and pre-release tenants
+// are re-created, never migrated.
+const StrictIsolation feature.Feature = "strict-isolation"
+
 // VerifiableLog is protocol.OpVerifiableLog: a deterministic, apply-time
 // create, append, checkpoint or body expiry on a named verifiable log. A
 // replica that does not implement it answers the opcode with UnknownOpError
@@ -234,6 +249,32 @@ const VerifiableLogAudit feature.Feature = "verifiable-log-audit"
 // does not sweep until the feature is active cluster-wide.
 const PendingUserTTL feature.Feature = "pending-user-ttl"
 
+// VectorStoredCount is the stored-id vector count: a vector upsert, batch
+// upsert or delete counts only distinct ids that change what is stored, so
+// a re-upsert of a stored id neither raises VectorCount nor counts against
+// the vector quota, and a delete of a missing id removes nothing. It changes
+// apply, so a node that predates it would count the same committed entry
+// differently and the replicas' counts and quota decisions would diverge.
+// The rule rides on the command (VectorCommand.StoredCount), set by the
+// proposer only once the feature is enabled on the shard; a command without
+// it applies the old +1-per-upsert rule on every binary
+// (docs/multi-tenancy/architecture.md "Feature gate and upgrade").
+const VectorStoredCount feature.Feature = "vector-stored-count"
+
+// AuditAppendOnce is the onboarding append-once rule: an OpAuditAppend or
+// audit-instance append of a tenant.onboard event that carries the
+// append-once marker is appended once per identity (its request id and
+// time), so a retried onboarding append whose first outcome was unknown
+// lands once. It changes apply, so a node that predates it would append the
+// retried event again while its peers drop it, and the replicas' chains
+// would diverge. The marker rides on the event (AuditEvent.AppendOnce),
+// set by the proposer only once the feature is enabled on the shard; until
+// then the pending onboarding record is not re-sent after an append whose
+// outcome was unknown, and an event without the marker is appended every
+// time it is applied, on every binary (docs/multi-tenancy/architecture.md
+// "Feature gate and upgrade").
+const AuditAppendOnce feature.Feature = "audit-append-once"
+
 // VectorManhattan is the Manhattan (L1) distance metric on a FLAT or IVF
 // vector namespace: record metric value 3 (pkg/vector DistanceManhattan),
 // which a binary from before it refuses as an unknown metric while its
@@ -262,7 +303,7 @@ const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL}
+var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, StrictIsolation, PendingUserTTL, VectorStoredCount, AuditAppendOnce}
 
 // Supported returns the features this binary implements.
 func Supported() []feature.Feature {

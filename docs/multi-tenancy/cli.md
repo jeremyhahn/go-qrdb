@@ -207,6 +207,7 @@ system-tenant permission.
 | `--metadata` | `key=value`, repeatable | **replaces the whole metadata map** with the given entries |
 | `--clear-metadata` | bool | removes every metadata entry; not with `--metadata` |
 | `--status` | string | **`active \| suspended \| disabled`**; needs `tenants:set_status` (system-tenant Admin only) |
+| `--isolation-policy` | string | **`inherit \| strict`**; refused until the `strict-isolation` feature is active (see [`qrdb cluster-isolation-policy`](#qrdb-cluster-isolation-policy)) |
 
 A flag that is not given leaves its field unchanged. `--metadata` splits each
 entry at the first `=`, so a value may contain `=`; an entry with no `=` or an
@@ -264,6 +265,27 @@ operator sets it: `set-entitlement` needs `tenants:set_entitlements` and
 certificate must be a `system`-tenant identity. So does `tenant create`
 (`tenants:create`). A tenant's Admin is refused 403 even on its own tenant. See
 [api.md](api.md#who-may-call-what).
+
+### `qrdb cluster-isolation-policy`
+
+Reads or sets the cluster-wide tenant isolation floor
+([api.md](api.md#strict-isolation--ruled)).
+
+```
+qrdb cluster-isolation-policy get
+qrdb cluster-isolation-policy set <operator-access|strict>
+```
+
+The floor only tightens: a loosening is refused with the 409-class
+`IsolationPolicyChangeError`, and an unknown value is refused as invalid input.
+`qrdb tenant update <id> --isolation-policy strict` sets one tenant's policy,
+and a strict tenant cannot go back to `inherit`.
+
+Every one of these is refused, changing nothing, until the `strict-isolation`
+feature is active (HTTP 503, gRPC/QUIC `Unavailable`, refusal reason
+`FEATURE_NOT_ACTIVE`). A standalone node is active from the start; a cluster
+once it has activated the feature cluster-wide. The `tenant.isolation_policy`
+configuration key is not behind this gate.
 
 ### `qrdb tenant set-entitlement <id>`
 
@@ -336,8 +358,10 @@ and is never sent. An embedded connection is in process and asks no proof.
 A barrier served by several nodes holds its own key on each. A `passphrase`
 init reads the serving nodes from `--server`'s `barrier-status` and is sent to
 every one of them, over `--server`'s transport at the endpoint each node
-publishes, with one result printed per node. Under any other strategy the init
-goes to `--server`'s node and the others initialize their own keys from it.
+publishes, with one result printed per node. When the serving nodes cannot be
+listed (`nodes_unreadable` in the status), the init fails with
+`TenantServingNodesUnknownError` and sends nothing. Under any other strategy the
+init goes to `--server`'s node and the others initialize their own keys from it.
 
 | Flag | Type | Meaning |
 |---|---|---|
@@ -385,6 +409,22 @@ qrdb tenant barrier-init --id secure-co --strategy shamir --threshold 2 --shares
 The credential unseal. A Shamir tenant barrier refuses it: M of its share
 holders unseal it with `qrdb tenant barrier-quorum submit --op unseal`.
 
+A barrier served by several nodes holds its own key on each. The unseal reads
+the nodes from `--server`'s barrier status and is sent to every one of them,
+over `--server`'s transport (rest, grpc, quic or mcp) at the endpoint each node
+publishes, with one result printed per node; the command fails naming the
+nodes that refused. A barrier served by one node is unsealed on `--server`'s
+node. When `--server`'s node cannot list the serving nodes (its status reports
+`nodes_unreadable`), the command fails with `TenantServingNodesUnknownError`
+naming the tenant and sends nothing: unsealing one node could leave the others
+sealed.
+
+A rerun after a partial unseal is safe: a node whose barrier is already open
+checks the credential against the key it holds and reports success when it
+matches, so the rerun unseals the nodes that refused before and reports every
+node OK. A wrong credential is still refused on an open node, which stays
+unsealed.
+
 | Flag | Type | Meaning |
 |---|---|---|
 | `--id` | string | tenant ID |
@@ -425,6 +465,12 @@ certificates from their own CA, are managed with `qrdb tenant trust-anchors`:
 
 ## Strict isolation
 
-No CLI verb reads or sets an isolation policy. A node running in FIPS 140-3 mode raises the
+`qrdb cluster-isolation-policy get|set` reads and sets the cluster floor, and
+`qrdb tenant update --isolation-policy` sets a tenant's policy. They and the
+REST, gRPC, QUIC and MCP verbs ([api.md](api.md)) are refused until the
+`strict-isolation`
+feature is active, which this build does not support (it is supported once
+G1 lands): each answers `feature.NotActiveError` (HTTP 503, `Unavailable`)
+and changes nothing. A node running in FIPS 140-3 mode raises the
 cluster floor to `strict` when the node starts. Design:
 [architecture.md](architecture.md#strict-tenant-isolation--design).

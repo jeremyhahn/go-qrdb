@@ -45,6 +45,9 @@ type restTenant struct {
 	Description   string                        `json:"description,omitempty"`
 	Metadata      map[string]string             `json:"metadata,omitempty"`
 	Status        transport.TenantStatus        `json:"status,omitempty"`
+	// IsolationPolicy is "strict", or empty when the tenant inherits the
+	// cluster floor.
+	IsolationPolicy string `json:"isolation_policy,omitempty"`
 	// Refusal is set when the answering node will not serve this
 	// tenant's data (docs/volume-pools/api.md's TenantRefusal); absent
 	// otherwise. Another node may still serve it.
@@ -121,8 +124,9 @@ type restTenantBarrierStatus struct {
 
 	ClusterSeal *transport.ClusterSeal `json:"cluster_seal,omitempty"`
 
-	KeyFingerprint string                        `json:"key_fingerprint,omitempty"`
-	Nodes          []transport.TenantBarrierNode `json:"nodes,omitempty"`
+	KeyFingerprint  string                        `json:"key_fingerprint,omitempty"`
+	Nodes           []transport.TenantBarrierNode `json:"nodes,omitempty"`
+	NodesUnreadable bool                          `json:"nodes_unreadable,omitempty"`
 }
 
 // toTenantInfo converts the flat REST payload into the transport-side
@@ -130,16 +134,17 @@ type restTenantBarrierStatus struct {
 // errors leave the field at its zero value.
 func (r *restTenant) toTenantInfo() transport.TenantInfo {
 	info := transport.TenantInfo{
-		ID:            r.ID,
-		Name:          r.Name,
-		IsolationType: r.IsolationType,
-		VolumePool:    r.VolumePool,
-		Quotas:        r.Quotas,
-		Entitlements:  r.Entitlements,
-		Description:   r.Description,
-		Metadata:      r.Metadata,
-		Status:        r.Status,
-		Refusal:       r.Refusal,
+		ID:              r.ID,
+		Name:            r.Name,
+		IsolationType:   r.IsolationType,
+		VolumePool:      r.VolumePool,
+		Quotas:          r.Quotas,
+		Entitlements:    r.Entitlements,
+		Description:     r.Description,
+		Metadata:        r.Metadata,
+		Status:          r.Status,
+		IsolationPolicy: r.IsolationPolicy,
+		Refusal:         r.Refusal,
 	}
 	if ts := pickFirstNonEmpty(r.CreatedAtStr, r.CreatedAtAlt); ts != "" {
 		if parsed, err := time.Parse(time.RFC3339Nano, ts); err == nil {
@@ -431,6 +436,38 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	return &transport.UpdateTenantEntitlementsResponse{Tenant: wire.toTenantInfo()}, nil
 }
 
+// restClusterIsolationPolicy is the body of GET and PUT
+// /v1/cluster/isolation-policy.
+type restClusterIsolationPolicy struct {
+	Policy string `json:"policy"`
+}
+
+// GetClusterIsolationPolicy returns the cluster-wide isolation floor.
+// It calls GET /v1/cluster/isolation-policy.
+func (t *Transport) GetClusterIsolationPolicy(ctx context.Context) (string, error) {
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
+	}
+	var wire restClusterIsolationPolicy
+	if err := t.getJSONDecode(ctx, "GetClusterIsolationPolicy", "/v1/cluster/isolation-policy", &wire); err != nil {
+		return "", err
+	}
+	return wire.Policy, nil
+}
+
+// SetClusterIsolationPolicy sets the cluster-wide isolation floor and
+// returns the stored floor. It calls PUT /v1/cluster/isolation-policy.
+func (t *Transport) SetClusterIsolationPolicy(ctx context.Context, policy string) (string, error) {
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
+	}
+	var wire restClusterIsolationPolicy
+	if err := t.putJSONDecode(ctx, "SetClusterIsolationPolicy", "/v1/cluster/isolation-policy", &restClusterIsolationPolicy{Policy: policy}, &wire); err != nil {
+		return "", err
+	}
+	return wire.Policy, nil
+}
+
 // tenantBarrierInitBegin calls POST /v1/tenants/{id}/barrier/init/begin and
 // returns the nonce with the client-side TLS state of the connection that
 // answered, which init/complete must reuse.
@@ -715,6 +752,7 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		ClusterSeal:     wire.ClusterSeal,
 		KeyFingerprint:  wire.KeyFingerprint,
 		Nodes:           wire.Nodes,
+		NodesUnreadable: wire.NodesUnreadable,
 	}, nil
 }
 
