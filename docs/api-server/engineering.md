@@ -520,6 +520,93 @@ Invariants:
   fault as a `*config.ValidationError` naming the field; it refuses an enabled
   configuration with gRPC or REST off (`*server.GRPCWebUnavailableError`).
 
+### WebTransport
+
+`pkg/api/rest` serves WebTransport sessions (draft-ietf-webtrans-http3-16,
+`docs/reference/draft-ietf-webtrans-http3-16.txt`) on the HTTP/3 listener
+through `internal/webtransport`, a patched copy of
+`github.com/quic-go/webtransport-go` v0.13.0 that is a package of the go-qrdb
+module (its README.md lists the patches):
+
+```go
+type WebTransportSession = webtransport.Session
+type WebTransportSessionErrorCode = webtransport.SessionErrorCode
+type WebTransportStreamErrorCode = webtransport.StreamErrorCode
+type WebTransportSessionError = webtransport.SessionError
+type WebTransportStreamError = webtransport.StreamError
+type WebTransportHandler func(sess *WebTransportSession, caller *auth.Identity, tenantID string)
+
+func WithWebTransportHandler(path string, h WebTransportHandler) ServerOption
+```
+
+`server.WithWebTransportHandler(path, h)` passes it through `pkg/server`, and
+the SDK re-exports the option and the types (`sdkserver.WithWebTransportHandler`,
+`sdkserver.WebTransportSession`, `sdkserver.WebTransportHandler`,
+`sdkserver.InvalidWebTransportHandlerError`, and the error codes and errors
+`sdkserver.WebTransportSessionErrorCode`, `sdkserver.WebTransportStreamErrorCode`,
+`sdkserver.WebTransportSessionError`, `sdkserver.WebTransportStreamError`), so
+an embedder can close a session with a code held in a `uint32` variable and
+match a peer's error with `errors.As`. There is one handler, for one path.
+
+Invariants:
+
+- **Authenticated before the upgrade.** The session's extended CONNECT is
+  registered as an authenticated REST route on the same chi router, so it
+  passes the same handler chain as every REST request: authentication, tenant
+  binding, authorization and the sealed-window gate. A CONNECT the chain refuses gets
+  the status REST would give: 401 with no caller, and so on. The handler is
+  then not called and nothing is upgraded. A CONNECT on another path is not
+  upgraded.
+- **HTTP/3 only.** The route on the HTTP/1.1 or HTTP/2 listener answers 400
+  (`*rest.WebTransportUpgradeError` over `*rest.WebTransportNotHTTP3Error`),
+  as does a failed upgrade (`*rest.WebTransportUpgradeError`).
+- **Nothing changes without a handler.** Only with a handler does the HTTP/3
+  listener set `EnableDatagrams` and `EnableStreamResetPartialDelivery` in its
+  QUIC configuration (-16 section 3), and only then does it send the
+  WebTransport SETTINGS. Without one, the path is an unknown route (404). The
+  SETTINGS the libraries send whether or not this applies are recorded as
+  deviations in [docs/reference/README.md](../reference/README.md).
+- **One accept loop.** webtransport-go has no `ServeListener`, so
+  `pkg/api/rest` accepts from the connection-limited QUIC listener itself and
+  hands each connection to `ServeQUICConn`. The per-peer cap holds for
+  WebTransport too.
+- **Bounded buffering before CONNECT.** A stream for a session that is not
+  established yet is buffered until the session arrives or the 5 s handshake
+  timeout passes. The timeout runs from the first stream for that session;
+  later streams do not extend it. A connection buffers at most 16 streams per
+  unknown session and 64 in total. Each stream past either cap is reset at
+  once with WT_BUFFERED_STREAM_REJECTED (-16 section 4.6), and so is each
+  buffered stream at the timeout. The caps live in `internal/webtransport`.
+- **Bounded streams per established session.** The server advertises 100
+  bidirectional and 100 unidirectional streams and a 16 MiB data window per
+  session (SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI/_UNI and
+  SETTINGS_WT_INITIAL_MAX_DATA, -16 section 5). A peer that negotiates flow
+  control and opens past the limit closes the session with
+  WT_FLOW_CONTROL_ERROR. With or without flow control, at most 100 streams of
+  each direction wait for the handler to accept them; each stream past that is
+  reset with WT_BUFFERED_STREAM_REJECTED and the session stays up. QUIC
+  stream credit is returned when a stream completes, not when the handler
+  accepts it, since quic-go's credit-release mode would apply
+  to every HTTP/3 request stream on the listener.
+- **Stream operations never wait on a gone session.** After a peer resets a
+  stream with WT_SESSION_GONE, a handler's Read or Write waits for the session
+  to close; the handler's own `CancelRead` or `CancelWrite` also ends that
+  wait. Opening a stream at the peer's limit while the session's capsule queue
+  is full closes the session with H3_EXCESSIVE_LOAD instead of blocking.
+  `internal/webtransport/README.md` lists the patches.
+- **Same-origin by default.** `CheckOrigin` is left nil, so webtransport-go
+  applies its default: a request carrying an `Origin` header must match the
+  request's host. The REST authentication chain is the access control.
+- **Invalid options fail Start.** A nil handler, a path not starting with
+  `/`, or a path the authentication middleware exempts as public for every
+  method (`middleware.IsPublicPath`: `/v1/ca/bootstrap`, `/v1/config/initialized`
+  and the two `/v1/cluster/` key-transport routes), makes `Start` return
+  `*rest.InvalidWebTransportHandlerError`. A CONNECT on a public path would
+  reach the handler with no caller, so every session would be refused.
+- **Closed with the server.** `Stop` closes every WebTransport connection
+  first, so each open session and its streams end and the peer sees the
+  close before the HTTP/3 server goes down.
+
 **One path per request on every HTTP surface.** The REST handler chain opens
 with `canonicalPathMiddleware`, which clears `r.URL.RawPath` so chi routes on
 the same decoded `r.URL.Path` that authorization, the sealed-window allowlist,
