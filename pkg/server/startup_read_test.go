@@ -146,6 +146,10 @@ func TestRunStartupRead_DeadlineExhaustedOnReadIndexNotReady(t *testing.T) {
 		Op:     "never ready",
 		Budget: 30 * time.Millisecond,
 		Delay:  2 * time.Millisecond,
+		// The wait counts only from the second attempt on, so a first
+		// attempt slowed past the whole budget by a loaded host still
+		// leaves the retry this test is about.
+		Counts: func(context.Context) bool { return calls >= 2 },
 		Logger: logger,
 	}, func(context.Context) (int, error) {
 		calls++
@@ -163,6 +167,30 @@ func TestRunStartupRead_DeadlineExhaustedOnReadIndexNotReady(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "never ready") {
 		t.Errorf("boot failure not logged; log = %q", logs.String())
+	}
+}
+
+// A not-ready reply that lands as the startup deadline lapses is the read's
+// own answer: it must not be counted as an attempt cut off at its bound.
+func TestRunStartupRead_NotReadyAtDeadlineIsNotTimedOut(t *testing.T) {
+	calls := 0
+	_, err := RunStartupRead(context.Background(), StartupRead{
+		Op:     "not ready at the bound",
+		Budget: time.Millisecond,
+		Logger: slog.New(slog.DiscardHandler),
+	}, func(actx context.Context) (int, error) {
+		calls++
+		// Reply only once the attempt's bound (the startup deadline) has
+		// passed: the reply and the deadline coincide, as under load.
+		<-actx.Done()
+		return 0, quicraft.ErrReadIndexNotReady
+	})
+	var sre *StartupReadError
+	if !errors.As(err, &sre) || !errors.Is(err, quicraft.ErrReadIndexNotReady) {
+		t.Fatalf("err = %v (%T), want *StartupReadError unwrapping to ErrReadIndexNotReady", err, err)
+	}
+	if sre.Attempts != calls || sre.TimedOut != 0 {
+		t.Errorf("calls=%d Attempts=%d TimedOut=%d, want no not-ready reply counted as cut off", calls, sre.Attempts, sre.TimedOut)
 	}
 }
 

@@ -129,11 +129,10 @@ func TestApkIndexSum_EveryCallerGoesThroughMake(t *testing.T) {
 	if strings.Contains(ci, "$(scripts/apk-index-sum.sh") {
 		t.Error("ci.yml runs scripts/apk-index-sum.sh directly; run `make -s apk-index-sum`, which supplies the GO_IMAGE pin")
 	}
-	// The two producers read the sum, the jobs that name and build the
-	// integration image: docker-build for the hosted legs and pool-images for
-	// the pool legs (ruling 879). Every other job loads or pulls one of those
-	// builds and names no image of its own.
-	if got := strings.Count(ci, apkCaller); got != 2 {
-		t.Errorf("ci.yml reads the sum through %q %d times; want twice, once in each of docker-build and pool-images", apkCaller, got)
+	// docker-build reads the sum, the one job that names and builds the
+	// integration image; every other job loads that build from its artifact
+	// (scripts/ci-image.sh, DS-7377) and names no image of its own.
+	if got := strings.Count(ci, apkCaller); got != 1 {
+		t.Errorf("ci.yml reads the sum through %q %d times; want exactly once, in docker-build", apkCaller, got)
 	}
 }
