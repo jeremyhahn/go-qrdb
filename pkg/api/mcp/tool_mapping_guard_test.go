@@ -178,6 +178,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_permissions_list":                   permission.PermissionsList,
 	"qrdb_permissions_resolve":                permission.PermissionsResolve,
 	"qrdb_permissions_own":                    permission.IdentityGated,
+	"qrdb_permissions_catalog":                permission.PermissionsList,
 	"qrdb_permissions_authorize":              permission.IdentityGated,
 	"qrdb_role_reconcile_builtin":             permission.RolesCreate,
 	"qrdb_role_reconcile_builtin_all_tenants": permission.RolesReconcileAll,
