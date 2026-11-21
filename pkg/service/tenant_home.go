@@ -144,16 +144,23 @@ func (s *DatabaseService) GrowTenantHome(ctx context.Context, tenantID string) (
 // none. The scheduler sizes the additions: it is asked for one per cluster
 // node, and an *InsufficientNodesError reports how many it could place.
 func (s *DatabaseService) growHome(ctx context.Context, home *placement.Placement) (*placement.Placement, error) {
-	if s.raftHost != nil {
-		if err := waitForShardLeaderKnown(ctx, s.raftHost, home.ShardID, s.scaleLeaderWaitTimeout, s.scaleLeaderWaitInterval); err != nil {
-			return home, err
-		}
+	// Without the raft host nothing can check leadership or change the
+	// group's Raft configuration, so the placement is left alone: a replica
+	// recorded now would be one Raft never admits. The watch retries once
+	// the host is installed (SetRaftHost).
+	host := s.currentRaftHost()
+	if host == nil {
+		s.noteNoRaftHost()
+		return home, nil
+	}
+	if err := waitForShardLeaderKnown(ctx, host, home.ShardID, s.scaleLeaderWaitTimeout, s.scaleLeaderWaitInterval); err != nil {
+		return home, err
 	}
 	// Only the home group's leader changes its placement: Raft admits a
 	// configuration change on the leader alone, so a follower that won the
 	// placement CAS would record a replica Raft never admits. Every node runs
 	// this reconcile on a join, so the leader's node does the work.
-	view, hasView := s.raftHost.(HomeGroupView)
+	view, hasView := host.(HomeGroupView)
 	if hasView {
 		lead, err := view.IsLocalShardLeader(home.ShardID)
 		if err != nil || !lead {
@@ -182,7 +189,7 @@ func (s *DatabaseService) growHome(ctx context.Context, home *placement.Placemen
 		if r.ReplicaID <= base {
 			continue
 		}
-		updated, _, aerr := addObserverReplica(ctx, s.raftHost, s.placementStore, current, r)
+		updated, _, aerr := addObserverReplica(ctx, host, s.placementStore, current, r)
 		current = updated
 		if aerr != nil {
 			return current, aerr
@@ -241,7 +248,7 @@ func (s *DatabaseService) readmitHomeReplicas(ctx context.Context, view HomeGrou
 				slog.Uint64("replica_id", r.ReplicaID))
 			continue
 		}
-		if err := s.raftHost.AddObserver(ctx, home.ShardID, r.ReplicaID, r.RaftAddr); err != nil {
+		if err := s.currentRaftHost().AddObserver(ctx, home.ShardID, r.ReplicaID, r.RaftAddr); err != nil {
 			return current, err
 		}
 		s.logger.Info("re-admitted a placed tenant home replica",
@@ -281,7 +288,7 @@ func (s *DatabaseService) shedDepartedHomeReplicas(ctx context.Context, home *pl
 		if live == 0 || live*2 <= len(current.Replicas) || len(current.Replicas)-1 < rf {
 			return current, nil
 		}
-		updated, _, err := removeReplicaFromGroup(ctx, s.raftHost, s.placementStore, current, r.ReplicaID)
+		updated, _, err := removeReplicaFromGroup(ctx, s.currentRaftHost(), s.placementStore, current, r.ReplicaID)
 		if err != nil {
 			return updated, err
 		}
@@ -345,7 +352,11 @@ func (s *DatabaseService) WatchTenantHomes(ctx context.Context, tick <-chan time
 	settled, idle := false, 0
 	for {
 		roster := s.placementScheduler.KnownRaftAddrs()
-		if !settled || idle >= tenantHomeWatchResyncTicks || !maps.Equal(roster, last) {
+		if s.currentRaftHost() == nil {
+			// Not composed yet: nothing is reconciled, and the first tick
+			// after SetRaftHost reconciles (settled stays false).
+			s.noteNoRaftHost()
+		} else if !settled || idle >= tenantHomeWatchResyncTicks || !maps.Equal(roster, last) {
 			rctx, cancel := context.WithTimeout(ctx, tenantHomeWatchTimeout)
 			err := s.ReconcileTenantHomes(rctx)
 			cancel()
@@ -364,6 +375,14 @@ func (s *DatabaseService) WatchTenantHomes(ctx context.Context, tick <-chan time
 		case <-tick:
 		}
 	}
+}
+
+// noteNoRaftHost logs, at debug and once per service, that a tenant home
+// was left alone because the raft host is not installed yet.
+func (s *DatabaseService) noteNoRaftHost() {
+	s.noRaftHostLogged.Do(func() {
+		s.logger.Debug("tenant home reconcile waits for the raft host")
+	})
 }
 
 // RetireTenantHome implements tenant.HomeRetirer: it deletes tenantID's

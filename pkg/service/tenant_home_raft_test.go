@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -56,7 +57,7 @@ func withHomeView(t *testing.T, svc *DatabaseService, store *placement.Store, le
 		leader:       leader,
 		members:      membersOf(loadHome(t, store)),
 	}
-	svc.raftHost = h
+	svc.SetRaftHost(h)
 	return h
 }
 
@@ -279,6 +280,57 @@ func TestWatchTenantHomes_FollowsAJoinWithoutDynamicMembership(t *testing.T) {
 	topo.set(healthyNodes("n1", "n2", "n3"))
 	tickUntil(t, tick, "shed the departed node from the home", func() bool {
 		return homeReplicaOn(t, store, "n4:1") == nil
+	})
+}
+
+// The watch starts before the raft host is composed: with no host it
+// leaves an existing home's placement alone, and once SetRaftHost runs it
+// reconciles. Run under -race: SetRaftHost races the watch's reads.
+func TestWatchTenantHomes_WaitsForItsRaftHost(t *testing.T) {
+	svc, store := newHomeDatabaseService(t, healthyNodes("n1", "n2", "n3"))
+	topo := &lockedTopology{nodes: healthyNodes("n1", "n2", "n3")}
+	sched, err := placement.NewScheduler(topo)
+	if err != nil {
+		t.Fatalf("placement.NewScheduler: %v", err)
+	}
+	svc.placementScheduler = sched
+	if _, err := svc.ProvisionTenantHome(context.Background(), "rt"); err != nil {
+		t.Fatalf("ProvisionTenantHome: %v", err)
+	}
+	svc.SetRaftHost(nil)
+	before := loadHome(t, store)
+	topo.set(healthyNodes("n1", "n2", "n3", "n4"))
+
+	tick := make(chan time.Time)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.WatchTenantHomes(ctx, tick)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	// Each send is taken only once the watch finished the iteration
+	// before it, so after these the watch has looked at the home with no
+	// host several times.
+	for range tenantHomeWatchResyncTicks + 2 {
+		tick <- time.Now()
+	}
+	if after := loadHome(t, store); !reflect.DeepEqual(after.Replicas, before.Replicas) {
+		t.Fatalf("home replicas changed with no raft host:\n got %+v\nwant %+v", after.Replicas, before.Replicas)
+	}
+
+	h := &homeViewHost{
+		fakeRaftHost: &fakeRaftHost{leaderID: 1, leaderOK: true},
+		leader:       true,
+		members:      membersOf(before),
+	}
+	svc.SetRaftHost(h)
+	tickUntil(t, tick, "grew the home onto the joined node once the host is set", func() bool {
+		return homeReplicaOn(t, store, "n4:1") != nil
 	})
 }
 

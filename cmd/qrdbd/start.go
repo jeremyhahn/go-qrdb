@@ -3192,7 +3192,8 @@ func runStart(f *startFlags) (err error) {
 			switch {
 			case f.dynamicMembership && !standalone:
 				// Tenant homes follow roster changes through the node
-				// watchers' roster watch (lifecycle.StartNodeWatchers),
+				// home roster watch (lifecycle.StartTenantHomeWatch, started
+				// by ComposeRaftTenantCluster once the raft host is set),
 				// with or without dynamic membership.
 				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, rnode, nodeSeal)
 				if mErr != nil {

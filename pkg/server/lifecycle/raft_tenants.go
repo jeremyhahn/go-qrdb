@@ -251,6 +251,9 @@ func ComposeRaftTenantCluster(c RaftTenantClusterConfig) *RaftTenantCluster {
 		if concrete, ok := c.Services.Rebalance.(*service.RebalanceService); ok {
 			concrete.SetRaftHost(replicas)
 		}
+		// The home watch changes Raft configuration: it starts only now
+		// that the database service has its raft host.
+		StartTenantHomeWatch(c.Services)
 		if err := startBarrierInitWatcher(c.Services, c.RaftAddr, logger); err != nil {
 			logger.Warn("barrier init: watcher not started; this node initializes no tenant barrier from its owner's statement",
 				slog.Any("error", err))

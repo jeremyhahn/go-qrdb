@@ -29,9 +29,12 @@ import (
 //     tenant's CA stops being cached and trusted promptly rather than aging
 //     out by TTL alone;
 //   - undone-tenant acknowledgement (startUndoneWatch), so a create of an
-//     undone id is not held until this node's next deleted-tenant reconcile;
-//   - the tenant home roster watch (startTenantHomeWatch), so every tenant
-//     home group follows a node joining or leaving the committed roster.
+//     undone id is not held until this node's next deleted-tenant reconcile.
+//
+// The tenant home roster watch is not started here: it changes Raft
+// configuration, so it starts only once the raft host is composed
+// (StartTenantHomeWatch, called by ComposeRaftTenantCluster right after
+// SetRaftHost).
 //
 // Call once, after BuildServices, with the node's long-lived background
 // context. n.Stop ends every watcher this starts and waits for it, before it
@@ -40,7 +43,6 @@ import (
 // errors are joined. Neither is fatal to the node: an undone id still clears
 // at the next reconcile-deleted-tenants pass, and Key B still ages out.
 func StartNodeWatchers(ctx context.Context, n *Node) error {
-	startTenantHomeWatch(n)
 	return errors.Join(
 		WatchCertProviderEvictions(ctx, n),
 		startUndoneWatch(ctx, n),
@@ -53,11 +55,15 @@ type tenantHomeWatcher interface {
 	WatchTenantHomes(ctx context.Context, tick <-chan time.Time)
 }
 
-// startTenantHomeWatch runs the tenant home roster watch for the node's
+// StartTenantHomeWatch runs the tenant home roster watch for the node's
 // lifetime, whether or not dynamic Raft membership is enabled: a node added
 // or removed by an explicit membership change must join or leave every
 // tenant home too, not only one the dynamic membership manager admits.
-func startTenantHomeWatch(n *Node) {
+// It is started only after the database service's raft host is set
+// (ComposeRaftTenantCluster), so its first reconcile can check leadership
+// and change the group's Raft configuration; qrdbd and sdk/go/node both
+// reach it through that one composition.
+func StartTenantHomeWatch(n *Node) {
 	if n == nil || n.Database == nil {
 		return
 	}

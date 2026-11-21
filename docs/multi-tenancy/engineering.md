@@ -2060,7 +2060,9 @@ Measured against the contract above:
 - **Late-joining nodes.** A node that joins after an isolated tenant was
   created receives the home placement through the reconciler: every node
   runs the tenant home roster watch (`DatabaseService.WatchTenantHomes`,
-  started by `lifecycle.StartNodeWatchers`), which reconciles each home on a
+  started by `lifecycle.StartTenantHomeWatch` from
+  `lifecycle.ComposeRaftTenantCluster` once the database service has its
+  raft host; with no host it changes no placement), which reconciles each home on a
   committed roster change whether or not dynamic membership is on, and on a
   departure sheds the node's home replica while quorum holds. Until its
   replica has caught up (the shard's join window has closed) the node refuses

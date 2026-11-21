@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
@@ -325,7 +326,7 @@ func WithLocalNodeID(nodeID string) DatabaseServiceOption {
 // placed. When nil, the RequestAddNodeWithIdentity step is skipped and the per-node
 // TenantShardReconciler converges the follower start on subsequent ticks.
 func WithRaftHost(h RaftHost) DatabaseServiceOption {
-	return func(s *DatabaseService) { s.raftHost = h }
+	return func(s *DatabaseService) { s.SetRaftHost(h) }
 }
 
 // WithScaleLeaderWaitTimeout overrides the bounded wait (default
@@ -859,7 +860,8 @@ type DatabaseService struct {
 	placementScheduler  *placement.Scheduler
 	dataRootResolver    TenantDataRootResolver
 	localNodeID         string
-	raftHost            RaftHost
+	raftHost            atomic.Pointer[raftHostRef]
+	noRaftHostLogged    sync.Once
 	logger              *slog.Logger
 
 	// scaleLeaderWaitTimeout/scaleLeaderWaitInterval bound
@@ -924,9 +926,27 @@ func (s *DatabaseService) SetLocalNodeID(nodeID string) {
 // SetRaftHost injects the Raft membership-change handle after construction.
 // The daemon calls this after the raft host adapter is available (which is
 // later in the startup sequence than when DatabaseService is built by
-// lifecycle.BuildServices). Thread-safety: this must be called before any
-// tenant database creation requests are served.
-func (s *DatabaseService) SetRaftHost(h RaftHost) { s.raftHost = h }
+// lifecycle.BuildServices). It is safe for concurrent use with every reader
+// (currentRaftHost): the tenant home watch may already be reading it.
+func (s *DatabaseService) SetRaftHost(h RaftHost) {
+	if h == nil {
+		s.raftHost.Store(nil)
+		return
+	}
+	s.raftHost.Store(&raftHostRef{h: h})
+}
+
+// raftHostRef boxes a RaftHost so it can be held in an atomic.Pointer.
+type raftHostRef struct{ h RaftHost }
+
+// currentRaftHost returns the raft host SetRaftHost installed, or nil
+// before it has been.
+func (s *DatabaseService) currentRaftHost() RaftHost {
+	if ref := s.raftHost.Load(); ref != nil {
+		return ref.h
+	}
+	return nil
+}
 
 // Create creates a new database with the given configuration and returns
 // its runtime information. Equivalent to CreateWithCredentials with an empty
@@ -2030,7 +2050,7 @@ func (s *DatabaseService) inviteReplicas(ctx context.Context, tenantID, name str
 	// an error, which is logged non-fatally; the reconciler and Raft retries
 	// converge. Only the leader node performs this step; followers are
 	// identified as replicas whose NodeID differs from the local node ID.
-	if plan == nil || s.raftHost == nil || s.localNodeID == "" {
+	if plan == nil || s.currentRaftHost() == nil || s.localNodeID == "" {
 		return
 	}
 	leaderReplica, leaderOK := plan.Leader()
@@ -2041,7 +2061,7 @@ func (s *DatabaseService) inviteReplicas(ctx context.Context, tenantID, name str
 		if replica.NodeID == s.localNodeID {
 			continue
 		}
-		if addErr := s.raftHost.AddFollowerNode(ctx, plan.ShardID, replica.ReplicaID, replica.RaftAddr); addErr != nil {
+		if addErr := s.currentRaftHost().AddFollowerNode(ctx, plan.ShardID, replica.ReplicaID, replica.RaftAddr); addErr != nil {
 			s.logger.Warn("raft: AddFollowerNode failed, reconciler will retry",
 				slog.String("tenant", tenantID),
 				slog.String("database", name),
@@ -2546,7 +2566,7 @@ func (s *DatabaseService) withCompactionPolicy(ctx context.Context, info *databa
 // RaftAddr taken from p.Replicas so the REST layer's peerAdminRegistry can
 // translate it to an admin URL.
 func (s *DatabaseService) resolveScaleLeader(ctx context.Context, p *placement.Placement) (isLocalLeader bool, leaderAddr string, err error) {
-	return resolveGroupLeader(ctx, s.raftHost, s.localNodeID, p)
+	return resolveGroupLeader(ctx, s.currentRaftHost(), s.localNodeID, p)
 }
 
 const (
@@ -2769,8 +2789,8 @@ func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db
 	// a placement plan that would otherwise go unused. Fails closed with a
 	// typed error (no quota reservation, no placement mutation) rather than
 	// racing an election that has not yet settled.
-	if s.raftHost != nil {
-		if err := waitForShardLeaderKnown(ctx, s.raftHost, p.ShardID, s.scaleLeaderWaitTimeout, s.scaleLeaderWaitInterval); err != nil {
+	if s.currentRaftHost() != nil {
+		if err := waitForShardLeaderKnown(ctx, s.currentRaftHost(), p.ShardID, s.scaleLeaderWaitTimeout, s.scaleLeaderWaitInterval); err != nil {
 			return nil, err
 		}
 	}
@@ -2812,7 +2832,7 @@ func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db
 	var added int
 	var loopErr error
 	for _, r := range newReplicas {
-		updated, _, err := addObserverReplica(ctx, s.raftHost, s.placementStore, current, r)
+		updated, _, err := addObserverReplica(ctx, s.currentRaftHost(), s.placementStore, current, r)
 		current = updated
 		if err != nil {
 			loopErr = err
@@ -2861,16 +2881,16 @@ func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db
 // double-applying.
 func (s *DatabaseService) scaleDown(ctx context.Context, tenantID, name string, db *database.Database, p *placement.Placement, targetReplicas, removeCount int) (*database.DatabaseInfo, error) {
 	var leaderReplicaID uint64
-	if s.raftHost != nil {
+	if s.currentRaftHost() != nil {
 		// RemoveFollowerNode below is hard-rejected by go-quicraft until the
 		// shard reports a known Raft leader (see scaleUp's identical wait for
 		// the rationale). Fail closed with a typed error before any
 		// placement mutation rather than racing an election that has not yet
 		// settled.
-		if err := waitForShardLeaderKnown(ctx, s.raftHost, p.ShardID, s.scaleLeaderWaitTimeout, s.scaleLeaderWaitInterval); err != nil {
+		if err := waitForShardLeaderKnown(ctx, s.currentRaftHost(), p.ShardID, s.scaleLeaderWaitTimeout, s.scaleLeaderWaitInterval); err != nil {
 			return nil, err
 		}
-		if id, ok, err := s.raftHost.LeaderReplicaID(ctx, p.ShardID); err == nil && ok {
+		if id, ok, err := s.currentRaftHost().LeaderReplicaID(ctx, p.ShardID); err == nil && ok {
 			leaderReplicaID = id
 		}
 	}
@@ -2881,7 +2901,7 @@ func (s *DatabaseService) scaleDown(ctx context.Context, tenantID, name string, 
 	var removed int
 	var loopErr error
 	for _, r := range toRemove {
-		updated, _, err := removeReplicaFromGroup(ctx, s.raftHost, s.placementStore, current, r.ReplicaID)
+		updated, _, err := removeReplicaFromGroup(ctx, s.currentRaftHost(), s.placementStore, current, r.ReplicaID)
 		current = updated
 		if err != nil {
 			loopErr = err

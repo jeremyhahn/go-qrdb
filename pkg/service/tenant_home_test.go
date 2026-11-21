@@ -35,7 +35,10 @@ func newHomeDatabaseService(t *testing.T, nodes []placement.NodeLoad) (*Database
 	t.Helper()
 	f := &fakeReplicaQuota{q: &quota.Quotas{MaxTotalReplicas: 100}}
 	svc, store := newPlacementDatabaseService(t, raftTenant(t), f, nodes)
-	return svc.(*DatabaseService), store
+	ds := svc.(*DatabaseService)
+	// A tenant home grows only through a raft host (growHome).
+	ds.SetRaftHost(&fakeRaftHost{leaderID: 1, leaderOK: true})
+	return ds, store
 }
 
 func TestProvisionTenantHome_PlacesOnEveryNode(t *testing.T) {
