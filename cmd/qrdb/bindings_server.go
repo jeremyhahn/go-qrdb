@@ -49,6 +49,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
+	qrdbtenant "github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -352,6 +354,11 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		opts = append(opts, embedded.WithLogService(svcNode.Log))
 	}
 
+	// The node's per-(tenant, database) service registry, which every
+	// network transport resolves requests through: without it the embedded
+	// transport cannot scope a connection to a named database.
+	opts = append(opts, embedded.WithServiceRegistry(embeddedServiceRegistry(svcNode, embeddedRegistry, cfg.RaftEnabled)))
+
 	// Collection service uses KV + index from the node.
 	opts = append(opts, embedded.WithCollectionService(svcNode.Collection))
 	if trail != nil {
@@ -414,6 +421,43 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	started = true
 	b.logger.Debug("StartEmbedded completed")
 	return nil
+}
+
+// embeddedServiceRegistry builds the embedded node's per-(tenant, database)
+// service registry the way qrdbd's does: the system database is registered
+// over the node's service graph, and any other database that exists for the
+// tenant resolves to a namespaced view of it. barrierReg is the embedded
+// barrier registry the node was built with (nil when the barrier is
+// unavailable); raftEnabled selects the shard the graph is served by (zero
+// for the engine-direct local backend).
+func embeddedServiceRegistry(svcNode *lifecycle.Node, barrierReg *seal.BarrierRegistry, raftEnabled bool) service.Registry {
+	var shardID uint64
+	if raftEnabled {
+		shardID = defaultShardID
+	}
+	dbReg := server.NewDatabaseServiceRegistry(lifecycle.SystemDatabase)
+	dbReg.Register(lifecycle.SystemDatabase, svcNode.DatabaseServices(lifecycle.SystemDatabase, shardID))
+	var regOpts []server.RESTRegistryOption
+	if svcNode.Tenant != nil {
+		regOpts = append(regOpts, server.WithTenantServicer(svcNode.Tenant))
+	}
+	if svcNode.Database != nil {
+		regOpts = append(regOpts, server.WithDatabaseCatalog(&embeddedDatabaseCatalog{databases: svcNode.Database}))
+	}
+	return server.NewRESTServiceRegistry(dbReg, barrierReg, tenantid.System, regOpts...)
+}
+
+// embeddedDatabaseCatalog reports a database as existing when the node's
+// database service finds it owned by the tenant, so a name that was never
+// created resolves to "not found" instead of a namespaced view.
+type embeddedDatabaseCatalog struct {
+	databases service.DatabaseServicer
+}
+
+// DatabaseExists implements server.DatabaseCatalog.
+func (c *embeddedDatabaseCatalog) DatabaseExists(tenantID, name string) bool {
+	_, err := c.databases.GetForTenant(qrdbtenant.WithTenantID(context.Background(), tenantID), name)
+	return err == nil
 }
 
 // embeddedClusterTrustDomain is the trust domain the embedded node issues
