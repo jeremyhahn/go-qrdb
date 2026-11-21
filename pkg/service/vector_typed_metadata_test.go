@@ -184,6 +184,55 @@ func TestSearchByMetadata_MatchesPreUpgradePlainStringEntries(t *testing.T) {
 	}
 }
 
+// TestSearchByMetadata_MixedTypeCompoundFilterSkipsLegacy checks that a
+// compound filter with a non-string predicate does not match a legacy record
+// that holds that value as a string.
+func TestSearchByMetadata_MixedTypeCompoundFilterSkipsLegacy(t *testing.T) {
+	store := vector.NewMemoryVectorStorage()
+	svc, err := NewVectorService(store, newVecTestLogger())
+	if err != nil {
+		t.Fatalf("NewVectorService: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
+		Namespace: "typed", Dimension: 2, DistanceMetric: "COSINE", IndexType: "HNSW",
+	}); err != nil {
+		t.Fatalf("CreateNamespace: %v", err)
+	}
+	if err := store.UpsertVector(ctx, scopedFromContext(ctx, "typed"), &vector.VectorValue{
+		ID: 1, Embedding: []float32{1, 0}, Metadata: map[string]string{"topic": "news", "score": "5"},
+	}); err != nil {
+		t.Fatalf("legacy UpsertVector: %v", err)
+	}
+	if _, err := svc.UpsertVector(ctx, &UpsertVectorRequest{
+		Namespace: "typed", ID: 2, Vector: []float32{0, 1},
+		Metadata: map[string]interface{}{"topic": "news", "score": float64(5)},
+	}); err != nil {
+		t.Fatalf("UpsertVector 2: %v", err)
+	}
+	for _, tc := range []struct {
+		score interface{}
+		want  []uint64
+	}{
+		{float64(5), []uint64{2}},
+		{"5", []uint64{1}},
+	} {
+		resp, err := svc.SearchByMetadata(ctx, &SearchByMetadataRequest{
+			Namespace: "typed", Filters: map[string]interface{}{"topic": "news", "score": tc.score},
+		})
+		if err != nil {
+			t.Fatalf("SearchByMetadata(score=%#v): %v", tc.score, err)
+		}
+		var ids []uint64
+		for _, r := range resp.Results {
+			ids = append(ids, r.ID)
+		}
+		if !reflect.DeepEqual(ids, tc.want) {
+			t.Fatalf("SearchByMetadata(score=%#v) matched IDs = %v, want %v", tc.score, ids, tc.want)
+		}
+	}
+}
+
 // TestSearchByMetadata_EmptyFiltersListLegacyAndJSON checks that an empty
 // filter list matches every record, legacy-format ones included, and that
 // offset and limit page across both formats in ID order.

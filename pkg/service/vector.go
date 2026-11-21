@@ -1950,9 +1950,11 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 // encoded filters match; a legacy-format record, written before metadata kept
 // its JSON types, indexes a string verbatim (news, not "news"). Each scan
 // keeps only the records of its own format, so a legacy "5" never answers the
-// number 5 and a JSON value never answers a verbatim string. When a filter
-// value is a string, the result is the union of the JSON scan and the
-// verbatim legacy scan, de-duplicated and ordered by ID; either way it is
+// number 5 and a JSON value never answers a verbatim string. When every
+// filter value is a string (or there is no filter), the result is the union
+// of the JSON scan and the verbatim legacy scan, de-duplicated and ordered by
+// ID; a compound filter with any non-string predicate scans JSON records
+// only, since a legacy record holds strings alone. Either way the result is
 // paged by offset and limit.
 func (v *vectorService) scanMetadataFilters(ctx context.Context, scoped string, raw map[string]interface{},
 	encoded []vector.MetadataFilter, limit, offset int) ([]*vector.VectorValue, error) {
@@ -1962,17 +1964,21 @@ func (v *vectorService) scanMetadataFilters(ctx context.Context, scoped string, 
 		return nil, err
 	}
 	legacy := make([]vector.MetadataFilter, 0, len(encoded))
-	hasString := false
+	allStrings := true
 	for _, f := range encoded {
-		if s, ok := raw[f.Field].(string); ok {
-			hasString = true
-			f.Value = s
+		s, ok := raw[f.Field].(string)
+		if !ok {
+			allStrings = false
+			break
 		}
+		f.Value = s
 		legacy = append(legacy, f)
 	}
 	// An empty filter list matches every record, so legacy-format records
-	// written before the JSON format are listed alongside JSON ones.
-	if hasString || len(encoded) == 0 {
+	// written before the JSON format are listed alongside JSON ones. A
+	// legacy record holds only strings, so a filter with any non-string
+	// predicate cannot match one.
+	if len(encoded) == 0 || allStrings {
 		old, err := v.scanFormat(ctx, scoped, legacy, vector.MetadataFormatLegacy, want)
 		if err != nil {
 			return nil, err
