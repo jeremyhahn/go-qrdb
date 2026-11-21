@@ -26,7 +26,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 )
@@ -481,11 +480,9 @@ func TestDocumentBodyBytes_ChargeEqualsRelease(t *testing.T) {
 		{"fields": map[string]interface{}{"a": 1.0}, "other": "x"},
 	}
 	checked := 0
-	for _, name := range []string{codec.TypeJSON, codec.TypeMsgPack, codec.TypeBSON, codec.TypeYAML} {
-		c, err := codec.ResolveCodec(name)
-		if err != nil {
-			continue // not built into this binary
-		}
+	for _, name := range []dao.CodecType{dao.CodecJSON, dao.CodecMsgPack, dao.CodecBSON, dao.CodecYAML} {
+		c, err := dao.NewDocumentCodec(name)
+		require.NoError(t, err, "codec %s", name)
 		for i, d := range docs {
 			fields := documentFields(d)
 			require.NoError(t, validateStoredFields(fields))

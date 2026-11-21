@@ -25,6 +25,7 @@ require (
 	github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7
 	github.com/flynn/noise v1.1.0
 	github.com/fsnotify/fsnotify v1.10.1
+	github.com/fxamacker/cbor/v2 v2.9.0
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/go-viper/mapstructure/v2 v2.5.0
@@ -56,7 +57,6 @@ require (
 	github.com/x448/float16 v0.8.4
 	go.etcd.io/etcd/api/v3 v3.7.3
 	go.etcd.io/etcd/client/v3 v3.7.3
-	go.mongodb.org/mongo-driver v1.17.10
 	golang.org/x/crypto v0.58.0
 	golang.org/x/mod v0.42.0
 	golang.org/x/net v0.62.0
@@ -131,7 +131,6 @@ require (
 	github.com/envoyproxy/go-control-plane/envoy v1.40.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
-	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.16 // indirect
 	github.com/getsentry/sentry-go v0.43.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
@@ -200,6 +199,7 @@ require (
 	github.com/wailsapp/go-webview2 v1.0.23 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.7.3 // indirect
+	go.mongodb.org/mongo-driver v1.17.10 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.47.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.72.0 // indirect

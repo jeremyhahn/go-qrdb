@@ -458,9 +458,11 @@ that then diverges.
 No collection-specific configuration keys. The collection sweeper's interval
 and staleness threshold are `server.WithCollectionSweep` options for a
 composer, defaulting to one minute and five minutes. `StorageCodec` is a per-collection
-override chosen at creation; the available codecs are those compiled in
-(`codec_json` is always present; `codec_msgpack`, `codec_yaml`, `codec_bson`,
-`codec_protobuf` are build-tag gated — see the Makefile's `WITH_CODEC_*` flags).
+override chosen at creation; the accepted codecs are `dao.DocumentCodecs()`
+(bson, json, msgpack and yaml from go-codec, plus cbor in a
+`codec_cbor` build). Protobuf cannot encode a generic document and is
+refused. TOML is refused too: it has no null value, so a document field
+set to null would be lost on write; typed entity DAOs still use TOML.
 
 ## Tenant scoping
 
