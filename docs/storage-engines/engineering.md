@@ -478,9 +478,14 @@ the same status.
 > encrypting wrapper (`pkg/storage/objstore/encremote.go`, OS-4 C), the
 > `pkg/storage/pebble` `WithRemote` option with its creator-ID marker file
 > (`pkg/storage/pebble/remote.go`) and the store format marker
-> `objstore.EnsureLSMFormat` (`pkg/storage/objstore/lsmformat.go`, OS-5 A)
-> exist, all unwired; **nothing else below is implemented**, and no configuration key, type or
-> error named below exists yet.
+> `objstore.EnsureLSMFormat` (`pkg/storage/objstore/lsmformat.go`, OS-5 A),
+> the store opener `objstore.OpenStore` (`pkg/storage/objstore/open.go`, with
+> `ArchiveTierUnsupportedError`) and the composed opener in
+> `pkg/server/lifecycle/objstore_lsm.go` (prefix "lsm", locator "qrdb", local
+> dir `objstore-lsm`, a sealed barrier refused with
+> `ObjstoreBarrierSealedError`) exist, all unwired; **nothing else below is
+> implemented**, no configuration key named below exists yet, and
+> `NewLocalStorage` still opens the flat engine.
 
 ### Exported surface (target)
 
