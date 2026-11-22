@@ -170,8 +170,10 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
   op (`OpMVCCMovePrefix` behind the `prefix-move` cluster feature), with a
   service-backed Backend (`ServiceBackend`) that commits through the
   transaction service and publishes through that op, and the writer lock
-  over the server's lock service (`NewLockServiceWriter`); no engine
-  binding, server construction of a Store, quota or transport is built.
+  over the server's lock service (`NewLockServiceWriter`), and a commit past
+  the tenant's storage quota failing with `ErrFull`; no engine binding,
+  server construction of a Store, database count cap, entitlement or
+  transport is built.
 - If any tier requires CGo (`mattn`, the loadable extension), that binding
   lives in its **own Go module**: CGo must not enter the root module's
   dependency graph. The pure-Go tier via `modernc.org/sqlite` avoids CGo

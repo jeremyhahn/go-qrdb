@@ -311,9 +311,12 @@ Built so far (unwired):
   server;
 - the writer lock over the server's lock service (`NewLockServiceWriter`),
   with a Store over a (tenant, database) scope's resolved services tested on
-  every isolation type; nothing in the server constructs a Store yet.
+  every isolation type; nothing in the server constructs a Store yet;
+- quota (Q5): a commit or publish past the tenant's storage quota fails with
+  `ErrFull`, tested on every isolation type.
 
 Still to come: the SQLite engine
 binding and VFS registration (blocked: owner queue 288); the server
 constructing a Store for a caller (open for the owner), the optimistic
-read-set check, quota and the entitlement.
+read-set check, the database count cap and the entitlement (they wait on
+where the server constructs a Store, open for the owner).
