@@ -19,7 +19,7 @@ There is no `--engine` flag; passing one is an unknown-flag error. Every databas
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
 | `--backend` | string | node default (`database_defaults.backend`, else the run mode's) | `pebble \| memory \| file \| raft \| objstore` — see below |
-| `--data-dir` | string | — | dedicated data directory; **required for a per-database barrier**. Honoured for the system tenant only |
+| `--data-dir` | string | — | dedicated data directory; **required for a per-database barrier**; on a standalone node the database's own store (without a per-database barrier as well). Honoured for the system tenant only |
 | `--cluster-mode` | string | unset (server applies `local`) | `local \| distributed` — **raft backend only** |
 | `--replicas` | int | unset (server applies `1`) | replication factor — **raft backend only** |
 | `--barrier-enabled` | bool | false | enable a per-database encryption barrier (**non-raft `--data-dir` database, system tenant only**) |
