@@ -104,8 +104,8 @@ type targetsFile struct {
 	DiskExec []string `json:"disk_exec"`
 	Signal   []string `json:"signal"`
 	Restart  []string `json:"restart"`
-	// Unseal is the nemesis.RemoteConfig unseal template; a kill under a
-	// seal type that restarts sealed requires it.
+	// Unseal is the nemesis.RemoteConfig unseal template; kill and
+	// disk-full under a seal type that restarts sealed require it.
 	Unseal  []string              `json:"unseal"`
 	Nodes   map[string]targetNode `json:"nodes"`
 	Inspect struct {
@@ -196,9 +196,14 @@ var faults = map[string]faultSpec{
 		}
 		return nemesis.NewClockRate(nemesis.ClockRateConfig{PPM: tf.ClockRate.PPM, Command: tf.ClockRate.Command, Harness: harness})
 	}},
-	"disk-full": {nemesis.SelectOne, 1, func(_ *Options, tf *targetsFile) (nemesis.Nemesis, error) {
+	"disk-full": {nemesis.SelectOne, 1, func(o *Options, tf *targetsFile) (nemesis.Nemesis, error) {
 		if tf.DiskFull.Path == "" {
 			return nil, &ConfigError{Field: EnvTargets + " disk_full.path", Reason: "is required"}
+		}
+		// The heal restarts a node that exited on ENOSPC; under a sealed
+		// type it comes back sealed, so the heal must carry the unseal.
+		if sealTypes[o.Seal] && len(tf.Unseal) == 0 {
+			return nil, &ConfigError{Field: EnvTargets + " unseal", Reason: "is required for disk-full under " + EnvSeal + "=" + o.Seal}
 		}
 		return nemesis.NewDiskFull(nemesis.DiskFullConfig{Path: tf.DiskFull.Path, Fill: tf.DiskFull.Fill, Free: tf.DiskFull.Free})
 	}},

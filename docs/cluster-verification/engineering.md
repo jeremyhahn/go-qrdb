@@ -256,7 +256,7 @@ Unknown fields are refused.
 
 | Field | Meaning |
 |---|---|
-| `exec`, `signal`, `restart`, `unseal` | the `RemoteTarget` templates (`unseal` optional, required for `kill` under a sealed type), one argv element per word, rendered with `{{.Node}}`, `{{.Vars.<name>}}`, `{{shquote .Argv}}` (the fault's command, for `exec`) and `{{.Signal}}` (`KILL`, `STOP`, `CONT`, for `signal`) |
+| `exec`, `signal`, `restart`, `unseal` | the `RemoteTarget` templates (`unseal` optional, required for `kill` and `disk-full` under a sealed type), one argv element per word, rendered with `{{.Node}}`, `{{.Vars.<name>}}`, `{{shquote .Argv}}` (the fault's command, for `exec`) and `{{.Signal}}` (`KILL`, `STOP`, `CONT`, for `signal`) |
 | `disk_exec` | optional `RemoteTarget` template the `disk-full` fill and free steps use instead of `exec`, rendered like `exec`; it reaches the node's data directory without joining the node's network namespace, so the free step still runs when the server has exited on a full disk |
 | `nodes.<name>.vars` | the node's template variables: its host, container name and so on; every `PROOF_NODES` name needs an entry and no other name may have one |
 | `nodes.<name>.addresses` | the IPs or prefixes its peers reach it on; required by the partitions |

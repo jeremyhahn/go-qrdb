@@ -44,7 +44,9 @@ type diskFullData struct {
 // frees it again. Fill and free run through [DiskExecer.DiskExec] when the
 // target has it, else through Exec. A server may exit on ENOSPC (fail-stop),
 // so the heal, after the free step, restarts a [Restarter] target (a no-op on
-// a running node) and unseals an [Unsealer] that has an unseal command.
+// a running node) and unseals an [Unsealer] that has an unseal command. The
+// soak config requires an unseal command for disk-full under a sealed
+// PROOF_SEAL type, so a target without one only occurs under none.
 func NewDiskFull(cfg DiskFullConfig) (Nemesis, error) {
 	if err := checkAbsolute("disk-full path", cfg.Path); err != nil {
 		return nil, err
@@ -88,7 +90,8 @@ func diskExecStep(tmpl *Template, data func(Target) (any, []string)) step {
 // was full: a fatal write error on ENOSPC is a legitimate fail-stop, so the
 // heal, not the server, restores the node. Restart is a no-op on a running
 // node; an [Unsealer] is unsealed after it, and a target with no unseal
-// command (ErrUnsupported) needs none. A target that cannot restart is left
+// command (ErrUnsupported) needs none: the soak config refuses disk-full
+// under a sealed PROOF_SEAL type without an unseal command. A target that cannot restart is left
 // as the free step left it. The node is expected to come back: the store
 // opens after a torn final write (a torn final WAL or MANIFEST frame is the
 // end of the log), and the soak's ledger then checks that no acknowledged
