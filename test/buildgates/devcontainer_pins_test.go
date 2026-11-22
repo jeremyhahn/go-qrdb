@@ -173,6 +173,7 @@ func copyDevcontainerPinFiles(t *testing.T) string {
 		if err := os.MkdirAll(filepath.Dir(out), 0o750); err != nil {
 			t.Fatalf("mkdir for %s: %v", rel, err)
 		}
+		// #nosec G703 -- out is filepath.Join(dst, rel): dst is the test's t.TempDir() root and rel comes from the literal devcontainerPinFiles list, so no input outside the test chooses the path.
 		if err := os.WriteFile(out, raw, 0o600); err != nil {
 			t.Fatalf("write %s: %v", rel, err)
 		}
@@ -232,6 +233,7 @@ func TestDevcontainerPinsDefectsFixtures(t *testing.T) {
 				if mutated == string(raw) {
 					t.Fatalf("%s: mutation %q changed nothing; the fixture no longer matches the file", tc.file, tc.old)
 				}
+				// #nosec G703 -- path is filepath.Join(root, tc.file): root is the t.TempDir() copy copyDevcontainerPinFiles made and tc.file comes from the literal cases table, so no input outside the test chooses the path.
 				if err := os.WriteFile(path, []byte(mutated), 0o600); err != nil {
 					t.Fatalf("write %s: %v", tc.file, err)
 				}
