@@ -21,6 +21,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -104,6 +105,39 @@ func TestBuildServices_LogServiceRoutesBarrierTenantsToTheirHome(t *testing.T) {
 	var refused *service.BarrierStoreUnavailableError
 	if !errors.As(err, &refused) || refused.TenantID != "vault" {
 		t.Fatalf("CreateLog = %v, want *service.BarrierStoreUnavailableError for vault", err)
+	}
+	if len(device.created) != 0 {
+		t.Fatalf("device asked to create %+v for a refused tenant", device.created)
+	}
+}
+
+// auditedBarrierTenants is a barrier tenant whose replicated audit is
+// entitled, so the opt-in logger hands its events to the replicated writer.
+type auditedBarrierTenants struct{ barrierTenants }
+
+func (auditedBarrierTenants) ReplicatedAuditEnabled(context.Context, string) (bool, error) {
+	return true, nil
+}
+
+// TestBuildServices_AuditAndLogShareTheBarrierTenantsGroup pins that the
+// composed node's audit writer and log reader resolve a barrier tenant's
+// audit trail through the same resolver: with no home group attached both
+// refuse with the same error, and neither falls back to the system shard.
+func TestBuildServices_AuditAndLogShareTheBarrierTenantsGroup(t *testing.T) {
+	device := &recordingHeadSigners{}
+	node := buildSeamNode(t, lifecycle.Infra{HeadSignerProvider: device})
+	node.Tenant = auditedBarrierTenants{}
+	ctx := tenant.WithTenantID(context.Background(), "vault")
+
+	emitErr := node.ReplicatedAudit.Emit(ctx, audit.AuditEvent{TenantID: "vault", Action: "secret.read"})
+	var emitRefused *service.BarrierStoreUnavailableError
+	if !errors.As(emitErr, &emitRefused) || emitRefused.TenantID != "vault" {
+		t.Fatalf("Emit = %v, want *service.BarrierStoreUnavailableError for vault", emitErr)
+	}
+	_, headErr := node.Log.Head(ctx, &service.HeadRequest{LogRef: service.LogRef{Database: "system", Log: "audit"}})
+	var headRefused *service.BarrierStoreUnavailableError
+	if !errors.As(headErr, &headRefused) || headRefused.TenantID != "vault" {
+		t.Fatalf("Head = %v, want *service.BarrierStoreUnavailableError for vault", headErr)
 	}
 	if len(device.created) != 0 {
 		t.Fatalf("device asked to create %+v for a refused tenant", device.created)
