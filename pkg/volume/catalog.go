@@ -16,14 +16,16 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 )
 
-// Key prefixes for the replicated catalog, assignment and health-report
-// records (docs/volume-pools/engineering.md#persistence). All three sit in
+// Key prefixes for the replicated catalog, assignment, health-report and
+// move-journal records (docs/volume-pools/engineering.md#persistence). All
+// four sit in
 // the reserved "__sys:" namespace: replicated state with no node-local
 // file, readable standalone (a single-node deployment still runs the same
 // KVServicer/TransactionServicer path) and under Raft alike.
@@ -31,10 +33,11 @@ const (
 	PoolKeyPrefix       = "__sys:volumepool/pools/"
 	AssignmentKeyPrefix = "__sys:volumepool/assign/"
 	NodeReportKeyPrefix = "__sys:volumepool/nodes/"
+	MoveKeyPrefix       = "__sys:volumepool/moves/"
 )
 
-// PoolKey, AssignmentKey and NodeReportKey build the storage key for a
-// Pool, Assignment or NodeReport record.
+// PoolKey, AssignmentKey, NodeReportKey and MoveKey build the storage key
+// for a Pool, Assignment, NodeReport or Move record.
 func PoolKey(name string) string           { return PoolKeyPrefix + name }
 func AssignmentKey(tenantID string) string { return AssignmentKeyPrefix + tenantID }
 func NodeReportKey(nodeID string) string   { return NodeReportKeyPrefix + nodeID }
@@ -270,6 +273,14 @@ func (c *Catalog) DeletePool(ctx context.Context, name string) error {
 		} else if unparseable {
 			return &PoolUnparseableAssignmentError{Pool: name}
 		}
+		// Invariant 10 and decision Q10: a pool a move journal names, as
+		// source or destination, is in use; a journal that does not
+		// decode fails closed.
+		if movers, err := c.tenantsMovingWith(ctx, name); err != nil {
+			return err
+		} else if len(movers) > 0 {
+			return &PoolInUseError{Pool: name, Tenants: movers}
+		}
 		deleted, err := c.kv.CompareAndDelete(ctx, PoolKey(name), raw)
 		if err != nil {
 			return err
@@ -279,6 +290,29 @@ func (c *Catalog) DeletePool(ctx context.Context, name string) error {
 		}
 	}
 	return &ReservationConflictError{Pool: name}
+}
+
+// tenantsMovingWith returns, sorted, the tenants whose move journal names
+// pool as its source or destination. A journal that does not decode
+// returns *CorruptRecordError for its key: DeletePool cannot prove it does
+// not name pool, so it refuses.
+func (c *Catalog) tenantsMovingWith(ctx context.Context, pool string) ([]string, error) {
+	raw, err := c.kv.Scan(ctx, MoveKeyPrefix)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for key, data := range raw {
+		var m Move
+		if err := json.Unmarshal(data, &m); err != nil {
+			return nil, &CorruptRecordError{Key: key, Err: err}
+		}
+		if m.FromPool == pool || m.ToPool == pool {
+			ids = append(ids, strings.TrimPrefix(key, MoveKeyPrefix))
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 // scanPools returns every Pool in the catalog, sorted by name. A record
@@ -606,6 +640,204 @@ func decodeAssignmentPageToken(token string) (string, error) {
 // Moves (Phase 2, decision D5)
 // ---------------------------------------------------------------------------
 
+// readMove returns tenantID's move journal and its raw bytes, or (nil, nil,
+// nil) when no move is journalled. A record that does not decode returns
+// *CorruptRecordError, never the raw bytes.
+func (c *Catalog) readMove(ctx context.Context, tenantID string) (*Move, []byte, error) {
+	raw, err := c.kv.Get(ctx, MoveKey(tenantID))
+	if err != nil {
+		return nil, nil, err
+	}
+	if raw == nil {
+		return nil, nil, nil
+	}
+	var m Move
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, nil, &CorruptRecordError{Key: MoveKey(tenantID), Err: err}
+	}
+	return &m, raw, nil
+}
+
+// providerOpensLockable reports whether the provider registered as name
+// opens Lockable volumes. A provider that is not registered or does not
+// implement LockableProvider returns fallback, so the caller chooses the
+// fail-closed answer for its side of the move.
+func (c *Catalog) providerOpensLockable(name string, fallback bool) bool {
+	p, err := c.registry.Lookup(name)
+	if err != nil || p == nil {
+		return fallback
+	}
+	if lp, ok := p.(LockableProvider); ok {
+		return lp.OpensLockable()
+	}
+	return fallback
+}
+
+// AdmitMove is the catalog half of a tenant move's admit step ("The move,
+// phase by phase" step 1, docs/decisions/volume-pool-tenant-moves.md). In
+// one transaction it reserves the tenant's Assignment.ReservedBytes on
+// req.ToPool and writes the journal at MoveKey(req.TenantID) in state
+// MoveStateAdmitted with every replica node pending. The source reservation
+// and the assignment stay as they are: the tenant counts on both pools
+// while it moves.
+//
+// Before the transaction it refuses, with *MoveConflictError, a second move
+// (Q10), a move to the current pool, a Lockable-to-non-Lockable move without
+// req.AllowUnencryptedDestination (Q9), and a destination that is not
+// Mapped and StateReady in a fresh report from every replica node (Q3). The
+// tenant-kind and AllowedVolumePools checks belong to the caller in the
+// tenant layer. Nothing calls AdmitMove yet.
+func (c *Catalog) AdmitMove(ctx context.Context, req MoveAdmitRequest) (*Move, error) {
+	if req.TenantID == "" {
+		return nil, &InvalidMoveRequestError{Reason: "empty tenant id"}
+	}
+	if req.ToPool == "" {
+		return nil, &InvalidMoveRequestError{Reason: "empty destination pool"}
+	}
+	if len(req.ReplicaNodes) == 0 {
+		return nil, &InvalidMoveRequestError{Reason: "no replica nodes"}
+	}
+	seen := make(map[string]struct{}, len(req.ReplicaNodes))
+	for _, n := range req.ReplicaNodes {
+		if n == "" {
+			return nil, &InvalidMoveRequestError{Reason: "empty replica node id"}
+		}
+		if _, dup := seen[n]; dup {
+			return nil, &InvalidMoveRequestError{Reason: "duplicate replica node id " + strconv.Quote(n)}
+		}
+		seen[n] = struct{}{}
+	}
+
+	for attempt := 0; attempt < maxCASRetries; attempt++ {
+		assignRaw, err := c.kv.Get(ctx, AssignmentKey(req.TenantID))
+		if err != nil {
+			return nil, err
+		}
+		if assignRaw == nil {
+			return nil, &AssignmentNotFoundError{TenantID: req.TenantID}
+		}
+		var assignment Assignment
+		if err := json.Unmarshal(assignRaw, &assignment); err != nil {
+			return nil, &CorruptRecordError{Key: AssignmentKey(req.TenantID), Err: err}
+		}
+		if err := ValidateAssignmentPath(req.TenantID, assignment.Path); err != nil {
+			return nil, err
+		}
+
+		existing, _, err := c.readMove(ctx, req.TenantID)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			return nil, &MoveConflictError{TenantID: req.TenantID, Reason: "a move is already running"}
+		}
+		if assignment.Pool == req.ToPool {
+			return nil, &MoveConflictError{TenantID: req.TenantID, Reason: "destination is the tenant's current pool"}
+		}
+
+		dest, destRaw, err := c.getPoolRaw(ctx, req.ToPool)
+		if err != nil {
+			return nil, err
+		}
+		source, _, err := c.getPoolRaw(ctx, assignment.Pool)
+		if err != nil {
+			return nil, err
+		}
+
+		// Q9: an unknown source counts as Lockable and an unknown
+		// destination as not, so neither lets a downgrade through unflagged.
+		if c.providerOpensLockable(source.Provider, true) &&
+			!c.providerOpensLockable(dest.Provider, false) &&
+			!req.AllowUnencryptedDestination {
+			return nil, &MoveConflictError{TenantID: req.TenantID, Reason: "destination pool is not Lockable; set allow_unencrypted_destination to move off a Lockable pool"}
+		}
+
+		// Q3: every replica node reports the destination ready, freshly.
+		reports, err := c.scanNodeReports(ctx)
+		if err != nil {
+			return nil, err
+		}
+		byNode := make(map[string]NodeReport, len(reports))
+		for _, r := range reports {
+			byNode[r.NodeID] = r
+		}
+		now := time.Now()
+		nodes := append([]string(nil), req.ReplicaNodes...)
+		sort.Strings(nodes)
+		for _, n := range nodes {
+			r, ok := byNode[n]
+			ready := ok && now.Sub(r.ReportedAt) <= c.leaseTTL
+			if ready {
+				p, mapped := r.Pools[req.ToPool]
+				ready = mapped && p.Mapped && p.Health.State == StateReady
+			}
+			if !ready {
+				return nil, &MoveConflictError{TenantID: req.TenantID, NodeID: n, Reason: "destination pool is not ready on this node"}
+			}
+		}
+
+		reserveBytes := assignment.ReservedBytes
+		overcommit := dest.Overcommit
+		if overcommit == 0 {
+			overcommit = DefaultOvercommit
+		}
+		capacity, err := c.effectiveCapacity(ctx, dest)
+		if err != nil {
+			return nil, err
+		}
+		if capacity > 0 {
+			limit := int64(float64(capacity) * overcommit)
+			available := limit - dest.ReservedBytes
+			if reserveBytes > available {
+				return nil, &PoolCapacityExceededError{Pool: req.ToPool, Requested: reserveBytes, Available: available}
+			}
+		}
+
+		updatedDest := *dest
+		updatedDest.ReservedBytes += reserveBytes
+		updatedDest.UpdatedAt = now
+		destData, err := json.Marshal(updatedDest)
+		if err != nil {
+			return nil, &EncodeError{Err: err}
+		}
+
+		move := Move{
+			TenantID:                    req.TenantID,
+			FromPool:                    assignment.Pool,
+			ToPool:                      req.ToPool,
+			State:                       MoveStateAdmitted,
+			NodesPending:                nodes,
+			ReservedBytes:               reserveBytes,
+			AllowUnencryptedDestination: req.AllowUnencryptedDestination,
+			AdmittedAt:                  now,
+		}
+		moveData, err := json.Marshal(move)
+		if err != nil {
+			return nil, &EncodeError{Err: err}
+		}
+
+		resp, err := c.tx.Execute(ctx,
+			[]lock.Compare{
+				{Key: []byte(PoolKey(req.ToPool)), Target: lock.CompareValue, Result: lock.CompareEqual, Value: destRaw},
+				{Key: []byte(AssignmentKey(req.TenantID)), Target: lock.CompareValue, Result: lock.CompareEqual, Value: assignRaw},
+				{Key: []byte(MoveKey(req.TenantID)), Target: lock.CompareVersion, Result: lock.CompareEqual, Version: 0},
+			},
+			[]lock.Op{
+				{Type: lock.OpPut, Key: []byte(PoolKey(req.ToPool)), Value: destData},
+				{Type: lock.OpPut, Key: []byte(MoveKey(req.TenantID)), Value: moveData},
+			},
+			nil,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Succeeded {
+			return &move, nil
+		}
+	}
+	return nil, &ReservationConflictError{Pool: req.ToPool}
+}
+
 // MoveTenant is not implemented: tenant moves are Phase 2.
 func (c *Catalog) MoveTenant(_ context.Context, _, _ string) (*Move, error) {
 	return nil, &MoveNotImplementedError{}
@@ -812,6 +1044,13 @@ func (c *Catalog) Release(ctx context.Context, tenantID string) error {
 		if assignRaw == nil {
 			return nil // invariant: releasing an unassigned tenant is a no-op
 		}
+		// Decision Q10: tenant delete is refused while a move runs; a
+		// journal that does not decode fails closed.
+		if m, _, err := c.readMove(ctx, tenantID); err != nil {
+			return err
+		} else if m != nil {
+			return &MoveConflictError{TenantID: tenantID, Reason: "tenant delete is refused while a move runs"}
+		}
 		var assignment Assignment
 		if err := json.Unmarshal(assignRaw, &assignment); err != nil {
 			return &CorruptRecordError{Key: AssignmentKey(tenantID), Err: err}
@@ -857,6 +1096,7 @@ func (c *Catalog) Release(ctx context.Context, tenantID string) error {
 			[]lock.Compare{
 				{Key: []byte(PoolKey(assignment.Pool)), Target: lock.CompareValue, Result: lock.CompareEqual, Value: poolRaw},
 				{Key: []byte(AssignmentKey(tenantID)), Target: lock.CompareValue, Result: lock.CompareEqual, Value: assignRaw},
+				{Key: []byte(MoveKey(tenantID)), Target: lock.CompareVersion, Result: lock.CompareEqual, Version: 0},
 			},
 			[]lock.Op{
 				{Type: lock.OpPut, Key: []byte(PoolKey(assignment.Pool)), Value: poolData},
@@ -890,6 +1130,13 @@ func (c *Catalog) AdjustReservation(ctx context.Context, tenantID string, newByt
 		}
 		if err := ValidateAssignmentPath(tenantID, assignment.Path); err != nil {
 			return nil, err
+		}
+		// Decision Q10: a quota change is refused while a move runs; a
+		// journal that does not decode fails closed.
+		if m, _, err := c.readMove(ctx, tenantID); err != nil {
+			return nil, err
+		} else if m != nil {
+			return nil, &MoveConflictError{TenantID: tenantID, Reason: "quota change is refused while a move runs"}
 		}
 		if assignment.ReservedBytes == newBytes {
 			return &assignment, nil
@@ -943,6 +1190,7 @@ func (c *Catalog) AdjustReservation(ctx context.Context, tenantID string, newByt
 			[]lock.Compare{
 				{Key: []byte(PoolKey(assignment.Pool)), Target: lock.CompareValue, Result: lock.CompareEqual, Value: poolRaw},
 				{Key: []byte(AssignmentKey(tenantID)), Target: lock.CompareValue, Result: lock.CompareEqual, Value: assignRaw},
+				{Key: []byte(MoveKey(tenantID)), Target: lock.CompareVersion, Result: lock.CompareEqual, Version: 0},
 			},
 			[]lock.Op{
 				{Type: lock.OpPut, Key: []byte(PoolKey(assignment.Pool)), Value: poolData},
@@ -967,3 +1215,4 @@ func (c *Catalog) AdjustReservation(ctx context.Context, tenantID string, newByt
 func isAssignmentNotFound(err error, target **AssignmentNotFoundError) bool {
 	return errors.As(err, target)
 }
+func MoveKey(tenantID string) string { return MoveKeyPrefix + tenantID }

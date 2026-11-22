@@ -175,6 +175,40 @@ func (e *MoveNotImplementedError) Error() string {
 	return "volume: tenant moves are not implemented in this release (decision D5, Phase 2)"
 }
 
+// MoveConflictError is returned when a tenant move is refused: by
+// Catalog.AdmitMove (a move already runs, the destination is the current
+// pool, the destination is not ready on a replica node per decision Q3, or a
+// Lockable-to-non-Lockable move lacks consent per decision Q9), or by
+// Release, AdjustReservation or a second admit while a move runs (decision
+// Q10). NodeID is set only for a per-node refusal. It classifies as
+// FailedPrecondition once a transport carries it.
+type MoveConflictError struct {
+	TenantID string
+	NodeID   string
+	Reason   string
+}
+
+// Error implements the error interface.
+func (e *MoveConflictError) Error() string {
+	msg := "volume: move of tenant " + strconv.Quote(e.TenantID)
+	if e.NodeID != "" {
+		msg += " on node " + strconv.Quote(e.NodeID)
+	}
+	return msg + " refused: " + e.Reason
+}
+
+// InvalidMoveRequestError is returned by Catalog.AdmitMove for a malformed
+// MoveAdmitRequest (an empty tenant or pool, no replica nodes, or an empty
+// or duplicate node ID).
+type InvalidMoveRequestError struct {
+	Reason string
+}
+
+// Error implements the error interface.
+func (e *InvalidMoveRequestError) Error() string {
+	return "volume: invalid move request: " + e.Reason
+}
+
 // MoveStepError is returned by the node-local step of a tenant move
 // (CopyTree, VerifyCopy). Phase is "copy" or "verify". NodeID is left
 // empty by those functions and filled in by the caller that runs the step

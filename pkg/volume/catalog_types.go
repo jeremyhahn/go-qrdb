@@ -168,10 +168,10 @@ type AssignmentPage struct {
 	NextPageToken string       `json:"next_page_token,omitempty"`
 }
 
-// Move is the Phase 2 move-journal record (decision D5). Nothing in this
-// build populates it: MoveTenant and GetMove return
-// *MoveNotImplementedError until the Phase 2 journal lands. The type
-// exists now only so volume.Service's signature compiles against it.
+// Move is the move-journal record persisted at MoveKey(TenantID) (decision
+// Q5, docs/decisions/volume-pool-tenant-moves.md). Catalog.AdmitMove writes
+// it in state MoveStateAdmitted; MoveTenant and GetMove still return
+// *MoveNotImplementedError until a later slice wires them to the journal.
 type Move struct {
 	TenantID     string   `json:"tenantId"`
 	FromPool     string   `json:"fromPool"`
@@ -180,6 +180,34 @@ type Move struct {
 	NodesCopied  []string `json:"nodesCopied,omitempty"`
 	NodesPending []string `json:"nodesPending,omitempty"`
 	Error        string   `json:"error,omitempty"`
+	// ReservedBytes is the reservation taken on ToPool at admit: the
+	// tenant's Assignment.ReservedBytes at that moment. A later abort
+	// releases it; cut over keeps it as the tenant's reservation.
+	ReservedBytes int64 `json:"reservedBytes"`
+	// AllowUnencryptedDestination records the operator's consent to move a
+	// tenant from a Lockable pool to a non-Lockable one (decision Q9).
+	AllowUnencryptedDestination bool `json:"allowUnencryptedDestination,omitempty"`
+	// AdmittedAt is when AdmitMove wrote the journal.
+	AdmittedAt time.Time `json:"admittedAt"`
+}
+
+// MoveStateAdmitted is the state AdmitMove writes: the destination is
+// reserved and every replica node is pending. It is the only state this
+// build writes; the later states arrive with the move reconciler (Q6).
+const MoveStateAdmitted = "admitted"
+
+// MoveAdmitRequest is the input to Catalog.AdmitMove.
+type MoveAdmitRequest struct {
+	// TenantID is the tenant to move.
+	TenantID string
+	// ToPool is the destination pool.
+	ToPool string
+	// ReplicaNodes is every node holding a replica of the tenant, supplied
+	// by the caller; each must report ToPool ready (decision Q3).
+	ReplicaNodes []string
+	// AllowUnencryptedDestination permits a Lockable-to-non-Lockable move
+	// (decision Q9).
+	AllowUnencryptedDestination bool
 }
 
 // Service is the management surface every transport delegates to (REST,

@@ -48,6 +48,16 @@ type Lockable interface {
 	Lock(ctx context.Context) error
 }
 
+// LockableProvider is an optional Provider interface: a provider states
+// whether the volumes it opens implement Lockable, without opening one.
+// Catalog.AdmitMove reads it for decision Q9 (a Lockable-to-non-Lockable
+// move needs allow_unencrypted_destination). A provider that does not
+// implement it fails closed: it counts as Lockable when it is the move's
+// source and as not Lockable when it is the destination.
+type LockableProvider interface {
+	OpensLockable() bool
+}
+
 // VolumeKey is a per-volume, per-node symmetric key used by a Lockable's
 // Unlock. It is derived fresh by DeriveVolumeKey at every system-barrier
 // unseal and is never persisted anywhere: a sealed node's system barrier has
