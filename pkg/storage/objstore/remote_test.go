@@ -23,6 +23,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -543,24 +544,40 @@ func restoreMode(t *testing.T, dir string) {
 	t.Cleanup(func() { require.NoError(t, os.Chmod(dir, 0o700)) })
 }
 
+// skipIfRoot skips a test that needs directory permission bits to deny
+// access: root ignores them.
+func skipIfRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permission bits deny nothing")
+	}
+}
+
 func TestNewCachedRemote_DirFaults(t *testing.T) {
 	inner := newTestRemote(t, memory.New(), "db1")
 
-	file := filepath.Join(t.TempDir(), "file")
-	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
-	_, err := NewCachedRemote(inner, file)
-	require.Error(t, err, "a file where the dir belongs")
+	t.Run("a file where the dir belongs", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "file")
+		require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
+		_, err := NewCachedRemote(inner, file)
+		require.Error(t, err)
+	})
 
-	unreadable := t.TempDir()
-	require.NoError(t, os.Chmod(unreadable, 0o000))
-	restoreMode(t, unreadable)
-	_, err = NewCachedRemote(inner, unreadable)
-	require.ErrorIs(t, err, fs.ErrPermission)
+	t.Run("unreadable dir", func(t *testing.T) {
+		skipIfRoot(t)
+		unreadable := t.TempDir()
+		require.NoError(t, os.Chmod(unreadable, 0o000))
+		restoreMode(t, unreadable)
+		_, err := NewCachedRemote(inner, unreadable)
+		require.ErrorIs(t, err, fs.ErrPermission)
+	})
 
-	stuck := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(stuck, "left"+cacheTempSuffix, "child"), 0o700))
-	_, err = NewCachedRemote(inner, stuck)
-	require.Error(t, err, "a temporary that cannot be removed")
+	t.Run("a temporary that cannot be removed", func(t *testing.T) {
+		stuck := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(stuck, "left"+cacheTempSuffix, "child"), 0o700))
+		_, err := NewCachedRemote(inner, stuck)
+		require.Error(t, err)
+	})
 }
 
 func TestCachedRemote_CacheDirFaults(t *testing.T) {
@@ -588,6 +605,7 @@ func TestCachedRemote_CacheDirFaults(t *testing.T) {
 
 	t.Run("read-only cache dir", func(t *testing.T) {
 		dir := t.TempDir()
+		skipIfRoot(t)
 		c := newTestCachedRemote(t, inner, dir)
 		require.NoError(t, os.Chmod(dir, 0o500))
 		restoreMode(t, dir)
@@ -601,6 +619,7 @@ func TestCachedRemote_CacheDirFaults(t *testing.T) {
 
 	t.Run("unlistable cache dir", func(t *testing.T) {
 		dir := t.TempDir()
+		skipIfRoot(t)
 		c := newTestCachedRemote(t, inner, dir)
 		require.NoError(t, os.Chmod(dir, 0o300))
 		restoreMode(t, dir)
@@ -609,16 +628,24 @@ func TestCachedRemote_CacheDirFaults(t *testing.T) {
 }
 
 func TestWriteSyncClose_Faults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "f")
-	require.NoError(t, os.WriteFile(path, nil, 0o600))
-	ro, err := os.Open(path)
-	require.NoError(t, err)
-	require.Error(t, writeSyncClose(ro, []byte("x")), "write to a read-only file")
+	t.Run("write to a read-only file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "f")
+		require.NoError(t, os.WriteFile(path, nil, 0o600))
+		ro, err := os.Open(path)
+		require.NoError(t, err)
+		require.Error(t, writeSyncClose(ro, []byte("x")))
+	})
 
-	// /dev/null takes writes but refuses fsync (EINVAL).
-	null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	require.NoError(t, err)
-	require.Error(t, writeSyncClose(null, []byte("x")), "fsync of a device")
+	t.Run("fsync of a device", func(t *testing.T) {
+		// Linux /dev/null takes writes but refuses fsync (EINVAL); other
+		// kernels may accept the fsync.
+		if runtime.GOOS != "linux" {
+			t.Skip("fsync of /dev/null fails only on Linux")
+		}
+		null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		require.NoError(t, err)
+		require.Error(t, writeSyncClose(null, []byte("x")))
+	})
 }
 
 func TestCacheFileReader_ShortFile(t *testing.T) {
