@@ -145,3 +145,44 @@ func TestReclaim_LeavesNamespaceNestedUnderKeyPrefix(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []byte("childvalue"), got)
 }
+
+// TestReclaim_ForeignObjectsKeepOwnerForResume is the #1577 Codex round-3
+// P1: a reclamation that leaves foreign objects keeps the owner marker, so
+// the owner can reopen the namespace and finish a drop that stopped after
+// reclamation, while every other opener stays refused.
+func TestReclaim_ForeignObjectsKeepOwnerForResume(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "a")
+	require.NoError(t, os.MkdirAll(root, 0o700))
+	settings := map[string]string{"path": root}
+	e, err := New("local", settings, WithOwner("db-a"))
+	require.NoError(t, err)
+	require.NoError(t, e.Set([]byte("key"), []byte("value")))
+	foreign := filepath.Join(root, "child", "x")
+	require.NoError(t, os.MkdirAll(filepath.Dir(foreign), 0o700))
+	require.NoError(t, os.WriteFile(foreign, []byte("foreign"), 0o600))
+	require.NoError(t, e.Reclaim())
+	names, err := e.store.List("")
+	require.NoError(t, err)
+	require.NoError(t, e.Close())
+	assert.ElementsMatch(t, []string{"child/x", ownerMarkerName}, names,
+		"Reclaim must keep only the foreign object and the owner marker")
+
+	other, err := New("local", settings, WithOwner("db-b"))
+	var owned *NamespaceOwnedError
+	require.True(t, errors.As(err, &owned), "another owner reopened the reclaimed namespace: %v", err)
+	assert.Nil(t, other)
+	assert.Equal(t, "db-a", owned.Owner)
+	_, err = os.Stat(filepath.Join(root, formatMarkerName))
+	require.True(t, os.IsNotExist(err), "a refused opener wrote the format marker: %v", err)
+
+	_, err = New("local", settings)
+	var missing *FormatMarkerMissingError
+	require.True(t, errors.As(err, &missing), "an opener with no owner accepted foreign objects: %v", err)
+
+	reopened, err := New("local", settings, WithOwner("db-a"))
+	require.NoError(t, err, "the owner cannot reopen its reclaimed namespace")
+	require.NoError(t, reopened.Reclaim())
+	require.NoError(t, reopened.Close())
+	_, err = os.Stat(foreign)
+	require.NoError(t, err, "the second Reclaim deleted the foreign object")
+}

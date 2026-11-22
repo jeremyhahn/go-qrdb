@@ -19,6 +19,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
@@ -150,7 +151,7 @@ func newObjstoreRegistry(t *testing.T) (*restServiceRegistry, *database.Database
 // placement and leaves the cached dedicated-store bundle untouched.
 func TestRESTServiceRegistry_ObjstoreResolveDoesNotMutateCachedBundle(t *testing.T) {
 	r, db := newObjstoreRegistry(t)
-	got, ok := r.resolveObjstoreDatabase(tenantid.System, "blobs", nil)
+	got, ok := r.resolveObjstoreDatabase(db, tenantid.System, nil)
 	if !ok || got == nil {
 		t.Fatalf("resolveObjstoreDatabase = %v, %v; want a bundle", got, ok)
 	}
@@ -170,7 +171,7 @@ func TestRESTServiceRegistry_ObjstoreResolveDoesNotMutateCachedBundle(t *testing
 // database from many goroutines; under -race it reports any write to the
 // shared cached bundle.
 func TestRESTServiceRegistry_ObjstoreConcurrentResolve(t *testing.T) {
-	r, _ := newObjstoreRegistry(t)
+	r, db := newObjstoreRegistry(t)
 	const workers, rounds = 16, 50
 	var wg sync.WaitGroup
 	errs := make(chan string, workers)
@@ -179,7 +180,7 @@ func TestRESTServiceRegistry_ObjstoreConcurrentResolve(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < rounds; i++ {
-				svcs, ok := r.resolveObjstoreDatabase(tenantid.System, "blobs", nil)
+				svcs, ok := r.resolveObjstoreDatabase(db, tenantid.System, nil)
 				if !ok || svcs.Placement != service.StorePlacementNode {
 					errs <- "resolve did not return a node-placed bundle"
 					return
@@ -191,6 +192,70 @@ func TestRESTServiceRegistry_ObjstoreConcurrentResolve(t *testing.T) {
 	close(errs)
 	for e := range errs {
 		t.Fatal(e)
+	}
+}
+
+// failAfterFirstGetCatalog answers the first Get from the catalog it wraps
+// and every later Get with errCatalogReadFault: a catalog read that fails
+// between two lookups of one request. gets counts every Get.
+type failAfterFirstGetCatalog struct {
+	database.Catalog
+	gets atomic.Int64
+}
+
+var errCatalogReadFault = errors.New("catalog read fault")
+
+func (c *failAfterFirstGetCatalog) Get(ctx context.Context, tenantID, name string) (database.DatabaseMeta, error) {
+	if c.gets.Add(1) > 1 {
+		return database.DatabaseMeta{}, errCatalogReadFault
+	}
+	return c.Catalog.Get(ctx, tenantID, name)
+}
+
+// TestRESTServiceRegistry_ObjstoreCatalogFailureAfterLookupNeverFallsBackToShared
+// is the #1577 Codex round-3 P1: resolve looks the database up once
+// (managedDatabase) and serves it from that record. A catalog read that
+// fails after that lookup must not route the objstore database onto the
+// node's shared store, where its writes have no guard.
+func TestRESTServiceRegistry_ObjstoreCatalogFailureAfterLookupNeverFallsBackToShared(t *testing.T) {
+	dataDir := t.TempDir()
+	mgr := databasetest.NewManager(nil, dataDir, database.WithBackendFactory(objstoredb.NewBackendFactory()))
+	t.Cleanup(func() { _ = mgr.Close() })
+	db, err := mgr.Create(database.DatabaseConfig{
+		Name:    "blobs",
+		Backend: database.BackendObjstore,
+		Objstore: &database.DatabaseObjstoreConfig{
+			Provider: "local",
+			Settings: map[string]string{"path": filepath.Join(t.TempDir(), "objects")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	nodeStore := newFilledRegistry()
+	reg := NewRESTServiceRegistry(nodeStore, nil, tenantid.System,
+		WithDatabaseCatalog(newManagerCatalog(mgr)),
+		withDatabaseManager(mgr),
+	)
+
+	faulty := &failAfterFirstGetCatalog{Catalog: databasetest.Catalog(dataDir)}
+	mgr.SetCatalog(faulty)
+	kv, err := reg.KVService(tenantid.System, "blobs")
+	if err != nil {
+		t.Fatalf("KVService: %v", err)
+	}
+	if got := faulty.gets.Load(); got != 1 {
+		t.Fatalf("resolve read the catalog %d times, want exactly one lookup", got)
+	}
+	ctx := context.Background()
+	if err := kv.Put(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if got, err := db.Backend().Get(ctx, []byte("k")); err != nil || string(got) != "v" {
+		t.Fatalf("the write is not in the database's own store: %q, %v", got, err)
+	}
+	if got, err := nodeStore.Default().KV.Get(ctx, tenant.ComposeNamespace(tenantid.System, "blobs")+"k"); err == nil && got != nil {
+		t.Fatalf("the write reached the node's shared store: %q, %v", got, err)
 	}
 }
 

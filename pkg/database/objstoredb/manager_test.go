@@ -18,7 +18,10 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -177,6 +180,98 @@ func TestManager_DropReclaimsAClosedOrFailedBackendsObjects(t *testing.T) {
 			}
 			if left := objects(t, root+".journal"); len(left) != 0 {
 				t.Fatalf("Drop left journal objects: %v", left)
+			}
+		})
+	}
+}
+
+// failDeleteOnceCatalog fails the first Delete with errCatalogDeleteFault and
+// passes every other call to the catalog it wraps: a drop that stops after
+// the reclamation and before the catalog record is gone.
+type failDeleteOnceCatalog struct {
+	database.Catalog
+	failed atomic.Bool
+}
+
+var errCatalogDeleteFault = errors.New("catalog delete fault")
+
+func (c *failDeleteOnceCatalog) Delete(ctx context.Context, tenantID, name, incarnation, dropClaim string) error {
+	if c.failed.CompareAndSwap(false, true) {
+		return errCatalogDeleteFault
+	}
+	return c.Catalog.Delete(ctx, tenantID, name, incarnation, dropClaim)
+}
+
+// TestManager_DropResumesAfterReclaimWithForeignObject is the #1577 Codex
+// round-3 P1: a drop that reclaimed a namespace holding a foreign object and
+// then stopped (the catalog delete failed) must be resumable, on the same
+// manager and after a restart. Reclaim keeps the owner marker while the
+// foreign object remains, and the database's owner reopens the namespace to
+// finish the drop.
+func TestManager_DropResumesAfterReclaimWithForeignObject(t *testing.T) {
+	cases := map[string]func(t *testing.T, mgr *database.Manager, dataDir string, cat database.Catalog) *database.Manager{
+		"retry on the same manager": func(_ *testing.T, mgr *database.Manager, _ string, _ database.Catalog) *database.Manager {
+			return mgr
+		},
+		"after a restart": func(t *testing.T, mgr *database.Manager, dataDir string, cat database.Catalog) *database.Manager {
+			if err := mgr.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			restarted := newManager(t, dataDir)
+			restarted.SetCatalog(cat)
+			return restarted
+		},
+	}
+	for name, resume := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			root := filepath.Join(t.TempDir(), "objects")
+			dataDir := t.TempDir()
+			mgr := newManager(t, dataDir)
+			db, err := mgr.Create(localObjstore("blobs", root))
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			tenantID := db.TenantID()
+			if err := db.Backend().Put(ctx, []byte("key"), []byte("v")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			foreign := filepath.Join(root, "child", "x")
+			if err := os.MkdirAll(filepath.Dir(foreign), 0o700); err != nil {
+				t.Fatalf("MkdirAll: %v", err)
+			}
+			if err := os.WriteFile(foreign, []byte("foreign"), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			cat := &failDeleteOnceCatalog{Catalog: databasetest.Catalog(dataDir)}
+			mgr.SetCatalog(cat)
+
+			if err := mgr.Drop(ctx, "blobs"); !errors.Is(err, errCatalogDeleteFault) {
+				t.Fatalf("Drop = %v, want the catalog delete fault", err)
+			}
+			resumed := resume(t, mgr, dataDir, cat)
+			if err := resumed.DropForTenant(ctx, "blobs"); err != nil {
+				t.Fatalf("resumed drop: %v", err)
+			}
+
+			var notFound *database.NotFoundError
+			if _, err := cat.Get(ctx, tenantID, "blobs"); !errors.As(err, &notFound) {
+				t.Fatalf("catalog Get after the drop = %v, want *NotFoundError", err)
+			}
+			foundForeign := false
+			for _, path := range objects(t, root) {
+				switch {
+				case path == foreign:
+					foundForeign = true
+				case filepath.Dir(path) == root && strings.HasPrefix(filepath.Base(path), "qrdb-objstore-owner"):
+					// The owner marker (and the local provider's metadata
+					// file for it) stays while the foreign object does.
+				default:
+					t.Errorf("the drop left %s", path)
+				}
+			}
+			if !foundForeign {
+				t.Fatal("the drop deleted the foreign object")
 			}
 		})
 	}

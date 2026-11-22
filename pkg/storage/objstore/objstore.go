@@ -343,10 +343,19 @@ func notFound(err error) bool {
 	return errors.Is(err, objcommon.ErrKeyNotFound)
 }
 
-// ensureFormatMarker refuses to open a non-empty store that was not written
+// ensureFormatMarkerFor refuses to open a non-empty store that was not written
 // by this exact object layout (see FormatMarkerMissingError and
 // FormatVersionMismatchError), and marks an empty one as this layout.
-func (e *Engine) ensureFormatMarker() error {
+//
+// owner is the opener's (claimNamespace). A namespace with no format marker
+// that is not empty is accepted only as the remains of its owner's own
+// reclamation (Reclaim): the format marker gone, the owner marker kept while
+// anything foreign remains under the root. The owner that marker names
+// reopens it, to finish a drop that stopped after reclamation; any other
+// opener is refused, before anything is written, exactly as claimOwner
+// would refuse it. An opener with no owner accepts only a namespace holding
+// nothing but the owner marker.
+func (e *Engine) ensureFormatMarkerFor(owner string) error {
 	rc, err := e.store.Get(formatMarkerName)
 	if err == nil {
 		defer func() { _ = rc.Close() }()
@@ -366,14 +375,46 @@ func (e *Engine) ensureFormatMarker() error {
 	if err != nil {
 		return err
 	}
-	// A namespace holding only the owner marker is one whose reclamation
-	// stopped between the format-marker and owner-marker deletes (Reclaim
-	// deletes the owner marker last). It is treated as empty, so its owner
-	// can reopen it and reclaim it again; claimOwner still refuses any other.
-	if len(names) > 0 && (len(names) != 1 || names[0] != ownerMarkerName) {
-		return &FormatMarkerMissingError{Provider: e.provider}
+	if len(names) > 0 {
+		if err := e.acceptReclaimedRemains(names, owner); err != nil {
+			return err
+		}
 	}
 	return e.store.Put(formatMarkerName, strings.NewReader(formatVersion))
+}
+
+// ensureFormatMarker is ensureFormatMarkerFor an opener with no owner.
+func (e *Engine) ensureFormatMarker() error {
+	return e.ensureFormatMarkerFor("")
+}
+
+// acceptReclaimedRemains decides whether a non-empty namespace with no format
+// marker (names, its listing) may be marked as this layout for owner: nil
+// when the owner marker names owner, the owner's refusal (ownerConflict) when
+// it names another, and *FormatMarkerMissingError when there is no owner
+// marker, which makes the objects some other data. An opener with no owner
+// keeps the rule it always had: only a namespace holding nothing but the
+// owner marker is accepted.
+func (e *Engine) acceptReclaimedRemains(names []string, owner string) error {
+	if owner == "" {
+		if len(names) == 1 && names[0] == ownerMarkerName {
+			return nil
+		}
+		return &FormatMarkerMissingError{Provider: e.provider}
+	}
+	rc, err := e.store.Get(ownerMarkerName)
+	if err != nil {
+		if notFound(err) {
+			return &FormatMarkerMissingError{Provider: e.provider}
+		}
+		return err
+	}
+	defer func() { _ = rc.Close() }()
+	found, err := io.ReadAll(rc)
+	if err != nil {
+		return err
+	}
+	return e.ownerConflict(string(found), owner)
 }
 
 // ownerLocks holds one lock per namespace identity (namespaceKey), so two
@@ -757,7 +798,7 @@ func physicalJournalRoot(dataRoot string) (string, error) {
 	return filepath.Join(parent, filepath.Base(lexical)), nil
 }
 
-// claimNamespace checks or writes the format marker (ensureFormatMarker) and
+// claimNamespace checks or writes the format marker (ensureFormatMarkerFor) and
 // then claims the namespace for owner (claimOwner), under the namespace's
 // in-process lock (lockNamespace). Two engines in this process opening one
 // namespace therefore run the check-then-write of each marker one at a time:
@@ -767,7 +808,7 @@ func physicalJournalRoot(dataRoot string) (string, error) {
 // put through this interface.
 func (e *Engine) claimNamespace(owner string) error {
 	defer lockNamespace(e.namespace)()
-	if err := e.ensureFormatMarker(); err != nil {
+	if err := e.ensureFormatMarkerFor(owner); err != nil {
 		return err
 	}
 	return e.claimOwner(owner)
@@ -788,18 +829,25 @@ func (e *Engine) claimOwner(owner string) error {
 		if readErr != nil {
 			return readErr
 		}
-		if string(found) == NodeStoreOwner && owner != NodeStoreOwner {
-			return &NamespaceInUseError{Provider: e.provider, Held: NodeStoreOwner, Want: owner}
-		}
-		if string(found) != owner {
-			return &NamespaceOwnedError{Provider: e.provider, Owner: string(found), Want: owner}
-		}
-		return nil
+		return e.ownerConflict(string(found), owner)
 	}
 	if !notFound(err) {
 		return err
 	}
 	return e.store.Put(ownerMarkerName, strings.NewReader(owner))
+}
+
+// ownerConflict is the one ownership rule: nil when found (the owner marker's
+// content) is owner, *NamespaceInUseError when the node store holds the
+// namespace and owner is not the node store, *NamespaceOwnedError otherwise.
+func (e *Engine) ownerConflict(found, owner string) error {
+	if found == NodeStoreOwner && owner != NodeStoreOwner {
+		return &NamespaceInUseError{Provider: e.provider, Held: NodeStoreOwner, Want: owner}
+	}
+	if found != owner {
+		return &NamespaceOwnedError{Provider: e.provider, Owner: found, Want: owner}
+	}
+	return nil
 }
 
 // Get retrieves the value for key. Returns nil, nil when the key does not exist,
@@ -1148,7 +1196,12 @@ func (e *Engine) Close() error {
 // the layout and owner markers last -- so no object outlives the database
 // that owned it. Any other name under the root is left in place: on a walked
 // provider the listing also reaches objects the engine did not write, such
-// as a nested namespace's, and those are not this engine's to delete. It
+// as a nested namespace's, and those are not this engine's to delete. While
+// any such foreign object remains, the owner marker is kept: it is the
+// durable, owner-verified record of the reclamation, which lets the same
+// owner reopen the namespace (ensureFormatMarkerFor) and finish a drop that
+// stopped after reclamation, and keeps every other opener out. With nothing
+// foreign left the owner marker goes too and the path is reusable. It
 // runs with every write excluded; the engine stays open and empty, refuses
 // every write from the moment it starts (so none lands between the
 // reclamation and Close), and the caller closes it. A failure leaves the
@@ -1193,8 +1246,17 @@ func (e *Engine) Reclaim() error {
 		return err
 	}
 	// The owner record goes last, so a reclamation that fails part-way
-	// leaves the namespace its owner's to retry: a namespace holding only
-	// the owner marker reopens for that owner (ensureFormatMarker).
+	// leaves the namespace its owner's to retry: a namespace holding the
+	// owner marker reopens for that owner (ensureFormatMarkerFor). It stays
+	// while foreign objects remain, so the owner can still reopen the
+	// namespace to finish a drop that stops after this reclamation.
+	remaining, err := e.store.List("")
+	if err != nil {
+		return err
+	}
+	if len(remaining) != 1 || remaining[0] != ownerMarkerName {
+		return nil
+	}
 	if err := e.store.Delete(ownerMarkerName); err != nil && !notFound(err) {
 		return err
 	}

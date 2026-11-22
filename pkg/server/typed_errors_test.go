@@ -592,7 +592,14 @@ func TestResolveDedicatedDatabaseBarrier_RefusesCrossTenantAccess(t *testing.T) 
 		{"the system tenant, for a tenant-owned database", "system"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			svcs, err := r.resolveDedicatedDatabaseBarrier(tc.tenant, "acme-db", nil)
+			// resolve passes resolveDedicatedDatabaseBarrier the one record
+			// managedDatabase looked up: another tenant's database is no
+			// record at all.
+			dbase := managedRecordOf(t, r, tc.tenant, "acme-db")
+			if dbase != nil {
+				t.Fatalf("managedDatabase(%q, acme-db) = %q; want no record for a tenant that does not own it", tc.tenant, dbase.Name())
+			}
+			svcs, err := r.resolveDedicatedDatabaseBarrier(dbase, tc.tenant, nil)
 			if !errors.Is(err, errNotDedicatedDatabaseBarrier) {
 				t.Fatalf("error = %v, want errNotDedicatedDatabaseBarrier: any other "+
 					"error is treated by the caller as a FINAL outcome", err)
@@ -607,6 +614,18 @@ func TestResolveDedicatedDatabaseBarrier_RefusesCrossTenantAccess(t *testing.T) 
 // TestResolveDedicatedDatabaseBarrier_RefusesWithoutABarrier: ownership alone
 // does not earn a dedicated store. A database with no barrier configured falls
 // through to the ordinary shared-store path.
+// managedRecordOf is the record resolve hands resolveDedicatedDatabaseBarrier:
+// its one lookup, managedDatabase. A lookup error fails the test; no record
+// (no manager, unknown or another tenant's database) is nil.
+func managedRecordOf(t *testing.T, r *restServiceRegistry, tenantID, db string) *database.Database {
+	t.Helper()
+	managed, err := r.managedDatabase(tenantID, db)
+	if err != nil {
+		t.Fatalf("managedDatabase(%q, %q): %v", tenantID, db, err)
+	}
+	return managed.db
+}
+
 func TestResolveDedicatedDatabaseBarrier_RefusesWithoutABarrier(t *testing.T) {
 	r, mgr := newBarrierResolveRegistry(t)
 
@@ -617,7 +636,7 @@ func TestResolveDedicatedDatabaseBarrier_RefusesWithoutABarrier(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	svcs, err := r.resolveDedicatedDatabaseBarrier("acme", "plain", nil)
+	svcs, err := r.resolveDedicatedDatabaseBarrier(managedRecordOf(t, r, "acme", "plain"), "acme", nil)
 	if !errors.Is(err, errNotDedicatedDatabaseBarrier) {
 		t.Fatalf("error = %v, want errNotDedicatedDatabaseBarrier", err)
 	}
@@ -633,14 +652,18 @@ func TestResolveDedicatedDatabaseBarrier_RefusesWithoutABarrier(t *testing.T) {
 func TestResolveDedicatedDatabaseBarrier_RefusesUnknownAndUnmanaged(t *testing.T) {
 	t.Run("no database manager", func(t *testing.T) {
 		r := &restServiceRegistry{systemTenant: "system", dedicatedStore: newDedicatedStoreServiceCache()}
-		if _, err := r.resolveDedicatedDatabaseBarrier("acme", "anything", nil); !errors.Is(err, errNotDedicatedDatabaseBarrier) {
+		if _, err := r.resolveDedicatedDatabaseBarrier(managedRecordOf(t, r, "acme", "anything"), "acme", nil); !errors.Is(err, errNotDedicatedDatabaseBarrier) {
 			t.Errorf("error = %v, want errNotDedicatedDatabaseBarrier", err)
 		}
 	})
 
 	t.Run("unknown database", func(t *testing.T) {
 		r, _ := newBarrierResolveRegistry(t)
-		if _, err := r.resolveDedicatedDatabaseBarrier("acme", "no-such-db", nil); !errors.Is(err, errNotDedicatedDatabaseBarrier) {
+		dbase := managedRecordOf(t, r, "acme", "no-such-db")
+		if dbase != nil {
+			t.Fatalf("managedDatabase(acme, no-such-db) = %q; want no record", dbase.Name())
+		}
+		if _, err := r.resolveDedicatedDatabaseBarrier(dbase, "acme", nil); !errors.Is(err, errNotDedicatedDatabaseBarrier) {
 			t.Errorf("error = %v, want errNotDedicatedDatabaseBarrier", err)
 		}
 	})
@@ -664,7 +687,11 @@ func TestResolveDedicatedDatabaseBarrier_SystemTenantReachesUnownedDatabases(t *
 	// BARRIER check, having passed the ownership check. An ownership failure
 	// here would mean the system tenant could never resolve an unowned
 	// database's dedicated store even once one is configured.
-	_, err := r.resolveDedicatedDatabaseBarrier("system", "unowned", nil)
+	unowned := managedRecordOf(t, r, "system", "unowned")
+	if unowned == nil {
+		t.Fatal("managedDatabase(system, unowned) holds no record: the ownership check refused the system tenant")
+	}
+	_, err := r.resolveDedicatedDatabaseBarrier(unowned, "system", nil)
 	if !errors.Is(err, errNotDedicatedDatabaseBarrier) {
 		t.Fatalf("error = %v, want errNotDedicatedDatabaseBarrier", err)
 	}
