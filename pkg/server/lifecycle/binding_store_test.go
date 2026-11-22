@@ -459,6 +459,9 @@ func TestTenantBarrierEncryptorLookup_Typed(t *testing.T) {
 	if _, err := lookup(id); !errors.Is(err, seal.ErrTenantNotFound) {
 		t.Fatalf("unknown tenant: err = %v, want seal.ErrTenantNotFound", err)
 	}
+	if _, err := reg.RegisterTenantDefault(id); err != nil {
+		t.Fatalf("RegisterTenantDefault: %v", err)
+	}
 	tb := seal.WrapTenantBarrier(id, newUnsealedBarrier(t))
 	if err := reg.ReplaceTenantBarrier(id, tb); err != nil {
 		t.Fatalf("ReplaceTenantBarrier: %v", err)
