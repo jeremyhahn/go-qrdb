@@ -296,11 +296,24 @@ change, a second move and deleting either pool are refused. `MoveTenant` is
 the only caller of `AdmitMove`.
 
 The move reconciler (`volume.MoveReconciler.ReconcileOnce`) advances the
-journal one node step at a time through the `volume.MoveStepRunner` seam:
-`copying` while a node holds the step or between steps, then `copied` when
-no node is pending, or `aborting` after 3 failed attempts of one node's step.
-No runner, leader schedule or composition exists yet, so nothing advances a
-journal in a running node.
+journal one node step at a time through the `volume.MoveStepRunner` seam;
+each `volume.MoveStep` carries its phase (`copy`, `abort` or `retire`). The
+journal goes `copying` while a node holds a copy step or between steps, then
+`copied` when no node is pending, or `aborting` after 3 failed attempts of
+one node's copy step. A `copied` move is cut over by `Catalog.CutOverMove`:
+one transaction points the assignment at the destination pool (same path,
+the move's reserved bytes) and sets the journal `cutover`, the commit point
+after which the move only goes forward. The wired `volume.MoveCutoverRecorder`
+(`tenant.TenantService.RecordTenantPoolMoved`) then makes the tenant record
+name the destination pool; with no recorder wired a copied move waits. Each
+copied node then retires its source copy (Q7 A), retried without bound, and
+the last retire releases the source reservation and deletes the journal in
+one transaction. `Catalog.CancelMove` (Q8 A) sends a move not yet cut over
+to `aborting` and refuses one past it. Abort steps remove the destination
+copy on copied nodes first, then on pending nodes, retried without bound;
+the last releases the destination reservation and deletes the journal,
+leaving the assignment untouched. No runner, leader schedule, transport or
+composition exists yet, so nothing advances a journal in a running node.
 
 ## Trust boundaries
 

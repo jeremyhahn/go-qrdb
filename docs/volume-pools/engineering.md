@@ -188,21 +188,39 @@ composition wires in this build:
 - `MoveKey(tenant)` / `MoveKeyPrefix`: the journal key
   `__sys:volumepool/moves/{tenant}`;
 - `MoveStateAdmitted`: the state `AdmitMove` writes, no step granted;
-- `MoveStateCopying` / `MoveStateCopied` / `MoveStateAborting`: a node step
-  granted or between steps; no node pending (ready for cut over); a node's
-  step failed its attempts;
+- `MoveStateCopying` / `MoveStateCopied` / `MoveStateAborting` /
+  `MoveStateCutover`: a node step granted or between steps; no node pending
+  (ready for cut over); a node's step failed its attempts or the move was
+  cancelled; cut over, past the commit point (the move only goes forward);
 - `DefaultMoveStepAttempts` (3): attempts of one node's step before the move
   aborts (Q6 A);
 - `Move.ReservedBytes`, `Move.AdmittedAt`: the bytes reserved on the
   destination, the admit time;
 - `Move.StepNode` / `Move.StepAttempts` / `Move.UpdatedAt`: the node holding
   the step (at most one, Q1 B), its failed attempts, the last transition;
+- `Move.NodesRetired` / `Move.SourceReservedBytes` / `Move.TenantRecorded`:
+  the nodes whose source copy is retired, the source bytes the last retire
+  releases, whether the tenant record names the destination;
 - `Catalog.GrantMoveStep` / `CompleteMoveStep` / `FailMoveStep`: the
   journal's step transitions, each one compare-and-swap on the journal
   (`*MoveJournalConflictError` after the bounded retries);
-- `MoveStep{TenantID, NodeID, FromPool, ToPool, Attempt}` /
-  `MoveStepRunner{RunMoveStep}`: one node's step and the seam that runs it on
-  that node (no implementation in this build);
+- `Catalog.CutOverMove`: one transaction pointing the assignment at the
+  destination pool and setting the journal `cutover` (the commit point);
+- `Catalog.MarkMoveTenantRecorded`: records on the journal that the tenant
+  record names the destination, which retire waits for;
+- `Catalog.GrantRetireStep` / `CompleteRetireStep` / `FailRetireStep`: the
+  retire step on each copied node (Q7 A); the last retire releases the
+  source reservation and deletes the journal;
+- `Catalog.CancelMove`: sends a move not yet cut over to `aborting` (Q8 A);
+  refused past cut over;
+- `Catalog.GrantAbortStep` / `CompleteAbortStep` / `FailAbortStep`: the
+  abort step, copied nodes first, then pending nodes; the last abort
+  releases the destination reservation and deletes the journal;
+- `MoveStep{TenantID, NodeID, FromPool, ToPool, Attempt, Phase, Copied}` /
+  `MoveStepPhaseCopy` / `MoveStepPhaseAbort` / `MoveStepPhaseRetire` /
+  `MoveStepRunner{RunMoveStep}`: one node's step, its phase, whether that
+  node holds a copy, and the seam that runs it on that node (no
+  implementation in this build);
 - `MoveReconciler` / `NewMoveReconciler(cat, runner, opts...)` /
   `WithMoveStepAttempts` / `WithMoveReconcilerLogger` /
   `ReconcileOnce(ctx)`: one pass running one node step per moving tenant;
@@ -216,7 +234,11 @@ composition wires in this build:
 - `MoveStartAuditor{BeginMoveStart}`: audits a move's start before admit (an
   error refuses it) and settles once with `AdmitMove`'s answer;
 - `Catalog.SetMoveAdmission` / `Catalog.SetMoveStartAuditor`: the
-  post-construction seams `MoveTenant` uses; nil unwires.
+  post-construction seams `MoveTenant` uses; nil unwires;
+- `MoveCutoverRecorder{RecordTenantPoolMoved}`: makes the tenant record name
+  the destination pool after cut over;
+- `Catalog.SetMoveCutoverRecorder`: the post-construction seam the
+  reconciler uses after cut over; nil unwires (a copied move then waits).
 
 ### Composition options
 
@@ -278,6 +300,7 @@ func (b *StorageBarrier) OnSealing(fn func(context.Context) error)
 | `seal.BarrierRegistry.RequireInsideLocalPool` | checks against the pool's opened `Volume.Root()` |
 | `seal.BarrierRegistry.RunMoveCopyStep(ctx, nodeID, tenantID, toPool) (*volume.Manifest, error)` | the move's node step on this node's pools: resolve both directories, copy, verify, remove a partial destination through `RemoveDataRoot`; nothing calls it in this build |
 | `tenant.TenantService.AdmitTenantMove(ctx, volume.MoveTenantRequest) ([]string, error)` | implements `volume.MoveAdmission`: the tenant exists, is `volume` or `raft` (not the system tenant), is entitled to `ToPool`; returns its replica nodes |
+| `tenant.TenantService.RecordTenantPoolMoved(ctx, tenantID, fromPool, toPool) error` | implements `volume.MoveCutoverRecorder`: makes the tenant record name `toPool`; idempotent; a tenant naming another pool is `*volume.MoveConflictError`, a missing tenant `ErrTenantNotFound`; nothing wires it in this build |
 | `tenant.MoveReplicaNodeSource` / `tenant.MoveReplicaNodeWiring` | the optional source of a tenant's replica node IDs and its setter; with none set `AdmitTenantMove` returns `*volume.MoveNotImplementedError` |
 | `service.NewVolumeMoveAudit(logger, policy) volume.MoveStartAuditor` | audits a move's start as `volume_pool.move_start` (`to_pool`, `from_pool` on the outcome); gated by the failure policy before admit, best-effort outcome after |
 | `seal.ErrMoveStepInvalid` | `RunMoveCopyStep` called without a node ID or destination pool |
@@ -368,13 +391,14 @@ Every error is typed. Each classification below is the row added to
 | `*tenant.PersistedDataRootError` | a record carries a path | the existing `FailedPrecondition` row |
 | `*seal.VolumeUnlockError{Pool, Err}` | a tracked `Lockable` volume's `Unlock` failed after unseal | not on the wire directly: surfaces as `PoolUnavailableError`/`pool_unavailable` through the pool's resolution |
 | `*seal.VolumeLockError{Pool, Err}` | a tracked `Lockable` volume's `Lock` failed while sealing | not on the wire: `Internal`-class, logged and audited; the barrier still seals |
-| `*volume.MoveStepError{NodeID, Phase, Path, Err}` | the node-local move copy (`Phase` `copy`) or verify (`Phase` `verify`) failed; `Path` is root-relative | not on the wire in this build |
-| `*volume.ManifestMismatchError{Path, Reason}` | the destination's manifest differs (`missing`, `extra`, `type`, `mode`, `size`, `digest`); wrapped in a `MoveStepError` | not on the wire in this build |
-| `*volume.MoveConflictError{TenantID, NodeID, Reason}` | a move admit is refused (a move already runs, the destination is the current pool, the destination is not ready on `NodeID`, the tenant is not a `volume` or `raft` tenant, or it has no replica node), a step transition is refused (no step to grant, or `NodeID` does not hold the step), or tenant delete / a quota change is refused while a move runs | not on the wire in this build |
-| `*volume.MoveToUnencryptedPoolError{TenantID, FromPool, ToPool}` | a move from a Lockable pool to one that is not, refused outright while Q9 is with the owner (ruling 1115) | not on the wire in this build |
-| `*volume.MoveJournalConflictError{TenantID}` | a move-journal step transition lost every compare-and-swap attempt; nothing written, retrying is safe | not on the wire in this build |
-| `*volume.InvalidMoveRequestError{Reason}` | `AdmitMove` got an empty tenant or pool, no replica nodes, or an empty or duplicate node ID; `MoveTenant` an empty tenant or pool; `GetMove` an empty tenant | not on the wire in this build |
-| `*volume.MoveNotFoundError{TenantID}` | `GetMove` found no journal for the tenant | not on the wire in this build; `NotFound` once a transport carries it |
+| `*volume.MoveStepError{NodeID, Phase, Path, Err}` | the node-local move copy (`Phase` `copy`) or verify (`Phase` `verify`) failed; `Path` is root-relative | `Unavailable` (503) when the cause is `PoolUnavailableError` or `NodeSealedError`, else `Internal` (500); no transport carries it in this build |
+| `*volume.ManifestMismatchError{Path, Reason}` | the destination's manifest differs (`missing`, `extra`, `type`, `mode`, `size`, `digest`); wrapped in a `MoveStepError` | `Internal` (500); no transport carries it in this build |
+| `*volume.MoveConflictError{TenantID, NodeID, Reason}` | a move admit is refused (a move already runs, the destination is the current pool, the destination is not ready on `NodeID`, the tenant is not a `volume` or `raft` tenant, or it has no replica node), a step transition is refused (no step to grant, or `NodeID` does not hold the step), cut over is refused (not copied, a node pending or holding a step, the assignment no longer naming the source pool), a retire or abort step is refused, `CancelMove` is refused past cut over, `RecordTenantPoolMoved` finds the tenant on neither pool, or tenant delete / a quota change is refused while a move runs | `FailedPrecondition` (409); no transport carries it in this build |
+| `*volume.MoveToUnencryptedPoolError{TenantID, FromPool, ToPool}` | a move from a Lockable pool to one that is not, refused outright while Q9 is with the owner (ruling 1115) | `FailedPrecondition` (409); no transport carries it in this build |
+| `*volume.MoveJournalConflictError{TenantID}` | a move-journal step transition lost every compare-and-swap attempt; nothing written, retrying is safe | `Aborted` (409); no transport carries it in this build |
+| `*volume.InvalidMoveRequestError{Reason}` | `AdmitMove` got an empty tenant or pool, no replica nodes, or an empty or duplicate node ID; `MoveTenant` an empty tenant or pool; `GetMove` an empty tenant | `InvalidArgument` (400); no transport carries it in this build |
+| `*volume.MoveNotFoundError{TenantID}` | `GetMove` or `CancelMove` found no journal for the tenant | `NotFound` (404); no transport carries it in this build |
+| `*volume.NodeSealedError{Op}` | the node barrier is sealed and a write the node would propose on its own behalf is refused | `Unavailable` (503) |
 | `*volume.MoveNotImplementedError` | `MoveTenant` in a composition that wired no `MoveAdmission`, or a tenant service with no replica-node source (every daemon in this build) | `Unimplemented`, the existing row |
 
 **Fail-closed paths.** An unreadable catalog or assignment fails the create, the
@@ -437,7 +461,7 @@ All in the replicated system namespace, hidden from user list and scan:
 | `__sys:volumepool/pools/{pool}` | `Pool` (JSON) | `CreatePool`, `UpdatePool`, reservation CAS |
 | `__sys:volumepool/assign/{tenant}` | `Assignment` (JSON) | create (put-if-absent), delete |
 | `__sys:volumepool/nodes/{node}` | `NodeReport` (JSON), lease-bound | `volume.Reporter`, refreshed every `DefaultReportInterval` *(5 s)*; lease TTL `DefaultLeaseTTL` *(15 s)* |
-| `__sys:volumepool/moves/{tenant}` | `Move` (JSON) | `Catalog.AdmitMove`, then the move reconciler's step transitions |
+| `__sys:volumepool/moves/{tenant}` | `Move` (JSON) | `Catalog.AdmitMove`, the step transitions, `CutOverMove`, `CancelMove`, and the final retire or abort (delete) |
 
 A tenant whose records predate this layout is refused, listed with its
 refusal, and deleted and re-created.
@@ -453,6 +477,12 @@ refusal, and deleted and re-created.
   destination pool record and the journal. `Release` and
   `AdjustReservation` also compare the journal absent, so neither races an
   admit.
+- Cut over is one transaction: a compare on the tenant's assignment and the
+  journal, then a put of both.
+- The last retire (on the source pool) and the last abort (on the
+  destination pool) are each one transaction: a compare on that pool record
+  and the journal, then a put of the pool record and a delete of the
+  journal.
 - Health reports are owned by their node. No other writer touches them.
 
 ## Test strategy
@@ -499,9 +529,25 @@ refusal, and deleted and re-created.
   2; a corrupt journal does not stop another tenant's step; a catalog error
   is returned; nil dependencies refused; a cancelled context returns
   `context.Canceled`;
+- `pkg/volume` (`move_journal_test.go`, cut over to delete):
+  `TestCatalog_CutOverMove` and `_Refusals`, `_MarkMoveTenantRecorded`,
+  `_RetireSteps`, `_RetireStep_SourceFloorZero`, `_NeedsTenantRecorded` and
+  `_FailureStaysCutover`, `_CancelMove` and `_CancelMove_InFlightStepRefused`,
+  `_AbortSteps`, `_AbortStep_Refusals` and `_FailureKeepsTheNode`,
+  `_PhaseSteps_StoreFailures`;
+- `pkg/volume` (`move_reconciler_test.go`, the dispatch):
+  `TestMoveReconciler_FullMoveCutsOverAndRetires`, `_CopiedWaitsForRecorder`,
+  `_RecorderErrorRetried`, `_RetireFailureRetried`, `_CancelThenAbort`,
+  `_AbortFailureRetried`, `_StepPhases`, `_PhaseCatalogErrorReturned`;
 - `pkg/tenant` (`volume_move_test.go`): `AdmitTenantMove` not found, a
   prefix tenant refused, a destination not entitled, no source, a source
   error, no replica node, a volume and a raft tenant admitted;
+  `TestRecordTenantPoolMoved`: the record names the destination and a
+  repeat is a no-op, another pool refused, a missing tenant;
+- `pkg/api/errclass` (`volume_move_test.go`): `TestClassify_VolumeMoveErrors`,
+  each move error's class, and `MoveStepError` by its cause (a wrapped
+  `PoolUnavailableError` or `NodeSealedError` `Unavailable`, anything else
+  `Internal`, also under `fmt.Errorf("%w")`);
 - `pkg/service` (`volume_move_audit_test.go`): the start recorded with
   `to_pool` only, the outcome with `from_pool`, a failure outcome, the gate
   following the policy, a nil logger giving no auditor;
