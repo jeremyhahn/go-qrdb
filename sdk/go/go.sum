@@ -231,8 +231,8 @@ github.com/jackc/puddle/v2 v2.2.3 h1:f8HoREISb3l5eO9coPgK7U3hKLhWGokOFVcThl5jrao
 github.com/jackc/puddle/v2 v2.2.3/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
 github.com/jeremyhahn/go-codec v1.5.1-alpha h1:XglYDVdpXbZmdOQbchouptw5vlPKaBD/ZlrH3tH8qDs=
 github.com/jeremyhahn/go-codec v1.5.1-alpha/go.mod h1:hIVpkPvrNnxTlnw8wBf56A6h+TOYTLuT7ItJc1UaG8o=
-github.com/jeremyhahn/go-enclave v0.11.1-alpha h1:aNy/4La944+KwTfZELIa8bHKDxpbcAE2ZXDKqfeVUvY=
-github.com/jeremyhahn/go-enclave v0.11.1-alpha/go.mod h1:VtR8yhyPZPlHwYLx/ge2w07WwmlrLe8AUDDv3XemlKI=
+github.com/jeremyhahn/go-enclave v0.12.0-alpha h1:8ImzEqtD8W3zrLEwkDrF/VoW6F9CSn7UZjYZG+l4iCk=
+github.com/jeremyhahn/go-enclave v0.12.0-alpha/go.mod h1:loMqT+rTHb8Kdqr6VpQL+fzR1wk4lot5LaFMyVA9Ln0=
 github.com/jeremyhahn/go-objstore v0.9.1-alpha.0.20261111054905-aed613658de5 h1:mYIZo3pTDhmRwEB2BFZoYU+s+HzjrHsxyKW4v/ScoiE=
 github.com/jeremyhahn/go-objstore v0.9.1-alpha.0.20261111054905-aed613658de5/go.mod h1:c9up6YRo6dVjeGoCPfjzEtlXX3E0bbLLiAa8yhwX2T4=
 github.com/jeremyhahn/go-quicraft v0.24.3-alpha h1:H3THFLG7y2MNuwOpKD4qYLbNsc+e+p7HpSmw8XPZx/o=

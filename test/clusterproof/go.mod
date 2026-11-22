@@ -18,7 +18,7 @@ go 1.27.4
 require (
 	github.com/anishathalye/porcupine v1.3.1
 	github.com/jeremyhahn/go-qrdb v0.58.0-alpha
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.58.0-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.58.5-alpha
 	golang.org/x/sys v0.50.0
 	google.golang.org/grpc v1.85.0
 )
@@ -103,7 +103,7 @@ require (
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
 	github.com/jackc/pgx/v5 v5.12.0 // indirect
 	github.com/jeremyhahn/go-codec v1.5.1-alpha // indirect
-	github.com/jeremyhahn/go-enclave v0.11.1-alpha // indirect
+	github.com/jeremyhahn/go-enclave v0.12.0-alpha // indirect
 	github.com/jeremyhahn/go-objstore v0.9.1-alpha.0.20261111054905-aed613658de5 // indirect
 	// go-quicraft: the newest tag, in lockstep with the root module (#944).
 	github.com/jeremyhahn/go-quicraft v0.24.3-alpha // indirect
