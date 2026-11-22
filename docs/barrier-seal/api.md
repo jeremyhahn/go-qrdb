@@ -23,6 +23,27 @@ to [../shamir-custody/api.md](../shamir-custody/api.md).
 | Enable encryption | `POST /v1/barrier/enable-encryption` | `BarrierEnableEncryption` | `barrier.EnableEncryption` | `qrdb_barrier_enable_encryption` | `BarrierEnableEncryption` | `seal:enable_encryption` (node) or `tenant_barrier:enable_encryption` (named tenant) |
 | Cluster unseal | `POST /v1/barrier/cluster-unseal` | `BarrierClusterUnseal` | `barrier.ClusterUnseal` | `qrdb_barrier_cluster_unseal` | `BarrierClusterUnseal` | `seal:unseal` |
 
+## Seal store (named secrets)
+
+The node's seal store holds named secrets. Every entry is encrypted under the
+system barrier, so a sealed node serves none of them.
+
+| Operation | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.SealStore()`) | `scp` permission |
+|---|---|---|---|---|---|---|
+| Put | `POST /v1/seal-store/secrets/{name}` | `SealStorePut` | `sealstore.Put` | `qrdb_seal_store_put` | `SealStorePut` | `seal:store_manage` |
+| Get | `GET /v1/seal-store/secrets/{name}` | `SealStoreGet` | `sealstore.Get` | `qrdb_seal_store_get` | `SealStoreGet` | `seal:store_manage` |
+| List | `GET /v1/seal-store/secrets` | `SealStoreList` | `sealstore.List` | `qrdb_seal_store_list` | `SealStoreList` | `seal:store_manage` |
+| Delete | `DELETE /v1/seal-store/secrets/{name}` | `SealStoreDelete` | `sealstore.Delete` | `qrdb_seal_store_delete` | `SealStoreDelete` | `seal:store_manage` |
+| Reseal | `POST /v1/seal-store/secrets/{name}/reseal` | `SealStoreReseal` | `sealstore.Reseal` | `qrdb_seal_store_reseal` | `SealStoreReseal` | `seal:store_manage` |
+| Status | `GET /v1/seal-store/status` | `SealStoreStatus` | `sealstore.Status` | `qrdb_seal_store_status` | `SealStoreStatus` | `seal:store_manage` |
+
+The CLI verbs for these operations are `qrdb seal-store put|get|list|delete|reseal|status`,
+documented in [cli.md](cli.md#qrdb-seal-store).
+
+A node served without a seal store answers every seal store call
+`Unimplemented` (the service is not configured): its REST server mounts no
+`/v1/seal-store` routes and its MCP server lists no `qrdb_seal_store_*` tools.
+
 A Shamir barrier is unsealed, sealed and rekeyed, and root tokens are minted,
 only by a quorum of authenticated share holders: `POST /v1/barrier/quorum/*`
 and `POST /v1/barrier/rekey/start`, in

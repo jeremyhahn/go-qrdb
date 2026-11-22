@@ -86,6 +86,12 @@ type sealSubsystem struct {
 	// sub-store so they are readable while the barrier is sealed.
 	PINBackend pin.PINBackend
 
+	// SealStoreSvc is the node's named-secret seal store over SealBarrier,
+	// served on every network listener (gRPC, unix, REST, QUIC, MCP) of both
+	// the sealed-phase and the unsealed node's server, gated by
+	// seal:store_manage.
+	SealStoreSvc *seal.SealStore
+
 	// SealDataDir is the directory containing the seal sub-store. It
 	// is exposed so callers (e.g. ceremony service construction) can
 	// reuse the same path.
@@ -308,6 +314,14 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 		return nil, &SealStorageError{Err: pinErr}
 	}
 
+	// The node's named-secret seal store, served by the SealStore* RPCs
+	// (seal:store_manage). Its entries are encrypted under the system barrier.
+	sealStoreSvc, sealStoreErr := seal.NewSealStore(sealBarrier, "", slog.Default())
+	if sealStoreErr != nil {
+		_ = sealStore.Close()
+		return nil, &SealStorageError{Err: sealStoreErr}
+	}
+
 	// Unseal last, once VolumeLifecycle and BarrierRegistry have registered
 	// their OnUnsealed observers, so a boot-time unseal runs them in the same
 	// order an operator's unseal call does.
@@ -328,6 +342,7 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 		VolumeLifecycle:   volumeLifecycle,
 		TenantHostsHolder: tenantHostsHolder,
 		PINBackend:        pinBackend,
+		SealStoreSvc:      sealStoreSvc,
 		SealDataDir:       sealDataDir,
 	}, nil
 }
@@ -489,6 +504,9 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 	}
 	if sub.PINBackend != nil {
 		serverOpts = append(serverOpts, server.WithPINBackend(sub.PINBackend))
+	}
+	if sub.SealStoreSvc != nil {
+		serverOpts = append(serverOpts, server.WithSealStoreService(sub.SealStoreSvc))
 	}
 	if sealNode.Ceremony != nil {
 		serverOpts = append(serverOpts, server.WithCeremonyService(sealNode.Ceremony))

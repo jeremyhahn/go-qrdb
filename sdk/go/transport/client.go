@@ -1138,7 +1138,8 @@ type CredentialClient interface {
 // Seal store operations
 // ---------------------------------------------------------------------------
 
-// SealStoreClient manages the local machine sealed credential store.
+// SealStoreClient manages the node's sealed named-secret store. Every transport implements it
+// (embedded in process, the network transports through NewRemoteSealStoreClient); each call requires seal:store_manage.
 type SealStoreClient interface {
 	// SealStorePut stores a secret in the seal store.
 	SealStorePut(ctx context.Context, req *SealStorePutRequest) error

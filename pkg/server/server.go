@@ -378,6 +378,11 @@ type serverOptions struct {
 	// hardware-aware callers inject a TPM2 or PKCS#11 backend here.
 	pinBackend pin.PINBackend
 
+	// sealStoreSvc is the node's named-secret seal store, served on gRPC
+	// and unix by the SealStore* RPCs (seal:store_manage). nil leaves the
+	// RPCs answering that the seal store is not configured.
+	sealStoreSvc service.SealStoreServicer
+
 	// factorRegistry is the canonical authentication-factor lookup
 	// (FIDO2 / PIV / PKCS#11 / mTLS). qrdb provides a default registry
 	// with only the software mTLS factor; higher layers register
@@ -1323,6 +1328,12 @@ func WithDEKKeyDir(dir string) ServerOption {
 func WithPINBackend(backend pin.PINBackend) ServerOption {
 	locked := pin.NewLockoutBackend(backend)
 	return func(o *serverOptions) { o.pinBackend = locked }
+}
+
+// WithSealStoreService attaches the node's seal store, served on gRPC and
+// unix by the SealStore* RPCs (seal:store_manage).
+func WithSealStoreService(svc service.SealStoreServicer) ServerOption {
+	return func(o *serverOptions) { o.sealStoreSvc = svc }
 }
 
 // WithFactorRegistry injects a populated authentication-factor registry.
@@ -2282,6 +2293,9 @@ func (s *Server) startREST() error {
 	if s.opts.pinBackend != nil {
 		restOpts = append(restOpts, rest.WithPINBackend(s.opts.pinBackend))
 	}
+	if s.opts.sealStoreSvc != nil {
+		restOpts = append(restOpts, rest.WithSealStoreService(s.opts.sealStoreSvc))
+	}
 	if s.opts.ceremonySvc != nil {
 		restOpts = append(restOpts, rest.WithCeremonyService(s.opts.ceremonySvc))
 	}
@@ -2568,6 +2582,9 @@ func (s *Server) startGRPC() error {
 	if s.opts.pinBackend != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithPINBackend(s.opts.pinBackend))
 	}
+	if s.opts.sealStoreSvc != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithSealStoreService(s.opts.sealStoreSvc))
+	}
 	if s.opts.ceremonySvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithCeremonyService(s.opts.ceremonySvc))
 	}
@@ -2782,6 +2799,9 @@ func (s *Server) startQUIC() error {
 	if s.opts.pinBackend != nil {
 		quicOpts = append(quicOpts, quicapi.WithPINBackend(s.opts.pinBackend))
 	}
+	if s.opts.sealStoreSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithSealStoreService(s.opts.sealStoreSvc))
+	}
 	if s.opts.ceremonySvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithCeremonyService(s.opts.ceremonySvc))
 	}
@@ -2909,6 +2929,9 @@ func (s *Server) startUnix() error {
 	}
 	if s.opts.pinBackend != nil {
 		unixOpts = append(unixOpts, unixapi.WithPINBackend(s.opts.pinBackend))
+	}
+	if s.opts.sealStoreSvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithSealStoreService(s.opts.sealStoreSvc))
 	}
 	if s.opts.ceremonySvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithCeremonyService(s.opts.ceremonySvc))
@@ -3094,6 +3117,9 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.pinBackend != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithPINBackend(s.opts.pinBackend))
+	}
+	if s.opts.sealStoreSvc != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithSealStoreService(s.opts.sealStoreSvc))
 	}
 	if s.opts.ceremonySvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithCeremonyService(s.opts.ceremonySvc))
