@@ -1,12 +1,13 @@
 # SQLite VFS backend: answers to the open questions that block a build decision
 
-> **Status: ACCEPTED — decided by convention (ruling 109), 2026-11-22** · Scope: go-qrdb
+> **Status: ACCEPTED — Q1-Q5 A adopted (Tenant Agent ruling 1115), 2026-11-22; SQLite engine dependency pending the owner (owner queue 288)** · Scope: go-qrdb
 > Last verified: 2026-11-22
 > SPEC row: `sqlite-vfs` (future). This record answers the five open questions
 > of [../sqlite-vfs/architecture.md](../sqlite-vfs/architecture.md)
 > ("Decided questions"). Each question lists its
 > options, the dependency each option needs, a recommendation and the reason.
-> The architecture calls are the owner's; nothing here is built.
+> Q1-Q5 were adopted under ruling 1115; the SQLite engine dependency is the
+> owner's open call.
 
 ## Problem
 
@@ -34,7 +35,8 @@ needs an API a lower project's main lacks.
 A SQLite engine binding is a third-party dependency, not a lower project:
 `modernc.org/sqlite` (pure Go) for tier 1, or `mattn/go-sqlite3` (CGo) in a
 separate Go module. Adding it is a `go.mod` change made by the build lane,
-not by this record.
+not by this record. That dependency is pending the owner (owner queue 288);
+no SQLite engine is imported until he answers.
 
 ## Q1. WAL-mode support
 
@@ -272,7 +274,10 @@ go-codec v1.5.1-alpha as tagged.
 ## Ruling
 
 The Tenant ordered the row ready; Q1-Q5 were then decided by convention under
-ruling 109:
+ruling 109 and adopted by Tenant Agent ruling 1115 (2026-11-22). Ruling 1115
+states Q2 A as a feature-gated, server-side prefix-move publish op that the
+namespace, confinement and quota wrappers rewrite, and holds the SQLite engine
+dependency for the owner (owner queue 288):
 
 - **Q1 = A**: batch-atomic only, no WAL, no `xShmMap`; the true journal mode
   is reported.
@@ -297,8 +302,12 @@ Built so far (unwired):
 - the staged commit and publish for oversized transactions (Q2) and the meta
   generation check (Q4);
 - the serialized writer lock with `SQLITE_BUSY` on contention and lease loss,
-  the meta change counter, and the sweep of abandoned stages (Q3).
+  the meta change counter, and the sweep of abandoned stages (Q3);
+- the prefix-move publish op (Q2): `protocol.OpMVCCMovePrefix` behind the
+  `prefix-move` feature, `MVCCKVService.MovePrefix`, and its rewrites in the
+  namespace, hard-confinement and quota wrappers.
 
-Still to come: the SQLite engine binding and VFS registration, wiring to the
+Still to come: the page store's publish over `MovePrefix`; the SQLite engine
+binding and VFS registration (blocked: owner queue 288); wiring to the
 server's lock service, the optimistic read-set check, quota and the
 entitlement.
