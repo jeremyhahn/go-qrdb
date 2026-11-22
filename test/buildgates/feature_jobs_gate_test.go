@@ -100,9 +100,10 @@ const (
 	// the images. Like the credential mask, it runs no make target.
 	freeDiskStepName = "Free the runner's disk"
 
-	// lanMaskStepName and lanMaskRun are ci-template v1.53's LAN mask (ruling
-	// 887): it follows the credential mask in every job that builds on a pool
-	// host and runs scripts/ci-mask-lan.sh alone, no make target.
+	// lanMaskStepName and lanMaskRun are ci-template v1.54's LAN mask (ruling
+	// 887): it follows the credential mask in every job that builds, sets
+	// CI_IMAGE_REGISTRY from the guarded secret in its env, and runs
+	// scripts/ci-mask-lan.sh alone, no make target.
 	lanMaskStepName = "Mask the LAN addresses"
 	lanMaskRun      = "scripts/ci-mask-lan.sh"
 
@@ -223,7 +224,7 @@ func featureJobProblems(body []byte, want []string) []string {
 		if len(runs) == 0 && (s.Name == maskStepName || s.Name == freeDiskStepName) && !strings.Contains(s.Run, "make ") {
 			continue
 		}
-		// The LAN mask (ci-template v1.53) leads the shard in its exact shape
+		// The LAN mask (ci-template v1.54) leads the shard in its exact shape
 		// alone, so its name cannot carry a narrowed run past this gate.
 		if len(runs) == 0 && s.Name == lanMaskStepName && strings.TrimSpace(s.Run) == lanMaskRun {
 			continue
@@ -569,6 +570,8 @@ jobs:
       - name: Mask the forge credentials
         run: echo "::add-mask::$GIT_CONFIG_VALUE_0"
       - name: Mask the LAN addresses
+        env:
+          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
         run: scripts/ci-mask-lan.sh
       - name: Free the runner's disk
         run: sudo rm -rf /usr/share/dotnet

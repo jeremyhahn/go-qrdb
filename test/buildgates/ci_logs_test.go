@@ -61,11 +61,11 @@ var unmaskedJobs = map[string]string{
 const maskStepName = "Mask the forge credentials"
 
 // runnerSelectStepName is preflight's first step since ci-template v1.48
-// (ruling 1024): it runs before the checkout, builds nothing and reads only
+// (ruling 1024), the balanced runner pool since v1.54 (ruling 1137): it runs before the checkout, builds nothing and reads only
 // the Actions API with the job token, so the mask check skips it.
 const (
 	runnerSelectJob      = "preflight"
-	runnerSelectStepName = "Hosted or overflow runner (ruling 1024)"
+	runnerSelectStepName = "Balanced runner pool (ruling 1137)"
 )
 
 // envPrint matches a step line that prints the job environment or an env file.
