@@ -212,6 +212,54 @@ func TestSealStoreRoutes_SystemSO(t *testing.T) {
 	}
 }
 
+// TestSealStoreRoutes_EncodedSeparatorRefused proves a secret name carrying
+// an encoded '/' never reaches another route: "alpha%2Freseal" is decoded to
+// the reseal route for "alpha" by the canonical-path middleware, and the
+// handler answers 400 without calling the store.
+func TestSealStoreRoutes_EncodedSeparatorRefused(t *testing.T) {
+	// A decoded path that matches a route is refused with 400; one that
+	// matches no route is a 404. Neither reaches the store.
+	cases := []struct {
+		method, path string
+		body         any
+		want         int
+	}{
+		{http.MethodPost, "/v1/seal-store/secrets/alpha%2Freseal", map[string]any{"secret": []byte("s3cret")}, http.StatusBadRequest},
+		{http.MethodPost, "/v1/seal-store/secrets/alpha%2Freseal", nil, http.StatusBadRequest},
+		{http.MethodPost, "/v1/seal-store/secrets/alpha%2fbeta/reseal", nil, http.StatusNotFound},
+		{http.MethodGet, "/v1/seal-store/secrets/alpha%2Fbeta", nil, http.StatusNotFound},
+		{http.MethodDelete, "/v1/seal-store/secrets/alpha%2Fbeta", nil, http.StatusNotFound},
+	}
+	for _, c := range cases {
+		t.Run(c.method+" "+c.path, func(t *testing.T) {
+			store := newStubSealStore()
+			srv := newSealStoreTestServer(t, authtest.SOIdentity(tenantid.System, "so-1"), store)
+			rec := serveSealStore(t, srv, c.method, c.path, c.body)
+			if rec.Code != c.want {
+				t.Fatalf("status = %d body=%q, want %d", rec.Code, rec.Body.String(), c.want)
+			}
+			if calls := store.callList(); len(calls) != 0 {
+				t.Fatalf("store calls = %v, want none", calls)
+			}
+			if len(store.resealed) != 0 {
+				t.Fatalf("resealed = %v, want none", store.resealed)
+			}
+		})
+	}
+}
+
+// TestSealStoreHTTPStatus_InvalidName proves the store's name refusal maps
+// to 400 rather than a server error.
+func TestSealStoreHTTPStatus_InvalidName(t *testing.T) {
+	err := &seal.SealStoreError{Op: "put", Key: "a\\b", Err: seal.ErrInvalidSecretName}
+	if got := sealStoreHTTPStatus(err); got != http.StatusBadRequest {
+		t.Fatalf("sealStoreHTTPStatus(invalid name) = %d, want 400", got)
+	}
+	if got := sealStoreHTTPStatus(seal.ErrInvalidSecretName); got != http.StatusBadRequest {
+		t.Fatalf("sealStoreHTTPStatus(ErrInvalidSecretName) = %d, want 400", got)
+	}
+}
+
 // TestSealStoreRoutes_TenantAdminRefused checks a tenant Admin is refused
 // with 403 and never reaches the store: seal:store_manage is node-scoped.
 func TestSealStoreRoutes_TenantAdminRefused(t *testing.T) {

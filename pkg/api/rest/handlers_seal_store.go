@@ -16,8 +16,12 @@ package rest
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -44,16 +48,48 @@ type sealStoreListResponse struct {
 	Names []string `json:"names"`
 }
 
+// sealStoreHTTPStatus maps a seal-store error to its HTTP status. A secret
+// name that is not one opaque path segment is the caller's error (400); every
+// other error takes the shared mapping.
+func sealStoreHTTPStatus(err error) int {
+	if errors.Is(err, seal.ErrInvalidSecretName) {
+		return http.StatusBadRequest
+	}
+	return mapHTTPError(err)
+}
+
+// sealStoreSecretName returns the {name} path value, or writes 400 and
+// returns false when the request named a secret with an encoded '/'. The
+// canonical-path middleware routes on the decoded path, so
+// "/v1/seal-store/secrets/alpha%2Freseal" reaches the reseal route for
+// "alpha"; comparing the separators of the request's escaped path with the
+// routed path catches it before the store is called. Every other name rule
+// is the seal store's own (seal.ErrInvalidSecretName).
+func sealStoreSecretName(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if r.RequestURI != "" {
+		u, err := url.ParseRequestURI(r.RequestURI)
+		if err != nil || strings.Count(u.EscapedPath(), "/") != strings.Count(r.URL.Path, "/") {
+			writeErrorJSON(w, http.StatusBadRequest, seal.ErrInvalidSecretName)
+			return "", false
+		}
+	}
+	return r.PathValue("name"), true
+}
+
 // handleSealStorePut handles POST /v1/seal-store/secrets/{name}.
 func (s *Server) handleSealStorePut(w http.ResponseWriter, r *http.Request) {
+	name, ok := sealStoreSecretName(w, r)
+	if !ok {
+		return
+	}
 	var req sealStorePutRequest
 	if !decodeIAMRequest(w, r, &req) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
-	if err := s.sealStoreSvc.Put(ctx, r.PathValue("name"), req.Secret); err != nil {
-		writeErrorJSON(w, mapHTTPError(err), err)
+	if err := s.sealStoreSvc.Put(ctx, name, req.Secret); err != nil {
+		writeErrorJSON(w, sealStoreHTTPStatus(err), err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -63,10 +99,13 @@ func (s *Server) handleSealStorePut(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSealStoreGet(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
-	name := r.PathValue("name")
+	name, ok := sealStoreSecretName(w, r)
+	if !ok {
+		return
+	}
 	secret, err := s.sealStoreSvc.Get(ctx, name)
 	if err != nil {
-		writeErrorJSON(w, mapHTTPError(err), err)
+		writeErrorJSON(w, sealStoreHTTPStatus(err), err)
 		return
 	}
 	writeJSON(w, sealStoreSecretResponse{Name: name, Secret: secret})
@@ -74,10 +113,14 @@ func (s *Server) handleSealStoreGet(w http.ResponseWriter, r *http.Request) {
 
 // handleSealStoreDelete handles DELETE /v1/seal-store/secrets/{name}.
 func (s *Server) handleSealStoreDelete(w http.ResponseWriter, r *http.Request) {
+	name, ok := sealStoreSecretName(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
-	if err := s.sealStoreSvc.Delete(ctx, r.PathValue("name")); err != nil {
-		writeErrorJSON(w, mapHTTPError(err), err)
+	if err := s.sealStoreSvc.Delete(ctx, name); err != nil {
+		writeErrorJSON(w, sealStoreHTTPStatus(err), err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -89,7 +132,7 @@ func (s *Server) handleSealStoreList(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	names, err := s.sealStoreSvc.List(ctx)
 	if err != nil {
-		writeErrorJSON(w, mapHTTPError(err), err)
+		writeErrorJSON(w, sealStoreHTTPStatus(err), err)
 		return
 	}
 	if names == nil {
@@ -100,10 +143,14 @@ func (s *Server) handleSealStoreList(w http.ResponseWriter, r *http.Request) {
 
 // handleSealStoreReseal handles POST /v1/seal-store/secrets/{name}/reseal.
 func (s *Server) handleSealStoreReseal(w http.ResponseWriter, r *http.Request) {
+	name, ok := sealStoreSecretName(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
-	if err := s.sealStoreSvc.Reseal(ctx, r.PathValue("name")); err != nil {
-		writeErrorJSON(w, mapHTTPError(err), err)
+	if err := s.sealStoreSvc.Reseal(ctx, name); err != nil {
+		writeErrorJSON(w, sealStoreHTTPStatus(err), err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -115,7 +162,7 @@ func (s *Server) handleSealStoreStatus(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	st, err := s.sealStoreSvc.Status(ctx)
 	if err != nil {
-		writeErrorJSON(w, mapHTTPError(err), err)
+		writeErrorJSON(w, sealStoreHTTPStatus(err), err)
 		return
 	}
 	writeJSON(w, transport.SealStoreStatusResponse{

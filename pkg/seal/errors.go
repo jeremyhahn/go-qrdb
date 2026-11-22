@@ -225,8 +225,9 @@ var (
 	// ErrSecretNotFound is returned when a named secret is not found.
 	ErrSecretNotFound = errors.New("qrdb/seal: secret not found")
 
-	// ErrInvalidSecretName is returned when a secret name is empty.
-	ErrInvalidSecretName = errors.New("qrdb/seal: secret name must not be empty")
+	// ErrInvalidSecretName is returned when a seal-store secret name is not
+	// one opaque path segment.
+	ErrInvalidSecretName = errors.New(`qrdb/seal: secret name must not be empty, "." or "..", and must not contain '/', '\' or control characters`)
 
 	// ErrResealFailed is returned when re-sealing a secret fails.
 	ErrResealFailed = errors.New("qrdb/seal: reseal failed")

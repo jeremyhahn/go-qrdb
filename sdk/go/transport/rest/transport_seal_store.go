@@ -84,6 +84,10 @@ func (e sealStoreEndpoints) PutSealStoreSecret(ctx context.Context, name string,
 	if e.t.closed.Load() {
 		return &transport.ClosedError{}
 	}
+	ctx, err := e.t.guardSecret(ctx, transport.SealStoreSecret(true))
+	if err != nil {
+		return err
+	}
 	return e.t.postJSONNoContent(ctx, "SealStorePut", sealStoreSecretPath(name), sealStoreSecretWire{Secret: secret})
 }
 
@@ -91,6 +95,10 @@ func (e sealStoreEndpoints) PutSealStoreSecret(ctx context.Context, name string,
 func (e sealStoreEndpoints) GetSealStoreSecret(ctx context.Context, name string) ([]byte, error) {
 	if e.t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	ctx, err := e.t.guardSecret(ctx, transport.SealStoreSecret(true))
+	if err != nil {
+		return nil, err
 	}
 	var resp sealStoreSecretWire
 	if err := e.t.getJSONDecode(ctx, "SealStoreGet", sealStoreSecretPath(name), &resp); err != nil {

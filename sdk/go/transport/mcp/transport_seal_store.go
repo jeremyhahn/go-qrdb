@@ -72,7 +72,11 @@ func (e sealStoreEndpoints) PutSealStoreSecret(ctx context.Context, name string,
 	if e.t.closed.Load() {
 		return &transport.ClosedError{}
 	}
-	_, err := e.t.callTool(ctx, "qrdb_seal_store_put", map[string]any{
+	ctx, err := e.t.guardSecret(ctx, transport.SealStoreSecret(true))
+	if err != nil {
+		return err
+	}
+	_, err = e.t.callTool(ctx, "qrdb_seal_store_put", map[string]any{
 		"name":   name,
 		"secret": base64.StdEncoding.EncodeToString(secret),
 	})
@@ -83,6 +87,10 @@ func (e sealStoreEndpoints) PutSealStoreSecret(ctx context.Context, name string,
 func (e sealStoreEndpoints) GetSealStoreSecret(ctx context.Context, name string) ([]byte, error) {
 	if e.t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	ctx, err := e.t.guardSecret(ctx, transport.SealStoreSecret(true))
+	if err != nil {
+		return nil, err
 	}
 	text, err := e.t.callTool(ctx, "qrdb_seal_store_get", map[string]any{"name": name})
 	if err != nil {

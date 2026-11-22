@@ -14,7 +14,9 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"unicode"
 )
 
 // SealStore provides a persistent store for named secrets that are
@@ -22,6 +24,9 @@ import (
 // All secrets are stored under a configurable key prefix and are
 // transparently encrypted/decrypted by the barrier.
 type SealStore struct {
+	// mu serializes Put, Delete and Reseal so a reseal never writes back a
+	// value a concurrent Put has replaced.
+	mu      sync.Mutex
 	barrier *StorageBarrier
 	prefix  string
 	logger  *slog.Logger
@@ -30,12 +35,32 @@ type SealStore struct {
 
 // NewSealStore creates a new SealStore backed by the given barrier.
 // The prefix is prepended to all storage keys for namespace isolation.
+// SealStoreDefaultPrefix is the key prefix a SealStore uses when none is
+// given. Each secret is stored under SealStoreDefaultPrefix + name.
+const SealStoreDefaultPrefix = "sealstore/"
+
+// validSecretName reports whether name may name a seal-store secret. A name
+// is one opaque path segment: it may not be empty, "." or "..", and may not
+// contain '/', '\\' or a control character, so it can never select another
+// key or another route on any transport.
+func validSecretName(name string) error {
+	if name == "" || name == "." || name == ".." {
+		return ErrInvalidSecretName
+	}
+	for _, r := range name {
+		if r == '/' || r == '\\' || unicode.IsControl(r) {
+			return ErrInvalidSecretName
+		}
+	}
+	return nil
+}
+
 func NewSealStore(barrier *StorageBarrier, prefix string, logger *slog.Logger) (*SealStore, error) {
 	if barrier == nil {
 		return nil, ErrNilSystemBarrier
 	}
 	if prefix == "" {
-		prefix = "sealstore/"
+		prefix = SealStoreDefaultPrefix
 	}
 	if !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
@@ -50,9 +75,11 @@ func NewSealStore(barrier *StorageBarrier, prefix string, logger *slog.Logger) (
 // Put encrypts and stores a named secret in the barrier. The name
 // must not be empty. The barrier encrypts the secret transparently.
 func (s *SealStore) Put(ctx context.Context, name string, secret []byte) error {
-	if name == "" {
-		return ErrInvalidSecretName
+	if err := validSecretName(name); err != nil {
+		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.barrier.IsSealed() {
 		return &SealStoreError{Op: "put", Key: name, Err: ErrSealStoreBarrierSealed}
 	}
@@ -68,8 +95,8 @@ func (s *SealStore) Put(ctx context.Context, name string, secret []byte) error {
 // Get retrieves and decrypts a named secret from the barrier.
 // Returns ErrSealStoreSecretNotFound if the secret does not exist.
 func (s *SealStore) Get(ctx context.Context, name string) ([]byte, error) {
-	if name == "" {
-		return nil, ErrInvalidSecretName
+	if err := validSecretName(name); err != nil {
+		return nil, err
 	}
 	if s.barrier.IsSealed() {
 		return nil, &SealStoreError{Op: "get", Key: name, Err: ErrSealStoreBarrierSealed}
@@ -88,9 +115,11 @@ func (s *SealStore) Get(ctx context.Context, name string) ([]byte, error) {
 // Delete removes a named secret from the barrier.
 // Returns ErrSealStoreSecretNotFound if the secret does not exist.
 func (s *SealStore) Delete(ctx context.Context, name string) error {
-	if name == "" {
-		return ErrInvalidSecretName
+	if err := validSecretName(name); err != nil {
+		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.barrier.IsSealed() {
 		return &SealStoreError{Op: "delete", Key: name, Err: ErrSealStoreBarrierSealed}
 	}
@@ -131,27 +160,34 @@ func (s *SealStore) List(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-// Reseal reads a secret, deletes the old ciphertext, and re-encrypts
-// with the barrier's current epoch key. This must be called after key
-// rotation to re-wrap secrets under the new DEK.
+// Reseal re-encrypts a secret under the barrier's current epoch key. This
+// must be called after key rotation to re-wrap secrets under the new DEK.
+//
+// It reads the plaintext and writes it back over the same key in one Put,
+// which replaces the ciphertext in a single write: there is never a moment
+// with no record, and a failed write leaves the old record in place. Put,
+// Delete and Reseal are serialized, so a concurrent Put is never
+// overwritten with the stale value.
 func (s *SealStore) Reseal(ctx context.Context, name string) error {
-	if name == "" {
-		return ErrInvalidSecretName
+	if err := validSecretName(name); err != nil {
+		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.barrier.IsSealed() {
 		return &SealStoreError{Op: "reseal", Key: name, Err: ErrSealStoreBarrierSealed}
 	}
+	key := s.prefix + name
 	// Read the plaintext (barrier decrypts with current or old epoch key).
-	plaintext, err := s.Get(ctx, name)
+	plaintext, err := s.barrier.Get(ctx, key)
 	if err != nil {
+		if errors.Is(err, ErrSecretNotFound) {
+			err = ErrSealStoreSecretNotFound
+		}
 		return &SealStoreError{Op: "reseal", Key: name, Err: err}
 	}
-	// Delete old ciphertext.
-	key := s.prefix + name
-	if delErr := s.barrier.Delete(ctx, key); delErr != nil {
-		return &SealStoreError{Op: "reseal", Key: name, Err: delErr}
-	}
-	// Re-encrypt with current epoch key.
+	defer clear(plaintext)
+	// Re-encrypt with the current epoch key, replacing the old ciphertext.
 	if putErr := s.barrier.Put(ctx, key, plaintext); putErr != nil {
 		return &SealStoreError{Op: "reseal", Key: name, Err: putErr}
 	}

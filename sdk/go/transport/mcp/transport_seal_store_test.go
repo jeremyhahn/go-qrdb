@@ -19,8 +19,11 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -219,5 +222,102 @@ func TestMCPSealStore_ClosedTransport(t *testing.T) {
 	defer stub.mu.Unlock()
 	if len(stub.calls) != 0 {
 		t.Fatalf("a closed transport reached the server %d times", len(stub.calls))
+	}
+}
+
+// mcpSealStoreSecretCalls are the two seal-store calls that carry a secret:
+// put sends one, get returns one.
+var mcpSealStoreSecretCalls = []struct {
+	name string
+	call func(*Transport) error
+}{
+	{"put", func(tr *Transport) error {
+		return tr.SealStorePut(context.Background(), &transport.SealStorePutRequest{Name: "alpha", Secret: []byte("s3cret")})
+	}},
+	{"get", func(tr *Transport) error {
+		_, err := tr.SealStoreGet(context.Background(), &transport.SealStoreGetRequest{Name: "alpha"})
+		return err
+	}},
+}
+
+// TestMCPSealStore_SecretRequiresTLS proves a seal-store put or get is
+// refused over http:// before any tool call reaches the server.
+func TestMCPSealStore_SecretRequiresTLS(t *testing.T) {
+	for _, c := range mcpSealStoreSecretCalls {
+		t.Run(c.name, func(t *testing.T) {
+			var reached atomic.Int64
+			plain := httptest.NewServer(toolCallCounter(&reached))
+			t.Cleanup(plain.Close)
+			tr := connectMCP(t, plain.URL+"/mcp", nil)
+
+			err := c.call(tr)
+			var tlsErr *transport.BarrierSecretRequiresTLSError
+			if !errors.As(err, &tlsErr) || tlsErr.Kind != transport.BarrierSecretSealStore {
+				t.Fatalf("err = %v, want *transport.BarrierSecretRequiresTLSError for the seal-store secret", err)
+			}
+			if n := reached.Load(); n != 0 {
+				t.Fatalf("the server saw %d seal-store tool calls over http://, want none", n)
+			}
+		})
+	}
+}
+
+// TestMCPSealStore_PlaintextRedirectIsRefused proves a seal-store put or get
+// never follows a redirect from https:// to http://.
+func TestMCPSealStore_PlaintextRedirectIsRefused(t *testing.T) {
+	for _, c := range mcpSealStoreSecretCalls {
+		t.Run(c.name, func(t *testing.T) {
+			var plainReached atomic.Int64
+			plain := httptest.NewServer(toolCallCounter(&plainReached))
+			t.Cleanup(plain.Close)
+			session := mcpserver.NewStreamableHTTPServer(mcpserver.NewMCPServer("redirect-probe", "1"))
+			origin := httptest.NewTLSServer(redirectToolCalls(session, http.StatusTemporaryRedirect, func(r *http.Request) string {
+				return plain.URL + r.URL.Path
+			}))
+			t.Cleanup(origin.Close)
+			tr := connectMCP(t, origin.URL+"/mcp", trustingMCP(origin))
+
+			err := c.call(tr)
+			var tlsErr *transport.BarrierSecretRequiresTLSError
+			if !errors.As(err, &tlsErr) || tlsErr.Kind != transport.BarrierSecretSealStore {
+				t.Fatalf("err = %v, want *transport.BarrierSecretRequiresTLSError for the seal-store secret", err)
+			}
+			if n := plainReached.Load(); n != 0 {
+				t.Fatalf("the seal-store call followed a redirect to http:// (%d tool calls)", n)
+			}
+		})
+	}
+}
+
+// TestMCPSealStore_ForeignHostRedirectIsRefused proves a seal-store put or
+// get never follows a 307 or 308 to another host.
+func TestMCPSealStore_ForeignHostRedirectIsRefused(t *testing.T) {
+	for _, c := range mcpSealStoreSecretCalls {
+		for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+			t.Run(c.name+"/"+http.StatusText(status), func(t *testing.T) {
+				var foreignRequests, foreignBytes atomic.Int64
+				foreign := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					foreignRequests.Add(1)
+					foreignBytes.Add(int64(len(buffered(r))))
+					w.WriteHeader(http.StatusOK)
+				}))
+				t.Cleanup(foreign.Close)
+				session := mcpserver.NewStreamableHTTPServer(mcpserver.NewMCPServer("redirect-probe", "1"))
+				origin := httptest.NewTLSServer(redirectToolCalls(session, status, func(r *http.Request) string {
+					return foreign.URL + r.URL.Path
+				}))
+				t.Cleanup(origin.Close)
+				tr := connectMCP(t, origin.URL+"/mcp", trustingMCP(origin))
+
+				err := c.call(tr)
+				var hostErr *transport.BarrierSecretForeignHostError
+				if !errors.As(err, &hostErr) || hostErr.Kind != transport.BarrierSecretSealStore {
+					t.Fatalf("err = %v, want *transport.BarrierSecretForeignHostError for the seal-store secret", err)
+				}
+				if n, body := foreignRequests.Load(), foreignBytes.Load(); n != 0 || body != 0 {
+					t.Fatalf("the foreign host saw %d requests and %d body bytes, want none", n, body)
+				}
+			})
+		}
 	}
 }

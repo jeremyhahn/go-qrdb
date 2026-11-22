@@ -12,6 +12,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -58,6 +60,175 @@ func newTestSealStoreWithBarrier(t *testing.T) (*SealStore, *StorageBarrier) {
 		t.Fatalf("NewSealStore: %v", err)
 	}
 	return ss, b
+}
+
+// gatedSealBackend is a MemoryBackend that can fail the next write of one
+// key, or hold the next read of one key until the test releases it. It
+// stores and returns exactly what the barrier gives it.
+type gatedSealBackend struct {
+	*MemoryBackend
+	key string
+
+	mu        sync.Mutex
+	failPut   bool
+	holdGet   bool
+	reading   chan struct{}
+	release   chan struct{}
+	failedPut chan struct{}
+}
+
+var errGatedPut = errors.New("gated backend: write refused")
+
+func (g *gatedSealBackend) Put(ctx context.Context, key string, data []byte) error {
+	g.mu.Lock()
+	fail := g.failPut && strings.Contains(key, g.key)
+	if fail {
+		g.failPut = false
+	}
+	g.mu.Unlock()
+	if fail {
+		close(g.failedPut)
+		return errGatedPut
+	}
+	return g.MemoryBackend.Put(ctx, key, data)
+}
+
+func (g *gatedSealBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	g.mu.Lock()
+	hold := g.holdGet && strings.Contains(key, g.key)
+	if hold {
+		g.holdGet = false
+	}
+	g.mu.Unlock()
+	if hold {
+		close(g.reading)
+		<-g.release
+	}
+	return g.MemoryBackend.Get(ctx, key)
+}
+
+func newGatedSealStore(t *testing.T, key string) (*SealStore, *gatedSealBackend) {
+	t.Helper()
+	g := &gatedSealBackend{
+		MemoryBackend: NewMemoryBackend(),
+		key:           SealStoreDefaultPrefix + key,
+		reading:       make(chan struct{}),
+		release:       make(chan struct{}),
+		failedPut:     make(chan struct{}),
+	}
+	b, err := NewStorageBarrier(testLogger(), g, BarrierConfig{RootKeyPath: "test/root-key"}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("test-password"))); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	ss, err := NewSealStore(b, "", testLogger())
+	if err != nil {
+		t.Fatalf("NewSealStore: %v", err)
+	}
+	return ss, g
+}
+
+// TestSealStore_ResealFailedWriteKeepsSecret proves a reseal whose write
+// fails leaves the old record in place: the secret still reads back.
+func TestSealStore_ResealFailedWriteKeepsSecret(t *testing.T) {
+	ss, g := newGatedSealStore(t, "keep")
+	ctx := context.Background()
+	if err := ss.Put(ctx, "keep", []byte("still-here")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	g.mu.Lock()
+	g.failPut = true
+	g.mu.Unlock()
+
+	err := ss.Reseal(ctx, "keep")
+	if !errors.Is(err, errGatedPut) {
+		t.Fatalf("Reseal = %v, want the backend's write error", err)
+	}
+	<-g.failedPut
+	got, err := ss.Get(ctx, "keep")
+	if err != nil {
+		t.Fatalf("Get after failed Reseal: %v", err)
+	}
+	if !bytes.Equal(got, []byte("still-here")) {
+		t.Fatalf("Get after failed Reseal = %q, want still-here", got)
+	}
+}
+
+// TestSealStore_ResealAndPutAreSerialized proves a Put racing a Reseal is
+// never overwritten with the stale value: the Put waits for the reseal that
+// holds the store, and the final value is the Put's.
+func TestSealStore_ResealAndPutAreSerialized(t *testing.T) {
+	ss, g := newGatedSealStore(t, "race")
+	ctx := context.Background()
+	if err := ss.Put(ctx, "race", []byte("old")); err != nil {
+		t.Fatalf("Put old: %v", err)
+	}
+	g.mu.Lock()
+	g.holdGet = true
+	g.mu.Unlock()
+
+	resealDone := make(chan error, 1)
+	go func() { resealDone <- ss.Reseal(ctx, "race") }()
+	<-g.reading
+	// The reseal is mid-read: it holds the store, so a writer must wait.
+	if ss.mu.TryLock() {
+		ss.mu.Unlock()
+		t.Fatal("Reseal does not hold the store while it reads")
+	}
+	putDone := make(chan error, 1)
+	go func() { putDone <- ss.Put(ctx, "race", []byte("new")) }()
+	close(g.release)
+
+	if err := <-resealDone; err != nil {
+		t.Fatalf("Reseal: %v", err)
+	}
+	if err := <-putDone; err != nil {
+		t.Fatalf("Put new: %v", err)
+	}
+	got, err := ss.Get(ctx, "race")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !bytes.Equal(got, []byte("new")) {
+		t.Fatalf("final value = %q, want the Put's value new", got)
+	}
+}
+
+// TestSealStore_SecretNames proves the store accepts a name only when it is
+// one opaque path segment.
+func TestSealStore_SecretNames(t *testing.T) {
+	ss := newTestSealStore(t, "")
+	ctx := context.Background()
+	rejected := []string{"", ".", "..", "alpha/reseal", "/alpha", "alpha/", `a\b`, "a\x00b", "a\nb", "a\tb", "a\x7fb", "a\u0085b"}
+	for _, name := range rejected {
+		if err := ss.Put(ctx, name, []byte("v")); !errors.Is(err, ErrInvalidSecretName) {
+			t.Errorf("Put(%q) = %v, want ErrInvalidSecretName", name, err)
+		}
+		if _, err := ss.Get(ctx, name); !errors.Is(err, ErrInvalidSecretName) {
+			t.Errorf("Get(%q) = %v, want ErrInvalidSecretName", name, err)
+		}
+		if err := ss.Delete(ctx, name); !errors.Is(err, ErrInvalidSecretName) {
+			t.Errorf("Delete(%q) = %v, want ErrInvalidSecretName", name, err)
+		}
+		if err := ss.Reseal(ctx, name); !errors.Is(err, ErrInvalidSecretName) {
+			t.Errorf("Reseal(%q) = %v, want ErrInvalidSecretName", name, err)
+		}
+	}
+	accepted := []string{"alpha", "a b", "a.b", "...", ".hidden", "db-key_1", "ключ", "a%2Fb"}
+	for _, name := range accepted {
+		if err := ss.Put(ctx, name, []byte("v-"+name)); err != nil {
+			t.Errorf("Put(%q) = %v, want nil", name, err)
+			continue
+		}
+		if got, err := ss.Get(ctx, name); err != nil || string(got) != "v-"+name {
+			t.Errorf("Get(%q) = %q, %v", name, got, err)
+		}
+		if err := ss.Reseal(ctx, name); err != nil {
+			t.Errorf("Reseal(%q) = %v, want nil", name, err)
+		}
+	}
 }
 
 // ---------- Constructor tests ----------

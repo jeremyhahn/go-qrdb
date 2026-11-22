@@ -19,14 +19,20 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 func TestRESTSealStore_Calls(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
+	// A seal-store secret is sent and returned only over TLS (#1647).
+	rs := &routerServer{}
+	srv := httptest.NewTLSServer(rs)
+	t.Cleanup(srv.Close)
+	rt := newWiredTransport(srv)
 	ctx := context.Background()
 	var put sealStoreSecretWire
 	var deleted, resealed bool
@@ -76,6 +82,93 @@ func TestRESTSealStore_Calls(t *testing.T) {
 	st, err := rt.SealStoreStatus(ctx)
 	if err != nil || !st.Available || st.SealerID != "passphrase" || st.SecretCount != 2 || !slices.Equal(st.SecretNames, []string{"alpha", "beta"}) {
 		t.Fatalf("SealStoreStatus = %+v, %v", st, err)
+	}
+}
+
+// sealStoreSecretCalls are the two seal-store calls that carry a secret:
+// put sends one, get returns one.
+var sealStoreSecretCalls = []struct {
+	name string
+	call func(*Transport) error
+}{
+	{"put", func(tr *Transport) error {
+		return tr.SealStorePut(context.Background(), &transport.SealStorePutRequest{Name: "alpha", Secret: []byte("s3cret")})
+	}},
+	{"get", func(tr *Transport) error {
+		_, err := tr.SealStoreGet(context.Background(), &transport.SealStoreGetRequest{Name: "alpha"})
+		return err
+	}},
+}
+
+// TestRESTSealStore_SecretRequiresTLS proves a seal-store put or get is
+// refused over http:// before any request reaches the server.
+func TestRESTSealStore_SecretRequiresTLS(t *testing.T) {
+	for _, c := range sealStoreSecretCalls {
+		t.Run(c.name, func(t *testing.T) {
+			var reached atomic.Int64
+			plain := httptest.NewServer(secretCounter(&reached))
+			t.Cleanup(plain.Close)
+			tr := connectREST(t, plain.URL, nil)
+
+			err := c.call(tr)
+			var tlsErr *transport.BarrierSecretRequiresTLSError
+			if !errors.As(err, &tlsErr) || tlsErr.Kind != transport.BarrierSecretSealStore {
+				t.Fatalf("err = %v, want *transport.BarrierSecretRequiresTLSError for the seal-store secret", err)
+			}
+			if n := reached.Load(); n != 0 {
+				t.Fatalf("the server saw %d seal-store requests over http://, want none", n)
+			}
+		})
+	}
+}
+
+// TestRESTSealStore_PlaintextRedirectIsRefused proves a seal-store put or get
+// never follows a redirect from https:// to http://.
+func TestRESTSealStore_PlaintextRedirectIsRefused(t *testing.T) {
+	for _, c := range sealStoreSecretCalls {
+		t.Run(c.name, func(t *testing.T) {
+			var plainReached atomic.Int64
+			plain := httptest.NewServer(secretCounter(&plainReached))
+			t.Cleanup(plain.Close)
+			secure := httptest.NewTLSServer(redirectTo(plain.URL, http.StatusTemporaryRedirect))
+			t.Cleanup(secure.Close)
+			tr := connectREST(t, secure.URL, trusting(secure))
+
+			err := c.call(tr)
+			var tlsErr *transport.BarrierSecretRequiresTLSError
+			if !errors.As(err, &tlsErr) || tlsErr.Kind != transport.BarrierSecretSealStore {
+				t.Fatalf("err = %v, want *transport.BarrierSecretRequiresTLSError for the seal-store secret", err)
+			}
+			if n := plainReached.Load(); n != 0 {
+				t.Fatalf("the seal-store call followed a redirect to http:// (%d requests)", n)
+			}
+		})
+	}
+}
+
+// TestRESTSealStore_ForeignHostRedirectIsRefused proves a seal-store put or
+// get never follows a 307 or 308 to another host.
+func TestRESTSealStore_ForeignHostRedirectIsRefused(t *testing.T) {
+	for _, c := range sealStoreSecretCalls {
+		for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+			t.Run(c.name+"/"+http.StatusText(status), func(t *testing.T) {
+				foreign := &bodyRecorder{}
+				foreignSrv := httptest.NewTLSServer(foreign)
+				t.Cleanup(foreignSrv.Close)
+				origin := httptest.NewTLSServer(redirectTo(foreignSrv.URL, status))
+				t.Cleanup(origin.Close)
+				tr := connectREST(t, origin.URL, trusting(origin))
+
+				err := c.call(tr)
+				var hostErr *transport.BarrierSecretForeignHostError
+				if !errors.As(err, &hostErr) || hostErr.Kind != transport.BarrierSecretSealStore {
+					t.Fatalf("err = %v, want *transport.BarrierSecretForeignHostError for the seal-store secret", err)
+				}
+				if n, body := foreign.seen(); n != 0 || body != 0 {
+					t.Fatalf("the foreign host saw %d requests and %d body bytes, want none", n, body)
+				}
+			})
+		}
 	}
 }
 
