@@ -235,6 +235,60 @@ func TestDropFence_WriteResolvedBeforeDropIsRejectedAtApply(t *testing.T) {
 	}
 }
 
+// TestDropFence_PrefixMoveResolvedBeforeDropIsRejectedAtApply is the
+// sqlite-vfs staged publish racing DROP DATABASE: the prefix move resolved
+// its namespace before the drop, so only the apply-time guard can refuse it.
+func TestDropFence_PrefixMoveResolvedBeforeDropIsRejectedAtApply(t *testing.T) {
+	f := newSharedStoreFixture(t)
+	ctx := context.Background()
+
+	mvccSvc, err := f.reg.MVCCService(tenantid.System, "orders")
+	if err != nil {
+		t.Fatalf("MVCCService: %v", err)
+	}
+	mover, ok := mvccSvc.(service.PrefixMover)
+	if !ok {
+		t.Fatalf("MVCCService %T does not implement service.PrefixMover", mvccSvc)
+	}
+	for _, key := range []string{"stage/1/a", "stage/1/b"} {
+		if err := mvccSvc.Put(ctx, key, []byte("page")); err != nil {
+			t.Fatalf("Put %s: %v", key, err)
+		}
+	}
+
+	gate := f.host.holdNextGuardedProposal()
+	errc := make(chan error, 1)
+	go func() {
+		_, err := mover.MovePrefix(ctx, &service.MovePrefixRequest{Src: "stage/1/", Dst: "page/", ExpectedKeys: 2})
+		errc <- err
+	}()
+
+	var held []byte
+	select {
+	case held = <-gate.proposed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the prefix move was never proposed")
+	}
+	if len(held) == 0 || held[0] != protocol.OpGuarded {
+		t.Fatalf("the held prefix move is not a guarded proposal: %x", held[:min(1, len(held))])
+	}
+
+	if err := f.mgr.Drop(ctx, "orders"); err != nil {
+		t.Fatalf("Drop: %v", err)
+	}
+	close(gate.release)
+
+	assertDroppingError(t, <-errc, "orders")
+
+	keys, err := f.raw.KV.ListAll(ctx, tenant.ComposeNamespace(tenantid.System, "orders"))
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("the refused prefix move left %v in the dropped database's keyspace", keys)
+	}
+}
+
 // TestDropFence_WriteAppliedBeforeTheFenceIsReclaimed is the other order: a
 // write whose entry applies BEFORE the fence landed and is removed by the
 // reclamation that follows it, because the reclamation's scan runs after
