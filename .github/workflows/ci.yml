@@ -1,4 +1,34 @@
-# ci-template: v1.35.1 + v1.42 hermetic gate + v1.43 hosted first — canonical CI for all first-party Go repos.
+# ci-template: v1.53 + v1.59 runner selection + go-qrdb CUSTOMIZE blocks — canonical CI for all first-party Go repos.
+# Ported template steps, not the template's job structure: v1.48 to v1.53
+# (Tenant Agent ruling 1087, DS-9947) and v1.54's selection step (ruling
+# 1137, handbook 1ad68ab8); the handbook's template holds each version's
+# note. v1.48 (ruling 1024): preflight's runner and runner_docker outputs,
+# read by CI Gate and by every job that builds or runs an image. v1.54
+# (ruling 1137): the preflight step `Balanced runner pool (ruling 1137)`
+# sets them, balancing this repository's jobs between the GitHub-hosted and
+# the Dells' self-hosted pools by the repository variables CI_HOSTED_SHARE,
+# CI_SELF_HOSTED_BIGDISK and CI_SELF_HOSTED_BIGDISK_DOCKER; it replaces
+# v1.48's `Hosted or overflow runner (ruling 1024)`, HOSTED_JOBS_PER_REPO
+# and HOSTED_QUEUE_GRACE_SECONDS. v1.59 (handbook b18e6499, #113; the Tenant
+# Agent's 15:28Z order, item 1, defect found by #1680): that step keeps a
+# listing short of its total_count as a lower bound and still chooses, with
+# a ::notice naming the shortfall; only a failed call goes hosted with a
+# ::warning. The step is copied from the template at v1.59.
+# v1.49 (ruling 1047 (3)): preflight runs on the bigdisk pool unless the
+# repository variable CI_PREFLIGHT_RUNS_ON says otherwise. v1.50: a short
+# Actions API listing is a lower bound. v1.51 and v1.52: the Runner labels
+# step checks pull_request_target, and a fork's pull request stays on
+# GitHub-hosted runners. v1.53: main's concurrency group is `main-{event}`.
+# v1.53 also (Tenant Agent on trusted-firmware #821, handbook 88c10e76,
+# DS-9961): (0) `Runner labels (ruling 633)` lets code-review.yml's API-only
+# jobs take exactly [self-hosted, linux, x64, bigdisk] for a same-repository
+# head under a PR event; a fork's head still takes a standard image. (1) CI
+# Gate runs on !cancelled() off pull_request, so a main run cancelled by a
+# newer push posts a skipped gate, not a failed one; a pull request keeps
+# always(), as a skipped required check counts as passed. (2) Every job that
+# builds on a pool host masks the LAN addresses (scripts/ci-mask-lan.sh,
+# which also masks single-label and private-suffix host names).
+# Before ruling 1087: v1.35.1 + v1.42 hermetic gate + v1.43 hosted first + v1.47.
 # v1.47 runner gate (Tenant Agent ruling 1007, handbook ci-template v1.47): the step Runner labels (ruling 633) checks every workflow's runs-on label and waiver category together; codex and qwen run only in code-review.yml (codex with credential:, qwen with hardware:).
 # v1.43 hosted first (Tenant Agent rulings 833 and 834, which supersede ruling
 # 617's two-pool rule; the owner's 11-07 ruling that GitHub-hosted runners are
@@ -30,12 +60,16 @@
 # this workflow there, because the PR it opens starts no pull_request run.
 # go-qrdb deviations from v1.35.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
-#   - every job runs on the standard GitHub-hosted ubuntu-latest runner,
-#     for every event (owner ruling 999, rulings 833 and 834); a job may name
-#     a pool expression only with a `# self-hosted: <reason>` comment naming
-#     the hardware it needs or the measured hosted limit (disk, memory, the
-#     6-hour job limit) it exceeds, and none does; larger hosted runners are
-#     not used; no LAN registry, cache volume, reaper or schedule guard
+#   - every job runs on the standard GitHub-hosted ubuntu-latest runner by
+#     default (owner ruling 999, rulings 833 and 834). Since v1.48 (ruling
+#     1024) the jobs that build or run images read preflight's runner_docker
+#     and CI Gate its runner, so a run whose hosted pool is full overflows to
+#     the Dells' bigdisk pools (a fork's pull request never does), and since
+#     v1.49 preflight runs on bigdisk unless CI_PREFLIGHT_RUNS_ON overrides
+#     it. Any other pool expression still needs a `# self-hosted: <reason>`
+#     comment naming the hardware it needs or the measured hosted limit
+#     (disk, memory, the 6-hour job limit) it exceeds, and none does; larger
+#     hosted runners are not used; no cache volume, reaper or schedule guard
 #     remains
 #   - no schedule guard, so preflight merges changes and arch-gates only
 #     (DS-7377)
@@ -128,14 +162,16 @@ on:
   schedule:
     - cron: '0 4 * * *'
 
-# v1.26.2 (ruling 145; go-qrdb's since DS-3465): on main the group is the
-# workflow, the event and the commit, so main runs never cancel each other and
-# every merge keeps a completed run. Every other ref is one group, so a PR's
-# newer run cancels the older. v1.29.3: a schedule run's group is
-# `schedule-{repository}`, so a repository has one schedule run at a time.
-# cancel-in-progress stays a literal `true` (Company Agent m695, m701).
+# v1.53 (ruling 1087): on main the group is the workflow and the event,
+# `main-{event}`, so a newer main run cancels the older one, queued or in
+# progress, and the newest run validates every merge under it. Before v1.53
+# (v1.26.2, ruling 145; go-qrdb's since DS-3465) the group also held the
+# commit, so main runs never cancelled each other. Every other ref is one
+# group, so a PR's newer run cancels the older. v1.29.3: a schedule run's
+# group is `schedule-{repository}`, so a repository has one schedule run at a
+# time. cancel-in-progress stays a literal `true` (Company Agent m695, m701).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && format('schedule-{0}', github.repository) || github.ref == 'refs/heads/main' && format('main-{0}-{1}', github.event_name, github.sha) || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && format('schedule-{0}', github.repository) || github.ref == 'refs/heads/main' && format('main-{0}', github.event_name) || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -178,6 +214,10 @@ env:
   DOCS_ONLY_PATTERN: '(\.md$|^docs/)'
   # #1619: a PR changing any file that matches this runs clusterproof-soak.
   CLUSTERPROOF_PATTERN: '^(scripts/cluster-proof-ci\.sh|test/clusterproof/)'
+  # v1.54 (ruling 1137): HOSTED_JOBS_PER_REPO and HOSTED_QUEUE_GRACE_SECONDS
+  # (v1.48) are removed; the limits of `Balanced runner pool (ruling 1137)`
+  # are the repository variables CI_HOSTED_SHARE, CI_SELF_HOSTED_BIGDISK and
+  # CI_SELF_HOSTED_BIGDISK_DOCKER.
 
 jobs:
   # v1.24: a PR whose every changed file matches DOCS_ONLY_PATTERN runs lint
@@ -208,18 +248,216 @@ jobs:
     name: Preflight
     # m2479: the entry job every other job waits on. git, grep and sh only;
     # no Go, no Docker (the compose-target check, which runs the docker CLI,
-    # is a docker-build step). On the self-hosted bigdisk pool for a push to
-    # main and a same-repository PR; hosted otherwise, a fork's PR included.
-    runs-on: ubuntu-latest
+    # is a docker-build step).
+    # v1.49 (Tenant Agent ruling 1047 (3), (2)): on github.com the Dells'
+    # bigdisk pool, so no run waits in the hosted queue for its first ten
+    # seconds of work; the repository variable CI_PREFLIGHT_RUNS_ON, runs-on
+    # JSON, overrides it (Fleet Ops sets `"ubuntu-latest"`, quotes included,
+    # while the Dells are down). Off github.com the forge label, as before.
+    # v1.52 (Tenant Agent order): a pull request from a fork (its head
+    # repository is not this one) takes ubuntu-latest whatever the variable
+    # holds; a fork never reaches a self-hosted runner.
+    runs-on: ${{ github.server_url == 'https://github.com' && (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_PREFLIGHT_RUNS_ON || '["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}   # v1.52
     timeout-minutes: 15   # CUSTOMIZE (go-qrdb): the template's 10, plus the full-tree gates
+    # v1.48 (ruling 1024): actions: read lets the selection step count this
+    # repository's hosted jobs with the job token.
+    permissions:
+      actions: read
+      contents: read
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
       clusterproof: ${{ steps.diff.outputs.clusterproof }}
+      # v1.48 (ruling 1024): runs-on JSON for the two hosted-capable classes,
+      # read as fromJSON(needs.preflight.outputs.runner_docker) by every job
+      # that builds or runs images and fromJSON(needs.preflight.outputs.runner)
+      # by CI Gate. `"ubuntu-latest"`, or the Dells' self-hosted label list
+      # (v1.54: whichever pool `Balanced runner pool (ruling 1137)` picks).
+      runner: ${{ steps.runner.outputs.runner }}
+      runner_docker: ${{ steps.runner.outputs.runner_docker }}
     env:
       # go-qrdb: the objstore storage backend, and the embedded transport's
       # volume pool, which is go-objstore's pool type.
       OBJSTORE_SEAMS: 'pkg/storage/objstore/|sdk/go/transport/embedded/'      # CUSTOMIZE
     steps:
+      # v1.54 (Tenant Agent ruling 1137, owner order; it replaces the hosted
+      # first rule of rulings 999 and 1024, v1.48 to v1.53): the run goes to
+      # whichever of the two pools, GitHub-hosted or the Dells' self-hosted
+      # bigdisk pools, this repository uses less, so both run full. On
+      # github.com this step lists every queued and in-progress run of every
+      # workflow of this repository and their latest jobs, through the
+      # Actions API with the job token (actions: read), and counts, from that
+      # one listing, each in progress plus queued, H: hosted jobs (labels
+      # naming an ubuntu-* image and not self-hosted), S1: self-hosted jobs on
+      # bigdisk and not bigdisk-docker, and S2: jobs on bigdisk-docker. Jobs
+      # of this run are not counted: they wait on this decision. The limits
+      # are repository variables set by the Infra Department, plain decimal
+      # integers: HS = vars.CI_HOSTED_SHARE (this repository's share of the
+      # account's 40 hosted runners; unset, 0 or not a whole number gives a
+      # ::warning and HS=12, the v1.48 limit), C1 =
+      # vars.CI_SELF_HOSTED_BIGDISK and C2 = vars.CI_SELF_HOSTED_BIGDISK_DOCKER
+      # (the units of each label; either unset, 0 or not a whole number: the
+      # hosted default with a ::warning). Hosted use is H/HS; self-hosted use
+      # is the larger of S1/C1 and S2/C2. Then:
+      #   - both below their limit: the lower use wins, compared by
+      #     cross-multiplication (self-hosted wins only when S1*HS < H*C1 and
+      #     S2*HS < H*C2); a tie goes hosted;
+      #   - one pool full (H >= HS; or S1 >= C1 or S2 >= C2): the other pool;
+      #   - both full: the pool with fewer queued jobs (bigdisk and
+      #     bigdisk-docker together for the Dells); a tie goes hosted.
+      # The units are shared across repositories, so C1 and C2 can overstate
+      # this repository's free room: when they are busy elsewhere its jobs
+      # queue, S1 or S2 rises, and its runs go hosted.
+      # It outputs `runner` and `runner_docker` as runs-on JSON:
+      # `"ubuntu-latest"`, or `["self-hosted","linux","x64","bigdisk"]` and
+      # `["self-hosted","linux","x64","bigdisk-docker"]`. A count it cannot
+      # read (a reply that is not 200, a list short of its total_count, a
+      # field missing) picks nothing silently: a ::warning names why and the
+      # run takes the hosted default. One decision per run: every job of the
+      # run takes it, in every workflow that reads these outputs. Off
+      # github.com it makes no call, and each job's runs-on keeps its forge
+      # label (bigdisk, ci-gate). It runs before the checkout, beside no
+      # repository code.
+      # v1.52 (Tenant Agent order, kept): on a pull request whose head
+      # repository is not this repository (a fork, or a fork since deleted),
+      # it makes no call and outputs the hosted default with a ::notice: a
+      # fork never reaches a self-hosted runner. Its tests:
+      # .github/workflows/testdata/runner-select-tests.py, run by the preflight step "Runner select tests".
+      - name: Balanced runner pool (ruling 1137)
+        id: runner
+        env:
+          SERVER: ${{ github.server_url }}
+          EVENT: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+          API: ${{ github.api_url }}/repos/${{ github.repository }}/actions
+          RUN_ID: ${{ github.run_id }}
+          JOB_TOKEN: ${{ github.token }}
+          HS: ${{ vars.CI_HOSTED_SHARE }}
+          C1: ${{ vars.CI_SELF_HOSTED_BIGDISK }}
+          C2: ${{ vars.CI_SELF_HOSTED_BIGDISK_DOCKER }}
+        run: |
+          set -uo pipefail
+          HOSTED='"ubuntu-latest"'
+          selfhosted() { printf '["self-hosted","linux","x64","%s"]' "$1"; }
+          emit() {
+            echo "runner: $1; runner_docker: $2"
+            { echo "runner=$1"; echo "runner_docker=$2"; } >> "$GITHUB_OUTPUT"
+          }
+          # hosted <why>: no count, so the default, with the reason shown.
+          hosted() {
+            echo "::warning::runner selection: $1; every job of this run takes the GitHub-hosted default, ubuntu-latest, and none runs on the Dells (ci-template v1.54, ruling 1137)"
+            emit "$HOSTED" "$HOSTED"
+            exit 0
+          }
+          if [ "$SERVER" != https://github.com ]; then
+            echo "not github.com: each job keeps its forge label (bigdisk, ci-gate); no selection"
+            emit "$HOSTED" "$HOSTED"
+            exit 0
+          fi
+          # v1.52: a fork's pull request runs every job on GitHub-hosted runners.
+          case "$EVENT" in
+            pull_request|pull_request_target)
+              if [ "$HEAD_REPO" != "$REPO" ]; then
+                echo "::notice::runner selection: this pull request's head repository is not this repository (a fork); every job of this run takes the GitHub-hosted default, ubuntu-latest, and none reaches a self-hosted runner (ci-template v1.52)"
+                emit "$HOSTED" "$HOSTED"
+                exit 0
+              fi ;;
+          esac
+          # whole <value>: a whole number above 0, at most 6 digits.
+          whole() { [[ "$1" =~ ^[0-9]{1,6}$ ]] && [ "$((10#$1))" -gt 0 ]; }
+          whole "$C1" || hosted "CI_SELF_HOSTED_BIGDISK='$C1' is unset, 0 or not a whole number, so no bigdisk job can be placed (the Infra Department sets it)"
+          whole "$C2" || hosted "CI_SELF_HOSTED_BIGDISK_DOCKER='$C2' is unset, 0 or not a whole number, so no bigdisk-docker job can be placed (the Infra Department sets it)"
+          C1=$((10#$C1)) C2=$((10#$C2))
+          if whole "$HS"; then
+            HS=$((10#$HS))
+          else
+            echo "::warning::runner selection: CI_HOSTED_SHARE='$HS' is unset, 0 or not a whole number; HS=12 until the Infra Department sets it (ci-template v1.54, ruling 1137)"
+            HS=12
+          fi
+          # get <url> <file>: 0 on a 200 reply, saved in <file>; the answer in
+          # CODE. The token reaches curl as a header from a file descriptor.
+          get() {
+            CODE=$(curl -sS --max-time 30 -o "$2" -w '%{http_code}' \
+              -H @<(printf 'Authorization: Bearer %s\n' "$JOB_TOKEN") \
+              -H 'Accept: application/vnd.github+json' "$1") || CODE="curl exit $?"
+            [ "$CODE" = 200 ]
+          }
+          # pages <url> <key> <out>: every page of a listing, its <key> items
+          # one JSON object per line in <out>. 1, with WHY set, when a reply is
+          # not 200, has no total_count or list, or passes 1000 entries. A list
+          # short of its total_count (runs change state while it is read) is
+          # kept as a lower bound and named in SHORT (v1.59).
+          pages() {
+            local p=1 got=0 total n
+            : > "$3"
+            while :; do
+              get "$1&per_page=100&page=$p" "$RUNNER_TEMP/sel-page.json" || { WHY="$1: $CODE"; return 1; }
+              total=$(jq -er '.total_count | numbers' "$RUNNER_TEMP/sel-page.json") || { WHY="$1: 200 with no total_count"; return 1; }
+              n=$(jq -er --arg k "$2" '.[$k] | arrays | length' "$RUNNER_TEMP/sel-page.json") || { WHY="$1: 200 with no $2 list"; return 1; }
+              jq -c --arg k "$2" '.[$k][]' "$RUNNER_TEMP/sel-page.json" >> "$3"
+              got=$((got + n))
+              { [ "$got" -lt "$total" ] && [ "$n" -gt 0 ]; } || break
+              [ "$p" -lt 10 ] || { WHY="$1: more than 1000 entries"; return 1; }
+              p=$((p + 1))
+            done
+            [ "$got" -ge "$total" ] || SHORT="${SHORT:+$SHORT; }${1#"$API"/}: $got of $total entries"
+            return 0
+          }
+          SHORT=
+          : > "$RUNNER_TEMP/sel-runs.jsonl"
+          for st in queued in_progress; do
+            pages "$API/runs?status=$st" workflow_runs "$RUNNER_TEMP/sel-r.jsonl" || hosted "the Actions API gave no complete run list ($WHY)"
+            cat "$RUNNER_TEMP/sel-r.jsonl" >> "$RUNNER_TEMP/sel-runs.jsonl"
+          done
+          : > "$RUNNER_TEMP/sel-jobs.jsonl"
+          for id in $(jq -r '.id' "$RUNNER_TEMP/sel-runs.jsonl" | sort -u); do
+            [ "$id" != "$RUN_ID" ] || continue
+            pages "$API/runs/$id/jobs?filter=latest" jobs "$RUNNER_TEMP/sel-j.jsonl" || hosted "the Actions API gave no complete job list ($WHY)"
+            cat "$RUNNER_TEMP/sel-j.jsonl" >> "$RUNNER_TEMP/sel-jobs.jsonl"
+          done
+          # H, S1, S2: hosted, bigdisk (not bigdisk-docker) and bigdisk-docker
+          # jobs in progress plus queued; HQ, SQ: the queued hosted and
+          # self-hosted (both kinds) ones. A job of this run is not counted.
+          read -r H S1 S2 HQ SQ < <(jq -rs --argjson run "$RUN_ID" '
+              [.[] | select(.run_id != $run and (.status == "queued" or .status == "in_progress"))
+                   | (.labels // []) as $l
+                   | {q: (.status == "queued"),
+                      p: (if ($l | any(. == "self-hosted")) then
+                            (if ($l | any(. == "bigdisk-docker")) then "s2"
+                             elif ($l | any(. == "bigdisk")) then "s1" else "x" end)
+                          elif ($l | any(startswith("ubuntu-"))) then "h"
+                          else "x" end)}] as $j
+              | def n(f): $j | map(select(f)) | length;
+              [n(.p == "h"), n(.p == "s1"), n(.p == "s2"), n(.p == "h" and .q),
+               n((.p == "s1" or .p == "s2") and .q)]
+              | map(tostring) | join(" ")' "$RUNNER_TEMP/sel-jobs.jsonl") || hosted "the job list could not be counted"
+          [ -n "${SQ:-}" ] || hosted "the job list could not be counted"
+          echo "this repository: hosted $H of CI_HOSTED_SHARE=$HS ($HQ queued); bigdisk $S1 of CI_SELF_HOSTED_BIGDISK=$C1, bigdisk-docker $S2 of CI_SELF_HOSTED_BIGDISK_DOCKER=$C2 ($SQ self-hosted queued)"
+          # v1.59: a short listing is a lower bound; still choose.
+          [ -z "$SHORT" ] || echo "::notice::runner selection: the listing returned fewer entries than its total ($SHORT); the counts are a lower bound and the choice below uses them (ci-template v1.59)"
+          pick=hosted hfull=0 sfull=0
+          [ "$H" -lt "$HS" ] || hfull=1
+          { [ "$S1" -lt "$C1" ] && [ "$S2" -lt "$C2" ]; } || sfull=1
+          if [ "$hfull" = 1 ] && [ "$sfull" = 1 ]; then
+            [ "$SQ" -lt "$HQ" ] && pick=self
+            why="both pools full: hosted $HQ queued, self-hosted $SQ queued"
+          elif [ "$hfull" = 1 ]; then
+            pick=self; why="the hosted pool is full ($H of $HS)"
+          elif [ "$sfull" = 1 ]; then
+            why="the self-hosted pool is full (bigdisk $S1 of $C1, bigdisk-docker $S2 of $C2)"
+          else
+            # self-hosted use, max(S1/C1, S2/C2), below hosted use H/HS.
+            [ $((S1 * HS)) -lt $((H * C1)) ] && [ $((S2 * HS)) -lt $((H * C2)) ] && pick=self
+            why="use hosted $H/$HS, bigdisk $S1/$C1, bigdisk-docker $S2/$C2"
+          fi
+          if [ "$pick" = self ]; then
+            echo "::notice::runner selection: $why; this run's jobs run on the Dells (bigdisk, bigdisk-docker) (ci-template v1.54, ruling 1137)"
+            emit "$(selfhosted bigdisk)" "$(selfhosted bigdisk-docker)"
+          else
+            echo "::notice::runner selection: $why; this run's jobs take the GitHub-hosted default, ubuntu-latest (ci-template v1.54, ruling 1137)"
+            emit "$HOSTED" "$HOSTED"
+          fi
+
       # v1.34: the changed-file diff needs the PR's base, and the
       # architecture gates scan the whole tree, so one full checkout serves both.
       # No credential is left in the checkout: nothing after it fetches or pushes.
@@ -236,6 +474,14 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: preflight runs on the bigdisk pool on github.com (v1.49),
+      # whose environment names LAN addresses, and its later steps run
+      # repository code (the testdata scripts, make check-public-releasable),
+      # so the LAN addresses are masked before any of them (local Codex
+      # review on #1680).
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
 
       # reads every .github/workflows/*.yml and *.yaml of the repository as
       # text, takes each job whose runs-on names `release` (plain, in a list,
@@ -264,9 +510,31 @@ jobs:
       # PR off its runner, by a top-level `&& head.repo.full_name ==
       # github.repository` (or a non-PR event) in its if:, or a runs-on that
       # resolves hosted for it (g).
+      # v1.48 (ruling 1024): in ci.yml, a runs-on that reads
+      # needs.preflight.outputs.runner or runner_docker is checked with the
+      # output at its default ("ubuntu-latest", which must give a standard
+      # image) and at its overflow, where exactly
+      # [self-hosted, linux, x64, bigdisk] or [..., bigdisk-docker] passes too.
+      # v1.49 (ruling 1047 (3)): the preflight job's own runs-on, which reads
+      # vars.CI_PREFLIGHT_RUNS_ON, is checked with the variable unset, where
+      # exactly [self-hosted, linux, x64, bigdisk] passes too, and set to
+      # `"ubuntu-latest"`, where it must give a standard image.
+      # v1.52 (Tenant Agent order): a fork's head under pull_request, as under
+      # pull_request_target (v1.51), gets no unset-variable exemption, and the
+      # selection outputs read for it are the hosted default the step emits.
       # Its tests: testdata/runner-labels-tests.py, run by the step before it.
       - name: Runner labels tests (go-qrdb #1642)
         run: python3 -I .github/workflows/testdata/runner-labels-tests.py
+      # Codex round 1 on #1671: the step "Balanced runner pool (ruling 1137)"
+      # run against a stub Actions API (balance, full pools, forks,
+      # unset variables, unreadable replies, off github.com); the handbook's
+      # v1.59 testdata/runner-select-tests.py, verbatim.
+      - name: Runner select tests (go-qrdb #1671)
+        run: python3 -I .github/workflows/testdata/runner-select-tests.py
+      # Codex round 1 on #1671: scripts/ci-mask-lan.sh masks an entry's
+      # userinfo and classifies the host after it, and every mask step runs it.
+      - name: LAN mask tests (go-qrdb #1671)
+        run: python3 -I .github/workflows/testdata/ci-mask-lan-tests.py
       - name: Runner labels (ruling 633)
         run: |
           python3 -I - <<'PY'
@@ -586,16 +854,49 @@ jobs:
           REVIEW_FILES = {"code-review.yml", "code-review.yaml"}
           REVIEW_TOKEN = re.compile(r"(?<![\w.-])['\"]?(codex|qwen)['\"]?(?![\w-])", re.I)
           GH = "https://github.com"
+          # v1.48 (ruling 1024): ci.yml's preflight runner selection (v1.54:
+          # `Balanced runner pool (ruling 1137)`) outputs runs-on JSON,
+          # "ubuntu-latest" or the Dells' self-hosted list ("overflow" below). In ci.yml only, a
+          # runs-on that reads exactly these outputs is checked under both: the
+          # default must be a standard image, as (c) asks of every job, and the
+          # overflow may also be exactly the list its output names. Any other
+          # self-hosted value still needs its waiver.
+          SEL_FILES = {"ci.yml", "ci.yaml"}
+          # v1.53 (Tenant Agent on trusted-firmware #821): code-review.yml's
+          # API-only guard jobs may take exactly [self-hosted, linux, x64,
+          # bigdisk] for a same-repository head under a PR event; a fork's
+          # head and every other event still take a standard image.
+          REVIEW_FILES = {"code-review.yml", "code-review.yaml"}
+          SEL_OUT = {"needs.preflight.outputs.runner": "bigdisk",
+                     "needs.preflight.outputs.runner_docker": "bigdisk-docker"}
+          OVERFLOW = [["self-hosted", "linux", "x64", v] for v in SEL_OUT.values()]
+          # v1.49 (ruling 1047 (3)): ci.yml's preflight job alone may read the
+          # repository variable CI_PREFLIGHT_RUNS_ON. Its runs-on is checked in
+          # two states of its own, in place of the selection's: unset, where
+          # exactly [self-hosted, linux, x64, bigdisk] passes too, and set to the
+          # fallback `"ubuntu-latest"`, where it must give a standard image on
+          # every event. Another job that reads the variable reads an unknown.
+          PRE_JOB = "preflight"
+          PRE_VAR = "vars.ci_preflight_runs_on"
+          PRE_READ = re.compile(r"(?<![\w.])vars\.CI_PREFLIGHT_RUNS_ON(?![\w-])", re.I)
           HOSTED_CTX = [  # (event, ref, head repo) on github.com; o/r is this repository
               ("push", "refs/heads/main", None), ("push", "refs/heads/feature", None),
               ("pull_request", "refs/pull/1/merge", "o/r"), ("pull_request", "refs/pull/1/merge", "fork/r"),
               ("workflow_dispatch", "refs/heads/main", None), ("schedule", "refs/heads/main", None),
+              # v1.51: the base-defined PR event code-review.yml and signatures.yml run on.
+              ("pull_request_target", "refs/heads/main", "o/r"), ("pull_request_target", "refs/heads/main", "fork/r"),
           ]
 
 
-          def hosted_get(ev, ref, head):
+          def hosted_get(ev, ref, head, sel=None):
               def get(path):
                   p = path.lower()
+                  if sel and p in SEL_OUT:  # v1.48: the selection output, as JSON text
+                      # v1.52: the step outputs the hosted default for a fork's head under pull_request.
+                      fork_pr = ev == "pull_request" and head == "fork/r"
+                      return json.dumps("ubuntu-latest" if sel == "default" or fork_pr else ["self-hosted", "linux", "x64", SEL_OUT[p]])
+                  if sel in ("unset", "set") and p == PRE_VAR:  # v1.49: unset, or the fallback switch
+                      return None if sel == "unset" else json.dumps("ubuntu-latest")
                   if p == "github.server_url":
                       return GH
                   if p == "github.repository":
@@ -617,14 +918,14 @@ jobs:
               return [str(value)]
 
 
-          def runs_on_labels(text, ev, ref, head):
+          def runs_on_labels(text, ev, ref, head, sel=None):
               t = text.strip()
               if t.startswith("group:") or t.startswith("labels:") or " labels:" in t:
                   m = re.search(r"labels:\s*(\[[^\]]*\]|\S+)", t)
                   t = m.group(1) if m else ""
               m = re.fullmatch(r"\$\{\{(.*)\}\}", unquote(t), re.S)
               if m:
-                  return labels(P(lex(m.group(1)), hosted_get(ev, ref, head)).parse())
+                  return labels(P(lex(m.group(1)), hosted_get(ev, ref, head, sel)).parse())
               if t.startswith("["):
                   return [unquote(x) for x in re.split(r"\s*,\s*", t.strip("[] ")) if x]
               if t.startswith("- "):
@@ -769,15 +1070,35 @@ jobs:
                                       bad.append(fk)
                                   continue
                               off = []
+                              sels = ("default", "overflow") if path.replace("\\", "/").rsplit("/", 1)[-1] in SEL_FILES else (None,)
+                              if sels[0] is not None and job == PRE_JOB and PRE_READ.search(ro):
+                                  sels = ("unset", "set")  # v1.49: its own two states, no selection output
                               for ev, ref, head in HOSTED_CTX:
-                                  try:
-                                      got = runs_on_labels(ro, ev, ref, head)
-                                  except ValueError as e:
-                                      off.append(f"{ev} ({ref}): cannot be read ({e})")
-                                      continue
-                                  if got is None or len(got) != 1 or not STANDARD.fullmatch(got[0]):
-                                      what = "an unknown label" if got is None else ", ".join(got)
-                                      off.append(f"{ev} ({ref}{', fork' if head == 'fork/r' else ''}): {what}")
+                                  # v1.51: under pull_request_target, a fork's head never
+                                  # reaches a self-hosted runner, overflow or not.
+                                  # v1.52: under pull_request too.
+                                  fork_target = ev in PR and head == "fork/r" and ev in on
+                                  for sel in sels:
+                                      try:
+                                          got = runs_on_labels(ro, ev, ref, head, sel)
+                                      except ValueError as e:
+                                          off.append(f"{ev} ({ref}): cannot be read ({e})")
+                                          continue
+                                      if got is not None and sel == "overflow" and got in OVERFLOW and not fork_target:
+                                          continue
+                                      if sel == "unset" and got == OVERFLOW[0] and not fork_target:
+                                          continue
+                                      if (sel is None and got == OVERFLOW[0] and ev in PR and head == "o/r"
+                                              and path.replace("\\", "/").rsplit("/", 1)[-1] in REVIEW_FILES):
+                                          continue  # v1.53: a same-repository head's review guard
+                                      if got is None or len(got) != 1 or not STANDARD.fullmatch(got[0]):
+                                          what = "an unknown label" if got is None else ", ".join(got)
+                                          note = ", runner selection overflow" if sel == "overflow" else ""
+                                          if sel in ("unset", "set"):
+                                              note = ", CI_PREFLIGHT_RUNS_ON " + ("unset" if sel == "unset" else 'set to "ubuntu-latest"')
+                                          if fork_target and got is not None:
+                                              note += f", {ev}: a fork never reaches a self-hosted runner"
+                                          off.append(f"{ev} ({ref}{', fork' if head == 'fork/r' else ''}{note}): {what}")
                               if off and BARE.search(ro_line):
                                   bad.append(f"{where}: (e) its `# self-hosted:` reason names no category; ruling 999 allows a self-hosted job "
                                              f"only as `# self-hosted: hardware: <reason>` or `# self-hosted: oversize: <reason>`; it runs on " + "; ".join(dict.fromkeys(off)))
@@ -922,7 +1243,7 @@ jobs:
   docker-build:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Devcontainer images
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48 (ruling 1024)
     needs: [preflight]
     timeout-minutes: 90
     # CUSTOMIZE (go-qrdb): on a push to main this job alone pushes the images
@@ -965,6 +1286,16 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        # v1.53: a registry a later step takes from `vars` is masked here.
+        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
+        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
+        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        run: scripts/ci-mask-lan.sh
 
       # CUSTOMIZE (go-qrdb): every compose service that names a build target
       # names a stage its Dockerfile declares, with each overlay resolved by
@@ -1225,7 +1556,7 @@ jobs:
   lint:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Devcontainer image [lint, gosec, gosec-sdk]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48 (ruling 1024)
     needs: [preflight, docker-build]
     timeout-minutes: 120
     env:
@@ -1242,6 +1573,16 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        # v1.53: a registry a later step takes from `vars` is masked here.
+        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
+        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
+        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -1361,7 +1702,7 @@ jobs:
   lint-gates:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Lint Gates [toolchain image]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48 (ruling 1024)
     needs: [preflight, docker-build]
     timeout-minutes: 90
     env:
@@ -1378,6 +1719,16 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        # v1.53: a registry a later step takes from `vars` is masked here.
+        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
+        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
+        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        run: scripts/ci-mask-lan.sh
 
       - name: Does the Makefile define lint-gates?
         id: probe
@@ -1487,7 +1838,7 @@ jobs:
 
   image:
     name: Devcontainer image [build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48 (ruling 1024)
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 90
@@ -1505,6 +1856,16 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        # v1.53: a registry a later step takes from `vars` is masked here.
+        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
+        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
+        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -1681,7 +2042,7 @@ jobs:
   # slowdown, the slowest fits the 180-minute limit.
   coverage:
     name: Unit [make coverage-leg ${{ matrix.leg }}]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 180
@@ -1830,7 +2191,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build, coverage]
     timeout-minutes: 30
@@ -1917,7 +2278,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 20
@@ -1997,7 +2358,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 20
@@ -2073,7 +2434,7 @@ jobs:
 
   test-tags:
     name: Unit [make test-tags]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 90
@@ -2190,7 +2551,7 @@ jobs:
   # TEST_SDK_LEGS or a leg's budget is not the limit less 5 minutes.
   test-sdk:
     name: Unit [make test-sdk-leg ${{ matrix.leg }}]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 150
@@ -2317,7 +2678,7 @@ jobs:
   # slowdown it fits the 120-minute limit.
   integration-features:
     name: Integration (shard ${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48 (ruling 1024)
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
@@ -2355,6 +2716,16 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        # v1.53: a registry a later step takes from `vars` is masked here.
+        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
+        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
+        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -2430,7 +2801,7 @@ jobs:
   # teardown, and `make integration-down` removes the run's image.
   integration-standalone:
     name: Integration (standalone stack)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48 (ruling 1024)
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
@@ -2445,6 +2816,16 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        # v1.53: a registry a later step takes from `vars` is masked here.
+        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
+        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
+        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -2493,9 +2874,9 @@ jobs:
   # repository's cache storage is bounded.
   fips:
     name: FIPS 140-3 (${{ matrix.leg }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
-    needs: [docker-build]
+    needs: [preflight, docker-build]   # v1.48: runs-on reads preflight's runner_docker
     strategy:
       fail-fast: false
       # DS-7377: the legs measured 7 to 14.3 minutes (run 76127) on the
@@ -2732,8 +3113,8 @@ jobs:
   soak:
     name: Soak [integration image]
     if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !github.event.pull_request.draft }}   # ruling 214
-    runs-on: ubuntu-latest
-    needs: [docker-build]
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48 (ruling 1024)
+    needs: [preflight, docker-build]   # v1.48: runs-on reads preflight's runner_docker
     timeout-minutes: 90
     env:
       CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
@@ -2751,6 +3132,16 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        # v1.53: a registry a later step takes from `vars` is masked here.
+        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
+        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
+        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -3072,9 +3463,18 @@ jobs:
     # Go, no Docker. On the self-hosted bigdisk pool for a push to main and a
     # same-repository PR, so it never waits in the hosted queue; hosted
     # otherwise.
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}   # v1.48 (ruling 1024)
     timeout-minutes: 5
-    if: ${{ always() }}
+    # v1.53 (Tenant Agent on trusted-firmware #821): with main-{event} a newer
+    # push cancels the older main run, and an always() gate then read the
+    # cancelled needs and failed, so every superseded main commit showed a red
+    # gate. Off pull_request the gate runs on !cancelled(): a cancelled run
+    # posts no gate result (skipped), and a run that is not cancelled still
+    # fails closed on any need that failed. A pull request keeps always(): a
+    # skipped required check counts as passed, so a cancelled PR run must post
+    # a failing gate, never a skip; only an older head of the PR is cancelled
+    # by its group, and the head that merges has its own run.
+    if: ${{ startsWith(github.event_name, 'pull_request') && always() || !cancelled() }}
     # CUSTOMIZE: the repo's job list. Add every CUSTOMIZE job here AND as a
     # check line below; remove none of the template's jobs.
     #

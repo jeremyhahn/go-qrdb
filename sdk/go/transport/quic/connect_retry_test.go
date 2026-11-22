@@ -104,6 +104,156 @@ func serveHealth(conn *quicgo.Conn) {
 	}
 }
 
+// stallingServer is a QUIC listener that, on the first stall connections it
+// accepts, takes the request stream and reads the request but never answers
+// it nor closes it -- the shape of a stream lost or stalled on a busy host --
+// and answers admin.Health on every later connection.
+type stallingServer struct {
+	ln    *quicgo.Listener
+	stall int64
+
+	// accepted counts the connections the server completed a handshake on.
+	accepted atomic.Int64
+	// stalled receives one value per stalled request, after it is read.
+	stalled chan struct{}
+}
+
+// startStallingServer starts a stallingServer on a random local port and
+// returns it with the client TLS config that trusts it.
+func startStallingServer(t *testing.T, stall int64) (*stallingServer, *tls.Config) {
+	t.Helper()
+
+	serverCfg, clientCfg := e2eTLS(t)
+	ln, err := quicgo.ListenAddr("127.0.0.1:0", serverCfg, &quicgo.Config{MaxIdleTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	s := &stallingServer{ln: ln, stall: stall, stalled: make(chan struct{}, 64)}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.serve()
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+	})
+	return s, clientCfg
+}
+
+func (s *stallingServer) serve() {
+	for {
+		conn, err := s.ln.Accept(context.Background())
+		if err != nil {
+			return
+		}
+		if s.accepted.Add(1) <= s.stall {
+			go s.stallConn(conn)
+			continue
+		}
+		go serveHealth(conn)
+	}
+}
+
+// stallConn reads each request on conn and leaves its stream open and
+// unanswered until the connection closes.
+func (s *stallingServer) stallConn(conn *quicgo.Conn) {
+	for {
+		stream, err := conn.AcceptStream(context.Background())
+		if err != nil {
+			return
+		}
+		if _, _, _, _, err := wire.ReadRequest(stream); err == nil {
+			select {
+			case s.stalled <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+// TestTransport_Connect_RetriesStalledHealthProbeWithinCallerBound pins that
+// a health probe the server never answers does not hold the only attempt for
+// the caller's whole bound: the probe is bounded per attempt and Connect
+// retries on a fresh connection, well inside the bound.
+func TestTransport_Connect_RetriesStalledHealthProbeWithinCallerBound(t *testing.T) {
+	const bound = 3 * time.Second
+	srv, clientCfg := startStallingServer(t, 1)
+	tr := newConnectTransport(t, srv.ln.Addr().String(), clientCfg, bound)
+
+	start := time.Now()
+	if err := tr.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v; want success on the attempt after the stalled probe", err)
+	}
+	elapsed := time.Since(start)
+	if got := srv.accepted.Load(); got != 2 {
+		t.Errorf("server accepted %d connections, want 2 (one stalled, one healthy)", got)
+	}
+	if got := len(srv.stalled); got != 1 {
+		t.Errorf("server stalled %d probes, want 1", got)
+	}
+	if elapsed >= bound {
+		t.Errorf("Connect took %v, want well inside the %v bound", elapsed, bound)
+	}
+}
+
+// TestTransport_Connect_StalledProbesSpendBoundAcrossAttempts pins that a
+// server that never answers the probe is tried on more than one connection
+// before the caller's bound ends, and that the bound error names the
+// health-check failure of the last attempt.
+func TestTransport_Connect_StalledProbesSpendBoundAcrossAttempts(t *testing.T) {
+	srv, clientCfg := startStallingServer(t, 1<<30)
+	tr := newConnectTransport(t, srv.ln.Addr().String(), clientCfg, 1500*time.Millisecond)
+
+	err := tr.Connect(context.Background())
+	var connErr *transport.ConnectionError
+	if !errors.As(err, &connErr) {
+		t.Fatalf("Connect: %v (%T); want *transport.ConnectionError", err, err)
+	}
+	var bound *connectBoundError
+	if !errors.As(err, &bound) {
+		t.Fatalf("Connect: %v; want a *connectBoundError", err)
+	}
+	if bound.Attempts < 2 {
+		t.Errorf("Attempts = %d, want >= 2", bound.Attempts)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("errors.Is(err, context.DeadlineExceeded) = false for %v", err)
+	}
+	var health *healthCheckError
+	if !errors.As(bound.Last, &health) {
+		t.Errorf("Last = %v; want the health-check failure", bound.Last)
+	}
+}
+
+// TestProbeBound pins the per-attempt probe bound: connectProbeTimeout or a
+// third of the time left, whichever is shorter. A context with no deadline is
+// never passed to probeBound: connectOnce then probes under the caller's
+// context unchanged.
+func TestProbeBound(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		left time.Duration
+		min  time.Duration
+		max  time.Duration
+	}{
+		{"30 s left", 30 * time.Second, connectProbeTimeout, connectProbeTimeout},
+		{"3 s left", 3 * time.Second, 900 * time.Millisecond, time.Second},
+		{"none left", 0, -time.Hour, 0},
+		{"past the deadline", -time.Second, -time.Hour, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(tc.left))
+			defer cancel()
+			got := probeBound(ctx)
+			if got < tc.min || got > tc.max {
+				t.Errorf("probeBound = %v, want in [%v, %v]", got, tc.min, tc.max)
+			}
+		})
+	}
+}
+
 // newConnectTransport builds a transport for addr with the given configured
 // timeout, closed when the test ends.
 func newConnectTransport(t *testing.T, addr string, clientCfg *tls.Config, timeout time.Duration) *Transport {
