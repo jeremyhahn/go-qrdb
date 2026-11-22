@@ -147,6 +147,10 @@
   let currentRevision: number | null = $state(null);
   let compactRevisionInput: string = $state("");
   let compactTarget: number | null = $state(null);
+  // Scope generation and store revision the pending compaction confirmation
+  // was opened for; confirmCompact refuses once either no longer holds.
+  let compactGeneration = 0;
+  let compactBaseRevision: number | null = null;
 
   // Optional lease for a save (mvcc.putWithLease); blank saves through kv.put.
   let modalLeaseId: string = $state("");
@@ -347,12 +351,24 @@
       return;
     }
     compactTarget = revision;
+    compactGeneration = scopeGeneration;
+    compactBaseRevision = currentRevision;
   }
 
   async function confirmCompact(): Promise<void> {
     if (compactTarget === null) return;
     const revision = compactTarget;
     compactTarget = null;
+    // The confirmation was opened for one database: if the user switched
+    // databases (or the store's revision went backwards, a recreated store)
+    // since, compacting now would apply that database's revision to another.
+    if (
+      !isCurrentScope(compactGeneration) ||
+      (compactBaseRevision !== null && currentRevision !== null && currentRevision < compactBaseRevision)
+    ) {
+      showToast("warning", "The database changed since compaction was requested; nothing was compacted.");
+      return;
+    }
     try {
       await client.mvcc.compact(revision);
       showToast("success", `Compacted history to revision ${revision}`);
@@ -394,6 +410,8 @@
     editMode = false;
     modalLeaseId = "";
     modalLeaseUnknown = false;
+    compactTarget = null;
+    compactRevisionInput = "";
   }
 
   /** Opens the detail panel for entry and loads its MVCC metadata. */
