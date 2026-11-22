@@ -18,9 +18,11 @@ package integration_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // sealStoreGetDisplay mirrors transport.SealStoreGetResponse's wire JSON
@@ -96,6 +98,63 @@ func TestSealStore_CLI_PerProtocol(t *testing.T) {
 			}
 			if out, err = runCLIProto(t, node, proto, "seal-store", "get", name); err == nil {
 				t.Fatalf("[%s] seal-store get after delete succeeded, output: %s", proto.name, out)
+			}
+		})
+	}
+}
+
+// TestSealStore_CLI_DeniedWithoutStoreManage_PerProtocol drives `qrdb
+// seal-store` as a tenant identity, which cannot hold seal:store_manage
+// (ScopeCross), on every network transport: get, list, status, reseal and
+// delete each fail as a permission denial that leaks no secret, and the
+// admin's control secret is unchanged afterwards. runQRDB has no stdin form,
+// so the refused put is covered by the SDK refusal test, not driven here.
+func TestSealStore_CLI_DeniedWithoutStoreManage_PerProtocol(t *testing.T) {
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			control := "cli-deny-" + proto.name
+			controlSecret := "seal-store-cli-control-" + proto.name
+
+			if out, err := runCLIProtoStdin(t, node, proto, controlSecret, "seal-store", "put", control); err != nil {
+				t.Fatalf("[%s] admin seal-store put: %v\noutput: %s", proto.name, err, out)
+			}
+
+			tenantID := fmt.Sprintf("sealdeny-%s-%d", proto.name, time.Now().UnixNano())
+			createTenant(t, node, proto, tenantID, "Seal Store Denied", "prefix", false)
+			cert, key := provisionTenantIdentity(t, node, tenantID, "seal-denied", []string{"admin:health"})
+			conn := tenantCLIArgsForProto(node, proto, cert, key)
+
+			for _, args := range [][]string{
+				{"seal-store", "get", control},
+				{"seal-store", "list"},
+				{"seal-store", "status"},
+				{"seal-store", "reseal", control},
+				{"seal-store", "delete", control},
+			} {
+				verb := strings.Join(args, " ")
+				out, err := runQRDB(t, node.cli, conn, args...)
+				if err == nil {
+					t.Fatalf("[%s] CLI %s succeeded for a caller without seal:store_manage: %s", proto.name, verb, out)
+				}
+				assertKVReadDeniedOutput(t, proto, verb, out, controlSecret)
+			}
+
+			out, err := runCLIProto(t, node, proto, "--output", "json", "seal-store", "get", control)
+			if err != nil {
+				t.Fatalf("[%s] admin seal-store get after refusals: %v\noutput: %s", proto.name, err, out)
+			}
+			var got sealStoreGetDisplay
+			if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
+				t.Fatalf("[%s] decode `seal-store get` JSON: %v\noutput: %s", proto.name, jerr, out)
+			}
+			if string(got.Secret) != controlSecret {
+				t.Fatalf("[%s] control secret = %q after refused delete/reseal, want %q", proto.name, got.Secret, controlSecret)
+			}
+			if out, err := runCLIProto(t, node, proto, "seal-store", "delete", control); err != nil {
+				t.Fatalf("[%s] admin seal-store delete: %v\noutput: %s", proto.name, err, out)
 			}
 		})
 	}
