@@ -35,13 +35,17 @@ import (
 )
 
 // writeStandaloneModeConfig writes a daemon YAML enabling the passphrase
-// seal barrier (the security core must run in standalone too) and a single
-// default database on the given local storage backend, which is what the
-// standalone composition branch selects its engine from, followed by
-// extraYAML.
+// seal barrier (the security core must run in standalone too) and
+// storage.backend set to the given local storage backend, which is what the
+// standalone composition branch selects its engine from (a databases entry's
+// backend records that database only), followed by extraYAML (a leading
+// "storage:" section in extraYAML joins the storage block).
 func writeStandaloneModeConfig(t *testing.T, backend, extraYAML string) string {
 	t.Helper()
-	yaml := fmt.Sprintf("seal:\n  enabled: true\n  strategy: passphrase\ndatabases:\n  - name: \"default\"\n    backend: %q\n", backend) + extraYAML
+	// An extraYAML that opens with its own storage section (storage tuning)
+	// continues this one: YAML refuses a repeated top-level key.
+	yaml := fmt.Sprintf("seal:\n  enabled: true\n  strategy: passphrase\nstorage:\n  backend: %q\n", backend) +
+		strings.TrimPrefix(extraYAML, "storage:\n")
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "qrdbd.yaml")
 	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
@@ -295,6 +299,53 @@ func TestStandaloneMode_BootsPerBackend(t *testing.T) {
 				t.Fatalf("kv get output %q does not contain the stored value", out)
 			}
 		})
+	}
+}
+
+// TestStandaloneMode_NodeStoreFromStorageBackend_PerProtocol proves the
+// standalone node's local store follows storage.backend, never a databases
+// entry (#923 slice 2): storage.backend file with a databases entry "other"
+// on memory boots a file engine (its directory under the data dir, no pebble
+// store), serves KV on every transport, and records "other" with its own
+// backend, memory, on every transport.
+func TestStandaloneMode_NodeStoreFromStorageBackend_PerProtocol(t *testing.T) {
+	node := startStandaloneModeNodeWithConfig(t, "file",
+		"databases:\n  - name: \"other\"\n    backend: memory\n")
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			key := "sa-store-" + proto.name
+			if out, err := runCLIProto(t, node, proto, "kv", "put", key, "v-"+proto.name); err != nil {
+				t.Fatalf("[%s] kv put: %v\n%s", proto.name, err, out)
+			}
+			out, err := runCLIProto(t, node, proto, "kv", "get", key)
+			if err != nil {
+				t.Fatalf("[%s] kv get: %v\n%s", proto.name, err, out)
+			}
+			if !strings.Contains(out, "v-"+proto.name) {
+				t.Fatalf("[%s] kv get output %q does not contain the stored value", proto.name, out)
+			}
+
+			info := cliDatabaseInfo(t, node, proto, "other")
+			if info.Backend != "memory" {
+				t.Fatalf("[%s] database info other: Backend = %q, want memory (the entry's own record)", proto.name, info.Backend)
+			}
+		})
+	}
+
+	// The file engine (lifecycle.NewLocalStorage's file case) keeps its
+	// store under <data-dir>/file; the pebble case would open
+	// <data-dir>/pebble. Neither a memory store nor pebble was chosen.
+	entries, err := os.ReadDir(filepath.Join(node.dataDir, "file"))
+	if err != nil {
+		t.Fatalf("file engine store: %v (storage.backend file did not pick the node store)", err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("file engine store %s is empty after KV writes", filepath.Join(node.dataDir, "file"))
+	}
+	if _, err := os.Stat(filepath.Join(node.dataDir, "pebble")); !os.IsNotExist(err) {
+		t.Fatalf("pebble store present under the data dir (stat err %v), want the file engine only", err)
 	}
 }
 
