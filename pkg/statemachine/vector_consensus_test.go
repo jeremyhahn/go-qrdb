@@ -150,7 +150,9 @@ func (m *mockVectorStorage) GetVector(_ context.Context, namespace string, id ui
 			return vec, nil
 		}
 	}
-	return nil, &dberrors.MessageError{Message: "vector not found in namespace " + namespace}
+	// As the real storages do, a missing namespace or id is
+	// vector.ErrVectorNotFound.
+	return nil, vectorStorage.ErrVectorNotFound
 }
 
 func (m *mockVectorStorage) DeleteVector(_ context.Context, namespace string, id uint64) error {
@@ -676,7 +678,8 @@ func TestVectorConsensusFSM_UpsertVector(t *testing.T) {
 		err := fsm.Update(context.Background(), entries, results)
 		result := results[0]
 		require.NoError(t, err)
-		assert.Equal(t, uint64(1), result.Value)
+		// Without storage no vector is stored, so the count is unchanged.
+		assert.Equal(t, uint64(0), result.Value)
 		require.NoError(t, fsm.Close(context.Background()))
 	})
 
@@ -788,7 +791,8 @@ func TestVectorConsensusFSM_DeleteVector(t *testing.T) {
 		err = fsm.Update(context.Background(), entries, results)
 		result := results[0]
 		require.NoError(t, err)
-		assert.Equal(t, uint64(1), result.Value)
+		// Value is the number of stored vectors the batch removed.
+		assert.Equal(t, uint64(3), result.Value)
 		require.NoError(t, fsm.Close(context.Background()))
 	})
 
@@ -806,7 +810,8 @@ func TestVectorConsensusFSM_DeleteVector(t *testing.T) {
 		err := fsm.Update(context.Background(), entries, results)
 		result := results[0]
 		require.NoError(t, err)
-		assert.Equal(t, uint64(1), result.Value)
+		// No storage holds the id, so the delete removed nothing.
+		assert.Equal(t, uint64(0), result.Value)
 		require.NoError(t, fsm.Close(context.Background()))
 	})
 
@@ -826,7 +831,8 @@ func TestVectorConsensusFSM_DeleteVector(t *testing.T) {
 		err := fsm.Update(context.Background(), entries, results)
 		result := results[0]
 		require.NoError(t, err)
-		assert.Equal(t, uint64(1), result.Value)
+		// The failed delete removed nothing, so the count is unchanged.
+		assert.Equal(t, uint64(0), result.Value)
 		require.NoError(t, fsm.Close(context.Background()))
 	})
 
@@ -846,7 +852,8 @@ func TestVectorConsensusFSM_DeleteVector(t *testing.T) {
 		err := fsm.Update(context.Background(), entries, results)
 		result := results[0]
 		require.NoError(t, err)
-		assert.Equal(t, uint64(1), result.Value)
+		// The failed delete removed nothing, so the count is unchanged.
+		assert.Equal(t, uint64(0), result.Value)
 		require.NoError(t, fsm.Close(context.Background()))
 	})
 }
@@ -913,7 +920,8 @@ func TestVectorConsensusFSM_BatchUpsert(t *testing.T) {
 		err := fsm.Update(context.Background(), entries, results)
 		result := results[0]
 		require.NoError(t, err)
-		assert.Equal(t, uint64(2), result.Value)
+		// Without storage no vector is stored, so the count is unchanged.
+		assert.Equal(t, uint64(0), result.Value)
 		require.NoError(t, fsm.Close(context.Background()))
 	})
 
