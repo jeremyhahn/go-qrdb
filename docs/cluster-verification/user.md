@@ -347,6 +347,7 @@ without needing a cluster.
 | E1 fails | a real defect | keep the whole bundle and report it with `verdict.json`; do not rerun over it |
 | E2 fails | a real defect: a stale read, a lost or reordered write, or a swap that saw the wrong value; the anomaly names the key, the value it held where no serial order could go on, and the operations that could have come next | as for E1; start reading `timeline.jsonl` at those operations |
 | exit `2`, E2 unavailable, "undecided after" | a key's history was too contended for the checker to decide in its ten minutes | widen the key space (`keys`) or shorten the run so each key holds fewer concurrent operations, and rerun |
+| exit `2`, E2 unavailable, "exceed the search bound" | a key collected more than 16 indeterminate writes: the cluster stopped acknowledging writes for a long stretch | read the bundle's `timeline.jsonl` and the node logs for when "ok" stopped |
 | `cluster-proof-boot`: "PROOF_INVENTORY must name a container inventory" | no inventory given | set `PROOF_INVENTORY`; the test fails rather than skipping |
 | `cluster-proof-boot`: `exec: "docker": executable file not found` | no container runtime where the `docker` command runs | install one, or point the inventory's `docker` at the nodes through a remote shell |
 | `cluster-proof-boot`: identity step fails | the image is missing on that node, or `tls_dir` holds no `node.pem` | load the image; check the TLS directory |
