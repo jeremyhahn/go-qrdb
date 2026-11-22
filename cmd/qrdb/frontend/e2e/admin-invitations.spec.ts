@@ -66,6 +66,8 @@ async function openAndFillRedeem(page: Page, token: string): Promise<void> {
   await expect(
     page.getByRole("heading", { name: "Redeem Invitation" }),
   ).toBeVisible();
+  // The desktop dials the server given here, so it asks for it.
+  await expect(page.getByTestId("redeem-browser-note")).toHaveCount(0);
   await page.locator("#redeem-server").fill("qrdb.example.com:8443");
   await page.locator("#redeem-transport").selectOption("grpc");
   await page.locator("#redeem-ca-file").fill("/tmp/ca.pem");

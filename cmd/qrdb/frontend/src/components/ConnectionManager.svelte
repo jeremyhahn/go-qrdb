@@ -33,11 +33,13 @@
     Ticket,
   } from "lucide-svelte";
   import RedeemInvitationModal from "./RedeemInvitationModal.svelte";
+  import EmbeddedServerPanel from "./EmbeddedServerPanel.svelte";
   import {
     connManagerStore,
     connectProfile,
     disconnectProfile,
     deleteProfile,
+    saveProfile,
     setActiveProfile,
   } from "$stores/connection-manager.svelte.ts";
   import type {
@@ -727,8 +729,7 @@
         } satisfies ExternalConnectionConfig,
         createdAt: new Date().toISOString(),
       };
-      await client.connectionManager.saveProfile(profile as never);
-      connManagerStore.profiles = [...connManagerStore.profiles, profile];
+      await saveProfile(client, profile);
       activePanel = "none";
       const state = await connectProfile(client, profile.id);
       if (
@@ -809,6 +810,14 @@
             </div>
           </div>
         </div>
+        <div class="mt-6 w-full max-w-md">
+          <EmbeddedServerPanel
+            {client}
+            available={connManagerStore.embeddedAvailable}
+            onStartNew={showEmbeddedPanel}
+            onRestored={onConnect}
+          />
+        </div>
       </div>
 
     <!-- Profile grid -->
@@ -843,6 +852,13 @@
           </button>
         </div>
       </div>
+
+      <EmbeddedServerPanel
+        {client}
+        available={connManagerStore.embeddedAvailable}
+        onStartNew={() => { if (activePanel !== "embedded") showEmbeddedPanel(); }}
+        onRestored={onConnect}
+      />
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {#each connManagerStore.profiles as profile (profile.id)}

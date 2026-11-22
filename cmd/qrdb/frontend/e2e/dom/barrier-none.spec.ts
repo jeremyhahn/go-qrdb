@@ -57,10 +57,11 @@ test("no barrier: Seal Manager shows 'not configured' and no Seal control", asyn
   // ...and there is no Unseal / submit-share control either.
   await expect(page.getByRole("button", { name: "Unseal", exact: true })).toHaveCount(0);
 
-  // The barrier subsystem reports uninitialized, so the in-place "Configure
-  // Encryption" affordance is offered (configuring it at runtime requires the
-  // seal subsystem to be enabled in server config).
-  await expect(page.getByTestId("configure-encryption-btn")).toBeVisible();
+  // The daemon is bootstrapped (`qrdb init` ran with the "none" strategy),
+  // so the strategy is fixed: enabling encryption is the online migration,
+  // not the in-place "Configure Encryption" affordance of a fresh barrier.
+  await expect(page.getByTestId("configure-encryption-btn")).toHaveCount(0);
+  await expect(page.getByTestId("enable-encryption-submit")).toBeVisible();
 });
 
 test("no barrier: footer status badge reads 'Not encrypted'", async ({ page }) => {

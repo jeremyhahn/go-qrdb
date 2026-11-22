@@ -21,6 +21,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	vectorStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
 
 func TestVectorCommand_Encode_Decode(t *testing.T) {
@@ -35,7 +37,7 @@ func TestVectorCommand_Encode_Decode(t *testing.T) {
 			"type":   "embeddings",
 		}
 
-		cmd := NewUpsertCommand("test_ns", 100, vector, metadata, "test-node")
+		cmd := NewUpsertCommand("test_ns", 100, vector, metadata, vectorStorage.MetadataFormatJSON, "test-node")
 		require.NotNil(t, cmd)
 
 		// Encode
@@ -79,7 +81,7 @@ func TestVectorCommand_Encode_Decode(t *testing.T) {
 			vectors[i] = make([]float32, 128)
 		}
 
-		cmd := NewBatchUpsertCommand("test_ns", ids, vectors, "test-node")
+		cmd := NewBatchUpsertCommand("test_ns", ids, vectors, vectorStorage.MetadataFormatJSON, "test-node")
 		require.NotNil(t, cmd)
 
 		data, err := cmd.Encode()
@@ -127,7 +129,7 @@ func TestVectorCommand_Encode_Decode(t *testing.T) {
 
 func TestVectorCommand_Validate(t *testing.T) {
 	t.Run("ValidUpsert", func(t *testing.T) {
-		cmd := NewUpsertCommand("test", 1, make([]float32, 128), nil, "node")
+		cmd := NewUpsertCommand("test", 1, make([]float32, 128), nil, vectorStorage.MetadataFormatJSON, "node")
 		err := cmd.Validate()
 		assert.NoError(t, err)
 	})
@@ -226,7 +228,7 @@ func TestVectorCommand_Size(t *testing.T) {
 			metadata[string(rune('a'+i))] = "value"
 		}
 
-		cmd := NewUpsertCommand("test", 1, vector, metadata, "node")
+		cmd := NewUpsertCommand("test", 1, vector, metadata, vectorStorage.MetadataFormatJSON, "node")
 		size := cmd.Size()
 		assert.Greater(t, size, 4096) // Should be > 4KB with vector data
 	})
@@ -239,7 +241,7 @@ func TestVectorCommand_Size(t *testing.T) {
 			vectors[i] = make([]float32, 256)
 		}
 
-		cmd := NewBatchUpsertCommand("test", ids, vectors, "node")
+		cmd := NewBatchUpsertCommand("test", ids, vectors, vectorStorage.MetadataFormatJSON, "node")
 		size := cmd.Size()
 		assert.Greater(t, size, 100000) // Should be > 100KB
 	})
@@ -307,7 +309,7 @@ func TestDecodeUint32_ShortBuffer(t *testing.T) {
 
 func TestVectorCommand_Timestamp(t *testing.T) {
 	before := time.Now().UnixNano()
-	cmd := NewUpsertCommand("test", 1, make([]float32, 128), nil, "node")
+	cmd := NewUpsertCommand("test", 1, make([]float32, 128), nil, vectorStorage.MetadataFormatJSON, "node")
 	after := time.Now().UnixNano()
 
 	assert.GreaterOrEqual(t, cmd.Timestamp, before)

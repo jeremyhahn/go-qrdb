@@ -87,6 +87,11 @@ export interface MockState {
   isFirstRun: boolean;
   wizardState: Record<string, unknown> | null;
   configInitialized: boolean;
+  /**
+   * CeremonyBinding.Status override. Unset reports "operational" with the
+   * mock pin once configured ("awaiting_init" before).
+   */
+  ceremonyStatus?: { state: string; spkiPin?: string };
   /** Server topology mode — controls whether the Cluster nav item is visible. */
   serverMode: 'standalone' | 'raft';
   /**
@@ -108,6 +113,26 @@ export interface MockState {
     sharesProvided: number;
     sharesTotal: number;
     strategy?: string;
+    /** The node barrier's cluster seal state (SealStatus.clusterSeal). */
+    clusterSeal?: {
+      active: boolean;
+      sealed: boolean;
+      epoch: number;
+      principal?: string;
+      principalTenant?: string;
+      node?: string;
+      at?: string;
+      local?: string;
+    };
+    /** The node barrier's cluster migration (SealStatus.clusterMigration). */
+    clusterMigration?: {
+      unconfirmed?: boolean;
+      target?: string;
+      generation?: number;
+      acked: number;
+      total: number;
+      nodes?: { nodeId: string; step?: string; phase?: string; attempts?: number; detail?: string }[];
+    };
   };
   unsealProgress: {
     sealed: boolean;
@@ -528,6 +553,44 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
       updatedAt: string;
     }>();
 
+    // Volume pool catalog store (VolumePoolBinding). Assignments are the
+    // tenants placed on each pool; tests seed them through
+    // window.__volumePoolAssign because tenant placement is not a
+    // VolumePoolBinding method.
+    type MockVolumePool = {
+      name: string;
+      provider: string;
+      description?: string;
+      capacityBytes: number;
+      reservedBytes: number;
+      usedBytes: number;
+      tenantCount: number;
+      nodes: { ready: number; locked: number; unavailable: number; unmapped: number };
+      overcommit: number;
+      createdAt: string;
+      updatedAt: string;
+    };
+    const volumePoolStore = new Map<string, MockVolumePool>();
+    const volumePoolAssignments = new Map<string, { tenantId: string; reservedBytes: number }[]>();
+    const volumePoolView = (p: MockVolumePool): MockVolumePool => {
+      const assigned = volumePoolAssignments.get(p.name) ?? [];
+      return {
+        ...p,
+        nodes: { ...p.nodes },
+        tenantCount: assigned.length,
+        reservedBytes: assigned.reduce((sum, a) => sum + a.reservedBytes, 0),
+      };
+    };
+    (window as unknown as Record<string, unknown>).__volumePoolAssign = (
+      pool: string,
+      tenantId: string,
+      reservedBytes: number,
+    ) => {
+      const list = volumePoolAssignments.get(pool) ?? [];
+      list.push({ tenantId, reservedBytes });
+      volumePoolAssignments.set(pool, list);
+    };
+
     // Lease store
     let leaseStore = new Map<number, { id: number; ttl: number; granted_ttl: number; remaining_ttl: number }>();
     let leaseIdCounter = 0;
@@ -715,6 +778,25 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             maybeReject("SealBinding.Status");
             return { ...getState().sealStatus };
           },
+          // SealBinding.ClusterUnseal(): clears the replicated cluster seal
+          // record, written through this node by the caller, and returns it.
+          ClusterUnseal: async () => {
+            maybeReject("SealBinding.ClusterUnseal");
+            const s = getState();
+            const prev = s.sealStatus.clusterSeal;
+            const next = {
+              active: true,
+              sealed: false,
+              epoch: (prev?.epoch ?? 0) + 1,
+              principal: "admin",
+              principalTenant: "system",
+              node: "127.0.0.1:7000",
+              at: "2026-11-12T10:00:00Z",
+              local: "serving",
+            };
+            s.sealStatus.clusterSeal = next;
+            return { ...next };
+          },
         },
         CeremonyBinding: {
           // CeremonyBinding.Initialize(req): `qrdb init`'s desktop
@@ -791,6 +873,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           Status: async () => {
             maybeReject("CeremonyBinding.Status");
+            const override = getState().ceremonyStatus;
+            if (override) return { ...override };
             return {
               state: getState().configInitialized ? "operational" : "awaiting_init",
               spkiPin: "mockpin",
@@ -974,6 +1058,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             maybeReject("EmbeddedServerBinding.StartEmbedded");
             const s = getState();
             s.embeddedRunning = true;
+            // The Go binding persists the config it started with.
+            (s as { embeddedSavedConfig?: boolean }).embeddedSavedConfig = true;
           },
           StopEmbedded: async () => {
             maybeReject("EmbeddedServerBinding.StopEmbedded");
@@ -981,6 +1067,35 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             s.embeddedRunning = false;
           },
           IsEmbedded: () => getState().embeddedRunning,
+          HasSavedConfig: async () => {
+            maybeReject("EmbeddedServerBinding.HasSavedConfig");
+            return (getState() as { embeddedSavedConfig?: boolean }).embeddedSavedConfig === true;
+          },
+          RestoreEmbedded: async () => {
+            maybeReject("EmbeddedServerBinding.RestoreEmbedded");
+            const s = getState();
+            if ((s as { embeddedSavedConfig?: boolean }).embeddedSavedConfig !== true) {
+              throw new Error("no saved embedded server config");
+            }
+            // Like the desktop binding, connect the saved config through the
+            // connection manager: an embedded "Local Server" profile becomes
+            // the connected, active profile (its barrier, seal mode none,
+            // initialises on connect). The standalone server stays stopped.
+            (s as { restoredProfile?: Record<string, unknown> }).restoredProfile = {
+              id: "mock-restored-1",
+              name: "Local Server",
+              type: "embedded",
+              embedded: { dataDir: "/mock/data", sealConfig: { mode: "none" } },
+              createdAt: "2026-01-01T00:00:00Z",
+            };
+            (s as { restoredConnected?: boolean }).restoredConnected = true;
+            s.sealStatus.initialized = true;
+            s.sealStatus.sealed = false;
+          },
+          ClearSavedConfig: async () => {
+            maybeReject("EmbeddedServerBinding.ClearSavedConfig");
+            (getState() as { embeddedSavedConfig?: boolean }).embeddedSavedConfig = false;
+          },
         },
         // Every KVBinding method takes the database it is scoped to first,
         // as the Go binding does.
@@ -1643,8 +1758,12 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           const tsRetentionStore = new Map<string, number>();
           const tsDeletedMetrics = new Set<string>();
           return {
-            Write: async (metric: string, value: number, timestampNs: number) => {
+            Write: async (point: Record<string, unknown>) => {
+              // TimeSeriesBinding.Write(point *TSDataPoint): one snake_case object.
               maybeReject("TimeSeriesBinding.Write");
+              const metric = point["metric"] as string;
+              const value = point["value"] as number;
+              const timestampNs = (point["timestamp_ns"] ?? point["timestampNs"] ?? Date.now() * 1_000_000) as number;
               if (!tsDeletedMetrics.has(metric)) {
                 tsPoints.push({ metric, value, timestampNs });
               }
@@ -1883,6 +2002,73 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return { ...user, roleIds: [...(user.roleIds ?? [])] };
           },
         },
+        VolumePoolBinding: {
+          List: async () => {
+            maybeReject("VolumePoolBinding.List");
+            return Array.from(volumePoolStore.values())
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map(volumePoolView);
+          },
+          Get: async (name: string) => {
+            maybeReject("VolumePoolBinding.Get");
+            const p = volumePoolStore.get(name);
+            if (!p) throw new Error(`volume pool "${name}" not found`);
+            return {
+              ...volumePoolView(p),
+              nodeReports: [
+                { nodeId: "node-1", state: "ready", sizeBytes: p.capacityBytes, freeBytes: p.capacityBytes, detail: "mock", reportedAt: p.updatedAt },
+              ],
+            };
+          },
+          Create: async (req: { name: string; provider?: string; description?: string; capacityBytes?: number; overcommit?: number }) => {
+            maybeReject("VolumePoolBinding.Create");
+            if (!req.name) throw new Error("volume pool name is required");
+            if (volumePoolStore.has(req.name)) throw new Error(`volume pool "${req.name}" already exists`);
+            const overcommit = req.overcommit && req.overcommit > 0 ? req.overcommit : 1;
+            if (overcommit < 1) throw new Error("overcommit must be >= 1.0");
+            const now = new Date().toISOString();
+            const p: MockVolumePool = {
+              name: req.name,
+              provider: req.provider || "dir",
+              description: req.description || undefined,
+              capacityBytes: req.capacityBytes ?? 0,
+              reservedBytes: 0,
+              usedBytes: 0,
+              tenantCount: 0,
+              nodes: { ready: 1, locked: 0, unavailable: 0, unmapped: 0 },
+              overcommit,
+              createdAt: now,
+              updatedAt: now,
+            };
+            volumePoolStore.set(p.name, p);
+            return volumePoolView(p);
+          },
+          Update: async (name: string, req: { description?: string; capacityBytes?: number; overcommit?: number }) => {
+            maybeReject("VolumePoolBinding.Update");
+            const p = volumePoolStore.get(name);
+            if (!p) throw new Error(`volume pool "${name}" not found`);
+            if (req.overcommit !== undefined && req.overcommit < 1) throw new Error("overcommit must be >= 1.0");
+            if (req.description !== undefined) p.description = req.description;
+            if (req.capacityBytes !== undefined) p.capacityBytes = req.capacityBytes;
+            if (req.overcommit !== undefined) p.overcommit = req.overcommit;
+            p.updatedAt = new Date().toISOString();
+            return volumePoolView(p);
+          },
+          Delete: async (name: string) => {
+            maybeReject("VolumePoolBinding.Delete");
+            if (!volumePoolStore.has(name)) throw new Error(`volume pool "${name}" not found`);
+            const assigned = volumePoolAssignments.get(name) ?? [];
+            if (assigned.length > 0) {
+              throw new Error(`volume pool "${name}" has assigned tenants: ${assigned.map((a) => a.tenantId).join(", ")}`);
+            }
+            volumePoolStore.delete(name);
+          },
+          ListTenants: async (name: string, _pageSize: number, _pageToken: string) => {
+            maybeReject("VolumePoolBinding.ListTenants");
+            if (!volumePoolStore.has(name)) throw new Error(`volume pool "${name}" not found`);
+            return { tenants: [...(volumePoolAssignments.get(name) ?? [])] };
+          },
+        },
         RoleBinding: {
           Create: async (req: { name: string; tenant?: string; permissions?: string[] }) => {
             maybeReject("RoleBinding.Create");
@@ -1957,7 +2143,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             certStore.set(serial, {
               serial,
               username: req.username,
-              tenantId: "default",
+              tenantID: "default",
               issuedAt: now,
               expiresAt,
               revoked: false,
@@ -1987,7 +2173,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             certStore.set(serial, {
               serial,
               username: req.username,
-              tenantId: "default",
+              tenantID: "default",
               issuedAt: now,
               expiresAt,
               revoked: false,
@@ -2421,12 +2607,19 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
         ConnectionManagerBinding: (() => {
           // Track saved profiles so Connect can determine isEmbedded.
           const savedProfiles: Record<string, Record<string, unknown>> = {};
+          // The profile RestoreEmbedded connected, if any (the desktop binding
+          // saves or reuses an embedded profile and makes it active).
+          const restored = (): Record<string, unknown> | undefined =>
+            (getState() as { restoredProfile?: Record<string, unknown> }).restoredProfile;
+          const restoredConnected = (): boolean =>
+            (getState() as { restoredConnected?: boolean }).restoredConnected === true;
           return {
             ListProfiles: async () => {
               const s = getState();
+              const list: Array<Record<string, unknown>> = [];
               if (s.configInitialized) {
                 const profileType = s.profileType ?? "embedded";
-                return [{
+                list.push({
                   id: "mock-profile-1",
                   name: "Local Database",
                   type: profileType,
@@ -2440,9 +2633,11 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                       }),
                   serverMode: s.serverMode,
                   createdAt: "2026-01-01T00:00:00Z",
-                }];
+                });
               }
-              return [];
+              const r = restored();
+              if (r) list.push(r);
+              return list;
             },
             SaveProfile: async (profile: Record<string, unknown>) => {
               if (profile.id) savedProfiles[profile.id as string] = profile;
@@ -2451,6 +2646,10 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               delete savedProfiles[id];
             },
             Connect: async (profileId: string) => {
+              if (profileId === restored()?.id) {
+                (getState() as { restoredConnected?: boolean }).restoredConnected = true;
+                return { profileId, status: "connected", isEmbedded: true };
+              }
               const s = getState();
               const profile = savedProfiles[profileId];
               const isEmbedded = profile?.type === "embedded";
@@ -2484,11 +2683,21 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               }
               return { profileId, status, isEmbedded };
             },
-            Disconnect: async (_profileId: string) => {
-              // no-op in mock
+            Disconnect: async (profileId: string) => {
+              // Only the restored profile tracks its connection in the mock.
+              if (profileId === restored()?.id) {
+                (getState() as { restoredConnected?: boolean }).restoredConnected = false;
+              }
             },
             GetState: async (profileId: string) => {
               const s = getState();
+              if (profileId === restored()?.id) {
+                return {
+                  profileId,
+                  status: restoredConnected() ? "connected" : "disconnected",
+                  isEmbedded: true,
+                };
+              }
               const profile = savedProfiles[profileId];
               const isEmbedded = profile?.type === "embedded";
               if (!s.configInitialized) {
@@ -2506,6 +2715,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             },
             GetActiveProfileID: async () => {
               const s = getState();
+              const r = restored();
+              if (r && restoredConnected()) return r.id as string;
               return s.configInitialized ? "mock-profile-1" : "";
             },
             IsEmbeddedAvailable: async () => {
@@ -2726,7 +2937,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return {
               backup_id: req.backup_id,
               shards_restored: 3,
-              duration: "1.2s",
+              duration_ms: 1200,
               errors: [],
             };
           },
@@ -2883,7 +3094,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return {
               movesCompleted: plan.moves.length,
               movesFailed: 0,
-              duration: "3.5s",
+              duration_ms: 3500,
               finalImbalance: 0.05,
             };
           },

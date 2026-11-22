@@ -102,4 +102,41 @@ test.describe("Rebalance Panel", () => {
 
     await expect(page.getByText("Last Execution Result")).not.toBeVisible();
   });
+
+  test("clicking a move row shows every shard stats field", async ({ page }) => {
+    await navigateToRebalance(page);
+
+    await page.getByRole("button", { name: "Generate Plan" }).click();
+    await expect(page.getByText(/Plan generated/)).toBeVisible({ timeout: 5_000 });
+
+    await page.getByRole("row", { name: /node-2\s+node-1/ }).click();
+
+    const panel = page.getByTestId("shard-stats-panel");
+    await expect(panel).toBeVisible({ timeout: 5_000 });
+    await expect(panel.getByText("Shard 1 Statistics")).toBeVisible();
+    await expect(panel.getByRole("row", { name: /Shard ID/ })).toContainText("1");
+    await expect(panel.getByRole("row", { name: /Keys/ })).toContainText("1000");
+    await expect(panel.getByRole("row", { name: /Bytes/ })).toContainText("1.0 MB (1048576)");
+    await expect(panel.getByRole("row", { name: /Leader Replica/ })).toContainText("1");
+    await expect(panel.getByRole("row", { name: /Replicas/ })).toContainText("3");
+
+    await panel.getByRole("button", { name: "Close" }).click();
+    await expect(panel).toHaveCount(0);
+  });
+
+  test("shard stats error shows the error state", async ({ page }) => {
+    await navigateToRebalance(page);
+
+    await page.getByRole("button", { name: "Generate Plan" }).click();
+    await expect(page.getByText(/Plan generated/)).toBeVisible({ timeout: 5_000 });
+
+    await injectError(page, "RebalanceBinding.GetShardStats", "shard 1 not found");
+    await page.getByRole("row", { name: /node-2\s+node-1/ }).click();
+
+    const errorBox = page.getByTestId("shard-stats-error");
+    await expect(errorBox).toBeVisible({ timeout: 5_000 });
+    await expect(errorBox).toContainText("shard 1 not found");
+
+    await clearError(page, "RebalanceBinding.GetShardStats");
+  });
 });

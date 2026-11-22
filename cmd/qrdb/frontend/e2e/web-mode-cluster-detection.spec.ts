@@ -18,15 +18,18 @@
  *
  * The built-in "This Server" web profile carries no recorded topology, so the
  * web UI must derive its server mode from the live /admin/topology endpoint
- * (connection-manager.detectWebServerMode): a server reporting more than one
- * distinct Raft node is "raft" and exposes the Cluster / Topology admin nav
- * entries; a single-node server stays standalone and hides them.
+ * (connection-manager.detectWebServerMode): a server whose topology loads is
+ * "raft" and exposes the Cluster / Topology admin nav entries, with three
+ * nodes or with one (a single-node Raft server mints its first join token
+ * from the Cluster view); a server whose topology cannot be read stays
+ * standalone and hides them.
  *
  * This is the mocked counterpart to the real-backend multi-node DOM spec
  * (e2e/dom/cluster-topology.spec.ts) and guards the WebSidebar → AdminNav
  * serverMode wiring against regression.
  */
 
+import type { Page } from "@playwright/test";
 import {
   webTest as test,
   expect,
@@ -61,7 +64,24 @@ test.describe("Web mode - cluster topology detection", () => {
       webMockState: { ...defaultWebMockState, topology: singleNodeTopology },
     });
 
-    test("hides Cluster + Topology nav when topology reports 1 node", async ({ page }) => {
+    test("exposes Cluster + Topology nav when topology reports 1 node", async ({ page }) => {
+      await page.goto("/");
+      const aside = page.locator("aside");
+
+      await expect(aside.getByText("Topology", { exact: true })).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+      await expect(aside.getByText("Cluster", { exact: true })).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+    });
+  });
+
+  test.describe("server without a readable topology", () => {
+    test("hides Cluster + Topology nav when topology cannot be read", async ({ page }) => {
+      await page.route("**/admin/topology", (route) =>
+        route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' }),
+      );
       await page.goto("/");
 
       // The app shell must be loaded before asserting absence — wait for a
@@ -73,6 +93,59 @@ test.describe("Web mode - cluster topology detection", () => {
 
       await expect(aside.getByText("Topology", { exact: true })).toHaveCount(0);
       await expect(aside.getByText("Cluster", { exact: true })).toHaveCount(0);
+    });
+  });
+
+  test.describe("caller refused the topology and the tenant list", () => {
+    // The read route of each admin view a delegated role may hold on its own
+    // (connection-manager DELEGATED_ADMIN_VIEWS), keyed by view.
+    const delegatedRoutes: Record<string, string> = {
+      cluster: "**/peers",
+      rebalance: "**/v1/rebalance/report",
+      users: "**/users/list**",
+      roles: "**/roles/list**",
+      "volume-pools": "**/v1/volume-pools/list",
+      certificates: "**/certs/list**",
+      credentials: "**/v1/credentials",
+      backups: "**/v1/backups/list",
+      "audit-log": "**/v1/audit/events**",
+    };
+
+    async function refuse(page: Page, pattern: string): Promise<void> {
+      await page.route(pattern, (route) =>
+        route.fulfill({ status: 403, contentType: "application/json", body: '{"error":"forbidden"}' }),
+      );
+    }
+
+    test("keeps the admin section for a role delegated the user list", async ({ page }) => {
+      await refuse(page, "**/admin/topology");
+      await refuse(page, "**/v1/tenants/list");
+      for (const [view, pattern] of Object.entries(delegatedRoutes)) {
+        if (view !== "users") await refuse(page, pattern);
+      }
+      await page.goto("/");
+
+      const aside = page.locator("aside");
+      await expect(aside.getByText("Users", { exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(aside.getByText("Tenants", { exact: true })).toHaveCount(0);
+      await expect(aside.getByText("Users", { exact: true })).toBeVisible();
+    });
+
+    test("hides the admin section when every admin view is refused", async ({ page }) => {
+      await refuse(page, "**/admin/topology");
+      await refuse(page, "**/v1/tenants/list");
+      for (const pattern of Object.values(delegatedRoutes)) {
+        await refuse(page, pattern);
+      }
+      await page.goto("/");
+
+      // The app shell must be loaded before asserting absence — wait for a
+      // stable user-plane element first.
+      const aside = page.locator("aside");
+      await expect(aside.getByText("Databases", { exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+      await expect(aside.getByText("Server Admin", { exact: true })).toHaveCount(0);
+      await expect(aside.getByText("Users", { exact: true })).toHaveCount(0);
     });
   });
 });

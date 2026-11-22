@@ -101,7 +101,7 @@ func TestTenantRequiredError_Error(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestConvertToStringMap_Nil(t *testing.T) {
-	if convertToStringMap(nil) != nil {
+	if convertToStringMap(vector.MetadataFormatJSON, nil) != nil {
 		t.Fatal("expected nil for nil input")
 	}
 }
@@ -112,15 +112,15 @@ func TestConvertToStringMap_Values(t *testing.T) {
 		"key2": 42,
 		"key3": true,
 	}
-	result := convertToStringMap(m)
+	result := convertToStringMap(vector.MetadataFormatJSON, m)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
 	if len(result) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(result))
 	}
-	if result["key1"] != "val1" {
-		t.Fatalf("expected val1, got %q", result["key1"])
+	if result["key1"] != "\"val1\"" {
+		t.Fatalf("expected the JSON string \"val1\", got %q", result["key1"])
 	}
 	if result["key2"] != "42" {
 		t.Fatalf("expected 42, got %q", result["key2"])
@@ -137,16 +137,19 @@ func TestConvertFromStringMap_Nil(t *testing.T) {
 }
 
 func TestConvertFromStringMap_Values(t *testing.T) {
-	m := map[string]string{"a": "1", "b": "2"}
-	result := convertFromStringMap(m)
+	m := map[string]string{"a": "1", "b": "\"2\""}
+	result := convertFromStringMap(&vector.VectorValue{Metadata: m, MetadataFormat: vector.MetadataFormatJSON})
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
 	if len(result) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(result))
 	}
-	if result["a"] != "1" {
-		t.Fatalf("expected 1, got %v", result["a"])
+	if result["a"] != float64(1) {
+		t.Fatalf("expected the number 1, got %#v", result["a"])
+	}
+	if result["b"] != "2" {
+		t.Fatalf("expected the string 2, got %#v", result["b"])
 	}
 }
 

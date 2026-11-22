@@ -31,6 +31,7 @@ export const API_PREFIXES: readonly string[] = [
   "/batch",
   "/watch",
   "/lease",
+  "/lock",
   "/index",
   "/vector",
   "/certs",

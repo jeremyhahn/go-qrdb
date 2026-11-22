@@ -392,6 +392,35 @@ export class CertNotFoundError extends QRDBError {
     }
 }
 
+/**
+ * Thrown when a PKCS#12 archive cannot be built from the given certificate
+ * and key: a missing or malformed PEM block, an unsupported key encoding,
+ * or a crypto failure. The archive is always built locally (no server has
+ * a PKCS#12 route), so this error never comes from the network.
+ */
+export class CertExportError extends QRDBError {
+    /** Description of why the export failed. */
+    readonly reason: string;
+
+    constructor(reason: string) {
+        super(`cert: export: ${reason}`);
+        this.name = 'CertExportError';
+        this.reason = reason;
+    }
+}
+
+/**
+ * Thrown when the private key given to a PKCS#12 export is not the key of
+ * the leaf certificate: its public half differs from the certificate's
+ * SubjectPublicKeyInfo. Raised before any archive bytes are built.
+ */
+export class CertKeyMismatchError extends CertExportError {
+    constructor(reason: string) {
+        super(`private key does not match the certificate: ${reason}`);
+        this.name = 'CertKeyMismatchError';
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Feature errors
 // ---------------------------------------------------------------------------

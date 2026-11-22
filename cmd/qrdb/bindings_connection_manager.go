@@ -687,6 +687,51 @@ func (b *ConnectionManagerBinding) migrate(_ context.Context) error {
 
 // validateProfile returns a ProfileValidationError if p is missing required
 // fields or has an unsupported type.
+// restoreEmbedded connects the saved embedded configuration through the
+// connection manager, so every binding that resolves its client from the
+// active profile reaches the restored server. It reuses the embedded profile
+// whose data directory matches cfg, or saves a new one, then connects it and
+// makes it the active profile.
+func (b *ConnectionManagerBinding) restoreEmbedded(cfg *EmbeddedConfig) error {
+	if cfg == nil {
+		return &ProfileValidationError{Field: "embedded", Reason: "required for type \"embedded\""}
+	}
+	wantDir := resolveDataDir(cfg.DataDir)
+
+	profileID := ""
+	b.mu.Lock()
+	for _, p := range b.profiles {
+		if p.Type == connectionTypeEmbedded && p.Embedded != nil && resolveDataDir(p.Embedded.DataDir) == wantDir {
+			profileID = p.ID
+			break
+		}
+	}
+	b.mu.Unlock()
+
+	if profileID == "" {
+		id, err := newUUID()
+		if err != nil {
+			return err
+		}
+		saved := *cfg
+		if err := b.SaveProfile(ConnectionProfile{
+			ID:        id,
+			Name:      "Local Server",
+			Type:      connectionTypeEmbedded,
+			Embedded:  &saved,
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		}); err != nil {
+			return err
+		}
+		profileID = id
+	}
+
+	if _, err := b.Connect(profileID); err != nil {
+		return err
+	}
+	return b.SetActive(profileID)
+}
+
 func validateProfile(p ConnectionProfile) error {
 	if p.ID == "" {
 		return &ProfileValidationError{Field: "id", Reason: "must not be empty"}

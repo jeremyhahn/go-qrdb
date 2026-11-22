@@ -130,6 +130,8 @@ type vectorUpsertResponse struct {
 	Version   uint64 `json:"version"`
 	Timestamp int64  `json:"timestamp"`
 	Success   bool   `json:"success"`
+	// Created is true when the ID was new, false when the upsert replaced a vector.
+	Created bool `json:"created"`
 }
 
 // vectorDeleteRequest is the JSON payload for POST /vector/delete.
@@ -355,6 +357,7 @@ type vectorRebuildProgressResponse struct {
 type vectorIndexStatsResponse struct {
 	Namespace        string            `json:"namespace"`
 	IndexType        string            `json:"index_type"`
+	DistanceMetric   string            `json:"distance_metric"`
 	VectorCount      uint64            `json:"vector_count"`
 	Dimension        uint32            `json:"dimension"`
 	IndexSizeBytes   uint64            `json:"index_size_bytes"`
@@ -648,6 +651,7 @@ func (s *Server) handleVectorUpsert(w http.ResponseWriter, r *http.Request) {
 		Version:   resp.Version,
 		Timestamp: resp.Timestamp,
 		Success:   resp.Success,
+		Created:   resp.Created,
 	})
 }
 
@@ -1258,6 +1262,7 @@ func (s *Server) handleVectorGetIndexStats(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, vectorIndexStatsResponse{
 		Namespace:        stats.Namespace,
 		IndexType:        stats.IndexType,
+		DistanceMetric:   stats.DistanceMetric,
 		VectorCount:      stats.VectorCount,
 		Dimension:        stats.Dimension,
 		IndexSizeBytes:   stats.IndexSizeBytes,

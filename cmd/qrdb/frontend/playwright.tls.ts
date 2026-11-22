@@ -27,6 +27,15 @@ export const TLS_CERT_ENV = "QRDB_VITE_TLS_CERT";
 /** Names the env var carrying the Vite server's PEM PKCS#8 private key. */
 export const TLS_KEY_ENV = "QRDB_VITE_TLS_KEY";
 
+/**
+ * Names the directory the Vite API proxy reads a client certificate from
+ * (client.crt and client.key, PEM) on every connection to the backend, so a
+ * DOM spec can make the UI an authenticated principal
+ * (e2e/dom/fixtures/dom-daemon.ts tenantAdmin). With no files there the proxy
+ * presents none.
+ */
+export const PROXY_CLIENT_TLS_DIR_ENV = "QRDB_PROXY_CLIENT_TLS_DIR";
+
 /** How long the certificate is valid for; a run is far shorter. */
 const VALIDITY_MS = 24 * 60 * 60 * 1000;
 

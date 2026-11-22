@@ -590,6 +590,13 @@ func (b *EmbeddedServerBinding) RestoreEmbedded() error {
 	if err != nil {
 		return err
 	}
+	// In the desktop app every binding resolves its client from the
+	// connection manager's active profile; a standalone server started here
+	// would be invisible to them. Connect the saved config as an embedded
+	// profile instead.
+	if b.conn != nil && b.conn.manager != nil {
+		return b.conn.manager.restoreEmbedded(cfg)
+	}
 	return b.StartEmbedded(cfg)
 }
 

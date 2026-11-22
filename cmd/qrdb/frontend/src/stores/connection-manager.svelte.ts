@@ -26,7 +26,7 @@
  */
 
 import type { Client } from "@qrdb/sdk";
-import { isDesktop } from "@qrdb/sdk";
+import { isDesktop, TransportError } from "@qrdb/sdk";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -138,6 +138,12 @@ export interface ConnManagerState {
     activeServerMode: 'standalone' | 'raft' | '';
     /** Number of cluster nodes for the currently active profile. */
     activeClusterNodeCount: number;
+    /**
+     * Per profile, the admin views whose own read route the server refused
+     * the caller (403) at connect time; those views are not offered. Kept in
+     * memory only: a different credential on the next load is probed afresh.
+     */
+    refusedAdminViews: Record<string, string[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +267,7 @@ export const connManagerStore: ConnManagerState = $state({
     loading: true,
     activeServerMode: '',
     activeClusterNodeCount: 0,
+    refusedAdminViews: {},
 });
 
 // ---------------------------------------------------------------------------
@@ -398,16 +405,25 @@ async function loadWebProfiles(client: Client): Promise<void> {
  * standalone/clustered choice). The built-in web "This Server" profile has no
  * such record, so without this probe a browser connected to a real multi-node
  * cluster would always present the standalone UI. We derive the mode from the
- * live topology: a server is "raft" when more than one distinct replica is
- * known across its Raft groups; a single-node deployment (or a minimal
- * embeddable server with no topology endpoint) resolves to "standalone".
+ * live topology: a server whose topology loads with at least one replica is
+ * "raft", so a single-node Raft server still exposes the Cluster surfaces
+ * (minting its first join token is how it grows). Only a server with no
+ * readable topology (a minimal embeddable server, forbidden or unreachable)
+ * resolves to "standalone". The database wizard keys its multi-node steps on
+ * the node count, not on this mode (see isMultiNodeServer).
  *
  * @returns The detected mode and the distinct cluster node count (0 when the
  *   topology could not be read).
  */
 async function detectWebServerMode(
     client: Client,
-): Promise<{ serverMode: 'standalone' | 'raft'; nodeCount: number }> {
+): Promise<{ serverMode: 'standalone' | 'raft'; nodeCount: number; refusedViews: string[] }> {
+    let serverMode: 'standalone' | 'raft' = 'standalone';
+    let nodeCount = 0;
+    const refusedViews: string[] = [];
+    // Every probe runs at once: the connect waits for the slowest, not the sum.
+    const probes = adminViewProbes(client);
+    const settled = Promise.allSettled(probes.map(([, probe]) => probe()));
     try {
         const topology = await client.admin.getTopology();
         const replicaIds = new Set<string>();
@@ -416,13 +432,112 @@ async function detectWebServerMode(
                 replicaIds.add(replicaId);
             }
         }
-        const nodeCount = replicaIds.size;
-        return { serverMode: nodeCount > 1 ? 'raft' : 'standalone', nodeCount };
-    } catch {
+        nodeCount = replicaIds.size;
+        serverMode = nodeCount >= 1 ? 'raft' : 'standalone';
+    } catch (err) {
         // No topology endpoint (minimal embeddable server), forbidden, or
         // unreachable → treat as standalone; cluster surfaces stay hidden.
-        return { serverMode: 'standalone', nodeCount: 0 };
+        if (isRefused(err)) refusedViews.push('topology');
     }
+    // Each admin view is offered only when the server allows the caller the
+    // view's own read route: a refusal (403) hides that view; any other
+    // error keeps it, so the view shows its own error.
+    const results = await settled;
+    results.forEach((r, i) => {
+        if (r.status === 'rejected' && isRefused(r.reason)) refusedViews.push(probes[i]![0]);
+    });
+    return { serverMode, nodeCount, refusedViews };
+}
+
+/**
+ * The read route each probed admin view loads first. Views not listed
+ * (settings, daemon) are local to the client and never hidden by a probe.
+ */
+function adminViewProbes(client: Client): Array<[string, () => Promise<unknown>]> {
+    return [
+        ['dashboard', () => client.admin.status()],
+        ['cluster', () => client.admin.peers()],
+        ['rebalance', () => client.rebalance.getImbalanceReport()],
+        ['seal-manager', () => client.seal.status()],
+        ['tenants', () => client.tenants.list()],
+        ['users', () => client.users.list({})],
+        ['roles', () => client.roles.list({})],
+        ['volume-pools', () => client.volumePools.list()],
+        ['certificates', () => client.certs.list('')],
+        ['credentials', () => client.credentials.list()],
+        ['databases', () => client.database.list()],
+        ['backups', () => client.backups.list()],
+        ['audit-log', () => client.audit.query({})],
+    ];
+}
+
+/** Whether the server allowed the caller this admin view's read route. */
+export function adminViewAllowed(profileId: string, view: string): boolean {
+    return !(connManagerStore.refusedAdminViews[profileId] ?? []).includes(view);
+}
+
+/**
+ * Admin views a delegated role may be granted on its own, without the
+ * topology or the tenant list: the probe ids of {@link adminViewProbes} minus
+ * dashboard, seal-manager and databases, whose read routes a plain user may
+ * reach.
+ */
+const DELEGATED_ADMIN_VIEWS: readonly string[] = [
+    'cluster',
+    'rebalance',
+    'users',
+    'roles',
+    'volume-pools',
+    'certificates',
+    'credentials',
+    'backups',
+    'audit-log',
+];
+
+/**
+ * Whether the caller administers anything on this server: a server
+ * administrator reads the topology, a tenant administrator its tenant list,
+ * and a delegated role (one allowed the user list or the audit log, say)
+ * one of the {@link DELEGATED_ADMIN_VIEWS}. Only a caller refused the
+ * topology, the tenant list and every delegated view is a plain user, who is
+ * offered no admin view even where a read route (its own databases, the seal
+ * status) is open to it. Each view the section shows is still filtered by
+ * {@link adminViewAllowed}.
+ */
+export function hasAdminViews(profileId: string): boolean {
+    const refused = connManagerStore.refusedAdminViews[profileId] ?? [];
+    return !(
+        refused.includes('topology') &&
+        refused.includes('tenants') &&
+        DELEGATED_ADMIN_VIEWS.every((view) => refused.includes(view))
+    );
+}
+
+/**
+ * A refusal (403), from a TransportError or from an SDK module that
+ * reports the status in its error message ("... failed: 403 ...").
+ */
+function isRefused(err: unknown): boolean {
+    if (isForbidden(err)) return true;
+    return err instanceof Error && /failed: 403\b/.test(err.message);
+}
+
+/** True when err is the server's refusal of the caller (HTTP 403). */
+export function isForbidden(err: unknown): boolean {
+    return err instanceof TransportError && err.statusCode === 403;
+}
+
+/**
+ * Reports whether the active server is a multi-node Raft cluster, which is what
+ * the database wizard's Raft steps (replica count, etcd) need. A single-node
+ * Raft server is "raft" for the admin nav but gets the wizard's single-node
+ * steps. A desktop profile recorded as clustered carries no node count (0) and
+ * stays multi-node.
+ */
+export function isMultiNodeServer(): boolean {
+    if (connManagerStore.activeServerMode !== 'raft') return false;
+    const n = connManagerStore.activeClusterNodeCount;
+    return n === 0 || n > 1;
 }
 
 /**
@@ -431,10 +546,11 @@ async function detectWebServerMode(
  * reloads without re-probing being strictly required.
  */
 async function applyWebServerMode(client: Client, profileId: string): Promise<void> {
-    const { serverMode, nodeCount } = await detectWebServerMode(client);
+    const { serverMode, nodeCount, refusedViews } = await detectWebServerMode(client);
     connManagerStore.profiles = connManagerStore.profiles.map((p) =>
         p.id === profileId ? { ...p, serverMode, clusterNodeCount: nodeCount } : p,
     );
+    connManagerStore.refusedAdminViews = { ...connManagerStore.refusedAdminViews, [profileId]: refusedViews };
     if (connManagerStore.activeProfileId === profileId) {
         connManagerStore.activeServerMode = serverMode;
         connManagerStore.activeClusterNodeCount = nodeCount;
@@ -534,6 +650,17 @@ export async function connectProfile(
         connManagerStore.states = new Map(connManagerStore.states).set(profileId, errState);
         return errState;
     }
+    // A transport closed by connection.disconnect() (Settings' Disconnect)
+    // is reopened here: the REST client always targets the page origin, as
+    // App.svelte's initialize does. Without this the probe below fails with
+    // "not connected" and the profile can only recover by a page reload.
+    if (!client.connection.isConnected()) {
+        try {
+            await client.connection.connect(window.location.origin);
+        } catch {
+            // Unreachable: resolveWebConnectionState reports the error state.
+        }
+    }
     const state = await resolveWebConnectionState(client, profile);
     connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
 
@@ -580,6 +707,29 @@ export async function disconnectProfile(
  * @param client    - The SDK client singleton.
  * @param profileId - ID of the profile to delete.
  */
+/**
+ * Saves a profile (insert or replace by id) and adds it to the store.
+ *
+ * Desktop mode delegates to the Wails ConnectionManagerBinding; web mode
+ * persists the updated list to localStorage, since the REST client has no
+ * connection-manager backend.
+ */
+export async function saveProfile(
+    client: Client,
+    profile: ConnectionProfile,
+): Promise<void> {
+    const updated = [
+        ...connManagerStore.profiles.filter((p) => p.id !== profile.id),
+        profile,
+    ];
+    if (isDesktop()) {
+        await client.connectionManager.saveProfile(profile as never);
+    } else {
+        await persistence.save(client, updated);
+    }
+    connManagerStore.profiles = updated;
+}
+
 export async function deleteProfile(
     client: Client,
     profileId: string,

@@ -28,6 +28,9 @@ type VectorValue struct {
 	CreatedAt int64             `msgpack:"created"`
 	UpdatedAt int64             `msgpack:"updated"`
 	Version   uint64            `msgpack:"ver"`
+	// MetadataFormat says how Metadata values are stored: legacy verbatim
+	// strings (0) or canonical JSON text (MetadataFormatJSON).
+	MetadataFormat uint8 `msgpack:"meta_fmt,omitempty"`
 }
 
 // NamespaceInfo contains metadata about a namespace.

@@ -17,8 +17,6 @@ import {
   expect,
   defaultMockState,
   secondLaunchEmbeddedState,
-  injectError,
-  clearError,
 } from "./fixtures/wails-mock.ts";
 import {
   waitForConnectionManager,
@@ -640,9 +638,7 @@ test.describe("Scenario E2 - passphrase server sealed/unsealed transition", () =
 
     // Submit the passphrase (non-shamir barriers label the action "Unseal").
     await main
-      .locator("input[type='password'], input[type='text']")
-      .filter({ hasNot: page.locator("[disabled]") })
-      .last()
+      .getByPlaceholder("Enter passphrase", { exact: true })
       .fill("my-passphrase-share");
 
     await main.getByRole("button", { name: "Unseal", exact: true }).click();
@@ -704,9 +700,7 @@ test.describe("Scenario E2 - passphrase server sealed/unsealed transition", () =
 
     // Unseal by submitting the passphrase
     await main
-      .locator("input[type='password'], input[type='text']")
-      .filter({ hasNot: page.locator("[disabled]") })
-      .last()
+      .getByPlaceholder("Enter passphrase", { exact: true })
       .fill("passphrase-share");
 
     await main.getByRole("button", { name: "Unseal", exact: true }).click();
