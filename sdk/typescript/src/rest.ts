@@ -358,7 +358,7 @@ async function requestJSON<T>(
     path: string,
     init?: RequestInit,
     camel = true,
-)): Promise<T> {
+): Promise<T> {
     const url = baseUrl + path;
     const method = init?.method ?? 'GET';
     let resp: Response;
