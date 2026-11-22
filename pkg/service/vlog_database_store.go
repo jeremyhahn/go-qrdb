@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
@@ -88,6 +89,12 @@ func (s *databaseLogStore) propose(ctx context.Context, cmd []byte) (sm.Result, 
 	if s.sealed() {
 		return sm.Result{}, s.sealedError()
 	}
+	// The command is a group proposal, its OpVerifiableLog byte first; the
+	// state machines apply the payload after it, and so does the store.
+	if len(cmd) == 0 || cmd[0] != protocol.OpVerifiableLog {
+		return sm.Result{}, errNotALogCommand
+	}
+	payload := cmd[1:]
 	backend := s.db.Backend()
 	r := backendReader{ctx: ctx, b: backend}
 	if s.logs == nil {
@@ -102,7 +109,7 @@ func (s *databaseLogStore) propose(ctx context.Context, cmd []byte) (sm.Result, 
 	b := storage.NewBufferedBatch(r, func(ops []storage.BufferedOp) error {
 		return applyToBackend(ctx, backend, ops)
 	})
-	res, err := statemachine.ApplyVerifiableLog(s.logs, r, b, cmd)
+	res, err := statemachine.ApplyVerifiableLog(s.logs, r, b, payload)
 	if err != nil {
 		s.logs = nil
 		_ = b.Rollback()
@@ -168,6 +175,7 @@ func (s *databaseLogStore) translateStoreError(err error) error {
 }
 
 var (
+	errNotALogCommand     = errors.New("vlog database store: the command is not a verifiable log command")
 	errReverseUnsupported = errors.New("vlog database store: reverse iteration is not supported")
 	errRangeUnsupported   = errors.New("vlog database store: range deletes are not supported")
 )

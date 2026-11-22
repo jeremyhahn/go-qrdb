@@ -17,18 +17,24 @@
 package lifecycle_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
 // errDeviceRefused is what the recording provider answers every request with.
@@ -173,5 +179,78 @@ func TestBuildServices_LogServiceServesBarrierDatabases(t *testing.T) {
 	// was routed to its store rather than refused before the device.
 	if !errors.Is(err, errDeviceRefused) {
 		t.Fatalf("CreateLog in acme's barrier database secure = %v, want the device's refusal", err)
+	}
+}
+
+func TestBuildServices_LogServiceSealsWithTheBarrierDatabase(t *testing.T) {
+	barrier, registry, credSvc := newTestBarrier(t)
+	dbs := databasetest.NewManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = dbs.Close() })
+	// The system shard host is built here rather than by buildSeamNode so
+	// the test can read what was written to it.
+	stg := memory.NewStorage()
+	host := backend.NewLocalBackend(engine.NewKVEngine(stg))
+	t.Cleanup(func() { _ = host.Close() })
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:              host,
+		WatchHub:          hub,
+		DataDir:           t.TempDir(),
+		SealBarrier:       barrier,
+		BarrierRegistry:   registry,
+		CredentialCoreSvc: credSvc,
+		DatabaseManager:   dbs,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	t.Cleanup(func() { _ = node.Stop(context.Background()) })
+	ctx := context.Background()
+	if _, err := dbs.CreateWithCredentials(ctx, database.DatabaseConfig{
+		TenantID: "acme", Name: "secure", Backend: database.BackendMemory, DataDir: t.TempDir(),
+		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
+	}, seal.MustCredentials(ctx, []byte("db-pass"))); err != nil {
+		t.Fatalf("create the barrier database: %v", err)
+	}
+	acme := tenant.WithTenantID(ctx, "acme")
+	ref := service.LogRef{Database: "secure", Log: "events"}
+	if _, err := node.Log.CreateLog(acme, &service.CreateLogRequest{LogRef: ref, Origin: "db.example.com/events", SigningKeyType: vlog.SignatureEd25519}); err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	if _, err := node.Log.Append(acme, &service.AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("entry")}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if head, err := node.Log.Head(acme, &service.HeadRequest{LogRef: ref}); err != nil || head.Head.Size != 1 {
+		t.Fatalf("Head = %+v, %v; want size 1", head, err)
+	}
+
+	bm := dbs.BarrierManager()
+	if bm == nil {
+		t.Fatalf("the composed node left the database manager without a barrier manager")
+	}
+	if err := bm.SealDatabase("secure", "acme"); err != nil {
+		t.Fatalf("SealDatabase: %v", err)
+	}
+	second := service.LogRef{Database: "secure", Log: "second"}
+	var sealed *service.BarrierSealedError
+	if _, err := node.Log.CreateLog(acme, &service.CreateLogRequest{LogRef: second, Origin: "db.example.com/second", SigningKeyType: vlog.SignatureEd25519}); !errors.As(err, &sealed) || sealed.TenantID != "acme" || sealed.Database != "secure" {
+		t.Fatalf("CreateLog in the sealed database = %v, want *service.BarrierSealedError for acme/secure", err)
+	}
+	if _, err := node.Log.Head(acme, &service.HeadRequest{LogRef: ref}); !errors.As(err, &sealed) || sealed.TenantID != "acme" || sealed.Database != "secure" {
+		t.Fatalf("Head in the sealed database = %v, want *service.BarrierSealedError for acme/secure", err)
+	}
+
+	it := stg.NewIterator(&storage.IteratorOptions{})
+	defer func() { _ = it.Close() }()
+	for ok := it.SeekToFirst(); ok; ok = it.Next() {
+		// The database catalog records acme/secure on the host; its logs
+		// must not be.
+		if bytes.Contains(it.Key(), []byte("qrdb.vlog/acme/secure")) {
+			t.Errorf("the system shard host holds the log record %q of acme's barrier database", it.Key())
+		}
+	}
+	if err := it.Error(); err != nil {
+		t.Fatalf("scan the system shard host: %v", err)
 	}
 }

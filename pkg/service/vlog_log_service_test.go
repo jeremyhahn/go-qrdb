@@ -21,6 +21,9 @@ import (
 	"context"
 	"crypto"
 	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"testing"
@@ -142,18 +145,6 @@ func noDatabases(t *testing.T) *database.Manager {
 	return mgr
 }
 
-// barrierDatabases is a database registry holding acme's barrier-enabled
-// database "secure", unsealed under the system barrier.
-func barrierDatabases(t *testing.T) *database.Manager {
-	t.Helper()
-	system, _ := newTestSoftwareBarrier(t)
-	ctx := context.Background()
-	if err := system.Initialize(ctx, seal.MustCredentials(ctx, []byte("system-pass"))); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	return newPassphraseDatabases(t, system)
-}
-
 // decodeLogCommand splits one proposed OpVerifiableLog command.
 func decodeLogCommand(t *testing.T, cmd []byte) (byte, string, []byte) {
 	t.Helper()
@@ -211,42 +202,109 @@ var _ LogDatabaseLookup = failingLogDatabases{}
 // refused with *BarrierDatabaseLogNotSupportedError, whatever its backend and
 // although its barrier is unsealed, before a key is minted or a command
 // proposed or read.
-func TestLogService_RefusesABarrierDatabase(t *testing.T) {
-	for name, databases := range unsealedBarrierDatabases(t) {
-		t.Run(name, func(t *testing.T) {
-			ctx := acmeCtx()
-			hsm := newHSMProvider()
-			host, cmds := recordingHost(sm.Result{})
-			reads := 0
-			host.syncReadFn = func(context.Context, uint64, interface{}) (interface{}, error) {
-				reads++
-				return nil, errors.New("unexpected read")
+func TestLogService_ServesABarrierDatabase(t *testing.T) {
+	dir := t.TempDir()
+	mgr := newBarrierDatabaseManager(t, dir)
+	svc, cmds, reads := newBarrierLogService(t, mgr, nil)
+	ctx := acmeCtx()
+	ref := LogRef{Database: "secure", Log: "events"}
+	const origin = "example.test/secure/events"
+	created, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: origin, SigningKeyType: vlog.SignatureEd25519})
+	if err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	entries := [][]byte{[]byte("barrier-entry-alpha-0001"), []byte("barrier-entry-bravo-0002"), []byte("barrier-entry-charlie-0003")}
+	appended, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: entries})
+	if err != nil || appended.FirstIndex != 0 || appended.Count != len(entries) {
+		t.Fatalf("Append = %+v, %v; want first index 0, count %d", appended, err, len(entries))
+	}
+	got, err := svc.GetEntries(ctx, &GetEntriesRequest{LogRef: ref})
+	if err != nil || len(got.Entries) != len(entries) {
+		t.Fatalf("GetEntries = %+v, %v; want %d entries", got, err, len(entries))
+	}
+	for i, e := range got.Entries {
+		if e.Index != uint64(i) || !bytes.Equal(e.Body, entries[i]) {
+			t.Errorf("entry %d = %d %q, want %d %q", i, e.Index, e.Body, i, entries[i])
+		}
+	}
+	head, err := svc.Head(ctx, &HeadRequest{LogRef: ref})
+	if err != nil || head.Head.Size != uint64(len(entries)) || len(head.Head.Root) == 0 {
+		t.Fatalf("Head = %+v, %v; want size %d with a root", head, err, len(entries))
+	}
+	for i := range entries {
+		proof, err := svc.ProveInclusion(ctx, &InclusionRequest{LogRef: ref, Index: uint64(i), Size: 3})
+		if err != nil || proof.Index != uint64(i) || proof.Size != 3 || len(proof.Hashes) == 0 {
+			t.Errorf("ProveInclusion(%d, 3) = %+v, %v; want a proof", i, proof, err)
+		}
+	}
+	consistency, err := svc.ProveConsistency(ctx, &ConsistencyRequest{LogRef: ref, Size1: 1, Size2: 3})
+	if err != nil || consistency.Size1 != 1 || consistency.Size2 != 3 || len(consistency.Hashes) == 0 {
+		t.Errorf("ProveConsistency(1, 3) = %+v, %v; want a proof", consistency, err)
+	}
+	signed, err := svc.SignHead(ctx, &SignHeadRequest{LogRef: ref})
+	if err != nil {
+		t.Fatalf("SignHead: %v", err)
+	}
+	pub, err := created.Key.Public()
+	if err != nil {
+		t.Fatalf("created key: %v", err)
+	}
+	if err := vlog.VerifyHead(pub, origin, signed.Head); err != nil || signed.Head.Size != 3 {
+		t.Fatalf("VerifyHead(size %d) = %v; want a verified head of size 3", signed.Head.Size, err)
+	}
+	if len(*cmds) != 0 || *reads != 0 {
+		t.Fatalf("the barrier database's log proposed %d commands and read %d times through the tenant host", len(*cmds), *reads)
+	}
+	key, err := (&logKeyReader{route: svc.(*logService).route}).ReadSigningKey(ctx, created.ID, created.Key.Version)
+	if err != nil || key == nil || len(key.PKCS8) == 0 {
+		t.Fatalf("ReadSigningKey = %v, %v; want the log's key record", key, err)
+	}
+	assertNoPlaintext(t, dir, append([][]byte{key.PKCS8}, entries...))
+}
+
+// assertNoPlaintext fails t when any file under dir holds any of secrets.
+func assertNoPlaintext(t *testing.T, dir string, secrets [][]byte) {
+	t.Helper()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("open root %s: %v", dir, err)
+	}
+	files := 0
+	err = fs.WalkDir(root.FS(), ".", func(path string, e fs.DirEntry, err error) error {
+		if err != nil || !e.Type().IsRegular() {
+			return err
+		}
+		files++
+		data, err := root.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, secret := range secrets {
+			if bytes.Contains(data, secret) {
+				t.Errorf("%s holds %q in plaintext", filepath.Join(dir, path), secret)
 			}
-			svc, err := NewLogService(LogServiceConfig{
-				Resolver:  &fixedShardResolver{host: &gatedHost{mockHost: host, enabled: map[uint64]bool{1: true}}, shardID: 1},
-				Databases: databases,
-				Signers:   hsm,
-			})
-			if err != nil {
-				t.Fatalf("NewLogService: %v", err)
-			}
-			for call, run := range barrierDatabaseCalls(ctx, svc) {
-				var refused *BarrierDatabaseLogNotSupportedError
-				if err := run(); !errors.As(err, &refused) || refused.TenantID != "acme" || refused.Database != "secure" {
-					t.Errorf("%s: err = %v, want *BarrierDatabaseLogNotSupportedError for acme/secure", call, err)
-				}
-			}
-			if len(*cmds) != 0 || reads != 0 || len(hsm.created) != 0 {
-				t.Fatalf("a refused log operation proposed %d commands, read %d times and minted %d keys", len(*cmds), reads, len(hsm.created))
-			}
-		})
+		}
+		return nil
+	})
+	if cerr := root.Close(); cerr != nil {
+		t.Fatalf("close root %s: %v", dir, cerr)
+	}
+	if err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	if files == 0 {
+		t.Fatalf("%s holds no files; the database wrote nowhere the walk reads", dir)
 	}
 }
 
-// unsealedBarrierDatabases is acme's UNSEALED barrier-enabled database secure,
-// as a supported pebble record with a data directory and as a legacy raft
-// record database.Manager.Open still opens barrier-enabled.
-func unsealedBarrierDatabases(t *testing.T) map[string]LogDatabaseLookup {
+// barrierDatabasePass is the passphrase newBarrierDatabaseManager seals each
+// barrier database with.
+const barrierDatabasePass = "db-pass"
+
+// newBarrierDatabaseManager returns a pebble database manager with a database
+// barrier manager over an initialised system barrier, holding acme's unsealed
+// passphrase barrier database "secure", every file it writes under dir.
+func newBarrierDatabaseManager(t *testing.T, dir string) *database.Manager {
 	t.Helper()
 	system, _ := newTestSoftwareBarrier(t)
 	ctx := context.Background()
@@ -257,26 +315,200 @@ func unsealedBarrierDatabases(t *testing.T) map[string]LogDatabaseLookup {
 	if err != nil {
 		t.Fatalf("NewDatabaseBarrierManager: %v", err)
 	}
-	pebble := databasetest.NewManager(nil, t.TempDir(), database.WithBarrierManager(bm))
-	t.Cleanup(func() { _ = pebble.Close() })
-	db, err := pebble.CreateWithCredentials(ctx, database.DatabaseConfig{
-		TenantID: "acme", Name: "secure", Backend: database.BackendPebble,
-		DataDir: t.TempDir(),
+	mgr := databasetest.NewManager(nil, filepath.Join(dir, "manager"), database.WithBarrierManager(bm))
+	t.Cleanup(func() { _ = mgr.Close() })
+	createBarrierDatabase(t, mgr, "acme", filepath.Join(dir, "acme"))
+	return mgr
+}
+
+// createBarrierDatabase creates tenantID's unsealed pebble passphrase barrier
+// database "secure", its dedicated store in dataDir.
+func createBarrierDatabase(t *testing.T, mgr *database.Manager, tenantID, dataDir string) *database.Database {
+	t.Helper()
+	ctx := context.Background()
+	db, err := mgr.CreateWithCredentials(ctx, database.DatabaseConfig{
+		TenantID: tenantID, Name: "secure", Backend: database.BackendPebble,
+		DataDir: dataDir,
 		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
-	}, seal.MustCredentials(ctx, []byte("db-pass")))
+	}, seal.MustCredentials(ctx, []byte(barrierDatabasePass)))
 	if err != nil {
-		t.Fatalf("create the pebble barrier database: %v", err)
+		t.Fatalf("create %s's pebble barrier database: %v", tenantID, err)
 	}
 	if !db.BarrierEnabled() || db.Status() == database.StatusSealed {
 		t.Fatalf("pebble barrier database: barrier enabled %v, status %v; want an unsealed barrier database", db.BarrierEnabled(), db.Status())
 	}
+	return db
+}
+
+// newBarrierLogService serves databases through a recording tenant host and
+// returns the commands it proposed and the reads it answered.
+func newBarrierLogService(t *testing.T, databases LogDatabaseLookup, signers vlog.HeadSignerProvider) (LogService, *[][]byte, *int) {
+	t.Helper()
+	host, cmds := recordingHost(sm.Result{})
+	reads := new(int)
+	host.syncReadFn = func(context.Context, uint64, interface{}) (interface{}, error) {
+		*reads++
+		return nil, errors.New("unexpected read")
+	}
+	svc, err := NewLogService(LogServiceConfig{
+		Resolver:  &fixedShardResolver{host: &gatedHost{mockHost: host, enabled: map[uint64]bool{1: true}}, shardID: 1},
+		Databases: databases,
+		Signers:   signers,
+	})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	return svc, cmds, reads
+}
+
+func TestLogService_BarrierDatabaseLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	mgr := newBarrierDatabaseManager(t, dir)
+	createBarrierDatabase(t, mgr, "globex", filepath.Join(dir, "globex"))
+	svc, cmds, reads := newBarrierLogService(t, mgr, nil)
+	acme, globex := acmeCtx(), tenant.WithTenantID(context.Background(), "globex")
+	ref := LogRef{Database: "secure", Log: "events"}
+	for name, ctx := range map[string]context.Context{"acme": acme, "globex": globex} {
+		if _, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: name + "/secure/events", SigningKeyType: vlog.SignatureEd25519}); err != nil {
+			t.Fatalf("%s CreateLog: %v", name, err)
+		}
+	}
+	if _, err := svc.Append(acme, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("a0"), []byte("a1"), []byte("a2")}}); err != nil {
+		t.Fatalf("acme Append: %v", err)
+	}
+	if _, err := svc.Append(globex, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("g0")}}); err != nil {
+		t.Fatalf("globex Append: %v", err)
+	}
+	headOf := func(svc LogService, ctx context.Context) vlog.Head {
+		t.Helper()
+		h, err := svc.Head(ctx, &HeadRequest{LogRef: ref})
+		if err != nil {
+			t.Fatalf("Head: %v", err)
+		}
+		return h.Head
+	}
+	before := headOf(svc, acme)
+	if before.Size != 3 || headOf(svc, globex).Size != 1 {
+		t.Fatalf("heads acme %d, globex %d; want 3 and 1", before.Size, headOf(svc, globex).Size)
+	}
+
+	if err := mgr.BarrierManager().SealDatabase("secure", "acme"); err != nil {
+		t.Fatalf("SealDatabase: %v", err)
+	}
+	for call, run := range barrierDatabaseCalls(acme, svc) {
+		var sealed *BarrierSealedError
+		if err := run(); !errors.As(err, &sealed) || sealed.TenantID != "acme" || sealed.Database != "secure" {
+			t.Errorf("sealed %s: err = %v, want *BarrierSealedError for acme/secure", call, err)
+		}
+	}
+	if headOf(svc, globex).Size != 1 {
+		t.Fatalf("sealing acme's database changed globex's log")
+	}
+
+	if err := mgr.BarrierManager().UnsealDatabase(context.Background(), "secure", "acme", seal.MustCredentials(context.Background(), []byte(barrierDatabasePass))); err != nil {
+		t.Fatalf("UnsealDatabase: %v", err)
+	}
+	if after := headOf(svc, acme); after.Size != before.Size || !bytes.Equal(after.Root, before.Root) {
+		t.Fatalf("unsealed head = %d %x, want %d %x", after.Size, after.Root, before.Size, before.Root)
+	}
+	appended, err := svc.Append(acme, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("a3")}})
+	if err != nil || appended.FirstIndex != 3 {
+		t.Fatalf("Append after unseal = %+v, %v; want first index 3", appended, err)
+	}
+	fresh, _, _ := newBarrierLogService(t, mgr, nil)
+	if got, want := headOf(fresh, acme), headOf(svc, acme); got.Size != 4 || !bytes.Equal(got.Root, want.Root) {
+		t.Fatalf("a fresh service's head = %d %x, want 4 %x", got.Size, got.Root, want.Root)
+	}
+
+	if err := mgr.DropForTenant(acme, "secure"); err != nil {
+		t.Fatalf("DropForTenant: %v", err)
+	}
+	createBarrierDatabase(t, mgr, "acme", filepath.Join(dir, "acme-again"))
+	var notFound *vlog.LogNotFoundError
+	if _, err := svc.Head(acme, &HeadRequest{LogRef: ref}); !errors.As(err, &notFound) {
+		t.Fatalf("Head of the re-created database = %v, want *vlog.LogNotFoundError", err)
+	}
+	if headOf(svc, globex).Size != 1 {
+		t.Fatalf("dropping acme's database changed globex's log")
+	}
+	if len(*cmds) != 0 || *reads != 0 {
+		t.Fatalf("the barrier databases' logs proposed %d commands and read %d times through the tenant host", len(*cmds), *reads)
+	}
+}
+
+func TestLogService_RefusesALegacyRaftBarrierRecord(t *testing.T) {
 	legacy := database.NewDatabase(database.DatabaseConfig{
 		TenantID: "acme", Name: "secure", Backend: database.BackendRaft,
 		Raft:    &database.DatabaseRaftConfig{ShardID: 7},
 		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
 	}, nil, t.TempDir())
 	legacy.SetBarrierEnabled(true)
-	return map[string]LogDatabaseLookup{"pebble": pebble, "legacy raft": &oneDatabase{db: legacy}}
+	hsm := newHSMProvider()
+	svc, cmds, reads := newBarrierLogService(t, &oneDatabase{db: legacy}, hsm)
+	for call, run := range barrierDatabaseCalls(acmeCtx(), svc) {
+		var refused *database.BarrierOffDataPathError
+		if err := run(); !errors.As(err, &refused) {
+			t.Errorf("%s: err = %v, want *database.BarrierOffDataPathError", call, err)
+		}
+	}
+	if len(*cmds) != 0 || *reads != 0 || len(hsm.created) != 0 {
+		t.Fatalf("a refused log operation proposed %d commands, read %d times and minted %d keys", len(*cmds), *reads, len(hsm.created))
+	}
+}
+
+// failOnceBatch is a real backend whose next Batch, once armed, fails.
+type failOnceBatch struct {
+	database.Backend
+	failed bool
+	armed  bool
+}
+
+func (f *failOnceBatch) Batch(ctx context.Context, ops []database.BatchOp) error {
+	if f.armed && !f.failed {
+		f.failed = true
+		return errors.New("injected batch failure")
+	}
+	return f.Backend.Batch(ctx, ops)
+}
+
+func TestLogService_BarrierDatabaseCommitFailureRestores(t *testing.T) {
+	dir := t.TempDir()
+	mgr := newBarrierDatabaseManager(t, dir)
+	real, err := mgr.GetOwned("secure", "acme")
+	if err != nil {
+		t.Fatalf("GetOwned: %v", err)
+	}
+	backend := &failOnceBatch{Backend: real.Backend()}
+	db := database.NewDatabase(real.Config(), backend, filepath.Join(dir, "acme"))
+	db.SetBarrierEnabled(true)
+	svc, cmds, reads := newBarrierLogService(t, &oneDatabase{db: db}, nil)
+	ctx := acmeCtx()
+	ref := LogRef{Database: "secure", Log: "events"}
+	if _, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: "o", SigningKeyType: vlog.SignatureEd25519}); err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	if _, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("e0")}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	before, err := svc.Head(ctx, &HeadRequest{LogRef: ref})
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	backend.armed = true
+	if _, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("e1")}}); err == nil {
+		t.Fatalf("Append over a failing batch succeeded")
+	}
+	after, err := svc.Head(ctx, &HeadRequest{LogRef: ref})
+	if err != nil || after.Head.Size != before.Head.Size || !bytes.Equal(after.Head.Root, before.Head.Root) {
+		t.Fatalf("Head after the failed commit = %+v, %v; want the pre-failure head %+v", after, err, before)
+	}
+	retried, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("e1")}})
+	if err != nil || retried.FirstIndex != 1 {
+		t.Fatalf("retried Append = %+v, %v; want first index 1", retried, err)
+	}
+	if len(*cmds) != 0 || *reads != 0 {
+		t.Fatalf("the barrier database's log proposed %d commands and read %d times through the tenant host", len(*cmds), *reads)
+	}
 }
 
 // oneDatabase is a LogDatabaseLookup holding one database record.
