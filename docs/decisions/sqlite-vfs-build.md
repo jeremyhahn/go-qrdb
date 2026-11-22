@@ -305,9 +305,12 @@ Built so far (unwired):
   the meta change counter, and the sweep of abandoned stages (Q3);
 - the prefix-move publish op (Q2): `protocol.OpMVCCMovePrefix` behind the
   `prefix-move` feature, `MVCCKVService.MovePrefix`, and its rewrites in the
-  namespace, hard-confinement and quota wrappers.
+  namespace, hard-confinement and quota wrappers;
+- the page store's publish in the prefix form over `MovePrefix` and a
+  service-backed Backend (`ServiceBackend`), not yet constructed by the
+  server.
 
-Still to come: the page store's publish over `MovePrefix`; the SQLite engine
+Still to come: the SQLite engine
 binding and VFS registration (blocked: owner queue 288); wiring to the
 server's lock service, the optimistic read-set check, quota and the
 entitlement.
