@@ -44,6 +44,9 @@ type ServiceTxn interface {
 	Execute(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op) (*service.TransactionResponse, error)
 }
 
+// The server's lock service is what NewLockServiceWriter takes.
+var _ LockServiceLocker = (service.LockServicer)(nil)
+
 // ServiceBackend is a Backend over the server's replicated services: reads
 // through ServiceKV, commits as one ServiceTxn transaction, and the staged
 // publish as one server-side prefix move (OpMVCCMovePrefix). The caller
@@ -85,13 +88,16 @@ func (b *ServiceBackend) Revision() (int64, error) {
 	return rev, nil
 }
 
-// GetAt returns key's value at revision rev. A *service.KeyNotFoundError or
-// a nil KeyValue is found=false with a nil error.
+// GetAt returns key's value at revision rev. A *service.KeyNotFoundError (a
+// tombstone), a *service.RevisionNotFoundError (no version of key at or
+// before rev, which is how the server answers a key never written) or a nil
+// KeyValue is found=false with a nil error.
 func (b *ServiceBackend) GetAt(key []byte, rev int64) ([]byte, bool, error) {
 	kv, err := b.kv.GetAtRevision(b.ctx, string(key), rev)
 	if err != nil {
 		var notFound *service.KeyNotFoundError
-		if errors.As(err, &notFound) {
+		var noRevision *service.RevisionNotFoundError
+		if errors.As(err, &notFound) || errors.As(err, &noRevision) {
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("sqlitevfs: read %q at revision %d: %w", key, rev, err)

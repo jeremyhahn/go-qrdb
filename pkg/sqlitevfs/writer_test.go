@@ -167,10 +167,36 @@ func TestNewLockerWriterRefusals(t *testing.T) {
 }
 
 func TestLockerWriterMapping(t *testing.T) {
+	for name, build := range writerBuilders() {
+		t.Run(name, func(t *testing.T) { testWriterMapping(t, build) })
+	}
+}
+
+// writerBuilders are the two writer-lock constructors, each over a fresh
+// memLocker: NewLockerWriter on it directly and NewLockServiceWriter on it
+// through svcLocker.
+func writerBuilders() map[string]func(l *memLocker, holder string, ttl time.Duration) (WriterLock, error) {
+	return map[string]func(l *memLocker, holder string, ttl time.Duration) (WriterLock, error){
+		"locker": func(l *memLocker, holder string, ttl time.Duration) (WriterLock, error) {
+			return NewLockerWriter(l, holder, ttl)
+		},
+		"lock service": func(l *memLocker, holder string, ttl time.Duration) (WriterLock, error) {
+			return NewLockServiceWriter(svcLocker{l}, holder, ttl)
+		},
+	}
+}
+
+func testWriterMapping(t *testing.T, build func(l *memLocker, holder string, ttl time.Duration) (WriterLock, error)) {
 	ctx := t.Context()
 	locker := newMemLocker()
-	a := newWriter(t, locker, "a")
-	b := newWriter(t, locker, "b")
+	a, err := build(locker, "a", time.Minute)
+	if err != nil {
+		t.Fatalf("writer a: %v", err)
+	}
+	b, err := build(locker, "b", time.Minute)
+	if err != nil {
+		t.Fatalf("writer b: %v", err)
+	}
 	const key = "sqlite/app.db/writer"
 
 	token, err := a.Acquire(ctx, key)
@@ -205,5 +231,39 @@ func TestLockerWriterMapping(t *testing.T) {
 	}
 	if err := b.Release(ctx, key, again); err != nil {
 		t.Fatalf("Release after expiry = %v, want nil", err)
+	}
+}
+
+// svcLocker is a LockServiceLocker over a memLocker, shaped as the server's
+// lock service: TryLock takes the key, holder, TTL and reentrancy as
+// arguments and forwards them as lock.LockOptions.
+type svcLocker struct {
+	l *memLocker
+}
+
+func (s svcLocker) TryLock(ctx context.Context, key, holderID string, ttl time.Duration, reentrant bool) (*lock.Lock, error) {
+	return s.l.TryLock(ctx, lock.LockOptions{Key: key, HolderID: holderID, TTL: ttl, Reentrant: reentrant})
+}
+
+func (s svcLocker) Extend(ctx context.Context, key string, fencingToken int64) (*lock.Lock, error) {
+	return s.l.Extend(ctx, key, fencingToken)
+}
+
+func (s svcLocker) Unlock(ctx context.Context, key string, fencingToken int64) error {
+	return s.l.Unlock(ctx, key, fencingToken)
+}
+
+func TestNewLockServiceWriterRefusals(t *testing.T) {
+	for name, build := range map[string]func() (WriterLock, error){
+		"nil lock service": func() (WriterLock, error) { return NewLockServiceWriter(nil, "h", time.Minute) },
+		"empty holder":     func() (WriterLock, error) { return NewLockServiceWriter(svcLocker{newMemLocker()}, "", time.Minute) },
+		"zero ttl":         func() (WriterLock, error) { return NewLockServiceWriter(svcLocker{newMemLocker()}, "h", 0) },
+		"negative ttl":     func() (WriterLock, error) { return NewLockServiceWriter(svcLocker{newMemLocker()}, "h", -time.Second) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if w, err := build(); !errors.Is(err, ErrInvalidOption) || w != nil {
+				t.Fatalf("NewLockServiceWriter = %v, %v, want ErrInvalidOption", w, err)
+			}
+		})
 	}
 }

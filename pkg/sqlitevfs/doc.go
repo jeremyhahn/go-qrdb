@@ -36,7 +36,9 @@
 // lock holder sweeps the stages a crashed writer left.
 //
 // The package is unwired. No SQLite engine is linked and no VFS is
-// registered; nothing in the server, the SDK or the CLI calls it. The engine
-// binding, wiring to the server's lock service, the optimistic read-set
-// check, quota, a page cache and every transport are later slices.
+// registered. ServiceBackend runs a Store over the server's MVCC and
+// transaction services, and NewLockServiceWriter takes its writer lock from
+// the server's lock service, but nothing in the server, the SDK or the CLI
+// constructs a Store yet. The engine binding, the optimistic read-set check,
+// quota, a page cache and every transport are later slices.
 package sqlitevfs

@@ -40,9 +40,44 @@ type WriterLock interface {
 	Release(ctx context.Context, key string, token int64) error
 }
 
-// lockerWriter is the WriterLock over a lock.Locker.
+// writerLocker is the part of a distributed lock the writer lock uses.
+// lock.Locker satisfies it, and lockServiceAdapter puts a
+// LockServiceLocker behind it.
+type writerLocker interface {
+	TryLock(ctx context.Context, opts lock.LockOptions) (*lock.Lock, error)
+	Extend(ctx context.Context, key string, fencingToken int64) (*lock.Lock, error)
+	Unlock(ctx context.Context, key string, fencingToken int64) error
+}
+
+// LockServiceLocker is the part of the server's lock service the writer
+// lock uses. *service.LockService, the lock service the server resolves for
+// a (tenant, database) scope, satisfies it.
+type LockServiceLocker interface {
+	TryLock(ctx context.Context, key, holderID string, ttl time.Duration, reentrant bool) (*lock.Lock, error)
+	Extend(ctx context.Context, key string, fencingToken int64) (*lock.Lock, error)
+	Unlock(ctx context.Context, key string, fencingToken int64) error
+}
+
+// lockServiceAdapter is a writerLocker over a LockServiceLocker.
+type lockServiceAdapter struct {
+	svc LockServiceLocker
+}
+
+func (a lockServiceAdapter) TryLock(ctx context.Context, opts lock.LockOptions) (*lock.Lock, error) {
+	return a.svc.TryLock(ctx, opts.Key, opts.HolderID, opts.TTL, opts.Reentrant)
+}
+
+func (a lockServiceAdapter) Extend(ctx context.Context, key string, fencingToken int64) (*lock.Lock, error) {
+	return a.svc.Extend(ctx, key, fencingToken)
+}
+
+func (a lockServiceAdapter) Unlock(ctx context.Context, key string, fencingToken int64) error {
+	return a.svc.Unlock(ctx, key, fencingToken)
+}
+
+// lockerWriter is the WriterLock over a writerLocker.
 type lockerWriter struct {
-	locker   lock.Locker
+	locker   writerLocker
 	holderID string
 	ttl      time.Duration
 }
@@ -50,8 +85,8 @@ type lockerWriter struct {
 // NewLockerWriter returns the Q3 A serialized-writer default: a WriterLock
 // over the distributed lock l, taken as holderID with a lease of ttl. The
 // lock is not reentrant. A nil locker, an empty holderID or a non-positive
-// ttl is refused with ErrInvalidOption. Wiring the server's lock service to
-// a Store is a later slice.
+// ttl is refused with ErrInvalidOption. NewLockServiceWriter builds the same
+// writer lock over the server's lock service.
 func NewLockerWriter(l lock.Locker, holderID string, ttl time.Duration) (WriterLock, error) {
 	if l == nil {
 		return nil, fmt.Errorf("%w: nil locker", ErrInvalidOption)
@@ -63,6 +98,24 @@ func NewLockerWriter(l lock.Locker, holderID string, ttl time.Duration) (WriterL
 		return nil, fmt.Errorf("%w: lease TTL %s", ErrInvalidOption, ttl)
 	}
 	return &lockerWriter{locker: l, holderID: holderID, ttl: ttl}, nil
+}
+
+// NewLockServiceWriter returns the writer lock of NewLockerWriter over svc,
+// the lock service the server resolves for a (tenant, database) scope, taken
+// as holderID with a lease of ttl. The lock is not reentrant, and its errors
+// map as NewLockerWriter's do. A nil service, an empty holderID or a
+// non-positive ttl is refused with ErrInvalidOption.
+func NewLockServiceWriter(svc LockServiceLocker, holderID string, ttl time.Duration) (WriterLock, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("%w: nil lock service", ErrInvalidOption)
+	}
+	if holderID == "" {
+		return nil, fmt.Errorf("%w: empty holder id", ErrInvalidOption)
+	}
+	if ttl <= 0 {
+		return nil, fmt.Errorf("%w: lease TTL %s", ErrInvalidOption, ttl)
+	}
+	return &lockerWriter{locker: lockServiceAdapter{svc: svc}, holderID: holderID, ttl: ttl}, nil
 }
 
 // Acquire calls TryLock once; a held lock is ErrBusy naming the key and its
