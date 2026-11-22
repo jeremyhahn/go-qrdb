@@ -100,6 +100,12 @@ const (
 	// the images. Like the credential mask, it runs no make target.
 	freeDiskStepName = "Free the runner's disk"
 
+	// lanMaskStepName and lanMaskRun are ci-template v1.53's LAN mask (ruling
+	// 887): it follows the credential mask in every job that builds on a pool
+	// host and runs scripts/ci-mask-lan.sh alone, no make target.
+	lanMaskStepName = "Mask the LAN addresses"
+	lanMaskRun      = "scripts/ci-mask-lan.sh"
+
 	// featureLoad is each shard's first step after the artifact download: it
 	// loads docker-build's integration image, checks it against
 	// docker-build's image ID, and hands that verified ID, never the shared
@@ -215,6 +221,16 @@ func featureJobProblems(body []byte, want []string) []string {
 		// step before any other that runs no make target is taken for one, so
 		// the name cannot carry a narrowed run past this gate.
 		if len(runs) == 0 && (s.Name == maskStepName || s.Name == freeDiskStepName) && !strings.Contains(s.Run, "make ") {
+			continue
+		}
+		// The LAN mask (ci-template v1.53) leads the shard in its exact shape
+		// alone, so its name cannot carry a narrowed run past this gate.
+		if len(runs) == 0 && s.Name == lanMaskStepName && strings.TrimSpace(s.Run) == lanMaskRun {
+			continue
+		}
+		// The self-hosted image prune trails the teardown; its shape and
+		// place are ci_image_id_handoff_test.go's pruneProblems to check.
+		if len(runs) == 3 && pruneRun.MatchString(strings.TrimSpace(s.Run)) && strings.TrimSpace(s.If) == pruneIf {
 			continue
 		}
 		// The LAN CI registry's pull (#1593) leads the load in its exact
@@ -552,6 +568,8 @@ jobs:
       - uses: actions/checkout@0000000000000000000000000000000000000000 # v6
       - name: Mask the forge credentials
         run: echo "::add-mask::$GIT_CONFIG_VALUE_0"
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
       - name: Free the runner's disk
         run: sudo rm -rf /usr/share/dotnet
       - name: Download the integration image
@@ -645,6 +663,7 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "one feature", old: `make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image`, new: "make integration-test IT_FEATURE=audit"},
 		{name: "a second run step", old: "IT_PROJECT=\"$IT_PROJECT\" IT_PREBUILT=1\n", new: "IT_PROJECT=\"$IT_PROJECT\" IT_PREBUILT=1\n      - run: make integration-test-auth\n"},
 		{name: "a make run named as the mask", old: "run: echo \"::add-mask::$GIT_CONFIG_VALUE_0\"", new: "run: make integration-test-auth"},
+		{name: "a make run named as the LAN mask", old: "run: scripts/ci-mask-lan.sh", new: "run: make integration-test-auth"},
 		{name: "no teardown", old: "      - name: Tear down (shard ${{ matrix.shard }})\n        if: always()\n        run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\"\n", new: ""},
 		{name: "teardown not always", old: "        if: always()\n", new: ""},
 		{name: "teardown on success only", old: "if: always()", new: "if: success()"},
@@ -660,6 +679,7 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "the load skipped whatever the pull did", old: "[ \"$PULLED\" = true ] || scripts", new: "[ \"$PULLED\" = true ] && scripts"},
 		{name: "a rebuild in place of the load", old: "scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"", new: "docker image inspect \"$IMAGE\" || make docker-build-it"},
 		{name: "a load with no ID check", old: "load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"", new: "load \"$RUNNER_TEMP/it-image\" \"$IMAGE\""},
+		{name: "the retaggable tag handed on", old: "echo \"IT_IMAGE=$ID\"", new: "echo \"IT_IMAGE=$IMAGE\""},
 		{name: "loaded image not handed on", old: "          echo \"IT_IMAGE=$ID\" >> \"$GITHUB_ENV\"\n", new: ""},
 		{name: "a per-shard image", old: "IMAGE: ${{ needs.docker-build.outputs.it_image }}", new: "IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ matrix.shard }}"},
 		{name: "the toolchain image", old: "outputs.it_image }}", new: "outputs.toolchain_image }}"},
