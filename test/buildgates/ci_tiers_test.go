@@ -117,6 +117,10 @@ const (
 	// ciGateJob is the one required check.
 	ciGateJob = "ci-gate"
 
+	// depsBumpDispatchIf keeps ci.yml's deps-bump-dispatch job to the
+	// nightly schedule run on main (ruling 640).
+	depsBumpDispatchIf = "${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' && !github.event.pull_request.draft }}"
+
 	// refKeyedGroup is devops.md §9b's concurrency group: per workflow and
 	// per ref, so a branch supersedes only itself.
 	refKeyedGroup = "${{ github.workflow }}-${{ github.ref }}"
@@ -130,20 +134,29 @@ const (
 	// v1.22.1 pair above.
 	ciWorkflowName = "ci.yml"
 
-	// mainKeyedGroup is ci.yml's concurrency group: a PR ref is one group, so
-	// a newer push to a PR cancels that PR's older run, and on main the group
-	// carries the event and the commit (DS-3465, the go-enclave #247 form), so
-	// a push to main never cancels the run of the previous main commit and
-	// every merge keeps a completed run. A schedule run is tested first and
-	// is one group per repository, with no sha (ci-template v1.29.3, ruling
-	// 255(10)/(11)(c)), so a repository has one schedule run at a time.
-	mainKeyedGroup = "${{ github.workflow }}-${{ github.event_name == 'schedule' && format('schedule-{0}', github.repository) || github.ref == 'refs/heads/main' && format('main-{0}-{1}', github.event_name, github.sha) || github.ref }}"
+	// mainKeyedGroup is ci.yml's concurrency group (ci-template v1.53, ruling
+	// 1087): a PR ref is one group, so a newer push to a PR cancels that PR's
+	// older run, and on main the group is main-{event} with no sha, so a newer
+	// main run cancels the older one. A schedule run is tested first and keeps
+	// schedule-{repository} (ci-template v1.29.3, ruling 255(10)/(11)(c)), so a
+	// repository has one schedule run at a time.
+	mainKeyedGroup = "${{ github.workflow }}-${{ github.event_name == 'schedule' && format('schedule-{0}', github.repository) || github.ref == 'refs/heads/main' && format('main-{0}', github.event_name) || github.ref }}"
 
 	// cancelLiteral is ci-template v1.23's cancel-in-progress. Gitea 1.27.1
 	// never released go-qrdb main runs 57063 and 57200 while it was an
 	// expression, so no expression reaches it.
 	cancelLiteral = "true"
 )
+
+// outsideGate names the ci.yml jobs ci-gate does not require, each with
+// the exact `if:` that confines it. deps-bump-dispatch (ruling 640) checks
+// nothing: it dispatches deps-bump.yml from the nightly schedule run on
+// main. It cannot be a nightly-tier job: that tier also runs on
+// workflow_dispatch, and deps-bump.yml dispatches ci.yml on ci/deps-bump,
+// so the two would dispatch each other.
+var outsideGate = map[string]string{
+	"deps-bump-dispatch": depsBumpDispatchIf,
+}
 
 // scheduleAllowed names the workflows allowed a `schedule:`. ci.yml carries
 // ci-template v1.27.0's cron, nightly here (ciSchedule), the one scheduler under ruling 135,
@@ -384,6 +397,13 @@ func ciTierProblems(wf ciWorkflow) []string {
 			continue
 		}
 		job := wf.Jobs[name]
+		if want, outside := outsideGate[name]; outside {
+			if job.If != want {
+				problems = append(problems, "job "+name+" is outside "+ciGateJob+" but its `if:` is "+
+					strconv.Quote(job.If)+", not "+strconv.Quote(want))
+			}
+			continue
+		}
 		if !slices.Contains(gateNeeds, name) {
 			problems = append(problems, ciGateJob+" does not list "+name+
 				" in needs: a job that can pass and is not required is a fail-open gate")
@@ -691,6 +711,21 @@ func TestCITierProblems_CanFail(t *testing.T) {
 	want := "job " + fipsJob + " is tagged pr but belongs to the full tier"
 	if p := ciTierProblems(parseWorkflow(t, fipsOnPR)); !slices.ContainsFunc(p, func(s string) bool { return strings.Contains(s, want) }) {
 		t.Fatalf("fips job on the PR tier: want a problem containing %q, got %q", want, p)
+	}
+
+	// deps-bump-dispatch (ruling 640) stays outside ci-gate only under its
+	// schedule-on-main `if:`; on the nightly tier's `if:` a workflow_dispatch
+	// run would dispatch deps-bump.yml, which dispatches ci.yml again.
+	dispatchJob := func(cond string) string {
+		return replace("  build:\n    steps:", "  deps-bump-dispatch:\n    if: "+cond+
+			"\n    steps:\n      - run: gh workflow run deps-bump.yml\n  build:\n    steps:")
+	}
+	if p := ciTierProblems(parseWorkflow(t, dispatchJob(depsBumpDispatchIf))); len(p) != 0 {
+		t.Fatalf("deps-bump-dispatch on its own `if:` must have no problems, got %v", p)
+	}
+	want = "job deps-bump-dispatch is outside " + ciGateJob + " but its `if:`"
+	if p := ciTierProblems(parseWorkflow(t, dispatchJob(nightlyIf))); !slices.ContainsFunc(p, func(s string) bool { return strings.Contains(s, want) }) {
+		t.Fatalf("deps-bump-dispatch on the nightly `if:`: want a problem containing %q, got %q", want, p)
 	}
 }
 
@@ -1101,8 +1136,8 @@ func TestWorkflowTriggerProblems_CanFail(t *testing.T) {
 		"other workflow on v1.23": {"x.yml", ciGood},
 		"ci.yml cancel expression": {ciWorkflowName,
 			strings.Replace(ciGood, "cancel-in-progress: "+cancelLiteral, "cancel-in-progress: "+cancelOffMain, 1)},
-		"ci.yml main group per event": {ciWorkflowName,
-			strings.Replace(ciGood, "format('main-{0}-{1}', github.event_name, github.sha)", "format('main-{0}', github.event_name)", 1)},
+		"ci.yml main group per sha": {ciWorkflowName,
+			strings.Replace(ciGood, "format('main-{0}', github.event_name)", "format('main-{0}-{1}', github.event_name, github.sha)", 1)},
 		"ci.yml schedule group per sha": {ciWorkflowName,
 			strings.Replace(ciGood, "format('schedule-{0}', github.repository)", "format('schedule-{0}-{1}', github.repository, github.sha)", 1)},
 		"ci.yml v1.22.1 group":  {ciWorkflowName, strings.Replace(ciGood, mainKeyedGroup, refKeyedGroup, 1)},

@@ -89,6 +89,17 @@ case "$out" in
 *) ok "vendor and .git are excluded" ;;
 esac
 
+# testdata/ is excluded too: the go tool ignores it, so a fixture module there
+# (scripts/depscheck/testdata/fail) is not a module to vet and must not become
+# an "unmapped module" that fails every sweep.
+fixture "$TMP/t" . scripts/x/testdata/fail testdata/y
+out=$(run "$TMP/t" --list); rc=$?
+case "$rc:$out" in
+*testdata*) bad "testdata modules are excluded" "leaked: $out" ;;
+0:*"$TMP/t"*) ok "testdata modules are excluded" ;;
+*) bad "testdata modules are excluded" "rc=$rc out=$out" ;;
+esac
+
 # --- mapping ---------------------------------------------------------------
 
 # The root and sdk/go map to the WHOLE declared set, in order, whatever its

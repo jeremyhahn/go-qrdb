@@ -32,13 +32,13 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/jeremyhahn/go-codec v1.5.1-alpha
-	// go-enclave: v0.11.1-alpha, in lockstep with go-quicraft v0.24.3-alpha
-	// and go-truststrap v0.7.1-alpha, which build on it (#944), as does
-	// go-objstore v0.9.1-alpha.
-	github.com/jeremyhahn/go-enclave v0.11.1-alpha
+	// go-enclave: v0.12.0-alpha (#1654); go-quicraft v0.24.3-alpha (built
+	// on go-enclave v0.10.0-alpha), go-truststrap v0.7.1-alpha and
+	// go-objstore v0.9.1-alpha resolve to it by minimum version selection.
+	github.com/jeremyhahn/go-enclave v0.12.0-alpha
 	github.com/jeremyhahn/go-objstore v0.9.1-alpha
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.58.0-alpha
-	// go-quicraft: the newest tag (#944), built on go-enclave v0.11.1-alpha.
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.58.5-alpha
+	// go-quicraft: the newest tag (#944), built on go-enclave v0.10.0-alpha.
 	github.com/jeremyhahn/go-quicraft v0.24.3-alpha
 	github.com/jeremyhahn/go-truststrap v0.7.1-alpha
 	github.com/jeroenrinzema/psql-wire v0.20.0
@@ -59,6 +59,7 @@ require (
 	go.etcd.io/etcd/client/v3 v3.7.3
 	go.mongodb.org/mongo-driver v1.17.10
 	golang.org/x/crypto v0.58.0
+	golang.org/x/mod v0.42.0
 	golang.org/x/net v0.62.0
 	golang.org/x/sync v0.25.0
 	golang.org/x/sys v0.50.0
@@ -214,7 +215,6 @@ require (
 	go.uber.org/zap v1.27.1 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
-	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/telemetry v0.0.0-20261009151841-97e8ea77aa2a // indirect
 	golang.org/x/text v0.43.0 // indirect

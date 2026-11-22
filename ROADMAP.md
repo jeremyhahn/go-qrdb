@@ -1,6 +1,6 @@
 # go-qrdb roadmap
 
-> **Status: REFERENCE** · Owner: Software Department · Last verified: 2026-10-25
+> **Status: REFERENCE** · Owner: Software Department · Last verified: 2026-11-20
 
 ## Mission
 
@@ -104,26 +104,33 @@ The cluster engine and database system for every project in the stack: embedded,
 - **barrier-passphrase-change** — a supported system-barrier passphrase change on every transport, the CLI, the TypeScript SDK and `Node.ChangePassphrase` — [#631](../../issues/631), [docs/barrier-seal/](docs/barrier-seal/) — done
 - **fsync-stall-leadership** — leadership survives a bounded follower WAL fsync stall; adopts go-quicraft's heartbeat-under-fsync seam — [docs/clustering/](docs/clustering/) — done
 - **lean-node-build** — opt-in `qrdb_*` tags for a lean embedded node — [#627](../../issues/627), [docs/run-modes/](docs/run-modes/) — done
+- **cluster-verification** — the qrdb-3-node-proven gate passes on the three-node cluster; cluster suites green on main — [#668](../../issues/668), [#671](../../issues/671), [#679](../../issues/679), [docs/cluster-verification/](docs/cluster-verification/) — done
+- **fips-140-3** — the FIPS 140-3 job (ci.yml `fips`) green and measured; clusterenroll on the P-256 handshake — [#618](../../issues/618), [#608](../../issues/608), [#20](../../issues/20), [#118](../../issues/118), [docs/seal/fips140-mode.md](docs/seal/fips140-mode.md), [docs/clustering/architecture.md](docs/clustering/architecture.md#member-side-csr-join-key-a-cluster-ca) — done
+- **tenant-delegation** — a tenant-controlled, revocable, audited delegation for an embedder's server-owned work in that tenant: a standing delegation policy, `Node.MintDelegation` and `Node.DelegatedContext`; consumer go-quicbaas #1814 — [#1187](../../issues/1187), [docs/identity-rbac/](docs/identity-rbac/), [docs/certificate-authority/](docs/certificate-authority/) — done
+- **invitation-reissue-supersedes** — re-inviting a pending account supersedes every earlier token in one guarded write (`invite.Store.Reissue`); activation recorded apart from redemption — [#1196](../../issues/1196), [docs/identity-rbac/](docs/identity-rbac/) — done
+- **role-grant-rule** — a grantor may grant only permissions it holds (`*role.GrantExceedsHolderError`) — [#1279](../../issues/1279), [docs/identity-rbac/architecture.md](docs/identity-rbac/architecture.md#the-grant-rule) — done
+- **tenant-barrier-signed-init** — a two-phase signed tenant barrier init for a first admin's key that signs away from the node; consumer go-quicbaas #1814 — [#1213](../../issues/1213), PR [#1402](../../pulls/1402), [docs/multi-tenancy/api.md](docs/multi-tenancy/api.md#signed-barrier-init-a-first-admins-key-that-signs-elsewhere) — done
+- **seal-quiesce** — sealing an at-rest barrier quiesces the encrypted stores under it, then refuses new work with `ErrBarrierSealed` — PR [#1403](../../pulls/1403), [docs/barrier-seal/](docs/barrier-seal/) — done
+- **kv-versions** — a caller reads a key's version, the number a transaction's `version` compare reads; transaction branches answer gets and ranges inside the transaction — [#1212](../../issues/1212), [docs/key-value/](docs/key-value/) — done
 
 ## Now
 
-- **cluster-verification** — the qrdb-3-node-proven gate passes on the three-node cluster; cluster suites green on main — [#668](../../issues/668), [#671](../../issues/671), [#679](../../issues/679), [docs/cluster-verification/](docs/cluster-verification/) — blocked: the pinned port set (#671) and the rate nemesis (#679)
 - **strict-tenant-isolation** — a home store per strict tenant; per-node tenant barrier init — [#683](../../issues/683), [docs/multi-tenancy/](docs/multi-tenancy/) — open
 - **arm64-release** — linux-arm64 and arm64-fips release artifacts; the integration suite once on arm64 before the RC — [#702](../../issues/702), [docs/release/](docs/release/) — in progress
 - **separation-of-duties** — SO separation of duties is enforced in compliance mode only; the optional SO holds in both postures — [#1128](../../issues/1128), [#1042](../../issues/1042), [docs/identity-rbac/](docs/identity-rbac/) — in progress
 - **desktop-gui** — the Wails desktop application — [docs/desktop-gui/](docs/desktop-gui/) — in progress
 - **webtransport-session** — WebTransport sessions (draft-ietf-webtrans-http3-16) on the REST HTTP/3 listener behind an authenticated, tenant-bound CONNECT route — [#1244](../../issues/1244), [docs/api-server/](docs/api-server/) — in progress
 - **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — [#1613](../../issues/1613), PR [#729](../../pulls/729), [docs/databases/](docs/databases/), [docs/plans/1613-verifiable-log.md](docs/plans/1613-verifiable-log.md) — in progress: serving barrier-isolated tenants and barrier-enabled databases awaits the owner's decision on where their logs live
-- **rolling-upgrades** — mixed-version rolling upgrades between adjacent releases: wire-version negotiation, typed refusal of version gaps, a cross-release compatibility matrix (N to N+1 both ways, mid-upgrade cluster) — [#1628](../../issues/1628), [docs/rolling-upgrades/](docs/rolling-upgrades/) — planned
 
 ## Next
-
-- **fips-140-3** — the FIPS 140-3 job (ci.yml `fips`) green and measured; clusterenroll on the P-256 handshake — [#618](../../issues/618), [#608](../../issues/608), [#20](../../issues/20), [#118](../../issues/118), [docs/seal/fips140-mode.md](docs/seal/fips140-mode.md), [docs/clustering/architecture.md](docs/clustering/architecture.md#member-side-csr-join-key-a-cluster-ca) — open
 
 ## Later
 
 - **release-readiness** — release readiness for the public release — [#565](../../issues/565), [docs/release/](docs/release/) — open
 - **object-storage-credential-handle** — the object-storage credential crosses the seam as the go-enclave protected-memory credential handle; adopts go-objstore#16 — [#1143](../../issues/1143), [docs/storage-engines/](docs/storage-engines/) — open
+- **rolling-upgrades** — mixed-version rolling upgrades between adjacent releases: wire-version negotiation, typed refusal of version gaps, a cross-release compatibility matrix (N to N+1 both ways, mid-upgrade cluster) — [#1628](../../issues/1628), PR [#1638](../../pulls/1638), [docs/rolling-upgrades/](docs/rolling-upgrades/) — in review
+- **object-storage-provider** — object storage is configurable as a backend storage provider of go-qrdb's storage API, the `pkg/storage.Storage` seam; go-objstore supplies the backends (owner ruling 228(3)) — [docs/storage-engines/](docs/storage-engines/) — open
+- **object-storage-provider-seam** — the provider side of the object-storage seam: go-quicbaas configures the provider per go-objstore backend; go-qrdb designs no backend of its own (owner ruling 228(2), 228(3)) — [docs/storage-engines/](docs/storage-engines/) — open
 
 ## Future
 

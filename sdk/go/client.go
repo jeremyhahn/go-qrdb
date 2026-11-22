@@ -328,17 +328,15 @@ func (c *Client) DatabaseScoped(name string) (*Client, error) {
 }
 
 // Permissions returns a PermissionClient exposing the read-only
-// permission registry. The transport must implement
-// transport.PermissionProvider; otherwise the returned client is nil
-// and callers should fall back appropriately.
+// permission registry: List, Lookup and LookupScope. Every transport
+// implements transport.PermissionProvider (embedded reads the registry, the
+// network transports answer from the server's permission catalog), so the
+// result is never nil on an open client.
 func (c *Client) Permissions() transport.PermissionClient {
 	if c.closed.Load() {
 		return nil
 	}
-	if p, ok := c.transport.(transport.PermissionProvider); ok {
-		return p.PermissionClient()
-	}
-	return nil
+	return capability[transport.PermissionProvider](c, "Permissions").PermissionClient()
 }
 
 // Audit returns an AuditClient that can emit and query compliance-grade

@@ -77,13 +77,8 @@ RUN set -eu; \
 # stage has git and base does not.
 FROM ${GO_IMAGE} AS modules
 ARG GO_BUILD_PROXY
-# Ruling 888: the pool's LAN apk cache reaches apk-mirror as the BuildKit
-# secret apk_mirror, empty on a hosted runner. A secret is in no layer and no
-# history entry; a build argument's value would be in both.
 ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOMODCACHE=/gomodcache GOPROXY=${GO_BUILD_PROXY}
-RUN --mount=type=bind,source=scripts/apk-mirror.sh,target=/usr/local/bin/apk-mirror \
-    --mount=type=secret,id=apk_mirror,env=APK_MIRROR \
-    apk-mirror add --no-cache git
+RUN apk add --no-cache git
 WORKDIR /src
 
 # Every module in the tree, at its own path: the `replace` directives point
@@ -145,11 +140,9 @@ ENV GOTOOLCHAIN=local \
     GOFLAGS=-mod=readonly \
     GOMODCACHE=/gomodcache \
     GOCACHE=/gocache
-RUN --mount=type=bind,source=scripts/apk-mirror.sh,target=/usr/local/bin/apk-mirror \
-    --mount=type=secret,id=apk_mirror,env=APK_MIRROR \
-    set -eu; \
-    apk-mirror upgrade --no-cache; \
-    apk-mirror add --no-cache gcc g++ musl-dev icu-dev bash; \
+RUN set -eu; \
+    apk upgrade --no-cache; \
+    apk add --no-cache gcc g++ musl-dev icu-dev bash; \
     addgroup -g 10001 dev; \
     adduser -D -u 10001 -G dev -h /home/dev dev; \
     install -d -m 0755 -o 10001 -g 10001 /src
@@ -166,9 +159,7 @@ ENV GOPROXY=off
 # ---------------------------------------------------------------------------
 FROM base AS toolchain
 ENV HOME=/tmp
-RUN --mount=type=bind,source=scripts/apk-mirror.sh,target=/usr/local/bin/apk-mirror \
-    --mount=type=secret,id=apk_mirror,env=APK_MIRROR \
-    apk-mirror add --no-cache make git curl jq shellcheck \
+RUN apk add --no-cache make git curl jq shellcheck \
       coreutils grep sed gawk findutils diffutils tar xz openssh-keygen; \
     git config --system --add safe.directory '*'
 COPY --from=tools /out/ /usr/local/bin/
@@ -186,9 +177,7 @@ ARG IT_TAGS
 # here on, so the upgrade takes Alpine's latest packages, a CVE fix among
 # them; base and toolchain do not declare it, so their cache does not move.
 ARG APK_INDEX_SUM
-RUN --mount=type=bind,source=scripts/apk-mirror.sh,target=/usr/local/bin/apk-mirror \
-    --mount=type=secret,id=apk_mirror,env=APK_MIRROR \
-    apk-mirror upgrade --no-cache
+RUN apk upgrade --no-cache
 WORKDIR /src
 # The whole source, filtered by .dockerignore, owned by root so the suite
 # cannot rewrite it. Not pkg and test alone: the qrdbdharness suites build the
