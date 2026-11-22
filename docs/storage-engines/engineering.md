@@ -480,7 +480,9 @@ the same status.
 > (`pkg/storage/pebble/remote.go`) and the store format marker
 > `objstore.EnsureLSMFormat` (`pkg/storage/objstore/lsmformat.go`, OS-5 A),
 > the store opener `objstore.OpenStore` (`pkg/storage/objstore/open.go`, with
-> `ArchiveTierUnsupportedError`) and the composed opener in
+> `ArchiveTierUnsupportedError`), the local object cache
+> `objstore.CachedRemote` (`pkg/storage/objstore/cacheremote.go`, OS-6 A
+> interim, local dir `objstore-lsm-cache`) and the composed opener in
 > `pkg/server/lifecycle/objstore_lsm.go` (prefix "lsm", locator "qrdb", local
 > dir `objstore-lsm`, a sealed barrier refused with
 > `ObjstoreBarrierSealedError`) exist, all unwired; **nothing else below is
@@ -557,7 +559,10 @@ never derived from a qrdb key, never shared between instances.
   [../backup-restore/architecture.md](../backup-restore/architecture.md)).
 - **No ranged read yet (OS-6).** Until go-objstore exposes one, `ReadObject`
   fetches the whole object once per open and serves `ReadAt` from a local
-  cache keyed by object name. This is a documented performance limitation of
+  cache keyed by object name. The cache is one file per object under the
+  data dir's `objstore-lsm-cache`, below the encrypting wrapper (it holds the
+  stored, sealed bytes), written through on create, removed on delete, and
+  unbounded otherwise. This is a documented performance limitation of
   phase 1, not a silent one: the adapter's doc comment says so, and the real
   fix is the ranged read requested from go-objstore.
 - **The provider credential crosses as go-objstore takes it.** `NewRemote`

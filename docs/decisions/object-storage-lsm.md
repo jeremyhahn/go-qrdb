@@ -176,6 +176,9 @@ interim cache is a performance caveat, not a correctness one, and Pebble's
 `SecondaryCacheSizeBytes` absorbs repeated block reads. Missing API, to file
 on go-objstore: a byte-range read on `common.Storage` (not in v0.9.1-alpha).
 
+**Decided (convention, ruling 109): A.** The interim cache is
+`objstore.CachedRemote`; the go-objstore ranged read is still to be requested.
+
 ### OS-7 — Lifting "objstore is refused as a hot apply path"
 
 - **A: lift only the per-database `backend: objstore` refusal (phase 2); keep
