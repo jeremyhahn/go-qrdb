@@ -38,12 +38,19 @@ const cacheTempSuffix = ".tmp"
 // file per object under its directory and serves ReadObject and Size from it,
 // so each object is fetched from the store at most once per cache dir.
 //
+// Operations on one object name are serialized by a per-name lock: concurrent
+// first reads of an uncached object share one fetch, and a fetch racing Delete
+// cannot store the cache file again after Delete removed it. Names that do
+// not map to exactly one file directly in the cache dir (empty, ".", "..")
+// are refused with an *InvalidObjectNameError before the inner storage is
+// called.
+//
 // Pebble never rewrites an object under the same name, so a cached file stays
 // valid until Delete removes it. CreateObject writes through: the bytes land in
 // the cache once the inner writer's Close succeeds. Each file is written to a
-// temporary name, fsynced and renamed into place, so a crash never leaves a
-// partial object under a real name; leftover temporaries are removed by
-// NewCachedRemote.
+// temporary name, fsynced, renamed into place and the cache dir fsynced, so a
+// crash never leaves a partial object under a real name; leftover temporaries
+// are removed by NewCachedRemote.
 //
 // The cache holds exactly the bytes the store holds, so it sits below
 // EncryptedRemote: with the barrier on it holds ciphertext and nothing
@@ -52,6 +59,53 @@ const cacheTempSuffix = ".tmp"
 type CachedRemote struct {
 	inner remote.Storage
 	dir   string
+
+	mu    sync.Mutex
+	locks map[string]*objLock
+}
+
+// objLock is the per-object-name lock of a CachedRemote; refs counts its
+// holders and waiters, and the entry is dropped when it reaches zero.
+type objLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// lock takes the lock of objName and returns the func that releases it.
+func (c *CachedRemote) lock(objName string) func() {
+	c.mu.Lock()
+	l, ok := c.locks[objName]
+	if !ok {
+		l = &objLock{}
+		c.locks[objName] = l
+	}
+	l.refs++
+	c.mu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		c.mu.Lock()
+		l.refs--
+		if l.refs == 0 {
+			delete(c.locks, objName)
+		}
+		c.mu.Unlock()
+	}
+}
+
+// checkName refuses an object name whose cache file would not be exactly one
+// file directly in the cache dir.
+func (c *CachedRemote) checkName(objName string) error {
+	esc := url.PathEscape(objName)
+	switch {
+	case objName == "":
+		return &InvalidObjectNameError{Name: objName, Reason: "empty name"}
+	case esc == "." || esc == "..":
+		return &InvalidObjectNameError{Name: objName, Reason: "name is a directory reference"}
+	case strings.ContainsRune(esc, '/') || strings.ContainsRune(esc, filepath.Separator):
+		return &InvalidObjectNameError{Name: objName, Reason: "escaped name holds a path separator"}
+	}
+	return nil
 }
 
 var _ remote.Storage = (*CachedRemote)(nil)
@@ -83,7 +137,7 @@ func NewCachedRemote(inner remote.Storage, dir string) (*CachedRemote, error) {
 			}
 		}
 	}
-	return &CachedRemote{inner: inner, dir: dir}, nil
+	return &CachedRemote{inner: inner, dir: dir, locks: make(map[string]*objLock)}, nil
 }
 
 // path returns the cache file of the object objName.
@@ -93,19 +147,21 @@ func (c *CachedRemote) path(objName string) string {
 
 // ReadObject serves the object from its cache file, or fetches it whole from
 // the inner storage, stores it in the cache and serves the fetched bytes. A
-// cache write failure is returned.
+// miss takes the object's lock and re-checks the cache file, so concurrent
+// first reads fetch once and a fetch never lands after a concurrent Delete. A
+// cache write failure is returned; an unmappable name is refused with an
+// *InvalidObjectNameError.
 func (c *CachedRemote) ReadObject(ctx context.Context, objName string) (remote.ObjectReader, int64, error) {
-	f, err := os.Open(c.path(objName))
-	switch {
-	case err == nil:
-		fi, err := f.Stat()
-		if err != nil {
-			_ = f.Close()
-			return nil, 0, err
-		}
-		return &cacheFileReader{f: f, size: fi.Size()}, fi.Size(), nil
-	case !errors.Is(err, fs.ErrNotExist):
+	if err := c.checkName(objName); err != nil {
 		return nil, 0, err
+	}
+	if rd, size, ok, err := c.openCached(objName); ok || err != nil {
+		return rd, size, err
+	}
+	unlock := c.lock(objName)
+	defer unlock()
+	if rd, size, ok, err := c.openCached(objName); ok || err != nil {
+		return rd, size, err
 	}
 	rd, size, err := c.inner.ReadObject(ctx, objName)
 	if err != nil {
@@ -126,9 +182,31 @@ func (c *CachedRemote) ReadObject(ctx context.Context, objName string) (remote.O
 	return &remoteReader{data: buf}, size, nil
 }
 
+// openCached opens the cache file of objName; ok is false when it is absent.
+func (c *CachedRemote) openCached(objName string) (rd remote.ObjectReader, size int64, ok bool, err error) {
+	f, err := os.Open(c.path(objName))
+	switch {
+	case err == nil:
+		fi, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			return nil, 0, false, err
+		}
+		return &cacheFileReader{f: f, size: fi.Size()}, fi.Size(), true, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, 0, false, nil
+	default:
+		return nil, 0, false, err
+	}
+}
+
 // CreateObject returns a writer that forwards to the inner storage's writer
-// and, once its Close succeeds, stores the object in the cache.
+// and, once its Close succeeds, stores the object in the cache under the
+// object's lock. An unmappable name is refused with an *InvalidObjectNameError.
 func (c *CachedRemote) CreateObject(objName string) (io.WriteCloser, error) {
+	if err := c.checkName(objName); err != nil {
+		return nil, err
+	}
 	w, err := c.inner.CreateObject(objName)
 	if err != nil {
 		return nil, err
@@ -141,11 +219,18 @@ func (c *CachedRemote) List(prefix, delimiter string) ([]string, error) {
 	return c.inner.List(prefix, delimiter)
 }
 
-// Delete removes the object from the inner storage and its cache file. The
-// inner error is returned first; a missing cache file is not an error.
+// Delete removes the object from the inner storage and its cache file, both
+// under the object's lock, so a concurrent ReadObject cannot store the file
+// again afterwards. The inner error is returned first; a missing cache file is
+// not an error. An unmappable name is refused with an *InvalidObjectNameError.
 func (c *CachedRemote) Delete(objName string) error {
+	if err := c.checkName(objName); err != nil {
+		return err
+	}
+	unlock := c.lock(objName)
 	err := c.inner.Delete(objName)
 	rmErr := os.Remove(c.path(objName))
+	unlock()
 	if err != nil {
 		return err
 	}
@@ -156,8 +241,12 @@ func (c *CachedRemote) Delete(objName string) error {
 }
 
 // Size returns the size of the cache file when present, else the inner
-// storage's size of the object.
+// storage's size of the object. An unmappable name is refused with an
+// *InvalidObjectNameError.
 func (c *CachedRemote) Size(objName string) (int64, error) {
+	if err := c.checkName(objName); err != nil {
+		return 0, err
+	}
 	fi, err := os.Stat(c.path(objName))
 	switch {
 	case err == nil:
@@ -177,8 +266,9 @@ func (c *CachedRemote) IsNotExistError(err error) bool {
 func (c *CachedRemote) Close() error { return nil }
 
 // store writes data as the cache file of objName: a temporary file in the
-// cache dir, fsynced and renamed into place. The temporary is removed on any
-// failure.
+// cache dir, fsynced and renamed into place, then the cache dir fsynced so the
+// rename survives a crash. The temporary is removed on any failure before the
+// rename. The caller holds the object's lock.
 func (c *CachedRemote) store(objName string, data []byte) (err error) {
 	tmp, err := os.CreateTemp(c.dir, "*"+cacheTempSuffix)
 	if err != nil {
@@ -199,7 +289,24 @@ func (c *CachedRemote) store(objName string, data []byte) (err error) {
 	if err = tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), c.path(objName))
+	if err = os.Rename(tmp.Name(), c.path(objName)); err != nil {
+		return err
+	}
+	return syncDir(c.dir)
+}
+
+// syncDir fsyncs the directory dir, returning the first error of open, sync
+// and close.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // cacheFileReader serves ReadAt from a cache file, with the semantics of
@@ -278,5 +385,7 @@ func (w *cacheWriter) Close() error {
 	if err := w.inner.Close(); err != nil {
 		return err
 	}
+	unlock := w.c.lock(w.objName)
+	defer unlock()
 	return w.c.store(w.objName, data)
 }

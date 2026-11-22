@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -337,4 +338,209 @@ func TestPebbleRoundTrip_CachedRemote(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEmpty(t, entries)
 	})
+}
+
+// blockingRemote holds every ReadObject that reaches the wrapped storage
+// until release is closed: it signals entry on entered first, and counts the
+// calls.
+type blockingRemote struct {
+	remote.Storage
+	entered chan struct{}
+	release chan struct{}
+	reads   atomic.Int64
+}
+
+func newBlockingRemote(inner remote.Storage) *blockingRemote {
+	return &blockingRemote{Storage: inner, entered: make(chan struct{}, 64), release: make(chan struct{})}
+}
+
+func (b *blockingRemote) ReadObject(ctx context.Context, objName string) (remote.ObjectReader, int64, error) {
+	b.reads.Add(1)
+	b.entered <- struct{}{}
+	<-b.release
+	return b.Storage.ReadObject(ctx, objName)
+}
+
+// allCallsRemote counts every call of the methods a CachedRemote forwards
+// per object name.
+type allCallsRemote struct {
+	remote.Storage
+	calls atomic.Int64
+}
+
+func (a *allCallsRemote) ReadObject(ctx context.Context, objName string) (remote.ObjectReader, int64, error) {
+	a.calls.Add(1)
+	return a.Storage.ReadObject(ctx, objName)
+}
+
+func (a *allCallsRemote) CreateObject(objName string) (io.WriteCloser, error) {
+	a.calls.Add(1)
+	return a.Storage.CreateObject(objName)
+}
+
+func (a *allCallsRemote) Delete(objName string) error {
+	a.calls.Add(1)
+	return a.Storage.Delete(objName)
+}
+
+func (a *allCallsRemote) Size(objName string) (int64, error) {
+	a.calls.Add(1)
+	return a.Storage.Size(objName)
+}
+
+// requireLocksReleased asserts no per-object lock entry is left.
+func requireLocksReleased(t *testing.T, c *CachedRemote) {
+	t.Helper()
+	c.mu.Lock()
+	n := len(c.locks)
+	c.mu.Unlock()
+	require.Zero(t, n)
+}
+
+// readAll reads the whole object objName through c.
+func readAll(c *CachedRemote, objName string) ([]byte, error) {
+	rd, size, err := c.ReadObject(context.Background(), objName)
+	if err != nil {
+		return nil, err
+	}
+	p := make([]byte, size)
+	err = rd.ReadAt(context.Background(), p, 0)
+	if cerr := rd.Close(); err == nil {
+		err = cerr
+	}
+	return p, err
+}
+
+func TestCachedRemote_ConcurrentFirstReadsFetchOnce(t *testing.T) {
+	rs := newTestRemote(t, memory.New(), "db1")
+	data := []byte("concurrent-object")
+	putObject(t, rs, "000010.sst", data)
+	b := newBlockingRemote(rs)
+	c := newTestCachedRemote(t, b, t.TempDir())
+
+	const n = 8
+	var wg sync.WaitGroup
+	got := make([][]byte, n)
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got[i], errs[i] = readAll(c, "000010.sst")
+		}()
+	}
+	<-b.entered
+	close(b.release)
+	wg.Wait()
+	for i := range n {
+		require.NoError(t, errs[i], "reader %d", i)
+		require.Equal(t, data, got[i], "reader %d", i)
+	}
+	require.Equal(t, int64(1), b.reads.Load())
+	requireLocksReleased(t, c)
+}
+
+func TestCachedRemote_DeleteDuringFetchLeavesNoCacheFile(t *testing.T) {
+	rs := newTestRemote(t, memory.New(), "db1")
+	data := []byte("raced")
+	putObject(t, rs, "000011.sst", data)
+	b := newBlockingRemote(rs)
+	c := newTestCachedRemote(t, b, t.TempDir())
+
+	readDone := make(chan struct{})
+	var readGot []byte
+	var readErr error
+	go func() {
+		defer close(readDone)
+		readGot, readErr = readAll(c, "000011.sst")
+	}()
+	<-b.entered
+
+	delDone := make(chan struct{})
+	var delErr error
+	go func() {
+		defer close(delDone)
+		delErr = c.Delete("000011.sst")
+	}()
+	select {
+	case <-delDone:
+		t.Fatal("Delete returned while a fetch of the object held its lock")
+	default:
+	}
+	close(b.release)
+	<-readDone
+	<-delDone
+
+	require.NoError(t, readErr)
+	require.Equal(t, data, readGot)
+	require.NoError(t, delErr)
+	_, err := os.Stat(c.path("000011.sst"))
+	require.True(t, os.IsNotExist(err))
+	_, err = c.Size("000011.sst")
+	require.True(t, c.IsNotExistError(err))
+	_, _, err = c.ReadObject(context.Background(), "000011.sst")
+	require.True(t, c.IsNotExistError(err))
+	requireLocksReleased(t, c)
+}
+
+func TestCachedRemote_RefusesUnmappableNames(t *testing.T) {
+	dir := t.TempDir()
+	rs := newTestRemote(t, memory.New(), "db1")
+	inner := &allCallsRemote{Storage: rs}
+	c := newTestCachedRemote(t, inner, dir)
+	before, err := os.ReadDir(dir)
+	require.NoError(t, err)
+
+	ops := []struct {
+		name string
+		call func(string) error
+	}{
+		{"ReadObject", func(n string) error { _, _, err := c.ReadObject(context.Background(), n); return err }},
+		{"CreateObject", func(n string) error { _, err := c.CreateObject(n); return err }},
+		{"Delete", c.Delete},
+		{"Size", func(n string) error { _, err := c.Size(n); return err }},
+	}
+	for _, name := range []string{"", ".", ".."} {
+		for _, op := range ops {
+			err := op.call(name)
+			var ie *InvalidObjectNameError
+			require.ErrorAs(t, err, &ie, "%s %q", op.name, name)
+			require.Equal(t, name, ie.Name)
+		}
+	}
+	require.Zero(t, inner.calls.Load())
+	after, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+	requireLocksReleased(t, c)
+
+	putObject(t, rs, "sub/dir/x.sst", []byte("ok"))
+	got, err := readAll(c, "sub/dir/x.sst")
+	require.NoError(t, err)
+	require.Equal(t, "ok", string(got))
+}
+
+func TestCachedRemote_LocksReleased(t *testing.T) {
+	rs := newTestRemote(t, memory.New(), "db1")
+	putObject(t, rs, "000012.sst", []byte("a"))
+	c := newTestCachedRemote(t, rs, t.TempDir())
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = readAll(c, "000012.sst")
+			w, err := c.CreateObject("000013.sst")
+			if err == nil {
+				_, _ = w.Write([]byte("b"))
+				_ = w.Close()
+			}
+			_, _ = c.Size("000013.sst")
+		}()
+	}
+	wg.Wait()
+	require.NoError(t, c.Delete("000012.sst"))
+	require.NoError(t, c.Delete("000013.sst"))
+	requireLocksReleased(t, c)
 }

@@ -50,6 +50,19 @@ func (e *InvalidCachedRemoteError) Error() string {
 	return "objstore: invalid cached remote storage (dir " + strconv.Quote(e.Dir) + "): " + e.Reason
 }
 
+// InvalidObjectNameError indicates a CachedRemote was given an object name
+// that does not map to exactly one file directly in its cache directory
+// (empty, ".", "..", or an escaped name holding a path separator). It is
+// refused before the inner storage is called.
+type InvalidObjectNameError struct {
+	Name   string
+	Reason string
+}
+
+func (e *InvalidObjectNameError) Error() string {
+	return "objstore: invalid object name " + strconv.Quote(e.Name) + ": " + e.Reason
+}
+
 // InvalidEncryptedRemoteError indicates NewEncryptedRemote was given a nil
 // inner remote storage or a nil barrier.
 type InvalidEncryptedRemoteError struct {
