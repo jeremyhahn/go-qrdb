@@ -612,7 +612,16 @@ Invariants:
     database the guard may still refuse. Once the strict create guard
     accepts the database, the record is promoted (`Provisional` cleared)
     and every node may serve it. A refused create whose cleanup could not
-    remove the record leaves it provisional and never opened. A
+    remove the record leaves it provisional and never opened. A drop of the
+    name (`Manager.DropForTenant`, `DropIncarnationForTenant`, and the
+    service drop with or without a placement store) reclaims it
+    (`Manager.reclaimProvisional`): it claims the record with a fresh
+    `DropClaim`, swapped in on its incarnation only while the record is
+    still provisional, then deletes it on both, never serving it. A claimed
+    record is never promoted: a create that has not promoted yet refuses the
+    promotion, while a create already promoted wins and the normal drop
+    applies. A record of another database id or incarnation is refused with
+    `DropSupersededError`. The name can then be created again. A
     provisioned (shared) database created at node boot under the one
     shared incarnation is written serving (`Provisional` false) and skips
     the promote: there is no API create to guard, and a peer provisioning

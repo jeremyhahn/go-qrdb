@@ -730,6 +730,11 @@ DedicatedWAL for a RESUMED drop (one whose local fence survived a restart),
 so the tenant's quota is still released correctly even though `GetForTenant`
 itself would refuse with `DroppingError`.
 
+With no placement store (a single node), there is no placement to tell the
+cases apart. A `NotFoundError` for the name goes on to the manager drop,
+which reclaims a stranded provisional record (see
+[engineering.md](engineering.md)) and otherwise returns the `NotFoundError`.
+
 **A drop resumes after a restart even though the local fence refuses the
 usual lookup.** `Manager.Get` keeps answering `*database.DroppingError` for
 a database whose local fence survived the restart, the resolution path

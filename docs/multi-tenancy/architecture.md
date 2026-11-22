@@ -1176,7 +1176,9 @@ by-id operations never cross tenants:
   shared routing table, there is nothing to redirect.
 - **Under `operator-access`, an operator names the tenant explicitly**
   (`qrdb users get --tenant acme <id>`). The id is resolved in that tenant's
-  store, on that tenant's serving set.
+  store, on that tenant's serving set. A tenant that does not exist answers
+  NotFound, and a policy that cannot be read answers Unavailable, never an
+  admit.
 
 The design removes `tenant.IdentityIndex`, `tenant.OwningTenant` and the
 system-namespace index records. An isolated tenant already keeps no index

@@ -84,6 +84,17 @@ are not reconstructed here — their history is in the git log.
   update that changes `isolation_policy` always needs `tenants:update` on the
   target tenant (and `tenants:update:cross` for another tenant), even when it
   also carries `status` or `isolation_type`.
+- **Strict tenant isolation fails closed and recovers stranded state**
+  (#1565). An operator's access to a tenant's identity records whose
+  isolation policy cannot be read answers `Unavailable` (HTTP 503,
+  `OperatorAccessUnresolvedError`), so the client retries, and a target
+  tenant that does not exist answers `NotFound` (HTTP 404) on REST and gRPC,
+  as on MCP and QUIC. A strict tenant's audit append is checked against the
+  route that won the route record, and a concurrent tightening fences it. A
+  drop of a name whose refused create left a provisional database record
+  reclaims that record, so the name can be created again.
+  `qrdb_vector_vector_count` follows the committed change of each write, so
+  concurrent writes of one id count once.
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's

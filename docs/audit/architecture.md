@@ -498,8 +498,12 @@ What proposes `OpAuditAppend`, and how a caller reads back what it proposed:
   is unchanged. A system route is under the node key, so a barrier tenant
   whose effective isolation policy is strict (its own policy or the cluster
   floor) gets no append there: the append is refused with
-  `*tenant.SystemAuditRouteError` (failed precondition) before any route is
-  recorded, while reads stay allowed; and tightening such a tenant to strict
+  `*tenant.SystemAuditRouteError` (failed precondition) before a fresh system
+  route is recorded, and checked again against the route that won the
+  record, so an append that loses the race to another writer's system route
+  is refused too. The append is fenced against an in-flight tightening by the
+  tightening's marker, and a marker read that fails refuses the append. Reads
+  stay allowed; and tightening such a tenant to strict
   (its policy or the floor) is refused with the same error, read through
   `SystemShardAuditResolver.SystemAuditRoute` (a recorded `system` route, or
   none recorded and a chain on the system shard). A home-group write while `verifiable-log-audit` is not active
