@@ -131,6 +131,8 @@ Note for OS-6: whole-object AEAD means a ranged read must either fetch the
 whole object or the wrapper must seal in fixed-size chunks; C should seal in
 chunks so a future ranged read can decrypt only the chunks it covers.
 
+**Decided (convention, ruling 109): C.**
+
 ### OS-5 — The encoded-name layout and the stores written in it
 
 - **A: refuse at open, no migration** — the LSM store carries its own format
