@@ -26,7 +26,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // DefaultCompactionInterval is how often the compaction scheduler runs the
@@ -276,19 +275,8 @@ func (s *Server) compactionStores(ctx context.Context) []scheduledStore {
 	// A database the Manager opened in its own store is compacted on its
 	// own host; the shared bundles above never reach it. It is ungated: a
 	// materialized database lives on a standalone node, its only replica.
-	if s.opts.dbManager != nil {
-		for _, info := range s.opts.dbManager.List() {
-			db, err := s.opts.dbManager.Open(ctx, info.TenantID, info.Name)
-			if err != nil || db == nil {
-				continue
-			}
-			ms, ok := db.Backend().(materializedStore)
-			if !ok {
-				continue
-			}
-			add("materialized "+tenantid.Normalize(info.TenantID)+"/"+info.Name,
-				service.NewMVCCKVService(ms.Host(), ms.ShardID(), service.WithDedicatedKeyspace()), false)
-		}
+	for _, m := range s.materializedStores(ctx) {
+		add(m.name, service.NewMVCCKVService(m.store.Host(), m.store.ShardID(), service.WithDedicatedKeyspace()), false)
 	}
 	if s.opts.tenantHosts != nil {
 		for tenantID, svcs := range s.opts.tenantHosts.startedServices() {
