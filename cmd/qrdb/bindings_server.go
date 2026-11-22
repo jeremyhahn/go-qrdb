@@ -444,7 +444,142 @@ func embeddedServiceRegistry(svcNode *lifecycle.Node, barrierReg *seal.BarrierRe
 	if svcNode.Database != nil {
 		regOpts = append(regOpts, server.WithDatabaseCatalog(&embeddedDatabaseCatalog{databases: svcNode.Database}))
 	}
-	return server.NewRESTServiceRegistry(dbReg, barrierReg, tenantid.System, regOpts...)
+	reg := server.NewRESTServiceRegistry(dbReg, barrierReg, tenantid.System, regOpts...)
+	if svcNode.Database == nil {
+		return reg
+	}
+	return &embeddedBarrierGuard{next: reg, databases: svcNode.Database}
+}
+
+// embeddedBarrierGuard refuses a named database whose own barrier the
+// embedded service registry cannot honour. The REST registry it wraps holds
+// no database.Manager (lifecycle.BuildServices keeps the one it opens), so
+// its refuseSealedDatabase and resolveDedicatedDatabaseBarrier resolve
+// nothing; without this guard a sealed database, or one carrying its own
+// passphrase or Shamir barrier over its own store, would be served from the
+// shared service graph. A sealed database is refused as the REST server
+// refuses it (service.BarrierSealedError); an unsealed database whose barrier
+// sits on its own data path is refused as unserved
+// (service.DatabaseNotFoundError, the REST registry's answer for a database
+// it does not serve) rather than read and written in the shared keyspace.
+type embeddedBarrierGuard struct {
+	next      service.Registry
+	databases service.DatabaseServicer
+}
+
+// refuse reports the error the embedded node returns for (tenantID, db), or
+// nil when the database may be served from the shared service graph. The
+// default (empty) database and a database the catalog does not know are left
+// to the wrapped registry.
+func (g *embeddedBarrierGuard) refuse(tenantID, db string) error {
+	if db == "" {
+		return nil
+	}
+	info, err := g.databases.GetForTenant(qrdbtenant.WithTenantID(context.Background(), tenantID), db)
+	if err != nil || info == nil {
+		return nil
+	}
+	if info.Status == database.StatusSealed {
+		return &service.BarrierSealedError{TenantID: tenantID, Database: db}
+	}
+	if info.Barrier != nil && info.Barrier.Enabled &&
+		info.Backend != database.BackendRaft && strings.TrimSpace(info.DataDir) != "" {
+		return &service.DatabaseNotFoundError{TenantID: tenantID, Database: db}
+	}
+	return nil
+}
+
+// guardResolve applies refuse ahead of one of the wrapped registry's
+// resolvers.
+func guardResolve[T any](g *embeddedBarrierGuard, tenantID, db string, resolve func(string, string) (T, error)) (T, error) {
+	if err := g.refuse(tenantID, db); err != nil {
+		var zero T
+		return zero, err
+	}
+	return resolve(tenantID, db)
+}
+
+// StreamRefusal implements service.StreamRefuser: an open stream on a
+// database the guard refuses is ended, and otherwise the wrapped registry's
+// own refusal (if it reports one) applies.
+func (g *embeddedBarrierGuard) StreamRefusal(tenantID, db string) error {
+	if err := g.refuse(tenantID, db); err != nil {
+		return err
+	}
+	if refuser, ok := g.next.(service.StreamRefuser); ok {
+		return refuser.StreamRefusal(tenantID, db)
+	}
+	return nil
+}
+
+// KVService implements service.Registry.
+func (g *embeddedBarrierGuard) KVService(tenantID, db string) (service.KVServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.KVService)
+}
+
+// MVCCService implements service.Registry.
+func (g *embeddedBarrierGuard) MVCCService(tenantID, db string) (service.MVCCKVServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.MVCCService)
+}
+
+// WatchService implements service.Registry.
+func (g *embeddedBarrierGuard) WatchService(tenantID, db string) (service.WatchServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.WatchService)
+}
+
+// LeaseService implements service.Registry.
+func (g *embeddedBarrierGuard) LeaseService(tenantID, db string) (service.LeaseServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.LeaseService)
+}
+
+// IndexService implements service.Registry.
+func (g *embeddedBarrierGuard) IndexService(tenantID, db string) (service.IndexServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.IndexService)
+}
+
+// TimeSeriesService implements service.Registry.
+func (g *embeddedBarrierGuard) TimeSeriesService(tenantID, db string) (service.TimeSeriesServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.TimeSeriesService)
+}
+
+// VectorService implements service.Registry.
+func (g *embeddedBarrierGuard) VectorService(tenantID, db string) (service.VectorServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.VectorService)
+}
+
+// TransactionService implements service.Registry.
+func (g *embeddedBarrierGuard) TransactionService(tenantID, db string) (service.TransactionServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.TransactionService)
+}
+
+// BatchService implements service.Registry.
+func (g *embeddedBarrierGuard) BatchService(tenantID, db string) (service.BatchServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.BatchService)
+}
+
+// TableService implements service.Registry.
+func (g *embeddedBarrierGuard) TableService(tenantID, db string) (service.TableServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.TableService)
+}
+
+// SequenceService implements service.Registry.
+func (g *embeddedBarrierGuard) SequenceService(tenantID, db string) (service.SequenceServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.SequenceService)
+}
+
+// PrivilegeService implements service.Registry.
+func (g *embeddedBarrierGuard) PrivilegeService(tenantID, db string) (service.PrivilegeServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.PrivilegeService)
+}
+
+// CollectionService implements service.Registry.
+func (g *embeddedBarrierGuard) CollectionService(tenantID, db string) (service.CollectionServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.CollectionService)
+}
+
+// LockService implements service.Registry.
+func (g *embeddedBarrierGuard) LockService(tenantID, db string) (service.LockServicer, error) {
+	return guardResolve(g, tenantID, db, g.next.LockService)
 }
 
 // embeddedDatabaseCatalog reports a database as existing when the node's
