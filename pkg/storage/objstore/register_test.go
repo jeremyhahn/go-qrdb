@@ -42,6 +42,16 @@ func memoryCreator(calls *int) func(map[string]string, objcommon.Credentials) (o
 	}
 }
 
+// forgetProviders removes names from the registry when t ends, so a test that registers a fixed name runs again under -count.
+func forgetProviders(t *testing.T, names ...string) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, n := range names {
+			registeredProviders.Delete(n)
+		}
+	})
+}
+
 func TestRegisterProvider_RefusesAnIncompleteRegistration(t *testing.T) {
 	var calls int
 	assert.ErrorIs(t, RegisterProvider("", ProviderCredentials{Secret: true}, memoryCreator(&calls)), ErrInvalidProviderRegistration)
@@ -60,6 +70,7 @@ func TestRegisterProvider_RefusesANameTheFactoryServes(t *testing.T) {
 }
 
 func TestRegisterProvider_RefusesASecondRegistration(t *testing.T) {
+	forgetProviders(t, "register-test-twice")
 	var first, second int
 	require.NoError(t, RegisterProvider("register-test-twice", ProviderCredentials{Secret: true}, memoryCreator(&first)))
 	var registered *ProviderRegisteredError
@@ -68,6 +79,7 @@ func TestRegisterProvider_RefusesASecondRegistration(t *testing.T) {
 }
 
 func TestRegisterProvider_NewDeliversTheDeclaredCredentials(t *testing.T) {
+	forgetProviders(t, "register-test-delivers")
 	var calls int
 	require.NoError(t, RegisterProvider("register-test-delivers", ProviderCredentials{Key: true, Secret: true}, memoryCreator(&calls)))
 	e, err := New("register-test-delivers", map[string]string{}, WithCredentialFiles(fakeFiles(t)))
@@ -77,6 +89,7 @@ func TestRegisterProvider_NewDeliversTheDeclaredCredentials(t *testing.T) {
 }
 
 func TestRegisterProvider_NewRefusesAnUndeclaredCredential(t *testing.T) {
+	forgetProviders(t, "register-test-secret-only")
 	var calls int
 	require.NoError(t, RegisterProvider("register-test-secret-only", ProviderCredentials{Secret: true}, memoryCreator(&calls)))
 	key := filepath.Join(t.TempDir(), "key")
@@ -93,6 +106,11 @@ func TestRegisterProvider_NewRefusesAnUndeclaredCredential(t *testing.T) {
 // unsynchronized, so under -race this fails if any registration writes it.
 func TestRegisterProvider_ConcurrentWithRegistrationAndNew(t *testing.T) {
 	const workers = 16
+	registered := []string{"register-test-contended"}
+	for i := range workers {
+		registered = append(registered, "register-test-concurrent-"+strconv.Itoa(i))
+	}
+	forgetProviders(t, registered...)
 	var (
 		wg      sync.WaitGroup
 		winners atomic.Int32
@@ -166,6 +184,7 @@ func TestRegisterProvider_RefusesAnArchiverName(t *testing.T) {
 }
 
 func TestResolveProvider(t *testing.T) {
+	forgetProviders(t, "register-test-resolve")
 	var calls int
 	require.NoError(t, RegisterProvider("register-test-resolve", ProviderCredentials{Secret: true}, memoryCreator(&calls)))
 	resolved, ok := resolveProvider("register-test-resolve")
@@ -206,6 +225,7 @@ func providerKnown(provider string) bool {
 // credentials.
 func TestNewRegistrationAfterResolve(t *testing.T) {
 	const name = "register-test-race"
+	forgetProviders(t, name)
 	var calls, hooks int
 	providerResolved = func(provider string) {
 		hooks++
@@ -259,6 +279,7 @@ func TestResolveProvider_ShippedReads(t *testing.T) {
 // refuses settings carrying a credential inline itself, so a registered
 // creator that does not delegate to a go-objstore Configure never sees them.
 func TestNew_RefusesInlineCredentialsBeforeARegisteredCreator(t *testing.T) {
+	forgetProviders(t, "register-test-inline")
 	var calls int
 	require.NoError(t, RegisterProvider("register-test-inline", ProviderCredentials{}, func(map[string]string, objcommon.Credentials) (objcommon.Storage, error) {
 		calls++

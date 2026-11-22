@@ -55,6 +55,31 @@ func fakeFiles(t *testing.T) CredentialFiles {
 	}
 }
 
+func TestOpenCredentials_DestroysTheKeyHandleWhenTheSecretReadFails(t *testing.T) {
+	var opened []enclave.ByteAccess
+	orig := readFileHandle
+	t.Cleanup(func() { readFileHandle = orig })
+	readFileHandle = func(path string) (enclave.ByteAccess, error) {
+		h, err := orig(path)
+		if h != nil {
+			opened = append(opened, h)
+		}
+		return h, err
+	}
+
+	files := fakeFiles(t)
+	files.SecretFile = filepath.Join(t.TempDir(), "absent")
+	creds, release, err := openCredentials(files)
+	assert.True(t, creds.IsZero(), "a failed open returns no credentials")
+	var fileErr *CredentialFileError
+	require.True(t, errors.As(err, &fileErr), "got %v", err)
+	assert.Equal(t, CredentialSecret, fileErr.Credential)
+	require.Len(t, opened, 1, "only the key handle opens")
+	assert.True(t, opened[0].IsAlive(), "the key handle lives until release")
+	release()
+	assert.False(t, opened[0].IsAlive(), "release destroys the key handle")
+}
+
 // credProbeProvider is the go-objstore storage provider registerCredentialProbe
 // registers: a memory store whose creator checks the credentials New passes.
 const credProbeProvider = "qrdb-credential-probe"
@@ -226,7 +251,7 @@ func TestOpenCredentials_FailsClosedNamingTheFile(t *testing.T) {
 	}
 }
 
-func TestOpenCredentials_DestroysTheKeyHandleWhenTheSecretReadFails(t *testing.T) {
+func TestOpenCredentials_NamesTheSecretFileAndReleasesTheKeyHandle(t *testing.T) {
 	key := writeCredentialFile(t, "key", fakeKey)
 	secret := filepath.Join(t.TempDir(), "absent")
 	var opened []enclave.ByteAccess
