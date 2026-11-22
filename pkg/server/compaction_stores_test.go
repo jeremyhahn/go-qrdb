@@ -19,6 +19,8 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -69,5 +71,43 @@ func TestServer_CompactionStores_Gating(t *testing.T) {
 	sort.Strings(names)
 	if len(names) != 1 || names[0] != "tenant host vol-up" {
 		t.Fatalf("stores = %v, want only the volume tenant's Host", names)
+	}
+}
+
+// A database the Manager opened in its own store is compacted on its own
+// host: the shared bundles never reach it, so it is listed by itself and
+// ungated (a standalone node is its only replica). A system-tenant database
+// on the shared store is not listed again.
+func TestCompactionStores_IncludeMaterializedDatabases(t *testing.T) {
+	factory := &fakeMaterializingFactory{}
+	dbMgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(factory))
+	t.Cleanup(func() { _ = dbMgr.Close() })
+	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: "acme", Name: "orders", Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := dbMgr.Create(database.DatabaseConfig{Name: "plain", Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create plain: %v", err)
+	}
+
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{}, WithDatabaseManager(dbMgr))
+	var names []string
+	for _, st := range srv.compactionStores(context.Background()) {
+		names = append(names, st.name)
+		if st.name == "materialized acme/orders" && st.leader != nil {
+			t.Fatal("a materialized database's store was gated by leadership")
+		}
+	}
+	sort.Strings(names)
+	found := false
+	for _, n := range names {
+		if n == "materialized acme/orders" {
+			found = true
+		}
+		if n == "materialized /plain" || n == "materialized plain" {
+			t.Fatalf("a shared-store database was listed as materialized: %v", names)
+		}
+	}
+	if !found {
+		t.Fatalf("stores = %v, want one named %q", names, "materialized acme/orders")
 	}
 }

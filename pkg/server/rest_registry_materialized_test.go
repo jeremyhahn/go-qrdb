@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
@@ -29,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -160,5 +162,29 @@ func TestRESTServiceRegistry_MaterializedDatabaseServedFromItsOwnHost(t *testing
 	}
 	if got, err := service.NewKVService(fresh.Host(), fresh.ShardID()).Get(ctx, "k2"); err != nil || !bytes.Equal(got, value) {
 		t.Fatalf("recreated own host Get = %q, %v; want %q", got, err, value)
+	}
+}
+
+// The configuration WithBindingServiceConfig gives the server reaches the
+// registry every transport resolves through, so a materialized database's
+// services are built with the node's limits rather than package defaults.
+func TestServer_RestRegistryOptions_CarryBindingServiceConfig(t *testing.T) {
+	dbMgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(&fakeMaterializingFactory{}))
+	t.Cleanup(func() { _ = dbMgr.Close() })
+	importSession := qrdbconfig.ImportSessionConfig{MaxSessionBytes: 4096}
+	index := qrdbconfig.IndexConfig{MaxIndexes: 3}
+	ts := qrdbconfig.TimeSeriesConfig{DefaultRetention: 60}
+
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{},
+		WithDatabaseManager(dbMgr), WithBindingServiceConfig(importSession, index, ts))
+	r := newRESTRegistry(NewDatabaseServiceRegistry("system"), nil, tenantid.System, srv.restRegistryOptions()...)
+	if r.bindingImportSession != importSession {
+		t.Fatalf("import session = %+v, want %+v", r.bindingImportSession, importSession)
+	}
+	if r.bindingIndex != index {
+		t.Fatalf("index = %+v, want %+v", r.bindingIndex, index)
+	}
+	if r.bindingTimeSeries.DefaultRetention != ts.DefaultRetention {
+		t.Fatalf("time series = %+v, want %+v", r.bindingTimeSeries, ts)
 	}
 }

@@ -154,6 +154,19 @@ func (r *restServiceRegistry) journaledCollectionService(tenantID, db string) (s
 	case tenant.IsolationRaft:
 		return nil, &CollectionWorkNotServedError{TenantID: tenantID, Database: db}
 	default:
+		// A database the Manager opened in its own store is served from
+		// its own host, exactly as resolve serves it, never from the
+		// shared store's composite below.
+		if dbase, ms, ok := r.materializedDatabase(tenantID, db); ok {
+			svcs, err := r.resolveMaterialized(tenantID, db, info, dbase, ms)
+			if err != nil {
+				return nil, err
+			}
+			if svcs.Collection == nil {
+				return nil, notImplemented("collection", "")
+			}
+			return svcs.Collection, nil
+		}
 		// The bundle resolve serves this database from: one registered
 		// under its name, else the default the shared store is built over.
 		if base = r.dbReg.GetOrDefault(db); base == nil {

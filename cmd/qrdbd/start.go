@@ -1795,6 +1795,10 @@ func runStart(f *startFlags) (err error) {
 			// (lifecycle.NewLocalStorage/NewLocalEngine -> backend.LocalBackend)
 			// shared with sdk/go/node.NewStandaloneNode. host stays nil in
 			// standalone and every raft-only stage below is guarded on it.
+			// bindingTenants is the tenant service the standalone binding
+			// factory reads isolation from; it is set once BuildServices
+			// has built it, and the factory fails closed until then.
+			var bindingTenants tenant.TenantServicer
 			standalone := f.mode == capabilities.ModeStandalone
 			var host *quicraft.Host
 			var svcHost service.AdminHost
@@ -1831,6 +1835,16 @@ func runStart(f *startFlags) (err error) {
 					return lerr
 				}
 				local := backend.NewLocalBackend(eng)
+				// A prefix tenant's plain database is materialized in
+				// its own store under its binding root, written through
+				// the node encryptor (docs/databases/architecture.md).
+				bf := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: f.dataDir, Defaults: dbDefaults}, enc, f.storageConfig,
+					lifecycle.TenantServiceBindingLookup(func() tenant.TenantServicer { return bindingTenants }), watchHubOpts...)
+				if err := dbManager.SetBackendFactory(bf); err != nil {
+					_ = local.Close()
+					_ = stg.Close()
+					return err
+				}
 				svcHost = local
 				rnode = local
 				nodeCloser = localDataPlaneCloser{local: local, storage: stg}
@@ -2094,6 +2108,9 @@ func runStart(f *startFlags) (err error) {
 				_ = shutdownNode(nodeCloser)
 				return err
 			}
+			// The binding factory's tenant lookup is late-bound: the
+			// first database opens (provisionDatabases) run after this.
+			bindingTenants = svcNode.Tenant
 			// FIPS-140 always tightens the cluster-wide isolation-policy
 			// floor to strict (pkg/tenant/isolation_policy.go); an operator
 			// may also raise it explicitly via the isolation-policy verb.
@@ -2774,6 +2791,7 @@ func runStart(f *startFlags) (err error) {
 				server.WithCollectionService(collectionSvc),
 				server.WithDatabaseService(dbSvc),
 				server.WithDatabaseManager(dbManager),
+				server.WithBindingServiceConfig(f.importSessionConfig, f.indexConfig, f.timeSeriesConfig),
 				// The seam that routes a volume-isolated tenant's DROP
 				// DATABASE reclamation to its dedicated per-tenant Host
 				// rather than the system store (go-qrdb#412). The reclaim

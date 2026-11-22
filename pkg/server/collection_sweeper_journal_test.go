@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -217,5 +218,41 @@ func TestJournaledCollectionService_NotServed(t *testing.T) {
 	}
 	if _, err := reg.journaledCollectionService("bad/tenant", "appdb"); err == nil {
 		t.Fatal("tenant resolution still applies")
+	}
+}
+
+// A database the Manager opened in its own store is journaled against its
+// own host: a collection the journaled service creates is in that store and
+// never in the shared one.
+func TestJournaledCollectionService_MaterializedDatabaseUsesItsOwnHost(t *testing.T) {
+	const tenantID, name = "acme", "orders"
+	ctx := context.Background()
+	factory := &fakeMaterializingFactory{}
+	dbMgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(factory))
+	t.Cleanup(func() { _ = dbMgr.Close() })
+	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	shared := newFilledRegistry()
+	reg := NewRESTServiceRegistry(shared, nil, tenantid.System, withDatabaseManager(dbMgr)).(*restServiceRegistry)
+
+	coll, err := reg.journaledCollectionService(tenantID, name)
+	if err != nil {
+		t.Fatalf("journaledCollectionService: %v", err)
+	}
+	if _, err := coll.CreateCollection(ctx, &service.CreateCollectionRequest{Database: name, Name: "events"}); err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+
+	fake := factory.last(t)
+	own := service.NewCollectionService(service.NewKVService(fake.Host(), fake.ShardID()))
+	listed, err := own.ListCollections(ctx, &service.ListCollectionsRequest{Database: name})
+	if err != nil || len(listed.Collections) != 1 || listed.Collections[0].Name != "events" {
+		t.Fatalf("own host collections = %+v, %v; want events", listed, err)
+	}
+	if sharedColl := shared.Default().Collection; sharedColl != nil {
+		if got, err := sharedColl.ListCollections(ctx, &service.ListCollectionsRequest{Database: name}); err == nil && len(got.Collections) > 0 {
+			t.Fatalf("shared store holds collections %+v", got.Collections)
+		}
 	}
 }

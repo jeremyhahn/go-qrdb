@@ -272,6 +272,26 @@ func (s *Server) compactionStores(ctx context.Context) []scheduledStore {
 	for _, svcs := range s.sharedStoreBundles() {
 		add("shared", svcs.MVCC, true)
 	}
+	// A database the Manager opened in its own store is compacted on its
+	// own host; the shared bundles above never reach it. It is ungated: a
+	// materialized database lives on a standalone node, its only replica.
+	if s.opts.dbManager != nil {
+		for _, info := range s.opts.dbManager.List() {
+			if info.TenantID == "" {
+				continue
+			}
+			db, err := s.opts.dbManager.Open(ctx, info.TenantID, info.Name)
+			if err != nil || db == nil {
+				continue
+			}
+			ms, ok := db.Backend().(materializedStore)
+			if !ok {
+				continue
+			}
+			add("materialized "+info.TenantID+"/"+info.Name,
+				service.NewMVCCKVService(ms.Host(), ms.ShardID(), service.WithDedicatedKeyspace()), false)
+		}
+	}
 	if s.opts.tenantHosts != nil {
 		for tenantID, svcs := range s.opts.tenantHosts.startedServices() {
 			if svcs != nil {

@@ -159,6 +159,35 @@ func WithBackendFactory(f BackendFactory) ManagerOption {
 	}
 }
 
+// SetBackendFactory installs the factory every later open uses, for a
+// node that can build its factory only after the Manager exists (the
+// standalone start builds the binding factory once the node encryptor is
+// up). It is refused with a *BackendFactoryInUseError while the Manager
+// holds any open database: a database already opened through the old
+// factory would otherwise be closed and reopened through different stores.
+// A nil f keeps the current factory and returns nil. On success the
+// replaced factory is closed and its Close error returned. It must be
+// called before the Manager is shared with concurrent callers.
+func (m *Manager) SetBackendFactory(f BackendFactory) error {
+	if f == nil {
+		return nil
+	}
+	open := 0
+	m.databases.Range(func(_, _ any) bool {
+		open++
+		return true
+	})
+	if open > 0 {
+		return &BackendFactoryInUseError{Open: open}
+	}
+	old := m.factory
+	m.factory = f
+	if old == nil {
+		return nil
+	}
+	return old.Close()
+}
+
 // WithBarrierManager sets the DatabaseBarrierManager for barrier operations.
 func WithBarrierManager(bm *DatabaseBarrierManager) ManagerOption {
 	return func(m *Manager) {

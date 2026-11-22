@@ -252,46 +252,52 @@ type serverOptions struct {
 	// after the built-in ones at MCP server construction (WithMCPServerOptions)
 	// — e.g. the OAuth discovery surface (mcpapi.WithBearerChallenge,
 	// mcpapi.WithProtectedResourceMetadata) go-quicbaas configures.
-	mcpServerOpts      []mcpapi.ServerOption
-	userSvc            user.UserServicer
-	roleSvc            role.RoleServicer
-	certProv           cert.CertProvider
-	certEnroll         service.CertEnrollmentServicer
-	invitations        service.InvitationServicer
-	onboarding         service.TenantOnboardingServicer
-	authMW             *authmw.AuthMiddleware
-	caBootstrapCert    []byte
-	caBootstrapBundle  func(context.Context) ([]byte, error)
-	batchSvc           service.BatchServicer
-	txSvc              service.TransactionServicer
-	mvccSvc            service.MVCCKVServicer
-	leaseSvc           service.LeaseServicer
-	lockSvc            service.LockServicer
-	tsSvc              service.TimeSeriesServicer
-	indexSvc           service.IndexServicer
-	vectorSvc          service.VectorServicer
-	logSvc             service.LogService
-	embeddingSvc       service.EmbeddingServicer
-	ragSvc             service.RAGServicer
-	watchSvc           service.WatchServicer
-	databaseSvc        service.DatabaseServicer
-	dbManager          *database.Manager
-	barrierSvc         service.BarrierServicer
-	encMigrator        service.EncryptionMigrator
-	clusterEncMigrator service.EncryptionMigrator
-	ceremonySvc        service.CeremonyServicer
-	credentialSvc      service.CredentialServicer
-	ceremonyCA         ceremony.CeremonyCA
-	serverTLSKey       crypto.Signer
-	collectionSvc      service.CollectionServicer
-	barrierRegistry    *seal.BarrierRegistry
-	dekSvc             service.DEKServicer
-	policySvc          service.PolicyServicer
-	tenantSvc          tenant.TenantServicer
-	tenantStoreRes     tenant.StoreResolver
-	backupSvc          service.BackupServicer
-	rebalanceSvc       service.RebalanceServicer
-	dbRegistry         *DatabaseServiceRegistry
+	mcpServerOpts     []mcpapi.ServerOption
+	userSvc           user.UserServicer
+	roleSvc           role.RoleServicer
+	certProv          cert.CertProvider
+	certEnroll        service.CertEnrollmentServicer
+	invitations       service.InvitationServicer
+	onboarding        service.TenantOnboardingServicer
+	authMW            *authmw.AuthMiddleware
+	caBootstrapCert   []byte
+	caBootstrapBundle func(context.Context) ([]byte, error)
+	batchSvc          service.BatchServicer
+	txSvc             service.TransactionServicer
+	mvccSvc           service.MVCCKVServicer
+	leaseSvc          service.LeaseServicer
+	lockSvc           service.LockServicer
+	tsSvc             service.TimeSeriesServicer
+	indexSvc          service.IndexServicer
+	vectorSvc         service.VectorServicer
+	logSvc            service.LogService
+	embeddingSvc      service.EmbeddingServicer
+	ragSvc            service.RAGServicer
+	watchSvc          service.WatchServicer
+	databaseSvc       service.DatabaseServicer
+	dbManager         *database.Manager
+	// bindingImportSession, bindingIndex and bindingTimeSeries configure
+	// the services built over a materialized database's own host
+	// (WithBindingServiceConfig).
+	bindingImportSession config.ImportSessionConfig
+	bindingIndex         config.IndexConfig
+	bindingTimeSeries    config.TimeSeriesConfig
+	barrierSvc           service.BarrierServicer
+	encMigrator          service.EncryptionMigrator
+	clusterEncMigrator   service.EncryptionMigrator
+	ceremonySvc          service.CeremonyServicer
+	credentialSvc        service.CredentialServicer
+	ceremonyCA           ceremony.CeremonyCA
+	serverTLSKey         crypto.Signer
+	collectionSvc        service.CollectionServicer
+	barrierRegistry      *seal.BarrierRegistry
+	dekSvc               service.DEKServicer
+	policySvc            service.PolicyServicer
+	tenantSvc            tenant.TenantServicer
+	tenantStoreRes       tenant.StoreResolver
+	backupSvc            service.BackupServicer
+	rebalanceSvc         service.RebalanceServicer
+	dbRegistry           *DatabaseServiceRegistry
 
 	// collectionSweepInterval and collectionStaleAfter tune the collection
 	// sweeper; zero keeps the defaults. See WithCollectionSweep.
@@ -972,6 +978,19 @@ func WithDatabaseService(svc service.DatabaseServicer) ServerOption {
 // multi-database support via provider.NewManagerProvider.
 func WithDatabaseManager(manager *database.Manager) ServerOption {
 	return func(o *serverOptions) { o.dbManager = manager }
+}
+
+// WithBindingServiceConfig configures the services the server builds over a
+// materialized database's own host (a database the Manager opened in its
+// own store): the import-session, index and time-series services, with the
+// same configuration the node gives a tenant's dedicated host. Zero values
+// take the packages' defaults.
+func WithBindingServiceConfig(importSession config.ImportSessionConfig, index config.IndexConfig, ts config.TimeSeriesConfig) ServerOption {
+	return func(o *serverOptions) {
+		o.bindingImportSession = importSession
+		o.bindingIndex = index
+		o.bindingTimeSeries = ts
+	}
 }
 
 // WithBarrierService configures the barrier service for all protocol servers.
@@ -2450,6 +2469,7 @@ func (s *Server) restRegistryOptions() []RESTRegistryOption {
 	if s.opts.dbManager != nil {
 		regOpts = append(regOpts, WithDatabaseCatalog(newManagerCatalog(s.opts.dbManager)))
 		regOpts = append(regOpts, withDatabaseManager(s.opts.dbManager))
+		regOpts = append(regOpts, withBindingServiceConfig(s.opts.bindingImportSession, s.opts.bindingIndex, s.opts.bindingTimeSeries))
 	}
 	if s.opts.tenantHosts != nil {
 		regOpts = append(regOpts, withTenantHostRegistry(s.opts.tenantHosts))

@@ -270,3 +270,72 @@ func TestLocalBindingFactory_DropRemovesRoot(t *testing.T) {
 		t.Fatalf("recreated database holds the dropped key: %q", got)
 	}
 }
+
+// isolationTenantService answers GetTenant with one isolation for every
+// tenant; every other TenantServicer method is unused here.
+type isolationTenantService struct {
+	tenant.TenantServicer
+	isolation tenant.IsolationType
+}
+
+func (s *isolationTenantService) GetTenant(_ context.Context, id string) (*tenant.TenantInfo, error) {
+	return &tenant.TenantInfo{ID: id, IsolationType: s.isolation}, nil
+}
+
+func newLookupManager(t *testing.T, get func() tenant.TenantServicer) *database.Manager {
+	t.Helper()
+	dir := t.TempDir()
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{},
+		lifecycle.TenantServiceBindingLookup(get))
+	mgr := database.NewManager(slog.Default(), dir, database.WithBackendFactory(f))
+	cat, err := database.NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
+	if err != nil {
+		t.Fatalf("NewKVCatalog: %v", err)
+	}
+	mgr.SetCatalog(cat)
+	t.Cleanup(func() { _ = mgr.Close() })
+	return mgr
+}
+
+// Before the tenant service exists the lookup fails closed: the create is
+// refused with a typed error and nothing is recorded, never opened as if the
+// tenant were prefix.
+func TestTenantServiceBindingLookup_FailsClosedWithoutService(t *testing.T) {
+	mgr := newLookupManager(t, func() tenant.TenantServicer { return nil })
+	_, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble})
+	var open *lifecycle.BindingOpenError
+	var unavailable *lifecycle.BindingTenantUnavailableError
+	if !errors.As(err, &open) || !errors.As(err, &unavailable) {
+		t.Fatalf("err = %v (%T), want *lifecycle.BindingOpenError wrapping *lifecycle.BindingTenantUnavailableError", err, err)
+	}
+	if unavailable.TenantID != bindingTenant {
+		t.Fatalf("TenantID = %q, want %q", unavailable.TenantID, bindingTenant)
+	}
+	if _, ok := mgr.Local("d", bindingTenant); ok {
+		t.Fatal("the Manager recorded a database whose tenant could not be read")
+	}
+}
+
+// A barrier tenant's database is delegated to the shared factory; a prefix
+// tenant's is materialized in its own store.
+func TestTenantServiceBindingLookup_BarrierTenantDelegates(t *testing.T) {
+	barrier := newLookupManager(t, func() tenant.TenantServicer {
+		return &isolationTenantService{isolation: tenant.IsolationBarrier}
+	})
+	db, err := barrier.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble})
+	if err != nil {
+		t.Fatalf("barrier Create: %v", err)
+	}
+	if _, ok := db.Backend().(*lifecycle.MaterializedBinding); ok {
+		t.Fatal("a barrier tenant's database was materialized in a node-encrypted binding store")
+	}
+
+	prefix := newLookupManager(t, func() tenant.TenantServicer {
+		return &isolationTenantService{isolation: tenant.IsolationPrefix}
+	})
+	db, err = prefix.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble})
+	if err != nil {
+		t.Fatalf("prefix Create: %v", err)
+	}
+	materialized(t, db)
+}

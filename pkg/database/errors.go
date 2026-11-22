@@ -1149,3 +1149,15 @@ func (e *InvalidRaftStateStorageError) Error() string {
 	return "database: raft state storage " + strconv.Quote(string(e.StateStorage)) + " of database " +
 		strconv.Quote(e.Name) + " is not one of pebble, file, memory"
 }
+
+// BackendFactoryInUseError is returned by Manager.SetBackendFactory while
+// the Manager holds open databases: the factory may change only before any
+// database is opened through it.
+type BackendFactoryInUseError struct {
+	Open int
+}
+
+// Error returns a human-readable description of the refused factory change.
+func (e *BackendFactoryInUseError) Error() string {
+	return "database: backend factory cannot change with " + strconv.Itoa(e.Open) + " databases open"
+}

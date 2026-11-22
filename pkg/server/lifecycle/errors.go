@@ -346,6 +346,20 @@ type LocalStorageError struct {
 // could not be opened: its tenant could not be looked up, or its store or
 // engine failed to open under the binding root. It is never answered by
 // falling back to the node's shared store.
+// BindingTenantUnavailableError is returned by the lookup
+// TenantServiceBindingLookup builds while the tenant service is not yet
+// available. The binding factory fails closed on it: a tenant whose
+// isolation cannot be read is never treated as prefix, so a barrier
+// tenant's database can never land in a node-encrypted binding store.
+type BindingTenantUnavailableError struct {
+	TenantID string
+}
+
+// Error returns a human-readable description of the missing tenant service.
+func (e *BindingTenantUnavailableError) Error() string {
+	return "lifecycle: binding tenant " + strconv.Quote(e.TenantID) + ": tenant service not available"
+}
+
 type BindingOpenError struct {
 	TenantID string
 	Database string

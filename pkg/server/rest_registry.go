@@ -460,10 +460,8 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// A database whose local binding is materialized has its own store,
 	// engine and host (lifecycle.LocalBindingFactory): it is served from
 	// that host, never from a namespace of the shared store.
-	if dbase, ok := r.ownedDatabase(tenantID, db); ok {
-		if ms, ok := dbase.Backend().(materializedStore); ok {
-			return r.resolveMaterialized(tenantID, db, info, dbase, ms)
-		}
+	if dbase, ms, ok := r.materializedDatabase(tenantID, db); ok {
+		return r.resolveMaterialized(tenantID, db, info, dbase, ms)
 	}
 
 	// A database is a key-namespace layered over the shared service set, so
@@ -560,6 +558,21 @@ func servesFromNodeLocalStore(cfg *database.DatabaseConfig) bool {
 // no database manager, no such database, or the database belongs to another
 // tenant. A mismatch is "not this database", so a caller never learns
 // anything about another tenant's database.
+// materializedDatabase returns tenantID's database db when the Manager opened
+// it in its own store (a materializedStore backend): every path that serves
+// such a database must use its own host, never the shared store.
+func (r *restServiceRegistry) materializedDatabase(tenantID, db string) (*database.Database, materializedStore, bool) {
+	dbase, ok := r.ownedDatabase(tenantID, db)
+	if !ok {
+		return nil, nil, false
+	}
+	ms, ok := dbase.Backend().(materializedStore)
+	if !ok {
+		return nil, nil, false
+	}
+	return dbase, ms, true
+}
+
 func (r *restServiceRegistry) ownedDatabase(tenantID, db string) (*database.Database, bool) {
 	if r.dbManager == nil {
 		return nil, false

@@ -129,6 +129,34 @@ func (f *LocalBindingFactory) tenant(tenantID string) (database.BindingTenant, e
 	return t, nil
 }
 
+// TenantServiceBindingLookup returns the tenant lookup NewLocalBindingFactory
+// takes, reading each tenant's isolation from the tenant service get returns.
+// get is late-bound: the node builds the factory before its tenant service
+// exists, and the lookup fails closed with a *BindingTenantUnavailableError
+// while get returns nil, never treating an unknown tenant as prefix. A
+// GetTenant error is returned as is (the factory wraps it in a
+// BindingOpenError). DataRoot stays empty: a volume or raft tenant is
+// delegated to the fallback factory before it would be read.
+func TenantServiceBindingLookup(get func() tenant.TenantServicer) func(string) (database.BindingTenant, error) {
+	return func(tenantID string) (database.BindingTenant, error) {
+		var svc tenant.TenantServicer
+		if get != nil {
+			svc = get()
+		}
+		if svc == nil {
+			return database.BindingTenant{}, &BindingTenantUnavailableError{TenantID: tenantID}
+		}
+		info, err := svc.GetTenant(context.Background(), tenantID)
+		if err != nil {
+			return database.BindingTenant{}, err
+		}
+		if info == nil {
+			return database.BindingTenant{}, &BindingTenantUnavailableError{TenantID: tenantID}
+		}
+		return database.BindingTenant{ID: tenantID, Isolation: info.EffectiveIsolationType()}, nil
+	}
+}
+
 func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, error) {
 	openErr := func(err error) error {
 		return &BindingOpenError{TenantID: b.TenantID, Database: b.Database, Backend: b.Backend, Err: err}
