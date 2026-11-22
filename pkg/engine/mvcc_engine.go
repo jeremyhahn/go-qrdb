@@ -1058,10 +1058,6 @@ func asAppErrResult(err error) (sm.Result, bool, error) {
 	if errors.As(err, &uce) {
 		return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorConflict, uce.Error())}, true, nil
 	}
-	var ide *IndexValueDecodeError
-	if errors.As(err, &ide) {
-		return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorInvalid, ide.Error())}, true, nil
-	}
 	return sm.Result{}, false, err
 }
 

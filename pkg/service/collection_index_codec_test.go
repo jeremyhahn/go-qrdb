@@ -15,6 +15,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -74,6 +75,79 @@ func TestCollectionService_CreateCollection_IndexesRequireJSONCodec(t *testing.T
 		svc := NewCollectionServiceWithIndex(newResolvedKVSvc(), newMemoryIndexSvc())
 		_, err := svc.CreateCollection(context.Background(), &CreateCollectionRequest{
 			Name: "users", Database: "mydb", StorageCodec: string(dao.CodecMsgPack),
+		})
+		require.NoError(t, err)
+	})
+}
+
+// assertWritesRefusedBeforePropose runs Insert, Update and Upsert against
+// mydb.users and checks each returns *CollectionInvalidIndexError with the
+// store byte-for-byte unchanged: no ID reserved, nothing proposed.
+func assertWritesRefusedBeforePropose(t *testing.T, svc *CollectionService, kv *memoryKVSvc) {
+	t.Helper()
+	ctx := context.Background()
+	before, err := kv.Scan(ctx, "")
+	require.NoError(t, err)
+	doc := map[string]interface{}{"email": "a@example.com"}
+
+	_, err = svc.InsertDocument(ctx, &InsertDocumentRequest{Database: "mydb", Collection: "users", Document: doc})
+	var iie *CollectionInvalidIndexError
+	require.Truef(t, errors.As(err, &iie), "insert: want *CollectionInvalidIndexError, got %v", err)
+
+	_, err = svc.UpdateDocument(ctx, &UpdateDocumentRequest{Database: "mydb", Collection: "users", ID: 1, Document: doc})
+	require.Truef(t, errors.As(err, &iie), "update: want *CollectionInvalidIndexError, got %v", err)
+
+	_, err = svc.UpsertDocument(ctx, &UpsertDocumentRequest{Database: "mydb", Collection: "users", ID: 1, Document: doc})
+	require.Truef(t, errors.As(err, &iie), "upsert: want *CollectionInvalidIndexError, got %v", err)
+
+	after, err := kv.Scan(ctx, "")
+	require.NoError(t, err)
+	require.Equal(t, before, after, "a refused write changed the store")
+}
+
+// TestCollectionService_WritesToLegacyIndexedNonJSONCollectionRefused pins
+// the propose-side refusal of document writes to an indexed collection whose
+// effective codec is not JSON: one created before CreateCollection refused
+// the combination (seeded here by writing its metadata record directly), or
+// one whose database default codec changed after creation. The engine's
+// apply path keeps storing such values unindexed so old logs replay.
+func TestCollectionService_WritesToLegacyIndexedNonJSONCollectionRefused(t *testing.T) {
+	ctx := context.Background()
+	newIndexed := func(t *testing.T) (*CollectionService, *memoryKVSvc) {
+		t.Helper()
+		kv := newResolvedKVSvc()
+		svc := NewCollectionServiceWithIndex(kv, newMemoryIndexSvc())
+		_, err := svc.CreateCollection(ctx, &CreateCollectionRequest{
+			Name: "users", Database: "mydb",
+			Indexes: []IndexDefinition{{FieldName: "email", Unique: true}},
+		})
+		require.NoError(t, err)
+		return svc, kv
+	}
+
+	t.Run("legacy msgpack collection", func(t *testing.T) {
+		svc, kv := newIndexed(t)
+		info, _, err := svc.loadCollectionRecord(ctx, "mydb", "users")
+		require.NoError(t, err)
+		require.NotEmpty(t, info.Indexes)
+		info.StorageCodec = string(dao.CodecMsgPack)
+		data, err := json.Marshal(info)
+		require.NoError(t, err)
+		require.NoError(t, kv.Put(ctx, collectionMetadataKey("mydb", "users"), data))
+		assertWritesRefusedBeforePropose(t, svc, kv)
+	})
+
+	t.Run("database default changed to msgpack", func(t *testing.T) {
+		svc, kv := newIndexed(t)
+		svc.WithDatabaseCodecLookup(func(string) string { return string(dao.CodecMsgPack) })
+		assertWritesRefusedBeforePropose(t, svc, kv)
+	})
+
+	t.Run("json collection still writes", func(t *testing.T) {
+		svc, _ := newIndexed(t)
+		_, err := svc.InsertDocument(ctx, &InsertDocumentRequest{
+			Database: "mydb", Collection: "users",
+			Document: map[string]interface{}{"email": "a@example.com"},
 		})
 		require.NoError(t, err)
 	})

@@ -1734,9 +1734,6 @@ func pebbleHandleBatch(s *PebbleStateMachine, batch *pebble.Batch, payload []byt
 	if res, refused := statemachine.OpsLeaseRefusal(s.lessor, ops); refused {
 		return res, nil, nil
 	}
-	if res, refused := pebblePrevalidateDocumentOps(s, ops); refused {
-		return res, nil, nil
-	}
 
 	var notifs []pebbleNotification
 	for _, op := range ops {
@@ -1748,24 +1745,6 @@ func pebbleHandleBatch(s *PebbleStateMachine, batch *pebble.Batch, payload []byt
 	}
 
 	return sm.Result{Value: uint64(len(ops))}, notifs, nil
-}
-
-// pebblePrevalidateDocumentOps runs engine.DocumentDecodeRefusal over every
-// OpMVCCPut in ops. An undecodable collection document under a
-// document-scoped index is a client-input outcome, so it refuses the whole
-// op set as an AppErrorInvalid result (refused=true) rather than an apply
-// error: returning an error from Update fails the shard. It runs before the
-// execute loop so a refusal stages nothing.
-func pebblePrevalidateDocumentOps(s *PebbleStateMachine, ops []protocol.DecodedOp) (sm.Result, bool) {
-	for _, op := range ops {
-		if op.Type != protocol.OpMVCCPut {
-			continue
-		}
-		if err := engine.DocumentDecodeRefusal(s.indexes, s.indexScopes, op.Key, op.Value); err != nil {
-			return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorInvalid, err.Error())}, true
-		}
-	}
-	return sm.Result{}, false
 }
 
 // ---------------------------------------------------------------------------
@@ -1835,9 +1814,6 @@ func pebbleHandleTransaction(s *PebbleStateMachine, batch *pebble.Batch, payload
 		return sm.Result{}, nil, verr
 	}
 	if res, refused := statemachine.OpsLeaseRefusal(s.lessor, ops); refused {
-		return res, nil, nil
-	}
-	if res, refused := pebblePrevalidateDocumentOps(s, ops); refused {
 		return res, nil, nil
 	}
 
@@ -1922,10 +1898,6 @@ func pebbleExecuteOp(s *PebbleStateMachine, batch *pebble.Batch, op protocol.Dec
 		// does, so a unique conflict here -- unlike the single-op paths --
 		// still surfaces as an apply-level error. The pre-check still runs
 		// first so a conflict leaves no partial index mutation behind.
-		// A document decode refusal never reaches this call: the
-		// Batch/Transaction handlers pre-validate every put of the op set
-		// (pebblePrevalidateDocumentOps) and refuse the whole set as an
-		// application result before anything is staged.
 		if verr := engine.CheckUniqueViolation(nil, s.indexes, s.indexFields, s.indexScopes, op.Key, op.Value); verr != nil {
 			return nil, verr
 		}
@@ -2598,10 +2570,6 @@ func (s *PebbleStateMachine) precheckAndUpdateIndexes(key, oldValue, newValue []
 		var uce *engine.UniqueConstraintError
 		if errors.As(verr, &uce) {
 			return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorConflict, uce.Error())}, true, nil
-		}
-		var ide *engine.IndexValueDecodeError
-		if errors.As(verr, &ide) {
-			return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorInvalid, ide.Error())}, true, nil
 		}
 		return sm.Result{}, true, verr
 	}

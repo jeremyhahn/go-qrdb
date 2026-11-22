@@ -15,7 +15,6 @@
 package engine
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/fxamacker/cbor/v2"
@@ -25,6 +24,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
+
+// The tests in this file are replay regressions. A committed put of a value
+// that is not a JSON object, under a key a collection ("__col:") index
+// covers, applies as it always has: the value is stored and not indexed.
+// Apply semantics of an existing Raft command never change, so an old log
+// replays and a mixed-version cluster converges; collections refuse such a
+// write before it is proposed (pkg/service).
 
 // cborDocument is a collection document in a non-JSON storage codec: valid
 // CBOR, unreadable to the JSON index extractor.
@@ -44,17 +50,6 @@ func uniqueIndexCmd(name, keyPrefix string) []byte {
 	}))
 }
 
-func assertInvalidRefusal(t *testing.T, res sm.Result) {
-	t.Helper()
-	_, kind, ok := protocol.DecodeAppErrorKind(res.Data)
-	if !ok {
-		t.Fatalf("write was not refused: result %+v", res)
-	}
-	if kind != protocol.AppErrorInvalid {
-		t.Fatalf("refusal kind = %v, want AppErrorInvalid", kind)
-	}
-}
-
 func assertDocWriteAdmitted(t *testing.T, res sm.Result) {
 	t.Helper()
 	if msg, ok := protocol.DecodeAppError(res.Data); ok {
@@ -62,107 +57,34 @@ func assertDocWriteAdmitted(t *testing.T, res sm.Result) {
 	}
 }
 
-func TestDocumentScoped(t *testing.T) {
-	cases := []struct {
-		name  string
-		scope string
-		want  bool
-	}{
-		{"db.users.email", "__col:db:users/", true},
-		{"t/db/db.users.email", "t/db/__col:db:users/", true},
-		{"t/db/users.email", "t/db/", false},
-		{"users.email", "", false},
-		{"users.email", "app/users/", false},
-		{"t/db/users.email", "t/db/app/users/", false},
-	}
-	for _, c := range cases {
-		if got := documentScoped(c.name, []byte(c.scope)); got != c.want {
-			t.Errorf("documentScoped(%q, %q) = %v, want %v", c.name, c.scope, got, c.want)
-		}
-	}
-}
-
-func TestCheckUniqueViolation_DocumentScopeRefusesUndecodable(t *testing.T) {
+func TestCheckUniqueViolation_ReplayIndexedNonJSONDocumentAdmitted(t *testing.T) {
 	const name = "t/db/db.users.email"
 	indexes := map[string]index.Index{name: nil}
 	scopes := map[string][]byte{name: ComposeIndexScope(name, "__col:db:users/")}
 	key := []byte("t/db/__col:db:users/1")
 
-	err := CheckUniqueViolation(nil, indexes, map[string]string{name: "email"}, scopes, key, []byte(cborDocument(t)))
-	var ide *IndexValueDecodeError
-	if !errors.As(err, &ide) || ide.Index != name || string(ide.Key) != string(key) {
-		t.Fatalf("CheckUniqueViolation = %v, want IndexValueDecodeError for %s", err, name)
+	if err := CheckUniqueViolation(nil, indexes, map[string]string{name: "email"}, scopes, key, []byte(cborDocument(t))); err != nil {
+		t.Fatalf("CheckUniqueViolation = %v, want nil (not a JSON object, nothing to index)", err)
 	}
-
-	err = CheckUniqueViolationsBatch(nil, indexes, map[string]string{name: "email"}, scopes,
-		[]indexedPut{{Key: key, Value: []byte(cborDocument(t))}}, nil)
-	if !errors.As(err, &ide) {
-		t.Fatalf("CheckUniqueViolationsBatch = %v, want IndexValueDecodeError", err)
-	}
-
-	// A key outside the scope is not a document of this collection.
-	if err := CheckUniqueViolation(nil, indexes, nil, scopes, []byte("t/db/other/1"), []byte(cborDocument(t))); err != nil {
-		t.Fatalf("out-of-scope key: %v", err)
+	if err := CheckUniqueViolationsBatch(nil, indexes, map[string]string{name: "email"}, scopes,
+		[]indexedPut{{Key: key, Value: []byte(cborDocument(t))}}, nil); err != nil {
+		t.Fatalf("CheckUniqueViolationsBatch = %v, want nil", err)
 	}
 }
 
-// TestDocumentDecodeRefusal pins the read-only decode pre-check the
-// Batch/Transaction paths run over every put before staging anything.
-func TestDocumentDecodeRefusal(t *testing.T) {
-	const doc = "t/db/db.users.email"
-	const plain = "t/db/by_email"
-	docIndexes := map[string]index.Index{doc: nil}
-	docScopes := map[string][]byte{doc: ComposeIndexScope(doc, "__col:db:users/")}
-	plainIndexes := map[string]index.Index{plain: nil}
-	plainScopes := map[string][]byte{plain: ComposeIndexScope(plain, "user/")}
-
-	cases := []struct {
-		name    string
-		indexes map[string]index.Index
-		scopes  map[string][]byte
-		key     string
-		value   []byte
-		refused bool
-	}{
-		{"document scope non-JSON", docIndexes, docScopes, "t/db/__col:db:users/1", []byte("not json"), true},
-		{"document scope CBOR", docIndexes, docScopes, "t/db/__col:db:users/1", []byte(cborDocument(t)), true},
-		{"document scope JSON array", docIndexes, docScopes, "t/db/__col:db:users/1", []byte(`["a"]`), true},
-		{"document scope JSON object", docIndexes, docScopes, "t/db/__col:db:users/1", []byte(`{"email":"a@example.com"}`), false},
-		{"non-document scope non-JSON", plainIndexes, plainScopes, "t/db/user/1", []byte("not json"), false},
-		{"key out of scope", docIndexes, docScopes, "t/db/other/1", []byte("not json"), false},
-		{"no indexes", nil, nil, "t/db/__col:db:users/1", []byte("not json"), false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := DocumentDecodeRefusal(tc.indexes, tc.scopes, []byte(tc.key), tc.value)
-			if !tc.refused {
-				if err != nil {
-					t.Fatalf("DocumentDecodeRefusal = %v, want nil", err)
-				}
-				return
-			}
-			var ide *IndexValueDecodeError
-			if !errors.As(err, &ide) || ide.Index != doc || string(ide.Key) != tc.key {
-				t.Fatalf("DocumentDecodeRefusal = %v, want IndexValueDecodeError for %s", err, doc)
-			}
-		})
-	}
-}
-
-func TestMVCCEngine_DocumentScopeRefusesUndecodableValue(t *testing.T) {
+func TestMVCCEngine_ReplayIndexedNonJSONDocumentApplies(t *testing.T) {
 	eng := newScopedEngine(t)
 	const idxName = "db.users.email"
 	applyOne(t, eng, 1, uniqueIndexCmd(idxName, "__col:db:users/"))
 
-	res := applyMVCCPut(t, eng, 2, "__col:db:users/1", cborDocument(t))
-	assertInvalidRefusal(t, res)
+	assertDocWriteAdmitted(t, applyMVCCPut(t, eng, 2, "__col:db:users/1", cborDocument(t)))
 
-	// The MVCC store reports an absent key as an error.
-	if kv, err := eng.store.Get([]byte("__col:db:users/1")); err == nil && kv != nil {
-		t.Fatal("refused document was written")
+	kv, err := eng.store.Get([]byte("__col:db:users/1"))
+	if err != nil || kv == nil {
+		t.Fatalf("committed document not stored: kv=%v err=%v", kv, err)
 	}
 	if keys := indexedKeys(t, eng, idxName); len(keys) != 0 {
-		t.Fatalf("index entries after refusal: %v", keys)
+		t.Fatalf("index entries for a non-JSON document: %v", keys)
 	}
 }
 
@@ -189,24 +111,24 @@ func TestMVCCEngine_DocumentScopeOtherScopesAdmitUndecodable(t *testing.T) {
 	}
 }
 
-func TestKVEngine_DocumentScopeRefusesUndecodableValue(t *testing.T) {
+func TestKVEngine_ReplayIndexedNonJSONDocumentApplies(t *testing.T) {
 	eng := newScopedKVEngine(t)
 	const idxName = "t/db/db.users.email"
 	applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: uniqueIndexCmd(idxName, "__col:db:users/")}})
 
 	key := "t/db/__col:db:users/1"
 	res := applyKVEntries(t, eng, []sm.Entry{kvPutEntry(2, key, cborDocument(t))})
-	assertInvalidRefusal(t, res[0])
+	assertDocWriteAdmitted(t, res[0])
 
 	val, err := eng.stg.Get([]byte(key))
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if val != nil {
-		t.Fatal("refused document was written")
+	if val == nil {
+		t.Fatal("committed document not stored")
 	}
 	if keys := kvIndexedKeys(t, eng, idxName); len(keys) != 0 {
-		t.Fatalf("index entries after refusal: %v", keys)
+		t.Fatalf("index entries for a non-JSON document: %v", keys)
 	}
 }
 

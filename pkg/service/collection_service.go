@@ -384,17 +384,8 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 		return nil, &CollectionInvalidCodecError{Codec: req.StorageCodec}
 	}
 
-	// Secondary indexes are maintained by the engine, which decodes the
-	// stored bytes as JSON: under any other codec a unique index would pass
-	// every document unchecked, so index definitions require JSON.
-	if len(req.Indexes) > 0 {
-		name := req.StorageCodec
-		if name == "" && s.dbCodecLookup != nil {
-			name = s.dbCodecLookup(req.Database)
-		}
-		if name != "" && dao.CodecType(name) != dao.CodecJSON {
-			return nil, &CollectionInvalidIndexError{Reason: "secondary indexes require the json storage codec, collection codec is " + strconv.Quote(name)}
-		}
+	if err := s.refuseIndexesUnderNonJSONCodec(req.Database, req.StorageCodec, len(req.Indexes)); err != nil {
+		return nil, err
 	}
 
 	incarnation, err := newCollectionIncarnation()
@@ -1233,6 +1224,9 @@ func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocum
 	if err != nil {
 		return nil, err
 	}
+	if err := s.refuseUnindexableWrite(info); err != nil {
+		return nil, err
+	}
 
 	// Honour an explicit _id from the document when present and non-zero;
 	// otherwise generate one using the collection's configured ID strategy.
@@ -1343,6 +1337,9 @@ func (s *CollectionService) UpdateDocument(ctx context.Context, req *UpdateDocum
 	if err != nil {
 		return nil, err
 	}
+	if err := s.refuseUnindexableWrite(info); err != nil {
+		return nil, err
+	}
 
 	// Verify document exists.
 	docKey := collectionDocumentKey(info, req.ID)
@@ -1437,6 +1434,9 @@ func (s *CollectionService) UpsertDocument(ctx context.Context, req *UpsertDocum
 
 	info, err := s.loadActiveCollection(ctx, req.Database, req.Collection)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.refuseUnindexableWrite(info); err != nil {
 		return nil, err
 	}
 	if err := s.reserveExplicitDocumentID(ctx, info, req.ID); err != nil {
@@ -1897,6 +1897,36 @@ func (s *CollectionService) resolveCodec(info *CollectionInfo) dao.Codec[map[str
 		return jsonDocumentCodec()
 	}
 	return c
+}
+
+// refuseIndexesUnderNonJSONCodec returns a *CollectionInvalidIndexError when
+// a collection with indexCount secondary indexes would store its documents
+// in a codec other than JSON. The effective codec is storageCodec, else the
+// database default (the same resolution as resolveCodec). Secondary indexes
+// are maintained by the engine, which decodes the stored bytes as JSON:
+// under any other codec a unique index would pass every document unchecked.
+func (s *CollectionService) refuseIndexesUnderNonJSONCodec(database, storageCodec string, indexCount int) error {
+	if indexCount == 0 {
+		return nil
+	}
+	name := storageCodec
+	if name == "" && s.dbCodecLookup != nil {
+		name = s.dbCodecLookup(database)
+	}
+	if name != "" && dao.CodecType(name) != dao.CodecJSON {
+		return &CollectionInvalidIndexError{Reason: "secondary indexes require the json storage codec, collection codec is " + strconv.Quote(name)}
+	}
+	return nil
+}
+
+// refuseUnindexableWrite refuses a document write, before anything is
+// reserved or proposed, to an indexed collection whose effective codec is
+// not JSON: a collection created before CreateCollection refused that
+// combination, or one whose database default codec changed after creation.
+// The refusal lives on the propose side so the apply semantics of committed
+// commands never change (an old log replays as it was committed).
+func (s *CollectionService) refuseUnindexableWrite(info *CollectionInfo) error {
+	return s.refuseIndexesUnderNonJSONCodec(info.Database, info.StorageCodec, len(info.Indexes))
 }
 
 // jsonDocumentCodec returns the go-codec JSON document codec, the
