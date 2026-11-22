@@ -48,7 +48,7 @@ type databaseLogStore struct {
 	name     string
 
 	mu     sync.Mutex
-	logs   *vlog.Chain
+	logs   logChain
 	served <-chan struct{}
 }
 
@@ -70,7 +70,7 @@ func (s *databaseLogStore) sealed() bool {
 		}
 	}
 	if stopped {
-		s.logs = nil
+		s.logs.drop()
 		s.served = nil
 	}
 	return stopped
@@ -89,37 +89,93 @@ func (s *databaseLogStore) propose(ctx context.Context, cmd []byte) (sm.Result, 
 	if s.sealed() {
 		return sm.Result{}, s.sealedError()
 	}
-	// The command is a group proposal, its OpVerifiableLog byte first; the
-	// state machines apply the payload after it, and so does the store.
+	backend := s.db.Backend()
+	r := backendReader{ctx: ctx, b: backend}
+	if s.logs.chain == nil {
+		served := s.db.Unserved()
+		if err := s.logs.restore(r); err != nil {
+			return sm.Result{}, s.translateStoreError(err)
+		}
+		s.served = served
+	}
+	res, err := s.logs.apply(r, func(ops []storage.BufferedOp) error {
+		return applyToBackend(ctx, backend, ops)
+	}, cmd)
+	if err != nil {
+		return sm.Result{}, s.translateStoreError(err)
+	}
+	return res, nil
+}
+
+// logChain is the apply core every verifiable log store outside Raft
+// shares (a barrier database's store, a barrier tenant's standalone store):
+// one vlog.Chain restored from the store and every command applied by
+// statemachine.ApplyVerifiableLog, exactly as the engine applies it, its
+// writes staged and handed to the store's atomic commit in one call. chain
+// is nil until restored and is set back to nil on any apply or commit
+// failure; the owning store drops it (drop) whenever its store stops
+// serving, so no head state outlives a seal. The owner serializes every
+// call.
+type logChain struct {
+	chain *vlog.Chain
+}
+
+// drop forgets the in-memory chain; the next apply restores it.
+func (c *logChain) drop() { c.chain = nil }
+
+// restore rebuilds the chain from r.
+func (c *logChain) restore(r storage.Reader) error {
+	ch := vlog.NewChain()
+	if err := ch.Restore(r); err != nil {
+		return err
+	}
+	c.chain = ch
+	return nil
+}
+
+// apply applies one encoded OpVerifiableLog command (its OpVerifiableLog
+// byte first, as a group proposal carries it) over r, restoring the chain
+// first when it is nil, and hands every staged write to commit in one call.
+// A failed apply rolls back and a failed apply or commit drops the chain.
+func (c *logChain) apply(r storage.Reader, commit func([]storage.BufferedOp) error, cmd []byte) (sm.Result, error) {
+	// The state machines apply the payload after the op byte, and so does
+	// the store.
 	if len(cmd) == 0 || cmd[0] != protocol.OpVerifiableLog {
 		return sm.Result{}, errNotALogCommand
 	}
 	payload := cmd[1:]
-	backend := s.db.Backend()
-	r := backendReader{ctx: ctx, b: backend}
-	if s.logs == nil {
-		served := s.db.Unserved()
-		c := vlog.NewChain()
-		if err := c.Restore(r); err != nil {
-			return sm.Result{}, s.translateStoreError(err)
+	if c.chain == nil {
+		if err := c.restore(r); err != nil {
+			return sm.Result{}, err
 		}
-		s.logs, s.served = c, served
 	}
-	s.logs.BeginUpdate()
-	b := storage.NewBufferedBatch(r, func(ops []storage.BufferedOp) error {
-		return applyToBackend(ctx, backend, ops)
-	})
-	res, err := statemachine.ApplyVerifiableLog(s.logs, r, b, payload)
+	c.chain.BeginUpdate()
+	b := storage.NewBufferedBatch(r, commit)
+	res, err := statemachine.ApplyVerifiableLog(c.chain, r, b, payload)
 	if err != nil {
-		s.logs = nil
+		c.chain = nil
 		_ = b.Rollback()
-		return sm.Result{}, s.translateStoreError(err)
+		return sm.Result{}, err
 	}
 	if err := b.Commit(); err != nil {
-		s.logs = nil
-		return sm.Result{}, s.translateStoreError(err)
+		c.chain = nil
+		return sm.Result{}, err
 	}
 	return res, nil
+}
+
+// readLog answers one vlog.Request from r. An error sealed reports as the
+// store's seal is returned as it is, for the owner to translate; any other
+// is a ReadError.
+func readLog(r storage.Reader, req vlog.Request, sealed func(error) bool) (interface{}, error) {
+	v, err := vlog.Read(r, req)
+	if err != nil {
+		if sealed(err) {
+			return nil, err
+		}
+		return nil, &ReadError{Err: err}
+	}
+	return v, nil
 }
 
 // applyToBackend writes ops to backend in one atomic Batch.
@@ -148,12 +204,11 @@ func (s *databaseLogStore) read(ctx context.Context, req vlog.Request) (interfac
 	if s.sealed() {
 		return nil, s.sealedError()
 	}
-	v, err := vlog.Read(backendReader{ctx: ctx, b: s.db.Backend()}, req)
+	v, err := readLog(backendReader{ctx: ctx, b: s.db.Backend()}, req, func(err error) bool {
+		return errors.As(err, new(*database.SealedError))
+	})
 	if err != nil {
-		if errors.As(err, new(*database.SealedError)) {
-			return nil, s.translateStoreError(err)
-		}
-		return nil, &ReadError{Err: err}
+		return nil, s.translateStoreError(err)
 	}
 	return v, nil
 }
@@ -167,7 +222,7 @@ func (s *databaseLogStore) featureEnabled(feature.Feature) bool { return true }
 // is. s.mu must be held.
 func (s *databaseLogStore) translateStoreError(err error) error {
 	if errors.As(err, new(*database.SealedError)) {
-		s.logs = nil
+		s.logs.drop()
 		s.served = nil
 		return s.sealedError()
 	}
