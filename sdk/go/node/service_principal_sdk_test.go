@@ -37,7 +37,7 @@ func newServicePrincipalNode(t *testing.T, name string) (*node.Node, sdk.NodeAud
 	cfg := sdk.DefaultDaemonConfig()
 	cfg.Auth.Enabled = sdk.BoolPtr(true)
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []sdk.DaemonDatabaseConfig{{Name: "default", Backend: string(sdk.BackendMemory)}}
+	cfg.Storage.Backend = string(sdk.BackendMemory)
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
 	cfg.Protocols.QUIC = false
@@ -115,7 +115,7 @@ func TestServicePrincipal_SDKOnly_AuthorizedByItsGrantsAndAudited(t *testing.T) 
 func TestServicePrincipal_SDKOnly_NotConfigured(t *testing.T) {
 	cfg := sdk.DefaultDaemonConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []sdk.DaemonDatabaseConfig{{Name: "default", Backend: string(sdk.BackendMemory)}}
+	cfg.Storage.Backend = string(sdk.BackendMemory)
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
 	cfg.Protocols.QUIC = false

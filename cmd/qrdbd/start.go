@@ -1813,11 +1813,13 @@ func runStart(f *startFlags) (err error) {
 			// already correct there.
 			localBackend := database.BackendPebble
 			if standalone {
-				if len(f.databases) > 0 && f.databases[0].Backend != "" {
-					localBackend = database.BackendType(f.databases[0].Backend)
-				}
-				if localBackend == database.BackendRaft {
-					return &StandaloneRaftBackendError{}
+				// The standalone node store follows storage.backend
+				// (pebble when empty), never a databases entry: an
+				// entry's backend records that database only.
+				// qrdbconfig.Load's Validate already refuses any
+				// storage.backend outside pebble/memory/file/objstore.
+				if f.storageConfig.Backend != "" {
+					localBackend = database.BackendType(f.storageConfig.Backend)
 				}
 				stg, pdb, lerr := lifecycle.NewLocalStorage(localBackend, f.dataDir, enc, f.storageConfig)
 				if lerr != nil {
@@ -1986,9 +1988,9 @@ func runStart(f *startFlags) (err error) {
 				return err
 			}
 			// The at-rest report reads the seal posture and the standalone
-			// backend (databases[0]), which the server config does not carry.
+			// store's storage.backend, which the server config does not carry.
 			capCfg.Seal = f.sealConfig
-			capCfg.Databases = f.databases
+			capCfg.Storage = f.storageConfig
 			profile := capCfg.EffectiveCapabilities()
 			if !standalone {
 				// A raft node serves what its state machine serves: the

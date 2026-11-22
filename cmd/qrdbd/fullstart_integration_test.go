@@ -218,15 +218,13 @@ func TestRunStart_StandaloneMode_ServesCoordinationFamilies(t *testing.T) {
 	var base string
 	done := startDaemon(t, func(p daemonPorts) daemonLaunch {
 		f := &startFlags{
-			mode:        "standalone",
-			dataDir:     t.TempDir(),
-			adminPort:   p.admin,
-			authEnabled: false,
-			enableREST:  true,
-			databases: []qrdbconfig.DatabaseConfig{
-				{Name: "default", Backend: "memory"},
-			},
-			host: testBindHost,
+			mode:          "standalone",
+			dataDir:       t.TempDir(),
+			adminPort:     p.admin,
+			authEnabled:   false,
+			enableREST:    true,
+			storageConfig: qrdbconfig.StorageConfig{Backend: "memory"},
+			host:          testBindHost,
 		}
 		base = fmt.Sprintf("https://%s", net.JoinHostPort(testBindHost, strconv.Itoa(p.admin)))
 		return runStartLaunch(t, f, func() bool {

@@ -60,7 +60,7 @@ func TestNewStandaloneNode_MemoryBackend(t *testing.T) {
 	// so a memory-engine node had to be handed a t.TempDir() it never
 	// otherwise needed. It no longer does.
 	cfg.Raft.DataDir = ""
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	// This test is about construction and the memory-engine/no-data-dir
 	// capability, not authorization; see sdk/go/transport/embedded's probe
 	// tests and node/auth_middleware_test.go for dedicated auth-enabled
@@ -108,7 +108,7 @@ func TestNewStandaloneNode_ObjstoreBackend(t *testing.T) {
 	cfg.Raft.DataDir = t.TempDir()
 	// Objstore is a persistent backend (KVEngine, like file). Use the local
 	// provider rooted under the node data dir by default.
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendObjstore)}}
+	cfg.Storage.Backend = string(database.BackendObjstore)
 	cfg.Storage.Objstore = qrdbconfig.ObjstoreConfig{Provider: "local"}
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
@@ -130,7 +130,7 @@ func TestNewStandaloneNode_DoesNotConstructSMCreateFunc(t *testing.T) {
 	// factory, construction must succeed for a memory backend.
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
 	cfg.Protocols.QUIC = false
@@ -301,16 +301,32 @@ func TestResolveBackend_EmptyDataDir_Errors(t *testing.T) {
 
 func TestResolveBackend_EmptyDataDir_ExplicitMemory(t *testing.T) {
 	// An in-memory store is permitted with no data dir only when explicitly
-	// requested.
+	// requested through storage.backend.
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = ""
-	cfg.Databases = []qrdbconfig.DatabaseConfig{
-		{Name: "default", Backend: string(database.BackendMemory)},
-	}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	bt, dir, err := resolveBackend(cfg)
 	require.NoError(t, err)
 	assert.Equal(t, database.BackendMemory, bt)
 	assert.Equal(t, "", dir)
+}
+
+func TestResolveBackend_DatabaseEntryDoesNotPickNodeStore(t *testing.T) {
+	// A databases entry's backend records that database only: a memory
+	// entry with an empty storage.backend and no data dir still needs the
+	// pebble node store's data directory.
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Raft.DataDir = ""
+	cfg.Storage.Backend = ""
+	cfg.Databases = []qrdbconfig.DatabaseConfig{
+		{Name: "default", Backend: string(database.BackendMemory)},
+	}
+	_, _, err := resolveBackend(cfg)
+	require.Error(t, err)
+	var cfgErr *ConfigError
+	require.ErrorAs(t, err, &cfgErr)
+	assert.Equal(t, "raft.data_dir", cfgErr.Field)
+	assert.Contains(t, cfgErr.Message, `storage.backend="memory"`)
 }
 
 func TestResolveBackend_PebbleDefault(t *testing.T) {
@@ -323,12 +339,10 @@ func TestResolveBackend_PebbleDefault(t *testing.T) {
 	assert.Equal(t, "/tmp/test-data", dir)
 }
 
-func TestResolveBackend_DatabaseConfigOverride(t *testing.T) {
+func TestResolveBackend_StorageBackendOverride(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = "/tmp/test-data"
-	cfg.Databases = []qrdbconfig.DatabaseConfig{
-		{Name: "default", Backend: string(database.BackendMemory)},
-	}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	bt, dir, err := resolveBackend(cfg)
 	require.NoError(t, err)
 	assert.Equal(t, database.BackendMemory, bt)
@@ -550,9 +564,7 @@ func TestNode_Unseal_NoSeal_IsNoop(t *testing.T) {
 	cfg.Raft.DataDir = t.TempDir()
 	// In-memory primary storage, but vector storage still requires a disk
 	// directory. t.TempDir() above satisfies that requirement.
-	cfg.Databases = []qrdbconfig.DatabaseConfig{
-		{Name: "default", Backend: string(database.BackendMemory)},
-	}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
 	cfg.Protocols.QUIC = false
@@ -605,9 +617,7 @@ func TestBarrierRegistry_NilWhenSealDisabled(t *testing.T) {
 	cfg.Seal.Enabled = false
 	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false)
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{
-		{Name: "default", Backend: string(database.BackendMemory)},
-	}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
 	cfg.Protocols.QUIC = false
@@ -855,7 +865,7 @@ func TestNewStandaloneNode_MalformedAuthSettingFailsBoot(t *testing.T) {
 		t.Run(name+"/unsealed", func(t *testing.T) {
 			cfg := qrdbconfig.DefaultConfig()
 			cfg.Raft.DataDir = t.TempDir()
-			cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+			cfg.Storage.Backend = string(database.BackendMemory)
 			cfg.Protocols.REST, cfg.Protocols.GRPC, cfg.Protocols.QUIC = false, false, false
 			cfg.Protocols.Unix, cfg.Protocols.MCP = false, false
 			set(cfg)

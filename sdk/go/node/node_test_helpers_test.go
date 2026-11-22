@@ -76,7 +76,7 @@ func newBearerNode(t *testing.T, configure func(*testing.T, *qrdbconfig.Config),
 
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Server.Host = "127.0.0.1"
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false

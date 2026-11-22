@@ -49,16 +49,6 @@ type MissingFlagError = cluster.MissingFlagError
 // discovery. Aliased from pkg/cluster.
 type NoPeersError = cluster.NoPeersError
 
-// StandaloneRaftBackendError is returned when mode "standalone" is
-// combined with a database whose backend is "raft" — the replicated data
-// plane structurally requires the consensus layer.
-type StandaloneRaftBackendError struct{}
-
-// Error returns a human-readable description.
-func (e *StandaloneRaftBackendError) Error() string {
-	return "cli: database backend \"raft\" requires mode: raft (standalone serves node-local backends only)"
-}
-
 // StandaloneMigrationError is returned when an in-process system
 // encryption migration is requested under mode "standalone". The
 // migration recycle path is raft-mode-only today.

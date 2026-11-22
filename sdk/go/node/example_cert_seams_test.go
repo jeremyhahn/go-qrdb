@@ -73,7 +73,7 @@ func openExampleNode(opts ...node.NodeOption) (*node.Node, func(), error) {
 	}
 	cfg := sdk.DefaultDaemonConfig()
 	cfg.Raft.DataDir = dir
-	cfg.Databases = []sdk.DaemonDatabaseConfig{{Name: "default", Backend: string(sdk.BackendMemory)}}
+	cfg.Storage.Backend = string(sdk.BackendMemory)
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
 	cfg.Protocols.QUIC = false

@@ -33,7 +33,7 @@ func newPostureNode(t *testing.T, separation bool, trail audit.AuditLogger) *Nod
 	t.Helper()
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Protocols.REST, cfg.Protocols.GRPC, cfg.Protocols.QUIC = false, false, false
 	cfg.Protocols.Unix, cfg.Protocols.MCP = false, false
 	cfg.Auth.SeparationOfDuties = separation

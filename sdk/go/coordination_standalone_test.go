@@ -35,7 +35,7 @@ func bootStandaloneNode(t *testing.T) *sdk.Coordinator {
 
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
 	// This suite is about the coordination surface (Get/Put/CAS/lease/watch

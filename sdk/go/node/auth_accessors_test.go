@@ -95,7 +95,7 @@ func TestNode_AuthMiddlewareAndAuthorizer_ModuleTargetAuth(t *testing.T) {
 func TestNode_AuthMiddlewareAndAuthorizer_NilWhenAuthDisabled(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
 	cfg.Protocols.QUIC = false
@@ -128,7 +128,7 @@ func TestNode_StrictSeparation_ReportsResolvedPosture(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cfg := qrdbconfig.DefaultConfig()
 			cfg.Raft.DataDir = t.TempDir()
-			cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+			cfg.Storage.Backend = string(database.BackendMemory)
 			cfg.Protocols.REST = false
 			cfg.Protocols.GRPC = false
 			cfg.Protocols.QUIC = false

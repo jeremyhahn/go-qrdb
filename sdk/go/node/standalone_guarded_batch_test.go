@@ -39,7 +39,7 @@ func guardedStandaloneStore(t *testing.T, backend sdk.BackendType) sdk.MultiGuar
 	cfg := sdk.DefaultDaemonConfig()
 	cfg.Auth.Enabled = sdk.BoolPtr(false) // not an authorization test
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []sdk.DaemonDatabaseConfig{{Name: "default", Backend: string(backend)}}
+	cfg.Storage.Backend = string(backend)
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
 	cfg.Protocols.REST = false

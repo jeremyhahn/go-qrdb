@@ -194,8 +194,9 @@ var unencryptedLocalBackends = map[string]struct{}{
 }
 
 // unencryptedAtRest reports where, with seal enabled, the node's data plane
-// keeps data unencrypted: a standalone node's objstore backend (the backend
-// of the first configured database, pebble when none is set). A raft node
+// keeps data unencrypted: a standalone node's objstore store (the node's
+// storage.backend, pebble when empty; a databases entry's backend records
+// that database only and never picks the node store). A raft node
 // reports nothing: every state machine storage it will start under the
 // barrier (pebble, file) is encrypted at rest, or persists nothing (memory).
 // It returns nil when seal is disabled.
@@ -204,8 +205,8 @@ func (c *Config) unencryptedAtRest(raft bool) []string {
 		return nil
 	}
 	backend := "pebble"
-	if len(c.Databases) > 0 && c.Databases[0].Backend != "" {
-		backend = c.Databases[0].Backend
+	if c.Storage.Backend != "" {
+		backend = c.Storage.Backend
 	}
 	if _, ok := unencryptedLocalBackends[backend]; ok {
 		return []string{`standalone backend "` + backend + `" stores its data without the seal barrier's at-rest encryption; use backend "pebble" or "file"`}

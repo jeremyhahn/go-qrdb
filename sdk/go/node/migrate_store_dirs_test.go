@@ -175,7 +175,7 @@ func TestNode_EnableEncryption_SystemNoneToPassphrase_FileBackend(t *testing.T) 
 		cfg := qrdbconfig.DefaultConfig()
 		cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
 		cfg.Raft.DataDir = dataDir
-		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendFile)}}
+		cfg.Storage.Backend = string(database.BackendFile)
 		cfg.Seal.Enabled = true
 		cfg.Seal.Strategy = "none"
 		cfg.Protocols.REST = false

@@ -84,9 +84,6 @@ func TestBuildServerConfig_CarriesMode(t *testing.T) {
 func TestStandaloneErrors_MessagesNameTheRemedy(t *testing.T) {
 	t.Parallel()
 
-	if msg := (&StandaloneRaftBackendError{}).Error(); !strings.Contains(msg, "requires mode: raft") {
-		t.Errorf("StandaloneRaftBackendError = %q, must name the remedy", msg)
-	}
 	if msg := (&StandaloneMigrationError{}).Error(); !strings.Contains(msg, "requires mode: raft") {
 		t.Errorf("StandaloneMigrationError = %q, must name the remedy", msg)
 	}

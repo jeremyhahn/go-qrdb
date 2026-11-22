@@ -3012,9 +3012,10 @@ func closePreboundOnError(errp *error, serverOpts []server.ServerOption) {
 
 // NewStandaloneNode builds a fully initialised standalone QRDB node backed
 // by a LocalBackend (engine-direct, no Raft state machine). The storage
-// backend is selected from cfg.Raft.DataDir and cfg.Databases; a memory
-// backend is used when DataDir is empty or the first database is configured
-// as BackendMemory.
+// backend is selected from cfg.Storage.Backend (pebble when empty; see
+// resolveBackend): storage.backend "memory" opts into an ephemeral store,
+// and every other backend requires cfg.Raft.DataDir. A cfg.Databases
+// entry's backend records that database only and never picks the node store.
 //
 // Seal lifecycle (when cfg.Seal.Enabled is true):
 //  1. The seal subsystem (barrier, credential service, barrier registry) is
@@ -4939,16 +4940,14 @@ func resolveBackend(cfg *qrdbconfig.Config) (database.BackendType, string, error
 	dataDir := cfg.Raft.DataDir
 
 	bt := database.BackendPebble
-	if len(cfg.Databases) > 0 {
-		if explicit := database.BackendType(cfg.Databases[0].Backend); explicit != "" {
-			bt = explicit
-		}
+	if explicit := database.BackendType(cfg.Storage.Backend); explicit != "" {
+		bt = explicit
 	}
 
 	if bt != database.BackendMemory && dataDir == "" {
 		return "", "", &ConfigError{
 			Field:   "raft.data_dir",
-			Message: `data directory is required for persistent storage; set databases[0].backend="memory" to opt into an ephemeral in-memory store`,
+			Message: `data directory is required for persistent storage; set storage.backend="memory" to opt into an ephemeral in-memory store`,
 		}
 	}
 	return bt, dataDir, nil

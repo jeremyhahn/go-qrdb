@@ -170,7 +170,7 @@ func newDelegatingNodeWithTrail(t *testing.T, principal string, opts ...node.Nod
 	t.Helper()
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Protocols.REST, cfg.Protocols.GRPC, cfg.Protocols.QUIC = false, false, false
 	cfg.Protocols.Unix, cfg.Protocols.MCP = false, false
 	cfg.Seal.Enabled = true
@@ -449,7 +449,7 @@ func TestDelegatedContext_ExpiredAfterCreationIsRefused(t *testing.T) {
 func TestDelegatedContext_NoServicePrincipal(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Protocols.REST, cfg.Protocols.GRPC, cfg.Protocols.QUIC = false, false, false
 	cfg.Protocols.Unix, cfg.Protocols.MCP = false, false
 	n, err := node.NewStandaloneNode(context.Background(), cfg, nil)
