@@ -49,3 +49,30 @@ func TestHandler_MembershipAdd_RefusedReplicaIsConflict(t *testing.T) {
 		t.Fatalf("mapHTTPError = %d, want %d", got, http.StatusConflict)
 	}
 }
+
+// TestHandler_MembershipAdd_UnannouncedCandidateIsConflict: a system-shard
+// add for a node with no live advertisement is a well-formed request the
+// operator resolves by enrolling the node, so REST answers the same 409 it
+// answers an unsupported replica, naming the address, not a 500.
+func TestHandler_MembershipAdd_UnannouncedCandidateIsConflict(t *testing.T) {
+	refusal := &featuregate.UnannouncedCandidateError{ShardID: 1, Address: "n3:1"}
+	adminSvc := &mockAdminService{
+		addMemberFn: func(context.Context, uint64, uint64, string) error { return refusal },
+	}
+	srv := NewServer(&mockKVService{}, adminSvc, ":0")
+
+	body := `{"shard_id":1,"replica_id":3,"address":"n3:1"}`
+	req := httptest.NewRequest(http.MethodPost, "/membership/add", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+	}
+	if !strings.Contains(rec.Body.String(), "n3:1") {
+		t.Fatalf("body %q does not name the unannounced address", rec.Body.String())
+	}
+	if got := membershipChangeStatus(refusal); got != http.StatusConflict {
+		t.Fatalf("membershipChangeStatus = %d, want %d", got, http.StatusConflict)
+	}
+}

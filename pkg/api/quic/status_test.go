@@ -284,6 +284,7 @@ var conditions = []conditionRow{
 	{"compaction to revision zero", &service.CompactRevisionInvalidError{Revision: 0}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"PIN strategy unset", pin.ErrStrategyNotSet, wire.StatusFailedPrecondition, codes.FailedPrecondition},
 	{"replica on a node without the group's features", &featuregate.UnsupportedReplicaError{ShardID: 1, Address: "n3:1", Feature: featuregate.GuardedWrites}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"system-shard candidate with no live advertisement", &featuregate.UnannouncedCandidateError{ShardID: 1, Address: "n3:1"}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
 
 	// --- concurrency ---------------------------------------------------
 	{"transaction conflict", &service.TransactionConflictError{Key: "k"}, wire.StatusAborted, codes.Aborted},

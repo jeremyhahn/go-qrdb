@@ -676,6 +676,8 @@ var placementRules = []rule{
 	// uses: the request is well formed and conflicts with the node's release,
 	// which the operator resolves by upgrading it (go-qrdb#482).
 	as(&featuregate.UnsupportedReplicaError{}, FailedPrecondition),
+	// A system-shard candidate with no live advertisement: the operator enrols the node first.
+	as(&featuregate.UnannouncedCandidateError{}, FailedPrecondition),
 	// A peer runs a release that is not adjacent to this node's (SPEC row
 	// rolling-upgrades): the request is well formed and the operator
 	// resolves it by running an adjacent release.

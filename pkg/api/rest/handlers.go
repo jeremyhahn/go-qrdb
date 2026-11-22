@@ -706,6 +706,10 @@ func membershipChangeStatus(err error) int {
 	if errors.As(err, &ure) {
 		return mapHTTPError(err)
 	}
+	var uce *featuregate.UnannouncedCandidateError
+	if errors.As(err, &uce) {
+		return mapHTTPError(err)
+	}
 	var noe *service.MemberNotObserverError
 	if errors.As(err, &noe) {
 		return mapHTTPError(err)
