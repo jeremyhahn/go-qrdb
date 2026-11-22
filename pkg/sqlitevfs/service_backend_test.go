@@ -154,6 +154,49 @@ func TestNewServiceBackendRefusesNil(t *testing.T) {
 	}
 }
 
+// callKey is the context key the context tests tag each call with.
+type callKey struct{}
+
+func TestServiceBackendPassesCallContext(t *testing.T) {
+	sb, d := newServiceBackend(t)
+	if _, err := sb.Commit(t.Context(), map[string][]byte{"src/a": []byte("1")}, nil); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	rev := revOf(t, sb)
+	tagged := func(v string) context.Context { return context.WithValue(t.Context(), callKey{}, v) }
+	tests := []struct {
+		name   string
+		method string
+		call   func(context.Context) error
+	}{
+		{"Revision", "CurrentRevision", func(ctx context.Context) error { _, err := sb.Revision(ctx); return err }},
+		{"GetAt", "GetAtRevision", func(ctx context.Context) error { _, _, err := sb.GetAt(ctx, []byte("src/a"), rev); return err }},
+		{"Keys", "Range", func(ctx context.Context) error { _, err := sb.Keys(ctx, []byte("src/"), rev); return err }},
+		{"Commit", "Execute", func(ctx context.Context) error {
+			_, err := sb.Commit(ctx, map[string][]byte{"k": []byte("v")}, nil)
+			return err
+		}},
+		{"Publish", "MovePrefix", func(ctx context.Context) error {
+			_, err := sb.Publish(ctx, []byte("src/"), []byte("dst/"), 1, nil, nil)
+			return err
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(tagged(tc.name)); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			got := d.seen[tc.method]
+			if got == nil {
+				t.Fatalf("%s did not reach the double's %s", tc.name, tc.method)
+			}
+			if v := got.Value(callKey{}); v != tc.name {
+				t.Fatalf("%s saw context value %v, want %q", tc.method, v, tc.name)
+			}
+		})
+	}
+}
+
 func TestServiceBackendGetAt(t *testing.T) {
 	sb, d := newServiceBackend(t)
 	rev, err := sb.Commit(t.Context(), map[string][]byte{"k": []byte("v")}, nil)

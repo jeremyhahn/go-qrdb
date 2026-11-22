@@ -100,7 +100,7 @@ func (q *quotaScene) store(t *testing.T, tenantID, holder string) *wiringStore {
 	if !ok {
 		t.Fatalf("transaction servicer %T is not a sqlitevfs.ServiceTxn", txnSvc)
 	}
-	backend, err := sqlitevfs.NewServiceBackend(t.Context(), kv, txn)
+	backend, err := sqlitevfs.NewServiceBackend(kv, txn)
 	if err != nil {
 		t.Fatalf("NewServiceBackend: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestSQLiteVFSQuota_StagedCommitPastLimitIsErrFull(t *testing.T) {
 			a := q.store(t, lockTenantA, lockHolderA)
 			commitFull(t, a, 0x81, 0x82, 0x83)
 
-			now, err := a.backend.Revision()
+			now, err := a.backend.Revision(t.Context())
 			if err != nil {
 				t.Fatalf("Revision: %v", err)
 			}
@@ -209,7 +209,7 @@ func TestSQLiteVFSQuota_StagedCommitPastLimitIsErrFull(t *testing.T) {
 			if err != nil {
 				t.Fatalf("StageRoot: %v", err)
 			}
-			if live, err := a.backend.Keys(stageRoot, now); err != nil || len(live) != 0 {
+			if live, err := a.backend.Keys(t.Context(), stageRoot, now); err != nil || len(live) != 0 {
 				t.Fatalf("live stage keys after a refused staged commit = %q, %v, want none", live, err)
 			}
 			a.assertPages(t, quotaGoodPages...)

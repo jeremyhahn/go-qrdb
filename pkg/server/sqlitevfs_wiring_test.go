@@ -67,7 +67,7 @@ func newWiringStore(t *testing.T, reg service.Registry, tenantID, holder string)
 	if !ok {
 		t.Fatalf("transaction servicer %T is not a sqlitevfs.ServiceTxn", txnSvc)
 	}
-	backend, err := sqlitevfs.NewServiceBackend(t.Context(), kv, txn)
+	backend, err := sqlitevfs.NewServiceBackend(kv, txn)
 	if err != nil {
 		t.Fatalf("NewServiceBackend: %v", err)
 	}
@@ -90,7 +90,7 @@ func wiringPage(fill byte) []byte {
 // reserved begins a transaction and takes the writer lock.
 func (w *wiringStore) reserved(t *testing.T) *sqlitevfs.Txn {
 	t.Helper()
-	txn, err := w.store.Begin()
+	txn, err := w.store.Begin(t.Context())
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -126,7 +126,7 @@ func (w *wiringStore) commitPages(t *testing.T, fills ...byte) int64 {
 // per fill byte.
 func (w *wiringStore) assertPages(t *testing.T, fills ...byte) {
 	t.Helper()
-	txn, err := w.store.Begin()
+	txn, err := w.store.Begin(t.Context())
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestSQLiteVFSWiring_StagedCommitPublishesThroughPrefixMove(t *testing.T) {
 			rev := a.commitPages(t, fills...)
 			a.assertPages(t, fills...)
 
-			now, err := a.backend.Revision()
+			now, err := a.backend.Revision(t.Context())
 			if err != nil {
 				t.Fatalf("Revision: %v", err)
 			}
@@ -171,7 +171,7 @@ func TestSQLiteVFSWiring_StagedCommitPublishesThroughPrefixMove(t *testing.T) {
 			if err != nil {
 				t.Fatalf("StageRoot: %v", err)
 			}
-			if live, err := a.backend.Keys(stageRoot, now); err != nil || len(live) != 0 {
+			if live, err := a.backend.Keys(t.Context(), stageRoot, now); err != nil || len(live) != 0 {
 				t.Fatalf("live stage keys after publish = %q, %v, want none", live, err)
 			}
 			pagePrefix, err := sqlitevfs.PagePrefix(wiringDB)
@@ -180,10 +180,10 @@ func TestSQLiteVFSWiring_StagedCommitPublishesThroughPrefixMove(t *testing.T) {
 			}
 			// The publish is one revision: every page is live at the
 			// commit's revision and none is one revision earlier.
-			if pages, err := a.backend.Keys(pagePrefix, rev); err != nil || len(pages) != len(fills) {
+			if pages, err := a.backend.Keys(t.Context(), pagePrefix, rev); err != nil || len(pages) != len(fills) {
 				t.Fatalf("page keys at the commit revision = %d, %v, want %d", len(pages), err, len(fills))
 			}
-			if pages, err := a.backend.Keys(pagePrefix, rev-1); err != nil || len(pages) != 0 {
+			if pages, err := a.backend.Keys(t.Context(), pagePrefix, rev-1); err != nil || len(pages) != 0 {
 				t.Fatalf("page keys one revision before the commit = %d, %v, want none", len(pages), err)
 			}
 		})
@@ -199,7 +199,7 @@ func TestSQLiteVFSWiring_WriterLockSerializesHolders(t *testing.T) {
 
 			txnA := a.reserved(t)
 			wiringWrite(t, txnA, 0x41)
-			txnB, err := b.store.Begin()
+			txnB, err := b.store.Begin(t.Context())
 			if err != nil {
 				t.Fatalf("Begin B: %v", err)
 			}

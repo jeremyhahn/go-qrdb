@@ -39,11 +39,11 @@ type failingBackend struct {
 	*MVCCBackend
 }
 
-func (f *failingBackend) Commit(map[string][]byte, [][]byte) (int64, error) {
+func (f *failingBackend) Commit(context.Context, map[string][]byte, [][]byte) (int64, error) {
 	return 0, errInjected
 }
 
-func (f *failingBackend) Publish([]byte, []byte, int64, map[string][]byte, [][]byte) (int64, error) {
+func (f *failingBackend) Publish(context.Context, []byte, []byte, int64, map[string][]byte, [][]byte) (int64, error) {
 	return 0, errInjected
 }
 
@@ -59,6 +59,8 @@ type stagingBackend struct {
 	stageKeys      [][]byte
 	failPublish    bool
 	failStageAfter int
+	// onPublish, when set, runs at the start of every Publish call.
+	onPublish func()
 }
 
 func newStagingBackend(t *testing.T) *stagingBackend {
@@ -66,7 +68,7 @@ func newStagingBackend(t *testing.T) *stagingBackend {
 	return &stagingBackend{MVCCBackend: newTestBackend(t), failStageAfter: -1}
 }
 
-func (b *stagingBackend) Commit(puts map[string][]byte, deletes [][]byte) (int64, error) {
+func (b *stagingBackend) Commit(ctx context.Context, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	staging := len(puts) > 0
 	for k := range puts {
 		if !bytes.Contains([]byte(k), []byte(stageSegment)) {
@@ -74,12 +76,12 @@ func (b *stagingBackend) Commit(puts map[string][]byte, deletes [][]byte) (int64
 		}
 	}
 	if !staging {
-		return b.MVCCBackend.Commit(puts, deletes)
+		return b.MVCCBackend.Commit(ctx, puts, deletes)
 	}
 	if b.failStageAfter >= 0 && b.stageCommits >= b.failStageAfter {
 		return 0, errInjected
 	}
-	rev, err := b.MVCCBackend.Commit(puts, deletes)
+	rev, err := b.MVCCBackend.Commit(ctx, puts, deletes)
 	if err != nil {
 		return 0, err
 	}
@@ -90,18 +92,21 @@ func (b *stagingBackend) Commit(puts map[string][]byte, deletes [][]byte) (int64
 	return rev, nil
 }
 
-func (b *stagingBackend) Publish(src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (int64, error) {
+func (b *stagingBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	b.publishes++
+	if b.onPublish != nil {
+		b.onPublish()
+	}
 	if b.failPublish {
 		return 0, errInjected
 	}
-	return b.MVCCBackend.Publish(src, dst, expectedKeys, puts, deletes)
+	return b.MVCCBackend.Publish(ctx, src, dst, expectedKeys, puts, deletes)
 }
 
 // revOf returns b's current revision, failing the test on a read error.
 func revOf(t *testing.T, b Backend) int64 {
 	t.Helper()
-	r, err := b.Revision()
+	r, err := b.Revision(t.Context())
 	if err != nil {
 		t.Fatalf("Revision: %v", err)
 	}
@@ -114,7 +119,7 @@ func assertNoStageKeyLive(t *testing.T, b *stagingBackend) {
 	t.Helper()
 	rev := revOf(t, b)
 	for _, key := range b.stageKeys {
-		if _, found, err := b.GetAt(key, rev); err != nil || found {
+		if _, found, err := b.GetAt(t.Context(), key, rev); err != nil || found {
 			t.Fatalf("stage key %q at revision %d: found=%v err=%v", key, rev, found, err)
 		}
 	}
@@ -153,7 +158,7 @@ func newTestStore(t *testing.T, b Backend, db string) *Store {
 
 func begin(t *testing.T, s *Store) *Txn {
 	t.Helper()
-	txn, err := s.Begin()
+	txn, err := s.Begin(t.Context())
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -247,7 +252,7 @@ func TestWriteCommitReadBack(t *testing.T) {
 	}
 
 	metaKey, _ := MetaKey("app.db")
-	value, found, err := b.GetAt(metaKey, rev)
+	value, found, err := b.GetAt(t.Context(), metaKey, rev)
 	if err != nil || !found {
 		t.Fatalf("meta at rev: found=%v err=%v", found, err)
 	}
@@ -391,10 +396,10 @@ func TestTruncate(t *testing.T) {
 	}
 	for pgno := uint32(2); pgno <= 3; pgno++ {
 		key, _ := PageKey("db", pgno)
-		if _, found, err := b.GetAt(key, rev); err != nil || found {
+		if _, found, err := b.GetAt(t.Context(), key, rev); err != nil || found {
 			t.Fatalf("page %d at rev %d: found=%v err=%v, want deleted", pgno, rev, found, err)
 		}
-		if _, found, _ := b.GetAt(key, rev-1); !found {
+		if _, found, _ := b.GetAt(t.Context(), key, rev-1); !found {
 			t.Fatalf("page %d gone at the earlier revision %d", pgno, rev-1)
 		}
 	}
@@ -584,7 +589,7 @@ func TestStagedCommitTruncates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, found, err := b.GetAt(key, revOf(t, b)); err != nil || found {
+		if _, found, err := b.GetAt(t.Context(), key, revOf(t, b)); err != nil || found {
 			t.Fatalf("truncated page %d is live: found=%v err=%v", pgno, found, err)
 		}
 	}
@@ -636,20 +641,131 @@ func TestStagedCommitStageFailure(t *testing.T) {
 	}
 }
 
+func TestStagedCommitCleanupIgnoresCancel(t *testing.T) {
+	b := newStagingBackend(t)
+	s := newStagingStore(t, b, "app.db")
+	seed(t, s, 0x01, 0x02)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	b.failPublish = true
+	b.onPublish = cancel
+	txn := begin(t, s)
+	writePages(t, txn, 0x11, 0x12, 0x13, 0x14, 0x15)
+	if _, err := txn.Commit(ctx); !errors.Is(err, errInjected) {
+		t.Fatalf("Commit err = %v, want errInjected", err)
+	}
+	if ctx.Err() == nil || b.stageCommits != 5 || b.publishes != 1 {
+		t.Fatalf("ctx err %v, %d stage commits, %d publishes, want cancelled, 5 and 1", ctx.Err(), b.stageCommits, b.publishes)
+	}
+	assertNoStageKeyLive(t, b)
+	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x01, 0x02)) {
+		t.Fatal("a failed publish changed the pages")
+	}
+}
+
+// ctxBackend is an MVCCBackend that records the context of its last GetAt
+// and its last Commit call.
+type ctxBackend struct {
+	*MVCCBackend
+	getCtx    context.Context
+	commitCtx context.Context
+}
+
+func (b *ctxBackend) GetAt(ctx context.Context, key []byte, rev int64) ([]byte, bool, error) {
+	b.getCtx = ctx
+	return b.MVCCBackend.GetAt(ctx, key, rev)
+}
+
+func (b *ctxBackend) Commit(ctx context.Context, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	b.commitCtx = ctx
+	return b.MVCCBackend.Commit(ctx, puts, deletes)
+}
+
+func TestStoreReadsWithBeginContext(t *testing.T) {
+	b := &ctxBackend{MVCCBackend: newTestBackend(t)}
+	s := newTestStore(t, b, "app.db")
+	seed(t, s, 0x01, 0x02)
+	ctxA := context.WithValue(t.Context(), callKey{}, "A")
+	ctxB := context.WithValue(t.Context(), callKey{}, "B")
+	txn, err := s.Begin(ctxA)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	b.getCtx = nil
+	if got := readAll(t, txn); !bytes.Equal(got, pagesOf(0x01, 0x02)) {
+		t.Fatal("the seeded pages do not read back")
+	}
+	if b.getCtx == nil || b.getCtx.Value(callKey{}) != "A" {
+		t.Fatalf("page read context = %v, want Begin's context A", b.getCtx)
+	}
+	writePages(t, txn, 0x11)
+	rev, err := txn.Commit(ctxB)
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if b.commitCtx == nil || b.commitCtx.Value(callKey{}) != "B" {
+		t.Fatalf("Backend.Commit context = %v, want Commit's context B", b.commitCtx)
+	}
+	if rev != revOf(t, b) {
+		t.Fatalf("Commit revision %d, backend at %d", rev, revOf(t, b))
+	}
+}
+
+func TestMVCCBackendHonoursDoneContext(t *testing.T) {
+	b := newTestBackend(t)
+	if _, err := b.Commit(t.Context(), map[string][]byte{"src/1": []byte("a")}, nil); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	before := revOf(t, b)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	calls := map[string]func() error{
+		"Revision": func() error { _, err := b.Revision(ctx); return err },
+		"GetAt":    func() error { _, _, err := b.GetAt(ctx, []byte("src/1"), before); return err },
+		"Keys":     func() error { _, err := b.Keys(ctx, []byte("src/"), before); return err },
+		"Commit": func() error {
+			_, err := b.Commit(ctx, map[string][]byte{"new": []byte("x")}, [][]byte{[]byte("src/1")})
+			return err
+		},
+		"Publish": func() error {
+			_, err := b.Publish(ctx, []byte("src/"), []byte("dst/"), 1, map[string][]byte{"new": []byte("x")}, nil)
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			if err := call(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("%s with a cancelled context = %v, want context.Canceled", name, err)
+			}
+		})
+	}
+	if got := revOf(t, b); got != before {
+		t.Fatalf("cancelled calls moved the revision to %d, want %d", got, before)
+	}
+	for _, key := range []string{"new", "dst/1"} {
+		if _, found, err := b.GetAt(t.Context(), []byte(key), before); err != nil || found {
+			t.Fatalf("cancelled call wrote %q: found=%v err=%v", key, found, err)
+		}
+	}
+	if _, found, err := b.GetAt(t.Context(), []byte("src/1"), before); err != nil || !found {
+		t.Fatalf("cancelled call deleted src/1: found=%v err=%v", found, err)
+	}
+}
+
 func TestPublishCountMismatchWritesNothing(t *testing.T) {
 	b := newTestBackend(t)
-	if _, err := b.Commit(map[string][]byte{"src/1": []byte("a")}, nil); err != nil {
+	if _, err := b.Commit(t.Context(), map[string][]byte{"src/1": []byte("a")}, nil); err != nil {
 		t.Fatal(err)
 	}
 	before := revOf(t, b)
-	_, err := b.Publish([]byte("src/"), []byte("dst/"), 2, map[string][]byte{"other": []byte("x")}, nil)
+	_, err := b.Publish(t.Context(), []byte("src/"), []byte("dst/"), 2, map[string][]byte{"other": []byte("x")}, nil)
 	if !errors.Is(err, ErrPublishConflict) {
 		t.Fatalf("Publish with a count mismatch = %v, want ErrPublishConflict", err)
 	}
 	if got := revOf(t, b); got != before {
 		t.Fatalf("failed Publish moved the revision to %d", got)
 	}
-	if _, found, err := b.GetAt([]byte("dst/1"), before); err != nil || found {
+	if _, found, err := b.GetAt(t.Context(), []byte("dst/1"), before); err != nil || found {
 		t.Fatalf("failed Publish wrote dst/1: found=%v err=%v", found, err)
 	}
 }
@@ -670,7 +786,7 @@ func TestPublishRefusesInvalidRequest(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := b.Publish([]byte(tc.src), []byte(tc.dst), tc.expected, nil, nil)
+			_, err := b.Publish(t.Context(), []byte(tc.src), []byte(tc.dst), tc.expected, nil, nil)
 			if !errors.Is(err, ErrInvalidPublish) {
 				t.Fatalf("Publish = %v, want ErrInvalidPublish", err)
 			}
@@ -699,7 +815,7 @@ func TestBumpGenerationEmptyWritesNothing(t *testing.T) {
 	b := newTestBackend(t)
 	s := newTestStore(t, b, "app.db")
 	before := revOf(t, b)
-	rev, err := s.BumpGeneration()
+	rev, err := s.BumpGeneration(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -722,7 +838,7 @@ func TestGenerationChange(t *testing.T) {
 	// generation.
 	restorer := newTestStore(t, b, "app.db")
 	seed(t, restorer, 0x41, 0x42, 0x43)
-	bumped, err := restorer.BumpGeneration()
+	bumped, err := restorer.BumpGeneration(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -733,7 +849,7 @@ func TestGenerationChange(t *testing.T) {
 	if revOf(t, b) != bumped {
 		t.Fatalf("refused Commit wrote: revision %d, want %d", revOf(t, b), bumped)
 	}
-	if _, err := s.Begin(); !errors.Is(err, ErrSnapshotChanged) {
+	if _, err := s.Begin(t.Context()); !errors.Is(err, ErrSnapshotChanged) {
 		t.Fatalf("first Begin after a restore err = %v, want ErrSnapshotChanged", err)
 	}
 	txn := begin(t, s)
@@ -778,7 +894,7 @@ func beginReserved(t *testing.T, s *Store) *Txn {
 
 func changeCounter(t *testing.T, s *Store) uint64 {
 	t.Helper()
-	meta, _, err := s.readMeta(revOf(t, s.backend))
+	meta, _, err := s.readMeta(t.Context(), revOf(t, s.backend))
 	if err != nil {
 		t.Fatalf("readMeta: %v", err)
 	}
@@ -920,7 +1036,7 @@ func TestReserveSweepsAbandonedStages(t *testing.T) {
 	for _, key := range b.stageKeys {
 		leftovers[string(key)] = pageOf(0xEE)
 	}
-	if _, err := b.MVCCBackend.Commit(leftovers, nil); err != nil {
+	if _, err := b.MVCCBackend.Commit(t.Context(), leftovers, nil); err != nil {
 		t.Fatalf("rewrite stage keys: %v", err)
 	}
 	if _, err := locker.TryLock(ctx, lock.LockOptions{Key: sa.lockKey, HolderID: "a", TTL: time.Minute}); err != nil {
@@ -943,7 +1059,7 @@ func TestReserveSweepsAbandonedStages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StageRoot: %v", err)
 	}
-	if keys, err := b.Keys(root, revOf(t, b)); err != nil || len(keys) != 0 {
+	if keys, err := b.Keys(t.Context(), root, revOf(t, b)); err != nil || len(keys) != 0 {
 		t.Fatalf("stage keys after the sweep = %q, %v", keys, err)
 	}
 	writePages(t, txn, 0x21)
@@ -997,18 +1113,18 @@ func TestStoreWithoutWriterLock(t *testing.T) {
 
 func TestMVCCBackendKeys(t *testing.T) {
 	b := newTestBackend(t)
-	if keys, err := b.Keys([]byte("p/"), 0); err != nil || keys != nil {
+	if keys, err := b.Keys(t.Context(), []byte("p/"), 0); err != nil || keys != nil {
 		t.Fatalf("Keys at revision 0 = %q, %v", keys, err)
 	}
-	rev1, err := b.Commit(map[string][]byte{"p/a": []byte("1"), "q/a": []byte("x")}, nil)
+	rev1, err := b.Commit(t.Context(), map[string][]byte{"p/a": []byte("1"), "q/a": []byte("x")}, nil)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	rev2, err := b.Commit(map[string][]byte{"p/b": []byte("2")}, nil)
+	rev2, err := b.Commit(t.Context(), map[string][]byte{"p/b": []byte("2")}, nil)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	rev3, err := b.Commit(nil, [][]byte{[]byte("p/a")})
+	rev3, err := b.Commit(t.Context(), nil, [][]byte{[]byte("p/a")})
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -1020,7 +1136,7 @@ func TestMVCCBackendKeys(t *testing.T) {
 		{rev2, []string{"p/a", "p/b"}},
 		{rev3, []string{"p/b"}},
 	} {
-		keys, err := b.Keys([]byte("p/"), tc.rev)
+		keys, err := b.Keys(t.Context(), []byte("p/"), tc.rev)
 		if err != nil {
 			t.Fatalf("Keys at %d: %v", tc.rev, err)
 		}
