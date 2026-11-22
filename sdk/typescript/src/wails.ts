@@ -1489,6 +1489,9 @@ export class WailsClient implements Client {
                 await b.RestoreEmbedded();
                 this.embedded.running = true;
             },
+            savedConfig: async (): Promise<EmbeddedConfig> => {
+                return (await b.SavedConfig()) as EmbeddedConfig;
+            },
             clearSavedConfig: async (): Promise<void> => {
                 await b.ClearSavedConfig();
             },

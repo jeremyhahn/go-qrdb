@@ -13,7 +13,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Admin | `drain` | views/admin/Cluster.svelte  | admin-dashboard.spec.ts admin-cluster.spec.ts  |  |
 | Admin | `getTopology` | stores/connection-manager.svelte.ts views/admin/Topology.svelte  | real-backend/rebalance-real.spec.ts  |  |
 | Admin | `health` | views/admin/Dashboard.svelte  | setup-wizard.spec.ts admin-views.spec.ts  |  |
-| Admin | `metrics` | views/admin/Dashboard.svelte (Metrics card: filter, family table, expandable samples; desktop shows not available) | admin-metrics.spec.ts | *verified* |
+| Admin | `metrics` | views/admin/Dashboard.svelte (Metrics card: filter, family table, expandable samples; desktop shows not available) | admin-metrics.spec.ts dom/metrics-roundtrip.spec.ts | *verified* |
 | Admin | `mintJoinToken` | views/admin/Cluster.svelte (web mode; desktop binding is not implemented by design) | admin-cluster.spec.ts web-mode-cluster.spec.ts | *verified* |
 | Admin | `nodeCompaction` | views/admin/Cluster.svelte | admin-cluster.spec.ts web-mode-cluster.spec.ts | *verified* |
 | Admin | `peers` | views/admin/Cluster.svelte  | setup-wizard.spec.ts full-admin-operations.spec.ts  |  |
@@ -55,14 +55,14 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Connection | `getVersion` | views/admin/Settings.svelte views/MainApp.svelte  | real-backend/sdk-wire-format.spec.ts  |  |
 | Connection | `isConnected` | views/admin/Settings.svelte | admin-settings-connection.spec.ts | *verified* |
 | ConnectionManager | `connect` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts | *verified* |
-| ConnectionManager | `deleteProfile` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts | *verified* |
-| ConnectionManager | `disconnect` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts | *verified* |
+| ConnectionManager | `deleteProfile` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts dom/connection-profiles-roundtrip.spec.ts | *verified* |
+| ConnectionManager | `disconnect` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts dom/connection-profiles-roundtrip.spec.ts | *verified* |
 | ConnectionManager | `getActiveProfileId` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts (boot path, not asserted) | *verified* |
 | ConnectionManager | `getState` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts (Connected badge) | *verified* |
 | ConnectionManager | `isEmbeddedAvailable` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts (no Embedded option in web mode) | *verified* |
 | ConnectionManager | `listProfiles` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts (server tree) | *verified* |
-| ConnectionManager | `saveProfile` | components/ConnectionManager.svelte | web-mode-connection-manager.spec.ts | *verified* |
-| ConnectionManager | `setActive` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts | *verified* |
+| ConnectionManager | `saveProfile` | components/ConnectionManager.svelte stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts dom/connection-profiles-roundtrip.spec.ts | *verified* |
+| ConnectionManager | `setActive` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts dom/connection-profiles-roundtrip.spec.ts | *verified* |
 | Credential | `delete` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
 | Credential | `gcExpired` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
 | Credential | `list` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
@@ -235,17 +235,17 @@ Each row is a read-only surface: the SDK method that returns it, its fields (`sd
 | surface | fields | UI display | Playwright spec | gap |
 |---|---|---|---|---|
 | /health (`admin.health`) | status, isLeader | views/admin/Dashboard.svelte (status badge, Leader/Follower) | admin-dashboard.spec.ts | *verified* |
-| /status (`admin.status`) | nodeId, raftAddress, isLeader, leaderId, shardCount, isDraining, shards | views/admin/Dashboard.svelte (all fields; Shards card) | admin-dashboard.spec.ts | *verified* |
+| /status (`admin.status`) | nodeId, raftAddress, isLeader, leaderId, shardCount, isDraining, shards | views/admin/Dashboard.svelte (all fields; Shards card) | admin-dashboard.spec.ts dom/dashboard-displays-roundtrip.spec.ts | *verified* |
 | /peers (`admin.peers`) | shards[].shardId, peers[].replicaId, address, isLeader | views/admin/Cluster.svelte (shard, replica, address table) | admin-cluster.spec.ts | *verified* |
-| /capabilities (`admin.capabilities`) | kv, mvcc, transaction, batch, watch, lease, index, timeSeries, vector | views/admin/Dashboard.svelte (feature list); stores/capabilities.svelte.ts gates views | admin-dashboard.spec.ts admin-views.spec.ts | *verified* |
+| /capabilities (`admin.capabilities`) | kv, mvcc, transaction, batch, watch, lease, index, timeSeries, vector | views/admin/Dashboard.svelte (feature list); stores/capabilities.svelte.ts gates views | admin-dashboard.spec.ts admin-views.spec.ts dom/dashboard-displays-roundtrip.spec.ts | *verified* |
 | cluster/raft topology (`admin.getTopology`) | nodeId, raftAddress, shardCount, shards[].shardId, replicaId, leaderId, replicas | views/admin/Topology.svelte (per-shard table) | admin-topology.spec.ts dom/cluster-topology.spec.ts | *verified* |
 | shard balance (`rebalance.getImbalanceReport`) | imbalance score, nodes, hotspots | views/admin/RebalancePanel.svelte (stat cards) | rebalance-panel.spec.ts rebalance-panel-web.spec.ts | *verified* |
 | seal state (`seal.status`) | sealed, initialized, strategy, sharesRequired, sharesProvided, sharesTotal | App.svelte (unseal gate), views/admin/SealManager.svelte (stats) | admin-seal.spec.ts unseal.spec.ts | *verified* |
 | cluster seal (`seal.status().clusterSeal`, `seal.clusterUnseal`) | active, sealed, epoch, principal, principalTenant, node, at, local, clusterMigration (target, generation, owners confirmed/total, per-owner step and phase) | views/admin/SealManager.svelte (all fields) | admin-seal.spec.ts | *verified* |
 | ceremony state (`ceremony.status`) | state, spkiPin | views/admin/SealManager.svelte (ceremony card: state, copyable SPKI pin, "No ceremony" before init, a warning on a load error) | admin-seal.spec.ts | *verified* |
 | daemon status (`daemon.daemonStatus`) | running, pid, logFile | components/admin/DaemonPanel.svelte (Running/Stopped, PID, log file) | admin-daemon.spec.ts | *verified* |
-| metrics (/metrics, `admin.metrics`) | families[].name, help, type, samples[].name, labels, value | views/admin/Dashboard.svelte (Metrics card) | admin-metrics.spec.ts | *verified* |
 | user record (`users.get`) | username, email, name, tenantId, roleIds, lifecycle, system, certBindings[].thumbprint, kind, notAfter, createdAt, updatedAt | views/admin/UserDetail.svelte (form fields, lifecycle badge, bindings list) | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
+| metrics (/metrics, `admin.metrics`) | families[].name, help, type, samples[].name, labels, value | views/admin/Dashboard.svelte (Metrics card) | admin-metrics.spec.ts dom/metrics-roundtrip.spec.ts | *verified* |
 
 ## Gap groups
 
@@ -264,9 +264,9 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 | 9 | Time series | `timeSeries.aggregate`, `richQuery`, `getRetention`, `setRetention`, `write`, `writeBatch` | views/user/TimeSeriesView.svelte; e2e/timeseries-advanced.spec.ts | mocked; covered |
 | 10 | Seal and ceremony | `seal.clusterUnseal` (no e2e), `seal.changePassphrase`; `ceremony.status`, `ceremony.signCSR`; displays: cluster seal principal/node/at, `clusterMigration` progress, ceremony state | views/admin/SealManager.svelte; e2e/admin-seal.spec.ts; new real-backend/cluster-seal-real.spec.ts | mocked; real for cluster seal; covered |
 | 11 | Cluster operations | `admin.mintJoinToken`, `nodeCompaction`, `setNodeCompaction`; `rebalance.getShardStats` | views/admin/Cluster.svelte, views/admin/RebalancePanel.svelte; e2e/admin-cluster.spec.ts, e2e/rebalance-panel.spec.ts | mocked; real for join token; covered |
-| 12 | Dashboard displays | `status.shards`, `capabilities.index`, metrics (needs an SDK method first) | views/admin/Dashboard.svelte; sdk/typescript/src/interfaces.ts, rest.ts, wails.ts for metrics; e2e/admin-dashboard.spec.ts | mocked; real for metrics |
-| 13 | Connections and embedded server | `connectionManager.deleteProfile`, `disconnect`, `saveProfile`, `setActive` (no e2e); `connection.disconnect`, `isConnected`; `config.initialized`, `isEmbeddedAvailable`; `embeddedServer.*` (6); `batch.availableCodecs` | components/ConnectionManager.svelte, stores/connection-manager.svelte.ts, views/user/BatchView.svelte; e2e/web-mode-connection-manager.spec.ts, new e2e/embedded-server.spec.ts (Wails mock) | mocked |
-| 14 | Detail reads | `backups.get`, `credentials.retrieveVersion`, `collection.getDocument` | views/admin/BackupManager.svelte, views/admin/CredentialManager.svelte, views/user/CollectionView.svelte; e2e/backup-manager.spec.ts, e2e/credential-manager.spec.ts, e2e/collection-advanced.spec.ts | mocked |
+| 12 | Dashboard displays | `status.shards`, `capabilities.index`, metrics (needs an SDK method first) | views/admin/Dashboard.svelte; sdk/typescript/src/interfaces.ts, rest.ts, wails.ts for metrics; e2e/admin-dashboard.spec.ts, e2e/admin-metrics.spec.ts, e2e/dom/dashboard-displays-roundtrip.spec.ts, e2e/dom/metrics-roundtrip.spec.ts | mocked; real for metrics; **covered** |
+| 13 | Connections and embedded server | `connectionManager.deleteProfile`, `disconnect`, `saveProfile`, `setActive` (no e2e); `connection.disconnect`, `isConnected`; `config.initialized`, `isEmbeddedAvailable`; `embeddedServer.*` (6); `batch.availableCodecs` | components/ConnectionManager.svelte, stores/connection-manager.svelte.ts, views/user/BatchView.svelte; e2e/web-mode-connection-manager.spec.ts, e2e/batch.spec.ts, e2e/admin-settings-connection.spec.ts, e2e/dom/connection-profiles-roundtrip.spec.ts, new e2e/embedded-server.spec.ts (Wails mock) | mocked; **covered** |
+| 14 | Detail reads | `backups.get`, `credentials.retrieveVersion`, `collection.getDocument` | views/admin/BackupManager.svelte, views/admin/CredentialManager.svelte, views/user/CollectionView.svelte; e2e/backup-manager.spec.ts, e2e/credential-manager.spec.ts, e2e/collection-advanced.spec.ts, e2e/dom/backups-detail-roundtrip.spec.ts | mocked; **covered** |
 
 ## Summary
 

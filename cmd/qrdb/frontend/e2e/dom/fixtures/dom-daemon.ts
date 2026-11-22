@@ -84,6 +84,13 @@ export interface StartDaemonOptions {
    */
   tlsClientAuth?: "none" | "request";
   /**
+   * Origins written to cors.allowed_origins. The daemon sends no CORS
+   * headers when the list is absent, so a spec whose page (at UI_BASE_URL)
+   * calls adminUrl directly, not through the Vite proxy, must allow the UI
+   * origin or the browser rejects every response.
+   */
+  corsOrigins?: readonly string[];
+  /**
    * State machine type passed as --sm=<value>. Defaults to the daemon's
    * default (pebble). MVCC reads (revisions, compaction, as-of reads) and
    * lock listing and status need an MVCC-backed shard, so the KV/MVCC and
@@ -363,7 +370,6 @@ function writeConfig(path: string, opts: StartDaemonOptions): void {
     // auth.enabled requires seal.enabled, so a seal-off daemon runs auth-off;
     // the auth-off block is already in the initial lines.
     lines.push("  enabled: false");
-    lines.push("auth:", "  enabled: false");
   } else if (opts.seal === "none-committed") {
     lines.push("  enabled: true", '  strategy: "none"');
   } else {
@@ -390,6 +396,10 @@ function writeConfig(path: string, opts: StartDaemonOptions): void {
       "    allow_volume_storage: true",
       `    allowed_volume_pools: [${opts.volumePools.map((n) => `"${n}"`).join(", ")}]`,
     );
+  }
+  if (opts.corsOrigins !== undefined && opts.corsOrigins.length > 0) {
+    lines.push("cors:", "  allowed_origins:");
+    for (const origin of opts.corsOrigins) lines.push(`    - ${JSON.stringify(origin)}`);
   }
   writeFileSync(path, lines.join("\n") + "\n", { mode: 0o600 });
 }

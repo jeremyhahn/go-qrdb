@@ -2643,6 +2643,9 @@ export class RestClient implements Client {
             restoreEmbedded: async (): Promise<void> => {
                 throw new DesktopOnlyError('embeddedServer.restoreEmbedded');
             },
+            savedConfig: async (): Promise<EmbeddedConfig> => {
+                throw new DesktopOnlyError('embeddedServer.savedConfig');
+            },
             clearSavedConfig: async (): Promise<void> => {
                 throw new DesktopOnlyError('embeddedServer.clearSavedConfig');
             },
@@ -2997,7 +3000,8 @@ export class RestClient implements Client {
                 interface ValueResponse { readonly value: string }
                 const resp = await this.fetchJSON<ValueResponse>(`/v1/credentials/${encodeURIComponent(name)}/value`,
                 );
-                // The wire field is []byte: base64 on the wire.
+                // The handler's value is a Go []byte, base64 on the wire
+                // (RFC 4648); return the plaintext, as the Wails binding does.
                 return decodeBase64Utf8(resp.value);
             },
             list: async (): Promise<string[]> => {
@@ -3044,7 +3048,8 @@ export class RestClient implements Client {
                 interface ValueResponse { readonly value: string }
                 const resp = await this.fetchJSON<ValueResponse>(`/v1/credentials/${encodeURIComponent(name)}/versions/${encodeURIComponent(String(version))}`,
                 );
-                // The wire field is []byte: base64 on the wire.
+                // The handler's value is a Go []byte, base64 on the wire
+                // (RFC 4648); return the plaintext, as the Wails binding does.
                 return decodeBase64Utf8(resp.value);
             },
             gcExpired: async (name: string): Promise<number> => {

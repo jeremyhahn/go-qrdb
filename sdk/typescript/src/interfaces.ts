@@ -1841,6 +1841,12 @@ export interface EmbeddedServerClient {
      */
     restoreEmbedded(): Promise<void>;
 
+    /**
+     * Returns the saved embedded configuration, the one restoreEmbedded
+     * starts. Rejects when no configuration is saved.
+     */
+    savedConfig(): Promise<EmbeddedConfig>;
+
     /** Removes the saved embedded configuration from disk. */
     clearSavedConfig(): Promise<void>;
 }

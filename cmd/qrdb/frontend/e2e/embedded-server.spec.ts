@@ -16,8 +16,8 @@
 /**
  * EmbeddedServerPanel e2e (Wails mock): the desktop-only panel in the
  * Connection Manager drives EmbeddedServerClient — isEmbedded,
- * hasSavedConfig, stopEmbedded, restoreEmbedded and clearSavedConfig —
- * and opens the embedded wizard for a new server.
+ * hasSavedConfig, savedConfig and clearSavedConfig, with Restore starting
+ * the saved configuration through the connection manager — and opens the embedded wizard for a new server.
  */
 
 import {
@@ -25,8 +25,10 @@ import {
   expect,
   defaultMockState,
   injectError,
+  secondLaunchEmbeddedState,
+  updateMockState,
 } from "./fixtures/wails-mock.ts";
-import { waitForConnectionManager, waitForDashboard } from "./fixtures/embedded-wizard-steps.ts";
+import { waitForConnectionManager } from "./fixtures/embedded-wizard-steps.ts";
 import type { Page } from "@playwright/test";
 
 const STEP_TIMEOUT = 10_000;
@@ -81,20 +83,27 @@ test.describe("Embedded server panel - no saved config", () => {
 test.describe("Embedded server panel - saved config", () => {
   test.use({ mockState: savedState });
 
-  test("restore connects the saved config through the connection manager", async ({ page }) => {
+  test("restore then stop", async ({ page }) => {
     await openPanel(page);
     await expect(panel(page).getByTestId("embedded-saved")).toHaveText("Saved config");
 
     await panel(page).getByRole("button", { name: "Restore saved config" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running");
 
-    // The restored server is the active, connected profile: the app leaves
-    // the connection manager for the connected UI, and the profile list
-    // carries the embedded profile Restore saved.
-    await waitForDashboard(page);
-    await expect(panel(page)).toHaveCount(0);
-    await expect(page.getByText("Local Server", { exact: true }).first()).toBeVisible({
-      timeout: STEP_TIMEOUT,
-    });
+    await panel(page).getByRole("button", { name: "Stop" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Stopped");
+    await expect(panel(page).getByTestId("embedded-error")).toHaveCount(0);
+  });
+
+  test("a profile-started embedded server shows running with Stop enabled", async ({ page }) => {
+    await waitForConnectionManager(page);
+    // Restore connects the saved embedded profile through the connection
+    // manager, so the started server is registered there: the panel reads
+    // its state from the profile, not from the global embedded binding.
+    await panel(page).getByRole("button", { name: "Restore saved config" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running");
+    await expect(panel(page).getByRole("button", { name: "Stop" })).toBeEnabled();
+    await expect(panel(page).getByTestId("embedded-error")).toHaveCount(0);
   });
 
   test("clear saved config asks to confirm", async ({ page }) => {
@@ -118,11 +127,71 @@ test.describe("Embedded server panel - saved config", () => {
     await panel(page).getByRole("button", { name: "Restore saved config" }).click();
     await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running");
 
-    await injectError(page, "EmbeddedServerBinding.StopEmbedded", "embedded: stop failed");
+    // Stop disconnects the embedded profile through the connection manager.
+    await injectError(page, "ConnectionManagerBinding.Disconnect", "embedded: stop failed");
     await panel(page).getByRole("button", { name: "Stop" }).click();
     await expect(panel(page).getByTestId("embedded-error")).toContainText(
       "embedded: stop failed",
     );
     await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running");
+  });
+});
+
+test.describe("Embedded server panel - sealed embedded server", () => {
+  test.use({ mockState: { ...secondLaunchEmbeddedState } });
+
+  test("a live sealed embedded server shows running and Stop disconnects it", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("aside").getByTitle("Add server").first().click();
+    await expect(panel(page)).toBeVisible({ timeout: STEP_TIMEOUT });
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running", {
+      timeout: STEP_TIMEOUT,
+    });
+    await panel(page).getByRole("button", { name: "Stop" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Stopped");
+
+    // The connection manager starts the embedded process before probing the
+    // barrier: a restarted server that comes up sealed is live, not stopped.
+    await updateMockState(page, {
+      sealStatus: { ...secondLaunchEmbeddedState.sealStatus, sealed: true },
+    });
+    await panel(page).getByRole("button", { name: "Restore saved config" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running");
+    await expect(panel(page).getByRole("button", { name: "Stop" })).toBeEnabled();
+
+    await panel(page).getByRole("button", { name: "Stop" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Stopped");
+    await expect(panel(page).getByTestId("embedded-error")).toHaveCount(0);
+  });
+
+  test("restore starts the saved config, not a profile that differs from it", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("aside").getByTitle("Add server").first().click();
+    await expect(panel(page)).toBeVisible({ timeout: STEP_TIMEOUT });
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running", {
+      timeout: STEP_TIMEOUT,
+    });
+    await panel(page).getByRole("button", { name: "Stop" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Stopped");
+
+    // Another configuration was started last, so it is the saved one; the
+    // listed profile (data dir /mock/data) is not it.
+    await updateMockState(page, {
+      embeddedSavedConfigValue: {
+        storageBackend: "pebble",
+        dataDir: "/mock/other",
+        raftEnabled: false,
+      },
+    } as unknown as Parameters<typeof updateMockState>[1]);
+    await panel(page).getByRole("button", { name: "Restore saved config" }).click();
+    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running");
+    await expect(panel(page).getByTestId("embedded-error")).toHaveCount(0);
+
+    // Restore saved a profile for the saved config and connected that one.
+    const connected = await page.evaluate(
+      () => (window as unknown as Record<string, unknown>).__lastConnectProfileId,
+    );
+    expect(connected).not.toBe("mock-profile-1");
+    await expect(page.locator("aside")).toContainText("Embedded server (/mock/other)");
   });
 });

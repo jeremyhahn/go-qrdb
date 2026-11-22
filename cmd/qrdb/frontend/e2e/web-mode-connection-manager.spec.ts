@@ -274,26 +274,6 @@ test.describe("Web Mode connection profiles", () => {
     });
   });
 
-  test("Redeem Invitation shows the page's server read-only, not dial options", async ({ page }) => {
-    await page.goto("/");
-    await waitForAppReady(page);
-    await openManager(page);
-
-    await page.getByRole("button", { name: "Redeem Invitation" }).click();
-    await expect(page.getByRole("heading", { name: "Redeem Invitation" })).toBeVisible();
-
-    // The browser's REST client is bound to the server that served the
-    // page; it ignores server, transport and CA, so the form does not ask.
-    const destination = page.getByTestId("redeem-destination");
-    await expect(destination).toBeVisible();
-    await expect(destination).toHaveValue(new URL(page.url()).origin);
-    await expect(destination).not.toBeEditable();
-    await expect(page.locator("#redeem-server")).toHaveCount(0);
-    await expect(page.locator("#redeem-transport")).toHaveCount(0);
-    await expect(page.locator("#redeem-ca-file")).toHaveCount(0);
-    await expect(page.locator("#redeem-tenant")).toBeVisible();
-  });
-
   test("disconnect then delete a non-built-in profile", async ({ page }) => {
     await page.goto("/");
     await waitForAppReady(page);

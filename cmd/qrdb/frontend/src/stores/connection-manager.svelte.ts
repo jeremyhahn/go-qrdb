@@ -359,6 +359,13 @@ async function loadWebProfiles(client: Client): Promise<void> {
     }
     connManagerStore.activeProfileId = activeId;
 
+    // App.initialize connected to webStartupTarget(); retarget in case the
+    // saved active profile was missing and fell back to 'self'.
+    const active = profiles.find((p) => p.id === activeId);
+    if (active !== undefined) {
+        await retargetWebClient(client, active);
+    }
+
     // Resolve connection state for each profile by probing the server.
     // The active profile (self) connects via the REST client that was already
     // initialised before loadProfiles was called. Non-active external profiles
@@ -615,6 +622,103 @@ async function resolveWebConnectionState(
  * @param profileId - ID of the profile to connect.
  * @returns The resulting connection state.
  */
+/**
+ * Base address the web-mode REST client was last connected to by
+ * connectProfile. null means App.svelte's initial connect to the page
+ * origin.
+ */
+let webConnectedBase: string | null = null;
+
+/**
+ * The REST base URL a web profile targets: its saved server address, or the
+ * page origin for the built-in profile (and when no profile is known). This
+ * is the single place the web UI picks its REST target; connectProfile,
+ * setActiveProfile and startup (webStartupTarget, loadWebProfiles) all use it.
+ */
+export function webProfileTarget(profile: ConnectionProfile | undefined): string {
+    return profile?.external?.address || window.location.origin;
+}
+
+/**
+ * The REST target App.initialize connects to before loading profiles: the
+ * persisted active profile's address, so a reload with an external profile
+ * saved as active talks to that server rather than the page origin.
+ */
+export function webStartupTarget(): string {
+    const activeId = webGetActiveProfileId();
+    const raw = localStorage.getItem(WEB_PROFILES_KEY);
+    if (activeId === '' || raw === null) return window.location.origin;
+    try {
+        const profiles = JSON.parse(raw) as ConnectionProfile[];
+        return webProfileTarget(profiles.find((p) => p.id === activeId));
+    } catch {
+        return window.location.origin;
+    }
+}
+
+/**
+ * Points the shared REST client at the profile's target. A client connected
+ * to another server is disconnected first, and a transport closed by
+ * connection.disconnect() is reopened. Only one server is reachable at a
+ * time, so every other profile still marked live is marked disconnected:
+ * the UI never labels one server while requests reach another.
+ */
+async function retargetWebClient(
+    client: Client,
+    profile: ConnectionProfile,
+): Promise<void> {
+    // Disable and invalidate every other profile's view BEFORE the client
+    // leaves its server. RestClient.connection.connect marks the client
+    // connected after the new server's /health and then awaits its /status;
+    // if the old profile still read "connected" during that window, its
+    // admin view and destructive actions would send requests to the new
+    // server (deleting A's displayed credential could delete B's).
+    let changed = false;
+    const states = new Map(connManagerStore.states);
+    for (const [id, state] of states) {
+        if (id !== profile.id && state.status !== 'disconnected' && state.status !== 'error') {
+            states.set(id, { profileId: id, status: 'disconnected', isEmbedded: false });
+            changed = true;
+        }
+    }
+    if (changed) connManagerStore.states = states;
+
+    const target = webProfileTarget(profile);
+    const current = webConnectedBase ?? window.location.origin;
+    if (!client.connection.isConnected() || current !== target) {
+        // The client no longer names a recorded server until connect succeeds.
+        webConnectedBase = null;
+        try {
+            if (client.connection.isConnected()) {
+                await client.connection.disconnect();
+            }
+            await client.connection.connect(target);
+            webConnectedBase = target;
+        } catch {
+            // Unreachable: resolveWebConnectionState reports the error state.
+        }
+    }
+}
+
+/**
+ * Tail of the web-mode profile switch queue. Every operation that retargets
+ * the shared REST client and then probes or activates a profile runs on this
+ * chain, one at a time: RestClient.connection.connect changes baseUrl before
+ * it awaits /health, so two overlapping switches could otherwise record one
+ * profile as connected while the client points at the other.
+ */
+let webSwitchChain: Promise<unknown> = Promise.resolve();
+
+/**
+ * serializeWebSwitch runs op after every previously queued web profile
+ * switch has settled, whether it succeeded or failed.
+ */
+function serializeWebSwitch<T>(op: () => Promise<T>): Promise<T> {
+    const run = webSwitchChain.then(op, op);
+    webSwitchChain = run.catch(() => undefined);
+    return run;
+}
+
 export async function connectProfile(
     client: Client,
     profileId: string,
@@ -663,26 +767,23 @@ export async function connectProfile(
         connManagerStore.states = new Map(connManagerStore.states).set(profileId, errState);
         return errState;
     }
-    // A transport closed by connection.disconnect() (Settings' Disconnect)
-    // is reopened here: the REST client always targets the page origin, as
-    // App.svelte's initialize does. Without this the probe below fails with
-    // "not connected" and the profile can only recover by a page reload.
-    if (!client.connection.isConnected()) {
-        try {
-            await client.connection.connect(window.location.origin);
-        } catch {
-            // Unreachable: resolveWebConnectionState reports the error state.
-        }
-    }
-    const state = await resolveWebConnectionState(client, profile);
-    connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
+    // Point the REST client at the profile's saved server address; without
+    // this the probe below and every later read would go to whichever
+    // server was connected before. The connect, probe and topology read run
+    // as one serialized switch so an overlapping connect cannot retarget the
+    // client between them.
+    return serializeWebSwitch(async () => {
+        await retargetWebClient(client, profile);
+        const state = await resolveWebConnectionState(client, profile);
+        connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
 
-    // Probe live topology on a successful connect so cluster surfaces appear
-    // immediately for multi-node servers (mirrors loadWebProfiles).
-    if (state.status === 'connected') {
-        await applyWebServerMode(client, profileId);
-    }
-    return state;
+        // Probe live topology on a successful connect so cluster surfaces appear
+        // immediately for multi-node servers (mirrors loadWebProfiles).
+        if (state.status === 'connected') {
+            await applyWebServerMode(client, profileId);
+        }
+        return state;
+    });
 }
 
 /**
@@ -709,6 +810,32 @@ export async function disconnectProfile(
         profileId,
         disconnected,
     );
+}
+
+/**
+ * Saves a profile (insert or replace by id) and adds it to the store.
+ *
+ * Desktop mode delegates to the Wails ConnectionManagerBinding; web mode
+ * persists the updated list to localStorage, since the REST client has no
+ * connection-manager backend.
+ *
+ * @param client  - The SDK client singleton.
+ * @param profile - The profile to save.
+ */
+export async function saveProfile(
+    client: Client,
+    profile: ConnectionProfile,
+): Promise<void> {
+    const updated = [
+        ...connManagerStore.profiles.filter((p) => p.id !== profile.id),
+        profile,
+    ];
+    if (isDesktop()) {
+        await client.connectionManager.saveProfile(profile as never);
+    } else {
+        await persistence.save(client, updated);
+    }
+    connManagerStore.profiles = updated;
 }
 
 /**
@@ -789,9 +916,30 @@ export async function setActiveProfile(
 ): Promise<void> {
     if (isDesktop()) {
         await client.connectionManager.setActive(profileId);
-    } else {
-        webSetActiveProfileId(profileId);
+        markProfileActive(profileId);
+        return;
     }
+    // Activation retargets the REST client: reads and destructive operations
+    // must reach the server the UI now labels as active. It runs on the same
+    // serialized switch queue as connectProfile, so the client target, the
+    // probed state and the active label always name one profile.
+    await serializeWebSwitch(async () => {
+        webSetActiveProfileId(profileId);
+        const target = connManagerStore.profiles.find((p) => p.id === profileId);
+        if (target !== undefined) {
+            await retargetWebClient(client, target);
+            const state = await resolveWebConnectionState(client, target);
+            connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
+        }
+        markProfileActive(profileId);
+    });
+}
+
+/**
+ * markProfileActive records profileId as the active profile in local state:
+ * the active id, its lastUsed timestamp and its server topology metadata.
+ */
+function markProfileActive(profileId: string): void {
     connManagerStore.activeProfileId = profileId;
 
     // Refresh the lastUsed timestamp on the profile in local state.
