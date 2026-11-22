@@ -1,6 +1,6 @@
 # SQLite VFS Backend — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-12
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-22
 > Conflicts with this document are defects. Fix them here first. This is a
 > future feature: not scheduled, not implemented.
 
@@ -89,7 +89,7 @@ keyspace (disjoint from both the KV plane and the relational plane, per the
 two-plane authz model):
 
 ```
-sqlite/<db-name>/meta          page size, page count, format version, generation
+sqlite/<db-name>/meta          page size, page count, format version, generation, change counter
 sqlite/<db-name>/page/<pgno>   one page per key, versioned by MVCC revision
 sqlite/<db-name>/stage/<commit-id>/page/<pgno>   staged page of an oversized commit, never read as a page
 ```
@@ -112,9 +112,12 @@ atomic batch proposal**. Rollback discards the buffer.
 
 ### Concurrency — two selectable modes
 
-1. **Serialized writer** (default, dqlite-style): `xLock(EXCLUSIVE)` acquires
-   a qrdb distributed lock with lease. Simple, matches SQLite's native
-   single-writer model across *machines*, not just processes.
+1. **Serialized writer** (default, dqlite-style): `xLock(RESERVED)` (not
+   EXCLUSIVE, as decided in Q3 A) acquires a qrdb distributed lock with
+   lease without blocking and returns `SQLITE_BUSY` at once when it is held;
+   a lost lease fails the commit with `SQLITE_BUSY`. Simple, matches
+   SQLite's native single-writer model across *machines*, not just
+   processes.
 2. **Optimistic** (mvsqlite-style): no lock; the commit batch carries the
    snapshot revision and the read-page set, and the state machine rejects
    the batch if any read page changed since the snapshot (the CAS/conflict
@@ -158,8 +161,10 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
   plus a thin engine binding per tier. The page store core exists unwired
   in `pkg/sqlitevfs` (keyspace, meta record, snapshot reads, one-batch
   commit on the local MVCC store), with the staged commit and publish for
-  oversized transactions (Q2) and the meta generation check (Q4); no engine
-  binding, locking, quota or transport is built.
+  oversized transactions (Q2), the meta generation check (Q4), and the
+  serialized writer lock with the meta change counter and the sweep of
+  stages a crashed writer left (Q3); no engine binding, lock-service wiring,
+  quota or transport is built.
 - If any tier requires CGo (`mattn`, the loadable extension), that binding
   lives in its **own Go module**: CGo must not enter the root module's
   dependency graph. The pure-Go tier via `modernc.org/sqlite` avoids CGo

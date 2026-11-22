@@ -4,7 +4,7 @@
 > Last verified: 2026-11-22
 > SPEC row: `sqlite-vfs` (future). This record answers the five open questions
 > of [../sqlite-vfs/architecture.md](../sqlite-vfs/architecture.md)
-> ("Open questions (blocking a build decision)"). Each question lists its
+> ("Decided questions"). Each question lists its
 > options, the dependency each option needs, a recommendation and the reason.
 > The architecture calls are the owner's; nothing here is built.
 
@@ -295,7 +295,10 @@ Built so far (unwired):
 - the page store core in `pkg/sqlitevfs` (keys, meta, transactions over
   `pkg/mvcc`);
 - the staged commit and publish for oversized transactions (Q2) and the meta
-  generation check (Q4).
+  generation check (Q4);
+- the serialized writer lock with `SQLITE_BUSY` on contention and lease loss,
+  the meta change counter, and the sweep of abandoned stages (Q3).
 
-Still to come: the SQLite engine binding and VFS registration, the writer
-lock, quota and the entitlement.
+Still to come: the SQLite engine binding and VFS registration, wiring to the
+server's lock service, the optimistic read-set check, quota and the
+entitlement.
