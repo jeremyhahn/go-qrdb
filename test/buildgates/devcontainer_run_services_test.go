@@ -34,19 +34,12 @@ const devcontainerFile = ".devcontainer.json"
 // runServices, Dev Containers runs compose up on every service in the file,
 // including the CI-only services whose images are never built locally.
 func devcontainerRunServicesDefects(devcontainer, compose []byte) ([]string, error) {
-	var lines []string
-	for _, l := range strings.Split(string(devcontainer), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(l), "//") {
-			continue
-		}
-		lines = append(lines, l)
-	}
 	var dc struct {
 		Service           string   `json:"service"`
 		RunServices       []string `json:"runServices"`
 		DockerComposeFile []string `json:"dockerComposeFile"`
 	}
-	if err := json.Unmarshal([]byte(strings.Join(lines, "\n")), &dc); err != nil {
+	if err := json.Unmarshal(stripJSONComments(devcontainer), &dc); err != nil {
 		return nil, fmt.Errorf("devcontainer: %w", err)
 	}
 	var doc struct {
@@ -72,6 +65,19 @@ func devcontainerRunServicesDefects(devcontainer, compose []byte) ([]string, err
 		}
 	}
 	return defects, nil
+}
+
+// stripJSONComments drops the whole-line `//` comments (the licence header)
+// that .devcontainer.json carries and encoding/json refuses.
+func stripJSONComments(raw []byte) []byte {
+	var lines []string
+	for _, l := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "//") {
+			continue
+		}
+		lines = append(lines, l)
+	}
+	return []byte(strings.Join(lines, "\n"))
 }
 
 func TestDevcontainerRunsOnlyDevcontainerService(t *testing.T) {
