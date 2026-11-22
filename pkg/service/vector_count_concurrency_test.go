@@ -1,4 +1,4 @@
-//go:build raft
+//go:build raft && qrdb_vector
 
 package service
 
