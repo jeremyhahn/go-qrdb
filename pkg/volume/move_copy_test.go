@@ -280,6 +280,49 @@ func assertNoAbsPath(t *testing.T, err error, paths ...string) {
 	}
 }
 
+// TestCopyTreeDestinationUnderAFile proves a destination below a regular
+// file fails with a *MoveStepError whose message never names the path.
+func TestCopyTreeDestinationUnderAFile(t *testing.T) {
+	base := t.TempDir()
+	file := filepath.Join(base, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := CopyTree(context.Background(), moveFixture(t), filepath.Join(file, "dst"))
+	var se *MoveStepError
+	if !errors.As(err, &se) {
+		t.Fatalf("CopyTree err = %v, want *MoveStepError", err)
+	}
+	if strings.Contains(err.Error(), base) {
+		t.Errorf("error %q names the temp dir %q", err.Error(), base)
+	}
+}
+
+// TestCopyTreeSourceThroughSymlinkedParent proves a source reached through
+// a symlinked parent fails with a *MoveStepError that never names the path.
+func TestCopyTreeSourceThroughSymlinkedParent(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(real, "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	_, err := CopyTree(context.Background(), filepath.Join(link, "src"), filepath.Join(t.TempDir(), "dst"))
+	var se *MoveStepError
+	if !errors.As(err, &se) {
+		t.Fatalf("CopyTree err = %v, want *MoveStepError", err)
+	}
+	if strings.Contains(err.Error(), base) {
+		t.Errorf("error %q names the temp dir %q", err.Error(), base)
+	}
+	if !strings.Contains(err.Error(), "must not traverse a symlink") {
+		t.Errorf("error %q, want the fixed symlink reason", err.Error())
+	}
+}
+
 func TestCopyTreeCancelled(t *testing.T) {
 	src := moveFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())

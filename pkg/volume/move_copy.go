@@ -121,11 +121,17 @@ func rootErr(phase, role, reason string, err error) *MoveStepError {
 // the path into the message.
 func checkRootPath(phase, role, p string) error {
 	if err := validation.AbsoluteCanonicalPath(p); err != nil {
+		// The reasons validation.PathError carries for a failed stat or a
+		// symlink name the absolute path, so the move error maps every
+		// reason to a fixed one and never carries the cause.
 		var pe *validation.PathError
 		if errors.As(err, &pe) {
-			return rootErr(phase, role, pe.Reason, nil)
+			if strings.HasPrefix(pe.Reason, "must ") {
+				return rootErr(phase, role, "must be an absolute canonical path", nil)
+			}
+			return rootErr(phase, role, "must not traverse a symlink", nil)
 		}
-		return rootErr(phase, role, "is not a valid path", err)
+		return rootErr(phase, role, "is not a valid path", nil)
 	}
 	return nil
 }
