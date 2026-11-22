@@ -254,10 +254,30 @@ func (m *Manager) DropForTenant(ctx context.Context, name string) error {
 	}
 	db, err := m.GetOwnedIgnoringFence(name, tenant.FromContext(ctx))
 	if err != nil {
-		return err
+		return m.reclaimOnNotFound(ctx, name, "", "", err)
 	}
 
 	return m.drop(ctx, keyFor(db.TenantID(), name), db)
+}
+
+// reclaimOnNotFound is the drop of a name that resolved to no database: a
+// *NotFoundError from the lookup may be a stranded provisional record,
+// which the drop reclaims (reclaimProvisional, by id and incarnation when
+// given). It returns nil when the record was reclaimed, and lookupErr when
+// there was nothing to reclaim or lookupErr is not a *NotFoundError.
+func (m *Manager) reclaimOnNotFound(ctx context.Context, name, id, incarnation string, lookupErr error) error {
+	var notFound *NotFoundError
+	if !errors.As(lookupErr, &notFound) {
+		return lookupErr
+	}
+	reclaimed, err := m.reclaimProvisional(ctx, tenant.FromContext(ctx), name, id, incarnation)
+	if err != nil {
+		return err
+	}
+	if reclaimed {
+		return nil
+	}
+	return lookupErr
 }
 
 // DropIncarnationForTenant drops the context tenant's database name only
@@ -273,7 +293,7 @@ func (m *Manager) DropIncarnationForTenant(ctx context.Context, name, id, incarn
 	}
 	db, err := m.GetOwnedIgnoringFence(name, tenant.FromContext(ctx))
 	if err != nil {
-		return err
+		return m.reclaimOnNotFound(ctx, name, id, incarnation, err)
 	}
 	if db.ID() != id || db.Incarnation() != incarnation {
 		return &DropSupersededError{Name: name, TenantID: db.TenantID()}

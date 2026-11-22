@@ -73,7 +73,8 @@ func TestManager_Create_RecordNonServingUntilGuardAccepts(t *testing.T) {
 func TestManager_Create_GuardRefusalWithFailedCleanupStaysNonServing(t *testing.T) {
 	creator, peer, cat := newProvisionalPeers(t)
 	deleteErr := errors.New("catalog delete timed out")
-	creator.SetCatalog(&settleFaultCatalog{Catalog: cat, deleteErr: deleteErr})
+	fault := &settleFaultCatalog{Catalog: cat, deleteErr: deleteErr}
+	creator.SetCatalog(fault)
 	refused := errors.New("tenant tightened to strict")
 	ctx := WithCreateGuard(context.Background(), func(context.Context) error { return refused })
 
@@ -86,6 +87,116 @@ func TestManager_Create_GuardRefusalWithFailedCleanupStaysNonServing(t *testing.
 	require.NoError(t, err, "the record the cleanup could not remove is kept")
 	assert.True(t, meta.Provisional, "a refused record is never promoted")
 	assertNotServing(t, peer, "orders")
+
+	// The store recovers: a drop of the name reclaims the stranded record,
+	// and the name can be created again.
+	fault.deleteErr = nil
+	require.NoError(t, creator.DropForTenant(context.Background(), "orders"))
+	_, err = cat.Get(context.Background(), "", "orders")
+	var notFound *NotFoundError
+	require.ErrorAs(t, err, &notFound, "the reclaimed record is gone")
+
+	_, err = creator.CreateWithCredentials(context.Background(), DatabaseConfig{Name: "orders", Backend: BackendMemory}, seal.Credentials{})
+	require.NoError(t, err, "a re-create of a reclaimed name succeeds")
+	meta, err = cat.Get(context.Background(), "", "orders")
+	require.NoError(t, err)
+	assert.False(t, meta.Provisional, "the re-create is promoted")
+	_, held := creator.Local("orders", "")
+	assert.True(t, held, "the creator holds the re-created database open")
+	_, err = peer.Open(context.Background(), "", "orders")
+	require.NoError(t, err, "the peer opens the re-created database")
+}
+
+// strandedProvisional leaves a provisional record of name behind: a create
+// the guard refuses, whose cleanup cannot remove the record. It returns the
+// record and clears the fault.
+func strandedProvisional(t *testing.T, creator *Manager, cat *KVCatalog, name string) DatabaseMeta {
+	t.Helper()
+	fault := &settleFaultCatalog{Catalog: cat, deleteErr: errors.New("catalog delete timed out")}
+	creator.SetCatalog(fault)
+	ctx := WithCreateGuard(context.Background(), func(context.Context) error { return errors.New("refused") })
+	_, err := creator.CreateWithCredentials(ctx, DatabaseConfig{Name: name, Backend: BackendMemory}, seal.Credentials{})
+	var orphan *CatalogOrphanError
+	require.ErrorAs(t, err, &orphan)
+	creator.SetCatalog(cat)
+	meta, err := cat.Get(context.Background(), "", name)
+	require.NoError(t, err)
+	require.True(t, meta.Provisional)
+	return meta
+}
+
+func TestManager_DropIncarnationForTenant_ReclaimsProvisional_WrongIDSuperseded(t *testing.T) {
+	creator, peer, cat := newProvisionalPeers(t)
+	meta := strandedProvisional(t, creator, cat, "orders")
+	ctx := context.Background()
+
+	err := creator.DropIncarnationForTenant(ctx, "orders", "another-id", meta.Incarnation)
+	var superseded *DropSupersededError
+	require.ErrorAs(t, err, &superseded, "a wrong id is refused")
+	err = creator.DropIncarnationForTenant(ctx, "orders", meta.ID, "another-incarnation")
+	require.ErrorAs(t, err, &superseded, "a wrong incarnation is refused")
+	kept, err := cat.Get(ctx, "", "orders")
+	require.NoError(t, err, "a refused reclaim keeps the record")
+	assert.Equal(t, meta.Incarnation, kept.Incarnation)
+	assert.Empty(t, kept.DropClaim, "a refused reclaim takes no claim")
+
+	require.NoError(t, creator.DropIncarnationForTenant(ctx, "orders", meta.ID, meta.Incarnation))
+	_, err = cat.Get(ctx, "", "orders")
+	var notFound *NotFoundError
+	require.ErrorAs(t, err, &notFound, "the right id and incarnation reclaim the record")
+	assertNotServing(t, peer, "orders")
+
+	err = creator.DropForTenant(ctx, "orders")
+	require.ErrorAs(t, err, &notFound, "a drop with nothing to reclaim stays NotFound")
+}
+
+// reclaimRaceCatalog claims a provisional record for a reclaim (sets its
+// DropClaim) at the first Update -- after the create's catalog write and
+// before its promotion.
+type reclaimRaceCatalog struct {
+	Catalog
+	claimed bool
+}
+
+func (c *reclaimRaceCatalog) Update(ctx context.Context, tenantID, name, incarnation string, mutate func(*DatabaseMeta) error) error {
+	if !c.claimed {
+		if err := c.Catalog.Update(ctx, tenantID, name, incarnation, func(meta *DatabaseMeta) error {
+			if meta.Provisional {
+				meta.DropClaim = "reclaimer"
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		c.claimed = true
+	}
+	return c.Catalog.Update(ctx, tenantID, name, incarnation, mutate)
+}
+
+func TestManager_Create_PromotionRefusedAfterReclaimClaim(t *testing.T) {
+	creator, peer, cat := newProvisionalPeers(t)
+	creator.SetCatalog(&reclaimRaceCatalog{Catalog: cat})
+	ctx := WithCreateGuard(context.Background(), func(context.Context) error { return nil })
+
+	_, err := creator.CreateWithCredentials(ctx, DatabaseConfig{Name: "orders", Backend: BackendMemory}, seal.Credentials{})
+	var inProgress *DropInProgressError
+	require.ErrorAs(t, err, &inProgress, "a claimed record is never promoted")
+	var orphan *CatalogOrphanError
+	assert.False(t, errors.As(err, &orphan), "the claimed record is the reclaimer's, not an orphan")
+	_, held := creator.Local("orders", "")
+	assert.False(t, held, "the creator never opens the claimed record")
+
+	meta, err := cat.Get(context.Background(), "", "orders")
+	require.NoError(t, err, "the record is left to the reclaimer")
+	assert.True(t, meta.Provisional)
+	assertNotServing(t, peer, "orders")
+
+	// A reclaim that stopped before its delete is taken over by the next.
+	creator.SetCatalog(cat)
+	require.NoError(t, creator.DropForTenant(context.Background(), "orders"))
+	_, err = cat.Get(context.Background(), "", "orders")
+	var notFound *NotFoundError
+	require.ErrorAs(t, err, &notFound)
 }
 
 // A provisioned database is created on every node at boot under the one

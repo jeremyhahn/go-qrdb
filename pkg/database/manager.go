@@ -462,9 +462,20 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// provisional and is never opened.
 	if meta.Provisional {
 		if err := cat.Update(ctx, cfg.TenantID, cfg.Name, incarnation, func(rec *DatabaseMeta) error {
+			// A drop reclaiming the name claimed the record meanwhile
+			// (reclaimProvisional): it is never promoted.
+			if rec.DropClaim != "" {
+				return &DropInProgressError{Name: cfg.Name}
+			}
 			rec.Provisional = false
 			return nil
 		}); err != nil {
+			var claimed *DropInProgressError
+			if errors.As(err, &claimed) {
+				// The record, and the directories a re-create reuses, are
+				// the reclaimer's: no orphan is reported for them.
+				undo.catalog, undo.dirs = nil, nil
+			}
 			return nil, undo.run(ctx, err)
 		}
 	}
@@ -1547,6 +1558,65 @@ func (m *Manager) claimDrop(ctx context.Context, db *Database, claim string) err
 		meta.DropClaim = claim
 		return nil
 	})
+}
+
+// reclaimProvisional removes tenantID's catalog record name when it is a
+// stranded provisional record: a create that crashed between its catalog
+// write and its acceptance, or whose rollback could not remove the record,
+// leaves one, and without a reclaim the name could never be created or
+// dropped again. It reports false and nil when there is no record or the
+// record is not provisional. When wantID or wantIncarnation is set and the
+// record is of another database or incarnation it refuses with
+// *DropSupersededError. Otherwise it claims the record -- a fresh DropClaim,
+// swapped in conditional on the incarnation and only while the record is
+// still provisional -- and deletes it conditional on both, so the record
+// never becomes serving: a create that had not yet promoted it finds the
+// claim and refuses the promotion. A create promoted meanwhile wins: the
+// claim is not taken, false and nil are returned, and the caller's normal
+// drop applies. A re-create of the name reuses the directories the failed
+// create left (createUndo keeps them, and mkdirAll accepts them).
+func (m *Manager) reclaimProvisional(ctx context.Context, tenantID, name, wantID, wantIncarnation string) (bool, error) {
+	cat, err := m.catalog("reclaim provisional database")
+	if err != nil {
+		return false, err
+	}
+	rec, err := cat.Get(ctx, tenantID, name)
+	var notFound *NotFoundError
+	switch {
+	case errors.As(err, &notFound):
+		return false, nil
+	case err != nil:
+		return false, err
+	case !rec.Provisional:
+		return false, nil
+	}
+	if (wantID != "" && rec.ID != wantID) || (wantIncarnation != "" && rec.Incarnation != wantIncarnation) {
+		return false, &DropSupersededError{Name: name, TenantID: tenantID}
+	}
+	claim, err := NewIncarnation()
+	if err != nil {
+		return false, &DropError{Name: name, Err: err}
+	}
+	// A claim left by a reclaim that stopped before its delete is taken
+	// over: the delete is conditional on the claim, so of two racing
+	// reclaims only the one holding the current claim removes the record.
+	errPromoted := errors.New("provisional record promoted")
+	if err := cat.Update(ctx, tenantID, name, rec.Incarnation, func(meta *DatabaseMeta) error {
+		if !meta.Provisional {
+			return errPromoted
+		}
+		meta.DropClaim = claim
+		return nil
+	}); err != nil {
+		if errors.Is(err, errPromoted) || errors.As(err, &notFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if err := cat.Delete(ctx, tenantID, name, rec.Incarnation, claim); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // releaseDropClaim clears the durable fence claim set, in one swap that

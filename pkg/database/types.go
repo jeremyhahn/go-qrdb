@@ -740,7 +740,12 @@ type DatabaseMeta struct {
 	// record serves nothing: no node opens it (Manager.Open, GetOwned,
 	// OpenAll) and RecordedIdentity does not resolve it, so no request can
 	// write to a database the guard may still refuse. A refused create
-	// whose cleanup could not remove the record leaves it provisional.
+	// whose cleanup could not remove the record leaves it provisional, as
+	// does a crash between the write and the acceptance. A drop of the name
+	// reclaims such a stranded record (Manager.reclaimProvisional): it
+	// claims the record by incarnation with a fresh DropClaim and deletes it
+	// conditional on both, never serving it; a create never promotes a
+	// record a reclaim has claimed.
 	Provisional bool `json:"provisional,omitempty"`
 
 	// ID is the database's opaque, never-reused id (NewDatabaseID),
