@@ -281,9 +281,14 @@ func (r *restServiceRegistry) resolveMaterialized(tenantID, db string, info *ten
 			r.bindingImportSession, r.bindingIndex, r.bindingTimeSeries, service.WithDedicatedKeyspace())
 	})
 	incarnation := dbase.Incarnation()
-	fence, err := newDatabaseFence(tenantID, db, incarnation, func() error { return r.refuseIfDropping(tenantID, db, true, incarnation) })
-	if err != nil {
-		return nil, err
+	// The fence carries no drop-fence write guard: that guard compares the
+	// fence key in the store the write lands in, and the drop fence is kept
+	// in the shared store, never in this database's own store, so the guard
+	// would refuse every write. Manager.Drop fences the record, then closes
+	// and removes this store itself; the vector view keeps its check.
+	fence := databaseFence{
+		vectorCheck: func() error { return r.refuseIfDropping(tenantID, db, true, incarnation) },
+		binding:     compaction.Binding{Tenant: tenantID, Database: db, Incarnation: incarnation},
 	}
 	fenced := fence.apply(base, "", false)
 	if base.Collection != nil {
@@ -553,11 +558,6 @@ func servesFromNodeLocalStore(cfg *database.DatabaseConfig) bool {
 	return cfg.Barrier != nil && cfg.Barrier.Enabled && cfg.BarrierOnDataPath()
 }
 
-// ownedDatabase returns the catalog record for db when tenantID owns it
-// (database.Manager.GetOwned, the one ownership rule), and false when there is
-// no database manager, no such database, or the database belongs to another
-// tenant. A mismatch is "not this database", so a caller never learns
-// anything about another tenant's database.
 // materializedDatabase returns tenantID's database db when the Manager opened
 // it in its own store (a materializedStore backend): every path that serves
 // such a database must use its own host, never the shared store.
@@ -573,6 +573,11 @@ func (r *restServiceRegistry) materializedDatabase(tenantID, db string) (*databa
 	return dbase, ms, true
 }
 
+// ownedDatabase returns the catalog record for db when tenantID owns it
+// (database.Manager.GetOwned, the one ownership rule), and false when there is
+// no database manager, no such database, or the database belongs to another
+// tenant. A mismatch is "not this database", so a caller never learns
+// anything about another tenant's database.
 func (r *restServiceRegistry) ownedDatabase(tenantID, db string) (*database.Database, bool) {
 	if r.dbManager == nil {
 		return nil, false

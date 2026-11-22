@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package integration
+//go:build integration
+
+package integration_test
 
 import (
 	"os"
@@ -31,7 +33,8 @@ func TestDatabaseBinding_CLI_PrefixTenantDatabaseOwnStore_PerProtocol(t *testing
 
 	const tenantID = "binding-acme"
 	createTenant(t, node, multiProtocols[0], tenantID, "Binding Acme", "prefix", false)
-	cert, key := provisionTenantIdentity(t, node, tenantID, "db-admin", dataPlanePermissions)
+	perms := append(append([]string{}, dataPlanePermissions...), "databases:delete")
+	cert, key := provisionTenantIdentity(t, node, tenantID, "db-admin", perms)
 
 	for _, proto := range multiProtocols {
 		proto := proto
