@@ -7,6 +7,8 @@ Command group: `qrdb barrier`. **This is the canonical barrier surface shared by
 every CLI binary in the stack** (`qrdb`, `xkmsctl`, `quicbaasctl`,
 `platformctl`). The verbs are `status`, `init`, `init-shamir`, `unseal`,
 `seal`, `cluster-unseal`, `rekey`, `enable-encryption`, `recovery`, `officer` and `quorum`.
+The node seal store of named secrets has its own group, `qrdb seal-store`
+(`put`, `get`, `list`, `delete`, `reseal`, `status`).
 
 A Shamir barrier is unsealed, sealed, rekeyed and recovered only by a quorum
 of authenticated share holders. `officer`, `quorum`, `rekey`, `init-shamir`
@@ -266,6 +268,33 @@ qrdb barrier enable-encryption --strategy shamir \
      --shamir-threshold 2 --shamir-total 3 --passphrase 'pw'
 ```
 
+## `qrdb seal-store`
+
+Operates the node seal store of named secrets
+([api.md](api.md)). Every verb needs `seal:store_manage`, a system-tenant
+Security Officer grant; any other caller is refused. The store is node-local:
+a network route reaches the store of the node it connects to.
+
+| Verb | Synopsis | Text output | `--output json`/`yaml` |
+|------|----------|-------------|------------------------|
+| `put` | `qrdb seal-store put <name>` | `stored <name>` | `{"name": ...}` |
+| `get` | `qrdb seal-store get <name>` | the secret | `{"name": ..., "secret": ...}` (secret base64 in JSON) |
+| `list` | `qrdb seal-store list` | one name per line | `{"names": [...]}` |
+| `delete` | `qrdb seal-store delete <name>` | `deleted <name>` | `{"name": ...}` |
+| `reseal` | `qrdb seal-store reseal <name>` | `resealed <name>` | `{"name": ...}` |
+| `status` | `qrdb seal-store status` | `available`, `sealer`, `secrets` lines, then a `NAME` table | `{"available", "sealer_id", "secret_count", "secret_names"}` |
+
+`put` reads the secret from stdin, never from the command line, so it never
+shows in a process list; an empty stdin is refused and nothing is stored.
+`reseal` re-seals the named secret with the current sealing key.
+
+```bash
+printf '%s' "$SECRET" | qrdb seal-store put signing-pin
+qrdb seal-store get signing-pin
+qrdb --output json seal-store status
+qrdb seal-store delete signing-pin
+```
+
 ## Per-database barriers
 
 A non-raft database with its own `--data-dir`, created by the system tenant,
@@ -304,6 +333,10 @@ nothing; a standalone node never refuses it. See
 The verbs are exercised end to end by `test/integration/barrier_cli_test.go`
 and `test/integration/barrier_permutations_cli_test.go`. The cluster-scope
 encryption migration test (`test/integration/cluster_enable_encryption_test.go`)
-runs under `make integration-test-barrier-seal`. CI runs them in the
+runs under `make integration-test-barrier-seal`, as do
+`test/integration/seal_store_cli_test.go` and
+`test/integration/seal_store_sdk_test.go`, which exercise the seal store
+through the CLI and the SDK on every network transport;
+`cmd/qrdb/seal_store_cmd_test.go` covers the embedded transport. CI runs them in the
 `integration-features` shard whose feature list includes `barrier-seal`
 (`.github/workflows/ci.yml`), required by `ci-gate`.

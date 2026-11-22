@@ -37,6 +37,9 @@ system barrier, so a sealed node serves none of them.
 | Reseal | `POST /v1/seal-store/secrets/{name}/reseal` | `SealStoreReseal` | `sealstore.Reseal` | `qrdb_seal_store_reseal` | `SealStoreReseal` | `seal:store_manage` |
 | Status | `GET /v1/seal-store/status` | `SealStoreStatus` | `sealstore.Status` | `qrdb_seal_store_status` | `SealStoreStatus` | `seal:store_manage` |
 
+The CLI verbs for these operations are `qrdb seal-store put|get|list|delete|reseal|status`,
+documented in [cli.md](cli.md#qrdb-seal-store).
+
 A node served without a seal store answers every seal store call
 `Unimplemented` (the service is not configured): its REST server mounts no
 `/v1/seal-store` routes and its MCP server lists no `qrdb_seal_store_*` tools.
