@@ -62,7 +62,8 @@ node-level settings decide instead.
 
 | Path | What serves the data plane | Engines served | Honours the database's `backend`? |
 |---|---|---|---|
-| Prefix or barrier tenant, no per-database barrier | the shared system shard, under a `<tenant>/<db>/` key prefix | all except vector (vector goes to the node-local store below) | **no** — the node's `--sm` / `raft.sm_type` in raft mode, or the node's single local store in standalone mode |
+| Prefix tenant on a **standalone** node, plain database (no per-database barrier, no explicit data directory, not raft) | the database's own store under its binding root `<data-dir>/tenants/<tenant>/databases/<name>`, written through the node encryptor and served from its own host (`lifecycle.LocalBindingFactory`) | all except vector | **yes** — memory, file and pebble |
+| Prefix or barrier tenant, no per-database barrier (every other case above and below) | the shared system shard, under a `<tenant>/<db>/` key prefix | all except vector (vector goes to the node-local store below) | **no** — the node's `--sm` / `raft.sm_type` in raft mode, or the node's single local store in standalone mode |
 | Prefix or barrier tenant, database with its own barrier and an explicit data directory | the database's own store, opened by `database.Manager` | **KV and collections only**; MVCC, batch, transactions, leases, watches, indexes, time series and vector are absent, so the SQL surface and sequences are too | partly — memory, file and pebble are opened; nothing else is |
 | Volume tenant | one Raft shard on a per-tenant host, shared by all of the tenant's databases under the `<tenant>/<db>/` prefix | all except vector | **no** |
 | Raft tenant | a dedicated Raft group per database on the system host | all except vector | forced to `raft` |
@@ -90,6 +91,21 @@ Supporting facts:
   service registry refuses every engine of a sealed database with
   `service.BarrierSealedError`, so it fails closed rather than serving the
   shared shard.
+- On a **standalone** node a prefix tenant's plain database (not the system
+  tenant, not a tenant home, no explicit data directory, not raft, no
+  per-database barrier) is materialized at open by
+  `lifecycle.LocalBindingFactory`, which the `cmd/qrdbd` standalone start
+  installs on `database.Manager`: its own store under
+  `<data-dir>/tenants/<tenant>/databases/<name>`, on the database's own
+  backend, written through the node encryptor. `resolve`, the collection
+  work journal and the compaction scheduler all serve it from its own host,
+  never from the shared store, and `DROP DATABASE` removes the binding root.
+  The factory reads the tenant's isolation from the tenant service and
+  refuses the open while that service is unavailable, so a barrier tenant's
+  database never lands in a node-encrypted store. Raft mode, the system
+  tenant, barrier, volume and raft tenants, per-database barriers and
+  explicit data directories are unchanged, and data written to the shared
+  store before bindings existed is not relocated.
 - `restServiceRegistry.resolve` (`pkg/server/rest_registry.go`) routes every
   other database to the shared default service set under the composite
   `<tenant>/<db>/` prefix, regardless of the database's recorded backend.
