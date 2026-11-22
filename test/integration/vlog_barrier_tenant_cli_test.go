@@ -49,6 +49,49 @@ func TestVlog_CLI_BarrierTenant_PerProtocol(t *testing.T) {
 	}
 }
 
+// TestVlog_CLI_BarrierTenant_Standalone_PerProtocol drives the same barrier
+// tenant's verifiable log as TestVlog_CLI_BarrierTenant_PerProtocol on a
+// standalone node: with no home Raft group the tenant's logs are served
+// from its standalone tenant barrier store, encrypted under its key and
+// refused while its barrier is sealed.
+func TestVlog_CLI_BarrierTenant_Standalone_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startStandaloneModeNodeWithConfig(t, "pebble", standaloneBarrierTenantYAML(t.TempDir()))
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testVlogBarrierTenantOverProtocol(t, node, proto)
+		})
+	}
+}
+
+// standaloneBarrierTenantYAML admits barrier-isolated tenants with
+// unlimited quotas on a standalone node, with a default volume pool at
+// volumePoolDir for their barriers.
+func standaloneBarrierTenantYAML(volumePoolDir string) string {
+	return fmt.Sprintf(`storage:
+  volume_pools:
+    - name: default
+      path: %s
+tenant:
+  default_entitlements:
+    allowed_isolation_modes:
+      - prefix
+      - barrier
+    allow_volume_storage: true
+    allow_system_managed_barrier: true
+    allowed_volume_pools:
+      - default
+  default_quotas:
+    max_databases: -1
+    max_raft_groups: -1
+    max_replicas_per_group: -1
+    max_total_replicas: -1
+    max_dedicated_wal_groups: -1
+`, volumePoolDir)
+}
+
 // TestVlog_CLI_BarrierDatabase_PerProtocol drives a verifiable log in a
 // barrier-enabled database through the real CLI on every transport. The
 // log lives in the database's own barrier backend: while the database is
