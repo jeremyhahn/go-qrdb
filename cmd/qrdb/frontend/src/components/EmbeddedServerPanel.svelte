@@ -7,31 +7,51 @@
 -->
 <script lang="ts">
   import type { Client } from "@qrdb/sdk";
+  import {
+    connManagerStore,
+    disconnectProfile,
+    loadProfiles,
+    type ConnectionState,
+  } from "$stores/connection-manager.svelte.ts";
 
   let {
     client,
     available,
     onStartNew,
+    onRestored,
   }: {
     client: Client;
     /** connectionManager.isEmbeddedAvailable() — false in web mode. */
     available: boolean;
     /** Opens the embedded server wizard (which owns startEmbedded). */
     onStartNew: () => void;
+    /**
+     * Called with the active profile's state once Restore saved config has
+     * connected the saved configuration through the connection manager.
+     */
+    onRestored: (state: ConnectionState) => void;
   } = $props();
 
-  let running: boolean = $state(false);
+  let standalone: boolean = $state(false);
   let saved: boolean = $state(false);
   let busy: boolean = $state(false);
   let error: string = $state("");
   let confirmClear: boolean = $state(false);
+
+  /** The connected embedded profile, if any (the desktop app's local server). */
+  let connectedEmbeddedId: string = $derived(
+    connManagerStore.profiles.find(
+      (p) => p.type === "embedded" && connManagerStore.states.get(p.id)?.status === "connected",
+    )?.id ?? "",
+  );
+  let running: boolean = $derived(standalone || connectedEmbeddedId !== "");
 
   function message(err: unknown): string {
     return err instanceof Error ? err.message : String(err);
   }
 
   async function refresh(): Promise<void> {
-    running = client.embeddedServer.isEmbedded();
+    standalone = client.embeddedServer.isEmbedded();
     try {
       saved = await client.embeddedServer.hasSavedConfig();
     } catch (err: unknown) {
@@ -53,11 +73,26 @@
   }
 
   function handleStop(): Promise<void> {
-    return run(() => client.embeddedServer.stopEmbedded());
+    return run(async () => {
+      if (connectedEmbeddedId !== "") {
+        await disconnectProfile(client, connectedEmbeddedId);
+        return;
+      }
+      await client.embeddedServer.stopEmbedded();
+    });
   }
 
   function handleRestore(): Promise<void> {
-    return run(() => client.embeddedServer.restoreEmbedded());
+    return run(async () => {
+      // The desktop binding connects the saved config as the active
+      // embedded profile of the connection manager.
+      await client.embeddedServer.restoreEmbedded();
+      await loadProfiles(client);
+      const id = await client.connectionManager.getActiveProfileId();
+      if (id === "") return;
+      const state = await client.connectionManager.getState(id);
+      if (state !== null) onRestored(state as unknown as ConnectionState);
+    });
   }
 
   async function handleClearConfirm(): Promise<void> {

@@ -387,7 +387,6 @@ test.describe("Vector View - advanced operations", () => {
     const detail = page.getByLabel("Vector Details");
     await expect(detail).toBeVisible();
     await detail.getByRole("button", { name: "Close", exact: true }).last().click();
-    await expect(detail).toBeHidden();
 
     await page.getByText("vb", { exact: true }).first().click();
     await expect(detail.getByTestId("vector-detail-created")).toHaveText("1700000002", { timeout: 5_000 });

@@ -26,7 +26,7 @@ import {
   defaultMockState,
   injectError,
 } from "./fixtures/wails-mock.ts";
-import { waitForConnectionManager } from "./fixtures/embedded-wizard-steps.ts";
+import { waitForConnectionManager, waitForDashboard } from "./fixtures/embedded-wizard-steps.ts";
 import type { Page } from "@playwright/test";
 
 const STEP_TIMEOUT = 10_000;
@@ -81,16 +81,20 @@ test.describe("Embedded server panel - no saved config", () => {
 test.describe("Embedded server panel - saved config", () => {
   test.use({ mockState: savedState });
 
-  test("restore then stop", async ({ page }) => {
+  test("restore connects the saved config through the connection manager", async ({ page }) => {
     await openPanel(page);
     await expect(panel(page).getByTestId("embedded-saved")).toHaveText("Saved config");
 
     await panel(page).getByRole("button", { name: "Restore saved config" }).click();
-    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Running");
 
-    await panel(page).getByRole("button", { name: "Stop" }).click();
-    await expect(panel(page).getByTestId("embedded-running")).toHaveText("Stopped");
-    await expect(panel(page).getByTestId("embedded-error")).toHaveCount(0);
+    // The restored server is the active, connected profile: the app leaves
+    // the connection manager for the connected UI, and the profile list
+    // carries the embedded profile Restore saved.
+    await waitForDashboard(page);
+    await expect(panel(page)).toHaveCount(0);
+    await expect(page.getByText("Local Server", { exact: true }).first()).toBeVisible({
+      timeout: STEP_TIMEOUT,
+    });
   });
 
   test("clear saved config asks to confirm", async ({ page }) => {

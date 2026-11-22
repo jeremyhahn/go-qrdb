@@ -1014,7 +1014,20 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             if ((s as { embeddedSavedConfig?: boolean }).embeddedSavedConfig !== true) {
               throw new Error("no saved embedded server config");
             }
-            s.embeddedRunning = true;
+            // Like the desktop binding, connect the saved config through the
+            // connection manager: an embedded "Local Server" profile becomes
+            // the connected, active profile (its barrier, seal mode none,
+            // initialises on connect). The standalone server stays stopped.
+            (s as { restoredProfile?: Record<string, unknown> }).restoredProfile = {
+              id: "mock-restored-1",
+              name: "Local Server",
+              type: "embedded",
+              embedded: { dataDir: "/mock/data", sealConfig: { mode: "none" } },
+              createdAt: "2026-01-01T00:00:00Z",
+            };
+            (s as { restoredConnected?: boolean }).restoredConnected = true;
+            s.sealStatus.initialized = true;
+            s.sealStatus.sealed = false;
           },
           ClearSavedConfig: async () => {
             maybeReject("EmbeddedServerBinding.ClearSavedConfig");
@@ -2472,12 +2485,19 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
         ConnectionManagerBinding: (() => {
           // Track saved profiles so Connect can determine isEmbedded.
           const savedProfiles: Record<string, Record<string, unknown>> = {};
+          // The profile RestoreEmbedded connected, if any (the desktop binding
+          // saves or reuses an embedded profile and makes it active).
+          const restored = (): Record<string, unknown> | undefined =>
+            (getState() as { restoredProfile?: Record<string, unknown> }).restoredProfile;
+          const restoredConnected = (): boolean =>
+            (getState() as { restoredConnected?: boolean }).restoredConnected === true;
           return {
             ListProfiles: async () => {
               const s = getState();
+              const list: Array<Record<string, unknown>> = [];
               if (s.configInitialized) {
                 const profileType = s.profileType ?? "embedded";
-                return [{
+                list.push({
                   id: "mock-profile-1",
                   name: "Local Database",
                   type: profileType,
@@ -2491,9 +2511,11 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                       }),
                   serverMode: s.serverMode,
                   createdAt: "2026-01-01T00:00:00Z",
-                }];
+                });
               }
-              return [];
+              const r = restored();
+              if (r) list.push(r);
+              return list;
             },
             SaveProfile: async (profile: Record<string, unknown>) => {
               if (profile.id) savedProfiles[profile.id as string] = profile;
@@ -2502,6 +2524,10 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               delete savedProfiles[id];
             },
             Connect: async (profileId: string) => {
+              if (profileId === restored()?.id) {
+                (getState() as { restoredConnected?: boolean }).restoredConnected = true;
+                return { profileId, status: "connected", isEmbedded: true };
+              }
               const s = getState();
               const profile = savedProfiles[profileId];
               const isEmbedded = profile?.type === "embedded";
@@ -2535,11 +2561,21 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               }
               return { profileId, status, isEmbedded };
             },
-            Disconnect: async (_profileId: string) => {
-              // no-op in mock
+            Disconnect: async (profileId: string) => {
+              // Only the restored profile tracks its connection in the mock.
+              if (profileId === restored()?.id) {
+                (getState() as { restoredConnected?: boolean }).restoredConnected = false;
+              }
             },
             GetState: async (profileId: string) => {
               const s = getState();
+              if (profileId === restored()?.id) {
+                return {
+                  profileId,
+                  status: restoredConnected() ? "connected" : "disconnected",
+                  isEmbedded: true,
+                };
+              }
               const profile = savedProfiles[profileId];
               const isEmbedded = profile?.type === "embedded";
               if (!s.configInitialized) {
@@ -2557,6 +2593,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             },
             GetActiveProfileID: async () => {
               const s = getState();
+              const r = restored();
+              if (r && restoredConnected()) return r.id as string;
               return s.configInitialized ? "mock-profile-1" : "";
             },
             IsEmbeddedAvailable: async () => {

@@ -815,6 +815,7 @@
             {client}
             available={connManagerStore.embeddedAvailable}
             onStartNew={showEmbeddedPanel}
+            onRestored={onConnect}
           />
         </div>
       </div>
@@ -856,6 +857,7 @@
         {client}
         available={connManagerStore.embeddedAvailable}
         onStartNew={() => { if (activePanel !== "embedded") showEmbeddedPanel(); }}
+        onRestored={onConnect}
       />
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
