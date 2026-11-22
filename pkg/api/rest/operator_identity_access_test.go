@@ -76,15 +76,50 @@ func (s *operatorAuditSink) operatorTrails() map[string]bool {
 // (a system-tenant admin), with the operator gate wired to policy.
 func newOperatorServer(t *testing.T, policy tenant.TenantIsolationPolicy, opts ...ServerOption) (*Server, *operatorAuditSink) {
 	t.Helper()
+	return newOperatorServerWithReader(t, &operatorPolicy{acme: policy}, opts...)
+}
+
+// newOperatorServerWithReader is newOperatorServer with the isolation policy
+// reader supplied by the caller.
+func newOperatorServerWithReader(t *testing.T, reader authmw.IsolationPolicyReader, opts ...ServerOption) (*Server, *operatorAuditSink) {
+	t.Helper()
 	sink := &operatorAuditSink{}
 	roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
 	mw := authmw.New(rbac.New(roles),
 		authmw.WithRoleResolver(roles),
 		authmw.WithAuthenticator(authtest.NewFixedAuthenticator(authtest.AdminIdentity(tenantid.System, "operator"))),
 		authmw.WithAuditLogger(sink), authmw.WithOperatorAccessTenantTrail(sink),
-		authmw.WithIsolationPolicyReader(&operatorPolicy{acme: policy}))
+		authmw.WithIsolationPolicyReader(reader))
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", append([]ServerOption{WithAuthMiddleware(mw)}, opts...)...)
 	return srv, sink
+}
+
+// failingOperatorPolicy is an isolation policy reader whose store is down.
+type failingOperatorPolicy struct{}
+
+func (failingOperatorPolicy) GetTenant(context.Context, string) (*tenant.TenantInfo, error) {
+	return nil, errors.New("tenant store unavailable")
+}
+
+func (failingOperatorPolicy) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
+	return "", errors.New("tenant store unavailable")
+}
+
+// TestOperatorIdentityAccess_PolicyReadFailureIs503: an operator's
+// cross-tenant user operation whose isolation policy read fails is refused
+// with a retryable 503, not a 403, and the user service never runs.
+func TestOperatorIdentityAccess_PolicyReadFailureIs503(t *testing.T) {
+	for _, op := range userOperations {
+		var seen []string
+		srv, _ := newOperatorServerWithReader(t, failingOperatorPolicy{}, WithUserService(boundUserService(&seen)))
+		rec := serveOperator(srv, op.method, op.path, op.body)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s: operator with a failing policy read = %d %s, want 503", op.name, rec.Code, rec.Body.String())
+		}
+		if len(seen) != 0 {
+			t.Fatalf("%s: user service ran (%v) after the refusal", op.name, seen)
+		}
+	}
 }
 
 func serveOperator(srv *Server, method, path, body string) *httptest.ResponseRecorder {

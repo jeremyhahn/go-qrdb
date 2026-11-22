@@ -15,9 +15,16 @@ import (
 type fakeIsolationPolicy struct {
 	floor   tenant.ClusterIsolationPolicy
 	tenants map[string]*tenant.TenantInfo
+	// getErr and floorErr, when set, are the store failures GetTenant and
+	// ClusterIsolationPolicy return.
+	getErr   error
+	floorErr error
 }
 
 func (f *fakeIsolationPolicy) GetTenant(_ context.Context, id string) (*tenant.TenantInfo, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	info, ok := f.tenants[id]
 	if !ok {
 		return nil, errors.New("tenant not found")
@@ -26,6 +33,9 @@ func (f *fakeIsolationPolicy) GetTenant(_ context.Context, id string) (*tenant.T
 }
 
 func (f *fakeIsolationPolicy) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
+	if f.floorErr != nil {
+		return "", f.floorErr
+	}
 	return f.floor, nil
 }
 
@@ -243,5 +253,33 @@ func TestOperatorIdentityAccess_NoPolicyReaderRefuses(t *testing.T) {
 	var unresolved *OperatorAccessUnresolvedError
 	if !errors.As(err, &unresolved) {
 		t.Fatalf("access without a policy reader = %v, want *OperatorAccessUnresolvedError", err)
+	}
+}
+
+// TestOperatorIdentityAccess_PolicyReadFailureIsUnavailable: a store failure
+// on the tenant-policy read or on the floor read fails closed with
+// *OperatorAccessUnresolvedError, classified Unavailable so a client retries
+// the outage instead of reading it as a refusal.
+func TestOperatorIdentityAccess_PolicyReadFailureIsUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail func(*fakeIsolationPolicy)
+	}{
+		{"tenant policy read", func(f *fakeIsolationPolicy) { f.getErr = errors.New("store down") }},
+		{"floor read", func(f *fakeIsolationPolicy) { f.floorErr = errors.New("store down") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := policyFixture(tenant.ClusterIsolationPolicyOperatorAccess, tenant.TenantIsolationPolicyStrict)
+			tc.fail(policy)
+			m := builtInMiddleware(t, withOperatorTrails(&mockAuditLogger{}), WithIsolationPolicyReader(policy))
+			_, err := m.AuthorizeOperatorIdentityAccess(operatorCtx(), "acme", permission.UsersReadTenant)
+			var unresolved *OperatorAccessUnresolvedError
+			if !errors.As(err, &unresolved) || unresolved.TenantID != "acme" {
+				t.Fatalf("access with a failing %s = %v, want *OperatorAccessUnresolvedError for acme", tc.name, err)
+			}
+			if got := ClassifyAuthError(err); got != AuthFailureUnavailable {
+				t.Fatalf("unresolved access classified %v, want unavailable", got)
+			}
+		})
 	}
 }

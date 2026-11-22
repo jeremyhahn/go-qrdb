@@ -85,7 +85,11 @@ func (e *OperatorAccessRefusedError) Unwrap() error { return auth.ErrUnauthorize
 
 // OperatorAccessUnresolvedError is the refusal of an operator's access to a
 // tenant's identity records when the tenant's isolation policy cannot be
-// read: no policy reader is wired, or the read failed.
+// read: no policy reader is wired, the tenant record is absent from the
+// reader's answer, or the read failed. ClassifyAuthError reports it as
+// AuthFailureUnavailable (HTTP 503, gRPC Unavailable), so a client retries a
+// transient store outage; a wrapped context cancellation or deadline keeps
+// its own class, and a wrapped tenant.ErrTenantNotFound keeps NotFound.
 type OperatorAccessUnresolvedError struct {
 	TenantID string
 	Err      error
