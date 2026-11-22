@@ -75,6 +75,7 @@ func (s *stubSealStore) Delete(_ context.Context, name string) error {
 	return nil
 }
 
+// names lists the stored secret names, sorted. The caller must hold s.mu.
 func (s *stubSealStore) names() []string {
 	names := make([]string, 0, len(s.secrets))
 	for n := range s.secrets {
@@ -82,6 +83,28 @@ func (s *stubSealStore) names() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// secret returns a copy of the named secret, read under s.mu.
+func (s *stubSealStore) secret(name string) ([]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.secrets[name]
+	return slices.Clone(v), ok
+}
+
+// resealNames returns a copy of the resealed names, read under s.mu.
+func (s *stubSealStore) resealNames() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.resealed)
+}
+
+// snapshot returns the call count and the number of stored secrets, read under s.mu.
+func (s *stubSealStore) snapshot() (calls, stored int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls, len(s.secrets)
 }
 
 func (s *stubSealStore) List(_ context.Context) ([]string, error) {
@@ -155,7 +178,7 @@ func TestSealStoreOverQUIC(t *testing.T) {
 
 	status, body := sealStoreCall(t, addr, cfg, "sealstore.Put", map[string]any{"name": "jwt", "secret": secret})
 	wantSealStoreOK(t, "Put", status, body)
-	if got := stub.secrets["jwt"]; !slices.Equal(got, secret) {
+	if got, _ := stub.secret("jwt"); !slices.Equal(got, secret) {
 		t.Fatalf("stub secret = %x, want %x", got, secret)
 	}
 	sealStoreCall(t, addr, cfg, "sealstore.Put", map[string]any{"name": "tls", "secret": []byte("k")})
@@ -176,8 +199,8 @@ func TestSealStoreOverQUIC(t *testing.T) {
 
 	status, body = sealStoreCall(t, addr, cfg, "sealstore.Reseal", map[string]any{"name": "tls"})
 	wantSealStoreOK(t, "Reseal", status, body)
-	if !slices.Equal(stub.resealed, []string{"tls"}) {
-		t.Fatalf("resealed = %v, want [tls]", stub.resealed)
+	if resealed := stub.resealNames(); !slices.Equal(resealed, []string{"tls"}) {
+		t.Fatalf("resealed = %v, want [tls]", resealed)
 	}
 
 	status, body = sealStoreCall(t, addr, cfg, "sealstore.Status", nil)
@@ -190,7 +213,7 @@ func TestSealStoreOverQUIC(t *testing.T) {
 
 	status, body = sealStoreCall(t, addr, cfg, "sealstore.Delete", map[string]any{"name": "jwt"})
 	wantSealStoreOK(t, "Delete", status, body)
-	if _, ok := stub.secrets["jwt"]; ok {
+	if _, ok := stub.secret("jwt"); ok {
 		t.Fatal("jwt still stored after Delete")
 	}
 }
@@ -202,8 +225,9 @@ func TestSealStoreOverQUIC_TenantAdminDenied(t *testing.T) {
 	if status != wire.StatusPermissionDenied {
 		t.Fatalf("status = %s, want PERMISSION_DENIED", wire.StatusName(status))
 	}
-	if stub.calls != 0 || len(stub.secrets) != 0 {
-		t.Fatalf("a denied call reached the seal store: calls=%d", stub.calls)
+	calls, stored := stub.snapshot()
+	if calls != 0 || stored != 0 {
+		t.Fatalf("a denied call reached the seal store: calls=%d", calls)
 	}
 }
 
