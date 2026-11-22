@@ -251,6 +251,26 @@ type MoveStartAuditor interface {
 	BeginMoveStart(ctx context.Context, req MoveTenantRequest) (settle func(*Move, error), err error)
 }
 
+// MoveStep is one node's step of a tenant move, as the move reconciler hands
+// it to a MoveStepRunner. Attempt is 1-based.
+type MoveStep struct {
+	TenantID string
+	NodeID   string
+	FromPool string
+	ToPool   string
+	Attempt  int
+}
+
+// MoveStepRunner runs one node's step of a tenant move on that node: close
+// the tenant's stores there, copy, verify, reopen from the destination and
+// catch up ("The move, phase by phase" steps 2-3,
+// docs/decisions/volume-pool-tenant-moves.md). A nil error completes the
+// step; any error counts as one failed attempt. The node side implements it
+// in a later slice.
+type MoveStepRunner interface {
+	RunMoveStep(ctx context.Context, step MoveStep) error
+}
+
 // Service is the management surface every transport delegates to (REST,
 // gRPC, QUIC, Unix, MCP, embedded -- see docs/volume-pools/api.md).
 //
