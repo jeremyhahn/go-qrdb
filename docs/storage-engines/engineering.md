@@ -476,8 +476,8 @@ the same status.
 > `object-storage-lsm`. Only the unwired Pebble `remote.Storage` adapter
 > over go-objstore (`pkg/storage/objstore/remote.go`) and its barrier-AEAD
 > encrypting wrapper (`pkg/storage/objstore/encremote.go`, OS-4 C), the
-> `pkg/storage/pebble` `WithRemote` option with its creator-ID marker file
-> (`pkg/storage/pebble/remote.go`) and the store format marker
+> `pkg/storage/pebble/remotelsm` `WithRemote` option with its creator-ID marker file
+> (`pkg/storage/pebble/remotelsm/remotelsm.go`) and the store format marker
 > `objstore.EnsureLSMFormat` (`pkg/storage/objstore/lsmformat.go`, OS-5 A),
 > the store opener `objstore.OpenStore` (`pkg/storage/objstore/open.go`, with
 > `ArchiveTierUnsupportedError`), the local object cache
@@ -506,9 +506,14 @@ func NewRemote(provider string, settings map[string]string, enc *atrest.Encrypto
 func Locator(provider, prefix string) remote.Locator
 ```
 
-`pkg/storage/pebble` gains one construction option:
+`pkg/storage/pebble/remotelsm` provides one construction option for
+`pkg/storage/pebble`. `pkg/storage/pebble` reaches the binding only through
+its `OpenHook` (installed with `WithOpenHook`), so the lean standalone build
+does not import `objstorage/remote`.
 
 ```go
+package remotelsm
+
 // WithRemote configures the Engine to keep its SSTables on remote storage
 // reached through store, under locator, using strategy to decide which
 // levels are remote (CreateOnSharedAll for a local binding — every level
@@ -516,13 +521,29 @@ func Locator(provider, prefix string) remote.Locator
 // The local dir passed to pebble.New still roots the WAL, MANIFEST and
 // block cache (OS-2) — WithRemote narrows what the local dir holds, it does
 // not replace it.
-func WithRemote(store remote.Storage, locator remote.Locator, strategy remote.CreateOnSharedStrategy) Option
+//
+// WithRemote lives in package pkg/storage/pebble/remotelsm, not in
+// pkg/storage/pebble, so pkg/storage/pebble keeps no objstorage/remote
+// import (lean standalone gate); it installs itself through
+// pebbleStorage.WithOpenHook.
+//
+// New refuses a nil store, an empty locator, CreateOnSharedNone and a
+// Config with DisableWAL with a *pebbleStorage.ConfigError, before it
+// creates any file. The store's CreatorID is generated once and persisted
+// in the file QRDB-CREATORID in Config.DataDir; a marker that differs from
+// the id the MANIFEST records is refused with a *CreatorIDError. WithRemote
+// has no effect on NewFromDB.
+func WithRemote(store remote.Storage, locator remote.Locator, strategy remote.CreateOnSharedStrategy) pebbleStorage.Option
 ```
 
-A `*pebble.DB` opened with `WithRemote` is constructed with a `CreatorID`
-(OS-3): one per owning instance, generated once and persisted as a small local
-marker file, `QRDB-CREATORID` in the data directory beside the WAL/MANIFEST —
-never derived from a qrdb key, never shared between instances.
+A `*pebble.DB` opened with `remotelsm.WithRemote` is constructed with a
+`CreatorID` (OS-3): one per owning instance, generated once and persisted as a
+small local marker file, `QRDB-CREATORID` in the data directory beside the
+WAL/MANIFEST — never derived from a qrdb key, never shared between instances.
+A marker that cannot be read or parsed, or a `CreatorID` that differs from the
+one the store's MANIFEST records, is refused at open with a
+`*remotelsm.CreatorIDError` naming the marker file (`Path`), rather than a
+panic.
 
 ### Invariants (target, additive to the ones above)
 
@@ -540,9 +561,9 @@ never derived from a qrdb key, never shared between instances.
 - **Encryption happens in the `remote.Storage` adapter, not in `vfs.FS`.**
   `pkg/atrest.Encryptor.Apply` continues to cover the local WAL/MANIFEST/local
   SSTables exactly as today; it does **not** reach objects written through
-  `WithRemote`. The adapter encrypts the whole object payload with the same
+  `remotelsm.WithRemote`. The adapter encrypts the whole object payload with the same
   `seal.StorageBarrier` AEAD before `CreateObject` and decrypts after
-  `ReadObject`. A barrier-sealed database with `WithRemote` configured and no
+  `ReadObject`. A barrier-sealed database with `remotelsm.WithRemote` configured and no
   working encryptor fails closed at open, matching
   `statemachine.SMStorageUnencryptedError`'s existing precedent for
   `file`-backed state machines.
@@ -604,7 +625,7 @@ non-replicated binding, is decided with OS-7.
 |---|---|---|
 | `provider` is `glacier` or `azurearchive` | `ArchiveTierUnsupportedError` at construction | **yes** |
 | Store written in the encoded-name layout (`qrdb-objstore-format` version `2`) | refused at open with the typed format error; no migration (OS-5) | **yes** |
-| Barrier sealed, no working encryptor, `WithRemote` configured | refused at open, matching `SMStorageUnencryptedError`'s precedent | **yes** |
+| Barrier sealed, no working encryptor, `remotelsm.WithRemote` configured | refused at open, matching `SMStorageUnencryptedError`'s precedent | **yes** |
 | A second instance attempts to open an already-owned `CreatorID`/prefix | refused — Pebble's own manifest/lock detects the conflict | **yes** |
 | go-objstore `ReadObject` for an object this instance did not write (prefix violated) | not expected to occur (OS-3); if it does, a corruption-class error, not silently served | **yes** |
 | `raft.sm_storage`/`state_storage: objstore` before the phase-3 gate accepts it | refused, as today | **yes** |
