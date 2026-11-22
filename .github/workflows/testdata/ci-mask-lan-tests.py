@@ -110,11 +110,15 @@ case(
 # S6: public addresses beside the private ranges stay unmasked.
 case("S6 public IPv4", {"GOPROXY": "http://203.0.113.7:8080"}, exact=set())
 # S7 (Codex on go-xkms #2340): a host name is classified case-insensitively
-# and with its terminal dot removed; the masks keep the entry's spelling.
+# and with its terminal dot removed; each host mask is printed as written
+# and, when that differs, lowercased (Codex round 2 on go-xkms #2346).
 case(
     "S7 upper-case LAN suffix",
     {"DEVCACHE_GO": "http://cache.INTERNAL:3000/go"},
-    exact={"http://cache.INTERNAL:3000/go", "cache.INTERNAL:3000", "cache.INTERNAL"},
+    exact={
+        "http://cache.INTERNAL:3000/go", "cache.INTERNAL:3000", "cache.INTERNAL",
+        "http://cache.internal:3000/go", "cache.internal:3000", "cache.internal",
+    },
 )
 case(
     "S7b fully qualified LAN name",
@@ -124,7 +128,20 @@ case(
 case(
     "S7c fully qualified, mixed case, no port",
     {"RELEASE_REGISTRY": "Pkgs.Home.Arpa."},
-    exact={"Pkgs.Home.Arpa."},
+    exact={"Pkgs.Home.Arpa.", "pkgs.home.arpa."},
+)
+# S7f: a mixed-case registry as a helper that lowercases it would log it.
+case(
+    "S7f mixed-case registry, lowercased form",
+    {"CI_IMAGE_REGISTRY": "Registry.Lan:5000"},
+    exact={"Registry.Lan:5000", "Registry.Lan", "registry.lan:5000", "registry.lan"},
+)
+# S7g: credentials are masked as written only, never lowercased.
+case(
+    "S7g mixed-case credentials stay as written",
+    {"GOPROXY": "http://CI:PassWord@cache.lan"},
+    want={"CI:PassWord", "PassWord", "cache.lan"},
+    absent={"ci:password", "password"},
 )
 case(
     "S7d fully qualified single label",
