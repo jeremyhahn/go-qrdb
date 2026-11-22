@@ -195,6 +195,43 @@ func TestCatalog_MoveStep_NoJournalAndCorrupt(t *testing.T) {
 	}
 }
 
+func TestCatalog_MoveStep_StoreFailures(t *testing.T) {
+	ctx := context.Background()
+	t.Run("get", func(t *testing.T) {
+		cat, kv, _ := newAdmittedMove(t)
+		boom := errors.New("get failed")
+		kv.failGet = boom
+		if _, err := cat.GrantMoveStep(ctx, "acme"); !errors.Is(err, boom) {
+			t.Errorf("GrantMoveStep error = %v, want the get failure", err)
+		}
+		if _, err := cat.CompleteMoveStep(ctx, "acme", "n1"); !errors.Is(err, boom) {
+			t.Errorf("CompleteMoveStep error = %v, want the get failure", err)
+		}
+		if _, err := cat.FailMoveStep(ctx, "acme", "n1", "x", 0); !errors.Is(err, boom) {
+			t.Errorf("FailMoveStep error = %v, want the get failure", err)
+		}
+	})
+	t.Run("execute", func(t *testing.T) {
+		cat, kv, tx := newAdmittedMove(t)
+		before, err := kv.Get(ctx, MoveKey("acme"))
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		boom := errors.New("execute failed")
+		tx.failExecute = boom
+		if _, err := cat.GrantMoveStep(ctx, "acme"); !errors.Is(err, boom) {
+			t.Fatalf("GrantMoveStep error = %v, want the execute failure", err)
+		}
+		after, err := kv.Get(ctx, MoveKey("acme"))
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if !bytes.Equal(before, after) {
+			t.Fatalf("journal changed by a failed transaction:\n%s\n%s", before, after)
+		}
+	})
+}
+
 func TestCatalog_MoveStep_InvalidRequest(t *testing.T) {
 	cat, _, _ := newAdmittedMove(t)
 	ctx := context.Background()

@@ -13,13 +13,17 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // moveFixture builds a source tree with nested directories, an empty
@@ -374,5 +378,214 @@ func TestMoveStepErrorMessage(t *testing.T) {
 	}
 	if err := VerifyCopy(context.Background(), t.TempDir(), nil); err == nil {
 		t.Errorf("VerifyCopy(nil manifest) = nil, want error")
+	}
+}
+
+// unixSocketDir returns a directory holding a listening unix socket named
+// "sock". The directory comes from os.MkdirTemp under the short system
+// temp dir because a socket path is limited to about 100 bytes. The
+// listener stays open until the test ends: closing it unlinks the file.
+func unixSocketDir(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets need unix")
+	}
+	dir, err := os.MkdirTemp("", "mv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	ln, err := net.Listen("unix", filepath.Join(dir, "sock"))
+	if err != nil {
+		t.Skipf("unix socket: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	return dir
+}
+
+// fifoDir returns a fresh directory holding a named pipe "fifo".
+func fifoDir(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("named pipes need unix")
+	}
+	dir := filepath.Join(t.TempDir(), "fifo-src")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("mkfifo", filepath.Join(dir, "fifo")).CombinedOutput(); err != nil {
+		t.Skipf("mkfifo: %v: %s", err, out)
+	}
+	return dir
+}
+
+func TestBuildManifestRefusals(t *testing.T) {
+	base := t.TempDir()
+	file := filepath.Join(base, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(base, "link")
+	if err := os.Mkdir(linkDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(file, filepath.Join(linkDir, "l")); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		root func(t *testing.T) string
+		want string
+	}{
+		{"relative root", func(*testing.T) string { return "rel/root" }, "manifest directory"},
+		{"unclean root", func(*testing.T) string { return base + "//root" }, "manifest directory"},
+		{"missing root", func(*testing.T) string { return filepath.Join(base, "nope") }, "cannot be read"},
+		{"root is a file", func(*testing.T) string { return file }, "is not a directory"},
+		{"symlink inside", func(*testing.T) string { return linkDir }, "symlink"},
+		{"named pipe inside", fifoDir, "named pipe"},
+		{"unix socket inside", unixSocketDir, "socket"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := tc.root(t)
+			m, err := BuildManifest(context.Background(), root)
+			var se *MoveStepError
+			if !errors.As(err, &se) {
+				t.Fatalf("BuildManifest = %v, %v; want *MoveStepError", m, err)
+			}
+			if se.Phase != "verify" {
+				t.Errorf("Phase = %q, want verify", se.Phase)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q lacks %q", err, tc.want)
+			}
+			assertNoAbsPath(t, err, base, root, file)
+		})
+	}
+}
+
+func TestEntryKind(t *testing.T) {
+	cases := []struct {
+		mode fs.FileMode
+		want string
+	}{
+		{fs.ModeSymlink | 0o777, "symlink"},
+		{fs.ModeNamedPipe | 0o600, "named pipe"},
+		{fs.ModeSocket | 0o600, "socket"},
+		{fs.ModeDevice | fs.ModeCharDevice | 0o600, "device"},
+		{fs.ModeDevice | 0o600, "device"},
+		{fs.ModeIrregular, "irregular"},
+	}
+	for _, tc := range cases {
+		if got := entryKind(tc.mode); got != tc.want {
+			t.Errorf("entryKind(%v) = %q, want %q", tc.mode, got, tc.want)
+		}
+	}
+}
+
+func TestCopyTreeSocketRefused(t *testing.T) {
+	src := unixSocketDir(t)
+	_, err := CopyTree(context.Background(), src, filepath.Join(t.TempDir(), "dst"))
+	var se *MoveStepError
+	if !errors.As(err, &se) || se.Phase != "copy" {
+		t.Fatalf("CopyTree err = %v, want *MoveStepError phase copy", err)
+	}
+	if se.Path != "sock" {
+		t.Errorf("Path = %q, want sock", se.Path)
+	}
+	if !strings.Contains(se.Err.Error(), "socket") {
+		t.Errorf("cause %q does not name socket", se.Err)
+	}
+	assertNoAbsPath(t, err, src)
+}
+
+// TestCopyTreeParentSyncFails makes the destination parent's fsync fail
+// through the fsync seam (process-global, so no t.Parallel).
+func TestCopyTreeParentSyncFails(t *testing.T) {
+	sentinel := errors.New("parent fsync failed")
+	t.Cleanup(fsync.SetForTest(func(string) error { return sentinel }))
+	src := moveFixture(t)
+	dst := filepath.Join(t.TempDir(), "dst")
+	m, err := CopyTree(context.Background(), src, dst)
+	var se *MoveStepError
+	if !errors.As(err, &se) || se.Phase != "copy" {
+		t.Fatalf("CopyTree = %v, %v; want *MoveStepError phase copy", m, err)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want it to wrap the fsync failure", err)
+	}
+	if !strings.Contains(err.Error(), "destination parent") {
+		t.Errorf("error %q does not name the destination parent", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "a", "top.dat")); err != nil || string(got) != "top" {
+		t.Errorf("copied file = %q, %v; want the copy left in place", got, err)
+	}
+}
+
+func TestCopyTreeUnreadableEntries(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads mode-0 entries")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("mode bits need unix")
+	}
+	for _, rel := range []string{"a/top.dat", "a/b"} {
+		t.Run(rel, func(t *testing.T) {
+			src := moveFixture(t)
+			p := filepath.Join(src, filepath.FromSlash(rel))
+			info, err := os.Stat(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(p, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(p, info.Mode().Perm()) })
+
+			_, err = CopyTree(context.Background(), src, filepath.Join(t.TempDir(), "dst"))
+			var se *MoveStepError
+			if !errors.As(err, &se) || se.Phase != "copy" {
+				t.Fatalf("CopyTree err = %v, want *MoveStepError phase copy", err)
+			}
+			if se.Path != rel {
+				t.Errorf("CopyTree Path = %q, want %q", se.Path, rel)
+			}
+			if !errors.Is(err, fs.ErrPermission) {
+				t.Errorf("CopyTree err = %v, want permission denied", err)
+			}
+			assertNoAbsPath(t, err, src)
+
+			_, err = BuildManifest(context.Background(), src)
+			if !errors.As(err, &se) || se.Phase != "verify" {
+				t.Fatalf("BuildManifest err = %v, want *MoveStepError phase verify", err)
+			}
+			if se.Path != rel {
+				t.Errorf("BuildManifest Path = %q, want %q", se.Path, rel)
+			}
+			assertNoAbsPath(t, err, src)
+		})
+	}
+}
+
+func TestVerifyCopyMissingDestination(t *testing.T) {
+	_, _, m := copyFixture(t)
+	missing := filepath.Join(t.TempDir(), "nope")
+	err := VerifyCopy(context.Background(), missing, m)
+	var se *MoveStepError
+	if !errors.As(err, &se) || se.Phase != "verify" {
+		t.Fatalf("VerifyCopy err = %v, want *MoveStepError phase verify", err)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("VerifyCopy err = %v, want not-exist", err)
+	}
+	assertNoAbsPath(t, err, missing)
+}
+
+func TestVerifyCopyUnsortedWant(t *testing.T) {
+	_, dst, m := copyFixture(t)
+	reversed := &Manifest{Entries: slices.Clone(m.Entries)}
+	slices.Reverse(reversed.Entries)
+	if err := VerifyCopy(context.Background(), dst, reversed); err != nil {
+		t.Fatalf("VerifyCopy(reversed manifest) = %v, want nil", err)
 	}
 }

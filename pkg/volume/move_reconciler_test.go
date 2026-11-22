@@ -9,9 +9,12 @@
 package volume
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -181,5 +184,72 @@ func TestMoveReconciler_CancelledContext(t *testing.T) {
 	}
 	if m := storedMove(t, kv, "acme"); m == nil || m.State != MoveStateAdmitted {
 		t.Fatalf("journal = %+v, want admitted", m)
+	}
+}
+
+func TestMoveReconciler_ScanFailure(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	runner := &scriptedRunner{}
+	r := newTestReconciler(t, cat, runner)
+	boom := errors.New("scan failed")
+	kv.failScan = boom
+	if err := r.ReconcileOnce(context.Background()); !errors.Is(err, boom) {
+		t.Fatalf("ReconcileOnce error = %v, want the scan failure", err)
+	}
+	if len(runner.steps) != 0 {
+		t.Fatalf("steps = %+v, want none", runner.steps)
+	}
+}
+
+// cancellingRunner cancels the reconcile pass's context mid-step and
+// reports the cancellation, as a runner interrupted by shutdown does.
+type cancellingRunner struct {
+	cancel context.CancelFunc
+	steps  []MoveStep
+}
+
+func (r *cancellingRunner) RunMoveStep(ctx context.Context, step MoveStep) error {
+	r.steps = append(r.steps, step)
+	r.cancel()
+	return ctx.Err()
+}
+
+func TestMoveReconciler_RunnerCancelsTheContext(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner := &cancellingRunner{cancel: cancel}
+	r := newTestReconciler(t, cat, runner)
+	if err := r.ReconcileOnce(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReconcileOnce error = %v, want context.Canceled", err)
+	}
+	if len(runner.steps) != 1 {
+		t.Fatalf("steps = %+v, want one", runner.steps)
+	}
+	m := storedMove(t, kv, "acme")
+	if m == nil || m.StepNode != "n1" || m.StepAttempts != 0 || m.Error != "" {
+		t.Fatalf("journal = %+v, want n1 granted with no failure recorded", m)
+	}
+}
+
+func TestMoveReconciler_LoggerReceivesTheFailure(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	cat.logger = logger
+	ctx := context.Background()
+	if err := kv.Put(ctx, MoveKey("aaa"), []byte("{not json")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	runner := &scriptedRunner{fail: map[string][]error{"n1": {errors.New("disk full")}}}
+	r := newTestReconciler(t, cat, runner, WithMoveReconcilerLogger(logger))
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"move step failed", "node=n1", "disk full", "skipping corrupt move journal"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log %q lacks %q", out, want)
+		}
 	}
 }

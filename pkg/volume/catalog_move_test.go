@@ -293,6 +293,129 @@ func TestCatalog_AdmitMove_BoundedRetries(t *testing.T) {
 	}
 }
 
+// rewriteRecord decodes the JSON record at key into a value of type T,
+// applies edit and stores it back.
+func rewriteRecord[T any](t *testing.T, kv *fakeKV, key string, edit func(*T)) {
+	t.Helper()
+	var v T
+	if err := json.Unmarshal(mustGet(t, kv, key), &v); err != nil {
+		t.Fatalf("decode %q: %v", key, err)
+	}
+	edit(&v)
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("encode %q: %v", key, err)
+	}
+	if err := kv.Put(context.Background(), key, data); err != nil {
+		t.Fatalf("Put %q: %v", key, err)
+	}
+}
+
+func TestCatalog_AdmitMove_BadRecords(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name  string
+		spoil func(t *testing.T, kv *fakeKV)
+		check func(t *testing.T, err error)
+	}{
+		{"corrupt assignment", func(t *testing.T, kv *fakeKV) {
+			if err := kv.Put(ctx, AssignmentKey("acme"), []byte("{not json")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+		}, func(t *testing.T, err error) {
+			var target *CorruptRecordError
+			if !errors.As(err, &target) || target.Key != AssignmentKey("acme") {
+				t.Fatalf("AdmitMove error = %v, want *CorruptRecordError on the assignment", err)
+			}
+		}},
+		{"assignment path escapes", func(t *testing.T, kv *fakeKV) {
+			rewriteRecord(t, kv, AssignmentKey("acme"), func(a *Assignment) { a.Path = "../escape" })
+		}, func(t *testing.T, err error) {
+			var target *InvalidAssignmentPathError
+			if !errors.As(err, &target) {
+				t.Fatalf("AdmitMove error = %v, want *InvalidAssignmentPathError", err)
+			}
+		}},
+		{"source pool missing", func(t *testing.T, kv *fakeKV) {
+			if ok, err := kv.CompareAndDelete(ctx, PoolKey("fast"), mustGet(t, kv, PoolKey("fast"))); err != nil || !ok {
+				t.Fatalf("delete fast: ok=%v err=%v", ok, err)
+			}
+		}, func(t *testing.T, err error) {
+			var target *PoolNotFoundError
+			if !errors.As(err, &target) {
+				t.Fatalf("AdmitMove error = %v, want *PoolNotFoundError", err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cat, kv, _ := newMoveTestCatalog(t)
+			tc.spoil(t, kv)
+			_, err := cat.AdmitMove(ctx, admitAcme())
+			tc.check(t, err)
+			if storedMove(t, kv, "acme") != nil {
+				t.Fatal("journal written over a bad record")
+			}
+			if got := poolReserved(t, kv, "bulk"); got != 0 {
+				t.Fatalf("bulk reserved = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestCatalog_AdmitMove_StoreFailures(t *testing.T) {
+	boom := errors.New("store failed")
+	cases := map[string]func(kv *fakeKV, tx *fakeTx, err error){
+		"get":     func(kv *fakeKV, _ *fakeTx, err error) { kv.failGet = err },
+		"scan":    func(kv *fakeKV, _ *fakeTx, err error) { kv.failScan = err },
+		"execute": func(_ *fakeKV, tx *fakeTx, err error) { tx.failExecute = err },
+	}
+	for name, set := range cases {
+		t.Run(name, func(t *testing.T) {
+			cat, kv, tx := newMoveTestCatalog(t)
+			set(kv, tx, boom)
+			_, err := cat.AdmitMove(context.Background(), admitAcme())
+			if !errors.Is(err, boom) {
+				t.Fatalf("AdmitMove error = %v, want the store failure", err)
+			}
+			set(kv, tx, nil)
+			if storedMove(t, kv, "acme") != nil {
+				t.Fatal("journal written although the store failed")
+			}
+			if got := poolReserved(t, kv, "bulk"); got != 0 {
+				t.Fatalf("bulk reserved = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestCatalog_AdmitMove_Q9UnregisteredProvider(t *testing.T) {
+	cat, kv := newQ9Catalog(t, "dir", "dir")
+	rewriteRecord(t, kv, PoolKey("fast"), func(p *Pool) { p.Provider = "retired" })
+	_, err := cat.AdmitMove(context.Background(), admitAcme())
+	var target *MoveToUnencryptedPoolError
+	if !errors.As(err, &target) {
+		t.Fatalf("AdmitMove from an unregistered provider error = %v, want *MoveToUnencryptedPoolError", err)
+	}
+	if storedMove(t, kv, "acme") != nil {
+		t.Fatal("journal written for a refused move")
+	}
+}
+
+func TestCatalog_DeletePool_MoveScanFailure(t *testing.T) {
+	cat, kv, _ := newMoveTestCatalog(t)
+	ctx := context.Background()
+	boom := errors.New("scan failed")
+	kv.failScan, kv.failScanPrefix = boom, MoveKeyPrefix
+	if err := cat.DeletePool(ctx, "bulk"); !errors.Is(err, boom) {
+		t.Fatalf("DeletePool error = %v, want the scan failure", err)
+	}
+	kv.failScan = nil
+	if _, err := cat.GetPool(ctx, "bulk"); err != nil {
+		t.Fatalf("GetPool after a failed delete: %v", err)
+	}
+}
+
 // lockableTestProvider is a Provider that states its volumes are Lockable.
 type lockableTestProvider struct{ name string }
 

@@ -33,6 +33,10 @@ type fakeKV struct {
 	// failScan, when set, is returned by every Scan instead of a real
 	// scan.
 	failScan error
+
+	// failScanPrefix, when set, limits failScan to the Scan of exactly
+	// that prefix, so a fault can reach a later scan of the same call.
+	failScanPrefix string
 }
 
 func newFakeKV() *fakeKV { return &fakeKV{data: make(map[string][]byte)} }
@@ -92,7 +96,7 @@ func (f *fakeKV) CompareAndDelete(_ context.Context, key string, expected []byte
 func (f *fakeKV) Scan(_ context.Context, prefix string) (map[string][]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.failScan != nil {
+	if f.failScan != nil && (f.failScanPrefix == "" || prefix == f.failScanPrefix) {
 		return nil, f.failScan
 	}
 	out := make(map[string][]byte)
@@ -122,6 +126,11 @@ type fakeTx struct {
 	// fault seam engineering.md's test strategy calls for ("reservation
 	// CAS under concurrent creates").
 	forceFailures int
+
+	// failExecute, when set, is returned by every Execute before any
+	// compare is evaluated -- a transaction the store could not run, as
+	// opposed to forceFailures' CAS miss.
+	failExecute error
 }
 
 func newFakeTx(kv *fakeKV) *fakeTx {
@@ -132,6 +141,11 @@ var errUnsupportedCompare = errors.New("fakeTx: unsupported compare target in te
 
 func (t *fakeTx) Execute(ctx context.Context, compares []lock.Compare, successOps, failureOps []lock.Op) (*lock.TransactionResponse, error) {
 	t.mu.Lock()
+	if t.failExecute != nil {
+		err := t.failExecute
+		t.mu.Unlock()
+		return nil, err
+	}
 	if t.forceFailures > 0 {
 		t.forceFailures--
 		t.mu.Unlock()
