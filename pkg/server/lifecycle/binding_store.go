@@ -25,6 +25,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -38,17 +39,23 @@ import (
 // local binding gets its own store, engine and service host under the
 // binding's data root instead of a key prefix in the node's shared store.
 //
-// This part materializes only the plainest binding: a prefix-isolated
-// tenant's database on a standalone node, with no database barrier, no
-// explicit data_dir and not in the system tenant. Every other database is
+// This part materializes the database of a prefix- or barrier-isolated
+// tenant on a standalone node, with no database barrier, no explicit
+// data_dir and not in the system tenant. A prefix tenant's store is written
+// through the node encryptor; a barrier tenant's through the tenant's own
+// barrier (WithTenantEncryptors), never the node encryptor, so sealing that
+// barrier fails the database's data closed. Every other database is
 // delegated unchanged to database.NewEmbeddedBackendFactory (docs/plans/923.md
-// slice 3b widens the set).
+// slice 3b.2 widens the set).
 
 // LocalBindingFactory is the database.BackendFactory of a standalone node
-// that opens a qualifying database's own store under its binding root.
+// that opens a qualifying database's own store under its binding root,
+// encrypted by the binding's encryptor scope: the node encryptor for a
+// prefix tenant, the tenant's barrier for a barrier tenant.
 type LocalBindingFactory struct {
 	node       database.BindingNode
 	enc        *atrest.Encryptor
+	tenantEnc  func(tenantID string) (*atrest.Encryptor, error)
 	storageCfg qrdbconfig.StorageConfig
 	tenants    func(tenantID string) (database.BindingTenant, error)
 	fallback   database.BackendFactory
@@ -72,6 +79,30 @@ func NewLocalBindingFactory(node database.BindingNode, enc *atrest.Encryptor, st
 	}
 }
 
+// WithTenantEncryptors sets lookup, the encryptor of a barrier tenant's
+// binding: the tenant's own barrier, looked up per database at open. A
+// lookup error fails the open closed (a *BindingOpenError wrapping it). nil,
+// the default, keeps barrier tenants delegated to the embedded factory,
+// unchanged. It returns f.
+func (f *LocalBindingFactory) WithTenantEncryptors(lookup func(string) (*atrest.Encryptor, error)) *LocalBindingFactory {
+	f.tenantEnc = lookup
+	return f
+}
+
+// materializes reports whether a tenant of isolation gets its databases
+// materialized: a prefix tenant (or an unset isolation) always, a barrier
+// tenant only with a tenant encryptor lookup.
+func (f *LocalBindingFactory) materializes(isolation tenant.IsolationType) bool {
+	switch isolation {
+	case "", tenant.IsolationPrefix:
+		return true
+	case tenant.IsolationBarrier:
+		return f.tenantEnc != nil
+	default:
+		return false
+	}
+}
+
 // Create opens cfg's backend. A qualifying database gets a
 // *MaterializedBinding over its own store; any other is opened by the
 // embedded factory at dataDir, unchanged.
@@ -83,7 +114,7 @@ func (f *LocalBindingFactory) Create(cfg database.DatabaseConfig, dataDir string
 	if err != nil {
 		return nil, &BindingOpenError{TenantID: cfg.TenantID, Database: cfg.Name, Backend: cfg.Backend, Err: err}
 	}
-	if t.Isolation != "" && t.Isolation != tenant.IsolationPrefix {
+	if !f.materializes(t.Isolation) {
 		return f.fallback.Create(cfg, dataDir)
 	}
 	b, err := database.ResolveBinding(&cfg, t, f.node)
@@ -157,11 +188,60 @@ func TenantServiceBindingLookup(get func() tenant.TenantServicer) func(string) (
 	}
 }
 
+// TenantBarrierEncryptorLookup returns the tenant encryptor lookup
+// WithTenantEncryptors takes: an encryptor over the tenant's own barrier in
+// the registry get returns. get is late-bound like TenantServiceBindingLookup:
+// while it is nil or returns nil the lookup fails closed with a
+// *BindingBarrierUnavailableError. A GetTenant error (seal.ErrTenantNotFound)
+// is returned as is, and a sealed tenant barrier gives a
+// *BindingBarrierSealedError; the node encryptor is never a stand-in.
+func TenantBarrierEncryptorLookup(get func() *seal.BarrierRegistry) func(string) (*atrest.Encryptor, error) {
+	return func(tenantID string) (*atrest.Encryptor, error) {
+		var reg *seal.BarrierRegistry
+		if get != nil {
+			reg = get()
+		}
+		if reg == nil {
+			return nil, &BindingBarrierUnavailableError{TenantID: tenantID}
+		}
+		tb, err := reg.GetTenant(tenantID)
+		if err != nil {
+			return nil, err
+		}
+		if tb.IsSealed() {
+			return nil, &BindingBarrierSealedError{TenantID: tenantID}
+		}
+		return atrest.New(tb.Barrier()), nil
+	}
+}
+
+// encryptor returns the encryptor b's store is written through, by its
+// encryptor scope: the node encryptor for EncryptorNode, the tenant's barrier
+// for EncryptorTenant. A tenant-scoped binding never falls back to the node
+// encryptor.
+func (f *LocalBindingFactory) encryptor(b *database.Binding) (*atrest.Encryptor, error) {
+	switch b.Encryptor {
+	case database.EncryptorNode:
+		return f.enc, nil
+	case database.EncryptorTenant:
+		if f.tenantEnc == nil {
+			return nil, &BindingBarrierUnavailableError{TenantID: b.TenantID}
+		}
+		return f.tenantEnc(b.TenantID)
+	default:
+		return nil, errors.New("lifecycle: binding encryptor scope " + string(b.Encryptor) + " not supported")
+	}
+}
+
 func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, error) {
 	openErr := func(err error) error {
 		return &BindingOpenError{TenantID: b.TenantID, Database: b.Database, Backend: b.Backend, Err: err}
 	}
-	stg, pdb, err := NewLocalStorage(b.Backend, b.DataRoot, f.enc, f.storageCfg)
+	enc, err := f.encryptor(b)
+	if err != nil {
+		return nil, openErr(err)
+	}
+	stg, pdb, err := NewLocalStorage(b.Backend, b.DataRoot, enc, f.storageCfg)
 	if err != nil {
 		return nil, openErr(err)
 	}

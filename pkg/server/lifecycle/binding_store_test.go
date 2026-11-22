@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -338,4 +339,140 @@ func TestTenantServiceBindingLookup_BarrierTenantDelegates(t *testing.T) {
 		t.Fatalf("prefix Create: %v", err)
 	}
 	materialized(t, db)
+}
+
+// newBarrierTenantManager builds a Manager whose factory reads every tenant
+// as barrier-isolated and takes each tenant's encryptor from tenantEnc.
+func newBarrierTenantManager(t *testing.T, dir string, nodeEnc *atrest.Encryptor, tenantEnc func(string) (*atrest.Encryptor, error)) *database.Manager {
+	t.Helper()
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nodeEnc, qrdbconfig.StorageConfig{},
+		func(id string) (database.BindingTenant, error) {
+			return database.BindingTenant{ID: id, Isolation: tenant.IsolationBarrier}, nil
+		}).WithTenantEncryptors(tenantEnc)
+	mgr := database.NewManager(slog.Default(), dir, database.WithBackendFactory(f))
+	cat, err := database.NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
+	if err != nil {
+		t.Fatalf("NewKVCatalog: %v", err)
+	}
+	mgr.SetCatalog(cat)
+	return mgr
+}
+
+// A barrier tenant's database is materialized under its binding root and
+// written through the tenant's own barrier: the node encryptor cannot read
+// it back, the tenant's can.
+func TestLocalBindingFactory_BarrierTenantEncryptedUnderTenantBarrier(t *testing.T) {
+	ctx := context.Background()
+	nodeEnc := atrest.New(newUnsealedBarrier(t))
+	tenantEnc := atrest.New(newUnsealedBarrier(t))
+	for _, b := range []database.BackendType{database.BackendPebble, database.BackendFile} {
+		t.Run(string(b), func(t *testing.T) {
+			dir := t.TempDir()
+			var asked []string
+			mgr := newBarrierTenantManager(t, dir, nodeEnc, func(id string) (*atrest.Encryptor, error) {
+				asked = append(asked, id)
+				return tenantEnc, nil
+			})
+			db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "vault", Backend: b})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			mb := materialized(t, db)
+			root := mb.DataRoot()
+			if want := filepath.Join(dir, "tenants", bindingTenant, "databases", "vault"); root != want {
+				t.Fatalf("DataRoot = %q, want %q", root, want)
+			}
+			if len(asked) != 1 || asked[0] != bindingTenant {
+				t.Fatalf("tenant encryptor lookups = %v, want [%q]", asked, bindingTenant)
+			}
+			value := []byte("barrier-tenant-plaintext-value")
+			if err := service.NewKVService(mb.Host(), mb.ShardID()).Put(ctx, "k", value); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			if err := mgr.Close(); err != nil {
+				t.Fatalf("Manager.Close: %v", err)
+			}
+			if got, err := readBack(t, b, root, nodeEnc, "k"); err == nil && bytes.Equal(got, value) {
+				t.Fatal("the node encryptor read a barrier tenant's value back")
+			}
+			got, err := readBack(t, b, root, tenantEnc, "k")
+			if err != nil || !bytes.Equal(got, value) {
+				t.Fatalf("read under the tenant barrier = %q, %v; want %q", got, err, value)
+			}
+		})
+	}
+}
+
+// A barrier tenant whose encryptor cannot be had (sealed barrier) fails
+// closed: the create is refused with a typed error and nothing is recorded.
+// Without WithTenantEncryptors a barrier tenant stays delegated.
+func TestLocalBindingFactory_BarrierTenantFailsClosed(t *testing.T) {
+	t.Run("sealed", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr := newBarrierTenantManager(t, dir, atrest.New(newUnsealedBarrier(t)), func(id string) (*atrest.Encryptor, error) {
+			return nil, &lifecycle.BindingBarrierSealedError{TenantID: id}
+		})
+		defer func() { _ = mgr.Close() }()
+		_, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble})
+		var open *lifecycle.BindingOpenError
+		var sealed *lifecycle.BindingBarrierSealedError
+		if !errors.As(err, &open) || !errors.As(err, &sealed) {
+			t.Fatalf("err = %v (%T), want *lifecycle.BindingOpenError wrapping *lifecycle.BindingBarrierSealedError", err, err)
+		}
+		if _, ok := mgr.Local("d", bindingTenant); ok {
+			t.Fatal("the Manager recorded a database whose tenant barrier is sealed")
+		}
+	})
+	t.Run("no tenant encryptors", func(t *testing.T) {
+		mgr := newLookupManager(t, func() tenant.TenantServicer {
+			return &isolationTenantService{isolation: tenant.IsolationBarrier}
+		})
+		db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if _, ok := db.Backend().(*lifecycle.MaterializedBinding); ok {
+			t.Fatal("a barrier tenant's database was materialized with no tenant encryptor lookup")
+		}
+	})
+}
+
+func TestTenantBarrierEncryptorLookup_Typed(t *testing.T) {
+	const id = bindingTenant
+	t.Run("nil registry", func(t *testing.T) {
+		for name, get := range map[string]func() *seal.BarrierRegistry{
+			"nil get":      nil,
+			"nil registry": func() *seal.BarrierRegistry { return nil },
+		} {
+			_, err := lifecycle.TenantBarrierEncryptorLookup(get)(id)
+			var want *lifecycle.BindingBarrierUnavailableError
+			if !errors.As(err, &want) || want.TenantID != id {
+				t.Fatalf("%s: err = %v (%T), want *lifecycle.BindingBarrierUnavailableError for %q", name, err, err, id)
+			}
+		}
+	})
+	reg, err := seal.NewBarrierRegistry(slog.Default(), newUnsealedBarrier(t))
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+	lookup := lifecycle.TenantBarrierEncryptorLookup(func() *seal.BarrierRegistry { return reg })
+	if _, err := lookup(id); !errors.Is(err, seal.ErrTenantNotFound) {
+		t.Fatalf("unknown tenant: err = %v, want seal.ErrTenantNotFound", err)
+	}
+	tb := seal.WrapTenantBarrier(id, newUnsealedBarrier(t))
+	if err := reg.ReplaceTenantBarrier(id, tb); err != nil {
+		t.Fatalf("ReplaceTenantBarrier: %v", err)
+	}
+	enc, err := lookup(id)
+	if err != nil || enc == nil || !enc.Enabled() {
+		t.Fatalf("registered tenant: enc = %v, err = %v; want an enabled encryptor", enc, err)
+	}
+	if err := tb.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	_, err = lookup(id)
+	var sealed *lifecycle.BindingBarrierSealedError
+	if !errors.As(err, &sealed) || sealed.TenantID != id {
+		t.Fatalf("sealed tenant: err = %v (%T), want *lifecycle.BindingBarrierSealedError for %q", err, err, id)
+	}
 }

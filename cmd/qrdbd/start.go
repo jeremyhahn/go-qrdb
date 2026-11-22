@@ -1799,6 +1799,7 @@ func runStart(f *startFlags) (err error) {
 			// factory reads isolation from; it is set once BuildServices
 			// has built it, and the factory fails closed until then.
 			var bindingTenants tenant.TenantServicer
+			var bindingBarriers *seal.BarrierRegistry
 			standalone := f.mode == capabilities.ModeStandalone
 			var host *quicraft.Host
 			var svcHost service.AdminHost
@@ -1839,7 +1840,8 @@ func runStart(f *startFlags) (err error) {
 				// its own store under its binding root, written through
 				// the node encryptor (docs/databases/architecture.md).
 				bf := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: f.dataDir, Defaults: dbDefaults}, enc, f.storageConfig,
-					lifecycle.TenantServiceBindingLookup(func() tenant.TenantServicer { return bindingTenants }), watchHubOpts...)
+					lifecycle.TenantServiceBindingLookup(func() tenant.TenantServicer { return bindingTenants }), watchHubOpts...).
+					WithTenantEncryptors(lifecycle.TenantBarrierEncryptorLookup(func() *seal.BarrierRegistry { return bindingBarriers }))
 				if err := dbManager.SetBackendFactory(bf); err != nil {
 					_ = local.Close()
 					_ = stg.Close()
@@ -1905,6 +1907,8 @@ func runStart(f *startFlags) (err error) {
 				sealBarrier = sealSub.SealBarrier
 				credCoreSvc = sealSub.CredCoreSvc
 				barrierRegistry = sealSub.BarrierRegistry
+				// The binding factory's tenant-barrier lookup is late-bound like bindingTenants.
+				bindingBarriers = barrierRegistry
 				pinBackend = sealSub.PINBackend
 			}
 			// nodeSeal is the node barrier as the background proposers see it

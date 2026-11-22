@@ -342,10 +342,6 @@ type LocalStorageError struct {
 	Err     error
 }
 
-// BindingOpenError reports that a database's materialized local binding
-// could not be opened: its tenant could not be looked up, or its store or
-// engine failed to open under the binding root. It is never answered by
-// falling back to the node's shared store.
 // BindingTenantUnavailableError is returned by the lookup
 // TenantServiceBindingLookup builds while the tenant service is not yet
 // available. The binding factory fails closed on it: a tenant whose
@@ -360,6 +356,36 @@ func (e *BindingTenantUnavailableError) Error() string {
 	return "lifecycle: binding tenant " + strconv.Quote(e.TenantID) + ": tenant service not available"
 }
 
+// BindingBarrierUnavailableError is returned by the lookup
+// TenantBarrierEncryptorLookup builds while the barrier registry is not yet
+// available. The binding factory fails closed on it: a barrier tenant's
+// database is never written through the node encryptor instead.
+type BindingBarrierUnavailableError struct {
+	TenantID string
+}
+
+// Error returns a human-readable description of the missing barrier registry.
+func (e *BindingBarrierUnavailableError) Error() string {
+	return "lifecycle: binding tenant " + strconv.Quote(e.TenantID) + ": barrier registry not available"
+}
+
+// BindingBarrierSealedError is returned by the lookup
+// TenantBarrierEncryptorLookup builds when the tenant's own barrier is
+// sealed: a barrier tenant's database cannot be opened until the tenant
+// barrier is unsealed.
+type BindingBarrierSealedError struct {
+	TenantID string
+}
+
+// Error returns a human-readable description of the sealed tenant barrier.
+func (e *BindingBarrierSealedError) Error() string {
+	return "lifecycle: binding tenant " + strconv.Quote(e.TenantID) + ": tenant barrier sealed"
+}
+
+// BindingOpenError reports that a database's materialized local binding
+// could not be opened: its tenant could not be looked up, or its store or
+// engine failed to open under the binding root. It is never answered by
+// falling back to the node's shared store.
 type BindingOpenError struct {
 	TenantID string
 	Database string

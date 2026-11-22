@@ -19,6 +19,7 @@ package integration_test
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -75,5 +76,73 @@ func TestDatabaseBinding_CLI_PrefixTenantDatabaseOwnStore_PerProtocol(t *testing
 				t.Fatalf("[%s] binding root %s survives DROP (stat err %v)", proto.name, root, err)
 			}
 		})
+	}
+}
+
+// A barrier tenant's database on a standalone node is materialized in its
+// own store under the binding root, written through the tenant's barrier:
+// sealing that barrier fails the database's data closed.
+func TestDatabaseBinding_CLI_BarrierTenantDatabaseOwnStore_PerProtocol(t *testing.T) {
+	// A system-managed (auto-unsealed) tenant barrier needs its entitlement
+	// and a volume pool for the barrier registry to keep its keys in.
+	node := startStandaloneModeNodeWithConfig(t, "pebble", "storage:\n  volume_pools:\n    - name: default\n      path: "+strconv.Quote(t.TempDir())+`
+tenant:
+  default_entitlements:
+    allowed_isolation_modes:
+      - prefix
+      - barrier
+    allow_system_managed_barrier: true
+`)
+
+	const tenantID = "binding-vault"
+	createVolumePoolCLI(t, node.cli, node.cliArgsFor(multiProtocols[0]), "default")
+	createTenant(t, node, multiProtocols[0], tenantID, "Binding Vault", "barrier", true)
+	perms := append(append([]string{}, dataPlanePermissions...), "tenant_barrier:status", "tenant_barrier:seal")
+	cert, key := provisionTenantIdentity(t, node, tenantID, "db-admin", perms)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			conn := tenantCLIArgsForProto(node, proto, cert, key)
+			name := "sealed-" + proto.name
+			kvKey := "barrier-binding-key-" + proto.name
+			value := "barrier-binding-value-" + proto.name
+			root := filepath.Join(node.dataDir, "tenants", tenantID, "databases", name)
+
+			if out, err := runQRDB(t, node.cli, conn, "database", "create", name, "--backend", "file"); err != nil {
+				t.Fatalf("[%s] database create: %v\n%s", proto.name, err, out)
+			}
+			if out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "put", kvKey, value); err != nil {
+				t.Fatalf("[%s] kv put: %v\n%s", proto.name, err, out)
+			}
+			out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "get", kvKey)
+			if err != nil || !strings.Contains(out, value) {
+				t.Fatalf("[%s] kv get = %q, %v; want %q", proto.name, out, err, value)
+			}
+
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatalf("[%s] binding root %s: %v (the database was not materialized in its own store)", proto.name, root, err)
+			}
+			if len(entries) == 0 {
+				t.Fatalf("[%s] binding root %s is empty after a write", proto.name, root)
+			}
+
+			if out, err := runQRDB(t, node.cli, conn, "kv", "get", kvKey); err == nil && strings.Contains(out, value) {
+				t.Fatalf("[%s] the tenant's default scope serves the database's key: %q", proto.name, out)
+			}
+		})
+	}
+
+	proto := multiProtocols[0]
+	conn := tenantCLIArgsForProto(node, proto, cert, key)
+	if out, err := runQRDB(t, node.cli, conn, "tenant", "barrier-seal", "--id", tenantID); err != nil {
+		t.Fatalf("[%s] tenant barrier-seal: %v\n%s", proto.name, err, out)
+	}
+	name := "sealed-" + proto.name
+	value := "barrier-binding-value-" + proto.name
+	out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "get", "barrier-binding-key-"+proto.name)
+	if err == nil || strings.Contains(out, value) {
+		t.Fatalf("[%s] kv get after the tenant barrier sealed = %q, %v; want a refusal without the value", proto.name, out, err)
 	}
 }
