@@ -1860,7 +1860,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           const tsRetentionStore = new Map<string, number>();
           const tsDeletedMetrics = new Set<string>();
           return {
-            Write: async (point: Record<string, unknown>) => {
+            Write: async (_database: string, point: Record<string, unknown>) => {
               // TimeSeriesBinding.Write(point *TSDataPoint): one snake_case object.
               maybeReject("TimeSeriesBinding.Write");
               const metric = point["metric"] as string;
@@ -1870,7 +1870,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                 tsPoints.push({ metric, value, timestampNs });
               }
             },
-            WriteBatch: async (points: Array<{ metric: string; value: number; timestampNs: number }>) => {
+            WriteBatch: async (_database: string, points: Array<{ metric: string; value: number; timestampNs: number }>) => {
               maybeReject("TimeSeriesBinding.WriteBatch");
               for (const p of points) {
                 if (!tsDeletedMetrics.has(p.metric)) {
@@ -1878,7 +1878,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                 }
               }
             },
-            WritePoint: async (point: Record<string, unknown>) => {
+            WritePoint: async (_database: string, point: Record<string, unknown>) => {
               maybeReject("TimeSeriesBinding.WritePoint");
               const metric = point["metric"] as string;
               const tsNs = (point["timestamp_ns"] ?? point["timestampNs"]) as number;
@@ -1891,7 +1891,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                 });
               }
             },
-            Query: async (req: Record<string, unknown>) => {
+            Query: async (_database: string, req: Record<string, unknown>) => {
               maybeReject("TimeSeriesBinding.Query");
               const startNs = (req["start_ns"] ?? req["startNs"]) as number;
               const endNs = (req["end_ns"] ?? req["endNs"]) as number;
@@ -1900,7 +1900,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               );
               return { points: filtered.map((p) => ({ metric: p.metric, value: p.value, timestampNs: p.timestampNs, tags: p.tags ?? [] })) };
             },
-            Aggregate: async (req: Record<string, unknown>) => {
+            Aggregate: async (_database: string, req: Record<string, unknown>) => {
               maybeReject("TimeSeriesBinding.Aggregate");
               const startNs = (req["start_ns"] ?? req["startNs"]) as number;
               const endNs = (req["end_ns"] ?? req["endNs"]) as number;
@@ -1918,11 +1918,11 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                 default: return { result: 0 };
               }
             },
-            RichQuery: async () => {
+            RichQuery: async (_database: string) => {
               maybeReject("TimeSeriesBinding.RichQuery");
               return { series: [] };
             },
-            DeleteSeries: async (req: { metric: string }) => {
+            DeleteSeries: async (_database: string, req: { metric: string }) => {
               maybeReject("TimeSeriesBinding.DeleteSeries");
               let deleted = 0;
               for (let i = tsPoints.length - 1; i >= 0; i--) {
@@ -1935,17 +1935,17 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               tsDeletedMetrics.add(req.metric);
               return { deleted };
             },
-            GetRetention: async (req: { metric: string }) => {
+            GetRetention: async (_database: string, req: { metric: string }) => {
               maybeReject("TimeSeriesBinding.GetRetention");
               // As the Go binding: an unset policy is the engine's non-nil
               // empty policy (duration 0), not null.
               return { policy: { durationNs: tsRetentionStore.get(req.metric) ?? 0 } };
             },
-            SetRetention: async (req: { metric: string; policy?: { duration_ns?: number } }) => {
+            SetRetention: async (_database: string, req: { metric: string; policy?: { duration_ns?: number } }) => {
               maybeReject("TimeSeriesBinding.SetRetention");
               tsRetentionStore.set(req.metric, req.policy?.duration_ns ?? 0);
             },
-            ListMetrics: async (req?: { prefix?: string }) => {
+            ListMetrics: async (_database: string, req?: { prefix?: string }) => {
               maybeReject("TimeSeriesBinding.ListMetrics");
               const metricSet = new Set<string>();
               for (const p of tsPoints) {

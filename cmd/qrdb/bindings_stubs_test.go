@@ -28,7 +28,7 @@ import (
 func TestTimeSeriesBinding_Stub_Write(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	err := b.Write(nil)
+	err := b.Write("", nil)
 	if err == nil {
 		t.Fatal("expected error from Write stub")
 	}
@@ -44,7 +44,7 @@ func TestTimeSeriesBinding_Stub_Write(t *testing.T) {
 func TestTimeSeriesBinding_Stub_Write_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	err := b.Write(nil)
+	err := b.Write("", nil)
 	expected := "qrdb: feature disabled: time-series"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -54,7 +54,7 @@ func TestTimeSeriesBinding_Stub_Write_ErrorMessage(t *testing.T) {
 func TestTimeSeriesBinding_Stub_WriteBatch(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	err := b.WriteBatch(nil)
+	err := b.WriteBatch("", nil)
 	if err == nil {
 		t.Fatal("expected error from WriteBatch stub")
 	}
@@ -70,7 +70,7 @@ func TestTimeSeriesBinding_Stub_WriteBatch(t *testing.T) {
 func TestTimeSeriesBinding_Stub_WriteBatch_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	err := b.WriteBatch(nil)
+	err := b.WriteBatch("", nil)
 	expected := "qrdb: feature disabled: time-series"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -80,7 +80,7 @@ func TestTimeSeriesBinding_Stub_WriteBatch_ErrorMessage(t *testing.T) {
 func TestTimeSeriesBinding_Stub_Query(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	resp, err := b.Query(nil)
+	resp, err := b.Query("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -99,7 +99,7 @@ func TestTimeSeriesBinding_Stub_Query(t *testing.T) {
 func TestTimeSeriesBinding_Stub_Query_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	_, err := b.Query(nil)
+	_, err := b.Query("", nil)
 	expected := "qrdb: feature disabled: time-series"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -109,7 +109,7 @@ func TestTimeSeriesBinding_Stub_Query_ErrorMessage(t *testing.T) {
 func TestTimeSeriesBinding_Stub_Aggregate(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	resp, err := b.Aggregate(nil)
+	resp, err := b.Aggregate("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -128,7 +128,7 @@ func TestTimeSeriesBinding_Stub_Aggregate(t *testing.T) {
 func TestTimeSeriesBinding_Stub_Aggregate_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	_, err := b.Aggregate(nil)
+	_, err := b.Aggregate("", nil)
 	expected := "qrdb: feature disabled: time-series"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -138,7 +138,7 @@ func TestTimeSeriesBinding_Stub_Aggregate_ErrorMessage(t *testing.T) {
 func TestTimeSeriesBinding_Stub_WritePoint(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	err := b.WritePoint(nil)
+	err := b.WritePoint("", nil)
 	if err == nil {
 		t.Fatal("expected error from WritePoint stub")
 	}
@@ -154,7 +154,7 @@ func TestTimeSeriesBinding_Stub_WritePoint(t *testing.T) {
 func TestTimeSeriesBinding_Stub_WritePoint_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	err := b.WritePoint(nil)
+	err := b.WritePoint("", nil)
 	expected := "qrdb: feature disabled: time-series"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -164,7 +164,7 @@ func TestTimeSeriesBinding_Stub_WritePoint_ErrorMessage(t *testing.T) {
 func TestTimeSeriesBinding_Stub_RichQuery(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	resp, err := b.RichQuery(nil)
+	resp, err := b.RichQuery("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -183,7 +183,7 @@ func TestTimeSeriesBinding_Stub_RichQuery(t *testing.T) {
 func TestTimeSeriesBinding_Stub_RichQuery_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	_, err := b.RichQuery(nil)
+	_, err := b.RichQuery("", nil)
 	expected := "qrdb: feature disabled: time-series"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -193,7 +193,7 @@ func TestTimeSeriesBinding_Stub_RichQuery_ErrorMessage(t *testing.T) {
 func TestTimeSeriesBinding_Stub_DeleteSeries(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	resp, err := b.DeleteSeries(nil)
+	resp, err := b.DeleteSeries("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -212,7 +212,7 @@ func TestTimeSeriesBinding_Stub_DeleteSeries(t *testing.T) {
 func TestTimeSeriesBinding_Stub_DeleteSeries_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	_, err := b.DeleteSeries(nil)
+	_, err := b.DeleteSeries("", nil)
 	expected := "qrdb: feature disabled: time-series"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -222,7 +222,7 @@ func TestTimeSeriesBinding_Stub_DeleteSeries_ErrorMessage(t *testing.T) {
 func TestTimeSeriesBinding_Stub_GetRetention(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	resp, err := b.GetRetention(nil)
+	resp, err := b.GetRetention("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -241,7 +241,7 @@ func TestTimeSeriesBinding_Stub_GetRetention(t *testing.T) {
 func TestTimeSeriesBinding_Stub_GetRetention_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	_, err := b.GetRetention(nil)
+	_, err := b.GetRetention("", nil)
 	expected := "qrdb: feature disabled: time-series"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -251,7 +251,7 @@ func TestTimeSeriesBinding_Stub_GetRetention_ErrorMessage(t *testing.T) {
 func TestTimeSeriesBinding_Stub_SetRetention(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	err := b.SetRetention(nil)
+	err := b.SetRetention("", nil)
 	if err == nil {
 		t.Fatal("expected error from SetRetention stub")
 	}
@@ -267,7 +267,7 @@ func TestTimeSeriesBinding_Stub_SetRetention(t *testing.T) {
 func TestTimeSeriesBinding_Stub_SetRetention_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	err := b.SetRetention(nil)
+	err := b.SetRetention("", nil)
 	expected := "qrdb: feature disabled: time-series"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
@@ -277,7 +277,7 @@ func TestTimeSeriesBinding_Stub_SetRetention_ErrorMessage(t *testing.T) {
 func TestTimeSeriesBinding_Stub_ListMetrics(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	resp, err := b.ListMetrics(nil)
+	resp, err := b.ListMetrics("", nil)
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -296,7 +296,7 @@ func TestTimeSeriesBinding_Stub_ListMetrics(t *testing.T) {
 func TestTimeSeriesBinding_Stub_ListMetrics_ErrorMessage(t *testing.T) {
 	conn := NewConnectionBinding(testLogger(t))
 	b := NewTimeSeriesBinding(testLogger(t), conn)
-	_, err := b.ListMetrics(nil)
+	_, err := b.ListMetrics("", nil)
 	expected := "qrdb: feature disabled: time-series"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())

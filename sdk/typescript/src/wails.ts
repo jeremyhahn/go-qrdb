@@ -944,7 +944,10 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get timeSeries(): TimeSeriesClient | null {
-        const b = wrapBindings(getBindings().main.TimeSeriesBinding);
+        // Every TimeSeriesBinding method takes the database first, as the
+        // KV and vector bindings do, so a databaseScoped client's reads and
+        // writes reach its own database rather than the default one.
+        const b = withDatabaseArg(wrapBindings(getBindings().main.TimeSeriesBinding), this.activeDatabase);
         return {
             write: async (point: TSDataPoint): Promise<void> => {
                 await b.Write(toSnake(point));

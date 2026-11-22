@@ -85,7 +85,7 @@ async function injectStatefulTimeSeriesBinding(
       clearInterval(waitForGo);
 
       go.main.TimeSeriesBinding = {
-        Write: async (point: Record<string, unknown>) => {
+        Write: async (_database: string, point: Record<string, unknown>) => {
           // TimeSeriesBinding.Write(point *TSDataPoint): one snake_case object.
           maybeReject("TimeSeriesBinding.Write");
           tsPoints.push({
@@ -95,13 +95,13 @@ async function injectStatefulTimeSeriesBinding(
             tags: point["tags"] as { key: string; value: string }[] | undefined,
           });
         },
-        WriteBatch: async (points: TSDataPoint[]) => {
+        WriteBatch: async (_database: string, points: TSDataPoint[]) => {
           maybeReject("TimeSeriesBinding.WriteBatch");
           for (const p of points) {
             tsPoints.push({ ...p });
           }
         },
-        WritePoint: async (point: Record<string, unknown>) => {
+        WritePoint: async (_database: string, point: Record<string, unknown>) => {
           maybeReject("TimeSeriesBinding.WritePoint");
           const tsNs = (point["timestamp_ns"] ?? point["timestampNs"]) as number;
           tsPoints.push({
@@ -111,7 +111,7 @@ async function injectStatefulTimeSeriesBinding(
             tags: point["tags"] as { key: string; value: string }[] | undefined,
           });
         },
-        Query: async (req: Record<string, unknown>) => {
+        Query: async (_database: string, req: Record<string, unknown>) => {
           maybeReject("TimeSeriesBinding.Query");
           const startNs = (req["start_ns"] ?? req["startNs"]) as number;
           const endNs = (req["end_ns"] ?? req["endNs"]) as number;
@@ -130,15 +130,15 @@ async function injectStatefulTimeSeriesBinding(
             })),
           };
         },
-        Aggregate: async () => {
+        Aggregate: async (_database: string) => {
           maybeReject("TimeSeriesBinding.Aggregate");
           return { result: 0 };
         },
-        RichQuery: async () => {
+        RichQuery: async (_database: string) => {
           maybeReject("TimeSeriesBinding.RichQuery");
           return { series: [] };
         },
-        DeleteSeries: async (req: TSDeleteRequest) => {
+        DeleteSeries: async (_database: string, req: TSDeleteRequest) => {
           maybeReject("TimeSeriesBinding.DeleteSeries");
           let deleted = 0;
           for (let i = tsPoints.length - 1; i >= 0; i--) {
@@ -150,16 +150,16 @@ async function injectStatefulTimeSeriesBinding(
           retentionStore.delete(req.metric);
           return { deleted };
         },
-        GetRetention: async (req: TSGetRetentionRequest) => {
+        GetRetention: async (_database: string, req: TSGetRetentionRequest) => {
           maybeReject("TimeSeriesBinding.GetRetention");
           // As the Go binding: an unset policy is an empty one, not null.
           return { policy: { durationNs: retentionStore.get(req.metric) ?? 0 } };
         },
-        SetRetention: async (req: TSSetRetentionRequest) => {
+        SetRetention: async (_database: string, req: TSSetRetentionRequest) => {
           maybeReject("TimeSeriesBinding.SetRetention");
           retentionStore.set(req.metric, req.policy?.duration_ns ?? 0);
         },
-        ListMetrics: async (req: TSListMetricsRequest) => {
+        ListMetrics: async (_database: string, req: TSListMetricsRequest) => {
           maybeReject("TimeSeriesBinding.ListMetrics");
           const metricSet = new Set<string>();
           for (const p of tsPoints) {

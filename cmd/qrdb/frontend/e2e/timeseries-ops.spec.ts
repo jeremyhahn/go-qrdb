@@ -140,25 +140,25 @@ async function injectStatefulTimeSeriesBinding(
       clearInterval(waitForGo);
 
       go.main.TimeSeriesBinding = {
-        Write: async (point: Req) => {
+        Write: async (_database: string, point: Req) => {
           maybeReject("Write");
           tsPoints.push(toPoint(point));
         },
-        WriteBatch: async (points: Req[]) => {
+        WriteBatch: async (_database: string, points: Req[]) => {
           maybeReject("WriteBatch");
           // The raw request text, as the transport serializes it.
           (w as unknown as { __TS_BATCH_WIRE__: string }).__TS_BATCH_WIRE__ = JSON.stringify(points);
           for (const p of points) tsPoints.push(toPoint(p));
         },
-        WritePoint: async (point: Req) => {
+        WritePoint: async (_database: string, point: Req) => {
           maybeReject("WritePoint");
           tsPoints.push(toPoint(point));
         },
-        Query: async (req: Req) => {
+        Query: async (_database: string, req: Req) => {
           maybeReject("Query");
           return { points: inRange(req) };
         },
-        Aggregate: async (req: Req) => {
+        Aggregate: async (_database: string, req: Req) => {
           await maybeHold("Aggregate");
           maybeReject("Aggregate");
           return {
@@ -170,7 +170,7 @@ async function injectStatefulTimeSeriesBinding(
             ),
           };
         },
-        RichQuery: async (req: Req) => {
+        RichQuery: async (_database: string, req: Req) => {
           await maybeHold("RichQuery");
           maybeReject("RichQuery");
           const filterTags = (req["tags"] as Tag[] | undefined) ?? [];
@@ -216,7 +216,7 @@ async function injectStatefulTimeSeriesBinding(
           }
           return resp;
         },
-        DeleteSeries: async (req: Req) => {
+        DeleteSeries: async (_database: string, req: Req) => {
           maybeReject("DeleteSeries");
           let deleted = 0;
           for (let i = tsPoints.length - 1; i >= 0; i--) {
@@ -228,14 +228,14 @@ async function injectStatefulTimeSeriesBinding(
           retentionStore.delete(req["metric"] as string);
           return { deleted };
         },
-        GetRetention: async (req: Req) => {
+        GetRetention: async (_database: string, req: Req) => {
           await maybeHold("GetRetention");
           maybeReject("GetRetention");
           // The Go binding passes the engine's answer through: an unset
           // policy is a non-nil empty one (duration 0), never null.
           return { policy: retentionStore.get(req["metric"] as string) ?? { durationNs: 0 } };
         },
-        SetRetention: async (req: Req) => {
+        SetRetention: async (_database: string, req: Req) => {
           maybeReject("SetRetention");
           const p = req["policy"] as Req;
           retentionStore.set(req["metric"] as string, {
@@ -244,7 +244,7 @@ async function injectStatefulTimeSeriesBinding(
             ...(p["aggregation"] !== undefined ? { aggregation: p["aggregation"] as number } : {}),
           });
         },
-        ListMetrics: async (req: Req) => {
+        ListMetrics: async (_database: string, req: Req) => {
           maybeReject("ListMetrics");
           let metrics = [...new Set(tsPoints.map((p) => p.metric))];
           const prefix = req["prefix"] as string | undefined;
