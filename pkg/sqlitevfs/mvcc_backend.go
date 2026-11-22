@@ -15,6 +15,7 @@
 package sqlitevfs
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"sort"
@@ -45,8 +46,8 @@ func NewMVCCBackend(s *mvcc.Store) (*MVCCBackend, error) {
 }
 
 // Revision returns the store's current revision.
-func (b *MVCCBackend) Revision() int64 {
-	return b.store.CurrentRevision()
+func (b *MVCCBackend) Revision() (int64, error) {
+	return b.store.CurrentRevision(), nil
 }
 
 // GetAt returns key's value at rev. A key with no live value at rev (never
@@ -115,34 +116,62 @@ func (b *MVCCBackend) Commit(puts map[string][]byte, deletes [][]byte) (int64, e
 	return b.commitLocked(puts, deletes)
 }
 
-// Publish reads each source key of moves with GetAtRevision at
-// CurrentRevision(), puts its value under the destination key, deletes the
-// source key, and applies puts and deletes, all in one storage batch at one
-// revision (commitLocked). A source key with no live value fails the
-// publish with an error naming it and writes nothing. This is the
-// local-process path only; a Raft publish proposal is a later slice.
-func (b *MVCCBackend) Publish(moves map[string]string, puts map[string][]byte, deletes [][]byte) (int64, error) {
+// Publish lists the keys live under src at CurrentRevision(), puts each
+// value under dst + (key without src), deletes the source key, and applies
+// puts and deletes, all in one storage batch at one revision
+// (commitLocked). A live count other than expectedKeys is
+// ErrPublishConflict and writes nothing. This is the local-process path
+// only; the replicated path is ServiceBackend over the server's
+// OpMVCCMovePrefix.
+func (b *MVCCBackend) Publish(src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	if err := validatePublish(src, dst, expectedKeys); err != nil {
+		return 0, err
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	rev := b.store.CurrentRevision()
-	all := make(map[string][]byte, len(puts)+len(moves))
+	keys, err := b.Keys(src, rev)
+	if err != nil {
+		return 0, fmt.Errorf("sqlitevfs: publish list %q at revision %d: %w", src, rev, err)
+	}
+	if int64(len(keys)) != expectedKeys {
+		return 0, fmt.Errorf("%w: %d keys live under %q at revision %d, expected %d",
+			ErrPublishConflict, len(keys), src, rev, expectedKeys)
+	}
+	all := make(map[string][]byte, len(puts)+len(keys))
 	for k, v := range puts {
 		all[k] = v
 	}
-	allDeletes := make([][]byte, 0, len(deletes)+len(moves))
+	allDeletes := make([][]byte, 0, len(deletes)+len(keys))
 	allDeletes = append(allDeletes, deletes...)
-	for dst, src := range moves {
-		value, found, err := b.GetAt([]byte(src), rev)
+	for _, key := range keys {
+		value, found, err := b.GetAt(key, rev)
 		if err != nil {
-			return 0, fmt.Errorf("sqlitevfs: publish read %q at revision %d: %w", src, rev, err)
+			return 0, fmt.Errorf("sqlitevfs: publish read %q at revision %d: %w", key, rev, err)
 		}
 		if !found {
-			return 0, fmt.Errorf("sqlitevfs: publish source %q has no live value at revision %d", src, rev)
+			return 0, fmt.Errorf("%w: %q has no live value at revision %d", ErrPublishConflict, key, rev)
 		}
-		all[dst] = value
-		allDeletes = append(allDeletes, []byte(src))
+		dstKey := make([]byte, 0, len(dst)+len(key)-len(src))
+		dstKey = append(append(dstKey, dst...), key[len(src):]...)
+		all[string(dstKey)] = value
+		allDeletes = append(allDeletes, key)
 	}
 	return b.commitLocked(all, allDeletes)
+}
+
+// validatePublish refuses an empty src or dst, prefixes where one is a
+// prefix of the other, and an expected key count below one.
+func validatePublish(src, dst []byte, expectedKeys int64) error {
+	switch {
+	case len(src) == 0 || len(dst) == 0:
+		return fmt.Errorf("%w: empty source or destination prefix", ErrInvalidPublish)
+	case bytes.HasPrefix(src, dst) || bytes.HasPrefix(dst, src):
+		return fmt.Errorf("%w: prefixes %q and %q overlap", ErrInvalidPublish, src, dst)
+	case expectedKeys < 1:
+		return fmt.Errorf("%w: expected key count %d", ErrInvalidPublish, expectedKeys)
+	}
+	return nil
 }
 
 // commitLocked is the batch body of Commit and Publish; b.mu must be held.

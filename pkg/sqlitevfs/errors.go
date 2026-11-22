@@ -72,4 +72,14 @@ var (
 	// ErrNotReserved is returned by WriteAt or Truncate on a Store with a
 	// writer lock before Txn.Reserve succeeded.
 	ErrNotReserved = errors.New("sqlitevfs: transaction has not reserved the writer lock")
+
+	// ErrPublishConflict is returned by Backend.Publish when the number of
+	// keys live under the source prefix differs from the expected count;
+	// the publish writes nothing.
+	ErrPublishConflict = errors.New("sqlitevfs: publish source count changed")
+
+	// ErrInvalidPublish is returned by Backend.Publish for an empty source
+	// or destination prefix, prefixes where one is a prefix of the other,
+	// or an expected key count below one.
+	ErrInvalidPublish = errors.New("sqlitevfs: invalid publish")
 )

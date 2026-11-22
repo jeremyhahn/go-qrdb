@@ -25,19 +25,22 @@ import (
 // Backend is the versioned key-value store the page store reads and commits
 // through.
 type Backend interface {
-	// Revision returns the newest committed revision.
-	Revision() int64
+	// Revision returns the newest committed revision; err is a failed
+	// read.
+	Revision() (int64, error)
 	// GetAt returns key's value at revision rev. A key with no live value
 	// at rev is found=false with a nil error; err is a failed read.
 	GetAt(key []byte, rev int64) (value []byte, found bool, err error)
 	// Commit applies every put and every delete at one new revision, or
 	// none of them, and returns that revision.
 	Commit(puts map[string][]byte, deletes [][]byte) (rev int64, err error)
-	// Publish, at one new revision, puts for each destination key in moves
-	// the newest committed value of its source key, deletes every source
-	// key, and applies puts and deletes; or does none of it. A source key
-	// with no live value fails the whole publish.
-	Publish(moves map[string]string, puts map[string][]byte, deletes [][]byte) (rev int64, err error)
+	// Publish, at one new revision, puts dst + (key without src) for
+	// every key live under prefix src with that key's newest committed
+	// value, deletes those source keys, and applies puts and deletes; or
+	// does none of it. A live count under src other than expectedKeys is
+	// ErrPublishConflict and writes nothing; empty or overlapping src and
+	// dst, or expectedKeys < 1, is ErrInvalidPublish.
+	Publish(src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (rev int64, err error)
 	// Keys returns every key with a live value at revision rev that
 	// starts with prefix, in key order.
 	Keys(prefix []byte, rev int64) ([][]byte, error)
@@ -178,7 +181,10 @@ func (s *Store) readMeta(rev int64) (Meta, bool, error) {
 // returns ErrSnapshotChanged, and the next Begin succeeds. This is where a
 // page cache will be dropped once there is one.
 func (s *Store) Begin() (*Txn, error) {
-	rev := s.backend.Revision()
+	rev, err := s.backend.Revision()
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevfs: begin %q: %w", s.db, err)
+	}
 	meta, _, err := s.readMeta(rev)
 	if err != nil {
 		return nil, err
@@ -206,7 +212,10 @@ func (s *Store) Begin() (*Txn, error) {
 // Backend.Commit, returning that revision. A database with no meta record
 // writes nothing and returns the current revision.
 func (s *Store) BumpGeneration() (int64, error) {
-	rev := s.backend.Revision()
+	rev, err := s.backend.Revision()
+	if err != nil {
+		return 0, fmt.Errorf("sqlitevfs: bump generation of %q: %w", s.db, err)
+	}
 	meta, found, err := s.readMeta(rev)
 	if err != nil {
 		return 0, err
@@ -315,7 +324,11 @@ func (t *Txn) Reserve(ctx context.Context) error {
 	}
 	t.token = token
 	t.held = true
-	rev := s.backend.Revision()
+	rev, err := s.backend.Revision()
+	if err != nil {
+		_ = t.release(ctx)
+		return fmt.Errorf("sqlitevfs: reserve %q: %w", s.db, err)
+	}
 	current, _, err := s.readMeta(rev)
 	if err != nil {
 		_ = t.release(ctx)
@@ -550,7 +563,11 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 			return 0, err
 		}
 	}
-	current, _, err := t.store.readMeta(t.store.backend.Revision())
+	now, err := t.store.backend.Revision()
+	if err != nil {
+		return 0, fmt.Errorf("sqlitevfs: commit %q: %w", t.store.db, err)
+	}
+	current, _, err := t.store.readMeta(now)
 	if err != nil {
 		return 0, err
 	}

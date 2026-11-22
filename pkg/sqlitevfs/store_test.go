@@ -43,7 +43,7 @@ func (f *failingBackend) Commit(map[string][]byte, [][]byte) (int64, error) {
 	return 0, errInjected
 }
 
-func (f *failingBackend) Publish(map[string]string, map[string][]byte, [][]byte) (int64, error) {
+func (f *failingBackend) Publish([]byte, []byte, int64, map[string][]byte, [][]byte) (int64, error) {
 	return 0, errInjected
 }
 
@@ -90,19 +90,29 @@ func (b *stagingBackend) Commit(puts map[string][]byte, deletes [][]byte) (int64
 	return rev, nil
 }
 
-func (b *stagingBackend) Publish(moves map[string]string, puts map[string][]byte, deletes [][]byte) (int64, error) {
+func (b *stagingBackend) Publish(src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	b.publishes++
 	if b.failPublish {
 		return 0, errInjected
 	}
-	return b.MVCCBackend.Publish(moves, puts, deletes)
+	return b.MVCCBackend.Publish(src, dst, expectedKeys, puts, deletes)
+}
+
+// revOf returns b's current revision, failing the test on a read error.
+func revOf(t *testing.T, b Backend) int64 {
+	t.Helper()
+	r, err := b.Revision()
+	if err != nil {
+		t.Fatalf("Revision: %v", err)
+	}
+	return r
 }
 
 // assertNoStageKeyLive fails if any stage key b recorded has a live value at
 // the backend's current revision.
 func assertNoStageKeyLive(t *testing.T, b *stagingBackend) {
 	t.Helper()
-	rev := b.Revision()
+	rev := revOf(t, b)
 	for _, key := range b.stageKeys {
 		if _, found, err := b.GetAt(key, rev); err != nil || found {
 			t.Fatalf("stage key %q at revision %d: found=%v err=%v", key, rev, found, err)
@@ -221,8 +231,8 @@ func TestWriteCommitReadBack(t *testing.T) {
 	b := newTestBackend(t)
 	s := newTestStore(t, b, "app.db")
 	rev := seed(t, s, 0xA1, 0xB2, 0xC3)
-	if rev != 1 || b.Revision() != 1 {
-		t.Fatalf("commit rev = %d, backend revision = %d, want 1 and 1", rev, b.Revision())
+	if rev != 1 || revOf(t, b) != 1 {
+		t.Fatalf("commit rev = %d, backend revision = %d, want 1 and 1", rev, revOf(t, b))
 	}
 	txn := begin(t, s)
 	if txn.Revision() != rev {
@@ -441,8 +451,8 @@ func TestCommitIsAtomic(t *testing.T) {
 	if _, err := txn.Commit(context.Background()); !errors.Is(err, errInjected) {
 		t.Fatalf("Commit err = %v, want the injected failure", err)
 	}
-	if b.Revision() != rev {
-		t.Fatalf("revision moved to %d after a failed commit, want %d", b.Revision(), rev)
+	if revOf(t, b) != rev {
+		t.Fatalf("revision moved to %d after a failed commit, want %d", revOf(t, b), rev)
 	}
 	after := begin(t, s)
 	if after.Size() != 2*testPageSize || !bytes.Equal(readAll(t, after), append(pageOf(0x11), pageOf(0x22)...)) {
@@ -537,8 +547,8 @@ func TestStagedCommit(t *testing.T) {
 	if b.stageCommits != 5 || b.publishes != 1 {
 		t.Fatalf("5-page commit: %d stage commits, %d publishes, want 5 and 1", b.stageCommits, b.publishes)
 	}
-	if rev != b.Revision() {
-		t.Fatalf("Commit revision %d, backend at %d", rev, b.Revision())
+	if rev != revOf(t, b) {
+		t.Fatalf("Commit revision %d, backend at %d", rev, revOf(t, b))
 	}
 	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x11, 0x12, 0x13, 0x14, 0x15)) {
 		t.Fatal("staged commit does not read back byte for byte")
@@ -574,7 +584,7 @@ func TestStagedCommitTruncates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, found, err := b.GetAt(key, b.Revision()); err != nil || found {
+		if _, found, err := b.GetAt(key, revOf(t, b)); err != nil || found {
 			t.Fatalf("truncated page %d is live: found=%v err=%v", pgno, found, err)
 		}
 	}
@@ -602,8 +612,8 @@ func TestStagedCommitPublishFailure(t *testing.T) {
 	if got := readAll(t, after); !bytes.Equal(got, pagesOf(0x01, 0x02)) {
 		t.Fatal("a failed publish changed the pages")
 	}
-	if b.Revision() <= before {
-		t.Fatalf("cleanup wrote no revision: %d <= %d", b.Revision(), before)
+	if revOf(t, b) <= before {
+		t.Fatalf("cleanup wrote no revision: %d <= %d", revOf(t, b), before)
 	}
 }
 
@@ -626,15 +636,48 @@ func TestStagedCommitStageFailure(t *testing.T) {
 	}
 }
 
-func TestPublishMissingSourceWritesNothing(t *testing.T) {
+func TestPublishCountMismatchWritesNothing(t *testing.T) {
 	b := newTestBackend(t)
-	before := b.Revision()
-	moves := map[string]string{"dst": "missing-src"}
-	if _, err := b.Publish(moves, map[string][]byte{"other": []byte("x")}, nil); err == nil {
-		t.Fatal("Publish of a missing source succeeded")
+	if _, err := b.Commit(map[string][]byte{"src/1": []byte("a")}, nil); err != nil {
+		t.Fatal(err)
 	}
-	if b.Revision() != before {
-		t.Fatalf("failed Publish moved the revision to %d", b.Revision())
+	before := revOf(t, b)
+	_, err := b.Publish([]byte("src/"), []byte("dst/"), 2, map[string][]byte{"other": []byte("x")}, nil)
+	if !errors.Is(err, ErrPublishConflict) {
+		t.Fatalf("Publish with a count mismatch = %v, want ErrPublishConflict", err)
+	}
+	if got := revOf(t, b); got != before {
+		t.Fatalf("failed Publish moved the revision to %d", got)
+	}
+	if _, found, err := b.GetAt([]byte("dst/1"), before); err != nil || found {
+		t.Fatalf("failed Publish wrote dst/1: found=%v err=%v", found, err)
+	}
+}
+
+func TestPublishRefusesInvalidRequest(t *testing.T) {
+	b := newTestBackend(t)
+	before := revOf(t, b)
+	cases := []struct {
+		name     string
+		src, dst string
+		expected int64
+	}{
+		{"empty src", "", "dst/", 1},
+		{"empty dst", "src/", "", 1},
+		{"dst under src", "src/", "src/x/", 1},
+		{"src under dst", "dst/x/", "dst/", 1},
+		{"zero expected", "src/", "dst/", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := b.Publish([]byte(tc.src), []byte(tc.dst), tc.expected, nil, nil)
+			if !errors.Is(err, ErrInvalidPublish) {
+				t.Fatalf("Publish = %v, want ErrInvalidPublish", err)
+			}
+		})
+	}
+	if got := revOf(t, b); got != before {
+		t.Fatalf("refused Publish moved the revision to %d", got)
 	}
 }
 
@@ -655,13 +698,13 @@ func TestNewStoreRefusesOptions(t *testing.T) {
 func TestBumpGenerationEmptyWritesNothing(t *testing.T) {
 	b := newTestBackend(t)
 	s := newTestStore(t, b, "app.db")
-	before := b.Revision()
+	before := revOf(t, b)
 	rev, err := s.BumpGeneration()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rev != before || b.Revision() != before {
-		t.Fatalf("BumpGeneration on an empty db = %d, backend at %d, want %d", rev, b.Revision(), before)
+	if rev != before || revOf(t, b) != before {
+		t.Fatalf("BumpGeneration on an empty db = %d, backend at %d, want %d", rev, revOf(t, b), before)
 	}
 	if txn := begin(t, s); txn.Size() != 0 {
 		t.Fatalf("empty db has size %d after BumpGeneration", txn.Size())
@@ -687,8 +730,8 @@ func TestGenerationChange(t *testing.T) {
 	if _, err := open.Commit(context.Background()); !errors.Is(err, ErrSnapshotChanged) {
 		t.Fatalf("Commit across a restore err = %v, want ErrSnapshotChanged", err)
 	}
-	if b.Revision() != bumped {
-		t.Fatalf("refused Commit wrote: revision %d, want %d", b.Revision(), bumped)
+	if revOf(t, b) != bumped {
+		t.Fatalf("refused Commit wrote: revision %d, want %d", revOf(t, b), bumped)
 	}
 	if _, err := s.Begin(); !errors.Is(err, ErrSnapshotChanged) {
 		t.Fatalf("first Begin after a restore err = %v, want ErrSnapshotChanged", err)
@@ -735,7 +778,7 @@ func beginReserved(t *testing.T, s *Store) *Txn {
 
 func changeCounter(t *testing.T, s *Store) uint64 {
 	t.Helper()
-	meta, _, err := s.readMeta(s.backend.Revision())
+	meta, _, err := s.readMeta(revOf(t, s.backend))
 	if err != nil {
 		t.Fatalf("readMeta: %v", err)
 	}
@@ -813,8 +856,8 @@ func TestWriterLeaseLostFailsCommit(t *testing.T) {
 	if _, err := txn.Commit(t.Context()); !errors.Is(err, ErrTxnDone) {
 		t.Fatalf("Commit again err = %v, want ErrTxnDone", err)
 	}
-	if b.Revision() != before {
-		t.Fatalf("a commit without its lease wrote revision %d, want %d", b.Revision(), before)
+	if revOf(t, b) != before {
+		t.Fatalf("a commit without its lease wrote revision %d, want %d", revOf(t, b), before)
 	}
 	if got := readAll(t, begin(t, sb)); !bytes.Equal(got, pageOf(0x01)) {
 		t.Fatal("a commit without its lease changed the pages")
@@ -888,19 +931,19 @@ func TestReserveSweepsAbandonedStages(t *testing.T) {
 		t.Fatalf("Reserve while the crashed writer holds the lock err = %v, want ErrBusy", err)
 	}
 	locker.expire(sa.lockKey)
-	rev := b.Revision()
+	rev := revOf(t, b)
 	if err := txn.Reserve(ctx); err != nil {
 		t.Fatalf("Reserve after expiry: %v", err)
 	}
-	if b.Revision() != rev+1 {
-		t.Fatalf("sweep wrote revisions %d..%d, want one", rev+1, b.Revision())
+	if revOf(t, b) != rev+1 {
+		t.Fatalf("sweep wrote revisions %d..%d, want one", rev+1, revOf(t, b))
 	}
 	assertNoStageKeyLive(t, b)
 	root, err := StageRoot("app.db")
 	if err != nil {
 		t.Fatalf("StageRoot: %v", err)
 	}
-	if keys, err := b.Keys(root, b.Revision()); err != nil || len(keys) != 0 {
+	if keys, err := b.Keys(root, revOf(t, b)); err != nil || len(keys) != 0 {
 		t.Fatalf("stage keys after the sweep = %q, %v", keys, err)
 	}
 	writePages(t, txn, 0x21)
@@ -909,10 +952,10 @@ func TestReserveSweepsAbandonedStages(t *testing.T) {
 		t.Fatal("the sweeping writer's commit is not visible")
 	}
 	// A reserve with nothing to sweep writes no revision.
-	rev = b.Revision()
+	rev = revOf(t, b)
 	idle := beginReserved(t, sa)
-	if b.Revision() != rev {
-		t.Fatalf("Reserve with no stages wrote revision %d", b.Revision())
+	if revOf(t, b) != rev {
+		t.Fatalf("Reserve with no stages wrote revision %d", revOf(t, b))
 	}
 	if err := idle.Rollback(ctx); err != nil {
 		t.Fatalf("Rollback: %v", err)
@@ -924,7 +967,7 @@ func TestStoreWithoutWriterLock(t *testing.T) {
 	b := newTestBackend(t)
 	s := newTestStore(t, b, "app.db")
 	seed(t, s, 0x01)
-	rev := b.Revision()
+	rev := revOf(t, b)
 	txn := begin(t, s)
 	if err := txn.Reserve(ctx); err != nil {
 		t.Fatalf("Reserve: %v", err)
@@ -932,7 +975,7 @@ func TestStoreWithoutWriterLock(t *testing.T) {
 	if err := txn.Reserve(ctx); err != nil {
 		t.Fatalf("second Reserve: %v", err)
 	}
-	if b.Revision() != rev {
+	if revOf(t, b) != rev {
 		t.Fatal("Reserve without a writer lock wrote a revision")
 	}
 	writePages(t, txn, 0x02)
