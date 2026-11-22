@@ -62,7 +62,7 @@ node-level settings decide instead.
 
 | Path | What serves the data plane | Engines served | Honours the database's `backend`? |
 |---|---|---|---|
-| Prefix or barrier tenant, or the system tenant (other than its `system` database), on a **standalone** node, database with no per-database barrier, not raft | the database's own store under its binding root `<data-dir>/tenants/<tenant>/databases/<name>`, or the explicit data directory when one is set (system tenant only), served from its own host (`lifecycle.LocalBindingFactory`); a prefix tenant's and the system tenant's store is written through the node encryptor, a barrier tenant's through its own tenant barrier (sealing that barrier fails the data closed) | all except vector | **yes** — memory, file, pebble and objstore (objstore on the local provider only, at `<root>/objstore`) |
+| Prefix or barrier tenant, or the system tenant (other than its `system` database), on a **standalone** node, database with no per-database barrier, not raft | the database's own store under its binding root `<data-dir>/tenants/<tenant>/databases/<name>`, or the explicit data directory when one is set (system tenant only), served from its own host (`lifecycle.LocalBindingFactory`); a prefix tenant's and the system tenant's store is written through the node encryptor, a barrier tenant's through its own tenant barrier (sealing that barrier fails the data closed on every engine; vector is not yet in the binding) | all except vector | **yes** — memory, file, pebble and objstore (objstore on the local provider only, at `<root>/objstore`) |
 | Prefix or barrier tenant, no per-database barrier (every other case above and below) | the shared system shard, under a `<tenant>/<db>/` key prefix | all except vector (vector goes to the node-local store below) | **no** — the node's `--sm` / `raft.sm_type` in raft mode, or the node's single local store in standalone mode |
 | Prefix or barrier tenant, database with its own barrier and an explicit data directory | the database's own store, opened by `database.Manager` | **KV and collections only**; MVCC, batch, transactions, leases, watches, indexes, time series and vector are absent, so the SQL surface and sequences are too | partly — memory, file and pebble are opened; nothing else is |
 | Volume tenant | one Raft shard on a per-tenant host, shared by all of the tenant's databases under the `<tenant>/<db>/` prefix | all except vector | **no** |
@@ -101,8 +101,10 @@ Supporting facts:
   one), on the database's own backend. A prefix tenant's and the system
   tenant's store is written through the node encryptor; a barrier tenant's
   through the tenant's own barrier, never the node encryptor, so sealing that
-  barrier fails the database's data closed (the open is refused while the
-  barrier is sealed or the barrier registry is not yet available). `resolve`,
+  barrier fails the database's data closed on every engine (vector is not yet
+  in the binding): an open store refuses writes, the store cannot be reopened
+  while the barrier is sealed or the barrier registry is not yet available,
+  and no engine's plaintext is on disk. `resolve`,
   the collection work journal and the compaction scheduler all serve it from
   its own host, never from the shared store, and `DROP DATABASE` removes the
   binding root (the explicit data directory included). The factory reads the
