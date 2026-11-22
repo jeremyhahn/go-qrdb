@@ -173,3 +173,41 @@ func (t *Transport) ListPoolTenants(ctx context.Context, req *transport.ListVolu
 	}
 	return out, nil
 }
+
+// MoveTenant starts moving a tenant to another pool by calling the
+// qrdb_volume_pool_move_tenant MCP tool.
+func (t *Transport) MoveTenant(ctx context.Context, req *transport.MoveVolumePoolTenantRequest) (*transport.VolumePoolMove, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "MoveTenant", Err: &transport.NilRequestError{}}
+	}
+	return t.volumeMoveTool(ctx, "MoveTenant", "qrdb_volume_pool_move_tenant", map[string]any{"tenant": req.TenantID, "to_pool": req.ToPool})
+}
+
+// GetMove answers a tenant's move in progress by calling the
+// qrdb_volume_pool_get_move MCP tool.
+func (t *Transport) GetMove(ctx context.Context, tenantID string) (*transport.VolumePoolMove, error) {
+	return t.volumeMoveTool(ctx, "GetMove", "qrdb_volume_pool_get_move", map[string]any{"tenant": tenantID})
+}
+
+// CancelMove cancels a tenant's move before cut over by calling the
+// qrdb_volume_pool_cancel_move MCP tool.
+func (t *Transport) CancelMove(ctx context.Context, tenantID string) (*transport.VolumePoolMove, error) {
+	return t.volumeMoveTool(ctx, "CancelMove", "qrdb_volume_pool_cancel_move", map[string]any{"tenant": tenantID})
+}
+
+// volumeMoveTool calls one of the move tools and decodes the journal it
+// answers.
+func (t *Transport) volumeMoveTool(ctx context.Context, method, tool string, args map[string]any) (*transport.VolumePoolMove, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	text, err := t.callTool(ctx, tool, args)
+	if err != nil {
+		return nil, &transport.RequestError{Method: method, Err: err}
+	}
+	var m transport.VolumePoolMove
+	if jsonErr := json.Unmarshal([]byte(text), &m); jsonErr != nil {
+		return nil, &transport.RequestError{Method: method, Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return &m, nil
+}

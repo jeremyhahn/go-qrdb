@@ -139,4 +139,46 @@ type VolumePoolClient interface {
 	// ListPoolTenants lists the tenants assigned to a pool, with each
 	// one's reservation and measured use.
 	ListPoolTenants(ctx context.Context, req *ListVolumePoolTenantsRequest) (*ListVolumePoolTenantsResponse, error)
+
+	// MoveTenant starts moving a tenant's volume to another pool the
+	// tenant is entitled to and answers the admitted move. The move runs
+	// in the background, one replica at a time; GetMove follows it.
+	// Requires volume_pools:move.
+	MoveTenant(ctx context.Context, req *MoveVolumePoolTenantRequest) (*VolumePoolMove, error)
+
+	// GetMove answers a tenant's move in progress; a tenant with no move
+	// answers a NotFound error.
+	GetMove(ctx context.Context, tenantID string) (*VolumePoolMove, error)
+
+	// CancelMove cancels a tenant's move before cut over; the move rolls
+	// back to the source pool. Requires volume_pools:move.
+	CancelMove(ctx context.Context, tenantID string) (*VolumePoolMove, error)
+}
+
+// MoveVolumePoolTenantRequest names the tenant to move and its
+// destination pool.
+type MoveVolumePoolTenantRequest struct {
+	TenantID string `json:"tenantId"`
+	ToPool   string `json:"toPool"`
+}
+
+// VolumePoolMove is a tenant move's journal: its state, the nodes that
+// copied, are still pending and retired their source copy, and the node
+// running the current step (docs/decisions/volume-pool-tenant-moves.md).
+type VolumePoolMove struct {
+	TenantID            string    `json:"tenantId"`
+	FromPool            string    `json:"fromPool"`
+	ToPool              string    `json:"toPool"`
+	State               string    `json:"state"`
+	NodesCopied         []string  `json:"nodesCopied,omitempty"`
+	NodesPending        []string  `json:"nodesPending,omitempty"`
+	NodesRetired        []string  `json:"nodesRetired,omitempty"`
+	StepNode            string    `json:"stepNode,omitempty"`
+	StepAttempts        int       `json:"stepAttempts,omitempty"`
+	Error               string    `json:"error,omitempty"`
+	ReservedBytes       int64     `json:"reservedBytes"`
+	SourceReservedBytes int64     `json:"sourceReservedBytes,omitempty"`
+	TenantRecorded      bool      `json:"tenantRecorded,omitempty"`
+	AdmittedAt          time.Time `json:"admittedAt"`
+	UpdatedAt           time.Time `json:"updatedAt"`
 }

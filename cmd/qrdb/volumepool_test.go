@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
 
@@ -310,6 +311,62 @@ func TestVolumePoolTenants_LastPageAndStructuredFormats(t *testing.T) {
 	}
 	if _, err := executeVolumePoolCmd(t, svc, "table", "tenants", "gone"); !errors.As(err, new(*volume.PoolNotFoundError)) {
 		t.Fatalf("err = %v, want PoolNotFoundError", err)
+	}
+}
+
+// TestVolumePoolMoves drives move-tenant, get-move and cancel-move: the
+// request reaches the service, the journal prints as a table and as JSON,
+// --to is required, and the service's refusals propagate.
+func TestVolumePoolMoves(t *testing.T) {
+	move := &volume.Move{
+		TenantID: "t1", FromPool: "a", ToPool: "b", State: "copying",
+		NodesCopied: []string{"n1"}, NodesPending: []string{"n2"}, StepNode: "n2", ReservedBytes: 1 << 20,
+	}
+	var got volume.MoveTenantRequest
+	svc := &volumetest.Service{
+		T: t,
+		MoveTenantFn: func(_ context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
+			got = req
+			if req.ToPool == "plain" {
+				return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+			}
+			return move, nil
+		},
+		GetMoveFn: func(context.Context, string) (*volume.Move, error) { return move, nil },
+	}
+
+	out, err := executeVolumePoolCmd(t, svc, "table", "move-tenant", "t1", "--to", "b")
+	if err != nil {
+		t.Fatalf("move-tenant: %v", err)
+	}
+	if got.TenantID != "t1" || got.ToPool != "b" {
+		t.Fatalf("request = %+v", got)
+	}
+	for _, want := range []string{"State:      copying", "To pool:    b", "n1", "copied", "n2", "pending", "Step node:  n2"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("move-tenant output missing %q:\n%s", want, out)
+		}
+	}
+
+	out, err = executeVolumePoolCmd(t, svc, "json", "get-move", "t1")
+	if err != nil {
+		t.Fatalf("get-move: %v", err)
+	}
+	var m transport.VolumePoolMove
+	if err := json.Unmarshal([]byte(out), &m); err != nil || m.State != "copying" || m.FromPool != "a" {
+		t.Fatalf("get-move json = %+v, %v (%s)", m, err, out)
+	}
+
+	if _, err := executeVolumePoolCmd(t, svc, "table", "move-tenant", "t1"); err == nil {
+		t.Fatal("move-tenant without --to: want an error")
+	}
+	var q9 *volume.MoveToUnencryptedPoolError
+	if _, err := executeVolumePoolCmd(t, svc, "table", "move-tenant", "t1", "--to", "plain"); !errors.As(err, &q9) {
+		t.Fatalf("err = %v, want MoveToUnencryptedPoolError", err)
+	}
+	var nf *volume.MoveNotFoundError
+	if _, err := executeVolumePoolCmd(t, svc, "table", "cancel-move", "none"); !errors.As(err, &nf) {
+		t.Fatalf("cancel-move: err = %v, want MoveNotFoundError", err)
 	}
 }
 

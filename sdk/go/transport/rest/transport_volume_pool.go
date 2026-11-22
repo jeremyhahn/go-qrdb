@@ -154,3 +154,47 @@ func (t *Transport) ListPoolTenants(ctx context.Context, req *transport.ListVolu
 	}
 	return out, nil
 }
+
+// MoveTenant starts moving a tenant to another pool. Maps to
+// POST /v1/volume-pools/{pool}/tenants/{tenant}/move ({pool} is the
+// destination).
+func (t *Transport) MoveTenant(ctx context.Context, req *transport.MoveVolumePoolTenantRequest) (*transport.VolumePoolMove, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "MoveTenant", Err: &transport.NilRequestError{}}
+	}
+	var m transport.VolumePoolMove
+	path := "/v1/volume-pools/" + url.PathEscape(req.ToPool) + "/tenants/" + url.PathEscape(req.TenantID) + "/move"
+	if err := t.postJSONDecode(ctx, "MoveTenant", path, struct{}{}, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// GetMove answers a tenant's move in progress. Maps to
+// GET /v1/tenants/{tenant}/volume-move.
+func (t *Transport) GetMove(ctx context.Context, tenantID string) (*transport.VolumePoolMove, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	var m transport.VolumePoolMove
+	if err := t.getJSONDecode(ctx, "GetMove", "/v1/tenants/"+url.PathEscape(tenantID)+"/volume-move", &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// CancelMove cancels a tenant's move before cut over. Maps to
+// DELETE /v1/tenants/{tenant}/volume-move.
+func (t *Transport) CancelMove(ctx context.Context, tenantID string) (*transport.VolumePoolMove, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	var m transport.VolumePoolMove
+	if err := t.deleteJSONDecode(ctx, "CancelMove", "/v1/tenants/"+url.PathEscape(tenantID)+"/volume-move", &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
