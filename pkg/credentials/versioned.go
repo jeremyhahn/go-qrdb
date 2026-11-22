@@ -1038,12 +1038,25 @@ func (s *CredentialService) deleteBarrierAll(ctx context.Context, name string) e
 			}
 			writes = append(writes, kvstore.KV{Key: k, Delete: true})
 		}
-		if rawMeta == nil && rawValue == nil && len(writes) == 0 {
+		// A legacy migration interrupted before its install still holds a
+		// pending claim on the name; the delete settles it in the same
+		// batch, so the install, retried after the delete, restores none
+		// of the deleted value, history or policy.
+		rawClaim, fence, err := s.deletionFence(ctx, name)
+		if err != nil {
+			secure.Wipe(rawValue)
+			return err
+		}
+		if rawMeta == nil && rawValue == nil && len(writes) == 0 && fence == nil {
 			return nil
 		}
 		writes = append(writes, kvstore.KV{Key: metaK, Delete: true}, kvstore.KV{Key: valueK, Delete: true})
-		applied, err := s.store.PutAllIfAllUnchanged(ctx,
-			[]kvstore.Guard{{Key: metaK, Value: rawMeta}, {Key: valueK, Value: rawValue}}, writes)
+		guards := []kvstore.Guard{{Key: metaK, Value: rawMeta}, {Key: valueK, Value: rawValue}}
+		if fence != nil {
+			writes = append(writes, kvstore.KV{Key: MigrationClaimPrefix + name, Value: fence})
+			guards = append(guards, kvstore.Guard{Key: MigrationClaimPrefix + name, Value: rawClaim})
+		}
+		applied, err := s.store.PutAllIfAllUnchanged(ctx, guards, writes)
 		secure.Wipe(rawValue)
 		if err != nil {
 			return &OperationError{Op: "delete current", Cause: err}

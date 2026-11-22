@@ -275,6 +275,15 @@ than change the interface.
   expired, and a stale version key with no meta entry reads as not-found.
   Under `manual` the enclave-backed version map and meta sidecar are dropped
   under the same lock as the current credential.
+- **A delete fences a pending legacy migration of the name.** A migration
+  interrupted between its claim and its install leaves the claim
+  (`credential-migrations/<name>`) pending, and its retry installs the legacy
+  copy only while the name's records are absent. A `barrier` delete that finds
+  that claim pending marks it complete in the same guarded batch that removes
+  the value, metadata and versions, so the retry, on any node, restores none of
+  the deleted value, history or policy and only removes the legacy copy. The
+  settled claim stops nothing else: a credential stored under the name after
+  the delete is kept, and the retry does not overwrite it.
 - **GC reaps only expired historical versions** — it never touches the current
   one.
 - **A protected config field resolves to a `SecretValue`, never a string.** It

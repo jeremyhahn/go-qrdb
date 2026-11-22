@@ -333,6 +333,67 @@ func TestMigrateLegacy_CrashWritingRecords(t *testing.T) {
 	assert.Empty(t, conflicts)
 }
 
+// TestMigrateLegacy_CrashThenPeerDeletes verifies a delete a peer completes
+// while an interrupted migration's claim is pending fences that migration:
+// the retry restores none of the deleted value, history or policy.
+func TestMigrateLegacy_CrashThenPeerDeletes(t *testing.T) {
+	ctx := context.Background()
+	legacy, mem := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	writeLegacy(t, legacy, "db", "v2", "v1", testPolicy)
+	shared := &faultyStore{Store: mem, op: "putall", key: credentialPrefix + "db"}
+	require.NoError(t, newMigratingService(t, legacy).BindStore(ctx, shared))
+	require.True(t, shared.fired)
+	peer := newUnboundService(t)
+	require.NoError(t, peer.BindStore(ctx, mem))
+	claim, ok, err := peer.loadClaim(ctx, MigrationClaimPrefix+"db")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.False(t, claim.Complete, "the interrupted install leaves its claim pending")
+
+	require.NoError(t, peer.StoreCredential(ctx, "db", []byte("fresh")))
+	require.NoError(t, peer.DeleteCredential(ctx, "db"))
+
+	rerun := newMigratingService(t, legacy)
+	require.NoError(t, rerun.BindStore(ctx, shared))
+	_, err = rerun.retrieveBytes(ctx, "db")
+	assert.ErrorIs(t, err, ErrCredentialNotFound, "the deleted credential stays deleted")
+	for _, key := range []string{credentialPrefix + "db", metaKey("db"), versionKey("db", 1)} {
+		_, err = mem.Get(ctx, key)
+		assert.ErrorIs(t, err, seal.ErrSecretNotFound, "no legacy record is restored at %s", key)
+	}
+	assert.Empty(t, legacyKeys(t, legacy), "the fenced legacy copy is removed")
+	conflicts, err := rerun.ListMigrationConflicts(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
+// TestMigrateLegacy_CrashThenPeerDeletesAndRestores verifies a credential
+// stored again after the fencing delete is kept: the retried migration
+// does not overwrite it with the legacy copy.
+func TestMigrateLegacy_CrashThenPeerDeletesAndRestores(t *testing.T) {
+	ctx := context.Background()
+	legacy, mem := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	writeLegacy(t, legacy, "db", "v2", "v1", testPolicy)
+	shared := &faultyStore{Store: mem, op: "putall", key: credentialPrefix + "db"}
+	require.NoError(t, newMigratingService(t, legacy).BindStore(ctx, shared))
+	require.True(t, shared.fired)
+
+	peer := newUnboundService(t)
+	require.NoError(t, peer.BindStore(ctx, mem))
+	require.NoError(t, peer.StoreCredential(ctx, "db", []byte("fresh")))
+	require.NoError(t, peer.DeleteCredential(ctx, "db"))
+	require.NoError(t, peer.StoreCredential(ctx, "db", []byte("again")))
+
+	rerun := newMigratingService(t, legacy)
+	require.NoError(t, rerun.BindStore(ctx, shared))
+	assert.Equal(t, "again", retrieveString(t, rerun, "db"), "the credential stored after the delete is kept")
+	for _, key := range []string{metaKey("db"), versionKey("db", 1)} {
+		_, err := mem.Get(ctx, key)
+		assert.ErrorIs(t, err, seal.ErrSecretNotFound, "no legacy record is added at %s", key)
+	}
+	assert.Empty(t, legacyKeys(t, legacy))
+}
+
 // TestMigrateLegacy_CrashDeletingLegacy verifies a run interrupted while it
 // deletes the old records finishes the deletion on the re-run, instead of
 // taking what is left for a differing copy.

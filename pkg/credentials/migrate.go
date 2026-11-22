@@ -456,6 +456,31 @@ func (s *CredentialService) writeWinningCopy(ctx context.Context, name string, r
 	return claim, nil
 }
 
+// deletionFence reads the name's migration claim for a delete and returns
+// the claim settled (Complete) when an install is still pending, or nil
+// when there is no claim to fence. The delete writes it in its own batch,
+// guarded on the raw claim it returns: a node whose interrupted install
+// left the claim pending then finds it complete when it retries and
+// restores nothing, so a completed delete is never undone by a legacy
+// copy that predates it. A credential stored under the name afterwards is
+// not blocked: a settled claim only stops the legacy install.
+func (s *CredentialService) deletionFence(ctx context.Context, name string) (raw, fenced []byte, err error) {
+	raw, err = s.store.Get(ctx, MigrationClaimPrefix+name)
+	if err != nil {
+		return nil, nil, readFailure("read migration claim", err, nil)
+	}
+	var claim migrationClaim
+	if len(raw) == 0 || json.Unmarshal(raw, &claim) != nil || claim.Complete {
+		return raw, nil, nil
+	}
+	claim.Complete = true
+	fenced, err = json.Marshal(claim)
+	if err != nil {
+		return nil, nil, &OperationError{Op: "encode migration claim", Cause: err}
+	}
+	return raw, fenced, nil
+}
+
 // deleteLegacy deletes this node's old records for name. It writes the
 // settled note first and deletes it last, so a run interrupted part-way
 // finishes the deletion instead of mistaking what is left for a different
