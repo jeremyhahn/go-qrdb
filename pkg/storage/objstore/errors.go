@@ -77,6 +77,17 @@ type FormatVersionMismatchError struct {
 	Want string
 }
 
+// LSMFormatMarkerMissingError reports a store that EnsureLSMFormat refuses:
+// it is not empty, yet carries no format marker for the LSM layout. Its
+// objects were written by something other than this layout, and there is no
+// migration (object-storage-lsm OS-5 A).
+type LSMFormatMarkerMissingError struct{}
+
+func (e *LSMFormatMarkerMissingError) Error() string {
+	return "objstore: the store is not empty and carries no " + formatMarkerName +
+		" marker for the LSM layout version " + lsmFormatVersion + " — there is no migration"
+}
+
 // Error returns a human-readable description of the mismatch.
 func (e *FormatVersionMismatchError) Error() string {
 	return "objstore: store format version " + e.Found + " does not match this build's " + e.Want +
