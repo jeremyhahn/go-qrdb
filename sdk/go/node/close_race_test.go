@@ -42,8 +42,8 @@ import (
 // ticker from this clock closes held, and every sweeper C call blocks until
 // release is closed. Every other caller, and every other method, gets the
 // Fake unchanged. The double holds only the sweeper's own read of the clock
-// and asserts nothing about Close. It is the first of the test's two gates;
-// gatedHandler (the member record, clustered node only) is the second.
+// and asserts nothing about Close. It is the gate of the gateLease subtests
+// (standalone and clustered-lease-expiry); elsewhere it stays unarmed.
 //
 // The hold is on Ticker.C, not on Now: lease.(*Lessor).RunExpiry evaluates
 // ticker.C() at the head of every pass of its select loop, outside any lock,
@@ -170,7 +170,8 @@ type memberGate struct {
 // the caller's own stack) it closes held once and blocks until release is
 // closed. Every other record passes through to a discarding text handler.
 // The double holds only that worker's own log call and asserts nothing
-// about Close.
+// about Close. It is the gate of the gateMember subtest
+// (clustered-member-record); elsewhere it stays unarmed.
 type gatedHandler struct {
 	slog.Handler
 	gate *memberGate
@@ -210,14 +211,18 @@ func (h *gatedHandler) WithGroup(name string) slog.Handler {
 // exited, so an embedder may tear down what it passed in (the audit sink)
 // straight after Close without racing one of them.
 //
-// The check is an ordering one, not an eventual one, with two gates on two
-// different workers and dependencies. The node runs on a gatedClock, so a
-// lease-expiry sweep is held inside its read of the clock while Close runs
-// at the same time; on the clustered node a gatedHandler also holds the
-// member-record worker inside its "member record published" log call. Close
-// must not return while either worker is held, and must return once both
-// are released. A stop that only cancels a gated worker without waiting for
-// it fails here.
+// The check is an ordering one, not an eventual one. There are three
+// subtests, and each holds exactly one worker while Close runs: standalone
+// and clustered-lease-expiry run the node on an armed gatedClock, so a
+// lease-expiry sweep is held inside its read of the clock;
+// clustered-member-record arms a gatedHandler, so the member-record worker
+// is held inside its "member record published" log call. Close must not
+// return while the held worker is held, and must return once it is
+// released. A stop that only cancels a gated worker without waiting for it
+// fails here. One gate per subtest, because Close joins the clustered lease
+// sweeper (bgWG) before the member worker (memberWG): a member gate held at
+// the same time would keep Close from returning on its own and so hide a
+// missing bgWG join.
 //
 // Right after Close returns, one goroutine snapshot (no poll, no sleep) must
 // show no constructor worker frame (constructorWorkerFrames) outside the
@@ -235,20 +240,45 @@ func (h *gatedHandler) WithGroup(name string) slog.Handler {
 // Both constructors are covered: an embedder (go-xkms pkg/embeddednode)
 // builds either one.
 func TestNodeCloseJoinsConstructorGoroutines(t *testing.T) {
+	clustered := func(t *testing.T) func([]server.ServerOption, ...NodeOption) (*Node, error) {
+		return func(opts []server.ServerOption, nodeOpts ...NodeOption) (*Node, error) {
+			return NewClusteredNode(context.Background(), newRaftIsolationConfig(t), raftMembers(), opts,
+				append(nodeOpts, WithNoSyncWrites())...)
+		}
+	}
 	t.Run("standalone", func(t *testing.T) {
-		assertCloseJoinsConstructorGoroutines(t, false, func(opts []server.ServerOption, nodeOpts ...NodeOption) (*Node, error) {
+		assertCloseJoinsConstructorGoroutines(t, gateLease, func(opts []server.ServerOption, nodeOpts ...NodeOption) (*Node, error) {
 			return NewStandaloneNode(context.Background(), newMemoryNodeConfig(t), opts, nodeOpts...)
 		})
 	})
-	t.Run("clustered", func(t *testing.T) {
-		assertCloseJoinsConstructorGoroutines(t, true, func(opts []server.ServerOption, nodeOpts ...NodeOption) (*Node, error) {
-			return NewClusteredNode(context.Background(), newRaftIsolationConfig(t), raftMembers(), opts,
-				append(nodeOpts, WithNoSyncWrites())...)
-		})
+	t.Run("clustered-lease-expiry", func(t *testing.T) {
+		assertCloseJoinsConstructorGoroutines(t, gateLease, clustered(t))
+	})
+	t.Run("clustered-member-record", func(t *testing.T) {
+		assertCloseJoinsConstructorGoroutines(t, gateMember, clustered(t))
 	})
 }
 
-func assertCloseJoinsConstructorGoroutines(t *testing.T, gateMember bool, build func([]server.ServerOption, ...NodeOption) (*Node, error)) {
+// closeGate selects the one constructor worker a subtest of
+// TestNodeCloseJoinsConstructorGoroutines holds while Close runs.
+type closeGate int
+
+const (
+	// gateLease holds the lease-expiry sweeper through the gatedClock.
+	gateLease closeGate = iota
+	// gateMember holds the member-record worker through the gatedHandler.
+	gateMember
+)
+
+// worker names the worker the gate holds, for failure messages.
+func (g closeGate) worker() string {
+	if g == gateMember {
+		return "member-record worker"
+	}
+	return "lease-expiry sweeper"
+}
+
+func assertCloseJoinsConstructorGoroutines(t *testing.T, gate closeGate, build func([]server.ServerOption, ...NodeOption) (*Node, error)) {
 	t.Helper()
 	before := qrdbGoroutines()
 	fresh := func(gs map[string]string) map[string]string {
@@ -271,7 +301,7 @@ func assertCloseJoinsConstructorGoroutines(t *testing.T, gateMember bool, build 
 	h := newGatedHandler()
 	var releaseMember sync.Once
 	t.Cleanup(func() { releaseMember.Do(func() { close(h.gate.release) }) })
-	if gateMember {
+	if gate == gateMember {
 		h.gate.armed.Store(true)
 	}
 
@@ -298,27 +328,30 @@ func assertCloseJoinsConstructorGoroutines(t *testing.T, gateMember bool, build 
 		t.Logf("open node runs %s in %d goroutine(s)", f, len(running[f]))
 	}
 
-	// Hold the lease-expiry sweeper inside its read of its ticker. It parks
-	// in its select on a channel it read before arming, so tick until a
-	// pass completes and the next pass reaches the gate.
-	clk.armed.Store(true)
-	deadline = time.Now().Add(10 * time.Second)
-	for holding := false; !holding; {
-		if time.Now().After(deadline) {
-			require.Fail(t, "no lease-expiry sweep reached the gated clock")
+	// Hold exactly one worker, so a join Close makes for one worker can never
+	// hide a missing join of the other.
+	switch gate {
+	case gateLease:
+		// Hold the lease-expiry sweeper inside its read of its ticker. It
+		// parks in its select on a channel it read before arming, so tick
+		// until a pass completes and the next pass reaches the gate.
+		clk.armed.Store(true)
+		deadline = time.Now().Add(10 * time.Second)
+		for holding := false; !holding; {
+			if time.Now().After(deadline) {
+				require.Fail(t, "no lease-expiry sweep reached the gated clock")
+			}
+			clk.Advance(lease.DefaultExpiryInterval)
+			select {
+			case <-clk.held:
+				holding = true
+			default:
+				runtime.Gosched()
+			}
 		}
-		clk.Advance(lease.DefaultExpiryInterval)
-		select {
-		case <-clk.held:
-			holding = true
-		default:
-			runtime.Gosched()
-		}
-	}
-
-	// On the clustered node, hold the member-record worker inside its
-	// "member record published" log call too.
-	if gateMember {
+	case gateMember:
+		// Hold the member-record worker inside its "member record
+		// published" log call.
 		select {
 		case <-h.gate.held:
 		case <-time.After(10 * time.Second):
@@ -333,28 +366,25 @@ func assertCloseJoinsConstructorGoroutines(t *testing.T, gateMember bool, build 
 		close(closeDone)
 	}()
 
-	// Bounded negative windows, not synchronizing sleeps: each gated worker
-	// is held until its release, so a Close that returns inside a window
+	// A bounded negative window, not a synchronizing sleep: the gated worker
+	// is held until its release, so a Close that returns inside the window
 	// did not wait for it.
 	select {
 	case <-closeDone:
-		t.Fatal("Close returned while a constructor worker was still inside a sweep")
+		t.Fatalf("Close returned while the %s was still held", gate.worker())
 	case <-time.After(250 * time.Millisecond):
 	}
 
-	releaseClock.Do(func() { close(clk.release) })
-	if gateMember {
-		select {
-		case <-closeDone:
-			t.Fatal("Close returned while the member-record worker was still held")
-		case <-time.After(250 * time.Millisecond):
-		}
+	switch gate {
+	case gateLease:
+		releaseClock.Do(func() { close(clk.release) })
+	case gateMember:
 		releaseMember.Do(func() { close(h.gate.release) })
 	}
 	select {
 	case <-closeDone:
 	case <-time.After(10 * time.Second):
-		require.Fail(t, "Close did not return after the held workers were released")
+		require.Failf(t, "Close did not return after the held worker was released", "%s", gate.worker())
 	}
 	require.NoError(t, closeErr)
 
