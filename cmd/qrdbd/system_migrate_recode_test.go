@@ -16,6 +16,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -373,6 +374,147 @@ func TestRecodeSystemBarrier_BackendWriteFailure(t *testing.T) {
 			}
 			if got := source.ActiveStrategy(); got != seal.StrategyNone {
 				t.Fatalf("active strategy = %q, want %q", got, seal.StrategyNone)
+			}
+		})
+	}
+}
+
+// putRecodeSealStoreSecrets stores secrets through a seal store on b.
+func putRecodeSealStoreSecrets(t *testing.T, b *seal.StorageBarrier, secrets map[string]string) {
+	t.Helper()
+	store, err := seal.NewSealStore(b, seal.SealStoreDefaultPrefix, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("NewSealStore: %v", err)
+	}
+	for name, value := range secrets {
+		if err := store.Put(context.Background(), name, []byte(value)); err != nil {
+			t.Fatalf("Put %q: %v", name, err)
+		}
+	}
+}
+
+// assertRecodeSealStoreSecrets reads every secret back through a seal store
+// on b.
+func assertRecodeSealStoreSecrets(t *testing.T, b *seal.StorageBarrier, secrets map[string]string) {
+	t.Helper()
+	store, err := seal.NewSealStore(b, seal.SealStoreDefaultPrefix, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("NewSealStore: %v", err)
+	}
+	for name, want := range secrets {
+		got, err := store.Get(context.Background(), name)
+		if err != nil {
+			t.Fatalf("Get %q: %v", name, err)
+		}
+		if string(got) != want {
+			t.Fatalf("secret %q = %q, want %q", name, got, want)
+		}
+	}
+	names, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(names) != len(secrets) {
+		t.Fatalf("List = %v, want %d names", names, len(secrets))
+	}
+}
+
+// TestRecodeSystemBarrier_MigratesSealStore proves enable-encryption
+// re-encrypts the seal store: after the recode the keyed barrier reads every
+// secret back, the raw backend holds no plaintext copy and no staged record is
+// left behind.
+func TestRecodeSystemBarrier_MigratesSealStore(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	source := newRecodeSourceBarrierOn(t, backend)
+	secrets := map[string]string{"alpha": "alpha-plaintext-secret", "beta": "beta-plaintext-secret"}
+	putRecodeSealStoreSecrets(t, source, secrets)
+	walDir := filepath.Join(t.TempDir(), "wal")
+	if err := os.MkdirAll(walDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	if err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts()); err != nil {
+		t.Fatalf("recodeSystemBarrier: %v", err)
+	}
+
+	for name, value := range secrets {
+		raw, err := backend.Get(ctx, seal.SealStoreDefaultPrefix+name)
+		if err != nil {
+			t.Fatalf("raw Get %q: %v", name, err)
+		}
+		if bytes.Contains(raw, []byte(value)) {
+			t.Fatalf("raw record %q still holds the plaintext", name)
+		}
+	}
+	staged, err := backend.List(ctx, sealStoreStagingPrefix)
+	if err != nil {
+		t.Fatalf("List staged: %v", err)
+	}
+	if len(staged) != 0 {
+		t.Fatalf("staged records left behind: %v", staged)
+	}
+
+	strategy, err := seal.NewSoftwareStrategy(ctx, []byte("daemon-migrate-pw"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	keyed, err := seal.NewStorageBarrier(slog.New(slog.DiscardHandler), backend,
+		seal.BarrierConfig{RootKeyPath: "system/root-key"}, strategy)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	t.Cleanup(func() { _ = keyed.Close() })
+	if err := keyed.Unseal(ctx, seal.MustCredentials(ctx, []byte("daemon-migrate-pw"))); err != nil {
+		t.Fatalf("Unseal keyed barrier: %v", err)
+	}
+	assertRecodeSealStoreSecrets(t, keyed, secrets)
+}
+
+// TestRecodeSystemBarrier_SealStoreFailureKeepsSource proves a recode that
+// fails before the commit leaves every seal-store secret readable on the none
+// source and discards the staged keyed records.
+func TestRecodeSystemBarrier_SealStoreFailureKeepsSource(t *testing.T) {
+	const rootKeyPath = "system/root-key"
+	tests := []struct {
+		name   string
+		key    string
+		failAt int
+		// staged is whether the staged keyed records survive: past the
+		// committing checkpoint they are kept as the roll-forward copy.
+		staged bool
+	}{
+		{name: "staging write", key: sealStoreStagingPrefix + "beta", failAt: 1},
+		{name: "verifying checkpoint", key: rootKeyPath + ".migration", failAt: 5},
+		{name: "root key adoption", key: rootKeyPath, failAt: 1, staged: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			backend := &recodeFailingBackend{StorageBackend: seal.NewMemoryBackend(), key: tt.key, failAt: tt.failAt}
+			source := newRecodeSourceBarrierOn(t, backend)
+			secrets := map[string]string{"alpha": "alpha-secret", "beta": "beta-secret"}
+			putRecodeSealStoreSecrets(t, source, secrets)
+			backend.armed = true
+			walDir := filepath.Join(t.TempDir(), "wal")
+			if err := os.MkdirAll(walDir, 0o700); err != nil {
+				t.Fatalf("MkdirAll: %v", err)
+			}
+
+			err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts())
+			if !errors.Is(err, errRecodeBackendPut) {
+				t.Fatalf("err = %v, want %v", err, errRecodeBackendPut)
+			}
+			if got := source.ActiveStrategy(); got != seal.StrategyNone {
+				t.Fatalf("active strategy = %q, want %q", got, seal.StrategyNone)
+			}
+			assertRecodeSealStoreSecrets(t, source, secrets)
+			staged, lerr := backend.List(ctx, sealStoreStagingPrefix)
+			if lerr != nil {
+				t.Fatalf("List staged: %v", lerr)
+			}
+			if got := len(staged) == len(secrets); got != tt.staged || (!tt.staged && len(staged) != 0) {
+				t.Fatalf("staged records = %v, want kept = %v", staged, tt.staged)
 			}
 		})
 	}

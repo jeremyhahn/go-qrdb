@@ -316,7 +316,7 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 
 	// The node's named-secret seal store, served by the SealStore* RPCs
 	// (seal:store_manage). Its entries are encrypted under the system barrier.
-	sealStoreSvc, sealStoreErr := seal.NewSealStore(sealBarrier, "", slog.Default())
+	sealStoreSvc, sealStoreErr := seal.NewSealStore(sealBarrier, seal.SealStoreDefaultPrefix, slog.Default())
 	if sealStoreErr != nil {
 		_ = sealStore.Close()
 		return nil, &SealStorageError{Err: sealStoreErr}

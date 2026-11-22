@@ -16,6 +16,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -490,6 +491,22 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, store
 		err = cerr
 		return err
 	}
+	// The seal store keeps its secrets as records in the system barrier's own
+	// backend, so they are re-encrypted too: each record is staged under the
+	// keyed root key beside the live none-format record, which stays readable
+	// until the commit. A pre-commit failure discards the staged set; past the
+	// committing checkpoint the staged set is kept as the roll-forward copy
+	// (the next migration clears it before it stages again).
+	sealKeys, cerr := stageSealStoreRecords(ctx, source, target)
+	defer func() {
+		if err != nil && !j.Committed() {
+			discardStagedSealStore(ctx, source, sealKeys)
+		}
+	}()
+	if cerr != nil {
+		err = fmt.Errorf("re-encrypt seal store: %w", cerr)
+		return err
+	}
 
 	// Verify each store round-trip (no data loss). The WAL is verified
 	// implicitly by the host reopen on the next boot iteration, which replays it
@@ -510,6 +527,10 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, store
 			err = fmt.Errorf("verify re-encrypted file store %q: %w", dir, verr)
 			return err
 		}
+	}
+	if verr := verifyStagedSealStore(ctx, source, target, sealKeys); verr != nil {
+		err = fmt.Errorf("verify re-encrypted seal store: %w", verr)
+		return err
 	}
 
 	// Commit (point of no return): swap dirs, commit the staged snapshots,
@@ -544,11 +565,123 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, store
 		database.RemoveStoreBackup(dir)
 	}
 	database.RemoveStoreBackup(walDir)
+	// Past the point of no return: replace each none-format seal-store record
+	// with its keyed copy so no plaintext stays on disk. The migration still
+	// completes on a failure here (the keyed root key is live); the staged
+	// copies the error names keep the secrets readable.
+	commitErr := commitStagedSealStore(ctx, target, sealKeys)
 
 	j.Phase = seal.PhaseComplete
 	_ = source.CheckpointMigration(ctx, j)
 	_ = source.FinishMigration(ctx)
+	if commitErr != nil {
+		return fmt.Errorf("commit re-encrypted seal store: %w", commitErr)
+	}
 	return nil
+}
+
+// sealStoreStagingPrefix is the key prefix the system migration stages the
+// keyed seal-store records under. It is a sibling of
+// seal.SealStoreDefaultPrefix, so the live seal store never lists a staged
+// record.
+var sealStoreStagingPrefix = strings.TrimSuffix(seal.SealStoreDefaultPrefix, "/") + systemMigrateStagingSuffix + "/"
+
+// stagedSealStoreKey returns the staging key for the live seal-store key.
+func stagedSealStoreKey(live string) string {
+	return sealStoreStagingPrefix + strings.TrimPrefix(live, seal.SealStoreDefaultPrefix)
+}
+
+// stageSealStoreRecords re-encrypts every seal-store record of source under
+// target's root key into the staging prefix, leaving the live records
+// untouched. Records left by an earlier interrupted migration are cleared
+// first. It returns the live keys it staged (also on error, so the caller can
+// discard a partial set).
+func stageSealStoreRecords(ctx context.Context, source, target *seal.StorageBarrier) ([]string, error) {
+	leftover, err := source.List(ctx, sealStoreStagingPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("list staged records: %w", err)
+	}
+	for _, key := range leftover {
+		if derr := source.Delete(ctx, key); derr != nil {
+			return nil, fmt.Errorf("clear staged record: %w", derr)
+		}
+	}
+	live, err := source.List(ctx, seal.SealStoreDefaultPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("list records: %w", err)
+	}
+	staged := make([]string, 0, len(live))
+	for _, key := range live {
+		plaintext, gerr := source.Get(ctx, key)
+		if gerr != nil {
+			return staged, fmt.Errorf("read record: %w", gerr)
+		}
+		perr := target.Put(ctx, stagedSealStoreKey(key), plaintext)
+		clear(plaintext)
+		staged = append(staged, key)
+		if perr != nil {
+			return staged, fmt.Errorf("stage record: %w", perr)
+		}
+	}
+	return staged, nil
+}
+
+// verifyStagedSealStore checks that every staged keyed record decrypts under
+// target to the live record's value.
+func verifyStagedSealStore(ctx context.Context, source, target *seal.StorageBarrier, keys []string) error {
+	for _, key := range keys {
+		want, err := source.Get(ctx, key)
+		if err != nil {
+			return fmt.Errorf("read record: %w", err)
+		}
+		got, err := target.Get(ctx, stagedSealStoreKey(key))
+		if err != nil {
+			clear(want)
+			return fmt.Errorf("read staged record: %w", err)
+		}
+		equal := bytes.Equal(want, got)
+		clear(want)
+		clear(got)
+		if !equal {
+			return errSealStoreRecordMismatch
+		}
+	}
+	return nil
+}
+
+// errSealStoreRecordMismatch reports a staged seal-store record that does not
+// decrypt to the live record's value.
+var errSealStoreRecordMismatch = errors.New("staged seal-store record does not match the live record")
+
+// discardStagedSealStore deletes the staged keyed records of keys, leaving
+// the live none-format records as they were.
+func discardStagedSealStore(ctx context.Context, b *seal.StorageBarrier, keys []string) {
+	for _, key := range keys {
+		_ = b.Delete(ctx, stagedSealStoreKey(key))
+	}
+}
+
+// commitStagedSealStore runs after the source barrier adopted the keyed root
+// key of b (the migration target, which shares its backend): it replaces each
+// live none-format record with its staged keyed copy (one Put over the live
+// key) and then deletes the staged copy. It carries on past a failed
+// record and returns the first error.
+func commitStagedSealStore(ctx context.Context, b *seal.StorageBarrier, keys []string) error {
+	var first error
+	for _, key := range keys {
+		plaintext, err := b.Get(ctx, stagedSealStoreKey(key))
+		if err == nil {
+			err = b.Put(ctx, key, plaintext)
+			clear(plaintext)
+		}
+		if err == nil {
+			err = b.Delete(ctx, stagedSealStoreKey(key))
+		}
+		if err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 // systemMigrateStagingSuffix names the staging root-key path for a system
