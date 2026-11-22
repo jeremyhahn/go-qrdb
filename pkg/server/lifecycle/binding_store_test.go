@@ -18,10 +18,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
@@ -30,10 +34,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -68,18 +75,32 @@ func materialized(t *testing.T, db *database.Database) *lifecycle.MaterializedBi
 // returns the value of key, or an error.
 func readBack(t *testing.T, b database.BackendType, root string, enc *atrest.Encryptor, key string) ([]byte, error) {
 	t.Helper()
+	host, closeHost, err := openBack(t, b, root, enc)
+	if err != nil {
+		return nil, err
+	}
+	defer closeHost()
+	return service.NewKVService(host, shard.ShardKV).Get(context.Background(), key)
+}
+
+// openBack reopens a binding root with the standalone composition under enc
+// and returns its host and a func that closes the host and then the storage.
+func openBack(t *testing.T, b database.BackendType, root string, enc *atrest.Encryptor) (service.Host, func(), error) {
+	t.Helper()
 	stg, pdb, err := lifecycle.NewLocalStorage(b, root, enc, qrdbconfig.StorageConfig{})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	defer func() { _ = stg.Close() }()
 	eng, err := lifecycle.NewLocalEngine(b, stg, pdb, watch.NewHub(), lease.NewLessor())
 	if err != nil {
-		return nil, err
+		_ = stg.Close()
+		return nil, nil, err
 	}
 	local := backend.NewLocalBackend(eng)
-	defer func() { _ = local.Close() }()
-	return service.NewKVService(local, shard.ShardKV).Get(context.Background(), key)
+	return local, func() {
+		_ = local.Close()
+		_ = stg.Close()
+	}, nil
 }
 
 func TestLocalBindingFactory_OwnStorePerBackend(t *testing.T) {
@@ -673,5 +694,296 @@ func TestLocalBindingFactory_ObjstoreLocalBindingAtItsRoot(t *testing.T) {
 	got, err := readBack(t, database.BackendObjstore, roots["b"], nil, "k")
 	if err != nil || !bytes.Equal(got, []byte("value-b")) {
 		t.Fatalf("b after dropping a = %q, %v; want value-b", got, err)
+	}
+}
+
+// The plaintext markers the seal tests write, one per engine, so a leak names
+// the engine it came from.
+const (
+	sealKVMarker   = "seal-kv-plaintext-marker"
+	sealMVCCMarker = "seal-mvcc-plaintext-marker"
+	sealDocMarker  = "seal-doc-plaintext-marker"
+	sealTSMarker   = "seal-ts-plaintext-marker"
+)
+
+var sealMarkers = []string{sealKVMarker, sealMVCCMarker, sealDocMarker, sealTSMarker}
+
+// sealTSAt is the time-series point's timestamp in the seal tests.
+var sealTSAt = time.Unix(1_700_000_000, 0)
+
+// newRegisteredTenantBarrier returns a real barrier registry with
+// bindingTenant registered under its own unsealed tenant barrier, set up as
+// TestTenantBarrierEncryptorLookup_Typed does.
+func newRegisteredTenantBarrier(t *testing.T) (*seal.BarrierRegistry, *seal.TenantBarrier) {
+	t.Helper()
+	reg, err := seal.NewBarrierRegistry(slog.Default(), newUnsealedBarrier(t))
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+	if _, err := reg.RegisterTenantDefault(bindingTenant); err != nil {
+		t.Fatalf("RegisterTenantDefault: %v", err)
+	}
+	tb := seal.WrapTenantBarrier(bindingTenant, newUnsealedBarrier(t))
+	if err := reg.ReplaceTenantBarrier(bindingTenant, tb); err != nil {
+		t.Fatalf("ReplaceTenantBarrier: %v", err)
+	}
+	return reg, tb
+}
+
+// sealEngines are a database's data-plane engines over one host, built the
+// way pkg/server buildDataPlaneServices builds them.
+type sealEngines struct {
+	kv   service.KVServicer
+	mvcc service.MVCCKVServicer
+	idx  service.IndexServicer
+	ts   service.TimeSeriesServicer
+	coll *service.CollectionService
+}
+
+func newSealEngines(host service.Host, shardID uint64) sealEngines {
+	kv := service.NewKVService(host, shardID)
+	mvcc := service.NewMVCCKVService(host, shardID)
+	idx := service.NewIndexService(host, shardID)
+	txn := service.NewTransactionService(host, shardID)
+	return sealEngines{
+		kv:   kv,
+		mvcc: mvcc,
+		idx:  idx,
+		ts:   service.NewTimeSeriesService(host, shardID),
+		coll: service.NewCollectionServiceWithIndex(kv, idx).WithSequenceService(service.NewSequenceService(mvcc, txn)),
+	}
+}
+
+// writeEveryEngine writes one marker per engine (KV, MVCC, a collection
+// document under a secondary index on its marker field, a time-series point
+// tagged with its marker) and returns the document's ID and whether the
+// time-series engine is compiled in (build tag qrdb_ts, which make test sets).
+func (e sealEngines) writeEveryEngine(t *testing.T, db string) (uint64, bool) {
+	t.Helper()
+	ctx := context.Background()
+	if err := e.kv.Put(ctx, "seal-kv", []byte(sealKVMarker)); err != nil {
+		t.Fatalf("KV Put: %v", err)
+	}
+	if err := e.mvcc.Put(ctx, "seal-mvcc", []byte(sealMVCCMarker)); err != nil {
+		t.Fatalf("MVCC Put: %v", err)
+	}
+	if _, err := e.coll.CreateCollection(ctx, &service.CreateCollectionRequest{
+		Name: "docs", Database: db, Indexes: []service.IndexDefinition{{FieldName: "secret"}},
+	}); err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	ins, err := e.coll.InsertDocument(ctx, &service.InsertDocumentRequest{
+		Collection: "docs", Database: db, Document: map[string]interface{}{"secret": sealDocMarker},
+	})
+	if err != nil {
+		t.Fatalf("InsertDocument: %v", err)
+	}
+	err = e.ts.Write(ctx, "seal.metric", 42.5, sealTSAt, map[string]string{"secret": sealTSMarker})
+	// The state machine encodes the refusal into the proposal's result, so
+	// only its text, not its type, reaches the caller.
+	if err != nil && strings.Contains(err.Error(), (&timeseries.NotCompiledError{}).Error()) {
+		t.Logf("time series not compiled in (%v): its seal cell runs under make test", err)
+		return ins.ID, false
+	}
+	if err != nil {
+		t.Fatalf("TimeSeries Write: %v", err)
+	}
+	return ins.ID, true
+}
+
+// engineRead is one engine's read of its own marker: what it returned, as
+// text, and its error.
+type engineRead struct {
+	engine, marker, got string
+	err                 error
+}
+
+// readEveryEngine reads each engine's value back by its exact key, ID, index
+// value or metric, never by listing.
+//
+// withIndex is false for a store reopened under the bare standalone
+// composition: the index registry lives in the state machine that created
+// the index and is not rebuilt by a reopen, so a reopened store answers
+// "index not found" whatever its barrier.
+func (e sealEngines) readEveryEngine(db string, docID uint64, withTS, withIndex bool) []engineRead {
+	ctx := context.Background()
+	kv, kvErr := e.kv.Get(ctx, "seal-kv")
+	mv, mvErr := e.mvcc.Get(ctx, "seal-mvcc")
+	doc, docErr := e.coll.GetDocument(ctx, &service.GetDocumentRequest{Collection: "docs", Database: db, ID: docID})
+	var docText string
+	if doc != nil {
+		docText = fmt.Sprint(doc.Document)
+	}
+	reads := []engineRead{
+		{engine: "kv", marker: sealKVMarker, got: string(kv), err: kvErr},
+		{engine: "mvcc", marker: sealMVCCMarker, got: string(mv), err: mvErr},
+		{engine: "collection", marker: sealDocMarker, got: docText, err: docErr},
+	}
+	if withIndex {
+		// The index returns the document's key, not its value: the control
+		// asks for one hit.
+		hits, idxErr := e.idx.Query(ctx, db+".docs.secret", []byte(sealDocMarker))
+		reads = append(reads, engineRead{engine: "index", marker: sealDocMarker, got: fmt.Sprint(len(hits)), err: idxErr})
+	}
+	if withTS {
+		points, tsErr := e.ts.Query(ctx, "seal.metric", sealTSAt.Add(-time.Hour), sealTSAt.Add(time.Hour))
+		reads = append(reads, engineRead{engine: "timeseries", marker: sealTSMarker, got: fmt.Sprint(points), err: tsErr})
+	}
+	return reads
+}
+
+// TestLocalBindingFactory_BarrierTenantSealFailsEveryEngineClosed is
+// binding-materialization test (3) for the tenant barrier on a standalone
+// node (engineering.md "Target: acceptance"): a barrier tenant's database is
+// written on every engine except vector (still the node-local store) and
+// objstore (values not yet encrypted at rest), read back under the tenant
+// barrier, and once that barrier is sealed the store cannot be read, no new
+// database opens, and no file under the binding root holds a plaintext value.
+func TestLocalBindingFactory_BarrierTenantSealFailsEveryEngineClosed(t *testing.T) {
+	for _, b := range []database.BackendType{database.BackendFile, database.BackendPebble} {
+		t.Run(string(b), func(t *testing.T) {
+			dir := t.TempDir()
+			reg, tb := newRegisteredTenantBarrier(t)
+			lookup := lifecycle.TenantBarrierEncryptorLookup(func() *seal.BarrierRegistry { return reg })
+			nodeEnc := atrest.New(newUnsealedBarrier(t))
+			mgr := newBarrierTenantManager(t, dir, nodeEnc, lookup)
+			db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "vault", Backend: b})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			mb := materialized(t, db)
+			root := mb.DataRoot()
+			live := newSealEngines(mb.Host(), mb.ShardID())
+			docID, withTS := live.writeEveryEngine(t, "vault")
+			// Control: every engine, the index included, reads its marker
+			// back on the open store, so the sealed checks below are not
+			// vacuous.
+			assertControl(t, "open store", live.readEveryEngine("vault", docID, withTS, true))
+			if err := mgr.Close(); err != nil {
+				t.Fatalf("Manager.Close: %v", err)
+			}
+
+			// Control: the store reopens under the unsealed tenant barrier and
+			// every engine but the index (see readEveryEngine) reads back.
+			host, closeHost, err := openBack(t, b, root, atrest.New(tb.Barrier()))
+			if err != nil {
+				t.Fatalf("reopen under the unsealed tenant barrier: %v", err)
+			}
+			reads := newSealEngines(host, shard.ShardKV).readEveryEngine("vault", docID, withTS, false)
+			closeHost()
+			assertControl(t, "reopened store", reads)
+
+			if err := tb.Seal(); err != nil {
+				t.Fatalf("Seal: %v", err)
+			}
+
+			// (1) The store does not reopen under the sealed barrier, so no
+			// engine is ever reached. The composition refuses the open with
+			// the store's own sealed error, not seal.ErrSealed: the file
+			// store's quiesce gate is closed (quiesce.ErrSealing), and
+			// pebble's seal watch reports pebblestore.ErrBarrierSealed.
+			wantSealed := map[database.BackendType]error{
+				database.BackendFile:   quiesce.ErrSealing,
+				database.BackendPebble: pebblestore.ErrBarrierSealed,
+			}[b]
+			host, closeHost, err = openBack(t, b, root, atrest.New(tb.Barrier()))
+			if err == nil {
+				closeHost()
+				t.Fatalf("the store reopened under its sealed tenant barrier")
+			}
+			if !errors.Is(err, wantSealed) {
+				t.Fatalf("reopen under the sealed tenant barrier: err = %v (%T), want %v", err, err, wantSealed)
+			}
+
+			// (2) A fresh Manager opens no new database for the tenant.
+			mgr2 := newBarrierTenantManager(t, dir, nodeEnc, lookup)
+			defer func() { _ = mgr2.Close() }()
+			_, err = mgr2.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "vault2", Backend: b})
+			var open *lifecycle.BindingOpenError
+			var sealed *lifecycle.BindingBarrierSealedError
+			if !errors.As(err, &open) || !errors.As(err, &sealed) {
+				t.Fatalf("Create under a sealed barrier: err = %v (%T), want *lifecycle.BindingOpenError wrapping *lifecycle.BindingBarrierSealedError", err, err)
+			}
+			if _, ok := mgr2.Local("vault2", bindingTenant); ok {
+				t.Fatal("the Manager recorded a database whose tenant barrier is sealed")
+			}
+
+			// (3) No file under the binding root holds a plaintext marker.
+			assertNoMarkerUnder(t, root)
+		})
+	}
+}
+
+// assertNoMarkerUnder fails if any file under root contains a seal marker.
+// assertControl fails unless every read succeeded with its marker (the index
+// with exactly one hit).
+func assertControl(t *testing.T, where string, reads []engineRead) {
+	t.Helper()
+	for _, r := range reads {
+		ok := strings.Contains(r.got, r.marker)
+		if r.engine == "index" {
+			ok = r.got == "1"
+		}
+		if r.err != nil || !ok {
+			t.Fatalf("control on the %s: %s read = %q, %v; want its marker %q", where, r.engine, r.got, r.err, r.marker)
+		}
+	}
+}
+
+func assertNoMarkerUnder(t *testing.T, root string) {
+	t.Helper()
+	files := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files++
+		for _, m := range sealMarkers {
+			if bytes.Contains(data, []byte(m)) {
+				t.Errorf("%s holds the plaintext marker %q", path, m)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir %s: %v", root, err)
+	}
+	if files == 0 {
+		t.Fatalf("no file under the binding root %s", root)
+	}
+}
+
+// TestLocalBindingFactory_BarrierTenantSealRefusesWritesOnOpenStore seals a
+// barrier tenant's barrier while its database's store is open: the next write
+// must be refused, not accepted into memory or the log as plaintext.
+func TestLocalBindingFactory_BarrierTenantSealRefusesWritesOnOpenStore(t *testing.T) {
+	ctx := context.Background()
+	for _, b := range []database.BackendType{database.BackendFile, database.BackendPebble} {
+		t.Run(string(b), func(t *testing.T) {
+			dir := t.TempDir()
+			reg, tb := newRegisteredTenantBarrier(t)
+			mgr := newBarrierTenantManager(t, dir, atrest.New(newUnsealedBarrier(t)),
+				lifecycle.TenantBarrierEncryptorLookup(func() *seal.BarrierRegistry { return reg }))
+			defer func() { _ = mgr.Close() }()
+			db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "vault", Backend: b})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			mb := materialized(t, db)
+			kv := service.NewKVService(mb.Host(), mb.ShardID())
+			if err := kv.Put(ctx, "before", []byte(sealKVMarker)); err != nil {
+				t.Fatalf("Put before the seal: %v", err)
+			}
+			if err := tb.Seal(); err != nil {
+				t.Fatalf("Seal: %v", err)
+			}
+			if err := kv.Put(ctx, "after", []byte(sealMVCCMarker)); err == nil {
+				t.Fatal("a write to an open store succeeded after its tenant barrier was sealed")
+			}
+		})
 	}
 }

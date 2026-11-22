@@ -81,7 +81,10 @@ func TestDatabaseBinding_CLI_PrefixTenantDatabaseOwnStore_PerProtocol(t *testing
 
 // A barrier tenant's database on a standalone node is materialized in its
 // own store under the binding root, written through the tenant's barrier:
-// sealing that barrier fails the database's data closed.
+// KV, SQL, an explicit index and time series answer on every transport, and
+// sealing that barrier fails every one of them closed on every transport.
+// Collections are absent: no built-in tenant role holds collections:*, so
+// a tenant identity cannot be granted them (the store test covers them).
 func TestDatabaseBinding_CLI_BarrierTenantDatabaseOwnStore_PerProtocol(t *testing.T) {
 	// A system-managed (auto-unsealed) tenant barrier needs its entitlement
 	// and a volume pool for the barrier registry to keep its keys in.
@@ -97,7 +100,12 @@ tenant:
 	const tenantID = "binding-vault"
 	createVolumePoolCLI(t, node.cli, node.cliArgsFor(multiProtocols[0]), "default")
 	createTenant(t, node, multiProtocols[0], tenantID, "Binding Vault", "barrier", true)
-	perms := append(append([]string{}, dataPlanePermissions...), "tenant_barrier:status", "tenant_barrier:seal")
+	// sql query is authorized as a KV range read (kv:range): the ad-hoc SQL
+	// surface is the read-only kv table, so the SQL cell reads the KV marker
+	// back through SQL.
+	perms := append(append([]string{}, dataPlanePermissions...), "tenant_barrier:status", "tenant_barrier:seal",
+		"kv:range",
+		"index:create", "index:query", "timeseries:write", "timeseries:query")
 	cert, key := provisionTenantIdentity(t, node, tenantID, "db-admin", perms)
 
 	for _, proto := range multiProtocols {
@@ -107,6 +115,7 @@ tenant:
 			name := "sealed-" + proto.name
 			kvKey := "barrier-binding-key-" + proto.name
 			value := "barrier-binding-value-" + proto.name
+			m := barrierBindingMarkersFor(proto.name)
 			root := filepath.Join(node.dataDir, "tenants", tenantID, "databases", name)
 
 			if out, err := runQRDB(t, node.cli, conn, "database", "create", name, "--backend", "file"); err != nil {
@@ -118,6 +127,12 @@ tenant:
 			out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "get", kvKey)
 			if err != nil || !strings.Contains(out, value) {
 				t.Fatalf("[%s] kv get = %q, %v; want %q", proto.name, out, err, value)
+			}
+			writeBarrierBindingEngines(t, node, conn, proto.name, name, m)
+			for _, c := range barrierBindingReads(name, kvKey, value, m) {
+				if out, err := runQRDB(t, node.cli, conn, c.args...); err != nil || !strings.Contains(out, c.want) {
+					t.Fatalf("[%s] %s = %q, %v; want %q", proto.name, c.engine, out, err, c.want)
+				}
 			}
 
 			entries, err := os.ReadDir(root)
@@ -139,11 +154,77 @@ tenant:
 	if out, err := runQRDB(t, node.cli, conn, "tenant", "barrier-seal", "--id", tenantID); err != nil {
 		t.Fatalf("[%s] tenant barrier-seal: %v\n%s", proto.name, err, out)
 	}
-	name := "sealed-" + proto.name
-	value := "barrier-binding-value-" + proto.name
-	out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "get", "barrier-binding-key-"+proto.name)
-	if err == nil || strings.Contains(out, value) {
-		t.Fatalf("[%s] kv get after the tenant barrier sealed = %q, %v; want a refusal without the value", proto.name, out, err)
+	// Every engine of every protocol's database is refused on every
+	// transport, and no refusal carries the engine's marker.
+	for _, via := range multiProtocols {
+		conn := tenantCLIArgsForProto(node, via, cert, key)
+		for _, owner := range multiProtocols {
+			name := "sealed-" + owner.name
+			kvKey := "barrier-binding-key-" + owner.name
+			value := "barrier-binding-value-" + owner.name
+			for _, c := range barrierBindingReads(name, kvKey, value, barrierBindingMarkersFor(owner.name)) {
+				out, err := runQRDB(t, node.cli, conn, c.args...)
+				if err == nil || strings.Contains(out, c.want) {
+					t.Errorf("[%s] %s on %s after the tenant barrier sealed = %q, %v; want a refusal without %q",
+						via.name, c.engine, name, out, err, c.want)
+				}
+			}
+		}
+	}
+}
+
+// barrierBindingMarkers are the plaintext values one protocol's database
+// holds on each engine besides KV, so a leak names the engine it came from.
+type barrierBindingMarkers struct {
+	entityKey, entity, index, metric, ts string
+}
+
+func barrierBindingMarkersFor(proto string) barrierBindingMarkers {
+	return barrierBindingMarkers{
+		entityKey: "barrier-binding-entity-" + proto,
+		entity:    "barrier-binding-indexed-" + proto,
+		index:     "barrier-binding-idx-" + proto,
+		metric:    "barrier.binding." + proto,
+		ts:        "barrier-binding-ts-" + proto,
+	}
+}
+
+// writeBarrierBindingEngines writes database name's explicit index, the KV
+// entity it indexes and its time-series point.
+func writeBarrierBindingEngines(t *testing.T, node *multiProtoNode, conn []string, proto, name string, m barrierBindingMarkers) {
+	t.Helper()
+	db := []string{"--database", name}
+	run := func(what string, args ...string) string {
+		t.Helper()
+		out, err := runQRDB(t, node.cli, conn, append(append([]string{}, db...), args...)...)
+		if err != nil {
+			t.Fatalf("[%s] %s: %v\n%s", proto, what, err, out)
+		}
+		return out
+	}
+	run("index create", "index", "create", m.index, "--field", "secret")
+	run("kv put (indexed entity)", "kv", "put", m.entityKey, `{"secret":"`+m.entity+`"}`)
+	run("ts write", "ts", "write", "--metric", m.metric, "--value", "42.5", "--tag", "host="+m.ts)
+}
+
+// barrierBindingRead is one engine's read of database name and the marker it
+// must return.
+type barrierBindingRead struct {
+	engine, want string
+	args         []string
+}
+
+// barrierBindingReads reads every engine except vector back from database
+// name by exact key, ID, index value or metric.
+func barrierBindingReads(name, kvKey, value string, m barrierBindingMarkers) []barrierBindingRead {
+	db := []string{"--database", name}
+	with := func(args ...string) []string { return append(append([]string{}, db...), args...) }
+	return []barrierBindingRead{
+		{engine: "kv get", want: value, args: with("kv", "get", kvKey)},
+		{engine: "sql query", want: value, args: []string{"sql", "query", "--database", name,
+			"SELECT * FROM kv WHERE `key` = '" + kvKey + "'"}},
+		{engine: "index query", want: m.entityKey, args: with("index", "query", m.index, "--value", m.entity)},
+		{engine: "ts query", want: m.ts, args: with("ts", "query", "--metric", m.metric, "--start", "0", "--end", "9223372036854775807")},
 	}
 }
 
