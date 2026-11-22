@@ -255,6 +255,7 @@ Supported transports:
 	rootCmd.AddCommand(newCACmd())
 	rootCmd.AddCommand(newCredentialCmd())
 	rootCmd.AddCommand(newDEKCmd())
+	rootCmd.AddCommand(newSealStoreCmd())
 	rootCmd.AddCommand(newABACCmd())
 	rootCmd.AddCommand(newBarrierCmd())
 	rootCmd.AddCommand(newCeremonyCmd())
