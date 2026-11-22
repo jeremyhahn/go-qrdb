@@ -24,8 +24,8 @@ import (
 )
 
 // ActionVolumePoolMoveStart records the start of a tenant move between
-// volume pools: the event carries the destination pool and decision Q9's
-// allow_unencrypted_destination flag, and its outcome the source pool.
+// volume pools: the event carries the destination pool and its outcome the
+// source pool.
 const ActionVolumePoolMoveStart = "volume_pool.move_start"
 
 // volumeMoveAuditComponent labels a move-start record that could not be
@@ -67,8 +67,7 @@ func moveStartEvent(ctx context.Context, req volume.MoveTenantRequest) audit.Aud
 		Resource: "volume_pool",
 		Action:   ActionVolumePoolMoveStart,
 		Attributes: map[string]any{
-			"to_pool":                       req.ToPool,
-			"allow_unencrypted_destination": req.AllowUnencryptedDestination,
+			"to_pool": req.ToPool,
 		},
 	}
 }

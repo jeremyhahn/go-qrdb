@@ -107,7 +107,7 @@ func TestCatalog_AdmitMove_Success(t *testing.T) {
 	if !reflect.DeepEqual(m.NodesPending, []string{"n1", "n2"}) || m.NodesCopied != nil {
 		t.Fatalf("nodes pending=%v copied=%v, want [n1 n2] and nil", m.NodesPending, m.NodesCopied)
 	}
-	if m.ReservedBytes != 200 || m.AllowUnencryptedDestination || m.AdmittedAt.IsZero() {
+	if m.ReservedBytes != 200 || m.AdmittedAt.IsZero() {
 		t.Fatalf("move = %+v", m)
 	}
 	stored := storedMove(t, kv, "acme")
@@ -345,28 +345,23 @@ func newQ9Catalog(t *testing.T, fastProvider, bulkProvider string) (*Catalog, *f
 	return cat, kv
 }
 
-func TestCatalog_AdmitMove_Q9LockableToPlain(t *testing.T) {
+func TestCatalog_AdmitMove_Q9LockableToPlainRefused(t *testing.T) {
 	cat, kv := newQ9Catalog(t, "luks2", "dir")
 	_, err := cat.AdmitMove(context.Background(), admitAcme())
-	var target *MoveConflictError
+	var target *MoveToUnencryptedPoolError
 	if !errors.As(err, &target) {
-		t.Fatalf("AdmitMove without the flag error = %v, want *MoveConflictError", err)
+		t.Fatalf("AdmitMove luks2 to dir error = %v, want *MoveToUnencryptedPoolError", err)
+	}
+	if target.TenantID != "acme" || target.FromPool != "fast" || target.ToPool != "bulk" {
+		t.Fatalf("refusal = %+v, want acme fast to bulk", target)
 	}
 	if storedMove(t, kv, "acme") != nil {
-		t.Fatal("journal written without the flag")
+		t.Fatal("journal written for a refused encrypted-to-unencrypted move")
 	}
-	req := admitAcme()
-	req.AllowUnencryptedDestination = true
-	m, err := cat.AdmitMove(context.Background(), req)
-	if err != nil {
-		t.Fatalf("AdmitMove with the flag: %v", err)
+	if got := poolReserved(t, kv, "bulk"); got != 0 {
+		t.Fatalf("bulk reserved = %d, want 0", got)
 	}
-	if !m.AllowUnencryptedDestination {
-		t.Fatal("returned move lost the flag")
-	}
-	if stored := storedMove(t, kv, "acme"); stored == nil || !stored.AllowUnencryptedDestination {
-		t.Fatalf("journal = %+v, want the flag set", stored)
-	}
+	assertAssignedTo(t, cat, "fast", 200)
 }
 
 func TestCatalog_AdmitMove_Q9PlainToLockable(t *testing.T) {
@@ -379,9 +374,21 @@ func TestCatalog_AdmitMove_Q9PlainToLockable(t *testing.T) {
 func TestCatalog_AdmitMove_Q9UnknownSourceFailsClosed(t *testing.T) {
 	cat, _ := newQ9Catalog(t, "silent", "dir")
 	_, err := cat.AdmitMove(context.Background(), admitAcme())
-	var target *MoveConflictError
+	var target *MoveToUnencryptedPoolError
 	if !errors.As(err, &target) {
-		t.Fatalf("AdmitMove from a provider without OpensLockable error = %v, want *MoveConflictError", err)
+		t.Fatalf("AdmitMove from a provider without OpensLockable error = %v, want *MoveToUnencryptedPoolError", err)
+	}
+}
+
+func TestCatalog_AdmitMove_Q9UnknownDestinationFailsClosed(t *testing.T) {
+	cat, kv := newQ9Catalog(t, "luks2", "silent")
+	_, err := cat.AdmitMove(context.Background(), admitAcme())
+	var target *MoveToUnencryptedPoolError
+	if !errors.As(err, &target) {
+		t.Fatalf("AdmitMove to a provider without OpensLockable error = %v, want *MoveToUnencryptedPoolError", err)
+	}
+	if storedMove(t, kv, "acme") != nil {
+		t.Fatal("journal written for a refused move")
 	}
 }
 
@@ -605,25 +612,20 @@ func TestCatalog_MoveTenant_NoAuditorWired(t *testing.T) {
 	}
 }
 
-func TestCatalog_MoveTenant_Q9FlagReachesTheJournal(t *testing.T) {
+func TestCatalog_MoveTenant_Q9RefusedOutright(t *testing.T) {
 	cat, kv := newQ9Catalog(t, "luks2", "dir")
 	cat.SetMoveAdmission(&recordingAdmission{nodes: []string{"n1", "n2"}})
 	aud := &recordingAuditor{}
 	cat.SetMoveStartAuditor(aud)
-	var conflict *MoveConflictError
-	if _, err := cat.MoveTenant(context.Background(), moveAcme()); !errors.As(err, &conflict) {
-		t.Fatalf("MoveTenant without the flag error = %v, want *MoveConflictError", err)
+	var refused *MoveToUnencryptedPoolError
+	if _, err := cat.MoveTenant(context.Background(), moveAcme()); !errors.As(err, &refused) {
+		t.Fatalf("MoveTenant luks2 to dir error = %v, want *MoveToUnencryptedPoolError", err)
 	}
-	req := moveAcme()
-	req.AllowUnencryptedDestination = true
-	if _, err := cat.MoveTenant(context.Background(), req); err != nil {
-		t.Fatalf("MoveTenant with the flag: %v", err)
+	if len(aud.begins) != 1 || aud.settles != 1 || aud.settledMove != nil || !errors.As(aud.settledErr, &refused) {
+		t.Fatalf("auditor begins=%d settles=%d move=%v err=%v", len(aud.begins), aud.settles, aud.settledMove, aud.settledErr)
 	}
-	if len(aud.begins) != 2 || aud.begins[0].AllowUnencryptedDestination || !aud.begins[1].AllowUnencryptedDestination {
-		t.Fatalf("audited begins = %+v, want the flag off then on", aud.begins)
-	}
-	if stored := storedMove(t, kv, "acme"); stored == nil || !stored.AllowUnencryptedDestination {
-		t.Fatalf("journal = %+v, want the flag set", stored)
+	if storedMove(t, kv, "acme") != nil {
+		t.Fatal("journal written for a refused move")
 	}
 }
 

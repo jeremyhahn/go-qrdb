@@ -51,7 +51,7 @@ type Lockable interface {
 // LockableProvider is an optional Provider interface: a provider states
 // whether the volumes it opens implement Lockable, without opening one.
 // Catalog.AdmitMove reads it for decision Q9 (a Lockable-to-non-Lockable
-// move needs allow_unencrypted_destination). A provider that does not
+// move is refused). A provider that does not
 // implement it fails closed: it counts as Lockable when it is the move's
 // source and as not Lockable when it is the destination.
 type LockableProvider interface {

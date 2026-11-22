@@ -688,9 +688,10 @@ func (c *Catalog) providerOpensLockable(name string, fallback bool) bool {
 // while it moves.
 //
 // Before the transaction it refuses, with *MoveConflictError, a second move
-// (Q10), a move to the current pool, a Lockable-to-non-Lockable move without
-// req.AllowUnencryptedDestination (Q9), and a destination that is not
-// Mapped and StateReady in a fresh report from every replica node (Q3). The
+// (Q10), a move to the current pool, and a destination that is not Mapped
+// and StateReady in a fresh report from every replica node (Q3). It refuses
+// a Lockable-to-non-Lockable move with *MoveToUnencryptedPoolError (decision
+// Q9, the interim refusal under ruling 1115), checked before Q3. The
 // tenant-kind and AllowedVolumePools checks belong to the caller in the
 // tenant layer: MoveTenant calls AdmitMove once the wired MoveAdmission
 // admitted the move and supplied the replica nodes.
@@ -751,12 +752,12 @@ func (c *Catalog) AdmitMove(ctx context.Context, req MoveAdmitRequest) (*Move, e
 			return nil, err
 		}
 
-		// Q9: an unknown source counts as Lockable and an unknown
-		// destination as not, so neither lets a downgrade through unflagged.
+		// Q9 (interim, ruling 1115): an unknown source counts as Lockable
+		// and an unknown destination as not, so neither lets a downgrade
+		// through.
 		if c.providerOpensLockable(source.Provider, true) &&
-			!c.providerOpensLockable(dest.Provider, false) &&
-			!req.AllowUnencryptedDestination {
-			return nil, &MoveConflictError{TenantID: req.TenantID, Reason: "destination pool is not Lockable; set allow_unencrypted_destination to move off a Lockable pool"}
+			!c.providerOpensLockable(dest.Provider, false) {
+			return nil, &MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: assignment.Pool, ToPool: req.ToPool}
 		}
 
 		// Q3: every replica node reports the destination ready, freshly.
@@ -809,14 +810,13 @@ func (c *Catalog) AdmitMove(ctx context.Context, req MoveAdmitRequest) (*Move, e
 		}
 
 		move := Move{
-			TenantID:                    req.TenantID,
-			FromPool:                    assignment.Pool,
-			ToPool:                      req.ToPool,
-			State:                       MoveStateAdmitted,
-			NodesPending:                nodes,
-			ReservedBytes:               reserveBytes,
-			AllowUnencryptedDestination: req.AllowUnencryptedDestination,
-			AdmittedAt:                  now,
+			TenantID:      req.TenantID,
+			FromPool:      assignment.Pool,
+			ToPool:        req.ToPool,
+			State:         MoveStateAdmitted,
+			NodesPending:  nodes,
+			ReservedBytes: reserveBytes,
+			AdmittedAt:    now,
 		}
 		moveData, err := json.Marshal(move)
 		if err != nil {

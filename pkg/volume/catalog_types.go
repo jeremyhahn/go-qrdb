@@ -170,8 +170,8 @@ type AssignmentPage struct {
 
 // Move is the move-journal record persisted at MoveKey(TenantID) (decision
 // Q5, docs/decisions/volume-pool-tenant-moves.md). Catalog.AdmitMove writes
-// it in state MoveStateAdmitted; MoveTenant and GetMove still return
-// *MoveNotImplementedError until a later slice wires them to the journal.
+// it in state MoveStateAdmitted (MoveTenant is its one caller), the move
+// reconciler advances it step by step, and GetMove reads it.
 type Move struct {
 	TenantID     string   `json:"tenantId"`
 	FromPool     string   `json:"fromPool"`
@@ -179,22 +179,39 @@ type Move struct {
 	State        string   `json:"state"`
 	NodesCopied  []string `json:"nodesCopied,omitempty"`
 	NodesPending []string `json:"nodesPending,omitempty"`
-	Error        string   `json:"error,omitempty"`
+	// StepNode is the node granted the current step: at most one replica
+	// is offline for a move at a time (decision Q1 B).
+	StepNode string `json:"stepNode,omitempty"`
+	// StepAttempts counts the failed attempts of StepNode's step.
+	StepAttempts int    `json:"stepAttempts,omitempty"`
+	Error        string `json:"error,omitempty"`
 	// ReservedBytes is the reservation taken on ToPool at admit: the
 	// tenant's Assignment.ReservedBytes at that moment. A later abort
 	// releases it; cut over keeps it as the tenant's reservation.
 	ReservedBytes int64 `json:"reservedBytes"`
-	// AllowUnencryptedDestination records the operator's consent to move a
-	// tenant from a Lockable pool to a non-Lockable one (decision Q9).
-	AllowUnencryptedDestination bool `json:"allowUnencryptedDestination,omitempty"`
 	// AdmittedAt is when AdmitMove wrote the journal.
 	AdmittedAt time.Time `json:"admittedAt"`
+	// UpdatedAt is when the journal last changed state or step.
+	UpdatedAt time.Time `json:"updatedAt,omitempty"`
 }
 
 // MoveStateAdmitted is the state AdmitMove writes: the destination is
-// reserved and every replica node is pending. It is the only state this
-// build writes; the later states arrive with the move reconciler (Q6).
+// reserved and every replica node is pending; no step is granted yet.
 const MoveStateAdmitted = "admitted"
+
+// MoveStateCopying is a move with a node step granted or between steps.
+const MoveStateCopying = "copying"
+
+// MoveStateCopied is a move with no node pending: ready for cut over.
+const MoveStateCopied = "copied"
+
+// MoveStateAborting is a move whose node step failed its attempts; the
+// abort itself is a later slice.
+const MoveStateAborting = "aborting"
+
+// DefaultMoveStepAttempts bounds the attempts of one node's step before the
+// move aborts (decision Q6 A's bounded retry).
+const DefaultMoveStepAttempts = 3
 
 // MoveAdmitRequest is the input to Catalog.AdmitMove.
 type MoveAdmitRequest struct {
@@ -205,9 +222,6 @@ type MoveAdmitRequest struct {
 	// ReplicaNodes is every node holding a replica of the tenant, supplied
 	// by the caller; each must report ToPool ready (decision Q3).
 	ReplicaNodes []string
-	// AllowUnencryptedDestination permits a Lockable-to-non-Lockable move
-	// (decision Q9).
-	AllowUnencryptedDestination bool
 }
 
 // MoveTenantRequest is the operator's request to move a tenant between
@@ -217,10 +231,6 @@ type MoveTenantRequest struct {
 	TenantID string
 	// ToPool is the destination pool.
 	ToPool string
-	// AllowUnencryptedDestination is decision Q9's
-	// allow_unencrypted_destination: it permits a Lockable-to-non-Lockable
-	// move.
-	AllowUnencryptedDestination bool
 }
 
 // MoveAdmission is the tenant layer's half of a move's admit step ("The
@@ -233,8 +243,8 @@ type MoveAdmission interface {
 	AdmitTenantMove(ctx context.Context, req MoveTenantRequest) (replicaNodes []string, err error)
 }
 
-// MoveStartAuditor audits the start of a tenant move with decision Q9's
-// flag. BeginMoveStart is called before anything is admitted: an error
+// MoveStartAuditor audits the start of a tenant move ("The move, phase by
+// phase" step 1). BeginMoveStart is called before anything is admitted: an error
 // refuses the start and nothing is admitted. Otherwise settle is called
 // exactly once with Catalog.AdmitMove's answer.
 type MoveStartAuditor interface {
@@ -246,7 +256,7 @@ type MoveStartAuditor interface {
 //
 // MoveTenant admits a tenant move through the wired MoveAdmission and
 // Catalog.AdmitMove (and audits its start through the wired
-// MoveStartAuditor, decision Q9); GetMove reads the move journal.
+// MoveStartAuditor); GetMove reads the move journal.
 type Service interface {
 	ListPools(ctx context.Context) ([]PoolView, error)
 	GetPool(ctx context.Context, name string) (*PoolDetail, error)

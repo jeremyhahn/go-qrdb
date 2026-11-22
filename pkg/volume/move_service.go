@@ -26,7 +26,7 @@ func (c *Catalog) SetMoveAdmission(a MoveAdmission) {
 	c.moveAdmission.Store(&moveAdmissionBox{a: a})
 }
 
-// SetMoveStartAuditor wires the auditor of a move's start (decision Q9).
+// SetMoveStartAuditor wires the auditor of a move's start.
 // nil unwires it. It is safe to call while moves are served.
 func (c *Catalog) SetMoveStartAuditor(a MoveStartAuditor) {
 	if a == nil {
@@ -54,7 +54,7 @@ func (c *Catalog) currentMoveAuditor() MoveStartAuditor {
 // docs/decisions/volume-pool-tenant-moves.md). The wired MoveAdmission
 // checks the tenant (it exists, is a volume or raft tenant, is entitled to
 // req.ToPool) and returns its replica nodes; the wired MoveStartAuditor, if
-// any, records the start with decision Q9's flag; AdmitMove then reserves
+// any, records the start; AdmitMove then reserves
 // the destination and writes the journal.
 //
 // An empty tenant or pool returns *InvalidMoveRequestError. A composition
@@ -86,10 +86,9 @@ func (c *Catalog) MoveTenant(ctx context.Context, req MoveTenantRequest) (*Move,
 		}
 	}
 	m, err := c.AdmitMove(ctx, MoveAdmitRequest{
-		TenantID:                    req.TenantID,
-		ToPool:                      req.ToPool,
-		ReplicaNodes:                nodes,
-		AllowUnencryptedDestination: req.AllowUnencryptedDestination,
+		TenantID:     req.TenantID,
+		ToPool:       req.ToPool,
+		ReplicaNodes: nodes,
 	})
 	settle(m, err)
 	if err != nil {

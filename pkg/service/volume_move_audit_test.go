@@ -24,42 +24,45 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
-func TestVolumeMoveAudit_RecordsTheStartWithTheFlag(t *testing.T) {
-	for _, flag := range []bool{false, true} {
-		ring := audit.NewRingBuffer(16)
-		a := NewVolumeMoveAudit(ring, audit.FailClosed)
-		ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "root"})
-		req := volume.MoveTenantRequest{TenantID: "acme", ToPool: "bulk", AllowUnencryptedDestination: flag}
-		settle, err := a.BeginMoveStart(ctx, req)
-		if err != nil {
-			t.Fatalf("BeginMoveStart: %v", err)
+func TestVolumeMoveAudit_RecordsTheStart(t *testing.T) {
+	ring := audit.NewRingBuffer(16)
+	a := NewVolumeMoveAudit(ring, audit.FailClosed)
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "root"})
+	req := volume.MoveTenantRequest{TenantID: "acme", ToPool: "bulk"}
+	settle, err := a.BeginMoveStart(ctx, req)
+	if err != nil {
+		t.Fatalf("BeginMoveStart: %v", err)
+	}
+	if n := len(ring.Snapshot()); n != 1 {
+		t.Fatalf("recorded %d events before settle, want the permitted record", n)
+	}
+	settle(&volume.Move{TenantID: "acme", FromPool: "fast", ToPool: "bulk"}, nil)
+	evs := ring.Snapshot()
+	if len(evs) != 2 {
+		t.Fatalf("recorded %d events, want the permitted record and its outcome", len(evs))
+	}
+	for i, want := range []string{audit.OutcomePermitted, audit.OutcomeSuccess} {
+		ev := evs[i]
+		if ev.Action != ActionVolumePoolMoveStart || ev.Outcome != want {
+			t.Fatalf("event %d = %s/%s, want %s/%s", i, ev.Action, ev.Outcome, ActionVolumePoolMoveStart, want)
 		}
-		if n := len(ring.Snapshot()); n != 1 {
-			t.Fatalf("flag=%v: recorded %d events before settle, want the permitted record", flag, n)
+		if ev.TenantID != "acme" || ev.Resource != "volume_pool" || ev.Actor != "root" {
+			t.Fatalf("event %d = %+v, want TenantID=acme Resource=volume_pool Actor=root", i, ev)
 		}
-		settle(&volume.Move{TenantID: "acme", FromPool: "fast", ToPool: "bulk"}, nil)
-		evs := ring.Snapshot()
-		if len(evs) != 2 {
-			t.Fatalf("flag=%v: recorded %d events, want the permitted record and its outcome", flag, len(evs))
+		if ev.Attributes["to_pool"] != "bulk" {
+			t.Fatalf("event %d attributes = %v, want to_pool=bulk", i, ev.Attributes)
 		}
-		for i, want := range []string{audit.OutcomePermitted, audit.OutcomeSuccess} {
-			ev := evs[i]
-			if ev.Action != ActionVolumePoolMoveStart || ev.Outcome != want {
-				t.Fatalf("event %d = %s/%s, want %s/%s", i, ev.Action, ev.Outcome, ActionVolumePoolMoveStart, want)
-			}
-			if ev.TenantID != "acme" || ev.Resource != "volume_pool" || ev.Actor != "root" {
-				t.Fatalf("event %d = %+v, want TenantID=acme Resource=volume_pool Actor=root", i, ev)
-			}
-			if ev.Attributes["to_pool"] != "bulk" || ev.Attributes["allow_unencrypted_destination"] != flag {
-				t.Fatalf("event %d attributes = %v, want to_pool=bulk allow_unencrypted_destination=%v", i, ev.Attributes, flag)
-			}
+		// Only to_pool, and on the outcome from_pool: no consent flag
+		// attribute (decision Q9 is refused outright, ruling 1115).
+		if wantKeys := i + 1; len(ev.Attributes) != wantKeys {
+			t.Fatalf("event %d attributes = %v, want %d keys", i, ev.Attributes, wantKeys)
 		}
-		if _, ok := evs[0].Attributes["from_pool"]; ok {
-			t.Fatalf("permitted record carries from_pool: %v", evs[0].Attributes)
-		}
-		if evs[1].Attributes["from_pool"] != "fast" {
-			t.Fatalf("outcome attributes = %v, want from_pool=fast", evs[1].Attributes)
-		}
+	}
+	if _, ok := evs[0].Attributes["from_pool"]; ok {
+		t.Fatalf("permitted record carries from_pool: %v", evs[0].Attributes)
+	}
+	if evs[1].Attributes["from_pool"] != "fast" {
+		t.Fatalf("outcome attributes = %v, want from_pool=fast", evs[1].Attributes)
 	}
 }
 

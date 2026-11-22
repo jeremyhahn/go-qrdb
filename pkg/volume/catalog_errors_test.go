@@ -34,6 +34,8 @@ func TestCatalogErrors_MessagesNameTheSubject(t *testing.T) {
 		{"MoveNotFoundError", &MoveNotFoundError{TenantID: "acme"}, []string{`"acme"`, "no move"}},
 		{"MoveConflictError", &MoveConflictError{TenantID: "acme", NodeID: "n1", Reason: "destination pool is not ready on this node"}, []string{"acme", "n1", "not ready"}},
 		{"MoveConflictError no node", &MoveConflictError{TenantID: "acme", Reason: "a move is already running"}, []string{"acme", "already running"}},
+		{"MoveToUnencryptedPoolError", &MoveToUnencryptedPoolError{TenantID: "acme", FromPool: "fast", ToPool: "bulk"}, []string{"acme", "fast", "bulk", "not"}},
+		{"MoveJournalConflictError", &MoveJournalConflictError{TenantID: "acme"}, []string{`"acme"`, "retry"}},
 		{"InvalidMoveRequestError", &InvalidMoveRequestError{Reason: "no replica nodes"}, []string{"no replica nodes"}},
 		{"InvalidCatalogDependencyError", &InvalidCatalogDependencyError{Reason: "nil KVServicer"}, []string{"nil KVServicer"}},
 		{"EncodeError", &EncodeError{Err: cause}, []string{"boom"}},
