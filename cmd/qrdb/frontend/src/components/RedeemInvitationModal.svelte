@@ -16,7 +16,7 @@
 -->
 <script lang="ts">
   import type { Client, EnrolledCert } from "@qrdb/sdk";
-  import { isDesktop } from "@qrdb/sdk";
+  import { isDesktop, RestClient } from "@qrdb/sdk";
   import FormModal from "./FormModal.svelte";
   import { showToast } from "$stores/toast.svelte.ts";
 
@@ -45,6 +45,7 @@
   /** The browser redeems only with the page's own server (see above). */
   const browserMode = !isDesktop();
   const pageServer = browserMode ? globalThis.location?.host ?? "" : "";
+  const pageOrigin = browserMode ? globalThis.location?.origin ?? "" : "";
 
   let server: string = $state(pageServer);
   let transport: string = $state("rest");
@@ -93,10 +94,12 @@
     try {
       saving = true;
       const req = { tenantID: tenantID.trim(), token: token.trim(), csrPEM: csrPEM.trim() };
-      // In the browser the REST client posts to the page's own server, the
-      // one the read-only field shows; there is no other destination to name.
+      // In the browser redeem posts to the page's own server, the one the
+      // read-only field shows. The shared client is not used: connectProfile
+      // or setActiveProfile may have retargeted it to another server, and the
+      // token and CSR must reach only the server the form names.
       enrolled = browserMode
-        ? await client.invitations.redeem(req)
+        ? await new RestClient(pageOrigin).invitations.redeem(req)
         : await client.invitations.redeem(req, {
             server: server.trim(),
             transport,
