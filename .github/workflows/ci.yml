@@ -1,12 +1,17 @@
-# ci-template: v1.53 + go-qrdb CUSTOMIZE blocks — canonical CI for all first-party Go repos.
+# ci-template: v1.54 + go-qrdb CUSTOMIZE blocks — canonical CI for all first-party Go repos.
+# v1.54 adopted (Tenant Agent ruling 1137): `Balanced runner pool (ruling 1137)`
+# replaces `Hosted or overflow runner (ruling 1024)`; HOSTED_JOBS_PER_REPO and
+# HOSTED_QUEUE_GRACE_SECONDS are removed for the repository variables
+# CI_HOSTED_SHARE, CI_SELF_HOSTED_BIGDISK and CI_SELF_HOSTED_BIGDISK_DOCKER;
+# the mask steps take the guarded CI_IMAGE_REGISTRY secret.
 # v1.48 to v1.53 adopted (Tenant Agent ruling 1087, DS-9947); the handbook's
-# template holds each version's note. v1.48 (ruling 1024): the preflight step
-# `Hosted or overflow runner (ruling 1024)`, HOSTED_JOBS_PER_REPO and
-# HOSTED_QUEUE_GRACE_SECONDS, and preflight's runner and runner_docker
-# outputs, read by CI Gate and by every job that builds or runs an image.
+# template holds each version's note. v1.48 (ruling 1024): the preflight
+# runner selection step (v1.54: balanced), and preflight's runner and
+# runner_docker outputs, read by CI Gate and by every job that builds or runs
+# an image.
 # v1.49 (ruling 1047 (3)): preflight runs on the bigdisk pool unless the
 # repository variable CI_PREFLIGHT_RUNS_ON says otherwise. v1.50: a short
-# Actions API listing is a lower bound. v1.51 and v1.52: the Runner labels
+# Actions API listing was a lower bound (v1.54: it sends the run hosted). v1.51 and v1.52: the Runner labels
 # step checks pull_request_target, and a fork's pull request stays on
 # GitHub-hosted runners. v1.53: main's concurrency group is `main-{event}`.
 # v1.53 also (Tenant Agent on trusted-firmware #821, handbook 88c10e76,
@@ -202,15 +207,10 @@ env:
   # embeds or generates from docs/ or markdown. The gates that read docs/ are
   # lint-class and run in `make lint-gates`, which a docs-only PR still runs.
   DOCS_ONLY_PATTERN: '(\.md$|^docs/)'
-  # v1.48 (Tenant Agent ruling 1024 item 1, queue 250 (a)): the most jobs of
-  # this repository that run on GitHub-hosted runners at once. The preflight
-  # step `Hosted or overflow runner (ruling 1024)` sends the run's jobs to the
-  # Dells' bigdisk pools when this many hosted jobs of the repository are
-  # already in progress, or when one of its hosted jobs has waited in the
-  # queue for HOSTED_QUEUE_GRACE_SECONDS (the hosted pool is full). The
-  # owner's number, not a CUSTOMIZE value.
-  HOSTED_JOBS_PER_REPO: 12
-  HOSTED_QUEUE_GRACE_SECONDS: 60
+  # v1.54 (ruling 1137): HOSTED_JOBS_PER_REPO and HOSTED_QUEUE_GRACE_SECONDS
+  # (v1.48) are removed; the limits of `Balanced runner pool (ruling 1137)`
+  # are the repository variables CI_HOSTED_SHARE, CI_SELF_HOSTED_BIGDISK and
+  # CI_SELF_HOSTED_BIGDISK_DOCKER.
 
 jobs:
   # v1.24: a PR whose every changed file matches DOCS_ONLY_PATTERN runs lint
@@ -262,7 +262,8 @@ jobs:
       # v1.48 (ruling 1024): runs-on JSON for the two hosted-capable classes,
       # read as fromJSON(needs.preflight.outputs.runner_docker) by every job
       # that builds or runs images and fromJSON(needs.preflight.outputs.runner)
-      # by CI Gate. `"ubuntu-latest"`, or the Dells' overflow label list.
+      # by CI Gate. `"ubuntu-latest"`, or the Dells' self-hosted label list
+      # (v1.54: whichever pool `Balanced runner pool (ruling 1137)` picks).
       runner: ${{ steps.runner.outputs.runner }}
       runner_docker: ${{ steps.runner.outputs.runner_docker }}
     env:
@@ -270,30 +271,51 @@ jobs:
       # volume pool, which is go-objstore's pool type.
       OBJSTORE_SEAMS: 'pkg/storage/objstore/|sdk/go/transport/embedded/'      # CUSTOMIZE
     steps:
-      # v1.48 (Tenant Agent ruling 1024 item 1, queue 250 (a)): the Dells'
-      # self-hosted runners supplement the 40 GitHub-hosted runners, and
-      # hosted stays the default. On github.com this step counts this
-      # repository's jobs on GitHub-hosted runners (a job whose labels name an
-      # ubuntu-* image and not self-hosted) in every queued and in-progress
-      # run of every workflow, through the Actions API with the job token
-      # (actions: read). It outputs `runner` and `runner_docker` as runs-on
-      # JSON: `"ubuntu-latest"`, or, when HOSTED_JOBS_PER_REPO hosted jobs or
-      # more are in progress, or a hosted job of another run has been queued
-      # HOSTED_QUEUE_GRACE_SECONDS or more (the hosted pool is full),
-      # `["self-hosted","linux","x64","bigdisk"]` and
+      # v1.54 (Tenant Agent ruling 1137, owner order; it replaces the hosted
+      # first rule of rulings 999 and 1024, v1.48 to v1.53): the run goes to
+      # whichever of the two pools, GitHub-hosted or the Dells' self-hosted
+      # bigdisk pools, this repository uses less, so both run full. On
+      # github.com this step lists every queued and in-progress run of every
+      # workflow of this repository and their latest jobs, through the
+      # Actions API with the job token (actions: read), and counts, from that
+      # one listing, each in progress plus queued, H: hosted jobs (labels
+      # naming an ubuntu-* image and not self-hosted), S1: self-hosted jobs on
+      # bigdisk and not bigdisk-docker, and S2: jobs on bigdisk-docker. Jobs
+      # of this run are not counted: they wait on this decision. The limits
+      # are repository variables set by the Infra Department, plain decimal
+      # integers: HS = vars.CI_HOSTED_SHARE (this repository's share of the
+      # account's 40 hosted runners; unset, 0 or not a whole number gives a
+      # ::warning and HS=12, the v1.48 limit), C1 =
+      # vars.CI_SELF_HOSTED_BIGDISK and C2 = vars.CI_SELF_HOSTED_BIGDISK_DOCKER
+      # (the units of each label; either unset, 0 or not a whole number: the
+      # hosted default with a ::warning). Hosted use is H/HS; self-hosted use
+      # is the larger of S1/C1 and S2/C2. Then:
+      #   - both below their limit: the lower use wins, compared by
+      #     cross-multiplication (self-hosted wins only when S1*HS < H*C1 and
+      #     S2*HS < H*C2); a tie goes hosted;
+      #   - one pool full (H >= HS; or S1 >= C1 or S2 >= C2): the other pool;
+      #   - both full: the pool with fewer queued jobs (bigdisk and
+      #     bigdisk-docker together for the Dells); a tie goes hosted.
+      # The units are shared across repositories, so C1 and C2 can overstate
+      # this repository's free room: when they are busy elsewhere its jobs
+      # queue, S1 or S2 rises, and its runs go hosted.
+      # It outputs `runner` and `runner_docker` as runs-on JSON:
+      # `"ubuntu-latest"`, or `["self-hosted","linux","x64","bigdisk"]` and
       # `["self-hosted","linux","x64","bigdisk-docker"]`. A count it cannot
       # read (a reply that is not 200, a list short of its total_count, a
-      # field missing) picks nothing silently: it prints a ::warning naming
-      # why and outputs the hosted default. One decision per run: every job
-      # of the run takes it. Off github.com it makes no call, and each job's
-      # runs-on keeps its forge label (bigdisk, ci-gate) as before v1.48. It
-      # runs before the checkout, beside no repository code.
-      # v1.52 (Tenant Agent order): on a pull request whose head repository is
-      # not this repository (a fork, or a fork since deleted), it makes no call
-      # and outputs the hosted default with a ::notice: a fork never reaches a
-      # self-hosted runner. Its tests: .github/workflows/testdata/runner-select-tests.py,
-      # run by the preflight step "Runner select tests".
-      - name: Hosted or overflow runner (ruling 1024)
+      # field missing) picks nothing silently: a ::warning names why and the
+      # run takes the hosted default. One decision per run: every job of the
+      # run takes it, in every workflow that reads these outputs. Off
+      # github.com it makes no call, and each job's runs-on keeps its forge
+      # label (bigdisk, ci-gate). It runs before the checkout, beside no
+      # repository code.
+      # v1.52 (Tenant Agent order, kept): on a pull request whose head
+      # repository is not this repository (a fork, or a fork since deleted),
+      # it makes no call and outputs the hosted default with a ::notice: a
+      # fork never reaches a self-hosted runner. Its tests:
+      # .github/workflows/testdata/runner-select-tests.py, run by the
+      # preflight step "Runner select tests".
+      - name: Balanced runner pool (ruling 1137)
         id: runner
         env:
           SERVER: ${{ github.server_url }}
@@ -303,19 +325,20 @@ jobs:
           API: ${{ github.api_url }}/repos/${{ github.repository }}/actions
           RUN_ID: ${{ github.run_id }}
           JOB_TOKEN: ${{ github.token }}
-          LIMIT: ${{ env.HOSTED_JOBS_PER_REPO }}
-          GRACE: ${{ env.HOSTED_QUEUE_GRACE_SECONDS }}
+          HS: ${{ vars.CI_HOSTED_SHARE }}
+          C1: ${{ vars.CI_SELF_HOSTED_BIGDISK }}
+          C2: ${{ vars.CI_SELF_HOSTED_BIGDISK_DOCKER }}
         run: |
           set -uo pipefail
           HOSTED='"ubuntu-latest"'
-          overflow() { printf '["self-hosted","linux","x64","%s"]' "$1"; }
+          selfhosted() { printf '["self-hosted","linux","x64","%s"]' "$1"; }
           emit() {
             echo "runner: $1; runner_docker: $2"
             { echo "runner=$1"; echo "runner_docker=$2"; } >> "$GITHUB_OUTPUT"
           }
           # hosted <why>: no count, so the default, with the reason shown.
           hosted() {
-            echo "::warning::runner selection: $1; every job of this run takes the GitHub-hosted default, ubuntu-latest, and none overflows to the Dells (ci-template v1.48, ruling 1024)"
+            echo "::warning::runner selection: $1; every job of this run takes the GitHub-hosted default, ubuntu-latest, and none runs on the Dells (ci-template v1.54, ruling 1137)"
             emit "$HOSTED" "$HOSTED"
             exit 0
           }
@@ -333,9 +356,17 @@ jobs:
                 exit 0
               fi ;;
           esac
-          case "$LIMIT:$GRACE" in
-            *[!0-9:]*|:*|*:) hosted "HOSTED_JOBS_PER_REPO='$LIMIT' or HOSTED_QUEUE_GRACE_SECONDS='$GRACE' is not a whole number" ;;
-          esac
+          # whole <value>: a whole number above 0, at most 6 digits.
+          whole() { [[ "$1" =~ ^[0-9]{1,6}$ ]] && [ "$((10#$1))" -gt 0 ]; }
+          whole "$C1" || hosted "CI_SELF_HOSTED_BIGDISK='$C1' is unset, 0 or not a whole number, so no bigdisk job can be placed (the Infra Department sets it)"
+          whole "$C2" || hosted "CI_SELF_HOSTED_BIGDISK_DOCKER='$C2' is unset, 0 or not a whole number, so no bigdisk-docker job can be placed (the Infra Department sets it)"
+          C1=$((10#$C1)) C2=$((10#$C2))
+          if whole "$HS"; then
+            HS=$((10#$HS))
+          else
+            echo "::warning::runner selection: CI_HOSTED_SHARE='$HS' is unset, 0 or not a whole number; HS=12 until the Infra Department sets it (ci-template v1.54, ruling 1137)"
+            HS=12
+          fi
           # get <url> <file>: 0 on a 200 reply, saved in <file>; the answer in
           # CODE. The token reaches curl as a header from a file descriptor.
           get() {
@@ -347,10 +378,6 @@ jobs:
           # pages <url> <key> <out>: every page of a listing, its <key> items
           # one JSON object per line in <out>. 1, with WHY set, when a reply is
           # not 200 or the items fall short of total_count.
-          # v1.50: a list short of its total_count is a lower bound, kept in
-          # SHORT (the API's listing lags total_count while runs move); the
-          # counts it gives are never over, so it may still overflow.
-          SHORT=""
           pages() {
             local p=1 got=0 total n
             : > "$3"
@@ -364,7 +391,7 @@ jobs:
               [ "$p" -lt 10 ] || { WHY="$1: more than 1000 entries"; return 1; }
               p=$((p + 1))
             done
-            [ "$got" -ge "$total" ] || SHORT="${SHORT:+$SHORT; }$1: $got of $total entries"
+            [ "$got" -ge "$total" ] || { WHY="$1: $got of $total entries"; return 1; }
           }
           : > "$RUNNER_TEMP/sel-runs.jsonl"
           for st in queued in_progress; do
@@ -373,33 +400,50 @@ jobs:
           done
           : > "$RUNNER_TEMP/sel-jobs.jsonl"
           for id in $(jq -r '.id' "$RUNNER_TEMP/sel-runs.jsonl" | sort -u); do
+            [ "$id" != "$RUN_ID" ] || continue
             pages "$API/runs/$id/jobs?filter=latest" jobs "$RUNNER_TEMP/sel-j.jsonl" || hosted "the Actions API gave no complete job list ($WHY)"
             cat "$RUNNER_TEMP/sel-j.jsonl" >> "$RUNNER_TEMP/sel-jobs.jsonl"
           done
-          # In progress: every hosted job (this one too, when CI_PREFLIGHT_RUNS_ON
-          # puts it on a hosted runner; v1.49). Queued: a hosted
-          # job of another run (this run's jobs wait on this one) queued for
-          # GRACE seconds or more, so a runner did not take it at once.
-          read -r running queued < <(jq -rs --argjson run "$RUN_ID" --argjson grace "$GRACE" '
-              [.[] | select((.labels // []) | any(startswith("ubuntu-")) and all(. != "self-hosted"))] as $h
-              | ($h | map(select(.status == "in_progress")) | length) as $r
-              | ($h | map(select(.status == "queued" and .run_id != $run
-                    and now - ((.created_at // .started_at) | fromdateiso8601) >= $grace)) | length) as $q
-              | "\($r) \($q)"' "$RUNNER_TEMP/sel-jobs.jsonl") || hosted "the job list could not be counted"
-          echo "this repository: $running hosted job(s) in progress (HOSTED_JOBS_PER_REPO=$LIMIT); $queued hosted job(s) of other runs queued ${GRACE}s or more"
-          if [ "$running" -ge "$LIMIT" ]; then
-            why="$running hosted jobs in progress, HOSTED_JOBS_PER_REPO=$LIMIT"
-          elif [ "$queued" -gt 0 ]; then
-            why="$queued hosted job(s) queued ${GRACE}s or more: the hosted pool is full"
-          elif [ -n "$SHORT" ]; then
-            hosted "the Actions API listed fewer entries than its total ($SHORT), and the counts read reach no trigger"
+          # H, S1, S2: hosted, bigdisk (not bigdisk-docker) and bigdisk-docker
+          # jobs in progress plus queued; HQ, SQ: the queued hosted and
+          # self-hosted (both kinds) ones. A job of this run is not counted.
+          read -r H S1 S2 HQ SQ < <(jq -rs --argjson run "$RUN_ID" '
+              [.[] | select(.run_id != $run and (.status == "queued" or .status == "in_progress"))
+                   | (.labels // []) as $l
+                   | {q: (.status == "queued"),
+                      p: (if ($l | any(. == "self-hosted")) then
+                            (if ($l | any(. == "bigdisk-docker")) then "s2"
+                             elif ($l | any(. == "bigdisk")) then "s1" else "x" end)
+                          elif ($l | any(startswith("ubuntu-"))) then "h"
+                          else "x" end)}] as $j
+              | def n(f): $j | map(select(f)) | length;
+              [n(.p == "h"), n(.p == "s1"), n(.p == "s2"), n(.p == "h" and .q),
+               n((.p == "s1" or .p == "s2") and .q)]
+              | map(tostring) | join(" ")' "$RUNNER_TEMP/sel-jobs.jsonl") || hosted "the job list could not be counted"
+          [ -n "${SQ:-}" ] || hosted "the job list could not be counted"
+          echo "this repository: hosted $H of CI_HOSTED_SHARE=$HS ($HQ queued); bigdisk $S1 of CI_SELF_HOSTED_BIGDISK=$C1, bigdisk-docker $S2 of CI_SELF_HOSTED_BIGDISK_DOCKER=$C2 ($SQ self-hosted queued)"
+          pick=hosted hfull=0 sfull=0
+          [ "$H" -lt "$HS" ] || hfull=1
+          { [ "$S1" -lt "$C1" ] && [ "$S2" -lt "$C2" ]; } || sfull=1
+          if [ "$hfull" = 1 ] && [ "$sfull" = 1 ]; then
+            [ "$SQ" -lt "$HQ" ] && pick=self
+            why="both pools full: hosted $HQ queued, self-hosted $SQ queued"
+          elif [ "$hfull" = 1 ]; then
+            pick=self; why="the hosted pool is full ($H of $HS)"
+          elif [ "$sfull" = 1 ]; then
+            why="the self-hosted pool is full (bigdisk $S1 of $C1, bigdisk-docker $S2 of $C2)"
           else
-            emit "$HOSTED" "$HOSTED"
-            exit 0
+            # self-hosted use, max(S1/C1, S2/C2), below hosted use H/HS.
+            [ $((S1 * HS)) -lt $((H * C1)) ] && [ $((S2 * HS)) -lt $((H * C2)) ] && pick=self
+            why="use hosted $H/$HS, bigdisk $S1/$C1, bigdisk-docker $S2/$C2"
           fi
-          [ -z "$SHORT" ] || why="$why (a lower bound: $SHORT)"
-          echo "::notice::runner selection: $why; this run's jobs overflow to the Dells (bigdisk, bigdisk-docker) (ci-template v1.48, ruling 1024)"
-          emit "$(overflow bigdisk)" "$(overflow bigdisk-docker)"
+          if [ "$pick" = self ]; then
+            echo "::notice::runner selection: $why; this run's jobs run on the Dells (bigdisk, bigdisk-docker) (ci-template v1.54, ruling 1137)"
+            emit "$(selfhosted bigdisk)" "$(selfhosted bigdisk-docker)"
+          else
+            echo "::notice::runner selection: $why; this run's jobs take the GitHub-hosted default, ubuntu-latest (ci-template v1.54, ruling 1137)"
+            emit "$HOSTED" "$HOSTED"
+          fi
 
       # v1.34: the changed-file diff needs the PR's base, and the
       # architecture gates scan the whole tree, so one full checkout serves both.
@@ -460,15 +504,19 @@ jobs:
       # Its tests: testdata/runner-labels-tests.py, run by the step before it.
       - name: Runner labels tests (go-qrdb #1642)
         run: python3 -I .github/workflows/testdata/runner-labels-tests.py
-      # Codex round 1 on #1671: the step "Hosted or overflow runner (ruling
-      # 1024)" run against a stub Actions API (forks, thresholds, grace,
-      # pagination, short listings, unreadable replies, off github.com).
+      # Codex round 1 on #1671, v1.54 (ruling 1137): the step "Balanced
+      # runner pool (ruling 1137)" run against a stub Actions API (forks,
+      # pool limits, balancing, ties, pagination, short listings, unreadable
+      # replies, off github.com).
       - name: Runner select tests (go-qrdb #1671)
         run: python3 -I .github/workflows/testdata/runner-select-tests.py
       # Codex round 1 on #1671: scripts/ci-mask-lan.sh masks an entry's
       # userinfo and classifies the host after it, and every mask step runs it.
       - name: LAN mask tests (go-qrdb #1671)
         run: python3 -I .github/workflows/testdata/ci-mask-lan-tests.py
+      # v1.54: no job output carries a registry address (H1 to H5).
+      - name: Job output handoff tests (ci-template v1.54)
+        run: python3 -I .github/workflows/testdata/job-output-handoff-tests.py
       - name: Runner labels (ruling 633)
         run: |
           python3 -I - <<'PY'
@@ -788,9 +836,9 @@ jobs:
           REVIEW_FILES = {"code-review.yml", "code-review.yaml"}
           REVIEW_TOKEN = re.compile(r"(?<![\w.-])['\"]?(codex|qwen)['\"]?(?![\w-])", re.I)
           GH = "https://github.com"
-          # v1.48 (ruling 1024): ci.yml's preflight step `Hosted or overflow runner
-          # (ruling 1024)` outputs runs-on JSON, "ubuntu-latest" by default and the
-          # Dells' overflow list when the hosted pool is full. In ci.yml only, a
+          # v1.48 (ruling 1024): ci.yml's preflight runner selection (v1.54:
+          # `Balanced runner pool (ruling 1137)`) outputs runs-on JSON,
+          # "ubuntu-latest" or the Dells' self-hosted list ("overflow" below). In ci.yml only, a
           # runs-on that reads exactly these outputs is checked under both: the
           # default must be a standard image, as (c) asks of every job, and the
           # overflow may also be exactly the list its output names. Any other
@@ -1183,10 +1231,6 @@ jobs:
       # be dropped.
       registry_toolchain_tag: ${{ steps.registry.outputs.toolchain_tag }}
       registry_it_tag: ${{ steps.registry.outputs.it_tag }}
-    env:
-      # #1593: the LAN CI registry, a repository secret so every log line
-      # masks it; secrets cannot gate a step's if:, the job's env can.
-      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -1207,11 +1251,15 @@ jobs:
       # Ruling 887: the LAN addresses this runner's environment names, masked
       # before any step that builds can print one.
       - name: Mask the LAN addresses
-        # v1.53: a registry a later step takes from `vars` is masked here.
-        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
-        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
-        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
-        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        env:
+          # v1.53: the internal registry is the Actions secret CI_IMAGE_REGISTRY,
+          # never a `vars` value. Actions prints a step's env in its log header
+          # before the run body, so an add-mask comes too late for a variable;
+          # the runner masks a secret from its first byte. A GitHub-hosted run
+          # receives none. ci-mask-lan.sh also masks the bare host name.
+          # CUSTOMIZE: one such line per other *_REGISTRY secret this job reads
+          # (testdata/ci-mask-lan-tests.py M1 to M5).
+          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
         run: scripts/ci-mask-lan.sh
 
       # CUSTOMIZE (go-qrdb): every compose service that names a build target
@@ -1384,8 +1432,12 @@ jobs:
       # push is a warning: its consumers take the artifact.
       - name: Push the devcontainer images to the LAN CI registry
         id: registry
-        if: ${{ env.CI_REGISTRY != '' && runner.environment != 'github-hosted' }}
+        if: ${{ runner.environment != 'github-hosted' }}
         env:
+          # #1593, v1.54: the LAN CI registry, a repository secret so every log
+          # line masks it, bound in this step's env and only on a self-hosted
+          # runner; secrets cannot gate a step's if:, the runner context can.
+          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ github.run_id }}-${{ github.run_attempt }}
           TOOLCHAIN_IMAGE: ${{ steps.build.outputs.toolchain_image }}
           IT_IMAGE: ${{ steps.build.outputs.it_image }}
@@ -1477,7 +1529,6 @@ jobs:
     needs: [preflight, docker-build]
     timeout-minutes: 120
     env:
-      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -1494,11 +1545,15 @@ jobs:
       # Ruling 887: the LAN addresses this runner's environment names, masked
       # before any step that builds can print one.
       - name: Mask the LAN addresses
-        # v1.53: a registry a later step takes from `vars` is masked here.
-        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
-        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
-        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
-        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        env:
+          # v1.53: the internal registry is the Actions secret CI_IMAGE_REGISTRY,
+          # never a `vars` value. Actions prints a step's env in its log header
+          # before the run body, so an add-mask comes too late for a variable;
+          # the runner masks a secret from its first byte. A GitHub-hosted run
+          # receives none. ci-mask-lan.sh also masks the bare host name.
+          # CUSTOMIZE: one such line per other *_REGISTRY secret this job reads
+          # (testdata/ci-mask-lan-tests.py M1 to M5).
+          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
         run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
@@ -1511,8 +1566,9 @@ jobs:
       # #1593: the LAN CI registry first, the artifact when the pull fails.
       - name: Pull the toolchain image from the LAN CI registry
         id: pull_toolchain
-        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && runner.environment != 'github-hosted' }}
         env:
+          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
@@ -1623,7 +1679,6 @@ jobs:
     needs: [preflight, docker-build]
     timeout-minutes: 90
     env:
-      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -1640,11 +1695,15 @@ jobs:
       # Ruling 887: the LAN addresses this runner's environment names, masked
       # before any step that builds can print one.
       - name: Mask the LAN addresses
-        # v1.53: a registry a later step takes from `vars` is masked here.
-        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
-        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
-        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
-        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        env:
+          # v1.53: the internal registry is the Actions secret CI_IMAGE_REGISTRY,
+          # never a `vars` value. Actions prints a step's env in its log header
+          # before the run body, so an add-mask comes too late for a variable;
+          # the runner masks a secret from its first byte. A GitHub-hosted run
+          # receives none. ci-mask-lan.sh also masks the bare host name.
+          # CUSTOMIZE: one such line per other *_REGISTRY secret this job reads
+          # (testdata/ci-mask-lan-tests.py M1 to M5).
+          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
         run: scripts/ci-mask-lan.sh
 
       - name: Does the Makefile define lint-gates?
@@ -1669,8 +1728,9 @@ jobs:
       # #1593: the LAN CI registry first, the artifact when the pull fails.
       - name: Pull the toolchain image from the LAN CI registry
         id: pull_toolchain
-        if: ${{ steps.probe.outputs.has_target == 'true' && needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
+        if: ${{ steps.probe.outputs.has_target == 'true' && needs.docker-build.outputs.registry_toolchain_tag != '' && runner.environment != 'github-hosted' }}
         env:
+          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
@@ -1760,7 +1820,6 @@ jobs:
     needs: [preflight, docker-build]
     timeout-minutes: 90
     env:
-      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -1777,11 +1836,15 @@ jobs:
       # Ruling 887: the LAN addresses this runner's environment names, masked
       # before any step that builds can print one.
       - name: Mask the LAN addresses
-        # v1.53: a registry a later step takes from `vars` is masked here.
-        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
-        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
-        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
-        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        env:
+          # v1.53: the internal registry is the Actions secret CI_IMAGE_REGISTRY,
+          # never a `vars` value. Actions prints a step's env in its log header
+          # before the run body, so an add-mask comes too late for a variable;
+          # the runner masks a secret from its first byte. A GitHub-hosted run
+          # receives none. ci-mask-lan.sh also masks the bare host name.
+          # CUSTOMIZE: one such line per other *_REGISTRY secret this job reads
+          # (testdata/ci-mask-lan-tests.py M1 to M5).
+          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
         run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
@@ -1794,8 +1857,9 @@ jobs:
       # #1593: the LAN CI registry first, the artifact when the pull fails.
       - name: Pull the toolchain image from the LAN CI registry
         id: pull_toolchain
-        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && runner.environment != 'github-hosted' }}
         env:
+          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
@@ -1842,8 +1906,9 @@ jobs:
       # built, so the full tier loads it too.
       - name: Pull the integration image from the LAN CI registry
         id: pull_it
-        if: ${{ env.CI_FULL_TIER == 'true' && needs.docker-build.outputs.registry_it_tag != '' && env.CI_REGISTRY != '' }}
+        if: ${{ env.CI_FULL_TIER == 'true' && needs.docker-build.outputs.registry_it_tag != '' && runner.environment != 'github-hosted' }}
         env:
+          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ needs.docker-build.outputs.registry_it_tag }}
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
@@ -1980,7 +2045,6 @@ jobs:
           - sdk-transport
           - sdk
     env:
-      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -2004,8 +2068,9 @@ jobs:
       # #1593: the LAN CI registry first, the artifact when the pull fails.
       - name: Pull the toolchain image from the LAN CI registry
         id: pull_toolchain
-        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && runner.environment != 'github-hosted' }}
         env:
+          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
@@ -2356,7 +2421,6 @@ jobs:
     needs: [preflight, docker-build]
     timeout-minutes: 90
     env:
-      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -2380,8 +2444,9 @@ jobs:
       # #1593: the LAN CI registry first, the artifact when the pull fails.
       - name: Pull the toolchain image from the LAN CI registry
         id: pull_toolchain
-        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && runner.environment != 'github-hosted' }}
         env:
+          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
@@ -2479,7 +2544,6 @@ jobs:
           - sdk-transport
           - sdk
     env:
-      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -2503,8 +2567,9 @@ jobs:
       # #1593: the LAN CI registry first, the artifact when the pull fails.
       - name: Pull the toolchain image from the LAN CI registry
         id: pull_toolchain
-        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && runner.environment != 'github-hosted' }}
         env:
+          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
@@ -2600,7 +2665,6 @@ jobs:
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
     env:
-      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
       IT_FEATURES: ${{ matrix.features }}
       # CUSTOMIZE (go-qrdb): IT_IMAGE is not set here. The load step writes it
@@ -2637,11 +2701,15 @@ jobs:
       # Ruling 887: the LAN addresses this runner's environment names, masked
       # before any step that builds can print one.
       - name: Mask the LAN addresses
-        # v1.53: a registry a later step takes from `vars` is masked here.
-        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
-        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
-        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
-        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        env:
+          # v1.53: the internal registry is the Actions secret CI_IMAGE_REGISTRY,
+          # never a `vars` value. Actions prints a step's env in its log header
+          # before the run body, so an add-mask comes too late for a variable;
+          # the runner masks a secret from its first byte. A GitHub-hosted run
+          # receives none. ci-mask-lan.sh also masks the bare host name.
+          # CUSTOMIZE: one such line per other *_REGISTRY secret this job reads
+          # (testdata/ci-mask-lan-tests.py M1 to M5).
+          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
         run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
@@ -2654,8 +2722,9 @@ jobs:
       # #1593: the LAN CI registry first, the artifact when the pull fails.
       - name: Pull the integration image from the LAN CI registry
         id: pull_it
-        if: ${{ needs.docker-build.outputs.registry_it_tag != '' && env.CI_REGISTRY != '' }}
+        if: ${{ needs.docker-build.outputs.registry_it_tag != '' && runner.environment != 'github-hosted' }}
         env:
+          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ needs.docker-build.outputs.registry_it_tag }}
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
@@ -2737,11 +2806,15 @@ jobs:
       # Ruling 887: the LAN addresses this runner's environment names, masked
       # before any step that builds can print one.
       - name: Mask the LAN addresses
-        # v1.53: a registry a later step takes from `vars` is masked here.
-        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
-        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
-        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
-        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        env:
+          # v1.53: the internal registry is the Actions secret CI_IMAGE_REGISTRY,
+          # never a `vars` value. Actions prints a step's env in its log header
+          # before the run body, so an add-mask comes too late for a variable;
+          # the runner masks a secret from its first byte. A GitHub-hosted run
+          # receives none. ci-mask-lan.sh also masks the bare host name.
+          # CUSTOMIZE: one such line per other *_REGISTRY secret this job reads
+          # (testdata/ci-mask-lan-tests.py M1 to M5).
+          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
         run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
@@ -2830,7 +2903,6 @@ jobs:
             minutes: 120
     timeout-minutes: ${{ matrix.minutes }}
     env:
-      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
       FIPS_ENV: GOFIPS140=latest GODEBUG=fips140=only
       # No cache, as the comment above says: the legs mount no Go cache.
       CI_CACHE: 'off'
@@ -2857,8 +2929,9 @@ jobs:
       # #1593: the LAN CI registry first, the artifact when the pull fails.
       - name: Pull the toolchain image from the LAN CI registry
         id: pull_toolchain
-        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && runner.environment != 'github-hosted' }}
         env:
+          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
@@ -3034,7 +3107,6 @@ jobs:
     needs: [preflight, docker-build]   # v1.48: runs-on reads preflight's runner_docker
     timeout-minutes: 90
     env:
-      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
       SOAK_MINUTES: 30        # CUSTOMIZE
       SOAK_FEATURE: clustering   # CUSTOMIZE (go-qrdb): the suite each iteration runs
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-soak
@@ -3053,11 +3125,15 @@ jobs:
       # Ruling 887: the LAN addresses this runner's environment names, masked
       # before any step that builds can print one.
       - name: Mask the LAN addresses
-        # v1.53: a registry a later step takes from `vars` is masked here.
-        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
-        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
-        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
-        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        env:
+          # v1.53: the internal registry is the Actions secret CI_IMAGE_REGISTRY,
+          # never a `vars` value. Actions prints a step's env in its log header
+          # before the run body, so an add-mask comes too late for a variable;
+          # the runner masks a secret from its first byte. A GitHub-hosted run
+          # receives none. ci-mask-lan.sh also masks the bare host name.
+          # CUSTOMIZE: one such line per other *_REGISTRY secret this job reads
+          # (testdata/ci-mask-lan-tests.py M1 to M5).
+          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
         run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
@@ -3070,8 +3146,9 @@ jobs:
       # #1593: the LAN CI registry first, the artifact when the pull fails.
       - name: Pull the integration image from the LAN CI registry
         id: pull_it
-        if: ${{ needs.docker-build.outputs.registry_it_tag != '' && env.CI_REGISTRY != '' }}
+        if: ${{ needs.docker-build.outputs.registry_it_tag != '' && runner.environment != 'github-hosted' }}
         env:
+          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ needs.docker-build.outputs.registry_it_tag }}
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
@@ -3168,6 +3245,23 @@ jobs:
           REPO: ${{ github.repository }}
         run: gh workflow run deps-bump.yml --repo "$REPO" --ref main
 
+  # v1.53 (the Tenant Agent's read of the Codex P1 on go-trusted-platform
+  # #2311): a job output never carries a registry address. The LAN mask
+  # registers each internal registry as a secret, and GitHub drops a job
+  # output that contains a masked value, so a consumer would read an empty
+  # reference. A CUSTOMIZE job that hands an image to another job exports
+  # only an unmasked identifier (the tag, the digest or its hex suffix), and
+  # each consumer rebuilds the reference from the secret CI_IMAGE_REGISTRY
+  # after its own mask step. The registry is never read from `vars`: a step's
+  # env is printed in its log header before the run body, and only a secret
+  # is masked from the first byte. A GitHub-hosted run receives none, so it
+  # takes the artifact path as before:
+  #   producer:  echo "image_tag=$tag" >> "$GITHUB_OUTPUT"
+  #   consumer:  env: { IT_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }},
+  #                     IT_IMAGE_TAG: ${{ needs.<producer>.outputs.image_tag }} }
+  #              run: ref="$IT_REGISTRY/<repo>/it-image:$IT_IMAGE_TAG"
+  # testdata/job-output-handoff-tests.py H1 to H5 holds the rule; run it
+  # with a copy's path to check that copy.
   signatures:
     name: Signatures
     runs-on: ubuntu-latest
