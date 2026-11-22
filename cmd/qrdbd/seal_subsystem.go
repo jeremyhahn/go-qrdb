@@ -87,7 +87,9 @@ type sealSubsystem struct {
 	PINBackend pin.PINBackend
 
 	// SealStoreSvc is the node's named-secret seal store over SealBarrier,
-	// served on gRPC and unix by the SealStore* RPCs.
+	// served on every network listener (gRPC, unix, REST, QUIC, MCP) of both
+	// the sealed-phase and the unsealed node's server, gated by
+	// seal:store_manage.
 	SealStoreSvc *seal.SealStore
 
 	// SealDataDir is the directory containing the seal sub-store. It
