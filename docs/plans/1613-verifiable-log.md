@@ -15,7 +15,7 @@ the row shipped only when every line HOLDS.
 | 5 | TypeScript SDK | HOLDS | `sdk/typescript/test/vlog-contract.test.ts` (REST and Wails clients) |
 | 6 | Tenant isolation | HOLDS | `pkg/service/vlog_log_service_test.go:TestLogService_CreateLog_Refusals` (cross-tenant); `test/integration/vlog_tenant_confinement_cli_test.go:TestVlog_CLI_TenantConfinement_PerProtocol` (closed by step 2a) |
 | 7 | DEK | HOLDS (by design) | `docs/databases/architecture.md` §8: no second key layer; a caller encrypts entries with `DEKService` before appending, the leaf commits to the ciphertext |
-| 8 | Barrier | PARTIAL | Barrier tenant HOLDS in Raft mode: its logs, entries and sealed signing keys are applied in its home group, under its own key; a sealed barrier refuses with `tenant.ErrTenantSealed` (`pkg/service/audit_shard_resolver_test.go:TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup`; `pkg/server/lifecycle/log_groups_test.go:TestLogGroups_TenantHomeGroup`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierTenant_PerProtocol`, every transport: sealed refused, unsealed create/append/get/prove-inclusion/prove-consistency/head, log unchanged after the unseal). Barrier database: every log call is refused with `BarrierDatabaseLogNotSupportedError` (`Unimplemented`) before any key, proposal or read, on every backend, sealed or not, because the log has no store under the database's key (`pkg/service/vlog_log_service_test.go:TestLogService_RefusesABarrierDatabase`; `pkg/api/errclass/database_barrier_test.go:TestClassify_BarrierDatabaseLogNotSupported`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierDatabase_PerProtocol`, every transport). A barrier tenant on a standalone node fails closed with `BarrierStoreUnavailableError`. See Remains. |
+| 8 | Barrier | PARTIAL | Barrier tenant HOLDS in Raft mode: its logs, entries and sealed signing keys are applied in its home group, under its own key; a sealed barrier refuses with `tenant.ErrTenantSealed` (`pkg/service/audit_shard_resolver_test.go:TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup`; `pkg/server/lifecycle/log_groups_test.go:TestLogGroups_TenantHomeGroup`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierTenant_PerProtocol`, every transport: sealed refused, unsealed create/append/get/prove-inclusion/prove-consistency/head, log unchanged after the unseal). Barrier database HOLDS on every backend: its logs are applied to and read from the database's own barrier backend (`pkg/service/vlog_database_store.go`), encrypted under the database's key; a sealed database refuses with `*service.BarrierSealedError`, a legacy raft barrier record with `*database.BarrierOffDataPathError` (`pkg/service/vlog_log_service_test.go:TestLogService_ServesABarrierDatabase`, `TestLogService_BarrierDatabaseLifecycle`, `TestLogService_RefusesALegacyRaftBarrierRecord`, `TestLogService_BarrierDatabaseCommitFailureRestores`; `pkg/server/lifecycle/seams_vlog_test.go:TestBuildServices_LogServiceSealsWithTheBarrierDatabase`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierDatabase_PerProtocol`, every transport: unsealed every verb and its proofs, no entry in plaintext in the database's data directory, sealed refused, wrong secret stays refused, unsealed log unchanged and grows, gone after drop). PARTIAL for one line: a barrier tenant on a standalone node fails closed with `BarrierStoreUnavailableError`. See Remains. |
 | 9 | Replication | HOLDS | `sdk/go/node/clustered_vlog_test.go:TestClusteredCreateFunc_AppliesVerifiableLog`, `...LogRegistryPerReplica`; `pkg/store/vlog_apply_test.go:TestStoreVerifiableLog_SnapshotMidLogMatchesAPeer` |
 | 10 | Standalone and Raft modes | HOLDS | standalone: `pkg/engine/mvcc_vlog_test.go:TestMVCCEngine_VerifiableLog_DispatchesAndAnswersReads`; Raft: `pkg/store/vlog_apply_test.go:TestStoreVerifiableLog_DispatchesAndAnswersReads` |
 | 11 | One apply-time opcode behind a feature gate | HOLDS | `protocol.OpVerifiableLog` (`pkg/protocol/vlog.go`), `featuregate.VerifiableLog`/`VerifiableLogKeys`; `pkg/service/vlog_log_service_test.go:TestLogService_Writes_RefusedBeforeGateActive`, `TestLogService_KeyWrites_RefusedBeforeKeyFeatureActive`; `pkg/store/vlog_apply_test.go:TestStoreAuditInstance_MixedVersionReplay` |
@@ -45,44 +45,53 @@ b. Row 8 (barrier), lane vl1613c. No new seal domain: the logs go to the
      `BuildServices` runs first). Sealed tenant barrier →
      `tenant.ErrTenantSealed`; no group → `BarrierStoreUnavailableError`
      (`Unavailable`).
-   - A barrier-enabled database is refused in the log service's route with
-     `BarrierDatabaseLogNotSupportedError` (`Unimplemented`) before any key,
-     proposal or read, whatever its backend (Codex round 1, P1 #1 and #2: a
-     dedicated Raft database's group is not under the database's key, and a
-     legacy record could reach the system shard). The per-database route
-     (`LogShardResolver`, `ResolveDatabaseLogShard`, `DatabaseGroup`) is
-     deleted.
+   - The per-database route of the first cut (`LogShardResolver`,
+     `ResolveDatabaseLogShard`, `DatabaseGroup`) is deleted (Codex round 1,
+     P1 #1 and #2: a dedicated Raft database's group is not under the
+     database's key, and a legacy record could reach the system shard); a
+     barrier-enabled database's log is served by slice c.
    - `BarrierTenantLogNotSupportedError` and its errclass row are deleted.
    - The REST transport sends the database scope header on `/vlog` requests;
      before, `--database` never reached the server over REST.
    - CLI E2E: `test/integration/vlog_barrier_tenant_cli_test.go`, listed in
      `INTTEST_databases`.
+c. Row 8 (barrier database), this PR, lanes fx1655h and fx1655i.
+   - `pkg/service/vlog_database_store.go`: a barrier-enabled database's logs
+     are applied to and read from the database's own barrier backend, so they
+     are encrypted under the database's key, sealed with it and dropped with
+     it. A sealed database refuses with `BarrierSealedError` (`Unavailable`); a
+     legacy raft barrier record with `database.BarrierOffDataPathError`
+     (`Unprocessable`).
+   - The log service's route resolves each database incarnation to its log
+     target (`logTarget`: the barrier store, or `raftTarget`, the group).
+   - The barrier-database refusal error of slice b and its errclass row are
+     deleted.
+   - CLI E2E: `TestVlog_CLI_BarrierDatabase_PerProtocol` in
+     `test/integration/vlog_barrier_tenant_cli_test.go`, every transport:
+     served, sealed, wrong secret, unsealed, dropped and re-created.
 
 ## Step 3
 
 Row 8 is PARTIAL, so the SPEC row stays `in progress` and `pm/rows.md` is
-unchanged: no log is served in a barrier-enabled database, and no barrier
-tenant is served on a standalone node. ROADMAP.md is a protected path this lane may not edit, so moving
+unchanged: one line remains open, no barrier tenant is served on a standalone
+node (`BarrierStoreUnavailableError`). ROADMAP.md is a protected path this lane may not edit, so moving
 fsync-stall-leadership, lean-node-build and barrier-passphrase-change to
 Complete (SPEC marks them shipped) is left to a lane launched with ROADMAP.md
 allowed.
 
 ## Remains
 
-- Row 8, open question for the owner: where does a barrier-enabled database's
-  log live? The database barrier encrypts that database's KV records, but the
-  log registry is state-machine state applied in a group, and no group a
-  database's log could be applied in (the system shard, a tenant's home group,
-  or a dedicated Raft database's own group) is under the database's key.
-  Putting the registry under the database barrier needs either a group sealed
-  by the database's barrier or apply-time encryption with the database key, an
-  architecture call (Codex round 1, P1 #2, deferred to the owner). Until the
-  owner rules, every log call in a barrier-enabled database fails closed with
-  `BarrierDatabaseLogNotSupportedError` (`Unimplemented`); this row implements
-  no barrier-database routing.
 - Row 8, standalone: barrier homes are `seal.NewTenantBarrierKVStore` KV stores
-  with no log state machine, so a barrier tenant's log fails closed there; the
-  same question (registry in a KV home) applies.
+  with no log state machine, so a barrier tenant's log fails closed there with
+  `BarrierStoreUnavailableError`.
+- Drop of a barrier database, question for the coordinator: `Manager.drop`
+  (`pkg/database/manager.go`) removes only the manager's own per-database
+  directory, not a `--data-dir` the caller chose. Re-creating a barrier
+  database over the old folder finds the old encrypted log and fails to
+  decrypt it instead of answering not found. Whether drop may delete a
+  caller-owned directory is a destructive-delete policy call; until it is
+  ruled, the user guide says to re-create in a new `--data-dir`, and the CLI
+  E2E does so.
 - The ROADMAP.md moves above.
 
 ## Out of scope

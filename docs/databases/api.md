@@ -498,11 +498,13 @@ tenant's sealed error. A node with no such group (standalone) refuses with
 `BarrierStoreUnavailableError`, `Unavailable` on every transport:
 `503 Service Unavailable` over REST, `UNAVAILABLE` over gRPC.
 
-A log in a barrier-enabled database has no store under the database's key yet,
-so every log call that names one is refused, before any key is created, any
-proposal is made or anything is read, whatever the database's backend, with
-`BarrierDatabaseLogNotSupportedError`: `Unimplemented` on every transport,
-`501 Not Implemented` over REST, `UNIMPLEMENTED` over gRPC.
+A log in a barrier-enabled database is served from the database's own barrier
+store, encrypted under the database's key. While the database is sealed every
+log call that names it is refused with `BarrierSealedError`: `Unavailable` on
+every transport, `503 Service Unavailable` over REST, `UNAVAILABLE` over gRPC.
+After the unseal the log is served unchanged. A legacy barrier record on a
+`raft` database, whose data is not served from the store the barrier wraps, is
+refused with `BarrierOffDataPathError`: `Unprocessable` on every transport.
 
 ## Verifiable-log payloads over QUIC and MCP
 

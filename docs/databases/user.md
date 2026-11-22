@@ -222,6 +222,10 @@ qrdb vlog rotate-key --log releases --signing-key-type ecdsa-p256-sha256
 qrdb vlog list
 ```
 
+A log in a barrier-enabled database is kept in the database's own store,
+encrypted under the database's key: it is sealed and unsealed with the database
+and dropped with it.
+
 `--origin` is required on every log and becomes the checkpoint's first line;
 `--signing-key-type` gives the log a head-signing key (`ed25519` or
 `ecdsa-p256-sha256`), and a log without one cannot sign heads. The proofs print
@@ -331,11 +335,23 @@ The node has no barrier-sealed group for the tenant: a standalone node. The
 server answers `503 Service Unavailable` (`UNAVAILABLE`). Run the tenant in a
 Raft deployment.
 
-**`qrdb vlog` says verifiable logs are not supported in a barrier-enabled
-database.** A log in a barrier-enabled database has no store under the
-database's key yet, so every `qrdb vlog` command with `--database` naming one is
-refused, sealed or not, with `501 Not Implemented` (`UNIMPLEMENTED`). Keep the
-log in a database without a barrier.
+**`qrdb vlog --database <db>` says the database is sealed.** The database's
+barrier is sealed (`BarrierSealedError`, `503 Service Unavailable`,
+`UNAVAILABLE`), and so is every log in it. Unseal it with
+`qrdb database unseal <db> --secret ...`, then retry: the log is unchanged.
+
+**`qrdb vlog --database <db>` says a per-database barrier would not protect
+the database.** The database is a `raft` database carrying a barrier record
+from an earlier release (`BarrierOffDataPathError`, classed
+`Unprocessable`): its data is served from its Raft group, not from a store the barrier
+wraps, so its log is refused rather than kept outside the barrier. Keep the
+log in a non-`raft` database created with `--barrier-enabled` and a
+`--data-dir` of its own.
+
+**A log is still there, or cannot be read, after a database was dropped and
+created again.** Dropping a database leaves a `--data-dir` you chose in place,
+with the dropped database's encrypted log in it. Create the replacement
+database with a new `--data-dir`.
 
 **`qrdb vlog` is an unknown command.** The client was built without verifiable
 logs (`WITH_QRDB_VLOG=0`); a server built without them answers every vlog call
