@@ -181,10 +181,13 @@ func (e *MoveNotImplementedError) Error() string {
 // Catalog.AdmitMove (a move already runs, the destination is the current
 // pool, or the destination is not ready on a replica node per decision Q3),
 // by the move-journal step transitions (no step to grant, or the node does
-// not hold the step), or by
+// not hold the step), by Catalog.CutOverMove (the move is not copied, a
+// node is pending or holds a step, or the assignment no longer names
+// FromPool), by the retire and abort steps, by Catalog.CancelMove after cut
+// over, by RecordTenantPoolMoved for a tenant naming neither pool, or by
 // Release, AdjustReservation or a second admit while a move runs (decision
 // Q10). NodeID is set only for a per-node refusal. It classifies as
-// FailedPrecondition once a transport carries it.
+// FailedPrecondition (errclass); no transport carries it yet.
 type MoveConflictError struct {
 	TenantID string
 	NodeID   string
@@ -204,7 +207,7 @@ func (e *MoveConflictError) Error() string {
 // a pool whose provider opens Lockable volumes to one whose provider does
 // not. Decision Q9 is with the owner, and until it is answered the build
 // refuses such a move outright, whatever the request carries (ruling 1115).
-// It classifies as FailedPrecondition once a transport carries it.
+// It classifies as FailedPrecondition (errclass); no transport carries it yet.
 type MoveToUnencryptedPoolError struct {
 	TenantID string
 	FromPool string
@@ -221,7 +224,8 @@ func (e *MoveToUnencryptedPoolError) Error() string {
 
 // MoveJournalConflictError is returned by a move-journal step transition
 // when the journal changed under it on every compare-and-swap attempt.
-// Nothing was written; retrying is safe.
+// Nothing was written; retrying is safe. It classifies as Aborted
+// (errclass); no transport carries it yet.
 type MoveJournalConflictError struct {
 	TenantID string
 }
@@ -245,9 +249,9 @@ func (e *InvalidMoveRequestError) Error() string {
 	return "volume: invalid move request: " + e.Reason
 }
 
-// MoveNotFoundError is returned by Catalog.GetMove when no move is
-// journalled for the tenant. It classifies as NotFound once a transport
-// carries it.
+// MoveNotFoundError is returned by Catalog.GetMove and Catalog.CancelMove
+// when no move is journalled for the tenant. It classifies as NotFound
+// (errclass); no transport carries it yet.
 type MoveNotFoundError struct {
 	TenantID string
 }
@@ -262,7 +266,8 @@ func (e *MoveNotFoundError) Error() string {
 // empty by those functions and filled in by the caller that runs the step
 // on a node. Path is the entry relative to the tree's root ("" when the
 // failure concerns a root itself), never an absolute path, so the message
-// carries no mount path.
+// carries no mount path. It classifies (errclass) as Unavailable when its
+// cause is a PoolUnavailableError or a NodeSealedError, else Internal.
 type MoveStepError struct {
 	NodeID string
 	Phase  string
