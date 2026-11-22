@@ -502,9 +502,11 @@ func providerSessionTenantID(ctx *sqle.Context) string {
 	return tenantid.System
 }
 
-// CreateDatabase creates a new database for the session's tenant, defaulting
-// to the pebble backend (SQL syntax for backend selection is not yet
-// supported). Returns MutableOperationNotSupportedError in legacy
+// CreateDatabase creates a new database for the session's tenant. The
+// statement names only the database: its backend comes from the node's
+// database_defaults (else the run mode's default: raft in raft mode, pebble
+// standalone), applied once at create and recorded in the catalog, so a later
+// change of the defaults or of --sm changes no existing database. Returns MutableOperationNotSupportedError in legacy
 // single-database mode.
 //
 // The statement is the API's database create in SQL clothing, and is held to
@@ -526,10 +528,7 @@ func (p *Provider) CreateDatabase(ctx *sqle.Context, name string) error {
 	if err := p.authorizeLifecycle(lctx, tenantID, "CREATE DATABASE", permission.DatabasesCreate); err != nil {
 		return &CreateDatabaseError{Name: name, Err: err}
 	}
-	cfg := database.DatabaseConfig{
-		Name:    name,
-		Backend: database.BackendPebble,
-	}
+	cfg := database.DatabaseConfig{Name: name}
 	var err error
 	switch {
 	case p.databaseSvc != nil:

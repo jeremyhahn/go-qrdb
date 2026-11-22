@@ -73,6 +73,12 @@ func provisionFlags(sqlDatabase string) *startFlags {
 	}
 }
 
+// memoryDefaults is a node's database_defaults naming the memory backend,
+// which the --sql-database database, naming no backend of its own, records.
+func memoryDefaults() database.ManagerOption {
+	return database.WithDefaults(database.Defaults{RunMode: database.RunModeStandalone, Backend: database.BackendMemory})
+}
+
 // A configured database dropped on an earlier boot is re-provisioned once
 // the reclaimer is attached -- which is why start runs provisioning after
 // BuildServices -- and refused with a typed error before it, rather than
@@ -103,7 +109,8 @@ func TestProvisionDatabases_DroppedConfiguredNameNeedsTheReclaimer(t *testing.T)
 // --sql-database is created with the enabled SQL protocols, and re-running
 // provisioning (the in-process recycle) keeps it and its protocols.
 func TestProvisionDatabases_CreatesAndKeepsTheSQLDatabase(t *testing.T) {
-	mgr := databasetest.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir(),
+		database.WithDefaults(database.Defaults{RunMode: database.RunModeStandalone, Backend: database.BackendMemory}))
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := provisionFlags("shop")
 	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
@@ -120,11 +127,33 @@ func TestProvisionDatabases_CreatesAndKeepsTheSQLDatabase(t *testing.T) {
 	assert.True(t, again.ProtocolConfig().PostgreSQL, "an existing SQL database gains the enabled protocols")
 }
 
+// TestProvisionDatabases_SQLDatabaseRecordsTheNodeDefault proves the
+// --sql-database database takes the node's database_defaults backend, never
+// one derived from --sm, and that the catalog records it.
+func TestProvisionDatabases_SQLDatabaseRecordsTheNodeDefault(t *testing.T) {
+	dir := t.TempDir()
+	mgr := databasetest.NewManager(nil, dir,
+		database.WithDefaults(database.Defaults{RunMode: database.RunModeStandalone, Backend: database.BackendFile}))
+	f := provisionFlags("shop")
+	f.smType = "memory"
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	require.NoError(t, mgr.Close())
+
+	// Reopened under another default, the database keeps what was recorded.
+	reopened := databasetest.NewManager(nil, dir,
+		database.WithDefaults(database.Defaults{RunMode: database.RunModeStandalone}))
+	t.Cleanup(func() { _ = reopened.Close() })
+	require.NoError(t, reopened.OpenAll(context.Background()))
+	db, err := reopened.Get("shop")
+	require.NoError(t, err)
+	assert.Equal(t, database.BackendFile, db.Config().Backend, "the catalog records the node default, not the --sm backend")
+}
+
 // The SQL database is the system tenant's: a tenant holding a database of the
 // same name neither makes boot provisioning fail on an ambiguous name nor has
 // its own database's protocols rewritten.
 func TestProvisionDatabases_ATenantDatabaseOfTheSameNameIsLeftAlone(t *testing.T) {
-	mgr := databasetest.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir(), memoryDefaults())
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := provisionFlags("shop")
 	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
@@ -275,7 +304,7 @@ func TestProvisionDatabases_ConfiguredEntryCarriesEtcd(t *testing.T) {
 // A --sql-database a drop is fencing does not fail boot; it stays fenced.
 func TestProvisionDatabases_LeavesADroppingSQLDatabaseFenced(t *testing.T) {
 	dir := t.TempDir()
-	mgr := databasetest.NewManager(nil, dir)
+	mgr := databasetest.NewManager(nil, dir, memoryDefaults())
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := provisionFlags("shop")
 	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))

@@ -27,8 +27,10 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
@@ -132,6 +134,52 @@ func TestProvider_Lifecycle_SystemSessionUsesManager(t *testing.T) {
 	require.NoError(t, p.DropDatabase(ctx, "opsdb"))
 	_, err := mgr.Get("opsdb")
 	require.Error(t, err)
+}
+
+// TestProvider_CreateDatabase_RecordsNodeDefaults proves CREATE DATABASE names
+// no backend of its own: the database records the node's database_defaults
+// backend, else the run mode's default, on both create paths.
+func TestProvider_CreateDatabase_RecordsNodeDefaults(t *testing.T) {
+	cases := []struct {
+		name     string
+		defaults database.Defaults
+		want     database.BackendType
+	}{
+		{"database_defaults backend", database.Defaults{RunMode: database.RunModeStandalone, Backend: database.BackendMemory}, database.BackendMemory},
+		{"raft run mode", database.Defaults{RunMode: database.RunModeRaft}, database.BackendRaft},
+		{"standalone run mode", database.Defaults{RunMode: database.RunModeStandalone}, database.BackendPebble},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"/system session", func(t *testing.T) {
+			mgr := newDefaultsManager(t, tc.defaults)
+			p := NewManagerProvider(mgr, &mockKVService{})
+			require.NoError(t, p.CreateDatabase(tenantSession("root", tenantid.System), "opsdb"))
+			db, err := mgr.Get("opsdb")
+			require.NoError(t, err)
+			require.Equal(t, tc.want, db.Config().Backend)
+		})
+		t.Run(tc.name+"/database service", func(t *testing.T) {
+			mgr := newDefaultsManager(t, tc.defaults)
+			p := NewManagerProvider(mgr, &mockKVService{},
+				WithDatabaseService(service.NewDatabaseService(mgr)),
+				WithLifecycleAuthorizer(&recordingAuthorizer{}))
+			require.NoError(t, p.CreateDatabase(tenantSession("alice", "acme"), "ledger"))
+			db, err := mgr.Get("ledger")
+			require.NoError(t, err)
+			require.Equal(t, tc.want, db.Config().Backend)
+		})
+	}
+}
+
+// newDefaultsManager returns a manager with the given node defaults and a
+// shard-ID claimer, as a raft node has, so a raft default can be created.
+func newDefaultsManager(t *testing.T, d database.Defaults) *database.Manager {
+	t.Helper()
+	mgr := newTestManager(t, database.WithDefaults(d))
+	claimer, err := shard.NewClaimer(kvstore.NewMemoryKVStore())
+	require.NoError(t, err)
+	mgr.SetShardIDClaimer(claimer)
+	return mgr
 }
 
 // mustCreateTenantDatabase creates name owned by tenantID in mgr.

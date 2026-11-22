@@ -103,7 +103,8 @@ type lifecycleFixture struct {
 
 func newLifecycleFixture(t *testing.T, databaseQuota int64) *lifecycleFixture {
 	t.Helper()
-	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
+	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir(),
+		database.WithDefaults(database.Defaults{RunMode: database.RunModeStandalone}))
 	t.Cleanup(func() { _ = mgr.Close() })
 	q := &databaseCountQuota{mgr: mgr, limit: databaseQuota}
 	return &lifecycleFixture{

@@ -373,10 +373,15 @@ func TestProvider_WithPrescopedKV_UsesBareKeys(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // newTestManager creates a database.Manager with a temp directory for testing.
-func newTestManager(t *testing.T) *database.Manager {
+func newTestManager(t *testing.T, opts ...database.ManagerOption) *database.Manager {
 	t.Helper()
 	dir := t.TempDir()
-	return databasetest.NewManager(nil, dir)
+	if len(opts) == 0 {
+		// A node always hands the provider a manager with its run mode set,
+		// so a statement that names no backend gets the run mode's default.
+		opts = []database.ManagerOption{database.WithDefaults(database.Defaults{RunMode: database.RunModeStandalone})}
+	}
+	return databasetest.NewManager(nil, dir, opts...)
 }
 
 func TestNewManagerProvider(t *testing.T) {

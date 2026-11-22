@@ -156,16 +156,13 @@ func configuredDatabases(f *startFlags) []database.DatabaseConfig {
 }
 
 // sqlDatabaseConfig returns the configuration --sql-database is provisioned
-// with: a KV database on the state machine's backend, serving the enabled
-// SQL wire protocols.
+// with: a database on the node's database_defaults backend (else the run
+// mode's default), serving the enabled SQL wire protocols. It names no
+// backend, so --sm never picks one: Manager.Provision fills the defaults
+// once and records them.
 func sqlDatabaseConfig(f *startFlags) database.DatabaseConfig {
-	backend := database.BackendPebble
-	if f.smType == "memory" || f.smType == "concurrent" {
-		backend = database.BackendMemory
-	}
 	return database.DatabaseConfig{
-		Name:    f.sqlDatabase,
-		Backend: backend,
+		Name: f.sqlDatabase,
 		Protocol: database.ProtocolConfig{
 			MySQL:      f.enableMySQL,
 			PostgreSQL: f.enablePgSQL,

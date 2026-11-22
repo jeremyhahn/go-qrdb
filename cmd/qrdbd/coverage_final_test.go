@@ -357,32 +357,16 @@ func TestInit_MVCCFactoryClosure_InvokedWhenResolved(t *testing.T) {
 // (line 826-828 of runStart)
 // ---------------------------------------------------------------------------
 
-func TestRunStart_SQLDatabase_MemoryBackend_SmType(t *testing.T) {
-	dir := t.TempDir()
-
-	// Use smType="memory" so that f.smType == "memory" triggers BackendMemory
-	// for the SQL database. Block WAL to get fast failure after the SQL path.
-	walPath := filepath.Join(dir, "wal")
-	require.NoError(t, os.WriteFile(walPath, []byte("x"), 0o600))
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "memory",
-		discoveryMethod: "static",
-		listen:          "127.0.0.1:0",
-		raftAddress:     "127.0.0.1:0",
-		shardID:         1,
-		replicaID:       1,
-		sqlDatabase:     "memsqldb",
-		enableMySQL:     true,
-		host:            testBindHost,
+func TestSQLDatabaseConfig_KeepsNameAndProtocols(t *testing.T) {
+	for _, sm := range []string{"memory", "concurrent", "mvcc"} {
+		t.Run(sm, func(t *testing.T) {
+			cfg := sqlDatabaseConfig(&startFlags{smType: sm, sqlDatabase: "memsqldb", enableMySQL: true, enablePgSQL: true})
+			assert.Empty(t, cfg.Backend, "the node's database_defaults fill the backend at provision")
+			assert.Equal(t, "memsqldb", cfg.Name)
+			assert.True(t, cfg.Protocol.MySQL)
+			assert.True(t, cfg.Protocol.PostgreSQL)
+		})
 	}
-
-	err := runStart(f)
-	require.Error(t, err, "runStart must fail when WAL is blocked")
-	// Should NOT fail with UnknownSMError (memory is valid).
-	var smErr *UnknownSMError
-	assert.False(t, errors.As(err, &smErr), "memory SM must not produce UnknownSMError")
 }
 
 // ---------------------------------------------------------------------------
