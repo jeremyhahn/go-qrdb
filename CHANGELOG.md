@@ -33,6 +33,8 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- On a standalone node an objstore database on the local provider now lives in its own store under its binding root (`<data-dir>/tenants/<tenant>/databases/<name>/objstore`), with the node's provider; before this it opened the configured `storage.objstore` path, shared with every other objstore database and with the node's own store. `storage.objstore`'s path now places the node's own store only, and a remote provider is unchanged. Data an objstore database wrote at the configured path before this release is not moved (docs/databases/architecture.md, #923).
+
 - **Key delivery works with `auth.enabled=false` (#1174).** An auto-provisioned key-delivery listener asks for node client certificates and trusts only the ceremony CA for them, so the cluster key route refuses a caller without a verified node certificate.
 - **Raft-mode disk state machines are durable (#1618).** `DiskAdapter.Sync` was a no-op, so go-quicraft could compact the Raft log past applied state the Pebble store (opened without synced writes) had never made durable, and a crash lost acknowledged writes. `PebbleStorage` now implements `storage.Syncer` (a synced WAL record, or a memtable flush when the WAL is disabled) and `DiskAdapter.Sync` calls it and returns its error. `QRDB_NOSYNC_WRITES=1` skips the Raft WAL fdatasync only in a `qrdb_testonly` build; a production build ignores it and logs one warning.
 

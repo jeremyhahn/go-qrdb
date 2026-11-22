@@ -43,6 +43,11 @@ credential under `settings` (`secret_key`, `access_key_id`, `account_key`,
 `credentials`, and fails the boot naming a file it cannot use; neither error
 prints the value. Paths in YAML are taken literally: write the expanded path.
 
+`settings.path` of the `local` provider places the node's own store. A
+database created with `--backend objstore` on the `local` provider lives under
+its binding root (`<data-dir>/tenants/<tenant>/databases/<name>/objstore`),
+with the node's provider and credentials.
+
 `storage.backend` has no `qrdb` value: `qrdbd` does not store through another
 go-qrdb node.
 
