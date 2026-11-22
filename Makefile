@@ -1784,6 +1784,13 @@ INT_FEATURES = $(sort $(subst _,-,$(patsubst INTTEST_%,%,$(foreach v,$(filter IN
 print-integration-features:
 	@printf '%s\n' $(INT_FEATURES)
 
+# one line per feature in INT_FEATURES: the feature, then the test/integration
+# files its integration-test-<feature> selects (int_files);
+# scripts/touched-features.sh reads the table through it, never a copy
+.PHONY: print-integration-feature-map
+print-integration-feature-map:
+	@$(foreach f,$(INT_FEATURES),printf '%s %s\n' '$(f)' '$(notdir $(call int_files,$(f)))';)
+
 # integration-test-feature is the one recipe behind every per-feature target:
 # `make integration-test-feature FEATURE=<docs folder name>`. The
 # `integration-test-%` pattern rule below dispatches to it, and so does integration-test-features, below, on a host.
@@ -2632,6 +2639,7 @@ LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-lean-standalone \
 	test-nightly-signal test-coverratchet test-coverage-merge-subprocess \
 	check-publication-bound test-publication-bound test-public-releasable \
+	test-touched-features test-touched-packages \
 	check-iface-sweep-findings test-iface-sweep-findings check-artifact-paths \
 	test-artifact-paths check-generated check-mod-tidy test-mod-tidy test-vet-modules \
 	test-release-alpha test-test-cross fmt vet test-secure-analyzer vet-sdk lint-sdk
@@ -2756,6 +2764,17 @@ check-publication-bound:
 .PHONY: test-publication-bound
 test-publication-bound:
 	@./scripts/check-publication-bound_test.sh
+
+# scripts/touched-features.sh and scripts/touched-packages.sh print what a diff
+# must re-run: the integration-test-<feature> targets (from the features.mk
+# table, via print-integration-feature-map) and the changed packages plus their
+# direct importers. Their suites feed paths through --files.
+.PHONY: test-touched-features test-touched-packages
+test-touched-features:
+	@./scripts/touched-features_test.sh
+
+test-touched-packages:
+	@GO="$(GO)" ./scripts/touched-packages_test.sh
 
 # The WHOLE tracked tree names no fleet value: no lab address, no lab host, no
 # path under the owner's home, and no tracked per-machine agent state (#565).
