@@ -151,21 +151,28 @@ func TestNewDataPlaneCreateFunc_LogKeysSurviveSnapshotRestore(t *testing.T) {
 	// Neither the PKCS#8 encoding nor the raw Ed25519 seed is in any file.
 	secrets := [][]byte{key.PKCS8, key.PKCS8[len(key.PKCS8)-ed25519.SeedSize:]}
 	for _, dir := range []string{dirA, dirB} {
-		err := filepath.WalkDir(dir, func(path string, e fs.DirEntry, err error) error {
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatalf("open root %s: %v", dir, err)
+		}
+		err = fs.WalkDir(root.FS(), ".", func(path string, e fs.DirEntry, err error) error {
 			if err != nil || !e.Type().IsRegular() {
 				return err
 			}
-			data, err := os.ReadFile(path)
+			data, err := root.ReadFile(path)
 			if err != nil {
 				return err
 			}
 			for _, secret := range secrets {
 				if bytes.Contains(data, secret) {
-					t.Errorf("%s holds the private key in plaintext", path)
+					t.Errorf("%s holds the private key in plaintext", filepath.Join(dir, path))
 				}
 			}
 			return nil
 		})
+		if cerr := root.Close(); cerr != nil {
+			t.Fatalf("close root %s: %v", dir, cerr)
+		}
 		if err != nil {
 			t.Fatalf("walk %s: %v", dir, err)
 		}
