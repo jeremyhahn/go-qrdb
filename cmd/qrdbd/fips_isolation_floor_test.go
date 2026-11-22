@@ -80,3 +80,60 @@ func TestApplyFIPSIsolationFloor(t *testing.T) {
 		})
 	}
 }
+
+// homeFloorDouble models the tightening's dependence on the tenant home
+// stores: tightening to strict probes each isolated tenant's node-key log
+// through its home store, so the write fails (the floor stays
+// operator-access) until the homes are attached.
+type homeFloorDouble struct {
+	floorDouble
+	attached bool
+}
+
+func (d *homeFloorDouble) SetClusterIsolationPolicy(ctx context.Context, next tenant.ClusterIsolationPolicy) error {
+	if !d.attached {
+		d.sets++
+		return errors.New("homeFloorDouble: tenant home store not attached")
+	}
+	return d.floorDouble.SetClusterIsolationPolicy(ctx, next)
+}
+
+func TestAttachTenantHomesThenApplyFIPSFloor_AttachesBeforeTightening(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("fips attaches then tightens", func(t *testing.T) {
+		d := &homeFloorDouble{floorDouble: floorDouble{floor: tenant.ClusterIsolationPolicyOperatorAccess}}
+		attached, err := attachTenantHomesThenApplyFIPSFloor(ctx, true, func() bool {
+			d.attached = true
+			return true
+		}, d)
+		if err != nil || !attached {
+			t.Fatalf("attachTenantHomesThenApplyFIPSFloor = (%v, %v), want (true, nil)", attached, err)
+		}
+		if d.floor != tenant.ClusterIsolationPolicyStrict {
+			t.Fatalf("floor = %q, want strict", d.floor)
+		}
+	})
+
+	t.Run("old order refuses", func(t *testing.T) {
+		d := &homeFloorDouble{floorDouble: floorDouble{floor: tenant.ClusterIsolationPolicyOperatorAccess}}
+		if err := applyFIPSIsolationFloor(ctx, true, d); !errors.Is(err, errFIPSFloorNotStrict) {
+			t.Fatalf("applyFIPSIsolationFloor before attach = %v, want errFIPSFloorNotStrict", err)
+		}
+	})
+
+	t.Run("fips off attaches without a floor write", func(t *testing.T) {
+		d := &homeFloorDouble{floorDouble: floorDouble{floor: tenant.ClusterIsolationPolicyOperatorAccess}}
+		ran := false
+		attached, err := attachTenantHomesThenApplyFIPSFloor(ctx, false, func() bool {
+			ran = true
+			return false
+		}, d)
+		if err != nil || attached || !ran {
+			t.Fatalf("attachTenantHomesThenApplyFIPSFloor = (%v, %v), attach ran %v; want (false, nil), true", attached, err, ran)
+		}
+		if d.sets != 0 || d.floor != tenant.ClusterIsolationPolicyOperatorAccess {
+			t.Fatalf("floor write with FIPS off: sets = %d, floor = %q", d.sets, d.floor)
+		}
+	})
+}

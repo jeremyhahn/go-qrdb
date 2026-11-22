@@ -19,6 +19,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -125,5 +126,90 @@ func TestNodeAuditEntitlementLookup_DelegatesWhenSupported(t *testing.T) {
 	}
 	if !on {
 		t.Fatal("want true: the wired servicer reports acme entitled")
+	}
+}
+
+// fakeTighteningTenantServicer extends fakeTenantServicer with the
+// strict-tightening marker read *tenant.TenantService and the KV-routed
+// service implement.
+type fakeTighteningTenantServicer struct {
+	fakeTenantServicer
+	tightening map[string]bool
+}
+
+func (f *fakeTighteningTenantServicer) IsolationTightening(_ context.Context, tenantID string) (bool, error) {
+	return f.tightening[tenantID], nil
+}
+
+// ClusterIsolationPolicy reports the operator-access floor: only the
+// tenant's own policy or the marker makes it strict.
+func (f *fakeTighteningTenantServicer) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
+	return tenant.ClusterIsolationPolicyOperatorAccess, nil
+}
+
+func TestNodeAuditIsolationLookup_ForwardsIsolationTightening(t *testing.T) {
+	ctx := context.Background()
+
+	n := &Node{}
+	l := &nodeAuditIsolationLookup{node: n}
+	got, err := l.IsolationTightening(ctx, "acme")
+	if err != nil || got {
+		t.Fatalf("nil Tenant: IsolationTightening = (%v, %v), want (false, nil)", got, err)
+	}
+
+	n.Tenant = &fakeTighteningTenantServicer{tightening: map[string]bool{"acme": true}}
+	got, err = l.IsolationTightening(ctx, "acme")
+	if err != nil || !got {
+		t.Fatalf("forwarded marker: IsolationTightening = (%v, %v), want (true, nil)", got, err)
+	}
+	got, err = l.IsolationTightening(ctx, "other")
+	if err != nil || got {
+		t.Fatalf("no marker: IsolationTightening = (%v, %v), want (false, nil)", got, err)
+	}
+
+	n.Tenant = &fakeTenantServicer{}
+	if got, err = l.IsolationTightening(ctx, "acme"); err == nil {
+		t.Fatalf("servicer without the method: IsolationTightening = (%v, nil), want an error (fail closed)", got)
+	}
+}
+
+// systemRouteStore answers every recorded audit route as the system route.
+type systemRouteStore struct{}
+
+func (systemRouteStore) Get(context.Context, string) ([]byte, error) {
+	return []byte(service.AuditRouteSystem), nil
+}
+
+func (systemRouteStore) PutIfAbsent(context.Context, string, []byte) (bool, error) {
+	return false, errors.New("systemRouteStore: route already recorded")
+}
+
+// unusedHomeGroups is a home-group source no test path reaches: a recorded
+// system route never resolves the tenant's home group.
+type unusedHomeGroups struct {
+	service.AuditHomeGroupSource
+}
+
+func TestNodeAuditIsolationLookup_TighteningRefusesSystemAppend(t *testing.T) {
+	ctx := context.Background()
+	n := &Node{Tenant: &fakeTighteningTenantServicer{
+		fakeTenantServicer: fakeTenantServicer{tenants: map[string]*tenant.TenantInfo{
+			"acme": {ID: "acme", IsolationType: tenant.IsolationBarrier},
+		}},
+		tightening: map[string]bool{"acme": true},
+	}}
+	r := service.NewSystemShardAuditResolver(nil, 1, &nodeAuditIsolationLookup{node: n})
+	r.SetHomeGroupSource(unusedHomeGroups{}, systemRouteStore{})
+
+	_, _, err := r.ResolveAuditAppend(ctx, "acme")
+	var refused *tenant.SystemAuditRouteError
+	if !errors.As(err, &refused) {
+		t.Fatalf("ResolveAuditAppend during a strict tightening = %v, want *tenant.SystemAuditRouteError", err)
+	}
+
+	// Without the marker the same append is allowed onto the system route.
+	n.Tenant.(*fakeTighteningTenantServicer).tightening = nil
+	if _, _, err := r.ResolveAuditAppend(ctx, "acme"); err != nil {
+		t.Fatalf("ResolveAuditAppend without a tightening = %v, want nil", err)
 	}
 }

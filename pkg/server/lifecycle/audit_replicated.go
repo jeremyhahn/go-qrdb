@@ -16,6 +16,7 @@ package lifecycle
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -34,6 +35,10 @@ import (
 // can call through n before it is returned) every tenant is routed as a
 // logical-prefix tenant, mirroring SystemShardAuditResolver's own
 // nil-isolation behavior.
+//
+// It forwards the three reads the audit and log resolvers make: GetTenant,
+// ClusterIsolationPolicy (the cluster floor) and IsolationTightening (the
+// in-flight strict-tightening marker the system-route append check reads).
 type nodeAuditIsolationLookup struct {
 	node *Node
 }
@@ -56,7 +61,25 @@ func (l *nodeAuditIsolationLookup) ClusterIsolationPolicy(ctx context.Context) (
 	return l.node.Tenant.ClusterIsolationPolicy(ctx)
 }
 
+// IsolationTightening implements tenant.IsolationTighteningReader: whether a
+// tightening of tenantID to strict is in flight, the marker the audit
+// resolver's system-route append check reads before the tenant itself. With
+// no tenant service there is no tightening. A tenant service that does not
+// report the marker is an error, not false: the append fails closed rather
+// than racing a tightening it cannot see.
+func (l *nodeAuditIsolationLookup) IsolationTightening(ctx context.Context, tenantID string) (bool, error) {
+	if l.node.Tenant == nil {
+		return false, nil
+	}
+	reader, ok := l.node.Tenant.(tenant.IsolationTighteningReader)
+	if !ok {
+		return false, fmt.Errorf("lifecycle: tenant service %T does not report strict tightening for tenant %q", l.node.Tenant, tenantID)
+	}
+	return reader.IsolationTightening(ctx, tenantID)
+}
+
 var _ tenant.ClusterIsolationPolicyReader = (*nodeAuditIsolationLookup)(nil)
+var _ tenant.IsolationTighteningReader = (*nodeAuditIsolationLookup)(nil)
 
 // nodeAuditEntitlementLookup reads n.Tenant lazily, exactly like
 // nodeAuditIsolationLookup above. ReplicatedAuditEnabled is not part of the

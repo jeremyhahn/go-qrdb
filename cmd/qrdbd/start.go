@@ -2092,17 +2092,6 @@ func runStart(f *startFlags) (err error) {
 				_ = shutdownNode(nodeCloser)
 				return err
 			}
-			// FIPS-140 always tightens the cluster-wide isolation-policy
-			// floor to strict (pkg/tenant/isolation_policy.go); an operator
-			// may also raise it explicitly via the isolation-policy verb.
-			// The write may lose to a peer that already moved the floor, so
-			// the floor is read back: a FIPS node whose floor is not strict
-			// refuses to serve (applyFIPSIsolationFloor). The node-key log
-			// probe the tightening consults is wired by BuildServices.
-			if err := applyFIPSIsolationFloor(sigCtx, fips140.Enabled(), svcNode.Tenant); err != nil {
-				_ = shutdownNode(nodeCloser)
-				return err
-			}
 			// The node's long-lived watchers (Key B cache eviction, undone
 			// tenant acknowledgement), composed in one place shared with
 			// sdk/go/node; see lifecycle.StartNodeWatchers. Unconditional --
@@ -2541,12 +2530,28 @@ func runStart(f *startFlags) (err error) {
 			// they fail closed. The served IAM services and the auth middleware
 			// resolve through mgmtResult's resolver, so it gets the same home
 			// stores.
-			homesAttached := false
-			switch {
-			case standalone && barrierRegistry != nil:
-				homesAttached = lifecycle.AttachLocalTenantHomes(svcNode, barrierRegistry, tenantHostReg, mgmtResult.storeResolver)
-			case raftBackendReg != nil:
-				homesAttached = lifecycle.AttachTenantHomes(svcNode, raftBackendReg, mgmtResult.storeResolver)
+			//
+			// FIPS-140 always tightens the cluster-wide isolation-policy
+			// floor to strict (pkg/tenant/isolation_policy.go); an operator
+			// may also raise it explicitly via the isolation-policy verb.
+			// The write may lose to a peer that already moved the floor, so
+			// the floor is read back: a FIPS node whose floor is not strict
+			// refuses to serve (applyFIPSIsolationFloor). The tightening's
+			// node-key log probe resolves each isolated tenant's catalog
+			// through its home store, so the floor is applied once the home
+			// stores are attached and before the node serves.
+			homesAttached, err := attachTenantHomesThenApplyFIPSFloor(sigCtx, fips140.Enabled(), func() bool {
+				switch {
+				case standalone && barrierRegistry != nil:
+					return lifecycle.AttachLocalTenantHomes(svcNode, barrierRegistry, tenantHostReg, mgmtResult.storeResolver)
+				case raftBackendReg != nil:
+					return lifecycle.AttachTenantHomes(svcNode, raftBackendReg, mgmtResult.storeResolver)
+				}
+				return false
+			}, svcNode.Tenant)
+			if err != nil {
+				_ = shutdownNode(nodeCloser)
+				return err
 			}
 			if !homesAttached && barrierRegistry != nil {
 				slog.Warn("isolated tenants' home stores are not available on this node; their requests fail closed")
@@ -3943,6 +3948,17 @@ func applyFIPSIsolationFloor(ctx context.Context, fipsOn bool, svc any) error {
 		slog.Info("tenant isolation: the cluster floor was already strict under FIPS-140", slog.Any("write_error", setErr))
 	}
 	return nil
+}
+
+// attachTenantHomesThenApplyFIPSFloor attaches the isolated tenants' home
+// stores (attach) and only then applies the FIPS-140 isolation floor
+// (applyFIPSIsolationFloor): tightening to strict probes the node-key log
+// of each isolated tenant, whose catalog resolves through its home store,
+// so a floor applied before the homes are attached fails for a valid
+// tenant. It returns attach's result and the floor's error.
+func attachTenantHomesThenApplyFIPSFloor(ctx context.Context, fipsOn bool, attach func() bool, svc any) (bool, error) {
+	attached := attach()
+	return attached, applyFIPSIsolationFloor(ctx, fipsOn, svc)
 }
 
 func shutdownNode(node io.Closer) error {
