@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -67,7 +68,12 @@ func (f *fakeMaterializingFactory) Create(cfg database.DatabaseConfig, dataDir s
 		return database.NewEmbeddedBackendFactory().Create(cfg, dataDir)
 	}
 	hub := watch.NewHub()
-	eng, err := engine.NewMVCCEngine(memory.NewStorage(), engine.WithMVCCWatchHub(hub))
+	stg := memory.NewStorage()
+	ts, err := timeseries.New(stg)
+	if err != nil {
+		return nil, err
+	}
+	eng, err := engine.NewMVCCEngine(stg, engine.WithMVCCWatchHub(hub), engine.WithMVCCTimeSeries(ts))
 	if err != nil {
 		return nil, err
 	}

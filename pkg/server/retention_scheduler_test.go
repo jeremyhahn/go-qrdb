@@ -16,14 +16,17 @@ package server
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
@@ -350,5 +353,55 @@ func TestServer_RetentionStores(t *testing.T) {
 	srv = New(testConfig(t, false, false), newMockKVService(), &mockAdminService{}, WithDatabaseServiceRegistry(noTS))
 	if stores := srv.retentionStores(context.Background()); len(stores) != 0 {
 		t.Fatalf("a bundle without a time-series service was scheduled: %+v", stores)
+	}
+}
+
+// TestRetentionScheduler_SweepsMaterializedDatabase proves one retention
+// pass reaches a database the Manager materialized in its own store: the
+// expired point goes and the live one stays.
+func TestRetentionScheduler_SweepsMaterializedDatabase(t *testing.T) {
+	const tenantID, name, metric = "acme", "metrics", "cpu.usage"
+	ctx := context.Background()
+	factory := &fakeMaterializingFactory{}
+	dbMgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(factory))
+	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fake := factory.last(t)
+	ts := service.NewTimeSeriesService(fake.Host(), fake.ShardID())
+
+	now := time.Now().UTC().Truncate(time.Second)
+	expired := &service.DataPoint{Metric: metric, Value: 1, Timestamp: now.Add(-2 * time.Hour)}
+	live := &service.DataPoint{Metric: metric, Value: 2, Timestamp: now.Add(-time.Minute)}
+	for _, p := range []*service.DataPoint{expired, live} {
+		if err := ts.WritePoint(ctx, p); err != nil {
+			var notCompiled *timeseries.NotCompiledError
+			if errors.As(err, &notCompiled) || strings.Contains(err.Error(), (&timeseries.NotCompiledError{}).Error()) {
+				t.Skipf("time series not built: %v", err)
+			}
+			t.Fatalf("WritePoint: %v", err)
+		}
+	}
+	if err := ts.SetRetentionPolicy(ctx, metric, &service.RetentionPolicy{Duration: time.Hour}); err != nil {
+		t.Fatalf("SetRetentionPolicy: %v", err)
+	}
+
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{}, WithDatabaseManager(dbMgr))
+	s := &retentionScheduler{
+		stores:   srv.retentionStores,
+		interval: time.Hour,
+		now:      func() time.Time { return now },
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	if n := s.passOnce(ctx); n != 1 {
+		t.Fatalf("retention pass swept %d metrics, want 1", n)
+	}
+
+	res, err := ts.QueryRich(ctx, &service.QueryRequest{Metric: metric, StartTime: now.Add(-24 * time.Hour), EndTime: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("QueryRich: %v", err)
+	}
+	if len(res.Points) != 1 || res.Points[0].Value != live.Value {
+		t.Fatalf("points after retention = %+v, want only the live point", res.Points)
 	}
 }
