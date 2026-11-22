@@ -1,0 +1,1427 @@
+diff --git a/software/templates/github-actions/README.md b/software/templates/github-actions/README.md
+index 157b121..effc940 100644
+--- a/software/templates/github-actions/README.md
++++ b/software/templates/github-actions/README.md
+@@ -11,7 +11,7 @@ the authority, this table is the index.
+ 
+ | File | Version | Copy to | Notes |
+ |------|---------|---------|-------|
+-| `ci.yml` | v1.53 | `.github/workflows/ci.yml` | The canonical CI workflow and merge gate. v1.53 (2026-11-21, Tenant Agent ruling 1087, owner order, and the Tenant Agent's read of trusted-firmware #821: CI Gate posts no red for a cancelled main run, main-green for a tag is a green run on the tagged commit, the CI_PREFLIGHT_RUNS_ON SOP is the Infra Department's, and the LAN mask covers internal host names): the LAN mask step scans every `*_REGISTRY` variable and sets `VARS_CI_IMAGE_REGISTRY` from the repository variable, so a registry a later step takes from `vars` is masked before `ci-image-cache.sh` can print it (the Tenant Agent's read of the Codex P1 on go-quicbaas #2667; a copy adds one `VARS_<NAME>` line per other `vars.*_REGISTRY` its job reads, `testdata/ci-mask-lan-tests.py` M1 to M3); main's concurrency group is `main-{event}` again, so a newer push to main cancels the older main run; v1.26.2's per-sha group (ruling 145) let superseded main runs queue ahead of PR work. **Rollout: a ci.yml-only PR per repository, separate from code-review.yml and not waiting for it, trusted-firmware and go-qrdb first**, carrying v1.52's runner selection so internal pull requests run on our runners. v1.52 (2026-11-21, Tenant Agent order, defect fix): a fork's pull request under `pull_request` reached a self-hosted runner, since `preflight`'s runs-on had no fork check and the runner selection could overflow the run to the Dells. A pull request whose head repository is not this repository now runs every job on `ubuntu-latest`: `preflight`'s runs-on adds a fork clause before `CI_PREFLIGHT_RUNS_ON`, and `Hosted or overflow runner (ruling 1024)` outputs the hosted default for a fork's head with no API call. `Runner labels (ruling 633)` gives a fork's head under `pull_request` no unset-variable exemption, as under `pull_request_target`. Same-repository pull requests, pushes and Gitea are unchanged. Tests: `testdata/runner-labels-tests.py` part H, `testdata/runner-select-tests.py` part E. Adopt as a one-file bump. v1.51 (2026-11-21, ruling 633 hardening): `Runner labels (ruling 633)` also reads every runs-on under `pull_request_target`, same-repository and fork, the event `code-review.yml` and `signatures.yml` run on; in a workflow with that trigger a fork's head gets no overflow and no unset-variable exemption, since a fork never reaches a self-hosted runner. v1.50 (2026-11-21, rulings 999/1024, defect fix): `Hosted or overflow runner (ruling 1024)` treated a run list shorter than its `total_count` (the Actions API lags while runs move: "61 of 62 entries") as an unread count and picked hosted, so under a full hosted queue it never overflowed. A short list is now a lower bound: it overflows when what it read reaches a trigger, and picks hosted with a `::warning` naming the shortfall when it does not. Tests: `testdata/runner-select-tests.py` B7, C4. Adopt as a one-file bump. v1.49 (2026-11-20, Tenant Agent ruling 1047 (3) and (2), CI priority 1, defect fix): on github.com the `preflight` job runs on the Dells' bigdisk pool, `fromJSON(vars.CI_PREFLIGHT_RUNS_ON \|\| '["self-hosted","linux","x64","bigdisk"]')`, instead of waiting up to an hour in the full hosted queue for ten seconds of work that every other job needs; the repository variable `CI_PREFLIGHT_RUNS_ON` (runs-on JSON) is the fallback switch, set to `"ubuntu-latest"` while the Dells are down, and off github.com the job keeps `ubuntu-latest`. The schedule guard gets `AGENT_TOKEN` off github.com only, where it reads it. `Runner labels (ruling 633)` checks preflight's runs-on with the variable unset and set; tests in `testdata/runner-labels-tests.py` part F. Adopt as a one-file bump. v1.48 (Tenant Agent ruling 1024 item 1, queue 250 (a), owner decision): GitHub-hosted runners stay the default and the Dells' self-hosted pools supplement them. A preflight step, `Hosted or overflow runner (ruling 1024)`, counts this repository's queued and in-progress jobs on `ubuntu-*` runners through the Actions API and outputs `runner` and `runner_docker` as runs-on JSON: `"ubuntu-latest"`, or `[self-hosted, linux, x64, bigdisk]` and `[..., bigdisk-docker]` when `HOSTED_JOBS_PER_REPO` (12) or more hosted jobs are in progress or another run's hosted job has queued `HOSTED_QUEUE_GRACE_SECONDS` (60) or more. lint, image, lint-gates, integration and soak read `runner_docker`, CI Gate reads `runner`. When the counts cannot be read the step picks hosted and prints a `::warning` naming why; it never overflows on an unread count. Off github.com nothing changes. `Runner labels (ruling 633)` accepts exactly those outputs in ci.yml (default a standard image, overflow exactly the bigdisk lists); any other self-hosted label still needs its waiver. Tests: `testdata/runner-select-tests.py`, `testdata/runner-labels-tests.py` part E. Adopt as a one-file bump. v1.47 (Tenant Agent ruling 1007; go-qrdb #1642's Codex review): `Runner labels (ruling 633)` checks the runs-on label and the waiver's category together. The review-only labels `codex` and `qwen` run only in code-review.yml, whatever the waiver says, `codex` with `credential:` and `qwen` with `hardware:`, and `credential:` is the `codex` job's alone; any other pairing is finding (f). A repository that copied v1.46 unchanged passes; adopt as a one-file bump. v1.46 (Tenant Agent ruling 999, owner decision): GitHub-hosted standard runners for every job possible; a self-hosted job names its reason's category, `# self-hosted: hardware: <reason>` or `# self-hosted: oversize: <reason>` (`credential:` for the Codex review only, pending the Tenant Agent), and a reason without one is finding (e). Adopt in ONE PR. v1.45 (Tenant Agent ruling 901): every job that builds an image runs `scripts/ci-image-history.sh` on the images it will use, after its last build step and before its first use, on a pool runner, and publish-images masks the LAN addresses and checks through `ci-image-cache.sh` v4 before the push. v1.44 (2026-11-18, Tenant Agent ruling 887): every job that builds runs `scripts/ci-mask-lan.sh` after the credential mask, so a pool job masks the LAN addresses its runner names. v1.43 (2026-11-17, Tenant Agent ruling 833; the owner's 11-07 ruling that GitHub-hosted runners are the default): every job that does not name `release` runs on a standard GitHub-hosted image on github.com, or its runs-on line says why it cannot (`# self-hosted: <reason>`); a larger runner is refused, since it bills on a public repository. The preflight step `Runner labels (ruling 633)` enforces both; `testdata/runner-labels-tests.py` part D tests them. The template's batch.yml, fuzz.yml and code-review.yml self-hosted jobs carry their reasons. v1.42 (2026-11-16, owner ruling 742 (1)): the CI Gate is hermetic, its outcome set only by the tree under test, on a PR and on `main`. `make deps-check`, `make security` (govulncheck, trivy fs) and `trivy image` leave `ci.yml` on every event for the scheduled `scans.yml`, so a new advisory or upstream release never turns `main` red and no PR inherits it; `make gosec` runs in the lint job on every event, and `publish-images` (release runner, never a PR gate) scans the toolchain image before it pushes it (`ci-image-cache.sh` v3). A repository adopts v1.42 in one CI-file PR that takes `ci-image-cache.sh` v3, deletes `deps-bump.yml` and adds `scans.yml` v1.0.0. v1.41 (2026-11-16, owner ruling 742 (2)): PR/main parity. Every job and step that runs on a push to `main` also runs on a `pull_request`: `CI_FULL_TIER` is true on every event but a refused dispatch, so a PR runs integration, `make security` and `trivy image` as `main` does, and the `make gosec (PR tier)` step goes (`make security` runs gosec). `ci:full` selects no tier; it only turns off the docs-only and `lint-gates` path scopes (new `CI_FULL_LABEL`). The exceptions: `publish-images` (release runner, ruling 633), soak (schedule and dispatch only) and the two path scopes; a docs-only PR also skips integration, which CI Gate now checks as `code`. A green PR Integration job proves its tree, so an up-to-date PR's squash merge skips the bigdisk jobs on `main`. A repository adopts v1.41 in one CI-file PR and sizes its PR runner capacity for integration on every PR. v1.40 (2026-11-16, owner ruling 732): a library behind a newer upstream release never fails CI. The deps-check step passes `DEPS_CHECK_LAG=report` on every event, so the shared [depscheck](../deps/depscheck/README.md) v1.1.0 reports every lag and fails only a vulnerable go.mod requirement, a lookup failure, and a fork replace or pseudo-version with no reason comment on a line the change adds or bumps; the daily `deps-bump.yml` v1.1.0 keeps the full gate and carries every lag as one PR. A repository adopts v1.40 in one CI-file PR with `scripts/depscheck` v1.1.0, the Makefile's `$(if $(DEPS_CHECK_LAG),-lag $(DEPS_CHECK_LAG))` argument and `deps-bump.yml` v1.1.0. v1.39 (2026-11-14, ruling 640, owner decision 222 (a)): `make deps-check` fails a library behind its latest release only when the change adds that go.mod requirement or changes its version, or when govulncheck reports a version of a go.mod requirement vulnerable (a stdlib, toolchain or indirect-only finding is reported, not failed); a lag the change did not touch is reported, not failed. A new lint-job step, `Base commit for deps-check (ruling 640)`, fetches one commit at depth 1 (a pull request's base sha, the merge ref's first parent, or a push's `before`) and passes it as `DEPS_CHECK_BASE`; a schedule or `workflow_dispatch` run has none and keeps the full gate. The preflight refusal of a `workflow_dispatch` off main exempts `ci/deps-bump`, which runs the PR tier, because `deps-bump.yml` dispatches CI there. A repository adopts v1.39 in one CI-file PR with the shared [depscheck](../deps/depscheck/README.md) at `scripts/depscheck`, its Makefile's `deps-check` and `deps-bump` targets, and `deps-bump.yml`. v1.38 (2026-11-14, owner ruling 633, decision 219(d); go-xkms #1384): release and publish jobs (release.yml, `publish-images`, anything that pushes images, signs, or uploads release assets) run only on `[self-hosted, linux, x64, release]`, and pull request jobs never do. `publish-images` takes that label; on GitHub it runs only when the repository variable `RELEASE_RUNNER` is `true`, on Gitea as before. The preflight step `Runner labels (ruling 633)` fails CI when a job that names `release` could run for a pull request (a), or its `if:` does not restrict it to a push to `refs/heads/main` or `refs/tags/`, or a `workflow_dispatch` on main (b); tests in `testdata/runner-labels-tests.py`. The `bigdisk-docker` pools get a rootless Docker daemon of their own at the same `/var/run/docker.sock`, so workflows need no change, but images and containers do not persist between jobs, `--network host` is the rootless namespace's network, and `-v $GITHUB_WORKSPACE:...` still mounts an empty path. A repository adopts v1.38 in one CI-file PR that also moves its release.yml jobs from `ubuntu-latest` to the release label, pins its build and scan images by `@sha256` digest and pulls them by digest before `docker create` or `docker run`, and sets `RELEASE_RUNNER` only after Infrastructure reports the release pools live ([ci-standard.md](../../conventions/ci-standard.md) §3a). v1.37 (2026-11-13, ruling 580): every job in every template carries `timeout-minutes` so a hung job ends itself; ceilings by kind are 60 for unit, race, lint and other test jobs, 120 for integration, image builds, soak and release, 10 for gates and aggregators; a repository sizes each job at or under its ceiling from 1.5 x its longest green run, and a job whose green runs need more keeps its measured value. v1.36 (2026-11-13, owner approval: keep CI caches local): a self-hosted job never touches the Actions cache; every `actions/setup-go` step takes `cache: ${{ runner.environment != 'self-hosted' }}`, and an `actions/cache` step runs only when a `$CI_HOST_CACHE` lookup missed. The self-hosted pools supply GOCACHE, GOMODCACHE, CI_HOST_CACHE, Athens GOPROXY and the dev-cache Trivy mirrors. v1.35.3 (2026-11-12, Tenant Agent m2586): `pull_request` also fires on `ready_for_review`, so a draft marked ready gets its CI run. v1.35.2 (2026-11-11, Tenant Agent m2577): the `Signatures` job moves to `signatures.yml`, so CI Gate no longer needs it; adopt with `signatures.yml` and `.github/allowed_signers` in one CI-file PR. v1.35.1 (2026-11-11): the `Signatures` job fails closed when a named base cannot be read, and its signature-presence check cannot fail on a long signed message. v1.35 (2026-11-11, Tenant Agent m2557, owner ruling on commit signing): a `Signatures` job, a `pr` job in CI Gate's needs, checks every commit in the range (base..head on a pull request, before..after on a push to `main`) with `git verify-commit` (`gpg.format=ssh`, `gpg.ssh.allowedSignersFile`) against `.github/allowed_signers` read from the base commit, and requires the key's registered principal to be the committer email; a commit GitHub made (committer `noreply@github.com`) passes only when the API reports it verified with committer `web-flow`. It fails closed on an unsigned commit, an unknown key, a principal mismatch or an unreadable API, printing the commit and why. A repository adopts v1.35 in one CI-file PR that also adds its `.github/allowed_signers` from [`../signing/`](../signing/README.md). v1.34.1 (2026-11-08, Tenant Agent m2226 item 2, ruling 377): `GO_BUILD_PROXY` has no trailing `direct` (dependency-resolution.md, no direct fetch anywhere); adoption PRs carry v1.34.1. v1.34 (2026-11-08, Tenant Agent m2211 item 2(b)): the `changes`, `schedule-guard` and `arch-gates` jobs are one `preflight` job (the guard first, nothing checked out before it), so the template has 8 jobs, not 10; CUSTOMIZE jobs read `needs.preflight.outputs.*`, and each repository merges its unit and race shards into one job in its adoption PR. v1.33.2 (2026-11-08, Tenant Agent m2113 item 3, with InfoSec): the `Releasability (private patterns)` step does not fail on a matched line that carries the InfoSec waiver `lab-string-ok: <reason>` on the same line, with the colon and a reason; it lists each waived line as a notice, path and line only, with the count. A bare marker still fails ([public-hygiene.md](../../conventions/public-hygiene.md) "Internal values stay private", rule 5). v1.33.1 (2026-11-08, Tenant Agent m2107 item 4): comments only; the pattern file's source is named as dept-infosec `security/internal-names.patterns`. v1.33 (2026-11-08, Tenant Agent m2104 item 2): the releasability step accepts the five classes of the regenerated pattern file, `coord-host`, `internal-email`, `lab-address`, `lab-host` and `owner-path` (optional `/i`); the image namespace comes from the repository variable `CI_IMAGE_NAMESPACE`. v1.32 (2026-11-08, Tenant Agent m2098 item 2, InfoSec finding): the `Releasability (private patterns)` step reads each pattern line as `class<TAB>regex` (class `lab-address`, `lab-host` or `owner-path`, optional `/i`; blank and `#` lines skipped), fails on a malformed line, an unknown class or a regex `grep -E` refuses, printing the line number only, and runs `git grep -i -E` over the regex fields. v1.31 grepped each whole line with `-F`, so nothing matched and the gate was green for a false reason; no repository merges v1.31. v1.31 (2026-11-07, Tenant Agent m2069 item 3): the `Releasability (private patterns)` step in the lint job checks the tracked tree against the private pattern file from the Actions secret `RELEASABILITY_PATTERNS` (source in platform-configs) and prints path and line only; `RELEASABILITY_TEST` names no internal value ([public-hygiene.md](../../conventions/public-hygiene.md) "Internal values stay private"). **CUSTOMIZE:** set the secret on each repository. v1.30 (2026-10-31, Tenant Agent m1804): the five fixes of the 72-hour evaluation ([ci-standard.md](../../conventions/ci-standard.md) §12): the toolchain image from the registry cache (`ci-image-cache.sh`, the `publish-images` job on the release runner), a proven tree skips the main full tier, path-scoped `lint-gates` and no `lane-ckpt/*` PRs, a timeout on every job, `make gosec` in the PR tier and no dispatch off `main`. Needs `make gosec` and `make docker-build-toolchain`. v1.29.5 (2026-10-30, ruling 262(a)): one change, the `GO_BUILD_PROXY` separator is `|` (`<DEVCACHE_GOPROXY>|https://proxy.golang.org|direct`), as everywhere else ([devops.md](../../conventions/devops.md) §2a), because Go falls through a `,` only on a 404 or 410 and through a `|` on any error. The repository's Makefile quotes the value on its docker build line (`--build-arg "GO_BUILD_PROXY=$(GO_BUILD_PROXY)"`, [devcontainer.md](../../conventions/devcontainer.md) §4), where an unquoted `|` is a shell pipe. A repository adopts v1.29.5 in the one CI-file PR that adopts v1.29.4, with that Makefile line. v1.29.4 (2026-10-30, ruling 261(c), claude-agents #379 comment 157032): each `make docker-build` passes `GO_BUILD_PROXY=<DEVCACHE_GOPROXY>,https://proxy.golang.org,direct` (v1.29.5: `|`) when the runner sets `DEVCACHE_GOPROXY` and Athens answers a 5-second probe, so the image and Lint Gates builds fetch through Athens with the public fallback ([devops.md](../../conventions/devops.md) §2a); the schedule guard reads `waiting` before `in_progress`, so no run starting between its two queries goes uncounted (trusted-firmware's fix); and it requires `in-toolchain-image.sh` v4. A repository adopts it in one CI-file PR that takes both files and keeps its CUSTOMIZE blocks. v1.29.3 (2026-10-29, ruling 255(10)/(11)(c)): one schedule run per repository, skipped when a `main` run is in flight. A schedule run's concurrency group is `schedule-{repository}`, and a new `schedule-guard` job skips every bigdisk job, and CI Gate with them (`skipped`, never green), while the workflow has a push run on `main` in progress or waiting; it fails closed when the API gives no count ([ci-standard.md](../../conventions/ci-standard.md) §10 (h)). A bigdisk CUSTOMIZE job adds `schedule-guard` to its needs and the guard clause to its `if:`. A repository adopts it in one CI-file PR, which can ride its v1.29.2 adoption bump PR. v1.29.2 (2026-10-28, ruling 239(8)): comments only. A `CUSTOMIZE` job that runs only when certain paths change needs `[changes, image]`, and its `if:` tests an output that the image job's build step sets (such as `needs.image.outputs.built == 'true'`) together with the changes output. On a pull_request, an `if:` that read only `needs.changes.result == 'success'` or only `needs.changes.outputs.<path> != ''` left the job skipped unstarted in two runs; the form that tests the image job's output started it. No repository adopts it by PR. v1.29.1 (2026-10-27, ruling 226(15), 108 repair): lint fails fast. The `lint-gates` job runs `make lint-gates` without `-k`, so the first failing gate ends the step; under `-k`, go-quicbaas run 68949's Lint took 51.5 min, 37 of them after its `go vet` failure. Every other job, gate and tier is v1.29.0's. v1.29.0 (2026-10-27, ruling 220(5) and 221(4), handbook #474; [ci-standard.md](../../conventions/ci-standard.md) §9): the Alpine package index checksum joins the integration image's tag hash. A new "Read the Alpine package index" step runs `apk-index-sum.sh` into `APK_INDEX_SUM` in each job that names the integration image (image, lint-gates, integration, soak), so none waits for the image job; the repository's `make -s it-image` hashes it and `make docker-build` passes it as a build argument ([devcontainer.md](../../conventions/devcontainer.md) §6), so a new Alpine package release, a CVE fix among them, changes the tag and forces a rebuild (go-enclave main fd83b79ce, CVE-2026-92392). Every job, gate and tier is v1.28's. A repository adopts v1.29 in one PR with `apk-index-sum.sh`, its Makefile's `APK_INDEX_SUM` and its Dockerfile `integration` stage's `ARG APK_INDEX_SUM` and `apk upgrade --no-cache`. The parallel stage jobs (ruling 220(7)) move to v1.30: `runs-on` cannot take a needs output on Gitea 1.27.1 (run 68501), and the registry-push question is with the owner (169). v1.28.0 (2026-10-26, ruling 219(3); [ci-standard.md](../../conventions/ci-standard.md) §8): `make deps-check` joins the PR tier as a lint-class gate. Its image-job step drops the `CI_FULL_TIER` condition and runs on every event, a docs-only PR included, as `make lint` does, with `IN_IMAGE_NETWORK=bridge` for the module proxy; it stays on the full tier. A module behind its dependency floor now fails the PR rather than `main` after the merge (go-objstore main 8946d5f53, fixed by go-objstore #127). The image job is already `pr` in CI Gate, so the gate's needs and results lines do not change. Each repository adopts v1.28 as a CI-file PR, and none hand-patches its `ci.yml` ahead of the template. v1.27.0 (2026-10-25, Tenant Agent m1192 (6), item 27, dept-software #710; [ci-standard.md](../../conventions/ci-standard.md) §10 (g)): a new `lint-gates` job runs the repository's `make -k lint-gates` in the toolchain image in parallel with the image job's `make lint`, not in series after it. It runs only when the Makefile or a tracked `*.mk` defines a `lint-gates` target, and otherwise prints OK and passes without building an image. It builds the images as the image job does (`make docker-build`, then `make -s toolchain-image`), skips on a draft, and is a `pr` job in CI Gate's needs and results check. `make lint` and `go vet` do not change. A repository whose `make lint` lists `lint-gates` removes it from the lint target, and one that ran `make lint-gates` as a lint or image job step drops the step, in the PR that adopts v1.27. `IN_IMAGE_NETWORK` on its step (`CUSTOMIZE`, default `none`) gives the gates a network. v1.26.2 (2026-10-24, Tenant Agent m1167 (5), ruling 145): one change, the concurrency group. `main` is keyed per event and sha (`main-{event}-{sha}`), so a merge never cancels the `main` run in progress; go-luks2, go-enclave, go-qrdb, go-objstore, trusted-firmware and xkey-android already run this form, and go-xkms #1692 and go-trusted-platform #1022, which key `main` by `github.sha` alone, are also per sha. A PR ref is one group and `cancel-in-progress` stays a literal `true`. v1.26.1 (2026-10-24, Tenant Agent m1128 (9), handbook #429 P1 2): a docs-only PR runs the repository's releasability test, `RELEASABILITY_TEST` (CUSTOMIZE), after `make lint`; `make coverage` runs it on every other PR. v1.26 (2026-10-24, Tenant Agent m804 item 3, m809 item 3; ruling 137; [ci-standard.md](../../conventions/ci-standard.md) §10 (f)): a draft pull request runs no CI; every job skips on `github.event.pull_request.draft` and CI Gate fails on a draft. Marking the PR ready starts no run, and there is no `edited` or `ready_for_review` trigger: the PR's own lane pushes an empty commit when it leaves draft. v1.25.4 (2026-10-21, from xkey-android #40's Codex review): `pull_request` lists `types: [opened, synchronize, reopened]` and leaves out `labeled`. Gitea 1.27.1 reports every label add and remove as `labeled` with no label in the payload, so each `task:*` or `code-review` change started a run that cancelled the PR's run in progress (go-trusted-platform #853; go-qrdb, go-xkms and trusted-firmware already carried the line). A `ci:full` label takes effect on the PR's next push or update-branch, or through `workflow_dispatch` ([ci-standard.md](../../conventions/ci-standard.md) §8). v1.25.3 (2026-10-21, from a Codex review): the reaper's in-use check and its `docker image rm` were two calls, so a job could lease and re-tag between them and still lose the tag. The reaper's image loop, each lease step and every re-tag now take one lock per Docker daemon: a created, never-started container named `<prefix>image-lock`, made from an empty image `<prefix>image-lock:base` imported when it is missing. The daemon refuses a second container of that name. A lock created more than 600 s ago is a dead holder's and is removed by its id. A step that cannot take the lock in 660 s fails. It ships `reap-stale-ci-stacks.sh` v5. v1.25.2 (2026-10-21, from a Codex review): a job no longer loses the integration image's tag while it holds the lease. Two commits whose only difference is a file the build ignores get two tags on the same image, and the reaper could remove one of those tags while another job was using it. The lease step now records the image id it leased as `IT_LEASE_ID`, and each step that uses the image by tag (`docker save`, `make integration-test`, every soak iteration) first puts the tag back with `docker tag "$IT_LEASE_ID" "$IT_IMAGE"`. It ships `reap-stale-ci-stacks.sh` v4. v1.25.1 (2026-10-20, from a Codex review): one change, the "Lease the integration image" step in the image, integration and soak jobs. It inspects the image, leases it by id (`docker create --pull never`) and inspects the tag again for the same id. If the image is missing or went before its lease, it runs `make docker-build` once, leases and inspects again, and fails the step if the image is still missing, so a job never runs unleased and a missing image is never a success. v1.25 (Tenant Agent m857, m774 option (i); superseded by v1.26.2, ruling 145): one change, the concurrency group. `main` has one group per event (`main-{event}`), so a push to `main` cancels the in-progress push run of an older commit, and a `workflow_dispatch` or `schedule` run never cancels a push run. Every other ref is one group, and `cancel-in-progress` stays a literal `true`. v1.24.1 (2026-10-20): the workflow's changelog and comments, and those of `batch.yml` and `reap-stale-ci-stacks.sh`, cite no internal repository or issue number, so a repository that publishes its workflows passes a releasability scan; one job change, the `changes` job's diff takes `--no-renames`, so a file moved from code into `docs/` lists its old path and the PR is not docs-only. v1.24 (owner ruling 2026-10-19, Tenant Agent m749, m751 (a), (e); [ci-standard.md](../../conventions/ci-standard.md) §10): a PR whose every changed file is markdown or under `docs/` runs lint alone (the `changes` job, `DOCS_ONLY_PATTERN`; `ci:full` overrides it); soak runs on the nightly schedule and dispatch only, a `nightly` job in the gate. v1.23.1 (handbook #392): ships `reap-stale-ci-stacks.sh` v3; no job changes. v1.23 (owner item 101, Tenant Agent m650 item 3): two tiers ([ci-standard.md](../../conventions/ci-standard.md) §8). One image tag per family, keyed by content (Tenant Agent m674 item 3, [ci-standard.md](../../conventions/ci-standard.md) §9): the integration image is `$(make -s it-image)`, built once per runner and never removed by a job's teardown. A PR runs lint (with the build-tag assertion and `arch-gates`), build, and the unit suite under `-race` (`make coverage`) only; integration, a new `soak` job, security, deps-check and `trivy image` run on `main` after every merge, nightly (a new `schedule:` trigger), on dispatch and on a PR labelled `ci:full`. `CI Gate` stays the one required check, with integration and soak marked `full`. A red `main` is reverted by `revert-red-main.yml`. The concurrency block keeps `cancel-in-progress: true` literal and gives `main` one group per event and commit, so no main run cancels or waits for another (Tenant Agent m695: v1.22.1's expression left go-qrdb main run 57063 with no task). v1.22.2 (Tenant Agent m641 item 2, m646 item 3): ships `in-toolchain-image.sh` v3, so every stage runs at the job slot's CPU bound; no job changes. v1.22.1 (Tenant Agent m636 item 2): the concurrency block is canonical, one group per ref; a PR ref's newer run cancels its older one, and a push to `main` never cancels an in-flight `main` run (`cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`); the repositories' `CUSTOMIZE` copies with `cancel-in-progress: true` go. v1.22 (Tenant Agent m616 item 2): the image job's stages keep the build, golangci-lint and module caches in named volumes on the runner's Docker host, split by trust class (`CI_CACHE_CLASS`: `main` for a push to main, else `pr`), never in a job container's layer ([ci-standard.md](../../conventions/ci-standard.md) §6); a `Trim the CI caches` step runs `trim-ci-caches.sh` after the image build. v1.21.1: the image and integration jobs mask the forge credentials first, and no step or make target prints an env file, the job environment or a matched line ([ci-standard.md](../../conventions/ci-standard.md) §5). v1.21: every stage runs in the project's devcontainer image ([ci-standard.md](../../conventions/ci-standard.md) §2): one image job on `bigdisk` (Tenant Agent m601) runs `make docker-build` once, then lint, build, test (`make coverage`), security, deps-check and `trivy image` as steps, each one `make` target in the toolchain image through `in-toolchain-image.sh`; integration stays its own job, `make integration-test` in the integration image; no setup-go, no runner tool install, no `GO_VERSION`, no SARIF upload and no `security-events` permission; CI Gate runs on `ci-gate` with a pr/full tier, and its needs and results lines are a `CUSTOMIZE` block. v1.20: the image job's `trivy image` takes `--skip-dirs /opt/go/mod`, and an `arch-gates` job (in CI Gate) fails a go-objstore import outside the repo's `OBJSTORE_SEAMS`. v1.19: the image job's `trivy image` takes `--ignore-unfixed`, and the github.com gosec install builds against the latest x/tools (devcontainer.md §2). v1.18: an integration job that starts containers runs `reap-stale-ci-stacks.sh` first. Every job starts at once (v1.14: no `needs: [lint, build]`); `CI Gate` needs them all and stays the one required check. v1.16: gosec, govulncheck and actionlint are installed only on github.com; Gitea jobs use the runner image's baked tools. `push` runs on `main` only (v1.15 drops v1.14's `merge-train/**`: automerge v7's trains are PRs and get CI from `pull_request`) |
++| `ci.yml` | v1.54 | `.github/workflows/ci.yml` | The canonical CI workflow and merge gate. v1.54 (2026-11-22, Tenant Agent ruling 1137, owner order: the Dells and the AMD SEV host are always used for CI): the preflight step `Balanced runner pool (ruling 1137)` replaces the hosted first rule of rulings 999 and 1024 with balancing. It counts this repository's hosted (H), bigdisk (S1) and bigdisk-docker (S2) jobs, in progress plus queued, against the repository variables `CI_HOSTED_SHARE` (HS; unset gives 12 with a warning), `CI_SELF_HOSTED_BIGDISK` (C1) and `CI_SELF_HOSTED_BIGDISK_DOCKER` (C2) (either unset or 0 sends the run hosted with a warning), set by the Infra Department; hosted use H/HS against self-hosted use max(S1/C1, S2/C2), the lower wins, a tie goes hosted, a full pool sends the run to the other, and with both full the shorter queue wins. The units are shared across repositories; counting queued self-hosted jobs sends a repository's runs hosted when its units are busy elsewhere. `HOSTED_JOBS_PER_REPO`, `HOSTED_QUEUE_GRACE_SECONDS` and the grace period are removed; the fork rule (v1.52), the off-github.com branch and the hosted fail-safe are kept (testdata/runner-select-tests.py). v1.53 (2026-11-21, Tenant Agent ruling 1087, owner order, and the Tenant Agent's read of trusted-firmware #821: CI Gate posts no red for a cancelled main run, main-green for a tag is a green run on the tagged commit, the CI_PREFLIGHT_RUNS_ON SOP is the Infra Department's, and the LAN mask covers internal host names): the internal registry is the Actions secret `CI_IMAGE_REGISTRY`, never a repository variable: Actions prints a step's env in its log header before the run body, so an add-mask comes too late for a `vars` value, while the runner masks a secret from its first byte; every read is `runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || ''`, so a GitHub-hosted run receives none, and the LAN mask step (which scans every `*_REGISTRY` variable) also masks the bare host name (the Tenant Agent's read of the Codex P1s on go-quicbaas #2667 and go-trusted-platform #2311; Infra creates the secret on each repository from the existing variable; `testdata/ci-mask-lan-tests.py` M1 to M5, which takes a copy's path); a job output never carries a registry address, since GitHub drops an output that contains a masked value: a job that hands an image to another exports only its tag or digest, and each consumer rebuilds the reference from the secret `CI_IMAGE_REGISTRY` after its own mask step (the Tenant Agent's read of the Codex P1 on go-trusted-platform #2311; `testdata/job-output-handoff-tests.py` H1 to H5, which takes a copy's path); main's concurrency group is `main-{event}` again, so a newer push to main cancels the older main run; v1.26.2's per-sha group (ruling 145) let superseded main runs queue ahead of PR work. **Rollout: a ci.yml-only PR per repository, separate from code-review.yml and not waiting for it, trusted-firmware and go-qrdb first**, carrying v1.52's runner selection so internal pull requests run on our runners. v1.52 (2026-11-21, Tenant Agent order, defect fix): a fork's pull request under `pull_request` reached a self-hosted runner, since `preflight`'s runs-on had no fork check and the runner selection could overflow the run to the Dells. A pull request whose head repository is not this repository now runs every job on `ubuntu-latest`: `preflight`'s runs-on adds a fork clause before `CI_PREFLIGHT_RUNS_ON`, and `Hosted or overflow runner (ruling 1024)` outputs the hosted default for a fork's head with no API call. `Runner labels (ruling 633)` gives a fork's head under `pull_request` no unset-variable exemption, as under `pull_request_target`. Same-repository pull requests, pushes and Gitea are unchanged. Tests: `testdata/runner-labels-tests.py` part H, `testdata/runner-select-tests.py` part E. Adopt as a one-file bump. v1.51 (2026-11-21, ruling 633 hardening): `Runner labels (ruling 633)` also reads every runs-on under `pull_request_target`, same-repository and fork, the event `code-review.yml` and `signatures.yml` run on; in a workflow with that trigger a fork's head gets no overflow and no unset-variable exemption, since a fork never reaches a self-hosted runner. v1.50 (2026-11-21, rulings 999/1024, defect fix): `Hosted or overflow runner (ruling 1024)` treated a run list shorter than its `total_count` (the Actions API lags while runs move: "61 of 62 entries") as an unread count and picked hosted, so under a full hosted queue it never overflowed. A short list is now a lower bound: it overflows when what it read reaches a trigger, and picks hosted with a `::warning` naming the shortfall when it does not. Tests: `testdata/runner-select-tests.py` B7, C4. Adopt as a one-file bump. v1.49 (2026-11-20, Tenant Agent ruling 1047 (3) and (2), CI priority 1, defect fix): on github.com the `preflight` job runs on the Dells' bigdisk pool, `fromJSON(vars.CI_PREFLIGHT_RUNS_ON \|\| '["self-hosted","linux","x64","bigdisk"]')`, instead of waiting up to an hour in the full hosted queue for ten seconds of work that every other job needs; the repository variable `CI_PREFLIGHT_RUNS_ON` (runs-on JSON) is the fallback switch, set to `"ubuntu-latest"` while the Dells are down, and off github.com the job keeps `ubuntu-latest`. The schedule guard gets `AGENT_TOKEN` off github.com only, where it reads it. `Runner labels (ruling 633)` checks preflight's runs-on with the variable unset and set; tests in `testdata/runner-labels-tests.py` part F. Adopt as a one-file bump. v1.48 (Tenant Agent ruling 1024 item 1, queue 250 (a), owner decision): GitHub-hosted runners stay the default and the Dells' self-hosted pools supplement them. A preflight step, `Hosted or overflow runner (ruling 1024)`, counts this repository's queued and in-progress jobs on `ubuntu-*` runners through the Actions API and outputs `runner` and `runner_docker` as runs-on JSON: `"ubuntu-latest"`, or `[self-hosted, linux, x64, bigdisk]` and `[..., bigdisk-docker]` when `HOSTED_JOBS_PER_REPO` (12) or more hosted jobs are in progress or another run's hosted job has queued `HOSTED_QUEUE_GRACE_SECONDS` (60) or more. lint, image, lint-gates, integration and soak read `runner_docker`, CI Gate reads `runner`. When the counts cannot be read the step picks hosted and prints a `::warning` naming why; it never overflows on an unread count. Off github.com nothing changes. `Runner labels (ruling 633)` accepts exactly those outputs in ci.yml (default a standard image, overflow exactly the bigdisk lists); any other self-hosted label still needs its waiver. Tests: `testdata/runner-select-tests.py`, `testdata/runner-labels-tests.py` part E. Adopt as a one-file bump. v1.47 (Tenant Agent ruling 1007; go-qrdb #1642's Codex review): `Runner labels (ruling 633)` checks the runs-on label and the waiver's category together. The review-only labels `codex` and `qwen` run only in code-review.yml, whatever the waiver says, `codex` with `credential:` and `qwen` with `hardware:`, and `credential:` is the `codex` job's alone; any other pairing is finding (f). A repository that copied v1.46 unchanged passes; adopt as a one-file bump. v1.46 (Tenant Agent ruling 999, owner decision): GitHub-hosted standard runners for every job possible; a self-hosted job names its reason's category, `# self-hosted: hardware: <reason>` or `# self-hosted: oversize: <reason>` (`credential:` for the Codex review only, pending the Tenant Agent), and a reason without one is finding (e). Adopt in ONE PR. v1.45 (Tenant Agent ruling 901): every job that builds an image runs `scripts/ci-image-history.sh` on the images it will use, after its last build step and before its first use, on a pool runner, and publish-images masks the LAN addresses and checks through `ci-image-cache.sh` v4 before the push. v1.44 (2026-11-18, Tenant Agent ruling 887): every job that builds runs `scripts/ci-mask-lan.sh` after the credential mask, so a pool job masks the LAN addresses its runner names. v1.43 (2026-11-17, Tenant Agent ruling 833; the owner's 11-07 ruling that GitHub-hosted runners are the default): every job that does not name `release` runs on a standard GitHub-hosted image on github.com, or its runs-on line says why it cannot (`# self-hosted: <reason>`); a larger runner is refused, since it bills on a public repository. The preflight step `Runner labels (ruling 633)` enforces both; `testdata/runner-labels-tests.py` part D tests them. The template's batch.yml, fuzz.yml and code-review.yml self-hosted jobs carry their reasons. v1.42 (2026-11-16, owner ruling 742 (1)): the CI Gate is hermetic, its outcome set only by the tree under test, on a PR and on `main`. `make deps-check`, `make security` (govulncheck, trivy fs) and `trivy image` leave `ci.yml` on every event for the scheduled `scans.yml`, so a new advisory or upstream release never turns `main` red and no PR inherits it; `make gosec` runs in the lint job on every event, and `publish-images` (release runner, never a PR gate) scans the toolchain image before it pushes it (`ci-image-cache.sh` v3). A repository adopts v1.42 in one CI-file PR that takes `ci-image-cache.sh` v3, deletes `deps-bump.yml` and adds `scans.yml` v1.0.0. v1.41 (2026-11-16, owner ruling 742 (2)): PR/main parity. Every job and step that runs on a push to `main` also runs on a `pull_request`: `CI_FULL_TIER` is true on every event but a refused dispatch, so a PR runs integration, `make security` and `trivy image` as `main` does, and the `make gosec (PR tier)` step goes (`make security` runs gosec). `ci:full` selects no tier; it only turns off the docs-only and `lint-gates` path scopes (new `CI_FULL_LABEL`). The exceptions: `publish-images` (release runner, ruling 633), soak (schedule and dispatch only) and the two path scopes; a docs-only PR also skips integration, which CI Gate now checks as `code`. A green PR Integration job proves its tree, so an up-to-date PR's squash merge skips the bigdisk jobs on `main`. A repository adopts v1.41 in one CI-file PR and sizes its PR runner capacity for integration on every PR. v1.40 (2026-11-16, owner ruling 732): a library behind a newer upstream release never fails CI. The deps-check step passes `DEPS_CHECK_LAG=report` on every event, so the shared [depscheck](../deps/depscheck/README.md) v1.1.0 reports every lag and fails only a vulnerable go.mod requirement, a lookup failure, and a fork replace or pseudo-version with no reason comment on a line the change adds or bumps; the daily `deps-bump.yml` v1.1.0 keeps the full gate and carries every lag as one PR. A repository adopts v1.40 in one CI-file PR with `scripts/depscheck` v1.1.0, the Makefile's `$(if $(DEPS_CHECK_LAG),-lag $(DEPS_CHECK_LAG))` argument and `deps-bump.yml` v1.1.0. v1.39 (2026-11-14, ruling 640, owner decision 222 (a)): `make deps-check` fails a library behind its latest release only when the change adds that go.mod requirement or changes its version, or when govulncheck reports a version of a go.mod requirement vulnerable (a stdlib, toolchain or indirect-only finding is reported, not failed); a lag the change did not touch is reported, not failed. A new lint-job step, `Base commit for deps-check (ruling 640)`, fetches one commit at depth 1 (a pull request's base sha, the merge ref's first parent, or a push's `before`) and passes it as `DEPS_CHECK_BASE`; a schedule or `workflow_dispatch` run has none and keeps the full gate. The preflight refusal of a `workflow_dispatch` off main exempts `ci/deps-bump`, which runs the PR tier, because `deps-bump.yml` dispatches CI there. A repository adopts v1.39 in one CI-file PR with the shared [depscheck](../deps/depscheck/README.md) at `scripts/depscheck`, its Makefile's `deps-check` and `deps-bump` targets, and `deps-bump.yml`. v1.38 (2026-11-14, owner ruling 633, decision 219(d); go-xkms #1384): release and publish jobs (release.yml, `publish-images`, anything that pushes images, signs, or uploads release assets) run only on `[self-hosted, linux, x64, release]`, and pull request jobs never do. `publish-images` takes that label; on GitHub it runs only when the repository variable `RELEASE_RUNNER` is `true`, on Gitea as before. The preflight step `Runner labels (ruling 633)` fails CI when a job that names `release` could run for a pull request (a), or its `if:` does not restrict it to a push to `refs/heads/main` or `refs/tags/`, or a `workflow_dispatch` on main (b); tests in `testdata/runner-labels-tests.py`. The `bigdisk-docker` pools get a rootless Docker daemon of their own at the same `/var/run/docker.sock`, so workflows need no change, but images and containers do not persist between jobs, `--network host` is the rootless namespace's network, and `-v $GITHUB_WORKSPACE:...` still mounts an empty path. A repository adopts v1.38 in one CI-file PR that also moves its release.yml jobs from `ubuntu-latest` to the release label, pins its build and scan images by `@sha256` digest and pulls them by digest before `docker create` or `docker run`, and sets `RELEASE_RUNNER` only after Infrastructure reports the release pools live ([ci-standard.md](../../conventions/ci-standard.md) §3a). v1.37 (2026-11-13, ruling 580): every job in every template carries `timeout-minutes` so a hung job ends itself; ceilings by kind are 60 for unit, race, lint and other test jobs, 120 for integration, image builds, soak and release, 10 for gates and aggregators; a repository sizes each job at or under its ceiling from 1.5 x its longest green run, and a job whose green runs need more keeps its measured value. v1.36 (2026-11-13, owner approval: keep CI caches local): a self-hosted job never touches the Actions cache; every `actions/setup-go` step takes `cache: ${{ runner.environment != 'self-hosted' }}`, and an `actions/cache` step runs only when a `$CI_HOST_CACHE` lookup missed. The self-hosted pools supply GOCACHE, GOMODCACHE, CI_HOST_CACHE, Athens GOPROXY and the dev-cache Trivy mirrors. v1.35.3 (2026-11-12, Tenant Agent m2586): `pull_request` also fires on `ready_for_review`, so a draft marked ready gets its CI run. v1.35.2 (2026-11-11, Tenant Agent m2577): the `Signatures` job moves to `signatures.yml`, so CI Gate no longer needs it; adopt with `signatures.yml` and `.github/allowed_signers` in one CI-file PR. v1.35.1 (2026-11-11): the `Signatures` job fails closed when a named base cannot be read, and its signature-presence check cannot fail on a long signed message. v1.35 (2026-11-11, Tenant Agent m2557, owner ruling on commit signing): a `Signatures` job, a `pr` job in CI Gate's needs, checks every commit in the range (base..head on a pull request, before..after on a push to `main`) with `git verify-commit` (`gpg.format=ssh`, `gpg.ssh.allowedSignersFile`) against `.github/allowed_signers` read from the base commit, and requires the key's registered principal to be the committer email; a commit GitHub made (committer `noreply@github.com`) passes only when the API reports it verified with committer `web-flow`. It fails closed on an unsigned commit, an unknown key, a principal mismatch or an unreadable API, printing the commit and why. A repository adopts v1.35 in one CI-file PR that also adds its `.github/allowed_signers` from [`../signing/`](../signing/README.md). v1.34.1 (2026-11-08, Tenant Agent m2226 item 2, ruling 377): `GO_BUILD_PROXY` has no trailing `direct` (dependency-resolution.md, no direct fetch anywhere); adoption PRs carry v1.34.1. v1.34 (2026-11-08, Tenant Agent m2211 item 2(b)): the `changes`, `schedule-guard` and `arch-gates` jobs are one `preflight` job (the guard first, nothing checked out before it), so the template has 8 jobs, not 10; CUSTOMIZE jobs read `needs.preflight.outputs.*`, and each repository merges its unit and race shards into one job in its adoption PR. v1.33.2 (2026-11-08, Tenant Agent m2113 item 3, with InfoSec): the `Releasability (private patterns)` step does not fail on a matched line that carries the InfoSec waiver `lab-string-ok: <reason>` on the same line, with the colon and a reason; it lists each waived line as a notice, path and line only, with the count. A bare marker still fails ([public-hygiene.md](../../conventions/public-hygiene.md) "Internal values stay private", rule 5). v1.33.1 (2026-11-08, Tenant Agent m2107 item 4): comments only; the pattern file's source is named as dept-infosec `security/internal-names.patterns`. v1.33 (2026-11-08, Tenant Agent m2104 item 2): the releasability step accepts the five classes of the regenerated pattern file, `coord-host`, `internal-email`, `lab-address`, `lab-host` and `owner-path` (optional `/i`); the image namespace comes from the repository variable `CI_IMAGE_NAMESPACE`. v1.32 (2026-11-08, Tenant Agent m2098 item 2, InfoSec finding): the `Releasability (private patterns)` step reads each pattern line as `class<TAB>regex` (class `lab-address`, `lab-host` or `owner-path`, optional `/i`; blank and `#` lines skipped), fails on a malformed line, an unknown class or a regex `grep -E` refuses, printing the line number only, and runs `git grep -i -E` over the regex fields. v1.31 grepped each whole line with `-F`, so nothing matched and the gate was green for a false reason; no repository merges v1.31. v1.31 (2026-11-07, Tenant Agent m2069 item 3): the `Releasability (private patterns)` step in the lint job checks the tracked tree against the private pattern file from the Actions secret `RELEASABILITY_PATTERNS` (source in platform-configs) and prints path and line only; `RELEASABILITY_TEST` names no internal value ([public-hygiene.md](../../conventions/public-hygiene.md) "Internal values stay private"). **CUSTOMIZE:** set the secret on each repository. v1.30 (2026-10-31, Tenant Agent m1804): the five fixes of the 72-hour evaluation ([ci-standard.md](../../conventions/ci-standard.md) §12): the toolchain image from the registry cache (`ci-image-cache.sh`, the `publish-images` job on the release runner), a proven tree skips the main full tier, path-scoped `lint-gates` and no `lane-ckpt/*` PRs, a timeout on every job, `make gosec` in the PR tier and no dispatch off `main`. Needs `make gosec` and `make docker-build-toolchain`. v1.29.5 (2026-10-30, ruling 262(a)): one change, the `GO_BUILD_PROXY` separator is `|` (`<DEVCACHE_GOPROXY>|https://proxy.golang.org|direct`), as everywhere else ([devops.md](../../conventions/devops.md) §2a), because Go falls through a `,` only on a 404 or 410 and through a `|` on any error. The repository's Makefile quotes the value on its docker build line (`--build-arg "GO_BUILD_PROXY=$(GO_BUILD_PROXY)"`, [devcontainer.md](../../conventions/devcontainer.md) §4), where an unquoted `|` is a shell pipe. A repository adopts v1.29.5 in the one CI-file PR that adopts v1.29.4, with that Makefile line. v1.29.4 (2026-10-30, ruling 261(c), claude-agents #379 comment 157032): each `make docker-build` passes `GO_BUILD_PROXY=<DEVCACHE_GOPROXY>,https://proxy.golang.org,direct` (v1.29.5: `|`) when the runner sets `DEVCACHE_GOPROXY` and Athens answers a 5-second probe, so the image and Lint Gates builds fetch through Athens with the public fallback ([devops.md](../../conventions/devops.md) §2a); the schedule guard reads `waiting` before `in_progress`, so no run starting between its two queries goes uncounted (trusted-firmware's fix); and it requires `in-toolchain-image.sh` v4. A repository adopts it in one CI-file PR that takes both files and keeps its CUSTOMIZE blocks. v1.29.3 (2026-10-29, ruling 255(10)/(11)(c)): one schedule run per repository, skipped when a `main` run is in flight. A schedule run's concurrency group is `schedule-{repository}`, and a new `schedule-guard` job skips every bigdisk job, and CI Gate with them (`skipped`, never green), while the workflow has a push run on `main` in progress or waiting; it fails closed when the API gives no count ([ci-standard.md](../../conventions/ci-standard.md) §10 (h)). A bigdisk CUSTOMIZE job adds `schedule-guard` to its needs and the guard clause to its `if:`. A repository adopts it in one CI-file PR, which can ride its v1.29.2 adoption bump PR. v1.29.2 (2026-10-28, ruling 239(8)): comments only. A `CUSTOMIZE` job that runs only when certain paths change needs `[changes, image]`, and its `if:` tests an output that the image job's build step sets (such as `needs.image.outputs.built == 'true'`) together with the changes output. On a pull_request, an `if:` that read only `needs.changes.result == 'success'` or only `needs.changes.outputs.<path> != ''` left the job skipped unstarted in two runs; the form that tests the image job's output started it. No repository adopts it by PR. v1.29.1 (2026-10-27, ruling 226(15), 108 repair): lint fails fast. The `lint-gates` job runs `make lint-gates` without `-k`, so the first failing gate ends the step; under `-k`, go-quicbaas run 68949's Lint took 51.5 min, 37 of them after its `go vet` failure. Every other job, gate and tier is v1.29.0's. v1.29.0 (2026-10-27, ruling 220(5) and 221(4), handbook #474; [ci-standard.md](../../conventions/ci-standard.md) §9): the Alpine package index checksum joins the integration image's tag hash. A new "Read the Alpine package index" step runs `apk-index-sum.sh` into `APK_INDEX_SUM` in each job that names the integration image (image, lint-gates, integration, soak), so none waits for the image job; the repository's `make -s it-image` hashes it and `make docker-build` passes it as a build argument ([devcontainer.md](../../conventions/devcontainer.md) §6), so a new Alpine package release, a CVE fix among them, changes the tag and forces a rebuild (go-enclave main fd83b79ce, CVE-2026-92392). Every job, gate and tier is v1.28's. A repository adopts v1.29 in one PR with `apk-index-sum.sh`, its Makefile's `APK_INDEX_SUM` and its Dockerfile `integration` stage's `ARG APK_INDEX_SUM` and `apk upgrade --no-cache`. The parallel stage jobs (ruling 220(7)) move to v1.30: `runs-on` cannot take a needs output on Gitea 1.27.1 (run 68501), and the registry-push question is with the owner (169). v1.28.0 (2026-10-26, ruling 219(3); [ci-standard.md](../../conventions/ci-standard.md) §8): `make deps-check` joins the PR tier as a lint-class gate. Its image-job step drops the `CI_FULL_TIER` condition and runs on every event, a docs-only PR included, as `make lint` does, with `IN_IMAGE_NETWORK=bridge` for the module proxy; it stays on the full tier. A module behind its dependency floor now fails the PR rather than `main` after the merge (go-objstore main 8946d5f53, fixed by go-objstore #127). The image job is already `pr` in CI Gate, so the gate's needs and results lines do not change. Each repository adopts v1.28 as a CI-file PR, and none hand-patches its `ci.yml` ahead of the template. v1.27.0 (2026-10-25, Tenant Agent m1192 (6), item 27, dept-software #710; [ci-standard.md](../../conventions/ci-standard.md) §10 (g)): a new `lint-gates` job runs the repository's `make -k lint-gates` in the toolchain image in parallel with the image job's `make lint`, not in series after it. It runs only when the Makefile or a tracked `*.mk` defines a `lint-gates` target, and otherwise prints OK and passes without building an image. It builds the images as the image job does (`make docker-build`, then `make -s toolchain-image`), skips on a draft, and is a `pr` job in CI Gate's needs and results check. `make lint` and `go vet` do not change. A repository whose `make lint` lists `lint-gates` removes it from the lint target, and one that ran `make lint-gates` as a lint or image job step drops the step, in the PR that adopts v1.27. `IN_IMAGE_NETWORK` on its step (`CUSTOMIZE`, default `none`) gives the gates a network. v1.26.2 (2026-10-24, Tenant Agent m1167 (5), ruling 145): one change, the concurrency group. `main` is keyed per event and sha (`main-{event}-{sha}`), so a merge never cancels the `main` run in progress; go-luks2, go-enclave, go-qrdb, go-objstore, trusted-firmware and xkey-android already run this form, and go-xkms #1692 and go-trusted-platform #1022, which key `main` by `github.sha` alone, are also per sha. A PR ref is one group and `cancel-in-progress` stays a literal `true`. v1.26.1 (2026-10-24, Tenant Agent m1128 (9), handbook #429 P1 2): a docs-only PR runs the repository's releasability test, `RELEASABILITY_TEST` (CUSTOMIZE), after `make lint`; `make coverage` runs it on every other PR. v1.26 (2026-10-24, Tenant Agent m804 item 3, m809 item 3; ruling 137; [ci-standard.md](../../conventions/ci-standard.md) §10 (f)): a draft pull request runs no CI; every job skips on `github.event.pull_request.draft` and CI Gate fails on a draft. Marking the PR ready starts no run, and there is no `edited` or `ready_for_review` trigger: the PR's own lane pushes an empty commit when it leaves draft. v1.25.4 (2026-10-21, from xkey-android #40's Codex review): `pull_request` lists `types: [opened, synchronize, reopened]` and leaves out `labeled`. Gitea 1.27.1 reports every label add and remove as `labeled` with no label in the payload, so each `task:*` or `code-review` change started a run that cancelled the PR's run in progress (go-trusted-platform #853; go-qrdb, go-xkms and trusted-firmware already carried the line). A `ci:full` label takes effect on the PR's next push or update-branch, or through `workflow_dispatch` ([ci-standard.md](../../conventions/ci-standard.md) §8). v1.25.3 (2026-10-21, from a Codex review): the reaper's in-use check and its `docker image rm` were two calls, so a job could lease and re-tag between them and still lose the tag. The reaper's image loop, each lease step and every re-tag now take one lock per Docker daemon: a created, never-started container named `<prefix>image-lock`, made from an empty image `<prefix>image-lock:base` imported when it is missing. The daemon refuses a second container of that name. A lock created more than 600 s ago is a dead holder's and is removed by its id. A step that cannot take the lock in 660 s fails. It ships `reap-stale-ci-stacks.sh` v5. v1.25.2 (2026-10-21, from a Codex review): a job no longer loses the integration image's tag while it holds the lease. Two commits whose only difference is a file the build ignores get two tags on the same image, and the reaper could remove one of those tags while another job was using it. The lease step now records the image id it leased as `IT_LEASE_ID`, and each step that uses the image by tag (`docker save`, `make integration-test`, every soak iteration) first puts the tag back with `docker tag "$IT_LEASE_ID" "$IT_IMAGE"`. It ships `reap-stale-ci-stacks.sh` v4. v1.25.1 (2026-10-20, from a Codex review): one change, the "Lease the integration image" step in the image, integration and soak jobs. It inspects the image, leases it by id (`docker create --pull never`) and inspects the tag again for the same id. If the image is missing or went before its lease, it runs `make docker-build` once, leases and inspects again, and fails the step if the image is still missing, so a job never runs unleased and a missing image is never a success. v1.25 (Tenant Agent m857, m774 option (i); superseded by v1.26.2, ruling 145): one change, the concurrency group. `main` has one group per event (`main-{event}`), so a push to `main` cancels the in-progress push run of an older commit, and a `workflow_dispatch` or `schedule` run never cancels a push run. Every other ref is one group, and `cancel-in-progress` stays a literal `true`. v1.24.1 (2026-10-20): the workflow's changelog and comments, and those of `batch.yml` and `reap-stale-ci-stacks.sh`, cite no internal repository or issue number, so a repository that publishes its workflows passes a releasability scan; one job change, the `changes` job's diff takes `--no-renames`, so a file moved from code into `docs/` lists its old path and the PR is not docs-only. v1.24 (owner ruling 2026-10-19, Tenant Agent m749, m751 (a), (e); [ci-standard.md](../../conventions/ci-standard.md) §10): a PR whose every changed file is markdown or under `docs/` runs lint alone (the `changes` job, `DOCS_ONLY_PATTERN`; `ci:full` overrides it); soak runs on the nightly schedule and dispatch only, a `nightly` job in the gate. v1.23.1 (handbook #392): ships `reap-stale-ci-stacks.sh` v3; no job changes. v1.23 (owner item 101, Tenant Agent m650 item 3): two tiers ([ci-standard.md](../../conventions/ci-standard.md) §8). One image tag per family, keyed by content (Tenant Agent m674 item 3, [ci-standard.md](../../conventions/ci-standard.md) §9): the integration image is `$(make -s it-image)`, built once per runner and never removed by a job's teardown. A PR runs lint (with the build-tag assertion and `arch-gates`), build, and the unit suite under `-race` (`make coverage`) only; integration, a new `soak` job, security, deps-check and `trivy image` run on `main` after every merge, nightly (a new `schedule:` trigger), on dispatch and on a PR labelled `ci:full`. `CI Gate` stays the one required check, with integration and soak marked `full`. A red `main` is reverted by `revert-red-main.yml`. The concurrency block keeps `cancel-in-progress: true` literal and gives `main` one group per event and commit, so no main run cancels or waits for another (Tenant Agent m695: v1.22.1's expression left go-qrdb main run 57063 with no task). v1.22.2 (Tenant Agent m641 item 2, m646 item 3): ships `in-toolchain-image.sh` v3, so every stage runs at the job slot's CPU bound; no job changes. v1.22.1 (Tenant Agent m636 item 2): the concurrency block is canonical, one group per ref; a PR ref's newer run cancels its older one, and a push to `main` never cancels an in-flight `main` run (`cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`); the repositories' `CUSTOMIZE` copies with `cancel-in-progress: true` go. v1.22 (Tenant Agent m616 item 2): the image job's stages keep the build, golangci-lint and module caches in named volumes on the runner's Docker host, split by trust class (`CI_CACHE_CLASS`: `main` for a push to main, else `pr`), never in a job container's layer ([ci-standard.md](../../conventions/ci-standard.md) §6); a `Trim the CI caches` step runs `trim-ci-caches.sh` after the image build. v1.21.1: the image and integration jobs mask the forge credentials first, and no step or make target prints an env file, the job environment or a matched line ([ci-standard.md](../../conventions/ci-standard.md) §5). v1.21: every stage runs in the project's devcontainer image ([ci-standard.md](../../conventions/ci-standard.md) §2): one image job on `bigdisk` (Tenant Agent m601) runs `make docker-build` once, then lint, build, test (`make coverage`), security, deps-check and `trivy image` as steps, each one `make` target in the toolchain image through `in-toolchain-image.sh`; integration stays its own job, `make integration-test` in the integration image; no setup-go, no runner tool install, no `GO_VERSION`, no SARIF upload and no `security-events` permission; CI Gate runs on `ci-gate` with a pr/full tier, and its needs and results lines are a `CUSTOMIZE` block. v1.20: the image job's `trivy image` takes `--skip-dirs /opt/go/mod`, and an `arch-gates` job (in CI Gate) fails a go-objstore import outside the repo's `OBJSTORE_SEAMS`. v1.19: the image job's `trivy image` takes `--ignore-unfixed`, and the github.com gosec install builds against the latest x/tools (devcontainer.md §2). v1.18: an integration job that starts containers runs `reap-stale-ci-stacks.sh` first. Every job starts at once (v1.14: no `needs: [lint, build]`); `CI Gate` needs them all and stays the one required check. v1.16: gosec, govulncheck and actionlint are installed only on github.com; Gitea jobs use the runner image's baked tools. `push` runs on `main` only (v1.15 drops v1.14's `merge-train/**`: automerge v7's trains are PRs and get CI from `pull_request`) |
+ | `signatures.yml` | v1 | `.github/workflows/signatures.yml` | **Ships with ci.yml v1.35.2.** The commit signature gate (Tenant Agent m2557, m2577). It runs on `pull_request_target`, so GitHub reads it from the base branch and a pull request cannot edit the verifier that judges it; it checks out the base only and reads the pull request's commits as objects, never running them. The registry is `.github/allowed_signers` at the base, with no head fallback. The ruleset requires `Signatures / Signatures` beside CI Gate. The adoption PR itself gets no Signatures run, because the workflow is not on its base yet. |
+ | `docs-ci.yml` | v6 | `.gitea/workflows/docs-ci.yml` (company repo and `platform-configs`; the handbook keeps its own adapted copy) | The `Docs Gate` required check for repositories that take this template verbatim; `pull_request` only. v5 (2026-10-08, department split): both checkers, `check-doc-links.py` and `secret-scan.py`, run from the handbook clone beside the checkout (`../handbook/software/scripts/`) in every repository but the handbook; a repository's secret-scan baseline, if any, is `secret-scan-baseline.tsv` at its root. v4 (2026-10-06) removed the company-repo clone step, which a repository's own project agent cannot make (owner ruling 2026-09-05, infosec IS-5). Deployed by dept-infra `gitea/scripts/deploy-gitea-workflows.sh` to every repo whose required check is the Docs Gate except the handbook |
+ | `revert-red-main.yml` | v1.3 | `.github/workflows/revert-red-main.yml` | v1.3 (2026-11-13, ruling 580): `timeout-minutes` on every job. **Ships with ci.yml v1.23.** v1.2 (2026-11-08, Tenant Agent m2101 item 2): `AGENT_DOMAIN` and `AGENT_LOGIN` are repository variables, as in automerge v13. v1.1 (2026-10-26, xkey-android #67): `REVERT_STEPS` names `make lint-gates`, the ci.yml v1.27 `lint-gates` job's step; a repository on v1.27 copies the line in its adoption PR or its next CI-files PR. Runs from the base branch's definition on `workflow_run` of CI. When a push run on `main` fails in a deterministic stage (`REVERT_STEPS`, `CUSTOMIZE`; never security, deps-check, trivy or a setup step), no failed job's log shows a runner or host fault, and the parent commit's `CI / CI Gate (push)` is green, it opens a `revert/<sha12>` PR as the repository's agent (never a push to `main`), which automerge merges on the PR tier. It puts the change back up as a draft: a merged PR, which Gitea cannot reopen, as a new `WIP: Reland #N` PR from its head; a PR a merge train carried, reopened with its branch restored at the recorded head and a `WIP:` title. It reopens the issues the merge closed and comments on each PR with the run; each PR put back up starts its body, and each reopened issue gets a comment, with one line naming the red run and the failed job (Tenant Agent m700 Q1). Every failed job's log must be read, or it does not revert. Adopted on go-quicraft first, then go-qrdb, then in stack order, each adoption PR with the four live-untested items checked and linked to their runs (m700 Q8; [ci-standard.md](../../conventions/ci-standard.md) §8) |
+diff --git a/software/templates/github-actions/ci-mask-lan.sh b/software/templates/github-actions/ci-mask-lan.sh
+index 5cf274d..388be75 100755
+--- a/software/templates/github-actions/ci-mask-lan.sh
++++ b/software/templates/github-actions/ci-mask-lan.sh
+@@ -16,10 +16,12 @@
+ # off) are left.
+ # v1.53 (Tenant Agent on go-quicbaas #2667): every variable whose name ends
+ # in _REGISTRY is scanned (CI_REGISTRY, CI_IMAGE_REGISTRY, RELEASE_REGISTRY,
+-# a copy's IT_REGISTRY), and the template's mask step sets
+-# VARS_CI_IMAGE_REGISTRY from the repository variable, because a registry a
+-# later step takes from `vars` is not in this step's environment otherwise. A
+-# _REGISTRY_OWNER or other non-host name is not scanned.
++# a copy's IT_REGISTRY). The template's mask step sets CI_IMAGE_REGISTRY from
++# the Actions secret of that name, which the runner already masks whole; this
++# script adds the bare host name. The registry is never a `vars` value: Actions
++# prints a step's env in its log header before the run body, so no add-mask
++# can cover a variable in time. A _REGISTRY_OWNER or other non-host name is
++# not scanned.
+ #
+ #   usage: scripts/ci-mask-lan.sh
+ set -euo pipefail
+diff --git a/software/templates/github-actions/ci.yml b/software/templates/github-actions/ci.yml
+index 4357fe8..8fdef1a 100644
+--- a/software/templates/github-actions/ci.yml
++++ b/software/templates/github-actions/ci.yml
+@@ -1,4 +1,35 @@
+-# ci-template: v1.53 — canonical CI for all first-party Go repos.
++# ci-template: v1.54 — canonical CI for all first-party Go repos.
++# v1.54 (2026-11-22, Tenant Agent ruling 1137, owner order: the Dells and
++# the AMD SEV host are always used for CI, and nothing sits idle): the
++# preflight step `Balanced runner pool (ruling 1137)` replaces the hosted
++# first rule of rulings 999 and 1024 (v1.46 to v1.53, `Hosted or overflow
++# runner (ruling 1024)`) with balancing. It counts this repository's jobs,
++# in progress plus queued, from one listing: H on hosted runners, S1 on
++# bigdisk (not bigdisk-docker) and S2 on bigdisk-docker. The limits are
++# repository variables set by the Infra Department, each a plain decimal
++# integer: CI_HOSTED_SHARE (HS, its share of the account's 40 hosted
++# runners; unset, 0 or not a number gives a ::warning and 12),
++# CI_SELF_HOSTED_BIGDISK (C1) and CI_SELF_HOSTED_BIGDISK_DOCKER (C2), the
++# self-hosted units of each label (either unset, 0 or not a number sends
++# the run hosted with a ::warning: both are needed to place a run on the
++# Dells). Hosted use is H/HS; self-hosted use is the larger of S1/C1 and
++# S2/C2. The pool with the lower use wins, compared by cross-multiplication
++# in whole numbers, and a tie goes hosted; a full pool (H >= HS, or
++# S1 >= C1 or S2 >= C2) sends the run to the other; with both full, the run
++# takes the pool with fewer queued jobs (bigdisk and bigdisk-docker
++# together), and a tie goes hosted. The self-hosted units are shared across
++# repositories, so C1 and C2 can overstate this repository's free room;
++# counting its queued self-hosted jobs corrects for that: when the units
++# are busy elsewhere its jobs queue, its self-hosted use rises, and its
++# runs go hosted. The grace period, HOSTED_JOBS_PER_REPO and
++# HOSTED_QUEUE_GRACE_SECONDS are removed. Unchanged: a fork's head takes the
++# hosted default with a ::notice and no call (v1.52), off github.com there
++# is no selection, the token reaches curl from a file descriptor, and a
++# reply that is not 200 or a listing short of its total sends the run
++# hosted with a ::warning. Every workflow that reads the outputs `runner`
++# and `runner_docker` takes the same decision. testdata/runner-select-tests.py
++# holds the cases. Adopt as a ci.yml-only bump that keeps the CUSTOMIZE
++# blocks; CI configuration rolls out at once (ruling 443).
+ # v1.53 (2026-11-21, Tenant Agent ruling 1087, owner order: remove the
+ # bottlenecks): main has one concurrency group per event again, `main-{event}`,
+ # so a newer push to main cancels the older main run still queued or in
+@@ -1014,15 +1045,10 @@ env:
+   # host, device, address or account; the internal names are checked by the
+   # `Releasability (private patterns)` step from the private pattern file.
+   RELEASABILITY_TEST: ""
+-  # v1.48 (Tenant Agent ruling 1024 item 1, queue 250 (a)): the most jobs of
+-  # this repository that run on GitHub-hosted runners at once. The preflight
+-  # step `Hosted or overflow runner (ruling 1024)` sends the run's jobs to the
+-  # Dells' bigdisk pools when this many hosted jobs of the repository are
+-  # already in progress, or when one of its hosted jobs has waited in the
+-  # queue for HOSTED_QUEUE_GRACE_SECONDS (the hosted pool is full). The
+-  # owner's number, not a CUSTOMIZE value.
+-  HOSTED_JOBS_PER_REPO: 12
+-  HOSTED_QUEUE_GRACE_SECONDS: 60
++  # v1.54 (ruling 1137): HOSTED_JOBS_PER_REPO and HOSTED_QUEUE_GRACE_SECONDS
++  # (v1.48) are removed; the limits of `Balanced runner pool (ruling 1137)`
++  # are the repository variables CI_HOSTED_SHARE, CI_SELF_HOSTED_BIGDISK and
++  # CI_SELF_HOSTED_BIGDISK_DOCKER.
+ 
+ jobs:
+   # v1.34 (Tenant Agent m2211 item 2(b)): one preflight job instead of three.
+@@ -1100,7 +1126,8 @@ jobs:
+       # v1.48 (ruling 1024): runs-on JSON for the two hosted-capable classes,
+       # read as fromJSON(needs.preflight.outputs.runner_docker) by every job
+       # that builds or runs images and fromJSON(needs.preflight.outputs.runner)
+-      # by CI Gate. `"ubuntu-latest"`, or the Dells' overflow label list.
++      # by CI Gate. `"ubuntu-latest"`, or the Dells' self-hosted label list
++      # (v1.54: whichever pool `Balanced runner pool (ruling 1137)` picks).
+       runner: ${{ steps.runner.outputs.runner }}
+       runner_docker: ${{ steps.runner.outputs.runner_docker }}
+     steps:
+@@ -1223,29 +1250,50 @@ jobs:
+           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+           echo "proof=$PROOF" >> "$GITHUB_OUTPUT"
+ 
+-      # v1.48 (Tenant Agent ruling 1024 item 1, queue 250 (a)): the Dells'
+-      # self-hosted runners supplement the 40 GitHub-hosted runners, and
+-      # hosted stays the default. On github.com this step counts this
+-      # repository's jobs on GitHub-hosted runners (a job whose labels name an
+-      # ubuntu-* image and not self-hosted) in every queued and in-progress
+-      # run of every workflow, through the Actions API with the job token
+-      # (actions: read). It outputs `runner` and `runner_docker` as runs-on
+-      # JSON: `"ubuntu-latest"`, or, when HOSTED_JOBS_PER_REPO hosted jobs or
+-      # more are in progress, or a hosted job of another run has been queued
+-      # HOSTED_QUEUE_GRACE_SECONDS or more (the hosted pool is full),
+-      # `["self-hosted","linux","x64","bigdisk"]` and
++      # v1.54 (Tenant Agent ruling 1137, owner order; it replaces the hosted
++      # first rule of rulings 999 and 1024, v1.48 to v1.53): the run goes to
++      # whichever of the two pools, GitHub-hosted or the Dells' self-hosted
++      # bigdisk pools, this repository uses less, so both run full. On
++      # github.com this step lists every queued and in-progress run of every
++      # workflow of this repository and their latest jobs, through the
++      # Actions API with the job token (actions: read), and counts, from that
++      # one listing, each in progress plus queued, H: hosted jobs (labels
++      # naming an ubuntu-* image and not self-hosted), S1: self-hosted jobs on
++      # bigdisk and not bigdisk-docker, and S2: jobs on bigdisk-docker. Jobs
++      # of this run are not counted: they wait on this decision. The limits
++      # are repository variables set by the Infra Department, plain decimal
++      # integers: HS = vars.CI_HOSTED_SHARE (this repository's share of the
++      # account's 40 hosted runners; unset, 0 or not a whole number gives a
++      # ::warning and HS=12, the v1.48 limit), C1 =
++      # vars.CI_SELF_HOSTED_BIGDISK and C2 = vars.CI_SELF_HOSTED_BIGDISK_DOCKER
++      # (the units of each label; either unset, 0 or not a whole number: the
++      # hosted default with a ::warning). Hosted use is H/HS; self-hosted use
++      # is the larger of S1/C1 and S2/C2. Then:
++      #   - both below their limit: the lower use wins, compared by
++      #     cross-multiplication (self-hosted wins only when S1*HS < H*C1 and
++      #     S2*HS < H*C2); a tie goes hosted;
++      #   - one pool full (H >= HS; or S1 >= C1 or S2 >= C2): the other pool;
++      #   - both full: the pool with fewer queued jobs (bigdisk and
++      #     bigdisk-docker together for the Dells); a tie goes hosted.
++      # The units are shared across repositories, so C1 and C2 can overstate
++      # this repository's free room: when they are busy elsewhere its jobs
++      # queue, S1 or S2 rises, and its runs go hosted.
++      # It outputs `runner` and `runner_docker` as runs-on JSON:
++      # `"ubuntu-latest"`, or `["self-hosted","linux","x64","bigdisk"]` and
+       # `["self-hosted","linux","x64","bigdisk-docker"]`. A count it cannot
+       # read (a reply that is not 200, a list short of its total_count, a
+-      # field missing) picks nothing silently: it prints a ::warning naming
+-      # why and outputs the hosted default. One decision per run: every job
+-      # of the run takes it. Off github.com it makes no call, and each job's
+-      # runs-on keeps its forge label (bigdisk, ci-gate) as before v1.48. It
+-      # runs before the checkout, beside no repository code.
+-      # v1.52 (Tenant Agent order): on a pull request whose head repository is
+-      # not this repository (a fork, or a fork since deleted), it makes no call
+-      # and outputs the hosted default with a ::notice: a fork never reaches a
+-      # self-hosted runner. Its tests: testdata/runner-select-tests.py.
+-      - name: Hosted or overflow runner (ruling 1024)
++      # field missing) picks nothing silently: a ::warning names why and the
++      # run takes the hosted default. One decision per run: every job of the
++      # run takes it, in every workflow that reads these outputs. Off
++      # github.com it makes no call, and each job's runs-on keeps its forge
++      # label (bigdisk, ci-gate). It runs before the checkout, beside no
++      # repository code.
++      # v1.52 (Tenant Agent order, kept): on a pull request whose head
++      # repository is not this repository (a fork, or a fork since deleted),
++      # it makes no call and outputs the hosted default with a ::notice: a
++      # fork never reaches a self-hosted runner. Its tests:
++      # testdata/runner-select-tests.py.
++      - name: Balanced runner pool (ruling 1137)
+         id: runner
+         env:
+           SERVER: ${{ github.server_url }}
+@@ -1255,19 +1303,20 @@ jobs:
+           API: ${{ github.api_url }}/repos/${{ github.repository }}/actions
+           RUN_ID: ${{ github.run_id }}
+           JOB_TOKEN: ${{ github.token }}
+-          LIMIT: ${{ env.HOSTED_JOBS_PER_REPO }}
+-          GRACE: ${{ env.HOSTED_QUEUE_GRACE_SECONDS }}
++          HS: ${{ vars.CI_HOSTED_SHARE }}
++          C1: ${{ vars.CI_SELF_HOSTED_BIGDISK }}
++          C2: ${{ vars.CI_SELF_HOSTED_BIGDISK_DOCKER }}
+         run: |
+           set -uo pipefail
+           HOSTED='"ubuntu-latest"'
+-          overflow() { printf '["self-hosted","linux","x64","%s"]' "$1"; }
++          selfhosted() { printf '["self-hosted","linux","x64","%s"]' "$1"; }
+           emit() {
+             echo "runner: $1; runner_docker: $2"
+             { echo "runner=$1"; echo "runner_docker=$2"; } >> "$GITHUB_OUTPUT"
+           }
+           # hosted <why>: no count, so the default, with the reason shown.
+           hosted() {
+-            echo "::warning::runner selection: $1; every job of this run takes the GitHub-hosted default, ubuntu-latest, and none overflows to the Dells (ci-template v1.48, ruling 1024)"
++            echo "::warning::runner selection: $1; every job of this run takes the GitHub-hosted default, ubuntu-latest, and none runs on the Dells (ci-template v1.54, ruling 1137)"
+             emit "$HOSTED" "$HOSTED"
+             exit 0
+           }
+@@ -1285,9 +1334,17 @@ jobs:
+                 exit 0
+               fi ;;
+           esac
+-          case "$LIMIT:$GRACE" in
+-            *[!0-9:]*|:*|*:) hosted "HOSTED_JOBS_PER_REPO='$LIMIT' or HOSTED_QUEUE_GRACE_SECONDS='$GRACE' is not a whole number" ;;
+-          esac
++          # whole <value>: a whole number above 0, at most 6 digits.
++          whole() { [[ "$1" =~ ^[0-9]{1,6}$ ]] && [ "$((10#$1))" -gt 0 ]; }
++          whole "$C1" || hosted "CI_SELF_HOSTED_BIGDISK='$C1' is unset, 0 or not a whole number, so no bigdisk job can be placed (the Infra Department sets it)"
++          whole "$C2" || hosted "CI_SELF_HOSTED_BIGDISK_DOCKER='$C2' is unset, 0 or not a whole number, so no bigdisk-docker job can be placed (the Infra Department sets it)"
++          C1=$((10#$C1)) C2=$((10#$C2))
++          if whole "$HS"; then
++            HS=$((10#$HS))
++          else
++            echo "::warning::runner selection: CI_HOSTED_SHARE='$HS' is unset, 0 or not a whole number; HS=12 until the Infra Department sets it (ci-template v1.54, ruling 1137)"
++            HS=12
++          fi
+           # get <url> <file>: 0 on a 200 reply, saved in <file>; the answer in
+           # CODE. The token reaches curl as a header from a file descriptor.
+           get() {
+@@ -1299,10 +1356,6 @@ jobs:
+           # pages <url> <key> <out>: every page of a listing, its <key> items
+           # one JSON object per line in <out>. 1, with WHY set, when a reply is
+           # not 200 or the items fall short of total_count.
+-          # v1.50: a list short of its total_count is a lower bound, kept in
+-          # SHORT (the API's listing lags total_count while runs move); the
+-          # counts it gives are never over, so it may still overflow.
+-          SHORT=""
+           pages() {
+             local p=1 got=0 total n
+             : > "$3"
+@@ -1316,7 +1369,7 @@ jobs:
+               [ "$p" -lt 10 ] || { WHY="$1: more than 1000 entries"; return 1; }
+               p=$((p + 1))
+             done
+-            [ "$got" -ge "$total" ] || SHORT="${SHORT:+$SHORT; }$1: $got of $total entries"
++            [ "$got" -ge "$total" ] || { WHY="$1: $got of $total entries"; return 1; }
+           }
+           : > "$RUNNER_TEMP/sel-runs.jsonl"
+           for st in queued in_progress; do
+@@ -1325,33 +1378,50 @@ jobs:
+           done
+           : > "$RUNNER_TEMP/sel-jobs.jsonl"
+           for id in $(jq -r '.id' "$RUNNER_TEMP/sel-runs.jsonl" | sort -u); do
++            [ "$id" != "$RUN_ID" ] || continue
+             pages "$API/runs/$id/jobs?filter=latest" jobs "$RUNNER_TEMP/sel-j.jsonl" || hosted "the Actions API gave no complete job list ($WHY)"
+             cat "$RUNNER_TEMP/sel-j.jsonl" >> "$RUNNER_TEMP/sel-jobs.jsonl"
+           done
+-          # In progress: every hosted job (this one too, when CI_PREFLIGHT_RUNS_ON
+-          # puts it on a hosted runner; v1.49). Queued: a hosted
+-          # job of another run (this run's jobs wait on this one) queued for
+-          # GRACE seconds or more, so a runner did not take it at once.
+-          read -r running queued < <(jq -rs --argjson run "$RUN_ID" --argjson grace "$GRACE" '
+-              [.[] | select((.labels // []) | any(startswith("ubuntu-")) and all(. != "self-hosted"))] as $h
+-              | ($h | map(select(.status == "in_progress")) | length) as $r
+-              | ($h | map(select(.status == "queued" and .run_id != $run
+-                    and now - ((.created_at // .started_at) | fromdateiso8601) >= $grace)) | length) as $q
+-              | "\($r) \($q)"' "$RUNNER_TEMP/sel-jobs.jsonl") || hosted "the job list could not be counted"
+-          echo "this repository: $running hosted job(s) in progress (HOSTED_JOBS_PER_REPO=$LIMIT); $queued hosted job(s) of other runs queued ${GRACE}s or more"
+-          if [ "$running" -ge "$LIMIT" ]; then
+-            why="$running hosted jobs in progress, HOSTED_JOBS_PER_REPO=$LIMIT"
+-          elif [ "$queued" -gt 0 ]; then
+-            why="$queued hosted job(s) queued ${GRACE}s or more: the hosted pool is full"
+-          elif [ -n "$SHORT" ]; then
+-            hosted "the Actions API listed fewer entries than its total ($SHORT), and the counts read reach no trigger"
++          # H, S1, S2: hosted, bigdisk (not bigdisk-docker) and bigdisk-docker
++          # jobs in progress plus queued; HQ, SQ: the queued hosted and
++          # self-hosted (both kinds) ones. A job of this run is not counted.
++          read -r H S1 S2 HQ SQ < <(jq -rs --argjson run "$RUN_ID" '
++              [.[] | select(.run_id != $run and (.status == "queued" or .status == "in_progress"))
++                   | (.labels // []) as $l
++                   | {q: (.status == "queued"),
++                      p: (if ($l | any(. == "self-hosted")) then
++                            (if ($l | any(. == "bigdisk-docker")) then "s2"
++                             elif ($l | any(. == "bigdisk")) then "s1" else "x" end)
++                          elif ($l | any(startswith("ubuntu-"))) then "h"
++                          else "x" end)}] as $j
++              | def n(f): $j | map(select(f)) | length;
++              [n(.p == "h"), n(.p == "s1"), n(.p == "s2"), n(.p == "h" and .q),
++               n((.p == "s1" or .p == "s2") and .q)]
++              | map(tostring) | join(" ")' "$RUNNER_TEMP/sel-jobs.jsonl") || hosted "the job list could not be counted"
++          [ -n "${SQ:-}" ] || hosted "the job list could not be counted"
++          echo "this repository: hosted $H of CI_HOSTED_SHARE=$HS ($HQ queued); bigdisk $S1 of CI_SELF_HOSTED_BIGDISK=$C1, bigdisk-docker $S2 of CI_SELF_HOSTED_BIGDISK_DOCKER=$C2 ($SQ self-hosted queued)"
++          pick=hosted hfull=0 sfull=0
++          [ "$H" -lt "$HS" ] || hfull=1
++          { [ "$S1" -lt "$C1" ] && [ "$S2" -lt "$C2" ]; } || sfull=1
++          if [ "$hfull" = 1 ] && [ "$sfull" = 1 ]; then
++            [ "$SQ" -lt "$HQ" ] && pick=self
++            why="both pools full: hosted $HQ queued, self-hosted $SQ queued"
++          elif [ "$hfull" = 1 ]; then
++            pick=self; why="the hosted pool is full ($H of $HS)"
++          elif [ "$sfull" = 1 ]; then
++            why="the self-hosted pool is full (bigdisk $S1 of $C1, bigdisk-docker $S2 of $C2)"
+           else
++            # self-hosted use, max(S1/C1, S2/C2), below hosted use H/HS.
++            [ $((S1 * HS)) -lt $((H * C1)) ] && [ $((S2 * HS)) -lt $((H * C2)) ] && pick=self
++            why="use hosted $H/$HS, bigdisk $S1/$C1, bigdisk-docker $S2/$C2"
++          fi
++          if [ "$pick" = self ]; then
++            echo "::notice::runner selection: $why; this run's jobs run on the Dells (bigdisk, bigdisk-docker) (ci-template v1.54, ruling 1137)"
++            emit "$(selfhosted bigdisk)" "$(selfhosted bigdisk-docker)"
++          else
++            echo "::notice::runner selection: $why; this run's jobs take the GitHub-hosted default, ubuntu-latest (ci-template v1.54, ruling 1137)"
+             emit "$HOSTED" "$HOSTED"
+-            exit 0
+           fi
+-          [ -z "$SHORT" ] || why="$why (a lower bound: $SHORT)"
+-          echo "::notice::runner selection: $why; this run's jobs overflow to the Dells (bigdisk, bigdisk-docker) (ci-template v1.48, ruling 1024)"
+-          emit "$(overflow bigdisk)" "$(overflow bigdisk-docker)"
+ 
+       # v1.34: the full history on a PR run for the changed-files diff, one
+       # commit otherwise. v1.41: every PR run, ci:full or not. No credential is left in the checkout.
+@@ -1710,9 +1780,9 @@ jobs:
+           REVIEW_FILES = {"code-review.yml", "code-review.yaml"}
+           REVIEW_TOKEN = re.compile(r"(?<![\w.-])['\"]?(codex|qwen)['\"]?(?![\w-])", re.I)
+           GH = "https://github.com"
+-          # v1.48 (ruling 1024): ci.yml's preflight step `Hosted or overflow runner
+-          # (ruling 1024)` outputs runs-on JSON, "ubuntu-latest" by default and the
+-          # Dells' overflow list when the hosted pool is full. In ci.yml only, a
++          # v1.48 (ruling 1024): ci.yml's preflight runner selection (v1.54:
++          # `Balanced runner pool (ruling 1137)`) outputs runs-on JSON,
++          # "ubuntu-latest" or the Dells' self-hosted list ("overflow" below). In ci.yml only, a
+           # runs-on that reads exactly these outputs is checked under both: the
+           # default must be a standard image, as (c) asks of every job, and the
+           # overflow may also be exactly the list its output names. Any other
+@@ -2025,10 +2095,14 @@ jobs:
+       # masked before ci-image-cache.sh publish builds and prints.
+       - name: Mask the LAN addresses
+         env:
+-          # v1.53: a registry a later step takes from `vars` is masked here.
+-          # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+-          # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3).
+-          VARS_CI_IMAGE_REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}
++          # v1.53: the internal registry is the Actions secret CI_IMAGE_REGISTRY,
++          # never a `vars` value. Actions prints a step's env in its log header
++          # before the run body, so an add-mask comes too late for a variable;
++          # the runner masks a secret from its first byte. A GitHub-hosted run
++          # receives none. ci-mask-lan.sh also masks the bare host name.
++          # CUSTOMIZE: one such line per other *_REGISTRY secret this job reads
++          # (testdata/ci-mask-lan-tests.py M1 to M5).
++          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
+         run: scripts/ci-mask-lan.sh
+ 
+       # v1.42 (ruling 742 (1)): ci-image-cache.sh v3 scans the toolchain
+@@ -2092,10 +2166,14 @@ jobs:
+       # before any step that builds can print one.
+       - name: Mask the LAN addresses
+         env:
+-          # v1.53: a registry a later step takes from `vars` is masked here.
+-          # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+-          # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3).
+-          VARS_CI_IMAGE_REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}
++          # v1.53: the internal registry is the Actions secret CI_IMAGE_REGISTRY,
++          # never a `vars` value. Actions prints a step's env in its log header
++          # before the run body, so an add-mask comes too late for a variable;
++          # the runner masks a secret from its first byte. A GitHub-hosted run
++          # receives none. ci-mask-lan.sh also masks the bare host name.
++          # CUSTOMIZE: one such line per other *_REGISTRY secret this job reads
++          # (testdata/ci-mask-lan-tests.py M1 to M5).
++          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
+         run: scripts/ci-mask-lan.sh
+ 
+       # v1.30 (fix 1): the registry cache first. A miss, or an unreachable
+@@ -2370,10 +2448,14 @@ jobs:
+       # before any step that builds can print one.
+       - name: Mask the LAN addresses
+         env:
+-          # v1.53: a registry a later step takes from `vars` is masked here.
+-          # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+-          # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3).
+-          VARS_CI_IMAGE_REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}
++          # v1.53: the internal registry is the Actions secret CI_IMAGE_REGISTRY,
++          # never a `vars` value. Actions prints a step's env in its log header
++          # before the run body, so an add-mask comes too late for a variable;
++          # the runner masks a secret from its first byte. A GitHub-hosted run
++          # receives none. ci-mask-lan.sh also masks the bare host name.
++          # CUSTOMIZE: one such line per other *_REGISTRY secret this job reads
++          # (testdata/ci-mask-lan-tests.py M1 to M5).
++          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
+         run: scripts/ci-mask-lan.sh
+ 
+       - name: Reap stale CI stacks
+@@ -2608,10 +2690,14 @@ jobs:
+       # before any step that builds can print one.
+       - name: Mask the LAN addresses
+         env:
+-          # v1.53: a registry a later step takes from `vars` is masked here.
+-          # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+-          # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3).
+-          VARS_CI_IMAGE_REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}
++          # v1.53: the internal registry is the Actions secret CI_IMAGE_REGISTRY,
++          # never a `vars` value. Actions prints a step's env in its log header
++          # before the run body, so an add-mask comes too late for a variable;
++          # the runner masks a secret from its first byte. A GitHub-hosted run
++          # receives none. ci-mask-lan.sh also masks the bare host name.
++          # CUSTOMIZE: one such line per other *_REGISTRY secret this job reads
++          # (testdata/ci-mask-lan-tests.py M1 to M5).
++          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
+         run: scripts/ci-mask-lan.sh
+ 
+       # A source check on the runner's shell: no make recipe runs here.
+@@ -2717,10 +2803,14 @@ jobs:
+       # before any step that builds can print one.
+       - name: Mask the LAN addresses
+         env:
+-          # v1.53: a registry a later step takes from `vars` is masked here.
+-          # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+-          # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3).
+-          VARS_CI_IMAGE_REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}
++          # v1.53: the internal registry is the Actions secret CI_IMAGE_REGISTRY,
++          # never a `vars` value. Actions prints a step's env in its log header
++          # before the run body, so an add-mask comes too late for a variable;
++          # the runner masks a secret from its first byte. A GitHub-hosted run
++          # receives none. ci-mask-lan.sh also masks the bare host name.
++          # CUSTOMIZE: one such line per other *_REGISTRY secret this job reads
++          # (testdata/ci-mask-lan-tests.py M1 to M5).
++          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
+         run: scripts/ci-mask-lan.sh
+ 
+       - name: Reap stale CI stacks
+@@ -2883,10 +2973,14 @@ jobs:
+       # before any step that builds can print one.
+       - name: Mask the LAN addresses
+         env:
+-          # v1.53: a registry a later step takes from `vars` is masked here.
+-          # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+-          # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3).
+-          VARS_CI_IMAGE_REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}
++          # v1.53: the internal registry is the Actions secret CI_IMAGE_REGISTRY,
++          # never a `vars` value. Actions prints a step's env in its log header
++          # before the run body, so an add-mask comes too late for a variable;
++          # the runner masks a secret from its first byte. A GitHub-hosted run
++          # receives none. ci-mask-lan.sh also masks the bare host name.
++          # CUSTOMIZE: one such line per other *_REGISTRY secret this job reads
++          # (testdata/ci-mask-lan-tests.py M1 to M5).
++          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
+         run: scripts/ci-mask-lan.sh
+ 
+       - name: Reap stale CI stacks
+@@ -3057,6 +3151,23 @@ jobs:
+   # and its check line in CI Gate is full, pr or code as before: the gate
+   # reads a proven skip as passed. Its timeout-minutes is ceil(1.5 x its
+   # 72-hour p95) (ci-standard.md §12).
++  # v1.53 (the Tenant Agent's read of the Codex P1 on go-trusted-platform
++  # #2311): a job output never carries a registry address. The LAN mask
++  # registers each internal registry as a secret, and GitHub drops a job
++  # output that contains a masked value, so a consumer would read an empty
++  # reference. A CUSTOMIZE job that hands an image to another job exports
++  # only an unmasked identifier (the tag, the digest or its hex suffix), and
++  # each consumer rebuilds the reference from the secret CI_IMAGE_REGISTRY
++  # after its own mask step. The registry is never read from `vars`: a step's
++  # env is printed in its log header before the run body, and only a secret
++  # is masked from the first byte. A GitHub-hosted run receives none, so it
++  # takes the artifact path as before:
++  #   producer:  echo "image_tag=$tag" >> "$GITHUB_OUTPUT"
++  #   consumer:  env: { IT_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }},
++  #                     IT_IMAGE_TAG: ${{ needs.<producer>.outputs.image_tag }} }
++  #              run: ref="$IT_REGISTRY/<repo>/it-image:$IT_IMAGE_TAG"
++  # testdata/job-output-handoff-tests.py H1 to H5 holds the rule; run it
++  # with a copy's path to check that copy.
+ 
+   # v1.35.2 (Tenant Agent m2577): the commit signature gate is not a job of
+   # this workflow. It is signatures.yml, on pull_request_target, so it runs
+diff --git a/software/templates/github-actions/testdata/ci-mask-lan-tests.py b/software/templates/github-actions/testdata/ci-mask-lan-tests.py
+index f43aae9..9c446b0 100644
+--- a/software/templates/github-actions/testdata/ci-mask-lan-tests.py
++++ b/software/templates/github-actions/testdata/ci-mask-lan-tests.py
+@@ -12,14 +12,22 @@ so a job a repository routes to a pool is masked from its first build on.
+   python3 -I software/templates/github-actions/testdata/ci-mask-lan-tests.py
+ """
+ import os
++import tempfile
+ import re
+ import subprocess
+ import sys
+ 
+ HERE = os.path.dirname(os.path.abspath(__file__))
+ TEMPLATES = os.path.dirname(HERE)
+-SCRIPT = os.path.join(TEMPLATES, "ci-mask-lan.sh")
+-CI = os.path.join(TEMPLATES, "ci.yml")
++# v1.53 (Codex P2 on go-trusted-platform #2311): the same file runs in the
++# handbook (testdata/ beside the template) and in a carrier (testdata/ at the
++# repository root), so each path is the template's, else the carrier's.
++def first(*paths):
++    return next((p for p in paths if os.path.exists(p)), paths[0])
++
++
++SCRIPT = first(os.path.join(TEMPLATES, "ci-mask-lan.sh"), os.path.join(TEMPLATES, "scripts", "ci-mask-lan.sh"))
++CI = first(os.path.join(TEMPLATES, "ci.yml"), os.path.join(TEMPLATES, ".github", "workflows", "ci.yml"))
+ STEP_RUN = "scripts/ci-mask-lan.sh"
+ BUILD = re.compile(r"(^|[\s;&|(`])(make|docker|go|scripts/in-toolchain-image\.sh|scripts/ci-image\.sh|scripts/ci-image-cache\.sh)(\s|$)")
+ 
+@@ -33,13 +41,13 @@ def check(cond, msg):
+ 
+ def script_cases():
+     if not os.path.exists(SCRIPT):
+-        failures.append("no ci-mask-lan.sh beside the template")
++        failures.append("no ci-mask-lan.sh beside the template or at scripts/ci-mask-lan.sh: carry it from the handbook template")
+         return
+     env = {
+         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+         "DEVCACHE_APT_PROXY": "http://192.168.77.7:3142",
+         "DEVCACHE_APK_MIRROR": "http://192.168.77.7:3143/alpine",
+-        "GOPROXY": "http://10.1.2.3:3300|https://proxy.golang.org,direct",
++        "GOPROXY": "http://10.200.0.17:3300|https://proxy.golang.org,direct",  # lab-string-ok: test fixture, a made-up address
+         "CI_REGISTRY": "172.20.0.5:5005",
+         # the forge's release registry and its own host, which image
+         # publishing and resolving name (Codex P1 on go-xkms #2273)
+@@ -52,7 +60,7 @@ def script_cases():
+     lines = out.stdout.split()
+     for want in ["::add-mask::http://192.168.77.7:3142", "::add-mask::192.168.77.7:3142", "::add-mask::192.168.77.7",
+                  "::add-mask::http://192.168.77.7:3143/alpine", "::add-mask::192.168.77.7:3143",
+-                 "::add-mask::http://10.1.2.3:3300", "::add-mask::10.1.2.3",
++                 "::add-mask::http://10.200.0.17:3300", "::add-mask::10.200.0.17",
+                  "::add-mask::172.20.0.5:5005", "::add-mask::172.20.0.5",
+                  "::add-mask::172.21.0.9:5443", "::add-mask::172.21.0.9",
+                  "::add-mask::http://10.9.8.7:8443", "::add-mask::10.9.8.7:8443", "::add-mask::10.9.8.7"]:
+@@ -75,8 +83,8 @@ def script_cases():
+         check(not any(k in l for k in ("proxy.golang.org", "direct", "::add-mask::off", "ghcr.io", "github.com")),
+               f"the script masks {l}: a public host or a keyword")
+     # v1.53 (Tenant Agent on go-quicbaas #2667): every *_REGISTRY variable,
+-    # the mask step's VARS_ copies of repository variables included.
+-    regs = dict(PATH=env["PATH"], VARS_CI_IMAGE_REGISTRY="registry.lan:5005", IT_REGISTRY="10.4.4.4:5000",
++    # a secret's copy in the mask step's env included.
++    regs = dict(PATH=env["PATH"], LAN_REGISTRY="registry.lan:5005", IT_REGISTRY="10.4.4.4:5000",
+                 CI_IMAGE_REGISTRY="build-node-3:5000", CI_REGISTRY_OWNER="someowner", CI_IMAGE_NAMESPACE="ghcr.io/someowner")
+     got = subprocess.run(["bash", SCRIPT], env=regs, capture_output=True, text=True).stdout.split()
+     for want in ["::add-mask::registry.lan:5005", "::add-mask::registry.lan", "::add-mask::10.4.4.4:5000",
+@@ -125,13 +133,102 @@ def template_cases(text):
+     check(building >= 4, f"found {building} jobs that build; the parse found too little")
+ 
+ 
+-VARS_REG = re.compile(r"vars\.([A-Z0-9_]*REGISTRY)\b")
++VARS_REG = re.compile(r"\bvars\.([A-Z0-9_]*REGISTRY)\b")
++SECRET_REG = re.compile(r"\bsecrets\.([A-Z0-9_]*REGISTRY)\b")
++GUARD = "runner.environment != 'github-hosted' && secrets."
++REG_HOST = "registry.lan"
++REG = REG_HOST + ":5005"
++
++
++def code(text):
++    """The workflow without its comment lines."""
++    return "\n".join(l for l in text.split("\n") if not l.lstrip().startswith("#"))
++
++
++def env_of(block, indent):
++    """{NAME: raw value} of the env: map at `indent` spaces in a block."""
++    lines = block.split("\n")
++    out = {}
++    for k, l in enumerate(lines):
++        if l == " " * indent + "env:":
++            for m in lines[k + 1:]:
++                if m.strip() == "" or m.lstrip().startswith("#"):
++                    continue
++                if len(m) - len(m.lstrip()) <= indent:
++                    break
++                kv = re.match(r"\s+([A-Za-z0-9_]+):\s*(.*)$", m)
++                if kv:
++                    out[kv.group(1)] = kv.group(2)
++            break
++    return out
++
++
++def evaluate(raw, ctx):
++    """A `${{ }}` value under ctx, enough of the Actions expression language
++    for env lines: contexts, string literals, ==, !=, &&, || (operand-valued
++    as in Actions)."""
++    def expr(src):
++        toks = re.findall(r"'[^']*'|&&|\|\||!=|==|[A-Za-z_][A-Za-z0-9_.-]*", src)
++        py = []
++        for tk in toks:
++            if tk == "&&": py.append(" and ")
++            elif tk == "||": py.append(" or ")
++            elif tk in ("!=", "=="): py.append(f" {tk} ")
++            elif tk.startswith("'"): py.append(repr(tk[1:-1]))
++            else: py.append(repr(ctx.get(tk, "")))
++        return eval("".join(py) or "''", {"__builtins__": {}})
++    return re.sub(r"\$\{\{(.*?)\}\}", lambda m: str(expr(m.group(1))), raw)
++
+ 
++def contexts(runner):
++    ctx = {"runner.environment": runner}
++    for n in ("CI_IMAGE_REGISTRY", "CI_REGISTRY", "RELEASE_REGISTRY", "OTHER_REGISTRY"):
++        ctx["vars." + n] = REG
++        ctx["secrets." + n] = REG
++    return ctx
+ 
+-def vars_cases(text):
+-    """M1-M3: in a job that runs the mask step, every vars.<NAME> ending in
+-    REGISTRY that the job reads is set in the mask step's env, so the
+-    address is masked before a later step prints it."""
++
++def headers(text, runner):
++    """[(job, step, NAME, value as the log header prints it)]. Actions prints
++    the job env and the step env before the run body; a secret's value is
++    printed as *** from the first byte, a variable's in plaintext."""
++    ctx = contexts(runner)
++    out = []
++    for name, blocks in jobs(text):
++        jtext = "\n".join(text.split("\n")[text.split("\n").index("  " + name + ":"):]).split("\n    steps:")[0]
++        jenv = env_of(jtext, 4)
++        for i, b in enumerate(blocks):
++            env = dict(jenv, **env_of(b, 8))
++            for k, raw in env.items():
++                val = evaluate(raw, ctx)
++                if SECRET_REG.search(raw) and val:
++                    secret_vals = {ctx["secrets." + s] for s in SECRET_REG.findall(raw)}
++                    for s in secret_vals:
++                        val = val.replace(s, "***")
++                out.append((name, i, k, raw, val))
++    return out
++
++
++def registry_cases(text, where="the template", template=True):
++    """M1 no job reads a registry from vars (header leak). M2 every secret
++    registry read is guarded so a hosted run receives none. M3 the rendered
++    step headers show no registry host on a self-hosted or a hosted run, and
++    on a hosted run every *REGISTRY env is empty. M4 (template) each mask
++    step sets CI_IMAGE_REGISTRY from the guarded secret."""
++    c = code(text)
++    for v in sorted(set(VARS_REG.findall(c))):
++        failures.append(f"M1 {where} reads vars.{v}: Actions prints it in the step's log header before any add-mask")
++    for m in re.finditer(r"^\s+([A-Z0-9_]+):\s*(\$\{\{.*\}\})\s*$", c, re.M):
++        if SECRET_REG.search(m.group(2)) and GUARD not in m.group(2):
++            failures.append(f"M2 {where} env {m.group(1)} reads a registry secret without the github-hosted guard: {m.group(2)}")
++    for runner in ("self-hosted", "github-hosted"):
++        for job, i, k, raw, val in headers(text, runner):
++            if REG_HOST in val:
++                failures.append(f"M3 {where} job {job} step {i} header prints {k}={val} on a {runner} run")
++            if runner == "github-hosted" and k.endswith("REGISTRY") and re.search(r"\b(?:vars|secrets)\.", raw) and val:
++                failures.append(f"M3 {where} job {job} step {i}: a hosted run receives {k}={val}")
++    if not template:
++        return
+     masked = 0
+     for name, blocks in jobs(text):
+         runs = [run_of(b) for b in blocks]
+@@ -139,47 +236,124 @@ def vars_cases(text):
+         if mask < 0:
+             continue
+         masked += 1
+-        envd = blocks[mask].split("\n        run:")[0]
+-        have = set(VARS_REG.findall(envd))
+-        check("CI_IMAGE_REGISTRY" in have, f"M1 job {name}'s mask step does not set VARS_CI_IMAGE_REGISTRY from vars")
+-        for i, b in enumerate(blocks):
+-            if i == mask:
+-                continue
+-            for v in VARS_REG.findall(b):
+-                check(v in have, f"M2 job {name} reads vars.{v} but its mask step does not set VARS_{v}: the address is printed unmasked")
++        raw = env_of(blocks[mask], 8).get("CI_IMAGE_REGISTRY", "")
++        check(GUARD + "CI_IMAGE_REGISTRY" in raw, f"M4 job {name}'s mask step does not set CI_IMAGE_REGISTRY from the guarded secret")
+     check(masked >= 4, f"found {masked} jobs with the mask step; the parse found too little")
+ 
+ 
++def caught(fn, *a, **k):
++    before = len(failures)
++    fn(*a, **k)
++    got = len(failures) > before
++    del failures[before:]
++    return got
++
++
++# M5: a consumer of the integration image, as a copy carries it. The log is
++# simulated: the header first (secrets as ***, variables plaintext), then the
++# run body's output (docker echoes its reference), with the runner's masks:
++# the secrets the job reads, and each ::add-mask:: printed by an earlier step.
++CONSUMER = """\
++jobs:
++  integration:
++    runs-on: bigdisk
++    steps:
++      - name: Mask the LAN addresses
++        env:
++          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
++        run: scripts/ci-mask-lan.sh
++      - name: Pull the integration image
++        env:
++          IT_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
++          IT_IMAGE_TAG: abc123
++        run: |
++          [ -n "$IT_REGISTRY" ] || { echo "no registry: artifact path"; exit 0; }
++          docker pull "$IT_REGISTRY/repo/it-image:$IT_IMAGE_TAG"
++"""
++
++
++def simulate_log(text, runner):
++    ctx = contexts(runner)
++    fake = tempfile.mkdtemp(prefix="ci-mask-lan-")
++    with open(os.path.join(fake, "docker"), "w") as f:
++        f.write('#!/bin/sh\necho "docker $*"\necho "Error response from daemon: Get https://$IT_REGISTRY/v2/: dial tcp"\n')
++    os.chmod(os.path.join(fake, "docker"), 0o755)
++    log = []
++    for name, blocks in jobs(text):
++        masks = {ctx["secrets." + s] for b in blocks for s in SECRET_REG.findall(b)
++                 if runner != "github-hosted"}
++        for b in blocks:
++            env = {k: evaluate(v, ctx) for k, v in env_of(b, 8).items()}
++            hdr = [f"  {k}: {v}" for k, v in env.items()]
++            body = run_of(b)
++            if body.strip() == STEP_RUN:
++                r = subprocess.run(["bash", SCRIPT], env=dict(PATH=os.environ["PATH"], **env), capture_output=True, text=True)
++            else:
++                r = subprocess.run(["bash", "-c", body], env=dict(PATH=fake + ":" + os.environ["PATH"], **env), capture_output=True, text=True)
++            out = r.stdout.split("\n")
++            def m(l):
++                for s in sorted(masks, key=len, reverse=True):
++                    if s:
++                        l = l.replace(s, "***")
++                return l
++            log += [m(l) for l in hdr]
++            for l in out:
++                if l.startswith("::add-mask::"):
++                    masks.add(l[len("::add-mask::"):])
++                    continue
++                log.append(m(l))
++    return log
++
++
++def log_cases():
++    for runner in ("self-hosted", "github-hosted"):
++        log = simulate_log(CONSUMER, runner)
++        leak = [l for l in log if REG_HOST in l]
++        check(not leak, f"M5 the {runner} log of the v1.53 consumer shows the registry: {leak}")
++    hosted = simulate_log(CONSUMER, "github-hosted")
++    check(any("artifact path" in l for l in hosted), f"M5 a hosted run received a registry: {hosted}")
++    selfh = simulate_log(CONSUMER, "self-hosted")
++    check(any("docker pull ***/repo/it-image:abc123" in l for l in selfh), f"M5 the self-hosted pull did not use the masked registry: {selfh}")
++    # Mutations: the #2311 head 2b940111 shape (registry from vars, add-mask
++    # in the run body) leaks in the header; an unguarded secret reaches a
++    # hosted run.
++    bad = CONSUMER.replace("runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || ''", "vars.CI_IMAGE_REGISTRY")
++    check(any(REG_HOST in l for l in simulate_log(bad, "self-hosted")), "M5 a registry from vars does not leak in the simulated header: the simulation no longer matches Actions")
++    check(caught(registry_cases, bad, "fixture", False), "M1 a consumer reading vars.CI_IMAGE_REGISTRY passes")
++    ungarded = CONSUMER.replace("runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || ''", "secrets.CI_IMAGE_REGISTRY")
++    check(caught(registry_cases, ungarded, "fixture", False), "M2 an unguarded registry secret passes")
++    check(not caught(registry_cases, CONSUMER, "fixture", False), "M1-M3 flag the v1.53 consumer")
++
++
+ def mutation_cases(text):
+-    # M3: a step that takes another registry from vars, with no VARS_ line, fails.
++    check(caught(registry_cases, text.replace("secrets.CI_IMAGE_REGISTRY || ''", "vars.CI_IMAGE_REGISTRY || ''", 1)),
++          "M1 a mask step reading vars.CI_IMAGE_REGISTRY passes")
+     i = text.index("        run: " + STEP_RUN + "\n")
+-    extra = "      - name: Pull\n        env:\n          IT_REGISTRY: ${{ vars.OTHER_REGISTRY }}\n        run: echo pull\n"
+     j = text.index("      - ", i)
+-    before = len(failures)
+-    vars_cases(text[:j] + extra + text[j:])
+-    caught = len(failures) > before
+-    del failures[before:]
+-    check(caught, "M3 a step reading vars.OTHER_REGISTRY with no VARS_ line in the mask step passes")
+-    before = len(failures)
+-    vars_cases(text.replace("          VARS_CI_IMAGE_REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}\n", "", 1))
+-    caught = len(failures) > before
+-    del failures[before:]
+-    check(caught, "M1 a mask step without VARS_CI_IMAGE_REGISTRY passes")
++    extra = "      - name: Pull\n        env:\n          IT_REGISTRY: ${{ secrets.OTHER_REGISTRY }}\n        run: echo pull\n"
++    check(caught(registry_cases, text[:j] + extra + text[j:]), "M2 a step reading an unguarded registry secret passes")
++    extra = "      - name: Pull\n        env:\n          IT_REGISTRY: ${{ vars.OTHER_REGISTRY }}\n        run: echo pull\n"
++    check(caught(registry_cases, text[:j] + extra + text[j:]), "M1/M3 a step reading vars.OTHER_REGISTRY passes")
++    check(caught(registry_cases, text.replace("          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}\n", "", 1)),
++          "M4 a mask step without CI_IMAGE_REGISTRY passes")
+     # The check catches a job that loses the step.
+     gone = text.replace("        run: " + STEP_RUN + "\n", "        run: echo gone\n", 1)
+-    before = list(failures)
+-    template_cases(gone)
+-    caught = len(failures) > len(before)
+-    del failures[len(before):]
+-    check(caught, "removing the mask step from a job passes the template check")
++    check(caught(template_cases, gone), "removing the mask step from a job passes the template check")
+ 
+ 
+ script_cases()
++if not os.path.exists(CI):
++    print(f"FAIL no {os.path.relpath(CI, TEMPLATES)}: carry it from the handbook template")
++    sys.exit(1)
+ ci = open(CI).read()
+ template_cases(ci)
+-vars_cases(ci)
++registry_cases(ci)
+ if STEP_RUN in ci:
+     mutation_cases(ci)
++log_cases()
++for p in sys.argv[1:]:
++    with open(p) as f:
++        registry_cases(f.read(), p, False)
+ if failures:
+     for f in failures:
+         print("FAIL", f)
+diff --git a/software/templates/github-actions/testdata/job-output-handoff-tests.py b/software/templates/github-actions/testdata/job-output-handoff-tests.py
+new file mode 100644
+index 0000000..ff412e7
+--- /dev/null
++++ b/software/templates/github-actions/testdata/job-output-handoff-tests.py
+@@ -0,0 +1,298 @@
++#!/usr/bin/env python3
++"""Tests for ci-template v1.53: no registry address in a job output.
++
++The Tenant Agent's read of the Codex P1 on go-trusted-platform #2311. v1.53's
++LAN mask (ci-mask-lan.sh) registers each internal registry address as a
++secret. GitHub drops a job output that contains a masked value, so a
++producer job that exported `image_ref=<registry>/<repo>/it-image:<id>` gave
++its consumer legs an empty reference: they failed with no verified
++integration image.
++
++The rule. Between jobs, a job passes only an unmasked identifier, such as a
++tag, a digest or its hex suffix. Each consumer rebuilds the reference from
++the Actions secret `CI_IMAGE_REGISTRY` (for a copy, its own `*_REGISTRY`
++secret; never a `vars` value, which the step's log header prints) and masks
++it in its own job: the mask step sets `CI_IMAGE_REGISTRY`, and this step runs
++before any step that names the reference.
++
++H1  The template has no job output whose value is built from a registry.
++    The registry can come from a `*REGISTRY*` variable, `vars`/`env`/`secrets`, or a
++    shell variable assigned from one.
++H2  The check flags the go-trusted-platform #2311 shape: `image_ref` built
++    from `$IT_REGISTRY` and exported through `$GITHUB_OUTPUT`. It also
++    flags an output set straight from `vars.CI_IMAGE_REGISTRY`.
++H3  The check passes the v1.53 shape. The producer exports `image_tag`
++    only. The consumer reads the `CI_IMAGE_REGISTRY` secret in its mask step and
++    rebuilds the reference after it.
++H4  The handoff, simulated with the real ci-mask-lan.sh. GitHub drops an
++    output that contains a mask. A reference output arrives empty. A tag
++    output arrives intact, and the consumer's rebuilt reference equals the
++    reference the producer pushed.
++H5  In the v1.53 fixture, a consumer that rebuilds the reference runs
++    ci-mask-lan.sh before that step, with `CI_IMAGE_REGISTRY` set.
++
++  python3 -I software/templates/github-actions/testdata/job-output-handoff-tests.py [ci.yml ...]
++
++With paths, it also checks each named workflow against H1. Use it on a
++repository's copy: it exits 1 and names each job output that carries a
++registry address.
++"""
++import os
++import re
++import subprocess
++import sys
++
++HERE = os.path.dirname(os.path.abspath(__file__))
++TEMPLATES = os.path.dirname(HERE)
++# v1.53 (Codex P2 on go-trusted-platform #2311): the same file runs in the
++# handbook (testdata/ beside the template) and in a carrier (testdata/ at the
++# repository root), so each path is the template's, else the carrier's.
++def first(*paths):
++    return next((p for p in paths if os.path.exists(p)), paths[0])
++
++
++CI = first(os.path.join(TEMPLATES, "ci.yml"), os.path.join(TEMPLATES, ".github", "workflows", "ci.yml"))
++MASK = first(os.path.join(TEMPLATES, "ci-mask-lan.sh"), os.path.join(TEMPLATES, "scripts", "ci-mask-lan.sh"))
++STEP_RUN = "scripts/ci-mask-lan.sh"
++
++failures = []
++
++
++def check(cond, msg):
++    if not cond:
++        failures.append(msg)
++
++
++def jobs(text):
++    """{name: [lines]} for each job under `jobs:`."""
++    lines = text.split("\n")
++    j0 = lines.index("jobs:")
++    starts = [i for i in range(j0 + 1, len(lines)) if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[i])]
++    out = {}
++    for k, a in enumerate(starts):
++        e = starts[k + 1] if k + 1 < len(starts) else len(lines)
++        out[lines[a].strip().rstrip(":")] = lines[a:e]
++    return out
++
++
++def job_outputs(jl):
++    """{output: expression} from a job's `outputs:` map (4-space key)."""
++    out = {}
++    i = next((n for n, l in enumerate(jl) if l.rstrip() == "    outputs:"), -1)
++    if i < 0:
++        return out
++    for l in jl[i + 1:]:
++        if l.strip() == "" or l.lstrip().startswith("#"):
++            continue
++        if not l.startswith("      "):
++            break
++        m = re.match(r"^      ([A-Za-z0-9_-]+):\s*(.*)$", l)
++        if m:
++            out[m.group(1)] = m.group(2)
++    return out
++
++
++def steps(jl):
++    """[step text] for each `- ` step of a job."""
++    st = [n for n, l in enumerate(jl) if l.startswith("      - ")]
++    return ["\n".join(jl[st[m]:(st[m + 1] if m + 1 < len(st) else len(jl))]) for m in range(len(st))]
++
++
++def step_id(s):
++    m = re.search(r"(?:^      - |\n        )id:\s*([A-Za-z0-9_-]+)", s)
++    return m.group(1) if m else None
++
++
++def env_names(block):
++    """Env names in a block whose value reads a *REGISTRY* var or env."""
++    return {m.group(1) for m in re.finditer(r"^\s+([A-Z0-9_]+):\s*\$\{\{[^}]*\b(?:vars|env|secrets)\.[A-Z0-9_]*REGISTRY[A-Z0-9_]*\b", block, re.M)}
++
++
++REG = re.compile(r"REGISTRY")
++
++
++def tainted_names(text, seed):
++    """Shell names whose value carries a registry: any *REGISTRY* name, the
++    seed (env from vars/env/secrets registries), and names assigned from them."""
++    t = set(seed)
++    def hit(expr):
++        return any(REG.search(v) or v in t for v in re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", expr)) or \
++            re.search(r"\b(?:vars|env|secrets)\.[A-Z0-9_]*REGISTRY", expr) is not None
++    changed = True
++    while changed:
++        changed = False
++        for m in re.finditer(r"(?:^|[\s;(])(?:local |export |readonly )?([A-Za-z_][A-Za-z0-9_]*)=(\S.*)$", text, re.M):
++            n, rhs = m.group(1), m.group(2)
++            if n not in t and hit(rhs):
++                t.add(n)
++                changed = True
++    return t, hit
++
++
++def findings(text):
++    """[(job, output, why)] for each job output that carries a registry."""
++    out = []
++    for name, jl in jobs(text).items():
++        outs = job_outputs(jl)
++        if not outs:
++            continue
++        jenv = env_names("\n".join(jl[:next((n for n, l in enumerate(jl) if l.startswith("    steps:")), len(jl))]))
++        by_id = {step_id(s): s for s in steps(jl) if step_id(s)}
++        for o, expr in outs.items():
++            if re.search(r"\b(?:vars|env|secrets)\.[A-Z0-9_]*REGISTRY", expr):
++                out.append((name, o, "set from a registry variable"))
++                continue
++            m = re.search(r"steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)", expr)
++            if not m or m.group(1) not in by_id:
++                continue
++            s = by_id[m.group(1)]
++            t, hit = tainted_names(s, jenv | env_names(s))
++            for w in re.finditer(r"(?:echo|printf)[^\n]*?\b" + re.escape(m.group(2)) + r"=([^\n]*?)(?:\"|')?\s*>>\s*\"?\$\{?GITHUB_OUTPUT", s):
++                if hit(w.group(1)):
++                    out.append((name, o, f"steps.{m.group(1)}.outputs.{m.group(2)} is written from a registry: {m.group(2)}={w.group(1).strip()}"))
++                    break
++    return out
++
++
++BAD = """\
++jobs:
++  integration-image:
++    runs-on: bigdisk
++    env:
++      IT_REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}
++    outputs:
++      image_id: ${{ steps.build.outputs.image_id }}
++      image_ref: ${{ steps.push.outputs.image_ref }}
++    steps:
++      - name: Build
++        id: build
++        run: |
++          echo "image_id=sha256:abc" >> "$GITHUB_OUTPUT"
++      - name: Push
++        id: push
++        run: |
++          ref="$IT_REGISTRY/go-trusted-platform/it-image:${IT_LEASE_ID#sha256:}"
++          docker push "$ref"
++          echo "image_ref=$ref" >> "$GITHUB_OUTPUT"
++  direct:
++    runs-on: bigdisk
++    outputs:
++      registry: ${{ vars.CI_IMAGE_REGISTRY }}
++    steps:
++      - run: true
++"""
++
++GOOD = """\
++jobs:
++  integration-image:
++    runs-on: bigdisk
++    outputs:
++      image_tag: ${{ steps.push.outputs.image_tag }}
++    steps:
++      - name: Mask LAN addresses
++        env:
++          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
++        run: scripts/ci-mask-lan.sh
++      - name: Push
++        id: push
++        env:
++          IT_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
++        run: |
++          tag=${IT_LEASE_ID#sha256:}
++          ref="$IT_REGISTRY/go-trusted-platform/it-image:$tag"
++          docker push "$ref"
++          echo "image_tag=$tag" >> "$GITHUB_OUTPUT"
++  integration:
++    runs-on: bigdisk
++    needs: integration-image
++    steps:
++      - name: Mask LAN addresses
++        env:
++          CI_IMAGE_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
++        run: scripts/ci-mask-lan.sh
++      - name: Pull the integration image
++        env:
++          IT_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
++          IT_IMAGE_TAG: ${{ needs.integration-image.outputs.image_tag }}
++        run: |
++          ref="$IT_REGISTRY/go-trusted-platform/it-image:$IT_IMAGE_TAG"
++          docker pull "$ref"
++"""
++
++
++GUARD = "${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}"
++
++
++def mask_values(env):
++    r = subprocess.run(["bash", MASK], env=dict(PATH=os.environ.get("PATH", "/usr/bin:/bin"), **env),
++                       capture_output=True, text=True)
++    check(r.returncode == 0, f"ci-mask-lan.sh exited {r.returncode}: {r.stderr}")
++    return [l[len("::add-mask::"):] for l in r.stdout.split() if l.startswith("::add-mask::")]
++
++
++def github_output(masks, value):
++    """GitHub's rule: a job output that contains a masked value is dropped."""
++    return "" if any(m and m in value for m in masks) else value
++
++
++def handoff_cases():
++    reg = "10.4.4.4:5000"
++    lease = "sha256:0123456789abcdef"
++    tag = lease[len("sha256:"):]
++    pushed = f"{reg}/go-trusted-platform/it-image:{tag}"
++    producer = mask_values({"CI_IMAGE_REGISTRY": reg, "IT_REGISTRY": reg})
++    check(reg in producer, f"H4: the producer's mask does not cover the registry: {producer}")
++    check(github_output(producer, pushed) == "",
++          "H4: a reference output survived the mask; the simulation no longer matches GitHub")
++    got = github_output(producer, tag)
++    check(got == tag, f"H4: the tag output did not arrive intact: {got!r}")
++    consumer = mask_values({"CI_IMAGE_REGISTRY": reg})
++    check(reg in consumer, "H4: the consumer's own mask does not cover the registry it rebuilds from")
++    rebuilt = f"{reg}/go-trusted-platform/it-image:{got}"
++    check(rebuilt == pushed, f"H4: the consumer rebuilt {rebuilt}, the producer pushed {pushed}")
++
++
++def consumer_cases(text):
++    """H5: a consumer step that reads a needs.*.outputs.* id and a registry
++    runs after the job's mask step, which sets CI_IMAGE_REGISTRY from the secret."""
++    seen = 0
++    for name, jl in jobs(text).items():
++        ss = steps(jl)
++        mask = next((i for i, s in enumerate(ss) if re.search(r"run:\s*" + re.escape(STEP_RUN) + r"\s*$", s, re.M)), -1)
++        for i, s in enumerate(ss):
++            if re.search(r"needs\.[A-Za-z0-9_-]+\.outputs\.", s) and env_names(s):
++                seen += 1
++                check(0 <= mask < i, f"H5: job {name} rebuilds a reference before (or without) its mask step")
++                check(mask >= 0 and "CI_IMAGE_REGISTRY: " + GUARD in ss[mask], f"H5: job {name}'s mask step does not set CI_IMAGE_REGISTRY from the guarded secret")
++    return seen
++
++
++def main():
++    for need in (CI, MASK):
++        if not os.path.exists(need):
++            print(f"FAIL: no {os.path.relpath(need, TEMPLATES)}: carry it from the handbook template")
++            sys.exit(1)
++    with open(CI) as f:
++        tmpl = f.read()
++    f1 = findings(tmpl)
++    check(f1 == [], f"H1: the template exports a registry in a job output: {f1}")
++    check(len([n for n, jl in jobs(tmpl).items() if job_outputs(jl)]) >= 1,
++          "H1: the parse found no job with outputs in the template")
++    bad = {(j, o) for j, o, _ in findings(BAD)}
++    check(("integration-image", "image_ref") in bad, f"H2: the #2311 shape is not flagged: {bad}")
++    check(("direct", "registry") in bad, f"H2: an output set from vars.CI_IMAGE_REGISTRY is not flagged: {bad}")
++    check(("integration-image", "image_id") not in bad, "H2: a digest output is flagged")
++    check(findings(GOOD) == [], f"H3: the v1.53 handoff is flagged: {findings(GOOD)}")
++    handoff_cases()
++    check(consumer_cases(GOOD) == 1, "H5: the parse did not find the fixture's consumer step")
++    for p in sys.argv[1:]:
++        with open(p) as f:
++            for j, o, why in findings(f.read()):
++                failures.append(f"{p}: job {j} output {o}: {why}")
++    for m in failures:
++        print("FAIL:", m)
++    print(f"job-output-handoff-tests: {len(failures)} failure(s)")
++    sys.exit(1 if failures else 0)
++
++
++main()
+diff --git a/software/templates/github-actions/testdata/runner-select-tests.py b/software/templates/github-actions/testdata/runner-select-tests.py
+index 3289a20..2da7ffb 100644
+--- a/software/templates/github-actions/testdata/runner-select-tests.py
++++ b/software/templates/github-actions/testdata/runner-select-tests.py
+@@ -1,33 +1,37 @@
+ #!/usr/bin/env python3
+-"""runner-select-tests.py -- runs ci.yml's preflight step `Hosted or overflow
+-runner (ruling 1024)` (ci-template v1.48, Tenant Agent ruling 1024 item 1,
+-queue 250 (a)) against a fake Actions API and asserts the runs-on JSON it
+-outputs.
++"""runner-select-tests.py -- runs ci.yml's preflight step `Balanced runner
++pool (ruling 1137)` (ci-template v1.54, Tenant Agent ruling 1137, which
++replaces the hosted first rule of rulings 999 and 1024) against a fake
++Actions API and asserts the runs-on JSON it outputs.
+ 
+ The code under test is read out of ci.yml, not copied: the `run: |` block of
+-the step named `Hosted or overflow runner (ruling 1024)`, found exactly once
+-or the test stops with FATAL (exit 9). It runs under `bash --noprofile
+---norc -eo pipefail`, as the runner runs a step, with a fake `curl` first on
+-PATH that answers from canned replies; nothing reaches the network. The fake
++the step named `Balanced runner pool (ruling 1137)`, found exactly once or
++the test stops with FATAL (exit 9). It runs under `bash --noprofile --norc
++-eo pipefail`, as the runner runs a step, with a fake `curl` first on PATH
++that answers from canned replies; nothing reaches the network. The fake
+ also fails a case whose curl command line carries the token.
+ 
+-  A. The default: below HOSTED_JOBS_PER_REPO and no hosted job waiting gives
+-     "ubuntu-latest" for both classes; self-hosted jobs, completed jobs, a
+-     queued job of this run, and a queued job younger than the grace do not
+-     count.
+-  B. Overflow: HOSTED_JOBS_PER_REPO hosted jobs in progress, or a hosted job
+-     of another run queued for the grace or longer, gives the bigdisk and
+-     bigdisk-docker label lists, with a ::notice.
+-  C. No silent pick: a reply that is not 200, a reply with no total_count, a
+-     list short of its total that reaches no trigger (v1.50), or a threshold
+-     that is not a number gives the hosted default with a ::warning naming why.
+-     A short list is a lower bound: one that reaches a trigger overflows (B7).
++  A. Balance: H hosted, S1 bigdisk and S2 bigdisk-docker jobs (in progress
++     plus queued, this run's jobs not counted) against HS=CI_HOSTED_SHARE,
++     C1=CI_SELF_HOSTED_BIGDISK and C2=CI_SELF_HOSTED_BIGDISK_DOCKER; hosted
++     use H/HS against self-hosted use max(S1/C1, S2/C2), by
++     cross-multiplication, and a tie goes hosted. Completed jobs, jobs with
++     no runner label and other self-hosted labels do not count; a hosted job
++     never counts as self-hosted.
++  B. Full pools: one full sends the run to the other (the self-hosted pool
++     is full when S1 >= C1 or S2 >= C2, each alone); both full takes the
++     shorter queue (bigdisk and bigdisk-docker queued together), and equal
++     queues go hosted.
++  C. No silent pick: C1 or C2 unset, 0 or not a whole number gives hosted
++     with a ::warning and no call; HS unset, 0 or not a number gives a ::warning and
++     HS=12; a reply that is not 200, no total_count, a list short of its
++     total, or a job list that cannot be counted gives hosted with a
++     ::warning.
+   D. Off github.com: no call, the default output, the forge labels kept.
+-  E. ci-template v1.52 (Tenant Agent order): a pull request whose head
+-     repository is not this repository (a fork, or one since deleted) gets the
+-     hosted default with a ::notice and no call, even when the hosted pool is
+-     full; a same-repository pull request and a push still overflow, and off
+-     github.com a fork keeps the forge labels as before.
++  E. ci-template v1.52 (kept): a pull request whose head repository is not
++     this repository (a fork, or one since deleted) gets the hosted default
++     with a ::notice and no call, even when self-hosted would win; a
++     same-repository pull request and a push still balance.
+ 
+ Run: python3 -I software/templates/github-actions/testdata/runner-select-tests.py
+ """
+@@ -42,12 +46,10 @@ import time
+ 
+ HERE = pathlib.Path(__file__).resolve().parent
+ WORKFLOW = HERE.parent / "ci.yml"
+-STEP = "      - name: Hosted or overflow runner (ruling 1024)\n"
++STEP = "      - name: Balanced runner pool (ruling 1137)\n"
+ TOKEN = "<fake-token-0123456789>"
+ FAILS = 0
+ HOSTED = '"ubuntu-latest"'
+-OVER = '["self-hosted","linux","x64","bigdisk"]'
+-OVER_D = '["self-hosted","linux","x64","bigdisk-docker"]'
+ 
+ 
+ def fatal(msg):
+@@ -58,7 +60,7 @@ def fatal(msg):
+ def script():
+     text = WORKFLOW.read_text()
+     if text.count(STEP) != 1:
+-        fatal("the step `Hosted or overflow runner (ruling 1024)` is not in ci.yml exactly once")
++        fatal("the step `Balanced runner pool (ruling 1137)` is not in ci.yml exactly once")
+     rest = text.split(STEP, 1)[1].split("\n")
+     out, inside = [], False
+     for line in rest:
+@@ -116,7 +118,7 @@ def jobs(*js, total=None):
+     return json.dumps({"total_count": len(js) if total is None else total, "jobs": list(js)})
+ 
+ 
+-def run(resp, server="https://github.com", limit="12", grace="60", event="push", head=""):
++def run(resp, server="https://github.com", hs="10", c1="10", c2="10", event="push", head=""):
+     with tempfile.TemporaryDirectory() as d:
+         d = pathlib.Path(d)
+         (d / "bin").mkdir()
+@@ -133,7 +135,7 @@ def run(resp, server="https://github.com", limit="12", grace="60", event="push",
+             "FAKE_RESP": str(d / "resp.json"), "FAKE_LOG": str(d / "log"), "FAKE_TOKEN": TOKEN,
+             "GITHUB_OUTPUT": str(d / "out"), "RUNNER_TEMP": str(d / "tmp"),
+             "SERVER": server, "API": "https://api.github.com/repos/o/r/actions", "RUN_ID": "100",
+-            "JOB_TOKEN": TOKEN, "LIMIT": limit, "GRACE": grace,
++            "JOB_TOKEN": TOKEN, "HS": hs, "C1": c1, "C2": c2,
+             "EVENT": event, "HEAD_REPO": head, "REPO": "o/r",
+         }
+         p = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", str(d / "step.sh")],
+@@ -159,114 +161,137 @@ U = ["ubuntu-latest"]
+ SH = ["self-hosted", "linux", "x64", "bigdisk-docker"]
+ 
+ 
+-def api(queued, in_progress, per_run):
+-    r = [["runs?status=queued", 200, queued], ["runs?status=in_progress", 200, in_progress]]
+-    return r + [[f"runs/{i}/jobs", 200, body] for i, body in per_run.items()]
+-
+-
+-# A. the default
+-case("A1 nothing in flight but this run: hosted",
+-     api(runs(), runs(100), {100: jobs(jobj(100, "in_progress", U))}), HOSTED, HOSTED,
+-     ["1 hosted job(s) in progress"], ["::warning::", "::notice::"])
+-case("A2 eleven hosted jobs in progress: hosted",
+-     api(runs(), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)),
+-                                  101: jobs(*[jobj(101, "in_progress", ["ubuntu-24.04"]) for _ in range(10)])}),
+-     HOSTED, HOSTED, ["11 hosted job(s) in progress"])
+-case("A3 self-hosted and completed jobs do not count",
+-     api(runs(), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)),
+-                                  101: jobs(*[jobj(101, "in_progress", SH) for _ in range(20)],
+-                                            *[jobj(101, "completed", U) for _ in range(20)],
+-                                            jobj(101, "in_progress", ["self-hosted", "ubuntu-latest"]))}),
+-     HOSTED, HOSTED, ["1 hosted job(s) in progress"])
+-case("A4 a queued job of this run does not count",
+-     api(runs(), runs(100), {100: jobs(jobj(100, "in_progress", U), jobj(100, "queued", U, age=600))}),
+-     HOSTED, HOSTED, ["0 hosted job(s) of other runs queued"])
+-case("A5 a queued hosted job younger than the grace does not count",
+-     api(runs(102), runs(100), {100: jobs(jobj(100, "in_progress", U)), 102: jobs(jobj(102, "queued", U, age=5))}),
+-     HOSTED, HOSTED, ["0 hosted job(s) of other runs queued"])
+-case("A6 a self-hosted job queued long does not count",
+-     api(runs(102), runs(100), {100: jobs(jobj(100, "in_progress", U)), 102: jobs(jobj(102, "queued", SH, age=900))}),
+-     HOSTED, HOSTED)
+-
+-# B. overflow
+-case("B1 twelve hosted jobs in progress: overflow",
+-     api(runs(), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)),
+-                                  101: jobs(*[jobj(101, "in_progress", U) for _ in range(11)])}),
+-     OVER, OVER_D, ["::notice::", "12 hosted jobs in progress", "HOSTED_JOBS_PER_REPO=12"])
+-case("B2 a hosted job of another run queued past the grace: overflow",
+-     api(runs(102), runs(100), {100: jobs(jobj(100, "in_progress", U)), 102: jobs(jobj(102, "queued", U, age=120))}),
+-     OVER, OVER_D, ["::notice::", "the hosted pool is full"])
+-case("B3 a queued job inside an in-progress run counts",
+-     api(runs(), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)),
+-                                  101: jobs(jobj(101, "in_progress", U), jobj(101, "queued", U, age=300))}),
+-     OVER, OVER_D, ["the hosted pool is full"])
+-case("B4 the threshold is HOSTED_JOBS_PER_REPO",
+-     api(runs(), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)), 101: jobs(jobj(101, "in_progress", U))}),
+-     OVER, OVER_D, ["HOSTED_JOBS_PER_REPO=2"], limit="2")
+-case("B5 a run listed as queued and as in progress is counted once",
+-     api(runs(101), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)),
+-                                     101: jobs(*[jobj(101, "in_progress", U) for _ in range(6)])}),
+-     HOSTED, HOSTED, ["7 hosted job(s) in progress"])
+-case("B6 a second page is read",
++SELF = '["self-hosted","linux","x64","bigdisk"]'
++SELF_D = '["self-hosted","linux","x64","bigdisk-docker"]'
++B1 = ["self-hosted", "linux", "x64", "bigdisk"]
++
++
++def pool(h=0, hq=0, s1=0, s1q=0, s2=0, s2q=0, extra=()):
++    """Run 101 holds h hosted in progress and hq queued, s1/s1q bigdisk and
++    s2/s2q bigdisk-docker; run 100 (this run) is listed but its jobs are
++    never read (the fake answers 404 for them)."""
++    js = ([jobj(101, "in_progress", U) for _ in range(h)] + [jobj(101, "queued", U) for _ in range(hq)]
++          + [jobj(101, "in_progress", B1) for _ in range(s1)] + [jobj(101, "queued", B1) for _ in range(s1q)]
++          + [jobj(101, "in_progress", SH) for _ in range(s2)] + [jobj(101, "queued", SH) for _ in range(s2q)]
++          + list(extra))
++    return [["runs?status=queued", 200, runs()], ["runs?status=in_progress", 200, runs(100, 101)],
++            ["runs/101/jobs", 200, jobs(*js)]]
++
++
++# A. balance (HS, C1, C2 default to 10)
++case("A1 hosted use lower: hosted",
++     pool(h=2, s1=5), HOSTED, HOSTED,
++     ["hosted 2 of CI_HOSTED_SHARE=10", "bigdisk 5 of CI_SELF_HOSTED_BIGDISK=10", "bigdisk-docker 0 of CI_SELF_HOSTED_BIGDISK_DOCKER=10"], ["::warning::"])
++case("A2 self-hosted use lower: self-hosted",
++     pool(h=5, s1=2, s2=2), SELF, SELF_D, ["::notice::", "run on the Dells"], ["::warning::"])
++case("A3 equal use: hosted",
++     pool(h=3, s2=3), HOSTED, HOSTED, ["use hosted 3/10, bigdisk 0/10, bigdisk-docker 3/10"])
++case("A4 equal use by cross-multiplication (2/10 against 4/20): hosted",
++     pool(h=2, s1=4), HOSTED, HOSTED, c1="20")
++case("A5 self-hosted use is the larger kind: S2/C2 3/6 against hosted 4/20 goes hosted",
++     pool(h=4, s1=0, s2=3), HOSTED, HOSTED, hs="20", c2="6")
++case("A6 both kinds below hosted use: 9/20 hosted against 1/6 and 1/6 goes self-hosted",
++     pool(h=9, s1=1, s2=1), SELF, SELF_D, hs="20", c1="6", c2="6")
++case("A7 one kind ties hosted use: hosted (1/10 hosted, bigdisk 1/10)",
++     pool(h=1, s1=1, s2=0), HOSTED, HOSTED)
++case("A8 nothing in flight: hosted (a tie at 0)",
++     pool(), HOSTED, HOSTED, ["hosted 0 of", "bigdisk 0 of", "bigdisk-docker 0 of"])
++case("A9 queued jobs count with in-progress ones",
++     pool(h=1, hq=3, s1=1, s1q=1, s2q=1), SELF, SELF_D, ["hosted 4 of", "(3 queued)", "bigdisk 2 of", "bigdisk-docker 1 of", "(2 self-hosted queued)"])
++case("A10 hosted jobs never count as self-hosted; completed, unlabelled and other self-hosted labels do not count",
++     pool(h=1, extra=[jobj(101, "completed", SH) for _ in range(30)] + [jobj(101, "in_progress", []) for _ in range(5)]
++          + [jobj(101, "in_progress", ["self-hosted", "linux", "x64", "release"])]
++          + [jobj(101, "in_progress", ["self-hosted", "ubuntu-latest"])]),
++     SELF, SELF_D, ["hosted 1 of", "bigdisk 0 of", "bigdisk-docker 0 of"])
++case("A11 a job on bigdisk-docker counts as S2 only",
++     pool(h=5, extra=[jobj(101, "in_progress", ["self-hosted", "bigdisk", "bigdisk-docker"])]),
++     SELF, SELF_D, ["bigdisk 0 of", "bigdisk-docker 1 of"])
++case("A12 this run's jobs are not read or counted",
++     pool(h=1) + [["runs/100/jobs", 200, jobs(*[jobj(100, "in_progress", SH) for _ in range(50)])]],
++     SELF, SELF_D, ["bigdisk-docker 0 of"])
++case("A13 a run listed as queued and as in progress is read once",
++     [["runs?status=queued", 200, runs(101)], ["runs?status=in_progress", 200, runs(100, 101)],
++      ["runs/101/jobs", 200, jobs(*[jobj(101, "in_progress", U) for _ in range(3)])]],
++     SELF, SELF_D, ["hosted 3 of"], calls=3)
++case("A14 a second page is read",
+      [["runs?status=queued", 200, runs()],
+       ["runs?status=in_progress&per_page=100&page=1", 200, runs(100, total=2)],
+       ["runs?status=in_progress&per_page=100&page=2", 200, runs(101, total=2)],
+-      ["runs/100/jobs", 200, jobs(jobj(100, "in_progress", U))],
+-      ["runs/101/jobs", 200, jobs(*[jobj(101, "in_progress", U) for _ in range(11)])]],
+-     OVER, OVER_D, ["12 hosted jobs in progress"])
+-case("B7 a queued list short of its total still overflows on what it read (v1.50)",
+-     [["runs?status=queued&per_page=100&page=1", 200, runs(102, total=3)],
+-      ["runs?status=queued&per_page=100&page=2", 200, runs(total=3)],
+-      ["runs?status=in_progress", 200, runs(100)],
+-      ["runs/100/jobs", 200, jobs(jobj(100, "in_progress", U))],
+-      ["runs/102/jobs", 200, jobs(jobj(102, "queued", U, age=600))]],
+-     OVER, OVER_D, ["::notice::", "the hosted pool is full", "a lower bound", "1 of 3 entries"], ["::warning::"])
++      ["runs/101/jobs", 200, jobs(*[jobj(101, "in_progress", U) for _ in range(4)])]],
++     SELF, SELF_D, ["hosted 4 of"])
++
++# B. full pools
++case("B1 hosted full, self-hosted free: self-hosted",
++     pool(h=10, s1=9, s2=9), SELF, SELF_D, ["the hosted pool is full (10 of 10)"])
++case("B2 self-hosted full, hosted free: hosted",
++     pool(h=9, s1=10, s2=10), HOSTED, HOSTED, ["the self-hosted pool is full"])
++case("B3 only bigdisk full (C1): self-hosted full, hosted",
++     pool(h=9, s1=2, s2=0), HOSTED, HOSTED, ["the self-hosted pool is full (bigdisk 2 of 2, bigdisk-docker 0 of 10)"], c1="2")
++case("B4 only bigdisk-docker full (C2): self-hosted full, hosted",
++     pool(h=9, s1=0, s2=3), HOSTED, HOSTED, ["the self-hosted pool is full (bigdisk 0 of 10, bigdisk-docker 3 of 3)"], c2="3")
++case("B5 both full, self-hosted queue shorter: self-hosted",
++     pool(h=6, hq=4, s1=9, s1q=1), SELF, SELF_D, ["both pools full: hosted 4 queued, self-hosted 1 queued"])
++case("B6 both full, hosted queue shorter: hosted",
++     pool(h=10, hq=1, s1=5, s2=8, s2q=2), HOSTED, HOSTED, ["both pools full: hosted 1 queued, self-hosted 2 queued"])
++case("B7 both full, the self-hosted queue counts both kinds",
++     pool(h=8, hq=2, s1=8, s1q=1, s2=9, s2q=1), HOSTED, HOSTED, ["self-hosted 2 queued"])
++case("B8 both full, equal queues: hosted",
++     pool(h=12, s1=12), HOSTED, HOSTED, ["both pools full: hosted 0 queued, self-hosted 0 queued"])
+ 
+ # C. no silent pick
+-case("C1 a 403 on the run list: hosted, with a warning naming why",
++for var, kw in (("CI_SELF_HOSTED_BIGDISK", "c1"), ("CI_SELF_HOSTED_BIGDISK_DOCKER", "c2")):
++    for label, v in (("unset", ""), ("0", "0"), ("not a number", "ten"), ("negative", "-3"), ("00", "00"), ("a decimal", "1.5")):
++        case(f"C1 {var} {label}: hosted, with a warning, no call",
++             pool(h=10), HOSTED, HOSTED, ["::warning::", f"{var}='{v}'"], calls=0, **{kw: v})
++case("C2 a value 08 reads as 8, not octal",
++     pool(h=5, s1=1), SELF, SELF_D, ["CI_SELF_HOSTED_BIGDISK=8"], c1="08")
++for label, hs in (("unset", ""), ("0", "0"), ("not a number", "x12")):
++    case(f"C3 CI_HOSTED_SHARE {label}: a warning and HS=12",
++         pool(h=11, s1=1), SELF, SELF_D, ["::warning::", "CI_HOSTED_SHARE", "HS=12", "hosted 11 of CI_HOSTED_SHARE=12"], hs=hs)
++case("C4 CI_HOSTED_SHARE unset: 12 hosted jobs fill the hosted pool",
++     pool(h=12, s1=9), SELF, SELF_D, ["the hosted pool is full (12 of 12)"], hs="")
++case("C5 a 403 on the run list: hosted, with a warning naming why",
+      [["runs?status=queued", 403, '{"message":"Resource not accessible by integration"}']],
+      HOSTED, HOSTED, ["::warning::runner selection: the Actions API gave no complete run list", "403", "ubuntu-latest"])
+-case("C2 a 500 on a job list: hosted, with a warning",
+-     api(runs(), runs(100), {}) + [["runs/100/jobs", 500, "{}"]],
+-     HOSTED, HOSTED, ["::warning::", "no complete job list", "500"])
+-case("C3 a 200 with no total_count: hosted, with a warning",
+-     [["runs?status=queued", 200, '{"workflow_runs":[]}']],
+-     HOSTED, HOSTED, ["::warning::", "no total_count"])
+-case("C4 a list short of its total that reaches no trigger: hosted, with a warning",
++case("C6 a 500 on a job list: hosted, with a warning",
++     pool(h=1)[:2] + [["runs/101/jobs", 500, "{}"]], HOSTED, HOSTED, ["::warning::", "no complete job list", "500"])
++case("C7 a 200 with no total_count: hosted, with a warning",
++     [["runs?status=queued", 200, '{"workflow_runs":[]}']], HOSTED, HOSTED, ["::warning::", "no total_count"])
++case("C8 a run list short of its total: hosted, with a warning",
+      [["runs?status=queued", 200, runs()],
+-      ["runs?status=in_progress&per_page=100&page=1", 200, runs(100, total=5)],
++      ["runs?status=in_progress&per_page=100&page=1", 200, runs(101, total=5)],
+       ["runs?status=in_progress&per_page=100&page=2", 200, runs(total=5)],
+-      ["runs/100/jobs", 200, jobs(jobj(100, "in_progress", U))]],
++      ["runs/101/jobs", 200, jobs(*[jobj(101, "in_progress", U) for _ in range(9)])]],
+      HOSTED, HOSTED, ["::warning::", "1 of 5 entries"])
+-case("C5 a threshold that is not a number: hosted, with a warning, no call",
+-     [], HOSTED, HOSTED, ["::warning::", "not a whole number"], calls=0, limit="twelve")
+-case("C6 an empty threshold: hosted, with a warning",
+-     [], HOSTED, HOSTED, ["::warning::", "not a whole number"], calls=0, limit="")
+-case("C7 a job with no created_at: hosted, with a warning",
+-     api(runs(102), runs(100), {100: jobs(jobj(100, "in_progress", U)),
+-                                102: jobs({"run_id": 102, "status": "queued", "labels": U})}),
++case("C9 a job list short of its total: hosted, with a warning",
++     pool(h=1)[:2] + [["runs/101/jobs?filter=latest&per_page=100&page=1", 200, jobs(jobj(101, "in_progress", U), total=4)],
++                      ["runs/101/jobs?filter=latest&per_page=100&page=2", 200, jobs(total=4)]],
++     HOSTED, HOSTED, ["::warning::", "1 of 4 entries"])
++case("C10 a job list that is not a list of objects: hosted, with a warning",
++     pool(h=1)[:2] + [["runs/101/jobs", 200, '{"total_count":1,"jobs":[7]}']],
+      HOSTED, HOSTED, ["::warning::", "could not be counted"])
+-case("C8 a route the API does not answer (404): hosted, with a warning",
++case("C11 a route the API does not answer (404): hosted, with a warning",
+      [], HOSTED, HOSTED, ["::warning::", "404"])
+ 
+ # D. off github.com
+ case("D1 Gitea: no call, the default output",
+      [], HOSTED, HOSTED, ["not github.com"], ["::warning::"], calls=0, server="https://forge.example")
++case("D2 Gitea with the self-hosted variables unset: no call, no warning",
++     [], HOSTED, HOSTED, ["not github.com"], ["::warning::"], calls=0, server="https://forge.example", c1="", c2="")
+ 
+-# E. a fork's pull request (v1.52)
+-FULL = api(runs(), runs(100, 101), {100: jobs(jobj(100, "in_progress", U)),
+-                                    101: jobs(*[jobj(101, "in_progress", U) for _ in range(11)])})
+-case("E1 a fork's pull request with the hosted pool full: hosted, no call",
+-     FULL, HOSTED, HOSTED, ["::notice::", "a fork", "ci-template v1.52"], ["::warning::"], calls=0,
++# E. a fork's pull request (v1.52, kept)
++WIN = pool(h=9)
++case("E1 a fork's pull request where self-hosted would win: hosted, no call",
++     WIN, HOSTED, HOSTED, ["::notice::", "a fork", "ci-template v1.52"], ["::warning::"], calls=0,
+      event="pull_request", head="fork/r")
+ case("E2 a pull request whose head repository is gone: hosted, no call",
+-     FULL, HOSTED, HOSTED, ["a fork"], calls=0, event="pull_request", head="")
++     WIN, HOSTED, HOSTED, ["a fork"], calls=0, event="pull_request", head="")
+ case("E3 a fork under pull_request_target: hosted, no call",
+-     FULL, HOSTED, HOSTED, ["a fork"], calls=0, event="pull_request_target", head="fork/r")
+-case("E4 a same-repository pull request with the hosted pool full still overflows",
+-     FULL, OVER, OVER_D, ["::notice::", "12 hosted jobs in progress"], ["a fork"], event="pull_request", head="o/r")
+-case("E5 a push with the hosted pool full still overflows",
+-     FULL, OVER, OVER_D, ["12 hosted jobs in progress"], ["a fork"])
++     WIN, HOSTED, HOSTED, ["a fork"], calls=0, event="pull_request_target", head="fork/r")
++case("E4 a same-repository pull request still balances",
++     WIN, SELF, SELF_D, ["::notice::", "run on the Dells"], ["a fork"], event="pull_request", head="o/r")
++case("E5 a push still balances",
++     WIN, SELF, SELF_D, ["run on the Dells"], ["a fork"])
+ case("E6 off github.com a fork keeps the forge labels: no call, no fork notice",
+      [], HOSTED, HOSTED, ["not github.com"], ["a fork"], calls=0, server="gitea", event="pull_request", head="fork/r")
+ 
