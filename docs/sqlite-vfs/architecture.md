@@ -108,7 +108,10 @@ revision comparison at snapshot pin) keeps warm reads off the network.
 `SQLITE_IOCAP_BATCH_ATOMIC`, so SQLite skips its rollback journal and
 delegates atomicity to the VFS: at commit (`xFileControl(COMMIT_PHASETWO)` /
 `xSync`), the buffered pages plus the meta record are submitted as **one
-atomic batch proposal**. Rollback discards the buffer.
+atomic batch proposal**. Rollback discards the buffer. A commit above the
+stage threshold stages its pages and publishes them with the server-side
+prefix move (`OpMVCCMovePrefix`, gated by the `prefix-move` cluster feature),
+the meta record and truncated-page deletes at the same one revision.
 
 ### Concurrency — two selectable modes
 
@@ -163,8 +166,9 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
   commit on the local MVCC store), with the staged commit and publish for
   oversized transactions (Q2), the meta generation check (Q4), and the
   serialized writer lock with the meta change counter and the sweep of
-  stages a crashed writer left (Q3); no engine binding, lock-service wiring,
-  quota or transport is built.
+  stages a crashed writer left (Q3), and the server-side prefix-move publish
+  op (`OpMVCCMovePrefix` behind the `prefix-move` cluster feature); no engine
+  binding, lock-service wiring, quota or transport is built.
 - If any tier requires CGo (`mattn`, the loadable extension), that binding
   lives in its **own Go module**: CGo must not enter the root module's
   dependency graph. The pure-Go tier via `modernc.org/sqlite` avoids CGo
@@ -177,7 +181,9 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
 Each question is answered with options, a recommendation and its reason in
 the decision record
 [../decisions/sqlite-vfs-build.md](../decisions/sqlite-vfs-build.md),
-where the questions are decided (by convention, ruling 109).
+where the questions are decided by convention under ruling 109, then
+adopted by Tenant Agent ruling 1115 (2026-11-22); the SQLite engine
+dependency is pending the owner (owner queue 288).
 
 1. **WAL-mode support** — advertise batch-atomic and force rollback-journal
    semantics (simpler), or replicate WAL frames dqlite-style (harder,
