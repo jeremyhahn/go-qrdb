@@ -448,6 +448,8 @@ func New(cfg Config) (*Gate, error)
 func (g *Gate) Enabled(shardID uint64, f Feature) bool
 func (g *Gate) Supports(raftAddr string, f Feature) bool
 func (g *Gate) AdmitReplica(shardID uint64, raftAddr string) error // *UnsupportedReplicaError
+func (g *Gate) AdmitReplicaAt(shardID uint64, raftAddr string) (ConfigBinding, error) // *release.GapError, *UnannouncedCandidateError, *UnknownMemberReleaseError, *UnsupportedReplicaError, *StoreError
+func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error // *StaleConfigurationError, *StoreError
 func (g *Gate) Activated(f Feature) bool
 func (g *Gate) AdvertisedSelf() (Self, error)
 func (g *Gate) CheckActivated(ctx context.Context, kv ActivationKV) error
@@ -499,6 +501,21 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   `AddObserver`; the placement scheduler drops refused candidates
   (`placement.WithReplicaFilter`, wired in `lifecycle.BuildServices`). A refusal
   is REST 409 and gRPC/QUIC `FailedPrecondition`.
+- **Release admission.** On the system shard, `AdmitReplicaAt` compares the
+  candidate's announced releases with every committed member's live or
+  recorded release (`__sys:cluster/features/releases/`), read afresh from the
+  stores, not the caches. A candidate with no live advertisement is refused
+  (`UnannouncedCandidateError`); one whose live record predates announcement
+  is judged by features alone. The returned `ConfigBinding` (`ConfigChangeID`,
+  `Required`, `Candidate`, `ReleaseDigest`) is passed by
+  `AdminService.AddMember`/`AddObserverMember` as the add's
+  `configChangeIndex` and rechecked by `CheckConfigBinding` immediately before
+  the request; `ErrStaleConfigChange` or `*StaleConfigurationError` re-admits
+  once. Residual gap: go-quicraft v0.24.3-alpha compares `configChangeIndex`
+  in `Host.requestConfigChange` before queuing but not on the Raft worker,
+  and skips index 0, so a change racing between the recheck and the append is
+  not refused; the gap is stated, closed by go-quicraft 1192 (see
+  [../plans/1628.md](../plans/1628.md)).
 - **Withdrawal.** `qrdbd` closes the advertiser and the gate explicitly in its
   signal and migration branches, before it stops the servers and the host, so
   the lease is revoked while the host can still propose. After a crash the

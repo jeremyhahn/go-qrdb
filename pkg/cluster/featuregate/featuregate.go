@@ -897,8 +897,6 @@ func announcedReleases(recs []cluster.Member) []string {
 	return slices.Compact(rels)
 }
 
-// candidateReleases returns every distinct release the live records at
-// raftAddr announce, sorted.
 // hasLiveRecord reports whether view holds any advertisement at raftAddr.
 func hasLiveRecord(view map[viewKey]cluster.Member, raftAddr string) bool {
 	for _, rec := range view {
@@ -909,6 +907,8 @@ func hasLiveRecord(view map[viewKey]cluster.Member, raftAddr string) bool {
 	return false
 }
 
+// candidateReleases returns every distinct release the live records at
+// raftAddr announce, sorted.
 func candidateReleases(view map[viewKey]cluster.Member, raftAddr string) []string {
 	var recs []cluster.Member
 	for _, rec := range view {

@@ -542,6 +542,18 @@ protocol through TLS ALPN from the list a release speaks (today
 with TLS alert 120 (`no_application_protocol`, QUIC error `0x178`), and the
 Go SDK reports that as a typed, non-retryable refusal.
 
+Release admission is checked against the system-shard membership it read and
+rechecked immediately before the membership change is proposed, so a
+concurrent addition, or a member restarted onto another release, between
+admission and the proposal makes the add retry its admission once and be
+refused. A narrow window remains between that last recheck and the Raft
+worker appending the change, in which two additions from opposite sides of the
+cluster's release (for example a 0.58 and a 0.60 node into an all-0.59
+cluster) can both commit; the gap is stated, closed by go-quicraft 1192 (a
+configuration check on the Raft worker at the proposal boundary). Until then,
+add one node at a time and wait for each `qrdb admin member add` to return
+before starting the next.
+
 While the upgrade is under way the cluster is **mixed**: some nodes run the
 old release (N) and some the new one (N+1). A mixed cluster serves every
 transport (REST, gRPC, QUIC, MCP, Unix socket) on every node, and a write sent
@@ -575,7 +587,10 @@ short-lived (15-minute) advertisement on its behalf as part of the join,
 naming the features the joiner's own binary claims. `qrdb admin member add`
 then sees a live advertisement and admits it, the same as any other node. If
 `member add` does not happen within that window the advertisement lapses;
-run the join again to get a fresh one. From the Go SDK, a node can instead be
+run the join again to get a fresh one. An add attempted after the
+advertisement lapsed is refused with `featuregate.UnannouncedCandidateError`
+(REST 409, gRPC and QUIC `FAILED_PRECONDITION`) rather than admitted without a
+release check. From the Go SDK, a node can instead be
 registered through dynamic membership over a client of the running cluster,
 with its features in the registration published before the add.
 
