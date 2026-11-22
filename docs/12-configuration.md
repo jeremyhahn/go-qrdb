@@ -508,11 +508,15 @@ database_defaults:
 
 ### storage
 
-Configures the underlying storage backend.
+Configures the node's own storage: the control-plane store (it holds the
+`system` database) and, in standalone mode, the node's one local data store.
+`storage.backend` picks that store's engine (pebble when empty); a
+[`databases`](#databases) entry's `backend` is that database's only and
+never picks the node store.
 
 | Field            | Type  | Default  | Required | Description                                       |
 |------------------|-------|----------|----------|---------------------------------------------------|
-| `backend`        | string | `pebble` | no       | Storage engine selection                          |
+| `backend`        | string | `pebble` | no       | Engine of the control-plane store and the standalone node store |
 | `cache_size`     | int64  | `0`      | no       | PebbleDB block cache size in bytes                |
 | `wal_dir`        | string | `""`     | no       | Separate directory for the PebbleDB WAL           |
 | `max_open_files` | int    | `0`      | no       | Maximum number of open files for PebbleDB         |
@@ -1047,7 +1051,10 @@ Cross-Origin Resource Sharing settings for the REST API (`config.CORSConfig`).
 Configures named databases. Each entry defines an isolated data store with
 its own backend and optional per-database wire protocols. There is no
 per-database `engine` field: every database serves every compiled-in engine,
-and a file carrying `engine` is refused at load as an unknown key.
+and a file carrying `engine` is refused at load as an unknown key. An entry's
+`backend` is recorded in the catalog for that database only, the first entry
+included: it never selects the node's store, which follows
+[`storage.backend`](#storage).
 
 | Field        | Type   | Default | Required | Description                                          |
 |--------------|--------|---------|----------|-------------------------------------------------------|

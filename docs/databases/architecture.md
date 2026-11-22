@@ -94,9 +94,10 @@ Supporting facts:
   other database to the shared default service set under the composite
   `<tenant>/<db>/` prefix, regardless of the database's recorded backend.
 - In standalone mode the whole node's data plane is one local store whose
-  backend is taken from **`databases[0].backend`** in the configuration file —
-  the first database's setting is applied to every database on the node
-  (`cmd/qrdbd` start path, `sdk/go/node.resolveBackend`).
+  backend is taken from **`storage.backend`** (pebble when empty; `cmd/qrdbd`
+  start path, `sdk/go/node.resolveBackend`). A `databases[]` entry's
+  `backend`, `databases[0].backend` included, records that database's backend
+  only and never picks the node store.
 - SQL `CREATE DATABASE` (`pkg/sql/provider`) and the daemon's `--sql-database`
   auto-provisioning name no backend: both create through the node's
   `database_defaults`, recording its backend, else the run mode's default
