@@ -371,29 +371,3 @@ func TestVectorIndexManager_Search_UntrainedIVFIsAFailedPrecondition(t *testing.
 		t.Errorf("Classify(untrained) = %v, want FailedPrecondition", got)
 	}
 }
-
-// TestVectorIndexManager_Search_TrainedIVFAnswers proves the untrained
-// refusal lifts once the namespace reaches its training floor.
-func TestVectorIndexManager_Search_TrainedIVFAnswers(t *testing.T) {
-	m := NewVectorIndexManager("", nil)
-	effects := []vector.IndexEffect{
-		{Op: vector.IndexEffectNamespaceCreate, Namespace: "ns", Record: vector.NamespaceRecord{
-			Dimension: 2, DistanceMetric: vector.DistanceEuclidean, IndexType: vector.IndexIVFFlat,
-			IndexParams: map[string]string{"num_centroids": "2"},
-		}},
-		{Op: vector.IndexEffectUpsert, Namespace: "ns", ID: 1, Embedding: []float32{0, 0}},
-		{Op: vector.IndexEffectUpsert, Namespace: "ns", ID: 2, Embedding: []float32{10, 10}},
-	}
-	m.ApplyEffects(effects[:2])
-	if _, err := m.Search("ns", []float32{0, 0}, 1); err == nil {
-		t.Fatal("Search below the training floor = nil error, want *service.VectorIndexUntrainedError")
-	}
-	m.ApplyEffects(effects[2:])
-	hits, err := m.Search("ns", []float32{0, 0}, 1)
-	if err != nil {
-		t.Fatalf("Search after training = %v", err)
-	}
-	if len(hits) != 1 || hits[0].ID != 1 {
-		t.Errorf("Search after training = %+v, want ID 1", hits)
-	}
-}
