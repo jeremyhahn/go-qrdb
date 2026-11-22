@@ -29,8 +29,14 @@
 // (Q2 A). The meta record carries a restore generation: a transaction that
 // sees it change fails with ErrSnapshotChanged after a restore (Q4 A).
 //
+// A Store built WithWriterLock serializes its writers through a distributed
+// lock with a lease (Q3 A): Txn.Reserve fails with ErrBusy at once on
+// contention, a lost lease fails Commit with ErrBusy, a stale snapshot (the
+// meta change counter moved) cannot reserve (ErrSnapshotChanged), and the
+// lock holder sweeps the stages a crashed writer left.
+//
 // The package is unwired. No SQLite engine is linked and no VFS is
 // registered; nothing in the server, the SDK or the CLI calls it. The engine
-// binding, writer serialization, quota, a page cache and every transport
-// are later slices.
+// binding, wiring to the server's lock service, the optimistic read-set
+// check, quota, a page cache and every transport are later slices.
 package sqlitevfs

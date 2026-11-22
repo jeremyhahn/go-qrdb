@@ -26,11 +26,16 @@ func encodeMeta(version, pageSize, pageCount uint32) []byte {
 }
 
 func encodeMetaGen(version, pageSize, pageCount uint32, generation uint64) []byte {
-	buf := make([]byte, 20)
+	return encodeMetaFull(version, pageSize, pageCount, generation, 0)
+}
+
+func encodeMetaFull(version, pageSize, pageCount uint32, generation, changeCounter uint64) []byte {
+	buf := make([]byte, 28)
 	binary.BigEndian.PutUint32(buf[0:4], version)
 	binary.BigEndian.PutUint32(buf[4:8], pageSize)
 	binary.BigEndian.PutUint32(buf[8:12], pageCount)
 	binary.BigEndian.PutUint64(buf[12:20], generation)
+	binary.BigEndian.PutUint64(buf[20:28], changeCounter)
 	return buf
 }
 
@@ -57,16 +62,18 @@ func TestMetaRoundTrip(t *testing.T) {
 }
 
 func TestMetaGenerationRoundTrip(t *testing.T) {
-	for _, gen := range []uint64{1, 7, 1<<32 + 5, 1<<64 - 1} {
-		m := Meta{FormatVersion: FormatVersion, PageSize: 4096, PageCount: 3, Generation: gen}
+	for _, tc := range []struct{ gen, counter uint64 }{
+		{1, 0}, {0, 1}, {7, 9}, {1<<32 + 5, 1<<40 + 3}, {1<<64 - 1, 1<<64 - 1},
+	} {
+		m := Meta{FormatVersion: FormatVersion, PageSize: 4096, PageCount: 3, Generation: tc.gen, ChangeCounter: tc.counter}
 		data, err := m.MarshalBinary()
 		if err != nil {
 			t.Fatalf("MarshalBinary(%+v): %v", m, err)
 		}
-		if len(data) != 20 {
-			t.Fatalf("MarshalBinary(%+v) is %d bytes, want 20", m, len(data))
+		if len(data) != 28 {
+			t.Fatalf("MarshalBinary(%+v) is %d bytes, want 28", m, len(data))
 		}
-		if want := encodeMetaGen(1, 4096, 3, gen); !bytes.Equal(data, want) {
+		if want := encodeMetaFull(1, 4096, 3, tc.gen, tc.counter); !bytes.Equal(data, want) {
 			t.Fatalf("MarshalBinary(%+v) = %x, want %x", m, data, want)
 		}
 		var got Meta
@@ -85,7 +92,8 @@ func TestMetaRefusals(t *testing.T) {
 		data []byte
 	}{
 		{"empty", nil},
-		{"short", encodeMeta(1, 4096, 1)[:19]},
+		{"short", encodeMeta(1, 4096, 1)[:27]},
+		{"no change counter (20 bytes)", encodeMeta(1, 4096, 1)[:20]},
 		{"no generation (12 bytes)", encodeMeta(1, 4096, 1)[:12]},
 		{"long", append(encodeMeta(1, 4096, 1), 0)},
 		{"version 0", encodeMeta(0, 4096, 1)},

@@ -20,6 +20,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
 )
 
@@ -64,6 +65,44 @@ func (b *MVCCBackend) GetAt(key []byte, rev int64) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	return kv.Value, true, nil
+}
+
+// Keys returns every key with a live value at revision rev that starts with
+// prefix, in key order. A non-positive rev is the empty store.
+func (b *MVCCBackend) Keys(prefix []byte, rev int64) ([][]byte, error) {
+	if rev <= 0 {
+		return nil, nil
+	}
+	opts := []lock.RangeOption{lock.WithKeysOnly()}
+	current := b.store.CurrentRevision()
+	if rev < current {
+		// A past revision scans the data entries, so a key deleted
+		// since rev is still listed.
+		opts = append(opts, lock.WithRevision(rev))
+	}
+	kvs, _, _, err := b.store.RangeFrom(b.store.Storage(), current, prefix, prefixEnd(prefix), opts...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevfs: list keys at revision %d: %w", rev, err)
+	}
+	keys := make([][]byte, 0, len(kvs))
+	for _, kv := range kvs {
+		keys = append(keys, kv.Key)
+	}
+	return keys, nil
+}
+
+// prefixEnd returns the smallest key greater than every key starting with
+// prefix, or nil (the end of the keyspace) when there is none.
+func prefixEnd(prefix []byte) []byte {
+	end := make([]byte, len(prefix))
+	copy(end, prefix)
+	for i := len(end) - 1; i >= 0; i-- {
+		if end[i] < 0xFF {
+			end[i]++
+			return end[:i+1]
+		}
+	}
+	return nil
 }
 
 // Commit writes every put and every delete into one storage batch at

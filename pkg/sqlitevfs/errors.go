@@ -59,6 +59,17 @@ var (
 	ErrInvalidCommitID = errors.New("sqlitevfs: invalid commit id")
 
 	// ErrInvalidOption is returned by NewStore for a non-positive stage
-	// threshold or stage chunk size.
+	// threshold or stage chunk size or a nil writer lock, and by
+	// NewLockerWriter for a nil locker, an empty holder id or a
+	// non-positive TTL.
 	ErrInvalidOption = errors.New("sqlitevfs: invalid option")
+
+	// ErrBusy is returned when the database's writer lock is held by
+	// another writer, or when this transaction's lease on it was lost
+	// before Commit. The SQLite binding maps it to SQLITE_BUSY.
+	ErrBusy = errors.New("sqlitevfs: database is locked by another writer")
+
+	// ErrNotReserved is returned by WriteAt or Truncate on a Store with a
+	// writer lock before Txn.Reserve succeeded.
+	ErrNotReserved = errors.New("sqlitevfs: transaction has not reserved the writer lock")
 )

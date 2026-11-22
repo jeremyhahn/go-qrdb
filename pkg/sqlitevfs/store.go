@@ -15,6 +15,7 @@
 package sqlitevfs
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -37,6 +38,9 @@ type Backend interface {
 	// key, and applies puts and deletes; or does none of it. A source key
 	// with no live value fails the whole publish.
 	Publish(moves map[string]string, puts map[string][]byte, deletes [][]byte) (rev int64, err error)
+	// Keys returns every key with a live value at revision rev that
+	// starts with prefix, in key order.
+	Keys(prefix []byte, rev int64) ([][]byte, error)
 }
 
 // Store is the page store of one SQLite database file over a Backend.
@@ -50,6 +54,11 @@ type Store struct {
 	// the page bytes of each staging Backend.Commit.
 	stageThreshold  int
 	stageChunkBytes int
+
+	// writer, when set, serializes this database's writers (Q3 A) through
+	// the lock named lockKey; nil is the no-lock (optimistic/local) Store.
+	writer  WriterLock
+	lockKey string
 
 	// mu guards seenGen and seen: the meta generation of this Store's last
 	// snapshot pin, and whether it has pinned one.
@@ -96,6 +105,19 @@ func WithStageChunkBytes(bytes int) Option {
 	}
 }
 
+// WithWriterLock serializes the Store's writers through w (Q3 A): a
+// transaction writes only after Txn.Reserve took the lock, and holds it until
+// Commit or Rollback. A nil lock is refused with ErrInvalidOption.
+func WithWriterLock(w WriterLock) Option {
+	return func(s *Store) error {
+		if w == nil {
+			return fmt.Errorf("%w: nil writer lock", ErrInvalidOption)
+		}
+		s.writer = w
+		return nil
+	}
+}
+
 // NewStore returns the page store of database db over b. A nil backend is
 // refused with ErrNilBackend and an invalid name with ErrInvalidDatabaseName.
 func NewStore(b Backend, db string, opts ...Option) (*Store, error) {
@@ -106,10 +128,15 @@ func NewStore(b Backend, db string, opts ...Option) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	lockKey, err := WriterLockKey(db)
+	if err != nil {
+		return nil, err
+	}
 	s := &Store{
 		backend:         b,
 		db:              db,
 		metaKey:         metaKey,
+		lockKey:         lockKey,
 		stageThreshold:  DefaultStageThreshold,
 		stageChunkBytes: DefaultStageChunkBytes,
 	}
@@ -199,6 +226,24 @@ func (s *Store) BumpGeneration() (int64, error) {
 	return newRev, nil
 }
 
+// sweepStages deletes, in one Backend.Commit, every staged page key of the
+// database live at revision rev. The caller holds the writer lock.
+func (s *Store) sweepStages(rev int64) error {
+	root, err := StageRoot(s.db)
+	if err != nil {
+		return err
+	}
+	keys, err := s.backend.Keys(root, rev)
+	if err != nil {
+		return err
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	_, err = s.backend.Commit(nil, keys)
+	return err
+}
+
 // Txn is one transaction on a database file: a snapshot at the revision
 // Begin pinned plus a buffer of the transaction's own writes. It offers the
 // file semantics a VFS binding calls (size, read, write, truncate) and
@@ -219,6 +264,11 @@ type Txn struct {
 	dirty map[uint32][]byte
 	wrote bool
 	done  bool
+	// reserved is set once Reserve succeeded; token is the writer lock's
+	// fencing token while this transaction holds it (held is true).
+	reserved bool
+	held     bool
+	token    int64
 }
 
 // Revision returns the revision the transaction reads at.
@@ -230,6 +280,67 @@ func (t *Txn) Revision() int64 {
 // PageCount*PageSize.
 func (t *Txn) Size() int64 {
 	return int64(t.meta.PageCount) * int64(t.meta.PageSize)
+}
+
+// Reserve makes the transaction the database's writer: SQLite's
+// xLock(RESERVED). A second call is a no-op. On a Store without a writer lock
+// it only marks the transaction reserved (optimistic/local mode). With one it
+// takes the lock without blocking: a lock held by another writer is ErrBusy
+// at once (the binding maps it to SQLITE_BUSY; SQLite's busy handler
+// retries). It then re-reads the meta record at the current revision: if the
+// generation or the change counter moved since this transaction's snapshot,
+// the snapshot is stale and cannot become the writer, so Reserve releases
+// the lock and returns ErrSnapshotChanged (SQLITE_BUSY_SNAPSHOT, as SQLite on
+// a file whose change counter moved).
+//
+// Holding the lock, Reserve sweeps abandoned stages: only the lock holder
+// stages pages, so every key under StageRoot seen under the lock was left by
+// a writer that crashed or lost its lease, and Reserve deletes them all in
+// one Backend.Commit. A failed sweep releases the lock and is returned.
+func (t *Txn) Reserve(ctx context.Context) error {
+	if t.done {
+		return ErrTxnDone
+	}
+	if t.reserved {
+		return nil
+	}
+	s := t.store
+	if s.writer == nil {
+		t.reserved = true
+		return nil
+	}
+	token, err := s.writer.Acquire(ctx, s.lockKey)
+	if err != nil {
+		return err
+	}
+	t.token = token
+	t.held = true
+	rev := s.backend.Revision()
+	current, _, err := s.readMeta(rev)
+	if err != nil {
+		_ = t.release(ctx)
+		return err
+	}
+	if current.Generation != t.base.Generation || current.ChangeCounter != t.base.ChangeCounter {
+		_ = t.release(ctx)
+		return fmt.Errorf("%w: %q moved from generation %d change counter %d to generation %d change counter %d",
+			ErrSnapshotChanged, s.db, t.base.Generation, t.base.ChangeCounter, current.Generation, current.ChangeCounter)
+	}
+	if err := s.sweepStages(rev); err != nil {
+		_ = t.release(ctx)
+		return fmt.Errorf("sqlitevfs: sweep abandoned stages of %q: %w", s.db, err)
+	}
+	t.reserved = true
+	return nil
+}
+
+// release gives up the writer lock if this transaction holds it.
+func (t *Txn) release(ctx context.Context) error {
+	if !t.held {
+		return nil
+	}
+	t.held = false
+	return t.store.writer.Release(ctx, t.store.lockKey, t.token)
 }
 
 // ReadAt reads len(p) bytes at offset off from the buffer, else from the
@@ -312,6 +423,9 @@ func (t *Txn) WriteAt(p []byte, off int64) (int, error) {
 	if t.done {
 		return 0, ErrTxnDone
 	}
+	if t.store.writer != nil && !t.reserved {
+		return 0, ErrNotReserved
+	}
 	if off < 0 {
 		return 0, fmt.Errorf("sqlitevfs: negative offset %d", off)
 	}
@@ -361,6 +475,9 @@ func (t *Txn) Truncate(size int64) error {
 	if t.done {
 		return ErrTxnDone
 	}
+	if t.store.writer != nil && !t.reserved {
+		return ErrNotReserved
+	}
 	if size < 0 {
 		return fmt.Errorf("sqlitevfs: negative size %d", size)
 	}
@@ -395,23 +512,43 @@ func (t *Txn) Truncate(size int64) error {
 // truncated away, and the new meta record in one Backend.Commit, and returns
 // its revision. A transaction with no writes commits nothing and returns the
 // pinned revision. The transaction is done afterwards, whether or not the
-// commit succeeded.
+// commit succeeded. A held writer lock is released afterwards, whether or not
+// the commit succeeded, with the same ctx; a Release error is ignored (after
+// a successful commit the data is committed and the lease expires on its
+// own; after a failed one the commit error is the one to report).
 //
-// Commit first re-reads the meta record at the backend's current revision:
-// if its generation differs from the one this transaction pinned, the
-// database was restored underneath it (Q4 A) and Commit returns
-// ErrSnapshotChanged and writes nothing. Without the Q3 writer lock this
-// check and the commit are not one step; the lock slice closes that window.
+// Commit first confirms, on a Store with a writer lock, that this
+// transaction still holds it: a lost lease is ErrBusy and nothing is
+// written. It then re-reads the meta record at the backend's current
+// revision: if its generation differs from the one this transaction pinned,
+// the database was restored underneath it (Q4 A), and with a writer lock a
+// moved change counter means another writer committed since the snapshot;
+// either way Commit returns ErrSnapshotChanged and writes nothing. With the
+// writer lock held from Reserve to Commit, no other page store writer
+// commits between the check and the write. BumpGeneration (restore) does not
+// take the lock: a restore racing a commit is caught at the next Begin.
 //
 // When the dirty pages total more than the Store's stage threshold, the
 // pages go through staging and one publish (Q2 A, commitStaged) instead.
-func (t *Txn) Commit() (int64, error) {
+func (t *Txn) Commit(ctx context.Context) (int64, error) {
 	if t.done {
 		return 0, ErrTxnDone
 	}
 	t.done = true
+	rev, err := t.commitWrites(ctx)
+	_ = t.release(ctx)
+	return rev, err
+}
+
+// commitWrites is Commit's write path; the caller releases the writer lock.
+func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 	if !t.wrote {
 		return t.rev, nil
+	}
+	if t.held {
+		if err := t.store.writer.Check(ctx, t.store.lockKey, t.token); err != nil {
+			return 0, err
+		}
 	}
 	current, _, err := t.store.readMeta(t.store.backend.Revision())
 	if err != nil {
@@ -420,7 +557,11 @@ func (t *Txn) Commit() (int64, error) {
 	if current.Generation != t.base.Generation {
 		return 0, fmt.Errorf("%w: %q moved from generation %d to %d", ErrSnapshotChanged, t.store.db, t.base.Generation, current.Generation)
 	}
+	if t.store.writer != nil && current.ChangeCounter != t.base.ChangeCounter {
+		return 0, fmt.Errorf("%w: %q moved from change counter %d to %d", ErrSnapshotChanged, t.store.db, t.base.ChangeCounter, current.ChangeCounter)
+	}
 	t.meta.Generation = t.base.Generation
+	t.meta.ChangeCounter = t.base.ChangeCounter + 1
 	metaValue, err := t.meta.MarshalBinary()
 	if err != nil {
 		return 0, err
@@ -459,12 +600,13 @@ func (t *Txn) Commit() (int64, error) {
 	return rev, nil
 }
 
-// Rollback discards the buffer. The transaction is done afterwards.
-func (t *Txn) Rollback() error {
+// Rollback discards the buffer and releases a held writer lock. The
+// transaction is done afterwards.
+func (t *Txn) Rollback(ctx context.Context) error {
 	if t.done {
 		return ErrTxnDone
 	}
 	t.done = true
 	t.dirty = nil
-	return nil
+	return t.release(ctx)
 }

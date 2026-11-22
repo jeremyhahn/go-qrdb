@@ -189,6 +189,58 @@ func TestStageKeysDisjoint(t *testing.T) {
 	}
 }
 
+func TestStageRootAndWriterLockKey(t *testing.T) {
+	root, err := StageRoot("app.db")
+	if err != nil || string(root) != "sqlite/app.db/stage/" {
+		t.Fatalf("StageRoot = %q, %v", root, err)
+	}
+	lockKey, err := WriterLockKey("app.db")
+	if err != nil || lockKey != "sqlite/app.db/writer" {
+		t.Fatalf("WriterLockKey = %q, %v", lockKey, err)
+	}
+	for _, bad := range []string{"", "a/b", "..", "."} {
+		if _, err := StageRoot(bad); !errors.Is(err, ErrInvalidDatabaseName) {
+			t.Fatalf("StageRoot(%q) err = %v, want ErrInvalidDatabaseName", bad, err)
+		}
+		if _, err := WriterLockKey(bad); !errors.Is(err, ErrInvalidDatabaseName) {
+			t.Fatalf("WriterLockKey(%q) err = %v, want ErrInvalidDatabaseName", bad, err)
+		}
+	}
+
+	rootA, err := StageRoot("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "0123456789abcdef0123456789abcdef"
+	for _, db := range []string{"a", "ab"} {
+		prefix, err := StagePrefix(db, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dbRoot, err := StageRoot(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.HasPrefix(prefix, dbRoot) {
+			t.Fatalf("StagePrefix(%q) = %q does not start with %q", db, prefix, dbRoot)
+		}
+		page, err := PageKey(db, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta, err := MetaKey(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.HasPrefix(page, dbRoot) || bytes.HasPrefix(meta, dbRoot) {
+			t.Fatalf("StageRoot(%q) prefixes a page or meta key", db)
+		}
+		if db == "ab" && (bytes.HasPrefix(prefix, rootA) || bytes.HasPrefix(page, rootA) || bytes.HasPrefix(meta, rootA)) {
+			t.Fatal(`StageRoot("a") prefixes a key of database "ab"`)
+		}
+	}
+}
+
 func TestPageKeyOrder(t *testing.T) {
 	pgnos := []uint32{1, 2, 255, 256, 65535, 65536, 1 << 24, 1<<32 - 1}
 	var prev []byte

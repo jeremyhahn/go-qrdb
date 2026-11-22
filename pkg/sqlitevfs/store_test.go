@@ -16,10 +16,14 @@ package sqlitevfs
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
@@ -163,7 +167,7 @@ func writePages(t *testing.T, txn *Txn, fills ...byte) {
 
 func commit(t *testing.T, txn *Txn) int64 {
 	t.Helper()
-	rev, err := txn.Commit()
+	rev, err := txn.Commit(context.Background())
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -241,7 +245,7 @@ func TestWriteCommitReadBack(t *testing.T) {
 	if err := m.UnmarshalBinary(value); err != nil {
 		t.Fatal(err)
 	}
-	if m != (Meta{FormatVersion: 1, PageSize: testPageSize, PageCount: 3}) {
+	if m != (Meta{FormatVersion: 1, PageSize: testPageSize, PageCount: 3, ChangeCounter: 1}) {
 		t.Fatalf("committed meta = %+v", m)
 	}
 }
@@ -317,7 +321,7 @@ func TestWriteRefusals(t *testing.T) {
 	if _, err := empty.WriteAt(make([]byte, testPageSize), 100); !errors.Is(err, ErrUnalignedIO) {
 		t.Fatalf("first write at offset 100 err = %v, want ErrUnalignedIO", err)
 	}
-	if err := empty.Rollback(); err != nil {
+	if err := empty.Rollback(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -434,7 +438,7 @@ func TestCommitIsAtomic(t *testing.T) {
 	if err := txn.Truncate(testPageSize); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := txn.Commit(); !errors.Is(err, errInjected) {
+	if _, err := txn.Commit(context.Background()); !errors.Is(err, errInjected) {
 		t.Fatalf("Commit err = %v, want the injected failure", err)
 	}
 	if b.Revision() != rev {
@@ -451,7 +455,7 @@ func TestRollbackDiscards(t *testing.T) {
 	rev := seed(t, s, 0x11)
 	txn := begin(t, s)
 	writePages(t, txn, 0x99, 0x88)
-	if err := txn.Rollback(); err != nil {
+	if err := txn.Rollback(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	after := begin(t, s)
@@ -466,7 +470,7 @@ func TestUseAfterDone(t *testing.T) {
 	writePages(t, committed, 0x11)
 	commit(t, committed)
 	rolledBack := begin(t, s)
-	if err := rolledBack.Rollback(); err != nil {
+	if err := rolledBack.Rollback(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	for name, txn := range map[string]*Txn{"committed": committed, "rolled back": rolledBack} {
@@ -480,10 +484,10 @@ func TestUseAfterDone(t *testing.T) {
 			if err := txn.Truncate(0); !errors.Is(err, ErrTxnDone) {
 				t.Fatalf("Truncate err = %v", err)
 			}
-			if _, err := txn.Commit(); !errors.Is(err, ErrTxnDone) {
+			if _, err := txn.Commit(context.Background()); !errors.Is(err, ErrTxnDone) {
 				t.Fatalf("Commit err = %v", err)
 			}
-			if err := txn.Rollback(); !errors.Is(err, ErrTxnDone) {
+			if err := txn.Rollback(context.Background()); !errors.Is(err, ErrTxnDone) {
 				t.Fatalf("Rollback err = %v", err)
 			}
 		})
@@ -584,7 +588,7 @@ func TestStagedCommitPublishFailure(t *testing.T) {
 	b.failPublish = true
 	txn := begin(t, s)
 	writePages(t, txn, 0x11, 0x12, 0x13, 0x14, 0x15)
-	if _, err := txn.Commit(); !errors.Is(err, errInjected) {
+	if _, err := txn.Commit(context.Background()); !errors.Is(err, errInjected) {
 		t.Fatalf("Commit err = %v, want errInjected", err)
 	}
 	if b.stageCommits != 5 || b.publishes != 1 {
@@ -610,7 +614,7 @@ func TestStagedCommitStageFailure(t *testing.T) {
 	b.failStageAfter = 2
 	txn := begin(t, s)
 	writePages(t, txn, 0x11, 0x12, 0x13, 0x14, 0x15)
-	if _, err := txn.Commit(); !errors.Is(err, errInjected) {
+	if _, err := txn.Commit(context.Background()); !errors.Is(err, errInjected) {
 		t.Fatalf("Commit err = %v, want errInjected", err)
 	}
 	if b.stageCommits != 2 || b.publishes != 0 {
@@ -680,7 +684,7 @@ func TestGenerationChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := open.Commit(); !errors.Is(err, ErrSnapshotChanged) {
+	if _, err := open.Commit(context.Background()); !errors.Is(err, ErrSnapshotChanged) {
 		t.Fatalf("Commit across a restore err = %v, want ErrSnapshotChanged", err)
 	}
 	if b.Revision() != bumped {
@@ -705,5 +709,284 @@ func TestGenerationChange(t *testing.T) {
 	fresh := begin(t, newTestStore(t, b, "app.db"))
 	if got := readAll(t, fresh); !bytes.Equal(got, pagesOf(0x51, 0x42, 0x43)) {
 		t.Fatal("a Store that first pins after the bump reads wrong bytes")
+	}
+}
+
+// newLockedStore returns a staging test Store over b whose writers are
+// serialized through locker as holder.
+func newLockedStore(t *testing.T, b Backend, locker lock.Locker, holder string) *Store {
+	t.Helper()
+	s, err := NewStore(b, "app.db", WithStageThreshold(2*testPageSize), WithStageChunkBytes(testPageSize), WithWriterLock(newWriter(t, locker, holder)))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	return s
+}
+
+// beginReserved begins a transaction on s and reserves the writer lock.
+func beginReserved(t *testing.T, s *Store) *Txn {
+	t.Helper()
+	txn := begin(t, s)
+	if err := txn.Reserve(t.Context()); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	return txn
+}
+
+func changeCounter(t *testing.T, s *Store) uint64 {
+	t.Helper()
+	meta, _, err := s.readMeta(s.backend.Revision())
+	if err != nil {
+		t.Fatalf("readMeta: %v", err)
+	}
+	return meta.ChangeCounter
+}
+
+func TestWriterLockSerializesWriters(t *testing.T) {
+	ctx := t.Context()
+	b := newTestBackend(t)
+	locker := newMemLocker()
+	sa := newLockedStore(t, b, locker, "a")
+	sb := newLockedStore(t, b, locker, "b")
+
+	first := begin(t, sa)
+	if _, err := first.WriteAt(pageOf(0x01), 0); !errors.Is(err, ErrNotReserved) {
+		t.Fatalf("WriteAt before Reserve err = %v, want ErrNotReserved", err)
+	}
+	if err := first.Truncate(0); !errors.Is(err, ErrNotReserved) {
+		t.Fatalf("Truncate before Reserve err = %v, want ErrNotReserved", err)
+	}
+	if err := first.Reserve(ctx); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if err := first.Reserve(ctx); err != nil {
+		t.Fatalf("second Reserve: %v", err)
+	}
+	writePages(t, first, 0x01)
+	commit(t, first)
+	if got := changeCounter(t, sa); got != 1 {
+		t.Fatalf("change counter after one commit = %d, want 1", got)
+	}
+
+	ta := beginReserved(t, sa)
+	tb := begin(t, sb)
+	if err := tb.Reserve(ctx); !errors.Is(err, ErrBusy) {
+		t.Fatalf("Reserve while held err = %v, want ErrBusy", err)
+	}
+	if got := readAll(t, tb); !bytes.Equal(got, pageOf(0x01)) {
+		t.Fatal("a busy transaction cannot read its snapshot")
+	}
+	writePages(t, ta, 0x02)
+	commit(t, ta)
+	if err := tb.Reserve(ctx); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("stale snapshot Reserve err = %v, want ErrSnapshotChanged", err)
+	}
+	if err := tb.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	fresh := beginReserved(t, sb)
+	writePages(t, fresh, 0x03)
+	commit(t, fresh)
+	if got := readAll(t, begin(t, sa)); !bytes.Equal(got, pageOf(0x03)) {
+		t.Fatal("the fresh writer's commit is not visible")
+	}
+	if got := changeCounter(t, sa); got != 3 {
+		t.Fatalf("change counter after three commits = %d, want 3", got)
+	}
+}
+
+func TestWriterLeaseLostFailsCommit(t *testing.T) {
+	b := newTestBackend(t)
+	locker := newMemLocker()
+	sa := newLockedStore(t, b, locker, "a")
+	sb := newLockedStore(t, b, locker, "b")
+	seeded := beginReserved(t, sa)
+	writePages(t, seeded, 0x01)
+	before := commit(t, seeded)
+
+	txn := beginReserved(t, sa)
+	writePages(t, txn, 0x09)
+	locker.expire(sa.lockKey)
+	if _, err := txn.Commit(t.Context()); !errors.Is(err, ErrBusy) {
+		t.Fatalf("Commit after lease loss err = %v, want ErrBusy", err)
+	}
+	if _, err := txn.Commit(t.Context()); !errors.Is(err, ErrTxnDone) {
+		t.Fatalf("Commit again err = %v, want ErrTxnDone", err)
+	}
+	if b.Revision() != before {
+		t.Fatalf("a commit without its lease wrote revision %d, want %d", b.Revision(), before)
+	}
+	if got := readAll(t, begin(t, sb)); !bytes.Equal(got, pageOf(0x01)) {
+		t.Fatal("a commit without its lease changed the pages")
+	}
+	other := beginReserved(t, sb)
+	if err := other.Rollback(t.Context()); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+}
+
+func TestWriterLockReleasedAtRollbackAndReadOnlyCommit(t *testing.T) {
+	b := newTestBackend(t)
+	locker := newMemLocker()
+	sa := newLockedStore(t, b, locker, "a")
+	sb := newLockedStore(t, b, locker, "b")
+
+	rolled := beginReserved(t, sa)
+	writePages(t, rolled, 0x01)
+	if err := rolled.Rollback(t.Context()); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	readOnly := beginReserved(t, sb)
+	rev := readOnly.Revision()
+	if got := commit(t, readOnly); got != rev {
+		t.Fatalf("read-only Commit = %d, want %d", got, rev)
+	}
+	last := beginReserved(t, sa)
+	if err := last.Rollback(t.Context()); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if l, err := locker.Status(t.Context(), sa.lockKey); err != nil || l != nil {
+		t.Fatalf("lock after Rollback = %v, %v, want released", l, err)
+	}
+}
+
+func TestReserveSweepsAbandonedStages(t *testing.T) {
+	ctx := t.Context()
+	b := newStagingBackend(t)
+	locker := newMemLocker()
+	sa := newLockedStore(t, b, locker, "a")
+	sb := newLockedStore(t, b, locker, "b")
+	seeded := beginReserved(t, sa)
+	writePages(t, seeded, 0x01, 0x02)
+	commit(t, seeded)
+
+	// A writer stages five pages and its publish fails.
+	b.failPublish = true
+	crashed := beginReserved(t, sa)
+	writePages(t, crashed, 0x11, 0x12, 0x13, 0x14, 0x15)
+	if _, err := crashed.Commit(ctx); !errors.Is(err, errInjected) {
+		t.Fatalf("Commit err = %v, want errInjected", err)
+	}
+	b.failPublish = false
+	if len(b.stageKeys) != 5 {
+		t.Fatalf("%d stage keys, want 5", len(b.stageKeys))
+	}
+	// Model a writer that crashed before its cleanup: its stage keys are
+	// live and it still holds the lock.
+	leftovers := make(map[string][]byte, len(b.stageKeys))
+	for _, key := range b.stageKeys {
+		leftovers[string(key)] = pageOf(0xEE)
+	}
+	if _, err := b.MVCCBackend.Commit(leftovers, nil); err != nil {
+		t.Fatalf("rewrite stage keys: %v", err)
+	}
+	if _, err := locker.TryLock(ctx, lock.LockOptions{Key: sa.lockKey, HolderID: "a", TTL: time.Minute}); err != nil {
+		t.Fatalf("TryLock: %v", err)
+	}
+	txn := begin(t, sb)
+	if err := txn.Reserve(ctx); !errors.Is(err, ErrBusy) {
+		t.Fatalf("Reserve while the crashed writer holds the lock err = %v, want ErrBusy", err)
+	}
+	locker.expire(sa.lockKey)
+	rev := b.Revision()
+	if err := txn.Reserve(ctx); err != nil {
+		t.Fatalf("Reserve after expiry: %v", err)
+	}
+	if b.Revision() != rev+1 {
+		t.Fatalf("sweep wrote revisions %d..%d, want one", rev+1, b.Revision())
+	}
+	assertNoStageKeyLive(t, b)
+	root, err := StageRoot("app.db")
+	if err != nil {
+		t.Fatalf("StageRoot: %v", err)
+	}
+	if keys, err := b.Keys(root, b.Revision()); err != nil || len(keys) != 0 {
+		t.Fatalf("stage keys after the sweep = %q, %v", keys, err)
+	}
+	writePages(t, txn, 0x21)
+	commit(t, txn)
+	if got := readAll(t, begin(t, sa)); !bytes.Equal(got, pagesOf(0x21, 0x02)) {
+		t.Fatal("the sweeping writer's commit is not visible")
+	}
+	// A reserve with nothing to sweep writes no revision.
+	rev = b.Revision()
+	idle := beginReserved(t, sa)
+	if b.Revision() != rev {
+		t.Fatalf("Reserve with no stages wrote revision %d", b.Revision())
+	}
+	if err := idle.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+}
+
+func TestStoreWithoutWriterLock(t *testing.T) {
+	ctx := t.Context()
+	b := newTestBackend(t)
+	s := newTestStore(t, b, "app.db")
+	seed(t, s, 0x01)
+	rev := b.Revision()
+	txn := begin(t, s)
+	if err := txn.Reserve(ctx); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if err := txn.Reserve(ctx); err != nil {
+		t.Fatalf("second Reserve: %v", err)
+	}
+	if b.Revision() != rev {
+		t.Fatal("Reserve without a writer lock wrote a revision")
+	}
+	writePages(t, txn, 0x02)
+	commit(t, txn)
+	// Without the lock two writers on one snapshot both commit (the
+	// optimistic read-set check is a later slice); the counter still counts.
+	one, two := begin(t, s), begin(t, s)
+	writePages(t, one, 0x03)
+	writePages(t, two, 0x04)
+	commit(t, one)
+	commit(t, two)
+	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pageOf(0x04)) {
+		t.Fatal("the last unlocked commit is not visible")
+	}
+	if got := changeCounter(t, s); got != 3 {
+		t.Fatalf("change counter = %d, want 3", got)
+	}
+}
+
+func TestMVCCBackendKeys(t *testing.T) {
+	b := newTestBackend(t)
+	if keys, err := b.Keys([]byte("p/"), 0); err != nil || keys != nil {
+		t.Fatalf("Keys at revision 0 = %q, %v", keys, err)
+	}
+	rev1, err := b.Commit(map[string][]byte{"p/a": []byte("1"), "q/a": []byte("x")}, nil)
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	rev2, err := b.Commit(map[string][]byte{"p/b": []byte("2")}, nil)
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	rev3, err := b.Commit(nil, [][]byte{[]byte("p/a")})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	for _, tc := range []struct {
+		rev  int64
+		want []string
+	}{
+		{rev1, []string{"p/a"}},
+		{rev2, []string{"p/a", "p/b"}},
+		{rev3, []string{"p/b"}},
+	} {
+		keys, err := b.Keys([]byte("p/"), tc.rev)
+		if err != nil {
+			t.Fatalf("Keys at %d: %v", tc.rev, err)
+		}
+		got := make([]string, 0, len(keys))
+		for _, k := range keys {
+			got = append(got, string(k))
+		}
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Fatalf("Keys at %d = %v, want %v", tc.rev, got, tc.want)
+		}
 	}
 }

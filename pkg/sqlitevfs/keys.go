@@ -30,6 +30,7 @@ const (
 	metaSuffix   = "/meta"
 	pageSegment  = "/page/"
 	stageSegment = "/stage/"
+	writerSuffix = "/writer"
 	pageNumBytes = 4
 
 	// commitIDLen is the length of a staging commit id: 16 random bytes,
@@ -141,6 +142,28 @@ func StagePrefix(db, commitID string) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(keyRoot + db + stageSegment + commitID + pageSegment), nil
+}
+
+// StageRoot returns the prefix of every staged page of every commit of
+// database db: sqlite/<db>/stage/. Every StagePrefix(db, id) starts with it,
+// and it never prefixes a page key or the meta key of any database,
+// including a database whose name starts with db (the '/' after db ends
+// the name).
+func StageRoot(db string) ([]byte, error) {
+	if err := ValidateDatabaseName(db); err != nil {
+		return nil, err
+	}
+	return []byte(keyRoot + db + stageSegment), nil
+}
+
+// WriterLockKey returns the lock.Locker key of database db's writer lock:
+// sqlite/<db>/writer. The lock service stores it under its own internal
+// prefix, so it never collides with a page store key.
+func WriterLockKey(db string) (string, error) {
+	if err := ValidateDatabaseName(db); err != nil {
+		return "", err
+	}
+	return keyRoot + db + writerSuffix, nil
 }
 
 // StageKey returns the staging key of page pgno of commit commitID of
