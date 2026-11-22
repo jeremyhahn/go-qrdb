@@ -68,7 +68,10 @@ type AuditHomeGroupSource interface {
 // silently written to the system shard's chain under its own tenant
 // segment, which would be a correctness defect -- the wrong replica set and
 // the wrong barrier -- not merely an absent feature; a barrier tenant's
-// audit stays on the system shard there.
+// audit stays on the system shard there, except that a barrier tenant whose
+// effective isolation policy is strict gets no append there
+// (*tenant.SystemAuditRouteError: the chain is under the node key) and is
+// refused strict isolation by the tightening probe (SystemAuditRoute).
 type SystemShardAuditResolver struct {
 	host      Host
 	shardID   uint64
@@ -234,6 +237,18 @@ func (r *SystemShardAuditResolver) resolve(ctx context.Context, tenantID string,
 		if r.refuseBarrier {
 			return nil, 0, &BarrierTenantLogNotSupportedError{TenantID: routed}
 		}
+		if write {
+			// Without a home group the system shard is the only route, and
+			// its chain is under the node key: a strict tenant gets no
+			// append there (decision S9). Reads stay allowed.
+			strict, err := r.strictPolicy(ctx, info)
+			if err != nil {
+				return nil, 0, err
+			}
+			if strict {
+				return nil, 0, &tenant.SystemAuditRouteError{TenantID: routed}
+			}
+		}
 		return r.host, r.shardID, nil
 	default:
 		return r.host, r.shardID, nil
@@ -343,8 +358,10 @@ func (r *SystemShardAuditResolver) strictPolicy(ctx context.Context, info *tenan
 // SystemAuditRoute implements tenant.AuditRouteProbe: it reports whether
 // tenantID is a barrier tenant whose audit chain is routed to the system
 // shard -- a recorded system route or, with none recorded, a chain that
-// already has records there. It only reads: no route is recorded. A tenant
-// that is not a barrier tenant is never on a system route.
+// already has records there. On a node without a home group a barrier
+// tenant's appends can only go to the system shard, so it is always on a
+// system route there, chain or not. It only reads: no route is recorded. A
+// tenant that is not a barrier tenant is never on a system route.
 func (r *SystemShardAuditResolver) SystemAuditRoute(ctx context.Context, tenantID string) (bool, error) {
 	routed := tenantid.Normalize(tenantID)
 	if tenantid.IsSystem(routed) || r.isolation == nil {
@@ -368,8 +385,10 @@ func (r *SystemShardAuditResolver) SystemAuditRoute(ctx context.Context, tenantI
 		if recorded != nil {
 			return string(recorded) == AuditRouteSystem, nil
 		}
+		return r.hasSystemChain(ctx, routed)
 	}
-	return r.hasSystemChain(ctx, routed)
+	// No home group: every append goes to the system shard.
+	return true, nil
 }
 
 var _ tenant.AuditRouteProbe = (*SystemShardAuditResolver)(nil)

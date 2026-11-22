@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -369,6 +370,46 @@ func TestSystemShardAuditResolver_NonStrictTenantAppendOnASystemRouteSucceeds(t 
 	}
 }
 
+// Without a home group (standalone) a barrier tenant's appends can only go
+// to the system shard, under the node key: a strict one gets none there
+// (decision S9), whether or not its chain has records yet; reads stay
+// allowed.
+func TestSystemShardAuditResolver_StrictBarrierAppendWithoutAHomeGroupIsRefused(t *testing.T) {
+	ctx := context.Background()
+	for name, lookup := range map[string]func() *floorIsolationLookup{
+		"tenant policy": func() *floorIsolationLookup { return barrierTenantLookup(tenant.TenantIsolationPolicyStrict, "") },
+		"cluster floor": func() *floorIsolationLookup { return barrierTenantLookup("", tenant.ClusterIsolationPolicyStrict) },
+	} {
+		for _, head := range []uint64{0, 3} {
+			t.Run(fmt.Sprintf("%s/head %d", name, head), func(t *testing.T) {
+				system := newChainShard(head, auditActive())
+				r := NewSystemShardAuditResolver(system.host, 1, lookup())
+				err := NewReplicatedLogger(r).Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"})
+				var sa *tenant.SystemAuditRouteError
+				if !errors.As(err, &sa) || sa.TenantID != "widgets" {
+					t.Fatalf("Emit = %v, want *tenant.SystemAuditRouteError for widgets", err)
+				}
+				if len(*system.cmds) != 0 {
+					t.Fatalf("system shard proposals = %d, want none", len(*system.cmds))
+				}
+				if _, shard, err := r.ResolveAuditShard(ctx, "widgets"); err != nil || shard != 1 {
+					t.Fatalf("ResolveAuditShard(widgets) = %d, %v; want shard 1", shard, err)
+				}
+			})
+		}
+	}
+	t.Run("not strict", func(t *testing.T) {
+		system := newChainShard(3, auditActive())
+		r := NewSystemShardAuditResolver(system.host, 1, barrierTenantLookup("", ""))
+		if err := NewReplicatedLogger(r).Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"}); err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if len(*system.cmds) != 1 {
+			t.Fatalf("system shard proposals = %d, want the event on shard 1", len(*system.cmds))
+		}
+	})
+}
+
 // TestSystemShardAuditResolver_SystemAuditRoute: the probe reports a
 // recorded system route, and with none recorded a chain already on the
 // system shard; it records no route, and a tenant that is not a barrier
@@ -380,14 +421,19 @@ func TestSystemShardAuditResolver_SystemAuditRoute(t *testing.T) {
 		tenantID string
 		head     uint64
 		recorded string
+		homes    bool
 		want     bool
 	}{
-		{"recorded system route", "widgets", 0, AuditRouteSystem, true},
-		{"recorded home route", "widgets", 3, AuditRouteHome, false},
-		{"no route, chain on the system shard", "widgets", 3, "", true},
-		{"no route, no chain", "widgets", 0, "", false},
-		{"prefix tenant", "acme", 3, "", false},
-		{"unregistered tenant", "nobody", 3, "", false},
+		{"recorded system route", "widgets", 0, AuditRouteSystem, true, true},
+		{"recorded home route", "widgets", 3, AuditRouteHome, true, false},
+		{"no route, chain on the system shard", "widgets", 3, "", true, true},
+		{"no route, no chain", "widgets", 0, "", true, false},
+		{"prefix tenant", "acme", 3, "", true, false},
+		{"unregistered tenant", "nobody", 3, "", true, false},
+		{"no home group, no chain", "widgets", 0, "", false, true},
+		{"no home group, chain on the system shard", "widgets", 3, "", false, true},
+		{"no home group, prefix tenant", "acme", 3, "", false, false},
+		{"no home group, unregistered tenant", "nobody", 3, "", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			system := newChainShard(tc.head, auditActive())
@@ -399,7 +445,9 @@ func TestSystemShardAuditResolver_SystemAuditRoute(t *testing.T) {
 					t.Fatalf("PutIfAbsent: %v", err)
 				}
 			}
-			r.SetHomeGroupSource(homes, routes)
+			if tc.homes {
+				r.SetHomeGroupSource(homes, routes)
+			}
 			got, err := r.SystemAuditRoute(ctx, tc.tenantID)
 			if err != nil || got != tc.want {
 				t.Fatalf("SystemAuditRoute(%s) = %v, %v; want %v", tc.tenantID, got, err, tc.want)
