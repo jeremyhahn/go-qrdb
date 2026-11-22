@@ -89,8 +89,9 @@ keyspace (disjoint from both the KV plane and the relational plane, per the
 two-plane authz model):
 
 ```
-sqlite/<db-name>/meta          page size, page count, format version
+sqlite/<db-name>/meta          page size, page count, format version, generation
 sqlite/<db-name>/page/<pgno>   one page per key, versioned by MVCC revision
+sqlite/<db-name>/stage/<commit-id>/page/<pgno>   staged page of an oversized commit, never read as a page
 ```
 
 ### Read path
@@ -156,8 +157,9 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
 - A new package implementing the page store against the service layer,
   plus a thin engine binding per tier. The page store core exists unwired
   in `pkg/sqlitevfs` (keyspace, meta record, snapshot reads, one-batch
-  commit on the local MVCC store); no engine binding, locking, staging,
-  quota or transport is built.
+  commit on the local MVCC store), with the staged commit and publish for
+  oversized transactions (Q2) and the meta generation check (Q4); no engine
+  binding, locking, quota or transport is built.
 - If any tier requires CGo (`mattn`, the loadable extension), that binding
   lives in its **own Go module**: CGo must not enter the root module's
   dependency graph. The pure-Go tier via `modernc.org/sqlite` avoids CGo
@@ -165,12 +167,12 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
 - The SDK transports and the batch and write-mode plumbing the VFS needs are
   existing SDK surfaces.
 
-## Open questions (blocking a build decision)
+## Decided questions
 
 Each question is answered with options, a recommendation and its reason in
-the proposed decision record
+the decision record
 [../decisions/sqlite-vfs-build.md](../decisions/sqlite-vfs-build.md),
-pending the owner's ruling.
+where the questions are decided (by convention, ruling 109).
 
 1. **WAL-mode support** — advertise batch-atomic and force rollback-journal
    semantics (simpler), or replicate WAL frames dqlite-style (harder,

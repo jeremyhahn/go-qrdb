@@ -1,7 +1,7 @@
 # SQLite VFS backend: answers to the open questions that block a build decision
 
-> **Status: PROPOSED — awaiting owner ruling** · Scope: go-qrdb
-> Last verified: 2026-11-12
+> **Status: ACCEPTED — decided by convention (ruling 109), 2026-11-22** · Scope: go-qrdb
+> Last verified: 2026-11-22
 > SPEC row: `sqlite-vfs` (future). This record answers the five open questions
 > of [../sqlite-vfs/architecture.md](../sqlite-vfs/architecture.md)
 > ("Open questions (blocking a build decision)"). Each question lists its
@@ -271,5 +271,31 @@ go-codec v1.5.1-alpha as tagged.
 
 ## Ruling
 
-None yet. The owner rules on Q1-Q5; this section then records the options
-chosen and what was built.
+The Tenant ordered the row ready; Q1-Q5 were then decided by convention under
+ruling 109:
+
+- **Q1 = A**: batch-atomic only, no WAL, no `xShmMap`; the true journal mode
+  is reported.
+- **Q2 = A**: staged commit: chunked staging writes under
+  `sqlite/<db>/stage/<commit-id>/page/<pgno>`, invisible to readers, plus one
+  publish that moves them into `page/` and updates meta at one revision.
+- **Q3 = A**: serialized writer by default through a distributed lock with a
+  lease, `SQLITE_BUSY` at once on contention; optimistic mode per connection
+  by the `qrdb_concurrency=optimistic` VFS URI parameter.
+- **Q4 = A**: the namespace is ordinary keyspace for backup and PITR; restore
+  bumps the meta generation; a transaction that sees a changed generation
+  fails with `SQLITE_BUSY_SNAPSHOT`. Export/import (B) comes later as a
+  migration tool.
+- **Q5 = A**: pages count in the tenant's existing storage quota; exceeding
+  it fails the commit with `SQLITE_FULL`; a per-tenant database count cap and
+  the `sqlite-vfs` entitlement gate creation.
+
+Built so far (unwired):
+
+- the page store core in `pkg/sqlitevfs` (keys, meta, transactions over
+  `pkg/mvcc`);
+- the staged commit and publish for oversized transactions (Q2) and the meta
+  generation check (Q4).
+
+Still to come: the SQLite engine binding and VFS registration, the writer
+lock, quota and the entitlement.
