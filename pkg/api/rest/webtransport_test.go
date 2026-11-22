@@ -859,7 +859,11 @@ func rawWTConnect(t *testing.T, srv *Server, pool *x509.CertPool, hs wtHandshake
 // that meets every client requirement of draft-ietf-webtrans-http3-16 section
 // 3.1 and breaks exactly one per case: the :protocol, the version it names,
 // SETTINGS_WT_ENABLED, SETTINGS_H3_DATAGRAM, and the max_datagram_frame_size
-// and reset_stream_at transport parameters. None opens a session.
+// and reset_stream_at transport parameters. None opens a session. A wrong
+// :protocol token is Upgrade's 400; a missing SETTINGS_WT_ENABLED,
+// SETTINGS_H3_DATAGRAM or reset_stream_at is a malformed CONNECT whose stream
+// is reset with H3_MESSAGE_ERROR; SETTINGS_H3_DATAGRAM without
+// max_datagram_frame_size closes the connection with H3_SETTINGS_ERROR.
 func TestWebTransport_NegotiationFailureOpensNoSession(t *testing.T) {
 	h := newWTRecorder()
 	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, h.handle))
@@ -904,7 +908,7 @@ func TestWebTransport_NegotiationFailureOpensNoSession(t *testing.T) {
 		"unsupported version": {broken(func(hs *wtHandshake) { hs.protocol = "webtransport-h4" }), refusal("unexpected protocol")},
 		"legacy protocol":     {broken(func(hs *wtHandshake) { hs.protocol = "webtransport" }), refusal("unexpected protocol")},
 		"no WT_ENABLED":       {broken(func(hs *wtHandshake) { hs.wtEnabled = false }), malformed},
-		"no H3_DATAGRAM":      {broken(func(hs *wtHandshake) { hs.h3Datagram = false }), refusal("datagram")},
+		"no H3_DATAGRAM":      {broken(func(hs *wtHandshake) { hs.h3Datagram = false }), malformed},
 		"no reset_stream_at":  {broken(func(hs *wtHandshake) { hs.resetStreamAt = false }), malformed},
 		// quic-go's http3.Server closes the connection: SETTINGS_H3_DATAGRAM
 		// without the max_datagram_frame_size transport parameter is
@@ -923,6 +927,49 @@ func TestWebTransport_NegotiationFailureOpensNoSession(t *testing.T) {
 	}
 	if n := h.calls.Load(); n != 1 {
 		t.Fatalf("handler ran %d times, want once, for the valid handshake alone", n)
+	}
+}
+
+// TestWebTransportClientRequirements_EachIsRequired checks that a client
+// meeting every draft-ietf-webtrans-http3-16 section 3.1 requirement passes
+// each entry of webTransportClientRequirements, and that dropping one fails
+// exactly the entry that names it.
+func TestWebTransportClientRequirements_EachIsRequired(t *testing.T) {
+	full := func() (*http3.Settings, quic.ConnectionState) {
+		var cs quic.ConnectionState
+		cs.SupportsStreamResetPartialDelivery.Remote = true
+		return &http3.Settings{EnableDatagrams: true, Other: map[uint64]uint64{settingsWTEnabled: 1}}, cs
+	}
+	s, cs := full()
+	for _, req := range webTransportClientRequirements {
+		if !req.met(s, cs) {
+			t.Fatalf("%s not met by a client that sends every requirement", req.name)
+		}
+	}
+	for name, tc := range map[string]struct {
+		breakIt func(*http3.Settings, *quic.ConnectionState)
+		fails   string
+	}{
+		"WT_ENABLED absent": {func(s *http3.Settings, _ *quic.ConnectionState) { delete(s.Other, settingsWTEnabled) }, "SETTINGS_WT_ENABLED"},
+		"WT_ENABLED=2":      {func(s *http3.Settings, _ *quic.ConnectionState) { s.Other[settingsWTEnabled] = 2 }, "SETTINGS_WT_ENABLED"},
+		"no H3_DATAGRAM":    {func(s *http3.Settings, _ *quic.ConnectionState) { s.EnableDatagrams = false }, "SETTINGS_H3_DATAGRAM"},
+		"no reset_stream_at": {func(_ *http3.Settings, cs *quic.ConnectionState) {
+			cs.SupportsStreamResetPartialDelivery.Remote = false
+		}, "the reset_stream_at transport parameter"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, cs := full()
+			tc.breakIt(s, &cs)
+			var failed []string
+			for _, req := range webTransportClientRequirements {
+				if !req.met(s, cs) {
+					failed = append(failed, req.name)
+				}
+			}
+			if len(failed) != 1 || failed[0] != tc.fails {
+				t.Fatalf("failed requirements %q, want exactly [%q]", failed, tc.fails)
+			}
+		})
 	}
 }
 

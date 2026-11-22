@@ -103,8 +103,9 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 			rejectWebTransportRequest(w, http3.ErrCodeRequestRejected)
 			return
 		}
-		// A CONNECT from a client that did not send SETTINGS_WT_ENABLED or
-		// the reset_stream_at transport parameter is malformed
+		// A CONNECT from a client that did not send SETTINGS_WT_ENABLED,
+		// SETTINGS_H3_DATAGRAM or the reset_stream_at transport parameter
+		// is malformed
 		// (draft-ietf-webtrans-http3-16 section 3.1): RFC 9114 section 4.1.2
 		// has the request stream reset with H3_MESSAGE_ERROR.
 		var reqErr *WebTransportClientRequirementError
@@ -119,8 +120,10 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 	// Server.Upgrade returns an error, having written no response and
 	// opened no session, unless the request is CONNECT, its :protocol is
 	// "webtransport-h3" (the only accepted token), CheckOrigin
-	// accepts it, and the client's SETTINGS enable HTTP/3 datagrams. We set
-	// no CheckOrigin, so its default applies: an Origin header, when sent,
+	// accepts it, and the client's SETTINGS enable HTTP/3 datagrams. That
+	// last check is not reached for a client that omitted
+	// SETTINGS_H3_DATAGRAM: webTransportClientRequirementsMet ran first and
+	// reset its CONNECT with H3_MESSAGE_ERROR. We set no CheckOrigin, so its default applies: an Origin header, when sent,
 	// must name the request's Host. Authentication is not Upgrade's job; the
 	// caller check above already ran. Server.Close closes every QUIC
 	// connection and its session manager, ending each session's context and
@@ -143,17 +146,19 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 // section 9.2: the draft-16 codepoint a client must send with the value 1.
 const settingsWTEnabled = 0x2c7cf000
 
-// webTransportClientRequirements are the client requirements of
-// draft-ietf-webtrans-http3-16 section 3.1 that webtransport-go v0.13.0's
-// Upgrade does not check: it opens a session for a client that sends neither.
-// The others it does check (the :protocol token and SETTINGS_H3_DATAGRAM), and
+// webTransportClientRequirements are the client SETTINGS and transport
+// parameters that draft-ietf-webtrans-http3-16 section 3.1 requires, checked
+// before Upgrade runs: a CONNECT from a client that lacks one is malformed and
+// its stream is reset with H3_MESSAGE_ERROR (RFC 9114 section 4.1.2).
+// webtransport-go's Upgrade still checks the :protocol token (400), and
 // quic-go's http3.Server closes a connection whose SETTINGS_H3_DATAGRAM is not
-// backed by the max_datagram_frame_size transport parameter.
+// backed by the max_datagram_frame_size transport parameter (H3_SETTINGS_ERROR).
 var webTransportClientRequirements = []struct {
 	name string
 	met  func(*http3.Settings, quic.ConnectionState) bool
 }{
 	{"SETTINGS_WT_ENABLED", func(s *http3.Settings, _ quic.ConnectionState) bool { return s.Other[settingsWTEnabled] == 1 }},
+	{"SETTINGS_H3_DATAGRAM", func(s *http3.Settings, _ quic.ConnectionState) bool { return s.EnableDatagrams }},
 	{"the reset_stream_at transport parameter", func(_ *http3.Settings, cs quic.ConnectionState) bool {
 		return cs.SupportsStreamResetPartialDelivery.Remote
 	}},
@@ -189,10 +194,13 @@ func webTransportClientRequirementsMet(w http.ResponseWriter, r *http.Request, d
 // arrive within webTransportHandshakeTimeout.
 var errWebTransportSettingsTimeout = errors.New("rest: the client's HTTP/3 SETTINGS did not arrive within the WebTransport handshake timeout")
 
-// rejectWebTransportRequest refuses a CONNECT whose client never sent its
-// SETTINGS: both directions of the request stream are reset with
-// H3_REQUEST_REJECTED (RFC 9114 section 8.1), which tells the client the
-// request was not processed, and no session handler runs.
+// rejectWebTransportRequest refuses a CONNECT before Upgrade: both directions
+// of the request stream are reset with code, and no session handler runs. code
+// is H3_REQUEST_REJECTED when the client's SETTINGS never arrived (RFC 9114
+// section 8.1: the request was not processed), and H3_MESSAGE_ERROR when the
+// client lacks a setting or transport parameter that
+// draft-ietf-webtrans-http3-16 section 3.1 requires (RFC 9114 section 4.1.2:
+// a malformed request).
 func rejectWebTransportRequest(w http.ResponseWriter, code http3.ErrCode) {
 	streamer, ok := w.(http3.HTTPStreamer)
 	if !ok {
