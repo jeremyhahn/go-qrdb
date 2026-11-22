@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
@@ -83,6 +84,9 @@ type PebbleStorage struct {
 	// has no Config.DisableWAL to read, so Sync learns the mode from the
 	// database itself on first use.
 	walOff atomic.Bool
+	// remote keeps the store's SSTables on remote storage (WithRemote);
+	// nil for an all-local store. New reads it before it opens the database.
+	remote *remoteOptions
 }
 
 // errWALDisabled is the message Pebble's commit path returns, before it
@@ -159,29 +163,54 @@ func New(config *Config, opts ...Option) (*PebbleStorage, error) {
 	}
 	config = config.WithDefaults()
 
-	pebbleOpts := config.ToPebbleOptions()
-
-	db, seals, err := Open(config.DataDir, pebbleOpts, nil)
-	if err != nil {
-		return nil, &storage.OpError{Op: "open", Err: err}
-	}
-
 	s := &PebbleStorage{
-		db:       db,
-		seals:    seals,
 		config:   config,
 		readSem:  make(chan struct{}, config.MaxConcurrentReads),
 		writeSem: make(chan struct{}, config.MaxConcurrentWrites),
 		syncs:    syncwatch.ForStorage(syncwatch.BackendPebble, syncwatch.WithAttrs(slog.String("dir", config.DataDir))),
 	}
-	return s.apply(opts), nil
+	s.apply(opts)
+
+	pebbleOpts := config.ToPebbleOptions()
+	if s.remote != nil {
+		if err := s.remote.validate(config); err != nil {
+			return nil, err
+		}
+		s.remote.applyTo(pebbleOpts)
+	}
+
+	db, seals, err := Open(config.DataDir, pebbleOpts, nil)
+	if err != nil {
+		return nil, &storage.OpError{Op: "open", Err: err}
+	}
+	if s.remote != nil && !config.ReadOnly {
+		fs := pebbleOpts.FS
+		if fs == nil {
+			fs = vfs.Default
+		}
+		id, err := loadCreatorID(fs, config.DataDir)
+		if err == nil {
+			err = db.SetCreatorID(id)
+		}
+		if err != nil {
+			_ = db.Close()
+			return nil, &storage.OpError{Op: "open", Err: err}
+		}
+	}
+	s.db = db
+	// A WithSealWatch option still overrides the watch Open made.
+	if s.seals == nil {
+		s.seals = seals
+	}
+	return s, nil
 }
 
 // NewFromDB wraps an existing PebbleDB instance as a storage.Storage.
 // The caller retains ownership of the DB lifecycle. Calling Close() on the
 // returned PebbleStorage will close the underlying DB, so coordinate
 // accordingly. SyncWrites controls whether batch commits use pebble.Sync
-// or pebble.NoSync.
+// or pebble.NoSync. WithRemote has no effect here: the database is already
+// open.
 func NewFromDB(db *pebble.DB, syncWrites bool, opts ...Option) *PebbleStorage {
 	s := &PebbleStorage{
 		db: db,
