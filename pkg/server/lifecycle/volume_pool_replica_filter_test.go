@@ -78,7 +78,7 @@ func (f *fakeVolumeServiceForReplicaFilter) DeletePool(context.Context, string) 
 func (f *fakeVolumeServiceForReplicaFilter) ListAssignments(context.Context, string, string, int) (*volume.AssignmentPage, error) {
 	panic("unused")
 }
-func (f *fakeVolumeServiceForReplicaFilter) MoveTenant(context.Context, string, string) (*volume.Move, error) {
+func (f *fakeVolumeServiceForReplicaFilter) MoveTenant(context.Context, volume.MoveTenantRequest) (*volume.Move, error) {
 	panic("unused")
 }
 func (f *fakeVolumeServiceForReplicaFilter) GetMove(context.Context, string) (*volume.Move, error) {

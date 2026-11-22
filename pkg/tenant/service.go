@@ -582,6 +582,9 @@ type TenantService struct {
 	// barrierFanOut lists the nodes a client fans a barrier init out to;
 	// see SetBarrierNodeSource.
 	barrierFanOut
+	// moveReplicaNodes lists a tenant's replica nodes for AdmitTenantMove;
+	// see volume_move.go.
+	moveReplicaNodes
 	// runtimeCloser stops what this node runs for a tenant before
 	// ReconcileDeletedTenants removes its directories; see ResidueWiring.
 	runtimeCloser atomic.Pointer[runtimeCloserBox]

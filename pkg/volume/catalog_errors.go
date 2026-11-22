@@ -166,13 +166,15 @@ func (e *ReservationConflictError) Error() string {
 	return "volume: reservation conflict on pool " + strconv.Quote(e.Pool) + ": too many concurrent racers, retry"
 }
 
-// MoveNotImplementedError is returned by MoveTenant and GetMove: tenant
-// moves are Phase 2 (decision D5) and are not implemented by this build.
+// MoveNotImplementedError is returned by Catalog.MoveTenant when the
+// composition wired no MoveAdmission, and by a tenant service with no
+// replica-node source: tenant moves are not wired in that composition. It
+// classifies as Unimplemented.
 type MoveNotImplementedError struct{}
 
 // Error implements the error interface.
 func (e *MoveNotImplementedError) Error() string {
-	return "volume: tenant moves are not implemented in this release (decision D5, Phase 2)"
+	return "volume: tenant moves are not wired in this composition"
 }
 
 // MoveConflictError is returned when a tenant move is refused: by
@@ -199,7 +201,8 @@ func (e *MoveConflictError) Error() string {
 
 // InvalidMoveRequestError is returned by Catalog.AdmitMove for a malformed
 // MoveAdmitRequest (an empty tenant or pool, no replica nodes, or an empty
-// or duplicate node ID).
+// or duplicate node ID), by Catalog.MoveTenant for an empty tenant or pool,
+// and by Catalog.GetMove for an empty tenant.
 type InvalidMoveRequestError struct {
 	Reason string
 }
@@ -207,6 +210,18 @@ type InvalidMoveRequestError struct {
 // Error implements the error interface.
 func (e *InvalidMoveRequestError) Error() string {
 	return "volume: invalid move request: " + e.Reason
+}
+
+// MoveNotFoundError is returned by Catalog.GetMove when no move is
+// journalled for the tenant. It classifies as NotFound once a transport
+// carries it.
+type MoveNotFoundError struct {
+	TenantID string
+}
+
+// Error implements the error interface.
+func (e *MoveNotFoundError) Error() string {
+	return "volume: no move journalled for tenant " + strconv.Quote(e.TenantID)
 }
 
 // MoveStepError is returned by the node-local step of a tenant move

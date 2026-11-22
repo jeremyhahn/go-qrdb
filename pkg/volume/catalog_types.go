@@ -210,12 +210,43 @@ type MoveAdmitRequest struct {
 	AllowUnencryptedDestination bool
 }
 
+// MoveTenantRequest is the operator's request to move a tenant between
+// pools ("The move, phase by phase" step 1).
+type MoveTenantRequest struct {
+	// TenantID is the tenant to move.
+	TenantID string
+	// ToPool is the destination pool.
+	ToPool string
+	// AllowUnencryptedDestination is decision Q9's
+	// allow_unencrypted_destination: it permits a Lockable-to-non-Lockable
+	// move.
+	AllowUnencryptedDestination bool
+}
+
+// MoveAdmission is the tenant layer's half of a move's admit step ("The
+// move, phase by phase" step 1): the tenant exists, is a volume or raft
+// tenant, and is entitled to req.ToPool. It returns every node holding a
+// replica of the tenant, as the decimal node IDs node reports are keyed by.
+// pkg/volume cannot import pkg/tenant, so the tenant layer implements it and
+// the composition sets it with Catalog.SetMoveAdmission.
+type MoveAdmission interface {
+	AdmitTenantMove(ctx context.Context, req MoveTenantRequest) (replicaNodes []string, err error)
+}
+
+// MoveStartAuditor audits the start of a tenant move with decision Q9's
+// flag. BeginMoveStart is called before anything is admitted: an error
+// refuses the start and nothing is admitted. Otherwise settle is called
+// exactly once with Catalog.AdmitMove's answer.
+type MoveStartAuditor interface {
+	BeginMoveStart(ctx context.Context, req MoveTenantRequest) (settle func(*Move, error), err error)
+}
+
 // Service is the management surface every transport delegates to (REST,
 // gRPC, QUIC, Unix, MCP, embedded -- see docs/volume-pools/api.md).
 //
-// MoveTenant and GetMove are Phase 2 (decision D5); their journal and wire
-// surface are not part of this build, and NewCatalog's implementation of
-// them returns *MoveNotImplementedError.
+// MoveTenant admits a tenant move through the wired MoveAdmission and
+// Catalog.AdmitMove (and audits its start through the wired
+// MoveStartAuditor, decision Q9); GetMove reads the move journal.
 type Service interface {
 	ListPools(ctx context.Context) ([]PoolView, error)
 	GetPool(ctx context.Context, name string) (*PoolDetail, error)
@@ -223,7 +254,7 @@ type Service interface {
 	UpdatePool(ctx context.Context, name string, req UpdatePoolRequest) (*Pool, error)
 	DeletePool(ctx context.Context, name string) error
 	ListAssignments(ctx context.Context, pool, pageToken string, pageSize int) (*AssignmentPage, error)
-	MoveTenant(ctx context.Context, tenantID, toPool string) (*Move, error)
+	MoveTenant(ctx context.Context, req MoveTenantRequest) (*Move, error)
 	GetMove(ctx context.Context, tenantID string) (*Move, error)
 }
 

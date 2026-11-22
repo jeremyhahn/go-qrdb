@@ -38,8 +38,9 @@ func (e *UnexpectedCallError) Error() string {
 // with Errorf rather than Fatal because transports call the service from
 // server goroutines, where Fatal cannot stop the test.
 //
-// MoveTenant and GetMove return *volume.MoveNotImplementedError, as the real
-// catalog does until tenant moves land.
+// MoveTenant returns *volume.MoveNotImplementedError, as the catalog does
+// with no MoveAdmission wired; GetMove returns *volume.MoveNotFoundError, as
+// the catalog does with no move journalled.
 type Service struct {
 	T                 testing.TB
 	ListPoolsFn       func(context.Context) ([]volume.PoolView, error)
@@ -111,11 +112,11 @@ func (s *Service) ListAssignments(ctx context.Context, pool, pageToken string, p
 }
 
 // MoveTenant implements volume.Service.
-func (s *Service) MoveTenant(context.Context, string, string) (*volume.Move, error) {
+func (s *Service) MoveTenant(context.Context, volume.MoveTenantRequest) (*volume.Move, error) {
 	return nil, &volume.MoveNotImplementedError{}
 }
 
 // GetMove implements volume.Service.
-func (s *Service) GetMove(context.Context, string) (*volume.Move, error) {
-	return nil, &volume.MoveNotImplementedError{}
+func (s *Service) GetMove(_ context.Context, tenantID string) (*volume.Move, error) {
+	return nil, &volume.MoveNotFoundError{TenantID: tenantID}
 }

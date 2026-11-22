@@ -259,21 +259,3 @@ func TestCatalog_DeletePool_RefusesWhileUnparseableAssignmentExists(t *testing.T
 		t.Fatalf("GetPool after refused delete: %v", err)
 	}
 }
-
-func TestCatalog_MoveTenant_NotImplemented(t *testing.T) {
-	cat, _, _ := newTestCatalog()
-	_, err := cat.MoveTenant(context.Background(), "acme", "bulk")
-	var target *MoveNotImplementedError
-	if !errors.As(err, &target) {
-		t.Fatalf("MoveTenant error = %v, want *MoveNotImplementedError", err)
-	}
-}
-
-func TestCatalog_GetMove_NotImplemented(t *testing.T) {
-	cat, _, _ := newTestCatalog()
-	_, err := cat.GetMove(context.Background(), "acme")
-	var target *MoveNotImplementedError
-	if !errors.As(err, &target) {
-		t.Fatalf("GetMove error = %v, want *MoveNotImplementedError", err)
-	}
-}

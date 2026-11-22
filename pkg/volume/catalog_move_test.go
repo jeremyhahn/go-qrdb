@@ -441,14 +441,223 @@ func TestCatalog_Move_CorruptJournalFailsClosed(t *testing.T) {
 	}
 }
 
-func TestCatalog_MoveTenantGetMove_StillNotImplemented(t *testing.T) {
-	cat, _, _ := newMoveTestCatalog(t)
-	ctx := context.Background()
+// recordingAdmission is a MoveAdmission double: it records each request and
+// answers with nodes or err.
+type recordingAdmission struct {
+	nodes []string
+	err   error
+	calls []MoveTenantRequest
+}
+
+func (a *recordingAdmission) AdmitTenantMove(_ context.Context, req MoveTenantRequest) ([]string, error) {
+	a.calls = append(a.calls, req)
+	if a.err != nil {
+		return nil, a.err
+	}
+	return a.nodes, nil
+}
+
+// recordingAuditor is a MoveStartAuditor double: it records each begin and
+// settle, and fails begin with beginErr.
+type recordingAuditor struct {
+	beginErr    error
+	begins      []MoveTenantRequest
+	settles     int
+	settledMove *Move
+	settledErr  error
+}
+
+func (a *recordingAuditor) BeginMoveStart(_ context.Context, req MoveTenantRequest) (func(*Move, error), error) {
+	a.begins = append(a.begins, req)
+	if a.beginErr != nil {
+		return nil, a.beginErr
+	}
+	return func(m *Move, err error) {
+		a.settles++
+		a.settledMove = m
+		a.settledErr = err
+	}, nil
+}
+
+func moveAcme() MoveTenantRequest {
+	return MoveTenantRequest{TenantID: "acme", ToPool: "bulk"}
+}
+
+func TestCatalog_MoveTenant_NoAdmissionWired(t *testing.T) {
+	cat, kv, _ := newMoveTestCatalog(t)
 	var target *MoveNotImplementedError
-	if _, err := cat.MoveTenant(ctx, "acme", "bulk"); !errors.As(err, &target) {
+	if _, err := cat.MoveTenant(context.Background(), moveAcme()); !errors.As(err, &target) {
 		t.Fatalf("MoveTenant error = %v, want *MoveNotImplementedError", err)
 	}
-	if _, err := cat.GetMove(ctx, "acme"); !errors.As(err, &target) {
-		t.Fatalf("GetMove error = %v, want *MoveNotImplementedError", err)
+	if storedMove(t, kv, "acme") != nil {
+		t.Fatal("journal written with no admission wired")
+	}
+}
+
+func TestCatalog_MoveTenant_InvalidRequest(t *testing.T) {
+	cat, _, _ := newMoveTestCatalog(t)
+	adm := &recordingAdmission{nodes: []string{"n1", "n2"}}
+	cat.SetMoveAdmission(adm)
+	for _, req := range []MoveTenantRequest{
+		{ToPool: "bulk"},
+		{TenantID: "acme"},
+	} {
+		var target *InvalidMoveRequestError
+		if _, err := cat.MoveTenant(context.Background(), req); !errors.As(err, &target) {
+			t.Fatalf("MoveTenant(%+v) error = %v, want *InvalidMoveRequestError", req, err)
+		}
+	}
+	if len(adm.calls) != 0 {
+		t.Fatalf("admission called %d times for invalid requests", len(adm.calls))
+	}
+}
+
+func TestCatalog_MoveTenant_AdmissionRefuses(t *testing.T) {
+	cat, kv, _ := newMoveTestCatalog(t)
+	refusal := errors.New("tenant not entitled")
+	cat.SetMoveAdmission(&recordingAdmission{err: refusal})
+	aud := &recordingAuditor{}
+	cat.SetMoveStartAuditor(aud)
+	if _, err := cat.MoveTenant(context.Background(), moveAcme()); !errors.Is(err, refusal) {
+		t.Fatalf("MoveTenant error = %v, want the admission's refusal", err)
+	}
+	if storedMove(t, kv, "acme") != nil {
+		t.Fatal("journal written after the admission refused")
+	}
+	if len(aud.begins) != 0 {
+		t.Fatal("start audited after the admission refused")
+	}
+}
+
+func TestCatalog_MoveTenant_AuditorRefusesStart(t *testing.T) {
+	cat, kv, _ := newMoveTestCatalog(t)
+	adm := &recordingAdmission{nodes: []string{"n1", "n2"}}
+	cat.SetMoveAdmission(adm)
+	auditErr := errors.New("audit sink down")
+	cat.SetMoveStartAuditor(&recordingAuditor{beginErr: auditErr})
+	if _, err := cat.MoveTenant(context.Background(), moveAcme()); !errors.Is(err, auditErr) {
+		t.Fatalf("MoveTenant error = %v, want the auditor's refusal", err)
+	}
+	if len(adm.calls) != 1 {
+		t.Fatalf("admission calls = %d, want 1", len(adm.calls))
+	}
+	if storedMove(t, kv, "acme") != nil {
+		t.Fatal("journal written after the auditor refused the start")
+	}
+	if got := poolReserved(t, kv, "bulk"); got != 0 {
+		t.Fatalf("bulk reserved = %d, want 0", got)
+	}
+}
+
+func TestCatalog_MoveTenant_Success(t *testing.T) {
+	cat, kv, _ := newMoveTestCatalog(t)
+	ctx := context.Background()
+	adm := &recordingAdmission{nodes: []string{"n1", "n2"}}
+	cat.SetMoveAdmission(adm)
+	aud := &recordingAuditor{}
+	cat.SetMoveStartAuditor(aud)
+	m, err := cat.MoveTenant(ctx, moveAcme())
+	if err != nil {
+		t.Fatalf("MoveTenant: %v", err)
+	}
+	if !reflect.DeepEqual(adm.calls, []MoveTenantRequest{moveAcme()}) {
+		t.Fatalf("admission calls = %+v", adm.calls)
+	}
+	if m.FromPool != "fast" || m.ToPool != "bulk" || !reflect.DeepEqual(m.NodesPending, []string{"n1", "n2"}) {
+		t.Fatalf("move = %+v", m)
+	}
+	if storedMove(t, kv, "acme") == nil {
+		t.Fatal("no journal at MoveKey(acme)")
+	}
+	if len(aud.begins) != 1 || aud.settles != 1 || aud.settledMove != m || aud.settledErr != nil {
+		t.Fatalf("auditor begins=%d settles=%d move=%v err=%v", len(aud.begins), aud.settles, aud.settledMove, aud.settledErr)
+	}
+	got, err := cat.GetMove(ctx, "acme")
+	if err != nil {
+		t.Fatalf("GetMove: %v", err)
+	}
+	if !got.AdmittedAt.Equal(m.AdmittedAt) {
+		t.Fatalf("GetMove AdmittedAt %v != %v", got.AdmittedAt, m.AdmittedAt)
+	}
+	got.AdmittedAt = m.AdmittedAt
+	if !reflect.DeepEqual(*got, *m) {
+		t.Fatalf("GetMove %+v != MoveTenant %+v", *got, *m)
+	}
+
+	// A second move is refused by AdmitMove (Q10) and settle sees it.
+	var conflict *MoveConflictError
+	if _, err := cat.MoveTenant(ctx, moveAcme()); !errors.As(err, &conflict) {
+		t.Fatalf("second MoveTenant error = %v, want *MoveConflictError", err)
+	}
+	if aud.settles != 2 || aud.settledMove != nil || !errors.As(aud.settledErr, &conflict) {
+		t.Fatalf("second settle: settles=%d move=%v err=%v", aud.settles, aud.settledMove, aud.settledErr)
+	}
+}
+
+func TestCatalog_MoveTenant_NoAuditorWired(t *testing.T) {
+	cat, kv, _ := newMoveTestCatalog(t)
+	cat.SetMoveAdmission(&recordingAdmission{nodes: []string{"n1", "n2"}})
+	if _, err := cat.MoveTenant(context.Background(), moveAcme()); err != nil {
+		t.Fatalf("MoveTenant: %v", err)
+	}
+	if storedMove(t, kv, "acme") == nil {
+		t.Fatal("no journal at MoveKey(acme)")
+	}
+}
+
+func TestCatalog_MoveTenant_Q9FlagReachesTheJournal(t *testing.T) {
+	cat, kv := newQ9Catalog(t, "luks2", "dir")
+	cat.SetMoveAdmission(&recordingAdmission{nodes: []string{"n1", "n2"}})
+	aud := &recordingAuditor{}
+	cat.SetMoveStartAuditor(aud)
+	var conflict *MoveConflictError
+	if _, err := cat.MoveTenant(context.Background(), moveAcme()); !errors.As(err, &conflict) {
+		t.Fatalf("MoveTenant without the flag error = %v, want *MoveConflictError", err)
+	}
+	req := moveAcme()
+	req.AllowUnencryptedDestination = true
+	if _, err := cat.MoveTenant(context.Background(), req); err != nil {
+		t.Fatalf("MoveTenant with the flag: %v", err)
+	}
+	if len(aud.begins) != 2 || aud.begins[0].AllowUnencryptedDestination || !aud.begins[1].AllowUnencryptedDestination {
+		t.Fatalf("audited begins = %+v, want the flag off then on", aud.begins)
+	}
+	if stored := storedMove(t, kv, "acme"); stored == nil || !stored.AllowUnencryptedDestination {
+		t.Fatalf("journal = %+v, want the flag set", stored)
+	}
+}
+
+func TestCatalog_GetMove(t *testing.T) {
+	cat, kv, _ := newMoveTestCatalog(t)
+	ctx := context.Background()
+	var invalid *InvalidMoveRequestError
+	if _, err := cat.GetMove(ctx, ""); !errors.As(err, &invalid) {
+		t.Fatalf("GetMove(\"\") error = %v, want *InvalidMoveRequestError", err)
+	}
+	var notFound *MoveNotFoundError
+	if _, err := cat.GetMove(ctx, "acme"); !errors.As(err, &notFound) || notFound.TenantID != "acme" {
+		t.Fatalf("GetMove error = %v, want *MoveNotFoundError for acme", err)
+	}
+	if err := kv.Put(ctx, MoveKey("acme"), []byte("{not json")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	var corrupt *CorruptRecordError
+	if _, err := cat.GetMove(ctx, "acme"); !errors.As(err, &corrupt) {
+		t.Fatalf("GetMove error = %v, want *CorruptRecordError", err)
+	}
+}
+
+func TestCatalog_SetMoveAdmissionNilUnwires(t *testing.T) {
+	cat, _, _ := newMoveTestCatalog(t)
+	adm := &recordingAdmission{nodes: []string{"n1", "n2"}}
+	cat.SetMoveAdmission(adm)
+	cat.SetMoveStartAuditor(nil)
+	cat.SetMoveAdmission(nil)
+	var target *MoveNotImplementedError
+	if _, err := cat.MoveTenant(context.Background(), moveAcme()); !errors.As(err, &target) {
+		t.Fatalf("MoveTenant error = %v, want *MoveNotImplementedError", err)
+	}
+	if len(adm.calls) != 0 {
+		t.Fatal("unwired admission was called")
 	}
 }

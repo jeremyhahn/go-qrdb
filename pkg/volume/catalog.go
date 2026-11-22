@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
@@ -78,6 +79,11 @@ type Catalog struct {
 	registry Registry
 	logger   *slog.Logger
 	leaseTTL time.Duration
+
+	// moveAdmission and moveAuditor are the optional post-construction
+	// seams MoveTenant orchestrates through (move_service.go).
+	moveAdmission atomic.Pointer[moveAdmissionBox]
+	moveAuditor   atomic.Pointer[moveAuditorBox]
 }
 
 // Compile-time proof that Catalog satisfies both exported seams.
@@ -686,7 +692,8 @@ func (c *Catalog) providerOpensLockable(name string, fallback bool) bool {
 // req.AllowUnencryptedDestination (Q9), and a destination that is not
 // Mapped and StateReady in a fresh report from every replica node (Q3). The
 // tenant-kind and AllowedVolumePools checks belong to the caller in the
-// tenant layer. Nothing calls AdmitMove yet.
+// tenant layer: MoveTenant calls AdmitMove once the wired MoveAdmission
+// admitted the move and supplied the replica nodes.
 func (c *Catalog) AdmitMove(ctx context.Context, req MoveAdmitRequest) (*Move, error) {
 	if req.TenantID == "" {
 		return nil, &InvalidMoveRequestError{Reason: "empty tenant id"}
@@ -836,16 +843,6 @@ func (c *Catalog) AdmitMove(ctx context.Context, req MoveAdmitRequest) (*Move, e
 		}
 	}
 	return nil, &ReservationConflictError{Pool: req.ToPool}
-}
-
-// MoveTenant is not implemented: tenant moves are Phase 2.
-func (c *Catalog) MoveTenant(_ context.Context, _, _ string) (*Move, error) {
-	return nil, &MoveNotImplementedError{}
-}
-
-// GetMove is not implemented: tenant moves are Phase 2.
-func (c *Catalog) GetMove(_ context.Context, _ string) (*Move, error) {
-	return nil, &MoveNotImplementedError{}
 }
 
 // ---------------------------------------------------------------------------
