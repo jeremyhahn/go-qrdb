@@ -1,0 +1,340 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package objstore
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"net/url"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+
+	"github.com/cockroachdb/pebble/v2/objstorage/remote"
+	"github.com/jeremyhahn/go-objstore/pkg/memory"
+	"github.com/stretchr/testify/require"
+)
+
+// countingRemote counts the ReadObject calls that reach the wrapped storage.
+type countingRemote struct {
+	remote.Storage
+	reads atomic.Int64
+}
+
+func (c *countingRemote) ReadObject(ctx context.Context, objName string) (remote.ObjectReader, int64, error) {
+	c.reads.Add(1)
+	return c.Storage.ReadObject(ctx, objName)
+}
+
+// errFailingClose is the error failingCloseRemote's writers return on Close.
+var errFailingClose = errors.New("test: inner writer close failed")
+
+// failingCloseRemote hands out writers whose Close fails without storing.
+type failingCloseRemote struct {
+	remote.Storage
+}
+
+func (f *failingCloseRemote) CreateObject(string) (io.WriteCloser, error) {
+	return failingCloseWriter{}, nil
+}
+
+type failingCloseWriter struct{}
+
+func (failingCloseWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (failingCloseWriter) Close() error                { return errFailingClose }
+
+func newTestCachedRemote(t *testing.T, inner remote.Storage, dir string) *CachedRemote {
+	t.Helper()
+	c, err := NewCachedRemote(inner, dir)
+	require.NoError(t, err)
+	return c
+}
+
+// cacheDirBytes returns the concatenated bytes of every file in dir.
+func cacheDirBytes(t *testing.T, dir string) []byte {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	var out []byte
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		require.NoError(t, err)
+		out = append(out, b...)
+	}
+	return out
+}
+
+func TestNewCachedRemote_Refusals(t *testing.T) {
+	_, err := NewCachedRemote(nil, t.TempDir())
+	var ie *InvalidCachedRemoteError
+	require.ErrorAs(t, err, &ie)
+	require.Contains(t, err.Error(), "nil inner storage")
+
+	_, err = NewCachedRemote(newTestRemote(t, memory.New(), "db1"), "")
+	require.ErrorAs(t, err, &ie)
+	require.Contains(t, err.Error(), "empty dir")
+}
+
+func TestNewCachedRemote_RemovesTemporaries(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "x.tmp"), []byte("partial"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "000001.sst"), []byte("kept"), 0o600))
+	newTestCachedRemote(t, newTestRemote(t, memory.New(), "db1"), dir)
+	_, err := os.Stat(filepath.Join(dir, "x.tmp"))
+	require.True(t, os.IsNotExist(err))
+	_, err = os.Stat(filepath.Join(dir, "000001.sst"))
+	require.NoError(t, err)
+}
+
+func TestNewCachedRemote_CreatesDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "a", "cache")
+	newTestCachedRemote(t, newTestRemote(t, memory.New(), "db1"), dir)
+	fi, err := os.Stat(dir)
+	require.NoError(t, err)
+	require.True(t, fi.IsDir())
+	require.Equal(t, os.FileMode(0o700), fi.Mode().Perm())
+}
+
+func TestCachedRemote_ReadFetchesOnce(t *testing.T) {
+	rs := newTestRemote(t, memory.New(), "db1")
+	data := []byte("0123456789abcdef")
+	putObject(t, rs, "000001.sst", data)
+	counting := &countingRemote{Storage: rs}
+	c := newTestCachedRemote(t, counting, t.TempDir())
+
+	for i := range 2 {
+		rd, size, err := c.ReadObject(context.Background(), "000001.sst")
+		require.NoError(t, err, "read %d", i)
+		require.Equal(t, int64(len(data)), size)
+
+		tests := []struct {
+			name string
+			off  int64
+			n    int
+			want string
+			err  error
+		}{
+			{"offset 0", 0, 4, "0123", nil},
+			{"mid", 6, 5, "6789a", nil},
+			{"up to end", 12, 4, "cdef", nil},
+			{"empty at end", 16, 0, "", nil},
+			{"past end", 14, 4, "", io.EOF},
+			{"wholly past end", 20, 1, "", io.EOF},
+			{"negative offset", -1, 1, "", errNegativeOffset},
+		}
+		for _, tc := range tests {
+			p := make([]byte, tc.n)
+			err := rd.ReadAt(context.Background(), p, tc.off)
+			if tc.err != nil {
+				require.ErrorIs(t, err, tc.err, "read %d %s", i, tc.name)
+				continue
+			}
+			require.NoError(t, err, "read %d %s", i, tc.name)
+			require.Equal(t, tc.want, string(p), "read %d %s", i, tc.name)
+		}
+		require.NoError(t, rd.Close())
+		require.ErrorIs(t, rd.ReadAt(context.Background(), make([]byte, 1), 0), errReaderClosed)
+		require.NoError(t, rd.Close())
+	}
+	require.Equal(t, int64(1), counting.reads.Load())
+
+	got, err := c.Size("000001.sst")
+	require.NoError(t, err)
+	want, err := rs.Size("000001.sst")
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
+func TestCachedRemote_EmptyObject(t *testing.T) {
+	rs := newTestRemote(t, memory.New(), "db1")
+	putObject(t, rs, "empty.sst", nil)
+	counting := &countingRemote{Storage: rs}
+	c := newTestCachedRemote(t, counting, t.TempDir())
+	for range 2 {
+		rd, size, err := c.ReadObject(context.Background(), "empty.sst")
+		require.NoError(t, err)
+		require.Zero(t, size)
+		require.NoError(t, rd.ReadAt(context.Background(), nil, 0))
+		require.ErrorIs(t, rd.ReadAt(context.Background(), make([]byte, 1), 0), io.EOF)
+		require.NoError(t, rd.Close())
+	}
+	require.Equal(t, int64(1), counting.reads.Load())
+}
+
+func TestCachedRemote_CreateWritesThrough(t *testing.T) {
+	rs := newTestRemote(t, memory.New(), "db1")
+	counting := &countingRemote{Storage: rs}
+	c := newTestCachedRemote(t, counting, t.TempDir())
+	w, err := c.CreateObject("000002.sst")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("hello "))
+	require.NoError(t, err)
+	_, err = w.Write([]byte("world"))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	require.NoError(t, w.Close())
+	_, err = w.Write([]byte("x"))
+	require.ErrorIs(t, err, errWriterClosed)
+
+	rd, size, err := c.ReadObject(context.Background(), "000002.sst")
+	require.NoError(t, err)
+	require.Equal(t, int64(11), size)
+	p := make([]byte, 11)
+	require.NoError(t, rd.ReadAt(context.Background(), p, 0))
+	require.Equal(t, "hello world", string(p))
+	require.NoError(t, rd.Close())
+	require.Zero(t, counting.reads.Load())
+
+	// The store holds the object too.
+	srd, _, err := rs.ReadObject(context.Background(), "000002.sst")
+	require.NoError(t, err)
+	require.NoError(t, srd.ReadAt(context.Background(), p, 0))
+	require.Equal(t, "hello world", string(p))
+	require.NoError(t, srd.Close())
+}
+
+func TestCachedRemote_InnerCloseFailureCachesNothing(t *testing.T) {
+	dir := t.TempDir()
+	c := newTestCachedRemote(t, &failingCloseRemote{Storage: newTestRemote(t, memory.New(), "db1")}, dir)
+	w, err := c.CreateObject("000003.sst")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("lost"))
+	require.NoError(t, err)
+	require.ErrorIs(t, w.Close(), errFailingClose)
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Empty(t, entries)
+}
+
+func TestCachedRemote_Delete(t *testing.T) {
+	dir := t.TempDir()
+	rs := newTestRemote(t, memory.New(), "db1")
+	c := newTestCachedRemote(t, rs, dir)
+	w, err := c.CreateObject("000004.sst")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("doomed"))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	_, err = os.Stat(c.path("000004.sst"))
+	require.NoError(t, err)
+
+	require.NoError(t, c.Delete("000004.sst"))
+	_, err = os.Stat(c.path("000004.sst"))
+	require.True(t, os.IsNotExist(err))
+	_, err = rs.Size("000004.sst")
+	require.True(t, rs.IsNotExistError(err))
+
+	_, _, err = c.ReadObject(context.Background(), "000004.sst")
+	require.Error(t, err)
+	require.True(t, c.IsNotExistError(err))
+	_, err = c.Size("000004.sst")
+	require.True(t, c.IsNotExistError(err))
+}
+
+func TestCachedRemote_ListDelegates(t *testing.T) {
+	rs := newTestRemote(t, memory.New(), "db1")
+	putObject(t, rs, "a/1.sst", []byte("1"))
+	putObject(t, rs, "a/2.sst", []byte("2"))
+	c := newTestCachedRemote(t, rs, t.TempDir())
+	want, err := rs.List("a/", "")
+	require.NoError(t, err)
+	got, err := c.List("a/", "")
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	require.NoError(t, c.Close())
+}
+
+func TestCachedRemote_SlashedNameStaysInDir(t *testing.T) {
+	dir := t.TempDir()
+	rs := newTestRemote(t, memory.New(), "db1")
+	putObject(t, rs, "sub/dir/000005.sst", []byte("nested"))
+	c := newTestCachedRemote(t, rs, dir)
+	rd, size, err := c.ReadObject(context.Background(), "sub/dir/000005.sst")
+	require.NoError(t, err)
+	require.Equal(t, int64(6), size)
+	require.NoError(t, rd.Close())
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.True(t, entries[0].Type().IsRegular())
+	require.Equal(t, url.PathEscape("sub/dir/000005.sst"), entries[0].Name())
+
+	rd, _, err = c.ReadObject(context.Background(), "sub/dir/000005.sst")
+	require.NoError(t, err)
+	p := make([]byte, 6)
+	require.NoError(t, rd.ReadAt(context.Background(), p, 0))
+	require.Equal(t, "nested", string(p))
+	require.NoError(t, rd.Close())
+}
+
+func TestCachedRemote_UnderEncryptedRemote(t *testing.T) {
+	barrier, _ := newUnsealedBarrier(t)
+	store := memory.New()
+	rs := newTestRemote(t, store, "tenant/db1")
+	plaintext := []byte("plaintext-sstable-bytes")
+
+	// Put the object sealed, bypassing the cache.
+	direct, err := NewEncryptedRemote(rs, barrier)
+	require.NoError(t, err)
+	w, err := direct.CreateObject("000006.sst")
+	require.NoError(t, err)
+	_, err = w.Write(plaintext)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	dir := t.TempDir()
+	counting := &countingRemote{Storage: rs}
+	enc, err := NewEncryptedRemote(newTestCachedRemote(t, counting, dir), barrier)
+	require.NoError(t, err)
+	for range 2 {
+		size, err := enc.Size("000006.sst")
+		require.NoError(t, err)
+		require.Equal(t, int64(len(plaintext)), size)
+	}
+	require.Equal(t, int64(1), counting.reads.Load())
+
+	rd, _, err := enc.ReadObject(context.Background(), "000006.sst")
+	require.NoError(t, err)
+	p := make([]byte, len(plaintext))
+	require.NoError(t, rd.ReadAt(context.Background(), p, 0))
+	require.Equal(t, plaintext, p)
+	require.NoError(t, rd.Close())
+	require.Equal(t, int64(1), counting.reads.Load())
+
+	// A write-through object lands sealed in the cache too.
+	w, err = enc.CreateObject("000007.sst")
+	require.NoError(t, err)
+	_, err = w.Write(plaintext)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	cached := cacheDirBytes(t, dir)
+	require.NotEmpty(t, cached)
+	require.False(t, bytes.Contains(cached, plaintext))
+}
+
+func TestPebbleRoundTrip_CachedRemote(t *testing.T) {
+	dir := t.TempDir()
+	c := newTestCachedRemote(t, newTestRemote(t, memory.New(), "db1"), dir)
+	pebbleRoundTrip(t, c, func([]string) {
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		require.NotEmpty(t, entries)
+	})
+}

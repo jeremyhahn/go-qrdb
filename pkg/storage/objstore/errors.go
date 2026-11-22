@@ -39,6 +39,17 @@ func (e *InvalidRemoteError) Error() string {
 	return "objstore: invalid remote storage (" + e.Reason + "): prefix " + strconv.Quote(e.Prefix)
 }
 
+// InvalidCachedRemoteError indicates NewCachedRemote was given a nil inner
+// storage or an empty cache directory.
+type InvalidCachedRemoteError struct {
+	Dir    string
+	Reason string
+}
+
+func (e *InvalidCachedRemoteError) Error() string {
+	return "objstore: invalid cached remote storage (dir " + strconv.Quote(e.Dir) + "): " + e.Reason
+}
+
 // InvalidEncryptedRemoteError indicates NewEncryptedRemote was given a nil
 // inner remote storage or a nil barrier.
 type InvalidEncryptedRemoteError struct {
