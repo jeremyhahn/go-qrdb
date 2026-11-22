@@ -176,8 +176,11 @@ var outsideGate = map[string]string{
 // under ruling 633 (owner decision 219(a): GitHub Actions schedule triggers
 // are allowed for CI soak and fuzz); the owner ruling of 2026-10-11 and m433
 // forbid host cron and timers, which stay banned, not this trigger.
+// nightly.yml runs on its own 04:45 UTC schedule by owner order
+// (go-qrdb#1683), which supersedes the 2026-10-11 rule for Nightly only.
 var scheduleAllowed = map[string]bool{
 	ciWorkflowName: true,
+	"nightly.yml":  true,
 }
 
 // prTierJobs, codeTierJobs, fullTierJobs, nightlyTierJobs and fullTierJob pin
@@ -1043,7 +1046,7 @@ func workflowTriggerProblems(name string, wf workflowFile) []string {
 	var problems []string
 	triggers := onTriggers(wf.On)
 	if slices.Contains(triggers, "schedule") && !scheduleAllowed[name] {
-		problems = append(problems, name+" runs on `schedule:`: only ci.yml's in-template nightly is a scheduler (rulings "+
+		problems = append(problems, name+" runs on `schedule:`: only ci.yml's in-template nightly and nightly.yml (#1683) are schedulers (rulings "+
 			"135, 216(1) and 633; host cron and timers stay banned); keep workflow_dispatch and dispatch it by hand")
 	}
 	if !slices.Contains(triggers, "pull_request") {
@@ -1224,16 +1227,19 @@ func TestWorkflowTriggerProblems_CanFail(t *testing.T) {
 	if p := workflowTriggerProblems(ciWorkflowName, parse(ciGood)); len(p) != 0 {
 		t.Fatalf("the valid %s fixture must have no problems, got %v", ciWorkflowName, p)
 	}
-	// Rulings 216(1) and 633: ci.yml carries one nightly cron; any other
+	// Rulings 216(1) and 633: ci.yml carries one nightly cron and nightly.yml its own (#1683); any other
 	// workflow's schedule still reddens (the "schedule" case below).
 	ciScheduled := strings.Replace(ciGood, "  workflow_dispatch:\n", "  workflow_dispatch:\n  schedule:\n    - cron: '0 4 * * *'\n", 1)
 	if p := workflowTriggerProblems(ciWorkflowName, parse(ciScheduled)); len(p) != 0 {
 		t.Fatalf("%s may run on schedule, got %v", ciWorkflowName, p)
 	}
+	// Owner order #1683: nightly.yml runs on its own schedule.
+	if p := workflowTriggerProblems("nightly.yml", parse("on:\n  schedule:\n    - cron: '45 4 * * *'\n  workflow_dispatch:\n")); len(p) != 0 {
+		t.Fatalf("nightly.yml may run on schedule (#1683), got %v", p)
+	}
 	type fixture struct{ file, body string }
 	cases := map[string]fixture{
 		"schedule":                {"x.yml", "on:\n  schedule:\n    - cron: '0 3 * * *'\n  workflow_dispatch:\n"},
-		"nightly.yml schedule":    {"nightly.yml", "on:\n  schedule:\n    - cron: '0 3 * * *'\n  workflow_dispatch:\n"},
 		"no concurrency":          {"x.yml", "on:\n  pull_request:\n"},
 		"group not ref-keyed":     {"x.yml", strings.Replace(good, refKeyedGroup, "${{ github.workflow }}", 1)},
 		"cancel-in-progress off":  {"x.yml", strings.Replace(good, cancelOffMain, "false", 1)},
