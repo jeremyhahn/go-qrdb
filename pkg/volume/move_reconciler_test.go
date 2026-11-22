@@ -50,13 +50,196 @@ func newTestReconciler(t *testing.T, cat *Catalog, runner MoveStepRunner, opts .
 	return r
 }
 
+// testNodes are the node IDs the move fixtures place replicas on.
+var testNodes = []string{"n1", "n2", "n3"}
+
+// tick runs one leader pass, then the node pass of every test node: the
+// shape one schedule tick has across a cluster.
+func tick(ctx context.Context, r *MoveReconciler) error {
+	leaderErr := r.ReconcileOnce(ctx)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	errs := []error{leaderErr}
+	for _, n := range testNodes {
+		if err := r.RunLocalSteps(ctx, n); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// TestMoveReconciler_LeaderPassNeverRunsAStep proves ReconcileOnce grants
+// the copy step to the first pending node and never calls the runner.
+func TestMoveReconciler_LeaderPassNeverRunsAStep(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	runner := &scriptedRunner{}
+	r := newTestReconciler(t, cat, runner)
+	for pass := 0; pass < 3; pass++ {
+		if err := r.ReconcileOnce(context.Background()); err != nil {
+			t.Fatalf("ReconcileOnce pass %d: %v", pass, err)
+		}
+	}
+	if len(runner.steps) != 0 {
+		t.Fatalf("leader pass ran steps %+v, want none", runner.steps)
+	}
+	if m := storedMove(t, kv, "acme"); m == nil || m.State != MoveStateCopying || m.StepNode != "n1" {
+		t.Fatalf("journal = %+v, want copying granted to n1", m)
+	}
+}
+
+// TestMoveReconciler_NodePassSkipsAnotherNodesStep proves RunLocalSteps
+// runs only the step granted to its own node.
+func TestMoveReconciler_NodePassSkipsAnotherNodesStep(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	runner := &scriptedRunner{}
+	r := newTestReconciler(t, cat, runner)
+	ctx := context.Background()
+	if err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	if err := r.RunLocalSteps(ctx, "n2"); err != nil {
+		t.Fatalf("RunLocalSteps n2: %v", err)
+	}
+	if len(runner.steps) != 0 {
+		t.Fatalf("n2 ran %+v, want nothing: the step is n1's", runner.steps)
+	}
+	if err := r.RunLocalSteps(ctx, "n1"); err != nil {
+		t.Fatalf("RunLocalSteps n1: %v", err)
+	}
+	if len(runner.steps) != 1 || runner.steps[0].NodeID != "n1" {
+		t.Fatalf("steps = %+v, want one on n1", runner.steps)
+	}
+	if m := storedMove(t, kv, "acme"); m == nil || !reflect.DeepEqual(m.NodesCopied, []string{"n1"}) || m.StepNode != "" {
+		t.Fatalf("journal = %+v, want n1 copied, no step held", m)
+	}
+	var ie *InvalidMoveRequestError
+	if err := r.RunLocalSteps(ctx, ""); !errors.As(err, &ie) {
+		t.Fatalf("RunLocalSteps empty node = %v, want *InvalidMoveRequestError", err)
+	}
+}
+
+// TestMoveReconciler_OneReplicaOfflineAtATime moves a three-replica tenant
+// while each node in turn misses its node pass: the move waits on the
+// offline node's granted step and goes on once it is back.
+func TestMoveReconciler_OneReplicaOfflineAtATime(t *testing.T) {
+	cat, kv, _ := newMoveTestCatalog(t)
+	ctx := context.Background()
+	putTestNodeReport(t, kv, readyReport("n3", "bulk", StateReady))
+	req := admitAcme()
+	req.ReplicaNodes = []string{"n3", "n1", "n2"}
+	if _, err := cat.AdmitMove(ctx, req); err != nil {
+		t.Fatalf("AdmitMove: %v", err)
+	}
+	runner := &scriptedRunner{}
+	r := newTestReconciler(t, cat, runner)
+	for _, offline := range testNodes {
+		if err := r.ReconcileOnce(ctx); err != nil {
+			t.Fatalf("ReconcileOnce: %v", err)
+		}
+		m := storedMove(t, kv, "acme")
+		if m == nil || m.StepNode != offline {
+			t.Fatalf("journal = %+v, want the step on %s", m, offline)
+		}
+		for _, n := range testNodes {
+			if n == offline {
+				continue
+			}
+			if err := r.RunLocalSteps(ctx, n); err != nil {
+				t.Fatalf("RunLocalSteps %s: %v", n, err)
+			}
+		}
+		if m := storedMove(t, kv, "acme"); m.StepNode != offline || contains(m.NodesCopied, offline) {
+			t.Fatalf("journal = %+v, want %s's step still held", m, offline)
+		}
+		if err := r.RunLocalSteps(ctx, offline); err != nil {
+			t.Fatalf("RunLocalSteps %s back: %v", offline, err)
+		}
+	}
+	m := storedMove(t, kv, "acme")
+	if m == nil || m.State != MoveStateCopied || !reflect.DeepEqual(m.NodesCopied, testNodes) {
+		t.Fatalf("journal = %+v, want copied on every node", m)
+	}
+	if len(runner.steps) != 3 {
+		t.Fatalf("steps = %+v, want one per node", runner.steps)
+	}
+}
+
+// TestMoveReconciler_LeaderChangeResumesFromTheJournal proves a second
+// reconciler over the same catalog, as a new leader, resumes the move from
+// the journal: the step the old leader granted is run, not granted again.
+func TestMoveReconciler_LeaderChangeResumesFromTheJournal(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	old := newTestReconciler(t, cat, &scriptedRunner{})
+	if err := old.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("old leader ReconcileOnce: %v", err)
+	}
+	runner := &scriptedRunner{}
+	next := newTestReconciler(t, cat, runner)
+	for pass := 0; pass < 2; pass++ {
+		if err := tick(ctx, next); err != nil {
+			t.Fatalf("new leader pass %d: %v", pass, err)
+		}
+	}
+	want := []MoveStep{
+		{TenantID: "acme", NodeID: "n1", FromPool: "fast", ToPool: "bulk", Attempt: 1, Phase: MoveStepPhaseCopy},
+		{TenantID: "acme", NodeID: "n2", FromPool: "fast", ToPool: "bulk", Attempt: 1, Phase: MoveStepPhaseCopy},
+	}
+	if !reflect.DeepEqual(runner.steps, want) {
+		t.Fatalf("steps = %+v, want %+v", runner.steps, want)
+	}
+	if m := storedMove(t, kv, "acme"); m == nil || m.State != MoveStateCopied {
+		t.Fatalf("journal = %+v, want copied", m)
+	}
+}
+
+// recordedTransition is one call a transitionLog saw.
+type recordedTransition struct{ transition, tenant, node, phase string }
+
+// transitionLog is a MoveTransitionRecorder double that keeps every call.
+type transitionLog struct {
+	calls []recordedTransition
+	err   error
+}
+
+func (l *transitionLog) RecordMoveTransition(_ context.Context, transition, tenantID, nodeID, phase string) error {
+	l.calls = append(l.calls, recordedTransition{transition, tenantID, nodeID, phase})
+	return l.err
+}
+
+// TestMoveReconciler_TransitionRecorder proves each Complete and Fail is
+// told to the recorder, and a recorder error does not fail the pass.
+func TestMoveReconciler_TransitionRecorder(t *testing.T) {
+	cat, _, _ := newAdmittedMove(t)
+	log := &transitionLog{err: errors.New("audit down")}
+	runner := &scriptedRunner{fail: map[string][]error{"copy/n1": {errors.New("copy failed")}}}
+	r := newTestReconciler(t, cat, runner, WithMoveTransitionRecorder(log), WithMoveTransitionRecorder(nil))
+	for pass := 0; pass < 3; pass++ {
+		if err := tick(context.Background(), r); err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+	}
+	want := []recordedTransition{
+		{MoveTransitionFail, "acme", "n1", MoveStepPhaseCopy},
+		{MoveTransitionComplete, "acme", "n1", MoveStepPhaseCopy},
+		{MoveTransitionComplete, "acme", "n2", MoveStepPhaseCopy},
+	}
+	if !reflect.DeepEqual(log.calls, want) {
+		t.Fatalf("transitions = %+v, want %+v", log.calls, want)
+	}
+}
+
 func TestMoveReconciler_TwoPassesCopyBothNodes(t *testing.T) {
 	cat, kv, _ := newAdmittedMove(t)
 	runner := &scriptedRunner{}
 	r := newTestReconciler(t, cat, runner)
 	ctx := context.Background()
 	for pass := 0; pass < 2; pass++ {
-		if err := r.ReconcileOnce(ctx); err != nil {
+		if err := tick(ctx, r); err != nil {
 			t.Fatalf("ReconcileOnce pass %d: %v", pass, err)
 		}
 	}
@@ -71,7 +254,7 @@ func TestMoveReconciler_TwoPassesCopyBothNodes(t *testing.T) {
 		t.Fatalf("journal = %+v, want copied", m)
 	}
 	// A copied move is left alone.
-	if err := r.ReconcileOnce(ctx); err != nil {
+	if err := tick(ctx, r); err != nil {
 		t.Fatalf("ReconcileOnce on copied: %v", err)
 	}
 	if len(runner.steps) != 2 {
@@ -97,7 +280,7 @@ func TestMoveReconciler_AbortsAfterBoundedAttempts(t *testing.T) {
 			}}
 			r := newTestReconciler(t, cat, runner, tc.opts...)
 			for pass := 0; pass < 5; pass++ {
-				if err := r.ReconcileOnce(context.Background()); err != nil {
+				if err := tick(context.Background(), r); err != nil {
 					t.Fatalf("ReconcileOnce pass %d: %v", pass, err)
 				}
 			}
@@ -130,7 +313,7 @@ func TestMoveReconciler_FailureThenSuccess(t *testing.T) {
 	r := newTestReconciler(t, cat, runner)
 	ctx := context.Background()
 	for pass := 0; pass < 2; pass++ {
-		if err := r.ReconcileOnce(ctx); err != nil {
+		if err := tick(ctx, r); err != nil {
 			t.Fatalf("ReconcileOnce pass %d: %v", pass, err)
 		}
 	}
@@ -151,7 +334,7 @@ func TestMoveReconciler_CorruptJournalDoesNotStopAnother(t *testing.T) {
 	}
 	runner := &scriptedRunner{}
 	r := newTestReconciler(t, cat, runner)
-	if err := r.ReconcileOnce(ctx); err != nil {
+	if err := tick(ctx, r); err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)
 	}
 	if len(runner.steps) != 1 || runner.steps[0].TenantID != "acme" {
@@ -164,7 +347,7 @@ func TestMoveReconciler_CatalogErrorReturned(t *testing.T) {
 	runner := &scriptedRunner{}
 	r := newTestReconciler(t, cat, runner)
 	tx.forceFailures = maxCASRetries
-	err := r.ReconcileOnce(context.Background())
+	err := tick(context.Background(), r)
 	var target *MoveJournalConflictError
 	if !errors.As(err, &target) {
 		t.Fatalf("ReconcileOnce error = %v, want *MoveJournalConflictError", err)
@@ -191,7 +374,7 @@ func TestMoveReconciler_CancelledContext(t *testing.T) {
 	r := newTestReconciler(t, cat, runner, WithMoveReconcilerLogger(nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := r.ReconcileOnce(ctx); !errors.Is(err, context.Canceled) {
+	if err := tick(ctx, r); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ReconcileOnce error = %v, want context.Canceled", err)
 	}
 	if len(runner.steps) != 0 {
@@ -208,7 +391,7 @@ func TestMoveReconciler_ScanFailure(t *testing.T) {
 	r := newTestReconciler(t, cat, runner)
 	boom := errors.New("scan failed")
 	kv.failScan = boom
-	if err := r.ReconcileOnce(context.Background()); !errors.Is(err, boom) {
+	if err := tick(context.Background(), r); !errors.Is(err, boom) {
 		t.Fatalf("ReconcileOnce error = %v, want the scan failure", err)
 	}
 	if len(runner.steps) != 0 {
@@ -235,7 +418,7 @@ func TestMoveReconciler_RunnerCancelsTheContext(t *testing.T) {
 	defer cancel()
 	runner := &cancellingRunner{cancel: cancel}
 	r := newTestReconciler(t, cat, runner)
-	if err := r.ReconcileOnce(ctx); !errors.Is(err, context.Canceled) {
+	if err := tick(ctx, r); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ReconcileOnce error = %v, want context.Canceled", err)
 	}
 	if len(runner.steps) != 1 {
@@ -258,7 +441,7 @@ func TestMoveReconciler_LoggerReceivesTheFailure(t *testing.T) {
 	}
 	runner := &scriptedRunner{fail: map[string][]error{"n1": {errors.New("disk full")}}}
 	r := newTestReconciler(t, cat, runner, WithMoveReconcilerLogger(logger))
-	if err := r.ReconcileOnce(ctx); err != nil {
+	if err := tick(ctx, r); err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)
 	}
 	out := buf.String()
@@ -286,7 +469,7 @@ func (f *fakeRecorder) RecordTenantPoolMoved(_ context.Context, tenantID, fromPo
 func reconcilePasses(t *testing.T, r *MoveReconciler, n int) {
 	t.Helper()
 	for pass := 0; pass < n; pass++ {
-		if err := r.ReconcileOnce(context.Background()); err != nil {
+		if err := tick(context.Background(), r); err != nil {
 			t.Fatalf("ReconcileOnce pass %d: %v", pass, err)
 		}
 	}
@@ -371,7 +554,7 @@ func TestMoveReconciler_RecorderErrorRetried(t *testing.T) {
 	runner := &scriptedRunner{}
 	r := newTestReconciler(t, cat, runner)
 	reconcilePasses(t, r, 1) // cut over
-	if err := r.ReconcileOnce(context.Background()); !errors.Is(err, boom) {
+	if err := tick(context.Background(), r); !errors.Is(err, boom) {
 		t.Fatalf("ReconcileOnce error = %v, want the recorder failure", err)
 	}
 	if m := storedMove(t, kv, "acme"); m.State != MoveStateCutover || m.TenantRecorded {
@@ -477,7 +660,7 @@ func TestMoveReconciler_PhaseCatalogErrorReturned(t *testing.T) {
 	m.NodesRetired = []string{"n1", "n2"}
 	putMove(t, kv, m)
 	r := newTestReconciler(t, cat, &scriptedRunner{})
-	err := r.ReconcileOnce(context.Background())
+	err := tick(context.Background(), r)
 	var target *MoveConflictError
 	if !errors.As(err, &target) {
 		t.Fatalf("ReconcileOnce error = %v, want the grant's *MoveConflictError", err)
@@ -485,7 +668,7 @@ func TestMoveReconciler_PhaseCatalogErrorReturned(t *testing.T) {
 	// An unknown state is skipped.
 	m.State = "unknown"
 	putMove(t, kv, m)
-	if err := r.ReconcileOnce(context.Background()); err != nil {
+	if err := tick(context.Background(), r); err != nil {
 		t.Fatalf("ReconcileOnce over an unknown state: %v", err)
 	}
 }
