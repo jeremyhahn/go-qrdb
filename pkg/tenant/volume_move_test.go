@@ -54,6 +54,42 @@ func TestAdmitTenantMove_TenantNotFound(t *testing.T) {
 	}
 }
 
+func TestRecordTenantPoolMoved(t *testing.T) {
+	ctx := context.Background()
+	svc := newMoveVolumeService(t)
+	info, err := svc.GetTenant(ctx, "vtenant")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	from := info.VolumePool
+	if from == "" || from == "bulk" {
+		t.Fatalf("volume tenant pool = %q, want a placed pool other than bulk", from)
+	}
+	if err := svc.RecordTenantPoolMoved(ctx, "vtenant", from, "bulk"); err != nil {
+		t.Fatalf("RecordTenantPoolMoved: %v", err)
+	}
+	moved, err := svc.GetTenant(ctx, "vtenant")
+	if err != nil || moved.VolumePool != "bulk" {
+		t.Fatalf("tenant after the move = %+v, %v, want pool bulk", moved, err)
+	}
+	// Repeating the call is a no-op with no write.
+	if err := svc.RecordTenantPoolMoved(ctx, "vtenant", from, "bulk"); err != nil {
+		t.Fatalf("repeated RecordTenantPoolMoved: %v", err)
+	}
+	again, err := svc.GetTenant(ctx, "vtenant")
+	if err != nil || !again.UpdatedAt.Equal(moved.UpdatedAt) {
+		t.Fatalf("repeated call wrote the record: %v -> %v (%v)", moved.UpdatedAt, again.UpdatedAt, err)
+	}
+	// A record naming neither pool is refused.
+	var conflict *volume.MoveConflictError
+	if err := svc.RecordTenantPoolMoved(ctx, "vtenant", "fast", "other"); !errors.As(err, &conflict) {
+		t.Fatalf("err = %v, want *volume.MoveConflictError", err)
+	}
+	if err := svc.RecordTenantPoolMoved(ctx, "ghost", from, "bulk"); !errors.Is(err, ErrTenantNotFound) {
+		t.Fatalf("err = %v, want ErrTenantNotFound", err)
+	}
+}
+
 func TestAdmitTenantMove_PrefixTenantRefused(t *testing.T) {
 	svc, _ := newVolumeService(t)
 	src := &fakeMoveNodes{nodes: []string{"1"}}

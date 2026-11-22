@@ -10,6 +10,7 @@ package tenant
 
 import (
 	"context"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -44,8 +45,9 @@ type moveReplicaNodes struct {
 }
 
 var (
-	_ volume.MoveAdmission  = (*TenantService)(nil)
-	_ MoveReplicaNodeWiring = (*TenantService)(nil)
+	_ volume.MoveAdmission       = (*TenantService)(nil)
+	_ volume.MoveCutoverRecorder = (*TenantService)(nil)
+	_ MoveReplicaNodeWiring      = (*TenantService)(nil)
 )
 
 // SetMoveReplicaNodeSource wires the source of a tenant's replica nodes. nil
@@ -103,4 +105,34 @@ func (s *TenantService) AdmitTenantMove(ctx context.Context, req volume.MoveTena
 		return nil, &volume.MoveConflictError{TenantID: req.TenantID, Reason: "tenant has no replica node"}
 	}
 	return nodes, nil
+}
+
+// RecordTenantPoolMoved is the tenant layer's half of a tenant move's cut
+// over ("The move, phase by phase" step 4,
+// docs/decisions/volume-pool-tenant-moves.md); it implements
+// volume.MoveCutoverRecorder. A record naming fromPool is rewritten to name
+// toPool; one already naming toPool is left as is with no write, so the
+// move reconciler may repeat the call. A record naming any other pool is
+// refused with *volume.MoveConflictError, and a missing tenant returns
+// ErrTenantNotFound.
+func (s *TenantService) RecordTenantPoolMoved(ctx context.Context, tenantID, fromPool, toPool string) error {
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if info.VolumePool == toPool {
+		return nil
+	}
+	_, err = s.swapRecord(ctx, tenantID, func(info *TenantInfo) (func(error), error) {
+		switch info.VolumePool {
+		case toPool:
+			return nil, nil
+		case fromPool:
+			info.VolumePool = toPool
+			return nil, nil
+		default:
+			return nil, &volume.MoveConflictError{TenantID: tenantID, Reason: "tenant record names pool " + strconv.Quote(info.VolumePool) + ", not the move's source " + strconv.Quote(fromPool)}
+		}
+	})
+	return err
 }
