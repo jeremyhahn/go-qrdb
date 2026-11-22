@@ -8,7 +8,8 @@ the set of ::add-mask:: values it prints. Every address here is an RFC 1918,
 RFC 5737 or RFC 4193 example; every user name and password is made up.
 
 S cases: the host classification (private IPv4, LAN host names, public hosts
-and keywords) and which variables are scanned.
+and keywords) and which variables are scanned; S7, host names in any letter
+case and with a terminal dot.
 U cases (Codex round 1 on #1671): an entry's userinfo is split off before the
 host is classified, so the host is the authority's host, never the user name,
 and the userinfo and its password are masked whenever present.
@@ -108,6 +109,33 @@ case(
 )
 # S6: public addresses beside the private ranges stay unmasked.
 case("S6 public IPv4", {"GOPROXY": "http://203.0.113.7:8080"}, exact=set())
+# S7 (Codex on go-xkms #2340): a host name is classified case-insensitively
+# and with its terminal dot removed; the masks keep the entry's spelling.
+case(
+    "S7 upper-case LAN suffix",
+    {"DEVCACHE_GO": "http://cache.INTERNAL:3000/go"},
+    exact={"http://cache.INTERNAL:3000/go", "cache.INTERNAL:3000", "cache.INTERNAL"},
+)
+case(
+    "S7b fully qualified LAN name",
+    {"CI_IMAGE_REGISTRY": "registry.lan.:5000"},
+    exact={"registry.lan.:5000", "registry.lan."},
+)
+case(
+    "S7c fully qualified, mixed case, no port",
+    {"RELEASE_REGISTRY": "Pkgs.Home.Arpa."},
+    exact={"Pkgs.Home.Arpa."},
+)
+case(
+    "S7d fully qualified single label",
+    {"GOPROXY": "http://buildcache.:3000"},
+    exact={"http://buildcache.:3000", "buildcache.:3000", "buildcache."},
+)
+case(
+    "S7e fully qualified public host and upper-case keyword",
+    {"GOPROXY": "https://Proxy.Golang.Org.,DIRECT"},
+    exact=set(),
+)
 
 # U1: userinfo with a password before a private IPv4 host. The host is the
 # authority's host, not the user name before the ":".
