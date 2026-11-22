@@ -144,6 +144,9 @@ func TestFramed_ScanFramesTails(t *testing.T) {
 		{"unsynced final frame unauthentic", flipUnsynced, a, nil},
 		{"unsynced final frame whole", unsynced, ac, nil},
 		{"newest commit slot torn", slot(raw, 1), ac, nil},
+		{"older commit slot torn", slot(raw, 0), ac, nil},
+		{"newest commit slot and synced final frame corrupted", slot(flipLast, 1), nil, ErrAuthFailed},
+		{"older commit slot and synced final frame corrupted", slot(flipLast, 0), nil, ErrAuthFailed},
 		{"synced final frame corrupted", flipLast, nil, ErrAuthFailed},
 		{"synced final frame corrupted, zero fill", append(bytes.Clone(flipLast), make([]byte, 64)...), nil, ErrAuthFailed},
 		{"synced final frame truncated", raw[:len(raw)-5], nil, ErrAuthFailed},
@@ -202,6 +205,146 @@ func TestFramed_ScanFramesTails(t *testing.T) {
 				t.Fatalf("after append: read %d bytes (err %v), want %d", len(got), err, len(want))
 			}
 		})
+	}
+}
+
+// TestFramed_DamagedSlotNeverDropsAckedFrames proves one damaged commit slot
+// cannot lower the durable boundary: with either slot corrupted and the last
+// acknowledged frame's ciphertext altered, every open refuses the log and
+// leaves its bytes alone instead of zeroing the frame as a torn tail.
+func TestFramed_DamagedSlotNeverDropsAckedFrames(t *testing.T) {
+	b := newFakeBarrier(t)
+	r1, r2, r3 := bytes.Repeat([]byte{'a'}, 100), bytes.Repeat([]byte{'b'}, 70), bytes.Repeat([]byte{'c'}, 60)
+	all := append(append(bytes.Clone(r1), r2...), r3...)
+	raw, frames := writeFramedLog(t, b, filepath.Join(t.TempDir(), "000001.log"), r1, r2, r3)
+	hsz := int64(raw[offHeaderSize]) | int64(raw[offHeaderSize+1])<<8
+	for slot := int64(0); slot < commitSlots; slot++ {
+		damaged := bytes.Clone(raw)
+		damaged[hsz+slot*commitSlotSize+5] ^= 0x01
+		fsys := New(filesys.Default, b)
+
+		// The damaged slot alone loses nothing: the other carries the boundary.
+		path := filepath.Join(t.TempDir(), "000001.log")
+		if err := os.WriteFile(path, damaged, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := readAllAt(t, fsys, path); err != nil || !bytes.Equal(got, all) {
+			t.Fatalf("slot %d damaged: read %d bytes (err %v), want %d", slot, len(got), err, len(all))
+		}
+
+		// Plus the last acknowledged frame altered: refused, never truncated.
+		damaged[frames[2].phys+frameLenSize+10] ^= 0x01
+		path = filepath.Join(t.TempDir(), "000001.log")
+		if err := os.WriteFile(path, damaged, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readAllAt(t, fsys, path); !errors.Is(err, ErrAuthFailed) {
+			t.Fatalf("slot %d + frame: read err = %v, want %v", slot, err, ErrAuthFailed)
+		}
+		w, err := fsys.OpenReadWrite(path)
+		if !errors.Is(err, ErrAuthFailed) {
+			if w != nil {
+				_ = w.Close()
+			}
+			t.Fatalf("slot %d + frame: OpenReadWrite err = %v, want %v", slot, err, ErrAuthFailed)
+		}
+		img, err := os.ReadFile(path) // #nosec G304 -- test file under t.TempDir
+		if err != nil || !bytes.Equal(img, damaged) {
+			t.Fatalf("slot %d + frame: a refused open changed the file (err %v)", slot, err)
+		}
+	}
+}
+
+// slotTearFS hands out files whose second commit-slot write after arm fails
+// and kills the file, as a power cut between a Sync's two slot writes would.
+type slotTearFS struct {
+	filesys.FS
+	armed, dead bool
+	slotWrites  int
+}
+
+type slotTearFile struct {
+	filesys.File
+	fs *slotTearFS
+}
+
+func (s *slotTearFS) Create(name string) (filesys.File, error) {
+	f, err := s.FS.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &slotTearFile{File: f, fs: s}, nil
+}
+
+func (f *slotTearFile) Write(p []byte) (int, error) {
+	if f.fs.dead {
+		return 0, errInjected
+	}
+	return f.File.Write(p)
+}
+
+func (f *slotTearFile) WriteAt(p []byte, off int64) (int, error) {
+	if f.fs.dead {
+		return 0, errInjected
+	}
+	if f.fs.armed && len(p) == commitSlotSize {
+		f.fs.slotWrites++
+		if f.fs.slotWrites == commitSlots {
+			f.fs.dead = true
+			return 0, errInjected
+		}
+	}
+	return f.File.WriteAt(p, off)
+}
+
+func (f *slotTearFile) Sync() error {
+	if f.fs.dead {
+		return errInjected
+	}
+	return f.File.Sync()
+}
+
+// TestFramed_DamagedSlotTornCommitKeepsAckedFrames tears a Sync between its
+// two commit-slot writes: that Sync fails, and a reopen still reads every
+// record of the earlier acknowledged Syncs.
+func TestFramed_DamagedSlotTornCommitKeepsAckedFrames(t *testing.T) {
+	b := newFakeBarrier(t)
+	r1, r2, r3 := bytes.Repeat([]byte{'a'}, 100), bytes.Repeat([]byte{'b'}, 70), bytes.Repeat([]byte{'c'}, 60)
+	acked := append(bytes.Clone(r1), r2...)
+	path := filepath.Join(t.TempDir(), "000001.log")
+	tear := &slotTearFS{FS: filesys.Default}
+	f, err := New(tear, b).Create(path)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, rec := range [][]byte{r1, r2} {
+		if _, err := f.Write(rec); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		if err := f.Sync(); err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+	}
+	if _, err := f.Write(r3); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	tear.armed = true
+	if err := f.Sync(); !errors.Is(err, errInjected) {
+		t.Fatalf("torn Sync err = %v, want %v", err, errInjected)
+	}
+	if !tear.dead {
+		t.Fatal("the second slot write of the torn Sync was never attempted")
+	}
+	_ = f.Close() // the file is dead; its error is the injected one
+
+	got, err := readAllAt(t, New(filesys.Default, b), path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	// The torn Sync never returned, so r3 may or may not be durable; the
+	// acknowledged records always are.
+	if !bytes.Equal(got, acked) && !bytes.Equal(got, append(bytes.Clone(acked), r3...)) {
+		t.Fatalf("reopen read %d bytes, want %d or %d", len(got), len(acked), len(acked)+len(r3))
 	}
 }
 

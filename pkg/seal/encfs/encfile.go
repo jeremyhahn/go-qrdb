@@ -83,7 +83,7 @@ func newWriteFile(base filesys.File, h *header) (*encryptedFile, error) {
 		// header so a later open can tell a crash inside Create (slots
 		// missing, no frames) from a corrupted log.
 		f.headerSize = framedDataStart(h)
-		f.commitSeq = commitSlots - 1
+		f.commitSeq = 0
 		// The real magic is stamped only after both are synced, so a
 		// short stamped file is a truncated log, not a torn Create.
 		if err := writeFramedStart(base, append(hdr, crypto.freshCommitSlots(f.headerSize)...)); err != nil {
@@ -250,15 +250,18 @@ func (f *encryptedFile) scanFrame(pos, physicalSize, idx int64) (frameRef, int64
 // framed log. Frames [0, count) end at physical offset end and were synced;
 // only bytes past end may be torn.
 type commitRecord struct {
-	seq   int64 // increments on every commit; slot seq%commitSlots holds it
+	seq   int64 // increments on every commit; every slot holds the latest one
 	count int64
 	end   int64
 }
 
 const (
-	// commitSlots is the number of alternating commit slots between a
-	// framed header and its first frame. A commit overwrites the older
-	// slot, so a commit torn by a power cut leaves the other one whole.
+	// commitSlots is the number of mirrored commit slots between a framed
+	// header and its first frame. Every commit writes both slots in turn,
+	// syncing after each, so both hold the last acknowledged boundary: a
+	// power cut tears only the commit in flight (its Sync never returned)
+	// and leaves the other slot whole, and a single damaged slot can never
+	// lower the boundary, because the other still carries it.
 	commitSlots = 2
 	// commitPlainSize is the plaintext of a commit slot: seq, count, end.
 	commitPlainSize = 24
@@ -272,14 +275,15 @@ func commitAAD(slot int64) []byte {
 	return append([]byte("encfs-commit"), byte(slot))
 }
 
-// sealCommit seals r for its slot.
-func (c *blockCrypto) sealCommit(r commitRecord) []byte {
+// sealCommit seals r for the commit slot at index slot; the AAD binds it to
+// that slot, so a sealed slot never opens when copied over the other.
+func (c *blockCrypto) sealCommit(r commitRecord, slot int64) []byte {
 	var pt [commitPlainSize]byte
 	binary.LittleEndian.PutUint64(pt[0:], uint64(r.seq))   // #nosec G115 -- non-negative
 	binary.LittleEndian.PutUint64(pt[8:], uint64(r.count)) // #nosec G115 -- non-negative
 	binary.LittleEndian.PutUint64(pt[16:], uint64(r.end))  // #nosec G115 -- non-negative
 	// #nosec G407 -- the nonce argument MUST be nil: this AEAD is cipher.NewGCMWithRandomNonce (see sealFrame).
-	return c.aead.Seal(nil, nil, pt[:], commitAAD(r.seq%commitSlots))
+	return c.aead.Seal(nil, nil, pt[:], commitAAD(slot))
 }
 
 // openCommit authenticates the commit slot at index slot.
@@ -293,7 +297,7 @@ func (c *blockCrypto) openCommit(sealed []byte, slot int64) (commitRecord, bool)
 		count: int64(binary.LittleEndian.Uint64(pt[8:])),  // #nosec G115 -- range checked below
 		end:   int64(binary.LittleEndian.Uint64(pt[16:])), // #nosec G115 -- range checked below
 	}
-	if r.seq < 0 || r.count < 0 || r.end < 0 || r.seq%commitSlots != slot {
+	if r.seq < 0 || r.count < 0 || r.end < 0 {
 		return commitRecord{}, false
 	}
 	return r, true
@@ -309,13 +313,16 @@ func framedDataStart(h *header) int64 {
 // frames whose data starts at start.
 func (c *blockCrypto) freshCommitSlots(start int64) []byte {
 	out := make([]byte, 0, commitSlots*commitSlotSize)
-	for seq := int64(0); seq < commitSlots; seq++ {
-		out = append(out, c.sealCommit(commitRecord{seq: seq, end: start})...)
+	for slot := int64(0); slot < commitSlots; slot++ {
+		out = append(out, c.sealCommit(commitRecord{end: start}, slot)...)
 	}
 	return out
 }
 
-// readCommit returns the newest authentic commit slot, if any.
+// readCommit returns the authentic commit slot with the highest seq, if any.
+// Every acknowledged Sync left its record in both slots, so one damaged slot
+// cannot lower the boundary below the last completed Sync; a slot that
+// differs from the other can only be the commit a power cut tore.
 func (f *encryptedFile) readCommit(physicalSize int64) (commitRecord, bool, error) {
 	var best commitRecord
 	found := false
@@ -336,16 +343,21 @@ func (f *encryptedFile) readCommit(physicalSize int64) (commitRecord, bool, erro
 	return best, found, nil
 }
 
-// commitLocked records every frame on disk as durable in the older commit
-// slot and syncs it. The frames themselves must already be synced.
+// commitLocked records every frame on disk as durable in both commit slots,
+// writing and syncing slot 0 and then slot 1 with the same record. The frames
+// themselves must already be synced. A torn first write leaves slot 1 on the
+// previous acknowledged record; a torn second write leaves slot 0 on the new
+// one. Either is correct, because that Sync never returned.
 func (f *encryptedFile) commitLocked() error {
 	r := commitRecord{seq: f.commitSeq + 1, count: int64(len(f.frames)), end: f.physEnd}
-	off := f.headerSize - commitSlots*commitSlotSize + (r.seq%commitSlots)*commitSlotSize
-	if _, err := f.base.WriteAt(f.crypto.sealCommit(r), off); err != nil {
-		return err
-	}
-	if err := f.base.Sync(); err != nil {
-		return err
+	base := f.headerSize - commitSlots*commitSlotSize
+	for slot := int64(0); slot < commitSlots; slot++ {
+		if _, err := f.base.WriteAt(f.crypto.sealCommit(r, slot), base+slot*commitSlotSize); err != nil {
+			return err
+		}
+		if err := f.base.Sync(); err != nil {
+			return err
+		}
 	}
 	f.commitSeq, f.durable = r.seq, r.count
 	return nil
@@ -673,8 +685,9 @@ func (f *encryptedFile) flushTailLocked() error {
 //
 // Two sealed commit slots sit between the header and the first frame. A
 // Sync that wrote frames syncs them, then records the frame count and
-// their physical end in the older slot and syncs again: that is the
-// durable boundary. On open every frame inside the boundary must
+// their physical end in both slots in turn, syncing after each: that is
+// the durable boundary, and both slots hold the last acknowledged one, so
+// a single damaged slot cannot lower it. On open every frame inside the boundary must
 // authenticate and end where the slot says, or the log is refused as
 // corrupt; only bytes past it (never acknowledged) are dropped as torn.
 func (f *encryptedFile) writeFrameLocked() error {

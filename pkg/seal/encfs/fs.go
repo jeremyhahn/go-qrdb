@@ -322,7 +322,7 @@ func (fs *FS) emptyFramedRO(base filesys.File, h *header) (*encryptedFile, error
 		readOnly:   true,
 		framed:     true,
 		physEnd:    start,
-		commitSeq:  commitSlots - 1,
+		commitSeq:  0,
 	}, nil
 }
 
@@ -350,7 +350,7 @@ func (fs *FS) freshOverTornHeader(base filesys.File, h *header, physicalSize int
 		headerSize: start,
 		framed:     true,
 		physEnd:    start,
-		commitSeq:  commitSlots - 1,
+		commitSeq:  0,
 	}, nil
 }
 
