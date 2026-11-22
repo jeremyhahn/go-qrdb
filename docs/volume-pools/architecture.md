@@ -270,6 +270,9 @@ a rolling, per-node copy behind a move journal, cut over by one assignment
 write, with its open questions, options and recommendations. Until it is
 ruled and built, nothing in it is part of this contract.
 
+Only its node-local copy and manifest verify step exists, unwired, in
+`pkg/volume/move_copy.go`; nothing else of the proposal is built.
+
 ## Trust boundaries
 
 - **Paths never cross a node boundary.** Nothing replicated names a filesystem

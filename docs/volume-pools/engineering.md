@@ -159,6 +159,20 @@ type Service interface {
 `PoolView` is a `Pool` plus `UsedBytes`, `TenantCount` and per-node health
 counts. `PoolDetail` is a `PoolView` plus one `NodeReportRow` per node.
 
+The node-local step of the proposed tenant move
+([../decisions/volume-pool-tenant-moves.md](../decisions/volume-pool-tenant-moves.md))
+is built but unwired (`move_copy.go`); nothing calls it in this build:
+
+- `CopyTree(ctx, src, dst) (*Manifest, error)`: the unwired node-step copy of
+  a closed directory tree, fsyncing files and directories, source kept;
+- `BuildManifest(ctx, root) (*Manifest, error)`: the unwired node-step
+  manifest of a tree, recomputed from disk;
+- `VerifyCopy(ctx, dst, want) error`: the unwired node-step check that the
+  destination's manifest equals the one built while copying;
+- `Manifest{Entries}`: the unwired node-step manifest, sorted by path;
+- `ManifestEntry{Path, Dir, Mode, Size, SHA256}`: one unwired node-step
+  manifest entry, root-relative.
+
 ### Composition options
 
 | Option | Package | Effect |
@@ -299,6 +313,8 @@ Every error is typed. Each classification below is the row added to
 | `*tenant.PersistedDataRootError` | a record carries a path | the existing `FailedPrecondition` row |
 | `*seal.VolumeUnlockError{Pool, Err}` | a tracked `Lockable` volume's `Unlock` failed after unseal | not on the wire directly: surfaces as `PoolUnavailableError`/`pool_unavailable` through the pool's resolution |
 | `*seal.VolumeLockError{Pool, Err}` | a tracked `Lockable` volume's `Lock` failed while sealing | not on the wire: `Internal`-class, logged and audited; the barrier still seals |
+| `*volume.MoveStepError{NodeID, Phase, Path, Err}` | the node-local move copy (`Phase` `copy`) or verify (`Phase` `verify`) failed; `Path` is root-relative | not on the wire in this build |
+| `*volume.ManifestMismatchError{Path, Reason}` | the destination's manifest differs (`missing`, `extra`, `type`, `mode`, `size`, `digest`); wrapped in a `MoveStepError` | not on the wire in this build |
 
 **Fail-closed paths.** An unreadable catalog or assignment fails the create, the
 move and the resolution. Nothing falls back to a default path or a fresh pick.
@@ -379,6 +395,10 @@ refusal, and deleted and re-created.
 - `pkg/volume`: registry, `dir` provider (including statfs, writability and
   symlink/relative-path rejection), `DeriveVolumeKey` (determinism, and that
   node/pool each change the derived key), `VolumeKey.Wipe`;
+- `pkg/volume` (`move_copy.go`): `CopyTree` round trip against
+  `BuildManifest` of both trees, its refusals (path rules, overlap, symlink,
+  named pipe, cancelled context), every `VerifyCopy` mismatch reason, and no
+  absolute path in any message;
 - `pkg/seal`: `VolumeLifecycle` ordering, proven with a fake `Lockable` --
   unlock after unseal and before a later-registered `OnUnsealed` observer
   (standing in for `BarrierRegistry`'s tenant restore); lock before the root
