@@ -17,7 +17,9 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"path/filepath"
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
@@ -25,10 +27,12 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	vectorstorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -285,6 +289,10 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 		return nil, openErr(errors.Join(err, stg.Close()))
 	}
 	local := backend.NewLocalBackend(eng)
+	vec, closeVec, err := newBindingVector(b, enc, local)
+	if err != nil {
+		return nil, openErr(errors.Join(err, local.Close(), stg.Close()))
+	}
 	stop := StartLocalLeaseExpiry(context.Background(), lr, service.NewLeaseService(local, shard.ShardKV), slog.Default())
 	return &MaterializedBinding{
 		StandaloneBackend: database.NewStandaloneBackend(stg),
@@ -292,8 +300,47 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 		stg:               stg,
 		hub:               hub,
 		binding:           b,
+		vector:            vec,
+		closeVector:       closeVec,
 		stop:              stop,
 	}, nil
+}
+
+// newBindingVector builds the binding's own vector service, over storage
+// under the binding root, with the constructor the node's vector service
+// uses (service.NewVectorService, the qrdb_vector build-tag seam). A
+// memory binding keeps its vectors in memory, as its KV; every other
+// backend keeps them in a Pebble store under <root>/vector, encrypted with
+// the binding's encryptor. The returned close stops the service before the
+// storage beneath it.
+func newBindingVector(b *database.Binding, enc *atrest.Encryptor, host any) (service.VectorServicer, func() error, error) {
+	log := logger.NewAdapter(newMinimalLogger(slog.Default()))
+	var vs vectorstorage.Storage
+	if b.Backend == database.BackendMemory || b.DataRoot == "" {
+		vs = vectorstorage.NewMemoryVectorStorage()
+	} else {
+		pvs, err := vectorstorage.NewPebbleVectorStorage(vectorstorage.DefaultConfig(filepath.Join(b.DataRoot, "vector")), log, vectorstorage.WithEncryptor(enc))
+		if err != nil {
+			return nil, nil, &VectorStorageError{Err: err}
+		}
+		vs = pvs
+	}
+	var opts []service.VectorServiceOption
+	if gates, ok := host.(service.FeatureGatedHost); ok {
+		opts = append(opts, service.WithFeatureGates(gates))
+	}
+	svc, err := service.NewVectorService(vs, log, opts...)
+	if err != nil {
+		return nil, nil, errors.Join(&VectorServiceError{Err: err}, vs.Close())
+	}
+	closeFn := func() error {
+		var svcErr error
+		if c, ok := svc.(io.Closer); ok {
+			svcErr = c.Close()
+		}
+		return errors.Join(svcErr, vs.Close())
+	}
+	return svc, closeFn, nil
 }
 
 // bindingStorageConfig returns the storage configuration a binding's store
@@ -324,13 +371,17 @@ func bindingStorageConfig(cfg qrdbconfig.StorageConfig, b *database.Binding) qrd
 type MaterializedBinding struct {
 	*database.StandaloneBackend
 
-	local     *backend.LocalBackend
-	stg       storage.Storage
-	hub       *watch.Hub
-	binding   *database.Binding
-	stop      func()
-	closeOnce sync.Once
-	closeErr  error
+	local   *backend.LocalBackend
+	stg     storage.Storage
+	hub     *watch.Hub
+	binding *database.Binding
+	// vector is the database's own vector service; closeVector stops it
+	// and closes its storage.
+	vector      service.VectorServicer
+	closeVector func() error
+	stop        func()
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 // Host returns the database's own service host.
@@ -353,7 +404,15 @@ func (m *MaterializedBinding) DataRoot() string { return m.binding.DataRoot }
 func (m *MaterializedBinding) Close() error {
 	m.closeOnce.Do(func() {
 		m.stop()
-		m.closeErr = errors.Join(m.local.Close(), m.StandaloneBackend.Close())
+		var vecErr error
+		if m.closeVector != nil {
+			vecErr = m.closeVector()
+		}
+		m.closeErr = errors.Join(vecErr, m.local.Close(), m.StandaloneBackend.Close())
 	})
 	return m.closeErr
 }
+
+// Vector returns the database's own vector service, built over storage
+// under its binding root.
+func (m *MaterializedBinding) Vector() service.VectorServicer { return m.vector }

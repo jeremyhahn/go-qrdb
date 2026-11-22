@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -26,9 +27,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	vectorstorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -43,7 +46,11 @@ type fakeMaterialized struct {
 	host    *backend.LocalBackend
 	hub     *watch.Hub
 	binding *database.Binding
+	vector  service.VectorServicer
 }
+
+// Vector returns the fake database's own vector service.
+func (f *fakeMaterialized) Vector() service.VectorServicer { return f.vector }
 
 func (f *fakeMaterialized) Host() service.Host         { return f.host }
 func (f *fakeMaterialized) ShardID() uint64            { return shard.ShardKV }
@@ -77,11 +84,20 @@ func (f *fakeMaterializingFactory) Create(cfg database.DatabaseConfig, dataDir s
 	if err != nil {
 		return nil, err
 	}
+	log, err := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
+	if err != nil {
+		return nil, err
+	}
+	vec, err := service.NewVectorService(vectorstorage.NewMemoryVectorStorage(), logger.NewAdapter(log))
+	if err != nil {
+		return nil, err
+	}
 	fm := &fakeMaterialized{
 		StandaloneBackend: database.NewStandaloneBackend(memory.NewStorage()),
 		host:              backend.NewLocalBackend(eng),
 		hub:               hub,
 		binding:           &database.Binding{TenantID: cfg.TenantID, Database: cfg.Name, Kind: database.BindingLocal, Backend: cfg.Backend},
+		vector:            vec,
 	}
 	f.mu.Lock()
 	f.created = append(f.created, fm)
@@ -171,6 +187,48 @@ func TestRESTServiceRegistry_MaterializedDatabaseServedFromItsOwnHost(t *testing
 	}
 	if got, err := service.NewKVService(fresh.Host(), fresh.ShardID()).Get(ctx, "k2"); err != nil || !bytes.Equal(got, value) {
 		t.Fatalf("recreated own host Get = %q, %v; want %q", got, err, value)
+	}
+}
+
+// TestRESTServiceRegistry_MaterializedDatabaseServesItsOwnVectors proves a
+// materialized database answers vector calls from its binding's own vector
+// service: a put lands there and a search through the bundle finds it.
+func TestRESTServiceRegistry_MaterializedDatabaseServesItsOwnVectors(t *testing.T) {
+	const tenantID, name = "acme", "embeddings"
+	ctx := tenant.WithTenantID(context.Background(), tenantID)
+	factory := &fakeMaterializingFactory{}
+	dbMgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(factory))
+	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fake := factory.last(t)
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	svcs, err := r.resolve(tenantID, name)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if svcs.Vector == nil {
+		t.Fatal("materialized bundle has no vector service")
+	}
+	if _, err := svcs.Vector.CreateNamespace(ctx, &service.CreateNamespaceRequest{Namespace: "ns", Dimension: 2, DistanceMetric: "COSINE"}); err != nil {
+		if strings.Contains(err.Error(), "qrdb_vector") {
+			t.Skipf("vector not built: %v", err)
+		}
+		t.Fatalf("CreateNamespace: %v", err)
+	}
+	if _, err := svcs.Vector.UpsertVector(ctx, &service.UpsertVectorRequest{Namespace: "ns", ID: 7, Vector: []float32{1, 0}}); err != nil {
+		t.Fatalf("UpsertVector: %v", err)
+	}
+	resp, err := svcs.Vector.SearchSimilar(ctx, &service.SearchSimilarRequest{Namespace: "ns", QueryVector: []float32{1, 0}, K: 1})
+	if err != nil {
+		t.Fatalf("SearchSimilar: %v", err)
+	}
+	if len(resp.Results) != 1 || resp.Results[0].ID != 7 {
+		t.Fatalf("SearchSimilar = %+v, want id 7", resp.Results)
+	}
+	list, err := fake.Vector().ListNamespaces(ctx, &service.ListNamespacesRequest{})
+	if err != nil || len(list.Namespaces) == 0 {
+		t.Fatalf("own vector service namespaces = %+v, %v; want the created namespace", list, err)
 	}
 }
 

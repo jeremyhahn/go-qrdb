@@ -269,6 +269,9 @@ type materializedStore interface {
 	ShardID() uint64
 	WatchHub() *watch.Hub
 	Binding() *database.Binding
+	// Vector is the database's own vector service, over storage under its
+	// binding root; nil when the binding built none.
+	Vector() service.VectorServicer
 }
 
 // resolveMaterialized serves a materialized database from its own host. The
@@ -277,8 +280,14 @@ type materializedStore interface {
 // same guard the shared store's views carry.
 func (r *restServiceRegistry) resolveMaterialized(tenantID, db string, info *tenant.TenantInfo, dbase *database.Database, ms materializedStore) (*DatabaseServices, error) {
 	base := r.materialized.getOrBuild(dbase, func() *DatabaseServices {
-		return buildDataPlaneServices(ms.Host(), ms.ShardID(), ms.WatchHub(),
+		svcs := buildDataPlaneServices(ms.Host(), ms.ShardID(), ms.WatchHub(),
 			r.bindingImportSession, r.bindingIndex, r.bindingTimeSeries, service.WithDedicatedKeyspace())
+		// The vector service is the binding's own, over its own storage;
+		// the shared node's vector store never holds this database's data.
+		if v := ms.Vector(); v != nil {
+			svcs.Vector = v
+		}
+		return svcs
 	})
 	incarnation := dbase.Incarnation()
 	// The fence carries no drop-fence write guard: that guard compares the
