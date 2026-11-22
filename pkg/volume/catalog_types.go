@@ -313,7 +313,7 @@ type MoveStep struct {
 // and catches up; an abort step removes the destination copy (after making
 // the source authoritative again when Copied); a retire step removes the
 // source copy. A nil error completes the step; any error counts as one
-// failed attempt. The node side implements every phase in a later slice.
+// failed attempt. seal.MoveStepRunner is the node-side implementation.
 type MoveStepRunner interface {
 	RunMoveStep(ctx context.Context, step MoveStep) error
 }

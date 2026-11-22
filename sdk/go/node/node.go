@@ -1226,6 +1226,12 @@ type Node struct {
 	// order).
 	tenantHostsHolder *server.TenantHostRegistryHolder
 	volumeRegistry    volume.Registry
+	// volumeCatalog is the catalog attachVolumeCatalog built; the tenant
+	// move worker runs over it (startTenantMoves).
+	volumeCatalog *volume.Catalog
+	// moveWorkerStarted is set once startTenantMoves started the worker; a
+	// recycle of the service graph does not start a second one.
+	moveWorkerStarted bool
 	openVolumes       *volume.OpenVolumes
 	volumePoolRows    []openedVolumePool
 	perTenantReg      pebbleStorage.PerTenantRegistry
@@ -1878,6 +1884,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 			WatchHub:             n.watchHubOpts,
 			Index:                pending.cfg.Index,
 			TimeSeries:           pending.cfg.TimeSeries,
+			VolumeNodeID:         strconv.FormatUint(pending.cfg.Raft.ReplicaID, 10),
 			// Phase 1: Host, Manager, ReplicaID, RaftAddr, SystemTenant,
 			// PlacementStore, MultiplexLogDB are all left zero — IsolationRaft
 			// is not wired in the embedded standalone node yet (Phase 2).
@@ -1899,6 +1906,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		if n.tenantHostsHolder != nil {
 			n.tenantHostsHolder.Store(ti.Hosts)
 		}
+		n.startTenantMoves(svcNode, ti, nil, pending.cfg.Raft.ReplicaID, pending.cfg)
 	} else if n.tenantHosts != nil && svcNode.Tenant != nil {
 		// A system-scope recycle rebuilt the tenant service; the runtimes
 		// survived it. Hand the new service the closer BuildTenantInfra gave
@@ -2532,6 +2540,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			// Dedicated shards snapshot on the system shard's cadence.
 			SnapshotEntries:    pending.cfg.Raft.SnapshotEntries,
 			CompactionOverhead: pending.cfg.Raft.CompactionOverhead,
+			VolumeNodeID:       strconv.FormatUint(pending.cfg.Raft.ReplicaID, 10),
 		})
 		if tiErr != nil {
 			n.stopVolumeReporter()
@@ -2556,6 +2565,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			n.logger.Warn("isolated tenants' home stores are not available on this node; their requests fail closed")
 		}
 		n.shardPauser.SetTenants(ti.Raft, ti.Hosts)
+		n.startTenantMoves(svcNode, ti, host, pending.cfg.Raft.ReplicaID, pending.cfg)
 		// Wire the IsolationRaft factory into the already-built backup
 		// service as its ShardRestarter, enabling ONLINE restore for
 		// dedicated per-database Raft shards (see
@@ -2727,6 +2737,7 @@ func (n *Node) attachVolumeCatalog(host service.Host) error {
 		return err
 	}
 	barrierRegistry.Attach(seal.WithVolumeAllocator(catalog))
+	n.volumeCatalog = catalog
 	// Security review finding 7: a pool this node opened under a
 	// different provider than the catalog recorded for it (a
 	// misconfigured node, e.g. "dir" where the cluster expects "luks2")
@@ -2741,6 +2752,56 @@ func (n *Node) attachVolumeCatalog(host service.Host) error {
 		}
 	}
 	return nil
+}
+
+// startTenantMoves wires tenant moves between volume pools over the catalog
+// attachVolumeCatalog built and ti's runtimes, and starts the move worker on
+// the node-lifetime context, as cmd/qrdbd/start.go does. host is the
+// clustered node's raft host, nil on the standalone node (its own leader
+// and only replica node). It runs once per node; a failure is logged and
+// leaves moves refused as not wired.
+func (n *Node) startTenantMoves(svcNode *lifecycle.Node, ti *server.TenantInfra, host *quicraft.Host, replicaID uint64, cfg *qrdbconfig.Config) {
+	barrierRegistry := n.barrierRegistry.Load()
+	// The boot already refused an unrecognised posture (withCryptoInfra);
+	// fail-closed is the default the parse resolves an empty one to.
+	policy := audit.FailClosed
+	if cfg != nil {
+		if p, err := audit.ParseFailurePolicy(cfg.Auth.AuditFailurePolicy); err == nil {
+			policy = p
+		}
+	}
+	if n.moveWorkerStarted || n.volumeCatalog == nil || barrierRegistry == nil || svcNode == nil {
+		return
+	}
+	tenants, ok := svcNode.Tenant.(server.TenantMoveService)
+	if !ok {
+		return
+	}
+	var membership server.MoveMembership
+	if host != nil {
+		membership = host
+	}
+	worker, err := server.WireTenantMoves(server.TenantMoveConfig{
+		Catalog:     n.volumeCatalog,
+		BarrierReg:  barrierRegistry,
+		Tenants:     tenants,
+		Infra:       ti,
+		NodeID:      strconv.FormatUint(replicaID, 10),
+		Membership:  membership,
+		ReplicaID:   replicaID,
+		Placements:  svcNode.PlacementStore,
+		StartAudit:  service.NewVolumeMoveAudit(n.auditLogger, policy),
+		Transitions: service.NewVolumeMoveTransitionAudit(n.auditLogger),
+		Logger:      n.logger,
+	})
+	if err != nil {
+		if n.logger != nil {
+			n.logger.Warn("volume pool: tenant moves are not wired on this node", slog.Any("error", err))
+		}
+		return
+	}
+	n.moveWorkerStarted = true
+	go worker.Run(n.background())
 }
 
 // stopVolumeReporter closes n.volumeReporter, if started. Reporter.Close is

@@ -103,3 +103,45 @@ func TestVolumeMoveAudit_NilLogger(t *testing.T) {
 		t.Fatalf("NewVolumeMoveAudit(nil) = %v, want nil", a)
 	}
 }
+
+func TestVolumeMoveTransitionAudit_RecordsEachTransition(t *testing.T) {
+	if r := NewVolumeMoveTransitionAudit(nil); r != nil {
+		t.Fatalf("NewVolumeMoveTransitionAudit(nil) = %v, want nil", r)
+	}
+	ring := audit.NewRingBuffer(16)
+	r := NewVolumeMoveTransitionAudit(ring)
+	ctx := context.Background()
+	steps := []struct{ transition, node, phase, action, outcome string }{
+		{volume.MoveTransitionComplete, "n1", volume.MoveStepPhaseCopy, "volume_pool.move_complete", audit.OutcomeSuccess},
+		{volume.MoveTransitionFail, "n2", volume.MoveStepPhaseCopy, "volume_pool.move_fail", audit.OutcomeFailure + ":move-step-failed"},
+		{volume.MoveTransitionCutover, "", "", "volume_pool.move_cutover", audit.OutcomeSuccess},
+		{volume.MoveTransitionCancel, "", "", "volume_pool.move_cancel", audit.OutcomeSuccess},
+	}
+	for _, s := range steps {
+		if err := r.RecordMoveTransition(ctx, s.transition, "acme", s.node, s.phase); err != nil {
+			t.Fatalf("RecordMoveTransition(%s): %v", s.transition, err)
+		}
+	}
+	evs := ring.Snapshot()
+	if len(evs) != len(steps) {
+		t.Fatalf("recorded %d events, want %d", len(evs), len(steps))
+	}
+	for i, s := range steps {
+		ev := evs[i]
+		if ev.Action != s.action || ev.Outcome != s.outcome || ev.TenantID != "acme" || ev.Resource != "volume_pool" {
+			t.Fatalf("event %d = %+v, want %s/%s", i, ev, s.action, s.outcome)
+		}
+		if s.node == "" && len(ev.Attributes) != 0 {
+			t.Fatalf("event %d attributes = %v, want none", i, ev.Attributes)
+		}
+		if s.node != "" && (ev.Attributes["node_id"] != s.node || ev.Attributes["phase"] != s.phase) {
+			t.Fatalf("event %d attributes = %v", i, ev.Attributes)
+		}
+	}
+	// A sink that refuses the write is never an error: the transition is
+	// already in the journal.
+	sink := &refusingAuditLogger{err: errors.New("audit sink unavailable")}
+	if err := NewVolumeMoveTransitionAudit(sink).RecordMoveTransition(ctx, volume.MoveTransitionCutover, "acme", "", ""); err != nil {
+		t.Fatalf("refused write = %v, want nil", err)
+	}
+}

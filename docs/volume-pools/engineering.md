@@ -163,20 +163,21 @@ counts. `PoolDetail` is a `PoolView` plus one `NodeReportRow` per node.
 The node-local step of the tenant move
 ([../decisions/volume-pool-tenant-moves.md](../decisions/volume-pool-tenant-moves.md))
 is built in `move_copy.go`; these functions are called by
-`seal.BarrierRegistry.RunMoveCopyStep`, which nothing calls in this build:
+`seal.BarrierRegistry.RunMoveCopyStep`, which `seal.MoveStepRunner` calls on
+each node:
 
-- `CopyTree(ctx, src, dst) (*Manifest, error)`: the unwired node-step copy of
-  a closed directory tree, fsyncing files and directories, source kept;
-- `BuildManifest(ctx, root) (*Manifest, error)`: the unwired node-step
-  manifest of a tree, recomputed from disk;
-- `VerifyCopy(ctx, dst, want) error`: the unwired node-step check that the
+- `CopyTree(ctx, src, dst) (*Manifest, error)`: the node-step copy of a
+  closed directory tree, fsyncing files and directories, source kept;
+- `BuildManifest(ctx, root) (*Manifest, error)`: the node-step manifest of a
+  tree, recomputed from disk;
+- `VerifyCopy(ctx, dst, want) error`: the node-step check that the
   destination's manifest equals the one built while copying;
-- `Manifest{Entries}`: the unwired node-step manifest, sorted by path;
-- `ManifestEntry{Path, Dir, Mode, Size, SHA256}`: one unwired node-step
-  manifest entry, root-relative.
+- `Manifest{Entries}`: the node-step manifest, sorted by path;
+- `ManifestEntry{Path, Dir, Mode, Size, SHA256}`: one node-step manifest
+  entry, root-relative.
 
-The catalog half of a move's admit step, called by `MoveTenant`, which no
-composition wires in this build:
+The catalog half of a move's admit step, called by `MoveTenant`
+(`server.WireTenantMoves` wires it on every node):
 
 - `Catalog.AdmitMove(ctx, MoveAdmitRequest) (*Move, error)`: one transaction
   reserving the tenant's `Assignment.ReservedBytes` on `ToPool` and writing
@@ -219,12 +220,16 @@ composition wires in this build:
 - `MoveStep{TenantID, NodeID, FromPool, ToPool, Attempt, Phase, Copied}` /
   `MoveStepPhaseCopy` / `MoveStepPhaseAbort` / `MoveStepPhaseRetire` /
   `MoveStepRunner{RunMoveStep}`: one node's step, its phase, whether that
-  node holds a copy, and the seam that runs it on that node (no
-  implementation in this build);
+  node holds a copy, and the seam that runs it on that node
+  (`seal.MoveStepRunner`);
 - `MoveReconciler` / `NewMoveReconciler(cat, runner, opts...)` /
   `WithMoveStepAttempts` / `WithMoveReconcilerLogger` /
-  `ReconcileOnce(ctx)`: one pass running one node step per moving tenant;
-  not scheduled in this build;
+  `WithMoveTransitionRecorder` / `ReconcileOnce(ctx)` /
+  `RunLocalSteps(ctx, node)`: the leader pass (grants and cuts over) and
+  the node pass (runs and settles this node's own step), scheduled by
+  `server.TenantMoveWorker`: `RunLocalSteps` every tick on every node,
+  `ReconcileOnce` on the system shard's leader
+  (`server.DefaultTenantMoveInterval`, 2 s);
 - `LockableProvider{OpensLockable() bool}`: optional provider interface; a
   provider without it counts as Lockable as a source and not Lockable as a
   destination (`dir` returns false);
@@ -239,6 +244,22 @@ composition wires in this build:
   the destination pool after cut over;
 - `Catalog.SetMoveCutoverRecorder`: the post-construction seam the
   reconciler uses after cut over; nil unwires (a copied move then waits).
+
+Both composers (cmd/qrdbd and `sdk/go/node`) wire the move through
+`server.WireTenantMoves(TenantMoveConfig)`:
+
+- `TenantInfraConfig.VolumeNodeID`: this node's move node ID (its system
+  replica ID, the `NodeReport` node ID), set on the barrier registry before
+  `RestoreVolumeTenants` so a moving tenant resolves from the journal;
+- `server.MoveStoreCloser`: closes and reopens a tenant's raft replicas, or
+  its IsolationVolume Host, and its barrier around a step; a reopened raft
+  replica counts as caught up once a ReadIndex on its shard completes;
+- the replica-node source: an IsolationRaft tenant's placements, each
+  replica's raft address mapped to its system-shard replica ID; a tenant
+  with no placement moves on this node only;
+- `service.NewVolumeMoveTransitionAudit`: one best-effort
+  `volume_pool.move_<transition>` event per journal transition, with
+  `node_id` and `phase` attributes.
 
 ### Composition options
 

@@ -94,3 +94,51 @@ func (a *volumeMoveAudit) BeginMoveStart(ctx context.Context, req volume.MoveTen
 		audit.EmitBestEffort(actx, a.audit, volumeMoveAuditComponent, out)
 	}, nil
 }
+
+// ActionVolumePoolMovePrefix prefixes the action of a move journal
+// transition's record: volume_pool.move_complete, volume_pool.move_fail,
+// volume_pool.move_cutover and volume_pool.move_cancel.
+const ActionVolumePoolMovePrefix = "volume_pool.move_"
+
+// volumeMoveTransitionAudit implements volume.MoveTransitionRecorder over
+// audit.EmitBestEffort: the transition is already in the journal, so a
+// record that cannot be written never undoes it.
+type volumeMoveTransitionAudit struct {
+	audit audit.AuditLogger
+}
+
+// NewVolumeMoveTransitionAudit returns the volume.MoveTransitionRecorder a
+// composition passes to volume.WithMoveTransitionRecorder. A nil logger
+// yields nil: no recorder.
+func NewVolumeMoveTransitionAudit(logger audit.AuditLogger) volume.MoveTransitionRecorder {
+	if logger == nil {
+		return nil
+	}
+	return &volumeMoveTransitionAudit{audit: logger}
+}
+
+// RecordMoveTransition implements volume.MoveTransitionRecorder. A node's
+// failed step is recorded with a failure outcome; every other transition
+// with success.
+func (a *volumeMoveTransitionAudit) RecordMoveTransition(ctx context.Context, transition, tenantID, nodeID, phase string) error {
+	attrs := map[string]any{}
+	if nodeID != "" {
+		attrs["node_id"] = nodeID
+	}
+	if phase != "" {
+		attrs["phase"] = phase
+	}
+	outcome := audit.OutcomeSuccess
+	if transition == volume.MoveTransitionFail {
+		outcome = audit.OutcomeFailure + ":move-step-failed"
+	}
+	audit.EmitBestEffort(ctx, a.audit, volumeMoveAuditComponent, audit.AuditEvent{
+		Actor:      "system",
+		TenantID:   tenantID,
+		Resource:   "volume_pool",
+		Action:     ActionVolumePoolMovePrefix + transition,
+		Outcome:    outcome,
+		Attributes: attrs,
+	})
+	return nil
+}

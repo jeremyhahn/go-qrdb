@@ -1910,6 +1910,9 @@ func runStart(f *startFlags) (err error) {
 			// shard -- so the KV/Transaction pair built directly over
 			// svcHost here is safe to use well before the shard is ready to
 			// serve a linearizable read.
+			// volumeCatalog outlives this block: the tenant-move worker,
+			// wired once the tenant service and runtimes exist, runs over it.
+			var volumeCatalog *volume.Catalog
 			if barrierRegistry != nil {
 				catalogKVSvc := lifecycle.NewVolumeCatalogKVServicer(service.NewKVService(svcHost, shard.ShardKV))
 				catalogTxSvc := service.NewTransactionService(svcHost, shard.ShardKV)
@@ -1918,6 +1921,7 @@ func runStart(f *startFlags) (err error) {
 					_ = shutdownNode(nodeCloser)
 					return catErr
 				}
+				volumeCatalog = catalog
 				barrierRegistry.Attach(seal.WithVolumeAllocator(catalog))
 				if volumePoolAttached != nil {
 					volumePoolAttached()
@@ -2534,6 +2538,7 @@ func runStart(f *startFlags) (err error) {
 				SnapshotEntries:      f.snapshotEntries,
 				CompactionOverhead:   f.compactionOverhead,
 				Lease:                f.leaseConfig,
+				VolumeNodeID:         nodeID,
 			})
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
@@ -2612,6 +2617,33 @@ func runStart(f *startFlags) (err error) {
 					ti.Reconciler.SetShellRegistrar(shells)
 				}
 				go ti.Reconciler.Run(bootCtx)
+			}
+			// Tenant moves between volume pools: every node runs its own
+			// move steps, and the system shard's leader grants them and cuts
+			// each move over (docs/decisions/volume-pool-tenant-moves.md).
+			if moveTenants, ok := svcNode.Tenant.(server.TenantMoveService); ok && volumeCatalog != nil && barrierRegistry != nil {
+				var membership server.MoveMembership
+				if host != nil {
+					membership = host
+				}
+				moveWorker, mwErr := server.WireTenantMoves(server.TenantMoveConfig{
+					Catalog:     volumeCatalog,
+					BarrierReg:  barrierRegistry,
+					Tenants:     moveTenants,
+					Infra:       ti,
+					NodeID:      nodeID,
+					Membership:  membership,
+					ReplicaID:   f.replicaID,
+					Placements:  svcNode.PlacementStore,
+					StartAudit:  service.NewVolumeMoveAudit(complianceAudit, auditPolicy),
+					Transitions: service.NewVolumeMoveTransitionAudit(complianceAudit),
+					Logger:      slog.Default(),
+				})
+				if mwErr != nil {
+					_ = shutdownNode(nodeCloser)
+					return mwErr
+				}
+				go moveWorker.Run(bootCtx)
 			}
 			// Wire the IsolationRaft factory into the already-built backup
 			// service as its ShardRestarter, enabling ONLINE restore (the

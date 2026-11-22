@@ -92,8 +92,8 @@ func TestMoveStoreCloser_CloseThenReopenAwaitsCatchUp(t *testing.T) {
 }
 
 func TestMoveStoreCloser_Errors(t *testing.T) {
-	if _, err := NewMoveStoreCloser(nil, &fakeMoveBarriers{}, nil, 0); err == nil {
-		t.Fatal("nil shards accepted")
+	if _, err := NewMoveStoreCloser(nil, nil, nil, 0); err == nil {
+		t.Fatal("nil barriers accepted")
 	}
 	boom := errors.New("boom")
 	shards := &fakeMoveShards{started: map[StartedShard]bool{{TenantID: "acme", Database: "a"}: true}}
@@ -124,5 +124,56 @@ func TestMoveStoreCloser_Errors(t *testing.T) {
 	}
 	if err := failing.OpenTenantStores(ctx, "acme"); !errors.Is(err, boom) {
 		t.Fatalf("barrier reopen = %v", err)
+	}
+}
+
+type fakeMoveHosts struct {
+	started map[string]bool
+	calls   []string
+}
+
+func (f *fakeMoveHosts) Started(tenantID string) bool { return f.started[tenantID] }
+
+func (f *fakeMoveHosts) Attach(_ context.Context, tenantID string) error {
+	f.calls = append(f.calls, "attach "+tenantID)
+	f.started[tenantID] = true
+	return nil
+}
+
+func (f *fakeMoveHosts) Close(tenantID string) error {
+	f.calls = append(f.calls, "close "+tenantID)
+	delete(f.started, tenantID)
+	return nil
+}
+
+func TestMoveStoreCloser_VolumeTenantHostWithoutShards(t *testing.T) {
+	hosts := &fakeMoveHosts{started: map[string]bool{"acme": true}}
+	barriers := &fakeMoveBarriers{}
+	c, err := NewMoveStoreCloser(nil, barriers, nil, 0, WithMoveTenantHosts(hosts))
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	ctx := context.Background()
+	if err := c.CloseTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if hosts.started["acme"] {
+		t.Fatal("host still started after close")
+	}
+	if err := c.OpenTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if want := []string{"close acme", "attach acme"}; !reflect.DeepEqual(hosts.calls, want) {
+		t.Fatalf("host calls = %v, want %v", hosts.calls, want)
+	}
+	// A tenant whose Host was never started here is not started by a reopen.
+	if err := c.CloseTenantStores(ctx, "other"); err != nil {
+		t.Fatalf("close other: %v", err)
+	}
+	if err := c.OpenTenantStores(ctx, "other"); err != nil {
+		t.Fatalf("open other: %v", err)
+	}
+	if hosts.started["other"] {
+		t.Fatal("reopen started a host that was not running")
 	}
 }
