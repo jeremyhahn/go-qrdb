@@ -309,6 +309,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		// Volume pool management (docs/volume-pools/api.md)
 		"volumepool.List": true, "volumepool.Get": true, "volumepool.Create": true,
 		"volumepool.Update": true, "volumepool.Delete": true, "volumepool.ListTenants": true,
+		"volumepool.MoveTenant": true, "volumepool.GetMove": true, "volumepool.CancelMove": true,
 		"tenant.TrustAnchorAdd":    true,
 		"tenant.TrustAnchorList":   true,
 		"tenant.TrustAnchorRemove": true,
