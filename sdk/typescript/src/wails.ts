@@ -64,6 +64,7 @@ import type {
     UserClient,
     VectorClient,
     VolumePoolClient,
+    VolumePoolMove,
     WatchClient,
     WatchHandle,
 } from './interfaces.js';
@@ -1514,6 +1515,15 @@ export class WailsClient implements Client {
             },
             listTenants: async (): Promise<ListVolumePoolTenantsResponse> => {
                 throw new NotImplementedError('volumePools.listTenants');
+            },
+            moveTenant: async (): Promise<VolumePoolMove> => {
+                throw new NotImplementedError('volumePools.moveTenant');
+            },
+            getMove: async (): Promise<VolumePoolMove> => {
+                throw new NotImplementedError('volumePools.getMove');
+            },
+            cancelMove: async (): Promise<VolumePoolMove> => {
+                throw new NotImplementedError('volumePools.cancelMove');
             },
         };
     }

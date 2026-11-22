@@ -85,6 +85,7 @@ export type {
     VlogExpireResult,
     ServerConfigClient,
     ConnectionManagerClient,
+    VolumePoolMove,
 } from './interfaces.js';
 
 // Error classes
