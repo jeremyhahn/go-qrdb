@@ -133,11 +133,12 @@ func (w *lockerWriter) Acquire(ctx context.Context, key string) (int64, error) {
 }
 
 // Check extends the lease (a keepalive, so a long transaction that checks
-// keeps it); a lock that is gone or held under another token is ErrBusy.
+// keeps it); a lock that is gone or held under another token is ErrBusy,
+// wrapping the lock service's error so errors.As still finds it.
 func (w *lockerWriter) Check(ctx context.Context, key string, token int64) error {
 	if _, err := w.locker.Extend(ctx, key, token); err != nil {
 		if leaseLost(err) {
-			return fmt.Errorf("%w: lease on %q lost: %v", ErrBusy, key, err)
+			return fmt.Errorf("%w: lease on %q lost: %w", ErrBusy, key, err)
 		}
 		return fmt.Errorf("sqlitevfs: check writer lock %q: %w", key, err)
 	}

@@ -212,8 +212,13 @@ func testWriterMapping(t *testing.T, build func(l *memLocker, holder string, ttl
 	if err := a.Check(ctx, key, token); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	if err := a.Check(ctx, key, token+100); !errors.Is(err, ErrBusy) {
+	err = a.Check(ctx, key, token+100)
+	if !errors.Is(err, ErrBusy) {
 		t.Fatalf("Check with a wrong token err = %v, want ErrBusy", err)
+	}
+	var notHolder *lock.NotLockHolderError
+	if !errors.As(err, &notHolder) {
+		t.Fatalf("Check with a wrong token err = %v, want it to wrap *lock.NotLockHolderError", err)
 	}
 	if err := a.Release(ctx, key, token); err != nil {
 		t.Fatalf("Release: %v", err)
@@ -226,8 +231,13 @@ func testWriterMapping(t *testing.T, build func(l *memLocker, holder string, ttl
 		t.Fatalf("fencing token %d after %d, want it to rise", again, token)
 	}
 	locker.expire(key)
-	if err := b.Check(ctx, key, again); !errors.Is(err, ErrBusy) {
+	err = b.Check(ctx, key, again)
+	if !errors.Is(err, ErrBusy) {
 		t.Fatalf("Check after expiry err = %v, want ErrBusy", err)
+	}
+	var notFound *lock.LockNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("Check after expiry err = %v, want it to wrap *lock.LockNotFoundError", err)
 	}
 	if err := b.Release(ctx, key, again); err != nil {
 		t.Fatalf("Release after expiry = %v, want nil", err)
