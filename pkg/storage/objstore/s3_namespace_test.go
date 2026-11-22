@@ -36,7 +36,6 @@ func TestNamespaceKey_S3EffectiveIdentity(t *testing.T) {
 		"default port":   "https://minio.invalid:443",
 		"no scheme":      "minio.invalid",
 		"upper case":     "HTTPS://MINIO.INVALID",
-		"path":           "https://minio.invalid:443/some/path/",
 	} {
 		require.Equal(t, minio, namespaceKey("s3", map[string]string{"bucket": "b", "endpoint": endpoint, "region": "r"}), name)
 	}
@@ -56,10 +55,56 @@ func TestNamespaceKey_S3EffectiveIdentity(t *testing.T) {
 		"other host":   "https://other.invalid",
 		"other port":   "https://minio.invalid:9000",
 		"other scheme": "http://minio.invalid",
+		"path":         "https://minio.invalid:443/some/path/",
 	} {
 		require.NotEqual(t, minio, namespaceKey("s3", map[string]string{"bucket": "b", "endpoint": endpoint}), name)
 	}
+	require.Equal(t,
+		namespaceKey("s3", map[string]string{"bucket": "b", "endpoint": "https://minio.invalid/some/path"}),
+		namespaceKey("s3", map[string]string{"bucket": "b", "endpoint": "https://minio.invalid:443/some/path/"}))
 	require.NotEqual(t, minio, namespaceKey("s3", map[string]string{"bucket": "c", "endpoint": "https://minio.invalid"}))
+}
+
+// TestNamespaceKey_S3EndpointPathSelectsNamespace: two S3-compatible
+// services behind one gateway host, told apart by the endpoint path, are
+// two namespaces even for one bucket name; spellings of one path are one.
+func TestNamespaceKey_S3EndpointPathSelectsNamespace(t *testing.T) {
+	key := func(endpoint string) string {
+		return namespaceKey("s3", map[string]string{"bucket": "b", "endpoint": endpoint})
+	}
+	tenantA := key("https://gw.invalid/tenant-a")
+	require.NotEqual(t, tenantA, key("https://gw.invalid/tenant-b"))
+	require.Equal(t, tenantA, key("https://gw.invalid/tenant-a/"))
+	require.Equal(t, tenantA, key("HTTPS://GW.INVALID:443/tenant-a"))
+}
+
+// TestNew_S3EndpointPathsOpenUnderTwoOwners: one bucket name under two
+// endpoint paths opens for two owners, each with its own store.
+func TestNew_S3EndpointPathsOpenUnderTwoOwners(t *testing.T) {
+	prev, hadPrev := registeredProviders.Load("s3")
+	registeredProviders.Store("s3", registeredProvider{
+		creator: func(map[string]string, objcommon.Credentials) (objcommon.Storage, error) {
+			store := objmemory.New()
+			if err := store.Configure(map[string]string{}, objcommon.Credentials{}); err != nil {
+				return nil, err
+			}
+			return store, nil
+		},
+	})
+	t.Cleanup(func() {
+		if hadPrev {
+			registeredProviders.Store("s3", prev)
+		} else {
+			registeredProviders.Delete("s3")
+		}
+	})
+
+	a, err := New("s3", map[string]string{"bucket": "b", "endpoint": "https://gw.invalid/tenant-a"}, WithOwner("db-a"))
+	require.NoError(t, err)
+	b, err := New("s3", map[string]string{"bucket": "b", "endpoint": "https://gw.invalid/tenant-b"}, WithOwner("db-b"))
+	require.NoError(t, err)
+	require.NoError(t, a.Close())
+	require.NoError(t, b.Close())
 }
 
 // Two concurrent opens of one AWS bucket, spelled differently and by

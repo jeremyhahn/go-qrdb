@@ -121,3 +121,21 @@ func TestNamespaceSharedOnlyByOneOwner(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, b.Close())
 }
+
+// TestNew_MemoryWithSettingsIsNotShared: the memory provider builds an
+// independent store on every open, so settings do not make two engines of
+// it one namespace: both owners open, and neither sees the other's keys.
+func TestNew_MemoryWithSettingsIsNotShared(t *testing.T) {
+	settings := map[string]string{"multipartExpiry": "1h"}
+	a, err := New("memory", settings, WithOwner("database:a"))
+	require.NoError(t, err)
+	b, err := New("memory", settings, WithOwner("database:b"))
+	require.NoError(t, err)
+
+	require.NoError(t, a.Set([]byte("k"), []byte("v")))
+	ok, err := b.Exists([]byte("k"))
+	require.NoError(t, err)
+	assert.False(t, ok)
+	require.NoError(t, a.Close())
+	require.NoError(t, b.Close())
+}

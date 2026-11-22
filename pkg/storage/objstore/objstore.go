@@ -459,8 +459,9 @@ const awsS3Identity = "aws"
 // endpoint (s3.amazonaws.com, s3.<region>.amazonaws.com,
 // s3-<region>.amazonaws.com and their bucket virtual-host forms, over http
 // or https) are awsS3Identity. Any other endpoint is its lowercased scheme
-// and host with the port made explicit (443 for https, 80 for http), any
-// path or trailing slash dropped.
+// and host with the port made explicit (443 for https, 80 for http), and its
+// path kept without its trailing slash (one gateway host can serve several
+// S3-compatible services under different paths); query and fragment dropped.
 func canonicalS3Endpoint(endpoint string) string {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
@@ -488,10 +489,11 @@ func canonicalS3Endpoint(endpoint string) string {
 			port = "80"
 		}
 	}
-	if port == "" {
-		return scheme + "://" + host
+	authority := host
+	if port != "" {
+		authority = net.JoinHostPort(host, port)
 	}
-	return scheme + "://" + net.JoinHostPort(host, port)
+	return scheme + "://" + authority + strings.TrimRight(u.EscapedPath(), "/")
 }
 
 // isAWSS3Host reports whether host is an AWS S3 service host: under
@@ -569,7 +571,7 @@ func canonicalAzureEndpoint(endpoint, accountName string) string {
 // routes requests, so it never selects the namespace, and namespaceKey
 // canonicalizes "endpoint" (canonicalS3Endpoint): an omitted endpoint and
 // every AWS S3 endpoint spelling are the one AWS identity, whose bucket
-// names are global, and any other endpoint is its scheme, host and port.
+// names are global, and any other endpoint is its scheme, host, port and path.
 //
 // An Azure namespace is the container at its effective endpoint: an omitted
 // endpoint is the account's default blob host, and namespaceKey canonicalizes
@@ -675,9 +677,13 @@ type namespaceHold struct {
 }
 
 // sharesNamespace reports whether two engines of provider opened with these
-// settings reach one namespace. A provider with no location settings and no
-// settings at all (the memory provider) gives each engine its own store.
+// settings reach one namespace. The memory provider gives each engine its
+// own store whatever its settings, so it never shares one; a registered
+// provider with no location settings and no settings at all does the same.
 func sharesNamespace(provider string, settings map[string]string) bool {
+	if provider == "memory" {
+		return false
+	}
 	_, listed := locationSettings[provider]
 	return listed || len(settings) > 0
 }
