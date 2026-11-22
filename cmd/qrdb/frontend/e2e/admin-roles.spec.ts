@@ -324,6 +324,49 @@ test.describe("Admin - Role Management", () => {
     });
   });
 
+  test.describe("Delete role", () => {
+    /** Re-fetches the role list and opens the named role's detail view. */
+    async function openRole(page: Page, name: string): Promise<void> {
+      await page.locator("aside").getByText("Dashboard").click();
+      await page.locator("aside").getByText("Roles").click();
+      await expect(page.getByText(name, { exact: true })).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+      await page.getByText(name, { exact: true }).click();
+      await expect(page.getByText("Edit Role")).toBeVisible();
+    }
+
+    test("deletes a custom role after confirmation", async ({ page }) => {
+      await navigateToRoles(page);
+      await seedRole(page, "doomed-role");
+      await openRole(page, "doomed-role");
+
+      const del = page.getByTestId("role-delete");
+      await del.click();
+      await expect(del).toHaveText("Confirm Delete");
+      await del.click();
+      await expect(page.getByText("No roles found.")).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+    });
+
+    test("shows an error toast when role deletion fails", async ({ page }) => {
+      await navigateToRoles(page);
+      await seedRole(page, "sticky-role");
+      await openRole(page, "sticky-role");
+
+      await injectError(page, "RoleBinding.Delete", "role still assigned");
+      const del = page.getByTestId("role-delete");
+      await del.click();
+      await del.click();
+      await expect(page.locator('[role="alert"]').last()).toContainText(
+        "role still assigned",
+      );
+      await expect(page.getByText("Edit Role")).toBeVisible();
+      await clearError(page, "RoleBinding.Delete");
+    });
+  });
+
   test.describe("Error handling", () => {
     test("displays error toast when role list fails to load", async ({
       page,

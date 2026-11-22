@@ -118,6 +118,35 @@ test("Databases view lists the built-in system database against a real backend w
   expect(pageErrors).toEqual([]);
 });
 
+test("a compaction policy saved in the admin detail shows in the database's workspace Settings", async ({ page }) => {
+  const pageErrors = attachPageErrorCollector(page);
+
+  await page.goto(UI_BASE_URL);
+  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+  await clickAdminNavItem(page, "Databases");
+  const main = page.locator("main");
+  await main.getByText("system", { exact: true }).click();
+  const detail = main.getByTestId("db-settings-compaction");
+  await expect(detail).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await detail.getByRole("combobox").selectOption("period");
+  await detail.getByLabel("Retention period").fill("48h");
+  await detail.getByRole("button", { name: "Save Compaction Policy" }).click();
+  await expect(detail.getByTestId("outcome-success")).toHaveText("Compaction policy saved.", {
+    timeout: LOAD_TIMEOUT,
+  });
+
+  // The workspace reads its database from the shared store without a reload:
+  // it shows the new policy only if the admin save updated that store.
+  await page.locator("aside").getByText("system", { exact: true }).click();
+  await main.getByRole("tab", { name: "Settings" }).click();
+  const ws = main.getByTestId("db-settings-compaction");
+  await expect(ws.getByRole("combobox")).toHaveValue("period", { timeout: LOAD_TIMEOUT });
+  await expect(ws.getByLabel("Retention period")).toHaveValue("48h");
+
+  expect(pageErrors).toEqual([]);
+});
+
 test("Backups view lists zero backups against a real empty backend without crashing", async ({ page }) => {
   const pageErrors = attachPageErrorCollector(page);
 
