@@ -175,6 +175,51 @@ func (e *MoveNotImplementedError) Error() string {
 	return "volume: tenant moves are not implemented in this release (decision D5, Phase 2)"
 }
 
+// MoveStepError is returned by the node-local step of a tenant move
+// (CopyTree, VerifyCopy). Phase is "copy" or "verify". NodeID is left
+// empty by those functions and filled in by the caller that runs the step
+// on a node. Path is the entry relative to the tree's root ("" when the
+// failure concerns a root itself), never an absolute path, so the message
+// carries no mount path.
+type MoveStepError struct {
+	NodeID string
+	Phase  string
+	Path   string
+	Err    error
+}
+
+// Error implements the error interface.
+func (e *MoveStepError) Error() string {
+	msg := "volume: move step " + strconv.Quote(e.Phase)
+	if e.NodeID != "" {
+		msg += " on node " + strconv.Quote(e.NodeID)
+	}
+	if e.Path != "" {
+		msg += " at " + strconv.Quote(e.Path)
+	}
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap supports errors.Is / errors.As against the wrapped cause.
+func (e *MoveStepError) Unwrap() error { return e.Err }
+
+// ManifestMismatchError is the cause VerifyCopy wraps in a MoveStepError
+// when the destination's manifest differs from the one built while
+// copying. Path is root-relative; Reason is one of "missing", "extra",
+// "type", "mode", "size" or "digest".
+type ManifestMismatchError struct {
+	Path   string
+	Reason string
+}
+
+// Error implements the error interface.
+func (e *ManifestMismatchError) Error() string {
+	return "volume: manifest mismatch at " + strconv.Quote(e.Path) + ": " + e.Reason
+}
+
 // PoolUnavailableError is returned when this node cannot open or resolve
 // the named pool: a missing mount, an absent device, an unregistered
 // provider, or a Lockable volume that failed to unlock. It is never
