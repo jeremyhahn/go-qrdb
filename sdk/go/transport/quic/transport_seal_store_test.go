@@ -85,14 +85,47 @@ func TestE2E_SealStore(t *testing.T) {
 
 func TestE2E_SealStorePermissionDenied(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	srv.SetResponder("sealstore.List", func([]byte) (uint16, []byte) {
-		return wire.StatusPermissionDenied, []byte("seal:store_manage")
-	})
-	_, err := tr.SealStoreList(context.Background())
-	if err == nil {
-		t.Fatal("SealStoreList = nil, want an error")
+	for _, method := range []string{"Put", "Get", "Delete", "List", "Reseal", "Status"} {
+		srv.SetResponder("sealstore."+method, func([]byte) (uint16, []byte) {
+			return wire.StatusPermissionDenied, []byte("seal:store_manage")
+		})
 	}
-	assertQuicRequestError(t, err)
+	ctx := context.Background()
+	calls := map[string]func() error{
+		"Put": func() error {
+			return tr.SealStorePut(ctx, &transport.SealStorePutRequest{Name: "jwt", Secret: []byte("s")})
+		},
+		"Get": func() error {
+			_, err := tr.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "jwt"})
+			return err
+		},
+		"Delete": func() error {
+			return tr.SealStoreDelete(ctx, &transport.SealStoreDeleteRequest{Name: "jwt"})
+		},
+		"List": func() error {
+			_, err := tr.SealStoreList(ctx)
+			return err
+		},
+		"Reseal": func() error {
+			return tr.SealStoreReseal(ctx, &transport.SealStoreResealRequest{Name: "jwt"})
+		},
+		"Status": func() error {
+			_, err := tr.SealStoreStatus(ctx)
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			err := call()
+			var re *transport.RequestError
+			if !errors.As(err, &re) {
+				t.Fatalf("SealStore%s = %v, want a *transport.RequestError", name, err)
+			}
+			if re.StatusCode != int(wire.StatusPermissionDenied) {
+				t.Fatalf("SealStore%s status = %d, want %d (permission denied)", name, re.StatusCode, wire.StatusPermissionDenied)
+			}
+		})
+	}
 }
 
 func TestE2E_SealStoreBadJSON(t *testing.T) {

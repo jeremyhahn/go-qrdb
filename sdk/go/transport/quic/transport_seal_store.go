@@ -73,7 +73,8 @@ func (t *Transport) SealStoreStatus(ctx context.Context) (*transport.SealStoreSt
 }
 
 // do sends one sealstore.<method> call with req as its JSON payload and
-// decodes the answer into resp when resp is non-nil.
+// decodes the answer into resp when resp is non-nil. A call error is
+// returned as-is, so its wire status survives.
 func (e sealStoreEndpoints) do(ctx context.Context, method string, req, resp any) error {
 	if e.t.closed.Load() {
 		return &transport.ClosedError{}
@@ -87,7 +88,7 @@ func (e sealStoreEndpoints) do(ctx context.Context, method string, req, resp any
 	}
 	data, err := e.t.call(ctx, "sealstore."+method, payload)
 	if err != nil {
-		return &transport.RequestError{Method: method, Err: err}
+		return err
 	}
 	if resp == nil {
 		return nil
