@@ -120,6 +120,21 @@ const PermissionIdentityGated = permission.IdentityGated
 // PermissionAction returns the action component of a permission string.
 var PermissionAction = permission.Action
 
+// PermissionMatches reports whether one granted permission admits a
+// concrete required permission: the exact "resource:action", "resource:*",
+// "*:action" or "*:*" (whole-segment wildcards only, never glob prefixes).
+// It is the server's own authorization rule (permission.Matches, the one
+// the RBAC authorizer decides with), so a consumer gets the server's
+// decision, never a fork of it.
+var PermissionMatches = permission.Matches
+
+// PermissionGranted reports whether any permission in the held set admits a
+// concrete required permission, as an O(1) lookup under the PermissionMatches
+// rule. It is the server's own check (permission.Granted, called by the RBAC
+// authorizer on a principal's resolved permissions), so a consumer gets the
+// server's decision, never a fork of it.
+var PermissionGranted = permission.Granted
+
 // ---------------------------------------------------------------------------
 // Cluster membership permissions
 //
