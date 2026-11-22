@@ -548,19 +548,6 @@ export function isMultiNodeServer(): boolean {
 }
 
 /**
- * Reports whether the active server is a multi-node Raft cluster, which is what
- * the database wizard's Raft steps (replica count, etcd) need. A single-node
- * Raft server is "raft" for the admin nav but gets the wizard's single-node
- * steps. A desktop profile recorded as clustered carries no node count (0) and
- * stays multi-node.
- */
-export function isMultiNodeServer(): boolean {
-    if (connManagerStore.activeServerMode !== 'raft') return false;
-    const n = connManagerStore.activeClusterNodeCount;
-    return n === 0 || n > 1;
-}
-
-/**
  * Applies detected topology to a web profile in the store and to the active
  * server-mode fields. Persists the updated profile so the mode survives
  * reloads without re-probing being strictly required.
@@ -847,29 +834,6 @@ export async function saveProfile(
  * @param client    - The SDK client singleton.
  * @param profileId - ID of the profile to delete.
  */
-/**
- * Saves a profile (insert or replace by id) and adds it to the store.
- *
- * Desktop mode delegates to the Wails ConnectionManagerBinding; web mode
- * persists the updated list to localStorage, since the REST client has no
- * connection-manager backend.
- */
-export async function saveProfile(
-    client: Client,
-    profile: ConnectionProfile,
-): Promise<void> {
-    const updated = [
-        ...connManagerStore.profiles.filter((p) => p.id !== profile.id),
-        profile,
-    ];
-    if (isDesktop()) {
-        await client.connectionManager.saveProfile(profile as never);
-    } else {
-        await persistence.save(client, updated);
-    }
-    connManagerStore.profiles = updated;
-}
-
 export async function deleteProfile(
     client: Client,
     profileId: string,
