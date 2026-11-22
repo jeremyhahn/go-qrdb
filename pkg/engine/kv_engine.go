@@ -448,8 +448,9 @@ func kvHandlePut(e *KVEngine, cmd kv.Command) (sm.Result, error) {
 		}
 	}
 
-	// Read-only pre-check before anything is queued: a unique conflict or an
-	// undecodable collection document is a non-fatal declined write.
+	// Read-only pre-check before anything is queued: a unique conflict is a
+	// non-fatal declined write. A value that is not a JSON object is nothing
+	// to index and is written as on main.
 	if len(e.indexes) > 0 {
 		if verr := CheckUniqueViolation(batch, e.indexes, e.indexFields, e.indexScopes, cmd.Key, cmd.Value); verr != nil {
 			res, handled, herr := asAppErrResult(verr)
