@@ -843,7 +843,10 @@ func newVectorIDs(ctx context.Context, store vector.Storage, namespace string, i
 	return added, nil
 }
 
-// handleUpsert handles vector upsert operations.
+// handleUpsert handles vector upsert operations. Result.Value is the change
+// it applied to VectorCount (1 for a new id, 0 for a re-upsert), the same on
+// every replica; under the old rule (no StoredCount) every upsert counts
+// one, as VectorCount does.
 
 func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorCommand) (sm.Result, error) {
 	start := time.Now()
@@ -935,7 +938,11 @@ func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorComm
 
 	// Update namespace stats and storage bytes
 	ns.mu.Lock()
-	ns.VectorCount += uint64(added) //nolint:gosec // G115: added is 0 or 1
+	applied := uint64(0) // the VectorCount change: added is 0 or 1
+	if added > 0 {
+		applied = 1
+	}
+	ns.VectorCount += applied
 	ns.StorageBytes += estimatedBytes
 	ns.UpdatedAt = time.Now().UnixNano()
 	ns.mu.Unlock()
@@ -946,10 +953,12 @@ func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorComm
 		"dimension": len(cmd.Vector),
 	}).Debug("upserted vector")
 
-	return sm.Result{Value: cmd.Version}, nil
+	return sm.Result{Value: applied}, nil
 }
 
-// handleDelete handles vector deletion operations.
+// handleDelete handles vector deletion operations. Result.Value is the change
+// it applied to VectorCount (the number of stored ids it deleted), the same
+// on every replica.
 func (vsm *VectorStateMachine) handleDelete(ctx context.Context, cmd *VectorCommand) (sm.Result, error) {
 	start := time.Now()
 	defer func() {
@@ -1068,7 +1077,10 @@ func (vsm *VectorStateMachine) handleDelete(ctx context.Context, cmd *VectorComm
 	return sm.Result{Value: uint64(deletedCount)}, nil //nolint:gosec // G115: Safe conversion - count within reasonable range
 }
 
-// handleBatchUpsert handles batch upsert operations.
+// handleBatchUpsert handles batch upsert operations. Result.Value is the
+// change it applied to VectorCount (the batch's distinct ids not yet
+// stored), the same on every replica; under the old rule (no StoredCount)
+// every id of the batch counts one, as VectorCount does.
 func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *VectorCommand) (sm.Result, error) {
 	start := time.Now()
 	defer func() {
@@ -1177,7 +1189,8 @@ func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *Vecto
 
 	// Update namespace stats and storage bytes
 	ns.mu.Lock()
-	ns.VectorCount += uint64(added) //nolint:gosec // G115: added is non-negative
+	applied := uint64(added) //nolint:gosec // G115: added is non-negative
+	ns.VectorCount += applied
 	ns.StorageBytes += totalEstimatedBytes
 	ns.UpdatedAt = time.Now().UnixNano()
 	ns.mu.Unlock()
@@ -1187,7 +1200,7 @@ func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *Vecto
 		"count":     len(cmd.IDs),
 	}).Debug("batch upserted vectors")
 
-	return sm.Result{Value: uint64(len(cmd.IDs))}, nil
+	return sm.Result{Value: applied}, nil
 }
 
 // handleCreateNamespace handles namespace creation.

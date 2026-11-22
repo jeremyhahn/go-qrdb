@@ -53,6 +53,48 @@ func applyCountCmdRule(t *testing.T, vsm *VectorStateMachine, index uint64, cmd 
 	return vsm.Update(context.Background(), []sm.Entry{{Index: index, Cmd: data}}, make([]sm.Result, 1))
 }
 
+// applyCountCmdResult applies cmd under the stored-count rule and returns
+// the entry's Result.
+func applyCountCmdResult(t *testing.T, vsm *VectorStateMachine, index uint64, cmd *VectorCommand) (sm.Result, error) {
+	t.Helper()
+	cmd.Namespace = "ns"
+	cmd.Timestamp = time.Now().UnixNano()
+	cmd.StoredCount = true
+	data, err := cmd.Encode()
+	require.NoError(t, err)
+	results := make([]sm.Result, 1)
+	err = vsm.Update(context.Background(), []sm.Entry{{Index: index, Cmd: data}}, results)
+	return results[0], err
+}
+
+// TestVectorCount_ResultReportsAppliedChange pins Result.Value to the change
+// each apply made to VectorCount, so a caller can move a gauge by the
+// committed mutation rather than by a read taken before it.
+func TestVectorCount_ResultReportsAppliedChange(t *testing.T) {
+	vsm := newCountTestVSM(t, 0)
+	steps := []struct {
+		name string
+		cmd  *VectorCommand
+		want uint64
+	}{
+		{"fresh upsert", &VectorCommand{Op: OpUpsertVector, ID: 1, Vector: []float32{1, 0}}, 1},
+		{"re-upsert", &VectorCommand{Op: OpUpsertVector, ID: 1, Vector: []float32{0, 1}}, 0},
+		{"batch with id 1 stored", &VectorCommand{
+			Op:      OpBatchUpsert,
+			IDs:     []uint64{1, 2, 2},
+			Vectors: [][]float32{{1, 1}, {0, 1}, {1, 1}},
+		}, 1},
+		{"delete of a missing id", &VectorCommand{Op: OpDeleteVector, ID: 9}, 0},
+		{"delete of a stored id", &VectorCommand{Op: OpDeleteVector, ID: 1}, 1},
+	}
+	for i, step := range steps {
+		res, err := applyCountCmdResult(t, vsm, uint64(i+1), step.cmd)
+		require.NoError(t, err, step.name)
+		require.Equal(t, step.want, res.Value, step.name)
+	}
+	require.Equal(t, uint64(1), storedCount(vsm))
+}
+
 func storedCount(vsm *VectorStateMachine) uint64 {
 	ns := vsm.namespaces["ns"]
 	ns.mu.RLock()

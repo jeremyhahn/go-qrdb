@@ -431,11 +431,17 @@ func (v *VectorConsensusFSM) applyDeleteNamespace(ctx context.Context, cmd *Vect
 }
 
 // applyUpsertVector inserts or updates a vector in storage and HNSW index.
+// Result.Value is the change it applied to the stored vector count: 1 when
+// the id was not stored and the write succeeded, else 0 (also with no
+// storage or a failed existence read), the same on every replica.
 func (v *VectorConsensusFSM) applyUpsertVector(ctx context.Context, cmd *VectorCommand) (sm.Result, error) {
 	v.logger.WithFields(map[string]interface{}{
 		"namespace": cmd.Namespace,
 		"id":        cmd.ID,
 	}).Debug("Applying UpsertVector")
+
+	// applied is the change this apply made to the stored vector count.
+	var applied uint64
 
 	// Apply to storage if available
 	if v.storage != nil {
@@ -455,6 +461,16 @@ func (v *VectorConsensusFSM) applyUpsertVector(ctx context.Context, cmd *VectorC
 			Version:   1,
 		}
 
+		stored, err := vectorStored(ctx, v.storage, cmd.Namespace, cmd.ID)
+		if err != nil {
+			v.logger.WithFields(map[string]interface{}{
+				"namespace": cmd.Namespace,
+				"id":        cmd.ID,
+				"error":     err,
+			}).Error("Failed to read vector before upsert")
+			stored = true // unknown: count nothing
+		}
+
 		if err := v.storage.UpsertVector(ctx, cmd.Namespace, vec); err != nil {
 			v.logger.WithFields(map[string]interface{}{
 				"namespace": cmd.Namespace,
@@ -462,6 +478,9 @@ func (v *VectorConsensusFSM) applyUpsertVector(ctx context.Context, cmd *VectorC
 				"error":     err,
 			}).Error("Failed to upsert vector to storage")
 			return sm.Result{}, err
+		}
+		if !stored {
+			applied = 1
 		}
 	}
 
@@ -500,10 +519,13 @@ func (v *VectorConsensusFSM) applyUpsertVector(ctx context.Context, cmd *VectorC
 		"namespace": cmd.Namespace,
 		"id":        cmd.ID,
 	}).Debug("Vector upserted via Raft consensus")
-	return sm.Result{Value: 1}, nil
+	return sm.Result{Value: applied}, nil
 }
 
 // applyDeleteVector removes a vector from storage and HNSW index.
+// Result.Value is the change it applied to the stored vector count: the
+// distinct stored ids it deleted, 0 when the delete or the existence read
+// failed or there is no storage.
 func (v *VectorConsensusFSM) applyDeleteVector(ctx context.Context, cmd *VectorCommand) (sm.Result, error) {
 	v.logger.WithFields(map[string]interface{}{
 		"namespace": cmd.Namespace,
@@ -513,13 +535,25 @@ func (v *VectorConsensusFSM) applyDeleteVector(ctx context.Context, cmd *VectorC
 
 	// Handle batch delete
 	if len(cmd.IDs) > 0 {
+		var removed uint64
 		if v.storage != nil {
+			stored, err := countDistinctVectorIDs(ctx, v.storage, cmd.Namespace, cmd.IDs, true)
+			if err != nil {
+				v.logger.WithFields(map[string]interface{}{
+					"namespace": cmd.Namespace,
+					"ids":       len(cmd.IDs),
+					"error":     err,
+				}).Error("Failed to read vectors before batch delete")
+				stored = 0
+			}
 			if err := v.storage.BatchDeleteVectors(ctx, cmd.Namespace, cmd.IDs); err != nil {
 				v.logger.WithFields(map[string]interface{}{
 					"namespace": cmd.Namespace,
 					"ids":       len(cmd.IDs),
 					"error":     err,
 				}).Error("Failed to batch delete vectors from storage")
+			} else {
+				removed = stored
 			}
 		}
 
@@ -539,17 +573,29 @@ func (v *VectorConsensusFSM) applyDeleteVector(ctx context.Context, cmd *VectorC
 				}
 			}
 		}
-		return sm.Result{Value: 1}, nil
+		return sm.Result{Value: removed}, nil
 	}
 
 	// Handle single delete
+	var removed uint64
 	if v.storage != nil {
+		stored, err := vectorStored(ctx, v.storage, cmd.Namespace, cmd.ID)
+		if err != nil {
+			v.logger.WithFields(map[string]interface{}{
+				"namespace": cmd.Namespace,
+				"id":        cmd.ID,
+				"error":     err,
+			}).Error("Failed to read vector before delete")
+			stored = false
+		}
 		if err := v.storage.DeleteVector(ctx, cmd.Namespace, cmd.ID); err != nil {
 			v.logger.WithFields(map[string]interface{}{
 				"namespace": cmd.Namespace,
 				"id":        cmd.ID,
 				"error":     err,
 			}).Error("Failed to delete vector from storage")
+		} else if stored {
+			removed = 1
 		}
 	}
 
@@ -572,15 +618,43 @@ func (v *VectorConsensusFSM) applyDeleteVector(ctx context.Context, cmd *VectorC
 		"namespace": cmd.Namespace,
 		"id":        cmd.ID,
 	}).Debug("Vector deleted via Raft consensus")
-	return sm.Result{Value: 1}, nil
+	return sm.Result{Value: removed}, nil
+}
+
+// countDistinctVectorIDs counts the distinct ids of ids whose stored state
+// in namespace is stored: with stored true, the number a delete of ids
+// removes; with stored false, the number an upsert of ids adds.
+func countDistinctVectorIDs(ctx context.Context, store vectorStorage.Storage, namespace string, ids []uint64, stored bool) (uint64, error) {
+	seen := make(map[uint64]struct{}, len(ids))
+	var n uint64
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		has, err := vectorStored(ctx, store, namespace, id)
+		if err != nil {
+			return 0, err
+		}
+		if has == stored {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // applyBatchUpsert inserts or updates multiple vectors in storage and HNSW index.
+// Result.Value is the change it applied to the stored vector count: the
+// batch's distinct ids not stored before, 0 when the existence read failed
+// or there is no storage.
 func (v *VectorConsensusFSM) applyBatchUpsert(ctx context.Context, cmd *VectorCommand) (sm.Result, error) {
 	v.logger.WithFields(map[string]interface{}{
 		"namespace": cmd.Namespace,
 		"count":     len(cmd.IDs),
 	}).Debug("Applying BatchUpsert")
+
+	// applied is the change this apply made to the stored vector count.
+	var applied uint64
 
 	if len(cmd.IDs) != len(cmd.Vectors) {
 		return sm.Result{}, api.NewLengthMismatchError("VectorConsensusFSM.applyBatchUpsert", "IDs", len(cmd.IDs), "Vectors", len(cmd.Vectors))
@@ -601,6 +675,16 @@ func (v *VectorConsensusFSM) applyBatchUpsert(ctx context.Context, cmd *VectorCo
 			}
 		}
 
+		added, err := countDistinctVectorIDs(ctx, v.storage, cmd.Namespace, cmd.IDs, false)
+		if err != nil {
+			v.logger.WithFields(map[string]interface{}{
+				"namespace": cmd.Namespace,
+				"count":     len(cmd.IDs),
+				"error":     err,
+			}).Error("Failed to read vectors before batch upsert")
+			added = 0
+		}
+
 		if err := v.storage.BatchUpsertVectors(ctx, cmd.Namespace, vecs); err != nil {
 			v.logger.WithFields(map[string]interface{}{
 				"namespace": cmd.Namespace,
@@ -609,6 +693,7 @@ func (v *VectorConsensusFSM) applyBatchUpsert(ctx context.Context, cmd *VectorCo
 			}).Error("Failed to batch upsert vectors to storage")
 			return sm.Result{}, err
 		}
+		applied = added
 	}
 
 	// Update HNSW index
@@ -650,7 +735,7 @@ func (v *VectorConsensusFSM) applyBatchUpsert(ctx context.Context, cmd *VectorCo
 		"namespace": cmd.Namespace,
 		"count":     len(cmd.IDs),
 	}).Debug("Batch upsert completed via Raft consensus")
-	return sm.Result{Value: uint64(len(cmd.IDs))}, nil
+	return sm.Result{Value: applied}, nil
 }
 
 // applyUpdateMetadata updates metadata for a vector.
