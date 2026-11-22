@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
@@ -367,6 +368,74 @@ func TestMigrateLegacy_CrashThenPeerDeletes(t *testing.T) {
 	assert.Empty(t, conflicts)
 }
 
+// putAllHookStore runs onPutAll before each guarded batch reaches the store.
+type putAllHookStore struct {
+	Store
+	onPutAll func(writes []kvstore.KV)
+}
+
+func (h *putAllHookStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if h.onPutAll != nil {
+		h.onPutAll(writes)
+	}
+	return h.Store.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
+// An upgraded node with no legacy copy stores and deletes a credential
+// before a node holding a pre-upgrade copy of it migrates. No claim existed
+// when the delete ran, so the delete leaves a tombstone, and the later
+// migration deletes its copy and restores none of the value, history or
+// policy. The second case writes a pending claim between the delete's read
+// of the claim and its batch: the batch fails its guard, the delete takes
+// its selection again and fences that claim too.
+func TestMigrateLegacy_DeleteBeforePeerMigrates(t *testing.T) {
+	ctx := context.Background()
+	for _, racing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "no claim", true: "claim written mid-delete"}[racing], func(t *testing.T) {
+			mem := seal.NewMemoryBackend()
+			shared := &putAllHookStore{Store: mem}
+			nodeA := newUnboundService(t)
+			require.NoError(t, nodeA.BindStore(ctx, shared))
+			require.NoError(t, nodeA.StoreCredential(ctx, "db", []byte("fresh")))
+			fired := false
+			if racing {
+				shared.onPutAll = func(writes []kvstore.KV) {
+					if fired || !slices.ContainsFunc(writes, func(w kvstore.KV) bool {
+						return w.Key == metaKey("db") && w.Delete
+					}) {
+						return
+					}
+					fired = true
+					pending, err := json.Marshal(migrationClaim{Digest: "peer"})
+					require.NoError(t, err)
+					require.NoError(t, mem.Put(ctx, MigrationClaimPrefix+"db", pending))
+				}
+			}
+			require.NoError(t, nodeA.DeleteCredential(ctx, "db"))
+			assert.Equal(t, racing, fired)
+			claim, ok, err := nodeA.loadClaim(ctx, MigrationClaimPrefix+"db")
+			require.NoError(t, err)
+			require.True(t, ok, "the delete leaves a claim")
+			assert.True(t, claim.Deleted && claim.Complete, "the claim standing after the delete is a tombstone")
+
+			legacy := seal.NewMemoryBackend()
+			writeLegacy(t, legacy, "db", "v2", "v1", testPolicy)
+			nodeB := newMigratingService(t, legacy)
+			require.NoError(t, nodeB.BindStore(ctx, mem))
+			_, err = nodeB.retrieveBytes(ctx, "db")
+			assert.ErrorIs(t, err, ErrCredentialNotFound, "the deleted credential stays deleted")
+			for _, key := range []string{credentialPrefix + "db", metaKey("db"), versionKey("db", 1)} {
+				_, err = mem.Get(ctx, key)
+				assert.ErrorIs(t, err, seal.ErrSecretNotFound, "no legacy record is restored at %s", key)
+			}
+			assert.Empty(t, legacyKeys(t, legacy), "the settled legacy copy is removed")
+			conflicts, err := nodeB.ListMigrationConflicts(ctx)
+			require.NoError(t, err)
+			assert.Empty(t, conflicts)
+		})
+	}
+}
+
 // TestMigrateLegacy_CrashThenPeerDeletesAndRestores verifies a credential
 // stored again after the fencing delete is kept: the retried migration
 // does not overwrite it with the legacy copy.
@@ -516,44 +585,82 @@ func TestResolveMigrationConflict_Import(t *testing.T) {
 // deleting the kept copy.
 func TestResolveMigrationConflict_ImportRetriedAfterCleanupFailure(t *testing.T) {
 	ctx := context.Background()
-	legacyA, shared := seal.NewMemoryBackend(), seal.NewMemoryBackend()
-	legacyB := &faultyStore{Store: seal.NewMemoryBackend()}
-	writeLegacy(t, legacyA, "db", "v2", "v1", nil)
-	writeLegacy(t, legacyB, "db", "kept", "kept-old", nil)
-	require.NoError(t, newMigratingService(t, legacyA).BindStore(ctx, shared))
-	nodeB := newMigratingService(t, legacyB)
-	require.NoError(t, nodeB.BindStore(ctx, shared))
-	arm := func(op, key string) {
-		legacyB.mu.Lock()
-		defer legacyB.mu.Unlock()
-		legacyB.op, legacyB.key, legacyB.fired = op, key, false
-	}
-	requireUntouched := func(msg string) {
+	// setup leaves node B's import of its kept copy committed and the
+	// cleanup that follows it failed.
+	setup := func(t *testing.T) (*CredentialService, *faultyStore, func(op, key string)) {
 		t.Helper()
-		meta, err := nodeB.loadBarrierMeta(ctx, "db")
+		legacyA, shared := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+		legacyB := &faultyStore{Store: seal.NewMemoryBackend()}
+		writeLegacy(t, legacyA, "db", "v2", "v1", nil)
+		writeLegacy(t, legacyB, "db", "kept", "kept-old", nil)
+		require.NoError(t, newMigratingService(t, legacyA).BindStore(ctx, shared))
+		nodeB := newMigratingService(t, legacyB)
+		require.NoError(t, nodeB.BindStore(ctx, shared))
+		arm := func(op, key string) {
+			legacyB.mu.Lock()
+			defer legacyB.mu.Unlock()
+			legacyB.op, legacyB.key, legacyB.fired = op, key, false
+		}
+		// The import commits, then the note that opens the cleanup fails.
+		arm("put", legacyMigrationNotePrefix+"db")
+		require.ErrorIs(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport), errInjected)
+		assert.Equal(t, "kept", retrieveString(t, nodeB, "db"))
+		return nodeB, legacyB, arm
+	}
+	requireSettled := func(t *testing.T, nodeB *CredentialService, legacyB *faultyStore) {
+		t.Helper()
+		assert.Empty(t, legacyKeys(t, legacyB), "the kept copy is deleted")
+		conflicts, err := nodeB.ListMigrationConflicts(ctx)
 		require.NoError(t, err)
-		assert.Equal(t, uint64(4), meta.CurrentVersion, msg)
-		assert.Equal(t, "newer", retrieveString(t, nodeB, "db"), msg)
+		assert.Empty(t, conflicts)
 	}
 
-	// The import commits, then the note that opens the cleanup fails.
-	arm("put", legacyMigrationNotePrefix+"db")
-	require.ErrorIs(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport), errInjected)
-	assert.Equal(t, "kept", retrieveString(t, nodeB, "db"))
-	_, err := nodeB.rotateBarrier(ctx, "db", RotateOptions{NewValue: []byte("newer")})
-	require.NoError(t, err)
+	t.Run("plain retry", func(t *testing.T) {
+		nodeB, legacyB, arm := setup(t)
+		_, err := nodeB.rotateBarrier(ctx, "db", RotateOptions{NewValue: []byte("newer")})
+		require.NoError(t, err)
+		requireUntouched := func(msg string) {
+			t.Helper()
+			meta, err := nodeB.loadBarrierMeta(ctx, "db")
+			require.NoError(t, err)
+			assert.Equal(t, uint64(4), meta.CurrentVersion, msg)
+			assert.Equal(t, "newer", retrieveString(t, nodeB, "db"), msg)
+		}
 
-	// The retry gets as far as deleting the kept copy, which fails.
-	arm("delete", legacyCredentialPrefix+"db")
-	require.ErrorIs(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport), errInjected)
-	requireUntouched("a retried import must not import the kept copy again")
+		// The retry gets as far as deleting the kept copy, which fails.
+		arm("delete", legacyCredentialPrefix+"db")
+		require.ErrorIs(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport), errInjected)
+		requireUntouched("a retried import must not import the kept copy again")
 
-	require.NoError(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport))
-	requireUntouched("finishing the cleanup must not import the kept copy again")
-	assert.Empty(t, legacyKeys(t, legacyB))
-	conflicts, err := nodeB.ListMigrationConflicts(ctx)
-	require.NoError(t, err)
-	assert.Empty(t, conflicts)
+		require.NoError(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport))
+		requireUntouched("finishing the cleanup must not import the kept copy again")
+		requireSettled(t, nodeB, legacyB)
+	})
+
+	t.Run("retry after delete", func(t *testing.T) {
+		nodeB, legacyB, _ := setup(t)
+		require.NoError(t, nodeB.DeleteCredential(ctx, "db"))
+
+		require.NoError(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport))
+		_, err := nodeB.retrieveBytes(ctx, "db")
+		assert.ErrorIs(t, err, ErrCredentialNotFound, "a retried import must not recreate a deleted credential")
+		requireSettled(t, nodeB, legacyB)
+	})
+
+	t.Run("retry after replacement", func(t *testing.T) {
+		nodeB, legacyB, _ := setup(t)
+		require.NoError(t, nodeB.DeleteCredential(ctx, "db"))
+		require.NoError(t, nodeB.StoreCredential(ctx, "db", []byte("replacement")))
+		before, err := nodeB.loadBarrierMeta(ctx, "db")
+		require.NoError(t, err)
+
+		require.NoError(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport))
+		after, err := nodeB.loadBarrierMeta(ctx, "db")
+		require.NoError(t, err)
+		assert.Equal(t, before.CurrentVersion, after.CurrentVersion, "a retried import must not rotate over a replacement")
+		assert.Equal(t, "replacement", retrieveString(t, nodeB, "db"))
+		requireSettled(t, nodeB, legacyB)
+	})
 }
 
 // getHookStore runs onGet after each read, with the key read, so a test can
@@ -615,7 +722,9 @@ func TestResolveMigrationConflict_ImportRacingAcrossDerivedServices(t *testing.T
 	meta, err := second.loadBarrierMeta(ctx, "db")
 	require.NoError(t, err)
 	assert.Equal(t, uint64(4), meta.CurrentVersion, "the copy is imported as one version")
-	assert.Len(t, meta.Imported, 1)
+	imports, err := second.store.List(ctx, MigrationImportPrefix)
+	require.NoError(t, err)
+	assert.Len(t, imports, 1, "the import is recorded once, outside the credential's metadata")
 	assert.Empty(t, legacyKeys(t, legacyB))
 	conflicts, err := second.ListMigrationConflicts(ctx)
 	require.NoError(t, err)

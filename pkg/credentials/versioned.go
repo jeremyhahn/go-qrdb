@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -180,10 +179,6 @@ type credentialMeta struct {
 	// NextRotation is when an enabled Policy next falls due. Zero when
 	// no enabled policy is set.
 	NextRotation time.Time `json:"next_rotation,omitzero"`
-
-	// Imported holds the digest of each legacy copy a migration import
-	// has committed as a version, so a retried import commits it once.
-	Imported []string `json:"imported,omitempty"`
 
 	// Claim is the lease of the scheduled rotation in progress, nil when
 	// none is. Only its holder invokes the rotation value source.
@@ -613,13 +608,6 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 		if err != nil {
 			return nil, err
 		}
-		// An import is refused on the record the batch is guarded on: a
-		// service derived for another request shares no lock with this
-		// one, so only this read, inside the retry loop, sees an import
-		// of the same copy committed since the caller's own check.
-		if opts.importDigest != "" && slices.Contains(meta.Imported, opts.importDigest) {
-			return nil, errAlreadyImported
-		}
 		prevValue, prevExists, err := s.loadBarrierCurrent(ctx, name)
 		if err != nil {
 			return nil, err
@@ -666,9 +654,6 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 		// operation: the next one must not recover a value issued for a
 		// rotation this version superseded.
 		meta.RotationOp = ""
-		if opts.importDigest != "" {
-			meta.Imported = append(meta.Imported, opts.importDigest)
-		}
 		if sched != nil {
 			sched.settle(meta)
 		}
@@ -685,6 +670,15 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 			kvstore.KV{Key: credentialPrefix + name, Value: opts.NewValue},
 			kvstore.KV{Key: metaKey(name), Value: nextMeta},
 			kvstore.KV{Key: stagedKey(name, newVersion), Delete: true})
+		// An import writes its copy's record in the same batch, guarded
+		// absent: a service derived for another request shares no lock
+		// with this one, so only this guard refuses a second commit of a
+		// copy another import committed since the caller's own check.
+		if opts.importDigest != "" {
+			k := importKey(name, opts.importDigest)
+			guards = append(guards, kvstore.Guard{Key: k})
+			writes = append(writes, kvstore.KV{Key: k, Value: []byte(strconv.FormatUint(newVersion, 10))})
+		}
 		applied, err := s.store.PutAllIfAllUnchanged(ctx, guards, writes)
 		// The in-memory copy of the previous value is wiped once it is on
 		// disk, or once this attempt is over.
@@ -693,6 +687,15 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 			return nil, &OperationError{Op: "commit rotation", Cause: err}
 		}
 		if !applied {
+			if opts.importDigest != "" {
+				done, err := s.getOptional(ctx, importKey(name, opts.importDigest))
+				if err != nil {
+					return nil, &OperationError{Op: "read migration import", Cause: err}
+				}
+				if done != nil {
+					return nil, errAlreadyImported
+				}
+			}
 			continue
 		}
 		s.logger.Debug("credential rotated",
@@ -1047,14 +1050,21 @@ func (s *CredentialService) deleteBarrierAll(ctx context.Context, name string) e
 			secure.Wipe(rawValue)
 			return err
 		}
-		if rawMeta == nil && rawValue == nil && len(writes) == 0 && fence == nil {
+		// A name with nothing to delete and no pending claim gets no
+		// tombstone: there is no deleted value a migration could restore.
+		if rawMeta == nil && rawValue == nil && len(writes) == 0 && (fence == nil || rawClaim == nil) {
 			return nil
 		}
 		writes = append(writes, kvstore.KV{Key: metaK, Delete: true}, kvstore.KV{Key: valueK, Delete: true})
-		guards := []kvstore.Guard{{Key: metaK, Value: rawMeta}, {Key: valueK, Value: rawValue}}
+		// The claim is guarded whether or not it is rewritten (a nil
+		// value holds only while it is absent): a claim written since the
+		// read fails the batch and the selection is taken again, so it is
+		// fenced too. A name with no claim gets a deletion tombstone,
+		// which settles a pre-upgrade copy another node migrates later.
+		guards := []kvstore.Guard{{Key: metaK, Value: rawMeta}, {Key: valueK, Value: rawValue},
+			{Key: MigrationClaimPrefix + name, Value: rawClaim}}
 		if fence != nil {
 			writes = append(writes, kvstore.KV{Key: MigrationClaimPrefix + name, Value: fence})
-			guards = append(guards, kvstore.Guard{Key: MigrationClaimPrefix + name, Value: rawClaim})
 		}
 		applied, err := s.store.PutAllIfAllUnchanged(ctx, guards, writes)
 		secure.Wipe(rawValue)

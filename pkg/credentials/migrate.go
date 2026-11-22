@@ -46,7 +46,18 @@ const legacyCredentialPrefix = "credentials/" //nolint:gosec // G101: a key pref
 const (
 	MigrationClaimPrefix      = "__sys:credential-migrations/"
 	legacyMigrationNotePrefix = "credential-migrations/"
+	// MigrationImportPrefix keys the record of each legacy copy a
+	// conflict import committed, MigrationImportPrefix + encodedName(name)
+	// + "/" + digest. It lives apart from the credential's records, so a
+	// delete of the credential leaves it and a retried import of the same
+	// copy still finds it.
+	MigrationImportPrefix = "__sys:credential-migration-imports/"
 )
+
+// importKey keys the import record of the legacy copy of name with digest.
+func importKey(name, digest string) string {
+	return MigrationImportPrefix + encodedName(name) + "/" + digest
+}
 
 // MigrationResolution is how an operator settles a migration conflict.
 type MigrationResolution string
@@ -80,6 +91,10 @@ type migrationClaim struct {
 	// Complete is set once every record of the winning copy is written.
 	// Until then a node holding the same copy finishes the write.
 	Complete bool `json:"complete"`
+	// Deleted marks the claim a DeleteCredential left: a tombstone,
+	// always Complete. Every legacy copy of the name predates the delete,
+	// so a migration that finds it deletes its copy and installs nothing.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 // credentialRecord is one credential's records, keyed by the suffix after
@@ -312,7 +327,9 @@ func (s *CredentialService) migrateOne(ctx context.Context, name string, c *lega
 			return nil, err
 		}
 	}
-	if claim.Digest != ours.Digest {
+	// A deletion tombstone settles the copy: it predates the delete, so
+	// it is removed and nothing is installed, whatever was stored since.
+	if !claim.Deleted && claim.Digest != ours.Digest {
 		return &CredentialMigrationConflictError{
 			Name:     name,
 			Value:    claim.Value != ours.Value,
@@ -467,13 +484,23 @@ func (s *CredentialService) writeWinningCopy(ctx context.Context, name string, r
 func (s *CredentialService) deletionFence(ctx context.Context, name string) (raw, fenced []byte, err error) {
 	raw, err = s.store.Get(ctx, MigrationClaimPrefix+name)
 	if err != nil {
-		return nil, nil, readFailure("read migration claim", err, nil)
+		if err = readFailure("read migration claim", err, nil); err != nil {
+			return nil, nil, err
+		}
+		raw = nil
 	}
 	var claim migrationClaim
-	if len(raw) == 0 || json.Unmarshal(raw, &claim) != nil || claim.Complete {
+	switch {
+	case len(raw) == 0:
+		// No claim yet: the delete leaves a tombstone, so a pre-upgrade
+		// copy another node migrates later restores nothing.
+		raw = nil
+		claim = migrationClaim{Complete: true, Deleted: true}
+	case json.Unmarshal(raw, &claim) != nil || claim.Complete:
 		return raw, nil, nil
+	default:
+		claim.Complete, claim.Deleted = true, true
 	}
-	claim.Complete = true
 	fenced, err = json.Marshal(claim)
 	if err != nil {
 		return nil, nil, &OperationError{Op: "encode migration claim", Cause: err}
@@ -830,14 +857,14 @@ func (s *CredentialService) importLegacy(ctx context.Context, name string, c *le
 		return nil, ErrCredentialNotFound
 	}
 	digest := c.record.claim().Digest
-	meta, err := s.loadBarrierMeta(ctx, name)
+	done, err := s.getOptional(ctx, importKey(name, digest))
 	if err != nil {
-		return nil, err
+		return nil, &OperationError{Op: "read migration import", Cause: err}
 	}
-	if slices.Contains(meta.Imported, digest) {
+	if done != nil {
 		// An earlier resolve committed this copy and failed deleting it.
-		// The credential may have been rotated since, so nothing is
-		// imported or replaced; only the deletion is left.
+		// The credential may have been rotated, deleted or replaced since,
+		// so nothing is imported or replaced; only the deletion is left.
 		return map[string]any{"already_imported": true}, nil
 	}
 	imported := bytes.Clone(value)

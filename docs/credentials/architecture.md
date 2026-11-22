@@ -174,6 +174,14 @@ records a node writes a settled note under the old prefix and deletes the
 note last, so a rerun interrupted mid-deletion finishes the deletion instead
 of reading the remainder as a different copy.
 
+**A delete leaves a tombstone.** Deleting a credential writes a deletion
+tombstone claim for the name in the same guarded write as the delete (or
+settles a pending claim into one), guarded on the claim it read, so a claim
+written meanwhile makes the delete select again. A legacy copy migrated after
+the delete predates it: the tombstone settles it, its old records are deleted
+and nothing of it is installed, whether or not a credential was stored under
+the name since.
+
 **Resolving a conflict.** A caller of `CredentialServicer` lists a node's
 conflicts (`CredentialMigrationConflicts`) and settles each one
 (`CredentialResolveMigrationConflict`) with one of two resolutions:
@@ -185,7 +193,12 @@ conflicts (`CredentialMigrationConflicts`) and settles each one
 
 Either way the node's old records for that name are then deleted, and the
 resolution is audited with the old records it did not carry over (the kept
-version history, and the current value unless it was imported). Resolving a
+version history, and the current value unless it was imported). A completed
+import is recorded per copy under `__sys:credential-migration-imports/`, in the
+import's own guarded write and outside the credential's metadata, so it
+survives a delete of the credential: an import retried after a failed cleanup
+only deletes the old records and never recreates a deleted credential or
+overwrites a replacement. Resolving a
 name that has no conflict on the node is `ErrMigrationConflictNotFound`; a
 resolution other than the two is `ErrInvalidMigrationResolution`. Conflicts are per node: each node lists and
 resolves only the copies it kept. The verbs are listed per transport in
