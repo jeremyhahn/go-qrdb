@@ -85,6 +85,10 @@ func (f *fakeVolumeServiceForReplicaFilter) GetMove(context.Context, string) (*v
 	panic("unused")
 }
 
+func (f *fakeVolumeServiceForReplicaFilter) CancelMove(context.Context, string) (*volume.Move, error) {
+	panic("unused")
+}
+
 // TestVolumePoolHealthFilter_NoAssignmentPassesThrough proves a tenant with
 // no catalog Assignment (prefix/barrier isolation, or the system tenant) is
 // not this filter's concern: it is admitted without consulting the pool at

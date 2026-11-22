@@ -333,6 +333,7 @@ type Service interface {
 	ListAssignments(ctx context.Context, pool, pageToken string, pageSize int) (*AssignmentPage, error)
 	MoveTenant(ctx context.Context, req MoveTenantRequest) (*Move, error)
 	GetMove(ctx context.Context, tenantID string) (*Move, error)
+	CancelMove(ctx context.Context, tenantID string) (*Move, error)
 }
 
 // Allocator is the narrow seam pkg/tenant (placing a tenant at create time)
