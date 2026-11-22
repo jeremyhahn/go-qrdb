@@ -300,9 +300,7 @@ func (c *CachedRemote) createTemp() (*os.File, string, error) {
 	var lastErr error
 	for range cacheTempAttempts {
 		var b [8]byte
-		if _, err := rand.Read(b[:]); err != nil {
-			return nil, "", err
-		}
+		_, _ = rand.Read(b[:]) // crypto/rand.Read never returns an error
 		name := hex.EncodeToString(b[:]) + cacheTempSuffix
 		f, err := c.root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 		if err == nil {
@@ -386,11 +384,8 @@ func (r *cacheFileReader) ReadAt(_ context.Context, p []byte, off int64) error {
 	if off+int64(len(p)) > r.size {
 		return io.EOF
 	}
-	n, err := r.f.ReadAt(p, off)
-	if n < len(p) {
-		if err == nil {
-			err = io.ErrUnexpectedEOF
-		}
+	// os.File.ReadAt returns a non-nil error whenever it reads short.
+	if n, err := r.f.ReadAt(p, off); n < len(p) {
 		return err
 	}
 	return nil

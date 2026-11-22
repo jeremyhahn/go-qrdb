@@ -20,6 +20,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -333,4 +336,303 @@ func TestPebbleRoundTrip_Remote(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, len(names), len(all), "every object is under the prefix")
 	})
+}
+
+// errTestFault is the error the fault doubles below inject.
+var errTestFault = errors.New("test: injected fault")
+
+// remoteFaultStore is a go-objstore Storage whose Get bodies fail to read or
+// close, whose List fails, or whose List also returns keys outside the
+// prefix asked for, as a provider with a looser prefix match would.
+type remoteFaultStore struct {
+	objcommon.Storage
+	readErr, closeErr, listErr error
+	extraKeys                  []string
+}
+
+type faultBody struct {
+	r                 io.Reader
+	readErr, closeErr error
+}
+
+func (b *faultBody) Read(p []byte) (int, error) {
+	if b.readErr != nil {
+		return 0, b.readErr
+	}
+	return b.r.Read(p)
+}
+
+func (b *faultBody) Close() error { return b.closeErr }
+
+func (s *remoteFaultStore) GetWithContext(ctx context.Context, key string) (io.ReadCloser, error) {
+	rc, err := s.Storage.GetWithContext(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		return nil, err
+	}
+	return &faultBody{r: bytes.NewReader(data), readErr: s.readErr, closeErr: s.closeErr}, nil
+}
+
+func (s *remoteFaultStore) ListWithContext(ctx context.Context, prefix string) ([]string, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	keys, err := s.Storage.ListWithContext(ctx, prefix)
+	return append(keys, s.extraKeys...), err
+}
+
+func TestRemote_StoreFaults(t *testing.T) {
+	ctx := context.Background()
+	st := &remoteFaultStore{Storage: memory.New()}
+	r := newTestRemote(t, st, "db1")
+	putRemoteObject(t, r, "obj", []byte("payload"))
+
+	st.readErr = errTestFault
+	_, _, err := r.ReadObject(ctx, "obj")
+	require.ErrorIs(t, err, errTestFault)
+	st.readErr = nil
+
+	st.closeErr = errTestFault
+	_, _, err = r.ReadObject(ctx, "obj")
+	require.ErrorIs(t, err, errTestFault)
+	st.closeErr = nil
+
+	st.listErr = errTestFault
+	_, err = r.List("", "")
+	require.ErrorIs(t, err, errTestFault)
+	st.listErr = nil
+
+	st.extraKeys = []string{"db10/obj", "other/obj"}
+	names, err := r.List("", "")
+	require.NoError(t, err)
+	require.Equal(t, []string{"obj"}, names)
+}
+
+// faultRemote is a Pebble remote.Storage whose readers fail ReadAt or Close,
+// whose CreateObject fails or returns a writer failing Write, or whose
+// Delete fails.
+type faultRemote struct {
+	remote.Storage
+	readAtErr, readerCloseErr, createErr, writeErr, deleteErr error
+}
+
+type faultReader struct {
+	remote.ObjectReader
+	readAtErr, closeErr error
+}
+
+func (r *faultReader) ReadAt(ctx context.Context, p []byte, off int64) error {
+	if r.readAtErr != nil {
+		return r.readAtErr
+	}
+	return r.ObjectReader.ReadAt(ctx, p, off)
+}
+
+func (r *faultReader) Close() error {
+	err := r.ObjectReader.Close()
+	if r.closeErr != nil {
+		return r.closeErr
+	}
+	return err
+}
+
+type faultWriter struct {
+	io.WriteCloser
+	err error
+}
+
+func (w *faultWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func (f *faultRemote) ReadObject(ctx context.Context, objName string) (remote.ObjectReader, int64, error) {
+	rd, size, err := f.Storage.ReadObject(ctx, objName)
+	if err != nil {
+		return nil, 0, err
+	}
+	return &faultReader{ObjectReader: rd, readAtErr: f.readAtErr, closeErr: f.readerCloseErr}, size, nil
+}
+
+func (f *faultRemote) CreateObject(objName string) (io.WriteCloser, error) {
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	w, err := f.Storage.CreateObject(objName)
+	if err != nil {
+		return nil, err
+	}
+	if f.writeErr != nil {
+		return &faultWriter{WriteCloser: w, err: f.writeErr}, nil
+	}
+	return w, nil
+}
+
+func (f *faultRemote) Delete(objName string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	return f.Storage.Delete(objName)
+}
+
+func TestCachedRemote_InnerFaults(t *testing.T) {
+	ctx := context.Background()
+	inner := newTestRemote(t, memory.New(), "db1")
+	putRemoteObject(t, inner, "obj", []byte("payload"))
+	fr := &faultRemote{Storage: inner}
+	dir := t.TempDir()
+	c := newTestCachedRemote(t, fr, dir)
+
+	fr.readAtErr = errTestFault
+	_, _, err := c.ReadObject(ctx, "obj")
+	require.ErrorIs(t, err, errTestFault)
+	fr.readAtErr = nil
+
+	fr.readerCloseErr = errTestFault
+	_, _, err = c.ReadObject(ctx, "obj")
+	require.ErrorIs(t, err, errTestFault)
+	fr.readerCloseErr = nil
+	require.Empty(t, cacheDirBytes(t, dir), "a failed fetch caches nothing")
+
+	fr.createErr = errTestFault
+	_, err = c.CreateObject("new")
+	require.ErrorIs(t, err, errTestFault)
+	fr.createErr = nil
+
+	fr.deleteErr = errTestFault
+	require.ErrorIs(t, c.Delete("obj"), errTestFault)
+	fr.deleteErr = nil
+	_, err = inner.Size("obj")
+	require.NoError(t, err, "a failed inner delete keeps the object")
+}
+
+func TestEncryptedRemote_InnerFaults(t *testing.T) {
+	ctx := context.Background()
+	barrier, _ := newUnsealedBarrier(t)
+	fr := &faultRemote{Storage: newTestRemote(t, memory.New(), "db1")}
+	e, err := NewEncryptedRemote(fr, barrier)
+	require.NoError(t, err)
+	putRemoteObject(t, e, "obj", []byte("payload"))
+
+	fr.readAtErr = errTestFault
+	_, _, err = e.ReadObject(ctx, "obj")
+	require.ErrorIs(t, err, errTestFault)
+	fr.readAtErr = nil
+
+	fr.readerCloseErr = errTestFault
+	_, _, err = e.ReadObject(ctx, "obj")
+	require.ErrorIs(t, err, errTestFault)
+	fr.readerCloseErr = nil
+
+	for _, fault := range []*error{&fr.createErr, &fr.writeErr} {
+		*fault = errTestFault
+		w, err := e.CreateObject("new")
+		require.NoError(t, err)
+		_, err = w.Write([]byte("plain"))
+		require.NoError(t, err)
+		require.ErrorIs(t, w.Close(), errTestFault)
+		*fault = nil
+	}
+}
+
+// restoreMode puts dir's mode back to 0700 at test end, before TempDir's
+// removal and the CachedRemote's Close.
+func restoreMode(t *testing.T, dir string) {
+	t.Helper()
+	t.Cleanup(func() { require.NoError(t, os.Chmod(dir, 0o700)) })
+}
+
+func TestNewCachedRemote_DirFaults(t *testing.T) {
+	inner := newTestRemote(t, memory.New(), "db1")
+
+	file := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
+	_, err := NewCachedRemote(inner, file)
+	require.Error(t, err, "a file where the dir belongs")
+
+	unreadable := t.TempDir()
+	require.NoError(t, os.Chmod(unreadable, 0o000))
+	restoreMode(t, unreadable)
+	_, err = NewCachedRemote(inner, unreadable)
+	require.ErrorIs(t, err, fs.ErrPermission)
+
+	stuck := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(stuck, "left"+cacheTempSuffix, "child"), 0o700))
+	_, err = NewCachedRemote(inner, stuck)
+	require.Error(t, err, "a temporary that cannot be removed")
+}
+
+func TestCachedRemote_CacheDirFaults(t *testing.T) {
+	ctx := context.Background()
+	inner := newTestRemote(t, memory.New(), "db1")
+	putRemoteObject(t, inner, "obj", []byte("payload"))
+
+	t.Run("cache file name held by a directory", func(t *testing.T) {
+		dir := t.TempDir()
+		c := newTestCachedRemote(t, inner, dir)
+		blocked := filepath.Join(dir, c.name("held"), "child")
+		require.NoError(t, os.MkdirAll(blocked, 0o700))
+
+		err := c.store("held", []byte("data"))
+		require.Error(t, err)
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		require.Len(t, entries, 1, "the temporary is removed after a failed rename")
+
+		putRemoteObject(t, inner, "held", []byte("x"))
+		require.Error(t, c.Delete("held"), "a cache entry that cannot be removed")
+		_, err = inner.Size("held")
+		require.True(t, inner.IsNotExistError(err), "the inner delete ran first")
+	})
+
+	t.Run("read-only cache dir", func(t *testing.T) {
+		dir := t.TempDir()
+		c := newTestCachedRemote(t, inner, dir)
+		require.NoError(t, os.Chmod(dir, 0o500))
+		restoreMode(t, dir)
+
+		_, _, err := c.createTemp()
+		require.ErrorIs(t, err, fs.ErrPermission)
+		require.ErrorIs(t, c.store("obj", []byte("x")), fs.ErrPermission)
+		_, _, err = c.ReadObject(ctx, "obj")
+		require.ErrorIs(t, err, fs.ErrPermission, "a cache write failure is returned")
+	})
+
+	t.Run("unlistable cache dir", func(t *testing.T) {
+		dir := t.TempDir()
+		c := newTestCachedRemote(t, inner, dir)
+		require.NoError(t, os.Chmod(dir, 0o300))
+		restoreMode(t, dir)
+		require.ErrorIs(t, c.syncDir(), fs.ErrPermission)
+	})
+}
+
+func TestWriteSyncClose_Faults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "f")
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+	ro, err := os.Open(path)
+	require.NoError(t, err)
+	require.Error(t, writeSyncClose(ro, []byte("x")), "write to a read-only file")
+
+	// /dev/null takes writes but refuses fsync (EINVAL).
+	null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	require.NoError(t, err)
+	require.Error(t, writeSyncClose(null, []byte("x")), "fsync of a device")
+}
+
+func TestCacheFileReader_ShortFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "f")
+	require.NoError(t, os.WriteFile(path, []byte("12345"), 0o600))
+	f, err := os.Open(path)
+	require.NoError(t, err)
+	// The recorded size passes the file's end, as when the file shrank.
+	r := &cacheFileReader{f: f, size: 10}
+	t.Cleanup(func() { _ = r.Close() })
+	require.ErrorIs(t, r.ReadAt(context.Background(), make([]byte, 8), 0), io.EOF)
+}
+
+func TestObjstoreErrors_Messages(t *testing.T) {
+	require.Contains(t, (&InvalidObjectNameError{Name: "a/b", Reason: "why"}).Error(), `"a/b": why`)
+	require.Contains(t, (&ArchiveTierUnsupportedError{Provider: "glacier"}).Error(), `"glacier" is an archive tier`)
 }
