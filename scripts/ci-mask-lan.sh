@@ -16,10 +16,12 @@
 # off) are left.
 # v1.53 (Tenant Agent on go-quicbaas #2667): every variable whose name ends
 # in _REGISTRY is scanned (CI_REGISTRY, CI_IMAGE_REGISTRY, RELEASE_REGISTRY,
-# a copy's IT_REGISTRY), and the template's mask step sets
-# VARS_CI_IMAGE_REGISTRY from the repository variable, because a registry a
-# later step takes from `vars` is not in this step's environment otherwise. A
-# _REGISTRY_OWNER or other non-host name is not scanned.
+# a copy's IT_REGISTRY). The template's mask step sets CI_IMAGE_REGISTRY from
+# the Actions secret of that name, which the runner already masks whole; this
+# script adds the bare host name. The registry is never a `vars` value: Actions
+# prints a step's env in its log header before the run body, so no add-mask
+# can cover a variable in time. A _REGISTRY_OWNER or other non-host name is
+# not scanned.
 # Userinfo (Codex on go-qrdb #1671): an entry's authority is split at its
 # last "@" before the host is classified, so in
 # http://build.user:password@192.168.1.10:8080 the host is 192.168.1.10, not
