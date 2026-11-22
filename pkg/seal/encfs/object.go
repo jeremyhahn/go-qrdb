@@ -20,6 +20,8 @@
 // object moved to another name all fail authentication. An empty object
 // is one zero-length final block, never zero blocks. A sealed object and
 // an encfs file are distinct domains: neither opens as the other.
+// Blocks go through blockCrypto, whose AEAD samples each nonce inside the
+// FIPS module.
 
 package encfs
 
@@ -68,7 +70,11 @@ func SealObject(barrier barrierKEK, objName string, plaintext []byte) ([]byte, e
 		start := i * BlockSize
 		end := min(start+BlockSize, len(plaintext))
 		aad := objectAAD(objName, uint64(i), i == blocks-1)
-		out = c.aead.Seal(out, nil, plaintext[start:end], aad)
+		block, err := c.encryptAAD(plaintext[start:end], aad)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, block...)
 	}
 	return out, nil
 }
@@ -108,10 +114,11 @@ func OpenObject(barrier barrierKEK, objName string, sealed []byte) ([]byte, erro
 		start := i * CiphertextBlockSize
 		end := min(start+CiphertextBlockSize, len(payload))
 		aad := objectAAD(objName, uint64(i), i == blocks-1)
-		plain, err = c.aead.Open(plain, nil, payload[start:end], aad)
+		block, err := c.decryptAAD(payload[start:end], aad)
 		if err != nil {
 			return nil, ErrAuthFailed
 		}
+		plain = append(plain, block...)
 	}
 	return plain, nil
 }

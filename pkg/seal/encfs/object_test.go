@@ -207,3 +207,46 @@ func TestObjectCiphertextHidesPlaintext(t *testing.T) {
 		t.Fatal("sealed object contains the plaintext")
 	}
 }
+
+func TestObjectSealsFreshNonces(t *testing.T) {
+	b := newFakeBarrier(t)
+	plain := objectPlaintext(t, 3*BlockSize)
+	seen := make(map[string]bool)
+	for k := range 2 {
+		sealed, err := SealObject(b, testObjName, plain)
+		if err != nil {
+			t.Fatalf("seal %d: SealObject: %v", k, err)
+		}
+		payload := sealed[objectHeaderSize(sealed):]
+		if len(payload) != 3*CiphertextBlockSize {
+			t.Fatalf("seal %d: payload is %d bytes, want %d", k, len(payload), 3*CiphertextBlockSize)
+		}
+		for i := range 3 {
+			nonce := string(payload[i*CiphertextBlockSize : i*CiphertextBlockSize+inlineNonceSize])
+			if seen[nonce] {
+				t.Fatalf("seal %d block %d: nonce repeated", k, i)
+			}
+			seen[nonce] = true
+		}
+		got, err := OpenObject(b, testObjName, sealed)
+		if err != nil {
+			t.Fatalf("seal %d: OpenObject: %v", k, err)
+		}
+		if !bytes.Equal(got, plain) {
+			t.Fatalf("seal %d: round trip mismatch", k)
+		}
+	}
+}
+
+func TestObjectLayoutUnchanged(t *testing.T) {
+	b := newFakeBarrier(t)
+	plain := objectPlaintext(t, BlockSize+7)
+	sealed, err := SealObject(b, testObjName, plain)
+	if err != nil {
+		t.Fatalf("SealObject: %v", err)
+	}
+	payload := sealed[objectHeaderSize(sealed):]
+	if want := 2*BlockOverhead + len(plain); len(payload) != want {
+		t.Fatalf("payload is %d bytes, want %d", len(payload), want)
+	}
+}
