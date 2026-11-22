@@ -28,10 +28,18 @@ import (
 
 func TestE2E_UpdateNamespace_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	var got pb.VectorUpdateNamespaceRequest
+	// The responder runs on the server's goroutine; the QUIC socket is not
+	// a happens-before edge the race detector sees, so the decoded request
+	// is handed to the test goroutine over a channel.
+	gotCh := make(chan *pb.VectorUpdateNamespaceRequest, 1)
 	srv.SetResponder("vector.UpdateNamespace", func(payload []byte) (uint16, []byte) {
-		if err := proto.Unmarshal(payload, &got); err != nil {
+		req := &pb.VectorUpdateNamespaceRequest{}
+		if err := proto.Unmarshal(payload, req); err != nil {
 			return wire.StatusInvalidArgument, nil
+		}
+		select {
+		case gotCh <- req:
+		default:
 		}
 		return wire.StatusOK, mustMarshal(&pb.VectorUpdateNamespaceResponse{
 			Updated: true, RequiresRebuild: true, Timestamp: 100,
@@ -49,9 +57,15 @@ func TestE2E_UpdateNamespace_HappyPath(t *testing.T) {
 	if !resp.Success || !resp.RequiresRebuild || resp.Namespace != "ns" || resp.Timestamp != 100 {
 		t.Fatalf("resp = %+v", resp)
 	}
+	var got *pb.VectorUpdateNamespaceRequest
+	select {
+	case got = <-gotCh:
+	default:
+		t.Fatal("responder did not receive the request")
+	}
 	if got.GetNamespace() != "ns" || got.GetDimension() != 4 ||
 		got.GetIndexParamsJson() != `{"ef_search":"128"}` || got.GetMetadataJson() != `{"owner":"search"}` {
-		t.Fatalf("request = %+v", &got)
+		t.Fatalf("request = %+v", got)
 	}
 }
 
