@@ -27,61 +27,61 @@ import (
 
 func TestTimeSeriesBinding_Write_NotConnected(t *testing.T) {
 	b := NewTimeSeriesBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	err := b.Write(nil)
+	err := b.Write("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestTimeSeriesBinding_WriteBatch_NotConnected(t *testing.T) {
 	b := NewTimeSeriesBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	err := b.WriteBatch(nil)
+	err := b.WriteBatch("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestTimeSeriesBinding_Query_NotConnected(t *testing.T) {
 	b := NewTimeSeriesBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.Query(nil)
+	_, err := b.Query("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestTimeSeriesBinding_Aggregate_NotConnected(t *testing.T) {
 	b := NewTimeSeriesBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.Aggregate(nil)
+	_, err := b.Aggregate("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestTimeSeriesBinding_WritePoint_NotConnected(t *testing.T) {
 	b := NewTimeSeriesBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	err := b.WritePoint(nil)
+	err := b.WritePoint("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestTimeSeriesBinding_RichQuery_NotConnected(t *testing.T) {
 	b := NewTimeSeriesBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.RichQuery(nil)
+	_, err := b.RichQuery("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestTimeSeriesBinding_DeleteSeries_NotConnected(t *testing.T) {
 	b := NewTimeSeriesBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.DeleteSeries(nil)
+	_, err := b.DeleteSeries("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestTimeSeriesBinding_GetRetention_NotConnected(t *testing.T) {
 	b := NewTimeSeriesBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.GetRetention(nil)
+	_, err := b.GetRetention("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestTimeSeriesBinding_SetRetention_NotConnected(t *testing.T) {
 	b := NewTimeSeriesBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	err := b.SetRetention(nil)
+	err := b.SetRetention("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
 func TestTimeSeriesBinding_ListMetrics_NotConnected(t *testing.T) {
 	b := NewTimeSeriesBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.ListMetrics(nil)
+	_, err := b.ListMetrics("", nil)
 	assertFeatureNotConnected(t, err)
 }
 
