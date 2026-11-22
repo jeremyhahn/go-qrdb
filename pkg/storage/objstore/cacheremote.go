@@ -17,6 +17,8 @@ package objstore
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
@@ -52,16 +54,21 @@ const cacheTempSuffix = ".tmp"
 // crash never leaves a partial object under a real name; leftover temporaries
 // are removed by NewCachedRemote.
 //
+// Every cache file operation (open, stat, create, rename, remove, listing and
+// the dir fsync) resolves inside the cache dir's *os.Root, so a symlink placed
+// in the dir cannot lead a read or write outside it.
+//
 // The cache holds exactly the bytes the store holds, so it sits below
 // EncryptedRemote: with the barrier on it holds ciphertext and nothing
 // plaintext lands on local disk. It is unbounded and shrinks only by Delete
 // until go-objstore gains a ranged read.
 type CachedRemote struct {
 	inner remote.Storage
-	dir   string
+	root  *os.Root
 
-	mu    sync.Mutex
-	locks map[string]*objLock
+	mu     sync.Mutex
+	locks  map[string]*objLock
+	closed bool
 }
 
 // objLock is the per-object-name lock of a CachedRemote; refs counts its
@@ -124,25 +131,32 @@ func NewCachedRemote(inner remote.Storage, dir string) (*CachedRemote, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(dir)
+	root, err := os.OpenRoot(dir)
 	if err != nil {
+		return nil, err
+	}
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		_ = root.Close()
 		return nil, err
 	}
 	for _, e := range entries {
 		// A cached object whose escaped name ends in the suffix is removed
 		// too; that costs one refetch, never a wrong read.
 		if strings.HasSuffix(e.Name(), cacheTempSuffix) {
-			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			if err := root.Remove(e.Name()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				_ = root.Close()
 				return nil, err
 			}
 		}
 	}
-	return &CachedRemote{inner: inner, dir: dir, locks: make(map[string]*objLock)}, nil
+	return &CachedRemote{inner: inner, root: root, locks: make(map[string]*objLock)}, nil
 }
 
-// path returns the cache file of the object objName.
-func (c *CachedRemote) path(objName string) string {
-	return filepath.Join(c.dir, url.PathEscape(objName))
+// name returns the name, in the cache dir's root, of the cache file of the
+// object objName.
+func (c *CachedRemote) name(objName string) string {
+	return url.PathEscape(objName)
 }
 
 // ReadObject serves the object from its cache file, or fetches it whole from
@@ -184,7 +198,7 @@ func (c *CachedRemote) ReadObject(ctx context.Context, objName string) (remote.O
 
 // openCached opens the cache file of objName; ok is false when it is absent.
 func (c *CachedRemote) openCached(objName string) (rd remote.ObjectReader, size int64, ok bool, err error) {
-	f, err := os.Open(c.path(objName))
+	f, err := c.root.Open(c.name(objName))
 	switch {
 	case err == nil:
 		fi, err := f.Stat()
@@ -229,7 +243,7 @@ func (c *CachedRemote) Delete(objName string) error {
 	}
 	unlock := c.lock(objName)
 	err := c.inner.Delete(objName)
-	rmErr := os.Remove(c.path(objName))
+	rmErr := c.root.Remove(c.name(objName))
 	unlock()
 	if err != nil {
 		return err
@@ -247,7 +261,7 @@ func (c *CachedRemote) Size(objName string) (int64, error) {
 	if err := c.checkName(objName); err != nil {
 		return 0, err
 	}
-	fi, err := os.Stat(c.path(objName))
+	fi, err := c.root.Stat(c.name(objName))
 	switch {
 	case err == nil:
 		return fi.Size(), nil
@@ -262,51 +276,92 @@ func (c *CachedRemote) IsNotExistError(err error) bool {
 	return c.inner.IsNotExistError(err)
 }
 
-// Close returns nil. The inner storage is shared and is not closed.
-func (c *CachedRemote) Close() error { return nil }
-
-// store writes data as the cache file of objName: a temporary file in the
-// cache dir, fsynced and renamed into place, then the cache dir fsynced so the
-// rename survives a crash. The temporary is removed on any failure before the
-// rename. The caller holds the object's lock.
-func (c *CachedRemote) store(objName string, data []byte) (err error) {
-	tmp, err := os.CreateTemp(c.dir, "*"+cacheTempSuffix)
-	if err != nil {
-		return err
+// Close closes the cache dir's root and returns its error; cache file
+// operations after Close fail. A second Close is a no-op returning nil. The
+// inner storage is shared and is not closed.
+func (c *CachedRemote) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil
 	}
-	defer func() {
-		if err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(tmp.Name())
-		}
-	}()
-	if _, err = tmp.Write(data); err != nil {
-		return err
-	}
-	if err = tmp.Sync(); err != nil {
-		return err
-	}
-	if err = tmp.Close(); err != nil {
-		return err
-	}
-	if err = os.Rename(tmp.Name(), c.path(objName)); err != nil {
-		return err
-	}
-	return syncDir(c.dir)
+	c.closed = true
+	return c.root.Close()
 }
 
-// syncDir fsyncs the directory dir, returning the first error of open, sync
-// and close.
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
+// cacheTempAttempts bounds the names createTemp tries before giving up.
+const cacheTempAttempts = 10
+
+// createTemp creates a new temporary file in the cache dir's root, named by 8
+// random bytes in hex and cacheTempSuffix, and returns it with its name. A
+// name that already exists is retried, at most cacheTempAttempts times; the
+// last error is returned.
+func (c *CachedRemote) createTemp() (*os.File, string, error) {
+	var lastErr error
+	for range cacheTempAttempts {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return nil, "", err
+		}
+		name := hex.EncodeToString(b[:]) + cacheTempSuffix
+		f, err := c.root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			return f, name, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, "", err
+		}
+		lastErr = err
+	}
+	return nil, "", lastErr
+}
+
+// writeSyncClose writes data to f, fsyncs and closes it. On a Write or Sync
+// error f is closed, that close error ignored, and the first error returned.
+func writeSyncClose(f *os.File, data []byte) error {
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// store writes data as the cache file of objName: a temporary file in the
+// cache dir's root, fsynced, closed and renamed into place, then the cache dir
+// fsynced so the rename survives a crash. The temporary is removed on any
+// failure before or at the rename. The caller holds the object's lock.
+func (c *CachedRemote) store(objName string, data []byte) error {
+	f, tmp, err := c.createTemp()
 	if err != nil {
 		return err
 	}
-	err = d.Sync()
-	if cerr := d.Close(); err == nil {
-		err = cerr
+	if err := writeSyncClose(f, data); err != nil {
+		_ = c.root.Remove(tmp)
+		return err
 	}
-	return err
+	if err := c.root.Rename(tmp, c.name(objName)); err != nil {
+		_ = c.root.Remove(tmp)
+		return err
+	}
+	return c.syncDir()
+}
+
+// syncDir fsyncs the cache dir through its root, returning the first error of
+// open, sync and close.
+func (c *CachedRemote) syncDir() error {
+	d, err := c.root.Open(".")
+	if err != nil {
+		return err
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return err
+	}
+	return d.Close()
 }
 
 // cacheFileReader serves ReadAt from a cache file, with the semantics of

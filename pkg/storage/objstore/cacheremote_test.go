@@ -22,6 +22,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -63,6 +65,7 @@ func newTestCachedRemote(t *testing.T, inner remote.Storage, dir string) *Cached
 	t.Helper()
 	c, err := NewCachedRemote(inner, dir)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
 
@@ -231,11 +234,11 @@ func TestCachedRemote_Delete(t *testing.T) {
 	_, err = w.Write([]byte("doomed"))
 	require.NoError(t, err)
 	require.NoError(t, w.Close())
-	_, err = os.Stat(c.path("000004.sst"))
+	_, err = c.root.Stat(c.name("000004.sst"))
 	require.NoError(t, err)
 
 	require.NoError(t, c.Delete("000004.sst"))
-	_, err = os.Stat(c.path("000004.sst"))
+	_, err = c.root.Stat(c.name("000004.sst"))
 	require.True(t, os.IsNotExist(err))
 	_, err = rs.Size("000004.sst")
 	require.True(t, rs.IsNotExistError(err))
@@ -474,7 +477,7 @@ func TestCachedRemote_DeleteDuringFetchLeavesNoCacheFile(t *testing.T) {
 	require.NoError(t, readErr)
 	require.Equal(t, data, readGot)
 	require.NoError(t, delErr)
-	_, err := os.Stat(c.path("000011.sst"))
+	_, err := c.root.Stat(c.name("000011.sst"))
 	require.True(t, os.IsNotExist(err))
 	_, err = c.Size("000011.sst")
 	require.True(t, c.IsNotExistError(err))
@@ -543,4 +546,72 @@ func TestCachedRemote_LocksReleased(t *testing.T) {
 	require.NoError(t, c.Delete("000012.sst"))
 	require.NoError(t, c.Delete("000013.sst"))
 	requireLocksReleased(t, c)
+}
+
+// A symlink planted in the cache dir under a valid object's cache name never
+// serves the bytes it points at: the root refuses to follow a link that leads
+// outside the cache dir, so the read fails, and the outside file is untouched.
+func TestCachedRemote_SymlinkOutsideDirRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on windows")
+	}
+	outside := filepath.Join(t.TempDir(), "secret")
+	secret := []byte("outside-the-cache-dir")
+	require.NoError(t, os.WriteFile(outside, secret, 0o600))
+
+	dir := t.TempDir()
+	rs := newTestRemote(t, memory.New(), "db1")
+	putObject(t, rs, "000020.sst", []byte("inner-object"))
+	c := newTestCachedRemote(t, rs, dir)
+	require.NoError(t, os.Symlink(outside, filepath.Join(dir, url.PathEscape("000020.sst"))))
+
+	got, err := readAll(c, "000020.sst")
+	require.Error(t, err)
+	require.NotContains(t, string(got), string(secret))
+	_, err = c.Size("000020.sst")
+	require.Error(t, err)
+
+	after, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	require.Equal(t, secret, after)
+	requireLocksReleased(t, c)
+}
+
+func TestCachedRemote_CloseReleasesRoot(t *testing.T) {
+	rs := newTestRemote(t, memory.New(), "db1")
+	putObject(t, rs, "000021.sst", []byte("cached"))
+	c := newTestCachedRemote(t, rs, t.TempDir())
+	got, err := readAll(c, "000021.sst")
+	require.NoError(t, err)
+	require.Equal(t, "cached", string(got))
+
+	require.NoError(t, c.Close())
+	require.NoError(t, c.Close())
+	_, _, err = c.ReadObject(context.Background(), "000021.sst")
+	require.Error(t, err)
+}
+
+func TestCachedRemote_StoreLeavesNoTemporary(t *testing.T) {
+	dir := t.TempDir()
+	rs := newTestRemote(t, memory.New(), "db1")
+	putObject(t, rs, "sub/000022.sst", []byte("fetched"))
+	c := newTestCachedRemote(t, rs, dir)
+
+	w, err := c.CreateObject("000023.sst")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("written"))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	got, err := readAll(c, "sub/000022.sst")
+	require.NoError(t, err)
+	require.Equal(t, "fetched", string(got))
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		require.False(t, strings.HasSuffix(e.Name(), cacheTempSuffix), e.Name())
+		names = append(names, e.Name())
+	}
+	require.ElementsMatch(t, []string{url.PathEscape("000023.sst"), url.PathEscape("sub/000022.sst")}, names)
 }
