@@ -135,6 +135,21 @@ const (
 	connectBackoffMax     = time.Second
 )
 
+// connectProbeTimeout bounds the health probe of one connect attempt. One
+// probe on a fresh connection answers in a round trip; a probe still
+// unanswered after this is a stalled stream, and a fresh connection is
+// likelier to succeed than waiting longer on it.
+const connectProbeTimeout = 5 * time.Second
+
+// probeBound returns the bound on one attempt's health probe under ctx, which
+// must carry a deadline: connectProbeTimeout or a third of the time left,
+// whichever is shorter, so even a short bound leaves room for at least two
+// more attempts. It is zero or negative once the deadline has passed.
+func probeBound(ctx context.Context) time.Duration {
+	deadline, _ := ctx.Deadline()
+	return min(connectProbeTimeout, time.Until(deadline)/3)
+}
+
 // Connect establishes the QUIC connection to the QRDB server and confirms
 // it answers a health check. QUIC always requires TLS; ALPN must select
 // wire.ProtocolV3 (see buildTLSConfig), and any other selection is refused.
@@ -146,7 +161,10 @@ const (
 // does not complete -- is retried with bounded backoff, as the gRPC
 // transport waits for its connection to become ready. A failure no retry
 // can cure (an unverifiable certificate, a foreign ALPN) ends Connect at
-// once. With no bound at all there is nothing to retry within, so one
+// once. Each attempt's health probe is bounded by connectProbeTimeout or a
+// third of the bound left, whichever is shorter, so a probe the server never
+// answers is retried on a fresh connection instead of spending the whole
+// bound. With no bound at all there is nothing to retry within, so one
 // attempt is made.
 //
 // Health is a no-login verb on every transport (pkg/api/publicverbs), so
@@ -194,12 +212,21 @@ func (t *Transport) Connect(ctx context.Context) error {
 }
 
 // connectOnce makes one connection attempt: a dial, then a health probe on
-// the new connection. A failed probe closes the connection it ran on.
+// the new connection. A failed probe closes the connection it ran on. Under a
+// bounded ctx the probe is bounded by probeBound, so a stream the server
+// never answers ends this attempt and leaves the rest of the bound to the
+// next; with no bound the probe runs under ctx unchanged.
 func (t *Transport) connectOnce(ctx context.Context) error {
 	if err := t.dial(ctx); err != nil {
 		return err
 	}
-	if err := t.probeHealth(ctx); err != nil {
+	pctx := ctx
+	if _, bounded := ctx.Deadline(); bounded {
+		var pcancel context.CancelFunc
+		pctx, pcancel = context.WithTimeout(ctx, probeBound(ctx))
+		defer pcancel()
+	}
+	if err := t.probeHealth(pctx); err != nil {
 		_ = t.conn.CloseWithError(0, "health check failed")
 		t.conn = nil
 		// A server that refuses the caller's credential has answered: its
