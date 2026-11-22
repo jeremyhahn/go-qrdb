@@ -541,6 +541,19 @@ export function isMultiNodeServer(): boolean {
 }
 
 /**
+ * Reports whether the active server is a multi-node Raft cluster, which is what
+ * the database wizard's Raft steps (replica count, etcd) need. A single-node
+ * Raft server is "raft" for the admin nav but gets the wizard's single-node
+ * steps. A desktop profile recorded as clustered carries no node count (0) and
+ * stays multi-node.
+ */
+export function isMultiNodeServer(): boolean {
+    if (connManagerStore.activeServerMode !== 'raft') return false;
+    const n = connManagerStore.activeClusterNodeCount;
+    return n === 0 || n > 1;
+}
+
+/**
  * Applies detected topology to a web profile in the store and to the active
  * server-mode fields. Persists the updated profile so the mode survives
  * reloads without re-probing being strictly required.

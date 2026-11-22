@@ -16,7 +16,7 @@
 -->
 <script lang="ts">
   import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, HolderRole, ClusterSeal, ClusterMigration, CeremonyStatusResponse } from "@qrdb/sdk";
-  import { TransportError } from "@qrdb/sdk";
+  import { isClusterHeldError } from "../../lib/clusterHeld.ts";
   import { onMount } from "svelte";
   import { AlertTriangle, Info, RefreshCw, Lock, UserPlus, CheckCircle, Clock, AlertCircle, Copy, Download } from "lucide-svelte";
   import { sealStore, updateSealStatus, updateOfficers, setOfficersLoading } from "$stores/seal.svelte.ts";
@@ -25,9 +25,15 @@
   import HolderRekeyPanel from "../../components/HolderRekeyPanel.svelte";
   import HolderEnrolmentForms from "../../components/wizard/HolderEnrolmentForms.svelte";
 
-  let { client, onReconfigure }: {
+  let { client, onReconfigure, onClusterReleased }: {
     client: Client;
     onReconfigure?: () => void;
+    /**
+     * Called once a cleared cluster seal lets this node serve again. App
+     * passes it when it mounts this view alone for a node held at startup,
+     * so the full app shell loads once the hold is gone.
+     */
+    onClusterReleased?: () => void;
   } = $props();
 
   let passphraseInput: string = $state("");
@@ -42,17 +48,6 @@
   // True while this node answers status with 503 SEALED: unsealed, but held
   // by a cluster seal (or cut off from the seal records).
   let clusterHeld: boolean = $state(false);
-
-  /** Status refused with 503 SEALED: the gate is closed on an unsealed barrier. */
-  function isClusterHeldError(err: unknown): boolean {
-    // The SDK reduces the server's {"error":"barrier sealed","code":"SEALED"}
-    // body to its error text, so the refusal reads "...: barrier sealed".
-    return (
-      err instanceof TransportError &&
-      err.statusCode === 503 &&
-      (err.message.endsWith(": barrier sealed") || err.message.includes('"code":"SEALED"'))
-    );
-  }
 
   // Change passphrase form state (passphrase-held barriers).
   let cpCurrent: string = $state("");
@@ -224,25 +219,50 @@
   // Actions
   // ---------------------------------------------------------------------------
 
-  /** Fetches the current seal status from the server. */
+  /**
+   * The node barrier is unsealed (a sealed node answers status through its
+   * sealed-window listener), but a cluster seal holds the node or it cannot
+   * confirm the seal records: it answers no status question and admits only
+   * the authenticated cluster unseal. Offer that, with no record: only a
+   * serving node reports one. Reached from a REST 503 SEALED refusal and from
+   * the desktop binding's clusterHeld flag alike.
+   *
+   * A cluster seal can only hold a node with a keyed, initialized barrier, so
+   * the store is marked initialized too: App mounts this view alone for a node
+   * held at startup, where no status read ever filled the store, and the
+   * cluster unseal sits in the Seal card that needs an initialized barrier.
+   */
+  function enterClusterHeld(): void {
+    sealStore.sealed = false;
+    sealStore.initialized = true;
+    clusterHeld = true;
+    clusterSeal = { active: true, sealed: true, epoch: 0 };
+    clusterMigration = null;
+  }
+
+  /**
+   * Fetches the current seal status from the server. A read that is no longer
+   * held after a held one means the cluster seal released this node, whoever
+   * cleared it (this page, another node or the CLI): onClusterReleased fires
+   * once on that transition, never on ordinary polls of a node never held.
+   */
   async function fetchSealStatus(): Promise<void> {
     try {
       const status = await client.seal.status();
+      if (status.clusterHeld === true) {
+        // The desktop binding turns the 503 SEALED refusal into this flag.
+        enterClusterHeld();
+        return;
+      }
+      const released = clusterHeld;
       updateSealStatus(status);
       clusterSeal = status.clusterSeal ?? null;
       clusterMigration = status.clusterMigration ?? null;
       clusterHeld = false;
+      if (released) onClusterReleased?.();
     } catch (err: unknown) {
       if (isClusterHeldError(err)) {
-        // The node barrier is unsealed (a sealed node answers status through
-        // its sealed-window listener), but a cluster seal holds the node or
-        // it cannot confirm the seal records: it answers no status question
-        // and admits only the authenticated cluster unseal. Offer that, with
-        // no record: only a serving node reports one.
-        sealStore.sealed = false;
-        clusterHeld = true;
-        clusterSeal = { active: true, sealed: true, epoch: 0 };
-        clusterMigration = null;
+        enterClusterHeld();
         return;
       }
       const msg = err instanceof Error ? err.message : "Failed to fetch seal status";
@@ -321,6 +341,7 @@
       clusterUnsealLoading = true;
       clusterSeal = await client.seal.clusterUnseal();
       showToast("success", "Cluster seal cleared");
+      // A read that observes the release hands off to onClusterReleased.
       await fetchSealStatus();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to clear the cluster seal";
@@ -785,6 +806,7 @@
               type="password"
               class="input input-bordered input-sm"
               placeholder="Enter passphrase"
+              data-testid="unseal-passphrase"
               bind:value={passphraseInput}
               onkeydown={(e: KeyboardEvent) => {
                 if (e.key === "Enter") void handleSubmitPassphrase();
@@ -811,7 +833,10 @@
     <div class="card bg-base-200 shadow">
       <div class="card-body">
         <h2 class="card-title text-lg">Seal</h2>
-        {#if isShamir}
+        <!-- A cluster-held node admits only the cluster unseal: no node seal. -->
+        {#if clusterHeld}
+          <!-- The cluster seal status below offers the clear. -->
+        {:else if isShamir}
           <!-- A single admin cannot seal a Shamir barrier: the server refuses
                it. A quorum of holders seals it from the CLI or the desktop app. -->
           <p class="text-base-content/70 text-sm" data-testid="seal-quorum-note">

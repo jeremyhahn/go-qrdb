@@ -56,7 +56,7 @@ async function injectStatefulTimeSeriesBinding(
 
     interface TSSetRetentionRequest {
       metric: string;
-      days: number;
+      policy?: { duration_ns?: number };
     }
 
     interface TSListMetricsRequest {
@@ -152,11 +152,12 @@ async function injectStatefulTimeSeriesBinding(
         },
         GetRetention: async (req: TSGetRetentionRequest) => {
           maybeReject("TimeSeriesBinding.GetRetention");
-          return { days: retentionStore.get(req.metric) ?? 0 };
+          // As the Go binding: an unset policy is an empty one, not null.
+          return { policy: { durationNs: retentionStore.get(req.metric) ?? 0 } };
         },
         SetRetention: async (req: TSSetRetentionRequest) => {
           maybeReject("TimeSeriesBinding.SetRetention");
-          retentionStore.set(req.metric, req.days);
+          retentionStore.set(req.metric, req.policy?.duration_ns ?? 0);
         },
         ListMetrics: async (req: TSListMetricsRequest) => {
           maybeReject("TimeSeriesBinding.ListMetrics");

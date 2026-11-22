@@ -402,6 +402,13 @@ export interface AdminClient {
      * the server's default TTL.
      */
     mintJoinToken(nodeId: string, ttlSeconds?: number): Promise<MintJoinTokenResponse>;
+    /**
+     * Reports whether this connection can mint join tokens: true on every
+     * authenticated remote transport; on the desktop binding, true only
+     * when the active connection is an authenticated external (remote)
+     * one, never the unauthenticated embedded server.
+     */
+    joinTokenMintable(): Promise<boolean>;
 
     /**
      * Adds a new replica to the specified shard.

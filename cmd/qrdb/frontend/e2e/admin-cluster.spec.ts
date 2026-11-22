@@ -424,6 +424,20 @@ test.describe("Admin - Cluster", () => {
     await expect(card.getByRole("button", { name: "Save Compaction" })).toBeEnabled();
   });
 
+  // admin.setNodeCompaction compacts only keys outside every database
+  // namespace; it is never a fallback for databases, whose history only their
+  // own policy compacts. The card must not claim otherwise.
+  test("node compaction card describes the node keyspace scope", async ({ page }) => {
+    await navigateToCluster(page);
+
+    const card = page.getByTestId("node-compaction-card");
+    await expect(card).toContainText("keys outside every database namespace", {
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(card).toContainText("Database history is compacted only by each database's own policy");
+    await expect(card).not.toContainText("database without its own policy");
+  });
+
   test("node compaction saves a revision policy and reloads it", async ({ page }) => {
     await navigateToCluster(page);
 
@@ -507,7 +521,25 @@ test.describe("Admin - Cluster", () => {
   // covers minting over REST.
   // -------------------------------------------------------------------------
 
-  test("desktop shows the join token note instead of the form", async ({ page }) => {
+  test("desktop over a remote connection mints a join token", async ({ page }) => {
+    // The active desktop profile is an authenticated external connection:
+    // AdminBinding.JoinTokenMintable reports true and the form is offered.
+    await page.addInitScript(() => {
+      (window as unknown as Record<string, unknown>).__QRDB_MOCK_REMOTE__ = true;
+    });
+    await navigateToCluster(page);
+
+    const card = page.getByTestId("join-token-card");
+    await expect(card.getByRole("button", { name: "Mint Token" })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(card.getByTestId("join-token-desktop-note")).toHaveCount(0);
+    await card.getByLabel("Join node ID").fill("node-9");
+    await card.getByRole("button", { name: "Mint Token" }).click();
+    await expect(card).toContainText("mock-join-token-node-9", { timeout: LOAD_TIMEOUT });
+  });
+
+  test("desktop over the embedded connection shows the join token note instead of the form", async ({ page }) => {
     await navigateToCluster(page);
 
     const card = page.getByTestId("join-token-card");

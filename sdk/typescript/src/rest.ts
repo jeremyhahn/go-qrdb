@@ -358,7 +358,7 @@ async function requestJSON<T>(
     path: string,
     init?: RequestInit,
     camel = true,
-): Promise<T> {
+)): Promise<T> {
     const url = baseUrl + path;
     const method = init?.method ?? 'GET';
     let resp: Response;
@@ -815,6 +815,9 @@ export class RestClient implements Client {
                     ...jsonBody({ node_id: nodeId, ttl_seconds: ttlSeconds ?? 0 }),
                 });
             },
+            // REST is an authenticated remote transport: the server
+            // authorizes the mint itself.
+            joinTokenMintable: async (): Promise<boolean> => true,
             addMember: async (
                 shardId: number,
                 replicaId: number,
@@ -1410,7 +1413,7 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 await this.fetchVoid('/ts/write', {
                     method: 'POST',
-                    ...jsonBody({
+                    ...wireBody({
                         metric: point.metric,
                         value: point.value,
                         timestamp: point.timestampNs,
@@ -1422,7 +1425,7 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 await this.fetchVoid('/ts/write-batch', {
                     method: 'POST',
-                    ...jsonBody({
+                    ...wireBody({
                         points: points.map((p) => ({
                             metric: p.metric,
                             value: p.value,
@@ -1437,7 +1440,7 @@ export class RestClient implements Client {
                 const tagsStr = req.tags
                     ? req.tags.map((t) => `${t.key}=${t.value}`).join(',')
                     : undefined;
-                const raw = await this.fetchJSON<{ points: RawTSPoint[] | null }>(`/ts/query${buildQuery({
+                const raw = await this.fetchRawJSON<{ points: RawTSPoint[] | null }>(`/ts/query${buildQuery({
                         metric: req.metric,
                         start_ns: req.startNs,
                         end_ns: req.endNs,
@@ -1472,7 +1475,7 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 await this.fetchVoid('/ts/write', {
                     method: 'POST',
-                    ...jsonBody({
+                    ...wireBody({
                         metric: point.metric,
                         value: point.value,
                         timestamp: point.timestampNs,
@@ -1482,19 +1485,22 @@ export class RestClient implements Client {
             },
             richQuery: async (req: TSRichQueryRequest): Promise<TSRichQueryResponse> => {
                 this.ensureConnected();
-                const raw = await this.fetchJSON<{
+                // Tag names are user data: send and read them verbatim
+                // (wireBody / fetchRawJSON), never through the SDK's
+                // camelCase <-> snake_case key conversion.
+                const raw = await this.fetchRawJSON<{
                     metric: string;
                     tags?: Record<string, string>;
                     points: RawTSPoint[] | null;
-                    aggregatedValue?: number;
-                    groupedResults?: {
+                    aggregated_value?: number;
+                    grouped_results?: {
                         tags: Record<string, string> | null;
                         points?: RawTSPoint[] | null;
-                        aggregatedValue?: number;
+                        aggregated_value?: number;
                     }[] | null;
                 }>('/ts/query-rich', {
                     method: 'POST',
-                    ...jsonBody({
+                    ...wireBody({
                         metric: req.metric,
                         tags: tagsArrayToMap(req.tags),
                         start_ns: req.startNs,
@@ -1510,11 +1516,11 @@ export class RestClient implements Client {
                     metric: raw.metric,
                     tags: tagsMapToArray(raw.tags),
                     points: (raw.points ?? []).map(rawTSPointToPoint),
-                    aggregatedValue: raw.aggregatedValue,
-                    groupedResults: (raw.groupedResults ?? []).map((g) => ({
+                    aggregatedValue: raw.aggregated_value,
+                    groupedResults: (raw.grouped_results ?? []).map((g) => ({
                         tags: tagsMapToArray(g.tags ?? undefined),
                         points: (g.points ?? []).map(rawTSPointToPoint),
-                        aggregatedValue: g.aggregatedValue,
+                        aggregatedValue: g.aggregated_value,
                     })),
                 };
             },
@@ -3193,6 +3199,11 @@ export class RestClient implements Client {
     /** Database-scope-aware wrapper over {@link requestJSON}. */
     private fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
         return requestJSON<T>(this.baseUrl, path, this.scopedInit(path, init));
+    }
+
+    /** fetchJSON without response key conversion (user-keyed maps). */
+    private fetchRawJSON<T>(path: string, init?: RequestInit): Promise<T> {
+        return requestJSON<T>(this.baseUrl, path, this.scopedInit(path, init), false);
     }
 
     /**

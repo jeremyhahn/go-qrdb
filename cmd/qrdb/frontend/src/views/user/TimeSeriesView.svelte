@@ -107,6 +107,14 @@
     "Last",
   ] as const;
 
+  // The AggFunc values every transport accepts: the REST handler's aggFuncMap
+  // (pkg/api/rest/handlers_timeseries.go) knows avg, sum, min, max, count and
+  // percentile only, so the menus offer those (First and Last would be a 400).
+  const SUPPORTED_AGG_FUNCS: readonly number[] = [1, 2, 3, 4, 5, 6];
+  // Rich query and retention may also run without an aggregation (0, "None",
+  // which the request omits); the aggregate card always needs one.
+  const OPTIONAL_AGG_FUNCS: readonly number[] = [0, ...SUPPORTED_AGG_FUNCS];
+
   // Aggregate card
   let aggFunction: number = $state(1);
   let aggInterval: string = $state("1m");
@@ -143,6 +151,13 @@
   let retention: RetentionView | null = $state(null);
   let retentionLoaded: boolean = $state(false);
   let retentionLoading: boolean = $state(false);
+  // The last retention lookup's failure; "" once one succeeds. Distinct from
+  // retention === null, which means the server has no policy.
+  let retentionError: string = $state("");
+  // Bumped whenever the detail view changes metric (open or back): a
+  // response, error or loading update from a request started under an older
+  // generation belongs to a metric no longer shown and is dropped.
+  let metricGen = 0;
   let retDuration: string = $state("7d");
   let retResolution: string = $state("");
   let retAggregation: number = $state(0);
@@ -310,11 +325,18 @@
   // ---------------------------------------------------------------------------
 
   async function loadRetention(metric: string): Promise<void> {
+    const gen = metricGen;
     retentionLoading = true;
     retentionLoaded = false;
+    retentionError = "";
     try {
       const resp = await client.timeSeries!.getRetention({ metric });
-      const p = resp?.policy ?? null;
+      if (gen !== metricGen) return;
+      // The engine answers an unset policy with an empty one (duration 0),
+      // which the embedded transport and the Wails binding pass through; REST
+      // already reports none. A zero or absent duration is no policy.
+      const raw = resp?.policy ?? null;
+      const p = raw !== null && (raw.durationNs ?? 0) > 0 ? raw : null;
       retention = p === null
         ? null
         : {
@@ -324,10 +346,14 @@
           };
       retentionLoaded = true;
     } catch (err: unknown) {
+      if (gen !== metricGen) return;
+      // Not "no policy": the server may well have one the client could not
+      // read. The card shows the failure with a retry until a lookup succeeds.
       showToast("error", errMessage(err));
       retention = null;
+      retentionError = errMessage(err);
     } finally {
-      retentionLoading = false;
+      if (gen === metricGen) retentionLoading = false;
     }
   }
 
@@ -344,6 +370,7 @@
       return;
     }
     const metric = selectedMetric;
+    const gen = metricGen;
     retentionLoading = true;
     try {
       await client.timeSeries!.setRetention({
@@ -357,18 +384,25 @@
       showToast("success", `Retention set for "${metric}".`);
     } catch (err: unknown) {
       showToast("error", errMessage(err));
-      retentionLoading = false;
+      if (gen === metricGen) retentionLoading = false;
       return;
     }
+    if (gen !== metricGen) return;
     await loadRetention(metric);
   }
 
+  /** Clears the per-metric cards and invalidates every pending request. */
   function resetMetricCards(): void {
+    metricGen++;
     aggResults = [];
     aggRan = false;
+    aggLoading = false;
     rqResult = null;
+    rqLoading = false;
     retention = null;
     retentionLoaded = false;
+    retentionLoading = false;
+    retentionError = "";
   }
 
   async function runRichQuery(): Promise<void> {
@@ -390,6 +424,7 @@
     }
     const tags = parseTags(rqTags);
     const groupBy = rqGroupBy.split(",").map((s) => s.trim()).filter((s) => s !== "");
+    const gen = metricGen;
     rqLoading = true;
     try {
       const resp = await client.timeSeries!.richQuery({
@@ -403,6 +438,7 @@
         ...(limit !== null ? { limit } : {}),
         ...(percentile !== null ? { percentile } : {}),
       });
+      if (gen !== metricGen) return;
       rqResult = {
         points: resp?.points ?? [],
         ...(resp?.aggregatedValue !== undefined ? { aggregatedValue: resp.aggregatedValue } : {}),
@@ -413,10 +449,11 @@
         })),
       };
     } catch (err: unknown) {
+      if (gen !== metricGen) return;
       showToast("error", errMessage(err));
       rqResult = null;
     } finally {
-      rqLoading = false;
+      if (gen === metricGen) rqLoading = false;
     }
   }
 
@@ -427,6 +464,7 @@
       showToast("warning", "Interval must be a duration like 30s, 5m, 1h or 1d.");
       return;
     }
+    const gen = metricGen;
     aggLoading = true;
     try {
       const resp = await client.timeSeries!.aggregate({
@@ -436,6 +474,7 @@
         function: aggFunction as AggFunc,
         ...(intervalNs !== null ? { intervalNs } : {}),
       });
+      if (gen !== metricGen) return;
       aggResults = (resp?.results ?? []).map((r) => ({
         timestampNs: r.timestampNs,
         value: r.value,
@@ -443,10 +482,11 @@
       }));
       aggRan = true;
     } catch (err: unknown) {
+      if (gen !== metricGen) return;
       showToast("error", errMessage(err));
       aggResults = [];
     } finally {
-      aggLoading = false;
+      if (gen === metricGen) aggLoading = false;
     }
   }
 
@@ -479,7 +519,7 @@
   }
 
   async function loadDataPoints(metric: string): Promise<void> {
-
+    const gen = metricGen;
     pointsLoading = true;
     try {
       const resp = await client.timeSeries!.query({
@@ -487,6 +527,7 @@
         startNs: rangeStartMs * 1_000_000,
         endNs: rangeEndMs * 1_000_000,
       });
+      if (gen !== metricGen) return;
       const points = resp?.points ?? [];
       dataPoints = points.map((dp) => ({
         metric: dp.metric,
@@ -495,10 +536,11 @@
         tags: dp.tags ?? [],
       }));
     } catch (err: unknown) {
+      if (gen !== metricGen) return;
       showToast("error", err instanceof Error ? err.message : String(err));
       dataPoints = [];
     } finally {
-      pointsLoading = false;
+      if (gen === metricGen) pointsLoading = false;
     }
   }
 
@@ -506,6 +548,7 @@
     selectedMetric = null;
     dataPoints = [];
     selectedPoint = null;
+    pointsLoading = false;
     resetMetricCards();
   }
 
@@ -518,6 +561,8 @@
     writeBatchText = "";
     showWritePanel = true;
   }
+
+  const INT64_MAX = BigInt("9223372036854775807");
 
   /**
    * Parses batch lines of the form `timestamp,value[,k=v;k=v]`. Returns the
@@ -535,13 +580,29 @@
       }
       const tsRaw = (parts[0] ?? "").trim();
       if (!/^\d+$/.test(tsRaw)) return `Line ${i + 1}: timestamp must be Unix nanoseconds.`;
-      const value = parseFloat((parts[1] ?? "").trim());
-      if (Number.isNaN(value)) return `Line ${i + 1}: value must be a valid number.`;
+      // The binding sends a JavaScript number as JSON, exact only to 2^53:
+      // adjacent nanoseconds can round to one value and overwrite each other
+      // in storage, and a value exact in binary (1700000000000000256) can
+      // still serialize to another decimal (1700000000000000300). Compare
+      // the decimal the wire carries with the input and reject any change.
+      const exactNs = BigInt(tsRaw);
+      if (exactNs > INT64_MAX) return `Line ${i + 1}: timestamp is out of range.`;
+      const timestampNs = Number(tsRaw);
+      const wireNs = JSON.stringify(timestampNs);
+      if (wireNs !== exactNs.toString()) {
+        return `Line ${i + 1}: timestamp ${exactNs} cannot be represented exactly (nearest is ${wireNs}).`;
+      }
+      // The whole field must be a finite number: parseFloat would take the
+      // prefix of "12oops", and "1e309" overflows to Infinity, which JSON
+      // sends as null (stored as 0).
+      const valueRaw = (parts[1] ?? "").trim();
+      const value = valueRaw === "" ? NaN : Number(valueRaw);
+      if (!Number.isFinite(value)) return `Line ${i + 1}: value must be a valid number.`;
       const tags = parts.length === 3 ? parseTags((parts[2] ?? "").replaceAll(";", ",")) : [];
       points.push({
         metric,
         value,
-        timestampNs: parseInt(tsRaw, 10),
+        timestampNs,
         ...(tags.length > 0 ? { tags } : {}),
       });
     }
@@ -886,8 +947,8 @@
             bind:value={aggFunction}
             data-testid="ts-agg-function"
           >
-            {#each AGG_FUNC_NAMES as name, i (name)}
-              <option value={i}>{name}</option>
+            {#each SUPPORTED_AGG_FUNCS as fn (fn)}
+              <option value={fn}>{AGG_FUNC_NAMES[fn]}</option>
             {/each}
           </select>
         </label>
@@ -968,8 +1029,8 @@
             bind:value={rqAggregation}
             data-testid="ts-rich-aggregation"
           >
-            {#each AGG_FUNC_NAMES as name, i (name)}
-              <option value={i}>{name}</option>
+            {#each OPTIONAL_AGG_FUNCS as fn (fn)}
+              <option value={fn}>{AGG_FUNC_NAMES[fn]}</option>
             {/each}
           </select>
         </label>
@@ -1078,6 +1139,17 @@
       <div class="mb-3 text-sm" data-testid="ts-retention-current">
         {#if retentionLoading && !retentionLoaded}
           <span class="loading loading-spinner loading-xs"></span>
+        {:else if retentionError !== ""}
+          <div class="flex items-center gap-2 text-error" data-testid="ts-retention-error">
+            <span>Current policy unavailable: {retentionError}</span>
+            <button
+              class="btn btn-ghost btn-xs"
+              data-testid="ts-retention-retry"
+              onclick={() => { if (selectedMetric !== null) void loadRetention(selectedMetric); }}
+            >
+              Retry
+            </button>
+          </div>
         {:else if retention === null}
           <span data-testid="ts-retention-none">Current policy: none</span>
         {:else}
@@ -1129,8 +1201,8 @@
             bind:value={retAggregation}
             data-testid="ts-retention-aggregation-input"
           >
-            {#each AGG_FUNC_NAMES as name, i (name)}
-              <option value={i}>{name}</option>
+            {#each OPTIONAL_AGG_FUNCS as fn (fn)}
+              <option value={fn}>{AGG_FUNC_NAMES[fn]}</option>
             {/each}
           </select>
         </label>

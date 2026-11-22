@@ -1894,6 +1894,13 @@ export interface SealStatus {
      * does not report it. Tenant and database barrier status never carry it.
      */
     readonly clusterMigration?: ClusterMigration;
+    /**
+     * True only from the desktop (Wails) binding when the node refused status
+     * with 503 SEALED: its own barrier is unsealed, but a cluster seal holds
+     * it, so only the cluster unseal is admitted. Over HTTP the same refusal
+     * surfaces as a TransportError instead.
+     */
+    readonly clusterHeld?: boolean;
 }
 
 /**

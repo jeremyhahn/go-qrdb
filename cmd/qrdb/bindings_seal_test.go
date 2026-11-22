@@ -548,7 +548,9 @@ func TestSealBinding_Status_SealedRefusalIsInitializedAndSealed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	want := SealStatus{Sealed: true, Initialized: true}
+	// ClusterHeld keeps the refusal distinct from a sealed barrier's answer,
+	// so the Seal Manager offers the cluster unseal, not a local unseal.
+	want := SealStatus{Sealed: true, Initialized: true, ClusterHeld: true}
 	if *status != want {
 		t.Fatalf("Status = %+v, want %+v", *status, want)
 	}
@@ -570,8 +572,8 @@ func TestSealBinding_Status_SealedInitializedAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if !status.Initialized || !status.Sealed {
-		t.Fatalf("Status = %+v, want sealed and initialized", *status)
+	if !status.Initialized || !status.Sealed || status.ClusterHeld {
+		t.Fatalf("Status = %+v, want sealed and initialized, not cluster-held", *status)
 	}
 }
 

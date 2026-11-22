@@ -20,6 +20,7 @@ import {
   injectError,
   clearError,
 } from "./fixtures/wails-mock.ts";
+import { webTest, defaultWebMockState } from "./fixtures/web-mode-mock.ts";
 import type { Page } from "@playwright/test";
 
 /** Timeout for async operations. */
@@ -470,6 +471,37 @@ test.describe("Admin - Seal Manager: cluster seal, passphrase and ceremony", () 
     },
   };
 
+  // A node the cluster seal holds refuses status with 503 SEALED; the desktop
+  // binding answers {sealed: true, initialized: true, clusterHeld: true} with
+  // no record. The view must offer the cluster unseal, not a local unseal.
+  test.describe("cluster-held node through the desktop binding", () => {
+    test.use({
+      mockState: {
+        ...passphraseState,
+        // The node's own barrier: passphrase-held and unsealed. The mock's
+        // SealBinding.Status withholds all of it while clusterHeld is set.
+        sealStatus: {
+          ...passphraseState.sealStatus,
+          sealed: false,
+          clusterHeld: true,
+        },
+      },
+    });
+
+    test("offers Clear Cluster Seal, not a passphrase unseal", async ({ page }) => {
+      await navigateToSealManager(page);
+      await expect(page.getByTestId("cluster-seal-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("unseal-passphrase")).toHaveCount(0);
+
+      await page.getByTestId("cluster-unseal-btn").click();
+
+      const status = page.getByTestId("cluster-seal-status");
+      await expect(status).toContainText("record clear (epoch 1)", { timeout: LOAD_TIMEOUT });
+      await expect(status).toContainText("this node is serving");
+      await expect(page.getByTestId("cluster-seal-held")).toHaveCount(0);
+    });
+  });
+
   test.describe("cluster seal record", () => {
     test.use({
       mockState: {
@@ -720,6 +752,121 @@ test.describe("Admin - Seal Manager: cluster seal, passphrase and ceremony", () 
       const alert = page.locator('[role="alert"]').filter({ hasText: "invalid SO PIN" });
       await expect(alert).toBeVisible({ timeout: 5_000 });
       await expect(card.getByTestId("csr-cert")).toHaveCount(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Web mode: a cluster-held node at startup (Codex #1612 round 2, P1)
+//
+// The daemon refuses GET /v1/barrier/status with 503 SEALED on an unsealed
+// node a cluster seal holds. The startup gate must route that to the Seal
+// Manager's cluster unseal, on a fresh load, on a reload, and after the App
+// unseal screen opened the node barrier, never to the startup error screen.
+// ---------------------------------------------------------------------------
+
+webTest.describe("Web mode - cluster-held node at startup", () => {
+  webTest.describe("held from the first request", () => {
+    webTest.use({
+      webMockState: { ...defaultWebMockState, clusterHeld: "always" },
+    });
+
+    webTest("routes to the cluster unseal, not the startup error", async ({ page }) => {
+      await page.goto("/");
+
+      await expect(page.getByTestId("app-cluster-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("cluster-seal-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("cluster-unseal-btn")).toBeVisible();
+      // A held node admits only the cluster unseal: no node seal is offered.
+      await expect(page.getByRole("button", { name: "Seal", exact: true })).toHaveCount(0);
+      await expect(page.getByText("Connection Error")).toHaveCount(0);
+
+      // A reload lands in the same place.
+      await page.reload();
+      await expect(page.getByTestId("cluster-seal-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("cluster-unseal-btn")).toBeVisible();
+      await expect(page.getByRole("button", { name: "Seal", exact: true })).toHaveCount(0);
+      await expect(page.getByText("Connection Error")).toHaveCount(0);
+
+      // Clearing the cluster seal lets the node serve: the app shell loads.
+      await page.getByTestId("cluster-unseal-btn").click();
+      await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+      await expect(page.getByTestId("app-cluster-held")).toHaveCount(0);
+    });
+
+    webTest("external release loads the app shell", async ({ page }) => {
+      await page.clock.install();
+      await page.goto("/");
+
+      await expect(page.getByTestId("app-cluster-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("cluster-seal-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+      // Another node or the CLI clears the record; this page clicks nothing.
+      await page.evaluate(async () => {
+        await fetch("/__mock/cluster-release", { method: "POST" });
+      });
+      // The next status poll observes the release.
+      await page.clock.runFor(5000);
+
+      await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+      await expect(page.getByTestId("app-cluster-held")).toHaveCount(0);
+    });
+  });
+
+  webTest.describe("released a status read after the clear", () => {
+    webTest.use({
+      webMockState: { ...defaultWebMockState, clusterHeld: "always", clusterHeldReadsAfterClear: 1 },
+    });
+
+    webTest("delayed release after clear", async ({ page }) => {
+      await page.clock.install();
+      await page.goto("/");
+
+      await expect(page.getByTestId("app-cluster-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await page.getByTestId("cluster-unseal-btn").click();
+
+      // The read right after the clear still answers 503 SEALED.
+      await expect(page.getByText("Cluster seal cleared")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("app-cluster-held")).toBeVisible();
+
+      // A later poll sees the release and the app shell loads.
+      await page.clock.runFor(5000);
+      await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+      await expect(page.getByTestId("app-cluster-held")).toHaveCount(0);
+    });
+  });
+
+  webTest.describe("held once the App unseal screen opens the node barrier", () => {
+    webTest.use({
+      webMockState: {
+        ...defaultWebMockState,
+        sealStatus: {
+          sealed: true,
+          initialized: true,
+          strategy: "passphrase",
+          hardware_backed: false,
+        },
+        clusterHeld: "after-unseal",
+      },
+    });
+
+    webTest("unseal then routes to the cluster unseal", async ({ page }) => {
+      await page.goto("/");
+
+      await expect(page.getByText("QRDB is Sealed")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await page.locator("#unseal-share").fill("correct horse battery staple");
+      await page.getByRole("button", { name: "Unseal" }).click();
+
+      await expect(page.getByTestId("cluster-seal-held")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("cluster-unseal-btn")).toBeVisible();
+      await expect(page.getByText("Connection Error")).toHaveCount(0);
+      await expect(page.getByText("QRDB is Sealed")).toHaveCount(0);
     });
   });
 });

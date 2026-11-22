@@ -74,6 +74,23 @@ export interface WebMockState {
    * single-node topology: Cluster nav shown, single-node wizard steps.
    */
   topology?: WebMockTopology;
+  /**
+   * A cluster seal holds the node: its barrier is unsealed, but GET
+   * /v1/barrier/status is refused with 503 {"error":"barrier sealed",
+   * "code":"SEALED"}, as the daemon's gate answers. "always" holds it from
+   * the first request; "after-unseal" holds it once POST /v1/barrier/unseal
+   * opened the node barrier (sealStatus is served until then). POST
+   * /v1/barrier/cluster-unseal releases the hold, as does a POST to the
+   * test-only /__mock/cluster-release (a release by another node or the CLI,
+   * outside this page).
+   */
+  clusterHeld?: "always" | "after-unseal";
+  /**
+   * How many further status reads still answer 503 SEALED after POST
+   * /v1/barrier/cluster-unseal cleared the record: the release reaches this
+   * node a little later. Unset or 0 releases the hold at once.
+   */
+  clusterHeldReadsAfterClear?: number;
 }
 
 /** A single-node (standalone) topology. */
@@ -154,15 +171,70 @@ export async function injectWebRestMock(
   await page.route("**/metrics", (route) => {
     void route.fulfill({ status: 200, contentType: "text/plain", body: "" });
   });
+  // Per-page barrier state: the fixture's state object is shared, so the
+  // unseal and cluster-unseal transitions live here.
+  let sealed = state.sealStatus.sealed;
+  let held = state.clusterHeld === "always";
+  let clusterEpoch = 0;
+  // Held status reads still owed after a clear, or null when none is pending.
+  let heldReadsAfterClear: number | null = null;
 
   // Intercept barrier status endpoint (used to probe seal state).
   await page.route("**/v1/barrier/status", (route) => {
+    if (held) {
+      if (heldReadsAfterClear !== null) {
+        heldReadsAfterClear -= 1;
+        if (heldReadsAfterClear <= 0) {
+          held = false;
+          heldReadsAfterClear = null;
+        }
+      }
+      void route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "barrier sealed", code: "SEALED" }),
+      });
+      return;
+    }
     void route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(state.sealStatus),
+      body: JSON.stringify({ ...state.sealStatus, sealed }),
     });
   });
+
+  if (state.clusterHeld !== undefined) {
+    // Passphrase unseal of the node barrier: 204, as the daemon answers.
+    await page.route("**/v1/barrier/unseal", (route) => {
+      sealed = false;
+      if (state.clusterHeld === "after-unseal") held = true;
+      void route.fulfill({ status: 204, body: "" });
+    });
+
+    // Authenticated cluster unseal: clears the record and releases the hold.
+    await page.route("**/v1/barrier/cluster-unseal", (route) => {
+      const delay = state.clusterHeldReadsAfterClear ?? 0;
+      if (held && delay > 0) {
+        heldReadsAfterClear = delay;
+      } else {
+        held = false;
+      }
+      clusterEpoch += 1;
+      void route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ active: true, sealed: false, epoch: clusterEpoch, local: "serving" }),
+      });
+    });
+
+    // Test-only hook: the hold is released outside this page (another node
+    // or the CLI cleared the record). The page learns of it only by polling.
+    await page.route("**/__mock/cluster-release", (route) => {
+      held = false;
+      heldReadsAfterClear = null;
+      void route.fulfill({ status: 204, body: "" });
+    });
+  }
 
   // Intercept database list endpoint.
   await page.route("**/v1/databases/list", (route) => {

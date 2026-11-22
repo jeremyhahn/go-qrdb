@@ -80,7 +80,20 @@
   // Join token state
   // ---------------------------------------------------------------------------
 
-  const desktop = isDesktop();
+  // Join tokens are minted only over an authenticated remote connection:
+  // every browser transport is one; on the desktop the binding reports
+  // whether the active profile is external (remote) or the embedded server.
+  let joinMintable = $state(!isDesktop());
+  $effect(() => {
+    void client.admin
+      .joinTokenMintable()
+      .then((ok) => {
+        joinMintable = ok;
+      })
+      .catch(() => {
+        joinMintable = false;
+      });
+  });
   let joinNodeId: string = $state("");
   let joinTtlSeconds: string | number | null = $state("");
   let joinLoading: boolean = $state(false);
@@ -546,8 +559,10 @@
       <div class="card-body">
         <h2 class="card-title text-lg">Node Compaction</h2>
         <p class="text-base-content/70 text-sm">
-          The node-wide MVCC history compaction policy, applied to every
-          database without its own policy.
+          The MVCC history compaction policy for the node keyspace: the
+          keys outside every database namespace. Database history is
+          compacted only by each database's own policy; set that on the
+          database.
         </p>
         {#if compactionLoading}
           <div class="flex justify-center py-4">
@@ -612,7 +627,7 @@
     <div class="card bg-base-200 shadow" data-testid="join-token-card">
       <div class="card-body">
         <h2 class="card-title text-lg">Mint Join Token</h2>
-        {#if desktop}
+        {#if !joinMintable}
           <div class="alert alert-info mt-2" data-testid="join-token-desktop-note">
             <span class="text-sm">
               Join tokens are minted over an authenticated remote connection.
