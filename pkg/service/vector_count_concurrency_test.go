@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -182,5 +184,57 @@ func TestVectorCountMetric_ConcurrentOverlappingBatchesCountEachIDOnce(t *testin
 			require.Equal(t, float64(8), storedVectors(t, storage))
 			assert.Equal(t, storedVectors(t, storage), tenantGauge(t, reg, "qrdb_vector_vector_count", "tenant-c"))
 		})
+	}
+}
+
+// TestVectorCountMetric_LocalSingleIDWritesCountOnceUnderAWideRace widens the
+// window between a local write's stored read and its storage write: the read
+// yields the processor several times before it returns. Without the
+// per-namespace write lock, writers of one id would all read it as absent (or
+// present) and each move the gauge; with it, each id moves the gauge once.
+func TestVectorCountMetric_LocalSingleIDWritesCountOnceUnderAWideRace(t *testing.T) {
+	reg := isolatedRegistry(t)
+	storage := newMockVectorStorage()
+	storage.getVectorFn = func(_ context.Context, namespace string, id uint64) (*vector.VectorValue, error) {
+		storage.mu.RLock()
+		_, nsExists := storage.namespaces[namespace]
+		vec, exists := storage.vectors[namespace][id]
+		storage.mu.RUnlock()
+		for i := 0; i < 8; i++ {
+			runtime.Gosched()
+		}
+		if !nsExists {
+			return nil, vector.ErrNamespaceNotFound
+		}
+		if !exists {
+			return nil, vector.ErrVectorNotFound
+		}
+		return vec, nil
+	}
+	svc, err := NewVectorService(storage, newMockLogger())
+	require.NoError(t, err)
+	_, err = svc.CreateNamespace(concurrencyCtx(), &CreateNamespaceRequest{Namespace: "conc", Dimension: 2})
+	require.NoError(t, err)
+
+	const rounds = 20
+	for i := 0; i < rounds; i++ {
+		id := uint64(1000 + i)
+		runTogether(t, concurrentWriters, func(int) error {
+			_, err := svc.UpsertVector(concurrencyCtx(), &UpsertVectorRequest{Namespace: "conc", ID: id, Vector: []float32{1, 1}})
+			return err
+		})
+		require.Equal(t, float64(i+1), storedVectors(t, storage))
+		require.Equal(t, storedVectors(t, storage), tenantGauge(t, reg, "qrdb_vector_vector_count", "tenant-c"), "upsert round %d", i)
+	}
+	for i := 0; i < rounds; i++ {
+		id := uint64(1000 + i)
+		runTogether(t, concurrentWriters, func(int) error {
+			// A delete that loses the race finds the id gone; the
+			// storage may refuse it, which is not what is under test.
+			_, _ = svc.DeleteVector(concurrencyCtx(), &DeleteVectorRequest{Namespace: "conc", ID: id})
+			return nil
+		})
+		require.Equal(t, float64(rounds-i-1), storedVectors(t, storage))
+		require.Equal(t, storedVectors(t, storage), tenantGauge(t, reg, "qrdb_vector_vector_count", "tenant-c"), "delete round %d", i)
 	}
 }
