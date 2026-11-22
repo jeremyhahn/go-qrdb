@@ -39,6 +39,7 @@ var (
 	_ service.MVCCKVServicer          = (*quotaMVCCService)(nil)
 	_ service.CompactionPolicyHolder  = (*quotaMVCCService)(nil)
 	_ service.RevisionHistoryReporter = (*quotaMVCCService)(nil)
+	_ service.PrefixMover             = (*quotaMVCCService)(nil)
 )
 
 // newQuotaMVCCService wraps inner with storage-byte quota enforcement for the
@@ -62,6 +63,34 @@ func (s *quotaMVCCService) PutWithLease(ctx context.Context, key string, value [
 		return nil, err
 	}
 	return kv, nil
+}
+
+// MovePrefix admits only the value bytes of the request's extra puts, then
+// forwards to the inner service's server-side move
+// (*service.PrefixMoveUnsupportedError when it has none), releasing the
+// reservation when the move fails. The moved bytes are not charged again:
+// they were charged when they were staged (Q5 A of
+// docs/decisions/sqlite-vfs-build.md), and their source keys are deleted at
+// the same revision. Destination bytes the move overwrites are not credited,
+// as deletes are not credited (quotaTransactionService).
+func (s *quotaMVCCService) MovePrefix(ctx context.Context, req *service.MovePrefixRequest) (int64, error) {
+	mover, ok := s.mvcc.(service.PrefixMover)
+	if !ok {
+		return 0, &service.PrefixMoveUnsupportedError{}
+	}
+	n := 0
+	if req != nil {
+		n = opPutBytes(req.Ops)
+	}
+	if err := s.reserve(ctx, n); err != nil {
+		return 0, err
+	}
+	rev, err := mover.MovePrefix(ctx, req)
+	if err != nil {
+		s.acct.Release(s.tenantID, int64(n))
+		return 0, err
+	}
+	return rev, nil
 }
 
 // PutWithLeaseAndMode accounts len(value) bytes after admitting the write.

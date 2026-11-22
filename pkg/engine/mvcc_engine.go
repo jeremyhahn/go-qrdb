@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
@@ -950,6 +951,7 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 		protocol.OpGuarded:           e.handleGuarded,
 		protocol.OpBatch:             e.handleBatch,
 		protocol.OpDeleteRange:       e.handleDeleteRange,
+		protocol.OpMVCCMovePrefix:    e.handleMovePrefix,
 		protocol.OpLeaseGrant:        handleLeaseGrant,
 		protocol.OpLeaseRevoke:       e.handleLeaseRevoke,
 		protocol.OpLeaseKeepAlive:    handleLeaseKeepAlive,
@@ -2011,10 +2013,62 @@ func (e *MVCCEngine) handleDeleteRange(s *mvcc.Store, lr *lease.Lessor, batch st
 	return e.applyDecodedBatch(s, lr, batch, deleteRangeOps(protocol.OpMVCCDelete, keys))
 }
 
+// handleMovePrefix applies protocol.OpMVCCMovePrefix, the sqlite-vfs
+// staged-commit publish (Q2 A, ruling 1115): at ONE new revision it puts the
+// value of every live key under src at dst + (key without src), with no
+// lease, deletes the src key, and applies the extra puts and single-key
+// deletes after them (a later op on the same key wins, as in a batch). The
+// source keys are read through the batch at apply, as handleDeleteRange's
+// are, so every replica moves the same set. A live count that differs from
+// the expected count writes nothing and answers AppErrorConflict: the move
+// names no keys, so the count is what makes a source key with no live value
+// fail the whole publish. Everything is staged by applyDecodedBatch, so the
+// reserved-key, vector-namespace and unique-index refusals, history and one
+// watch event per key hold as for a batch.
+func (e *MVCCEngine) handleMovePrefix(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+	src, dst, expected, extra, err := protocol.DecodeMVCCMovePrefix(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	if res, refused := statemachine.ReservedKeyRefusal(append([][]byte{src, dst}, statemachine.OpKeys(extra)...)...); refused {
+		return res, nil, nil
+	}
+	if bytes.HasPrefix(src, dst) || bytes.HasPrefix(dst, src) {
+		return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorInvalid,
+			"move prefix: source and destination prefixes overlap")}, nil, nil
+	}
+	for _, op := range extra {
+		if (op.Type != protocol.OpMVCCPut && op.Type != protocol.OpMVCCDelete) || len(op.RangeEnd) > 0 {
+			return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorInvalid,
+				"move prefix: an extra op must be a put or a single-key delete")}, nil, nil
+		}
+	}
+	kvs, _, _, err := s.RangeInBatchAt(batch, s.CurrentRevision(), src, storage.PrefixEnd(src))
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	ops := make([]protocol.DecodedOp, 0, 2*len(kvs)+len(extra))
+	for _, kv := range kvs {
+		if statemachine.IsReservedKey(kv.Key) || vector.IsForgedKey(kv.Key) {
+			continue
+		}
+		moved := make([]byte, 0, len(dst)+len(kv.Key)-len(src))
+		moved = append(append(moved, dst...), kv.Key[len(src):]...)
+		ops = append(ops,
+			protocol.DecodedOp{Type: protocol.OpMVCCPut, Key: moved, Value: kv.Value},
+			protocol.DecodedOp{Type: protocol.OpMVCCDelete, Key: append([]byte(nil), kv.Key...)})
+	}
+	if got := int64(len(ops) / 2); got != expected {
+		return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorConflict,
+			fmt.Sprintf("move prefix: %d live keys under the source, expected %d", got, expected))}, nil, nil
+	}
+	return e.applyDecodedBatch(s, lr, batch, append(ops, extra...))
+}
+
 // applyDecodedBatch applies a decoded operation set atomically at one new
 // revision. Every refusal is asked before anything is staged, so a refused
-// set leaves the batch untouched. It is the single body behind OpBatch and
-// OpDeleteRange.
+// set leaves the batch untouched. It is the single body behind OpBatch,
+// OpDeleteRange and OpMVCCMovePrefix.
 func (e *MVCCEngine) applyDecodedBatch(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, ops []protocol.DecodedOp) (sm.Result, []Notification, error) {
 	if res, refused := statemachine.ReservedKeyRefusal(statemachine.OpKeys(ops)...); refused {
 		return res, nil, nil

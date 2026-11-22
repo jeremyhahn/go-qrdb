@@ -52,6 +52,7 @@ type hardConfinedMVCC struct {
 var (
 	_ CompactionPolicyHolder  = (*hardConfinedMVCC)(nil)
 	_ RevisionHistoryReporter = (*hardConfinedMVCC)(nil)
+	_ PrefixMover             = (*hardConfinedMVCC)(nil)
 )
 
 // NewHardConfinedMVCC wraps svc, or returns nil unchanged so a resolver
@@ -80,6 +81,30 @@ func (h *hardConfinedMVCC) CompactionPolicy(ctx context.Context) (*compaction.Po
 		return nil, nil
 	}
 	return p.CompactionPolicy(ctx)
+}
+
+// MovePrefix refuses, with *HardConfinedKeyError, a prefix move whose source
+// or destination could reach a hard-confined key, or whose extra op names
+// one, and otherwise forwards to the inner servicer's MovePrefix
+// (*PrefixMoveUnsupportedError when it has none).
+func (h *hardConfinedMVCC) MovePrefix(ctx context.Context, req *MovePrefixRequest) (int64, error) {
+	if req != nil {
+		for _, p := range []string{req.Src, req.Dst} {
+			if hardConfinedPrefixOverlaps(p) {
+				return 0, &HardConfinedKeyError{Key: p}
+			}
+		}
+		for _, op := range req.Ops {
+			if isHardConfinedKey(string(op.Key)) {
+				return 0, &HardConfinedKeyError{Key: string(op.Key)}
+			}
+		}
+	}
+	mover, ok := h.mvcc.(PrefixMover)
+	if !ok {
+		return 0, &PrefixMoveUnsupportedError{}
+	}
+	return mover.MovePrefix(ctx, req)
 }
 
 // SetCompactionPolicy forwards to the wrapped servicer.

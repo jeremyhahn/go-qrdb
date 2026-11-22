@@ -850,6 +850,92 @@ type PrefixCompactor interface {
 // Compile-time interface check.
 var _ PrefixCompactor = (*MVCCKVService)(nil)
 
+// PrefixMover publishes a staged set of keys by moving them, server side, at
+// one revision: the sqlite-vfs staged-commit publish (Q2 A of
+// docs/decisions/sqlite-vfs-build.md, Tenant Agent ruling 1115). The
+// namespace, hard-confinement and quota wrappers rewrite it; a wrapper whose
+// inner servicer has none answers *PrefixMoveUnsupportedError rather than
+// falling back to per-key writes.
+type PrefixMover interface {
+	// MovePrefix moves every live key under req.Src to req.Dst + (the key
+	// without req.Src), deletes the source keys and applies req.Ops, all at
+	// one new revision, which it returns. A live source count that differs
+	// from req.ExpectedKeys writes nothing.
+	MovePrefix(ctx context.Context, req *MovePrefixRequest) (int64, error)
+}
+
+// MovePrefixRequest is one prefix-move publish. Src and Dst are non-empty and
+// neither is a prefix of the other; ExpectedKeys is at least 1; Ops holds
+// only OpPut and OpDelete without a RangeEnd (the page store's meta update
+// and truncated-page deletes), applied after the move, so a later op on the
+// same key wins.
+type MovePrefixRequest struct {
+	Src, Dst     string
+	ExpectedKeys int64
+	Ops          []Op
+}
+
+// Compile-time interface check.
+var _ PrefixMover = (*MVCCKVService)(nil)
+
+// ValidateMovePrefix refuses a request that is not a well-formed prefix move,
+// with a *PrefixMoveInvalidError, before anything is proposed.
+func ValidateMovePrefix(req *MovePrefixRequest) error {
+	if req == nil {
+		return &PrefixMoveInvalidError{Reason: "no request"}
+	}
+	invalid := func(reason string) error {
+		return &PrefixMoveInvalidError{Src: req.Src, Dst: req.Dst, Reason: reason}
+	}
+	switch {
+	case req.Src == "" || req.Dst == "":
+		return invalid("empty prefix")
+	case strings.HasPrefix(req.Src, req.Dst) || strings.HasPrefix(req.Dst, req.Src):
+		return invalid("source and destination prefixes overlap")
+	case req.ExpectedKeys < 1:
+		return invalid("expected key count below 1")
+	}
+	for _, op := range req.Ops {
+		if (op.Type != OpPut && op.Type != OpDelete) || len(op.RangeEnd) != 0 || len(op.Key) == 0 {
+			return invalid("an extra op must be a put or a single-key delete")
+		}
+	}
+	return nil
+}
+
+// MovePrefix proposes protocol.OpMVCCMovePrefix once the request validates
+// and the group's feature gate reports every replica can apply it
+// (*feature.NotActiveError otherwise), and returns the revision it committed
+// at.
+func (s *MVCCKVService) MovePrefix(ctx context.Context, req *MovePrefixRequest) (int64, error) {
+	if err := ValidateMovePrefix(req); err != nil {
+		return 0, err
+	}
+	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.PrefixMove) {
+		return 0, &feature.NotActiveError{Feature: featuregate.PrefixMove, ShardID: s.shardID}
+	}
+	ops := make([][]byte, len(req.Ops))
+	for i, op := range req.Ops {
+		encoded, err := encodeServiceOp(Op{Type: op.Type, Key: op.Key, Value: op.Value})
+		if err != nil {
+			return 0, &EncodeRequestError{Err: err}
+		}
+		ops[i] = encoded
+	}
+	cmd, encErr := protocol.EncodeMVCCMovePrefix([]byte(req.Src), []byte(req.Dst), req.ExpectedKeys, ops)
+	if encErr != nil {
+		return 0, &EncodeRequestError{Err: encErr}
+	}
+	result, err := propose(ctx, s.host, s.shardID, cmd)
+	if err != nil {
+		return 0, translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return 0, resultErr
+	}
+	return int64(result.Value), nil //nolint:gosec // G115: the engine answers a revision, a non-negative int64
+}
+
 // NodeKeyspaceCompactor compacts the node keyspace: every key outside all
 // "<tenant>/<db>/" namespaces -- the node's own internal records and the
 // system tenant's raw keyspace. It is a platform act; no key with a database

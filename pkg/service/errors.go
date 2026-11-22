@@ -1420,6 +1420,28 @@ func (e *CompactPrefixInvalidError) Error() string {
 	return "service: compaction prefix " + strconv.Quote(e.Prefix) + " is not one database's keyspace"
 }
 
+// PrefixMoveInvalidError is returned when a MovePrefix request is not a
+// well-formed prefix move: an empty or overlapping prefix, an expected key
+// count below 1, or an extra op that is not a put or a single-key delete.
+type PrefixMoveInvalidError struct {
+	Src, Dst string
+	Reason   string
+}
+
+// Error returns a human-readable description.
+func (e *PrefixMoveInvalidError) Error() string {
+	return "service: prefix move " + strconv.Quote(e.Src) + " -> " + strconv.Quote(e.Dst) + " refused: " + e.Reason
+}
+
+// PrefixMoveUnsupportedError is returned by a wrapper whose inner servicer
+// cannot move a prefix server side; it never falls back to per-key writes.
+type PrefixMoveUnsupportedError struct{}
+
+// Error returns a human-readable description.
+func (e *PrefixMoveUnsupportedError) Error() string {
+	return "service: this store does not support a server-side prefix move"
+}
+
 // CompactRevisionInvalidError is returned when Compact names a revision below
 // 1.
 type CompactRevisionInvalidError struct {
