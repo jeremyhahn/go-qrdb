@@ -154,7 +154,10 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
 ## Component placement
 
 - A new package implementing the page store against the service layer,
-  plus a thin engine binding per tier.
+  plus a thin engine binding per tier. The page store core exists unwired
+  in `pkg/sqlitevfs` (keyspace, meta record, snapshot reads, one-batch
+  commit on the local MVCC store); no engine binding, locking, staging,
+  quota or transport is built.
 - If any tier requires CGo (`mattn`, the loadable extension), that binding
   lives in its **own Go module**: CGo must not enter the root module's
   dependency graph. The pure-Go tier via `modernc.org/sqlite` avoids CGo
