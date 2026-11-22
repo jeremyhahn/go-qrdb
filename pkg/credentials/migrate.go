@@ -484,8 +484,8 @@ func (s *CredentialService) writeWinningCopy(ctx context.Context, name string, r
 func (s *CredentialService) deletionFence(ctx context.Context, name string) (raw, fenced []byte, err error) {
 	raw, err = s.store.Get(ctx, MigrationClaimPrefix+name)
 	if err != nil {
-		if err = readFailure("read migration claim", err, nil); err != nil {
-			return nil, nil, err
+		if rerr := readFailure("read migration claim", err, nil); rerr != nil {
+			return nil, nil, rerr
 		}
 		raw = nil
 	}
