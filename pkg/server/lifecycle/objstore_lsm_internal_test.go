@@ -81,7 +81,7 @@ func objstoreLSMKey(i int) []byte { return []byte(fmt.Sprintf("objstore-lsm-key-
 // roundTripObjstoreLSM opens the LSM store, writes and flushes 50 keys, closes
 // it, reopens it on the same data dir and reads every key back. It returns
 // the concatenated bytes of every SSTable on the shared store.
-func roundTripObjstoreLSM(t *testing.T, dataDir string, enc *atrest.Encryptor) []byte {
+func roundTripObjstoreLSM(t *testing.T, dataDir string, enc *atrest.Encryptor) (sharedTables, cacheFiles []byte) {
 	t.Helper()
 	const n = 50
 	stg, err := newObjstoreLSMStorage(dataDir, enc, qrdbconfig.StorageConfig{})
@@ -141,21 +141,45 @@ func roundTripObjstoreLSM(t *testing.T, dataDir string, enc *atrest.Encryptor) [
 	if tables.Len() == 0 {
 		t.Fatalf("no .sst object under %s; the flush did not reach the shared store", sharedDir)
 	}
-	return tables.Bytes()
+
+	cacheDir := filepath.Join(dataDir, objstoreLSMCacheDir)
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatalf("read the local object cache %s: %v", cacheDir, err)
+	}
+	var cached bytes.Buffer
+	for _, e := range entries {
+		raw, err := os.ReadFile(filepath.Join(cacheDir, e.Name()))
+		if err != nil {
+			t.Fatalf("read cache file %s: %v", e.Name(), err)
+		}
+		cached.Write(raw)
+		cached.WriteByte(0)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("no file in the local object cache %s after the reopen read-back", cacheDir)
+	}
+	return tables.Bytes(), cached.Bytes()
 }
 
 func TestObjstoreLSM_PlaintextRoundTrip(t *testing.T) {
-	tables := roundTripObjstoreLSM(t, t.TempDir(), atrest.New(nil))
+	tables, cached := roundTripObjstoreLSM(t, t.TempDir(), atrest.New(nil))
 	if !bytes.Contains(tables, []byte(objstoreLSMValue(0))) {
 		t.Fatal("plaintext SSTables on the shared store do not hold the written value")
+	}
+	if !bytes.Contains(cached, []byte(objstoreLSMValue(0))) {
+		t.Fatal("plaintext SSTables in the local object cache do not hold the written value")
 	}
 }
 
 func TestObjstoreLSM_EncryptedRoundTrip(t *testing.T) {
 	enc := atrest.New(newObjstoreLSMBarrier(t, false))
-	tables := roundTripObjstoreLSM(t, t.TempDir(), enc)
+	tables, cached := roundTripObjstoreLSM(t, t.TempDir(), enc)
 	if bytes.Contains(tables, []byte(objstoreLSMValue(0))) {
 		t.Fatal("SSTables on the shared store hold the plaintext value; the barrier did not encrypt them")
+	}
+	if bytes.Contains(cached, []byte(objstoreLSMValue(0))) {
+		t.Fatal("the local object cache holds the plaintext value; it must hold only sealed objects")
 	}
 }
 
@@ -167,7 +191,7 @@ func TestObjstoreLSM_SealedBarrierRefused(t *testing.T) {
 	if !errors.As(err, &sealedErr) {
 		t.Fatalf("err = %v; want *ObjstoreBarrierSealedError", err)
 	}
-	for _, dir := range []string{objstoreLSMDir, "objstore"} {
+	for _, dir := range []string{objstoreLSMDir, objstoreLSMCacheDir, "objstore"} {
 		if _, err := os.Stat(filepath.Join(dataDir, dir)); !errors.Is(err, fs.ErrNotExist) {
 			t.Fatalf("%s after a sealed refusal: stat err = %v; want it absent", dir, err)
 		}

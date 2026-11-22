@@ -41,6 +41,12 @@ const objstoreLSMLocator remote.Locator = "qrdb"
 // pebble backend's "pebble" and the local provider's default "objstore".
 const objstoreLSMDir = "objstore-lsm"
 
+// objstoreLSMCacheDir is the directory under the data dir holding the local
+// object cache (objstore.CachedRemote, OS-6 A interim): one file per fetched
+// or created SSTable, as stored (sealed when the barrier is on). It is a
+// sibling of objstoreLSMDir so Pebble never sees foreign files in its dir.
+const objstoreLSMCacheDir = "objstore-lsm-cache"
+
 // newObjstoreLSMStorage opens the Pebble engine over the configured object
 // store (object-storage-lsm): the store is resolved by objstore.OpenStore
 // (archive tiers refused), refused unless it is empty or already carries the
@@ -50,6 +56,11 @@ const objstoreLSMDir = "objstore-lsm"
 // WAL and MANIFEST stay in <dataDir>/objstore-lsm, encrypted by the same
 // barrier through the local VFS. A sealed barrier fails closed before any
 // store is opened or file created.
+//
+// Reads go through the local object cache in <dataDir>/objstore-lsm-cache
+// (objstore.CachedRemote, OS-6 A interim), below the encrypting wrapper so it
+// holds only the stored bytes: each SSTable is fetched from the store at most
+// once, and a freshly created one is written through and never fetched.
 //
 // It is the composition NewLocalStorage's objstore case will call once the
 // flat engine is replaced (object-storage-lsm slice 4b); nothing calls it yet.
@@ -76,9 +87,13 @@ func newObjstoreLSMStorage(dataDir string, enc *atrest.Encryptor, storageCfg qrd
 	if err != nil {
 		return nil, err
 	}
-	shared = rs
+	cached, err := objstore.NewCachedRemote(rs, filepath.Join(dataDir, objstoreLSMCacheDir))
+	if err != nil {
+		return nil, err
+	}
+	shared = cached
 	if enc.Enabled() {
-		encrypted, err := objstore.NewEncryptedRemote(rs, enc.Barrier())
+		encrypted, err := objstore.NewEncryptedRemote(cached, enc.Barrier())
 		if err != nil {
 			return nil, err
 		}
