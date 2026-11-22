@@ -149,9 +149,10 @@ type Service interface {
 	UpdatePool(ctx context.Context, name string, req UpdatePoolRequest) (*Pool, error)
 	DeletePool(ctx context.Context, name string) error
 	ListAssignments(ctx context.Context, pool, pageToken string, pageSize int) (*AssignmentPage, error)
-	// MoveTenant and GetMove return *MoveNotImplementedError; no transport
-	// exposes them.
-	MoveTenant(ctx context.Context, tenantID, toPool string) (*Move, error)
+	// MoveTenant admits a move through the wired MoveAdmission and
+	// Catalog.AdmitMove (*MoveNotImplementedError with none wired); GetMove
+	// reads the journal. No transport exposes them.
+	MoveTenant(ctx context.Context, req MoveTenantRequest) (*Move, error)
 	GetMove(ctx context.Context, tenantID string) (*Move, error)
 }
 ```
@@ -174,7 +175,8 @@ is built in `move_copy.go`; these functions are called by
 - `ManifestEntry{Path, Dir, Mode, Size, SHA256}`: one unwired node-step
   manifest entry, root-relative.
 
-The catalog half of a move's admit step, which nothing calls in this build:
+The catalog half of a move's admit step, called by `MoveTenant`, which no
+composition wires in this build:
 
 - `Catalog.AdmitMove(ctx, MoveAdmitRequest) (*Move, error)`: one transaction
   reserving the tenant's `Assignment.ReservedBytes` on `ToPool` and writing
@@ -188,7 +190,15 @@ The catalog half of a move's admit step, which nothing calls in this build:
   the bytes reserved on the destination, the Q9 consent, the admit time;
 - `LockableProvider{OpensLockable() bool}`: optional provider interface; a
   provider without it counts as Lockable as a source and not Lockable as a
-  destination (`dir` returns false).
+  destination (`dir` returns false);
+- `MoveTenantRequest{TenantID, ToPool, AllowUnencryptedDestination}`: the
+  operator's move request; the flag is Q9's `allow_unencrypted_destination`;
+- `MoveAdmission{AdmitTenantMove}`: the tenant layer's half of admit (kind,
+  entitlement), returning the replica node IDs;
+- `MoveStartAuditor{BeginMoveStart}`: audits a move's start before admit (an
+  error refuses it) and settles once with `AdmitMove`'s answer;
+- `Catalog.SetMoveAdmission` / `Catalog.SetMoveStartAuditor`: the
+  post-construction seams `MoveTenant` uses; nil unwires.
 
 ### Composition options
 
@@ -249,6 +259,9 @@ func (b *StorageBarrier) OnSealing(fn func(context.Context) error)
 | `seal.BarrierRegistry.LocalTenantDataRoot` | resolves through the assignment and the opened `volume.Volume` |
 | `seal.BarrierRegistry.RequireInsideLocalPool` | checks against the pool's opened `Volume.Root()` |
 | `seal.BarrierRegistry.RunMoveCopyStep(ctx, nodeID, tenantID, toPool) (*volume.Manifest, error)` | the move's node step on this node's pools: resolve both directories, copy, verify, remove a partial destination through `RemoveDataRoot`; nothing calls it in this build |
+| `tenant.TenantService.AdmitTenantMove(ctx, volume.MoveTenantRequest) ([]string, error)` | implements `volume.MoveAdmission`: the tenant exists, is `volume` or `raft` (not the system tenant), is entitled to `ToPool`; returns its replica nodes |
+| `tenant.MoveReplicaNodeSource` / `tenant.MoveReplicaNodeWiring` | the optional source of a tenant's replica node IDs and its setter; with none set `AdmitTenantMove` returns `*volume.MoveNotImplementedError` |
+| `service.NewVolumeMoveAudit(logger, policy) volume.MoveStartAuditor` | audits a move's start as `volume_pool.move_start` (`to_pool`, `allow_unencrypted_destination`, `from_pool` on the outcome); gated by the failure policy before admit, best-effort outcome after |
 | `seal.ErrMoveStepInvalid` | `RunMoveCopyStep` called without a node ID or destination pool |
 | `seal.ErrMoveSamePool` | the destination pool is the tenant's current pool |
 | `seal.ErrMoveTenantOpen` | the tenant still has a barrier on this node; the step copies a closed directory |
@@ -339,6 +352,10 @@ Every error is typed. Each classification below is the row added to
 | `*seal.VolumeLockError{Pool, Err}` | a tracked `Lockable` volume's `Lock` failed while sealing | not on the wire: `Internal`-class, logged and audited; the barrier still seals |
 | `*volume.MoveStepError{NodeID, Phase, Path, Err}` | the node-local move copy (`Phase` `copy`) or verify (`Phase` `verify`) failed; `Path` is root-relative | not on the wire in this build |
 | `*volume.ManifestMismatchError{Path, Reason}` | the destination's manifest differs (`missing`, `extra`, `type`, `mode`, `size`, `digest`); wrapped in a `MoveStepError` | not on the wire in this build |
+| `*volume.MoveConflictError{TenantID, NodeID, Reason}` | a move admit is refused (a move already runs, the destination is the current pool, the destination is not ready on `NodeID`, a Lockable-to-plain move lacks `allow_unencrypted_destination`, the tenant is not a `volume` or `raft` tenant, or it has no replica node), or tenant delete / a quota change is refused while a move runs | not on the wire in this build |
+| `*volume.InvalidMoveRequestError{Reason}` | `AdmitMove` got an empty tenant or pool, no replica nodes, or an empty or duplicate node ID; `MoveTenant` an empty tenant or pool; `GetMove` an empty tenant | not on the wire in this build |
+| `*volume.MoveNotFoundError{TenantID}` | `GetMove` found no journal for the tenant | not on the wire in this build; `NotFound` once a transport carries it |
+| `*volume.MoveNotImplementedError` | `MoveTenant` in a composition that wired no `MoveAdmission`, or a tenant service with no replica-node source (every daemon in this build) | `Unimplemented`, the existing row |
 
 **Fail-closed paths.** An unreadable catalog or assignment fails the create, the
 move and the resolution. Nothing falls back to a default path or a fresh pick.
@@ -440,7 +457,19 @@ refusal, and deleted and re-created.
   refused); Q10 after admit (`Release`, `AdjustReservation` refused with
   reservations unchanged, `DeletePool` of either pool names the tenant); a
   corrupt journal fails `Release`, `AdjustReservation`, `DeletePool` and
-  `AdmitMove` closed; `MoveTenant`/`GetMove` still not implemented;
+  `AdmitMove` closed; `MoveTenant` with no admission wired (not
+  implemented), invalid requests (admission never called), an admission
+  refusal and an auditor refusal (no journal, no reservation), success
+  (journal from the admission's nodes, settle with the move, `GetMove`
+  equal), a second move settled with `*MoveConflictError`, no auditor
+  wired, the Q9 flag through to the journal; `GetMove` invalid, not found
+  and corrupt; `SetMoveAdmission(nil)` unwires;
+- `pkg/tenant` (`volume_move_test.go`): `AdmitTenantMove` not found, a
+  prefix tenant refused, a destination not entitled, no source, a source
+  error, no replica node, a volume and a raft tenant admitted;
+- `pkg/service` (`volume_move_audit_test.go`): the start recorded with the
+  flag both ways, the outcome with `from_pool`, a failure outcome, the gate
+  following the policy, a nil logger giving no auditor;
 - `pkg/seal`: `VolumeLifecycle` ordering, proven with a fake `Lockable` --
   unlock after unseal and before a later-registered `OnUnsealed` observer
   (standing in for `BarrierRegistry`'s tenant restore); lock before the root
@@ -531,11 +560,11 @@ Metrics:
   unlike `NodeReport` (invariant 9).
 - `qrdb_volume_pool_locked{pool}` (0/1, per node; always 0 for a non-`Lockable` volume) *(not yet implemented)*
 
-Audit: every catalog change, assignment change and move transition (**Phase
-2** for moves) is an audit record naming the operator identity; every
+Audit: every catalog change, assignment change and move transition is an
+audit record naming the operator identity (a move's start is
+`volume_pool.move_start` through `service.NewVolumeMoveAudit`, with the Q9
+flag; later transitions arrive with the reconciler); every
 `Lockable` unlock and lock attempt is an audit record naming the pool and,
 on failure, the error, under actions `volume_unlock` / `volume_lock`
 (`pkg/seal.VolumeLifecycle`, subject `seal`, since these run inside the
 system barrier before any operator request exists to attribute them to).
-| `*volume.MoveConflictError{TenantID, NodeID, Reason}` | a move admit is refused (a move already runs, the destination is the current pool, the destination is not ready on `NodeID`, or a Lockable-to-plain move lacks `allow_unencrypted_destination`), or tenant delete / a quota change is refused while a move runs | not on the wire in this build |
-| `*volume.InvalidMoveRequestError{Reason}` | `AdmitMove` got an empty tenant or pool, no replica nodes, or an empty or duplicate node ID | not on the wire in this build |

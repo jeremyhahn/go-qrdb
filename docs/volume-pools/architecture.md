@@ -261,8 +261,15 @@ resolved on both sides, applied per pool.
 
 ## Moving a tenant between pools
 
-Not implemented. No transport exposes a move, and `volume.Catalog.MoveTenant`
-returns `*volume.MoveNotImplementedError`, classified `Unimplemented`.
+Built in the catalog, not wired in the daemon. `volume.Catalog.MoveTenant`
+admits a move through the tenant layer (`tenant.TenantService.AdmitTenantMove`:
+the tenant exists, is a `volume` or `raft` tenant, is entitled to the
+destination pool, and its replica nodes) and then `AdmitMove`, and audits the
+start with the Q9 flag (`volume_pool.move_start`) before anything is
+admitted; `volume.Catalog.GetMove` reads the journal. None of these seams is
+wired in the daemon yet, so a running node still answers `MoveTenant` with
+`*volume.MoveNotImplementedError`, classified `Unimplemented`, and no
+transport exposes a move.
 
 The design, decided by convention (ruling 109) and not awaiting a ruling, is
 [../decisions/volume-pool-tenant-moves.md](../decisions/volume-pool-tenant-moves.md):
@@ -274,8 +281,7 @@ The node step runs on a node's own pools through
 directory and its destination directory on the destination pool, copies the
 closed tree, verifies the copy against its SHA-256 manifest, and on a failure
 removes the partial destination through the inside-pool guard, never the
-source. No journal, reconciler or transport calls it yet, and `MoveTenant`
-still returns `*volume.MoveNotImplementedError`.
+source. No journal, reconciler or transport calls it yet.
 
 The catalog admits a move through `volume.Catalog.AdmitMove`: one
 transaction reserves the tenant's bytes on the destination pool and writes
@@ -285,8 +291,8 @@ replica node (Q3), that a move off a Lockable pool onto one that is not
 carries `allow_unencrypted_destination` (Q9), and that no move already runs
 (Q10). The source reservation and the assignment stay, so the tenant counts
 on both pools while it moves. While a journal exists, tenant delete, a quota
-change, a second move and deleting either pool are refused. Nothing calls
-`AdmitMove` yet.
+change, a second move and deleting either pool are refused. `MoveTenant` is
+the only caller of `AdmitMove`.
 
 ## Trust boundaries
 
