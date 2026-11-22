@@ -263,3 +263,53 @@ func TestHostAdapter_AdmitReplicaAt(t *testing.T) {
 	require.ErrorAs(t, a.CheckConfigBinding(1, stale), &staleErr)
 	require.NoError(t, a.CheckConfigBinding(1, featuregate.ConfigBinding{ConfigChangeID: 1, Required: true}))
 }
+
+// ProposeBound runs propose directly on an ungated adapter, returning its
+// error, and on a gated adapter delegates to the gate: a matching binding
+// runs propose, a stale one is refused before propose runs.
+func TestHostAdapter_ProposeBound(t *testing.T) {
+	gate := gateOver(t, groups{1: {ConfigChangeID: 1, Replicas: map[uint64]string{1: "n1"}}})
+	gated := NewWithInner(nil, &mockQuicraftHost{})
+	WithFeatureGate(gate)(gated)
+	ungated := NewWithInner(nil, &mockQuicraftHost{})
+
+	proposeErr := errors.New("propose failed")
+	current := featuregate.ConfigBinding{ConfigChangeID: 1, Required: true}
+	stale := featuregate.ConfigBinding{ConfigChangeID: 0, Required: true}
+
+	tests := []struct {
+		name    string
+		adapter *HostAdapter
+		binding featuregate.ConfigBinding
+		result  error
+		ran     bool
+		wantErr func(t *testing.T, err error)
+	}{
+		{"ungated zero binding runs", ungated, featuregate.ConfigBinding{}, nil, true,
+			func(t *testing.T, err error) { require.NoError(t, err) }},
+		{"ungated stale binding still runs", ungated, stale, nil, true,
+			func(t *testing.T, err error) { require.NoError(t, err) }},
+		{"ungated returns propose error", ungated, featuregate.ConfigBinding{}, proposeErr, true,
+			func(t *testing.T, err error) { require.ErrorIs(t, err, proposeErr) }},
+		{"gated current binding runs", gated, current, nil, true,
+			func(t *testing.T, err error) { require.NoError(t, err) }},
+		{"gated returns propose error", gated, current, proposeErr, true,
+			func(t *testing.T, err error) { require.ErrorIs(t, err, proposeErr) }},
+		{"gated stale binding refused", gated, stale, nil, false,
+			func(t *testing.T, err error) {
+				var staleErr *featuregate.StaleConfigurationError
+				require.ErrorAs(t, err, &staleErr)
+			}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ran := false
+			err := tc.adapter.ProposeBound(1, tc.binding, func() error {
+				ran = true
+				return tc.result
+			})
+			tc.wantErr(t, err)
+			assert.Equal(t, tc.ran, ran)
+		})
+	}
+}
