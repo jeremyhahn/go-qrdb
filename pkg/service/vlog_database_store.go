@@ -227,6 +227,16 @@ func (s *databaseLogStore) read(ctx context.Context, req vlog.Request) (interfac
 // binary alone, so no replica can lack a feature.
 func (s *databaseLogStore) featureEnabled(feature.Feature) bool { return true }
 
+// serving refuses a sealed database with BarrierSealedError.
+func (s *databaseLogStore) serving() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sealed() {
+		return s.sealedError()
+	}
+	return nil
+}
+
 // translateStoreError answers a sealed database's error with
 // BarrierSealedError, dropping the chain, and returns any other error as it
 // is. s.mu must be held.

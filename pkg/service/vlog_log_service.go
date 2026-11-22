@@ -201,6 +201,10 @@ type logTarget interface {
 	propose(ctx context.Context, cmd []byte) (sm.Result, error)
 	read(ctx context.Context, req vlog.Request) (interface{}, error)
 	featureEnabled(f feature.Feature) bool
+	// serving refuses a target that cannot serve now (a sealed barrier)
+	// with the error its propose and read answer; nil when it serves. It is
+	// checked before a signing key is minted, and propose checks again.
+	serving() error
 }
 
 // raftTarget is a tenant's Raft group.
@@ -228,6 +232,9 @@ func (t raftTarget) read(ctx context.Context, req vlog.Request) (interface{}, er
 	}
 	return result, nil
 }
+
+// serving reports nil: the group's own apply refuses a sealed tenant.
+func (t raftTarget) serving() error { return nil }
 
 func (t raftTarget) featureEnabled(f feature.Feature) bool {
 	if gated, ok := t.host.(FeatureGatedHost); ok {
@@ -276,6 +283,9 @@ func (s *logService) admit(ctx context.Context, tenantID, db string, features []
 			}
 			return logGroup{}, &LogFeatureNotActiveError{TenantID: tenantID, ShardID: shardID, Feature: f}
 		}
+	}
+	if err := target.serving(); err != nil {
+		return logGroup{}, err
 	}
 	return logGroup{target: target}, nil
 }

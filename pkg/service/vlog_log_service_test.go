@@ -465,6 +465,35 @@ func TestLogService_BarrierDatabaseSealUnsealWithoutALogCallServes(t *testing.T)
 	}
 }
 
+// A sealed barrier database refuses a create or a rotation before the
+// signer provider is asked for a key.
+func TestLogService_SealedBarrierDatabaseMintsNoKey(t *testing.T) {
+	dir := t.TempDir()
+	mgr := newBarrierDatabaseManager(t, dir)
+	hsm := newHSMProvider()
+	svc, _, _ := newBarrierLogService(t, mgr, hsm)
+	acme := acmeCtx()
+	ref := LogRef{Database: "secure", Log: "events"}
+	if _, err := svc.CreateLog(acme, &CreateLogRequest{LogRef: ref, Origin: "acme/secure/events", SigningKeyType: vlog.SignatureEd25519}); err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	if err := mgr.BarrierManager().SealDatabase("secure", "acme"); err != nil {
+		t.Fatalf("SealDatabase: %v", err)
+	}
+	minted := len(hsm.created)
+	var sealed *BarrierSealedError
+	other := LogRef{Database: "secure", Log: "other"}
+	if _, err := svc.CreateLog(acme, &CreateLogRequest{LogRef: other, Origin: "acme/secure/other", SigningKeyType: vlog.SignatureEd25519}); !errors.As(err, &sealed) {
+		t.Fatalf("CreateLog on a sealed database = %v, want *BarrierSealedError", err)
+	}
+	if _, err := svc.RotateKey(acme, &RotateKeyRequest{LogRef: ref, SigningKeyType: vlog.SignatureEd25519}); !errors.As(err, &sealed) {
+		t.Fatalf("RotateKey on a sealed database = %v, want *BarrierSealedError", err)
+	}
+	if len(hsm.created) != minted {
+		t.Fatalf("the provider minted %d keys for refused requests", len(hsm.created)-minted)
+	}
+}
+
 func TestLogService_RefusesALegacyRaftBarrierRecord(t *testing.T) {
 	legacy := database.NewDatabase(database.DatabaseConfig{
 		TenantID: "acme", Name: "secure", Backend: database.BackendRaft,

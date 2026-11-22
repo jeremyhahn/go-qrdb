@@ -145,6 +145,16 @@ func (s *barrierLogStore) read(ctx context.Context, req vlog.Request) (interface
 // binary alone, so no replica can lack a feature.
 func (s *barrierLogStore) featureEnabled(feature.Feature) bool { return true }
 
+// serving refuses a sealed tenant barrier with tenant.ErrTenantSealed.
+func (s *barrierLogStore) serving() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sealed() {
+		return tenant.ErrTenantSealed
+	}
+	return nil
+}
+
 // applyToBarrierKV writes ops to kv in one atomic, unguarded batch.
 func applyToBarrierKV(ctx context.Context, kv kvstore.MultiGuardedBatchKVStore, ops []storage.BufferedOp) error {
 	if len(ops) == 0 {

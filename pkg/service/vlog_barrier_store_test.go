@@ -69,6 +69,13 @@ func (r *standaloneBarrierResolver) TenantLogStore(_ context.Context, tenantID s
 
 func newStandaloneBarrierFixture(t *testing.T) *standaloneBarrierFixture {
 	t.Helper()
+	return newStandaloneBarrierFixtureWithSigners(t, nil)
+}
+
+// newStandaloneBarrierFixtureWithSigners is newStandaloneBarrierFixture
+// with signers as the service's head-signer provider.
+func newStandaloneBarrierFixtureWithSigners(t *testing.T, signers vlog.HeadSignerProvider) *standaloneBarrierFixture {
+	t.Helper()
 	ctx := context.Background()
 	system, _ := newTestSoftwareBarrier(t)
 	if err := system.Initialize(ctx, seal.MustCredentials(ctx, []byte("system-pass"))); err != nil {
@@ -80,7 +87,7 @@ func newStandaloneBarrierFixture(t *testing.T) *standaloneBarrierFixture {
 	}
 	f := &standaloneBarrierFixture{reg: reg, ctx: tenant.WithTenantID(ctx, "vault")}
 	f.backend = f.registerVault(t)
-	svc, err := NewLogService(LogServiceConfig{Resolver: &standaloneBarrierResolver{f: f}, Databases: noDatabases(t)})
+	svc, err := NewLogService(LogServiceConfig{Resolver: &standaloneBarrierResolver{f: f}, Databases: noDatabases(t), Signers: signers})
 	if err != nil {
 		t.Fatalf("NewLogService: %v", err)
 	}
@@ -227,6 +234,30 @@ func TestLogService_SealedStandaloneBarrierTenantRefuses(t *testing.T) {
 	}
 	if size := f.headSize(t); size != 4 {
 		t.Fatalf("head size = %d, want 4", size)
+	}
+}
+
+// A sealed standalone barrier refuses a create or a rotation before the
+// signer provider is asked for a key.
+func TestLogService_SealedStandaloneBarrierTenantMintsNoKey(t *testing.T) {
+	hsm := newHSMProvider()
+	f := newStandaloneBarrierFixtureWithSigners(t, hsm)
+	if _, err := f.svc.CreateLog(f.ctx, &CreateLogRequest{LogRef: barrierTenantRef, Origin: "vault/ledger/events", SigningKeyType: vlog.SignatureEd25519}); err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	if err := f.reg.SealTenant("vault"); err != nil {
+		t.Fatalf("SealTenant: %v", err)
+	}
+	minted := len(hsm.created)
+	other := LogRef{Database: barrierTenantRef.Database, Log: "other"}
+	if _, err := f.svc.CreateLog(f.ctx, &CreateLogRequest{LogRef: other, Origin: "vault/ledger/other", SigningKeyType: vlog.SignatureEd25519}); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("CreateLog on a sealed barrier = %v, want tenant.ErrTenantSealed", err)
+	}
+	if _, err := f.svc.RotateKey(f.ctx, &RotateKeyRequest{LogRef: barrierTenantRef, SigningKeyType: vlog.SignatureEd25519}); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("RotateKey on a sealed barrier = %v, want tenant.ErrTenantSealed", err)
+	}
+	if len(hsm.created) != minted {
+		t.Fatalf("the provider minted %d keys for refused requests", len(hsm.created)-minted)
 	}
 }
 
