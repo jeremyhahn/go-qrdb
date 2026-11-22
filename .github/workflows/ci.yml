@@ -462,6 +462,14 @@ jobs:
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
 
+      # Ruling 887: preflight runs on the bigdisk pool on github.com (v1.49),
+      # whose environment names LAN addresses, and its later steps run
+      # repository code (the testdata scripts, make check-public-releasable),
+      # so the LAN addresses are masked before any of them (local Codex
+      # review on #1680).
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
+
       # reads every .github/workflows/*.yml and *.yaml of the repository as
       # text, takes each job whose runs-on names `release` (plain, in a list,
       # or as a quoted string inside an expression), and evaluates its `if:`
