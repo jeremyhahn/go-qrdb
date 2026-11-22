@@ -69,6 +69,12 @@ var (
 	// before Commit. The SQLite binding maps it to SQLITE_BUSY.
 	ErrBusy = errors.New("sqlitevfs: database is locked by another writer")
 
+	// ErrFull is returned when a commit, a stage write or a publish exceeds
+	// the tenant's storage quota. The database is unchanged: the pages and
+	// meta are those of the last good commit. The SQLite binding maps it to
+	// SQLITE_FULL.
+	ErrFull = errors.New("sqlitevfs: database or disk is full")
+
 	// ErrNotReserved is returned by WriteAt or Truncate on a Store with a
 	// writer lock before Txn.Reserve succeeded.
 	ErrNotReserved = errors.New("sqlitevfs: transaction has not reserved the writer lock")

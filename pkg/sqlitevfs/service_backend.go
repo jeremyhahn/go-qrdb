@@ -21,6 +21,7 @@ import (
 	"sort"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -135,14 +136,16 @@ func (b *ServiceBackend) Keys(prefix []byte, rev int64) ([][]byte, error) {
 }
 
 // Commit applies puts and deletes as one transaction with no compares and
-// returns its revision. Nothing to write returns the current revision.
+// returns its revision. Nothing to write returns the current revision. A
+// transaction past the tenant's storage quota (a *quota.ExceededError) is
+// ErrFull, joined with the cause.
 func (b *ServiceBackend) Commit(puts map[string][]byte, deletes [][]byte) (int64, error) {
 	if len(puts) == 0 && len(deletes) == 0 {
 		return b.Revision()
 	}
 	resp, err := b.txn.Execute(b.ctx, nil, writeOps(puts, deletes), nil)
 	if err != nil {
-		return 0, fmt.Errorf("sqlitevfs: commit transaction: %w", err)
+		return 0, fmt.Errorf("sqlitevfs: commit transaction: %w", full(err))
 	}
 	if resp == nil || !resp.Succeeded {
 		return 0, errors.New("sqlitevfs: commit transaction did not succeed")
@@ -152,7 +155,8 @@ func (b *ServiceBackend) Commit(puts map[string][]byte, deletes [][]byte) (int64
 
 // Publish sends one server-side prefix move. A *service.CommandConflictError
 // (a live source count other than expectedKeys at apply) is
-// ErrPublishConflict.
+// ErrPublishConflict. A move past the tenant's storage quota (a
+// *quota.ExceededError) is ErrFull, joined with the cause.
 func (b *ServiceBackend) Publish(src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	if err := validatePublish(src, dst, expectedKeys); err != nil {
 		return 0, err
@@ -168,9 +172,21 @@ func (b *ServiceBackend) Publish(src, dst []byte, expectedKeys int64, puts map[s
 		if errors.As(err, &conflict) {
 			return 0, fmt.Errorf("%w: %w", ErrPublishConflict, err)
 		}
-		return 0, fmt.Errorf("sqlitevfs: publish %q to %q: %w", src, dst, err)
+		return 0, fmt.Errorf("sqlitevfs: publish %q to %q: %w", src, dst, full(err))
 	}
 	return rev, nil
+}
+
+// full joins ErrFull with err when err carries a *quota.ExceededError (the
+// tenant's storage quota refused the write), so errors.Is(err, ErrFull) and
+// errors.As(err, **quota.ExceededError) both hold; any other err is returned
+// unchanged.
+func full(err error) error {
+	var exceeded *quota.ExceededError
+	if errors.As(err, &exceeded) {
+		return fmt.Errorf("%w: %w", ErrFull, err)
+	}
+	return err
 }
 
 // writeOps returns puts as OpPut ops in key order, then deletes as OpDelete

@@ -39,6 +39,8 @@
 // registered. ServiceBackend runs a Store over the server's MVCC and
 // transaction services, and NewLockServiceWriter takes its writer lock from
 // the server's lock service, but nothing in the server, the SDK or the CLI
-// constructs a Store yet. The engine binding, the optimistic read-set check,
-// quota, a page cache and every transport are later slices.
+// constructs a Store yet. A commit past the tenant's storage quota fails
+// with ErrFull and leaves the database whole. The engine binding, the
+// optimistic read-set check, the database count cap and the sqlite-vfs
+// entitlement, a page cache and every transport are later slices.
 package sqlitevfs

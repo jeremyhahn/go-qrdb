@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -36,6 +37,10 @@ type serviceDouble struct {
 	getErr     error
 	strayUnder bool
 	moves      int
+	// execErr and moveErr, when set, are answered by Execute and MovePrefix
+	// before the double applies anything, as a refusing service would.
+	execErr error
+	moveErr error
 }
 
 func (d *serviceDouble) GetAtRevision(_ context.Context, key string, revision int64) (*service.KeyValue, error) {
@@ -70,6 +75,9 @@ func (d *serviceDouble) MovePrefix(_ context.Context, req *service.MovePrefixReq
 		return 0, err
 	}
 	d.moves++
+	if d.moveErr != nil {
+		return 0, d.moveErr
+	}
 	if d.strayUnder {
 		if _, err := d.b.Commit(map[string][]byte{req.Src + "\xff\xff\xff\xff": []byte("stray")}, nil); err != nil {
 			return 0, err
@@ -86,6 +94,9 @@ func (d *serviceDouble) MovePrefix(_ context.Context, req *service.MovePrefixReq
 func (d *serviceDouble) Execute(_ context.Context, compares []service.Compare, successOps, _ []service.Op) (*service.TransactionResponse, error) {
 	if len(compares) != 0 {
 		return nil, errors.New("serviceDouble: compares are not modelled")
+	}
+	if d.execErr != nil {
+		return nil, d.execErr
 	}
 	puts, deletes := splitOps(successOps)
 	rev, err := d.b.Commit(puts, deletes)
@@ -240,6 +251,63 @@ func TestServiceBackendPublishConflict(t *testing.T) {
 	}
 	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x01, 0x02)) {
 		t.Fatal("a conflicting publish changed the pages")
+	}
+}
+
+func TestServiceBackendQuotaIsErrFull(t *testing.T) {
+	exceeded := func() error {
+		return fmt.Errorf("quota wrapper: %w", &quota.ExceededError{
+			TenantID: "tenant-a",
+			Resource: quota.ResourceStorageBytes,
+			Current:  100,
+			Limit:    64,
+		})
+	}
+	puts := map[string][]byte{"k": []byte("v")}
+	commit := func(sb *ServiceBackend, d *serviceDouble, err error) error {
+		d.execErr = err
+		_, got := sb.Commit(puts, nil)
+		return got
+	}
+	publish := func(sb *ServiceBackend, d *serviceDouble, err error) error {
+		d.moveErr = err
+		_, got := sb.Publish([]byte("src/"), []byte("dst/"), 1, puts, nil)
+		return got
+	}
+	tests := []struct {
+		name         string
+		call         func(*ServiceBackend, *serviceDouble, error) error
+		err          error
+		wantFull     bool
+		wantConflict bool
+	}{
+		{name: "commit past quota", call: commit, err: exceeded(), wantFull: true},
+		{name: "publish past quota", call: publish, err: exceeded(), wantFull: true},
+		{name: "commit plain error", call: commit, err: errors.New("unavailable")},
+		{name: "publish plain error", call: publish, err: errors.New("unavailable")},
+		{name: "publish conflict", call: publish, err: &service.CommandConflictError{Message: "count moved"}, wantConflict: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sb, d := newServiceBackend(t)
+			err := tc.call(sb, d, tc.err)
+			if err == nil {
+				t.Fatal("call succeeded, want an error")
+			}
+			if got := errors.Is(err, ErrFull); got != tc.wantFull {
+				t.Fatalf("errors.Is(%v, ErrFull) = %v, want %v", err, got, tc.wantFull)
+			}
+			var ex *quota.ExceededError
+			if got := errors.As(err, &ex); got != tc.wantFull {
+				t.Fatalf("errors.As(%v, *quota.ExceededError) = %v, want %v", err, got, tc.wantFull)
+			}
+			if tc.wantFull && (ex.TenantID != "tenant-a" || ex.Resource != quota.ResourceStorageBytes) {
+				t.Fatalf("ExceededError = %+v, want tenant-a storage bytes", ex)
+			}
+			if got := errors.Is(err, ErrPublishConflict); got != tc.wantConflict {
+				t.Fatalf("errors.Is(%v, ErrPublishConflict) = %v, want %v", err, got, tc.wantConflict)
+			}
+		})
 	}
 }
 
