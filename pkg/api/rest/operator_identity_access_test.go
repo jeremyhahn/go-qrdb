@@ -3,6 +3,7 @@ package rest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,7 +26,7 @@ type operatorPolicy struct{ acme tenant.TenantIsolationPolicy }
 
 func (p *operatorPolicy) GetTenant(_ context.Context, id string) (*tenant.TenantInfo, error) {
 	if id != "acme" {
-		return nil, errors.New("tenant not found")
+		return nil, fmt.Errorf("get tenant %q: %w", id, tenant.ErrTenantNotFound)
 	}
 	return &tenant.TenantInfo{ID: "acme", IsolationType: tenant.IsolationRaft, IsolationPolicy: p.acme}, nil
 }
@@ -118,6 +119,25 @@ func TestOperatorIdentityAccess_PolicyReadFailureIs503(t *testing.T) {
 		}
 		if len(seen) != 0 {
 			t.Fatalf("%s: user service ran (%v) after the refusal", op.name, seen)
+		}
+	}
+}
+
+// TestOperatorIdentityAccess_MissingTenantIs404: an operator user operation
+// on a tenant that does not exist answers 404, as on gRPC, MCP and QUIC --
+// not 403 (a refusal) or 503 (a store outage).
+func TestOperatorIdentityAccess_MissingTenantIs404(t *testing.T) {
+	for _, op := range userOperations {
+		var seen []string
+		srv, _ := newOperatorServer(t, tenant.TenantIsolationPolicyInherit, WithUserService(boundUserService(&seen)))
+		path := strings.ReplaceAll(op.path, "tenantID=acme", "tenantID=ghost")
+		body := strings.ReplaceAll(op.body, `"tenant_id":"acme"`, `"tenant_id":"ghost"`)
+		rec := serveOperator(srv, op.method, path, body)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s: operator on a missing tenant = %d %s, want 404", op.name, rec.Code, rec.Body.String())
+		}
+		if len(seen) != 0 {
+			t.Fatalf("%s: user service ran (%v) for a missing tenant", op.name, seen)
 		}
 	}
 }

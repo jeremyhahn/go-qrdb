@@ -3,11 +3,13 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
@@ -21,7 +23,7 @@ type operatorPolicy struct{ acme tenant.TenantIsolationPolicy }
 
 func (p *operatorPolicy) GetTenant(_ context.Context, id string) (*tenant.TenantInfo, error) {
 	if id != "acme" {
-		return nil, errors.New("tenant not found")
+		return nil, fmt.Errorf("get tenant %q: %w", id, tenant.ErrTenantNotFound)
 	}
 	return &tenant.TenantInfo{ID: "acme", IsolationType: tenant.IsolationRaft, IsolationPolicy: p.acme}, nil
 }
@@ -123,5 +125,41 @@ func TestOperatorIdentityAccess_MCPToolsRefusedUnderStrict(t *testing.T) {
 	}
 	if !sink.trails["acme"] {
 		t.Fatal("the refusal is not in acme's trail")
+	}
+}
+
+// TestOperatorIdentityAccess_MCPToolsMissingTenantIsNotFound: an operator
+// identity tool on a tenant that does not exist is refused with the NotFound
+// wire code, as on REST, gRPC and QUIC; the tool never runs.
+func TestOperatorIdentityAccess_MCPToolsMissingTenantIsNotFound(t *testing.T) {
+	sink := &operatorAuditSink{trails: map[string]bool{}}
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
+		authmw.WithAuditLogger(sink), authmw.WithOperatorAccessTenantTrail(sink),
+		authmw.WithIsolationPolicyReader(&operatorPolicy{acme: tenant.TenantIsolationPolicyInherit}))
+	ctx := auth.WithIdentity(tenant.WithTenantID(context.Background(), tenantid.System),
+		authtest.AdminIdentity(tenantid.System, "operator"))
+	checked := 0
+	for _, tl := range append(userTools(nil, nil, mw, nil), roleTools(nil, nil, mw)...) {
+		perm, ok := operatorIdentityTools[tl.Tool.Name]
+		if !ok {
+			continue
+		}
+		name := tl.Tool.Name
+		next := func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			t.Fatalf("%s ran for a missing tenant", name)
+			return nil, nil
+		}
+		req := mcp.CallToolRequest{}
+		req.Params.Name = name
+		req.Params.Arguments = map[string]any{"tenant_id": "ghost"}
+		_, err := operatorTenantHandler(mw, perm, next)(ctx, req)
+		if code := ServiceErrorCode(err); code != wire.CodeNotFound {
+			t.Fatalf("%s on a missing tenant: code %v (err %v), want NotFound", name, code, err)
+		}
+		checked++
+	}
+	if checked != len(operatorIdentityTools) {
+		t.Fatalf("checked %d tools, want all %d identity tools", checked, len(operatorIdentityTools))
 	}
 }

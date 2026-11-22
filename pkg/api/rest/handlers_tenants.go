@@ -17,6 +17,7 @@ package rest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -616,6 +617,8 @@ func (s *Server) authorizeTenantRequest(w http.ResponseWriter, id string, decide
 // records, admitted by authmw.AuthorizeOperatorIdentityAccess under perm and
 // the tenant's isolation policy, and audited in both trails. It returns the
 // context the request runs under, or writes the refusal and reports false.
+// A target tenant that does not exist answers 404 through errclass, as on
+// gRPC, MCP and QUIC; any other refusal goes through writeAuthzErrorJSON.
 func (s *Server) operatorTenantContext(ctx context.Context, w http.ResponseWriter, tenantID string, perm permission.Permission) (context.Context, bool) {
 	if tenantID == "" {
 		return ctx, true
@@ -631,6 +634,10 @@ func (s *Server) operatorTenantContext(ctx context.Context, w http.ResponseWrite
 	}
 	out, err := s.authMW.AuthorizeOperatorIdentityAccess(ctx, tenantID, perm)
 	if err != nil {
+		if errors.Is(err, tenant.ErrTenantNotFound) {
+			writeErrorJSON(w, mapHTTPError(err), err)
+			return nil, false
+		}
 		writeAuthzErrorJSON(w, err)
 		return nil, false
 	}

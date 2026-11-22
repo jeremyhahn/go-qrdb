@@ -89,7 +89,9 @@ func (e *OperatorAccessRefusedError) Unwrap() error { return auth.ErrUnauthorize
 // reader's answer, or the read failed. ClassifyAuthError reports it as
 // AuthFailureUnavailable (HTTP 503, gRPC Unavailable), so a client retries a
 // transient store outage; a wrapped context cancellation or deadline keeps
-// its own class, and a wrapped tenant.ErrTenantNotFound keeps NotFound.
+// its own class, and a wrapped tenant.ErrTenantNotFound keeps NotFound: a
+// missing tenant answers NotFound (HTTP 404, gRPC NotFound) on REST, gRPC,
+// MCP and QUIC alike.
 type OperatorAccessUnresolvedError struct {
 	TenantID string
 	Err      error

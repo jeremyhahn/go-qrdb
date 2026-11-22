@@ -16,6 +16,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -510,7 +511,9 @@ func (s *qrdbServiceServer) authorizeTenantRequest(tenantID string, decide func(
 // caller's, the caller is the platform operator acting on that tenant's
 // records, admitted by authmw.AuthorizeOperatorIdentityAccess under perm and
 // the tenant's isolation policy, and audited in both trails. It returns the
-// context the RPC runs under.
+// context the RPC runs under. A target tenant that does not exist answers
+// codes.NotFound through mapServiceError, as on REST, MCP and QUIC; any
+// other refusal goes through authmw.GRPCError.
 func (s *qrdbServiceServer) operatorTenantContext(ctx context.Context, tenantID string, perm permission.Permission) (context.Context, error) {
 	if tenantID == "" {
 		return ctx, nil
@@ -525,6 +528,9 @@ func (s *qrdbServiceServer) operatorTenantContext(ctx context.Context, tenantID 
 	}
 	out, err := s.authMW.AuthorizeOperatorIdentityAccess(ctx, tenantID, perm)
 	if err != nil {
+		if errors.Is(err, tenant.ErrTenantNotFound) {
+			return nil, mapServiceError(err)
+		}
 		return nil, authmw.GRPCError(err, codes.PermissionDenied)
 	}
 	return out, nil

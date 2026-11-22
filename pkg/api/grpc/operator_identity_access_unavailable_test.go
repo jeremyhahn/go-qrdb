@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -71,6 +72,39 @@ func TestOperatorTenantContext_PolicyReadFailureIsUnavailable(t *testing.T) {
 		_, err := srv.operatorTenantContext(ctx, "acme", perm)
 		if got := status.Code(err); got != codes.Unavailable {
 			t.Fatalf("%s with a failing policy read: code = %v, want Unavailable (err %v)", perm, got, err)
+		}
+	}
+}
+
+// missingTenantPolicyReader answers an unknown tenant as the real reader
+// does: tenant.ErrTenantNotFound.
+type missingTenantPolicyReader struct{}
+
+func (missingTenantPolicyReader) GetTenant(_ context.Context, id string) (*tenant.TenantInfo, error) {
+	return nil, fmt.Errorf("get tenant %q: %w", id, tenant.ErrTenantNotFound)
+}
+
+func (missingTenantPolicyReader) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
+	return tenant.ClusterIsolationPolicyOperatorAccess, nil
+}
+
+// TestOperatorTenantContext_MissingTenantIsNotFound: an operator call on a
+// tenant that does not exist answers codes.NotFound, as on REST, MCP and
+// QUIC, not PermissionDenied or Unavailable.
+func TestOperatorTenantContext_MissingTenantIsNotFound(t *testing.T) {
+	sink := &unavailablePolicySink{}
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
+	mw := authmw.New(rbac.New(roles),
+		authmw.WithRoleResolver(roles),
+		authmw.WithAuditLogger(sink), authmw.WithOperatorAccessTenantTrail(sink),
+		authmw.WithIsolationPolicyReader(missingTenantPolicyReader{}))
+	srv := &qrdbServiceServer{roleSvc: roles, authMW: mw}
+	ctx := auth.WithIdentity(tenant.WithTenantID(context.Background(), tenantid.System),
+		authtest.AdminIdentity(tenantid.System, "operator"))
+	for _, perm := range []permission.Permission{permission.UsersReadTenant, permission.UsersWriteTenant} {
+		_, err := srv.operatorTenantContext(ctx, "ghost", perm)
+		if got := status.Code(err); got != codes.NotFound {
+			t.Fatalf("%s on a missing tenant: code = %v, want NotFound (err %v)", perm, got, err)
 		}
 	}
 }
