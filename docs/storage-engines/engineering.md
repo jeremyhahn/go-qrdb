@@ -472,9 +472,11 @@ the same status.
 
 > See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
 > for the shape, the direction it proposes, and the decisions (OS-1..OS-7)
-> this contract assumes. It is future work under the SPEC row
-> `object-storage-lsm`. **Nothing below is implemented**, and no
-> configuration key, type or error named below exists yet.
+> this contract assumes. It is work in progress under the SPEC row
+> `object-storage-lsm`. Only the Pebble `remote.Storage` adapter over
+> go-objstore exists, unwired, in `pkg/storage/objstore/remote.go`;
+> **nothing else below is implemented**, and no configuration key, type or
+> error named below exists yet.
 
 ### Exported surface (target)
 
