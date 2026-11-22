@@ -44,7 +44,7 @@ func (f *failingIsolationLookup) GetTenant(context.Context, string) (*tenant.Ten
 
 func TestSystemShardAuditResolver_RoutesSystemTenantToTheSystemShard(t *testing.T) {
 	host := &mockHost{}
-	r := NewSystemShardAuditResolver(host, 1, nil)
+	r := NewSystemShardAuditResolver(host, 1, nil, nil)
 	gotHost, shardID, err := r.ResolveAuditShard(context.Background(), tenantid.System)
 	if err != nil {
 		t.Fatalf("ResolveAuditShard: %v", err)
@@ -56,7 +56,7 @@ func TestSystemShardAuditResolver_RoutesSystemTenantToTheSystemShard(t *testing.
 
 func TestSystemShardAuditResolver_NilIsolationRoutesEveryTenantToTheSystemShard(t *testing.T) {
 	host := &mockHost{}
-	r := NewSystemShardAuditResolver(host, 1, nil)
+	r := NewSystemShardAuditResolver(host, 1, nil, nil)
 	_, shardID, err := r.ResolveAuditShard(context.Background(), "acme")
 	if err != nil {
 		t.Fatalf("ResolveAuditShard: %v", err)
@@ -68,7 +68,7 @@ func TestSystemShardAuditResolver_NilIsolationRoutesEveryTenantToTheSystemShard(
 
 func TestSystemShardAuditResolver_RoutesUnregisteredTenantToTheSystemShard(t *testing.T) {
 	host := &mockHost{}
-	r := NewSystemShardAuditResolver(host, 1, &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{}})
+	r := NewSystemShardAuditResolver(host, 1, &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{}}, nil)
 	_, shardID, err := r.ResolveAuditShard(context.Background(), "ghost")
 	if err != nil {
 		t.Fatalf("ResolveAuditShard: %v", err)
@@ -78,34 +78,32 @@ func TestSystemShardAuditResolver_RoutesUnregisteredTenantToTheSystemShard(t *te
 	}
 }
 
-func TestSystemShardAuditResolver_RoutesPrefixAndBarrierTenantsToTheSystemShard(t *testing.T) {
+func TestSystemShardAuditResolver_RoutesPrefixTenantsToTheSystemShard(t *testing.T) {
 	host := &mockHost{}
 	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
-		"acme":    {ID: "acme", IsolationType: tenant.IsolationPrefix},
-		"widgets": {ID: "widgets", IsolationType: tenant.IsolationBarrier},
+		"acme": {ID: "acme", IsolationType: tenant.IsolationPrefix},
 	}}
-	r := NewSystemShardAuditResolver(host, 1, lookup)
-	for _, id := range []string{"acme", "widgets"} {
-		_, shardID, err := r.ResolveAuditShard(context.Background(), id)
-		if err != nil {
-			t.Fatalf("ResolveAuditShard(%q): %v", id, err)
-		}
-		if shardID != 1 {
-			t.Fatalf("tenant %q resolved shard %d, want 1", id, shardID)
-		}
+	r := NewSystemShardAuditResolver(host, 1, lookup, &fakeLogGroups{})
+	gotHost, shardID, err := r.ResolveAuditShard(context.Background(), "acme")
+	if err != nil {
+		t.Fatalf("ResolveAuditShard(acme): %v", err)
+	}
+	if gotHost != host || shardID != 1 {
+		t.Fatalf("tenant acme resolved (%v, %d), want the system shard 1", gotHost, shardID)
 	}
 }
 
-// TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup: a barrier
-// tenant's log lives in its home group, under the tenant's key.
-func TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup(t *testing.T) {
+// TestSystemShardAuditResolver_RoutesBarrierTenantsToTheirHomeGroup: a barrier
+// tenant's audit instance and its other logs live in its home group, under the
+// tenant's key, for the audit trail and the log service alike.
+func TestSystemShardAuditResolver_RoutesBarrierTenantsToTheirHomeGroup(t *testing.T) {
 	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
 		"widgets": {ID: "widgets", IsolationType: tenant.IsolationBarrier},
 		"vault":   {ID: "vault", IsolationType: tenant.IsolationBarrier},
 	}}
 	home := &mockHost{}
 	groups := &fakeLogGroups{host: home, homes: map[string]uint64{"widgets": 9}, sealed: map[string]bool{"vault": true}}
-	r := NewSystemShardLogResolver(&mockHost{}, 1, lookup, groups)
+	r := NewSystemShardAuditResolver(&mockHost{}, 1, lookup, groups)
 
 	host, shardID, err := r.ResolveAuditShard(context.Background(), "widgets")
 	if err != nil || shardID != 9 || host != home {
@@ -116,7 +114,7 @@ func TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup(t *testing.
 	}
 
 	// Without a group source a barrier tenant fails closed.
-	bare := NewSystemShardLogResolver(&mockHost{}, 1, lookup, nil)
+	bare := NewSystemShardAuditResolver(&mockHost{}, 1, lookup, nil)
 	var unavailable *BarrierStoreUnavailableError
 	if _, _, err := bare.ResolveAuditShard(context.Background(), "widgets"); !errors.As(err, &unavailable) || unavailable.TenantID != "widgets" {
 		t.Fatalf("no groups: ResolveAuditShard(widgets) = %v, want *BarrierStoreUnavailableError", err)
@@ -139,14 +137,15 @@ func (g *fakeLogGroups) TenantHomeGroup(_ context.Context, tenantID string) (Hos
 	return g.host, g.homes[tenantID], nil
 }
 
-// TestSystemShardLogResolver_RoutesOtherTenantsAsTheAuditResolverDoes: only
-// a barrier tenant is refused beyond what the audit resolver refuses.
-func TestSystemShardLogResolver_RoutesOtherTenantsAsTheAuditResolverDoes(t *testing.T) {
+// TestSystemShardAuditResolver_RoutesNonBarrierTenantsAsWithoutGroups: only
+// a barrier tenant uses the group source; every other tenant routes as it
+// does with none.
+func TestSystemShardAuditResolver_RoutesNonBarrierTenantsAsWithoutGroups(t *testing.T) {
 	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
 		"acme":  {ID: "acme", IsolationType: tenant.IsolationPrefix},
 		"vault": {ID: "vault", IsolationType: tenant.IsolationVolume},
 	}}
-	r := NewSystemShardLogResolver(&mockHost{}, 1, lookup, &fakeLogGroups{})
+	r := NewSystemShardAuditResolver(&mockHost{}, 1, lookup, &fakeLogGroups{})
 	for _, id := range []string{tenantid.System, "acme", "ghost"} {
 		if _, shardID, err := r.ResolveAuditShard(context.Background(), id); err != nil || shardID != 1 {
 			t.Fatalf("ResolveAuditShard(%q) = %d, %v; want shard 1", id, shardID, err)
@@ -167,7 +166,7 @@ func TestSystemShardAuditResolver_RefusesDedicatedIsolationTenants(t *testing.T)
 		"vault":  {ID: "vault", IsolationType: tenant.IsolationVolume},
 		"shard1": {ID: "shard1", IsolationType: tenant.IsolationRaft},
 	}}
-	r := NewSystemShardAuditResolver(host, 1, lookup)
+	r := NewSystemShardAuditResolver(host, 1, lookup, nil)
 	for _, id := range []string{"vault", "shard1"} {
 		_, _, err := r.ResolveAuditShard(context.Background(), id)
 		var refused *DedicatedTenantAuditNotSupportedError
@@ -183,7 +182,7 @@ func TestSystemShardAuditResolver_RefusesDedicatedIsolationTenants(t *testing.T)
 func TestSystemShardAuditResolver_PropagatesLookupError(t *testing.T) {
 	host := &mockHost{}
 	lookupErr := errors.New("store unavailable")
-	r := NewSystemShardAuditResolver(host, 1, &failingIsolationLookup{err: lookupErr})
+	r := NewSystemShardAuditResolver(host, 1, &failingIsolationLookup{err: lookupErr}, nil)
 	_, _, err := r.ResolveAuditShard(context.Background(), "acme")
 	if !errors.Is(err, lookupErr) {
 		t.Fatalf("err = %v, want %v", err, lookupErr)

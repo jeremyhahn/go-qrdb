@@ -39,14 +39,23 @@ type AuditIsolationLookup interface {
 	GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error)
 }
 
-// SystemShardAuditResolver resolves every prefix/barrier/system tenant's
-// replicated audit chain to one fixed (Host, shardID): the system shard,
-// where ruling 2 of docs/audit/architecture.md#cluster-wide-replicated-trail
-// already puts the system tenant's own platform events, and where every
-// prefix/barrier tenant's resolved IAM store already lives
-// (tenant.StoreResolver's sharedFor). An unregistered tenant id -- no
-// metadata at all -- resolves here too, mirroring tenant.StoreResolver's own
-// fall-through for the same case.
+// SystemShardAuditResolver is the one resolver the replicated audit trail
+// and the verifiable-log service route through, so a tenant's audit
+// instance (system/audit) is written and read in the same group. Every
+// prefix and system tenant resolves to one fixed (Host, shardID): the
+// system shard, where ruling 2 of
+// docs/audit/architecture.md#cluster-wide-replicated-trail already puts the
+// system tenant's own platform events, and where every prefix tenant's
+// resolved IAM store already lives (tenant.StoreResolver's sharedFor). An
+// unregistered tenant id -- no metadata at all -- resolves there too,
+// mirroring tenant.StoreResolver's own fall-through for the same case.
+//
+// A barrier tenant resolves to its own home group through groups: its audit
+// records, its logs' entries and their sealed head-signing keys are applied
+// into, and read from, the log registry of the tenant's barrier-sealed
+// store, never the system shard's, and a sealed tenant barrier refuses them
+// with the error its other reads return. Snapshot and restore of that group
+// carry the logs with it.
 //
 // A dedicated-isolation tenant (volume or raft) runs its own separate Raft
 // host, built lazily after its barrier unseals. Routing ITS audit trail to
@@ -59,32 +68,18 @@ type SystemShardAuditResolver struct {
 	host      Host
 	shardID   uint64
 	isolation AuditIsolationLookup
-	// logs routes a barrier tenant to its home group through groups; see
-	// NewSystemShardLogResolver.
-	logs   bool
-	groups LogGroupSource
+	groups    LogGroupSource
 }
 
 // NewSystemShardAuditResolver returns a resolver that names (host, shardID)
-// for every tenant isolation does not identify as dedicated. isolation may
-// be nil, in which case every tenant is routed to the system shard without a
-// dedicated-isolation check -- the correct behavior for a daemon
-// composition that has not wired tenant metadata (standalone, or a node
-// before firstboot).
-func NewSystemShardAuditResolver(host Host, shardID uint64, isolation AuditIsolationLookup) *SystemShardAuditResolver {
-	return &SystemShardAuditResolver{host: host, shardID: shardID, isolation: isolation}
-}
-
-// NewSystemShardLogResolver returns the resolver the verifiable-log service
-// routes through: NewSystemShardAuditResolver's, except that a barrier tenant
-// resolves to its own home group through groups. A log's entries and its
-// sealed head-signing key are then applied into, and read from, the log
-// registry of the tenant's barrier-sealed store, never the system shard's,
-// and a sealed tenant barrier refuses them with the error its other reads
-// return. Snapshot and restore of that group carry the logs with it. A nil
+// for every tenant isolation does not identify as dedicated or barrier, and
+// a barrier tenant's home group through groups. isolation may be nil, in
+// which case every tenant is routed to the system shard without an
+// isolation check -- the correct behavior for a daemon composition that has
+// not wired tenant metadata (standalone, or a node before firstboot). A nil
 // groups fails a barrier tenant closed with *BarrierStoreUnavailableError.
-func NewSystemShardLogResolver(host Host, shardID uint64, isolation AuditIsolationLookup, groups LogGroupSource) *SystemShardAuditResolver {
-	return &SystemShardAuditResolver{host: host, shardID: shardID, isolation: isolation, logs: true, groups: groups}
+func NewSystemShardAuditResolver(host Host, shardID uint64, isolation AuditIsolationLookup, groups LogGroupSource) *SystemShardAuditResolver {
+	return &SystemShardAuditResolver{host: host, shardID: shardID, isolation: isolation, groups: groups}
 }
 
 // LogGroupSource resolves the Raft group of a barrier tenant's home store: its
@@ -116,13 +111,10 @@ func (r *SystemShardAuditResolver) ResolveAuditShard(ctx context.Context, tenant
 			IsolationType: string(info.EffectiveIsolationType()),
 		}
 	case tenant.IsolationBarrier:
-		if r.logs {
-			if r.groups == nil {
-				return nil, 0, &BarrierStoreUnavailableError{TenantID: routed}
-			}
-			return r.groups.TenantHomeGroup(ctx, routed)
+		if r.groups == nil {
+			return nil, 0, &BarrierStoreUnavailableError{TenantID: routed}
 		}
-		return r.host, r.shardID, nil
+		return r.groups.TenantHomeGroup(ctx, routed)
 	default:
 		return r.host, r.shardID, nil
 	}

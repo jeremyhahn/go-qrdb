@@ -833,9 +833,17 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// BuildServices has returned, by which point n.Tenant -- if this
 	// composition has one at all -- is already set, so the lookups pick it
 	// up automatically with no restart.
-	auditResolver := service.NewSystemShardAuditResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	//
+	// The replicated audit logger and the verifiable-log service share one
+	// resolver, so a barrier tenant's audit instance (system/audit) is
+	// written and read in its home group, under its barrier (n.logGroups,
+	// attached with the home groups): a sealed tenant barrier refuses its
+	// audit appends and reads as it refuses its other writes. Prefix,
+	// system and unregistered tenants keep the system shard.
+	n.logGroups = &logGroups{host: infra.Host}
+	logResolver := service.NewSystemShardAuditResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n}, n.logGroups)
 	n.ReplicatedAudit = service.NewOptInAuditLogger(
-		service.NewReplicatedLogger(auditResolver),
+		service.NewReplicatedLogger(logResolver),
 		&nodeAuditEntitlementLookup{node: n},
 		infra.ReplicatedAuditPlatformEnabled,
 	)
@@ -1022,14 +1030,12 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		bm.SetUnsealGate(databaseUnsealGate(infra.ClusterSealer))
 	}
 
-	// The verifiable-log service routes as the audit chain does, except that
-	// a barrier tenant's logs, entries and sealed signing keys are applied in
-	// its home group and a barrier database's in the database's own group,
-	// each under that barrier (n.logGroups, attached with the home groups).
-	// A build without the qrdb_vlog tag has no log service, which is not a
-	// boot failure.
-	n.logGroups = &logGroups{host: infra.Host}
-	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n}, n.logGroups)
+	// The verifiable-log service routes over the audit logger's resolver
+	// (logResolver above): a barrier tenant's logs, entries and sealed
+	// signing keys are applied in its home group, under its barrier, and a
+	// barrier-enabled database's in that database's own barrier-protected
+	// store. A build without the qrdb_vlog tag has no log service, which is
+	// not a boot failure.
 	logSvc, err := buildLogService(logResolver, dbManager, infra.HeadSignerProvider)
 	if err != nil {
 		return nil, err
