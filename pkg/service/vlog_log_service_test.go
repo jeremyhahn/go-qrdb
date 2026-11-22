@@ -435,6 +435,36 @@ func TestLogService_BarrierDatabaseLifecycle(t *testing.T) {
 	}
 }
 
+// A seal and unseal with no log call in between leaves the log served: the
+// cached chain of the stopped incarnation is dropped, not taken for a seal.
+func TestLogService_BarrierDatabaseSealUnsealWithoutALogCallServes(t *testing.T) {
+	dir := t.TempDir()
+	mgr := newBarrierDatabaseManager(t, dir)
+	svc, _, _ := newBarrierLogService(t, mgr, nil)
+	acme := acmeCtx()
+	ref := LogRef{Database: "secure", Log: "events"}
+	if _, err := svc.CreateLog(acme, &CreateLogRequest{LogRef: ref, Origin: "acme/secure/events", SigningKeyType: vlog.SignatureEd25519}); err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	if _, err := svc.Append(acme, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("a0"), []byte("a1")}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := mgr.BarrierManager().SealDatabase("secure", "acme"); err != nil {
+		t.Fatalf("SealDatabase: %v", err)
+	}
+	if err := mgr.BarrierManager().UnsealDatabase(context.Background(), "secure", "acme", seal.MustCredentials(context.Background(), []byte(barrierDatabasePass))); err != nil {
+		t.Fatalf("UnsealDatabase: %v", err)
+	}
+	h, err := svc.Head(acme, &HeadRequest{LogRef: ref})
+	if err != nil || h.Head.Size != 2 {
+		t.Fatalf("Head after seal and unseal = %+v, %v; want size 2", h, err)
+	}
+	appended, err := svc.Append(acme, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("a2")}})
+	if err != nil || appended.FirstIndex != 2 {
+		t.Fatalf("Append after seal and unseal = %+v, %v; want first index 2", appended, err)
+	}
+}
+
 func TestLogService_RefusesALegacyRaftBarrierRecord(t *testing.T) {
 	legacy := database.NewDatabase(database.DatabaseConfig{
 		TenantID: "acme", Name: "secure", Backend: database.BackendRaft,

@@ -334,3 +334,9 @@ func (b *BarrierBackend) Close() error {
 	b.lease.Unregister()
 	return b.inner.Close()
 }
+
+// IsSealed reports whether the database's barrier is sealed: every call is
+// refused with SealedError while it is.
+func (b *BarrierBackend) IsSealed() bool {
+	return b.barrier.IsSealed()
+}

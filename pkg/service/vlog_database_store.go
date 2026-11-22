@@ -61,24 +61,34 @@ func newDatabaseLogStore(tenantID string, db *database.Database) *databaseLogSto
 // the chain was restored (a seal, drop or failure; an unseal hands out a
 // fresh signal). Either drops the in-memory chain. s.mu must be held.
 func (s *databaseLogStore) sealed() bool {
-	stopped := s.db.Status() == database.StatusSealed
-	if !stopped && s.served != nil {
+	if s.served != nil {
 		select {
 		case <-s.served:
-			stopped = true
+			// The incarnation the chain was restored under stopped serving:
+			// the chain is stale even if the database serves again now.
+			s.logs.drop()
+			s.served = nil
 		default:
 		}
 	}
-	if stopped {
+	if s.db.Status() == database.StatusSealed || barrierSealed(s.db.Backend()) {
 		s.logs.drop()
 		s.served = nil
+		return true
 	}
-	return stopped
+	return false
 }
 
 // sealedError is the refusal of a call to the sealed database.
 func (s *databaseLogStore) sealedError() error {
 	return &BarrierSealedError{TenantID: s.tenantID, Database: s.name}
+}
+
+// barrierSealed reports whether backend is a barrier whose seal is in
+// place: the barrier is sealed before the database's status follows it.
+func barrierSealed(backend database.Backend) bool {
+	sealed, ok := backend.(interface{ IsSealed() bool })
+	return ok && sealed.IsSealed()
 }
 
 // propose applies one encoded OpVerifiableLog command to the database's
