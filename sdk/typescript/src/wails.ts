@@ -348,6 +348,26 @@ function wrapBindings(
 }
 
 /**
+ * Prepends the database scope to every call of a binding whose Go methods
+ * take the target database as their first argument (VectorBinding): the
+ * Go side resolves the connection's client through Client.DatabaseScoped,
+ * so the operation reaches that database and not the connection's default
+ * one. An empty name is the unscoped client.
+ */
+function withDatabaseArg(
+    b: Record<string, (...args: unknown[]) => Promise<unknown>>,
+    database: string,
+): Record<string, (...args: unknown[]) => Promise<unknown>> {
+    return new Proxy(b, {
+        get(target, prop: string) {
+            const fn = target[prop];
+            if (typeof fn !== 'function') return fn;
+            return (...args: unknown[]) => fn(database, ...args);
+        },
+    });
+}
+
+/**
  * Normalizes a binding rejection to an Error. The Wails runtime rejects a
  * Go method's error as its message string, not an Error, so callers that
  * test `instanceof Error` would otherwise lose the server's message.
@@ -446,10 +466,24 @@ interface WailsRuntime {
  */
 export class WailsClient implements Client {
 
-    /** Tracks whether the embedded server is currently running. */
-    // Held in an object so a databaseScoped() client, which delegates to
-    // this one, reads and writes the same flag.
-    private readonly embedded = { running: false };
+    /**
+     * Tracks whether the embedded server is currently running. Shared with
+     * every database-scoped client derived from this one: there is one
+     * embedded server per process.
+     */
+    private readonly embedded: { running: boolean };
+
+    /**
+     * The database this client targets; empty for the unscoped client
+     * (the connection's default, the `system` database). Named apart from
+     * the `database` getter, which returns the DatabaseClient.
+     */
+    private readonly activeDatabase: string;
+
+    constructor(database = '', embedded?: { running: boolean }) {
+        this.activeDatabase = database;
+        this.embedded = embedded ?? { running: false };
+    }
 
     /**
      * @inheritdoc
@@ -462,16 +496,9 @@ export class WailsClient implements Client {
      */
     databaseScoped(name: string): Client {
         const target = name === 'system' ? '' : name;
-        if (target === this.activeDatabase) {
-            return this;
-        }
-        const scoped = Object.create(this) as WailsClient;
-        scoped.activeDatabase = target;
-        return scoped;
+        if (target === this.activeDatabase) return this;
+        return new WailsClient(target, this.embedded);
     }
-
-    /** The database KV-keyspace calls are scoped to; empty for the default. */
-    private activeDatabase = '';
 
     // -----------------------------------------------------------------------
     // Connection
@@ -959,7 +986,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get vector(): VectorClient | null {
-        const b = wrapBindings(getBindings().main.VectorBinding);
+        const b = withDatabaseArg(wrapBindings(getBindings().main.VectorBinding), this.activeDatabase);
         return {
             createNamespace: async (
                 req: CreateNamespaceRequest,
@@ -1001,24 +1028,22 @@ export class WailsClient implements Client {
                 return b.UpsertVector(toSnake({ ...req, id: vectorIDToWire(req.id) })) as Promise<UpsertVectorResponse>;
             },
             getVector: async (req: GetVectorRequest): Promise<VectorData> => {
-                // The binding takes transport.GetVectorRequest, whose
-                // include_vector/include_metadata default to false: ask for
-                // both, as the REST route answers them.
-                const vec = await b.GetVector(toSnake({
-                    ...req,
-                    id: vectorIDToWire(req.id),
-                    includeVector: true,
-                    includeMetadata: true,
-                })) as VectorData;
+                // The Go request defaults both include flags to false, which
+                // omits the values and the metadata; a vector read is whole.
+                const vec = await b.GetVector({
+                    ...toSnake({ ...req, id: vectorIDToWire(req.id) }),
+                    include_vector: true,
+                    include_metadata: true,
+                }) as VectorData;
                 return normalizeVectorIDField(vec);
             },
             deleteVector: async (req: DeleteVectorRequest): Promise<void> => {
                 await b.DeleteVector(toSnake({ ...req, id: vectorIDToWire(req.id) }));
             },
             batchUpsert: async (req: BatchUpsertRequest): Promise<BatchUpsertResponse> => {
-                // The binding answers transport.BatchUpsertResponse
-                // {ids, versions, success, inserted_count}: the upserted
-                // count is inserted_count, the rest failed.
+                // The binding answers the Go BatchUpsertResponse
+                // {ids, versions, timestamp, success, inserted_count}: the
+                // upserted count is inserted_count, the rest failed.
                 const resp = await b.BatchUpsert(toSnake({
                     ...req,
                     vectors: req.vectors.map((v) => ({ ...v, id: vectorIDToWire(v.id) })),
@@ -1029,7 +1054,8 @@ export class WailsClient implements Client {
             batchDeleteVectors: async (
                 req: BatchDeleteVectorsRequest,
             ): Promise<BatchDeleteVectorsResponse> => {
-                // The binding answers {deleted_count, failed_ids, success}.
+                // The binding answers the Go BatchDeleteVectorsResponse
+                // {deleted_count, failed_ids, timestamp, success}.
                 const resp = await b.BatchDeleteVectors(toSnake({
                     ...req,
                     ids: req.ids.map(vectorIDToWire),

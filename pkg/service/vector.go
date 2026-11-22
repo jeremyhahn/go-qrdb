@@ -3153,7 +3153,10 @@ func (v *vectorService) validateGetCompactionProgressRequest(req *GetCompactionP
 // Extended Vector Operations
 // =============================================================================
 
-// BatchDeleteVectors removes multiple vectors from the namespace.
+// BatchDeleteVectors removes multiple vectors from the namespace: from
+// storage in one batch, then from the live HNSW index, so SearchSimilar no
+// longer returns them. If the batch storage call fails it falls back to
+// DeleteVector per ID and reports the IDs that could not be deleted.
 func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDeleteVectorsRequest) (*BatchDeleteVectorsResponse, error) {
 	start := time.Now()
 
@@ -3170,7 +3173,11 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 	scoped := scopedFromContext(ctx, req.Namespace)
 
 	err := v.admit(func() error {
-		return v.storage.BatchDeleteVectors(ctx, scoped, req.IDs)
+		if err := v.storage.BatchDeleteVectors(ctx, scoped, req.IDs); err != nil {
+			return err
+		}
+		v.removeFromLiveIndex(scoped, req.Namespace, req.IDs)
+		return nil
 	})
 	var closedErr *VectorServiceClosedError
 	if errors.As(err, &closedErr) {
@@ -3217,6 +3224,34 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 		Timestamp:    time.Now().UnixNano(),
 		Success:      true,
 	}, nil
+}
+
+// removeFromLiveIndex drops ids from the namespace's live HNSW index after
+// storage has deleted them and moves the delete metrics, as DeleteVector does
+// for one ID. A failed index removal is logged and the rest go on. Callers
+// hold v.mu read-locked with v.closed checked (v.admit).
+func (v *vectorService) removeFromLiveIndex(scoped, namespace string, ids []uint64) {
+	v.indexMu.RLock()
+	index, exists := v.hnswIndexes[scoped]
+	v.indexMu.RUnlock()
+
+	if exists {
+		for _, id := range ids {
+			if err := index.Delete(id); err != nil {
+				v.logger.WithFields(map[string]interface{}{
+					"namespace": namespace,
+					"id":        id,
+					"error":     err,
+				}).Warn("failed to delete vector from HNSW index")
+			}
+		}
+	}
+
+	if v.metrics != nil {
+		n := float64(len(ids))
+		v.metrics.vectorsDeleted.Add(n)
+		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Sub(n)
+	}
 }
 
 // ListVectors returns vectors in a namespace with pagination.

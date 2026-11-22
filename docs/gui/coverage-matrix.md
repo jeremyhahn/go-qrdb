@@ -134,7 +134,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Officer | `registerDatabaseOfficer` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | database-holders.spec.ts dom/database-holders-roundtrip.spec.ts | *verified* |
 | Officer | `registerOfficer` | views/admin/SealManager.svelte components/wizard/HolderEnrolmentForms.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `registerRecoveryOfficer` | views/admin/SealManager.svelte | admin-seal-recovery-officers.spec.ts | *verified* |
-| Officer | `registerTenantOfficer` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
+| Officer | `registerTenantOfficer` | views/admin/TenantManager.svelte | tenant-holders.spec.ts, dom/tenant-trust-roundtrip.spec.ts | *verified* |
 | Officer | `revokeDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | database-holders.spec.ts dom/database-holders-roundtrip.spec.ts | *verified* |
 | Officer | `revokeOfficer` | views/admin/SealManager.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `revokeTenantOfficer` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
@@ -173,7 +173,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Tenant | `delete` | views/admin/TenantManager.svelte | tenant-crud.spec.ts | *verified* |
 | Tenant | `get` | views/admin/TenantDetail.svelte | tenant-crud.spec.ts tenant-quotas.spec.ts | *verified* |
 | Tenant | `list` | views/admin/TenantManager.svelte components/admin/TenantSelect.svelte | tenant-crud.spec.ts | *verified* |
-| Tenant | `listTrustAnchors` | views/admin/TenantDetail.svelte | tenant-trust-anchors.spec.ts | *verified* |
+| Tenant | `listTrustAnchors` | views/admin/TenantDetail.svelte | tenant-trust-anchors.spec.ts, dom/tenant-trust-roundtrip.spec.ts | *verified* |
 | Tenant | `removeTrustAnchor` | views/admin/TenantDetail.svelte | tenant-trust-anchors.spec.ts | *verified* |
 | Tenant | `update` | views/admin/TenantDetail.svelte | dom/tenant-management.spec.ts | *verified* |
 | Tenant | `updateEntitlements` | views/admin/TenantDetail.svelte | tenant-multitenancy-web.spec.ts dom/tenant-management.spec.ts | *verified* |
@@ -199,8 +199,8 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | User | `list` | views/admin/UserManager.svelte | admin-users.spec.ts | *verified* |
 | User | `removeCertBinding` | views/admin/UserDetail.svelte | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
 | User | `update` | views/admin/UserDetail.svelte (username, email, display name) | dom/user-detail-roundtrip.spec.ts | *verified* |
-| Vector | `batchDeleteVectors` | views/user/VectorView.svelte | vector-advanced.spec.ts | *verified* |
-| Vector | `batchUpsert` | views/user/VectorView.svelte | vector-advanced.spec.ts | *verified* |
+| Vector | `batchDeleteVectors` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
+| Vector | `batchUpsert` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
 | Vector | `compactNamespace` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `createNamespace` | views/user/VectorView.svelte  | vector.spec.ts vector-namespace-fix.spec.ts  |  |
 | Vector | `deleteNamespace` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
@@ -209,15 +209,15 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Vector | `getIndexStats` | views/user/VectorView.svelte | vector.spec.ts (load stats) | *verified* |
 | Vector | `getNamespaceInfo` | views/user/VectorView.svelte | vector.spec.ts (info stat cards) | *verified* |
 | Vector | `getRebuildProgress` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
-| Vector | `getVector` | views/user/VectorView.svelte | vector-advanced.spec.ts | *verified* |
-| Vector | `hybridSearch` (similarity search narrowed by a metadata filter; the service ranks by similarity only, so the view has no weight inputs) | views/user/VectorView.svelte | vector-advanced.spec.ts | *verified* |
+| Vector | `getVector` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
+| Vector | `hybridSearch` (similarity search narrowed by a metadata filter; the service ranks by similarity only, so the view has no weight inputs) | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
 | Vector | `listNamespaces` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `listVectors` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `rebuildIndex` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `searchByID` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `searchByMetadata` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `searchSimilar` | views/user/VectorView.svelte | vector.spec.ts (search form, input validation) | *verified* |
-| Vector | `updateMetadata` | views/user/VectorView.svelte | vector-advanced.spec.ts | *verified* |
+| Vector | `updateMetadata` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
 | Vector | `upsertVector` | views/user/VectorView.svelte  | vector.spec.ts  |  |
 | VolumePool | `create` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
 | VolumePool | `delete` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |

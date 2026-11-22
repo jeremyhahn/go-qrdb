@@ -139,6 +139,32 @@
   let compactProgress: unknown = $state(null);
 
   // ---------------------------------------------------------------------------
+  // Namespace selection generation
+  // ---------------------------------------------------------------------------
+
+  // nsGeneration counts namespace selections. A per-namespace read applies
+  // its response (results, error toast, loading flag) only while its
+  // namespace selection is current: same generation and selectedNamespace
+  // still the namespace the request was sent for.
+  let nsGeneration = 0;
+
+  function nsSelectionCurrent(gen: number, namespace: string): boolean {
+    return gen === nsGeneration && selectedNamespace === namespace;
+  }
+
+  /** A namespace change drops every result shown for the previous one. */
+  function resetNamespaceResults(): void {
+    nsGeneration++;
+    nsInfoResult = null;
+    vecListResults = [];
+    vectorsLoading = false;
+    statsResult = null;
+    rebuildProgress = null;
+    compactProgress = null;
+    searchResults = [];
+  }
+
+  // ---------------------------------------------------------------------------
   // Delete confirmation state
   // ---------------------------------------------------------------------------
 
@@ -420,14 +446,19 @@
       showToast("error", "Vector operations are not available on this connection.");
       return;
     }
-    if (selectedNamespace.trim() === "") return;
+    const namespace = selectedNamespace;
+    if (namespace.trim() === "") return;
+    const gen = nsGeneration;
     loading = true;
     try {
-      nsInfoResult = await client.vector.getNamespaceInfo({ namespace: selectedNamespace });
+      const info = await client.vector.getNamespaceInfo({ namespace });
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      nsInfoResult = info;
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -520,18 +551,25 @@
       showToast("error", "Vector operations are not available on this connection.");
       return;
     }
-    if (selectedNamespace.trim() === "") return;
+    const namespace = selectedNamespace;
+    if (namespace.trim() === "") return;
+    const gen = nsGeneration;
     vectorsLoading = true;
     try {
-      const resp: ListVectorsResponse = await client.vector.listVectors({ namespace: selectedNamespace });
+      const resp: ListVectorsResponse = await client.vector.listVectors({ namespace });
+      if (!nsSelectionCurrent(gen, namespace)) return;
       vecListResults = [...resp.vectors];
-      // Every write relists; the namespace cards follow the same refresh.
-      nsInfoResult = await client.vector.getNamespaceInfo({ namespace: selectedNamespace });
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      vectorsLoading = false;
+      if (nsSelectionCurrent(gen, namespace)) vectorsLoading = false;
     }
+    // Every write relists; the namespace cards follow the same refresh. A
+    // failed info read reports once, through handleNsInfo. A list for a
+    // superseded selection stops here: the new selection reads its own.
+    if (!nsSelectionCurrent(gen, namespace)) return;
+    await handleNsInfo();
   }
 
   // ---------------------------------------------------------------------------
@@ -595,6 +633,15 @@
         !Array.isArray(vec) || vec.length === 0 || !vec.every((n) => typeof n === "number")
       ) {
         showToast("warning", `Batch item ${i + 1} needs a string id and a numeric vector array.`);
+        return null;
+      }
+      // The transports send all-digit ids as JSON numbers; past 2^53 - 1
+      // Number() rounds them onto a different id, so refuse those here.
+      if (/^\d+$/.test(o.id) && BigInt(o.id) > BigInt(Number.MAX_SAFE_INTEGER)) {
+        showToast(
+          "warning",
+          `Batch item ${i + 1} id ${o.id} exceeds the largest exact numeric id (${Number.MAX_SAFE_INTEGER}).`,
+        );
         return null;
       }
       const md = o.metadata;
@@ -661,6 +708,11 @@
       return;
     }
     const { method, options } = event;
+    // The request carries options.namespace; its results apply only while
+    // the selection current at call time still is.
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
+    let results: unknown[] = [];
 
     loading = true;
     try {
@@ -675,7 +727,7 @@
             vector: options.vector,
             k: options.topK ?? 10,
           });
-          searchResults = [...resp.results];
+          results = [...resp.results];
           break;
         }
         case "id": {
@@ -688,7 +740,7 @@
             id: options.vectorId,
             k: options.topK ?? 10,
           });
-          searchResults = [...resp.results];
+          results = [...resp.results];
           break;
         }
         case "metadata": {
@@ -701,18 +753,21 @@
             filters: options.metadataFilter,
             limit: options.topK ?? 10,
           });
-          searchResults = [...resp.results];
+          results = [...resp.results];
           break;
         }
       }
 
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      searchResults = results;
       if (searchResults.length === 0) {
         showToast("info", "No matching vectors found.");
       }
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -741,22 +796,26 @@
       showToast("warning", "K must be a positive integer.");
       return;
     }
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
     loading = true;
     try {
       const resp: HybridSearchResponse = await client.vector.hybridSearch({
-        namespace: selectedNamespace,
+        namespace,
         vector,
         metadataFilters,
         k,
       });
+      if (!nsSelectionCurrent(gen, namespace)) return;
       searchResults = [...resp.results];
       if (searchResults.length === 0) {
         showToast("info", "No matching vectors found.");
       }
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -794,16 +853,21 @@
       showToast("warning", "Select a namespace first.");
       return;
     }
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
     loading = true;
     try {
-      rebuildProgress = await client.vector.getRebuildProgress({
-        namespace: selectedNamespace,
+      const progress = await client.vector.getRebuildProgress({
+        namespace,
         jobId: rebuildJobId,
       });
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      rebuildProgress = progress;
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -816,13 +880,18 @@
       showToast("warning", "Select a namespace first.");
       return;
     }
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
     loading = true;
     try {
-      statsResult = await client.vector.getIndexStats({ namespace: selectedNamespace });
+      const stats = await client.vector.getIndexStats({ namespace });
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      statsResult = stats;
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -856,16 +925,21 @@
       showToast("warning", "Select a namespace first.");
       return;
     }
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
     loading = true;
     try {
-      compactProgress = await client.vector.getCompactionProgress({
-        namespace: selectedNamespace,
+      const progress = await client.vector.getCompactionProgress({
+        namespace,
         jobId: compactJobId,
       });
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      compactProgress = progress;
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -877,22 +951,51 @@
     selectedNamespace = event.row.namespace;
   }
 
+  /**
+   * The list route sends uint64 ids as JSON numbers, which JavaScript has
+   * already rounded past 2^53 (9007199254740993 arrives as
+   * 9007199254740992). Such an id may name a different vector, so it never
+   * reaches getVector or updateMetadata.
+   */
+  function unsafeNumericId(id: unknown): string | null {
+    if (typeof id === "number") {
+      return Number.isSafeInteger(id) || !Number.isInteger(id) ? null : String(id);
+    }
+    if (typeof id === "string" && /^\d+$/.test(id) && BigInt(id) > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return id;
+    }
+    return null;
+  }
+
   function handleVectorRowClick(event: RowClickEvent<VectorRow>): void {
+    const unsafe = unsafeNumericId((event.row.raw as Record<string, unknown>).id);
+    if (unsafe !== null) {
+      showToast(
+        "error",
+        `Vector id ${unsafe} exceeds the largest exact numeric id (${Number.MAX_SAFE_INTEGER}); the list cannot identify it exactly, so it cannot be opened for editing.`,
+      );
+      return;
+    }
     selectedVector = event.row.raw;
     detailVector = null;
+    detailError = "";
     detailMetadata = JSON.stringify(
       ((event.row.raw as Record<string, unknown>).metadata as Record<string, unknown> | undefined) ?? {},
       null,
       2,
     );
     showVectorDetailPanel = true;
-    void loadVectorDetail(event.row.id);
+    // A new selection invalidates every response still in flight for the
+    // previous one: the editor only ever shows and saves this target.
+    detailGeneration++;
+    const target = { namespace: selectedNamespace, id: event.row.id };
+    detailTarget = target;
+    void loadVectorDetail(detailGeneration, target);
   }
 
   function closeVectorDetail(): void {
-    // Invalidate any getVector still in flight so it cannot repopulate
-    // the panel (or retarget Save) after the selection changed.
-    detailRequest++;
+    detailGeneration++;
+    detailTarget = null;
     showVectorDetailPanel = false;
     selectedVector = null;
     detailVector = null;
@@ -904,29 +1007,27 @@
   // Vector detail: getVector + updateMetadata
   // ---------------------------------------------------------------------------
 
-  // Monotonic token of the latest loadVectorDetail call. A response is
-  // applied only when its token is still the latest one, so a slow
-  // getVector for a previously selected vector never replaces the current one.
-  let detailRequest = 0;
+  // detailGeneration counts detail-panel selections; a getVector or
+  // updateMetadata response applies only while its generation is current.
+  let detailGeneration = 0;
+  let detailTarget: { namespace: string; id: string } | null = null;
 
-  async function loadVectorDetail(id: string): Promise<void> {
-    const token = ++detailRequest;
-    const namespace = selectedNamespace;
-    if (client.vector === null || namespace.trim() === "" || id === "") return;
+  async function loadVectorDetail(gen: number, target: { namespace: string; id: string }): Promise<void> {
+    if (client.vector === null || target.namespace.trim() === "" || target.id === "") return;
+    if (gen !== detailGeneration) return;
     detailLoading = true;
     detailError = "";
-    const current = (): boolean => token === detailRequest && namespace === selectedNamespace;
     try {
-      const v: VectorData = await client.vector.getVector({ namespace, id });
-      if (!current()) return;
+      const v: VectorData = await client.vector.getVector({ namespace: target.namespace, id: target.id });
+      if (gen !== detailGeneration) return;
       detailVector = v;
       detailMetadata = JSON.stringify(v.metadata ?? {}, null, 2);
     } catch (err: unknown) {
-      if (!current()) return;
+      if (gen !== detailGeneration) return;
       detailVector = null;
       detailError = err instanceof Error ? err.message : String(err);
     } finally {
-      if (current()) detailLoading = false;
+      if (gen === detailGeneration) detailLoading = false;
     }
   }
 
@@ -948,10 +1049,20 @@
       showToast("error", "Vector operations are not available on this connection.");
       return;
     }
-    const id = detailVector?.id ?? ((selectedVector as Record<string, unknown> | null)?.id as string | undefined) ?? "";
-    const namespace = selectedNamespace;
-    if (namespace.trim() === "" || id === "") {
+    // The target is the selection the editor was opened for, never a
+    // response that arrived for an earlier one.
+    const gen = detailGeneration;
+    const target = detailTarget;
+    const id = target?.id ?? "";
+    if (target === null || target.namespace.trim() === "" || id === "") {
       showToast("warning", "Namespace and vector ID are required.");
+      return;
+    }
+    // updateMetadata replaces the stored metadata: only an editor seeded by
+    // a successful getVector of this target may write it. The list row's
+    // metadata is not authoritative (the list omits it by default).
+    if (detailLoading || detailVector === null) {
+      showToast("error", "The vector could not be read; reopen it before saving metadata.");
       return;
     }
     const metadata = parseJsonObjectStrict(detailMetadata, "Metadata");
@@ -959,17 +1070,17 @@
     detailLoading = true;
     try {
       await client.vector.updateMetadata({
-        namespace,
+        namespace: target.namespace,
         id,
         metadata,
       });
       showToast("success", `Metadata of vector "${id}" updated.`);
-      await loadVectorDetail(id);
+      if (gen === detailGeneration) await loadVectorDetail(gen, target);
       await handleVecList();
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      detailLoading = false;
+      if (gen === detailGeneration) detailLoading = false;
     }
   }
 
@@ -992,12 +1103,13 @@
   });
 
   $effect(() => {
-    if (selectedNamespace.trim() !== "") {
-      handleNsInfo();
+    const namespace = selectedNamespace;
+    // Every selection change, to a namespace or to none, invalidates the
+    // reads still in flight for the previous one.
+    resetNamespaceResults();
+    if (namespace.trim() !== "") {
+      // handleVecList reads the namespace info after the list.
       handleVecList();
-    } else {
-      nsInfoResult = null;
-      vecListResults = [];
     }
   });
 </script>
@@ -1168,8 +1280,7 @@
             Hybrid
           </h3>
           <p class="text-base-content/50 text-xs">
-            Nearest vectors by similarity, keeping only those whose metadata
-            matches the filter, in namespace
+            Combine vector similarity with a metadata match in namespace
             <span class="font-semibold">{selectedNamespace || "(none selected)"}</span>.
           </p>
           <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1523,7 +1634,8 @@
             <button
               class="btn btn-primary btn-sm mt-2"
               onclick={handleSaveMetadata}
-              disabled={detailLoading}
+              disabled={detailLoading || detailVector === null}
+              data-testid="vector-detail-save-metadata"
             >
               Save metadata
             </button>

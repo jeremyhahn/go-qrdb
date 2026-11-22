@@ -104,7 +104,7 @@ async function injectStatefulVectorBinding(
     };
 
     go.main.VectorBinding = {
-      CreateNamespace: async (req: unknown) => {
+      CreateNamespace: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.CreateNamespace");
         const r = req as { namespace: string; dimension: number };
         if (namespaceStore.has(r.namespace)) {
@@ -115,7 +115,7 @@ async function injectStatefulVectorBinding(
         return {};
       },
 
-      DeleteNamespace: async (req: unknown) => {
+      DeleteNamespace: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.DeleteNamespace");
         const r = req as { namespace: string };
         namespaceStore.delete(r.namespace);
@@ -127,7 +127,7 @@ async function injectStatefulVectorBinding(
         return { namespaces: Array.from(namespaceStore.keys()) };
       },
 
-      GetNamespaceInfo: async (req: unknown) => {
+      GetNamespaceInfo: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.GetNamespaceInfo");
         const r = req as { namespace: string };
         const info = namespaceStore.get(r.namespace);
@@ -140,122 +140,133 @@ async function injectStatefulVectorBinding(
         };
       },
 
-      UpsertVector: async (req: unknown) => {
+      UpsertVector: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.UpsertVector");
         const r = req as { namespace: string; id: string; vector: number[]; metadata?: Record<string, unknown> };
         put(r.namespace, r.id, r.vector, r.metadata ?? {});
         return {};
       },
 
-      // The Go binding answers transport.GetVectorResponse in snake_case
-      // and, like the service, omits the vector and the metadata unless
-      // include_vector / include_metadata ask for them.
-      GetVector: async (req: unknown) => {
+      GetVector: async (_database: unknown, req: unknown) => {
+        const gs = w.__QRDB_MOCK_STATE__ as { getVectorCalls?: number };
+        gs.getVectorCalls = (gs.getVectorCalls ?? 0) + 1;
         maybeReject("VectorBinding.GetVector");
-        const r = req as { namespace: string; id: string; include_vector?: boolean; include_metadata?: boolean };
-        // A test can hold the answer for one id until it releases it, to
-        // make a stale response arrive after a newer one.
-        const hold = (w.__VEC_GET_HOLD__ as Record<string, Promise<void>> | undefined)?.[String(r.id)];
-        if (hold) await hold;
-        ((w.__VEC_GET_ANSWERED__ ??= []) as string[]).push(String(r.id));
-        const v = lookup(r.namespace, String(r.id));
-        return {
-          id: v.id,
-          ...(r.include_vector ? { vector: v.vector } : {}),
-          ...(r.include_metadata ? { metadata: v.metadata } : {}),
-          version: v.version,
-          created_at: v.createdAt,
-          updated_at: v.updatedAt,
-          found: true,
+        const r = req as { namespace: string; id: string };
+        // A held ID answers only when the test releases it, so a spec can
+        // deliver responses out of order.
+        const s = w.__QRDB_MOCK_STATE__ as {
+          holdGetVector?: Record<string, boolean>;
+          releaseGetVector?: Record<string, () => void>;
         };
+        if (s.holdGetVector?.[r.id]) {
+          await new Promise<void>((resolve) => {
+            s.releaseGetVector = { ...(s.releaseGetVector ?? {}), [r.id]: resolve };
+          });
+        }
+        // Like the Go service, the binding returns the values and the
+        // metadata only when the request asks for them.
+        const q = req as { include_vector?: boolean; include_metadata?: boolean };
+        const out: Record<string, unknown> = { ...lookup(r.namespace, r.id) };
+        if (q.include_vector !== true) delete out.vector;
+        if (q.include_metadata !== true) delete out.metadata;
+        return out;
       },
 
-      DeleteVector: async (req: unknown) => {
+      DeleteVector: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.DeleteVector");
         const r = req as { namespace: string; id: string };
         vectorStore.get(r.namespace)?.delete(r.id);
       },
 
-      BatchUpsert: async (req: unknown) => {
+      BatchUpsert: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.BatchUpsert");
         const r = req as {
           namespace: string;
           vectors: Array<{ id: string; vector: number[]; metadata?: Record<string, unknown> }>;
         };
+        // The Go service validates the whole batch first and answers
+        // {ids, versions, timestamp, success, inserted_count}; one bad
+        // dimension refuses the batch.
         const dim = namespaceStore.get(r.namespace)?.dimension;
-        const ids: string[] = [];
-        const versions: number[] = [];
         for (const v of r.vectors) {
-          if (dim !== undefined && v.vector.length !== dim) continue;
-          put(r.namespace, String(v.id), v.vector, v.metadata ?? {});
-          ids.push(String(v.id));
-          versions.push(lookup(r.namespace, String(v.id)).version);
+          if (dim !== undefined && v.vector.length !== dim) {
+            throw new Error(`service: dimension mismatch: expected ${dim}, got ${v.vector.length}`);
+          }
         }
-        // transport.BatchUpsertResponse: no succeeded/failed/errors fields.
-        return { ids, versions, timestamp: 1, success: true, inserted_count: ids.length };
+        for (const v of r.vectors) put(r.namespace, v.id, v.vector, v.metadata ?? {});
+        return {
+          ids: r.vectors.map((v) => v.id),
+          versions: r.vectors.map(() => 1),
+          timestamp: 0,
+          success: true,
+          inserted_count: r.vectors.length,
+        };
       },
 
-      BatchDeleteVectors: async (req: unknown) => {
+      BatchDeleteVectors: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.BatchDeleteVectors");
         const r = req as { namespace: string; ids: string[] };
         const vecs = vectorStore.get(r.namespace);
-        let deleted = 0;
+        // The Go BatchDeleteVectorsResponse: deleted_count and failed_ids.
+        let deletedCount = 0;
         const failedIds: string[] = [];
         for (const id of r.ids ?? []) {
-          if (vecs?.delete(String(id))) {
-            deleted++;
+          if (vecs?.delete(id)) {
+            deletedCount++;
           } else {
-            failedIds.push(String(id));
+            failedIds.push(id);
           }
         }
-        // transport.BatchDeleteVectorsResponse.
-        return { deleted_count: deleted, failed_ids: failedIds, timestamp: 1, success: failedIds.length === 0 };
+        return { deleted_count: deletedCount, failed_ids: failedIds, timestamp: 0, success: true };
       },
 
-      ListVectors: async (req: unknown) => {
+      ListVectors: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.ListVectors");
+        // listVectorsWire is a raw JSON body: JSON.parse decodes uint64
+        // ids as numbers exactly as the transport does, rounding past 2^53.
+        const ls = w.__QRDB_MOCK_STATE__ as { listVectorsWire?: string };
+        if (ls.listVectorsWire !== undefined) return JSON.parse(ls.listVectorsWire);
         const r = req as { namespace: string };
         const vecs = vectorStore.get(r.namespace);
         return { vectors: vecs ? Array.from(vecs.values()) : [] };
       },
 
-      UpdateMetadata: async (req: unknown) => {
+      UpdateMetadata: async (_database: unknown, req: unknown) => {
+        const st = w.__QRDB_MOCK_STATE__ as { updateMetadataCalls?: number };
+        st.updateMetadataCalls = (st.updateMetadataCalls ?? 0) + 1;
         maybeReject("VectorBinding.UpdateMetadata");
         const r = req as { namespace: string; id: string; metadata: Record<string, unknown> };
-        ((w.__VEC_UPDATE_IDS__ ??= []) as string[]).push(String(r.id));
         const vec = lookup(r.namespace, r.id);
         put(r.namespace, r.id, vec.vector, r.metadata);
       },
 
-      HybridSearch: async (req: unknown) => {
+      HybridSearch: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.HybridSearch");
-        // transport.HybridSearchRequest reads query_vector and
-        // metadata_filter. The service keeps the vectors whose metadata
-        // matches the filter and ranks them by similarity; it has no weights.
+        // transport.HybridSearchRequest: query_vector, k, metadata_filter.
+        // The service runs a similarity search, then keeps only the
+        // results whose metadata matches the filter exactly.
         const r = req as {
           namespace: string;
           query_vector?: number[];
           metadata_filter?: Record<string, unknown>;
           k: number;
-          include_metadata?: boolean;
         };
         if (!Array.isArray(r.query_vector) || r.query_vector.length === 0) {
-          throw new Error("query_vector is required");
+          throw new Error("query vector is required");
         }
         const q = r.query_vector;
         const vecs = vectorStore.get(r.namespace);
-        if (!vecs) return { results: [], query_duration: 0 };
-        const filter = r.metadata_filter ?? {};
+        if (!vecs) return { results: [], took: 0 };
+        const filters = r.metadata_filter ?? {};
+        const keys = Object.keys(filters);
+        const dot = (a: number[], b: number[]): number => a.reduce((acc, x, i) => acc + x * (b[i] ?? 0), 0);
+        const norm = (a: number[]): number => Math.sqrt(dot(a, a)) || 1;
         const results = Array.from(vecs.values())
-          .filter((v) => Object.keys(filter).every((key) => String(v.metadata[key]) === String(filter[key])))
-          .map((v) => ({
-            id: v.id,
-            score: v.vector.reduce((acc, x, i) => acc + x * (q[i] ?? 0), 0),
-            ...(r.include_metadata ? { metadata: v.metadata } : {}),
-          }))
+          .map((v) => ({ id: v.id, score: dot(q, v.vector) / (norm(q) * norm(v.vector)), metadata: v.metadata }))
           .sort((a, b) => b.score - a.score)
-          .slice(0, r.k);
-        return { results, query_duration: 1 };
+          .slice(0, r.k)
+          .filter((v) => keys.every((key) => String(v.metadata[key]) === String(filters[key])));
+        return { results, took: 1 };
       },
     };
   });
@@ -370,60 +381,11 @@ test.describe("Vector View - advanced operations", () => {
     await expect(detail.getByTestId("vector-detail-metadata-json")).toContainText('"label": "first"');
   });
 
-  test("a stale getVector for a closed selection does not replace the current one", async ({ page }) => {
-    await upsertVector(page, "va", "0.1, 0.2, 0.3", '{"label": "a"}');
-    await upsertVector(page, "vb", "0.4, 0.5, 0.6", '{"label": "b"}');
-    // Hold the answer for va until the test releases it.
-    await page.evaluate(() => {
-      const w = window as unknown as Record<string, unknown>;
-      w.__VEC_GET_HOLD__ = {
-        va: new Promise<void>((resolve) => {
-          w.__VEC_RELEASE_VA__ = resolve;
-        }),
-      };
-    });
-
-    await page.getByText("va", { exact: true }).first().click();
-    const detail = page.getByLabel("Vector Details");
-    await expect(detail).toBeVisible();
-    await detail.getByRole("button", { name: "Close", exact: true }).last().click();
-
-    await page.getByText("vb", { exact: true }).first().click();
-    await expect(detail.getByTestId("vector-detail-created")).toHaveText("1700000002", { timeout: 5_000 });
-    await expect(detail.getByTestId("vector-detail-metadata-input")).toHaveValue(/"label": "b"/);
-
-    // va's getVector now answers, after vb's.
-    await page.evaluate(() => {
-      const w = window as unknown as Record<string, unknown>;
-      (w.__VEC_RELEASE_VA__ as () => void)();
-    });
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () => (window as unknown as Record<string, unknown>).__VEC_GET_ANSWERED__ as string[] | undefined,
-        ),
-      )
-      .toContain("va");
-    await expect(detail.getByTestId("vector-detail-created")).toHaveText("1700000002");
-    await expect(detail.getByTestId("vector-detail-metadata-input")).toHaveValue(/"label": "b"/);
-
-    await detail.getByTestId("vector-detail-metadata-input").fill('{"label": "b2"}');
-    await detail.getByRole("button", { name: "Save metadata" }).click();
-    await expect(page.getByText('Metadata of vector "vb" updated.')).toBeVisible({ timeout: 5_000 });
-    const updated = await page.evaluate(
-      () => (window as unknown as Record<string, unknown>).__VEC_UPDATE_IDS__ as string[] | undefined,
-    );
-    expect(updated).toEqual(["vb"]);
-  });
-
   test("Save metadata calls updateMetadata and refreshes the detail", async ({ page }) => {
     await upsertVector(page, "v1", "0.1, 0.2, 0.3", '{"label": "first"}');
     await page.getByText("v1", { exact: true }).first().click();
     const detail = page.getByLabel("Vector Details");
     await expect(detail.getByTestId("vector-detail-version")).toHaveText("1", { timeout: 5_000 });
-    // The detail loads the stored metadata (getVector asks for it).
-    await expect(detail.getByTestId("vector-detail-metadata-json")).toContainText('"label": "first"');
-    await expect(detail.getByTestId("vector-detail-metadata-input")).toHaveValue(/"label": "first"/);
 
     await detail.getByTestId("vector-detail-metadata-input").fill('{"label": "second", "tier": 2}');
     await detail.getByRole("button", { name: "Save metadata" }).click();
@@ -446,21 +408,109 @@ test.describe("Vector View - advanced operations", () => {
     await expect(detail.getByTestId("vector-detail-version")).toHaveText("1");
   });
 
-  test("batch upsert reports succeeded and failed from inserted_count", async ({ page }) => {
-    const mixed = JSON.stringify([
-      { id: "b1", vector: [0.1, 0.2, 0.3] },
-      { id: "b2", vector: [0.4, 0.5, 0.6], metadata: { color: "blue" } },
-      { id: "bad", vector: [0.1, 0.2] },
-    ]);
-    const panel = await batchUpsert(page, mixed);
-    await expect(panel.getByTestId("batch-upsert-succeeded")).toHaveText("2");
-    await expect(panel.getByTestId("batch-upsert-failed")).toHaveText("1");
-    await expect(page.getByText("Batch upsert: 2 succeeded, 1 failed.")).toBeVisible();
+  test("batch upsert reports the inserted count from the binding", async ({ page }) => {
+    const panel = await batchUpsert(page, threeVectors);
+    await expect(panel.getByTestId("batch-upsert-succeeded")).toHaveText("3");
+    await expect(panel.getByTestId("batch-upsert-failed")).toHaveText("0");
+    await expect(page.getByText("Batch upsert: 3 succeeded.")).toBeVisible();
 
     await panel.getByLabel("Close", { exact: true }).click();
-    await expect(page.getByText("b1", { exact: true })).toBeVisible();
-    await expect(page.getByText("b2", { exact: true })).toBeVisible();
+    for (const id of ["b1", "b2", "b3"]) {
+      await expect(page.getByText(id, { exact: true })).toBeVisible();
+    }
+  });
+
+  test("batch upsert with a wrong dimension is refused whole", async ({ page }) => {
+    const mixed = JSON.stringify([
+      { id: "b1", vector: [0.1, 0.2, 0.3] },
+      { id: "bad", vector: [0.1, 0.2] },
+    ]);
+    await page.getByRole("button", { name: "Batch upsert" }).click();
+    const panel = page.getByLabel("Batch Upsert");
+    await expect(panel).toBeVisible();
+    await panel.getByTestId("batch-upsert-input").fill(mixed);
+    await panel.getByRole("button", { name: "Upsert batch" }).click();
+    await expect(page.getByText("service: dimension mismatch: expected 3, got 2")).toBeVisible({ timeout: 5_000 });
+    await expect(panel.getByTestId("batch-upsert-succeeded")).toHaveCount(0);
+
+    await panel.getByLabel("Close", { exact: true }).click();
+    await expect(page.getByText("b1", { exact: true })).toHaveCount(0);
     await expect(page.getByText("bad", { exact: true })).toHaveCount(0);
+  });
+
+  test("batch upsert refuses a numeric id the transport would round", async ({ page }) => {
+    // 2^53 + 1 becomes 2^53 through Number(); sending it would overwrite
+    // vector 9007199254740992 while reporting success.
+    const unsafe = JSON.stringify([
+      { id: "b1", vector: [0.1, 0.2, 0.3] },
+      { id: "9007199254740993", vector: [0.4, 0.5, 0.6] },
+    ]);
+    await page.getByRole("button", { name: "Batch upsert" }).click();
+    const panel = page.getByLabel("Batch Upsert");
+    await expect(panel).toBeVisible();
+    await panel.getByTestId("batch-upsert-input").fill(unsafe);
+    await panel.getByRole("button", { name: "Upsert batch" }).click();
+    await expect(
+      page.getByText("Batch item 2 id 9007199254740993 exceeds the largest exact numeric id (9007199254740991)."),
+    ).toBeVisible({ timeout: 5_000 });
+    await expect(panel.getByTestId("batch-upsert-succeeded")).toHaveCount(0);
+
+    await panel.getByLabel("Close", { exact: true }).click();
+    await expect(page.getByText("b1", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("9007199254740992", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("9007199254740993", { exact: true })).toHaveCount(0);
+  });
+
+  test("a late getVector response for a closed selection never reaches the editor", async ({ page }) => {
+    await upsertVector(page, "v1", "0.1, 0.2, 0.3", '{"label": "first"}');
+    await upsertVector(page, "v2", "0.4, 0.5, 0.6", '{"label": "second"}');
+    await dismissToasts(page);
+    await page.evaluate(() => {
+      const s = (window as unknown as Record<string, unknown>).__QRDB_MOCK_STATE__ as Record<string, unknown>;
+      s.holdGetVector = { v1: true };
+    });
+
+    // Open v1 (its getVector stays pending), close it, open v2.
+    await page.getByText("v1", { exact: true }).first().click();
+    const detail = page.getByLabel("Vector Details");
+    await expect(detail).toBeVisible();
+    await detail.getByLabel("Close", { exact: true }).click();
+    await page.getByText("v2", { exact: true }).first().click();
+    await expect(detail.getByTestId("vector-detail-metadata-json")).toContainText('"label": "second"', {
+      timeout: 5_000,
+    });
+
+    // Deliver v1's response now, after v2's, and let the page settle.
+    await page.waitForFunction(() => {
+      const s = (window as unknown as Record<string, unknown>).__QRDB_MOCK_STATE__ as {
+        releaseGetVector?: Record<string, () => void>;
+      };
+      return typeof s.releaseGetVector?.v1 === "function";
+    });
+    await page.evaluate(async () => {
+      const s = (window as unknown as Record<string, unknown>).__QRDB_MOCK_STATE__ as {
+        holdGetVector?: Record<string, boolean>;
+        releaseGetVector?: Record<string, () => void>;
+      };
+      s.holdGetVector = {};
+      s.releaseGetVector?.v1?.();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    });
+
+    await expect(detail.getByTestId("vector-detail-metadata-json")).toContainText('"label": "second"');
+    await expect(detail.getByTestId("vector-detail-metadata-input")).toHaveValue(/"second"/);
+
+    // Saving edits v2, the open selection, and leaves v1 as it was.
+    await detail.getByTestId("vector-detail-metadata-input").fill('{"label": "edited"}');
+    await detail.getByRole("button", { name: "Save metadata" }).click();
+    await expect(page.getByText('Metadata of vector "v2" updated.')).toBeVisible({ timeout: 5_000 });
+    await expect(detail.getByTestId("vector-detail-metadata-json")).toContainText('"label": "edited"');
+
+    await detail.getByLabel("Close", { exact: true }).click();
+    await page.getByText("v1", { exact: true }).first().click();
+    await expect(detail.getByTestId("vector-detail-metadata-json")).toContainText('"label": "first"', {
+      timeout: 5_000,
+    });
   });
 
   test("bulk delete removes the selected vectors with batchDeleteVectors", async ({ page }) => {
@@ -484,7 +534,7 @@ test.describe("Vector View - advanced operations", () => {
     await expect(page.getByText("b2", { exact: true })).toBeVisible();
   });
 
-  test("hybrid search keeps only the metadata matches", async ({ page }) => {
+  test("hybrid search keeps only the nearest vectors that match the metadata filter", async ({ page }) => {
     const panel = await batchUpsert(page, threeVectors);
     await panel.getByLabel("Close", { exact: true }).click();
     await dismissToasts(page);
@@ -493,12 +543,12 @@ test.describe("Vector View - advanced operations", () => {
     const card = page.getByTestId("hybrid-search-card");
     await expect(card.getByLabel("Hybrid vector weight")).toHaveCount(0);
     await expect(card.getByLabel("Hybrid metadata weight")).toHaveCount(0);
-    await card.getByLabel("Hybrid vector", { exact: true }).fill("0.1, 0.2, 0.3");
+    await card.getByLabel("Hybrid vector", { exact: true }).fill("0.4, 0.5, 0.6");
     await card.getByLabel("Hybrid metadata filter").fill('{"color": "blue"}');
-    await card.getByLabel("Hybrid k").fill("2");
+    await card.getByLabel("Hybrid k").fill("3");
     await card.getByRole("button", { name: "Hybrid search" }).click();
 
-    const rows = page.getByRole("row").filter({ hasText: /^.*b\d/ });
+    const rows = page.getByRole("row").filter({ hasText: /b\d/ });
     await expect(rows).toHaveCount(1, { timeout: 5_000 });
     await expect(rows.first()).toContainText("b2");
   });
@@ -529,5 +579,68 @@ test.describe("Vector View - advanced operations", () => {
       timeout: 5_000,
     });
     await expect(detail.getByTestId("vector-detail-version")).toHaveCount(0);
+  });
+
+  test("the detail editor is seeded with the stored values and metadata", async ({ page }) => {
+    await upsertVector(page, "v1", "0.1, 0.2, 0.3", '{"color":"red"}');
+    await page.getByText("v1", { exact: true }).first().click();
+    const detail = page.getByLabel("Vector Details");
+    await expect(detail.getByTestId("vector-detail-version")).toBeVisible({ timeout: 5_000 });
+    await expect(detail.getByText("0.1, 0.2, 0.3")).toBeVisible();
+    await expect(detail.getByTestId("vector-detail-metadata-input")).toHaveValue(/"color": "red"/);
+  });
+
+  test("a failed getVector blocks saving metadata", async ({ page }) => {
+    await upsertVector(page, "v1", "0.1, 0.2, 0.3", '{"keep":true}');
+    await injectError(page, "VectorBinding.GetVector", "vector store unavailable");
+    await page.getByText("v1", { exact: true }).first().click();
+    const detail = page.getByLabel("Vector Details");
+    await expect(detail.getByTestId("vector-detail-error")).toContainText("vector store unavailable", {
+      timeout: 5_000,
+    });
+    const save = detail.getByTestId("vector-detail-save-metadata");
+    await expect(save).toBeDisabled();
+    await save.click({ force: true });
+    const calls = await page.evaluate(() => {
+      const s = (window as unknown as Record<string, unknown>).__QRDB_MOCK_STATE__ as {
+        updateMetadataCalls?: number;
+      };
+      return s.updateMetadataCalls ?? 0;
+    });
+    expect(calls).toBe(0);
+  });
+
+  test("a listed id above 2^53 never opens the metadata editor", async ({ page }) => {
+    // The list route sends uint64 ids as JSON numbers: 2^53 + 1 arrives as
+    // 2^53, so editing that row would read and overwrite vector 2^53. The
+    // adjacent 2^53 + 2 is representable but just as unverifiable.
+    await page.evaluate(() => {
+      const s = (window as unknown as Record<string, unknown>).__QRDB_MOCK_STATE__ as {
+        listVectorsWire?: string;
+      };
+      s.listVectorsWire =
+        '{"vectors":[{"id":9007199254740993,"metadata":{"row":"a"}},{"id":9007199254740994,"metadata":{"row":"b"}}]}';
+    });
+    // Any write relists the namespace through the wire body above.
+    await upsertVector(page, "v1", "0.1, 0.2, 0.3", '{"keep":true}');
+    await expect(page.getByText("9007199254740992", { exact: true })).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText("9007199254740994", { exact: true })).toBeVisible();
+
+    for (const shown of ["9007199254740992", "9007199254740994"]) {
+      await page.getByText(shown, { exact: true }).first().click();
+      await expect(page.getByText(`Vector id ${shown} exceeds the largest exact numeric id (9007199254740991)`)).toBeVisible({
+        timeout: 5_000,
+      });
+      await expect(page.getByTestId("vector-detail")).toBeHidden();
+      await dismissToasts(page);
+    }
+    const calls = await page.evaluate(() => {
+      const s = (window as unknown as Record<string, unknown>).__QRDB_MOCK_STATE__ as {
+        getVectorCalls?: number;
+        updateMetadataCalls?: number;
+      };
+      return { get: s.getVectorCalls ?? 0, update: s.updateMetadataCalls ?? 0 };
+    });
+    expect(calls).toEqual({ get: 0, update: 0 });
   });
 });

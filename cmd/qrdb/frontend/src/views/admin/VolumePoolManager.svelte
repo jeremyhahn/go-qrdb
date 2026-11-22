@@ -62,6 +62,19 @@
   let detailLoading: boolean = $state(false);
   let tenants: VolumePoolTenant[] = $state([]);
   let tenantsNextToken: string = $state("");
+  /** True while a tenant page request is in flight; serializes Load more. */
+  let tenantsLoading: boolean = $state(false);
+  /**
+   * State of the first tenant page: only a successful empty answer may say
+   * that no tenant is assigned; a pending or failed one says so instead.
+   */
+  let tenantsStatus: "loading" | "loaded" | "failed" = $state("loading");
+  let tenantsError: string = $state("");
+  /**
+   * Bumped on every open and close of the detail panel: a response for an
+   * earlier selection is discarded instead of touching the current one.
+   */
+  let detailSelection = 0;
   let editDescription: string = $state("");
   let editCapacity: number | string = $state("");
   let editOvercommit: number | string = $state("");
@@ -178,46 +191,92 @@
     }
   }
 
-  /** Loads one page of the pool's assigned tenants. */
-  async function loadTenants(pool: string, pageToken: string): Promise<void> {
+  /**
+   * Loads one page of the pool's assigned tenants for selection `sel`. The
+   * page is dropped when the selection has changed meanwhile, and a tenant
+   * already listed is never appended twice (the table is keyed by tenantId).
+   */
+  async function loadTenants(sel: number, pool: string, pageToken: string): Promise<void> {
     const page = await client.volumePools.listTenants(pool, {
       pageSize: TENANT_PAGE_SIZE,
       ...(pageToken ? { pageToken } : {}),
     });
-    tenants = pageToken ? [...tenants, ...page.tenants] : [...page.tenants];
+    if (sel !== detailSelection) return;
+    if (pageToken) {
+      const seen = new Set(tenants.map((t) => t.tenantId));
+      tenants = [...tenants, ...page.tenants.filter((t) => !seen.has(t.tenantId))];
+    } else {
+      tenants = [...page.tenants];
+    }
     tenantsNextToken = page.nextPageToken ?? "";
+  }
+
+  /**
+   * Loads the first tenant page for selection `sel`, recording whether it
+   * is pending, answered or failed.
+   */
+  async function loadFirstTenants(sel: number, pool: string): Promise<void> {
+    tenantsStatus = "loading";
+    tenantsError = "";
+    try {
+      await loadTenants(sel, pool, "");
+      if (sel === detailSelection) tenantsStatus = "loaded";
+    } catch (err: unknown) {
+      if (sel !== detailSelection) return;
+      tenantsStatus = "failed";
+      tenantsError = errMessage(err, "Failed to list pool tenants");
+    }
+  }
+
+  function retryTenants(): void {
+    if (!detail || tenantsStatus === "loading") return;
+    void loadFirstTenants(detailSelection, detail.name);
   }
 
   /** Opens the detail panel: get plus the first page of tenants. */
   async function openDetail(name: string): Promise<void> {
+    const sel = ++detailSelection;
+    tenantsLoading = false;
+    tenants = [];
+    tenantsNextToken = "";
+    tenantsStatus = "loading";
+    tenantsError = "";
     try {
       detailLoading = true;
       const d = await client.volumePools.get(name);
+      if (sel !== detailSelection) return;
       detail = d;
       editDescription = d.description ?? "";
       editCapacity = String(d.capacityBytes);
       editOvercommit = String(d.overcommit);
-      await loadTenants(name, "");
     } catch (err: unknown) {
-      showToast("error", errMessage(err, "Failed to load volume pool"));
+      if (sel === detailSelection) showToast("error", errMessage(err, "Failed to load volume pool"));
+      return;
     } finally {
-      detailLoading = false;
+      if (sel === detailSelection) detailLoading = false;
     }
+    await loadFirstTenants(sel, name);
   }
 
   async function loadMoreTenants(): Promise<void> {
-    if (!detail || !tenantsNextToken) return;
+    if (!detail || !tenantsNextToken || tenantsLoading) return;
+    const sel = detailSelection;
+    tenantsLoading = true;
     try {
-      await loadTenants(detail.name, tenantsNextToken);
+      await loadTenants(sel, detail.name, tenantsNextToken);
     } catch (err: unknown) {
-      showToast("error", errMessage(err, "Failed to list pool tenants"));
+      if (sel === detailSelection) showToast("error", errMessage(err, "Failed to list pool tenants"));
+    } finally {
+      if (sel === detailSelection) tenantsLoading = false;
     }
   }
 
   function closeDetail(): void {
+    detailSelection++;
     detail = null;
     tenants = [];
     tenantsNextToken = "";
+    tenantsLoading = false;
     void fetchPools();
   }
 
@@ -359,12 +418,29 @@
                 <td>{formatBytes(t.reservedBytes)}</td>
               </tr>
             {:else}
-              <tr><td colspan="2" class="text-center opacity-60">No tenants are assigned to this pool.</td></tr>
+              {#if tenantsStatus === "loaded"}
+                <tr><td colspan="2" class="text-center opacity-60">No tenants are assigned to this pool.</td></tr>
+              {:else if tenantsStatus === "failed"}
+                <tr>
+                  <td colspan="2" data-testid="volume-pool-tenants-error">
+                    <div class="flex items-center justify-between gap-2 text-error">
+                      <span>Could not list the assigned tenants: {tenantsError}</span>
+                      <button class="btn btn-xs" data-testid="volume-pool-tenants-retry" onclick={retryTenants}>Retry</button>
+                    </div>
+                  </td>
+                </tr>
+              {:else}
+                <tr>
+                  <td colspan="2" class="text-center opacity-60" data-testid="volume-pool-tenants-loading">
+                    <span class="loading loading-spinner loading-xs"></span> Loading tenants…
+                  </td>
+                </tr>
+              {/if}
             {/each}
           </tbody>
         </table>
         {#if tenantsNextToken}
-          <button class="btn btn-sm btn-ghost self-start" data-testid="volume-pool-tenants-more" onclick={loadMoreTenants}>
+          <button class="btn btn-sm btn-ghost self-start" data-testid="volume-pool-tenants-more" disabled={tenantsLoading} onclick={loadMoreTenants}>
             Load more
           </button>
         {/if}

@@ -363,6 +363,7 @@ function writeConfig(path: string, opts: StartDaemonOptions): void {
     // auth.enabled requires seal.enabled, so a seal-off daemon runs auth-off;
     // the auth-off block is already in the initial lines.
     lines.push("  enabled: false");
+    lines.push("auth:", "  enabled: false");
   } else if (opts.seal === "none-committed") {
     lines.push("  enabled: true", '  strategy: "none"');
   } else {
@@ -544,6 +545,7 @@ export async function stopDaemon(daemon: DomDaemon | null): Promise<void> {
   }
   try {
     rmSync(daemon.dataDir, { recursive: true, force: true });
+    rmSync(`${daemon.dataDir}-pools`, { recursive: true, force: true });
   } catch {
     // best effort
   }
