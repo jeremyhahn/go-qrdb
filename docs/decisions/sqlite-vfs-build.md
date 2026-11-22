@@ -308,9 +308,12 @@ Built so far (unwired):
   namespace, hard-confinement and quota wrappers;
 - the page store's publish in the prefix form over `MovePrefix` and a
   service-backed Backend (`ServiceBackend`), not yet constructed by the
-  server.
+  server;
+- the writer lock over the server's lock service (`NewLockServiceWriter`),
+  with a Store over a (tenant, database) scope's resolved services tested on
+  every isolation type; nothing in the server constructs a Store yet.
 
 Still to come: the SQLite engine
-binding and VFS registration (blocked: owner queue 288); wiring to the
-server's lock service, the optimistic read-set check, quota and the
-entitlement.
+binding and VFS registration (blocked: owner queue 288); the server
+constructing a Store for a caller (open for the owner), the optimistic
+read-set check, quota and the entitlement.
