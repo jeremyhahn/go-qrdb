@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -32,6 +33,10 @@ import (
 type logGroups struct {
 	host     service.Host
 	services atomic.Pointer[logGroupServices]
+
+	// barriers is the tenant barrier registry of a standalone node, attached
+	// by AttachLocalTenantHomes; see TenantLogStore.
+	barriers atomic.Pointer[seal.BarrierRegistry]
 }
 
 // logGroupServices boxes the attached dedicated-raft services.
@@ -39,7 +44,10 @@ type logGroupServices struct {
 	services TenantHomeServices
 }
 
-var _ service.LogGroupSource = (*logGroups)(nil)
+var (
+	_ service.LogGroupSource        = (*logGroups)(nil)
+	_ service.LogBarrierStoreSource = (*logGroups)(nil)
+)
 
 // attach makes services the source of every barrier group.
 func (g *logGroups) attach(services TenantHomeServices) {
@@ -47,6 +55,38 @@ func (g *logGroups) attach(services TenantHomeServices) {
 		return
 	}
 	g.services.Store(&logGroupServices{services: services})
+}
+
+// attachLocal makes registry the source of every barrier tenant's
+// standalone log store (TenantLogStore): the tenant barrier's own store, at
+// its data root. It is for a standalone node, which attaches no home groups.
+func (g *logGroups) attachLocal(registry *seal.BarrierRegistry) {
+	if g == nil || registry == nil {
+		return
+	}
+	g.barriers.Store(registry)
+}
+
+// TenantLogStore implements service.LogBarrierStoreSource: the barrier the
+// node's registry holds for tenantID now and the KV store over it, whose
+// every value is encrypted under the tenant's key and every call refused
+// with seal.ErrSealed while it is sealed. Home groups win: a node with home
+// groups attached, or no registry, has no standalone store and refuses with
+// *service.BarrierStoreUnavailableError.
+func (g *logGroups) TenantLogStore(_ context.Context, tenantID string) (service.LogBarrier, kvstore.KVStore, error) {
+	registry := g.barriers.Load()
+	if registry == nil || g.services.Load() != nil {
+		return nil, nil, &service.BarrierStoreUnavailableError{TenantID: tenantID}
+	}
+	tb, err := registry.GetTenant(tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+	kv, err := seal.NewTenantBarrierKVStore(tb)
+	if err != nil {
+		return nil, nil, err
+	}
+	return tb, kv, nil
 }
 
 // TenantHomeGroup implements service.LogGroupSource: tenantID's home group,

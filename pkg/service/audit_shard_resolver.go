@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -89,6 +90,24 @@ type LogGroupSource interface {
 	TenantHomeGroup(ctx context.Context, tenantID string) (Host, uint64, error)
 }
 
+// LogBarrier is the tenant barrier a LogBarrierStoreSource serves a
+// tenant's logs from: its seal state, read live. Two calls naming the same
+// barrier instance return the same (==) value, so a recycled or restored
+// barrier is seen as a new one.
+type LogBarrier interface {
+	IsSealed() bool
+}
+
+// LogBarrierStoreSource is the source of a barrier-isolated tenant's log
+// store on a node whose tenant has no home group (a standalone node): the
+// tenant barrier the node holds for the tenant now and the KV store over it
+// (each value encrypted under the tenant's key). The log route consults it
+// for an IsolationBarrier tenant only when no home group serves the tenant;
+// in Raft mode the home group wins.
+type LogBarrierStoreSource interface {
+	TenantLogStore(ctx context.Context, tenantID string) (LogBarrier, kvstore.KVStore, error)
+}
+
 // ResolveAuditShard implements AuditShardResolver.
 func (r *SystemShardAuditResolver) ResolveAuditShard(ctx context.Context, tenantID string) (Host, uint64, error) {
 	routed := tenantid.Normalize(tenantID)
@@ -118,4 +137,16 @@ func (r *SystemShardAuditResolver) ResolveAuditShard(ctx context.Context, tenant
 	default:
 		return r.host, r.shardID, nil
 	}
+}
+
+// TenantLogStore implements LogBarrierStoreSource through the resolver's
+// group source when it is one too (a standalone node's, with the tenant
+// barriers attached); otherwise the tenant's barrier store is unavailable.
+func (r *SystemShardAuditResolver) TenantLogStore(ctx context.Context, tenantID string) (LogBarrier, kvstore.KVStore, error) {
+	routed := tenantid.Normalize(tenantID)
+	src, ok := r.groups.(LogBarrierStoreSource)
+	if !ok {
+		return nil, nil, &BarrierStoreUnavailableError{TenantID: routed}
+	}
+	return src.TenantLogStore(ctx, routed)
 }

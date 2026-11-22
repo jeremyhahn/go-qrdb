@@ -191,7 +191,13 @@ func AttachLocalTenantHomes(n *Node, registry *seal.BarrierRegistry, gate tenant
 	if err != nil {
 		return false
 	}
-	return attachHomeSource(n, homes, served)
+	if !attachHomeSource(n, homes, served) {
+		return false
+	}
+	// The same barriers serve each isolated tenant's verifiable logs, in
+	// their own keyspace (service.BarrierLogKeyspace).
+	n.logGroups.attachLocal(registry)
+	return true
 }
 
 // attachHomeSource attaches source to n's store resolver and to every served

@@ -51,7 +51,7 @@ func NewLogService(cfg LogServiceConfig) (LogService, error) {
 	if cfg.Databases == nil {
 		return nil, &SubsystemNotConfiguredError{Subsystem: "vlog database lookup"}
 	}
-	route := &logRoute{resolver: cfg.Resolver, databases: cfg.Databases, stores: make(map[dbStoreKey]*databaseLogStore)}
+	route := &logRoute{resolver: cfg.Resolver, databases: cfg.Databases, stores: make(map[dbStoreKey]*databaseLogStore), barriers: make(map[string]*barrierLogStore)}
 	signers := cfg.Signers
 	if signers == nil {
 		signers = vlog.NewSoftwareHeadSignerProvider(&logKeyReader{route: route})
@@ -121,9 +121,39 @@ func (r *logRoute) resolve(ctx context.Context, tenantID, name string) (logTarge
 func (r *logRoute) raft(ctx context.Context, tenantID string) (logTarget, error) {
 	host, shardID, err := r.resolver.ResolveAuditShard(ctx, tenantID)
 	if err != nil {
+		var unavailable *BarrierStoreUnavailableError
+		if src, ok := r.resolver.(LogBarrierStoreSource); ok && errors.As(err, &unavailable) {
+			return r.barrierStore(ctx, src, tenantID)
+		}
 		return nil, err
 	}
 	return raftTarget{host: host, shardID: shardID}, nil
+}
+
+// barrierStore returns the barrierLogStore of barrier tenant tenantID on a
+// node no home group serves it on, keyed by the barrier instance src holds
+// for it now: a recycled or restored barrier gets a fresh store (and chain),
+// and the old one is forgotten.
+func (r *logRoute) barrierStore(ctx context.Context, src LogBarrierStoreSource, tenantID string) (logTarget, error) {
+	barrier, kv, err := src.TenantLogStore(ctx, tenantID)
+	if err != nil {
+		if isSealedError(err) {
+			return nil, tenant.ErrTenantSealed
+		}
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.barriers[tenantID]; ok && s.barrier == barrier {
+		return s, nil
+	}
+	s, err := newBarrierLogStore(tenantID, barrier, kv)
+	if err != nil {
+		delete(r.barriers, tenantID)
+		return nil, err
+	}
+	r.barriers[tenantID] = s
+	return s, nil
 }
 
 // store returns the databaseLogStore of tenantID's barrier database db,
@@ -158,8 +188,9 @@ type logRoute struct {
 	resolver  AuditShardResolver
 	databases LogDatabaseLookup
 
-	mu     sync.Mutex
-	stores map[dbStoreKey]*databaseLogStore
+	mu       sync.Mutex
+	stores   map[dbStoreKey]*databaseLogStore
+	barriers map[string]*barrierLogStore
 }
 
 // dbStoreKey names one incarnation of a tenant's database.
