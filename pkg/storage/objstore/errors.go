@@ -14,6 +14,8 @@
 
 package objstore
 
+import "strconv"
+
 // UnsupportedProviderError indicates the requested go-objstore provider is not
 // registered in this build. Cloud providers are compiled in only when
 // go-objstore's matching build tag is set (e.g. -tags awss3 for "s3").
@@ -24,6 +26,17 @@ type UnsupportedProviderError struct {
 func (e *UnsupportedProviderError) Error() string {
 	return "objstore: unsupported provider " + e.Provider +
 		` (cloud providers require go-objstore's build tag, e.g. -tags awss3 for s3)`
+}
+
+// InvalidRemoteError indicates NewRemote was given a nil store or an unusable
+// object prefix (empty, leading "/", or containing a NUL).
+type InvalidRemoteError struct {
+	Prefix string
+	Reason string
+}
+
+func (e *InvalidRemoteError) Error() string {
+	return "objstore: invalid remote storage (" + e.Reason + "): prefix " + strconv.Quote(e.Prefix)
 }
 
 // FormatMarkerMissingError refuses to open a NON-EMPTY store that carries no
