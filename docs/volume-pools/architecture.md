@@ -277,6 +277,17 @@ removes the partial destination through the inside-pool guard, never the
 source. No journal, reconciler or transport calls it yet, and `MoveTenant`
 still returns `*volume.MoveNotImplementedError`.
 
+The catalog admits a move through `volume.Catalog.AdmitMove`: one
+transaction reserves the tenant's bytes on the destination pool and writes
+the journal `__sys:volumepool/moves/{tenant}` in state `admitted`, with every
+replica node pending, after checking that the destination is ready on every
+replica node (Q3), that a move off a Lockable pool onto one that is not
+carries `allow_unencrypted_destination` (Q9), and that no move already runs
+(Q10). The source reservation and the assignment stay, so the tenant counts
+on both pools while it moves. While a journal exists, tenant delete, a quota
+change, a second move and deleting either pool are refused. Nothing calls
+`AdmitMove` yet.
+
 ## Trust boundaries
 
 - **Paths never cross a node boundary.** Nothing replicated names a filesystem

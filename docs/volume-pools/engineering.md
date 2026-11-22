@@ -174,6 +174,22 @@ is built in `move_copy.go`; these functions are called by
 - `ManifestEntry{Path, Dir, Mode, Size, SHA256}`: one unwired node-step
   manifest entry, root-relative.
 
+The catalog half of a move's admit step, which nothing calls in this build:
+
+- `Catalog.AdmitMove(ctx, MoveAdmitRequest) (*Move, error)`: one transaction
+  reserving the tenant's `Assignment.ReservedBytes` on `ToPool` and writing
+  the journal in state `admitted`, after the Q3, Q9 and Q10 checks;
+- `MoveAdmitRequest{TenantID, ToPool, ReplicaNodes, AllowUnencryptedDestination}`:
+  the admit input; the caller supplies every replica node;
+- `MoveKey(tenant)` / `MoveKeyPrefix`: the journal key
+  `__sys:volumepool/moves/{tenant}`;
+- `MoveStateAdmitted`: the only journal state written in this build;
+- `Move.ReservedBytes`, `Move.AllowUnencryptedDestination`, `Move.AdmittedAt`:
+  the bytes reserved on the destination, the Q9 consent, the admit time;
+- `LockableProvider{OpensLockable() bool}`: optional provider interface; a
+  provider without it counts as Lockable as a source and not Lockable as a
+  destination (`dir` returns false).
+
 ### Composition options
 
 | Option | Package | Effect |
@@ -297,7 +313,10 @@ func (b *StorageBarrier) OnSealing(fn func(context.Context) error)
    none: it publishes no report, and its pools show `no report` for it. A
    clustered node always reports.
 10. **A pool with assignments cannot be deleted**
-    (`*volume.PoolInUseError` naming the tenants, first page).
+    (`*volume.PoolInUseError` naming the tenants, first page), nor can a
+    pool a move journal names as source or destination (`*volume.PoolInUseError`
+    naming the moving tenants; a journal that does not decode refuses with
+    `*volume.CorruptRecordError`).
 
 ## Error semantics
 
@@ -381,6 +400,7 @@ All in the replicated system namespace, hidden from user list and scan:
 | `__sys:volumepool/pools/{pool}` | `Pool` (JSON) | `CreatePool`, `UpdatePool`, reservation CAS |
 | `__sys:volumepool/assign/{tenant}` | `Assignment` (JSON) | create (put-if-absent), delete |
 | `__sys:volumepool/nodes/{node}` | `NodeReport` (JSON), lease-bound | `volume.Reporter`, refreshed every `DefaultReportInterval` *(5 s)*; lease TTL `DefaultLeaseTTL` *(15 s)* |
+| `__sys:volumepool/moves/{tenant}` | `Move` (JSON) | `Catalog.AdmitMove` (later transitions arrive with the reconciler) |
 
 A tenant whose records predate this layout is refused, listed with its
 refusal, and deleted and re-created.
@@ -391,6 +411,11 @@ refusal, and deleted and re-created.
   the pool record, and a put-if-absent (or delete) on the assignment. A lost CAS is
   re-read and retried a bounded number of times, then reported as
   `*volume.ReservationConflictError` (`Aborted`).
+- A move admit is one transaction: a compare on the destination pool
+  record, the tenant's assignment and an absent journal, then a put of the
+  destination pool record and the journal. `Release` and
+  `AdjustReservation` also compare the journal absent, so neither races an
+  admit.
 - Health reports are owned by their node. No other writer touches them.
 
 ## Test strategy
@@ -404,6 +429,18 @@ refusal, and deleted and re-created.
   `BuildManifest` of both trees, its refusals (path rules, overlap, symlink,
   named pipe, cancelled context), every `VerifyCopy` mismatch reason, and no
   absolute path in any message;
+- `pkg/volume` (`catalog_move_test.go`): `AdmitMove` success (journal equal
+  to the result, nodes pending sorted, destination reserved, source and
+  assignment unchanged); each invalid request; no assignment; unknown
+  destination; same pool; a second admit (journal and reservation
+  unchanged); a replica node with no report, a stale report, the pool
+  unmapped or locked (`NodeID` set); capacity; bounded retries; Q9 with a
+  Lockable test provider (refused without the flag, admitted with it, plain
+  to Lockable admitted, a provider without `OpensLockable` as source
+  refused); Q10 after admit (`Release`, `AdjustReservation` refused with
+  reservations unchanged, `DeletePool` of either pool names the tenant); a
+  corrupt journal fails `Release`, `AdjustReservation`, `DeletePool` and
+  `AdmitMove` closed; `MoveTenant`/`GetMove` still not implemented;
 - `pkg/seal`: `VolumeLifecycle` ordering, proven with a fake `Lockable` --
   unlock after unseal and before a later-registered `OnUnsealed` observer
   (standing in for `BarrierRegistry`'s tenant restore); lock before the root
@@ -500,3 +537,5 @@ Audit: every catalog change, assignment change and move transition (**Phase
 on failure, the error, under actions `volume_unlock` / `volume_lock`
 (`pkg/seal.VolumeLifecycle`, subject `seal`, since these run inside the
 system barrier before any operator request exists to attribute them to).
+| `*volume.MoveConflictError{TenantID, NodeID, Reason}` | a move admit is refused (a move already runs, the destination is the current pool, the destination is not ready on `NodeID`, or a Lockable-to-plain move lacks `allow_unencrypted_destination`), or tenant delete / a quota change is refused while a move runs | not on the wire in this build |
+| `*volume.InvalidMoveRequestError{Reason}` | `AdmitMove` got an empty tenant or pool, no replica nodes, or an empty or duplicate node ID | not on the wire in this build |
