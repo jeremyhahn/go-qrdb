@@ -74,9 +74,12 @@ removes none.
    gRPC, QUIC `tenant.SetRegistration|GetRegistration`, unix, MCP, embedded)
    and in the CLI as `qrdb tenant registration set|get`.
 4. **Permission:** a new `tenants:set_registration`. It is self-scoped, so a
-   tenant Admin may set its own tenant (owner ruling of 2026-10-04: a tenant Admin may do everything in its own tenant except SO and custodian duties). The
-   cross-tenant form `tenants:set_registration:cross` is for platform
-   operators. It is a separate permission rather than `tenants:update`, so
+   tenant Admin may set its own tenant (a tenant Admin does everything in its
+   own tenant except SO and custodian duties: see
+   [architecture.md](architecture.md), the certificate target guard, and
+   [engineering.md](engineering.md)). The cross-tenant form
+   `tenants:set_registration:cross` is for platform operators. It is a
+   separate permission rather than `tenants:update`, so
    ABAC policy and audit can name the act of opening sign-up. Reads use
    `tenants:read`.
 
@@ -181,8 +184,8 @@ is about factors and is a separate thing.
   new tenant per customer. Dependency: none in a lower project, but a new
   public verb that provisions a tenant.
 
-**Reason:** go-qrdb's tenant Admin cannot create tenants (owner ruling of
-2026-09-29; see [Trust boundaries](../multi-tenancy/architecture.md#trust-boundaries),
+**Reason:** go-qrdb's tenant Admin cannot create tenants (see
+[Trust boundaries](../multi-tenancy/architecture.md#trust-boundaries),
 "A tenant's plan belongs to the platform operator"), and an unauthenticated
 tenant-creation verb would be a much larger surface. A keeps tenant creation
 with the platform operator, where it is today.
