@@ -1175,3 +1175,4 @@ describes the code.
 - [auth/layering.md](../auth/layering.md) — how the authorization layers compose.
 - [auth/custom-authorizers.md](../auth/custom-authorizers.md) — replacing or
   extending the authorizer.
+- [registration.md](registration.md) — registration policy design note (proposed, not built): `invite_only` or `open` per tenant and the public `Register` verb.

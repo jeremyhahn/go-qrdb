@@ -1,7 +1,8 @@
 # Registration policy (design note)
 
-Status: proposed, awaiting approval of the API shape. SPEC row:
-`registration-policy` in [../SPEC.md](../SPEC.md).
+> **Status: PROPOSED — awaiting owner ruling** · Scope: go-qrdb
+> Last verified: 2026-11-22 at main 952b4057f2
+> SPEC row `registration-policy` (future) in [../SPEC.md](../SPEC.md). Nothing here is built. Each open question lists its options, a recommendation and the reason. The owner rules, and the Ruling section stays empty until then.
 
 ## Problem
 
@@ -27,6 +28,15 @@ callers are:
 | `RedeemInvitation`: activates the pending account, creates none | the token | yes (`publicverbs.VerbInvitationRedeem`) |
 | firstboot admin, tenant provisioning, pending tenant-admin completion | internal | n/a |
 
+### Dependencies
+
+No lower-project API is needed: go-quicraft and go-objstore are not touched.
+The design reuses `publicverbs.Table`, the guarded tenant update,
+`user.Service.CreateUser`, `users.ActivateWithCertBinding`,
+`certenroll.IssueFromCSR` and the tenant user quota. It adds no Raft opcode.
+go-xkms and go-quicbaas each remove their own setting in their own
+repository after this row ships, and go-qrdb does not depend on them.
+
 ## Design
 
 ### The policy
@@ -47,8 +57,9 @@ removes none.
    | `open`, empty means `invite_only`), a field on `config.AuthConfig` beside
    `InvitationTTL`. It is parsed and validated by `config.ParseRegistrationMode`
    (a `ValidationError` on `auth.registration_mode` for any other value), and
-   documented in [../12-configuration.md](../12-configuration.md). It applies to
-   every tenant without its own value, the system tenant included.
+   documented in [../12-configuration.md](../12-configuration.md) when the row
+   is built. It applies to every tenant without its own value, the system
+   tenant included (see Q5).
 2. **Per tenant:** `tenant.TenantInfo.RegistrationMode` (empty means inherit
    the node default) and `TenantPatch.RegistrationMode`. The value lives in
    the replicated tenant record, written through the existing guarded tenant
@@ -63,7 +74,7 @@ removes none.
    gRPC, QUIC `tenant.SetRegistration|GetRegistration`, unix, MCP, embedded)
    and in the CLI as `qrdb tenant registration set|get`.
 4. **Permission:** a new `tenants:set_registration`. It is self-scoped, so a
-   tenant Admin may set its own tenant (the "admin is powerful" ruling). The
+   tenant Admin may set its own tenant (owner ruling of 2026-10-04: a tenant Admin may do everything in its own tenant except SO and custodian duties). The
    cross-tenant form `tenants:set_registration:cross` is for platform
    operators. It is a separate permission rather than `tenants:update`, so
    ABAC policy and audit can name the act of opening sign-up. Reads use
@@ -87,16 +98,20 @@ themselves. In order:
    (`role.SystemRoleID(tenant, role.RoleNameUser)`). The request carries no
    roles, permissions or tenant-admin flags, so self sign-up cannot assign
    privilege.
-4. Set the credential in the same way that `RedeemInvitation` activates an
-   account, with a password or a certificate binding. Registering reuses the
-   activation code (`users.ActivateWithCertBinding` and the password path),
-   so the credential rules of both flows cannot drift apart.
+4. Set the credential exactly as `RedeemInvitation` sets one. The request
+   carries a CSR (required; it proves the caller holds the key) and,
+   optionally, a bring-your-own certificate and chain over that key.
+   `Register` issues through `certenroll.IssueFromCSR` or verifies the BYO
+   certificate, then binds it with `users.ActivateWithCertBinding`. It shares
+   that code with redemption, so the credential rules of both flows cannot
+   drift apart, and it returns the issued certificate as redemption does.
+   There is no other credential path.
 5. Write an audit record: `user.registered` with the tenant, the account and
    the transport, in the tenant's trail.
 
 The tenant's user quota (`quota.MaxUsers`) applies, so `open` cannot grow a
-tenant past its quota. `Register` is a pre-auth verb. It gets the 4 MiB
-pre-auth request cap, and its `publicverbs.Table` entry carries a `RateLimit`
+tenant past its quota. `Register` is a pre-auth verb. It gets the pre-auth
+message cap (`transport.max_message_bytes`, default 4 MiB), and its `publicverbs.Table` entry carries a `RateLimit`
 dimension, as redemption's does.
 
 ### The new public verb
@@ -113,7 +128,10 @@ nowhere else:
 | QUIC | `user.Register` |
 | MCP | `qrdb_register` |
 | unix, embedded | `Register` |
-| CLI | `qrdb register --tenant T --username U (--password-stdin \| --cert F)` |
+| CLI | `qrdb register --tenant-id T --username U [--csr F [--cert F [--chain F]]] [--out DIR]` |
+
+The CLI flags have the same meanings as `qrdb enroll`: without `--csr`, a
+key is generated locally and written only to `--out`.
 
 ### Seam
 
@@ -151,22 +169,87 @@ Each product's own setting is then removed in its repository, with no
 compatibility layer. go-xkms keeps WebAuthn credential registration, which
 is about factors and is a separate thing.
 
-## Out of scope (question for the owner)
+## Open questions
 
-The SaaS case "new customers sign up" could mean one of two things:
+### Q1. Does "new customers sign up" mean a user in an existing tenant, or a new tenant?
 
-- a new user in an existing tenant, which this row covers;
-- a new **tenant** per customer.
+- **A (recommended). User accounts only.** This row covers a new user in an
+  existing tenant. go-quicbaas creates a customer's tenant in its own
+  onboarding, with its platform credential, then sets that tenant's mode and
+  lets the customer's users register. Dependency: none.
+- **B. A public tenant-creation verb.** An unauthenticated caller creates a
+  new tenant per customer. Dependency: none in a lower project, but a new
+  public verb that provisions a tenant.
 
-go-qrdb's tenant Admin cannot create tenants (ruling: tenant admin scope),
-and an unauthenticated tenant-creation verb would be a much larger surface.
+**Reason:** go-qrdb's tenant Admin cannot create tenants (owner ruling of
+2026-09-29; see [Trust boundaries](../multi-tenancy/architecture.md#trust-boundaries),
+"A tenant's plan belongs to the platform operator"), and an unauthenticated
+tenant-creation verb would be a much larger surface. A keeps tenant creation
+with the platform operator, where it is today.
 
-**Recommendation:** this row covers user accounts only. go-quicbaas keeps
-creating a customer's tenant in its own onboarding, with its platform
-credential. It then sets that tenant's mode and lets the customer's users
-register.
+### Q2. Which permission sets the mode?
 
-## Tests (test-first)
+- **A (recommended). A new `tenants:set_registration`** (self-scoped), plus
+  `tenants:set_registration:cross` for platform operators. Dependency: none.
+- **B. Reuse `tenants:update`.** Dependency: none.
+
+**Reason:** a separate permission lets ABAC policy and audit name the act of
+opening sign-up, rather than folding it into every tenant update.
+
+### Q3. How is a refusal reported?
+
+- **A (recommended). One `ErrRegistrationClosed`** (`PermissionDenied`, REST
+  `403`) for an unknown, an inactive and an `invite_only` tenant alike.
+  Dependency: none.
+- **B. Distinct errors:** `NotFound` for an unknown tenant and
+  `FailedPrecondition` for a closed one. Dependency: none.
+
+**Reason:** the caller is unauthenticated. B tells a stranger which tenants
+exist; A tells them nothing, as `RedeemInvitation` already does with its one
+opaque refusal.
+
+### Q4. How does a gate-pending account become active?
+
+- **A (recommended). Through the existing invitation path.** The account is
+  created pending, with no credential bound. Once the composer's check
+  completes, it calls `InvitationService.InviteUser` for that username:
+  `InviteUser` finds the existing account and, because it is still
+  `LifecyclePending` with no certificate binding, re-invites it
+  (`InvitationService.reinvite`) with a fresh single-use token. The user then
+  activates with `RedeemInvitation`, which binds the credential. Dependency:
+  none; both APIs exist today.
+- **B. The gate decides synchronously.** `AdmitRegistration` returns only
+  admit or deny, and `Pending` is dropped from `RegistrationDecision`.
+  Dependency: none.
+
+**Reason:** A supports checks that complete later (email or phone
+verification, billing) with no new activation code: the pending account and
+its activation reuse what invitations already prove. B is simpler but leaves
+a composer with an asynchronous check no way to use the gate.
+
+### Q5. May the system tenant be `open`?
+
+- **A. The node default applies to it as written** (see "Where it is set",
+  item 1). Dependency: none.
+- **B (recommended). The system tenant is always `invite_only`.**
+  `SetTenantRegistrationMode` refuses `open` on it, and the node default never
+  applies to it. Dependency: none.
+
+**Reason:** open sign-up into the operator tenant hands strangers accounts
+beside the platform operators, even if only with the `user` role. A node
+default of `open` set for customer tenants should not reach it by accident.
+
+## Recommendation summary
+
+| Question | Recommended | Reason |
+|---|---|---|
+| Q1. Users or tenants | A, user accounts only | tenant creation stays with the platform operator |
+| Q2. Permission | A, `tenants:set_registration` (+ `:cross`) | ABAC and audit can name opening sign-up |
+| Q3. Refusal | A, one `ErrRegistrationClosed` | a stranger learns nothing about which tenants exist |
+| Q4. Pending activation | A, re-invite then `RedeemInvitation` | asynchronous checks with no new activation code |
+| Q5. System tenant | B, always `invite_only` | no stranger accounts beside the platform operators |
+
+## Tests that would prove it
 
 - Unit tests:
   - mode parsing and validation;
@@ -177,11 +260,19 @@ register.
     `invite_only`;
   - exactly the `user` role is assigned;
   - the quota is enforced;
-  - the audit record is written.
+  - the audit record is written;
+  - if Q5 is ruled B, `SetTenantRegistrationMode` refuses `open` on the
+    system tenant, and a node default of `open` leaves it `invite_only`.
 - CLI end-to-end on every transport (m651, tier 1). Under `invite_only`,
   `qrdb register` is refused. `qrdb tenant registration set open` then makes
-  `qrdb register` succeed and the new user able to log in with only the
-  `user` role. `set inherit` returns the tenant to the node default.
+  `qrdb register` succeed, and the new user logs in with the issued
+  certificate and holds only the `user` role. `set inherit` returns the tenant to the node default.
   Invitation redemption works the same in both modes.
 - A buildgates check that `Register` is in `publicverbs.Table` and is public
   on every transport.
+
+## Ruling
+
+None yet. The owner rules on Q1 to Q5. The Status line and this section
+record the ruling, and `docs/identity-rbac/` absorbs the ruled design when
+the row is built.
