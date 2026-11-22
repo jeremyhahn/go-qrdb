@@ -63,6 +63,7 @@ func TestVolumePoolTools_RegistersSixScopedTools(t *testing.T) {
 	want := []string{
 		"qrdb_volume_pool_list", "qrdb_volume_pool_get", "qrdb_volume_pool_create",
 		"qrdb_volume_pool_update", "qrdb_volume_pool_delete", "qrdb_volume_pool_list_tenants",
+		"qrdb_volume_pool_move_tenant", "qrdb_volume_pool_get_move", "qrdb_volume_pool_cancel_move",
 	}
 	if len(tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(tools), len(want))
@@ -278,6 +279,60 @@ func TestHandleVolumePoolListTenants_WireShape(t *testing.T) {
 	if !errors.As(err, &nf) {
 		t.Fatalf("err = %v, want PoolNotFoundError", err)
 	}
+}
+
+// TestHandleVolumePoolMoves drives the three move tools: the journal
+// reaches the tool text, Q9's refusal and a tenant with no move come back
+// as the service's typed errors for the shared mapper, and missing
+// arguments are refused.
+func TestHandleVolumePoolMoves(t *testing.T) {
+	move := &volume.Move{TenantID: "t1", FromPool: "a", ToPool: "b", State: "copying", StepNode: "n1"}
+	svc := &volumetest.Service{
+		T: t,
+		MoveTenantFn: func(_ context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
+			if req.ToPool == "plain" {
+				return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+			}
+			return move, nil
+		},
+		GetMoveFn: func(context.Context, string) (*volume.Move, error) { return move, nil },
+	}
+	moveH := handleVolumePoolMoveTenant(svc)
+	getH := handleVolumePoolMoveLookup("qrdb_volume_pool_get_move", svc.GetMove)
+	cancelH := handleVolumePoolMoveLookup("qrdb_volume_pool_cancel_move", svc.CancelMove)
+
+	res, err := invokeTool(t, moveH, "qrdb_volume_pool_move_tenant", map[string]any{"tenant": "t1", "to_pool": "b"})
+	if err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	var got volume.Move
+	if err := json.Unmarshal([]byte(resultText(t, res)), &got); err != nil || got.ToPool != "b" || got.StepNode != "n1" {
+		t.Fatalf("move = %+v, %v", got, err)
+	}
+	if res, err = invokeTool(t, getH, "qrdb_volume_pool_get_move", map[string]any{"tenant": "t1"}); err != nil {
+		t.Fatalf("get-move: %v", err)
+	}
+	if err := json.Unmarshal([]byte(resultText(t, res)), &got); err != nil || got.State != "copying" {
+		t.Fatalf("get-move = %+v, %v", got, err)
+	}
+
+	_, err = invokeTool(t, moveH, "qrdb_volume_pool_move_tenant", map[string]any{"tenant": "t1", "to_pool": "plain"})
+	var q9 *volume.MoveToUnencryptedPoolError
+	if !errors.As(err, &q9) {
+		t.Fatalf("Q9: err = %v, want MoveToUnencryptedPoolError", err)
+	}
+	_, err = invokeTool(t, cancelH, "qrdb_volume_pool_cancel_move", map[string]any{"tenant": "none"})
+	var nf *volume.MoveNotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("cancel of no move: err = %v, want MoveNotFoundError", err)
+	}
+
+	res, err = invokeTool(t, moveH, "qrdb_volume_pool_move_tenant", map[string]any{"tenant": "t1"})
+	requireArgumentRefusal(t, res, err)
+	res, err = invokeTool(t, moveH, "qrdb_volume_pool_move_tenant", nil)
+	requireArgumentRefusal(t, res, err)
+	res, err = invokeTool(t, cancelH, "qrdb_volume_pool_cancel_move", nil)
+	requireArgumentRefusal(t, res, err)
 }
 
 // TestNewServer_WithVolumeServiceRegistersTools proves the option reaches the
