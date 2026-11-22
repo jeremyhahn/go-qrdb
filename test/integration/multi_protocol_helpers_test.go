@@ -895,6 +895,12 @@ const memberAddUnadvertisedRefusal = "no live feature advertisement from that no
 // recorded its release; it clears once that member's gate starts.
 const memberAddUnknownReleaseRefusal = "cannot be established"
 
+// memberAddUnannouncedCandidateRefusal is the gate's refusal of a
+// system-shard add for an address with no live advertisement at all
+// (featuregate.UnannouncedCandidateError): a joiner whose enrolment lease
+// is not yet published is refused this way until it is.
+const memberAddUnannouncedCandidateRefusal = "announces its release"
+
 // runMemberAddWhenAdvertised runs `admin member add` with args through node
 // over proto, acting as the operator who retries the featuregate refusals
 // until the joiner advertises and every member's release is established.
@@ -909,7 +915,9 @@ func runMemberAddWhenAdvertised(t *testing.T, node *multiProtoNode, proto multiP
 	var err error
 	pollUntil(12*featuregate.DefaultRefreshInterval, featuregate.DefaultRefreshInterval/5, func() bool {
 		out, err = runCLIProto(t, node, proto, cmd...)
-		if err == nil || (!strings.Contains(out, memberAddUnadvertisedRefusal) && !strings.Contains(out, memberAddUnknownReleaseRefusal)) {
+		if err == nil || (!strings.Contains(out, memberAddUnadvertisedRefusal) &&
+			!strings.Contains(out, memberAddUnknownReleaseRefusal) &&
+			!strings.Contains(out, memberAddUnannouncedCandidateRefusal)) {
 			return true
 		}
 		t.Logf("[%s] %s refused until the joiner and every member advertise, retrying: %s", proto.name, strings.Join(cmd, " "), strings.TrimSpace(out))

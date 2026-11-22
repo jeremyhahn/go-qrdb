@@ -53,6 +53,39 @@ func TestAdmitReplica_ReadsAdvertisementsAuthoritatively(t *testing.T) {
 	assert.Equal(t, "0.60.0-alpha", gap.Peer)
 }
 
+// TestAdmitReplica_AbsentCandidateAdvertisementRefuses: a candidate whose
+// advertisement expired from the store while the watch-fed cache still
+// holds it is refused on the system shard, not judged on the stale
+// features, and a binding admitted before the expiry no longer holds.
+func TestAdmitReplica_AbsentCandidateAdvertisementRefuses(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	ls, kv := newLeaseStore(), newMemKV()
+	ls.advertiseRelease(t, 2, "n2:7000", "0.59.0-alpha")
+	ls.advertiseRelease(t, 3, "n3:7000", "0.59.0-alpha")
+	ls.advertiseRelease(t, 4, "n4:7000", "0.60.0-alpha")
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.Start(context.Background(), kv, noWatchStore{ls}))
+	require.NoError(t, g.AdmitReplica(systemShard, "n4:7000"), "0.60 is adjacent to every 0.59 member")
+	binding, err := g.AdmitReplicaAt(systemShard, "n4:7000")
+	require.NoError(t, err)
+
+	// n4's lease expires from the store; the cache, fed by no watch, keeps it.
+	ls.expire(4)
+	var stale *StaleConfigurationError
+	require.ErrorAs(t, g.CheckConfigBinding(systemShard, binding), &stale,
+		"the lost advertisement changes the release digest")
+	assert.True(t, stale.ReleasesChanged)
+
+	_, err = kv.PutIfAbsent(context.Background(), ReleasePrefix+"2/0.58.0-alpha", []byte("n2:7000"))
+	require.NoError(t, err)
+	ls.advertiseRelease(t, 2, "n2:7000", "0.58.0-alpha")
+
+	var unannounced *UnannouncedCandidateError
+	require.ErrorAs(t, g.AdmitReplica(systemShard, "n4:7000"), &unannounced)
+	assert.Equal(t, uint64(systemShard), unannounced.ShardID)
+	assert.Equal(t, "n4:7000", unannounced.Address)
+}
+
 // TestAdmitReplica_ReadsReleaseRecordsAuthoritatively: node 2's
 // advertisement has lapsed and the release it recorded on its 0.58 restart
 // is not in this node's cached records. Admission must read the records

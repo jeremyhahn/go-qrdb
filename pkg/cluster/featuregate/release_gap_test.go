@@ -68,6 +68,7 @@ func TestAdmitReplica_AcceptsAdjacentAndUnannounced(t *testing.T) {
 
 	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n2:7000"))
 	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n3:7000"))
+	assert.NoError(t, g.AdmitReplica(systemShard, "n3:7000"), "a live record that predates announcement is judged by features alone")
 	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n1:7000"), "this node admits itself")
 }
 

@@ -689,7 +689,7 @@ func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error {
 // change index is a different counter) or when no membership was compared
 // (the node itself, or a candidate that advertises no release).
 func (g *Gate) AdmitReplicaAt(shardID uint64, raftAddr string) (ConfigBinding, error) {
-	binding, err := g.admitRelease(raftAddr)
+	binding, err := g.admitRelease(shardID, raftAddr)
 	if err != nil {
 		return ConfigBinding{}, err
 	}
@@ -718,7 +718,7 @@ func (g *Gate) AdmitReplicaAt(shardID uint64, raftAddr string) (ConfigBinding, e
 // release announcement and is judged by its features alone, both as the
 // candidate and as a member compared against; this node itself is never
 // refused.
-func (g *Gate) admitRelease(raftAddr string) (ConfigBinding, error) {
+func (g *Gate) admitRelease(shardID uint64, raftAddr string) (ConfigBinding, error) {
 	self, selfErr := g.AdvertisedSelf()
 	if selfErr == nil && self.Address == raftAddr {
 		return ConfigBinding{}, nil
@@ -737,10 +737,6 @@ func (g *Gate) admitRelease(raftAddr string) (ConfigBinding, error) {
 	// A candidate advertised from several sources may announce several
 	// releases: each must be adjacent, or the verdict depends on which
 	// record map order yields.
-	candidates := candidateReleases(view, raftAddr)
-	if len(candidates) == 0 {
-		return ConfigBinding{}, nil
-	}
 	refuse := func(err error, candidate, member, memberRelease string) (ConfigBinding, error) {
 		g.logger.Warn("feature gate: refusing replica on a release gap",
 			"address", raftAddr,
@@ -748,6 +744,19 @@ func (g *Gate) admitRelease(raftAddr string) (ConfigBinding, error) {
 			"member", member,
 			"member_release", memberRelease)
 		return ConfigBinding{}, err
+	}
+	// No live record at all is not the same as a live record that predates
+	// announcement: the feature check that follows reads the watch-fed
+	// cache, which can still hold an advertisement the store has expired,
+	// so a system-shard candidate with nothing live is refused here rather
+	// than judged on stale features. A non-system shard's candidates are
+	// committed members, judged by features alone.
+	if shardID == g.systemShard && !hasLiveRecord(view, raftAddr) {
+		return refuse(&UnannouncedCandidateError{ShardID: shardID, Address: raftAddr}, "", "self", release.Version())
+	}
+	candidates := candidateReleases(view, raftAddr)
+	if len(candidates) == 0 {
+		return ConfigBinding{}, nil
 	}
 	for _, candidate := range candidates {
 		if err := release.Check(releaseChannel, candidate); err != nil {
@@ -890,6 +899,16 @@ func announcedReleases(recs []cluster.Member) []string {
 
 // candidateReleases returns every distinct release the live records at
 // raftAddr announce, sorted.
+// hasLiveRecord reports whether view holds any advertisement at raftAddr.
+func hasLiveRecord(view map[viewKey]cluster.Member, raftAddr string) bool {
+	for _, rec := range view {
+		if rec.Address == raftAddr {
+			return true
+		}
+	}
+	return false
+}
+
 func candidateReleases(view map[viewKey]cluster.Member, raftAddr string) []string {
 	var recs []cluster.Member
 	for _, rec := range view {

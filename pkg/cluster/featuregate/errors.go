@@ -104,3 +104,18 @@ func (e *UnknownMemberReleaseError) Error() string {
 	return "feature gate: release of system-shard member " + strconv.FormatUint(e.ReplicaID, 10) +
 		" at " + e.Address + " cannot be established"
 }
+
+// UnannouncedCandidateError is returned by AdmitReplica when a candidate for
+// the system shard has no live advertisement at all, so neither its release
+// nor its features can be read from the authoritative store. A joining
+// node's advertisement is published by its enrollment.
+type UnannouncedCandidateError struct {
+	ShardID uint64
+	Address string
+}
+
+// Error implements error.
+func (e *UnannouncedCandidateError) Error() string {
+	return "feature gate: no live advertisement from " + e.Address +
+		" announces its release; a joining node's advertisement is published by its enrollment -- enroll the node first"
+}

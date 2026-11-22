@@ -139,3 +139,27 @@ func TestRollingUpgrade_VersionGapRefused_CLI(t *testing.T) {
 		t.Fatalf("QUIC dial offering only qrdb-quic/5 = %v, want transport error 0x178 (TLS alert 120)", err)
 	}
 }
+
+// TestRollingUpgrade_UnannouncedCandidateRefused_CLI: `qrdb admin member add`
+// for a Raft address with no live advertisement -- a node that never
+// enrolled -- is refused on every transport, and the address never joins.
+// startSelfIssuedCAFounders takes a binary for every node, so the founder
+// binary is passed three times and node 3 is never started.
+func TestRollingUpgrade_UnannouncedCandidateRefused_CLI(t *testing.T) {
+	founder := buildReleaseBinary(t, "0.59.0-alpha")
+	c := startSelfIssuedCAFounders(t, [3]string{founder, founder, founder})
+
+	for _, proto := range multiProtocols {
+		out, err := runCLIProto(t, c.nodes[0], proto, "admin", "member", "add", c.listeners[2].raftAddr(),
+			"--shard-id", "1", "--replica-id", "3")
+		if err == nil {
+			t.Fatalf("[%s] admin member add of an unannounced address succeeded: %s", proto.name, out)
+		}
+		if !strings.Contains(out, memberAddUnannouncedCandidateRefusal) {
+			t.Fatalf("[%s] admin member add refusal = %q, want it to contain %q", proto.name, out, memberAddUnannouncedCandidateRefusal)
+		}
+		if adminPeersContainsReplica(t, c.nodes[0], proto, 3) {
+			t.Errorf("[%s] admin peers lists the refused address", proto.name)
+		}
+	}
+}
