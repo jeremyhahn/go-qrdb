@@ -26,6 +26,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **The desktop's embedded server serves named databases (#1478).** Opening a database other than the system database over the embedded connection failed every browse, write, MVCC, lease, batch, index, watch and lock call with `DatabaseScopeUnsupportedError`; the embedded transport now resolves databases through the node's service registry as qrdbd does.
 - **Key delivery works with `auth.enabled=false` (#1174).** An auto-provisioned key-delivery listener asks for node client certificates and trusts only the ceremony CA for them, so the cluster key route refuses a caller without a verified node certificate.
 - **Raft-mode disk state machines are durable (#1618).** `DiskAdapter.Sync` was a no-op, so go-quicraft could compact the Raft log past applied state the Pebble store (opened without synced writes) had never made durable, and a crash lost acknowledged writes. `PebbleStorage` now implements `storage.Syncer` (a synced WAL record, or a memtable flush when the WAL is disabled) and `DiskAdapter.Sync` calls it and returns its error. `QRDB_NOSYNC_WRITES=1` skips the Raft WAL fdatasync only in a `qrdb_testonly` build; a production build ignores it and logs one warning.
 
