@@ -39,6 +39,82 @@ func (f *failingBackend) Commit(map[string][]byte, [][]byte) (int64, error) {
 	return 0, errInjected
 }
 
+func (f *failingBackend) Publish(map[string]string, map[string][]byte, [][]byte) (int64, error) {
+	return 0, errInjected
+}
+
+// stagingBackend is an MVCCBackend that counts staging commits (a Commit
+// whose puts are all stage keys) and Publish calls and records every stage
+// key a staging commit wrote. failPublish makes Publish fail without
+// writing; failStageAfter >= 0 makes every staging commit after that many
+// successful ones fail without writing.
+type stagingBackend struct {
+	*MVCCBackend
+	stageCommits   int
+	publishes      int
+	stageKeys      [][]byte
+	failPublish    bool
+	failStageAfter int
+}
+
+func newStagingBackend(t *testing.T) *stagingBackend {
+	t.Helper()
+	return &stagingBackend{MVCCBackend: newTestBackend(t), failStageAfter: -1}
+}
+
+func (b *stagingBackend) Commit(puts map[string][]byte, deletes [][]byte) (int64, error) {
+	staging := len(puts) > 0
+	for k := range puts {
+		if !bytes.Contains([]byte(k), []byte(stageSegment)) {
+			staging = false
+		}
+	}
+	if !staging {
+		return b.MVCCBackend.Commit(puts, deletes)
+	}
+	if b.failStageAfter >= 0 && b.stageCommits >= b.failStageAfter {
+		return 0, errInjected
+	}
+	rev, err := b.MVCCBackend.Commit(puts, deletes)
+	if err != nil {
+		return 0, err
+	}
+	b.stageCommits++
+	for k := range puts {
+		b.stageKeys = append(b.stageKeys, []byte(k))
+	}
+	return rev, nil
+}
+
+func (b *stagingBackend) Publish(moves map[string]string, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	b.publishes++
+	if b.failPublish {
+		return 0, errInjected
+	}
+	return b.MVCCBackend.Publish(moves, puts, deletes)
+}
+
+// assertNoStageKeyLive fails if any stage key b recorded has a live value at
+// the backend's current revision.
+func assertNoStageKeyLive(t *testing.T, b *stagingBackend) {
+	t.Helper()
+	rev := b.Revision()
+	for _, key := range b.stageKeys {
+		if _, found, err := b.GetAt(key, rev); err != nil || found {
+			t.Fatalf("stage key %q at revision %d: found=%v err=%v", key, rev, found, err)
+		}
+	}
+}
+
+func newStagingStore(t *testing.T, b Backend, db string) *Store {
+	t.Helper()
+	s, err := NewStore(b, db, WithStageThreshold(2*testPageSize), WithStageChunkBytes(testPageSize))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	return s
+}
+
 func newTestBackend(t *testing.T) *MVCCBackend {
 	t.Helper()
 	ms, err := mvcc.New(memory.NewStorage())
@@ -430,5 +506,204 @@ func TestStoresAreIsolatedByName(t *testing.T) {
 	third := begin(t, newTestStore(t, b, "three.db"))
 	if third.Size() != 0 {
 		t.Fatalf("an unwritten database has size %d", third.Size())
+	}
+}
+
+// pagesOf concatenates one test page per fill byte.
+func pagesOf(fills ...byte) []byte {
+	var out []byte
+	for _, fill := range fills {
+		out = append(out, pageOf(fill)...)
+	}
+	return out
+}
+
+func TestStagedCommit(t *testing.T) {
+	b := newStagingBackend(t)
+	s := newStagingStore(t, b, "app.db")
+	seed(t, s, 0x01, 0x02)
+	if b.stageCommits != 0 || b.publishes != 0 {
+		t.Fatalf("2-page commit staged: %d stage commits, %d publishes", b.stageCommits, b.publishes)
+	}
+	old := begin(t, s)
+
+	txn := begin(t, s)
+	writePages(t, txn, 0x11, 0x12, 0x13, 0x14, 0x15)
+	rev := commit(t, txn)
+	if b.stageCommits != 5 || b.publishes != 1 {
+		t.Fatalf("5-page commit: %d stage commits, %d publishes, want 5 and 1", b.stageCommits, b.publishes)
+	}
+	if rev != b.Revision() {
+		t.Fatalf("Commit revision %d, backend at %d", rev, b.Revision())
+	}
+	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x11, 0x12, 0x13, 0x14, 0x15)) {
+		t.Fatal("staged commit does not read back byte for byte")
+	}
+	if len(b.stageKeys) != 5 {
+		t.Fatalf("%d stage keys written, want 5", len(b.stageKeys))
+	}
+	assertNoStageKeyLive(t, b)
+	if got := readAll(t, old); !bytes.Equal(got, pagesOf(0x01, 0x02)) {
+		t.Fatal("a transaction pinned before the staged commit does not read the old bytes")
+	}
+}
+
+func TestStagedCommitTruncates(t *testing.T) {
+	b := newStagingBackend(t)
+	s := newStagingStore(t, b, "app.db")
+	seed(t, s, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06)
+	b.publishes = 0
+	txn := begin(t, s)
+	if err := txn.Truncate(0); err != nil {
+		t.Fatal(err)
+	}
+	writePages(t, txn, 0x21, 0x22, 0x23)
+	commit(t, txn)
+	if b.publishes != 1 {
+		t.Fatalf("%d publishes, want 1", b.publishes)
+	}
+	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x21, 0x22, 0x23)) {
+		t.Fatal("staged commit with truncation reads back wrong")
+	}
+	for pgno := uint32(4); pgno <= 6; pgno++ {
+		key, err := PageKey("app.db", pgno)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, found, err := b.GetAt(key, b.Revision()); err != nil || found {
+			t.Fatalf("truncated page %d is live: found=%v err=%v", pgno, found, err)
+		}
+	}
+	assertNoStageKeyLive(t, b)
+}
+
+func TestStagedCommitPublishFailure(t *testing.T) {
+	b := newStagingBackend(t)
+	s := newStagingStore(t, b, "app.db")
+	before := seed(t, s, 0x01, 0x02)
+	b.failPublish = true
+	txn := begin(t, s)
+	writePages(t, txn, 0x11, 0x12, 0x13, 0x14, 0x15)
+	if _, err := txn.Commit(); !errors.Is(err, errInjected) {
+		t.Fatalf("Commit err = %v, want errInjected", err)
+	}
+	if b.stageCommits != 5 || b.publishes != 1 {
+		t.Fatalf("%d stage commits, %d publishes, want 5 and 1", b.stageCommits, b.publishes)
+	}
+	assertNoStageKeyLive(t, b)
+	after := begin(t, s)
+	if after.Size() != 2*testPageSize {
+		t.Fatalf("size after a failed publish = %d", after.Size())
+	}
+	if got := readAll(t, after); !bytes.Equal(got, pagesOf(0x01, 0x02)) {
+		t.Fatal("a failed publish changed the pages")
+	}
+	if b.Revision() <= before {
+		t.Fatalf("cleanup wrote no revision: %d <= %d", b.Revision(), before)
+	}
+}
+
+func TestStagedCommitStageFailure(t *testing.T) {
+	b := newStagingBackend(t)
+	s := newStagingStore(t, b, "app.db")
+	seed(t, s, 0x01, 0x02)
+	b.failStageAfter = 2
+	txn := begin(t, s)
+	writePages(t, txn, 0x11, 0x12, 0x13, 0x14, 0x15)
+	if _, err := txn.Commit(); !errors.Is(err, errInjected) {
+		t.Fatalf("Commit err = %v, want errInjected", err)
+	}
+	if b.stageCommits != 2 || b.publishes != 0 {
+		t.Fatalf("%d stage commits, %d publishes, want 2 and 0", b.stageCommits, b.publishes)
+	}
+	assertNoStageKeyLive(t, b)
+	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x01, 0x02)) {
+		t.Fatal("a failed staging changed the pages")
+	}
+}
+
+func TestPublishMissingSourceWritesNothing(t *testing.T) {
+	b := newTestBackend(t)
+	before := b.Revision()
+	moves := map[string]string{"dst": "missing-src"}
+	if _, err := b.Publish(moves, map[string][]byte{"other": []byte("x")}, nil); err == nil {
+		t.Fatal("Publish of a missing source succeeded")
+	}
+	if b.Revision() != before {
+		t.Fatalf("failed Publish moved the revision to %d", b.Revision())
+	}
+}
+
+func TestNewStoreRefusesOptions(t *testing.T) {
+	b := newTestBackend(t)
+	for name, opt := range map[string]Option{
+		"threshold 0":  WithStageThreshold(0),
+		"threshold -1": WithStageThreshold(-1),
+		"chunk 0":      WithStageChunkBytes(0),
+		"chunk -4096":  WithStageChunkBytes(-4096),
+	} {
+		if _, err := NewStore(b, "app.db", opt); !errors.Is(err, ErrInvalidOption) {
+			t.Fatalf("NewStore(%s) err = %v, want ErrInvalidOption", name, err)
+		}
+	}
+}
+
+func TestBumpGenerationEmptyWritesNothing(t *testing.T) {
+	b := newTestBackend(t)
+	s := newTestStore(t, b, "app.db")
+	before := b.Revision()
+	rev, err := s.BumpGeneration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev != before || b.Revision() != before {
+		t.Fatalf("BumpGeneration on an empty db = %d, backend at %d, want %d", rev, b.Revision(), before)
+	}
+	if txn := begin(t, s); txn.Size() != 0 {
+		t.Fatalf("empty db has size %d after BumpGeneration", txn.Size())
+	}
+}
+
+func TestGenerationChange(t *testing.T) {
+	b := newTestBackend(t)
+	s := newTestStore(t, b, "app.db")
+	seed(t, s, 0x01, 0x02)
+	open := begin(t, s)
+	writePages(t, open, 0x31)
+
+	// The restore: another Store writes the restored pages and bumps the
+	// generation.
+	restorer := newTestStore(t, b, "app.db")
+	seed(t, restorer, 0x41, 0x42, 0x43)
+	bumped, err := restorer.BumpGeneration()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := open.Commit(); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("Commit across a restore err = %v, want ErrSnapshotChanged", err)
+	}
+	if b.Revision() != bumped {
+		t.Fatalf("refused Commit wrote: revision %d, want %d", b.Revision(), bumped)
+	}
+	if _, err := s.Begin(); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("first Begin after a restore err = %v, want ErrSnapshotChanged", err)
+	}
+	txn := begin(t, s)
+	if got := readAll(t, txn); !bytes.Equal(got, pagesOf(0x41, 0x42, 0x43)) {
+		t.Fatal("Begin after the restore does not read the restored bytes")
+	}
+	if txn.base.Generation != 1 {
+		t.Fatalf("generation after one bump = %d", txn.base.Generation)
+	}
+	writePages(t, txn, 0x51)
+	commit(t, txn)
+	if got := begin(t, s).base.Generation; got != 1 {
+		t.Fatalf("a commit did not carry the generation forward: %d", got)
+	}
+
+	fresh := begin(t, newTestStore(t, b, "app.db"))
+	if got := readAll(t, fresh); !bytes.Equal(got, pagesOf(0x51, 0x42, 0x43)) {
+		t.Fatal("a Store that first pins after the bump reads wrong bytes")
 	}
 }

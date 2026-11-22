@@ -22,10 +22,15 @@ import (
 )
 
 func encodeMeta(version, pageSize, pageCount uint32) []byte {
-	buf := make([]byte, 12)
+	return encodeMetaGen(version, pageSize, pageCount, 0)
+}
+
+func encodeMetaGen(version, pageSize, pageCount uint32, generation uint64) []byte {
+	buf := make([]byte, 20)
 	binary.BigEndian.PutUint32(buf[0:4], version)
 	binary.BigEndian.PutUint32(buf[4:8], pageSize)
 	binary.BigEndian.PutUint32(buf[8:12], pageCount)
+	binary.BigEndian.PutUint64(buf[12:20], generation)
 	return buf
 }
 
@@ -51,13 +56,37 @@ func TestMetaRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMetaGenerationRoundTrip(t *testing.T) {
+	for _, gen := range []uint64{1, 7, 1<<32 + 5, 1<<64 - 1} {
+		m := Meta{FormatVersion: FormatVersion, PageSize: 4096, PageCount: 3, Generation: gen}
+		data, err := m.MarshalBinary()
+		if err != nil {
+			t.Fatalf("MarshalBinary(%+v): %v", m, err)
+		}
+		if len(data) != 20 {
+			t.Fatalf("MarshalBinary(%+v) is %d bytes, want 20", m, len(data))
+		}
+		if want := encodeMetaGen(1, 4096, 3, gen); !bytes.Equal(data, want) {
+			t.Fatalf("MarshalBinary(%+v) = %x, want %x", m, data, want)
+		}
+		var got Meta
+		if err := got.UnmarshalBinary(data); err != nil {
+			t.Fatalf("UnmarshalBinary: %v", err)
+		}
+		if got != m {
+			t.Fatalf("round trip = %+v, want %+v", got, m)
+		}
+	}
+}
+
 func TestMetaRefusals(t *testing.T) {
 	tests := []struct {
 		name string
 		data []byte
 	}{
 		{"empty", nil},
-		{"short", encodeMeta(1, 4096, 1)[:11]},
+		{"short", encodeMeta(1, 4096, 1)[:19]},
+		{"no generation (12 bytes)", encodeMeta(1, 4096, 1)[:12]},
 		{"long", append(encodeMeta(1, 4096, 1), 0)},
 		{"version 0", encodeMeta(0, 4096, 1)},
 		{"version 2", encodeMeta(2, 4096, 1)},

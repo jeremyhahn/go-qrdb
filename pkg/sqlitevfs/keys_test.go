@@ -89,6 +89,106 @@ func TestKeyLayout(t *testing.T) {
 	}
 }
 
+const testCommitID = "0123456789abcdef0123456789abcdef"
+
+func TestStageKeyLayout(t *testing.T) {
+	prefix, err := StagePrefix("app.db", testCommitID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "sqlite/app.db/stage/" + testCommitID + "/page/"; string(prefix) != want {
+		t.Fatalf("StagePrefix = %q, want %q", prefix, want)
+	}
+	key, err := StageKey("app.db", testCommitID, 0x01020304)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := string(prefix) + "\x01\x02\x03\x04"; string(key) != want {
+		t.Fatalf("StageKey = %q, want %q", key, want)
+	}
+}
+
+func TestStageKeyRefusals(t *testing.T) {
+	if _, err := StagePrefix("a/b", testCommitID); !errors.Is(err, ErrInvalidDatabaseName) {
+		t.Fatalf("StagePrefix bad db err = %v, want ErrInvalidDatabaseName", err)
+	}
+	if _, err := StageKey("", testCommitID, 1); !errors.Is(err, ErrInvalidDatabaseName) {
+		t.Fatalf("StageKey empty db err = %v, want ErrInvalidDatabaseName", err)
+	}
+	if _, err := StageKey("app.db", testCommitID, 0); !errors.Is(err, ErrInvalidPageNumber) {
+		t.Fatalf("StageKey pgno 0 err = %v, want ErrInvalidPageNumber", err)
+	}
+	for name, id := range map[string]string{
+		"empty":     "",
+		"31 chars":  testCommitID[:31],
+		"33 chars":  testCommitID + "0",
+		"uppercase": strings.ToUpper(testCommitID),
+		"non-hex":   "0123456789abcdef0123456789abcdeg",
+		"slash":     "0123456789abcdef0123456789abcde/",
+	} {
+		if err := ValidateCommitID(id); !errors.Is(err, ErrInvalidCommitID) {
+			t.Fatalf("ValidateCommitID(%s) err = %v, want ErrInvalidCommitID", name, err)
+		}
+		if _, err := StageKey("app.db", id, 1); !errors.Is(err, ErrInvalidCommitID) {
+			t.Fatalf("StageKey(%s) err = %v, want ErrInvalidCommitID", name, err)
+		}
+	}
+	if err := ValidateCommitID(testCommitID); err != nil {
+		t.Fatalf("ValidateCommitID(valid) = %v", err)
+	}
+	id, err := newCommitID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCommitID(id); err != nil {
+		t.Fatalf("newCommitID %q: %v", id, err)
+	}
+}
+
+func TestStageKeysDisjoint(t *testing.T) {
+	dbs := []string{"app.db", "stage", "page", "meta", "a", "app.db.stage"}
+	var others [][]byte
+	for _, db := range dbs {
+		meta, err := MetaKey(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prefix, err := PagePrefix(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		others = append(others, meta, prefix)
+		for _, pgno := range []uint32{1, 2, 1<<32 - 1} {
+			key, err := PageKey(db, pgno)
+			if err != nil {
+				t.Fatal(err)
+			}
+			others = append(others, key)
+		}
+	}
+	for _, db := range dbs {
+		prefix, err := StagePrefix(db, testCommitID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stage := [][]byte{prefix}
+		for _, pgno := range []uint32{1, 2, 1<<32 - 1} {
+			key, err := StageKey(db, testCommitID, pgno)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stage = append(stage, key)
+		}
+		for _, s := range stage {
+			for _, o := range others {
+				if bytes.HasPrefix(o, s) || bytes.HasPrefix(s, o) {
+					t.Fatalf("stage key %q and page/meta key %q overlap", s, o)
+				}
+			}
+		}
+	}
+}
+
 func TestPageKeyOrder(t *testing.T) {
 	pgnos := []uint32{1, 2, 255, 256, 65535, 65536, 1 << 24, 1<<32 - 1}
 	var prev []byte

@@ -73,6 +73,41 @@ func (b *MVCCBackend) GetAt(key []byte, rev int64) ([]byte, bool, error) {
 func (b *MVCCBackend) Commit(puts map[string][]byte, deletes [][]byte) (int64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.commitLocked(puts, deletes)
+}
+
+// Publish reads each source key of moves with GetAtRevision at
+// CurrentRevision(), puts its value under the destination key, deletes the
+// source key, and applies puts and deletes, all in one storage batch at one
+// revision (commitLocked). A source key with no live value fails the
+// publish with an error naming it and writes nothing. This is the
+// local-process path only; a Raft publish proposal is a later slice.
+func (b *MVCCBackend) Publish(moves map[string]string, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	rev := b.store.CurrentRevision()
+	all := make(map[string][]byte, len(puts)+len(moves))
+	for k, v := range puts {
+		all[k] = v
+	}
+	allDeletes := make([][]byte, 0, len(deletes)+len(moves))
+	allDeletes = append(allDeletes, deletes...)
+	for dst, src := range moves {
+		value, found, err := b.GetAt([]byte(src), rev)
+		if err != nil {
+			return 0, fmt.Errorf("sqlitevfs: publish read %q at revision %d: %w", src, rev, err)
+		}
+		if !found {
+			return 0, fmt.Errorf("sqlitevfs: publish source %q has no live value at revision %d", src, rev)
+		}
+		all[dst] = value
+		allDeletes = append(allDeletes, []byte(src))
+	}
+	return b.commitLocked(all, allDeletes)
+}
+
+// commitLocked is the batch body of Commit and Publish; b.mu must be held.
+func (b *MVCCBackend) commitLocked(puts map[string][]byte, deletes [][]byte) (int64, error) {
 	if len(puts) == 0 && len(deletes) == 0 {
 		return b.store.CurrentRevision(), nil
 	}

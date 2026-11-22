@@ -23,8 +23,14 @@
 // shared-memory index): a transaction's writes become visible all at once or
 // not at all.
 //
+// A transaction whose dirty pages exceed the stage threshold commits
+// through staging writes under sqlite/<db>/stage/<commit-id>/page/ and one
+// publish that moves them into page/ and updates meta at one revision
+// (Q2 A). The meta record carries a restore generation: a transaction that
+// sees it change fails with ErrSnapshotChanged after a restore (Q4 A).
+//
 // The package is unwired. No SQLite engine is linked and no VFS is
 // registered; nothing in the server, the SDK or the CLI calls it. The engine
-// binding, writer serialization, staged commits for oversized transactions,
-// quota, a page cache and every transport are later slices.
+// binding, writer serialization, quota, a page cache and every transport
+// are later slices.
 package sqlitevfs

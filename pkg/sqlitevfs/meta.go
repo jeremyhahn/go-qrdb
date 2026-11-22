@@ -28,8 +28,9 @@ const (
 	MinPageSize uint32 = 512
 	MaxPageSize uint32 = 65536
 
-	// metaLen is the encoded meta record length: three big-endian uint32.
-	metaLen = 12
+	// metaLen is the encoded meta record length: three big-endian uint32,
+	// then a big-endian uint64.
+	metaLen = 20
 )
 
 // Meta is a database's meta record, stored at MetaKey(db).
@@ -41,6 +42,10 @@ type Meta struct {
 	// PageCount is the number of pages; the file size is
 	// PageCount*PageSize.
 	PageCount uint32
+	// Generation is the restore generation (Q4 A): a restore of the
+	// namespace bumps it, and a transaction that pinned another generation
+	// fails with ErrSnapshotChanged.
+	Generation uint64
 }
 
 // ValidPageSize reports whether n is a page size SQLite allows: a power of
@@ -59,9 +64,9 @@ func (m Meta) validate() error {
 	return nil
 }
 
-// MarshalBinary encodes m as 12 bytes: format version, page size and page
-// count, each a big-endian uint32. An invalid record is refused with
-// ErrInvalidMeta.
+// MarshalBinary encodes m as 20 bytes: format version, page size and page
+// count, each a big-endian uint32, then the generation as a big-endian
+// uint64. An invalid record is refused with ErrInvalidMeta.
 func (m Meta) MarshalBinary() ([]byte, error) {
 	if err := m.validate(); err != nil {
 		return nil, err
@@ -70,10 +75,12 @@ func (m Meta) MarshalBinary() ([]byte, error) {
 	binary.BigEndian.PutUint32(buf[0:4], m.FormatVersion)
 	binary.BigEndian.PutUint32(buf[4:8], m.PageSize)
 	binary.BigEndian.PutUint32(buf[8:12], m.PageCount)
+	binary.BigEndian.PutUint64(buf[12:20], m.Generation)
 	return buf, nil
 }
 
-// UnmarshalBinary decodes a record MarshalBinary wrote. A wrong length, an
+// UnmarshalBinary decodes a 20-byte record MarshalBinary wrote, generation
+// included. A wrong length, an
 // unknown format version or an invalid page size is refused with
 // ErrInvalidMeta and leaves m unchanged.
 func (m *Meta) UnmarshalBinary(data []byte) error {
@@ -84,6 +91,7 @@ func (m *Meta) UnmarshalBinary(data []byte) error {
 		FormatVersion: binary.BigEndian.Uint32(data[0:4]),
 		PageSize:      binary.BigEndian.Uint32(data[4:8]),
 		PageCount:     binary.BigEndian.Uint32(data[8:12]),
+		Generation:    binary.BigEndian.Uint64(data[12:20]),
 	}
 	if err := decoded.validate(); err != nil {
 		return err

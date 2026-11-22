@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sync"
 )
 
 // Backend is the versioned key-value store the page store reads and commits
@@ -31,6 +32,11 @@ type Backend interface {
 	// Commit applies every put and every delete at one new revision, or
 	// none of them, and returns that revision.
 	Commit(puts map[string][]byte, deletes [][]byte) (rev int64, err error)
+	// Publish, at one new revision, puts for each destination key in moves
+	// the newest committed value of its source key, deletes every source
+	// key, and applies puts and deletes; or does none of it. A source key
+	// with no live value fails the whole publish.
+	Publish(moves map[string]string, puts map[string][]byte, deletes [][]byte) (rev int64, err error)
 }
 
 // Store is the page store of one SQLite database file over a Backend.
@@ -38,11 +44,61 @@ type Store struct {
 	backend Backend
 	db      string
 	metaKey []byte
+
+	// stageThreshold is the dirty-page byte total above which a commit
+	// goes through staging and one publish (Q2 A); stageChunkBytes bounds
+	// the page bytes of each staging Backend.Commit.
+	stageThreshold  int
+	stageChunkBytes int
+
+	// mu guards seenGen and seen: the meta generation of this Store's last
+	// snapshot pin, and whether it has pinned one.
+	mu      sync.Mutex
+	seenGen uint64
+	seen    bool
+}
+
+const (
+	// DefaultStageThreshold is the default dirty-page byte total above
+	// which a commit stages its pages before one publish.
+	DefaultStageThreshold = 4 << 20
+	// DefaultStageChunkBytes is the default page bytes per staging commit:
+	// half of go-quicraft's 8 MiB proto.MaxEntrySize per Raft entry, so a
+	// staging write with its key overhead fits one entry.
+	DefaultStageChunkBytes = 4 << 20
+)
+
+// Option configures a Store built by NewStore.
+type Option func(*Store) error
+
+// WithStageThreshold sets the dirty-page byte total above which a commit
+// goes through staging and one publish. A non-positive value is refused
+// with ErrInvalidOption.
+func WithStageThreshold(bytes int) Option {
+	return func(s *Store) error {
+		if bytes <= 0 {
+			return fmt.Errorf("%w: stage threshold %d", ErrInvalidOption, bytes)
+		}
+		s.stageThreshold = bytes
+		return nil
+	}
+}
+
+// WithStageChunkBytes sets the most page bytes one staging commit writes. A
+// non-positive value is refused with ErrInvalidOption.
+func WithStageChunkBytes(bytes int) Option {
+	return func(s *Store) error {
+		if bytes <= 0 {
+			return fmt.Errorf("%w: stage chunk size %d", ErrInvalidOption, bytes)
+		}
+		s.stageChunkBytes = bytes
+		return nil
+	}
 }
 
 // NewStore returns the page store of database db over b. A nil backend is
 // refused with ErrNilBackend and an invalid name with ErrInvalidDatabaseName.
-func NewStore(b Backend, db string) (*Store, error) {
+func NewStore(b Backend, db string, opts ...Option) (*Store, error) {
 	if b == nil {
 		return nil, ErrNilBackend
 	}
@@ -50,7 +106,19 @@ func NewStore(b Backend, db string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{backend: b, db: db, metaKey: metaKey}, nil
+	s := &Store{
+		backend:         b,
+		db:              db,
+		metaKey:         metaKey,
+		stageThreshold:  DefaultStageThreshold,
+		stageChunkBytes: DefaultStageChunkBytes,
+	}
+	for _, opt := range opts {
+		if err := opt(s); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
 }
 
 // DB returns the database name.
@@ -58,20 +126,43 @@ func (s *Store) DB() string {
 	return s.db
 }
 
-// Begin starts a transaction: it pins the backend's current revision and
-// reads the meta record at it. An absent meta record is an empty database
-// (size 0, page size not yet set).
-func (s *Store) Begin() (*Txn, error) {
-	rev := s.backend.Revision()
+// readMeta reads the meta record at revision rev. An absent meta record is
+// an empty database: found=false and a Meta with only FormatVersion set.
+func (s *Store) readMeta(rev int64) (Meta, bool, error) {
 	meta := Meta{FormatVersion: FormatVersion}
 	value, found, err := s.backend.GetAt(s.metaKey, rev)
 	if err != nil {
-		return nil, fmt.Errorf("sqlitevfs: read meta of %q at revision %d: %w", s.db, rev, err)
+		return Meta{}, false, fmt.Errorf("sqlitevfs: read meta of %q at revision %d: %w", s.db, rev, err)
 	}
 	if found {
 		if err := meta.UnmarshalBinary(value); err != nil {
-			return nil, err
+			return Meta{}, false, err
 		}
+	}
+	return meta, found, nil
+}
+
+// Begin starts a transaction: it pins the backend's current revision and
+// reads the meta record at it. An absent meta record is an empty database
+// (size 0, page size not yet set).
+//
+// If this Store pinned a different meta generation before, the database
+// was restored underneath it (Q4 A): Begin records the new generation and
+// returns ErrSnapshotChanged, and the next Begin succeeds. This is where a
+// page cache will be dropped once there is one.
+func (s *Store) Begin() (*Txn, error) {
+	rev := s.backend.Revision()
+	meta, _, err := s.readMeta(rev)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	changed := s.seen && s.seenGen != meta.Generation
+	s.seenGen = meta.Generation
+	s.seen = true
+	s.mu.Unlock()
+	if changed {
+		return nil, fmt.Errorf("%w: %q is at generation %d", ErrSnapshotChanged, s.db, meta.Generation)
 	}
 	return &Txn{
 		store: s,
@@ -83,10 +174,36 @@ func (s *Store) Begin() (*Txn, error) {
 	}, nil
 }
 
+// BumpGeneration is the restore hook of Q4 A: it reads the meta record at
+// the current revision and commits it with Generation+1 in one
+// Backend.Commit, returning that revision. A database with no meta record
+// writes nothing and returns the current revision.
+func (s *Store) BumpGeneration() (int64, error) {
+	rev := s.backend.Revision()
+	meta, found, err := s.readMeta(rev)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return rev, nil
+	}
+	meta.Generation++
+	value, err := meta.MarshalBinary()
+	if err != nil {
+		return 0, err
+	}
+	newRev, err := s.backend.Commit(map[string][]byte{string(s.metaKey): value}, nil)
+	if err != nil {
+		return 0, fmt.Errorf("sqlitevfs: bump generation of %q: %w", s.db, err)
+	}
+	return newRev, nil
+}
+
 // Txn is one transaction on a database file: a snapshot at the revision
 // Begin pinned plus a buffer of the transaction's own writes. It offers the
 // file semantics a VFS binding calls (size, read, write, truncate) and
-// commits the buffer as one Backend.Commit. A Txn is not safe for concurrent
+// commits the buffer as one Backend.Commit, or, above the stage threshold,
+// as staging commits and one Backend.Publish. A Txn is not safe for concurrent
 // use.
 type Txn struct {
 	store *Store
@@ -279,6 +396,15 @@ func (t *Txn) Truncate(size int64) error {
 // its revision. A transaction with no writes commits nothing and returns the
 // pinned revision. The transaction is done afterwards, whether or not the
 // commit succeeded.
+//
+// Commit first re-reads the meta record at the backend's current revision:
+// if its generation differs from the one this transaction pinned, the
+// database was restored underneath it (Q4 A) and Commit returns
+// ErrSnapshotChanged and writes nothing. Without the Q3 writer lock this
+// check and the commit are not one step; the lock slice closes that window.
+//
+// When the dirty pages total more than the Store's stage threshold, the
+// pages go through staging and one publish (Q2 A, commitStaged) instead.
 func (t *Txn) Commit() (int64, error) {
 	if t.done {
 		return 0, ErrTxnDone
@@ -287,18 +413,17 @@ func (t *Txn) Commit() (int64, error) {
 	if !t.wrote {
 		return t.rev, nil
 	}
-	metaValue, err := t.meta.MarshalBinary()
+	current, _, err := t.store.readMeta(t.store.backend.Revision())
 	if err != nil {
 		return 0, err
 	}
-	puts := make(map[string][]byte, len(t.dirty)+1)
-	puts[string(t.store.metaKey)] = metaValue
-	for pgno, page := range t.dirty {
-		key, err := PageKey(t.store.db, pgno)
-		if err != nil {
-			return 0, err
-		}
-		puts[string(key)] = page
+	if current.Generation != t.base.Generation {
+		return 0, fmt.Errorf("%w: %q moved from generation %d to %d", ErrSnapshotChanged, t.store.db, t.base.Generation, current.Generation)
+	}
+	t.meta.Generation = t.base.Generation
+	metaValue, err := t.meta.MarshalBinary()
+	if err != nil {
+		return 0, err
 	}
 	var deletes [][]byte
 	for pgno := uint64(t.floor) + 1; pgno <= uint64(t.base.PageCount); pgno++ {
@@ -310,6 +435,22 @@ func (t *Txn) Commit() (int64, error) {
 			return 0, err
 		}
 		deletes = append(deletes, key)
+	}
+	dirtyBytes := 0
+	for _, page := range t.dirty {
+		dirtyBytes += len(page)
+	}
+	if dirtyBytes > t.store.stageThreshold {
+		return t.commitStaged(metaValue, deletes)
+	}
+	puts := make(map[string][]byte, len(t.dirty)+1)
+	puts[string(t.store.metaKey)] = metaValue
+	for pgno, page := range t.dirty {
+		key, err := PageKey(t.store.db, pgno)
+		if err != nil {
+			return 0, err
+		}
+		puts[string(key)] = page
 	}
 	rev, err := t.store.backend.Commit(puts, deletes)
 	if err != nil {

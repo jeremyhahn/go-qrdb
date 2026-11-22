@@ -47,4 +47,18 @@ var (
 	// ErrNilBackend is returned when a Store or MVCCBackend is built over a
 	// nil backend.
 	ErrNilBackend = errors.New("sqlitevfs: nil backend")
+
+	// ErrSnapshotChanged is returned when the database's meta generation
+	// changed since this Store's last snapshot pin or this transaction's
+	// pin: the database was restored underneath it (Q4 A). The SQLite
+	// binding maps it to SQLITE_BUSY_SNAPSHOT.
+	ErrSnapshotChanged = errors.New("sqlitevfs: snapshot generation changed")
+
+	// ErrInvalidCommitID is returned for a staging commit id that is not 32
+	// lowercase hex characters.
+	ErrInvalidCommitID = errors.New("sqlitevfs: invalid commit id")
+
+	// ErrInvalidOption is returned by NewStore for a non-positive stage
+	// threshold or stage chunk size.
+	ErrInvalidOption = errors.New("sqlitevfs: invalid option")
 )

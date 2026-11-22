@@ -16,7 +16,9 @@ package sqlitevfs
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 )
 
@@ -27,7 +29,12 @@ const (
 	keyRoot      = "sqlite/"
 	metaSuffix   = "/meta"
 	pageSegment  = "/page/"
+	stageSegment = "/stage/"
 	pageNumBytes = 4
+
+	// commitIDLen is the length of a staging commit id: 16 random bytes,
+	// hex-encoded.
+	commitIDLen = 32
 )
 
 // ValidateDatabaseName returns ErrInvalidDatabaseName unless db is a usable
@@ -96,4 +103,59 @@ func ParsePageKey(db string, key []byte) (uint32, error) {
 		return 0, fmt.Errorf("%w: 0", ErrInvalidPageNumber)
 	}
 	return pgno, nil
+}
+
+// ValidateCommitID reports whether id is a staging commit id: exactly 32
+// lowercase hex characters.
+func ValidateCommitID(id string) error {
+	if len(id) != commitIDLen {
+		return fmt.Errorf("%w: %d characters, want %d", ErrInvalidCommitID, len(id), commitIDLen)
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return fmt.Errorf("%w: %q is not lowercase hex", ErrInvalidCommitID, id)
+		}
+	}
+	return nil
+}
+
+// newCommitID returns a fresh staging commit id: 16 bytes from crypto/rand,
+// hex-encoded.
+func newCommitID() (string, error) {
+	var raw [commitIDLen / 2]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("sqlitevfs: new commit id: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+// StagePrefix returns the prefix of every staged page of commit commitID of
+// database db: sqlite/<db>/stage/<commit-id>/page/. Staged pages are written
+// by an oversized commit before its publish and are never read as pages.
+func StagePrefix(db, commitID string) ([]byte, error) {
+	if err := ValidateDatabaseName(db); err != nil {
+		return nil, err
+	}
+	if err := ValidateCommitID(commitID); err != nil {
+		return nil, err
+	}
+	return []byte(keyRoot + db + stageSegment + commitID + pageSegment), nil
+}
+
+// StageKey returns the staging key of page pgno of commit commitID of
+// database db: StagePrefix followed by pgno as 4 big-endian bytes. Page
+// number 0 is refused, as in PageKey.
+func StageKey(db, commitID string, pgno uint32) ([]byte, error) {
+	prefix, err := StagePrefix(db, commitID)
+	if err != nil {
+		return nil, err
+	}
+	if pgno == 0 {
+		return nil, fmt.Errorf("%w: 0", ErrInvalidPageNumber)
+	}
+	key := make([]byte, len(prefix)+pageNumBytes)
+	copy(key, prefix)
+	binary.BigEndian.PutUint32(key[len(prefix):], pgno)
+	return key, nil
 }
