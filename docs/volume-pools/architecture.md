@@ -264,14 +264,18 @@ resolved on both sides, applied per pool.
 Not implemented. No transport exposes a move, and `volume.Catalog.MoveTenant`
 returns `*volume.MoveNotImplementedError`, classified `Unimplemented`.
 
-The proposed design, awaiting the owner's ruling, is
+The design, decided by convention (ruling 109) and not awaiting a ruling, is
 [../decisions/volume-pool-tenant-moves.md](../decisions/volume-pool-tenant-moves.md):
 a rolling, per-node copy behind a move journal, cut over by one assignment
-write, with its open questions, options and recommendations. Until it is
-ruled and built, nothing in it is part of this contract.
+write. Only the parts built and described here are part of this contract.
 
-Only its node-local copy and manifest verify step exists, unwired, in
-`pkg/volume/move_copy.go`; nothing else of the proposal is built.
+The node step runs on a node's own pools through
+`seal.BarrierRegistry.RunMoveCopyStep`: it resolves the tenant's source
+directory and its destination directory on the destination pool, copies the
+closed tree, verifies the copy against its SHA-256 manifest, and on a failure
+removes the partial destination through the inside-pool guard, never the
+source. No journal, reconciler or transport calls it yet, and `MoveTenant`
+still returns `*volume.MoveNotImplementedError`.
 
 ## Trust boundaries
 

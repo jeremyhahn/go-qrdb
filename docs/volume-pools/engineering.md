@@ -159,9 +159,10 @@ type Service interface {
 `PoolView` is a `Pool` plus `UsedBytes`, `TenantCount` and per-node health
 counts. `PoolDetail` is a `PoolView` plus one `NodeReportRow` per node.
 
-The node-local step of the proposed tenant move
+The node-local step of the tenant move
 ([../decisions/volume-pool-tenant-moves.md](../decisions/volume-pool-tenant-moves.md))
-is built but unwired (`move_copy.go`); nothing calls it in this build:
+is built in `move_copy.go`; these functions are called by
+`seal.BarrierRegistry.RunMoveCopyStep`, which nothing calls in this build:
 
 - `CopyTree(ctx, src, dst) (*Manifest, error)`: the unwired node-step copy of
   a closed directory tree, fsyncing files and directories, source kept;
@@ -231,6 +232,10 @@ func (b *StorageBarrier) OnSealing(fn func(context.Context) error)
 | `config.VolumePoolConfig` | `Name`, `Path`, `Provider` (default `dir`) and `Options map[string]string` |
 | `seal.BarrierRegistry.LocalTenantDataRoot` | resolves through the assignment and the opened `volume.Volume` |
 | `seal.BarrierRegistry.RequireInsideLocalPool` | checks against the pool's opened `Volume.Root()` |
+| `seal.BarrierRegistry.RunMoveCopyStep(ctx, nodeID, tenantID, toPool) (*volume.Manifest, error)` | the move's node step on this node's pools: resolve both directories, copy, verify, remove a partial destination through `RemoveDataRoot`; nothing calls it in this build |
+| `seal.ErrMoveStepInvalid` | `RunMoveCopyStep` called without a node ID or destination pool |
+| `seal.ErrMoveSamePool` | the destination pool is the tenant's current pool |
+| `seal.ErrMoveTenantOpen` | the tenant still has a barrier on this node; the step copies a closed directory |
 | `placement.ReplicaFilter` | `func(tenantID string, shardID uint64, raftAddr string) error`; `WithReplicaFilter` composes several |
 
 ## Invariants
@@ -412,8 +417,17 @@ refusal, and deleted and re-created.
   concurrent creates, entitlement and
   reservation ordering;
 - `pkg/placement`: the pool filter;
-- `pkg/seal` (`BarrierRegistry`): resolution and the inside-root guard, once
-  the catalog/assignment resolution replaces the objstore-pool path.
+- `pkg/seal` (`move_step_test.go`): `RunMoveCopyStep` over two real `dir`
+  pools copies a nested tree (subdirectory, empty file, file over 1 MiB, a
+  0600 file) to `<destination root>/<Assignment.Path>` with a manifest equal
+  to `BuildManifest` of both trees, the source and the assignment unchanged;
+  a leftover partial destination is removed and the copy redone; refusals
+  (empty tenant, empty node or pool, no pools configured, no assignment, same
+  pool, a pool not open on this node, a tenant with a registered barrier, a
+  symbolic link in the source); a verify failure (a file truncated between
+  copy and verify) removes the destination and keeps the source, and with a
+  failing remover the error still carries the `*volume.MoveStepError` and the
+  remover's error; a cancelled context; no message names a pool path.
 
 Fault seams:
 

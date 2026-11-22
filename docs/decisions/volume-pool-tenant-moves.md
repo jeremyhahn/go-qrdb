@@ -1,11 +1,11 @@
 # Moving a tenant between volume pools
 
-> **Status: PROPOSED — awaiting owner ruling** · Scope: go-qrdb
+> **Status: DECIDED by convention (ruling 109) on 2026-11-22, the Tenant
+> ordered the row to task:ready; building** · Scope: go-qrdb
 > Last verified: 2026-11-12 at main e8b579229d
-> SPEC row `volume-pool-tenant-moves` (future, phase 2). Nothing here is
-> built. Each open question lists its options, a recommendation and the
-> lower-project dependency each option needs. The owner rules; the Ruling
-> section is empty until then.
+> SPEC row `volume-pool-tenant-moves` (future, phase 2). Each open question
+> lists its options, a recommendation and the lower-project dependency each
+> option needs; the Ruling section records the pick for each.
 
 ## Problem
 
@@ -392,6 +392,24 @@ sleeps: every wait is on an observable state):
 
 ## Ruling
 
-None yet. The owner rules on Q1 to Q10; the Status line and this section
-record the ruling, and `docs/volume-pools/` absorbs the ruled design when the
-row is built.
+Decided by convention (ruling 109) on 2026-11-22, each question taking its
+recommendation:
+
+- Q1: B, rolling, one replica at a time.
+- Q2: A, file copy of the closed replica directory, the source kept until
+  retire.
+- Q3: A, the destination pool ready on every replica node at admit, and again
+  at each node's step.
+- Q4: A, a manifest of path, size and SHA-256, plus reopen and catch-up.
+- Q5: A, a move journal `__sys:volumepool/moves/{tenant}` beside the
+  assignment.
+- Q6: A, a move reconciler on the system shard's leader, bounded retry
+  (default 3), then abort.
+- Q7: A, the source removed at retire, right after cut over.
+- Q8: A, `CancelMove` until cut over, `FailedPrecondition` after.
+- Q9: A, Lockable to non-Lockable only with `allow_unencrypted_destination`,
+  audited.
+- Q10: A, refuse tenant delete, `UpdateQuotas` and a second move while a move
+  runs; serve reads and writes.
+
+`docs/volume-pools/` absorbs each part of this design as it is built.
