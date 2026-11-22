@@ -16,6 +16,7 @@ package sqlitevfs
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -30,6 +31,10 @@ import (
 // revision itself, so the store must have no other writer (no Raft apply
 // loop) while the backend commits. Replicating a commit through a Raft batch
 // proposal is a later slice.
+//
+// Every method returns ctx.Err() before it reads or writes when ctx is
+// already done. A commit that has started is not interrupted: it is one
+// local storage batch.
 type MVCCBackend struct {
 	store *mvcc.Store
 	// mu serializes Commit: each commit claims CurrentRevision()+1.
@@ -46,13 +51,19 @@ func NewMVCCBackend(s *mvcc.Store) (*MVCCBackend, error) {
 }
 
 // Revision returns the store's current revision.
-func (b *MVCCBackend) Revision() (int64, error) {
+func (b *MVCCBackend) Revision(ctx context.Context) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	return b.store.CurrentRevision(), nil
 }
 
 // GetAt returns key's value at rev. A key with no live value at rev (never
 // written, or deleted at or before rev) is found=false, not an error.
-func (b *MVCCBackend) GetAt(key []byte, rev int64) ([]byte, bool, error) {
+func (b *MVCCBackend) GetAt(ctx context.Context, key []byte, rev int64) ([]byte, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	if rev <= 0 {
 		return nil, false, nil
 	}
@@ -70,7 +81,10 @@ func (b *MVCCBackend) GetAt(key []byte, rev int64) ([]byte, bool, error) {
 
 // Keys returns every key with a live value at revision rev that starts with
 // prefix, in key order. A non-positive rev is the empty store.
-func (b *MVCCBackend) Keys(prefix []byte, rev int64) ([][]byte, error) {
+func (b *MVCCBackend) Keys(ctx context.Context, prefix []byte, rev int64) ([][]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if rev <= 0 {
 		return nil, nil
 	}
@@ -110,7 +124,10 @@ func prefixEnd(prefix []byte) []byte {
 // revision CurrentRevision()+1, commits it, and publishes the revision. Any
 // error closes the batch uncommitted and leaves the revision unchanged. A
 // commit with nothing to write returns the current revision.
-func (b *MVCCBackend) Commit(puts map[string][]byte, deletes [][]byte) (int64, error) {
+func (b *MVCCBackend) Commit(ctx context.Context, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.commitLocked(puts, deletes)
@@ -123,14 +140,17 @@ func (b *MVCCBackend) Commit(puts map[string][]byte, deletes [][]byte) (int64, e
 // ErrPublishConflict and writes nothing. This is the local-process path
 // only; the replicated path is ServiceBackend over the server's
 // OpMVCCMovePrefix.
-func (b *MVCCBackend) Publish(src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (int64, error) {
+func (b *MVCCBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if err := validatePublish(src, dst, expectedKeys); err != nil {
 		return 0, err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	rev := b.store.CurrentRevision()
-	keys, err := b.Keys(src, rev)
+	keys, err := b.Keys(ctx, src, rev)
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: publish list %q at revision %d: %w", src, rev, err)
 	}
@@ -145,7 +165,7 @@ func (b *MVCCBackend) Publish(src, dst []byte, expectedKeys int64, puts map[stri
 	allDeletes := make([][]byte, 0, len(deletes)+len(keys))
 	allDeletes = append(allDeletes, deletes...)
 	for _, key := range keys {
-		value, found, err := b.GetAt(key, rev)
+		value, found, err := b.GetAt(ctx, key, rev)
 		if err != nil {
 			return 0, fmt.Errorf("sqlitevfs: publish read %q at revision %d: %w", key, rev, err)
 		}

@@ -15,6 +15,7 @@
 package sqlitevfs
 
 import (
+	"context"
 	"fmt"
 	"sort"
 )
@@ -34,7 +35,7 @@ import (
 // publish revision and the new ones from it. On a staging or publish
 // failure commitStaged deletes every stage key it wrote in one best-effort
 // Backend.Commit and returns the original error wrapped with the db name.
-func (t *Txn) commitStaged(metaValue []byte, deletes [][]byte) (int64, error) {
+func (t *Txn) commitStaged(ctx context.Context, metaValue []byte, deletes [][]byte) (int64, error) {
 	s := t.store
 	commitID, err := newCommitID()
 	if err != nil {
@@ -49,7 +50,10 @@ func (t *Txn) commitStaged(metaValue []byte, deletes [][]byte) (int64, error) {
 	var staged [][]byte
 	fail := func(err error) (int64, error) {
 		if len(staged) > 0 {
-			_, _ = s.backend.Commit(nil, staged)
+			// The cleanup ignores the caller's cancellation
+			// (context.WithoutCancel), so a cancelled ctx cannot leave
+			// staged keys behind.
+			_, _ = s.backend.Commit(context.WithoutCancel(ctx), nil, staged)
 		}
 		return 0, fmt.Errorf("sqlitevfs: staged commit %q: %w", s.db, err)
 	}
@@ -61,7 +65,7 @@ func (t *Txn) commitStaged(metaValue []byte, deletes [][]byte) (int64, error) {
 		if len(chunk) == 0 {
 			return nil
 		}
-		if _, err := s.backend.Commit(chunk, nil); err != nil {
+		if _, err := s.backend.Commit(ctx, chunk, nil); err != nil {
 			return err
 		}
 		staged = append(staged, chunkKeys...)
@@ -97,7 +101,7 @@ func (t *Txn) commitStaged(metaValue []byte, deletes [][]byte) (int64, error) {
 	if err != nil {
 		return fail(err)
 	}
-	rev, err := s.backend.Publish(stagePrefix, pagePrefix, int64(len(pgnos)), puts, deletes)
+	rev, err := s.backend.Publish(ctx, stagePrefix, pagePrefix, int64(len(pgnos)), puts, deletes)
 	if err != nil {
 		return fail(err)
 	}

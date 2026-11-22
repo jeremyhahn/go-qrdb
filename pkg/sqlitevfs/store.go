@@ -25,25 +25,28 @@ import (
 // Backend is the versioned key-value store the page store reads and commits
 // through.
 type Backend interface {
+	// Every method takes the caller's context first: ctx bounds that one
+	// call, and a done ctx fails the call before it reads or writes.
+
 	// Revision returns the newest committed revision; err is a failed
 	// read.
-	Revision() (int64, error)
+	Revision(ctx context.Context) (int64, error)
 	// GetAt returns key's value at revision rev. A key with no live value
 	// at rev is found=false with a nil error; err is a failed read.
-	GetAt(key []byte, rev int64) (value []byte, found bool, err error)
+	GetAt(ctx context.Context, key []byte, rev int64) (value []byte, found bool, err error)
 	// Commit applies every put and every delete at one new revision, or
 	// none of them, and returns that revision.
-	Commit(puts map[string][]byte, deletes [][]byte) (rev int64, err error)
+	Commit(ctx context.Context, puts map[string][]byte, deletes [][]byte) (rev int64, err error)
 	// Publish, at one new revision, puts dst + (key without src) for
 	// every key live under prefix src with that key's newest committed
 	// value, deletes those source keys, and applies puts and deletes; or
 	// does none of it. A live count under src other than expectedKeys is
 	// ErrPublishConflict and writes nothing; empty or overlapping src and
 	// dst, or expectedKeys < 1, is ErrInvalidPublish.
-	Publish(src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (rev int64, err error)
+	Publish(ctx context.Context, src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (rev int64, err error)
 	// Keys returns every key with a live value at revision rev that
 	// starts with prefix, in key order.
-	Keys(prefix []byte, rev int64) ([][]byte, error)
+	Keys(ctx context.Context, prefix []byte, rev int64) ([][]byte, error)
 }
 
 // Store is the page store of one SQLite database file over a Backend.
@@ -158,9 +161,9 @@ func (s *Store) DB() string {
 
 // readMeta reads the meta record at revision rev. An absent meta record is
 // an empty database: found=false and a Meta with only FormatVersion set.
-func (s *Store) readMeta(rev int64) (Meta, bool, error) {
+func (s *Store) readMeta(ctx context.Context, rev int64) (Meta, bool, error) {
 	meta := Meta{FormatVersion: FormatVersion}
-	value, found, err := s.backend.GetAt(s.metaKey, rev)
+	value, found, err := s.backend.GetAt(ctx, s.metaKey, rev)
 	if err != nil {
 		return Meta{}, false, fmt.Errorf("sqlitevfs: read meta of %q at revision %d: %w", s.db, rev, err)
 	}
@@ -174,18 +177,20 @@ func (s *Store) readMeta(rev int64) (Meta, bool, error) {
 
 // Begin starts a transaction: it pins the backend's current revision and
 // reads the meta record at it. An absent meta record is an empty database
-// (size 0, page size not yet set).
+// (size 0, page size not yet set). ctx is the context of every read the
+// transaction makes (Begin's own, and every page read through ReadAt);
+// Reserve, Commit and Rollback use the ctx they are given.
 //
 // If this Store pinned a different meta generation before, the database
 // was restored underneath it (Q4 A): Begin records the new generation and
 // returns ErrSnapshotChanged, and the next Begin succeeds. This is where a
 // page cache will be dropped once there is one.
-func (s *Store) Begin() (*Txn, error) {
-	rev, err := s.backend.Revision()
+func (s *Store) Begin(ctx context.Context) (*Txn, error) {
+	rev, err := s.backend.Revision(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitevfs: begin %q: %w", s.db, err)
 	}
-	meta, _, err := s.readMeta(rev)
+	meta, _, err := s.readMeta(ctx, rev)
 	if err != nil {
 		return nil, err
 	}
@@ -199,6 +204,7 @@ func (s *Store) Begin() (*Txn, error) {
 	}
 	return &Txn{
 		store: s,
+		ctx:   ctx,
 		rev:   rev,
 		base:  meta,
 		meta:  meta,
@@ -210,13 +216,14 @@ func (s *Store) Begin() (*Txn, error) {
 // BumpGeneration is the restore hook of Q4 A: it reads the meta record at
 // the current revision and commits it with Generation+1 in one
 // Backend.Commit, returning that revision. A database with no meta record
-// writes nothing and returns the current revision.
-func (s *Store) BumpGeneration() (int64, error) {
-	rev, err := s.backend.Revision()
+// writes nothing and returns the current revision. ctx bounds the read and
+// the commit.
+func (s *Store) BumpGeneration(ctx context.Context) (int64, error) {
+	rev, err := s.backend.Revision(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: bump generation of %q: %w", s.db, err)
 	}
-	meta, found, err := s.readMeta(rev)
+	meta, found, err := s.readMeta(ctx, rev)
 	if err != nil {
 		return 0, err
 	}
@@ -228,7 +235,7 @@ func (s *Store) BumpGeneration() (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	newRev, err := s.backend.Commit(map[string][]byte{string(s.metaKey): value}, nil)
+	newRev, err := s.backend.Commit(ctx, map[string][]byte{string(s.metaKey): value}, nil)
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: bump generation of %q: %w", s.db, err)
 	}
@@ -237,19 +244,19 @@ func (s *Store) BumpGeneration() (int64, error) {
 
 // sweepStages deletes, in one Backend.Commit, every staged page key of the
 // database live at revision rev. The caller holds the writer lock.
-func (s *Store) sweepStages(rev int64) error {
+func (s *Store) sweepStages(ctx context.Context, rev int64) error {
 	root, err := StageRoot(s.db)
 	if err != nil {
 		return err
 	}
-	keys, err := s.backend.Keys(root, rev)
+	keys, err := s.backend.Keys(ctx, root, rev)
 	if err != nil {
 		return err
 	}
 	if len(keys) == 0 {
 		return nil
 	}
-	_, err = s.backend.Commit(nil, keys)
+	_, err = s.backend.Commit(ctx, nil, keys)
 	return err
 }
 
@@ -261,7 +268,11 @@ func (s *Store) sweepStages(rev int64) error {
 // use.
 type Txn struct {
 	store *Store
-	rev   int64
+	// ctx is the read context: the context Begin was given, used by every
+	// page and meta read the transaction makes.
+	// ReadAt is io-shaped (SQLite's xRead) and carries no context of its own.
+	ctx context.Context
+	rev int64
 	// base is the meta record at rev; meta is base with the buffered
 	// writes and truncations applied.
 	base Meta
@@ -306,6 +317,7 @@ func (t *Txn) Size() int64 {
 // stages pages, so every key under StageRoot seen under the lock was left by
 // a writer that crashed or lost its lease, and Reserve deletes them all in
 // one Backend.Commit. A failed sweep releases the lock and is returned.
+// Every lock call, read and sweep Reserve makes uses its own ctx.
 func (t *Txn) Reserve(ctx context.Context) error {
 	if t.done {
 		return ErrTxnDone
@@ -324,12 +336,12 @@ func (t *Txn) Reserve(ctx context.Context) error {
 	}
 	t.token = token
 	t.held = true
-	rev, err := s.backend.Revision()
+	rev, err := s.backend.Revision(ctx)
 	if err != nil {
 		_ = t.release(ctx)
 		return fmt.Errorf("sqlitevfs: reserve %q: %w", s.db, err)
 	}
-	current, _, err := s.readMeta(rev)
+	current, _, err := s.readMeta(ctx, rev)
 	if err != nil {
 		_ = t.release(ctx)
 		return err
@@ -339,7 +351,7 @@ func (t *Txn) Reserve(ctx context.Context) error {
 		return fmt.Errorf("%w: %q moved from generation %d change counter %d to generation %d change counter %d",
 			ErrSnapshotChanged, s.db, t.base.Generation, t.base.ChangeCounter, current.Generation, current.ChangeCounter)
 	}
-	if err := s.sweepStages(rev); err != nil {
+	if err := s.sweepStages(ctx, rev); err != nil {
 		_ = t.release(ctx)
 		return fmt.Errorf("sqlitevfs: sweep abandoned stages of %q: %w", s.db, err)
 	}
@@ -360,7 +372,8 @@ func (t *Txn) release(ctx context.Context) error {
 // pages at the pinned revision. A read wholly past the end zero-fills p and
 // returns 0 and io.EOF; a read that runs past the end zero-fills the rest of
 // p and returns the bytes read and io.ErrUnexpectedEOF (SQLite's
-// SQLITE_IOERR_SHORT_READ contract).
+// SQLITE_IOERR_SHORT_READ contract). ReadAt is io-shaped (SQLite's xRead):
+// it takes no context, and its page reads use the context Begin was given.
 func (t *Txn) ReadAt(p []byte, off int64) (int, error) {
 	if t.done {
 		return 0, ErrTxnDone
@@ -412,7 +425,7 @@ func (t *Txn) page(pgno uint32) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	value, found, err := t.store.backend.GetAt(key, t.rev)
+	value, found, err := t.store.backend.GetAt(t.ctx, key, t.rev)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitevfs: read page %d of %q at revision %d: %w", pgno, t.store.db, t.rev, err)
 	}
@@ -543,6 +556,7 @@ func (t *Txn) Truncate(size int64) error {
 //
 // When the dirty pages total more than the Store's stage threshold, the
 // pages go through staging and one publish (Q2 A, commitStaged) instead.
+// Every read and write Commit makes uses its own ctx, not Begin's.
 func (t *Txn) Commit(ctx context.Context) (int64, error) {
 	if t.done {
 		return 0, ErrTxnDone
@@ -563,11 +577,11 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 			return 0, err
 		}
 	}
-	now, err := t.store.backend.Revision()
+	now, err := t.store.backend.Revision(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: commit %q: %w", t.store.db, err)
 	}
-	current, _, err := t.store.readMeta(now)
+	current, _, err := t.store.readMeta(ctx, now)
 	if err != nil {
 		return 0, err
 	}
@@ -599,7 +613,7 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 		dirtyBytes += len(page)
 	}
 	if dirtyBytes > t.store.stageThreshold {
-		return t.commitStaged(metaValue, deletes)
+		return t.commitStaged(ctx, metaValue, deletes)
 	}
 	puts := make(map[string][]byte, len(t.dirty)+1)
 	puts[string(t.store.metaKey)] = metaValue
@@ -610,7 +624,7 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 		}
 		puts[string(key)] = page
 	}
-	rev, err := t.store.backend.Commit(puts, deletes)
+	rev, err := t.store.backend.Commit(ctx, puts, deletes)
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: commit %q: %w", t.store.db, err)
 	}

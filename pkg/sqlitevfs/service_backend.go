@@ -54,12 +54,9 @@ var _ LockServiceLocker = (service.LockServicer)(nil)
 // supplies the database's services already wrapped for its namespace,
 // hard confinement and quota; ServiceBackend adds no key rewriting.
 //
-// The context is taken at construction and used for every call, because the
-// page store's ReadAt and WriteAt are io-shaped and carry no context. Whether
-// Backend should carry a per-call context instead is an open point for the
-// owner.
+// Each call takes the caller's context (owner point o3, decided by convention
+// under ruling 109).
 type ServiceBackend struct {
-	ctx          context.Context
 	kv           ServiceKV
 	txn          ServiceTxn
 	keysPageSize int64
@@ -67,22 +64,18 @@ type ServiceBackend struct {
 
 var _ Backend = (*ServiceBackend)(nil)
 
-// NewServiceBackend returns a ServiceBackend over kv and txn that uses ctx
-// for every call. A nil kv or txn is ErrNilBackend; a nil ctx is
-// context.Background().
-func NewServiceBackend(ctx context.Context, kv ServiceKV, txn ServiceTxn) (*ServiceBackend, error) {
+// NewServiceBackend returns a ServiceBackend over kv and txn. A nil kv or
+// txn is ErrNilBackend.
+func NewServiceBackend(kv ServiceKV, txn ServiceTxn) (*ServiceBackend, error) {
 	if kv == nil || txn == nil {
 		return nil, ErrNilBackend
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return &ServiceBackend{ctx: ctx, kv: kv, txn: txn, keysPageSize: defaultKeysPageSize}, nil
+	return &ServiceBackend{kv: kv, txn: txn, keysPageSize: defaultKeysPageSize}, nil
 }
 
 // Revision returns the service's current revision.
-func (b *ServiceBackend) Revision() (int64, error) {
-	rev, err := b.kv.CurrentRevision(b.ctx)
+func (b *ServiceBackend) Revision(ctx context.Context) (int64, error) {
+	rev, err := b.kv.CurrentRevision(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: current revision: %w", err)
 	}
@@ -93,8 +86,8 @@ func (b *ServiceBackend) Revision() (int64, error) {
 // tombstone), a *service.RevisionNotFoundError (no version of key at or
 // before rev, which is how the server answers a key never written) or a nil
 // KeyValue is found=false with a nil error.
-func (b *ServiceBackend) GetAt(key []byte, rev int64) ([]byte, bool, error) {
-	kv, err := b.kv.GetAtRevision(b.ctx, string(key), rev)
+func (b *ServiceBackend) GetAt(ctx context.Context, key []byte, rev int64) ([]byte, bool, error) {
+	kv, err := b.kv.GetAtRevision(ctx, string(key), rev)
 	if err != nil {
 		var notFound *service.KeyNotFoundError
 		var noRevision *service.RevisionNotFoundError
@@ -111,7 +104,7 @@ func (b *ServiceBackend) GetAt(key []byte, rev int64) ([]byte, bool, error) {
 
 // Keys returns every key live at revision rev under prefix, in key order,
 // paging the Range by keysPageSize keys.
-func (b *ServiceBackend) Keys(prefix []byte, rev int64) ([][]byte, error) {
+func (b *ServiceBackend) Keys(ctx context.Context, prefix []byte, rev int64) ([][]byte, error) {
 	if rev <= 0 {
 		return nil, nil
 	}
@@ -119,7 +112,7 @@ func (b *ServiceBackend) Keys(prefix []byte, rev int64) ([][]byte, error) {
 	start := prefix
 	var keys [][]byte
 	for {
-		kvs, _, _, err := b.kv.Range(b.ctx, start, end,
+		kvs, _, _, err := b.kv.Range(ctx, start, end,
 			lock.WithRevision(rev), lock.WithKeysOnly(), lock.WithLimit(b.keysPageSize))
 		if err != nil {
 			return nil, fmt.Errorf("sqlitevfs: list keys at revision %d: %w", rev, err)
@@ -139,11 +132,11 @@ func (b *ServiceBackend) Keys(prefix []byte, rev int64) ([][]byte, error) {
 // returns its revision. Nothing to write returns the current revision. A
 // transaction past the tenant's storage quota (a *quota.ExceededError) is
 // ErrFull, joined with the cause.
-func (b *ServiceBackend) Commit(puts map[string][]byte, deletes [][]byte) (int64, error) {
+func (b *ServiceBackend) Commit(ctx context.Context, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	if len(puts) == 0 && len(deletes) == 0 {
-		return b.Revision()
+		return b.Revision(ctx)
 	}
-	resp, err := b.txn.Execute(b.ctx, nil, writeOps(puts, deletes), nil)
+	resp, err := b.txn.Execute(ctx, nil, writeOps(puts, deletes), nil)
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: commit transaction: %w", full(err))
 	}
@@ -157,11 +150,11 @@ func (b *ServiceBackend) Commit(puts map[string][]byte, deletes [][]byte) (int64
 // (a live source count other than expectedKeys at apply) is
 // ErrPublishConflict. A move past the tenant's storage quota (a
 // *quota.ExceededError) is ErrFull, joined with the cause.
-func (b *ServiceBackend) Publish(src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (int64, error) {
+func (b *ServiceBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	if err := validatePublish(src, dst, expectedKeys); err != nil {
 		return 0, err
 	}
-	rev, err := b.kv.MovePrefix(b.ctx, &service.MovePrefixRequest{
+	rev, err := b.kv.MovePrefix(ctx, &service.MovePrefixRequest{
 		Src:          string(src),
 		Dst:          string(dst),
 		ExpectedKeys: expectedKeys,

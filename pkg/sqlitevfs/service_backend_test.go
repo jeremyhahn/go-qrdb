@@ -41,13 +41,23 @@ type serviceDouble struct {
 	// before the double applies anything, as a refusing service would.
 	execErr error
 	moveErr error
+	// seen records, per double method, the context its last call received.
+	seen map[string]context.Context
 }
 
-func (d *serviceDouble) GetAtRevision(_ context.Context, key string, revision int64) (*service.KeyValue, error) {
+func (d *serviceDouble) record(method string, ctx context.Context) {
+	if d.seen == nil {
+		d.seen = make(map[string]context.Context)
+	}
+	d.seen[method] = ctx
+}
+
+func (d *serviceDouble) GetAtRevision(ctx context.Context, key string, revision int64) (*service.KeyValue, error) {
+	d.record("GetAtRevision", ctx)
 	if d.getErr != nil {
 		return nil, d.getErr
 	}
-	value, found, err := d.b.GetAt([]byte(key), revision)
+	value, found, err := d.b.GetAt(ctx, []byte(key), revision)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +67,8 @@ func (d *serviceDouble) GetAtRevision(_ context.Context, key string, revision in
 	return &service.KeyValue{Key: []byte(key), Value: value}, nil
 }
 
-func (d *serviceDouble) Range(_ context.Context, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+func (d *serviceDouble) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	d.record("Range", ctx)
 	current := d.b.store.CurrentRevision()
 	kvs, count, _, err := d.b.store.RangeFrom(d.b.store.Storage(), current, start, end, opts...)
 	if err != nil {
@@ -66,11 +77,13 @@ func (d *serviceDouble) Range(_ context.Context, start, end []byte, opts ...serv
 	return kvs, count, current, nil
 }
 
-func (d *serviceDouble) CurrentRevision(context.Context) (int64, error) {
-	return d.b.Revision()
+func (d *serviceDouble) CurrentRevision(ctx context.Context) (int64, error) {
+	d.record("CurrentRevision", ctx)
+	return d.b.Revision(ctx)
 }
 
-func (d *serviceDouble) MovePrefix(_ context.Context, req *service.MovePrefixRequest) (int64, error) {
+func (d *serviceDouble) MovePrefix(ctx context.Context, req *service.MovePrefixRequest) (int64, error) {
+	d.record("MovePrefix", ctx)
 	if err := service.ValidateMovePrefix(req); err != nil {
 		return 0, err
 	}
@@ -79,19 +92,20 @@ func (d *serviceDouble) MovePrefix(_ context.Context, req *service.MovePrefixReq
 		return 0, d.moveErr
 	}
 	if d.strayUnder {
-		if _, err := d.b.Commit(map[string][]byte{req.Src + "\xff\xff\xff\xff": []byte("stray")}, nil); err != nil {
+		if _, err := d.b.Commit(ctx, map[string][]byte{req.Src + "\xff\xff\xff\xff": []byte("stray")}, nil); err != nil {
 			return 0, err
 		}
 	}
 	puts, deletes := splitOps(req.Ops)
-	rev, err := d.b.Publish([]byte(req.Src), []byte(req.Dst), req.ExpectedKeys, puts, deletes)
+	rev, err := d.b.Publish(ctx, []byte(req.Src), []byte(req.Dst), req.ExpectedKeys, puts, deletes)
 	if errors.Is(err, ErrPublishConflict) {
 		return 0, &service.CommandConflictError{Message: err.Error()}
 	}
 	return rev, err
 }
 
-func (d *serviceDouble) Execute(_ context.Context, compares []service.Compare, successOps, _ []service.Op) (*service.TransactionResponse, error) {
+func (d *serviceDouble) Execute(ctx context.Context, compares []service.Compare, successOps, _ []service.Op) (*service.TransactionResponse, error) {
+	d.record("Execute", ctx)
 	if len(compares) != 0 {
 		return nil, errors.New("serviceDouble: compares are not modelled")
 	}
@@ -99,7 +113,7 @@ func (d *serviceDouble) Execute(_ context.Context, compares []service.Compare, s
 		return nil, d.execErr
 	}
 	puts, deletes := splitOps(successOps)
-	rev, err := d.b.Commit(puts, deletes)
+	rev, err := d.b.Commit(ctx, puts, deletes)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +137,7 @@ func splitOps(ops []service.Op) (map[string][]byte, [][]byte) {
 func newServiceBackend(t *testing.T) (*ServiceBackend, *serviceDouble) {
 	t.Helper()
 	d := &serviceDouble{b: newTestBackend(t)}
-	sb, err := NewServiceBackend(t.Context(), d, d)
+	sb, err := NewServiceBackend(d, d)
 	if err != nil {
 		t.Fatalf("NewServiceBackend: %v", err)
 	}
@@ -132,29 +146,29 @@ func newServiceBackend(t *testing.T) (*ServiceBackend, *serviceDouble) {
 
 func TestNewServiceBackendRefusesNil(t *testing.T) {
 	d := &serviceDouble{b: newTestBackend(t)}
-	if _, err := NewServiceBackend(t.Context(), nil, d); !errors.Is(err, ErrNilBackend) {
+	if _, err := NewServiceBackend(nil, d); !errors.Is(err, ErrNilBackend) {
 		t.Fatalf("nil kv err = %v, want ErrNilBackend", err)
 	}
-	if _, err := NewServiceBackend(t.Context(), d, nil); !errors.Is(err, ErrNilBackend) {
+	if _, err := NewServiceBackend(d, nil); !errors.Is(err, ErrNilBackend) {
 		t.Fatalf("nil txn err = %v, want ErrNilBackend", err)
 	}
 }
 
 func TestServiceBackendGetAt(t *testing.T) {
 	sb, d := newServiceBackend(t)
-	rev, err := sb.Commit(map[string][]byte{"k": []byte("v")}, nil)
+	rev, err := sb.Commit(t.Context(), map[string][]byte{"k": []byte("v")}, nil)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	value, found, err := sb.GetAt([]byte("k"), rev)
+	value, found, err := sb.GetAt(t.Context(), []byte("k"), rev)
 	if err != nil || !found || string(value) != "v" {
 		t.Fatalf("GetAt k = %q, %v, %v", value, found, err)
 	}
-	if _, found, err := sb.GetAt([]byte("absent"), rev); err != nil || found {
+	if _, found, err := sb.GetAt(t.Context(), []byte("absent"), rev); err != nil || found {
 		t.Fatalf("GetAt absent: found=%v err=%v, want not found and no error", found, err)
 	}
 	d.getErr = errInjected
-	if _, _, err := sb.GetAt([]byte("k"), rev); !errors.Is(err, errInjected) {
+	if _, _, err := sb.GetAt(t.Context(), []byte("k"), rev); !errors.Is(err, errInjected) {
 		t.Fatalf("GetAt with a read error = %v, want errInjected", err)
 	}
 }
@@ -169,11 +183,11 @@ func TestServiceBackendKeysPages(t *testing.T) {
 		puts[key] = []byte("v")
 		want = append(want, key)
 	}
-	rev, err := sb.Commit(puts, nil)
+	rev, err := sb.Commit(t.Context(), puts, nil)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	keys, err := sb.Keys([]byte("p/"), rev)
+	keys, err := sb.Keys(t.Context(), []byte("p/"), rev)
 	if err != nil {
 		t.Fatalf("Keys: %v", err)
 	}
@@ -187,18 +201,18 @@ func TestServiceBackendKeysPages(t *testing.T) {
 	}
 	// An exact multiple of the page size ends on an empty page.
 	sb.keysPageSize = 5
-	if keys, err := sb.Keys([]byte("p/"), rev); err != nil || len(keys) != 5 {
+	if keys, err := sb.Keys(t.Context(), []byte("p/"), rev); err != nil || len(keys) != 5 {
 		t.Fatalf("Keys at a full page = %q, %v", keys, err)
 	}
 }
 
 func TestServiceBackendCommitNothing(t *testing.T) {
 	sb, _ := newServiceBackend(t)
-	before, err := sb.Commit(map[string][]byte{"k": []byte("v")}, nil)
+	before, err := sb.Commit(t.Context(), map[string][]byte{"k": []byte("v")}, nil)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	rev, err := sb.Commit(nil, nil)
+	rev, err := sb.Commit(t.Context(), nil, nil)
 	if err != nil || rev != before || revOf(t, sb) != before {
 		t.Fatalf("empty Commit = %d, %v; backend at %d; want %d", rev, err, revOf(t, sb), before)
 	}
@@ -234,7 +248,7 @@ func TestServiceBackendStoreCommits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StageRoot: %v", err)
 	}
-	if keys, err := sb.Keys(root, rev); err != nil || len(keys) != 0 {
+	if keys, err := sb.Keys(t.Context(), root, rev); err != nil || len(keys) != 0 {
 		t.Fatalf("stage keys after the publish = %q, %v", keys, err)
 	}
 }
@@ -266,12 +280,12 @@ func TestServiceBackendQuotaIsErrFull(t *testing.T) {
 	puts := map[string][]byte{"k": []byte("v")}
 	commit := func(sb *ServiceBackend, d *serviceDouble, err error) error {
 		d.execErr = err
-		_, got := sb.Commit(puts, nil)
+		_, got := sb.Commit(t.Context(), puts, nil)
 		return got
 	}
 	publish := func(sb *ServiceBackend, d *serviceDouble, err error) error {
 		d.moveErr = err
-		_, got := sb.Publish([]byte("src/"), []byte("dst/"), 1, puts, nil)
+		_, got := sb.Publish(t.Context(), []byte("src/"), []byte("dst/"), 1, puts, nil)
 		return got
 	}
 	tests := []struct {
@@ -328,7 +342,7 @@ func TestServiceBackendSweepAndBump(t *testing.T) {
 		}
 		leftovers[string(key)] = pageOf(0xEE)
 	}
-	if _, err := sb.Commit(leftovers, nil); err != nil {
+	if _, err := sb.Commit(t.Context(), leftovers, nil); err != nil {
 		t.Fatalf("Commit leftovers: %v", err)
 	}
 	rev := revOf(t, sb)
@@ -340,13 +354,13 @@ func TestServiceBackendSweepAndBump(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StageRoot: %v", err)
 	}
-	if keys, err := sb.Keys(root, revOf(t, sb)); err != nil || len(keys) != 0 {
+	if keys, err := sb.Keys(t.Context(), root, revOf(t, sb)); err != nil || len(keys) != 0 {
 		t.Fatalf("stage keys after the sweep = %q, %v", keys, err)
 	}
 	writePages(t, txn, 0x21)
 
 	// A restore underneath the open writer refuses its commit.
-	bumped, err := s.BumpGeneration()
+	bumped, err := s.BumpGeneration(t.Context())
 	if err != nil {
 		t.Fatalf("BumpGeneration: %v", err)
 	}
