@@ -587,3 +587,91 @@ func TestLocalBindingFactory_ExplicitDataDirOwnStore(t *testing.T) {
 		})
 	}
 }
+
+// newSharedObjstoreManager builds a binding Manager whose node storage
+// configuration sets the local objstore provider's path, over the catalog
+// store kv, so a second Manager on the same dir and kv reopens the catalog.
+func newSharedObjstoreManager(t *testing.T, dir, shared string, kv kvstore.AtomicKVStore) *database.Manager {
+	t.Helper()
+	cfg := qrdbconfig.StorageConfig{Objstore: qrdbconfig.ObjstoreConfig{Provider: "local", Settings: map[string]string{"path": shared}}}
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, cfg, prefixTenants)
+	mgr := database.NewManager(slog.Default(), dir, database.WithBackendFactory(f))
+	cat, err := database.NewKVCatalog(kv, nil)
+	if err != nil {
+		t.Fatalf("NewKVCatalog: %v", err)
+	}
+	mgr.SetCatalog(cat)
+	return mgr
+}
+
+// TestLocalBindingFactory_ObjstoreLocalBindingAtItsRoot proves an objstore
+// database on the local provider lives in its own store under its binding
+// root even when storage.objstore sets a path: the configured path places
+// the node's own store only, and a drop removes the database's store with
+// its journal while a sibling keeps its value.
+func TestLocalBindingFactory_ObjstoreLocalBindingAtItsRoot(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	shared := filepath.Join(t.TempDir(), "shared")
+	kv := kvstore.NewMemoryKVStore()
+	mgr := newSharedObjstoreManager(t, dir, shared, kv)
+	dbs := []struct{ tenantID, dirTenant, name, value string }{
+		{bindingTenant, bindingTenant, "a", "value-a"},
+		{bindingTenant, bindingTenant, "b", "value-b"},
+		{"", "system", "c", "value-c"},
+	}
+	roots := make(map[string]string, len(dbs))
+	for _, d := range dbs {
+		db, err := mgr.Create(database.DatabaseConfig{TenantID: d.tenantID, Name: d.name, Backend: database.BackendObjstore})
+		if err != nil {
+			t.Fatalf("Create %s: %v", d.name, err)
+		}
+		mb := materialized(t, db)
+		want := filepath.Join(dir, "tenants", d.dirTenant, "databases", d.name)
+		if mb.DataRoot() != want {
+			t.Fatalf("%s DataRoot = %q, want %q", d.name, mb.DataRoot(), want)
+		}
+		roots[d.name] = want
+		if err := service.NewKVService(mb.Host(), mb.ShardID()).Put(ctx, "k", []byte(d.value)); err != nil {
+			t.Fatalf("Put %s: %v", d.name, err)
+		}
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Manager.Close: %v", err)
+	}
+	for _, d := range dbs {
+		root := roots[d.name]
+		entries, err := os.ReadDir(filepath.Join(root, "objstore"))
+		if err != nil || len(entries) == 0 {
+			t.Fatalf("%s: %s/objstore is empty (%v)", d.name, root, err)
+		}
+		got, err := readBack(t, database.BackendObjstore, root, nil, "k")
+		if err != nil || !bytes.Equal(got, []byte(d.value)) {
+			t.Fatalf("%s read back = %q, %v; want %q", d.name, got, err, d.value)
+		}
+	}
+	if entries, err := os.ReadDir(shared); err == nil && len(entries) != 0 {
+		t.Fatalf("the configured objstore path holds %d entries; want none", len(entries))
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("ReadDir(shared): %v", err)
+	}
+
+	mgr = newSharedObjstoreManager(t, dir, shared, kv)
+	defer func() { _ = mgr.Close() }()
+	if err := mgr.DropForTenant(tenant.WithTenantID(ctx, bindingTenant), "a"); err != nil {
+		t.Fatalf("DropForTenant: %v", err)
+	}
+	if _, err := os.Stat(roots["a"]); !os.IsNotExist(err) {
+		t.Fatalf("binding root %s survives the drop (%v)", roots["a"], err)
+	}
+	if _, err := os.Stat(filepath.Join(roots["a"], "objstore.journal")); !os.IsNotExist(err) {
+		t.Fatalf("objstore journal of a survives the drop (%v)", err)
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Manager.Close: %v", err)
+	}
+	got, err := readBack(t, database.BackendObjstore, roots["b"], nil, "k")
+	if err != nil || !bytes.Equal(got, []byte("value-b")) {
+		t.Fatalf("b after dropping a = %q, %v; want value-b", got, err)
+	}
+}

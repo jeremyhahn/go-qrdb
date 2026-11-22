@@ -201,3 +201,70 @@ func TestDatabaseBinding_CLI_SystemTenantDatabaseOwnStore_PerProtocol(t *testing
 		})
 	}
 }
+
+// TestDatabaseBinding_CLI_ProvisionedFourBackendsOwnStores_PerProtocol is the
+// "Node defaults" acceptance of engineering.md "Binding materialization": a
+// standalone node provisioned with four databases on memory, file, pebble
+// and objstore puts each database's files where its binding says and
+// nowhere else. storage.objstore sets a local path, which places the node's
+// own store only: the objstore database lives under its binding root.
+func TestDatabaseBinding_CLI_ProvisionedFourBackendsOwnStores_PerProtocol(t *testing.T) {
+	shared := t.TempDir()
+	backends := []struct{ name, backend string }{
+		{"nd-memory", "memory"},
+		{"nd-file", "file"},
+		{"nd-pebble", "pebble"},
+		{"nd-objstore", "objstore"},
+	}
+	extra := "storage:\n  objstore:\n    provider: local\n    settings:\n      path: " + strconv.Quote(shared) + "\n" +
+		"databases:\n"
+	for _, b := range backends {
+		extra += "  - name: " + strconv.Quote(b.name) + "\n    backend: " + b.backend + "\n"
+	}
+	node := startStandaloneModeNodeWithConfig(t, "objstore", extra)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			conn := node.cliArgsFor(proto)
+			for _, b := range backends {
+				key, value := b.name+"-key-"+proto.name, b.name+"-value-"+proto.name
+				if out, err := runQRDB(t, node.cli, conn, "--database", b.name, "kv", "put", key, value); err != nil {
+					t.Fatalf("[%s] kv put %s: %v\n%s", proto.name, b.name, err, out)
+				}
+				out, err := runQRDB(t, node.cli, conn, "--database", b.name, "kv", "get", key)
+				if err != nil || !strings.Contains(out, value) {
+					t.Fatalf("[%s] kv get %s = %q, %v; want %q", proto.name, b.name, out, err, value)
+				}
+				if info := cliDatabaseInfo(t, node, proto, b.name); string(info.Backend) != b.backend {
+					t.Fatalf("[%s] database info %s backend = %q, want %q", proto.name, b.name, info.Backend, b.backend)
+				}
+			}
+		})
+	}
+
+	nonEmpty := func(dir string) {
+		t.Helper()
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) == 0 {
+			t.Fatalf("%s is missing or empty (%v)", dir, err)
+		}
+	}
+	databases := filepath.Join(node.dataDir, "tenants", "system", "databases")
+	for _, name := range []string{"nd-file", "nd-pebble", "nd-objstore"} {
+		nonEmpty(filepath.Join(databases, name))
+	}
+	nonEmpty(filepath.Join(databases, "nd-objstore", "objstore"))
+	if _, err := os.Stat(filepath.Join(databases, "nd-memory")); !os.IsNotExist(err) {
+		t.Fatalf("a directory exists for nd-memory (%v)", err)
+	}
+	for _, proto := range multiProtocols {
+		conn := node.cliArgsFor(proto)
+		for _, b := range backends {
+			key, value := b.name+"-key-"+proto.name, b.name+"-value-"+proto.name
+			if out, err := runQRDB(t, node.cli, conn, "kv", "get", key); err == nil && strings.Contains(out, value) {
+				t.Fatalf("[%s] the system database serves %s's key: %q", proto.name, b.name, out)
+			}
+		}
+	}
+}

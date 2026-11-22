@@ -49,6 +49,9 @@ import (
 // barrier fails the database's data closed. A database with a per-database
 // barrier, a raft-mode node, and volume and raft tenants are delegated
 // unchanged to database.NewEmbeddedBackendFactory (docs/plans/923.md).
+// An objstore database on the local provider lives under its binding root;
+// storage.objstore's path places the node's own store only, and a remote
+// provider is unchanged.
 
 // LocalBindingFactory is the database.BackendFactory of a standalone node
 // that opens a qualifying database's own store under its binding root (an
@@ -68,7 +71,9 @@ type LocalBindingFactory struct {
 // NewLocalBindingFactory returns a factory for node. enc is the node
 // encryptor every on-disk binding store writes through (nil or disabled
 // leaves them plaintext); storageCfg is the node's storage configuration
-// (NewLocalStorage). tenants looks up the owning tenant of a database; a nil
+// (NewLocalStorage); an objstore database on the local provider lives under
+// its binding root, storage.objstore's path places the node's own store
+// only, and a remote provider is unchanged. tenants looks up the owning tenant of a database; a nil
 // tenants treats every tenant as prefix-isolated. The system tenant is never
 // looked up: its databases (except the system database) and a database at
 // an explicit data_dir without a per-database barrier are materialized; a
@@ -254,7 +259,7 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 	if err != nil {
 		return nil, openErr(err)
 	}
-	stg, pdb, err := NewLocalStorage(b.Backend, b.DataRoot, enc, f.storageCfg)
+	stg, pdb, err := NewLocalStorage(b.Backend, b.DataRoot, enc, bindingStorageConfig(f.storageCfg, b))
 	if err != nil {
 		return nil, openErr(err)
 	}
@@ -274,6 +279,29 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 		binding:           b,
 		stop:              stop,
 	}, nil
+}
+
+// bindingStorageConfig returns the storage configuration a binding's store
+// opens with. An objstore database on the local provider lives under its
+// binding root, so the copy drops the configured "path", which places the
+// node's own store only, and resolveObjstoreSettings roots the store at
+// <DataRoot>/objstore. Every other backend and provider gets cfg unchanged;
+// cfg's settings map is never mutated.
+func bindingStorageConfig(cfg qrdbconfig.StorageConfig, b *database.Binding) qrdbconfig.StorageConfig {
+	if b.Backend != database.BackendObjstore {
+		return cfg
+	}
+	if p := cfg.Objstore.Provider; p != "" && p != "local" {
+		return cfg
+	}
+	settings := make(map[string]string, len(cfg.Objstore.Settings))
+	for k, v := range cfg.Objstore.Settings {
+		if k != "path" {
+			settings[k] = v
+		}
+	}
+	cfg.Objstore.Settings = settings
+	return cfg
 }
 
 // MaterializedBinding is a database's own store, engine and service host.
