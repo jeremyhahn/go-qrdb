@@ -38,6 +38,12 @@ func (f *fakeIsolationLookup) GetTenant(_ context.Context, tenantID string) (*te
 	return info, nil
 }
 
+// IsolationTightening reports no tightening in flight, so the tests that
+// predate the marker keep their assertions (floorIsolationLookup inherits it).
+func (f *fakeIsolationLookup) IsolationTightening(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 type failingIsolationLookup struct{ err error }
 
 func (f *failingIsolationLookup) GetTenant(context.Context, string) (*tenant.TenantInfo, error) {
@@ -324,6 +330,121 @@ func TestSystemShardAuditResolver_StrictTenantAppendOnASystemRouteIsRefused(t *t
 			}
 			if report, err := logger.VerifyTenantChain(ctx, "widgets"); err != nil || report.Head != 3 {
 				t.Fatalf("VerifyTenantChain = %+v, %v; want the system shard's chain readable", report, err)
+			}
+		})
+	}
+}
+
+// losingRouteStore is a route store on which this writer loses the
+// first-writer-wins record to another writer's system route: its first Get
+// finds nothing, and PutIfAbsent records "system" as the other writer's
+// winner and reports won=false.
+type losingRouteStore struct {
+	*memRouteStore
+	gets int
+}
+
+func (s *losingRouteStore) Get(ctx context.Context, key string) ([]byte, error) {
+	s.gets++
+	if s.gets == 1 {
+		return nil, nil
+	}
+	return s.memRouteStore.Get(ctx, key)
+}
+
+func (s *losingRouteStore) PutIfAbsent(ctx context.Context, key string, _ []byte) (bool, error) {
+	if _, err := s.memRouteStore.PutIfAbsent(ctx, key, []byte(AuditRouteSystem)); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// TestSystemShardAuditResolver_StrictAppendLosingToARecordedSystemRouteIsRefused:
+// a strict tenant whose own derived route is home but which loses the record
+// to another writer's system route gets no append on the system shard: the
+// check runs on the route that won.
+func TestSystemShardAuditResolver_StrictAppendLosingToARecordedSystemRouteIsRefused(t *testing.T) {
+	ctx := context.Background()
+	system := newChainShard(0, auditActive())
+	homes, homeCmds := homeShard()
+	r := NewSystemShardAuditResolver(system.host, 1, barrierTenantLookup(tenant.TenantIsolationPolicyStrict, ""))
+	routes := &losingRouteStore{memRouteStore: newMemRouteStore()}
+	r.SetHomeGroupSource(homes, routes)
+
+	err := NewReplicatedLogger(r).Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"})
+	var sa *tenant.SystemAuditRouteError
+	if !errors.As(err, &sa) || sa.TenantID != "widgets" {
+		t.Fatalf("Emit = %v, want *tenant.SystemAuditRouteError for widgets", err)
+	}
+	if got := routes.route("widgets"); got != AuditRouteSystem {
+		t.Fatalf("recorded route = %q, want the other writer's %q", got, AuditRouteSystem)
+	}
+	if len(*system.cmds) != 0 || len(*homeCmds) != 0 {
+		t.Fatalf("proposals: system %d, home %d; want none", len(*system.cmds), len(*homeCmds))
+	}
+}
+
+// tighteningIsolationLookup reports a tightening marker (or a marker read
+// error) for every tenant.
+type tighteningIsolationLookup struct {
+	*floorIsolationLookup
+	tightening bool
+	err        error
+}
+
+func (l *tighteningIsolationLookup) IsolationTightening(context.Context, string) (bool, error) {
+	return l.tightening, l.err
+}
+
+// TestSystemShardAuditResolver_SystemAppendDuringTighteningIsRefused: a
+// tenant that is not strict yet but has a tightening in flight gets no
+// append on its system route; a marker read error fails closed; with no
+// tightening the append lands.
+func TestSystemShardAuditResolver_SystemAppendDuringTighteningIsRefused(t *testing.T) {
+	ctx := context.Background()
+	markerErr := errors.New("marker read failed")
+	for name, tc := range map[string]struct {
+		tightening bool
+		err        error
+		wantCmds   int
+	}{
+		"tightening":    {tightening: true},
+		"marker error":  {err: markerErr},
+		"no tightening": {wantCmds: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			system := newChainShard(3, auditActive())
+			homes, homeCmds := homeShard()
+			lookup := &tighteningIsolationLookup{
+				floorIsolationLookup: barrierTenantLookup(tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyOperatorAccess),
+				tightening:           tc.tightening,
+				err:                  tc.err,
+			}
+			r := NewSystemShardAuditResolver(system.host, 1, lookup)
+			routes := newMemRouteStore()
+			if _, err := routes.PutIfAbsent(ctx, AuditRouteKey("widgets"), []byte(AuditRouteSystem)); err != nil {
+				t.Fatalf("PutIfAbsent: %v", err)
+			}
+			r.SetHomeGroupSource(homes, routes)
+
+			err := NewReplicatedLogger(r).Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"})
+			switch {
+			case tc.tightening:
+				var sa *tenant.SystemAuditRouteError
+				if !errors.As(err, &sa) || sa.TenantID != "widgets" {
+					t.Fatalf("Emit = %v, want *tenant.SystemAuditRouteError for widgets", err)
+				}
+			case tc.err != nil:
+				if !errors.Is(err, markerErr) {
+					t.Fatalf("Emit = %v, want the marker read error", err)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("Emit: %v", err)
+				}
+			}
+			if len(*system.cmds) != tc.wantCmds || len(*homeCmds) != 0 {
+				t.Fatalf("proposals: system %d, home %d; want system %d, home 0", len(*system.cmds), len(*homeCmds), tc.wantCmds)
 			}
 		})
 	}
