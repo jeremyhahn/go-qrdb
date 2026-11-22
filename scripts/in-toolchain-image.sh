@@ -157,6 +157,21 @@ if [ "$#" -lt 2 ]; then
 fi
 image=$1
 shift
+# #1597 (security): scripts/ci-image.sh load verified an image ID and recorded
+# it for its tag in the job's own directory. The tag is shared by every commit
+# with the same build inputs, so on a shared daemon another job can load other
+# bytes under it after the check: every docker create and run below uses the
+# recorded ID, never the tag. A tag with no record (a local run) runs as given.
+ids=${CI_IMAGE_IDS:-${RUNNER_TEMP:+$RUNNER_TEMP/ci-image-ids}}
+if [ -n "$ids" ] && [ -s "$ids/${image//[^A-Za-z0-9._-]/_}" ]; then
+  verified=$(<"$ids/${image//[^A-Za-z0-9._-]/_}")
+  case $verified in
+    sha256:*) ;;
+    *) echo "in-toolchain-image: $ids records '$verified' for $image, not an image ID" >&2; exit 2 ;;
+  esac
+  echo "==> $image runs as $verified, the ID scripts/ci-image.sh load verified" >&2
+  image=$verified
+fi
 network=${IN_IMAGE_NETWORK:-none}
 case $network in
   none | bridge) ;;
@@ -380,11 +395,54 @@ docker create "${args[@]}" "$image" sh -c "$guard; $cmd" >/dev/null
 # "mkdir /cache/gomod/cache: permission denied"). Every entry not already the
 # run's is given to it: a CI_CACHE_DIR cache comes back from actions/cache
 # owned by the runner's user, and the stage writes into it.
-if [ "${#cache_mounts[@]}" -gt 0 ]; then
+#
+# #1597 (reliability): a CI_CACHE_DIR generation is shared by concurrent
+# stages, and a stage's Go DiskCache.Trim can delete an entry between find's
+# directory read and its ownership lookup. So the walk runs once per
+# generation, under the generation's lock: it writes .owner-ready, and a later
+# stage skips it while the marker is there and every mounted directory is
+# already the run's (a cache restored by actions/cache comes back the runner's,
+# and is walked again). A walk that does run tolerates entries that vanish
+# under it ("No such file or directory") and fails on any other error.
+owner_walk() {
+  local m err rc=0
   helper=(docker run --rm --network none --cap-drop ALL --cap-add CHOWN
     --security-opt no-new-privileges:true --user 0:0)
   for m in "${cache_mounts[@]}"; do helper+=(-v "${m%%:*}:/c/${m##*/}"); done
-  "${helper[@]}" "$image" find /c -mindepth 1 ! -user "$uid" -exec chown -h "$uid:$uid" {} + >/dev/null
+  err=$(mktemp)
+  "${helper[@]}" "$image" find /c -mindepth 1 ! -user "$uid" -exec chown -h "$uid:$uid" {} + >/dev/null 2>"$err" || rc=$?
+  if [ "$rc" != 0 ] && { [ ! -s "$err" ] || grep -v 'No such file or directory' "$err" >/dev/null; }; then
+    cat "$err" >&2
+    rm -f "$err"
+    echo "in-toolchain-image: the cache ownership walk failed ($rc)" >&2
+    return "$rc"
+  fi
+  rm -f "$err"
+}
+owner_ready() {
+  local m
+  [ -f "$cache_dir/.owner-ready" ] || return 1
+  for m in "${cache_mounts[@]}"; do
+    [ "$(stat -c %u "${m%%:*}")" = "$uid" ] || return 1
+  done
+}
+owner_prepare() {
+  owner_ready && return 0
+  owner_walk || return
+  : >"$cache_dir/.owner-ready"
+}
+if [ "${#cache_mounts[@]}" -gt 0 ]; then
+  if [ -z "$cache_dir" ]; then
+    owner_walk
+  elif command -v flock >/dev/null 2>&1; then
+    (
+      exec 8>>"$cache_dir/.owner-lock"
+      flock 8
+      owner_prepare
+    )
+  else
+    owner_prepare
+  fi
 fi
 tar -C "$PWD" --owner="$uid" --group="$uid" --numeric-owner -cf - . |
   docker cp -a - "$name:/src"
