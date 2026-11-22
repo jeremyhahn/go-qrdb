@@ -1239,7 +1239,10 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 	// ID is the add's configChangeIndex, which go-quicraft refuses with
 	// ErrStaleConfigChange when another membership change committed in
 	// between; it skips that check for 0, so a binding to the initial
-	// configuration is compared before the proposal (checkConfigBinding).
+	// configuration is compared before the proposal. The recheck and the
+	// request through its result run under the gate's per-node lock
+	// (requestAddBound), so a concurrent add through this node cannot
+	// commit between them.
 	// It is not Required for any other shard: release admission is about
 	// system-shard membership, and another shard's configuration change
 	// index is a different counter.
@@ -1266,15 +1269,16 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 	return s.requestAddBound(ctx, shardID, replicaID, raftAddr, resolved, binding, s.requestAdd)
 }
 
-// requestAddBound proposes an add through request bound to binding: a
-// binding to change ID 0, which go-quicraft does not compare, is compared
-// first.
+// requestAddBound proposes an add through request bound to binding. A
+// Required binding is rechecked (change ID 0 too, which go-quicraft does not
+// compare) and the request runs through its result under the gate's per-node
+// lock (featuregate.Gate.ProposeBound), so no other bound add through this
+// node commits between the recheck and this add's append.
 func (s *AdminService) requestAddBound(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, binding featuregate.ConfigBinding,
 	request func(context.Context, uint64, uint64, string, string, uint64) error) error {
-	if err := checkConfigBinding(s.host, shardID, binding); err != nil {
-		return err
-	}
-	return request(ctx, shardID, replicaID, raftAddr, identity, binding.ConfigChangeID)
+	return proposeBound(s.host, shardID, binding, func() error {
+		return request(ctx, shardID, replicaID, raftAddr, identity, binding.ConfigChangeID)
+	})
 }
 
 // requestAdd proposes adding replicaID with its identity, ordered after the

@@ -509,13 +509,19 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   is judged by features alone. The returned `ConfigBinding` (`ConfigChangeID`,
   `Required`, `Candidate`, `ReleaseDigest`) is passed by
   `AdminService.AddMember`/`AddObserverMember` as the add's
-  `configChangeIndex` and rechecked by `CheckConfigBinding` immediately before
-  the request; `ErrStaleConfigChange` or `*StaleConfigurationError` re-admits
-  once. Residual gap: go-quicraft v0.24.3-alpha compares `configChangeIndex`
-  in `Host.requestConfigChange` before queuing but not on the Raft worker,
-  and skips index 0, so a change racing between the recheck and the append is
-  not refused; the gap is stated, closed by go-quicraft 1192 (see
-  [../plans/1628.md](../plans/1628.md)).
+  `configChangeIndex` and run through `Gate.ProposeBound`, which holds one
+  per-node lock from the `CheckConfigBinding` recheck until the add commits or
+  is refused; `ErrStaleConfigChange` or `*StaleConfigurationError` re-admits
+  once. go-quicraft v0.24.3-alpha compares `configChangeIndex` in
+  `Host.requestConfigChange` before queuing but not on the Raft worker, and
+  skips index 0; it accepts a config change only on the shard leader and
+  refuses a second while one is uncommitted, so the lock serializes
+  concurrent additions through the leader from recheck to commit, and the
+  later one is refused with `*release.GapError` (REST 409). Residuals, closed
+  by go-quicraft 1192 (see [../plans/1628.md](../plans/1628.md)): a
+  leadership change while an add is in flight, and a member restarted onto
+  another release whose `Gate.Start` restart check ran before the add
+  committed.
 - **Withdrawal.** `qrdbd` closes the advertiser and the gate explicitly in its
   signal and migration branches, before it stops the servers and the host, so
   the lease is revoked while the host can still propose. After a crash the

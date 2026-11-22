@@ -31,7 +31,6 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 )
 
 func TestCluster_HealthEndpoint(t *testing.T) {
@@ -1217,8 +1216,10 @@ func TestCluster_MVCCSingleNode(t *testing.T) {
 
 // TestCluster_MembershipAdd_RefusedWithoutAdvertisement is the companion of
 // TestCluster_MembershipAdd_ForwardsToLeader: the phantom node publishes no
-// feature advertisement, so after activation the feature gate refuses to add
-// it. The refusal must be the same whichever node the add reaches -- the
+// advertisement, so release admission refuses to add it to the system shard
+// (*featuregate.UnannouncedCandidateError: no live advertisement announces
+// its release; enroll the node first) before any feature is compared. The
+// refusal must be the same whichever node the add reaches -- the
 // follower forwards it and relays the leader's answer -- and nothing changes.
 func TestCluster_MembershipAdd_RefusedWithoutAdvertisement(t *testing.T) {
 	adminPorts, _, ca := startThreeNodeClusterSPIFFE(t, "pebble")
@@ -1236,8 +1237,8 @@ func TestCluster_MembershipAdd_RefusedWithoutAdvertisement(t *testing.T) {
 	waitForSettledFollowerView(t, ca, followerPort, 30*time.Second)
 	shardID, newReplicaID := nextReplicaID(t, ca, leaderPort)
 
-	// Wait for the cluster to activate guarded writes: every node's gate
-	// then refuses a replica on a node with no advertisement.
+	// Poll until the leader's gate answers: it refuses a system-shard
+	// replica on a node with no advertisement with 409.
 	var leaderCode int
 	var leaderBody string
 	pollUntil(60*time.Second, 500*time.Millisecond, func() bool {
@@ -1250,7 +1251,7 @@ func TestCluster_MembershipAdd_RefusedWithoutAdvertisement(t *testing.T) {
 	if leaderCode != http.StatusConflict {
 		t.Fatalf("leader: status %d, body %s, want 409", leaderCode, leaderBody)
 	}
-	for _, want := range []string{"127.0.0.1:1", string(featuregate.GuardedWrites), "advertisement", "enrollment"} {
+	for _, want := range []string{"127.0.0.1:1", "advertisement", "announces its release", "enrollment"} {
 		if !strings.Contains(leaderBody, want) {
 			t.Fatalf("leader refusal %s does not name %q", leaderBody, want)
 		}

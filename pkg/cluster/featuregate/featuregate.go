@@ -393,8 +393,13 @@ type Gate struct {
 
 	// view is the current advertisement snapshot across every store the
 	// gate follows, replaced whole.
-	mu   sync.Mutex // serializes view replacement
-	view atomic.Pointer[map[viewKey]cluster.Member]
+	mu sync.Mutex // serializes view replacement
+	// proposeMu serializes bound system-shard additions on this node from
+	// the CheckConfigBinding recheck through the add's commit or refusal
+	// (ProposeBound), so no other add through this node commits between a
+	// recheck and its append.
+	proposeMu sync.Mutex
+	view      atomic.Pointer[map[viewKey]cluster.Member]
 
 	// releases maps a system-shard replica ID to the releases recorded
 	// under ReleasePrefix for it, replaced whole by recordRelease. It
@@ -639,8 +644,14 @@ func (e *StaleConfigurationError) Error() string {
 // runs it immediately before proposing a bound add; on the refusal it admits
 // again. An unbound b, or another shard, always passes.
 //
-// The window between this check and the add's commit stays open until
-// go-quicraft offers a proposal-time configuration check (docs/plans/1628.md).
+// A caller proposes a bound add through ProposeBound, which holds this node's
+// lock from this check until the add commits or is refused, so no other add
+// through this node commits in between. Two residuals wait for go-quicraft
+// to offer a proposal-time configuration check (go-quicraft 1192,
+// docs/plans/1628.md): a leadership change while an add is in flight (the
+// new leader's adds do not share this node's lock), and a member restarted
+// onto another release whose Gate.Start restart check ran before the add
+// committed.
 func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error {
 	if !b.Required || shardID != g.systemShard {
 		return nil
@@ -670,6 +681,27 @@ func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error {
 		return &StaleConfigurationError{ShardID: shardID, Admitted: b.ConfigChangeID, Current: system.ConfigChangeID, ReleasesChanged: true}
 	}
 	return nil
+}
+
+// ProposeBound runs propose, which proposes the add bound to b and returns
+// only once that add commits or is refused. When b is Required and shardID is
+// the system shard, it holds this node's proposal lock from CheckConfigBinding
+// through propose's return: go-quicraft accepts a configuration change only on
+// the shard leader's host and refuses a second one while one is uncommitted,
+// so no other add through this node commits between the recheck and this
+// add's append. The next add then rechecks against the committed
+// configuration and is refused as stale. Any other binding runs propose with
+// no lock and no check.
+func (g *Gate) ProposeBound(shardID uint64, b ConfigBinding, propose func() error) error {
+	if !b.Required || shardID != g.systemShard {
+		return propose()
+	}
+	g.proposeMu.Lock()
+	defer g.proposeMu.Unlock()
+	if err := g.CheckConfigBinding(shardID, b); err != nil {
+		return err
+	}
+	return propose()
 }
 
 // AdmitReplicaAt is AdmitReplica that also returns the system-shard

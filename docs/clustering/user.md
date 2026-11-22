@@ -546,13 +546,16 @@ Release admission is checked against the system-shard membership it read and
 rechecked immediately before the membership change is proposed, so a
 concurrent addition, or a member restarted onto another release, between
 admission and the proposal makes the add retry its admission once and be
-refused. A narrow window remains between that last recheck and the Raft
-worker appending the change, in which two additions from opposite sides of the
+refused. Concurrent additions through the leader are serialized from that
+recheck to the change's commit, so of two additions from opposite sides of the
 cluster's release (for example a 0.58 and a 0.60 node into an all-0.59
-cluster) can both commit; the gap is stated, closed by go-quicraft 1192 (a
-configuration check on the Raft worker at the proposal boundary). Until then,
-add one node at a time and wait for each `qrdb admin member add` to return
-before starting the next.
+cluster) the later one is refused with the release gap (HTTP 409). Two
+narrow residuals remain until go-quicraft 1192 (a configuration check on the
+Raft worker at the proposal boundary): a leadership change while an addition
+is in flight, and a member restarted onto another release after its restart
+check but before the addition commits. To stay clear of them, add one node at
+a time and wait for each `qrdb admin member add` to return before starting the
+next.
 
 While the upgrade is under way the cluster is **mixed**: some nodes run the
 old release (N) and some the new one (N+1). A mixed cluster serves every

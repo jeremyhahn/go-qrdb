@@ -168,6 +168,16 @@ func (a *HostAdapter) CheckConfigBinding(shardID uint64, b featuregate.ConfigBin
 	return a.gate.CheckConfigBinding(shardID, b)
 }
 
+// ProposeBound runs propose under the gate's per-node proposal lock with the
+// binding rechecked first (featuregate.Gate.ProposeBound); an ungated adapter
+// binds nothing and runs propose directly.
+func (a *HostAdapter) ProposeBound(shardID uint64, b featuregate.ConfigBinding, propose func() error) error {
+	if a.gate == nil {
+		return propose()
+	}
+	return a.gate.ProposeBound(shardID, b, propose)
+}
+
 // FeatureEnabled reports whether every replica of shardID's group can apply
 // commands that use feature. With a feature gate the gate decides. Without
 // one, a host with no transport -- every replica is this process -- and a

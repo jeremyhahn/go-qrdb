@@ -90,21 +90,23 @@ func admitReplica(h any, shardID uint64, raftAddr string) (featuregate.ConfigBin
 	return featuregate.ConfigBinding{}, nil
 }
 
-// checkConfigBinding refuses an add bound to a system-shard configuration
-// that is no longer current, immediately before the proposal. go-quicraft
-// makes the change-ID comparison for a non-zero configChangeIndex but skips
-// it for 0, and makes no release comparison at all, so every Required
-// binding is checked here: the gate compares the change ID (for 0 too) and
-// whether a compared member's release changed since admission (a restart
-// on another release changes no configuration).
-func checkConfigBinding(h any, shardID uint64, b featuregate.ConfigBinding) error {
+// proposeBound runs propose, the add bound to b, which returns only once the
+// add commits or is refused. go-quicraft makes the change-ID comparison for a
+// non-zero configChangeIndex but skips it for 0, and makes no release
+// comparison at all, so every Required binding goes through the host's
+// featuregate.Gate.ProposeBound: it compares the change ID (for 0 too) and
+// whether a compared member's release changed since admission (a restart on
+// another release changes no configuration), and holds the gate's per-node
+// lock from that recheck through propose's return, so no other bound add
+// through this node commits in between.
+func proposeBound(h any, shardID uint64, b featuregate.ConfigBinding, propose func() error) error {
 	if !b.Required {
-		return nil
+		return propose()
 	}
 	if a, ok := h.(configBoundAdmitter); ok {
-		return a.CheckConfigBinding(shardID, b)
+		return a.ProposeBound(shardID, b, propose)
 	}
-	return nil
+	return propose()
 }
 
 // staleConfiguration reports whether err refuses an add because the
@@ -122,9 +124,12 @@ func staleConfiguration(err error) bool {
 // binding's change ID as the add's configChangeIndex, so go-quicraft refuses
 // the add as stale when the membership changed after admission, and
 // compares a binding to change ID 0 itself, which go-quicraft cannot.
+// ProposeBound runs that comparison and the proposal through its result
+// under the gate's per-node lock (featuregate.Gate.ProposeBound).
 type configBoundAdmitter interface {
 	AdmitReplicaAt(shardID uint64, raftAddr string) (featuregate.ConfigBinding, error)
 	CheckConfigBinding(shardID uint64, b featuregate.ConfigBinding) error
+	ProposeBound(shardID uint64, b featuregate.ConfigBinding, propose func() error) error
 }
 
 // WriteGuard is a precondition carried by every write proposed under a

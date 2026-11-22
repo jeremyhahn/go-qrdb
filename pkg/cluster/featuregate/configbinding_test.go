@@ -78,6 +78,73 @@ func TestCheckConfigBinding_InitialConfiguration(t *testing.T) {
 	assert.Equal(t, StaleConfigurationError{ShardID: systemShard, Admitted: 5, Current: 0}, *stale)
 }
 
+// TestProposeBound_SerializesRequiredBindings: a Required system-shard
+// binding's recheck and proposal run under the gate's lock, so a second
+// ProposeBound rechecks only after the first's proposal returned, against
+// the configuration it committed, and is refused as stale without
+// proposing. An unbound or other-shard binding proposes with no check.
+func TestProposeBound_SerializesRequiredBindings(t *testing.T) {
+	members := threeNodes()
+	nodes := map[uint64]string{1: "n1:7000", 2: "n2:7000", 3: "n3:7000"}
+	members.set(systemShard, 0, nodes)
+	g := newGate(t, members)
+	reads := func() int {
+		members.mu.Lock()
+		defer members.mu.Unlock()
+		return members.reads
+	}
+	bound := ConfigBinding{ConfigChangeID: 0, Required: true}
+
+	entered, release1 := make(chan struct{}), make(chan struct{})
+	readsWhileHeld := make(chan int, 1)
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- g.ProposeBound(systemShard, bound, func() error {
+			close(entered)
+			<-release1
+			readsWhileHeld <- reads()
+			// The add commits: the configuration moves on.
+			members.set(systemShard, 1, nodes)
+			return nil
+		})
+	}()
+	<-entered
+	held := reads()
+
+	secondProposed := make(chan struct{}, 1)
+	secondStarted, secondDone := make(chan struct{}), make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		secondDone <- g.ProposeBound(systemShard, bound, func() error {
+			secondProposed <- struct{}{}
+			return nil
+		})
+	}()
+	<-secondStarted
+	close(release1)
+
+	require.NoError(t, <-firstDone)
+	assert.Equal(t, held, <-readsWhileHeld, "the second ProposeBound rechecked while the first held the lock")
+	var stale *StaleConfigurationError
+	require.ErrorAs(t, <-secondDone, &stale)
+	assert.Equal(t, StaleConfigurationError{ShardID: systemShard, Admitted: 0, Current: 1}, *stale)
+	assert.Empty(t, secondProposed, "a stale binding must not propose")
+
+	before := reads()
+	for _, b := range []struct {
+		shard   uint64
+		binding ConfigBinding
+	}{
+		{systemShard, ConfigBinding{ConfigChangeID: 0}},
+		{systemShard + 1, ConfigBinding{ConfigChangeID: 0, Required: true}},
+	} {
+		ran := false
+		require.NoError(t, g.ProposeBound(b.shard, b.binding, func() error { ran = true; return nil }))
+		assert.True(t, ran, "shard %d binding %+v did not propose", b.shard, b.binding)
+	}
+	assert.Equal(t, before, reads(), "an unbound or other-shard binding must not be checked")
+}
+
 func TestAdmitReplicaAt_BindsTheSystemShardConfiguration(t *testing.T) {
 	members := threeNodes()
 	g := adjacentCluster(t, members)

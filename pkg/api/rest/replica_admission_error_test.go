@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // A member add refused because the node does not advertise a feature the
@@ -75,4 +76,66 @@ func TestHandler_MembershipAdd_UnannouncedCandidateIsConflict(t *testing.T) {
 	if got := membershipChangeStatus(refusal); got != http.StatusConflict {
 		t.Fatalf("membershipChangeStatus = %d, want %d", got, http.StatusConflict)
 	}
+}
+
+// observerAdminService is a mockAdminService that also adds observers
+// (service.ObserverMemberAdder), which handleMembershipAddObserver requires.
+type observerAdminService struct {
+	*mockAdminService
+	addObserverMemberFn func(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error
+}
+
+func (m *observerAdminService) AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	return m.addObserverMemberFn(ctx, shardID, replicaID, raftAddr, identity)
+}
+
+// releaseGapRefusal is the refusal release admission returns for a candidate
+// two minor releases from a member.
+func releaseGapRefusal() *release.GapError {
+	return &release.GapError{Channel: "raft-membership", Local: "0.59.0-alpha", Peer: "0.61.0-alpha"}
+}
+
+// assertReleaseGapConflict dispatches body to path and requires 409 with a
+// body naming both releases.
+func assertReleaseGapConflict(t *testing.T, srv *Server, path string, gap *release.GapError) {
+	t.Helper()
+	body := `{"shard_id":1,"replica_id":3,"address":"n3:1"}`
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("%s status = %d, want %d (body %q)", path, rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	for _, want := range []string{gap.Local, gap.Peer} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("%s body %q does not name release %q", path, rec.Body.String(), want)
+		}
+	}
+	if got := membershipChangeStatus(gap); got != http.StatusConflict {
+		t.Fatalf("membershipChangeStatus = %d, want %d", got, http.StatusConflict)
+	}
+}
+
+// TestHandler_MembershipAdd_ReleaseGapIsConflict: a release-gap refusal of
+// POST /membership/add is the client's precondition failure, 409, not 500.
+func TestHandler_MembershipAdd_ReleaseGapIsConflict(t *testing.T) {
+	gap := releaseGapRefusal()
+	adminSvc := &mockAdminService{
+		addMemberFn: func(context.Context, uint64, uint64, string) error { return gap },
+	}
+	assertReleaseGapConflict(t, NewServer(&mockKVService{}, adminSvc, ":0"), "/membership/add", gap)
+}
+
+// TestHandler_MembershipAddObserver_ReleaseGapIsConflict: the same refusal of
+// POST /membership/add-observer is 409 too.
+func TestHandler_MembershipAddObserver_ReleaseGapIsConflict(t *testing.T) {
+	gap := releaseGapRefusal()
+	adminSvc := &observerAdminService{
+		mockAdminService: &mockAdminService{},
+		addObserverMemberFn: func(context.Context, uint64, uint64, string, string) error {
+			return gap
+		},
+	}
+	assertReleaseGapConflict(t, NewServer(&mockKVService{}, adminSvc, ":0"), "/membership/add-observer", gap)
 }

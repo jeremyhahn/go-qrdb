@@ -53,6 +53,15 @@ type bindingHost struct {
 	paused    bool
 	admitted  chan struct{}
 	resume    chan struct{}
+
+	// pauseRequestAddr's first add request blocks before the stale check
+	// until resumeRequest is closed; requested is closed when it reaches
+	// the pause. That is go-quicraft's window between Host.requestConfigChange's
+	// check and the Raft worker, which compares no ConfigChangeID.
+	pauseRequestAddr string
+	requestPaused    bool
+	requested        chan struct{}
+	resumeRequest    chan struct{}
 }
 
 var (
@@ -83,6 +92,10 @@ func (h *bindingHost) CheckConfigBinding(shardID uint64, b featuregate.ConfigBin
 	return h.gate.CheckConfigBinding(shardID, b)
 }
 
+func (h *bindingHost) ProposeBound(shardID uint64, b featuregate.ConfigBinding, propose func() error) error {
+	return h.gate.ProposeBound(shardID, b, propose)
+}
+
 func (h *bindingHost) AdmitReplicaAt(shardID uint64, raftAddr string) (featuregate.ConfigBinding, error) {
 	id, err := h.gate.AdmitReplicaAt(shardID, raftAddr)
 	h.mu.Lock()
@@ -101,6 +114,16 @@ func (h *bindingHost) AdmitReplicaAt(shardID uint64, raftAddr string) (featurega
 func (h *bindingHost) RequestAddNodeWithIdentity(_ context.Context, shardID, replicaID uint64, addr, _ string, configChangeIndex uint64) (*quicraft.RequestState, error) {
 	if shardID != bindingSystemShard {
 		return nil, errors.New("shard not hosted")
+	}
+	h.mu.Lock()
+	pause := addr == h.pauseRequestAddr && !h.requestPaused
+	if pause {
+		h.requestPaused = true
+	}
+	h.mu.Unlock()
+	if pause {
+		close(h.requested)
+		<-h.resumeRequest
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -498,4 +521,110 @@ func TestAdminService_InitialConfigurationSecondNonAdjacentAddRefused(t *testing
 	if len(h.indexes) != 1 || h.indexes[0] != 0 {
 		t.Fatalf("configChangeIndex per add = %v, want only the first add, at the initial configuration 0", h.indexes)
 	}
+}
+
+// serializedBoundAdds runs two adds of non-adjacent releases into an
+// all-0.59 cluster at the initial configuration (change ID 0, which
+// go-quicraft does not compare). The first add, of old, is paused inside its
+// request, after its recheck passed and before it commits: go-quicraft's
+// window between the host check and the Raft worker. The second add, of
+// next, is admitted on that same configuration while the first is paused.
+// Only then is the first add released. It returns both results.
+func serializedBoundAdds(t *testing.T, h *bindingHost, old, next cluster.Member,
+	add func(*AdminService, context.Context, uint64, uint64, string, string) error) (first, second error) {
+	t.Helper()
+	svc, ok := NewAdminService(h).(*AdminService)
+	if !ok {
+		t.Fatal("NewAdminService did not return *AdminService")
+	}
+	h.pauseRequestAddr = old.Address
+	h.requested = make(chan struct{})
+	h.resumeRequest = make(chan struct{})
+	h.pauseAddr = next.Address
+	close(h.resume)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- add(svc, context.Background(), bindingSystemShard, old.NodeID, old.Address, "")
+	}()
+	select {
+	case <-h.requested:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first add never reached its request")
+	}
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- add(svc, context.Background(), bindingSystemShard, next.NodeID, next.Address, "")
+	}()
+	select {
+	case <-h.admitted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second add never reached admission")
+	}
+	close(h.resumeRequest)
+	for i := 0; i < 2; i++ {
+		select {
+		case first = <-firstDone:
+		case second = <-secondDone:
+		case <-time.After(10 * time.Second):
+			t.Fatal("an add never returned")
+		}
+	}
+	return first, second
+}
+
+// assertSerializedBoundAdds requires the first add committed and the second
+// refused with the release gap, with only the first add's request proposed.
+func assertSerializedBoundAdds(t *testing.T, h *bindingHost, first, second error) {
+	t.Helper()
+	if first != nil {
+		t.Fatalf("first add = %v, want committed", first)
+	}
+	var gap *release.GapError
+	if !errors.As(second, &gap) {
+		t.Fatalf("second add = %v, want *release.GapError", second)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, n4 := h.members[4]
+	_, n5 := h.members[5]
+	if n4 || !n5 {
+		t.Fatalf("members = %v, want n5 added and n4 refused", h.members)
+	}
+	if len(h.indexes) != 1 || h.indexes[0] != 0 {
+		t.Fatalf("configChangeIndex per request = %v, want only the first add's, at the initial configuration 0", h.indexes)
+	}
+}
+
+// TestAdminService_AddMemberBoundAddsAreSerializedThroughCommit: a bound
+// system-shard add holds the gate's lock from its recheck until its request
+// returns, so a concurrent add admitted on the same configuration rechecks
+// only after the first commits, is refused as stale, re-admits and gets the
+// release gap. Without the lock, the second add's recheck passes while the
+// first is in flight and both commit at change ID 0.
+func TestAdminService_AddMemberBoundAddsAreSerializedThroughCommit(t *testing.T) {
+	old := cluster.Member{NodeID: 5, Address: "n5:1", ReleaseVersion: "0.58.0-alpha"}
+	next := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
+	h := newBindingHostAt(t, 0, old, next)
+
+	first, second := serializedBoundAdds(t, h, old, next, (*AdminService).AddMember)
+	assertSerializedBoundAdds(t, h, first, second)
+}
+
+// TestAdminService_AddObserverMemberBoundAddsAreSerializedThroughCommit: an
+// observer add shares the voter add's lock, so a voter add admitted while an
+// observer add is in flight is refused with the release gap the same way.
+func TestAdminService_AddObserverMemberBoundAddsAreSerializedThroughCommit(t *testing.T) {
+	old := cluster.Member{NodeID: 5, Address: "n5:1", ReleaseVersion: "0.58.0-alpha"}
+	next := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
+	h := newBindingHostAt(t, 0, old, next)
+
+	svcAdd := func(svc *AdminService, ctx context.Context, shardID, replicaID uint64, addr, identity string) error {
+		if addr == old.Address {
+			return svc.AddObserverMember(ctx, shardID, replicaID, addr, identity)
+		}
+		return svc.AddMember(ctx, shardID, replicaID, addr, identity)
+	}
+	first, second := serializedBoundAdds(t, h, old, next, svcAdd)
+	assertSerializedBoundAdds(t, h, first, second)
 }
