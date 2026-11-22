@@ -800,12 +800,7 @@ type engineRead struct {
 
 // readEveryEngine reads each engine's value back by its exact key, ID, index
 // value or metric, never by listing.
-//
-// withIndex is false for a store reopened under the bare standalone
-// composition: the index registry lives in the state machine that created
-// the index and is not rebuilt by a reopen, so a reopened store answers
-// "index not found" whatever its barrier.
-func (e sealEngines) readEveryEngine(db string, docID uint64, withTS, withIndex bool) []engineRead {
+func (e sealEngines) readEveryEngine(db string, docID uint64, withTS bool) []engineRead {
 	ctx := context.Background()
 	kv, kvErr := e.kv.Get(ctx, "seal-kv")
 	mv, mvErr := e.mvcc.Get(ctx, "seal-mvcc")
@@ -819,12 +814,11 @@ func (e sealEngines) readEveryEngine(db string, docID uint64, withTS, withIndex 
 		{engine: "mvcc", marker: sealMVCCMarker, got: string(mv), err: mvErr},
 		{engine: "collection", marker: sealDocMarker, got: docText, err: docErr},
 	}
-	if withIndex {
-		// The index returns the document's key, not its value: the control
-		// asks for one hit.
-		hits, idxErr := e.idx.Query(ctx, db+".docs.secret", []byte(sealDocMarker))
-		reads = append(reads, engineRead{engine: "index", marker: sealDocMarker, got: fmt.Sprint(len(hits)), err: idxErr})
-	}
+	// The index returns the document's key, not its value: the control asks
+	// for one hit. A reopened store serves it too: the engine restores the
+	// index definitions from its catalog on open.
+	hits, idxErr := e.idx.Query(ctx, db+".docs.secret", []byte(sealDocMarker))
+	reads = append(reads, engineRead{engine: "index", marker: sealDocMarker, got: fmt.Sprint(len(hits)), err: idxErr})
 	if withTS {
 		points, tsErr := e.ts.Query(ctx, "seal.metric", sealTSAt.Add(-time.Hour), sealTSAt.Add(time.Hour))
 		reads = append(reads, engineRead{engine: "timeseries", marker: sealTSMarker, got: fmt.Sprint(points), err: tsErr})
@@ -858,18 +852,18 @@ func TestLocalBindingFactory_BarrierTenantSealFailsEveryEngineClosed(t *testing.
 			// Control: every engine, the index included, reads its marker
 			// back on the open store, so the sealed checks below are not
 			// vacuous.
-			assertControl(t, "open store", live.readEveryEngine("vault", docID, withTS, true))
+			assertControl(t, "open store", live.readEveryEngine("vault", docID, withTS))
 			if err := mgr.Close(); err != nil {
 				t.Fatalf("Manager.Close: %v", err)
 			}
 
 			// Control: the store reopens under the unsealed tenant barrier and
-			// every engine but the index (see readEveryEngine) reads back.
+			// every engine, the index included, reads back.
 			host, closeHost, err := openBack(t, b, root, atrest.New(tb.Barrier()))
 			if err != nil {
 				t.Fatalf("reopen under the unsealed tenant barrier: %v", err)
 			}
-			reads := newSealEngines(host, shard.ShardKV).readEveryEngine("vault", docID, withTS, false)
+			reads := newSealEngines(host, shard.ShardKV).readEveryEngine("vault", docID, withTS)
 			closeHost()
 			assertControl(t, "reopened store", reads)
 
