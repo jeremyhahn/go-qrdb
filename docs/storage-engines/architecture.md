@@ -505,9 +505,11 @@ encoded-name layout and the stores written in it.
 
 **The new `pkg/storage/objstore` package stops being a KV engine and becomes a
 `remote.Storage` adapter over go-objstore**, consumed by `pkg/storage/pebble`
-through a new construction option, e.g. `pebble.WithRemote(objstore.NewRemote(provider,
-settings), locator, strategy)`. There is no second, parallel engine
-implementation:
+through a construction option, `remotelsm.WithRemote(objstore.NewRemote(provider,
+settings), locator, strategy)` in package `pkg/storage/pebble/remotelsm`, which
+binds through `pebble.WithOpenHook` so `pkg/storage/pebble` itself keeps no
+`objstorage/remote` import (lean standalone gate). There is no second, parallel
+engine implementation:
 
 ```
 pkg/storage/pebble        — unchanged: *pebble.DB, storage.Storage, Batch, Iterator, Snapshot
@@ -777,7 +779,9 @@ what they already are — backup/archive destinations reached through
 **Phase 1 — the adapter and the engine option.**
 Rewrite `pkg/storage/objstore` as the `remote.Storage` adapter (OS-6's interim
 whole-object cache) plus the encrypting wrapper (OS-4). Add
-`pebble.WithRemote(...)` to `pkg/storage/pebble`, wiring
+`remotelsm.WithRemote(...)` in package `pkg/storage/pebble/remotelsm` (bound
+through `pebble.WithOpenHook`; `pkg/storage/pebble` keeps no
+`objstorage/remote` import, lean standalone gate), wiring
 `Options.Experimental.{RemoteStorage,CreateOnShared,CreateOnSharedLocator}`
 and a `CreatorID` persisted beside the local directory. Delete the flat
 `Engine`/`Batch`/`Iterator`/`Snapshot` and the batch commit journal in
@@ -795,7 +799,7 @@ encoded-name layout is refused at open (OS-5).
 
 **Phase 2 — wire a database's `backend: objstore` as a non-replicated binding.**
 Remove the `database.InvalidBackendError` refusal at `openStorage` for
-`backend: objstore`; route it through `pebble.WithRemote` like any other
+`backend: objstore`; route it through `remotelsm.WithRemote` like any other
 non-replicated binding. The surrounding binding resolution is the databases
 feature's ([../databases/architecture.md](../databases/architecture.md));
 this phase owns only the storage side.
