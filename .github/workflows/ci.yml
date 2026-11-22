@@ -73,12 +73,12 @@
 #     saves one (CI_CACHE_SAVE), so a pull
 #     request never writes main's cache. On a
 #     self-hosted pool host, whose temp dir is on the root filesystem and
-#     outlives the job, they are a generation directory on /mnt/raid0 that
+#     outlives the job, they are a generation directory in the CI_CACHE_ROOT directory (runner host env file) that
 #     every job shares: past CI_CACHE_MAX_GB (40 GB) a new generation becomes
 #     current, and an old one is deleted only once no job has used it for
 #     CI_CACHE_RECLAIM_HOURS (7, longer than any job), so no running stage
 #     loses its bind mount; or they are the stage's named Docker volumes when
-#     /mnt/raid0 is not writable. actions/cache is skipped there, and every
+#     the CI_CACHE_ROOT directory (runner host env file) is not writable. actions/cache is skipped there, and every
 #     job removes $RUNNER_TEMP/ci-cache at its end through
 #     scripts/ci-cache-clean.sh, which deletes the stages' uid-10001 files as
 #     root in the toolchain image and only warns when it cannot;

@@ -394,7 +394,7 @@ read-only module cache, so it still proves the image builds offline; a bridge
 stage takes a writable copy of it. Only the nightly schedule on `main` saves
 an entry (`actions/cache/save` under `CI_CACHE_SAVE` on a hosted runner; a
 push to `main` runs on the self-hosted pool, whose caches live on
-`/mnt/raid0`, #1597; the combined `actions/cache` action, which saves on
+the CI_CACHE_ROOT directory (runner host env file), #1597; the combined `actions/cache` action, which saves on
 every event, is refused), so a pull request reads `main`'s cache and never
 writes one; GitHub evicts the least recently used
 entries past the repository's 10 GB. Each leg has its own key, so legs never
