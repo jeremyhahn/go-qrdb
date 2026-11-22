@@ -153,6 +153,11 @@ async function injectStatefulVectorBinding(
       GetVector: async (req: unknown) => {
         maybeReject("VectorBinding.GetVector");
         const r = req as { namespace: string; id: string; include_vector?: boolean; include_metadata?: boolean };
+        // A test can hold the answer for one id until it releases it, to
+        // make a stale response arrive after a newer one.
+        const hold = (w.__VEC_GET_HOLD__ as Record<string, Promise<void>> | undefined)?.[String(r.id)];
+        if (hold) await hold;
+        ((w.__VEC_GET_ANSWERED__ ??= []) as string[]).push(String(r.id));
         const v = lookup(r.namespace, String(r.id));
         return {
           id: v.id,
@@ -217,6 +222,7 @@ async function injectStatefulVectorBinding(
       UpdateMetadata: async (req: unknown) => {
         maybeReject("VectorBinding.UpdateMetadata");
         const r = req as { namespace: string; id: string; metadata: Record<string, unknown> };
+        ((w.__VEC_UPDATE_IDS__ ??= []) as string[]).push(String(r.id));
         const vec = lookup(r.namespace, r.id);
         put(r.namespace, r.id, vec.vector, r.metadata);
       },
@@ -362,6 +368,53 @@ test.describe("Vector View - advanced operations", () => {
     await expect(detail.getByTestId("vector-detail-created")).toHaveText("1700000001");
     await expect(detail.getByTestId("vector-detail-updated")).toHaveText("1700000001");
     await expect(detail.getByTestId("vector-detail-metadata-json")).toContainText('"label": "first"');
+  });
+
+  test("a stale getVector for a closed selection does not replace the current one", async ({ page }) => {
+    await upsertVector(page, "va", "0.1, 0.2, 0.3", '{"label": "a"}');
+    await upsertVector(page, "vb", "0.4, 0.5, 0.6", '{"label": "b"}');
+    // Hold the answer for va until the test releases it.
+    await page.evaluate(() => {
+      const w = window as unknown as Record<string, unknown>;
+      w.__VEC_GET_HOLD__ = {
+        va: new Promise<void>((resolve) => {
+          w.__VEC_RELEASE_VA__ = resolve;
+        }),
+      };
+    });
+
+    await page.getByText("va", { exact: true }).first().click();
+    const detail = page.getByLabel("Vector Details");
+    await expect(detail).toBeVisible();
+    await detail.getByRole("button", { name: "Close", exact: true }).last().click();
+    await expect(detail).toBeHidden();
+
+    await page.getByText("vb", { exact: true }).first().click();
+    await expect(detail.getByTestId("vector-detail-created")).toHaveText("1700000002", { timeout: 5_000 });
+    await expect(detail.getByTestId("vector-detail-metadata-input")).toHaveValue(/"label": "b"/);
+
+    // va's getVector now answers, after vb's.
+    await page.evaluate(() => {
+      const w = window as unknown as Record<string, unknown>;
+      (w.__VEC_RELEASE_VA__ as () => void)();
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as Record<string, unknown>).__VEC_GET_ANSWERED__ as string[] | undefined,
+        ),
+      )
+      .toContain("va");
+    await expect(detail.getByTestId("vector-detail-created")).toHaveText("1700000002");
+    await expect(detail.getByTestId("vector-detail-metadata-input")).toHaveValue(/"label": "b"/);
+
+    await detail.getByTestId("vector-detail-metadata-input").fill('{"label": "b2"}');
+    await detail.getByRole("button", { name: "Save metadata" }).click();
+    await expect(page.getByText('Metadata of vector "vb" updated.')).toBeVisible({ timeout: 5_000 });
+    const updated = await page.evaluate(
+      () => (window as unknown as Record<string, unknown>).__VEC_UPDATE_IDS__ as string[] | undefined,
+    );
+    expect(updated).toEqual(["vb"]);
   });
 
   test("Save metadata calls updateMetadata and refreshes the detail", async ({ page }) => {

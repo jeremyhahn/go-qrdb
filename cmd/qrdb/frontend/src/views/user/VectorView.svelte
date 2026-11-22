@@ -890,29 +890,43 @@
   }
 
   function closeVectorDetail(): void {
+    // Invalidate any getVector still in flight so it cannot repopulate
+    // the panel (or retarget Save) after the selection changed.
+    detailRequest++;
     showVectorDetailPanel = false;
     selectedVector = null;
     detailVector = null;
     detailError = "";
+    detailLoading = false;
   }
 
   // ---------------------------------------------------------------------------
   // Vector detail: getVector + updateMetadata
   // ---------------------------------------------------------------------------
 
+  // Monotonic token of the latest loadVectorDetail call. A response is
+  // applied only when its token is still the latest one, so a slow
+  // getVector for a previously selected vector never replaces the current one.
+  let detailRequest = 0;
+
   async function loadVectorDetail(id: string): Promise<void> {
-    if (client.vector === null || selectedNamespace.trim() === "" || id === "") return;
+    const token = ++detailRequest;
+    const namespace = selectedNamespace;
+    if (client.vector === null || namespace.trim() === "" || id === "") return;
     detailLoading = true;
     detailError = "";
+    const current = (): boolean => token === detailRequest && namespace === selectedNamespace;
     try {
-      const v: VectorData = await client.vector.getVector({ namespace: selectedNamespace, id });
+      const v: VectorData = await client.vector.getVector({ namespace, id });
+      if (!current()) return;
       detailVector = v;
       detailMetadata = JSON.stringify(v.metadata ?? {}, null, 2);
     } catch (err: unknown) {
+      if (!current()) return;
       detailVector = null;
       detailError = err instanceof Error ? err.message : String(err);
     } finally {
-      detailLoading = false;
+      if (current()) detailLoading = false;
     }
   }
 
@@ -935,7 +949,8 @@
       return;
     }
     const id = detailVector?.id ?? ((selectedVector as Record<string, unknown> | null)?.id as string | undefined) ?? "";
-    if (selectedNamespace.trim() === "" || id === "") {
+    const namespace = selectedNamespace;
+    if (namespace.trim() === "" || id === "") {
       showToast("warning", "Namespace and vector ID are required.");
       return;
     }
@@ -944,7 +959,7 @@
     detailLoading = true;
     try {
       await client.vector.updateMetadata({
-        namespace: selectedNamespace,
+        namespace,
         id,
         metadata,
       });
