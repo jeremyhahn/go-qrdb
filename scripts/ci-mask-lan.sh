@@ -36,6 +36,17 @@
 #   usage: scripts/ci-mask-lan.sh
 set -euo pipefail
 
+# mask <value>: one ::add-mask:: command, its value escaped as workflow
+# command data (% as %25, CR as %0D, LF as %0A), because the runner decodes
+# those sequences: a literal %25 in a password would otherwise register a
+# different mask than the text a log repeats (local Codex review on #1680).
+mask() {
+	local v=${1//%/%25}
+	v=${v//$'\r'/%0D}
+	v=${v//$'\n'/%0A}
+	printf '::add-mask::%s\n' "$v"
+}
+
 private() {
 	local h=${1,,}
 	h=${h%.}
@@ -67,15 +78,15 @@ for v in $(compgen -e); do
 		*) host=${hostport%%:*} ;;
 		esac
 		if [ -n "$userinfo" ]; then
-			echo "::add-mask::$userinfo"
+			mask "$userinfo"
 			password=${userinfo#*:}
-			[ "$password" = "$userinfo" ] || [ -z "$password" ] || echo "::add-mask::$password"
+			[ "$password" = "$userinfo" ] || [ -z "$password" ] || mask "$password"
 		fi
 		private "$host" || continue
-		echo "::add-mask::$entry"
-		[ "$authority" = "$entry" ] || echo "::add-mask::$authority"
-		[ "$hostport" = "$authority" ] || echo "::add-mask::$hostport"
-		[ "$host" = "$hostport" ] || echo "::add-mask::$host"
-		case $host in \[*\]) inner=${host#[}; echo "::add-mask::${inner%]}" ;; esac
+		mask "$entry"
+		[ "$authority" = "$entry" ] || mask "$authority"
+		[ "$hostport" = "$authority" ] || mask "$hostport"
+		[ "$host" = "$hostport" ] || mask "$host"
+		case $host in \[*\]) inner=${host#[}; mask "${inner%]}" ;; esac
 	done
 done

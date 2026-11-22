@@ -214,6 +214,15 @@ case(
 )
 
 
+# E1 (local Codex review on #1680): a mask value is escaped as workflow
+# command data, so the runner decodes it back to the literal text: a
+# password holding "%25" registers "%2525", which decodes to "%25".
+case(
+    "E1 percent in a password",
+    {"GOPROXY": "http://ci:pa%25ss@192.168.1.10:8080"},
+    want={"pa%2525ss", "ci:pa%2525ss", "192.168.1.10"},
+    absent={"pa%25ss"},
+)
 # M cases: ci.yml's mask steps.
 def jobs(text):
     """Map job id -> job text, from the top-level jobs: block."""
