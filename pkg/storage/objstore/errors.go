@@ -39,6 +39,40 @@ func (e *InvalidRemoteError) Error() string {
 	return "objstore: invalid remote storage (" + e.Reason + "): prefix " + strconv.Quote(e.Prefix)
 }
 
+// InvalidCachedRemoteError indicates NewCachedRemote was given a nil inner
+// storage or an empty cache directory.
+type InvalidCachedRemoteError struct {
+	Dir    string
+	Reason string
+}
+
+func (e *InvalidCachedRemoteError) Error() string {
+	return "objstore: invalid cached remote storage (dir " + strconv.Quote(e.Dir) + "): " + e.Reason
+}
+
+// InvalidObjectNameError indicates a CachedRemote was given an object name
+// that does not map to exactly one file directly in its cache directory
+// (empty, ".", "..", or an escaped name holding a path separator). It is
+// refused before the inner storage is called.
+type InvalidObjectNameError struct {
+	Name   string
+	Reason string
+}
+
+func (e *InvalidObjectNameError) Error() string {
+	return "objstore: invalid object name " + strconv.Quote(e.Name) + ": " + e.Reason
+}
+
+// InvalidEncryptedRemoteError indicates NewEncryptedRemote was given a nil
+// inner remote storage or a nil barrier.
+type InvalidEncryptedRemoteError struct {
+	Reason string
+}
+
+func (e *InvalidEncryptedRemoteError) Error() string {
+	return "objstore: invalid encrypted remote storage (" + e.Reason + ")"
+}
+
 // FormatMarkerMissingError refuses to open a NON-EMPTY store that carries no
 // format marker object (formatMarkerName). A store this engine created always
 // has one, so its absence means the objects were written by something else —
@@ -65,6 +99,32 @@ type FormatVersionMismatchError struct {
 	Found string
 	// Want is the version this build requires.
 	Want string
+}
+
+// LSMFormatMarkerMissingError reports a store that EnsureLSMFormat refuses:
+// it is not empty, yet carries no format marker for the LSM layout. Its
+// objects were written by something other than this layout, and there is no
+// migration (object-storage-lsm OS-5 A).
+type LSMFormatMarkerMissingError struct{}
+
+func (e *LSMFormatMarkerMissingError) Error() string {
+	return "objstore: the store is not empty and carries no " + formatMarkerName +
+		" marker for the LSM layout version " + lsmFormatVersion + " — there is no migration"
+}
+
+// ArchiveTierUnsupportedError reports an LSM store (object-storage-lsm)
+// requested on an archive-tier provider. Archive tiers are backup and archive
+// destinations only: their reads are delayed or billed per restore, so they
+// cannot serve the SSTable reads of a live database.
+type ArchiveTierUnsupportedError struct {
+	// Provider is the archive-tier go-objstore provider that was refused.
+	Provider string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *ArchiveTierUnsupportedError) Error() string {
+	return "objstore: provider " + strconv.Quote(e.Provider) +
+		" is an archive tier (backup and archive destinations only) and cannot hold LSM segments"
 }
 
 // Error returns a human-readable description of the mismatch.

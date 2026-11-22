@@ -183,3 +183,41 @@ func TestBlockCrypto_DifferentNoncesProduceDifferentCiphertext(t *testing.T) {
 		t.Error("two encryptions of the same plaintext must differ (random nonce)")
 	}
 }
+
+func TestBlockCryptoAADBinds(t *testing.T) {
+	c := freshBlockCrypto(t)
+	plain := []byte("aad-bound block")
+	aadA, aadB := []byte("aad-A"), []byte("aad-B")
+	block, err := c.encryptAAD(plain, aadA)
+	if err != nil {
+		t.Fatalf("encryptAAD: %v", err)
+	}
+	got, err := c.decryptAAD(block, aadA)
+	if err != nil {
+		t.Fatalf("decryptAAD under A: %v", err)
+	}
+	if !bytes.Equal(got, plain) {
+		t.Fatal("decryptAAD under A: mismatch")
+	}
+	if _, err := c.decryptAAD(block, aadB); !errors.Is(err, ErrAuthFailed) {
+		t.Fatalf("decryptAAD under B: err = %v, want ErrAuthFailed", err)
+	}
+	if _, err := c.decryptAAD(block, nil); !errors.Is(err, ErrAuthFailed) {
+		t.Fatalf("decryptAAD under nil: err = %v, want ErrAuthFailed", err)
+	}
+	if _, err := c.decrypt(block); !errors.Is(err, ErrAuthFailed) {
+		t.Fatalf("decrypt: err = %v, want ErrAuthFailed", err)
+	}
+
+	fileBlock, err := c.encrypt(plain)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	got, err = c.decrypt(fileBlock)
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	if !bytes.Equal(got, plain) {
+		t.Fatal("decrypt: mismatch")
+	}
+}
