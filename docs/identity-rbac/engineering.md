@@ -1248,8 +1248,10 @@ instead of a refusal on a misconfigured node. `authorize()` itself fails
 CLOSED on an unregistered method key (`UnregisteredOperationError`) rather than silently admitting one,
 making the declaration gates load-bearing rather than advisory.
 
-`SealStore*` has no `pkg/permission` entry of its own because no network
-route exposes it (REST, gRPC, QUIC, MCP). It is gated by
+`SealStore*` is served on every network transport: REST
+(`/v1/seal-store/secrets[/{name}[/reseal]]`, `/v1/seal-store/status`), gRPC
+and unix (`SealStorePut`/`Get`/`List`/`Delete`/`Reseal`/`Status`), QUIC
+(`sealstore.*`) and MCP (`qrdb_seal_store_*`). Every route is gated by
 `permission.SealStoreManage` (`seal:store_manage`, `ScopeCross`,
 SO-exclusive — not granted to the narrower Admin role), not by the bare
 `IdentityGated` floor.
