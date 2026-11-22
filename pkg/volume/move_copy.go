@@ -32,6 +32,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 	"github.com/jeremyhahn/go-qrdb/pkg/validation"
 )
 
@@ -343,7 +344,7 @@ func CopyTree(ctx context.Context, src, dst string) (*Manifest, error) {
 	if err := copyDir(ctx, sr, dr, "", 0o700, m); err != nil {
 		return nil, err
 	}
-	if err := syncDir(parent); err != nil {
+	if err := fsync.Dir(parent); err != nil {
 		return nil, rootErr(movePhaseCopy, "destination parent", "cannot be synced", err)
 	}
 	sortManifest(m)
@@ -435,15 +436,6 @@ func copyFile(sr, dr *os.Root, rel string) (ManifestEntry, error) {
 	e := ManifestEntry{Path: rel, Mode: perm, Size: n}
 	copy(e.SHA256[:], h.Sum(nil))
 	return e, nil
-}
-
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = d.Close() }()
-	return d.Sync()
 }
 
 // VerifyCopy builds the manifest of dst and compares it with want entry
