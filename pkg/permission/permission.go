@@ -164,6 +164,42 @@ func Expand(p Permission) []Permission {
 	return out
 }
 
+// Matches reports whether the one granted permission admits the concrete
+// required permission. This is the RBAC authorization rule: a grant matches
+// when it is the exact "resource:action", the resource wildcard
+// "resource:*", the action wildcard "*:action", or the full wildcard "*:*".
+// Only whole-segment "*" wildcards are recognized, never glob prefixes, so
+// "ke*:sign" does not admit "keys:sign". The required permission is split
+// with Resource and Action, so "*:revoke:cross" admits "certs:revoke:cross".
+func Matches(granted, required Permission) bool {
+	resource, action := Resource(required), Action(required)
+	return granted == required ||
+		granted == Permission(resource+":*") ||
+		granted == Permission("*:"+action) ||
+		granted == Permission("*:*")
+}
+
+// Granted reports whether any permission in the held set admits the
+// concrete required permission under the Matches rule. Because only
+// whole-segment wildcards are recognized, the check is a bounded O(1)
+// lookup of the four candidates that could admit it rather than an
+// iteration over the set. A nil or empty set admits nothing.
+func Granted(held map[Permission]struct{}, required Permission) bool {
+	resource, action := Resource(required), Action(required)
+	candidates := [...]Permission{
+		required,
+		Permission(resource + ":*"),
+		Permission("*:" + action),
+		Permission("*:*"),
+	}
+	for _, c := range candidates {
+		if _, ok := held[c]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // ExpandAll returns the concrete permissions perms cover: each one passed
 // through Expand, deduplicated and sorted by name.
 func ExpandAll(perms []Permission) []Permission {
