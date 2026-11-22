@@ -24,6 +24,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/pebble/remotelsm"
 )
 
 // objstoreLSMPrefix is the object-name prefix the LSM store's SSTables live
@@ -100,5 +101,5 @@ func newObjstoreLSMStorage(dataDir string, enc *atrest.Encryptor, storageCfg qrd
 		shared = encrypted
 	}
 	cfg := localPebbleConfig(filepath.Join(dataDir, objstoreLSMDir), enc, storageCfg)
-	return pebbleStorage.New(cfg, pebbleStorage.WithRemote(shared, objstoreLSMLocator, remote.CreateOnSharedAll))
+	return pebbleStorage.New(cfg, remotelsm.WithRemote(shared, objstoreLSMLocator, remote.CreateOnSharedAll))
 }

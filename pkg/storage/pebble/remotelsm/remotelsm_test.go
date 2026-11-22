@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package pebble
+package remotelsm
 
 import (
 	"bytes"
@@ -29,12 +29,13 @@ import (
 	"github.com/jeremyhahn/go-objstore/pkg/memory"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
+	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 const remoteTestKeys = 50
 
 // writeRemoteKeys writes the test keys and flushes them to SSTables.
-func writeRemoteKeys(t *testing.T, s *PebbleStorage) {
+func writeRemoteKeys(t *testing.T, s *pebbleStorage.PebbleStorage) {
 	t.Helper()
 	for i := 0; i < remoteTestKeys; i++ {
 		if err := s.Set([]byte(fmt.Sprintf("key-%03d", i)), []byte(fmt.Sprintf("value-%03d", i))); err != nil {
@@ -47,7 +48,7 @@ func writeRemoteKeys(t *testing.T, s *PebbleStorage) {
 }
 
 // checkRemoteKeys reads every test key back.
-func checkRemoteKeys(t *testing.T, s *PebbleStorage) {
+func checkRemoteKeys(t *testing.T, s *pebbleStorage.PebbleStorage) {
 	t.Helper()
 	for i := 0; i < remoteTestKeys; i++ {
 		got, err := s.Get([]byte(fmt.Sprintf("key-%03d", i)))
@@ -84,9 +85,9 @@ func readCreatorID(t *testing.T, dir string) uint64 {
 	return id
 }
 
-func openRemote(t *testing.T, dir string, rs remote.Storage) (*PebbleStorage, error) {
+func openRemote(t *testing.T, dir string, rs remote.Storage) (*pebbleStorage.PebbleStorage, error) {
 	t.Helper()
-	return New(TestConfig(dir), WithRemote(rs, "qrdb", remote.CreateOnSharedAll))
+	return pebbleStorage.New(pebbleStorage.TestConfig(dir), WithRemote(rs, "qrdb", remote.CreateOnSharedAll))
 }
 
 func TestWithRemote_RoundTripAndCreatorID(t *testing.T) {
@@ -138,12 +139,21 @@ func TestWithRemote_ChangedCreatorIDRefused(t *testing.T) {
 	if other == 0 {
 		other = 1
 	}
-	if err := os.WriteFile(filepath.Join(dir, creatorIDFile), []byte(strconv.FormatUint(other, 10)+"\n"), 0o600); err != nil {
+	marker := filepath.Join(dir, creatorIDFile)
+	if err := os.WriteFile(marker, []byte(strconv.FormatUint(other, 10)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if s, err := openRemote(t, dir, rs); err == nil {
+	s, err = openRemote(t, dir, rs)
+	if err == nil {
 		_ = s.Close()
 		t.Fatal("reopen with a changed creator id succeeded")
+	}
+	var cerr *CreatorIDError
+	if !errors.As(err, &cerr) {
+		t.Fatalf("err = %v, want *CreatorIDError", err)
+	}
+	if cerr.Path != marker {
+		t.Fatalf("CreatorIDError.Path = %q, want the marker file %q", cerr.Path, marker)
 	}
 }
 
@@ -157,7 +167,7 @@ func TestWithRemote_BadCreatorIDFile(t *testing.T) {
 			s, err := openRemote(t, dir, remote.NewInMem())
 			if err == nil {
 				_ = s.Close()
-				t.Fatal("New accepted a bad creator id file")
+				t.Fatal("pebbleStorage.New accepted a bad creator id file")
 			}
 			var cerr *CreatorIDError
 			if !errors.As(err, &cerr) {
@@ -184,16 +194,16 @@ func TestWithRemote_Refusals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			cfg := TestConfig(dir)
+			cfg := pebbleStorage.TestConfig(dir)
 			cfg.DisableWAL = tt.noWAL
-			s, err := New(cfg, WithRemote(tt.store, tt.locator, tt.strategy))
+			s, err := pebbleStorage.New(cfg, WithRemote(tt.store, tt.locator, tt.strategy))
 			if err == nil {
 				_ = s.Close()
-				t.Fatal("New succeeded")
+				t.Fatal("pebbleStorage.New succeeded")
 			}
-			var cerr *ConfigError
+			var cerr *pebbleStorage.ConfigError
 			if !errors.As(err, &cerr) || cerr.Field != tt.field {
-				t.Fatalf("err = %v, want *ConfigError on %s", err, tt.field)
+				t.Fatalf("err = %v, want *pebbleStorage.ConfigError on %s", err, tt.field)
 			}
 			entries, err := os.ReadDir(dir)
 			if err != nil {
@@ -208,7 +218,7 @@ func TestWithRemote_Refusals(t *testing.T) {
 
 func TestWithoutRemote_NoCreatorIDFile(t *testing.T) {
 	dir := t.TempDir()
-	s, err := New(TestConfig(dir))
+	s, err := pebbleStorage.New(pebbleStorage.TestConfig(dir))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

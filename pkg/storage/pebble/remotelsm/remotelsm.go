@@ -12,12 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package pebble
+// Package remotelsm binds a pkg/storage/pebble store to remote SSTable
+// storage (pebble's objstorage/remote). It lives outside pkg/storage/pebble
+// so that package keeps no objstorage/remote import and a lean standalone
+// embedder does not compile it; only the objstore opener imports remotelsm.
+package remotelsm
 
 import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -26,6 +31,8 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/objstorage/remote"
 	"github.com/cockroachdb/pebble/v2/vfs"
+
+	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // creatorIDFile is the local marker file, in Config.DataDir beside the WAL
@@ -33,8 +40,13 @@ import (
 // uint64 and a newline.
 const creatorIDFile = "QRDB-CREATORID"
 
-// remoteOptions is what WithRemote records for New.
-type remoteOptions struct {
+// creatorIDPanicPrefix starts the message of the assertion (an error, or a
+// panic with pebble's invariants enabled) pebble raises when SetCreatorID is
+// given an id other than the one the MANIFEST records.
+const creatorIDPanicPrefix = "attempt to change CreatorID"
+
+// remoteHook is the pebbleStorage.OpenHook WithRemote installs.
+type remoteHook struct {
 	store    remote.Storage
 	locator  remote.Locator
 	strategy remote.CreateOnSharedStrategy
@@ -48,35 +60,40 @@ type remoteOptions struct {
 // block cache (OS-2) — WithRemote narrows what the local dir holds, it does
 // not replace it.
 //
+// WithRemote lives in package pkg/storage/pebble/remotelsm, not in
+// pkg/storage/pebble, so pkg/storage/pebble keeps no objstorage/remote
+// import (lean standalone gate); it installs itself through
+// pebbleStorage.WithOpenHook.
+//
 // New refuses a nil store, an empty locator, CreateOnSharedNone and a
-// Config with DisableWAL with a *ConfigError, before it creates any file.
-// The store's CreatorID is generated once and persisted in the file
-// QRDB-CREATORID in Config.DataDir. WithRemote has no effect on NewFromDB.
-func WithRemote(store remote.Storage, locator remote.Locator, strategy remote.CreateOnSharedStrategy) Option {
-	return func(s *PebbleStorage) {
-		s.remote = &remoteOptions{store: store, locator: locator, strategy: strategy}
-	}
+// Config with DisableWAL with a *pebbleStorage.ConfigError, before it
+// creates any file. The store's CreatorID is generated once and persisted
+// in the file QRDB-CREATORID in Config.DataDir; a marker that differs from
+// the id the MANIFEST records is refused with a *CreatorIDError. WithRemote
+// has no effect on NewFromDB.
+func WithRemote(store remote.Storage, locator remote.Locator, strategy remote.CreateOnSharedStrategy) pebbleStorage.Option {
+	return pebbleStorage.WithOpenHook(&remoteHook{store: store, locator: locator, strategy: strategy})
 }
 
-// validate refuses a remote binding New cannot open, and a configuration
+// Validate refuses a remote binding New cannot open, and a configuration
 // that keeps no durable local WAL (OS-2 A).
-func (r *remoteOptions) validate(config *Config) error {
+func (r *remoteHook) Validate(config *pebbleStorage.Config) error {
 	switch {
 	case r.store == nil:
-		return &ConfigError{Field: "Remote", Message: "store is required"}
+		return &pebbleStorage.ConfigError{Field: "Remote", Message: "store is required"}
 	case r.locator == "":
-		return &ConfigError{Field: "Remote", Message: "locator is required"}
+		return &pebbleStorage.ConfigError{Field: "Remote", Message: "locator is required"}
 	case r.strategy == remote.CreateOnSharedNone:
-		return &ConfigError{Field: "Remote", Message: "strategy must not be CreateOnSharedNone"}
+		return &pebbleStorage.ConfigError{Field: "Remote", Message: "strategy must not be CreateOnSharedNone"}
 	case config.DisableWAL:
-		return &ConfigError{Field: "DisableWAL", Message: "must be false with a remote store (OS-2 A)"}
+		return &pebbleStorage.ConfigError{Field: "DisableWAL", Message: "must be false with a remote store (OS-2 A)"}
 	}
 	return nil
 }
 
-// applyTo points o's remote storage at the binding and raises its format
+// Apply points o's remote storage at the binding and raises its format
 // major version to the minimum that supports shared objects.
-func (r *remoteOptions) applyTo(o *pebble.Options) {
+func (r *remoteHook) Apply(o *pebble.Options) {
 	o.Experimental.RemoteStorage = remote.MakeSimpleFactory(map[remote.Locator]remote.Storage{r.locator: r.store})
 	o.Experimental.CreateOnShared = r.strategy
 	o.Experimental.CreateOnSharedLocator = r.locator
@@ -85,8 +102,60 @@ func (r *remoteOptions) applyTo(o *pebble.Options) {
 	}
 }
 
-// CreatorIDError reports a creator-ID marker file that cannot be read or
-// does not hold one decimal non-zero uint64.
+// AfterOpen loads (or creates) the store's CreatorID marker and sets the id
+// on db.
+func (r *remoteHook) AfterOpen(db *pebble.DB, fs vfs.FS, dir string) error {
+	id, err := loadCreatorID(fs, dir)
+	if err != nil {
+		return err
+	}
+	return setCreatorID(db, fs.PathJoin(dir, creatorIDFile), id)
+}
+
+// setCreatorID sets id on db. An id that differs from the one the MANIFEST
+// already records is an assertion failure in pebble's (*DB).SetCreatorID:
+// pebble gives it no typed error, and with pebble's invariants enabled (race
+// and invariants builds, as the coverage leg runs) it panics instead of
+// returning, so a tampered or swapped marker file would crash the process.
+// setCreatorID turns that assertion, returned or raised, into a
+// *CreatorIDError naming the marker file at path, and re-panics any other
+// panic.
+func setCreatorID(db *pebble.DB, path string, id uint64) (err error) {
+	changed := &CreatorIDError{Path: path, Reason: "differs from the creator id the store's MANIFEST records"}
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		if !strings.HasPrefix(panicMessage(r), creatorIDPanicPrefix) {
+			panic(r)
+		}
+		err = changed
+	}()
+	if err := db.SetCreatorID(id); err != nil {
+		if strings.HasPrefix(err.Error(), creatorIDPanicPrefix) {
+			return changed
+		}
+		return err
+	}
+	return nil
+}
+
+// panicMessage returns the text of a recovered panic value.
+func panicMessage(r any) string {
+	switch v := r.(type) {
+	case error:
+		return v.Error()
+	case string:
+		return v
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
+// CreatorIDError reports a creator-ID marker file that cannot be read, does
+// not hold one decimal non-zero uint64, or differs from the id the store's
+// MANIFEST records.
 type CreatorIDError struct {
 	Path   string
 	Reason string
