@@ -16,6 +16,9 @@
 package dao
 
 import (
+	"fmt"
+	"io"
+	"math"
 	"reflect"
 
 	fxcbor "github.com/fxamacker/cbor/v2"
@@ -23,23 +26,107 @@ import (
 	"github.com/jeremyhahn/go-codec/pkg/cbor"
 )
 
-// newCBORCodec builds the CBOR codec for a typed entity with fxamacker's
-// decoding defaults: a map held in an any field decodes as map[any]any.
-func newCBORCodec[E any]() (codec.Codec[E], error) {
-	return cbor.New[E](), nil
+// CBOR structural limits, one set for encode and decode. fxamacker's
+// defaults (32 levels, 131072 array elements and map pairs) are tighter than
+// what the encoder writes and what the JSON codec accepts, so a document
+// could be stored and then fail to decode. The limits match the JSON codec:
+// encoding/json refuses nesting deeper than 10000 and has no element or pair
+// limit, so the element and pair limits are the CBOR library's maximum.
+const (
+	// CBORMaxNestedLevels is the deepest nesting of arrays, maps and tags
+	// a CBOR value may have.
+	CBORMaxNestedLevels = 10000
+	// CBORMaxArrayElements is the largest number of elements in one array.
+	CBORMaxArrayElements = math.MaxInt32
+	// CBORMaxMapPairs is the largest number of key-value pairs in one map.
+	CBORMaxMapPairs = math.MaxInt32
+)
+
+// CBORLimitError reports a value the CBOR codec refuses to encode because
+// its encoding exceeds the structural limits the decoder enforces.
+type CBORLimitError struct {
+	Cause error
 }
 
-// newCBORDocumentCodec builds the CBOR codec for generic documents: nested
-// maps decode as map[string]any, as a JSON document's do, instead of
-// fxamacker's map[any]any default. Typed entities keep the default (see
-// newCBORCodec), so an any field may still hold a map with non-string keys.
-func newCBORDocumentCodec() (codec.Codec[map[string]any], error) {
-	c, err := cbor.NewWithOptions[map[string]any](
-		fxcbor.DecOptions{DefaultMapType: reflect.TypeFor[map[string]any]()},
-		fxcbor.EncOptions{},
-	)
+func (e CBORLimitError) Error() string {
+	return fmt.Sprintf("cbor: value exceeds the codec limits (max nested levels %d, max array elements %d, max map pairs %d): %v",
+		CBORMaxNestedLevels, CBORMaxArrayElements, CBORMaxMapPairs, e.Cause)
+}
+
+func (e CBORLimitError) Unwrap() error { return e.Cause }
+
+// cborDecOptions returns the decode options with the shared limits applied.
+func cborDecOptions(defaultMapType reflect.Type) fxcbor.DecOptions {
+	return fxcbor.DecOptions{
+		MaxNestedLevels:  CBORMaxNestedLevels,
+		MaxArrayElements: CBORMaxArrayElements,
+		MaxMapPairs:      CBORMaxMapPairs,
+		DefaultMapType:   defaultMapType,
+	}
+}
+
+// limitedCBORCodec checks every encoding against the decoder's limits
+// before returning it, so nothing is written that cannot be read back.
+type limitedCBORCodec[E any] struct {
+	inner codec.Codec[E]
+	dm    fxcbor.DecMode
+}
+
+func newLimitedCBORCodec[E any](dec fxcbor.DecOptions) (codec.Codec[E], error) {
+	inner, err := cbor.NewWithOptions[E](dec, fxcbor.EncOptions{})
 	if err != nil {
 		return nil, err
 	}
-	return c, nil
+	dm, err := dec.DecMode()
+	if err != nil {
+		return nil, err
+	}
+	return &limitedCBORCodec[E]{inner: inner, dm: dm}, nil
+}
+
+// Marshal encodes data and refuses an encoding past the limits.
+func (c *limitedCBORCodec[E]) Marshal(data E) ([]byte, error) {
+	b, err := c.inner.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.dm.Wellformed(b); err != nil {
+		return nil, CBORLimitError{Cause: err}
+	}
+	return b, nil
+}
+
+// Unmarshal decodes data under the same limits.
+func (c *limitedCBORCodec[E]) Unmarshal(data []byte, v *E) error {
+	return c.inner.Unmarshal(data, v)
+}
+
+// Encode writes the checked encoding of data to w.
+func (c *limitedCBORCodec[E]) Encode(w io.Writer, data E) error {
+	b, err := c.Marshal(data)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(b)
+	return err
+}
+
+// Decode reads one value from r under the same limits.
+func (c *limitedCBORCodec[E]) Decode(r io.Reader, v *E) error {
+	return c.inner.Decode(r, v)
+}
+
+// newCBORCodec builds the CBOR codec for a typed entity with fxamacker's
+// default map type and the shared structural limits.
+func newCBORCodec[E any]() (codec.Codec[E], error) {
+	return newLimitedCBORCodec[E](cborDecOptions(nil))
+}
+
+// newCBORDocumentCodec builds the CBOR codec for generic documents: nested
+// objects decode as map[string]any, the shape the JSON codec produces (the
+// default map[interface{}]interface{} is kept for typed entities, see
+// newCBORCodec), so an any field may still hold a map with non-string keys.
+// It shares the structural limits of newCBORCodec.
+func newCBORDocumentCodec() (codec.Codec[map[string]any], error) {
+	return newLimitedCBORCodec[map[string]any](cborDecOptions(reflect.TypeFor[map[string]any]()))
 }
