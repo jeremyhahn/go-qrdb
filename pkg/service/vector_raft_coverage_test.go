@@ -40,7 +40,7 @@ func TestVectorService_ProposeToRaft_NilRaftNode(t *testing.T) {
 		Vector:    []float32{1.0, 2.0, 3.0},
 	}
 
-	err := vs.proposeToRaft(context.Background(), cmd)
+	_, err := vs.proposeToRaft(context.Background(), cmd)
 	// Nil raft node means local-only mode, should return nil
 	require.NoError(t, err)
 }
@@ -63,7 +63,7 @@ func TestVectorService_ProposeToRaft_Success(t *testing.T) {
 		Vector:    []float32{1.0, 2.0, 3.0},
 	}
 
-	err := vs.proposeToRaft(context.Background(), cmd)
+	_, err := vs.proposeToRaft(context.Background(), cmd)
 	require.NoError(t, err)
 }
 
@@ -85,7 +85,7 @@ func TestVectorService_ProposeToRaft_RaftError(t *testing.T) {
 		Vector:    []float32{1.0, 2.0, 3.0},
 	}
 
-	err := vs.proposeToRaft(context.Background(), cmd)
+	_, err := vs.proposeToRaft(context.Background(), cmd)
 	require.Error(t, err)
 
 	requireErrorAs[*ProposeError](t, err)

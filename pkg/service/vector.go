@@ -99,6 +99,38 @@ type vectorService struct {
 	// has started waits for it and then sees the check refuse it.
 	nsLocksMu sync.Mutex
 	nsLocks   map[string]*sync.RWMutex
+
+	// nsWriteMu guards nsWriteLocks, which maps a scoped namespace to the
+	// mutex that serialises its local (non-Raft) writes; see
+	// lockNamespaceWrites. Writers share the reclaim lock above, so that
+	// lock cannot order two writers. As with nsLocks, an entry outlives a
+	// drop of its namespace: removing it while a writer still held it would
+	// let a writer to a re-created namespace of the same name take a fresh
+	// mutex and run beside it.
+	nsWriteMu    sync.Mutex
+	nsWriteLocks map[string]*sync.Mutex
+}
+
+// lockNamespaceWrites serialises the local (non-Raft) writes to one scoped
+// namespace, so the read that decides a write's vector-count delta and the
+// write itself are one step: two concurrent upserts of the same new id
+// cannot both read it absent and each add one to the gauge, nor two
+// deletes of one stored id each take one away. A Raft-path write needs no
+// such lock, since the state machine applies the log in order and reports
+// the change each entry made (see proposeToRaft).
+func (v *vectorService) lockNamespaceWrites(scoped string) (unlock func()) {
+	v.nsWriteMu.Lock()
+	if v.nsWriteLocks == nil {
+		v.nsWriteLocks = make(map[string]*sync.Mutex)
+	}
+	lock, ok := v.nsWriteLocks[scoped]
+	if !ok {
+		lock = &sync.Mutex{}
+		v.nsWriteLocks[scoped] = lock
+	}
+	v.nsWriteMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
 }
 
 // clusterIsolationPolicyReaderBox boxes a tenant.ClusterIsolationPolicyReader
@@ -935,10 +967,13 @@ func vectorStorageError(op, namespace string, id uint64, err error) error {
 // Raft Proposal Helpers
 // =============================================================================
 
-// proposeToRaft proposes a vector command to Raft for consensus.
-func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.VectorCommand) error {
+// proposeToRaft proposes a vector command to Raft for consensus and returns
+// the committed entry's Result.Value: for an upsert, delete or batch upsert,
+// the change it made to the stored vector count. With no Raft node it
+// proposes nothing and returns 0.
+func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.VectorCommand) (uint64, error) {
 	if v.raftNode == nil {
-		return nil
+		return 0, nil
 	}
 
 	// The stored-count rule changes how apply counts vectors, so a command
@@ -947,12 +982,12 @@ func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.Vec
 
 	cmdBytes, err := cmd.Encode()
 	if err != nil {
-		return &EncodeRequestError{Err: err}
+		return 0, &EncodeRequestError{Err: err}
 	}
 
 	result, err := v.raftNode.SyncPropose(ctx, v.shardID, cmdBytes)
 	if err != nil {
-		return translateProposeError(err)
+		return 0, translateProposeError(err)
 	}
 
 	// A proposal that Raft accepted can still have been REFUSED by the state
@@ -974,13 +1009,18 @@ func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.Vec
 	// outcome is not evidence that the outcome was good.
 	smResult, ok := result.(sm.Result)
 	if !ok {
-		return &VectorOperationError{Op: fmt.Sprintf("raft proposal (result type %T carries no readable state-machine outcome)", result)}
+		return 0, &VectorOperationError{Op: fmt.Sprintf("raft proposal (result type %T carries no readable state-machine outcome)", result)}
 	}
 	if resultErr := checkResultError(smResult); resultErr != nil {
-		return resultErr
+		return 0, resultErr
 	}
 
-	return nil
+	// Result.Value of an upsert, delete or batch upsert is the change that
+	// entry made to the stored vector count, the same on every replica
+	// since each applies the log in order; the caller moves its gauge by it
+	// rather than by a read taken before the proposal, which a concurrent
+	// write of the same id can make stale.
+	return smResult.Value, nil
 }
 
 // vectorStoredCountEnabled reports whether featuregate.VectorStoredCount is
@@ -1079,7 +1119,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 			NodeID:         v.nodeID,
 		})
 
-		if err := v.proposeToRaft(ctx, cmd); err != nil {
+		if _, err := v.proposeToRaft(ctx, cmd); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("create_namespace", "raft_error").Inc()
 			}
@@ -1236,7 +1276,7 @@ func (v *vectorService) UpdateNamespace(ctx context.Context, req *UpdateNamespac
 	if v.raftNode != nil {
 		cmd := statemachine.NewUpdateNamespaceCommand(scoped, req.IndexConfig, req.Metadata, v.nodeID)
 		cmd.Dimension = req.Dimension
-		if err := v.proposeToRaft(ctx, cmd); err != nil {
+		if _, err := v.proposeToRaft(ctx, cmd); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("update_namespace", "raft_error").Inc()
 			}
@@ -1297,7 +1337,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 
 	if v.raftNode != nil {
 		cmd := statemachine.NewDeleteNamespaceCommand(scoped, v.nodeID)
-		if err := v.proposeToRaft(ctx, cmd); err != nil {
+		if _, err := v.proposeToRaft(ctx, cmd); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("delete_namespace", "raft_error").Inc()
 			}
@@ -1538,15 +1578,12 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 	now := time.Now().UnixNano()
 
-	// Read before the write: a re-upsert of a stored id adds no vector.
-	var added float64
-	if v.metrics != nil && !v.vectorStored(ctx, scoped, req.ID) {
-		added = 1
-	}
-
 	if v.raftNode != nil {
 		cmd := statemachine.NewUpsertCommand(scoped, req.ID, req.Vector, req.Metadata, v.nodeID)
-		if err := v.proposeToRaft(ctx, cmd); err != nil {
+		// applied is 1 when the committed entry stored a new id and 0 on a
+		// re-upsert, as the state machine counted it in log order.
+		applied, err := v.proposeToRaft(ctx, cmd)
+		if err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("upsert_vector", "raft_error").Inc()
 			}
@@ -1571,7 +1608,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Inc()
-			v.metrics.addVectors(scoped, added)
+			v.metrics.addVectors(scoped, float64(applied))
 			v.refreshIndexSizeMetric(scoped)
 		}
 
@@ -1586,6 +1623,16 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 			Timestamp: now,
 			Success:   true,
 		}, nil
+	}
+
+	// The read that decides the gauge delta and the write are one step
+	// under the namespace's write lock: a re-upsert of a stored id adds no
+	// vector, and two concurrent upserts of one new id add it once.
+	unlock := v.lockNamespaceWrites(scoped)
+	defer unlock()
+	var added float64
+	if v.metrics != nil && !v.vectorStored(ctx, scoped, req.ID) {
+		added = 1
 	}
 
 	vecValue := &vector.VectorValue{
@@ -1714,15 +1761,12 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 		return nil, &VectorServiceClosedError{}
 	}
 
-	// Read before the write: a delete of a missing id removes no vector.
-	var removed float64
-	if v.metrics != nil && v.vectorStored(ctx, scoped, req.ID) {
-		removed = -1
-	}
-
 	if v.raftNode != nil {
 		cmd := statemachine.NewDeleteCommand(scoped, req.ID, v.nodeID)
-		if err := v.proposeToRaft(ctx, cmd); err != nil {
+		// applied is 1 when the committed entry removed a stored id and 0
+		// when the id was missing, as the state machine counted it.
+		applied, err := v.proposeToRaft(ctx, cmd)
+		if err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("delete_vector", "raft_error").Inc()
 			}
@@ -1744,7 +1788,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 		if v.metrics != nil {
 			v.metrics.vectorsDeleted.Inc()
-			v.metrics.addVectors(scoped, removed)
+			v.metrics.addVectors(scoped, -float64(applied))
 			v.refreshIndexSizeMetric(scoped)
 		}
 
@@ -1757,6 +1801,16 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 			Success:   true,
 			Timestamp: time.Now().UnixNano(),
 		}, nil
+	}
+
+	// The read that decides the gauge delta and the delete are one step
+	// under the namespace's write lock: a delete of a missing id removes no
+	// vector, and two concurrent deletes of one stored id remove it once.
+	unlock := v.lockNamespaceWrites(scoped)
+	defer unlock()
+	var removed float64
+	if v.metrics != nil && v.vectorStored(ctx, scoped, req.ID) {
+		removed = -1
 	}
 
 	if err := v.storage.DeleteVector(ctx, scoped, req.ID); err != nil {
@@ -1857,13 +1911,6 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		versions[i] = 1
 	}
 
-	// Read before the write: only distinct ids not yet stored add vectors.
-	var added float64
-	if v.metrics != nil {
-		distinct, stored := v.storedVectorIDs(ctx, scoped, ids)
-		added = float64(distinct - stored)
-	}
-
 	if v.raftNode != nil {
 		batchIDs := make([]uint64, len(req.Vectors))
 		batchVectors := make([][]float32, len(req.Vectors))
@@ -1873,7 +1920,10 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		}
 
 		cmd := statemachine.NewBatchUpsertCommand(scoped, batchIDs, batchVectors, v.nodeID)
-		if err := v.proposeToRaft(ctx, cmd); err != nil {
+		// applied is the number of distinct ids the committed entry stored
+		// that were not stored before, as the state machine counted them.
+		applied, err := v.proposeToRaft(ctx, cmd)
+		if err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("batch_upsert", "raft_error").Inc()
 			}
@@ -1900,7 +1950,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
-			v.metrics.addVectors(scoped, added)
+			v.metrics.addVectors(scoped, float64(applied))
 			v.refreshIndexSizeMetric(scoped)
 		}
 
@@ -1928,6 +1978,18 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 			UpdatedAt: now,
 			Version:   1,
 		}
+	}
+
+	// The read that decides the gauge delta and the write are one step
+	// under the namespace's write lock: only distinct ids not yet stored
+	// add vectors, and a concurrent write of the same ids cannot make the
+	// read stale before this batch lands.
+	unlock := v.lockNamespaceWrites(scoped)
+	defer unlock()
+	var added float64
+	if v.metrics != nil {
+		distinct, stored := v.storedVectorIDs(ctx, scoped, ids)
+		added = float64(distinct - stored)
 	}
 
 	if err := v.storage.BatchUpsertVectors(ctx, scoped, vecs); err != nil {
@@ -3163,14 +3225,25 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
-	// Read before the write: the batch removes only the ids stored now.
-	var removed float64
+	// The read that decides the gauge delta, the delete and the gauge move
+	// are one step under the namespace's write lock: the batch removes only
+	// the distinct ids stored now, and a concurrent delete of the same ids
+	// cannot take them away from the gauge a second time.
 	err := v.admit(func() error {
+		unlock := v.lockNamespaceWrites(scoped)
+		defer unlock()
+		var removed float64
 		if v.metrics != nil {
 			_, stored := v.storedVectorIDs(ctx, scoped, req.IDs)
 			removed = -float64(stored)
 		}
-		return v.storage.BatchDeleteVectors(ctx, scoped, req.IDs)
+		if err := v.storage.BatchDeleteVectors(ctx, scoped, req.IDs); err != nil {
+			return err
+		}
+		if v.metrics != nil {
+			v.metrics.addVectors(scoped, removed)
+		}
+		return nil
 	})
 	var closedErr *VectorServiceClosedError
 	if errors.As(err, &closedErr) {
@@ -3208,7 +3281,6 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 	}
 
 	if v.metrics != nil {
-		v.metrics.addVectors(scoped, removed)
 		v.refreshIndexSizeMetric(scoped)
 		v.metrics.operationDuration.With("batch_delete").Observe(time.Since(start).Seconds())
 	}
