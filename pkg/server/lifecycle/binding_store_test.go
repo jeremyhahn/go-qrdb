@@ -697,6 +697,85 @@ func TestLocalBindingFactory_ObjstoreLocalBindingAtItsRoot(t *testing.T) {
 	}
 }
 
+// TestLocalBindingFactory_RemoteObjstoreRefused proves a materialized objstore
+// database on a remote provider is refused for every tenant, so no two
+// tenants' databases ever share the provider's unprefixed keyspace.
+func TestLocalBindingFactory_RemoteObjstoreRefused(t *testing.T) {
+	dir := t.TempDir()
+	cfg := qrdbconfig.StorageConfig{Objstore: qrdbconfig.ObjstoreConfig{Provider: "s3", Settings: map[string]string{"bucket": "shared"}}}
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, cfg, prefixTenants)
+	defer func() { _ = f.Close() }()
+	for _, tenantID := range []string{bindingTenant, "other-tenant"} {
+		_, err := f.Create(database.DatabaseConfig{TenantID: tenantID, Name: "app", Backend: database.BackendObjstore}, filepath.Join(dir, tenantID))
+		var remote *lifecycle.RemoteObjstoreBindingUnsupportedError
+		if !errors.As(err, &remote) {
+			t.Fatalf("Create for %s: err = %v, want *RemoteObjstoreBindingUnsupportedError", tenantID, err)
+		}
+		if remote.TenantID != tenantID || remote.Database != "app" || remote.Provider != "s3" {
+			t.Fatalf("Create for %s: error = %+v", tenantID, remote)
+		}
+	}
+}
+
+// TestLocalBindingFactory_EncryptedObjstoreRefused proves an objstore binding
+// that would carry an at-rest encryptor is refused instead of being stored
+// in plaintext, while an unencrypted prefix-tenant objstore binding opens.
+func TestLocalBindingFactory_EncryptedObjstoreRefused(t *testing.T) {
+	t.Run("barrier tenant", func(t *testing.T) {
+		dir := t.TempDir()
+		tenantEnc := atrest.New(newUnsealedBarrier(t))
+		mgr := newBarrierTenantManager(t, dir, nil, func(string) (*atrest.Encryptor, error) { return tenantEnc, nil })
+		defer func() { _ = mgr.Close() }()
+		_, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "app", Backend: database.BackendObjstore})
+		var refused *lifecycle.ObjstoreBindingEncryptionUnsupportedError
+		if !errors.As(err, &refused) {
+			t.Fatalf("Create: err = %v, want *ObjstoreBindingEncryptionUnsupportedError", err)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, "tenants", bindingTenant, "databases", "app", "objstore")); !os.IsNotExist(statErr) {
+			t.Fatalf("a refused binding left an objstore root (%v)", statErr)
+		}
+	})
+	t.Run("sealed node", func(t *testing.T) {
+		dir := t.TempDir()
+		f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, atrest.New(newUnsealedBarrier(t)), qrdbconfig.StorageConfig{}, prefixTenants)
+		defer func() { _ = f.Close() }()
+		_, err := f.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "app", Backend: database.BackendObjstore}, dir)
+		var refused *lifecycle.ObjstoreBindingEncryptionUnsupportedError
+		if !errors.As(err, &refused) {
+			t.Fatalf("Create: err = %v, want *ObjstoreBindingEncryptionUnsupportedError", err)
+		}
+	})
+	t.Run("prefix tenant unencrypted opens", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr := newSharedObjstoreManager(t, dir, filepath.Join(t.TempDir(), "shared"), kvstore.NewMemoryKVStore())
+		defer func() { _ = mgr.Close() }()
+		db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "app", Backend: database.BackendObjstore})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		_ = materialized(t, db)
+	})
+}
+
+// TestLocalBindingFactory_RaftOnStandaloneRefused proves a backend: raft
+// record on a standalone node is refused with the binding's
+// *RaftBackendUnavailableError, never opened by the embedded factory.
+func TestLocalBindingFactory_RaftOnStandaloneRefused(t *testing.T) {
+	dir := t.TempDir()
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
+	defer func() { _ = f.Close() }()
+	for _, tenantID := range []string{"", bindingTenant} {
+		be, err := f.Create(database.DatabaseConfig{TenantID: tenantID, Name: "app", Backend: database.BackendRaft}, dir)
+		var unavailable *database.RaftBackendUnavailableError
+		if !errors.As(err, &unavailable) {
+			if be != nil {
+				_ = be.Close()
+			}
+			t.Fatalf("Create raft for %q: err = %v, want *RaftBackendUnavailableError", tenantID, err)
+		}
+	}
+}
+
 // The plaintext markers the seal tests write, one per engine, so a leak names
 // the engine it came from.
 const (

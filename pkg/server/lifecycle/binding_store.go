@@ -119,6 +119,13 @@ func (f *LocalBindingFactory) materializes(isolation tenant.IsolationType) bool 
 // *MaterializedBinding over its own store; any other is opened by the
 // embedded factory at dataDir, unchanged.
 func (f *LocalBindingFactory) Create(cfg database.DatabaseConfig, dataDir string) (database.Backend, error) {
+	// A standalone node has no Raft host: a backend: raft record is
+	// refused, on create and when a recorded database is provisioned, the
+	// way ResolveBinding refuses it, never served from an unreplicated
+	// local store.
+	if !f.node.RaftMode && cfg.Backend == database.BackendRaft {
+		return nil, &database.RaftBackendUnavailableError{Name: cfg.Name}
+	}
 	if !f.mayQualify(&cfg) {
 		return f.fallback.Create(cfg, dataDir)
 	}
@@ -135,6 +142,11 @@ func (f *LocalBindingFactory) Create(cfg database.DatabaseConfig, dataDir string
 	}
 	if b.Kind != database.BindingLocal || b.DatabaseBarrier {
 		return f.fallback.Create(cfg, dataDir)
+	}
+	if b.Backend == database.BackendObjstore {
+		if p := f.storageCfg.Objstore.Provider; p != "" && p != "local" {
+			return nil, &RemoteObjstoreBindingUnsupportedError{TenantID: b.TenantID, Database: b.Database, Provider: p}
+		}
 	}
 	return f.open(b)
 }
@@ -259,6 +271,9 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 	if err != nil {
 		return nil, openErr(err)
 	}
+	if b.Backend == database.BackendObjstore && enc.Enabled() {
+		return nil, &ObjstoreBindingEncryptionUnsupportedError{TenantID: b.TenantID, Database: b.Database}
+	}
 	stg, pdb, err := NewLocalStorage(b.Backend, b.DataRoot, enc, bindingStorageConfig(f.storageCfg, b))
 	if err != nil {
 		return nil, openErr(err)
@@ -285,13 +300,12 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 // opens with. An objstore database on the local provider lives under its
 // binding root, so the copy drops the configured "path", which places the
 // node's own store only, and resolveObjstoreSettings roots the store at
-// <DataRoot>/objstore. Every other backend and provider gets cfg unchanged;
-// cfg's settings map is never mutated.
+// <DataRoot>/objstore. Every other backend gets cfg unchanged; a remote
+// provider never reaches here (Create refuses it with a
+// *RemoteObjstoreBindingUnsupportedError). cfg's settings map is never
+// mutated.
 func bindingStorageConfig(cfg qrdbconfig.StorageConfig, b *database.Binding) qrdbconfig.StorageConfig {
 	if b.Backend != database.BackendObjstore {
-		return cfg
-	}
-	if p := cfg.Objstore.Provider; p != "" && p != "local" {
 		return cfg
 	}
 	settings := make(map[string]string, len(cfg.Objstore.Settings))

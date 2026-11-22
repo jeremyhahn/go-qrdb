@@ -400,6 +400,34 @@ func (e *BindingOpenError) Error() string {
 func (e *BindingOpenError) Unwrap() error { return e.Err }
 
 // errText renders a possibly-nil wrapped error.
+// RemoteObjstoreBindingUnsupportedError reports that an objstore database
+// would be materialized on a remote object-store provider. Its own store
+// would share the node's provider settings, so every such database of every
+// tenant would share one unprefixed keyspace and journal; the binding is
+// refused instead.
+type RemoteObjstoreBindingUnsupportedError struct {
+	TenantID string
+	Database string
+	Provider string
+}
+
+func (e *RemoteObjstoreBindingUnsupportedError) Error() string {
+	return "lifecycle: binding " + e.TenantID + "/" + e.Database + ": objstore provider " + e.Provider + " cannot hold a materialized database (only the local provider can)"
+}
+
+// ObjstoreBindingEncryptionUnsupportedError reports that an objstore
+// database would be materialized with an at-rest encryptor (a barrier tenant
+// or a sealed node). The objstore storage does not encrypt values or
+// metadata, so the binding is refused rather than stored in plaintext.
+type ObjstoreBindingEncryptionUnsupportedError struct {
+	TenantID string
+	Database string
+}
+
+func (e *ObjstoreBindingEncryptionUnsupportedError) Error() string {
+	return "lifecycle: binding " + e.TenantID + "/" + e.Database + ": objstore storage cannot encrypt at rest; refused for an encrypted binding"
+}
+
 func errText(err error) string {
 	if err == nil {
 		return "<nil>"
