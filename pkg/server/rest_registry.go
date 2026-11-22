@@ -22,11 +22,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
 // errNotDedicatedDatabaseBarrier is a sentinel returned by
@@ -92,6 +94,16 @@ type restServiceRegistry struct {
 	// resolveDedicatedDatabaseBarrier for the non-raft (direct encrypting
 	// Backend()) case. Always non-nil; unused when dbManager is nil.
 	dedicatedStore *dedicatedStoreServiceCache
+
+	// materialized caches the bundle served from each materialized
+	// database's own host (a backend implementing materializedStore).
+	materialized *materializedServiceCache
+	// bindingImportSession, bindingIndex and bindingTimeSeries configure the
+	// services built over a materialized database's host; zero values
+	// resolve to the package defaults (withBindingServiceConfig).
+	bindingImportSession qrdbconfig.ImportSessionConfig
+	bindingIndex         qrdbconfig.IndexConfig
+	bindingTimeSeries    qrdbconfig.TimeSeriesConfig
 
 	// reclaimOrigin identifies this node on the reclaim-job index entries
 	// its TableServices publish (service.ReclaimIndexEntry.Origin), so a job
@@ -162,6 +174,7 @@ func newRESTRegistry(
 		barrierReg:     barrierReg,
 		systemTenant:   systemTenant,
 		dedicatedStore: newDedicatedStoreServiceCache(),
+		materialized:   newMaterializedServiceCache(),
 		collections:    newCompositeCollectionCache(),
 	}
 	for _, opt := range opts {
@@ -232,6 +245,53 @@ func withDatabaseManager(mgr *database.Manager) RESTRegistryOption {
 	return func(r *restServiceRegistry) {
 		r.dbManager = mgr
 	}
+}
+
+// withBindingServiceConfig sets the import-session, index and time-series
+// configuration of the services built over a materialized database's own
+// host. Zero values resolve to the package defaults, as they do for the
+// system shard.
+func withBindingServiceConfig(importSession qrdbconfig.ImportSessionConfig, index qrdbconfig.IndexConfig, ts qrdbconfig.TimeSeriesConfig) RESTRegistryOption {
+	return func(r *restServiceRegistry) {
+		r.bindingImportSession = importSession
+		r.bindingIndex = index
+		r.bindingTimeSeries = ts
+	}
+}
+
+// materializedStore is the backend of a database whose local binding is
+// materialized (lifecycle.MaterializedBinding): the database's own service
+// host, the shard its data lives on there, and the watch hub its engine
+// publishes to. pkg/server sees it only through this interface, because
+// pkg/server/lifecycle imports pkg/server.
+type materializedStore interface {
+	Host() service.Host
+	ShardID() uint64
+	WatchHub() *watch.Hub
+	Binding() *database.Binding
+}
+
+// resolveMaterialized serves a materialized database from its own host. The
+// host is the database's whole keyspace, so its views carry no namespace
+// prefix; every write still carries the database's drop fence guard, the
+// same guard the shared store's views carry.
+func (r *restServiceRegistry) resolveMaterialized(tenantID, db string, info *tenant.TenantInfo, dbase *database.Database, ms materializedStore) (*DatabaseServices, error) {
+	base := r.materialized.getOrBuild(dbase, func() *DatabaseServices {
+		return buildDataPlaneServices(ms.Host(), ms.ShardID(), ms.WatchHub(),
+			r.bindingImportSession, r.bindingIndex, r.bindingTimeSeries, service.WithDedicatedKeyspace())
+	})
+	incarnation := dbase.Incarnation()
+	fence, err := newDatabaseFence(tenantID, db, incarnation, func() error { return r.refuseIfDropping(tenantID, db, true, incarnation) })
+	if err != nil {
+		return nil, err
+	}
+	fenced := fence.apply(base, "", false)
+	if base.Collection != nil {
+		fenced.Collection = &guardedCollectionService{dbGuard: dbGuard{guard: fence.guard}, inner: base.Collection}
+	}
+	svcs := r.applyQuota(fenced, tenantID, info)
+	svcs.Placement = service.StorePlacementNode
+	return svcs, nil
 }
 
 // withReclaimOrigin sets this node's identity as recorded on the reclaim-job
@@ -395,6 +455,15 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 			svcs.Placement = service.StorePlacementNode
 		}
 		return svcs, err
+	}
+
+	// A database whose local binding is materialized has its own store,
+	// engine and host (lifecycle.LocalBindingFactory): it is served from
+	// that host, never from a namespace of the shared store.
+	if dbase, ok := r.ownedDatabase(tenantID, db); ok {
+		if ms, ok := dbase.Backend().(materializedStore); ok {
+			return r.resolveMaterialized(tenantID, db, info, dbase, ms)
+		}
 	}
 
 	// A database is a key-namespace layered over the shared service set, so

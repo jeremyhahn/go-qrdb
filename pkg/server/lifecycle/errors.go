@@ -342,6 +342,31 @@ type LocalStorageError struct {
 	Err     error
 }
 
+// BindingOpenError reports that a database's materialized local binding
+// could not be opened: its tenant could not be looked up, or its store or
+// engine failed to open under the binding root. It is never answered by
+// falling back to the node's shared store.
+type BindingOpenError struct {
+	TenantID string
+	Database string
+	Backend  database.BackendType
+	Err      error
+}
+
+func (e *BindingOpenError) Error() string {
+	return "lifecycle: open binding " + e.TenantID + "/" + e.Database + " (" + string(e.Backend) + "): " + errText(e.Err)
+}
+
+func (e *BindingOpenError) Unwrap() error { return e.Err }
+
+// errText renders a possibly-nil wrapped error.
+func errText(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return err.Error()
+}
+
 // Error returns a human-readable description.
 func (e *LocalStorageError) Error() string {
 	return "lifecycle: local " + string(e.Backend) + " storage: " + e.Err.Error()

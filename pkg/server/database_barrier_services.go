@@ -135,3 +135,41 @@ func (c *dedicatedStoreServiceCache) getOrBuild(db *database.Database) *Database
 	c.entries[name] = &dedicatedStoreServiceEntry{db: db, svcs: svcs}
 	return svcs
 }
+
+// materializedServiceCache caches the service bundle built over each
+// materialized database's own host (a local binding, see
+// lifecycle.LocalBindingFactory), keyed by owning tenant and name. The entry
+// remembers the *database.Database instance it was built for: a database
+// dropped and created again under the same name is a new instance over a new
+// store, so its bundle is rebuilt rather than served over the closed one.
+type materializedServiceCache struct {
+	mu      sync.RWMutex
+	entries map[string]*dedicatedStoreServiceEntry
+}
+
+// newMaterializedServiceCache creates an empty cache.
+func newMaterializedServiceCache() *materializedServiceCache {
+	return &materializedServiceCache{entries: make(map[string]*dedicatedStoreServiceEntry)}
+}
+
+// getOrBuild returns the cached bundle for db, building and caching one with
+// build when absent or when db is a different instance than the cached one.
+func (c *materializedServiceCache) getOrBuild(db *database.Database, build func() *DatabaseServices) *DatabaseServices {
+	key := db.TenantID() + "\x00" + db.Name()
+
+	c.mu.RLock()
+	if e, ok := c.entries[key]; ok && e.db == db {
+		c.mu.RUnlock()
+		return e.svcs
+	}
+	c.mu.RUnlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[key]; ok && e.db == db {
+		return e.svcs
+	}
+	svcs := build()
+	c.entries[key] = &dedicatedStoreServiceEntry{db: db, svcs: svcs}
+	return svcs
+}

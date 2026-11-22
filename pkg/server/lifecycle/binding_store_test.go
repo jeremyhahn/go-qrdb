@@ -1,0 +1,272 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package lifecycle_test
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
+)
+
+const bindingTenant = "acme"
+
+func prefixTenants(id string) (database.BindingTenant, error) {
+	return database.BindingTenant{ID: id, Isolation: tenant.IsolationPrefix}, nil
+}
+
+func newBindingManager(t *testing.T, dir string, enc *atrest.Encryptor) *database.Manager {
+	t.Helper()
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, enc, qrdbconfig.StorageConfig{}, prefixTenants)
+	mgr := database.NewManager(slog.Default(), dir, database.WithBackendFactory(f))
+	cat, err := database.NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
+	if err != nil {
+		t.Fatalf("NewKVCatalog: %v", err)
+	}
+	mgr.SetCatalog(cat)
+	return mgr
+}
+
+func materialized(t *testing.T, db *database.Database) *lifecycle.MaterializedBinding {
+	t.Helper()
+	mb, ok := db.Backend().(*lifecycle.MaterializedBinding)
+	if !ok {
+		t.Fatalf("db.Backend() = %T, want *lifecycle.MaterializedBinding", db.Backend())
+	}
+	return mb
+}
+
+// readBack reopens a binding root with the standalone composition and
+// returns the value of key, or an error.
+func readBack(t *testing.T, b database.BackendType, root string, enc *atrest.Encryptor, key string) ([]byte, error) {
+	t.Helper()
+	stg, pdb, err := lifecycle.NewLocalStorage(b, root, enc, qrdbconfig.StorageConfig{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = stg.Close() }()
+	eng, err := lifecycle.NewLocalEngine(b, stg, pdb, watch.NewHub(), lease.NewLessor())
+	if err != nil {
+		return nil, err
+	}
+	local := backend.NewLocalBackend(eng)
+	defer func() { _ = local.Close() }()
+	return service.NewKVService(local, shard.ShardKV).Get(context.Background(), key)
+}
+
+func TestLocalBindingFactory_OwnStorePerBackend(t *testing.T) {
+	ctx := context.Background()
+	for _, b := range []database.BackendType{database.BackendMemory, database.BackendFile, database.BackendPebble, database.BackendObjstore} {
+		t.Run(string(b), func(t *testing.T) {
+			dir := t.TempDir()
+			mgr := newBindingManager(t, dir, nil)
+			db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "orders", Backend: b})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			mb := materialized(t, db)
+			if mb.Binding().Backend != b {
+				t.Fatalf("Binding().Backend = %q, want %q", mb.Binding().Backend, b)
+			}
+			wantRoot := filepath.Join(dir, "tenants", bindingTenant, "databases", "orders")
+			if b == database.BackendMemory {
+				wantRoot = ""
+			}
+			if mb.DataRoot() != wantRoot {
+				t.Fatalf("DataRoot() = %q, want %q", mb.DataRoot(), wantRoot)
+			}
+			if err := service.NewKVService(mb.Host(), mb.ShardID()).Put(ctx, "k1", []byte("v1")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			if err := mgr.Close(); err != nil {
+				t.Fatalf("Manager.Close: %v", err)
+			}
+			if b == database.BackendMemory {
+				return
+			}
+			got, err := readBack(t, b, wantRoot, nil, "k1")
+			if err != nil || !bytes.Equal(got, []byte("v1")) {
+				t.Fatalf("read back = %q, %v; want v1", got, err)
+			}
+			entries, err := os.ReadDir(wantRoot)
+			if err != nil || len(entries) == 0 {
+				t.Fatalf("binding root %s is empty (%v)", wantRoot, err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "databases", "orders")); !os.IsNotExist(err) {
+				t.Fatalf("shared databases/orders exists (%v)", err)
+			}
+		})
+	}
+}
+
+func TestLocalBindingFactory_EncryptedUnderNodeEncryptor(t *testing.T) {
+	ctx := context.Background()
+	enc := atrest.New(newUnsealedBarrier(t))
+	other := atrest.New(newUnsealedBarrier(t))
+	for _, b := range []database.BackendType{database.BackendPebble, database.BackendFile} {
+		t.Run(string(b), func(t *testing.T) {
+			dir := t.TempDir()
+			mgr := newBindingManager(t, dir, enc)
+			db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "secret", Backend: b})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			mb := materialized(t, db)
+			root := mb.DataRoot()
+			value := []byte("binding-at-rest-plaintext-value")
+			if err := service.NewKVService(mb.Host(), mb.ShardID()).Put(ctx, "k", value); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			if err := mgr.Close(); err != nil {
+				t.Fatalf("Manager.Close: %v", err)
+			}
+			if got, err := readBack(t, b, root, other, "k"); err == nil && bytes.Equal(got, value) {
+				t.Fatal("a different key read the plaintext back")
+			}
+			got, err := readBack(t, b, root, enc, "k")
+			if err != nil || !bytes.Equal(got, value) {
+				t.Fatalf("read under the node key = %q, %v; want %q", got, err, value)
+			}
+		})
+	}
+}
+
+func TestLocalBindingFactory_NonQualifyingDelegates(t *testing.T) {
+	barrierTenants := func(id string) (database.BindingTenant, error) {
+		return database.BindingTenant{ID: id, Isolation: tenant.IsolationBarrier}, nil
+	}
+	cases := []struct {
+		name    string
+		node    database.BindingNode
+		tenants func(string) (database.BindingTenant, error)
+		cfg     database.DatabaseConfig
+	}{
+		{"barrier tenant", database.BindingNode{}, barrierTenants,
+			database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble}},
+		{"database barrier", database.BindingNode{}, prefixTenants,
+			database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble,
+				Barrier: &database.DatabaseBarrierConfig{Enabled: true}}},
+		{"system tenant", database.BindingNode{}, prefixTenants,
+			database.DatabaseConfig{TenantID: "system", Name: "d", Backend: database.BackendPebble}},
+		{"explicit data_dir", database.BindingNode{}, prefixTenants,
+			database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble, DataDir: "explicit"}},
+		{"raft mode node", database.BindingNode{RaftMode: true}, prefixTenants,
+			database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			node := tc.node
+			node.DataDir = dir
+			f := lifecycle.NewLocalBindingFactory(node, nil, qrdbconfig.StorageConfig{}, tc.tenants)
+			cfg := tc.cfg
+			if cfg.DataDir != "" {
+				cfg.DataDir = filepath.Join(dir, cfg.DataDir)
+			}
+			be, err := f.Create(cfg, filepath.Join(dir, "shared"))
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			defer func() { _ = be.Close() }()
+			if _, ok := be.(*lifecycle.MaterializedBinding); ok {
+				t.Fatal("a non-qualifying database was materialized")
+			}
+		})
+	}
+}
+
+func TestLocalBindingFactory_ErrorsTyped(t *testing.T) {
+	t.Run("resolve binding", func(t *testing.T) {
+		f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: t.TempDir()}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
+		_, err := f.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendMemory,
+			Barrier: &database.DatabaseBarrierConfig{Enabled: true}}, t.TempDir())
+		var want *database.BarrierRequiresPersistentBackendError
+		if !errors.As(err, &want) {
+			t.Fatalf("err = %v (%T), want *database.BarrierRequiresPersistentBackendError", err, err)
+		}
+	})
+	t.Run("tenant lookup", func(t *testing.T) {
+		lookupErr := errors.New("tenant store down")
+		f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: t.TempDir()}, nil, qrdbconfig.StorageConfig{},
+			func(string) (database.BindingTenant, error) { return database.BindingTenant{}, lookupErr })
+		_, err := f.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble}, t.TempDir())
+		var want *lifecycle.BindingOpenError
+		if !errors.As(err, &want) || !errors.Is(err, lookupErr) {
+			t.Fatalf("err = %v (%T), want *lifecycle.BindingOpenError wrapping the lookup error", err, err)
+		}
+	})
+	t.Run("unopenable root", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "tenants"), []byte("not a directory"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		mgr := newBindingManager(t, dir, nil)
+		defer func() { _ = mgr.Close() }()
+		_, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble})
+		var want *lifecycle.BindingOpenError
+		if !errors.As(err, &want) {
+			t.Fatalf("err = %v (%T), want *lifecycle.BindingOpenError", err, err)
+		}
+		if _, ok := mgr.Local("d", bindingTenant); ok {
+			t.Fatal("the Manager recorded a database whose binding failed to open")
+		}
+	})
+}
+
+func TestLocalBindingFactory_DropRemovesRoot(t *testing.T) {
+	dir := t.TempDir()
+	mgr := newBindingManager(t, dir, nil)
+	defer func() { _ = mgr.Close() }()
+	ctx := context.Background()
+	cfg := database.DatabaseConfig{TenantID: bindingTenant, Name: "gone", Backend: database.BackendPebble}
+	db, err := mgr.Create(cfg)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mb := materialized(t, db)
+	root := mb.DataRoot()
+	if err := service.NewKVService(mb.Host(), mb.ShardID()).Put(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := mgr.DropForTenant(tenant.WithTenantID(ctx, bindingTenant), "gone"); err != nil {
+		t.Fatalf("DropForTenant: %v", err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("binding root %s survives the drop (%v)", root, err)
+	}
+	db, err = mgr.Create(cfg)
+	if err != nil {
+		t.Fatalf("re-Create: %v", err)
+	}
+	mb = materialized(t, db)
+	if got, err := service.NewKVService(mb.Host(), mb.ShardID()).Get(ctx, "k"); err == nil && got != nil {
+		t.Fatalf("recreated database holds the dropped key: %q", got)
+	}
+}

@@ -960,6 +960,15 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    what this drop removed above was still its own, because the
 	//    successor cannot open here while the drop holds the name's claim,
 	//    and its entry goes with it.
+	//    A backend that owns a store directory of its own (a materialized
+	//    binding's root) has it removed too, so a recreate starts empty.
+	if owner, ok := db.rawBackend.(DataRootOwner); ok {
+		if root := owner.DataRoot(); root != "" {
+			if err := os.RemoveAll(root); err != nil {
+				return &DropError{Name: name, Err: err}
+			}
+		}
+	}
 	if err := os.RemoveAll(m.dbDir(key.tenant, name)); err != nil {
 		return &DropError{Name: name, Err: err}
 	}
