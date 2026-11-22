@@ -10,6 +10,7 @@ package seal
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -294,5 +295,80 @@ func TestMoveStepRunner_NoUnlock(t *testing.T) {
 	}
 	if stores.open != fx.src {
 		t.Fatalf("open = %q, want the source", stores.open)
+	}
+}
+
+// putJournal writes m as the tenant's move journal in the fixture's KV.
+func (fx *moveFixture) putJournal(t *testing.T, m volume.Move) {
+	t.Helper()
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fx.kv.Put(context.Background(), volume.MoveKey(m.TenantID), raw); err != nil {
+		t.Fatalf("put journal: %v", err)
+	}
+}
+
+func journal(state string, copied ...string) volume.Move {
+	return volume.Move{TenantID: moveTestTenant, FromPool: "default", ToPool: "fast", State: state, NodesCopied: copied}
+}
+
+// TestMoveStepRunner_CrashAfterCopyCASOpensFromDestination: a node that
+// crashed after its copy step's journal write (the in-memory override is
+// gone) resolves the destination from the journal, and only that node.
+func TestMoveStepRunner_CrashAfterCopyCASOpensFromDestination(t *testing.T) {
+	fx, _, r := newRunnerFixture(t)
+	ctx := context.Background()
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	fx.putJournal(t, journal(volume.MoveStateCopying, moveTestNode))
+	fx.reg.moveOpenPools.Delete(moveTestTenant) // the crash
+	if root, err := fx.reg.RequireInsideLocalPool(ctx, moveTestTenant); err != nil || root != fx.src {
+		t.Fatalf("no node ID: root = %q, %v; want the source", root, err)
+	}
+	fx.reg.SetVolumeNodeID(moveTestNode)
+	if root, err := fx.reg.RequireInsideLocalPool(ctx, moveTestTenant); err != nil || root != fx.dst() {
+		t.Fatalf("copied node: root = %q, %v; want the destination", root, err)
+	}
+	fx.reg.SetVolumeNodeID("other")
+	if root, err := fx.reg.RequireInsideLocalPool(ctx, moveTestTenant); err != nil || root != fx.src {
+		t.Fatalf("other node: root = %q, %v; want the source", root, err)
+	}
+}
+
+// TestMoveStepRunner_BootAfterAbortCASRemovesDestination covers the abort
+// crash points after the journal write: before the reopen and before the
+// destination's removal. Boot opens the source (the journal no longer
+// lists the node as copied) and removes the leftover destination; a node
+// the journal still serves from the destination keeps it.
+func TestMoveStepRunner_BootAfterAbortCASRemovesDestination(t *testing.T) {
+	fx, stores, r := newRunnerFixture(t)
+	ctx := context.Background()
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	stores.write("w1")
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseAbort, true)); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	fx.reg.moveOpenPools.Delete(moveTestTenant) // the crash
+	fx.reg.SetVolumeNodeID(moveTestNode)
+
+	fx.putJournal(t, journal(volume.MoveStateAborting, moveTestNode))
+	if err := fx.reg.RestoreVolumeTenants(ctx); err != nil {
+		t.Fatalf("restore, still copied: %v", err)
+	}
+	mustExist(t, filepath.Join(fx.dst(), "w1"))
+
+	fx.putJournal(t, journal(volume.MoveStateAborting))
+	if err := fx.reg.RestoreVolumeTenants(ctx); err != nil {
+		t.Fatalf("restore after the abort CAS: %v", err)
+	}
+	assertGone(t, fx.dst())
+	mustExist(t, filepath.Join(fx.src, "w1"))
+	if root, err := fx.reg.RequireInsideLocalPool(ctx, moveTestTenant); err != nil || root != fx.src {
+		t.Fatalf("root = %q, %v; want the source", root, err)
 	}
 }

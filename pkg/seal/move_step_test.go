@@ -39,6 +39,7 @@ const (
 type moveFixture struct {
 	reg         *BarrierRegistry
 	catalog     *volume.Catalog
+	kv          *sealTestFakeKV
 	open        *volume.OpenVolumes
 	defaultRoot string
 	fastRoot    string
@@ -49,7 +50,8 @@ type moveFixture struct {
 func newMoveFixture(t *testing.T, opts ...Option) *moveFixture {
 	t.Helper()
 	ctx := context.Background()
-	catalog, open, defaultRoot := newTestVolumeFixture(t)
+	defaultRoot := t.TempDir()
+	catalog, open, kv := newTestVolumeFixtureKV(t, defaultRoot)
 
 	fastRoot := t.TempDir()
 	provider, err := volume.NewRegistry().Lookup("dir")
@@ -83,7 +85,7 @@ func newMoveFixture(t *testing.T, opts ...Option) *moveFixture {
 		t.Fatalf("RequireInsideLocalPool: %v", err)
 	}
 	writeMoveTree(t, src)
-	return &moveFixture{reg: reg, catalog: catalog, open: open, defaultRoot: defaultRoot, fastRoot: fastRoot, src: src, path: a.Path}
+	return &moveFixture{reg: reg, catalog: catalog, kv: kv, open: open, defaultRoot: defaultRoot, fastRoot: fastRoot, src: src, path: a.Path}
 }
 
 func writeMoveTree(t *testing.T, root string) {

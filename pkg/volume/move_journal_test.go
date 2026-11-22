@@ -739,6 +739,68 @@ func TestCatalog_AbortSteps(t *testing.T) {
 	}
 }
 
+func TestCatalog_ResolveForNode(t *testing.T) {
+	cat, _, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	pool := func(node string) string {
+		t.Helper()
+		a, err := cat.ResolveForNode(ctx, "acme", node)
+		if err != nil {
+			t.Fatalf("ResolveForNode(%s): %v", node, err)
+		}
+		return a.Pool
+	}
+	if got := pool("n2"); got != "fast" {
+		t.Fatalf("admitted: n1 pool = %s, want the source", got)
+	}
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.CompleteMoveStep(ctx, "acme", "n1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pool("n1"); got != "bulk" {
+		t.Fatalf("copied node n1 pool = %s, want the destination", got)
+	}
+	for _, n := range []string{"n2", ""} {
+		if got := pool(n); got != "fast" {
+			t.Fatalf("node %q pool = %s, want the source", n, got)
+		}
+	}
+	if _, err := cat.CancelMove(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pool("n1"); got != "bulk" {
+		t.Fatalf("aborting, before n1's abort step: pool = %s, want the destination", got)
+	}
+	if _, err := cat.GrantAbortStep(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.CompleteAbortStep(ctx, "acme", "n1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pool("n1"); got != "fast" {
+		t.Fatalf("after n1's abort step: pool = %s, want the source", got)
+	}
+	if _, err := cat.ResolveForNode(ctx, "nobody", "n2"); err == nil {
+		t.Fatal("unknown tenant resolved")
+	}
+}
+
+func TestCatalog_ResolveForNode_CutOverNamesTheDestination(t *testing.T) {
+	cat, _, _ := copiedMove(t)
+	ctx := context.Background()
+	if _, err := cat.CutOverMove(ctx, "acme"); err != nil {
+		t.Fatalf("CutOverMove: %v", err)
+	}
+	for _, n := range []string{"n1", "n2", "n3"} {
+		a, err := cat.ResolveForNode(ctx, "acme", n)
+		if err != nil || a.Pool != "bulk" {
+			t.Fatalf("node %s = %+v, %v; want bulk", n, a, err)
+		}
+	}
+}
+
 func TestCatalog_AbortStep_Refusals(t *testing.T) {
 	ctx := context.Background()
 	cat, kv, _ := newAdmittedMove(t)

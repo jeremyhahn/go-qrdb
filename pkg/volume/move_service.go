@@ -134,3 +134,35 @@ func (c *Catalog) GetMove(ctx context.Context, tenantID string) (*Move, error) {
 	}
 	return m, nil
 }
+
+// ResolveForNode is Resolve as seen by nodeID during a move: before cut
+// over, a node in the journal's NodesCopied serves the tenant from ToPool
+// (its copy step reopened it there), so the returned assignment names
+// ToPool. Every other node, and every tenant with no move or a cut-over
+// move, gets Resolve's assignment unchanged. A boot or a reopen resolves
+// through it, so a node that crashed after its step's journal write opens
+// from the directory the journal names for it.
+func (c *Catalog) ResolveForNode(ctx context.Context, tenantID, nodeID string) (*Assignment, error) {
+	a, err := c.Resolve(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if nodeID == "" {
+		return a, nil
+	}
+	m, _, err := c.readMove(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if m == nil || m.State == MoveStateCutover || m.State == MoveStateAdmitted || !contains(m.NodesCopied, nodeID) {
+		return a, nil
+	}
+	if a.Pool != m.FromPool {
+		// The assignment no longer names the move's source: the move's
+		// view is stale, so the assignment stands.
+		return a, nil
+	}
+	moved := *a
+	moved.Pool = m.ToPool
+	return &moved, nil
+}
