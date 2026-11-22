@@ -167,7 +167,9 @@ describe('WailsClient vector wire shapes', () => {
 
     it('a scoped client still exposes database as the DatabaseClient', () => {
         // The scope name lives in a private field; it must not shadow the
-        // `database` getter that implements Client.database.
+        // `database` getter that implements Client.database. The getter
+        // reads window.go, so the binding is stubbed first.
+        vi.stubGlobal('window', { go: { main: { DatabaseBinding: { List: vi.fn() } } } });
         const scoped: Client = new WailsClient('x');
         const rescoped: Client = new WailsClient().databaseScoped('x');
         for (const c of [scoped, rescoped]) {
