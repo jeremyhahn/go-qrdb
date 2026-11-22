@@ -97,7 +97,13 @@ Supporting facts:
   backend is taken from **`databases[0].backend`** in the configuration file —
   the first database's setting is applied to every database on the node
   (`cmd/qrdbd` start path, `sdk/go/node.resolveBackend`).
-- SQL `CREATE DATABASE` hardcodes `backend: pebble` (`pkg/sql/provider`), and the daemon's `--sql-database` auto-provisioning derives the backend from `--sm`.
+- SQL `CREATE DATABASE` (`pkg/sql/provider`) and the daemon's `--sql-database`
+  auto-provisioning name no backend: both create through the node's
+  `database_defaults`, recording its backend, else the run mode's default
+  (`raft` in raft mode, `pebble` in standalone mode). `--sm` picks no
+  database's backend. The defaults are applied once at create and recorded,
+  so a later change of `database_defaults` or `--sm` changes no existing
+  database.
 - **Vector** is one node-local Pebble store at `{DataDir}/vector`, shared by
   every tenant and every database on the node, encrypted under the system
   encryptor, and isolated only by a key prefix on the namespace name
