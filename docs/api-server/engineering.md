@@ -561,7 +561,12 @@ Invariants:
   upgraded.
 - **HTTP/3 only.** The route on the HTTP/1.1 or HTTP/2 listener answers 400
   (`*rest.WebTransportUpgradeError` over `*rest.WebTransportNotHTTP3Error`),
-  as does a failed upgrade (`*rest.WebTransportUpgradeError`).
+  as does a failed upgrade (`*rest.WebTransportUpgradeError`). A CONNECT
+  missing a client setting or transport parameter that -16 section 3.1
+  requires (`SETTINGS_WT_ENABLED`, `SETTINGS_H3_DATAGRAM`, `reset_stream_at`)
+  is reset with `H3_MESSAGE_ERROR` before Upgrade runs, and one whose client
+  SETTINGS do not arrive within the 5 s handshake timeout with
+  `H3_REQUEST_REJECTED`.
 - **Nothing changes without a handler.** Only with a handler does the HTTP/3
   listener set `EnableDatagrams` and `EnableStreamResetPartialDelivery` in its
   QUIC configuration (-16 section 3), and only then does it send the

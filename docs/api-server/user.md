@@ -105,11 +105,11 @@ A client opens `https://db.example.com:63002/wt` over HTTP/3. The session is
 authenticated exactly like a REST request, with your client certificate or
 token. A caller REST would refuse gets the same status (401 when
 unauthenticated, for example), and the session is never opened. A request over
-HTTP/1.1 or HTTP/2, or one that is not a valid WebTransport CONNECT, gets 400.
-Valid means what draft-ietf-webtrans-http3-16 section 3.1 asks of a client:
-the `webtransport-h3` protocol, `SETTINGS_WT_ENABLED` and `SETTINGS_H3_DATAGRAM`
-set to 1, and the `max_datagram_frame_size` and `reset_stream_at` transport
-parameters. A client that sends `SETTINGS_H3_DATAGRAM` without
+HTTP/1.1 or HTTP/2, or a CONNECT with any `:protocol` other than
+`webtransport-h3`, gets 400. A client that did not send `SETTINGS_WT_ENABLED`=1,
+`SETTINGS_H3_DATAGRAM`=1 or the `reset_stream_at` transport parameter
+(draft-ietf-webtrans-http3-16 section 3.1) has its CONNECT stream reset with
+`H3_MESSAGE_ERROR`, and the session is never opened. A client that sends `SETTINGS_H3_DATAGRAM` without
 `max_datagram_frame_size` has its connection closed with `H3_SETTINGS_ERROR`
 instead.
 A browser's `Origin` must match the host it connects to.
