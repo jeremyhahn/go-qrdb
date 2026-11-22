@@ -36,7 +36,8 @@ a. Row 6 (done): `test/integration/vlog_tenant_confinement_cli_test.go`,
 b. Row 8 (barrier), lane vl1613c. No new seal domain: the logs go to the
    barrier-sealed Raft groups the node already runs, whose state machines
    carry a log registry (snapshot and restore follow the group).
-   - `service.NewSystemShardLogResolver` takes a `service.LogGroupSource`;
+   - `service.NewSystemShardAuditResolver` takes a `service.LogGroupSource`,
+     the one resolver of the audit logger and the log service;
      a barrier tenant routes to `TenantHomeGroup` (its `__home` dedicated
      group).
    - `pkg/server/lifecycle/log_groups.go` implements the source over the
