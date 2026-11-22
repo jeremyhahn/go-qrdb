@@ -27,6 +27,7 @@
   import { navStore, selectDbTool } from "../../stores/navigation.svelte.ts";
   import type { DbTool } from "../../stores/navigation.svelte.ts";
   import { connManagerStore } from "../../stores/connection-manager.svelte.ts";
+  import { revisionSupportFingerprint, type RevisionSupportScope } from "../../lib/revisionSupportCache.ts";
 
   // Tool view components
   import KVExplorer from "./KVExplorer.svelte";
@@ -56,14 +57,18 @@
   // scoping; admin/system views elsewhere also keep the unscoped client.
   const dbClient = $derived(client.databaseScoped(database.name));
 
-  // The store the data views read: server (the active profile's address, or
-  // its id for an embedded server), tenant and database. KVExplorer keys
-  // what it remembers about the store (revision support) by it.
-  const kvScope = $derived.by((): string => {
-    const profile = connManagerStore.profiles.find((p) => p.id === connManagerStore.activeProfileId);
-    const server = profile?.external?.address ?? connManagerStore.activeProfileId;
-    return JSON.stringify([server, database.tenantId ?? "", database.name]);
-  });
+  // The database the data views read (connection profile, tenant, database)
+  // and the fingerprint of its store: KVExplorer remembers revision support
+  // in the shared revisionSupportCache under both, so a database recreated
+  // under the same name is asked again.
+  const revisionScope = $derived.by(
+    (): RevisionSupportScope => ({
+      profileId: connManagerStore.activeProfileId,
+      tenant: database.tenantId ?? "",
+      database: database.name,
+    }),
+  );
+  const revisionFingerprint = $derived(revisionSupportFingerprint(database));
 
   // ---------------------------------------------------------------------------
   // Tab definitions
@@ -146,7 +151,7 @@
   <!-- Tool view -->
   <div class="flex-1 overflow-y-auto p-6" id="tabpanel-{activeTool}" role="tabpanel">
     {#if activeTool === 'data'}
-      <KVExplorer client={dbClient} scope={kvScope} />
+      <KVExplorer client={dbClient} {revisionScope} {revisionFingerprint} />
     {:else if activeTool === 'collections'}
       <CollectionView {client} {database} />
     {:else if activeTool === 'indexes'}

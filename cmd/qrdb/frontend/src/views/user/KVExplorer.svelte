@@ -15,40 +15,6 @@
   limitations under the License.
 -->
 <script lang="ts" module>
-  /**
-   * Scopes (server, tenant, database) whose store answered 501 to
-   * GET /kv/revision (no revisions). Kept in sessionStorage so a reload of
-   * the tab does not ask again; keyed by the full scope so one store without
-   * revisions never hides them on another database or server.
-   */
-  const NO_REVISION_KEY = "qrdb.noRevisionScopes";
-
-  function loadNoRevisionScopes(): Set<string> {
-    try {
-      const raw = globalThis.sessionStorage?.getItem(NO_REVISION_KEY);
-      const parsed: unknown = raw ? JSON.parse(raw) : [];
-      return new Set(Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : []);
-    } catch {
-      return new Set();
-    }
-  }
-
-  const noRevisionScopes = loadNoRevisionScopes();
-
-  /**
-   * Remembers that scope's store keeps no revisions. An empty scope names
-   * no store, so nothing is remembered for it.
-   */
-  function rememberNoRevisions(scope: string): void {
-    if (scope === "") return;
-    noRevisionScopes.add(scope);
-    try {
-      globalThis.sessionStorage?.setItem(NO_REVISION_KEY, JSON.stringify([...noRevisionScopes]));
-    } catch {
-      // Storage unavailable: the in-memory set still covers this page load.
-    }
-  }
-
   /** Reports whether err is the server's 501 Not Implemented answer. */
   function isNotImplemented(err: unknown): boolean {
     if (typeof err !== "object" || err === null) return false;
@@ -71,6 +37,7 @@
   import { showToast } from "../../stores/toast.svelte.ts";
   import { withRetry } from "../../lib/retry.ts";
   import { rangeBoundsForPrefix } from "../../lib/kvRange.ts";
+  import { revisionSupportCache, type RevisionSupportScope } from "../../lib/revisionSupportCache.ts";
   import PageHeader from "../../components/PageHeader.svelte";
   import ConfirmModal from "../../components/ConfirmModal.svelte";
   import { CrudTable } from "../../components/core/CrudTable";
@@ -88,18 +55,25 @@
   } from "lucide-svelte";
 
   /**
-   * scope identifies the store this explorer reads: server, tenant and
-   * database (see kvScope). Revision support is remembered per scope.
+   * revisionScope names the database this explorer reads (connection
+   * profile, tenant, database) and revisionFingerprint identifies its store,
+   * so a database recreated under the same name is asked again. Revision
+   * support is remembered in the shared revisionSupportCache.
    */
-  let { client, scope = "" }: { client: Client; scope?: string } = $props();
+  let {
+    client,
+    revisionScope,
+    revisionFingerprint,
+  }: { client: Client; revisionScope: RevisionSupportScope; revisionFingerprint: string } = $props();
 
-  // Set once the scope's store answered 501 to the revision probe.
-  // Bumped when a probe adds the scope to noRevisionScopes, so the derived
-  // flag re-reads the (non-reactive) set.
-  let revisionSupportVersion: number = $state(0);
-  const revisionsUnsupported: boolean = $derived(
-    revisionSupportVersion >= 0 && scope !== "" && noRevisionScopes.has(scope),
-  );
+  // Set from the shared cache when the scope changes and when a probe of
+  // this scope's store answers 501 (the cache itself is not reactive).
+  let revisionsUnsupported: boolean = $state(false);
+
+  /** Reports whether the cache knows scope's store (as fingerprinted) keeps no revisions. */
+  function cachedUnsupported(scope: RevisionSupportScope, fingerprint: string): boolean {
+    return scope.database !== "" && revisionSupportCache.isUnsupported(scope, fingerprint);
+  }
 
   // ---------------------------------------------------------------------------
   // Types
@@ -302,8 +276,10 @@
     // The explorer stays mounted across database switches: the probe is
     // bound to the client and scope it started for, and its answer is
     // shown only if the user is still on that database.
+    const gen = scopeGeneration;
     const probeClient = client;
-    const probeScope = scope;
+    const probeScope = revisionScope;
+    const probeFingerprint = revisionFingerprint;
     if (revisionsUnsupported) {
       currentRevision = null;
       return;
@@ -312,28 +288,34 @@
     // each asking; another database asks for itself.
     let probe = revisionProbes.get(probeClient);
     if (probe === undefined) {
-      probe = probeCurrentRevision(probeClient, probeScope).finally(() => {
+      probe = probeCurrentRevision(probeClient, probeScope, probeFingerprint).finally(() => {
         revisionProbes.delete(probeClient);
       });
       revisionProbes.set(probeClient, probe);
     }
     const revision = await probe;
-    if (client === probeClient && scope === probeScope) currentRevision = revision;
+    if (client !== probeClient || !isCurrentScope(gen)) return;
+    currentRevision = revision;
+    revisionsUnsupported = cachedUnsupported(probeScope, probeFingerprint);
   }
 
   const revisionProbes = new Map<Client, Promise<number | null>>();
 
   /**
    * Reads probeClient's current revision; null when it has none. A 501 is
-   * remembered for probeScope, the database the probe was sent to.
+   * remembered for probeScope, the database the probe was sent to, under
+   * the fingerprint of the store it reached.
    */
-  async function probeCurrentRevision(probeClient: Client, probeScope: string): Promise<number | null> {
+  async function probeCurrentRevision(
+    probeClient: Client,
+    probeScope: RevisionSupportScope,
+    probeFingerprint: string,
+  ): Promise<number | null> {
     try {
       return await probeClient.mvcc.currentRevision();
     } catch (err: unknown) {
-      if (isNotImplemented(err)) {
-        rememberNoRevisions(probeScope);
-        revisionSupportVersion++;
+      if (isNotImplemented(err) && probeScope.database !== "") {
+        revisionSupportCache.rememberUnsupported(probeScope, probeFingerprint);
       }
       return null;
     }
@@ -803,17 +785,24 @@
   // between databases) and on initial mount. Using $effect instead of onMount
   // ensures data is fetched even when the component stays mounted but receives
   // a new client prop after a database switch.
-  // A database switch (a new client or scope) closes the open entry and
-  // drops its metadata, and per-key reads still in flight are discarded
-  // (scopeGeneration). Runs before the reload below.
+  // A database switch (a new client, scope or store fingerprint) closes the
+  // open entry and drops its metadata, per-key reads still in flight are
+  // discarded (scopeGeneration), and revision support is re-read from the
+  // shared cache for the new store. Runs before the reload below.
   $effect.pre(() => {
     void client;
-    void scope;
-    untrack(resetSelection);
+    const scope = revisionScope;
+    const fingerprint = revisionFingerprint;
+    untrack(() => {
+      resetSelection();
+      revisionsUnsupported = cachedUnsupported(scope, fingerprint);
+    });
   });
 
   $effect(() => {
     void client;
+    void revisionScope;
+    void revisionFingerprint;
     loadEntries();
   });
 </script>
