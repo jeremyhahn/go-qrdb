@@ -166,6 +166,7 @@ func TestClose_EveryCallWaitsAndIsRefusedAfter(t *testing.T) {
 }
 
 func TestNew_ReleasesTheProviderOfAFailedOpenAndOnClose(t *testing.T) {
+	forgetProviders(t, "close-test-provider", "close-test-failed-open")
 	var stores []*closingStore
 	creator := func(map[string]string, objcommon.Credentials) (objcommon.Storage, error) {
 		cs := newClosingStore()
