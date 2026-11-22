@@ -136,6 +136,13 @@ case(
     {"CI_IMAGE_REGISTRY": "Registry.Lan:5000"},
     exact={"Registry.Lan:5000", "Registry.Lan", "registry.lan:5000", "registry.lan"},
 )
+# S7h: an upper-case bracketed IPv6 host is masked lowercased too, the
+# unbracketed form included (local Codex review on this branch).
+case(
+    "S7h upper-case IPv6 host",
+    {"GOPROXY": "http://[FD00::ABCD]:3000"},
+    want={"[FD00::ABCD]", "[fd00::abcd]", "FD00::ABCD", "fd00::abcd"},
+)
 # S7g: credentials are masked as written only, never lowercased.
 case(
     "S7g mixed-case credentials stay as written",

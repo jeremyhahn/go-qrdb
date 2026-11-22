@@ -96,6 +96,6 @@ for v in $(compgen -e); do
 		[ "$authority" = "$entry" ] || maskhost "$authority"
 		[ "$hostport" = "$authority" ] || maskhost "$hostport"
 		[ "$host" = "$hostport" ] || maskhost "$host"
-		case $host in \[*\]) inner=${host#[}; mask "${inner%]}" ;; esac
+		case $host in \[*\]) inner=${host#[}; maskhost "${inner%]}" ;; esac
 	done
 done
