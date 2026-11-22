@@ -47,6 +47,15 @@ mask() {
 	printf '::add-mask::%s\n' "$v"
 }
 
+# maskhost <value>: a value that names the host, masked as written and,
+# when that differs, lowercased, because a helper may log the normalized
+# form (Codex round 2 on go-xkms #2346: its ci-registry.sh logs the
+# lowercased RELEASE_REGISTRY). Credentials are masked as written only.
+maskhost() {
+	mask "$1"
+	[ "${1,,}" = "$1" ] || mask "${1,,}"
+}
+
 private() {
 	local h=${1,,}
 	h=${h%.}
@@ -83,10 +92,10 @@ for v in $(compgen -e); do
 			[ "$password" = "$userinfo" ] || [ -z "$password" ] || mask "$password"
 		fi
 		private "$host" || continue
-		mask "$entry"
-		[ "$authority" = "$entry" ] || mask "$authority"
-		[ "$hostport" = "$authority" ] || mask "$hostport"
-		[ "$host" = "$hostport" ] || mask "$host"
-		case $host in \[*\]) inner=${host#[}; mask "${inner%]}" ;; esac
+		maskhost "$entry"
+		[ "$authority" = "$entry" ] || maskhost "$authority"
+		[ "$hostport" = "$authority" ] || maskhost "$hostport"
+		[ "$host" = "$hostport" ] || maskhost "$host"
+		case $host in \[*\]) inner=${host#[}; maskhost "${inner%]}" ;; esac
 	done
 done
