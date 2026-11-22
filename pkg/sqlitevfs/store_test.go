@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -749,6 +750,219 @@ func TestMVCCBackendHonoursDoneContext(t *testing.T) {
 	}
 	if _, found, err := b.GetAt(t.Context(), []byte("src/1"), before); err != nil || !found {
 		t.Fatalf("cancelled call deleted src/1: found=%v err=%v", found, err)
+	}
+}
+
+// errBackend is an MVCCBackend whose Revision, GetAt, Keys and Commit fail
+// with errInjected, without reading or writing, while the matching field is
+// set.
+type errBackend struct {
+	*MVCCBackend
+	failRevision, failGet, failKeys, failCommit bool
+}
+
+func (b *errBackend) Revision(ctx context.Context) (int64, error) {
+	if b.failRevision {
+		return 0, errInjected
+	}
+	return b.MVCCBackend.Revision(ctx)
+}
+
+func (b *errBackend) GetAt(ctx context.Context, key []byte, rev int64) ([]byte, bool, error) {
+	if b.failGet {
+		return nil, false, errInjected
+	}
+	return b.MVCCBackend.GetAt(ctx, key, rev)
+}
+
+func (b *errBackend) Keys(ctx context.Context, prefix []byte, rev int64) ([][]byte, error) {
+	if b.failKeys {
+		return nil, errInjected
+	}
+	return b.MVCCBackend.Keys(ctx, prefix, rev)
+}
+
+func (b *errBackend) Commit(ctx context.Context, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	if b.failCommit {
+		return 0, errInjected
+	}
+	return b.MVCCBackend.Commit(ctx, puts, deletes)
+}
+
+func TestStoreBackendErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		// fail sets the failing method after the database is seeded.
+		fail func(*errBackend)
+		call func(*testing.T, *Store) error
+	}{
+		{"Begin revision", func(b *errBackend) { b.failRevision = true }, func(t *testing.T, s *Store) error {
+			txn, err := s.Begin(t.Context())
+			if txn != nil {
+				t.Fatal("a failed Begin returned a transaction")
+			}
+			return err
+		}},
+		{"Begin meta read", func(b *errBackend) { b.failGet = true }, func(t *testing.T, s *Store) error {
+			_, err := s.Begin(t.Context())
+			return err
+		}},
+		{"BumpGeneration revision", func(b *errBackend) { b.failRevision = true }, func(t *testing.T, s *Store) error {
+			_, err := s.BumpGeneration(t.Context())
+			return err
+		}},
+		{"BumpGeneration meta read", func(b *errBackend) { b.failGet = true }, func(t *testing.T, s *Store) error {
+			_, err := s.BumpGeneration(t.Context())
+			return err
+		}},
+		{"BumpGeneration commit", func(b *errBackend) { b.failCommit = true }, func(t *testing.T, s *Store) error {
+			_, err := s.BumpGeneration(t.Context())
+			return err
+		}},
+		{"page read", func(b *errBackend) { b.failGet = true }, func(t *testing.T, s *Store) error {
+			s.backend.(*errBackend).failGet = false
+			txn := begin(t, s)
+			s.backend.(*errBackend).failGet = true
+			_, err := txn.ReadAt(make([]byte, 8), 0)
+			return err
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &errBackend{MVCCBackend: newTestBackend(t)}
+			s := newTestStore(t, b, "app.db")
+			if s.DB() != "app.db" {
+				t.Fatalf("DB = %q, want app.db", s.DB())
+			}
+			before := seed(t, s, 0x01, 0x02)
+			tc.fail(b)
+			if err := tc.call(t, s); !errors.Is(err, errInjected) {
+				t.Fatalf("err = %v, want errInjected", err)
+			}
+			*b = errBackend{MVCCBackend: b.MVCCBackend}
+			if got := revOf(t, b); got != before {
+				t.Fatalf("a failed call moved the revision to %d, want %d", got, before)
+			}
+			if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x01, 0x02)) {
+				t.Fatal("a failed call changed the pages")
+			}
+		})
+	}
+}
+
+func TestReserveBackendErrorsReleaseTheLock(t *testing.T) {
+	tests := []struct {
+		name string
+		fail func(*errBackend)
+	}{
+		{"revision", func(b *errBackend) { b.failRevision = true }},
+		{"meta read", func(b *errBackend) { b.failGet = true }},
+		{"stage sweep", func(b *errBackend) { b.failKeys = true }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &errBackend{MVCCBackend: newTestBackend(t)}
+			locker := newMemLocker()
+			s := newLockedStore(t, b, locker, "a")
+			seeded := beginReserved(t, s)
+			writePages(t, seeded, 0x01)
+			before := commit(t, seeded)
+			txn := begin(t, s)
+			tc.fail(b)
+			if err := txn.Reserve(t.Context()); !errors.Is(err, errInjected) {
+				t.Fatalf("Reserve err = %v, want errInjected", err)
+			}
+			*b = errBackend{MVCCBackend: b.MVCCBackend}
+			if l, err := locker.Status(t.Context(), s.lockKey); err != nil || l != nil {
+				t.Fatalf("lock after a failed Reserve = %v, %v, want released", l, err)
+			}
+			if _, err := txn.WriteAt(pageOf(0x09), 0); !errors.Is(err, ErrNotReserved) {
+				t.Fatalf("WriteAt after a failed Reserve err = %v, want ErrNotReserved", err)
+			}
+			if got := revOf(t, b); got != before {
+				t.Fatalf("a failed Reserve moved the revision to %d, want %d", got, before)
+			}
+		})
+	}
+}
+
+func TestStoreRefusesCorruptRecords(t *testing.T) {
+	b := newTestBackend(t)
+	s := newTestStore(t, b, "app.db")
+	seed(t, s, 0x01, 0x02)
+	pageKey, err := PageKey("app.db", 2)
+	if err != nil {
+		t.Fatalf("PageKey: %v", err)
+	}
+	if _, err := b.Commit(t.Context(), map[string][]byte{string(pageKey): []byte("short")}, nil); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	txn := begin(t, s)
+	buf := make([]byte, 2*testPageSize)
+	if n, err := txn.ReadAt(buf, 0); err == nil || n != testPageSize {
+		t.Fatalf("ReadAt over a short page = %d, %v, want page 1 and an error", n, err)
+	}
+
+	metaKey, err := MetaKey("app.db")
+	if err != nil {
+		t.Fatalf("MetaKey: %v", err)
+	}
+	rev, err := b.Commit(t.Context(), map[string][]byte{string(metaKey): []byte("garbage")}, nil)
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if _, err := s.Begin(t.Context()); !errors.Is(err, ErrInvalidMeta) {
+		t.Fatalf("Begin over a corrupt meta record err = %v, want ErrInvalidMeta", err)
+	}
+	if _, err := s.BumpGeneration(t.Context()); !errors.Is(err, ErrInvalidMeta) {
+		t.Fatalf("BumpGeneration over a corrupt meta record err = %v, want ErrInvalidMeta", err)
+	}
+	if got := revOf(t, b); got != rev {
+		t.Fatalf("a refused BumpGeneration moved the revision to %d, want %d", got, rev)
+	}
+}
+
+func TestTxnIOEdgeCases(t *testing.T) {
+	s := newTestStore(t, newTestBackend(t), "app.db")
+
+	empty := begin(t, s)
+	if err := empty.Truncate(testPageSize); !errors.Is(err, ErrUnalignedIO) {
+		t.Fatalf("Truncate of an empty file to one page err = %v, want ErrUnalignedIO", err)
+	}
+	if err := empty.Truncate(0); err != nil || empty.Size() != 0 {
+		t.Fatalf("Truncate(0) of an empty file = %v, size %d", err, empty.Size())
+	}
+
+	rev := seed(t, s, 0x01, 0x02)
+	txn := begin(t, s)
+	size := txn.Size()
+	if n, err := txn.ReadAt(nil, 0); n != 0 || err != nil {
+		t.Fatalf("empty ReadAt = %d, %v, want 0, nil", n, err)
+	}
+	if n, err := txn.WriteAt(nil, 0); n != 0 || err != nil {
+		t.Fatalf("empty WriteAt = %d, %v, want 0, nil", n, err)
+	}
+	if n, err := txn.ReadAt(make([]byte, 1), -1); n != 0 || err == nil {
+		t.Fatalf("ReadAt at -1 = %d, %v, want an error", n, err)
+	}
+	if n, err := txn.WriteAt(pageOf(0x09), -testPageSize); n != 0 || err == nil {
+		t.Fatalf("WriteAt at -%d = %d, %v, want an error", testPageSize, n, err)
+	}
+	if err := txn.Truncate(-testPageSize); err == nil {
+		t.Fatal("Truncate to a negative size succeeded")
+	}
+	pastLast := int64(math.MaxUint32) * testPageSize
+	if _, err := txn.WriteAt(pageOf(0x09), pastLast); !errors.Is(err, ErrInvalidPageNumber) {
+		t.Fatalf("WriteAt past the last page err = %v, want ErrInvalidPageNumber", err)
+	}
+	if err := txn.Truncate(pastLast + testPageSize); !errors.Is(err, ErrInvalidPageNumber) {
+		t.Fatalf("Truncate past the last page err = %v, want ErrInvalidPageNumber", err)
+	}
+	if txn.Size() != size {
+		t.Fatalf("refused calls changed the size to %d, want %d", txn.Size(), size)
+	}
+	if got := commit(t, txn); got != rev {
+		t.Fatalf("a transaction with only refused writes committed at %d, want the pinned %d", got, rev)
 	}
 }
 
