@@ -431,8 +431,6 @@ var vlogRules = []rule{
 	// A barrier tenant's log lives in its home group, which this node cannot
 	// reach yet.
 	as(&service.BarrierStoreUnavailableError{}, Unavailable),
-	// A barrier-enabled database's log has no store under the database's key.
-	as(&service.BarrierDatabaseLogNotSupportedError{}, Unimplemented),
 }
 
 // collectionRules are the document-collection conditions.

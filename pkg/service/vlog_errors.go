@@ -32,23 +32,6 @@ func (e *BarrierStoreUnavailableError) Error() string {
 	return "service: the barrier-sealed store of barrier tenant " + strconv.Quote(e.TenantID) + " is not reachable on this node"
 }
 
-// BarrierDatabaseLogNotSupportedError is returned by every LogService call
-// naming a barrier-enabled database, whatever its backend, before any signing
-// key is created, any command is proposed or any read is made. A verifiable
-// log in such a database has no store under the database's own key yet: the
-// tenant's group would hold its entries and signing keys outside that key, and
-// they would stay readable while the database is sealed. The log is refused
-// until it has one.
-type BarrierDatabaseLogNotSupportedError struct {
-	TenantID string
-	Database string
-}
-
-func (e *BarrierDatabaseLogNotSupportedError) Error() string {
-	return "service: verifiable logs are not supported in barrier-enabled database " + strconv.Quote(e.Database) +
-		" of tenant " + strconv.Quote(e.TenantID) + ": the log has no store under the database's key"
-}
-
 // LogFeatureNotActiveError is returned by a LogService write while a cluster
 // feature the write's command needs (featuregate.VerifiableLog, and for a
 // create or a key rotation featuregate.VerifiableLogKeys) is not yet active on

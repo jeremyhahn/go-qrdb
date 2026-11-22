@@ -19,8 +19,10 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -49,7 +51,7 @@ func NewLogService(cfg LogServiceConfig) (LogService, error) {
 	if cfg.Databases == nil {
 		return nil, &SubsystemNotConfiguredError{Subsystem: "vlog database lookup"}
 	}
-	route := &logRoute{resolver: cfg.Resolver, databases: cfg.Databases}
+	route := &logRoute{resolver: cfg.Resolver, databases: cfg.Databases, stores: make(map[dbStoreKey]*databaseLogStore)}
 	signers := cfg.Signers
 	if signers == nil {
 		signers = vlog.NewSoftwareHeadSignerProvider(&logKeyReader{route: route})
@@ -94,33 +96,113 @@ func (s *logService) logID(ctx context.Context, ref LogRef, op string) (vlog.Log
 	return id, nil
 }
 
-// resolve is the logRoute's resolution of tenantID's database name.
-func (r *logRoute) resolve(ctx context.Context, tenantID, name string) (Host, uint64, error) {
+// resolve is the logRoute's resolution of tenantID's database name to the
+// target its logs are applied in and read from.
+func (r *logRoute) resolve(ctx context.Context, tenantID, name string) (logTarget, error) {
 	db, err := r.databases.GetOwned(name, tenantID)
 	if err != nil {
 		var notFound *database.NotFoundError
 		if !errors.As(err, &notFound) {
-			return nil, 0, err
+			return nil, err
 		}
-		return r.resolver.ResolveAuditShard(ctx, tenantID)
+		return r.raft(ctx, tenantID)
 	}
 	if db.BarrierEnabled() {
-		return nil, 0, &BarrierDatabaseLogNotSupportedError{TenantID: tenantID, Database: name}
+		cfg := db.Config()
+		if !cfg.BarrierOnDataPath() {
+			return nil, &database.BarrierOffDataPathError{Name: name, ServedBy: database.ServedByRaftGroup}
+		}
+		return r.store(tenantID, name, db), nil
 	}
-	return r.resolver.ResolveAuditShard(ctx, tenantID)
+	return r.raft(ctx, tenantID)
 }
 
-// logRoute resolves the Raft group a log in tenantID's database is applied
-// in and read from: the tenant's group (a barrier tenant's home group, else
-// the system shard). A log in a barrier-enabled database is refused with
-// BarrierDatabaseLogNotSupportedError (Unimplemented), never routed, until
-// the log has a store under the database's key. A name with no database
-// record carries no isolation of its own and routes with its tenant, the
-// fall-through the tenant resolver gives a tenant without metadata; a failed
-// lookup refuses.
+// raft resolves tenantID's group as a raftTarget.
+func (r *logRoute) raft(ctx context.Context, tenantID string) (logTarget, error) {
+	host, shardID, err := r.resolver.ResolveAuditShard(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return raftTarget{host: host, shardID: shardID}, nil
+}
+
+// store returns the databaseLogStore of tenantID's barrier database db,
+// keyed by its incarnation: a database dropped and created again under the
+// name gets a fresh store, and the old one is forgotten.
+func (r *logRoute) store(tenantID, name string, db *database.Database) *databaseLogStore {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := dbStoreKey{tenant: tenantID, name: name, incarnation: db.Incarnation()}
+	if s, ok := r.stores[key]; ok && s.db == db {
+		return s
+	}
+	for k := range r.stores {
+		if k.tenant == tenantID && k.name == name {
+			delete(r.stores, k)
+		}
+	}
+	s := newDatabaseLogStore(tenantID, db)
+	r.stores[key] = s
+	return s
+}
+
+// logRoute resolves where a log in tenantID's database is applied and read:
+// a barrier-enabled database's logs live in its own barrier store, under the
+// database's key (databaseLogStore); a legacy raft-backend barrier record is
+// refused with BarrierOffDataPathError. Every other log is in the tenant's
+// Raft group (a barrier tenant's home group, else the system shard). A name
+// with no database record carries no isolation of its own and routes with
+// its tenant, the fall-through the tenant resolver gives a tenant without
+// metadata; a failed lookup refuses.
 type logRoute struct {
 	resolver  AuditShardResolver
 	databases LogDatabaseLookup
+
+	mu     sync.Mutex
+	stores map[dbStoreKey]*databaseLogStore
+}
+
+// dbStoreKey names one incarnation of a tenant's database.
+type dbStoreKey struct{ tenant, name, incarnation string }
+
+// logTarget is where a log's commands are applied and its reads answered.
+type logTarget interface {
+	propose(ctx context.Context, cmd []byte) (sm.Result, error)
+	read(ctx context.Context, req vlog.Request) (interface{}, error)
+	featureEnabled(f feature.Feature) bool
+}
+
+// raftTarget is a tenant's Raft group.
+type raftTarget struct {
+	host    Host
+	shardID uint64
+}
+
+func (t raftTarget) propose(ctx context.Context, cmd []byte) (sm.Result, error) {
+	result, err := propose(ctx, t.host, t.shardID, cmd)
+	if err != nil {
+		return sm.Result{}, translateProposeError(err)
+	}
+	return result, nil
+}
+
+func (t raftTarget) read(ctx context.Context, req vlog.Request) (interface{}, error) {
+	result, err := t.host.SyncRead(ctx, t.shardID, req)
+	if err != nil {
+		var nle *quicraft.NotLeaderError
+		if errors.As(err, &nle) {
+			return nil, &NotLeaderError{ShardID: nle.ShardID, LeaderID: nle.LeaderID, LeaderAddress: nle.LeaderAddress}
+		}
+		return nil, &ReadError{Err: err}
+	}
+	return result, nil
+}
+
+func (t raftTarget) featureEnabled(f feature.Feature) bool {
+	if gated, ok := t.host.(FeatureGatedHost); ok {
+		return gated.FeatureEnabled(t.shardID, f)
+	}
+	return true
 }
 
 // logFeatures gates the sub-types every replica that implements verifiable
@@ -142,28 +224,29 @@ func (s *logService) propose(ctx context.Context, id vlog.LogID, features []feat
 	return g.propose(ctx, id, encode)
 }
 
-// logGroup is the Raft group a log write has been admitted to.
+// logGroup is the target a log write has been admitted to.
 type logGroup struct {
-	host    Host
-	shardID uint64
+	target logTarget
 }
 
-// admit resolves the tenant's group and refuses the write while any of
+// admit resolves the tenant's target and refuses the write while any of
 // features is not active there. A write that mints a key admits first, so a
 // refused tenant never has a key created for it.
 func (s *logService) admit(ctx context.Context, tenantID, db string, features []feature.Feature) (logGroup, error) {
-	host, shardID, err := s.route.resolve(ctx, tenantID, db)
+	target, err := s.route.resolve(ctx, tenantID, db)
 	if err != nil {
 		return logGroup{}, err
 	}
-	if gated, ok := host.(FeatureGatedHost); ok {
-		for _, f := range features {
-			if !gated.FeatureEnabled(shardID, f) {
-				return logGroup{}, &LogFeatureNotActiveError{TenantID: tenantID, ShardID: shardID, Feature: f}
+	for _, f := range features {
+		if !target.featureEnabled(f) {
+			var shardID uint64
+			if rt, ok := target.(raftTarget); ok {
+				shardID = rt.shardID
 			}
+			return logGroup{}, &LogFeatureNotActiveError{TenantID: tenantID, ShardID: shardID, Feature: f}
 		}
 	}
-	return logGroup{host: host, shardID: shardID}, nil
+	return logGroup{target: target}, nil
 }
 
 // propose sends one encoded OpVerifiableLog command for the log id to g and
@@ -173,9 +256,9 @@ func (g logGroup) propose(ctx context.Context, id vlog.LogID, encode func() ([]b
 	if err != nil {
 		return 0, &EncodeRequestError{Err: err}
 	}
-	result, err := propose(ctx, g.host, g.shardID, cmd)
+	result, err := g.target.propose(ctx, cmd)
 	if err != nil {
-		return 0, translateProposeError(err)
+		return 0, err
 	}
 	// Every log command names one log, id, so a log refusal is answered with
 	// its typed vlog error naming that log: a not-found one with the error a
@@ -192,17 +275,13 @@ func (g logGroup) propose(ctx context.Context, id vlog.LogID, encode func() ([]b
 // read answers one vlog.Request from the tenant's group.
 func logRead[T any](ctx context.Context, route *logRoute, tenantID, db string, req vlog.Request) (T, error) {
 	var zero T
-	host, shardID, err := route.resolve(ctx, tenantID, db)
+	target, err := route.resolve(ctx, tenantID, db)
 	if err != nil {
 		return zero, err
 	}
-	result, err := host.SyncRead(ctx, shardID, req)
+	result, err := target.read(ctx, req)
 	if err != nil {
-		var nle *quicraft.NotLeaderError
-		if errors.As(err, &nle) {
-			return zero, &NotLeaderError{ShardID: nle.ShardID, LeaderID: nle.LeaderID, LeaderAddress: nle.LeaderAddress}
-		}
-		return zero, &ReadError{Err: err}
+		return zero, err
 	}
 	v, ok := result.(T)
 	if !ok {

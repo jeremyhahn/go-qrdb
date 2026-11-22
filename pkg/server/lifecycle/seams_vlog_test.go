@@ -144,11 +144,10 @@ func TestBuildServices_AuditAndLogShareTheBarrierTenantsGroup(t *testing.T) {
 	}
 }
 
-// TestBuildServices_LogServiceRefusesBarrierDatabases: the composed log
-// service checks the node's own database registry and refuses a log in a
-// barrier-enabled database before any key is created, because the log has no
-// store under the database's key.
-func TestBuildServices_LogServiceRefusesBarrierDatabases(t *testing.T) {
+// TestBuildServices_LogServiceServesBarrierDatabases: the composed log
+// service checks the node's own database registry and serves a log in a
+// barrier-enabled database from that database's own barrier store.
+func TestBuildServices_LogServiceServesBarrierDatabases(t *testing.T) {
 	barrier, registry, credSvc := newTestBarrier(t)
 	dbs := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = dbs.Close() })
@@ -170,11 +169,9 @@ func TestBuildServices_LogServiceRefusesBarrierDatabases(t *testing.T) {
 	_, err := node.Log.CreateLog(tenant.WithTenantID(ctx, "acme"), &service.CreateLogRequest{
 		LogRef: service.LogRef{Database: "secure", Log: "events"}, Origin: "db.example.com/events", SigningKeyType: vlog.SignatureEd25519,
 	})
-	var refused *service.BarrierDatabaseLogNotSupportedError
-	if !errors.As(err, &refused) || refused.TenantID != "acme" || refused.Database != "secure" {
-		t.Fatalf("CreateLog = %v, want *service.BarrierDatabaseLogNotSupportedError for acme's secure", err)
-	}
-	if len(device.created) != 0 {
-		t.Fatalf("device asked to create %+v for a refused database", device.created)
+	// The double refuses every key: reaching it shows the barrier database
+	// was routed to its store rather than refused before the device.
+	if !errors.Is(err, errDeviceRefused) {
+		t.Fatalf("CreateLog in acme's barrier database secure = %v, want the device's refusal", err)
 	}
 }

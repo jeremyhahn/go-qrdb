@@ -59,11 +59,12 @@ func TestClassify_BarrierStoreUnavailable(t *testing.T) {
 	}
 }
 
-// TestClassify_BarrierDatabaseLogNotSupported pins that a verifiable-log call
-// naming a barrier-enabled database is Unimplemented on every transport.
-func TestClassify_BarrierDatabaseLogNotSupported(t *testing.T) {
-	err := &service.BarrierDatabaseLogNotSupportedError{TenantID: "acme", Database: "secure"}
-	if got := Classify(err); got != Unimplemented {
-		t.Errorf("Classify(%T) = %v, want %v", err, got, Unimplemented)
+// TestClassify_BarrierSealedError pins that a call to a sealed barrier
+// database, a verifiable-log call included, is Unavailable on every
+// transport.
+func TestClassify_BarrierSealedError(t *testing.T) {
+	err := &service.BarrierSealedError{TenantID: "acme", Database: "secure"}
+	if got := Classify(err); got != Unavailable {
+		t.Errorf("Classify(%T) = %v, want %v", err, got, Unavailable)
 	}
 }

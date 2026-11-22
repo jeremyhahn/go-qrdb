@@ -48,15 +48,6 @@ func TestBarrierStoreUnavailableError_NamesTheStore(t *testing.T) {
 	}
 }
 
-func TestBarrierDatabaseLogNotSupportedError_NamesTheDatabase(t *testing.T) {
-	msg := (&BarrierDatabaseLogNotSupportedError{TenantID: "acme", Database: "secure"}).Error()
-	for _, want := range []string{`"acme"`, `"secure"`, "barrier-enabled database", "not supported"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("Error() = %q, missing %q", msg, want)
-		}
-	}
-}
-
 func TestLogFeatureNotActiveError_SystemTenant(t *testing.T) {
 	msg := (&LogFeatureNotActiveError{}).Error()
 	if !strings.Contains(msg, `""`) || !strings.Contains(msg, "shard 0") {
