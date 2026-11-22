@@ -88,6 +88,21 @@ func (e *LSMFormatMarkerMissingError) Error() string {
 		" marker for the LSM layout version " + lsmFormatVersion + " — there is no migration"
 }
 
+// ArchiveTierUnsupportedError reports an LSM store (object-storage-lsm)
+// requested on an archive-tier provider. Archive tiers are backup and archive
+// destinations only: their reads are delayed or billed per restore, so they
+// cannot serve the SSTable reads of a live database.
+type ArchiveTierUnsupportedError struct {
+	// Provider is the archive-tier go-objstore provider that was refused.
+	Provider string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *ArchiveTierUnsupportedError) Error() string {
+	return "objstore: provider " + strconv.Quote(e.Provider) +
+		" is an archive tier (backup and archive destinations only) and cannot hold LSM segments"
+}
+
 // Error returns a human-readable description of the mismatch.
 func (e *FormatVersionMismatchError) Error() string {
 	return "objstore: store format version " + e.Found + " does not match this build's " + e.Want +
