@@ -19,7 +19,9 @@
 // tenant's logs live in its own barrier-sealed home group: while the barrier
 // is unsealed every verb works and its proofs verify; once the barrier is
 // sealed every verb is refused as sealed; after the unseal the log is still
-// there, read back from the same store.
+// there, read back from the same store. A log in a barrier-enabled database
+// lives in the database's own barrier backend and is sealed, unsealed and
+// dropped with it.
 package integration_test
 
 import (
@@ -31,7 +33,6 @@ import (
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/vlogwire"
 )
@@ -48,10 +49,14 @@ func TestVlog_CLI_BarrierTenant_PerProtocol(t *testing.T) {
 	}
 }
 
-// TestVlog_CLI_BarrierDatabase_PerProtocol pins that a verifiable log in a
-// barrier-enabled database is refused over every transport, although the
-// database's barrier is unsealed: the log has no store under the database's
-// key, and a log kept outside it would stay readable while it is sealed.
+// TestVlog_CLI_BarrierDatabase_PerProtocol drives a verifiable log in a
+// barrier-enabled database through the real CLI on every transport. The
+// log lives in the database's own barrier backend: while the database is
+// unsealed every verb works, its proofs verify and none of its entries is in
+// the database's data directory in plaintext; once the database is sealed
+// every verb is refused as sealed; after the unseal the log is where it was
+// and grows; and a database re-created under the same name after a drop has
+// no log of the dropped one.
 func TestVlog_CLI_BarrierDatabase_PerProtocol(t *testing.T) {
 	t.Parallel()
 	node := startMultiProtocolNode(t)
@@ -59,34 +64,134 @@ func TestVlog_CLI_BarrierDatabase_PerProtocol(t *testing.T) {
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
-			dbName := fmt.Sprintf("vlogbarrier-%s-%d", proto.name, time.Now().UnixNano())
-			t.Cleanup(func() {
-				_, _ = runCLIProto(t, node, proto, "database", "drop", dbName)
-			})
-			if out, err := runCLIProto(t, node, proto, "database", "create", dbName,
-				"--data-dir", t.TempDir(),
-				"--backend", "pebble", "--barrier-enabled",
-				"--barrier-strategy", "passphrase",
-				"--barrier-passphrase", "vlog-barrier-database-passphrase",
-			); err != nil {
-				t.Fatalf("[%s] database create %s (barrier-enabled): %v\noutput: %s", proto.name, dbName, err, out)
-			}
-
-			// A log outside any database names the caller's routed tenant,
-			// the one the refusal renders.
-			probe := vlogCLIJSON[vlogwire.CreateResult](t, node, proto, "create", "--origin", vlogCLIOrigin, "--log", "probe-"+dbName)
-			want := (&service.BarrierDatabaseLogNotSupportedError{TenantID: probe.TenantID, Database: dbName}).Error()
-
-			logName := "barrier-db-" + proto.name
-			for _, args := range [][]string{
-				{"create", "--origin", vlogCLIOrigin, "--database", dbName, "--log", logName},
-				{"append", "--database", dbName, "--log", logName, "--entry", "e0"},
-				{"head", "--database", dbName, "--log", logName},
-			} {
-				vlogCLIRefused(t, node, proto, want, args...)
-			}
+			testVlogBarrierDatabaseOverProtocol(t, node, proto)
 		})
 	}
+}
+
+// vlogBarrierDatabasePassphrase is the barrier secret of every database
+// TestVlog_CLI_BarrierDatabase_PerProtocol creates.
+const vlogBarrierDatabasePassphrase = "vlog-barrier-database-passphrase"
+
+// createVlogBarrierDatabase creates dbName as a barrier-enabled pebble
+// database whose dedicated store is dataDir.
+func createVlogBarrierDatabase(t *testing.T, node *multiProtoNode, proto multiProtocol, dbName, dataDir string) {
+	t.Helper()
+	if out, err := runCLIProto(t, node, proto, "database", "create", dbName,
+		"--data-dir", dataDir,
+		"--backend", "pebble", "--barrier-enabled",
+		"--barrier-strategy", "passphrase",
+		"--barrier-passphrase", vlogBarrierDatabasePassphrase,
+	); err != nil {
+		t.Fatalf("[%s] database create %s (barrier-enabled): %v\noutput: %s", proto.name, dbName, err, out)
+	}
+}
+
+func testVlogBarrierDatabaseOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	dbName := fmt.Sprintf("vlogbarrier-%s-%d", proto.name, time.Now().UnixNano())
+	dataDir := t.TempDir()
+	t.Cleanup(func() {
+		_, _ = runCLIProto(t, node, proto, "database", "drop", dbName)
+	})
+	createVlogBarrierDatabase(t, node, proto, dbName, dataDir)
+
+	logName := "barrier-db-" + proto.name
+	entries := make([]string, 6)
+	for i := range entries {
+		entries[i] = fmt.Sprintf("vlog-barrier-db-%s-entry-%d", proto.name, i)
+	}
+	assertEntriesEncrypted := func(n int) {
+		t.Helper()
+		for _, e := range entries[:n] {
+			assertPlaintextAbsentInDir(t, dataDir, []byte(e))
+		}
+	}
+
+	// Unsealed: every verb is served from the database's own barrier
+	// backend, the software signing key's sealed record included.
+	created := vlogCLIJSON[vlogwire.CreateResult](t, node, proto, "create", "--origin", vlogCLIOrigin, "--database", dbName, "--log", logName, "--signing-key-type", "ed25519")
+	if created.Log != logName || created.Database != dbName || created.Key == nil || created.Key.Version != 1 || len(created.Key.PublicKey) == 0 {
+		t.Fatalf("[%s] vlog create = %+v, want log %q in %q with a version-1 key and its public key", proto.name, created, logName, dbName)
+	}
+	vlogCLIJSON[vlogwire.AppendResult](t, node, proto, "append", "--database", dbName, "--log", logName, "--entry", entries[0], "--entry", entries[1])
+	head2 := vlogCLIJSON[vlogwire.Head](t, node, proto, "head", "--database", dbName, "--log", logName)
+	vlogCLIJSON[vlogwire.AppendResult](t, node, proto, "append", "--database", dbName, "--log", logName, "--entry", entries[2], "--entry", entries[3], "--entry", entries[4])
+	head5 := vlogCLIJSON[vlogwire.Head](t, node, proto, "head", "--database", dbName, "--log", logName)
+	if head2.Size != 2 || head5.Size != 5 {
+		t.Fatalf("[%s] head sizes %d, %d; want 2 and 5", proto.name, head2.Size, head5.Size)
+	}
+	got := vlogCLIJSON[vlogwire.GetResult](t, node, proto, "get", "--database", dbName, "--log", logName, "--from", "1", "--limit", "3")
+	if len(got.Entries) != 3 || string(got.Entries[0].Body) != entries[1] || string(got.Entries[2].Body) != entries[3] {
+		t.Fatalf("[%s] get --from 1 --limit 3 = %+v, want entries 1..3", proto.name, got.Entries)
+	}
+	incl := vlogCLIJSON[vlogwire.InclusionProof](t, node, proto, "prove-inclusion", "--database", dbName, "--log", logName, "--index", "3", "--size", "5")
+	if err := proof.VerifyInclusion(rfc6962.DefaultHasher, incl.Index, incl.Size, rfc6962.DefaultHasher.HashLeaf([]byte(entries[3])), incl.Hashes, head5.Root); err != nil {
+		t.Fatalf("[%s] prove-inclusion of entry 3 does not verify against the size-5 root: %v", proto.name, err)
+	}
+	cons := vlogCLIJSON[vlogwire.ConsistencyProof](t, node, proto, "prove-consistency", "--database", dbName, "--log", logName, "--size1", "2", "--size2", "5")
+	if err := proof.VerifyConsistency(rfc6962.DefaultHasher, cons.Size1, cons.Size2, cons.Hashes, head2.Root, head5.Root); err != nil {
+		t.Fatalf("[%s] prove-consistency 2->5 does not verify against the head roots: %v", proto.name, err)
+	}
+	signed := vlogCLIJSON[vlogwire.SignHeadResult](t, node, proto, "sign-head", "--database", dbName, "--log", logName)
+	verifyBarrierCheckpoint(t, proto, created, *created.Key, signed.Checkpoint, 5, head5.Root)
+	// The physical proof the log is under the database's key: no entry is
+	// in the database's data directory in plaintext.
+	assertEntriesEncrypted(5)
+
+	// Sealed: every verb is refused as sealed.
+	out, err := runCLIProto(t, node, proto, "database", "seal", dbName)
+	if err != nil || !strings.Contains(out, "OK") {
+		t.Fatalf("[%s] database seal %s: %v\noutput: %s", proto.name, dbName, err, out)
+	}
+	sealedVerbs := [][]string{
+		{"create", "--origin", vlogCLIOrigin, "--database", dbName, "--log", logName + "-sealed"},
+		{"append", "--database", dbName, "--log", logName, "--entry", "sealed"},
+		{"get", "--database", dbName, "--log", logName, "--from", "0", "--limit", "1"},
+		{"head", "--database", dbName, "--log", logName},
+		{"prove-inclusion", "--database", dbName, "--log", logName, "--index", "3", "--size", "5"},
+		{"prove-consistency", "--database", dbName, "--log", logName, "--size1", "2", "--size2", "5"},
+		{"sign-head", "--database", dbName, "--log", logName},
+		{"rotate-key", "--database", dbName, "--log", logName, "--signing-key-type", "ecdsa-p256-sha256"},
+	}
+	for _, args := range sealedVerbs {
+		vlogCLIRefused(t, node, proto, "sealed", args...)
+	}
+
+	// A wrong secret leaves the database sealed, and the log refused.
+	if out, err := runCLIProto(t, node, proto, "database", "unseal", dbName, "--secret", "definitely-wrong"); err == nil {
+		t.Fatalf("[%s] database unseal %s with a wrong secret succeeded: %s", proto.name, dbName, out)
+	}
+	vlogCLIRefused(t, node, proto, "sealed", "head", "--database", dbName, "--log", logName)
+
+	// The correct secret unseals: the log is where it was, unchanged, and grows.
+	out, err = runCLIProto(t, node, proto, "database", "unseal", dbName, "--secret", vlogBarrierDatabasePassphrase)
+	if err != nil || !strings.Contains(out, "OK") {
+		t.Fatalf("[%s] database unseal %s: %v\noutput: %s", proto.name, dbName, err, out)
+	}
+	after := vlogCLIJSON[vlogwire.Head](t, node, proto, "head", "--database", dbName, "--log", logName)
+	if after.Size != 5 || string(after.Root) != string(head5.Root) {
+		t.Fatalf("[%s] head after the unseal = size %d root %x; want size 5 root %x", proto.name, after.Size, after.Root, head5.Root)
+	}
+	appended := vlogCLIJSON[vlogwire.AppendResult](t, node, proto, "append", "--database", dbName, "--log", logName, "--entry", entries[5])
+	if appended.FirstIndex != 5 || appended.Count != 1 {
+		t.Fatalf("[%s] append after the unseal = %+v, want first index 5, count 1", proto.name, appended)
+	}
+	head6 := vlogCLIJSON[vlogwire.Head](t, node, proto, "head", "--database", dbName, "--log", logName)
+	if head6.Size != 6 {
+		t.Fatalf("[%s] head after the append = size %d, want 6", proto.name, head6.Size)
+	}
+	resigned := vlogCLIJSON[vlogwire.SignHeadResult](t, node, proto, "sign-head", "--database", dbName, "--log", logName)
+	verifyBarrierCheckpoint(t, proto, created, *created.Key, resigned.Checkpoint, 6, head6.Root)
+	assertEntriesEncrypted(6)
+
+	// Dropped: the log goes with the database. The re-created database has
+	// a data directory of its own: drop leaves the caller's directory.
+	if out, err := runCLIProto(t, node, proto, "database", "drop", dbName); err != nil {
+		t.Fatalf("[%s] database drop %s: %v\noutput: %s", proto.name, dbName, err, out)
+	}
+	createVlogBarrierDatabase(t, node, proto, dbName, t.TempDir())
+	vlogCLIRefused(t, node, proto, "not found", "head", "--database", dbName, "--log", logName)
 }
 
 func testVlogBarrierTenantOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
