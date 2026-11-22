@@ -70,6 +70,10 @@ type BarrierRegistry struct {
 	// means the operating system. See WithDirectoryRemover.
 	remover DirectoryRemover
 
+	// moveAfterCopy is a same-package test hook run between copy and verify
+	// in RunMoveCopyStep; nil in production.
+	moveAfterCopy func(dst string)
+
 	// migrationRecoverer, when non-nil, reconciles an interrupted encryption
 	// migration recorded in a tenant's journal BEFORE the tenant barrier is
 	// built (see MigrationRecoverer). Guarded by poolMu like the other
