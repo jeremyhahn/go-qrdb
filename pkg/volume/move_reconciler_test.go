@@ -21,6 +21,9 @@ import (
 // scriptedRunner is a MoveStepRunner double: it records every step and
 // answers attempt k of a node's step with fail[node][k-1] (nil past the
 // script's end).
+// scriptedRunner fails a step's attempts from a script keyed
+// "<phase>/<node>", else "<node>" (every phase), and records every step it
+// is handed.
 type scriptedRunner struct {
 	fail  map[string][]error
 	steps []MoveStep
@@ -28,7 +31,10 @@ type scriptedRunner struct {
 
 func (r *scriptedRunner) RunMoveStep(_ context.Context, step MoveStep) error {
 	r.steps = append(r.steps, step)
-	script := r.fail[step.NodeID]
+	script, ok := r.fail[step.Phase+"/"+step.NodeID]
+	if !ok {
+		script = r.fail[step.NodeID]
+	}
 	if step.Attempt-1 < len(script) {
 		return script[step.Attempt-1]
 	}
@@ -55,8 +61,8 @@ func TestMoveReconciler_TwoPassesCopyBothNodes(t *testing.T) {
 		}
 	}
 	want := []MoveStep{
-		{TenantID: "acme", NodeID: "n1", FromPool: "fast", ToPool: "bulk", Attempt: 1},
-		{TenantID: "acme", NodeID: "n2", FromPool: "fast", ToPool: "bulk", Attempt: 1},
+		{TenantID: "acme", NodeID: "n1", FromPool: "fast", ToPool: "bulk", Attempt: 1, Phase: MoveStepPhaseCopy},
+		{TenantID: "acme", NodeID: "n2", FromPool: "fast", ToPool: "bulk", Attempt: 1, Phase: MoveStepPhaseCopy},
 	}
 	if !reflect.DeepEqual(runner.steps, want) {
 		t.Fatalf("steps = %+v, want %+v", runner.steps, want)
@@ -85,17 +91,26 @@ func TestMoveReconciler_AbortsAfterBoundedAttempts(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cat, kv, _ := newAdmittedMove(t)
-			runner := &scriptedRunner{fail: map[string][]error{"n1": {boom, boom, boom, boom}}}
+			runner := &scriptedRunner{fail: map[string][]error{
+				"copy/n1":  {boom, boom, boom, boom},
+				"abort/n1": {boom, boom, boom, boom},
+			}}
 			r := newTestReconciler(t, cat, runner, tc.opts...)
 			for pass := 0; pass < 5; pass++ {
 				if err := r.ReconcileOnce(context.Background()); err != nil {
 					t.Fatalf("ReconcileOnce pass %d: %v", pass, err)
 				}
 			}
-			if len(runner.steps) != tc.runs {
-				t.Fatalf("runs = %d, want %d", len(runner.steps), tc.runs)
+			var copies []MoveStep
+			for _, s := range runner.steps {
+				if s.Phase == MoveStepPhaseCopy {
+					copies = append(copies, s)
+				}
 			}
-			for i, s := range runner.steps {
+			if len(copies) != tc.runs {
+				t.Fatalf("copy runs = %d, want %d", len(copies), tc.runs)
+			}
+			for i, s := range copies {
 				if s.NodeID != "n1" || s.Attempt != i+1 {
 					t.Fatalf("step %d = %+v, want n1 attempt %d", i, s, i+1)
 				}
@@ -251,5 +266,226 @@ func TestMoveReconciler_LoggerReceivesTheFailure(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("log %q lacks %q", out, want)
 		}
+	}
+}
+
+// fakeRecorder records each call and fails the first len(fail) of them.
+type fakeRecorder struct {
+	calls [][3]string
+	fail  []error
+}
+
+func (f *fakeRecorder) RecordTenantPoolMoved(_ context.Context, tenantID, fromPool, toPool string) error {
+	f.calls = append(f.calls, [3]string{tenantID, fromPool, toPool})
+	if len(f.calls) <= len(f.fail) {
+		return f.fail[len(f.calls)-1]
+	}
+	return nil
+}
+
+func reconcilePasses(t *testing.T, r *MoveReconciler, n int) {
+	t.Helper()
+	for pass := 0; pass < n; pass++ {
+		if err := r.ReconcileOnce(context.Background()); err != nil {
+			t.Fatalf("ReconcileOnce pass %d: %v", pass, err)
+		}
+	}
+}
+
+func TestMoveReconciler_FullMoveCutsOverAndRetires(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	recorder := &fakeRecorder{}
+	cat.SetMoveCutoverRecorder(recorder)
+	runner := &scriptedRunner{}
+	r := newTestReconciler(t, cat, runner)
+	pathBefore := storedAssignment(t, kv, "acme").Path
+	reconcilePasses(t, r, 6)
+	want := []string{"copy/n1", "copy/n2", "retire/n1", "retire/n2"}
+	var got []string
+	for _, s := range runner.steps {
+		got = append(got, s.Phase+"/"+s.NodeID)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("steps = %v, want %v", got, want)
+	}
+	if !reflect.DeepEqual(recorder.calls, [][3]string{{"acme", "fast", "bulk"}}) {
+		t.Fatalf("recorder calls = %v, want one (acme, fast, bulk)", recorder.calls)
+	}
+	if m := storedMove(t, kv, "acme"); m != nil {
+		t.Fatalf("journal = %+v, want deleted", m)
+	}
+	a := storedAssignment(t, kv, "acme")
+	if a.Pool != "bulk" || a.Path != pathBefore || a.ReservedBytes != 200 {
+		t.Fatalf("assignment = %+v, want bulk", a)
+	}
+	if reservedOn(t, cat, "fast") != 0 || reservedOn(t, cat, "bulk") != 200 {
+		t.Fatal("reservations not moved to the destination")
+	}
+	// A pass with no journal left does nothing.
+	reconcilePasses(t, r, 1)
+	if len(runner.steps) != len(want) {
+		t.Fatalf("steps after the move = %d", len(runner.steps))
+	}
+}
+
+func TestMoveReconciler_CopiedWaitsForRecorder(t *testing.T) {
+	cat, kv, _ := copiedMove(t)
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	runner := &scriptedRunner{}
+	r := newTestReconciler(t, cat, runner, WithMoveReconcilerLogger(logger))
+	reconcilePasses(t, r, 2)
+	if m := storedMove(t, kv, "acme"); m.State != MoveStateCopied {
+		t.Fatalf("journal = %+v, want copied", m)
+	}
+	if n := strings.Count(buf.String(), "waits for the tenant recorder"); n != 2 {
+		t.Fatalf("wait logged %d times over 2 passes, want once per pass", n)
+	}
+	if len(runner.steps) != 0 {
+		t.Fatalf("steps = %+v, want none", runner.steps)
+	}
+	// Cut over but the recorder unwired again before the tenant is recorded:
+	// the move waits; once recorded, retire needs no recorder.
+	recorder := &fakeRecorder{}
+	cat.SetMoveCutoverRecorder(recorder)
+	reconcilePasses(t, r, 1)
+	cat.SetMoveCutoverRecorder(nil)
+	reconcilePasses(t, r, 1)
+	if m := storedMove(t, kv, "acme"); m.State != MoveStateCutover || m.TenantRecorded || len(recorder.calls) != 0 {
+		t.Fatalf("journal = %+v, calls %v, want cutover waiting", m, recorder.calls)
+	}
+	cat.SetMoveCutoverRecorder(recorder)
+	reconcilePasses(t, r, 1)
+	cat.SetMoveCutoverRecorder(nil)
+	reconcilePasses(t, r, 2)
+	if m := storedMove(t, kv, "acme"); m != nil {
+		t.Fatalf("journal = %+v, want retired and deleted", m)
+	}
+}
+
+func TestMoveReconciler_RecorderErrorRetried(t *testing.T) {
+	cat, kv, _ := copiedMove(t)
+	boom := errors.New("tenant store unavailable")
+	recorder := &fakeRecorder{fail: []error{boom}}
+	cat.SetMoveCutoverRecorder(recorder)
+	runner := &scriptedRunner{}
+	r := newTestReconciler(t, cat, runner)
+	reconcilePasses(t, r, 1) // cut over
+	if err := r.ReconcileOnce(context.Background()); !errors.Is(err, boom) {
+		t.Fatalf("ReconcileOnce error = %v, want the recorder failure", err)
+	}
+	if m := storedMove(t, kv, "acme"); m.State != MoveStateCutover || m.TenantRecorded {
+		t.Fatalf("journal = %+v, want cutover, not recorded", m)
+	}
+	reconcilePasses(t, r, 1)
+	if m := storedMove(t, kv, "acme"); !m.TenantRecorded || len(recorder.calls) != 2 {
+		t.Fatalf("journal = %+v, calls %d, want recorded on the retry", m, len(recorder.calls))
+	}
+}
+
+func TestMoveReconciler_RetireFailureRetried(t *testing.T) {
+	cat, kv, _ := cutOverMove(t)
+	boom := errors.New("source busy")
+	runner := &scriptedRunner{fail: map[string][]error{"retire/n1": {boom, boom, boom, boom}}}
+	r := newTestReconciler(t, cat, runner)
+	reconcilePasses(t, r, 4)
+	m := storedMove(t, kv, "acme")
+	if m.State != MoveStateCutover || m.StepNode != "n1" || m.StepAttempts != 4 || m.Error != boom.Error() {
+		t.Fatalf("journal = %+v, want cutover, n1 retrying", m)
+	}
+	reconcilePasses(t, r, 2)
+	if m := storedMove(t, kv, "acme"); m != nil {
+		t.Fatalf("journal = %+v, want deleted", m)
+	}
+}
+
+func TestMoveReconciler_CancelThenAbort(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	runner := &scriptedRunner{}
+	r := newTestReconciler(t, cat, runner)
+	ctx := context.Background()
+	assignBefore := mustGet(t, kv, AssignmentKey("acme"))
+	reconcilePasses(t, r, 1) // n1 copied
+	if _, err := cat.CancelMove(ctx, "acme"); err != nil {
+		t.Fatalf("CancelMove: %v", err)
+	}
+	reconcilePasses(t, r, 2)
+	want := []MoveStep{
+		{TenantID: "acme", NodeID: "n1", FromPool: "fast", ToPool: "bulk", Attempt: 1, Phase: MoveStepPhaseCopy},
+		{TenantID: "acme", NodeID: "n1", FromPool: "fast", ToPool: "bulk", Attempt: 1, Phase: MoveStepPhaseAbort, Copied: true},
+		{TenantID: "acme", NodeID: "n2", FromPool: "fast", ToPool: "bulk", Attempt: 1, Phase: MoveStepPhaseAbort},
+	}
+	if !reflect.DeepEqual(runner.steps, want) {
+		t.Fatalf("steps = %+v, want %+v", runner.steps, want)
+	}
+	if m := storedMove(t, kv, "acme"); m != nil {
+		t.Fatalf("journal = %+v, want deleted", m)
+	}
+	if !bytes.Equal(assignBefore, mustGet(t, kv, AssignmentKey("acme"))) {
+		t.Fatal("abort changed the assignment")
+	}
+	if reservedOn(t, cat, "bulk") != 0 || reservedOn(t, cat, "fast") != 200 {
+		t.Fatal("abort did not release the destination only")
+	}
+}
+
+func TestMoveReconciler_AbortFailureRetried(t *testing.T) {
+	cat, kv, _ := copiedMove(t)
+	if _, err := cat.CancelMove(context.Background(), "acme"); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("remove failed")
+	runner := &scriptedRunner{fail: map[string][]error{"abort/n1": {boom}}}
+	r := newTestReconciler(t, cat, runner)
+	reconcilePasses(t, r, 1)
+	if m := storedMove(t, kv, "acme"); m.StepNode != "n1" || m.StepAttempts != 1 || len(m.NodesCopied) != 2 {
+		t.Fatalf("journal = %+v, want n1 kept", m)
+	}
+	reconcilePasses(t, r, 2)
+	if m := storedMove(t, kv, "acme"); m != nil {
+		t.Fatalf("journal = %+v, want deleted", m)
+	}
+}
+
+func TestMoveReconciler_StepPhases(t *testing.T) {
+	ctx := context.Background()
+	phases := map[string]bool{}
+	// Copy then retire on one move.
+	cat, _, _ := newAdmittedMove(t)
+	cat.SetMoveCutoverRecorder(&fakeRecorder{})
+	runner := &scriptedRunner{}
+	reconcilePasses(t, newTestReconciler(t, cat, runner), 6)
+	// Abort on another.
+	cat2, _, _ := copiedMove(t)
+	if _, err := cat2.CancelMove(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	reconcilePasses(t, newTestReconciler(t, cat2, runner), 1)
+	for _, s := range runner.steps {
+		phases[s.Phase] = true
+	}
+	for _, p := range []string{MoveStepPhaseCopy, MoveStepPhaseRetire, MoveStepPhaseAbort} {
+		if !phases[p] {
+			t.Errorf("runner never saw phase %q (saw %v)", p, phases)
+		}
+	}
+}
+
+func TestMoveReconciler_PhaseCatalogErrorReturned(t *testing.T) {
+	cat, kv, _ := cutOverMove(t)
+	m := storedMove(t, kv, "acme")
+	m.NodesRetired = []string{"n1", "n2"}
+	putMove(t, kv, m)
+	r := newTestReconciler(t, cat, &scriptedRunner{})
+	err := r.ReconcileOnce(context.Background())
+	var target *MoveConflictError
+	if !errors.As(err, &target) {
+		t.Fatalf("ReconcileOnce error = %v, want the grant's *MoveConflictError", err)
+	}
+	// An unknown state is skipped.
+	m.State = "unknown"
+	putMove(t, kv, m)
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("ReconcileOnce over an unknown state: %v", err)
 	}
 }

@@ -11,6 +11,7 @@ package volume
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -259,4 +260,619 @@ func TestCatalog_MoveStep_BoundedRetries(t *testing.T) {
 	if after := mustGet(t, kv, MoveKey("acme")); !bytes.Equal(before, after) {
 		t.Fatal("journal written although every transaction failed")
 	}
+}
+
+// copiedMove admits acme's move fast -> bulk and copies both nodes.
+func copiedMove(t *testing.T) (*Catalog, *fakeKV, *fakeTx) {
+	t.Helper()
+	cat, kv, tx := newAdmittedMove(t)
+	ctx := context.Background()
+	for _, n := range []string{"n1", "n2"} {
+		if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+			t.Fatalf("GrantMoveStep: %v", err)
+		}
+		if _, err := cat.CompleteMoveStep(ctx, "acme", n); err != nil {
+			t.Fatalf("CompleteMoveStep %s: %v", n, err)
+		}
+	}
+	return cat, kv, tx
+}
+
+// cutOverMove is copiedMove cut over with the tenant recorded.
+func cutOverMove(t *testing.T) (*Catalog, *fakeKV, *fakeTx) {
+	t.Helper()
+	cat, kv, tx := copiedMove(t)
+	ctx := context.Background()
+	if _, err := cat.CutOverMove(ctx, "acme"); err != nil {
+		t.Fatalf("CutOverMove: %v", err)
+	}
+	if _, err := cat.MarkMoveTenantRecorded(ctx, "acme"); err != nil {
+		t.Fatalf("MarkMoveTenantRecorded: %v", err)
+	}
+	return cat, kv, tx
+}
+
+func storedAssignment(t *testing.T, kv *fakeKV, tenantID string) Assignment {
+	t.Helper()
+	var a Assignment
+	if err := json.Unmarshal(mustGet(t, kv, AssignmentKey(tenantID)), &a); err != nil {
+		t.Fatalf("decode assignment: %v", err)
+	}
+	return a
+}
+
+func reservedOn(t *testing.T, cat *Catalog, name string) int64 {
+	t.Helper()
+	p, _, err := cat.getPoolRaw(context.Background(), name)
+	if err != nil {
+		t.Fatalf("getPoolRaw %s: %v", name, err)
+	}
+	return p.ReservedBytes
+}
+
+func wantConflict(t *testing.T, what string, err error) {
+	t.Helper()
+	var target *MoveConflictError
+	if !errors.As(err, &target) {
+		t.Fatalf("%s error = %v, want *MoveConflictError", what, err)
+	}
+}
+
+func TestCatalog_CutOverMove(t *testing.T) {
+	cat, kv, _ := copiedMove(t)
+	ctx := context.Background()
+	before := storedAssignment(t, kv, "acme")
+	m, err := cat.CutOverMove(ctx, "acme")
+	if err != nil {
+		t.Fatalf("CutOverMove: %v", err)
+	}
+	if m.State != MoveStateCutover || m.SourceReservedBytes != 200 {
+		t.Fatalf("move = %+v, want cutover with SourceReservedBytes 200", m)
+	}
+	got := storedAssignment(t, kv, "acme")
+	want := Assignment{TenantID: "acme", Pool: "bulk", Path: before.Path, ReservedBytes: 200}
+	if got != want {
+		t.Fatalf("assignment = %+v, want %+v", got, want)
+	}
+	if s := storedMove(t, kv, "acme"); s.State != MoveStateCutover || s.SourceReservedBytes != 200 {
+		t.Fatalf("journal = %+v, want cutover", s)
+	}
+	raw := mustGet(t, kv, MoveKey("acme"))
+	again, err := cat.CutOverMove(ctx, "acme")
+	if err != nil || again.State != MoveStateCutover {
+		t.Fatalf("second CutOverMove = %+v, %v", again, err)
+	}
+	if !bytes.Equal(raw, mustGet(t, kv, MoveKey("acme"))) {
+		t.Fatal("second CutOverMove wrote the journal")
+	}
+	if reservedOn(t, cat, "fast") != 200 || reservedOn(t, cat, "bulk") != 200 {
+		t.Fatal("cut over changed a pool reservation")
+	}
+}
+
+func TestCatalog_CutOverMove_Refusals(t *testing.T) {
+	ctx := context.Background()
+	t.Run("admitted", func(t *testing.T) {
+		cat, _, _ := newAdmittedMove(t)
+		_, err := cat.CutOverMove(ctx, "acme")
+		wantConflict(t, "CutOverMove", err)
+	})
+	t.Run("copying", func(t *testing.T) {
+		cat, _, _ := newAdmittedMove(t)
+		if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := cat.CutOverMove(ctx, "acme")
+		wantConflict(t, "CutOverMove", err)
+	})
+	t.Run("pending node left", func(t *testing.T) {
+		cat, kv, _ := copiedMove(t)
+		m := storedMove(t, kv, "acme")
+		m.NodesPending = []string{"n3"}
+		putMove(t, kv, m)
+		_, err := cat.CutOverMove(ctx, "acme")
+		wantConflict(t, "CutOverMove", err)
+	})
+	t.Run("step held", func(t *testing.T) {
+		cat, kv, _ := copiedMove(t)
+		m := storedMove(t, kv, "acme")
+		m.StepNode = "n1"
+		putMove(t, kv, m)
+		_, err := cat.CutOverMove(ctx, "acme")
+		wantConflict(t, "CutOverMove", err)
+	})
+	t.Run("assignment changed", func(t *testing.T) {
+		cat, kv, _ := copiedMove(t)
+		a := storedAssignment(t, kv, "acme")
+		a.Pool = "other"
+		data, _ := json.Marshal(a)
+		if err := kv.Put(ctx, AssignmentKey("acme"), data); err != nil {
+			t.Fatal(err)
+		}
+		_, err := cat.CutOverMove(ctx, "acme")
+		wantConflict(t, "CutOverMove", err)
+	})
+	t.Run("assignment missing", func(t *testing.T) {
+		cat, kv, _ := copiedMove(t)
+		kv.mu.Lock()
+		delete(kv.data, AssignmentKey("acme"))
+		kv.mu.Unlock()
+		var target *AssignmentNotFoundError
+		if _, err := cat.CutOverMove(ctx, "acme"); !errors.As(err, &target) {
+			t.Fatalf("CutOverMove error = %v, want *AssignmentNotFoundError", err)
+		}
+	})
+	t.Run("corrupt assignment", func(t *testing.T) {
+		cat, kv, _ := copiedMove(t)
+		if err := kv.Put(ctx, AssignmentKey("acme"), []byte("{not json")); err != nil {
+			t.Fatal(err)
+		}
+		var target *CorruptRecordError
+		if _, err := cat.CutOverMove(ctx, "acme"); !errors.As(err, &target) {
+			t.Fatalf("CutOverMove error = %v, want *CorruptRecordError", err)
+		}
+	})
+	t.Run("no journal and empty tenant", func(t *testing.T) {
+		cat, _, _ := newMoveTestCatalog(t)
+		var nf *MoveNotFoundError
+		if _, err := cat.CutOverMove(ctx, "acme"); !errors.As(err, &nf) {
+			t.Fatalf("CutOverMove error = %v, want *MoveNotFoundError", err)
+		}
+		var inv *InvalidMoveRequestError
+		if _, err := cat.CutOverMove(ctx, ""); !errors.As(err, &inv) {
+			t.Fatalf("CutOverMove error = %v, want *InvalidMoveRequestError", err)
+		}
+	})
+	t.Run("store failures", func(t *testing.T) {
+		cat, kv, tx := copiedMove(t)
+		assignBefore := mustGet(t, kv, AssignmentKey("acme"))
+		moveBefore := mustGet(t, kv, MoveKey("acme"))
+		boom := errors.New("execute failed")
+		tx.failExecute = boom
+		if _, err := cat.CutOverMove(ctx, "acme"); !errors.Is(err, boom) {
+			t.Fatalf("CutOverMove error = %v, want the execute failure", err)
+		}
+		if !bytes.Equal(assignBefore, mustGet(t, kv, AssignmentKey("acme"))) || !bytes.Equal(moveBefore, mustGet(t, kv, MoveKey("acme"))) {
+			t.Fatal("a failed transaction wrote a record")
+		}
+		tx.failExecute = nil
+		tx.forceFailures = maxCASRetries
+		var jc *MoveJournalConflictError
+		if _, err := cat.CutOverMove(ctx, "acme"); !errors.As(err, &jc) {
+			t.Fatalf("CutOverMove under sustained conflict error = %v, want *MoveJournalConflictError", err)
+		}
+		getBoom := errors.New("get failed")
+		kv.failGet = getBoom
+		if _, err := cat.CutOverMove(ctx, "acme"); !errors.Is(err, getBoom) {
+			t.Fatalf("CutOverMove error = %v, want the get failure", err)
+		}
+	})
+	t.Run("assignment get failure", func(t *testing.T) {
+		cat, kv, _ := copiedMove(t)
+		// The journal decodes; the assignment read is the one that fails.
+		cat.kv = &getFailAfterKV{fakeKV: kv, key: AssignmentKey("acme"), err: errors.New("assignment get failed")}
+		if _, err := cat.CutOverMove(ctx, "acme"); err == nil || err.Error() != "assignment get failed" {
+			t.Fatalf("CutOverMove error = %v, want the assignment get failure", err)
+		}
+	})
+}
+
+// getFailAfterKV fails the Get of one key and serves the rest from fakeKV.
+type getFailAfterKV struct {
+	*fakeKV
+	key string
+	err error
+}
+
+func (g *getFailAfterKV) Get(ctx context.Context, key string) ([]byte, error) {
+	if key == g.key {
+		return nil, g.err
+	}
+	return g.fakeKV.Get(ctx, key)
+}
+
+func putMove(t *testing.T, kv *fakeKV, m *Move) {
+	t.Helper()
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kv.Put(context.Background(), MoveKey(m.TenantID), data); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCatalog_MarkMoveTenantRecorded(t *testing.T) {
+	ctx := context.Background()
+	cat, kv, _ := copiedMove(t)
+	_, err := cat.MarkMoveTenantRecorded(ctx, "acme")
+	wantConflict(t, "MarkMoveTenantRecorded on copied", err)
+	if _, err := cat.CutOverMove(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	m, err := cat.MarkMoveTenantRecorded(ctx, "acme")
+	if err != nil || !m.TenantRecorded || !storedMove(t, kv, "acme").TenantRecorded {
+		t.Fatalf("MarkMoveTenantRecorded = %+v, %v", m, err)
+	}
+}
+
+func TestCatalog_RetireSteps(t *testing.T) {
+	cat, kv, _ := cutOverMove(t)
+	ctx := context.Background()
+	for i, n := range []string{"n1", "n2"} {
+		m, err := cat.GrantRetireStep(ctx, "acme")
+		if err != nil || m.StepNode != n {
+			t.Fatalf("GrantRetireStep %d = %+v, %v, want %s", i, m, err, n)
+		}
+		// A granted step is returned again with no write.
+		if again, err := cat.GrantRetireStep(ctx, "acme"); err != nil || again.StepNode != n {
+			t.Fatalf("second GrantRetireStep = %+v, %v", again, err)
+		}
+		m, err = cat.CompleteRetireStep(ctx, "acme", n)
+		if err != nil {
+			t.Fatalf("CompleteRetireStep %s: %v", n, err)
+		}
+		if i == 0 {
+			if s := storedMove(t, kv, "acme"); s == nil || !reflect.DeepEqual(s.NodesRetired, []string{"n1"}) || s.StepNode != "" {
+				t.Fatalf("journal after n1 = %+v", s)
+			}
+			if reservedOn(t, cat, "fast") != 200 {
+				t.Fatal("source released before every node retired")
+			}
+		} else if !reflect.DeepEqual(m.NodesRetired, []string{"n1", "n2"}) {
+			t.Fatalf("final move = %+v", m)
+		}
+	}
+	if s := storedMove(t, kv, "acme"); s != nil {
+		t.Fatalf("journal = %+v, want deleted", s)
+	}
+	if got := reservedOn(t, cat, "fast"); got != 0 {
+		t.Fatalf("fast reserved = %d, want 0", got)
+	}
+	if got := reservedOn(t, cat, "bulk"); got != 200 {
+		t.Fatalf("bulk reserved = %d, want 200", got)
+	}
+	if err := cat.Release(ctx, "acme"); err != nil {
+		t.Fatalf("Release after the move: %v", err)
+	}
+	if got := reservedOn(t, cat, "bulk"); got != 0 {
+		t.Fatalf("bulk reserved after Release = %d, want 0", got)
+	}
+}
+
+func TestCatalog_RetireStep_SourceFloorZero(t *testing.T) {
+	cat, kv, _ := cutOverMove(t)
+	ctx := context.Background()
+	m := storedMove(t, kv, "acme")
+	m.SourceReservedBytes = 5000
+	putMove(t, kv, m)
+	for _, n := range []string{"n1", "n2"} {
+		if _, err := cat.GrantRetireStep(ctx, "acme"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cat.CompleteRetireStep(ctx, "acme", n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := reservedOn(t, cat, "fast"); got != 0 {
+		t.Fatalf("fast reserved = %d, want floor 0", got)
+	}
+}
+
+func TestCatalog_RetireStep_NeedsTenantRecorded(t *testing.T) {
+	cat, _, _ := copiedMove(t)
+	ctx := context.Background()
+	_, err := cat.GrantRetireStep(ctx, "acme")
+	wantConflict(t, "GrantRetireStep on copied", err)
+	if _, err := cat.CutOverMove(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = cat.GrantRetireStep(ctx, "acme")
+	wantConflict(t, "GrantRetireStep before the tenant is recorded", err)
+}
+
+func TestCatalog_RetireStep_FailureStaysCutover(t *testing.T) {
+	cat, kv, _ := cutOverMove(t)
+	ctx := context.Background()
+	if _, err := cat.GrantRetireStep(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= DefaultMoveStepAttempts+2; i++ {
+		m, err := cat.FailRetireStep(ctx, "acme", "n1", "disk busy")
+		if err != nil {
+			t.Fatalf("FailRetireStep %d: %v", i, err)
+		}
+		if m.State != MoveStateCutover || m.StepNode != "n1" || m.StepAttempts != i || m.Error != "disk busy" {
+			t.Fatalf("move after %d failures = %+v", i, m)
+		}
+	}
+	_, err := cat.FailRetireStep(ctx, "acme", "n2", "x")
+	wantConflict(t, "FailRetireStep by a node without the step", err)
+	_, err = cat.CompleteRetireStep(ctx, "acme", "n2")
+	wantConflict(t, "CompleteRetireStep by a node without the step", err)
+	if _, err := cat.CompleteRetireStep(ctx, "acme", "n1"); err != nil {
+		t.Fatal(err)
+	}
+	if s := storedMove(t, kv, "acme"); s.StepAttempts != 0 || s.Error != "" {
+		t.Fatalf("journal after success = %+v, want the count cleared", s)
+	}
+	m := storedMove(t, kv, "acme")
+	m.NodesRetired = append(m.NodesRetired, "n2")
+	putMove(t, kv, m)
+	_, err = cat.GrantRetireStep(ctx, "acme")
+	wantConflict(t, "GrantRetireStep with every node retired", err)
+}
+
+func TestCatalog_CancelMove(t *testing.T) {
+	ctx := context.Background()
+	setups := map[string]func(t *testing.T) (*Catalog, *fakeKV, *fakeTx){
+		"admitted": newAdmittedMove,
+		"copying": func(t *testing.T) (*Catalog, *fakeKV, *fakeTx) {
+			cat, kv, tx := newAdmittedMove(t)
+			if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cat.FailMoveStep(ctx, "acme", "n1", "x", 0); err != nil {
+				t.Fatal(err)
+			}
+			return cat, kv, tx
+		},
+		"copied": copiedMove,
+	}
+	for name, setup := range setups {
+		t.Run(name, func(t *testing.T) {
+			cat, kv, _ := setup(t)
+			m, err := cat.CancelMove(ctx, "acme")
+			if err != nil {
+				t.Fatalf("CancelMove: %v", err)
+			}
+			if m.State != MoveStateAborting || m.StepNode != "" || m.StepAttempts != 0 || m.Error != "cancelled by operator" {
+				t.Fatalf("move = %+v, want aborting, step released", m)
+			}
+			raw := mustGet(t, kv, MoveKey("acme"))
+			if again, err := cat.CancelMove(ctx, "acme"); err != nil || again.State != MoveStateAborting {
+				t.Fatalf("second CancelMove = %+v, %v", again, err)
+			}
+			if !bytes.Equal(raw, mustGet(t, kv, MoveKey("acme"))) {
+				t.Fatal("cancelling an aborting move wrote the journal")
+			}
+		})
+	}
+	t.Run("cutover", func(t *testing.T) {
+		cat, _, _ := cutOverMove(t)
+		_, err := cat.CancelMove(ctx, "acme")
+		wantConflict(t, "CancelMove on cutover", err)
+	})
+	t.Run("missing and empty", func(t *testing.T) {
+		cat, _, _ := newMoveTestCatalog(t)
+		var nf *MoveNotFoundError
+		if _, err := cat.CancelMove(ctx, "acme"); !errors.As(err, &nf) {
+			t.Fatalf("CancelMove error = %v, want *MoveNotFoundError", err)
+		}
+		var inv *InvalidMoveRequestError
+		if _, err := cat.CancelMove(ctx, ""); !errors.As(err, &inv) {
+			t.Fatalf("CancelMove error = %v, want *InvalidMoveRequestError", err)
+		}
+	})
+	t.Run("store failures", func(t *testing.T) {
+		cat, kv, tx := newAdmittedMove(t)
+		before := mustGet(t, kv, MoveKey("acme"))
+		boom := errors.New("execute failed")
+		tx.failExecute = boom
+		if _, err := cat.CancelMove(ctx, "acme"); !errors.Is(err, boom) {
+			t.Fatalf("CancelMove error = %v, want the execute failure", err)
+		}
+		if !bytes.Equal(before, mustGet(t, kv, MoveKey("acme"))) {
+			t.Fatal("a failed transaction wrote the journal")
+		}
+		getBoom := errors.New("get failed")
+		kv.failGet = getBoom
+		if _, err := cat.CancelMove(ctx, "acme"); !errors.Is(err, getBoom) {
+			t.Fatalf("CancelMove error = %v, want the get failure", err)
+		}
+	})
+}
+
+func TestCatalog_CancelMove_InFlightStepRefused(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.CancelMove(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := cat.CompleteMoveStep(ctx, "acme", "n1")
+	wantConflict(t, "CompleteMoveStep after cancel", err)
+	_, err = cat.FailMoveStep(ctx, "acme", "n1", "x", 0)
+	wantConflict(t, "FailMoveStep after cancel", err)
+	if s := storedMove(t, kv, "acme"); s.State != MoveStateAborting || !reflect.DeepEqual(s.NodesPending, []string{"n1", "n2"}) {
+		t.Fatalf("journal = %+v, want aborting with both nodes pending", s)
+	}
+}
+
+func TestCatalog_AbortSteps(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.CompleteMoveStep(ctx, "acme", "n1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.CancelMove(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	assignBefore := mustGet(t, kv, AssignmentKey("acme"))
+	for i, n := range []string{"n1", "n2"} {
+		m, err := cat.GrantAbortStep(ctx, "acme")
+		if err != nil || m.StepNode != n {
+			t.Fatalf("GrantAbortStep %d = %+v, %v, want %s", i, m, err, n)
+		}
+		if again, err := cat.GrantAbortStep(ctx, "acme"); err != nil || again.StepNode != n {
+			t.Fatalf("second GrantAbortStep = %+v, %v", again, err)
+		}
+		if _, err := cat.CompleteAbortStep(ctx, "acme", n); err != nil {
+			t.Fatalf("CompleteAbortStep %s: %v", n, err)
+		}
+		if i == 0 {
+			s := storedMove(t, kv, "acme")
+			if len(s.NodesCopied) != 0 || !reflect.DeepEqual(s.NodesPending, []string{"n2"}) {
+				t.Fatalf("journal after n1 = %+v", s)
+			}
+			if reservedOn(t, cat, "bulk") != 200 {
+				t.Fatal("destination released before every node aborted")
+			}
+		}
+	}
+	if s := storedMove(t, kv, "acme"); s != nil {
+		t.Fatalf("journal = %+v, want deleted", s)
+	}
+	if !bytes.Equal(assignBefore, mustGet(t, kv, AssignmentKey("acme"))) {
+		t.Fatal("abort wrote the assignment")
+	}
+	if got := reservedOn(t, cat, "bulk"); got != 0 {
+		t.Fatalf("bulk reserved = %d, want 0", got)
+	}
+	if got := reservedOn(t, cat, "fast"); got != 200 {
+		t.Fatalf("fast reserved = %d, want 200", got)
+	}
+}
+
+func TestCatalog_AbortStep_Refusals(t *testing.T) {
+	ctx := context.Background()
+	cat, kv, _ := newAdmittedMove(t)
+	_, err := cat.GrantAbortStep(ctx, "acme")
+	wantConflict(t, "GrantAbortStep on admitted", err)
+	if _, err := cat.CancelMove(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	m := storedMove(t, kv, "acme")
+	m.NodesPending = nil
+	putMove(t, kv, m)
+	_, err = cat.GrantAbortStep(ctx, "acme")
+	wantConflict(t, "GrantAbortStep with no node left", err)
+	var inv *InvalidMoveRequestError
+	if _, err := cat.CompleteAbortStep(ctx, "acme", ""); !errors.As(err, &inv) {
+		t.Fatalf("CompleteAbortStep error = %v, want *InvalidMoveRequestError", err)
+	}
+	if _, err := cat.FailAbortStep(ctx, "acme", "", "x"); !errors.As(err, &inv) {
+		t.Fatalf("FailAbortStep error = %v, want *InvalidMoveRequestError", err)
+	}
+	if _, err := cat.CompleteRetireStep(ctx, "acme", ""); !errors.As(err, &inv) {
+		t.Fatalf("CompleteRetireStep error = %v, want *InvalidMoveRequestError", err)
+	}
+	if _, err := cat.GrantAbortStep(ctx, ""); !errors.As(err, &inv) {
+		t.Fatalf("GrantAbortStep error = %v, want *InvalidMoveRequestError", err)
+	}
+	var nf *MoveNotFoundError
+	if _, err := cat.GrantRetireStep(ctx, "nobody"); !errors.As(err, &nf) {
+		t.Fatalf("GrantRetireStep error = %v, want *MoveNotFoundError", err)
+	}
+}
+
+func TestCatalog_AbortStep_FailureKeepsTheNode(t *testing.T) {
+	cat, kv, _ := copiedMove(t)
+	ctx := context.Background()
+	if _, err := cat.CancelMove(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.GrantAbortStep(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= DefaultMoveStepAttempts+2; i++ {
+		m, err := cat.FailAbortStep(ctx, "acme", "n1", "remove failed")
+		if err != nil {
+			t.Fatalf("FailAbortStep %d: %v", i, err)
+		}
+		if m.State != MoveStateAborting || m.StepNode != "n1" || m.StepAttempts != i ||
+			!reflect.DeepEqual(m.NodesCopied, []string{"n1", "n2"}) {
+			t.Fatalf("move after %d failures = %+v", i, m)
+		}
+	}
+	if s := storedMove(t, kv, "acme"); s.Error != "remove failed" {
+		t.Fatalf("journal = %+v, want the failure recorded", s)
+	}
+	_, err := cat.CompleteAbortStep(ctx, "acme", "n2")
+	wantConflict(t, "CompleteAbortStep by a node without the step", err)
+}
+
+func TestCatalog_PhaseSteps_StoreFailures(t *testing.T) {
+	ctx := context.Background()
+	t.Run("get", func(t *testing.T) {
+		cat, kv, _ := cutOverMove(t)
+		boom := errors.New("get failed")
+		kv.failGet = boom
+		calls := map[string]func() error{
+			"GrantRetireStep":        func() error { _, err := cat.GrantRetireStep(ctx, "acme"); return err },
+			"CompleteRetireStep":     func() error { _, err := cat.CompleteRetireStep(ctx, "acme", "n1"); return err },
+			"FailRetireStep":         func() error { _, err := cat.FailRetireStep(ctx, "acme", "n1", "x"); return err },
+			"GrantAbortStep":         func() error { _, err := cat.GrantAbortStep(ctx, "acme"); return err },
+			"CompleteAbortStep":      func() error { _, err := cat.CompleteAbortStep(ctx, "acme", "n1"); return err },
+			"FailAbortStep":          func() error { _, err := cat.FailAbortStep(ctx, "acme", "n1", "x"); return err },
+			"MarkMoveTenantRecorded": func() error { _, err := cat.MarkMoveTenantRecorded(ctx, "acme"); return err },
+		}
+		for name, call := range calls {
+			if err := call(); !errors.Is(err, boom) {
+				t.Errorf("%s error = %v, want the get failure", name, err)
+			}
+		}
+	})
+	t.Run("execute", func(t *testing.T) {
+		for _, phase := range []string{MoveStepPhaseRetire, MoveStepPhaseAbort} {
+			var cat *Catalog
+			var kv *fakeKV
+			var tx *fakeTx
+			grant, complete := (*Catalog).GrantRetireStep, (*Catalog).CompleteRetireStep
+			if phase == MoveStepPhaseRetire {
+				cat, kv, tx = cutOverMove(t)
+			} else {
+				cat, kv, tx = copiedMove(t)
+				if _, err := cat.CancelMove(ctx, "acme"); err != nil {
+					t.Fatal(err)
+				}
+				grant, complete = (*Catalog).GrantAbortStep, (*Catalog).CompleteAbortStep
+			}
+			before := mustGet(t, kv, MoveKey("acme"))
+			boom := errors.New("execute failed")
+			tx.failExecute = boom
+			if _, err := grant(cat, ctx, "acme"); !errors.Is(err, boom) {
+				t.Fatalf("%s grant error = %v, want the execute failure", phase, err)
+			}
+			if !bytes.Equal(before, mustGet(t, kv, MoveKey("acme"))) {
+				t.Fatalf("%s: a failed transaction wrote the journal", phase)
+			}
+			// The final step's release transaction fails: nothing is written.
+			tx.failExecute = nil
+			for _, n := range []string{"n1", "n2"} {
+				if _, err := grant(cat, ctx, "acme"); err != nil {
+					t.Fatal(err)
+				}
+				if n == "n2" {
+					break
+				}
+				if _, err := complete(cat, ctx, "acme", n); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before = mustGet(t, kv, MoveKey("acme"))
+			tx.failExecute = boom
+			if _, err := complete(cat, ctx, "acme", "n2"); !errors.Is(err, boom) {
+				t.Fatalf("%s final complete error = %v, want the execute failure", phase, err)
+			}
+			if !bytes.Equal(before, mustGet(t, kv, MoveKey("acme"))) {
+				t.Fatalf("%s: a failed release wrote the journal", phase)
+			}
+			tx.failExecute = nil
+			// The released pool is gone: the final step returns its error.
+			kv.mu.Lock()
+			delete(kv.data, PoolKey("fast"))
+			delete(kv.data, PoolKey("bulk"))
+			kv.mu.Unlock()
+			var pnf *PoolNotFoundError
+			if _, err := complete(cat, ctx, "acme", "n2"); !errors.As(err, &pnf) {
+				t.Fatalf("%s final complete error = %v, want *PoolNotFoundError", phase, err)
+			}
+		}
+	})
 }

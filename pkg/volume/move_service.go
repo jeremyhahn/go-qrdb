@@ -36,6 +36,27 @@ func (c *Catalog) SetMoveStartAuditor(a MoveStartAuditor) {
 	c.moveAuditor.Store(&moveAuditorBox{a: a})
 }
 
+// moveRecorderBox lets an interface value sit in an atomic.Pointer.
+type moveRecorderBox struct{ r MoveCutoverRecorder }
+
+// SetMoveCutoverRecorder wires the tenant layer's half of a move's cut
+// over. nil unwires it; the move reconciler then leaves copied moves
+// copied. It is safe to call while moves are served.
+func (c *Catalog) SetMoveCutoverRecorder(r MoveCutoverRecorder) {
+	if r == nil {
+		c.moveRecorder.Store(nil)
+		return
+	}
+	c.moveRecorder.Store(&moveRecorderBox{r: r})
+}
+
+func (c *Catalog) currentMoveCutoverRecorder() MoveCutoverRecorder {
+	if b := c.moveRecorder.Load(); b != nil {
+		return b.r
+	}
+	return nil
+}
+
 func (c *Catalog) currentMoveAdmission() MoveAdmission {
 	if b := c.moveAdmission.Load(); b != nil {
 		return b.a

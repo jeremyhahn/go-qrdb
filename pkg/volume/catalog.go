@@ -84,6 +84,7 @@ type Catalog struct {
 	// seams MoveTenant orchestrates through (move_service.go).
 	moveAdmission atomic.Pointer[moveAdmissionBox]
 	moveAuditor   atomic.Pointer[moveAuditorBox]
+	moveRecorder  atomic.Pointer[moveRecorderBox]
 }
 
 // Compile-time proof that Catalog satisfies both exported seams.

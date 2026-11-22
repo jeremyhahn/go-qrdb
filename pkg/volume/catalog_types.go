@@ -189,6 +189,16 @@ type Move struct {
 	// tenant's Assignment.ReservedBytes at that moment. A later abort
 	// releases it; cut over keeps it as the tenant's reservation.
 	ReservedBytes int64 `json:"reservedBytes"`
+	// NodesRetired is every node of NodesCopied that removed its source
+	// copy after cut over (decision Q7 A). NodesCopied keeps its meaning.
+	NodesRetired []string `json:"nodesRetired,omitempty"`
+	// SourceReservedBytes is the source assignment's ReservedBytes,
+	// recorded at cut over and released from FromPool once every node
+	// retired its source.
+	SourceReservedBytes int64 `json:"sourceReservedBytes,omitempty"`
+	// TenantRecorded reports that the tenant record names ToPool (the
+	// wired MoveCutoverRecorder ran after cut over); retire waits on it.
+	TenantRecorded bool `json:"tenantRecorded,omitempty"`
 	// AdmittedAt is when AdmitMove wrote the journal.
 	AdmittedAt time.Time `json:"admittedAt"`
 	// UpdatedAt is when the journal last changed state or step.
@@ -205,9 +215,27 @@ const MoveStateCopying = "copying"
 // MoveStateCopied is a move with no node pending: ready for cut over.
 const MoveStateCopied = "copied"
 
-// MoveStateAborting is a move whose node step failed its attempts; the
-// abort itself is a later slice.
+// MoveStateCutover is a move past its commit point (Catalog.CutOverMove):
+// the assignment names ToPool and the move only goes forward, retiring
+// each node's source copy (decision Q7 A).
+const MoveStateCutover = "cutover"
+
+// MoveStateAborting is a move rolled back before cut over, because a node
+// step failed its attempts or the operator cancelled it (decision Q8 A):
+// abort steps remove the destination copies one node at a time, then the
+// destination reservation is released and the journal deleted.
 const MoveStateAborting = "aborting"
+
+// The phases of a MoveStep.
+const (
+	// MoveStepPhaseCopy copies the tenant to the destination on one node.
+	MoveStepPhaseCopy = "copy"
+	// MoveStepPhaseAbort removes the destination copy on one node.
+	MoveStepPhaseAbort = "abort"
+	// MoveStepPhaseRetire removes the source copy on one node after cut
+	// over.
+	MoveStepPhaseRetire = "retire"
+)
 
 // DefaultMoveStepAttempts bounds the attempts of one node's step before the
 // move aborts (decision Q6 A's bounded retry).
@@ -251,6 +279,16 @@ type MoveStartAuditor interface {
 	BeginMoveStart(ctx context.Context, req MoveTenantRequest) (settle func(*Move, error), err error)
 }
 
+// MoveCutoverRecorder is the tenant layer's half of a move's cut over: it
+// makes the tenant record name toPool (a record already naming toPool is
+// left as is). pkg/volume cannot import pkg/tenant, so the tenant layer
+// implements it and the composition sets it with
+// Catalog.SetMoveCutoverRecorder. A tenant naming neither pool returns
+// *MoveConflictError.
+type MoveCutoverRecorder interface {
+	RecordTenantPoolMoved(ctx context.Context, tenantID, fromPool, toPool string) error
+}
+
 // MoveStep is one node's step of a tenant move, as the move reconciler hands
 // it to a MoveStepRunner. Attempt is 1-based.
 type MoveStep struct {
@@ -259,14 +297,23 @@ type MoveStep struct {
 	FromPool string
 	ToPool   string
 	Attempt  int
+	// Phase is MoveStepPhaseCopy, MoveStepPhaseAbort or
+	// MoveStepPhaseRetire.
+	Phase string
+	// Copied, on an abort step, reports that the node had finished its
+	// copy step: its source is stale and must be made authoritative again
+	// before the destination copy goes.
+	Copied bool
 }
 
-// MoveStepRunner runs one node's step of a tenant move on that node: close
-// the tenant's stores there, copy, verify, reopen from the destination and
-// catch up ("The move, phase by phase" steps 2-3,
-// docs/decisions/volume-pool-tenant-moves.md). A nil error completes the
-// step; any error counts as one failed attempt. The node side implements it
-// in a later slice.
+// MoveStepRunner runs one node's step of a tenant move on that node
+// ("The move, phase by phase" and "Failure and rollback",
+// docs/decisions/volume-pool-tenant-moves.md). A copy step closes the
+// tenant's stores there, copies, verifies, reopens from the destination
+// and catches up; an abort step removes the destination copy (after making
+// the source authoritative again when Copied); a retire step removes the
+// source copy. A nil error completes the step; any error counts as one
+// failed attempt. The node side implements every phase in a later slice.
 type MoveStepRunner interface {
 	RunMoveStep(ctx context.Context, step MoveStep) error
 }
