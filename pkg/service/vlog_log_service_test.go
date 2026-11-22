@@ -197,11 +197,10 @@ func (f failingLogDatabases) GetOwned(string, string) (*database.Database, error
 
 var _ LogDatabaseLookup = failingLogDatabases{}
 
-// TestLogService_RefusesABarrierDatabase: a barrier-enabled database's log has
-// no store under the database's key, so every log operation naming one is
-// refused with *BarrierDatabaseLogNotSupportedError, whatever its backend and
-// although its barrier is unsealed, before a key is minted or a command
-// proposed or read.
+// TestLogService_ServesABarrierDatabase: a barrier-enabled pebble database's
+// logs are applied to and read from the database's own barrier store, never
+// through the tenant's group, and nothing the log holds reaches the disk in
+// plaintext: not an entry, not the log's signing key.
 func TestLogService_ServesABarrierDatabase(t *testing.T) {
 	dir := t.TempDir()
 	mgr := newBarrierDatabaseManager(t, dir)
