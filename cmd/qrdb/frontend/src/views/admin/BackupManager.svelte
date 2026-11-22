@@ -92,6 +92,19 @@
     return `${value.toFixed(1)} ${units[unitIndex]}`;
   }
 
+  // formatDurationMs renders the SDK's millisecond duration the way the
+  // server's duration string read before (e.g. "850ms", "1.5s", "2m3.4s").
+  function formatDurationMs(ms: number): string {
+    if (!Number.isFinite(ms) || ms <= 0) return "0s";
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    const totalSeconds = ms / 1000;
+    if (totalSeconds < 60) return `${Number(totalSeconds.toFixed(3))}s`;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = Number((totalSeconds - minutes * 60).toFixed(3));
+    if (minutes < 60) return `${minutes}m${seconds}s`;
+    return `${Math.floor(minutes / 60)}h${minutes % 60}m${seconds}s`;
+  }
+
   function resetCreateForm(): void {
     newDestination = "";
     newCompression = "zstd";
@@ -178,7 +191,7 @@
       const errorCount = (result.errors ?? []).length;
       showToast(
         errorCount === 0 ? "success" : "warning",
-        `Restore completed: ${result.shardsRestored} shard(s) restored in ${result.duration}${errorCount > 0 ? `, ${errorCount} error(s)` : ""}.`,
+        `Restore completed: ${result.shardsRestored} shard(s) restored in ${formatDurationMs(result.durationMs)}${errorCount > 0 ? `, ${errorCount} error(s)` : ""}.`,
       );
       showRestoreModal = false;
       restoreDecryptionKeyRef = "";
@@ -301,7 +314,7 @@
                   <tr><th>Compression</th><td>{selectedBackup.compression}</td></tr>
                   <tr><th>Encryption</th><td>{selectedBackup.encryption}</td></tr>
                   <tr><th>Key Provider</th><td class="font-mono text-xs break-all">{selectedBackup.keyProviderId ?? ""}</td></tr>
-                  <tr><th>Duration</th><td>{selectedBackup.duration}</td></tr>
+                  <tr><th>Duration</th><td>{formatDurationMs(selectedBackup.durationMs)}</td></tr>
                   <tr><th>Error</th><td class="text-xs break-all">{selectedBackup.errorMessage}</td></tr>
                   <tr>
                     <th>Metadata</th>
