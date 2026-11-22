@@ -92,6 +92,8 @@ bumps the format major version and cannot be read by an older Pebble.
 WAL must be durable on a local disk exactly like `backend: pebble`; one rule
 for both modes is simpler and costs nothing. C is not available.
 
+**Decided (convention, ruling 109): A.**
+
 ### OS-3 — Ownership: a prefix per Pebble instance, or shared across replicas?
 
 - **A: one bucket prefix and one `CreatorID` per owning instance, never
@@ -148,6 +150,8 @@ chunks so a future ranged read can decrypt only the chunks it covers.
 rather than misread it; B and C keep the deleted engine as a compatibility
 surface, which the project does not do, and backup/restore already moves data
 between formats.
+
+**Decided (convention, ruling 109): A.**
 
 ### OS-6 — go-objstore has no ranged read
 

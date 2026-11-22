@@ -475,8 +475,11 @@ the same status.
 > this contract assumes. It is work in progress under the SPEC row
 > `object-storage-lsm`. Only the unwired Pebble `remote.Storage` adapter
 > over go-objstore (`pkg/storage/objstore/remote.go`) and its barrier-AEAD
-> encrypting wrapper (`pkg/storage/objstore/encremote.go`, OS-4 C) exist;
-> **nothing else below is implemented**, and no configuration key, type or
+> encrypting wrapper (`pkg/storage/objstore/encremote.go`, OS-4 C), the
+> `pkg/storage/pebble` `WithRemote` option with its creator-ID marker file
+> (`pkg/storage/pebble/remote.go`) and the store format marker
+> `objstore.EnsureLSMFormat` (`pkg/storage/objstore/lsmformat.go`, OS-5 A)
+> exist, all unwired; **nothing else below is implemented**, and no configuration key, type or
 > error named below exists yet.
 
 ### Exported surface (target)
@@ -511,8 +514,8 @@ func WithRemote(store remote.Storage, locator remote.Locator, strategy remote.Cr
 
 A `*pebble.DB` opened with `WithRemote` is constructed with a `CreatorID`
 (OS-3): one per owning instance, generated once and persisted as a small local
-marker file beside the WAL/MANIFEST directory — never derived from a qrdb
-key, never shared between instances.
+marker file, `QRDB-CREATORID` in the data directory beside the WAL/MANIFEST —
+never derived from a qrdb key, never shared between instances.
 
 ### Invariants (target, additive to the ones above)
 
