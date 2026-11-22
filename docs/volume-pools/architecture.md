@@ -265,13 +265,14 @@ Built in the catalog, not wired in the daemon. `volume.Catalog.MoveTenant`
 admits a move through the tenant layer (`tenant.TenantService.AdmitTenantMove`:
 the tenant exists, is a `volume` or `raft` tenant, is entitled to the
 destination pool, and its replica nodes) and then `AdmitMove`, and audits the
-start with the Q9 flag (`volume_pool.move_start`) before anything is
-admitted; `volume.Catalog.GetMove` reads the journal. None of these seams is
+start (`volume_pool.move_start`) before anything is admitted; `volume.Catalog.GetMove` reads the journal. None of these seams is
 wired in the daemon yet, so a running node still answers `MoveTenant` with
 `*volume.MoveNotImplementedError`, classified `Unimplemented`, and no
 transport exposes a move.
 
-The design, decided by convention (ruling 109) and not awaiting a ruling, is
+The design, decided by ruling 1115 for every question but Q9, which is with
+the owner (until he answers, a move off a Lockable pool onto one that is not
+is refused outright), is
 [../decisions/volume-pool-tenant-moves.md](../decisions/volume-pool-tenant-moves.md):
 a rolling, per-node copy behind a move journal, cut over by one assignment
 write. Only the parts built and described here are part of this contract.
@@ -287,12 +288,19 @@ The catalog admits a move through `volume.Catalog.AdmitMove`: one
 transaction reserves the tenant's bytes on the destination pool and writes
 the journal `__sys:volumepool/moves/{tenant}` in state `admitted`, with every
 replica node pending, after checking that the destination is ready on every
-replica node (Q3), that a move off a Lockable pool onto one that is not
-carries `allow_unencrypted_destination` (Q9), and that no move already runs
-(Q10). The source reservation and the assignment stay, so the tenant counts
+replica node (Q3) and that no move already runs (Q10). A move off a Lockable
+pool onto one that is not is refused outright with
+`*volume.MoveToUnencryptedPoolError` (Q9, interim under ruling 1115). The source reservation and the assignment stay, so the tenant counts
 on both pools while it moves. While a journal exists, tenant delete, a quota
 change, a second move and deleting either pool are refused. `MoveTenant` is
 the only caller of `AdmitMove`.
+
+The move reconciler (`volume.MoveReconciler.ReconcileOnce`) advances the
+journal one node step at a time through the `volume.MoveStepRunner` seam:
+`copying` while a node holds the step or between steps, then `copied` when
+no node is pending, or `aborting` after 3 failed attempts of one node's step.
+No runner, leader schedule or composition exists yet, so nothing advances a
+journal in a running node.
 
 ## Trust boundaries
 
