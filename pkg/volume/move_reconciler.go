@@ -279,7 +279,24 @@ func (r *MoveReconciler) runStep(ctx context.Context, m Move, p moveStepPhase) e
 		return err
 	}
 	r.recordTransition(ctx, MoveTransitionComplete, m.TenantID, step.NodeID, step.Phase)
+	if settler, ok := r.runner.(MoveStepSettler); ok {
+		if err := settler.SettleMoveStep(ctx, step); err != nil {
+			r.logger.Warn("volume: settling the move step after its journal write failed",
+				slog.String("tenant", step.TenantID), slog.String("node", step.NodeID),
+				slog.String("phase", step.Phase), slog.String("error", err.Error()))
+			return err
+		}
+	}
 	return nil
+}
+
+// MoveStepSettler is the optional half of a MoveStepRunner that runs after
+// the step's Complete transition is in the journal: the work that must not
+// precede the CAS, such as reopening from the source after an abort's
+// copy-back. It is not called after a Fail. A node that crashes between
+// the CAS and the settle does that work at boot from the journal.
+type MoveStepSettler interface {
+	SettleMoveStep(ctx context.Context, step MoveStep) error
 }
 
 // Move transitions a MoveTransitionRecorder is told of.

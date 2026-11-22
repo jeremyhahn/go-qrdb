@@ -74,6 +74,13 @@ type BarrierRegistry struct {
 	// in RunMoveCopyStep; nil in production.
 	moveAfterCopy func(dst string)
 
+	// moveOpenPools maps a tenant ID to the pool this node's MoveStepRunner
+	// reopened the tenant from before the journal records it (decision doc
+	// step 3: reopen, catch up, then the CAS). It is memory only: a crash
+	// drops it, so a node that crashes before its CAS opens from the
+	// journal's answer and redoes the step.
+	moveOpenPools sync.Map
+
 	// migrationRecoverer, when non-nil, reconciles an interrupted encryption
 	// migration recorded in a tenant's journal BEFORE the tenant barrier is
 	// built (see MigrationRecoverer). Guarded by poolMu like the other
@@ -372,7 +379,11 @@ func (r *BarrierRegistry) RequireInsideLocalPool(ctx context.Context, tenantID s
 	if err != nil {
 		return "", err
 	}
-	return placementRoot(ctx, resolver, tenantID, assignment.Pool, assignment.Path)
+	pool := assignment.Pool
+	if moved, ok := r.moveOpenPools.Load(tenantID); ok {
+		pool = moved.(string) //nolint:errcheck // type assertion on a value this map only ever holds
+	}
+	return placementRoot(ctx, resolver, tenantID, pool, assignment.Path)
 }
 
 // PlacementDataRoot returns this node's directory for tenantID at path on
