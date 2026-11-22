@@ -39,6 +39,16 @@ func (e *InvalidRemoteError) Error() string {
 	return "objstore: invalid remote storage (" + e.Reason + "): prefix " + strconv.Quote(e.Prefix)
 }
 
+// InvalidEncryptedRemoteError indicates NewEncryptedRemote was given a nil
+// inner remote storage or a nil barrier.
+type InvalidEncryptedRemoteError struct {
+	Reason string
+}
+
+func (e *InvalidEncryptedRemoteError) Error() string {
+	return "objstore: invalid encrypted remote storage (" + e.Reason + ")"
+}
+
 // FormatMarkerMissingError refuses to open a NON-EMPTY store that carries no
 // format marker object (formatMarkerName). A store this engine created always
 // has one, so its absence means the objects were written by something else —
