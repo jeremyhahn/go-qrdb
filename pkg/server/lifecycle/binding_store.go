@@ -39,19 +39,22 @@ import (
 // local binding gets its own store, engine and service host under the
 // binding's data root instead of a key prefix in the node's shared store.
 //
-// This part materializes the database of a prefix- or barrier-isolated
-// tenant on a standalone node, with no database barrier, no explicit
-// data_dir and not in the system tenant. A prefix tenant's store is written
+// On a standalone node it materializes the database of a prefix- or
+// barrier-isolated tenant and of the system tenant (except its system
+// database, which stays on the control-plane store), at the default root or
+// at an explicit data_dir, as long as the database has no per-database
+// barrier. A prefix tenant's and the system tenant's store is written
 // through the node encryptor; a barrier tenant's through the tenant's own
 // barrier (WithTenantEncryptors), never the node encryptor, so sealing that
-// barrier fails the database's data closed. Every other database is
-// delegated unchanged to database.NewEmbeddedBackendFactory (docs/plans/923.md
-// slice 3b.2 widens the set).
+// barrier fails the database's data closed. A database with a per-database
+// barrier, a raft-mode node, and volume and raft tenants are delegated
+// unchanged to database.NewEmbeddedBackendFactory (docs/plans/923.md).
 
 // LocalBindingFactory is the database.BackendFactory of a standalone node
-// that opens a qualifying database's own store under its binding root,
-// encrypted by the binding's encryptor scope: the node encryptor for a
-// prefix tenant, the tenant's barrier for a barrier tenant.
+// that opens a qualifying database's own store under its binding root (an
+// explicit data_dir when one is set), encrypted by the binding's encryptor
+// scope: the node encryptor for a prefix tenant and the system tenant, the
+// tenant's barrier for a barrier tenant.
 type LocalBindingFactory struct {
 	node       database.BindingNode
 	enc        *atrest.Encryptor
@@ -66,7 +69,11 @@ type LocalBindingFactory struct {
 // encryptor every on-disk binding store writes through (nil or disabled
 // leaves them plaintext); storageCfg is the node's storage configuration
 // (NewLocalStorage). tenants looks up the owning tenant of a database; a nil
-// tenants treats every tenant as prefix-isolated. hubOpts configure the watch
+// tenants treats every tenant as prefix-isolated. The system tenant is never
+// looked up: its databases (except the system database) and a database at
+// an explicit data_dir without a per-database barrier are materialized; a
+// per-database barrier, raft mode, and volume and raft tenants stay
+// delegated to the embedded factory. hubOpts configure the watch
 // hub of each materialized database.
 func NewLocalBindingFactory(node database.BindingNode, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig, tenants func(string) (database.BindingTenant, error), hubOpts ...watch.HubOption) *LocalBindingFactory {
 	return &LocalBindingFactory{
@@ -137,16 +144,22 @@ func (f *LocalBindingFactory) mayQualify(cfg *database.DatabaseConfig) bool {
 	if f.node.RaftMode {
 		return false
 	}
-	if cfg.TenantID == "" || tenantid.IsSystem(cfg.TenantID) {
+	// The system database lives on the control-plane store.
+	if tenantid.IsSystem(cfg.TenantID) && cfg.Name == SystemDatabase {
 		return false
 	}
 	if database.IsTenantHome(cfg.Name) {
 		return false
 	}
-	return !cfg.HasDedicatedStore()
+	return cfg.Backend != database.BackendRaft
 }
 
 func (f *LocalBindingFactory) tenant(tenantID string) (database.BindingTenant, error) {
+	// The system tenant is prefix-isolated by construction (the tenant
+	// service refuses any other isolation for it), so it is never looked up.
+	if tenantid.IsSystem(tenantID) {
+		return database.BindingTenant{ID: tenantid.System, Isolation: tenant.IsolationPrefix}, nil
+	}
 	if f.tenants == nil {
 		return database.BindingTenant{ID: tenantID}, nil
 	}

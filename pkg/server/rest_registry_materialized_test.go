@@ -57,10 +57,13 @@ func (f *fakeMaterialized) Close() error {
 type fakeMaterializingFactory struct {
 	mu      sync.Mutex
 	created []*fakeMaterialized
+	// system materializes the system tenant's databases too (except its
+	// system database), as lifecycle.LocalBindingFactory does.
+	system bool
 }
 
 func (f *fakeMaterializingFactory) Create(cfg database.DatabaseConfig, dataDir string) (database.Backend, error) {
-	if cfg.TenantID == "" || cfg.TenantID == "system" {
+	if (cfg.TenantID == "" || cfg.TenantID == "system") && (!f.system || cfg.Name == "system") {
 		return database.NewEmbeddedBackendFactory().Create(cfg, dataDir)
 	}
 	hub := watch.NewHub()
@@ -162,6 +165,63 @@ func TestRESTServiceRegistry_MaterializedDatabaseServedFromItsOwnHost(t *testing
 	}
 	if got, err := service.NewKVService(fresh.Host(), fresh.ShardID()).Get(ctx, "k2"); err != nil || !bytes.Equal(got, value) {
 		t.Fatalf("recreated own host Get = %q, %v; want %q", got, err, value)
+	}
+}
+
+func TestRESTServiceRegistry_MaterializedSystemTenantDatabaseServedFromItsOwnHost(t *testing.T) {
+	const name = "ledger"
+	ctx := context.Background()
+	factory := &fakeMaterializingFactory{system: true}
+	dbMgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(factory))
+	t.Cleanup(func() { _ = dbMgr.Close() })
+	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: "", Name: name, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fake := factory.last(t)
+	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: "", Name: "system", Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create system: %v", err)
+	}
+
+	// The node's shared set is registered under the system database.
+	shared := NewDatabaseServiceRegistry("system")
+	shared.Register("system", newFilledServices("system"))
+	r := NewRESTServiceRegistry(shared, nil, "system", withDatabaseManager(dbMgr)).(*restServiceRegistry)
+
+	svcs, err := r.resolve("system", name)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if svcs.Placement != service.StorePlacementNode {
+		t.Fatalf("Placement = %q, want %q", svcs.Placement, service.StorePlacementNode)
+	}
+	value := []byte("system-tenant-value")
+	if err := svcs.KV.Put(ctx, "k", value); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	got, err := service.NewKVService(fake.Host(), fake.ShardID()).Get(ctx, "k")
+	if err != nil || !bytes.Equal(got, value) {
+		t.Fatalf("own host Get = %q, %v; want %q", got, err, value)
+	}
+	for _, key := range []string{"k", "system/" + name + "/k"} {
+		if got, err := shared.Default().KV.Get(ctx, key); err == nil && got != nil {
+			t.Fatalf("shared store holds %q = %q", key, got)
+		}
+	}
+
+	factory.mu.Lock()
+	created := len(factory.created)
+	factory.mu.Unlock()
+	sys, err := r.resolve("system", "system")
+	if err != nil {
+		t.Fatalf("resolve system database: %v", err)
+	}
+	if sys.Placement == service.StorePlacementNode {
+		t.Fatalf("the system database is served from its own host (Placement = %q), want the shared set", sys.Placement)
+	}
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	if len(factory.created) != created {
+		t.Fatal("the factory materialized the system database")
 	}
 }
 

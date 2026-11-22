@@ -103,11 +103,33 @@ func TestCompactionStores_IncludeMaterializedDatabases(t *testing.T) {
 		if n == "materialized acme/orders" {
 			found = true
 		}
-		if n == "materialized /plain" || n == "materialized plain" {
+		if n == "materialized /plain" || n == "materialized plain" || n == "materialized system/plain" {
 			t.Fatalf("a shared-store database was listed as materialized: %v", names)
 		}
 	}
 	if !found {
 		t.Fatalf("stores = %v, want one named %q", names, "materialized acme/orders")
+	}
+
+	sysMgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(&fakeMaterializingFactory{system: true}))
+	t.Cleanup(func() { _ = sysMgr.Close() })
+	if _, err := sysMgr.Create(database.DatabaseConfig{Name: "ledger", Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create ledger: %v", err)
+	}
+	sysSrv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{}, WithDatabaseManager(sysMgr))
+	const want = "materialized system/ledger"
+	var sysNames []string
+	found = false
+	for _, st := range sysSrv.compactionStores(context.Background()) {
+		sysNames = append(sysNames, st.name)
+		if st.name == want {
+			found = true
+			if st.leader != nil {
+				t.Fatal("a materialized system-tenant database's store was gated by leadership")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("stores = %v, want one named %q", sysNames, want)
 	}
 }

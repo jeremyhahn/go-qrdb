@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // DefaultCompactionInterval is how often the compaction scheduler runs the
@@ -277,9 +278,6 @@ func (s *Server) compactionStores(ctx context.Context) []scheduledStore {
 	// materialized database lives on a standalone node, its only replica.
 	if s.opts.dbManager != nil {
 		for _, info := range s.opts.dbManager.List() {
-			if info.TenantID == "" {
-				continue
-			}
 			db, err := s.opts.dbManager.Open(ctx, info.TenantID, info.Name)
 			if err != nil || db == nil {
 				continue
@@ -288,7 +286,7 @@ func (s *Server) compactionStores(ctx context.Context) []scheduledStore {
 			if !ok {
 				continue
 			}
-			add("materialized "+info.TenantID+"/"+info.Name,
+			add("materialized "+tenantid.Normalize(info.TenantID)+"/"+info.Name,
 				service.NewMVCCKVService(ms.Host(), ms.ShardID(), service.WithDedicatedKeyspace()), false)
 		}
 	}

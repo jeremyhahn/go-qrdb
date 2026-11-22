@@ -146,3 +146,58 @@ tenant:
 		t.Fatalf("[%s] kv get after the tenant barrier sealed = %q, %v; want a refusal without the value", proto.name, out, err)
 	}
 }
+
+// TestDatabaseBinding_CLI_SystemTenantDatabaseOwnStore_PerProtocol drives
+// the system tenant's databases on a standalone node: a database at the
+// default root lives under <data-dir>/tenants/system/databases/<name>, one
+// created with --data-dir lives in that directory, and DROP removes it.
+func TestDatabaseBinding_CLI_SystemTenantDatabaseOwnStore_PerProtocol(t *testing.T) {
+	node := startStandaloneModeNodeWithConfig(t, "pebble", "")
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			conn := node.cliArgsFor(proto)
+			assertOwnStore := func(name, root, kvKey, value string) {
+				t.Helper()
+				if out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "put", kvKey, value); err != nil {
+					t.Fatalf("[%s] kv put %s: %v\n%s", proto.name, name, err, out)
+				}
+				out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "get", kvKey)
+				if err != nil || !strings.Contains(out, value) {
+					t.Fatalf("[%s] kv get %s = %q, %v; want %q", proto.name, name, out, err, value)
+				}
+				entries, err := os.ReadDir(root)
+				if err != nil {
+					t.Fatalf("[%s] binding root %s: %v (the database was not materialized in its own store)", proto.name, root, err)
+				}
+				if len(entries) == 0 {
+					t.Fatalf("[%s] binding root %s is empty after a write", proto.name, root)
+				}
+				if out, err := runQRDB(t, node.cli, conn, "kv", "get", kvKey); err == nil && strings.Contains(out, value) {
+					t.Fatalf("[%s] the system database serves %s's key: %q", proto.name, name, out)
+				}
+			}
+
+			sys := "sys-" + proto.name
+			if out, err := runQRDB(t, node.cli, conn, "database", "create", sys, "--backend", "file"); err != nil {
+				t.Fatalf("[%s] database create %s: %v\n%s", proto.name, sys, err, out)
+			}
+			assertOwnStore(sys, filepath.Join(node.dataDir, "tenants", "system", "databases", sys),
+				"sys-key-"+proto.name, "sys-value-"+proto.name)
+
+			dir := "dir-" + proto.name
+			explicit := filepath.Join(t.TempDir(), dir)
+			if out, err := runQRDB(t, node.cli, conn, "database", "create", dir, "--backend", "pebble", "--data-dir", explicit); err != nil {
+				t.Fatalf("[%s] database create %s: %v\n%s", proto.name, dir, err, out)
+			}
+			assertOwnStore(dir, explicit, "dir-key-"+proto.name, "dir-value-"+proto.name)
+			if out, err := runQRDB(t, node.cli, conn, "database", "drop", dir); err != nil {
+				t.Fatalf("[%s] database drop %s: %v\n%s", proto.name, dir, err, out)
+			}
+			if _, err := os.Stat(explicit); !os.IsNotExist(err) {
+				t.Fatalf("[%s] explicit data directory %s survives DROP (stat err %v)", proto.name, explicit, err)
+			}
+		})
+	}
+}
