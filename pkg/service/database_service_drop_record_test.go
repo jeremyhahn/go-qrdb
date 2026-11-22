@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -67,5 +70,57 @@ func TestDropForTenant_ResumesWithANewPlacementStoreAfterCatalogRemoval(t *testi
 	}
 	if id, err := mgr.DroppedID(ctx, "rt", "orders"); err != nil || id != "" {
 		t.Fatalf("drop record after the resumed drop = (%q, %v), want cleared", id, err)
+	}
+}
+
+// deleteRefusingCatalog fails every Delete, so a refused create's cleanup
+// cannot remove its provisional record and strands it in the catalog.
+type deleteRefusingCatalog struct {
+	database.Catalog
+	err error
+}
+
+func (c deleteRefusingCatalog) Delete(context.Context, string, string, string, string) error {
+	return c.err
+}
+
+// A drop on a service with no placement store reclaims a stranded
+// provisional record instead of answering NotFound for ever, so the name
+// can be created again.
+func TestDropForTenant_ReclaimsAStrandedProvisionalRecord(t *testing.T) {
+	mgr := newCoverageDatabaseManager(t)
+	svc := NewDatabaseService(mgr)
+	cat := databasetest.Catalog(mgr.DataDir())
+
+	mgr.SetCatalog(deleteRefusingCatalog{Catalog: cat, err: errors.New("catalog delete timed out")})
+	refused := database.WithCreateGuard(context.Background(), func(context.Context) error { return errors.New("refused") })
+	_, err := mgr.CreateWithCredentials(refused,
+		database.DatabaseConfig{TenantID: "acme", Name: "orders", Backend: database.BackendMemory}, seal.Credentials{})
+	var orphan *database.CatalogOrphanError
+	if !errors.As(err, &orphan) {
+		t.Fatalf("refused create = %v, want *database.CatalogOrphanError", err)
+	}
+	mgr.SetCatalog(cat)
+	meta, err := cat.Get(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("catalog Get of the stranded record: %v", err)
+	}
+	if !meta.Provisional {
+		t.Fatal("stranded record is not provisional; the test would not exercise the reclaim")
+	}
+
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	if err := svc.DropForTenant(ctx, "orders"); err != nil {
+		t.Fatalf("DropForTenant of the stranded name: %v", err)
+	}
+	var notFound *database.NotFoundError
+	if _, err := cat.Get(context.Background(), "acme", "orders"); !errors.As(err, &notFound) {
+		t.Fatalf("catalog Get after the reclaim = %v, want *database.NotFoundError", err)
+	}
+	if err := svc.DropForTenant(ctx, "orders"); !errors.As(err, &notFound) {
+		t.Fatalf("second DropForTenant = %v, want *database.NotFoundError", err)
+	}
+	if _, err := svc.CreateForTenant(ctx, testDBConfig("orders")); err != nil {
+		t.Fatalf("CreateForTenant after the reclaim: %v", err)
 	}
 }

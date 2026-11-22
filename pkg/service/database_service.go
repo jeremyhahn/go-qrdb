@@ -2269,6 +2269,10 @@ func (s *DatabaseService) boundedInfoRead(ctx context.Context) (context.Context,
 // removing its replicated data) is handled at the server layer alongside
 // multi-node placement; this method releases only the on-disk catalog/dir,
 // the replicated placement entry, and the quota slot.
+//
+// With no placement store wired in, a name with no local record still goes
+// to the manager, which reclaims a stranded provisional catalog record (a
+// refused create whose cleanup failed) so the name can be created again.
 func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error {
 	if err := database.CheckDroppable(name); err != nil {
 		return err
@@ -2325,9 +2329,20 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 		knownID = id
 	default:
 		// No placement wired in at all (a single-node deployment with no
-		// scheduler): there is no replicated signal to consult, so a
-		// missing local record is unconditionally a genuine failure.
-		return dbErr
+		// scheduler): there is no replicated signal to consult. A missing
+		// local record may still be a stranded provisional record (a
+		// refused create whose cleanup could not remove it). Such a record
+		// has no placement and no quota reservation -- the failed create
+		// released them (releaseReservations) -- so the drop goes on to
+		// manager.DropForTenant, whose reclaimOnNotFound returns nil when
+		// it reclaimed the record and the original *NotFoundError
+		// otherwise. With knownID "" the placement, drop-record and quota
+		// steps between here and there are no-ops. Any other error is a
+		// genuine failure.
+		var notFound *database.NotFoundError
+		if !errors.As(dbErr, &notFound) {
+			return dbErr
+		}
 	}
 
 	databaseID, err := s.placementID(ctx, tenantID, name, knownID)
