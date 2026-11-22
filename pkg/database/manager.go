@@ -474,6 +474,9 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		return nil, undo.run(ctx, err)
 	}
 	undo.backends = append(undo.backends, backend)
+	if err := m.backendRootConflict(keyFor(cfg.TenantID, cfg.Name), cfg.Name, backend); err != nil {
+		return nil, undo.run(ctx, err)
+	}
 
 	// Register a dedicated per-database barrier when enabled, and wrap the
 	// data-plane backend so every value it stores is encrypted under the
@@ -668,6 +671,9 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 	backend, err := m.factory.Create(cfg, dataDir)
 	if err != nil {
 		return nil, err
+	}
+	if err := m.backendRootConflict(key, name, backend); err != nil {
+		return nil, errors.Join(err, backend.Close())
 	}
 
 	// Register the per-database barrier when enabled and wrap the
@@ -882,6 +888,13 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 		return &DropInProgressError{Name: name}
 	}
 	defer m.dropping.Delete(key)
+
+	// A store root that equals or contains another registered database's
+	// root is never removed: the drop is refused before anything is fenced
+	// or deleted.
+	if err := m.backendRootConflict(key, name, db.rawBackend); err != nil {
+		return &DropError{Name: name, Err: err}
+	}
 
 	// 0. Fence: refuse every new caller before the data they would touch
 	//    starts being reclaimed (go-qrdb#482). The IN-MEMORY flag is set
@@ -1846,6 +1859,65 @@ func resolveDataDir(dataDir string) (string, error) {
 // pathContains reports whether candidate is equal to base or nested within
 // it. Both arguments must already be cleaned, comparable paths (as returned
 // by resolveDataDir).
+// ownedRootConflict reports a *DataDirConflictError when resolved (the
+// resolved data_dir or store root of the database self, called name) equals,
+// contains or lies inside the store root of any OTHER registered database:
+// its materialized binding root (DataRootOwner) or its data directory. A
+// binding root is where Drop removes a database's store, so two databases
+// whose roots nest would let one's drop delete the other's data.
+func (m *Manager) ownedRootConflict(self dbKey, name, dataDir, resolved string) error {
+	var conflict error
+	m.databases.Range(func(key, value any) bool {
+		other, _ := key.(dbKey)
+		if other == self {
+			return true
+		}
+		db, _ := value.(*Database)
+		if db == nil {
+			return true
+		}
+		roots := []string{db.DataDir()}
+		if owner, ok := db.rawBackend.(DataRootOwner); ok {
+			roots = append(roots, owner.DataRoot())
+		}
+		for _, r := range roots {
+			if strings.TrimSpace(r) == "" {
+				continue
+			}
+			otherRoot, err := resolveDataDir(r)
+			if err != nil {
+				continue
+			}
+			if pathContains(resolved, otherRoot) || pathContains(otherRoot, resolved) {
+				conflict = &DataDirConflictError{Name: name, DataDir: dataDir, With: other.name}
+				return false
+			}
+		}
+		return true
+	})
+	return conflict
+}
+
+// backendRootConflict checks the store root a backend owns (DataRootOwner)
+// against every other registered database's roots, the way validateDataDir
+// checks an explicit data_dir: before a newly opened database is registered,
+// and before Drop removes the root. A backend that owns no root passes.
+func (m *Manager) backendRootConflict(self dbKey, name string, backend Backend) error {
+	owner, ok := backend.(DataRootOwner)
+	if !ok {
+		return nil
+	}
+	root := owner.DataRoot()
+	if strings.TrimSpace(root) == "" {
+		return nil
+	}
+	resolved, err := resolveDataDir(root)
+	if err != nil {
+		return &InvalidDataDirError{Name: name, DataDir: root, Err: err}
+	}
+	return m.ownedRootConflict(self, name, root, resolved)
+}
+
 func pathContains(base, candidate string) bool {
 	if base == candidate {
 		return true
@@ -1882,6 +1954,12 @@ func (m *Manager) validateDataDir(tenantID, name, dataDir string) error {
 	root, err := resolveDataDir(m.dataDir)
 	if err != nil {
 		return &InvalidDataDirError{Name: name, DataDir: dataDir, Err: err}
+	}
+
+	// Never equal to, inside or above another registered database's store
+	// root, its materialized binding root included (the root Drop removes).
+	if err := m.ownedRootConflict(keyFor(tenantID, name), name, dataDir, resolved); err != nil {
+		return err
 	}
 
 	// Never the manager's own data root, and never an ancestor of it: both
