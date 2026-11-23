@@ -27,6 +27,23 @@ type MoveReconciler struct {
 	maxAttempts int
 	logger      *slog.Logger
 	transitions MoveTransitionRecorder
+	nodes       MoveNodeSource
+}
+
+// MoveNodeSource lists the move node IDs of a tenant's current replicas.
+// The reconciler resyncs a copying move's node set from it before each
+// grant and before cut over, so a replica added or removed after admit is
+// copied or dropped (Catalog.SyncMoveNodes).
+type MoveNodeSource interface {
+	MoveReplicaNodes(ctx context.Context, tenantID string) ([]string, error)
+}
+
+// WithMoveNodeSource wires the replica-set source a copying move resyncs
+// from; nil keeps the node set fixed at admit.
+func WithMoveNodeSource(src MoveNodeSource) MoveReconcilerOption {
+	return func(r *MoveReconciler) {
+		r.nodes = src
+	}
 }
 
 // MoveReconcilerOption configures a MoveReconciler.
@@ -111,7 +128,7 @@ func (r *MoveReconciler) ReconcileOnce(ctx context.Context) error {
 		switch m.State {
 		case MoveStateAdmitted, MoveStateCopying:
 			if m.StepNode == "" {
-				_, err = r.cat.GrantMoveStep(ctx, m.TenantID)
+				err = r.resyncThenGrant(ctx, &m)
 			}
 		case MoveStateCopied, MoveStateCutover:
 			if recorder == nil && !m.TenantRecorded {
@@ -123,6 +140,12 @@ func (r *MoveReconciler) ReconcileOnce(ctx context.Context) error {
 			}
 			switch {
 			case m.State == MoveStateCopied:
+				// No cut over in a pass whose resync changed the journal: a
+				// replica that joined is copied first, by a later grant.
+				var changed bool
+				if _, changed, err = r.resync(ctx, &m); err != nil || changed {
+					break
+				}
 				_, err = r.cat.CutOverMove(ctx, m.TenantID)
 				if err == nil {
 					r.recordTransition(ctx, MoveTransitionCutover, m.TenantID, "", "")
@@ -149,6 +172,34 @@ func (r *MoveReconciler) ReconcileOnce(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// resync brings m's node set up to the tenant's current replica set
+// through the wired MoveNodeSource (Catalog.SyncMoveNodes). With no source
+// wired the journal is left as admitted.
+func (r *MoveReconciler) resync(ctx context.Context, m *Move) (*Move, bool, error) {
+	if r.nodes == nil {
+		return m, false, nil
+	}
+	nodes, err := r.nodes.MoveReplicaNodes(ctx, m.TenantID)
+	if err != nil {
+		return nil, false, err
+	}
+	return r.cat.SyncMoveNodes(ctx, m.TenantID, nodes)
+}
+
+// resyncThenGrant resyncs m's node set and grants the next copy step when
+// the synced move still has one to grant.
+func (r *MoveReconciler) resyncThenGrant(ctx context.Context, m *Move) error {
+	synced, _, err := r.resync(ctx, m)
+	if err != nil {
+		return err
+	}
+	if synced.StepNode != "" || (synced.State != MoveStateAdmitted && synced.State != MoveStateCopying) {
+		return nil
+	}
+	_, err = r.cat.GrantMoveStep(ctx, m.TenantID)
+	return err
 }
 
 // RunLocalSteps runs the node pass for nodeID: for every journalled move

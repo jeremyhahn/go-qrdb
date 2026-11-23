@@ -553,6 +553,112 @@ func TestMoveReconciler_FullMoveCutsOverAndRetires(t *testing.T) {
 	}
 }
 
+// scriptedNodeSource answers MoveReplicaNodes from nodes, or with err.
+type scriptedNodeSource struct {
+	nodes []string
+	err   error
+	calls int
+}
+
+func (s *scriptedNodeSource) MoveReplicaNodes(_ context.Context, _ string) ([]string, error) {
+	s.calls++
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]string(nil), s.nodes...), nil
+}
+
+// TestMoveReconciler_Resync_CopiesAReplicaAddedAfterAdmit: a replica that
+// joined the tenant after admit (here after every admitted node copied) is
+// copied before cut over, and the pass whose resync changed the journal
+// does not cut over.
+func TestMoveReconciler_Resync_CopiesAReplicaAddedAfterAdmit(t *testing.T) {
+	cat, kv, _ := copiedMove(t)
+	cat.SetMoveCutoverRecorder(&fakeRecorder{})
+	src := &scriptedNodeSource{nodes: []string{"n1", "n2", "n3"}}
+	runner := &scriptedRunner{}
+	r := newTestReconciler(t, cat, runner, WithMoveNodeSource(src))
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	m := storedMove(t, kv, "acme")
+	if m.State != MoveStateCopying || !reflect.DeepEqual(m.NodesPending, []string{"n3"}) {
+		t.Fatalf("after resync = %+v; want copying with n3 pending, no cut over", m)
+	}
+	if a := storedAssignment(t, kv, "acme"); a.Pool != "fast" {
+		t.Fatalf("assignment = %+v; want still the source", a)
+	}
+	reconcilePasses(t, r, 6)
+	var copied []string
+	for _, s := range runner.steps {
+		if s.Phase == MoveStepPhaseCopy {
+			copied = append(copied, s.NodeID)
+		}
+	}
+	if !reflect.DeepEqual(copied, []string{"n3"}) {
+		t.Fatalf("copy steps = %v; want n3", copied)
+	}
+	if a := storedAssignment(t, kv, "acme"); a.Pool != "bulk" {
+		t.Fatalf("assignment = %+v; want cut over to bulk", a)
+	}
+}
+
+// TestMoveReconciler_Resync_DropsADepartedReplica: a pending replica that
+// left the tenant is never granted a step.
+func TestMoveReconciler_Resync_DropsADepartedReplica(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	src := &scriptedNodeSource{nodes: []string{"n2"}}
+	runner := &scriptedRunner{}
+	r := newTestReconciler(t, cat, runner, WithMoveNodeSource(src))
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	if m := storedMove(t, kv, "acme"); m.StepNode != "n2" || !reflect.DeepEqual(m.NodesPending, []string{"n2"}) {
+		t.Fatalf("after resync = %+v; want n1 dropped and n2 stepped", m)
+	}
+}
+
+// TestMoveReconciler_Resync_SourceFailureHoldsTheMove: a node source error
+// grants no step and cuts nothing over; the error is returned.
+func TestMoveReconciler_Resync_SourceFailureHoldsTheMove(t *testing.T) {
+	boom := errors.New("membership unavailable")
+	for _, tc := range []struct {
+		name  string
+		setup func(*testing.T) (*Catalog, *fakeKV, *fakeTx)
+	}{
+		{"admitted", newAdmittedMove},
+		{"copied", copiedMove},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cat, kv, _ := tc.setup(t)
+			cat.SetMoveCutoverRecorder(&fakeRecorder{})
+			before := storedMove(t, kv, "acme")
+			r := newTestReconciler(t, cat, &scriptedRunner{}, WithMoveNodeSource(&scriptedNodeSource{err: boom}))
+			if err := r.ReconcileOnce(context.Background()); !errors.Is(err, boom) {
+				t.Fatalf("ReconcileOnce err = %v; want the source error", err)
+			}
+			after := storedMove(t, kv, "acme")
+			if after.State != before.State || after.StepNode != "" {
+				t.Fatalf("journal = %+v; want unchanged %+v", after, before)
+			}
+		})
+	}
+}
+
+// TestMoveReconciler_Resync_NotConsultedOutsideCopy: a cut over or aborting
+// move never asks the node source.
+func TestMoveReconciler_Resync_NotConsultedOutsideCopy(t *testing.T) {
+	cat, _, _ := cutOverMove(t)
+	src := &scriptedNodeSource{nodes: []string{"n1", "n2", "n3"}}
+	r := newTestReconciler(t, cat, &scriptedRunner{}, WithMoveNodeSource(src))
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	if src.calls != 0 {
+		t.Fatalf("node source calls = %d; want 0", src.calls)
+	}
+}
+
 func TestMoveReconciler_CopiedWaitsForRecorder(t *testing.T) {
 	cat, kv, _ := copiedMove(t)
 	var buf bytes.Buffer

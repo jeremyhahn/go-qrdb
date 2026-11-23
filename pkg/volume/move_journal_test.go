@@ -1135,3 +1135,130 @@ func TestCatalog_PhaseSteps_StoreFailures(t *testing.T) {
 		}
 	})
 }
+
+// TestCatalog_SyncMoveNodes_AddsAJoinedReplica: a replica added to the tenant
+// after admit becomes pending, so the move copies it too.
+func TestCatalog_SyncMoveNodes_AddsAJoinedReplica(t *testing.T) {
+	cat, _, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	m, changed, err := cat.SyncMoveNodes(ctx, "acme", []string{"n3", "n1", "n2"})
+	if err != nil || !changed {
+		t.Fatalf("SyncMoveNodes = %v, %v; want changed", changed, err)
+	}
+	if !reflect.DeepEqual(m.NodesPending, []string{"n1", "n2", "n3"}) || m.State != MoveStateAdmitted {
+		t.Fatalf("move = %+v; want n3 pending", m)
+	}
+	got, err := cat.GetMove(ctx, "acme")
+	if err != nil || !reflect.DeepEqual(got.NodesPending, []string{"n1", "n2", "n3"}) {
+		t.Fatalf("stored move = %+v, %v; want n3 pending", got, err)
+	}
+}
+
+// TestCatalog_SyncMoveNodes_CopiedGoesBackToCopying: a replica that joined
+// after every known node copied must be copied before cut over.
+func TestCatalog_SyncMoveNodes_CopiedGoesBackToCopying(t *testing.T) {
+	cat, _, _ := copiedMove(t)
+	ctx := context.Background()
+	m, changed, err := cat.SyncMoveNodes(ctx, "acme", []string{"n1", "n2", "n3"})
+	if err != nil || !changed {
+		t.Fatalf("SyncMoveNodes = %v, %v; want changed", changed, err)
+	}
+	if m.State != MoveStateCopying || !reflect.DeepEqual(m.NodesPending, []string{"n3"}) ||
+		!reflect.DeepEqual(m.NodesCopied, []string{"n1", "n2"}) {
+		t.Fatalf("move = %+v; want copying with n3 pending", m)
+	}
+	if _, err := cat.CutOverMove(ctx, "acme"); err == nil {
+		t.Fatal("CutOverMove succeeded with n3 uncopied")
+	}
+	if m, err := cat.GrantMoveStep(ctx, "acme"); err != nil || m.StepNode != "n3" {
+		t.Fatalf("GrantMoveStep = %+v, %v; want step n3", m, err)
+	}
+}
+
+// TestCatalog_SyncMoveNodes_DropsADepartedPendingNode: a pending node that
+// left the replica set is dropped; the stepped node and copied nodes stay.
+func TestCatalog_SyncMoveNodes_DropsADepartedPendingNode(t *testing.T) {
+	cat, _, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	m, changed, err := cat.SyncMoveNodes(ctx, "acme", []string{"n1"})
+	if err != nil || !changed || !reflect.DeepEqual(m.NodesPending, []string{"n1"}) {
+		t.Fatalf("SyncMoveNodes = %+v, %v, %v; want n2 dropped", m, changed, err)
+	}
+
+	cat, _, _ = newAdmittedMove(t)
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatalf("GrantMoveStep: %v", err)
+	}
+	m, changed, err = cat.SyncMoveNodes(ctx, "acme", []string{"n3"})
+	if err != nil || !changed || m.StepNode != "n1" || !reflect.DeepEqual(m.NodesPending, []string{"n1", "n3"}) {
+		t.Fatalf("SyncMoveNodes with n1 stepped = %+v, %v, %v; want n1 kept", m, changed, err)
+	}
+}
+
+// TestCatalog_SyncMoveNodes_LastPendingDroppedIsCopied: dropping the last
+// pending node of an unstepped copying move leaves it copied.
+func TestCatalog_SyncMoveNodes_LastPendingDroppedIsCopied(t *testing.T) {
+	cat, _, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatalf("GrantMoveStep: %v", err)
+	}
+	if _, err := cat.CompleteMoveStep(ctx, "acme", "n1"); err != nil {
+		t.Fatalf("CompleteMoveStep: %v", err)
+	}
+	m, changed, err := cat.SyncMoveNodes(ctx, "acme", []string{"n1"})
+	if err != nil || !changed || m.State != MoveStateCopied || len(m.NodesPending) != 0 {
+		t.Fatalf("SyncMoveNodes = %+v, %v, %v; want copied", m, changed, err)
+	}
+}
+
+// TestCatalog_SyncMoveNodes_NoChange: an unchanged node set writes nothing.
+func TestCatalog_SyncMoveNodes_NoChange(t *testing.T) {
+	cat, _, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	before, err := cat.GetMove(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, changed, err := cat.SyncMoveNodes(ctx, "acme", []string{"n2", "n1"})
+	if err != nil || changed || !m.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("SyncMoveNodes = %+v, %v, %v; want unchanged", m, changed, err)
+	}
+}
+
+// TestCatalog_SyncMoveNodes_Refusals: an empty node set or node id is
+// refused, and a move past copying or cancelling is left alone.
+func TestCatalog_SyncMoveNodes_Refusals(t *testing.T) {
+	ctx := context.Background()
+	cat, _, _ := newAdmittedMove(t)
+	var invalid *InvalidMoveRequestError
+	if _, _, err := cat.SyncMoveNodes(ctx, "acme", nil); !errors.As(err, &invalid) {
+		t.Fatalf("empty node set err = %v; want InvalidMoveRequestError", err)
+	}
+	if _, _, err := cat.SyncMoveNodes(ctx, "", []string{"n1"}); !errors.As(err, &invalid) {
+		t.Fatalf("empty tenant err = %v; want InvalidMoveRequestError", err)
+	}
+	if _, _, err := cat.SyncMoveNodes(ctx, "acme", []string{"n1", ""}); !errors.As(err, &invalid) {
+		t.Fatalf("empty node id err = %v; want InvalidMoveRequestError", err)
+	}
+	var notFound *MoveNotFoundError
+	if _, _, err := cat.SyncMoveNodes(ctx, "other", []string{"n1"}); !errors.As(err, &notFound) {
+		t.Fatalf("no journal err = %v; want MoveNotFoundError", err)
+	}
+
+	cat, _, _ = cutOverMove(t)
+	if m, changed, err := cat.SyncMoveNodes(ctx, "acme", []string{"n1", "n2", "n3"}); err != nil || changed || m.State != MoveStateCutover {
+		t.Fatalf("cut over SyncMoveNodes = %+v, %v, %v; want left alone", m, changed, err)
+	}
+
+	cat, _, _ = newAdmittedMove(t)
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.CancelMove(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if m, changed, err := cat.SyncMoveNodes(ctx, "acme", []string{"n1", "n2", "n3"}); err != nil || changed || len(m.NodesPending) != 2 {
+		t.Fatalf("cancelling SyncMoveNodes = %+v, %v, %v; want left alone", m, changed, err)
+	}
+}

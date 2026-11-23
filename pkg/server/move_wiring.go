@@ -130,7 +130,16 @@ func WireTenantMoves(cfg TenantMoveConfig) (*TenantMoveWorker, error) {
 	if err != nil {
 		return nil, err
 	}
-	opts := []volume.MoveReconcilerOption{volume.WithMoveReconcilerLogger(logger)}
+	// One replica-set source: admit lists a tenant's move nodes from it, and
+	// the reconciler resyncs a copying move from it before each grant and
+	// before cut over, so a replica added or removed after admit is copied
+	// or dropped.
+	nodes := &moveReplicaNodeSource{
+		membership: cfg.Membership,
+		placements: cfg.Placements,
+		local:      cfg.NodeID,
+	}
+	opts := []volume.MoveReconcilerOption{volume.WithMoveReconcilerLogger(logger), volume.WithMoveNodeSource(nodes)}
 	if cfg.Transitions != nil {
 		opts = append(opts, volume.WithMoveTransitionRecorder(cfg.Transitions))
 	}
@@ -143,11 +152,7 @@ func WireTenantMoves(cfg TenantMoveConfig) (*TenantMoveWorker, error) {
 	if cfg.StartAudit != nil {
 		cfg.Catalog.SetMoveStartAuditor(cfg.StartAudit)
 	}
-	cfg.Tenants.SetMoveReplicaNodeSource(&moveReplicaNodeSource{
-		membership: cfg.Membership,
-		placements: cfg.Placements,
-		local:      cfg.NodeID,
-	})
+	cfg.Tenants.SetMoveReplicaNodeSource(nodes)
 	interval := cfg.Interval
 	if interval <= 0 {
 		interval = DefaultTenantMoveInterval
