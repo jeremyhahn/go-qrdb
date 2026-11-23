@@ -44,19 +44,6 @@ const (
 	// as an overlapping passphrase change, was in flight and this one was
 	// refused before it wrote anything.
 	ReasonBarrierRootKeyWriteInProgress = "BARRIER_ROOT_KEY_WRITE_IN_PROGRESS"
-	// ReasonSealStoreSecretNotFound names seal.ErrSealStoreSecretNotFound:
-	// the named seal-store secret does not exist.
-	// #nosec G101 -- structured-refusal reason code, not a credential.
-	ReasonSealStoreSecretNotFound = "SEAL_STORE_SECRET_NOT_FOUND"
-	// ReasonSealStoreInvalidSecretName names seal.ErrInvalidSecretName: the
-	// seal-store secret name is not one opaque path segment.
-	// #nosec G101 -- structured-refusal reason code, not a credential.
-	ReasonSealStoreInvalidSecretName = "SEAL_STORE_INVALID_SECRET_NAME"
-	// ReasonSealStoreBarrierSealed names seal.ErrSealStoreBarrierSealed: the
-	// seal store's barrier is sealed. The seal store itself is embedded-only;
-	// these reasons stay for the other RPCs (e.g. the seal-store PIN
-	// backend) that can surface the seal-store sentinels.
-	ReasonSealStoreBarrierSealed = "SEAL_STORE_BARRIER_SEALED"
 )
 
 // barrierRefusal pairs a barrier sentinel with the reason that carries it.
@@ -72,9 +59,6 @@ var barrierRefusals = []barrierRefusal{
 	{ReasonBarrierCredentialMismatch, seal.ErrCredentialMismatch},
 	{ReasonBarrierPassphraseChangeConflict, seal.ErrPassphraseChangeConflict},
 	{ReasonBarrierRootKeyWriteInProgress, seal.ErrRootKeyWriteInProgress},
-	{ReasonSealStoreSecretNotFound, seal.ErrSealStoreSecretNotFound},
-	{ReasonSealStoreInvalidSecretName, seal.ErrInvalidSecretName},
-	{ReasonSealStoreBarrierSealed, seal.ErrSealStoreBarrierSealed},
 }
 
 // BarrierRefusal returns the structured-refusal reason of the barrier

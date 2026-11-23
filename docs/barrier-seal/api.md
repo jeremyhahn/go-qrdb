@@ -67,11 +67,13 @@ Reseal are serialized, so a failed reseal leaves the old record.
 
 A missing secret, an invalid name and a sealed seal-store barrier surface as
 `sdk.ErrSealStoreSecretNotFound`, `seal.ErrInvalidSecretName` and
-`sdk.ErrSealStoreBarrierSealed`. The structured refusal reasons
-`SEAL_STORE_SECRET_NOT_FOUND`, `SEAL_STORE_INVALID_SECRET_NAME` and
-`SEAL_STORE_BARRIER_SEALED` (the `transport.ReasonSealStore*` constants) stay
-for the other RPCs that can surface those sentinels, such as the seal-store
-PIN backend.
+`sdk.ErrSealStoreBarrierSealed`, matched with `errors.Is` on the embedded
+transport. The sentinels are embedded-only: only `seal.SealStore` returns them,
+and no remote RPC serves it (the node's PIN backend persists through the seal
+backend directly, not the seal store), so they have no structured refusal
+reason. On a node's embedded client a sealed barrier is refused by the node's
+seal gate first, with `seal.ErrSealed`; `sdk.ErrSealStoreBarrierSealed` is the
+store's own guard behind it.
 
 A Shamir barrier is unsealed, sealed and rekeyed, and root tokens are minted,
 only by a quorum of authenticated share holders: `POST /v1/barrier/quorum/*`
