@@ -354,6 +354,32 @@ in mg1655a.
   service drop/log tests, the lifecycle package and
   `TestVlog_CLI_DatabaseDrop_PerProtocol` pass on the full tag set.
 
+## rw1613p and rw1613w1 (CI red and Codex round 2 at b50e2f2b95)
+
+- CI red at b50e2f2b95 ("Unit [make coverage-leg service]", "Unit [make
+  test-tags]"): `TestKeyspaceReclaim_BarrierTenantFencesDataAndLogMarkers`.
+  Keeping the log tombstone at reclaim dropped the only step that reported
+  a stale drop superseded when no data was left to refuse it. Fix
+  (f6700ef94, `pkg/service/keyspace_reclaim.go`): the reclaim reads the
+  home-group log marker without removing it; absent or this drop's
+  tombstone passes, a successor's live marker or another drop's tombstone
+  is `DropSupersededError`.
+- Codex round 2 P1 (`vlog_barrier_store.go` proposeFenced): `CreateLog`
+  keeps its admitted standalone barrier store across `createKey`; an
+  encryption migration that commits meanwhile
+  (`BarrierRegistry.ReplaceTenantBarrier`) leaves the old barrier unsealed,
+  so the create wrote descriptor and head under the obsolete key. Fix: the
+  store keeps its `LogBarrierStoreSource` and, after admission and under
+  its lock, refuses with `ErrLogStoreReplaced` (class Unavailable; the
+  caller retries) when the source no longer holds its barrier, dropping
+  the chain; the route already rebuilds the store on the new barrier.
+- Tests: `TestLogService_StandaloneBarrierCreateAcrossMigrationRefusesTheReplacedBarrier`
+  (new; failed before the fix with the create succeeding through the old
+  barrier); `pausingSigners` pauses only its first `CreateKey`;
+  pkg/service on the default and the four test-tags sets, pkg/api/errclass,
+  `TestVlog_CLI_DatabaseDrop_PerProtocol` and
+  `TestVlog_CLI_BarrierTenant_Standalone_PerProtocol` pass.
+
 ## Out of scope
 
 The go-xkms provider and transparency log (the seam rows on the other side);
