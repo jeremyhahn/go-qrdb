@@ -43,10 +43,15 @@ func TestEnsureMigrated_RetryIsBoundedWithoutCallerDeadline(t *testing.T) {
 	legacy.stalled.Store(true)
 	svc.rotationAttemptTimeout = 20 * time.Millisecond
 
-	requireBounded := func(op func() error) {
+	// op runs under a caller context with no deadline. Should the bound
+	// not hold, the watchdog cancels that context so the operation's
+	// goroutine ends before the test fails.
+	requireBounded := func(op func(context.Context) error) {
 		t.Helper()
+		opCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
 		done := make(chan error, 1)
-		go func() { done <- op() }()
+		go func() { done <- op(opCtx) }()
 		select {
 		case err := <-done:
 			var opErr *OperationError
@@ -54,14 +59,16 @@ func TestEnsureMigrated_RetryIsBoundedWithoutCallerDeadline(t *testing.T) {
 			assert.Equal(t, "migrate", opErr.Op)
 			assert.ErrorIs(t, err, context.DeadlineExceeded)
 		case <-time.After(10 * time.Second):
+			cancel()
+			<-done
 			t.Fatal("the operation is still waiting on a store that never answers")
 		}
 	}
-	requireBounded(func() error {
+	requireBounded(func(ctx context.Context) error {
 		_, err := svc.RotateDue(ctx, time.Now())
 		return err
 	})
-	requireBounded(func() error {
+	requireBounded(func(ctx context.Context) error {
 		_, err := svc.RetrieveCredentialBuffer(ctx, "db")
 		return err
 	})

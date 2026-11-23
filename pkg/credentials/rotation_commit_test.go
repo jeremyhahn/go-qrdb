@@ -173,6 +173,9 @@ func idempotentSource(svc *CredentialService, calls *atomic.Int32, ops *[]string
 	}
 }
 
+// A store after a scheduled rotation failed, at its staging or at its
+// commit, ends that rotation's operation: the next pass asks the source
+// under a new operation, so the superseded value is never replayed.
 func TestRotateDue_StoreEndsTheSupersededRotationOperation(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -271,7 +274,13 @@ func TestRotateDue_ReplacementDuringTheValueSourceFencesTheClaim(t *testing.T) {
 				n, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour))
 				done <- result{n, err}
 			}()
-			<-entered
+			// A pass that ends without asking the source fails here
+			// rather than leaving the test blocked on entered.
+			select {
+			case <-entered:
+			case got := <-done:
+				t.Fatalf("RotateDue = %d, %v before it asked the value source", got.n, got.err)
+			}
 			if err := tc.replace(t.Context(), svc); err != nil {
 				close(release)
 				<-done

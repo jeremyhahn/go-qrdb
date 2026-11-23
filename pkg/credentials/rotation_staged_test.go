@@ -40,10 +40,13 @@ func TestRotateDue_FailureBetweenPersistAndSettleCallsSourceOnce(t *testing.T) {
 		// lapse moves the service clock past the first claim's lease,
 		// for a fault that also keeps the claim from being released.
 		lapse bool
+		// cause is the failure the first pass reports.
+		cause error
 	}{
 		{
 			name:   "commit fails after staging",
 			inject: func(b *faultBackend) { arm(&b.failCAS, current) },
+			cause:  errInjectedFault,
 		},
 		{
 			name: "commit contended after staging",
@@ -55,6 +58,7 @@ func TestRotateDue_FailureBetweenPersistAndSettleCallsSourceOnce(t *testing.T) {
 					}
 				}
 			},
+			cause: ErrRotationMetaContended,
 		},
 		{
 			name: "commit fails and the claim lapses",
@@ -65,6 +69,7 @@ func TestRotateDue_FailureBetweenPersistAndSettleCallsSourceOnce(t *testing.T) {
 					}
 				}
 			},
+			cause: errInjectedFault,
 			lapse: true,
 		},
 	} {
@@ -81,8 +86,8 @@ func TestRotateDue_FailureBetweenPersistAndSettleCallsSourceOnce(t *testing.T) {
 			due := rotationEpoch.Add(time.Hour)
 
 			tc.inject(backend)
-			if n, err := svc.RotateDue(t.Context(), due); n != 0 || err == nil {
-				t.Fatalf("RotateDue under the fault = %d, %v; want 0 and an error", n, err)
+			if n, err := svc.RotateDue(t.Context(), due); n != 0 || !errors.Is(err, tc.cause) {
+				t.Fatalf("RotateDue under the fault = %d, %v; want 0, %v", n, err, tc.cause)
 			}
 			backend.onCAS = nil
 			backend.failCAS.Store(nil)
@@ -115,8 +120,8 @@ func TestRotateDue_FailureBetweenPersistAndSettleCallsSourceOnce(t *testing.T) {
 			}
 			requireVersionValue(t, svc, next, "k-rotated-1")
 			requireVersionValue(t, svc, prev, "k-initial")
-			if _, err := svc.store.Get(t.Context(), stagedKey("k", next)); err == nil {
-				t.Fatalf("the staged value under v%d survived the settled rotation", next)
+			if _, err := svc.store.Get(t.Context(), stagedKey("k", next)); !errors.Is(err, seal.ErrSecretNotFound) {
+				t.Fatalf("the staged value under v%d after the settled rotation: %v, want ErrSecretNotFound", next, err)
 			}
 		})
 	}
@@ -137,15 +142,15 @@ func TestRotateCredential_ClearsAStaleStagedValue(t *testing.T) {
 	_, next := rotationVersions(before.CurrentVersion, true)
 
 	arm(&backend.failCAS, credentialPrefix+"k")
-	if _, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour)); err == nil {
-		t.Fatal("RotateDue under the fault succeeded, want an error")
+	if _, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour)); !errors.Is(err, errInjectedFault) {
+		t.Fatalf("RotateDue under the fault = %v, want the injected fault", err)
 	}
 	backend.failCAS.Store(nil)
 	if _, err := svc.RotateCredential(t.Context(), "k", RotateOptions{NewValue: []byte("k-manual")}); err != nil {
 		t.Fatalf("RotateCredential: %v", err)
 	}
-	if _, err := svc.store.Get(t.Context(), stagedKey("k", next)); err == nil {
-		t.Fatalf("the stale staged value under v%d survived the manual rotation", next)
+	if _, err := svc.store.Get(t.Context(), stagedKey("k", next)); !errors.Is(err, seal.ErrSecretNotFound) {
+		t.Fatalf("the stale staged value under v%d after the manual rotation: %v, want ErrSecretNotFound", next, err)
 	}
 	requireVersionValue(t, svc, next, "k-manual")
 
@@ -300,8 +305,8 @@ func TestDeleteCredential_RemovesAStagedValue(t *testing.T) {
 	}
 	_, next := rotationVersions(before.CurrentVersion, true)
 	arm(&backend.failCAS, credentialPrefix+"k")
-	if _, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour)); err == nil {
-		t.Fatal("RotateDue under the fault succeeded, want an error")
+	if _, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour)); !errors.Is(err, errInjectedFault) {
+		t.Fatalf("RotateDue under the fault = %v, want the injected fault", err)
 	}
 	backend.failCAS.Store(nil)
 
@@ -316,8 +321,8 @@ func TestDeleteCredential_RemovesAStagedValue(t *testing.T) {
 	if err := svc.DeleteCredential(t.Context(), "k"); err != nil {
 		t.Fatalf("DeleteCredential: %v", err)
 	}
-	if _, err := svc.store.Get(t.Context(), stagedKey("k", next)); err == nil {
-		t.Fatalf("the staged value under v%d survived the delete", next)
+	if _, err := svc.store.Get(t.Context(), stagedKey("k", next)); !errors.Is(err, seal.ErrSecretNotFound) {
+		t.Fatalf("the staged value under v%d after the delete: %v, want ErrSecretNotFound", next, err)
 	}
 }
 
@@ -376,8 +381,8 @@ func TestRotateDue_StagedReadFailurePropagates(t *testing.T) {
 	due := rotationEpoch.Add(time.Hour)
 
 	arm(&backend.failCAS, credentialPrefix+"k")
-	if _, err := svc.RotateDue(t.Context(), due); err == nil {
-		t.Fatal("RotateDue under the fault succeeded, want an error")
+	if _, err := svc.RotateDue(t.Context(), due); !errors.Is(err, errInjectedFault) {
+		t.Fatalf("RotateDue under the fault = %v, want the injected fault", err)
 	}
 	backend.failCAS.Store(nil)
 
