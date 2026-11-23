@@ -226,8 +226,9 @@ func CheckUniqueViolationsBatch(batch storage.Batch, indexes map[string]index.In
 // every registered secondary index whose key scope covers key (see
 // indexScopes and ComposeIndexScope; an index with no scope covers the whole
 // state machine). If the key had a previous value with different indexed
-// fields, the old index entries are removed first.
-// Non-JSON values or missing fields are silently skipped.
+// fields, the old index entries are removed first. The new value need not be
+// JSON: one that is not a JSON object, or lacks an indexed field, adds no
+// entry for it, and the old entries are removed all the same.
 //
 // Old index entry deletions are best-effort: failures are ignored so that a
 // stale entry in a non-unique index does not block the write. New index entry
@@ -238,11 +239,10 @@ func UpdateIndexes(indexes map[string]index.Index, indexFields map[string]string
 		return nil
 	}
 
-	// Parse the new value as a flat JSON object.
-	var newFields map[string]json.RawMessage
-	if json.Unmarshal(value, &newFields) != nil {
-		return nil // not JSON; nothing to index
-	}
+	// Parse the new value as a flat JSON object. A value that is not one
+	// indexes nothing, but the previous value's entries are still removed
+	// below, so overwriting a record with non-JSON bytes releases them.
+	newFields := parseIndexFields(value)
 
 	// Parse the old value (if any) for index cleanup.
 	var oldFields map[string]json.RawMessage
@@ -285,17 +285,18 @@ func UpdateIndexes(indexes map[string]index.Index, indexFields map[string]string
 // queues index updates into the provided batch for atomic commit. Only the
 // indexes whose key scope covers key are touched (see indexScopes). If the key
 // had a previous value with different indexed fields, the old index entries
-// are removed first. Each index must implement index.BatchableIndex.
+// are removed first. The new value need not be JSON: one that is not a JSON
+// object adds no entry, and the old entries are removed all the same. Each
+// index must implement index.BatchableIndex.
 func UpdateIndexesBatch(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, key, value []byte, prevKv *qkv.KeyValue) error {
 	if len(indexes) == 0 || !anyIndexInScope(indexes, indexScopes, key) {
 		return nil
 	}
 
-	// Parse the new value as a flat JSON object.
-	var newFields map[string]json.RawMessage
-	if json.Unmarshal(value, &newFields) != nil {
-		return nil // not JSON; nothing to index
-	}
+	// Parse the new value as a flat JSON object. A value that is not one
+	// indexes nothing, but the previous value's entries are still removed
+	// below, so overwriting a record with non-JSON bytes releases them.
+	newFields := parseIndexFields(value)
 
 	// Parse the old value (if any) for index cleanup.
 	var oldFields map[string]json.RawMessage
@@ -530,16 +531,17 @@ func UnquoteJSON(raw json.RawMessage) []byte {
 // UpdateCompoundIndexesBatch extracts JSON field values and queues compound
 // index updates into the provided batch, for every compound index whose key
 // scope covers key (see compoundIndexScopes). Each compound index has multiple
-// JSON field names; all are extracted from a single JSON parse.
+// JSON field names; all are extracted from a single JSON parse. The previous
+// value's compound entries are always removed; a new value that is not a JSON
+// object, or lacks any of the fields, adds no entry.
 func UpdateCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]*index.CompoundIndex, compoundIndexFields map[string][]string, compoundIndexScopes map[string][]byte, key, value []byte, prevKv *qkv.KeyValue) error {
 	if len(compoundIndexes) == 0 {
 		return nil
 	}
 
-	var newFields map[string]json.RawMessage
-	if json.Unmarshal(value, &newFields) != nil {
-		return nil
-	}
+	// A new value that is not a JSON object adds no entry, but the previous
+	// value's entries are still removed below.
+	newFields := parseIndexFields(value)
 
 	var oldFields map[string]json.RawMessage
 	if prevKv != nil && len(prevKv.Value) > 0 {
@@ -564,6 +566,9 @@ func UpdateCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]
 		}
 
 		// Add new compound entry.
+		if newFields == nil {
+			continue
+		}
 		newValues := extractCompoundFieldValues(newFields, fieldNames)
 		if newValues != nil {
 			if err := idx.PutCompoundBatch(batch, key, newValues); err != nil {
@@ -651,6 +656,17 @@ func BackfillCompoundIndexWithPrefix(stg storage.Storage, idx *index.CompoundInd
 
 // extractCompoundFieldValues extracts ordered field values from parsed JSON.
 // Returns nil if any field is missing (sparse behavior).
+// parseIndexFields parses value as a flat JSON object for index maintenance.
+// It returns nil when value is not a JSON object (arbitrary bytes, an array,
+// a scalar or null): such a value has no indexable fields.
+func parseIndexFields(value []byte) map[string]json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(value, &fields) != nil {
+		return nil
+	}
+	return fields
+}
+
 func extractCompoundFieldValues(fields map[string]json.RawMessage, fieldNames []string) [][]byte {
 	values := make([][]byte, len(fieldNames))
 	for i, name := range fieldNames {
