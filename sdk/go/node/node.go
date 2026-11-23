@@ -80,6 +80,7 @@ package node
 
 import (
 	"context"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -3869,6 +3870,14 @@ func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCf
 // and multi-protocol server. Used by both standalone and clustered builders
 // after the service graph is ready.
 func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node, cfg *qrdbconfig.Config, callerOpts []server.ServerOption, standalone bool) error {
+	// The cluster isolation floor, applied as cmd/qrdbd applies it and
+	// before anything serves: every boot path reaches here after its
+	// tenants' home stores are attached (the tightening's node-key log
+	// probe resolves each isolated tenant's catalog through its home), so
+	// a FIPS-140 node whose floor is not confirmed strict refuses to boot.
+	if err := n.applyIsolationFloor(ctx, svcNode, cfg); err != nil {
+		return err
+	}
 	// Resolve caller-supplied crypto options once so the same instances back
 	// both the multi-protocol server and the in-process transport.
 	crypto := server.ResolveCryptoOptions(callerOpts...)
@@ -4458,6 +4467,46 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	wired = true
 	return nil
 }
+
+// applyIsolationFloor applies the cluster isolation floor to svcNode's
+// tenant service exactly as cmd/qrdbd does (lifecycle.ApplyFIPSIsolationFloor,
+// then lifecycle.ApplyIsolationFloor with tenant.isolation_policy): a
+// FIPS-140 build tightens the floor to strict and refuses to boot unless it
+// reads strict back; the configured floor is then raised, retrying in the
+// background for the node's life when the store is not yet writable. A node
+// built without a tenant service has no floor to apply.
+func (n *Node) applyIsolationFloor(ctx context.Context, svcNode *lifecycle.Node, cfg *qrdbconfig.Config) error {
+	if svcNode == nil {
+		return nil
+	}
+	if err := lifecycle.ApplyFIPSIsolationFloor(ctx, fipsEnabled(), svcNode.Tenant); err != nil {
+		return &IsolationFloorError{Err: err}
+	}
+	if cfg != nil && svcNode.Tenant != nil {
+		lifecycle.ApplyIsolationFloor(n.background(), svcNode.Tenant, cfg.Tenant.IsolationPolicy)
+	}
+	return nil
+}
+
+// fipsEnabled reports whether this build runs in FIPS 140-3 mode. It is a
+// variable only so a test can prove the FIPS floor on a non-FIPS build.
+var fipsEnabled = fips140.Enabled
+
+// IsolationFloorError is returned when a node could not confirm the cluster
+// isolation floor its build requires: a FIPS-140 node whose floor does not
+// read strict back (lifecycle.ErrFIPSFloorNotStrict) refuses to boot rather
+// than serve tenants under a weaker floor than cmd/qrdbd would.
+type IsolationFloorError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *IsolationFloorError) Error() string {
+	return "node: cluster isolation floor not applied: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *IsolationFloorError) Unwrap() error { return e.Err }
 
 // buildEmbeddedOpts constructs the embedded transport options from the
 // lifecycle.Node's services. When the node carries a User service it also
