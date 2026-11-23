@@ -285,6 +285,22 @@ not already started are attached, each replica waits for catch-up with the
 same poll, and a self-managed tenant still comes back sealed. A fresh close
 of the tenant supersedes its pending reopen.
 
+The list of a tenant's local replicas comes from durable placement as well
+as from the started shards (`WithMoveLocalReplicas`, wired by
+`newMoveStores` from `localMoveReplicas`: every database whose
+`Placement.Replicas[].RaftAddr` is this node's system-shard raft address).
+A step resumed by a fresh process (the journal has `StepSettling` for this
+node, and the new `MoveStoreCloser` never closed the tenant) reopens and
+catches up every replica placement puts on this node before
+`settleAndRelease` releases the step, so a restart cannot hand the next node
+its step while this replica is still behind; a placement lookup error leaves
+the tenant pending, for `RetryReopen`. A copy step closes the started shards
+and also records a placed replica the shard reconciler has not started yet,
+so the reopen starts it and waits for its catch-up. An `Attach` that fails
+because the shard reconciler started the shard meanwhile counts as started.
+An IsolationVolume tenant has one replica and no placement, so it has no
+quorum to lose: its Host path is unchanged.
+
 A step whose settle fails is not retried for ever. `settleAndRelease`
 records each failure with `Catalog.FailSettleStep` (the sanitized error
 class and an attempt count) and the step stays settling. For a copy step
