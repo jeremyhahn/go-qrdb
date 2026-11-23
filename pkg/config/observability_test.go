@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest"
@@ -147,7 +147,7 @@ func keepSlowSyncThreshold(t *testing.T) {
 // TestObservabilityConfig_YAML: the key is observability.slow_sync_threshold.
 func TestObservabilityConfig_YAML(t *testing.T) {
 	var cfg Config
-	if err := yaml.Unmarshal([]byte("observability:\n  slow_sync_threshold: 250ms\n"), &cfg); err != nil {
+	if err := gocodecyaml.New[Config]().Unmarshal([]byte("observability:\n  slow_sync_threshold: 250ms\n"), &cfg); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := cfg.Observability.SlowSyncThresholdDuration(); err != nil || got != 250*time.Millisecond {
