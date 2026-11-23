@@ -136,7 +136,7 @@ const compactionKeys = {
     retainPeriod: true,
 } satisfies Record<keyof DatabaseCompactionConfig, true>;
 
-const bindingKeys = { kind: true, nodes: true, encryption: true } satisfies Record<keyof DatabaseBindingInfo, true>;
+const bindingKeys = { kind: true, nodes: true, encryption: true, generation: true } satisfies Record<keyof DatabaseBindingInfo, true>;
 
 /**
  * Each object of the response and the keys the SDK declares for it. There are

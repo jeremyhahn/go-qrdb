@@ -513,6 +513,7 @@ func printDatabaseInfo(info *transport.DatabaseInfo) error {
 			_, _ = fmt.Fprintf(outputWriter, "Binding:\n")
 			_, _ = fmt.Fprintf(outputWriter, "  Kind:       %s\n", info.Binding.Kind)
 			_, _ = fmt.Fprintf(outputWriter, "  Encryption: %s\n", info.Binding.Encryption)
+			_, _ = fmt.Fprintf(outputWriter, "  Generation: %d\n", info.Binding.Generation)
 			if len(info.Binding.Nodes) > 0 {
 				_, _ = fmt.Fprintf(outputWriter, "  Nodes:      %s\n", strings.Join(info.Binding.Nodes, ","))
 			}

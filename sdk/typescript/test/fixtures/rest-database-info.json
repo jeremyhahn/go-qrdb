@@ -82,6 +82,7 @@
   "binding": {
     "kind": "local",
     "nodes": ["n1"],
-    "encryption": "tenant"
+    "encryption": "tenant",
+    "generation": 2
   }
 }

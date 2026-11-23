@@ -2856,6 +2856,11 @@ export interface DatabaseBindingInfo {
     /** Whose key encrypts the store at rest: "node", "tenant", or
      * "tenant+database" when the database has its own barrier. */
     readonly encryption: string;
+    /** The database's generation: each create of a name gets a number higher
+     * than any earlier create of that name, so a recreated database never
+     * shares a generation with the one it replaced. Generations only rise but
+     * may skip values. */
+    readonly generation: number;
 }
 
 /** Request to create a new database. */
