@@ -17,11 +17,14 @@
 package integration_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // On a standalone node a prefix tenant's plain database is materialized in
@@ -278,6 +281,76 @@ func TestDatabaseBinding_CLI_SystemTenantDatabaseOwnStore_PerProtocol(t *testing
 			}
 			if _, err := os.Stat(explicit); !os.IsNotExist(err) {
 				t.Fatalf("[%s] explicit data directory %s survives DROP (stat err %v)", proto.name, explicit, err)
+			}
+		})
+	}
+}
+
+// TestDatabaseBinding_CLI_InfoReportsTheBinding_PerProtocol drives
+// `database info` and `database list` over every transport and asserts the
+// read-only binding block: a standalone node binds a file database locally,
+// encrypted under the node or tenant scope, and the table output prints the
+// same block.
+func TestDatabaseBinding_CLI_InfoReportsTheBinding_PerProtocol(t *testing.T) {
+	node := startStandaloneModeNodeWithConfig(t, "pebble", "")
+
+	assertBinding := func(t *testing.T, protoName, where string, b *transport.DatabaseBinding) {
+		t.Helper()
+		if b == nil {
+			t.Fatalf("[%s] %s carries no binding block", protoName, where)
+		}
+		if b.Kind != "local" {
+			t.Fatalf("[%s] %s binding kind = %q, want local", protoName, where, b.Kind)
+		}
+		if b.Encryption != "node" && b.Encryption != "tenant" {
+			t.Fatalf("[%s] %s binding encryption = %q, want node or tenant", protoName, where, b.Encryption)
+		}
+	}
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			conn := node.cliArgsFor(proto)
+			name := "bound-" + proto.name
+			if out, err := runQRDB(t, node.cli, conn, "database", "create", name, "--backend", "file"); err != nil {
+				t.Fatalf("[%s] database create %s: %v\n%s", proto.name, name, err, out)
+			}
+
+			out, err := runQRDB(t, node.cli, conn, "--output", "json", "database", "info", name)
+			if err != nil {
+				t.Fatalf("[%s] database info %s: %v\n%s", proto.name, name, err, out)
+			}
+			var info transport.DatabaseInfo
+			if jerr := json.Unmarshal([]byte(out), &info); jerr != nil {
+				t.Fatalf("[%s] decode database info JSON: %v\n%s", proto.name, jerr, out)
+			}
+			assertBinding(t, proto.name, "database info", info.Binding)
+
+			out, err = runQRDB(t, node.cli, conn, "--output", "json", "database", "list")
+			if err != nil {
+				t.Fatalf("[%s] database list: %v\n%s", proto.name, err, out)
+			}
+			var list []transport.DatabaseInfo
+			if jerr := json.Unmarshal([]byte(out), &list); jerr != nil {
+				t.Fatalf("[%s] decode database list JSON: %v\n%s", proto.name, jerr, out)
+			}
+			found := false
+			for i := range list {
+				if list[i].Name == name {
+					found = true
+					assertBinding(t, proto.name, "database list", list[i].Binding)
+				}
+			}
+			if !found {
+				t.Fatalf("[%s] database list does not name %s:\n%s", proto.name, name, out)
+			}
+
+			out, err = runQRDB(t, node.cli, conn, "database", "info", name)
+			if err != nil {
+				t.Fatalf("[%s] database info (table) %s: %v\n%s", proto.name, name, err, out)
+			}
+			if !strings.Contains(out, "Binding:") || !strings.Contains(out, "Kind:       local") {
+				t.Fatalf("[%s] table output lacks the binding block:\n%s", proto.name, out)
 			}
 		})
 	}
