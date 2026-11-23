@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -37,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -122,24 +124,34 @@ func (f *LocalBindingFactory) WithIsolationPolicy(r tenant.ClusterIsolationPolic
 	return f
 }
 
-// ReservedRoots reports the node stores this factory's storage config
-// places outside the node data directory: an absolute storage.wal_dir and
-// a local object-store location (settings path, relative paths resolved
-// against the node data directory). The database Manager refuses a data
-// directory overlapping any of them and never removes one
-// (database.ReservedRootsReporter).
-func (f *LocalBindingFactory) ReservedRoots() []string {
+// ReservedRoots reports the paths the node's own stores occupy as storage
+// actually opens them, so the database Manager refuses a data directory
+// overlapping any of them and never removes one
+// (database.ReservedRootsReporter): storage.wal_dir whenever it is set, made
+// absolute against the working directory as Pebble opens a relative one; and,
+// for the local object-store provider, the settings path resolved exactly as
+// NewLocalStorage resolves it (empty: <data dir>/objstore; relative: against
+// the working directory, as the local provider opens it), its physical
+// directory and its commit-journal sibling (objstore.LocalRoots). A path that
+// cannot be resolved is an error: the Manager then fails closed.
+func (f *LocalBindingFactory) ReservedRoots() ([]string, error) {
 	var roots []string
-	if wal := f.storageCfg.WALDir; wal != "" && filepath.IsAbs(wal) {
-		roots = append(roots, wal)
-	}
-	if p := f.storageCfg.Objstore.Settings["path"]; p != "" {
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(f.node.DataDir, p)
+	if wal := f.storageCfg.WALDir; wal != "" {
+		abs, err := filepath.Abs(wal)
+		if err != nil {
+			return nil, fmt.Errorf("resolve storage.wal_dir %q: %w", wal, err)
 		}
-		roots = append(roots, p)
+		roots = append(roots, abs)
 	}
-	return roots
+	provider, settings := resolveObjstoreSettings(f.storageCfg.Objstore, f.node.DataDir)
+	if provider == "local" {
+		local, err := objstore.LocalRoots(settings["path"])
+		if err != nil {
+			return nil, fmt.Errorf("resolve storage.objstore.settings.path %q: %w", settings["path"], err)
+		}
+		roots = append(roots, local...)
+	}
+	return roots, nil
 }
 
 // lateIsolationPolicy reads the cluster isolation policy from the tenant

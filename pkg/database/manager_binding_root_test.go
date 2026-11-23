@@ -148,9 +148,10 @@ func TestManager_DropNeverRemovesAnotherRoot(t *testing.T) {
 type reservingFactory struct {
 	*rootedFactory
 	reserved []string
+	err      error
 }
 
-func (f *reservingFactory) ReservedRoots() []string { return f.reserved }
+func (f *reservingFactory) ReservedRoots() ([]string, error) { return f.reserved, f.err }
 
 // TestManager_DataDirOverNodeStoresRefused proves a data directory equal to,
 // inside or above a node store is refused at create: the control-plane
@@ -159,7 +160,8 @@ func (f *reservingFactory) ReservedRoots() []string { return f.reserved }
 func TestManager_DataDirOverNodeStoresRefused(t *testing.T) {
 	dir := t.TempDir()
 	external := filepath.Join(t.TempDir(), "ext", "wal")
-	f := &reservingFactory{rootedFactory: &rootedFactory{node: dir, roots: map[string]*string{}}, reserved: []string{external}}
+	objects := filepath.Join(t.TempDir(), "objects")
+	f := &reservingFactory{rootedFactory: &rootedFactory{node: dir, roots: map[string]*string{}}, reserved: []string{external, objects, objects + ".journal"}}
 	m := newCatalogManager(slog.Default(), dir, WithBackendFactory(f))
 	t.Cleanup(func() { _ = m.Close() })
 	cases := []string{
@@ -168,6 +170,10 @@ func TestManager_DataDirOverNodeStoresRefused(t *testing.T) {
 		filepath.Join(dir, "file"),
 		filepath.Join(dir, "vector"),
 		filepath.Join(dir, "objstore"),
+		filepath.Join(dir, "objstore.journal"),
+		filepath.Join(dir, "objstore.journal", "inner"),
+		objects + ".journal",
+		filepath.Join(objects+".journal", "inner"),
 		external,
 		filepath.Join(external, "inner"),
 		filepath.Dir(external),
@@ -208,6 +214,54 @@ func TestManager_DropNeverRemovesANodeStore(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("control-plane store after the refused drop: %v", err)
+	}
+}
+
+// TestManager_DropNeverRemovesTheObjstoreJournal proves a record whose root is
+// the node object store's commit-journal sibling, which the factory reports,
+// is refused at drop and the journal stays.
+func TestManager_DropNeverRemovesTheObjstoreJournal(t *testing.T) {
+	dir := t.TempDir()
+	objects := filepath.Join(t.TempDir(), "objects")
+	journal := objects + ".journal"
+	f := &reservingFactory{rootedFactory: &rootedFactory{node: dir, roots: map[string]*string{}}, reserved: []string{objects, journal}}
+	m := newCatalogManager(slog.Default(), dir, WithBackendFactory(f))
+	t.Cleanup(func() { _ = m.Close() })
+	if _, err := m.Create(DatabaseConfig{Name: "b", Backend: BackendMemory}); err != nil {
+		t.Fatalf("Create b: %v", err)
+	}
+	if err := os.MkdirAll(journal, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(journal, "commit")
+	if err := os.WriteFile(marker, []byte("journal"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	*f.roots["b"] = journal
+	err := m.Drop(context.Background(), "b")
+	var reserved *DataDirReservedPathError
+	if !errors.As(err, &reserved) {
+		t.Fatalf("Drop b: err = %v, want *DataDirReservedPathError", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("object-store journal after the refused drop: %v", err)
+	}
+}
+
+// TestManager_ReservedRootsErrorFailsCreateClosed proves a factory that cannot
+// resolve its node stores refuses a data directory and writes no record.
+func TestManager_ReservedRootsErrorFailsCreateClosed(t *testing.T) {
+	dir := t.TempDir()
+	f := &reservingFactory{rootedFactory: &rootedFactory{node: dir, roots: map[string]*string{}}, err: errors.New("unresolvable store")}
+	m := newCatalogManager(slog.Default(), dir, WithBackendFactory(f))
+	t.Cleanup(func() { _ = m.Close() })
+	_, err := m.Create(DatabaseConfig{Name: "db", Backend: BackendFile, DataDir: filepath.Join(t.TempDir(), "own")})
+	var invalid *InvalidDataDirError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("Create: err = %v, want *InvalidDataDirError", err)
+	}
+	if _, err := m.Get("db"); err == nil {
+		t.Fatal("a refused database is registered")
 	}
 }
 
