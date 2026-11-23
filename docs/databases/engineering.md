@@ -1477,7 +1477,7 @@ CLI and the SDK types. A row that is not on all six is a parity defect.
 | Database info / list | read-only `binding` block added | no |
 | Update connection | removed, with remote mode | yes |
 | Update raft | `state_storage` is creation-time; refused on update | no |
-| Vector, every request that carries `shard_id` | `shard_id` removed | yes |
+| Vector, every request | the request shard field removed (proto fields reserved); done | yes |
 | Vector, every capability | served for every database on every backend, including volume and raft tenants | no |
 | MVCC, transactions, leases, watches, locks | served for every database on every node mode | no |
 | Capabilities report | MVCC, transaction, lease, watch, lock not raft-mode gated | no |

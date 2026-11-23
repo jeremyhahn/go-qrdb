@@ -76,13 +76,11 @@ Upsert:
 
 Vector IDs are `uint64` JSON numbers. `vector` length must equal the namespace `dimension`.
 
-**`shard_id` selects nothing, and no client sends it** (OD-14 A): neither
-SDK's vector requests nor any `qrdb vector` verb carries a shard ID; the
-database named by the request's database scope decides where the namespace
-lives. The server still accepts the field on the wire until it is removed from
-all twenty requests on every transport. Target: every capability is then
-served for every database on every backend, including volume- and
-raft-isolated tenants, where it is refused as not implemented today.
+No vector request names a shard (OD-14 A): the database named by the
+request's database scope decides where the namespace lives, through that
+database's binding. Target: every capability is served for every database on
+every backend, including volume- and raft-isolated tenants, where it is
+refused as not implemented today.
 
 Similarity search:
 
@@ -139,5 +137,5 @@ embedded transport returns the typed error itself.
 
 ## Versioning
 
-Vector REST paths are unversioned (`/vector/...`). Removing `shard_id` (OD-14
-A) is a breaking change carried by a MINOR release.
+Vector REST paths are unversioned (`/vector/...`). Breaking changes are
+carried by a MINOR release.

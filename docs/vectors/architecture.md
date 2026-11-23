@@ -94,8 +94,7 @@ Production traffic uses the node-local service:
 - **Not replicated.** The service replicates only when given a Raft node, and no
   production path gives it one. The reserved vector shard and the two vector
   state machines in `pkg/statemachine` are never started. In a cluster, each
-  node's store holds only the writes that node served. The `shard_id` request
-  field selects nothing.
+  node's store holds only the writes that node served.
 - **Absent where tenants have their own store.** The per-tenant volume host, the
   dedicated-raft database bundles and the dedicated-store bundle carry no vector
   service; vector requests for those databases are refused as not implemented.
@@ -247,12 +246,12 @@ database). Each capability keeps exactly one home: the engine.
 
 ## Sharding
 
-Shipped: vector operations take an optional **shard ID** (`--shard-id`,
-`shard_id`). It selects nothing — see "Current state".
+Shipped: no vector request names a shard (OD-14 A); the request's database
+scope decides where the namespace lives.
 
 Target: a namespace belongs to a database and lives wherever that database's
 binding lives. Horizontal scale comes from databases on different Raft groups,
-not from a vector-specific shard. The `shard_id` field is removed (OD-14).
+not from a vector-specific shard.
 
 ## Trust boundaries
 
