@@ -49,6 +49,8 @@ func parityOutcome(err error) string {
 		return "not found"
 	case errors.Is(err, sdk.ErrKVIndexUnsupported):
 		return "index unsupported"
+	case sdk.IsErrorCode(err, sdk.ErrConflict):
+		return "conflict"
 	default:
 		return "refused"
 	}
@@ -116,7 +118,7 @@ func parityScenario() []parityStep {
 		{name: "index lookup team", run: func(ctx context.Context, d parityDAOs) string {
 			return memberIDs(d.members.QueryByIndex(ctx, "Team", "red"))
 		}},
-		{name: "unique refusal", run: save(daoMember{ID: 3, Email: "a@example.test"})},
+		{name: "unique refusal", run: save(daoMember{ID: 3, Email: "a@example.test"}), want: everyStore("conflict")},
 		{name: "refused entity absent", run: func(ctx context.Context, d parityDAOs) string { return oneMember(d.members.Get(ctx, 3)) }},
 		// The value moves in op order: a releases its value first, then c
 		// takes it.
@@ -179,12 +181,18 @@ func parityScenario() []parityStep {
 		{name: "guarded batch applies", run: guardedTxBatch("txmember/11", "txmember/11", daoMember{ID: 11, Email: "tx11@example.test"}), want: everyStore("applied")},
 		{name: "applied batch visible", run: func(ctx context.Context, d parityDAOs) string { return oneMember(d.txMembers.Get(ctx, 11)) }, want: everyStore("11:tx11@example.test")},
 		// The guard holds but the write takes ID 1's unique Email. Every
-		// store refuses it; only the embedded store types the refusal as
-		// ErrConflict (the service store returns *kvstore.NotAppliedError,
-		// the client store the transport's *transport.RequestError), so the
-		// step compares the refusal, not its code (docs/plans/1649.md).
-		{name: "guarded batch unique conflict", run: guardedTxBatch("txmember/10", "txmember/10", daoMember{ID: 10, Email: "tx1@example.test"}), want: everyStore("refused")},
+		// store refuses it and types the refusal ErrConflict: the embedded
+		// store directly, the service store through
+		// service.CommandConflictError, the client store through the
+		// rebuilt transport.CommandConflictError (docs/plans/1649.md).
+		{name: "guarded batch unique conflict", run: guardedTxBatch("txmember/10", "txmember/10", daoMember{ID: 10, Email: "tx1@example.test"}), want: everyStore("conflict")},
 		{name: "conflict wrote nothing", run: func(ctx context.Context, d parityDAOs) string { return oneMember(d.txMembers.Get(ctx, 10)) }, want: everyStore("not found")},
+		// A unique index is per entity type: member's Email index does not
+		// cover txmember keys, so a member may take a txmember's Email.
+		{name: "member takes a txmember's Email", run: save(daoMember{ID: 20, Email: "tx2@example.test"}), want: everyStore("ok")},
+		{name: "txmember Email unaffected", run: func(ctx context.Context, d parityDAOs) string {
+			return oneMember(d.txMembers.QueryOneByIndex(ctx, "Email", "tx2@example.test"))
+		}, want: everyStore("2:tx2@example.test")},
 	}
 }
 
