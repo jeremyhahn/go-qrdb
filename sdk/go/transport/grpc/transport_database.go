@@ -267,36 +267,6 @@ func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateD
 	return dbconv.Info(resp), nil
 }
 
-// UpdateDatabaseConnection updates the connection configuration for a
-// database.
-func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	pbReq := &pb.DatabaseUpdateConnectionRequest{
-		Name: req.Name,
-	}
-
-	if req.Connection != nil {
-		pbReq.Connection = &pb.DatabaseConnectionConfig{
-			Transport:     req.Connection.Transport,
-			RemoteAddress: req.Connection.Address,
-			UseTls:        req.Connection.CAFile != "" || req.Connection.CertFile != "" || req.Connection.KeyFile != "",
-			CaFile:        req.Connection.CAFile,
-			CertFile:      req.Connection.CertFile,
-			KeyFile:       req.Connection.KeyFile,
-		}
-	}
-
-	resp, err := t.client.DatabaseUpdateConnection(ctx, pbReq)
-	if err != nil {
-		return nil, mapGRPCError("UpdateDatabaseConnection", err)
-	}
-
-	return dbconv.Info(resp), nil
-}
-
 // ---------------------------------------------------------------------------
 // Database type conversion helpers
 // ---------------------------------------------------------------------------

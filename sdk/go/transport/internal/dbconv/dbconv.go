@@ -59,15 +59,6 @@ func Info(resp *pb.DatabaseInfoResponse) *transport.DatabaseInfo {
 			SharesTotal:    int(b.GetSharesTotal()),
 		}
 	}
-	if c := resp.GetConnection(); c != nil {
-		info.Connection = &transport.DatabaseConnectionConfig{
-			Transport: c.GetTransport(),
-			Address:   c.GetRemoteAddress(),
-			CAFile:    c.GetCaFile(),
-			CertFile:  c.GetCertFile(),
-			KeyFile:   c.GetKeyFile(),
-		}
-	}
 	if q := resp.GetSql(); q != nil {
 		info.SQL = &transport.DatabaseSQLConfig{Concurrency: q.GetConcurrency()}
 	}

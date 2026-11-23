@@ -336,33 +336,3 @@ func (t *Transport) UpdateDatabaseCompaction(ctx context.Context, req transport.
 	}
 	return &info, nil
 }
-
-// UpdateDatabaseConnection updates the remote connection configuration
-// for a database by calling the db.UpdateConnection handler.
-func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	payload, err := json.Marshal(struct {
-		Name       string                              `json:"name"`
-		Connection *transport.DatabaseConnectionConfig `json:"connection"`
-	}{
-		Name:       req.Name,
-		Connection: req.Connection,
-	})
-	if err != nil {
-		return nil, &marshalError{Err: err}
-	}
-
-	respBytes, err := t.call(ctx, "db.UpdateConnection", payload)
-	if err != nil {
-		return nil, err
-	}
-
-	var info transport.DatabaseInfo
-	if err := json.Unmarshal(respBytes, &info); err != nil {
-		return nil, &unmarshalError{Err: err}
-	}
-	return &info, nil
-}

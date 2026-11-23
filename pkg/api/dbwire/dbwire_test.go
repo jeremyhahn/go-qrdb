@@ -81,9 +81,6 @@ func TestInfo_CarriesEveryFieldAndNoSecret(t *testing.T) {
 	if b := out.Barrier; b == nil || !b.Enabled || b.Mode != "shamir" || b.SharesRequired != 2 || b.SharesTotal != 3 {
 		t.Errorf("barrier = %+v", out.Barrier)
 	}
-	if c := out.Connection; c == nil || c.Address != "db.example.com:63000" || c.CAFile != "/etc/qrdb/ca.pem" {
-		t.Errorf("connection = %+v", out.Connection)
-	}
 	if out.SQL == nil || out.SQL.Concurrency != "pessimistic" {
 		t.Errorf("sql = %+v", out.SQL)
 	}
@@ -149,7 +146,7 @@ func TestInfo_UnsetSecretIsNotReportedSet(t *testing.T) {
 func TestInfo_OptionalBlocksAbsent(t *testing.T) {
 	in := &database.DatabaseInfo{Name: "plain", Backend: database.BackendMemory}
 	j := dbwire.Info(in)
-	if j.Raft != nil || j.Barrier != nil || j.Connection != nil || j.SQL != nil || j.Protocol.Etcd != nil || j.Binding != nil {
+	if j.Raft != nil || j.Barrier != nil || j.SQL != nil || j.Protocol.Etcd != nil || j.Binding != nil {
 		t.Errorf("JSON invented blocks: %+v", j)
 	}
 	p := dbwire.InfoProto(in)

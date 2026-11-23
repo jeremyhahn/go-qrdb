@@ -375,48 +375,6 @@ func (t *Transport) UpdateDatabaseCompaction(ctx context.Context, req transport.
 	return &info, nil
 }
 
-// UpdateDatabaseConnection updates the remote connection configuration for a
-// database by calling the qrdb_database_update_connection MCP tool.
-func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	args := map[string]any{
-		"name": req.Name,
-	}
-
-	if req.Connection != nil {
-		if req.Connection.Transport != "" {
-			args["transport"] = req.Connection.Transport
-		}
-		if req.Connection.Address != "" {
-			args["remote_address"] = req.Connection.Address
-		}
-		if req.Connection.CAFile != "" {
-			args["ca_file"] = req.Connection.CAFile
-		}
-		if req.Connection.CertFile != "" {
-			args["cert_file"] = req.Connection.CertFile
-		}
-		if req.Connection.KeyFile != "" {
-			args["key_file"] = req.Connection.KeyFile
-		}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_database_update_connection", args)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "UpdateDatabaseConnection", Err: err}
-	}
-
-	var info transport.DatabaseInfo
-	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "UpdateDatabaseConnection", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	return &info, nil
-}
-
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------

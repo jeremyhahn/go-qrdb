@@ -44,7 +44,6 @@ func newDatabaseCmd() *cobra.Command {
 		newDatabaseUpdateRaftCmd(),
 		newDatabaseScaleCmd(),
 		newDatabaseUpdateBarrierCmd(),
-		newDatabaseUpdateConnectionCmd(),
 		newDatabaseUpdateCompactionCmd(),
 		newDatabaseSealCmd(),
 		newDatabaseUnsealCmd(),
@@ -403,50 +402,6 @@ func newDatabaseUpdateBarrierCmd() *cobra.Command {
 	return cmd
 }
 
-// newDatabaseUpdateConnectionCmd creates the "database update-connection" subcommand.
-func newDatabaseUpdateConnectionCmd() *cobra.Command {
-	var (
-		connTransport string
-		address       string
-		caFile        string
-		certFile      string
-		keyFile       string
-	)
-
-	cmd := &cobra.Command{
-		Use:   "update-connection <name>",
-		Short: "Update remote connection configuration",
-		Long:  "Update the remote connection configuration for a database.",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-			req := transport.UpdateDatabaseConnectionRequest{
-				Name: name,
-				Connection: &transport.DatabaseConnectionConfig{
-					Transport: connTransport,
-					Address:   address,
-					CAFile:    caFile,
-					CertFile:  certFile,
-					KeyFile:   keyFile,
-				},
-			}
-			info, err := client.Database().UpdateDatabaseConnection(cmd.Context(), req)
-			if err != nil {
-				return err
-			}
-			return printDatabaseInfo(info)
-		},
-	}
-
-	cmd.Flags().StringVar(&connTransport, "conn-transport", "tcp", "Connection transport (tcp, quic)")
-	cmd.Flags().StringVar(&address, "address", "", "Remote database address (host:port)")
-	cmd.Flags().StringVar(&caFile, "conn-ca-file", "", "Connection TLS CA certificate file")
-	cmd.Flags().StringVar(&certFile, "conn-cert-file", "", "Connection TLS client certificate file")
-	cmd.Flags().StringVar(&keyFile, "conn-key-file", "", "Connection TLS client key file")
-
-	return cmd
-}
-
 // formatProtocols returns a comma-separated string of active protocol names.
 func formatProtocols(proto transport.ProtocolConfig) string {
 	var protocols []string
@@ -517,11 +472,6 @@ func printDatabaseInfo(info *transport.DatabaseInfo) error {
 			if len(info.Binding.Nodes) > 0 {
 				_, _ = fmt.Fprintf(outputWriter, "  Nodes:      %s\n", strings.Join(info.Binding.Nodes, ","))
 			}
-		}
-		if info.Connection != nil {
-			_, _ = fmt.Fprintf(outputWriter, "Connection:\n")
-			_, _ = fmt.Fprintf(outputWriter, "  Transport: %s\n", info.Connection.Transport)
-			_, _ = fmt.Fprintf(outputWriter, "  Address:   %s\n", info.Connection.Address)
 		}
 		if info.SQL != nil && info.SQL.Concurrency != "" {
 			_, _ = fmt.Fprintf(outputWriter, "SQL:\n")

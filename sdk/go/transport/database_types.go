@@ -54,7 +54,6 @@ type DatabaseInfo struct {
 	DedicatedWAL bool                      `json:"dedicatedWal,omitempty"`
 	Raft         *DatabaseRaftInfo         `json:"raft,omitempty"`
 	Barrier      *DatabaseBarrierInfo      `json:"barrier,omitempty"`
-	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
 	SQL          *DatabaseSQLConfig        `json:"sql,omitempty"`
 	Compaction   *DatabaseCompactionConfig `json:"compaction,omitempty"`
 	// CompactionUnavailable reports that the server could not read the
@@ -259,28 +258,18 @@ type DatabaseBarrierConfig struct {
 	Secret string `json:"secret,omitempty"`
 }
 
-// DatabaseConnectionConfig holds remote connection settings for a database.
-type DatabaseConnectionConfig struct {
-	Transport string `json:"transport"`
-	Address   string `json:"address"`
-	CAFile    string `json:"caFile,omitempty"`
-	CertFile  string `json:"certFile,omitempty"`
-	KeyFile   string `json:"keyFile,omitempty"`
-}
-
 // CreateDatabaseRequest represents a request to create a database.
 type CreateDatabaseRequest struct {
-	TenantID   string                    `json:"tenantId,omitempty"`
-	Name       string                    `json:"name"`
-	Backend    string                    `json:"backend"`
-	Protocol   ProtocolConfig            `json:"protocol,omitempty"`
-	DataDir    string                    `json:"dataDir,omitempty"`
-	Mode       string                    `json:"mode,omitempty"`
-	Replicas   int                       `json:"replicas,omitempty"`
-	Raft       *DatabaseRaftConfig       `json:"raft,omitempty"`
-	Barrier    *DatabaseBarrierConfig    `json:"barrier,omitempty"`
-	Connection *DatabaseConnectionConfig `json:"connection,omitempty"`
-	SQL        *DatabaseSQLConfig        `json:"sql,omitempty"`
+	TenantID string                 `json:"tenantId,omitempty"`
+	Name     string                 `json:"name"`
+	Backend  string                 `json:"backend"`
+	Protocol ProtocolConfig         `json:"protocol,omitempty"`
+	DataDir  string                 `json:"dataDir,omitempty"`
+	Mode     string                 `json:"mode,omitempty"`
+	Replicas int                    `json:"replicas,omitempty"`
+	Raft     *DatabaseRaftConfig    `json:"raft,omitempty"`
+	Barrier  *DatabaseBarrierConfig `json:"barrier,omitempty"`
+	SQL      *DatabaseSQLConfig     `json:"sql,omitempty"`
 }
 
 // UpdateDatabaseRaftRequest represents a request to update Raft config.
@@ -300,12 +289,6 @@ type ScaleDatabaseRequest struct {
 type UpdateDatabaseBarrierRequest struct {
 	Name    string                 `json:"-"`
 	Barrier *DatabaseBarrierConfig `json:"barrier"`
-}
-
-// UpdateDatabaseConnectionRequest represents a request to update connection config.
-type UpdateDatabaseConnectionRequest struct {
-	Name       string                    `json:"-"`
-	Connection *DatabaseConnectionConfig `json:"connection"`
 }
 
 // UpdateDatabaseProtocolRequest represents a request to update the wire
@@ -370,10 +353,6 @@ type DatabaseClient interface {
 	// dedicated-raft database, adding or removing voting replicas without
 	// recreating the database.
 	ScaleDatabase(ctx context.Context, req ScaleDatabaseRequest) (*DatabaseInfo, error)
-
-	// UpdateDatabaseConnection updates the remote connection configuration
-	// for a database.
-	UpdateDatabaseConnection(ctx context.Context, req UpdateDatabaseConnectionRequest) (*DatabaseInfo, error)
 
 	// UpdateDatabaseSQL updates a database's SQL settings -- its
 	// concurrency mode -- and returns the updated database information.

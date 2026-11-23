@@ -262,17 +262,16 @@ var operationPermissions = map[string]permission.Permission{
 	// Database management. No cross-tenant target: a database belongs to
 	// the caller's own tenant, exactly as QUIC's db.* registrations carry
 	// no identityTargets entry.
-	"CreateDatabase":           permission.DatabasesCreate,
-	"GetDatabase":              permission.DatabasesRead,
-	"ListDatabases":            permission.DatabasesList,
-	"DropDatabase":             permission.DatabasesDelete,
-	"ScaleDatabase":            permission.DatabasesScale,
-	"UpdateDatabaseProtocol":   permission.DatabasesUpdate,
-	"UpdateDatabaseEtcd":       permission.DatabasesUpdate,
-	"UpdateDatabaseRaft":       permission.DatabasesUpdate,
-	"UpdateDatabaseBarrier":    permission.DatabasesUpdate,
-	"UpdateDatabaseConnection": permission.DatabasesUpdate,
-	"UpdateDatabaseSQL":        permission.DatabasesUpdate,
+	"CreateDatabase":         permission.DatabasesCreate,
+	"GetDatabase":            permission.DatabasesRead,
+	"ListDatabases":          permission.DatabasesList,
+	"DropDatabase":           permission.DatabasesDelete,
+	"ScaleDatabase":          permission.DatabasesScale,
+	"UpdateDatabaseProtocol": permission.DatabasesUpdate,
+	"UpdateDatabaseEtcd":     permission.DatabasesUpdate,
+	"UpdateDatabaseRaft":     permission.DatabasesUpdate,
+	"UpdateDatabaseBarrier":  permission.DatabasesUpdate,
+	"UpdateDatabaseSQL":      permission.DatabasesUpdate,
 	// Setting a compaction policy is compacting on a schedule (QUIC's own
 	// comment for db.UpdateCompaction).
 	"UpdateDatabaseCompaction": permission.MVCCCompact,

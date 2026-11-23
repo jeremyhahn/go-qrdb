@@ -64,15 +64,6 @@ func Info(info *database.DatabaseInfo) *transport.DatabaseInfo {
 			SharesTotal:    b.SharesTotal,
 		}
 	}
-	if c := info.Connection; c != nil {
-		out.Connection = &transport.DatabaseConnectionConfig{
-			Transport: c.Transport,
-			Address:   c.Address,
-			CAFile:    c.CAFile,
-			CertFile:  c.CertFile,
-			KeyFile:   c.KeyFile,
-		}
-	}
 	if s := info.SQL; s != nil {
 		out.SQL = &transport.DatabaseSQLConfig{Concurrency: string(s.Concurrency)}
 	}
