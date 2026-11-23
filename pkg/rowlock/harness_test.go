@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
@@ -26,7 +28,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
-	"github.com/stretchr/testify/require"
 )
 
 // stack is a real, in-memory store: the MVCC engine with its lessor and
