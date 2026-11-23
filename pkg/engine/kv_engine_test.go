@@ -2941,6 +2941,83 @@ func TestKVEngine_PutWithIndexes_UpdateExistingKey(t *testing.T) {
 	}
 }
 
+// TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesUniqueValue overwrites
+// an indexed JSON record with non-JSON bytes: its old unique entry must be
+// released, so another key can take the value and a lookup of it no longer
+// returns the overwritten key.
+func TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesUniqueValue(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+	if err := eng.RegisterEntityType("member", []EntityIndex{
+		{FieldName: "Email", JSONFieldName: "email", Unique: true},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType: %v", err)
+	}
+
+	if err := eng.PutWithIndexes([]byte("member/1"), []byte(`{"email":"a"}`)); err != nil {
+		t.Fatalf("PutWithIndexes member/1 JSON: %v", err)
+	}
+	if err := eng.PutWithIndexes([]byte("member/1"), []byte("not-json")); err != nil {
+		t.Fatalf("PutWithIndexes member/1 non-JSON: %v", err)
+	}
+
+	result, err := eng.Lookup(context.Background(), index.IndexQueryRequest{
+		IndexName: "member.Email",
+		Value:     []byte("a"),
+	})
+	if err != nil {
+		t.Fatalf("Lookup a: %v", err)
+	}
+	if ids := result.([][]byte); len(ids) != 0 {
+		t.Errorf("expected no keys for the overwritten value, got %q", ids)
+	}
+
+	if err := eng.PutWithIndexes([]byte("member/2"), []byte(`{"email":"a"}`)); err != nil {
+		t.Fatalf("PutWithIndexes member/2 with the released value: %v", err)
+	}
+}
+
+// TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesCompoundUniqueValue is
+// the compound-index twin of the test above.
+func TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesCompoundUniqueValue(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+	if err := eng.RegisterEntityType("sessions", []EntityIndex{
+		{FieldNames: []string{"UserID", "DeviceID"}, JSONFieldNames: []string{"user_id", "device_id"}, Unique: true},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType: %v", err)
+	}
+	if len(eng.compoundIndexes) != 1 {
+		t.Fatalf("expected 1 compound index, got %d", len(eng.compoundIndexes))
+	}
+
+	value := []byte(`{"user_id":"u1","device_id":"d1"}`)
+	if err := eng.PutWithIndexes([]byte("sessions/1"), value); err != nil {
+		t.Fatalf("PutWithIndexes sessions/1 JSON: %v", err)
+	}
+	if err := eng.PutWithIndexes([]byte("sessions/1"), []byte("not-json")); err != nil {
+		t.Fatalf("PutWithIndexes sessions/1 non-JSON: %v", err)
+	}
+
+	for name, idx := range eng.compoundIndexes {
+		ids, err := idx.GetCompound([][]byte{[]byte("u1"), []byte("d1")})
+		if err != nil {
+			t.Fatalf("GetCompound %s: %v", name, err)
+		}
+		if len(ids) != 0 {
+			t.Errorf("expected no keys for the overwritten compound value in %s, got %q", name, ids)
+		}
+	}
+
+	if err := eng.PutWithIndexes([]byte("sessions/2"), value); err != nil {
+		t.Fatalf("PutWithIndexes sessions/2 with the released value: %v", err)
+	}
+}
+
 func TestKVEngine_DeleteWithIndexes_RemovesKey(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
