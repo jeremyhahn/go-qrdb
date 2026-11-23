@@ -376,10 +376,19 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, store
 			return fmt.Errorf("mint keyed sibling: %w", err)
 		}
 	}
-	// Always remove the staging keyed root-key blob + zero its key enclave on
-	// return (success: redundant after adopt; failure: rollback). Mint is itself
-	// idempotent against a leftover blob; this keeps the backend clean.
-	defer func() { _ = target.DeleteRootKey(ctx) }()
+	// Remove the staging keyed root-key blob on return when nothing still needs
+	// it: on success (the canonical key is adopted) and on a rollback before the
+	// commit point. Past the commit point a failure keeps it: the staged
+	// secrets and the committed journal survive and are readable only under
+	// it, so the next boot's RecoverInterruptedMigration adopts it and rolls
+	// the migration forward. Mint is itself idempotent against a leftover blob.
+	// The key enclave is zeroed by target.Close either way.
+	committing := false
+	defer func() {
+		if err == nil || !committing {
+			_ = target.DeleteRootKey(ctx)
+		}
+	}()
 	defer func() { _ = target.Close() }()
 
 	storeDirs := stores.Dirs()
@@ -542,6 +551,7 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, store
 	// Commit (point of no return): swap dirs, commit the staged snapshots,
 	// adopt the keyed root key.
 	j.Phase = seal.PhaseCommitting
+	committing = true
 	if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
 		err = cerr
 		return err
@@ -562,6 +572,12 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, store
 	if cerr := database.CommitStagedSnapshotsWithRetry(ctx, stagedSnaps, systemSnapshotCommitAttempts, systemSnapshotCommitBackoff); cerr != nil {
 		err = fmt.Errorf("commit re-encrypted snapshots: %w", cerr)
 		return err
+	}
+	if systemAdoptRootKeyFault != nil {
+		if ferr := systemAdoptRootKeyFault(); ferr != nil {
+			err = ferr
+			return err
+		}
 	}
 	if aerr := source.AdoptMigratedRootKey(ctx, target); aerr != nil {
 		err = aerr
@@ -625,6 +641,33 @@ func journalNamesSealStore(j *seal.MigrationJournal) bool {
 		}
 	}
 	return false
+}
+
+// systemAdoptRootKeyFault, when set (tests only), fails recodeSystemBarrier
+// right before it adopts the staged keyed root key, past the commit point.
+var systemAdoptRootKeyFault func() error
+
+// errMigrationStagingRootMissing is returned at boot when a committed
+// migration journal still needs its staging root key and the key is gone.
+var errMigrationStagingRootMissing = errors.New("committed encryption-migration journal names a staging root key that is missing and the canonical root key is not keyed; refusing to roll the migration forward")
+
+// refuseCommittedJournalWithoutStagingRoot guards the boot-time roll-forward
+// (database.RecoverInterruptedMigration). A committed journal whose canonical
+// root key is still the none one rolls forward by adopting the staging root
+// key; if that key is gone, rolling forward would copy the staged ciphertexts
+// over the live secrets and clear the journal with no key able to read them.
+// It refuses instead: an error, the journal kept, nothing copied.
+func refuseCommittedJournalWithoutStagingRoot(ctx context.Context, backend seal.StorageBackend, rootKeyPath string, j *seal.MigrationJournal) error {
+	if j == nil || !j.Committed() || j.StagingRootKeyPath == "" {
+		return nil
+	}
+	if persisted := seal.PersistedStrategyFrom(ctx, backend, rootKeyPath); persisted != seal.StrategyNone && persisted != "" {
+		return nil
+	}
+	if blob, err := backend.Get(ctx, j.StagingRootKeyPath); err == nil && len(blob) > 0 {
+		return nil
+	}
+	return fmt.Errorf("%w (staging key %q)", errMigrationStagingRootMissing, j.StagingRootKeyPath)
 }
 
 // systemMigrateStagingSuffix names the staging root-key path for a system

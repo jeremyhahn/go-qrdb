@@ -606,6 +606,81 @@ func TestRecodeSystemBarrier_SealStoreCrashAfterCommitRollsForwardAtBoot(t *test
 	assertRecodeSealStoreKeyed(t, backend, secrets)
 }
 
+// recodeAdoptFailure runs recodeSystemBarrier with AdoptMigratedRootKey
+// failing past the commit point and returns the committed journal it leaves.
+func recodeAdoptFailure(t *testing.T, backend seal.StorageBackend, secrets map[string]string) *seal.MigrationJournal {
+	t.Helper()
+	ctx := context.Background()
+	source := newRecodeSourceBarrierOn(t, backend)
+	putRecodeSealStoreSecrets(t, source, secrets)
+	walDir := filepath.Join(t.TempDir(), "wal")
+	if err := os.MkdirAll(walDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	prev := systemAdoptRootKeyFault
+	systemAdoptRootKeyFault = func() error { return errRecodeSealStoreCrash }
+	t.Cleanup(func() { systemAdoptRootKeyFault = prev })
+
+	err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts(), nil)
+	if !errors.Is(err, errRecodeSealStoreCrash) {
+		t.Fatalf("err = %v, want %v", err, errRecodeSealStoreCrash)
+	}
+	j, err := seal.LoadMigrationJournalFrom(ctx, backend, "system/root-key")
+	if err != nil || j == nil || !j.Committed() || j.StagingRootKeyPath == "" {
+		t.Fatalf("journal after the adopt failure = %+v (err %v), want a committed journal naming a staging root", j, err)
+	}
+	return j
+}
+
+func TestRecodeSystemBarrier_AdoptFailureKeepsStagingRootForBoot(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	secrets := map[string]string{"alpha": "alpha-adopt-secret", "beta": "beta-adopt-secret"}
+	j := recodeAdoptFailure(t, backend, secrets)
+
+	if blob, err := backend.Get(ctx, j.StagingRootKeyPath); err != nil || len(blob) == 0 {
+		t.Fatalf("staging root key after the adopt failure: %d bytes, err %v; want it kept", len(blob), err)
+	}
+
+	// The next boot: the guard passes and the roll-forward adopts the staging
+	// root, leaving every secret readable under the keyed barrier.
+	if err := refuseCommittedJournalWithoutStagingRoot(ctx, backend, "system/root-key", j); err != nil {
+		t.Fatalf("refuseCommittedJournalWithoutStagingRoot: %v", err)
+	}
+	if err := database.RecoverInterruptedMigration(ctx, backend, "system/root-key", nil); err != nil {
+		t.Fatalf("RecoverInterruptedMigration: %v", err)
+	}
+	assertRecodeSealStoreKeyed(t, backend, secrets)
+}
+
+func TestRecoverInterruptedSystemMigration_RefusesMissingStagingRoot(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	secrets := map[string]string{"alpha": "alpha-orphan-secret", "beta": "beta-orphan-secret"}
+	j := recodeAdoptFailure(t, backend, secrets)
+	if err := backend.Delete(ctx, j.StagingRootKeyPath); err != nil {
+		t.Fatalf("Delete staging root: %v", err)
+	}
+
+	err := refuseCommittedJournalWithoutStagingRoot(ctx, backend, "system/root-key", j)
+	if !errors.Is(err, errMigrationStagingRootMissing) {
+		t.Fatalf("err = %v, want %v", err, errMigrationStagingRootMissing)
+	}
+	kept, lerr := seal.LoadMigrationJournalFrom(ctx, backend, "system/root-key")
+	if lerr != nil || kept == nil || !kept.Committed() {
+		t.Fatalf("journal after the refusal = %+v (err %v), want it kept", kept, lerr)
+	}
+	for name, value := range secrets {
+		raw, gerr := backend.Get(ctx, seal.SealStoreDefaultPrefix+name)
+		if gerr != nil {
+			t.Fatalf("raw Get %q: %v", name, gerr)
+		}
+		if !bytes.Contains(raw, []byte(value)) {
+			t.Fatalf("live record %q was overwritten; the refusal must copy nothing", name)
+		}
+	}
+}
+
 func TestRecodeSystemBarrier_SealStoreCommitFailureKeepsJournal(t *testing.T) {
 	ctx := context.Background()
 	backend := &recodeFailingBackend{StorageBackend: seal.NewMemoryBackend(), key: seal.SealStoreDefaultPrefix + "alpha", failAt: 1}

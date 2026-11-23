@@ -170,6 +170,10 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 	// recovery below rolls the re-encrypted seal-store records forward; the
 	// plaintext versions they replace are then compacted out of the store.
 	pending, _ := seal.LoadMigrationJournalFrom(sigCtx, sealBackend, barrierCfg.RootKeyPath)
+	if rerr := refuseCommittedJournalWithoutStagingRoot(sigCtx, sealBackend, barrierCfg.RootKeyPath, pending); rerr != nil {
+		_ = sealStore.Close()
+		return nil, &SealBarrierError{Err: rerr}
+	}
 	if rerr := database.RecoverInterruptedMigration(sigCtx, sealBackend, barrierCfg.RootKeyPath, sysStoreDirs); rerr != nil {
 		slog.Warn("system encryption-migration crash recovery failed; manual reconcile may be required",
 			slog.Any("error", rerr))
