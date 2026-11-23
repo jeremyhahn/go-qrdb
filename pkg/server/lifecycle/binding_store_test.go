@@ -43,6 +43,7 @@ import (
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	vectorstorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -985,6 +986,105 @@ func TestLocalBindingFactory_PlaintextBarrierAdmitsObjstore(t *testing.T) {
 				t.Fatal("Create returned no binding")
 			}
 		})
+	}
+}
+
+// strictPolicy is a ClusterIsolationPolicyReader pinned to strict.
+type strictPolicy struct{}
+
+func (strictPolicy) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
+	return tenant.ClusterIsolationPolicyStrict, nil
+}
+
+// TestLocalBindingFactory_VectorHonorsIsolationPolicy proves a materialized
+// database's own vector service consults the factory's isolation policy: a
+// strict policy refuses a system-tenant namespace create in the named
+// database, as the shared vector service does, and without a policy it opens.
+func TestLocalBindingFactory_VectorHonorsIsolationPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		policy tenant.ClusterIsolationPolicyReader
+		refuse bool
+	}{
+		{name: "strict refuses", policy: strictPolicy{}, refuse: true},
+		{name: "no policy admits", policy: nil, refuse: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants).
+				WithIsolationPolicy(tc.policy)
+			defer func() { _ = f.Close() }()
+			be, err := f.Create(database.DatabaseConfig{TenantID: tenantid.System, Name: "app", Backend: database.BackendMemory}, dir)
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			mb, ok := be.(*lifecycle.MaterializedBinding)
+			if !ok {
+				t.Fatalf("Create = %T, want *lifecycle.MaterializedBinding", be)
+			}
+			_, err = mb.Vector().CreateNamespace(context.Background(), &service.CreateNamespaceRequest{Namespace: "ns", Dimension: 2, DistanceMetric: "L2"})
+			var required *service.TenantRequiredError
+			if tc.refuse != errors.As(err, &required) {
+				t.Fatalf("CreateNamespace: err = %v, want TenantRequiredError = %v", err, tc.refuse)
+			}
+		})
+	}
+}
+
+// TestNodeBindingFactory_IsolationPolicyFailsClosedBeforeTenantService proves
+// the late-bound policy a node factory wires refuses a system-tenant
+// namespace create while the tenant service does not exist yet.
+func TestNodeBindingFactory_IsolationPolicyFailsClosedBeforeTenantService(t *testing.T) {
+	dir := t.TempDir()
+	f := lifecycle.NewNodeBindingFactory(dir, database.Defaults{}, nil, qrdbconfig.StorageConfig{},
+		func() tenant.TenantServicer { return nil }, func() *seal.BarrierRegistry { return nil })
+	defer func() { _ = f.Close() }()
+	be, err := f.Create(database.DatabaseConfig{TenantID: tenantid.System, Name: "app", Backend: database.BackendMemory}, dir)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mb, ok := be.(*lifecycle.MaterializedBinding)
+	if !ok {
+		t.Fatalf("Create = %T, want *lifecycle.MaterializedBinding", be)
+	}
+	_, err = mb.Vector().CreateNamespace(context.Background(), &service.CreateNamespaceRequest{Namespace: "ns", Dimension: 2, DistanceMetric: "L2"})
+	var unavailable *lifecycle.IsolationPolicyUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("CreateNamespace: err = %v, want *IsolationPolicyUnavailableError", err)
+	}
+}
+
+// TestMaterializedBinding_CloseClosesWatchHub proves teardown closes the
+// database's own watch hub: an open watcher's channel closes, its slot is
+// released, and a new watch on the dropped database is refused.
+func TestMaterializedBinding_CloseClosesWatchHub(t *testing.T) {
+	dir := t.TempDir()
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
+	defer func() { _ = f.Close() }()
+	be, err := f.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "app", Backend: database.BackendMemory}, dir)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mb, ok := be.(*lifecycle.MaterializedBinding)
+	if !ok {
+		t.Fatalf("Create = %T, want *lifecycle.MaterializedBinding", be)
+	}
+	hub := mb.WatchHub()
+	w, err := hub.Watch(context.Background(), "k")
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	if err := mb.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	for range w.Events() {
+	}
+	if n := hub.WatchCount(); n != 0 {
+		t.Fatalf("WatchCount after Close = %d, want 0", n)
+	}
+	var closed *watch.HubClosedError
+	if _, err := hub.Watch(context.Background(), "k"); !errors.As(err, &closed) {
+		t.Fatalf("Watch after Close: err = %v, want *watch.HubClosedError", err)
 	}
 }
 

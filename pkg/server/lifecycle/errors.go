@@ -428,6 +428,15 @@ func (e *ObjstoreBindingEncryptionUnsupportedError) Error() string {
 	return "lifecycle: binding " + e.TenantID + "/" + e.Database + ": objstore storage cannot encrypt at rest; refused for an encrypted binding"
 }
 
+// IsolationPolicyUnavailableError reports that a materialized database's
+// vector service was asked for the cluster isolation policy before the
+// tenant service that keeps it exists; the create fails closed.
+type IsolationPolicyUnavailableError struct{}
+
+func (e *IsolationPolicyUnavailableError) Error() string {
+	return "lifecycle: cluster isolation policy unavailable: the tenant service is not built yet"
+}
+
 func errText(err error) string {
 	if err == nil {
 		return "<nil>"

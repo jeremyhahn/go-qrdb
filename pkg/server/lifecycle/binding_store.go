@@ -75,6 +75,10 @@ type LocalBindingFactory struct {
 	tenants    func(tenantID string) (database.BindingTenant, error)
 	fallback   database.BackendFactory
 	hubOpts    []watch.HubOption
+	// policy is the live cluster isolation policy each materialized
+	// database's vector service consults, as the shared vector service
+	// does; nil means no requirement.
+	policy tenant.ClusterIsolationPolicyReader
 }
 
 // NewLocalBindingFactory returns a factory for node. enc is the node
@@ -108,6 +112,41 @@ func NewLocalBindingFactory(node database.BindingNode, enc *atrest.Encryptor, st
 func (f *LocalBindingFactory) WithTenantEncryptors(lookup func(string) (*atrest.Encryptor, error)) *LocalBindingFactory {
 	f.tenantEnc = lookup
 	return f
+}
+
+// WithIsolationPolicy wires the cluster isolation policy reader every
+// materialized database's vector service consults, so a strict policy
+// refuses a system-tenant namespace create in a named database exactly as
+// the shared vector service does. It returns f.
+func (f *LocalBindingFactory) WithIsolationPolicy(r tenant.ClusterIsolationPolicyReader) *LocalBindingFactory {
+	f.policy = r
+	return f
+}
+
+// lateIsolationPolicy reads the cluster isolation policy from the tenant
+// service each call, because the service exists only once the node's
+// services are built, after the manager that opens databases.
+type lateIsolationPolicy struct {
+	tenants func() tenant.TenantServicer
+}
+
+// ClusterIsolationPolicy returns the tenant service's live policy. Before
+// the service exists it fails closed with IsolationPolicyUnavailableError;
+// a service that keeps no policy imposes no requirement, matching the
+// shared vector service, which is wired only to a reader.
+func (l lateIsolationPolicy) ClusterIsolationPolicy(ctx context.Context) (tenant.ClusterIsolationPolicy, error) {
+	var svc tenant.TenantServicer
+	if l.tenants != nil {
+		svc = l.tenants()
+	}
+	if svc == nil {
+		return tenant.ClusterIsolationPolicyUnset, &IsolationPolicyUnavailableError{}
+	}
+	r, ok := svc.(tenant.ClusterIsolationPolicyReader)
+	if !ok {
+		return tenant.ClusterIsolationPolicyUnset, nil
+	}
+	return r.ClusterIsolationPolicy(ctx)
 }
 
 // materializes reports whether a tenant of isolation gets its databases
@@ -333,7 +372,8 @@ func TenantBarrierEncryptorLookup(get func() *seal.BarrierRegistry) func(string)
 func NewNodeBindingFactory(dataDir string, defaults database.Defaults, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig, tenants func() tenant.TenantServicer, barriers func() *seal.BarrierRegistry, hubOpts ...watch.HubOption) *LocalBindingFactory {
 	return NewLocalBindingFactory(database.BindingNode{DataDir: dataDir, Defaults: defaults}, enc, storageCfg,
 		TenantServiceBindingLookup(tenants), hubOpts...).
-		WithTenantEncryptors(TenantBarrierEncryptorLookup(barriers))
+		WithTenantEncryptors(TenantBarrierEncryptorLookup(barriers)).
+		WithIsolationPolicy(lateIsolationPolicy{tenants: tenants})
 }
 
 // encryptor returns the encryptor b's store is written through, by its
@@ -382,7 +422,7 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 		return nil, openErr(errors.Join(err, stg.Close()))
 	}
 	local := backend.NewLocalBackend(eng)
-	vec, closeVec, err := newBindingVector(b, enc, local)
+	vec, closeVec, err := newBindingVector(b, enc, local, f.policy)
 	if err != nil {
 		return nil, openErr(errors.Join(err, local.Close(), stg.Close()))
 	}
@@ -406,7 +446,7 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 // backend keeps them in a Pebble store under <root>/vector, encrypted with
 // the binding's encryptor. The returned close stops the service before the
 // storage beneath it.
-func newBindingVector(b *database.Binding, enc *atrest.Encryptor, host any) (service.VectorServicer, func() error, error) {
+func newBindingVector(b *database.Binding, enc *atrest.Encryptor, host any, policy tenant.ClusterIsolationPolicyReader) (service.VectorServicer, func() error, error) {
 	log := logger.NewAdapter(newMinimalLogger(slog.Default()))
 	var vs vectorstorage.Storage
 	if b.Backend == database.BackendMemory || b.DataRoot == "" {
@@ -421,6 +461,9 @@ func newBindingVector(b *database.Binding, enc *atrest.Encryptor, host any) (ser
 	var opts []service.VectorServiceOption
 	if gates, ok := host.(service.FeatureGatedHost); ok {
 		opts = append(opts, service.WithFeatureGates(gates))
+	}
+	if policy != nil {
+		opts = append(opts, service.WithClusterIsolationPolicyReader(policy))
 	}
 	svc, err := service.NewVectorService(vs, log, opts...)
 	if err != nil {
@@ -535,6 +578,12 @@ func (m *MaterializedBinding) DataRoot() string { return m.binding.DataRoot }
 func (m *MaterializedBinding) Close() error {
 	m.closeOnce.Do(func() {
 		m.stop()
+		// The hub is this database's own: closing it cancels its watchers
+		// and frees their node-wide WatcherLimit slots, and refuses new
+		// watches against the dropped database.
+		if m.hub != nil {
+			m.hub.Close()
+		}
 		var vecErr error
 		if m.closeVector != nil {
 			vecErr = m.closeVector()
