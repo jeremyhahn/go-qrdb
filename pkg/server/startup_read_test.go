@@ -22,7 +22,9 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -276,22 +278,50 @@ func TestRunStartupRead_ContextEnds(t *testing.T) {
 		t.Fatalf("err = %v after %d calls, want context.Canceled and the read's answer after 1", err, calls)
 	}
 
-	ctx, cancel = context.WithCancel(context.Background())
-	defer cancel()
-	start := time.Now()
-	_, err = RunStartupRead(ctx, StartupRead{Op: "abandoned", Budget: time.Minute, Delay: time.Minute}, func(context.Context) (int, error) {
-		// The caller gives up while the first attempt answers, so the
-		// minute-long backoff that follows is where the cancel lands.
+	// The caller gives up while the call is durably blocked in the
+	// minute-long backoff after the first attempt, so the backoff's cancel
+	// case is where the cancel lands.
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var reads atomic.Int32
+		done := make(chan error, 1)
+		start := time.Now()
+		go func() {
+			_, err := RunStartupRead(ctx, StartupRead{Op: "abandoned", Budget: time.Minute, Delay: time.Minute}, func(context.Context) (int, error) {
+				reads.Add(1)
+				return 0, quicraft.ErrReadIndexNotReady
+			})
+			done <- err
+		}()
+		synctest.Wait()
+		if got := reads.Load(); got != 1 {
+			t.Fatalf("reads before the cancel = %d, want 1 (blocked in the backoff)", got)
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("RunStartupRead returned %v before the cancel, want it blocked in the backoff", err)
+		default:
+		}
 		cancel()
-		return 0, quicraft.ErrReadIndexNotReady
+		synctest.Wait()
+		var err error
+		select {
+		case err = <-done:
+		default:
+			t.Fatal("RunStartupRead did not return once ctx was cancelled during the backoff")
+		}
+		var sre *StartupReadError
+		if !errors.As(err, &sre) || !errors.Is(err, context.Canceled) || !errors.Is(err, quicraft.ErrReadIndexNotReady) {
+			t.Fatalf("err = %v (%T), want *StartupReadError matching context.Canceled and ErrReadIndexNotReady", err, err)
+		}
+		if got := reads.Load(); got != 1 {
+			t.Errorf("reads = %d, want 1", got)
+		}
+		if elapsed := time.Since(start); elapsed != 0 {
+			t.Errorf("fake time advanced %s, want an immediate return once ctx was cancelled", elapsed)
+		}
 	})
-	var sre *StartupReadError
-	if !errors.As(err, &sre) || !errors.Is(err, context.Canceled) || !errors.Is(err, quicraft.ErrReadIndexNotReady) {
-		t.Fatalf("err = %v (%T), want *StartupReadError matching context.Canceled and ErrReadIndexNotReady", err, err)
-	}
-	if time.Since(start) > 2*time.Second {
-		t.Errorf("took %s, want an immediate return once ctx was cancelled", time.Since(start))
-	}
 }
 
 // An attempt in flight when the caller gives up ends with it, and is not
