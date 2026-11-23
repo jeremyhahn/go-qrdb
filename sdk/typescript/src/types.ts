@@ -2806,7 +2806,7 @@ export interface DatabaseInfo {
     /** Raft shard ID the cluster issued at create; absent for non-raft
      * databases. It never changes. */
     readonly shardId?: number;
-    /** Database mode (e.g. "embedded", "remote"). */
+    /** Database mode ("embedded"). */
     readonly mode?: string;
     /** The codec the database's values are stored in; absent means the
      * node's default. */
@@ -2855,7 +2855,7 @@ export interface CreateDatabaseRequest {
     readonly sql?: DatabaseSQLConfig;
     /** Custom data directory for file/pebble backends. */
     readonly dataDir?: string;
-    /** Database mode (e.g. "embedded", "remote"). */
+    /** Database mode ("embedded"). */
     readonly mode?: string;
     /** Replication factor for a dedicated-raft database. Meaningful only for the
      * raft backend; unset defaults to 1 replica. */

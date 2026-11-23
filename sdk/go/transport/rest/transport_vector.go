@@ -81,9 +81,6 @@ func (t *Transport) ListNamespaces(ctx context.Context, req *transport.ListNames
 	}
 
 	params := url.Values{}
-	if req.ShardID > 0 {
-		params.Set("shard_id", strconv.FormatUint(req.ShardID, 10))
-	}
 
 	reqURL := t.baseURL + "/vector/namespaces"
 	if encoded := params.Encode(); encoded != "" {
@@ -125,9 +122,6 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 
 	params := url.Values{}
 	params.Set("namespace", req.Namespace)
-	if req.ShardID > 0 {
-		params.Set("shard_id", strconv.FormatUint(req.ShardID, 10))
-	}
 
 	reqURL := t.baseURL + "/vector/namespace/info?" + params.Encode()
 
@@ -194,9 +188,6 @@ func (t *Transport) GetVector(ctx context.Context, req *transport.GetVectorReque
 	}
 	if req.Consistency > 0 {
 		params.Set("consistency", strconv.FormatUint(uint64(req.Consistency), 10))
-	}
-	if req.ShardID > 0 {
-		params.Set("shard_id", strconv.FormatUint(req.ShardID, 10))
 	}
 
 	reqURL := t.baseURL + "/vector/get?" + params.Encode()
@@ -292,9 +283,6 @@ func (t *Transport) ListVectors(ctx context.Context, req *transport.ListVectorsR
 	}
 	if req.Consistency > 0 {
 		params.Set("consistency", strconv.FormatUint(uint64(req.Consistency), 10))
-	}
-	if req.ShardID > 0 {
-		params.Set("shard_id", strconv.FormatUint(req.ShardID, 10))
 	}
 
 	reqURL := t.baseURL + "/vector/list?" + params.Encode()
@@ -466,9 +454,6 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 
 	params := url.Values{}
 	params.Set("namespace", req.Namespace)
-	if req.ShardID > 0 {
-		params.Set("shard_id", strconv.FormatUint(req.ShardID, 10))
-	}
 
 	reqURL := t.baseURL + "/vector/index/stats?" + params.Encode()
 
@@ -527,9 +512,6 @@ func (t *Transport) GetCompactionProgress(ctx context.Context, req *transport.Ge
 	}
 	if req.OperationID != "" {
 		params.Set("operation_id", req.OperationID)
-	}
-	if req.ShardID > 0 {
-		params.Set("shard_id", strconv.FormatUint(req.ShardID, 10))
 	}
 
 	reqURL := t.baseURL + "/vector/compact/progress"
