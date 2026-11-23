@@ -35,11 +35,25 @@ type faultBackend struct {
 	seal.StorageBackend
 	failGet func(key string) bool
 	failPut func(key string) bool
+	// failGetN, when set, fails the n-th Get (1-based) of key.
+	failGetN func(key string, n int) bool
+	gets     map[string]int
+	// puts records every successful Put key, in order.
+	puts []string
 }
 
 func (f *faultBackend) Get(ctx context.Context, key string) ([]byte, error) {
 	if f.failGet != nil && f.failGet(key) {
 		return nil, errBackendFault
+	}
+	if f.failGetN != nil {
+		if f.gets == nil {
+			f.gets = map[string]int{}
+		}
+		f.gets[key]++
+		if f.failGetN(key, f.gets[key]) {
+			return nil, errBackendFault
+		}
 	}
 	return f.StorageBackend.Get(ctx, key)
 }
@@ -48,7 +62,11 @@ func (f *faultBackend) Put(ctx context.Context, key string, data []byte) error {
 	if f.failPut != nil && f.failPut(key) {
 		return errBackendFault
 	}
-	return f.StorageBackend.Put(ctx, key, data)
+	if err := f.StorageBackend.Put(ctx, key, data); err != nil {
+		return err
+	}
+	f.puts = append(f.puts, key)
+	return nil
 }
 
 // TestPersistedStrategy_AbsentAndGarbage covers persistedStrategy's two defensive
@@ -183,5 +201,192 @@ func TestRecoverInterruptedMigration_AdoptPutError(t *testing.T) {
 	err = RecoverInterruptedMigration(ctx, backend, "root-key", []string{t.TempDir() + "/nope"})
 	if !errors.Is(err, errBackendFault) {
 		t.Fatalf("Recover err = %v, want %v", err, errBackendFault)
+	}
+}
+
+// The live record, its staged keyed copy and their values in
+// stagedRecoveryFixture.
+const (
+	recoveryLiveKey    = "store/alpha"
+	recoveryStagingKey = "store.migrating/store/alpha"
+	recoveryLiveValue  = "none-format-alpha"
+	recoveryStaged     = "keyed-alpha"
+)
+
+// stagedRecoveryFixture lays out a committed migration interrupted before
+// root-key adoption: a keyed staging root key, a canonical none root key, one
+// live none-format record and its staged keyed copy, and a committed journal
+// naming both.
+func stagedRecoveryFixture(t *testing.T) *seal.MemoryBackend {
+	t.Helper()
+	ctx := context.Background()
+	mem := seal.NewMemoryBackend()
+	keyed, err := seal.NewStorageBarrier(reencTestLogger(), mem,
+		seal.BarrierConfig{RootKeyPath: "root-key.migrating"}, seal.NewDeferredSoftwareStrategy())
+	if err != nil {
+		t.Fatalf("keyed barrier: %v", err)
+	}
+	if err := keyed.Initialize(ctx, seal.MustCredentials(ctx, []byte("recover-staging"))); err != nil {
+		t.Fatalf("init keyed: %v", err)
+	}
+	_ = initNoneBarrierBackend(t, mem, "root-key")
+	if err := mem.Put(ctx, recoveryLiveKey, []byte(recoveryLiveValue)); err != nil {
+		t.Fatalf("put live record: %v", err)
+	}
+	if err := mem.Put(ctx, recoveryStagingKey, []byte(recoveryStaged)); err != nil {
+		t.Fatalf("put staged record: %v", err)
+	}
+	j := &seal.MigrationJournal{
+		SourceStrategy: seal.StrategyNone, TargetStrategy: seal.StrategyPassphrase,
+		Mechanism: seal.MechanismSwap, Phase: seal.PhaseCommitting,
+		StagingRootKeyPath: "root-key.migrating",
+		StagedRecords:      []seal.StagedRecords{{Prefix: "store/", StagingPrefix: "store.migrating/"}},
+	}
+	jblob, _ := json.Marshal(j)
+	if err := mem.Put(ctx, "root-key.migration", jblob); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+	return mem
+}
+
+// assertRecoveryUntouched checks that a refused roll-forward changed nothing:
+// the live record still holds its none-format value and the staging root
+// key, the staged record and the journal are all still present.
+func assertRecoveryUntouched(t *testing.T, mem *seal.MemoryBackend) {
+	t.Helper()
+	ctx := context.Background()
+	if got, err := mem.Get(ctx, recoveryLiveKey); err != nil || string(got) != recoveryLiveValue {
+		t.Fatalf("live record = %q (err %v), want %q", got, err, recoveryLiveValue)
+	}
+	for _, key := range []string{"root-key.migrating", recoveryStagingKey, "root-key.migration"} {
+		if blob, err := mem.Get(ctx, key); err != nil || len(blob) == 0 {
+			t.Fatalf("%s after the refusal: %d bytes, err %v; want it kept", key, len(blob), err)
+		}
+	}
+	if got := persistedStrategy(ctx, mem, "root-key"); got != seal.StrategyNone {
+		t.Fatalf("canonical strategy = %q, want none", got)
+	}
+}
+
+// TestRecoverInterruptedMigration_StagingRootReadFailsAfterGuard covers a
+// staging root key that a caller's guard read but the roll-forward cannot:
+// the recovery refuses before any record is copied or anything is cleared.
+func TestRecoverInterruptedMigration_StagingRootReadFailsAfterGuard(t *testing.T) {
+	mem := stagedRecoveryFixture(t)
+	backend := &faultBackend{
+		StorageBackend: mem,
+		failGet:        func(key string) bool { return key == "root-key.migrating" },
+	}
+	err := RecoverInterruptedMigration(context.Background(), backend, "root-key", nil)
+	if !errors.Is(err, ErrMigrationStagingRootUnreadable) {
+		t.Fatalf("Recover err = %v, want %v", err, ErrMigrationStagingRootUnreadable)
+	}
+	assertRecoveryUntouched(t, mem)
+}
+
+// TestRecoverInterruptedMigration_StagingRootEmpty covers an empty staging
+// root-key blob: refused like an unreadable one, nothing changed.
+func TestRecoverInterruptedMigration_StagingRootEmpty(t *testing.T) {
+	ctx := context.Background()
+	mem := stagedRecoveryFixture(t)
+	if err := mem.Put(ctx, "root-key.migrating", []byte{}); err != nil {
+		t.Fatalf("empty staging root: %v", err)
+	}
+	err := RecoverInterruptedMigration(ctx, mem, "root-key", nil)
+	if !errors.Is(err, ErrMigrationStagingRootUnreadable) {
+		t.Fatalf("Recover err = %v, want %v", err, ErrMigrationStagingRootUnreadable)
+	}
+	if got, gerr := mem.Get(ctx, recoveryLiveKey); gerr != nil || string(got) != recoveryLiveValue {
+		t.Fatalf("live record = %q (err %v), want %q", got, gerr, recoveryLiveValue)
+	}
+	for _, key := range []string{recoveryStagingKey, "root-key.migration"} {
+		if blob, gerr := mem.Get(ctx, key); gerr != nil || len(blob) == 0 {
+			t.Fatalf("%s after the refusal: %d bytes, err %v; want it kept", key, len(blob), gerr)
+		}
+	}
+	if _, gerr := mem.Get(ctx, "root-key.migrating"); gerr != nil {
+		t.Fatalf("staging root after the refusal: %v; want it kept", gerr)
+	}
+}
+
+// TestRecoverInterruptedMigration_StagingWrappedReadFails covers a staging
+// wrapped key read that fails with anything but not-found: refused, nothing
+// changed.
+func TestRecoverInterruptedMigration_StagingWrappedReadFails(t *testing.T) {
+	mem := stagedRecoveryFixture(t)
+	backend := &faultBackend{
+		StorageBackend: mem,
+		failGet:        func(key string) bool { return key == seal.WrappedRootKeyPath("root-key.migrating") },
+	}
+	err := RecoverInterruptedMigration(context.Background(), backend, "root-key", nil)
+	if !errors.Is(err, ErrMigrationStagingRootUnreadable) {
+		t.Fatalf("Recover err = %v, want %v", err, ErrMigrationStagingRootUnreadable)
+	}
+	assertRecoveryUntouched(t, mem)
+}
+
+// TestRecoverInterruptedMigration_ShamirWrappedKeyAdoptedBeforeEnvelope
+// covers a Shamir target interrupted before adoption: the roll-forward
+// writes the staged wrapped root key at the canonical wrapped path before the
+// canonical envelope, then deletes both staging keys.
+func TestRecoverInterruptedMigration_ShamirWrappedKeyAdoptedBeforeEnvelope(t *testing.T) {
+	ctx := context.Background()
+	mem := stagedRecoveryFixture(t)
+	wrapped := []byte("staged-shamir-wrapped-root-key")
+	if err := mem.Put(ctx, seal.WrappedRootKeyPath("root-key.migrating"), wrapped); err != nil {
+		t.Fatalf("put staging wrapped key: %v", err)
+	}
+	backend := &faultBackend{StorageBackend: mem}
+	if err := RecoverInterruptedMigration(ctx, backend, "root-key", nil); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got, err := mem.Get(ctx, seal.WrappedRootKeyPath("root-key")); err != nil || string(got) != string(wrapped) {
+		t.Fatalf("canonical wrapped key = %q (err %v), want %q", got, err, wrapped)
+	}
+	wrappedAt, envelopeAt := -1, -1
+	for i, key := range backend.puts {
+		switch key {
+		case seal.WrappedRootKeyPath("root-key"):
+			wrappedAt = i
+		case "root-key":
+			envelopeAt = i
+		}
+	}
+	if wrappedAt < 0 || envelopeAt < 0 || wrappedAt > envelopeAt {
+		t.Fatalf("put order %v: want the canonical wrapped key before the envelope", backend.puts)
+	}
+	if got, err := mem.Get(ctx, recoveryLiveKey); err != nil || string(got) != recoveryStaged {
+		t.Fatalf("live record = %q (err %v), want %q", got, err, recoveryStaged)
+	}
+	for _, key := range []string{"root-key.migrating", seal.WrappedRootKeyPath("root-key.migrating")} {
+		if _, err := mem.Get(ctx, key); !errors.Is(err, seal.ErrSecretNotFound) {
+			t.Fatalf("%s after recovery: err %v, want it deleted", key, err)
+		}
+	}
+}
+
+// TestRecoverInterruptedMigration_ShamirWrappedPutFails covers a failed
+// canonical wrapped-key write: the error is returned before the envelope and
+// before cleanup, so the journal and staging keys stay for the next boot.
+func TestRecoverInterruptedMigration_ShamirWrappedPutFails(t *testing.T) {
+	ctx := context.Background()
+	mem := stagedRecoveryFixture(t)
+	if err := mem.Put(ctx, seal.WrappedRootKeyPath("root-key.migrating"), []byte("wrapped")); err != nil {
+		t.Fatalf("put staging wrapped key: %v", err)
+	}
+	backend := &faultBackend{
+		StorageBackend: mem,
+		failPut:        func(key string) bool { return key == seal.WrappedRootKeyPath("root-key") },
+	}
+	if err := RecoverInterruptedMigration(ctx, backend, "root-key", nil); !errors.Is(err, errBackendFault) {
+		t.Fatalf("Recover err = %v, want %v", err, errBackendFault)
+	}
+	for _, key := range []string{"root-key.migration", "root-key.migrating", seal.WrappedRootKeyPath("root-key.migrating")} {
+		if blob, err := mem.Get(ctx, key); err != nil || len(blob) == 0 {
+			t.Fatalf("%s after the failed adoption: %d bytes, err %v; want it kept", key, len(blob), err)
+		}
+	}
+	if got := persistedStrategy(ctx, mem, "root-key"); got != seal.StrategyNone {
+		t.Fatalf("canonical strategy = %q, want none (envelope not written)", got)
 	}
 }

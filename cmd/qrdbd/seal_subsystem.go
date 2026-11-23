@@ -590,7 +590,9 @@ func recoverSystemMigration(ctx context.Context, backend seal.StorageBackend, re
 	// A failed recovery stops the boot: past root-key adoption, a committed
 	// journal and staged old values left behind would replay over any later
 	// seal-store write at the next restart. The journal survives the
-	// failure, so the next boot retries the roll-forward.
+	// failure, so the next boot retries the roll-forward. That includes a
+	// staging root key that the guard above read but the roll-forward cannot
+	// (database.ErrMigrationStagingRootUnreadable): nothing is touched then.
 	if rerr := database.RecoverInterruptedMigration(ctx, backend, rootKeyPath, storeDirs); rerr != nil {
 		return fmt.Errorf("recover the interrupted system encryption migration: %w", rerr)
 	}

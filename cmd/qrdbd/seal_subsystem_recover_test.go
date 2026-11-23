@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -184,6 +185,60 @@ func TestSealSubsystemRecoverInterrupted_RollForwardFailureStopsBoot(t *testing.
 	backend = reboot()
 	if err := recoverSystemMigration(ctx, backend, retirer, "system/root-key", nil); err != nil {
 		t.Fatalf("boot after the rewrite: %v", err)
+	}
+	assertRecodeSealStoreKeyed(t, backend, secrets)
+}
+
+// nthGetFaultBackend fails the failOn-th Get (1-based) of key and delegates
+// everything else.
+type nthGetFaultBackend struct {
+	seal.StorageBackend
+	key    string
+	failOn int
+	gets   int
+}
+
+func (f *nthGetFaultBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	if key == f.key {
+		f.gets++
+		if f.gets == f.failOn {
+			return nil, errRecoverFault
+		}
+	}
+	return f.StorageBackend.Get(ctx, key)
+}
+
+// TestSealSubsystemRecoverInterrupted_SecondStagingReadFailureStopsBoot
+// covers a staging root key the boot guard reads but the roll-forward cannot:
+// the boot stops with the journal and every seal-store secret intact, and the
+// next boot rolls the migration forward.
+func TestSealSubsystemRecoverInterrupted_SecondStagingReadFailureStopsBoot(t *testing.T) {
+	ctx := context.Background()
+	// A barrier's Close closes the store under it, so the migration runs on
+	// a memory backend; the retirer comes from a seal store of its own.
+	store, retirer, err := openSealStore(filepath.Join(t.TempDir(), "seal"))
+	if err != nil {
+		t.Fatalf("openSealStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	backend := seal.NewMemoryBackend()
+	secrets := map[string]string{"alpha": "alpha-second-read-secret", "beta": "beta-second-read-secret"}
+	j := recodeAdoptFailure(t, backend, secrets)
+
+	// Boot 1: the guard's read of the staging root passes, the roll-forward's
+	// read fails; the boot stops before anything is touched.
+	faulty := &nthGetFaultBackend{StorageBackend: backend, key: j.StagingRootKeyPath, failOn: 2}
+	if err := recoverSystemMigration(ctx, faulty, retirer, "system/root-key", nil); !errors.Is(err, database.ErrMigrationStagingRootUnreadable) {
+		t.Fatalf("boot with a failing staging read: err = %v, want %v", err, database.ErrMigrationStagingRootUnreadable)
+	}
+	if faulty.gets < 2 {
+		t.Fatalf("staging root read %d times, want the guard's and the roll-forward's", faulty.gets)
+	}
+	assertRecoverJournalPending(t, backend)
+
+	// Boot 2: the fault is gone; the roll-forward completes.
+	if err := recoverSystemMigration(ctx, backend, retirer, "system/root-key", nil); err != nil {
+		t.Fatalf("boot after the failed staging read: %v", err)
 	}
 	assertRecodeSealStoreKeyed(t, backend, secrets)
 }

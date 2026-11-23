@@ -506,7 +506,8 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, store
 	// first record is staged, so every later checkpoint (the committing one
 	// included) carries it: a crash before the commit point rolls the staged
 	// set back at boot, a crash past it rolls the set forward
-	// (database.RecoverInterruptedMigration).
+	// (database.RecoverInterruptedMigration), which also adopts the staged
+	// keyed root key, a Shamir target's wrapped root key before its envelope.
 	sealRec := seal.StagedRecords{Prefix: seal.SealStoreDefaultPrefix, StagingPrefix: sealStoreStagingPrefix}
 	j.StagedRecords = append(j.StagedRecords, sealRec)
 	if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
@@ -657,6 +658,11 @@ var errMigrationStagingRootMissing = errors.New("committed encryption-migration 
 // key; if that key is gone, rolling forward would copy the staged ciphertexts
 // over the live secrets and clear the journal with no key able to read them.
 // It refuses instead: an error, the journal kept, nothing copied.
+//
+// RecoverInterruptedMigration re-reads the staging key itself and refuses an
+// unreadable one (database.ErrMigrationStagingRootUnreadable), so this check
+// is redundant for the roll-forward alone. It stays because the boot runs it
+// earlier, before the seal-store retirement is marked owed.
 func refuseCommittedJournalWithoutStagingRoot(ctx context.Context, backend seal.StorageBackend, rootKeyPath string, j *seal.MigrationJournal) error {
 	if j == nil || !j.Committed() || j.StagingRootKeyPath == "" {
 		return nil

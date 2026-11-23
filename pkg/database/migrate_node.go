@@ -17,6 +17,8 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -316,6 +318,12 @@ func (m *NodeStoreMigration) rollback(ctx context.Context, j *MigrationJournalRe
 // the journal type itself is owned by pkg/seal.
 type MigrationJournalRef = seal.MigrationJournal
 
+// ErrMigrationStagingRootUnreadable reports that a committed migration's
+// keyed staging root key (or its Shamir wrapped key) could not be read on
+// roll-forward. RecoverInterruptedMigration returns it before touching any
+// directory, record, staging key or the journal, so a later boot retries.
+var ErrMigrationStagingRootUnreadable = errors.New("qrdb/database: migration staging root key unreadable; roll-forward refused, nothing changed")
+
 // RecoverInterruptedMigration reconciles a migration that was interrupted by a
 // crash, using the persisted journal, BEFORE the data stores are opened. It is
 // idempotent and credential-free (it only moves directories, staged snapshot
@@ -333,7 +341,14 @@ type MigrationJournalRef = seal.MigrationJournal
 //     canonical root key is the keyed one (adopting the staging blob if the
 //     crash struck between the swaps and the root-key update). This rescues
 //     the dangerous mid-commit window where the data dirs are keyed but the
-//     root key is still "none" (which would otherwise wedge the node).
+//     root key is still "none" (which would otherwise wedge the node). When
+//     the canonical key is still "none", the staging root key is read before
+//     anything is swapped, copied, deleted or cleared: a failed or empty read
+//     returns ErrMigrationStagingRootUnreadable and leaves the journal and
+//     staging intact, because committing the staged records without a key
+//     to adopt would leave every record unreadable. A Shamir target's
+//     staged wrapped root key is adopted before the envelope, in
+//     seal.AdoptMigratedRootKey's order.
 //   - Not committed (pending/copying/verifying/failed): ROLL BACK — discard the
 //     keyed staging copies and staged snapshots, and restore any pre-migration
 //     backups.
@@ -350,6 +365,34 @@ func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBacken
 	dirs := unionDirs(storeDirs, j.StoreDirs)
 
 	if j.Committed() {
+		// Read the keyed staging root key (and, for a Shamir target, its
+		// unseal-domain wrapped key) BEFORE anything is swapped, copied or
+		// deleted: once the staged records overwrite the live ones, the
+		// staging key is the only key that reads them, so an unreadable one
+		// must stop the roll-forward with the journal and staging intact.
+		var stagingRoot, stagingWrapped []byte
+		adopt := false
+		if persisted := persistedStrategy(ctx, backend, canonicalRootKeyPath); (persisted == seal.StrategyNone || persisted == "") && j.StagingRootKeyPath != "" {
+			blob, gerr := backend.Get(ctx, j.StagingRootKeyPath)
+			if gerr != nil {
+				return fmt.Errorf("%w: %s: %w", ErrMigrationStagingRootUnreadable, j.StagingRootKeyPath, gerr)
+			}
+			if len(blob) == 0 {
+				return fmt.Errorf("%w: %s: empty", ErrMigrationStagingRootUnreadable, j.StagingRootKeyPath)
+			}
+			stagingRoot = blob
+			adopt = true
+			wrappedPath := seal.WrappedRootKeyPath(j.StagingRootKeyPath)
+			wblob, werr := backend.Get(ctx, wrappedPath)
+			switch {
+			case werr == nil:
+				stagingWrapped = wblob
+			case errors.Is(werr, seal.ErrSecretNotFound):
+				// Not a Shamir target: no wrapped key to adopt.
+			default:
+				return fmt.Errorf("%w: %s: %w", ErrMigrationStagingRootUnreadable, wrappedPath, werr)
+			}
+		}
 		// Roll forward: ensure every store dir holds its keyed copy.
 		for _, dir := range dirs {
 			if serr := swapDir(dir); serr != nil {
@@ -367,21 +410,25 @@ func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBacken
 			return cerr
 		}
 		// Ensure the canonical root key is the keyed one. If the crash struck
-		// before the root-key update, the staging blob still holds it.
-		if persisted := persistedStrategy(ctx, backend, canonicalRootKeyPath); persisted == seal.StrategyNone || persisted == "" {
-			if j.StagingRootKeyPath != "" {
-				if blob, gerr := backend.Get(ctx, j.StagingRootKeyPath); gerr == nil && len(blob) > 0 {
-					if perr := backend.Put(ctx, canonicalRootKeyPath, blob); perr != nil {
-						return perr
-					}
+		// before the root-key update, the staging blobs still hold it: adopt
+		// the wrapped key first, then the envelope (AdoptMigratedRootKey's
+		// order), so a canonical Shamir envelope never lacks its wrapped key.
+		if adopt {
+			if stagingWrapped != nil {
+				if perr := backend.Put(ctx, seal.WrappedRootKeyPath(canonicalRootKeyPath), stagingWrapped); perr != nil {
+					return perr
 				}
 			}
+			if perr := backend.Put(ctx, canonicalRootKeyPath, stagingRoot); perr != nil {
+				return perr
+			}
 		}
-		// Cleanup: drop backups + staging blob + journal.
+		// Cleanup: drop backups + staging blobs + journal.
 		for _, dir := range dirs {
 			_ = os.RemoveAll(dir + backupSuffix)
 		}
 		if j.StagingRootKeyPath != "" {
+			_ = backend.Delete(ctx, seal.WrappedRootKeyPath(j.StagingRootKeyPath))
 			_ = backend.Delete(ctx, j.StagingRootKeyPath)
 		}
 		return seal.ClearMigrationJournalFrom(ctx, backend, canonicalRootKeyPath)
