@@ -20,6 +20,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -318,6 +319,65 @@ func TestRESTServiceRegistry_MaterializedHandleResolvedBeforeDropIsFenced(t *tes
 	reclaim.write = func() error { return svcs.KV.Put(ctx, "after", []byte("v")) }
 	if err := dbMgr.DropForTenant(tenant.WithTenantID(ctx, tenantID), name); err != nil {
 		t.Fatalf("DropForTenant: %v", err)
+	}
+	assertDroppingError(t, reclaim.err, name)
+}
+
+// faultyOwnedSource fails the resolver's catalog lookup while fail is set,
+// as a catalog read that does not answer during a DROP does.
+type faultyOwnedSource struct {
+	ownedDatabaseSource
+	fail atomic.Bool
+}
+
+func (s *faultyOwnedSource) GetOwnedIgnoringFence(name, tenantID string) (*database.Database, error) {
+	if s.fail.Load() {
+		return nil, errCatalogUnavailable
+	}
+	return s.ownedDatabaseSource.GetOwnedIgnoringFence(name, tenantID)
+}
+
+// A catalog read that fails while a DROP resolves a materialized database's
+// fence fails the drop closed: the shared store is left as it was, not fenced
+// in the database's place, and the database's own marker stays live, so a
+// handle resolved before the drop still writes and the drop, retried, fences
+// the database's own store.
+func TestRESTServiceRegistry_MaterializedDropFailsClosedOnALookupFault(t *testing.T) {
+	const tenantID, name = "acme", "orders"
+	ctx := context.Background()
+	factory := &fakeMaterializingFactory{}
+	dbMgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(factory))
+	t.Cleanup(func() { _ = dbMgr.Close() })
+	sharedKV := newMockKVService()
+	reclaim := &writeAfterFence{KeyspaceReclaimService: service.NewKeyspaceReclaimService(service.ReclaimTarget{KV: sharedKV})}
+	source := &faultyOwnedSource{ownedDatabaseSource: dbMgr}
+	reclaim.SetStoreResolver(&storeResolver{databases: source, systemTenant: tenantid.System})
+	dbMgr.SetKeyspaceReclaimer(reclaim)
+	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	svcs, err := r.resolve(tenantID, name)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	before := maps.Clone(sharedKV.store)
+	source.fail.Store(true)
+	if err := dbMgr.DropForTenant(tenant.WithTenantID(ctx, tenantID), name); !errors.Is(err, errCatalogUnavailable) {
+		t.Fatalf("DropForTenant with a failing lookup = %v, want %v", err, errCatalogUnavailable)
+	}
+	if !maps.EqualFunc(sharedKV.store, before, bytes.Equal) {
+		t.Fatalf("the shared store was fenced in the database's place: %q, want %q", sharedKV.store, before)
+	}
+	if err := svcs.KV.Put(ctx, "after-failed-drop", []byte("v")); err != nil {
+		t.Fatalf("Put after the failed drop: %v (the database's own marker was tombstoned)", err)
+	}
+
+	source.fail.Store(false)
+	reclaim.write = func() error { return svcs.KV.Put(ctx, "after", []byte("v")) }
+	if err := dbMgr.DropForTenant(tenant.WithTenantID(ctx, tenantID), name); err != nil {
+		t.Fatalf("DropForTenant retried: %v", err)
 	}
 	assertDroppingError(t, reclaim.err, name)
 }

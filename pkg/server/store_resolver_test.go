@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -364,6 +365,52 @@ func TestStoreResolver_FenceTargetNeverFallsBackOnFailure(t *testing.T) {
 				t.Fatal("a failure must not be reported as the system store")
 			}
 		})
+	}
+}
+
+// stubOwnedDatabases answers every catalog lookup with err.
+type stubOwnedDatabases struct{ err error }
+
+func (s stubOwnedDatabases) GetOwnedIgnoringFence(string, string) (*database.Database, error) {
+	return nil, s.err
+}
+
+// A catalog lookup that fails for any reason but "no such database" fails
+// the drop closed: FenceTarget returns the error and no store, never the
+// system store a materialized database's fence does not live in.
+func TestStoreResolver_FenceTargetMaterializedLookupFailureFailsClosed(t *testing.T) {
+	errLookup := errors.New("catalog read failed")
+	r := &storeResolver{
+		databases:    stubOwnedDatabases{err: errLookup},
+		tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationPrefix},
+		systemTenant: tenantid.System,
+	}
+	store, dedicated, err := r.FenceTarget(context.Background(), "acme", "orders", "")
+	if !errors.Is(err, errLookup) {
+		t.Fatalf("FenceTarget err = %v, want %v", err, errLookup)
+	}
+	if !dedicated {
+		t.Fatal("FenceTarget fell through to the system store on a failed lookup")
+	}
+	if store.KV != nil || store.PerDatabase {
+		t.Fatalf("FenceTarget store = %+v, want none", store)
+	}
+}
+
+// *database.NotFoundError (no record) and *database.AlreadyExistsError (a
+// create still holds the claim) are the lookup answers that mean "not
+// materialized": FenceTarget keeps the tenant's ordinary routing.
+func TestStoreResolver_FenceTargetMaterializedNotFoundFallsThrough(t *testing.T) {
+	for _, lookupErr := range []error{&database.NotFoundError{Name: "orders"}, &database.AlreadyExistsError{Name: "orders"}} {
+		r := &storeResolver{
+			databases:    stubOwnedDatabases{err: lookupErr},
+			tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationPrefix},
+			systemTenant: tenantid.System,
+		}
+		store, dedicated, err := r.FenceTarget(context.Background(), "acme", "orders", "")
+		if err != nil || dedicated || store.PerDatabase {
+			t.Fatalf("FenceTarget(%T) = (%+v, %v, %v), want the system store", lookupErr, store, dedicated, err)
+		}
 	}
 }
 

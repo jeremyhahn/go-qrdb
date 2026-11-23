@@ -68,12 +68,28 @@ type ownedDatabaseSource interface {
 // *database.DropSupersededError. ok is false for any other database, and for
 // one not open yet: a create marks its incarnation live before the Manager
 // holds it, in the store a per-database drop tombstones (claimReclaimStore).
+//
+// The lookup fails closed: only *database.NotFoundError (no record) and
+// *database.AlreadyExistsError (a create still holds the name's claim, so
+// Open lost to it) mean "not materialized". Any other lookup error
+// -- a catalog read that failed, a store that did not answer -- is returned
+// with ok true, so the drop fails instead of falling through to the shared
+// store and tombstoning a marker the database never reads while its own
+// marker stays live.
 func (r *storeResolver) materializedFenceTarget(tenantID, db, incarnation string) (service.FenceStore, bool, error) {
 	if r.databases == nil || db == "" {
 		return service.FenceStore{}, false, nil
 	}
 	dbase, err := r.databases.GetOwnedIgnoringFence(db, tenantID)
-	if err != nil || dbase == nil {
+	var notFound *database.NotFoundError
+	var creating *database.AlreadyExistsError
+	if errors.As(err, &notFound) || errors.As(err, &creating) {
+		return service.FenceStore{}, false, nil
+	}
+	if err != nil {
+		return service.FenceStore{}, true, err
+	}
+	if dbase == nil {
 		return service.FenceStore{}, false, nil
 	}
 	ms, ok := dbase.Backend().(materializedStore)
