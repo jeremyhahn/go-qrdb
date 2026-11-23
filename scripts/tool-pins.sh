@@ -15,7 +15,7 @@
 GO_IMAGE=golang:1.27.4-alpine3.24@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf
 
 # The analysers. Every literal pin in .github/workflows/ci.yml and the ARG
-# defaults of .devcontainer/Dockerfile{,.gpu} must match these
+# defaults of the dev and gpu stages of build/docker/devcontainer/Dockerfile must match these
 # (scripts/check-tool-versions.sh, `make check-tool-versions`, enforces it).
 GOLANGCI_LINT_VERSION=v2.14.0
 # The workflow linter `make lint` runs over .github/workflows.

@@ -141,8 +141,9 @@ than duplicated.
 
 CI's stages run in one image, built from `build/docker/devcontainer/Dockerfile`
 at the commit under test (handbook `ci-standard.md` §2, `devcontainer.md` §1).
-`.devcontainer/` is a different image, the developer's VS Code container and
-the Docker `test/integration/api` stack, and runs none of these stages.
+The `dev`, `dev-deps`, `dev-integration` and `gpu` stages of the same
+Dockerfile are the developer's VS Code container, the Docker
+`test/integration/api` stack and the CUDA image, and run no CI stage.
 `make docker-build-toolchain` builds the toolchain image alone, under its
 content-hash tag, and skips the build when that tag is already on the daemon.
 When the runner's environment sets `CI_IMAGE_REGISTRY` (host:port, plain HTTP, no login), `make docker-build-toolchain`, `make docker-build-it` and `scripts/in-toolchain-image.sh` first pull the image from it, and push a build to it (`scripts/image-registry.sh`, #1609); a failed or hung pull or push, each bounded by `CI_IMAGE_REGISTRY_TIMEOUT` seconds (default 900), falls back to the build and never fails the job, and each image logs one line: `pulled <repo>@<digest>`, `miss, built and pushed <repo>@<digest>` or `miss, built, push failed`.
@@ -159,7 +160,7 @@ alone, with no network, which the PR tier's `lint` job runs and
 
 `scripts/tool-pins.sh` is the one pin file: `make docker-build` passes its
 values to the Dockerfile as build arguments, the Makefile includes it, and
-`make check-tool-versions` holds `.devcontainer/`'s ARG defaults to it and
+`make check-tool-versions` holds the `dev` and `gpu` stages' ARG defaults to it and
 fails on a tool pin in ci.yml or an assignment in the Makefile, either of
 which would be a second pin. Module credentials reach the build only as the
 `gomodauth` BuildKit secret (`$(stage-gomodauth)`). In CI the `docker-build`

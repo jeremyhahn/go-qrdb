@@ -146,9 +146,9 @@ func generatedFileScope(f *ast.File) bool {
 // codecTags is the set of struct-tag keys that mean "a decoder outside this
 // package materialises this field".
 //
-// It is the codec set this repository actually builds — see the Makefile's
-// BUILD_TAGS: codec_json, codec_msgpack, codec_yaml, codec_bson,
-// codec_protobuf — plus xml and toml, which no build tag selects but which a
+// It is the codec set this repository actually builds — json, msgpack,
+// yaml, bson and protobuf, which go-codec always compiles in — plus xml
+// and toml, which no build tag selects but which a
 // consumer of the SDK's types may drive through encoding/xml or a config
 // loader. Adding a key here widens the exemption and belongs in a change that
 // says so.

@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 // TestReplicaForwardingConfig_OnUnlessTurnedOff: unset is on; only an
@@ -63,7 +63,7 @@ func TestReplicaForwardingConfig_TimeoutDuration(t *testing.T) {
 // TestReplicaForwardingConfig_YAML: the section's keys are the documented ones.
 func TestReplicaForwardingConfig_YAML(t *testing.T) {
 	var cfg Config
-	if err := yaml.Unmarshal([]byte("replica_forwarding:\n  enabled: false\n  timeout: 4s\n"), &cfg); err != nil {
+	if err := gocodecyaml.New[Config]().Unmarshal([]byte("replica_forwarding:\n  enabled: false\n  timeout: 4s\n"), &cfg); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.ReplicaForwarding.On() || cfg.ReplicaForwarding.Timeout != "4s" {
