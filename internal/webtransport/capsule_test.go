@@ -28,7 +28,7 @@ func TestParseCloseSessionCapsuleRejectsMalformedMessage(t *testing.T) {
 			var b bytes.Buffer
 			require.NoError(t, http3.WriteCapsule(quicvarint.NewWriter(&b), closeSessionCapsuleType, payload))
 
-			_, err := parseNextCapsule(http3.NewCapsuleParser(&b))
+			_, err := parseNextCapsule(http3.NewCapsuleParser(&b), true)
 			require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCodeMessageError})
 		})
 	}
@@ -43,7 +43,7 @@ func TestParseCloseSessionCapsuleAcceptsLongestMessage(t *testing.T) {
 	var b bytes.Buffer
 	require.NoError(t, http3.WriteCapsule(quicvarint.NewWriter(&b), closeSessionCapsuleType, payload))
 
-	c, err := parseNextCapsule(http3.NewCapsuleParser(&b))
+	c, err := parseNextCapsule(http3.NewCapsuleParser(&b), true)
 	require.NoError(t, err)
 	require.Equal(t, closeSessionCapsule{ErrorCode: 1337, Message: msg}, c)
 }
@@ -67,7 +67,7 @@ func TestCloseSessionCapsuleRoundTrip(t *testing.T) {
 	var b bytes.Buffer
 	b.Write((closeSessionCapsule{ErrorCode: 42, Message: "all good"}).Append(nil))
 
-	c, err := parseNextCapsule(http3.NewCapsuleParser(&b))
+	c, err := parseNextCapsule(http3.NewCapsuleParser(&b), true)
 	require.NoError(t, err)
 	require.Equal(t, closeSessionCapsule{ErrorCode: 42, Message: "all good"}, c)
 }
@@ -84,7 +84,7 @@ func TestDataBlockedCapsuleRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint64(1337), maxData)
 
-	parsed, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(c.Append(nil))))
+	parsed, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(c.Append(nil))), true)
 	require.NoError(t, err)
 	require.Equal(t, c, parsed)
 }
@@ -101,7 +101,7 @@ func TestMaxDataCapsuleRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint64(1337), maxData)
 
-	parsed, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(c.Append(nil))))
+	parsed, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(c.Append(nil))), true)
 	require.NoError(t, err)
 	require.Equal(t, c, parsed)
 }
@@ -137,7 +137,7 @@ func TestMaxStreamsCapsuleRoundTrip(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.max, maxStreams)
 
-			c, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(tc.c.Append(nil))))
+			c, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(tc.c.Append(nil))), true)
 			require.NoError(t, err)
 			require.Equal(t, tc.c, c)
 		})
@@ -175,7 +175,7 @@ func TestStreamsBlockedCapsuleRoundTrip(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.max, maxStreams)
 
-			c, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(tc.c.Append(nil))))
+			c, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(tc.c.Append(nil))), true)
 			require.NoError(t, err)
 			require.Equal(t, tc.c, c)
 		})
@@ -186,7 +186,7 @@ func TestParseMaxStreamsCapsuleTooLarge(t *testing.T) {
 	var b bytes.Buffer
 	b.Write((maxStreamsBidiCapsule{MaximumStreams: maxStreamsLimit + 1}).Append(nil))
 
-	_, err := parseNextCapsule(http3.NewCapsuleParser(&b))
+	_, err := parseNextCapsule(http3.NewCapsuleParser(&b), true)
 	require.ErrorContains(t, err, "value too large")
 }
 
@@ -194,7 +194,7 @@ func TestParseStreamsBlockedCapsuleTooLarge(t *testing.T) {
 	var b bytes.Buffer
 	b.Write((streamsBlockedBidiCapsule{MaximumStreams: maxStreamsLimit + 1}).Append(nil))
 
-	_, err := parseNextCapsule(http3.NewCapsuleParser(&b))
+	_, err := parseNextCapsule(http3.NewCapsuleParser(&b), true)
 	require.ErrorContains(t, err, "WT_STREAMS_BLOCKED value too large")
 }
 
@@ -204,7 +204,7 @@ func TestParseDataBlockedCapsuleTrailingData(t *testing.T) {
 	b = quicvarint.Append(b, 42)
 	b = append(b, 0)
 
-	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(b)))
+	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(b)), true)
 	require.ErrorContains(t, err, "WT_DATA_BLOCKED capsule has trailing data")
 }
 
@@ -214,7 +214,7 @@ func TestParseMaxDataCapsuleTrailingData(t *testing.T) {
 	b = quicvarint.Append(b, 42)
 	b = append(b, 0)
 
-	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(b)))
+	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(b)), true)
 	require.ErrorContains(t, err, "WT_MAX_DATA capsule has trailing data")
 }
 
@@ -224,7 +224,7 @@ func TestParseMaxStreamsCapsuleTrailingData(t *testing.T) {
 	b = quicvarint.Append(b, 42)
 	b = append(b, 0)
 
-	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(b)))
+	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(b)), true)
 	require.ErrorContains(t, err, "trailing data")
 }
 
@@ -234,7 +234,7 @@ func TestParseStreamsBlockedCapsuleTrailingData(t *testing.T) {
 	b = quicvarint.Append(b, 42)
 	b = append(b, 0)
 
-	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(b)))
+	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(b)), true)
 	require.ErrorContains(t, err, "WT_STREAMS_BLOCKED capsule has trailing data")
 }
 
@@ -268,7 +268,7 @@ func shortCapsuleBodies() []struct {
 func TestParseNextCapsuleShortBodyIsNotEOF(t *testing.T) {
 	for _, tc := range shortCapsuleBodies() {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(tc.b)))
+			_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(tc.b)), true)
 			require.Error(t, err)
 			require.NotErrorIs(t, err, io.EOF)
 		})
@@ -276,7 +276,7 @@ func TestParseNextCapsuleShortBodyIsNotEOF(t *testing.T) {
 }
 
 func TestParseNextCapsuleEndOfStreamIsEOF(t *testing.T) {
-	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(nil)))
+	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(nil)), true)
 	require.Equal(t, io.EOF, err)
 }
 

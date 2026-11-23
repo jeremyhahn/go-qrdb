@@ -589,7 +589,9 @@ Invariants:
   session (SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI/_UNI and
   SETTINGS_WT_INITIAL_MAX_DATA, -16 section 5). A peer that negotiates flow
   control and opens past the limit closes the session with
-  WT_FLOW_CONTROL_ERROR. With or without flow control, at most 100 streams of
+  WT_FLOW_CONTROL_ERROR. Without flow control negotiated, the WT_MAX_STREAMS
+  and WT_STREAMS_BLOCKED capsules (both directions) are skipped without validating their values
+  (-16 section 5.1); a malformed body is still H3_DATAGRAM_ERROR. With or without flow control, at most 100 streams of
   each direction wait for the handler to accept them; each stream past that is
   reset with WT_BUFFERED_STREAM_REJECTED and the session stays up. QUIC
   stream credit is returned when a stream completes, not when the handler

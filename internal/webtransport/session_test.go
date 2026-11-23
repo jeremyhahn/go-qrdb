@@ -424,6 +424,51 @@ func TestOversizedStreamLimitCapsulesCloseSessionWithFlowControlError(t *testing
 	}
 }
 
+// TestOversizedStreamLimitCapsulesIgnoredWithoutFlowControl: when flow
+// control was not negotiated, WT_MAX_STREAMS and WT_STREAMS_BLOCKED capsules
+// are ignored (draft-ietf-webtrans-http3-16 section 5.1), so an oversized
+// value does not close the session; the WT_CLOSE_SESSION after it does.
+func TestOversizedStreamLimitCapsulesIgnoredWithoutFlowControl(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		typ  http3.CapsuleType
+	}{
+		{name: "WT_MAX_STREAMS bidi", typ: maxStreamsBidiCapsuleType},
+		{name: "WT_MAX_STREAMS uni", typ: maxStreamsUniCapsuleType},
+		{name: "WT_STREAMS_BLOCKED bidi", typ: streamsBlockedBidiCapsuleType},
+		{name: "WT_STREAMS_BLOCKED uni", typ: streamsBlockedUniCapsuleType},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			w := quicvarint.NewWriter(&b)
+			require.NoError(t, http3.WriteCapsule(w, tc.typ, quicvarint.Append(nil, maxStreamsLimit+1)))
+			closePayload := binary.BigEndian.AppendUint32(nil, 1337)
+			closePayload = append(closePayload, "bye"...)
+			require.NoError(t, http3.WriteCapsule(w, closeSessionCapsuleType, closePayload))
+
+			sess := newSession(
+				context.Background(),
+				42,
+				nil,
+				mockHTTP3Stream{bytes.NewReader(b.Bytes())},
+				"",
+				sessionFlowControl{Enabled: false},
+			)
+			select {
+			case <-sess.Context().Done():
+			case <-time.After(scaleDuration(time.Second)):
+				t.Fatal("timeout")
+			}
+
+			sess.closeMx.Lock()
+			err := sess.closeErr
+			sess.closeMx.Unlock()
+
+			require.Equal(t, &SessionError{Remote: true, ErrorCode: 1337, Message: "bye"}, err)
+		})
+	}
+}
+
 func TestMaxStreamsCapsuleDecreaseClosesSession(t *testing.T) {
 	b := (maxStreamsBidiCapsule{MaximumStreams: maxOutgoingStreams}).Append(nil)
 	b = (maxStreamsBidiCapsule{MaximumStreams: maxOutgoingStreams - 1}).Append(b)
@@ -466,10 +511,10 @@ func TestSessionSendsQueuedCapsules(t *testing.T) {
 	require.NoError(t, serverStr.SetReadDeadline(time.Now().Add(time.Second)))
 
 	parser := http3.NewCapsuleParser(serverStr)
-	c, err := parseNextCapsule(parser)
+	c, err := parseNextCapsule(parser, true)
 	require.NoError(t, err)
 	require.Equal(t, streamsBlockedBidiCapsule{MaximumStreams: 42}, c)
-	c, err = parseNextCapsule(parser)
+	c, err = parseNextCapsule(parser, true)
 	require.NoError(t, err)
 	require.Equal(t, streamsBlockedUniCapsule{MaximumStreams: 1337}, c)
 }

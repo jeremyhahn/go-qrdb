@@ -31,12 +31,24 @@ type capsule interface {
 }
 
 // parseNextCapsule parses Capsules sent on the request stream.
-// It returns the next known Capsule, skipping unknown Capsules.
-func parseNextCapsule(parser *http3.CapsuleParser) (capsule, error) {
+// It returns the next known Capsule, skipping unknown Capsules. When flow
+// control was not negotiated (flowControlEnabled false), the WT_MAX_STREAMS
+// and WT_STREAMS_BLOCKED Capsules are skipped too: a malformed body is still
+// an error, but their values are not validated.
+func parseNextCapsule(parser *http3.CapsuleParser, flowControlEnabled bool) (capsule, error) {
 	for {
 		typ, capsuleReader, err := parser.Next()
 		if err != nil {
 			return nil, err
+		}
+		if !flowControlEnabled && isStreamLimitCapsuleType(typ) {
+			// draft-ietf-webtrans-http3 section 5.1: flow-control capsules are
+			// ignored when flow control was not negotiated, so their values
+			// are not validated. A malformed body is still an error.
+			if err := skipStreamLimitCapsule(capsuleReader); err != nil {
+				return nil, capsuleBodyError(err)
+			}
+			continue
 		}
 		switch typ {
 		case closeSessionCapsuleType:
@@ -92,6 +104,29 @@ func parseNextCapsule(parser *http3.CapsuleParser) (capsule, error) {
 			}
 		}
 	}
+}
+
+// isStreamLimitCapsuleType reports whether typ is one of the WT_MAX_STREAMS
+// or WT_STREAMS_BLOCKED Capsule types.
+func isStreamLimitCapsuleType(typ http3.CapsuleType) bool {
+	switch typ {
+	case maxStreamsBidiCapsuleType, maxStreamsUniCapsuleType,
+		streamsBlockedBidiCapsuleType, streamsBlockedUniCapsuleType:
+		return true
+	}
+	return false
+}
+
+// skipStreamLimitCapsule consumes the body of an ignored WT_MAX_STREAMS or
+// WT_STREAMS_BLOCKED Capsule, checking only that it is one varint.
+func skipStreamLimitCapsule(r http3.CapsuleReader) error {
+	if _, err := quicvarint.Read(r); err != nil {
+		return err
+	}
+	if r.Remaining() != 0 {
+		return errors.New("stream limit capsule has trailing data")
+	}
+	return nil
 }
 
 // capsuleBodyError maps the io.EOF a capsule body parser returns when the
