@@ -55,6 +55,17 @@ write, and Put, Delete and Reseal are serialized, so a failed reseal leaves the
 old record. `enable-encryption` re-encrypts every seal-store record under the
 new root key and leaves no plaintext copy.
 
+A missing secret, an invalid name and a sealed seal-store barrier carry a
+structured refusal reason on every transport (`SEAL_STORE_SECRET_NOT_FOUND`,
+`SEAL_STORE_INVALID_SECRET_NAME` and `SEAL_STORE_BARRIER_SEALED`, the
+`transport.ReasonSealStore*` constants), and every SDK client rebuilds the seal
+sentinel from it. So `errors.Is(err, sdk.ErrSealStoreSecretNotFound)` holds
+over gRPC, Unix, REST, QUIC and MCP as it does embedded (and likewise
+`seal.ErrInvalidSecretName` and `sdk.ErrSealStoreBarrierSealed`); a missing
+secret is no longer a `*transport.KeyNotFoundError`. The statuses are
+unchanged: REST answers 404, 400 and 503, gRPC and Unix `NotFound`,
+`InvalidArgument` and `Unavailable`.
+
 A node served without a seal store answers every seal store call
 `Unimplemented` (the service is not configured): its REST server mounts no
 `/v1/seal-store` routes and its MCP server lists no `qrdb_seal_store_*` tools.
