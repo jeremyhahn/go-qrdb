@@ -608,6 +608,17 @@ those jobs' checks; `ci-gate` still fails the run on any red check. The label go
 request is green on the PR tier and ready to merge (architecture.md, "CI
 tiers").
 
+The `row` job (Row [one SPEC row per pull request], ci-template v1.55, ruling
+1136) is in `ci-gate`'s needs as a `pull` job: it runs on a ready pull request
+only, and `ci-gate` excuses its skip off `pull_request` alone. It passes a
+pull request whose head branch is `row/<n>-*` when issue #n is named in a
+`docs/SPEC.md` table row on the base commit (a ROADMAP.md mention does not
+count), one labelled `ci`, `main-fix` or `std`, or one from a `merge-train/`
+branch; anything else is red. It reads the base, never the head, so a row
+lands in SPEC through its own docs pull request first.
+`.github/workflows/testdata/row-job-tests.py`, run in preflight, holds the
+cases.
+
 Each shard runs on its own GitHub-hosted `ubuntu-latest` runner, as the
 image job and the standalone and soak jobs do (owner ruling 999).
 Load on a runner breaks a 3-node cluster's elections and a CLI call's

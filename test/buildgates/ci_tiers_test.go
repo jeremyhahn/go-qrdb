@@ -113,6 +113,13 @@ const (
 	tierCode    = "code"
 	tierFull    = "full"
 	tierNightly = "nightly"
+	// tierPull (ci-template v1.55) is a job that runs on a ready pull
+	// request only, the Row job: CI Gate excuses its skip off pull_request.
+	tierPull = "pull"
+
+	// pullTierIf is a pull job's `if:` and pullTierGateEnv ci-gate's PULL.
+	pullTierIf      = "${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}"
+	pullTierGateEnv = "${{ github.event_name == 'pull_request' }}"
 
 	// ciGateJob is the one required check.
 	ciGateJob = "ci-gate"
@@ -471,9 +478,22 @@ func ciTierProblems(wf ciWorkflow) []string {
 				problems = append(problems, "job "+name+" is a PR-tier or full-tier job tagged nightly: it would "+
 					"stop gating pull requests or main")
 			}
+		case tierPull:
+			if job.If != pullTierIf {
+				problems = append(problems, "job "+name+" is tagged pull in "+ciGateJob+
+					" but its `if:` is "+strconv.Quote(job.If)+", not "+strconv.Quote(pullTierIf))
+			}
+			if got := env["PULL"]; got != pullTierGateEnv {
+				problems = append(problems, ciGateJob+"'s PULL is "+strconv.Quote(got)+", not "+pullTierGateEnv+
+					": the gate would excuse skips the pull jobs' `if:` does not produce")
+			}
+			if slices.Contains(prTierJobs, name) || slices.Contains(codeTierJobs, name) || fullTierJob(name) {
+				problems = append(problems, "job "+name+" is a PR-, code- or full-tier job tagged pull: it would "+
+					"stop gating main")
+			}
 		default:
 			problems = append(problems, "job "+name+"'s check line in "+ciGateJob+" has tier "+
-				strconv.Quote(c.tier)+"; want pr, code, full or nightly")
+				strconv.Quote(c.tier)+"; want pr, code, full, pull or nightly")
 		}
 	}
 
@@ -489,8 +509,8 @@ func ciTierProblems(wf ciWorkflow) []string {
 	// request, so a PR-tier job needs no code, full or nightly job and a
 	// code-tier job no full or nightly one.
 	narrower := map[string][]string{
-		tierPR:   {tierCode, tierFull, tierNightly},
-		tierCode: {tierFull, tierNightly},
+		tierPR:   {tierCode, tierFull, tierPull, tierNightly},
+		tierCode: {tierFull, tierPull, tierNightly},
 	}
 	for _, name := range names {
 		for _, dep := range needsList(wf.Jobs[name].Needs) {
@@ -741,7 +761,9 @@ func runGate(t *testing.T, run string, env map[string]string, results map[string
 	if err != nil {
 		t.Fatalf("bash is required to execute %s's script: %v", ciGateJob, err)
 	}
-	vars := []string{"PATH=" + os.Getenv("PATH"), "FULL_TIER=" + fullTier, "NIGHTLY=" + nightly, "DOCS_ONLY=" + docsOnly}
+	// PULL (v1.55) defaults to a pull request run; an extra PULL=... after it
+	// wins, as exec keeps the last value of a duplicate key.
+	vars := []string{"PATH=" + os.Getenv("PATH"), "FULL_TIER=" + fullTier, "NIGHTLY=" + nightly, "DOCS_ONLY=" + docsOnly, "PULL=true"}
 	vars = append(vars, extra...)
 	for k, v := range env {
 		m := needsResult.FindStringSubmatch(v)
@@ -918,6 +940,48 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 	for _, tc := range codeCases {
 		t.Run(tc.name, func(t *testing.T) {
 			exit := runGate(t, run, env, tc.results, tc.fullTier, "false", tc.docsOnly)
+			if tc.wantExit && exit == 0 {
+				t.Fatalf("%s passed; want it to fail", ciGateJob)
+			}
+			if !tc.wantExit && exit != 0 {
+				t.Fatalf("%s failed with exit %d; want it to pass", ciGateJob, exit)
+			}
+		})
+	}
+
+	// The pull tier (ci-template v1.55, the Row job): only PULL=false, a run
+	// off pull_request, excuses a pull skip, and it excuses nothing else.
+	var pull []string
+	for name, c := range checks {
+		if c.tier == tierPull {
+			pull = append(pull, name)
+		}
+	}
+	if len(pull) == 0 {
+		t.Fatalf("%s has no pull check line; the Row job (ci-template v1.55) would not gate", ciGateJob)
+	}
+	sort.Strings(pull)
+	allPull := func(result string) map[string]string { return all(pull, result) }
+	pullCases := []struct {
+		name     string
+		results  map[string]string
+		fullTier string
+		pull     string
+		wantExit bool
+	}{
+		{"pull jobs skipped on a main push", allPull("skipped"), "true", "false", false},
+		{"pull jobs skipped on a pull request", allPull("skipped"), "false", "true", true},
+		{"pull job failed on a pull request", map[string]string{pull[0]: "failure"}, "false", "true", true},
+		{"pull job cancelled on a pull request", map[string]string{pull[0]: "cancelled"}, "false", "true", true},
+		{"pull job failed off pull_request", map[string]string{pull[0]: "failure"}, "true", "false", true},
+		{"off pull_request does not excuse a PR-tier skip", map[string]string{pr[0]: "skipped"}, "true", "false", true},
+		{"pull jobs skipped, PULL unreadable", allPull("skipped"), "true", "", true},
+		{"PULL unreadable", nil, "false", "", true},
+		{"PULL not a boolean", allPull("skipped"), "true", "maybe", true},
+	}
+	for _, tc := range pullCases {
+		t.Run(tc.name, func(t *testing.T) {
+			exit := runGate(t, run, env, tc.results, tc.fullTier, "false", "false", "PULL="+tc.pull)
 			if tc.wantExit && exit == 0 {
 				t.Fatalf("%s passed; want it to fail", ciGateJob)
 			}

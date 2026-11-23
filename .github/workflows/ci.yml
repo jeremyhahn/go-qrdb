@@ -1,4 +1,18 @@
-# ci-template: v1.53 + v1.59 runner selection + go-qrdb CUSTOMIZE blocks — canonical CI for all first-party Go repos.
+# ci-template: v1.55 + v1.59 runner selection + go-qrdb CUSTOMIZE blocks — canonical CI for all first-party Go repos.
+# v1.55 (2026-11-22, the Tenant Agent's 12:47Z order, owner: the Software
+# plan links every project's ROADMAP, SPEC and docs, and every piece of work
+# corresponds to a SPEC row, ruling 1136): the `row` job (Row [one SPEC row
+# per pull request]) joins CI Gate. A head branch row/<n>-* passes when
+# issue #n is named on the base commit in a docs/SPEC.md table row (SPEC
+# only, ruling 1143 (3): a ROADMAP.md mention does not count); a pull request labelled ci, main-fix or std (ROW_EXEMPT_LABELS),
+# or from a merge-train/ branch (ROW_EXEMPT_BRANCHES), passes; anything else
+# is red. It reads the base, never the head, runs on CI Gate's selected
+# runner (hosted for a fork's head) and reads the labels
+# live with the read-only job token. CI Gate checks it as `pull`: skipped
+# off pull_request only. testdata/row-job-tests.py holds the cases. Adopt as
+# a ci.yml-only bump that keeps the CUSTOMIZE blocks; CI configuration rolls
+# out at once (ruling 443). A repository with open PRs on non-row branches
+# labels each ci, main-fix or std, or moves it to its row, before it adopts.
 # Ported template steps, not the template's job structure: v1.48 to v1.53
 # (Tenant Agent ruling 1087, DS-9947) and v1.54's selection step (ruling
 # 1137, handbook 1ad68ab8); the handbook's template holds each version's
@@ -29,6 +43,7 @@
 # builds on a pool host masks the LAN addresses (scripts/ci-mask-lan.sh,
 # which also masks single-label and private-suffix host names).
 # Before ruling 1087: v1.35.1 + v1.42 hermetic gate + v1.43 hosted first + v1.47.
+# code-review.yml v5.12.11's regression tests run in preflight (#1666).
 # v1.47 runner gate (Tenant Agent ruling 1007, handbook ci-template v1.47): the step Runner labels (ruling 633) checks every workflow's runs-on label and waiver category together; codex and qwen run only in code-review.yml (codex with credential:, qwen with hardware:).
 # v1.43 hosted first (Tenant Agent rulings 833 and 834, which supersede ruling
 # 617's two-pool rule; the owner's 11-07 ruling that GitHub-hosted runners are
@@ -532,6 +547,18 @@ jobs:
       # userinfo and classifies the host after it, and every mask step runs it.
       - name: LAN mask tests (go-qrdb #1671)
         run: python3 -I .github/workflows/testdata/ci-mask-lan-tests.py
+      # v1.54: no job output carries a registry address (H1 to H5).
+      - name: Job output handoff tests (ci-template v1.54)
+        run: python3 -I .github/workflows/testdata/job-output-handoff-tests.py
+      # v1.55: the Row job's check, run against a stub base and label API.
+      - name: Row job tests (ci-template v1.55)
+        run: python3 -I .github/workflows/testdata/row-job-tests.py
+      # code-review.yml v5.12.11 (ruling 1081) carries the handbook template's
+      # regression tests verbatim: testdata/code-review-v51211-tests.py, which
+      # loads the expression evaluator from testdata/code-review-v51210-tests.py.
+      # A fake curl forge serves every API read; nothing reaches the network.
+      - name: Code review workflow tests (v5.12.11)
+        run: python3 -I .github/workflows/testdata/code-review-v51211-tests.py
       - name: Runner labels (ruling 633)
         run: |
           python3 -I - <<'PY'
@@ -3231,6 +3258,23 @@ jobs:
           REPO: ${{ github.repository }}
         run: gh workflow run deps-bump.yml --repo "$REPO" --ref main
 
+  # v1.53 (the Tenant Agent's read of the Codex P1 on go-trusted-platform
+  # #2311): a job output never carries a registry address. The LAN mask
+  # registers each internal registry as a secret, and GitHub drops a job
+  # output that contains a masked value, so a consumer would read an empty
+  # reference. A CUSTOMIZE job that hands an image to another job exports
+  # only an unmasked identifier (the tag, the digest or its hex suffix), and
+  # each consumer rebuilds the reference from the secret CI_IMAGE_REGISTRY
+  # after its own mask step. The registry is never read from `vars`: a step's
+  # env is printed in its log header before the run body, and only a secret
+  # is masked from the first byte. A GitHub-hosted run receives none, so it
+  # takes the artifact path as before:
+  #   producer:  echo "image_tag=$tag" >> "$GITHUB_OUTPUT"
+  #   consumer:  env: { IT_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }},
+  #                     IT_IMAGE_TAG: ${{ needs.<producer>.outputs.image_tag }} }
+  #              run: ref="$IT_REGISTRY/<repo>/it-image:$IT_IMAGE_TAG"
+  # testdata/job-output-handoff-tests.py H1 to H5 holds the rule; run it
+  # with a copy's path to check that copy.
   signatures:
     name: Signatures
     runs-on: ubuntu-latest
@@ -3331,6 +3375,102 @@ jobs:
           done
           exit $BAD
 
+  # v1.55 (2026-11-22, the Tenant Agent's 12:47Z order, owner: every piece of
+  # work corresponds to a SPEC row, ruling 1136): the Row job. A pull request
+  # whose head branch is `row/<n>-*` passes when issue #n is named on the
+  # BASE commit, in a table row of docs/SPEC.md, and nowhere else (ruling
+  # 1143 (3): SPEC only; ROADMAP.md does not count) (`#n` not preceded by a word character or `/`, so `owner/repo#n` and
+  # `#123` for `#12` do not count). A pull request with a label in
+  # ROW_EXEMPT_LABELS (ci, main-fix, std), or from a branch that starts with
+  # one of ROW_EXEMPT_BRANCHES (merge-train/: a train carries row PRs that
+  # passed), passes too. Anything else is red with a ::error naming the rule.
+  # The base is checked out and read with `git show <base>:<path>`, so a
+  # pull request cannot add its own row and pass on it: the row lands first,
+  # through a docs PR. The job runs where CI Gate runs (the preflight
+  # selection's `runner` output: hosted for a fork's head, so a fork never
+  # reaches a self-hosted runner) and runs no code of the head. The labels are read live from
+  # the API with the job token (read-only), so a rerun after a label is
+  # added passes; when they cannot be read, the event's labels are used with
+  # a ::warning. pull_request has no `labeled` type (v1.25.4), so a label
+  # takes effect on the next push or a rerun of this job.
+  # testdata/row-job-tests.py holds the cases.
+  # CUSTOMIZE (go-qrdb): runs-on is CI Gate's own expression.
+  row:
+    name: Row [one SPEC row per pull request]
+    needs: [preflight]
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}   # v1.55: CI Gate's runner
+    if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      ROW_EXEMPT_LABELS: 'ci main-fix std'   # space-separated; CUSTOMIZE only by Tenant Agent order
+      ROW_EXEMPT_BRANCHES: 'merge-train/'    # space-separated branch prefixes
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Row check (one SPEC row per pull request)
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          LABELS_URL: ${{ github.api_url }}/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels?per_page=100
+          JOB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, re, subprocess, sys, urllib.request
+          head = os.environ.get("HEAD_REF", "")
+          base = os.environ.get("BASE_SHA", "")
+          exempt = set(os.environ.get("ROW_EXEMPT_LABELS", "").split())
+          prefixes = os.environ.get("ROW_EXEMPT_BRANCHES", "").split()
+          rule = "every pull request corresponds to one SPEC row (ci-template v1.55, ruling 1136)"
+          labels = set()
+          try:
+              labels |= {str(x) for x in json.loads(os.environ.get("EVENT_LABELS") or "[]") or []}
+          except ValueError:
+              pass
+          url, tok = os.environ.get("LABELS_URL", ""), os.environ.get("JOB_TOKEN", "")
+          if url and tok:
+              try:
+                  req = urllib.request.Request(url, headers={"Authorization": "Bearer " + tok,
+                                                             "Accept": "application/vnd.github+json"})
+                  with urllib.request.urlopen(req, timeout=20) as r:
+                      labels |= {l["name"] for l in json.load(r)}
+              except Exception as e:
+                  print(f"::warning::Row: the live labels could not be read ({type(e).__name__}); the event's labels are used")
+          hit = sorted(labels & exempt)
+          if hit:
+              print(f"Row: exempt label '{hit[0]}'; no row is required")
+              sys.exit(0)
+          for p in prefixes:
+              if head.startswith(p):
+                  print(f"Row: exempt branch prefix '{p}'; no row is required")
+                  sys.exit(0)
+          m = re.match(r"row/(\d+)-", head)
+          if not m:
+              print(f"::error::Row: head branch '{head}' is not row/<n>-* and the pull request carries none of the labels {' '.join(sorted(exempt))}; {rule}")
+              sys.exit(1)
+          if not re.fullmatch(r"[0-9a-f]{40}", base):
+              print(f"::error::Row: no base commit to read ('{base}'); {rule}")
+              sys.exit(1)
+          n = m[1]
+          pat = re.compile(rf"(?<![\w/])#{n}(?!\d)")
+          r = subprocess.run(["git", "show", f"{base}:docs/SPEC.md"], capture_output=True, text=True)
+          if r.returncode != 0:
+              print(f"Row: docs/SPEC.md is absent on the base {base[:12]}")
+          rows = [l for l in r.stdout.splitlines() if l.lstrip().startswith("|")] if r.returncode == 0 else []
+          if any(pat.search(l) for l in rows):
+              print(f"Row: issue #{n} is named in a docs/SPEC.md table row on the base {base[:12]}")
+              sys.exit(0)
+          print(f"::error::Row: issue #{n} (head branch '{head}') is named in no docs/SPEC.md table row on the base {base[:12]} (ROADMAP.md does not count); land the row in SPEC through a docs PR first, or label the pull request {' or '.join(sorted(exempt))}; {rule}")
+          sys.exit(1)
+          PY
+
   ci-gate:
     name: CI Gate
     # m2479 (m2475 h): the gate reads the jobs' results only: no checkout, no
@@ -3357,13 +3497,14 @@ jobs:
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier: pr,
     # code (every event but a docs-only PR, DS-3160), full or nightly. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [preflight, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak, signatures]
+    needs: [preflight, row, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak, signatures]
     steps:
       - name: Fail closed on any non-success
         env:
           # ruling 214: a draft PR runs no CI, so its gate fails rather than pass on skips.
           DRAFT: ${{ github.event.pull_request.draft == true }}
           RESULT_PREFLIGHT: ${{ needs.preflight.result }}
+          RESULT_ROW: ${{ needs.row.result }}
           RESULT_DOCKER_BUILD: ${{ needs.docker-build.result }}
           RESULT_LINT: ${{ needs.lint.result }}
           RESULT_LINT_GATES: ${{ needs.lint-gates.result }}
@@ -3390,6 +3531,8 @@ jobs:
           # a docs-only PR (the preflight job's docs_only, false off
           # pull_request and on ci:full).
           DOCS_ONLY: ${{ needs.preflight.outputs.docs_only }}
+          # v1.55: the Row job runs on pull_request only (a `pull` job).
+          PULL: ${{ github.event_name == 'pull_request' }}
         run: |
           if [ "$DRAFT" = "true" ]; then
             echo "FAIL draft pull request: no CI runs on a draft. Mark it ready, then push an empty commit to start its run."
@@ -3412,12 +3555,18 @@ jobs:
             true|false) ;;
             *) echo "FAIL: NIGHTLY is unreadable ('${NIGHTLY}')"; BAD=1;;
           esac
-          check() { # <job> <result> <pr|code|full|nightly>
+          case "${PULL}" in
+            true|false) ;;
+            *) echo "FAIL: PULL is unreadable ('${PULL}')"; BAD=1;;
+          esac
+          check() { # <job> <result> <pr|code|full|pull|nightly>
             case "$2" in
               success) echo "OK   $1";;
               skipped)
                 if [ "$3" = full ] && [ "${FULL_TIER}" != true ]; then
                   echo "SKIP $1 (full tier not selected)"
+                elif [ "$3" = pull ] && [ "${PULL}" != true ]; then
+                  echo "SKIP $1 (pull request only)"
                 elif [ "$3" = nightly ] && [ "${NIGHTLY}" != true ]; then
                   echo "SKIP $1 (nightly and dispatch only)"
                 elif [ "$3" = code ] && [ "${DOCS_ONLY}" = true ]; then
@@ -3432,7 +3581,9 @@ jobs:
           # full tier by its `if:` is marked full, one gated to schedule and
           # workflow_dispatch is nightly, one skipped on a docs-only PR
           # (go-qrdb, DS-3160) is code; every other job is pr.
+          # v1.55: row runs on pull_request only, so it is pull.
           check preflight "$RESULT_PREFLIGHT" pr
+          check row "$RESULT_ROW" pull
           check docker-build "$RESULT_DOCKER_BUILD" pr
           check lint "$RESULT_LINT" pr
           check lint-gates "$RESULT_LINT_GATES" pr
