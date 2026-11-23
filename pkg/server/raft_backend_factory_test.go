@@ -20,9 +20,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
@@ -303,19 +305,26 @@ func writeAndAwaitLogRange(ctx context.Context, t *testing.T, host *quicraft.Hos
 			t.Fatalf("KV.Put %d: %v", i, err)
 		}
 	}
-	var lr quicraft.LogRange
-	deadline := time.Now().Add(wait)
-	for {
-		var err error
-		lr, err = host.LogRange(shardID)
-		if err != nil {
-			t.Fatalf("LogRange: %v", err)
-		}
-		if lr.FirstIndex > 1 || time.Now().After(deadline) {
-			return lr
-		}
-		time.Sleep(20 * time.Millisecond)
+	var (
+		mu    sync.Mutex
+		lr    quicraft.LogRange
+		lrErr error
+	)
+	// The quiet reporter lets a shard that never compacts report its
+	// uncompacted range; the caller judges it.
+	assert.Eventually(quietReporter{}, func() bool {
+		got, err := host.LogRange(shardID)
+		mu.Lock()
+		defer mu.Unlock()
+		lr, lrErr = got, err
+		return err != nil || got.FirstIndex > 1
+	}, wait, 20*time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if lrErr != nil {
+		t.Fatalf("LogRange: %v", lrErr)
 	}
+	return lr
 }
 
 // TestRaftBackendFactory_WithSnapshotSettings_CompactsLog proves a dedicated
@@ -608,14 +617,9 @@ func TestRaftBackendFactory_OnlineBackupRestore_RF1Success(t *testing.T) {
 	// warm-up window getWhenReadable tolerates for KV reads elsewhere in this
 	// file. Poll rather than assume the very first attempt lands after
 	// waitForShardServingWithin merely observes a leader ID.
-	restoreDeadline := time.Now().Add(15 * time.Second)
-	for {
-		err = online.RestoreShardOnline(ctx, shardID, data)
-		if err == nil || !strings.Contains(err.Error(), "read index not ready") || time.Now().After(restoreDeadline) {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+	err = retryWhileReadIndexNotReady(func() error {
+		return online.RestoreShardOnline(ctx, shardID, data)
+	})
 	if err != nil {
 		t.Fatalf("RestoreShardOnline: %v", err)
 	}
