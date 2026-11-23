@@ -76,10 +76,10 @@ type CredentialRotateResponse struct {
 // rotation policy. Interval is a Go duration string ("720h"); it may be
 // empty when Enabled is false. A disabled policy stops scheduled rotation.
 type CredentialSetRotationPolicyRequest struct {
-	Name           string `json:"name"`
-	Enabled        bool   `json:"enabled"`
-	Interval       string `json:"interval"`
-	RetainVersions int    `json:"retain_versions"`
+	Name           string `json:"name" yaml:"name"`
+	Enabled        bool   `json:"enabled" yaml:"enabled"`
+	Interval       string `json:"interval" yaml:"interval"`
+	RetainVersions int    `json:"retain_versions" yaml:"retain_versions"`
 }
 
 // CredentialRotationPolicyRequest names the credential whose rotation
@@ -93,11 +93,11 @@ type CredentialRotationPolicyRequest struct {
 // NextRotation is the RFC 3339 time of the next scheduled rotation, empty
 // when the policy is unset or disabled.
 type CredentialRotationPolicyResponse struct {
-	Name           string `json:"name"`
-	Enabled        bool   `json:"enabled"`
-	Interval       string `json:"interval"`
-	RetainVersions int    `json:"retain_versions"`
-	NextRotation   string `json:"next_rotation,omitempty"`
+	Name           string `json:"name" yaml:"name"`
+	Enabled        bool   `json:"enabled" yaml:"enabled"`
+	Interval       string `json:"interval" yaml:"interval"`
+	RetainVersions int    `json:"retain_versions" yaml:"retain_versions"`
+	NextRotation   string `json:"next_rotation,omitempty" yaml:"next_rotation,omitempty"`
 }
 
 // CredentialMigrationConflict is one credential whose node-local copy in
@@ -105,16 +105,16 @@ type CredentialRotationPolicyResponse struct {
 // node migrated first. The flags name the parts that differ; no value is
 // ever carried.
 type CredentialMigrationConflict struct {
-	Name     string `json:"name"`
-	Value    bool   `json:"value"`
-	Versions bool   `json:"versions"`
-	Policy   bool   `json:"policy"`
+	Name     string `json:"name" yaml:"name"`
+	Value    bool   `json:"value" yaml:"value"`
+	Versions bool   `json:"versions" yaml:"versions"`
+	Policy   bool   `json:"policy" yaml:"policy"`
 }
 
 // CredentialMigrationConflictsResponse lists the node's unresolved
 // migration conflicts, sorted by name.
 type CredentialMigrationConflictsResponse struct {
-	Conflicts []CredentialMigrationConflict `json:"conflicts"`
+	Conflicts []CredentialMigrationConflict `json:"conflicts" yaml:"conflicts"`
 }
 
 // CredentialResolveMigrationConflictRequest settles one migration
@@ -122,8 +122,8 @@ type CredentialMigrationConflictsResponse struct {
 // value in as a new version, or "discard", which keeps the replicated
 // record as it is.
 type CredentialResolveMigrationConflictRequest struct {
-	Name       string `json:"name"`
-	Resolution string `json:"resolution"`
+	Name       string `json:"name" yaml:"name"`
+	Resolution string `json:"resolution" yaml:"resolution"`
 }
 
 // CredentialRetrieveVersionRequest selects a specific version of a
