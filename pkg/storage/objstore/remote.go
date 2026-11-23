@@ -22,6 +22,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -46,6 +47,11 @@ import (
 type Remote struct {
 	store  objcommon.Storage
 	prefix string
+	// root is the local bucket root when the store is a PathAccessor with a
+	// non-empty LocalPath, else "". ops is the directory seam used to make
+	// the directory chain under root durable.
+	root string
+	ops  remoteDirOps
 }
 
 var _ remote.Storage = (*Remote)(nil)
@@ -75,14 +81,16 @@ func newRemote(store objcommon.Storage, prefix string, ops remoteDirOps) (*Remot
 	case strings.ContainsRune(prefix, 0):
 		return nil, &InvalidRemoteError{Prefix: prefix, Reason: "prefix contains a NUL"}
 	}
+	r := &Remote{store: store, prefix: prefix, ops: ops}
 	if pa, ok := store.(objcommon.PathAccessor); ok {
 		if root := pa.LocalPath(); root != "" {
 			if err := ensureDurablePrefix(root, prefix, ops); err != nil {
 				return nil, err
 			}
+			r.root = root
 		}
 	}
-	return &Remote{store: store, prefix: prefix}, nil
+	return r, nil
 }
 
 // remoteDirOps is the filesystem seam ensureDurablePrefix works through, so a
@@ -154,7 +162,7 @@ func (r *Remote) ReadObject(ctx context.Context, objName string) (remote.ObjectR
 // CreateObject returns a writer that buffers the object and stores it on
 // Close.
 func (r *Remote) CreateObject(objName string) (io.WriteCloser, error) {
-	return &remoteWriter{store: r.store, key: r.key(objName)}, nil
+	return &remoteWriter{store: r.store, key: r.key(objName), root: r.root, ops: r.ops}, nil
 }
 
 // List returns the names, relative to this Remote's prefix, of the objects
@@ -271,6 +279,8 @@ var errWriterClosed = errors.New("objstore: write to a closed remote object writ
 type remoteWriter struct {
 	store  objcommon.Storage
 	key    string
+	root   string
+	ops    remoteDirOps
 	buf    bytes.Buffer
 	closed bool
 }
@@ -291,5 +301,16 @@ func (w *remoteWriter) Close() error {
 	w.closed = true
 	err := w.store.PutWithContext(context.Background(), w.key, bytes.NewReader(w.buf.Bytes()))
 	w.buf = bytes.Buffer{}
-	return err
+	if err != nil {
+		return err
+	}
+	// The local provider prunes empty directories on Delete, so the Put may
+	// have recreated part of the key's directory chain; its writeAtomic syncs
+	// only the object's own directory. Sync every entry from the bucket root
+	// down to the object's parent so the acknowledged object survives a
+	// power loss.
+	if w.root == "" || !cacheDirSyncSupported {
+		return nil
+	}
+	return ensureDurablePrefix(w.root, path.Dir(w.key), w.ops)
 }

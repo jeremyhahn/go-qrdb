@@ -757,7 +757,11 @@ func TestNewRemote_DirSyncBeforeFirstPut(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, w.Close())
 
-	want := []string{"mkdir lsm", "sync .", "mkdir lsm/a", "sync lsm", "put lsm/a/000001.sst"}
+	want := []string{
+		"mkdir lsm", "sync .", "mkdir lsm/a", "sync lsm",
+		"put lsm/a/000001.sst",
+		"mkdir lsm", "sync .", "mkdir lsm/a", "sync lsm",
+	}
 	if !cacheDirSyncSupported {
 		want = []string{"mkdir lsm", "mkdir lsm/a", "put lsm/a/000001.sst"}
 	}
@@ -830,6 +834,88 @@ func TestNewRemote_DirSyncLocalProvider(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 3, size)
 	require.NoError(t, rd.Close())
+}
+
+// writeObject writes data to objName through rs and closes the writer.
+func writeObject(rs *Remote, objName, data string) error {
+	w, err := rs.CreateObject(objName)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(data)); err != nil {
+		return err
+	}
+	return w.Close()
+}
+
+// TestRemoteWriter_DirSyncAfterPrune: the local provider prunes the empty
+// prefix directory when the last object is deleted; the next Close must make
+// the recreated directory chain durable after the Put and before it returns.
+func TestRemoteWriter_DirSyncAfterPrune(t *testing.T) {
+	root := t.TempDir()
+	local, err := OpenStore("local", map[string]string{"path": root})
+	require.NoError(t, err)
+	var events []string
+	store := &pathStore{Storage: local, root: root, events: &events}
+	rs, err := newRemote(store, "lsm/a", recordingDirOps(&events, root))
+	require.NoError(t, err)
+	require.NoError(t, writeObject(rs, "000001.sst", "one"))
+	require.NoError(t, rs.Delete("000001.sst"))
+	require.NoDirExists(t, filepath.Join(root, "lsm", "a"), "the provider prunes the empty prefix")
+
+	events = events[:0]
+	require.NoError(t, writeObject(rs, "000002.sst", "two"))
+	want := []string{"put lsm/a/000002.sst", "mkdir lsm", "sync .", "mkdir lsm/a", "sync lsm"}
+	if !cacheDirSyncSupported {
+		want = []string{"put lsm/a/000002.sst"}
+	}
+	require.Equal(t, want, events)
+	rd, size, err := rs.ReadObject(context.Background(), "000002.sst")
+	require.NoError(t, err)
+	require.EqualValues(t, 3, size)
+	require.NoError(t, rd.Close())
+}
+
+// TestRemoteWriter_DirSyncFaultSurfaces: a syncDir fault after the Put is
+// Close's error.
+func TestRemoteWriter_DirSyncFaultSurfaces(t *testing.T) {
+	if !cacheDirSyncSupported {
+		t.Skip("directory sync is not supported on this platform")
+	}
+	root := t.TempDir()
+	local, err := OpenStore("local", map[string]string{"path": root})
+	require.NoError(t, err)
+	boom := errors.New("boom")
+	armed := false
+	rs, err := newRemote(local, "lsm", remoteDirOps{
+		mkdir: defaultRemoteDirOps.mkdir,
+		syncDir: func(name string) error {
+			if armed {
+				return boom
+			}
+			return defaultRemoteDirOps.syncDir(name)
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, writeObject(rs, "000001.sst", "one"))
+	require.NoError(t, rs.Delete("000001.sst"))
+	armed = true
+	require.ErrorIs(t, writeObject(rs, "000002.sst", "two"), boom)
+}
+
+// TestRemoteWriter_NoLocalRootNoDirOps: a store without a local root does no
+// directory operations on Close.
+func TestRemoteWriter_NoLocalRootNoDirOps(t *testing.T) {
+	var events []string
+	for _, store := range []objcommon.Storage{
+		memory.New(),
+		&pathStore{Storage: memory.New(), root: "", events: &events},
+	} {
+		rs, err := newRemote(store, "lsm", recordingDirOps(&events, ""))
+		require.NoError(t, err)
+		require.NoError(t, writeObject(rs, "000001.sst", "one"))
+	}
+	require.Equal(t, []string{"put lsm/000001.sst"}, events)
 }
 
 func TestObjstoreErrors_Messages(t *testing.T) {
