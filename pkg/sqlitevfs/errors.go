@@ -73,12 +73,6 @@ var (
 	// ErrInvalidOption.
 	ErrOptimisticWithWriterLock = fmt.Errorf("%w: optimistic mode and a writer lock are exclusive", ErrInvalidOption)
 
-	// ErrReadCheckUnsupported is returned by a Backend.Publish that cannot
-	// evaluate a non-empty read set atomically with the prefix move (the
-	// service path: OpMVCCMovePrefix carries no compares). It writes
-	// nothing; the check is refused, never approximated.
-	ErrReadCheckUnsupported = errors.New("sqlitevfs: backend cannot check a read set atomically with a publish")
-
 	// ErrBusy is returned when the database's writer lock is held by
 	// another writer, or when this transaction's lease on it was lost
 	// before Commit. The SQLite binding maps it to SQLITE_BUSY.

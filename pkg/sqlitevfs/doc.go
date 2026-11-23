@@ -42,10 +42,9 @@
 // writes nothing. Writers on disjoint pages both commit. The meta record is
 // checked at the commit revision rather than the snapshot revision, since
 // every commit rewrites it. A moved page count or page size is a conflict.
-// ServiceBackend cannot check a read set on a staged publish (MovePrefix
-// carries no compares), so it refuses one with ErrReadCheckUnsupported.
-// That holds for any Store without a writer lock, because the meta check is
-// always sent.
+// A staged commit's read set travels as the prefix move's compares, which
+// the engine checks at apply, atomically with the move; a failed one is
+// ErrSnapshotChanged and writes nothing.
 //
 // The package is unwired. No SQLite engine is linked and no VFS is
 // registered. ServiceBackend runs a Store over the server's MVCC and

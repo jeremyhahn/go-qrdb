@@ -190,6 +190,73 @@ func TestSQLiteVFSWiring_StagedCommitPublishesThroughPrefixMove(t *testing.T) {
 	}
 }
 
+// TestSQLiteVFSWiring_OptimisticStagedPublishChecksReads: an optimistic
+// Store (no writer lock) publishes a staged commit through the prefix move
+// with its read set as the move's compares. A staged commit whose read page
+// another writer changed is ErrSnapshotChanged at the publish and writes
+// nothing; an unchanged one publishes.
+func TestSQLiteVFSWiring_OptimisticStagedPublishChecksReads(t *testing.T) {
+	for name, build := range lockScenes {
+		t.Run(name, func(t *testing.T) {
+			locked := newWiringStore(t, build(t).registry, lockTenantA, lockHolderA)
+			s, err := sqlitevfs.NewStore(locked.backend, wiringDB,
+				sqlitevfs.WithOptimistic(), sqlitevfs.WithStageThreshold(wiringStageThreshold))
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			opt := &wiringStore{store: s, backend: locked.backend}
+			begin := func() *sqlitevfs.Txn {
+				t.Helper()
+				txn, err := opt.store.Begin(t.Context())
+				if err != nil {
+					t.Fatalf("Begin: %v", err)
+				}
+				return txn
+			}
+			seedTxn := begin()
+			wiringWrite(t, seedTxn, 0x71, 0x72)
+			if _, err := seedTxn.Commit(t.Context()); err != nil {
+				t.Fatalf("seed Commit: %v", err)
+			}
+
+			reader, writer := begin(), begin()
+			if _, err := reader.ReadAt(make([]byte, wiringPageSize), 0); err != nil {
+				t.Fatalf("ReadAt page 1: %v", err)
+			}
+			wiringWrite(t, reader, 0x81, 0x82, 0x83, 0x84)
+			wiringWrite(t, writer, 0x91)
+			if _, err := writer.Commit(t.Context()); err != nil {
+				t.Fatalf("writer Commit: %v", err)
+			}
+			if _, err := reader.Commit(t.Context()); !errors.Is(err, sqlitevfs.ErrSnapshotChanged) {
+				t.Fatalf("staged Commit over a changed read = %v, want ErrSnapshotChanged", err)
+			}
+			opt.assertPages(t, 0x91, 0x72)
+			stageRoot, err := sqlitevfs.StageRoot(wiringDB)
+			if err != nil {
+				t.Fatalf("StageRoot: %v", err)
+			}
+			now, err := opt.backend.Revision(t.Context())
+			if err != nil {
+				t.Fatalf("Revision: %v", err)
+			}
+			if live, err := opt.backend.Keys(t.Context(), stageRoot, now); err != nil || len(live) != 0 {
+				t.Fatalf("live stage keys after the refused publish = %q, %v, want none", live, err)
+			}
+
+			again := begin()
+			if _, err := again.ReadAt(make([]byte, wiringPageSize), 0); err != nil {
+				t.Fatalf("ReadAt page 1: %v", err)
+			}
+			wiringWrite(t, again, 0xa1, 0xa2, 0xa3, 0xa4)
+			if _, err := again.Commit(t.Context()); err != nil {
+				t.Fatalf("staged Commit with an unchanged read set: %v", err)
+			}
+			opt.assertPages(t, 0xa1, 0xa2, 0xa3, 0xa4)
+		})
+	}
+}
+
 func TestSQLiteVFSWiring_WriterLockSerializesHolders(t *testing.T) {
 	for name, build := range lockScenes {
 		t.Run(name, func(t *testing.T) {

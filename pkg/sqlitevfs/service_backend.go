@@ -174,27 +174,30 @@ func readCompares(reads []ReadCheck) []service.Compare {
 	return cmps
 }
 
-// Publish sends one server-side prefix move. A *service.CommandConflictError
-// (a live source count other than expectedKeys at apply) is
-// ErrPublishConflict. A move past the tenant's storage quota (a
-// *quota.ExceededError) is ErrFull, joined with the cause. A non-empty read
-// set is refused with ErrReadCheckUnsupported before anything is sent:
-// OpMVCCMovePrefix carries no compares, and a compare read before the move
-// would not be atomic with it.
+// Publish sends one server-side prefix move carrying the read set as its
+// compares, which the engine checks at apply, atomically with the move. A
+// failed compare (a *service.WriteGuardRefusedError: a key read by the
+// staged transaction changed since its snapshot) is ErrSnapshotChanged and
+// writes nothing. A *service.CommandConflictError (a live source count other
+// than expectedKeys at apply) is ErrPublishConflict. A move past the
+// tenant's storage quota (a *quota.ExceededError) is ErrFull, joined with
+// the cause.
 func (b *ServiceBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys int64, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	if err := validatePublish(src, dst, expectedKeys); err != nil {
 		return 0, err
-	}
-	if len(reads) > 0 {
-		return 0, fmt.Errorf("%w: %d read checks on the publish of %q", ErrReadCheckUnsupported, len(reads), src)
 	}
 	rev, err := b.kv.MovePrefix(ctx, &service.MovePrefixRequest{
 		Src:          string(src),
 		Dst:          string(dst),
 		ExpectedKeys: expectedKeys,
 		Ops:          writeOps(puts, deletes),
+		Compares:     readCompares(reads),
 	})
 	if err != nil {
+		var refused *service.WriteGuardRefusedError
+		if errors.As(err, &refused) {
+			return 0, fmt.Errorf("%w: %w", ErrSnapshotChanged, err)
+		}
 		var conflict *service.CommandConflictError
 		if errors.As(err, &conflict) {
 			return 0, fmt.Errorf("%w: %w", ErrPublishConflict, err)

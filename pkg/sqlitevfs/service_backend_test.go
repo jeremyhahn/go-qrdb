@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
@@ -44,6 +45,9 @@ type serviceDouble struct {
 	moveErr error
 	// seen records, per double method, the context its last call received.
 	seen map[string]context.Context
+	// apply serializes Execute and MovePrefix, so each one's compares and
+	// writes are one step, as one raft apply is on the server.
+	apply sync.Mutex
 }
 
 func (d *serviceDouble) record(method string, ctx context.Context) {
@@ -97,6 +101,26 @@ func (d *serviceDouble) MovePrefix(ctx context.Context, req *service.MovePrefixR
 			return 0, err
 		}
 	}
+	// As the engine does at apply, the compares, the count check and the
+	// move are one step: apply serializes every write through the double,
+	// and the first compare that fails is a *service.WriteGuardRefusedError
+	// naming its key, with nothing written.
+	d.apply.Lock()
+	defer d.apply.Unlock()
+	d.b.mu.Lock()
+	now := d.b.store.CurrentRevision()
+	for _, c := range req.Compares {
+		ok, err := d.compareHolds(c, now)
+		if err != nil {
+			d.b.mu.Unlock()
+			return 0, err
+		}
+		if !ok {
+			d.b.mu.Unlock()
+			return 0, &service.WriteGuardRefusedError{Key: string(c.Key)}
+		}
+	}
+	d.b.mu.Unlock()
 	puts, deletes := splitOps(req.Ops)
 	rev, err := d.b.Publish(ctx, []byte(req.Src), []byte(req.Dst), req.ExpectedKeys, nil, puts, deletes)
 	if errors.Is(err, ErrPublishConflict) {
@@ -115,6 +139,8 @@ func (d *serviceDouble) Execute(ctx context.Context, compares []service.Compare,
 	}
 	// As the service does, the compares and the success ops are one atomic
 	// step: a failed compare fails the whole transaction and applies nothing.
+	d.apply.Lock()
+	defer d.apply.Unlock()
 	d.b.mu.Lock()
 	defer d.b.mu.Unlock()
 	now := d.b.store.CurrentRevision()
@@ -316,9 +342,8 @@ func TestServiceBackendCommitNothing(t *testing.T) {
 
 func TestServiceBackendStoreCommits(t *testing.T) {
 	sb, d := newServiceBackend(t)
-	// A staged commit over the service publishes with MovePrefix, which
-	// carries no compares, so it needs the writer lock (see
-	// TestServiceBackendStagedReadSetRefused).
+	// The writer-locked path: a staged commit publishes with one MovePrefix
+	// (the read-checked path is TestServiceBackendStagedReadSetChecked).
 	s := newLockedStore(t, sb, newMemLocker(), "a")
 	seed(t, s, 0x01, 0x02)
 	if d.moves != 0 {
@@ -367,10 +392,10 @@ func TestServiceBackendPublishConflict(t *testing.T) {
 	}
 }
 
-// TestServiceBackendStagedReadSetRefused: without a writer lock every commit
-// carries a read set, and MovePrefix cannot check one, so a staged publish is
-// refused before anything is published and its stage keys are swept.
-func TestServiceBackendStagedReadSetRefused(t *testing.T) {
+// TestServiceBackendStagedReadSetChecked: without a writer lock every commit
+// carries a read set, which the staged publish sends as the prefix move's
+// compares, so an unchanged read set publishes once and leaves no stage key.
+func TestServiceBackendStagedReadSetChecked(t *testing.T) {
 	for name, s := range map[string]func(Backend) (*Store, error){
 		"unlocked": func(b Backend) (*Store, error) {
 			return NewStore(b, "app.db", WithStageThreshold(2*testPageSize), WithStageChunkBytes(testPageSize))
@@ -387,24 +412,55 @@ func TestServiceBackendStagedReadSetRefused(t *testing.T) {
 			}
 			seed(t, store, 0x01, 0x02)
 			txn := begin(t, store)
+			readPage(t, txn, 1)
 			writePages(t, txn, 0x11, 0x12, 0x13)
-			if _, err := txn.Commit(t.Context()); !errors.Is(err, ErrReadCheckUnsupported) {
-				t.Fatalf("staged Commit with a read set = %v, want ErrReadCheckUnsupported", err)
+			if _, err := txn.Commit(t.Context()); err != nil {
+				t.Fatalf("staged Commit with an unchanged read set: %v", err)
 			}
-			if d.moves != 0 {
-				t.Fatalf("a refused publish moved %d times", d.moves)
+			if d.moves != 1 {
+				t.Fatalf("a staged commit moved %d times, want 1", d.moves)
 			}
-			if got := readAll(t, begin(t, store)); !bytes.Equal(got, pagesOf(0x01, 0x02)) {
-				t.Fatal("a refused staged commit changed the pages")
+			if got := readAll(t, begin(t, store)); !bytes.Equal(got, pagesOf(0x11, 0x12, 0x13)) {
+				t.Fatal("a checked staged commit does not read back byte for byte")
 			}
-			root, err := StageRoot("app.db")
-			if err != nil {
-				t.Fatalf("StageRoot: %v", err)
-			}
-			if keys, err := sb.Keys(t.Context(), root, revOf(t, sb)); err != nil || len(keys) != 0 {
-				t.Fatalf("stage keys after the refusal = %q, %v", keys, err)
-			}
+			assertNoServiceStageKey(t, sb)
 		})
+	}
+}
+
+// TestOptimistic_ServiceStagedPublishConflicts: a staged optimistic commit
+// whose read page another writer changed fails at the publish with
+// ErrSnapshotChanged; the move writes nothing and the stage keys are swept.
+func TestOptimistic_ServiceStagedPublishConflicts(t *testing.T) {
+	sb, d := newServiceBackend(t)
+	s := newOptimisticStore(t, sb)
+	seed(t, s, 0x01, 0x02)
+	reader, writer := begin(t, s), begin(t, s)
+	readPage(t, reader, 1)
+	writePages(t, reader, 0x11, 0x12, 0x13)
+	writePage(t, writer, 1, 0x21)
+	commit(t, writer)
+	if _, err := reader.Commit(t.Context()); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("staged service Commit over a changed read = %v, want ErrSnapshotChanged", err)
+	}
+	if d.moves != 1 {
+		t.Fatalf("a conflicting staged commit moved %d times, want 1", d.moves)
+	}
+	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x21, 0x02)) {
+		t.Fatal("a refused staged commit changed the pages")
+	}
+	assertNoServiceStageKey(t, sb)
+}
+
+// assertNoServiceStageKey fails t if any stage key of app.db is live.
+func assertNoServiceStageKey(t *testing.T, sb *ServiceBackend) {
+	t.Helper()
+	root, err := StageRoot("app.db")
+	if err != nil {
+		t.Fatalf("StageRoot: %v", err)
+	}
+	if keys, err := sb.Keys(t.Context(), root, revOf(t, sb)); err != nil || len(keys) != 0 {
+		t.Fatalf("stage keys left live = %q, %v", keys, err)
 	}
 }
 

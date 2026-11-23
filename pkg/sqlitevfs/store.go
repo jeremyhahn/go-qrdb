@@ -46,9 +46,8 @@ type Backend interface {
 	// does none of it. A live count under src other than expectedKeys is
 	// ErrPublishConflict and writes nothing; empty or overlapping src and
 	// dst, or expectedKeys < 1, is ErrInvalidPublish. The read checks are
-	// Commit's: a failed one is ErrSnapshotChanged and writes nothing, and
-	// a backend that cannot evaluate them atomically with the move refuses
-	// a non-empty set with ErrReadCheckUnsupported.
+	// Commit's, evaluated atomically with the move: a failed one is
+	// ErrSnapshotChanged and writes nothing.
 	Publish(ctx context.Context, src, dst []byte, expectedKeys int64, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (rev int64, err error)
 	// Keys returns every key with a live value at revision rev that
 	// starts with prefix, in key order.

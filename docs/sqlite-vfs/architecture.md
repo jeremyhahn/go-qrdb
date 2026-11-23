@@ -169,7 +169,10 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
   stages a crashed writer left (Q3), and the server-side prefix-move publish
   op (`OpMVCCMovePrefix` behind the `prefix-move` cluster feature), with a
   service-backed Backend (`ServiceBackend`) that commits through the
-  transaction service and publishes through that op, and the writer lock
+  transaction service and publishes through that op (an optimistic
+  commit's read set travels as the commit's compares, or as the prefix
+  move's compares that the engine checks at apply, atomically with the
+  move), and the writer lock
   over the server's lock service (`NewLockServiceWriter`), and a commit past
   the tenant's storage quota failing with `ErrFull`; no engine binding,
   server construction of a Store, database count cap, entitlement or
