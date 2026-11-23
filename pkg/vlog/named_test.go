@@ -844,6 +844,72 @@ func TestChain_DropDatabase_ReclaimsEveryLogOfTheDatabase(t *testing.T) {
 	}
 }
 
+// TestChain_DropDatabase_EmptyLogsAreBounded: a database of many empty logs
+// holds only descriptors and heads; they count against the step's budget, so
+// no step deletes more than MaxPrunePerCommand records, and every log a step
+// does not finish keeps its descriptor and head together.
+func TestChain_DropDatabase_EmptyLogsAreBounded(t *testing.T) {
+	c, stg := mustCreate(t, true)
+	const n = MaxPrunePerCommand/2 + 1
+	for i := range n {
+		id := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "empty-" + strconv.Itoa(i)}
+		if err := c.Create(stg, id, testDescriptor(true)); err != nil {
+			t.Fatalf("Create %v: %v", id, err)
+		}
+	}
+	steps := 0
+	for {
+		got, err := c.DropDatabase(stg, stg, testLog.TenantID, testLog.Database, "")
+		if err != nil {
+			t.Fatalf("DropDatabase: %v", err)
+		}
+		if got > MaxPrunePerCommand {
+			t.Fatalf("step %d deleted %d records; want at most %d", steps+1, got, MaxPrunePerCommand)
+		}
+		if got == 0 {
+			break
+		}
+		if steps++; steps > 10 {
+			t.Fatal("DropDatabase did not converge")
+		}
+		if err := NewChain().Restore(stg); err != nil {
+			t.Fatalf("Restore after step %d: %v", steps, err)
+		}
+		dbPrefix := []byte(LogTablePrefix + testLog.TenantID + "/" + testLog.Database + "/")
+		it := stg.NewIterator(&storage.IteratorOptions{LowerBound: dbPrefix, UpperBound: prefixEnd(dbPrefix)})
+		var desc, head int
+		for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+			id, _, parsed := parseLogPrefix(it.Key())
+			if !parsed {
+				t.Fatalf("unparsable key %q", it.Key())
+			}
+			switch {
+			case bytes.Equal(it.Key(), descriptorKey(id)):
+				desc++
+			case bytes.Equal(it.Key(), logHeadKey(id)):
+				head++
+			}
+		}
+		_ = it.Close()
+		if desc != head {
+			t.Fatalf("after step %d: %d descriptors, %d heads; want them together", steps, desc, head)
+		}
+	}
+	if steps < 2 {
+		t.Fatalf("the drop took %d steps; want the budget to split it", steps)
+	}
+	restored := NewChain()
+	if err := restored.Restore(stg); err != nil {
+		t.Fatalf("Restore after the drop: %v", err)
+	}
+	for i := range n {
+		id := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "empty-" + strconv.Itoa(i)}
+		if _, err := restored.AppendEntries(stg, id, entries(0, 1)); !errors.As(err, new(*LogNotFoundError)) {
+			t.Fatalf("AppendEntries to dropped %v = %v; want LogNotFoundError", id, err)
+		}
+	}
+}
+
 // tableKeys lists every key of stg under prefix, in order.
 func tableKeys(t *testing.T, stg storage.Storage, prefix []byte) []string {
 	t.Helper()
