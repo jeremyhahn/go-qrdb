@@ -54,10 +54,12 @@ func TestDeleteBarrierAll_Faults(t *testing.T) {
 			requireOperationError(t, err, tc.op)
 			assert.ErrorIs(t, err, tc.cause)
 
-			// The value and its metadata go together or not at all.
+			// The value, its retained version and its metadata go
+			// together or not at all.
 			backend.failGet.Store(nil)
 			assert.True(t, keyExists(t, svc, metaKey("k")))
 			assert.True(t, keyExists(t, svc, credentialPrefix+"k"))
+			assert.True(t, keyExists(t, svc, versionKey("k", 1)))
 		})
 	}
 }
@@ -289,5 +291,8 @@ func TestUpdateBarrierMeta_AbsentAndContended(t *testing.T) {
 		})
 		requireOperationError(t, err, "set op")
 		assert.ErrorIs(t, err, ErrRotationMetaContended)
+		meta, err := svc.loadBarrierMeta(ctx, "k")
+		require.NoError(t, err)
+		assert.Empty(t, meta.RotationOp, "a contended update wrote the record")
 	})
 }

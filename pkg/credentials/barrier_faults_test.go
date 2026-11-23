@@ -64,7 +64,9 @@ type faultBackend struct {
 
 var _ seal.StorageBackend = (*faultBackend)(nil)
 
-// Put fails with errInjectedFault when key ends with the armed Put suffix.
+// Get fails with errInjectedFault when key ends with the armed Get suffix,
+// and holds until the caller's context ends when it ends with the stalled
+// Get suffix.
 func (f *faultBackend) Get(ctx context.Context, key string) ([]byte, error) {
 	if s := f.failGet.Load(); s != nil && strings.HasSuffix(key, *s) {
 		return nil, errInjectedFault
@@ -310,6 +312,17 @@ func TestBarrierFault_DeleteFailures(t *testing.T) {
 			err := svc.DeleteCredential(ctx, "k")
 			requireOperationError(t, err, tc.op)
 			assert.ErrorIs(t, err, errInjectedFault)
+
+			// The batch is all or nothing: the failed delete removed
+			// no record, so the credential is still whole.
+			disarmAll(backend)
+			for key, want := range map[string]string{credentialPrefix + "k": "v2", versionKey("k", 1): "v1"} {
+				got, err := svc.store.Get(ctx, key)
+				require.NoError(t, err, "%s was deleted by a failed delete", key)
+				assert.Equal(t, want, string(got), key)
+			}
+			_, err = svc.store.Get(ctx, metaKey("k"))
+			require.NoError(t, err, "a failed delete keeps the metadata")
 		})
 	}
 }

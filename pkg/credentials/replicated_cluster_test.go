@@ -195,7 +195,7 @@ func TestReplicatedCluster(t *testing.T) {
 				_, err := nodes[i].RetrieveCredentialBuffer(ctx, name)
 				require.ErrorIs(t, err, credentials.ErrCredentialNotFound, "node %d", i)
 				_, err = nodes[i].RetrieveCredentialVersionBuffer(ctx, name, 1)
-				require.Error(t, err, "node %d reads no version of a deleted credential", i)
+				require.ErrorIs(t, err, credentials.ErrCredentialNotFound, "node %d reads no version of a deleted credential", i)
 				names, err := nodes[i].ListCredentials(ctx)
 				require.NoError(t, err)
 				assert.NotContains(t, names, name, "node %d", i)

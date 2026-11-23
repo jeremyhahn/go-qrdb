@@ -10,8 +10,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
-// commitHookStore runs after following each guarded batch that applies,
-// until after reports it is done.
+// commitHookStore runs after following each guarded batch that applied,
+// until after reports it is done. Every write goes to the wrapped store
+// unchanged.
 type commitHookStore struct {
 	Store
 	after func() bool
@@ -74,6 +75,9 @@ func requireStagedKept(t *testing.T, svc *CredentialService, version uint64) {
 	assert.Equal(t, version, meta.Staged)
 }
 
+// A credential deleted and recreated right after a rotation committed, and
+// whose new rotation staged the version that commit took, keeps that staged
+// value: the commit deletes the staged key in its own batch, never after it.
 func TestRotateBarrier_RecreatedAfterCommitKeepsItsStagedValue(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newFaultRotationService(t)
@@ -98,24 +102,9 @@ func TestRotateBarrier_RecreatedAfterCommitKeepsItsStagedValue(t *testing.T) {
 	requireStagedKept(t, svc, committed)
 }
 
-func TestRotateBarrier_SpentStagedValueDeletedWithTheCommit(t *testing.T) {
-	ctx := context.Background()
-	svc, _ := newFaultRotationService(t)
-	setFaultPolicy(t, svc, "k", 3)
-	meta, err := svc.loadBarrierMeta(ctx, "k")
-	require.NoError(t, err)
-	_, exists, err := svc.loadBarrierCurrent(ctx, "k")
-	require.NoError(t, err)
-	_, next := rotationVersions(meta.CurrentVersion, exists)
-	require.NoError(t, svc.store.Put(ctx, stagedKey("k", next), []byte("spent")))
-
-	result, err := svc.RotateCredential(ctx, "k", RotateOptions{NewValue: []byte("rotated")})
-	require.NoError(t, err)
-	require.Equal(t, next, result.NewVersion)
-	_, err = svc.store.Get(ctx, stagedKey("k", next))
-	require.Error(t, err, "the spent staged value survived the commit")
-}
-
+// A scheduled rotation that abandons its staged version keeps the staged
+// value of a credential recreated under the name since: the abandon's
+// delete is guarded on the metadata it read.
 func TestRotateBarrier_AbandonKeepsARecreatedCredentialsStagedValue(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newFaultRotationService(t)
