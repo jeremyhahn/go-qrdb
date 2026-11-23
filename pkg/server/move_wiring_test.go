@@ -47,6 +47,9 @@ func TestSystemLeaderCheck(t *testing.T) {
 	if !systemLeaderCheck(nil, 7)() {
 		t.Fatal("a node with no membership must lead its own moves")
 	}
+	if !systemLeaderCheck((*quicraft.Host)(nil), 7)() {
+		t.Fatal("a nil *quicraft.Host must count as no membership")
+	}
 	m := &fakeMoveMembership{leader: 7, known: true}
 	if !systemLeaderCheck(m, 7)() {
 		t.Fatal("the system shard's leader does not lead")
@@ -79,6 +82,10 @@ func TestMoveReplicaNodeSource(t *testing.T) {
 	src := &moveReplicaNodeSource{membership: m, placements: store, local: "1"}
 	if got, err := src.MoveReplicaNodes(ctx, "acme"); err != nil || !reflect.DeepEqual(got, []string{"1"}) {
 		t.Fatalf("no placement = %v, %v; want this node", got, err)
+	}
+	typedNil := &moveReplicaNodeSource{membership: (*quicraft.Host)(nil), placements: store, local: "1"}
+	if got, err := typedNil.MoveReplicaNodes(ctx, "acme"); err != nil || !reflect.DeepEqual(got, []string{"1"}) {
+		t.Fatalf("nil *quicraft.Host = %v, %v; want this node", got, err)
 	}
 	for _, db := range []string{"a", "b"} {
 		if err := store.Put(ctx, &placement.Placement{
@@ -116,6 +123,9 @@ func TestLocalMoveReplicas(t *testing.T) {
 	m := &fakeMoveMembership{nodes: map[uint64]string{1: "127.0.0.1:7001", 2: "127.0.0.1:7002", 3: "127.0.0.1:7003"}}
 	if localMoveReplicas(nil, store, 1) != nil || localMoveReplicas(m, nil, 1) != nil || localMoveReplicas(m, store, 0) != nil {
 		t.Fatal("nil membership, nil placements or replica ID 0 must return nil")
+	}
+	if localMoveReplicas((*quicraft.Host)(nil), store, 1) != nil {
+		t.Fatal("a nil *quicraft.Host must return nil, not a func that panics")
 	}
 	put := func(tenant, db string, addrs ...string) {
 		t.Helper()

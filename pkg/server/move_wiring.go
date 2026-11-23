@@ -230,8 +230,19 @@ func readProbeOutcome(ctx context.Context, err error) (bool, error) {
 
 // systemLeaderCheck reports whether this node leads the system shard. With
 // no membership the node is its own leader.
-func systemLeaderCheck(m MoveMembership, replicaID uint64) func() bool {
+// isNilMoveMembership reports whether m is a nil interface or a nil
+// *quicraft.Host stored in one: either has no membership to read, and
+// calling through the typed nil would panic.
+func isNilMoveMembership(m MoveMembership) bool {
 	if m == nil {
+		return true
+	}
+	h, ok := m.(*quicraft.Host)
+	return ok && h == nil
+}
+
+func systemLeaderCheck(m MoveMembership, replicaID uint64) func() bool {
+	if isNilMoveMembership(m) {
 		return func() bool { return true }
 	}
 	return func() bool {
@@ -298,7 +309,7 @@ type moveReplicaNodeSource struct {
 
 // MoveReplicaNodes implements tenant.MoveReplicaNodeSource.
 func (s *moveReplicaNodeSource) MoveReplicaNodes(ctx context.Context, tenantID string) ([]string, error) {
-	if s.placements == nil || s.membership == nil {
+	if s.placements == nil || isNilMoveMembership(s.membership) {
 		return []string{s.local}, nil
 	}
 	ps, err := s.placements.ListForTenant(ctx, tenantID)
@@ -342,7 +353,7 @@ func (s *moveReplicaNodeSource) MoveReplicaNodes(ctx context.Context, tenantID s
 // alone. An IsolationVolume tenant has no placement and one replica, so it
 // lists nothing here and keeps its Host path.
 func localMoveReplicas(membership MoveMembership, placements *placement.Store, replicaID uint64) MoveLocalReplicas {
-	if placements == nil || membership == nil || replicaID == 0 {
+	if placements == nil || isNilMoveMembership(membership) || replicaID == 0 {
 		return nil
 	}
 	return func(ctx context.Context, tenantID string) ([]string, error) {
