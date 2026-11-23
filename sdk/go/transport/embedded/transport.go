@@ -35,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -104,6 +105,7 @@ type Transport struct {
 	vectorSvc   service.VectorServicer
 	userSvc     user.UserServicer
 	roleSvc     role.RoleServicer
+	groupSvc    group.GroupServicer
 	certProv    cert.CertProvider
 	certEnroll  service.CertEnrollmentServicer
 	invitations service.InvitationServicer
@@ -298,6 +300,13 @@ func WithLogService(svc service.LogService) Option {
 func WithUserService(svc user.UserServicer) Option {
 	return func(t *Transport) {
 		t.userSvc = svc
+	}
+}
+
+// WithGroupService injects the IAM group store into the transport.
+func WithGroupService(svc group.GroupServicer) Option {
+	return func(t *Transport) {
+		t.groupSvc = svc
 	}
 }
 

@@ -162,6 +162,11 @@ func (c *Client) Users() transport.UserClient {
 	return capability[transport.UserClient](c, "Users")
 }
 
+// Groups returns a GroupClient for IAM group management operations.
+func (c *Client) Groups() transport.GroupClient {
+	return capability[transport.GroupClient](c, "Groups")
+}
+
 // Roles returns a RoleClient for role management operations.
 func (c *Client) Roles() transport.RoleClient {
 	return capability[transport.RoleClient](c, "Roles")

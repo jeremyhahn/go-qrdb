@@ -847,6 +847,39 @@ type RoleClient interface {
 	ReconcileBuiltInRolesAllTenants(ctx context.Context) (*ReconcileAllTenantsRolesResponse, error)
 }
 
+// GroupClient provides IAM group management. A group is a named set of roles
+// of one tenant; its members hold those roles. Membership is recorded on the
+// user record, and a role reaching a user through a group passes the same
+// escalation guard as AssignRole.
+type GroupClient interface {
+	// CreateGroup creates a group; the name must be unique within the tenant.
+	CreateGroup(ctx context.Context, req *CreateGroupRequest) (*Group, error)
+
+	// GetGroup retrieves a group by its ID.
+	GetGroup(ctx context.Context, id string) (*Group, error)
+
+	// GetGroupByName retrieves a group by its tenant-scoped name.
+	GetGroupByName(ctx context.Context, req *GetGroupByNameRequest) (*Group, error)
+
+	// UpdateGroup changes a group's name, description or role set.
+	UpdateGroup(ctx context.Context, req *UpdateGroupRequest) (*Group, error)
+
+	// DeleteGroup removes the group from every member, then the group.
+	DeleteGroup(ctx context.Context, id string) error
+
+	// ListGroups returns a page of the tenant's groups.
+	ListGroups(ctx context.Context, req *ListGroupsRequest) (*ListGroupsResponse, error)
+
+	// AddGroupMember adds a user to a group of the user's own tenant.
+	AddGroupMember(ctx context.Context, userID uint64, groupID string) error
+
+	// RemoveGroupMember removes a user from a group.
+	RemoveGroupMember(ctx context.Context, userID uint64, groupID string) error
+
+	// ListGroupMembers returns the members of a group ordered by user ID.
+	ListGroupMembers(ctx context.Context, groupID string) (*ListGroupMembersResponse, error)
+}
+
 // ---------------------------------------------------------------------------
 // Certificate management operations
 // ---------------------------------------------------------------------------
@@ -1294,6 +1327,7 @@ type Client interface {
 	VlogClient
 	UserClient
 	RoleClient
+	GroupClient
 	CertClient
 	DEKClient
 	BarrierClient

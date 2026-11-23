@@ -29,6 +29,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -603,6 +604,11 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		if holders, err := user.NewRoleRevoker(userSvc); err == nil {
 			if roleSvc, err := role.NewStore(authStore, role.WithHolderRevoker(holders)); err == nil {
 				opts = append(opts, embedded.WithRoleService(roleSvc))
+				if members, err := user.NewGroupMembership(userSvc); err == nil {
+					if groupSvc, err := group.NewStore(authStore, group.WithRoleLookup(roleSvc), group.WithMemberRevoker(members)); err == nil {
+						opts = append(opts, embedded.WithGroupService(groupSvc))
+					}
+				}
 			}
 		}
 	}

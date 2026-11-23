@@ -54,6 +54,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/invite"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -600,6 +601,10 @@ type Node struct {
 	// Auth services backed by KV storage.
 	User user.UserServicer
 	Role role.RoleServicer
+
+	// Group is the IAM group store (go-qrdb#1651): a group carries roles of
+	// its tenant, and its members (recorded on the user record) hold them.
+	Group group.GroupServicer
 
 	// Security services. All are nil when no SealBarrier was provided.
 	Barrier    service.BarrierServicer
@@ -1503,6 +1508,19 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// provisioned with seal.enabled: true, with data moved into it through
 	// backup/restore or an application-level re-seed (see
 	// docs/barrier-seal/user.md).
+	// IAM groups (go-qrdb#1651): one store over the auth store, its records
+	// keyed by tenant; membership lives on the (final, possibly routed) user
+	// record and the group's roles are checked against the role service.
+	groupMembers, err := user.NewGroupMembership(n.User)
+	if err != nil {
+		return nil, &GroupServiceError{Err: err}
+	}
+	groupSvc, err := group.NewStore(authStore, group.WithRoleLookup(n.Role), group.WithMemberRevoker(groupMembers))
+	if err != nil {
+		return nil, &GroupServiceError{Err: err}
+	}
+	n.Group = groupSvc
+
 	if !infra.SealEnabled && infra.SealBarrier == nil {
 		log.Warn("qrdb/seal: seal disabled; at-rest data is stored in plaintext",
 			"hint", "encryption cannot be added in place; provision a new node/tenant with seal.enabled: true and migrate data via backup/restore")
