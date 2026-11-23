@@ -100,7 +100,7 @@ func (t *Transport) CredentialDelete(ctx context.Context, name string) error {
 		return nil
 	}
 
-	return t.decodeErrorResponse("CredentialDelete", resp)
+	return notFoundError(t.decodeErrorResponse("CredentialDelete", resp))
 }
 
 // CredentialList returns the sorted list of every stored credential
@@ -153,7 +153,7 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 	path := credentialPath(req.Name, "/rotate")
 	var resp transport.CredentialRotateResponse
 	if err := t.postJSONDecode(ctx, "CredentialRotate", path, req, &resp); err != nil {
-		return nil, err
+		return nil, notFoundError(err)
 	}
 	return &resp, nil
 }
@@ -251,7 +251,7 @@ func (t *Transport) CredentialListVersions(ctx context.Context, req *transport.C
 	defer func() { _ = httpResp.Body.Close() }()
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, t.decodeErrorResponse("CredentialListVersions", httpResp)
+		return nil, notFoundError(t.decodeErrorResponse("CredentialListVersions", httpResp))
 	}
 
 	var resp transport.CredentialListVersionsResponse
@@ -310,7 +310,7 @@ func (t *Transport) CredentialRetrieveBuffer(ctx context.Context, name string) (
 	path := credentialPath(name, "/value")
 	if err := t.getJSONDecode(ctx, "CredentialRetrieve", path, &resp); err != nil {
 		resp.Value.Buffer.Destroy()
-		return nil, err
+		return nil, notFoundError(err)
 	}
 	return resp.Value.Buffer, nil
 }
@@ -334,7 +334,7 @@ func (t *Transport) CredentialRetrieveVersionBuffer(ctx context.Context, req *tr
 	path := credentialPath(req.Name, "/versions/"+strconv.FormatUint(req.Version, 10))
 	if err := t.getJSONDecode(ctx, "CredentialRetrieveVersion", path, &resp); err != nil {
 		resp.Value.Buffer.Destroy()
-		return nil, err
+		return nil, notFoundError(err)
 	}
 	return resp.Value.Buffer, nil
 }

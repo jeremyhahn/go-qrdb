@@ -550,6 +550,72 @@ func TestCredentialRotationPolicy_NotFoundIsKeyNotFound(t *testing.T) {
 	}
 }
 
+// TestCredentialVerbs_NotFoundIsKeyNotFound pins the REST not-found mapping
+// of the remaining credential verbs: a 404 is *transport.KeyNotFoundError, as
+// the gRPC, QUIC, Unix and MCP transports return, and any other status stays
+// *transport.RequestError. The retrieve verbs return no buffer on either.
+func TestCredentialVerbs_NotFoundIsKeyNotFound(t *testing.T) {
+	// Each call reports whether it returned a non-nil buffer.
+	verbs := map[string]func(rt *Transport) (bool, error){
+		"CredentialDelete": func(rt *Transport) (bool, error) {
+			return false, rt.CredentialDelete(context.Background(), "missing")
+		},
+		"CredentialRotate": func(rt *Transport) (bool, error) {
+			_, err := rt.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "missing"})
+			return false, err
+		},
+		"CredentialListVersions": func(rt *Transport) (bool, error) {
+			_, err := rt.CredentialListVersions(context.Background(), &transport.CredentialListVersionsRequest{Name: "missing"})
+			return false, err
+		},
+		"CredentialRetrieveBuffer": func(rt *Transport) (bool, error) {
+			buf, err := rt.CredentialRetrieveBuffer(context.Background(), "missing")
+			return buf != nil, err
+		},
+		"CredentialRetrieveVersionBuffer": func(rt *Transport) (bool, error) {
+			buf, err := rt.CredentialRetrieveVersionBuffer(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "missing", Version: 2})
+			return buf != nil, err
+		},
+	}
+	for name, call := range verbs {
+		t.Run(name, func(t *testing.T) {
+			var status atomic.Int64
+			httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				code := int(status.Load())
+				http.Error(w, "credential not found: missing", code)
+			}))
+			t.Cleanup(httpSrv.Close)
+			rt := newWiredTransport(httpSrv)
+
+			status.Store(http.StatusNotFound)
+			gotBuf, err := call(rt)
+			var knf *transport.KeyNotFoundError
+			if !errors.As(err, &knf) {
+				t.Fatalf("404: expected *transport.KeyNotFoundError, got %T (%v)", err, err)
+			}
+			if !strings.Contains(knf.Error(), "not found") {
+				t.Errorf("404: error %q does not say not found", knf.Error())
+			}
+			if gotBuf {
+				t.Errorf("404: expected a nil buffer")
+			}
+
+			status.Store(http.StatusInternalServerError)
+			gotBuf, err = call(rt)
+			var reqErr *transport.RequestError
+			if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusInternalServerError {
+				t.Fatalf("500: expected *transport.RequestError with status 500, got %T (%v)", err, err)
+			}
+			if errors.As(err, &knf) {
+				t.Errorf("500: unexpected *transport.KeyNotFoundError")
+			}
+			if gotBuf {
+				t.Errorf("500: expected a nil buffer")
+			}
+		})
+	}
+}
+
 func TestCredentialMigrationConflicts_Success(t *testing.T) {
 	rt, _ := newCredentialsTestTransport(t)
 	resp, err := rt.CredentialMigrationConflicts(context.Background())
