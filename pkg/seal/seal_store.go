@@ -42,7 +42,10 @@ const SealStoreDefaultPrefix = "sealstore/"
 // validSecretName reports whether name may name a seal-store secret. A name
 // is one opaque path segment: it may not be empty, "." or "..", and may not
 // contain '/', '\\' or a control character, so it can never select another
-// key or another route on any transport.
+// key or another route on any transport. Put holds every new name to this
+// rule; Get, Delete and Reseal also accept a failing nonempty name whose
+// record already exists (a legacy record stored before the rule), see
+// checkExistingName.
 func validSecretName(name string) error {
 	if name == "" || name == "." || name == ".." {
 		return ErrInvalidSecretName
@@ -93,13 +96,18 @@ func (s *SealStore) Put(ctx context.Context, name string, secret []byte) error {
 }
 
 // Get retrieves and decrypts a named secret from the barrier.
-// Returns ErrSealStoreSecretNotFound if the secret does not exist.
+// Returns ErrSealStoreSecretNotFound if the secret does not exist. A name
+// that fails validSecretName is accepted only for an existing legacy record
+// (see checkExistingName); otherwise it returns ErrInvalidSecretName.
 func (s *SealStore) Get(ctx context.Context, name string) ([]byte, error) {
-	if err := validSecretName(name); err != nil {
-		return nil, err
+	if name == "" {
+		return nil, ErrInvalidSecretName
 	}
 	if s.barrier.IsSealed() {
 		return nil, &SealStoreError{Op: "get", Key: name, Err: ErrSealStoreBarrierSealed}
+	}
+	if err := s.checkExistingName(ctx, "get", name); err != nil {
+		return nil, err
 	}
 	key := s.prefix + name
 	data, err := s.barrier.Get(ctx, key)
@@ -112,16 +120,46 @@ func (s *SealStore) Get(ctx context.Context, name string) ([]byte, error) {
 	return data, nil
 }
 
+// checkExistingName applies the secret-name rule to an operation on an
+// existing record (Get, Delete, Reseal). A name that passes validSecretName
+// is accepted. A nonempty name that fails it is accepted only when the
+// record s.prefix+name already exists in the barrier: a legacy record stored
+// before the one-segment rule (for example "tls/key"), which stays
+// reachable in-process. Any other failing name returns ErrInvalidSecretName,
+// the same refusal as before, so the error does not reveal existence. The
+// caller has already answered a sealed barrier.
+func (s *SealStore) checkExistingName(ctx context.Context, op, name string) error {
+	if err := validSecretName(name); err == nil {
+		return nil
+	}
+	if name == "" {
+		return ErrInvalidSecretName
+	}
+	exists, err := s.barrier.Exists(ctx, s.prefix+name)
+	if err != nil {
+		return &SealStoreError{Op: op, Key: name, Err: err}
+	}
+	if !exists {
+		return ErrInvalidSecretName
+	}
+	return nil
+}
+
 // Delete removes a named secret from the barrier.
-// Returns ErrSealStoreSecretNotFound if the secret does not exist.
+// Returns ErrSealStoreSecretNotFound if the secret does not exist. A name
+// that fails validSecretName is accepted only for an existing legacy record
+// (see checkExistingName); otherwise it returns ErrInvalidSecretName.
 func (s *SealStore) Delete(ctx context.Context, name string) error {
-	if err := validSecretName(name); err != nil {
-		return err
+	if name == "" {
+		return ErrInvalidSecretName
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.barrier.IsSealed() {
 		return &SealStoreError{Op: "delete", Key: name, Err: ErrSealStoreBarrierSealed}
+	}
+	if err := s.checkExistingName(ctx, "delete", name); err != nil {
+		return err
 	}
 	key := s.prefix + name
 	exists, err := s.barrier.Exists(ctx, key)
@@ -167,15 +205,20 @@ func (s *SealStore) List(ctx context.Context) ([]string, error) {
 // which replaces the ciphertext in a single write: there is never a moment
 // with no record, and a failed write leaves the old record in place. Put,
 // Delete and Reseal are serialized, so a concurrent Put is never
-// overwritten with the stale value.
+// overwritten with the stale value. A name that fails validSecretName is
+// accepted only for an existing legacy record (see checkExistingName), so a
+// record stored before the name rule can still be resealed in place.
 func (s *SealStore) Reseal(ctx context.Context, name string) error {
-	if err := validSecretName(name); err != nil {
-		return err
+	if name == "" {
+		return ErrInvalidSecretName
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.barrier.IsSealed() {
 		return &SealStoreError{Op: "reseal", Key: name, Err: ErrSealStoreBarrierSealed}
+	}
+	if err := s.checkExistingName(ctx, "reseal", name); err != nil {
+		return err
 	}
 	key := s.prefix + name
 	// Read the plaintext (barrier decrypts with current or old epoch key).
