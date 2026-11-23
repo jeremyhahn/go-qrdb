@@ -41,7 +41,10 @@ func nodeAccessors() []reflect.Method {
 		m := t.Method(i)
 		// NumIn()==1 is the receiver alone. Unseal, EnableEncryption and Close
 		// take arguments or mutate, and are drivers in these tests, not probes.
-		if m.Type.NumIn() == 1 && m.Name != "Close" {
+		// Refusal is not a handle accessor: it reports the release refusal
+		// that quarantined the node (rolling upgrades, #1628), and Close is
+		// not such a refusal. assertAllAccessorsNil pins that separately.
+		if m.Type.NumIn() == 1 && m.Name != "Close" && m.Name != "Refusal" {
 			out = append(out, m)
 		}
 	}
@@ -85,6 +88,10 @@ func pollNodeAccessors(n *Node, accessors []reflect.Method) int {
 // than becoming a stale handle in a consumer.
 func assertAllAccessorsNil(t *testing.T, n *Node, accessors []reflect.Method) {
 	t.Helper()
+	// Close is not a release refusal: a node that was never quarantined
+	// reports no refusal after Close, so the member record and the
+	// quarantine probe never mistake a clean shutdown for a version gap.
+	assert.NoError(t, n.Refusal(), "Close must not record a release refusal")
 	rv := reflect.ValueOf(n)
 	for _, m := range accessors {
 		for _, out := range m.Func.Call([]reflect.Value{rv}) {
