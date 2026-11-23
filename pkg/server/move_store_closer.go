@@ -32,6 +32,15 @@ type MoveBarriers interface {
 	ReopenVolumeTenant(ctx context.Context, tenantID string) error
 }
 
+// MoveSealedBarriers is a MoveBarriers that reports a tenant barrier left
+// sealed by ReopenVolumeTenant (a self-managed tenant awaiting its
+// administrator's unseal). OpenTenantStores then attaches nothing: the
+// stores attach on that unseal.
+type MoveSealedBarriers interface {
+	MoveBarriers
+	TenantBarrierSealed(tenantID string) bool
+}
+
 // MoveTenantHosts is the part of TenantHostRegistry a MoveStoreCloser
 // drives for an IsolationVolume tenant: its one Host on this node.
 type MoveTenantHosts interface {
@@ -178,6 +187,17 @@ func (c *MoveStoreCloser) OpenTenantStores(ctx context.Context, tenantID string)
 	c.mu.Unlock()
 	if err := c.barriers.ReopenVolumeTenant(ctx, tenantID); err != nil {
 		return err
+	}
+	if sr, ok := c.barriers.(MoveSealedBarriers); ok && sr.TenantBarrierSealed(tenantID) {
+		// A self-managed barrier stays sealed until its administrator
+		// unseals it, and Attach refuses a sealed barrier: the reopen is
+		// done, and the shard reconciler (on the unseal notification) and
+		// Services attach the stores once it serves.
+		c.mu.Lock()
+		delete(c.closed, tenantID)
+		delete(c.closedHost, tenantID)
+		c.mu.Unlock()
+		return nil
 	}
 	if host {
 		if err := c.hosts.Attach(ctx, tenantID); err != nil {

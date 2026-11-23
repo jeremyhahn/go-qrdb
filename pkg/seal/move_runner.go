@@ -272,6 +272,17 @@ func (r *BarrierRegistry) ReopenVolumeTenant(ctx context.Context, tenantID strin
 	return r.UnsealTenant(ctx, tenantID, Credentials{})
 }
 
+// TenantBarrierSealed reports whether tenantID's barrier is registered on
+// this node and sealed: after ReopenVolumeTenant, a self-managed tenant
+// whose barrier stays sealed awaits its administrator's unseal. Its sealed
+// posture is durable (persisted with the barrier), so nothing more is
+// recorded: the stores attach on that unseal (the shard reconciler's
+// unseal notification, and Services once the barrier serves).
+func (r *BarrierRegistry) TenantBarrierSealed(tenantID string) bool {
+	tb, err := r.GetTenant(tenantID)
+	return err == nil && tb.IsSealed()
+}
+
 // TenantMoveHeldError is a fresh registration of a volume tenant refused
 // because a move step on this node holds the tenant's stores closed: the
 // move's own reopen opens them again, from whichever pool the move settles.

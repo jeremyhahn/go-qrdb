@@ -102,3 +102,60 @@ func TestTenantHostRegistry_MoveHoldRefusesServices(t *testing.T) {
 		t.Fatalf("Services after the move = %v, %v", svcs, err)
 	}
 }
+
+// TestMoveStoreCloser_SelfManagedTenantAwaitsUnseal: moving an active
+// self-managed tenant reopens its barrier sealed. The reopen completes at
+// once (no Attach on the sealed barrier, so no retries), and the tenant
+// serves once its administrator unseals it.
+func TestMoveStoreCloser_SelfManagedTenantAwaitsUnseal(t *testing.T) {
+	reg := newVolumePooledRegistry(t)
+	ctx := context.Background()
+	allocVal, _ := testVolumeAllocators.Load(reg)
+	sealtest.ReserveVolumeTenant(t, allocVal.(volume.Allocator), "vt")
+	if _, _, err := reg.RegisterVolumeTenant(ctx, "vt", false); err != nil {
+		t.Fatalf("RegisterVolumeTenant: %v", err)
+	}
+	creds := seal.MustCredentials(ctx, []byte("self-managed-pass-0123"))
+	if err := reg.InitializeTenant(ctx, "vt", creds); err != nil {
+		t.Fatalf("InitializeTenant: %v", err)
+	}
+	if reg.TenantBarrierSealed("vt") {
+		if err := reg.UnsealTenant(ctx, "vt", creds); err != nil {
+			t.Fatalf("UnsealTenant before the move: %v", err)
+		}
+	}
+
+	hostReg := NewTenantHostRegistry(reg, &lookupDataRootSource{registry: reg}, volTestLogger())
+	t.Cleanup(func() { _ = hostReg.CloseAll() })
+	if _, err := hostReg.Services(ctx, "vt"); err != nil {
+		t.Fatalf("Services before the move: %v", err)
+	}
+	closer, err := NewMoveStoreCloser(nil, reg, nil, 0, WithMoveTenantHosts(hostReg))
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	hostReg.SetMoveHold(closer)
+
+	if err := closer.CloseTenantStores(ctx, "vt"); err != nil {
+		t.Fatalf("CloseTenantStores: %v", err)
+	}
+	if err := closer.OpenTenantStores(ctx, "vt"); err != nil {
+		t.Fatalf("OpenTenantStores of a sealed self-managed tenant = %v, want nil (awaits unseal)", err)
+	}
+	if closer.HoldsTenant("vt") {
+		t.Fatal("the hold outlived the reopen")
+	}
+	if !reg.TenantBarrierSealed("vt") {
+		t.Fatal("the self-managed barrier was unsealed without its credentials")
+	}
+	if hostReg.Started("vt") {
+		t.Fatal("the reopen attached a Host on a sealed barrier")
+	}
+
+	if err := reg.UnsealTenant(ctx, "vt", creds); err != nil {
+		t.Fatalf("administrator UnsealTenant: %v", err)
+	}
+	if svcs, err := hostReg.Services(ctx, "vt"); err != nil || svcs == nil {
+		t.Fatalf("Services after unseal = %v, %v", svcs, err)
+	}
+}
