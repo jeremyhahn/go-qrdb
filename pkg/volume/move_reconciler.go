@@ -218,7 +218,11 @@ func (r *MoveReconciler) recordTenant(ctx context.Context, recorder MoveCutoverR
 type moveStepPhase struct {
 	name     string
 	complete func(ctx context.Context, tenantID, nodeID string) (*Move, error)
-	fail     func(ctx context.Context, tenantID, nodeID, reason string) (*Move, error)
+	// record, when set, records the step but keeps it granted while the
+	// node settles it (RecordMoveStep, RecordAbortStep); the reconciler
+	// uses it when its runner is a MoveStepSettler, then ReleaseMoveStep.
+	record func(ctx context.Context, tenantID, nodeID string) (*Move, error)
+	fail   func(ctx context.Context, tenantID, nodeID, reason string) (*Move, error)
 }
 
 // copyPhase settles a copy step; a failure counts against maxAttempts.
@@ -226,6 +230,7 @@ func (r *MoveReconciler) copyPhase() moveStepPhase {
 	return moveStepPhase{
 		name:     MoveStepPhaseCopy,
 		complete: r.cat.CompleteMoveStep,
+		record:   r.cat.RecordMoveStep,
 		fail: func(ctx context.Context, tenantID, nodeID, reason string) (*Move, error) {
 			return r.cat.FailMoveStep(ctx, tenantID, nodeID, reason, r.maxAttempts)
 		},
@@ -246,6 +251,7 @@ func (r *MoveReconciler) abortPhase() moveStepPhase {
 	return moveStepPhase{
 		name:     MoveStepPhaseAbort,
 		complete: r.cat.CompleteAbortStep,
+		record:   r.cat.RecordAbortStep,
 		fail:     r.cat.FailAbortStep,
 	}
 }
@@ -261,14 +267,16 @@ func (r *MoveReconciler) runStep(ctx context.Context, m Move, p moveStepPhase) e
 		Phase:    p.name,
 	}
 	if p.name == MoveStepPhaseAbort {
-		// A settling abort step is always a copied node's: an uncopied
-		// node's abort releases its step at completion.
-		step.Copied = m.StepSettling || contains(m.NodesCopied, m.StepNode)
+		step.Copied = contains(m.NodesCopied, m.StepNode)
 	}
+	settler, _ := r.runner.(MoveStepSettler)
 	if m.StepSettling {
-		// The step is recorded but its settle has not succeeded yet:
-		// settle again, never redo the step.
-		return r.settleStep(ctx, step, true)
+		// The step is recorded but its settle has not been acknowledged
+		// (it failed, or the node stopped before it): settle again.
+		if p.name == MoveStepPhaseAbort {
+			step.Copied = m.StepCopied
+		}
+		return r.settleAndRelease(ctx, settler, step)
 	}
 	if p.name == MoveStepPhaseCopy && m.CancelRequested {
 		// Cancelled before this node started its copy: the source stays
@@ -293,30 +301,31 @@ func (r *MoveReconciler) runStep(ctx context.Context, m Move, p moveStepPhase) e
 		r.recordTransition(ctx, MoveTransitionFail, m.TenantID, step.NodeID, step.Phase)
 		return nil
 	}
-	settling := false
-	if next, err := p.complete(ctx, m.TenantID, step.NodeID); err != nil {
+	if settler != nil && p.record != nil {
+		// Record the step but keep it until the node has settled it: the
+		// leader grants no other step meanwhile, and a settle that fails
+		// is retried from the journal on the next pass.
+		if _, err := p.record(ctx, m.TenantID, step.NodeID); err != nil {
+			if !r.stepRecorded(ctx, m.TenantID, step.NodeID) {
+				return err
+			}
+		} else {
+			r.recordTransition(ctx, MoveTransitionComplete, m.TenantID, step.NodeID, step.Phase)
+		}
+		return r.settleAndRelease(ctx, settler, step)
+	}
+	if _, err := p.complete(ctx, m.TenantID, step.NodeID); err != nil {
 		if !r.copyRecorded(ctx, m.TenantID, step) {
 			// The journal does not name the destination: it stays closed
 			// and the next tick redoes the copy from the source.
 			return err
 		}
 		// The write landed though its reply failed: the journal names the
-		// destination and holds the step settling, so settle on it.
-		settling = true
+		// destination, so settle on it.
 	} else {
-		settling = next != nil && next.StepSettling && next.StepNode == step.NodeID
 		r.recordTransition(ctx, MoveTransitionComplete, m.TenantID, step.NodeID, step.Phase)
 	}
-	return r.settleStep(ctx, step, settling)
-}
-
-// settleStep runs SettleMoveStep for step and, when the journal holds the
-// step settling (ack), releases it with AckMoveStep only after the settle
-// succeeded. A failed settle leaves the step settling: the holder's next
-// RunLocalSteps pass settles it again, and meanwhile no other node is
-// granted a step, nothing cuts over and no abort releases.
-func (r *MoveReconciler) settleStep(ctx context.Context, step MoveStep, ack bool) error {
-	if settler, ok := r.runner.(MoveStepSettler); ok {
+	if settler != nil {
 		if err := settler.SettleMoveStep(ctx, step); err != nil {
 			r.logger.Warn("volume: settling the move step after its journal write failed",
 				slog.String("tenant", step.TenantID), slog.String("node", step.NodeID),
@@ -324,11 +333,34 @@ func (r *MoveReconciler) settleStep(ctx context.Context, step MoveStep, ack bool
 			return err
 		}
 	}
-	if !ack {
-		return nil
+	return nil
+}
+
+// settleAndRelease settles a recorded copy or abort step on this node and
+// then releases it in the journal. A settle that fails leaves the step
+// granted and settling, so the node's next pass retries it and no other
+// node is granted a step meanwhile.
+func (r *MoveReconciler) settleAndRelease(ctx context.Context, settler MoveStepSettler, step MoveStep) error {
+	if settler != nil {
+		if err := settler.SettleMoveStep(ctx, step); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			r.logger.Warn("volume: settling the move step failed; it stays granted and is retried",
+				slog.String("tenant", step.TenantID), slog.String("node", step.NodeID),
+				slog.String("phase", step.Phase), slog.String("error", err.Error()))
+			return err
+		}
 	}
-	_, err := r.cat.AckMoveStep(ctx, step.TenantID, step.NodeID)
+	_, err := r.cat.ReleaseMoveStep(ctx, step.TenantID, step.NodeID)
 	return err
+}
+
+// stepRecorded reports whether the journal holds nodeID's step as recorded
+// and settling: a record whose write landed though its reply failed.
+func (r *MoveReconciler) stepRecorded(ctx context.Context, tenantID, nodeID string) bool {
+	cur, _, err := r.cat.readMove(ctx, tenantID)
+	return err == nil && cur != nil && cur.StepSettling && cur.StepNode == nodeID
 }
 
 // copyRecorded reports whether the journal records step's node copied

@@ -1690,19 +1690,19 @@ func (s *TenantService) deleteTenant(ctx context.Context, tenantID string, mint 
 		return err
 	}
 
-	// 1. Bottom-up refusal. A tenant whose volume move is running is
-	//    refused first (decision Q10), before any tombstone or teardown:
-	//    the move worker still owns its data and barrier.
-	if err := s.refuseIfMoving(ctx, tenantID); err != nil {
-		return err
-	}
+	// 1. Bottom-up refusal.
 	if err := s.refuseIfDatabasesRemain(ctx, tenantID); err != nil {
 		return err
 	}
-	// 1b. The replicated deletion fence: refuseIfMoving is a plain read,
-	//     so a move could be admitted after it; fenceMoves marks the
-	//     assignment retiring in the same transaction that proves no
-	//     journal exists, and AdmitMove refuses a retiring assignment.
+	// A tenant whose volume move is running is refused (decision Q10),
+	// before any tombstone or teardown: the move worker still owns its data
+	// and barrier. The refusal is a conditional transition in the
+	// replicated volume catalog, not a read: fenceMoves marks the
+	// assignment retiring in the same transaction that proves no journal
+	// exists, and AdmitMove refuses a retiring assignment, so a move cannot
+	// be admitted between this check and the teardown. The mark is never
+	// lifted: a delete that fails later is re-issued, and moves stay
+	// refused meanwhile.
 	if err := s.fenceMoves(ctx, tenantID); err != nil {
 		return err
 	}
@@ -1721,46 +1721,17 @@ func (s *TenantService) deleteTenant(ctx context.Context, tenantID string, mint 
 	return s.finishTeardown(ctx, tenantID)
 }
 
-// moveReader is the part of the volume catalog refuseIfMoving reads. The
-// catalog (*volume.Catalog) implements it; an allocator that does not has no
-// move journal, so no tenant of it can be moving.
-type moveReader interface {
-	GetMove(ctx context.Context, tenantID string) (*volume.Move, error)
-}
-
-// refuseIfMoving returns *volume.MoveConflictError while tenantID has a move
-// journal (decision Q10). A journal read that fails, or does not decode,
-// fails closed: the delete is refused rather than tearing down data a move
-// may still own.
-func (s *TenantService) refuseIfMoving(ctx context.Context, tenantID string) error {
-	reader, ok := s.volumeAllocator.(moveReader)
-	if !ok || reader == nil {
-		return nil
-	}
-	m, err := reader.GetMove(ctx, tenantID)
-	if err != nil {
-		var notFound *volume.MoveNotFoundError
-		if errors.As(err, &notFound) {
-			return nil
-		}
-		return err
-	}
-	if m == nil {
-		return nil
-	}
-	return &volume.MoveConflictError{TenantID: tenantID, Reason: "tenant delete is refused while a move runs"}
-}
-
 // moveFencer is the part of the volume catalog deleteTenant fences moves
 // with. The catalog (*volume.Catalog) implements it; an allocator that does
-// not has no move journal, so it keeps the read-only refusal.
+// not has no move journal, so no tenant of it can be moving.
 type moveFencer interface {
 	FenceForDelete(ctx context.Context, tenantID string) error
 }
 
 // fenceMoves marks tenantID's assignment retiring so no move is admitted
 // over its teardown; a running move refuses it with *volume.MoveConflictError
-// before any tombstone is written.
+// before any tombstone is written. A store failure fails closed: the delete
+// is refused rather than tearing down data a move may own.
 func (s *TenantService) fenceMoves(ctx context.Context, tenantID string) error {
 	fencer, ok := s.volumeAllocator.(moveFencer)
 	if !ok || fencer == nil {

@@ -45,22 +45,26 @@ func moveVTenant() volume.MoveTenantRequest {
 	return volume.MoveTenantRequest{TenantID: "vtenant", ToPool: "default"}
 }
 
-// movingAllocator wraps the real catalog and answers GetMove with move or
-// err, standing in for a tenant whose move journal is (or is not) present.
+// movingAllocator wraps the real catalog and answers the delete fence as a
+// catalog with move's journal (or err from the store) would; with neither
+// it delegates to the real catalog's fence.
 type movingAllocator struct {
 	volume.Allocator
 	move *volume.Move
 	err  error
 }
 
-func (m *movingAllocator) GetMove(_ context.Context, tenantID string) (*volume.Move, error) {
+func (m *movingAllocator) FenceForDelete(ctx context.Context, tenantID string) error {
 	if m.err != nil {
-		return nil, m.err
+		return m.err
 	}
-	if m.move == nil {
-		return nil, &volume.MoveNotFoundError{TenantID: tenantID}
+	if m.move != nil {
+		return &volume.MoveConflictError{TenantID: tenantID, Reason: "tenant delete is refused while a move runs"}
 	}
-	return m.move, nil
+	if f, ok := m.Allocator.(moveFencer); ok {
+		return f.FenceForDelete(ctx, tenantID)
+	}
+	return nil
 }
 
 // TestDeleteTenant_RefusedWhileMoving: a delete of a moving tenant returns
@@ -105,7 +109,7 @@ func TestDeleteTenant_RefusedWhileMoving(t *testing.T) {
 }
 
 // racingAdmitAllocator is a movingAllocator whose deletion fence first runs
-// admit: a move admitted after refuseIfMoving's plain read and before the
+// admit: a move admitted after deleteTenant's earlier checks and before the
 // fence's transaction. The fence then sees the journal and refuses, as
 // Catalog.FenceForDelete does in one compare.
 type racingAdmitAllocator struct {

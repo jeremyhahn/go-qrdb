@@ -755,8 +755,8 @@ func TestMoveReconciler_CopySettlesOnlyOnRecordedCAS(t *testing.T) {
 		cat, kv, _ := newAdmittedMove(t)
 		runner := &casHookRunner{}
 		runner.hook = func(step MoveStep) {
-			if _, err := cat.CompleteMoveStep(context.Background(), step.TenantID, step.NodeID); err != nil {
-				t.Fatalf("CompleteMoveStep in the hook: %v", err)
+			if _, err := cat.RecordMoveStep(context.Background(), step.TenantID, step.NodeID); err != nil {
+				t.Fatalf("RecordMoveStep in the hook: %v", err)
 			}
 		}
 		r := newTestReconciler(t, cat, runner)
