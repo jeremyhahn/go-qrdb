@@ -243,6 +243,144 @@ func TestBindStoreFrom_ImportRetriedAfterMoveImportsNothing(t *testing.T) {
 	assert.Empty(t, conflicts)
 }
 
+// TestBindStoreFrom_ImportRetriedAfterConflictingMoveImportsNothing verifies
+// a conflict import whose cleanup failed, retried after a store move whose
+// destination already held the name, finds its import record in the
+// destination and imports nothing: not over the destination credential, and
+// not after that credential's delete.
+func TestBindStoreFrom_ImportRetriedAfterConflictingMoveImportsNothing(t *testing.T) {
+	ctx := context.Background()
+	setup := func(t *testing.T) (*CredentialService, *faultyStore) {
+		t.Helper()
+		legacyA, shared, moved := seal.NewMemoryBackend(), seal.NewMemoryBackend(), seal.NewMemoryBackend()
+		legacyB := &faultyStore{Store: seal.NewMemoryBackend()}
+		writeLegacy(t, legacyA, "db", "v2", "v1", nil)
+		writeLegacy(t, legacyB, "db", "kept", "kept-old", nil)
+		require.NoError(t, newMigratingService(t, legacyA).BindStore(ctx, shared))
+		nodeB := newMigratingService(t, legacyB)
+		require.NoError(t, nodeB.BindStore(ctx, shared))
+
+		// The import commits, then the note that opens the cleanup fails.
+		legacyB.mu.Lock()
+		legacyB.op, legacyB.key, legacyB.fired = "put", legacyMigrationNotePrefix+"db", false
+		legacyB.mu.Unlock()
+		require.ErrorIs(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport), errInjected)
+
+		// The destination already holds the name: the move conflicts.
+		dest := newUnboundService(t)
+		require.NoError(t, dest.BindStore(ctx, moved))
+		require.NoError(t, dest.StoreCredential(ctx, "db", []byte("dest")))
+
+		require.NoError(t, nodeB.BindStoreFrom(ctx, moved, shared))
+		imports, err := moved.List(ctx, MigrationImportPrefix)
+		require.NoError(t, err)
+		require.NotEmpty(t, imports, "the import record is carried into the destination")
+		return nodeB, legacyB
+	}
+	requireSettled := func(t *testing.T, nodeB *CredentialService, legacyB *faultyStore) {
+		t.Helper()
+		assert.Empty(t, legacyKeys(t, legacyB), "the kept copy is deleted")
+		conflicts, err := nodeB.ListMigrationConflicts(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, conflicts)
+	}
+
+	t.Run("destination credential kept", func(t *testing.T) {
+		nodeB, legacyB := setup(t)
+		require.NoError(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport))
+		assert.Equal(t, "dest", retrieveString(t, nodeB, "db"), "a retried import must not import the kept copy over the destination")
+		requireSettled(t, nodeB, legacyB)
+	})
+
+	t.Run("deleted since", func(t *testing.T) {
+		nodeB, legacyB := setup(t)
+		require.NoError(t, nodeB.DeleteCredential(ctx, "db"))
+		require.NoError(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport))
+		_, err := nodeB.retrieveBytes(ctx, "db")
+		require.ErrorIs(t, err, ErrCredentialNotFound, "a retried import must not recreate a deleted credential")
+		requireSettled(t, nodeB, legacyB)
+	})
+}
+
+// TestMoveLayout_ConflictCarriesImportRecords verifies every conflict branch
+// of a store move copies the set's import records into the destination and
+// keeps the whole set, import records included, in the source.
+func TestMoveLayout_ConflictCarriesImportRecords(t *testing.T) {
+	ctx := context.Background()
+	imp := importKey("db", "d1")
+	requireCarried := func(t *testing.T, err error, from, to Store, keys []string, want string) {
+		t.Helper()
+		var conflict *LayoutConflictError
+		require.ErrorAs(t, err, &conflict)
+		assert.Equal(t, []string{"db"}, conflict.Names)
+		requireValue(t, to, imp, want)
+		requireValue(t, from, imp, "v@"+imp)
+		for _, key := range keys {
+			requireValue(t, from, key, "old@"+key)
+		}
+	}
+	putImport := func(t *testing.T, st Store) {
+		t.Helper()
+		require.NoError(t, st.Put(ctx, imp, []byte("v@"+imp)))
+	}
+
+	t.Run("destination holds the name", func(t *testing.T) {
+		from, to := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+		keys := putLayout(t, from, "db", "old")
+		putImport(t, from)
+		require.NoError(t, to.Put(ctx, credentialPrefix+"db", []byte("new")))
+		requireCarried(t, moveLayout(ctx, from, to), from, to, keys, "v@"+imp)
+		requireValue(t, to, credentialPrefix+"db", "new")
+	})
+
+	t.Run("recorded conflict from an earlier pass", func(t *testing.T) {
+		from, to := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+		keys := putLayout(t, from, "db", "old")
+		require.NoError(t, to.Put(ctx, credentialPrefix+"db", []byte("new")))
+		var conflict *LayoutConflictError
+		require.ErrorAs(t, moveLayout(ctx, from, to), &conflict)
+		require.NoError(t, to.Delete(ctx, credentialPrefix+"db"))
+		putImport(t, from)
+		requireCarried(t, moveLayout(ctx, from, to), from, to, keys, "v@"+imp)
+		requireAbsent(t, to, credentialPrefix+"db")
+	})
+
+	t.Run("guarded batch refused", func(t *testing.T) {
+		from, to := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+		keys := putLayout(t, from, "db", "old")
+		putImport(t, from)
+		requireCarried(t, moveLayout(ctx, from, &refusingStore{Store: to}), from, to, keys, "v@"+imp)
+		requireAbsent(t, to, credentialPrefix+"db")
+	})
+
+	t.Run("guarded batch refused after a racing store", func(t *testing.T) {
+		from, second := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+		keys := putLayout(t, from, "db", "old")
+		putImport(t, from)
+		to := &racingStore{Store: second, race: func() {
+			require.NoError(t, second.Put(ctx, credentialPrefix+"db", []byte("fresh")))
+		}}
+		requireCarried(t, moveLayout(ctx, from, to), from, second, keys, "v@"+imp)
+		requireValue(t, second, credentialPrefix+"db", "fresh")
+	})
+
+	t.Run("import-only set", func(t *testing.T) {
+		from, to := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+		putImport(t, from)
+		require.NoError(t, to.Put(ctx, credentialPrefix+"db", []byte("new")))
+		requireCarried(t, moveLayout(ctx, from, to), from, to, nil, "v@"+imp)
+	})
+
+	t.Run("destination import record kept", func(t *testing.T) {
+		from, to := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+		keys := putLayout(t, from, "db", "old")
+		putImport(t, from)
+		require.NoError(t, to.Put(ctx, credentialPrefix+"db", []byte("new")))
+		require.NoError(t, to.Put(ctx, imp, []byte("other")))
+		requireCarried(t, moveLayout(ctx, from, to), from, to, keys, "other")
+	})
+}
+
 func TestMoveLayout_RefusedGuardMovesNothing(t *testing.T) {
 	ctx := context.Background()
 	from := &captureStore{Store: seal.NewMemoryBackend()}
