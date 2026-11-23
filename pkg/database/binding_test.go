@@ -43,6 +43,44 @@ func bindTenant(isolation tenant.IsolationType) BindingTenant {
 // composition table in docs/databases/architecture.md names, or to its typed
 // refusal. Each expected binding is written out in full, so a cell that
 // resolves to the right kind in the wrong place still fails.
+// TestBinding_Describe_EncryptionAndNodes pins the read-only block database
+// info reports: the binding's kind, whose key encrypts the store (with
+// "+database" when the database has its own barrier), and the owner node.
+func TestBinding_Describe_EncryptionAndNodes(t *testing.T) {
+	cases := []struct {
+		name    string
+		binding Binding
+		owner   string
+		want    DatabaseBinding
+	}{
+		{"prefix tenant local", Binding{Kind: BindingLocal, Encryptor: EncryptorNode}, "",
+			DatabaseBinding{Kind: BindingLocal, Encryption: "node"}},
+		{"barrier tenant", Binding{Kind: BindingLocal, Encryptor: EncryptorTenant}, "",
+			DatabaseBinding{Kind: BindingLocal, Encryption: "tenant"}},
+		{"database barrier", Binding{Kind: BindingLocal, Encryptor: EncryptorTenant, DatabaseBarrier: true}, "",
+			DatabaseBinding{Kind: BindingLocal, Encryption: "tenant+database"}},
+		{"owner node", Binding{Kind: BindingLocal, Encryptor: EncryptorNode}, "n1",
+			DatabaseBinding{Kind: BindingLocal, Encryption: "node", Nodes: []string{"n1"}}},
+		{"raft without owner", Binding{Kind: BindingRaft, Encryptor: EncryptorNode}, "",
+			DatabaseBinding{Kind: BindingRaft, Encryption: "node"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.binding.Describe(tc.owner)
+			if got == nil {
+				t.Fatal("Describe returned nil")
+			}
+			if !reflect.DeepEqual(*got, tc.want) {
+				t.Fatalf("Describe(%q) = %+v, want %+v", tc.owner, *got, tc.want)
+			}
+		})
+	}
+	var nilBinding *Binding
+	if got := nilBinding.Describe("n1"); got != nil {
+		t.Fatalf("nil binding described as %+v", got)
+	}
+}
+
 func TestResolveBinding_IsolationByBackend(t *testing.T) {
 	nodeRoot := filepath.Join(bindNodeDir, "tenants", "acme", "databases", "app")
 	tenantRoot := filepath.Join(bindTenantRoot, "databases", "app")

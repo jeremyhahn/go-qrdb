@@ -2842,6 +2842,20 @@ export interface DatabaseInfo {
     readonly barrier?: DatabaseBarrierConfig;
     /** Remote connection configuration. */
     readonly connection?: DatabaseConnectionConfig;
+    /** Read-only binding block: what the server's binding resolver decided
+     * for the database. Absent where the server describes no bindings. */
+    readonly binding?: DatabaseBindingInfo;
+}
+
+/** Read-only binding block of {@link DatabaseInfo}. */
+export interface DatabaseBindingInfo {
+    /** Kind of host that applies the database's writes: "local" or "raft". */
+    readonly kind: string;
+    /** Nodes that hold the database; absent when any node opens it. */
+    readonly nodes?: readonly string[];
+    /** Whose key encrypts the store at rest: "node", "tenant", or
+     * "tenant+database" when the database has its own barrier. */
+    readonly encryption: string;
 }
 
 /** Request to create a new database. */

@@ -73,6 +73,9 @@ func Info(resp *pb.DatabaseInfoResponse) *transport.DatabaseInfo {
 	}
 	info.Compaction = compactionconv.FromProto(resp.GetCompaction())
 	info.CompactionUnavailable = resp.GetCompactionUnavailable()
+	if b := resp.GetBinding(); b != nil {
+		info.Binding = &transport.DatabaseBinding{Kind: b.GetKind(), Nodes: append([]string(nil), b.GetNodes()...), Encryption: b.GetEncryption()}
+	}
 	return info
 }
 

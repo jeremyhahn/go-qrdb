@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -62,6 +63,97 @@ func newRootedManager(t *testing.T) (*Manager, *rootedFactory, string) {
 	m := newCatalogManager(slog.Default(), dir, WithBackendFactory(f))
 	t.Cleanup(func() { _ = m.Close() })
 	return m, f, dir
+}
+
+// describingFactory is an embedded backend factory that describes every
+// database's binding as binding, or fails with err.
+type describingFactory struct {
+	EmbeddedBackendFactory
+	binding *Binding
+	err     error
+}
+
+func (f *describingFactory) DescribeBinding(DatabaseConfig) (*Binding, error) {
+	return f.binding, f.err
+}
+
+func newDescribingManager(t *testing.T, f BackendFactory) *Manager {
+	t.Helper()
+	m := newCatalogManager(slog.Default(), t.TempDir(), WithBackendFactory(f))
+	t.Cleanup(func() { _ = m.Close() })
+	return m
+}
+
+// TestManager_InfoCarriesTheDescribedBinding: database info and both
+// listings report the block the factory describes for the record.
+func TestManager_InfoCarriesTheDescribedBinding(t *testing.T) {
+	f := &describingFactory{binding: &Binding{Kind: BindingLocal, Encryptor: EncryptorTenant, DatabaseBarrier: true}}
+	m := newDescribingManager(t, f)
+	if _, err := m.Create(DatabaseConfig{Name: "a", Backend: BackendMemory}); err != nil {
+		t.Fatalf("Create a: %v", err)
+	}
+	want := &DatabaseBinding{Kind: BindingLocal, Encryption: "tenant+database"}
+	db, err := m.Get("a")
+	if err != nil {
+		t.Fatalf("Get a: %v", err)
+	}
+	if got := db.Info().Binding; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Info().Binding = %+v, want %+v", got, want)
+	}
+	found := false
+	for _, info := range m.List() {
+		if info.Name == "a" {
+			found = true
+			if !reflect.DeepEqual(info.Binding, want) {
+				t.Fatalf("List binding = %+v, want %+v", info.Binding, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("List does not report a")
+	}
+	infos, err := m.ListForTenant(context.Background())
+	if err != nil {
+		t.Fatalf("ListForTenant: %v", err)
+	}
+	found = false
+	for _, info := range infos {
+		if info.Name == "a" {
+			found = true
+			if !reflect.DeepEqual(info.Binding, want) {
+				t.Fatalf("ListForTenant binding = %+v, want %+v", info.Binding, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("ListForTenant does not report a")
+	}
+}
+
+// TestManager_InfoWithoutDescriberHasNoBinding: a factory that describes
+// nothing (raft mode until raft bindings) leaves the block absent.
+func TestManager_InfoWithoutDescriberHasNoBinding(t *testing.T) {
+	m := newDescribingManager(t, &EmbeddedBackendFactory{})
+	db, err := m.Create(DatabaseConfig{Name: "a", Backend: BackendMemory})
+	if err != nil {
+		t.Fatalf("Create a: %v", err)
+	}
+	if got := db.Info().Binding; got != nil {
+		t.Fatalf("Info().Binding = %+v, want nil", got)
+	}
+}
+
+// TestManager_DescribeBindingErrorLeavesInfoWithoutBlock: info never fails
+// over the block; an unresolvable binding leaves it out.
+func TestManager_DescribeBindingErrorLeavesInfoWithoutBlock(t *testing.T) {
+	m := newDescribingManager(t, &describingFactory{err: errors.New("unresolvable")})
+	db, err := m.Create(DatabaseConfig{Name: "a", Backend: BackendMemory})
+	if err != nil {
+		t.Fatalf("Create a: %v", err)
+	}
+	if got := db.Info().Binding; got != nil {
+		t.Fatalf("Info().Binding = %+v, want nil", got)
+	}
 }
 
 // RecordRoot is the root Create gives cfg's database (RecordRootResolver),

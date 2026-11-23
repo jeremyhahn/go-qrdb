@@ -61,6 +61,24 @@ type DatabaseInfo struct {
 	// database's scheduled-compaction policy from its store: Compaction is
 	// unknown, not off. The rest of the information stands.
 	CompactionUnavailable bool `json:"compactionUnavailable,omitempty"`
+	// Binding is the read-only binding block: what the server's binding
+	// resolver decided for the database. Absent where the server describes
+	// no bindings (raft mode until raft bindings).
+	Binding *DatabaseBinding `json:"binding,omitempty"`
+}
+
+// DatabaseBinding is the read-only binding block of DatabaseInfo.
+type DatabaseBinding struct {
+	// Kind is the kind of host that applies the database's writes: "local"
+	// or "raft".
+	Kind string `json:"kind"`
+	// Nodes are the nodes that hold the database; empty when any node opens
+	// it.
+	Nodes []string `json:"nodes,omitempty"`
+	// Encryption names whose key encrypts the store at rest: "node",
+	// "tenant", or "tenant+database" when the database has its own barrier
+	// over the tenant's.
+	Encryption string `json:"encryption"`
 }
 
 // DatabaseRaftInfo is a database's Raft configuration as a response reports

@@ -78,5 +78,10 @@
     "mode": "period",
     "retainRevisions": 500,
     "retainPeriod": "720h"
+  },
+  "binding": {
+    "kind": "local",
+    "nodes": ["n1"],
+    "encryption": "tenant"
   }
 }

@@ -92,6 +92,7 @@ func fullDatabaseInfo() *database.DatabaseInfo {
 		Compaction: &compaction.Policy{Mode: compaction.Period, RetainRevisions: 500, RetainPeriod: "720h"},
 		// Set beside a policy only so the key is on the wire to compare.
 		CompactionUnavailable: true,
+		Binding:               &database.DatabaseBinding{Kind: database.BindingLocal, Nodes: []string{"n1"}, Encryption: "tenant"},
 	}
 }
 

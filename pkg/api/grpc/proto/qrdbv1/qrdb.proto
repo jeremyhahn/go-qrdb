@@ -4074,6 +4074,24 @@ message DatabaseInfoResponse {
     // compaction_unavailable reports that the database's store could not be
     // read for its policy: compaction is unknown, not off.
     bool compaction_unavailable = 18;
+    // binding is the read-only binding block: what the node's binding
+    // resolver decided for the database. Unset where the node describes no
+    // bindings (raft mode until raft bindings).
+    DatabaseBindingInfo binding = 19;
+}
+
+// DatabaseBindingInfo is the read-only binding block of DatabaseInfoResponse.
+message DatabaseBindingInfo {
+    // kind is the kind of host that applies the database's writes: "local"
+    // or "raft".
+    string kind = 1;
+    // nodes are the nodes that hold the database; empty when any node opens
+    // it.
+    repeated string nodes = 2;
+    // encryption names whose key encrypts the store at rest: "node",
+    // "tenant", or "tenant+database" when the database has its own barrier
+    // over the tenant's.
+    string encryption = 3;
 }
 
 // DatabaseRaftInfo is a database's Raft configuration as a response reports

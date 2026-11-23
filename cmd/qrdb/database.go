@@ -509,6 +509,14 @@ func printDatabaseInfo(info *transport.DatabaseInfo) error {
 			_, _ = fmt.Fprintf(outputWriter, "Barrier:\n")
 			_, _ = fmt.Fprintf(outputWriter, "  Enabled:  %s\n", strconv.FormatBool(info.Barrier.Enabled))
 		}
+		if info.Binding != nil {
+			_, _ = fmt.Fprintf(outputWriter, "Binding:\n")
+			_, _ = fmt.Fprintf(outputWriter, "  Kind:       %s\n", info.Binding.Kind)
+			_, _ = fmt.Fprintf(outputWriter, "  Encryption: %s\n", info.Binding.Encryption)
+			if len(info.Binding.Nodes) > 0 {
+				_, _ = fmt.Fprintf(outputWriter, "  Nodes:      %s\n", strings.Join(info.Binding.Nodes, ","))
+			}
+		}
 		if info.Connection != nil {
 			_, _ = fmt.Fprintf(outputWriter, "Connection:\n")
 			_, _ = fmt.Fprintf(outputWriter, "  Transport: %s\n", info.Connection.Transport)

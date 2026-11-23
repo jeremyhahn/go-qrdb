@@ -58,7 +58,11 @@ func TestInfo_FullPayload(t *testing.T) {
 		Barrier:    &pb.DatabaseBarrierInfo{Enabled: true, Mode: "shamir", SharesRequired: 2, SharesTotal: 3},
 		Connection: &pb.DatabaseConnectionConfig{Transport: "grpc", RemoteAddress: "db.example.com:63000"},
 		Sql:        &pb.DatabaseSQLConfig{Concurrency: "pessimistic"},
+		Binding:    &pb.DatabaseBindingInfo{Kind: "local", Nodes: []string{"n1"}, Encryption: "tenant"},
 	})
+	if b := out.Binding; b == nil || b.Kind != "local" || len(b.Nodes) != 1 || b.Nodes[0] != "n1" || b.Encryption != "tenant" {
+		t.Errorf("binding = %+v", out.Binding)
+	}
 	if out.TenantID != "t1" || out.Name != "db1" || out.ShardID != 17 || out.StorageCodec != "msgpack" || out.Replicas != 3 || !out.DedicatedWAL {
 		t.Errorf("identity mismatch: %+v", out)
 	}
@@ -94,7 +98,7 @@ func TestInfo_FullPayload(t *testing.T) {
 
 func TestInfo_MinimalPayload(t *testing.T) {
 	out := Info(&pb.DatabaseInfoResponse{Name: "db"})
-	if out.Name != "db" || out.Raft != nil || out.Barrier != nil || out.Connection != nil || out.SQL != nil {
+	if out.Name != "db" || out.Raft != nil || out.Barrier != nil || out.Connection != nil || out.SQL != nil || out.Binding != nil {
 		t.Errorf("minimal payload mapped to %+v", out)
 	}
 }

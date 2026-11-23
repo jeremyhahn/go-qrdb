@@ -27,6 +27,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RestClient } from '../src/rest.js';
 import type {
     DatabaseBarrierConfig,
+    DatabaseBindingInfo,
     DatabaseCompactionConfig,
     DatabaseConnectionConfig,
     DatabaseEtcdProtocolInfo,
@@ -53,6 +54,7 @@ const databaseInfoKeys = {
     sql: true,
     compaction: true,
     compactionUnavailable: true,
+    binding: true,
     dataDir: true,
     shardId: true,
     mode: true,
@@ -134,6 +136,8 @@ const compactionKeys = {
     retainPeriod: true,
 } satisfies Record<keyof DatabaseCompactionConfig, true>;
 
+const bindingKeys = { kind: true, nodes: true, encryption: true } satisfies Record<keyof DatabaseBindingInfo, true>;
+
 /**
  * Each object of the response and the keys the SDK declares for it. There are
  * no listed gaps: a key the server sends that the SDK does not type fails, as
@@ -156,6 +160,7 @@ const objects: ReadonlyArray<{
     { path: 'connection', declared: connectionKeys, untyped: [] },
     { path: 'sql', declared: sqlKeys, untyped: [] },
     { path: 'compaction', declared: compactionKeys, untyped: [] },
+    { path: 'binding', declared: bindingKeys, untyped: [] },
 ];
 
 function objectAt(path: string): Record<string, unknown> {

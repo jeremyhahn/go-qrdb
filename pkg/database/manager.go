@@ -551,6 +551,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	}
 	db.incarnation = incarnation
 	db.ownerNode = meta.OwnerNode
+	db.binding = m.describeBinding(meta)
 
 	// Mark the new incarnation live in the store holding the database's
 	// data. This is the LAST fallible step before the database becomes
@@ -743,6 +744,7 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 	}
 	db.incarnation = meta.Incarnation
 	db.ownerNode = meta.OwnerNode
+	db.binding = m.describeBinding(meta)
 
 	if actual, loaded := m.databases.LoadOrStore(key, db); loaded {
 		// Another goroutine opened it concurrently.
@@ -1994,6 +1996,33 @@ type RecordRootResolver interface {
 // opening it, or nil for a database it serves from the fallback store.
 type RecordBindingResolver interface {
 	RecordBinding(cfg DatabaseConfig) (*Binding, error)
+}
+
+// BindingDescriber is implemented by a BackendFactory that can say what
+// ResolveBinding decides for any database cfg describes, whether the
+// factory materializes it in a store of its own or serves it from the
+// fallback store. DescribeBinding opens nothing.
+type BindingDescriber interface {
+	DescribeBinding(cfg DatabaseConfig) (*Binding, error)
+}
+
+// describeBinding is the read-only binding block database info reports for
+// meta: nil when the backend factory describes no bindings or the binding
+// cannot be resolved. Info never fails over the block.
+func (m *Manager) describeBinding(meta DatabaseMeta) *DatabaseBinding {
+	describer, ok := m.factory.(BindingDescriber)
+	if !ok {
+		return nil
+	}
+	b, err := describer.DescribeBinding(configFromMeta(meta))
+	if err != nil {
+		m.logger.Debug("database binding not described",
+			slog.String("tenant", meta.TenantID),
+			slog.String("name", meta.Name),
+			slog.String("error", err.Error()))
+		return nil
+	}
+	return b.Describe(meta.OwnerNode)
 }
 
 // RecordBindings returns the binding of every catalog record (ListRecords)

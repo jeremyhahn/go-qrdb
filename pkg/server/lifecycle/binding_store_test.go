@@ -1445,6 +1445,33 @@ func newNoneStrategyBarrier(t *testing.T) *seal.StorageBarrier {
 // TestLocalBindingFactory_RaftOnStandaloneRefused proves a backend: raft
 // record on a standalone node is refused with the binding's
 // *RaftBackendUnavailableError, never opened by the embedded factory.
+// TestLocalBindingFactory_DescribeBinding: the block database info reports is
+// what ResolveBinding decides for the record, including a database the
+// factory serves from the fallback store; a raft record on a standalone node
+// is refused as Create refuses it.
+func TestLocalBindingFactory_DescribeBinding(t *testing.T) {
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: t.TempDir()}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
+	var _ database.BindingDescriber = f
+	for _, cfg := range []database.DatabaseConfig{
+		{TenantID: bindingTenant, Name: "orders", Backend: database.BackendFile},
+		{TenantID: bindingTenant, Name: database.TenantHomeName, Backend: database.BackendMemory},
+	} {
+		b, err := f.DescribeBinding(cfg)
+		if err != nil || b == nil {
+			t.Fatalf("DescribeBinding(%s) = %v, %v; want a binding", cfg.Name, b, err)
+		}
+		got := b.Describe("")
+		if got.Kind != database.BindingLocal || got.Encryption != "node" || got.Nodes != nil {
+			t.Fatalf("DescribeBinding(%s).Describe = %+v; want local, node, no nodes", cfg.Name, got)
+		}
+	}
+	_, err := f.DescribeBinding(database.DatabaseConfig{TenantID: bindingTenant, Name: "orders", Backend: database.BackendRaft})
+	var unavailable *database.RaftBackendUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("DescribeBinding(raft) err = %v, want *RaftBackendUnavailableError", err)
+	}
+}
+
 func TestLocalBindingFactory_RaftOnStandaloneRefused(t *testing.T) {
 	dir := t.TempDir()
 	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants)

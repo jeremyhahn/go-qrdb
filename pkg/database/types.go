@@ -767,4 +767,22 @@ type DatabaseInfo struct {
 	// OwnerNode is the node that holds the database (DatabaseMeta.OwnerNode); empty
 	// when any node opens it.
 	OwnerNode string `json:"owner_node,omitempty"`
+	// Binding is the read-only block reporting what ResolveBinding decided
+	// for the database: where its writes are applied and whose key encrypts
+	// its store. It is absent where the node has no binding factory that
+	// describes bindings (raft mode until raft bindings).
+	Binding *DatabaseBinding `json:"binding,omitempty"`
+}
+
+// DatabaseBinding is the read-only binding block of DatabaseInfo.
+type DatabaseBinding struct {
+	// Kind is the kind of host that applies the database's writes.
+	Kind BindingKind `json:"kind"`
+	// Nodes are the nodes that hold the database: the owner node when one
+	// is recorded, none when any node opens it.
+	Nodes []string `json:"nodes,omitempty"`
+	// Encryption names whose key encrypts the store at rest: "node",
+	// "tenant", or "tenant+database" when the database has its own barrier
+	// over the tenant's.
+	Encryption string `json:"encryption"`
 }

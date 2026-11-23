@@ -308,6 +308,24 @@ func (f *LocalBindingFactory) RecordBinding(cfg database.DatabaseConfig) (*datab
 	return f.resolveLocal(&cfg)
 }
 
+// DescribeBinding is the binding ResolveBinding decides for the database
+// cfg describes, opening nothing. Unlike RecordBinding it describes a
+// database the factory serves from the fallback store too: database info
+// reports the binding of every database, materialized here or not. A
+// backend: raft record on a standalone node is refused as Create refuses it.
+func (f *LocalBindingFactory) DescribeBinding(cfg database.DatabaseConfig) (*database.Binding, error) {
+	if !f.node.RaftMode && cfg.Backend == database.BackendRaft {
+		return nil, &database.RaftBackendUnavailableError{Name: cfg.Name}
+	}
+	t, err := f.tenant(cfg.TenantID)
+	if err != nil {
+		return nil, &BindingOpenError{TenantID: cfg.TenantID, Database: cfg.Name, Backend: cfg.Backend, Err: err}
+	}
+	return database.ResolveBinding(&cfg, t, f.node)
+}
+
+var _ database.BindingDescriber = (*LocalBindingFactory)(nil)
+
 // resolveLocal is the local binding Create materializes for cfg, or nil when
 // cfg's database is served from the fallback store.
 func (f *LocalBindingFactory) resolveLocal(cfg *database.DatabaseConfig) (*database.Binding, error) {

@@ -116,7 +116,9 @@ func (m *Manager) ListForTenant(ctx context.Context) ([]DatabaseInfo, error) {
 		// Another node holds it: it is listed as the catalog records it,
 		// and nothing is opened here.
 		if _, held := m.ownerRefusal(key, meta); held {
-			infos = append(infos, remoteInfo(meta))
+			info := remoteInfo(meta)
+			info.Binding = m.describeBinding(meta)
+			infos = append(infos, info)
 			continue
 		}
 		db, err := m.openRecord(key, meta)

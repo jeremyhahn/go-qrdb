@@ -98,6 +98,11 @@ type Database struct {
 	// (DatabaseMeta.OwnerNode). Set once, like incarnation, before the
 	// database is published; empty when any node opens it.
 	ownerNode string
+
+	// binding is the read-only binding block Info reports
+	// (Manager.describeBinding). Set once, like ownerNode, before the
+	// database is published; nil where the node describes no bindings.
+	binding *DatabaseBinding
 }
 
 // NewDatabase creates a Database from the given config and backend.
@@ -453,6 +458,7 @@ func (d *Database) Info() DatabaseInfo {
 		Connection:   cfg.Connection,
 		SQL:          cfg.SQL,
 		OwnerNode:    d.ownerNode,
+		Binding:      d.binding,
 	}
 	if cfg.Raft != nil {
 		info.ShardID = cfg.Raft.ShardID

@@ -207,6 +207,25 @@ type Binding struct {
 	Raft *RaftBinding
 }
 
+// Describe returns the read-only block database info reports for the
+// binding. owner is the node recorded as holding the database
+// (DatabaseMeta.OwnerNode), empty when any node opens it: a standalone
+// record then names no node, and a raft binding names its replicas only
+// once raft bindings are described. A nil binding describes nothing.
+func (b *Binding) Describe(owner string) *DatabaseBinding {
+	if b == nil {
+		return nil
+	}
+	out := &DatabaseBinding{Kind: b.Kind, Encryption: string(b.Encryptor)}
+	if b.DatabaseBarrier {
+		out.Encryption += "+database"
+	}
+	if owner != "" {
+		out.Nodes = []string{owner}
+	}
+	return out
+}
+
 // TenantBarrierBound reports whether sealing the owning tenant's barrier
 // fails this binding closed: true for every tenant whose key encrypts it.
 func (b *Binding) TenantBarrierBound() bool {
