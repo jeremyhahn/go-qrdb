@@ -259,6 +259,8 @@ func assertLeaseExpiryDeletesKeys(t *testing.T, ctx context.Context, c *sdk.Clie
 	// notices it within one DefaultExpiryInterval, and its revoke is then a
 	// write like any other.
 	deadline := time.Now().Add(time.Duration(ttl)*time.Second + lease.DefaultExpiryInterval + expiryRevokeAllowance)
+	poll := time.NewTicker(100 * time.Millisecond)
+	defer poll.Stop()
 	for {
 		if _, err := c.KV().Get(ctx, "cp/expiry/key"); err != nil {
 			return
@@ -266,7 +268,7 @@ func assertLeaseExpiryDeletesKeys(t *testing.T, ctx context.Context, c *sdk.Clie
 		if time.Now().After(deadline) {
 			t.Fatalf("the key outlived its %ds lease by %s: nothing swept the expired lease", ttl, lease.DefaultExpiryInterval+expiryRevokeAllowance)
 		}
-		time.Sleep(100 * time.Millisecond)
+		<-poll.C
 	}
 }
 

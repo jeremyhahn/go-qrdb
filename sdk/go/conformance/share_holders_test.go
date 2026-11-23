@@ -432,6 +432,8 @@ func (e *holderE2E) dial(tlsCfg *tls.Config) *sdk.Client {
 	e.t.Helper()
 	opts := []transport.Option{transport.WithAddress(e.address()), transport.WithTLSConfig(tlsCfg)}
 	deadline := time.Now().Add(15 * time.Second)
+	poll := time.NewTicker(50 * time.Millisecond)
+	defer poll.Stop()
 	for {
 		var (
 			tr  transport.Transport
@@ -464,7 +466,7 @@ func (e *holderE2E) dial(tlsCfg *tls.Config) *sdk.Client {
 		if time.Now().After(deadline) {
 			e.t.Fatalf("%s: connect: %v", e.tk, err)
 		}
-		time.Sleep(50 * time.Millisecond)
+		<-poll.C
 	}
 }
 
