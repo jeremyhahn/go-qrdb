@@ -50,6 +50,17 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 		// AuditAppend sub-type reaches it.
 		return logs.AppendEntries(w, id, entries)
 	},
+	protocol.VerifiableLogSubtypeAppendSealed: func(logs *vlog.Chain, _ storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
+		id, leaves, err := protocol.DecodeVerifiableLogAppendSealed(tenantID, body)
+		if err != nil {
+			return 0, err
+		}
+		// Apply folds the proposer's leaf hashes and stores the sealed
+		// bodies; it never sees the plaintext, so a replica whose database
+		// barrier is sealed applies it too. The audit instance is refused
+		// as for Append.
+		return logs.AppendSealed(w, id, leaves)
+	},
 	protocol.VerifiableLogSubtypeAuditAppend: func(logs *vlog.Chain, _ storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
 		id, entries, err := protocol.DecodeVerifiableLogAuditAppend(tenantID, body)
 		if err != nil {

@@ -360,6 +360,51 @@ func TestChain_AppendEntries_InteriorNodeWriteFault(t *testing.T) {
 	}
 }
 
+func TestChain_AppendSealed_RootMatchesThePlaintextTree(t *testing.T) {
+	plain, pstg := mustCreate(t, false)
+	sealed, sstg := mustCreate(t, false)
+	es := entries(0, 5)
+	if _, err := plain.AppendEntries(pstg, testLog, es); err != nil {
+		t.Fatalf("AppendEntries: %v", err)
+	}
+	leaves := make([]SealedLeaf, len(es))
+	for i, e := range es {
+		leaves[i] = SealedLeaf{Hash: LeafHash(e), Body: append([]byte("sealed:"), e...)}
+	}
+	first, err := sealed.AppendSealed(sstg, testLog, leaves)
+	if err != nil || first != 0 {
+		t.Fatalf("AppendSealed() = %d, %v, want 0", first, err)
+	}
+	ph, err := ReadHead(pstg, testLog)
+	if err != nil {
+		t.Fatalf("ReadHead(plain): %v", err)
+	}
+	sh, err := ReadHead(sstg, testLog)
+	if err != nil {
+		t.Fatalf("ReadHead(sealed): %v", err)
+	}
+	if ph.Size != sh.Size || !bytes.Equal(ph.Root, sh.Root) {
+		t.Fatalf("sealed head = %d/%x, want %d/%x", sh.Size, sh.Root, ph.Size, ph.Root)
+	}
+	for i, l := range leaves {
+		got, err := sstg.Get(entryKey(testLog, uint64(i)))
+		if err != nil || !bytes.Equal(got, l.Body) {
+			t.Fatalf("stored body %d = %q, %v, want the opaque body", i, got, err)
+		}
+	}
+	var abe *AppendBatchError
+	if _, err := sealed.AppendSealed(sstg, testLog, nil); !errors.As(err, &abe) {
+		t.Fatalf("AppendSealed(empty) = %v, want *AppendBatchError", err)
+	}
+	var lhe *LeafHashError
+	if _, err := sealed.AppendSealed(sstg, testLog, []SealedLeaf{{Hash: make([]byte, 31), Body: []byte("x")}}); !errors.As(err, &lhe) {
+		t.Fatalf("AppendSealed(31-byte hash) = %v, want *LeafHashError", err)
+	}
+	if h, _ := ReadHead(sstg, testLog); h.Size != 5 {
+		t.Fatalf("size after the refusal = %d, want 5", h.Size)
+	}
+}
+
 // namedOp is one command of the determinism scenario below, applied to c
 // with r as the storage the Update call reads and w as its batch.
 type namedOp func(c *Chain, r storage.Reader, w Writer) (string, error)

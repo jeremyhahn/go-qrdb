@@ -27,6 +27,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
 )
 
 var applyLog = vlog.LogID{TenantID: "acme", Database: "certs", Log: "issued"}
@@ -421,6 +423,53 @@ func TestApplyVerifiableLog_AppendAndDropInOneBatch(t *testing.T) {
 	pk, sk := keys(packedStg), keys(separateStg)
 	if !slices.Equal(pk, sk) {
 		t.Fatalf("packed apply leaves %q; separate applies leave %q", pk, sk)
+	}
+}
+
+func TestApplyVerifiableLog_AppendSealedFoldsTheGivenLeafHash(t *testing.T) {
+	p := payloadOf(t)
+	logs, stg := vlog.NewChain(), memory.NewStorage()
+	mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogCreate(applyLog, applyDescriptor(false))))
+	mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogAppend(applyLog, [][]byte{[]byte("a")})))
+
+	plain := [][]byte{[]byte("secret-1"), []byte("secret-2")}
+	leaves := make([]vlog.SealedLeaf, len(plain))
+	for i, e := range plain {
+		leaves[i] = vlog.SealedLeaf{Hash: vlog.LeafHash(e), Body: append([]byte("ct:"), e...)}
+	}
+	if first := mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogAppendSealed(applyLog, leaves))); first != 1 {
+		t.Fatalf("first index = %d, want 1", first)
+	}
+	head, err := vlog.ReadHead(stg, applyLog)
+	if err != nil || head.Size != 3 {
+		t.Fatalf("ReadHead = %+v, %v, want size 3", head, err)
+	}
+	for i, e := range plain {
+		idx := uint64(i + 1)
+		path, err := vlog.Inclusion(stg, applyLog, idx, head.Size)
+		if err != nil {
+			t.Fatalf("Inclusion(%d): %v", idx, err)
+		}
+		if err := proof.VerifyInclusion(rfc6962.DefaultHasher, idx, head.Size, vlog.LeafHash(e), path, head.Root); err != nil {
+			t.Fatalf("inclusion of plaintext %d: %v", idx, err)
+		}
+	}
+	got, err := vlog.Get(stg, applyLog, 1, 2)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("Get = %v, %v", got, err)
+	}
+	for i, e := range got {
+		if !bytes.Equal(e.Body, leaves[i].Body) {
+			t.Fatalf("body %d = %q, want the sealed bytes %q", i, e.Body, leaves[i].Body)
+		}
+	}
+	// A malformed body is refused like Append's, applying nothing.
+	res, err := ApplyVerifiableLog(logs, stg, stg, p(protocol.EncodeVerifiableLogAppendSealed(applyLog, leaves))[:20])
+	if err != nil {
+		t.Fatalf("ApplyVerifiableLog(truncated): %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(res.Data); !ok {
+		t.Fatalf("truncated sealed append: %+v, want a refusal", res)
 	}
 }
 

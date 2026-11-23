@@ -15,6 +15,7 @@
 package protocol
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"strconv"
@@ -89,6 +90,15 @@ const (
 	// only VerifiableLog has no handler for it, so it is never proposed
 	// until every replica of the group advertises the drop feature.
 	VerifiableLogSubtypeDropDatabase byte = 7
+
+	// VerifiableLogSubtypeAppendSealed is a barrier database's append: each
+	// entry carries its RFC 6962 leaf hash, computed over the plaintext
+	// before propose, and its body sealed under the database's barrier key
+	// (vlog.Chain AppendSealed). Apply folds the given hash and stores the
+	// sealed body; it never sees the plaintext. It requires
+	// featuregate.VerifiableLogSealed: a replica that implements only
+	// VerifiableLog has no handler for it.
+	VerifiableLogSubtypeAppendSealed byte = 8
 )
 
 // The presence byte of a Create or RotateKey body's key record.
@@ -186,6 +196,36 @@ func encodeVerifiableLogEntries(subtype byte, id vlog.LogID, entries [][]byte) (
 		for _, e := range entries {
 			buf = binary.BigEndian.AppendUint32(buf, uint32(len(e)))
 			buf = append(buf, e...)
+		}
+		return buf
+	})
+}
+
+// EncodeVerifiableLogAppendSealed builds a VerifiableLogSubtypeAppendSealed
+// command body: the count, then per leaf its 32-byte leaf hash and its
+// length-prefixed sealed body.
+func EncodeVerifiableLogAppendSealed(id vlog.LogID, leaves []vlog.SealedLeaf) ([]byte, error) {
+	if len(leaves) == 0 || len(leaves) > vlog.MaxAppendPerCommand {
+		return nil, &vlog.AppendBatchError{Count: len(leaves)}
+	}
+	bodies := make([][]byte, len(leaves))
+	for i, l := range leaves {
+		if len(l.Hash) != sha256.Size {
+			return nil, &vlog.LeafHashError{Index: i, Len: len(l.Hash)}
+		}
+		bodies[i] = l.Body
+	}
+	fieldsSize, err := framedSlicesSize(bodies)
+	if err != nil {
+		return nil, err
+	}
+	fieldsSize += len(leaves) * sha256.Size
+	return encodeVerifiableLog(VerifiableLogSubtypeAppendSealed, id, fieldsSize, func(buf []byte) []byte {
+		buf = binary.BigEndian.AppendUint32(buf, uint32(len(leaves)))
+		for _, l := range leaves {
+			buf = append(buf, l.Hash...)
+			buf = binary.BigEndian.AppendUint32(buf, uint32(len(l.Body)))
+			buf = append(buf, l.Body...)
 		}
 		return buf
 	})
@@ -386,6 +426,44 @@ func DecodeVerifiableLogAppend(tenantID string, body []byte) (vlog.LogID, [][]by
 		return vlog.LogID{}, nil, &InvalidCommandError{Reason: "verifiable log append: trailing bytes"}
 	}
 	return id, entries, nil
+}
+
+// DecodeVerifiableLogAppendSealed parses an
+// EncodeVerifiableLogAppendSealed body. A leaf hash that is not exactly 32
+// bytes cannot be framed, so a short body is refused as truncated.
+func DecodeVerifiableLogAppendSealed(tenantID string, body []byte) (vlog.LogID, []vlog.SealedLeaf, error) {
+	id, rest, err := decodeLogName(tenantID, body)
+	if err != nil {
+		return vlog.LogID{}, nil, err
+	}
+	if len(rest) < 4 {
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: "verifiable log sealed append: count truncated"}
+	}
+	count := binary.BigEndian.Uint32(rest)
+	rest = rest[4:]
+	// Every leaf costs at least its hash and its 4-byte length, so a count
+	// the body cannot hold is refused before it sizes an allocation.
+	if uint64(count) > uint64(len(rest))/(sha256.Size+4) {
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: "verifiable log sealed append: entries truncated"}
+	}
+	leaves := make([]vlog.SealedLeaf, 0, count)
+	for range count {
+		if len(rest) < sha256.Size+4 {
+			return vlog.LogID{}, nil, &InvalidCommandError{Reason: "verifiable log sealed append: entries truncated"}
+		}
+		hash := rest[:sha256.Size:sha256.Size]
+		blen := binary.BigEndian.Uint32(rest[sha256.Size:])
+		rest = rest[sha256.Size+4:]
+		if uint64(blen) > uint64(len(rest)) {
+			return vlog.LogID{}, nil, &InvalidCommandError{Reason: "verifiable log sealed append: entries truncated"}
+		}
+		leaves = append(leaves, vlog.SealedLeaf{Hash: hash, Body: rest[:blen:blen]})
+		rest = rest[blen:]
+	}
+	if len(rest) != 0 {
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: "verifiable log sealed append: trailing bytes"}
+	}
+	return id, leaves, nil
 }
 
 // DecodeVerifiableLogAuditAppend decodes an AuditAppend body, which is

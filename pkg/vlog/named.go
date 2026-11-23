@@ -16,8 +16,10 @@ package vlog
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strconv"
@@ -566,11 +568,63 @@ func (c *Chain) RotateKey(r storage.Reader, w Writer, id LogID, next HeadKey, re
 // library's compact range, which reports each node as the append completes
 // it; nothing is read from storage.
 func (c *Chain) AppendEntries(w Writer, id LogID, entries [][]byte) (first uint64, err error) {
+	hashes := make([][]byte, len(entries))
+	for i, e := range entries {
+		hashes[i] = hasher.HashLeaf(e)
+	}
+	return c.appendBodies(w, id, hashes, entries)
+}
+
+// SealedLeaf is one entry of a sealed append: Hash is the entry's RFC 6962
+// leaf hash, computed by the proposer over the plaintext, and Body is the
+// entry sealed under the database's barrier key. Apply folds Hash into the
+// tree and stores Body as given; it never sees the plaintext.
+type SealedLeaf struct {
+	Hash []byte
+	Body []byte
+}
+
+// LeafHashError is returned when a sealed leaf's hash is not a SHA-256
+// digest.
+type LeafHashError struct {
+	Index int
+	Len   int
+}
+
+func (e *LeafHashError) Error() string {
+	return fmt.Sprintf("vlog: sealed leaf %d hash is %d bytes, want %d", e.Index, e.Len, sha256.Size)
+}
+
+// LeafHash returns the RFC 6962 leaf hash of entry, the hash a proposer
+// sends with a sealed entry so the tree is built over the plaintext.
+func LeafHash(entry []byte) []byte {
+	return hasher.HashLeaf(entry)
+}
+
+// AppendSealed appends leaves to the log id as AppendEntries does, folding
+// each leaf's given hash into the tree and storing its body as opaque bytes.
+// The resulting tree is the one AppendEntries builds over the plaintexts the
+// hashes were computed from.
+func (c *Chain) AppendSealed(w Writer, id LogID, leaves []SealedLeaf) (first uint64, err error) {
+	hashes := make([][]byte, len(leaves))
+	bodies := make([][]byte, len(leaves))
+	for i, l := range leaves {
+		if len(l.Hash) != sha256.Size {
+			return 0, &LeafHashError{Index: i, Len: len(l.Hash)}
+		}
+		hashes[i], bodies[i] = l.Hash, l.Body
+	}
+	return c.appendBodies(w, id, hashes, bodies)
+}
+
+// appendBodies stores bodies at the next indices of the log id and folds
+// hashes, one per body, into its tree.
+func (c *Chain) appendBodies(w Writer, id LogID, hashes, bodies [][]byte) (first uint64, err error) {
 	if err := id.Validate(); err != nil {
 		return 0, err
 	}
-	if len(entries) == 0 || len(entries) > MaxAppendPerCommand {
-		return 0, &AppendBatchError{Count: len(entries)}
+	if len(bodies) == 0 || len(bodies) > MaxAppendPerCommand {
+		return 0, &AppendBatchError{Count: len(bodies)}
 	}
 
 	c.mu.Lock()
@@ -584,12 +638,12 @@ func (c *Chain) AppendEntries(w Writer, id LogID, entries [][]byte) (first uint6
 	if !ok {
 		return 0, &LogNotFoundError{ID: id}
 	}
-	for i, e := range entries {
+	for i, e := range bodies {
 		if err := w.Set(entryKey(id, st.size+uint64(i)), e); err != nil {
 			return 0, &TableWriteError{Err: err}
 		}
 	}
-	next, staged, err := appendLeaves(w, id, st, entries)
+	next, staged, err := appendLeafHashes(w, id, st, hashes)
 	if err != nil {
 		return 0, err
 	}
@@ -603,6 +657,15 @@ func (c *Chain) AppendEntries(w Writer, id LogID, entries [][]byte) (first uint6
 // and the staged nodes by key, leaving st and c untouched, so a failed append
 // changes nothing in memory. The leaves' bodies are the caller's to store.
 func appendLeaves(w Writer, id LogID, st logState, leaves [][]byte) (logState, map[string][]byte, error) {
+	hashes := make([][]byte, len(leaves))
+	for i, e := range leaves {
+		hashes[i] = hasher.HashLeaf(e)
+	}
+	return appendLeafHashes(w, id, st, hashes)
+}
+
+// appendLeafHashes folds the given leaf hashes into the tree of the log id.
+func appendLeafHashes(w Writer, id LogID, st logState, hashes [][]byte) (logState, map[string][]byte, error) {
 	// The range is built over a copy, so a failed append leaves st as it was.
 	rng, err := factory.NewRange(0, st.size, append([][]byte(nil), st.hashes...))
 	if err != nil {
@@ -622,8 +685,8 @@ func appendLeaves(w Writer, id LogID, st logState, leaves [][]byte) (logState, m
 		}
 		staged[string(k)] = hash
 	}
-	for _, e := range leaves {
-		if err := rng.Append(hasher.HashLeaf(e), visit); err != nil {
+	for _, h := range hashes {
+		if err := rng.Append(h, visit); err != nil {
 			return logState{}, nil, &CorruptTableError{Key: string(logHeadKey(id)), Reason: err.Error()}
 		}
 		if stageErr != nil {
@@ -631,12 +694,12 @@ func appendLeaves(w Writer, id LogID, st logState, leaves [][]byte) (logState, m
 		}
 	}
 
-	size := st.size + uint64(len(leaves))
-	hashes := rng.Hashes()
-	if err := w.Set(logHeadKey(id), encodeLogHead(size, st.lo, hashes)); err != nil {
+	size := st.size + uint64(len(hashes))
+	rhashes := rng.Hashes()
+	if err := w.Set(logHeadKey(id), encodeLogHead(size, st.lo, rhashes)); err != nil {
 		return logState{}, nil, &TableWriteError{Err: err}
 	}
-	st.size, st.hashes = size, hashes
+	st.size, st.hashes = size, rhashes
 	return st, staged, nil
 }
 
