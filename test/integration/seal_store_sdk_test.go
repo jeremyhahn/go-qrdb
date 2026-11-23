@@ -380,35 +380,32 @@ func TestSealStore_GRPCWeb_EmbeddedOnly(t *testing.T) {
 	}
 	assertRefused("unsealed")
 
-	// BarrierSeal is SO-gated; over gRPC-Web the node answers "pin: invalid
-	// PIN" to an x-qrdb-so-pin header the native gRPC listener accepts (open
-	// in docs/plans/1647.md, rw1647w2), so the seal goes over native gRPC
-	// and the unseal, the call a sealed node must still serve, over gRPC-Web.
-	grpcClient := sealNodeAdminClient(t, node, multiProtocol{name: "grpc"})
-	defer grpcClient.Close()
-	sealCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := grpcClient.Connect(sealCtx); err != nil {
-		t.Fatalf("gRPC connect: %v", err)
+	// BarrierSeal over gRPC-Web carries the barrier SO PIN exactly as the
+	// native gRPC SDK does: in BarrierSealRequest.so_pin, which the handler
+	// checks with pin.RequireSOPIN. seal:seal is not an SO-gate permission
+	// (authmw.SOPermissions), so no x-qrdb-so-pin header is read for it on
+	// any transport. A request without the PIN is refused, and the unseal is
+	// the call a sealed node must still serve.
+	if err := call(pb.QRDBService_BarrierSeal_FullMethodName, nil,
+		&pb.BarrierSealRequest{}, &emptypb.Empty{}); err == nil {
+		t.Fatal("gRPC-Web BarrierSeal without the SO PIN succeeded, want the barrier PIN refusal")
 	}
-	sealCtx, release, err := transport.WithSOPIN(sealCtx, []byte(sealNodeSOPIN))
-	if err != nil {
-		t.Fatalf("WithSOPIN: %v", err)
+	if err := call(pb.QRDBService_BarrierSeal_FullMethodName, nil,
+		&pb.BarrierSealRequest{SoPin: sealNodeSOPIN}, &emptypb.Empty{}); err != nil {
+		t.Fatalf("gRPC-Web BarrierSeal: %v", err)
 	}
-	err = grpcClient.Barrier().BarrierSeal(sealCtx)
-	release()
-	if err != nil {
-		t.Fatalf("gRPC BarrierSeal: %v", err)
+	sealed := &pb.BarrierStatusResponse{}
+	if err := call(pb.QRDBService_BarrierStatus_FullMethodName, nil, &emptypb.Empty{}, sealed); err != nil || !sealed.GetSealed() {
+		t.Fatalf("gRPC-Web BarrierStatus after seal = %+v, %v; want sealed", sealed, err)
 	}
 	assertRefused("sealed")
 	if err := call(pb.QRDBService_BarrierUnseal_FullMethodName, nil,
 		&pb.BarrierUnsealRequest{Secret: []byte(embeddedOnlySealPassphrase)}, &emptypb.Empty{}); err != nil {
 		t.Fatalf("gRPC-Web BarrierUnseal: %v", err)
 	}
-	statusCtx, statusCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer statusCancel()
-	if st, err := grpcClient.Barrier().BarrierStatus(statusCtx); err != nil || st.Sealed {
-		t.Fatalf("BarrierStatus after gRPC-Web unseal = %+v, %v; want unsealed", st, err)
+	unsealed := &pb.BarrierStatusResponse{}
+	if err := call(pb.QRDBService_BarrierStatus_FullMethodName, nil, &emptypb.Empty{}, unsealed); err != nil || unsealed.GetSealed() {
+		t.Fatalf("gRPC-Web BarrierStatus after unseal = %+v, %v; want unsealed", unsealed, err)
 	}
 	assertRefused("after unseal")
 }
