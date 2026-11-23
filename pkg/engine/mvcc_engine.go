@@ -1061,28 +1061,20 @@ func asAppErrResult(err error) (sm.Result, bool, error) {
 	return sm.Result{}, false, err
 }
 
-// putsFromOps extracts the indexable puts from a decoded operation set for
-// batch unique-constraint pre-validation.
-func putsFromOps(ops []protocol.DecodedOp) []indexedPut {
-	var puts []indexedPut
+// writesFromOps extracts the puts and deletes of a decoded operation set, in
+// op order, for batch unique-constraint pre-validation: the check replays them
+// in that order so it admits exactly what ordered apply admits.
+func writesFromOps(ops []protocol.DecodedOp) []indexedWrite {
+	var writes []indexedWrite
 	for _, op := range ops {
-		if op.Type == protocol.OpMVCCPut {
-			puts = append(puts, indexedPut{Key: op.Key, Value: op.Value})
+		switch op.Type {
+		case protocol.OpMVCCPut:
+			writes = append(writes, indexedWrite{Key: op.Key, Value: op.Value})
+		case protocol.OpMVCCDelete:
+			writes = append(writes, indexedWrite{Key: op.Key, Delete: true})
 		}
 	}
-	return puts
-}
-
-// deleteKeysFromOps extracts the keys an operation set deletes, so batch
-// pre-validation can treat the unique values they hold as freed.
-func deleteKeysFromOps(ops []protocol.DecodedOp) [][]byte {
-	var keys [][]byte
-	for _, op := range ops {
-		if op.Type == protocol.OpMVCCDelete {
-			keys = append(keys, op.Key)
-		}
-	}
-	return keys
+	return writes
 }
 
 // ---------------------------------------------------------------------------
@@ -1762,7 +1754,7 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 	// (read-only, delete-aware) so a violation rejects the transaction
 	// atomically via a non-fatal application error — no partial writes, no
 	// consensus stall.
-	if verr := CheckUniqueViolationsBatch(batch, e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+	if verr := CheckUniqueViolationsBatch(batch, e.indexes, e.indexFields, e.indexScopes, writesFromOps(ops)); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -2038,7 +2030,7 @@ func (e *MVCCEngine) applyDecodedBatch(s *mvcc.Store, lr *lease.Lessor, batch st
 	// Pre-validate unique-index constraints for the whole batch (read-only,
 	// delete-aware) so a violation rejects the batch atomically via a non-fatal
 	// application error rather than stalling consensus mid-apply.
-	if verr := CheckUniqueViolationsBatch(batch, e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+	if verr := CheckUniqueViolationsBatch(batch, e.indexes, e.indexFields, e.indexScopes, writesFromOps(ops)); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}

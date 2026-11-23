@@ -787,7 +787,7 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 	// consensus stall — matching the MVCC and batch handlers. Read through
 	// the batch so a uniqueness check sees an index write staged earlier in
 	// this same batch (storage.Reader).
-	if verr := CheckUniqueViolationsBatch(batch, e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+	if verr := CheckUniqueViolationsBatch(batch, e.indexes, e.indexFields, e.indexScopes, writesFromOps(ops)); verr != nil {
 		if res, handled, aerr := asAppErrResult(verr); handled {
 			return res, aerr
 		}

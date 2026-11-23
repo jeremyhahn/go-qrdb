@@ -144,6 +144,59 @@ func TestMVCCEngine_UniqueConflictIsAnAppErrorOnEveryWritePath(t *testing.T) {
 	}
 }
 
+// TestMVCCEngine_BatchMovesUniqueValueBetweenKeys: one transaction or batch
+// that overwrites user:2 (holding b@example.com) with another value and then
+// gives b@example.com to user:3 is applied, as ordered apply admits it; the
+// reverse order, which claims the value before user:2 releases it, is a
+// conflict application error that changes nothing.
+func TestMVCCEngine_BatchMovesUniqueValueBetweenKeys(t *testing.T) {
+	encoders := map[string]func(ops [][]byte) []byte{
+		"transaction": func(ops [][]byte) []byte { return mustEncode(protocol.EncodeTransaction(nil, ops, nil)) },
+		"batch":       func(ops [][]byte) []byte { return mustEncode(protocol.EncodeBatch(ops)) },
+	}
+	for name, encode := range encoders {
+		t.Run(name+" release then claim", func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			ops := [][]byte{
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:2", faultDocC),
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:3", faultDocB),
+			}
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: encode(ops)}})
+			if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); ok {
+				t.Fatalf("result data = %q (kind %v), want the move applied", results[0].Data, kind)
+			}
+			got, err := eng.Store().Get([]byte("user:3"))
+			if err != nil || string(got.Value) != faultDocB {
+				t.Fatalf("user:3 = %v, %v; want %s", got, err, faultDocB)
+			}
+			res, err := eng.Lookup(context.Background(), service.IndexQueryRequest{IndexName: "by_email", Value: []byte("b@example.com")})
+			if err != nil {
+				t.Fatalf("lookup b@example.com: %v", err)
+			}
+			keys, ok := res.([][]byte)
+			if !ok || len(keys) != 1 || string(keys[0]) != "user:3" {
+				t.Fatalf("lookup b@example.com = %#v, want only user:3", res)
+			}
+		})
+		t.Run(name+" claim before release", func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			before := eng.Store().CurrentRevision()
+			ops := [][]byte{
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:3", faultDocB),
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:2", faultDocC),
+			}
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: encode(ops)}})
+			_, kind, ok := protocol.DecodeAppErrorKind(results[0].Data)
+			if !ok || kind != protocol.AppErrorConflict {
+				t.Fatalf("result data = %q, want a conflict application error", results[0].Data)
+			}
+			if after := eng.Store().CurrentRevision(); after != before {
+				t.Fatalf("revision %d -> %d: a refused write must change nothing", before, after)
+			}
+		})
+	}
+}
+
 // A storage fault while staging a write is fatal on every write path: the
 // error reaches the caller of Update, typed as the injected fault, rather than
 // being folded into a result. Run with and without a secondary index, so the

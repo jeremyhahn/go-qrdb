@@ -131,43 +131,61 @@ func getIndexValues(batch storage.Batch, idx index.Index, fieldVal []byte) ([][]
 	return idx.Get(fieldVal)
 }
 
-// indexedPut is a (key, value) write evaluated for unique-constraint
-// admissibility by CheckUniqueViolationsBatch.
-type indexedPut struct {
-	Key   []byte
-	Value []byte
+// indexedWrite is one op of a transaction or batch, in op order, evaluated
+// for unique-constraint admissibility by CheckUniqueViolationsBatch: a put of
+// Value to Key, or (Delete set) a delete of Key.
+type indexedWrite struct {
+	Key    []byte
+	Value  []byte
+	Delete bool
 }
 
-// CheckUniqueViolationsBatch validates a batch of writes against the unique
-// secondary indexes WITHOUT modifying any index. It accounts for two things a
-// naive per-put check cannot: (1) keys DELETED in the same batch free the
-// unique values they hold (so a delete-then-reinsert of the same value is
-// admissible, matching ordered execution), and (2) conflicts BETWEEN puts in
-// the batch (two puts mapping different keys to the same unique value).
+// CheckUniqueViolationsBatch validates an ordered set of writes against the
+// unique secondary indexes WITHOUT modifying any index. It replays the writes
+// in op order, as apply runs them, and so accounts for what a naive per-put
+// check cannot: (1) a delete or an overwrite of a key releases the unique
+// values its committed entry holds, so a LATER op of the set may claim them
+// (a delete-then-reinsert, or moving a value from one key to another), while
+// an EARLIER op may not; an overwrite with a non-JSON value, or one without the
+// indexed field, releases the entry and claims nothing; and (2) conflicts
+// BETWEEN writes of the set (two keys claiming the same unique value), where a
+// later write of a key drops that key's earlier claim.
 //
 // It lets transaction/batch handlers reject the whole operation set atomically
 // — before any state is written — so a unique violation never reaches idx.Put
 // on the apply path and never stalls consensus. Returns a *UniqueConstraintError
 // on the first conflict, a non-typed error on an index read failure, or nil
 // when every write is admissible.
-func CheckUniqueViolationsBatch(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, puts []indexedPut, deletedKeys [][]byte) error {
-	if len(indexes) == 0 || len(puts) == 0 {
+func CheckUniqueViolationsBatch(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, writes []indexedWrite) error {
+	if len(indexes) == 0 || len(writes) == 0 {
 		return nil
 	}
-	deleted := make(map[string]struct{}, len(deletedKeys))
-	for _, k := range deletedKeys {
-		deleted[string(k)] = struct{}{}
-	}
+	// released holds the keys whose committed entries an earlier write of the
+	// set replaced (a delete, or a put that re-claims through pending).
+	released := make(map[string]struct{})
 	// pending records the key each (index, value) is claimed by within this
-	// batch, so an intra-batch duplicate is caught too.
-	pending := make(map[string][]byte)
-	for _, p := range puts {
+	// set, so an intra-set duplicate is caught too; claims indexes it by key so
+	// a later write of the same key can drop the key's earlier claims.
+	pending := make(map[string]string)
+	claims := make(map[string][]string)
+	for _, w := range writes {
+		key := string(w.Key)
+		for _, mapKey := range claims[key] {
+			if pending[mapKey] == key {
+				delete(pending, mapKey)
+			}
+		}
+		delete(claims, key)
+		released[key] = struct{}{}
+		if w.Delete {
+			continue
+		}
 		var fields map[string]json.RawMessage
-		if json.Unmarshal(p.Value, &fields) != nil {
+		if json.Unmarshal(w.Value, &fields) != nil {
 			continue // not JSON; nothing to index
 		}
 		for idxName, idx := range indexes {
-			if !KeyInScope(indexScopes[idxName], p.Key) {
+			if !KeyInScope(indexScopes[idxName], w.Key) {
 				continue
 			}
 			u, ok := idx.(uniqueIndexChecker)
@@ -188,19 +206,17 @@ func CheckUniqueViolationsBatch(batch storage.Batch, indexes map[string]index.In
 				return err
 			}
 			for _, k := range existing {
-				if bytes.Equal(k, p.Key) {
-					continue // the key updating its own entry
-				}
-				if _, isDeleted := deleted[string(k)]; isDeleted {
-					continue // the conflicting key is removed in this batch
+				if _, isReleased := released[string(k)]; isReleased {
+					continue // the key itself, or a holder an earlier write released
 				}
 				return &UniqueConstraintError{Index: idxName, Field: fieldName}
 			}
 			mapKey := idxName + "\x00" + string(fieldVal)
-			if prev, seen := pending[mapKey]; seen && !bytes.Equal(prev, p.Key) {
+			if prev, seen := pending[mapKey]; seen && prev != key {
 				return &UniqueConstraintError{Index: idxName, Field: fieldName}
 			}
-			pending[mapKey] = p.Key
+			pending[mapKey] = key
+			claims[key] = append(claims[key], mapKey)
 		}
 	}
 	return nil
