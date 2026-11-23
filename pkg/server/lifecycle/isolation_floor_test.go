@@ -18,9 +18,12 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -38,6 +41,37 @@ type fakeFloorService struct {
 	raceTo tenant.ClusterIsolationPolicy
 	// applied, when set, is closed by the first write that succeeds.
 	applied chan struct{}
+	// check is the strict-isolation activation check the composer hands
+	// every production tenant service; nil means no check is wired, which
+	// tenant.RequireStrictIsolation reads as not active.
+	check func() error
+}
+
+// StrictIsolationCheck implements tenant.StrictIsolationGate.
+func (f *fakeFloorService) StrictIsolationCheck() func() error { return f.check }
+
+// activeCheck is the activation check of a node where strict isolation and
+// guarded writes are both active.
+func activeCheck() error { return nil }
+
+// toggledCheck is an activation check that reports guarded writes not
+// active until activate is called.
+type toggledCheck struct {
+	active atomic.Bool
+	calls  chan struct{}
+}
+
+func (c *toggledCheck) check() error {
+	if c.calls != nil {
+		select {
+		case c.calls <- struct{}{}:
+		default:
+		}
+	}
+	if c.active.Load() {
+		return nil
+	}
+	return &feature.NotActiveError{Feature: featuregate.GuardedWrites}
 }
 
 func (f *fakeFloorService) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
@@ -82,7 +116,7 @@ func fastFloorRetries(t *testing.T, wait time.Duration) {
 
 func TestApplyIsolationFloor_SetsConfiguredFloor(t *testing.T) {
 	fastFloorRetries(t, time.Second)
-	svc := &fakeFloorService{setErrs: []error{errors.New("not leader")}}
+	svc := &fakeFloorService{setErrs: []error{errors.New("not leader")}, check: activeCheck}
 
 	ApplyIsolationFloor(context.Background(), svc, "strict")
 
@@ -108,6 +142,7 @@ func TestApplyIsolationFloor_RaceWonByAnotherNodeSucceeds(t *testing.T) {
 	svc := &fakeFloorService{
 		setErrs: []error{&tenant.IsolationPolicyChangeError{From: "strict", To: "strict"}},
 		raceTo:  tenant.ClusterIsolationPolicyStrict,
+		check:   activeCheck,
 	}
 	ApplyIsolationFloor(context.Background(), svc, "strict")
 	if _, sets := svc.state(); sets != 1 {
@@ -120,6 +155,7 @@ func TestApplyIsolationFloor_RefusalIsFinal(t *testing.T) {
 	svc := &fakeFloorService{
 		floor:   tenant.ClusterIsolationPolicyOperatorAccess,
 		setErrs: []error{&tenant.InvalidIsolationPolicyError{Value: "strict"}},
+		check:   activeCheck,
 	}
 	ApplyIsolationFloor(context.Background(), svc, "strict")
 	floor, sets := svc.state()
@@ -138,7 +174,7 @@ func TestApplyIsolationFloor_ContinuesInBackground(t *testing.T) {
 		errs[i] = errors.New("no quorum")
 	}
 	applied := make(chan struct{})
-	svc := &fakeFloorService{setErrs: errs, applied: applied}
+	svc := &fakeFloorService{setErrs: errs, applied: applied, check: activeCheck}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -151,6 +187,105 @@ func TestApplyIsolationFloor_ContinuesInBackground(t *testing.T) {
 	}
 	if floor, _ := svc.state(); floor != tenant.ClusterIsolationPolicyStrict {
 		t.Fatalf("floor = %q, want strict", floor)
+	}
+}
+
+// TestApplyIsolationFloor_WaitsForStrictIsolationActivation: on a clustered
+// node where guarded writes are not yet active (a rolling upgrade), the
+// configured floor is not written -- the tightening would commit while every
+// write guard is dropped. It is applied in the background once the
+// activation check passes, like a transient failure.
+func TestApplyIsolationFloor_WaitsForStrictIsolationActivation(t *testing.T) {
+	fastFloorRetries(t, 20*time.Millisecond)
+	gate := &toggledCheck{}
+	applied := make(chan struct{})
+	svc := &fakeFloorService{
+		floor:   tenant.ClusterIsolationPolicyOperatorAccess,
+		applied: applied,
+		check:   gate.check,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ApplyIsolationFloor(ctx, svc, "strict")
+
+	floor, sets := svc.state()
+	if sets != 0 {
+		t.Fatalf("set attempts = %d, want 0 while guarded writes are not active", sets)
+	}
+	if floor != tenant.ClusterIsolationPolicyOperatorAccess {
+		t.Fatalf("floor = %q, want operator-access to stand while guarded writes are not active", floor)
+	}
+
+	gate.active.Store(true)
+	select {
+	case <-applied:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the floor was not applied in the background once strict isolation became active")
+	}
+	if floor, _ := svc.state(); floor != tenant.ClusterIsolationPolicyStrict {
+		t.Fatalf("floor = %q, want strict", floor)
+	}
+}
+
+// TestApplyIsolationFloor_NotActiveButAlreadyAppliedIsNoOp: a floor that
+// already holds the configured value needs no write, so an inactive check
+// does not hold the start.
+func TestApplyIsolationFloor_NotActiveButAlreadyAppliedIsNoOp(t *testing.T) {
+	fastFloorRetries(t, time.Second)
+	gate := &toggledCheck{}
+	svc := &fakeFloorService{floor: tenant.ClusterIsolationPolicyStrict, check: gate.check}
+
+	done := make(chan struct{})
+	go func() {
+		ApplyIsolationFloor(context.Background(), svc, "strict")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("ApplyIsolationFloor waited although the floor already holds the configured value")
+	}
+	if floor, sets := svc.state(); sets != 0 || floor != tenant.ClusterIsolationPolicyStrict {
+		t.Fatalf("floor = %q, set attempts = %d; want strict and 0", floor, sets)
+	}
+}
+
+// TestApplyIsolationFloor_NotActiveStopsWithContext: a check that never
+// becomes active keeps the floor unwritten, and the retry ends with its
+// context without a write.
+func TestApplyIsolationFloor_NotActiveStopsWithContext(t *testing.T) {
+	fastFloorRetries(t, 20*time.Millisecond)
+	gate := &toggledCheck{calls: make(chan struct{}, 1)}
+	svc := &fakeFloorService{floor: tenant.ClusterIsolationPolicyOperatorAccess, check: gate.check}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ApplyIsolationFloor(ctx, svc, "strict")
+	if _, sets := svc.state(); sets != 0 {
+		t.Fatalf("set attempts = %d after the wait, want 0", sets)
+	}
+
+	// The background retry is the same loop; run it here so its end is
+	// observable, and cancel once it has consulted the check.
+	result := make(chan bool, 1)
+	go func() { result <- setIsolationFloor(ctx, svc, tenant.ClusterIsolationPolicyStrict) }()
+	select {
+	case <-gate.calls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the retry never consulted the activation check")
+	}
+	cancel()
+	select {
+	case ok := <-result:
+		if ok {
+			t.Fatal("setIsolationFloor = true after its context ended, want false")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the retry did not end with its context")
+	}
+	if floor, sets := svc.state(); sets != 0 || floor != tenant.ClusterIsolationPolicyOperatorAccess {
+		t.Fatalf("floor = %q, set attempts = %d; want operator-access and 0", floor, sets)
 	}
 }
 
