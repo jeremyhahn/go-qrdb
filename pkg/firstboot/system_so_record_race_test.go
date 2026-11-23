@@ -232,6 +232,9 @@ func TestRecordSOBoundKey_OtherErrorIsNotRetried(t *testing.T) {
 	if !errors.As(err, &enroll) || enroll.Op != "binding" {
 		t.Fatalf("err = %v, want a binding SystemSOEnrollmentError", err)
 	}
+	if users.updates != 1 {
+		t.Fatalf("UpdateUser calls = %d, want 1: a fault that is not a lost race is not retried", users.updates)
+	}
 }
 
 type failingSOUpdater struct{ *racingSOUsers }
