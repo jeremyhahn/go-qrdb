@@ -20,12 +20,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/cockroachdb/pebble/v2/objstorage/remote"
 	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // Remote adapts a go-objstore common.Storage to Pebble's
@@ -48,7 +53,18 @@ var _ remote.Storage = (*Remote)(nil)
 // NewRemote returns a Remote over store whose objects live under prefix. A nil
 // store, or a prefix that is empty, starts with "/" or contains a NUL, is
 // refused with an *InvalidRemoteError.
+//
+// When store is backed by a local filesystem path (common.PathAccessor, the
+// local provider), NewRemote makes the prefix directory durable before Pebble
+// writes any object: the provider creates missing directories on Put but never
+// fsyncs the parent that holds their entry, so a power loss could drop an
+// SSTable Pebble already counts as written. See ensureDurablePrefix.
 func NewRemote(store objcommon.Storage, prefix string) (*Remote, error) {
+	return newRemote(store, prefix, defaultRemoteDirOps)
+}
+
+// newRemote is NewRemote with the directory seam injected.
+func newRemote(store objcommon.Storage, prefix string, ops remoteDirOps) (*Remote, error) {
 	switch {
 	case store == nil:
 		return nil, &InvalidRemoteError{Prefix: prefix, Reason: "nil store"}
@@ -59,7 +75,57 @@ func NewRemote(store objcommon.Storage, prefix string) (*Remote, error) {
 	case strings.ContainsRune(prefix, 0):
 		return nil, &InvalidRemoteError{Prefix: prefix, Reason: "prefix contains a NUL"}
 	}
+	if pa, ok := store.(objcommon.PathAccessor); ok {
+		if root := pa.LocalPath(); root != "" {
+			if err := ensureDurablePrefix(root, prefix, ops); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return &Remote{store: store, prefix: prefix}, nil
+}
+
+// remoteDirOps is the filesystem seam ensureDurablePrefix works through, so a
+// test can record the order of its directory creations and syncs.
+type remoteDirOps struct {
+	mkdir   func(name string) error
+	syncDir func(name string) error
+}
+
+// defaultRemoteDirOps creates and fsyncs real directories.
+var defaultRemoteDirOps = remoteDirOps{
+	mkdir:   func(name string) error { return os.Mkdir(name, 0o700) },
+	syncDir: fsync.Dir,
+}
+
+// ensureDurablePrefix creates each directory of prefix under the bucket root
+// root, in order, and after each one fsyncs its parent, so the entry naming it
+// is on stable storage before any object below it is. A directory that already
+// exists is synced too: an earlier process may have created it and crashed
+// before the sync. A "." or ".." segment is refused, as it would leave root.
+// Windows cannot flush a directory handle (cacheDirSyncSupported), so there
+// the directories are only created.
+func ensureDurablePrefix(root, prefix string, ops remoteDirOps) error {
+	parent := filepath.Clean(root)
+	for _, part := range strings.Split(prefix, "/") {
+		switch part {
+		case "":
+			continue
+		case ".", "..":
+			return &InvalidRemoteError{Prefix: prefix, Reason: "prefix has a . or .. segment"}
+		}
+		dir := filepath.Join(parent, part)
+		if err := ops.mkdir(dir); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		if cacheDirSyncSupported {
+			if err := ops.syncDir(parent); err != nil {
+				return err
+			}
+		}
+		parent = dir
+	}
+	return nil
 }
 
 // key returns the store key of the Pebble object objName.

@@ -709,6 +709,129 @@ func TestCacheFileReader_ReadAtBounds(t *testing.T) {
 	require.NoError(t, r.ReadAt(context.Background(), nil, int64(len(data))))
 }
 
+// pathStore is an in-memory store that reports a local bucket root, as the
+// local provider does, and records each Put in the shared event log.
+type pathStore struct {
+	objcommon.Storage
+	root   string
+	events *[]string
+}
+
+func (s *pathStore) LocalPath() string { return s.root }
+
+func (s *pathStore) PutWithContext(ctx context.Context, key string, data io.Reader) error {
+	*s.events = append(*s.events, "put "+key)
+	return s.Storage.PutWithContext(ctx, key, data)
+}
+
+// recordingDirOps creates and syncs real directories and logs each call.
+func recordingDirOps(events *[]string, root string) remoteDirOps {
+	rel := func(name string) string {
+		r, err := filepath.Rel(root, name)
+		if err != nil {
+			return name
+		}
+		return filepath.ToSlash(r)
+	}
+	return remoteDirOps{
+		mkdir: func(name string) error {
+			*events = append(*events, "mkdir "+rel(name))
+			return defaultRemoteDirOps.mkdir(name)
+		},
+		syncDir: func(name string) error {
+			*events = append(*events, "sync "+rel(name))
+			return defaultRemoteDirOps.syncDir(name)
+		},
+	}
+}
+
+func TestNewRemote_DirSyncBeforeFirstPut(t *testing.T) {
+	root := t.TempDir()
+	var events []string
+	store := &pathStore{Storage: memory.New(), root: root, events: &events}
+	rs, err := newRemote(store, "lsm/a", recordingDirOps(&events, root))
+	require.NoError(t, err)
+	w, err := rs.CreateObject("000001.sst")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("x"))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	want := []string{"mkdir lsm", "sync .", "mkdir lsm/a", "sync lsm", "put lsm/a/000001.sst"}
+	if !cacheDirSyncSupported {
+		want = []string{"mkdir lsm", "mkdir lsm/a", "put lsm/a/000001.sst"}
+	}
+	require.Equal(t, want, events)
+	info, err := os.Stat(filepath.Join(root, "lsm", "a"))
+	require.NoError(t, err)
+	require.True(t, info.IsDir())
+}
+
+func TestNewRemote_DirSyncExistingPrefixStillSynced(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, "lsm"), 0o700))
+	var events []string
+	store := &pathStore{Storage: memory.New(), root: root, events: &events}
+	_, err := newRemote(store, "lsm", recordingDirOps(&events, root))
+	require.NoError(t, err)
+	want := []string{"mkdir lsm", "sync ."}
+	if !cacheDirSyncSupported {
+		want = []string{"mkdir lsm"}
+	}
+	require.Equal(t, want, events)
+}
+
+func TestNewRemote_DirSyncFaults(t *testing.T) {
+	root := t.TempDir()
+	boom := errors.New("boom")
+	var events []string
+	store := &pathStore{Storage: memory.New(), root: root, events: &events}
+
+	_, err := newRemote(store, "lsm", remoteDirOps{
+		mkdir:   func(string) error { return boom },
+		syncDir: defaultRemoteDirOps.syncDir,
+	})
+	require.ErrorIs(t, err, boom)
+
+	if cacheDirSyncSupported {
+		_, err = newRemote(store, "lsm", remoteDirOps{
+			mkdir:   defaultRemoteDirOps.mkdir,
+			syncDir: func(string) error { return boom },
+		})
+		require.ErrorIs(t, err, boom)
+	}
+
+	for _, prefix := range []string{"lsm/..", "./lsm"} {
+		_, err = newRemote(store, prefix, defaultRemoteDirOps)
+		var inv *InvalidRemoteError
+		require.ErrorAs(t, err, &inv, prefix)
+	}
+	require.Empty(t, events)
+}
+
+func TestNewRemote_DirSyncLocalProvider(t *testing.T) {
+	root := t.TempDir()
+	// The store the engine opens (OpenStore) must expose the bucket root.
+	store, err := OpenStore("local", map[string]string{"path": root})
+	require.NoError(t, err)
+	_, ok := store.(objcommon.PathAccessor)
+	require.True(t, ok, "the local provider must expose its bucket root")
+	rs, err := NewRemote(store, "lsm")
+	require.NoError(t, err)
+	info, err := os.Stat(filepath.Join(root, "lsm"))
+	require.NoError(t, err)
+	require.True(t, info.IsDir())
+	w, err := rs.CreateObject("000001.sst")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("sst"))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	rd, size, err := rs.ReadObject(context.Background(), "000001.sst")
+	require.NoError(t, err)
+	require.EqualValues(t, 3, size)
+	require.NoError(t, rd.Close())
+}
+
 func TestObjstoreErrors_Messages(t *testing.T) {
 	require.Contains(t, (&InvalidObjectNameError{Name: "a/b", Reason: "why"}).Error(), `"a/b": why`)
 	require.Contains(t, (&ArchiveTierUnsupportedError{Provider: "glacier"}).Error(), `"glacier" is an archive tier`)
