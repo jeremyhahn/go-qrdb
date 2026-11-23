@@ -56,3 +56,22 @@ func WithTimeout(d time.Duration) ClientOption {
 		o.transportOpts = append(o.transportOpts, transport.WithTimeout(d))
 	}
 }
+
+// WithBearerToken sends "Authorization: Bearer <token>" on every request of
+// the REST, gRPC, Unix and MCP transports. It mirrors
+// transport.WithBearerToken: the token is sent only over TLS and, on REST and
+// MCP, only to the configured host. The QUIC transport refuses it.
+func WithBearerToken(token string) ClientOption {
+	return func(o *clientOptions) {
+		o.transportOpts = append(o.transportOpts, transport.WithBearerToken(token))
+	}
+}
+
+// WithTokenSource is WithBearerToken with a token that src supplies; src is
+// consulted once per request, so a refreshed token is used at once. It
+// mirrors transport.WithTokenSource.
+func WithTokenSource(src transport.TokenSource) ClientOption {
+	return func(o *clientOptions) {
+		o.transportOpts = append(o.transportOpts, transport.WithTokenSource(src))
+	}
+}
