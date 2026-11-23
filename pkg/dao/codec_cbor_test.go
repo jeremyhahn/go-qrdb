@@ -127,6 +127,29 @@ func TestCBORDocumentCodec_NestingPastLimitRefusedOnEncode(t *testing.T) {
 	assert.True(t, errors.As(err, &limitErr), "error is %T: %v", err, err)
 }
 
+// TestCBORDocumentCodec_NonStringNestedMapKeyRefusedOnEncode proves a
+// document the document decoder cannot read back (a nested map with integer
+// keys, which does not decode as map[string]any) is refused at encode time,
+// while a string-keyed nested map round-trips.
+func TestCBORDocumentCodec_NonStringNestedMapKeyRefusedOnEncode(t *testing.T) {
+	c, err := NewDocumentCodec(CodecCBOR)
+	require.NoError(t, err)
+
+	data, err := c.Marshal(map[string]any{"nested": map[int]string{1: "one"}})
+	require.Error(t, err)
+	assert.Nil(t, data, "a refused document yields no bytes to store")
+	var shapeErr CBORDecodeShapeError
+	assert.True(t, errors.As(err, &shapeErr), "error is %T: %v", err, err)
+
+	data, err = c.Marshal(map[string]any{"nested": map[string]any{"a": 1}})
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, c.Unmarshal(data, &got))
+	nested, ok := got["nested"].(map[string]any)
+	require.True(t, ok, "nested is %T", got["nested"])
+	assert.EqualValues(t, 1, nested["a"])
+}
+
 func TestCBORDocumentCodec_LargeArrayAndMapRoundTrip(t *testing.T) {
 	c, err := NewDocumentCodec(CodecCBOR)
 	require.NoError(t, err)

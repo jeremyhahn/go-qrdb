@@ -55,6 +55,19 @@ func (e CBORLimitError) Error() string {
 
 func (e CBORLimitError) Unwrap() error { return e.Cause }
 
+// CBORDecodeShapeError reports a value the CBOR codec refuses to encode
+// because its encoding cannot be decoded back as the stored type, such as a
+// map with non-string keys inside a generic document.
+type CBORDecodeShapeError struct {
+	Cause error
+}
+
+func (e CBORDecodeShapeError) Error() string {
+	return fmt.Sprintf("cbor: value encodes but cannot be decoded back as the stored type (e.g. a map with non-string keys inside a document): %v", e.Cause)
+}
+
+func (e CBORDecodeShapeError) Unwrap() error { return e.Cause }
+
 // cborDecOptions returns the decode options with the shared limits applied.
 func cborDecOptions(defaultMapType reflect.Type) fxcbor.DecOptions {
 	return fxcbor.DecOptions{
@@ -65,8 +78,9 @@ func cborDecOptions(defaultMapType reflect.Type) fxcbor.DecOptions {
 	}
 }
 
-// limitedCBORCodec checks every encoding against the decoder's limits
-// before returning it, so nothing is written that cannot be read back.
+// limitedCBORCodec checks every encoding against the decoder's limits and
+// decodes it back once as E with the same DecMode before returning it, so
+// nothing is written that cannot be read back.
 type limitedCBORCodec[E any] struct {
 	inner codec.Codec[E]
 	dm    fxcbor.DecMode
@@ -92,6 +106,10 @@ func (c *limitedCBORCodec[E]) Marshal(data E) ([]byte, error) {
 	}
 	if err := c.dm.Wellformed(b); err != nil {
 		return nil, CBORLimitError{Cause: err}
+	}
+	var probe E
+	if err := c.dm.Unmarshal(b, &probe); err != nil {
+		return nil, CBORDecodeShapeError{Cause: err}
 	}
 	return b, nil
 }
