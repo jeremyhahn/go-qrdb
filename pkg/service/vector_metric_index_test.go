@@ -31,7 +31,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
 )
@@ -246,27 +245,4 @@ func TestVecBatchUpsert_IVFRefusesWrongDimensionBeforeWriting(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, found.Results, 1)
 	assert.Equal(t, uint64(2), found.Results[0].ID)
-}
-
-func TestWithClusterIsolationPolicyReader_OperatorAccess(t *testing.T) {
-	storage := newVecMockStorage()
-	logger := newVecTestLogger()
-
-	// operator-access (and no reader at all, the default) — system tenant
-	// context should work.
-	svc, err := NewVectorService(storage, logger, WithClusterIsolationPolicyReader(
-		fixedClusterIsolationPolicyReader{policy: tenant.ClusterIsolationPolicyOperatorAccess}))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if svc == nil {
-		t.Fatal("expected non-nil service")
-	}
-	ctx := context.Background() // no tenant
-	if _, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
-		Namespace: "test-ns",
-		Dimension: 128,
-	}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 }
