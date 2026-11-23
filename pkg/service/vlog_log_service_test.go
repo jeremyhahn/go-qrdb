@@ -1767,6 +1767,7 @@ func (r markerReclaimer) UnfenceDatabaseKeyspace(_ context.Context, tenantID, db
 // drop and recreate the log's database while a create is minting its key.
 type pausingSigners struct {
 	*hsmProvider
+	once    sync.Once
 	entered chan struct{}
 	release chan struct{}
 }
@@ -1812,8 +1813,10 @@ func (s *pausingHeadSigner) Sign(ctx context.Context, msg []byte) ([]byte, error
 }
 
 func (p *pausingSigners) CreateKey(ctx context.Context, req vlog.CreateKeyRequest) (vlog.CreatedKey, error) {
-	close(p.entered)
-	<-p.release
+	p.once.Do(func() {
+		close(p.entered)
+		<-p.release
+	})
 	return p.hsmProvider.CreateKey(ctx, req)
 }
 

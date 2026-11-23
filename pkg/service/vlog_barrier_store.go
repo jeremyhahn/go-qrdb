@@ -64,6 +64,10 @@ type barrierLogStore struct {
 	// admit admits each read and write through the tenant's home-store gate
 	// (LogStoreAdmission); nil admits every operation.
 	admit LogStoreAdmission
+	// source is the LogBarrierStoreSource the store was built from; each
+	// admitted operation checks it still holds barrier for the tenant
+	// (replaced). nil checks nothing.
+	source LogBarrierStoreSource
 
 	mu   sync.Mutex
 	logs logChain
@@ -72,12 +76,12 @@ type barrierLogStore struct {
 // newBarrierLogStore returns the store of tenantID's barrier, served by kv.
 // kv must apply atomic batches (kvstore.MultiGuardedBatchKVStore), else
 // errBarrierLogStoreNotAtomic.
-func newBarrierLogStore(tenantID string, barrier LogBarrier, kv kvstore.KVStore, admit LogStoreAdmission) (*barrierLogStore, error) {
+func newBarrierLogStore(tenantID string, barrier LogBarrier, kv kvstore.KVStore, admit LogStoreAdmission, source LogBarrierStoreSource) (*barrierLogStore, error) {
 	batched, ok := kv.(kvstore.MultiGuardedBatchKVStore)
 	if !ok || barrier == nil {
 		return nil, errBarrierLogStoreNotAtomic
 	}
-	return &barrierLogStore{tenantID: tenantID, barrier: barrier, kv: batched, admit: admit}, nil
+	return &barrierLogStore{tenantID: tenantID, barrier: barrier, kv: batched, admit: admit, source: source}, nil
 }
 
 // admitOp admits one operation through s.admit; release ends it.
@@ -96,6 +100,21 @@ func (s *barrierLogStore) sealed() bool {
 		return true
 	}
 	return false
+}
+
+// replaced refuses with ErrLogStoreReplaced, dropping the chain, when the
+// source no longer holds s.barrier for the tenant (an encryption migration's
+// ReplaceTenantBarrier) or cannot say. s.mu must be held.
+func (s *barrierLogStore) replaced(ctx context.Context) error {
+	if s.source == nil {
+		return nil
+	}
+	barrier, _, err := s.source.TenantLogStore(ctx, s.tenantID)
+	if err == nil && barrier == s.barrier {
+		return nil
+	}
+	s.logs.drop()
+	return ErrLogStoreReplaced
 }
 
 // isSealedError reports whether err is the tenant barrier's seal.
@@ -137,6 +156,9 @@ func (s *barrierLogStore) proposeFenced(ctx context.Context, cmd []byte, fence l
 	if s.sealed() {
 		return sm.Result{}, tenant.ErrTenantSealed
 	}
+	if err := s.replaced(ctx); err != nil {
+		return sm.Result{}, err
+	}
 	if fence.live != nil {
 		if err := fence.live(); err != nil {
 			return sm.Result{}, err
@@ -163,6 +185,9 @@ func (s *barrierLogStore) read(ctx context.Context, req vlog.Request) (interface
 	defer s.mu.Unlock()
 	if s.sealed() {
 		return nil, tenant.ErrTenantSealed
+	}
+	if err := s.replaced(ctx); err != nil {
+		return nil, err
 	}
 	v, err := readLog(barrierKVReader{ctx: ctx, kv: s.kv}, req, isSealedError)
 	if err != nil {

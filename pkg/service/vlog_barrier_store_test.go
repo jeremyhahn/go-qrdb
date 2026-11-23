@@ -343,6 +343,55 @@ func TestLogService_RecycledStandaloneBarrierDropsTheChain(t *testing.T) {
 	}
 }
 
+// migrateVault replaces vault's registered barrier the way an encryption
+// migration's commit does (seal.BarrierRegistry.ReplaceTenantBarrier):
+// the registry then holds a new, initialized barrier over its own backend,
+// and the old one stays unsealed.
+func (f *standaloneBarrierFixture) migrateVault(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	b, _ := newTestSoftwareBarrier(t)
+	if err := b.Initialize(ctx, seal.MustCredentials(ctx, []byte(barrierTenantPass))); err != nil {
+		t.Fatalf("Initialize the replacement barrier: %v", err)
+	}
+	if err := f.reg.ReplaceTenantBarrier("vault", seal.WrapTenantBarrier("vault", b)); err != nil {
+		t.Fatalf("ReplaceTenantBarrier: %v", err)
+	}
+}
+
+// A create that resolved its standalone store before an encryption
+// migration replaced the tenant barrier, and proposes after, is refused
+// with ErrLogStoreReplaced and writes nothing through the old barrier; the
+// caller's retry lands on the replacement barrier.
+func TestLogService_StandaloneBarrierCreateAcrossMigrationRefusesTheReplacedBarrier(t *testing.T) {
+	signers := newPausingSigners()
+	f := newStandaloneBarrierFixtureWithSigners(t, signers)
+	ctx := context.Background()
+	before, err := f.backend.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List the old backend: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.svc.CreateLog(f.ctx, &CreateLogRequest{LogRef: barrierTenantRef, Origin: "vault/ledger/events", SigningKeyType: vlog.SignatureEd25519})
+		done <- err
+	}()
+	<-signers.entered
+	f.migrateVault(t)
+	close(signers.release)
+	if err := <-done; !errors.Is(err, ErrLogStoreReplaced) {
+		t.Fatalf("CreateLog across the migration = %v, want ErrLogStoreReplaced", err)
+	}
+	after, err := f.backend.List(ctx, "")
+	if err != nil || len(after) != len(before) {
+		t.Fatalf("the old barrier's backend holds %d keys (%v), had %d: the create wrote through the replaced barrier", len(after), err, len(before))
+	}
+	f.createAndAppend(t, [][]byte{[]byte("after-migration")})
+	if size := f.headSize(t); size != 1 {
+		t.Fatalf("head size on the replacement barrier = %d, want 1", size)
+	}
+}
+
 // TestLogService_DropDatabaseLogsOnAStandaloneBarrierReclaimsEveryLog proves
 // a dropped database's logs on a barrier tenant's standalone store are
 // deleted: its logs no longer list, the old log reads as not found, a second

@@ -132,6 +132,8 @@ var dominantRules = []rule{
 	// A barrier-isolated tenant's IAM store resolved to a SEALED barrier; the
 	// resolver fails closed rather than falling back to the shared store.
 	is(tenant.ErrTenantSealed, Unavailable),
+	// A standalone barrier log store a migration replaced: the retry resolves the new barrier.
+	is(service.ErrLogStoreReplaced, Unavailable),
 	// The same seal met one step later: the barrier sealed AFTER Resolve
 	// returned a store and BEFORE that store's own Get/Put ran, which reports
 	// the barrier's sentinel unwrapped (go-qrdb#464 round 6).

@@ -136,6 +136,13 @@ type LogStoreAdmission interface {
 	AdmitTenantLog(tenantID string) (release func(), err error)
 }
 
+// ErrLogStoreReplaced refuses an operation on a barrier tenant's standalone
+// log store whose barrier is no longer the one the node holds for the
+// tenant: an encryption migration replaced it while the store was retained,
+// and a write through it would land under the obsolete key. The caller
+// retries; the retry resolves the replacement barrier.
+var ErrLogStoreReplaced = errors.New("verifiable log: the tenant barrier was replaced; retry")
+
 // ResolveAuditShard implements AuditShardResolver.
 func (r *SystemShardAuditResolver) ResolveAuditShard(ctx context.Context, tenantID string) (Host, uint64, error) {
 	routed := tenantid.Normalize(tenantID)
