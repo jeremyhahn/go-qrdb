@@ -361,6 +361,48 @@ Controls which API protocols are enabled.
 
 ---
 
+### unix
+
+The gRPC-over-Unix-socket service (`protocols.unix`).
+
+| Field | Type | Default | CLI Flag | Description |
+|---|---|---|---|---|
+| `socket_path` | string | `/var/run/qrdbd/qrdbd.sock` | `--unix-socket-path` | Path of the socket |
+| `peer_credentials` | list | none | — | Maps the connecting process's kernel-reported uid or gid (`SO_PEERCRED`, Linux only) to a go-qrdb account |
+| `peer_credentials[].uid` | uint32 | — | — | The uid to match. Set exactly one of `uid` and `gid` |
+| `peer_credentials[].gid` | uint32 | — | — | The primary gid to match |
+| `peer_credentials[].tenant` | string | `""` | — | The account's tenant |
+| `peer_credentials[].user` | string | — | — | The account's username. Required |
+
+```yaml
+unix:
+  socket_path: /var/run/qrdbd/qrdbd.sock
+  peer_credentials:
+    - uid: 1000
+      tenant: acme
+      user: deploy
+    - gid: 2000
+      tenant: acme
+      user: ops
+```
+
+**Notes:**
+
+- A mapping names an account, never a role. The account's roles decide what
+  the caller may do, through the same RBAC as every other identity. A mapping
+  whose account does not exist authenticates a caller that holds no roles, so
+  every request is denied.
+- An unmapped peer is refused (`peer_credential_unmapped`, `UNAUTHENTICATED`).
+  With no `peer_credentials` no peer-credential authenticator is installed.
+- The authenticator is last in the authentication chain, so a client
+  certificate or a consumer authenticator presented on the socket still
+  decides the request first.
+- A `uid` match wins over a `gid` match. A uid or gid may appear in only one
+  mapping. The list is validated even while `protocols.unix` is off.
+- The account's `auth_methods`, when set, must include `peercred`.
+
+---
+
 ### raft
 
 Configures the QuicRaft consensus layer.
