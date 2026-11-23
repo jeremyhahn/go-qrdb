@@ -50,6 +50,11 @@ const rotationAttemptTimeout = 30 * time.Second
 // leaves the claim to lapse.
 const rotationSettleTimeout = 30 * time.Second
 
+// rotationListTimeout bounds the barrier listing that opens a pass. The
+// scheduler's context carries no deadline, so a store that never answers
+// the listing would otherwise hold the pass, and every later one, forever.
+const rotationListTimeout = 30 * time.Second
+
 // rotationClaim is the lease a scheduled rotation takes on a credential's
 // metadata record before it invokes the rotation value source, so one
 // caller at a time runs a source that may have side effects outside the
@@ -315,7 +320,9 @@ func (s *CredentialService) RotateDue(ctx context.Context, now time.Time) (int, 
 	if s.strategy != StrategyBarrier {
 		return 0, nil
 	}
-	names, err := s.listBarrier(ctx)
+	lctx, lcancel := context.WithTimeout(ctx, rotationListTimeout)
+	names, err := s.listBarrier(lctx)
+	lcancel()
 	if err != nil {
 		return 0, err
 	}

@@ -1089,6 +1089,52 @@ func TestRotateDue_StalledClaimIsBounded(t *testing.T) {
 	})
 }
 
+// stallListStore is a Store whose List of the credential prefix never
+// answers: the listing ends only with its context.
+type stallListStore struct {
+	Store
+}
+
+func (s stallListStore) List(ctx context.Context, prefix string) ([]string, error) {
+	if prefix == credentialPrefix {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.Store.List(ctx, prefix)
+}
+
+// TestRotateDue_StalledListingIsBounded: a barrier listing that never
+// answers ends the pass at rotationListTimeout, not at the scheduler's
+// own (much later) deadline.
+func TestRotateDue_StalledListingIsBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		svc, _ := newFaultRotationService(t)
+		setFaultPolicy(t, svc, "a", 5)
+		inner, err := svc.store.current()
+		if err != nil {
+			t.Fatalf("current store: %v", err)
+		}
+		if err := svc.store.bind(stallListStore{Store: inner}); err != nil {
+			t.Fatalf("bind: %v", err)
+		}
+
+		parent, cancel := context.WithTimeout(t.Context(), time.Hour)
+		defer cancel()
+		start := time.Now()
+		n, err := svc.RotateDue(parent, rotationEpoch.Add(time.Hour))
+		spent := time.Since(start)
+		if n != 0 || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("RotateDue over a stalled listing = %d, %v; want 0 and a deadline error", n, err)
+		}
+		if spent > rotationListTimeout {
+			t.Fatalf("the stalled listing held the pass for %v, want at most %v", spent, rotationListTimeout)
+		}
+		if parent.Err() != nil {
+			t.Fatalf("the pass ended with its parent context (%v), want the listing bound first", parent.Err())
+		}
+	})
+}
+
 func TestRotateDue_StalledCleanupIsBounded(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		svc, backend := newFaultRotationService(t)
