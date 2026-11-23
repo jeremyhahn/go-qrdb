@@ -35,12 +35,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
-// BarrierLogKeyspace is the reserved keyspace a barrier tenant's verifiable
-// logs occupy inside the tenant barrier on a standalone node. Like
-// tenant.HomeName it is a reserved name ("__" first), so neither the home
-// store (tenant.HomeName + "/") nor any database of the tenant shares it.
-const BarrierLogKeyspace = "__vlog"
-
 // barrierLogPrefix is the key prefix of BarrierLogKeyspace. A vlog key is
 // stored under it in lower-case hex, which keeps the byte order of the
 // keys in the string order of the stored keys and any byte of a key legal.
@@ -67,6 +61,9 @@ type barrierLogStore struct {
 	tenantID string
 	barrier  LogBarrier
 	kv       kvstore.MultiGuardedBatchKVStore
+	// admit admits each read and write through the tenant's home-store gate
+	// (LogStoreAdmission); nil admits every operation.
+	admit LogStoreAdmission
 
 	mu   sync.Mutex
 	logs logChain
@@ -75,12 +72,20 @@ type barrierLogStore struct {
 // newBarrierLogStore returns the store of tenantID's barrier, served by kv.
 // kv must apply atomic batches (kvstore.MultiGuardedBatchKVStore), else
 // errBarrierLogStoreNotAtomic.
-func newBarrierLogStore(tenantID string, barrier LogBarrier, kv kvstore.KVStore) (*barrierLogStore, error) {
+func newBarrierLogStore(tenantID string, barrier LogBarrier, kv kvstore.KVStore, admit LogStoreAdmission) (*barrierLogStore, error) {
 	batched, ok := kv.(kvstore.MultiGuardedBatchKVStore)
 	if !ok || barrier == nil {
 		return nil, errBarrierLogStoreNotAtomic
 	}
-	return &barrierLogStore{tenantID: tenantID, barrier: barrier, kv: batched}, nil
+	return &barrierLogStore{tenantID: tenantID, barrier: barrier, kv: batched, admit: admit}, nil
+}
+
+// admitOp admits one operation through s.admit; release ends it.
+func (s *barrierLogStore) admitOp() (func(), error) {
+	if s.admit == nil {
+		return func() {}, nil
+	}
+	return s.admit.AdmitTenantLog(s.tenantID)
 }
 
 // sealed reports whether the barrier is sealed, dropping the chain when it
@@ -112,6 +117,11 @@ func (s *barrierLogStore) translateStoreError(err error) error {
 // propose applies one encoded OpVerifiableLog command to the tenant
 // barrier's store and returns the apply's result.
 func (s *barrierLogStore) propose(ctx context.Context, cmd []byte) (sm.Result, error) {
+	release, err := s.admitOp()
+	if err != nil {
+		return sm.Result{}, err
+	}
+	defer release()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.sealed() {
@@ -129,6 +139,11 @@ func (s *barrierLogStore) propose(ctx context.Context, cmd []byte) (sm.Result, e
 
 // read answers one vlog.Request from the tenant barrier's store.
 func (s *barrierLogStore) read(ctx context.Context, req vlog.Request) (interface{}, error) {
+	release, err := s.admitOp()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.sealed() {

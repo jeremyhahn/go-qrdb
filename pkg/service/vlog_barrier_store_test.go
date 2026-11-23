@@ -237,6 +237,62 @@ func TestLogService_SealedStandaloneBarrierTenantRefuses(t *testing.T) {
 	}
 }
 
+// fencingBarrierResolver is a standaloneBarrierResolver whose log store
+// admits operations as the tenant-host registry's home gate does: refused
+// while fenced, and counted in flight until released.
+type fencingBarrierResolver struct {
+	standaloneBarrierResolver
+	fenced   bool
+	admitted int
+	inflight int
+}
+
+var errLogFenced = errors.New("tenant migration in progress")
+
+func (r *fencingBarrierResolver) AdmitTenantLog(tenantID string) (func(), error) {
+	if tenantID != "vault" {
+		return nil, errors.New("admitted a tenant other than vault: " + tenantID)
+	}
+	if r.fenced {
+		return nil, errLogFenced
+	}
+	r.admitted++
+	r.inflight++
+	return func() { r.inflight-- }, nil
+}
+
+// TestLogService_StandaloneBarrierLogOpsPassTheHomeGate pins that every read
+// and write of a barrier tenant's standalone log store is admitted through
+// the source's LogStoreAdmission and released when it ends, and that a
+// fenced gate (an encryption migration) refuses them with its error.
+func TestLogService_StandaloneBarrierLogOpsPassTheHomeGate(t *testing.T) {
+	f := newStandaloneBarrierFixture(t)
+	gate := &fencingBarrierResolver{standaloneBarrierResolver: standaloneBarrierResolver{f: f}}
+	svc, err := NewLogService(LogServiceConfig{Resolver: gate, Databases: noDatabases(t)})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	f.svc, f.route = svc, svc.(*logService).route
+	f.createAndAppend(t, [][]byte{[]byte("one"), []byte("two")})
+	if size := f.headSize(t); size != 2 {
+		t.Fatalf("head size = %d, want 2", size)
+	}
+	if gate.admitted == 0 || gate.inflight != 0 {
+		t.Fatalf("gate admitted %d, %d still in flight; want admissions, all released", gate.admitted, gate.inflight)
+	}
+	gate.fenced = true
+	if _, err := f.svc.Append(f.ctx, &AppendRequest{LogRef: barrierTenantRef, Entries: [][]byte{[]byte("fenced")}}); !errors.Is(err, errLogFenced) {
+		t.Fatalf("Append through a fenced gate = %v, want the gate's error", err)
+	}
+	if _, err := f.svc.Head(f.ctx, &HeadRequest{LogRef: barrierTenantRef}); !errors.Is(err, errLogFenced) {
+		t.Fatalf("Head through a fenced gate = %v, want the gate's error", err)
+	}
+	gate.fenced = false
+	if size := f.headSize(t); size != 2 {
+		t.Fatalf("head size after the fence lifts = %d, want 2", size)
+	}
+}
+
 // A sealed standalone barrier refuses a create or a rotation before the
 // signer provider is asked for a key.
 func TestLogService_SealedStandaloneBarrierTenantMintsNoKey(t *testing.T) {

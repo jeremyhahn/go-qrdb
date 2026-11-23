@@ -196,7 +196,7 @@ func AttachLocalTenantHomes(n *Node, registry *seal.BarrierRegistry, gate tenant
 	}
 	// The same barriers serve each isolated tenant's verifiable logs, in
 	// their own keyspace (service.BarrierLogKeyspace).
-	n.logGroups.attachLocal(registry)
+	n.logGroups.attachLocal(registry, gate)
 	return true
 }
 

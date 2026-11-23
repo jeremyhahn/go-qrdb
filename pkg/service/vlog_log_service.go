@@ -165,7 +165,8 @@ func (r *logRoute) barrierStore(ctx context.Context, src LogBarrierStoreSource, 
 	if s, ok := r.barriers[tenantID]; ok && s.barrier == barrier {
 		return s, nil
 	}
-	s, err := newBarrierLogStore(tenantID, barrier, kv)
+	admit, _ := src.(LogStoreAdmission)
+	s, err := newBarrierLogStore(tenantID, barrier, kv, admit)
 	if err != nil {
 		delete(r.barriers, tenantID)
 		return nil, err

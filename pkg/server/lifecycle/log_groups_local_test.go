@@ -65,6 +65,41 @@ func TestAttachLocalTenantHomes_AttachesTheStandaloneLogStore(t *testing.T) {
 	}
 }
 
+// refusingHomeGate is a tenant.HomeAdmission that refuses every operation,
+// naming the tenant it was asked to admit.
+type refusingHomeGate struct{ asked []string }
+
+var errHomeGateFenced = errors.New("home gate fenced")
+
+func (g *refusingHomeGate) AdmitHome(tenantID string) (func(), error) {
+	g.asked = append(g.asked, tenantID)
+	return nil, errHomeGateFenced
+}
+
+// TestAttachLocalTenantHomes_LogStoreAdmitsThroughTheHomeGate pins that the
+// standalone log store admits its operations through the home-store gate
+// AttachLocalTenantHomes is given, and admits every one without a gate.
+func TestAttachLocalTenantHomes_LogStoreAdmitsThroughTheHomeGate(t *testing.T) {
+	reg := newHomeRegistry(t)
+	registerHomeTenant(t, reg, "vault")
+	n := &Node{StoreResolver: &homeRouterResolver{}, logGroups: &logGroups{host: &groupHost{}}}
+	release, err := n.logGroups.AdmitTenantLog("vault")
+	if err != nil {
+		t.Fatalf("AdmitTenantLog without a gate = %v, want admitted", err)
+	}
+	release()
+	gate := &refusingHomeGate{}
+	if !AttachLocalTenantHomes(n, reg, gate) {
+		t.Fatal("AttachLocalTenantHomes = false, want true")
+	}
+	if _, err := n.logGroups.AdmitTenantLog("vault"); !errors.Is(err, errHomeGateFenced) {
+		t.Fatalf("AdmitTenantLog through a fenced gate = %v, want the gate's error", err)
+	}
+	if len(gate.asked) != 1 || gate.asked[0] != "vault" {
+		t.Fatalf("gate asked for %v, want [vault]", gate.asked)
+	}
+}
+
 func TestAttachLocalTenantHomes_RefusedAttachesNoLogStore(t *testing.T) {
 	reg := newHomeRegistry(t)
 	registerHomeTenant(t, reg, "vault")

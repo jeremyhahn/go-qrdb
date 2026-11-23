@@ -118,6 +118,24 @@ type LogBarrierStoreSource interface {
 	TenantLogStore(ctx context.Context, tenantID string) (LogBarrier, kvstore.KVStore, error)
 }
 
+// BarrierLogKeyspace is the reserved keyspace a barrier tenant's verifiable
+// logs occupy inside the tenant barrier on a standalone node. Like
+// tenant.HomeName it is a reserved name ("__" first), so neither the home
+// store (tenant.HomeName + "/") nor any database of the tenant shares it. It
+// is defined in every build, the log feature's or not: a tenant's encryption
+// migration re-encrypts the keyspace whichever binary runs it.
+const BarrierLogKeyspace = "__vlog"
+
+// LogStoreAdmission admits each operation on a barrier tenant's standalone
+// log store through the gate its home store's operations pass
+// (tenant.HomeAdmission): an encryption migration fences new operations and
+// drains admitted ones before it re-encrypts the tenant's records, the log
+// keyspace among them. A LogBarrierStoreSource that implements it is
+// consulted before every log read and write; release ends the operation.
+type LogStoreAdmission interface {
+	AdmitTenantLog(tenantID string) (release func(), err error)
+}
+
 // ResolveAuditShard implements AuditShardResolver.
 func (r *SystemShardAuditResolver) ResolveAuditShard(ctx context.Context, tenantID string) (Host, uint64, error) {
 	routed := tenantid.Normalize(tenantID)
@@ -162,4 +180,13 @@ func (r *SystemShardAuditResolver) TenantLogStore(ctx context.Context, tenantID 
 		return nil, nil, &BarrierStoreUnavailableError{TenantID: routed}
 	}
 	return src.TenantLogStore(ctx, routed)
+}
+
+// AdmitTenantLog implements LogStoreAdmission through the resolver's group
+// source when it is one too; otherwise every operation is admitted.
+func (r *SystemShardAuditResolver) AdmitTenantLog(tenantID string) (func(), error) {
+	if gate, ok := r.groups.(LogStoreAdmission); ok {
+		return gate.AdmitTenantLog(tenantid.Normalize(tenantID))
+	}
+	return func() {}, nil
 }

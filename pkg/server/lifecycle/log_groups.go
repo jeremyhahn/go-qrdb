@@ -37,6 +37,14 @@ type logGroups struct {
 	// barriers is the tenant barrier registry of a standalone node, attached
 	// by AttachLocalTenantHomes; see TenantLogStore.
 	barriers atomic.Pointer[seal.BarrierRegistry]
+	// gate admits each standalone log-store operation (AdmitTenantLog):
+	// the home-store gate, attached with barriers.
+	gate atomic.Pointer[logGate]
+}
+
+// logGate boxes the attached home-store admission gate.
+type logGate struct {
+	admission tenant.HomeAdmission
 }
 
 // logGroupServices boxes the attached dedicated-raft services.
@@ -47,6 +55,7 @@ type logGroupServices struct {
 var (
 	_ service.LogGroupSource        = (*logGroups)(nil)
 	_ service.LogBarrierStoreSource = (*logGroups)(nil)
+	_ service.LogStoreAdmission     = (*logGroups)(nil)
 )
 
 // attach makes services the source of every barrier group.
@@ -60,11 +69,26 @@ func (g *logGroups) attach(services TenantHomeServices) {
 // attachLocal makes registry the source of every barrier tenant's
 // standalone log store (TenantLogStore): the tenant barrier's own store, at
 // its data root. It is for a standalone node, which attaches no home groups.
-func (g *logGroups) attachLocal(registry *seal.BarrierRegistry) {
+// gate admits each log-store operation as it admits the home store's, so an
+// encryption migration fences and drains both; nil admits every operation.
+func (g *logGroups) attachLocal(registry *seal.BarrierRegistry, gate tenant.HomeAdmission) {
 	if g == nil || registry == nil {
 		return
 	}
+	if gate != nil {
+		g.gate.Store(&logGate{admission: gate})
+	}
 	g.barriers.Store(registry)
+}
+
+// AdmitTenantLog implements service.LogStoreAdmission through the attached
+// home-store gate; without one every operation is admitted.
+func (g *logGroups) AdmitTenantLog(tenantID string) (func(), error) {
+	box := g.gate.Load()
+	if box == nil {
+		return func() {}, nil
+	}
+	return box.admission.AdmitHome(tenantID)
 }
 
 // TenantLogStore implements service.LogBarrierStoreSource: the barrier the
