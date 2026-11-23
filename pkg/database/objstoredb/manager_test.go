@@ -22,8 +22,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+
+	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
+	objfactory "github.com/jeremyhahn/go-objstore/pkg/factory"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
@@ -419,6 +423,102 @@ func TestManager_FailedCreateOntoExistingDataDropsOwnerMarker(t *testing.T) {
 	mgr.SetKeyspaceReclaimer(nil)
 	if _, err := mgr.Create(localObjstore("other", root)); err != nil {
 		t.Fatalf("Create of another database after the failed create: %v", err)
+	}
+}
+
+// errReleaseFault fails the delete of a namespace's owner marker.
+var errReleaseFault = errors.New("injected owner marker delete fault")
+
+// releaseFaultProvider is a local-directory provider whose store fails the
+// owner marker's delete once, when the test arms it: the one call a drop's
+// namespace release makes that can leave the namespace reserved.
+const releaseFaultProvider = "release-fault-local"
+
+var (
+	releaseFaultArmed    atomic.Bool
+	registerReleaseFault sync.Once
+)
+
+type releaseFaultStore struct {
+	objcommon.Storage
+}
+
+func (s releaseFaultStore) Delete(name string) error {
+	if name == "qrdb-objstore-owner" && releaseFaultArmed.CompareAndSwap(true, false) {
+		return errReleaseFault
+	}
+	return s.Storage.Delete(name)
+}
+
+func releaseFaultObjstore(t *testing.T, name, root string) database.DatabaseConfig {
+	t.Helper()
+	registerReleaseFault.Do(func() {
+		err := objstore.RegisterProvider(releaseFaultProvider, objstore.ProviderCredentials{},
+			func(settings map[string]string, creds objcommon.Credentials) (objcommon.Storage, error) {
+				inner, err := objfactory.NewStorage("local", settings, creds)
+				if err != nil {
+					return nil, err
+				}
+				return releaseFaultStore{Storage: inner}, nil
+			})
+		if err != nil {
+			t.Fatalf("RegisterProvider: %v", err)
+		}
+	})
+	return database.DatabaseConfig{Name: name, Backend: database.BackendObjstore, Objstore: &database.DatabaseObjstoreConfig{
+		Provider: releaseFaultProvider,
+		Settings: map[string]string{"path": root},
+	}}
+}
+
+// TestManager_FailedReleaseRetriedAtOpenAll: a drop whose namespace release
+// fails still completes, and the namespace stays reserved; the release is
+// recorded durably, so the next Manager's OpenAll on the same data
+// directory releases it and another database may then use the namespace.
+func TestManager_FailedReleaseRetriedAtOpenAll(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "objects")
+	dataDir := t.TempDir()
+	mgr := newManager(t, dataDir)
+	db, err := mgr.Create(releaseFaultObjstore(t, "blobs", root))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := db.Backend().Put(ctx, []byte("key"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	releaseFaultArmed.Store(true)
+	t.Cleanup(func() { releaseFaultArmed.Store(false) })
+	if err := mgr.Drop(ctx, "blobs"); err != nil {
+		t.Fatalf("Drop: %v", err)
+	}
+	if releaseFaultArmed.Load() {
+		t.Fatal("the drop never deleted the owner marker")
+	}
+	// A create retries the recorded release first; that retry fails too,
+	// so the namespace is still reserved and the create is refused.
+	releaseFaultArmed.Store(true)
+	var owned *objstore.NamespaceOwnedError
+	if _, err := mgr.Create(releaseFaultObjstore(t, "other", root)); !errors.As(err, &owned) {
+		t.Fatalf("Create onto the unreleased namespace = %v, want *NamespaceOwnedError", err)
+	}
+	if releaseFaultArmed.Load() {
+		t.Fatal("the create did not retry the recorded release")
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	next := newManager(t, dataDir)
+	if err := next.OpenAll(ctx); err != nil {
+		t.Fatalf("OpenAll: %v", err)
+	}
+	other, err := next.Create(releaseFaultObjstore(t, "other", root))
+	if err != nil {
+		t.Fatalf("Create after the retried release: %v", err)
+	}
+	if err := other.Backend().Put(ctx, []byte("key"), []byte("w")); err != nil {
+		t.Fatalf("Put: %v", err)
 	}
 }
 

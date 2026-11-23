@@ -336,6 +336,11 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	if err != nil {
 		return nil, err
 	}
+	if cfg.Backend == BackendObjstore {
+		// A namespace a dropped database still holds may be the one this
+		// create names: give back every one whose release is due first.
+		m.retryNamespaceReleases(ctx)
+	}
 	if err := m.validateDataDir(cfg.TenantID, cfg.Name, cfg.DataDir); err != nil {
 		return nil, err
 	}
@@ -920,8 +925,7 @@ func (m *Manager) reclaimDatabaseObjects(key dbKey, db *Database) error {
 // it names this database and nothing foreign remains. Reclaim keeps the
 // marker so a drop that fails before its catalog delete is retried by the
 // same owner, and no other database claims the namespace meanwhile.
-func (m *Manager) releaseDatabaseNamespace(key dbKey, db *Database) error {
-	cfg := db.Config()
+func (m *Manager) releaseDatabaseNamespace(key dbKey, cfg DatabaseConfig) error {
 	if cfg.Backend != BackendObjstore {
 		return nil
 	}
@@ -1062,7 +1066,15 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    incarnation is a successor created since the check in step 1b:
 	//    what this drop removed above was still its own, because the
 	//    successor cannot open here while the drop holds the name's claim,
-	//    and its entry goes with it.
+	//    and its entry goes with it. An object-storage database's namespace
+	//    release is recorded first (releasingDir), so a release that fails
+	//    in step 6, or never runs because the node stops after the delete,
+	//    is retried (retryNamespaceReleases).
+	if db.Config().Backend == BackendObjstore {
+		if err := m.recordRelease(key, db.Config()); err != nil {
+			return &DropError{Name: name, Err: err}
+		}
+	}
 	if err := os.RemoveAll(m.dbDir(key.tenant, name)); err != nil {
 		return &DropError{Name: name, Err: err}
 	}
@@ -1084,10 +1096,14 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    with the record gone, does the owner marker go: until the record
 	//    is deleted a retry of this drop reopens the namespace as its owner,
 	//    and no other database may claim it. The drop is complete whatever
-	//    the release returns; a release that fails leaves the namespace
-	//    reserved, and is logged.
-	if err := m.releaseDatabaseNamespace(key, db); err != nil {
+	//    the release returns; a release that fails keeps its entry from
+	//    step 4, is logged, and is retried at the next boot or object-storage
+	//    create (retryNamespaceReleases).
+	if err := m.releaseDatabaseNamespace(key, db.Config()); err != nil {
 		m.logger.Warn("database dropped; object-storage namespace not released",
+			slog.String("name", name), slog.String("error", err.Error()))
+	} else if err := m.forgetRelease(key.tenant, key.name); err != nil {
+		m.logger.Warn("database dropped; failed to forget its namespace release entry",
 			slog.String("name", name), slog.String("error", err.Error()))
 	}
 
@@ -1752,6 +1768,9 @@ func (m *Manager) OpenAll(ctx context.Context) error {
 			continue
 		}
 	}
+	// Namespaces of databases dropped here whose release failed, or never
+	// ran because the node stopped mid-drop.
+	m.retryNamespaceReleases(ctx)
 	return nil
 }
 
