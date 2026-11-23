@@ -43,6 +43,7 @@ import (
 	"testing"
 	"time"
 
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -54,7 +55,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	qrdbnode "github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
-	"gopkg.in/yaml.v3"
 )
 
 // credentialVersionCLIJSON mirrors transport.CredentialVersionInfo.
@@ -946,7 +946,7 @@ func testCredentialRotationPolicyOverProtocol(t *testing.T, barrier, manual *mul
 		t.Fatalf("[%s] rotation-policy get yaml: %v\noutput: %s", proto.name, err, yamlOut)
 	}
 	var yamlPolicy map[string]any
-	if yerr := yaml.Unmarshal([]byte(yamlOut), &yamlPolicy); yerr != nil {
+	if yerr := gocodecyaml.New[map[string]any]().Unmarshal([]byte(yamlOut), &yamlPolicy); yerr != nil {
 		t.Fatalf("[%s] decode rotation-policy YAML: %v\noutput: %s", proto.name, yerr, yamlOut)
 	}
 	wantYAML := map[string]any{
@@ -1028,7 +1028,7 @@ func testCredentialMigrationConflictsOverProtocol(t *testing.T, node *multiProto
 		t.Fatalf("[%s] migration-conflicts list yaml: %v\noutput: %s", proto.name, err, yamlOut)
 	}
 	var yamlListed map[string]any
-	if yerr := yaml.Unmarshal([]byte(yamlOut), &yamlListed); yerr != nil {
+	if yerr := gocodecyaml.New[map[string]any]().Unmarshal([]byte(yamlOut), &yamlListed); yerr != nil {
 		t.Fatalf("[%s] decode migration-conflicts YAML: %v\noutput: %s", proto.name, yerr, yamlOut)
 	}
 	if yamlConflicts, ok := yamlListed["conflicts"].([]any); len(yamlListed) != 1 || !ok || len(yamlConflicts) != 0 {
