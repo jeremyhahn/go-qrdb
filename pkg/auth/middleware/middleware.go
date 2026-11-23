@@ -495,15 +495,18 @@ func IdentityIAMSealed(identity *auth.Identity) bool {
 // assignments from the user store, enforces the user-enabled check, the
 // account's mTLS certificate enrolment (checkCertBinding) and its
 // permitted-method policy (checkAuthMethod), then binds the identity and its
-// tenant into the returned context. The base identity's
-// Roles are overwritten with the store's RoleIDs: roles are ALWAYS resolved
-// from the authorization store, never trusted from the identity's origin (a
-// certificate, a token, or -- critically -- a forwarded on-behalf assertion).
+// tenant into the returned context.
 //
-// When no user store is configured the base identity is used as-is. A missing
-// user proceeds without enrichment (empty roles -> default-deny at authorize);
-// a transient store failure returns StoreUnavailableError so clients retry
-// rather than being denied with stale/empty roles.
+// Roles (the record's RoleIDs), RoleBindings and Attributes come ONLY from
+// the user record the identity binds to (SPEC authz-claim-roles): whatever
+// the identity's origin carried -- an authenticator, a token's claims, a
+// certificate or, critically, a forwarded on-behalf assertion -- is
+// discarded before anything else. A subject with no record, a tenant whose
+// IAM is sealed and a node with no user store configured all leave the
+// identity with none of them: RBAC default-denies it and only the
+// IdentityGated surface stays reachable. A transient store failure returns
+// StoreUnavailableError so clients retry rather than being denied with
+// stale/empty roles.
 func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Identity, method authMethod) (context.Context, *auth.Identity, error) {
 	// A node-sanctioned service principal is granted to in-process callers
 	// only (auth.NewServicePrincipal, reached through sdk/go/node
@@ -577,12 +580,16 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 		return ctx, nil, err
 	}
 
-	// RoleBindings and Attributes are user-record state: the user store is
-	// their ONLY source. Clear whatever the authenticator carried in, before
+	// Roles (the record's RoleIDs), RoleBindings and Attributes are
+	// user-record state: the user store is their ONLY source (SPEC
+	// authz-claim-roles). Clear whatever the authenticator carried in, before
 	// anything else, so every path below -- found, not found, tenant sealed,
 	// and no user store at all -- starts from none: a binding withdrawn from
 	// the record, never on it, or asserted by an authenticator with no record
 	// behind it cannot reach the authorizer.
+	// A role list read from a token's claims is never an authorization
+	// source.
+	identity.Roles = nil
 	identity.RoleBindings = nil
 	identity.Attributes = nil
 	// TenantOwner likewise has one source, decideTenantOwner below; no
@@ -612,7 +619,6 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// here would refuse a holder legitimately claiming its own share before
 	// decide() is ever reached, which is the bug this fixes.
 	if auth.IsHolderIdentity(identity) {
-		identity.Roles = nil
 		if err := m.decideTenantOwner(ctx, identity); err != nil {
 			return ctx, nil, err
 		}
