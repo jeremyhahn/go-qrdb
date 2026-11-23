@@ -184,11 +184,6 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 	return result, nil
 }
 
-// recordSeparationPosture records the separation-of-duties posture the node
-// resolved in the replicated system record once first boot has run, leaving
-// one event in the node's audit log on a first recording or a change from
-// the recorded posture (go-qrdb#1128). A node with no services yet has no
-// store to record into.
 // checkStrictSeparationHolders refuses a strict first boot, before any
 // write, while an account of this node's store holds the system SO role
 // together with Admin: the same fail-closed check cmd/qrdbd runs at the
@@ -206,6 +201,11 @@ func (n *Node) checkStrictSeparationHolders(ctx context.Context, strict bool) er
 	return firstboot.CheckStrictSeparationHolders(ctx, svcNode.User, svcNode.Role)
 }
 
+// recordSeparationPosture records the separation-of-duties posture the node
+// resolved in the replicated system record once first boot has run, leaving
+// one event in the node's audit log on a first recording or a change from
+// the recorded posture (go-qrdb#1128). A node with no services yet has no
+// store to record into.
 func (n *Node) recordSeparationPosture(ctx context.Context) error {
 	svcNode := n.svcNode.Load()
 	if svcNode == nil || svcNode.KV == nil {
@@ -299,14 +299,6 @@ func (n *Node) reconcileAwaitingAdminCredential(ctx context.Context, users first
 	}()
 }
 
-// firstBootUnderPolicy is FirstBoot with the node's state passed in, so the
-// policy handling is testable without standing up a node. users is the store
-// the node's auth middleware authenticates against; the verdict is read from
-// it rather than from deps.Users, which may be an adapter over something else.
-//
-// policy -- the node's own configured auth.mtls_binding_policy -- always wins
-// over whatever deps.MTLSBindingPolicy already held, since that field's zero
-// value is indistinguishable from an explicit auth.MTLSBindingRequired.
 // defaultSOPINs points deps.SOPINs, when the embedder left it nil, at the SO
 // PIN store the node's SO gate verifies against (the one tenant create
 // commits a tenant SO's PIN to), so the system SO's PIN lands where the
@@ -338,6 +330,14 @@ func (n *Node) defaultSOTrust(deps *firstboot.Dependencies) {
 	}
 }
 
+// firstBootUnderPolicy is FirstBoot with the node's state passed in, so the
+// policy handling is testable without standing up a node. users is the store
+// the node's auth middleware authenticates against; the verdict is read from
+// it rather than from deps.Users, which may be an adapter over something else.
+//
+// policy -- the node's own configured auth.mtls_binding_policy -- always wins
+// over whatever deps.MTLSBindingPolicy already held, since that field's zero
+// value is indistinguishable from an explicit auth.MTLSBindingRequired.
 func firstBootUnderPolicy(ctx context.Context, deps firstboot.Dependencies, policy auth.MTLSBindingPolicy, users firstboot.AdminLookup) (*firstboot.Result, error) {
 	deps.MTLSBindingPolicy = policy
 	result, err := firstboot.Initialize(ctx, deps)
