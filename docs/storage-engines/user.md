@@ -152,6 +152,19 @@ backend at an empty bucket or directory, or start empty. Give the engine a
 bucket or prefix of its own: any object it did not write causes the same
 refusal.
 
+**A database refused to open with "namespace is owned by" or "namespace is
+in use by owner".** Each object-storage database owns its bucket or
+directory: the first database opened there records itself in the
+`qrdb-objstore-owner` marker, and any other database pointed at the same
+place — including through a symlink to the directory, another spelling of the
+same endpoint, or the node's own `storage.backend` bucket — is refused, as is
+a `local` path nested inside another open database's directory. Give each
+database a bucket, container or directory of its own. A dropped database's
+location is reusable once the drop has released it; if that release failed
+(the node logs "database dropped; object-storage namespace not released"),
+the node retries it at its next start and before the next object-storage
+database is created, so the place frees up without operator action.
+
 **You want an S3 or GCS backend.** Those come from go-objstore and are
 build-tag gated — rebuild with `WITH_AWS_S3=1`, `WITH_GCP_STORAGE=1` and so on.
 They are a snapshot and archive tier, not a hot path.

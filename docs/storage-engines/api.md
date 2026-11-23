@@ -22,8 +22,17 @@ handle and never holds a plaintext copy; an open that fails returns
 (`objstore.CredentialFileError`, `objstore.UnsupportedProviderError`).
 `pkg/database` does not link the engine: the opener and the settings
 validator are wired with
-`database.NewEmbeddedBackendFactory(database.WithObjectStorage(objstoredb.Open), database.WithObjectStorageValidator(objstoredb.ValidateSettings))`
+`database.NewEmbeddedBackendFactory(database.WithObjectStorage(objstoredb.Open), database.WithObjectStorageValidator(objstoredb.ValidateSettings), database.WithObjectStorageNamespace(objstoredb.Namespace))`
 (`objstoredb.NewBackendFactory`), which `qrdbd` and the server lifecycle do.
+`objstoredb.Open` opens each database as the owner of its provider namespace
+(`objstore.WithOwner`), so a second database on the same bucket or path fails
+with `database.StorageCreateError` wrapping `objstore.NamespaceOwnedError`.
+The namespacer, `objstoredb.Namespace`, returns `objstore.NamespaceKey` of a
+database's provider and settings; the manager uses it to tell whether a name
+dropped and re-created holds the dropped incarnation's namespace, and without
+it (a lean embedder, or a Go SDK node without
+`node.WithObjectStorageNamespace(objstoredb.Namespace)`) such a release stays
+pending rather than guessed.
 `Manager.Create` runs the validator on a database's `objstore` block, whatever
 its backend, before the catalog write, so an inline credential
 (`database.ObjstoreCredentialSettingError`) never reaches the replicated
