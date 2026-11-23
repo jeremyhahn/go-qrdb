@@ -2638,6 +2638,11 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 		}
 		BackfillIndexBatch(scan, bIdx, batch, fieldName, scope)
 	} else {
+		if exists {
+			e.indexMu.Lock()
+			e.withdrawReaderIndex(name)
+			e.indexMu.Unlock()
+		}
 		if err := idx.Clear(); err != nil {
 			return sm.Result{}, nil, err
 		}
@@ -2780,6 +2785,18 @@ func (e *MVCCEngine) holdReaderIndexes() {
 	e.indexPublishPending = true
 }
 
+// withdrawReaderIndex takes name out of the reader view at once. A create or
+// drop applied without the index-catalog feature rewrites the index's
+// committed entries directly, outside the apply batch, as a member that
+// predates the feature does; moving that write after the commit would change
+// the keys the group stores. Readers therefore stop seeing the index before
+// its committed entries change, rather than read it half cleared, and see
+// whatever the batch publishes once it commits. Callers hold indexMu.
+func (e *MVCCEngine) withdrawReaderIndex(name string) {
+	e.holdReaderIndexes()
+	delete(e.readerIndexes, name)
+}
+
 // readerIndexSet is the index set a reader sees: the committed snapshot
 // while a batch's creates or drops are applied but not committed, the apply
 // view otherwise. The caller holds e.indexMu (read or write).
@@ -2834,8 +2851,13 @@ func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, batch stora
 			_ = idx.Close()
 			return sm.Result{}, nil, err
 		}
-	} else if err := idx.Clear(); err != nil {
-		return sm.Result{}, nil, err
+	} else {
+		e.indexMu.Lock()
+		e.withdrawReaderIndex(name)
+		e.indexMu.Unlock()
+		if err := idx.Clear(); err != nil {
+			return sm.Result{}, nil, err
+		}
 	}
 
 	return sm.Result{Value: 1}, nil, nil
