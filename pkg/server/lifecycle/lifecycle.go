@@ -1037,7 +1037,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// barrier-enabled database's in that database's own barrier-protected
 	// store. A build without the qrdb_vlog tag has no log service, which is
 	// not a boot failure.
-	logSvc, err := buildLogService(logResolver, dbManager, infra.HeadSignerProvider)
+	logSvc, err := buildLogService(logResolver, auditResolver, dbManager, infra.HeadSignerProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -1552,8 +1552,8 @@ func infraClock(infra Infra) clock.Clock {
 // and the node's databases with the composer's head-signer provider; a nil
 // provider is the software default. It returns a nil service and no error when
 // the build does not carry the qrdb_vlog tag.
-func buildLogService(resolver service.AuditShardResolver, databases service.LogDatabaseLookup, signers vlog.HeadSignerProvider) (service.LogService, error) {
-	svc, err := service.NewLogService(service.LogServiceConfig{Resolver: resolver, Databases: databases, Signers: signers})
+func buildLogService(resolver, audit service.AuditShardResolver, databases service.LogDatabaseLookup, signers vlog.HeadSignerProvider) (service.LogService, error) {
+	svc, err := service.NewLogService(service.LogServiceConfig{Resolver: resolver, AuditResolver: audit, Databases: databases, Signers: signers})
 	var notCompiled *vlog.NotCompiledError
 	if errors.As(err, &notCompiled) {
 		return nil, nil

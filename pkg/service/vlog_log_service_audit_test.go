@@ -145,19 +145,22 @@ func untouchedSystemShard() (*mockHost, *int) {
 	}, &calls
 }
 
-// TestLogService_ReadsABarrierTenantsAuditInstanceFromItsHomeGroup: the
-// replicated audit logger and the log service share one resolver, so the
-// audit records a barrier tenant's events append are the ones its log
-// service reads back and proves, in its home group, never the system shard.
-func TestLogService_ReadsABarrierTenantsAuditInstanceFromItsHomeGroup(t *testing.T) {
-	home := barrierHomeGroup(t)
-	system, systemCalls := untouchedSystemShard()
+// TestLogService_ReadsABarrierTenantsAuditInstanceWhereItsLoggerWrites: the
+// replicated audit logger writes a barrier tenant's events to the system
+// shard, as on main, and the log service reads, lists and proves the audit
+// instance through the same audit resolver, so the head and proof it serves
+// are of the records the logger wrote; the tenant's home group is never
+// consulted for its audit trail.
+func TestLogService_ReadsABarrierTenantsAuditInstanceWhereItsLoggerWrites(t *testing.T) {
+	system := barrierHomeGroup(t)
+	home, homeCalls := untouchedSystemShard()
 	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
 		"vault": {ID: "vault", IsolationType: tenant.IsolationBarrier},
 	}}
-	resolver := NewSystemShardLogResolver(system, 1, lookup,
+	auditResolver := NewSystemShardAuditResolver(system, 1, lookup)
+	logResolver := NewSystemShardLogResolver(system, 1, lookup,
 		&fakeLogGroups{host: home, homes: map[string]uint64{"vault": 9}})
-	logger := NewReplicatedLogger(resolver)
+	logger := NewReplicatedLogger(auditResolver)
 	ctx := tenant.WithTenantID(context.Background(), "vault")
 	for _, action := range []string{"a", "b"} {
 		ev := fixedAuditEvent("vault")
@@ -167,7 +170,7 @@ func TestLogService_ReadsABarrierTenantsAuditInstanceFromItsHomeGroup(t *testing
 		}
 	}
 
-	svc, err := NewLogService(LogServiceConfig{Resolver: resolver, Databases: noDatabases(t)})
+	svc, err := NewLogService(LogServiceConfig{Resolver: logResolver, AuditResolver: auditResolver, Databases: noDatabases(t)})
 	if err != nil {
 		t.Fatalf("NewLogService: %v", err)
 	}
@@ -196,38 +199,42 @@ func TestLogService_ReadsABarrierTenantsAuditInstanceFromItsHomeGroup(t *testing
 	if !slices.Contains(listed.Logs, vlog.AuditLogID("vault")) {
 		t.Fatalf("ListLogs = %v, want it to name %v", listed.Logs, vlog.AuditLogID("vault"))
 	}
-	if *systemCalls != 0 {
-		t.Fatalf("the system shard saw %d calls for a barrier tenant, want none", *systemCalls)
+	if _, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("forged")}}); !errors.As(err, new(*vlog.ReservedLogError)) {
+		t.Fatalf("Append(audit) = %v, want *vlog.ReservedLogError", err)
+	}
+	if *homeCalls != 0 {
+		t.Fatalf("the home group saw %d audit calls, want none: the logger writes the system shard", *homeCalls)
 	}
 }
 
-// TestLogService_SealedBarrierTenantRefusesItsAuditTrail: a sealed tenant
-// barrier refuses the audit append, the audit query and the log read alike,
-// with tenant.ErrTenantSealed, and nothing is proposed anywhere.
-func TestLogService_SealedBarrierTenantRefusesItsAuditTrail(t *testing.T) {
-	system, systemCalls := untouchedSystemShard()
+// TestLogService_SealedBarrierTenantKeepsItsAuditTrailOnTheSystemShard: as
+// on main, a barrier tenant's audit trail is on the system shard, outside
+// its barrier, so sealing the barrier neither loses an audit event nor
+// hides the trail; the tenant's own logs, in its home group, refuse with
+// tenant.ErrTenantSealed.
+func TestLogService_SealedBarrierTenantKeepsItsAuditTrailOnTheSystemShard(t *testing.T) {
+	system := barrierHomeGroup(t)
 	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
 		"vault": {ID: "vault", IsolationType: tenant.IsolationBarrier},
 	}}
-	resolver := NewSystemShardLogResolver(system, 1, lookup,
+	auditResolver := NewSystemShardAuditResolver(system, 1, lookup)
+	logResolver := NewSystemShardLogResolver(system, 1, lookup,
 		&fakeLogGroups{sealed: map[string]bool{"vault": true}})
-	logger := NewReplicatedLogger(resolver)
+	logger := NewReplicatedLogger(auditResolver)
 	ctx := tenant.WithTenantID(context.Background(), "vault")
-	if err := logger.Emit(ctx, fixedAuditEvent("vault")); !errors.Is(err, tenant.ErrTenantSealed) {
-		t.Fatalf("Emit = %v, want tenant.ErrTenantSealed", err)
+	if err := logger.Emit(ctx, fixedAuditEvent("vault")); err != nil {
+		t.Fatalf("Emit = %v, want the event on the system shard", err)
 	}
-	if _, err := logger.Query(ctx, audit.Filter{TenantID: "vault"}); !errors.Is(err, tenant.ErrTenantSealed) {
-		t.Fatalf("Query = %v, want tenant.ErrTenantSealed", err)
-	}
-	svc, err := NewLogService(LogServiceConfig{Resolver: resolver, Databases: noDatabases(t)})
+	svc, err := NewLogService(LogServiceConfig{Resolver: logResolver, AuditResolver: auditResolver, Databases: noDatabases(t)})
 	if err != nil {
 		t.Fatalf("NewLogService: %v", err)
 	}
 	ref := LogRef{Database: vlog.AuditDatabase, Log: vlog.AuditLog}
-	if _, err := svc.Head(ctx, &HeadRequest{LogRef: ref}); !errors.Is(err, tenant.ErrTenantSealed) {
-		t.Fatalf("Head = %v, want tenant.ErrTenantSealed", err)
+	if head, err := svc.Head(ctx, &HeadRequest{LogRef: ref}); err != nil || head.Head.Size != 1 {
+		t.Fatalf("Head(audit) = %+v, %v; want the 1 audited event", head, err)
 	}
-	if *systemCalls != 0 {
-		t.Fatalf("the system shard saw %d calls for a sealed barrier tenant, want none", *systemCalls)
+	own := LogRef{Database: "orders", Log: "ledger"}
+	if _, err := svc.Head(ctx, &HeadRequest{LogRef: own}); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("Head(own log) = %v, want tenant.ErrTenantSealed", err)
 	}
 }

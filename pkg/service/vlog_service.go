@@ -48,6 +48,14 @@ type LogServiceConfig struct {
 	// service shares the audit resolver.
 	Resolver AuditShardResolver
 
+	// AuditResolver routes a tenant to the group its replicated audit
+	// logger writes: every read and write of the reserved system database,
+	// the audit instance's home, goes there, so the audit reader and writer
+	// use one group. A barrier tenant's audit trail stays on the system
+	// shard while its own logs live in its home group. Nil routes the
+	// system database through Resolver.
+	AuditResolver AuditShardResolver
+
 	// Databases resolves the database each request names, so a database
 	// with a barrier of its own is refused before any key or log is touched.
 	Databases LogDatabaseLookup

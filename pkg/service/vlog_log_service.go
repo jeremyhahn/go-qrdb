@@ -51,7 +51,7 @@ func NewLogService(cfg LogServiceConfig) (LogService, error) {
 	if cfg.Databases == nil {
 		return nil, &SubsystemNotConfiguredError{Subsystem: "vlog database lookup"}
 	}
-	route := &logRoute{resolver: cfg.Resolver, databases: cfg.Databases, stores: make(map[dbStoreKey]*databaseLogStore), barriers: make(map[string]*barrierLogStore)}
+	route := &logRoute{resolver: cfg.Resolver, audit: cfg.AuditResolver, databases: cfg.Databases, stores: make(map[dbStoreKey]*databaseLogStore), barriers: make(map[string]*barrierLogStore)}
 	signers := cfg.Signers
 	if signers == nil {
 		signers = vlog.NewSoftwareHeadSignerProvider(&logKeyReader{route: route})
@@ -99,6 +99,9 @@ func (s *logService) logID(ctx context.Context, ref LogRef, op string) (vlog.Log
 // resolve is the logRoute's resolution of tenantID's database name to the
 // target its logs are applied in and read from.
 func (r *logRoute) resolve(ctx context.Context, tenantID, name string) (logTarget, error) {
+	if name == vlog.AuditDatabase && r.audit != nil {
+		return r.auditGroup(ctx, tenantID)
+	}
 	db, err := r.databases.GetOwned(name, tenantID)
 	if err != nil {
 		var notFound *database.NotFoundError
@@ -118,6 +121,18 @@ func (r *logRoute) resolve(ctx context.Context, tenantID, name string) (logTarge
 }
 
 // raft resolves tenantID's group as a raftTarget.
+// auditGroup returns the group the replicated audit logger writes tenantID's
+// audit trail to. The reserved system database, the audit instance's home,
+// is read and written there, so the audit reader and writer always use one
+// group: for a barrier tenant that is the system shard, as on main.
+func (r *logRoute) auditGroup(ctx context.Context, tenantID string) (logTarget, error) {
+	host, shardID, err := r.audit.ResolveAuditShard(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return raftTarget{host: host, shardID: shardID}, nil
+}
+
 func (r *logRoute) raft(ctx context.Context, tenantID string) (logTarget, error) {
 	host, shardID, err := r.resolver.ResolveAuditShard(ctx, tenantID)
 	if err != nil {
@@ -186,6 +201,7 @@ func (r *logRoute) store(tenantID, name string, db *database.Database) *database
 // metadata; a failed lookup refuses.
 type logRoute struct {
 	resolver  AuditShardResolver
+	audit     AuditShardResolver
 	databases LogDatabaseLookup
 
 	mu       sync.Mutex
