@@ -380,6 +380,34 @@ in mg1655a.
   `TestVlog_CLI_DatabaseDrop_PerProtocol` and
   `TestVlog_CLI_BarrierTenant_Standalone_PerProtocol` pass.
 
+## rw1613w2 (Codex round 1 at 9428bf8de4)
+
+The three P1s were fixed in b50e2f2b9; rw1613w2 gives each a test.
+
+- P1-a, a pre-upgrade barrier tenant's database had no log marker in its
+  home group, so every log write was refused `DroppingError` and its
+  drop failed. Fix: `LogFenceInitializer`
+  (`KeyspaceReclaimService.InitDatabaseLogFence`, wired in
+  `lifecycle.BuildServices`) writes the live incarnation at the first
+  log admission, never over a present marker, once per incarnation;
+  `fenceLogMarker` tombstones an absent log marker on drop. Tests:
+  `TestKeyspaceReclaim_PreUpgradeBarrierTenantLogMarker`,
+  `TestLogService_PreUpgradeDatabaseLogFenceIsInitializedAtFirstLogWrite`.
+  With `fenceMarker` in place of `fenceLogMarker` the reclaim test fails:
+  the drop is refused `DropSupersededError`.
+- P1-b, the reclamation cleared the log tombstone, readmitting a write
+  paused under the empty incarnation. Fix: the tombstone stays until the
+  next create claims it (`ownLogTombstone` reads it, never removes it).
+  Tests: `TestKeyspaceReclaim_BarrierTenantFencesDataAndLogMarkers`
+  (asserts the tombstone after the reclamation; it failed at
+  9428bf8de4), and the pre-upgrade test above.
+- P1-c, admission looked the database up twice and a failed second
+  lookup admitted the write unfenced. Fix: `logRoute.resolve` returns
+  the database its one lookup found and `admit` fences to its
+  incarnation. Test: `TestLogService_AdmitFencesToItsOneDatabaseLookup`.
+- docs/databases/architecture.md: the log tombstone outlives the
+  reclamation; the pre-upgrade marker initialization.
+
 ## Out of scope
 
 The go-xkms provider and transparency log (the seam rows on the other side);
