@@ -1077,6 +1077,7 @@ How a claim works:
 | Target: barrier on `backend: memory` | `database.BarrierRequiresPersistentBackendError` | **yes** |
 | Target: etcd on a non-raft backend | `database.EtcdRequiresRaftBackendError` | **yes** |
 | Target: `data_dir` outside a volume/raft tenant's root | `database.DataDirOutsideTenantRootError` | **yes** |
+| Target: `data_dir` equal to, inside or above a node store (control-plane engine stores, the node objstore root and its `.journal` sibling, `storage.wal_dir`, each resolved as storage opens it: relative paths against the working directory) | `database.DataDirReservedPathError` | **yes** |
 | Target: `file`/`objstore` for a volume/raft tenant, as backend or raft state storage | `database.BackendIsolationConflictError` | **yes** |
 | Target: a tenant isolation mode the binding table does not know | `database.InvalidTenantIsolationError` | **yes** |
 | Target: the store's directory cannot be placed (volume/raft tenant without a data root on this node, node without a data directory) | `database.BindingRootUnresolvedError` | **yes** |

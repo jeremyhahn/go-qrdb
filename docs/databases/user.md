@@ -112,6 +112,12 @@ the barrier does not reach and sealing it would protect nothing:
 
 A non-system tenant therefore cannot create a per-database barrier at all.
 
+A `--data-dir` may not equal, sit inside or contain a node store: the
+control-plane stores, the node's local object store and its `.journal`
+commit-journal sibling, and `storage.wal_dir`. A relative `storage.wal_dir` or
+`storage.objstore.settings.path` resolves against the daemon's working
+directory, as the store opens it, so that is the path the check protects.
+
 ```bash
 qrdb database create secure --data-dir <install-dir>/secure \
      --barrier-enabled --barrier-strategy passphrase --barrier-passphrase "$PASSPHRASE"
