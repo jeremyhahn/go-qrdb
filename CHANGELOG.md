@@ -888,7 +888,8 @@ are not reconstructed here — their history is in the git log.
 
 ### Removed
 
-- **Breaking:** remote-mode databases leave the clients (OD-9 A): the CLI's `qrdb database update-connection`, the Go SDK's `UpdateDatabaseConnection` and `DatabaseConnectionConfig` and the `Connection` field of its database types, and the TypeScript SDK's `updateDatabaseConnection` and connection types are deleted; the server-side verb and wire fields follow (#923).
+- **Breaking:** remote-mode databases leave the clients (OD-9 A): the CLI's `qrdb database update-connection`, the Go SDK's `UpdateDatabaseConnection` and `DatabaseConnectionConfig` and the `Connection` field of its database types, and the TypeScript SDK's `updateDatabaseConnection` and connection types are deleted (#923).
+- **Breaking:** remote-mode databases leave the server (OD-9 A): `mode: remote`, the `connection` block of database create and `DatabaseInfo`, REST `PATCH /v1/databases/{name}/connection`, gRPC `DatabaseUpdateConnection` (field 11 of `DatabaseInfoResponse` reserved), QUIC `db.UpdateConnection` and the MCP tool `qrdb_database_update_connection` are deleted; REST refuses a `connection` field on create as an unknown field (#923).
 - The dev container's internal module-forge path (GITEA_HOST, MODULE_FORGE_TOKEN); modules resolve from the public proxy.
 
 ## [0.58.0-alpha] - 2026-10-27

@@ -120,7 +120,8 @@ reopened, while the record and every other node report the stored value.
 (`json:"stateStorage,omitempty"`: `pebble | file | memory`) and carries no shard
 ID, which the cluster issues. `UpdateDatabaseConnection`,
 `UpdateDatabaseConnectionRequest`, `DatabaseConnectionConfig`, the `Connection`
-field and remote mode are removed.
+field and remote mode are removed (shipped: the server and the clients on every
+transport have none of them; gRPC `DatabaseInfoResponse` field 11 is reserved).
 
 ### Server-side binding
 

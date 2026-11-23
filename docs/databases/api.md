@@ -98,8 +98,7 @@ Shipped:
   "protocol": { "mysql": false, "postgresql": true,
                 "etcd": { "enabled": false, "listenAddr": ":2379" } },
   "barrier": { "enabled": true, "mode": "passphrase",
-               "secret": "correct horse battery" },
-  "connection": { "transport": "tcp", "address": "db2.example.com:63003" } }
+               "secret": "correct horse battery" } }
 ```
 
 Response — `DatabaseInfo`, which adds `tenantId`, `status`, `shardId`,
@@ -214,9 +213,11 @@ as `DatabaseBindingInfo binding = 19` on `DatabaseInfoResponse` (`generation` is
 its field 4); the CLI table output prints it under `Binding:`.
 
 Target: a raft binding lists its replica nodes.
-Remote mode is removed (OD-9 A). The CLI and both SDKs no longer offer the
-update-connection verb or send a `connection` block (rw923w slice 19); the
-server-side verb, the `connection` fields and the gRPC RPC go in slice 20.
+Remote mode is removed (OD-9 A): no transport offers the update-connection
+verb, a create carries no `mode: remote` and no `connection` block (REST refuses
+a `connection` field as an unknown field), and `DatabaseInfo` has no
+`connection`. gRPC's `DatabaseUpdateConnection` RPC is deleted and field 11 of
+`DatabaseInfoResponse` is reserved.
 
 ### Updates, scale and unseal
 
