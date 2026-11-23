@@ -928,6 +928,15 @@ type IncarnationRequest struct {
 	Incarnation string
 }
 
+// owns reports whether desc belongs to the database incarnation q reads
+// under: one that recorded that incarnation, or a legacy log that recorded
+// none (created before incarnations were recorded, or while a replica of
+// its group could not carry one), which belongs to whichever database holds
+// its name, as otherIncarnation treats it for a drop.
+func (q IncarnationRequest) owns(desc *Descriptor) bool {
+	return desc.Incarnation == "" || desc.Incarnation == q.Incarnation
+}
+
 func (q IncarnationRequest) read(r storage.Reader) (any, error) {
 	if list, ok := q.Request.(ListRequest); ok {
 		return q.readList(r, list)
@@ -937,14 +946,15 @@ func (q IncarnationRequest) read(r storage.Reader) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if desc.Incarnation != q.Incarnation {
+		if !q.owns(desc) {
 			return nil, &LogNotFoundError{ID: id}
 		}
 	}
 	return q.Request.read(r)
 }
 
-// readList answers list without the logs of another incarnation.
+// readList answers list without the logs of another incarnation; legacy logs
+// (no incarnation recorded) are listed.
 func (q IncarnationRequest) readList(r storage.Reader, list ListRequest) (any, error) {
 	ids, err := List(r, list.TenantID, list.Database)
 	if err != nil {
@@ -956,7 +966,7 @@ func (q IncarnationRequest) readList(r storage.Reader, list ListRequest) (any, e
 		if err != nil {
 			return nil, err
 		}
-		if desc.Incarnation == q.Incarnation {
+		if q.owns(desc) {
 			live = append(live, id)
 		}
 	}

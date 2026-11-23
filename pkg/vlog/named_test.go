@@ -976,6 +976,46 @@ func TestChain_DropDatabase_RefusesAnInvalidName(t *testing.T) {
 	}
 }
 
+// TestIncarnationRequest_LegacyLogIsVisible pins that a log created before
+// incarnations were recorded (a descriptor without one) belongs to the
+// database that holds its name, whatever that database's incarnation: reads
+// and lists answer it, while a log of another incarnation stays hidden.
+func TestIncarnationRequest_LegacyLogIsVisible(t *testing.T) {
+	c, stg := mustCreate(t, true)
+	stale := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "stale"}
+	desc := testDescriptor(true)
+	desc.Incarnation = "inc-old"
+	if err := c.Create(stg, stale, desc); err != nil {
+		t.Fatalf("Create stale: %v", err)
+	}
+	if _, err := c.AppendEntries(stg, testLog, entries(0, 2)); err != nil {
+		t.Fatalf("AppendEntries to the legacy log: %v", err)
+	}
+	const live = "inc-new"
+
+	got, err := IncarnationRequest{Request: DescriptorRequest{ID: testLog}, Incarnation: live}.read(stg)
+	if err != nil {
+		t.Fatalf("read the legacy log's descriptor: %v", err)
+	}
+	if d, ok := got.(*Descriptor); !ok || d.Incarnation != "" {
+		t.Fatalf("legacy descriptor = %#v; want one recording no incarnation", got)
+	}
+	if _, err := (IncarnationRequest{Request: DescriptorRequest{ID: stale}, Incarnation: live}).read(stg); !errors.As(err, new(*LogNotFoundError)) {
+		t.Fatalf("read another incarnation's log = %v; want LogNotFoundError", err)
+	}
+	listed, err := IncarnationRequest{Request: ListRequest{TenantID: testLog.TenantID, Database: testLog.Database}, Incarnation: live}.read(stg)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	ids, _ := listed.([]LogID)
+	if len(ids) != 1 || ids[0] != testLog {
+		t.Fatalf("list = %v; want only the legacy log %v", listed, testLog)
+	}
+	if first, err := c.AppendEntries(stg, testLog, entries(2, 1)); err != nil || first != 2 {
+		t.Fatalf("AppendEntries after the reads = %d, %v; want index 2", first, err)
+	}
+}
+
 func TestChain_ExpireBodies_Refusals(t *testing.T) {
 	c, stg := mustCreate(t, false)
 	mustAppend(t, c, stg, 0, 3)
