@@ -62,9 +62,10 @@ type vectorService struct {
 	logger       interfaces.Logger
 	metrics      *vectorServiceMetrics
 	mu           sync.RWMutex
-	// writeMu serializes the local (non-Raft) vector writes that read
-	// before they write: an upsert's existence check and its write are one
-	// step against a concurrent upsert or delete of the same store.
+	// writeMu serializes each vector write with its live HNSW index update,
+	// so the index applies writes of an ID in the order storage (or the
+	// Raft log) took them; it also makes an upsert's existence check and
+	// write one step.
 	writeMu        sync.Mutex
 	closed         bool
 	indexMu        sync.RWMutex
@@ -1405,7 +1406,11 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 	if v.raftNode != nil {
 		cmd := statemachine.NewUpsertCommand(scoped, req.ID, req.Vector, req.Metadata, format, v.nodeID)
 		var applied sm.Result
+		// The proposal and its index insert are one step under writeMu, so
+		// a concurrent delete of the ID cannot land between them.
+		v.writeMu.Lock()
 		if err := v.proposeToRaftResult(ctx, cmd, &applied); err != nil {
+			v.writeMu.Unlock()
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("upsert_vector", "raft_error").Inc()
 			}
@@ -1427,6 +1432,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 				}).Warn("failed to insert vector into local HNSW index")
 			}
 		}
+		v.writeMu.Unlock()
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Inc()
@@ -1458,13 +1464,14 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 		MetadataFormat: format,
 	}
 
-	// The existence read and the write are one step under writeMu, so of
-	// two upserts of a missing ID exactly one reports created.
+	// The existence read, the write and the index insert are one step under
+	// writeMu, so of two upserts of a missing ID exactly one reports created
+	// and a concurrent delete of the ID cannot land between write and index.
 	v.writeMu.Lock()
 	created := v.vectorIsNew(ctx, scoped, req.ID)
 	err = v.storage.UpsertVector(ctx, scoped, vecValue)
-	v.writeMu.Unlock()
 	if err != nil {
+		v.writeMu.Unlock()
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("upsert_vector", "storage_error").Inc()
 		}
@@ -1484,6 +1491,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 			}).Warn("failed to insert vector into HNSW index")
 		}
 	}
+	v.writeMu.Unlock()
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Inc()
@@ -1591,7 +1599,10 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 	if v.raftNode != nil {
 		cmd := statemachine.NewDeleteCommand(scoped, req.ID, v.nodeID)
+		// The proposal and its index delete are one step under writeMu.
+		v.writeMu.Lock()
 		if err := v.proposeToRaft(ctx, cmd); err != nil {
+			v.writeMu.Unlock()
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("delete_vector", "raft_error").Inc()
 			}
@@ -1610,6 +1621,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 				}).Warn("failed to delete vector from local HNSW index")
 			}
 		}
+		v.writeMu.Unlock()
 
 		if v.metrics != nil {
 			v.metrics.vectorsDeleted.Inc()
@@ -1627,10 +1639,11 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 		}, nil
 	}
 
+	// The storage delete and its index delete are one step under writeMu.
 	v.writeMu.Lock()
 	err := v.storage.DeleteVector(ctx, scoped, req.ID)
-	v.writeMu.Unlock()
 	if err != nil {
+		v.writeMu.Unlock()
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("delete_vector", "storage_error").Inc()
 		}
@@ -1650,6 +1663,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 			}).Warn("failed to delete vector from HNSW index")
 		}
 	}
+	v.writeMu.Unlock()
 
 	if v.metrics != nil {
 		v.metrics.vectorsDeleted.Inc()
@@ -1745,7 +1759,10 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		}
 
 		cmd := statemachine.NewBatchUpsertCommand(scoped, batchIDs, batchVectors, batchMeta, format, v.nodeID)
+		// The proposal and its index inserts are one step under writeMu.
+		v.writeMu.Lock()
 		if err := v.proposeToRaft(ctx, cmd); err != nil {
+			v.writeMu.Unlock()
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("batch_upsert", "raft_error").Inc()
 			}
@@ -1769,6 +1786,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 				}
 			}
 		}
+		v.writeMu.Unlock()
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
@@ -1803,7 +1821,10 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		}
 	}
 
+	// The storage write and its index inserts are one step under writeMu.
+	v.writeMu.Lock()
 	if err := v.storage.BatchUpsertVectors(ctx, scoped, vecs); err != nil {
+		v.writeMu.Unlock()
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("batch_upsert", "storage_error").Inc()
 		}
@@ -1825,6 +1846,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 			}
 		}
 	}
+	v.writeMu.Unlock()
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
@@ -3187,6 +3209,9 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 	// falls back to a node-local write.
 	if v.raftNode != nil {
 		err := v.admit(func() error {
+			// The proposal and its index removal are one step under writeMu.
+			v.writeMu.Lock()
+			defer v.writeMu.Unlock()
 			cmd := statemachine.NewBatchDeleteCommand(scoped, req.IDs, v.nodeID)
 			if err := v.proposeToRaft(ctx, cmd); err != nil {
 				if v.metrics != nil {
@@ -3211,6 +3236,10 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 	}
 
 	err := v.admit(func() error {
+		// The storage delete and its index removal are one step under
+		// writeMu; the per-ID fallback below runs after the lock is released.
+		v.writeMu.Lock()
+		defer v.writeMu.Unlock()
 		if err := v.storage.BatchDeleteVectors(ctx, scoped, req.IDs); err != nil {
 			return err
 		}
