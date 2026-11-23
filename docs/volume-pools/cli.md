@@ -111,6 +111,45 @@ use is not reported: the `USED` column prints `-`. Paginated.
 qrdb volume-pool tenants fast --page-size 50
 ```
 
+## `qrdb volume-pool move-tenant <tenant> --to <pool>`
+
+Starts moving a `volume` or `raft` tenant to another pool the tenant is
+entitled to, and prints the journalled move. The move then runs in the
+background, node by node; follow it with `get-move`. Needs
+`volume_pools:move`. Refused when the tenant is not entitled to the pool, when
+a move is already journalled for it, and when the move goes from an encrypted
+pool to an unencrypted one (no flag allows that).
+
+| Flag | Type | Default | Required | Meaning |
+|---|---|---|---|---|
+| `--to` | string | — | yes | the destination pool |
+
+```bash
+qrdb volume-pool move-tenant acme --to fast
+```
+
+## `qrdb volume-pool get-move <tenant>`
+
+Shows a tenant's move in progress: its state, the nodes copied, pending and
+retired, and the current step with its attempts and last error. A tenant with
+no move answers not found, so a move that has ended answers not found. Needs
+`volume_pools:read`.
+
+```bash
+qrdb volume-pool get-move acme --output json
+```
+
+## `qrdb volume-pool cancel-move <tenant>`
+
+Cancels a tenant's move before its cut over and prints the move in state
+`aborting`; the move rolls back to the source pool. Refused once the move is
+past its cut over, and not found when no move is journalled. Needs
+`volume_pools:move`.
+
+```bash
+qrdb volume-pool cancel-move acme
+```
+
 ## Tenant verbs that touch pools
 
 ### `qrdb tenant create --pool`

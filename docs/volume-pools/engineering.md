@@ -151,9 +151,11 @@ type Service interface {
 	ListAssignments(ctx context.Context, pool, pageToken string, pageSize int) (*AssignmentPage, error)
 	// MoveTenant admits a move through the wired MoveAdmission and
 	// Catalog.AdmitMove (*MoveNotImplementedError with none wired); GetMove
-	// reads the journal. No transport exposes them.
+	// reads the journal; CancelMove sends a move not yet cut over to
+	// aborting. Every transport exposes the three.
 	MoveTenant(ctx context.Context, req MoveTenantRequest) (*Move, error)
 	GetMove(ctx context.Context, tenantID string) (*Move, error)
+	CancelMove(ctx context.Context, tenantID string) (*Move, error)
 }
 ```
 

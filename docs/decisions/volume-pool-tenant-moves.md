@@ -1,8 +1,8 @@
 # Moving a tenant between volume pools
 
-> **Status: DECIDED for Q1-Q8 and Q10 (ruling 1115, Tenant Agent,
-> 2026-11-22, adopting the recommendations); Q9 pending the owner (owner
-> queue 287), interim: refused outright; building** · Scope: go-qrdb
+> **Status: DECIDED for every question: Q1-Q8 and Q10 by ruling 1115
+> (Tenant Agent, 2026-11-22, adopting the recommendations), Q9 by the owner
+> (owner queue 287): C, refused outright; building** · Scope: go-qrdb
 > Last verified: 2026-11-12 at main e8b579229d
 > SPEC row `volume-pool-tenant-moves` (future, phase 2). Each open question
 > lists its options, a recommendation and the lower-project dependency each
@@ -327,10 +327,13 @@ costs one verb per transport.
 operator meant to drop the at-rest layer below it; the flag makes the
 downgrade deliberate and visible, without forbidding it.
 
-**Pending the owner (owner queue 287).** Ruling 1115 left Q9 to the owner.
-Until he answers, the build refuses every move from a Lockable pool to a
-pool that is not Lockable with `*volume.MoveToUnencryptedPoolError`, whatever
-the request carries; there is no consent flag.
+**Decided by the owner (owner queue 287): C, refuse.** Ruling 1115 left Q9
+to the owner, who chose to refuse outright; A stays above as the recorded
+recommendation. Every move from a Lockable pool to a pool that is not
+Lockable is refused with `*volume.MoveToUnencryptedPoolError`
+(`FailedPrecondition`), whatever the request carries; there is no consent
+flag. To leave a LUKS pool for an unencrypted one, the operator recreates
+the tenant.
 
 ### Q10. Which tenant operations are refused while a move runs?
 
@@ -399,7 +402,7 @@ sleeps: every wait is on an observable state):
 ## Ruling
 
 Ruling 1115 (Tenant Agent, 2026-11-22) adopted the recommendation of every
-question except Q9, which is with the owner (owner queue 287). Slices 1-4
+question except Q9, which the owner decided (owner queue 287). Slices 1-4
 were built under the earlier by-convention record (ruling 109), which named
 the same picks.
 
@@ -415,8 +418,8 @@ the same picks.
   (default 3), then abort.
 - Q7: A, the source removed at retire, right after cut over.
 - Q8: A, `CancelMove` until cut over, `FailedPrecondition` after.
-- Q9: pending the owner (owner queue 287). Interim (ruling 1115): a move from
-  a Lockable pool to one that is not is refused outright.
+- Q9: C, decided by the owner (owner queue 287): a move from a Lockable pool
+  to one that is not is refused outright, with no flag.
 - Q10: A, refuse tenant delete, `UpdateQuotas` and a second move while a move
   runs; serve reads and writes.
 

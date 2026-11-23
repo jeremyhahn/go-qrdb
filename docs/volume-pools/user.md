@@ -78,7 +78,14 @@ nothing is created. Raise the pool's capacity or choose another pool.
 - **See which tenants are on a pool:** `qrdb volume-pool tenants fast`.
 - **Grow a pool:** grow the disk on every node, then, if you set a capacity by
   hand, `qrdb volume-pool update fast --capacity 3TiB`.
-- **Retire a pool:** delete its tenants, then
+- **Move a tenant to another pool:** entitle it to the pool, then
+  `qrdb volume-pool move-tenant acme --to bulk`. The move copies the
+  tenant's data node by node in the background; follow it with
+  `qrdb volume-pool get-move acme` (it answers not found once the move has
+  ended), and stop it before its cut over with
+  `qrdb volume-pool cancel-move acme`. A move from an encrypted pool to an
+  unencrypted one is always refused.
+- **Retire a pool:** move or delete its tenants, then
   `qrdb volume-pool delete fast`. Remove the mapping from each node's
   configuration afterwards.
 
@@ -137,4 +144,9 @@ without the flag to go back to the stricter default.
 | a tenant listed `Refused: pool_unavailable` | the node you asked cannot open the tenant's pool | look at the pool's per-node health; other nodes may still serve the tenant |
 | `create` refused with "resource exhausted" | the pool's capacity is reserved | raise capacity, use another pool, or lower the tenant's storage quota |
 | `create` refused with "permission denied … volume_pool" | the tenant is not entitled to the pool | add the pool to its entitlements |
-| `volume-pool delete` refused | tenants are still assigned | delete them first |
+| `volume-pool delete` refused | tenants are still assigned | move or delete them first |
+| `move-tenant` refused with "permission denied … volume_pool" | the tenant is not entitled to the destination pool | add the pool to its entitlements |
+| `move-tenant` refused with "failed precondition" | a move is already journalled for the tenant, the tenant is not `volume` or `raft`, or the move goes from an encrypted pool to an unencrypted one | wait for or cancel the running move; an encrypted to unencrypted move is never allowed |
+| `get-move` or `cancel-move` answers not found | no move is journalled: none was started, or it has ended | check the tenant's pool with `tenant get` |
+| `cancel-move` refused with "cannot cancel" | the move is past its cut over | let it finish |
+| `get-move` shows a step error and rising attempts | a node's copy step keeps failing; after its attempts the move aborts back to the source pool | read the error, fix the node or pool, then start the move again |

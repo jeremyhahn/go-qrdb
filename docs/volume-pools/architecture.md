@@ -261,18 +261,23 @@ resolved on both sides, applied per pool.
 
 ## Moving a tenant between pools
 
-Built in the catalog, not wired in the daemon. `volume.Catalog.MoveTenant`
-admits a move through the tenant layer (`tenant.TenantService.AdmitTenantMove`:
-the tenant exists, is a `volume` or `raft` tenant, is entitled to the
-destination pool, and its replica nodes) and then `AdmitMove`, and audits the
-start (`volume_pool.move_start`) before anything is admitted; `volume.Catalog.GetMove` reads the journal. None of these seams is
-wired in the daemon yet, so a running node still answers `MoveTenant` with
-`*volume.MoveNotImplementedError`, classified `Unimplemented`, and no
-transport exposes a move.
+Built and wired on every node. `volume.Catalog.MoveTenant` admits a move
+through the tenant layer (`tenant.TenantService.AdmitTenantMove`: the tenant
+exists, is a `volume` or `raft` tenant, is entitled to the destination pool,
+and its replica nodes) and then `AdmitMove`, and audits the start
+(`volume_pool.move_start`) before anything is admitted;
+`volume.Catalog.GetMove` reads the journal and `volume.Catalog.CancelMove`
+cancels it. `server.WireTenantMoves` sets every seam and starts the
+`TenantMoveWorker` in qrdbd and in the embedded node. The three verbs are on
+`volume.Service` and every transport (gRPC, Unix, QUIC, REST, MCP, embedded),
+both SDKs and the CLI: start (`volume_pools:move`), inspect
+(`volume_pools:read`) and cancel (`volume_pools:move`); see
+[api.md](api.md) and [cli.md](cli.md). Each refusal takes its status from
+the shared errclass row of its error.
 
-The design, decided by ruling 1115 for every question but Q9, which is with
-the owner (until he answers, a move off a Lockable pool onto one that is not
-is refused outright), is
+The design, decided by ruling 1115 for Q1-Q8 and Q10 and by the owner for Q9
+(owner queue 287: a move off a Lockable pool onto one that is not is refused
+outright), is
 [../decisions/volume-pool-tenant-moves.md](../decisions/volume-pool-tenant-moves.md):
 a rolling, per-node copy behind a move journal, cut over by one assignment
 write. Only the parts built and described here are part of this contract.
@@ -282,7 +287,8 @@ The node step runs on a node's own pools through
 directory and its destination directory on the destination pool, copies the
 closed tree, verifies the copy against its SHA-256 manifest, and on a failure
 removes the partial destination through the inside-pool guard, never the
-source. No journal, reconciler or transport calls it yet.
+source. The node-side `seal.MoveStepRunner` calls it for the node's granted
+copy step.
 
 The catalog admits a move through `volume.Catalog.AdmitMove`: one
 transaction reserves the tenant's bytes on the destination pool and writes
@@ -290,7 +296,7 @@ the journal `__sys:volumepool/moves/{tenant}` in state `admitted`, with every
 replica node pending, after checking that the destination is ready on every
 replica node (Q3) and that no move already runs (Q10). A move off a Lockable
 pool onto one that is not is refused outright with
-`*volume.MoveToUnencryptedPoolError` (Q9, interim under ruling 1115). The source reservation and the assignment stay, so the tenant counts
+`*volume.MoveToUnencryptedPoolError` (Q9, the owner's ruling, no flag). The source reservation and the assignment stay, so the tenant counts
 on both pools while it moves. While a journal exists, tenant delete, a quota
 change, a second move and deleting either pool are refused. `MoveTenant` is
 the only caller of `AdmitMove`.
@@ -312,8 +318,10 @@ one transaction. `Catalog.CancelMove` (Q8 A) sends a move not yet cut over
 to `aborting` and refuses one past it. Abort steps remove the destination
 copy on copied nodes first, then on pending nodes, retried without bound;
 the last releases the destination reservation and deletes the journal,
-leaving the assignment untouched. No runner, leader schedule, transport or
-composition exists yet, so nothing advances a journal in a running node.
+leaving the assignment untouched. In a running node the system shard's
+leader runs `ReconcileOnce` (grants and cut over) and every node runs
+`RunLocalSteps` for its own granted step, both on the `TenantMoveWorker`
+tick.
 
 ## Trust boundaries
 

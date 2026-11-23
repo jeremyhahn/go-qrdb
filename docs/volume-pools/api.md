@@ -19,15 +19,26 @@ RPCs. The Unix socket serves the same gRPC wire over a UDS.
 | Update | `PUT /v1/volume-pools/{pool}` | `VolumePoolUpdate` | `volumepool.Update` | `qrdb_volume_pool_update` | `UpdatePool` | `volume_pools:update` |
 | Delete | `DELETE /v1/volume-pools/{pool}` | `VolumePoolDelete` | `volumepool.Delete` | `qrdb_volume_pool_delete` | `DeletePool` | `volume_pools:delete` |
 | List a pool's tenants | `GET /v1/volume-pools/{pool}/tenants` | `VolumePoolListTenants` | `volumepool.ListTenants` | `qrdb_volume_pool_list_tenants` | `ListPoolTenants` | `volume_pools:read` |
+| Move a tenant to a pool | `POST /v1/volume-pools/{pool}/tenants/{tenant}/move` (`{pool}` is the destination; 202) | `VolumePoolMoveTenant` | `volumepool.MoveTenant` | `qrdb_volume_pool_move_tenant` | `MoveTenant` | `volume_pools:move` |
+| Inspect a tenant's move | `GET /v1/tenants/{tenant}/volume-move` | `VolumePoolGetMove` | `volumepool.GetMove` | `qrdb_volume_pool_get_move` | `GetMove` | `volume_pools:read` |
+| Cancel a tenant's move | `DELETE /v1/tenants/{tenant}/volume-move` | `VolumePoolCancelMove` | `volumepool.CancelMove` | `qrdb_volume_pool_cancel_move` | `CancelMove` | `volume_pools:move` |
 
 **Every `volume_pools:*` permission is cross-scope.** It is registered with
 `permission.RegisterScope(ScopeCross, …)`, so only an identity in the `system`
-tenant can exercise it. The built-in Admin role carries all five, as it carries
+tenant can exercise it. The built-in Admin role carries all six, as it carries
 `tenants:set_quotas`, so only Admin in the `system` tenant can use them. A
 tenant's Admin cannot see the pool catalog, health or other tenants'
 assignments. It sees its own tenant's pool name through `tenant get`.
 
-Moving a tenant between pools is not on any transport.
+**Moves.** `MoveTenant` journals a move of a `volume` or `raft` tenant to a
+pool it is entitled to and answers with the journalled `VolumePoolMove`; the
+move then runs node by node in the background (see
+[architecture.md](architecture.md#moving-a-tenant-between-pools)). A tenant
+has at most one move. `GetMove` answers the move until it ends, then
+`NOT_FOUND`. `CancelMove` aborts a move that has not reached its cut over and
+answers the move in state `aborting`; once cut over it is refused. A move from
+an encrypted pool to an unencrypted one is refused outright (the owner's
+ruling on Q9); no flag allows it.
 
 ## Volume pool fields on the tenant surface
 
@@ -81,6 +92,14 @@ health.
 
 // VolumePoolTenant (list-tenants row; paginated with page_token / page_size)
 { "tenantId": "acme", "reservedBytes": 214748364800 }
+
+// VolumePoolMove (the move-tenant, get-move and cancel-move answer)
+{ "tenantId": "acme", "fromPool": "default", "toPool": "fast",
+  "state": "copying", "nodesCopied": ["node-1"], "nodesPending": ["node-2"],
+  "stepNode": "node-2", "stepAttempts": 1, "error": "",
+  "reservedBytes": 214748364800, "nodesRetired": [],
+  "sourceReservedBytes": 214748364800, "tenantRecorded": false,
+  "admittedAt": "<RFC 3339 time>", "updatedAt": "<RFC 3339 time>" }
 ```
 
 No response carries a node mount or device. The per-node rows report state and
@@ -100,6 +119,10 @@ paginated, because a cluster has a handful of pools.
 | Create names a provider this node lacks | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` | `FAILED_PRECONDITION` |
 | Reservation exceeds capacity | 429 | `RESOURCE_EXHAUSTED` | `StatusResourceExhausted` | `RESOURCE_EXHAUSTED` |
 | Tenant not entitled to the pool | 403 | `PERMISSION_DENIED` | `StatusPermissionDenied` | `PERMISSION_DENIED` |
+| No move journalled for the tenant (get-move, cancel-move) | 404 | `NOT_FOUND` | `StatusNotFound` | `NOT_FOUND` |
+| Move conflict: a move already journalled, a tenant that is not `volume` or `raft`, or a cancel past the cut over | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` | `FAILED_PRECONDITION` |
+| Move from an encrypted pool to an unencrypted one | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` | `FAILED_PRECONDITION` |
+| The move journal changed under every compare-and-swap | 409 | `ABORTED` | `StatusAborted` | `ABORTED` |
 | Reservation conflict after bounded retries | 409 | `ABORTED` | `StatusAborted` | `ABORTED` |
 | Pool unavailable on the answering node (includes a `Lockable` volume that failed to unlock, or a pool this node skipped at boot under `--allow-degraded-volume-boot`) | 503 | `UNAVAILABLE` | `StatusUnavailable` | `UNAVAILABLE` |
 
