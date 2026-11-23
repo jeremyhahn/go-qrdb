@@ -1762,7 +1762,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager, err := n.newStandaloneDatabaseManager(pending.dataDir, pending.cfg, encryptor)
+	dbManager, err := n.newStandaloneDatabaseManager(pending.dataDir, pending.cfg, encryptor, smAdapter)
 	if err != nil {
 		_ = n.stg.Close()
 		n.stg = nil
@@ -1953,7 +1953,7 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 // factory (lifecycle.NewNodeBindingFactory): a database is materialized in its
 // own store under its binding root, sealed under enc, with its tenant and
 // tenant barrier resolved live from the services built after the manager.
-func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Config, enc *atrest.Encryptor) (*database.Manager, error) {
+func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Config, enc *atrest.Encryptor, shared backend.SMAdapter) (*database.Manager, error) {
 	defaults := standaloneDatabaseDefaults(cfg)
 	dbManager := database.NewManager(n.logger, dataDir, database.WithDefaults(defaults))
 	bf := lifecycle.NewNodeBindingFactory(dataDir, defaults, enc, cfg.Storage,
@@ -1963,7 +1963,10 @@ func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Conf
 			}
 			return nil
 		},
-		n.barrierRegistry.Load, n.watchHubOpts...)
+		n.barrierRegistry.Load, n.watchHubOpts...).
+		// A backend: memory database whose data predates its own store
+		// keeps the shared route it lives in.
+		WithSharedKeyspaceProbe(lifecycle.SharedStoreKeyspaceProbe(shared))
 	if err := dbManager.SetBackendFactory(bf); err != nil {
 		_ = dbManager.Close()
 		return nil, err
@@ -3192,7 +3195,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager, err := n.newStandaloneDatabaseManager(dataDir, cfg, nil)
+	dbManager, err := n.newStandaloneDatabaseManager(dataDir, cfg, nil, smAdapter)
 	if err != nil {
 		_ = n.stg.Close()
 		return nil, err

@@ -1841,7 +1841,10 @@ func runStart(f *startFlags) (err error) {
 				// the node encryptor (docs/databases/architecture.md).
 				bf := lifecycle.NewNodeBindingFactory(f.dataDir, dbDefaults, enc, f.storageConfig,
 					func() tenant.TenantServicer { return bindingTenants },
-					func() *seal.BarrierRegistry { return bindingBarriers }, watchHubOpts...)
+					func() *seal.BarrierRegistry { return bindingBarriers }, watchHubOpts...).
+					// A backend: memory database whose data predates its
+					// own store keeps the shared route it lives in.
+					WithSharedKeyspaceProbe(lifecycle.SharedStoreKeyspaceProbe(eng))
 				if err := dbManager.SetBackendFactory(bf); err != nil {
 					_ = local.Close()
 					_ = stg.Close()

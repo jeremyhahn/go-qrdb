@@ -106,6 +106,57 @@ func openBack(t *testing.T, b database.BackendType, root string, enc *atrest.Enc
 	}, nil
 }
 
+// failingLookup is a shared engine whose every read fails.
+type failingLookup struct {
+	backend.SMAdapter
+	err error
+}
+
+func (f failingLookup) Lookup(context.Context, interface{}) (interface{}, error) { return nil, f.err }
+
+func TestSharedStoreKeyspaceProbe_ReportsOnlyItsNamespace(t *testing.T) {
+	ctx := context.Background()
+	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.StorageConfig{})
+	if err != nil {
+		t.Fatalf("NewLocalStorage: %v", err)
+	}
+	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, pdb, watch.NewHub(), lease.NewLessor())
+	if err != nil {
+		_ = stg.Close()
+		t.Fatalf("NewLocalEngine: %v", err)
+	}
+	host := backend.NewLocalBackend(eng)
+	t.Cleanup(func() {
+		_ = host.Close()
+		_ = stg.Close()
+	})
+	probe := lifecycle.SharedStoreKeyspaceProbe(eng)
+
+	if got, err := probe("acme", "orders"); err != nil || got {
+		t.Fatalf("empty store: probe = %v, %v; want false, nil", got, err)
+	}
+
+	key := tenant.ComposeNamespace("acme", "orders") + "k"
+	if err := service.NewKVService(host, shard.ShardKV).Put(ctx, key, []byte("v")); err != nil {
+		t.Fatalf("put %s: %v", key, err)
+	}
+	if got, err := probe("acme", "orders"); err != nil || !got {
+		t.Errorf("acme/orders: probe = %v, %v; want true, nil", got, err)
+	}
+	// "order" is a prefix of "orders" but a different database: the
+	// namespace's trailing separator keeps its probe off orders' keys.
+	for _, other := range [][2]string{{"acme", "order"}, {"acme", "orders2"}, {"acm", "orders"}, {"acme2", "orders"}} {
+		if got, err := probe(other[0], other[1]); err != nil || got {
+			t.Errorf("%s/%s: probe = %v, %v; want false, nil", other[0], other[1], got, err)
+		}
+	}
+
+	readErr := errors.New("shared store read failed")
+	if got, err := lifecycle.SharedStoreKeyspaceProbe(failingLookup{err: readErr})("acme", "orders"); !errors.Is(err, readErr) || got {
+		t.Errorf("failing store: probe = %v, %v; want false, %v", got, err, readErr)
+	}
+}
+
 func TestLocalBindingFactory_OwnStorePerBackend(t *testing.T) {
 	ctx := context.Background()
 	for _, b := range []database.BackendType{database.BackendMemory, database.BackendFile, database.BackendPebble, database.BackendObjstore} {

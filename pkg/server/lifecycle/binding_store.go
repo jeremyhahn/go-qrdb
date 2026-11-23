@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -160,6 +161,29 @@ func (f *LocalBindingFactory) WithIsolationPolicy(r tenant.ClusterIsolationPolic
 func (f *LocalBindingFactory) WithSharedKeyspaceProbe(p SharedKeyspaceProbe) *LocalBindingFactory {
 	f.sharedData = p
 	return f
+}
+
+// SharedStoreKeyspaceProbe probes the shared engine a standalone node composes
+// (NewLocalEngine) for a database's legacy data. The shared route stores a
+// database's keys under tenant.ComposeNamespace(tenantID, db), so the probe
+// asks the engine for that prefix, as a read on the shared route would, and
+// stops at the first live key. A lookup error is returned, never read as "no
+// data".
+func SharedStoreKeyspaceProbe(eng backend.SMAdapter) SharedKeyspaceProbe {
+	return func(tenantID, db string) (bool, error) {
+		res, err := eng.Lookup(context.Background(), &statemachine.PrefixQuery{
+			Prefix: []byte(tenant.ComposeNamespace(tenantID, db)),
+			Limit:  1,
+		})
+		if err != nil {
+			return false, err
+		}
+		keys, ok := res.(map[string][]byte)
+		if !ok {
+			return false, fmt.Errorf("shared keyspace probe: unexpected lookup result %T", res)
+		}
+		return len(keys) > 0, nil
+	}
 }
 
 // ReservedRoots reports the paths the node's own stores occupy as storage
