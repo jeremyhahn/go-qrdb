@@ -390,8 +390,9 @@ unix:
 
 - A mapping names an account, never a role. The account's roles decide what
   the caller may do, through the same RBAC as every other identity. A mapping
-  whose account does not exist authenticates a caller that holds no roles, so
-  every request is denied.
+  whose account does not exist, or was deleted, is refused
+  (`peer_credential_account_missing`, `UNAUTHENTICATED`), so no policy, an
+  ABAC `subject.authenticated` allow included, can admit it.
 - An unmapped peer is refused (`peer_credential_unmapped`, `UNAUTHENTICATED`).
   With no `peer_credentials` no peer-credential authenticator is installed.
 - The authenticator is last in the authentication chain, so a client

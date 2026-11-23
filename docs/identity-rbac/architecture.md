@@ -96,7 +96,9 @@ credential presented on the socket still decides the request first.
   primary gid, to a tenant and username. A uid match wins over a gid match.
   The bound identity is filled from the stored account like every other
   identity, so the account's roles decide through the one PDP. A mapped
-  account that does not exist holds no roles, so every request is denied. An
+  account that does not exist, or was deleted, is refused
+  (`peer_credential_account_missing`, `UNAUTHENTICATED`), so no policy, an
+  ABAC `subject.authenticated` allow included, can admit it. An
   account whose `auth_methods` are set must list `peercred`.
 - **An unmapped peer is refused.** A peer whose uid and gid match no mapping
   is refused with `peer_credential_unmapped` (`UNAUTHENTICATED`). With no
