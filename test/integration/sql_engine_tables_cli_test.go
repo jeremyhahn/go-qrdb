@@ -103,7 +103,12 @@ func TestSQLEngineTables_UserTablesNamedLikeEngineTables(t *testing.T) {
 	_, mysqlPort, pgsqlPort, ca := startSingleNodeWithSQL(t)
 	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 
-	assertReserved := func(t *testing.T, wire, stmt, name string, err error) {
+	// assertReserved asserts the reserved table name refusal arrives with
+	// the wire's standard code: over MySQL ER_WRONG_TABLE_NAME (1103,
+	// SQLSTATE 42000), over PostgreSQL SQLSTATE 42939 reserved_name. want
+	// is the code the call site's wire sends: the MySQL error number or
+	// the PostgreSQL SQLSTATE.
+	assertReserved := func(t *testing.T, wire, stmt, name, want string, err error) {
 		t.Helper()
 		if err == nil {
 			t.Fatalf("[%s] %s succeeded, want the reserved table name refusal", wire, stmt)
@@ -112,17 +117,21 @@ func TestSQLEngineTables_UserTablesNamedLikeEngineTables(t *testing.T) {
 		if !strings.Contains(msg, "reserved") || !strings.Contains(msg, name) {
 			t.Fatalf("[%s] %s error = %q, want it to name the reserved table %s", wire, stmt, err.Error(), name)
 		}
-		// Record the code each wire sends for the refusal today; neither
-		// wire's error table maps *provider.ReservedTableNameError yet.
 		var pgErr *pgconn.PgError
 		var myErr *gomysql.MySQLError
 		switch {
-		case errors.As(err, &pgErr):
-			t.Logf("[%s] %s refused with SQLSTATE %s", wire, stmt, pgErr.Code)
-		case errors.As(err, &myErr):
-			t.Logf("[%s] %s refused with MySQL error %d (SQLSTATE %s)", wire, stmt, myErr.Number, string(myErr.SQLState[:]))
+		case wire == "pgsql" && errors.As(err, &pgErr):
+			if pgErr.Code != want {
+				t.Fatalf("[%s] %s refused with SQLSTATE %s, want %s", wire, stmt, pgErr.Code, want)
+			}
+		case wire == "mysql" && errors.As(err, &myErr):
+			got := fmt.Sprintf("%d", myErr.Number)
+			if got != want || string(myErr.SQLState[:]) != "42000" {
+				t.Fatalf("[%s] %s refused with MySQL error %s (SQLSTATE %s), want %s (SQLSTATE 42000)",
+					wire, stmt, got, string(myErr.SQLState[:]), want)
+			}
 		default:
-			t.Logf("[%s] %s refused with %T", wire, stmt, err)
+			t.Fatalf("[%s] %s refused with %T, want the wire's own error type", wire, stmt, err)
 		}
 	}
 
@@ -156,11 +165,11 @@ func TestSQLEngineTables_UserTablesNamedLikeEngineTables(t *testing.T) {
 		}
 
 		_, err := db.Exec("CREATE TABLE qrdb_ts_metrics (id BIGINT PRIMARY KEY)")
-		assertReserved(t, "mysql", "CREATE TABLE qrdb_ts_metrics", "qrdb_ts_metrics", err)
+		assertReserved(t, "mysql", "CREATE TABLE qrdb_ts_metrics", "qrdb_ts_metrics", "1103", err)
 		_, err = db.Exec("CREATE TABLE QRDB_Vector_Vectors (id BIGINT PRIMARY KEY)")
-		assertReserved(t, "mysql", "CREATE TABLE QRDB_Vector_Vectors", "qrdb_vector_vectors", err)
+		assertReserved(t, "mysql", "CREATE TABLE QRDB_Vector_Vectors", "qrdb_vector_vectors", "1103", err)
 		_, err = db.Exec("RENAME TABLE metrics TO qrdb_ts_datapoints")
-		assertReserved(t, "mysql", "RENAME TABLE metrics TO qrdb_ts_datapoints", "qrdb_ts_datapoints", err)
+		assertReserved(t, "mysql", "RENAME TABLE metrics TO qrdb_ts_datapoints", "qrdb_ts_datapoints", "1103", err)
 
 		var count int
 		if err := db.QueryRow("SELECT COUNT(*) FROM qrdb_ts_metrics").Scan(&count); err != nil {
@@ -191,11 +200,11 @@ func TestSQLEngineTables_UserTablesNamedLikeEngineTables(t *testing.T) {
 		}
 
 		_, err := conn.Exec(ctx, "CREATE TABLE qrdb_vector_namespaces (id BIGINT PRIMARY KEY)")
-		assertReserved(t, "pgsql", "CREATE TABLE qrdb_vector_namespaces", "qrdb_vector_namespaces", err)
+		assertReserved(t, "pgsql", "CREATE TABLE qrdb_vector_namespaces", "qrdb_vector_namespaces", "42939", err)
 		_, err = conn.Exec(ctx, "CREATE TABLE QRDB_Vector_Vectors (id BIGINT PRIMARY KEY)")
-		assertReserved(t, "pgsql", "CREATE TABLE QRDB_Vector_Vectors", "qrdb_vector_vectors", err)
+		assertReserved(t, "pgsql", "CREATE TABLE QRDB_Vector_Vectors", "qrdb_vector_vectors", "42939", err)
 		_, err = conn.Exec(ctx, "ALTER TABLE datapoints RENAME TO qrdb_ts_datapoints")
-		assertReserved(t, "pgsql", "ALTER TABLE datapoints RENAME TO qrdb_ts_datapoints", "qrdb_ts_datapoints", err)
+		assertReserved(t, "pgsql", "ALTER TABLE datapoints RENAME TO qrdb_ts_datapoints", "qrdb_ts_datapoints", "42939", err)
 
 		var count int64
 		if err := conn.QueryRow(ctx, "SELECT COUNT(*) FROM qrdb_ts_metrics").Scan(&count); err != nil {
