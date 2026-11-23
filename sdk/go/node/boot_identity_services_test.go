@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -121,8 +123,14 @@ func TestBootIdentityServices_StrictHolderCheckSeesPersistedConflict(t *testing.
 	if err != nil {
 		t.Fatalf("bootIdentityServices: %v", err)
 	}
-	err = firstboot.CheckStrictSeparationHolders(ctx, users, roles)
+	// The boot stores read this replica's local state, which may trail the
+	// commit by an apply when it is a follower: poll until the write is
+	// applied. A wrong keyspace never sees the account and fails here.
 	var conflict *firstboot.StrictSeparationSOAdminError
+	require.Eventually(t, func() bool {
+		err = firstboot.CheckStrictSeparationHolders(ctx, users, roles)
+		return errors.As(err, &conflict)
+	}, 20*time.Second, 20*time.Millisecond, "the boot stores never saw the persisted SO+Admin holder")
 	if !errors.As(err, &conflict) {
 		t.Fatalf("strict startup holder check over the boot stores: %v, want *firstboot.StrictSeparationSOAdminError", err)
 	}

@@ -127,8 +127,9 @@ func TestEmbeddedSOExclusive_RoleCreateAndReconcile(t *testing.T) {
 
 // TestEmbeddedSOExclusive_ReconcileAllTenants: the bulk built-in role
 // reconcile carries the same strict-posture gate as on the network
-// transports, so a system Admin holding roles:reconcile_all is refused and
-// the system SO is let through.
+// transports, so a system Admin holding roles:reconcile_all is refused, a
+// system SO also holding Admin is refused as a conflict, and the system SO is
+// let through; the standard posture admits both admin callers.
 func TestEmbeddedSOExclusive_ReconcileAllTenants(t *testing.T) {
 	const sysSO, sysAdmin = "system-so", "system-admin"
 	tests := []struct {
@@ -139,7 +140,9 @@ func TestEmbeddedSOExclusive_ReconcileAllTenants(t *testing.T) {
 	}{
 		{name: "strict: system SO", strict: true, roles: []string{sysSO}},
 		{name: "strict: system admin", strict: true, roles: []string{sysAdmin}, wantErr: errorIs[*auth.SORoleRequiredError]},
+		{name: "strict: system SO holding admin", strict: true, roles: []string{sysAdmin, sysSO}, wantErr: errorIs[*auth.SORoleConflictError]},
 		{name: "standard: system admin", roles: []string{sysAdmin}},
+		{name: "standard: system SO holding admin", roles: []string{sysAdmin, sysSO}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
