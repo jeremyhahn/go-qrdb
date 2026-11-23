@@ -185,6 +185,15 @@ type StoreResolver interface {
 	// incarnation's -- the store of a database created again under the
 	// name -- is refused with *database.DropSupersededError.
 	FenceTarget(ctx context.Context, tenantID, db, incarnation string) (store FenceStore, dedicated bool, err error)
+
+	// LogFenceTarget returns the store holding the marker the (tenantID,
+	// db) database's verifiable-log writes are guarded by, when it is not
+	// FenceTarget's store: a barrier tenant's home group, whose state
+	// machine evaluates its logs' drop fence while its data is guarded in
+	// the system store. ok=false means the logs share FenceTarget's marker
+	// (or are checked live), so there is no second marker. An error is
+	// never answered with ok=false.
+	LogFenceTarget(ctx context.Context, tenantID, db, incarnation string) (store FenceStore, ok bool, err error)
 }
 
 // FenceStore is the store a database's drop fence lives in.
@@ -314,6 +323,9 @@ func (s *KeyspaceReclaimService) ReclaimDatabaseKeyspace(ctx context.Context, te
 	if fence.PerDatabase {
 		markerKV = target.KV
 	}
+	// The log marker is cleared under no write guard: clearMarker is itself
+	// conditional on this drop's tombstone.
+	unguarded := ctx
 	var stillFenced func(context.Context) error
 	if markerKV != nil {
 		guard, err := dropFencedGuard(tenantID, db, claim)
@@ -342,9 +354,27 @@ func (s *KeyspaceReclaimService) ReclaimDatabaseKeyspace(ctx context.Context, te
 	// record this incarnation set: a record bound to another incarnation was
 	// written by a database created again under the name, and a re-issued
 	// drop of the old one must not take it.
-	return supersededDrop(clearCompactionRecords(ctx, target.Compaction, func(scope string, st *compaction.State) bool {
+	if err := supersededDrop(clearCompactionRecords(ctx, target.Compaction, func(scope string, st *compaction.State) bool {
 		return scope == ns && st.Incarnation == incarnation
-	}), tenantID, db)
+	}), tenantID, db); err != nil {
+		return err
+	}
+	// A barrier tenant's log marker, in its home group, is this drop's
+	// tombstone until here; it goes once the data is reclaimed (an absent
+	// marker admits no log write of any incarnation). A marker another
+	// drop took over, or a successor marked live, is not this drop's.
+	logKV, err := s.logFenceKV(unguarded, tenantID, db, incarnation)
+	if err != nil {
+		return err
+	}
+	if logKV == nil {
+		return nil
+	}
+	err = clearMarker(unguarded, logKV, tenantID, db, DropFenceKey(tenantID, db), claim)
+	if _, live := errors.AsType[*database.AlreadyExistsError](err); live {
+		return &database.DropSupersededError{Name: db, TenantID: tenantID}
+	}
+	return err
 }
 
 // FenceDatabaseKeyspace fences incarnation of the (tenantID, db) database in
@@ -368,6 +398,18 @@ func (s *KeyspaceReclaimService) FenceDatabaseKeyspace(ctx context.Context, tena
 	}
 	if store.KV == nil {
 		return &DropFenceError{TenantID: tenantID, Database: db, Op: "write", Err: &FenceStoreMissingError{TenantID: tenantID, Database: db}}
+	}
+	// A barrier tenant's logs are guarded by a marker of their own, in its
+	// home group: it is tombstoned first, so no log write of the dropped
+	// incarnation lands once its data is fenced.
+	logKV, err := s.logFenceKV(ctx, tenantID, db, incarnation)
+	if err != nil {
+		return err
+	}
+	if logKV != nil {
+		if err := fenceMarker(ctx, logKV, tenantID, db, DropFenceKey(tenantID, db), incarnation, claim); err != nil {
+			return err
+		}
 	}
 	if store.PerDatabase {
 		if err := s.fenceReclaimStore(ctx, tenantID, db, incarnation, claim); err != nil {
@@ -461,6 +503,20 @@ func (s *KeyspaceReclaimService) UnfenceDatabaseKeyspace(ctx context.Context, te
 		return err
 	}
 	key := DropFenceKey(tenantID, db)
+	// A barrier tenant's log marker, in its home group, is marked live with
+	// the data's: its logs' writes are guarded there.
+	logKV, err := s.logFenceKV(ctx, tenantID, db, incarnation)
+	if errors.As(err, &superseded) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if logKV != nil {
+		if err := markLive(ctx, logKV, tenantID, db, key, incarnation, claim); err != nil {
+			return err
+		}
+	}
 	if store.PerDatabase {
 		if err := s.claimReclaimStore(ctx, tenantID, db, incarnation, claim); err != nil {
 			return err
@@ -714,6 +770,27 @@ func (s *KeyspaceReclaimService) fenceTarget(ctx context.Context, tenantID, db, 
 		return FenceStore{KV: s.system.KV}, nil
 	}
 	return store, nil
+}
+
+// logFenceKV returns the store of the (tenantID, db) database's second,
+// log-only drop-fence marker (StoreResolver.LogFenceTarget), or nil when its
+// logs share the data's marker.
+func (s *KeyspaceReclaimService) logFenceKV(ctx context.Context, tenantID, db, incarnation string) (ReclaimKV, error) {
+	if s.resolver == nil {
+		return nil, nil
+	}
+	store, ok, err := s.resolver.LogFenceTarget(ctx, tenantID, db, incarnation)
+	var superseded *database.DropSupersededError
+	if errors.As(err, &superseded) {
+		return nil, superseded
+	}
+	if err != nil {
+		return nil, &ReclaimStoreUnavailableError{TenantID: tenantID, Err: err}
+	}
+	if !ok || store.KV == nil {
+		return nil, nil
+	}
+	return store.KV, nil
 }
 
 // ReclaimTenantKeyspace deletes everything tenantID owns in the system store:

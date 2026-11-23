@@ -190,29 +190,46 @@ func (r *storeResolver) FenceTarget(ctx context.Context, tenantID, db, incarnati
 			return service.FenceStore{}, true, err
 		}
 		return service.FenceStore{KV: svcs.KV, PerDatabase: true}, true, nil
-	case tenant.IsolationBarrier:
-		// A barrier tenant's logs are proposed to its home group, whose
-		// state machine evaluates their drop fence, so the marker goes
-		// there. The home group holds every one of the tenant's databases,
-		// as the system store does, so it is not per-database. A node with
-		// no home group (no Raft backend, or the group unknown) proposes
-		// them to the tenant barrier's own store instead, which checks the
-		// incarnation is live rather than reading a marker: the system
-		// store, as before.
-		if r.barrier == nil {
-			return service.FenceStore{}, false, nil
-		}
-		svcs, err := r.barrier.Services(ctx, tenantID, database.TenantHomeName)
-		if errors.Is(err, ErrRaftDatabaseUnknown) {
-			return service.FenceStore{}, false, nil
-		}
-		if err != nil {
-			return service.FenceStore{}, true, err
-		}
-		return service.FenceStore{KV: svcs.KV}, true, nil
 	default:
+		// Prefix and barrier isolation: a barrier tenant's database data
+		// is served from the system store (restServiceRegistry.resolveShared)
+		// and guarded there by the system-store marker. Its logs are fenced
+		// in its home group, by LogFenceTarget.
 		return service.FenceStore{}, false, nil
 	}
+}
+
+// LogFenceTarget returns the store holding the drop-fence marker the
+// (tenantID, db) database's verifiable-log writes are guarded by, when that
+// is not the store FenceTarget answers. A barrier tenant's logs are proposed
+// to its home group, whose state machine evaluates their drop fence, so the
+// log marker goes there; the home group holds every one of the tenant's
+// databases, so it is not per-database. A node with no home group (no Raft
+// backend, or the group unknown) proposes them to the tenant barrier's own
+// store, which checks the incarnation is live rather than reading a marker,
+// and answers false like every other isolation: no second marker.
+func (r *storeResolver) LogFenceTarget(ctx context.Context, tenantID, db, incarnation string) (service.FenceStore, bool, error) {
+	if r.tenantSvc == nil || r.barrier == nil || tenantID == "" || tenantID == r.systemTenant {
+		return service.FenceStore{}, false, nil
+	}
+	info, err := r.tenantSvc.GetTenant(ctx, tenantID)
+	if errors.Is(err, tenant.ErrTenantNotFound) {
+		return service.FenceStore{}, false, nil
+	}
+	if err != nil {
+		return service.FenceStore{}, true, err
+	}
+	if info == nil || info.EffectiveIsolationType() != tenant.IsolationBarrier {
+		return service.FenceStore{}, false, nil
+	}
+	svcs, err := r.barrier.Services(ctx, tenantID, database.TenantHomeName)
+	if errors.Is(err, ErrRaftDatabaseUnknown) {
+		return service.FenceStore{}, false, nil
+	}
+	if err != nil {
+		return service.FenceStore{}, true, err
+	}
+	return service.FenceStore{KV: svcs.KV}, true, nil
 }
 
 // isNilTenantServices reports whether the source is absent, including the
