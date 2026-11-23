@@ -348,6 +348,87 @@ func TestFramed_DamagedSlotTornCommitKeepsAckedFrames(t *testing.T) {
 	}
 }
 
+// TestFramed_TornCommitRepairedBeforeNoAppendSyncAck: a crash between a
+// Sync's two slot writes leaves slot 0 newer than slot 1. A writeable reopen
+// that acknowledges a Sync without appending must first rewrite both slots,
+// so losing the newer slot later can never demote the acknowledged frame to
+// an unsynced tail that the next writeable open zeroes.
+func TestFramed_TornCommitRepairedBeforeNoAppendSyncAck(t *testing.T) {
+	b := newFakeBarrier(t)
+	r1, r2 := bytes.Repeat([]byte{'a'}, 100), bytes.Repeat([]byte{'b'}, 70)
+	path := filepath.Join(t.TempDir(), "000001.log")
+	tear := &slotTearFS{FS: filesys.Default}
+	f, err := New(tear, b).Create(path)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := f.Write(r1); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if _, err := f.Write(r2); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	tear.armed = true
+	if err := f.Sync(); !errors.Is(err, errInjected) {
+		t.Fatalf("torn Sync err = %v, want %v", err, errInjected)
+	}
+	if !tear.dead {
+		t.Fatal("the second slot write of the torn Sync was never attempted")
+	}
+	_ = f.Close() // the file is dead; its error is the injected one
+
+	w, err := New(filesys.Default, b).OpenReadWrite(path)
+	if err != nil {
+		t.Fatalf("OpenReadWrite: %v", err)
+	}
+	ef := w.(*encryptedFile)
+	if ef.durable != 2 || len(ef.frames) != 2 {
+		t.Fatalf("reopen durable=%d frames=%d, want 2 and 2", ef.durable, len(ef.frames))
+	}
+	if err := w.Sync(); err != nil {
+		t.Fatalf("no-append Sync: %v", err)
+	}
+	slot0 := ef.headerSize - commitSlots*commitSlotSize
+	frameLast := ef.physEnd - 1 // last sealed byte of the second frame
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	raw, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	for _, off := range []int64{slot0, frameLast} {
+		var bt [1]byte
+		if _, err := raw.ReadAt(bt[:], off); err != nil {
+			t.Fatalf("read byte at %d: %v", off, err)
+		}
+		bt[0] ^= 0xff
+		if _, err := raw.WriteAt(bt[:], off); err != nil {
+			t.Fatalf("flip byte at %d: %v", off, err)
+		}
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	if ro, err := New(filesys.Default, b).Open(path); !errors.Is(err, ErrAuthFailed) {
+		if err == nil {
+			_ = ro.Close()
+		}
+		t.Fatalf("read-only reopen err = %v, want %v", err, ErrAuthFailed)
+	}
+	if rw, err := New(filesys.Default, b).OpenReadWrite(path); !errors.Is(err, ErrAuthFailed) {
+		if err == nil {
+			_ = rw.Close()
+		}
+		t.Fatalf("writeable reopen err = %v, want %v (the acknowledged frame was zeroed)", err, ErrAuthFailed)
+	}
+}
+
 // writeUnsyncedTail writes first and syncs it, then writes rest and closes
 // without a Sync, so rest's frame is on disk past the commit boundary.
 func writeUnsyncedTail(t *testing.T, b barrierKEK, first, rest []byte) ([]byte, []frameRef) {
