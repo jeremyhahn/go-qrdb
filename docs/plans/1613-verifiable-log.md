@@ -335,6 +335,25 @@ in mg1655a.
 - docs/databases/architecture.md: "What a drop reclaims" and the log service
   row no longer call the untenanted case open.
 
+## rw1613h
+
+- CI on #1655's merge with main (ee91c9028d) failed
+  `TestBuildServices_ReclaimerReachesEveryShapeADatabaseOwns`: the drop of an
+  untenanted memory database was refused "service: read failed: engine:
+  invalid query: unsupported query type". Reproduced at the merge and at the
+  row tip ab80ca2fd; green at cd4ace6eb. The cause is rw1613g, not #1705's
+  go-codec move: an untenanted drop now checks and reclaims logs, and the
+  test's host runs the "kv" engine (also an opt-in embedded engine), whose
+  Lookup has no verifiable-log case, so `dropGroup`'s list read was refused.
+- Fix: `logService.dropGroup` reads the unsupported-query-type refusal (the
+  duck-typed `unsupportedQueryTypeErr` the MVCC service already uses) as "this
+  group holds no log": nothing to check, reclaim or propose. Every other read
+  refusal still refuses the drop.
+- Tests: `TestLogService_DropDatabaseLogs_GroupWithNoLogCaseHasNoneToReclaim`
+  (new); `TestBuildServices_ReclaimerReachesEveryShapeADatabaseOwns`, the
+  service drop/log tests, the lifecycle package and
+  `TestVlog_CLI_DatabaseDrop_PerProtocol` pass on the full tag set.
+
 ## Out of scope
 
 The go-xkms provider and transparency log (the seam rows on the other side);
