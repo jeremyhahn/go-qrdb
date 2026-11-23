@@ -562,6 +562,15 @@ func TestInitialize_SystemSOPINCommitFailureOnFreshSO(t *testing.T) {
 	if got := h.pins.pins[tenantid.System]; got != "someone else's" {
 		t.Fatalf("committed PIN = %q, want the conflicting PIN untouched", got)
 	}
+	// A run holding someone else's PIN leaves no SO credential: the
+	// account stays pending and nothing is bound or signed.
+	so := h.users.byName["officer"]
+	if so == nil || so.Lifecycle != user.LifecyclePending || len(so.CertBindings) != 0 {
+		t.Fatalf("SO after a foreign PIN = %+v, want a pending, unbound account", so)
+	}
+	if len(h.binder.calls) != 0 || len(h.signer.calls) != 0 {
+		t.Fatalf("binder calls %v, signer calls %v, want none", h.binder.calls, h.signer.calls)
+	}
 }
 
 func TestInitialize_SystemSOPINRetryWithItsOwnPINSucceeds(t *testing.T) {
