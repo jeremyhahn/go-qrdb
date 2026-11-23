@@ -294,7 +294,11 @@ node copied in the journal, so a crash or a failed journal write before that
 rolls back to a source that holds every acknowledged write. A self-managed
 tenant's barrier comes back sealed after its step, as after a restart: the
 step completes with the tenant's stores closed, and they attach on its
-administrator's unseal.
+administrator's unseal. A node that is sealed, or whose destination pool is
+locked or not open, cannot run its copy step: the step waits for the unseal
+without counting an attempt, the node stays pending, and the journal's error
+names the reason ("move copy step waiting: node sealed" or "... pool
+unavailable") until the same step runs.
 
 The catalog admits a move through `volume.Catalog.AdmitMove`: one
 transaction reserves the tenant's bytes on the destination pool and writes

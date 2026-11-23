@@ -207,6 +207,12 @@ The catalog half of a move's admit step, called by `MoveTenant`
 - `Catalog.GrantMoveStep` / `CompleteMoveStep` / `FailMoveStep`: the
   journal's step transitions, each one compare-and-swap on the journal
   (`*MoveJournalConflictError` after the bounded retries);
+- `Catalog.WaitMoveStep`: a copy step whose node is sealed or whose
+  destination pool is unavailable (`*NodeSealedError`,
+  `*PoolUnavailableError`) waits: the journal's `Error` names the reason
+  ("move copy step waiting: node sealed"), no attempt is counted, the move
+  never aborts on it and an unchanged reason writes nothing; a recorded
+  cancel still aborts, as in `FailMoveStep`;
 - `Catalog.CutOverMove`: one transaction pointing the assignment at the
   destination pool and setting the journal `cutover` (the commit point);
 - `Catalog.MarkMoveTenantRecorded`: records on the journal that the tenant
@@ -638,6 +644,14 @@ A raft-tenant move is covered by the three-node E2E (`TestVolumePool_CLI_MoveTen
   `TestMoveReconciler_FullMoveCutsOverAndRetires`, `_CopiedWaitsForRecorder`,
   `_RecorderErrorRetried`, `_RetireFailureRetried`, `_CancelThenAbort`,
   `_AbortFailureRetried`, `_StepPhases`, `_PhaseCatalogErrorReturned`;
+- `pkg/volume` (a copy step that waits): `TestCatalog_WaitMoveStep` (no
+  attempt counted, no write while the reason is unchanged, a cancel still
+  aborts), `TestMoveReconciler_SealedNodeStepWaits`,
+  `_UnavailableDestinationStepWaits` (past the attempt bound the move stays
+  copying with the node pending, then completes after the unseal) and
+  `_CancelWhileSealedAborts`; `pkg/seal`
+  `TestMoveStepRunner_SealedStepWaitsThenRuns` (a sealed node's step
+  closes nothing and runs after the unseal);
 - `pkg/tenant` (`volume_move_test.go`): `AdmitTenantMove` not found, a
   prefix tenant refused, a destination not entitled, no source, a source
   error, no replica node, a volume and a raft tenant admitted;
