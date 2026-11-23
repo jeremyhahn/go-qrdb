@@ -404,7 +404,9 @@ func (r *cacheFileReader) ReadAt(_ context.Context, p []byte, off int64) error {
 	if off < 0 {
 		return errNegativeOffset
 	}
-	if off+int64(len(p)) > r.size {
+	// Compare against the bytes left after off, never off+len(p): that sum
+	// overflows for an offset near MaxInt64.
+	if off > r.size || int64(len(p)) > r.size-off {
 		return io.EOF
 	}
 	// os.File.ReadAt returns a non-nil error whenever it reads short.

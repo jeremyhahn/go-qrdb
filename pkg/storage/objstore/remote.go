@@ -180,7 +180,10 @@ func (rr *remoteReader) ReadAt(_ context.Context, p []byte, off int64) error {
 	if off < 0 {
 		return errNegativeOffset
 	}
-	if off+int64(len(p)) > int64(len(rr.data)) {
+	// Compare against the bytes left after off, never off+len(p): that sum
+	// overflows for an offset near MaxInt64 (a corrupt SSTable index).
+	size := int64(len(rr.data))
+	if off > size || int64(len(p)) > size-off {
 		return io.EOF
 	}
 	copy(p, rr.data[off:])

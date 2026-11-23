@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -657,6 +658,55 @@ func TestCacheFileReader_ShortFile(t *testing.T) {
 	r := &cacheFileReader{f: f, size: 10}
 	t.Cleanup(func() { _ = r.Close() })
 	require.ErrorIs(t, r.ReadAt(context.Background(), make([]byte, 8), 0), io.EOF)
+}
+
+// readAtBoundsCases are the offsets a corrupt SSTable index can hand ReadAt:
+// every one past the object's end, or overflowing off+len(p), must fail with
+// an error and never panic.
+func readAtBoundsCases(size int64) []struct {
+	name string
+	off  int64
+	want error
+} {
+	return []struct {
+		name string
+		off  int64
+		want error
+	}{
+		{"MaxInt64", math.MaxInt64, io.EOF},
+		{"MaxInt64-1", math.MaxInt64 - 1, io.EOF},
+		{"size", size, io.EOF},
+		{"size+1", size + 1, io.EOF},
+		{"negative", -1, errNegativeOffset},
+	}
+}
+
+func TestRemoteReader_ReadAtBounds(t *testing.T) {
+	data := []byte("0123456789")
+	rr := &remoteReader{data: data}
+	for _, tc := range readAtBoundsCases(int64(len(data))) {
+		t.Run(tc.name, func(t *testing.T) {
+			require.ErrorIs(t, rr.ReadAt(context.Background(), make([]byte, 4), tc.off), tc.want)
+		})
+	}
+	// A zero-length read at the end is in range.
+	require.NoError(t, rr.ReadAt(context.Background(), nil, int64(len(data))))
+}
+
+func TestCacheFileReader_ReadAtBounds(t *testing.T) {
+	data := []byte("0123456789")
+	path := filepath.Join(t.TempDir(), "f")
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	f, err := os.Open(path)
+	require.NoError(t, err)
+	r := &cacheFileReader{f: f, size: int64(len(data))}
+	t.Cleanup(func() { _ = r.Close() })
+	for _, tc := range readAtBoundsCases(int64(len(data))) {
+		t.Run(tc.name, func(t *testing.T) {
+			require.ErrorIs(t, r.ReadAt(context.Background(), make([]byte, 4), tc.off), tc.want)
+		})
+	}
+	require.NoError(t, r.ReadAt(context.Background(), nil, int64(len(data))))
 }
 
 func TestObjstoreErrors_Messages(t *testing.T) {
