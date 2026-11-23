@@ -19,6 +19,7 @@ import (
 	"slices"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -170,6 +171,78 @@ func (m *AuthMiddleware) AuthorizeRoleUnassignment(ctx context.Context, userSvc 
 	// still grants it afterwards.
 	afterIDs := slices.DeleteFunc(slices.Clone(existing.RoleIDs), func(id string) bool { return id == roleID })
 	return m.authorizeSORoleChange(ctx, target, heldRoleIDs(target, existing.RoleIDs, existing.RoleBindings), heldRoleIDs(target, afterIDs, existing.RoleBindings))
+}
+
+// AuthorizeGroupRoles is the escalation guard for a group's role set: before
+// CreateGroup or UpdateGroup gives a group of tenantID the roles roleIDs, the
+// caller must be allowed to assign every one of them, exactly as AssignRole
+// requires (role.ValidateAssignable, and strict separation's SO rule: only an
+// SO may put the SO role on a group). A group carries only roles of its own
+// tenant; the group store refuses any other.
+func (m *AuthMiddleware) AuthorizeGroupRoles(ctx context.Context, roleSvc role.RoleServicer, tenantID string, roleIDs []string) error {
+	if m == nil || len(roleIDs) == 0 {
+		return nil
+	}
+	target := tenantid.Normalize(tenantID)
+	if err := m.authorizeSORoleChange(ctx, target, nil, slices.Clone(roleIDs)); err != nil {
+		return err
+	}
+	return validateRoleAssignment(ctx, roleSvc, m.Authorizer(), role.ValidateAssignable, target, roleIDs, nil)
+}
+
+// AuthorizeGroupMembership is the escalation guard for AddGroupMember: the
+// caller needs groups:add_member in the user's tenant, the user must be of
+// the group's tenant, and the caller must be allowed to assign every role
+// the group carries, exactly as AssignRole requires of each one.
+func (m *AuthMiddleware) AuthorizeGroupMembership(
+	ctx context.Context,
+	userSvc user.UserServicer,
+	roleSvc role.RoleServicer,
+	userID uint64,
+	g *group.Group,
+) error {
+	if m == nil {
+		return nil
+	}
+	existing, err := assignee(ctx, userSvc, userID)
+	if err != nil {
+		return err
+	}
+	target := tenantid.Normalize(existing.TenantID)
+	if err := m.AuthorizeTenant(ctx, target, permission.GroupsAddMember); err != nil {
+		return err
+	}
+	if g.TenantID != target {
+		return &group.GroupNotFoundError{ID: g.ID}
+	}
+	before := heldRoleIDs(target, existing.RoleIDs, existing.RoleBindings)
+	if err := m.authorizeSORoleChange(ctx, target, before, append(slices.Clip(before), g.RoleIDs...)); err != nil {
+		return err
+	}
+	validate := assignValidator(role.ValidateAssignable)
+	if assignsToSelf(ctx, existing) {
+		validate = role.ValidateSelfAssignable
+	}
+	return validateRoleAssignment(ctx, roleSvc, m.Authorizer(), validate, target, g.RoleIDs, nil)
+}
+
+// AuthorizeGroupMemberRemoval is the guard for RemoveGroupMember: the caller
+// needs groups:remove_member in the user's tenant, and under strict
+// separation only an SO may take the SO role away through a group.
+func (m *AuthMiddleware) AuthorizeGroupMemberRemoval(ctx context.Context, userSvc user.UserServicer, userID uint64, g *group.Group) error {
+	if m == nil {
+		return nil
+	}
+	existing, err := assignee(ctx, userSvc, userID)
+	if err != nil {
+		return err
+	}
+	target := tenantid.Normalize(existing.TenantID)
+	if err := m.AuthorizeTenant(ctx, target, permission.GroupsRemoveMember); err != nil {
+		return err
+	}
+	held := heldRoleIDs(target, existing.RoleIDs, existing.RoleBindings)
+	return m.authorizeSORoleChange(ctx, target, append(slices.Clip(held), g.RoleIDs...), held)
 }
 
 // AuthorizeRoleAssignmentWriteOnCreate authorizes and validates a

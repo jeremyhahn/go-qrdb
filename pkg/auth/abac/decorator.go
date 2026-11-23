@@ -207,6 +207,7 @@ func (d *Decorator) Authorize(ctx context.Context, identity *auth.Identity, reso
 		subject.Name = identity.AccountName()
 		subject.TenantID = identity.TenantID
 		subject.Roles = identity.Roles
+		subject.Groups = identity.Groups
 		subject.Attributes = stringMapToAttributes(identity.Metadata)
 		subject.UserAttributes = stringMapToAttributes(identity.Attributes)
 	}

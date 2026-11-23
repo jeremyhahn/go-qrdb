@@ -62,7 +62,17 @@ type Identity struct {
 	// whether the identity holds a named system role, resolve the name
 	// through the role store (role.HoldsSystemRole) rather than comparing
 	// the name here.
+	//
+	// It includes the roles the record's IAM groups carry (pkg/group): the
+	// middleware unions RoleIDs with the RoleIDs of every group in the
+	// record's GroupIDs that still resolves.
 	Roles []string
+
+	// Groups lists the IAM group IDs (pkg/group) the bound user record is a
+	// member of. Like Roles it is set ONLY from the record; an identity with
+	// no user record carries no groups. ABAC policies match it as
+	// subject.groups.
+	Groups []string
 
 	// RoleBindings carries the identity's TENANT-SCOPED role grants —
 	// user.RoleBinding's shape, copied rather than imported: pkg/user

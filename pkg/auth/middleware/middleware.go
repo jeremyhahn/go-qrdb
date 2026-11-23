@@ -53,6 +53,7 @@ type AuthMiddleware struct {
 	methods       map[string]struct{}
 	authorizer    auth.Authorizer
 	users         user.UserServicer
+	groups        GroupResolver
 	usersFallback user.UserServicer
 	audit         audit.Logger
 
@@ -614,6 +615,7 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// A role list read from a token's claims is never an authorization
 	// source.
 	identity.Roles = nil
+	identity.Groups = nil
 	identity.RoleBindings = nil
 	identity.Attributes = nil
 	// TenantOwner likewise has one source, decideTenantOwner below; no
@@ -775,7 +777,12 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			// RoleBindings and Attributes are overwritten from the store's
 			// current state, never merged, so a withdrawal on the record
 			// takes effect here.
-			identity.Roles = u.RoleIDs
+			// Group-derived roles join the record's own: a member holds
+			// every role of every group it belongs to that still resolves
+			// (see effectiveRoles). Groups are records too, so roles still
+			// come only from go-qrdb's own state.
+			identity.Roles = m.effectiveRoles(ctx, u)
+			identity.Groups = slices.Clone(u.GroupIDs)
 			identity.RoleBindings = convertRoleBindings(u.RoleBindings)
 
 			// Attributes stays separate from Metadata (see
