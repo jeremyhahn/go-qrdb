@@ -520,13 +520,20 @@ What proposes `OpAuditAppend`, and how a caller reads back what it proposed:
   probe still sees it and refuses. Only a `home` route, which is never
   retired, is cached; a `system` route is read from the route store on every
   call, so another node or resolver sees a retired and re-recorded route.
-  Residual: the hold is per resolver, so a refusal on another node, or on
-  this node's separate log resolver, can retire a route an append here still
-  holds, and a proposal that returned on a timeout can still apply.
+  The hold is per resolver, so a system-routed append also carries a guard
+  on the tenant's and the floor's isolation epochs, read before its strict
+  check: an append in flight across a tightening (a refusal on another node
+  or on this node's separate log resolver, or a proposal that returned on a
+  timeout) is refused at apply time on every replica, reported as
+  `*tenant.SystemAuditRouteError` when the tenant is now strict, else as the
+  retryable `*service.WriteGuardRefusedError`. Residual: a group with
+  `guarded-writes` off (mixed version) has only the hold.
   A home-group write while `verifiable-log-audit` is not active
   on every replica is refused as unavailable with
   `*service.AuditHomeNotActiveError`. Without home groups (standalone) a
-  barrier tenant stays on the system shard and a dedicated-isolation tenant is
+  barrier tenant stays on the system shard, unguarded: it cannot be tightened
+  to strict, because the tightening's probe reports a system route for it, so
+  its appends need no epoch guard; a dedicated-isolation tenant is
   refused with `*service.DedicatedTenantAuditNotSupportedError` rather than
   silently guessing.
 - `service.ReplicatedLogger` — the `audit.AuditLogger` that actually encodes
