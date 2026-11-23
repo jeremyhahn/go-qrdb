@@ -361,6 +361,17 @@ a deleted tenant is a retired-id record, listed by List deleted, not a status.
 The filter applies after the `tenants:list:cross` narrowing, so it never
 widens what a caller sees.
 
+A server older than the filter drops it and answers every tenant. The Go SDK's
+network transports (REST, gRPC, Unix, QUIC, MCP) and so the CLI check the answer
+(`transport.EnforceStatusFilter`): when a status was asked for and any returned
+tenant's status differs from it, a tenant with no stored status included, the
+answer is refused with no tenants and a `*transport.CapabilityUnsupportedError`
+(`transport: unsupported capability: server ignored the tenant list status
+filter "<status>": it answered tenant "<id>" with status "<got>"; upgrade the
+server`); the CLI exits non-zero rather than print an unfiltered list. An
+unfiltered request, or an answer whose every tenant matches, passes unchanged.
+The embedded transport is the same build as its server and is not checked.
+
 | Transport | List filter |
 |---|---|
 | REST `GET /v1/tenants/list` | `?status=suspended` |
@@ -523,6 +534,7 @@ leaks to a caller with no access to the tier.
 | Reconcile deleted: one or more retired ids failed | 200 | `OK` — the report, with `failed` naming each failed tenant, step, path and message; every other id was still reclaimed, a failed id keeps its records, and re-running resumes. The Go SDK returns the response and a `*transport.ReconcileDeletedTenantsError` |
 | Update with a `description` or `metadata` over its limit, a metadata key outside the key grammar, or invalid UTF-8 | 400 | `INVALID_ARGUMENT` — `*TenantFieldError` naming the field; nothing written |
 | List with a `status` filter that is not `active`, `suspended` or `disabled` | 400 | `INVALID_ARGUMENT` — `*InvalidStatusError` listing the allowed values |
+| List with a `status` filter against a server older than the filter, which dropped it and answered a tenant of another status | client-side, no wire status (the server answered 200 / `OK`) | `*transport.CapabilityUnsupportedError` (`server ignored the tenant list status filter ...; upgrade the server`) from the Go SDK's network transports and the CLI; no tenants returned |
 | Update with a `status` that is not `active`, `suspended` or `disabled` | 400 | `INVALID_ARGUMENT` — `*InvalidStatusError` listing the allowed values; nothing written |
 | Update with a `status` the tenant cannot move to from its current one (`disabled` → `suspended`) | 409 | `FAILED_PRECONDITION` — `*StatusTransitionError`; nothing written |
 | Any request by a principal of a suspended or disabled tenant | 403 | `PERMISSION_DENIED` — `*middleware.TenantNotActiveError`, classed as a disabled account |
