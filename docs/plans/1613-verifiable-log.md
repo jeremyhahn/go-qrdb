@@ -202,13 +202,19 @@ allowed.
 Codex round 4 P1-3 at 9a8dd39821: a barrier tenant's logs are proposed to
 its home group, but `storeResolver.FenceTarget` put the drop-fence marker of
 its named databases on the system store, so the home group's state machine
-refused a log write in a live database as `DroppingError`. `FenceTarget`
-now resolves the home group (`database.TenantHomeName`, through
+refused a log write in a live database as `DroppingError`. fx1655c made
+`FenceTarget` resolve the home group (`database.TenantHomeName`, through
 `RaftBackendFactory.Services`) for barrier isolation, not per-database, and
-keeps the system store on a node with no home group (its standalone barrier
+keep the system store on a node with no home group (its standalone barrier
 store checks the incarnation is live instead). No new key scheme.
+Correction (rw1613d, Codex round 5 P1 1): moving the whole marker was wrong.
+Only the log fence goes to the home group (`StoreResolver.LogFenceTarget`);
+the data fence stays on the system store, where the tenant's database data
+is served and `sharedStoreFence` guards it.
 
-- Tests: `TestStoreResolver_FenceTargetBarrierTenantUsesItsHomeGroup`,
+- Tests: `TestStoreResolver_LogFenceTargetBarrierTenantUsesItsHomeGroup`
+  (renamed from `TestStoreResolver_FenceTargetBarrierTenantUsesItsHomeGroup`
+  in rw1613d),
   `TestLogService_BarrierTenantNamedDatabaseIsFencedInItsHomeGroup`, and the
   named-database step of `TestVlog_CLI_BarrierTenant_PerProtocol`, which
   fails with "database is being dropped" without the fix.
@@ -257,6 +263,33 @@ in mg1655a.
   database therefore takes a new `--data-dir` (the user guide and the CLI
   E2E do so).
 - The SPEC, `pm/rows.md` and ROADMAP.md moves above.
+
+## rw1613d (Codex round 5 at 928f3d8a41)
+
+- P1 1: fx1655c put a barrier tenant's whole drop-fence marker in its home
+  group, so its database data, served from the system store, lost its fence.
+  `FenceTarget` answers the system store again (data fence,
+  `sharedStoreFence`); the new `StoreResolver.LogFenceTarget` answers the
+  home group (log fence). The reclaim service marks the log marker live on
+  create, tombstones it before the data fence on drop and clears it when the
+  reclamation ends. Fix 67692d823, tests f31428695:
+  `TestStoreResolver_FenceTargetBarrierTenantUsesTheSystemStore`,
+  `TestStoreResolver_LogFenceTargetBarrierTenantUsesItsHomeGroup`,
+  `TestKeyspaceReclaim_BarrierTenantFencesDataAndLogMarkers`; the CLI e2e
+  `TestVlog_CLI_BarrierTenant_PerProtocol` puts and gets a kv key in the
+  named database across a drop and re-create (rw1613e granted the test
+  identity `kv:put`/`kv:get`).
+- P1 2: `SignHead` read the descriptor and head before admission, so a
+  signer paused across a drop and re-create signed the old incarnation's
+  head. It now admits first, reads through the admitted group under its
+  incarnation and proposes through it (refused with `DroppingError`);
+  `RotateKey` re-reads the descriptor under the admitted incarnation. Fix
+  b3df53741, test 90211cc83:
+  `TestLogService_SignHeadPausedAcrossDropAndRecreateIsRefused`.
+- P1 3: a database drop deleted every completed log's descriptor and head
+  outside the step budget. Both now count against `MaxPrunePerCommand`; a
+  step that cannot cover the pair leaves it for the next. Fix 7e80ce1c0,
+  test 878a45233: `TestChain_DropDatabase_EmptyLogsAreBounded`.
 
 ## Out of scope
 
