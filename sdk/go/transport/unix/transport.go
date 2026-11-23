@@ -102,6 +102,12 @@ func (t *Transport) dialOptions() ([]grpc.DialOption, error) {
 		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor("unix", t.config.TLSEnabled)),
 		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor("unix", t.config.TLSEnabled)),
 	)
+	// A configured bearer token rides every RPC as metadata "authorization",
+	// fetched from the token source per call, and only over TLS.
+	opts = append(opts,
+		grpc.WithChainUnaryInterceptor(transport.BearerUnaryClientInterceptor("unix", t.config.TLSEnabled, t.config.TokenSource)),
+		grpc.WithChainStreamInterceptor(transport.BearerStreamClientInterceptor("unix", t.config.TLSEnabled, t.config.TokenSource)),
+	)
 
 	if t.activeDatabase != "" {
 		opts = append(opts,
@@ -183,6 +189,15 @@ func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
 // (transport.WithTLS / transport.WithMTLS / transport.WithTLSConfig); when
 // enabled its cert/key/CA options are validated the same way as the gRPC
 // transport. The transport is not connected until Connect is called.
+// isBearerRefusal reports whether err is the client's own refusal to send a
+// configured bearer token: *transport.BearerRequiresTLSError or
+// *transport.TokenSourceError.
+func isBearerRefusal(err error) bool {
+	var tlsErr *transport.BearerRequiresTLSError
+	var srcErr *transport.TokenSourceError
+	return errors.As(err, &tlsErr) || errors.As(err, &srcErr)
+}
+
 func New(opts ...transport.Option) (*Transport, error) {
 	cfg := transport.ApplyOptions(opts...)
 
@@ -301,6 +316,10 @@ func (t *Transport) probeHealth(ctx context.Context) error {
 		// The server answered with a typed refusal of the caller -- its
 		// credential, or its address under the client-address rate limit.
 		return mapGRPCError("Health", err)
+	case isBearerRefusal(err):
+		// The client refused to send its bearer token (connection not
+		// TLS, failing token source): that refusal is the result.
+		return err
 	}
 	return &transport.ConnectionError{
 		Address: t.config.Address,

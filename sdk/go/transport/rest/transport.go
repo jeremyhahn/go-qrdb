@@ -126,6 +126,13 @@ func New(opts ...transport.Option) (*Transport, error) {
 // connection first. 90 s is net/http's DefaultTransport value.
 const idleConnTimeout = 90 * time.Second
 
+// bearerRoundTripper wraps base so every request carries the configured
+// bearer token, over https to the configured host only; with no token source
+// it returns base.
+func (t *Transport) bearerRoundTripper(base http.RoundTripper) http.RoundTripper {
+	return transport.BearerRoundTripper(base, "rest", transport.ConfiguredHost(t.baseURL), t.config.TokenSource)
+}
+
 func (t *Transport) ensureClient() error {
 	if t.client != nil {
 		return nil
@@ -156,7 +163,7 @@ func (t *Transport) ensureClient() error {
 	// closed the idle connection it was written onto, is sent once more.
 	t.httpTransport = httpTransport
 	t.baseRT = transport.RetryServerClosedIdle(
-		transport.SOPINRoundTripper(httpTransport, "rest", transport.ConfiguredHost(t.baseURL)))
+		transport.SOPINRoundTripper(t.bearerRoundTripper(httpTransport), "rest", transport.ConfiguredHost(t.baseURL)))
 	t.client = &http.Client{
 		Transport: t.scopedRoundTripper(),
 		Timeout:   timeout,

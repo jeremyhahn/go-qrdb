@@ -122,6 +122,11 @@ func New(opts ...transport.Option) (*Transport, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	// The QUIC request frame has no credential field, so a bearer token
+	// could not be sent: refuse it rather than drop it silently.
+	if cfg.TokenSource != nil {
+		return nil, &transport.ConfigError{Field: "TokenSource", Reason: "the QUIC transport cannot send a bearer token; use REST, gRPC, Unix or MCP"}
+	}
 
 	return &Transport{config: cfg}, nil
 }
