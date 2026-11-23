@@ -473,6 +473,60 @@ func TestApplyVerifiableLog_AppendSealedFoldsTheGivenLeafHash(t *testing.T) {
 	}
 }
 
+// TestApplyVerifiableLog_SealedKeyRecordsAreStoredUnopened pins sub-types
+// CreateSealedKey and RotateSealedKey: apply stores a key record whose PKCS8
+// is sealed as it is, checking only its version, while Create and RotateKey
+// still refuse a record they cannot decode.
+func TestApplyVerifiableLog_SealedKeyRecordsAreStoredUnopened(t *testing.T) {
+	p := payloadOf(t)
+	gen := func(version uint32) vlog.SigningKey {
+		t.Helper()
+		k, err := vlog.GenerateSigningKey(vlog.SignatureEd25519, version)
+		if err != nil {
+			t.Fatalf("GenerateSigningKey: %v", err)
+		}
+		return k
+	}
+	first, second := gen(vlog.FirstKeyVersion), gen(vlog.FirstKeyVersion+1)
+	desc := applyDescriptor(false)
+	desc.Keys = []vlog.HeadKey{applyHeadKey(t, first)}
+	sealedFirst := vlog.SigningKey{Version: first.Version, PKCS8: []byte("sealed-record-first")}
+	sealedSecond := vlog.SigningKey{Version: second.Version, PKCS8: []byte("sealed-record-second")}
+	refused := func(name string, payload []byte) {
+		t.Helper()
+		logs, stg := vlog.NewChain(), memory.NewStorage()
+		res, err := ApplyVerifiableLog(logs, stg, stg, payload)
+		if err != nil {
+			t.Fatalf("%s: ApplyVerifiableLog = %v, want a refusal result", name, err)
+		}
+		if _, ok := protocol.DecodeAppError(res.Data); !ok {
+			t.Fatalf("%s: %+v, want a refusal", name, res)
+		}
+	}
+	refused("Create with a sealed record", p(protocol.EncodeVerifiableLogCreateWithKey(applyLog, desc, sealedFirst)))
+	refused("CreateSealedKey at another version", p(protocol.EncodeVerifiableLogCreateSealedKey(applyLog, desc, sealedSecond)))
+
+	logs, stg := vlog.NewChain(), memory.NewStorage()
+	mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogCreateSealedKey(applyLog, desc, sealedFirst)))
+	if got, err := vlog.ReadSigningKey(stg, applyLog, first.Version); err != nil || !bytes.Equal(got.PKCS8, sealedFirst.PKCS8) {
+		t.Fatalf("key record 1 = %v, %v; want the sealed bytes", got, err)
+	}
+	next := applyHeadKey(t, second)
+	if v := mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogRotateSealedKey(applyLog, next, sealedSecond))); v != uint64(second.Version) {
+		t.Fatalf("RotateSealedKey value = %d, want %d", v, second.Version)
+	}
+	if got, err := vlog.ReadSigningKey(stg, applyLog, second.Version); err != nil || !bytes.Equal(got.PKCS8, sealedSecond.PKCS8) {
+		t.Fatalf("key record 2 = %v, %v; want the sealed bytes", got, err)
+	}
+	res, err := ApplyVerifiableLog(logs, stg, stg, p(protocol.EncodeVerifiableLogRotateKey(applyLog, applyHeadKey(t, gen(3)), &vlog.SigningKey{Version: 3, PKCS8: []byte("sealed-record-third")})))
+	if err != nil {
+		t.Fatalf("RotateKey with a sealed record: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(res.Data); !ok {
+		t.Fatalf("RotateKey with a sealed record: %+v, want a refusal", res)
+	}
+}
+
 // TestApplyVerifiableLog_CreateWithKey covers a Create carrying the log's
 // head-signing key: the key lands in the same apply as the descriptor, and a
 // key of a type RFC 9162 does not allow is refused with nothing written.

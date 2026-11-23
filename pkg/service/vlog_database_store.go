@@ -144,10 +144,13 @@ func (t *barrierDatabaseTarget) seal(s databaseSealer, cmd []byte) ([]byte, erro
 		return nil, err
 	}
 	switch subtype {
-	case protocol.VerifiableLogSubtypeAppend:
+	case protocol.VerifiableLogSubtypeAppend, protocol.VerifiableLogSubtypeCreate, protocol.VerifiableLogSubtypeRotateKey:
 		if !t.parent.featureEnabled(featuregate.VerifiableLogSealed) {
 			return nil, t.featureNotActive(featuregate.VerifiableLogSealed)
 		}
+	}
+	switch subtype {
+	case protocol.VerifiableLogSubtypeAppend:
 		id, entries, err := protocol.DecodeVerifiableLogAppend(tenantID, body)
 		if err != nil {
 			return nil, err
@@ -170,7 +173,7 @@ func (t *barrierDatabaseTarget) seal(s databaseSealer, cmd []byte) ([]byte, erro
 		if err != nil {
 			return nil, err
 		}
-		return protocol.EncodeVerifiableLogCreateWithKey(id, desc, *sealed)
+		return protocol.EncodeVerifiableLogCreateSealedKey(id, desc, *sealed)
 	case protocol.VerifiableLogSubtypeRotateKey:
 		id, next, key, err := protocol.DecodeVerifiableLogRotateKey(tenantID, body)
 		if err != nil || key == nil {
@@ -180,7 +183,7 @@ func (t *barrierDatabaseTarget) seal(s databaseSealer, cmd []byte) ([]byte, erro
 		if err != nil {
 			return nil, err
 		}
-		return protocol.EncodeVerifiableLogRotateKey(id, next, sealed)
+		return protocol.EncodeVerifiableLogRotateSealedKey(id, next, *sealed)
 	default:
 		return cmd, nil
 	}

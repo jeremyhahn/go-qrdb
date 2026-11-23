@@ -25,15 +25,17 @@ import (
 )
 
 // TestBackendKV_RefusesABarrierDatabasesLogKeyspace proves the kv surface of
-// a barrier database cannot reach the verifiable log records and signing-key
-// records databaseLogStore keeps in the same backend: get, put, put-if-absent,
-// compare-and-swap, compare-and-delete, exists and delete of every reserved
-// key are refused with a ReservedKeyError, list, list-all and scan never show
-// one, a delete range over them is refused, and the log stays readable.
+// a barrier database cannot write into the verifiable log keyspace. The
+// database's logs live in its parent group (owner ruling 1234), so its
+// backend holds none, and the keyspace stays reserved: get, put,
+// put-if-absent, compare-and-swap, compare-and-delete, exists and delete of
+// a reserved key are refused with a ReservedKeyError, list, list-all and
+// scan never show one, a delete range over them is refused, and the log
+// stays readable.
 func TestBackendKV_RefusesABarrierDatabasesLogKeyspace(t *testing.T) {
 	dir := t.TempDir()
 	mgr := newBarrierDatabaseManager(t, dir)
-	svc, _, _ := newBarrierLogService(t, mgr, nil)
+	svc, _ := newParentGroupLogService(t, newFenceGroup(t), mgr, nil)
 	ctx := acmeCtx()
 	ref := LogRef{Database: "secure", Log: "events"}
 	created, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: "example.test/secure/events", SigningKeyType: vlog.SignatureEd25519})
@@ -59,9 +61,11 @@ func TestBackendKV_RefusesABarrierDatabasesLogKeyspace(t *testing.T) {
 			reserved = append(reserved, k)
 		}
 	}
-	if len(reserved) == 0 {
-		t.Fatal("the barrier database's backend holds no log records; want the log written into it")
+	if len(reserved) != 0 {
+		t.Fatalf("the barrier database's backend holds log records %q; want them in the parent group", reserved)
 	}
+	// The keyspace stays reserved: a key a log record would take is refused.
+	reserved = []string{vlog.LogTablePrefix + "secure/events/h", vlog.LogTablePrefix}
 
 	kv := NewNamedBackendKVService("secure", db.Backend())
 	if err := kv.Put(bg, "app/visible", []byte("v")); err != nil {

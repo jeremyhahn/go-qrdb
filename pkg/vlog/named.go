@@ -466,6 +466,34 @@ func (c *Chain) CreateWithKey(w Writer, id LogID, desc Descriptor, key SigningKe
 	return c.create(w, id, desc, &key)
 }
 
+// CreateWithSealedKey stages a new log as CreateWithKey does, with a key
+// record whose PKCS8 the proposer sealed under a database barrier after it
+// matched the key against the descriptor (a barrier database's logs, owner
+// ruling 1234). The sealed record cannot be decoded here, so only its
+// version is checked against the descriptor's one key.
+func (c *Chain) CreateWithSealedKey(w Writer, id LogID, desc Descriptor, key SigningKey) error {
+	if len(desc.Keys) != 1 {
+		return &InvalidDescriptorError{Reason: "a log created with its key records exactly that key, not " + strconv.Itoa(len(desc.Keys))}
+	}
+	if err := desc.Keys[0].sealedMatches(key); err != nil {
+		return err
+	}
+	return c.create(w, id, desc, &key)
+}
+
+// sealedMatches refuses a sealed k/<version> record that cannot be this
+// key's: an empty record or one at another version. The record's key is
+// sealed, so it is not compared.
+func (k HeadKey) sealedMatches(record SigningKey) error {
+	if len(record.PKCS8) == 0 {
+		return &InvalidSigningKeyError{Reason: "empty sealed key record"}
+	}
+	if record.Version != k.Version {
+		return &InvalidSigningKeyError{Reason: "key record version " + KeyRef(record.Version) + " for key version " + KeyRef(k.Version)}
+	}
+	return nil
+}
+
 // create stages the descriptor, the empty head and, when key is not nil, the
 // signing key.
 func (c *Chain) create(w Writer, id LogID, desc Descriptor, key *SigningKey) error {
@@ -531,7 +559,28 @@ func (c *Chain) RotateKey(r storage.Reader, w Writer, id LogID, next HeadKey, re
 			return err
 		}
 	}
+	return c.rotateKey(r, w, id, next, record)
+}
 
+// RotateSealedKey records next as RotateKey does, with its key record whose
+// PKCS8 the proposer sealed under a database barrier after it matched the
+// key (a barrier database's logs, owner ruling 1234). The sealed record
+// cannot be decoded here, so only its version is checked against next.
+func (c *Chain) RotateSealedKey(r storage.Reader, w Writer, id LogID, next HeadKey, record SigningKey) error {
+	if err := id.Validate(); err != nil {
+		return err
+	}
+	if err := next.validate(); err != nil {
+		return err
+	}
+	if err := next.sealedMatches(record); err != nil {
+		return err
+	}
+	return c.rotateKey(r, w, id, next, &record)
+}
+
+// rotateKey stages next, and its record when not nil, once both are checked.
+func (c *Chain) rotateKey(r storage.Reader, w Writer, id LogID, next HeadKey, record *SigningKey) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	w = c.staging(w)

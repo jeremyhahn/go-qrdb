@@ -99,6 +99,20 @@ const (
 	// featuregate.VerifiableLogSealed: a replica that implements only
 	// VerifiableLog has no handler for it.
 	VerifiableLogSubtypeAppendSealed byte = 8
+
+	// VerifiableLogSubtypeCreateSealedKey is a barrier database's create
+	// with its software key record: the body is a Create body whose key
+	// record's PKCS8 the proposer sealed under the database's barrier
+	// after matching it against the descriptor (vlog.Chain
+	// CreateWithSealedKey). It requires featuregate.VerifiableLogSealed.
+	VerifiableLogSubtypeCreateSealedKey byte = 9
+
+	// VerifiableLogSubtypeRotateSealedKey is a barrier database's key
+	// rotation with its software key record, sealed as for
+	// CreateSealedKey (vlog.Chain RotateSealedKey). The body is a
+	// RotateKey body that carries the record. It requires
+	// featuregate.VerifiableLogSealed.
+	VerifiableLogSubtypeRotateSealedKey byte = 10
 )
 
 // The presence byte of a Create or RotateKey body's key record.
@@ -137,6 +151,26 @@ func EncodeVerifiableLogRotateKey(id vlog.LogID, next vlog.HeadKey, record *vlog
 		return nil, &InvalidCommandError{Reason: "verifiable log rotate key: empty signing key"}
 	}
 	return encodeVerifiableLogKeyed(VerifiableLogSubtypeRotateKey, "verifiable log rotate key: key", id, next, record)
+}
+
+// EncodeVerifiableLogCreateSealedKey encodes a CreateSealedKey command: a
+// create of id with the key record whose PKCS8 is sealed. Decode its body
+// with DecodeVerifiableLogCreate.
+func EncodeVerifiableLogCreateSealedKey(id vlog.LogID, desc vlog.Descriptor, key vlog.SigningKey) ([]byte, error) {
+	if key.Version == 0 || len(key.PKCS8) == 0 {
+		return nil, &InvalidCommandError{Reason: "verifiable log create sealed key: empty signing key"}
+	}
+	return encodeVerifiableLogKeyed(VerifiableLogSubtypeCreateSealedKey, "verifiable log create: descriptor", id, desc, &key)
+}
+
+// EncodeVerifiableLogRotateSealedKey encodes a RotateSealedKey command: a
+// rotation of id to next with the key record whose PKCS8 is sealed. Decode
+// its body with DecodeVerifiableLogRotateKey.
+func EncodeVerifiableLogRotateSealedKey(id vlog.LogID, next vlog.HeadKey, record vlog.SigningKey) ([]byte, error) {
+	if record.Version == 0 || len(record.PKCS8) == 0 {
+		return nil, &InvalidCommandError{Reason: "verifiable log rotate sealed key: empty signing key"}
+	}
+	return encodeVerifiableLogKeyed(VerifiableLogSubtypeRotateSealedKey, "verifiable log rotate key: key", id, next, &record)
 }
 
 // encodeVerifiableLogKeyed frames a sub-type whose fields are a

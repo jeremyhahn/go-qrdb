@@ -110,10 +110,10 @@ func (s *BackendKVService) translateSealed(err error) error {
 }
 
 // refuseReserved refuses a key inside the verifiable log's reserved keyspace
-// (vlog.IsTableKey). A barrier database's logs, their entries, heads,
-// checkpoints and PKCS#8 signing-key records live in the database's own
-// backend, so the kv surface must neither read nor write them: a kv write
-// would forge a log record, a kv read would disclose a signing key.
+// (vlog.IsTableKey). A database's logs live in its tenant's Raft group, never
+// in its own backend, so the keyspace stays reserved there: a kv write would
+// plant a record the log service never wrote, and a kv read or scan must not
+// surface one.
 func refuseReserved(key []byte) error {
 	if vlog.IsTableKey(key) {
 		return &ReservedKeyError{Key: string(key)}

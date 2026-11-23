@@ -225,7 +225,7 @@ var _ LogDatabaseLookup = failingLogDatabases{}
 func TestLogService_ServesABarrierDatabase(t *testing.T) {
 	dir := t.TempDir()
 	mgr := newBarrierDatabaseManager(t, dir)
-	svc, cmds, reads := newBarrierLogService(t, mgr, nil)
+	svc, cmds := newParentGroupLogService(t, newFenceGroup(t), mgr, nil)
 	ctx := acmeCtx()
 	ref := LogRef{Database: "secure", Log: "events"}
 	const origin = "example.test/secure/events"
@@ -272,13 +272,11 @@ func TestLogService_ServesABarrierDatabase(t *testing.T) {
 	if err := vlog.VerifyHead(pub, origin, signed.Head); err != nil || signed.Head.Size != 3 {
 		t.Fatalf("VerifyHead(size %d) = %v; want a verified head of size 3", signed.Head.Size, err)
 	}
-	if len(*cmds) != 0 || *reads != 0 {
-		t.Fatalf("the barrier database's log proposed %d commands and read %d times through the tenant host", len(*cmds), *reads)
-	}
 	key, err := (&logKeyReader{route: svc.(*logService).route}).ReadSigningKey(ctx, created.ID, created.Key.Version)
 	if err != nil || key == nil || len(key.PKCS8) == 0 {
 		t.Fatalf("ReadSigningKey = %v, %v; want the log's key record", key, err)
 	}
+	assertNoProposedPlaintext(t, *cmds, append([][]byte{key.PKCS8}, entries...))
 	assertNoPlaintext(t, dir, append([][]byte{key.PKCS8}, entries...))
 }
 
@@ -289,6 +287,14 @@ func TestLogService_ServesABarrierDatabase(t *testing.T) {
 func newParentGroupBarrierService(t *testing.T, dir string, g *fenceGroup, signers vlog.HeadSignerProvider) (LogService, *database.Manager, *[][]byte) {
 	t.Helper()
 	mgr := newBarrierDatabaseManager(t, dir)
+	svc, cmds := newParentGroupLogService(t, g, mgr, signers)
+	return svc, mgr, cmds
+}
+
+// newParentGroupLogService builds a LogService over mgr whose tenant group
+// is g, as newParentGroupBarrierService does.
+func newParentGroupLogService(t *testing.T, g *fenceGroup, mgr *database.Manager, signers vlog.HeadSignerProvider) (LogService, *[][]byte) {
+	t.Helper()
 	inner := g.host(t)
 	apply := inner.syncProposeFn
 	cmds := new([][]byte)
@@ -308,7 +314,20 @@ func newParentGroupBarrierService(t *testing.T, dir string, g *fenceGroup, signe
 		t.Fatalf("NewLogService: %v", err)
 	}
 	mgr.SetLogReclaimer(svc.(*logService))
-	return svc, mgr, cmds
+	return svc, cmds
+}
+
+// assertNoProposedPlaintext fails t if any command in cmds carries one of
+// secrets.
+func assertNoProposedPlaintext(t *testing.T, cmds [][]byte, secrets [][]byte) {
+	t.Helper()
+	for i, cmd := range cmds {
+		for _, secret := range secrets {
+			if bytes.Contains(cmd, secret) {
+				t.Fatalf("proposed command %d carries plaintext %q", i, secret)
+			}
+		}
+	}
 }
 
 // TestLogService_BarrierDatabaseLogsLiveInTheParentGroup pins owner ruling
@@ -337,13 +356,7 @@ func TestLogService_BarrierDatabaseLogsLiveInTheParentGroup(t *testing.T) {
 	if err != nil || key == nil || len(key.PKCS8) == 0 {
 		t.Fatalf("ReadSigningKey = %v, %v; want the log's opened key record", key, err)
 	}
-	for i, cmd := range *cmds {
-		for _, secret := range append([][]byte{key.PKCS8}, entries...) {
-			if bytes.Contains(cmd, secret) {
-				t.Fatalf("proposed command %d carries plaintext %q", i, secret)
-			}
-		}
-	}
+	assertNoProposedPlaintext(t, *cmds, append([][]byte{key.PKCS8}, entries...))
 	got, err := svc.GetEntries(ctx, &GetEntriesRequest{LogRef: ref})
 	if err != nil || len(got.Entries) != len(entries) {
 		t.Fatalf("GetEntries = %+v, %v; want %d entries", got, err, len(entries))
@@ -365,6 +378,120 @@ func TestLogService_BarrierDatabaseLogsLiveInTheParentGroup(t *testing.T) {
 		if err := proof.VerifyInclusion(rfc6962.DefaultHasher, uint64(i), head.Head.Size, rfc6962.DefaultHasher.HashLeaf(e), p.Hashes, head.Head.Root); err != nil {
 			t.Fatalf("VerifyInclusion(%d) of the plaintext: %v", i, err)
 		}
+	}
+}
+
+// TestLogService_SealedBarrierDatabaseRefusesWhileItsGroupApplies pins that
+// a sealed barrier database's log calls are refused with BarrierSealedError
+// and propose nothing, while the parent group goes on serving the logs of
+// the tenant's other databases.
+func TestLogService_SealedBarrierDatabaseRefusesWhileItsGroupApplies(t *testing.T) {
+	dir := t.TempDir()
+	g := newFenceGroup(t)
+	svc, mgr, cmds := newParentGroupBarrierService(t, dir, g, nil)
+	if _, err := mgr.Create(database.DatabaseConfig{TenantID: "acme", Name: "plain", Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("create acme/plain: %v", err)
+	}
+	ctx := acmeCtx()
+	secure, plain := LogRef{Database: "secure", Log: "events"}, LogRef{Database: "plain", Log: "events"}
+	for _, ref := range []LogRef{secure, plain} {
+		if _, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: "example.test/" + ref.Database, SigningKeyType: vlog.SignatureEd25519}); err != nil {
+			t.Fatalf("CreateLog %s: %v", ref.Database, err)
+		}
+	}
+	if err := mgr.BarrierManager().SealDatabase("secure", "acme"); err != nil {
+		t.Fatalf("SealDatabase: %v", err)
+	}
+	proposed := len(*cmds)
+	for call, run := range barrierDatabaseCalls(ctx, svc) {
+		var sealed *BarrierSealedError
+		if err := run(); !errors.As(err, &sealed) || sealed.TenantID != "acme" || sealed.Database != "secure" {
+			t.Errorf("sealed %s: err = %v, want *BarrierSealedError for acme/secure", call, err)
+		}
+	}
+	if len(*cmds) != proposed {
+		t.Fatalf("the sealed database proposed %d commands", len(*cmds)-proposed)
+	}
+	appended, err := svc.Append(ctx, &AppendRequest{LogRef: plain, Entries: [][]byte{[]byte("plain-0")}})
+	if err != nil || appended.FirstIndex != 0 {
+		t.Fatalf("Append to acme/plain while acme/secure is sealed = %+v, %v; want first index 0", appended, err)
+	}
+}
+
+// TestLogService_BarrierDatabaseAppendNeedsTheSealedFeature pins that a
+// barrier database's writes, which carry the sealed sub-types, are refused
+// with LogFeatureNotActiveError naming featuregate.VerifiableLogSealed, and
+// propose nothing, until every replica of the parent group carries it.
+func TestLogService_BarrierDatabaseAppendNeedsTheSealedFeature(t *testing.T) {
+	dir := t.TempDir()
+	g := newFenceGroup(t)
+	upgraded, mgr, cmds := newParentGroupBarrierService(t, dir, g, nil)
+	active := map[feature.Feature]bool{}
+	for _, f := range featuregate.Supported() {
+		active[f] = f != featuregate.VerifiableLogSealed
+	}
+	mixed, err := NewLogService(LogServiceConfig{
+		Resolver:  &fixedShardResolver{host: &featureHost{mockHost: g.host(t), active: active}, shardID: 1},
+		Databases: mgr,
+	})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	ctx := acmeCtx()
+	ref := LogRef{Database: "secure", Log: "events"}
+	wantRefused := func(op string, err error) {
+		t.Helper()
+		var inactive *LogFeatureNotActiveError
+		if !errors.As(err, &inactive) || inactive.Feature != featuregate.VerifiableLogSealed || inactive.TenantID != "acme" || inactive.ShardID != 1 {
+			t.Fatalf("%s on a mixed group = %v, want *LogFeatureNotActiveError for %s on shard 1", op, err, featuregate.VerifiableLogSealed)
+		}
+	}
+	_, err = mixed.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: "example.test/secure/events", SigningKeyType: vlog.SignatureEd25519})
+	wantRefused("CreateLog", err)
+	if _, err := upgraded.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: "example.test/secure/events", SigningKeyType: vlog.SignatureEd25519}); err != nil {
+		t.Fatalf("CreateLog on an upgraded group: %v", err)
+	}
+	proposed := len(*cmds)
+	_, err = mixed.Append(ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("mixed-0")}})
+	wantRefused("Append", err)
+	if len(*cmds) != proposed {
+		t.Fatalf("the refused append proposed %d commands", len(*cmds)-proposed)
+	}
+	if appended, err := upgraded.Append(ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("upgraded-0")}}); err != nil || appended.FirstIndex != 0 {
+		t.Fatalf("Append on an upgraded group = %+v, %v; want first index 0", appended, err)
+	}
+}
+
+// TestLogService_BarrierDatabaseDropReclaimsItsLogsInTheParentGroup pins
+// that dropping a barrier database reclaims its logs from the parent group:
+// the descriptor is gone from the group's store and a database re-created
+// under the name holds no log.
+func TestLogService_BarrierDatabaseDropReclaimsItsLogsInTheParentGroup(t *testing.T) {
+	dir := t.TempDir()
+	g := newFenceGroup(t)
+	svc, mgr, _ := newParentGroupBarrierService(t, dir, g, nil)
+	ctx := acmeCtx()
+	ref := LogRef{Database: "secure", Log: "events"}
+	created, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: "example.test/secure/events", SigningKeyType: vlog.SignatureEd25519})
+	if err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	if _, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("dropped-entry-0001")}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := mgr.DropForTenant(ctx, "secure"); err != nil {
+		t.Fatalf("DropForTenant: %v", err)
+	}
+	var notFound *vlog.LogNotFoundError
+	g.mu.Lock()
+	_, err = vlog.ReadDescriptor(g.store, created.ID)
+	g.mu.Unlock()
+	if !errors.As(err, &notFound) {
+		t.Fatalf("descriptor after the drop = %v, want *vlog.LogNotFoundError", err)
+	}
+	createBarrierDatabase(t, mgr, "acme", filepath.Join(dir, "acme-again"))
+	if _, err := svc.Head(ctx, &HeadRequest{LogRef: ref}); !errors.As(err, &notFound) {
+		t.Fatalf("Head of the re-created database = %v, want *vlog.LogNotFoundError", err)
 	}
 }
 
@@ -471,7 +598,8 @@ func TestLogService_BarrierDatabaseLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	mgr := newBarrierDatabaseManager(t, dir)
 	createBarrierDatabase(t, mgr, "globex", filepath.Join(dir, "globex"))
-	svc, cmds, reads := newBarrierLogService(t, mgr, nil)
+	g := newFenceGroup(t)
+	svc, cmds := newParentGroupLogService(t, g, mgr, nil)
 	acme, globex := acmeCtx(), tenant.WithTenantID(context.Background(), "globex")
 	ref := LogRef{Database: "secure", Log: "events"}
 	for name, ctx := range map[string]context.Context{"acme": acme, "globex": globex} {
@@ -521,7 +649,8 @@ func TestLogService_BarrierDatabaseLifecycle(t *testing.T) {
 	if err != nil || appended.FirstIndex != 3 {
 		t.Fatalf("Append after unseal = %+v, %v; want first index 3", appended, err)
 	}
-	fresh, _, _ := newBarrierLogService(t, mgr, nil)
+	fresh, _ := newParentGroupLogService(t, g, mgr, nil)
+	mgr.SetLogReclaimer(svc.(*logService))
 	if got, want := headOf(fresh, acme), headOf(svc, acme); got.Size != 4 || !bytes.Equal(got.Root, want.Root) {
 		t.Fatalf("a fresh service's head = %d %x, want 4 %x", got.Size, got.Root, want.Root)
 	}
@@ -537,8 +666,8 @@ func TestLogService_BarrierDatabaseLifecycle(t *testing.T) {
 	if headOf(svc, globex).Size != 1 {
 		t.Fatalf("dropping acme's database changed globex's log")
 	}
-	if len(*cmds) != 0 || *reads != 0 {
-		t.Fatalf("the barrier databases' logs proposed %d commands and read %d times through the tenant host", len(*cmds), *reads)
+	if len(*cmds) == 0 {
+		t.Fatal("the barrier databases' logs proposed nothing to their parent group")
 	}
 }
 
@@ -547,7 +676,7 @@ func TestLogService_BarrierDatabaseLifecycle(t *testing.T) {
 func TestLogService_BarrierDatabaseSealUnsealWithoutALogCallServes(t *testing.T) {
 	dir := t.TempDir()
 	mgr := newBarrierDatabaseManager(t, dir)
-	svc, _, _ := newBarrierLogService(t, mgr, nil)
+	svc, _ := newParentGroupLogService(t, newFenceGroup(t), mgr, nil)
 	acme := acmeCtx()
 	ref := LogRef{Database: "secure", Log: "events"}
 	if _, err := svc.CreateLog(acme, &CreateLogRequest{LogRef: ref, Origin: "acme/secure/events", SigningKeyType: vlog.SignatureEd25519}); err != nil {
@@ -618,61 +747,6 @@ func TestLogService_RefusesALegacyRaftBarrierRecord(t *testing.T) {
 	}
 	if len(*cmds) != 0 || *reads != 0 || len(hsm.created) != 0 {
 		t.Fatalf("a refused log operation proposed %d commands, read %d times and minted %d keys", len(*cmds), *reads, len(hsm.created))
-	}
-}
-
-// failOnceBatch is a real backend whose next Batch, once armed, fails.
-type failOnceBatch struct {
-	database.Backend
-	failed bool
-	armed  bool
-}
-
-func (f *failOnceBatch) Batch(ctx context.Context, ops []database.BatchOp) error {
-	if f.armed && !f.failed {
-		f.failed = true
-		return errors.New("injected batch failure")
-	}
-	return f.Backend.Batch(ctx, ops)
-}
-
-func TestLogService_BarrierDatabaseCommitFailureRestores(t *testing.T) {
-	dir := t.TempDir()
-	mgr := newBarrierDatabaseManager(t, dir)
-	real, err := mgr.GetOwned("secure", "acme")
-	if err != nil {
-		t.Fatalf("GetOwned: %v", err)
-	}
-	backend := &failOnceBatch{Backend: real.Backend()}
-	db := database.NewDatabase(real.Config(), backend, filepath.Join(dir, "acme"))
-	db.SetBarrierEnabled(true)
-	svc, cmds, reads := newBarrierLogService(t, &oneDatabase{db: db}, nil)
-	ctx := acmeCtx()
-	ref := LogRef{Database: "secure", Log: "events"}
-	if _, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: "o", SigningKeyType: vlog.SignatureEd25519}); err != nil {
-		t.Fatalf("CreateLog: %v", err)
-	}
-	if _, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("e0")}}); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	before, err := svc.Head(ctx, &HeadRequest{LogRef: ref})
-	if err != nil {
-		t.Fatalf("Head: %v", err)
-	}
-	backend.armed = true
-	if _, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("e1")}}); err == nil {
-		t.Fatalf("Append over a failing batch succeeded")
-	}
-	after, err := svc.Head(ctx, &HeadRequest{LogRef: ref})
-	if err != nil || after.Head.Size != before.Head.Size || !bytes.Equal(after.Head.Root, before.Head.Root) {
-		t.Fatalf("Head after the failed commit = %+v, %v; want the pre-failure head %+v", after, err, before)
-	}
-	retried, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("e1")}})
-	if err != nil || retried.FirstIndex != 1 {
-		t.Fatalf("retried Append = %+v, %v; want first index 1", retried, err)
-	}
-	if len(*cmds) != 0 || *reads != 0 {
-		t.Fatalf("the barrier database's log proposed %d commands and read %d times through the tenant host", len(*cmds), *reads)
 	}
 }
 

@@ -188,8 +188,9 @@ func (r *logRoute) barrierStore(ctx context.Context, src LogBarrierStoreSource, 
 }
 
 // logRoute resolves where a log in tenantID's database is applied and read:
-// a barrier-enabled database's logs live in its own barrier store, under the
-// database's key (databaseLogStore); a legacy raft-backend barrier record is
+// a barrier-enabled database's logs live in the Raft group its tenant
+// resolves to, each body and software key sealed under the database's key
+// before it is proposed (barrierDatabaseTarget); a legacy raft-backend barrier record is
 // refused with BarrierOffDataPathError. Every other log is in the tenant's
 // Raft group (a barrier tenant's home group, else the system shard). A name
 // with no database record carries no isolation of its own and routes with
@@ -869,7 +870,7 @@ func (s *logService) ExpireBodies(ctx context.Context, req *ExpireBodiesRequest)
 // dropped incarnation, where its name routes once the database's own backend
 // is gone: the tenant's Raft group (a barrier tenant's home group, else the
 // system shard) or a barrier tenant's standalone barrier store. A barrier
-// database's own store goes with its backend and holds nothing here. The
+// database's sealed logs are in that same group and are reclaimed here. The
 // command is bounded (vlog.Chain.DropDatabase), so it is proposed again until
 // a step deletes nothing. database.Manager runs it inside the drop's fenced
 // teardown, before the catalog record is deleted and the name released, so a

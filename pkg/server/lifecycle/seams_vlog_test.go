@@ -217,7 +217,11 @@ func TestBuildServices_LogServiceSealsWithTheBarrierDatabase(t *testing.T) {
 	// The system shard host is built here rather than by buildSeamNode so
 	// the test can read what was written to it.
 	stg := memory.NewStorage()
-	host := backend.NewLocalBackend(engine.NewKVEngine(stg))
+	mvcc, err := engine.NewMVCCEngine(stg, engine.WithMVCCLogs(vlog.NewChain()))
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	host := backend.NewLocalBackend(mvcc)
 	t.Cleanup(func() { _ = host.Close() })
 	hub := watch.NewHub()
 	t.Cleanup(hub.Close)
@@ -243,10 +247,11 @@ func TestBuildServices_LogServiceSealsWithTheBarrierDatabase(t *testing.T) {
 	}
 	acme := tenant.WithTenantID(ctx, "acme")
 	ref := service.LogRef{Database: "secure", Log: "events"}
+	const plaintext = "barrier-plaintext-entry"
 	if _, err := node.Log.CreateLog(acme, &service.CreateLogRequest{LogRef: ref, Origin: "db.example.com/events", SigningKeyType: vlog.SignatureEd25519}); err != nil {
 		t.Fatalf("CreateLog: %v", err)
 	}
-	if _, err := node.Log.Append(acme, &service.AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("entry")}}); err != nil {
+	if _, err := node.Log.Append(acme, &service.AppendRequest{LogRef: ref, Entries: [][]byte{[]byte(plaintext)}}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if head, err := node.Log.Head(acme, &service.HeadRequest{LogRef: ref}); err != nil || head.Head.Size != 1 {
@@ -271,14 +276,21 @@ func TestBuildServices_LogServiceSealsWithTheBarrierDatabase(t *testing.T) {
 
 	it := stg.NewIterator(&storage.IteratorOptions{})
 	defer func() { _ = it.Close() }()
+	records := 0
 	for ok := it.SeekToFirst(); ok; ok = it.Next() {
-		// The database catalog records acme/secure on the host; its logs
-		// must not be.
+		// The barrier database's logs live in the system shard's group,
+		// each body sealed under the database's key before it is proposed.
 		if bytes.Contains(it.Key(), []byte("qrdb.vlog/acme/secure")) {
-			t.Errorf("the system shard host holds the log record %q of acme's barrier database", it.Key())
+			records++
+		}
+		if bytes.Contains(it.Value(), []byte(plaintext)) {
+			t.Errorf("the system shard host holds acme's appended entry in plaintext under %q", it.Key())
 		}
 	}
 	if err := it.Error(); err != nil {
 		t.Fatalf("scan the system shard host: %v", err)
+	}
+	if records == 0 {
+		t.Fatalf("the system shard host holds no log record of acme's barrier database")
 	}
 }

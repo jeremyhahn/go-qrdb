@@ -99,6 +99,28 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 		}
 		return uint64(next.Version), logs.RotateKey(r, w, id, next, record)
 	},
+	protocol.VerifiableLogSubtypeCreateSealedKey: func(logs *vlog.Chain, _ storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
+		id, desc, key, err := protocol.DecodeVerifiableLogCreate(tenantID, body)
+		if err != nil {
+			return 0, err
+		}
+		if key == nil {
+			return 0, &protocol.InvalidCommandError{Reason: "verifiable log create sealed key: no key record"}
+		}
+		// The record's PKCS8 is sealed under the database's barrier; apply
+		// stores it as it is and never opens it.
+		return 0, logs.CreateWithSealedKey(w, id, desc, *key)
+	},
+	protocol.VerifiableLogSubtypeRotateSealedKey: func(logs *vlog.Chain, r storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
+		id, next, record, err := protocol.DecodeVerifiableLogRotateKey(tenantID, body)
+		if err != nil {
+			return 0, err
+		}
+		if record == nil {
+			return 0, &protocol.InvalidCommandError{Reason: "verifiable log rotate sealed key: no key record"}
+		}
+		return uint64(next.Version), logs.RotateSealedKey(r, w, id, next, *record)
+	},
 	protocol.VerifiableLogSubtypeDropDatabase: func(logs *vlog.Chain, r storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
 		database, incarnation, err := protocol.DecodeVerifiableLogDropDatabase(tenantID, body)
 		if err != nil {
