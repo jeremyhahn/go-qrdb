@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"os"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
@@ -152,6 +153,18 @@ func (m *MoveStepRunner) copyStep(ctx context.Context, step volume.MoveStep) err
 // copy step, is copied back over the source and verified. go-quicraft's
 // Promoter cannot demote a voter in place, so path (b) serves multi-replica
 // tenants too, as the decision allows.
+//
+// The source is never removed before an intact copy of the destination
+// exists beside it: the destination's tree is copied into a staging
+// directory in the source pool (copyBackStagingName) and verified there,
+// and only then is the source removed and the staging directory renamed
+// into its place. A copy or verify that fails -- a destination that cannot
+// be read back is the likely case -- removes only the staging directory,
+// so the source stays byte for byte as it was, and the stores reopen from
+// the destination, which the journal still names for this node. A rerun
+// after a crash at any point before the journal CAS first removes a
+// leftover staging directory and treats a source already missing as
+// removed: the destination stays authoritative until the CAS.
 func (m *MoveStepRunner) copyBack(ctx context.Context, step volume.MoveStep) error {
 	if err := m.stores.CloseTenantStores(ctx, step.TenantID); err != nil {
 		return err
@@ -159,30 +172,50 @@ func (m *MoveStepRunner) copyBack(ctx context.Context, step volume.MoveStep) err
 	stepErr := func(err error) error {
 		return &volume.MoveStepError{NodeID: m.nodeID, Phase: volume.MoveStepPhaseAbort, Err: err}
 	}
+	// fail keeps the destination authoritative: the journal still names it
+	// for this node, so it serves from there until the step is redone.
+	fail := func(err error) error {
+		if openErr := m.stores.OpenTenantStores(ctx, step.TenantID); openErr != nil {
+			return errors.Join(stepErr(err), openErr)
+		}
+		return stepErr(err)
+	}
 	src, dst, err := m.placements(ctx, step)
+	if err != nil {
+		return stepErr(err)
+	}
+	path, err := m.assignmentPath(ctx, step.TenantID)
+	if err != nil {
+		return stepErr(err)
+	}
+	staging, err := m.reg.PlacementDataRoot(ctx, step.TenantID, step.FromPool, copyBackStagingName(path))
 	if err != nil {
 		return stepErr(err)
 	}
 	if _, err := os.Lstat(dst); err != nil {
 		return stepErr(err)
 	}
-	if err := m.reg.RemoveDataRoot(ctx, src); err != nil {
-		return stepErr(err)
+	if err := m.reg.RemoveDataRoot(ctx, staging); err != nil {
+		return fail(err)
 	}
-	manifest, err := volume.CopyTree(ctx, dst, src)
+	manifest, err := volume.CopyTree(ctx, dst, staging)
 	if err == nil {
 		if m.reg.moveAfterCopy != nil {
-			m.reg.moveAfterCopy(src)
+			m.reg.moveAfterCopy(staging)
 		}
-		err = volume.VerifyCopy(ctx, src, manifest)
+		err = volume.VerifyCopy(ctx, staging, manifest)
 	}
 	if err != nil {
-		// The destination stays authoritative: the journal still names it
-		// for this node, so it serves from there until the step is redone.
-		if openErr := m.stores.OpenTenantStores(ctx, step.TenantID); openErr != nil {
-			return errors.Join(stepErr(err), openErr)
+		if rmErr := m.reg.RemoveDataRoot(ctx, staging); rmErr != nil {
+			err = errors.Join(err, rmErr)
 		}
-		return stepErr(err)
+		return fail(err)
+	}
+	if err := m.reg.RemoveDataRoot(ctx, src); err != nil {
+		return fail(err)
+	}
+	if err := fsync.Rename(staging, src); err != nil {
+		return fail(err)
 	}
 	return nil
 }
@@ -217,6 +250,13 @@ func (m *MoveStepRunner) placements(ctx context.Context, step volume.MoveStep) (
 		return "", "", err
 	}
 	return src, dst, nil
+}
+
+// copyBackStagingName is the directory, in the source pool beside the
+// tenant's own, that a copy-back fills and verifies before it replaces the
+// source. It is one path component, as placementRoot requires.
+func copyBackStagingName(path string) string {
+	return path + ".copyback"
 }
 
 // removePlacement removes this node's directory for tenantID on pool, if

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
@@ -498,6 +499,69 @@ func TestMoveStepRunner_CorruptCopyBackKeepsDestination(t *testing.T) {
 		t.Fatalf("open = %q, want the destination, not the source", stores.open)
 	}
 	mustExist(t, filepath.Join(fx.dst(), "w1"))
+}
+
+// TestMoveStepRunner_CopyBackFromUnreadableDestinationKeepsSource is the
+// rollback of a destination that cannot be read back intact: the copy-back
+// stages the destination's tree in the source pool and verifies it there,
+// so a failed verify removes only the staging directory and the source
+// stays byte for byte as it was.
+func TestMoveStepRunner_CopyBackFromUnreadableDestinationKeepsSource(t *testing.T) {
+	fx, stores, r := newRunnerFixture(t)
+	ctx := context.Background()
+	before := mustManifest(t, fx.src)
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("settle copy: %v", err)
+	}
+	stores.write("w1")
+	truncateOnCopy(t, fx.reg)
+	err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseAbort, true))
+	var se *volume.MoveStepError
+	if !errors.As(err, &se) || se.Phase != volume.MoveStepPhaseAbort {
+		t.Fatalf("abort = %v, want an abort *volume.MoveStepError", err)
+	}
+	if after := mustManifest(t, fx.src); !reflect.DeepEqual(after, before) {
+		t.Fatalf("source changed by a failed copy-back")
+	}
+	assertGone(t, filepath.Join(fx.defaultRoot, copyBackStagingName(fx.path)))
+	mustExist(t, filepath.Join(fx.dst(), "w1"))
+}
+
+// TestMoveStepRunner_CopyBackRerunAfterSourceRemoved is a crash between the
+// source's removal and the staging directory's rename: the rerun removes
+// the stale staging directory, treats the missing source as removed and
+// rebuilds the source from the destination, which stayed authoritative.
+func TestMoveStepRunner_CopyBackRerunAfterSourceRemoved(t *testing.T) {
+	fx, stores, r := newRunnerFixture(t)
+	ctx := context.Background()
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("settle copy: %v", err)
+	}
+	stores.write("w1")
+	if err := os.RemoveAll(fx.src); err != nil {
+		t.Fatalf("remove source: %v", err)
+	}
+	staging := filepath.Join(fx.defaultRoot, copyBackStagingName(fx.path))
+	if err := os.MkdirAll(staging, 0o700); err != nil {
+		t.Fatalf("stale staging: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "partial"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("stale staging file: %v", err)
+	}
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseAbort, true)); err != nil {
+		t.Fatalf("abort rerun: %v", err)
+	}
+	if got, want := mustManifest(t, fx.src), mustManifest(t, fx.dst()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("rebuilt source differs from the destination")
+	}
+	mustExist(t, filepath.Join(fx.src, "w1"))
+	assertGone(t, staging)
 }
 
 // TestMoveStepRunner_AbortRedoneBeforeCAS is the first abort crash point:
