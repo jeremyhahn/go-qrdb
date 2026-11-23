@@ -62,6 +62,14 @@ type clusterIsolationFloor interface {
 // stands. When the wait runs out, the remaining attempts continue in the
 // background until ctx ends. A tenant service that holds no floor is logged
 // and left alone.
+//
+// Like every isolation-policy verb on every transport, the floor waits for
+// the strict-isolation activation check (tenant.RequireStrictIsolation): a
+// clustered node writes it only once strict isolation and guarded writes are
+// both active on group 0, so a configured tightening never commits while the
+// write guards are dropped. Until then the write is retried like a transient
+// failure -- activation is permanent -- and a floor that already holds want
+// needs no write. A standalone node is active from the start.
 func ApplyIsolationFloor(ctx context.Context, svc tenant.TenantServicer, want string) {
 	if want == "" {
 		return
@@ -86,11 +94,30 @@ func ApplyIsolationFloor(ctx context.Context, svc tenant.TenantServicer, want st
 }
 
 // setIsolationFloor tries to set want until it is set or refused, reporting
-// true, or until ctx ends, reporting false.
+// true, or until ctx ends, reporting false. Each write attempt waits for the
+// strict-isolation activation check; a floor that already holds want is
+// done without one.
 func setIsolationFloor(ctx context.Context, setter clusterIsolationFloor, want tenant.ClusterIsolationPolicy) bool {
+	loggedInactive := false
 	for {
-		err := setter.SetClusterIsolationPolicy(ctx, want)
 		var current tenant.ClusterIsolationPolicy
+		if inactive := tenant.RequireStrictIsolation(setter); inactive != nil {
+			if current, _ = setter.ClusterIsolationPolicy(ctx); current == want {
+				return true
+			}
+			if !loggedInactive {
+				slog.Info("tenant.isolation_policy waits for the strict-isolation and guarded-writes features; retrying",
+					slog.String("isolation_policy", string(want)), slog.Any("error", inactive))
+				loggedInactive = true
+			}
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(isolationFloorRetry):
+			}
+			continue
+		}
+		err := setter.SetClusterIsolationPolicy(ctx, want)
 		if err != nil {
 			// A concurrent setter -- another node applying the same
 			// configuration -- wins the race as a refused transition; what
