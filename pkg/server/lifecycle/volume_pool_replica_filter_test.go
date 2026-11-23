@@ -54,6 +54,10 @@ func (f *fakeAllocatorForReplicaFilter) AdjustReservation(context.Context, strin
 // newVolumePoolHealthFilter).
 type fakeVolumeServiceForReplicaFilter struct {
 	pools map[string]*volume.PoolDetail // pool name -> detail
+	// moves is the journalled move per tenant; a tenant absent here has
+	// none, unless moveErr makes the journal read itself fail.
+	moves   map[string]*volume.Move
+	moveErr error
 }
 
 func (f *fakeVolumeServiceForReplicaFilter) GetPool(_ context.Context, name string) (*volume.PoolDetail, error) {
@@ -81,8 +85,17 @@ func (f *fakeVolumeServiceForReplicaFilter) ListAssignments(context.Context, str
 func (f *fakeVolumeServiceForReplicaFilter) MoveTenant(context.Context, volume.MoveTenantRequest) (*volume.Move, error) {
 	panic("unused")
 }
-func (f *fakeVolumeServiceForReplicaFilter) GetMove(context.Context, string) (*volume.Move, error) {
-	panic("unused")
+
+// GetMove answers the tenant's journalled move from moves, and
+// *volume.MoveNotFoundError (the service's own no-move answer) otherwise.
+func (f *fakeVolumeServiceForReplicaFilter) GetMove(_ context.Context, tenantID string) (*volume.Move, error) {
+	if m, ok := f.moves[tenantID]; ok {
+		return m, nil
+	}
+	if f.moveErr != nil {
+		return nil, f.moveErr
+	}
+	return nil, &volume.MoveNotFoundError{TenantID: tenantID}
 }
 
 func (f *fakeVolumeServiceForReplicaFilter) CancelMove(context.Context, string) (*volume.Move, error) {
@@ -119,6 +132,84 @@ func TestVolumePoolHealthFilter_ReadyNodeAdmits(t *testing.T) {
 
 	if err := filter("tenant-a", 1, "10.0.0.1:7000"); err != nil {
 		t.Fatalf("filter() = %v, want nil", err)
+	}
+}
+
+// TestVolumePoolHealthFilter_JournalledMoveRefusesNewReplica is #925
+// finding (5): the move journal fixes its replica set at admission, so a
+// replica added while a move is journalled would get no copy step yet be
+// cut over. The filter refuses it with *TenantMovingReplicaError naming the
+// move, even on a node whose pool is ready, in every journalled state.
+func TestVolumePoolHealthFilter_JournalledMoveRefusesNewReplica(t *testing.T) {
+	states := []string{
+		volume.MoveStateAdmitted, volume.MoveStateCopying, volume.MoveStateCopied,
+		volume.MoveStateCutover, volume.MoveStateAborting,
+	}
+	for _, state := range states {
+		t.Run(state, func(t *testing.T) {
+			allocator := &fakeAllocatorForReplicaFilter{assignments: map[string]volume.Assignment{
+				"tenant-a": {TenantID: "tenant-a", Pool: "fast"},
+			}}
+			volumeSvc := &fakeVolumeServiceForReplicaFilter{
+				pools: map[string]*volume.PoolDetail{
+					"fast": {NodeReports: []volume.NodeReportRow{{NodeID: "1", State: volume.NodeStateReady}}},
+				},
+				moves: map[string]*volume.Move{
+					"tenant-a": {TenantID: "tenant-a", FromPool: "fast", ToPool: "slow", State: state},
+				},
+			}
+			filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{"10.0.0.1:7000": "1"}, nil)
+
+			err := filter("tenant-a", 1, "10.0.0.1:7000")
+			var target *TenantMovingReplicaError
+			if !errors.As(err, &target) {
+				t.Fatalf("filter() = %v, want *TenantMovingReplicaError", err)
+			}
+			if target.TenantID != "tenant-a" || target.FromPool != "fast" || target.ToPool != "slow" || target.State != state {
+				t.Fatalf("TenantMovingReplicaError = %+v, want tenant-a fast->slow %s", target, state)
+			}
+		})
+	}
+}
+
+// TestVolumePoolHealthFilter_OtherTenantMoveAdmits proves the refusal is
+// per tenant: another tenant's journalled move does not hold this one.
+func TestVolumePoolHealthFilter_OtherTenantMoveAdmits(t *testing.T) {
+	allocator := &fakeAllocatorForReplicaFilter{assignments: map[string]volume.Assignment{
+		"tenant-a": {TenantID: "tenant-a", Pool: "fast"},
+	}}
+	volumeSvc := &fakeVolumeServiceForReplicaFilter{
+		pools: map[string]*volume.PoolDetail{
+			"fast": {NodeReports: []volume.NodeReportRow{{NodeID: "1", State: volume.NodeStateReady}}},
+		},
+		moves: map[string]*volume.Move{
+			"tenant-b": {TenantID: "tenant-b", FromPool: "fast", ToPool: "slow", State: volume.MoveStateCopying},
+		},
+	}
+	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{"10.0.0.1:7000": "1"}, nil)
+
+	if err := filter("tenant-a", 1, "10.0.0.1:7000"); err != nil {
+		t.Fatalf("filter() = %v, want nil", err)
+	}
+}
+
+// TestVolumePoolHealthFilter_MoveReadErrorRefuses: a journal read that fails
+// for any reason other than "no move" is returned, never taken as no move.
+func TestVolumePoolHealthFilter_MoveReadErrorRefuses(t *testing.T) {
+	wantErr := errors.New("journal unavailable")
+	allocator := &fakeAllocatorForReplicaFilter{assignments: map[string]volume.Assignment{
+		"tenant-a": {TenantID: "tenant-a", Pool: "fast"},
+	}}
+	volumeSvc := &fakeVolumeServiceForReplicaFilter{
+		pools: map[string]*volume.PoolDetail{
+			"fast": {NodeReports: []volume.NodeReportRow{{NodeID: "1", State: volume.NodeStateReady}}},
+		},
+		moveErr: wantErr,
+	}
+	filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{"10.0.0.1:7000": "1"}, nil)
+
+	if err := filter("tenant-a", 1, "10.0.0.1:7000"); !errors.Is(err, wantErr) {
+		t.Fatalf("filter() = %v, want %v", err, wantErr)
 	}
 }
 
