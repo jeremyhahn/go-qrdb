@@ -855,25 +855,6 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             return { ...next };
           },
-          // SealBinding.ClusterUnseal(): clears the replicated cluster seal
-          // record, written through this node by the caller, and returns it.
-          ClusterUnseal: async () => {
-            maybeReject("SealBinding.ClusterUnseal");
-            const s = getState();
-            const prev = s.sealStatus.clusterSeal;
-            const next = {
-              active: true,
-              sealed: false,
-              epoch: (prev?.epoch ?? 0) + 1,
-              principal: "admin",
-              principalTenant: "system",
-              node: "127.0.0.1:7000",
-              at: "2026-11-12T10:00:00Z",
-              local: "serving",
-            };
-            s.sealStatus.clusterSeal = next;
-            return { ...next };
-          },
         },
         CeremonyBinding: {
           // CeremonyBinding.Initialize(req): `qrdb init`'s desktop
