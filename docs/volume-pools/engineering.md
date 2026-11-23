@@ -652,6 +652,14 @@ A raft-tenant move is covered by the three-node E2E (`TestVolumePool_CLI_MoveTen
   `_CancelWhileSealedAborts`; `pkg/seal`
   `TestMoveStepRunner_SealedStepWaitsThenRuns` (a sealed node's step
   closes nothing and runs after the unseal);
+- `pkg/volume` (`catalog_move_race_test.go`, admission against reservation
+  under the CAS): `TestCatalog_AdmitMove_RacesReserveOverCapacity`,
+  `_RacesReserveWithinCapacity`, `TestCatalog_Reserve_RacesAdmitOverCapacity`
+  and `TestCatalog_AdmitMove_TwoTenantsRaceForTheLastCapacity` (a racing
+  admit and reserve never over-reserve a pool); `pkg/seal`
+  `TestMoveStepRunner_BootAfterAbortDeletionOpensFromSource` (the third
+  abort crash point: a boot after the destination was deleted, before or
+  after the journal is removed, opens the tenant from the source);
 - `pkg/tenant` (`volume_move_test.go`): `AdmitTenantMove` not found, a
   prefix tenant refused, a destination not entitled, no source, a source
   error, no replica node, a volume and a raft tenant admitted;
