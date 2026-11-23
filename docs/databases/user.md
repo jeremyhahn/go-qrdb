@@ -222,9 +222,11 @@ qrdb vlog rotate-key --log releases --signing-key-type ecdsa-p256-sha256
 qrdb vlog list
 ```
 
-A log in a barrier-enabled database is kept in the database's own store,
-encrypted under the database's key: it is sealed and unsealed with the database
-and dropped with it.
+A log in a barrier-enabled database is replicated with the tenant's other
+logs, each entry and signing key encrypted under the database's key before it
+leaves the node: it is refused while the database is sealed, served unchanged
+once it is unsealed, and removed when the database is dropped. Proofs and
+checkpoints commit to the plaintext entries, so they verify as for any log.
 
 `--origin` is required on every log and becomes the checkpoint's first line;
 `--signing-key-type` gives the log a head-signing key (`ed25519` or
