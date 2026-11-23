@@ -408,6 +408,50 @@ The three P1s were fixed in b50e2f2b9; rw1613w2 gives each a test.
 - docs/databases/architecture.md: the log tombstone outlives the
   reclamation; the pre-upgrade marker initialization.
 
+## rw1613w3 (owner ruling 1234, option A)
+
+A barrier-enabled database's logs move from its own barrier store into
+the Raft group its tenant resolves to (`r.raft(ctx, tenantID)`).
+
+- `barrierDatabaseTarget` (`pkg/service/vlog_database_store.go`) wraps
+  the parent group's target. It holds the database's quiesce lease
+  across each propose and refuses with `BarrierSealedError` while the
+  database is sealed.
+- What it proposes:
+  - An append goes as sub-type 8 (`AppendSealed`). Each leaf hash is
+    computed over the plaintext and each body is sealed with
+    `BarrierBackend.SealValue`.
+  - A software key's PKCS#8 is sealed and goes as the new sub-type 9
+    (create) or 10 (rotate).
+  - Apply stores the sealed records unopened (`vlog.CreateWithSealedKey`,
+    `vlog.RotateSealedKey`). Sub-types 1 and 5 match the record against a
+    parsed key, so they cannot carry a sealed one.
+  - Reads open bodies and keys under the database's key.
+  - Sealed writes need `featuregate.VerifiableLogSealed`. This includes
+    a keyless create.
+- `databaseLogStore` and the per-database store cache are deleted. A
+  drop reclaims the logs in the parent group.
+- Tests:
+  - `TestLogService_BarrierDatabaseLogsLiveInTheParentGroup` failed
+    before the change: the logs were in the database's backend.
+  - `TestLogService_SealedBarrierDatabaseRefusesWhileItsGroupApplies`,
+    `TestLogService_BarrierDatabaseAppendNeedsTheSealedFeature`,
+    `TestLogService_BarrierDatabaseDropReclaimsItsLogsInTheParentGroup`
+    and `TestApplyVerifiableLog_SealedKeyRecordsAreStoredUnopened` were
+    written after the code.
+  - `TestBuildServices_LogServiceSealsWithTheBarrierDatabase` now asserts
+    that the system shard holds the records, with no entry in plaintext.
+  - The CLI e2e (`TestVlog_CLI_BarrierDatabase_PerProtocol`) scans the
+    node's data root as well as the database's directory.
+- Step 9: `pkg/server/lifecycle/tenant_home.go` routes only barrier
+  *tenants* (`service.BarrierLogKeyspace`), so it needs no change.
+- Step 10: a database barrier's rekey (`DatabaseBarrierRekeyStart`,
+  `seal.RekeyParams`) re-wraps the root key under a fresh unseal key.
+  The root key never rotates and no stored value is re-encrypted
+  (`pkg/seal/unsealkey.go`), so sealed log records stay readable.
+- Open: there is no re-encryption of sealed log records on root-key
+  compromise, because the barrier offers none for any value.
+
 ## Out of scope
 
 The go-xkms provider and transparency log (the seam rows on the other side);
