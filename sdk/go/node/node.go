@@ -988,7 +988,28 @@ func (n *Node) buildServices(ctx context.Context, infra lifecycle.Infra, cfg *qr
 	if err != nil {
 		return nil, err
 	}
+	if infra.SharedDatabaseNames == nil {
+		infra.SharedDatabaseNames = n.sharedDatabaseNames(cfg)
+	}
 	return lifecycle.BuildServices(ctx, infra)
+}
+
+// sharedDatabaseNames is the Infra.SharedDatabaseNames source of an SDK
+// node: the configured SQL default database and the databases of the
+// shared registry wireClientAndServer builds after the services (none
+// before it exists), read each time the node-key log probe runs
+// (go-qrdb#1565).
+func (n *Node) sharedDatabaseNames(cfg *qrdbconfig.Config) func() []string {
+	var sqlDefault string
+	if cfg != nil {
+		sqlDefault = cfg.SQL.DefaultDatabase
+	}
+	return lifecycle.SharedNames(sqlDefault, func() []string {
+		if r := n.sharedRegistry.Load(); r != nil {
+			return r.List()
+		}
+		return nil
+	})
 }
 
 // buildSealServices builds the sealed window's service graph over infra with
@@ -1181,6 +1202,9 @@ type Node struct {
 	// requests, as cmd/qrdbd keeps it.
 	featureClient atomic.Pointer[sdk.Client]
 	svcNode       atomic.Pointer[lifecycle.Node]
+	// sharedRegistry is the shared database service registry the server
+	// serves; the node-key log probe lists its databases (go-qrdb#1565).
+	sharedRegistry atomic.Pointer[server.DatabaseServiceRegistry]
 
 	// carriedCeremony is the ceremony service a data-plane teardown carried
 	// out of the stopped service graph, for the rebuild to reuse. See
@@ -4326,7 +4350,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 
 	// Build multi-protocol server.
 	serverCfg := buildNodeServerConfig(cfg)
-	allOpts := buildServerOpts(svcNode, ceremonySvc, n.dbManager, callerOpts, standalone)
+	dbRegistry := newNodeDatabaseRegistry(svcNode, standalone)
+	n.sharedRegistry.Store(dbRegistry)
+	allOpts := buildServerOptsOn(dbRegistry, svcNode, ceremonySvc, n.dbManager, callerOpts, standalone)
 	fwdOpt, fwdErr := n.replicaForwardingOption(cfg, standalone, placementChangesOf(svcNode), featureClient)
 	if fwdErr != nil {
 		_ = client.Close()
@@ -4844,12 +4870,26 @@ func principalRoles(u *user.User) []string {
 // database-scoped client was refused outright and RAG, which is bound to the
 // registry, refused every call.
 func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServicer, dbManager *database.Manager, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
+	return buildServerOptsOn(newNodeDatabaseRegistry(svcNode, standalone), svcNode, ceremonySvc, dbManager, callerOpts, standalone)
+}
+
+// newNodeDatabaseRegistry returns the node's shared database service
+// registry with its default entry, the node's own service graph
+// (lifecycle.SystemDatabase).
+func newNodeDatabaseRegistry(svcNode *lifecycle.Node, standalone bool) *server.DatabaseServiceRegistry {
 	var shardID uint64
 	if !standalone {
 		shardID = shard.ShardKV
 	}
 	dbRegistry := server.NewDatabaseServiceRegistry(lifecycle.SystemDatabase)
 	dbRegistry.Register(lifecycle.SystemDatabase, svcNode.DatabaseServices(lifecycle.SystemDatabase, shardID))
+	return dbRegistry
+}
+
+// buildServerOptsOn is buildServerOpts over a registry the caller built, so
+// the caller can hand the same registry to the node-key log probe
+// (go-qrdb#1565).
+func buildServerOptsOn(dbRegistry *server.DatabaseServiceRegistry, svcNode *lifecycle.Node, ceremonySvc service.CeremonyServicer, dbManager *database.Manager, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
 	opts := []server.ServerOption{
 		server.WithDatabaseServiceRegistry(dbRegistry),
 		server.WithBatch(svcNode.Batch),
