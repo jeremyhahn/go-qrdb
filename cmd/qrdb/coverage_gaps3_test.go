@@ -137,7 +137,7 @@ func TestConfigPath_MkdirAllError(t *testing.T) {
 // type returns a TransportError.
 func TestBuildClient_UnknownTransport(t *testing.T) {
 	ctx := context.Background()
-	_, err := buildClient(ctx, "badtransport", "localhost:1234", "", "", "", 0)
+	_, err := buildClient(ctx, "badtransport", "localhost:1234", "", "", "", "", 0)
 	if err == nil {
 		t.Fatal("expected error for unknown transport type")
 	}

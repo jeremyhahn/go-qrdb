@@ -112,13 +112,14 @@ var (
 //     read-only subcommand.
 func newRootCmd() *cobra.Command {
 	var (
-		serverFlag    string
-		transportFlag string
-		caFile        string
-		certFile      string
-		keyFile       string
-		timeout       time.Duration
-		databaseFlag  string
+		serverFlag      string
+		transportFlag   string
+		caFile          string
+		certFile        string
+		keyFile         string
+		bearerTokenFile string
+		timeout         time.Duration
+		databaseFlag    string
 	)
 
 	rootCmd := &cobra.Command{
@@ -175,7 +176,7 @@ Supported transports:
 			transportType, address := resolveTransport(serverFlag, effectiveTransport)
 
 			// Build and connect the SDK client.
-			c, err := buildClient(cmd.Context(), transportType, address, caFile, certFile, keyFile, timeout)
+			c, err := buildClient(cmd.Context(), transportType, address, caFile, certFile, keyFile, bearerTokenFile, timeout)
 			if err != nil {
 				return err
 			}
@@ -205,6 +206,7 @@ Supported transports:
 	pflags.StringVar(&caFile, "ca-file", "", "TLS CA certificate file")
 	pflags.StringVar(&certFile, "cert-file", "", "TLS client certificate file")
 	pflags.StringVar(&keyFile, "key-file", "", "TLS client key file")
+	pflags.StringVar(&bearerTokenFile, "bearer-token-file", "", "File holding a bearer token sent as Authorization on every request (rest, grpc, mcp, unix over TLS); re-read per request")
 	pflags.StringVar(&outputFormat, "output", "table", "Output format: table | json | yaml")
 	pflags.DurationVar(&timeout, "timeout", 10*time.Second, "Request timeout")
 	pflags.StringVar(&logLevel, "log-level", "info", "Log level: trace | debug | info | warn | error")

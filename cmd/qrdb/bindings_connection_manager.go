@@ -508,7 +508,7 @@ func (b *ConnectionManagerBinding) connectExternal(p ConnectionProfile) (*sdk.Cl
 		return nil, &ProfileValidationError{Field: "external", Reason: "external config is required for external connections"}
 	}
 	cfg := p.External
-	return buildClient(b.ctx, cfg.Transport, cfg.Address, cfg.CAFile, cfg.CertFile, cfg.KeyFile, defaultConnectTimeout)
+	return buildClient(b.ctx, cfg.Transport, cfg.Address, cfg.CAFile, cfg.CertFile, cfg.KeyFile, "", defaultConnectTimeout)
 }
 
 // probeBarrierStatus calls the barrier status endpoint to determine whether

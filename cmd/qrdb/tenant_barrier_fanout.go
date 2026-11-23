@@ -86,11 +86,12 @@ func (e *NodeEndpointMissingError) Error() string {
 // nodeDialer connects to the nodes serving a barrier over the root command's
 // TLS flags, the ones --server is reached with.
 type nodeDialer struct {
-	caFile   string
-	certFile string
-	keyFile  string
-	timeout  time.Duration
-	clients  []*sdk.Client
+	caFile    string
+	certFile  string
+	keyFile   string
+	tokenFile string
+	timeout   time.Duration
+	clients   []*sdk.Client
 }
 
 // newNodeDialer reads the root command's connection flags.
@@ -100,13 +101,14 @@ func newNodeDialer(cmd *cobra.Command) *nodeDialer {
 	d.caFile, _ = root.GetString("ca-file")
 	d.certFile, _ = root.GetString("cert-file")
 	d.keyFile, _ = root.GetString("key-file")
+	d.tokenFile, _ = root.GetString("bearer-token-file")
 	d.timeout, _ = root.GetDuration("timeout")
 	return d
 }
 
 // dial connects to address over transportType.
 func (d *nodeDialer) dial(ctx context.Context, transportType, address string) (*sdk.Client, error) {
-	cl, err := buildClient(ctx, transportType, address, d.caFile, d.certFile, d.keyFile, d.timeout)
+	cl, err := buildClient(ctx, transportType, address, d.caFile, d.certFile, d.keyFile, d.tokenFile, d.timeout)
 	if err != nil {
 		return nil, err
 	}
