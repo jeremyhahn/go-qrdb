@@ -458,8 +458,13 @@ The fence has two halves, and they answer different questions:
   keeps its data marker on the system store and gets a second, log-only
   marker in its home group, where its verifiable logs live
   (`StoreResolver.LogFenceTarget`): it is marked live on create,
-  tombstoned before the data marker on drop, and cleared when the
-  reclamation ends.
+  tombstoned before the data marker on drop, and its tombstone outlives
+  the reclamation until the next database created under the name claims
+  it, as the data marker's does: a write admitted under the empty
+  incarnation is satisfied by an absent marker. A database created before
+  this marker existed has none in the home group: its first log write
+  initializes it to the live incarnation (`LogFenceInitializer`, never
+  over a present marker), and a drop tombstones an absent one.
 
 **Once the drop removes the catalog record, the database does not exist.**
 The catalog is replicated, so every node applies the removal and releases
