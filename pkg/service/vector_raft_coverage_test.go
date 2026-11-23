@@ -173,6 +173,58 @@ func TestVectorService_RaftBatchUpsertKeepsMetadata(t *testing.T) {
 	}
 }
 
+// TestVectorService_RaftBatchDeleteGoesThroughConsensus checks that a batch
+// delete on a Raft-configured service is one proposed delete command
+// carrying every ID, that applying it removes the vectors, and that the
+// service never deletes from storage itself.
+func TestVectorService_RaftBatchDeleteGoesThroughConsensus(t *testing.T) {
+	svc, store, applied := raftAppliedVectorService(t, nil)
+	ctx := context.Background()
+
+	_, err := svc.BatchUpsert(ctx, &BatchUpsertRequest{Namespace: "docs", Vectors: []*VectorData{
+		{ID: 1, Vector: []float32{1, 0}},
+		{ID: 2, Vector: []float32{0, 1}},
+	}})
+	require.NoError(t, err)
+
+	resp, err := svc.BatchDeleteVectors(ctx, &BatchDeleteVectorsRequest{Namespace: "docs", IDs: []uint64{1, 2}})
+	require.NoError(t, err)
+	require.True(t, resp.Success)
+	require.Equal(t, 2, resp.DeletedCount)
+
+	require.Len(t, *applied, 2)
+	del := (*applied)[1]
+	require.Equal(t, statemachine.OpDeleteVector, del.Op)
+	require.Equal(t, []uint64{1, 2}, del.IDs)
+	require.Zero(t, store.directBatchDeletes, "a Raft-configured service deleted from storage directly")
+
+	for _, id := range []uint64{1, 2} {
+		_, err := svc.GetVector(ctx, &GetVectorRequest{Namespace: "docs", ID: id})
+		require.Error(t, err, "vector %d survived the batch delete", id)
+	}
+}
+
+// TestVectorService_RaftBatchDeleteProposalErrorDeletesNothing checks that a
+// failed proposal is the caller's answer and no vector is deleted, neither
+// through consensus nor node-locally.
+func TestVectorService_RaftBatchDeleteProposalErrorDeletesNothing(t *testing.T) {
+	proposeErr := &vectorTestError{msg: "raft proposal failed"}
+	svc, store, _ := raftAppliedVectorService(t, proposeErr)
+	ctx := context.Background()
+	scoped := scopedFromContext(ctx, "docs")
+	require.NoError(t, store.MemoryVectorStorage.UpsertVector(ctx, scoped, &vector.VectorValue{ID: 7, Embedding: []float32{1, 0}}))
+
+	resp, err := svc.BatchDeleteVectors(ctx, &BatchDeleteVectorsRequest{Namespace: "docs", IDs: []uint64{7}})
+	require.Error(t, err)
+	require.Nil(t, resp)
+	requireErrorAs[*ProposeError](t, err)
+	require.Zero(t, store.directBatchDeletes)
+
+	got, err := store.MemoryVectorStorage.GetVector(ctx, scoped, 7)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+}
+
 // vectorTestError is a test error type for vector tests.
 type vectorTestError struct {
 	msg string

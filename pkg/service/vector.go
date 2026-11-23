@@ -3174,6 +3174,36 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
+	// A Raft-configured service deletes through consensus, as DeleteVector
+	// does: one batch delete command carries every ID, so each replica
+	// applies the same delete and none is left serving the vectors. A
+	// failed proposal deletes nothing and is the caller's answer; it never
+	// falls back to a node-local write.
+	if v.raftNode != nil {
+		err := v.admit(func() error {
+			cmd := statemachine.NewBatchDeleteCommand(scoped, req.IDs, v.nodeID)
+			if err := v.proposeToRaft(ctx, cmd); err != nil {
+				if v.metrics != nil {
+					v.metrics.operationErrors.With("batch_delete", "raft_error").Inc()
+				}
+				return err
+			}
+			v.removeFromLiveIndex(scoped, req.Namespace, req.IDs)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if v.metrics != nil {
+			v.metrics.operationDuration.With("batch_delete").Observe(time.Since(start).Seconds())
+		}
+		return &BatchDeleteVectorsResponse{
+			DeletedCount: len(req.IDs),
+			Timestamp:    time.Now().UnixNano(),
+			Success:      true,
+		}, nil
+	}
+
 	err := v.admit(func() error {
 		if err := v.storage.BatchDeleteVectors(ctx, scoped, req.IDs); err != nil {
 			return err
