@@ -88,7 +88,8 @@ describe('CredentialClient — REST wire contract', () => {
         expect(calls).toHaveLength(1);
         expect(calls[0]!.method).toBe('POST');
         expect(calls[0]!.url).toBe('https://localhost:63002/v1/credentials/submit');
-        expect(calls[0]!.body).toEqual({ name: 'db-password', value: 'hunter2' });
+        // The request's value is a Go []byte: base64 on the wire ("hunter2").
+        expect(calls[0]!.body).toEqual({ name: 'db-password', value: 'aHVudGVyMg==' });
     });
 
     it('store POSTs /v1/credentials/store with name+value', async () => {
@@ -99,7 +100,8 @@ describe('CredentialClient — REST wire contract', () => {
 
         expect(calls[0]!.method).toBe('POST');
         expect(calls[0]!.url).toBe('https://localhost:63002/v1/credentials/store');
-        expect(calls[0]!.body).toEqual({ name: 'api-key', value: 'abc123' });
+        // The request's value is a Go []byte: base64 on the wire ("abc123").
+        expect(calls[0]!.body).toEqual({ name: 'api-key', value: 'YWJjMTIz' });
     });
 
     it('retrieve GETs /v1/credentials/{name}/value and returns the value', async () => {
@@ -182,7 +184,7 @@ describe('CredentialClient — REST wire contract', () => {
         expect(calls[0]!.url).toBe('https://localhost:63002/v1/credentials/db-password/rotate');
         expect(calls[0]!.body).toEqual({
             name: 'db-password',
-            new_value: 'newvalue',
+            new_value: 'bmV3dmFsdWU=', // base64 of "newvalue" (Go []byte)
             grace_period_seconds: 3600,
         });
         expect(result).toEqual({
@@ -201,7 +203,7 @@ describe('CredentialClient — REST wire contract', () => {
 
         expect(calls[0]!.body).toEqual({
             name: 'k',
-            new_value: 'v2',
+            new_value: 'djI=', // base64 of "v2" (Go []byte)
             grace_period_seconds: 0,
         });
     });
