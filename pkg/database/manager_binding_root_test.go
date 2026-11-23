@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // rootedBackend is a backend that owns a store root of its own, the way a
@@ -227,6 +229,103 @@ func TestManager_RootsCheckUnopenedRecords(t *testing.T) {
 		}
 		if _, err := m.Get("b"); err != nil {
 			t.Fatalf("b after the refused drop: %v", err)
+		}
+	})
+}
+
+// isolatedHomes routes the tenants in homes to their own home store, as a
+// tenant registry does for an isolated tenant, and lists every tenant it
+// holds (CatalogTenantLister).
+type isolatedHomes struct {
+	homes map[string]kvstore.KVStore
+}
+
+func (h *isolatedHomes) Resolve(_ context.Context, tenantID string) (kvstore.KVStore, error) {
+	if s, ok := h.homes[tenantID]; ok {
+		return s, nil
+	}
+	return nil, errors.New("no home for " + tenantID)
+}
+
+func (h *isolatedHomes) InHome(_ context.Context, tenantID string) (bool, error) {
+	_, ok := h.homes[tenantID]
+	return ok, nil
+}
+
+func (h *isolatedHomes) TenantIDs(context.Context) ([]string, error) {
+	ids := make([]string, 0, len(h.homes))
+	for id := range h.homes {
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// An isolated tenant's records are in its home store, which Catalog.List
+// does not read: the root check reads every tenant's records, and refuses
+// any root under another tenant's tenants/<id>/ subtree, so neither a
+// create nor a drop of a system database reaches an unopened isolated
+// tenant's root.
+func TestManager_RootsCheckIsolatedTenantRecords(t *testing.T) {
+	newIsolated := func(t *testing.T) (*Manager, *rootedFactory, string, string) {
+		t.Helper()
+		m, f, dir := newRootedManager(t)
+		cat, err := NewKVCatalog(kvstore.NewMemoryKVStore(), &isolatedHomes{homes: map[string]kvstore.KVStore{"iso": kvstore.NewMemoryKVStore()}})
+		if err != nil {
+			t.Fatalf("NewKVCatalog: %v", err)
+		}
+		m.SetCatalog(cat)
+		isoRoot := filepath.Join(dir, "iso-root", "app")
+		if err := os.MkdirAll(isoRoot, 0o700); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := cat.Create(context.Background(), DatabaseMeta{TenantID: "iso", Name: "app", Backend: BackendMemory, DataDir: isoRoot}); err != nil {
+			t.Fatalf("record iso/app: %v", err)
+		}
+		if metas, err := cat.List(context.Background()); err != nil || len(metas) != 0 {
+			t.Fatalf("List = %v, %v; the isolated record must be in the home store only", metas, err)
+		}
+		return m, f, dir, isoRoot
+	}
+
+	t.Run("create over an isolated tenant's root", func(t *testing.T) {
+		m, _, dir, isoRoot := newIsolated(t)
+		_, err := m.Create(DatabaseConfig{Name: "evil", Backend: BackendMemory, DataDir: filepath.Join(dir, "iso-root")})
+		var conflict *DataDirConflictError
+		if !errors.As(err, &conflict) || conflict.With != "app" {
+			t.Fatalf("Create evil: err = %v, want *DataDirConflictError with app", err)
+		}
+		if _, err := m.Get("evil"); err == nil {
+			t.Fatal("the refused database is registered")
+		}
+		if _, err := os.Stat(isoRoot); err != nil {
+			t.Fatalf("iso/app's root after the refused create: %v", err)
+		}
+	})
+	t.Run("drop over an isolated tenant's root", func(t *testing.T) {
+		m, f, dir, isoRoot := newIsolated(t)
+		if _, err := m.Create(DatabaseConfig{Name: "b", Backend: BackendMemory}); err != nil {
+			t.Fatalf("Create b: %v", err)
+		}
+		*f.roots["b"] = filepath.Join(dir, "iso-root")
+		err := m.Drop(context.Background(), "b")
+		var conflict *DataDirConflictError
+		if !errors.As(err, &conflict) || conflict.With != "app" {
+			t.Fatalf("Drop b: err = %v, want a *DataDirConflictError with app", err)
+		}
+		if _, err := os.Stat(isoRoot); err != nil {
+			t.Fatalf("iso/app's root after the refused drop: %v", err)
+		}
+	})
+	t.Run("create under another tenant's subtree", func(t *testing.T) {
+		m, _, dir, _ := newIsolated(t)
+		other := filepath.Join(dir, "tenants", "other", "databases", "x")
+		_, err := m.Create(DatabaseConfig{Name: "evil", Backend: BackendMemory, DataDir: other})
+		var conflict *DataDirConflictError
+		if !errors.As(err, &conflict) || conflict.With != "tenant other" {
+			t.Fatalf("Create evil: err = %v, want *DataDirConflictError with tenant other", err)
+		}
+		if _, err := m.Get("evil"); err == nil {
+			t.Fatal("the refused database is registered")
 		}
 	})
 }

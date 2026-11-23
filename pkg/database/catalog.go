@@ -292,6 +292,61 @@ func (c *KVCatalog) ListTenant(ctx context.Context, tenantID string) ([]Database
 	return scanCatalog(ctx, store, CatalogKeyPrefix+tenantid.Normalize(tenantID)+"/")
 }
 
+// CatalogTenantLister lists the id of every tenant the registry holds. A
+// CatalogHomes that implements it lets ListAll reach the records held in
+// every isolated tenant's home store, opened here or not.
+type CatalogTenantLister interface {
+	TenantIDs(ctx context.Context) ([]string, error)
+}
+
+// AllTenantsCatalog is a Catalog that can list the records of every tenant,
+// those in isolated tenants' home stores included, not only those List
+// returns from the system store.
+type AllTenantsCatalog interface {
+	ListAll(ctx context.Context) ([]DatabaseMeta, error)
+}
+
+var _ AllTenantsCatalog = (*KVCatalog)(nil)
+
+// ListAll returns every record the catalog holds: List's, and those of
+// every isolated tenant in its home store. A catalog whose homes cannot
+// list tenants has no isolated tenant to reach, and returns List's. A
+// tenant whose records cannot be read fails the listing, so a caller that
+// guards something on what the catalog holds never misses a record.
+func (c *KVCatalog) ListAll(ctx context.Context) ([]DatabaseMeta, error) {
+	metas, err := c.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	lister, ok := c.homes.(CatalogTenantLister)
+	if !ok {
+		return metas, nil
+	}
+	ids, err := lister.TenantIDs(ctx)
+	if err != nil {
+		return nil, &CatalogStoreError{Err: err}
+	}
+	for _, id := range ids {
+		if tenantid.IsSystem(id) {
+			continue
+		}
+		inHome, err := c.homes.InHome(ctx, id)
+		if err != nil {
+			return nil, &CatalogStoreError{TenantID: id, Err: err}
+		}
+		if !inHome {
+			// A shared tenant's records are in the system store List read.
+			continue
+		}
+		tenantMetas, err := c.ListTenant(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		metas = append(metas, tenantMetas...)
+	}
+	return metas, nil
+}
+
 // scanCatalog decodes every record under prefix in store. A record that
 // does not decode fails the whole scan: skipping it would hide a database.
 func scanCatalog(ctx context.Context, store kvstore.KVStore, prefix string) ([]DatabaseMeta, error) {

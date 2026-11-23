@@ -1992,7 +1992,14 @@ func (m *Manager) recordRootConflict(ctx context.Context, self dbKey, name, root
 	if err != nil {
 		return err
 	}
-	metas, err := cat.List(ctx)
+	// Every tenant's records, an isolated tenant's in its home store
+	// included, opened on this node or not: List sees the system store only.
+	var metas []DatabaseMeta
+	if all, ok := cat.(AllTenantsCatalog); ok {
+		metas, err = all.ListAll(ctx)
+	} else {
+		metas, err = cat.List(ctx)
+	}
 	if err != nil {
 		return &RecordRootUnresolvedError{Name: name, Err: err}
 	}
@@ -2022,7 +2029,34 @@ func (m *Manager) recordRootConflict(ctx context.Context, self dbKey, name, root
 			}
 		}
 	}
-	return nil
+	// No database may claim a root under another tenant's tenants/<id>/
+	// subtree, whether or not a record of that tenant is listed: a drop of
+	// a database that owns its root removes it.
+	return m.foreignTenantRootConflict(self, name, root, resolved)
+}
+
+// foreignTenantRootConflict refuses resolved, the root name claims, when it
+// lies under another tenant's <dataDir>/tenants/<id>/ subtree: the default
+// home of that tenant's stores, which a record listing may not show (an
+// isolated tenant's records are in its home store, sealed or not opened
+// here).
+func (m *Manager) foreignTenantRootConflict(self dbKey, name, root, resolved string) error {
+	if strings.TrimSpace(m.dataDir) == "" {
+		return nil
+	}
+	tenantsDir, err := resolveDataDir(filepath.Join(m.dataDir, "tenants"))
+	if err != nil {
+		return &RecordRootUnresolvedError{Name: name, Err: err}
+	}
+	rel, err := filepath.Rel(tenantsDir, resolved)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil
+	}
+	owner := strings.SplitN(rel, string(filepath.Separator), 2)[0]
+	if tenantid.Normalize(owner) == tenantid.Normalize(self.tenant) {
+		return nil
+	}
+	return &DataDirConflictError{Name: name, DataDir: root, With: "tenant " + owner}
 }
 
 // ownedRecordRootConflict is recordRootConflict for the store root backend
