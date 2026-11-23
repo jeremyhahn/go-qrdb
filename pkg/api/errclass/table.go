@@ -141,9 +141,11 @@ var dominantRules = []rule{
 	// every service wrapper would otherwise report it as a server fault.
 	is(seal.ErrBarrierSealed, Unavailable),
 	// The node seal store refuses every operation while its barrier is
-	// sealed, and a read of an absent name is a missing resource.
+	// sealed, and a read of an absent name is a missing resource. A secret
+	// name that is not one opaque path segment is the caller's error.
 	is(seal.ErrSealStoreBarrierSealed, Unavailable),
 	is(seal.ErrSealStoreSecretNotFound, NotFound),
+	is(seal.ErrInvalidSecretName, InvalidArgument),
 	// The storage packages cannot import pkg/seal, so they refuse with their
 	// own sentinels: a sealing barrier's closed quiesce gate (the file
 	// store's *SealedError and every leased store) and Pebble's sealed

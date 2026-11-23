@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -38,14 +39,26 @@ func (m *memSealStore) Put(_ context.Context, name string, secret []byte) error 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.accessed++
+	if invalidSecretName(name) {
+		return &seal.SealStoreError{Op: "put", Key: name, Err: seal.ErrInvalidSecretName}
+	}
 	m.secrets[name] = append([]byte(nil), secret...)
 	return nil
+}
+
+// invalidSecretName is the seal store's name rule (validSecretName): a name
+// must be one opaque path segment.
+func invalidSecretName(name string) bool {
+	return name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`)
 }
 
 func (m *memSealStore) Get(_ context.Context, name string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.accessed++
+	if invalidSecretName(name) {
+		return nil, &seal.SealStoreError{Op: "get", Key: name, Err: seal.ErrInvalidSecretName}
+	}
 	s, ok := m.secrets[name]
 	if !ok {
 		return nil, &seal.SealStoreError{Op: "get", Key: name, Err: seal.ErrSealStoreSecretNotFound}
@@ -170,5 +183,20 @@ func TestGRPC_SealStore_WithoutPermissionDenied(t *testing.T) {
 	}
 	if store.calls() != 0 {
 		t.Fatal("a refused call reached the seal store")
+	}
+}
+
+// TestGRPC_SealStore_InvalidNameIsInvalidArgument: a secret name that is not
+// one opaque path segment is the caller's error, so gRPC answers
+// InvalidArgument through the shared classification, not Internal.
+func TestGRPC_SealStore_InvalidNameIsInvalidArgument(t *testing.T) {
+	store := newMemSealStore()
+	c := startSealStoreServer(t, store, authtest.SOIdentity(tenantid.System, "so"))
+	_, err := c.SealStorePut(context.Background(), &pb.SealStorePutRequest{Name: `a\b`, Secret: []byte("s1")})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Put(a\\b): code %s (%v), want InvalidArgument", status.Code(err), err)
+	}
+	if store.calls() != 1 {
+		t.Fatalf("seal store calls = %d, want 1 (the name rule is the store's)", store.calls())
 	}
 }

@@ -17,6 +17,7 @@ package errclass
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -668,6 +669,8 @@ func TestClassify_ClusterSeal(t *testing.T) {
 		{"node cut off from the seal records", &clusterseal.SealStateUnconfirmedError{}, Unavailable},
 		{"corrupt seal record", &clusterseal.CorruptRecordError{Barrier: clusterseal.NodeBarrier()}, Internal},
 		{"malformed barrier name", &clusterseal.InvalidBarrierError{Name: "x"}, InvalidArgument},
+		{"invalid seal-store secret name", seal.ErrInvalidSecretName, InvalidArgument},
+		{"invalid seal-store secret name, wrapped", fmt.Errorf("put: %w", seal.ErrInvalidSecretName), InvalidArgument},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Classify(wrapped{tc.err}); got != tc.want {

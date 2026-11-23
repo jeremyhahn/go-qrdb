@@ -21,6 +21,7 @@ import (
 	"errors"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -52,6 +53,9 @@ func (s *stubSealStore) Put(_ context.Context, name string, secret []byte) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls++
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return &seal.SealStoreError{Op: "put", Key: name, Err: seal.ErrInvalidSecretName}
+	}
 	s.secrets[name] = slices.Clone(secret)
 	return nil
 }
@@ -247,6 +251,13 @@ func TestSealStoreOverQUIC_Errors(t *testing.T) {
 		}
 		if status, _ := sealStoreCall(t, addr, cfg, "sealstore.Get", map[string]any{"name": "missing"}); status == wire.StatusOK {
 			t.Fatal("Get of a missing secret answered OK")
+		}
+	})
+	t.Run("invalid name", func(t *testing.T) {
+		addr, cfg := sealStoreServer(t, so, newStubSealStore())
+		status, _ := sealStoreCall(t, addr, cfg, "sealstore.Put", map[string]any{"name": `a\b`, "secret": []byte("x")})
+		if status != wire.StatusInvalidArgument {
+			t.Fatalf("Put(a\\b): status %v, want StatusInvalidArgument", status)
 		}
 	})
 }

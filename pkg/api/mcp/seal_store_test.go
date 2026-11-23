@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -78,6 +79,9 @@ func (s *stubSealStore) Put(_ context.Context, name string, secret []byte) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.record("put")
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return &seal.SealStoreError{Op: "put", Key: name, Err: seal.ErrInvalidSecretName}
+	}
 	s.secrets[name] = append([]byte(nil), secret...)
 	return nil
 }
@@ -250,6 +254,26 @@ func TestSealStoreTools_ServiceErrorIsToolError(t *testing.T) {
 	}
 	if store.count("get") != 1 {
 		t.Fatalf("get calls = %d, want 1", store.count("get"))
+	}
+}
+
+// TestSealStoreTools_InvalidNameIsInvalidArgument: a secret name that is not
+// one opaque path segment is the caller's error, so the tool error carries the
+// invalid-argument code, the class REST answers 400 for.
+func TestSealStoreTools_InvalidNameIsInvalidArgument(t *testing.T) {
+	store := newStubSealStore()
+	client := startSealStoreMCP(t, store, tenantid.System, authtest.SOIdentity(tenantid.System, "system-so"))
+	res := callSealStoreTool(t, client, "qrdb_seal_store_put", map[string]any{
+		"name": `a\b`, "secret": base64.StdEncoding.EncodeToString([]byte("s1")),
+	})
+	if !res.IsError {
+		t.Fatalf("put of an invalid name: result %+v, want IsError", res)
+	}
+	if got := toolErrorCode(t, res); got != wire.CodeInvalidArgument {
+		t.Fatalf("code = %s, want %s", got, wire.CodeInvalidArgument)
+	}
+	if store.count("put") != 1 {
+		t.Fatalf("put calls = %d, want 1", store.count("put"))
 	}
 }
 

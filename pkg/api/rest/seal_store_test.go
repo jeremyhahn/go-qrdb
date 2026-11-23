@@ -252,11 +252,11 @@ func TestSealStoreRoutes_EncodedSeparatorRefused(t *testing.T) {
 // to 400 rather than a server error.
 func TestSealStoreHTTPStatus_InvalidName(t *testing.T) {
 	err := &seal.SealStoreError{Op: "put", Key: "a\\b", Err: seal.ErrInvalidSecretName}
-	if got := sealStoreHTTPStatus(err); got != http.StatusBadRequest {
-		t.Fatalf("sealStoreHTTPStatus(invalid name) = %d, want 400", got)
+	if got := mapHTTPError(err); got != http.StatusBadRequest {
+		t.Fatalf("mapHTTPError(invalid name) = %d, want 400", got)
 	}
-	if got := sealStoreHTTPStatus(seal.ErrInvalidSecretName); got != http.StatusBadRequest {
-		t.Fatalf("sealStoreHTTPStatus(ErrInvalidSecretName) = %d, want 400", got)
+	if got := mapHTTPError(seal.ErrInvalidSecretName); got != http.StatusBadRequest {
+		t.Fatalf("mapHTTPError(ErrInvalidSecretName) = %d, want 400", got)
 	}
 }
 
