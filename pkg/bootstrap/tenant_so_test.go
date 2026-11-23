@@ -183,6 +183,7 @@ func TestProvisionTenant_SO_RefusedBeforeTheTenantIsCreated(t *testing.T) {
 		{"no username", nil, func(s *firstboot.SOConfig) { s.Username = "" }, Dependencies{SOPINs: &fakeSOPINs{}}, isIncomplete("so_username")},
 		{"no credential", nil, func(s *firstboot.SOConfig) { s.CSRPEM = nil }, Dependencies{SOPINs: &fakeSOPINs{}}, isIncomplete("so_csr_pem or so_cert_pem")},
 		{"no PIN", nil, func(s *firstboot.SOConfig) { s.PIN = nil }, Dependencies{SOPINs: &fakeSOPINs{}}, isIncomplete("so_pin")},
+		{"destroyed PIN beside a hashed record", nil, func(s *firstboot.SOConfig) { s.PIN.Destroy(); s.PINRecord = "record" }, Dependencies{SOPINs: &fakeSOPINs{}}, isIncomplete("so_pin")},
 		{"both credentials", nil, func(s *firstboot.SOConfig) { s.CertPEM = []byte("x") }, Dependencies{SOPINs: &fakeSOPINs{}}, errAs[*firstboot.ConflictingSOCredentialError]},
 		{"strict: admin's username", nil, func(s *firstboot.SOConfig) { s.Username = "Admin" }, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true}, isMatch("username")},
 		{"strict: admin's key", sameKey, func(s *firstboot.SOConfig) { s.CSRPEM = sameKey }, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true}, isMatch("key")},
