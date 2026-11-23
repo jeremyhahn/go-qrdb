@@ -532,14 +532,18 @@ each in turn. Every `qrdbd` built by `make build` or the Docker image carries
 its release (`qrdbd version` prints it) and announces it when it enrols and in
 its membership advertisement. A node whose release is not adjacent is refused
 at both points with `release.GapError`, which names the channel
-(`enrollment`, `raft-membership` or `key-delivery`) and both releases: a
+(`enrollment`, `raft-membership`, `key-delivery` or `replica-forwarding`) and both releases: a
 joining node is refused before its join token is consumed, so the same token
 works once the node runs an adjacent release (REST 409; the joiner exits with
 the error), and a membership change that would place a replica on such a node
 is refused (gRPC and QUIC `FAILED_PRECONDITION`). A node whose release is not
 adjacent cannot receive a dedicated tenant's key either: the key-delivery
 envelope announces the sender's release, and the receiver refuses a gap
-before it decrypts anything (REST 409), so the sender gets the gap. The QUIC API negotiates its frame
+before it decrypts anything (REST 409), so the sender gets the gap. A request
+a node forwards to a replica or to the leader carries the forwarding node's
+release inside its signed on-behalf assertion, and a node whose release is not
+adjacent refuses it with the gap (REST 409, gRPC and QUIC
+`FAILED_PRECONDITION`) instead of serving it. The QUIC API negotiates its frame
 protocol through TLS ALPN from the list a release speaks (today
 `qrdb-quic/3`); a client offering none of them is refused in the handshake
 with TLS alert 120 (`no_application_protocol`, QUIC error `0x178`), and the
