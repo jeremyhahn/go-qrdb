@@ -306,8 +306,19 @@ records each failure with `Catalog.FailSettleStep` (the sanitized error
 class and an attempt count) and the step stays settling. For a copy step
 the `WithMoveStepAttempts`-th failure (3 by default), or a cancel recorded
 while it settled, sends the move to `aborting` with the node copied, and the
-abort steps restore the source on it. An abort or retire step cannot back
-out further: its failures are counted and it is retried.
+abort steps restore the source on it. The node stays copied because a shard
+may have attached from the destination and acknowledged raft entries before
+the settle failed. Its copy-back (`MoveStepRunner.copyBack`) never removes
+the source first: it copies the destination's tree into a staging directory
+beside the tenant's directory in the source pool (`<path>.copyback`) and
+verifies it there, and only then removes the source and renames the staging
+directory into its place. A destination that cannot be read back fails the
+copy or the verify; that removes only the staging directory, so the source
+stays byte for byte intact and the stores reopen from the destination, which
+the journal still names. A rerun after a crash first removes a leftover
+staging directory and treats a source already missing as removed. An abort
+or retire step cannot back out further: its failures are counted and it is
+retried.
 
 A move's node set is not fixed at admission. Before granting a copy step
 and before cut over, `ReconcileOnce` re-reads the tenant's replicas through
@@ -654,6 +665,19 @@ refusal, and deleted and re-created.
   copy and verify) removes the destination and keeps the source, and with a
   failing remover the error still carries the `*volume.MoveStepError` and the
   remover's error; a cancelled context; no message names a pool path.
+- `pkg/seal` (`move_runner_test.go`, the copy-back):
+  `TestMoveStepRunner_CopyBackFromUnreadableDestinationKeepsSource` (a
+  copy-back whose verify fails leaves the source unchanged and no staging
+  directory) and `TestMoveStepRunner_CopyBackRerunAfterSourceRemoved` (a
+  crash between the source's removal and the rename: the rerun removes the
+  stale staging directory and rebuilds the source from the destination);
+- `pkg/seal` (`move_settle_failure_test.go`, the real catalog, reconciler and
+  step runner over a destination that never reopens):
+  `TestMoveSettle_PermanentDestinationReopenFailureThenCancel` and
+  `TestMoveSettle_PermanentDestinationReopenFailureAbortsPastAttempts`: the
+  settle failure is counted, the move goes through `aborting` with the node
+  copied, and ends with the stores on the intact source, the destination
+  removed and the reservation released.
 
 Fault seams:
 

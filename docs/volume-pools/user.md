@@ -151,4 +151,5 @@ without the flag to go back to the stricter default.
 | `move-tenant` refused with "failed precondition" | a move is already journalled for the tenant, the tenant is not `volume` or `raft`, or the move goes from an encrypted pool to an unencrypted one | wait for or cancel the running move; an encrypted to unencrypted move is never allowed |
 | `get-move` or `cancel-move` answers not found | no move is journalled: none was started, or it has ended | check the tenant's pool with `tenant get` |
 | `cancel-move` refused with "cannot cancel" | the move is past its cut over | let it finish |
+| move stays `aborting` after `cancel-move` | the destination could not be read back; the source is kept | fix the destination pool's storage; the abort step retries |
 | `get-move` shows a step error and rising attempts | a node's copy step keeps failing; after its attempts the move aborts back to the source pool | read the error, fix the node or pool, then start the move again |
