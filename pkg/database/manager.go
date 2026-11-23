@@ -1586,6 +1586,22 @@ func (m *Manager) List() []DatabaseInfo {
 	return infos
 }
 
+// Records returns every database record the catalog holds, opened on this
+// node or not, an isolated tenant's in its home store included. List
+// returns the open databases only, so a caller that must reach every
+// database -- maintenance after a restart, before any request has opened
+// one lazily -- reads Records and opens each through Open.
+func (m *Manager) Records(ctx context.Context) ([]DatabaseMeta, error) {
+	cat, err := m.catalog("list records")
+	if err != nil {
+		return nil, err
+	}
+	if all, ok := cat.(AllTenantsCatalog); ok {
+		return all.ListAll(ctx)
+	}
+	return cat.List(ctx)
+}
+
 // sortInfos orders infos by name, then by tenant: the order List and
 // ListForTenant report in.
 func sortInfos(infos []DatabaseInfo) {

@@ -254,7 +254,7 @@ func (s *Server) materializedStores(ctx context.Context) []namedMaterializedStor
 		return nil
 	}
 	var out []namedMaterializedStore
-	for _, info := range s.opts.dbManager.List() {
+	for _, info := range s.maintainedDatabases(ctx) {
 		db, err := s.opts.dbManager.Open(ctx, info.TenantID, info.Name)
 		if err != nil || db == nil {
 			continue
@@ -266,6 +266,42 @@ func (s *Server) materializedStores(ctx context.Context) []namedMaterializedStor
 		out = append(out, namedMaterializedStore{name: "materialized " + tenantid.Normalize(info.TenantID) + "/" + info.Name, store: ms})
 	}
 	return out
+}
+
+// maintainedDatabases returns every database background maintenance
+// (retention, compaction, the collection sweeper) must reach: each record
+// the Manager's catalog holds -- an isolated tenant's and a prefix-scoped
+// one included, opened on this node or not -- and each database open here.
+// Manager.List alone answers the open ones only, so after a restart a
+// database no request has lazily opened yet would get no maintenance at
+// all. When the catalog cannot be read the open databases are still
+// returned, and the failure is logged.
+func (s *Server) maintainedDatabases(ctx context.Context) []database.DatabaseInfo {
+	if s.opts.dbManager == nil {
+		return nil
+	}
+	infos := s.opts.dbManager.List()
+	seen := make(map[string]bool, len(infos))
+	key := func(tenantID, name string) string { return tenantid.Normalize(tenantID) + "\x00" + name }
+	for _, info := range infos {
+		seen[key(info.TenantID, info.Name)] = true
+	}
+	records, err := s.opts.dbManager.Records(ctx)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.WarnContext(ctx, "maintenance: database catalog unreadable; open databases only", "error", err)
+		}
+		return infos
+	}
+	for _, meta := range records {
+		k := key(meta.TenantID, meta.Name)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		infos = append(infos, database.DatabaseInfo{TenantID: meta.TenantID, Name: meta.Name})
+	}
+	return infos
 }
 
 // WithRetentionInterval overrides how often the retention scheduler sweeps

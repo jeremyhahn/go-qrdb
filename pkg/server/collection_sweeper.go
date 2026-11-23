@@ -311,9 +311,12 @@ func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepT
 		}
 	}
 	if s.opts.dbManager != nil {
-		for _, info := range s.opts.dbManager.List() {
-			dbase, err := s.opts.dbManager.GetOwned(info.Name, info.TenantID)
-			if err != nil {
+		// Every catalog record, not only the open databases: after a
+		// restart a lazily opened database's interrupted collection work
+		// is finished here without waiting for a foreground request.
+		for _, info := range s.maintainedDatabases(ctx) {
+			dbase, err := s.opts.dbManager.Open(ctx, info.TenantID, info.Name)
+			if err != nil || dbase == nil {
 				continue
 			}
 			owner := info.TenantID
