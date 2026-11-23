@@ -276,8 +276,9 @@ both SDKs and the CLI: start (`volume_pools:move`), inspect
 the shared errclass row of its error.
 
 The design, decided by ruling 1115 for Q1-Q8 and Q10 and by the owner for Q9
-(owner queue 287: a move off a Lockable pool onto one that is not is refused
-outright), is
+(ruling 1234, superseding owner queue 287: a move off a Lockable pool onto
+one that is not runs only with the explicit, audited
+`allow_unencrypted_destination` flag), is
 [../decisions/volume-pool-tenant-moves.md](../decisions/volume-pool-tenant-moves.md):
 a rolling, per-node copy behind a move journal, cut over by one assignment
 write. Only the parts built and described here are part of this contract.
@@ -305,8 +306,18 @@ transaction reserves the tenant's bytes on the destination pool and writes
 the journal `__sys:volumepool/moves/{tenant}` in state `admitted`, with every
 replica node pending, after checking that the destination is ready on every
 replica node (Q3) and that no move already runs (Q10). A move off a Lockable
-pool onto one that is not is refused outright with
-`*volume.MoveToUnencryptedPoolError` (Q9, the owner's ruling, no flag). The source reservation and the assignment stay, so the tenant counts
+pool onto one that is not (Q9, ruling 1234) is refused with
+`*volume.MoveToUnencryptedPoolError` unless the request carries the
+operator's `allow_unencrypted_destination` flag. Under the flag,
+`volume.Catalog.MoveTenant` reads whether the move drops encryption and
+records the drop fail-closed as the audit record
+`volume_pool.move_encryption_drop` before anything is admitted; with no
+audit sink wired the drop is refused with
+`*volume.MoveEncryptionDropUnauditedError`. `AdmitMove` re-applies the rule
+in its transaction and admits a drop only with `AllowEncryptionDrop`, which
+`MoveTenant` sets only after the audit, so a pool change in between refuses
+rather than drops encryption unaudited. The journal of an admitted drop
+carries `encryptionDropped`. The source reservation and the assignment stay, so the tenant counts
 on both pools while it moves. While a journal exists, tenant delete, a quota
 change, a second move and deleting either pool are refused. So is a new
 replica of the tenant: the volume-pool placement filter refuses the replica

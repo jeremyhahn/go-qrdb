@@ -184,10 +184,14 @@ The catalog half of a move's admit step, called by `MoveTenant`
 - `Catalog.AdmitMove(ctx, MoveAdmitRequest) (*Move, error)`: one transaction
   reserving the tenant's `Assignment.ReservedBytes` on `ToPool` and writing
   the journal in state `admitted`, after the Q3 and Q10 checks and the Q9
-  refusal (`*MoveToUnencryptedPoolError` for a Lockable-to-non-Lockable
-  move, interim under ruling 1115);
-- `MoveAdmitRequest{TenantID, ToPool, ReplicaNodes}`:
-  the admit input; the caller supplies every replica node;
+  rule (`*MoveToUnencryptedPoolError` for a Lockable-to-non-Lockable move
+  unless the request carries `AllowEncryptionDrop`, ruling 1234; an admitted
+  drop sets the journal's `EncryptionDropped`);
+- `MoveAdmitRequest{TenantID, ToPool, ReplicaNodes, AllowEncryptionDrop}`:
+  the admit input; the caller supplies every replica node; `MoveTenant` sets
+  `AllowEncryptionDrop` only after the drop was audited, so `AdmitMove`
+  re-checks the rule in its transaction and a pool change after
+  `MoveTenant`'s read refuses rather than drops encryption unaudited;
 - `MoveKey(tenant)` / `MoveKeyPrefix`: the journal key
   `__sys:volumepool/moves/{tenant}`;
 - `MoveStateAdmitted`: the state `AdmitMove` writes, no step granted;
@@ -248,11 +252,20 @@ The catalog half of a move's admit step, called by `MoveTenant`
 - `LockableProvider{OpensLockable() bool}`: optional provider interface; a
   provider without it counts as Lockable as a source and not Lockable as a
   destination (`dir` returns false);
-- `MoveTenantRequest{TenantID, ToPool}`: the operator's move request;
+- `MoveTenantRequest{TenantID, ToPool, AllowUnencryptedDestination}`: the
+  operator's move request; `AllowUnencryptedDestination` is the explicit,
+  audited flag that lets a move leave a Lockable pool for one that is not
+  (decision Q9, ruling 1234);
 - `MoveAdmission{AdmitTenantMove}`: the tenant layer's half of admit (kind,
   entitlement), returning the replica node IDs;
-- `MoveStartAuditor{BeginMoveStart}`: audits a move's start before admit (an
-  error refuses it) and settles once with `AdmitMove`'s answer;
+- `MoveStartFacts{FromPool, EncryptionDropped}`: what `MoveTenant` read
+  before admit under the flag (`moveDropsEncryption`): the tenant's pool and
+  whether the move drops encryption; zero without the flag;
+- `MoveStartAuditor{BeginMoveStart(ctx, MoveTenantRequest, MoveStartFacts)
+  (settle func(*Move, error), err error)}`: audits a move's start before
+  admit (an error refuses it), records a drop fail-closed first, and settles
+  once with `AdmitMove`'s answer; a drop with no auditor wired is refused
+  with `*MoveEncryptionDropUnauditedError`;
 - `Catalog.SetMoveAdmission` / `Catalog.SetMoveStartAuditor`: the
   post-construction seams `MoveTenant` uses; nil unwires;
 - `MoveCutoverRecorder{RecordTenantPoolMoved}`: makes the tenant record name
@@ -421,7 +434,7 @@ func (b *StorageBarrier) OnSealing(fn func(context.Context) error)
 | `tenant.TenantService.AdmitTenantMove(ctx, volume.MoveTenantRequest) ([]string, error)` | implements `volume.MoveAdmission`: the tenant exists, is `volume` or `raft` (not the system tenant), is entitled to `ToPool`; returns its replica nodes |
 | `tenant.TenantService.RecordTenantPoolMoved(ctx, tenantID, fromPool, toPool) error` | implements `volume.MoveCutoverRecorder`: makes the tenant record name `toPool`; idempotent; a tenant naming another pool is `*volume.MoveConflictError`, a missing tenant `ErrTenantNotFound`; `server.WireTenantMoves` sets it as the catalog's cut-over recorder |
 | `tenant.MoveReplicaNodeSource` / `tenant.MoveReplicaNodeWiring` | the optional source of a tenant's replica node IDs and its setter; with none set `AdmitTenantMove` returns `*volume.MoveNotImplementedError` |
-| `service.NewVolumeMoveAudit(logger, policy) volume.MoveStartAuditor` | audits a move's start as `volume_pool.move_start` (`to_pool`, `from_pool` on the outcome); gated by the failure policy before admit, best-effort outcome after |
+| `service.NewVolumeMoveAudit(logger, policy) volume.MoveStartAuditor` | audits a move's start as `volume_pool.move_start` (`to_pool`, `allow_unencrypted_destination`, `encryption_dropped`, `from_pool` on the outcome); gated by the failure policy before admit, best-effort outcome after. A move that drops encryption (Q9, ruling 1234) is first recorded as `volume_pool.move_encryption_drop` (`from_pool`, `to_pool`, `encryption: dropped`, `allow_unencrypted_destination`) fail-closed whatever the policy: a failed write refuses the start |
 | `seal.ErrMoveStepInvalid` | `RunMoveCopyStep` called without a node ID or destination pool |
 | `seal.ErrMoveSamePool` | the destination pool is the tenant's current pool |
 | `seal.ErrMoveTenantOpen` | the tenant still has a barrier on this node; the step copies a closed directory |
@@ -513,7 +526,8 @@ Every error is typed. Each classification below is the row added to
 | `*volume.MoveStepError{NodeID, Phase, Path, Err}` | the node-local move copy (`Phase` `copy`) or verify (`Phase` `verify`) failed; `Path` is root-relative | `Unavailable` (503) when the cause is `PoolUnavailableError` or `NodeSealedError`, else `Internal` (500) |
 | `*volume.ManifestMismatchError{Path, Reason}` | the destination's manifest differs (`missing`, `extra`, `type`, `mode`, `size`, `digest`); wrapped in a `MoveStepError` | `Internal` (500) |
 | `*volume.MoveConflictError{TenantID, NodeID, Reason}` | a move admit is refused (a move already runs, the destination is the current pool, the destination is not ready on `NodeID`, the tenant is not a `volume` or `raft` tenant, or it has no replica node), a step transition is refused (no step to grant, or `NodeID` does not hold the step), cut over is refused (not copied, a node pending or holding a step, the assignment no longer naming the source pool), a retire or abort step is refused, `CancelMove` is refused past cut over, `RecordTenantPoolMoved` finds the tenant on neither pool, or tenant delete / a quota change is refused while a move runs | `FailedPrecondition` (409) |
-| `*volume.MoveToUnencryptedPoolError{TenantID, FromPool, ToPool}` | a move from a Lockable pool to one that is not, refused outright (owner ruling on Q9) | `FailedPrecondition` (409) |
+| `*volume.MoveToUnencryptedPoolError{TenantID, FromPool, ToPool}` | a move from a Lockable pool to one that is not, without the `allow_unencrypted_destination` flag (Q9, ruling 1234); the message names `--allow-unencrypted-destination` | `FailedPrecondition` (409) |
+| `*volume.MoveEncryptionDropUnauditedError{TenantID, FromPool, ToPool}` | a move under the flag that drops encryption while no `MoveStartAuditor` is wired ("dropping encryption needs an audit sink") | `FailedPrecondition` (409) |
 | `*volume.MoveJournalConflictError{TenantID}` | a move-journal step transition lost every compare-and-swap attempt; nothing written, retrying is safe | `Aborted` (409) |
 | `*volume.InvalidMoveRequestError{Reason}` | `AdmitMove` got an empty tenant or pool, no replica nodes, or an empty or duplicate node ID; `MoveTenant` an empty tenant or pool; `GetMove` an empty tenant | `InvalidArgument` (400) |
 | `*volume.MoveNotFoundError{TenantID}` | `GetMove` or `CancelMove` found no journal for the tenant | `NotFound` (404) |
@@ -622,11 +636,17 @@ A raft-tenant move is covered by the three-node E2E (`TestVolumePool_CLI_MoveTen
   assignment unchanged); each invalid request; no assignment; unknown
   destination; same pool; a second admit (journal and reservation
   unchanged); a replica node with no report, a stale report, the pool
-  unmapped or locked (`NodeID` set); capacity; bounded retries; Q9 refused outright
-  with a Lockable test provider (`*MoveToUnencryptedPoolError` for luks2 to
-  dir with no journal, reservation or assignment change, for a provider
-  without `OpensLockable` as source and as destination, and through
-  `MoveTenant` with the settle; plain to Lockable admitted); Q10 after admit (`Release`, `AdjustReservation` refused with
+  unmapped or locked (`NodeID` set); capacity; bounded retries; Q9 refused without
+  the flag with a Lockable test provider (`*MoveToUnencryptedPoolError` for
+  luks2 to dir with no journal, reservation or assignment change, for a
+  provider without `OpensLockable` as source and as destination, and through
+  `MoveTenant` with the settle; plain to Lockable admitted); Q9 under ruling
+  1234 (`TestCatalog_MoveTenant_Q9WithoutFlagRefused`,
+  `TestCatalog_MoveTenant_Q9FlagAuditsTheDrop`: the drop audited before the
+  admit and the journal's `EncryptionDropped`,
+  `TestCatalog_MoveTenant_Q9DropWithoutAuditorRefused`,
+  `TestCatalog_MoveTenant_Q9FlagOnPlainMoveNoDrop`,
+  `TestCatalog_AdmitMove_Q9AllowedDropIsJournalled`); Q10 after admit (`Release`, `AdjustReservation` refused with
   reservations unchanged, `DeletePool` of either pool names the tenant); a
   corrupt journal fails `Release`, `AdjustReservation`, `DeletePool` and
   `AdmitMove` closed; `MoveTenant` with no admission wired (not
@@ -694,8 +714,12 @@ A raft-tenant move is covered by the three-node E2E (`TestVolumePool_CLI_MoveTen
   `PoolUnavailableError` or `NodeSealedError` `Unavailable`, anything else
   `Internal`, also under `fmt.Errorf("%w")`);
 - `pkg/service` (`volume_move_audit_test.go`): the start recorded with
-  `to_pool` only, the outcome with `from_pool`, a failure outcome, the gate
-  following the policy, a nil logger giving no auditor;
+  `to_pool`, `allow_unencrypted_destination` and `encryption_dropped`, the
+  outcome with `from_pool`, a failure outcome, the gate following the
+  policy, a nil logger giving no auditor; the drop record
+  `volume_pool.move_encryption_drop` before the start
+  (`TestVolumeMoveAudit_EncryptionDropRecord`) and fail-closed under a
+  fail-open policy (`TestVolumeMoveAudit_EncryptionDropFailsClosedUnderFailOpen`);
 - `pkg/seal`: `VolumeLifecycle` ordering, proven with a fake `Lockable` --
   unlock after unseal and before a later-registered `OnUnsealed` observer
   (standing in for `BarrierRegistry`'s tenant restore); lock before the root

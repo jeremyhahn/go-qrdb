@@ -36,9 +36,26 @@ move then runs node by node in the background (see
 [architecture.md](architecture.md#moving-a-tenant-between-pools)). A tenant
 has at most one move. `GetMove` answers the move until it ends, then
 `NOT_FOUND`. `CancelMove` aborts a move that has not reached its cut over and
-answers the move in state `aborting`; once cut over it is refused. A move from
-an encrypted pool to an unencrypted one is refused outright (the owner's
-ruling on Q9); no flag allows it.
+answers the move in state `aborting`; once cut over it is refused.
+
+**Dropping encryption (Q9, ruling 1234).** A move from an encrypted
+(`Lockable`) pool to an unencrypted one is refused unless the request carries
+the operator's explicit flag:
+
+| Transport | Request field |
+|---|---|
+| gRPC, Unix | `VolumePoolMoveTenantRequest.allow_unencrypted_destination = true` |
+| QUIC | `allow_unencrypted_destination` in the `volumepool.MoveTenant` request |
+| REST | optional JSON body `{"allowUnencryptedDestination": true}` |
+| MCP | argument `allow_unencrypted_destination: true` |
+| Go SDK | `transport.VolumePoolMoveTenantRequest.AllowUnencryptedDestination` |
+| TypeScript SDK | `moveTenant(tenant, toPool, { allowUnencryptedDestination: true })` |
+
+A move admitted under the flag that drops encryption answers with
+`"encryptionDropped": true` (proto `encryption_dropped`). The drop is audited
+fail-closed (`volume_pool.move_encryption_drop`) before the move is admitted,
+and a server with no audit sink refuses it. Every `volume_pool.move_start`
+record carries `allow_unencrypted_destination` and `encryption_dropped`.
 
 ## Volume pool fields on the tenant surface
 
@@ -100,6 +117,7 @@ health.
   "reservedBytes": 214748364800, "nodesRetired": [],
   "sourceReservedBytes": 214748364800, "tenantRecorded": false,
   "admittedAt": "<RFC 3339 time>", "updatedAt": "<RFC 3339 time>" }
+// "encryptionDropped": true is present only on a move that drops encryption
 ```
 
 No response carries a node mount or device. The per-node rows report state and
@@ -121,7 +139,7 @@ paginated, because a cluster has a handful of pools.
 | Tenant not entitled to the pool | 403 | `PERMISSION_DENIED` | `StatusPermissionDenied` | `PERMISSION_DENIED` |
 | No move journalled for the tenant (get-move, cancel-move) | 404 | `NOT_FOUND` | `StatusNotFound` | `NOT_FOUND` |
 | Move conflict: a move already journalled, a tenant that is not `volume` or `raft`, or a cancel past the cut over | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` | `FAILED_PRECONDITION` |
-| Move from an encrypted pool to an unencrypted one | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` | `FAILED_PRECONDITION` |
+| Move from an encrypted pool to an unencrypted one without `allow_unencrypted_destination`, or under it with no audit sink | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` | `FAILED_PRECONDITION` |
 | The move journal changed under every compare-and-swap | 409 | `ABORTED` | `StatusAborted` | `ABORTED` |
 | Reservation conflict after bounded retries | 409 | `ABORTED` | `StatusAborted` | `ABORTED` |
 | Pool unavailable on the answering node (includes a `Lockable` volume that failed to unlock, or a pool this node skipped at boot under `--allow-degraded-volume-boot`) | 503 | `UNAVAILABLE` | `StatusUnavailable` | `UNAVAILABLE` |

@@ -84,7 +84,13 @@ nothing is created. Raise the pool's capacity or choose another pool.
   `qrdb volume-pool get-move acme` (it answers not found once the move has
   ended), and stop it before its cut over with
   `qrdb volume-pool cancel-move acme`. A move from an encrypted pool to an
-  unencrypted one is always refused. An auto-unseal tenant is unsealed again
+  unencrypted one drops the tenant's at-rest encryption below its own
+  barrier, so it runs only when you ask for it with
+  `--allow-unencrypted-destination` (for example to leave an encrypted pool
+  you are retiring). The drop is always audited
+  (`volume_pool.move_encryption_drop`) before the move starts, and the move
+  is refused when that record cannot be written or the server has no audit
+  sink; the move then shows `Encryption: dropped`. An auto-unseal tenant is unsealed again
   when the move reopens it; a self-managed tenant comes back sealed after a
   move, as after a restart, until its admin unseals it. A `raft` tenant's move
   across a three-node cluster is covered end to end, with a replica restart
@@ -150,7 +156,7 @@ without the flag to go back to the stricter default.
 | `create` refused with "permission denied … volume_pool" | the tenant is not entitled to the pool | add the pool to its entitlements |
 | `volume-pool delete` refused | tenants are still assigned | move or delete them first |
 | `move-tenant` refused with "permission denied … volume_pool" | the tenant is not entitled to the destination pool | add the pool to its entitlements |
-| `move-tenant` refused with "failed precondition" | a move is already journalled for the tenant, the tenant is not `volume` or `raft`, or the move goes from an encrypted pool to an unencrypted one | wait for or cancel the running move; an encrypted to unencrypted move is never allowed |
+| `move-tenant` refused with "failed precondition" | a move is already journalled for the tenant, the tenant is not `volume` or `raft`, or the move goes from an encrypted pool to an unencrypted one without `--allow-unencrypted-destination` (or with it, on a server with no audit sink) | wait for or cancel the running move; for an encrypted to unencrypted move, add `--allow-unencrypted-destination` if dropping encryption is intended, on a server with an audit sink |
 | `get-move` or `cancel-move` answers not found | no move is journalled: none was started, or it has ended | check the tenant's pool with `tenant get` |
 | `cancel-move` refused with "cannot cancel" | the move is past its cut over | let it finish |
 | move stays `aborting` after `cancel-move` | the destination could not be read back; the source is kept | fix the destination pool's storage; the abort step retries |
