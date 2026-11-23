@@ -62,6 +62,20 @@ func newRotationService(t *testing.T, opts ...Option) *CredentialService {
 	return svc
 }
 
+// TestRotationStatus_RefusesEmptyName pins that reading a rotation policy
+// refuses an empty or blank name with ErrEmptyCredentialName, the same
+// invalid-argument error every other credential verb returns, instead of
+// reading back a disabled policy for a name that cannot exist.
+func TestRotationStatus_RefusesEmptyName(t *testing.T) {
+	svc := newRotationService(t)
+	for _, name := range []string{"", "   "} {
+		_, _, err := svc.RotationStatus(t.Context(), name)
+		if !errors.Is(err, ErrEmptyCredentialName) {
+			t.Fatalf("RotationStatus(%q) error = %v, want ErrEmptyCredentialName", name, err)
+		}
+	}
+}
+
 // countingSource is a RotationValueSource that hands out a fresh value per
 // call and counts the calls.
 func countingSource(calls *atomic.Int32) RotationValueSource {
