@@ -40,6 +40,16 @@ system barrier, so a sealed node serves none of them.
 The CLI verbs for these operations are `qrdb seal-store put|get|list|delete|reseal|status`,
 documented in [cli.md](cli.md#qrdb-seal-store).
 
+A secret name is one opaque segment: it may not be empty, `.` or `..`, or
+contain `/`, `\` or a control character. The server refuses such a name with
+`seal.ErrInvalidSecretName` (REST answers 400), and the SDK refuses it before
+the wire with `transport.ErrSealStoreInvalidName`. REST and MCP send or return
+a secret only over https and refuse a redirect to `http://` or another host
+(`transport.BarrierSecretRequiresTLSError`). Reseal replaces the record in one
+write, and Put, Delete and Reseal are serialized, so a failed reseal leaves the
+old record. `enable-encryption` re-encrypts every seal-store record under the
+new root key and leaves no plaintext copy.
+
 A node served without a seal store answers every seal store call
 `Unimplemented` (the service is not configured): its REST server mounts no
 `/v1/seal-store` routes and its MCP server lists no `qrdb_seal_store_*` tools.

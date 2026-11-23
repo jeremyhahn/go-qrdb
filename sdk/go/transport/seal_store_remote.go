@@ -17,6 +17,7 @@ package transport
 import (
 	"context"
 	"errors"
+	"unicode"
 )
 
 // SealStoreEndpoints is the wire surface a remote SealStoreClient needs: one
@@ -45,6 +46,12 @@ var ErrSealStoreNilRequest = errors.New("transport: seal store request is nil")
 // The name is checked client-side so an empty key never reaches the wire.
 var ErrSealStoreEmptyName = errors.New("transport: seal store secret name is empty")
 
+// ErrSealStoreInvalidName is returned for a seal-store request whose name is
+// not one opaque segment: "." or "..", or a name holding '/', '\\' or a
+// control character. It is the client-side twin of the server's
+// seal.ErrInvalidSecretName, checked so such a name never reaches the wire.
+var ErrSealStoreInvalidName = errors.New(`transport: seal store secret name must not be "." or "..", and must not contain '/', '\' or control characters`)
+
 // remoteSealStoreClient answers SealStoreClient through SealStoreEndpoints.
 type remoteSealStoreClient struct {
 	endpoints SealStoreEndpoints
@@ -59,6 +66,14 @@ func NewRemoteSealStoreClient(e SealStoreEndpoints) SealStoreClient {
 func sealStoreName(name string) error {
 	if name == "" {
 		return ErrSealStoreEmptyName
+	}
+	if name == "." || name == ".." {
+		return ErrSealStoreInvalidName
+	}
+	for _, r := range name {
+		if r == '/' || r == '\\' || unicode.IsControl(r) {
+			return ErrSealStoreInvalidName
+		}
 	}
 	return nil
 }

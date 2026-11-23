@@ -147,3 +147,46 @@ func TestRemoteSealStoreClient_RefusesNilAndEmptyBeforeTheWire(t *testing.T) {
 		t.Fatalf("wire called %d times for refused requests", f.calls)
 	}
 }
+
+func TestRemoteSealStoreClient_RefusesInvalidNamesBeforeTheWire(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeSealStoreEndpoints()
+	c := NewRemoteSealStoreClient(f)
+
+	for _, name := range []string{"alpha/reseal", "a\\b", ".", "..", "a\x00b", "a\nb"} {
+		calls := map[string]error{
+			"Put":    c.SealStorePut(ctx, &SealStorePutRequest{Name: name, Secret: []byte("v")}),
+			"Delete": c.SealStoreDelete(ctx, &SealStoreDeleteRequest{Name: name}),
+			"Reseal": c.SealStoreReseal(ctx, &SealStoreResealRequest{Name: name}),
+		}
+		_, calls["Get"] = c.SealStoreGet(ctx, &SealStoreGetRequest{Name: name})
+		for op, err := range calls {
+			if !errors.Is(err, ErrSealStoreInvalidName) {
+				t.Errorf("%s(%q) = %v, want ErrSealStoreInvalidName", op, name, err)
+			}
+		}
+	}
+	if f.calls != 0 {
+		t.Fatalf("wire called %d times for refused names", f.calls)
+	}
+}
+
+func TestRemoteSealStoreClient_AcceptsOpaqueNames(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeSealStoreEndpoints()
+	c := NewRemoteSealStoreClient(f)
+
+	for _, name := range []string{"alpha", "alpha.reseal", "a-b_c", "..a", "ключ"} {
+		before := f.calls
+		if err := c.SealStorePut(ctx, &SealStorePutRequest{Name: name, Secret: []byte("v-" + name)}); err != nil {
+			t.Fatalf("Put(%q): %v", name, err)
+		}
+		got, err := c.SealStoreGet(ctx, &SealStoreGetRequest{Name: name})
+		if err != nil || got.Name != name || string(got.Secret) != "v-"+name {
+			t.Fatalf("Get(%q) = %#v, %v", name, got, err)
+		}
+		if f.calls-before != 2 {
+			t.Fatalf("%q: wire called %d times, want 2", name, f.calls-before)
+		}
+	}
+}
