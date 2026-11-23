@@ -66,6 +66,17 @@ func TestClassify_StrictTenantDedicatedWALRequired(t *testing.T) {
 	}
 }
 
+func TestClassify_StrictTenantSharedStore(t *testing.T) {
+	for _, err := range []error{
+		&service.StrictTenantSharedStoreError{TenantID: "acme", Database: ""},
+		fmt.Errorf("resolve: %w", &service.StrictTenantSharedStoreError{TenantID: "acme", Database: "default"}),
+	} {
+		if got := Classify(err); got != FailedPrecondition {
+			t.Errorf("Classify(%v) = %v, want FailedPrecondition", err, got)
+		}
+	}
+}
+
 // TestClassify_BarrierLogRefusals pins that a verifiable-log call refused for
 // a barrier tenant or a barrier database is Unimplemented on every transport:
 // the log registry sits under the system barrier, so the deployment does not

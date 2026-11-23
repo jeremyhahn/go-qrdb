@@ -556,6 +556,9 @@ var databaseRules = []rule{
 	// G1) is refused by the tenant's isolation policy, not by the request's
 	// shape: the same request succeeds for an operator-access tenant.
 	as(&database.StrictTenantDedicatedWALRequiredError{}, FailedPrecondition),
+	// A strict tenant's request that resolves to the shared node-keyed
+	// store is refused by the same policy (G1).
+	as(&service.StrictTenantSharedStoreError{}, FailedPrecondition),
 	as(&database.InvalidConcurrencyError{}, InvalidArgument),
 	// A database configuration that fails validation is the caller's error,
 	// not the server's: each of these used to reach REST as a 500.

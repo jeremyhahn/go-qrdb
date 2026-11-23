@@ -184,6 +184,10 @@ func (systemRouteStore) PutIfAbsent(context.Context, string, []byte) (bool, erro
 	return false, errors.New("systemRouteStore: route already recorded")
 }
 
+func (systemRouteStore) CompareAndDelete(context.Context, string, []byte) (bool, error) {
+	return false, nil
+}
+
 // unusedHomeGroups is a home-group source no test path reaches: a recorded
 // system route never resolves the tenant's home group.
 type unusedHomeGroups struct {

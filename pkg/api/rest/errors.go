@@ -473,6 +473,11 @@ type BarrierSealedError = service.BarrierSealedError
 // Maps to HTTP 503. Alias of service.IsolationBackendUnavailableError.
 type IsolationBackendUnavailableError = service.IsolationBackendUnavailableError
 
+// StrictTenantSharedStoreError is returned when a strict tenant resolves a
+// database served from the shared node-keyed store. Maps to HTTP 409. Alias
+// of service.StrictTenantSharedStoreError.
+type StrictTenantSharedStoreError = service.StrictTenantSharedStoreError
+
 // ValidationError is returned when a required field is absent or invalid in
 // the request payload. Maps to HTTP 400.
 type ValidationError struct {

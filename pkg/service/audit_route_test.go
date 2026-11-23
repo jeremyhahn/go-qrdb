@@ -33,6 +33,16 @@ import (
 type memRouteStore struct {
 	mu   sync.Mutex
 	data map[string][]byte
+	// beforePutIfAbsent, when set, pauses the next PutIfAbsent: it signals
+	// reached, then waits for release.
+	beforePutIfAbsent *putPause
+}
+
+// putPause is a channel pair that holds a writer immediately before its
+// route claim.
+type putPause struct {
+	reached chan struct{}
+	release chan struct{}
 }
 
 func newMemRouteStore() *memRouteStore { return &memRouteStore{data: map[string][]byte{}} }
@@ -43,7 +53,25 @@ func (s *memRouteStore) Get(_ context.Context, key string) ([]byte, error) {
 	return s.data[key], nil
 }
 
+func (s *memRouteStore) CompareAndDelete(_ context.Context, key string, value []byte) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if got, ok := s.data[key]; !ok || string(got) != string(value) {
+		return false, nil
+	}
+	delete(s.data, key)
+	return true, nil
+}
+
 func (s *memRouteStore) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	s.mu.Lock()
+	pause := s.beforePutIfAbsent
+	s.beforePutIfAbsent = nil
+	s.mu.Unlock()
+	if pause != nil {
+		close(pause.reached)
+		<-pause.release
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.data[key]; ok {
@@ -261,5 +289,84 @@ func TestAuditRoute_AuditInstanceOnTheSystemShardIsNotReadFromTheHome(t *testing
 	}
 	if host, _, err := logs.ResolveAuditShard(context.Background(), "widgets"); err != nil || host != homes.host {
 		t.Fatalf("ResolveAuditShard(widgets) = %v, %v; want the home group", host, err)
+	}
+}
+
+// TestAuditRoute_TighteningBeforeSystemClaimDoesNotStrandTheTenant: with the
+// audit instance inactive a writer derives the system route, passes the
+// strict check and pauses before its claim; a tightening commits strict
+// while it is paused. The landed claim is checked again and, carrying no
+// chain, released, so once the audit instance activates the tenant's next
+// append records the home route and succeeds.
+func TestAuditRoute_TighteningBeforeSystemClaimDoesNotStrandTheTenant(t *testing.T) {
+	ctx := context.Background()
+	on := mixedCapability()
+	system := newChainShard(0, on)
+	homes, homeCmds := homeShard()
+	lookup := barrierTenantLookup("", "")
+	r := NewSystemShardAuditResolver(system.host, 1, lookup)
+	routes := newMemRouteStore()
+	pause := &putPause{reached: make(chan struct{}), release: make(chan struct{})}
+	routes.beforePutIfAbsent = pause
+	r.SetHomeGroupSource(homes, routes)
+	logger := NewReplicatedLogger(r)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- logger.Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"})
+	}()
+	<-pause.reached
+	// The tightening commits strict while the writer is paused.
+	lookup.tenants["widgets"].IsolationPolicy = tenant.TenantIsolationPolicyStrict
+	close(pause.release)
+	err := <-done
+
+	var sa *tenant.SystemAuditRouteError
+	if !errors.As(err, &sa) || sa.TenantID != "widgets" {
+		t.Fatalf("Emit = %v, want *tenant.SystemAuditRouteError for widgets", err)
+	}
+	if got := routes.route("widgets"); got != "" {
+		t.Fatalf("recorded route = %q, want no system route left recorded", got)
+	}
+	if len(*system.cmds) != 0 {
+		t.Fatalf("system proposals = %d, want none", len(*system.cmds))
+	}
+
+	on[featuregate.VerifiableLogAudit] = true
+	if err := logger.Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"}); err != nil {
+		t.Fatalf("Emit after activation: %v", err)
+	}
+	if got := routes.route("widgets"); got != AuditRouteHome {
+		t.Fatalf("recorded route = %q, want %q", got, AuditRouteHome)
+	}
+	if len(*system.cmds) != 0 || len(*homeCmds) != 1 {
+		t.Fatalf("proposals: system %d, home %d; want the event in the home group", len(*system.cmds), len(*homeCmds))
+	}
+}
+
+// TestAuditRoute_SystemRouteWithChainIsKept: a strict tenant's recorded
+// system route with a chain already on the system shard is refused but kept
+// (S9): its history stays where it is.
+func TestAuditRoute_SystemRouteWithChainIsKept(t *testing.T) {
+	ctx := context.Background()
+	system := newChainShard(3, auditActive())
+	homes, homeCmds := homeShard()
+	r := NewSystemShardAuditResolver(system.host, 1, barrierTenantLookup(tenant.TenantIsolationPolicyStrict, ""))
+	routes := newMemRouteStore()
+	if _, err := routes.PutIfAbsent(ctx, AuditRouteKey("widgets"), []byte(AuditRouteSystem)); err != nil {
+		t.Fatalf("PutIfAbsent: %v", err)
+	}
+	r.SetHomeGroupSource(homes, routes)
+
+	err := NewReplicatedLogger(r).Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"})
+	var sa *tenant.SystemAuditRouteError
+	if !errors.As(err, &sa) || sa.TenantID != "widgets" {
+		t.Fatalf("Emit = %v, want *tenant.SystemAuditRouteError for widgets", err)
+	}
+	if got := routes.route("widgets"); got != AuditRouteSystem {
+		t.Fatalf("recorded route = %q, want the chained %q kept", got, AuditRouteSystem)
+	}
+	if len(*system.cmds) != 0 || len(*homeCmds) != 0 {
+		t.Fatalf("proposals: system %d, home %d; want none", len(*system.cmds), len(*homeCmds))
 	}
 }

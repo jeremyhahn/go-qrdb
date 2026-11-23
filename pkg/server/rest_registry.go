@@ -402,10 +402,44 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// the named database is used when present (e.g. the default database);
 	// otherwise any database that exists for the tenant resolves to a
 	// namespaced view of the default service set.
+	//
+	// That shared set's WAL is under the node key, so a strict tenant is
+	// refused here, its implicit default database ("" or the default name)
+	// included: only a database with its own dedicated WAL, resolved above,
+	// serves its data (G1).
+	if err := r.refuseStrictSharedStore(tenantID, db, isolation, info); err != nil {
+		return nil, err
+	}
 	if r.dbReg.GetOrDefault(db) == nil && !r.databaseExists(tenantID, db) {
 		return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
 	}
 	return r.resolveShared(tenantID, db, info, managed)
+}
+
+// refuseStrictSharedStore refuses (*rest.StrictTenantSharedStoreError) a
+// request by a tenant whose effective isolation policy is strict -- its own
+// policy, or the cluster floor it inherits -- that would be served from the
+// shared node-keyed store. A prefix tenant shares the store by design and the
+// system tenant is the node's own, so neither is refused. A floor that cannot
+// be read fails closed.
+func (r *restServiceRegistry) refuseStrictSharedStore(tenantID, db string, isolation tenant.IsolationType, info *tenant.TenantInfo) error {
+	if info == nil || isolation == tenant.IsolationPrefix || tenantID == r.systemTenant {
+		return nil
+	}
+	var floor tenant.ClusterIsolationPolicy
+	if reader, ok := r.tenantSvc.(tenant.ClusterIsolationPolicyReader); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		read, err := reader.ClusterIsolationPolicy(ctx)
+		cancel()
+		if err != nil {
+			return err
+		}
+		floor = read
+	}
+	if tenant.EffectiveIsolationPolicy(floor, info.IsolationPolicy) != tenant.ClusterIsolationPolicyStrict {
+		return nil
+	}
+	return &rest.StrictTenantSharedStoreError{TenantID: tenantID, Database: db}
 }
 
 // resolveShared returns (tenant, db)'s composite-namespaced, quota-wrapped

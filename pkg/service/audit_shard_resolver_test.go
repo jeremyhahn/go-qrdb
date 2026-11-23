@@ -376,8 +376,10 @@ func TestSystemShardAuditResolver_StrictAppendLosingToARecordedSystemRouteIsRefu
 	if !errors.As(err, &sa) || sa.TenantID != "widgets" {
 		t.Fatalf("Emit = %v, want *tenant.SystemAuditRouteError for widgets", err)
 	}
-	if got := routes.route("widgets"); got != AuditRouteSystem {
-		t.Fatalf("recorded route = %q, want the other writer's %q", got, AuditRouteSystem)
+	// The other writer's system route carries no chain, so the refusal
+	// releases it: the tenant is never stranded on it.
+	if got := routes.route("widgets"); got != "" {
+		t.Fatalf("recorded route = %q, want the unchained system route released", got)
 	}
 	if len(*system.cmds) != 0 || len(*homeCmds) != 0 {
 		t.Fatalf("proposals: system %d, home %d; want none", len(*system.cmds), len(*homeCmds))

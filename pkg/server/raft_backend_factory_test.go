@@ -440,6 +440,11 @@ type fakeRaftTenantSvc struct {
 	info *tenant.TenantInfo
 }
 
+// ClusterIsolationPolicy reads no floor: the tenant's own policy decides.
+func (f *fakeRaftTenantSvc) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
+	return tenant.ClusterIsolationPolicyUnset, nil
+}
+
 func (f *fakeRaftTenantSvc) GetTenant(_ context.Context, id string) (*tenant.TenantInfo, error) {
 	if f.info != nil && f.info.ID == id {
 		return f.info, nil

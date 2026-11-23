@@ -90,6 +90,10 @@ type SystemShardAuditResolver struct {
 type AuditRouteStore interface {
 	Get(ctx context.Context, key string) ([]byte, error)
 	PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error)
+	// CompareAndDelete removes key only while it still holds value and
+	// reports whether it did. It releases a recorded system route that
+	// carries no chain once a tightening refuses it.
+	CompareAndDelete(ctx context.Context, key string, value []byte) (bool, error)
 }
 
 // The recorded audit routes of a barrier tenant.
@@ -265,9 +269,10 @@ func (r *SystemShardAuditResolver) resolve(ctx context.Context, tenantID string,
 // node key. The strict check runs on the route that won the record, so an
 // append that loses the first-writer-wins race to another writer's system
 // route is checked too, and it is fenced against an in-flight tightening by
-// the tightening's marker (refuseStrictSystemAppend). auditRoute runs the
-// same check before it records a fresh system route, so a strict tenant
-// never records one; reads stay allowed.
+// the tightening's marker (refuseStrictSystemAppend). A refused system route
+// that carries no chain is released (releaseUnchainedSystemRoute), so the
+// tenant's next append derives its route afresh and is never stranded on a
+// route it can no longer append to; reads stay allowed.
 func (r *SystemShardAuditResolver) barrierRoute(ctx context.Context, homes *auditHomeGroupSource, tenantID string, write bool) (Host, uint64, error) {
 	route, err := r.auditRoute(ctx, homes, tenantID, write)
 	if err != nil {
@@ -286,7 +291,7 @@ func (r *SystemShardAuditResolver) barrierRoute(ctx context.Context, homes *audi
 		// route is the recorded winner: this writer's own, or another
 		// writer's that won the first-writer-wins record.
 		if err := r.refuseStrictSystemAppend(ctx, tenantID); err != nil {
-			return nil, 0, err
+			return nil, 0, r.releaseUnchainedSystemRoute(ctx, homes, tenantID, err)
 		}
 	}
 	return r.host, r.shardID, nil
@@ -299,8 +304,11 @@ func (r *SystemShardAuditResolver) barrierRoute(ctx context.Context, homes *audi
 // runs: the tightening writes its marker and then probes SystemAuditRoute,
 // and this reads the marker and then the tenant afresh. Either the
 // tightening sees the recorded system route and refuses, or this sees the
-// marker or the committed strict policy and refuses. A read that fails is
-// returned: the append fails closed.
+// marker or the committed strict policy and refuses. auditRoute runs it
+// again after its system claim lands, so a claim recorded after the
+// tightening's probe is always seen; a refused claim with no chain behind it
+// is released (releaseUnchainedSystemRoute). A read that fails is returned:
+// the append fails closed.
 func (r *SystemShardAuditResolver) refuseStrictSystemAppend(ctx context.Context, tenantID string) error {
 	refused := &tenant.SystemAuditRouteError{TenantID: tenantID}
 	if reader, ok := r.isolation.(tenant.IsolationTighteningReader); ok {
@@ -328,8 +336,38 @@ func (r *SystemShardAuditResolver) refuseStrictSystemAppend(ctx context.Context,
 	return nil
 }
 
+// releaseUnchainedSystemRoute handles refused, the strict refusal of an
+// append to tenantID's recorded system route. When the system shard holds no
+// chain for the tenant the route carries nothing, so it is released: the
+// recorded "system" is compare-and-deleted and the cached entry dropped, and
+// the next append derives its route again (home once the audit instance is
+// active). A chain already on the system shard keeps its route (S9). It
+// returns refused, or the error of a read or release that failed.
+func (r *SystemShardAuditResolver) releaseUnchainedSystemRoute(ctx context.Context, homes *auditHomeGroupSource, tenantID string, refused error) error {
+	var routeErr *tenant.SystemAuditRouteError
+	if !errors.As(refused, &routeErr) {
+		return refused
+	}
+	hasChain, err := r.hasSystemChain(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if hasChain {
+		return refused
+	}
+	if _, err := homes.routes.CompareAndDelete(ctx, AuditRouteKey(tenantID), []byte(AuditRouteSystem)); err != nil {
+		return err
+	}
+	homes.recorded.Delete(tenantID)
+	return refused
+}
+
 // auditRoute returns tenantID's recorded route or, when none is recorded,
-// derives one; a write records the derived route, first writer wins.
+// derives one; a write records the derived route, first writer wins. A
+// fresh system route is checked by refuseStrictSystemAppend before the claim
+// and again after a won claim lands, so a tightening that committed between
+// the two cannot leave a strict tenant recorded on the system route: the
+// post-claim refusal releases it (releaseUnchainedSystemRoute).
 func (r *SystemShardAuditResolver) auditRoute(ctx context.Context, homes *auditHomeGroupSource, tenantID string, write bool) (string, error) {
 	if cached, ok := homes.recorded.Load(tenantID); ok {
 		if route, ok := cached.(string); ok {
@@ -360,7 +398,8 @@ func (r *SystemShardAuditResolver) auditRoute(ctx context.Context, homes *auditH
 	if !write {
 		return route, nil
 	}
-	if route == AuditRouteSystem && !r.refuseBarrier {
+	checkSystem := route == AuditRouteSystem && !r.refuseBarrier
+	if checkSystem {
 		// A strict tenant never records a fresh system route. A loss to
 		// another writer's recorded system route is checked by barrierRoute.
 		if err := r.refuseStrictSystemAppend(ctx, tenantID); err != nil {
@@ -376,13 +415,17 @@ func (r *SystemShardAuditResolver) auditRoute(ctx context.Context, homes *auditH
 			return "", err
 		}
 		route = string(recorded)
+	} else if checkSystem {
+		// The claim landed: check it again, so a tightening that committed
+		// while this writer paused before the claim is seen.
+		if err := r.refuseStrictSystemAppend(ctx, tenantID); err != nil {
+			return "", r.releaseUnchainedSystemRoute(ctx, homes, tenantID, err)
+		}
 	}
 	homes.recorded.Store(tenantID, route)
 	return route, nil
 }
 
-// hasSystemChain reports whether tenantID's replicated audit chain already
-// has records on the system shard.
 // strictPolicy reports whether info's effective isolation policy is strict:
 // its own policy, or the cluster floor when the isolation lookup reads one
 // (tenant.ClusterIsolationPolicyReader).
@@ -435,6 +478,8 @@ func (r *SystemShardAuditResolver) SystemAuditRoute(ctx context.Context, tenantI
 
 var _ tenant.AuditRouteProbe = (*SystemShardAuditResolver)(nil)
 
+// hasSystemChain reports whether tenantID's replicated audit chain already
+// has records on the system shard.
 func (r *SystemShardAuditResolver) hasSystemChain(ctx context.Context, tenantID string) (bool, error) {
 	result, err := r.host.SyncRead(ctx, r.shardID, audit.VerifyRequest{TenantID: tenantID})
 	if err != nil {
