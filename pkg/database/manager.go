@@ -409,9 +409,12 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// The new database's incarnation: the value its writes will be guarded
 	// by. With no reclaimer there is no store to mark it in, and the
 	// database is live while its marker is absent (an empty incarnation);
-	// a provisioned database shares the empty incarnation on purpose.
+	// a provisioned database shares the empty incarnation on purpose. An
+	// object-storage database always gets one, reclaimer or not: its
+	// namespace's owner marker names it, so a dropped incarnation's release
+	// can never reclaim a successor of the same name (releaseDatabaseNamespace).
 	incarnation := ""
-	if m.reclaimer != nil && !shared {
+	if (m.reclaimer != nil || cfg.Backend == BackendObjstore) && !shared {
 		var err error
 		if incarnation, err = NewIncarnation(); err != nil {
 			return nil, err
@@ -471,7 +474,8 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	}
 	undo.catalog, undo.incarnation = cat, incarnation
 
-	// Open storage backend via factory.
+	// Open storage backend via factory, as the new incarnation.
+	cfg.Incarnation = incarnation
 	backend, err := m.factory.Create(cfg, dataDir)
 	if err != nil {
 		return nil, undo.run(ctx, err)
@@ -644,6 +648,7 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 		Connection:   meta.Connection,
 		SQL:          meta.SQL,
 		Objstore:     meta.Objstore,
+		Incarnation:  meta.Incarnation,
 	}
 	if meta.Barrier != nil && meta.Barrier.Enabled && !cfg.HasDedicatedStore() {
 		return nil, &SharedStoreBarrierUnsupportedError{Name: name, Backend: cfg.Backend}
@@ -931,6 +936,14 @@ func (m *Manager) releaseDatabaseNamespace(key dbKey, cfg DatabaseConfig) error 
 	}
 	backend, err := m.factory.Create(cfg, m.dbDir(key.tenant, cfg.Name))
 	if err != nil {
+		// The namespace is owned by another incarnation -- a successor of
+		// the same tenant and name, created once this incarnation's owner
+		// marker was gone. Nothing in it is this incarnation's: the release
+		// is done and reclaims nothing.
+		var owned namespaceOwnedByAnother
+		if errors.As(err, &owned) && owned.NamespaceOwnedByAnother() {
+			return nil
+		}
 		return err
 	}
 	var releaseErr error
@@ -938,6 +951,12 @@ func (m *Manager) releaseDatabaseNamespace(key dbKey, cfg DatabaseConfig) error 
 		releaseErr = r.ReleaseOwner()
 	}
 	return errors.Join(releaseErr, backend.Close())
+}
+
+// namespaceOwnedByAnother is an open refused because the provider namespace
+// is owned by another owner (objstore.NamespaceOwnedError).
+type namespaceOwnedByAnother interface {
+	NamespaceOwnedByAnother() bool
 }
 
 func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {

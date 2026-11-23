@@ -714,6 +714,11 @@ func (e *NamespaceInUseError) Error() string {
 		", refused for " + strconv.Quote(e.Want)
 }
 
+// NamespaceOwnedByAnother marks the refusal for a caller that cannot import
+// this package (NamespaceOwnedError.NamespaceOwnedByAnother): another owner
+// holds the namespace.
+func (e *NamespaceInUseError) NamespaceOwnedByAnother() bool { return e.Held != e.Want }
+
 // openNamespaces records, for each namespace identity (namespaceKey) open
 // in this process, its owner and how many engines hold it. Equal roots and
 // equal bucket settings meet here: a second open is shared only by the same
@@ -1254,15 +1259,15 @@ func (e *Engine) Close() error {
 
 // Reclaim implements storage.Reclaimer: it deletes every object the engine
 // writes -- each key (the "k/" and "h/" names), a pending commit journal, and
-// the layout and owner markers last -- so no object outlives the database
-// that owned it. Any other name under the root is left in place: on a walked
+// the layout marker last -- so no data object outlives the database that
+// owned it. Any other name under the root is left in place: on a walked
 // provider the listing also reaches objects the engine did not write, such
-// as a nested namespace's, and those are not this engine's to delete. While
-// any such foreign object remains, the owner marker is kept: it is the
-// durable, owner-verified record of the reclamation, which lets the same
-// owner reopen the namespace (ensureFormatMarkerFor) and finish a drop that
-// stopped after reclamation, and keeps every other opener out. With nothing
-// foreign left the owner marker goes too and the path is reusable. It
+// as a nested namespace's, and those are not this engine's to delete. The
+// owner marker is always kept: it is the durable, owner-verified record of
+// the reclamation, which lets the same owner reopen the namespace
+// (ensureFormatMarkerFor) and finish a drop that stopped after reclamation,
+// and keeps every other opener out until ReleaseOwner gives the namespace
+// back. It
 // runs with every write excluded; the engine stays open and empty, refuses
 // every write from the moment it starts (so none lands between the
 // reclamation and Close), and the caller closes it. A failure leaves the

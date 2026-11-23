@@ -101,7 +101,8 @@ func WithCredentialFiles(files CredentialFiles) Option {
 // first open records owner in the namespace, outside every key, and every
 // later open with a different owner is refused with *NamespaceOwnedError, so
 // two databases configured onto one bucket or path cannot read, overwrite or
-// reclaim each other's objects. Reclaim removes the record last. An empty
+// reclaim each other's objects. Reclaim keeps the record; ReleaseOwner (or
+// ReleaseClaim, for an open whose create failed) removes it. An empty
 // owner records and checks nothing.
 func WithOwner(owner string) Option {
 	return func(o *options) { o.owner = owner }

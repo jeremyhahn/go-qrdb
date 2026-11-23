@@ -93,6 +93,11 @@ func (e *NamespaceOwnedError) Error() string {
 		", not " + strconv.Quote(e.Want)
 }
 
+// NamespaceOwnedByAnother marks the refusal for a caller that cannot import
+// this package: the namespace is held by another owner, so an open as the
+// wanted owner reaches none of its objects.
+func (e *NamespaceOwnedError) NamespaceOwnedByAnother() bool { return true }
+
 type FormatMarkerMissingError struct {
 	// Provider is the go-objstore provider whose store was refused.
 	Provider string

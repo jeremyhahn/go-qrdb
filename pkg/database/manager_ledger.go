@@ -182,9 +182,11 @@ type releaseEntry struct {
 	file string
 }
 
-// config is the DatabaseConfig the entry's namespace reopens under.
+// config is the DatabaseConfig the entry's namespace reopens under: as the
+// dropped incarnation, so a namespace a successor owns is refused, not
+// reclaimed (releaseDatabaseNamespace).
 func (e releaseEntry) config() DatabaseConfig {
-	return DatabaseConfig{TenantID: e.TenantID, Name: e.Name, Backend: e.Backend, Objstore: e.Objstore}
+	return DatabaseConfig{TenantID: e.TenantID, Name: e.Name, Backend: e.Backend, Objstore: e.Objstore, Incarnation: e.Incarnation}
 }
 
 // recordRelease durably records that cfg's namespace awaits its release.
@@ -271,8 +273,7 @@ func (m *Manager) releaseEntryPath(tenantID, name, file string) string {
 // release. An incarnation is NewIncarnation's lowercase hex, a single safe
 // path element, and names its entry (a retried drop of the same incarnation
 // rewrites it); any other value is named by its hex SHA-256. A database
-// without one -- a provisioned database, or one created where no reclaimer
-// is set -- shares the empty incarnation with every re-creation of its name,
+// without one -- a provisioned database -- shares the empty incarnation with every re-creation of its name,
 // so each of its drops gets a fresh token instead, prefixed "-" so it can
 // never equal an incarnation's name.
 func releaseEntryFile(incarnation string) (string, error) {
@@ -298,8 +299,8 @@ func releaseEntryFile(incarnation string) (string, error) {
 // the next retry and is logged. An entry whose name a drop is still working
 // on here, or whose catalog record still carries the drop's fence, is left
 // to that drop. An entry whose name has a live record again was re-created:
-// when that database holds the entry's namespace (the owner is the tenant
-// and name) the entry is forgotten; when it provably holds another one
+// when that database holds the entry's namespace the entry is forgotten (a
+// release would be refused anyway: the owner names the incarnation); when it provably holds another one
 // (ObjectStorageNamespacer) the old namespace is released; when that cannot
 // be told the entry is kept and logged. Each entry is handled under its name's claim,
 // so no create or open of the name runs meanwhile.

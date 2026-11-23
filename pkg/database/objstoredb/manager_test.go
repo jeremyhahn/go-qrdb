@@ -447,7 +447,166 @@ func (s releaseFaultStore) Delete(name string) error {
 	if name == "qrdb-objstore-owner" && releaseFaultArmed.CompareAndSwap(true, false) {
 		return errReleaseFault
 	}
+	if name == "qrdb-objstore-owner" && releaseLostArmed.CompareAndSwap(true, false) {
+		// The delete lands but its answer is lost: the caller is told
+		// it failed although the marker is gone.
+		if err := s.Storage.Delete(name); err != nil {
+			return err
+		}
+		return errReleaseFault
+	}
 	return s.Storage.Delete(name)
+}
+
+// releaseLostArmed makes the owner marker's next delete land and then
+// report errReleaseFault (releaseFaultStore.Delete).
+var releaseLostArmed atomic.Bool
+
+// afterDeleteCatalog runs after once, the first time a catalog delete
+// succeeds: a drop paused between its catalog delete and its namespace
+// release.
+type afterDeleteCatalog struct {
+	database.Catalog
+	after func()
+}
+
+func (c *afterDeleteCatalog) Delete(ctx context.Context, tenantID, name, incarnation, dropClaim string) error {
+	if err := c.Catalog.Delete(ctx, tenantID, name, incarnation, dropClaim); err != nil {
+		return err
+	}
+	if after := c.after; after != nil {
+		c.after = nil
+		after()
+	}
+	return nil
+}
+
+// releaseLedgerFiles lists the release entries dataDir's Manager holds.
+func releaseLedgerFiles(t *testing.T, dataDir string) []string {
+	t.Helper()
+	dir := filepath.Join(dataDir, "releasing")
+	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return objects(t, dir)
+}
+
+// hasOwnerMarker reports whether root holds an owner marker.
+func hasOwnerMarker(t *testing.T, root string) bool {
+	t.Helper()
+	return slices.ContainsFunc(objects(t, root), func(p string) bool {
+		return strings.Contains(p, "qrdb-objstore-owner")
+	})
+}
+
+// TestManager_ReleaseSparesSuccessorIncarnation: the owner a namespace
+// records names the database incarnation, so a database of the same tenant
+// and name created by another Manager while an old drop's release is pending
+// is refused, and once it holds the namespace the old incarnation's release
+// reclaims nothing of it.
+func TestManager_ReleaseSparesSuccessorIncarnation(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	root := filepath.Join(base, "objects")
+	otherRoot := filepath.Join(base, "other")
+	dataA, dataB := t.TempDir(), t.TempDir()
+	t.Cleanup(func() { releaseLostArmed.Store(false) })
+	mgrA := newManager(t, dataA)
+	if _, err := mgrA.Create(releaseFaultObjstore(t, "blobs", root)); err != nil {
+		t.Fatalf("Create on A: %v", err)
+	}
+	mgrB := newManager(t, dataB)
+	var hookErr error
+	hooked := false
+	mgrA.SetCatalog(&afterDeleteCatalog{Catalog: databasetest.Catalog(dataA), after: func() {
+		hooked = true
+		_, hookErr = mgrB.Create(releaseFaultObjstore(t, "blobs", root))
+	}})
+	releaseLostArmed.Store(true)
+	if err := mgrA.Drop(ctx, "blobs"); err != nil {
+		t.Fatalf("Drop on A: %v", err)
+	}
+	var owned *objstore.NamespaceOwnedError
+	if !hooked || !errors.As(hookErr, &owned) {
+		t.Fatalf("successor create during the pending release = %v (ran %v), want *NamespaceOwnedError", hookErr, hooked)
+	}
+	if releaseLostArmed.Load() {
+		t.Fatal("the drop never deleted the owner marker")
+	}
+	if len(releaseLedgerFiles(t, dataA)) == 0 {
+		t.Fatal("the drop whose release reported a failure kept no ledger entry")
+	}
+
+	successor, err := mgrB.Create(releaseFaultObjstore(t, "blobs", root))
+	if err != nil {
+		t.Fatalf("successor Create after the release: %v", err)
+	}
+	if err := successor.Backend().Put(ctx, []byte("key"), []byte("w")); err != nil {
+		t.Fatalf("successor Put: %v", err)
+	}
+	// A's next object-storage create retries the recorded release of the
+	// dropped incarnation.
+	if _, err := mgrA.Create(localObjstore("other", otherRoot)); err != nil {
+		t.Fatalf("Create on A: %v", err)
+	}
+	got, err := successor.Backend().Get(ctx, []byte("key"))
+	if err != nil || string(got) != "w" {
+		t.Fatalf("successor Get(key) after the old release = %q, %v; want \"w\"", got, err)
+	}
+	if !hasOwnerMarker(t, root) {
+		t.Fatal("the old incarnation's release removed the successor's owner marker")
+	}
+	if left := releaseLedgerFiles(t, dataA); len(left) != 0 {
+		t.Fatalf("the release of a namespace another incarnation owns was not forgotten: %v", left)
+	}
+}
+
+// TestManager_ReleaseRetrySparesSuccessorIncarnation: a release retried from
+// the ledger opens the namespace as the dropped incarnation, so a successor
+// of the same tenant and name on the same namespace keeps its objects and
+// owner marker, and the entry is forgotten.
+func TestManager_ReleaseRetrySparesSuccessorIncarnation(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	root := filepath.Join(base, "objects")
+	dataA, dataB := t.TempDir(), t.TempDir()
+	t.Cleanup(func() { releaseLostArmed.Store(false) })
+	mgrA := newManager(t, dataA)
+	if _, err := mgrA.Create(releaseFaultObjstore(t, "blobs", root)); err != nil {
+		t.Fatalf("Create on A: %v", err)
+	}
+	releaseLostArmed.Store(true)
+	if err := mgrA.Drop(ctx, "blobs"); err != nil {
+		t.Fatalf("Drop on A: %v", err)
+	}
+	if len(releaseLedgerFiles(t, dataA)) == 0 {
+		t.Fatal("the drop whose release reported a failure kept no ledger entry")
+	}
+	mgrB := newManager(t, dataB)
+	successor, err := mgrB.Create(releaseFaultObjstore(t, "blobs", root))
+	if err != nil {
+		t.Fatalf("successor Create: %v", err)
+	}
+	if err := successor.Backend().Put(ctx, []byte("key"), []byte("w")); err != nil {
+		t.Fatalf("successor Put: %v", err)
+	}
+	if err := mgrA.Close(); err != nil {
+		t.Fatalf("Close A: %v", err)
+	}
+	next := newManager(t, dataA)
+	if err := next.OpenAll(ctx); err != nil {
+		t.Fatalf("OpenAll: %v", err)
+	}
+	got, err := successor.Backend().Get(ctx, []byte("key"))
+	if err != nil || string(got) != "w" {
+		t.Fatalf("successor Get(key) after the retried release = %q, %v; want \"w\"", got, err)
+	}
+	if !hasOwnerMarker(t, root) {
+		t.Fatal("the retried release removed the successor's owner marker")
+	}
+	if left := releaseLedgerFiles(t, dataA); len(left) != 0 {
+		t.Fatalf("the retried release of a namespace another incarnation owns was not forgotten: %v", left)
+	}
 }
 
 func releaseFaultObjstore(t *testing.T, name, root string) database.DatabaseConfig {
@@ -649,9 +808,39 @@ func TestManager_RecreatedNameOnAnotherNamespaceReleasesTheOld(t *testing.T) {
 // retry never releases a namespace the re-created database holds: the entry
 // is forgotten and the owner marker stays.
 func TestManager_RecreatedNameOnTheSameNamespaceKeepsIt(t *testing.T) {
+	ctx := context.Background()
 	rootA := filepath.Join(t.TempDir(), "a")
 	dataDir := t.TempDir()
-	dropThenRecreate(t, dataDir, rootA, rootA)
+	mgr := newManager(t, dataDir)
+	t.Cleanup(func() { releaseFaultArmed.Store(false) })
+	if _, err := mgr.Create(releaseFaultObjstore(t, "blobs", rootA)); err != nil {
+		t.Fatalf("Create on rootA: %v", err)
+	}
+	releaseFaultArmed.Store(true)
+	if err := mgr.Drop(ctx, "blobs"); err != nil {
+		t.Fatalf("Drop: %v", err)
+	}
+	// The dropped incarnation still owns the namespace while its release
+	// fails: a re-create of the name, a new incarnation, is refused rather
+	// than taking over what the release will reclaim.
+	releaseFaultArmed.Store(true)
+	var ownedNow *objstore.NamespaceOwnedError
+	if _, err := mgr.Create(releaseFaultObjstore(t, "blobs", rootA)); !errors.As(err, &ownedNow) {
+		t.Fatalf("re-Create while the release fails = %v, want *NamespaceOwnedError", err)
+	}
+	if releaseFaultArmed.Load() {
+		t.Fatal("the re-create did not retry the recorded release")
+	}
+	db, err := mgr.Create(releaseFaultObjstore(t, "blobs", rootA))
+	if err != nil {
+		t.Fatalf("re-Create after the retried release: %v", err)
+	}
+	if err := db.Backend().Put(ctx, []byte("key"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	next := reopenAndGetBlobs(t, dataDir)
 	var owned *objstore.NamespaceOwnedError
@@ -659,23 +848,7 @@ func TestManager_RecreatedNameOnTheSameNamespaceKeepsIt(t *testing.T) {
 	if _, err := next.Create(releaseFaultObjstore(t, "other", rootA)); !errors.As(err, &owned) && !errors.As(err, &inUse) {
 		t.Fatalf("Create on the live namespace = %v, want an objstore owner refusal", err)
 	}
-	var left []string
-	err := filepath.WalkDir(filepath.Join(dataDir, "releasing"), func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		if !d.IsDir() {
-			left = append(left, path)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk the release ledger: %v", err)
-	}
-	if len(left) != 0 {
+	if left := releaseLedgerFiles(t, dataDir); len(left) != 0 {
 		t.Fatalf("release ledger still holds %v, want no entry", left)
 	}
 }

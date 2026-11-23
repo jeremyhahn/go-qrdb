@@ -57,9 +57,13 @@ func Open(cfg database.DatabaseConfig) (storage.Storage, error) {
 }
 
 // namespaceOwner is the owner a database records in its provider namespace:
-// its tenant and name, which identify it on the node.
+// its tenant, its name and its incarnation (DatabaseConfig.Incarnation). The
+// incarnation makes it one database's and no successor's: a database of the
+// same tenant and name created after a drop is refused the namespace while
+// the dropped one still holds it, and the dropped one's release, retried
+// later, is refused a namespace the successor owns and reclaims none of it.
 func namespaceOwner(cfg database.DatabaseConfig) string {
-	return "database:" + strconv.Quote(cfg.TenantID) + "/" + strconv.Quote(cfg.Name)
+	return "database:" + strconv.Quote(cfg.TenantID) + "/" + strconv.Quote(cfg.Name) + "#" + strconv.Quote(cfg.Incarnation)
 }
 
 // NewBackendFactory returns the embedded backend factory with object storage

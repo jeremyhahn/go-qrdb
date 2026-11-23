@@ -529,6 +529,14 @@ type DatabaseConfig struct {
 	// go-objstore provider, its settings and the credential handle. It is
 	// ignored for every other backend.
 	Objstore *DatabaseObjstoreConfig `yaml:"objstore,omitempty" json:"objstore,omitempty"`
+
+	// Incarnation is the database incarnation (Database.Incarnation) an
+	// object-storage backend opens its provider namespace as: the owner
+	// marker names it, so a release by a dropped incarnation never reclaims
+	// a successor of the same tenant and name. The Manager sets it before
+	// every open from the catalog record, the new incarnation or the release
+	// ledger entry; it is never configured or persisted.
+	Incarnation string `yaml:"-" json:"-"`
 }
 
 // DatabaseObjstoreConfig is a per-database objstore backend. Settings carry
