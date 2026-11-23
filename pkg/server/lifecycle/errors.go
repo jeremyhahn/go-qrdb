@@ -454,3 +454,14 @@ type CertProviderConflictError struct{}
 func (e *CertProviderConflictError) Error() string {
 	return "lifecycle: CertProvider and CertKeyProviderFactory are mutually exclusive: the key factory configures only the built-in certificate provider"
 }
+
+// ObjstoreBarrierSealedError reports an objstore LSM store (object-storage-lsm)
+// opened while the at-rest barrier is sealed. Its SSTables are sealed by the
+// barrier, so the open fails closed before any store is opened or file
+// created, rather than reading ciphertext it cannot decrypt.
+type ObjstoreBarrierSealedError struct{}
+
+// Error returns a human-readable description of the refusal.
+func (e *ObjstoreBarrierSealedError) Error() string {
+	return "lifecycle: the storage barrier is sealed; an objstore LSM store cannot open until it is unsealed (object-storage-lsm, fails closed)"
+}

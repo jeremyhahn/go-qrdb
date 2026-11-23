@@ -24,7 +24,7 @@ import (
 
 // docker_build_tags_test.go closes go-qrdb#555: the standalone integration
 // stage's qrdbd and qrdb binaries were baked from a literal, narrower tag
-// list in .devcontainer/Dockerfile ('codec_json raft qrdb_ts qrdb_vector' for
+// list in build/docker/devcontainer/Dockerfile ('codec_json raft qrdb_ts qrdb_vector' for
 // qrdbd, 'qrdb_ts qrdb_vector' for qrdb) that nothing kept in step with the
 // Makefile's BUILD_TAGS. Fourteen standalone tests failed on "unknown flag"
 // for --sql-concurrency, --etcd, --mysql, --postgresql and update-raft
@@ -40,14 +40,15 @@ import (
 // gate exists to hold in step, the same role check-tool-versions.sh plays
 // for the scanner-version ARGs right above it in the same file.
 
-// dockerfilePath is .devcontainer/Dockerfile, relative to the repo root.
+// dockerfilePath is build/docker/devcontainer/Dockerfile (its dev-integration
+// stage bakes the binaries), relative to the repo root.
 func dockerfilePath(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(repoRoot(t), ".devcontainer", "Dockerfile")
+	return filepath.Join(repoRoot(t), "build", "docker", "devcontainer", "Dockerfile")
 }
 
 // qrdbBuildTagsArgDefault reads `ARG QRDB_BUILD_TAGS="..."`'s default value
-// out of .devcontainer/Dockerfile. A lookup that finds nothing is a FAILURE,
+// out of build/docker/devcontainer/Dockerfile. A lookup that finds nothing is a FAILURE,
 // not a vacuous pass: the pattern depends on a file path and a spelling that
 // a future edit could move, and a gate that silently compares two empty
 // strings would stop testing anything while still reporting green.
@@ -69,7 +70,7 @@ func qrdbBuildTagsArgDefault(t *testing.T) string {
 }
 
 // qrdbBuildTagsGoBuildCount counts how many `go build` invocations in
-// .devcontainer/Dockerfile pass `-tags "${QRDB_BUILD_TAGS}"`. The gate
+// build/docker/devcontainer/Dockerfile (dev-integration stage) pass `-tags "${QRDB_BUILD_TAGS}"`. The gate
 // requires at least 2 (qrdbd and qrdb): a literal tag list reintroduced on
 // either `go build` line -- the exact regression #555 fixed -- would leave
 // this below the floor.
@@ -84,7 +85,7 @@ func qrdbBuildTagsGoBuildCount(t *testing.T) int {
 }
 
 // TestDockerBuildTags_ArgDefaultMatchesMakefile asserts
-// .devcontainer/Dockerfile's QRDB_BUILD_TAGS ARG default is exactly the set
+// build/docker/devcontainer/Dockerfile's QRDB_BUILD_TAGS ARG default is exactly the set
 // `make -s print-build-tags` prints -- byte for byte, not just as a set:
 // the two are maintained by hand in two files, and a byte-for-byte match is
 // what lets a reviewer diff them on sight rather than having to evaluate
@@ -93,7 +94,7 @@ func TestDockerBuildTags_ArgDefaultMatchesMakefile(t *testing.T) {
 	want := strings.Join(fullBuildTags(t), " ")
 	got := qrdbBuildTagsArgDefault(t)
 	if got != want {
-		t.Fatalf("`ARG QRDB_BUILD_TAGS` default in .devcontainer/Dockerfile is %q, but "+
+		t.Fatalf("`ARG QRDB_BUILD_TAGS` default in build/docker/devcontainer/Dockerfile is %q, but "+
 			"`make -s print-build-tags` prints %q. These must agree: `make integration-image` "+
 			"overrides the ARG with the Makefile's own value, but a bare `docker compose build` or "+
 			"VS Code \"Reopen in Container\" (#302) falls back to the Dockerfile's default alone, so a "+
@@ -102,7 +103,7 @@ func TestDockerBuildTags_ArgDefaultMatchesMakefile(t *testing.T) {
 }
 
 // TestDockerBuildTags_BothBinariesShareTheArg asserts both `go build`
-// invocations in the integration stage use `-tags "${QRDB_BUILD_TAGS}"`
+// invocations in the dev-integration stage use `-tags "${QRDB_BUILD_TAGS}"`
 // rather than a literal list -- the qrdbd daemon and the qrdb CLI must
 // compile the same feature set, or the CLI offers a flag the server it
 // drives never compiled a handler for (or refuses one the server supports).
