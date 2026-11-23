@@ -222,6 +222,34 @@ func testCredentialTenantStoresOverProtocol(t *testing.T, node *multiProtoNode, 
 		t.Fatalf("[%s] globex's %s changed with acme's rotation: %q", proto.name, shared, got)
 	}
 
+	// A rotation policy set in acme governs acme's credential only: globex's
+	// credential of the same name keeps no policy, and globex can set no
+	// policy on a name only acme holds.
+	run(acme, "credential", "rotation-policy", "set", shared, "--enabled", "--interval", "24h", "--retain-versions", "2")
+	policyOf := func(conn []string) credentialRotationPolicyStatusCLIJSON {
+		t.Helper()
+		out := run(conn, "--output", "json", "credential", "rotation-policy", "get", shared)
+		var policy credentialRotationPolicyStatusCLIJSON
+		if err := json.Unmarshal([]byte(out), &policy); err != nil {
+			t.Fatalf("[%s] decode rotation-policy JSON: %v\noutput: %s", proto.name, err, out)
+		}
+		return policy
+	}
+	if got := policyOf(acme); !got.Enabled || got.RetainVersions != 2 || got.NextRotation == "" {
+		t.Fatalf("[%s] acme's policy on %s = %+v, want enabled retain_versions=2 with a next rotation", proto.name, shared, got)
+	}
+	if got := policyOf(globex); got.Enabled || got.NextRotation != "" {
+		t.Fatalf("[%s] acme's policy reached globex's %s: %+v", proto.name, shared, got)
+	}
+	if out, err := runQRDB(t, node.cli, globex, "credential", "rotation-policy", "set", acmeOnly,
+		"--enabled", "--interval", "1h", "--retain-versions", "1"); err == nil {
+		t.Fatalf("[%s] globex must not set a policy on acme's %s, got: %s", proto.name, acmeOnly, out)
+	}
+	if out, err := runQRDB(t, node.cli, globex, "credential", "rotation-policy", "get", acmeOnly); err == nil {
+		t.Fatalf("[%s] globex must not read acme's policy on %s, got: %s", proto.name, acmeOnly, out)
+	}
+	run(acme, "credential", "rotation-policy", "set", shared, "--interval", "24h", "--retain-versions", "2")
+
 	// globex deleting the shared name leaves acme's in place.
 	run(globex, "credential", "delete", shared)
 	if got := run(acme, "credential", "retrieve", shared); got != "acme-value-2" {
@@ -918,5 +946,69 @@ func testCredentialRotationPolicyOverProtocol(t *testing.T, barrier, manual *mul
 	out, err := runCLIProto(t, barrier, proto, "credential", "retrieve", name)
 	if err != nil || strings.TrimSpace(out) != "policy-value-1" {
 		t.Fatalf("[%s] a policy change must not rotate the value: %q, %v", proto.name, out, err)
+	}
+}
+
+// TestCredential_CLI_MigrationConflicts_PerProtocol drives `credential
+// migration-conflicts list|resolve` over every protocol against a node that
+// adopted no node-local credential copies: the list is empty in every
+// output form, and a resolve is refused with the typed error and a non-zero
+// exit, whether the name has no conflict or the resolution is unknown.
+func TestCredential_CLI_MigrationConflicts_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			testCredentialMigrationConflictsOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testCredentialMigrationConflictsOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	name := fmt.Sprintf("cmc-%s-%d", proto.name, time.Now().UnixNano())
+	if out, err := runCLIProto(t, node, proto, "credential", "store", name, "--value", "conflict-free"); err != nil {
+		t.Fatalf("[%s] credential store: %v\noutput: %s", proto.name, err, out)
+	}
+
+	// (a) no conflicts: an empty JSON array, and no table rows.
+	out, err := runCLIProto(t, node, proto, "--output", "json", "credential", "migration-conflicts", "list")
+	if err != nil {
+		t.Fatalf("[%s] migration-conflicts list: %v\noutput: %s", proto.name, err, out)
+	}
+	var listed map[string]json.RawMessage
+	if jerr := json.Unmarshal([]byte(out), &listed); jerr != nil {
+		t.Fatalf("[%s] decode migration-conflicts JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	var conflicts []map[string]any
+	if raw, ok := listed["conflicts"]; !ok || json.Unmarshal(raw, &conflicts) != nil || conflicts == nil || len(conflicts) != 0 {
+		t.Fatalf("[%s] migration-conflicts list = %s, want an empty conflicts array", proto.name, out)
+	}
+	table, err := runCLIProto(t, node, proto, "credential", "migration-conflicts", "list")
+	if err != nil || strings.TrimSpace(table) != "" {
+		t.Fatalf("[%s] migration-conflicts list (table) = %q, %v; want no rows", proto.name, table, err)
+	}
+
+	// (b) resolving a name with no conflict, or with an unknown
+	// resolution, is refused with the typed error.
+	refused := func(want string, args ...string) {
+		t.Helper()
+		out, err := runCLIProto(t, node, proto, append([]string{"credential", "migration-conflicts", "resolve"}, args...)...)
+		if err == nil {
+			t.Fatalf("[%s] migration-conflicts resolve %v must be refused, got: %s", proto.name, args, out)
+		}
+		if !strings.Contains(out+err.Error(), want) {
+			t.Fatalf("[%s] migration-conflicts resolve %v refusal = %v\noutput: %s\nwant %q", proto.name, args, err, out, want)
+		}
+	}
+	refused("migration conflict not found", name, "--resolution", "import")
+	refused("migration conflict not found", "cmc-absent-"+proto.name, "--resolution", "discard")
+	refused("migration resolution must be import or discard", name, "--resolution", "merge")
+	refused(`required flag(s) "resolution" not set`, name)
+
+	// The refusals changed nothing.
+	if got, err := runCLIProto(t, node, proto, "credential", "retrieve", name); err != nil || strings.TrimSpace(got) != "conflict-free" {
+		t.Fatalf("[%s] a refused resolve changed %s: %q, %v", proto.name, name, got, err)
 	}
 }
