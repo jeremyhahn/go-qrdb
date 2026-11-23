@@ -121,6 +121,65 @@ func TestFeatureGateRefused_RestartReleaseGapIsTerminal(t *testing.T) {
 	assert.False(t, featureGateRefused(context.DeadlineExceeded))
 }
 
+// closingLeader is a leader whose host can be closed, as the quarantine of a
+// refused node does.
+type closingLeader struct {
+	leader
+	closed atomic.Int32
+}
+
+func (l *closingLeader) Close() error {
+	l.closed.Add(1)
+	return nil
+}
+
+// assertQuarantined checks that a node refused by the release check is off
+// the data plane: no advertisement, the Raft host closed, every gated call
+// refused, and the refusal kept.
+func assertQuarantined(t *testing.T, n *Node, l *closingLeader, target any) {
+	t.Helper()
+	assert.Nil(t, n.featureAdv.Load(), "a refused node keeps no feature advertisement")
+	assert.Nil(t, n.memberAdv.Load(), "a refused node keeps no member record")
+	assert.Equal(t, int32(1), l.closed.Load(), "the refused node's Raft host must be closed")
+	require.ErrorAs(t, n.Refusal(), target, "the node keeps the refusal")
+	probe := n.refusalProbe(nil)
+	assert.True(t, probe.IsSealed(), "every data-plane call must be refused")
+	sealed, unconfirmed := probe.SealState()
+	assert.True(t, sealed)
+	assert.False(t, unconfirmed)
+	n.bgCancel()
+	require.NoError(t, n.stopFeatureGate())
+	require.NoError(t, n.stopMemberRecord())
+	require.NoError(t, n.stopFeatureGate(), "stopping again after the quarantine must stay safe")
+}
+
+func TestNode_RestartReleaseGapQuarantinesTheNode(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	kv := &releaseHistoryKV{keys: map[string]bool{featuregate.ReleasePrefix + "1/0.58.0-alpha": true}}
+	n := gatedNode(t, kv, embedded.WithLeaseService(noLeases{}))
+	require.NoError(t, n.Refusal(), "a node not yet checked is not refused")
+	assert.False(t, n.refusalProbe(nil).IsSealed())
+	l := &closingLeader{}
+	l.known.Store(true)
+
+	n.startFeatureGate(l, kv)
+	n.featureWG.Wait()
+	var gap *release.GapError
+	assertQuarantined(t, n, l, &gap)
+}
+
+func TestNode_UnsupportedFeatureQuarantinesTheNode(t *testing.T) {
+	kv := &activationKV{keys: []string{featuregate.ActivationPrefix + "future-opcode"}}
+	n := gatedNode(t, kv)
+	l := &closingLeader{}
+	l.known.Store(true)
+
+	n.startFeatureGate(l, kv)
+	n.featureWG.Wait()
+	var unsupported *featuregate.UnsupportedFeatureError
+	assertQuarantined(t, n, l, &unsupported)
+}
+
 // releaseHistoryKV is a store holding the release history whose state
 // machine has no leases (the embedded transport is built without one).
 type releaseHistoryKV struct {

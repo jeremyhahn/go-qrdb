@@ -1521,7 +1521,10 @@ type Node struct {
 	// no barrier or no cluster.
 	shardPauser *server.ShardPauser
 	featureAdv  atomic.Pointer[cluster.Advertiser]
-	featureWG   sync.WaitGroup
+	// refusal is the terminal release refusal that quarantined this node
+	// (see Node.quarantine); nil while the node may serve.
+	refusal   atomic.Pointer[nodeRefusal]
+	featureWG sync.WaitGroup
 
 	// memberAdv publishes this node's member record once startMemberRecord
 	// has brought it up; memberWG tracks that goroutine so Close can wait it
@@ -4269,7 +4272,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		if n.clusterSeal != nil {
 			cs = n.clusterSeal
 		}
-		embeddedOpts = append(embeddedOpts, embedded.WithSealProbe(server.NodeSealProbe(barrier, cs)))
+		embeddedOpts = append(embeddedOpts, embedded.WithSealProbe(n.refusalProbe(server.NodeSealProbe(barrier, cs))))
 	}
 	// The gate refuses a watch as it opens; a watch opened before a seal is
 	// a stream the seal must end, as it ends a network listener's.

@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/release"
@@ -92,7 +93,9 @@ func (n *Node) startFeatureGate(host leaderReporter, activations featuregate.Act
 					return
 				}
 				if featureGateRefused(err) {
-					n.featureLogger().Error("feature gate: this binary cannot run in this cluster", slog.Any("error", err))
+					n.featureLogger().Error("feature gate: this binary cannot run in this cluster; "+
+						"quarantining the node", slog.Any("error", err))
+					n.quarantine(host, err)
 					return
 				}
 			}
@@ -102,6 +105,69 @@ func (n *Node) startFeatureGate(host leaderReporter, activations featuregate.Act
 			}
 		}
 	}()
+}
+
+// nodeRefusal boxes the terminal release refusal kept by Node.quarantine.
+type nodeRefusal struct{ err error }
+
+// hostCloser is the part of the Raft host the quarantine closes.
+type hostCloser interface{ Close() error }
+
+// quarantine takes a node the release check refused off the cluster, the
+// embedded equivalent of the daemon exiting on the same refusal (SPEC
+// rolling upgrades clause (3)): it keeps the refusal, withdraws the member
+// record and the feature advertisement, and closes the Raft host so the node
+// no longer votes, replicates or serves. The node's seal probe
+// (refusalProbe) then refuses every data-plane call. Node.Close stays safe
+// afterwards: Host.Close is idempotent and the advertisers are swapped out.
+func (n *Node) quarantine(host leaderReporter, err error) {
+	n.refusal.Store(&nodeRefusal{err: err})
+	if adv := n.memberAdv.Swap(nil); adv != nil {
+		_ = adv.Close()
+	}
+	if adv := n.featureAdv.Swap(nil); adv != nil {
+		_ = adv.Close()
+	}
+	if c, ok := host.(hostCloser); ok {
+		if cerr := c.Close(); cerr != nil {
+			n.featureLogger().Error("feature gate: closing the refused node's Raft host", slog.Any("error", cerr))
+		}
+	}
+}
+
+// Refusal returns the release refusal that quarantined this node, or nil.
+// While it is non-nil the node takes no part in Raft and serves nothing.
+func (n *Node) Refusal() error {
+	if r := n.refusal.Load(); r != nil {
+		return r.err
+	}
+	return nil
+}
+
+// refusalProbe wraps the node's seal probe so a quarantined node reports
+// itself sealed and the embedded transport refuses every data-plane call.
+func (n *Node) refusalProbe(inner embedded.SealProbe) quarantineProbe {
+	return quarantineProbe{n: n, inner: inner}
+}
+
+// quarantineProbe is the seal probe returned by Node.refusalProbe.
+type quarantineProbe struct {
+	n     *Node
+	inner embedded.SealProbe
+}
+
+// SealState implements sealedwindow.StateProbe.
+func (p quarantineProbe) SealState() (sealed, unconfirmed bool) {
+	if p.n.Refusal() != nil {
+		return true, false
+	}
+	return sealedwindow.Sample(p.inner)
+}
+
+// IsSealed implements embedded.SealProbe.
+func (p quarantineProbe) IsSealed() bool {
+	sealed, _ := p.SealState()
+	return sealed
 }
 
 // featureLogger is the node's logger, or the default one.
