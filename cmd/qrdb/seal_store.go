@@ -49,7 +49,9 @@ func newSealStoreCmd() *cobra.Command {
 		Short: "Node seal store of named secrets (put, get, list, delete, reseal, status)",
 		Long: "Operate the node's seal store of named secrets. The caller must hold\n" +
 			"seal:store_manage, a system-tenant Security Officer grant. The store is\n" +
-			"node-local: a network route reaches the store of the node it connects to.",
+			"node-local and embedded-only (--transport embedded, desktop/GUI build);\n" +
+			"every network transport refuses the verbs with an embedded-only error\n" +
+			"(ruling 1234). Seal and unseal stay on every transport: qrdb barrier seal|unseal.",
 	}
 	cmd.AddCommand(
 		newSealStorePutCmd(),

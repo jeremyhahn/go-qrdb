@@ -32,6 +32,7 @@ import (
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
+	grpctransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/grpc"
 )
 
 // newCLITestSealStore returns a real seal store over an initialized,
@@ -64,6 +65,17 @@ func newCLITestSealStore(t *testing.T) *seal.SealStore {
 // wired to store, with stdin as the command's input.
 func executeSealStoreCmd(t *testing.T, store *seal.SealStore, stdin string, args ...string) (string, error) {
 	t.Helper()
+	tr, err := embedded.New(newMockKVService(), newMockAdminService(), embedded.WithSealStore(store))
+	if err != nil {
+		t.Fatalf("embedded.New: %v", err)
+	}
+	return executeSealStoreCmdOn(t, tr, true, stdin, args...)
+}
+
+// executeSealStoreCmdOn runs the CLI against tr; connect=false leaves a
+// network transport unconnected, which proves its refusal needs no I/O.
+func executeSealStoreCmdOn(t *testing.T, tr transport.Transport, connect bool, stdin string, args ...string) (string, error) {
+	t.Helper()
 	var buf bytes.Buffer
 	oldWriter, oldFormat := outputWriter, outputFormat
 	t.Cleanup(func() { outputWriter, outputFormat = oldWriter, oldFormat })
@@ -79,16 +91,14 @@ func executeSealStoreCmd(t *testing.T, store *seal.SealStore, stdin string, args
 			return err
 		}
 		outputFormat = format
-		tr, err := embedded.New(newMockKVService(), newMockAdminService(), embedded.WithSealStore(store))
-		if err != nil {
-			return err
-		}
 		c, err := sdk.NewClient(tr)
 		if err != nil {
 			return err
 		}
-		if err := c.Connect(cmd.Context()); err != nil {
-			return err
+		if connect {
+			if err := c.Connect(cmd.Context()); err != nil {
+				return err
+			}
 		}
 		client = c
 		return nil
@@ -179,5 +189,38 @@ func TestSealStoreCmd_Refusals(t *testing.T) {
 
 	if _, err := executeSealStoreCmd(t, store, "", "seal-store", "get", "unknown"); err == nil {
 		t.Fatal("get of an unknown name succeeded")
+	}
+}
+
+// TestSealStoreCmd_NetworkTransportEmbeddedOnly: over a network transport
+// every seal-store verb fails with the embedded-only refusal naming the
+// verb (ruling 1234), so the command exits non-zero.
+func TestSealStoreCmd_NetworkTransportEmbeddedOnly(t *testing.T) {
+	cases := []struct {
+		op    string
+		stdin string
+		args  []string
+	}{
+		{transport.OpSealStorePut, "secret", []string{"seal-store", "put", "alpha"}},
+		{transport.OpSealStoreGet, "", []string{"seal-store", "get", "alpha"}},
+		{transport.OpSealStoreList, "", []string{"seal-store", "list"}},
+		{transport.OpSealStoreDelete, "", []string{"seal-store", "delete", "alpha"}},
+		{transport.OpSealStoreReseal, "", []string{"seal-store", "reseal", "alpha"}},
+		{transport.OpSealStoreStatus, "", []string{"seal-store", "status"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.op, func(t *testing.T) {
+			_, err := executeSealStoreCmdOn(t, &grpctransport.Transport{}, false, tc.stdin, tc.args...)
+			if !errors.Is(err, transport.ErrEmbeddedOnly) {
+				t.Fatalf("%v: err = %v, want transport.ErrEmbeddedOnly", tc.args, err)
+			}
+			var eo *transport.EmbeddedOnlyError
+			if !errors.As(err, &eo) || eo.Operation != tc.op {
+				t.Fatalf("%v: err = %v, want *EmbeddedOnlyError for %s", tc.args, err, tc.op)
+			}
+			if !strings.Contains(err.Error(), tc.op) || !strings.Contains(err.Error(), "embedded-only") {
+				t.Fatalf("%v: message %q does not name %s as embedded-only", tc.args, err, tc.op)
+			}
+		})
 	}
 }

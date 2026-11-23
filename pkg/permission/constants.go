@@ -597,10 +597,9 @@ const (
 
 	// SealStoreManage grants access to the generic secret store a seal
 	// strategy keeps for its own state (SealStore{Put,Get,Delete,List,
-	// Reseal,Status}). The surface is served on every transport -- embedded,
-	// gRPC, unix, REST /v1/seal-store/..., QUIC and the MCP
-	// qrdb_seal_store_* tools -- and each of those routes is gated by this
-	// permission.
+	// Reseal,Status}). It gates the embedded surface only: the verbs are
+	// embedded-only (ruling 1234, transport.EmbeddedOnlyOperations) and every
+	// remote transport refuses them before authorization.
 	// It is platform state, like every other node-barrier permission:
 	// ScopeCross (node_barrier_scope.go), so only a system-tenant identity
 	// exercises it, and a tenant-scoped identity is refused regardless of

@@ -53,7 +53,9 @@ const (
 	// #nosec G101 -- structured-refusal reason code, not a credential.
 	ReasonSealStoreInvalidSecretName = "SEAL_STORE_INVALID_SECRET_NAME"
 	// ReasonSealStoreBarrierSealed names seal.ErrSealStoreBarrierSealed: the
-	// seal store's barrier is sealed while the listener serves.
+	// seal store's barrier is sealed. The seal store itself is embedded-only;
+	// these reasons stay for the other RPCs (e.g. the seal-store PIN
+	// backend) that can surface the seal-store sentinels.
 	ReasonSealStoreBarrierSealed = "SEAL_STORE_BARRIER_SEALED"
 )
 

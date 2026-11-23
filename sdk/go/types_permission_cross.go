@@ -186,8 +186,8 @@ const (
 	PermissionSealOfficerRevoke = permission.SealOfficerRevoke
 
 	// PermissionSealStoreManage ("seal:store_manage") manages the generic
-	// secret store a seal strategy keeps for its own state (served on every
-	// transport).
+	// secret store a seal strategy keeps for its own state (embedded-only;
+	// every remote transport refuses the verbs, ruling 1234).
 	PermissionSealStoreManage = permission.SealStoreManage
 )
 
