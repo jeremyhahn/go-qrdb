@@ -858,6 +858,7 @@ func volumeMoveClusterSettlingNode(t *testing.T, node *multiProtoNode, proto mul
 	}) {
 		return idx
 	}
+	dumpClusterStacks(t, append([]*multiProtoNode{node}, node.clusterPeers...)...)
 	t.Fatalf("[%s] move of %s neither settled nor ended within %s; last get-move (err=%v): %s", proto.name, tenantID, volumeMoveDeadline, err, out)
 	return -1
 }
@@ -909,6 +910,7 @@ func volumeMoveClusterResumedNode(t *testing.T, node *multiProtoNode, proto mult
 	}) {
 		return idx
 	}
+	dumpClusterStacks(t, append([]*multiProtoNode{node}, node.clusterPeers...)...)
 	t.Fatalf("[%s] move of %s reached no resumed replica within %s; last get-move (err=%v): %s", proto.name, tenantID, volumeMoveDeadline, err, out)
 	return -1
 }
@@ -1049,7 +1051,10 @@ func volumeMoveClusterStartMove(t *testing.T, node *multiProtoNode, proto multiP
 }
 
 // volumeMoveClusterWaitGone polls get-move until the tenant has no move,
-// within volumeMoveDeadline.
+// within volumeMoveDeadline. A move that does not end first dumps the
+// goroutines of node and its clusterPeers (dumpClusterStacks), so a stalled
+// step leaves every node's stacks in its log; the failure then names the
+// last get-move JSON (state, stepNode, nodesCopied).
 func volumeMoveClusterWaitGone(t *testing.T, node *multiProtoNode, proto multiProtocol, tenantID string) {
 	t.Helper()
 	var out string
@@ -1060,6 +1065,7 @@ func volumeMoveClusterWaitGone(t *testing.T, node *multiProtoNode, proto multiPr
 	}) {
 		return
 	}
+	dumpClusterStacks(t, append([]*multiProtoNode{node}, node.clusterPeers...)...)
 	t.Fatalf("[%s] move of %s did not end within %s; last get-move (err=%v): %s", proto.name, tenantID, volumeMoveDeadline, err, out)
 }
 
