@@ -56,10 +56,32 @@ func directFormatImport(path string) bool {
 		(strings.HasSuffix(path, "/bson") || strings.Contains(path, "/bson/"))
 }
 
-// formatImportsByFile maps each non-test Go file under pkg, cmd, sdk/go and
-// test (repository-relative, slash-separated) to the format libraries it
-// imports directly. Files that import none are absent.
-func formatImportsByFile(t *testing.T) map[string][]string {
+// goCodecTestGapSites are the only _test.go files that may import a
+// serialization library directly. Each walks yaml.Node trees (or exercises
+// the msgpack hooks of a goCodecGapSites file) through an API go-codec does
+// not expose yet; docs/plans/1646.md names the go-codec feature that would
+// remove the entry. The list only shrinks.
+var goCodecTestGapSites = map[string]string{
+	"pkg/config/strict_yaml_features_test.go":           "builds and walks yaml.Node trees for the strict decoder; go-codec yaml exposes no Node",
+	"pkg/dao/secret_bytes_discard_test.go":              "asserts a direct msgpack decode bypasses the gap site's CustomDecoder tracking; go-codec msgpack exposes no hooks",
+	"pkg/dao/secret_bytes_msgpack_test.go":              "exercises the msgpack CustomEncoder/CustomDecoder hooks of pkg/dao/secret_bytes_msgpack.go; go-codec msgpack exposes no hooks",
+	"test/buildgates/action_pins_test.go":               "walks a yaml.Node tree of the workflow files; go-codec yaml exposes no Node",
+	"test/buildgates/ci_runners_test.go":                "walks a yaml.Node tree of the workflow files; go-codec yaml exposes no Node",
+	"test/buildgates/ci_tiers_test.go":                  "walks a yaml.Node tree of the workflow files; go-codec yaml exposes no Node",
+	"test/buildgates/compose_tmp_test.go":               "walks a yaml.Node tree of the compose files; go-codec yaml exposes no Node",
+	"test/buildgates/coverage_legs_test.go":             "walks a yaml.Node tree of the workflow files; go-codec yaml exposes no Node",
+	"test/buildgates/devcontainer_run_services_test.go": "walks a yaml.Node tree of the compose files; go-codec yaml exposes no Node",
+	"test/buildgates/feature_jobs_gate_test.go":         "walks a yaml.Node tree of the workflow files; go-codec yaml exposes no Node",
+	"test/buildgates/fips_legs_test.go":                 "walks a yaml.Node tree of the workflow files; go-codec yaml exposes no Node",
+	"test/buildgates/integration_image_tag_test.go":     "walks a yaml.Node tree of the workflow files; go-codec yaml exposes no Node",
+	"test/buildgates/release_workflow_test.go":          "walks a yaml.Node tree of the workflow files; go-codec yaml exposes no Node",
+}
+
+// formatImportsByFile maps each Go file under pkg, cmd, sdk/go and test
+// (repository-relative, slash-separated) to the format libraries it imports
+// directly: non-test files when tests is false, _test.go files when it is
+// true. Files that import none are absent.
+func formatImportsByFile(t *testing.T, tests bool) map[string][]string {
 	t.Helper()
 	root := repoRoot(t)
 	found := map[string][]string{}
@@ -76,7 +98,7 @@ func formatImportsByFile(t *testing.T) map[string][]string {
 				}
 				return nil
 			}
-			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, ".pb.go") {
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") != tests || strings.HasSuffix(path, ".pb.go") {
 				return nil
 			}
 			files++
@@ -101,14 +123,18 @@ func formatImportsByFile(t *testing.T) map[string][]string {
 			t.Fatalf("walk %s: %v", dir, err)
 		}
 	}
+	kind := "non-test"
+	if tests {
+		kind = "test"
+	}
 	if files < minImportFiles {
-		t.Fatalf("found %d non-test Go files, want at least %d: the walk is not looking where the code is", files, minImportFiles)
+		t.Fatalf("found %d %s Go files, want at least %d: the walk is not looking where the code is", files, kind, minImportFiles)
 	}
 	return found
 }
 
 func TestDirectFormatImports_OnlyAtGoCodecGapSites(t *testing.T) {
-	found := formatImportsByFile(t)
+	found := formatImportsByFile(t, false)
 	var bad []string
 	for file, libs := range found {
 		if _, ok := goCodecGapSites[file]; ok {
@@ -124,11 +150,41 @@ func TestDirectFormatImports_OnlyAtGoCodecGapSites(t *testing.T) {
 }
 
 func TestDirectFormatImports_AllowlistHasNoStaleEntry(t *testing.T) {
-	found := formatImportsByFile(t)
+	found := formatImportsByFile(t, false)
 	var stale []string
 	for file := range goCodecGapSites {
 		if _, ok := found[file]; !ok {
 			stale = append(stale, file+": allowlisted in goCodecGapSites but imports no format library; delete the entry")
+		}
+	}
+	sort.Strings(stale)
+	for _, s := range stale {
+		t.Error(s)
+	}
+}
+
+func TestDirectFormatImports_TestFilesOnlyAtGoCodecGapSites(t *testing.T) {
+	found := formatImportsByFile(t, true)
+	var bad []string
+	for file, libs := range found {
+		if _, ok := goCodecTestGapSites[file]; ok {
+			continue
+		}
+		bad = append(bad, file+": imports "+strings.Join(libs, ", ")+
+			" directly; use github.com/jeremyhahn/go-codec, or add the file to goCodecTestGapSites with the go-codec API it lacks")
+	}
+	sort.Strings(bad)
+	for _, b := range bad {
+		t.Error(b)
+	}
+}
+
+func TestDirectFormatImports_TestAllowlistHasNoStaleEntry(t *testing.T) {
+	found := formatImportsByFile(t, true)
+	var stale []string
+	for file := range goCodecTestGapSites {
+		if _, ok := found[file]; !ok {
+			stale = append(stale, file+": allowlisted in goCodecTestGapSites but imports no format library; delete the entry")
 		}
 	}
 	sort.Strings(stale)
