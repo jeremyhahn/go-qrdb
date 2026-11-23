@@ -1540,8 +1540,15 @@ feature judged cluster-wide. It adds no Raft command.
   `*feature.NotActiveError{Feature: strict-isolation}` (503, retryable after
   rollout) and writes nothing; the scheduler's serving-set lookup refuses an
   isolated tenant's placement the same way, failing closed rather than placing
-  it unconfined. A shared tenant and the home group are unaffected.
-- **Active:** once every member advertises the feature, as above; a
+  it unconfined. A shared tenant and the home group are unaffected. The same
+  refusals, and the isolation-policy verbs, also hold while strict-isolation
+  is active but `guarded-writes` (`featuregate.GuardedWrites`) is not, with
+  `*feature.NotActiveError{Feature: guarded-writes}` (503, retryable after
+  rollout): until guarded-writes is active a group proposes every write guard
+  unguarded, so a tightening committed then would leave an in-flight
+  shared-store write or audit append with only the propose-time recheck.
+  Activation is permanent, so once both are active no guard is dropped again.
+- **Active:** once every member advertises both features, as above; a
   standalone node gates nothing.
 - **Not gated:** keying placements and key-delivery envelopes by the opaque
   database id is a format change. Nothing is migrated: pre-release tenants are

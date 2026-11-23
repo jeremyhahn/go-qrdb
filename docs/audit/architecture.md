@@ -526,8 +526,10 @@ What proposes `OpAuditAppend`, and how a caller reads back what it proposed:
   or on this node's separate log resolver, or a proposal that returned on a
   timeout) is refused at apply time on every replica, reported as
   `*tenant.SystemAuditRouteError` when the tenant is now strict, else as the
-  retryable `*service.WriteGuardRefusedError`. Residual: a group with
-  `guarded-writes` off (mixed version) has only the hold.
+  retryable `*service.WriteGuardRefusedError`. The guard is never dropped:
+  a cluster refuses the isolation-policy verbs until `guarded-writes` is
+  active as well as `strict-isolation`, and activation is permanent, so no
+  group proposes the guard unguarded once a tenant can be strict.
   A home-group write while `verifiable-log-audit` is not active
   on every replica is refused as unavailable with
   `*service.AuditHomeNotActiveError`. Without home groups (standalone) a
