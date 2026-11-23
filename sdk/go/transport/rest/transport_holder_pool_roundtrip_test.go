@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -147,6 +148,63 @@ func TestRESTVolumePools_EveryVerbHitsItsRoute(t *testing.T) {
 		t.Fatalf("ListPoolTenants = %+v, %v", tenants, err)
 	}
 	assertCall(t, wr.last(t), http.MethodGet, "/v1/volume-pools/fast%20pool/tenants?page_size=5&page_token=n1")
+}
+
+// TestRESTVolumePools_MoveVerbsHitTheirRoutes: MoveTenant posts to the target
+// pool's tenant move route, GetMove and CancelMove GET and DELETE the tenant's
+// volume-move resource; each decodes the move, and a 404 is the typed
+// not-found.
+func TestRESTVolumePools_MoveVerbsHitTheirRoutes(t *testing.T) {
+	rt, wr := newWireRecorder(t)
+	admitted := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+	move := func(state string) *transport.VolumePoolMove {
+		return &transport.VolumePoolMove{TenantID: "acme", FromPool: "default", ToPool: "fast pool", State: state,
+			NodesPending: []string{"n1"}, StepNode: "n1", StepAttempts: 1, ReservedBytes: 64, AdmittedAt: admitted}
+	}
+	wr.reply(http.MethodPost, "/v1/volume-pools/fast pool/tenants/acme/move", move("copying"))
+	wr.reply(http.MethodGet, "/v1/tenants/acme/volume-move", move("copying"))
+	wr.reply(http.MethodDelete, "/v1/tenants/acme/volume-move", move("aborting"))
+	ctx := context.Background()
+
+	check := func(method string, m *transport.VolumePoolMove, err error, state string) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%s: %v", method, err)
+		}
+		if m.TenantID != "acme" || m.FromPool != "default" || m.ToPool != "fast pool" || m.State != state ||
+			len(m.NodesPending) != 1 || m.NodesPending[0] != "n1" || m.StepNode != "n1" || m.StepAttempts != 1 ||
+			m.ReservedBytes != 64 || !m.AdmittedAt.Equal(admitted) {
+			t.Fatalf("%s decoded move = %+v", method, m)
+		}
+	}
+	m, err := rt.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{TenantID: "acme", ToPool: "fast pool"})
+	check("MoveTenant", m, err, "copying")
+	assertCall(t, wr.last(t), http.MethodPost, "/v1/volume-pools/fast%20pool/tenants/acme/move")
+	m, err = rt.GetMove(ctx, "acme")
+	check("GetMove", m, err, "copying")
+	assertCall(t, wr.last(t), http.MethodGet, "/v1/tenants/acme/volume-move")
+	m, err = rt.CancelMove(ctx, "acme")
+	check("CancelMove", m, err, "aborting")
+	assertCall(t, wr.last(t), http.MethodDelete, "/v1/tenants/acme/volume-move")
+
+	// No move for the tenant: the server's 404 is a RequestError naming the
+	// verb and carrying the status.
+	notFound := func(method string, err error) {
+		t.Helper()
+		var re *transport.RequestError
+		if !errors.As(err, &re) || re.Method != method || re.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s(gone): err = %v, want a 404 RequestError naming %s", method, err, method)
+		}
+	}
+	_, err = rt.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{TenantID: "gone", ToPool: "fast pool"})
+	notFound("MoveTenant", err)
+	assertCall(t, wr.last(t), http.MethodPost, "/v1/volume-pools/fast%20pool/tenants/gone/move")
+	_, err = rt.GetMove(ctx, "gone")
+	notFound("GetMove", err)
+	assertCall(t, wr.last(t), http.MethodGet, "/v1/tenants/gone/volume-move")
+	_, err = rt.CancelMove(ctx, "gone")
+	notFound("CancelMove", err)
+	assertCall(t, wr.last(t), http.MethodDelete, "/v1/tenants/gone/volume-move")
 }
 
 func TestRESTVolumePools_RefusalsAndClosed(t *testing.T) {
