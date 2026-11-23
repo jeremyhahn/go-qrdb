@@ -114,6 +114,16 @@ HTTP/1.1 or HTTP/2, or a CONNECT with any `:protocol` other than
 instead.
 A browser's `Origin` must match the host it connects to.
 
+A client-certificate (mTLS) caller authenticates the `CONNECT` exactly as it
+authenticates a REST request: the HTTP/3 listener uses the TLS settings you
+give the REST port, client-certificate verification included, and the same
+binding policy and authenticators run. A certificate REST would refuse (for
+example, one with no enrolled account under `auth.mtls_binding_policy:
+required`) gets the same status, and the session is never opened. A
+certificate from a CA the listener does not trust fails the TLS handshake. The
+handler's `tenantID` is always the authenticated caller's tenant: a client
+`X-QRDB-Tenant` header is ignored.
+
 Without this option the server announces no WebTransport support, and `/wt`
 is an unknown path (404). A nil handler, or a path not starting with `/`, stops
 the server at startup with `InvalidWebTransportHandlerError`. Deviations from
