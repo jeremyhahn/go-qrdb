@@ -490,6 +490,58 @@ func (c *Catalog) FailSettleStep(ctx context.Context, tenantID, nodeID, reason s
 	})
 }
 
+// WaitSettleStep records that nodeID's settling step waits on a condition
+// outside the move, a tenant barrier that reopened sealed and awaits its
+// administrator's unseal: unlike FailSettleStep it counts no attempt, so
+// the step keeps settling on the node, and the leader grants no other node
+// a step, until the node's next settle finishes. A cancel recorded on a
+// copying move aborts it through abortSettlingCopy, the node kept in
+// NodesCopied so the abort copies it back. The reason is stored in Error;
+// an unchanged reason with no cancel to honour writes nothing. A node that
+// holds no settling step is refused with *MoveConflictError.
+func (c *Catalog) WaitSettleStep(ctx context.Context, tenantID, nodeID, reason string) (*Move, error) {
+	if nodeID == "" {
+		return nil, &InvalidMoveRequestError{Reason: "empty node id"}
+	}
+	if tenantID == "" {
+		return nil, &InvalidMoveRequestError{Reason: "empty tenant id"}
+	}
+	holdsSettling := func(m *Move) error {
+		if !m.StepSettling || m.StepNode != nodeID {
+			return &MoveConflictError{TenantID: m.TenantID, NodeID: nodeID, Reason: "node holds no settling move step"}
+		}
+		return nil
+	}
+	cancels := func(m *Move) bool {
+		return m.State == MoveStateCopying && m.CancelRequested
+	}
+	current, _, err := c.readMove(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if current == nil {
+		return nil, &MoveNotFoundError{TenantID: tenantID}
+	}
+	if err := holdsSettling(current); err != nil {
+		return nil, err
+	}
+	if !cancels(current) && current.Error == reason {
+		return current, nil
+	}
+	return c.updateMove(ctx, tenantID, func(m *Move) error {
+		if err := holdsSettling(m); err != nil {
+			return err
+		}
+		if cancels(m) {
+			m.CancelRequested = false
+			abortSettlingCopy(m, "cancelled by operator")
+			return nil
+		}
+		m.Error = reason
+		return nil
+	})
+}
+
 // abortSettlingCopy turns m's settling copy step into an abort: the node
 // stays in NodesCopied, so the abort steps restore the source on it.
 func abortSettlingCopy(m *Move, reason string) {

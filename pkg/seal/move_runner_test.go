@@ -774,6 +774,46 @@ func TestMoveStepRunner_AbortUncopiedRemovesPartialDestination(t *testing.T) {
 	}
 }
 
+// TestMoveStepRunner_SealedReopenSettlesOnlyAfterUnseal: a copied abort's
+// settle whose reopen answers *volume.TenantSealedError has not settled: it
+// returns the error and keeps the destination until a reopen succeeds. An
+// uncopied abort, which settles nothing, treats the sealed reopen as done.
+func TestMoveStepRunner_SealedReopenSettlesOnlyAfterUnseal(t *testing.T) {
+	fx, stores, r := newRunnerFixture(t)
+	ctx := context.Background()
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("settle copy: %v", err)
+	}
+	abort := runnerStep(volume.MoveStepPhaseAbort, true)
+	if err := r.RunMoveStep(ctx, abort); err != nil {
+		t.Fatalf("abort run: %v", err)
+	}
+	stores.openErr = &volume.TenantSealedError{TenantID: moveTestTenant}
+	var sealed *volume.TenantSealedError
+	if err := r.SettleMoveStep(ctx, abort); !errors.As(err, &sealed) {
+		t.Fatalf("sealed abort settle = %v, want *volume.TenantSealedError", err)
+	}
+	mustExist(t, fx.dst())
+	stores.openErr = nil
+	if err := r.SettleMoveStep(ctx, abort); err != nil {
+		t.Fatalf("abort settle after the unseal: %v", err)
+	}
+	assertGone(t, fx.dst())
+
+	fx2, stores2, r2 := newRunnerFixture(t)
+	if err := stores2.CloseTenantStores(ctx, moveTestTenant); err != nil {
+		t.Fatal(err)
+	}
+	stores2.openErr = &volume.TenantSealedError{TenantID: moveTestTenant}
+	if err := r2.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseAbort, false)); err != nil {
+		t.Fatalf("uncopied abort with a sealed reopen: %v", err)
+	}
+	assertGone(t, fx2.dst())
+}
+
 func TestMoveStepRunner_RetireRemovesSource(t *testing.T) {
 	fx, _, r := newRunnerFixture(t)
 	ctx := context.Background()

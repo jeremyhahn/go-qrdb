@@ -145,7 +145,7 @@ func (m *MoveStepRunner) copyStep(ctx context.Context, step volume.MoveStep) err
 	}
 	m.reg.moveOpenPools.Delete(step.TenantID)
 	if _, err := m.reg.RunMoveCopyStep(ctx, m.nodeID, step.TenantID, step.ToPool); err != nil {
-		if openErr := m.stores.OpenTenantStores(ctx, step.TenantID); openErr != nil {
+		if openErr := m.reopenStores(ctx, step.TenantID); openErr != nil {
 			return errors.Join(err, openErr)
 		}
 		return err
@@ -188,7 +188,7 @@ func (m *MoveStepRunner) copyBack(ctx context.Context, step volume.MoveStep) err
 	// fail keeps the destination authoritative: the journal still names it
 	// for this node, so it serves from there until the step is redone.
 	fail := func(err error) error {
-		if openErr := m.stores.OpenTenantStores(ctx, step.TenantID); openErr != nil {
+		if openErr := m.reopenStores(ctx, step.TenantID); openErr != nil {
 			return errors.Join(stepErr(err), openErr)
 		}
 		return stepErr(err)
@@ -285,7 +285,22 @@ func (m *MoveStepRunner) abortUncopied(ctx context.Context, step volume.MoveStep
 	if _, open := m.reg.tenants.Load(step.TenantID); open {
 		return nil
 	}
-	return m.stores.OpenTenantStores(ctx, step.TenantID)
+	return m.reopenStores(ctx, step.TenantID)
+}
+
+// reopenStores reopens the tenant's stores for a step that does not settle
+// a move (a failed copy's reopen, a failed copy-back, an uncopied abort): a
+// tenant left sealed (*volume.TenantSealedError) is reopened as far as it
+// can be, and the shard reconciler attaches its stores on the unseal, so
+// it is not this step's failure. SettleMoveStep calls OpenTenantStores
+// directly: a sealed replica has not settled.
+func (m *MoveStepRunner) reopenStores(ctx context.Context, tenantID string) error {
+	err := m.stores.OpenTenantStores(ctx, tenantID)
+	var sealed *volume.TenantSealedError
+	if errors.As(err, &sealed) {
+		return nil
+	}
+	return err
 }
 
 func (m *MoveStepRunner) retire(ctx context.Context, step volume.MoveStep) error {

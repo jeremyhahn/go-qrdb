@@ -414,6 +414,21 @@ func (r *MoveReconciler) settleAndRelease(ctx context.Context, settler MoveStepS
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
 			}
+			var sealed *TenantSealedError
+			if errors.As(err, &sealed) {
+				// The replica's tenant reopened sealed: it is not serving
+				// and has not caught up, so the step stays settling on it,
+				// uncounted, until the administrator's unseal lets the next
+				// settle attach it and await its catch-up.
+				reason := waitingMoveStepReason(step.Phase, err)
+				if _, waitErr := r.cat.WaitSettleStep(ctx, step.TenantID, step.NodeID, reason); waitErr != nil {
+					return errors.Join(err, waitErr)
+				}
+				r.logger.Info("volume: move step settle waits for the tenant's unseal",
+					slog.String("tenant", step.TenantID), slog.String("node", step.NodeID),
+					slog.String("phase", step.Phase), slog.String("reason", reason))
+				return nil
+			}
 			r.logger.Warn("volume: settling the move step failed; it stays granted and is retried",
 				slog.String("tenant", step.TenantID), slog.String("node", step.NodeID),
 				slog.String("phase", step.Phase), slog.Int("attempt", step.Attempt),
@@ -487,6 +502,7 @@ func moveStepErrorClass(err error) string {
 		mismatch    *ManifestMismatchError
 		unavailable *PoolUnavailableError
 		sealed      *NodeSealedError
+		tenant      *TenantSealedError
 		closed      *ClosedVolumeError
 		open        *OpenError
 		notDir      *notADirectoryError
@@ -503,6 +519,8 @@ func moveStepErrorClass(err error) string {
 		return "pool unavailable"
 	case errors.As(err, &sealed):
 		return "node sealed"
+	case errors.As(err, &tenant):
+		return "tenant sealed"
 	case errors.As(err, &closed):
 		return "volume closed"
 	case errors.As(err, &open):

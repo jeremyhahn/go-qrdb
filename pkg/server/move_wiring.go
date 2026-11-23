@@ -276,6 +276,14 @@ func (w *TenantMoveWorker) retryReopens(ctx context.Context) {
 	}
 	for _, tenantID := range w.reopens.PendingReopen() {
 		if err := w.reopens.RetryReopen(ctx, tenantID); err != nil {
+			// A tenant left sealed awaits its administrator's unseal: one
+			// retry per tick until then is expected, not a fault.
+			var sealed *volume.TenantSealedError
+			if errors.As(err, &sealed) {
+				w.logger.Debug("volume: tenant store reopen waits for the tenant's unseal",
+					slog.String("tenant", tenantID))
+				continue
+			}
 			w.logger.Warn("volume: tenant store reopen retry failed",
 				slog.String("tenant", tenantID), slog.String("error", err.Error()))
 		}

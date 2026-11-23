@@ -468,6 +468,73 @@ func TestCatalog_WaitMoveStep(t *testing.T) {
 	}
 }
 
+// TestCatalog_WaitSettleStep: a settle that waits for its tenant's unseal
+// counts no attempt and keeps the step settling on the node, writes nothing
+// for an unchanged reason, refuses a node holding no settling step, and a
+// recorded cancel aborts the move with the node kept copied.
+func TestCatalog_WaitSettleStep(t *testing.T) {
+	cat, kv, tx := newAdmittedMove(t)
+	ctx := context.Background()
+	const reason = "move copy step waiting: tenant sealed"
+	var invalid *InvalidMoveRequestError
+	if _, err := cat.WaitSettleStep(ctx, "acme", "", reason); !errors.As(err, &invalid) {
+		t.Fatalf("WaitSettleStep with no node error = %v, want *InvalidMoveRequestError", err)
+	}
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatalf("GrantMoveStep: %v", err)
+	}
+	var conflict *MoveConflictError
+	if _, err := cat.WaitSettleStep(ctx, "acme", "n1", reason); !errors.As(err, &conflict) {
+		t.Fatalf("WaitSettleStep on an unrecorded step error = %v, want *MoveConflictError", err)
+	}
+	if _, err := cat.RecordMoveStep(ctx, "acme", "n1"); err != nil {
+		t.Fatalf("RecordMoveStep: %v", err)
+	}
+	if _, err := cat.WaitSettleStep(ctx, "acme", "n2", reason); !errors.As(err, &conflict) {
+		t.Fatalf("WaitSettleStep by a node not settling error = %v, want *MoveConflictError", err)
+	}
+	for i := 0; i < DefaultMoveStepAttempts+1; i++ {
+		m, err := cat.WaitSettleStep(ctx, "acme", "n1", reason)
+		if err != nil {
+			t.Fatalf("WaitSettleStep #%d: %v", i+1, err)
+		}
+		if m.State != MoveStateCopying || m.StepNode != "n1" || !m.StepSettling || m.StepAttempts != 0 ||
+			m.Error != reason || !contains(m.NodesCopied, "n1") {
+			t.Fatalf("WaitSettleStep #%d move = %+v, want n1 settling, 0 attempts, the reason", i+1, m)
+		}
+	}
+	// An unchanged reason writes nothing: no raft write per tick while the
+	// tenant stays sealed.
+	rawBefore := mustGet(t, kv, MoveKey("acme"))
+	tx.mu.Lock()
+	versionBefore := tx.versions[MoveKey("acme")]
+	tx.mu.Unlock()
+	if _, err := cat.WaitSettleStep(ctx, "acme", "n1", reason); err != nil {
+		t.Fatalf("WaitSettleStep unchanged: %v", err)
+	}
+	tx.mu.Lock()
+	versionAfter := tx.versions[MoveKey("acme")]
+	tx.mu.Unlock()
+	if versionAfter != versionBefore || !bytes.Equal(rawBefore, mustGet(t, kv, MoveKey("acme"))) {
+		t.Fatalf("an unchanged wait rewrote the journal (version %d -> %d)", versionBefore, versionAfter)
+	}
+	// A recorded cancel aborts, the node kept copied for the copy-back.
+	if _, err := cat.CancelMove(ctx, "acme"); err != nil {
+		t.Fatalf("CancelMove: %v", err)
+	}
+	m, err := cat.WaitSettleStep(ctx, "acme", "n1", reason)
+	if err != nil {
+		t.Fatalf("WaitSettleStep with a cancel: %v", err)
+	}
+	if m.State != MoveStateAborting || m.CancelRequested || m.StepNode != "" || m.StepSettling ||
+		!contains(m.NodesCopied, "n1") || m.Error != "cancelled by operator" {
+		t.Fatalf("WaitSettleStep with a cancel move = %+v, want aborting with n1 copied", m)
+	}
+	if got := storedMove(t, kv, "acme"); got.State != MoveStateAborting {
+		t.Fatalf("stored move = %+v, want aborting", got)
+	}
+}
+
 func TestCatalog_GrantMoveStep_CopiedRefused(t *testing.T) {
 	cat, _, _ := newAdmittedMove(t)
 	ctx := context.Background()

@@ -139,8 +139,14 @@ func TestMoveStoreCloser_SelfManagedTenantAwaitsUnseal(t *testing.T) {
 	if err := closer.CloseTenantStores(ctx, "vt"); err != nil {
 		t.Fatalf("CloseTenantStores: %v", err)
 	}
-	if err := closer.OpenTenantStores(ctx, "vt"); err != nil {
-		t.Fatalf("OpenTenantStores of a sealed self-managed tenant = %v, want nil (awaits unseal)", err)
+	// The reopen is not done while the barrier stays sealed: the settle
+	// that called it waits, and the tenant stays pending.
+	var sealedErr *volume.TenantSealedError
+	if err := closer.OpenTenantStores(ctx, "vt"); !errors.As(err, &sealedErr) {
+		t.Fatalf("OpenTenantStores of a sealed self-managed tenant = %v, want *volume.TenantSealedError (awaits unseal)", err)
+	}
+	if got := closer.PendingReopen(); len(got) != 1 || got[0] != "vt" {
+		t.Fatalf("pending = %v, want [vt]", got)
 	}
 	if closer.HoldsTenant("vt") {
 		t.Fatal("the hold outlived the reopen")
@@ -154,6 +160,16 @@ func TestMoveStoreCloser_SelfManagedTenantAwaitsUnseal(t *testing.T) {
 
 	if err := reg.UnsealTenant(ctx, "vt", creds); err != nil {
 		t.Fatalf("administrator UnsealTenant: %v", err)
+	}
+	// The retry once the barrier serves attaches the Host and finishes.
+	if err := closer.RetryReopen(ctx, "vt"); err != nil {
+		t.Fatalf("RetryReopen after the unseal: %v", err)
+	}
+	if got := closer.PendingReopen(); len(got) != 0 {
+		t.Fatalf("pending after the unseal = %v", got)
+	}
+	if !hostReg.Started("vt") {
+		t.Fatal("the retry after the unseal attached no Host")
 	}
 	if svcs, err := hostReg.Services(ctx, "vt"); err != nil || svcs == nil {
 		t.Fatalf("Services after unseal = %v, %v", svcs, err)

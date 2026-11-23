@@ -15,6 +15,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // MoveShardLifecycle is the part of ShardLifecycle a MoveStoreCloser
@@ -315,11 +317,13 @@ func (c *MoveStoreCloser) reopen(ctx context.Context, tenantID string) error {
 	}
 	if sr, ok := c.barriers.(MoveSealedBarriers); ok && sr.TenantBarrierSealed(tenantID) {
 		// A self-managed barrier stays sealed until its administrator
-		// unseals it, and Attach refuses a sealed barrier: the reopen is
-		// done, and the shard reconciler (on the unseal notification) and
-		// Services attach the stores once it serves.
-		c.finishReopen(tenantID)
-		return nil
+		// unseals it, and Attach refuses a sealed barrier: the replica is
+		// not serving and has not caught up, so the reopen is not done.
+		// It stays pending with its closed stores recorded (and the
+		// barrier marked reopened), and the next reopen, once the barrier
+		// serves, attaches them and awaits their catch-up; the move step
+		// that called it keeps settling until then.
+		return fail(&volume.TenantSealedError{TenantID: tenantID})
 	}
 	if host && !c.hosts.Started(tenantID) {
 		if err := c.hosts.Attach(ctx, tenantID); err != nil {
@@ -394,7 +398,10 @@ func (c *MoveStoreCloser) PendingReopen() []string {
 
 // RetryReopen reruns the reopen path for a tenant PendingReopen lists. It
 // does nothing for a tenant not pending, or one a move step holds (that
-// step owns the stores). A self-managed tenant still comes back sealed.
+// step owns the stores). A self-managed tenant whose barrier is still
+// sealed answers *volume.TenantSealedError and stays pending; the retry
+// after its administrator's unseal attaches its stores and awaits their
+// catch-up.
 func (c *MoveStoreCloser) RetryReopen(ctx context.Context, tenantID string) error {
 	c.mu.Lock()
 	pending := c.pending[tenantID]
