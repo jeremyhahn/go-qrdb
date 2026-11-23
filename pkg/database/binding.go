@@ -179,6 +179,10 @@ type RaftBinding struct {
 	// StateStorage is the store the group's state machine runs the engine
 	// over: pebble, file or memory.
 	StateStorage BackendType
+	// Nodes are the Raft addresses of the group's replicas, read from the
+	// database's placement entry. ResolveBinding leaves it empty; a
+	// describer that reads the placement table fills it.
+	Nodes []string
 }
 
 // Binding is the resolved, concrete placement of one (tenant, database): the
@@ -220,7 +224,11 @@ func (b *Binding) Describe(owner string, generation uint64) *DatabaseBinding {
 	if b.DatabaseBarrier {
 		out.Encryption += "+database"
 	}
-	if owner != "" {
+	switch {
+	case b.Kind == BindingRaft && b.Raft != nil && len(b.Raft.Nodes) > 0:
+		// Every replica of the database's group serves it.
+		out.Nodes = append([]string(nil), b.Raft.Nodes...)
+	case owner != "":
 		out.Nodes = []string{owner}
 	}
 	return out

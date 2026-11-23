@@ -64,6 +64,10 @@ func TestBinding_Describe_EncryptionAndNodes(t *testing.T) {
 			DatabaseBinding{Kind: BindingLocal, Encryption: "node", Nodes: []string{"n1"}, Generation: 7}},
 		{"raft without owner", Binding{Kind: BindingRaft, Encryptor: EncryptorNode}, "", 0,
 			DatabaseBinding{Kind: BindingRaft, Encryption: "node"}},
+		// A raft binding's nodes are its group's replicas, not the owner:
+		// every replica serves the database.
+		{"raft with replicas", Binding{Kind: BindingRaft, Encryptor: EncryptorTenant, Raft: &RaftBinding{Replicas: 2, Nodes: []string{"127.0.0.1:7001", "127.0.0.1:7002"}}}, "n1", 4,
+			DatabaseBinding{Kind: BindingRaft, Encryption: "tenant", Nodes: []string{"127.0.0.1:7001", "127.0.0.1:7002"}, Generation: 4}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
