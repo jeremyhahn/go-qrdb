@@ -19,10 +19,10 @@ package service
 import (
 	"context"
 	"errors"
-	"sync"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -31,94 +31,223 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
-// databaseLogStore serves the verifiable logs of one barrier-enabled
-// database from the database's own store: db.Backend() is the barrier
-// backend, so every record is encrypted under the database's key and every
-// call while it is sealed is refused. Commands are applied by
-// statemachine.ApplyVerifiableLog over a vlog.Chain restored from that
-// store, exactly as the engine applies them; refusals commit their staged
-// writes as the engine does.
-//
-// mu serializes every propose and read. logs is nil until restored, and is
-// set back to nil on any apply or commit failure and whenever the database
-// is seen sealed, so no head state outlives a seal.
-type databaseLogStore struct {
-	db       *database.Database
+// barrierDatabaseTarget serves the verifiable logs of one barrier-enabled
+// database from its parent Raft group (owner ruling 1234, option A): the
+// logs are proposed to and read from the tenant's group like any other
+// database's, and the database's barrier seals what the group holds. An
+// append carries each entry's RFC 6962 leaf hash, computed over the
+// plaintext, and the entry's body sealed under the database's key (sub-type
+// AppendSealed), so the group's tree and every proof are over the plaintext
+// while its store holds only ciphertext; a create or key rotation carries
+// the software signing key's PKCS8 sealed the same way. Bodies and the key
+// are opened on read. Every call is refused with BarrierSealedError while
+// the barrier is sealed, and a write holds the barrier's quiesce lease until
+// its proposal returns, so a seal never lands between a body sealed and its
+// proposal applied.
+type barrierDatabaseTarget struct {
 	tenantID string
 	name     string
-
-	mu     sync.Mutex
-	logs   logChain
-	served <-chan struct{}
+	db       *database.Database
+	parent   logTarget
 }
 
-// newDatabaseLogStore returns the store of tenantID's database db.
-func newDatabaseLogStore(tenantID string, db *database.Database) *databaseLogStore {
-	return &databaseLogStore{db: db, tenantID: tenantID, name: db.Name()}
+// databaseSealer is the seal surface of a barrier database's backend
+// (database.BarrierBackend).
+type databaseSealer interface {
+	SealValue(plaintext []byte) ([]byte, error)
+	OpenValue(ciphertext []byte) ([]byte, error)
+	Hold() (func(), error)
+	IsSealed() bool
 }
 
-// sealed reports whether the database is sealed, or stopped serving since
-// the chain was restored (a seal, drop or failure; an unseal hands out a
-// fresh signal). Either drops the in-memory chain. s.mu must be held.
-func (s *databaseLogStore) sealed() bool {
-	if s.served != nil {
-		select {
-		case <-s.served:
-			// The incarnation the chain was restored under stopped serving:
-			// the chain is stale even if the database serves again now.
-			s.logs.drop()
-			s.served = nil
-		default:
-		}
+// sealer returns the database's barrier when it is unsealed, else
+// BarrierSealedError. The barrier is sealed before the database's status
+// follows it, so both are checked.
+func (t *barrierDatabaseTarget) sealer() (databaseSealer, error) {
+	s, ok := t.db.Backend().(databaseSealer)
+	if !ok || s.IsSealed() || t.db.Status() == database.StatusSealed {
+		return nil, t.sealedError()
 	}
-	if s.db.Status() == database.StatusSealed || barrierSealed(s.db.Backend()) {
-		s.logs.drop()
-		s.served = nil
-		return true
-	}
-	return false
+	return s, nil
 }
 
 // sealedError is the refusal of a call to the sealed database.
-func (s *databaseLogStore) sealedError() error {
-	return &BarrierSealedError{TenantID: s.tenantID, Database: s.name}
+func (t *barrierDatabaseTarget) sealedError() error {
+	return &BarrierSealedError{TenantID: t.tenantID, Database: t.name}
 }
 
-// barrierSealed reports whether backend is a barrier whose seal is in
-// place: the barrier is sealed before the database's status follows it.
-func barrierSealed(backend database.Backend) bool {
-	sealed, ok := backend.(interface{ IsSealed() bool })
-	return ok && sealed.IsSealed()
+// translate answers the barrier's seal with BarrierSealedError and returns
+// any other error as it is.
+func (t *barrierDatabaseTarget) translate(err error) error {
+	if errors.As(err, new(*database.SealedError)) {
+		return t.sealedError()
+	}
+	return err
 }
 
-// propose applies one encoded OpVerifiableLog command to the database's
-// store and returns the apply's result.
-func (s *databaseLogStore) propose(ctx context.Context, cmd []byte) (sm.Result, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.sealed() {
-		return sm.Result{}, s.sealedError()
+// serving refuses a sealed database with BarrierSealedError, else answers
+// as the parent group does.
+func (t *barrierDatabaseTarget) serving() error {
+	if _, err := t.sealer(); err != nil {
+		return err
 	}
-	backend := s.db.Backend()
-	r := backendReader{ctx: ctx, b: backend}
-	if s.logs.chain == nil {
-		served := s.db.Unserved()
-		if err := s.logs.restore(r); err != nil {
-			return sm.Result{}, s.translateStoreError(err)
-		}
-		s.served = served
-	}
-	res, err := s.logs.apply(r, func(ops []storage.BufferedOp) error {
-		return applyToBackend(ctx, backend, ops)
-	}, cmd)
+	return t.parent.serving()
+}
+
+// featureEnabled reports whether every replica of the parent group carries f.
+func (t *barrierDatabaseTarget) featureEnabled(f feature.Feature) bool {
+	return t.parent.featureEnabled(f)
+}
+
+// propose seals cmd under the database's barrier and proposes it to the
+// parent group, holding the barrier's lease until the proposal returns.
+func (t *barrierDatabaseTarget) propose(ctx context.Context, cmd []byte) (sm.Result, error) {
+	return t.proposeFenced(ctx, cmd, logFence{})
+}
+
+// proposeFenced seals cmd and proposes it to the parent group under fence,
+// holding the barrier's lease until the proposal returns.
+func (t *barrierDatabaseTarget) proposeFenced(ctx context.Context, cmd []byte, fence logFence) (sm.Result, error) {
+	s, err := t.sealer()
 	if err != nil {
-		return sm.Result{}, s.translateStoreError(err)
+		return sm.Result{}, err
 	}
-	return res, nil
+	release, err := s.Hold()
+	if err != nil {
+		return sm.Result{}, t.translate(err)
+	}
+	defer release()
+	sealed, err := t.seal(s, cmd)
+	if err != nil {
+		return sm.Result{}, t.translate(err)
+	}
+	if fenced, ok := t.parent.(fencedLogTarget); ok {
+		return fenced.proposeFenced(ctx, sealed, fence)
+	}
+	if err := fence.live(); err != nil {
+		return sm.Result{}, err
+	}
+	return t.parent.propose(ctx, sealed)
+}
+
+// seal rewrites one encoded OpVerifiableLog command so that no plaintext
+// entry or signing key leaves the database: an append becomes AppendSealed,
+// and a create or key rotation carrying a software key's record carries its
+// PKCS8 sealed. Every other sub-type carries no secret and is returned as
+// it is.
+func (t *barrierDatabaseTarget) seal(s databaseSealer, cmd []byte) ([]byte, error) {
+	if len(cmd) == 0 || cmd[0] != protocol.OpVerifiableLog {
+		return nil, errNotALogCommand
+	}
+	subtype, tenantID, body, err := protocol.DecodeVerifiableLogCommand(cmd[1:])
+	if err != nil {
+		return nil, err
+	}
+	switch subtype {
+	case protocol.VerifiableLogSubtypeAppend:
+		if !t.parent.featureEnabled(featuregate.VerifiableLogSealed) {
+			return nil, t.featureNotActive(featuregate.VerifiableLogSealed)
+		}
+		id, entries, err := protocol.DecodeVerifiableLogAppend(tenantID, body)
+		if err != nil {
+			return nil, err
+		}
+		leaves := make([]vlog.SealedLeaf, len(entries))
+		for i, e := range entries {
+			sealed, err := s.SealValue(e)
+			if err != nil {
+				return nil, err
+			}
+			leaves[i] = vlog.SealedLeaf{Hash: vlog.LeafHash(e), Body: sealed}
+		}
+		return protocol.EncodeVerifiableLogAppendSealed(id, leaves)
+	case protocol.VerifiableLogSubtypeCreate:
+		id, desc, key, err := protocol.DecodeVerifiableLogCreate(tenantID, body)
+		if err != nil || key == nil {
+			return cmd, err
+		}
+		sealed, err := sealKey(s, key)
+		if err != nil {
+			return nil, err
+		}
+		return protocol.EncodeVerifiableLogCreateWithKey(id, desc, *sealed)
+	case protocol.VerifiableLogSubtypeRotateKey:
+		id, next, key, err := protocol.DecodeVerifiableLogRotateKey(tenantID, body)
+		if err != nil || key == nil {
+			return cmd, err
+		}
+		sealed, err := sealKey(s, key)
+		if err != nil {
+			return nil, err
+		}
+		return protocol.EncodeVerifiableLogRotateKey(id, next, sealed)
+	default:
+		return cmd, nil
+	}
+}
+
+// featureNotActive is the refusal of a write the parent group's replicas
+// cannot all apply yet.
+func (t *barrierDatabaseTarget) featureNotActive(f feature.Feature) error {
+	e := &LogFeatureNotActiveError{TenantID: t.tenantID, Feature: f}
+	if rt, ok := t.parent.(raftTarget); ok {
+		e.ShardID = rt.shardID
+	}
+	return e
+}
+
+// sealKey returns a copy of key with its PKCS8 sealed under s.
+func sealKey(s databaseSealer, key *vlog.SigningKey) (*vlog.SigningKey, error) {
+	sealed, err := s.SealValue(key.PKCS8)
+	if err != nil {
+		return nil, err
+	}
+	out := *key
+	out.PKCS8 = sealed
+	return &out, nil
+}
+
+// read answers req from the parent group, opening every entry body and
+// signing key record under the database's barrier. A body or key that does
+// not open is an error, never returned sealed.
+func (t *barrierDatabaseTarget) read(ctx context.Context, req vlog.Request) (interface{}, error) {
+	s, err := t.sealer()
+	if err != nil {
+		return nil, err
+	}
+	v, err := t.parent.read(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	switch got := v.(type) {
+	case []vlog.Entry:
+		out := make([]vlog.Entry, len(got))
+		for i, e := range got {
+			out[i] = e
+			if e.Expired || e.Body == nil {
+				continue
+			}
+			if out[i].Body, err = s.OpenValue(e.Body); err != nil {
+				return nil, t.translate(err)
+			}
+		}
+		return out, nil
+	case *vlog.SigningKey:
+		if got == nil {
+			return got, nil
+		}
+		key := *got
+		if key.PKCS8, err = s.OpenValue(got.PKCS8); err != nil {
+			return nil, t.translate(err)
+		}
+		return &key, nil
+	default:
+		return v, nil
+	}
 }
 
 // logChain is the apply core every verifiable log store outside Raft
-// shares (a barrier database's store, a barrier tenant's standalone store):
+// shares (a barrier tenant's standalone store):
 // one vlog.Chain restored from the store and every command applied by
 // statemachine.ApplyVerifiableLog, exactly as the engine applies it, its
 // writes staged and handed to the store's atomic commit in one call. chain
@@ -188,101 +317,8 @@ func readLog(r storage.Reader, req vlog.Request, sealed func(error) bool) (inter
 	return v, nil
 }
 
-// applyToBackend writes ops to backend in one atomic Batch.
-func applyToBackend(ctx context.Context, backend database.Backend, ops []storage.BufferedOp) error {
-	if len(ops) == 0 {
-		return nil
-	}
-	batch := make([]database.BatchOp, 0, len(ops))
-	for _, op := range ops {
-		switch {
-		case op.Range:
-			return errRangeUnsupported
-		case op.Deleted:
-			batch = append(batch, database.BatchOp{Op: database.BatchOpDelete, Key: op.Key})
-		default:
-			batch = append(batch, database.BatchOp{Op: database.BatchOpPut, Key: op.Key, Value: op.Value})
-		}
-	}
-	return backend.Batch(ctx, batch)
-}
-
-// read answers one vlog.Request from the database's store.
-func (s *databaseLogStore) read(ctx context.Context, req vlog.Request) (interface{}, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.sealed() {
-		return nil, s.sealedError()
-	}
-	v, err := readLog(backendReader{ctx: ctx, b: s.db.Backend()}, req, func(err error) bool {
-		return errors.As(err, new(*database.SealedError))
-	})
-	if err != nil {
-		return nil, s.translateStoreError(err)
-	}
-	return v, nil
-}
-
-// featureEnabled reports true: the database's store is applied by this
-// binary alone, so no replica can lack a feature.
-func (s *databaseLogStore) featureEnabled(feature.Feature) bool { return true }
-
-// serving refuses a sealed database with BarrierSealedError.
-func (s *databaseLogStore) serving() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.sealed() {
-		return s.sealedError()
-	}
-	return nil
-}
-
-// translateStoreError answers a sealed database's error with
-// BarrierSealedError, dropping the chain, and returns any other error as it
-// is. s.mu must be held.
-func (s *databaseLogStore) translateStoreError(err error) error {
-	if errors.As(err, new(*database.SealedError)) {
-		s.logs.drop()
-		s.served = nil
-		return s.sealedError()
-	}
-	return err
-}
-
 var (
 	errNotALogCommand     = errors.New("vlog database store: the command is not a verifiable log command")
 	errReverseUnsupported = errors.New("vlog database store: reverse iteration is not supported")
 	errRangeUnsupported   = errors.New("vlog database store: range deletes are not supported")
 )
-
-// backendReader is a storage.Reader over a database.Backend.
-type backendReader struct {
-	ctx context.Context
-	b   database.Backend
-}
-
-// Get returns key's value, nil when it is absent.
-func (r backendReader) Get(key []byte) ([]byte, error) {
-	return r.b.Get(r.ctx, key)
-}
-
-// NewIterator returns an ascending iterator over the keys in opts' bounds.
-func (r backendReader) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
-	var lower, upper []byte
-	if opts != nil {
-		if opts.Reverse {
-			return storage.NewSliceIterator(nil, nil, errReverseUnsupported)
-		}
-		lower, upper = opts.LowerBound, opts.UpperBound
-	}
-	kvs, err := r.b.Range(r.ctx, lower, upper, 0)
-	if err != nil {
-		return storage.NewSliceIterator(nil, nil, err)
-	}
-	keys := make([][]byte, len(kvs))
-	values := make([][]byte, len(kvs))
-	for i, kv := range kvs {
-		keys[i], values[i] = kv.Key, kv.Value
-	}
-	return storage.NewSliceIterator(keys, values, nil)
-}

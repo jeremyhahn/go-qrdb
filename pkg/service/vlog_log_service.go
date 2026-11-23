@@ -54,7 +54,7 @@ func NewLogService(cfg LogServiceConfig) (LogService, error) {
 	if cfg.Databases == nil {
 		return nil, &SubsystemNotConfiguredError{Subsystem: "vlog database lookup"}
 	}
-	route := &logRoute{resolver: cfg.Resolver, audit: cfg.AuditResolver, databases: cfg.Databases, stores: make(map[dbStoreKey]*databaseLogStore), barriers: make(map[string]*barrierLogStore)}
+	route := &logRoute{resolver: cfg.Resolver, audit: cfg.AuditResolver, databases: cfg.Databases, barriers: make(map[string]*barrierLogStore)}
 	signers := cfg.Signers
 	if signers == nil {
 		signers = vlog.NewSoftwareHeadSignerProvider(&logKeyReader{route: route})
@@ -125,7 +125,11 @@ func (r *logRoute) resolve(ctx context.Context, id vlog.LogID) (logTarget, *data
 		if !cfg.BarrierOnDataPath() {
 			return nil, nil, &database.BarrierOffDataPathError{Name: name, ServedBy: database.ServedByRaftGroup}
 		}
-		return r.store(tenantID, name, db), db, nil
+		parent, err := r.raft(ctx, tenantID)
+		if err != nil {
+			return nil, db, err
+		}
+		return &barrierDatabaseTarget{tenantID: tenantID, name: name, db: db, parent: parent}, db, nil
 	}
 	target, err := r.raft(ctx, tenantID)
 	return target, db, err
@@ -183,26 +187,6 @@ func (r *logRoute) barrierStore(ctx context.Context, src LogBarrierStoreSource, 
 	return s, nil
 }
 
-// store returns the databaseLogStore of tenantID's barrier database db,
-// keyed by its incarnation: a database dropped and created again under the
-// name gets a fresh store, and the old one is forgotten.
-func (r *logRoute) store(tenantID, name string, db *database.Database) *databaseLogStore {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	key := dbStoreKey{tenant: tenantID, name: name, incarnation: db.Incarnation()}
-	if s, ok := r.stores[key]; ok && s.db == db {
-		return s
-	}
-	for k := range r.stores {
-		if k.tenant == tenantID && k.name == name {
-			delete(r.stores, k)
-		}
-	}
-	s := newDatabaseLogStore(tenantID, db)
-	r.stores[key] = s
-	return s
-}
-
 // logRoute resolves where a log in tenantID's database is applied and read:
 // a barrier-enabled database's logs live in its own barrier store, under the
 // database's key (databaseLogStore); a legacy raft-backend barrier record is
@@ -217,7 +201,6 @@ type logRoute struct {
 	databases LogDatabaseLookup
 
 	mu       sync.Mutex
-	stores   map[dbStoreKey]*databaseLogStore
 	barriers map[string]*barrierLogStore
 
 	// fences writes a database's log marker where it was never written

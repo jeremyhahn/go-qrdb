@@ -45,6 +45,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
 )
 
 // staticSignerProvider hands out one signer, or fails.
@@ -278,6 +280,92 @@ func TestLogService_ServesABarrierDatabase(t *testing.T) {
 		t.Fatalf("ReadSigningKey = %v, %v; want the log's key record", key, err)
 	}
 	assertNoPlaintext(t, dir, append([][]byte{key.PKCS8}, entries...))
+}
+
+// newParentGroupBarrierService builds a LogService whose tenant group is g,
+// applying each log command through ApplyVerifiableLog, over a manager
+// holding acme's barrier-enabled database "secure". cmds records every
+// command the service proposes to the group.
+func newParentGroupBarrierService(t *testing.T, dir string, g *fenceGroup, signers vlog.HeadSignerProvider) (LogService, *database.Manager, *[][]byte) {
+	t.Helper()
+	mgr := newBarrierDatabaseManager(t, dir)
+	inner := g.host(t)
+	apply := inner.syncProposeFn
+	cmds := new([][]byte)
+	var mu sync.Mutex
+	inner.syncProposeFn = func(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error) {
+		mu.Lock()
+		*cmds = append(*cmds, append([]byte(nil), cmd...))
+		mu.Unlock()
+		return apply(ctx, shardID, cmd)
+	}
+	svc, err := NewLogService(LogServiceConfig{
+		Resolver:  &fixedShardResolver{host: &gatedHost{mockHost: inner, enabled: map[uint64]bool{1: true}}, shardID: 1},
+		Databases: mgr,
+		Signers:   signers,
+	})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	mgr.SetLogReclaimer(svc.(*logService))
+	return svc, mgr, cmds
+}
+
+// TestLogService_BarrierDatabaseLogsLiveInTheParentGroup pins owner ruling
+// 1234 option A: a barrier-enabled database's logs are proposed to and read
+// from the tenant's Raft group, every proposed payload carries the entries
+// and the signing key's PKCS8 only sealed under the database's barrier, and
+// the plaintext read back proves its inclusion against the group's root.
+func TestLogService_BarrierDatabaseLogsLiveInTheParentGroup(t *testing.T) {
+	dir := t.TempDir()
+	g := newFenceGroup(t)
+	svc, _, cmds := newParentGroupBarrierService(t, dir, g, nil)
+	ctx := acmeCtx()
+	ref := LogRef{Database: "secure", Log: "events"}
+	created, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: "example.test/secure/events", SigningKeyType: vlog.SignatureEd25519})
+	if err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	entries := [][]byte{[]byte("parent-entry-alpha-0001"), []byte("parent-entry-bravo-0002"), []byte("parent-entry-charlie-0003")}
+	if _, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: entries}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if len(*cmds) == 0 {
+		t.Fatal("the barrier database's log proposed nothing to its parent group")
+	}
+	key, err := (&logKeyReader{route: svc.(*logService).route}).ReadSigningKey(ctx, created.ID, created.Key.Version)
+	if err != nil || key == nil || len(key.PKCS8) == 0 {
+		t.Fatalf("ReadSigningKey = %v, %v; want the log's opened key record", key, err)
+	}
+	for i, cmd := range *cmds {
+		for _, secret := range append([][]byte{key.PKCS8}, entries...) {
+			if bytes.Contains(cmd, secret) {
+				t.Fatalf("proposed command %d carries plaintext %q", i, secret)
+			}
+		}
+	}
+	got, err := svc.GetEntries(ctx, &GetEntriesRequest{LogRef: ref})
+	if err != nil || len(got.Entries) != len(entries) {
+		t.Fatalf("GetEntries = %+v, %v; want %d entries", got, err, len(entries))
+	}
+	for i, e := range got.Entries {
+		if !bytes.Equal(e.Body, entries[i]) {
+			t.Errorf("entry %d = %q, want %q", i, e.Body, entries[i])
+		}
+	}
+	head, err := svc.Head(ctx, &HeadRequest{LogRef: ref})
+	if err != nil || head.Head.Size != uint64(len(entries)) {
+		t.Fatalf("Head = %+v, %v; want size %d", head, err, len(entries))
+	}
+	for i, e := range entries {
+		p, err := svc.ProveInclusion(ctx, &InclusionRequest{LogRef: ref, Index: uint64(i), Size: head.Head.Size})
+		if err != nil {
+			t.Fatalf("ProveInclusion(%d): %v", i, err)
+		}
+		if err := proof.VerifyInclusion(rfc6962.DefaultHasher, uint64(i), head.Head.Size, rfc6962.DefaultHasher.HashLeaf(e), p.Hashes, head.Head.Root); err != nil {
+			t.Fatalf("VerifyInclusion(%d) of the plaintext: %v", i, err)
+		}
+	}
 }
 
 // assertNoPlaintext fails t when any file under dir holds any of secrets.
