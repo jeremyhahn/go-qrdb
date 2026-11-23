@@ -238,6 +238,68 @@ func TestGuardCommand_RefusesWhatCannotBeWrapped(t *testing.T) {
 	}
 }
 
+// TestGuardCommand_GuardedWriteCheckMergesItsGuard: a guarded write check
+// runs before the proposal; its error refuses the write, and the guard it
+// returns is wrapped beside the context's own. With guarded writes off the
+// command goes unguarded. A refusal of its guard is reported as the error
+// the refusal mapper names.
+func TestGuardCommand_GuardedWriteCheckMergesItsGuard(t *testing.T) {
+	cmd := []byte{kv.OpPut, 0, 0}
+	fence := mustDropFenceGuard(t, "acme", "orders")
+	epoch, err := NewWriteGuard(Compare{Key: []byte("__sys:isolation-epoch/acme"), Target: CompareValue, Result: CompareEqual, Value: []byte("e1")})
+	if err != nil {
+		t.Fatalf("NewWriteGuard: %v", err)
+	}
+	base := WithWriteGuard(context.Background(), fence)
+
+	refusal := errors.New("isolation policy unreadable")
+	refused := WithGuardedWriteCheck(base, func(context.Context) (WriteGuard, error) { return WriteGuard{}, refusal })
+	host, cmds := recordingHost(sm.Result{})
+	if _, err := propose(refused, host, 1, cmd); !errors.Is(err, refusal) {
+		t.Fatalf("propose with a failing guarded check: error = %v, want %v", err, refusal)
+	}
+	if len(*cmds) != 0 {
+		t.Fatal("a write whose guarded check failed was proposed")
+	}
+
+	ctx := WithGuardedWriteCheck(base, func(context.Context) (WriteGuard, error) { return epoch, nil })
+	got, err := guardCommand(ctx, nil, 1, cmd)
+	if err != nil {
+		t.Fatalf("guardCommand: %v", err)
+	}
+	want, err := fence.merge(epoch).wrap(cmd)
+	if err != nil {
+		t.Fatalf("wrap: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("the guarded check's guard was not wrapped beside the context guard")
+	}
+
+	off := &gatedHost{mockHost: &mockHost{}, enabled: map[uint64]bool{}}
+	if got, err := guardCommand(ctx, off, 1, cmd); err != nil || !bytes.Equal(got, cmd) {
+		t.Fatalf("guarded writes off: guardCommand = (%x, %v), want the command unguarded", got, err)
+	}
+
+	strict := errors.New("tenant is strict")
+	mapped := WithGuardRefusal(ctx, func(_ context.Context, e *WriteGuardRefusedError) error {
+		if e.Key == "__sys:isolation-epoch/acme" {
+			return strict
+		}
+		return nil
+	})
+	refusedHost, _ := recordingHost(sm.Result{Data: protocol.EncodeGuardRefusal([]byte("__sys:isolation-epoch/acme"))})
+	if _, err := propose(mapped, refusedHost, 1, cmd); !errors.Is(err, strict) || !errors.Is(err, ErrNotStored) {
+		t.Fatalf("refused epoch guard: error = %v, want the mapped error marked not stored", err)
+	}
+	if _, err := proposeWithMode(mapped, refusedHost, 1, cmd, writemode.Sync); !errors.Is(err, strict) {
+		t.Fatalf("proposeWithMode, refused epoch guard: error = %v, want the mapped error", err)
+	}
+	otherHost, _ := recordingHost(sm.Result{Data: protocol.EncodeGuardRefusal([]byte("other"))})
+	if res, err := propose(mapped, otherHost, 1, cmd); err != nil || !errors.As(checkResultError(res), new(*WriteGuardRefusedError)) {
+		t.Fatalf("refusal of another key: (%v, %v), want the refusal reported as before", res, err)
+	}
+}
+
 // The service-level fence verbs set the marker to the tombstone, to an
 // incarnation, or remove it, in the store the resolver names.
 func TestKeyspaceReclaimService_FenceAndUnfence(t *testing.T) {

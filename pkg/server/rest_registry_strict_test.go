@@ -15,8 +15,16 @@
 package server
 
 import (
+	"sync"
+
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"context"
 	"errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 	"io"
 	"log/slog"
 	"testing"
@@ -172,6 +180,137 @@ func TestRestRegistry_ResolvedHandleWriteRefusedAfterStrictTightening(t *testing
 	}
 	if got := string(shared.store["bt/system/still"]); got != "yes" {
 		t.Fatalf("shared store bt/system/still = %q, want yes", got)
+	}
+}
+
+// holdFirstProposalHost is a LocalBackend that, when armed, holds the next
+// proposal -- guarded or not -- after it was built and checked, until the
+// test releases it.
+type holdFirstProposalHost struct {
+	*backend.LocalBackend
+
+	mu   sync.Mutex
+	gate *proposalGate
+}
+
+func (h *holdFirstProposalHost) holdNext() *proposalGate {
+	g := &proposalGate{proposed: make(chan []byte, 1), release: make(chan struct{})}
+	h.mu.Lock()
+	h.gate = g
+	h.mu.Unlock()
+	return g
+}
+
+func (h *holdFirstProposalHost) SyncPropose(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error) {
+	h.mu.Lock()
+	g := h.gate
+	h.gate = nil
+	h.mu.Unlock()
+	if g != nil {
+		g.proposed <- cmd
+		<-g.release
+	}
+	return h.LocalBackend.SyncPropose(ctx, shardID, cmd)
+}
+
+func (h *holdFirstProposalHost) ProposeWithMode(ctx context.Context, shardID uint64, cmd []byte, _ writemode.Mode) (sm.Result, error) {
+	return h.SyncPropose(ctx, shardID, cmd)
+}
+
+// epochTenantSvc is floorTenantSvc reading the isolation epochs from the
+// system KV the shared store's writes go to, as the tenant service's system
+// store does.
+type epochTenantSvc struct {
+	*floorTenantSvc
+	system service.KVServicer
+}
+
+func (s *epochTenantSvc) IsolationEpochs(ctx context.Context, tenantID string) (map[string][]byte, error) {
+	out := map[string][]byte{}
+	for _, key := range tenant.IsolationEpochKeys(tenantID) {
+		value, err := s.system.Get(ctx, key)
+		var missing *service.KeyNotFoundError
+		if errors.As(err, &missing) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out[key] = value
+	}
+	return out, nil
+}
+
+// TestRestRegistry_WriteInFlightAcrossStrictTighteningIsRefused: a
+// shared-store write that passed the propose-time recheck and is in flight
+// when a tightening to strict writes its isolation epoch and commits is
+// refused at apply time, as the strict refusal, and stores nothing. A write
+// in flight across an epoch write with no tightening to strict is refused
+// by its guard alone and succeeds on its retry.
+func TestRestRegistry_WriteInFlightAcrossStrictTighteningIsRefused(t *testing.T) {
+	ctx := context.Background()
+	eng, err := engine.NewMVCCEngine(memory.NewStorage())
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	lb := backend.NewLocalBackend(eng)
+	t.Cleanup(func() { _ = lb.Close() })
+	host := &holdFirstProposalHost{LocalBackend: lb}
+	raw := rawServices(host)
+
+	rr, _ := newStrictSharedRegistry(t, tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyOperatorAccess, nil)
+	rr.dbReg.Register("system", raw)
+	floor := rr.tenantSvc.(*floorTenantSvc)
+	rr.tenantSvc = &epochTenantSvc{floorTenantSvc: floor, system: raw.KV}
+	kv, err := rr.KVService("bt", "system")
+	if err != nil {
+		t.Fatalf("KVService(operator-access): %v", err)
+	}
+	floorEpoch := tenant.IsolationEpochKeys("bt")[1]
+
+	inFlight := func(key string, during func()) error {
+		gate := host.holdNext()
+		errc := make(chan error, 1)
+		go func() { errc <- kv.Put(ctx, key, []byte("v")) }()
+		select {
+		case <-gate.proposed:
+		case err := <-errc:
+			t.Fatalf("Put %s returned %v before it was proposed", key, err)
+		}
+		during()
+		close(gate.release)
+		return <-errc
+	}
+
+	err = inFlight("inflight", func() {
+		if err := raw.KV.Put(ctx, floorEpoch, []byte("epoch-1")); err != nil {
+			t.Fatalf("epoch write: %v", err)
+		}
+		floor.floor = tenant.ClusterIsolationPolicyStrict
+	})
+	var strictErr *rest.StrictTenantSharedStoreError
+	if !errors.As(err, &strictErr) {
+		t.Fatalf("write in flight across the tightening: err = %v, want *rest.StrictTenantSharedStoreError", err)
+	}
+	if _, err := raw.KV.Get(ctx, "bt/system/inflight"); err == nil {
+		t.Fatal("the write in flight across the tightening reached the shared node-keyed store")
+	}
+
+	floor.floor = tenant.ClusterIsolationPolicyOperatorAccess
+	err = inFlight("twin", func() {
+		if err := raw.KV.Put(ctx, floorEpoch, []byte("epoch-2")); err != nil {
+			t.Fatalf("epoch write: %v", err)
+		}
+	})
+	var refused *service.WriteGuardRefusedError
+	if !errors.As(err, &refused) || errors.As(err, &strictErr) {
+		t.Fatalf("write in flight across a non-strict epoch write: err = %v, want the guard refusal", err)
+	}
+	if err := kv.Put(ctx, "twin", []byte("v")); err != nil {
+		t.Fatalf("retry after the epoch write: %v", err)
+	}
+	if got, err := raw.KV.Get(ctx, "bt/system/twin"); err != nil || string(got) != "v" {
+		t.Fatalf("bt/system/twin = (%q, %v), want v", got, err)
 	}
 }
 

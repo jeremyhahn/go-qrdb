@@ -212,6 +212,73 @@ func CheckWrite(ctx context.Context) error {
 	return nil
 }
 
+// guardedWriteCheckKey is the context key for the request's guarded write
+// checks.
+type guardedWriteCheckKey struct{}
+
+// WithGuardedWriteCheck returns a context whose writes run check before they
+// are proposed, after any check ctx already carries, and carry the guard it
+// returns beside the context's own (WithWriteGuard); its error refuses the
+// write. The guard is read at propose time and decided at apply time: check
+// reads the values the write depends on, and the guard it returns compares
+// them, in the write's own Raft command, on every replica. It is for a
+// policy a concurrent change records in the log before it acts, such as a
+// tenant's isolation epoch. Like every guard it is enforced only once
+// featuregate.GuardedWrites is on (guardCommand). A nil check returns ctx
+// unchanged.
+func WithGuardedWriteCheck(ctx context.Context, check func(context.Context) (WriteGuard, error)) context.Context {
+	if check == nil {
+		return ctx
+	}
+	existing, _ := ctx.Value(guardedWriteCheckKey{}).([]func(context.Context) (WriteGuard, error))
+	checks := append(append([]func(context.Context) (WriteGuard, error)(nil), existing...), check)
+	return context.WithValue(ctx, guardedWriteCheckKey{}, checks)
+}
+
+// guardRefusalKey is the context key for the request's guard refusal
+// mappers.
+type guardRefusalKey struct{}
+
+// WithGuardRefusal returns a context whose writes report a refused guard
+// (*WriteGuardRefusedError) as the first non-nil error a mapper returns,
+// marked ErrNotStored; a mapper returning nil leaves the refusal to the
+// next, and the write reports it as before. It names the precondition a
+// WithGuardedWriteCheck guard records. A nil mapper returns ctx unchanged.
+func WithGuardRefusal(ctx context.Context, refused func(context.Context, *WriteGuardRefusedError) error) context.Context {
+	if refused == nil {
+		return ctx
+	}
+	existing, _ := ctx.Value(guardRefusalKey{}).([]func(context.Context, *WriteGuardRefusedError) error)
+	mappers := append(append([]func(context.Context, *WriteGuardRefusedError) error(nil), existing...), refused)
+	return context.WithValue(ctx, guardRefusalKey{}, mappers)
+}
+
+// mapGuardRefusal applies ctx's guard refusal mappers (WithGuardRefusal) to
+// a proposal's result.
+func mapGuardRefusal(ctx context.Context, result sm.Result, err error) (sm.Result, error) {
+	if err != nil {
+		return result, err
+	}
+	mappers, _ := ctx.Value(guardRefusalKey{}).([]func(context.Context, *WriteGuardRefusedError) error)
+	if len(mappers) == 0 {
+		return result, nil
+	}
+	key, refused := protocol.DecodeGuardRefusal(result.Data)
+	if !refused {
+		return result, nil
+	}
+	wr, ok := guardRefusalError(key).(*WriteGuardRefusedError)
+	if !ok {
+		return result, nil
+	}
+	for _, m := range mappers {
+		if mapped := m(ctx, wr); mapped != nil {
+			return sm.Result{}, markNotStored(mapped)
+		}
+	}
+	return result, nil
+}
+
 // containsFrame reports whether frames already holds an encoded compare
 // equal to f.
 func containsFrame(frames [][]byte, f []byte) bool {
@@ -232,6 +299,14 @@ func guardCommand(ctx context.Context, host Host, shardID uint64, cmd []byte) ([
 		return nil, err
 	}
 	g := WriteGuardFrom(ctx)
+	checks, _ := ctx.Value(guardedWriteCheckKey{}).([]func(context.Context) (WriteGuard, error))
+	for _, check := range checks {
+		checked, err := check(ctx)
+		if err != nil {
+			return nil, err
+		}
+		g = g.merge(checked)
+	}
 	if g.IsZero() {
 		return cmd, nil
 	}
@@ -257,7 +332,8 @@ func propose(ctx context.Context, host Host, shardID uint64, cmd []byte) (sm.Res
 	if err != nil {
 		return sm.Result{}, err
 	}
-	return host.SyncPropose(ctx, shardID, guarded)
+	result, err := host.SyncPropose(ctx, shardID, guarded)
+	return mapGuardRefusal(ctx, result, err)
 }
 
 // proposeWithMode is propose for a write with an explicit durability mode.
@@ -266,5 +342,6 @@ func proposeWithMode(ctx context.Context, host Host, shardID uint64, cmd []byte,
 	if err != nil {
 		return sm.Result{}, err
 	}
-	return host.ProposeWithMode(ctx, shardID, guarded, mode)
+	result, err := host.ProposeWithMode(ctx, shardID, guarded, mode)
+	return mapGuardRefusal(ctx, result, err)
 }

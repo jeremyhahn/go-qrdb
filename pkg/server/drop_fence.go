@@ -44,11 +44,21 @@ type dbGuard struct {
 	// (service.WithWriteCheck): the shared-store view's recheck of the
 	// tenant's isolation policy (restServiceRegistry.strictWriteCheck).
 	check func(context.Context) error
+	// guardCheck, when set, is run before each write is proposed and
+	// returns a guard the write carries beside guard
+	// (service.WithGuardedWriteCheck): the shared-store view's isolation
+	// epoch guard (restServiceRegistry.strictWriteGuard), read at propose
+	// time and decided at apply time. refusal names its refusal
+	// (service.WithGuardRefusal).
+	guardCheck func(context.Context) (service.WriteGuard, error)
+	refusal    func(context.Context, *service.WriteGuardRefusedError) error
 }
 
-// scope returns ctx carrying the view's write guard and write check.
+// scope returns ctx carrying the view's write guard, write check, guarded
+// write check and refusal mapper.
 func (g dbGuard) scope(ctx context.Context) context.Context {
-	return service.WithWriteCheck(service.WithWriteGuard(ctx, g.guard), g.check)
+	ctx = service.WithWriteCheck(service.WithWriteGuard(ctx, g.guard), g.check)
+	return service.WithGuardRefusal(service.WithGuardedWriteCheck(ctx, g.guardCheck), g.refusal)
 }
 
 // dropFence is the check-then-write fence the vector view still uses.
