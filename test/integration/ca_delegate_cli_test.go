@@ -295,13 +295,29 @@ func grantDelegationDataRole(t *testing.T, n *node.Node, tenantID string) {
 	if err != nil {
 		t.Fatalf("CreateRole(%s): %v", tenantID, err)
 	}
-	admin, err := svc.User.GetUserByUsername(ctx, tenantID, tenantID+"-admin")
-	if err != nil {
-		t.Fatalf("GetUserByUsername(%s): %v", tenantID, err)
-	}
-	if _, err := svc.User.UpdateUser(ctx, &user.UpdateUserRequest{
-		ID: admin.ID, RoleIDs: append(slices.Clone(admin.RoleIDs), r.ID),
-	}); err != nil {
+	// The read-modify-write below races any other write to the admin row
+	// (node start-up, onboarding): the store's optimistic-concurrency check
+	// then refuses the stale write with a *user.ConcurrentUpdateError, a
+	// documented retryable conflict. Re-read and retry a bounded number of
+	// times; any other error, or a conflict on the last attempt, is fatal.
+	const maxAttempts = 5
+	for attempt := 1; ; attempt++ {
+		admin, err := svc.User.GetUserByUsername(ctx, tenantID, tenantID+"-admin")
+		if err != nil {
+			t.Fatalf("GetUserByUsername(%s): %v", tenantID, err)
+		}
+		if slices.Contains(admin.RoleIDs, r.ID) {
+			return
+		}
+		_, err = svc.User.UpdateUser(ctx, &user.UpdateUserRequest{
+			ID: admin.ID, RoleIDs: append(slices.Clone(admin.RoleIDs), r.ID),
+		})
+		if err == nil {
+			return
+		}
+		if attempt < maxAttempts && errors.As(err, new(*user.ConcurrentUpdateError)) {
+			continue
+		}
 		t.Fatalf("UpdateUser(%s): %v", tenantID, err)
 	}
 }
