@@ -120,9 +120,6 @@ github.com/jeremyhahn/go-qrdb/pkg/clustermig	KV	Put	true	true	true	19	pkg/cluste
 github.com/jeremyhahn/go-qrdb/pkg/clustermig	KV	Scan	true	true	true	19	pkg/clustermig/store.go	58
 github.com/jeremyhahn/go-qrdb/pkg/clustermig	LocalRecycler	Recycle	true	true	true	1	pkg/clustermig/reconciler.go	52
 github.com/jeremyhahn/go-qrdb/pkg/clustermig	OwnerResolver	Owners	true	true	true	1	pkg/clustermig/coordinator.go	31
-github.com/jeremyhahn/go-qrdb/pkg/codec	Codec	Marshal	true	true	true	6	pkg/codec/codec.go	38
-github.com/jeremyhahn/go-qrdb/pkg/codec	Codec	Type	true	true	true	6	pkg/codec/codec.go	44
-github.com/jeremyhahn/go-qrdb/pkg/codec	Codec	Unmarshal	true	true	true	6	pkg/codec/codec.go	41
 github.com/jeremyhahn/go-qrdb/pkg/custodian	Servicer	GetCustodian	true	false	false	1	pkg/custodian/service.go	60
 github.com/jeremyhahn/go-qrdb/pkg/custodian	Servicer	ListCustodians	true	false	false	1	pkg/custodian/service.go	63
 github.com/jeremyhahn/go-qrdb/pkg/custodian	Servicer	RegisterCustodian	true	false	false	1	pkg/custodian/service.go	56
