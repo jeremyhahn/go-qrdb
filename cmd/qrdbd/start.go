@@ -1839,9 +1839,9 @@ func runStart(f *startFlags) (err error) {
 				// A prefix tenant's plain database is materialized in
 				// its own store under its binding root, written through
 				// the node encryptor (docs/databases/architecture.md).
-				bf := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: f.dataDir, Defaults: dbDefaults}, enc, f.storageConfig,
-					lifecycle.TenantServiceBindingLookup(func() tenant.TenantServicer { return bindingTenants }), watchHubOpts...).
-					WithTenantEncryptors(lifecycle.TenantBarrierEncryptorLookup(func() *seal.BarrierRegistry { return bindingBarriers }))
+				bf := lifecycle.NewNodeBindingFactory(f.dataDir, dbDefaults, enc, f.storageConfig,
+					func() tenant.TenantServicer { return bindingTenants },
+					func() *seal.BarrierRegistry { return bindingBarriers }, watchHubOpts...)
 				if err := dbManager.SetBackendFactory(bf); err != nil {
 					_ = local.Close()
 					_ = stg.Close()

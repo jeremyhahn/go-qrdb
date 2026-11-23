@@ -142,6 +142,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
@@ -1761,7 +1762,12 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager := n.newStandaloneDatabaseManager(pending.dataDir, pending.cfg)
+	dbManager, err := n.newStandaloneDatabaseManager(pending.dataDir, pending.cfg, encryptor)
+	if err != nil {
+		_ = n.stg.Close()
+		n.stg = nil
+		return err
+	}
 
 	// The effective capability profile of THIS node: NewStandaloneNode is
 	// the raft-free composition by construction, so the profile is computed
@@ -1943,11 +1949,27 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 // database it records, and to the server, so a named database resolves
 // through the server's registry, is confined to its owning tenant, and is
 // refused while sealed. The manager carries the node's database_defaults
-// (standaloneDatabaseDefaults), as the daemon's does.
-func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Config) *database.Manager {
-	dbManager := database.NewManager(n.logger, dataDir, database.WithDefaults(standaloneDatabaseDefaults(cfg)))
+// (standaloneDatabaseDefaults), as the daemon's does, and the daemon's binding
+// factory (lifecycle.NewNodeBindingFactory): a database is materialized in its
+// own store under its binding root, sealed under enc, with its tenant and
+// tenant barrier resolved live from the services built after the manager.
+func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Config, enc *atrest.Encryptor) (*database.Manager, error) {
+	defaults := standaloneDatabaseDefaults(cfg)
+	dbManager := database.NewManager(n.logger, dataDir, database.WithDefaults(defaults))
+	bf := lifecycle.NewNodeBindingFactory(dataDir, defaults, enc, cfg.Storage,
+		func() tenant.TenantServicer {
+			if svcNode := n.svcNode.Load(); svcNode != nil {
+				return svcNode.Tenant
+			}
+			return nil
+		},
+		n.barrierRegistry.Load, n.watchHubOpts...)
+	if err := dbManager.SetBackendFactory(bf); err != nil {
+		_ = dbManager.Close()
+		return nil, err
+	}
 	n.dbManager = dbManager
-	return dbManager
+	return dbManager, nil
 }
 
 // closeDatabaseManager closes the node's database catalog, if open.
@@ -3170,7 +3192,11 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager := n.newStandaloneDatabaseManager(dataDir, cfg)
+	dbManager, err := n.newStandaloneDatabaseManager(dataDir, cfg, nil)
+	if err != nil {
+		_ = n.stg.Close()
+		return nil, err
+	}
 
 	// Per-instance effective capability profile: standalone semantics by
 	// construction (see completeStandaloneBoot for the rationale).

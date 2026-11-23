@@ -249,6 +249,19 @@ func TenantBarrierEncryptorLookup(get func() *seal.BarrierRegistry) func(string)
 	}
 }
 
+// NewNodeBindingFactory is the one binding factory a standalone node -- qrdbd
+// and the embedded sdk/go/node standalone node alike -- installs on its
+// database manager: bindings rooted under dataDir with the node's
+// database_defaults, sealed under enc, with a database's tenant and its
+// tenant barrier resolved live through tenants and barriers. Both lookups are
+// late-bound because the tenant service and the barrier registry exist only
+// once the services are built, after the manager.
+func NewNodeBindingFactory(dataDir string, defaults database.Defaults, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig, tenants func() tenant.TenantServicer, barriers func() *seal.BarrierRegistry, hubOpts ...watch.HubOption) *LocalBindingFactory {
+	return NewLocalBindingFactory(database.BindingNode{DataDir: dataDir, Defaults: defaults}, enc, storageCfg,
+		TenantServiceBindingLookup(tenants), hubOpts...).
+		WithTenantEncryptors(TenantBarrierEncryptorLookup(barriers))
+}
+
 // encryptor returns the encryptor b's store is written through, by its
 // encryptor scope: the node encryptor for EncryptorNode, the tenant's barrier
 // for EncryptorTenant. A tenant-scoped binding never falls back to the node
