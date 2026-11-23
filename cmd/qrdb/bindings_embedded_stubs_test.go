@@ -137,7 +137,7 @@ func TestSealBinding_Stub_Initialize(t *testing.T) {
 func TestSealBinding_Stub_InitializeShamir(t *testing.T) {
 	log := testLogger(t)
 	b := NewSealBinding(log, nil, nil)
-	_, err := b.InitializeShamir("secret", 3, 5)
+	_, err := b.InitializeShamir(3, 5, "any-enrolled")
 	var fde *FeatureDisabledError
 	if !errors.As(err, &fde) {
 		t.Fatalf("expected FeatureDisabledError, got %T: %v", err, err)
