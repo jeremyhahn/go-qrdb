@@ -134,8 +134,9 @@ func (c *NetworkConnector) getOrCreateTransport(ctx context.Context) (sqlTranspo
 		return nil, &UnsupportedSchemeError{Scheme: c.cfg.Scheme}
 	}
 
-	opts := []transport.Option{transport.WithAddress(c.cfg.Host)}
-	if c.cfg.CAFile != "" || c.cfg.CertFile != "" || c.cfg.KeyFile != "" {
+	tlsOn := c.cfg.CAFile != "" || c.cfg.CertFile != "" || c.cfg.KeyFile != ""
+	opts := []transport.Option{transport.WithAddress(networkAddress(c.cfg.Scheme, c.cfg.Host, tlsOn))}
+	if tlsOn {
 		opts = append(opts, transport.WithTLS(c.cfg.CertFile, c.cfg.KeyFile, c.cfg.CAFile))
 	}
 	if c.cfg.TokenSource != nil {
@@ -153,4 +154,18 @@ func (c *NetworkConnector) getOrCreateTransport(ctx context.Context) (sqlTranspo
 
 	c.transport = tr
 	return tr, nil
+}
+
+// networkAddress is the address the scheme's transport dials. The REST
+// client joins request paths onto its address as a base URL, so a rest://
+// DSN's host:port becomes https://host:port when TLS is configured and
+// http://host:port otherwise; gRPC dials host:port as it is.
+func networkAddress(scheme, host string, tlsOn bool) string {
+	if scheme != SchemeREST {
+		return host
+	}
+	if tlsOn {
+		return "https://" + host
+	}
+	return "http://" + host
 }

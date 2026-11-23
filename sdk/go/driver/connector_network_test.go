@@ -200,6 +200,42 @@ func TestNetworkConnector_NoTokenSourceSendsNoBearer(t *testing.T) {
 	}
 }
 
+// TestNetworkConnector_TransportAddress: the REST client joins request paths
+// onto its address as a base URL, so a rest:// host:port is dialled as
+// https:// with TLS and http:// without; grpc:// dials host:port as it is.
+func TestNetworkConnector_TransportAddress(t *testing.T) {
+	for _, tc := range []struct {
+		dsn  string
+		want string
+	}{
+		{"rest://localhost:63001/mydb?ca=ca.pem", "https://localhost:63001"},
+		{"rest://localhost:63001/mydb", "http://localhost:63001"},
+		{"grpc://localhost:63002/mydb?ca=ca.pem", "localhost:63002"},
+		{"grpc://localhost:63002/mydb", "localhost:63002"},
+	} {
+		t.Run(tc.dsn, func(t *testing.T) {
+			cfg, err := ParseDSN(tc.dsn)
+			if err != nil {
+				t.Fatalf("ParseDSN: %v", err)
+			}
+			var captured []transport.Option
+			withCapturingStubTransport(t, cfg.Scheme, &stubTransport{client: &fakeSQLClient{}}, &captured)
+
+			connector := NewNetworkConnector(cfg)
+			defer func() { _ = connector.Close() }()
+			conn, err := connector.Connect(context.Background())
+			if err != nil {
+				t.Fatalf("Connect: %v", err)
+			}
+			_ = conn.Close()
+
+			if got := transport.ApplyOptions(captured...).Address; got != tc.want {
+				t.Errorf("Address = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestNetworkConnector_GRPCUsesGRPCTransport verifies a grpc:// DSN builds a
 // gRPC transport.
 //
