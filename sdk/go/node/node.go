@@ -4594,6 +4594,17 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 	if svcNode.Barrier != nil {
 		opts = append(opts, embedded.WithBarrierService(svcNode.Barrier))
 	}
+	// The seal store (named secrets sealed under the node barrier) is
+	// embedded-only (ruling 1234): no network transport serves its data, so
+	// this is the one place it is wired. Without it every SealStoreClient
+	// verb on node.Client() answered "SealStore must not be nil".
+	if barrier := n.barrier.Load(); barrier != nil {
+		sealStore, err := seal.NewSealStore(barrier, seal.SealStoreDefaultPrefix, slog.Default())
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, embedded.WithSealStore(sealStore))
+	}
 	// The tenant surface was never wired here, so every TenantClient verb on
 	// node.Client() answered "TenantServicer must not be nil" while the same
 	// verbs worked on every network transport of the same node.
