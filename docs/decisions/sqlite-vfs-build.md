@@ -1,13 +1,13 @@
 # SQLite VFS backend: answers to the open questions that block a build decision
 
-> **Status: ACCEPTED — Q1-Q5 A adopted (Tenant Agent ruling 1115), 2026-11-22; SQLite engine dependency pending the owner (owner queue 288)** · Scope: go-qrdb
+> **Status: ACCEPTED — Q1-Q5 A adopted (Tenant Agent ruling 1115), 2026-11-22; SQLite engine dependency `modernc.org/sqlite` approved by owner ruling 1234 and in** · Scope: go-qrdb
 > Last verified: 2026-11-23
 > SPEC row: `sqlite-vfs` (future). This record answers the five open questions
 > of [../sqlite-vfs/architecture.md](../sqlite-vfs/architecture.md)
 > ("Decided questions"). Each question lists its
 > options, the dependency each option needs, a recommendation and the reason.
-> Q1-Q5 were adopted under ruling 1115; the SQLite engine dependency is the
-> owner's open call.
+> Q1-Q5 were adopted under ruling 1115; owner ruling 1234 approved the SQLite
+> engine dependency, `modernc.org/sqlite`.
 
 ## Problem
 
@@ -35,8 +35,8 @@ needs an API a lower project's main lacks.
 A SQLite engine binding is a third-party dependency, not a lower project:
 `modernc.org/sqlite` (pure Go) for tier 1, or `mattn/go-sqlite3` (CGo) in a
 separate Go module. Adding it is a `go.mod` change made by the build lane,
-not by this record. That dependency is pending the owner (owner queue 288);
-no SQLite engine is imported until he answers.
+not by this record. Owner ruling 1234 approved `modernc.org/sqlite` (owner
+queue 288); it is in `go.mod` at v1.63.0.
 
 ## Q1. WAL-mode support
 
@@ -277,7 +277,7 @@ The Tenant ordered the row ready; Q1-Q5 were then decided by convention under
 ruling 109 and adopted by Tenant Agent ruling 1115 (2026-11-22). Ruling 1115
 states Q2 A as a feature-gated, server-side prefix-move publish op that the
 namespace, confinement and quota wrappers rewrite, and holds the SQLite engine
-dependency for the owner (owner queue 288):
+dependency for the owner (owner queue 288, approved by owner ruling 1234):
 
 - **Q1 = A**: batch-atomic only, no WAL, no `xShmMap`; the true journal mode
   is reported.
@@ -333,8 +333,10 @@ Built so far (unwired):
   --allow-sqlite-vfs`, `qrdb tenant update-quotas --max-sqlite-databases`
   and the config defaults.
 
-Still to come: the SQLite engine
-binding and VFS registration (blocked: owner queue 288); the server
+Built since: the tier 1 binding on `modernc.org/sqlite` (owner ruling 1234),
+`moderncvfs.Register`, registering VFS `qrdb` over the page store.
+
+Still to come: the server
 constructing a Store for a caller (open for the owner, o1), which is also
 where `sqlitevfs.Admit` is called: only that caller waits on o1.
 Registering `sqlitevfs.CountDatabases` as the `sqlite_databases` quota

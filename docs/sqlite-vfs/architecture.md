@@ -139,7 +139,7 @@ assume durable commits.
 
 | Tier | Consumer | Change required |
 |---|---|---|
-| 1 | Go applications | Import the VFS package, open `file:app.db?vfs=qrdb`. Pure-Go via `modernc.org/sqlite` (no CGo) or registered on `mattn/go-sqlite3`. |
+| 1 | Go applications | Import the VFS package, open `file:app.db?vfs=qrdb`. Pure-Go via `modernc.org/sqlite` (no CGo): package `pkg/sqlitevfs/moderncvfs`, registered with `moderncvfs.Register`; or registered on `mattn/go-sqlite3`. |
 | 2 | Any language | A loadable extension (`.so`/`.dylib`) registering the VFS; apps change only the connection string (`?vfs=qrdb`) or `SQLITE_VFS` default. |
 | 3 | Unmodified binaries | `LD_PRELOAD` shim or a LiteFS-style FUSE mount. Zero application changes. |
 
