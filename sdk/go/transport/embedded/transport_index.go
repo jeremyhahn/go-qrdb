@@ -58,6 +58,7 @@ func (t *Transport) IndexCreate(ctx context.Context, name, fieldName string, con
 		// rather than leaving it zero, or an ordinary index created over this
 		// transport folds case (go-qrdb#34).
 		CaseSensitive: !config.CaseInsensitive,
+		KeyPrefix:     config.KeyPrefix,
 	}
 	return translateError(t.indexSvc.CreateIndex(ctx, name, fieldName, idxConfig))
 }

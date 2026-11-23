@@ -2264,6 +2264,10 @@ message IndexCreateRequest {
     // a case-SENSITIVE index -- the behaviour requests predating it were
     // created under (go-qrdb#34).
     bool case_insensitive = 6;
+    // key_prefix is the key scope the index covers, relative to the namespace
+    // the server gives the index name: only keys under it are indexed, and a
+    // unique index is unique only among them. Empty covers every key.
+    string key_prefix = 7;
 }
 
 // IndexDropRequest removes a secondary index.
