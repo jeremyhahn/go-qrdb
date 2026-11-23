@@ -463,6 +463,48 @@ the Raft group its tenant resolves to (`r.raft(ctx, tenantID)`).
 - Open: there is no re-encryption of sealed log records on root-key
   compromise, because the barrier offers none for any value.
 
+## rw1613w4 (option A on a standalone node; proof list against the tip)
+
+- Standalone result: `TestVlog_CLI_BarrierDatabase_Standalone_PerProtocol`
+  (`test/integration/vlog_barrier_tenant_cli_test.go`) boots a standalone
+  node (`startStandaloneModeNode`, pebble) and runs the clustered test's body
+  on every transport: create a barrier database, unsealed
+  create/append/get/prove-inclusion/prove-consistency/head/sign-head, no
+  entry in plaintext under the node's data root or the database's directory,
+  sealed refused, wrong secret refused, unsealed log unchanged and grows,
+  gone after drop. It passed first: `logRoute.resolve` wraps
+  `r.raft(ctx, tenantID)`, and on a standalone node the resolver answers the
+  node's local store, so `barrierDatabaseTarget` seals the logs there with
+  no second store type. No code change, no CHANGELOG line.
+- Stale text fixed: audit row 8 (parent group / local store, the rw1613w3
+  tests; the deleted `TestLogService_BarrierDatabaseCommitFailureRestores`
+  removed), slice c, the review-fix barrier-database bullet;
+  `docs/audit/engineering.md` lists sub-types 1 to 10 for
+  `pkg/protocol/vlog.go`; `docs/databases/architecture.md` and `user.md` name
+  the standalone case and drop "its own store". The fx1655c and Codex-verify
+  residuals above that mention the database's own store are history,
+  superseded by rw1613w3. Left: `docs/databases/api.md` (the "own barrier"
+  sentence of the log section) is outside this lane's paths.
+- Proof list: every test named in rows 1 to 17 was found on the tip, except
+  row 15's `TestWithHeadSignerProvider_ReachesTheServer`, now named by the
+  tests that prove it (`TestResolveCryptoOptions_SurfacesTheHeadSignerProvider`,
+  `TestMergeSeamOptions_FoldsNodeOptionsIntoTheServerOptions`,
+  `TestWithHeadSignerProvider_ReachesCryptoOptions`), and row 9's elided
+  `TestClusteredCreateFunc_LogRegistryPerReplica` written out.
+- Commands, each passing: `go test -count=1 -tags=codec_json,raft,qrdb_vlog
+  -run '^(...)$'` over the named tests of `./pkg/service/` (22),
+  `./pkg/vlog/`, `./pkg/server/lifecycle/`, `./pkg/store/`, `./pkg/engine/`,
+  `./pkg/statemachine/`, `./pkg/server/`, and in `sdk/go` `./node/` and
+  `./server/` (23 between them). Without `qrdb_vlog` the `seams_vlog_test.go`
+  tests compile out, so run them with it. Integration
+  (`-tags=codec_json,raft,integration`): the six barrier, drop and per-verb
+  CLI tests and `TestVlog_CLI_TenantConfinement_PerProtocol`, every transport.
+- `./pkg/service/` whole: green on the Makefile's `BUILD_TAGS` (`codec_json
+  raft qrdb_ts qrdb_vector qrdb_vlog qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd
+  qrdb_embedded`). With `-tags=codec_json,raft` alone the vector tests fail
+  "vector support not compiled" (they need `qrdb_vector`); this lane changed
+  no Go code in the package, so that is the tag set, not a regression.
+
 ## Out of scope
 
 The go-xkms provider and transparency log (the seam rows on the other side);
