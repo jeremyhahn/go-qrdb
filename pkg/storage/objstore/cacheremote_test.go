@@ -677,6 +677,45 @@ func TestCachedRemote_CloseReleasesRoot(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestCachedRemote_SecondOpenLeavesALiveWritersTempFile pins that a
+// CachedRemote owns its directory before it sweeps temporaries: a second
+// open on a directory a live instance holds fails and unlinks nothing, so
+// the live instance's in-flight temp file and its next publication survive.
+func TestCachedRemote_SecondOpenLeavesALiveWritersTempFile(t *testing.T) {
+	dir := t.TempDir()
+	rs := newTestRemote(t, memory.New(), "db1")
+	counting := &countingRemote{Storage: rs}
+	live := newTestCachedRemote(t, counting, dir)
+
+	f, tmp, err := live.createTemp()
+	require.NoError(t, err)
+	_, err = f.Write([]byte("in flight"))
+	require.NoError(t, err)
+
+	second, err := NewCachedRemote(rs, dir)
+	require.Error(t, err)
+	require.Nil(t, second)
+	_, err = os.Stat(filepath.Join(dir, tmp))
+	require.NoError(t, err, "the live instance's temp file survives a second open")
+	require.NoError(t, f.Close())
+	require.NoError(t, live.root.Remove(tmp))
+
+	w, err := live.CreateObject("000023.sst")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("published"))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	got, err := readAll(live, "000023.sst")
+	require.NoError(t, err)
+	require.Equal(t, "published", string(got))
+	require.Zero(t, counting.reads.Load(), "the write was published to the cache")
+
+	require.NoError(t, live.Close())
+	reopened, err := NewCachedRemote(rs, dir)
+	require.NoError(t, err, "Close releases the directory")
+	require.NoError(t, reopened.Close())
+}
+
 func TestCachedRemote_StoreLeavesNoTemporary(t *testing.T) {
 	dir := t.TempDir()
 	rs := newTestRemote(t, memory.New(), "db1")

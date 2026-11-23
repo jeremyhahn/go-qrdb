@@ -29,7 +29,13 @@ import (
 	"sync"
 
 	"github.com/cockroachdb/pebble/v2/objstorage/remote"
+	"github.com/cockroachdb/pebble/v2/vfs"
 )
+
+// cacheLockSuffix names the lock file a CachedRemote holds for as long as
+// it owns its directory: the directory's own path plus this suffix, a
+// sibling, so the directory itself holds only cached objects.
+const cacheLockSuffix = ".lock"
 
 // cacheTempSuffix ends the name of a cache file still being written.
 const cacheTempSuffix = ".tmp"
@@ -65,6 +71,10 @@ const cacheTempSuffix = ".tmp"
 type CachedRemote struct {
 	inner remote.Storage
 	root  *os.Root
+	// dirLock is the OS lock on dir+cacheLockSuffix, held from before the
+	// temp-file sweep until Close, so a second CachedRemote on the same
+	// directory fails instead of unlinking a live writer's temp file.
+	dirLock io.Closer
 
 	mu     sync.Mutex
 	locks  map[string]*objLock
@@ -135,22 +145,30 @@ func NewCachedRemote(inner remote.Storage, dir string) (*CachedRemote, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := fs.ReadDir(root.FS(), ".")
+	// Own the directory before touching its temp files: another live
+	// CachedRemote on it may be mid-write.
+	dirLock, err := vfs.Default.Lock(filepath.Clean(dir) + cacheLockSuffix)
 	if err != nil {
 		_ = root.Close()
 		return nil, err
+	}
+	fail := func(err error) (*CachedRemote, error) {
+		return nil, errors.Join(err, dirLock.Close(), root.Close())
+	}
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return fail(err)
 	}
 	for _, e := range entries {
 		// A cached object whose escaped name ends in the suffix is removed
 		// too; that costs one refetch, never a wrong read.
 		if strings.HasSuffix(e.Name(), cacheTempSuffix) {
 			if err := root.Remove(e.Name()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				_ = root.Close()
-				return nil, err
+				return fail(err)
 			}
 		}
 	}
-	return &CachedRemote{inner: inner, root: root, locks: make(map[string]*objLock)}, nil
+	return &CachedRemote{inner: inner, root: root, dirLock: dirLock, locks: make(map[string]*objLock)}, nil
 }
 
 // name returns the name, in the cache dir's root, of the cache file of the
@@ -288,7 +306,7 @@ func (c *CachedRemote) Close() error {
 		return nil
 	}
 	c.closed = true
-	return c.root.Close()
+	return errors.Join(c.dirLock.Close(), c.root.Close())
 }
 
 // cacheTempAttempts bounds the names createTemp tries before giving up.
