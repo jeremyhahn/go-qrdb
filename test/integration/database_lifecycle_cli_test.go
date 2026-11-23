@@ -20,7 +20,7 @@
 // (REST, gRPC, QUIC, MCP, Unix), using the shared startMultiProtocolNode
 // harness (multi_protocol_helpers_test.go). It closes the CLI coverage
 // audit's two biggest database-command gaps: `update-protocol`,
-// `update-raft`, `update-barrier`, `update-connection`, and `scale` had zero
+// `update-raft`, `update-barrier`, `update-connection` (since removed), and `scale` had zero
 // integration coverage of any kind, and the whole command tree was
 // previously exercised only on the default (REST) transport.
 //
@@ -42,8 +42,7 @@ import (
 )
 
 // TestDatabaseLifecycle_CLI_PerProtocol drives database create / list / info
-// / update-protocol / update-raft / update-barrier / update-connection /
-// scale / drop through the CLI binary against every transport, sharing one
+// / update-protocol / update-raft / update-barrier / scale / drop through the CLI binary against every transport, sharing one
 // multiProtoNode. Each protocol subtest operates on its own uniquely-named
 // database(s) so protocols never contend over the same resource.
 func TestDatabaseLifecycle_CLI_PerProtocol(t *testing.T) {
@@ -74,8 +73,7 @@ func cliDatabaseInfo(t *testing.T, node *multiProtoNode, proto multiProtocol, na
 }
 
 // testDatabaseLifecycleOverProtocol exercises database create, list, info,
-// update-protocol, update-raft, update-barrier, update-connection, scale,
-// and drop against a single protocol.
+// update-protocol, update-raft, update-barrier, scale, and drop against a single protocol.
 func testDatabaseLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
 	t.Helper()
 
@@ -161,22 +159,6 @@ func testDatabaseLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto
 	out, err = runCLIProto(t, node, proto, "database", "update-barrier", dbName, "--disabled")
 	if err != nil {
 		t.Fatalf("[%s] database update-barrier %s --disabled: %v\noutput: %s", proto.name, dbName, err, out)
-	}
-
-	// --- update-connection ---------------------------------------------
-	out, err = runCLIProto(t, node, proto, "database", "update-connection", dbName,
-		"--conn-transport", "tcp", "--address", "127.0.0.1:59999")
-	if err != nil {
-		t.Fatalf("[%s] database update-connection %s: %v\noutput: %s", proto.name, dbName, err, out)
-	}
-	info = cliDatabaseInfo(t, node, proto, dbName)
-	if info.Connection == nil || info.Connection.Address != "127.0.0.1:59999" || info.Connection.Transport != "tcp" {
-		t.Fatalf("[%s] database info %s after update-connection: Connection = %+v, want {tcp 127.0.0.1:59999}", proto.name, dbName, info.Connection)
-	}
-	// An empty address must fail closed (ConnectionRequiredError).
-	out, err = runCLIProto(t, node, proto, "database", "update-connection", dbName, "--conn-transport", "tcp")
-	if err == nil {
-		t.Fatalf("[%s] database update-connection %s with no --address succeeded, want error (output: %s)", proto.name, dbName, out)
 	}
 
 	// --- scale -------------------------------------------------------

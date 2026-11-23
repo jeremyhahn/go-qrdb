@@ -241,31 +241,6 @@ func TestCLIStorageMatrixUpdateOperations(t *testing.T) {
 					fmt.Sprintf("[%s] shared-store barrier rejection should name the dedicated-store requirement", proto))
 				t.Logf("[%s] update-barrier --enabled correctly rejected on shared store", proto)
 
-				// Update 5: update-connection --conn-transport tcp --address remote:9000
-				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
-					"database", "update-connection", dbName,
-					"--conn-transport", "tcp",
-					"--address", "remote:9000")
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] database update-connection failed: %v", proto, err)
-				}
-				output = stdout + stderr
-				assertNotEmpty(t, output,
-					fmt.Sprintf("[%s] database update-connection produced no output", proto))
-				t.Logf("[%s] update-connection --transport tcp passed", proto)
-
-				// Verify update-connection via info.
-				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "info", dbName)
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] database info after update-connection failed: %v", proto, err)
-				}
-				assertContains(t, stdout, "Connection:",
-					fmt.Sprintf("[%s] database info should contain 'Connection:' after update-connection", proto))
-
 				// Drop the database.
 				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName)
 				if err != nil {
