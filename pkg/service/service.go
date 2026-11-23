@@ -1131,6 +1131,10 @@ type AdminService struct {
 	// proposes.
 	leaderWaitTimeout  time.Duration
 	leaderWaitInterval time.Duration
+
+	// resultOf, when set (tests only), substitutes the result an add waits
+	// on for its request state (membershipResultOf); nil waits on it.
+	resultOf func(*quicraft.RequestState) membershipResult
 }
 
 // NewAdminService creates a new AdminServicer backed by the given host.
@@ -1242,7 +1246,10 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 	// configuration is compared before the proposal. The recheck and the
 	// request through its result run under the gate's per-node lock
 	// (requestAddBound), so a concurrent add through this node cannot
-	// commit between them.
+	// commit between them. An add whose wait times out after it may have
+	// reached raft returns its error at once but keeps that lock until its
+	// outcome is delivered, so a later add cannot recheck against the
+	// membership before it.
 	// It is not Required for any other shard: release admission is about
 	// system-shard membership, and another shard's configuration change
 	// index is a different counter.
@@ -1273,26 +1280,74 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 // Required binding is rechecked (change ID 0 too, which go-quicraft does not
 // compare) and the request runs through its result under the gate's per-node
 // lock (featuregate.Gate.ProposeBound), so no other bound add through this
-// node commits between the recheck and this add's append.
+// node commits between the recheck and this add's append. A request whose
+// wait timed out after it may have reached raft returns its error at once,
+// but the lock stays held until the add's outcome is delivered (pending).
 func (s *AdminService) requestAddBound(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, binding featuregate.ConfigBinding,
-	request func(context.Context, uint64, uint64, string, string, uint64) error) error {
-	return proposeBound(s.host, shardID, binding, func() error {
+	request func(context.Context, uint64, uint64, string, string, uint64) (<-chan struct{}, error)) error {
+	return proposeBound(s.host, shardID, binding, func() (<-chan struct{}, error) {
 		return request(ctx, shardID, replicaID, raftAddr, identity, binding.ConfigChangeID)
 	})
 }
 
+// membershipResult is the part of a *quicraft.RequestState a membership
+// change waits on.
+type membershipResult interface {
+	Result() (quicraft.RequestResult, error)
+	ResultC() <-chan quicraft.RequestResult
+}
+
+// membershipResultOf is the result an add waits on for rs: rs itself unless
+// a test substituted resultOf.
+func (s *AdminService) membershipResultOf(rs *quicraft.RequestState) membershipResult {
+	if s.resultOf != nil {
+		return s.resultOf(rs)
+	}
+	return rs
+}
+
+// awaitAdd waits for an add's result. When the wait times out after the add
+// may already have reached raft (a *quicraft.MaybeAppliedError wrapping
+// quicraft.ErrTimeout: go-quicraft does not cancel it, so it can still
+// commit), it returns the error with a pending channel that is closed once
+// the add's final result is delivered on ResultC (at once if rs was released).
+// Any other outcome is final and returns a nil pending. rs is not released
+// before that delivery.
+func awaitAdd(rs membershipResult) (pending <-chan struct{}, err error) {
+	_, err = rs.Result()
+	if err == nil {
+		return nil, nil
+	}
+	if !errors.As(err, new(*quicraft.MaybeAppliedError)) || !errors.Is(err, quicraft.ErrTimeout) {
+		return nil, err
+	}
+	resolved := make(chan struct{})
+	resultC := rs.ResultC()
+	if resultC == nil {
+		close(resolved)
+		return resolved, err
+	}
+	go func() {
+		defer close(resolved)
+		<-resultC
+	}()
+	return resolved, err
+}
+
 // requestAdd proposes adding replicaID with its identity, ordered after the
 // configuration change configChangeID (0 skips the ordering check), and
-// waits for the result.
-func (s *AdminService) requestAdd(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) error {
+// waits for the result; pending is non-nil when that wait ended with the
+// outcome unknown (awaitAdd).
+func (s *AdminService) requestAdd(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) (<-chan struct{}, error) {
 	rs, err := s.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, raftAddr, identity, configChangeID)
 	if err != nil {
-		return s.translateMembershipError("add", err)
+		return nil, s.translateMembershipError("add", err)
 	}
-	if _, err := rs.Result(); err != nil {
-		return s.translateMembershipError("add", err)
+	pending, err := awaitAdd(s.membershipResultOf(rs))
+	if err != nil {
+		return pending, s.translateMembershipError("add", err)
 	}
-	return nil
+	return nil, nil
 }
 
 // AddObserverMember adds a new replica to the specified shard as a
@@ -1333,16 +1388,18 @@ func (s *AdminService) AddObserverMember(ctx context.Context, shardID, replicaID
 }
 
 // requestAddObserver proposes the observer addition bound to configChangeID
-// and waits for its result, as requestAdd does for a voter.
-func (s *AdminService) requestAddObserver(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) error {
+// and waits for its result, as requestAdd does for a voter (an ambiguous
+// timeout returns a pending channel the same way).
+func (s *AdminService) requestAddObserver(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) (<-chan struct{}, error) {
 	rs, err := s.host.RequestAddObserverWithIdentity(ctx, shardID, replicaID, raftAddr, identity, configChangeID)
 	if err != nil {
-		return s.translateMembershipError("add-observer", err)
+		return nil, s.translateMembershipError("add-observer", err)
 	}
-	if _, err := rs.Result(); err != nil {
-		return s.translateMembershipError("add-observer", err)
+	pending, err := awaitAdd(s.membershipResultOf(rs))
+	if err != nil {
+		return pending, s.translateMembershipError("add-observer", err)
 	}
-	return nil
+	return nil, nil
 }
 
 // RemoveMember removes a replica from the specified shard. The request is

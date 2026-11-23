@@ -397,9 +397,19 @@ type Gate struct {
 	// proposeMu serializes bound system-shard additions on this node from
 	// the CheckConfigBinding recheck through the add's commit or refusal
 	// (ProposeBound), so no other add through this node commits between a
-	// recheck and its append.
+	// recheck and its append. An add whose outcome is ambiguous (its wait
+	// timed out after it may have reached raft) keeps it held until the
+	// outcome is known or the Gate closes.
 	proposeMu sync.Mutex
-	view      atomic.Pointer[map[viewKey]cluster.Member]
+
+	// fenceMu guards fenceClosed and the fenceWG.Add that hands proposeMu to
+	// an ambiguous add's fence goroutine; Close sets fenceClosed, closes
+	// fenceStop and joins fenceWG.
+	fenceMu     sync.Mutex
+	fenceClosed bool
+	fenceStop   chan struct{}
+	fenceWG     sync.WaitGroup
+	view        atomic.Pointer[map[viewKey]cluster.Member]
 
 	// releases maps a system-shard replica ID to the releases recorded
 	// under ReleasePrefix for it, replaced whole by recordRelease. It
@@ -446,6 +456,7 @@ func New(cfg Config) (*Gate, error) {
 		refresh:     cfg.RefreshInterval,
 		logger:      cfg.Logger,
 		activated:   make(map[feature.Feature]*atomic.Bool, len(supported)),
+		fenceStop:   make(chan struct{}),
 	}
 	if g.refresh <= 0 {
 		g.refresh = DefaultRefreshInterval
@@ -646,7 +657,9 @@ func (e *StaleConfigurationError) Error() string {
 //
 // A caller proposes a bound add through ProposeBound, which holds this node's
 // lock from this check until the add commits or is refused, so no other add
-// through this node commits in between. Two residuals wait for go-quicraft
+// through this node commits in between. An add whose wait timed out after it
+// may have reached raft stays fenced the same way until its outcome is known.
+// Two residuals wait for go-quicraft
 // to offer a proposal-time configuration check (go-quicraft 1192,
 // docs/plans/1628.md): a leadership change while an add is in flight (the
 // new leader's adds do not share this node's lock), and a member restarted
@@ -684,24 +697,52 @@ func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error {
 }
 
 // ProposeBound runs propose, which proposes the add bound to b and returns
-// only once that add commits or is refused. When b is Required and shardID is
-// the system shard, it holds this node's proposal lock from CheckConfigBinding
-// through propose's return: go-quicraft accepts a configuration change only on
-// the shard leader's host and refuses a second one while one is uncommitted,
-// so no other add through this node commits between the recheck and this
-// add's append. The next add then rechecks against the committed
-// configuration and is refused as stale. Any other binding runs propose with
-// no lock and no check.
-func (g *Gate) ProposeBound(shardID uint64, b ConfigBinding, propose func() error) error {
+// once that add commits or is refused, or once its wait ends with the outcome
+// unknown. When b is Required and shardID is the system shard, it holds this
+// node's proposal lock from CheckConfigBinding through the add's outcome:
+// go-quicraft accepts a configuration change only on the shard leader's host
+// and refuses a second one while one is uncommitted, so no other add through
+// this node commits between the recheck and this add's append. The next add
+// then rechecks against the committed configuration and is refused as stale.
+//
+// propose returns a non-nil pending channel when the outcome is ambiguous (the
+// add may still commit; go-quicraft does not cancel it). ProposeBound then
+// returns propose's error at once but leaves the lock held until pending is
+// closed (the outcome is known) or the Gate closes, so an add that commits
+// late cannot pass a recheck made against the membership before it. Any other
+// binding runs propose with no lock and no check, and ignores pending.
+func (g *Gate) ProposeBound(shardID uint64, b ConfigBinding, propose func() (pending <-chan struct{}, err error)) error {
 	if !b.Required || shardID != g.systemShard {
-		return propose()
-	}
-	g.proposeMu.Lock()
-	defer g.proposeMu.Unlock()
-	if err := g.CheckConfigBinding(shardID, b); err != nil {
+		_, err := propose()
 		return err
 	}
-	return propose()
+	g.proposeMu.Lock()
+	if err := g.CheckConfigBinding(shardID, b); err != nil {
+		g.proposeMu.Unlock()
+		return err
+	}
+	pending, err := propose()
+	if pending == nil {
+		g.proposeMu.Unlock()
+		return err
+	}
+	g.fenceMu.Lock()
+	if g.fenceClosed {
+		g.fenceMu.Unlock()
+		g.proposeMu.Unlock()
+		return err
+	}
+	g.fenceWG.Add(1)
+	g.fenceMu.Unlock()
+	go func() {
+		defer g.fenceWG.Done()
+		defer g.proposeMu.Unlock()
+		select {
+		case <-pending:
+		case <-g.fenceStop:
+		}
+	}()
+	return err
 }
 
 // AdmitReplicaAt is AdmitReplica that also returns the system-shard
@@ -1397,7 +1438,8 @@ func (g *Gate) Start(ctx context.Context, kv ActivationKV, adverts ...cluster.Me
 	return nil
 }
 
-// Close stops the background loop. It is idempotent.
+// Close stops the background loop and releases the proposal lock an
+// ambiguous bound add still holds (ProposeBound). It is idempotent.
 func (g *Gate) Close() error {
 	g.runMu.Lock()
 	cancel := g.cancel
@@ -1406,6 +1448,13 @@ func (g *Gate) Close() error {
 	if cancel != nil {
 		cancel()
 	}
+	g.fenceMu.Lock()
+	if !g.fenceClosed {
+		g.fenceClosed = true
+		close(g.fenceStop)
+	}
+	g.fenceMu.Unlock()
+	g.fenceWG.Wait()
 	g.wg.Wait()
 	return nil
 }

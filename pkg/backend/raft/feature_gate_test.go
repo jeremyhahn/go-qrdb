@@ -304,9 +304,9 @@ func TestHostAdapter_ProposeBound(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ran := false
-			err := tc.adapter.ProposeBound(1, tc.binding, func() error {
+			err := tc.adapter.ProposeBound(1, tc.binding, func() (<-chan struct{}, error) {
 				ran = true
-				return tc.result
+				return nil, tc.result
 			})
 			tc.wantErr(t, err)
 			assert.Equal(t, tc.ran, ran)

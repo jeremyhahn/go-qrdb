@@ -62,6 +62,50 @@ type bindingHost struct {
 	requestPaused    bool
 	requested        chan struct{}
 	resumeRequest    chan struct{}
+
+	// ambiguousAddr's first add request reaches raft but its wait times out
+	// with the outcome unknown (ambiguousResult): it commits only when
+	// commitAmbiguous runs, which then delivers its result. entered is
+	// signalled each time an add enters ProposeBound.
+	ambiguousAddr      string
+	ambiguousRS        *quicraft.RequestState
+	ambiguousReplica   uint64
+	ambiguousDelivered chan quicraft.RequestResult
+	entered            chan struct{}
+}
+
+// ambiguousResult is the result go-quicraft reports for an add whose wait
+// (RequestState.Result's deadline) ended after it was handed to raft: a
+// *quicraft.MaybeAppliedError wrapping quicraft.ErrTimeout, with the final
+// result delivered later on ResultC. go-quicraft exports no way to build such
+// a RequestState, so the test substitutes it through AdminService.resultOf.
+type ambiguousResult struct {
+	c chan quicraft.RequestResult
+}
+
+func (r ambiguousResult) Result() (quicraft.RequestResult, error) {
+	return quicraft.RequestResult{}, &quicraft.MaybeAppliedError{Err: quicraft.ErrTimeout}
+}
+
+func (r ambiguousResult) ResultC() <-chan quicraft.RequestResult { return r.c }
+
+// resultOf substitutes ambiguousResult for the ambiguous add's request state.
+func (h *bindingHost) resultOf(rs *quicraft.RequestState) membershipResult {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if rs == h.ambiguousRS {
+		return ambiguousResult{c: h.ambiguousDelivered}
+	}
+	return rs
+}
+
+// commitAmbiguous commits the ambiguous add late and delivers its result.
+func (h *bindingHost) commitAmbiguous() {
+	h.mu.Lock()
+	h.members[h.ambiguousReplica] = h.ambiguousAddr
+	h.configChangeID++
+	h.mu.Unlock()
+	h.ambiguousDelivered <- quicraft.RequestResult{}
 }
 
 var (
@@ -92,7 +136,10 @@ func (h *bindingHost) CheckConfigBinding(shardID uint64, b featuregate.ConfigBin
 	return h.gate.CheckConfigBinding(shardID, b)
 }
 
-func (h *bindingHost) ProposeBound(shardID uint64, b featuregate.ConfigBinding, propose func() error) error {
+func (h *bindingHost) ProposeBound(shardID uint64, b featuregate.ConfigBinding, propose func() (<-chan struct{}, error)) error {
+	if h.entered != nil {
+		h.entered <- struct{}{}
+	}
 	return h.gate.ProposeBound(shardID, b, propose)
 }
 
@@ -130,6 +177,12 @@ func (h *bindingHost) RequestAddNodeWithIdentity(_ context.Context, shardID, rep
 	h.indexes = append(h.indexes, configChangeIndex)
 	if configChangeIndex != 0 && configChangeIndex != h.configChangeID {
 		return nil, quicraft.ErrStaleConfigChange
+	}
+	if addr == h.ambiguousAddr && h.ambiguousRS == nil {
+		// Handed to raft; it commits later (commitAmbiguous).
+		h.ambiguousRS = newCompletedRequestState(quicraft.RequestResult{})
+		h.ambiguousReplica = replicaID
+		return h.ambiguousRS, nil
 	}
 	h.members[replicaID] = addr
 	h.configChangeID++
@@ -627,4 +680,163 @@ func TestAdminService_AddObserverMemberBoundAddsAreSerializedThroughCommit(t *te
 	}
 	first, second := serializedBoundAdds(t, h, old, next, svcAdd)
 	assertSerializedBoundAdds(t, h, first, second)
+}
+
+// ambiguousBoundAdds adds old into h with a wait that times out ambiguously,
+// then starts adding next. It asserts that next is not admitted (requested)
+// while old's outcome is unknown, commits old late, and returns both errors.
+func ambiguousBoundAdds(t *testing.T, h *bindingHost, old, next cluster.Member,
+	add func(*AdminService, context.Context, uint64, uint64, string, string) error) (first, second error) {
+	t.Helper()
+	svc, ok := NewAdminService(h).(*AdminService)
+	if !ok {
+		t.Fatal("NewAdminService did not return *AdminService")
+	}
+	svc.resultOf = h.resultOf
+	h.ambiguousAddr = old.Address
+	h.ambiguousDelivered = make(chan quicraft.RequestResult, 1)
+	h.entered = make(chan struct{}, 2)
+	close(h.resume)
+
+	first = add(svc, context.Background(), bindingSystemShard, old.NodeID, old.Address, "")
+	<-h.entered
+	if h.member(old.NodeID) {
+		t.Fatal("the ambiguous add committed before commitAmbiguous")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- add(svc, context.Background(), bindingSystemShard, next.NodeID, next.Address, "")
+	}()
+	select {
+	case <-h.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second add never reached ProposeBound")
+	}
+	select {
+	case err := <-secondDone:
+		t.Fatalf("the second add returned %v while the first add's outcome was unknown", err)
+	default:
+	}
+	h.mu.Lock()
+	requested := len(h.indexes)
+	h.mu.Unlock()
+	if requested != 1 {
+		t.Fatalf("add requests = %d while the first add's outcome was unknown, want 1", requested)
+	}
+
+	h.commitAmbiguous()
+	select {
+	case second = <-secondDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second add never returned after the first committed")
+	}
+	return first, second
+}
+
+// assertAmbiguousBoundAdds checks that the ambiguous add surfaced its timeout,
+// the second add was refused with the release gap once the first committed,
+// and only the first candidate became a member.
+func assertAmbiguousBoundAdds(t *testing.T, h *bindingHost, first, second error) {
+	t.Helper()
+	if first == nil {
+		t.Fatal("ambiguous add = nil, want its timeout error")
+	}
+	var gap *release.GapError
+	if !errors.As(second, &gap) {
+		t.Fatalf("second add = %v, want *release.GapError", second)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, n4 := h.members[4]
+	_, n5 := h.members[5]
+	if n4 || !n5 {
+		t.Fatalf("members = %v, want n5 added and n4 refused", h.members)
+	}
+	if len(h.indexes) != 1 {
+		t.Fatalf("configChangeIndex per request = %v, want only the ambiguous add's", h.indexes)
+	}
+}
+
+// A 0.58 add whose wait times out with its outcome unknown (go-quicraft does
+// not cancel it) keeps this node's proposal lock until it commits, so a 0.60
+// add into the all-0.59 cluster is not admitted against the membership
+// before it and is refused with the release gap once it commits.
+func TestAdminService_AddMemberAmbiguousTimeoutStaysFenced(t *testing.T) {
+	old := cluster.Member{NodeID: 5, Address: "n5:1", ReleaseVersion: "0.58.0-alpha"}
+	next := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
+	h := newBindingHostAt(t, 0, old, next)
+
+	first, second := ambiguousBoundAdds(t, h, old, next, (*AdminService).AddMember)
+	assertAmbiguousBoundAdds(t, h, first, second)
+}
+
+// AddObserverMember keeps an ambiguous add fenced exactly as AddMember does.
+func TestAdminService_AddObserverMemberAmbiguousTimeoutStaysFenced(t *testing.T) {
+	old := cluster.Member{NodeID: 5, Address: "n5:1", ReleaseVersion: "0.58.0-alpha"}
+	next := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
+	h := newBindingHostAt(t, 0, old, next)
+
+	first, second := ambiguousBoundAdds(t, h, old, next, (*AdminService).AddObserverMember)
+	assertAmbiguousBoundAdds(t, h, first, second)
+}
+
+// resultStub is a membershipResult with a fixed Result error and ResultC.
+type resultStub struct {
+	err error
+	c   chan quicraft.RequestResult
+}
+
+func (r resultStub) Result() (quicraft.RequestResult, error) { return quicraft.RequestResult{}, r.err }
+
+func (r resultStub) ResultC() <-chan quicraft.RequestResult {
+	if r.c == nil {
+		return nil
+	}
+	return r.c
+}
+
+// awaitAdd reports a pending outcome only for a timeout after the add reached
+// raft; that pending closes once the result is delivered, or at once when the
+// request state was released.
+func TestAwaitAdd_OnlyAnAmbiguousTimeoutIsPending(t *testing.T) {
+	ambiguous := &quicraft.MaybeAppliedError{Err: quicraft.ErrTimeout}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"committed", nil},
+		{"refused before raft", quicraft.ErrStaleConfigChange},
+		{"timeout before raft", quicraft.ErrTimeout},
+		{"delivered maybe-applied", &quicraft.MaybeAppliedError{Err: quicraft.ErrShardNotReady}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pending, err := awaitAdd(resultStub{err: tc.err, c: make(chan quicraft.RequestResult)})
+			if !errors.Is(err, tc.err) || (tc.err == nil) != (err == nil) {
+				t.Fatalf("err = %v, want %v", err, tc.err)
+			}
+			if pending != nil {
+				t.Fatal("a final outcome returned a pending channel")
+			}
+		})
+	}
+
+	delivered := make(chan quicraft.RequestResult, 1)
+	pending, err := awaitAdd(resultStub{err: ambiguous, c: delivered})
+	if !errors.Is(err, quicraft.ErrTimeout) || pending == nil {
+		t.Fatalf("awaitAdd = (%v, %v), want a pending timeout", pending, err)
+	}
+	select {
+	case <-pending:
+		t.Fatal("pending closed before the result was delivered")
+	default:
+	}
+	delivered <- quicraft.RequestResult{}
+	<-pending
+
+	pending, err = awaitAdd(resultStub{err: ambiguous})
+	if err == nil || pending == nil {
+		t.Fatalf("awaitAdd on a released state = (%v, %v), want a pending timeout", pending, err)
+	}
+	<-pending
 }

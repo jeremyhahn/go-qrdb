@@ -90,23 +90,26 @@ func admitReplica(h any, shardID uint64, raftAddr string) (featuregate.ConfigBin
 	return featuregate.ConfigBinding{}, nil
 }
 
-// proposeBound runs propose, the add bound to b, which returns only once the
-// add commits or is refused. go-quicraft makes the change-ID comparison for a
+// proposeBound runs propose, the add bound to b, which returns once the add
+// commits or is refused, or with a non-nil pending channel once its wait ends
+// with the outcome unknown (closed when the outcome is known). go-quicraft makes the change-ID comparison for a
 // non-zero configChangeIndex but skips it for 0, and makes no release
 // comparison at all, so every Required binding goes through the host's
 // featuregate.Gate.ProposeBound: it compares the change ID (for 0 too) and
 // whether a compared member's release changed since admission (a restart on
 // another release changes no configuration), and holds the gate's per-node
-// lock from that recheck through propose's return, so no other bound add
-// through this node commits in between.
-func proposeBound(h any, shardID uint64, b featuregate.ConfigBinding, propose func() error) error {
-	if !b.Required {
-		return propose()
+// lock from that recheck through the add's outcome (past propose's return
+// while pending is open), so no other bound add through this node commits in
+// between. With no gate, nothing is fenced and pending is ignored.
+func proposeBound(h any, shardID uint64, b featuregate.ConfigBinding, propose func() (pending <-chan struct{}, err error)) error {
+	if b.Required {
+		if a, ok := h.(configBoundAdmitter); ok {
+			return a.ProposeBound(shardID, b, propose)
+		}
 	}
-	if a, ok := h.(configBoundAdmitter); ok {
-		return a.ProposeBound(shardID, b, propose)
-	}
-	return propose()
+	// Nothing is fenced, so a pending outcome needs no lock.
+	_, err := propose()
+	return err
 }
 
 // staleConfiguration reports whether err refuses an add because the
@@ -129,7 +132,7 @@ func staleConfiguration(err error) bool {
 type configBoundAdmitter interface {
 	AdmitReplicaAt(shardID uint64, raftAddr string) (featuregate.ConfigBinding, error)
 	CheckConfigBinding(shardID uint64, b featuregate.ConfigBinding) error
-	ProposeBound(shardID uint64, b featuregate.ConfigBinding, propose func() error) error
+	ProposeBound(shardID uint64, b featuregate.ConfigBinding, propose func() (pending <-chan struct{}, err error)) error
 }
 
 // WriteGuard is a precondition carried by every write proposed under a
