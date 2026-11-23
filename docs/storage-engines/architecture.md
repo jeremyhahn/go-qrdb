@@ -313,6 +313,26 @@ the data by reading it out through the binary that wrote it and writing it
 in through this one, or start the store empty. The store must be dedicated to the engine:
 any object the engine did not write makes an unmarked store non-empty.
 
+**One owner per namespace.** A store opened with `WithOwner` also carries an
+owner marker object (`qrdb-objstore-owner`) beside the format marker, written
+on the first owned open and holding the owner's name. Each object-storage
+database opens its namespace as its own owner and the standalone node's store
+as `NodeStoreOwner`, so a second database configured onto the same bucket or
+path is refused at open (`NamespaceOwnedError`) instead of reading,
+overwriting or reclaiming the first one's objects, and no database opens the
+node's store (`NamespaceInUseError`). In one process a namespace is open by
+one owner at a time (`NamespaceInUseError`), and a `local` root nested in, or
+holding, another open engine's root is refused (`OverlappingRootError`). A
+namespace is identified by its provider and location settings in canonical
+form (`NamespaceKey`): a symlinked root and its target are one namespace, an
+S3 or Azure endpoint is compared in canonical form, and a GCS namespace is its
+bucket, not its project. The marker outlives `Reclaim`, so the namespace stays
+its owner's through a drop until the database's catalog record is gone; the
+drop then gives it up with `ReleaseOwner`, which deletes the marker only when
+it names that owner and nothing else remains, and a failed create gives its
+claim back with `ReleaseClaim` (a fresh namespace whole; on pre-existing data
+only the marker it wrote).
+
 ### Alternatives rejected
 
 - **One engine.** Rejected: memory is required for tests to be fast and
