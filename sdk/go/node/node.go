@@ -1240,9 +1240,9 @@ type Node struct {
 	// standalone boot built; its runtimes survive a system-scope recycle,
 	// so the rebuild wires the new move worker onto it.
 	standaloneTenantInfra *server.TenantInfra
-	openVolumes    *volume.OpenVolumes
-	volumePoolRows []openedVolumePool
-	perTenantReg   pebbleStorage.PerTenantRegistry
+	openVolumes           *volume.OpenVolumes
+	volumePoolRows        []openedVolumePool
+	perTenantReg          pebbleStorage.PerTenantRegistry
 	// volumeReporter publishes this node's volume-pool health on a lease
 	// once the data-plane services exist (see startVolumeReporter). Nil
 	// when no volume pool is configured.
