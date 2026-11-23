@@ -22,6 +22,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"log/slog"
 	"testing"
 
@@ -79,6 +80,56 @@ func TestBuildSealServicesOnly_StrictAcceptsCeremonyWithoutSO(t *testing.T) {
 	}
 	if last, _ := core.LastIssuedAdminCertPEM(); last == nil {
 		t.Error("the admin credential must be issued")
+	}
+}
+
+// TestBuildSealServicesOnly_StrictRefusesAdminAsSO is the other half of the
+// posture check above: the SO-less ceremony passes in both postures, so only
+// a refusal strict alone makes proves BuildSealServicesOnly handed the
+// ceremony the strict posture. Under strict, a system SO named as the
+// bootstrap admin is a *ceremony.SystemSORejectedError, refused before the
+// PINs are committed.
+func TestBuildSealServicesOnly_StrictRefusesAdminAsSO(t *testing.T) {
+	ctx := context.Background()
+	barrier, registry, credSvc := newTestBarrier(t)
+	pins := pintest.NewBackend(t)
+	ca, _ := ceremonytest.NewCA(t, "strict-test-ca")
+	node, err := lifecycle.BuildSealServicesOnly(ctx, lifecycle.Infra{
+		DataDir:            t.TempDir(),
+		SealBarrier:        barrier,
+		BarrierRegistry:    registry,
+		CredentialCoreSvc:  credSvc,
+		CeremonyCA:         ca,
+		ClusterTrustDomain: "cluster.test",
+		PINBackend:         pins,
+		Logger:             slog.Default(),
+		SeparationOfDuties: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildSealServicesOnly: %v", err)
+	}
+	defer func() { _ = node.Stop(ctx) }()
+
+	core, ok := service.CeremonyServiceCore(node.Ceremony)
+	if !ok {
+		t.Fatal("CeremonyServiceCore: core service not exposed")
+	}
+	_, err = core.Initialize(ctx, ca, &ceremony.InitializeOptions{
+		SOPin:       "test-so-pin",
+		UserPin:     "test-user-pin",
+		AdminCSRPEM: strictTestCSRPEM(t),
+		SOUsername:  "admin",
+		SOCSRPEM:    strictTestCSRPEM(t),
+	})
+	var rejected *ceremony.SystemSORejectedError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("Initialize naming the admin as SO under strict = %v, want *ceremony.SystemSORejectedError", err)
+	}
+	if pins.IsInitialized() {
+		t.Error("the refused ceremony committed the PINs")
+	}
+	if got := core.State(); got != ceremony.StateAwaitingInit {
+		t.Errorf("ceremony state = %q, want %q", got, ceremony.StateAwaitingInit)
 	}
 }
 
