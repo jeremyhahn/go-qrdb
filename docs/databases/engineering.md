@@ -86,7 +86,9 @@ asks its backend factory through the optional `BindingDescriber` interface
 `LocalBindingFactory` answers with the same `ResolveBinding` the open path uses,
 and `Binding.Describe(owner)` turns the result into the block. A factory that
 does not implement the interface, or a resolve error (logged at debug), leaves
-the block absent. The block reaches `database info` and `database list` on every
+the block absent. Raft-mode nodes install the same factory, so the block is
+present in raft mode too: `local` for a memory, file, pebble or objstore
+database, and `raft` for a `backend: raft` database. The block reaches `database info` and `database list` on every
 transport: gRPC `DatabaseBindingInfo` (field 19 of `DatabaseInfoResponse`),
 REST, MCP, QUIC, the Unix socket, both SDKs and the CLI table output.
 

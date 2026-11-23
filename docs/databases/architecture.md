@@ -91,11 +91,11 @@ Supporting facts:
   service registry refuses every engine of a sealed database with
   `service.BarrierSealedError`, so it fails closed rather than serving the
   shared shard.
-- On a **standalone** node a database of a prefix or barrier tenant, or of
-  the system tenant other than its `system` database (not a tenant home, not
-  raft, no per-database barrier), is materialized at open by
-  `lifecycle.LocalBindingFactory`, which the `cmd/qrdbd` standalone start
-  installs on `database.Manager`: its own store under
+- On a **standalone or raft-mode** node a database of a prefix or barrier
+  tenant, or of the system tenant other than its `system` database (not a
+  tenant home, not raft, no per-database barrier), is materialized at open by
+  `lifecycle.LocalBindingFactory`, which both `cmd/qrdbd` start paths and
+  `sdk/go/node` install on `database.Manager` the same way: its own store under
   `<data-dir>/tenants/<tenant>/databases/<name>`, or in the database's
   explicit data directory when one is set (only the system tenant can set
   one), on the database's own backend. A prefix tenant's and the system
@@ -112,7 +112,11 @@ Supporting facts:
   service is unavailable, so a barrier tenant's database never lands in a
   node-encrypted store; the system tenant is prefix-isolated by construction
   and is never looked up. The system tenant's `system` database stays on the
-  control-plane store. Raft mode, volume and raft tenants and per-database
+  control-plane store. On a raft-mode node a `backend: raft` database keeps
+  the Manager's raft path, and the database's owner node (OD-2) opens the
+  local store while other nodes forward to it; a `backend: memory` database
+  whose data predates its own store keeps the shared route, probed on the
+  system shard's local replica. Volume and raft tenants and per-database
   barriers are unchanged; data written to the shared store before bindings
   existed is not relocated, and an explicit data directory written before
   this release is not converted. An objstore database on the local provider
