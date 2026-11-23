@@ -716,6 +716,54 @@ func TestCachedRemote_SecondOpenLeavesALiveWritersTempFile(t *testing.T) {
 	require.NoError(t, reopened.Close())
 }
 
+// requireSecondOpenRefused opens a live cache at dir, writes a temp file, and
+// checks a second open through other fails and leaves the temp file in place.
+func requireSecondOpenRefused(t *testing.T, dir, other string) {
+	t.Helper()
+	rs := newTestRemote(t, memory.New(), "db1")
+	live := newTestCachedRemote(t, rs, dir)
+	f, tmp, err := live.createTemp()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+	_, err = f.Write([]byte("in flight"))
+	require.NoError(t, err)
+
+	second, err := NewCachedRemote(rs, other)
+	require.Error(t, err, "a second open through %q must hit the live lock", other)
+	require.Nil(t, second)
+	_, err = os.Stat(filepath.Join(dir, tmp))
+	require.NoError(t, err, "the live instance's temp file survives a second open")
+}
+
+func TestNewCachedRemote_CanonicalRelativeAndAbsoluteShareALock(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "cache")
+	require.NoError(t, os.Mkdir(dir, 0o700))
+	t.Chdir(base)
+	t.Run("relative then absolute", func(t *testing.T) {
+		requireSecondOpenRefused(t, "cache", dir)
+	})
+	t.Run("absolute then relative", func(t *testing.T) {
+		requireSecondOpenRefused(t, dir, "."+string(filepath.Separator)+"cache")
+	})
+}
+
+func TestNewCachedRemote_SymlinkSharesALock(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "cache")
+	require.NoError(t, os.Mkdir(dir, 0o700))
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Run("target then link", func(t *testing.T) {
+		requireSecondOpenRefused(t, dir, link)
+	})
+	t.Run("link then target", func(t *testing.T) {
+		requireSecondOpenRefused(t, link, dir)
+	})
+}
+
 func TestCachedRemote_StoreLeavesNoTemporary(t *testing.T) {
 	dir := t.TempDir()
 	rs := newTestRemote(t, memory.New(), "db1")

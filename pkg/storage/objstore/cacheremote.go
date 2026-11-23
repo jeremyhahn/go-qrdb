@@ -141,13 +141,21 @@ func NewCachedRemote(inner remote.Storage, dir string) (*CachedRemote, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	root, err := os.OpenRoot(dir)
+	// One directory has one lock, whatever its spelling: a relative path, an
+	// absolute one or a symlink to it all resolve to the same canonical path,
+	// so a second open of a live cache fails on the lock instead of sweeping
+	// the live instance's temp files.
+	canon, err := canonicalCacheDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(canon)
 	if err != nil {
 		return nil, err
 	}
 	// Own the directory before touching its temp files: another live
 	// CachedRemote on it may be mid-write.
-	dirLock, err := vfs.Default.Lock(filepath.Clean(dir) + cacheLockSuffix)
+	dirLock, err := vfs.Default.Lock(canon + cacheLockSuffix)
 	if err != nil {
 		_ = root.Close()
 		return nil, err
@@ -169,6 +177,16 @@ func NewCachedRemote(inner remote.Storage, dir string) (*CachedRemote, error) {
 		}
 	}
 	return &CachedRemote{inner: inner, root: root, dirLock: dirLock, locks: make(map[string]*objLock)}, nil
+}
+
+// canonicalCacheDir returns the absolute, symlink-free path of the existing
+// directory dir.
+func canonicalCacheDir(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(abs)
 }
 
 // name returns the name, in the cache dir's root, of the cache file of the
