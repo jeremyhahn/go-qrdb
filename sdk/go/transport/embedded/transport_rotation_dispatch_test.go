@@ -151,6 +151,88 @@ func TestEmbeddedCredential_RotationVerbsNotFoundIsKeyNotFound(t *testing.T) {
 	}
 }
 
+// sentinelVerbService answers every credential delete, rotate, list-versions,
+// retrieve and retrieve-version call with err.
+func sentinelVerbService(err error) *sentinelCredentialService {
+	return &sentinelCredentialService{
+		err: err,
+		mockCredentialService: mockCredentialService{
+			deleteFn: func(context.Context, string) error { return err },
+			rotateFn: func(context.Context, string, credentials.RotateOptions) (*credentials.RotateResult, error) {
+				return nil, err
+			},
+			listVersionsFn: func(context.Context, string) ([]credentials.CredentialVersion, error) {
+				return nil, err
+			},
+			retrieveFn:        func(context.Context, string) ([]byte, error) { return nil, err },
+			retrieveVersionFn: func(context.Context, string, uint64) ([]byte, error) { return nil, err },
+		},
+	}
+}
+
+// TestEmbeddedCredential_VerbsNotFoundIsKeyNotFound pins the embedded
+// not-found mapping of the remaining credential verbs: each not-found
+// sentinel the service can return is *transport.KeyNotFoundError naming the
+// credential, as the gRPC, QUIC, Unix and MCP transports return (the gRPC
+// server maps every one of them to codes.NotFound); any other error passes
+// through unchanged. The retrieve verbs return no buffer.
+func TestEmbeddedCredential_VerbsNotFoundIsKeyNotFound(t *testing.T) {
+	ctx := context.Background()
+	// Each call reports whether it returned a non-nil buffer.
+	type verb struct {
+		call      func(tr *Transport) (bool, error)
+		sentinels []error
+	}
+	notFound := []error{credentials.ErrCredentialNotFound}
+	verbs := map[string]verb{
+		"CredentialDelete": {func(tr *Transport) (bool, error) {
+			return false, tr.CredentialDelete(ctx, "missing")
+		}, notFound},
+		"CredentialRotate": {func(tr *Transport) (bool, error) {
+			_, err := tr.CredentialRotate(ctx, &transport.CredentialRotateRequest{Name: "missing"})
+			return false, err
+		}, notFound},
+		"CredentialListVersions": {func(tr *Transport) (bool, error) {
+			_, err := tr.CredentialListVersions(ctx, &transport.CredentialListVersionsRequest{Name: "missing"})
+			return false, err
+		}, notFound},
+		"CredentialRetrieveBuffer": {func(tr *Transport) (bool, error) {
+			buf, err := tr.CredentialRetrieveBuffer(ctx, "missing")
+			return buf != nil, err
+		}, notFound},
+		"CredentialRetrieveVersionBuffer": {func(tr *Transport) (bool, error) {
+			buf, err := tr.CredentialRetrieveVersionBuffer(ctx, &transport.CredentialRetrieveVersionRequest{Name: "missing", Version: 2})
+			return buf != nil, err
+		}, []error{credentials.ErrCredentialNotFound, credentials.ErrVersionNotFound, credentials.ErrVersionExpired}},
+	}
+	for name, v := range verbs {
+		for _, sentinel := range v.sentinels {
+			t.Run(name+"/"+sentinel.Error(), func(t *testing.T) {
+				gotBuf, err := v.call(newCredentialTransport(t, sentinelVerbService(sentinel)))
+				var knf *transport.KeyNotFoundError
+				if !errors.As(err, &knf) {
+					t.Fatalf("expected *transport.KeyNotFoundError, got %T (%v)", err, err)
+				}
+				if knf.Key != "missing" {
+					t.Errorf("Key = %q, want %q", knf.Key, "missing")
+				}
+				if gotBuf {
+					t.Errorf("expected a nil buffer")
+				}
+			})
+		}
+		t.Run(name+"/other", func(t *testing.T) {
+			gotBuf, err := v.call(newCredentialTransport(t, sentinelVerbService(errCredential)))
+			if err != errCredential {
+				t.Fatalf("err = %T (%v), want errCredential unchanged", err, err)
+			}
+			if gotBuf {
+				t.Errorf("expected a nil buffer")
+			}
+		})
+	}
+}
+
 func TestEmbeddedCredential_RotationVerbsWithoutAService(t *testing.T) {
 	ctx := context.Background()
 	tr := newExtTransport(t)

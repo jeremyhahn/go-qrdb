@@ -89,7 +89,7 @@ func (t *Transport) CredentialDelete(ctx context.Context, name string) error {
 	if t.credentialSvc == nil {
 		return &NilServiceError{Service: "CredentialServicer"}
 	}
-	return t.credentialSvc.CredentialDelete(ctx, name)
+	return credentialNotFound(name, t.credentialSvc.CredentialDelete(ctx, name))
 }
 
 // CredentialList returns the names of every stored credential by
@@ -143,7 +143,7 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 		GracePeriod: time.Duration(req.GracePeriodSeconds) * time.Second,
 	})
 	if err != nil {
-		return nil, err
+		return nil, credentialNotFound(req.Name, err)
 	}
 	resp := &transport.CredentialRotateResponse{
 		Name:            res.Name,
@@ -268,7 +268,10 @@ func (t *Transport) CredentialResolveMigrationConflict(ctx context.Context, req 
 // for name with the *transport.KeyNotFoundError the gRPC, QUIC, Unix, MCP and
 // REST transports return for them; any other error passes through unchanged.
 func credentialNotFound(name string, err error) error {
-	if errors.Is(err, credentials.ErrCredentialNotFound) || errors.Is(err, credentials.ErrMigrationConflictNotFound) {
+	if errors.Is(err, credentials.ErrCredentialNotFound) ||
+		errors.Is(err, credentials.ErrMigrationConflictNotFound) ||
+		errors.Is(err, credentials.ErrVersionNotFound) ||
+		errors.Is(err, credentials.ErrVersionExpired) {
 		return &transport.KeyNotFoundError{Key: name}
 	}
 	return err
@@ -296,7 +299,7 @@ func (t *Transport) CredentialListVersions(ctx context.Context, req *transport.C
 	}
 	versions, err := t.credentialSvc.CredentialListVersions(ctx, req.Name)
 	if err != nil {
-		return nil, err
+		return nil, credentialNotFound(req.Name, err)
 	}
 	out := make([]transport.CredentialVersionInfo, 0, len(versions))
 	for _, v := range versions {
@@ -526,7 +529,12 @@ func (t *Transport) CredentialRetrieveBuffer(ctx context.Context, name string) (
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
 	}
-	return t.credentialSvc.CredentialRetrieveBuffer(ctx, name)
+	buf, err := t.credentialSvc.CredentialRetrieveBuffer(ctx, name)
+	if err != nil {
+		buf.Destroy()
+		return nil, credentialNotFound(name, err)
+	}
+	return buf, nil
 }
 
 // CredentialRetrieveVersionBuffer returns the stored value for a specific
@@ -550,5 +558,10 @@ func (t *Transport) CredentialRetrieveVersionBuffer(ctx context.Context, req *tr
 	if req == nil {
 		return nil, &NilRequestError{Method: "CredentialRetrieveVersion"}
 	}
-	return t.credentialSvc.CredentialRetrieveVersionBuffer(ctx, req.Name, req.Version)
+	buf, err := t.credentialSvc.CredentialRetrieveVersionBuffer(ctx, req.Name, req.Version)
+	if err != nil {
+		buf.Destroy()
+		return nil, credentialNotFound(req.Name, err)
+	}
+	return buf, nil
 }
