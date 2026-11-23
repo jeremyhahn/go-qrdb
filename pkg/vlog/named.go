@@ -750,10 +750,12 @@ func (c *Chain) ExpireBodies(w Writer, id LogID, cutoff uint64) (expired int, er
 // database created again under the name starts with no logs. The audit
 // instance is never touched: its retention is audit Prune.
 //
-// One call deletes at most MaxPrunePerCommand of the logs' records plus the
-// descriptor and head of each log it finished, so a command stays bounded;
-// the caller repeats it until it reports 0. A log's descriptor and head go
-// last, in the call that deletes its final other record, so a node restored
+// One call deletes at most MaxPrunePerCommand of the logs' records, the
+// descriptor and head of each log it finished counted among them, so a
+// command stays bounded however many (empty) logs the database has; the
+// caller repeats it until it reports 0. A log's descriptor and head go last
+// and together: in the call that finishes its other records when the budget
+// still covers both, else both stay for the next call, so a node restored
 // between two calls finds every remaining log whole (restoreLogs refuses a
 // descriptor without a head).
 //
@@ -811,7 +813,15 @@ func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database, inc
 			}
 		}
 		if seen && id != current {
+			// The previous log's body is gone: its descriptor and head
+			// are deleted together, charged against the same budget, or
+			// both stay for the next step.
+			if budget < 2 {
+				exhausted = true
+				break
+			}
 			complete = append(complete, current)
+			budget -= 2
 		}
 		current, seen = id, true
 		if bytes.Equal(key, descriptorKey(id)) || bytes.Equal(key, logHeadKey(id)) {
@@ -837,7 +847,7 @@ func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database, inc
 	if err := it.Close(); err != nil {
 		return deleted, &TableReadError{Err: err}
 	}
-	if seen && !exhausted {
+	if seen && !exhausted && budget >= 2 {
 		complete = append(complete, current)
 	}
 	for _, id := range complete {
