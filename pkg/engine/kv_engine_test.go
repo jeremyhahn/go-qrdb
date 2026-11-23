@@ -2743,6 +2743,33 @@ func TestKVEngine_LegacyNonJSONOverwriteReplay(t *testing.T) {
 	})
 }
 
+// TestKVEngine_OrderedTransactionCaseInsensitiveReleaseThenDuplicate pins that
+// a flagged transaction claiming one case-folded unique term twice (A releases
+// "alpha", then B "ALPHA" and C "alpha") is refused as a conflict result by
+// the pre-check, with no apply error and nothing written.
+func TestKVEngine_OrderedTransactionCaseInsensitiveReleaseThenDuplicate(t *testing.T) {
+	stg := memory.NewStorage()
+	t.Cleanup(func() { _ = stg.Close() })
+	eng := NewKVEngine(stg)
+	create := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name",
+		protocol.IndexCreateOptions{Unique: true, CaseInsensitive: true}))
+	applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: create}, kvPutEntry(2, "user:A", `{"name":"alpha"}`)})
+
+	txn := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:A"), []byte(`{"name":"beta"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:B"), []byte(`{"name":"ALPHA"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:C"), []byte(`{"name":"alpha"}`), nil, 0)),
+	}, nil, protocol.CmdFlagOrderedUnique))
+	res := applyKVEntries(t, eng, []sm.Entry{{Index: 3, Cmd: txn}})[0]
+	_, kind, ok := protocol.DecodeAppErrorKind(res.Data)
+	if !ok || kind != protocol.AppErrorConflict {
+		t.Fatalf("result data = %q, want a conflict application error", res.Data)
+	}
+	mustLookupValue(t, eng, "user:A", `{"name":"alpha"}`)
+	mustLookupAbsent(t, eng, "user:B")
+	mustLookupAbsent(t, eng, "user:C")
+}
+
 // A flagged transaction checks a unique compound index across all its
 // writes in op order: two keys cannot claim one tuple, and a tuple an
 // earlier overwrite released may be taken by a later write.

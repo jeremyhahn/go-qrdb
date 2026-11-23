@@ -214,7 +214,18 @@ func CheckUniqueViolationsBatch(batch storage.Batch, indexes map[string]index.In
 				}
 				return &UniqueConstraintError{Index: idxName, Field: fieldName}
 			}
-			mapKey := idxName + "\x00" + string(fieldVal)
+			// Key the claim by the term the index stores (case-folded or
+			// numeric-encoded per its config), so two raw spellings of one
+			// stored term collide here and not in PutBatch at apply.
+			term := fieldVal
+			if c, hasCfg := idx.(interface{ Config() index.IndexConfig }); hasCfg {
+				normalized, indexable := index.NormalizeFieldValue(fieldVal, c.Config())
+				if !indexable {
+					continue // the index stores no entry for this value
+				}
+				term = normalized
+			}
+			mapKey := idxName + "\x00" + string(term)
 			if prev, seen := pending[mapKey]; seen && prev != key {
 				return &UniqueConstraintError{Index: idxName, Field: fieldName}
 			}

@@ -645,6 +645,45 @@ func TestUpdateIndexesBatch_NonJSONReplacementRemovesOldEntry(t *testing.T) {
 	}
 }
 
+// TestCheckUniqueViolationsBatch_CaseInsensitiveReleaseThenDuplicate pins that
+// pending claims are keyed by the index's normalized term: with A holding
+// "alpha" in a case-insensitive unique index, the set A->"beta", B->"ALPHA",
+// C->"alpha" claims one stored term twice and is refused by the pre-check,
+// not later by PutBatch as a fatal apply error.
+func TestCheckUniqueViolationsBatch_CaseInsensitiveReleaseThenDuplicate(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	idx, err := index.NewStoragePebbleIndex(stg, index.IndexConfig{
+		Name: "users.Name", Type: index.IndexTypeUnique, Unique: true, CaseSensitive: false,
+	}, indexTestLogger(t))
+	if err != nil {
+		t.Fatalf("NewStoragePebbleIndex: %v", err)
+	}
+	indexes := map[string]index.Index{"users.Name": idx}
+	fields := map[string]string{"users.Name": "name"}
+
+	seed := stg.Batch()
+	if err := UpdateIndexesBatch(seed, indexes, fields, nil, []byte("A"), []byte(`{"name":"alpha"}`), nil); err != nil {
+		t.Fatalf("seed UpdateIndexesBatch: %v", err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed Commit: %v", err)
+	}
+
+	writes := []indexedWrite{
+		{Key: []byte("A"), Value: []byte(`{"name":"beta"}`)},
+		{Key: []byte("B"), Value: []byte(`{"name":"ALPHA"}`)},
+		{Key: []byte("C"), Value: []byte(`{"name":"alpha"}`)},
+	}
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+	err = CheckUniqueViolationsBatch(batch, indexes, fields, nil, writes)
+	var uce *UniqueConstraintError
+	if !errors.As(err, &uce) {
+		t.Fatalf("CheckUniqueViolationsBatch = %v, want *UniqueConstraintError (B and C claim one case-folded term)", err)
+	}
+}
+
 func TestUpdateIndexesBatch_WithPreviousValue(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
