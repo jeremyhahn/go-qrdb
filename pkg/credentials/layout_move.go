@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // layoutPrefixes are the key prefixes the replicated layout keeps a
@@ -20,7 +21,9 @@ import (
 // version, a staged rotation, the migration claims, and the migration
 // import records. An import record moves with its credential, so a conflict
 // import retried against the destination finds its copy already committed;
-// one a deleted credential left moves in a set of its own.
+// one a deleted credential left moves in a set of its own. When the
+// destination already holds the name, the set's import records are copied
+// into the destination and the rest of the set stays in the source.
 var layoutPrefixes = []string{credentialPrefix, MetaKeyPrefix, VersionKeyPrefix, StagedKeyPrefix, MigrationClaimPrefix, MigrationImportPrefix}
 
 // LayoutMovedPrefix keys the move marker a layout move writes into the
@@ -115,6 +118,8 @@ func (s *CredentialService) ensureLayoutMoved(ctx context.Context) error {
 			// Every other name moved and a conflict does not clear on a
 			// retry: the move is over. Report it once and let the
 			// operation that triggered it go on against the new store.
+			// The conflicting sets' import records were copied into
+			// the new store, so an import retried there imports nothing.
 			s.layoutFrom = nil
 			s.logger.Warn("credential records left in the earlier credential store",
 				slog.String("error", err.Error()))
@@ -332,9 +337,11 @@ func moveLayout(ctx context.Context, from, to Store) error {
 	return nil
 }
 
-// moveLayoutSet moves one credential's records and reports false, leaving
-// both stores as they were, when to already holds a record of that name
-// without its move marker or the guarded write did not apply. When to
+// moveLayoutSet moves one credential's records and reports false when to
+// already holds a record of that name without its move marker, an earlier
+// pass recorded a conflict for it, or the guarded write did not apply. On
+// such a conflict the set's import records are copied into to
+// (carryImportRecords) and the whole set stays in from. When to
 // holds this source's marker, an earlier pass committed the set: its
 // remaining source records and then the marker are deleted, and nothing is
 // copied. Another source's marker or fence on the name is an ordinary
@@ -356,15 +363,25 @@ func moveLayoutSet(ctx context.Context, from, to Store, move layoutMove, set *la
 	// A conflict an earlier pass recorded stands even when the
 	// destination copy that caused it was deleted since: the source copy
 	// is older than that delete and must not bring the credential back.
+	// On every conflict branch the set's import records are carried into
+	// to first, before the conflict record is written: a pass that stops
+	// between the two carries them again, and an import retried against
+	// to finds them there and imports nothing.
 	lost, err := holdsKey(ctx, to, move.conflict(set.name))
-	if err != nil || lost {
+	if err != nil {
 		return false, err
+	}
+	if lost {
+		return false, carryImportRecords(ctx, from, to, set)
 	}
 	held, err := destinationHolds(ctx, to, move, set)
 	if err != nil {
 		return false, err
 	}
 	if held {
+		if err := carryImportRecords(ctx, from, to, set); err != nil {
+			return false, err
+		}
 		_, err := to.PutIfAbsent(ctx, move.conflict(set.name), []byte(move.id))
 		return false, err
 	}
@@ -413,10 +430,40 @@ func moveLayoutSet(ctx context.Context, from, to Store, move layoutMove, set *la
 	if !applied {
 		// A refused guard is a record of the name that landed in to
 		// since the probe: the same conflict, recorded the same way.
+		if err := carryImportRecords(ctx, from, to, set); err != nil {
+			return false, err
+		}
 		_, err := to.PutIfAbsent(ctx, move.conflict(set.name), []byte(move.id))
 		return false, err
 	}
 	return true, finishLayoutSet(ctx, from, to, move, set)
+}
+
+// carryImportRecords copies the migration import records of a conflicting
+// set from from into to, leaving the source copies in place so the set
+// stays whole. An import record only stops a legacy import from running
+// again, so carrying it is fail-closed: it never brings a value back. A
+// destination record of the same key is kept, and a source key gone since
+// the listing is skipped. Each value read is wiped once written.
+func carryImportRecords(ctx context.Context, from, to Store, set *layoutSet) error {
+	for _, key := range set.keys {
+		if !strings.HasPrefix(key, MigrationImportPrefix) {
+			continue
+		}
+		value, err := from.Get(ctx, key)
+		if errors.Is(err, seal.ErrSecretNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		_, err = to.PutIfAbsent(ctx, key, value)
+		clear(value)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // finishLayoutSet deletes the source records of a set whose copy, with its
