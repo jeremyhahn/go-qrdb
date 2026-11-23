@@ -1014,7 +1014,11 @@ that shard serves it without a catalog record: `system`
 lists -- the configured SQL default database and the databases registered in
 the shared database registry -- read each time the probe runs
 (`WithSharedNamespaceNames`), deduplicated against the catalog records. A
-read error fails the tightening closed.
+read error fails the tightening closed. Every composer sets that source with
+`lifecycle.SharedNames`: `qrdbd start` and the SDK node pass the SQL default
+database and the shared registry's `DatabaseServiceRegistry.List`, and the
+`qrdb` bindings server, which has neither, declares an empty source, so its
+probe reads `system` alone.
 
 Both barrier bootstrap fallbacks (`AuthorizeTenantBarrierInit`,
 `AuthorizeTenantBarrierSealedOp`) return a `*RateLimitedError` immediately,
