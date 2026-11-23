@@ -313,10 +313,18 @@ Built so far (unwired):
   with a Store over a (tenant, database) scope's resolved services tested on
   every isolation type; nothing in the server constructs a Store yet;
 - quota (Q5): a commit or publish past the tenant's storage quota fails with
-  `ErrFull`, tested on every isolation type.
+  `ErrFull`, tested on every isolation type;
+- the optimistic read-set check on commit and publish (Q3);
+- the `sqlite-vfs` entitlement (`quota.FeatureSQLiteVFS`) and the
+  per-tenant database count cap (`quota.ResourceSQLiteDatabases`, counted
+  by `sqlitevfs.CountDatabases`) as a creation gate, `sqlitevfs.Admit`
+  (Q5). Opening an existing database needs neither. The cap is a soft
+  bound: two concurrent creators can both pass at the limit minus one, and
+  the storage quota is the hard bound. The gate is not yet called by the
+  server.
 
 Still to come: the SQLite engine
 binding and VFS registration (blocked: owner queue 288); the server
-constructing a Store for a caller (open for the owner), the optimistic
-read-set check, the database count cap and the entitlement (they wait on
-where the server constructs a Store, open for the owner).
+constructing a Store for a caller (open for the owner, o1), which is also
+where `sqlitevfs.Admit` is called: only that caller waits on o1. The
+transport, CLI and SDK fields for the entitlement and the cap go with it.

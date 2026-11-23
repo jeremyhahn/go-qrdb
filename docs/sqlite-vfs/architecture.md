@@ -174,9 +174,12 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
   move's compares that the engine checks at apply, atomically with the
   move), and the writer lock
   over the server's lock service (`NewLockServiceWriter`), and a commit past
-  the tenant's storage quota failing with `ErrFull`; no engine binding,
-  server construction of a Store, database count cap, entitlement or
-  transport is built.
+  the tenant's storage quota failing with `ErrFull`, and the creation gate
+  `sqlitevfs.Admit`: a new database needs the `sqlite-vfs` entitlement and a
+  free slot under the tenant's SQLite-database count cap (a soft bound),
+  and an existing one opens with neither. The gate is not yet called by the
+  server: no engine binding, server construction of a Store or transport is
+  built.
 - If any tier requires CGo (`mattn`, the loadable extension), that binding
   lives in its **own Go module**: CGo must not enter the root module's
   dependency graph. The pure-Go tier via `modernc.org/sqlite` avoids CGo
@@ -208,7 +211,9 @@ dependency is pending the owner (owner queue 288).
    comes free via the barrier, but restore semantics need definition. See
    [Q4](../decisions/sqlite-vfs-build.md#q4-backup-restore-and-pitr-interplay).
 5. **Quota/entitlement accounting** — pages are opaque to the entity/SQL
-   planes; per-tenant quotas need to count the namespace. See
+   planes; per-tenant quotas need to count the namespace. Creation is gated
+   by `sqlitevfs.Admit` (entitlement and count cap), not yet called by the
+   server. See
    [Q5](../decisions/sqlite-vfs-build.md#q5-quota-and-entitlement-accounting).
 
 ## Non-goals
