@@ -26,6 +26,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 )
 
@@ -111,15 +114,12 @@ func TestWatchAdmission_SealedSkipsTheAdmission(t *testing.T) {
 	admission := &countingAdmission{}
 	g := New(probe, nil, time.Millisecond, WithAdmission(admission))
 	g.Start()
-	deadline := time.Now().Add(5 * time.Second)
-	for probe.byAdmission.Load() < 3 || probe.byProbe.Load() < 3 {
-		if time.Now().After(deadline) {
-			g.Stop()
-			t.Fatalf("watch loops read the probe %d (admission) and %d (probe) times",
-				probe.byAdmission.Load(), probe.byProbe.Load())
-		}
-		time.Sleep(time.Millisecond)
-	}
+	// Stop is idempotent: deferred so a failed poll still stops both loops.
+	defer g.Stop()
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.GreaterOrEqual(c, probe.byAdmission.Load(), int32(3), "probe reads by the admission loop")
+		assert.GreaterOrEqual(c, probe.byProbe.Load(), int32(3), "probe reads by the probe loop")
+	}, 5*time.Second, time.Millisecond, "watch loops did not read the probe often enough")
 	g.Stop()
 	if n := admission.n.Load(); n != 0 {
 		t.Fatalf("a sealed node consulted the admission %d times", n)

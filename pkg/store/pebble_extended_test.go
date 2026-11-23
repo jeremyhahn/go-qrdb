@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
@@ -119,19 +121,14 @@ func TestPebbleStateMachine_Lookup_LeaseKeepAlive(t *testing.T) {
 	}()
 	defer func() { cancel(); <-done }()
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		got, err := s.Lookup(context.Background(), lease.LeaseKeepAliveQuery{ID: leaseID})
-		if err == nil {
-			if l := got.(*lease.Lease); l.ID != leaseID {
-				t.Fatalf("lease ID = %d, want %d", l.ID, leaseID)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Lookup never renewed: %v", err)
-		}
-		time.Sleep(time.Millisecond)
+	var got any
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		var err error
+		got, err = s.Lookup(context.Background(), lease.LeaseKeepAliveQuery{ID: leaseID})
+		assert.NoError(c, err)
+	}, 5*time.Second, time.Millisecond, "Lookup never renewed")
+	if l := got.(*lease.Lease); l.ID != leaseID {
+		t.Fatalf("lease ID = %d, want %d", l.ID, leaseID)
 	}
 
 	var lnf *service.LeaseNotFoundError
