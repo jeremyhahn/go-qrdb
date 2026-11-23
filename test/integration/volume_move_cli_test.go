@@ -356,7 +356,10 @@ tenant:
     allowed_isolation_modes:
       - prefix
       - volume
+      - raft
     allow_volume_storage: true
+    allow_dedicated_raft: true
+    allow_dedicated_wal: true
     allow_system_managed_barrier: true
     allowed_volume_pools:
       - default
@@ -461,4 +464,199 @@ func startVolumeMoveNode(t *testing.T) *multiProtoNode {
 		createVolumePoolCLI(t, cli, n.cliArgsFor(multiProtocols[0]), pool)
 	}
 	return n
+}
+
+// TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart moves a raft
+// tenant placed on all three nodes from pool default to second while one
+// replica restarts: the node is stopped as soon as move-tenant returns, so
+// the move cannot complete until that node, after its restart, closes its
+// stores, copies, reopens from second and catches up. Every value then reads
+// back from every node, and a new write lands and replicates.
+func TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart(t *testing.T) {
+	t.Parallel()
+	nodes := volumeMoveClusterStart(t)
+
+	// No t.Run per transport: the restarted node's process (and its log
+	// writer) is owned by the test that starts it, so it must outlive one
+	// transport's pass. Every failure names its transport.
+	for _, proto := range multiProtocols {
+		mt, conns := volumeMoveClusterSeed(t, nodes, proto, "vr")
+		volumeMoveClusterStartMove(t, nodes[0], proto, mt.tenantID)
+
+		nodes[2].restart(t, fmt.Sprintf("[vmove-cluster-node3-%s] ", strings.ToLower(proto.name)))
+
+		volumeMoveClusterWaitGone(t, nodes[0], proto, mt.tenantID)
+		for i, node := range nodes {
+			if pool := volumeMoveTenantPool(t, node, proto, mt.tenantID); pool != "second" {
+				t.Fatalf("[%s] node %d: after the move tenant %s is on pool %q, want second", proto.name, i+1, mt.tenantID, pool)
+			}
+		}
+		volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, mt.key, mt.value)
+
+		afterKey, afterValue := "after", "after-the-move-"+mt.tenantID
+		volumeMoveClusterPut(t, nodes[2], proto, mt, conns[2], afterKey, afterValue)
+		volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, afterKey, afterValue)
+		volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, mt.key, mt.value)
+	}
+}
+
+// TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite starts a
+// move of a raft tenant on all three nodes, stops one replica so the move
+// cannot complete, has the two running replicas acknowledge a new write
+// mid-move, cancels, and restarts the stopped replica: the move rolls back,
+// the tenant stays on default, and every node serves every acknowledged
+// write.
+func TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite(t *testing.T) {
+	t.Parallel()
+	nodes := volumeMoveClusterStart(t)
+
+	// No t.Run per transport: the restarted node's process (and its log
+	// writer) is owned by the test that starts it, so it must outlive one
+	// transport's pass. Every failure names its transport.
+	for _, proto := range multiProtocols {
+		mt, conns := volumeMoveClusterSeed(t, nodes, proto, "vk")
+		volumeMoveClusterStartMove(t, nodes[0], proto, mt.tenantID)
+		nodes[2].stop(t)
+
+		ackedKey, ackedValue := "acked", "acked-mid-move-"+mt.tenantID
+		volumeMoveClusterPut(t, nodes[0], proto, mt, conns[0], ackedKey, ackedValue)
+
+		out, err := runCLIProto(t, nodes[0], proto, "--output", "json", "volume-pool", "cancel-move", mt.tenantID)
+		if err != nil {
+			t.Fatalf("[%s] volume-pool cancel-move with a replica down: %v\noutput: %s", proto.name, err, out)
+		}
+		var m cliVolumePoolMoveJSON
+		if jerr := json.Unmarshal([]byte(out), &m); jerr != nil {
+			t.Fatalf("[%s] decode cancel-move JSON: %v\noutput: %s", proto.name, jerr, out)
+		}
+		if m.TenantID != mt.tenantID || (m.State != "aborting" && m.State != "copying") {
+			t.Fatalf("[%s] cancel-move = %+v, want the move of %s aborting or its cancel recorded", proto.name, m, mt.tenantID)
+		}
+
+		nodes[2].startAgain(t, fmt.Sprintf("[vmove-cluster-node3-%s] ", strings.ToLower(proto.name)))
+		volumeMoveClusterWaitGone(t, nodes[0], proto, mt.tenantID)
+		for i, node := range nodes {
+			if pool := volumeMoveTenantPool(t, node, proto, mt.tenantID); pool != "default" {
+				t.Fatalf("[%s] node %d: after the cancel tenant %s is on pool %q, want default", proto.name, i+1, mt.tenantID, pool)
+			}
+		}
+		volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, mt.key, mt.value)
+		volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, ackedKey, ackedValue)
+
+		afterKey, afterValue := "after", "after-the-cancel-"+mt.tenantID
+		volumeMoveClusterPut(t, nodes[2], proto, mt, conns[2], afterKey, afterValue)
+		volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, afterKey, afterValue)
+	}
+}
+
+// volumeMoveClusterYAML is volumeMoveYAML without its seal block, which the
+// cluster fixture writes itself: one node's own pool directories.
+func volumeMoveClusterYAML(defaultDir, secondDir string) string {
+	return strings.TrimPrefix(volumeMoveYAML(defaultDir, secondDir), "seal:\n  enabled: true\n  strategy: passphrase\n")
+}
+
+// volumeMoveClusterStart starts a three-node cluster whose nodes each hold
+// their own default and second pool directories, and creates both pools in
+// the replicated catalog.
+func volumeMoveClusterStart(t *testing.T) [3]*multiProtoNode {
+	t.Helper()
+	nodes, _ := startMultiProtocolClusterWithNodeConfig(t, 0, func(int) string {
+		return volumeMoveClusterYAML(t.TempDir(), t.TempDir())
+	})
+	for _, pool := range []string{"default", "second"} {
+		createVolumePoolCLI(t, nodes[0].cli, nodes[0].cliArgsFor(multiProtocols[0]), pool)
+	}
+	return nodes
+}
+
+// volumeMoveClusterSeed creates a raft tenant (placed on every node of the
+// cluster) on pool default, a database in it and one key, and returns the
+// tenant and its data-plane connection to each node.
+func volumeMoveClusterSeed(t *testing.T, nodes [3]*multiProtoNode, proto multiProtocol, prefix string) (volumeMoveTenant, [3][]string) {
+	t.Helper()
+	suffix := fmt.Sprintf("%s-%d", strings.ToLower(proto.name), time.Now().UnixNano())
+	mt := volumeMoveTenant{
+		tenantID: prefix + "-" + suffix,
+		dbName:   "movedata-" + suffix,
+		key:      "greeting",
+		value:    "before-the-move-" + suffix,
+	}
+	createTenant(t, nodes[0], proto, mt.tenantID, "Moving Raft Tenant", "raft", true)
+	if pool := volumeMoveTenantPool(t, nodes[0], proto, mt.tenantID); pool != "default" {
+		t.Fatalf("[%s] raft tenant %s placed on pool %q, want default", proto.name, mt.tenantID, pool)
+	}
+	certPath, keyPath := provisionTenantIdentity(t, nodes[0], mt.tenantID, "mover", dataPlanePermissions)
+	var conns [3][]string
+	for i, node := range nodes {
+		conns[i] = tenantCLIArgsForProto(node, proto, certPath, keyPath)
+	}
+	mt.conn = conns[0]
+	if out, err := runQRDB(t, nodes[0].cli, mt.conn, "database", "create", mt.dbName, "--backend", "pebble"); err != nil {
+		t.Fatalf("[%s] tenant database create: %v\noutput: %s", proto.name, err, out)
+	}
+	volumeMoveClusterPut(t, nodes[0], proto, mt, mt.conn, mt.key, mt.value)
+	volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, mt.key, mt.value)
+	return mt, conns
+}
+
+// volumeMoveClusterStartMove starts the move of tenantID to pool second.
+func volumeMoveClusterStartMove(t *testing.T, node *multiProtoNode, proto multiProtocol, tenantID string) {
+	t.Helper()
+	out, err := runCLIProto(t, node, proto, "--output", "json", "volume-pool", "move-tenant", tenantID, "--to", "second")
+	if err != nil {
+		t.Fatalf("[%s] volume-pool move-tenant: %v\noutput: %s", proto.name, err, out)
+	}
+	var started cliVolumePoolMoveJSON
+	if jerr := json.Unmarshal([]byte(out), &started); jerr != nil {
+		t.Fatalf("[%s] decode move-tenant JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if started.TenantID != tenantID || started.FromPool != "default" || started.ToPool != "second" || started.State == "" {
+		t.Fatalf("[%s] move-tenant = %+v, want tenant %s from default to second with a state", proto.name, started, tenantID)
+	}
+}
+
+// volumeMoveClusterWaitGone polls get-move until the tenant has no move,
+// within volumeMoveDeadline.
+func volumeMoveClusterWaitGone(t *testing.T, node *multiProtoNode, proto multiProtocol, tenantID string) {
+	t.Helper()
+	var out string
+	var err error
+	if pollUntil(volumeMoveDeadline, 200*time.Millisecond, func() bool {
+		out, err = runCLIProto(t, node, proto, "--output", "json", "volume-pool", "get-move", tenantID)
+		return err != nil && volumeMoveIsNoMove(out)
+	}) {
+		return
+	}
+	t.Fatalf("[%s] move of %s did not end within %s; last get-move (err=%v): %s", proto.name, tenantID, volumeMoveDeadline, err, out)
+}
+
+// volumeMoveClusterPut writes key through conn on node, retrying until the
+// write is acknowledged: mid-move a replica's stores close for its copy step.
+func volumeMoveClusterPut(t *testing.T, node *multiProtoNode, proto multiProtocol, mt volumeMoveTenant, conn []string, key, value string) {
+	t.Helper()
+	var out string
+	var err error
+	if pollUntil(volumeMoveDeadline, 200*time.Millisecond, func() bool {
+		out, err = runQRDB(t, node.cli, conn, "--database", mt.dbName, "kv", "put", key, value)
+		return err == nil
+	}) {
+		return
+	}
+	t.Fatalf("[%s] tenant %s kv put %s not acknowledged within %s: %v\noutput: %s", proto.name, mt.tenantID, key, volumeMoveDeadline, err, out)
+}
+
+// volumeMoveClusterExpectEverywhere reads key back from every node, waiting
+// for a lagging replica to catch up within volumeMoveDeadline.
+func volumeMoveClusterExpectEverywhere(t *testing.T, nodes [3]*multiProtoNode, proto multiProtocol, mt volumeMoveTenant, conns [3][]string, key, want string) {
+	t.Helper()
+	for i, node := range nodes {
+		var out string
+		var err error
+		if !pollUntil(volumeMoveDeadline, 200*time.Millisecond, func() bool {
+			out, err = runQRDB(t, node.cli, conns[i], "--database", mt.dbName, "kv", "get", key)
+			return err == nil && strings.Contains(out, want)
+		}) {
+			t.Fatalf("[%s] node %d: tenant %s kv get %s = %q (err=%v), want %q", proto.name, i+1, mt.tenantID, key, out, err, want)
+		}
+	}
 }
