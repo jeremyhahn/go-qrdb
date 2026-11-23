@@ -229,6 +229,18 @@ func (s *Store) Begin(ctx context.Context) (*Txn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sqlitevfs: begin %q: %w", s.db, err)
 	}
+	return s.BeginAt(ctx, rev)
+}
+
+// BeginAt is Begin with the snapshot pinned at revision rev instead of the
+// backend's current one: a caller that just committed at rev reads its own
+// commit's snapshot, whatever committed since. rev must not be ahead of the
+// backend's revision (the backend refuses a read there); the generation
+// check is Begin's.
+func (s *Store) BeginAt(ctx context.Context, rev int64) (*Txn, error) {
+	if rev < 0 {
+		return nil, fmt.Errorf("sqlitevfs: begin %q at negative revision %d", s.db, rev)
+	}
 	meta, _, err := s.readMeta(ctx, rev)
 	if err != nil {
 		return nil, err

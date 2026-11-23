@@ -191,6 +191,73 @@ func TestVFS_RollbackLeavesDatabaseUnchanged(t *testing.T) {
 	}
 }
 
+// TestVFS_SharedAfterCommitReadsOwnCommit: a connection that keeps SHARED
+// after its write transaction (an open read statement) keeps reading the
+// snapshot of its own commit, so a commit by another connection in the
+// meantime never mixes into its page cache (o7).
+func TestVFS_SharedAfterCommitReadsOwnCommit(t *testing.T) {
+	ctx := context.Background()
+	b := newBackend(t)
+	setup(t, "shared.db", plainOpener(b, "shared.db"))
+	db1 := openDB(t, "shared.db", "")
+	mustExec(t, db1, "create table a(id integer primary key, n integer, v blob)")
+	mustExec(t, db1, "create table b(id integer primary key)")
+	mustExec(t, db1, "with recursive s(i) as (select 1 union all select i + 1 from s where i < 2000) "+
+		"insert into a(n, v) select i, randomblob(400) from s")
+
+	conn, err := db1.Conn(ctx)
+	if err != nil {
+		t.Fatalf("Conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "pragma cache_size=10"); err != nil {
+		t.Fatalf("cache_size: %v", err)
+	}
+	rows, err := conn.QueryContext(ctx, "select id from a")
+	if err != nil {
+		t.Fatalf("query a: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		t.Fatalf("no first row: %v", rows.Err())
+	}
+	if _, err := conn.ExecContext(ctx, "insert into b(id) values(1)"); err != nil {
+		t.Fatalf("insert into b: %v", err)
+	}
+
+	db2 := openDB(t, "shared.db", "")
+	mustExec(t, db2, "delete from a where id % 2 = 0")
+	mustExec(t, db2, "update a set n = n + 1000000, v = randomblob(300)")
+
+	var n, sum int64
+	if err := conn.QueryRowContext(ctx, "select count(*), sum(n) from a").Scan(&n, &sum); err != nil {
+		t.Fatalf("count a under SHARED: %v", err)
+	}
+	if n != 2000 || sum != 2000*2001/2 {
+		t.Fatalf("table a under SHARED after own commit = %d rows, sum %d; want 2000, %d", n, sum, 2000*2001/2)
+	}
+	var check string
+	if err := conn.QueryRowContext(ctx, "pragma integrity_check").Scan(&check); err != nil || check != "ok" {
+		t.Fatalf("integrity_check under SHARED = %q, %v", check, err)
+	}
+	var nb int
+	if err := conn.QueryRowContext(ctx, "select count(*) from b").Scan(&nb); err != nil || nb != 1 {
+		t.Fatalf("table b under SHARED = %d, %v; want its own commit's row", nb, err)
+	}
+	seen := 1
+	for rows.Next() {
+		seen++
+	}
+	if err := rows.Err(); err != nil || seen != 2000 {
+		t.Fatalf("open read statement saw %d rows, %v; want 2000", seen, err)
+	}
+	_ = rows.Close()
+
+	if got := count(t, db2, "a"); got != 1000 {
+		t.Fatalf("table a after the other commit = %d rows, want 1000", got)
+	}
+}
+
 func TestVFS_ReopenReadsCommittedRows(t *testing.T) {
 	b := newBackend(t)
 	setup(t, "reopen.db", plainOpener(b, "reopen.db"))

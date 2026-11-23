@@ -943,6 +943,38 @@ func TestTxnChangeCounter(t *testing.T) {
 	}
 }
 
+func TestStoreBeginAt(t *testing.T) {
+	s := newTestStore(t, newTestBackend(t), "app.db")
+	first := seed(t, s, 0x01)
+	second := seed(t, s, 0x02)
+
+	for _, tc := range []struct {
+		rev     int64
+		fill    byte
+		counter uint64
+	}{{first, 0x01, 1}, {second, 0x02, 2}} {
+		txn, err := s.BeginAt(t.Context(), tc.rev)
+		if err != nil {
+			t.Fatalf("BeginAt(%d): %v", tc.rev, err)
+		}
+		if got := txn.Revision(); got != tc.rev {
+			t.Fatalf("BeginAt(%d).Revision() = %d", tc.rev, got)
+		}
+		if got := txn.ChangeCounter(); got != tc.counter {
+			t.Fatalf("BeginAt(%d).ChangeCounter() = %d, want %d", tc.rev, got, tc.counter)
+		}
+		if got := readAll(t, txn); !bytes.Equal(got, pageOf(tc.fill)) {
+			t.Fatalf("BeginAt(%d) reads page fill %#x, want %#x", tc.rev, got[0], tc.fill)
+		}
+		if err := txn.Rollback(t.Context()); err != nil {
+			t.Fatalf("Rollback: %v", err)
+		}
+	}
+	if _, err := s.BeginAt(t.Context(), -1); err == nil {
+		t.Fatal("BeginAt(-1) succeeded")
+	}
+}
+
 func TestTxnIOEdgeCases(t *testing.T) {
 	s := newTestStore(t, newTestBackend(t), "app.db")
 

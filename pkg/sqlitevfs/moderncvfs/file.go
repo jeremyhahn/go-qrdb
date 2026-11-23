@@ -113,14 +113,23 @@ func (f *dbFile) release() {
 
 // commit commits the Txn as one revision. On failure the file enters
 // the failed state and the mapped code, with fallback for errors
-// outside the table, is returned.
+// outside the table, is returned. On success the file keeps a read Txn
+// pinned at the commit's revision: SQLite may stay at SHARED after the
+// commit (an open read statement) and reads on with the page cache of
+// its own commit, so those reads must come from that snapshot and not
+// from whatever committed since. If the pinned Begin fails, the commit
+// stands and the next read begins afresh (and reports the error).
 func (f *dbFile) commit(fallback int32) int32 {
 	txn := f.txn
 	f.txn, f.reserved, f.dirty = nil, false, false
-	if _, err := txn.Commit(context.Background()); err != nil {
+	rev, err := txn.Commit(context.Background())
+	if err != nil {
 		_ = txn.Rollback(context.Background())
 		f.failed = true
 		return resultCode(err, fallback)
+	}
+	if pinned, err := f.store.BeginAt(context.Background(), rev); err == nil {
+		f.txn = pinned
 	}
 	return sqlite3.SQLITE_OK
 }
