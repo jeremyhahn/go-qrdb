@@ -160,9 +160,94 @@ func TestCatalog_SettlingCopyStepCancelAbortsAtRelease(t *testing.T) {
 // TestCatalog_ReleaseMoveStep_WithoutSettlingRefused: only the holder of a
 // recorded, settling step releases it; a step granted but not recorded, or
 // no step at all, is refused and the journal is left as it was.
+func TestCatalog_ReleaseMoveStep_WithoutSettlingRefused(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	var conflict *MoveConflictError
+	if _, err := cat.ReleaseMoveStep(ctx, "acme", "n1"); !errors.As(err, &conflict) {
+		t.Fatalf("ReleaseMoveStep with no step error = %v, want *MoveConflictError", err)
+	}
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatalf("GrantMoveStep: %v", err)
+	}
+	if _, err := cat.ReleaseMoveStep(ctx, "acme", "n1"); !errors.As(err, &conflict) {
+		t.Fatalf("ReleaseMoveStep of an unrecorded step error = %v, want *MoveConflictError", err)
+	}
+	var invalid *InvalidMoveRequestError
+	if _, err := cat.ReleaseMoveStep(ctx, "acme", ""); !errors.As(err, &invalid) {
+		t.Fatalf("ReleaseMoveStep with no node error = %v, want *InvalidMoveRequestError", err)
+	}
+	m := storedMove(t, kv, "acme")
+	if m.StepNode != "n1" || m.StepSettling || len(m.NodesCopied) != 0 || m.State != MoveStateCopying {
+		t.Fatalf("move after refused releases = %+v, want n1's step granted, unrecorded", m)
+	}
+}
+
 // TestCatalog_RecordAbortStep_KeepsJournalAndReservation: a copied node's
 // recorded abort step keeps its step, the journal and the destination
 // reservation until ReleaseMoveStep; the last release frees both.
+func TestCatalog_RecordAbortStep_KeepsJournalAndReservation(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	reserved := poolReserved(t, kv, "bulk")
+	if reserved == 0 {
+		t.Fatal("bulk reserved = 0 after admission, want the move's reservation")
+	}
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatalf("GrantMoveStep: %v", err)
+	}
+	if _, err := cat.CompleteMoveStep(ctx, "acme", "n1"); err != nil {
+		t.Fatalf("CompleteMoveStep n1: %v", err)
+	}
+	if m, err := cat.CancelMove(ctx, "acme"); err != nil || m.State != MoveStateAborting {
+		t.Fatalf("CancelMove = %+v, %v, want aborting", m, err)
+	}
+	if m, err := cat.GrantAbortStep(ctx, "acme"); err != nil || m.StepNode != "n1" {
+		t.Fatalf("GrantAbortStep = %+v, %v, want the copied n1", m, err)
+	}
+	m, err := cat.RecordAbortStep(ctx, "acme", "n1")
+	if err != nil || m.StepNode != "n1" || !m.StepSettling || !m.StepCopied || contains(m.NodesCopied, "n1") {
+		t.Fatalf("RecordAbortStep n1 = %+v, %v, want n1 settling, copied, off the lists", m, err)
+	}
+	if m, err = cat.RecordAbortStep(ctx, "acme", "n1"); err != nil || !m.StepSettling || !m.StepCopied {
+		t.Fatalf("repeated RecordAbortStep = %+v, %v, want an idempotent settling step", m, err)
+	}
+	if m, err = cat.GrantAbortStep(ctx, "acme"); err != nil || m.StepNode != "n1" {
+		t.Fatalf("GrantAbortStep while n1 settles = %+v, %v, want the step kept by n1", m, err)
+	}
+	var conflict *MoveConflictError
+	if _, err := cat.CompleteAbortStep(ctx, "acme", "n1"); !errors.As(err, &conflict) {
+		t.Fatalf("CompleteAbortStep of a settling step error = %v, want *MoveConflictError", err)
+	}
+	if storedMove(t, kv, "acme") == nil || poolReserved(t, kv, "bulk") != reserved {
+		t.Fatalf("journal or reservation gone while n1 settles: reserved = %d, want %d", poolReserved(t, kv, "bulk"), reserved)
+	}
+	if m, err = cat.ReleaseMoveStep(ctx, "acme", "n1"); err != nil || m.StepNode != "" || m.StepSettling || m.StepCopied {
+		t.Fatalf("ReleaseMoveStep n1 = %+v, %v, want the step released", m, err)
+	}
+	for i := 0; i < 4 && storedMove(t, kv, "acme") != nil; i++ {
+		g, err := cat.GrantAbortStep(ctx, "acme")
+		if err != nil {
+			t.Fatalf("GrantAbortStep: %v", err)
+		}
+		if _, err := cat.RecordAbortStep(ctx, "acme", g.StepNode); err != nil {
+			t.Fatalf("RecordAbortStep %s: %v", g.StepNode, err)
+		}
+		if storedMove(t, kv, "acme") == nil || poolReserved(t, kv, "bulk") != reserved {
+			t.Fatalf("journal or reservation gone before %s's release", g.StepNode)
+		}
+		if _, err := cat.ReleaseMoveStep(ctx, "acme", g.StepNode); err != nil {
+			t.Fatalf("ReleaseMoveStep %s: %v", g.StepNode, err)
+		}
+	}
+	if storedMove(t, kv, "acme") != nil {
+		t.Fatal("journal kept after the last release")
+	}
+	if got := poolReserved(t, kv, "bulk"); got != 0 {
+		t.Fatalf("bulk reserved = %d after the last release, want 0", got)
+	}
+}
+
 func TestCatalog_MoveStep_NodeWithoutTheStepRefused(t *testing.T) {
 	cat, kv, _ := newAdmittedMove(t)
 	ctx := context.Background()
