@@ -96,6 +96,9 @@ var refusalErrors = map[string]func(md map[string]string) error{
 	ReasonUserConcurrentUpdate: func(md map[string]string) error {
 		return UserConcurrentUpdateFromMetadata(md)
 	},
+	ReasonCommandConflict: func(md map[string]string) error {
+		return CommandConflictFromMetadata(md)
+	},
 	lock.ReasonLockHeld: func(md map[string]string) error {
 		return lock.LockHeldFromMetadata(md)
 	},
