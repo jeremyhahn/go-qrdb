@@ -96,7 +96,28 @@ func TestSystemShardAuditResolver_RoutesPrefixTenantsToTheSystemShard(t *testing
 // TestSystemShardAuditResolver_RoutesBarrierTenantsToTheirHomeGroup: a barrier
 // tenant's audit instance and its other logs live in its home group, under the
 // tenant's key, for the audit trail and the log service alike.
-func TestSystemShardAuditResolver_RoutesBarrierTenantsToTheirHomeGroup(t *testing.T) {
+// TestSystemShardAuditResolver_RoutesBarrierTenantsToTheSystemShard pins
+// main's audit routing: the audit logger writes a barrier tenant's events
+// to the system shard, even when a group source is wired, and a sealed
+// barrier tenant is not consulted.
+func TestSystemShardAuditResolver_RoutesBarrierTenantsToTheSystemShard(t *testing.T) {
+	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
+		"widgets": {ID: "widgets", IsolationType: tenant.IsolationBarrier},
+		"vault":   {ID: "vault", IsolationType: tenant.IsolationBarrier},
+	}}
+	system := &mockHost{}
+	r := NewSystemShardAuditResolver(system, 1, lookup)
+	for _, id := range []string{"widgets", "vault"} {
+		host, shardID, err := r.ResolveAuditShard(context.Background(), id)
+		if err != nil || shardID != 1 || host != system {
+			t.Fatalf("ResolveAuditShard(%q) = %v, %d, %v; want the system shard 1", id, host, shardID, err)
+		}
+	}
+}
+
+// TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup pins the
+// log resolver: a barrier tenant's own logs live in its home group.
+func TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup(t *testing.T) {
 	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
 		"widgets": {ID: "widgets", IsolationType: tenant.IsolationBarrier},
 		"vault":   {ID: "vault", IsolationType: tenant.IsolationBarrier},
