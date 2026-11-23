@@ -350,6 +350,59 @@ func TestChain_MarkedRetryAfterUnmarkedOriginalIsReplicaIndependent(t *testing.T
 	}
 }
 
+// TestChain_UnmarkedRepeatAfterMarkedAppendAppendsNothing: an onboarding
+// emitter's unmarked proposal timed out in flight and its marked retry
+// applied first. The late unmarked one consults the once-index and appends
+// nothing, through either opcode and on a replica restored in between.
+func TestChain_UnmarkedRepeatAfterMarkedAppendAppendsNothing(t *testing.T) {
+	const tenantID = "acme"
+	unmarked, marked := onboardingEvents(tenantID)
+	for _, instance := range []bool{false, true} {
+		t.Run(map[bool]string{false: "audit append", true: "instance"}[instance], func(t *testing.T) {
+			store := memory.NewStorage()
+			c := NewChain()
+			applyEvent(t, c, store, tenantID, marked, instance)
+			before := rawTable(t, store)
+			applyEvent(t, c, store, tenantID, unmarked, instance)
+			if seq, _, _ := c.log.Head(tenantID); seq != 1 {
+				t.Fatalf("head seq = %d after a marked append and its unmarked repeat, want 1", seq)
+			}
+			sameTable(t, rawTable(t, store), before)
+
+			restored := NewChain()
+			if err := restored.Restore(store); err != nil {
+				t.Fatalf("Restore: %v", err)
+			}
+			applyEvent(t, restored, store, tenantID, unmarked, instance)
+			sameTable(t, rawTable(t, store), before)
+		})
+	}
+}
+
+// TestChain_UnmarkedOnboardBeforeActivationUnchanged: with no marked record
+// an unmarked onboarding event applied twice is two events, and the raw
+// table is the one a release without the once rule writes.
+func TestChain_UnmarkedOnboardBeforeActivationUnchanged(t *testing.T) {
+	const tenantID = "acme"
+	unmarked, _ := onboardingEvents(tenantID)
+	want := memory.NewStorage()
+	legacy := NewChain()
+	for range 2 {
+		if _, err := legacy.log.Append(want, tenantID, linkEvent(unmarked)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := memory.NewStorage()
+	c := NewChain()
+	for range 2 {
+		applyEvent(t, c, got, tenantID, unmarked, false)
+	}
+	if seq, _, _ := c.log.Head(tenantID); seq != 2 {
+		t.Fatalf("head seq = %d after two unmarked applies, want 2", seq)
+	}
+	sameTable(t, rawTable(t, got), rawTable(t, want))
+}
+
 // TestChain_MarkedRetryOfMarkedProposalAppendsOnce: a marked proposal and
 // its marked retry leave one event, restored or not.
 func TestChain_MarkedRetryOfMarkedProposalAppendsOnce(t *testing.T) {

@@ -101,9 +101,14 @@ func (c *Chain) Append(w vlog.Writer, tenantID string, ev AuditEvent) (seq uint6
 	}
 	once := ev.AppendOnce
 	ev.AppendOnce = false
-	if token := onceToken(ev); token != "" && once {
-		seq, _, err = c.log.AppendOnce(w, tenantID, token, linkEvent(ev), false)
-		return seq, err
+	if token := onceToken(ev); token != "" {
+		if once {
+			seq, _, err = c.log.AppendOnce(w, tenantID, token, linkEvent(ev), false)
+			return seq, err
+		}
+		if head, done := c.log.HasOnce(tenantID, token); done {
+			return head, nil
+		}
 	}
 	return c.log.Append(w, tenantID, linkEvent(ev))
 }
@@ -111,12 +116,16 @@ func (c *Chain) Append(w vlog.Writer, tenantID string, ev AuditEvent) (seq uint6
 // ActionTenantOnboard is the action of a tenant's onboarding event. Its
 // emitter retries an append it could not confirm, so an event carrying
 // AppendOnce (featuregate.AuditAppendOnce) is appended once per identity
-// (onceToken) at apply time, and only once-records written by marked
-// appends are consulted. An unmarked one is appended exactly as before the
-// marker existed, writing nothing else, so a command proposed before
-// activation leaves the same raw state on every replica whichever release
-// applied it. A marked retry of a pre-activation unmarked proposal can
-// therefore leave a second event, identical on every replica.
+// (onceToken) at apply time. An unmarked one consults the once-index
+// read-only (vlog.Chain.HasOnce): if a marked append of the same identity
+// has already applied it appends nothing, else it is appended exactly as
+// before the marker existed, writing nothing else. Before activation no
+// once-record exists, so a pre-activation command applies and replays to
+// the same raw state as on a release without this rule; after activation
+// every replica runs a release with it, so an unmarked proposal that timed
+// out and applies after its marked retry is dropped identically everywhere.
+// An unmarked proposal that applies BEFORE its marked retry is proposed
+// leaves no once-record, so that retry still appends a second event.
 const ActionTenantOnboard = "tenant.onboard"
 
 // onceToken returns the apply-time identity of an event appended at most
@@ -157,8 +166,11 @@ func (c *Chain) AppendToInstance(w vlog.Writer, tenantID string, entries [][]byt
 	for _, ev := range events {
 		once := ev.AppendOnce
 		ev.AppendOnce = false
-		if token := onceToken(ev); token != "" && once {
+		token := onceToken(ev)
+		if token != "" && once {
 			seq, _, err = c.log.AppendOnce(w, tenantID, token, linkEvent(ev), true)
+		} else if head, done := c.log.HasOnce(tenantID, token); token != "" && done {
+			seq = head
 		} else {
 			seq, err = c.log.AppendAudit(w, tenantID, linkEvent(ev))
 		}

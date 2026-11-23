@@ -644,9 +644,11 @@ func (s *TenantOnboardingService) emitPendingOnboardAudit(ctx context.Context, t
 	// re-sending it could chain it twice, so the record waits, kept, for the
 	// feature. Once it is active the retry carries the append-once marker,
 	// and apply keeps one event for a marked proposal and its marked retry.
-	// An unmarked proposal is appended as before activation, so its marked
-	// retry can leave a second event, the same on every replica
-	// (audit.Chain.Append). No elapsed time is taken as proof that the
+	// An unmarked proposal that applies after its marked retry finds the
+	// retry's once-record and appends nothing, the same on every replica
+	// (audit.Chain.Append); one that applies before the retry is proposed
+	// leaves no once-record, so that retry still appends a second event.
+	// No elapsed time is taken as proof that the
 	// earlier proposal was lost. A claim whose holder stopped mid-append is
 	// such an append too.
 	uncertain := claim != nil && claim.Uncertain

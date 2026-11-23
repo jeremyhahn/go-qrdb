@@ -236,6 +236,19 @@ func (c *Chain) AppendOnce(w Writer, tenantID, token string, encode Encoder, aud
 	return seq, true, nil
 }
 
+// HasOnce reports whether an event identified by token has already been
+// appended once (AppendOnce) to tenantID's chain, and the chain's head
+// sequence. It writes nothing and changes no state: a caller applying an
+// unmarked repeat of a once-appended event uses it to append nothing.
+func (c *Chain) HasOnce(tenantID, token string) (seq uint64, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.requests[string(requestKey(tenantID, token))]; !ok {
+		return 0, false
+	}
+	return c.heads[tenantID].seq, true
+}
+
 // restoreRequests reads every event identity recorded by AppendOnce.
 func restoreRequests(r storage.Reader) (map[string]struct{}, error) {
 	requests := make(map[string]struct{})

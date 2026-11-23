@@ -100,6 +100,33 @@ func TestChain_AppendOnce_RepeatTokenAppendsNothing(t *testing.T) {
 	}
 }
 
+// HasOnce answers from the once-index and writes nothing.
+func TestChain_AppendOnce_HasOnceIsReadOnly(t *testing.T) {
+	store := memory.NewStorage()
+	c := NewChain()
+	if _, ok := c.HasOnce("acme", "onboard"); ok {
+		t.Fatal("HasOnce on an empty chain = true")
+	}
+	if _, appended, err := c.AppendOnce(store, "acme", "onboard", fixedRecord(0), false); err != nil || !appended {
+		t.Fatalf("AppendOnce = %v, %v", appended, err)
+	}
+	if _, err := c.Append(store, "acme", fixedRecord(1)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if seq, ok := c.HasOnce("acme", "onboard"); !ok || seq != 2 {
+		t.Fatalf("HasOnce = %d, %v; want the head 2, true", seq, ok)
+	}
+	if _, ok := c.HasOnce("globex", "onboard"); ok {
+		t.Fatal("HasOnce matched another tenant's token")
+	}
+	if _, ok := c.HasOnce("acme", "other"); ok {
+		t.Fatal("HasOnce matched another token")
+	}
+	if n := countEvents(t, store, "acme"); n != 2 {
+		t.Fatalf("events after HasOnce = %d, want 2", n)
+	}
+}
+
 func TestChain_AppendOnce_AuditAppendsTheInstanceEvent(t *testing.T) {
 	store := memory.NewStorage()
 	c := NewChain()
