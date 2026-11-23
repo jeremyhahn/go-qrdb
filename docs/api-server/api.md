@@ -49,6 +49,29 @@ Beside these run **per-database protocol listeners** — MySQL and PostgreSQL
 ([../etcd-compatibility/api.md](../etcd-compatibility/api.md)). Those speak
 foreign protocols over the same services; they are not a seventh transport.
 
+## WebTransport sessions
+
+A program that embeds a node can serve WebTransport sessions
+(draft-ietf-webtrans-http3-16) on the REST listener's HTTP/3 side. It is opt-in
+and SDK-only: `server.WithWebTransportHandler(path, h)` (`sdk/go/server`, an
+alias of `pkg/server` and `pkg/api/rest`); no `qrdbd` flag or configuration key
+turns it on. See [user.md](user.md#webtransport-sessions-on-an-embedded-node)
+for the embedding code.
+
+| | |
+|---|---|
+| Route | extended `CONNECT` to `path` on the HTTP/3 listener, `:protocol` `webtransport-h3` (the only token accepted) |
+| Authentication | the session's `CONNECT` is an authenticated REST route: it passes the same authentication, tenant binding and every other REST layer before the upgrade, and is refused with the status REST gives (`401`, `403`, a tenant refusal) without reaching the handler |
+| Not HTTP/3 | an authenticated request that reaches the route over HTTP/1.1 or HTTP/2 is `400` |
+| Client requirements | a `CONNECT` from a client that did not send `SETTINGS_WT_ENABLED`, `SETTINGS_H3_DATAGRAM` or the `reset_stream_at` transport parameter has its request stream reset with `H3_MESSAGE_ERROR` |
+| Handler | `func(sess *WebTransportSession, caller *auth.Identity, tenantID string)`: the upgraded session, the authenticated caller and the bound tenant; the handler owns the session |
+| Without the option | the listener advertises no WebTransport SETTINGS and `path` is an unknown route |
+| Refused at `Start` | a path that is not absolute, a nil handler, or a path the middleware exempts as public (`*rest.InvalidWebTransportHandlerError`) |
+| Shutdown | `Stop` ends every open session |
+
+Where the implementation departs from draft -16 is recorded in
+[../reference/README.md](../reference/README.md#the-draft-ietf-webtrans-http3-pin-and-its-deviations).
+
 ## gRPC services
 
 | Service | Covers |
