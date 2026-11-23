@@ -111,10 +111,12 @@ intermediates). The SO's PIN is `so_pin`. The ceremony keeps it only as its
 optional as a whole, in both postures; a strict server booted without one
 refuses only the SO-exclusive operations (see
 [../firstboot/architecture.md](../firstboot/architecture.md#the-system-security-officer)).
-A username without a certificate input (or the reverse), both inputs, the
-admin's username or key, no `so_pin`, a CSR that does not parse, or a
-certificate that does not verify is refused with
-`*ceremony.SystemSORejectedError` (400).
+A username without a certificate input (or the reverse), both inputs, no
+`so_pin`, a CSR that does not parse, or a certificate that does not verify is
+refused with `*ceremony.SystemSORejectedError` (400). So is an SO that is the
+admin under strict separation, by username or by key; the standard posture
+lets the admin be named as the SO, and refuses only another SO that holds the
+admin's key.
 
 Response — `CeremonyInitializeResponse`: `spki_pin`, `ca_cert_pem`,
 `tls_cert_pem`, `state`, `share_count`, `holders` — each initial holder's
@@ -168,7 +170,7 @@ requires an authenticated, authorized caller rather than only the SO PIN.
 | SO PIN locked out after repeated wrong PINs | 429 with `Retry-After` | `RESOURCE_EXHAUSTED` |
 | No PIN backend | 412 | `FAILED_PRECONDITION` |
 | CSR-sign or generate admin path on a node with no CA key (a composer's gRPC registration without `sdk.WithRegisterCeremonyCA`) | 409 | `FAILED_PRECONDITION` — `*ceremony.AdminCredentialRequiresCAError`, refusal reason `ADMIN_CREDENTIAL_REQUIRES_CA` with metadata `path` (`csr-sign` or `generate`); the SDK rebuilds the typed error on every transport |
-| System SO given in part, with both inputs, matching the admin, without `so_pin`, or with a bad CSR or certificate | 400 | `INVALID_ARGUMENT` — `*ceremony.SystemSORejectedError` |
+| System SO given in part, with both inputs, matching the admin (by username or key under strict; by key alone, for an SO other than the admin, under standard), without `so_pin`, or with a bad CSR or certificate | 400 | `INVALID_ARGUMENT` — `*ceremony.SystemSORejectedError` |
 | Ceremony already performed | 409 | `FAILED_PRECONDITION` — `ErrAlreadyInitialized` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 
