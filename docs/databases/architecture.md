@@ -1126,8 +1126,10 @@ keyspace with `service.ReservedKeyError` (`InvalidArgument`); dropping a
 database reclaims its logs, so a re-created name starts empty. A database named by a call is looked up in the
 node's database registry before the call is routed. A barrier-enabled
 database's logs are applied to and read from the Raft group its tenant
-resolves to, like every other database's (owner ruling 1234, option A;
-`barrierDatabaseTarget` in `pkg/service/vlog_database_store.go`). Each entry's
+resolves to, like every other database's, and on a standalone node, which runs
+no Raft group, from the node's local store, through the same route (owner
+ruling 1234, option A; `barrierDatabaseTarget` in
+`pkg/service/vlog_database_store.go`; no second store type on either node). Each entry's
 RFC 6962 leaf hash is computed over the plaintext before the propose, and its
 body is sealed under the database's key (`BarrierBackend.SealValue`); the
 append goes as sub-type 8 (`AppendSealed`). A software signing key's PKCS#8

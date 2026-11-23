@@ -338,9 +338,11 @@ the tenant. The server answers `503 Service Unavailable` (`UNAVAILABLE`).
 A barrier tenant's audit trail is not in its barrier: it stays on the system
 shard.
 
-**A `qrdb kv` call is refused as reserved for the verifiable log.** A
-barrier-enabled database keeps its logs in its own store under a reserved
-keyspace that only `qrdb vlog` reads and writes (`ReservedKeyError`,
+**A `qrdb kv` call is refused as reserved for the verifiable log.** The
+verifiable log's keyspace is reserved in every database, a barrier-enabled one
+too: its logs are kept, sealed under the database's key, in the group its
+tenant resolves to (on a standalone node, the node's local store), never in
+the database's own store, and only `qrdb vlog` reads and writes them (`ReservedKeyError`,
 `400 Bad Request`, `INVALID_ARGUMENT`). Use another key. Dropping a database
 removes its logs, so one created again under the name starts with none.
 

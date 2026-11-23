@@ -15,14 +15,14 @@ the row shipped only when every line HOLDS.
 | 5 | TypeScript SDK | HOLDS | `sdk/typescript/test/vlog-contract.test.ts` (REST and Wails clients) |
 | 6 | Tenant isolation | HOLDS | `pkg/service/vlog_log_service_test.go:TestLogService_CreateLog_Refusals` (cross-tenant); `test/integration/vlog_tenant_confinement_cli_test.go:TestVlog_CLI_TenantConfinement_PerProtocol` (closed by step 2a) |
 | 7 | DEK | HOLDS (by design) | `docs/databases/architecture.md` §8: no second key layer; a caller encrypts entries with `DEKService` before appending, the leaf commits to the ciphertext |
-| 8 | Barrier | HOLDS | Barrier tenant HOLDS in Raft mode: its logs, entries and sealed signing keys are applied in its home group, under its own key; a sealed barrier refuses with `tenant.ErrTenantSealed` (`pkg/service/audit_shard_resolver_test.go:TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup`; `pkg/server/lifecycle/log_groups_test.go:TestLogGroups_TenantHomeGroup`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierTenant_PerProtocol`, every transport: sealed refused, unsealed create/append/get/prove-inclusion/prove-consistency/head, log unchanged after the unseal). Barrier database HOLDS on every backend: its logs are applied to and read from the database's own barrier backend (`pkg/service/vlog_database_store.go`), encrypted under the database's key; a sealed database refuses with `*service.BarrierSealedError`, a legacy raft barrier record with `*database.BarrierOffDataPathError` (`pkg/service/vlog_log_service_test.go:TestLogService_ServesABarrierDatabase`, `TestLogService_BarrierDatabaseLifecycle`, `TestLogService_RefusesALegacyRaftBarrierRecord`, `TestLogService_BarrierDatabaseCommitFailureRestores`; `pkg/server/lifecycle/seams_vlog_test.go:TestBuildServices_LogServiceSealsWithTheBarrierDatabase`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierDatabase_PerProtocol`, every transport: unsealed every verb and its proofs, no entry in plaintext in the database's data directory, sealed refused, wrong secret stays refused, unsealed log unchanged and grows, gone after drop). Barrier tenant HOLDS on a standalone node: its logs are applied to and read from its own standalone barrier store (`pkg/service/vlog_barrier_store.go`, attached by `AttachLocalTenantHomes`) (`pkg/service/vlog_barrier_store_test.go:TestLogService_ServesABarrierTenantOnItsStandaloneBarrier`, `TestLogService_SealedStandaloneBarrierTenantRefuses`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierTenant_Standalone_PerProtocol`). A barrier tenant's audit trail stays on the system shard, where its audit logger writes and the log service reads it (review fixes F2, F3 and the audit P1 below). The kv surface refuses a barrier database's reserved log keyspace (F1), and a dropped database's logs are reclaimed (F4). |
-| 9 | Replication | HOLDS | `sdk/go/node/clustered_vlog_test.go:TestClusteredCreateFunc_AppliesVerifiableLog`, `...LogRegistryPerReplica`; `pkg/store/vlog_apply_test.go:TestStoreVerifiableLog_SnapshotMidLogMatchesAPeer` |
+| 8 | Barrier | HOLDS | Barrier tenant HOLDS in Raft mode: its logs, entries and sealed signing keys are applied in its home group, under its own key; a sealed barrier refuses with `tenant.ErrTenantSealed` (`pkg/service/audit_shard_resolver_test.go:TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup`; `pkg/server/lifecycle/log_groups_test.go:TestLogGroups_TenantHomeGroup`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierTenant_PerProtocol`, every transport: sealed refused, unsealed create/append/get/prove-inclusion/prove-consistency/head, log unchanged after the unseal). Barrier database HOLDS on every backend (owner ruling 1234, option A): its logs live in the group its tenant resolves to (on a standalone node, the node's local store), proposed through `barrierDatabaseTarget` (`pkg/service/vlog_database_store.go`) with each entry body and software key sealed under the database's barrier key (sub-types 8, 9 and 10, `featuregate.VerifiableLogSealed`); a sealed database refuses with `*service.BarrierSealedError`, a legacy raft barrier record with `*database.BarrierOffDataPathError` (`pkg/service/vlog_log_service_test.go:TestLogService_ServesABarrierDatabase`, `TestLogService_BarrierDatabaseLogsLiveInTheParentGroup`, `TestLogService_SealedBarrierDatabaseRefusesWhileItsGroupApplies`, `TestLogService_BarrierDatabaseAppendNeedsTheSealedFeature`, `TestLogService_BarrierDatabaseDropReclaimsItsLogsInTheParentGroup`, `TestLogService_BarrierDatabaseLifecycle`, `TestLogService_RefusesALegacyRaftBarrierRecord`; `pkg/statemachine/vlog_apply_test.go:TestApplyVerifiableLog_SealedKeyRecordsAreStoredUnopened`; `pkg/server/lifecycle/seams_vlog_test.go:TestBuildServices_LogServiceSealsWithTheBarrierDatabase`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierDatabase_PerProtocol` (clustered) and `TestVlog_CLI_BarrierDatabase_Standalone_PerProtocol` (standalone), every transport: unsealed every verb and its proofs, no entry in plaintext under the node's data root or the database's data directory, sealed refused, wrong secret stays refused, unsealed log unchanged and grows, gone after drop). Barrier tenant HOLDS on a standalone node: its logs are applied to and read from its own standalone barrier store (`pkg/service/vlog_barrier_store.go`, attached by `AttachLocalTenantHomes`) (`pkg/service/vlog_barrier_store_test.go:TestLogService_ServesABarrierTenantOnItsStandaloneBarrier`, `TestLogService_SealedStandaloneBarrierTenantRefuses`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierTenant_Standalone_PerProtocol`). A barrier tenant's audit trail stays on the system shard, where its audit logger writes and the log service reads it (review fixes F2, F3 and the audit P1 below). The kv surface refuses a barrier database's reserved log keyspace (F1), and a dropped database's logs are reclaimed (F4). |
+| 9 | Replication | HOLDS | `sdk/go/node/clustered_vlog_test.go:TestClusteredCreateFunc_AppliesVerifiableLog`, `TestClusteredCreateFunc_LogRegistryPerReplica`; `pkg/store/vlog_apply_test.go:TestStoreVerifiableLog_SnapshotMidLogMatchesAPeer` |
 | 10 | Standalone and Raft modes | HOLDS | standalone: `pkg/engine/mvcc_vlog_test.go:TestMVCCEngine_VerifiableLog_DispatchesAndAnswersReads`; Raft: `pkg/store/vlog_apply_test.go:TestStoreVerifiableLog_DispatchesAndAnswersReads` |
 | 11 | One apply-time opcode behind a feature gate | HOLDS | `protocol.OpVerifiableLog` (`pkg/protocol/vlog.go`), `featuregate.VerifiableLog`/`VerifiableLogKeys`; `pkg/service/vlog_log_service_test.go:TestLogService_Writes_RefusedBeforeGateActive`, `TestLogService_KeyWrites_RefusedBeforeKeyFeatureActive`; `pkg/store/vlog_apply_test.go:TestStoreAuditInstance_MixedVersionReplay` |
 | 12 | Dispatched by both state-machine families | HOLDS | `statemachine.ApplyVerifiableLog` from `pkg/engine/mvcc_engine.go` and `pkg/store/pebble.go`; `TestMVCCEngine_VerifiableLog_RefusalVersusHalt`, `TestStoreVerifiableLog_RefusalVersusHalt`, `TestStoreAuditInstance_FamiliesAgree` |
 | 13 | Sequence assigned at apply | HOLDS | `pkg/vlog/audit_instance_test.go:TestAuditInstance_DeterministicAcrossBatchPacking`; `pkg/store/vlog_apply_test.go:TestStoreVerifiableLog_ReopenMatchesAPeer` |
 | 14 | Head signature produced outside apply, appended as a record | HOLDS | `LogService.SignHead` signs, then proposes the `Checkpoint` sub-type; `TestLogService_SignHead_RecordsTheCheckpoint`; `pkg/vlog/checkpoint_test.go` |
-| 15 | `vlog.HeadSignerProvider` via `WithHeadSignerProvider` on the server and `sdk/go/node` | HOLDS | `pkg/server/seam_options_test.go`; `sdk/go/node/seams_test.go:TestWithHeadSignerProvider_ReachesTheServer`; `sdk/go/server/headsigner_test.go`; `pkg/server/lifecycle/seams_vlog_test.go:TestBuildServices_HeadSignerProviderCreatesTheLogsKeys` |
+| 15 | `vlog.HeadSignerProvider` via `WithHeadSignerProvider` on the server and `sdk/go/node` | HOLDS | `pkg/server/seam_options_test.go:TestResolveCryptoOptions_SurfacesTheHeadSignerProvider`; `sdk/go/node/seams_test.go:TestMergeSeamOptions_FoldsNodeOptionsIntoTheServerOptions`; `sdk/go/server/headsigner_test.go:TestWithHeadSignerProvider_ReachesCryptoOptions`; `pkg/server/lifecycle/seams_vlog_test.go:TestBuildServices_HeadSignerProviderCreatesTheLogsKeys` |
 | 16 | Software provider (key as the log's sealed record) is the default | HOLDS | `pkg/vlog/signing_software_test.go:TestSoftwareHeadSignerProvider_CreateKeyIsTheSealedRecord`; `TestNewLogService_DefaultsToTheSoftwareProvider`; `TestBuildServices_HeadSignerProviderAbsentKeepsTheSoftwareProvider`; `sdk/go/node/seams_test.go:TestWithHeadSignerProvider_AbsentKeepsTheSoftwareProvider` |
 | 17 | The audit trail is one log instance | HOLDS | `pkg/vlog/audit_instance_test.go:TestAuditInstance_SwitchStartsTheTreeAtS0`; `pkg/store/vlog_apply_test.go:TestStoreAuditInstance_FamiliesAgree`; `pkg/service/vlog_log_service_audit_test.go:TestLogService_ReadsTheAuditInstance` |
 
@@ -59,20 +59,29 @@ b. Row 8 (barrier), lane vl1613c. No new seal domain: the logs go to the
      before, `--database` never reached the server over REST.
    - CLI E2E: `test/integration/vlog_barrier_tenant_cli_test.go`, listed in
      `INTTEST_databases`.
-c. Row 8 (barrier database), this PR, lanes fx1655h and fx1655i.
+c. Row 8 (barrier database), this PR, lanes fx1655h and fx1655i, replaced
+   by rw1613w3 (owner ruling 1234, option A) and closed for standalone
+   nodes by rw1613w4.
    - `pkg/service/vlog_database_store.go`: a barrier-enabled database's logs
-     are applied to and read from the database's own barrier backend, so they
-     are encrypted under the database's key, sealed with it and dropped with
-     it. A sealed database refuses with `BarrierSealedError` (`Unavailable`); a
+     live in the group its tenant resolves to (`r.raft(ctx, tenantID)`; on a
+     standalone node, the node's local store). `barrierDatabaseTarget` wraps
+     that group's target: entry bodies and software keys are sealed under
+     the database's barrier key (sub-types 8, 9, 10), so they are unreadable
+     while it is sealed and reclaimed in the parent group when it is dropped.
+     A sealed database refuses with `BarrierSealedError` (`Unavailable`); a
      legacy raft barrier record with `database.BarrierOffDataPathError`
-     (`Unprocessable`).
+     (`Unprocessable`). The first cut's per-database barrier store
+     (`databaseLogStore`) is deleted.
    - The log service's route resolves each database incarnation to its log
-     target (`logTarget`: the barrier store, or `raftTarget`, the group).
+     target (`logTarget`: `barrierDatabaseTarget` over the parent group, a
+     barrier tenant's standalone store, or `raftTarget`, the group).
    - The barrier-database refusal error of slice b and its errclass row are
      deleted.
-   - CLI E2E: `TestVlog_CLI_BarrierDatabase_PerProtocol` in
-     `test/integration/vlog_barrier_tenant_cli_test.go`, every transport:
-     served, sealed, wrong secret, unsealed, dropped and re-created.
+   - CLI E2E in `test/integration/vlog_barrier_tenant_cli_test.go`, every
+     transport: `TestVlog_CLI_BarrierDatabase_PerProtocol` (clustered) and
+     `TestVlog_CLI_BarrierDatabase_Standalone_PerProtocol` (standalone):
+     served, no plaintext under the data root, sealed, wrong secret,
+     unsealed, dropped and re-created.
 
 d. Review fixes, lane fx1655n (PR #1655).
    - F1, `e17340317`: the kv surface refuses a key in, or a delete range over,
@@ -98,8 +107,10 @@ d. Review fixes, lane fx1655n (PR #1655).
      `pkg/service/vlog_log_service_test.go:TestDatabaseService_DropReclaimsTheDatabasesLogs`,
      `TestLogService_DropDatabaseLogs_ProposesUntilNothingRemains`;
      `pkg/service/vlog_barrier_store_test.go:TestLogService_DropDatabaseLogsOnAStandaloneBarrierReclaimsEveryLog`).
-   - Barrier-database P1: served from the database's own barrier store (slice
-     c; `TestLogService_ServesABarrierDatabase`,
+   - Barrier-database P1: served from the parent group (or a standalone
+     node's local store), sealed under the database's key (slice c;
+     `TestLogService_ServesABarrierDatabase`,
+     `TestLogService_BarrierDatabaseLogsLiveInTheParentGroup`,
      `TestLogService_BarrierDatabaseLifecycle`).
 
 Migration note: a barrier tenant's audit trail is on the system shard, under
