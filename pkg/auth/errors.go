@@ -54,6 +54,14 @@ var (
 	// ErrPeerCredentialUnmapped is returned when a local-socket caller's
 	// peer credential (uid/gid) matches no configured mapping.
 	ErrPeerCredentialUnmapped = &AuthError{Code: "peer_credential_unmapped", Message: "peer credential is not mapped to an account"}
+
+	// ErrPeerCredentialAccountMissing is returned when a local-socket
+	// caller's peer credential is mapped, but the mapped account does not
+	// exist (never created, or deleted) or cannot be resolved because no
+	// user store is configured. The caller is refused at authentication,
+	// so no policy -- an ABAC subject.authenticated allow included -- can
+	// admit it.
+	ErrPeerCredentialAccountMissing = &AuthError{Code: "peer_credential_account_missing", Message: "peer credential maps to an account that does not exist"}
 )
 
 // CertificateTenantError reports that a client certificate names no usable

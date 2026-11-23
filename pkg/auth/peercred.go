@@ -61,9 +61,11 @@ type PeerCredentialMapping struct {
 // operator-configured mapping from uid or gid to a go-qrdb account. A uid
 // mapping wins over a gid mapping; a peer no mapping names is refused with
 // ErrPeerCredentialUnmapped (default deny). The identity it returns carries
-// no roles: the middleware fills them from the bound account, so an
-// account that does not exist, is disabled, or does not permit
-// MethodPeerCred is refused or denied exactly as for any other method.
+// no roles: the middleware fills them from the bound account. A mapped
+// account that does not exist (never created, or deleted), or that cannot
+// be resolved because no user store is configured, is refused with
+// ErrPeerCredentialAccountMissing; a disabled account or one not permitting
+// MethodPeerCred is refused as for any other method.
 type PeerCredentialAuthenticator struct {
 	mappings []PeerCredentialMapping
 }

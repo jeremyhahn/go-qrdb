@@ -503,7 +503,10 @@ func IdentityIAMSealed(identity *auth.Identity) bool {
 // When no user store is configured the base identity is used as-is. A missing
 // user proceeds without enrichment (empty roles -> default-deny at authorize);
 // a transient store failure returns StoreUnavailableError so clients retry
-// rather than being denied with stale/empty roles.
+// rather than being denied with stale/empty roles. A peer credential
+// (auth.MethodPeerCred) is the exception: its mapped account must resolve, so
+// a missing account, or no user store at all, is refused with
+// auth.ErrPeerCredentialAccountMissing (checkUnresolvedPeerCred).
 func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Identity, method authMethod) (context.Context, *auth.Identity, error) {
 	// A node-sanctioned service principal is granted to in-process callers
 	// only (auth.NewServicePrincipal, reached through sdk/go/node
@@ -654,6 +657,9 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			// certificate naming no account is refused.
 			var unf *user.UserNotFoundError
 			if errors.As(err, &unf) {
+				if rerr := checkUnresolvedPeerCred(method); rerr != nil {
+					return ctx, nil, rerr
+				}
 				if rerr := checkUnresolvedCertLogin(ctx, identity, method, m.bindingPolicy); rerr != nil {
 					return ctx, nil, rerr
 				}
@@ -749,6 +755,10 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			// record's map.
 			identity.Attributes = maps.Clone(u.Attributes)
 		}
+	} else if rerr := checkUnresolvedPeerCred(method); rerr != nil {
+		// No user store: a peer credential's mapped account cannot be
+		// resolved, so the caller is refused rather than admitted unresolved.
+		return ctx, nil, rerr
 	} else if rerr := checkUnresolvedCertLogin(ctx, identity, method, m.bindingPolicy); rerr != nil {
 		// No user store: no account can be resolved, so under the
 		// "required" posture no certificate login can show an enrolment.
@@ -1370,6 +1380,22 @@ func checkAuthMethod(u *user.User, method authMethod) error {
 		return nil
 	}
 	return CheckAuthMethod(u, method.name)
+}
+
+// checkUnresolvedPeerCred refuses a peer-credential login whose mapped
+// account did not resolve: the account does not exist (never created, or
+// deleted) or no user store is configured to resolve it. A peer credential
+// names a local OS principal, not an account; the configured mapping is what
+// turns it into one, so an identity whose account is absent has not
+// identified anyone and is refused with auth.ErrPeerCredentialAccountMissing
+// (UNAUTHENTICATED) rather than admitted unresolved, where an ABAC
+// subject.authenticated allow could still grant it. Every other method keeps
+// the unresolved-account rule of finalizeIdentity.
+func checkUnresolvedPeerCred(method authMethod) error {
+	if method.known && method.name == auth.MethodPeerCred {
+		return auth.ErrPeerCredentialAccountMissing
+	}
+	return nil
 }
 
 // CheckAuthMethod enforces u's permitted-authentication-method policy
