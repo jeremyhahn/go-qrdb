@@ -273,7 +273,7 @@ statement-level writes, not a wire field.
 | Piece | Package | Owner |
 |---|---|---|
 | Collection metadata, document CRUD, ID strategies | `pkg/service` (`collection_service.go`, `collection_types.go`) | go-qrdb |
-| Document encoding (storage codec) | `pkg/codec`, backed by **go-codec** | go-qrdb / go-codec |
+| Document encoding (storage codec) | `pkg/dao` (`NewCodec`, `DocumentCodecs`), backed by **go-codec** | go-qrdb / go-codec |
 | Underlying storage and MVCC | `pkg/storage`, `pkg/mvcc` | go-qrdb |
 | Secondary indexes on documents | `pkg/index` — see [../secondary-indexes/](../secondary-indexes/) | go-qrdb |
 | SDK surface | `sdk/go` (`Client.Collections()`) | go-qrdb |

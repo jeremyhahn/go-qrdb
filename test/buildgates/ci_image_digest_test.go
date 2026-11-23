@@ -62,7 +62,7 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 const (
@@ -170,7 +170,7 @@ type digestWorkflow struct {
 // and the consumers it found.
 func digestProblems(body []byte, floor int) (problems, consumers []string) {
 	var wf digestWorkflow
-	if err := yaml.Unmarshal(body, &wf); err != nil {
+	if err := gocodecyaml.New[digestWorkflow]().Unmarshal(body, &wf); err != nil {
 		return []string{"ci.yml is not a workflow this gate can read: " + err.Error()}, nil
 	}
 	if v := strings.TrimSpace(wf.Env["CI_PUBLISH"]); v != ciPublishExpr {
