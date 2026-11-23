@@ -34,17 +34,21 @@
 # those suites as integration-features, one job per feature; none of them is
 # a job here, so the watch list below has nothing to add.
 
-# NO SCHEDULE HERE (go-qrdb#674; handbook sdlc.md §5a): this workflow runs on
-# `workflow_dispatch` alone and is dispatched by hand; no host cron, timer or
-# watcher dispatches it (owner ruling 2026-10-11, Company Agent m433). The one
-# scheduler is ci.yml's in-template `schedule:` (ruling 135, restored under
-# Company Agent ruling 216(1)). The `0 3 * * *` trigger that once ran here is
-# gone; the "scheduled runs" counted above are the runs it made.
+# SCHEDULED (go-qrdb#1683). Owner order, 2026-11-22: "the nightlys shouldnt
+# require any manual executiion, it should be getting run automatically!" It
+# supersedes the 2026-10-11 no-schedule rule (go-qrdb#674) for this Nightly
+# workflow only. The slot is `45 4 * * *` (04:45 UTC): the project slots run 20
+# minutes apart after worker-image at 03:00, in the order go-quicbaas, go-xkms,
+# go-qrdb, go-quicraft, go-enclave, go-luks2, go-trusted-platform.
+# `workflow_dispatch` stays for a run by hand. Every job runs on ubuntu-latest
+# on github.com, so no self-hosted pool runs at night.
 
 name: Nightly
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '45 4 * * *'
 
 permissions:
   contents: read
