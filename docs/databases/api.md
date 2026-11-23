@@ -25,7 +25,6 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Update barrier | `PATCH /v1/databases/{name}/barrier` | `DatabaseUpdateBarrier` | `db.UpdateBarrier` | `qrdb_database_update_barrier` | `UpdateDatabaseBarrier` | `databases:update` |
 | Update SQL settings | `PATCH /v1/databases/{name}/sql` | `DatabaseUpdateSQL` | `db.UpdateSQL` | `qrdb_database_update_sql` | `UpdateDatabaseSQL` | `databases:update` |
 | Update compaction policy | `PATCH /v1/databases/{name}/compaction` | `DatabaseUpdateCompaction` | `db.UpdateCompaction` | `qrdb_database_update_compaction` | `UpdateDatabaseCompaction` | `mvcc:compact` (`ScopeSelfStrict`) |
-| Update connection | `PATCH /v1/databases/{name}/connection` | `DatabaseUpdateConnection` | `db.UpdateConnection` | `qrdb_database_update_connection` | — (removed, OD-9) | `databases:update` |
 | Scale | `PATCH /v1/databases/{name}/scale` | `DatabaseScale` | `db.Scale` | `qrdb_database_scale` | `ScaleDatabase` | `databases:scale` |
 | Seal | `POST /v1/databases/{name}/seal` | `DatabaseSeal` | `db.Seal` | `qrdb_database_seal` | `SealDatabase` | `databases:seal` |
 | Unseal | `POST /v1/databases/{name}/unseal` | `DatabaseUnseal` | `db.Unseal` | `qrdb_database_unseal` | `UnsealDatabase` | `databases:unseal` |
@@ -98,8 +97,7 @@ Shipped:
   "protocol": { "mysql": false, "postgresql": true,
                 "etcd": { "enabled": false, "listenAddr": ":2379" } },
   "barrier": { "enabled": true, "mode": "passphrase",
-               "secret": "correct horse battery" },
-  "connection": { "transport": "tcp", "address": "db2.example.com:63003" } }
+               "secret": "correct horse battery" } }
 ```
 
 Response — `DatabaseInfo`, which adds `tenantId`, `status`, `shardId`,
@@ -214,9 +212,11 @@ as `DatabaseBindingInfo binding = 19` on `DatabaseInfoResponse` (`generation` is
 its field 4); the CLI table output prints it under `Binding:`.
 
 Target: a raft binding lists its replica nodes.
-Remote mode is removed (OD-9 A). The CLI and both SDKs no longer offer the
-update-connection verb or send a `connection` block (rw923w slice 19); the
-server-side verb, the `connection` fields and the gRPC RPC go in slice 20.
+Remote mode is removed (OD-9 A): there is no update-connection verb on any
+transport, no `connection` field on a create request or in `DatabaseInfo`, and
+no gRPC `DatabaseUpdateConnection` RPC; `DatabaseInfoResponse` reserves field
+11 and the name `connection`. A create or a config entry carrying `mode:
+remote` or a `connection` block is refused (invalid mode / unknown field).
 
 ### Updates, scale and unseal
 
@@ -319,9 +319,6 @@ barrier is on the database's data path: a non-raft database with its own
 `dataDir`, which only the system tenant can set (`BarrierOffDataPathError`,
 `SharedStoreBarrierUnsupportedError` otherwise). A non-system tenant therefore
 cannot create a barrier-backed database of either kind.
-
-`DatabaseConnectionConfig` fields: `transport` (`tcp|quic`), `address`,
-`caFile`, `certFile`, `keyFile`.
 
 ## Capability matrix — database barrier share holders
 

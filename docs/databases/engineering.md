@@ -31,7 +31,6 @@ type DatabaseClient interface {
 	UpdateDatabaseRaft(ctx context.Context, req UpdateDatabaseRaftRequest) (*DatabaseInfo, error)
 	UpdateDatabaseBarrier(ctx context.Context, req UpdateDatabaseBarrierRequest) (*DatabaseInfo, error)
 	ScaleDatabase(ctx context.Context, req ScaleDatabaseRequest) (*DatabaseInfo, error)
-	UpdateDatabaseConnection(ctx context.Context, req UpdateDatabaseConnectionRequest) (*DatabaseInfo, error)
 	UpdateDatabaseSQL(ctx context.Context, req UpdateDatabaseSQLRequest) (*DatabaseInfo, error)
 	UpdateDatabaseCompaction(ctx context.Context, req UpdateDatabaseCompactionRequest) (*DatabaseInfo, error)
 	SealDatabase(ctx context.Context, name string) error
@@ -118,9 +117,7 @@ reopened, while the record and every other node report the stored value.
 
 `DatabaseRaftConfig` gains `StateStorage string`
 (`json:"stateStorage,omitempty"`: `pebble | file | memory`) and carries no shard
-ID, which the cluster issues. `UpdateDatabaseConnection`,
-`UpdateDatabaseConnectionRequest`, `DatabaseConnectionConfig`, the `Connection`
-field and remote mode are removed.
+ID, which the cluster issues.
 
 ### Server-side binding
 
