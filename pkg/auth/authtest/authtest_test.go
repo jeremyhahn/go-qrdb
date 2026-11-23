@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // TestSealedIdentity_CarriesTheMiddlewareMarker pins the marker key against
@@ -191,6 +192,60 @@ func TestFixedAuthenticator_ZeroValueIsUnauthenticated(t *testing.T) {
 	var a authtest.FixedAuthenticator
 	if _, err := a.Authenticate(context.Background()); !errors.Is(err, auth.ErrUnauthenticated) {
 		t.Fatalf("zero value = %v, want auth.ErrUnauthenticated", err)
+	}
+}
+
+// Users resolves the authenticator's CURRENT identity, by username and by
+// id, to an active record carrying its roles; any other account is not
+// found. Set moves the record with the identity.
+func TestFixedAuthenticator_UsersResolvesCurrentIdentity(t *testing.T) {
+	ctx := context.Background()
+	alice := authtest.AdminIdentity("acme", "alice")
+	alice.RoleBindings = []auth.RoleBinding{{RoleID: "r1", TenantID: "acme"}}
+	alice.Attributes = map[string]string{"dept": "ops"}
+	fa := authtest.NewFixedAuthenticator(alice)
+	users := fa.Users()
+
+	rec, err := users.GetUserByUsername(ctx, "acme", "alice")
+	if err != nil {
+		t.Fatalf("GetUserByUsername(alice): %v", err)
+	}
+	if rec.ID == 0 || rec.Username != "alice" || rec.TenantID != "acme" || rec.Lifecycle != user.LifecycleActive {
+		t.Fatalf("record = %+v, want active alice in acme with a non-zero id", rec)
+	}
+	if len(rec.RoleIDs) != len(alice.Roles) || rec.RoleIDs[0] != alice.Roles[0] {
+		t.Fatalf("RoleIDs = %v, want %v", rec.RoleIDs, alice.Roles)
+	}
+	if len(rec.RoleBindings) != 1 || rec.RoleBindings[0].RoleID != "r1" || rec.Attributes["dept"] != "ops" {
+		t.Fatalf("bindings/attributes = %v/%v, want copied", rec.RoleBindings, rec.Attributes)
+	}
+	byID, err := users.GetUser(ctx, rec.ID)
+	if err != nil || byID.Username != "alice" {
+		t.Fatalf("GetUser(%d) = %v, %v; want alice", rec.ID, byID, err)
+	}
+	again, _ := users.GetUserByUsername(ctx, "acme", "alice")
+	if again.ID != rec.ID {
+		t.Fatalf("id not deterministic: %d then %d", rec.ID, again.ID)
+	}
+
+	var notFound *user.UserNotFoundError
+	if _, err := users.GetUserByUsername(ctx, "acme", "bob"); !errors.As(err, &notFound) {
+		t.Fatalf("GetUserByUsername(bob) = %v, want UserNotFoundError", err)
+	}
+	if _, err := users.GetUserByUsername(ctx, "other", "alice"); !errors.As(err, &notFound) {
+		t.Fatalf("alice in another tenant = %v, want UserNotFoundError", err)
+	}
+	if _, err := users.GetUser(ctx, rec.ID+1); !errors.As(err, &notFound) {
+		t.Fatalf("GetUser(other id) = %v, want UserNotFoundError", err)
+	}
+
+	fa.Set(&auth.Identity{Subject: "bob", TenantID: "acme"})
+	if _, err := users.GetUserByUsername(ctx, "acme", "alice"); !errors.As(err, &notFound) {
+		t.Fatalf("after Set(bob), alice = %v, want UserNotFoundError", err)
+	}
+	bob, err := users.GetUserByUsername(ctx, "acme", "bob")
+	if err != nil || len(bob.RoleIDs) != 0 {
+		t.Fatalf("after Set(bob), bob = %v, %v; want a role-less record", bob, err)
 	}
 }
 
