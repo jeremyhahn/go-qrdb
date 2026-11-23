@@ -21,6 +21,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1500,6 +1501,49 @@ func TestBatchService_Import_Auto_UnknownFormatReturnsParseError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Import - YAML Parsing
 // ---------------------------------------------------------------------------
+
+// TestBatchService_parseYAML_SingleMapSequenceAndInvalid pins parseYAML: a
+// sequence of maps and a single map both yield records, empty input yields
+// none, and input that is neither returns an *ImportParseError.
+func TestBatchService_parseYAML_SingleMapSequenceAndInvalid(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []map[string]string
+	}{
+		{"sequence", "- key: a\n  value: one\n- key: b\n  value: two\n", []map[string]string{{"key": "a", "value": "one"}, {"key": "b", "value": "two"}}},
+		{"single map", "key: a\nvalue: one\n", []map[string]string{{"key": "a", "value": "one"}}},
+		{"empty", "  \n\t\n", nil},
+		{"null document", "~\n", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseYAML([]byte(tc.in))
+			if err != nil {
+				t.Fatalf("parseYAML(%q) error = %v", tc.in, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("parseYAML(%q) = %#v, want %#v", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("invalid", func(t *testing.T) {
+		_, err := parseYAML([]byte("key: [unclosed\n"))
+		var parseErr *ImportParseError
+		if !errors.As(err, &parseErr) {
+			t.Fatalf("parseYAML(invalid) error = %v, want *ImportParseError", err)
+		}
+	})
+
+	t.Run("scalar is not a record", func(t *testing.T) {
+		_, err := parseYAML([]byte("just a string\n"))
+		var parseErr *ImportParseError
+		if !errors.As(err, &parseErr) {
+			t.Fatalf("parseYAML(scalar) error = %v, want *ImportParseError", err)
+		}
+	})
+}
 
 func TestBatchService_Import_YAML_Sequence(t *testing.T) {
 	host := &mockHost{
