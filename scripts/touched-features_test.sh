@@ -18,10 +18,18 @@
 # Each case feeds paths to `scripts/touched-features.sh --files` on stdin and
 # compares the printed lines, against the live features.mk table:
 #
-#   lease file          a test/integration file one feature maps prints that
-#                       feature (leases)
+#   lock file           a test/integration file one feature maps, whose
+#                       helpers no other file names, prints that feature
+#                       (distributed-locks)
 #   shared file         a file two features map prints both (api-server,
-#                       capabilities)
+#                       capabilities), plus auth-factors, one of
+#                       whose files calls a helper it declares
+#   helper caller       batch_import_cli_test.go (key-value) declares
+#                       runQRDBStdin, which tx_cli_test.go (transactions)
+#                       calls: both print
+#   helper in unmapped  admin_cluster_cli_test.go declares a cluster helper
+#   file                an unmapped helper file names: ALL
+#   unmapped test file  a test/integration file no feature maps prints ALL
 #   shared + docs       a docs-only path beside it adds nothing
 #   docs only           docs/ and *.md paths print nothing
 #   Makefile            prints ALL (it holds the dispatch)
@@ -54,9 +62,12 @@ check() {
 	fi
 }
 
-check "lease file" "test/integration/lease_cli_test.go$nl" "leases"
-check "shared file" "test/integration/cli_multiprotocol_test.go$nl" "api-server${nl}capabilities"
-check "shared + docs" "test/integration/cli_multiprotocol_test.go${nl}docs/watch/architecture.md$nl" "api-server${nl}capabilities"
+check "lock file" "test/integration/lock_cli_test.go$nl" "distributed-locks"
+check "shared file" "test/integration/cli_multiprotocol_test.go$nl" "api-server${nl}auth-factors${nl}capabilities"
+check "shared + docs" "test/integration/cli_multiprotocol_test.go${nl}docs/watch/architecture.md$nl" "api-server${nl}auth-factors${nl}capabilities"
+check "helper caller" "test/integration/batch_import_cli_test.go$nl" "key-value${nl}transactions"
+check "helper in unmapped file" "test/integration/admin_cluster_cli_test.go$nl" "ALL"
+check "unmapped test file" "test/integration/no_such_cli_test.go$nl" "ALL"
 check "docs only" "docs/watch/architecture.md${nl}README.md$nl" ""
 check "Makefile" "Makefile$nl" "ALL"
 check "package" "pkg/lease/lease.go$nl" "ALL"

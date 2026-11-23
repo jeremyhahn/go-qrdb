@@ -29,7 +29,9 @@
 # Per changed path:
 #   - a docs-only path (ci.yml's DOCS_ONLY_PATTERN, read from ci.yml) is ignored;
 #   - test/integration/<file> named by one or more features in the map counts
-#     for those features;
+#     for those features, and for the features of every other mapped file
+#     that names one of its top-level identifiers (a helper it declares); an
+#     unmapped file naming one prints ALL;
 #   - anything else (Makefile, test/integration/features.mk, any other
 #     test/integration file, .github, scripts, go.mod/go.sum, any Go package,
 #     sdk) prints the single line ALL. A package change means ALL because the
@@ -61,7 +63,7 @@ case $# in
 		echo "touched-features.sh: HEAD is not $2; the feature table is read from the work tree, so check out the tip first" >&2
 		exit 2
 	fi
-	paths=$(git diff --name-only "$1" "$2")
+	paths=$(git diff --name-only --no-renames "$1" "$2")
 	;;
 *)
 	usage
@@ -80,6 +82,32 @@ if [ -z "$map" ]; then
 	exit 2
 fi
 
+# features_of <file>: the features the map names <file> under, one per line.
+features_of() {
+	local feature files f
+	while read -r feature files; do
+		for f in $files; do
+			if [ "$f" = "$1" ]; then
+				echo "$feature"
+			fi
+		done
+	done <<<"$map"
+}
+
+# decls <file.go>: the top-level identifiers <file.go> declares (func, method,
+# type, var, const, grouped or not), but its Test, Benchmark, Fuzz and
+# Example functions, which nothing else calls.
+decls() {
+	awk '
+	/^\)/ { block = 0; next }
+	block && /^\t[A-Za-z_]/ { n = substr($0, 2); sub(/[^A-Za-z0-9_].*/, "", n); print n; next }
+	/^(var|const|type) \(/ { block = 1; next }
+	/^(var|const|type) [A-Za-z_]/ { n = $2; sub(/[^A-Za-z0-9_].*/, "", n); print n; next }
+	/^func \(/ { n = $0; sub(/^func \([^)]*\) */, "", n); sub(/[^A-Za-z0-9_].*/, "", n); print n; next }
+	/^func [A-Za-z_]/ { n = $2; sub(/[^A-Za-z0-9_].*/, "", n); print n; next }
+	' "$1" | grep -vE '^((Test|Benchmark|Fuzz|Example)([A-Z_].*)?|_)?$' | sort -u || true
+}
+
 found=()
 while IFS= read -r p; do
 	[ -n "$p" ] || continue
@@ -92,20 +120,30 @@ while IFS= read -r p; do
 		exit 0
 		;;
 	test/integration/*)
-		file=${p#test/integration/}
-		hit=0
-		while read -r feature files; do
-			for f in $files; do
-				if [ "$f" = "$file" ]; then
-					found+=("$feature")
-					hit=1
-				fi
-			done
-		done <<<"$map"
-		if [ "$hit" -eq 0 ]; then
+		fs=$(features_of "${p#test/integration/}")
+		if [ -z "$fs" ]; then
 			echo ALL
 			exit 0
 		fi
+		# shellcheck disable=SC2206 # feature names hold no spaces or globs
+		found+=($fs)
+		# The file's helpers: every other test/integration file that names one
+		# of its top-level identifiers adds its features, and an unmapped
+		# (helper) file naming one means ALL. A deleted file declares nothing
+		# its callers can still reach: they fail to compile in every feature.
+		[ -f "$p" ] || continue
+		ids=$(decls "$p" | paste -sd'|' -)
+		[ -n "$ids" ] || continue
+		while IFS= read -r user; do
+			[ -n "$user" ] && [ "$user" != "$p" ] || continue
+			fs=$(features_of "${user#test/integration/}")
+			if [ -z "$fs" ]; then
+				echo ALL
+				exit 0
+			fi
+			# shellcheck disable=SC2206
+			found+=($fs)
+		done < <(grep -lwE "($ids)" test/integration/*.go || true)
 		;;
 	*)
 		echo ALL

@@ -31,7 +31,10 @@
 #     go.mod, from git ls-files) is ignored: those have their own suites;
 #   - go.mod, go.sum or Makefile prints the single line ALL;
 #   - otherwise the owning directory (a /testdata/... suffix stripped to its
-#     package) counts when it holds a .go file in the work tree.
+#     package) counts when it holds a .go file in the work tree;
+#   - a .go path whose directory holds no .go file (a deleted package) prints
+#     ALL: its importers cannot be read from the work tree.
+# A renamed file counts at both ends (git diff --no-renames).
 # A package prints when it changed or its Imports, TestImports or XTestImports
 # (one `go list ./...` under `make -s print-build-tags`) name a changed
 # package. Nothing changed in Go prints nothing. $GO overrides `go`.
@@ -61,7 +64,9 @@ case $# in
 		echo "touched-packages.sh: HEAD is not $2; packages are read from the work tree, so check out the tip first" >&2
 		exit 2
 	fi
-	paths=$(git diff --name-only "$1" "$2")
+	# --no-renames: a moved file prints both its source and its destination,
+	# so the package it left counts too.
+	paths=$(git diff --name-only --no-renames "$1" "$2")
 	;;
 *)
 	usage
@@ -110,6 +115,12 @@ while IFS= read -r p; do
 	esac
 	if compgen -G "$dir/*.go" >/dev/null; then
 		changed["$dir"]=1
+	elif [ "$dir" = "${p%/*}" ] && [ "${p%.go}" != "$p" ]; then
+		# A .go file whose directory holds no .go file now: the package was
+		# deleted (or moved away whole), and its importers are not in the
+		# work tree's graph to find.
+		echo ALL
+		exit 0
 	fi
 done <<<"$paths"
 

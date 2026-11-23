@@ -28,6 +28,11 @@
 #   nested module       sdk/go/node/close_race_test.go (sdk/go has its own
 #                       go.mod) prints nothing
 #   go.mod              prints ALL
+#   deleted package     a .go path whose directory holds no .go file prints ALL
+#   moved file          base..HEAD renaming pkg/ratelimit/errors.go to
+#                       pkg/lease/errors.go prints ./pkg/lease and also the
+#                       source ./pkg/ratelimit with its importer
+#                       ./pkg/clientlimit
 #   bad args            no arguments exit 2
 
 set -u
@@ -65,6 +70,25 @@ if [ "$rc" -eq 0 ] && [ -z "$got" ]; then pass "nested module"; else fail "neste
 got=$(printf 'go.mod\n' | "$script" --files 2>&1)
 rc=$?
 if [ "$rc" -eq 0 ] && [ "$got" = ALL ]; then pass "go.mod"; else fail "go.mod: rc=$rc got [$got]"; fi
+
+got=$(printf 'pkg/no_such_pkg/gone.go\n' | "$script" --files 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$got" = ALL ]; then pass "deleted package"; else fail "deleted package: rc=$rc got [$got]"; fi
+
+# moved file: a base tree with pkg/lease/errors.go at pkg/ratelimit/errors.go,
+# so the diff base..HEAD is a rename out of pkg/ratelimit.
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+blob=$(git rev-parse HEAD:pkg/lease/errors.go)
+GIT_INDEX_FILE="$tmp/index" git read-tree HEAD
+GIT_INDEX_FILE="$tmp/index" git update-index --force-remove pkg/lease/errors.go
+GIT_INDEX_FILE="$tmp/index" git update-index --add --cacheinfo "100644,$blob,pkg/ratelimit/errors.go"
+tree=$(GIT_INDEX_FILE="$tmp/index" git write-tree)
+base=$(git -c commit.gpgsign=false commit-tree -m "touched-packages_test base" "$tree")
+got=$("$script" "$base" HEAD 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ] && has "$got" ./pkg/lease; then pass "moved file destination"; else fail "moved file destination: rc=$rc got [$got]"; fi
+if [ "$rc" -eq 0 ] && has "$got" ./pkg/ratelimit && has "$got" ./pkg/clientlimit; then pass "moved file source"; else fail "moved file source: rc=$rc got [$got]"; fi
 
 "$script" </dev/null >/dev/null 2>&1
 rc=$?
