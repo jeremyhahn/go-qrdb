@@ -2023,7 +2023,19 @@ func runStart(f *startFlags) (err error) {
 				sealPauser = shardPauser
 			}
 
+			// The shared database registry is built after the services; the
+			// node-key log probe reads its names, and the SQL default
+			// database's, each time it runs (go-qrdb#1565).
+			var sharedRegistry atomic.Pointer[server.DatabaseServiceRegistry]
+			sharedDatabaseNames := lifecycle.SharedNames(f.sqlDatabase, func() []string {
+				if r := sharedRegistry.Load(); r != nil {
+					return r.List()
+				}
+				return nil
+			})
+
 			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
+				SharedDatabaseNames:  sharedDatabaseNames,
 				ClusterSealer:        clusterSeal,
 				ShardPauser:          sealPauser,
 				AuthMethodVocabulary: authMethods.IsAuthMethod,
@@ -3098,6 +3110,7 @@ func runStart(f *startFlags) (err error) {
 			dbRegistry := server.NewDatabaseServiceRegistry(lifecycle.SystemDatabase)
 			dbRegistry.Register(lifecycle.SystemDatabase, svcNode.DatabaseServices(lifecycle.SystemDatabase, shard.ShardKV))
 			serverOpts = append(serverOpts, server.WithDatabaseServiceRegistry(dbRegistry))
+			sharedRegistry.Store(dbRegistry)
 
 			if tenantSvcInst != nil {
 				lifecycle.ApplyIsolationFloor(bootCtx, tenantSvcInst, f.tenantConfig.IsolationPolicy)
