@@ -104,6 +104,73 @@ func TestDeleteTenant_RefusedWhileMoving(t *testing.T) {
 	}
 }
 
+// racingAdmitAllocator is a movingAllocator whose deletion fence first runs
+// admit: a move admitted after refuseIfMoving's plain read and before the
+// fence's transaction. The fence then sees the journal and refuses, as
+// Catalog.FenceForDelete does in one compare.
+type racingAdmitAllocator struct {
+	movingAllocator
+	admit   func()
+	fenced  int
+	fenceAt func()
+}
+
+func (r *racingAdmitAllocator) FenceForDelete(_ context.Context, tenantID string) error {
+	r.fenced++
+	if r.fenceAt != nil {
+		r.fenceAt()
+	}
+	if r.admit != nil {
+		r.admit()
+	}
+	if r.move != nil {
+		return &volume.MoveConflictError{TenantID: tenantID, Reason: "tenant delete is refused while a move runs"}
+	}
+	return nil
+}
+
+func TestDeleteTenant_RacingAdmitNeverDestroysMovingTenant(t *testing.T) {
+	ctx := context.Background()
+	svc, reg := newVolumeService(t)
+	if _, err := svc.CreateTenant(ctx, "vtenant", "Volume Tenant", IsolationVolume); err != nil {
+		t.Fatalf("CreateTenant(volume): %v", err)
+	}
+	racing := &racingAdmitAllocator{movingAllocator: movingAllocator{Allocator: svc.volumeAllocator}}
+	racing.admit = func() { racing.move = &volume.Move{TenantID: "vtenant", State: volume.MoveStateAdmitted} }
+	racing.fenceAt = func() {
+		if _, tombstoned, err := svc.deletedAt(ctx, "vtenant"); err != nil || tombstoned {
+			t.Errorf("fence ran after the tombstone: tombstoned=%v err=%v", tombstoned, err)
+		}
+	}
+	svc.volumeAllocator = racing
+
+	var conflict *volume.MoveConflictError
+	if err := svc.DeleteTenant(ctx, "vtenant"); !errors.As(err, &conflict) {
+		t.Fatalf("DeleteTenant racing an admit = %v, want *volume.MoveConflictError", err)
+	}
+	if racing.fenced != 1 {
+		t.Fatalf("fence calls = %d, want 1", racing.fenced)
+	}
+	if _, err := svc.GetTenant(ctx, "vtenant"); err != nil {
+		t.Fatalf("metadata gone under an admitted move: %v", err)
+	}
+	if _, tombstoned, err := svc.deletedAt(ctx, "vtenant"); err != nil || tombstoned {
+		t.Fatalf("tombstoned = %v (%v), want no tombstone", tombstoned, err)
+	}
+	if _, err := reg.LocalTenantDataRoot(ctx, "vtenant"); err != nil {
+		t.Fatalf("data root gone under an admitted move: %v", err)
+	}
+	if _, err := reg.GetTenant("vtenant"); err != nil {
+		t.Fatalf("barrier gone under an admitted move: %v", err)
+	}
+
+	// The move ends; the delete fences and completes.
+	racing.admit, racing.move = nil, nil
+	if err := svc.DeleteTenant(ctx, "vtenant"); err != nil {
+		t.Fatalf("DeleteTenant after the move: %v", err)
+	}
+}
+
 func TestAdmitTenantMove_TenantNotFound(t *testing.T) {
 	svc, _ := newVolumeService(t)
 	svc.SetMoveReplicaNodeSource(&fakeMoveNodes{nodes: []string{"1"}})

@@ -740,6 +740,9 @@ func (c *Catalog) AdmitMove(ctx context.Context, req MoveAdmitRequest) (*Move, e
 		if existing != nil {
 			return nil, &MoveConflictError{TenantID: req.TenantID, Reason: "a move is already running"}
 		}
+		if assignment.Retiring {
+			return nil, &MoveConflictError{TenantID: req.TenantID, Reason: "tenant is being deleted"}
+		}
 		if assignment.Pool == req.ToPool {
 			return nil, &MoveConflictError{TenantID: req.TenantID, Reason: "destination is the tenant's current pool"}
 		}
@@ -1032,7 +1035,63 @@ func (c *Catalog) ListAll(ctx context.Context) ([]Assignment, error) {
 	}
 }
 
-// Release implements Allocator.
+// FenceForDelete marks tenantID's assignment Retiring in one replicated
+// transaction that also proves no move journal exists (decision Q10). A
+// journal refuses the fence with *MoveConflictError; AdmitMove refuses a
+// retiring assignment and compares the assignment's raw value, so of a
+// racing fence and admit exactly one wins. An unassigned or already
+// retiring tenant is a no-op, so a resumed teardown stays idempotent.
+func (c *Catalog) FenceForDelete(ctx context.Context, tenantID string) error {
+	if tenantID == "" {
+		return &InvalidMoveRequestError{Reason: "empty tenant id"}
+	}
+	for attempt := 0; attempt < maxCASRetries; attempt++ {
+		assignRaw, err := c.kv.Get(ctx, AssignmentKey(tenantID))
+		if err != nil {
+			return err
+		}
+		if assignRaw == nil {
+			return nil
+		}
+		if m, _, err := c.readMove(ctx, tenantID); err != nil {
+			return err
+		} else if m != nil {
+			return &MoveConflictError{TenantID: tenantID, Reason: "tenant delete is refused while a move runs"}
+		}
+		var assignment Assignment
+		if err := json.Unmarshal(assignRaw, &assignment); err != nil {
+			return &CorruptRecordError{Key: AssignmentKey(tenantID), Err: err}
+		}
+		if assignment.Retiring {
+			return nil
+		}
+		assignment.Retiring = true
+		data, err := json.Marshal(assignment)
+		if err != nil {
+			return &EncodeError{Err: err}
+		}
+		resp, err := c.tx.Execute(ctx,
+			[]lock.Compare{
+				{Key: []byte(AssignmentKey(tenantID)), Target: lock.CompareValue, Result: lock.CompareEqual, Value: assignRaw},
+				{Key: []byte(MoveKey(tenantID)), Target: lock.CompareVersion, Result: lock.CompareEqual, Version: 0},
+			},
+			[]lock.Op{
+				{Type: lock.OpPut, Key: []byte(AssignmentKey(tenantID)), Value: data},
+			},
+			nil,
+		)
+		if err != nil {
+			return err
+		}
+		if resp.Succeeded {
+			return nil
+		}
+	}
+	return &MoveJournalConflictError{TenantID: tenantID}
+}
+
+// Release implements Allocator. A Retiring assignment (FenceForDelete) is
+// the normal delete path: it is released like any other.
 func (c *Catalog) Release(ctx context.Context, tenantID string) error {
 	for attempt := 0; attempt < maxCASRetries; attempt++ {
 		assignRaw, err := c.kv.Get(ctx, AssignmentKey(tenantID))

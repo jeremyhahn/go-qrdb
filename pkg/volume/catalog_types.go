@@ -46,6 +46,10 @@ type Assignment struct {
 	// joined onto the pool's opened Volume.Root() by the resolving layer.
 	Path          string `json:"path"`
 	ReservedBytes int64  `json:"reservedBytes"`
+	// Retiring reports that tenant delete fenced this assignment
+	// (Catalog.FenceForDelete): AdmitMove refuses it, so no move can be
+	// admitted over a tenant being torn down (decision Q10).
+	Retiring bool `json:"retiring,omitempty"`
 }
 
 // NodeReport is one node's health report: persisted at
@@ -183,7 +187,14 @@ type Move struct {
 	// is offline for a move at a time (decision Q1 B).
 	StepNode string `json:"stepNode,omitempty"`
 	// StepAttempts counts the failed attempts of StepNode's step.
-	StepAttempts int    `json:"stepAttempts,omitempty"`
+	StepAttempts int `json:"stepAttempts,omitempty"`
+	// StepSettling reports that StepNode's copy or copied-abort step is
+	// recorded (CompleteMoveStep, CompleteAbortStep) but the node has not
+	// yet reopened and caught up on the authoritative pool, or removed its
+	// aborted destination (SettleMoveStep). StepNode keeps the step, so no
+	// other node is granted one and nothing cuts over or releases, until
+	// AckMoveStep after a settle that succeeded.
+	StepSettling bool   `json:"stepSettling,omitempty"`
 	Error        string `json:"error,omitempty"`
 	// CancelRequested reports an operator cancel that arrived while
 	// StepNode held a copy step: the step keeps its holder, which awaits
