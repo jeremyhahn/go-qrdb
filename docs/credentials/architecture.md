@@ -203,7 +203,7 @@ import's own guarded write and outside the credential's metadata, so it
 survives a delete of the credential: an import retried after a failed cleanup
 only deletes the old records and never recreates a deleted credential or
 overwrites a replacement. The import records are confined from the embedded
-KV like the claims, and a store move carries them with their credential. Resolving a
+KV like the claims, and a store move carries them with their credential. A store move whose destination already holds the credential still copies its import records into the destination (the rest of the set stays in the earlier store), so an import retried there imports nothing. Resolving a
 name that has no conflict on the node is `ErrMigrationConflictNotFound`; a
 resolution other than the two is `ErrInvalidMigrationResolution`. Conflicts are per node: each node lists and
 resolves only the copies it kept. The verbs are listed per transport in
