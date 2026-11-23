@@ -901,6 +901,18 @@ func (e *MVCCEngine) LookupAt(_ context.Context, r storage.Reader, rev int64, qu
 		}
 		return results, nil
 
+	case service.VectorNamespaceQuery:
+		return lookupVectorNamespace(r, q.Namespace)
+
+	case service.VectorNamespaceListQuery:
+		return lookupVectorNamespaces(r)
+
+	case service.VectorGetQuery:
+		return lookupVector(r, q.Namespace, q.ID)
+
+	case service.VectorScanQuery:
+		return lookupVectorScan(r, q)
+
 	default:
 		return nil, &InvalidQueryError{Reason: "unsupported query type"}
 	}

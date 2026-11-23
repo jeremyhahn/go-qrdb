@@ -320,6 +320,18 @@ func (e *KVEngine) Lookup(_ context.Context, query interface{}) (interface{}, er
 		}
 		return results, nil
 
+	case service.VectorNamespaceQuery:
+		return lookupVectorNamespace(e.stg, q.Namespace)
+
+	case service.VectorNamespaceListQuery:
+		return lookupVectorNamespaces(e.stg)
+
+	case service.VectorGetQuery:
+		return lookupVector(e.stg, q.Namespace, q.ID)
+
+	case service.VectorScanQuery:
+		return lookupVectorScan(e.stg, q)
+
 	default:
 		return nil, &InvalidQueryError{Reason: "unsupported query type"}
 	}
