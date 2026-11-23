@@ -34,6 +34,35 @@ Because the binding is over the **public key**, renewing your certificate with
 the same key keeps you the same user. Rotate the key and you need a new
 binding.
 
+### A local process without a certificate: Unix peer credentials
+
+On Linux, a process that connects to the Unix socket can be identified by the
+uid or gid the kernel reports for it, with no client certificate. The operator
+maps each uid or gid to an account:
+
+```yaml
+unix:
+  peer_credentials:
+    - uid: 1000        # the deploy service's uid
+      tenant: acme
+      user: deploy
+```
+
+The mapping names an account, never a role. Create the account and give it
+the roles it needs; the built-in `operator` role, for example, lets it read
+and write keys but not create users:
+
+```sh
+qrdb users create --without-email-login-key --username deploy --roles <operator role id>
+```
+
+Then, as uid 1000, `qrdb --server unix:///var/run/qrdbd/qrdbd.sock --ca-file ca.pem kv get mykey`
+works with no certificate, and `qrdb users create` is still refused. Until the
+account exists the caller holds no roles and every command is denied. A uid
+or gid with no mapping is refused as `unauthenticated`. A client certificate
+presented on the socket still wins over the peer credential. Field rules are
+in [../12-configuration.md](../12-configuration.md#unix).
+
 ## What needs no identity
 
 Two verbs need no certificate, token or role at all, on every transport:

@@ -78,6 +78,40 @@ chain stays first-success-wins; a composer that wants its checks applied to
 certificate-bearing requests places its authenticator ahead of mTLS or in its
 place, rather than qrdb running a second, conjunctive chain beside the first.
 
+### The Unix peer-credential authenticator
+
+A local process on the Unix socket can be identified by the kernel rather than
+by a certificate. When `unix.peer_credentials` lists any mapping, the node
+installs a second qrdb authenticator, `peercred`, **last** in the chain: after
+mTLS and after every consumer placement, so a certificate or a consumer
+credential presented on the socket still decides the request first.
+
+- **Where the credential comes from.** On Linux the Unix listener reads
+  `SO_PEERCRED` (uid, gid, pid) from each accepted connection before the TLS
+  handshake and carries it with the connection; the gRPC interceptors put it
+  in the request context (`auth.WithPeerCredential`). Only the Unix transport
+  sets it, so on every other transport the authenticator declines. Other
+  platforms carry no peer credential.
+- **A mapping names an account, never a role.** A mapping takes a uid, or a
+  primary gid, to a tenant and username. A uid match wins over a gid match.
+  The bound identity is filled from the stored account like every other
+  identity, so the account's roles decide through the one PDP. A mapped
+  account that does not exist holds no roles, so every request is denied. An
+  account whose `auth_methods` are set must list `peercred`.
+- **An unmapped peer is refused.** A peer whose uid and gid match no mapping
+  is refused with `peer_credential_unmapped` (`UNAUTHENTICATED`). With no
+  mappings the authenticator is not installed at all.
+
+**Why last.** The peer credential is ambient: every request on the
+connection carries it whether the caller meant to use it or not. Placed ahead
+of mTLS, it would decide a request that also presents a certificate for a
+different, perhaps more privileged, identity. Last, it only decides requests
+nothing else claimed.
+
+**What was rejected.** Mapping a uid or gid straight to roles. That would be
+a second source of grants outside the account store, invisible to role reads
+and to the role-assignment audit trail.
+
 ### Identity mapping
 
 | Certificate field | User field | Role |

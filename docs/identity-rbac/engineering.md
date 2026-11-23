@@ -1360,6 +1360,9 @@ authenticated value — whether or not the authenticator set one.
 | A role a user still holds was deleted (one of the two windows `DeleteRole`'s holder strip leaves, see Invariants), on ANY tenant including the system tenant | `*rbac.ResolveError` wrapping `*role.RoleNotFoundError` (**not** retried against the fallback — a stale replica could still grant the deleted role's permissions — and **not** reclassified as retryable) | **yes** |
 | Stored role carries a permission this build does not define | reported on read via `RetiredPermissions`; **no read fails** | — |
 | Duplicate username within a tenant | refused | yes |
+| Unix peer whose `SO_PEERCRED` uid and gid match no `unix.peer_credentials` mapping (`auth.PeerCredentialAuthenticator`, last in the chain) | `auth.ErrPeerCredentialUnmapped`: `peer_credential_unmapped`, `UNAUTHENTICATED` | **yes** |
+| Request with no peer credential in its context (every transport but Unix, and Unix off Linux) | the peer-credential authenticator declines with `ErrUnauthenticated`; the chain's verdict stands | **yes** |
+| Mapped account absent, or its `auth_methods` set without `peercred` | the identity holds no roles, or is refused; never a grant from the mapping | **yes** |
 | Stored ABAC policy document or name invalid, does not decode, or does not compile | `*service.PolicyInvalidError` (400 / `INVALID_ARGUMENT`), nothing written | **yes** |
 | Policy create of a name the tenant already holds | `*service.PolicyExistsError` (409 / `ALREADY_EXISTS`) | **yes** |
 | Policy get, update or delete of a name the tenant does not hold | `*service.PolicyNotFoundError` (404 / `NOT_FOUND`) | — |
