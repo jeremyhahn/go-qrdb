@@ -334,17 +334,11 @@ func TestCertReloader_FileWatch(t *testing.T) {
 	expected, err := tls.X509KeyPair(newCert, newKey)
 	require.NoError(t, err)
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		current := r.cert.Load()
-		if current != origLoaded {
-			assert.Equal(t, expected.Certificate, current.Certificate,
-				"auto-reloaded certificate must match the newly written files")
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatal("certificate was not auto-reloaded within 2 seconds")
+	require.Eventuallyf(t, func() bool { return r.cert.Load() != origLoaded },
+		2*time.Second, 20*time.Millisecond,
+		"certificate was not auto-reloaded within 2 seconds")
+	assert.Equal(t, expected.Certificate, r.cert.Load().Certificate,
+		"auto-reloaded certificate must match the newly written files")
 }
 
 func TestCertReloader_FileWatch_IgnoresUnrelatedFiles(t *testing.T) {
@@ -582,15 +576,9 @@ func TestCertReloader_FileWatch_KeyDirChange(t *testing.T) {
 	expected, err := tls.X509KeyPair(newCert, newKey)
 	require.NoError(t, err)
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		current := r.cert.Load()
-		if current != origLoaded {
-			assert.Equal(t, expected.Certificate, current.Certificate,
-				"auto-reloaded certificate must match the newly written files when key is in separate dir")
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatal("certificate was not auto-reloaded within 2 seconds when key is in a separate directory")
+	require.Eventuallyf(t, func() bool { return r.cert.Load() != origLoaded },
+		2*time.Second, 20*time.Millisecond,
+		"certificate was not auto-reloaded within 2 seconds when key is in a separate directory")
+	assert.Equal(t, expected.Certificate, r.cert.Load().Certificate,
+		"auto-reloaded certificate must match the newly written files when key is in separate dir")
 }

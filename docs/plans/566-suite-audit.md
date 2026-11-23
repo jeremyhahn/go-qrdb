@@ -469,3 +469,31 @@ failure.
 | pkg/sql/mysql/sealed_cursor_wire_test.go | 258 | require.EventuallyWithT on a fetch failing, then requireSealedEnd on that error |
 | pkg/sql/mysql/sealed_session_wire_test.go | 105 | require.EventuallyWithT on the ping reading as a closed connection |
 | pkg/sql/mysql/sealed_session_wire_test.go | 162 | assert.Eventually on the statement being refused; rollback then FailNow on timeout |
+
+## Sleep sweep 4 (rw566g)
+
+Package order 4 (cmd/qrdbd): every time.Sleep left in the cmd/qrdbd test files
+below either became a bounded testify poll on the same condition, or stays
+because the elapsed time is what the test proves or the test can reach no
+observable ready state without a production change. Line numbers are those
+before the sweep. The tip's lint finding is fixed in the same slice:
+pkg/rowlock/harness_test.go imports are grouped as goimports with the
+go-qrdb local prefix writes them (testify in its own group).
+
+| File | Line | Replaced by / kept and why |
+|---|---|---|
+| cmd/qrdbd/cert_reload_test.go | 345 | TestCertReloader_FileWatch: require.Eventuallyf on r.cert.Load() != origLoaded (2s, 20ms), certificate equality asserted after |
+| cmd/qrdbd/cert_reload_test.go | 366 | kept: a negative window (no reload from an unrelated file); CertReloader exposes no "event handled" signal |
+| cmd/qrdbd/cert_reload_test.go | 479 | kept: a negative window past the debounce (no reload after Stop); no "event handled" signal exists |
+| cmd/qrdbd/cert_reload_test.go | 593 | TestCertReloader_FileWatch_KeyDirChange: require.Eventuallyf on r.cert.Load() != origLoaded (2s, 20ms), certificate equality asserted after |
+| cmd/qrdbd/cluster_migrate_test.go | 503 | require.Eventuallyf on GetMigration returning nil (5s, 20ms) |
+| cmd/qrdbd/coverage_target_test.go | 150 | kept: the sealed-window listener binds port 0 and awaitUnseal exposes no address, hook or state for its first tick, so the test has no observable ready state without a production change |
+| cmd/qrdbd/fullstart_integration_test.go | 187 | kept: a poll on the admin port accepting never succeeded within 15s (the daemon logs no "starting sealed-window listener" before the SIGTERM), so no observable ready state is reachable; the 2s window stays |
+| cmd/qrdbd/holder_audit_test.go | 256 | require.Eventuallyf on svc.HolderDeps().Audit != nil (readinessTimeout, 10ms) |
+| cmd/qrdbd/isolation_floor_test.go | 153 | require.Eventuallyf on the strict floor being applied (5s, 5ms) |
+| cmd/qrdbd/noise_port_unix_test.go | 51 | kept: 4 retry intervals so the guard must fall back on polling; the elapsed window is what the test proves |
+| cmd/qrdbd/reclaim_sweep_test.go | 117 | require.Eventuallyf on len(resolver.sweeps()) > 0 (5s, 1ms) |
+| cmd/qrdbd/reclaim_sweep_test.go | 141 | require.Eventuallyf on len(resolver.sweeps()) > 0 (5s, 1ms) |
+| cmd/qrdbd/reset_signal_race_test.go | 108 | kept: lets an in-flight SIGTERM land before the helper process exits; the window is what the race test proves |
+| cmd/qrdbd/signal_dispatch_test.go | 95 | kept: 2 retry intervals after stop prove no later signal outlives the daemon |
+| cmd/qrdbd/unseal_ceremony_test.go | 468, 477 | initializeCeremony: require.EventuallyWithTf over the same POST (readinessTimeout, signalRetryInterval), last error or status reported |

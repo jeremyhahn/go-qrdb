@@ -15,6 +15,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- Tests: cmd/qrdbd waits on the observed condition with bounded testify polls instead of fixed sleeps (#566)
 - `Client.Permissions()` is a required capability and never returns nil on an open client: gRPC, REST, QUIC, Unix and MCP now implement `transport.PermissionProvider` over the new `ListPermissionCatalog` RPC (`GET /permissions/catalog`, QUIC `role.ListPermissionCatalog`, MCP `qrdb_permissions_catalog`, gated on `permissions:list`), which answers every registered permission with its scope, sorted by name. `Lookup`/`LookupScope` return `PermissionNotFoundError` for an unknown name and an error for an empty scope. `qrdb roles permissions --detail` lists the catalog with resource, action and scope; the default output is unchanged (docs/18 V12, #1647).
 
 - CI runs every job on the standard GitHub-hosted `ubuntu-latest` runner for every event, a push to `main` and a same-repository pull request included (owner ruling 999). The pool split (ruling 841) and the pool image producer that published the pool legs' images to the LAN CI registry (ruling 879) are removed; a job may run self-hosted only with a `# self-hosted: <reason>` comment naming the hardware it needs or the measured hosted limit it exceeds, and none does. Code review's review jobs keep their self-hosted review hosts.
