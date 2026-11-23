@@ -1776,9 +1776,6 @@ func TestVectorService_GetRebuildProgress_EstimatedTimeRemaining(t *testing.T) {
 	rebuildResp, err := svc.RebuildIndex(ctx, rebuildReq)
 	require.NoError(t, err)
 
-	// Wait a bit to get some elapsed time
-	time.Sleep(10 * time.Millisecond)
-
 	// Get progress (may show estimate if in progress)
 	req := &GetRebuildProgressRequest{
 		JobID: rebuildResp.JobID,
