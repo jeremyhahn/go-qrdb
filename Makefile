@@ -270,10 +270,10 @@ COVER_MIN     := $(or $(COVERAGE_THRESHOLD),91)
 # Docker
 DOCKER_IMAGE  := go-qrdb-dev
 DOCKER_TAG    := latest
-COMPOSE_FILE  := .devcontainer/docker-compose.yml
+COMPOSE_FILE  := build/docker/devcontainer/compose.yaml
 
 # ---------------------------------------------------------------------------
-# Module credentials for EVERY entrypoint that builds .devcontainer/Dockerfile
+# Module credentials for EVERY entrypoint that builds build/docker/devcontainer/Dockerfile
 # ---------------------------------------------------------------------------
 # First-party github.com/jeremyhahn/* modules resolve from the public proxy
 # by default. A docker build inherits nothing from its caller's environment,
@@ -312,7 +312,7 @@ COMPOSE_FILE  := .devcontainer/docker-compose.yml
 #
 # GOMODAUTH is the one name both consumers read: `docker build --secret
 # id=gomodauth,env=GOMODAUTH`, and the compose services' `build.secrets`
-# through the top-level `secrets:` block in .devcontainer/docker-compose.yml
+# through the top-level `secrets:` block in build/docker/devcontainer/compose.yaml
 # and test/integration/api/docker-compose.yml. Sharing it is the whole point
 # (#302): `make ci` built this image with no secret at all while
 # `make integration-image` passed one, so two entrypoints to the same image
@@ -374,12 +374,6 @@ WITH_QRDB_FTS    ?= 0
 WITH_QRDB_GPU      ?= 0
 WITH_QRDB_EMBEDDED ?= 1
 WITH_QRDBD_WEBUI   ?= 0
-
-# Optional codec flags (1 = enabled, 0 = disabled; all default ON)
-WITH_CODEC_MSGPACK  ?= 1
-WITH_CODEC_YAML     ?= 1
-WITH_CODEC_BSON     ?= 1
-WITH_CODEC_PROTOBUF ?= 1
 
 # Object-storage (go-objstore) cloud backends, used by the objstore storage
 # backend and the backup/restore targets. These gate code in go-objstore (the
@@ -479,18 +473,6 @@ endif
 ifeq ($(WITH_QRDBD_WEBUI),1)
   BUILD_TAGS += qrdbd_webui
 endif
-ifeq ($(WITH_CODEC_MSGPACK),1)
-  BUILD_TAGS += codec_msgpack
-endif
-ifeq ($(WITH_CODEC_YAML),1)
-  BUILD_TAGS += codec_yaml
-endif
-ifeq ($(WITH_CODEC_BSON),1)
-  BUILD_TAGS += codec_bson
-endif
-ifeq ($(WITH_CODEC_PROTOBUF),1)
-  BUILD_TAGS += codec_protobuf
-endif
 # Object-storage (go-objstore) cloud backends.
 ifeq ($(WITH_AWS_S3),1)
   BUILD_TAGS += awss3
@@ -508,9 +490,18 @@ ifeq ($(WITH_AZURE_ARCHIVE),1)
   BUILD_TAGS += azurearchive
 endif
 # GO_BUILD_TAGS is CI's one copy of the tag set (ci-template v1.21,
-# devcontainer.md §6); when it is set it replaces the composed set.
+# devcontainer.md §6); when it is set it replaces the composed set, except
+# for the tags of the print-optional-test-tags WITH_ flags re-added below.
 ifneq ($(strip $(GO_BUILD_TAGS)),)
   BUILD_TAGS := $(strip $(GO_BUILD_TAGS))
+endif
+# GO_BUILD_TAGS replaces the composed set, but a WITH_ flag that
+# print-optional-test-tags names is an explicit request for that tag and is
+# added on top (once), so the `make test-pkg PKG=<dir> WITH_<FLAG>=1` lines
+# scripts/touched-packages.sh prints compile the tag under CI's override too.
+# Nothing in CI sets these flags, so no CI tag set changes.
+ifeq ($(WITH_QRDB_FTS),1)
+  BUILD_TAGS := $(strip $(filter-out qrdb_fts,$(BUILD_TAGS)) qrdb_fts)
 endif
 DESKTOP_TAGS := desktop production webkit2_41 $(BUILD_TAGS)
 
@@ -522,9 +513,9 @@ DESKTOP_TAG_FLAG := -tags "$(strip $(DESKTOP_TAGS))"
 # build args, through the same environment-PASSTHROUGH mechanism as the
 # scanner-version pins ($(SCANNER_BUILD_ARGS) below): exported here, read
 # there by name with no value given, so compose fills it from THIS process's
-# environment when make runs it and leaves it to .devcontainer/Dockerfile's
-# own ARG default when nothing exported it (a bare `docker compose build`,
-# #302). See .devcontainer/Dockerfile's QRDB_BUILD_TAGS comment for what
+# environment when make runs it and leaves it to the dev stage's own ARG
+# default in build/docker/devcontainer/Dockerfile when nothing exported it (a
+# bare `docker compose build`, #302). See that stage's QRDB_BUILD_TAGS comment for what
 # drifting the two apart cost (go-qrdb#555).
 export QRDB_BUILD_TAGS := $(strip $(BUILD_TAGS))
 
@@ -576,7 +567,6 @@ PKG_SQL_QUERY      := ./pkg/sql/query/...
 PKG_SQL_CATALOG    := ./pkg/sql/catalog/...
 PKG_SQL_PRIVILEGE  := ./pkg/sql/privilege/...
 PKG_SQL_PGCATALOG  := ./pkg/sql/pgcatalog/...
-PKG_CODEC          := ./pkg/codec/...
 PKG_ETCD           := ./pkg/api/etcd/...
 PKG_DATABASE       := ./pkg/database/...
 PKG_QUIC           := ./pkg/api/quic/...
@@ -1286,10 +1276,6 @@ test-sql-privilege:
 test-sql-pgcatalog:
 	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_PGCATALOG)
 
-.PHONY: test-codec
-test-codec:
-	$(GOTEST) $(TAG_FLAG) $(PKG_CODEC)
-
 .PHONY: test-etcd
 test-etcd:
 	$(GOTEST) $(TAG_FLAG) $(PKG_ETCD)
@@ -1317,6 +1303,19 @@ FTS_TAGS := $(strip $(BUILD_TAGS)) qrdb_fts
 .PHONY: test-fts
 test-fts:
 	$(GOTEST) -tags "$(FTS_TAGS)" $(PKG_FTS)
+
+# print-optional-test-tags prints one line per supported default-off build tag:
+# `<tag> <WITH_flag>=1`, where the WITH_ flag adds the tag to BUILD_TAGS (so
+# `make test-pkg PKG=<dir> WITH_QRDB_FTS=1` compiles under the same tags as
+# test-fts). scripts/touched-packages.sh reads the importer graph under each
+# tag and prints `./<dir> <WITH_flag>=1` for packages with files behind it.
+# Every entry must be a rung in SUPPORTED_TAG_SETS (print-tag-sets); gpu and
+# qrdbd_webui are not rungs and stay out. Every entry's WITH_ flag must also
+# be re-added after the GO_BUILD_TAGS block (the "tag over GO_BUILD_TAGS"
+# case of scripts/touched-packages_test.sh checks it).
+.PHONY: print-optional-test-tags
+print-optional-test-tags:
+	@echo "qrdb_fts WITH_QRDB_FTS=1"
 
 .PHONY: test-sql
 test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql test-sql-query test-sql-catalog test-sql-privilege test-sql-pgcatalog
@@ -1466,7 +1465,7 @@ INT_COMPOSE := test/integration/api/docker-compose.yml
 # interpolations (`${QRDB_INT_IMAGE:?...}`): there is no fallback tag, because a
 # fallback is a shared tag again. The `export` reaches every `docker compose`
 # call below, sub-makes included. The devcontainer keeps its own stable
-# `go-qrdb-dev:latest` (.devcontainer/docker-compose.yml); nothing here builds
+# `go-qrdb-dev:latest` (build/docker/devcontainer/compose.yaml); nothing here builds
 # or runs it. integration-down removes these when the run ends.
 # test/buildgates/integration_image_tag_test.go holds all of this in place.
 INT_IMAGE     := go-qrdb-int:$(INT_PROJECT)
@@ -1487,7 +1486,7 @@ export QRDB_INT_GPU_IMAGE := $(INT_GPU_IMAGE)
 # command and flag the Makefile's own feature flags enable (go-qrdb#555: a
 # Dockerfile ARG left at a hardcoded, narrower default silently built a CLI
 # that could not drive the server it was tested against). The ARG's default
-# in .devcontainer/Dockerfile is a second copy for a bare `docker compose
+# in build/docker/devcontainer/Dockerfile's dev stage is a second copy for a bare `docker compose
 # build` that skips make (#302); docker_build_tags_test.go
 # (test/buildgates) keeps the two from drifting apart.
 .PHONY: integration-image
@@ -1497,8 +1496,8 @@ integration-image:
 	  --secret id=gomodauth,env=GOMODAUTH \
 	  $(SCANNER_BUILD_ARGS) \
 	  --build-arg QRDB_BUILD_TAGS="$(strip $(BUILD_TAGS))" \
-	  --target integration \
-	  -f .devcontainer/Dockerfile \
+	  --target dev-integration \
+	  -f build/docker/devcontainer/Dockerfile \
 	  -t $(INT_IMAGE) .
 
 # integration-test is CI's integration stage (handbook ci-standard.md): it runs
@@ -1547,7 +1546,7 @@ integration-test:
 		down --volumes >/dev/null 2>&1 || true; \
 	exit $$status
 
-# integration-test-docker runs the suites that need the .devcontainer stacks in
+# integration-test-docker runs the suites that need the dev-integration stacks in
 # isolated stages, so the standalone (multi-protocol CLI vs the single-node
 # docker servers) and cluster (self-spawned single-node + 3-node clusters)
 # tests never run concurrently and never contend for host CPU. Each stage
@@ -1701,13 +1700,13 @@ INT_GPU_COMPOSE := test/integration/api/docker-compose.gpu.yml
 HAS_GPU := $(shell command -v nvidia-smi >/dev/null 2>&1 && echo 1 || echo 0)
 
 .PHONY: integration-test-gpu
-# `--build` here builds .devcontainer/Dockerfile.gpu, so this needs the same
+# `--build` here builds build/docker/devcontainer/Dockerfile's gpu stage, so this needs the same
 # credential prelude as every other entrypoint that builds an image (#305); the
 # overlay's services declare build.secrets and read $$GOMODAUTH from it.
 # `set +e` because the prelude leaves the shell under `set -eu` and this recipe
 # captures its own exit code to run `down -v` after a failure.
 integration-test-gpu:
-	@echo "==> Running GPU integration tests (qrdbd + all protocols + NVIDIA GPU)..."
+	@echo "==> Running GPU integration tests (qrdbd + all protocols + NVIDIA GPU, build/docker/devcontainer/Dockerfile stage gpu)..."
 	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@$(stage-gomodauth) \
 	set +e; \
@@ -1783,6 +1782,13 @@ INT_FEATURES = $(sort $(subst _,-,$(patsubst INTTEST_%,%,$(foreach v,$(filter IN
 .PHONY: print-integration-features
 print-integration-features:
 	@printf '%s\n' $(INT_FEATURES)
+
+# one line per feature in INT_FEATURES: the feature, then the test/integration
+# files its integration-test-<feature> selects (int_files);
+# scripts/touched-features.sh reads the table through it, never a copy
+.PHONY: print-integration-feature-map
+print-integration-feature-map:
+	@$(foreach f,$(INT_FEATURES),printf '%s %s\n' '$(f)' '$(notdir $(call int_files,$(f)))';)
 
 # integration-test-feature is the one recipe behind every per-feature target:
 # `make integration-test-feature FEATURE=<docs folder name>`. The
@@ -2398,10 +2404,6 @@ coverage-sql-pgcatalog: | _cover-dir
 	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-pgcatalog.out $(PKG_SQL_PGCATALOG)
 	$(call check-coverage,$(COVER_DIR)/sql-pgcatalog.out,sql-pgcatalog)
 
-.PHONY: coverage-codec
-coverage-codec: | _cover-dir
-	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/codec.out $(PKG_CODEC)
-	$(call check-coverage,$(COVER_DIR)/codec.out,codec)
 
 .PHONY: coverage-etcd
 coverage-etcd: | _cover-dir
@@ -2632,6 +2634,7 @@ LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-lean-standalone \
 	test-nightly-signal test-coverratchet test-coverage-merge-subprocess \
 	check-publication-bound test-publication-bound test-public-releasable \
+	test-touched-features test-touched-packages \
 	check-iface-sweep-findings test-iface-sweep-findings check-artifact-paths \
 	test-artifact-paths check-generated check-mod-tidy test-mod-tidy test-vet-modules \
 	test-release-alpha test-test-cross fmt vet test-secure-analyzer vet-sdk lint-sdk
@@ -2756,6 +2759,20 @@ check-publication-bound:
 .PHONY: test-publication-bound
 test-publication-bound:
 	@./scripts/check-publication-bound_test.sh
+
+# scripts/touched-features.sh and scripts/touched-packages.sh print what a diff
+# must re-run: the integration-test-<feature> targets (from the features.mk
+# table, via print-integration-feature-map) and the changed packages plus their
+# direct importers, read under BUILD_TAGS and under each print-optional-test-tags
+# tag; a package with files behind such a tag also prints a tagged line
+# `./<dir> WITH_<FLAG>=1` for `make test-pkg PKG=`. Their suites feed paths
+# through --files.
+.PHONY: test-touched-features test-touched-packages
+test-touched-features:
+	@./scripts/touched-features_test.sh
+
+test-touched-packages:
+	@GO="$(GO)" ./scripts/touched-packages_test.sh
 
 # The WHOLE tracked tree names no fleet value: no lab address, no lab host, no
 # path under the owner's home, and no tracked per-machine agent state (#565).
@@ -3317,6 +3334,15 @@ TEST_TAGS_SETS := $(LINT_TAGS) $(NOMYSQL_TAGS) $(NOPGSQL_TAGS) $(NOSQLFAMILY_TAG
 # refusal lives in the service layer every transport shares.
 TEST_TAGS_PKGS := ./cmd/qrdbd/... ./cmd/qrdb/... ./pkg/service
 
+# CODEC_CBOR_TAGS / CODEC_CBOR_TEST_PKGS: the CBOR codec (pkg/dao) and its
+# document-storage behavior (pkg/service) compile only under codec_cbor,
+# which no other set enables, so `make test-tags` runs these two packages
+# once more with it. Called with `go test` directly rather than through
+# scripts/test-tags.sh, whose discovery floor (MIN_PACKAGES=3) is sized for
+# TEST_TAGS_PKGS.
+CODEC_CBOR_TAGS := $(LINT_TAGS),codec_cbor
+CODEC_CBOR_TEST_PKGS := ./pkg/dao ./pkg/service
+
 # vet-tags sweeps EVERY Go module in the tree, each with its own tag sets.
 #
 # The logic lives in scripts/vet-modules.sh, not here, and that is the point:
@@ -3363,10 +3389,13 @@ vet-tags:
 # full rationale and why this is scoped to ./cmd/... rather than the whole
 # tree. Runs with `go test` directly (no -race): TEST_TAGS_SETS already
 # multiplies the command-surface suite by five, and the packages it covers
-# are raced on their own by `make test`/CI's existing race job.
+# are raced on their own by `make test`/CI's existing race job. A second
+# run tests CODEC_CBOR_TEST_PKGS under CODEC_CBOR_TAGS, the only gate that
+# compiles the codec_cbor CBOR codec and its collection-storage tests.
 .PHONY: test-tags
 test-tags:
 	GOTEST="$(GO) test" GOLIST="$(GO) list" ./scripts/test-tags.sh "$(TEST_TAGS_SETS)" "$(TEST_TAGS_PKGS)"
+	$(GO) test -count=1 -tags=$(CODEC_CBOR_TAGS) $(CODEC_CBOR_TEST_PKGS)
 
 # print-tag-sets prints the declared combinations, one per line, so that
 # anything needing them -- a CI matrix, a doc, a one-off sweep -- READS the
@@ -3558,7 +3587,8 @@ endef
 # `make check-tool-versions`, which runs first in `_ci`:
 #   - the literal env pins in .github/workflows/ci.yml for the jobs that run
 #     on the runner rather than in the image (the runner image bakes them);
-#   - the ARG DEFAULTS of .devcontainer/Dockerfile{,.gpu}, the developer
+#   - the ARG DEFAULTS of the dev and gpu stages of
+#     build/docker/devcontainer/Dockerfile, the developer
 #     devcontainer, so a build that goes around make -- VS Code "Reopen in
 #     Container", a bare `docker compose build` -- still gets the pinned
 #     analysers (#302, ruled 2026-09-05).
@@ -3571,7 +3601,7 @@ endef
 # files take them through the environment-PASSTHROUGH form (`GOSEC_VERSION:`
 # with no value), so an unset variable omits the arg and the Dockerfile
 # default applies; `${GOSEC_VERSION}` there would pass an empty string and
-# defeat the default. Measured, and written up in .devcontainer/docker-compose.yml.
+# defeat the default. Measured, and written up in build/docker/devcontainer/compose.yaml.
 #
 # WHAT check-tool-versions DOES NOT ASSERT: that the version pinned is the
 # version INSTALLED. require-tool.sh answers that, inside the Dockerfiles at
@@ -3610,11 +3640,16 @@ export GOSEC_VERSION
 export GOVULNCHECK_VERSION
 export TRIVY_VERSION
 export TRIVY_IMAGE
+# GO_IMAGE too: build/docker/devcontainer/Dockerfile's global FROMs name
+# ${GO_IMAGE} and ${TRIVY_IMAGE}, which have no default, and BuildKit resolves
+# every global FROM whatever the target, so the compose dev services need both.
+export GO_IMAGE
 
 # The two `docker build` entrypoints get no compose interpolation, so they pass
 # the same pins explicitly. One variable rather than a flag per pin at each
 # site, for the same reason `export` beats per-recipe passing.
 SCANNER_BUILD_ARGS := \
+  --build-arg GO_IMAGE=$(GO_IMAGE) \
   --build-arg GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION) \
   --build-arg GOSEC_VERSION=$(GOSEC_VERSION) \
   --build-arg GOVULNCHECK_VERSION=$(GOVULNCHECK_VERSION) \
@@ -3642,7 +3677,7 @@ SCANNER_BUILD_ARGS := \
 GOSEC_INSTALL       := go install -ldflags '-X main.Version=$(GOSEC_VERSION)' github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 GOVULNCHECK_INSTALL := go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 # The binary out of the official image pinned by digest (TRIVY_IMAGE), which is
-# how the CI image, .devcontainer/Dockerfile and nightly.yml install it, so the
+# how the CI image, the dev stage and nightly.yml install it, so the
 # hint and the images run the same fixed artifact. A fixed container name rather
 # than $$(docker create ...): require-scanner echoes the hint inside double
 # quotes, which would run a command substitution instead of printing it.
@@ -4120,9 +4155,10 @@ docker-run-devcontainer:
 #
 # build/docker/devcontainer/Dockerfile is the ONE image every CI stage runs
 # in: build, unit tests, security and deps-check in its `toolchain` stage,
-# the integration suites in its `integration` stage. .devcontainer/ is the
-# developer's VS Code container and the image of the Docker-based
-# test/integration/api stack; it runs no CI stage of its own.
+# the integration suites in its `integration` stage. Its dev, dev-deps,
+# dev-integration and gpu stages are the developer's VS Code container, the
+# image of the Docker-based test/integration/api stack and the CUDA image;
+# they run no CI stage.
 #
 # The toolchain tag is a hash of everything the image is built from -- the
 # Dockerfile, the pin file and every module's go.mod/go.sum the modules stage

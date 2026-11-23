@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build codec_msgpack
-
 package service
 
 import (
@@ -24,7 +22,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 )
 
@@ -39,10 +36,10 @@ func TestCollectionService_CreateCollection_WithStorageCodec(t *testing.T) {
 	info, err := svc.CreateCollection(ctx, &CreateCollectionRequest{
 		Name:         "users",
 		Database:     "mydb",
-		StorageCodec: codec.TypeMsgPack,
+		StorageCodec: string(dao.CodecMsgPack),
 	})
 	require.NoError(t, err)
-	assert.Equal(t, codec.TypeMsgPack, info.StorageCodec)
+	assert.Equal(t, string(dao.CodecMsgPack), info.StorageCodec)
 }
 
 func TestCollectionService_CreateCollection_InvalidStorageCodec(t *testing.T) {
@@ -65,7 +62,7 @@ func TestCollectionService_InsertGet_MsgpackCodec(t *testing.T) {
 		Name:         "products",
 		Database:     "mydb",
 		IDStrategy:   IDStrategyIncrement,
-		StorageCodec: codec.TypeMsgPack,
+		StorageCodec: string(dao.CodecMsgPack),
 	})
 	require.NoError(t, err)
 
@@ -94,7 +91,7 @@ func TestCollectionService_UpdateDocument_MsgpackCodec(t *testing.T) {
 		Name:         "items",
 		Database:     "mydb",
 		IDStrategy:   IDStrategyIncrement,
-		StorageCodec: codec.TypeMsgPack,
+		StorageCodec: string(dao.CodecMsgPack),
 	})
 	require.NoError(t, err)
 
@@ -130,7 +127,7 @@ func TestCollectionService_ListDocuments_MsgpackCodec(t *testing.T) {
 		Name:         "logs",
 		Database:     "mydb",
 		IDStrategy:   IDStrategyIncrement,
-		StorageCodec: codec.TypeMsgPack,
+		StorageCodec: string(dao.CodecMsgPack),
 	})
 	require.NoError(t, err)
 
@@ -182,7 +179,7 @@ func TestCollectionService_BackwardCompatibility(t *testing.T) {
 		Name:         "legacy",
 		Database:     "mydb",
 		IDStrategy:   IDStrategyUnixNano,
-		StorageCodec: codec.TypeMsgPack,
+		StorageCodec: string(dao.CodecMsgPack),
 		Schema:       make(map[string]string),
 	}
 	metaBytes, err := json.Marshal(info)
@@ -207,7 +204,7 @@ func TestCollectionService_BackwardCompatibility(t *testing.T) {
 func TestCollectionService_DatabaseCodecLookup(t *testing.T) {
 	svc := newTestCollectionService().WithDatabaseCodecLookup(func(db string) string {
 		if db == "msgpack_db" {
-			return codec.TypeMsgPack
+			return string(dao.CodecMsgPack)
 		}
 		return ""
 	})
@@ -239,7 +236,7 @@ func TestCollectionService_DatabaseCodecLookup(t *testing.T) {
 
 func TestCollectionService_DatabaseCodecLookup_CollectionOverrides(t *testing.T) {
 	svc := newTestCollectionService().WithDatabaseCodecLookup(func(_ string) string {
-		return codec.TypeMsgPack
+		return string(dao.CodecMsgPack)
 	})
 	ctx := context.Background()
 
@@ -247,11 +244,11 @@ func TestCollectionService_DatabaseCodecLookup_CollectionOverrides(t *testing.T)
 	info, err := svc.CreateCollection(ctx, &CreateCollectionRequest{
 		Name:         "override",
 		Database:     "mydb",
-		StorageCodec: codec.TypeJSON,
+		StorageCodec: string(dao.CodecJSON),
 	})
 	require.NoError(t, err)
-	assert.Equal(t, codec.TypeJSON, info.StorageCodec)
+	assert.Equal(t, string(dao.CodecJSON), info.StorageCodec)
 
 	c := svc.resolveCodec(info)
-	assert.Equal(t, codec.TypeJSON, c.Type())
+	assert.Equal(t, dao.CodecJSON, c.Type())
 }

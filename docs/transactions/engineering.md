@@ -203,6 +203,13 @@ Every transport carries it, with the same meaning:
 The MCP result is an object, not an array: a client reads the per-op results
 from `Responses`.
 
+A `yaml` import is parsed through go-codec's yaml codec
+(`github.com/jeremyhahn/go-codec/pkg/yaml`): a sequence of maps imports one
+record per map, a single map imports one record, an empty document imports
+nothing, and anything else is an `ImportParseError`. The CLI's `--output yaml`
+prints through the same codec, with map keys sorted, struct fields in declaration order and a four-space
+indent.
+
 Import session — `pkg/service.BatchServicer`:
 
 ```go

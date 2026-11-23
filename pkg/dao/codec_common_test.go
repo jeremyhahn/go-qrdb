@@ -15,6 +15,7 @@ package dao
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -88,4 +89,21 @@ func TestNewCodecUnsupported(t *testing.T) {
 		require.True(t, errors.As(err, &codecErr))
 		assert.Equal(t, "", codecErr.CodecType)
 	})
+}
+
+// TestDocumentCodecs pins the one storage-codec list: sorted, every
+// document codec present, protobuf (which cannot encode a generic map)
+// absent.
+func TestDocumentCodecs(t *testing.T) {
+	got := DocumentCodecs()
+	assert.True(t, slices.IsSorted(got), "DocumentCodecs must be sorted: %v", got)
+	for _, want := range []CodecType{CodecJSON, CodecMsgPack, CodecYAML, CodecBSON} {
+		assert.Contains(t, got, want)
+	}
+	assert.NotContains(t, got, CodecProtoBuf)
+	assert.NotContains(t, got, CodecTOML, "TOML cannot encode null")
+	for _, ct := range got {
+		_, err := NewCodec[map[string]any](ct)
+		require.NoError(t, err, "codec %s", ct)
+	}
 }

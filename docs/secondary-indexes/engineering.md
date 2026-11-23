@@ -425,7 +425,7 @@ credDAO, err := dao.New[*Credential](store, "creds", newCredential,
 
 | Codec | Secret fields | Why |
 |---|---|---|
-| MessagePack (`CodecMsgPack`, build tag `codec_msgpack`) | **supported**, as one raw bin item | encoding measures the record, then writes the secret straight from its protected pages into a record allocated at exactly that size; decoding reads the bin item straight from the record into a new protected buffer |
+| MessagePack (`CodecMsgPack`) | **supported**, as one raw bin item | encoding measures the record, then writes the secret straight from its protected pages into a record allocated at exactly that size; decoding reads the bin item straight from the record into a new protected buffer |
 | JSON (the DAO default) | refused | base64 of the plaintext is built in the encoder's pooled buffer |
 | YAML, TOML | refused | encode through `encoding.TextMarshaler` and growing buffers |
 | BSON, CBOR | refused | encode through pooled writer buffers the DAO cannot wipe |
@@ -434,7 +434,7 @@ credDAO, err := dao.New[*Credential](store, "creds", newCredential,
 The refusal is `dao.CodecCreationError` wrapping
 `dao.SecretCodecUnsupportedError{CodecType}`, returned when the codec is built
 — an entity type with a secret field cannot reach a store through a codec that
-would copy it. A build without `codec_msgpack` refuses every codec.
+would copy it. MessagePack secret support is in every build.
 `SecretBytes` also refuses `encoding/json` and `encoding.TextMarshaler`
 directly, so an entity marshalled outside the DAO (into a log line) fails
 rather than leaks, and every `fmt` verb prints `dao.SecretBytes(redacted)`.
@@ -501,7 +501,7 @@ copies and so proves the measurement can fail).
 | `GetByNaturalKey` where the configured `IDGenerator` is not a `DeterministicIDGenerator` | `*dao.UnsupportedIDGeneratorError` | **yes** — there is no deterministic way to derive an ID from a bare value |
 | `GetByNaturalKey` where the derived ID names a DIFFERENT entity | `dao.NaturalKeyMismatchError` | **yes** — the mismatched record is never returned |
 | `Get(id)`, `Page`, `ForEachPage`, `Delete` | never verify a natural key | n/a — each takes a bare id or an already-loaded entity, never the natural-key value a mismatch would be checked against |
-| `dao.New` / `dao.NewCodec` for an entity type holding a `SecretBytes` with any codec but MessagePack (or without `codec_msgpack`) | `dao.CodecCreationError` wrapping `dao.SecretCodecUnsupportedError` | **yes** — refused before any record exists |
+| `dao.New` / `dao.NewCodec` for an entity type holding a `SecretBytes` with any codec but MessagePack | `dao.CodecCreationError` wrapping `dao.SecretCodecUnsupportedError` | **yes** — refused before any record exists |
 | `index:` tag or compound index naming a `SecretBytes` field | `dao.SecretFieldIndexedError` from `dao.New` | **yes** |
 | `json.Marshal` / `MarshalText` of a `SecretBytes` outside the DAO | `dao.SecretCodecUnsupportedError` (`"json"` / `"text"`) | **yes** |
 | Saving an entity whose `SecretBytes` was destroyed | `*secure.NilBufferError` | **yes** — never stored as empty |
