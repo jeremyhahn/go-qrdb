@@ -14,10 +14,12 @@ import (
 	"log/slog"
 	"reflect"
 	"testing"
+	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
@@ -139,6 +141,53 @@ func TestReadIndexCaughtUp(t *testing.T) {
 	probe.err = nil
 	if ok, err := caughtUp(ctx, "acme", "a"); err != nil || !ok {
 		t.Fatalf("ready = %v, %v; want caught up", ok, err)
+	}
+}
+
+// A replica whose shard is gone or whose host closed never catches up, so
+// the probe's error comes back rather than reading as "not yet"; a probe
+// that ran out its own timeout while the caller still waits is "not yet".
+func TestReadIndexCaughtUp_PermanentShardFailureIsAnError(t *testing.T) {
+	ctx := context.Background()
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(ctx, &placement.Placement{
+		TenantID: "acme", Database: "a", ShardID: 42, RF: 1, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "127.0.0.1:7001", RaftAddr: "127.0.0.1:7001"}},
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	for _, perm := range []error{quicraft.ErrShardNotFound, quicraft.ErrClosed} {
+		caughtUp := readIndexCaughtUp(&fakeReadProbe{err: perm}, store)
+		if ok, err := caughtUp(ctx, "acme", "a"); ok || !errors.Is(err, perm) {
+			t.Fatalf("probe %v = %v, %v; want the error", perm, ok, err)
+		}
+	}
+	caughtUp := readIndexCaughtUp(&fakeReadProbe{err: context.DeadlineExceeded}, store)
+	if ok, err := caughtUp(ctx, "acme", "a"); ok || err != nil {
+		t.Fatalf("probe timeout = %v, %v; want not yet", ok, err)
+	}
+}
+
+// TenantMoveConfig.CatchUpTimeout reaches the store closer; zero keeps the
+// default.
+func TestNewMoveStores_CatchUpTimeout(t *testing.T) {
+	reg := &seal.BarrierRegistry{} // construction only; never opened
+	stores, err := newMoveStores(TenantMoveConfig{BarrierReg: reg, CatchUpTimeout: 3 * time.Second})
+	if err != nil {
+		t.Fatalf("newMoveStores: %v", err)
+	}
+	if stores.catchUpTimeout != 3*time.Second {
+		t.Fatalf("catchUpTimeout = %v, want 3s", stores.catchUpTimeout)
+	}
+	stores, err = newMoveStores(TenantMoveConfig{BarrierReg: reg})
+	if err != nil {
+		t.Fatalf("newMoveStores: %v", err)
+	}
+	if stores.catchUpTimeout != DefaultMoveCatchUpTimeout {
+		t.Fatalf("default catchUpTimeout = %v", stores.catchUpTimeout)
 	}
 }
 

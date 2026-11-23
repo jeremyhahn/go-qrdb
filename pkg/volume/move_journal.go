@@ -395,6 +395,55 @@ func (c *Catalog) FailMoveStep(ctx context.Context, tenantID, nodeID, reason str
 	})
 }
 
+// FailSettleStep records that nodeID's recorded step failed to settle: the
+// step stays settling and its attempt count rises, so a settle that can
+// never finish (a replica that never catches up) is bounded. For a copy
+// step a cancel recorded meanwhile, or the maxAttempts-th failure, aborts
+// the move with the node copied, as a cancel after the copy would; the
+// abort steps then restore the source. A step settling in any later phase
+// cannot abort further: its attempt is counted and it is retried. A
+// non-positive maxAttempts uses DefaultMoveStepAttempts.
+func (c *Catalog) FailSettleStep(ctx context.Context, tenantID, nodeID, reason string, maxAttempts int) (*Move, error) {
+	if nodeID == "" {
+		return nil, &InvalidMoveRequestError{Reason: "empty node id"}
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = DefaultMoveStepAttempts
+	}
+	return c.updateMove(ctx, tenantID, func(m *Move) error {
+		if !m.StepSettling || m.StepNode != nodeID {
+			return &MoveConflictError{TenantID: m.TenantID, NodeID: nodeID, Reason: "node holds no settling move step"}
+		}
+		if m.State != MoveStateCopying {
+			m.StepAttempts++
+			m.Error = reason
+			return nil
+		}
+		if m.CancelRequested {
+			m.CancelRequested = false
+			abortSettlingCopy(m, "cancelled by operator")
+			return nil
+		}
+		m.StepAttempts++
+		m.Error = reason
+		if m.StepAttempts >= maxAttempts {
+			abortSettlingCopy(m, reason)
+		}
+		return nil
+	})
+}
+
+// abortSettlingCopy turns m's settling copy step into an abort: the node
+// stays in NodesCopied, so the abort steps restore the source on it.
+func abortSettlingCopy(m *Move, reason string) {
+	m.State = MoveStateAborting
+	m.StepNode = ""
+	m.StepSettling = false
+	m.StepCopied = false
+	m.StepAttempts = 0
+	m.Error = reason
+}
+
 // holdsStep refuses, with *MoveConflictError, a step settled by a node that
 // does not hold it or on a move no longer in state: a copy step granted
 // before CancelMove is refused once the move is aborting.

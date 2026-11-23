@@ -981,6 +981,69 @@ func TestMoveReconciler_AbortSettleFailureKeepsJournal(t *testing.T) {
 	}
 }
 
+// TestMoveReconciler_StalledSettleAbortsTheMove: a tenant whose reopened
+// replica never catches up fails its copy settle every tick; each failure
+// is counted in the journal, and the maxAttempts-th aborts the move, whose
+// abort steps then restore the source and free the reservation, instead of
+// the step staying granted for ever.
+func TestMoveReconciler_StalledSettleAbortsTheMove(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	runner := &flakySettleRunner{phase: MoveStepPhaseCopy, failSettle: 1 << 30}
+	r := newTestReconciler(t, cat, runner, WithMoveStepAttempts(3))
+	for i := 1; i <= 2; i++ {
+		if err := tick(ctx, r); err == nil {
+			t.Fatalf("tick %d with a stalled settle: nil error", i)
+		}
+		m := storedMove(t, kv, "acme")
+		if m.State != MoveStateCopying || m.StepNode != "n1" || !m.StepSettling || m.StepAttempts != i {
+			t.Fatalf("move after %d failed settles = %+v, want n1 settling, %d attempts", i, m, i)
+		}
+		if m.Error == "" || m.Error == "settle failed" {
+			t.Fatalf("journal error = %q, want a sanitized class", m.Error)
+		}
+	}
+	if err := tick(ctx, r); err == nil {
+		t.Fatal("third stalled tick: nil error")
+	}
+	if m := storedMove(t, kv, "acme"); m == nil || m.State != MoveStateAborting || !contains(m.NodesCopied, "n1") {
+		t.Fatalf("move after max failed settles = %+v, want aborting with n1 copied", m)
+	}
+	for i := 0; i < 6 && storedMove(t, kv, "acme") != nil; i++ {
+		if err := tick(ctx, r); err != nil {
+			t.Fatalf("abort tick %d: %v", i, err)
+		}
+	}
+	if storedMove(t, kv, "acme") != nil {
+		t.Fatal("journal kept after the stalled move aborted")
+	}
+	if got := poolReserved(t, kv, "bulk"); got != 0 {
+		t.Fatalf("bulk reserved = %d after the abort, want 0", got)
+	}
+}
+
+// TestMoveReconciler_CancelDuringStalledSettle: a cancel recorded while a
+// copy step's settle keeps failing is honoured at the next settle attempt.
+func TestMoveReconciler_CancelDuringStalledSettle(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	runner := &flakySettleRunner{phase: MoveStepPhaseCopy, failSettle: 1 << 30}
+	r := newTestReconciler(t, cat, runner, WithMoveStepAttempts(100))
+	if err := tick(ctx, r); err == nil {
+		t.Fatal("tick with a stalled settle: nil error")
+	}
+	if m, err := cat.CancelMove(ctx, "acme"); err != nil || !m.CancelRequested {
+		t.Fatalf("CancelMove = %+v, %v, want the cancel recorded", m, err)
+	}
+	if err := tick(ctx, r); err == nil {
+		t.Fatal("tick with a stalled settle after the cancel: nil error")
+	}
+	m := storedMove(t, kv, "acme")
+	if m == nil || m.State != MoveStateAborting || m.CancelRequested || m.Error != "cancelled by operator" {
+		t.Fatalf("move after the cancelled settle = %+v, want aborting, cancel honoured", m)
+	}
+}
+
 func TestMoveReconciler_CancelBeforeCopyStartsAbortsUncopied(t *testing.T) {
 	cat, kv, _ := newAdmittedMove(t)
 	ctx := context.Background()

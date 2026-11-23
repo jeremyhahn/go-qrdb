@@ -255,10 +255,20 @@ Both composers (cmd/qrdbd and `sdk/go/node`) wire the move through
   `RestoreVolumeTenants` so a moving tenant resolves from the journal;
 - `server.MoveStoreCloser`: closes and reopens a tenant's raft replicas, or
   its IsolationVolume Host, and its barrier around a step; a reopened raft
-  replica counts as caught up once a ReadIndex on its shard completes;
+  replica counts as caught up once a ReadIndex on its shard completes. A
+  probe the leader cannot yet serve (`quicraft.ErrReadIndexNotReady`) or
+  that ran out its own 500 ms timeout is "not yet"; a gone shard
+  (`quicraft.ErrShardNotFound`), a closed host (`quicraft.ErrClosed`) or any
+  other error fails the reopen at once. Each replica's wait is bounded by
+  `TenantMoveConfig.CatchUpTimeout` (`WithMoveCatchUpTimeout`, default
+  `DefaultMoveCatchUpTimeout`, 2 min), past which the reopen fails with
+  `ErrMoveCatchUpTimeout`;
 - the replica-node source: an IsolationRaft tenant's placements, each
   replica's raft address mapped to its system-shard replica ID; a tenant
-  with no placement moves on this node only;
+  with no placement moves on this node only. The same source admits the
+  move and, through `volume.WithMoveNodeSource`, lets the reconciler resync
+  the journal's node set (`Catalog.SyncMoveNodes`) before each copy grant
+  and before cut over;
 - `service.NewVolumeMoveTransitionAudit`: one best-effort
   `volume_pool.move_<transition>` event per journal transition, with
   `node_id` and `phase` attributes.
@@ -274,6 +284,24 @@ is reopened only if no earlier attempt reopened it, only shards and the Host
 not already started are attached, each replica waits for catch-up with the
 same poll, and a self-managed tenant still comes back sealed. A fresh close
 of the tenant supersedes its pending reopen.
+
+A step whose settle fails is not retried for ever. `settleAndRelease`
+records each failure with `Catalog.FailSettleStep` (the sanitized error
+class and an attempt count) and the step stays settling. For a copy step
+the `WithMoveStepAttempts`-th failure (3 by default), or a cancel recorded
+while it settled, sends the move to `aborting` with the node copied, and the
+abort steps restore the source on it. An abort or retire step cannot back
+out further: its failures are counted and it is retried.
+
+A move's node set is not fixed at admission. Before granting a copy step
+and before cut over, `ReconcileOnce` re-reads the tenant's replicas through
+`volume.MoveNodeSource`: `Catalog.SyncMoveNodes` adds a replica that joined
+as pending (a `copied` move goes back to `copying`) and drops a pending
+replica that left and holds no step. A pass that changed the set does not
+cut over; one whose lookup failed grants and cuts over nothing. The
+rebalancer refuses a MOVE or scale-up of a moving tenant
+(`*volume.TenantMovingReplicaError`), so a resync covers only replica changes
+made outside it.
 
 ### Composition options
 

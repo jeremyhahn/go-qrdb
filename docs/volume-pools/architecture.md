@@ -305,17 +305,27 @@ pool onto one that is not is refused outright with
 `*volume.MoveToUnencryptedPoolError` (Q9, the owner's ruling, no flag). The source reservation and the assignment stay, so the tenant counts
 on both pools while it moves. While a journal exists, tenant delete, a quota
 change, a second move and deleting either pool are refused. So is a new
-replica of the tenant: the journal's replica set is fixed at admission, and
-the volume-pool placement filter refuses the replica with
-`*lifecycle.TenantMovingReplicaError` until the journal is gone. `MoveTenant` is
-the only caller of `AdmitMove`.
+replica of the tenant: the volume-pool placement filter refuses the replica
+with `*volume.TenantMovingReplicaError`, and the rebalancer refuses a MOVE
+or scale-up of a moving tenant, until the journal is gone. The journal's node
+set still follows the tenant's replicas: before it grants a copy step and
+before it cuts over, the reconciler re-reads them (`Catalog.SyncMoveNodes`),
+adds a replica that joined since admission as pending (a `copied` move goes
+back to `copying`), and drops a pending replica that left. A pass that
+changed the set does not cut over, and one whose replica lookup failed
+neither grants nor cuts over. `MoveTenant` is the only caller of
+`AdmitMove`.
 
 The move reconciler (`volume.MoveReconciler.ReconcileOnce`) advances the
 journal one node step at a time through the `volume.MoveStepRunner` seam;
 each `volume.MoveStep` carries its phase (`copy`, `abort` or `retire`). The
 journal goes `copying` while a node holds a copy step or between steps, then
 `copied` when no node is pending, or `aborting` after 3 failed attempts of
-one node's copy step. A `copied` move is cut over by `Catalog.CutOverMove`:
+one node's copy step. A copy step whose settle fails (its reopened replica
+does not catch up within `TenantMoveConfig.CatchUpTimeout`, or its shard is
+gone) stays settling and counts the failure (`Catalog.FailSettleStep`); the
+third failure, or a cancel recorded meanwhile, sends the move to `aborting`
+with that node copied. A `copied` move is cut over by `Catalog.CutOverMove`:
 one transaction points the assignment at the destination pool (same path,
 the move's reserved bytes) and sets the journal `cutover`, the commit point
 after which the move only goes forward. The wired `volume.MoveCutoverRecorder`

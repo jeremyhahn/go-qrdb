@@ -399,7 +399,19 @@ func (r *MoveReconciler) settleAndRelease(ctx context.Context, settler MoveStepS
 			}
 			r.logger.Warn("volume: settling the move step failed; it stays granted and is retried",
 				slog.String("tenant", step.TenantID), slog.String("node", step.NodeID),
-				slog.String("phase", step.Phase), slog.String("error", err.Error()))
+				slog.String("phase", step.Phase), slog.Int("attempt", step.Attempt),
+				slog.String("error", err.Error()))
+			// Count the failure in the journal, so a settle that never
+			// finishes is bounded: a copy settle aborts past maxAttempts
+			// or once a cancel is recorded.
+			m, failErr := r.cat.FailSettleStep(ctx, step.TenantID, step.NodeID,
+				sanitizeMoveStepError(step.Phase, err), r.maxAttempts)
+			if failErr != nil {
+				return errors.Join(err, failErr)
+			}
+			if m != nil && m.StepNode != step.NodeID {
+				r.recordTransition(ctx, MoveTransitionFail, step.TenantID, step.NodeID, step.Phase)
+			}
 			return err
 		}
 	}

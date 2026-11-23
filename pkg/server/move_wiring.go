@@ -75,7 +75,10 @@ type TenantMoveConfig struct {
 	Transitions volume.MoveTransitionRecorder
 	// Interval is the tick; a non-positive one is DefaultTenantMoveInterval.
 	Interval time.Duration
-	Logger   *slog.Logger
+	// CatchUpTimeout bounds how long a settle step waits for each reopened
+	// replica to catch up; a non-positive one is DefaultMoveCatchUpTimeout.
+	CatchUpTimeout time.Duration
+	Logger         *slog.Logger
 }
 
 // TenantMoveWorker runs a node's share of the tenant moves: every tick it
@@ -170,7 +173,7 @@ func WireTenantMoves(cfg TenantMoveConfig) (*TenantMoveWorker, error) {
 // newMoveStores is the TenantStoreCloser over cfg's tenant runtimes.
 func newMoveStores(cfg TenantMoveConfig) (*MoveStoreCloser, error) {
 	var shards MoveShardLifecycle
-	var opts []MoveStoreCloserOption
+	opts := []MoveStoreCloserOption{WithMoveCatchUpTimeout(cfg.CatchUpTimeout)}
 	if cfg.Infra != nil && cfg.Infra.Raft != nil {
 		shards = cfg.Infra.Raft
 	}
@@ -199,7 +202,25 @@ func readIndexCaughtUp(probe shardLeaderSource, placements *placement.Store) Rep
 		if p == nil {
 			return true, nil
 		}
-		return probe.ReadReady(ctx, p.ShardID) == nil, nil
+		return readProbeOutcome(ctx, probe.ReadReady(ctx, p.ShardID))
+	}
+}
+
+// readProbeOutcome sorts one ReadReady result: nil is caught up; a leader
+// that has not yet committed in its term, or a probe that ran out its own
+// timeout while the caller still waits, is "not yet"; a shard that is gone
+// or a closed host never catches up, and every other error is returned so
+// the settle fails instead of polling forever.
+func readProbeOutcome(ctx context.Context, err error) (bool, error) {
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, quicraft.ErrReadIndexNotReady):
+		return false, nil
+	case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
+		return false, nil
+	default:
+		return false, err
 	}
 }
 

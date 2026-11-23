@@ -183,6 +183,104 @@ func TestCatalog_ReleaseMoveStep_WithoutSettlingRefused(t *testing.T) {
 	}
 }
 
+// recordedCopyStep grants and records n1's copy step, leaving it settling.
+func recordedCopyStep(t *testing.T) (*Catalog, *fakeKV) {
+	t.Helper()
+	cat, kv, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatalf("GrantMoveStep: %v", err)
+	}
+	if _, err := cat.RecordMoveStep(ctx, "acme", "n1"); err != nil {
+		t.Fatalf("RecordMoveStep: %v", err)
+	}
+	return cat, kv
+}
+
+// A failed copy settle counts an attempt and keeps the step settling; the
+// last allowed failure aborts the move with the node copied, as a cancel
+// after the copy would.
+func TestCatalog_FailSettleStep_AbortsPastMaxAttempts(t *testing.T) {
+	cat, kv := recordedCopyStep(t)
+	ctx := context.Background()
+	m, err := cat.FailSettleStep(ctx, "acme", "n1", "settle failed: catch-up timeout", 2)
+	if err != nil {
+		t.Fatalf("FailSettleStep: %v", err)
+	}
+	if m.State != MoveStateCopying || m.StepNode != "n1" || !m.StepSettling || m.StepAttempts != 1 ||
+		m.Error != "settle failed: catch-up timeout" {
+		t.Fatalf("after one failure = %+v, want n1 still settling, 1 attempt", m)
+	}
+	if _, err := cat.FailSettleStep(ctx, "acme", "n1", "settle failed: catch-up timeout", 2); err != nil {
+		t.Fatalf("FailSettleStep: %v", err)
+	}
+	m = storedMove(t, kv, "acme")
+	if m.State != MoveStateAborting || m.StepNode != "" || m.StepSettling || m.StepAttempts != 0 ||
+		!contains(m.NodesCopied, "n1") || m.Error != "settle failed: catch-up timeout" {
+		t.Fatalf("after max failures = %+v, want aborting with n1 copied", m)
+	}
+}
+
+// A cancel recorded while the step settles is honoured at the next failed
+// settle attempt, whatever the attempt count.
+func TestCatalog_FailSettleStep_HonoursCancel(t *testing.T) {
+	cat, kv := recordedCopyStep(t)
+	ctx := context.Background()
+	if _, err := cat.CancelMove(ctx, "acme"); err != nil {
+		t.Fatalf("CancelMove: %v", err)
+	}
+	if _, err := cat.FailSettleStep(ctx, "acme", "n1", "settle failed", 5); err != nil {
+		t.Fatalf("FailSettleStep: %v", err)
+	}
+	m := storedMove(t, kv, "acme")
+	if m.State != MoveStateAborting || m.CancelRequested || m.StepNode != "" || m.StepSettling ||
+		!contains(m.NodesCopied, "n1") || m.Error != "cancelled by operator" {
+		t.Fatalf("cancelled settle failure = %+v, want aborting, cancel honoured", m)
+	}
+}
+
+// An abort step's settle cannot abort further: it counts the attempt and
+// stays settling, so the abort is retried until it lands.
+func TestCatalog_FailSettleStep_AbortStepKeepsSettling(t *testing.T) {
+	cat, kv := recordedCopyStep(t)
+	ctx := context.Background()
+	if _, err := cat.FailSettleStep(ctx, "acme", "n1", "settle failed", 1); err != nil {
+		t.Fatalf("FailSettleStep: %v", err)
+	}
+	if _, err := cat.GrantAbortStep(ctx, "acme"); err != nil {
+		t.Fatalf("GrantAbortStep: %v", err)
+	}
+	if _, err := cat.RecordAbortStep(ctx, "acme", "n1"); err != nil {
+		t.Fatalf("RecordAbortStep: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := cat.FailSettleStep(ctx, "acme", "n1", "abort settle failed", 1); err != nil {
+			t.Fatalf("FailSettleStep on the abort step: %v", err)
+		}
+	}
+	m := storedMove(t, kv, "acme")
+	if m.State != MoveStateAborting || m.StepNode != "n1" || !m.StepSettling || m.StepAttempts != 3 ||
+		m.Error != "abort settle failed" {
+		t.Fatalf("abort settle failures = %+v, want n1 still settling, 3 attempts", m)
+	}
+}
+
+func TestCatalog_FailSettleStep_Refusals(t *testing.T) {
+	cat, _, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	var invalid *InvalidMoveRequestError
+	if _, err := cat.FailSettleStep(ctx, "acme", "", "x", 1); !errors.As(err, &invalid) {
+		t.Fatalf("empty node = %v, want *InvalidMoveRequestError", err)
+	}
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatalf("GrantMoveStep: %v", err)
+	}
+	var conflict *MoveConflictError
+	if _, err := cat.FailSettleStep(ctx, "acme", "n1", "x", 1); !errors.As(err, &conflict) {
+		t.Fatalf("unrecorded step = %v, want *MoveConflictError", err)
+	}
+}
+
 // TestCatalog_RecordAbortStep_KeepsJournalAndReservation: a copied node's
 // recorded abort step keeps its step, the journal and the destination
 // reservation until ReleaseMoveStep; the last release frees both.
