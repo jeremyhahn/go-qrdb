@@ -107,6 +107,39 @@ func TestDAOClientStore_CLI_PerProtocol(t *testing.T) {
 			if jerr := json.Unmarshal([]byte(cliKVValue(t, out)), &got); jerr != nil || got.ID != 3 || got.Email != e2 {
 				t.Fatalf("[%s] kv get %s = %+v (%v); want entity 3 with %s", proto.name, key(3), got, jerr, e2)
 			}
+
+			// (4) A unit of work commits two saves as one guarded batch over
+			// this transport, and the CLI reads both back on the same one.
+			txType := entityType + "-tx"
+			txAccounts, err := sdk.NewDAOTransactional(client.KVStore(), txType, func() *daoCLIAccount { return &daoCLIAccount{} })
+			if err != nil {
+				t.Fatalf("[%s] NewDAOTransactional: %v", proto.name, err)
+			}
+			uow := sdk.NewDAOUnitOfWork(client.KVStore())
+			want := []daoCLIAccount{
+				{ID: 1, Email: proto.name + "-tx1@example.test", Name: "tx one"},
+				{ID: 2, Email: proto.name + "-tx2@example.test", Name: "tx two"},
+			}
+			for i := range want {
+				a := want[i]
+				if err := sdk.RegisterDAOSave(uow, sdk.GenericDAO[*daoCLIAccount](txAccounts), &a); err != nil {
+					t.Fatalf("[%s] RegisterDAOSave(%d): %v", proto.name, a.ID, err)
+				}
+			}
+			if err := uow.Commit(ctx); err != nil {
+				t.Fatalf("[%s] unit of work Commit: %v", proto.name, err)
+			}
+			for _, w := range want {
+				txKey := fmt.Sprintf("%s/%d", txType, w.ID)
+				out, err := runCLIProto(t, node, proto, "--output", "json", "kv", "get", txKey)
+				if err != nil {
+					t.Fatalf("[%s] kv get %s: %v\noutput: %s", proto.name, txKey, err, out)
+				}
+				got = daoCLIAccount{}
+				if jerr := json.Unmarshal([]byte(cliKVValue(t, out)), &got); jerr != nil || got != w {
+					t.Fatalf("[%s] kv get %s = %+v (%v); want the unit of work's %+v", proto.name, txKey, got, jerr, w)
+				}
+			}
 		})
 	}
 }
