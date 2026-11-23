@@ -483,6 +483,18 @@ func logRead[T any](ctx context.Context, route *logRoute, id vlog.LogID, req vlo
 	return targetRead[T](ctx, target, req)
 }
 
+// groupRead answers req from the target g was admitted to, under the
+// incarnation g was admitted under (when it has one), so a write built from
+// what it reads is checked and proposed against one incarnation: a drop and
+// re-create between the read and the propose cannot hand the predecessor's
+// state to the successor.
+func groupRead[T any](ctx context.Context, g logGroup, req vlog.Request) (T, error) {
+	if g.incarnation != "" {
+		req = vlog.IncarnationRequest{Request: req, Incarnation: g.incarnation}
+	}
+	return targetRead[T](ctx, g.target, req)
+}
+
 // targetRead answers one vlog.Request from target.
 func targetRead[T any](ctx context.Context, target logTarget, req vlog.Request) (T, error) {
 	var zero T
@@ -578,6 +590,11 @@ func (s *logService) RotateKey(ctx context.Context, req *RotateKeyRequest) (*Rot
 	}
 	g, err := s.admit(ctx, id, features)
 	if err != nil {
+		return nil, err
+	}
+	// The read above only chose the features to admit under; the key
+	// version comes from the descriptor of the incarnation admitted.
+	if desc, err = groupRead[*vlog.Descriptor](ctx, g, vlog.DescriptorRequest{ID: id}); err != nil {
 		return nil, err
 	}
 	key, record, err := s.createKey(ctx, id, req.SigningKeyType, vlog.FirstKeyVersion+uint32(len(desc.Keys)))
@@ -747,7 +764,15 @@ func (s *logService) SignHead(ctx context.Context, req *SignHeadRequest) (*SignH
 	if err != nil {
 		return nil, err
 	}
-	desc, err := logRead[*vlog.Descriptor](ctx, s.route, id, vlog.DescriptorRequest{ID: id})
+	// Admit first: the descriptor and head are read, and the checkpoint
+	// proposed, under the one incarnation admitted here, so a SignHead
+	// paused in its signer across a drop and re-create is refused rather
+	// than landing the predecessor's checkpoint in the successor.
+	g, err := s.admit(ctx, id, logFeatures)
+	if err != nil {
+		return nil, err
+	}
+	desc, err := groupRead[*vlog.Descriptor](ctx, g, vlog.DescriptorRequest{ID: id})
 	if err != nil {
 		return nil, err
 	}
@@ -755,7 +780,7 @@ func (s *logService) SignHead(ctx context.Context, req *SignHeadRequest) (*SignH
 	if !ok {
 		return nil, &vlog.KeyNotFoundError{ID: id, Version: vlog.FirstKeyVersion}
 	}
-	head, err := logRead[*vlog.Head](ctx, s.route, id, vlog.HeadRequest{ID: id})
+	head, err := groupRead[*vlog.Head](ctx, g, vlog.HeadRequest{ID: id})
 	if err != nil {
 		return nil, err
 	}
@@ -779,7 +804,7 @@ func (s *logService) SignHead(ctx context.Context, req *SignHeadRequest) (*SignH
 	if _, err := desc.VerifyCheckpoint(signer.Name(), note); err != nil {
 		return nil, err
 	}
-	if _, err := s.propose(ctx, id, logFeatures, func() ([]byte, error) {
+	if _, err := g.propose(ctx, id, func() ([]byte, error) {
 		return protocol.EncodeVerifiableLogCheckpoint(id, head.Size, head.Root, note)
 	}); err != nil {
 		return nil, err
