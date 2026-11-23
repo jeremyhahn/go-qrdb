@@ -199,8 +199,10 @@ func testCredentialTenantStoresOverProtocol(t *testing.T, node *multiProtoNode, 
 	if names := list(globex); stringSliceContains(names, acmeOnly) || !stringSliceContains(names, shared) {
 		t.Fatalf("[%s] globex's list = %v, want %q and not %q", proto.name, names, shared, acmeOnly)
 	}
-	if out, err := runQRDB(t, node.cli, globex, "credential", "retrieve", acmeOnly); err == nil || strings.Contains(out, "acme-private") {
-		t.Fatalf("[%s] globex must not read acme's %s: err=%v output: %s", proto.name, acmeOnly, err, out)
+	if out, err := runQRDB(t, node.cli, globex, "credential", "retrieve", acmeOnly); strings.Contains(out, "acme-private") {
+		t.Fatalf("[%s] globex read acme's %s: %s", proto.name, acmeOnly, out)
+	} else {
+		requireCredentialNotFoundCLI(t, proto, "globex retrieve of acme's "+acmeOnly, out, err)
 	}
 	if !stringSliceContains(list(acme), acmeOnly) {
 		t.Fatalf("[%s] acme's list must name its own %s", proto.name, acmeOnly)
@@ -241,12 +243,13 @@ func testCredentialTenantStoresOverProtocol(t *testing.T, node *multiProtoNode, 
 	if got := policyOf(globex); got.Enabled || got.NextRotation != "" {
 		t.Fatalf("[%s] acme's policy reached globex's %s: %+v", proto.name, shared, got)
 	}
-	if out, err := runQRDB(t, node.cli, globex, "credential", "rotation-policy", "set", acmeOnly,
-		"--enabled", "--interval", "1h", "--retain-versions", "1"); err == nil {
-		t.Fatalf("[%s] globex must not set a policy on acme's %s, got: %s", proto.name, acmeOnly, out)
-	}
-	if out, err := runQRDB(t, node.cli, globex, "credential", "rotation-policy", "get", acmeOnly); err == nil {
-		t.Fatalf("[%s] globex must not read acme's policy on %s, got: %s", proto.name, acmeOnly, out)
+	out, err := runQRDB(t, node.cli, globex, "credential", "rotation-policy", "set", acmeOnly,
+		"--enabled", "--interval", "1h", "--retain-versions", "1")
+	requireCredentialNotFoundCLI(t, proto, "globex rotation-policy set on acme's "+acmeOnly, out, err)
+	out, err = runQRDB(t, node.cli, globex, "credential", "rotation-policy", "get", acmeOnly)
+	requireCredentialNotFoundCLI(t, proto, "globex rotation-policy get on acme's "+acmeOnly, out, err)
+	if got := run(acme, "credential", "rotation-policy", "get", acmeOnly); !strings.Contains(got, "enabled=false") {
+		t.Fatalf("[%s] globex's refused set reached acme's %s: %s", proto.name, acmeOnly, got)
 	}
 	run(acme, "credential", "rotation-policy", "set", shared, "--interval", "24h", "--retain-versions", "2")
 
@@ -262,7 +265,7 @@ func testCredentialTenantStoresOverProtocol(t *testing.T, node *multiProtoNode, 
 
 	// A tenant on the shared system barrier is refused, not served the
 	// node-wide store.
-	out, err := runQRDB(t, node.cli, ct.conn(node, proto, ct.shared), "credential", "store", shared, "--value", "leak")
+	out, err = runQRDB(t, node.cli, ct.conn(node, proto, ct.shared), "credential", "store", shared, "--value", "leak")
 	if err == nil {
 		t.Fatalf("[%s] a shared-barrier tenant must be refused a credential store, got success: %s", proto.name, out)
 	}
@@ -849,8 +852,21 @@ func testCredentialOneStoreOverProtocol(t *testing.T, nodes [3]*multiProtoNode, 
 	if out, err := runCLIProto(t, c, proto, "credential", "delete", name); err != nil {
 		t.Fatalf("[%s] credential delete on C: %v\noutput: %s", proto.name, err, out)
 	}
-	if out, err := runCLIProto(t, a, proto, "credential", "retrieve", name); err == nil {
-		t.Fatalf("[%s] credential retrieve on A after delete on C should fail, got: %s", proto.name, out)
+	out, err = runCLIProto(t, a, proto, "credential", "retrieve", name)
+	requireCredentialNotFoundCLI(t, proto, "credential retrieve on A after delete on C", out, err)
+}
+
+// requireCredentialNotFoundCLI fails the test unless a CLI call failed with
+// a not-found refusal. Every transport names it "not found" (their error
+// types differ; see docs/plans/1201.md "Open"), so the refusal reads the
+// same as for a name no tenant holds and leaks no other failure.
+func requireCredentialNotFoundCLI(t *testing.T, proto multiProtocol, what, out string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("[%s] %s must be refused, got: %s", proto.name, what, out)
+	}
+	if !strings.Contains(strings.ToLower(out+err.Error()), "not found") {
+		t.Fatalf("[%s] %s refusal = %v\noutput: %s\nwant a not-found refusal", proto.name, what, err, out)
 	}
 }
 
