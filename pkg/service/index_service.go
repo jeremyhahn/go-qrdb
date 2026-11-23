@@ -120,7 +120,10 @@ func (s *IndexService) catalogEnabled() bool {
 // teardown (DROP DATABASE, tenant deletion) issues: those remove everything in
 // their scope, and ownership is not theirs to consult.
 func (s *IndexService) DropIndex(ctx context.Context, name string) error {
-	cmd, err := protocol.EncodeIndexDrop(name)
+	// The drop clears the index's entries in the apply batch only once every
+	// member of the group does (featuregate.IndexCatalog); before that it
+	// clears them as a member that predates the catalog does.
+	cmd, err := protocol.EncodeIndexDropOpts(name, protocol.IndexDropOptions{Catalog: s.catalogEnabled()})
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
@@ -132,7 +135,7 @@ func (s *IndexService) DropIndex(ctx context.Context, name string) error {
 // same step as the removal, so no create can land between a check and the
 // drop (go-qrdb#426).
 func (s *IndexService) DropOwnedIndex(ctx context.Context, name, owner string) error {
-	cmd, err := protocol.EncodeIndexDropOpts(name, protocol.IndexDropOptions{CheckOwner: true, Owner: owner})
+	cmd, err := protocol.EncodeIndexDropOpts(name, protocol.IndexDropOptions{CheckOwner: true, Owner: owner, Catalog: s.catalogEnabled()})
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}

@@ -758,11 +758,22 @@ type IndexDropOptions struct {
 
 	// Owner is the owner the caller claims. Read only when CheckOwner is set.
 	Owner string
+
+	// Catalog marks a drop proposed under the index-catalog cluster feature
+	// (featuregate.IndexCatalog): the apply path clears the index's entries
+	// in the apply batch, reading through it. A drop without it clears the
+	// committed entries only, as a member that predates the catalog does, so
+	// a group whose members disagree on the feature never diverges.
+	Catalog bool
 }
 
 // indexDropFlagCheckOwner marks an owner-checked drop in the drop command's
 // flag byte.
 const indexDropFlagCheckOwner byte = 0x01
+
+// indexDropFlagCatalog marks a drop proposed under the index-catalog feature
+// (IndexDropOptions.Catalog) in the drop command's flag byte.
+const indexDropFlagCatalog byte = 0x02
 
 // Flags renders the options as the command's flag byte.
 func (o IndexCreateOptions) Flags() byte {
@@ -890,8 +901,15 @@ func EncodeIndexDrop(name string) ([]byte, error) {
 // opts encodes exactly what EncodeIndexDrop does, so an unconditional drop
 // keeps the shape every existing log entry has.
 func EncodeIndexDropOpts(name string, opts IndexDropOptions) ([]byte, error) {
-	if !opts.CheckOwner {
+	if !opts.CheckOwner && !opts.Catalog {
 		return EncodeIndexDrop(name)
+	}
+	var flags byte
+	if opts.CheckOwner {
+		flags |= indexDropFlagCheckOwner
+	}
+	if opts.Catalog {
+		flags |= indexDropFlagCatalog
 	}
 	nameBytes := []byte(name)
 	ownerBytes := []byte(opts.Owner)
@@ -911,7 +929,7 @@ func EncodeIndexDropOpts(name string, opts IndexDropOptions) ([]byte, error) {
 	off += 2
 	copy(buf[off:], nameBytes)
 	off += len(nameBytes)
-	buf[off] = indexDropFlagCheckOwner
+	buf[off] = flags
 	off++
 	if err := putUint16Len(buf[off:], len(ownerBytes), "index owner"); err != nil {
 		return nil, err
@@ -1675,6 +1693,7 @@ func DecodeIndexDropOpts(payload []byte) (string, IndexDropOptions, error) {
 	return name, IndexDropOptions{
 		CheckOwner: flags&indexDropFlagCheckOwner != 0,
 		Owner:      string(payload[off : off+ownerLen]),
+		Catalog:    flags&indexDropFlagCatalog != 0,
 	}, nil
 }
 

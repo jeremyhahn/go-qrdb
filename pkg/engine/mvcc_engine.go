@@ -2586,7 +2586,13 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 		kvs, _, _, err := store.RangeInBatch(batch, start, end)
 		return kvs, err
 	}
-	if bIdx, ok := idx.(batchClearableIndex); ok {
+	//
+	// Only a create proposed under the index-catalog feature (opts.Catalog)
+	// clears and backfills in the batch: a member that predates the feature
+	// clears the committed entries and writes the backfill outside it, and a
+	// put earlier in the same batch would leave the two with different
+	// entries. Without the feature, every member does what the old one does.
+	if bIdx, ok := idx.(batchClearableIndex); ok && opts.Catalog {
 		if err := bIdx.ClearBatch(batch); err != nil {
 			_ = idx.Close()
 			return sm.Result{}, nil, err
@@ -2728,7 +2734,11 @@ func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, batch stora
 
 	// The entries are removed in the batch that deletes the catalog record,
 	// so a batch that fails to commit keeps the definition and every entry.
-	if bIdx, ok := idx.(batchClearableIndex); ok {
+	// That is only for a drop proposed under the index-catalog feature
+	// (dropOpts.Catalog): before it, every member clears the committed
+	// entries only, as a member that predates the feature does, so a put
+	// and a drop in one batch leave every member the same keys.
+	if bIdx, ok := idx.(batchClearableIndex); ok && dropOpts.Catalog {
 		if err := bIdx.ClearBatch(batch); err != nil {
 			_ = idx.Close()
 			return sm.Result{}, nil, err
