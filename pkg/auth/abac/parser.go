@@ -359,6 +359,11 @@ func resolveValue(expr string, ctx *EvalContext) interface{} {
 		return nil
 	}
 
+	// Built-in object-owner condition, evaluated fail closed.
+	if expr == "subject.owns_resource" {
+		return ownsResource(ctx)
+	}
+
 	// Handle field references
 	parts := strings.Split(expr, ".")
 	if len(parts) == 0 {
@@ -389,6 +394,19 @@ func resolveValue(expr string, ctx *EvalContext) interface{} {
 
 	// Return as string
 	return expr
+}
+
+// ownsResource evaluates the built-in subject.owns_resource condition: true
+// only when the request carries a non-empty string resource owner (under
+// ResourceOwnerContextKey) equal to a non-empty subject id. An absent,
+// empty or non-string owner, or an empty subject id, is false, so the
+// condition fails closed and an empty owner never matches an empty id.
+func ownsResource(ctx *EvalContext) bool {
+	if ctx == nil || ctx.Subject == nil || ctx.Subject.ID == "" {
+		return false
+	}
+	owner, ok := ctx.Request[ResourceOwnerContextKey].(string)
+	return ok && owner != "" && owner == ctx.Subject.ID
 }
 
 func resolveSubjectField(parts []string, subject *Subject) interface{} {

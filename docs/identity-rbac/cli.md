@@ -479,6 +479,13 @@ Each verb prints a table (`NAME`, `TENANT`, `ENABLED`, `PRIORITY`, `RULES`,
 `UPDATED`) by default, and the stored document with `--output json` or
 `--output yaml`. A refusal exits non-zero with the server's error.
 
+A rule's `when:` and `unless:` conditions may use the subject fields
+`subject.id`, `subject.authenticated`, `subject.mfa_verified` and the
+object-owner condition `subject.owns_resource`, true only when the
+embedder's store has recorded the object's owner and it is the caller
+(false when the owner is unknown); `resource.owner` reads that owner. The
+store keeps the expressions exactly as written.
+
 ### `qrdb abac policy create`
 
 Creates a policy from one YAML or JSON document. A name the tenant already
