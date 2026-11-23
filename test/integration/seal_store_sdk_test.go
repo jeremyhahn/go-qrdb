@@ -18,11 +18,21 @@ package integration_test
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	connectrpc "connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/types/known/emptypb"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -287,4 +297,118 @@ func TestSealStore_SDK_Embedded_Lifecycle(t *testing.T) {
 	if string(got.Secret) != string(secret) {
 		t.Fatalf("SealStoreGet after unseal = %q, want %q", got.Secret, secret)
 	}
+}
+
+// removedSealStoreMethods are the qrdb.v1 seal-store procedures the row
+// removed from every remote transport (ruling 1234). Their generated method
+// constants are gone with them, so the names are spelled here.
+var removedSealStoreMethods = []string{
+	"/qrdb.v1.QRDBService/SealStorePut",
+	"/qrdb.v1.QRDBService/SealStoreGet",
+	"/qrdb.v1.QRDBService/SealStoreDelete",
+	"/qrdb.v1.QRDBService/SealStoreList",
+	"/qrdb.v1.QRDBService/SealStoreReseal",
+	"/qrdb.v1.QRDBService/SealStoreStatus",
+}
+
+// TestSealStore_GRPCWeb_EmbeddedOnly closes the gRPC-Web leg of the
+// embedded-only refusal: on a passphrase-sealed node with gRPC-Web enabled,
+// every removed seal-store procedure called through /grpc-web/ on the REST
+// listener answers Unimplemented with no data, unsealed and sealed, and
+// BarrierUnseal (the passphrase fixture) over the same route unseals.
+func TestSealStore_GRPCWeb_EmbeddedOnly(t *testing.T) {
+	t.Parallel()
+	binary := buildBinary(t)
+	cli := buildCLIBinary(t)
+	rest := multiProtocols[0]
+
+	configPath := writeSealConfig(t, "passphrase", 0, 0)
+	f, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open seal config: %v", err)
+	}
+	if _, err := f.WriteString("server:\n  grpc_web:\n    enabled: true\n"); err != nil {
+		t.Fatalf("append grpc_web config: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close seal config: %v", err)
+	}
+	sockDir, err := os.MkdirTemp("", "qrdb-gw-")
+	if err != nil {
+		t.Fatalf("socket dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	raftPorts := allocatePorts(t, 1)
+	quicPorts := allocatePorts(t, 1)
+	tcpPorts := allocateTCPPorts(t, 3)
+	node := startSealNodeAllTransports(t, binary, t.TempDir(), configPath,
+		raftPorts[0], tcpPorts[0], tcpPorts[1], quicPorts[0], tcpPorts[2], filepath.Join(sockDir, "qrdbd.sock"))
+	waitForBarrierReachable(t, cli, node.noAuthFlagsFor(rest), 60*time.Second)
+	node.initSystem(t, cli, rest, "--barrier-strategy", "passphrase", "--passphrase", embeddedOnlySealPassphrase)
+	node.waitForFullBoot(t)
+
+	cert, err := tls.LoadX509KeyPair(node.adminCert, node.adminKey)
+	if err != nil {
+		t.Fatalf("load admin certificate: %v", err)
+	}
+	tr := &http.Transport{
+		TLSClientConfig:   &tls.Config{RootCAs: node.ca.Pool, Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13},
+		ForceAttemptHTTP2: true,
+	}
+	defer tr.CloseIdleConnections()
+	base := fmt.Sprintf("https://127.0.0.1:%d/grpc-web", node.adminPort)
+	client := connectrpc.NewClient(connecthttp.NewTransport(&http.Client{Transport: tr}, base, connecthttp.WithGRPCWeb()))
+	call := func(procedure string, header map[string]string, req, resp any) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		ctx, info := connectrpc.NewClientContext(ctx)
+		for k, v := range header {
+			info.RequestHeader().Set(k, v)
+		}
+		return client.CallUnary(ctx, connectrpc.Spec{StreamType: connectrpc.StreamTypeUnary, Procedure: procedure}, req, resp)
+	}
+
+	assertRefused := func(phase string) {
+		t.Helper()
+		for _, procedure := range removedSealStoreMethods {
+			resp := &emptypb.Empty{}
+			err := call(procedure, nil, &emptypb.Empty{}, resp)
+			if got := codes.Code(connectrpc.CodeOf(err)); got != codes.Unimplemented {
+				t.Fatalf("[%s] gRPC-Web %s = %v (%v), want Unimplemented", phase, procedure, got, err)
+			}
+		}
+	}
+	assertRefused("unsealed")
+
+	// BarrierSeal is SO-gated; over gRPC-Web the node answers "pin: invalid
+	// PIN" to an x-qrdb-so-pin header the native gRPC listener accepts (open
+	// in docs/plans/1647.md, rw1647w2), so the seal goes over native gRPC
+	// and the unseal, the call a sealed node must still serve, over gRPC-Web.
+	grpcClient := sealNodeAdminClient(t, node, multiProtocol{name: "grpc"})
+	defer grpcClient.Close()
+	sealCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := grpcClient.Connect(sealCtx); err != nil {
+		t.Fatalf("gRPC connect: %v", err)
+	}
+	sealCtx, release, err := transport.WithSOPIN(sealCtx, []byte(sealNodeSOPIN))
+	if err != nil {
+		t.Fatalf("WithSOPIN: %v", err)
+	}
+	err = grpcClient.Barrier().BarrierSeal(sealCtx)
+	release()
+	if err != nil {
+		t.Fatalf("gRPC BarrierSeal: %v", err)
+	}
+	assertRefused("sealed")
+	if err := call(pb.QRDBService_BarrierUnseal_FullMethodName, nil,
+		&pb.BarrierUnsealRequest{Secret: []byte(embeddedOnlySealPassphrase)}, &emptypb.Empty{}); err != nil {
+		t.Fatalf("gRPC-Web BarrierUnseal: %v", err)
+	}
+	statusCtx, statusCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer statusCancel()
+	if st, err := grpcClient.Barrier().BarrierStatus(statusCtx); err != nil || st.Sealed {
+		t.Fatalf("BarrierStatus after gRPC-Web unseal = %+v, %v; want unsealed", st, err)
+	}
+	assertRefused("after unseal")
 }
