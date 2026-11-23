@@ -209,7 +209,13 @@ significant** — the first field is the leading prefix field.
 - **A transaction or batch is checked in op order.** A value released by an
   earlier delete or overwrite of its holder may be taken by a later op of the
   same set, and not by an earlier one, so the pre-check admits exactly what
-  ordered apply admits.
+  ordered apply admits. This holds for a command proposed once the cluster
+  feature `ordered-unique-check` (`featuregate.OrderedUniqueCheck`) is enabled
+  for the group, at once on a standalone or embedded store: such a command
+  carries the `protocol.CmdFlagOrderedUnique` trailer byte. A command without
+  it, written by an older binary or proposed before the feature was enabled,
+  keeps the legacy check, in which only a key deleted in the set frees its
+  values (an overwrite does not), so a log replays to the state it committed.
 - **A sparse index simply omits entities missing the field** — it does not index
   them under a zero value, which would make "missing" and "empty" the same
   query.
