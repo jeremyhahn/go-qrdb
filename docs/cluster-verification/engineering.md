@@ -84,6 +84,9 @@ runs only under `make cluster-proof-boot`.
 - **Final read.** After the load phase and the recovery check the workload
   reads every key once more. Those reads are in the history under client
   number `clients`, one past the last load client, and are outside E7.
+  The post-run deadline bounds every final read, and any operation that
+  times out unanswered, a read included, fails its client over to the next
+  node.
 - **Read mode.** The history does not record a read's consistency level;
   the operator declares the cluster's read mode in the targets file and the
   bundle records it. `raft.lease_read` stays at its default, `true`, and the
