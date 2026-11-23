@@ -89,6 +89,32 @@ func TestNew_NonComparableProviderWalkedSlots(t *testing.T) {
 	require.Equal(t, want, closes)
 }
 
+// OpenStore on a symlinked root keeps only the store reopened on the
+// physical root: the store it opened at the symlink is released at once,
+// and a failed canonical reopen releases the store it opened.
+func TestOpenStore_ReleasesReplacedStore(t *testing.T) {
+	closes, created := registerValueStore(t, "local")
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	require.NoError(t, os.Mkdir(real, 0o700))
+	link := filepath.Join(dir, "link")
+	require.NoError(t, os.Symlink(real, link))
+
+	store, err := OpenStore("local", map[string]string{"path": link})
+	require.NoError(t, err)
+	require.Equal(t, []string{link, real}, *created)
+	require.Equal(t, map[string]int{link: 1}, closes, "the store at the symlink is released at open")
+	require.NoError(t, closeStores(store))
+	require.Equal(t, map[string]int{link: 1, real: 1}, closes)
+
+	// A root that does not resolve fails the canonical reopen; the store
+	// opened on it is released, not leaked.
+	missing := filepath.Join(dir, "missing")
+	_, err = OpenStore("local", map[string]string{"path": missing})
+	require.Error(t, err)
+	require.Equal(t, 1, closes[missing], "the store opened before the failure is released")
+}
+
 // sameStorage compares only comparable values of one type.
 func TestSameStorage(t *testing.T) {
 	mem := objmemory.New()
