@@ -84,6 +84,24 @@ func (b *AdminBinding) Peers() (*transport.PeersResponse, error) {
 	return resp, nil
 }
 
+// GetTopology returns this node's topology: its id, Raft address and the
+// shards it hosts. The desktop Topology view renders it.
+func (b *AdminBinding) GetTopology() (*transport.TopologyResponse, error) {
+	b.logger.Debug("GetTopology called")
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("GetTopology failed", "error", err)
+		return nil, err
+	}
+	resp, err := cl.Admin().GetTopology(context.Background())
+	if err != nil {
+		b.logger.Error("GetTopology failed", "error", err)
+		return nil, err
+	}
+	b.logger.Debug("GetTopology completed")
+	return resp, nil
+}
+
 // AddMember adds a new replica to the specified shard.
 func (b *AdminBinding) AddMember(shardID, replicaID uint64, raftAddr string) error {
 	b.logger.Debug("AddMember called", "shardID", shardID, "replicaID", replicaID, "raftAddr", raftAddr)
