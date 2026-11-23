@@ -1653,6 +1653,42 @@ func newPausingSigners() *pausingSigners {
 	return &pausingSigners{hsmProvider: newHSMProvider(), entered: make(chan struct{}), release: make(chan struct{})}
 }
 
+// pausingHeadSigners is a hardware-shaped HeadSignerProvider whose head
+// signers' Sign reports it has been entered and then waits for release, so a
+// test can drop and recreate the log's database while a SignHead is signing.
+type pausingHeadSigners struct {
+	*hsmProvider
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newPausingHeadSigners() *pausingHeadSigners {
+	return &pausingHeadSigners{hsmProvider: newHSMProvider(), entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (p *pausingHeadSigners) HeadSigner(ctx context.Context, req vlog.HeadSignerRequest) (vlog.HeadSigner, error) {
+	signer, err := p.hsmProvider.HeadSigner(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &pausingHeadSigner{HeadSigner: signer, p: p}, nil
+}
+
+// pausingHeadSigner pauses only the first Sign of its provider.
+type pausingHeadSigner struct {
+	vlog.HeadSigner
+	p *pausingHeadSigners
+}
+
+func (s *pausingHeadSigner) Sign(ctx context.Context, msg []byte) ([]byte, error) {
+	s.p.once.Do(func() {
+		close(s.p.entered)
+		<-s.p.release
+	})
+	return s.HeadSigner.Sign(ctx, msg)
+}
+
 func (p *pausingSigners) CreateKey(ctx context.Context, req vlog.CreateKeyRequest) (vlog.CreatedKey, error) {
 	close(p.entered)
 	<-p.release
@@ -1750,6 +1786,64 @@ func TestLogService_CreatePausedAcrossDropAndRecreateIsRefused(t *testing.T) {
 	g.mu.Unlock()
 	if err != nil || desc.Incarnation != second || len(desc.Keys) != 0 {
 		t.Fatalf("successor's log = %+v, %v; want incarnation %q and no key", desc, err, second)
+	}
+}
+
+// TestLogService_SignHeadPausedAcrossDropAndRecreateIsRefused proves a
+// SignHead admitted under one incarnation of a database, paused in its signer
+// while the database is dropped and created again with an empty log of the
+// same name (same size and root), is refused with *database.DroppingError
+// and lands no checkpoint in the successor's log.
+func TestLogService_SignHeadPausedAcrossDropAndRecreateIsRefused(t *testing.T) {
+	g := newFenceGroup(t)
+	signers := newPausingHeadSigners()
+	svc, mgr := newFencedLogService(t, g, signers)
+	ctx := acmeCtx()
+	first := createAcmeLedger(t, mgr)
+	create := func() {
+		t.Helper()
+		if _, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: testLogRef, Origin: "example.test/acme/events", SigningKeyType: vlog.SignatureEd25519}); err != nil {
+			t.Fatalf("CreateLog: %v", err)
+		}
+	}
+	create()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.SignHead(ctx, &SignHeadRequest{LogRef: testLogRef})
+		done <- err
+	}()
+	<-signers.entered
+	if err := mgr.DropForTenant(ctx, "ledger"); err != nil {
+		t.Fatalf("drop acme/ledger: %v", err)
+	}
+	second := createAcmeLedger(t, mgr)
+	if second == first {
+		t.Fatalf("recreated acme/ledger kept incarnation %q", first)
+	}
+	create()
+	close(signers.release)
+
+	var dropping *database.DroppingError
+	if err := <-done; !errors.As(err, &dropping) || dropping.Name != "ledger" || dropping.TenantID != "acme" {
+		t.Fatalf("paused SignHead = %v, want DroppingError for acme/ledger", err)
+	}
+	id := vlog.LogID{TenantID: "acme", Database: "ledger", Log: "events"}
+	g.mu.Lock()
+	note, err := vlog.ReadCheckpoint(g.store, id, 0)
+	g.mu.Unlock()
+	if err != nil || len(note) != 0 {
+		t.Fatalf("successor's checkpoint at size 0 after the refused SignHead = %q, %v; want none", note, err)
+	}
+	// The successor's own SignHead is admitted under its incarnation.
+	if _, err := svc.SignHead(ctx, &SignHeadRequest{LogRef: testLogRef}); err != nil {
+		t.Fatalf("SignHead in the successor: %v", err)
+	}
+	g.mu.Lock()
+	note, err = vlog.ReadCheckpoint(g.store, id, 0)
+	g.mu.Unlock()
+	if err != nil || len(note) == 0 {
+		t.Fatalf("successor's checkpoint after its own SignHead = %q, %v; want one", note, err)
 	}
 }
 
