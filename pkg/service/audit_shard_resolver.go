@@ -81,6 +81,12 @@ type SystemShardAuditResolver struct {
 	refuseBarrier bool
 	// homes, once attached, routes isolated tenants to their home group.
 	homes atomic.Pointer[auditHomeGroupSource]
+	// holdMu guards inflight: per tenant, the appends this resolver
+	// routed by a recorded system route whose proposal has not returned
+	// (HoldAuditAppend). releaseUnchainedSystemRoute retires no route
+	// while its count is non-zero.
+	holdMu   sync.Mutex
+	inflight map[string]int
 }
 
 // AuditRouteStore records each barrier tenant's audit route: the
@@ -119,13 +125,20 @@ type AuditAppendResolver interface {
 	ResolveAuditAppend(ctx context.Context, tenantID string) (Host, uint64, error)
 }
 
+// AuditAppendHolder is a resolver that holds the route an append resolved
+// by until its proposal returns (SystemShardAuditResolver.HoldAuditAppend).
+// The appender calls release once the proposal has returned.
+type AuditAppendHolder interface {
+	HoldAuditAppend(ctx context.Context, tenantID string) (host Host, shardID uint64, release func(), err error)
+}
+
 // auditHomeGroupSource boxes the attached source and route store for the
 // atomic pointer.
 type auditHomeGroupSource struct {
 	AuditHomeGroupSource
 	routes AuditRouteStore
-	// recorded caches the routes read from or written to routes: a recorded
-	// route never changes.
+	// recorded caches the home routes read from or written to routes: a
+	// recorded home route never changes. A system route is never cached.
 	recorded sync.Map
 }
 
@@ -205,44 +218,54 @@ func (r *SystemShardAuditResolver) ResolveAuditInstance(ctx context.Context, ten
 // Every decision is made here, by the proposer, before anything is
 // proposed: nothing at apply time depends on it.
 func (r *SystemShardAuditResolver) resolve(ctx context.Context, tenantID string, write, chain bool) (Host, uint64, error) {
+	host, shardID, _, err := r.resolveRoute(ctx, tenantID, write, chain)
+	return host, shardID, err
+}
+
+// resolveRoute is resolve, also reporting the recorded audit route a
+// barrier tenant's chain resolved by (AuditRouteSystem or AuditRouteHome),
+// or "" for every other resolution.
+func (r *SystemShardAuditResolver) resolveRoute(ctx context.Context, tenantID string, write, chain bool) (Host, uint64, string, error) {
 	routed := tenantid.Normalize(tenantID)
 	if tenantid.IsSystem(routed) || r.isolation == nil {
-		return r.host, r.shardID, nil
+		return r.host, r.shardID, "", nil
 	}
 	info, err := r.isolation.GetTenant(ctx, routed)
 	if err != nil {
 		if errors.Is(err, tenant.ErrTenantNotFound) {
 			// No metadata: served as a logical-prefix tenant, the same
 			// fall-through tenant.StoreResolver.Resolve performs.
-			return r.host, r.shardID, nil
+			return r.host, r.shardID, "", nil
 		}
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 	isolation := info.EffectiveIsolationType()
 	if homes := r.homes.Load(); homes != nil {
 		switch isolation {
 		case tenant.IsolationBarrier:
 			if !chain {
-				return homes.HomeGroup(ctx, routed)
+				host, shardID, err := homes.HomeGroup(ctx, routed)
+				return host, shardID, "", err
 			}
 			return r.barrierRoute(ctx, homes, routed, write)
 		case tenant.IsolationVolume, tenant.IsolationRaft:
 			if write && !r.auditInstanceActive() {
-				return nil, 0, &AuditHomeNotActiveError{TenantID: routed}
+				return nil, 0, "", &AuditHomeNotActiveError{TenantID: routed}
 			}
-			return homes.HomeGroup(ctx, routed)
+			host, shardID, err := homes.HomeGroup(ctx, routed)
+			return host, shardID, "", err
 		}
-		return r.host, r.shardID, nil
+		return r.host, r.shardID, "", nil
 	}
 	switch isolation {
 	case tenant.IsolationVolume, tenant.IsolationRaft:
-		return nil, 0, &DedicatedTenantAuditNotSupportedError{
+		return nil, 0, "", &DedicatedTenantAuditNotSupportedError{
 			TenantID:      routed,
 			IsolationType: string(info.EffectiveIsolationType()),
 		}
 	case tenant.IsolationBarrier:
 		if r.refuseBarrier {
-			return nil, 0, &BarrierTenantLogNotSupportedError{TenantID: routed}
+			return nil, 0, "", &BarrierTenantLogNotSupportedError{TenantID: routed}
 		}
 		if write {
 			// Without a home group the system shard is the only route, and
@@ -250,15 +273,75 @@ func (r *SystemShardAuditResolver) resolve(ctx context.Context, tenantID string,
 			// append there (decision S9). Reads stay allowed.
 			strict, err := r.strictPolicy(ctx, info)
 			if err != nil {
-				return nil, 0, err
+				return nil, 0, "", err
 			}
 			if strict {
-				return nil, 0, &tenant.SystemAuditRouteError{TenantID: routed}
+				return nil, 0, "", &tenant.SystemAuditRouteError{TenantID: routed}
 			}
 		}
-		return r.host, r.shardID, nil
+		return r.host, r.shardID, "", nil
 	default:
-		return r.host, r.shardID, nil
+		return r.host, r.shardID, "", nil
+	}
+}
+
+// maxAuditRouteHoldAttempts bounds HoldAuditAppend's re-resolution when
+// the system route it resolved is retired before the hold counts itself.
+const maxAuditRouteHoldAttempts = 3
+
+// HoldAuditAppend resolves tenantID's audit append as ResolveAuditAppend
+// does and, when it resolved by a recorded system route, holds that route
+// until release is called: releaseUnchainedSystemRoute does not retire it
+// meanwhile, so a tightening's probe (SystemAuditRoute) still reports it.
+// The hold re-reads the route after counting itself, immediately before
+// the caller proposes; a route retired in between is resolved again.
+// release is never nil on success and is safe to call more than once.
+//
+// The hold is per resolver: a release on another node, or on another
+// resolver of this node, does not see it (docs/audit/architecture.md).
+func (r *SystemShardAuditResolver) HoldAuditAppend(ctx context.Context, tenantID string) (Host, uint64, func(), error) {
+	routed := tenantid.Normalize(tenantID)
+	for range maxAuditRouteHoldAttempts {
+		host, shardID, route, err := r.resolveRoute(ctx, routed, true, true)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		homes := r.homes.Load()
+		if route != AuditRouteSystem || homes == nil {
+			return host, shardID, func() {}, nil
+		}
+		release := r.holdSystemRoute(routed)
+		recorded, err := homes.routes.Get(ctx, AuditRouteKey(routed))
+		if err != nil {
+			release()
+			return nil, 0, nil, err
+		}
+		if string(recorded) == AuditRouteSystem {
+			return host, shardID, release, nil
+		}
+		release()
+	}
+	return nil, 0, nil, &tenant.SystemAuditRouteError{TenantID: routed}
+}
+
+// holdSystemRoute counts one in-flight append on tenantID's system route
+// and returns the func that uncounts it, once.
+func (r *SystemShardAuditResolver) holdSystemRoute(tenantID string) func() {
+	r.holdMu.Lock()
+	if r.inflight == nil {
+		r.inflight = make(map[string]int)
+	}
+	r.inflight[tenantID]++
+	r.holdMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.holdMu.Lock()
+			defer r.holdMu.Unlock()
+			if r.inflight[tenantID]--; r.inflight[tenantID] <= 0 {
+				delete(r.inflight, tenantID)
+			}
+		})
 	}
 }
 
@@ -273,28 +356,29 @@ func (r *SystemShardAuditResolver) resolve(ctx context.Context, tenantID string,
 // that carries no chain is released (releaseUnchainedSystemRoute), so the
 // tenant's next append derives its route afresh and is never stranded on a
 // route it can no longer append to; reads stay allowed.
-func (r *SystemShardAuditResolver) barrierRoute(ctx context.Context, homes *auditHomeGroupSource, tenantID string, write bool) (Host, uint64, error) {
+func (r *SystemShardAuditResolver) barrierRoute(ctx context.Context, homes *auditHomeGroupSource, tenantID string, write bool) (Host, uint64, string, error) {
 	route, err := r.auditRoute(ctx, homes, tenantID, write)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 	if route == AuditRouteHome {
 		if write && !r.auditInstanceActive() {
-			return nil, 0, &AuditHomeNotActiveError{TenantID: tenantID}
+			return nil, 0, "", &AuditHomeNotActiveError{TenantID: tenantID}
 		}
-		return homes.HomeGroup(ctx, tenantID)
+		host, shardID, err := homes.HomeGroup(ctx, tenantID)
+		return host, shardID, route, err
 	}
 	if r.refuseBarrier {
-		return nil, 0, &BarrierTenantLogNotSupportedError{TenantID: tenantID}
+		return nil, 0, "", &BarrierTenantLogNotSupportedError{TenantID: tenantID}
 	}
 	if write {
 		// route is the recorded winner: this writer's own, or another
 		// writer's that won the first-writer-wins record.
 		if err := r.refuseStrictSystemAppend(ctx, tenantID); err != nil {
-			return nil, 0, r.releaseUnchainedSystemRoute(ctx, homes, tenantID, err)
+			return nil, 0, "", r.releaseUnchainedSystemRoute(ctx, homes, tenantID, err)
 		}
 	}
-	return r.host, r.shardID, nil
+	return r.host, r.shardID, route, nil
 }
 
 // refuseStrictSystemAppend refuses (*tenant.SystemAuditRouteError) an append
@@ -355,10 +439,19 @@ func (r *SystemShardAuditResolver) releaseUnchainedSystemRoute(ctx context.Conte
 	if hasChain {
 		return refused
 	}
+	// A zero committed head does not prove no append is in flight: an
+	// append held on the route (HoldAuditAppend) may still propose to the
+	// system shard, so the route stays while one is held. The hold takes
+	// holdMu to count itself and then re-reads the route, so it either
+	// counts before this check or sees the route gone.
+	r.holdMu.Lock()
+	defer r.holdMu.Unlock()
+	if r.inflight[tenantID] > 0 {
+		return refused
+	}
 	if _, err := homes.routes.CompareAndDelete(ctx, AuditRouteKey(tenantID), []byte(AuditRouteSystem)); err != nil {
 		return err
 	}
-	homes.recorded.Delete(tenantID)
 	return refused
 }
 
@@ -369,11 +462,15 @@ func (r *SystemShardAuditResolver) releaseUnchainedSystemRoute(ctx context.Conte
 // the two cannot leave a strict tenant recorded on the system route: the
 // post-claim refusal releases it (releaseUnchainedSystemRoute).
 func (r *SystemShardAuditResolver) auditRoute(ctx context.Context, homes *auditHomeGroupSource, tenantID string, write bool) (string, error) {
+	// Only a home route is cached: it is never released. A system route
+	// can be retired by any resolver sharing the route store
+	// (releaseUnchainedSystemRoute) and re-recorded home, so it is read
+	// from the store on every call.
 	if cached, ok := homes.recorded.Load(tenantID); ok {
-		if route, ok := cached.(string); ok {
+		if route, ok := cached.(string); ok && route == AuditRouteHome {
 			return route, nil
 		}
-		// Not a route: drop it and read the recorded one.
+		// Not a home route: drop it and read the recorded one.
 		homes.recorded.Delete(tenantID)
 	}
 	key := AuditRouteKey(tenantID)
@@ -382,7 +479,9 @@ func (r *SystemShardAuditResolver) auditRoute(ctx context.Context, homes *auditH
 		return "", err
 	}
 	if recorded != nil {
-		homes.recorded.Store(tenantID, string(recorded))
+		if string(recorded) == AuditRouteHome {
+			homes.recorded.Store(tenantID, AuditRouteHome)
+		}
 		return string(recorded), nil
 	}
 	route := AuditRouteSystem
@@ -422,7 +521,9 @@ func (r *SystemShardAuditResolver) auditRoute(ctx context.Context, homes *auditH
 			return "", r.releaseUnchainedSystemRoute(ctx, homes, tenantID, err)
 		}
 	}
-	homes.recorded.Store(tenantID, route)
+	if route == AuditRouteHome {
+		homes.recorded.Store(tenantID, route)
+	}
 	return route, nil
 }
 

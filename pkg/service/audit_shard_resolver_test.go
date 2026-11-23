@@ -18,11 +18,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
+
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // fakeIsolationLookup answers GetTenant from a fixed map, keyed by tenant ID.
@@ -449,6 +453,130 @@ func TestSystemShardAuditResolver_SystemAppendDuringTighteningIsRefused(t *testi
 				t.Fatalf("proposals: system %d, home %d; want system %d, home 0", len(*system.cmds), len(*homeCmds), tc.wantCmds)
 			}
 		})
+	}
+}
+
+// TestSystemShardAuditResolver_TwoResolversSharingRouteStoreSeeReleasedSystemRoute:
+// two resolvers (two nodes) share one route store. One resolves widgets by
+// its recorded system route; the other, refusing an append during a
+// tightening, releases that chainless route, and a later append records
+// home. The first resolver then resolves home: it never cached the system
+// route.
+func TestSystemShardAuditResolver_TwoResolversSharingRouteStoreSeeReleasedSystemRoute(t *testing.T) {
+	ctx := context.Background()
+	system := newChainShard(0, auditActive())
+	homes, _ := homeShard()
+	routes := newMemRouteStore()
+	if _, err := routes.PutIfAbsent(ctx, AuditRouteKey("widgets"), []byte(AuditRouteSystem)); err != nil {
+		t.Fatalf("PutIfAbsent: %v", err)
+	}
+	policy := func() *tighteningIsolationLookup {
+		return &tighteningIsolationLookup{
+			floorIsolationLookup: barrierTenantLookup(tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyOperatorAccess),
+		}
+	}
+	firstLookup, secondLookup := policy(), policy()
+	first := NewSystemShardAuditResolver(system.host, 1, firstLookup)
+	first.SetHomeGroupSource(homes, routes)
+	second := NewSystemShardAuditResolver(system.host, 1, secondLookup)
+	second.SetHomeGroupSource(homes, routes)
+
+	if host, _, err := first.ResolveAuditAppend(ctx, "widgets"); err != nil || host != Host(system.host) {
+		t.Fatalf("first ResolveAuditAppend = %v, %v; want the system shard", host, err)
+	}
+
+	secondLookup.tightening = true
+	var refused *tenant.SystemAuditRouteError
+	if _, _, err := second.ResolveAuditAppend(ctx, "widgets"); !errors.As(err, &refused) {
+		t.Fatalf("second ResolveAuditAppend during the tightening = %v, want *tenant.SystemAuditRouteError", err)
+	}
+	if recorded, _ := routes.Get(ctx, AuditRouteKey("widgets")); recorded != nil {
+		t.Fatalf("route after the refusal = %q, want it released", recorded)
+	}
+
+	secondLookup.tightening = false
+	if host, _, err := second.ResolveAuditAppend(ctx, "widgets"); err != nil || host != Host(homes.host) {
+		t.Fatalf("second ResolveAuditAppend after the release = %v, %v; want the home group", host, err)
+	}
+	if recorded, _ := routes.Get(ctx, AuditRouteKey("widgets")); string(recorded) != AuditRouteHome {
+		t.Fatalf("route = %q, want %q", recorded, AuditRouteHome)
+	}
+	for name, resolve := range map[string]func(context.Context, string) (Host, uint64, error){
+		"append": first.ResolveAuditAppend,
+		"read":   first.ResolveAuditShard,
+	} {
+		if host, _, err := resolve(ctx, "widgets"); err != nil || host != Host(homes.host) {
+			t.Fatalf("first %s after another resolver recorded home = %v, %v; want the home group", name, host, err)
+		}
+	}
+}
+
+// TestSystemShardAuditResolver_ReleaseWaitsForInFlightAppend: an append
+// resolved by widgets' chainless system route pauses before its proposal
+// returns. A tightening begins; an append it refuses does not retire the
+// route, and the tightening's probe still reports it. Once the paused
+// append returns, the next refusal retires the route.
+func TestSystemShardAuditResolver_ReleaseWaitsForInFlightAppend(t *testing.T) {
+	ctx := context.Background()
+	system := newChainShard(0, auditActive())
+	proposing, proceed := make(chan struct{}), make(chan struct{})
+	var paused sync.Once
+	hold := func(cmd []byte) {
+		paused.Do(func() {
+			close(proposing)
+			<-proceed
+		})
+		*system.cmds = append(*system.cmds, append([]byte(nil), cmd...))
+	}
+	system.host.syncProposeFn = func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+		hold(cmd)
+		return sm.Result{Value: 1}, nil
+	}
+	system.host.proposeWithModeFn = func(_ context.Context, _ uint64, cmd []byte, _ writemode.Mode) (sm.Result, error) {
+		hold(cmd)
+		return sm.Result{Value: 1}, nil
+	}
+	homes, homeCmds := homeShard()
+	lookup := &tighteningIsolationLookup{
+		floorIsolationLookup: barrierTenantLookup(tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyOperatorAccess),
+	}
+	r := NewSystemShardAuditResolver(system.host, 1, lookup)
+	routes := newMemRouteStore()
+	if _, err := routes.PutIfAbsent(ctx, AuditRouteKey("widgets"), []byte(AuditRouteSystem)); err != nil {
+		t.Fatalf("PutIfAbsent: %v", err)
+	}
+	r.SetHomeGroupSource(homes, routes)
+	logger := NewReplicatedLogger(r)
+
+	done := make(chan error, 1)
+	go func() { done <- logger.Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"}) }()
+	<-proposing
+
+	lookup.tightening = true
+	var refused *tenant.SystemAuditRouteError
+	if err := logger.Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"}); !errors.As(err, &refused) {
+		t.Fatalf("Emit during the tightening = %v, want *tenant.SystemAuditRouteError", err)
+	}
+	if recorded, _ := routes.Get(ctx, AuditRouteKey("widgets")); string(recorded) != AuditRouteSystem {
+		t.Fatalf("route while an append is in flight = %q, want %q", recorded, AuditRouteSystem)
+	}
+	if onSystem, err := r.SystemAuditRoute(ctx, "widgets"); err != nil || !onSystem {
+		t.Fatalf("SystemAuditRoute while an append is in flight = %v, %v; want true", onSystem, err)
+	}
+
+	close(proceed)
+	if err := <-done; err != nil {
+		t.Fatalf("in-flight Emit: %v", err)
+	}
+	if len(*system.cmds) != 1 || len(*homeCmds) != 0 {
+		t.Fatalf("proposals: system %d, home %d; want system 1, home 0", len(*system.cmds), len(*homeCmds))
+	}
+
+	if err := logger.Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"}); !errors.As(err, &refused) {
+		t.Fatalf("Emit after the in-flight append returned = %v, want *tenant.SystemAuditRouteError", err)
+	}
+	if recorded, _ := routes.Get(ctx, AuditRouteKey("widgets")); recorded != nil {
+		t.Fatalf("route after the in-flight append returned = %q, want it released", recorded)
 	}
 }
 
