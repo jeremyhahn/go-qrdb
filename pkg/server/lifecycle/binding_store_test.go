@@ -1700,3 +1700,39 @@ func TestLocalBindingFactory_BarrierTenantSealRefusesWritesOnOpenStore(t *testin
 		})
 	}
 }
+
+// TestLocalBindingFactory_BarrierTenantSealRefusesReadsOnOpenStore seals a
+// barrier tenant's barrier while its database's store is open, after every
+// engine was written: every engine's next read must be refused, not served
+// from the open store's memtables or cache, and no refusal carries a marker.
+func TestLocalBindingFactory_BarrierTenantSealRefusesReadsOnOpenStore(t *testing.T) {
+	for _, b := range []database.BackendType{database.BackendFile, database.BackendPebble} {
+		t.Run(string(b), func(t *testing.T) {
+			dir := t.TempDir()
+			reg, tb := newRegisteredTenantBarrier(t)
+			mgr := newBarrierTenantManager(t, dir, atrest.New(newUnsealedBarrier(t)),
+				lifecycle.TenantBarrierEncryptorLookup(func() *seal.BarrierRegistry { return reg }))
+			defer func() { _ = mgr.Close() }()
+			db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "vault", Backend: b})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			mb := materialized(t, db)
+			live := newSealEngines(mb.Host(), mb.ShardID())
+			docID, withTS := live.writeEveryEngine(t, "vault")
+			assertControl(t, "open store", live.readEveryEngine("vault", docID, withTS))
+
+			if err := tb.Seal(); err != nil {
+				t.Fatalf("Seal: %v", err)
+			}
+			for _, r := range live.readEveryEngine("vault", docID, withTS) {
+				if r.err == nil {
+					t.Errorf("%s: a read on the open store succeeded after its tenant barrier was sealed (got %q)", r.engine, r.got)
+				}
+				if r.engine != "index" && strings.Contains(r.got, r.marker) {
+					t.Errorf("%s: the sealed read returned the marker %q", r.engine, r.marker)
+				}
+			}
+		})
+	}
+}
