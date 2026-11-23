@@ -16,6 +16,8 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -154,8 +156,9 @@ func (m *Manager) dropEntry(tenantID, name string) string {
 }
 
 // releasingDir holds one file per object-storage database this node dropped
-// whose provider namespace it has not yet released, at the database's
-// (tenant, name) path (tenantScopedPath). A drop records the entry before
+// whose provider namespace it has not yet released: a directory at the
+// database's (tenant, name) path (tenantScopedPath) holding one file per
+// dropped incarnation (releaseEntryFile). A drop records the entry before
 // its catalog delete and forgets it once the namespace is released (drop,
 // steps 4 and 6), so a release that failed, or never ran because the node
 // stopped between the two, is retried (retryNamespaceReleases).
@@ -169,6 +172,14 @@ type releaseEntry struct {
 	TenantID string                  `json:"tenant_id,omitempty"`
 	Name     string                  `json:"name"`
 	Objstore *DatabaseObjstoreConfig `json:"objstore,omitempty"`
+	// Incarnation is the dropped database's incarnation (Database.Incarnation):
+	// the ledger keeps one entry per incarnation, so a name dropped,
+	// re-created and dropped again keeps every namespace it must release.
+	Incarnation string `json:"incarnation,omitempty"`
+
+	// file is the entry's file name in its name's directory
+	// (releaseEntryFile), set when the entry is read back.
+	file string
 }
 
 // config is the DatabaseConfig the entry's namespace reopens under.
@@ -177,28 +188,42 @@ func (e releaseEntry) config() DatabaseConfig {
 }
 
 // recordRelease durably records that cfg's namespace awaits its release.
-func (m *Manager) recordRelease(key dbKey, cfg DatabaseConfig) error {
+func (m *Manager) recordRelease(key dbKey, cfg DatabaseConfig, incarnation string) (string, error) {
+	file, err := releaseEntryFile(incarnation)
+	if err != nil {
+		return "", err
+	}
 	// The configuration's own tenant and name, not the key's: the namespace
 	// owner is spelled from the configuration (objstoredb).
-	data, err := json.Marshal(releaseEntry{Backend: cfg.Backend, TenantID: cfg.TenantID, Name: cfg.Name, Objstore: cfg.Objstore})
+	data, err := json.Marshal(releaseEntry{Backend: cfg.Backend, TenantID: cfg.TenantID, Name: cfg.Name, Objstore: cfg.Objstore, Incarnation: incarnation})
 	if err != nil {
-		return err
+		return "", err
 	}
-	path := m.releaseEntryPath(key.tenant, key.name)
+	path := m.releaseEntryPath(key.tenant, key.name, file)
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return &MetaWriteError{Path: dir, Err: err}
+		return "", &MetaWriteError{Path: dir, Err: err}
 	}
-	return writeFileAtomic(dir, filepath.Base(path), data)
+	if err := writeFileAtomic(dir, file, data); err != nil {
+		return "", err
+	}
+	return file, nil
 }
 
 // forgetRelease removes the release entry of tenantID's database name; an
 // absent entry is not an error.
-func (m *Manager) forgetRelease(tenantID, name string) error {
-	path := m.releaseEntryPath(tenantID, name)
+func (m *Manager) forgetRelease(tenantID, name, file string) error {
+	if file == "" {
+		// No entry was recorded (a database that is not object storage).
+		return nil
+	}
+	path := m.releaseEntryPath(tenantID, name, file)
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return &MetaWriteError{Path: path, Err: err}
 	}
+	// The name's directory goes with its last entry; another incarnation's
+	// entry keeps it (ENOTEMPTY), which is not an error.
+	_ = os.Remove(filepath.Dir(path))
 	return nil
 }
 
@@ -228,6 +253,7 @@ func (m *Manager) releaseEntries() ([]releaseEntry, error) {
 			m.logger.Warn("skipping an unreadable object-storage namespace release entry", slog.String("path", filepath.Join(root, path)))
 			return nil
 		}
+		entry.file = d.Name()
 		entries = append(entries, entry)
 		return nil
 	})
@@ -235,8 +261,35 @@ func (m *Manager) releaseEntries() ([]releaseEntry, error) {
 }
 
 // releaseEntryPath is where tenantID's database name has its release entry.
-func (m *Manager) releaseEntryPath(tenantID, name string) string {
-	return tenantScopedPath(filepath.Join(m.dataDir, releasingDir), tenantID, name)
+func (m *Manager) releaseEntryPath(tenantID, name, file string) string {
+	return filepath.Join(tenantScopedPath(filepath.Join(m.dataDir, releasingDir), tenantID, name), file)
+}
+
+// releaseEntryFile names a drop's release entry inside its name's directory,
+// so the ledger keeps one entry per dropped database incarnation and a name
+// dropped, re-created and dropped again keeps every namespace it must
+// release. An incarnation is NewIncarnation's lowercase hex, a single safe
+// path element, and names its entry (a retried drop of the same incarnation
+// rewrites it); any other value is named by its hex SHA-256. A database
+// without one -- a provisioned database, or one created where no reclaimer
+// is set -- shares the empty incarnation with every re-creation of its name,
+// so each of its drops gets a fresh token instead, prefixed "-" so it can
+// never equal an incarnation's name.
+func releaseEntryFile(incarnation string) (string, error) {
+	if incarnation == "" {
+		token, err := NewIncarnation()
+		if err != nil {
+			return "", err
+		}
+		return "-" + token, nil
+	}
+	for _, c := range incarnation {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			sum := sha256.Sum256([]byte(incarnation))
+			return "sha256-" + hex.EncodeToString(sum[:]), nil
+		}
+	}
+	return incarnation, nil
 }
 
 // retryNamespaceReleases releases the namespace of every release entry this
@@ -282,7 +335,7 @@ func (m *Manager) retryNamespaceRelease(ctx context.Context, cat Catalog, entry 
 		if meta.Dropping {
 			return
 		}
-		if err := m.forgetRelease(key.tenant, key.name); err != nil {
+		if err := m.forgetRelease(key.tenant, key.name, entry.file); err != nil {
 			warn("failed to forget the namespace release entry of a re-created database", err)
 		}
 		return
@@ -296,7 +349,7 @@ func (m *Manager) retryNamespaceRelease(ctx context.Context, cat Catalog, entry 
 		warn("object-storage namespace release retry failed", err)
 		return
 	}
-	if err := m.forgetRelease(key.tenant, key.name); err != nil {
+	if err := m.forgetRelease(key.tenant, key.name, entry.file); err != nil {
 		warn("failed to forget a released object-storage namespace", err)
 		return
 	}

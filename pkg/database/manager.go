@@ -1070,8 +1070,10 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    release is recorded first (releasingDir), so a release that fails
 	//    in step 6, or never runs because the node stops after the delete,
 	//    is retried (retryNamespaceReleases).
+	releaseFile := ""
 	if db.Config().Backend == BackendObjstore {
-		if err := m.recordRelease(key, db.Config()); err != nil {
+		var err error
+		if releaseFile, err = m.recordRelease(key, db.Config(), db.Incarnation()); err != nil {
 			return &DropError{Name: name, Err: err}
 		}
 	}
@@ -1102,7 +1104,7 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	if err := m.releaseDatabaseNamespace(key, db.Config()); err != nil {
 		m.logger.Warn("database dropped; object-storage namespace not released",
 			slog.String("name", name), slog.String("error", err.Error()))
-	} else if err := m.forgetRelease(key.tenant, key.name); err != nil {
+	} else if err := m.forgetRelease(key.tenant, key.name, releaseFile); err != nil {
 		m.logger.Warn("database dropped; failed to forget its namespace release entry",
 			slog.String("name", name), slog.String("error", err.Error()))
 	}

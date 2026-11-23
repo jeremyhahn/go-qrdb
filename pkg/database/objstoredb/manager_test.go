@@ -522,6 +522,59 @@ func TestManager_FailedReleaseRetriedAtOpenAll(t *testing.T) {
 	}
 }
 
+// TestManager_ReleaseLedgerKeepsEveryIncarnation pins that the release
+// ledger holds one entry per database incarnation: a name dropped, re-created
+// on another namespace and dropped again, each release failing, leaves both
+// namespaces to be released, not only the last one.
+func TestManager_ReleaseLedgerKeepsEveryIncarnation(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	rootA := filepath.Join(base, "a")
+	rootB := filepath.Join(base, "b")
+	dataDir := t.TempDir()
+	mgr := newManager(t, dataDir)
+	t.Cleanup(func() { releaseFaultArmed.Store(false) })
+	if _, err := mgr.Create(releaseFaultObjstore(t, "blobs", rootA)); err != nil {
+		t.Fatalf("Create on rootA: %v", err)
+	}
+	releaseFaultArmed.Store(true)
+	if err := mgr.Drop(ctx, "blobs"); err != nil {
+		t.Fatalf("Drop on rootA: %v", err)
+	}
+	if releaseFaultArmed.Load() {
+		t.Fatal("the first drop never deleted the owner marker")
+	}
+	// The re-create retries the recorded rootA release first; it fails too.
+	releaseFaultArmed.Store(true)
+	if _, err := mgr.Create(releaseFaultObjstore(t, "blobs", rootB)); err != nil {
+		t.Fatalf("Create on rootB: %v", err)
+	}
+	if releaseFaultArmed.Load() {
+		t.Fatal("the re-create did not retry the recorded release")
+	}
+	releaseFaultArmed.Store(true)
+	if err := mgr.Drop(ctx, "blobs"); err != nil {
+		t.Fatalf("Drop on rootB: %v", err)
+	}
+	if releaseFaultArmed.Load() {
+		t.Fatal("the second drop never deleted the owner marker")
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	next := newManager(t, dataDir)
+	if err := next.OpenAll(ctx); err != nil {
+		t.Fatalf("OpenAll: %v", err)
+	}
+	if _, err := next.Create(releaseFaultObjstore(t, "a", rootA)); err != nil {
+		t.Fatalf("Create on rootA after the retried releases: %v", err)
+	}
+	if _, err := next.Create(releaseFaultObjstore(t, "b", rootB)); err != nil {
+		t.Fatalf("Create on rootB after the retried releases: %v", err)
+	}
+}
+
 // TestManager_SecondDatabaseCannotReachAnothersNamespace pins that a database
 // owns its provider namespace: a second database configured onto the first's
 // path is refused, cannot read or reclaim its objects, and the first still
