@@ -19,6 +19,7 @@ package integration_test
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,64 @@ func TestTenantStatus_CLI_SuspendRefusesItsPrincipals_PerProtocol(t *testing.T) 
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
 			testTenantStatusOverProtocol(t, node, proto)
+		})
+	}
+}
+
+// TestTenantStatus_CLI_ListStatusFilter_PerProtocol drives `qrdb tenant list
+// --status` over every transport: a known status keeps only the tenants with
+// that status, no flag lists them all, and an unknown value (including
+// "deleted", which is a tombstone and not a status) is refused naming the
+// allowed statuses.
+func TestTenantStatus_CLI_ListStatusFilter_PerProtocol(t *testing.T) {
+	node := startMultiProtocolNode(t)
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			suffix := fmt.Sprintf("%s-%d", proto.name, time.Now().UnixNano())
+			active := "list-active-" + suffix
+			suspended := "list-suspended-" + suffix
+			createTenant(t, node, proto, active, "List Active", "prefix", false)
+			createTenant(t, node, proto, suspended, "List Suspended", "prefix", false)
+			if got := setTenantStatus(t, node, proto, suspended, "suspended"); got != "suspended" {
+				t.Fatalf("[%s] tenant update --status suspended answered status %q", proto.name, got)
+			}
+
+			list := func(args ...string) string {
+				t.Helper()
+				full := append([]string{"--output", "json", "tenant", "list"}, args...)
+				out, err := runCLIProto(t, node, proto, full...)
+				if err != nil {
+					t.Fatalf("[%s] tenant list %v: %v\noutput: %s", proto.name, args, err, out)
+				}
+				return out
+			}
+			expect := func(out, label string, want, notWant []string) {
+				t.Helper()
+				for _, id := range want {
+					if !strings.Contains(out, strconv.Quote(id)) {
+						t.Fatalf("[%s] tenant list %s must list %s, got: %s", proto.name, label, id, out)
+					}
+				}
+				for _, id := range notWant {
+					if strings.Contains(out, strconv.Quote(id)) {
+						t.Fatalf("[%s] tenant list %s must not list %s, got: %s", proto.name, label, id, out)
+					}
+				}
+			}
+			expect(list("--status", "suspended"), "--status suspended", []string{suspended}, []string{active})
+			expect(list("--status", "active"), "--status active", []string{active}, []string{suspended})
+			expect(list(), "(no filter)", []string{active, suspended}, nil)
+
+			out, err := runCLIProto(t, node, proto, "--output", "json", "tenant", "list", "--status", "deleted")
+			if err == nil {
+				t.Fatalf("[%s] tenant list --status deleted succeeded: %s", proto.name, out)
+			}
+			for _, want := range []string{"invalid status", "active", "suspended", "disabled"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("[%s] tenant list --status deleted must be refused naming %q, got: %s", proto.name, want, out)
+				}
+			}
 		})
 	}
 }
