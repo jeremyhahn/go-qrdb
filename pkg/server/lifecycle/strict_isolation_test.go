@@ -31,11 +31,27 @@ func TestStrictIsolationRequired_FollowsTheHost(t *testing.T) {
 	cases := map[string]struct {
 		host   service.Host
 		active bool
+		// missing is the feature the refusal names when not active.
+		missing feature.Feature
 	}{
 		"standalone": {host: newStandaloneHost(), active: true},
-		"no host":    {host: nil},
-		"not active": {host: gatedHost{enabled: map[feature.Feature]bool{featuregate.PerNodeBarrierKeys: true}}},
-		"activated":  {host: gatedHost{enabled: map[feature.Feature]bool{featuregate.StrictIsolation: true}}, active: true},
+		"no host":    {host: nil, missing: featuregate.StrictIsolation},
+		"not active": {host: gatedHost{enabled: map[feature.Feature]bool{featuregate.PerNodeBarrierKeys: true}}, missing: featuregate.StrictIsolation},
+		"guarded-writes active, strict-isolation not": {
+			host:    gatedHost{enabled: map[feature.Feature]bool{featuregate.GuardedWrites: true}},
+			missing: featuregate.StrictIsolation,
+		},
+		// A tightening committed while a group may still propose its guards
+		// unguarded leaves in-flight shared-store and audit writes with only
+		// the propose-time recheck: refused until guarded-writes is active.
+		"strict-isolation active, guarded-writes not": {
+			host:    gatedHost{enabled: map[feature.Feature]bool{featuregate.StrictIsolation: true}},
+			missing: featuregate.GuardedWrites,
+		},
+		"activated": {
+			host:   gatedHost{enabled: map[feature.Feature]bool{featuregate.StrictIsolation: true, featuregate.GuardedWrites: true}},
+			active: true,
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -51,8 +67,8 @@ func TestStrictIsolationRequired_FollowsTheHost(t *testing.T) {
 				return
 			}
 			var notActive *feature.NotActiveError
-			if !errors.As(err, &notActive) || notActive.Feature != featuregate.StrictIsolation || notActive.ShardID != 0 {
-				t.Fatalf("strictIsolationRequired()() = %v, want cluster-wide NotActiveError(%s)", err, featuregate.StrictIsolation)
+			if !errors.As(err, &notActive) || notActive.Feature != tc.missing || notActive.ShardID != 0 {
+				t.Fatalf("strictIsolationRequired()() = %v, want cluster-wide NotActiveError(%s)", err, tc.missing)
 			}
 		})
 	}
