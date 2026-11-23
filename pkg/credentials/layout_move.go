@@ -77,8 +77,13 @@ func (s *CredentialService) BindStoreFrom(ctx context.Context, st, from Store) e
 	s.layoutFrom = from
 	s.layoutMu.Unlock()
 	if err := s.ensureLayoutMoved(ctx); err != nil {
+		// No migration runs while the move is pending: it would read a
+		// destination that lacks the source's records (an import marker
+		// among them) and could re-import a legacy copy they settled. The
+		// next credential operation retries the move, then migrates.
 		s.logger.Error("credential move from the earlier credential store did not finish",
 			slog.String("error", err.Error()))
+		return nil
 	}
 	if err := s.MigrateLegacy(ctx); err != nil {
 		s.logger.Error("credential migration from the node-local layout did not finish",

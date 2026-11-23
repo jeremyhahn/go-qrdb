@@ -86,6 +86,47 @@ func (f *faultyStore) List(ctx context.Context, prefix string) ([]string, error)
 
 var _ Store = (*faultyStore)(nil)
 
+// A resolution must not run against a destination the store move has not
+// filled yet: there it misses the import marker still in the source and
+// imports the settled legacy copy over the newer value.
+func TestResolveMigrationConflict_WaitsForPendingMove(t *testing.T) {
+	ctx := context.Background()
+	legacyA, raw, moved := seal.NewMemoryBackend(), seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	shared := &faultyStore{Store: raw, fired: true}
+	legacyB := &faultyStore{Store: seal.NewMemoryBackend()}
+	writeLegacy(t, legacyA, "db", "v2", "v1", nil)
+	writeLegacy(t, legacyB, "db", "kept", "kept-old", nil)
+	require.NoError(t, newMigratingService(t, legacyA).BindStore(ctx, raw))
+	nodeB := newMigratingService(t, legacyB)
+	require.NoError(t, nodeB.BindStore(ctx, raw))
+
+	// The import commits, then the note that opens the cleanup fails.
+	legacyB.mu.Lock()
+	legacyB.op, legacyB.key, legacyB.fired = "put", legacyMigrationNotePrefix+"db", false
+	legacyB.mu.Unlock()
+	require.ErrorIs(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport), errInjected)
+	_, err := nodeB.rotateBarrier(ctx, "db", RotateOptions{NewValue: []byte("newer")})
+	require.NoError(t, err)
+
+	arm := func() {
+		shared.mu.Lock()
+		shared.op, shared.key, shared.fired = "list", layoutPrefixes[0], false
+		shared.mu.Unlock()
+	}
+	arm()
+	require.NoError(t, nodeB.BindStoreFrom(ctx, moved, shared), "a failed move does not fail the bind")
+	arm()
+	require.ErrorIs(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport), errInjected,
+		"resolution refuses while the move is pending")
+
+	require.NoError(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport))
+	assert.Equal(t, "newer", retrieveString(t, nodeB, "db"), "the settled legacy copy is not imported again")
+	assert.Empty(t, legacyKeys(t, legacyB), "the kept copy is deleted")
+	conflicts, err := nodeB.ListMigrationConflicts(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
 // writeLegacy writes a credential under the old credentials/ layout: value
 // as version 2, prior as retained version 1, and policy in its meta.
 func writeLegacy(t *testing.T, st Store, name, value, prior string, policy *RotationPolicy) {

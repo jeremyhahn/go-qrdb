@@ -226,6 +226,9 @@ func (s *CredentialService) BindStore(ctx context.Context, st Store) error {
 // point and run again reaches the same result. A service with no legacy
 // store, or of the manual strategy, has nothing to migrate.
 func (s *CredentialService) MigrateLegacy(ctx context.Context) error {
+	if err := s.ensureLayoutMoved(ctx); err != nil {
+		return err
+	}
 	s.migrateMu.Lock()
 	defer s.migrateMu.Unlock()
 	return s.migrateLocked(ctx)
@@ -781,6 +784,9 @@ func legacyMeta(raw []byte) (*credentialMeta, bool) {
 // node, sorted by name. It first finishes a migration that has not run or
 // did not finish.
 func (s *CredentialService) ListMigrationConflicts(ctx context.Context) ([]CredentialMigrationConflictError, error) {
+	if err := s.ensureLayoutMoved(ctx); err != nil {
+		return nil, err
+	}
 	s.migrateMu.Lock()
 	defer s.migrateMu.Unlock()
 	if err := s.migrateLocked(ctx); err != nil {
@@ -812,6 +818,12 @@ func (s *CredentialService) ResolveMigrationConflict(ctx context.Context, name s
 	resolve, ok := migrationResolvers[how]
 	if !ok {
 		return ErrInvalidMigrationResolution
+	}
+	// Resolution reads the destination's records: a move still pending
+	// would leave the source's import marker unseen and re-import the
+	// legacy copy it settled.
+	if err := s.ensureLayoutMoved(ctx); err != nil {
+		return err
 	}
 	s.migrateMu.Lock()
 	defer s.migrateMu.Unlock()
