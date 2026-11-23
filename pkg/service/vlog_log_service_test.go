@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -142,7 +143,8 @@ func newTestLogService(t *testing.T, host *mockHost, signers vlog.HeadSignerProv
 }
 
 // noDatabases is a database registry holding no database: every log names a
-// database it has no record of, which the log service lets through.
+// database it has no record of, which the log service lets through, fenced
+// to no database holding the name.
 func noDatabases(t *testing.T) *database.Manager {
 	t.Helper()
 	mgr := databasetest.NewManager(nil, t.TempDir())
@@ -153,6 +155,18 @@ func noDatabases(t *testing.T) *database.Manager {
 // decodeLogCommand splits one proposed OpVerifiableLog command.
 func decodeLogCommand(t *testing.T, cmd []byte) (byte, string, []byte) {
 	t.Helper()
+	// A fenced log's command arrives in its drop-fence guard: for a name no
+	// database holds, the guard that the name's marker is absent.
+	if len(cmd) > 0 && cmd[0] == protocol.OpGuarded {
+		compares, inner, err := protocol.DecodeGuarded(cmd[1:])
+		if err != nil {
+			t.Fatalf("DecodeGuarded: %v", err)
+		}
+		if len(compares) != 1 || !strings.HasPrefix(string(compares[0].Key), DropFencePrefix) {
+			t.Fatalf("guard = %+v, want one drop-fence compare", compares)
+		}
+		cmd = inner
+	}
 	if len(cmd) == 0 || cmd[0] != protocol.OpVerifiableLog {
 		t.Fatalf("proposed command is not OpVerifiableLog: %x", cmd)
 	}

@@ -323,9 +323,6 @@ func (s *KeyspaceReclaimService) ReclaimDatabaseKeyspace(ctx context.Context, te
 	if fence.PerDatabase {
 		markerKV = target.KV
 	}
-	// The log marker is cleared under no write guard: clearMarker is itself
-	// conditional on this drop's tombstone.
-	unguarded := ctx
 	var stillFenced func(context.Context) error
 	if markerKV != nil {
 		guard, err := dropFencedGuard(tenantID, db, claim)
@@ -359,22 +356,13 @@ func (s *KeyspaceReclaimService) ReclaimDatabaseKeyspace(ctx context.Context, te
 	}), tenantID, db); err != nil {
 		return err
 	}
-	// A barrier tenant's log marker, in its home group, is this drop's
-	// tombstone until here; it goes once the data is reclaimed (an absent
-	// marker admits no log write of any incarnation). A marker another
-	// drop took over, or a successor marked live, is not this drop's.
-	logKV, err := s.logFenceKV(unguarded, tenantID, db, incarnation)
-	if err != nil {
-		return err
-	}
-	if logKV == nil {
-		return nil
-	}
-	err = clearMarker(unguarded, logKV, tenantID, db, DropFenceKey(tenantID, db), claim)
-	if _, live := errors.AsType[*database.AlreadyExistsError](err); live {
-		return &database.DropSupersededError{Name: db, TenantID: tenantID}
-	}
-	return err
+	// A barrier tenant's log marker, in its home group, stays this drop's
+	// tombstone, as the data's does: a write admitted under an empty
+	// incarnation (a database created before incarnations) is satisfied by
+	// an absent marker, so removing it would readmit such a write paused
+	// across the drop. The next database created under the name claims it
+	// (UnfenceDatabaseKeyspace).
+	return nil
 }
 
 // FenceDatabaseKeyspace fences incarnation of the (tenantID, db) database in
@@ -407,7 +395,7 @@ func (s *KeyspaceReclaimService) FenceDatabaseKeyspace(ctx context.Context, tena
 		return err
 	}
 	if logKV != nil {
-		if err := fenceMarker(ctx, logKV, tenantID, db, DropFenceKey(tenantID, db), incarnation, claim); err != nil {
+		if err := fenceLogMarker(ctx, logKV, tenantID, db, DropFenceKey(tenantID, db), incarnation, claim); err != nil {
 			return err
 		}
 	}
@@ -717,6 +705,48 @@ func fenceMarker(ctx context.Context, kv ReclaimKV, tenantID, db, key, incarnati
 		// is the one the marker answers to from here on.
 		fenced, err = kv.CompareAndSwap(ctx, key, current, tombstone)
 	}
+}
+
+// fenceLogMarker fences incarnation's log-only marker (StoreResolver.
+// LogFenceTarget) as fenceMarker does, and tombstones it as well when it is
+// absent: a database created before its logs had a marker of their own
+// never had one written unless a log write initialized it
+// (LogFenceInitializer), and its drop must still leave the tombstone that
+// refuses every later write of the dropped incarnation. An absent marker is
+// never a successor's: every create marks it live, and a drop's tombstone
+// stays until a create claims it.
+func fenceLogMarker(ctx context.Context, kv ReclaimKV, tenantID, db, key, incarnation, claim string) error {
+	if incarnation != "" {
+		fenced, err := kv.PutIfAbsent(ctx, key, dropFenceTombstoneFor(claim))
+		if err != nil {
+			return &DropFenceError{TenantID: tenantID, Database: db, Op: "write", Err: err}
+		}
+		if fenced {
+			return nil
+		}
+	}
+	return fenceMarker(ctx, kv, tenantID, db, key, incarnation, claim)
+}
+
+// InitDatabaseLogFence writes incarnation as the (tenantID, db) database's
+// log-only drop-fence marker when that marker is absent (see
+// LogFenceInitializer). A database whose logs share its data's marker has
+// no log marker to write.
+func (s *KeyspaceReclaimService) InitDatabaseLogFence(ctx context.Context, tenantID, db, incarnation string) error {
+	if db == "" || incarnation == "" {
+		return nil
+	}
+	logKV, err := s.logFenceKV(ctx, tenantID, db, incarnation)
+	if err != nil {
+		return err
+	}
+	if logKV == nil {
+		return nil
+	}
+	if _, err := logKV.PutIfAbsent(ctx, DropFenceKey(tenantID, db), []byte(incarnation)); err != nil {
+		return &DropFenceError{TenantID: tenantID, Database: db, Op: "initialize", Err: err}
+	}
+	return nil
 }
 
 // dropFencedGuard returns the guard every delete of a database's reclamation

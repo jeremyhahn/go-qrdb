@@ -1358,7 +1358,7 @@ func TestKeyspaceReclaim_BarrierTenantFencesDataAndLogMarkers(t *testing.T) {
 
 	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", ""))
 	assert.Equal(t, string(dropFenceTombstone), marker(system), "the data marker stays for the successor to claim")
-	assert.Equal(t, "<absent>", marker(home), "the reclamation clears its log marker")
+	assert.Equal(t, string(dropFenceTombstone), marker(home), "the log tombstone stays too, refusing a paused empty-incarnation write")
 
 	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-b", ""))
 	assert.Equal(t, "inc-b", marker(system))

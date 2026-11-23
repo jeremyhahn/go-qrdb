@@ -1226,6 +1226,13 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		Compaction: systemCompaction,
 	})
 	dbManager.SetKeyspaceReclaimer(n.KeyspaceReclaim)
+	// A barrier tenant's database created before its logs had a marker of
+	// their own in the home group gets one at its first log write.
+	if fenced, ok := n.Log.(interface {
+		SetLogFenceInitializer(service.LogFenceInitializer)
+	}); ok {
+		fenced.SetLogFenceInitializer(n.KeyspaceReclaim)
+	}
 
 	// go-qrdb#547's reclaim-job sweeper, over the un-namespaced system store
 	// where every pending job's index entry lives. Each job's own store is

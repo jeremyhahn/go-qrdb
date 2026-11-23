@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -99,28 +100,35 @@ func (s *logService) logID(ctx context.Context, ref LogRef, op string) (vlog.Log
 }
 
 // resolve is the logRoute's resolution of tenantID's database name to the
-// target its logs are applied in and read from.
-func (r *logRoute) resolve(ctx context.Context, id vlog.LogID) (logTarget, error) {
+// target its logs are applied in and read from, with the database that one
+// lookup found: nil for a name no database holds and for the audit log a
+// separate audit resolver serves. A caller fences to that database's
+// incarnation, never to a second lookup's (which a drop may already have
+// overtaken).
+func (r *logRoute) resolve(ctx context.Context, id vlog.LogID) (logTarget, *database.Database, error) {
 	tenantID, name := id.TenantID, id.Database
 	if isAuditLog(id) && r.audit != nil {
-		return r.auditGroup(ctx, tenantID)
+		target, err := r.auditGroup(ctx, tenantID)
+		return target, nil, err
 	}
 	db, err := r.databases.GetOwned(name, tenantID)
 	if err != nil {
 		var notFound *database.NotFoundError
 		if !errors.As(err, &notFound) {
-			return nil, err
+			return nil, nil, err
 		}
-		return r.raft(ctx, tenantID)
+		target, err := r.raft(ctx, tenantID)
+		return target, nil, err
 	}
 	if db.BarrierEnabled() {
 		cfg := db.Config()
 		if !cfg.BarrierOnDataPath() {
-			return nil, &database.BarrierOffDataPathError{Name: name, ServedBy: database.ServedByRaftGroup}
+			return nil, nil, &database.BarrierOffDataPathError{Name: name, ServedBy: database.ServedByRaftGroup}
 		}
-		return r.store(tenantID, name, db), nil
+		return r.store(tenantID, name, db), db, nil
 	}
-	return r.raft(ctx, tenantID)
+	target, err := r.raft(ctx, tenantID)
+	return target, db, err
 }
 
 // auditGroup returns the group the replicated audit logger writes tenantID's
@@ -211,6 +219,51 @@ type logRoute struct {
 	mu       sync.Mutex
 	stores   map[dbStoreKey]*databaseLogStore
 	barriers map[string]*barrierLogStore
+
+	// fences writes a database's log marker where it was never written
+	// (SetLogFenceInitializer); nil writes none. inited holds every
+	// incarnation it has answered for, so it is asked once per incarnation.
+	fences atomic.Pointer[logFenceInitializerRef]
+	inited sync.Map // dbStoreKey -> struct{}
+}
+
+// logFenceInitializerRef boxes a LogFenceInitializer for an atomic pointer.
+type logFenceInitializerRef struct{ f LogFenceInitializer }
+
+// SetLogFenceInitializer sets the LogFenceInitializer every fenced log write
+// is admitted through; nil removes it. The composer sets it once the
+// keyspace reclaimer, built after the log service, exists.
+func (s *logService) SetLogFenceInitializer(f LogFenceInitializer) {
+	if f == nil {
+		s.route.fences.Store(nil)
+		return
+	}
+	s.route.fences.Store(&logFenceInitializerRef{f: f})
+}
+
+// initFence has incarnation of tenantID's database name written as its log
+// marker when the marker was never written: a database created before a
+// barrier tenant's logs were fenced in its home group would otherwise
+// refuse every log write, its guard comparing the incarnation against an
+// absent marker. It is incarnation-safe: incarnation is the catalog's live
+// one, and a marker is absent only while no drop or create of the name has
+// run since, each of which writes it (a drop tombstones even an absent
+// marker), so a stale incarnation finds the marker present and writes
+// nothing.
+func (r *logRoute) initFence(ctx context.Context, tenantID, name, incarnation string) error {
+	ref := r.fences.Load()
+	if ref == nil || incarnation == "" {
+		return nil
+	}
+	key := dbStoreKey{tenant: tenantID, name: name, incarnation: incarnation}
+	if _, done := r.inited.Load(key); done {
+		return nil
+	}
+	if err := ref.f.InitDatabaseLogFence(ctx, tenantID, name, incarnation); err != nil {
+		return err
+	}
+	r.inited.Store(key, struct{}{})
+	return nil
 }
 
 // dbStoreKey names one incarnation of a tenant's database.
@@ -333,7 +386,7 @@ type fencedLogTarget interface {
 // refused tenant never has a key created for it.
 func (s *logService) admit(ctx context.Context, id vlog.LogID, features []feature.Feature) (logGroup, error) {
 	tenantID := id.TenantID
-	target, err := s.route.resolve(ctx, id)
+	target, db, err := s.route.resolve(ctx, id)
 	if err != nil {
 		return logGroup{}, err
 	}
@@ -353,19 +406,21 @@ func (s *logService) admit(ctx context.Context, id vlog.LogID, features []featur
 	if !s.route.fenced(id) {
 		return g, nil
 	}
-	// The incarnation is resolved once, here: every command proposed
-	// through g is fenced to it, so a write that waits past a drop (a signer
-	// minting its key) is refused even once the name is created again. A
-	// name no database holds has no drop to fence against.
-	db, err := s.route.databases.GetOwned(id.Database, tenantID)
-	if err != nil {
-		if _, dropping := errors.AsType[*database.DroppingError](err); dropping {
+	// The incarnation is the one resolve found the target by, in the same
+	// lookup: every command proposed through g is fenced to it, so a write
+	// that waits past a drop (a signer minting its key) is refused even once
+	// the name is created again. A name no database holds is fenced to
+	// that: its marker absent (a drop's tombstone outlives the drop) and no
+	// database holding the name, so a write admitted as a drop finished is
+	// refused rather than outliving the drop that reclaimed the name's logs.
+	held := db != nil
+	if held {
+		g.incarnation = db.Incarnation()
+		if err := s.route.initFence(ctx, tenantID, id.Database, g.incarnation); err != nil {
 			return logGroup{}, err
 		}
-		return g, nil
 	}
-	g.incarnation = db.Incarnation()
-	if g.fence, err = s.route.fence(tenantID, id.Database, g.incarnation); err != nil {
+	if g.fence, err = s.route.fence(tenantID, id.Database, g.incarnation, held); err != nil {
 		return logGroup{}, err
 	}
 	return g, nil
@@ -382,31 +437,33 @@ func (r *logRoute) fenced(id vlog.LogID) bool {
 	return !isAuditLog(id) || r.audit == nil
 }
 
-// fence returns the logFence of incarnation of tenantID's database name.
-func (r *logRoute) fence(tenantID, name, incarnation string) (logFence, error) {
+// fence returns the logFence of incarnation of tenantID's database name;
+// held=false fences to no database holding the name (incarnation "").
+func (r *logRoute) fence(tenantID, name, incarnation string, held bool) (logFence, error) {
 	guard, err := DropFenceGuard(tenantID, name, incarnation)
 	if err != nil {
 		return logFence{}, err
 	}
 	return logFence{guard: &guard, live: func() error {
-		return r.liveIncarnation(tenantID, name, incarnation)
+		return r.liveIncarnation(tenantID, name, incarnation, held)
 	}}, nil
 }
 
 // liveIncarnation refuses with *database.DroppingError, as not stored,
 // unless incarnation is the live incarnation of tenantID's database name: a
 // database being dropped, dropped, or created again under the name since.
-func (r *logRoute) liveIncarnation(tenantID, name, incarnation string) error {
+// held=false admits only while no database holds the name.
+func (r *logRoute) liveIncarnation(tenantID, name, incarnation string, held bool) error {
 	db, err := r.databases.GetOwned(name, tenantID)
-	if err == nil && db.Incarnation() == incarnation {
+	if err == nil && held && db.Incarnation() == incarnation {
 		return nil
 	}
-	if err != nil {
-		if _, notFound := errors.AsType[*database.NotFoundError](err); !notFound {
-			if _, dropping := errors.AsType[*database.DroppingError](err); !dropping {
-				return err
-			}
-		}
+	_, notFound := errors.AsType[*database.NotFoundError](err)
+	if notFound && !held {
+		return nil
+	}
+	if _, dropping := errors.AsType[*database.DroppingError](err); err != nil && !notFound && !dropping {
+		return err
 	}
 	return markNotStored(&database.DroppingError{Name: name, TenantID: tenantID})
 }
@@ -471,14 +528,12 @@ func (g logGroup) proposeCmd(ctx context.Context, cmd []byte) (sm.Result, error)
 // the name is ever served to its successor.
 func logRead[T any](ctx context.Context, route *logRoute, id vlog.LogID, req vlog.Request) (T, error) {
 	var zero T
-	target, err := route.resolve(ctx, id)
+	target, db, err := route.resolve(ctx, id)
 	if err != nil {
 		return zero, err
 	}
-	if id.TenantID != "" && id.Database != "" && (!isAuditLog(id) || route.audit == nil) {
-		if db, err := route.databases.GetOwned(id.Database, id.TenantID); err == nil {
-			req = vlog.IncarnationRequest{Request: req, Incarnation: db.Incarnation()}
-		}
+	if db != nil && id.TenantID != "" && id.Database != "" {
+		req = vlog.IncarnationRequest{Request: req, Incarnation: db.Incarnation()}
 	}
 	return targetRead[T](ctx, target, req)
 }
