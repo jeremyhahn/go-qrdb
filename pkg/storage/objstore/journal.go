@@ -56,20 +56,11 @@ func openStores(provider string, create objfactory.StorageCreator, settings map[
 	if !walked {
 		return keptStores{data: store, journal: store}, nil
 	}
-	kept := keptStores{data: store}
-	// The provider has created its root by now, so it resolves.
-	physical, err := filepath.EvalSymlinks(settings[rootSetting])
+	data, physical, err := canonicalStore(provider, create, settings, store, creds)
 	if err != nil {
 		return keptStores{}, err
 	}
-	if physical != settings[rootSetting] {
-		dataSettings := maps.Clone(settings)
-		dataSettings[rootSetting] = physical
-		if kept.data, err = create(dataSettings, creds); err != nil {
-			return keptStores{}, err
-		}
-		kept.dataCreated = true
-	}
+	kept := keptStores{data: data, dataCreated: physical != settings[rootSetting]}
 	if err := refuseInTreeJournal(provider, kept.data); err != nil {
 		return keptStores{}, err
 	}
@@ -119,6 +110,31 @@ func canonicalNamespace(provider string, settings map[string]string) (map[string
 	canonical := maps.Clone(settings)
 	canonical[rootSetting] = physical
 	return canonical, nil
+}
+
+// canonicalStore returns store reopened on its physical root, the root setting
+// with every symlink resolved, for a provider whose root the store walks: the
+// walk does not follow a root symlink, so a store on a symlinked root lists
+// nothing. physical is that root. A provider with no walked root returns store
+// and "" unchanged.
+func canonicalStore(provider string, create objfactory.StorageCreator, settings map[string]string, store objcommon.Storage, creds objcommon.Credentials) (_ objcommon.Storage, physical string, err error) {
+	rootSetting, walked := walkedRoots[provider]
+	if !walked {
+		return store, "", nil
+	}
+	// The provider has created its root by now, so it resolves.
+	physical, err = filepath.EvalSymlinks(settings[rootSetting])
+	if err != nil {
+		return nil, "", err
+	}
+	if physical != settings[rootSetting] {
+		dataSettings := maps.Clone(settings)
+		dataSettings[rootSetting] = physical
+		if store, err = create(dataSettings, creds); err != nil {
+			return nil, "", err
+		}
+	}
+	return store, physical, nil
 }
 
 // journalRoot names the sibling tree that holds the journal of a store rooted

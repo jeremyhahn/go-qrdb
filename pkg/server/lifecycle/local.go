@@ -84,18 +84,7 @@ func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atre
 		return stg, nil, nil
 
 	case database.BackendPebble:
-		pebbleDir := filepath.Join(dataDir, "pebble")
-		cfg := pebbleStorage.DefaultConfig(pebbleDir)
-		if storageCfg.CacheSize > 0 {
-			cfg.CacheSize = storageCfg.CacheSize
-		}
-		if storageCfg.MaxOpenFiles > 0 {
-			cfg.MaxOpenFiles = storageCfg.MaxOpenFiles
-		}
-		cfg.WALDir = storageCfg.WALDir
-		if enc.Enabled() {
-			cfg.FS = pebbleStorage.WrapVFS(nil, enc.Wrap)
-		}
+		cfg := localPebbleConfig(filepath.Join(dataDir, "pebble"), enc, storageCfg)
 		stg, err := pebbleStorage.New(cfg)
 		if err != nil {
 			return nil, nil, &LocalStorageError{Backend: backendType, Err: err}
@@ -106,6 +95,25 @@ func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atre
 	default:
 		return nil, nil, &UnsupportedLocalBackendError{Backend: backendType}
 	}
+}
+
+// localPebbleConfig is the Pebble configuration of a node-local Pebble store
+// in dir: the storage section's cache size, open-file limit and WAL directory,
+// and the at-rest encrypting VFS when the barrier is on. The pebble backend
+// and the objstore LSM opener (its local WAL and MANIFEST) share it.
+func localPebbleConfig(dir string, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig) *pebbleStorage.Config {
+	cfg := pebbleStorage.DefaultConfig(dir)
+	if storageCfg.CacheSize > 0 {
+		cfg.CacheSize = storageCfg.CacheSize
+	}
+	if storageCfg.MaxOpenFiles > 0 {
+		cfg.MaxOpenFiles = storageCfg.MaxOpenFiles
+	}
+	cfg.WALDir = storageCfg.WALDir
+	if enc.Enabled() {
+		cfg.FS = pebbleStorage.WrapVFS(nil, enc.Wrap)
+	}
+	return cfg
 }
 
 // resolveObjstoreSettings derives the go-objstore provider and settings for

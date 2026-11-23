@@ -219,24 +219,7 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	for _, opt := range opts {
 		opt(&o)
 	}
-	// A registered creator need not delegate to a go-objstore Configure, so
-	// an inline credential is refused here, before any provider sees it.
-	if err := RejectCredentialSettings(settings); err != nil {
-		return nil, err
-	}
-	// The provider is resolved once, and an unknown one refused before any
-	// credential file is read: the declaration checked below and the creator
-	// that opens the store are one registration, whatever RegisterProvider
-	// does meanwhile.
-	resolved, known := resolveProvider(provider)
-	providerResolved(provider)
-	if !known {
-		return nil, &UnsupportedProviderError{Provider: provider}
-	}
-	if err := checkCredentialUse(provider, resolved.reads, o.credentials); err != nil {
-		return nil, err
-	}
-	creds, release, err := openCredentials(o.credentials)
+	store, creator, creds, release, err := openStore(provider, settings, o)
 	defer release()
 	if err != nil {
 		return nil, err
@@ -244,9 +227,9 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	// Every provider the open creates is recorded, so a failed open releases
 	// each one, and a successful open releases any it created but does not
 	// keep (openStores replaces a store rooted at a symlink).
-	var created []objcommon.Storage
+	created := []objcommon.Storage{store}
 	create := func(settings map[string]string, creds objcommon.Credentials) (objcommon.Storage, error) {
-		s, err := resolved.creator(settings, creds)
+		s, err := creator(settings, creds)
 		if err == nil {
 			created = append(created, s)
 		}
@@ -258,10 +241,6 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 			_ = closeStores(created...)
 		}
 	}()
-	store, err := create(settings, creds)
-	if err != nil {
-		return nil, credentialOpenError(o.credentials, err)
-	}
 	kept, err := openStores(provider, create, settings, store, creds)
 	if err != nil {
 		return nil, credentialOpenError(o.credentials, err)

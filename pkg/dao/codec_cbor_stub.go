@@ -17,6 +17,10 @@ package dao
 
 import "github.com/jeremyhahn/go-codec"
 
-func newCBORCodec[E any]() codec.Codec[E] {
-	return nil
+func newCBORCodec[E any]() (codec.Codec[E], error) {
+	return nil, codec.ErrCodecNotSupported{CodecType: CodecCBOR}
+}
+
+func newCBORDocumentCodec() (codec.Codec[map[string]any], error) {
+	return nil, codec.ErrCodecNotSupported{CodecType: CodecCBOR}
 }
