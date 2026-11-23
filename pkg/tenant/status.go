@@ -95,6 +95,32 @@ func applyStatus(info *TenantInfo, patch TenantPatch) error {
 	return nil
 }
 
+// FilterByStatus narrows a tenant listing to the tenants in one status.
+// Every API surface applies it after the caller's visibility narrowing
+// (authmw.FilterTenantList), so the transports cannot drift; the servicer's
+// ListTenants stays unfiltered for the internal callers that need every
+// tenant. An empty status is no filter and returns infos unchanged. A known
+// status keeps only the tenants whose stored Status equals it: a legacy
+// record with an empty status matches no filter (fail-closed, as IsActive).
+// An unknown value, including go-xkms's "deleted" (deleted tenants are
+// retired ids in the deleted-tenant tombstone, listed by
+// ListDeletedTenants), is refused with *InvalidStatusError.
+func FilterByStatus(infos []TenantInfo, status Status) ([]TenantInfo, error) {
+	if status == "" {
+		return infos, nil
+	}
+	if !status.Valid() {
+		return nil, &InvalidStatusError{Value: status, Allowed: knownStatuses()}
+	}
+	out := make([]TenantInfo, 0, len(infos))
+	for i := range infos {
+		if infos[i].Status == status {
+			out = append(out, infos[i])
+		}
+	}
+	return out, nil
+}
+
 // InvalidStatusError is returned when a request names a status that is not
 // one of the known statuses.
 type InvalidStatusError struct {
