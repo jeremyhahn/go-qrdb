@@ -263,6 +263,13 @@ in mg1655a.
   database therefore takes a new `--data-dir` (the user guide and the CLI
   E2E do so).
 - The SPEC, `pm/rows.md` and ROADMAP.md moves above.
+- An untenanted (platform) database's verifiable logs survive its drop
+  (rw1613f): `Manager.reclaimLogs` (`pkg/database/manager.go`) and
+  `DatabaseService.checkLogs` skip a database whose tenant ID is empty, while
+  the log service keeps its logs under the `system` tenant
+  (`routingTenant`). Fix: drop both empty-tenant guards and route the tenant
+  through `routingTenant` in `logService.DropDatabaseLogs` and
+  `CheckDropDatabaseLogs`. `pkg/database` was outside rw1613f's file map.
 
 ## rw1613d (Codex round 5 at 928f3d8a41)
 
@@ -290,6 +297,23 @@ in mg1655a.
   outside the step budget. Both now count against `MaxPrunePerCommand`; a
   step that cannot cover the pair leaves it for the next. Fix 7e80ce1c0,
   test 878a45233: `TestChain_DropDatabase_EmptyLogsAreBounded`.
+
+## rw1613f
+
+- `TestVlog_CLI_DatabaseDrop_PerProtocol` (`test/integration/vlog_cli_test.go`),
+  on every transport, two cases: a shared-store database (`database create`
+  with no backend flag) and a dedicated-raft one (`--backend raft
+  --cluster-mode local --replicas 1`). Each creates two logs, appends, signs,
+  rotates, drops and re-creates the database, then expects neither log
+  listed, `head` not found, and the same log name created afresh (key
+  version 1, first index 0, head size 1, a checkpoint verifying under the
+  new key).
+- RED on every transport (wip bd2d1fe03): the test runs as an untenanted
+  identity, whose database logs the drop never reclaims (see Remains); list
+  and head hide them by incarnation, but `create` of the same name is
+  refused "already exists". No fix landed in this slice.
+- docs/databases/architecture.md: the logs step of "What a drop reclaims",
+  the barrier tenant's log-only fence marker, and `SignHead` admitting first.
 
 ## Out of scope
 
