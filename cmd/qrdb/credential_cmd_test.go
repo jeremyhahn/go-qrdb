@@ -59,6 +59,7 @@ type mockCredSvc struct {
 	setPolicyErr error
 	policyName   string
 	policy       credentials.RotationPolicy
+	policyGot    string
 
 	conflictsErr error
 	resolvedName string
@@ -197,6 +198,7 @@ func (m *mockCredSvc) CredentialSetRotationPolicy(_ context.Context, name string
 }
 
 func (m *mockCredSvc) CredentialRotationPolicy(_ context.Context, name string) (*service.CredentialRotationPolicyStatus, error) {
+	m.policyGot = name
 	if name == "missing" {
 		return nil, credentials.ErrCredentialNotFound
 	}
@@ -481,12 +483,18 @@ func TestCredentialRotationPolicySetCmd_Success(t *testing.T) {
 }
 
 func TestCredentialRotationPolicySetCmd_SuccessJSON(t *testing.T) {
-	out, err := executeCredCmd(t, newMockCredSvc(), "--output", "json", "credential", "rotation-policy", "set", "rk",
+	svc := newMockCredSvc()
+	out, err := executeCredCmd(t, svc, "--output", "json", "credential", "rotation-policy", "set", "rk",
 		"--enabled", "--interval", "24h", "--retain-versions", "2")
 	if err != nil {
 		t.Fatalf("credential rotation-policy set json: %v", err)
 	}
-	if !strings.Contains(out, `"retain_versions": 2`) || !strings.Contains(out, `"rk"`) {
+	want := credentials.RotationPolicy{Enabled: true, Interval: 24 * time.Hour, RetainVersions: 2}
+	if svc.policyName != "rk" || svc.policy != want {
+		t.Errorf("service saw %q %+v, want rk %+v", svc.policyName, svc.policy, want)
+	}
+	if !strings.Contains(out, `"retain_versions": 2`) || !strings.Contains(out, `"rk"`) ||
+		!strings.Contains(out, `"enabled": true`) || !strings.Contains(out, `"24h"`) {
 		t.Errorf("expected the policy in JSON, got: %q", out)
 	}
 }
@@ -498,6 +506,9 @@ func TestCredentialRotationPolicySetCmd_InvalidPolicy(t *testing.T) {
 	var invalid *credentials.InvalidRotationPolicyError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("expected InvalidRotationPolicyError, got %T: %v", err, err)
+	}
+	if invalid.Reason != "interval must be positive" {
+		t.Errorf("Reason = %q, want the service's reason", invalid.Reason)
 	}
 }
 
@@ -527,11 +538,16 @@ func TestCredentialRotationPolicyGetCmd_Success(t *testing.T) {
 }
 
 func TestCredentialRotationPolicyGetCmd_SuccessYAML(t *testing.T) {
-	out, err := executeCredCmd(t, newMockCredSvc(), "--output", "yaml", "credential", "rotation-policy", "get", "rk")
+	svc := newMockCredSvc()
+	out, err := executeCredCmd(t, svc, "--output", "yaml", "credential", "rotation-policy", "get", "rk")
 	if err != nil {
 		t.Fatalf("credential rotation-policy get yaml: %v", err)
 	}
-	if !strings.Contains(out, "rk") || !strings.Contains(out, "1h0m0s") {
+	if svc.policyGot != "rk" {
+		t.Errorf("service was asked for %q, want rk", svc.policyGot)
+	}
+	if !strings.Contains(out, "rk") || !strings.Contains(out, "1h0m0s") ||
+		!strings.Contains(out, "enabled: true") || !strings.Contains(out, "versions: 2") {
 		t.Errorf("expected the policy in YAML, got: %q", out)
 	}
 }
@@ -558,7 +574,8 @@ func TestCredentialMigrationConflictsListCmd_SuccessJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential migration-conflicts list json: %v", err)
 	}
-	if !strings.Contains(out, `"conflicts"`) || !strings.Contains(out, `"db"`) || !strings.Contains(out, `"policy": true`) {
+	if !strings.Contains(out, `"conflicts"`) || !strings.Contains(out, `"db"`) || !strings.Contains(out, `"policy": true`) ||
+		!strings.Contains(out, `"value": true`) || !strings.Contains(out, `"versions": false`) {
 		t.Errorf("expected the conflicts in JSON, got: %q", out)
 	}
 }
@@ -587,9 +604,13 @@ func TestCredentialMigrationConflictsResolveCmd_Success(t *testing.T) {
 }
 
 func TestCredentialMigrationConflictsResolveCmd_SuccessYAML(t *testing.T) {
-	out, err := executeCredCmd(t, newMockCredSvc(), "--output", "yaml", "credential", "migration-conflicts", "resolve", "db", "--resolution", "discard")
+	svc := newMockCredSvc()
+	out, err := executeCredCmd(t, svc, "--output", "yaml", "credential", "migration-conflicts", "resolve", "db", "--resolution", "discard")
 	if err != nil {
 		t.Fatalf("credential migration-conflicts resolve yaml: %v", err)
+	}
+	if svc.resolvedName != "db" || svc.resolution != credentials.MigrationDiscard {
+		t.Errorf("service saw %q %q, want db discard", svc.resolvedName, svc.resolution)
 	}
 	if !strings.Contains(out, "db") || !strings.Contains(out, "discard") {
 		t.Errorf("expected the resolution in YAML, got: %q", out)
@@ -612,8 +633,9 @@ func TestCredentialMigrationConflictsResolveCmd_InvalidResolution(t *testing.T) 
 
 func TestCredentialMigrationConflictsResolveCmd_MissingResolution(t *testing.T) {
 	svc := newMockCredSvc()
-	if _, err := executeCredCmd(t, svc, "credential", "migration-conflicts", "resolve", "db"); err == nil {
-		t.Fatal("expected an error without --resolution")
+	_, err := executeCredCmd(t, svc, "credential", "migration-conflicts", "resolve", "db")
+	if err == nil || !strings.Contains(err.Error(), `required flag(s) "resolution" not set`) {
+		t.Fatalf("err = %v, want the missing --resolution flag named", err)
 	}
 	if svc.resolvedName != "" {
 		t.Errorf("a resolve without --resolution reached the service: %q", svc.resolvedName)
