@@ -26,12 +26,14 @@ type byRoleLister struct {
 	UserServicer
 	users []*User
 	err   error
-	calls int
+	// failAfter is the number of pages served before err is returned.
+	failAfter int
+	calls     int
 }
 
 func (l *byRoleLister) ListUsers(_ context.Context, req *ListUsersRequest) (*ListUsersResponse, error) {
 	l.calls++
-	if l.err != nil {
+	if l.err != nil && l.calls > l.failAfter {
 		return nil, l.err
 	}
 	start := (req.Page - 1) * req.PageSize
@@ -104,5 +106,19 @@ func TestUsersHoldingRole_Errors(t *testing.T) {
 	fault := errors.New("store fault")
 	if _, err := UsersHoldingRole(ctx, &byRoleLister{err: fault}, "system", "so"); !errors.Is(err, fault) {
 		t.Fatalf("fault: %v", err)
+	}
+	// A fault on a later page aborts the walk: the holders already found
+	// are not returned as the whole answer.
+	var users []*User
+	for i := range 250 {
+		users = append(users, &User{ID: uint64(i + 1), TenantID: "system", RoleIDs: []string{"so"}})
+	}
+	l := &byRoleLister{users: users, err: fault, failAfter: 1}
+	got, err := UsersHoldingRole(ctx, l, "system", "so")
+	if !errors.Is(err, fault) || got != nil {
+		t.Fatalf("second-page fault: holders %d, err %v; want no holders and the fault", len(got), err)
+	}
+	if l.calls != 2 {
+		t.Fatalf("ListUsers calls = %d, want 2", l.calls)
 	}
 }
