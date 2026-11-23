@@ -747,11 +747,23 @@ func recodeDirPlaintext(t *testing.T, dir string, secrets map[string]string) []s
 	defer func() { _ = root.Close() }()
 	var hits []string
 	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		// The open store compacts in the background, so a file listed by
+		// the walk can be gone before it is read. A removed file holds no
+		// surviving plaintext; skip it. Every other error stays fatal.
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			return err
+		}
+		if d.IsDir() {
+			return nil
 		}
 		data, rerr := root.ReadFile(path)
 		if rerr != nil {
+			if errors.Is(rerr, fs.ErrNotExist) {
+				return nil
+			}
 			return rerr
 		}
 		for _, value := range secrets {
