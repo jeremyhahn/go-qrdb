@@ -357,6 +357,58 @@ func TestDatabaseBinding_CLI_InfoReportsTheBinding_PerProtocol(t *testing.T) {
 	}
 }
 
+// TestDatabaseBinding_CLI_RaftModeLocalBackendOwnStore_PerProtocol proves a
+// raft-mode node materializes a local binding the way a standalone node does:
+// a pebble database of the system tenant is served from its own store under
+// the node's data directory, `database info` reports a local binding, and
+// dropping the database removes the store, over every transport.
+func TestDatabaseBinding_CLI_RaftModeLocalBackendOwnStore_PerProtocol(t *testing.T) {
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			conn := node.cliArgsFor(proto)
+			name := "raftlocal-" + proto.name
+			if out, err := runQRDB(t, node.cli, conn, "database", "create", name, "--backend", "pebble"); err != nil {
+				t.Fatalf("[%s] database create %s: %v\n%s", proto.name, name, err, out)
+			}
+			if out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "put", "k1", "v1"); err != nil {
+				t.Fatalf("[%s] kv put: %v\n%s", proto.name, err, out)
+			}
+			out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "get", "k1")
+			if err != nil || !strings.Contains(out, "v1") {
+				t.Fatalf("[%s] kv get = %q, %v; want v1", proto.name, out, err)
+			}
+
+			out, err = runQRDB(t, node.cli, conn, "--output", "json", "database", "info", name)
+			if err != nil {
+				t.Fatalf("[%s] database info %s: %v\n%s", proto.name, name, err, out)
+			}
+			var info transport.DatabaseInfo
+			if jerr := json.Unmarshal([]byte(out), &info); jerr != nil {
+				t.Fatalf("[%s] decode database info JSON: %v\n%s", proto.name, jerr, out)
+			}
+			if info.Binding == nil || info.Binding.Kind != "local" {
+				t.Fatalf("[%s] database info binding = %+v, want kind local\n%s", proto.name, info.Binding, out)
+			}
+
+			root := filepath.Join(node.dataDir, "tenants", "system", "databases", name)
+			entries, err := os.ReadDir(root)
+			if err != nil || len(entries) == 0 {
+				t.Fatalf("[%s] the database's own store %s is missing or empty (%d entries, %v)", proto.name, root, len(entries), err)
+			}
+
+			if out, err := runQRDB(t, node.cli, conn, "database", "drop", name); err != nil {
+				t.Fatalf("[%s] database drop %s: %v\n%s", proto.name, name, err, out)
+			}
+			if _, err := os.Stat(root); !os.IsNotExist(err) {
+				t.Fatalf("[%s] the dropped database's store %s still exists (%v)", proto.name, root, err)
+			}
+		})
+	}
+}
+
 // TestDatabaseBinding_CLI_RecreateGivesNewGeneration_PerProtocol drops a
 // database and creates it again under the same name over the CLI on every
 // transport, in a prefix tenant, and asserts the drop removes the store
