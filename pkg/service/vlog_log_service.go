@@ -892,6 +892,12 @@ func (s *logService) dropGroup(ctx context.Context, tenantID, name string) (logG
 	}
 	logs, err := targetRead[[]vlog.LogID](ctx, target, vlog.ListRequest{TenantID: tenantID, Database: name})
 	if err != nil {
+		// A state machine with no verifiable-log case at all (the opt-in
+		// "kv" engine) refuses every log request as an unsupported query
+		// type: it holds no log, so its database has none to reclaim.
+		if uqe, ok := errors.AsType[unsupportedQueryTypeErr](err); ok && uqe.UnsupportedQueryType() {
+			return logGroup{}, false, nil
+		}
 		return logGroup{}, false, err
 	}
 	if len(logs) == 0 {

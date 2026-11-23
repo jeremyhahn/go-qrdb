@@ -1441,6 +1441,46 @@ func TestLogService_DropDatabaseLogs_UntenantedActsOnTheSystemTenant(t *testing.
 	}
 }
 
+// TestLogService_DropDatabaseLogs_GroupWithNoLogCaseHasNoneToReclaim proves
+// a drop whose group's state machine has no verifiable-log case at all (the
+// opt-in "kv" engine refuses every log request as an unsupported query type)
+// checks and reclaims nothing and proposes nothing: such a group holds no
+// log. Any other read refusal (an invalid query naming a missing resource)
+// still refuses the drop.
+func TestLogService_DropDatabaseLogs_GroupWithNoLogCaseHasNoneToReclaim(t *testing.T) {
+	for _, tenantID := range []string{"", "tenant-delta"} {
+		proposed := 0
+		host := &mockHost{
+			syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+				proposed++
+				return sm.Result{}, nil
+			},
+			syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+				return nil, &fakeUnsupportedQueryTypeError{unsupported: true}
+			},
+		}
+		svc := newTestLogService(t, host, nil).(*logService)
+		if err := svc.CheckDropDatabaseLogs(context.Background(), tenantID, testLogRef.Database); err != nil {
+			t.Fatalf("tenant %q: CheckDropDatabaseLogs: %v", tenantID, err)
+		}
+		if err := svc.DropDatabaseLogs(context.Background(), tenantID, testLogRef.Database, "inc-1"); err != nil {
+			t.Fatalf("tenant %q: DropDatabaseLogs: %v", tenantID, err)
+		}
+		if proposed != 0 {
+			t.Fatalf("tenant %q: proposed %d commands, want none", tenantID, proposed)
+		}
+	}
+
+	refusal := &fakeUnsupportedQueryTypeError{unsupported: false}
+	host := &mockHost{
+		syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) { return nil, refusal },
+	}
+	svc := newTestLogService(t, host, nil).(*logService)
+	if err := svc.DropDatabaseLogs(context.Background(), "", testLogRef.Database, "inc-1"); !errors.Is(err, refusal) {
+		t.Fatalf("DropDatabaseLogs = %v; want the read refusal %v", err, refusal)
+	}
+}
+
 // dropGateOffHost is a raft host on which every feature but
 // featuregate.VerifiableLogDrop is active.
 type dropGateOffHost struct{ *mockHost }
@@ -1517,11 +1557,6 @@ func (r *stubLogReclaimer) CheckDropDatabaseLogs(context.Context, string, string
 	return r.checkErr
 }
 
-// TestDatabaseService_DropReclaimsTheDatabasesLogs proves Drop and
-// DropForTenant reclaim the dropped database's verifiable logs inside the
-// manager's fenced teardown, before the name is released; that a failed
-// reclaim leaves the database droppable on retry; and that a refused check
-// refuses the drop with nothing fenced.
 // TestDatabaseService_DropOfAnUntenantedDatabaseReclaimsItsLogs proves an
 // admin Drop of a database created with no tenant checks and reclaims its
 // verifiable logs (the reclaimer files them under the system tenant), so a
@@ -1541,6 +1576,11 @@ func TestDatabaseService_DropOfAnUntenantedDatabaseReclaimsItsLogs(t *testing.T)
 	}
 }
 
+// TestDatabaseService_DropReclaimsTheDatabasesLogs proves Drop and
+// DropForTenant reclaim the dropped database's verifiable logs inside the
+// manager's fenced teardown, before the name is released; that a failed
+// reclaim leaves the database droppable on retry; and that a refused check
+// refuses the drop with nothing fenced.
 func TestDatabaseService_DropReclaimsTheDatabasesLogs(t *testing.T) {
 	ctx := tenantCtx("tenant-delta")
 	for _, admin := range []bool{false, true} {
