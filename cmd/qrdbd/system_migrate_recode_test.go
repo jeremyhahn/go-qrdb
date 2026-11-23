@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -713,12 +714,17 @@ func TestRecodeSystemBarrier_SealStoreCommitFailureKeepsJournal(t *testing.T) {
 // recodeDirPlaintext lists the files under dir holding any secret's plaintext.
 func recodeDirPlaintext(t *testing.T, dir string, secrets map[string]string) []string {
 	t.Helper()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("open root %s: %v", dir, err)
+	}
+	defer func() { _ = root.Close() }()
 	var hits []string
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
 			return err
 		}
-		data, rerr := os.ReadFile(path)
+		data, rerr := root.ReadFile(path)
 		if rerr != nil {
 			return rerr
 		}

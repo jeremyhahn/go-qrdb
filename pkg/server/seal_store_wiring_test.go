@@ -36,8 +36,9 @@ func (s *listOnlySealStore) Status(context.Context) (*seal.SealStoreStatus, erro
 func TestStart_GRPCAndUnix_ServeSealStore(t *testing.T) {
 	socketPath := t.TempDir() + "/seal.sock"
 	cfg := testConfigFull(t, protocolFlags{grpc: true, unix: true}, socketPath)
+	srvTLS := selfSignedTLSConfig(t)
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
-		WithTLS(selfSignedTLSConfig(t)),
+		WithTLS(srvTLS),
 		WithSealStoreService(&listOnlySealStore{names: []string{"alpha"}}),
 	)
 	if err := srv.Start(); err != nil {
@@ -45,8 +46,11 @@ func TestStart_GRPCAndUnix_ServeSealStore(t *testing.T) {
 	}
 	defer srv.Stop()
 
-	//nolint:gosec // test dial to a self-signed listener
-	creds := grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true}))
+	creds := grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
+		RootCAs:    srvTLS.RootCAs,
+		ServerName: "localhost",
+		MinVersion: tls.VersionTLS13,
+	}))
 	dials := map[string]func() (*grpc.ClientConn, error){
 		"grpc": func() (*grpc.ClientConn, error) { return grpc.NewClient(srv.GRPCAddr(), creds) },
 		// The unix listener serves gRPC over TLS too.
@@ -75,8 +79,9 @@ func TestStart_GRPCAndUnix_ServeSealStore(t *testing.T) {
 func TestStart_RESTQUICMCP_ServeSealStore(t *testing.T) {
 	socketPath := t.TempDir() + "/seal.sock"
 	cfg := testConfigFull(t, protocolFlags{rest: true, quic: true, mcp: true}, socketPath)
+	srvTLS := selfSignedTLSConfig(t)
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
-		WithTLS(selfSignedTLSConfig(t)),
+		WithTLS(srvTLS),
 		WithSealStoreService(&listOnlySealStore{names: []string{"alpha"}}),
 	)
 	if err := srv.Start(); err != nil {
@@ -84,8 +89,11 @@ func TestStart_RESTQUICMCP_ServeSealStore(t *testing.T) {
 	}
 	defer srv.Stop()
 
-	//nolint:gosec // test dial to a self-signed listener
-	cliTLS := &tls.Config{InsecureSkipVerify: true}
+	cliTLS := &tls.Config{
+		RootCAs:    srvTLS.RootCAs,
+		ServerName: "localhost",
+		MinVersion: tls.VersionTLS13,
+	}
 
 	t.Run("rest", func(t *testing.T) {
 		hc := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: cliTLS.Clone()}}

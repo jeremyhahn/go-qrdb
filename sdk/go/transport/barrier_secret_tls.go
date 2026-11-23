@@ -42,6 +42,7 @@ const (
 	BarrierSecretUserPIN BarrierSecretKind = "user PIN"
 	// BarrierSecretSealStore is a secret stored in, or read from, the seal
 	// store.
+	// #nosec G101 -- barrier-secret kind label used in refusal messages, not a credential.
 	BarrierSecretSealStore BarrierSecretKind = "seal-store secret"
 
 	// soPINSecret is a request's own SO PIN field. It is refused with

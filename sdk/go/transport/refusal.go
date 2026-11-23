@@ -46,9 +46,11 @@ const (
 	ReasonBarrierRootKeyWriteInProgress = "BARRIER_ROOT_KEY_WRITE_IN_PROGRESS"
 	// ReasonSealStoreSecretNotFound names seal.ErrSealStoreSecretNotFound:
 	// the named seal-store secret does not exist.
+	// #nosec G101 -- structured-refusal reason code, not a credential.
 	ReasonSealStoreSecretNotFound = "SEAL_STORE_SECRET_NOT_FOUND"
 	// ReasonSealStoreInvalidSecretName names seal.ErrInvalidSecretName: the
 	// seal-store secret name is not one opaque path segment.
+	// #nosec G101 -- structured-refusal reason code, not a credential.
 	ReasonSealStoreInvalidSecretName = "SEAL_STORE_INVALID_SECRET_NAME"
 	// ReasonSealStoreBarrierSealed names seal.ErrSealStoreBarrierSealed: the
 	// seal store's barrier is sealed while the listener serves.
