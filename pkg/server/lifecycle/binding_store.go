@@ -200,7 +200,7 @@ func (f *LocalBindingFactory) Create(cfg database.DatabaseConfig, dataDir string
 	// as a new, empty materialized store. Moving it to the binding root is
 	// a relocation (slice 3b.8), not done here. A fresh create has no data
 	// at dataDir and gets its materialized binding.
-	if preBindingData(b.DataRoot, dataDir) {
+	if preBindingData(b.Backend, b.DataRoot, dataDir) {
 		return f.fallback.Create(cfg, dataDir)
 	}
 	return f.open(b)
@@ -274,18 +274,42 @@ func (f *LocalBindingFactory) resolveLocal(cfg *database.DatabaseConfig) (*datab
 // binding root does not exist, and the store at dataDir, where the database
 // was opened before, holds data. A memory store (no root) has nothing at
 // rest to keep.
-func preBindingData(root, dataDir string) bool {
+func preBindingData(backend database.BackendType, root, dataDir string) bool {
 	if strings.TrimSpace(root) == "" || strings.TrimSpace(dataDir) == "" {
 		return false
 	}
+	probe := root
 	if filepath.Clean(root) == filepath.Clean(dataDir) {
-		return false
+		// An explicit data_dir is the binding root itself: the database
+		// wrote its store straight into data_dir before the binding
+		// change, and the binding opens its own store one level down
+		// (NewLocalStorage: <root>/pebble, <root>/file). Until that store
+		// exists, data in data_dir is the legacy placement and keeps its
+		// shared route; relocation is slice 3b.8.
+		probe = bindingStoreDir(backend, root)
+		if probe == "" {
+			return false
+		}
 	}
-	if _, err := os.Stat(root); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(probe); !errors.Is(err, fs.ErrNotExist) {
 		return false
 	}
 	entries, err := os.ReadDir(dataDir)
 	return err == nil && len(entries) > 0
+}
+
+// bindingStoreDir names the store directory NewLocalStorage opens under a
+// binding root, or "" for a backend whose store is not a subdirectory of
+// it.
+func bindingStoreDir(backend database.BackendType, root string) string {
+	switch backend {
+	case database.BackendPebble:
+		return filepath.Join(root, "pebble")
+	case database.BackendFile:
+		return filepath.Join(root, "file")
+	default:
+		return ""
+	}
 }
 
 // Close releases the embedded factory.

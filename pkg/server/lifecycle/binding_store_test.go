@@ -291,6 +291,69 @@ func TestLocalBindingFactory_PreBindingDataKept(t *testing.T) {
 	}
 }
 
+// TestLocalBindingFactory_ExplicitDataDirLegacyKept proves a database with
+// an explicit data_dir, whose binding root is that data_dir, keeps the store
+// it wrote straight into data_dir before the binding change: reopened
+// through the factory, it is served from there, not from a new empty
+// <data_dir>/<backend> store. A fresh create under an empty explicit
+// data_dir is materialized, and stays materialized when reopened.
+func TestLocalBindingFactory_ExplicitDataDirLegacyKept(t *testing.T) {
+	ctx := context.Background()
+	for _, b := range []database.BackendType{database.BackendPebble, database.BackendFile} {
+		t.Run(string(b), func(t *testing.T) {
+			dir := t.TempDir()
+			legacyDir := filepath.Join(dir, "explicit-legacy")
+			legacy := database.DatabaseConfig{TenantID: bindingTenant, Name: "legacy", Backend: b, DataDir: legacyDir}
+
+			before, err := database.NewEmbeddedBackendFactory().Create(legacy, legacyDir)
+			if err != nil {
+				t.Fatalf("pre-binding Create: %v", err)
+			}
+			if err := before.Put(ctx, []byte("k"), []byte("v")); err != nil {
+				t.Fatalf("pre-binding Put: %v", err)
+			}
+			if err := before.Close(); err != nil {
+				t.Fatalf("pre-binding Close: %v", err)
+			}
+
+			f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
+			be, err := f.Create(legacy, legacyDir)
+			if err != nil {
+				t.Fatalf("reopen legacy: %v", err)
+			}
+			if _, ok := be.(*lifecycle.MaterializedBinding); ok {
+				t.Fatal("a legacy explicit data_dir database was reopened as a new materialized store")
+			}
+			got, err := be.Get(ctx, []byte("k"))
+			if err != nil || string(got) != "v" {
+				t.Fatalf("legacy Get(k) = %q, %v; want v", got, err)
+			}
+			if err := be.Close(); err != nil {
+				t.Fatalf("legacy Close: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(legacyDir, string(b))); !os.IsNotExist(err) {
+				t.Fatalf("the reopen created a binding store under the legacy data_dir (%v)", err)
+			}
+
+			freshDir := filepath.Join(dir, "explicit-fresh")
+			fresh := database.DatabaseConfig{TenantID: bindingTenant, Name: "fresh", Backend: b, DataDir: freshDir}
+			for i := 0; i < 2; i++ {
+				fb, err := f.Create(fresh, freshDir)
+				if err != nil {
+					t.Fatalf("Create fresh (open %d): %v", i, err)
+				}
+				_, ok := fb.(*lifecycle.MaterializedBinding)
+				if err := fb.Close(); err != nil {
+					t.Fatalf("Close fresh (open %d): %v", i, err)
+				}
+				if !ok {
+					t.Fatalf("fresh explicit data_dir backend (open %d) = %T, want *lifecycle.MaterializedBinding", i, fb)
+				}
+			}
+		})
+	}
+}
+
 func TestLocalBindingFactory_ErrorsTyped(t *testing.T) {
 	t.Run("resolve binding", func(t *testing.T) {
 		f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: t.TempDir()}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
