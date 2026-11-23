@@ -85,6 +85,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strconv"
@@ -3585,10 +3586,15 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	// barrier is built or data stores are opened: roll a committed migration
 	// forward (so the keyed data + keyed root key are both in place) or a
 	// not-yet-committed one back. Idempotent and credential-free, so safe on
-	// every boot; a no-op when no migration journal is present.
+	// every boot; a no-op when no migration journal is present. A failed
+	// recovery stops startup, as the daemon's recoverSystemMigration does:
+	// reopening the none-strategy stores over a committed journal would
+	// acknowledge writes a later successful roll-forward swaps away. The
+	// journal stays, so the next start retries.
 	if rerr := database.RecoverInterruptedMigration(ctx, sealBackend, barrierCfg.RootKeyPath,
 		[]string{filepath.Join(dataDir, "pebble"), filepath.Join(dataDir, "vector")}); rerr != nil {
-		log.Warn("node: encryption-migration crash recovery failed", "error", rerr)
+		_ = sealStore.Close()
+		return nil, &StorageCreateError{Backend: "seal-recover", Err: fmt.Errorf("recover the interrupted system encryption migration: %w", rerr)}
 	}
 
 	// The system barrier resolves its strategy through the same registry
