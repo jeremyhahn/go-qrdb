@@ -100,10 +100,16 @@ func (e sealStoreEndpoints) do(ctx context.Context, method string, req, resp any
 }
 
 func (e sealStoreEndpoints) PutSealStoreSecret(ctx context.Context, name string, secret []byte) error {
+	if err := e.t.requireTLS(transport.SealStoreSecret(true)); err != nil {
+		return err
+	}
 	return e.do(ctx, "Put", sealStorePutWire{Name: name, Secret: secret}, nil)
 }
 
 func (e sealStoreEndpoints) GetSealStoreSecret(ctx context.Context, name string) ([]byte, error) {
+	if err := e.t.requireTLS(transport.SealStoreSecret(true)); err != nil {
+		return nil, err
+	}
 	var resp transport.SealStoreGetResponse
 	if err := e.do(ctx, "Get", sealStoreNameWire{Name: name}, &resp); err != nil {
 		return nil, err

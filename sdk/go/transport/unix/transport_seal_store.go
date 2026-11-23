@@ -75,6 +75,9 @@ func (e sealStoreEndpoints) PutSealStoreSecret(ctx context.Context, name string,
 	if e.t.closed.Load() {
 		return &transport.ClosedError{}
 	}
+	if err := e.t.requireTLS(transport.SealStoreSecret(true)); err != nil {
+		return err
+	}
 	if _, err := e.t.client.SealStorePut(ctx, &pb.SealStorePutRequest{Name: name, Secret: secret}); err != nil {
 		return mapGRPCError("SealStorePut", err)
 	}
@@ -85,6 +88,9 @@ func (e sealStoreEndpoints) PutSealStoreSecret(ctx context.Context, name string,
 func (e sealStoreEndpoints) GetSealStoreSecret(ctx context.Context, name string) ([]byte, error) {
 	if e.t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if err := e.t.requireTLS(transport.SealStoreSecret(true)); err != nil {
+		return nil, err
 	}
 	resp, err := e.t.client.SealStoreGet(ctx, &pb.SealStoreNameRequest{Name: name})
 	if err != nil {

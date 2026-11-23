@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/pem"
@@ -165,9 +166,18 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 		filepath.Join(f.dataDir, "vector"),
 		filepath.Join(f.dataDir, "wal"),
 	}
+	// A committed journal that names the seal-store keyspace means the
+	// recovery below rolls the re-encrypted seal-store records forward; the
+	// plaintext versions they replace are then compacted out of the store.
+	pending, _ := seal.LoadMigrationJournalFrom(sigCtx, sealBackend, barrierCfg.RootKeyPath)
 	if rerr := database.RecoverInterruptedMigration(sigCtx, sealBackend, barrierCfg.RootKeyPath, sysStoreDirs); rerr != nil {
 		slog.Warn("system encryption-migration crash recovery failed; manual reconcile may be required",
 			slog.Any("error", rerr))
+	} else if pending != nil && pending.Committed() && journalNamesSealStore(pending) {
+		if cerr := sealStoreCompactor(sealStore)(); cerr != nil {
+			slog.Warn("compacting the seal store's plaintext history after encryption-migration recovery failed",
+				slog.Any("error", cerr))
+		}
 	}
 
 	// The system barrier resolves its strategies through the same registry an
@@ -356,6 +366,41 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 // after an enable-encryption the config still names none while the root key
 // is keyed, and that barrier stays sealed. An uninitialized barrier is left
 // alone; its first boot is the operator's init.
+// sealStoreCompactor returns the step that retires the seal store's plaintext
+// history once enable-encryption has replaced its records: a whole-store
+// compaction, which flushes the memtable (rotating the WAL that holds the old
+// writes) and rewrites every SST without the shadowed versions. A nil store
+// has no history to retire.
+func sealStoreCompactor(store *pebblestore.PebbleStorage) func() error {
+	if store == nil {
+		return func() error { return nil }
+	}
+	return func() error {
+		// Pebble refuses an unbounded manual compaction, so the range ends
+		// just past the largest key any table holds once the memtable is
+		// flushed (deleted keys included: their tombstones are in a table).
+		if err := store.Flush(); err != nil {
+			return err
+		}
+		levels, err := store.DB().SSTables()
+		if err != nil {
+			return err
+		}
+		var largest []byte
+		for _, level := range levels {
+			for _, table := range level {
+				if k := table.Largest.UserKey; largest == nil || bytes.Compare(k, largest) > 0 {
+					largest = k
+				}
+			}
+		}
+		if largest == nil {
+			return nil
+		}
+		return store.Compact(nil, append(append([]byte(nil), largest...), 0x00))
+	}
+}
+
 func unsealNoneBarrier(ctx context.Context, barrier *seal.StorageBarrier) error {
 	if !barrier.IsSealed() || barrier.PersistedStrategy(ctx) != seal.StrategyNone {
 		return nil

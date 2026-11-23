@@ -26,7 +26,12 @@ to [../shamir-custody/api.md](../shamir-custody/api.md).
 ## Seal store (named secrets)
 
 The node's seal store holds named secrets. Every entry is encrypted under the
-system barrier, so a sealed node serves none of them.
+system barrier, so a sealed node serves none of them. Put and Get refuse a
+plaintext connection on every SDK transport (REST, gRPC, Unix, QUIC and MCP)
+before the secret reaches the wire. `enable-encryption` re-encrypts the seal
+store under the new root key, rolls it forward at the next boot after a crash
+past the commit point, and compacts the plaintext history out of the seal
+store's files.
 
 | Operation | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.SealStore()`) | `scp` permission |
 |---|---|---|---|---|---|---|

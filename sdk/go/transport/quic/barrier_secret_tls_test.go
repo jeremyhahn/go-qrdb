@@ -41,6 +41,35 @@ func TestBarrierSecret_HTTPAddressRefusesEverySecretCall(t *testing.T) {
 	sotest.RunHTTPAddressRefused(t, "quic", sotest.SecretTarget{Client: tr, Reached: func() int { return int(frames.Load()) }})
 }
 
+// TestSealStoreSecret_HTTPAddressIsRefused proves Put and Get of a seal-store
+// secret refuse an http:// address before any frame is sent.
+func TestSealStoreSecret_HTTPAddressIsRefused(t *testing.T) {
+	var frames atomic.Int64
+	tr := NewFrameTransport("", func(context.Context, string, string, []byte) (uint16, []byte, error) {
+		frames.Add(1)
+		return 0, nil, errors.New("the frame was sent")
+	})
+	tr.config.Address = "http://127.0.0.1:1"
+	tr.config.TLSEnabled = true
+	ep := sealStoreEndpoints{t: tr}
+	ctx := context.Background()
+	var tlsErr *transport.BarrierSecretRequiresTLSError
+	if err := ep.PutSealStoreSecret(ctx, "alpha", []byte("alpha-secret")); !errors.As(err, &tlsErr) {
+		t.Fatalf("Put over http://: err = %v, want *transport.BarrierSecretRequiresTLSError", err)
+	}
+	if _, err := ep.GetSealStoreSecret(ctx, "alpha"); !errors.As(err, &tlsErr) {
+		t.Fatalf("Get over http://: err = %v, want *transport.BarrierSecretRequiresTLSError", err)
+	}
+	if n := frames.Load(); n != 0 {
+		t.Fatalf("seal-store secret frames sent = %d, want 0", n)
+	}
+	// A non-secret call still goes to the wire: the refusal is the guard's.
+	_, _ = ep.ListSealStoreSecrets(ctx)
+	if n := frames.Load(); n == 0 {
+		t.Fatal("List sent no frame: the frame counter cannot see a sent call")
+	}
+}
+
 // TestBarrierSecret_HTTPAddressIsRefused: an address configured with an
 // explicit http:// scheme refuses every secret-carrying call (#1639), and the
 // server never sees the call. A call carrying no secret goes through.

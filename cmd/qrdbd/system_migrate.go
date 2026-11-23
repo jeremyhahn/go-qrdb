@@ -16,7 +16,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -267,7 +266,7 @@ func handleSystemMigration(
 	stores := systemMigrationStores(f.dataDir, f.smType, f.smStorage)
 	walDir := filepath.Join(f.dataDir, "wal")
 
-	rerr := recodeSystemBarrier(context.Background(), sealSub.SealBarrier, stores, walDir, req.opts)
+	rerr := recodeSystemBarrier(context.Background(), sealSub.SealBarrier, stores, walDir, req.opts, sealStoreCompactor(sealSub.SealStore))
 	// The recycle has consumed the unlock credential; destroy the credential the
 	// reconciler handed off (the system-scope path owns it — the reconciler can't
 	// destroy it because this recycle runs async across the in-process reboot).
@@ -339,7 +338,7 @@ func existingDirs(paths ...string) []string {
 // walDir is the Raft write-ahead log. The host
 // MUST already be closed by the caller (its Pebble/WAL locks released). It
 // mirrors the per-tenant recycle in pkg/server/tenant_migrate.go.
-func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, stores service.MigrationStores, walDir string, opts seal.MigrationOptions) (err error) {
+func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, stores service.MigrationStores, walDir string, opts seal.MigrationOptions, retireSealStore func() error) (err error) {
 	if source == nil {
 		return service.ErrMigrationProviderUnavailable
 	}
@@ -494,16 +493,23 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, store
 	// The seal store keeps its secrets as records in the system barrier's own
 	// backend, so they are re-encrypted too: each record is staged under the
 	// keyed root key beside the live none-format record, which stays readable
-	// until the commit. A pre-commit failure discards the staged set; past the
-	// committing checkpoint the staged set is kept as the roll-forward copy
-	// (the next migration clears it before it stages again).
-	sealKeys, cerr := stageSealStoreRecords(ctx, source, target)
+	// until the commit. The journal names the seal-store keyspace BEFORE the
+	// first record is staged, so every later checkpoint (the committing one
+	// included) carries it: a crash before the commit point rolls the staged
+	// set back at boot, a crash past it rolls the set forward
+	// (database.RecoverInterruptedMigration).
+	sealRec := seal.StagedRecords{Prefix: seal.SealStoreDefaultPrefix, StagingPrefix: sealStoreStagingPrefix}
+	j.StagedRecords = append(j.StagedRecords, sealRec)
+	if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
+		err = cerr
+		return err
+	}
 	defer func() {
 		if err != nil && !j.Committed() {
-			discardStagedSealStore(ctx, source, sealKeys)
+			_ = source.RollbackStagedRecords(ctx, []seal.StagedRecords{sealRec})
 		}
 	}()
-	if cerr != nil {
+	if _, cerr := source.StageMigratedRecords(ctx, target, sealRec); cerr != nil {
 		err = fmt.Errorf("re-encrypt seal store: %w", cerr)
 		return err
 	}
@@ -528,7 +534,7 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, store
 			return err
 		}
 	}
-	if verr := verifyStagedSealStore(ctx, source, target, sealKeys); verr != nil {
+	if verr := source.VerifyMigratedRecords(ctx, target, sealRec); verr != nil {
 		err = fmt.Errorf("verify re-encrypted seal store: %w", verr)
 		return err
 	}
@@ -565,18 +571,33 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, store
 		database.RemoveStoreBackup(dir)
 	}
 	database.RemoveStoreBackup(walDir)
-	// Past the point of no return: replace each none-format seal-store record
-	// with its keyed copy so no plaintext stays on disk. The migration still
-	// completes on a failure here (the keyed root key is live); the staged
-	// copies the error names keep the secrets readable.
-	commitErr := commitStagedSealStore(ctx, target, sealKeys)
+	// Past the point of no return: copy each staged seal-store record over its
+	// live none-format record. A failure here (or a crash) returns with the
+	// committed journal still in place, so the next boot's
+	// RecoverInterruptedMigration rolls the records forward from it.
+	if sealStoreCommitFault != nil {
+		if ferr := sealStoreCommitFault(); ferr != nil {
+			err = ferr
+			return err
+		}
+	}
+	if cerr := source.CommitStagedRecords(ctx, j.StagedRecords); cerr != nil {
+		err = fmt.Errorf("commit re-encrypted seal store: %w", cerr)
+		return err
+	}
+	// Retire the plaintext history the replaced records leave in the seal
+	// store's files, still under the journal: a failure keeps the journal so
+	// the next boot compacts again.
+	if retireSealStore != nil {
+		if rerr := retireSealStore(); rerr != nil {
+			err = fmt.Errorf("retire seal-store plaintext history: %w", rerr)
+			return err
+		}
+	}
 
 	j.Phase = seal.PhaseComplete
 	_ = source.CheckpointMigration(ctx, j)
 	_ = source.FinishMigration(ctx)
-	if commitErr != nil {
-		return fmt.Errorf("commit re-encrypted seal store: %w", commitErr)
-	}
 	return nil
 }
 
@@ -586,102 +607,24 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, store
 // record.
 var sealStoreStagingPrefix = strings.TrimSuffix(seal.SealStoreDefaultPrefix, "/") + systemMigrateStagingSuffix + "/"
 
-// stagedSealStoreKey returns the staging key for the live seal-store key.
-func stagedSealStoreKey(live string) string {
-	return sealStoreStagingPrefix + strings.TrimPrefix(live, seal.SealStoreDefaultPrefix)
-}
+// sealStoreCommitFault, when set by a test, runs right after the keyed root
+// key is adopted and before the staged seal-store records are copied over the
+// live ones: it simulates a crash past the commit point. Nil in production.
+var sealStoreCommitFault func() error
 
-// stageSealStoreRecords re-encrypts every seal-store record of source under
-// target's root key into the staging prefix, leaving the live records
-// untouched. Records left by an earlier interrupted migration are cleared
-// first. It returns the live keys it staged (also on error, so the caller can
-// discard a partial set).
-func stageSealStoreRecords(ctx context.Context, source, target *seal.StorageBarrier) ([]string, error) {
-	leftover, err := source.List(ctx, sealStoreStagingPrefix)
-	if err != nil {
-		return nil, fmt.Errorf("list staged records: %w", err)
+// journalNamesSealStore reports whether a migration journal stages the seal
+// store's records, which the boot recovery then rolls forward and whose
+// plaintext history it must compact away.
+func journalNamesSealStore(j *seal.MigrationJournal) bool {
+	if j == nil {
+		return false
 	}
-	for _, key := range leftover {
-		if derr := source.Delete(ctx, key); derr != nil {
-			return nil, fmt.Errorf("clear staged record: %w", derr)
+	for _, rec := range j.StagedRecords {
+		if rec.Prefix == seal.SealStoreDefaultPrefix {
+			return true
 		}
 	}
-	live, err := source.List(ctx, seal.SealStoreDefaultPrefix)
-	if err != nil {
-		return nil, fmt.Errorf("list records: %w", err)
-	}
-	staged := make([]string, 0, len(live))
-	for _, key := range live {
-		plaintext, gerr := source.Get(ctx, key)
-		if gerr != nil {
-			return staged, fmt.Errorf("read record: %w", gerr)
-		}
-		perr := target.Put(ctx, stagedSealStoreKey(key), plaintext)
-		clear(plaintext)
-		staged = append(staged, key)
-		if perr != nil {
-			return staged, fmt.Errorf("stage record: %w", perr)
-		}
-	}
-	return staged, nil
-}
-
-// verifyStagedSealStore checks that every staged keyed record decrypts under
-// target to the live record's value.
-func verifyStagedSealStore(ctx context.Context, source, target *seal.StorageBarrier, keys []string) error {
-	for _, key := range keys {
-		want, err := source.Get(ctx, key)
-		if err != nil {
-			return fmt.Errorf("read record: %w", err)
-		}
-		got, err := target.Get(ctx, stagedSealStoreKey(key))
-		if err != nil {
-			clear(want)
-			return fmt.Errorf("read staged record: %w", err)
-		}
-		equal := bytes.Equal(want, got)
-		clear(want)
-		clear(got)
-		if !equal {
-			return errSealStoreRecordMismatch
-		}
-	}
-	return nil
-}
-
-// errSealStoreRecordMismatch reports a staged seal-store record that does not
-// decrypt to the live record's value.
-var errSealStoreRecordMismatch = errors.New("staged seal-store record does not match the live record")
-
-// discardStagedSealStore deletes the staged keyed records of keys, leaving
-// the live none-format records as they were.
-func discardStagedSealStore(ctx context.Context, b *seal.StorageBarrier, keys []string) {
-	for _, key := range keys {
-		_ = b.Delete(ctx, stagedSealStoreKey(key))
-	}
-}
-
-// commitStagedSealStore runs after the source barrier adopted the keyed root
-// key of b (the migration target, which shares its backend): it replaces each
-// live none-format record with its staged keyed copy (one Put over the live
-// key) and then deletes the staged copy. It carries on past a failed
-// record and returns the first error.
-func commitStagedSealStore(ctx context.Context, b *seal.StorageBarrier, keys []string) error {
-	var first error
-	for _, key := range keys {
-		plaintext, err := b.Get(ctx, stagedSealStoreKey(key))
-		if err == nil {
-			err = b.Put(ctx, key, plaintext)
-			clear(plaintext)
-		}
-		if err == nil {
-			err = b.Delete(ctx, stagedSealStoreKey(key))
-		}
-		if err != nil && first == nil {
-			first = err
-		}
-	}
-	return first
+	return false
 }
 
 // systemMigrateStagingSuffix names the staging root-key path for a system

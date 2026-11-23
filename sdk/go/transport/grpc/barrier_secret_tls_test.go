@@ -40,6 +40,35 @@ func TestBarrierSecret_RequiresTLS(t *testing.T) {
 	sotest.RunBarrierSecretTLS(t, "grpc", secretTarget(t, nil, nil), secretTarget(t, serverTLS, clientTLS))
 }
 
+// TestSealStoreSecret_RequiresTLS proves Put and Get of a seal-store secret
+// refuse a plaintext connection before any wire call, and reach the server
+// over TLS.
+func TestSealStoreSecret_RequiresTLS(t *testing.T) {
+	ctx := context.Background()
+	plain := secretTarget(t, nil, nil)
+	ep := sealStoreEndpoints{t: plain.Client.(*Transport)}
+	var tlsErr *transport.BarrierSecretRequiresTLSError
+	if err := ep.PutSealStoreSecret(ctx, "alpha", []byte("alpha-secret")); !errors.As(err, &tlsErr) {
+		t.Fatalf("Put over plaintext: err = %v, want *transport.BarrierSecretRequiresTLSError", err)
+	}
+	if _, err := ep.GetSealStoreSecret(ctx, "alpha"); !errors.As(err, &tlsErr) {
+		t.Fatalf("Get over plaintext: err = %v, want *transport.BarrierSecretRequiresTLSError", err)
+	}
+	if n := plain.Reached(); n != 0 {
+		t.Fatalf("plaintext seal-store secret calls reached the server %d times, want 0", n)
+	}
+
+	serverTLS, clientTLS := sotest.TLSPair(t)
+	secure := secretTarget(t, serverTLS, clientTLS)
+	sep := sealStoreEndpoints{t: secure.Client.(*Transport)}
+	if err := sep.PutSealStoreSecret(ctx, "alpha", []byte("alpha-secret")); errors.As(err, &tlsErr) {
+		t.Fatalf("Put over TLS refused: %v", err)
+	}
+	if n := secure.Reached(); n == 0 {
+		t.Fatal("Put over TLS never reached the server")
+	}
+}
+
 // TestBarrierSecret_HTTPAddressIsRefused: an address configured with an
 // explicit http:// scheme refuses every secret-carrying call in
 // sotest.SecretCalls, whatever the TLS config says (#1639), and the server

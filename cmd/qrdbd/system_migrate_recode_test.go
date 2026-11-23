@@ -144,7 +144,7 @@ func TestRecodeSystemBarrier_ReencryptsStores(t *testing.T) {
 			opts := validSystemMigrateOpts()
 			opts.Mechanism = mech
 			stores := service.MigrationStores{Pebble: []string{pebbleDir}, File: []string{fileDir}}
-			if err := recodeSystemBarrier(ctx, source, stores, walDir, opts); err != nil {
+			if err := recodeSystemBarrier(ctx, source, stores, walDir, opts, nil); err != nil {
 				t.Fatalf("recodeSystemBarrier: %v", err)
 			}
 			if got := source.ActiveStrategy(); got != seal.StrategyPassphrase {
@@ -228,7 +228,7 @@ func TestRecodeSystemBarrier_FailureRollsBack(t *testing.T) {
 			stores := tt.stores(t, root)
 			walDir := filepath.Join(root, "wal")
 
-			if err := recodeSystemBarrier(ctx, source, stores, walDir, validSystemMigrateOpts()); err == nil {
+			if err := recodeSystemBarrier(ctx, source, stores, walDir, validSystemMigrateOpts(), nil); err == nil {
 				t.Fatal("recodeSystemBarrier succeeded, want an error")
 			}
 			if got := source.ActiveStrategy(); got != seal.StrategyNone {
@@ -368,7 +368,7 @@ func TestRecodeSystemBarrier_BackendWriteFailure(t *testing.T) {
 				t.Fatalf("MkdirAll: %v", err)
 			}
 
-			err := recodeSystemBarrier(context.Background(), source, service.MigrationStores{}, walDir, validSystemMigrateOpts())
+			err := recodeSystemBarrier(context.Background(), source, service.MigrationStores{}, walDir, validSystemMigrateOpts(), nil)
 			if !errors.Is(err, errRecodeBackendPut) {
 				t.Fatalf("err = %v, want %v", err, errRecodeBackendPut)
 			}
@@ -434,7 +434,7 @@ func TestRecodeSystemBarrier_MigratesSealStore(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	if err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts()); err != nil {
+	if err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts(), nil); err != nil {
 		t.Fatalf("recodeSystemBarrier: %v", err)
 	}
 
@@ -484,8 +484,9 @@ func TestRecodeSystemBarrier_SealStoreFailureKeepsSource(t *testing.T) {
 		// committing checkpoint they are kept as the roll-forward copy.
 		staged bool
 	}{
-		{name: "staging write", key: sealStoreStagingPrefix + "beta", failAt: 1},
-		{name: "verifying checkpoint", key: rootKeyPath + ".migration", failAt: 5},
+		{name: "staging write", key: sealStoreStagingPrefix + seal.SealStoreDefaultPrefix + "beta", failAt: 1},
+		{name: "seal-store journal checkpoint", key: rootKeyPath + ".migration", failAt: 5},
+		{name: "verifying checkpoint", key: rootKeyPath + ".migration", failAt: 6},
 		{name: "root key adoption", key: rootKeyPath, failAt: 1, staged: true},
 	}
 	for _, tt := range tests {
@@ -501,7 +502,7 @@ func TestRecodeSystemBarrier_SealStoreFailureKeepsSource(t *testing.T) {
 				t.Fatalf("MkdirAll: %v", err)
 			}
 
-			err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts())
+			err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts(), nil)
 			if !errors.Is(err, errRecodeBackendPut) {
 				t.Fatalf("err = %v, want %v", err, errRecodeBackendPut)
 			}
@@ -520,6 +521,183 @@ func TestRecodeSystemBarrier_SealStoreFailureKeepsSource(t *testing.T) {
 	}
 }
 
+// errRecodeSealStoreCrash stands in for a crash past the commit point.
+var errRecodeSealStoreCrash = errors.New("injected crash after the root key adoption")
+
+// assertRecodeSealStoreKeyed checks that every seal-store record on backend is
+// keyed: no raw record holds its plaintext, no staged record is left, the
+// migration journal is cleared, and the keyed barrier reads every secret.
+func assertRecodeSealStoreKeyed(t *testing.T, backend seal.StorageBackend, secrets map[string]string) {
+	t.Helper()
+	ctx := context.Background()
+	for name, value := range secrets {
+		raw, err := backend.Get(ctx, seal.SealStoreDefaultPrefix+name)
+		if err != nil {
+			t.Fatalf("raw Get %q: %v", name, err)
+		}
+		if bytes.Contains(raw, []byte(value)) {
+			t.Fatalf("raw record %q still holds the plaintext", name)
+		}
+	}
+	staged, err := backend.List(ctx, sealStoreStagingPrefix)
+	if err != nil {
+		t.Fatalf("List staged: %v", err)
+	}
+	if len(staged) != 0 {
+		t.Fatalf("staged records left behind: %v", staged)
+	}
+	j, err := seal.LoadMigrationJournalFrom(ctx, backend, "system/root-key")
+	if err != nil {
+		t.Fatalf("LoadMigrationJournalFrom: %v", err)
+	}
+	if j != nil {
+		t.Fatalf("migration journal left behind at phase %q", j.Phase)
+	}
+	strategy, err := seal.NewSoftwareStrategy(ctx, []byte("daemon-migrate-pw"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	keyed, err := seal.NewStorageBarrier(slog.New(slog.DiscardHandler), backend,
+		seal.BarrierConfig{RootKeyPath: "system/root-key"}, strategy)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	defer func() { _ = keyed.Close() }()
+	if err := keyed.Unseal(ctx, seal.MustCredentials(ctx, []byte("daemon-migrate-pw"))); err != nil {
+		t.Fatalf("Unseal keyed barrier: %v", err)
+	}
+	assertRecodeSealStoreSecrets(t, keyed, secrets)
+}
+
+// setRecodeSealStoreCommitFault installs fault as the post-adoption hook for
+// the test's duration.
+func setRecodeSealStoreCommitFault(t *testing.T, fault func() error) {
+	t.Helper()
+	prev := sealStoreCommitFault
+	sealStoreCommitFault = fault
+	t.Cleanup(func() { sealStoreCommitFault = prev })
+}
+
+func TestRecodeSystemBarrier_SealStoreCrashAfterCommitRollsForwardAtBoot(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	source := newRecodeSourceBarrierOn(t, backend)
+	secrets := map[string]string{"alpha": "alpha-crash-secret", "beta": "beta-crash-secret"}
+	putRecodeSealStoreSecrets(t, source, secrets)
+	walDir := filepath.Join(t.TempDir(), "wal")
+	if err := os.MkdirAll(walDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	setRecodeSealStoreCommitFault(t, func() error { return errRecodeSealStoreCrash })
+
+	err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts(), nil)
+	if !errors.Is(err, errRecodeSealStoreCrash) {
+		t.Fatalf("err = %v, want %v", err, errRecodeSealStoreCrash)
+	}
+	j, err := seal.LoadMigrationJournalFrom(ctx, backend, "system/root-key")
+	if err != nil || j == nil || !j.Committed() || !journalNamesSealStore(j) {
+		t.Fatalf("journal after the crash = %+v (err %v), want a committed journal naming the seal store", j, err)
+	}
+
+	// The next boot: the recovery pass rolls the staged records forward.
+	if err := database.RecoverInterruptedMigration(ctx, backend, "system/root-key", nil); err != nil {
+		t.Fatalf("RecoverInterruptedMigration: %v", err)
+	}
+	assertRecodeSealStoreKeyed(t, backend, secrets)
+}
+
+func TestRecodeSystemBarrier_SealStoreCommitFailureKeepsJournal(t *testing.T) {
+	ctx := context.Background()
+	backend := &recodeFailingBackend{StorageBackend: seal.NewMemoryBackend(), key: seal.SealStoreDefaultPrefix + "alpha", failAt: 1}
+	source := newRecodeSourceBarrierOn(t, backend)
+	secrets := map[string]string{"alpha": "alpha-commit-secret", "beta": "beta-commit-secret"}
+	putRecodeSealStoreSecrets(t, source, secrets)
+	backend.armed = true
+	walDir := filepath.Join(t.TempDir(), "wal")
+	if err := os.MkdirAll(walDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts(), nil)
+	if !errors.Is(err, errRecodeBackendPut) {
+		t.Fatalf("err = %v, want %v", err, errRecodeBackendPut)
+	}
+	j, err := seal.LoadMigrationJournalFrom(ctx, backend, "system/root-key")
+	if err != nil {
+		t.Fatalf("LoadMigrationJournalFrom: %v", err)
+	}
+	if j == nil || !j.Committed() || !journalNamesSealStore(j) {
+		t.Fatalf("journal = %+v, want a committed journal naming the seal-store keyspace", j)
+	}
+}
+
+// recodeDirPlaintext lists the files under dir holding any secret's plaintext.
+func recodeDirPlaintext(t *testing.T, dir string, secrets map[string]string) []string {
+	t.Helper()
+	var hits []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		for _, value := range secrets {
+			if bytes.Contains(data, []byte(value)) {
+				hits = append(hits, filepath.Base(path))
+				break
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	return hits
+}
+
+func TestRecodeSystemBarrier_SealStoreRetiresPlaintextHistory(t *testing.T) {
+	ctx := context.Background()
+	sealDir := filepath.Join(t.TempDir(), "seal")
+	store, err := pebblestore.New(&pebblestore.Config{DataDir: sealDir, SyncWrites: true})
+	if err != nil {
+		t.Fatalf("pebble New: %v", err)
+	}
+	backend := seal.NewStorageAdapter(store)
+	source := newRecodeSourceBarrierOn(t, backend)
+	secrets := map[string]string{"alpha": "alpha-history-secret", "beta": "beta-history-secret"}
+	putRecodeSealStoreSecrets(t, source, secrets)
+	if err := store.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if hits := recodeDirPlaintext(t, sealDir, secrets); len(hits) == 0 {
+		t.Fatal("no plaintext on disk before the migration: the check below proves nothing")
+	}
+	walDir := filepath.Join(t.TempDir(), "wal")
+	if err := os.MkdirAll(walDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	if err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts(), sealStoreCompactor(store)); err != nil {
+		t.Fatalf("recodeSystemBarrier: %v", err)
+	}
+	_ = source.Close()
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if hits := recodeDirPlaintext(t, sealDir, secrets); len(hits) != 0 {
+		t.Fatalf("plaintext seal-store history survives in %v", hits)
+	}
+
+	reopened, err := pebblestore.New(&pebblestore.Config{DataDir: sealDir, SyncWrites: true})
+	if err != nil {
+		t.Fatalf("pebble reopen: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	assertRecodeSealStoreKeyed(t, seal.NewStorageAdapter(reopened), secrets)
+}
+
 func TestRecodeSystemBarrier_EmptyWALCommits(t *testing.T) {
 	ctx := context.Background()
 	source := newRecodeSourceBarrier(t)
@@ -528,7 +706,7 @@ func TestRecodeSystemBarrier_EmptyWALCommits(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	if err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts()); err != nil {
+	if err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts(), nil); err != nil {
 		t.Fatalf("recodeSystemBarrier: %v", err)
 	}
 	if got := source.ActiveStrategy(); got != seal.StrategyPassphrase {
@@ -594,7 +772,7 @@ func TestRecodeSystemBarrier_CommitsWALSnapshotOutsideStores(t *testing.T) {
 	writeRecodeWALSnapshot(t, walDir, snapDir, source, 3, []byte("serialized-state-machine-bytes"))
 
 	stores := service.MigrationStores{Pebble: []string{pebbleDir}}
-	if err := recodeSystemBarrier(ctx, source, stores, walDir, validSystemMigrateOpts()); err != nil {
+	if err := recodeSystemBarrier(ctx, source, stores, walDir, validSystemMigrateOpts(), nil); err != nil {
 		t.Fatalf("recodeSystemBarrier: %v", err)
 	}
 	snapDat := filepath.Join(snapDir, database.SnapshotDataFile)
@@ -624,7 +802,7 @@ func TestRecodeSystemBarrier_SwapsWALSnapshotInsideStore(t *testing.T) {
 	writeRecodeWALSnapshot(t, walDir, snapDir, source, 1, []byte("serialized-state-machine-bytes"))
 
 	stores := service.MigrationStores{File: []string{fileDir}, Pebble: []string{storeDir}}
-	if err := recodeSystemBarrier(ctx, source, stores, walDir, validSystemMigrateOpts()); err != nil {
+	if err := recodeSystemBarrier(ctx, source, stores, walDir, validSystemMigrateOpts(), nil); err != nil {
 		t.Fatalf("recodeSystemBarrier: %v", err)
 	}
 	snapDat := filepath.Join(snapDir, database.SnapshotDataFile)
@@ -707,7 +885,7 @@ func TestRecodeSystemBarrier_Errors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := recodeSystemBarrier(ctx, tt.source(t), service.MigrationStores{}, t.TempDir(), tt.opts)
+			err := recodeSystemBarrier(ctx, tt.source(t), service.MigrationStores{}, t.TempDir(), tt.opts, nil)
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("err = %v, want %v", err, tt.want)
 			}
