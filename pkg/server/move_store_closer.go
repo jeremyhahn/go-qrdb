@@ -76,6 +76,9 @@ type MoveStoreCloser struct {
 	barriers MoveBarriers
 	caughtUp ReplicaCaughtUp
 	poll     time.Duration
+	// localReplicas lists the databases of a tenant that durable placement
+	// puts on this node; nil when the node has no placement store.
+	localReplicas MoveLocalReplicas
 	// catchUpTimeout bounds each replica's catch-up wait.
 	catchUpTimeout time.Duration
 
@@ -105,6 +108,23 @@ func WithMoveTenantHosts(hosts MoveTenantHosts) MoveStoreCloserOption {
 	return func(c *MoveStoreCloser) {
 		if hosts != nil {
 			c.hosts = hosts
+		}
+	}
+}
+
+// MoveLocalReplicas returns the databases of tenantID with a replica on this
+// node, sorted, as durable placement records them. It covers the replicas the
+// shard reconciler has not started yet, and a step resumed by a fresh process
+// that never closed the tenant's stores.
+type MoveLocalReplicas func(ctx context.Context, tenantID string) ([]string, error)
+
+// WithMoveLocalReplicas makes CloseTenantStores and OpenTenantStores take the
+// tenant's local replicas from durable placement as well as from the started
+// shards. A nil f leaves the closer on the started shards alone.
+func WithMoveLocalReplicas(f MoveLocalReplicas) MoveStoreCloserOption {
+	return func(c *MoveStoreCloser) {
+		if f != nil {
+			c.localReplicas = f
 		}
 	}
 }
@@ -143,7 +163,10 @@ func NewMoveStoreCloser(shards MoveShardLifecycle, barriers MoveBarriers, caught
 
 // CloseTenantStores stops every shard of tenantID started on this node and
 // its Host, then closes its barrier, and remembers what it stopped for the
-// reopen.
+// reopen. With WithMoveLocalReplicas it also records every replica durable
+// placement puts on this node, started or not, so the reopen starts and
+// catches up a replica the shard reconciler had not started yet; a placement
+// lookup error fails the close.
 func (c *MoveStoreCloser) CloseTenantStores(ctx context.Context, tenantID string) (err error) {
 	c.hold(tenantID)
 	defer func() {
@@ -152,9 +175,21 @@ func (c *MoveStoreCloser) CloseTenantStores(ctx context.Context, tenantID string
 			c.release(tenantID)
 		}
 	}()
+	var placed []string
+	if c.localReplicas != nil && c.shards != nil {
+		placed, err = c.localReplicas(ctx, tenantID)
+		if err != nil {
+			return fmt.Errorf("move: list local replicas of tenant %s: %w", tenantID, err)
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	dbs := append([]string(nil), c.closed[tenantID]...)
+	// A placed replica the shard reconciler has not started yet has nothing
+	// to close, but the reopen must start it and wait for its catch-up.
+	for _, db := range placed {
+		dbs = appendUnique(dbs, db)
+	}
 	if c.shards != nil {
 		for _, s := range c.shards.ListStarted() {
 			if s.TenantID != tenantID {
@@ -225,7 +260,9 @@ func (c *MoveStoreCloser) tryHold(tenantID string) bool {
 
 // OpenTenantStores reopens tenantID's barrier, restarts the shards and Host
 // CloseTenantStores stopped, and returns once each shard reports caught up
-// or ctx ends.
+// or ctx ends. A step resumed by a fresh process (no close on record) takes
+// its shards from durable placement (WithMoveLocalReplicas), so the settle
+// still waits for every local replica before the step is released.
 func (c *MoveStoreCloser) OpenTenantStores(ctx context.Context, tenantID string) error {
 	// Released on every return: a failed reopen leaves the tenant pending,
 	// and RetryReopen (driven by the move worker's tick) finishes it. The
@@ -239,11 +276,14 @@ func (c *MoveStoreCloser) OpenTenantStores(ctx context.Context, tenantID string)
 // reopened once per close, a Host or shard already started is not attached
 // again, and every shard waits for its replica to catch up. Any failure
 // marks the tenant pending a reopen; success clears every record of the
-// close.
+// close. A tenant with no close record (a step resumed after a restart)
+// takes its shards from durable placement when WithMoveLocalReplicas is set;
+// a lookup error leaves it pending too.
 func (c *MoveStoreCloser) reopen(ctx context.Context, tenantID string) error {
 	c.mu.Lock()
-	dbs := append([]string(nil), c.closed[tenantID]...)
-	host := c.closedHost[tenantID]
+	dbs, recorded := c.closed[tenantID]
+	dbs = append([]string(nil), dbs...)
+	host, hostRecorded := c.closedHost[tenantID]
 	barrierOpen := c.barrierOpen[tenantID]
 	c.mu.Unlock()
 	fail := func(err error) error {
@@ -254,6 +294,13 @@ func (c *MoveStoreCloser) reopen(ctx context.Context, tenantID string) error {
 		c.pending[tenantID] = true
 		c.mu.Unlock()
 		return err
+	}
+	if !recorded && !hostRecorded && c.localReplicas != nil && c.shards != nil {
+		placed, err := c.localReplicas(ctx, tenantID)
+		if err != nil {
+			return fail(fmt.Errorf("move: list local replicas of tenant %s: %w", tenantID, err))
+		}
+		dbs = placed
 	}
 	if !barrierOpen {
 		if err := c.barriers.ReopenVolumeTenant(ctx, tenantID); err != nil {
@@ -292,6 +339,10 @@ func (c *MoveStoreCloser) reopen(ctx context.Context, tenantID string) error {
 			continue
 		}
 		if err := c.shards.Attach(ctx, tenantID, db); err != nil {
+			if c.shardStarted(tenantID, db) {
+				// The shard reconciler started it meanwhile.
+				continue
+			}
 			return fail(err)
 		}
 	}
@@ -302,6 +353,20 @@ func (c *MoveStoreCloser) reopen(ctx context.Context, tenantID string) error {
 	}
 	c.finishReopen(tenantID)
 	return nil
+}
+
+// shardStarted reports whether the shard of tenantID's database db is
+// started on this node.
+func (c *MoveStoreCloser) shardStarted(tenantID, db string) bool {
+	if c.shards == nil {
+		return false
+	}
+	for _, s := range c.shards.ListStarted() {
+		if s.TenantID == tenantID && s.Database == db {
+			return true
+		}
+	}
+	return false
 }
 
 // finishReopen forgets tenantID's close once its stores serve again.

@@ -395,3 +395,196 @@ func TestMoveStoreCloser_VolumeTenantHostWithoutShards(t *testing.T) {
 		t.Fatal("reopen started a host that was not running")
 	}
 }
+
+// placedReplicas returns a MoveLocalReplicas answering dbs for every tenant.
+func placedReplicas(dbs ...string) MoveLocalReplicas {
+	return func(context.Context, string) ([]string, error) {
+		return append([]string(nil), dbs...), nil
+	}
+}
+
+func TestMoveStoreCloser_ResumedSettleReopensPlacedReplicas(t *testing.T) {
+	shards := &fakeMoveShards{started: map[StartedShard]bool{}}
+	barriers := &fakeMoveBarriers{}
+	// Each catch-up read takes one answer from answers and reports it on
+	// asked, so the test sees the reopen still waiting on a false answer.
+	answers := make(chan bool)
+	asked := make(chan string, 8)
+	caughtUp := func(_ context.Context, _, db string) (bool, error) {
+		asked <- db
+		return <-answers, nil
+	}
+	c, err := NewMoveStoreCloser(shards, barriers, caughtUp, time.Millisecond,
+		WithMoveLocalReplicas(placedReplicas("a", "b")))
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.OpenTenantStores(context.Background(), "acme") }()
+	for _, step := range []struct {
+		db     string
+		answer bool
+	}{{"a", false}, {"a", true}, {"b", false}, {"b", true}} {
+		if got := <-asked; got != step.db {
+			t.Fatalf("catch-up read for %q, want %q", got, step.db)
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("open returned %v before %s caught up", err, step.db)
+		default:
+		}
+		answers <- step.answer
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if want := []string{"attach acme/a", "attach acme/b"}; !reflect.DeepEqual(shards.calls, want) {
+		t.Fatalf("shard calls = %v, want %v", shards.calls, want)
+	}
+	if want := []string{"reopen acme"}; !reflect.DeepEqual(barriers.calls, want) {
+		t.Fatalf("barrier calls = %v, want %v", barriers.calls, want)
+	}
+	if got := c.PendingReopen(); len(got) != 0 {
+		t.Fatalf("pending = %v", got)
+	}
+}
+
+func TestMoveStoreCloser_ResumedSettleLookupFailureStaysPending(t *testing.T) {
+	shards := &fakeMoveShards{started: map[StartedShard]bool{}}
+	barriers := &fakeMoveBarriers{}
+	lookupErr := errors.New("placement unavailable")
+	failLookup := true
+	lookup := func(context.Context, string) ([]string, error) {
+		if failLookup {
+			return nil, lookupErr
+		}
+		return []string{"a"}, nil
+	}
+	reads := 0
+	c, err := NewMoveStoreCloser(shards, barriers, func(context.Context, string, string) (bool, error) {
+		reads++
+		return true, nil
+	}, time.Millisecond, WithMoveLocalReplicas(lookup))
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	ctx := context.Background()
+	if err := c.OpenTenantStores(ctx, "acme"); !errors.Is(err, lookupErr) {
+		t.Fatalf("open = %v, want the lookup error", err)
+	}
+	if got := c.PendingReopen(); !reflect.DeepEqual(got, []string{"acme"}) {
+		t.Fatalf("pending = %v, want [acme]", got)
+	}
+	if len(shards.calls) != 0 || reads != 0 {
+		t.Fatalf("shard calls = %v, catch-up reads = %d after a failed lookup", shards.calls, reads)
+	}
+	failLookup = false
+	if err := c.RetryReopen(ctx, "acme"); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if got := c.PendingReopen(); len(got) != 0 {
+		t.Fatalf("pending after the retry = %v", got)
+	}
+	if want := []string{"attach acme/a"}; !reflect.DeepEqual(shards.calls, want) || reads != 1 {
+		t.Fatalf("shard calls = %v, catch-up reads = %d", shards.calls, reads)
+	}
+}
+
+func TestMoveStoreCloser_CloseRecordsUnstartedPlacedReplica(t *testing.T) {
+	shards := &fakeMoveShards{started: map[StartedShard]bool{
+		{TenantID: "acme", Database: "a"}: true,
+	}}
+	barriers := &fakeMoveBarriers{}
+	var asked []string
+	c, err := NewMoveStoreCloser(shards, barriers, func(_ context.Context, _, db string) (bool, error) {
+		asked = append(asked, db)
+		return true, nil
+	}, time.Millisecond, WithMoveLocalReplicas(placedReplicas("a", "b")))
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	ctx := context.Background()
+	if err := c.CloseTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if want := []string{"close acme/a"}; !reflect.DeepEqual(shards.calls, want) {
+		t.Fatalf("shard calls after close = %v, want %v", shards.calls, want)
+	}
+	if err := c.OpenTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if want := []string{"close acme/a", "attach acme/a", "attach acme/b"}; !reflect.DeepEqual(shards.calls, want) {
+		t.Fatalf("shard calls = %v, want %v", shards.calls, want)
+	}
+	if want := []string{"a", "b"}; !reflect.DeepEqual(asked, want) {
+		t.Fatalf("catch-up reads = %v, want %v", asked, want)
+	}
+}
+
+func TestMoveStoreCloser_CloseLookupFailureFailsClose(t *testing.T) {
+	shards := &fakeMoveShards{started: map[StartedShard]bool{
+		{TenantID: "acme", Database: "a"}: true,
+	}}
+	lookupErr := errors.New("placement unavailable")
+	c, err := NewMoveStoreCloser(shards, &fakeMoveBarriers{}, func(context.Context, string, string) (bool, error) {
+		return true, nil
+	}, time.Millisecond, WithMoveLocalReplicas(func(context.Context, string) ([]string, error) {
+		return nil, lookupErr
+	}))
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	if err := c.CloseTenantStores(context.Background(), "acme"); !errors.Is(err, lookupErr) {
+		t.Fatalf("close = %v, want the lookup error", err)
+	}
+	if c.HoldsTenant("acme") {
+		t.Fatal("acme held after a failed close")
+	}
+	if len(shards.calls) != 0 {
+		t.Fatalf("shard calls = %v after a failed lookup", shards.calls)
+	}
+}
+
+func TestMoveStoreCloser_AttachRaceWithReconcilerCountsStarted(t *testing.T) {
+	// The shard reconciler starts "a" while the reopen attaches it: Attach
+	// fails as already started, and ListStarted now reports it.
+	shards := &fakeMoveShards{started: map[StartedShard]bool{}, err: errors.New("shard already started")}
+	reads := 0
+	c, err := NewMoveStoreCloser(shards, &fakeMoveBarriers{}, func(context.Context, string, string) (bool, error) {
+		reads++
+		return true, nil
+	}, time.Millisecond, WithMoveLocalReplicas(placedReplicas("a")))
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	if err := c.OpenTenantStores(context.Background(), "acme"); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if reads != 1 {
+		t.Fatalf("catch-up reads = %d, want 1", reads)
+	}
+	// An Attach that fails with the shard still not started fails the
+	// reopen and leaves the tenant pending.
+	refused := errors.New("attach refused")
+	c, err = NewMoveStoreCloser(refusingAttachShards{&fakeMoveShards{started: map[StartedShard]bool{}}, refused},
+		&fakeMoveBarriers{}, func(context.Context, string, string) (bool, error) {
+			return true, nil
+		}, time.Millisecond, WithMoveLocalReplicas(placedReplicas("a")))
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	if err := c.OpenTenantStores(context.Background(), "acme"); !errors.Is(err, refused) {
+		t.Fatalf("open = %v, want the attach error", err)
+	}
+	if got := c.PendingReopen(); !reflect.DeepEqual(got, []string{"acme"}) {
+		t.Fatalf("pending = %v, want [acme]", got)
+	}
+}
+
+// refusingAttachShards refuses every Attach without starting the shard.
+type refusingAttachShards struct {
+	*fakeMoveShards
+	err error
+}
+
+func (r refusingAttachShards) Attach(context.Context, string, string) error { return r.err }
