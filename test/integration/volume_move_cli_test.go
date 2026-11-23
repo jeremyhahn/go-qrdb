@@ -475,6 +475,55 @@ func startVolumeMoveNode(t *testing.T) *multiProtoNode {
 // the move cannot complete until that node, after its restart, closes its
 // stores, copies, reopens from second and catches up. Every value then reads
 // back from every node, and a new write lands and replicates.
+// TestVolumePool_CLI_MoveTenant_ThreeNode_DestinationUnreadyRefused proves
+// the decision's admit check (docs/decisions/volume-pool-tenant-moves.md,
+// Q3) end to end on every transport: a three-node cluster where node 3's
+// "second" pool path does not exist and node 3 boots degraded
+// (storage.allow_degraded_volume_boot) with that pool skipped. A move of a
+// raft tenant placed on all three nodes from default to second is refused
+// at admit, naming node 3 (the journal node ID is the replica ID, fixture
+// index + 1) and saying the destination pool is not ready. Nothing is
+// journalled, the tenant stays on default on every node, no destination
+// directory appears on nodes 1 and 2, and the tenant keeps reading and
+// replicating writes everywhere.
+func TestVolumePool_CLI_MoveTenant_ThreeNode_DestinationUnreadyRefused(t *testing.T) {
+	t.Parallel()
+	nodes, dirs := volumeMoveClusterStartWith(t, volumeMoveClusterUnreadySecondYAML(t))
+
+	// One loop, no t.Run per transport, like _ReplicaRestart: the cluster
+	// is shared by every pass. Every failure names its transport.
+	for _, proto := range multiProtocols {
+		mt, conns := volumeMoveClusterSeed(t, nodes, proto, "vu")
+
+		out, err := runCLIProto(t, nodes[0], proto, "volume-pool", "move-tenant", mt.tenantID, "--to", "second")
+		if err == nil {
+			t.Fatalf("[%s] move-tenant to a pool unready on node 3 succeeded: %s", proto.name, out)
+		}
+		if !strings.Contains(out, "not ready") || !strings.Contains(out, `node "3"`) {
+			t.Fatalf("[%s] move-tenant refusal = %q, want it to say the destination is not ready on node \"3\"", proto.name, out)
+		}
+
+		if out, err := runCLIProto(t, nodes[0], proto, "volume-pool", "get-move", mt.tenantID); err == nil || !volumeMoveIsNoMove(out) {
+			t.Fatalf("[%s] get-move after a refused move = %q (err=%v), want no move", proto.name, out, err)
+		}
+		for i, node := range nodes {
+			if pool := volumeMoveTenantPool(t, node, proto, mt.tenantID); pool != "default" {
+				t.Fatalf("[%s] node %d: after the refused move tenant %s is on pool %q, want default", proto.name, i+1, mt.tenantID, pool)
+			}
+		}
+		for i := range 2 {
+			if _, err := os.Stat(filepath.Join(dirs[i].second, mt.tenantID)); !os.IsNotExist(err) {
+				t.Fatalf("[%s] node %d: destination directory for tenant %s after a refused move: stat err=%v, want not exist", proto.name, i+1, mt.tenantID, err)
+			}
+		}
+		volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, mt.key, mt.value)
+
+		afterKey, afterValue := "after", "after-the-refusal-"+mt.tenantID
+		volumeMoveClusterPut(t, nodes[0], proto, mt, conns[0], afterKey, afterValue)
+		volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, afterKey, afterValue)
+	}
+}
+
 func TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart(t *testing.T) {
 	t.Parallel()
 	nodes, dirs := volumeMoveClusterStart(t)
@@ -654,17 +703,44 @@ func volumeMoveClusterYAML(defaultDir, secondDir string) string {
 // the replicated catalog.
 func volumeMoveClusterStart(t *testing.T) ([3]*multiProtoNode, [3]volumeMovePoolDirs) {
 	t.Helper()
+	return volumeMoveClusterStartWith(t, func(_ int, d volumeMovePoolDirs) string {
+		return volumeMoveClusterYAML(d.def, d.second)
+	})
+}
+
+// volumeMoveClusterStartWith is volumeMoveClusterStart with a per-node
+// config: yaml builds node i's YAML from that node's pool directories.
+func volumeMoveClusterStartWith(t *testing.T, yaml func(i int, d volumeMovePoolDirs) string) ([3]*multiProtoNode, [3]volumeMovePoolDirs) {
+	t.Helper()
 	var dirs [3]volumeMovePoolDirs
 	for i := range dirs {
 		dirs[i] = volumeMovePoolDirs{def: t.TempDir(), second: t.TempDir()}
 	}
 	nodes, _ := startMultiProtocolClusterWithNodeConfig(t, 0, func(i int) string {
-		return volumeMoveClusterYAML(dirs[i].def, dirs[i].second)
+		return yaml(i, dirs[i])
 	})
 	for _, pool := range []string{"default", "second"} {
 		createVolumePoolCLI(t, nodes[0].cli, nodes[0].cliArgsFor(multiProtocols[0]), pool)
 	}
 	return nodes, dirs
+}
+
+// volumeMoveClusterUnreadySecondYAML is node i's config for the
+// unready-destination test: node 3 (index 2) maps the "second" pool on a
+// directory that does not exist and opts into the degraded boot
+// (storage.allow_degraded_volume_boot), so it boots with that pool skipped
+// and its node report does not show "second" ready. Node 3's dirs entry
+// keeps an unused temporary second directory; its configured path is the
+// missing one.
+func volumeMoveClusterUnreadySecondYAML(t *testing.T) func(i int, d volumeMovePoolDirs) string {
+	t.Helper()
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	return func(i int, d volumeMovePoolDirs) string {
+		if i != 2 {
+			return volumeMoveClusterYAML(d.def, d.second)
+		}
+		return strings.Replace(volumeMoveClusterYAML(d.def, missing), "storage:\n", "storage:\n  allow_degraded_volume_boot: true\n", 1)
+	}
 }
 
 // volumeMovePoolDirs is one cluster node's default and second pool directory.
