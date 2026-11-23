@@ -225,6 +225,67 @@ func TestVectorService_RaftBatchDeleteProposalErrorDeletesNothing(t *testing.T) 
 	require.NotNil(t, got)
 }
 
+// failingBatchDeleteStorage is the state machine's storage with a batch
+// delete that fails, as a full or failing disk would.
+type failingBatchDeleteStorage struct {
+	*vector.MemoryVectorStorage
+	err error
+}
+
+func (s *failingBatchDeleteStorage) BatchDeleteVectors(context.Context, string, []uint64) error {
+	return s.err
+}
+
+// TestVectorService_RaftBatchDeleteStorageErrorKeepsTheIndex checks that a
+// committed batch delete whose durable delete fails on apply is the caller's
+// error: the records survive, so the live index keeps serving them and no ID
+// is reported deleted.
+func TestVectorService_RaftBatchDeleteStorageErrorKeepsTheIndex(t *testing.T) {
+	ctx := context.Background()
+	mem := vector.NewMemoryVectorStorage()
+	scoped := scopedFromContext(ctx, "docs")
+	require.NoError(t, mem.CreateNamespace(ctx, &vector.NamespaceInfo{Name: scoped, Dimension: 2}))
+
+	log, err := logger.New(logger.Default())
+	require.NoError(t, err)
+	storageErr := &vectorTestError{msg: "batch delete failed on disk"}
+	fsm := statemachine.NewVectorConsensusFSMWithStorage(VectorShardID, 1,
+		&failingBatchDeleteStorage{MemoryVectorStorage: mem, err: storageErr}, log)
+	t.Cleanup(func() { _ = fsm.Close(context.Background()) })
+
+	var index uint64
+	node := &mockRaftNode{
+		syncProposeFn: func(ctx context.Context, _ uint64, data []byte) error {
+			index++
+			return fsm.Update(ctx, []sm.Entry{{Index: index, Cmd: data}}, make([]sm.Result, 1))
+		},
+	}
+	store := &countingVectorStorage{MemoryVectorStorage: mem}
+	svc, err := NewVectorService(store, newVecTestLogger(), WithRaftNode(node), WithNodeID("node-1"))
+	require.NoError(t, err)
+
+	_, err = svc.BatchUpsert(ctx, &BatchUpsertRequest{Namespace: "docs", Vectors: []*VectorData{
+		{ID: 1, Vector: []float32{1, 0}},
+		{ID: 2, Vector: []float32{0, 1}},
+	}})
+	require.NoError(t, err)
+	vs, ok := svc.(*vectorService)
+	require.True(t, ok)
+	liveIndex := vs.hnswIndexes[scoped]
+	require.NotNil(t, liveIndex)
+	require.EqualValues(t, 2, liveIndex.Count())
+
+	resp, err := svc.BatchDeleteVectors(ctx, &BatchDeleteVectorsRequest{Namespace: "docs", IDs: []uint64{1, 2}})
+	require.Error(t, err)
+	require.Nil(t, resp)
+	require.EqualValues(t, 2, liveIndex.Count(), "the live index dropped vectors storage still holds")
+	for _, id := range []uint64{1, 2} {
+		got, err := mem.GetVector(ctx, scoped, id)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+	}
+}
+
 // vectorTestError is a test error type for vector tests.
 type vectorTestError struct {
 	msg string

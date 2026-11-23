@@ -810,23 +810,31 @@ func TestVectorConsensusFSM_DeleteVector(t *testing.T) {
 		require.NoError(t, fsm.Close(context.Background()))
 	})
 
-	t.Run("handles batch delete storage error gracefully", func(t *testing.T) {
+	t.Run("batch delete storage error is returned and keeps the index entries", func(t *testing.T) {
 		log := createTestVectorLogger(t)
 		storage := newMockVectorStorage()
-		storage.batchDeleteErr = errBatchDeleteFailed
-		fsm := NewVectorConsensusFSMWithStorage(VectorShardID, 1, storage, log)
+		fsm, ok := NewVectorConsensusFSMWithStorage(VectorShardID, 1, storage, log).(*VectorConsensusFSM)
+		require.True(t, ok)
 
+		applyVectorCmd(t, fsm, 1, &VectorCommand{Op: OpCreateNamespace, Namespace: "err-ns", Dimension: 2})
+		applyVectorCmd(t, fsm, 2, &VectorCommand{Op: OpUpsertVector, Namespace: "err-ns", ID: 1, Vector: []float32{1, 0}})
+		applyVectorCmd(t, fsm, 3, &VectorCommand{Op: OpUpsertVector, Namespace: "err-ns", ID: 2, Vector: []float32{0, 1}})
+		require.EqualValues(t, 2, fsm.hnswIndexes["err-ns"].Count())
+
+		// The durable delete fails: the records survive, so the apply
+		// reports the error and the index keeps serving them.
+		storage.batchDeleteErr = errBatchDeleteFailed
 		deleteCmd := encodeVectorCmd(t, &VectorCommand{
 			Op:        OpDeleteVector,
 			Namespace: "err-ns",
 			IDs:       []uint64{1, 2},
 		})
-		entries := []sm.Entry{{Index: 1, Cmd: deleteCmd}}
+		entries := []sm.Entry{{Index: 4, Cmd: deleteCmd}}
 		results := make([]sm.Result, 1)
 		err := fsm.Update(context.Background(), entries, results)
-		result := results[0]
-		require.NoError(t, err)
-		assert.Equal(t, uint64(1), result.Value)
+		require.ErrorIs(t, err, errBatchDeleteFailed)
+		assert.Zero(t, results[0].Value)
+		assert.EqualValues(t, 2, fsm.hnswIndexes["err-ns"].Count())
 		require.NoError(t, fsm.Close(context.Background()))
 	})
 

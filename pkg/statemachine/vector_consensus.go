@@ -523,6 +523,10 @@ func (v *VectorConsensusFSM) applyDeleteVector(ctx context.Context, cmd *VectorC
 					"ids":       len(cmd.IDs),
 					"error":     err,
 				}).Error("Failed to batch delete vectors from storage")
+				// The durable records survive, so the index keeps them
+				// too and the caller learns of the failure, as a failed
+				// batch upsert reports its storage error.
+				return sm.Result{}, err
 			}
 		}
 
