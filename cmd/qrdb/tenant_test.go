@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -701,6 +702,58 @@ func TestTenantUpdateQuotasCmd_AllFlags(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("tenant update-quotas all flags: %v", err)
+	}
+}
+
+// sqliteVFSCapturingTenantService records the quotas and entitlements the
+// CLI sends so the sqlite-vfs flags can be checked end to end through the SDK.
+type sqliteVFSCapturingTenantService struct {
+	*mockTenantService
+	quotas       *quota.Quotas
+	entitlements *quota.Entitlements
+}
+
+func (s *sqliteVFSCapturingTenantService) UpdateQuotas(ctx context.Context, id string, q *quota.Quotas) (*tenant.TenantInfo, error) {
+	s.quotas = q
+	return s.mockTenantService.UpdateQuotas(ctx, id, q)
+}
+
+func (s *sqliteVFSCapturingTenantService) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
+	s.entitlements = e
+	return s.mockTenantService.UpdateEntitlements(ctx, id, e)
+}
+
+func TestTenantUpdateQuotasCmd_MaxSQLiteDatabases(t *testing.T) {
+	svc := &sqliteVFSCapturingTenantService{mockTenantService: &mockTenantService{}}
+	if _, err := executeTenantCmd(t, svc, "update-quotas", "tenant-001", "--max-sqlite-databases", "4"); err != nil {
+		t.Fatalf("tenant update-quotas --max-sqlite-databases: %v", err)
+	}
+	if svc.quotas == nil || svc.quotas.MaxSQLiteDatabases != 4 {
+		t.Fatalf("service saw quotas %+v, want MaxSQLiteDatabases 4", svc.quotas)
+	}
+}
+
+func TestTenantSetEntitlementCmd_AllowSQLiteVFS(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"granted", []string{"set-entitlement", "tenant-001", "--allow-sqlite-vfs"}, true},
+		{"omitted", []string{"set-entitlement", "tenant-001", "--allow-dedicated-raft"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &sqliteVFSCapturingTenantService{mockTenantService: &mockTenantService{}}
+			if _, err := executeTenantCmd(t, svc, tc.args...); err != nil {
+				t.Fatalf("tenant %v: %v", tc.args, err)
+			}
+			if svc.entitlements == nil {
+				t.Fatal("UpdateEntitlements was not called")
+			}
+			if svc.entitlements.AllowSQLiteVFS != tc.want {
+				t.Fatalf("AllowSQLiteVFS = %v, want %v", svc.entitlements.AllowSQLiteVFS, tc.want)
+			}
+		})
 	}
 }
 

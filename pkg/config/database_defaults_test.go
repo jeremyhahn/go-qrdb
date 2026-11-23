@@ -68,3 +68,21 @@ func TestLoadDatabaseDefaults(t *testing.T) {
 		t.Fatalf("DatabaseDefaults = %+v, want %+v", cfg.DatabaseDefaults, want)
 	}
 }
+
+// TestTenantDefaultsSQLiteVFS checks the sqlite-vfs entitlement and the
+// SQLite database cap reach the domain types, and that their zero values
+// mean "not entitled" and "unlimited".
+func TestTenantDefaultsSQLiteVFS(t *testing.T) {
+	if q := (TenantQuotaDefaults{}).ToQuotas(); q.MaxSQLiteDatabases != 0 {
+		t.Fatalf("zero default MaxSQLiteDatabases = %d, want 0 (unlimited)", q.MaxSQLiteDatabases)
+	}
+	if e := (TenantEntitlementDefaults{}).ToEntitlements(); e.AllowSQLiteVFS {
+		t.Fatal("zero default AllowSQLiteVFS = true, want false")
+	}
+	if q := (TenantQuotaDefaults{MaxSQLiteDatabases: 4}).ToQuotas(); q.MaxSQLiteDatabases != 4 {
+		t.Fatalf("MaxSQLiteDatabases = %d, want 4", q.MaxSQLiteDatabases)
+	}
+	if e := (TenantEntitlementDefaults{AllowSQLiteVFS: true}).ToEntitlements(); !e.AllowSQLiteVFS {
+		t.Fatal("AllowSQLiteVFS = false, want true")
+	}
+}

@@ -983,6 +983,62 @@ func TestHandleSetTenantQuotas_Success(t *testing.T) {
 	}
 }
 
+// entitlementsRecorder captures the entitlements the PATCH handler forwards.
+type entitlementsRecorder struct {
+	*mockTenantService
+	gotID string
+	got   *quota.Entitlements
+}
+
+func (r *entitlementsRecorder) UpdateEntitlements(_ context.Context, tenantID string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
+	r.gotID = tenantID
+	r.got = e
+	info := testTenantInfo()
+	info.Entitlements = e
+	return info, nil
+}
+
+func TestHandleSetTenantEntitlements_SQLiteVFS(t *testing.T) {
+	svc := &entitlementsRecorder{mockTenantService: &mockTenantService{}}
+	srv := newTenantServer(svc)
+
+	body := `{"allow_dedicated_wal":true,"allow_sqlite_vfs":true}`
+	req := httptest.NewRequest(http.MethodPatch, "/v1/tenants/acme/entitlements", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	if svc.gotID != "acme" {
+		t.Fatalf("tenantID = %q, want acme", svc.gotID)
+	}
+	if svc.got == nil {
+		t.Fatal("UpdateEntitlements was not called")
+	}
+	if !svc.got.AllowSQLiteVFS {
+		t.Fatal("AllowSQLiteVFS = false, want true")
+	}
+	if !svc.got.AllowDedicatedWAL {
+		t.Fatal("AllowDedicatedWAL = false, want true")
+	}
+}
+
+func TestHandleSetTenantEntitlements_SQLiteVFSDefaultsFalse(t *testing.T) {
+	svc := &entitlementsRecorder{mockTenantService: &mockTenantService{}}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/tenants/acme/entitlements", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	if svc.got == nil {
+		t.Fatal("UpdateEntitlements was not called")
+	}
+	if svc.got.AllowSQLiteVFS {
+		t.Fatal("AllowSQLiteVFS = true for an omitted field, want false")
+	}
+}
+
 func TestHandleSetTenantQuotas_NotFound(t *testing.T) {
 	svc := &mockTenantService{
 		updateQuotasFn: func(_ context.Context, _ string, _ *quota.Quotas) (*tenant.TenantInfo, error) {

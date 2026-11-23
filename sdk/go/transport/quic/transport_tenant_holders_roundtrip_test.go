@@ -471,7 +471,7 @@ func TestQUICRoundTrip_UpdateTenantEntitlements_ForwardsEveryField(t *testing.T)
 	want := transport.TenantEntitlements{
 		AllowedIsolationModes: []string{"prefix", "volume"}, AllowDedicatedRaft: true, AllowVolumeStorage: true,
 		AllowSystemManagedBarrier: true, AllowedBarrierModes: []string{"shamir"}, AllowDedicatedWAL: true,
-		AllowedVolumePools: []string{"fast", "bulk"},
+		AllowSQLiteVFS: true, AllowedVolumePools: []string{"fast", "bulk"},
 	}
 	resp, err := tr.UpdateTenantEntitlements(ctx, &transport.UpdateTenantEntitlementsRequest{TenantID: "acme", Entitlements: want})
 	if err != nil {
@@ -480,7 +480,7 @@ func TestQUICRoundTrip_UpdateTenantEntitlements_ForwardsEveryField(t *testing.T)
 	got := svc.seen().entitled
 	if svc.seen().tenantID != "acme" || got == nil ||
 		!reflect.DeepEqual(got.AllowedIsolationModes, want.AllowedIsolationModes) || !got.AllowDedicatedRaft || !got.AllowVolumeStorage ||
-		!got.AllowSystemManagedBarrier || !reflect.DeepEqual(got.AllowedBarrierModes, want.AllowedBarrierModes) || !got.AllowDedicatedWAL ||
+		!got.AllowSystemManagedBarrier || !reflect.DeepEqual(got.AllowedBarrierModes, want.AllowedBarrierModes) || !got.AllowDedicatedWAL || !got.AllowSQLiteVFS ||
 		!reflect.DeepEqual(got.AllowedVolumePools, want.AllowedVolumePools) {
 		t.Fatalf("service saw tenant %q entitlements %+v", svc.seen().tenantID, got)
 	}
