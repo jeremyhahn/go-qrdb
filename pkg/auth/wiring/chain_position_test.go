@@ -167,3 +167,41 @@ func TestBuildAuthMiddleware_RefusesReplacingMTLSWithNothing(t *testing.T) {
 	var target *auth.EmptyAuthenticatorChainError
 	require.ErrorAs(t, err, &target)
 }
+
+// TestBuildAuthMiddleware_PeerCredentialsLastInChain: the peer-credential
+// authenticator runs after mTLS and after every embedder placement, so an
+// explicit credential wins over the socket's ambient identity.
+func TestBuildAuthMiddleware_PeerCredentialsLastInChain(t *testing.T) {
+	uid := uint32(1000)
+	stub := &stubAuthenticator{token: "Bearer good"}
+	mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{
+		Enabled:             true,
+		RoleService:         adminRoleService(),
+		UserService:         &fakeUserService{},
+		MTLSBindingPolicy:   auth.MTLSBindingEnrolled,
+		ExtraAuthenticators: afterMTLS(stub),
+		PeerCredentials:     []auth.PeerCredentialMapping{{UID: &uid, Username: "pc-user"}},
+	})
+	require.NoError(t, err)
+	cred := auth.PeerCredential{UID: uid, GID: 1000, PID: 1}
+
+	_, id, err := mw.Authenticate(auth.WithPeerCredential(chainPeerContext(t, ""), cred))
+	require.NoError(t, err)
+	assert.Equal(t, chainCertSubject, id.Subject, "a certificate must win over the peer credential")
+
+	_, id, err = mw.Authenticate(auth.WithPeerCredential(auth.WithHTTPAuthorization(context.Background(), "Bearer good"), cred))
+	require.NoError(t, err)
+	assert.Equal(t, "bearer-subject", id.Subject, "an embedder bearer must win over the peer credential")
+
+	_, id, err = mw.Authenticate(auth.WithPeerCredential(context.Background(), cred))
+	require.NoError(t, err)
+	assert.Equal(t, "1000", id.Metadata["peer_uid"], "the peer credential alone must authenticate")
+}
+
+// TestBuildAuthMiddleware_NoPeerCredentialsNoAuthenticator: with no mapping
+// configured a peer credential authenticates nobody.
+func TestBuildAuthMiddleware_NoPeerCredentialsNoAuthenticator(t *testing.T) {
+	mw := buildPositioned(t, auth.ChainAfterMTLS, &stubAuthenticator{token: "Bearer good"})
+	_, _, err := mw.Authenticate(auth.WithPeerCredential(context.Background(), auth.PeerCredential{UID: 1000}))
+	require.Error(t, err)
+}
