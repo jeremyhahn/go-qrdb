@@ -394,6 +394,14 @@
     modalLeaseUnknown = false;
     compactTarget = null;
     compactRevisionInput = "";
+    // A pending delete or restore confirmation names keys of the database
+    // being left: confirming it after the switch would act on the new one.
+    deleteTarget = null;
+    showRestoreModal = false;
+    restorePhase = "form";
+    restorePlan = null;
+    restoreOutcome = null;
+    restoreRequestBase = null;
   }
 
   /** Opens the detail panel for entry and loads its MVCC metadata. */

@@ -582,4 +582,43 @@ test.describe("KV Explorer MVCC calls are scoped to the selected database", () =
     await expect(page.locator("table").getByText("plain-a")).toBeVisible({ timeout: LOAD_TIMEOUT });
     await expect(page.locator("table").getByText("plain-b")).toBeVisible();
   });
+
+  test("a delete confirmation open at a switch is dropped and deletes nothing", async ({ page }) => {
+    await page.goto("/");
+    // Both databases hold the same key name.
+    await page.locator("aside").getByText("kv-mvcc").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-mvcc", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await createEntry(page, "same/a", "mvcc-a");
+    await page.locator("aside").getByText("kv-plain").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-plain", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await createEntry(page, "same/a", "plain-a");
+    await expect(page.getByRole("alert").filter({ hasText: 'Created "same/a"' })).toHaveCount(0, { timeout: LOAD_TIMEOUT });
+
+    // The single-entry delete confirmation is open in kv-plain when the
+    // database changes (dispatched on the sidebar entry: the modal's backdrop
+    // covers it for a pointer click).
+    const panel = await openRow(page, "same/a");
+    await panel.getByRole("button", { name: "Delete", exact: true }).click();
+    const dialog = page.locator(".modal").filter({ hasText: "Delete Entry" });
+    await expect(dialog).toBeVisible();
+    await page.locator("aside").getByText("kv-mvcc").dispatchEvent("click");
+    await expect(page.locator(".breadcrumbs").getByText("kv-mvcc", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(page.locator("table").getByText("mvcc-a")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    // The confirmation went with the old database: nothing is left to confirm.
+    await expect(dialog).toHaveCount(0);
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await expect(page.locator("table").getByText("mvcc-a")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await page.locator("aside").getByText("kv-plain").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-plain", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(page.locator("table").getByText("plain-a")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  });
 });
