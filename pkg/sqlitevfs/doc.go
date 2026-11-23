@@ -53,6 +53,12 @@
 // constructs a Store yet. A commit past the tenant's storage quota fails
 // with ErrFull and leaves the database whole. Every Backend call takes the
 // caller's context, and a transaction reads with the context Begin was
-// given. The engine binding, the database count cap and the sqlite-vfs
-// entitlement, a page cache and every transport are later slices.
+// given. A staged publish carries the database's drop-fence guard, so a
+// publish resolved before DROP DATABASE is refused at apply.
+//
+// Admit is the creation gate: a new database needs the sqlite-vfs
+// entitlement and a free slot under the tenant's database count cap (a soft
+// bound), and an existing one opens with neither; CountDatabases counts a
+// tenant's databases. Nothing in the server calls Admit yet. The engine
+// binding, a page cache and every transport are later slices.
 package sqlitevfs

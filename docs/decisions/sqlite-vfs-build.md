@@ -1,7 +1,7 @@
 # SQLite VFS backend: answers to the open questions that block a build decision
 
 > **Status: ACCEPTED — Q1-Q5 A adopted (Tenant Agent ruling 1115), 2026-11-22; SQLite engine dependency pending the owner (owner queue 288)** · Scope: go-qrdb
-> Last verified: 2026-11-22
+> Last verified: 2026-11-23
 > SPEC row: `sqlite-vfs` (future). This record answers the five open questions
 > of [../sqlite-vfs/architecture.md](../sqlite-vfs/architecture.md)
 > ("Decided questions"). Each question lists its
@@ -314,6 +314,12 @@ Built so far (unwired):
   every isolation type; nothing in the server constructs a Store yet;
 - quota (Q5): a commit or publish past the tenant's storage quota fails with
   `ErrFull`, tested on every isolation type;
+- per-call context (ruling 109, o3): every `Backend` method takes the
+  caller's context, and a transaction reads with the context its `Begin`
+  was given;
+- drop fence (ruling 109, o4): a staged publish is one `OpGuarded` entry
+  carrying the database's drop-fence guard, so a publish resolved before
+  `DROP DATABASE` is refused at apply;
 - the optimistic read-set check on commit and publish (Q3);
 - the `sqlite-vfs` entitlement (`quota.FeatureSQLiteVFS`) and the
   per-tenant database count cap (`quota.ResourceSQLiteDatabases`, counted
@@ -321,10 +327,15 @@ Built so far (unwired):
   (Q5). Opening an existing database needs neither. The cap is a soft
   bound: two concurrent creators can both pass at the limit minus one, and
   the storage quota is the hard bound. The gate is not yet called by the
-  server.
+  server;
+- the admin surface for both: `allow_sqlite_vfs` and `max_sqlite_databases`
+  on every transport, the SDKs, `qrdb tenant set-entitlement
+  --allow-sqlite-vfs`, `qrdb tenant update-quotas --max-sqlite-databases`
+  and the config defaults.
 
 Still to come: the SQLite engine
 binding and VFS registration (blocked: owner queue 288); the server
 constructing a Store for a caller (open for the owner, o1), which is also
-where `sqlitevfs.Admit` is called: only that caller waits on o1. The
-transport, CLI and SDK fields for the entitlement and the cap go with it.
+where `sqlitevfs.Admit` is called: only that caller waits on o1.
+Registering `sqlitevfs.CountDatabases` as the `sqlite_databases` quota
+counter also waits on o1, since it reads the scope a Store lives in.

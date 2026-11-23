@@ -1,6 +1,6 @@
 # SQLite VFS Backend — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-23
 > Conflicts with this document are defects. Fix them here first. This is a
 > future feature: not scheduled, not implemented.
 
@@ -174,12 +174,16 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
   move's compares that the engine checks at apply, atomically with the
   move), and the writer lock
   over the server's lock service (`NewLockServiceWriter`), and a commit past
-  the tenant's storage quota failing with `ErrFull`, and the creation gate
-  `sqlitevfs.Admit`: a new database needs the `sqlite-vfs` entitlement and a
-  free slot under the tenant's SQLite-database count cap (a soft bound),
-  and an existing one opens with neither. The gate is not yet called by the
-  server: no engine binding, server construction of a Store or transport is
-  built.
+  the tenant's storage quota failing with `ErrFull`, a `Backend` that takes
+  the caller's context on every call, a staged publish refused at apply when
+  its database was dropped meanwhile (the drop-fence guard), and the
+  creation gate `sqlitevfs.Admit`: a new database needs the `sqlite-vfs`
+  entitlement and a free slot under the tenant's SQLite-database count cap
+  (a soft bound), and an existing one opens with neither. The gate and its
+  admin surface (the entitlement and the cap on every transport, the CLI and
+  config defaults) are built; the server does not call the gate yet: no
+  engine binding, server construction of a Store or SQLite database
+  transport is built.
 - If any tier requires CGo (`mattn`, the loadable extension), that binding
   lives in its **own Go module**: CGo must not enter the root module's
   dependency graph. The pure-Go tier via `modernc.org/sqlite` avoids CGo
