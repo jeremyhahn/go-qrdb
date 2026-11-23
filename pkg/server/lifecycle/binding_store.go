@@ -16,6 +16,8 @@ package lifecycle
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
@@ -351,7 +353,13 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 	if b.Backend == database.BackendObjstore && enc.Enabled() {
 		return nil, &ObjstoreBindingEncryptionUnsupportedError{TenantID: b.TenantID, Database: b.Database}
 	}
-	stg, pdb, err := NewLocalStorage(b.Backend, b.DataRoot, enc, bindingStorageConfig(f.storageCfg, b))
+	storageCfg := bindingStorageConfig(f.storageCfg, b)
+	if b.Backend == database.BackendPebble {
+		if err := clearStaleBindingWAL(storageCfg.WALDir, b.DataRoot); err != nil {
+			return nil, openErr(err)
+		}
+	}
+	stg, pdb, err := NewLocalStorage(b.Backend, b.DataRoot, enc, storageCfg)
 	if err != nil {
 		return nil, openErr(err)
 	}
@@ -425,6 +433,12 @@ func newBindingVector(b *database.Binding, enc *atrest.Encryptor, host any) (ser
 // *RemoteObjstoreBindingUnsupportedError). cfg's settings map is never
 // mutated.
 func bindingStorageConfig(cfg qrdbconfig.StorageConfig, b *database.Binding) qrdbconfig.StorageConfig {
+	// A configured wal_dir is the node store's: every binding writes its
+	// write-ahead log in a subdirectory of its own (BindingWALDir), so no
+	// two Pebble databases replay or recycle one directory's logs.
+	if b.Backend == database.BackendPebble && cfg.WALDir != "" {
+		cfg.WALDir = BindingWALDir(cfg.WALDir, b.DataRoot)
+	}
 	if b.Backend != database.BackendObjstore {
 		return cfg
 	}
@@ -436,6 +450,38 @@ func bindingStorageConfig(cfg qrdbconfig.StorageConfig, b *database.Binding) qrd
 	}
 	cfg.Objstore.Settings = settings
 	return cfg
+}
+
+// BindingWALDir returns the write-ahead log directory of the Pebble binding
+// store rooted at dataRoot when the node's storage.wal_dir is walDir: a
+// subdirectory of walDir named for the binding root, which no two live
+// bindings share (database.Manager refuses a root another record claims).
+// An empty walDir keeps the log beside the data, under dataRoot, and returns
+// "".
+func BindingWALDir(walDir, dataRoot string) string {
+	if walDir == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(dataRoot)))
+	return filepath.Join(walDir, "bindings", hex.EncodeToString(sum[:16]))
+}
+
+// clearStaleBindingWAL removes a binding's WAL directory when its store has
+// no Pebble data yet: the binding root of a dropped database is removed
+// while its WAL directory, outside that root, is not, so a database created
+// again under the same root must not replay the dropped one's logs.
+func clearStaleBindingWAL(walDir, dataRoot string) error {
+	if walDir == "" {
+		return nil
+	}
+	_, err := os.Stat(filepath.Join(dataRoot, "pebble"))
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return os.RemoveAll(walDir)
 }
 
 // MaterializedBinding is a database's own store, engine and service host.

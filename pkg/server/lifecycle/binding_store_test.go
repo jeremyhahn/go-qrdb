@@ -358,6 +358,82 @@ func TestLocalBindingFactory_DropRemovesRoot(t *testing.T) {
 	}
 }
 
+// TestLocalBindingFactory_WALDirPerBinding pins that an absolute
+// storage.wal_dir gives each Pebble binding its own WAL subdirectory: two
+// bindings' logs are never in one directory, neither replays the other's
+// writes after a reopen, and a database created again under a dropped one's
+// root does not replay the dropped one's log.
+func TestLocalBindingFactory_WALDirPerBinding(t *testing.T) {
+	dir := t.TempDir()
+	walDir := filepath.Join(t.TempDir(), "wal")
+	cat, err := database.NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
+	if err != nil {
+		t.Fatalf("NewKVCatalog: %v", err)
+	}
+	newMgr := func() *database.Manager {
+		f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{WALDir: walDir}, prefixTenants)
+		mgr := database.NewManager(slog.Default(), dir, database.WithBackendFactory(f))
+		mgr.SetCatalog(cat)
+		return mgr
+	}
+	ctx := context.Background()
+	mgr := newMgr()
+	roots := map[string]string{}
+	for _, name := range []string{"alpha", "beta"} {
+		db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: name, Backend: database.BackendPebble})
+		if err != nil {
+			t.Fatalf("Create %s: %v", name, err)
+		}
+		mb := materialized(t, db)
+		roots[name] = mb.DataRoot()
+		if err := service.NewKVService(mb.Host(), mb.ShardID()).Put(ctx, name+"-key", []byte(name)); err != nil {
+			t.Fatalf("Put %s: %v", name, err)
+		}
+	}
+	alphaWAL := lifecycle.BindingWALDir(walDir, roots["alpha"])
+	betaWAL := lifecycle.BindingWALDir(walDir, roots["beta"])
+	if alphaWAL == betaWAL || alphaWAL == walDir {
+		t.Fatalf("binding WAL dirs %q and %q, want two distinct subdirectories of %q", alphaWAL, betaWAL, walDir)
+	}
+	for _, d := range []string{alphaWAL, betaWAL} {
+		if got := walFiles(t, d); len(got) == 0 {
+			t.Errorf("no WAL file in the binding WAL dir %s", d)
+		}
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	mgr = newMgr()
+	defer func() { _ = mgr.Close() }()
+	for name, other := range map[string]string{"alpha": "beta", "beta": "alpha"} {
+		db, err := mgr.GetOwned(name, bindingTenant)
+		if err != nil {
+			t.Fatalf("GetOwned %s after reopen: %v", name, err)
+		}
+		mb := materialized(t, db)
+		kv := service.NewKVService(mb.Host(), mb.ShardID())
+		if got, err := kv.Get(ctx, name+"-key"); err != nil || string(got) != name {
+			t.Fatalf("%s after reopen Get = %q, %v; want %q", name, got, err, name)
+		}
+		if got, err := kv.Get(ctx, other+"-key"); err == nil && got != nil {
+			t.Fatalf("%s replayed %s's write: %q", name, other, got)
+		}
+	}
+
+	if err := mgr.DropForTenant(tenant.WithTenantID(ctx, bindingTenant), "alpha"); err != nil {
+		t.Fatalf("DropForTenant: %v", err)
+	}
+	db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "alpha", Backend: database.BackendPebble})
+	if err != nil {
+		t.Fatalf("re-Create: %v", err)
+	}
+	mb := materialized(t, db)
+	if got, err := service.NewKVService(mb.Host(), mb.ShardID()).Get(ctx, "alpha-key"); err == nil && got != nil {
+		t.Fatalf("recreated database replayed the dropped one's WAL: %q", got)
+	}
+}
+
 // TestLocalBindingFactory_OwnVectorStore proves a materialized database
 // keeps its vectors in its own store under its binding root, and reads
 // them back from that store after the database closes.
