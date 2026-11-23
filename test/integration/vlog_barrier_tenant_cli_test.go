@@ -149,13 +149,16 @@ func testVlogBarrierDatabaseOverProtocol(t *testing.T, node *multiProtoNode, pro
 	}
 	assertEntriesEncrypted := func(n int) {
 		t.Helper()
+		// The log lives in the tenant's Raft group, under the node's data
+		// root, so the whole root is scanned, the database's directory too.
 		for _, e := range entries[:n] {
+			assertPlaintextAbsentInDir(t, node.dataDir, []byte(e))
 			assertPlaintextAbsentInDir(t, dataDir, []byte(e))
 		}
 	}
 
-	// Unsealed: every verb is served from the database's own barrier
-	// backend, the software signing key's sealed record included.
+	// Unsealed: every verb is served from the tenant's Raft group, each
+	// entry and the software signing key sealed under the database's key.
 	created := vlogCLIJSON[vlogwire.CreateResult](t, node, proto, "create", "--origin", vlogCLIOrigin, "--database", dbName, "--log", logName, "--signing-key-type", "ed25519")
 	if created.Log != logName || created.Database != dbName || created.Key == nil || created.Key.Version != 1 || len(created.Key.PublicKey) == 0 {
 		t.Fatalf("[%s] vlog create = %+v, want log %q in %q with a version-1 key and its public key", proto.name, created, logName, dbName)
@@ -182,7 +185,7 @@ func testVlogBarrierDatabaseOverProtocol(t *testing.T, node *multiProtoNode, pro
 	signed := vlogCLIJSON[vlogwire.SignHeadResult](t, node, proto, "sign-head", "--database", dbName, "--log", logName)
 	verifyBarrierCheckpoint(t, proto, created, *created.Key, signed.Checkpoint, 5, head5.Root)
 	// The physical proof the log is under the database's key: no entry is
-	// in the database's data directory in plaintext.
+	// in the node's data root or the database's directory in plaintext.
 	assertEntriesEncrypted(5)
 
 	// Sealed: every verb is refused as sealed.
