@@ -28,6 +28,10 @@ type cliVolumePoolMoveJSON struct {
 	State       string   `json:"state"`
 	NodesCopied []string `json:"nodesCopied"`
 	StepNode    string   `json:"stepNode"`
+	// EncryptionDropped is set only on a Lockable-to-non-Lockable move
+	// admitted with --allow-unencrypted-destination (decision Q9, ruling
+	// 1234).
+	EncryptionDropped bool `json:"encryptionDropped"`
 }
 
 // TestVolumePool_CLI_MoveTenant_PerProtocol drives `qrdb volume-pool
@@ -65,6 +69,9 @@ func TestVolumePool_CLI_MoveTenant_PerProtocol(t *testing.T) {
 			})
 			t.Run("complete", func(t *testing.T) {
 				testVolumeMoveCompletesOverProtocol(t, node, proto)
+			})
+			t.Run("flag-audited", func(t *testing.T) {
+				testVolumeMoveAllowFlagAuditedOverProtocol(t, node, proto)
 			})
 		})
 	}
@@ -390,6 +397,93 @@ func volumeMoveExpectValue(t *testing.T, node *multiProtoNode, proto multiProtoc
 func testVolumeMoveCompletesOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
 	t.Helper()
 
+	tenantID, conn := volumeMoveToCompletion(t, node, proto)
+	volumeMoveExpectStartAudit(t, node, proto, conn, tenantID, false)
+}
+
+// testVolumeMoveAllowFlagAuditedOverProtocol drives `volume-pool
+// move-tenant --allow-unencrypted-destination` (decision Q9, ruling 1234)
+// over one transport. Both of the test node's pools are unencrypted, so the
+// move drops no encryption: it proves the flag travels the transport, the
+// move completes as without it, the answer carries no encryptionDropped, and
+// the volume_pool.move_start audit record carries the operator's flag. A
+// LUKS-to-dir drop needs a LUKS pool and root, so the drop itself is proven
+// by the pkg/volume and pkg/service unit tests.
+func testVolumeMoveAllowFlagAuditedOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	tenantID, conn := volumeMoveToCompletion(t, node, proto, "--allow-unencrypted-destination")
+	volumeMoveExpectStartAudit(t, node, proto, conn, tenantID, true)
+}
+
+// volumeMoveExpectStartAudit asserts the volume_pool.move_start audit record
+// of tenantID's move carries the operator's allow_unencrypted_destination
+// flag as allowFlag and encryption_dropped false (both test pools are
+// unencrypted). The record is the tenant's: a system-tenant caller may not
+// query it, so it is read over conn, an identity of the tenant holding
+// audit:query.
+func volumeMoveExpectStartAudit(t *testing.T, node *multiProtoNode, proto multiProtocol, conn []string, tenantID string, allowFlag bool) {
+	t.Helper()
+
+	var ev auditEventCLIJSON
+	var lastOut string
+	if !pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
+		out, err := runQRDB(t, node.cli, conn, "--output", "json", "audit", "query",
+			"--action", "volume_pool.move_start", "--tenant-id", tenantID)
+		lastOut = out
+		if err != nil {
+			return false
+		}
+		var page auditPageCLIJSON
+		if jerr := json.Unmarshal([]byte(out), &page); jerr != nil {
+			t.Fatalf("[%s] decode audit query JSON: %v\noutput: %s", proto.name, jerr, out)
+		}
+		if len(page.Events) == 0 {
+			return false
+		}
+		ev = page.Events[0]
+		return true
+	}) {
+		t.Fatalf("[%s] audit query for tenant %s's volume_pool.move_start found no record within timeout\nlast output: %s", proto.name, tenantID, lastOut)
+	}
+	if ev.Action != "volume_pool.move_start" || ev.TenantID != tenantID {
+		t.Fatalf("[%s] move_start audit record = %+v, want action volume_pool.move_start for tenant %s", proto.name, ev, tenantID)
+	}
+	if got, ok := volumeMoveAuditBool(ev.Attributes["allow_unencrypted_destination"]); !ok || got != allowFlag {
+		t.Fatalf("[%s] move_start audit allow_unencrypted_destination = %v (%T), want %v; attributes %v",
+			proto.name, ev.Attributes["allow_unencrypted_destination"], ev.Attributes["allow_unencrypted_destination"], allowFlag, ev.Attributes)
+	}
+	if got, ok := volumeMoveAuditBool(ev.Attributes["encryption_dropped"]); !ok || got {
+		t.Fatalf("[%s] move_start audit encryption_dropped = %v (%T), want false; attributes %v",
+			proto.name, ev.Attributes["encryption_dropped"], ev.Attributes["encryption_dropped"], ev.Attributes)
+	}
+}
+
+// volumeMoveAuditBool reads a boolean audit attribute as the CLI prints it:
+// REST, QUIC and MCP keep the JSON bool, while gRPC and Unix carry audit
+// attributes as a string map, so the bool arrives as "true" or "false".
+func volumeMoveAuditBool(v any) (bool, bool) {
+	switch b := v.(type) {
+	case bool:
+		return b, true
+	case string:
+		parsed, err := strconv.ParseBool(b)
+		return parsed, err == nil
+	default:
+		return false, false
+	}
+}
+
+// volumeMoveToCompletion seeds a tenant with a database and a key on the
+// "default" pool, moves it to "second" with moveArgs added to
+// `volume-pool move-tenant`, waits for the move to end, and proves the
+// tenant's data and a post-move write on "second". No step of the move may
+// report encryptionDropped: both pools are unencrypted. It returns the
+// tenant ID and the CLI arguments of the tenant's identity, which holds the
+// data plane permissions and audit:query.
+func volumeMoveToCompletion(t *testing.T, node *multiProtoNode, proto multiProtocol, moveArgs ...string) (string, []string) {
+	t.Helper()
+
 	suffix := fmt.Sprintf("%s-%d", strings.ToLower(proto.name), time.Now().UnixNano())
 	tenantID := "vc-" + suffix
 	dbName := "moved-" + suffix
@@ -401,7 +495,7 @@ func testVolumeMoveCompletesOverProtocol(t *testing.T, node *multiProtoNode, pro
 	if pool := volumeMoveTenantPool(t, node, proto, tenantID); pool != "default" {
 		t.Fatalf("[%s] tenant %s placed on pool %q, want default", proto.name, tenantID, pool)
 	}
-	certPath, keyPath := provisionTenantIdentity(t, node, tenantID, "mover", dataPlanePermissions)
+	certPath, keyPath := provisionTenantIdentity(t, node, tenantID, "mover", append(append([]string(nil), dataPlanePermissions...), "audit:query"))
 	conn := tenantCLIArgsForProto(node, proto, certPath, keyPath)
 	if out, err := runQRDB(t, node.cli, conn, "database", "create", dbName, "--backend", "pebble"); err != nil {
 		t.Fatalf("[%s] tenant database create: %v\noutput: %s", proto.name, err, out)
@@ -410,9 +504,21 @@ func testVolumeMoveCompletesOverProtocol(t *testing.T, node *multiProtoNode, pro
 		t.Fatalf("[%s] tenant kv put: %v\noutput: %s", proto.name, err, out)
 	}
 
-	out, err := runCLIProto(t, node, proto, "--output", "json", "volume-pool", "move-tenant", tenantID, "--to", "second")
+	args := append([]string{"--output", "json", "volume-pool", "move-tenant", tenantID, "--to", "second"}, moveArgs...)
+	out, err := runCLIProto(t, node, proto, args...)
 	if err != nil {
-		t.Fatalf("[%s] volume-pool move-tenant: %v\noutput: %s", proto.name, err, out)
+		t.Fatalf("[%s] volume-pool move-tenant %v: %v\noutput: %s", proto.name, moveArgs, err, out)
+	}
+	volumeMoveExpectNoDrop(t, proto, "move-tenant", out)
+
+	// The text rendering names a drop as "Encryption: dropped"; the move
+	// may already have ended, which get-move answers as no move.
+	if text, terr := runCLIProto(t, node, proto, "volume-pool", "get-move", tenantID); terr != nil {
+		if !volumeMoveIsNoMove(text) {
+			t.Fatalf("[%s] volume-pool get-move (text): %v\noutput: %s", proto.name, terr, text)
+		}
+	} else if strings.Contains(text, "Encryption: dropped") {
+		t.Fatalf("[%s] volume-pool get-move (text) reports a drop between unencrypted pools:\n%s", proto.name, text)
 	}
 
 	deadline := time.Now().Add(volumeMoveDeadline)
@@ -424,6 +530,7 @@ func testVolumeMoveCompletesOverProtocol(t *testing.T, node *multiProtoNode, pro
 			}
 			break
 		}
+		volumeMoveExpectNoDrop(t, proto, "get-move", out)
 		if time.Now().After(deadline) {
 			t.Fatalf("[%s] move of %s did not end within %s; last get-move: %s", proto.name, tenantID, volumeMoveDeadline, out)
 		}
@@ -448,6 +555,21 @@ func testVolumeMoveCompletesOverProtocol(t *testing.T, node *multiProtoNode, pro
 	}
 	if !strings.Contains(out, afterValue) {
 		t.Fatalf("[%s] kv get %s after the move = %q, want %q", proto.name, afterKey, out, afterValue)
+	}
+	return tenantID, conn
+}
+
+// volumeMoveExpectNoDrop decodes a move journal printed as JSON and fails
+// when it reports encryptionDropped: both test pools are unencrypted.
+func volumeMoveExpectNoDrop(t *testing.T, proto multiProtocol, what, out string) {
+	t.Helper()
+
+	var m cliVolumePoolMoveJSON
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatalf("[%s] decode volume-pool %s JSON: %v\noutput: %s", proto.name, what, err, out)
+	}
+	if m.EncryptionDropped {
+		t.Fatalf("[%s] volume-pool %s reports encryptionDropped between unencrypted pools: %s", proto.name, what, out)
 	}
 }
 
