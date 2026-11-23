@@ -31,16 +31,28 @@
 #   fixture             not a nested module: prints ./scripts/depscheck
 #   go.mod              prints ALL
 #   deleted package     a .go path whose directory holds no .go file prints ALL
+#   tagged importer     pkg/storage/storage.go prints ./pkg/fts WITH_QRDB_FTS=1:
+#                       pkg/fts imports pkg/storage only under qrdb_fts
+#   tagged package      pkg/fts/analyzer.go prints ./pkg/fts (the stub) and
+#                       ./pkg/fts WITH_QRDB_FTS=1 (the real implementation)
+#   tagged file         pkg/capabilities/capabilities_fts.go prints
+#                       ./pkg/capabilities WITH_QRDB_FTS=1
+#   untagged            pkg/ratelimit/token_bucket.go prints no WITH_ line
+#   rung                every print-optional-test-tags tag is an element of a
+#                       print-tag-sets line (a supported tag set)
 #   moved file          base..HEAD renaming pkg/ratelimit/errors.go to
 #                       pkg/lease/errors.go prints ./pkg/lease and also the
 #                       source ./pkg/ratelimit with its importer
 #                       ./pkg/clientlimit
 #   bad args            no arguments exit 2
+#   go.sum untouched    the suite leaves go.sum byte for byte as it found it
 
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/touched-packages.sh"
+gosum="$here/../go.sum"
+sum_before=$(cksum <"$gosum")
 fails=0
 
 pass() { echo "PASS: $1"; }
@@ -81,6 +93,52 @@ got=$(printf 'pkg/no_such_pkg/gone.go\n' | "$script" --files 2>&1)
 rc=$?
 if [ "$rc" -eq 0 ] && [ "$got" = ALL ]; then pass "deleted package"; else fail "deleted package: rc=$rc got [$got]"; fi
 
+got=$(printf 'pkg/storage/storage.go\n' | "$script" --files 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ] && has "$got" "./pkg/fts WITH_QRDB_FTS=1"; then pass "tagged importer"; else fail "tagged importer: rc=$rc got [$got]"; fi
+
+got=$(printf 'pkg/fts/analyzer.go\n' | "$script" --files 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ] && has "$got" ./pkg/fts && has "$got" "./pkg/fts WITH_QRDB_FTS=1"; then pass "tagged package"; else fail "tagged package: rc=$rc got [$got]"; fi
+
+got=$(printf 'pkg/capabilities/capabilities_fts.go\n' | "$script" --files 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ] && has "$got" "./pkg/capabilities WITH_QRDB_FTS=1"; then pass "tagged file"; else fail "tagged file: rc=$rc got [$got]"; fi
+
+got=$(printf 'pkg/ratelimit/token_bucket.go\n' | "$script" --files 2>&1)
+rc=$?
+case $got in
+*WITH_*) fail "untagged: rc=$rc got [$got]" ;;
+*) if [ "$rc" -eq 0 ] && [ -n "$got" ]; then pass "untagged"; else fail "untagged: rc=$rc got [$got]"; fi ;;
+esac
+
+optional=$(make -s --no-print-directory -C "$here/.." print-optional-test-tags 2>&1)
+orc=$?
+sets=$(make -s --no-print-directory -C "$here/.." print-tag-sets 2>&1)
+src=$?
+if [ "$orc" -ne 0 ] || [ "$src" -ne 0 ] || [ -z "$optional" ]; then
+	fail "rung: print-optional-test-tags rc=$orc [$optional], print-tag-sets rc=$src"
+else
+	rung_ok=1
+	while read -r tag flag; do
+		[ -n "$tag" ] || continue
+		case $flag in
+		WITH_*=1) ;;
+		*)
+			rung_ok=0
+			fail "rung: $tag has no WITH_<FLAG>=1 word [$flag]"
+			;;
+		esac
+		if ! printf '%s\n' "$sets" | tr ', ' '\n\n' | grep -qxF "$tag"; then
+			rung_ok=0
+			fail "rung: $tag is in no print-tag-sets line"
+		fi
+	done <<EOF
+$optional
+EOF
+	[ "$rung_ok" -eq 0 ] || pass "rung"
+fi
+
 # moved file: a base tree with pkg/lease/errors.go at pkg/ratelimit/errors.go,
 # so the diff base..HEAD is a rename out of pkg/ratelimit.
 tmp=$(mktemp -d)
@@ -103,6 +161,8 @@ fi
 "$script" </dev/null >/dev/null 2>&1
 rc=$?
 if [ "$rc" -eq 2 ]; then pass "bad args"; else fail "bad args: rc=$rc want 2"; fi
+
+if [ "$(cksum <"$gosum")" = "$sum_before" ]; then pass "go.sum untouched"; else fail "go.sum untouched: the suite changed go.sum"; fi
 
 if [ "$fails" -ne 0 ]; then
 	echo "touched-packages_test.sh: $fails case(s) failed"
