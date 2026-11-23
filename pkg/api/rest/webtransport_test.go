@@ -326,6 +326,99 @@ func TestWebTransport_UnauthenticatedSessionRefusedBeforeTheHandler(t *testing.T
 	}
 }
 
+// TestWebTransport_RESTLayersRefuseBeforeTheHandler proves the session's
+// extended CONNECT passes every other REST layer, not only authentication:
+// an authenticated CONNECT over real QUIC is refused with the status REST
+// gives while the sealed window is closed, while the admin credential is
+// awaited and once the client is over its limit, and the handler never runs.
+func TestWebTransport_RESTLayersRefuseBeforeTheHandler(t *testing.T) {
+	awaiting := &stubAwaitingProbe{}
+	awaiting.awaiting.Store(true)
+	for name, tc := range map[string]struct {
+		opt      ServerOption
+		admitted int
+		want     int
+	}{
+		"sealed window":             {opt: WithSealedWindowProbe(newFakeSealed(true)), want: http.StatusServiceUnavailable},
+		"awaiting admin credential": {opt: WithAwaitingAdminCredentialProbe(awaiting), want: http.StatusServiceUnavailable},
+		"client limit":              {opt: WithClientLimiter(newRESTClientLimiter(t, 1, nil)), admitted: 1, want: http.StatusTooManyRequests},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newWTRecorder()
+			srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, h.handle), tc.opt)
+			for i := range tc.admitted {
+				status, sess, err := dialWT(t, srv, pool, wtTestPath, "Bearer good")
+				if err != nil || sess == nil || status != http.StatusOK {
+					t.Fatalf("admitted dial %d: status %d, err %v, want an established session", i, status, err)
+				}
+				<-h.sessions
+			}
+			status, sess, err := dialWT(t, srv, pool, wtTestPath, "Bearer good")
+			if err == nil || sess != nil {
+				t.Fatal("a session was established through the refusing layer")
+			}
+			if status != tc.want {
+				t.Fatalf("status %d, want REST's %d", status, tc.want)
+			}
+			if n := h.calls.Load(); n != int32(tc.admitted) {
+				t.Fatalf("handler ran %d times, want %d", n, tc.admitted)
+			}
+		})
+	}
+}
+
+// TestWebTransport_TCPListenersDoNotSpeakWebTransport proves the HTTP/1.1
+// and HTTP/2 listeners of a started server refuse an authenticated CONNECT
+// on the session route without running the handler: WebTransport is served
+// over HTTP/3 only.
+func TestWebTransport_TCPListenersDoNotSpeakWebTransport(t *testing.T) {
+	h := newWTRecorder()
+	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, h.handle))
+	clientTLS := &tls.Config{RootCAs: pool, ServerName: "localhost", MinVersion: tls.VersionTLS13}
+	tcp := func(set func(*http.Protocols)) http.RoundTripper {
+		p := new(http.Protocols)
+		set(p)
+		return &http.Transport{TLSClientConfig: clientTLS.Clone(), Protocols: p}
+	}
+	for name, tc := range map[string]struct {
+		rt    http.RoundTripper
+		major int
+		want  int
+	}{
+		// HTTP/1.1 carries the path, so the CONNECT reaches the route and
+		// serveWebTransport refuses it as not HTTP/3.
+		"HTTP/1.1": {rt: tcp(func(p *http.Protocols) { p.SetHTTP1(true) }), major: 1, want: http.StatusBadRequest},
+		// net/http's HTTP/2 client refuses a :protocol pseudo-header, so it
+		// cannot send an extended CONNECT (RFC 8441): HTTP/2 sends a plain
+		// CONNECT, which has no :path and matches no route.
+		"HTTP/2": {rt: tcp(func(p *http.Protocols) { p.SetHTTP2(true) }), major: 2, want: http.StatusNotFound},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "https://"+srv.Addr()+wtTestPath, nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("Authorization", "Bearer good")
+			resp, err := (&http.Client{Transport: tc.rt}).Do(req)
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.ProtoMajor != tc.major {
+				t.Fatalf("served over HTTP/%d, want HTTP/%d", resp.ProtoMajor, tc.major)
+			}
+			if resp.StatusCode != tc.want {
+				t.Fatalf("status %d, want %d", resp.StatusCode, tc.want)
+			}
+		})
+	}
+	if n := h.calls.Load(); n != 0 {
+		t.Fatalf("handler ran %d times for CONNECTs on the TCP listeners", n)
+	}
+}
+
 func TestWebTransport_OtherPathNotUpgraded(t *testing.T) {
 	h := newWTRecorder()
 	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, h.handle))
