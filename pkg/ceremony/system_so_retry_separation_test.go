@@ -25,10 +25,13 @@ func TestInitialize_SingleAdminFaultAfterUnsealResealsAndRetryEnrolsSO(t *testin
 			SOCSRPEM:      soCSR,
 		}
 	}
-	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
+	b := testBarrier(t)
+	svc := newTestCeremonyService(t, defaultConfig(), b)
 
 	_, err := svc.Initialize(ctx, faultCA{CeremonyCA: mock, issueErr: errors.New("simulated TLS fault")}, opts())
 	require.ErrorIs(t, err, ErrInitFailed)
+	assert.True(t, b.IsSealed(), "the failed init leaves the barrier sealed")
+	assert.Equal(t, StateAwaitingInit, svc.State(), "the failed init is retryable")
 	assert.True(t, svc.HoldsSealedWindow(ctx), "the failed init leaves the sealed window up")
 	assert.Nil(t, svc.LastIssuedSystemSO())
 	adminPEM, _ := svc.LastIssuedAdminCertPEM()
