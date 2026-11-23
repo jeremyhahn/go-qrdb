@@ -451,6 +451,47 @@ Construction refuses an invalid chain, wrapped in `*node.AuthMiddlewareWiringErr
 With auth disabled (`auth.enabled: false`) there is no chain, and the option
 has no effect.
 
+### Client bearer tokens: `transport.WithBearerToken` / `transport.WithTokenSource`
+
+A client of a node that runs a bearer authenticator (above) sends its token
+with an SDK option, not a hand-set header. The REST, gRPC, Unix and MCP
+transports send `Authorization: Bearer <token>` (gRPC and Unix as the
+`authorization` metadata key) on every request, data and admin alike. The root
+sdk mirrors both options as `sdk.WithBearerToken` and `sdk.WithTokenSource`.
+
+```go
+tr, err := rest.New(
+	transport.WithAddress("https://127.0.0.1:8443"),
+	transport.WithTLSConfig(tlsConfig),
+	transport.WithBearerToken(token),
+)
+
+// Or a token that refreshes: Token is called once per request.
+tr, err = grpc.New(
+	transport.WithAddress("127.0.0.1:9443"),
+	transport.WithTLSConfig(tlsConfig),
+	transport.WithTokenSource(src), // src implements Token(ctx) (string, error)
+)
+```
+
+- **TLS only, configured host only.** A token is never sent in clear text. On a
+  connection without TLS the request is refused before the token source is
+  asked, with `*transport.BearerRequiresTLSError`. REST and MCP send it only to
+  the configured host: a redirect to any other host is refused with
+  `*transport.BearerForeignHostError`.
+- **Per-request refresh.** `transport.TokenSource` is the local interface
+  `Token(ctx) (string, error)`, called once per request, so a source that
+  rotates its token is used at once. `transport.StaticTokenSource(token)` is
+  the fixed source behind `WithBearerToken`. There is no oauth2 dependency.
+- **Refused tokens.** A source error, an empty token, or a token holding a
+  control byte fails the request with `*transport.TokenSourceError`. No error
+  text ever contains the token.
+- **QUIC refuses the option.** The QUIC request frame has no credential field,
+  so `quic.New` returns `*transport.ConfigError{Field: "TokenSource"}`. Use
+  REST, gRPC, Unix or MCP, or mTLS on QUIC.
+- **Embedded takes none.** An embedded client runs in the node's process and
+  goes through no network authenticator, so it has no bearer option.
+
 ### Delegation certificates
 
 A certificate carrying the delegation extension authenticates as a service
