@@ -2269,6 +2269,50 @@ func TestLogService_PreUpgradeDatabaseLogFenceIsInitializedAtFirstLogWrite(t *te
 	}
 }
 
+// The route remembers each incarnation whose log marker it has initialised,
+// so the initializer is asked once per incarnation. A drop of the database's
+// logs ends that incarnation: its entry leaves the route with it, so the
+// route holds no entry per incarnation ever created under the name.
+func TestLogService_DropForgetsTheLogFenceIncarnation(t *testing.T) {
+	home := newFenceGroup(t)
+	mgr := databasetest.NewManager(nil, t.TempDir(), database.WithKeyspaceReclaimer(markerReclaimer{mu: &home.mu, store: home.store}))
+	t.Cleanup(func() { _ = mgr.Close() })
+	svc, err := NewLogService(LogServiceConfig{
+		Resolver:  &fixedShardResolver{host: &gatedHost{mockHost: home.host(t), enabled: map[uint64]bool{1: true}}, shardID: 1},
+		Databases: mgr,
+		Signers:   newPausingSigners(),
+	})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	ls := svc.(*logService)
+	ls.SetLogFenceInitializer(&storeLogFenceInit{mu: &home.mu, store: home.store})
+	ctx := acmeCtx()
+	first := createAcmeLedger(t, mgr)
+	if _, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: testLogRef, Origin: "example.test/acme/events"}); err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	held := func() int {
+		n := 0
+		ls.route.inited.Range(func(k, _ any) bool {
+			if key := k.(dbStoreKey); key.tenant == "acme" && key.name == "ledger" {
+				n++
+			}
+			return true
+		})
+		return n
+	}
+	if n := held(); n != 1 {
+		t.Fatalf("route holds %d fence entries after the first log write, want 1", n)
+	}
+	if err := ls.DropDatabaseLogs(context.Background(), "acme", "ledger", first); err != nil {
+		t.Fatalf("DropDatabaseLogs: %v", err)
+	}
+	if n := held(); n != 0 {
+		t.Fatalf("route holds %d fence entries after the drop, want none", n)
+	}
+}
+
 // secondLookupFails answers the first GetOwned from the registry and
 // every later one with err: a registry that fails between two lookups of
 // one admission.

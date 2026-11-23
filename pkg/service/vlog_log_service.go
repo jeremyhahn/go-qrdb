@@ -881,6 +881,29 @@ func (s *logService) ExpireBodies(ctx context.Context, req *ExpireBodiesRequest)
 // without the sub-type would halt on it.
 func (s *logService) DropDatabaseLogs(ctx context.Context, tenantID, name, incarnation string) error {
 	tenantID = routingTenant(tenantID)
+	if err := s.dropDatabaseLogs(ctx, tenantID, name, incarnation); err != nil {
+		return err
+	}
+	// The dropped incarnation's log-fence entry leaves the route with it.
+	s.route.forgetFences(tenantID, name)
+	return nil
+}
+
+// forgetFences removes every initFence entry of tenantID's database name.
+// One that a later write still needs is asked again, which writes nothing
+// over a present marker.
+func (r *logRoute) forgetFences(tenantID, name string) {
+	r.inited.Range(func(k, _ any) bool {
+		if key, ok := k.(dbStoreKey); ok && key.tenant == tenantID && key.name == name {
+			r.inited.Delete(k)
+		}
+		return true
+	})
+}
+
+// dropDatabaseLogs proposes the bounded drop of DropDatabaseLogs until a
+// step deletes nothing.
+func (s *logService) dropDatabaseLogs(ctx context.Context, tenantID, name, incarnation string) error {
 	g, ok, err := s.dropGroup(ctx, tenantID, name)
 	if err != nil || !ok {
 		return err
