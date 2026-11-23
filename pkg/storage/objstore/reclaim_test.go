@@ -201,11 +201,21 @@ func TestReclaim_ProviderFaults(t *testing.T) {
 // the rest; another owner is still refused.
 func TestReclaim_InterruptedReopensForCleanup(t *testing.T) {
 	cases := map[string]func(t *testing.T) (*reclaimStore, *reclaimStore){
-		"owner marker delete fails": func(t *testing.T) (*reclaimStore, *reclaimStore) {
+		// Reclaim keeps the owner marker: the drop releases it only after
+		// the catalog record is gone (ReleaseOwner), so a drop that stops
+		// between the two leaves the namespace its owner's.
+		"drop stops after the reclamation": func(t *testing.T) (*reclaimStore, *reclaimStore) {
 			e, store, journal := newReclaimEngine(t)
 			require.NoError(t, e.claimOwner("db-a"))
+			require.NoError(t, e.Reclaim())
+			return store, journal
+		},
+		"owner marker delete fails": func(t *testing.T) (*reclaimStore, *reclaimStore) {
+			e, store, journal := newReclaimEngine(t)
+			e.owner = "db-a"
+			require.NoError(t, e.claimOwner("db-a"))
 			store.deleteFails[ownerMarkerName] = true
-			require.ErrorIs(t, e.Reclaim(), errProvider)
+			require.ErrorIs(t, e.ReleaseOwner(), errProvider)
 			clear(store.deleteFails)
 			return store, journal
 		},
@@ -220,18 +230,61 @@ func TestReclaim_InterruptedReopensForCleanup(t *testing.T) {
 			store, journal := interrupt(t)
 			require.Equal(t, []string{ownerMarkerName}, names(t, store))
 
-			other := &Engine{store: store, journal: journal, provider: "memory"}
+			other := &Engine{store: store, journal: journal, provider: "memory", owner: "db-b"}
 			var owned *NamespaceOwnedError
 			require.True(t, errors.As(other.claimNamespace("db-b"), &owned))
 			assert.Equal(t, "db-a", owned.Owner)
 
-			reopened := &Engine{store: store, journal: journal, provider: "memory"}
+			reopened := &Engine{store: store, journal: journal, provider: "memory", owner: "db-a"}
 			require.NoError(t, reopened.claimNamespace("db-a"))
 			require.NoError(t, reopened.Reclaim())
+			require.Equal(t, []string{ownerMarkerName}, names(t, store))
+			require.NoError(t, reopened.ReleaseOwner())
 			require.Empty(t, names(t, store))
 			require.Empty(t, names(t, journal))
+
+			// The released namespace is free for another owner.
+			next := &Engine{store: store, journal: journal, provider: "memory", owner: "db-b"}
+			require.NoError(t, next.claimNamespace("db-b"))
 		})
 	}
+}
+
+// TestReleaseOwner_Rules pins what ReleaseOwner deletes: this owner's
+// records and markers, and the owner marker only when it names this owner
+// and nothing foreign remains in the namespace.
+func TestReleaseOwner_Rules(t *testing.T) {
+	t.Run("own namespace with records", func(t *testing.T) {
+		e, store, journal := newReclaimEngine(t)
+		e.owner = "db-a"
+		require.NoError(t, e.claimOwner("db-a"))
+		require.NoError(t, e.ReleaseOwner())
+		require.Empty(t, names(t, store))
+		require.Empty(t, names(t, journal))
+		// Nothing is written after the release.
+		require.Error(t, e.Set([]byte("c"), []byte("3")))
+	})
+	t.Run("foreign object keeps the owner marker", func(t *testing.T) {
+		e, store, _ := newReclaimEngine(t)
+		e.owner = "db-a"
+		require.NoError(t, e.claimOwner("db-a"))
+		require.NoError(t, store.Storage.Put("foreign/x", strings.NewReader("x")))
+		require.NoError(t, e.ReleaseOwner())
+		assert.ElementsMatch(t, []string{"foreign/x", ownerMarkerName}, names(t, store))
+	})
+	t.Run("another owner's marker stays", func(t *testing.T) {
+		e, store, _ := newReclaimEngine(t)
+		e.owner = "db-a"
+		require.NoError(t, store.Storage.Put(ownerMarkerName, strings.NewReader("db-b")))
+		require.NoError(t, e.ReleaseOwner())
+		require.Equal(t, []string{ownerMarkerName}, names(t, store))
+	})
+	t.Run("unowned engine leaves the marker", func(t *testing.T) {
+		e, store, _ := newReclaimEngine(t)
+		require.NoError(t, store.Storage.Put(ownerMarkerName, strings.NewReader("db-a")))
+		require.NoError(t, e.ReleaseOwner())
+		require.Equal(t, []string{ownerMarkerName}, names(t, store))
+	})
 }
 
 func contains(list []string, want string) bool {

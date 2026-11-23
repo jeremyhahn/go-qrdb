@@ -117,6 +117,14 @@ type Engine struct {
 	// writeMu (enterWrite, CompareAndSwap, a batch commit).
 	reclaimed bool
 
+	// emptyAtOpen is set when the open found the namespace holding no
+	// object at all and wrote the format marker into it
+	// (ensureFormatMarkerFor); freshClaim when, in addition, this open
+	// wrote the owner marker (claimOwner). A failed create releases a
+	// freshly claimed namespace (FreshlyClaimed) and leaves any other alone.
+	emptyAtOpen bool
+	freshClaim  bool
+
 	// beforeEnter, when set, runs in enter between its first closed check
 	// and lifeMu. Tests use it to hold a call in that gap; it is nil in
 	// production.
@@ -380,7 +388,11 @@ func (e *Engine) ensureFormatMarkerFor(owner string) error {
 			return err
 		}
 	}
-	return e.store.Put(formatMarkerName, strings.NewReader(formatVersion))
+	if err := e.store.Put(formatMarkerName, strings.NewReader(formatVersion)); err != nil {
+		return err
+	}
+	e.emptyAtOpen = len(names) == 0
+	return nil
 }
 
 // ensureFormatMarker is ensureFormatMarkerFor an opener with no owner.
@@ -834,7 +846,20 @@ func (e *Engine) claimOwner(owner string) error {
 	if !notFound(err) {
 		return err
 	}
-	return e.store.Put(ownerMarkerName, strings.NewReader(owner))
+	if err := e.store.Put(ownerMarkerName, strings.NewReader(owner)); err != nil {
+		return err
+	}
+	e.freshClaim = e.emptyAtOpen
+	return nil
+}
+
+// FreshlyClaimed reports whether this open claimed its namespace new: it
+// wrote the owner marker into a namespace that held no object before. A
+// create that fails after the open releases such a namespace
+// (ReleaseOwner); a namespace that already held data, or was already this
+// owner's, is left alone.
+func (e *Engine) FreshlyClaimed() bool {
+	return e.freshClaim
 }
 
 // ownerConflict is the one ownership rule: nil when found (the owner marker's
@@ -1216,6 +1241,16 @@ func (e *Engine) Reclaim() error {
 	defer e.journalMu.Unlock()
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
+	return e.reclaimLocked()
+}
+
+// reclaimLocked is Reclaim under enter, journalMu and writeMu. It deletes
+// this engine's records, the journal and the format marker; the owner
+// marker stays (ReleaseOwner), so the namespace is still its owner's until
+// the drop has removed the database's catalog record: a drop that stops
+// between the two reopens the namespace for the same owner and finishes,
+// and no other database can claim it meanwhile.
+func (e *Engine) reclaimLocked() error {
 	// Set before the first delete: even a reclamation that fails part-way
 	// has removed objects, so no write may follow it.
 	e.reclaimed = true
@@ -1230,7 +1265,7 @@ func (e *Engine) Reclaim() error {
 		// listing also reaches objects under the root that are not this
 		// engine's -- a namespace nested under k/ or h/ (its markers,
 		// journal and records), or anything else placed there -- and those
-		// stay. The journal and markers at the root go last, below.
+		// stay. The journal and the format marker at the root go last.
 		if _, direct := decodeDirectName(name); !direct && !isHashedName(name) {
 			continue
 		}
@@ -1245,16 +1280,55 @@ func (e *Engine) Reclaim() error {
 	if err := e.store.Delete(formatMarkerName); err != nil && !notFound(err) {
 		return err
 	}
-	// The owner record goes last, so a reclamation that fails part-way
-	// leaves the namespace its owner's to retry: a namespace holding the
-	// owner marker reopens for that owner (ensureFormatMarkerFor). It stays
-	// while foreign objects remain, so the owner can still reopen the
-	// namespace to finish a drop that stops after this reclamation.
+	return nil
+}
+
+// ReleaseOwner gives the namespace up: it reclaims what this engine wrote
+// (as Reclaim), then deletes the owner marker when it names this engine's
+// owner and nothing else remains. A namespace still holding foreign objects
+// keeps the marker, so its owner can reopen it; a marker naming another
+// owner, or an unowned engine, deletes no marker. A drop calls it once the
+// database's catalog record is gone; a failed create calls it on a
+// namespace its open freshly claimed (FreshlyClaimed). No write follows it.
+func (e *Engine) ReleaseOwner() error {
+	leave, err := e.enter()
+	if err != nil {
+		return err
+	}
+	defer leave()
+	e.journalMu.Lock()
+	defer e.journalMu.Unlock()
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+	if err := e.reclaimLocked(); err != nil {
+		return err
+	}
+	if e.owner == "" {
+		return nil
+	}
+	if e.namespace != "" {
+		defer lockNamespace(e.namespace)()
+	}
 	remaining, err := e.store.List("")
 	if err != nil {
 		return err
 	}
 	if len(remaining) != 1 || remaining[0] != ownerMarkerName {
+		return nil
+	}
+	rc, err := e.store.Get(ownerMarkerName)
+	if err != nil {
+		if notFound(err) {
+			return nil
+		}
+		return err
+	}
+	found, readErr := io.ReadAll(rc)
+	_ = rc.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if string(found) != e.owner {
 		return nil
 	}
 	if err := e.store.Delete(ownerMarkerName); err != nil && !notFound(err) {

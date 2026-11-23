@@ -46,6 +46,38 @@ func TestNew_OwnerClaimsNamespace(t *testing.T) {
 	}
 }
 
+// TestNew_FreshlyClaimed pins the flag a failed create reads to decide
+// whether it may release the namespace: true only for an owned open that
+// wrote the owner marker onto a namespace holding nothing before.
+func TestNew_FreshlyClaimed(t *testing.T) {
+	open := func(t *testing.T, path, owner string) *Engine {
+		t.Helper()
+		e, err := New("local", map[string]string{"path": path}, WithOwner(owner))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = e.Close() })
+		return e
+	}
+	t.Run("new namespace", func(t *testing.T) {
+		assert.True(t, open(t, t.TempDir(), "db-a").FreshlyClaimed())
+	})
+	t.Run("reopen by the same owner", func(t *testing.T) {
+		path := t.TempDir()
+		first := open(t, path, "db-a")
+		require.NoError(t, first.Close())
+		assert.False(t, open(t, path, "db-a").FreshlyClaimed())
+	})
+	t.Run("unowned data claimed", func(t *testing.T) {
+		path := t.TempDir()
+		unowned := open(t, path, "")
+		require.NoError(t, unowned.Set([]byte("k"), []byte("v")))
+		require.NoError(t, unowned.Close())
+		assert.False(t, open(t, path, "db-a").FreshlyClaimed())
+	})
+	t.Run("unowned open", func(t *testing.T) {
+		assert.False(t, open(t, t.TempDir(), "").FreshlyClaimed())
+	})
+}
+
 // TestClaimOwner_ProviderFaults covers the provider failures on the claim:
 // the marker read, the marker body and the marker write.
 func TestClaimOwner_ProviderFaults(t *testing.T) {
