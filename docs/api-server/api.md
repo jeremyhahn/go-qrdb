@@ -62,6 +62,7 @@ for the embedding code.
 |---|---|
 | Route | extended `CONNECT` to `path` on the HTTP/3 listener, `:protocol` `webtransport-h3` (the only token accepted) |
 | Authentication | the session's `CONNECT` is an authenticated REST route: it passes the same authentication, tenant binding and every other REST layer before the upgrade, and is refused with the status REST gives (`401`, `403`, a tenant refusal) without reaching the handler |
+| Refused before the upgrade | each answered before the handler runs: `401` unauthenticated; `503` while the sealed window is closed or the admin credential is awaited; `429` over the client limit; on the TCP listeners `400` for an HTTP/1.1 `CONNECT` to `path` and `404` for an HTTP/2 `CONNECT`, which carries no `:path` |
 | Not HTTP/3 | an authenticated request that reaches the route over HTTP/1.1 or HTTP/2 is `400` |
 | Client requirements | a `CONNECT` from a client that did not send `SETTINGS_WT_ENABLED`, `SETTINGS_H3_DATAGRAM` or the `reset_stream_at` transport parameter has its request stream reset with `H3_MESSAGE_ERROR` |
 | Handler | `func(sess *WebTransportSession, caller *auth.Identity, tenantID string)`: the upgraded session, the authenticated caller and the bound tenant; the handler owns the session |
