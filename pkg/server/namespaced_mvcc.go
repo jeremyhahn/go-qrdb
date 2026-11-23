@@ -272,7 +272,8 @@ func (s *namespacedMVCCService) Compact(ctx context.Context, revision int64) err
 }
 
 // MovePrefix rewrites a prefix move into this namespace -- the source, the
-// destination and every extra op's key gain the view's prefix, so a move
+// destination, every extra op's key and every read-set compare's key gain
+// the view's prefix, so a move
 // never reaches outside the database -- and forwards it to the inner
 // service's server-side move (*service.PrefixMoveUnsupportedError when it
 // has none). A dedicated-raft view, whose prefix is empty, forwards the
@@ -290,10 +291,15 @@ func (s *namespacedMVCCService) MovePrefix(ctx context.Context, req *service.Mov
 		Dst:          s.prefix + req.Dst,
 		ExpectedKeys: req.ExpectedKeys,
 		Ops:          make([]service.Op, len(req.Ops)),
+		Compares:     make([]service.Compare, len(req.Compares)),
 	}
 	for i, op := range req.Ops {
 		op.Key = append([]byte(s.prefix), op.Key...)
 		scoped.Ops[i] = op
+	}
+	for i, c := range req.Compares {
+		c.Key = append([]byte(s.prefix), c.Key...)
+		scoped.Compares[i] = c
 	}
 	return s.mover.MovePrefix(ctx, scoped)
 }

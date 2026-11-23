@@ -84,8 +84,8 @@ func (h *hardConfinedMVCC) CompactionPolicy(ctx context.Context) (*compaction.Po
 }
 
 // MovePrefix refuses, with *HardConfinedKeyError, a prefix move whose source
-// or destination could reach a hard-confined key, or whose extra op names
-// one, and otherwise forwards to the inner servicer's MovePrefix
+// or destination could reach a hard-confined key, or whose extra op or
+// read-set compare names one, and otherwise forwards to the inner servicer's MovePrefix
 // (*PrefixMoveUnsupportedError when it has none).
 func (h *hardConfinedMVCC) MovePrefix(ctx context.Context, req *MovePrefixRequest) (int64, error) {
 	if req != nil {
@@ -97,6 +97,12 @@ func (h *hardConfinedMVCC) MovePrefix(ctx context.Context, req *MovePrefixReques
 		for _, op := range req.Ops {
 			if isHardConfinedKey(string(op.Key)) {
 				return 0, &HardConfinedKeyError{Key: string(op.Key)}
+			}
+		}
+		// A compare is an existence oracle over the key it names.
+		for _, c := range req.Compares {
+			if isHardConfinedKey(string(c.Key)) {
+				return 0, &HardConfinedKeyError{Key: string(c.Key)}
 			}
 		}
 	}

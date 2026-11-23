@@ -33,6 +33,10 @@ func validMoveRequest() *MovePrefixRequest {
 			{Type: OpPut, Key: []byte("t/db/meta"), Value: []byte("m2")},
 			{Type: OpDelete, Key: []byte("t/db/p/9")},
 		},
+		Compares: []Compare{
+			{Key: []byte("t/db/p/1"), Target: CompareModRevision, Result: CompareEqual, ModRevision: 0},
+			{Key: []byte("t/db/p/2"), Target: CompareModRevision, Result: CompareLess, ModRevision: 6},
+		},
 	}
 }
 
@@ -46,6 +50,9 @@ func TestMVCCKVService_MovePrefix_RefusesInvalidBeforeProposing(t *testing.T) {
 		"range op":          func(r *MovePrefixRequest) { r.Ops = []Op{{Type: OpRange, Key: []byte("a")}} },
 		"ranged delete":     func(r *MovePrefixRequest) { r.Ops = []Op{{Type: OpDelete, Key: []byte("a"), RangeEnd: []byte("b")}} },
 		"op with empty key": func(r *MovePrefixRequest) { r.Ops = []Op{{Type: OpPut}} },
+		"compare with empty key": func(r *MovePrefixRequest) {
+			r.Compares = []Compare{{Target: CompareModRevision, Result: CompareEqual}}
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -91,7 +98,7 @@ func TestMVCCKVService_MovePrefix_ProposesTheMove(t *testing.T) {
 	if len(*cmds) != 1 || (*cmds)[0][0] != protocol.OpMVCCMovePrefix {
 		t.Fatalf("proposed %x, want one OpMVCCMovePrefix", *cmds)
 	}
-	src, dst, expected, ops, err := protocol.DecodeMVCCMovePrefix((*cmds)[0][1:])
+	src, dst, expected, ops, cmps, err := protocol.DecodeMVCCMovePrefix((*cmds)[0][1:])
 	if err != nil || string(src) != "t/db/s/1/" || string(dst) != "t/db/p/" || expected != 3 {
 		t.Fatalf("the proposed command decodes as %q %q %d %v", src, dst, expected, err)
 	}
@@ -100,11 +107,31 @@ func TestMVCCKVService_MovePrefix_ProposesTheMove(t *testing.T) {
 		ops[1].Type != protocol.OpMVCCDelete || string(ops[1].Key) != "t/db/p/9" {
 		t.Fatalf("the proposed ops are %+v", ops)
 	}
+	if len(cmps) != 2 ||
+		string(cmps[0].Key) != "t/db/p/1" || cmps[0].Target != protocol.CompareTargetModRevision ||
+		cmps[0].Result != protocol.CompareResultEqual || cmps[0].ModRevision != 0 ||
+		string(cmps[1].Key) != "t/db/p/2" || cmps[1].Target != protocol.CompareTargetModRevision ||
+		cmps[1].Result != protocol.CompareResultLess || cmps[1].ModRevision != 6 {
+		t.Fatalf("the proposed compares are %+v", cmps)
+	}
 
 	appErr, _ := recordingHost(sm.Result{Data: protocol.EncodeCapabilityError("subsystem not configured")})
 	var unsupported *CapabilityUnsupportedError
 	if _, err := NewMVCCKVService(appErr, 1).(*MVCCKVService).MovePrefix(context.Background(), validMoveRequest()); !stderrors.As(err, &unsupported) {
 		t.Fatalf("an encoded application error = %v, want a CapabilityUnsupportedError", err)
+	}
+}
+
+// TestMVCCKVService_MovePrefix_GuardRefusalIsWriteGuardRefused: a compare the
+// engine found not to hold comes back as *WriteGuardRefusedError naming its
+// key, distinct from the count conflict.
+func TestMVCCKVService_MovePrefix_GuardRefusalIsWriteGuardRefused(t *testing.T) {
+	inner, _ := recordingHost(sm.Result{Data: protocol.EncodeGuardRefusal([]byte("t/db/p/2"))})
+	host := &gatedHost{mockHost: inner, enabled: map[uint64]bool{1: true}}
+	_, err := NewMVCCKVService(host, 1).(*MVCCKVService).MovePrefix(context.Background(), validMoveRequest())
+	var refused *WriteGuardRefusedError
+	if !stderrors.As(err, &refused) || string(refused.Key) != "t/db/p/2" {
+		t.Fatalf("MovePrefix = %v, want *WriteGuardRefusedError naming t/db/p/2", err)
 	}
 }
 
@@ -128,6 +155,9 @@ func TestHardConfinedMVCC_MovePrefix(t *testing.T) {
 		"dst in a confined namespace": func(r *MovePrefixRequest) { r.Dst = InternalKeyPrefixSystem + "cluster_ca/x/" },
 		"op on a material key": func(r *MovePrefixRequest) {
 			r.Ops = []Op{{Type: OpPut, Key: []byte(InternalKeyPrefixSystem + "cert_ca/t/material"), Value: []byte("k")}}
+		},
+		"compare on a material key": func(r *MovePrefixRequest) {
+			r.Compares = []Compare{{Key: []byte(InternalKeyPrefixSystem + "cert_ca/t/material"), Target: CompareModRevision, Result: CompareEqual}}
 		},
 	}
 	for name, mutate := range confined {

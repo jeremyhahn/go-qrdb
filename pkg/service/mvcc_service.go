@@ -873,6 +873,10 @@ type MovePrefixRequest struct {
 	Src, Dst     string
 	ExpectedKeys int64
 	Ops          []Op
+	// Compares is the publisher's read set, evaluated at apply before the
+	// source is read: the first that does not hold refuses the whole move
+	// with a *WriteGuardRefusedError naming its key, and nothing is written.
+	Compares []Compare
 }
 
 // Compile-time interface check.
@@ -900,6 +904,11 @@ func ValidateMovePrefix(req *MovePrefixRequest) error {
 			return invalid("an extra op must be a put or a single-key delete")
 		}
 	}
+	for _, c := range req.Compares {
+		if len(c.Key) == 0 {
+			return invalid("a compare must name a key")
+		}
+	}
 	return nil
 }
 
@@ -922,7 +931,15 @@ func (s *MVCCKVService) MovePrefix(ctx context.Context, req *MovePrefixRequest) 
 		}
 		ops[i] = encoded
 	}
-	cmd, encErr := protocol.EncodeMVCCMovePrefix([]byte(req.Src), []byte(req.Dst), req.ExpectedKeys, ops)
+	compares := make([][]byte, len(req.Compares))
+	for i, c := range req.Compares {
+		encoded, err := protocol.EncodeCompare(c.Key, byte(c.Target), byte(c.Result), c.Value, c.Version, c.CreateRevision, c.ModRevision)
+		if err != nil {
+			return 0, &EncodeRequestError{Err: err}
+		}
+		compares[i] = encoded
+	}
+	cmd, encErr := protocol.EncodeMVCCMovePrefix([]byte(req.Src), []byte(req.Dst), req.ExpectedKeys, ops, compares)
 	if encErr != nil {
 		return 0, &EncodeRequestError{Err: encErr}
 	}

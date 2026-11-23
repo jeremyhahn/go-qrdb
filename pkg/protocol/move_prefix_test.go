@@ -34,14 +34,14 @@ func moveOps(t *testing.T) [][]byte {
 }
 
 func TestMVCCMovePrefixRoundtrip(t *testing.T) {
-	cmd, err := EncodeMVCCMovePrefix([]byte("db/s/1/"), []byte("db/p/"), 3, moveOps(t))
+	cmd, err := EncodeMVCCMovePrefix([]byte("db/s/1/"), []byte("db/p/"), 3, moveOps(t), moveCompares(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cmd[0] != OpMVCCMovePrefix {
 		t.Fatalf("opcode = %d, want %d", cmd[0], OpMVCCMovePrefix)
 	}
-	src, dst, expected, ops, err := DecodeMVCCMovePrefix(cmd[1:])
+	src, dst, expected, ops, cmps, err := DecodeMVCCMovePrefix(cmd[1:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,15 +52,37 @@ func TestMVCCMovePrefixRoundtrip(t *testing.T) {
 		string(ops[0].Value) != "m2" || ops[1].Type != OpMVCCDelete || string(ops[1].Key) != "db/p/9" {
 		t.Fatalf("decoded ops %+v", ops)
 	}
+	if len(cmps) != 2 ||
+		string(cmps[0].Key) != "db/p/1" || cmps[0].Target != CompareTargetModRevision ||
+		cmps[0].Result != CompareResultEqual || cmps[0].ModRevision != 0 ||
+		string(cmps[1].Key) != "db/p/2" || cmps[1].Target != CompareTargetModRevision ||
+		cmps[1].Result != CompareResultLess || cmps[1].ModRevision != 7 {
+		t.Fatalf("decoded compares %+v", cmps)
+	}
 
-	// No extra ops is a valid move.
-	cmd, err = EncodeMVCCMovePrefix([]byte("a/"), []byte("b/"), 1, nil)
+	// No extra ops and no compares is a valid move.
+	cmd, err = EncodeMVCCMovePrefix([]byte("a/"), []byte("b/"), 1, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, ops, err = DecodeMVCCMovePrefix(cmd[1:]); err != nil || len(ops) != 0 {
-		t.Fatalf("ops %v err %v", ops, err)
+	if _, _, _, ops, cmps, err = DecodeMVCCMovePrefix(cmd[1:]); err != nil || len(ops) != 0 || len(cmps) != 0 {
+		t.Fatalf("ops %v compares %v err %v", ops, cmps, err)
 	}
+}
+
+// moveCompares is a read set of two compares: one key never written
+// (ModRevision equal 0) and one read at a revision below 7.
+func moveCompares(t *testing.T) [][]byte {
+	t.Helper()
+	absent, err := EncodeCompare([]byte("db/p/1"), CompareTargetModRevision, CompareResultEqual, nil, 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	older, err := EncodeCompare([]byte("db/p/2"), CompareTargetModRevision, CompareResultLess, nil, 0, 0, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return [][]byte{absent, older}
 }
 
 func TestEncodeMVCCMovePrefix_Refusals(t *testing.T) {
@@ -76,14 +98,14 @@ func TestEncodeMVCCMovePrefix_Refusals(t *testing.T) {
 		{"negative expected", []byte("a/"), []byte("b/"), -1},
 	}
 	for _, tc := range cases {
-		_, err := EncodeMVCCMovePrefix(tc.src, tc.dst, tc.expected, nil)
+		_, err := EncodeMVCCMovePrefix(tc.src, tc.dst, tc.expected, nil, nil)
 		var inv *InvalidCommandError
 		if !errors.As(err, &inv) {
 			t.Errorf("%s: err = %v, want *InvalidCommandError", tc.name, err)
 		}
 	}
 	for _, pair := range [][2][]byte{{long, []byte("b/")}, {[]byte("a/"), long}} {
-		_, err := EncodeMVCCMovePrefix(pair[0], pair[1], 1, nil)
+		_, err := EncodeMVCCMovePrefix(pair[0], pair[1], 1, nil, nil)
 		var tooLong *KeyTooLongError
 		if !errors.As(err, &tooLong) {
 			t.Errorf("oversize prefix: err = %v, want *KeyTooLongError", err)
@@ -92,7 +114,7 @@ func TestEncodeMVCCMovePrefix_Refusals(t *testing.T) {
 }
 
 func TestDecodeMVCCMovePrefix_Refusals(t *testing.T) {
-	cmd, err := EncodeMVCCMovePrefix([]byte("a/"), []byte("b/"), 2, moveOps(t))
+	cmd, err := EncodeMVCCMovePrefix([]byte("a/"), []byte("b/"), 2, moveOps(t), moveCompares(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,8 +133,24 @@ func TestDecodeMVCCMovePrefix_Refusals(t *testing.T) {
 		zeroExpected[i] = 0
 	}
 	bad["zero expected"] = zeroExpected
+
+	// A move with no compares ends in [cmpCount=0]; rewrite that tail.
+	cmd, err = EncodeMVCCMovePrefix([]byte("a/"), []byte("b/"), 2, moveOps(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noCmp := cmd[1:]
+	head := noCmp[:len(noCmp)-4]
+	bad["no compare count"] = append([]byte(nil), head...)
+	// [cmpCount=5] with no compare frames after it.
+	bad["compare count past payload"] = append(append([]byte(nil), head...), 5, 0, 0, 0)
+	// [cmpCount=1][cmpLen=100] and two bytes of compare.
+	bad["truncated compare frame"] = append(append([]byte(nil), head...), 1, 0, 0, 0, 100, 0, 0, 0, 1, 2)
+	// [cmpCount=1] and half a length frame.
+	bad["truncated compare length"] = append(append([]byte(nil), head...), 1, 0, 0, 0, 4, 0)
+
 	for name, p := range bad {
-		_, _, _, _, err := DecodeMVCCMovePrefix(p)
+		_, _, _, _, _, err := DecodeMVCCMovePrefix(p)
 		var inv *InvalidCommandError
 		if !errors.As(err, &inv) {
 			t.Errorf("%s: err = %v, want *InvalidCommandError", name, err)

@@ -243,9 +243,14 @@ const (
 	// publish (Q2 A of docs/decisions/sqlite-vfs-build.md, ruling 1115). The
 	// source keys are resolved at apply, as OpDeleteRange's are, and the
 	// whole move writes nothing when their live count differs from the
-	// expected count. Payload: [srcLen:2 LE][src][dstLen:2 LE][dst]
-	// [expected:8 LE][opCount:4 LE]([opLen:4 LE][op])*, the ops encoded with
-	// EncodeOp as for OpBatch. MVCC engine only; gated behind
+	// expected count. The compares are the publisher's read set, evaluated
+	// at apply before the source is read: the first that does not hold
+	// answers a guard refusal (EncodeGuardRefusal) naming its key and the
+	// move writes nothing. Payload: [srcLen:2 LE][src][dstLen:2 LE][dst]
+	// [expected:8 LE][opCount:4 LE]([opLen:4 LE][op])*
+	// [cmpCount:4 LE]([cmpLen:4 LE][cmp])*, the ops encoded with EncodeOp as
+	// for OpBatch and the compares with EncodeCompare as for OpTransaction.
+	// MVCC engine only; gated behind
 	// featuregate.PrefixMove: a replica that does not understand this opcode
 	// must never be sent it. (82 is OpVerifiableLog, in vlog.go.)
 	OpMVCCMovePrefix byte = 83
@@ -552,11 +557,12 @@ func EncodeDeleteRange(start, end []byte) ([]byte, error) {
 // EncodeMVCCMovePrefix encodes an OpMVCCMovePrefix command: move every live
 // key under src to dst + (key without src), expecting exactly expectedKeys
 // of them, and apply ops (each EncodeOp-encoded, as for EncodeBatch) at the
-// same revision. Both prefixes must be non-empty and within
+// same revision, only when every compare (each EncodeCompare-encoded, as for
+// EncodeTransaction) holds at apply. Both prefixes must be non-empty and within
 // MaxClientKeyLength, and expectedKeys must be at least 1; a refusal is an
 // *InvalidCommandError or a *KeyTooLongError. Gated behind
 // featuregate.PrefixMove.
-func EncodeMVCCMovePrefix(src, dst []byte, expectedKeys int64, ops [][]byte) ([]byte, error) {
+func EncodeMVCCMovePrefix(src, dst []byte, expectedKeys int64, ops, compares [][]byte) ([]byte, error) {
 	if len(src) == 0 || len(dst) == 0 {
 		return nil, &InvalidCommandError{Reason: "move prefix: empty prefix"}
 	}
@@ -573,8 +579,15 @@ func EncodeMVCCMovePrefix(src, dst []byte, expectedKeys int64, ops [][]byte) ([]
 	if err != nil {
 		return nil, err
 	}
+	c, err := framedSlicesSize(compares)
+	if err != nil {
+		return nil, err
+	}
 	size, err := addSize(headerSize+2+len(src)+2+len(dst)+8, n)
 	if err != nil {
+		return nil, err
+	}
+	if size, err = addSize(size, c); err != nil {
 		return nil, err
 	}
 	buf := make([]byte, size)
@@ -592,7 +605,12 @@ func EncodeMVCCMovePrefix(src, dst []byte, expectedKeys int64, ops [][]byte) ([]
 	off += copy(buf[off:], dst)
 	binary.LittleEndian.PutUint64(buf[off:], uint64(expectedKeys)) //nolint:gosec // G115: expectedKeys >= 1, checked above
 	off += 8
-	if _, err := encodeFramedSlices(buf[off:], ops); err != nil {
+	w, err := encodeFramedSlices(buf[off:], ops)
+	if err != nil {
+		return nil, err
+	}
+	off += w
+	if _, err := encodeFramedSlices(buf[off:], compares); err != nil {
 		return nil, err
 	}
 	return buf, nil
@@ -1544,8 +1562,9 @@ func DecodeMVCCCompactPrefix(payload []byte) (prefix []byte, revision int64, err
 
 // DecodeMVCCMovePrefix decodes an OpMVCCMovePrefix payload (the bytes after
 // the opcode). A short payload, an empty prefix, an expected count below 1,
-// a truncated op or bytes after the last op are an *InvalidCommandError.
-func DecodeMVCCMovePrefix(payload []byte) (src, dst []byte, expectedKeys int64, ops []DecodedOp, err error) {
+// a truncated op or compare, or bytes after the last compare are an
+// *InvalidCommandError.
+func DecodeMVCCMovePrefix(payload []byte) (src, dst []byte, expectedKeys int64, ops []DecodedOp, compares []DecodedCompare, err error) {
 	off := 0
 	readPrefix := func(what string) ([]byte, error) {
 		if off+2 > len(payload) {
@@ -1563,47 +1582,74 @@ func DecodeMVCCMovePrefix(payload []byte) (src, dst []byte, expectedKeys int64, 
 		off += n
 		return p, nil
 	}
+	// readFrames walks one [count:4 LE]([len:4 LE][item])* section,
+	// handing each item to decode.
+	readFrames := func(what string, decode func([]byte) error) error {
+		if off+frameSize > len(payload) {
+			return &InvalidCommandError{Reason: "move prefix: payload too short"}
+		}
+		count, cerr := decodeCount(binary.LittleEndian.Uint32(payload[off:]), len(payload)-off-frameSize, "move prefix: "+what)
+		if cerr != nil {
+			return cerr
+		}
+		off += frameSize
+		for i := 0; i < count; i++ {
+			if off+frameSize > len(payload) {
+				return &InvalidCommandError{Reason: "move prefix: truncated " + what + " length"}
+			}
+			rawLen := binary.LittleEndian.Uint32(payload[off:])
+			off += frameSize
+			n, lerr := decodeLen(rawLen, len(payload)-off, "move prefix: "+what+" exceeds payload")
+			if lerr != nil {
+				return lerr
+			}
+			if derr := decode(payload[off : off+n]); derr != nil {
+				return derr
+			}
+			off += n
+		}
+		return nil
+	}
 	if src, err = readPrefix("source"); err != nil {
-		return nil, nil, 0, nil, err
+		return nil, nil, 0, nil, nil, err
 	}
 	if dst, err = readPrefix("destination"); err != nil {
-		return nil, nil, 0, nil, err
+		return nil, nil, 0, nil, nil, err
 	}
 	if off+8+frameSize > len(payload) {
-		return nil, nil, 0, nil, &InvalidCommandError{Reason: "move prefix: payload too short"}
+		return nil, nil, 0, nil, nil, &InvalidCommandError{Reason: "move prefix: payload too short"}
 	}
 	expectedKeys = int64(binary.LittleEndian.Uint64(payload[off:])) //nolint:gosec // G115: two's-complement round trip of the encoded int64
 	off += 8
 	if expectedKeys < 1 {
-		return nil, nil, 0, nil, &InvalidCommandError{Reason: "move prefix: expected key count below 1"}
+		return nil, nil, 0, nil, nil, &InvalidCommandError{Reason: "move prefix: expected key count below 1"}
 	}
-	opCount, err := decodeCount(binary.LittleEndian.Uint32(payload[off:]), len(payload)-off-frameSize, "move prefix: op")
-	if err != nil {
-		return nil, nil, 0, nil, err
-	}
-	off += frameSize
-	ops = make([]DecodedOp, 0, preallocSize(opCount))
-	for i := 0; i < opCount; i++ {
-		if off+frameSize > len(payload) {
-			return nil, nil, 0, nil, &InvalidCommandError{Reason: "move prefix: truncated op length"}
-		}
-		rawLen := binary.LittleEndian.Uint32(payload[off:])
-		off += frameSize
-		oLen, lerr := decodeLen(rawLen, len(payload)-off, "move prefix: op exceeds payload")
-		if lerr != nil {
-			return nil, nil, 0, nil, lerr
-		}
-		op, _, derr := DecodeOp(payload[off : off+oLen])
+	ops = []DecodedOp{}
+	if err = readFrames("op", func(b []byte) error {
+		op, _, derr := DecodeOp(b)
 		if derr != nil {
-			return nil, nil, 0, nil, derr
+			return derr
 		}
 		ops = append(ops, op)
-		off += oLen
+		return nil
+	}); err != nil {
+		return nil, nil, 0, nil, nil, err
+	}
+	compares = []DecodedCompare{}
+	if err = readFrames("compare", func(b []byte) error {
+		cmp, _, derr := DecodeCompare(b)
+		if derr != nil {
+			return derr
+		}
+		compares = append(compares, cmp)
+		return nil
+	}); err != nil {
+		return nil, nil, 0, nil, nil, err
 	}
 	if off != len(payload) {
-		return nil, nil, 0, nil, &InvalidCommandError{Reason: "move prefix: trailing bytes after the last op"}
+		return nil, nil, 0, nil, nil, &InvalidCommandError{Reason: "move prefix: trailing bytes after the last compare"}
 	}
-	return src, dst, expectedKeys, ops, nil
+	return src, dst, expectedKeys, ops, compares, nil
 }
 
 // DecodeLeaseGrant extracts the TTL from a Lease Grant payload.

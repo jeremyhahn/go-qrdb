@@ -26,7 +26,7 @@ import (
 
 // movePrefixEntry encodes an OpMVCCMovePrefix entry; extra holds the extra
 // ops as key/value pairs, an empty value meaning a delete.
-func movePrefixEntry(t *testing.T, idx uint64, src, dst string, expected int64, extra ...[2]string) sm.Entry {
+func movePrefixEntry(t *testing.T, idx uint64, src, dst string, expected int64, compares [][]byte, extra ...[2]string) sm.Entry {
 	t.Helper()
 	ops := make([][]byte, 0, len(extra))
 	for _, kv := range extra {
@@ -42,11 +42,21 @@ func movePrefixEntry(t *testing.T, idx uint64, src, dst string, expected int64, 
 		}
 		ops = append(ops, op)
 	}
-	cmd, err := protocol.EncodeMVCCMovePrefix([]byte(src), []byte(dst), expected, ops)
+	cmd, err := protocol.EncodeMVCCMovePrefix([]byte(src), []byte(dst), expected, ops, compares)
 	if err != nil {
 		t.Fatalf("EncodeMVCCMovePrefix: %v", err)
 	}
 	return sm.Entry{Index: idx, Cmd: cmd}
+}
+
+// modRevisionCompare encodes a ModRevision compare on key.
+func modRevisionCompare(t *testing.T, key string, result byte, rev int64) []byte {
+	t.Helper()
+	cmp, err := protocol.EncodeCompare([]byte(key), protocol.CompareTargetModRevision, result, nil, 0, 0, rev)
+	if err != nil {
+		t.Fatalf("EncodeCompare: %v", err)
+	}
+	return cmp
 }
 
 func mvccValue(t *testing.T, eng *MVCCEngine, key string) (string, int64) {
@@ -66,7 +76,7 @@ func TestMVCCEngine_MovePrefix_PublishesAtOneRevision(t *testing.T) {
 	before := eng.Store().CurrentRevision()
 
 	results := applyMVCCEntries(t, eng, []sm.Entry{
-		movePrefixEntry(t, 20, "db/s/1/", "db/p/", 3, [2]string{"db/meta", "m2"}, [2]string{"db/p/z", ""}),
+		movePrefixEntry(t, 20, "db/s/1/", "db/p/", 3, nil, [2]string{"db/meta", "m2"}, [2]string{"db/p/z", ""}),
 	})
 	if _, refused := protocol.DecodeAppError(results[0].Data); refused {
 		t.Fatalf("move refused: %+v", results[0])
@@ -105,7 +115,7 @@ func TestMVCCEngine_MovePrefix_CountMismatchWritesNothing(t *testing.T) {
 	seedMVCC(t, eng, "s/a", "s/b", "meta")
 	before := eng.Store().CurrentRevision()
 
-	results := applyMVCCEntries(t, eng, []sm.Entry{movePrefixEntry(t, 20, "s/", "p/", 3, [2]string{"meta", "m2"})})
+	results := applyMVCCEntries(t, eng, []sm.Entry{movePrefixEntry(t, 20, "s/", "p/", 3, nil, [2]string{"meta", "m2"})})
 	msg, refused := protocol.DecodeAppError(results[0].Data)
 	if !refused || !strings.Contains(msg, "expected 3") {
 		t.Fatalf("result = %+v, want the conflict refusal", results[0])
@@ -124,6 +134,63 @@ func TestMVCCEngine_MovePrefix_CountMismatchWritesNothing(t *testing.T) {
 	}
 }
 
+// TestMVCCEngine_MovePrefix_FailedCompareWritesNothing: a read-set compare
+// on a key changed after its read revision refuses the whole move with a
+// guard refusal naming that key, and nothing is written.
+func TestMVCCEngine_MovePrefix_FailedCompareWritesNothing(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+	seedMVCC(t, eng, "s/a", "s/b", "meta", "p/1")
+	_, readRev := mvccValue(t, eng, "p/1")
+	applyMVCCEntries(t, eng, []sm.Entry{mvccPutEntry(10, []byte("p/1"), []byte("changed"), 0)})
+	before := eng.Store().CurrentRevision()
+
+	cmps := [][]byte{
+		modRevisionCompare(t, "never", protocol.CompareResultEqual, 0),
+		modRevisionCompare(t, "p/1", protocol.CompareResultEqual, readRev),
+	}
+	results := applyMVCCEntries(t, eng, []sm.Entry{movePrefixEntry(t, 20, "s/", "p/", 2, cmps, [2]string{"meta", "m2"})})
+	key, refused := protocol.DecodeGuardRefusal(results[0].Data)
+	if !refused || string(key) != "p/1" {
+		t.Fatalf("result = %+v, want the guard refusal naming p/1", results[0])
+	}
+	if got := eng.Store().CurrentRevision(); got != before {
+		t.Fatalf("revision = %d, want %d: a refused move writes nothing", got, before)
+	}
+	if !mvccLive(t, eng, "s/a") || !mvccLive(t, eng, "s/b") || mvccLive(t, eng, "p/a") || mvccLive(t, eng, "p/b") {
+		t.Fatal("a refused move moved a key")
+	}
+	if v, _ := mvccValue(t, eng, "meta"); v != "v-meta" {
+		t.Fatalf("meta = %q: a refused move applied an extra op", v)
+	}
+	if v, _ := mvccValue(t, eng, "p/1"); v != "changed" {
+		t.Fatalf("p/1 = %q, want the newer write", v)
+	}
+}
+
+// TestMVCCEngine_MovePrefix_AbsentCompareHolds: ModRevision equal 0 on a key
+// never written holds, so the move publishes.
+func TestMVCCEngine_MovePrefix_AbsentCompareHolds(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+	seedMVCC(t, eng, "s/a", "s/b")
+	before := eng.Store().CurrentRevision()
+
+	cmps := [][]byte{modRevisionCompare(t, "p/never", protocol.CompareResultEqual, 0)}
+	results := applyMVCCEntries(t, eng, []sm.Entry{movePrefixEntry(t, 20, "s/", "p/", 2, cmps)})
+	if _, refused := protocol.DecodeAppError(results[0].Data); refused {
+		t.Fatalf("result = %+v, want the move published", results[0])
+	}
+	if got := eng.Store().CurrentRevision(); got != before+1 {
+		t.Fatalf("revision = %d, want %d", got, before+1)
+	}
+	if mvccLive(t, eng, "s/a") || !mvccLive(t, eng, "p/a") || !mvccLive(t, eng, "p/b") {
+		t.Fatal("the move did not publish")
+	}
+}
+
 func TestMVCCEngine_MovePrefix_SkipsKeysDeletedInHistory(t *testing.T) {
 	eng, stg := newMVCCEngine(t)
 	defer func() { _ = stg.Close() }()
@@ -131,7 +198,7 @@ func TestMVCCEngine_MovePrefix_SkipsKeysDeletedInHistory(t *testing.T) {
 	seedMVCC(t, eng, "s/a", "s/b")
 	applyMVCCEntries(t, eng, []sm.Entry{mvccDeleteEntry(10, []byte("s/b"))})
 
-	results := applyMVCCEntries(t, eng, []sm.Entry{movePrefixEntry(t, 20, "s/", "p/", 1)})
+	results := applyMVCCEntries(t, eng, []sm.Entry{movePrefixEntry(t, 20, "s/", "p/", 1, nil)})
 	if _, refused := protocol.DecodeAppError(results[0].Data); refused {
 		t.Fatalf("move refused: %+v", results[0])
 	}
@@ -148,11 +215,12 @@ func TestMVCCEngine_MovePrefix_RefusesReservedAndOverlap(t *testing.T) {
 	before := eng.Store().CurrentRevision()
 
 	entries := []sm.Entry{
-		movePrefixEntry(t, 20, "\x00r/", "p/", 1),
-		movePrefixEntry(t, 21, "s/", "\x00r/", 2),
-		movePrefixEntry(t, 22, "s/", "p/", 2, [2]string{"\x00meta", "m"}),
-		movePrefixEntry(t, 23, "s/", "s/b/", 2),
-		movePrefixEntry(t, 24, "s/b/", "s/", 1),
+		movePrefixEntry(t, 20, "\x00r/", "p/", 1, nil),
+		movePrefixEntry(t, 21, "s/", "\x00r/", 2, nil),
+		movePrefixEntry(t, 22, "s/", "p/", 2, nil, [2]string{"\x00meta", "m"}),
+		movePrefixEntry(t, 23, "s/", "s/b/", 2, nil),
+		movePrefixEntry(t, 24, "s/b/", "s/", 1, nil),
+		movePrefixEntry(t, 25, "s/", "p/", 2, [][]byte{modRevisionCompare(t, "\x00meta", protocol.CompareResultEqual, 0)}),
 	}
 	for i, res := range applyMVCCEntries(t, eng, entries) {
 		if _, refused := protocol.DecodeAppError(res.Data); !refused {

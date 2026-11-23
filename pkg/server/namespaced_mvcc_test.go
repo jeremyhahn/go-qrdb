@@ -155,6 +155,9 @@ func moveRequest() *service.MovePrefixRequest {
 			{Type: service.OpPut, Key: []byte("meta"), Value: []byte("m2")},
 			{Type: service.OpDelete, Key: []byte("p/9")},
 		},
+		Compares: []service.Compare{
+			{Key: []byte("p/1"), Target: service.CompareModRevision, Result: service.CompareLess, ModRevision: 5},
+		},
 	}
 }
 
@@ -172,7 +175,11 @@ func TestNamespacedMVCC_MovePrefix_PrefixesEveryKey(t *testing.T) {
 		string(got.Ops[1].Key) != "acme/db/p/9" || got.Ops[1].Type != service.OpDelete {
 		t.Fatalf("forwarded %+v, want every key under acme/db/", got)
 	}
-	if req.Src != "s/1/" || string(req.Ops[0].Key) != "meta" {
+	if len(got.Compares) != 1 || string(got.Compares[0].Key) != "acme/db/p/1" ||
+		got.Compares[0].Result != service.CompareLess || got.Compares[0].ModRevision != 5 {
+		t.Fatalf("forwarded compares %+v, want every compare key under acme/db/", got.Compares)
+	}
+	if req.Src != "s/1/" || string(req.Ops[0].Key) != "meta" || string(req.Compares[0].Key) != "p/1" {
 		t.Fatalf("the caller's request was modified: %+v", req)
 	}
 }

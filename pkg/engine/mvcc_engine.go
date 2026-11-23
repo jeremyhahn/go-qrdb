@@ -2022,16 +2022,30 @@ func (e *MVCCEngine) handleDeleteRange(s *mvcc.Store, lr *lease.Lessor, batch st
 // are, so every replica moves the same set. A live count that differs from
 // the expected count writes nothing and answers AppErrorConflict: the move
 // names no keys, so the count is what makes a source key with no live value
-// fail the whole publish. Everything is staged by applyDecodedBatch, so the
+// fail the whole publish. The compares are the publisher's read set, each
+// evaluated through the batch before the source is read, as
+// handleTransaction's are (reserved and forged vector compare keys
+// refused first); the first that does not hold writes nothing and answers
+// protocol.EncodeGuardRefusal naming its key, which a proposer tells apart
+// from the count conflict. Everything is staged by applyDecodedBatch, so the
 // reserved-key, vector-namespace and unique-index refusals, history and one
 // watch event per key hold as for a batch.
 func (e *MVCCEngine) handleMovePrefix(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
-	src, dst, expected, extra, err := protocol.DecodeMVCCMovePrefix(payload)
+	src, dst, expected, extra, compares, err := protocol.DecodeMVCCMovePrefix(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
 	if res, refused := statemachine.ReservedKeyRefusal(append([][]byte{src, dst}, statemachine.OpKeys(extra)...)...); refused {
 		return res, nil, nil
+	}
+	// A compare is an existence oracle over the key it names, as in
+	// handleTransaction: reserved and forged vector keys are refused
+	// before any compare is evaluated.
+	if res, refused := statemachine.ReservedKeyRefusal(statemachine.CompareKeys(compares)...); refused {
+		return res, nil, nil
+	}
+	if verr := vector.RefuseForgedKeys(statemachine.CompareKeys(compares)...); verr != nil {
+		return sm.Result{}, nil, verr
 	}
 	if bytes.HasPrefix(src, dst) || bytes.HasPrefix(dst, src) {
 		return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorInvalid,
@@ -2041,6 +2055,20 @@ func (e *MVCCEngine) handleMovePrefix(s *mvcc.Store, lr *lease.Lessor, batch sto
 		if (op.Type != protocol.OpMVCCPut && op.Type != protocol.OpMVCCDelete) || len(op.RangeEnd) > 0 {
 			return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorInvalid,
 				"move prefix: an extra op must be a put or a single-key delete")}, nil, nil
+		}
+	}
+	// The read set is checked before the source is read and before
+	// anything is staged: the first compare that does not hold answers a
+	// guard refusal naming its key and the move writes nothing. A read
+	// error is returned, never treated as an absent key.
+	for _, dc := range compares {
+		cmp := decodedCompareToService(dc)
+		kvResult, getErr := getInBatchAllowingAbsence(s, batch, cmp.Key)
+		if getErr != nil {
+			return sm.Result{}, nil, getErr
+		}
+		if !mvcc.Evaluate(&cmp, kvResult) {
+			return sm.Result{Data: protocol.EncodeGuardRefusal(dc.Key)}, nil, nil
 		}
 	}
 	kvs, _, _, err := s.RangeInBatchAt(batch, s.CurrentRevision(), src, storage.PrefixEnd(src))
