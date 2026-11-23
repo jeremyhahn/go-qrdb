@@ -29,6 +29,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -169,6 +171,37 @@ func TestMCPSealStore_ToolErrorIsError(t *testing.T) {
 	}
 	if err := tr.SealStorePut(context.Background(), &transport.SealStorePutRequest{Name: "a", Secret: []byte("x")}); err == nil {
 		t.Fatal("an IsError put result was not returned as an error")
+	}
+}
+
+// TestMCPSealStore_MissingSecretIsSealStoreNotFound proves a missing secret,
+// an invalid name and a sealed seal-store barrier reach an MCP caller as the
+// seal sentinel the embedded transport returns (#1647), not as a
+// KeyNotFoundError. The payload is the one the server's classifiedToolError
+// writes: the code, the message and the structured refusal reason.
+func TestMCPSealStore_MissingSecretIsSealStoreNotFound(t *testing.T) {
+	cases := []struct {
+		tool     string
+		code     wire.Code
+		sentinel error
+	}{
+		{"qrdb_seal_store_get", wire.CodeNotFound, seal.ErrSealStoreSecretNotFound},
+		{"qrdb_seal_store_delete", wire.CodeNotFound, seal.ErrSealStoreSecretNotFound},
+		{"qrdb_seal_store_put", wire.CodeInvalidArgument, seal.ErrInvalidSecretName},
+		{"qrdb_seal_store_get", wire.CodeUnavailable, seal.ErrSealStoreBarrierSealed},
+	}
+	for _, tc := range cases {
+		reason, ok := transport.BarrierRefusal(tc.sentinel)
+		if !ok {
+			t.Fatalf("BarrierRefusal(%v) has no reason", tc.sentinel)
+		}
+		err := mapToolError(tc.tool, &wire.ErrorPayload{Code: tc.code, Message: tc.sentinel.Error(), Reason: reason})
+		if !errors.Is(err, tc.sentinel) {
+			t.Fatalf("%s %v = %v, want errors.Is %v", tc.tool, tc.code, err, tc.sentinel)
+		}
+		if _, ok := errors.AsType[*transport.KeyNotFoundError](err); ok {
+			t.Fatalf("%s %v = %v, want no KeyNotFoundError", tc.tool, tc.code, err)
+		}
 	}
 }
 
