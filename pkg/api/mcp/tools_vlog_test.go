@@ -185,7 +185,7 @@ func newVlogFixtureOver(t *testing.T, svc service.LogService) *vlogFixture {
 	tenants := authtest.NewTenants(t, "acme", "globex")
 	caller := authtest.NewFixedAuthenticator(authtest.AdminIdentity("acme", "acme-admin"))
 	roles := authtest.BuiltInRoles(t, "acme", "globex")
-	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller), authmw.WithUserService(caller.Users()))
 
 	tlsCfg := testTLSConfig(t)
 	srv := NewServer(nil, nil, "127.0.0.1:0",
