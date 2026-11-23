@@ -2859,7 +2859,8 @@ export interface DatabaseBindingInfo {
     /** The database's generation: each create of a name gets a number higher
      * than any earlier create of that name, so a recreated database never
      * shares a generation with the one it replaced. Generations only rise but
-     * may skip values. */
+     * may skip values. A uint64 on the wire, within
+     * Number.MAX_SAFE_INTEGER in practice. */
     readonly generation: number;
 }
 
