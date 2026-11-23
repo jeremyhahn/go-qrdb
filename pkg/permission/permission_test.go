@@ -354,6 +354,7 @@ func TestAll_ContainsAllConstants(t *testing.T) {
 		AdminSnapshot, AdminDrain, AdminCapabilities,
 		UsersCreate, UsersRead, UsersUpdate, UsersDelete, UsersList, UsersEnable, UsersDisable,
 		RolesCreate, RolesRead, RolesUpdate, RolesDelete, RolesList, RolesAssign, RolesUnassign,
+		GroupsCreate, GroupsRead, GroupsUpdate, GroupsDelete, GroupsList, GroupsAddMember, GroupsRemoveMember,
 		CertsIssue, CertsRevoke, CertsList,
 		SealBootstrap, SealUnseal, SealSeal, SealStatus,
 		TenantsCreate, TenantsRead, TenantsUpdate, TenantsDelete, TenantsList,
@@ -617,8 +618,10 @@ func TestAll_TotalCount(t *testing.T) {
 	//   role convergence (ScopeCross) = 412 total.
 	// + 4 device pairing/sharing perms (device:pair, device:revoke,
 	//   device:share, device:sync; ScopeSelf) + 1 passwords:override_ownership
-	//   (ScopeSelf, Admin and Security Officer) = 417 total.
-	const expectedTotal = 417
+	//   (ScopeSelf, Admin and Security Officer) + 7 IAM groups perms
+	//   (groups:create/read/update/delete/list/add_member/remove_member;
+	//   ScopeSelf, granted like their roles:* counterparts) = 424 total.
+	const expectedTotal = 424
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

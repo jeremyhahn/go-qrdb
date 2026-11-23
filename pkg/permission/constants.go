@@ -331,6 +331,20 @@ const (
 	RolesAssign Permission = "roles:assign"
 	// RolesUnassign grants access to unassign roles from users.
 	RolesUnassign Permission = "roles:unassign"
+	// GroupsCreate grants access to create IAM groups.
+	GroupsCreate Permission = "groups:create"
+	// GroupsRead grants access to read IAM group details.
+	GroupsRead Permission = "groups:read"
+	// GroupsUpdate grants access to update IAM groups.
+	GroupsUpdate Permission = "groups:update"
+	// GroupsDelete grants access to delete IAM groups.
+	GroupsDelete Permission = "groups:delete"
+	// GroupsList grants access to list IAM groups and their members.
+	GroupsList Permission = "groups:list"
+	// GroupsAddMember grants access to add a user to an IAM group.
+	GroupsAddMember Permission = "groups:add_member"
+	// GroupsRemoveMember grants access to remove a user from an IAM group.
+	GroupsRemoveMember Permission = "groups:remove_member"
 	// PermissionsList grants access to list available permission categories.
 	PermissionsList Permission = "permissions:list"
 	// PermissionsResolve grants access to resolve the effective (unioned)
@@ -1179,6 +1193,14 @@ var categories = []Category{
 			RolesCreate, RolesRead, RolesUpdate, RolesDelete,
 			RolesList, RolesAssign, RolesUnassign, PermissionsList,
 			PermissionsResolve, RolesReconcileAll,
+		},
+	},
+	{
+		Name:  "Group Management",
+		Group: "Management Services",
+		Permissions: []Permission{
+			GroupsCreate, GroupsRead, GroupsUpdate, GroupsDelete,
+			GroupsList, GroupsAddMember, GroupsRemoveMember,
 		},
 	},
 	{

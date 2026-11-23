@@ -131,6 +131,10 @@ func registerGovernanceDuties() {
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
+		// IAM groups: granted exactly as their roles:* counterparts.
+		GroupsCreate, GroupsRead, GroupsUpdate,
+		GroupsDelete, GroupsList, GroupsAddMember,
+		GroupsRemoveMember,
 		// User administration.
 		UsersCreate, UsersRead, UsersUpdate,
 		UsersDelete, UsersList, UsersEnable,

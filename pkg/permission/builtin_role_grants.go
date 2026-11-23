@@ -68,6 +68,10 @@ func registerSOGrants() {
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
+		// IAM groups: granted exactly as their roles:* counterparts.
+		GroupsCreate, GroupsRead, GroupsUpdate,
+		GroupsDelete, GroupsList, GroupsAddMember,
+		GroupsRemoveMember,
 		// User management
 		UsersCreate, UsersRead, UsersUpdate,
 		UsersDelete, UsersList, UsersEnable,
@@ -219,6 +223,9 @@ func registerAdminGrants() {
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
+		// IAM groups: granted exactly as their roles:* counterparts.
+		GroupsCreate, GroupsRead, GroupsUpdate,
+		GroupsList, GroupsAddMember, GroupsRemoveMember,
 		// Verifiable logs. Creating a log and expiring entry bodies on the
 		// logs that allow it are configuration of the tenant's data, which is
 		// Admin's. Never vlog:sign_head: signing a head is a use of the
@@ -601,6 +608,7 @@ func registerAuditorGrants() {
 		// User, role, cert, tenant listing (metadata only — no writes)
 		UsersList, UsersRead,
 		RolesList, RolesRead, PermissionsList,
+		GroupsList, GroupsRead,
 		CertsList, CertsRead,
 		// Hardware crypto backend inventory (read-only visibility)
 		BackendsList, BackendsRead,

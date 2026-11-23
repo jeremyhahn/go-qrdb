@@ -314,6 +314,15 @@ func selfScopedPermissions() []Permission {
 		RolesUnassign,
 		RolesUpdate,
 
+		// groups
+		GroupsAddMember,
+		GroupsCreate,
+		GroupsDelete,
+		GroupsList,
+		GroupsRead,
+		GroupsRemoveMember,
+		GroupsUpdate,
+
 		// seal
 		//
 		// Every other seal:* permission is ScopeCross
