@@ -1171,8 +1171,9 @@ type TenantClient interface {
 	// GetTenant retrieves a tenant by ID.
 	GetTenant(ctx context.Context, tenantID string) (*GetTenantResponse, error)
 
-	// ListTenants lists all tenants.
-	ListTenants(ctx context.Context) (*ListTenantsResponse, error)
+	// ListTenants lists the tenants the caller may list, narrowed to
+	// req.Status when it is set. A nil req is no filter.
+	ListTenants(ctx context.Context, req *ListTenantsRequest) (*ListTenantsResponse, error)
 
 	// ListDeletedTenants returns one page of retired tenant ids with their
 	// deletion records, in ascending id order.

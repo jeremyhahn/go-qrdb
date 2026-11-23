@@ -109,12 +109,12 @@ func (t *Transport) GetTenant(ctx context.Context, tenantID string) (*transport.
 }
 
 // ListTenants returns all tenants via the gRPC TenantList RPC.
-func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResponse, error) {
+func (t *Transport) ListTenants(ctx context.Context, req *transport.ListTenantsRequest) (*transport.ListTenantsResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
-	resp, err := t.client.TenantList(ctx, &emptypb.Empty{})
+	resp, err := t.client.TenantList(ctx, &pb.TenantListRequest{Status: string(req.GetStatus())})
 	if err != nil {
 		return nil, mapGRPCError("ListTenants", err)
 	}

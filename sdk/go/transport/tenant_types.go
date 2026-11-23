@@ -266,6 +266,23 @@ type GetTenantResponse struct {
 	Tenant TenantInfo `json:"tenant"`
 }
 
+// ListTenantsRequest filters the tenant listing. An empty Status is no filter:
+// every tenant the caller may list. TenantStatusActive, TenantStatusSuspended
+// or TenantStatusDisabled lists only the tenants in that status; any other
+// value is refused by the server as an invalid status. Deleted tenants are not
+// a status: list them with ListDeletedTenants.
+type ListTenantsRequest struct {
+	Status TenantStatus `json:"status,omitempty"`
+}
+
+// GetStatus returns the requested status filter; empty for a nil request.
+func (r *ListTenantsRequest) GetStatus() TenantStatus {
+	if r == nil {
+		return ""
+	}
+	return r.Status
+}
+
 // ListTenantsResponse contains a list of tenants.
 type ListTenantsResponse struct {
 	Tenants []TenantInfo `json:"tenants"`

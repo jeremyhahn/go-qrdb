@@ -263,7 +263,7 @@ func malformedCalls() map[string]malformedCall {
 			return err
 		}},
 		"ListTenants": {"qrdb_tenant_list", func(ctx context.Context, tr *Transport) error {
-			_, err := tr.ListTenants(ctx)
+			_, err := tr.ListTenants(ctx, nil)
 			return err
 		}},
 		"UpdateTenant": {"qrdb_tenant_update", func(ctx context.Context, tr *Transport) error {
