@@ -519,3 +519,39 @@ unchanged.
 | pkg/volume/reporter_test.go | 261 | TestReporter_StartRetriesAFailedInitialReport: require.EventuallyWithT over the same mvcc.Get (5s, 5ms), the last raw and err reported |
 | pkg/credentials/retrieve_buffer_test.go | 110 | require.EventuallyWithT on len(svc.waiters["late"]) == waiters read under waitersMu (5s, 1ms), the last count reported |
 | pkg/credentials/waiter_cancel_test.go | 87 | waitUntil deleted; its one caller in TestRetrieveManual_CancelDeregistersWaiter is require.Eventually on the same condition (2s, 1ms) with the same failure message |
+
+## Sleep sweep 6 (rw566i)
+
+Package order 6 (pkg/clienttrust, pkg/cert, pkg/cluster, pkg/cluster/featuregate,
+pkg/clusterenroll, pkg/replicaforward, pkg/database, pkg/engine, pkg/store,
+pkg/sql/internal/sessionguard, pkg/bootstrap): every deadline-loop time.Sleep
+poll in the test files below became a bounded testify poll on the same
+condition with the same bound and tick, the last error or observation
+reported. Line numbers are those before the sweep. Helpers keep their
+signature and callers; a value found inside the condition is captured and
+used after. The sleeps named at the end of the table stay, with the reason.
+
+| File | Line | Replaced by / kept and why |
+|---|---|---|
+| pkg/clienttrust/pool_test.go | 1286 | require.Eventually on atomic.LoadInt32(&prov.blockingCalls) != 0 (2s, 1ms), same failure message |
+| pkg/clienttrust/pool_test.go | 1450 | require.Eventually on atomic.LoadInt32(&prov.blockingCalls) != 0 (2s, 1ms), same failure message |
+| pkg/clienttrust/pool_test.go | 2441 | TestPool_Run_RebuildsOnInvalidate: require.EventuallyWithT on VerifyPeerChain returning nil (poolCacheTTL/2, 5ms), the last error reported; cancel() deferred so a failed poll still stops Run |
+| pkg/cert/watch_eviction_test.go | 188 | pollUntil: require.Eventually(check, 2s, 1ms) with the same message |
+| pkg/cluster/featuregate/featuregate_test.go | 262 | eventually: require.Eventually(cond, 2s, 5ms, msg) |
+| pkg/cluster/membership_test.go | 715 | require.EventuallyWithT on store.putCallCount() >= 3 (2s, 5ms), the last count reported |
+| pkg/clusterenroll/join_test.go | 411 | require.Eventually on ListPendingJoinRequests returning one entry (5s, 10ms), requestID captured; a list error ends the poll at once and fails on require.NoError |
+| pkg/replicaforward/invalidate_test.go | 54 | eventually: require.Eventually(cond, 5s, 5ms, msg) |
+| pkg/database/backend_standalone_multiprocess_test.go | 109 | require.EventuallyWithT on os.Stat(startFile) succeeding (30s, 1ms), the last error reported |
+| pkg/engine/mvcc_engine_test.go | 1354 | require.EventuallyWithT on Lookup succeeding (5s, 1ms), the last error reported; the result is captured and the lease ID asserted once after |
+| pkg/store/coverage_test.go | 1302 | require.EventuallyWithT on Lookup succeeding (5s, 1ms), the last error reported; the lease ID asserted once after |
+| pkg/store/pebble_extended_test.go | 134 | require.EventuallyWithT on Lookup succeeding (5s, 1ms), the last error reported; the lease ID asserted once after |
+| pkg/sql/internal/sessionguard/sessionguard_test.go | 121 | TestWatchAdmission_SealedSkipsTheAdmission: require.EventuallyWithT on byAdmission and byProbe >= 3 (5s, 1ms), both last counts reported; g.Stop() (idempotent) deferred before the poll |
+| pkg/bootstrap/concurrent_role_seed_test.go | 344 | waitShardReadableWithin: one require.EventuallyWithT over every host's SyncGetShardMembership (same bound, 10ms), each attempt keeps its shardReadyPollAttempt timeout, a host that answered is not asked again, the last error reported |
+| pkg/sql/internal/sessionguard/sessionguard_test.go | 180, 206 | kept: a fixed 20ms window after the stream ends proves no further callback fires; there is no condition to wait on |
+| pkg/backend/group_commit_test.go | 70 | kept: injected store latency that lets commits group, not a wait |
+| pkg/trustanchor/kv_atomic_test.go | 43 | kept: injected store latency, not a wait |
+| pkg/statemachine/raft_keylength_test.go | 86 | kept in this sweep: backoff between proposals while the raft cluster settles; left to a pkg/statemachine sweep |
+| pkg/statemachine/replica_storage_cluster_test.go | 109 | kept in this sweep: backoff between attempts while the raft cluster settles; left to a pkg/statemachine sweep |
+| pkg/api/*, pkg/sql/mysql, pkg/sql/pgsql wire tests | - | kept in this sweep: outside sweep 6's packages (pkg/sql/mysql is in the sweep 3 table) |
+| pkg/firstboot, pkg/rowlock | - | kept in this sweep: outside sweep 6's packages (pkg/rowlock is in an earlier sweep table) |
+| pkg/watch, pkg/lock, pkg/credentials/versioned_test.go | - | kept: time.Sleep appears only in comments |
