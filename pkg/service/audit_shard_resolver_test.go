@@ -837,6 +837,32 @@ func TestSystemShardAuditResolver_AuditGuardRefusalMapsOnlyEpochKeys(t *testing.
 	}
 }
 
+// TestSystemShardAuditResolver_NoHomeGroupBarrierAppendIsUnguarded pins
+// that a barrier tenant on a node without home groups appends to the system
+// shard with the zero guard. That needs no guard: the tightening's probe
+// (SystemAuditRoute, read by tenant.isolationChangeGuard.tightenToStrict
+// after it writes the epoch) reports a system route for every such tenant,
+// so it is never tightened to strict while it appends there.
+func TestSystemShardAuditResolver_NoHomeGroupBarrierAppendIsUnguarded(t *testing.T) {
+	ctx := context.Background()
+	lookup := newEpochIsolationLookup(tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyOperatorAccess,
+		map[string][]byte{tenant.IsolationEpochKeys("widgets")[0]: []byte("epoch-1")})
+	r := NewSystemShardAuditResolver(newChainShard(0, auditActive()).host, 1, lookup)
+
+	_, shardID, release, guard, err := r.HoldAuditAppend(ctx, "widgets")
+	if err != nil || shardID != 1 {
+		t.Fatalf("HoldAuditAppend = shard %d, %v; want the system shard", shardID, err)
+	}
+	release()
+	if !guard.IsZero() {
+		t.Fatal("no-home-group barrier append carries a guard, want the zero guard")
+	}
+	system, err := r.SystemAuditRoute(ctx, "widgets")
+	if err != nil || !system {
+		t.Fatalf("SystemAuditRoute = %v, %v; want true: the probe refuses the tightening", system, err)
+	}
+}
+
 // TestSystemShardAuditResolver_StrictTenantAppendOnAHomeRouteSucceeds: a
 // strict barrier tenant with no chain on the system shard appends to its
 // home group.
