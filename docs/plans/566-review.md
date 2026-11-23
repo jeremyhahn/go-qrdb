@@ -68,3 +68,24 @@ Verdicts: ok = nothing to fix; fixed in <commit subject>.
 | sdk/go/testutil/qrdbdharness/daemon_test.go, relay_test.go | waitForTail, waitCount | daemon log tail, relay counters | ok | ticker only |
 | sdk/go/transport/embedded/seal_watch_test.go, transport_watch_test.go | TestWatch_OtherTenantSealLeavesTheStream, settledGoroutineCount, goroutinesAtMost, awaitEviction | watch stream / goroutine count / hub count loops | ok | ticker only; a ticker starts no goroutine, so the goroutine counts are not disturbed |
 | sdk/go/transport/mcp/transport_database_scope_test.go, transport_guarded_test.go; sdk/go/transport/quic/transport_credentials_test.go, transport_guarded_test.go; sdk/go/transport/unix/transport_guarded_test.go | Implements tests removed | compile-time guards | ok | 566-audit-5 |
+
+## pkg/server
+
+| File | Changed tests | Caller chain checked | Verdict | Note |
+|---|---|---|---|---|
+| pkg/server/conn_observer_test.go | waitForCounts, TestConnObserver_SeesEveryListener loops → assert.Eventually then a re-read that fails with the observed counts | connection observer counters per listener | ok | the failure path re-reads and names the counts, so a timeout cannot pass |
+| pkg/server/data_plane_keyspace_test.go | lease-expiry wait → clocktest fake clock, Advance past the TTL, then ExpiredLeaseIDs / Revoke called synchronously | lessor expiry against the injected clock | ok | the expiry is driven, not waited for |
+| pkg/server/lifecycle/cluster_ca_test.go | backoff-cancel test → synctest bubble with an onCall counter | cluster CA read retry backoff → ctx.Done | ok | asserts one read, the call still blocked in the backoff, then an immediate return after the cancel |
+| pkg/server/lifecycle/local_lease_expiry_test.go | fake clock: BlockUntil(1), Advance, Waiters()==0 after stop | local lease expiry loop timer | ok | BlockUntil observes the loop parked on its timer before the clock moves |
+| pkg/server/lifecycle/trust_anchors_test.go | poll → Eventuallyf | trust anchor reload | ok | same condition and bound |
+| pkg/server/namespaced_watch_leak_test.go | goroutine/watch-count waits → Eventually helpers on quietReporter returning the last sample | namespaced watch teardown | ok | callers assert the returned sample, so a timeout fails with the observed count |
+| pkg/server/namespaced_watch_terminal_test.go | terminal-event wait → Eventually | namespaced watch terminal close | ok | same condition and bound |
+| pkg/server/raft_backend_factory_identity_test.go | identity poll → EventuallyWithT | raft backend factory replica identity | ok | assertions inside the CollectT run on the last tick |
+| pkg/server/raft_backend_factory_lock_test.go | lock-held poll → Eventually with a deferred unlock | factory open lock | ok | same condition; the unlock now runs on every exit path |
+| pkg/server/raft_backend_factory_test.go | writeAndAwaitLogRange: one synchronous read, then a ticker loop; KeepsLog also asserts LastIndex >= written | raft log range after a write | ok | stronger: the kept log is checked to cover the written index |
+| pkg/server/raft_backend_migrate_test.go | getWhenReadable → retryWhileReadIndexNotReady (assert.Eventually on quietReporter, 15 s, 200 ms) | get after an election until "read index not ready" clears | ok | the last attempt's error is returned and asserted by the caller; the mutex and done channel stop a late tick from running an attempt after the helper returns, so the result read by the caller is the last one |
+| pkg/server/raft_promoter_identity_test.go | TestRaftPromoter_PromoteObserverCarriesItsIdentity: ctx loop → require.Eventually on Observers[2] | follower ShardMembership after promote | ok | same condition; bound is raftharness.Bound |
+| pkg/server/rest_registry_test.go | TestNewRESTServiceRegistry_ReturnsNonNil removed | NewRESTServiceRegistry declared return type and its behaviour tests | ok | 566-audit-4 |
+| pkg/server/served_watch_test.go, served_watch_transport_test.go, server_etcd_guard_test.go | drained, waitFor, GuardStreamEndsOnClusterSeal: deadline loops → require.Eventually | served watch queue / stream subscription count | ok | same condition, bound and message |
+| pkg/server/startup_read_test.go | TestRunStartupRead_ContextEnds → synctest bubble; _ContextEndsMidAttempt cancels inside the attempt; _ReportsAnAttemptThatOutlivesItsBound returns once two progress lines are logged | RunStartupRead attempt / backoff / progress reporter | ok | ContextEnds now proves the cancel lands in the backoff (one read, still blocked, zero fake time to return); the outlive test waits on the logged lines, not a 200 ms sleep |
+| pkg/server/tenant_shard_reconciler_test.go | awaitCondition → assert.Eventually on quietReporter | tenant shard reconciler convergence | ok | returns the bool; callers phrase the failure |
