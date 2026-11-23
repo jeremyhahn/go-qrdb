@@ -785,6 +785,44 @@ func TestMoveStepRunner_Refusals(t *testing.T) {
 	}
 }
 
+// A sealed node's copy step is refused with *volume.NodeSealedError, which
+// the reconciler treats as a wait (no attempt counted, no abort; proven by
+// pkg/volume's TestMoveReconciler_SealedNodeStepWaits, as this fixture has
+// no volume catalog). After the unseal the same step runs: the destination
+// holds the copy and the settle reopens the stores on it.
+func TestMoveStepRunner_SealedStepWaitsThenRuns(t *testing.T) {
+	fx, stores, r := newRunnerFixture(t)
+	ctx := context.Background()
+	if err := fx.reg.system.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	step := runnerStep(volume.MoveStepPhaseCopy, false)
+	for i := 0; i < volume.DefaultMoveStepAttempts+1; i++ {
+		var se *volume.NodeSealedError
+		if err := r.RunMoveStep(ctx, step); !errors.As(err, &se) {
+			t.Fatalf("sealed step #%d = %v, want *volume.NodeSealedError", i+1, err)
+		}
+	}
+	if stores.closes != 0 {
+		t.Fatalf("a sealed node's step closed the stores %d times", stores.closes)
+	}
+	assertGone(t, fx.dst())
+	mustExist(t, fx.src)
+	if err := fx.reg.system.Unseal(ctx, MustCredentials(ctx, []byte("pool-test-pass"))); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	if err := r.RunMoveStep(ctx, step); err != nil {
+		t.Fatalf("copy after the unseal: %v", err)
+	}
+	mustExist(t, filepath.Join(fx.dst(), "MANIFEST-000001"))
+	if err := r.SettleMoveStep(ctx, step); err != nil {
+		t.Fatalf("settle copy after the unseal: %v", err)
+	}
+	if stores.open != fx.dst() {
+		t.Fatalf("open after settle = %q, want the destination %q", stores.open, fx.dst())
+	}
+}
+
 // unlockCounter is a Lockable resolver double: it records every Unlock.
 type unlockCounter struct {
 	VolumeResolver
