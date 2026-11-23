@@ -1144,6 +1144,12 @@ one.**
   `barrier` tenants use the existing dedicated-WAL mechanism: the multiplex
   LogDB (`pkg/database/multiplex_logdb.go`) over go-quicraft's per-shard
   barriers.
+- **Never the shared store.** A strict tenant is never served from the
+  shared system shard, whose WAL is under the node key: a request that names
+  no database, the default database or the SQL default is refused
+  (`StrictTenantSharedStoreError`, FailedPrecondition) on every transport,
+  and the strict tightening's node-key log probe counts data already in that
+  implicit default namespace.
 - **No fallback (G2).** A shard whose dedicated WAL cannot be opened does not
   start, and never falls back to the shared WAL; the refusal is
   `database.TenantWALUnavailableError`.
@@ -1414,7 +1420,7 @@ form within its startup budget.
 
 | Setting | Where | Values | Who sets it |
 |---|---|---|---|
-| Cluster floor | `__sys:cluster/isolation_policy` | unset (read as `operator-access`), `operator-access`, `strict` | The config key `tenant.isolation_policy`, which each node applies at start through `TenantService.SetClusterIsolationPolicy`. A value the stored floor already holds is a no-op. A node in FIPS 140 mode tightens it to `strict` at start. The floor verbs (`qrdb cluster-isolation-policy get|set` and their REST, gRPC, QUIC and MCP forms) read and set it, refused until the `strict-isolation` feature is active. |
+| Cluster floor | `__sys:cluster/isolation_policy` | unset (read as `operator-access`), `operator-access`, `strict` | The config key `tenant.isolation_policy`, which each node applies at start through `TenantService.SetClusterIsolationPolicy`. A value the stored floor already holds is a no-op. A node in FIPS 140 mode tightens it to `strict` at start and refuses to serve unless it reads `strict` back. Every node applies both, `qrdbd` and an SDK node (`sdk/go/node`) alike, through `pkg/server/lifecycle/isolation_floor.go`, after its tenant home stores attach and before it serves. The floor verbs (`qrdb cluster-isolation-policy get|set` and their REST, gRPC, QUIC and MCP forms) read and set it, refused until the `strict-isolation` feature is active. |
 | Tenant policy | the tenant's registry entry (`isolation_policy`) | `inherit` (empty, the default) or `strict` | The Go API: `tenant.WithIsolationPolicy` at create, or a `TenantPatch.IsolationPolicy` on update. On the transports, a tenant update's `isolation_policy` field and `qrdb tenant update --isolation-policy`, refused until the `strict-isolation` feature is active. |
 
 `tenant.EffectiveIsolationPolicy` is `strict` when either setting is `strict`.
