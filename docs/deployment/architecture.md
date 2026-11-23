@@ -79,8 +79,8 @@ Two halves: derive from the limit, and ship caps.
 - `sdk/go/secure` re-exports go-enclave's `DiscoverLockedMemoryLimit`,
   `NewAllocatorWithinRLimit` and `SetAllocator`; go-enclave owns the discovery
   and the ceiling check.
-- `Dockerfile`, `.devcontainer/docker-compose.yml`,
-  `.devcontainer/devcontainer.json` and `test/integration/api/docker-compose.yml`
+- `Dockerfile`, `build/docker/devcontainer/compose.yaml`,
+  `.devcontainer.json` and `test/integration/api/docker-compose.yml`
   carry the caps.
 
 ## Listeners
@@ -195,7 +195,8 @@ the read guarantee.
 
 ## Build and CI dev-cache passthrough
 
-`.devcontainer/Dockerfile`, `.devcontainer/docker-compose.yml` and
+The `dev` stage of `build/docker/devcontainer/Dockerfile`,
+`build/docker/devcontainer/compose.yaml` and
 `.github/workflows/ci.yml` take the fleet's `DEVCACHE_*` variables
 (`../../handbook/software/conventions/devops.md` §2a) and behave as if no cache
 existed when a variable is unset, empty, or its cache does not answer:
@@ -224,7 +225,7 @@ existed when a variable is unset, empty, or its cache does not answer:
   not exist. The step fails OPEN: a failed fetch or an unreachable cache sets
   nothing, and the job runs uncached.
 
-`.devcontainer/Dockerfile.gpu` takes none of these variables; it bakes no
+The `gpu` stage of the same Dockerfile takes none of these variables; it bakes no
 frontend and no apt proxy of its own.
 
 ## Not in scope

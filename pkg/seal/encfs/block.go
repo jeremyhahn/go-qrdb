@@ -70,8 +70,16 @@ func newBlockCrypto(dek []byte) (*blockCrypto, error) {
 //	[ nonce (12B) | ciphertext (len(plaintext)) | tag (16B) ]
 //
 // The nonce is sampled from crypto/rand. The output length is
-// len(plaintext) + BlockOverhead.
+// len(plaintext) + BlockOverhead. It is the encfs file form: encryptAAD
+// with no additional data.
 func (c *blockCrypto) encrypt(plaintext []byte) ([]byte, error) {
+	return c.encryptAAD(plaintext, nil)
+}
+
+// encryptAAD encrypts plaintext into an inline-nonce ciphertext block as
+// encrypt does, binding aad as the GCM additional data; a nil aad is the
+// encfs file form. It is the one Seal call site of blockCrypto.
+func (c *blockCrypto) encryptAAD(plaintext, aad []byte) ([]byte, error) {
 	if len(plaintext) > BlockSize {
 		return nil, ErrBlockTooLarge
 	}
@@ -79,18 +87,26 @@ func (c *blockCrypto) encrypt(plaintext []byte) ([]byte, error) {
 	// itself and prepends it to the returned block.
 	out := make([]byte, 0, inlineNonceSize+len(plaintext)+tagSize)
 	// #nosec G407 -- the nonce argument MUST be nil here: this AEAD is cipher.NewGCMWithRandomNonce, which generates a fresh 96-bit nonce inside the FIPS module on every Seal and prepends it to the ciphertext. gosec reads the nil as a hardcoded IV; passing anything else makes Seal panic.
-	return c.aead.Seal(out, nil, plaintext, nil), nil
+	return c.aead.Seal(out, nil, plaintext, aad), nil
 }
 
 // decrypt decrypts an inline-nonce ciphertext block. Returns
-// ErrAuthFailed if authentication fails (tampering or wrong key).
+// ErrAuthFailed if authentication fails (tampering or wrong key). It is
+// the encfs file form: decryptAAD with no additional data.
 func (c *blockCrypto) decrypt(block []byte) ([]byte, error) {
+	return c.decryptAAD(block, nil)
+}
+
+// decryptAAD decrypts an inline-nonce ciphertext block as decrypt does,
+// authenticating aad as the GCM additional data; a nil aad is the encfs
+// file form. It is the one Open call site of blockCrypto.
+func (c *blockCrypto) decryptAAD(block, aad []byte) ([]byte, error) {
 	if len(block) < BlockOverhead || len(block) > CiphertextBlockSize {
 		return nil, ErrBlockTooShort
 	}
 	// The nonce argument must be empty: the AEAD reads the inline
 	// nonce back off the front of the block.
-	plaintext, err := c.aead.Open(nil, nil, block, nil)
+	plaintext, err := c.aead.Open(nil, nil, block, aad)
 	if err != nil {
 		return nil, ErrAuthFailed
 	}

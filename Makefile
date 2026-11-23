@@ -270,10 +270,10 @@ COVER_MIN     := $(or $(COVERAGE_THRESHOLD),91)
 # Docker
 DOCKER_IMAGE  := go-qrdb-dev
 DOCKER_TAG    := latest
-COMPOSE_FILE  := .devcontainer/docker-compose.yml
+COMPOSE_FILE  := build/docker/devcontainer/compose.yaml
 
 # ---------------------------------------------------------------------------
-# Module credentials for EVERY entrypoint that builds .devcontainer/Dockerfile
+# Module credentials for EVERY entrypoint that builds build/docker/devcontainer/Dockerfile
 # ---------------------------------------------------------------------------
 # First-party github.com/jeremyhahn/* modules resolve from the public proxy
 # by default. A docker build inherits nothing from its caller's environment,
@@ -312,7 +312,7 @@ COMPOSE_FILE  := .devcontainer/docker-compose.yml
 #
 # GOMODAUTH is the one name both consumers read: `docker build --secret
 # id=gomodauth,env=GOMODAUTH`, and the compose services' `build.secrets`
-# through the top-level `secrets:` block in .devcontainer/docker-compose.yml
+# through the top-level `secrets:` block in build/docker/devcontainer/compose.yaml
 # and test/integration/api/docker-compose.yml. Sharing it is the whole point
 # (#302): `make ci` built this image with no secret at all while
 # `make integration-image` passed one, so two entrypoints to the same image
@@ -522,9 +522,9 @@ DESKTOP_TAG_FLAG := -tags "$(strip $(DESKTOP_TAGS))"
 # build args, through the same environment-PASSTHROUGH mechanism as the
 # scanner-version pins ($(SCANNER_BUILD_ARGS) below): exported here, read
 # there by name with no value given, so compose fills it from THIS process's
-# environment when make runs it and leaves it to .devcontainer/Dockerfile's
-# own ARG default when nothing exported it (a bare `docker compose build`,
-# #302). See .devcontainer/Dockerfile's QRDB_BUILD_TAGS comment for what
+# environment when make runs it and leaves it to the dev stage's own ARG
+# default in build/docker/devcontainer/Dockerfile when nothing exported it (a
+# bare `docker compose build`, #302). See that stage's QRDB_BUILD_TAGS comment for what
 # drifting the two apart cost (go-qrdb#555).
 export QRDB_BUILD_TAGS := $(strip $(BUILD_TAGS))
 
@@ -1498,7 +1498,7 @@ INT_COMPOSE := test/integration/api/docker-compose.yml
 # interpolations (`${QRDB_INT_IMAGE:?...}`): there is no fallback tag, because a
 # fallback is a shared tag again. The `export` reaches every `docker compose`
 # call below, sub-makes included. The devcontainer keeps its own stable
-# `go-qrdb-dev:latest` (.devcontainer/docker-compose.yml); nothing here builds
+# `go-qrdb-dev:latest` (build/docker/devcontainer/compose.yaml); nothing here builds
 # or runs it. integration-down removes these when the run ends.
 # test/buildgates/integration_image_tag_test.go holds all of this in place.
 INT_IMAGE     := go-qrdb-int:$(INT_PROJECT)
@@ -1519,7 +1519,7 @@ export QRDB_INT_GPU_IMAGE := $(INT_GPU_IMAGE)
 # command and flag the Makefile's own feature flags enable (go-qrdb#555: a
 # Dockerfile ARG left at a hardcoded, narrower default silently built a CLI
 # that could not drive the server it was tested against). The ARG's default
-# in .devcontainer/Dockerfile is a second copy for a bare `docker compose
+# in build/docker/devcontainer/Dockerfile's dev stage is a second copy for a bare `docker compose
 # build` that skips make (#302); docker_build_tags_test.go
 # (test/buildgates) keeps the two from drifting apart.
 .PHONY: integration-image
@@ -1529,8 +1529,8 @@ integration-image:
 	  --secret id=gomodauth,env=GOMODAUTH \
 	  $(SCANNER_BUILD_ARGS) \
 	  --build-arg QRDB_BUILD_TAGS="$(strip $(BUILD_TAGS))" \
-	  --target integration \
-	  -f .devcontainer/Dockerfile \
+	  --target dev-integration \
+	  -f build/docker/devcontainer/Dockerfile \
 	  -t $(INT_IMAGE) .
 
 # integration-test is CI's integration stage (handbook ci-standard.md): it runs
@@ -1579,7 +1579,7 @@ integration-test:
 		down --volumes >/dev/null 2>&1 || true; \
 	exit $$status
 
-# integration-test-docker runs the suites that need the .devcontainer stacks in
+# integration-test-docker runs the suites that need the dev-integration stacks in
 # isolated stages, so the standalone (multi-protocol CLI vs the single-node
 # docker servers) and cluster (self-spawned single-node + 3-node clusters)
 # tests never run concurrently and never contend for host CPU. Each stage
@@ -1733,13 +1733,13 @@ INT_GPU_COMPOSE := test/integration/api/docker-compose.gpu.yml
 HAS_GPU := $(shell command -v nvidia-smi >/dev/null 2>&1 && echo 1 || echo 0)
 
 .PHONY: integration-test-gpu
-# `--build` here builds .devcontainer/Dockerfile.gpu, so this needs the same
+# `--build` here builds build/docker/devcontainer/Dockerfile's gpu stage, so this needs the same
 # credential prelude as every other entrypoint that builds an image (#305); the
 # overlay's services declare build.secrets and read $$GOMODAUTH from it.
 # `set +e` because the prelude leaves the shell under `set -eu` and this recipe
 # captures its own exit code to run `down -v` after a failure.
 integration-test-gpu:
-	@echo "==> Running GPU integration tests (qrdbd + all protocols + NVIDIA GPU)..."
+	@echo "==> Running GPU integration tests (qrdbd + all protocols + NVIDIA GPU, build/docker/devcontainer/Dockerfile stage gpu)..."
 	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@$(stage-gomodauth) \
 	set +e; \
@@ -3590,7 +3590,8 @@ endef
 # `make check-tool-versions`, which runs first in `_ci`:
 #   - the literal env pins in .github/workflows/ci.yml for the jobs that run
 #     on the runner rather than in the image (the runner image bakes them);
-#   - the ARG DEFAULTS of .devcontainer/Dockerfile{,.gpu}, the developer
+#   - the ARG DEFAULTS of the dev and gpu stages of
+#     build/docker/devcontainer/Dockerfile, the developer
 #     devcontainer, so a build that goes around make -- VS Code "Reopen in
 #     Container", a bare `docker compose build` -- still gets the pinned
 #     analysers (#302, ruled 2026-09-05).
@@ -3603,7 +3604,7 @@ endef
 # files take them through the environment-PASSTHROUGH form (`GOSEC_VERSION:`
 # with no value), so an unset variable omits the arg and the Dockerfile
 # default applies; `${GOSEC_VERSION}` there would pass an empty string and
-# defeat the default. Measured, and written up in .devcontainer/docker-compose.yml.
+# defeat the default. Measured, and written up in build/docker/devcontainer/compose.yaml.
 #
 # WHAT check-tool-versions DOES NOT ASSERT: that the version pinned is the
 # version INSTALLED. require-tool.sh answers that, inside the Dockerfiles at
@@ -3642,11 +3643,16 @@ export GOSEC_VERSION
 export GOVULNCHECK_VERSION
 export TRIVY_VERSION
 export TRIVY_IMAGE
+# GO_IMAGE too: build/docker/devcontainer/Dockerfile's global FROMs name
+# ${GO_IMAGE} and ${TRIVY_IMAGE}, which have no default, and BuildKit resolves
+# every global FROM whatever the target, so the compose dev services need both.
+export GO_IMAGE
 
 # The two `docker build` entrypoints get no compose interpolation, so they pass
 # the same pins explicitly. One variable rather than a flag per pin at each
 # site, for the same reason `export` beats per-recipe passing.
 SCANNER_BUILD_ARGS := \
+  --build-arg GO_IMAGE=$(GO_IMAGE) \
   --build-arg GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION) \
   --build-arg GOSEC_VERSION=$(GOSEC_VERSION) \
   --build-arg GOVULNCHECK_VERSION=$(GOVULNCHECK_VERSION) \
@@ -3674,7 +3680,7 @@ SCANNER_BUILD_ARGS := \
 GOSEC_INSTALL       := go install -ldflags '-X main.Version=$(GOSEC_VERSION)' github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 GOVULNCHECK_INSTALL := go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 # The binary out of the official image pinned by digest (TRIVY_IMAGE), which is
-# how the CI image, .devcontainer/Dockerfile and nightly.yml install it, so the
+# how the CI image, the dev stage and nightly.yml install it, so the
 # hint and the images run the same fixed artifact. A fixed container name rather
 # than $$(docker create ...): require-scanner echoes the hint inside double
 # quotes, which would run a command substitution instead of printing it.
@@ -4152,9 +4158,10 @@ docker-run-devcontainer:
 #
 # build/docker/devcontainer/Dockerfile is the ONE image every CI stage runs
 # in: build, unit tests, security and deps-check in its `toolchain` stage,
-# the integration suites in its `integration` stage. .devcontainer/ is the
-# developer's VS Code container and the image of the Docker-based
-# test/integration/api stack; it runs no CI stage of its own.
+# the integration suites in its `integration` stage. Its dev, dev-deps,
+# dev-integration and gpu stages are the developer's VS Code container, the
+# image of the Docker-based test/integration/api stack and the CUDA image;
+# they run no CI stage.
 #
 # The toolchain tag is a hash of everything the image is built from -- the
 # Dockerfile, the pin file and every module's go.mod/go.sum the modules stage
