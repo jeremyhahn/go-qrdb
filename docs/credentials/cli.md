@@ -132,7 +132,17 @@ rotation time (RFC 3339, UTC). No flags. A credential with no policy shows
 ```bash
 qrdb credential rotation-policy get smtp-password
 # rotation policy for smtp-password: enabled=true interval=720h0m0s retain-versions=3 next-rotation=2026-11-29T12:00:00Z
+
+qrdb --output yaml credential rotation-policy get smtp-password
+# name: smtp-password
+# enabled: true
+# interval: 720h0m0s
+# retain_versions: 3
+# next_rotation: "2026-11-29T12:00:00Z"
 ```
+
+`--output json` and `--output yaml` print the same snake_case key names for
+the `rotation-policy` and `migration-conflicts` verbs.
 
 ## `qrdb credential migration-conflicts list`
 
