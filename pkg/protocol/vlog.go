@@ -85,6 +85,9 @@ const (
 	// VerifiableLogSubtypeDropDatabase reclaims the logs of a dropped
 	// database, a bounded number of records per command (vlog.Chain
 	// DropDatabase); the database service repeats it until it deletes 0.
+	// It requires featuregate.VerifiableLogDrop: a replica that implements
+	// only VerifiableLog has no handler for it, so it is never proposed
+	// until every replica of the group advertises the drop feature.
 	VerifiableLogSubtypeDropDatabase byte = 7
 )
 

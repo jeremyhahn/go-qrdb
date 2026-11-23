@@ -226,6 +226,15 @@ const VerifiableLogKeys feature.Feature = "verifiable-log-keys"
 // See docs/databases/architecture.md.
 const VerifiableLogAudit feature.Feature = "verifiable-log-audit"
 
+// VerifiableLogDrop is the DropDatabase sub-type of protocol.OpVerifiableLog:
+// it reclaims the logs of one incarnation of a dropped database. A replica
+// that implements only VerifiableLog has no handler for it and halts its
+// apply, so the database service proposes it only once every replica of the
+// group can apply it, and refuses a drop of a database with logs until then.
+// Its apply carries no build tag, so every binary that carries it advertises
+// it. See docs/databases/architecture.md.
+const VerifiableLogDrop feature.Feature = "verifiable-log-drop"
+
 // PendingUserTTL is the pending-user expiry: User.PendingExpiresAt and the
 // reaper's ExpiryClaim on the user record, and the "__reap/" markers the
 // pending-user reaper writes. A binary without it decodes a user record
@@ -262,7 +271,7 @@ const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL}
+var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL, VerifiableLogDrop}
 
 // Supported returns the features this binary implements.
 func Supported() []feature.Feature {
