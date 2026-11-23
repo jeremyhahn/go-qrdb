@@ -23,9 +23,16 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	qrdbbackend "github.com/jeremyhahn/go-qrdb/pkg/backend"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -179,4 +186,72 @@ func TestStandaloneNode_DatabaseLivesUnderItsBindingRoot(t *testing.T) {
 	got, err := scoped.KV().Get(ctx, "order/1")
 	require.NoError(t, err, "the materialized database was not reopened from its binding root")
 	require.Equal(t, "open", string(got))
+}
+
+// seedSharedStore writes key under the system tenant's legacy database
+// namespace straight into a stopped standalone node's shared store, opened
+// with the constructors NewStandaloneNode uses for it (createNodeStorage
+// and createNodeEngine with the pebble backend at raft.data_dir and no
+// encryptor, as a node with seal disabled opens it). It stands
+// in for data written before the database had a store of its own.
+func seedSharedStore(ctx context.Context, t *testing.T, cfg *qrdbconfig.Config, db, key, value string) {
+	t.Helper()
+	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendPebble, cfg.Raft.DataDir, nil, cfg.Storage)
+	require.NoError(t, err)
+	eng, err := lifecycle.NewLocalEngine(database.BackendPebble, stg, pdb, watch.NewHub(), lease.NewLessor())
+	if err != nil {
+		_ = stg.Close()
+		require.NoError(t, err)
+	}
+	host := qrdbbackend.NewLocalBackend(eng)
+	full := tenant.ComposeNamespace(string(tenantid.System), db) + key
+	putErr := service.NewKVService(host, shard.ShardKV).Put(ctx, full, []byte(value))
+	_ = host.Close()
+	require.NoError(t, stg.Close())
+	require.NoError(t, putErr)
+}
+
+// TestStandaloneNode_LegacyMemoryDatabaseKeepsSharedRoute pins the
+// standalone node's shared-keyspace probe (newStandaloneDatabaseManager's
+// lifecycle.WithSharedKeyspaceProbe): a backend: memory database whose
+// data predates its own store keeps reading the shared store, a fresh
+// memory database is materialized and sees none of it, and the legacy data
+// survives a restart, which a materialized memory store would not.
+func TestStandaloneNode_LegacyMemoryDatabaseKeepsSharedRoute(t *testing.T) {
+	ctx := context.Background()
+	cfg := newTenantIsolationConfig(t)
+	// Seal off: the shared store is written without an at-rest encryptor
+	// (the strategy-none barrier still frames its files), so the test can
+	// seed it offline. The sealed boot path builds its database manager
+	// through the same newStandaloneDatabaseManager and probe.
+	cfg.Seal.Enabled = false
+	n, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	require.NoError(t, n.Close())
+
+	seedSharedStore(ctx, t, cfg, "legacy", "k", "shared-v")
+
+	n, err = NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	createDatabaseOn(ctx, t, n, "legacy", database.BackendMemory)
+	createDatabaseOn(ctx, t, n, "fresh", database.BackendMemory)
+	legacy, err := n.Client().DatabaseScoped("legacy")
+	require.NoError(t, err)
+	got, err := legacy.KV().Get(ctx, "k")
+	require.NoError(t, err, "the legacy memory database lost its shared route")
+	require.Equal(t, "shared-v", string(got))
+	fresh, err := n.Client().DatabaseScoped("fresh")
+	require.NoError(t, err)
+	_, err = fresh.KV().Get(ctx, "k")
+	require.Error(t, err, "a fresh memory database read another database's shared data")
+	require.NoError(t, n.Close())
+
+	n, err = NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+	legacy, err = n.Client().DatabaseScoped("legacy")
+	require.NoError(t, err)
+	got, err = legacy.KV().Get(ctx, "k")
+	require.NoError(t, err, "the legacy key did not survive the restart")
+	require.Equal(t, "shared-v", string(got))
 }
