@@ -15,26 +15,25 @@
 package server
 
 import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"sync"
+	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
-	"context"
-	"errors"
-	"github.com/jeremyhahn/go-qrdb/pkg/backend"
-	"github.com/jeremyhahn/go-qrdb/pkg/engine"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
-	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
-	"io"
-	"log/slog"
-	"testing"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // floorTenantSvc is a tenant service that also reads the cluster isolation

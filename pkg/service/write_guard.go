@@ -17,6 +17,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
@@ -267,8 +268,8 @@ func mapGuardRefusal(ctx context.Context, result sm.Result, err error) (sm.Resul
 	if !refused {
 		return result, nil
 	}
-	wr, ok := guardRefusalError(key).(*WriteGuardRefusedError)
-	if !ok {
+	var wr *WriteGuardRefusedError
+	if !errors.As(guardRefusalError(key), &wr) {
 		return result, nil
 	}
 	for _, m := range mappers {
