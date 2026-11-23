@@ -17,9 +17,14 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -107,5 +112,45 @@ func TestResolve_OperatorAccessTenantKeepsTheSharedStore(t *testing.T) {
 	}
 	if got := string(shared.store["bt/system/routed"]); got != "yes" {
 		t.Fatalf("shared store bt/system/routed = %q, want yes; keys = %v", got, storeKeys(shared))
+	}
+}
+
+// TestResolve_StrictTenantOwnBarrierDatabaseStillResolves: the shared-store
+// refusal is only for the shared store. A strict tenant's database whose own
+// barrier wraps its own data path is served from that store, never the
+// system shard, so it still resolves, under its own policy or a strict floor.
+func TestResolve_StrictTenantOwnBarrierDatabaseStillResolves(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		policy tenant.TenantIsolationPolicy
+		floor  tenant.ClusterIsolationPolicy
+	}{
+		{"own policy strict", tenant.TenantIsolationPolicyStrict, ""},
+		{"inherits a strict floor", tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyStrict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr, shared := newStrictSharedRegistry(t, tc.policy, tc.floor, nil)
+			mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
+			t.Cleanup(func() { _ = mgr.Close() })
+			rr.dbManager = mgr
+			rr.dedicatedStore = newDedicatedStoreServiceCache()
+			ctx := context.Background()
+			if _, err := mgr.CreateWithCredentials(ctx, database.DatabaseConfig{
+				TenantID: "bt", Name: "vault", Backend: database.BackendMemory, DataDir: t.TempDir(),
+				Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
+			}, seal.MustCredentials(ctx, []byte("db-pass"))); err != nil {
+				t.Fatalf("create the barrier database: %v", err)
+			}
+			kv, err := rr.KVService("bt", "vault")
+			if err != nil {
+				t.Fatalf("KVService(bt, vault) = %v, want its own barrier store", err)
+			}
+			if err := kv.Put(ctx, "k", []byte("v")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			if keys := storeKeys(shared); len(keys) != 0 {
+				t.Fatalf("shared store keys = %v, want none: the database's own store serves it", keys)
+			}
+		})
 	}
 }
