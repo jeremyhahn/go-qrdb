@@ -50,6 +50,10 @@ var (
 	// MTLSAuthenticator.Authenticate, on every request, and never from a
 	// handshake callback — see RevocationChecker for why.
 	ErrCertificateRevoked = &AuthError{Code: "cert_revoked", Message: "client certificate has been revoked"}
+
+	// ErrPeerCredentialUnmapped is returned when a local-socket caller's
+	// peer credential (uid/gid) matches no configured mapping.
+	ErrPeerCredentialUnmapped = &AuthError{Code: "peer_credential_unmapped", Message: "peer credential is not mapped to an account"}
 )
 
 // CertificateTenantError reports that a client certificate names no usable
