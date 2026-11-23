@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -61,8 +62,8 @@ func newEmbeddedTestStore(t *testing.T) (KVStore, sdkstorage.Storage) {
 
 func TestEmbeddedKVStore_RefusesNilStorage(t *testing.T) {
 	store, err := NewEmbeddedKVStore(nil)
-	if store != nil || !errors.Is(err, ErrEmbeddedStorageRequired) {
-		t.Fatalf("NewEmbeddedKVStore(nil) = %v, %v; want nil, ErrEmbeddedStorageRequired", store, err)
+	if store != nil || err == nil || !strings.Contains(err.Error(), "storage engine") {
+		t.Fatalf("NewEmbeddedKVStore(nil) = %v, %v; want nil and an error naming the storage engine", store, err)
 	}
 }
 
@@ -174,6 +175,40 @@ func TestEmbeddedKVStore_UnsupportedDefinitionsDowngrade(t *testing.T) {
 				t.Fatalf("RegisterEntityIndexes = %v, want ErrKVIndexUnsupported", err)
 			}
 		})
+	}
+}
+
+// TestEmbeddedKVStore_NestedEntityTypeRefused pins that an entity type
+// containing "/" is refused: the engine would compose its namespace twice
+// (tenant/db/tenant/db/member/), so writes would never be indexed. A DAO over
+// such a type falls back to scans and still finds its records.
+func TestEmbeddedKVStore_NestedEntityTypeRefused(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	defs := []EntityIndex{{FieldName: "Email", JSONFieldName: "email"}}
+	if err := store.RegisterEntityIndexes("tenant/db/member", defs); !errors.Is(err, ErrKVIndexUnsupported) {
+		t.Fatalf("RegisterEntityIndexes(tenant/db/member) = %v, want ErrKVIndexUnsupported", err)
+	}
+
+	dao, err := NewDAO(store, "tenant/db/widget", func() *embeddedWidget { return &embeddedWidget{} })
+	if err != nil {
+		t.Fatalf("NewDAO: %v", err)
+	}
+	for i, w := range []*embeddedWidget{
+		{ID: 1, Name: "alpha", Team: "red", State: "open"},
+		{ID: 2, Name: "beta", Team: "blue", State: "open"},
+	} {
+		if err := dao.Save(ctx, w); err != nil {
+			t.Fatalf("Save %d: %v", i, err)
+		}
+	}
+	hits, err := dao.Find(ctx).Where("Name = ?", "beta").Execute()
+	if err != nil || len(hits) != 1 || hits[0].ID != 2 {
+		t.Fatalf("Where Name by scan = %+v, %v; want one record with ID 2", hits, err)
+	}
+	all, err := dao.Find(ctx).Execute()
+	if err != nil || len(all) != 2 {
+		t.Fatalf("Find = %+v, %v; want two records", all, err)
 	}
 }
 

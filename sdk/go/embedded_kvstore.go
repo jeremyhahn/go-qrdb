@@ -27,9 +27,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
-// ErrEmbeddedStorageRequired is returned by NewEmbeddedKVStore when it is
-// given no storage engine to run over.
-var ErrEmbeddedStorageRequired = errors.New("sdk: embedded KV store needs a storage engine")
+// errEmbeddedStorageRequired is returned by NewEmbeddedKVStore when it is
+// given no storage engine to run over. It stays private: the approved
+// embedder surface is the constructors and index types, not this sentinel.
+var errEmbeddedStorageRequired = errors.New("sdk: embedded KV store needs a storage engine")
 
 // NewEmbeddedKVStore returns a KVStore that runs the go-qrdb KV engine
 // in-process over stg, with secondary indexes maintained atomically on every
@@ -40,7 +41,8 @@ var ErrEmbeddedStorageRequired = errors.New("sdk: embedded KV store needs a stor
 // Get reports an absent key as (nil, nil); every other storage failure is
 // returned. A query on an index that was never registered reports no matches.
 // A definition the engine cannot maintain exactly (a caller-qualified index
-// name, a key prefix other than "{entityType}/", or a numeric index) is
+// name, a key prefix other than "{entityType}/", a numeric index, or an
+// entity type containing "/", whose namespace the engine would compose twice) is
 // refused with ErrKVIndexUnsupported, so a DAO downgrades that query kind to
 // a full scan instead of querying an index nobody built.
 //
@@ -53,7 +55,7 @@ var ErrEmbeddedStorageRequired = errors.New("sdk: embedded KV store needs a stor
 // released, so it may read from or write to the store.
 func NewEmbeddedKVStore(stg storage.Storage) (KVStore, error) {
 	if stg == nil {
-		return nil, ErrEmbeddedStorageRequired
+		return nil, errEmbeddedStorageRequired
 	}
 	return &embeddedKVStore{stg: stg, eng: engine.NewKVEngine(stg)}, nil
 }
@@ -206,6 +208,12 @@ func (s *embeddedKVStore) RegisterEntityIndexes(entityType string, indexes []kvs
 // embeddedIndexSupported refuses a definition the engine would build under a
 // different name or scope than the caller will query it by.
 func embeddedIndexSupported(entityType string, def kvstore.EntityIndex) error {
+	// The engine composes an index's scope from the namespace it parses out
+	// of the index name, so a nested entity type (tenant/db/member) would get
+	// its namespace prepended twice and no write would ever be indexed.
+	if strings.Contains(entityType, "/") {
+		return fmt.Errorf("entity type %q is nested (contains \"/\"): %w", entityType, kvstore.ErrIndexUnsupported)
+	}
 	if def.Numeric {
 		return fmt.Errorf("index %s.%s is numeric: %w", entityType, def.FieldName, kvstore.ErrIndexUnsupported)
 	}
