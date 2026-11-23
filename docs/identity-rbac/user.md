@@ -442,6 +442,50 @@ the caller's very next request. If the node cannot read the role store, the
 request is refused as temporarily unavailable, which a client may retry. It is
 never answered as "not owner".
 
+## Limiting an action to the object's owner
+
+An application that keeps its own objects (a key, a certificate, a shared
+password) often lets only the object's owner act on it. go-qrdb decides that
+for you, the same way it decides the tenant. Your store loads the object,
+puts its recorded owner on the request context, and asks the authorizer. A
+policy then names the built-in condition `subject.owns_resource`:
+
+```yaml
+apiVersion: abac.qrdb.io/v1
+kind: Policy
+metadata:
+  name: owner-only-delete
+spec:
+  subjects:
+    any: true
+  rules:
+    - name: deny-non-owner-delete
+      effect: deny
+      actions: [delete]
+      resources: ["/objects/**"]
+      unless:
+        - expression: 'subject.owns_resource'
+```
+
+```go
+ctx = sdk.WithResourceOwner(ctx, obj.OwnerID) // the owner's user id, from your store
+if err := authorizer.Authorize(ctx, identity, "/objects/"+obj.ID, "delete"); err != nil {
+	return err
+}
+```
+
+`subject.owns_resource` is true only when the context carries a non-empty
+owner equal to the caller's user id (`Identity.Subject`). It is false when
+your store set no owner, so the deny above refuses everyone, the owner too,
+when the owner is unknown. The owner always comes from your store, never
+from a field the caller sends.
+
+Without a policy, call the rule directly: `sdk.OwnObject(ctx, obj.OwnerID,
+"delete")` returns `nil` for the owner and a `*sdk.ObjectOwnerDeniedError`
+(a permission denial, HTTP 403) for anyone else, for a caller with no
+identity, and for an object with no recorded owner. It is the object twin of
+`sdk.OwnTenant`.
+
 ## Seeing whether someone has a second factor
 
 `qrdb users get "$USER"` prints `MFAEnabled`, and `MFAMethods` when it is

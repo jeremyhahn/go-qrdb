@@ -541,6 +541,33 @@ Invariants:
   `metadata.updated` on create and update; an update keeps `created`.
 - **List is sorted by name** and returns the whole set, unpaginated.
 
+**The object-owner condition.** A policy limits an action to the object's
+owner with the built-in boolean `subject.owns_resource`
+(`pkg/auth/abac/parser.go` `ownsResource`), named beside
+`subject.authenticated` and `subject.mfa_verified`. The owner reaches the PDP
+the way the target tenant does: server-side, through the context. The
+embedder's store calls `auth.WithResourceOwner(ctx, ownerID)`
+(`pkg/auth/object_owner.go`) after loading the object, and
+`abac.Decorator.Authorize` copies it into the check request under
+`abac.ResourceOwnerContextKey` (`resource_owner`), where conditions also read
+it as `resource.owner`. No caller-written request field feeds it, and no wire
+field carries it: go-qrdb has no owner-bearing object on its transports, so
+the over-the-wire surface is the stored policy that names the condition. The
+condition fails closed: it is true only for a non-empty string owner equal to
+a non-empty subject id (`Identity.Subject`, the account's immutable user id),
+and false for an absent, empty or non-string owner or an empty subject id. A
+hand-written `resource.owner == subject.id` is not equivalent, because the
+`==` comparison renders both sides with `%v` and so matches nil with nil and
+empty with empty. A deny written as `unless: subject.owns_resource` therefore
+denies when the owner is unknown. The Go rule `auth.OwnObject(ctx, owner,
+op)` is the object twin of `tenant.OwnTenant`: it refuses with
+`*auth.ObjectOwnerDeniedError`, which unwraps to `auth.ErrUnauthorized`
+(PermissionDenied, 403), for no identity, an empty subject, an empty owner or
+a different owner. It lives in `pkg/auth` because it needs the identity,
+which `pkg/tenant` cannot import. `sdk/go/types_object_owner.go` re-exports
+`OwnObject`, `WithResourceOwner`, `ResourceOwnerFromContext`,
+`ObjectOwnerDeniedError` and `ABACResourceOwnerContextKey`.
+
 ## Invitation self-enrolment
 
 `pkg/service.InvitationServicer` is the one surface every transport's invite
