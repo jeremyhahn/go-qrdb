@@ -175,6 +175,25 @@ allowed.
     - Append apply does not compare the descriptor's incarnation itself. The
       fence keeps stale logs from arising.
 
+## fx1655c
+
+Codex round 4 P1-3 at 9a8dd39821: a barrier tenant's logs are proposed to
+its home group, but `storeResolver.FenceTarget` put the drop-fence marker of
+its named databases on the system store, so the home group's state machine
+refused a log write in a live database as `DroppingError`. `FenceTarget`
+now resolves the home group (`database.TenantHomeName`, through
+`RaftBackendFactory.Services`) for barrier isolation, not per-database, and
+keeps the system store on a node with no home group (its standalone barrier
+store checks the incarnation is live instead). No new key scheme.
+
+- Tests: `TestStoreResolver_FenceTargetBarrierTenantUsesItsHomeGroup`,
+  `TestLogService_BarrierTenantNamedDatabaseIsFencedInItsHomeGroup`, and the
+  named-database step of `TestVlog_CLI_BarrierTenant_PerProtocol`, which
+  fails with "database is being dropped" without the fix.
+- Residual: a barrier database's logs go to its own sealed store, which
+  checks incarnation liveness and reads no marker; its marker stays where
+  the tenant's isolation puts it (no sealed-store fence target added).
+
 ## Remains
 
 - This slice did not run the vlog CLI E2E (`TestVlog_CLI_PerProtocol`,
