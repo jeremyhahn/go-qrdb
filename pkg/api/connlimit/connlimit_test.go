@@ -127,24 +127,19 @@ func TestListenerReleasesSlotOnClose(t *testing.T) {
 	// Poll rather than sleep a fixed duration: release() runs on whichever
 	// goroutine calls Close, and this asserts only that it has happened by
 	// the time a second connection from the same peer is admitted.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	require.Eventuallyf(t, func() bool {
 		second, err := net.DialTimeout("tcp", raw.Addr().String(), time.Second)
-		if err == nil {
-			_ = second.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-			buf := make([]byte, 1)
-			_, readErr := second.Read(buf)
-			netErr, ok := readErr.(net.Error)
-			_ = second.Close()
-			if ok && netErr.Timeout() {
-				return // accepted and left open: the slot was released.
-			}
+		if err != nil {
+			return false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("second connection from the same peer was never accepted after the first was closed")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		_ = second.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		buf := make([]byte, 1)
+		_, readErr := second.Read(buf)
+		netErr, ok := readErr.(net.Error)
+		_ = second.Close()
+		return ok && netErr.Timeout() // accepted and left open: the slot was released.
+	}, 2*time.Second, 20*time.Millisecond,
+		"second connection from the same peer was never accepted after the first was closed")
 }
 
 // waitForAccepted blocks until the server has accepted at least n
