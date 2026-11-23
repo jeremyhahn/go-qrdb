@@ -93,6 +93,14 @@ func TestCheckStrictSeparationHolders(t *testing.T) {
 	errBoom := errors.New("boom")
 	soOnly := &user.User{ID: 1, Username: "so", TenantID: tenantid.System, RoleIDs: []string{ssSOID}}
 	adminOnly := &user.User{ID: 2, Username: "admin", TenantID: tenantid.System, RoleIDs: []string{ssSysAdminID}}
+	// More SO holders than one page of the walk: the account holding both
+	// roles is on the last page.
+	var manyHolders []*user.User
+	for i := range 250 {
+		manyHolders = append(manyHolders, &user.User{ID: uint64(100 + i), Username: "so", TenantID: tenantid.System, RoleIDs: []string{ssSOID}})
+	}
+	manyHolders[249].Username = "last-page"
+	manyHolders[249].RoleIDs = []string{ssSOID, ssSysAdminID}
 
 	tests := []struct {
 		name      string
@@ -163,6 +171,12 @@ func TestCheckStrictSeparationHolders(t *testing.T) {
 				"t1/" + role.RoleNameAdmin:                 1,
 				"t2/" + role.RoleNameAdmin:                 1,
 			},
+		},
+		{
+			name:      "SO with system Admin on a later page is refused",
+			users:     &ssUsers{users: manyHolders},
+			roles:     &ssRoles{roles: ssStandardRoles()},
+			wantSOAdm: &StrictSeparationSOAdminError{UserID: 349, Username: "last-page", AdminTenantID: tenantid.System},
 		},
 		{
 			name: "clean holder set passes",

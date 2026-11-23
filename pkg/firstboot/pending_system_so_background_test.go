@@ -156,11 +156,18 @@ func TestClearPendingSystemSOInBackground_StopsOnUnverifiedAndCancel(t *testing.
 		}
 	}
 
-	// A committed PIN that is not the record's is never retried, even with
-	// a long interval, a nil logger and a non-positive attempt count.
+	// A committed PIN that is not the record's is never retried: with
+	// attempts left and an hour between them, only the unverified stop
+	// ends the run in time.
 	wait(ClearPendingSystemSOInBackground(ctx, store, users,
-		scriptedPINChecker{committed: true, matches: false}, time.Hour, 0, nil),
+		scriptedPINChecker{committed: true, matches: false}, time.Hour, 5, nil),
 		"an unverified SO was retried")
+	assert.False(t, SystemSOConsumed(ctx, store))
+
+	// A non-positive attempt count runs one attempt and ends.
+	wait(ClearPendingSystemSOInBackground(ctx, store, users,
+		scriptedPINChecker{committedErr: errBranchFault}, time.Hour, 0, nil),
+		"a non-positive attempt count was retried")
 	assert.False(t, SystemSOConsumed(ctx, store))
 
 	// A cancelled context ends the wait between attempts.
