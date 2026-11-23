@@ -79,6 +79,13 @@ type TenantHostRegistry struct {
 	// returns ErrTenantMigrationInProgress (retryable) instead.
 	migrating sync.Map // tenantID -> struct{}
 
+	// moveHold, when set, is the volume-pool move hold (MoveStoreCloser):
+	// while it holds a tenant, Services neither builds nor caches a Host
+	// for it and returns ErrTenantMoveInProgress (retryable), so a request
+	// cannot re-open the source directory a move step is closing. Attach,
+	// the move's own reopen, is not held back by it.
+	moveHold atomic.Pointer[moveHoldBox]
+
 	// homeOps counts each tenant's in-flight standalone home-store
 	// operations, which AdmitHome admits against migrating; MigrateEncryption
 	// drains them before it touches the barrier. See tenant_home_admission.go.
@@ -200,12 +207,38 @@ func (s *lookupDataRootSource) dataRootOf(ctx context.Context, tenantID string) 
 // access. The tenant's barrier must already be registered and unsealed; a
 // sealed or missing barrier returns an error so the request fails closed.
 func (r *TenantHostRegistry) Services(ctx context.Context, tenantID string) (*DatabaseServices, error) {
+	return r.services(ctx, tenantID, true)
+}
+
+// SetMoveHold installs the volume-pool move hold Services honours. Nil
+// clears it.
+func (r *TenantHostRegistry) SetMoveHold(h MoveHold) {
+	if r == nil {
+		return
+	}
+	if h == nil {
+		r.moveHold.Store(nil)
+		return
+	}
+	r.moveHold.Store(&moveHoldBox{hold: h})
+}
+
+// services is Services; honourMoveHold false is Attach, the move's own
+// reopen, which runs while the move still holds the tenant.
+func (r *TenantHostRegistry) services(ctx context.Context, tenantID string, honourMoveHold bool) (*DatabaseServices, error) {
 	if r == nil || r.barrierReg == nil || r.tenants == nil {
 		return nil, &TenantHostError{TenantID: tenantID, Op: "resolve", Err: ErrTenantHostUnavailable}
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// A move step holds the tenant from before it closes the Host until the
+	// reopen: refuse even a cached Host, which the close is about to evict.
+	if honourMoveHold {
+		if h := r.moveHold.Load(); h != nil && h.hold.HoldsTenant(tenantID) {
+			return nil, &TenantHostError{TenantID: tenantID, Op: "resolve", Err: ErrTenantMoveInProgress}
+		}
+	}
 	if th, ok := r.hosts[tenantID]; ok {
 		return th.services, nil
 	}
@@ -328,7 +361,7 @@ func (r *TenantHostRegistry) StartedHosts() map[string]service.AdminHost {
 // not pay the Host-construction cost. It is idempotent: an already-attached
 // tenant is a no-op.
 func (r *TenantHostRegistry) Attach(ctx context.Context, tenantID string) error {
-	_, err := r.Services(ctx, tenantID)
+	_, err := r.services(ctx, tenantID, false)
 	return err
 }
 

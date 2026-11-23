@@ -109,6 +109,9 @@ func WireTenantMoves(cfg TenantMoveConfig) (*TenantMoveWorker, error) {
 		// shell) between a move closing the tenant's shards and its barrier.
 		cfg.Infra.Reconciler.SetMoveHold(stores)
 	}
+	if cfg.Infra != nil && cfg.Infra.Hosts != nil {
+		cfg.Infra.Hosts.SetMoveHold(stores)
+	}
 	runner, err := seal.NewMoveStepRunner(cfg.BarrierReg, cfg.NodeID, stores)
 	if err != nil {
 		return nil, err
