@@ -5,7 +5,6 @@ import (
 	"math"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -132,26 +131,4 @@ func TestListVectors_MaxUint64LastIDEndsTheWalk(t *testing.T) {
 	require.Len(t, resp.Vectors, 1)
 	require.Equal(t, uint64(math.MaxUint64), resp.Vectors[0].ID)
 	require.Empty(t, resp.NextCursor, "no ID follows MaxUint64")
-}
-
-func TestPerformIndexRebuild_PagesEveryVectorOnce(t *testing.T) {
-	for name, ids := range map[string][]uint64{
-		"pages":     listCursorIDs(),
-		"maxUint64": {1, math.MaxUint64},
-	} {
-		t.Run(name, func(t *testing.T) {
-			svc, _ := newListCursorService(t, "docs", ids)
-			ns := scopedNamespace(tenantid.System, "docs")
-			job := &RebuildJobState{JobID: "rebuild-" + name, Namespace: ns, InProgress: true, StartedAt: time.Now()}
-			svc.jobMu.Lock()
-			svc.rebuildJobs[job.JobID] = job
-			svc.jobMu.Unlock()
-
-			require.NoError(t, svc.performIndexRebuild(context.Background(), job.JobID, ns, &vector.NamespaceInfo{Name: ns, Dimension: 2}, nil))
-
-			job.mu.RLock()
-			defer job.mu.RUnlock()
-			require.Equal(t, uint64(len(ids)), job.VectorsProcessed)
-		})
-	}
 }

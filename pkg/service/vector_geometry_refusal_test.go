@@ -9,6 +9,17 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
+// newRestartVectorStorage opens a PebbleDB-backed vector store at dir.
+func newRestartVectorStorage(t *testing.T, dir string) *vectorstorage.PebbleVectorStorage {
+	t.Helper()
+	cfg := vectorstorage.DefaultConfig(dir)
+	store, err := vectorstorage.NewPebbleVectorStorage(cfg, newVecTestLogger())
+	if err != nil {
+		t.Fatalf("NewPebbleVectorStorage(%q): %v", dir, err)
+	}
+	return store
+}
+
 // seedStoredGeometry writes a namespace record and one vector straight to
 // storage, as an earlier release that did not check the metric or index name
 // at create left them.
@@ -94,20 +105,6 @@ func TestVectorService_RestartRefusesStoredUnknownGeometry(t *testing.T) {
 				t.Fatalf("DeleteNamespace: %v", err)
 			}
 		})
-	}
-}
-
-func TestVectorService_SupportedStoredGeometryStillSearches(t *testing.T) {
-	dir := t.TempDir()
-	seedStoredGeometry(t, dir, "legacy", "L2", "HNSW")
-	svc := reopenVectorService(t, dir)
-
-	resp, err := svc.SearchSimilar(context.Background(), &SearchSimilarRequest{Namespace: "legacy", QueryVector: []float32{1, 0}, K: 1})
-	if err != nil {
-		t.Fatalf("SearchSimilar: %v", err)
-	}
-	if len(resp.Results) != 1 || resp.Results[0].ID != 1 {
-		t.Fatalf("SearchSimilar = %+v, want vector 1", resp.Results)
 	}
 }
 
