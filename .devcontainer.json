@@ -14,8 +14,10 @@
 
 {
 	"name": "go-qrdb",
-	"dockerComposeFile": "docker-compose.yml",
+	"initializeCommand": "sh scripts/devcontainer-pins.sh",
+	"dockerComposeFile": ["build/docker/devcontainer/compose.yaml", "build/docker/devcontainer/compose.pins.yaml"],
 	"service": "devcontainer",
+	"runServices": ["devcontainer"],
 	"workspaceFolder": "/workspace/go-qrdb",
 	"customizations": {
 		"vscode": {
