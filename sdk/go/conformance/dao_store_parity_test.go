@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -20,6 +21,9 @@ type parityDAOs struct {
 	store   sdk.KVStore
 	members sdk.GenericDAO[*daoMember]
 	widgets sdk.GenericDAO[*daoWidget]
+	// txMembers is a DAOTransactional over the same store, so a unit of
+	// work and a guarded batch run against every store kind.
+	txMembers sdk.DAOTransactional[*daoMember]
 }
 
 // parityStep is one DAO operation and its normalised outcome. want, when
@@ -147,6 +151,72 @@ func parityScenario() []parityStep {
 		{name: "compound index by name", run: func(ctx context.Context, d parityDAOs) string {
 			return widgetIDs(d.widgets.QueryByCompoundIndex(ctx, "widget.Team_State", []interface{}{"red", "open"}))
 		}, want: map[string]string{embeddedStoreKind: "[1]", serviceStoreKind: "index unsupported", clientStoreKind: "index unsupported"}},
+		{name: "unit of work commits two", run: func(ctx context.Context, d parityDAOs) string {
+			uow := sdk.NewDAOUnitOfWork(d.store)
+			for _, m := range []*daoMember{{ID: 1, Email: "tx1@example.test"}, {ID: 2, Email: "tx2@example.test"}} {
+				if err := sdk.RegisterDAOSave(uow, sdk.GenericDAO[*daoMember](d.txMembers), m); err != nil {
+					return parityOutcome(err)
+				}
+			}
+			return parityOutcome(uow.Commit(ctx))
+		}, want: everyStore("ok")},
+		{name: "unit of work saves visible", run: func(ctx context.Context, d parityDAOs) string {
+			var ms []*daoMember
+			for _, id := range []uint64{1, 2} {
+				m, err := d.txMembers.Get(ctx, id)
+				if err != nil {
+					return parityOutcome(err)
+				}
+				ms = append(ms, m)
+			}
+			return memberIDs(ms, nil)
+		}, want: everyStore("[1:tx1@example.test 2:tx2@example.test]")},
+		// txmember/1 exists, so an absence guard on it is stale.
+		{name: "guarded batch stale guard refused", run: guardedTxBatch("txmember/1", "txmember/9", daoMember{ID: 9, Email: "tx9@example.test"}), want: everyStore("not applied")},
+		{name: "refused batch wrote nothing", run: func(ctx context.Context, d parityDAOs) string { return oneMember(d.txMembers.Get(ctx, 9)) }, want: everyStore("not found")},
+		// Control: a holding guard and a free Email apply, so the refusal
+		// below is the unique conflict and not the batch's shape.
+		{name: "guarded batch applies", run: guardedTxBatch("txmember/11", "txmember/11", daoMember{ID: 11, Email: "tx11@example.test"}), want: everyStore("applied")},
+		{name: "applied batch visible", run: func(ctx context.Context, d parityDAOs) string { return oneMember(d.txMembers.Get(ctx, 11)) }, want: everyStore("11:tx11@example.test")},
+		// The guard holds but the write takes ID 1's unique Email. Every
+		// store refuses it; only the embedded store types the refusal as
+		// ErrConflict (the service store returns *kvstore.NotAppliedError,
+		// the client store the transport's *transport.RequestError), so the
+		// step compares the refusal, not its code (docs/plans/1649.md).
+		{name: "guarded batch unique conflict", run: guardedTxBatch("txmember/10", "txmember/10", daoMember{ID: 10, Email: "tx1@example.test"}), want: everyStore("refused")},
+		{name: "conflict wrote nothing", run: func(ctx context.Context, d parityDAOs) string { return oneMember(d.txMembers.Get(ctx, 10)) }, want: everyStore("not found")},
+	}
+}
+
+// everyStore is a want that pins the same outcome on every store kind: the
+// stores agree, and the shared answer is the expected one.
+func everyStore(outcome string) map[string]string {
+	return map[string]string{embeddedStoreKind: outcome, serviceStoreKind: outcome, clientStoreKind: outcome}
+}
+
+// guardedTxBatch is a parity step that issues one PutAllIfAllUnchanged with
+// an absence guard on guardKey and one write of m's JSON under writeKey.
+func guardedTxBatch(guardKey, writeKey string, m daoMember) func(context.Context, parityDAOs) string {
+	return func(ctx context.Context, d parityDAOs) string {
+		guarded, ok := d.store.(sdk.MultiGuardedBatchKVStore)
+		if !ok {
+			return "no guarded batches"
+		}
+		value, err := json.Marshal(&m)
+		if err != nil {
+			return parityOutcome(err)
+		}
+		applied, err := guarded.PutAllIfAllUnchanged(ctx,
+			[]sdk.KVGuard{{Key: guardKey, Value: nil}},
+			[]sdk.KVWrite{{Key: writeKey, Value: value}})
+		switch {
+		case err != nil:
+			return parityOutcome(err)
+		case applied:
+			return "applied"
+		default:
+			return "not applied"
+		}
 	}
 }
 
@@ -160,7 +230,11 @@ func newParityDAOs(t *testing.T, store sdk.KVStore) parityDAOs {
 	if err != nil {
 		t.Fatalf("NewDAO widget: %v", err)
 	}
-	return parityDAOs{store: store, members: members, widgets: widgets}
+	txMembers, err := sdk.NewDAOTransactional(store, "txmember", func() *daoMember { return &daoMember{} })
+	if err != nil {
+		t.Fatalf("NewDAOTransactional txmember: %v", err)
+	}
+	return parityDAOs{store: store, members: members, widgets: widgets, txMembers: txMembers}
 }
 
 func newEmbeddedParityStore(t *testing.T) sdk.KVStore {
