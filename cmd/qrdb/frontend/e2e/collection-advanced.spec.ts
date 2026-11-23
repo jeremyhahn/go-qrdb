@@ -272,7 +272,11 @@ test.describe("Collection Advanced", () => {
     await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const b = (window as any).go.main.CollectionBinding;
-      await b.InsertDocument("default", "race-a", JSON.stringify({ name: "FromA" }));
+      await b.InsertDocument({
+        database: "default",
+        collection: "race-a",
+        document: { name: "FromA" },
+      });
     });
     await page.getByText("race-a", { exact: true }).first().click();
     // Hold A's getDocument until B is selected.
