@@ -2536,11 +2536,11 @@ func runStart(f *startFlags) (err error) {
 			// may also raise it explicitly via the isolation-policy verb.
 			// The write may lose to a peer that already moved the floor, so
 			// the floor is read back: a FIPS node whose floor is not strict
-			// refuses to serve (applyFIPSIsolationFloor). The tightening's
+			// refuses to serve (lifecycle.ApplyFIPSIsolationFloor). The tightening's
 			// node-key log probe resolves each isolated tenant's catalog
 			// through its home store, so the floor is applied once the home
 			// stores are attached and before the node serves.
-			homesAttached, err := attachTenantHomesThenApplyFIPSFloor(sigCtx, fips140.Enabled(), func() bool {
+			homesAttached, err := lifecycle.AttachTenantHomesThenApplyFIPSFloor(sigCtx, fips140.Enabled(), func() bool {
 				switch {
 				case standalone && barrierRegistry != nil:
 					return lifecycle.AttachLocalTenantHomes(svcNode, barrierRegistry, tenantHostReg, mgmtResult.storeResolver)
@@ -3100,7 +3100,7 @@ func runStart(f *startFlags) (err error) {
 			serverOpts = append(serverOpts, server.WithDatabaseServiceRegistry(dbRegistry))
 
 			if tenantSvcInst != nil {
-				applyIsolationFloor(bootCtx, tenantSvcInst, f.tenantConfig.IsolationPolicy)
+				lifecycle.ApplyIsolationFloor(bootCtx, tenantSvcInst, f.tenantConfig.IsolationPolicy)
 			}
 
 			// The sockets the sealed-window listener served on, if it ran;
@@ -3902,63 +3902,6 @@ func (c localDataPlaneCloser) Close() error {
 		err = serr
 	}
 	return err
-}
-
-// errFIPSFloorNotStrict refuses a FIPS-140 start whose cluster-wide
-// isolation-policy floor is not confirmed strict.
-var errFIPSFloorNotStrict = errors.New("tenant isolation: the cluster isolation floor is not strict under FIPS-140; refusing to serve")
-
-// clusterIsolationFloor is the tenant service's cluster-wide
-// isolation-policy floor (pkg/tenant/isolation_policy.go).
-type clusterIsolationFloor interface {
-	SetClusterIsolationPolicy(ctx context.Context, next tenant.ClusterIsolationPolicy) error
-	ClusterIsolationPolicy(ctx context.Context) (tenant.ClusterIsolationPolicy, error)
-}
-
-// applyFIPSIsolationFloor tightens the cluster isolation floor to strict
-// on a FIPS-140 node and reads it back. The write may lose to a peer that
-// already moved the floor, so only the read decides: a floor that is not
-// strict afterwards -- the tightening was refused (a governed tenant's
-// databases still on the node-keyed WAL, or no way to verify them), the
-// floor cannot be read, or the tenant service holds no floor -- refuses
-// the start, naming the cause. With FIPS off it does nothing.
-func applyFIPSIsolationFloor(ctx context.Context, fipsOn bool, svc any) error {
-	if !fipsOn {
-		return nil
-	}
-	floor, ok := svc.(clusterIsolationFloor)
-	if !ok {
-		return fmt.Errorf("%w: the tenant service (%T) holds no cluster isolation floor", errFIPSFloorNotStrict, svc)
-	}
-	setErr := floor.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicyStrict)
-	got, err := floor.ClusterIsolationPolicy(ctx)
-	if err != nil {
-		if setErr != nil {
-			return fmt.Errorf("%w: reading the floor back: %w (write: %w)", errFIPSFloorNotStrict, err, setErr)
-		}
-		return fmt.Errorf("%w: reading the floor back: %w", errFIPSFloorNotStrict, err)
-	}
-	if got != tenant.ClusterIsolationPolicyStrict {
-		if setErr != nil {
-			return fmt.Errorf("%w: the floor is %q: %w", errFIPSFloorNotStrict, got, setErr)
-		}
-		return fmt.Errorf("%w: the floor is %q after the write", errFIPSFloorNotStrict, got)
-	}
-	if setErr != nil {
-		slog.Info("tenant isolation: the cluster floor was already strict under FIPS-140", slog.Any("write_error", setErr))
-	}
-	return nil
-}
-
-// attachTenantHomesThenApplyFIPSFloor attaches the isolated tenants' home
-// stores (attach) and only then applies the FIPS-140 isolation floor
-// (applyFIPSIsolationFloor): tightening to strict probes the node-key log
-// of each isolated tenant, whose catalog resolves through its home store,
-// so a floor applied before the homes are attached fails for a valid
-// tenant. It returns attach's result and the floor's error.
-func attachTenantHomesThenApplyFIPSFloor(ctx context.Context, fipsOn bool, attach func() bool, svc any) (bool, error) {
-	attached := attach()
-	return attached, applyFIPSIsolationFloor(ctx, fipsOn, svc)
 }
 
 func shutdownNode(node io.Closer) error {
