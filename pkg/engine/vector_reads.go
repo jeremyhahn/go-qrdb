@@ -15,6 +15,7 @@
 package engine
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -70,7 +71,11 @@ func lookupVectorNamespaces(r storage.Reader) ([]service.VectorNamespaceAnswer, 
 		if a == nil {
 			continue
 		}
-		out = append(out, *a.(*service.VectorNamespaceAnswer))
+		ans, ok := a.(*service.VectorNamespaceAnswer)
+		if !ok {
+			return nil, fmt.Errorf("engine: vector namespace %q: unexpected answer type %T", name, a)
+		}
+		out = append(out, *ans)
 	}
 	return out, nil
 }
