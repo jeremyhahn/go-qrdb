@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -90,8 +91,16 @@ func TestSealStore_SDK_PerProtocol(t *testing.T) {
 				t.Fatalf("[%s] SealStoreDelete: %v", proto.name, err)
 			}
 
-			if _, err := store.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: name}); err == nil {
-				t.Fatalf("[%s] SealStoreGet after delete succeeded, want an error", proto.name)
+			// A missing secret keeps its seal-store type over every
+			// transport, as it does embedded (#1647).
+			var nf *transport.KeyNotFoundError
+			_, err = store.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: name})
+			if !errors.Is(err, sdk.ErrSealStoreSecretNotFound) || errors.As(err, &nf) {
+				t.Fatalf("[%s] SealStoreGet after delete = %v, want errors.Is sdk.ErrSealStoreSecretNotFound", proto.name, err)
+			}
+			err = store.SealStoreDelete(ctx, &transport.SealStoreDeleteRequest{Name: name})
+			if !errors.Is(err, sdk.ErrSealStoreSecretNotFound) || errors.As(err, &nf) {
+				t.Fatalf("[%s] SealStoreDelete of a missing name = %v, want errors.Is sdk.ErrSealStoreSecretNotFound", proto.name, err)
 			}
 		})
 	}

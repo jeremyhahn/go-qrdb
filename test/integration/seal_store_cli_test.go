@@ -44,6 +44,10 @@ type sealStoreStatusDisplay struct {
 // reseal/delete` through the CLI binary over every network transport sharing
 // one multiProtoNode, as the bootstrap admin (system-tenant Security Officer,
 // holder of seal:store_manage).
+// sealStoreSecretNotFoundText is the text of seal.ErrSealStoreSecretNotFound
+// the CLI prints for a missing secret on every protocol.
+const sealStoreSecretNotFoundText = "sealstore secret not found"
+
 func TestSealStore_CLI_PerProtocol(t *testing.T) {
 	node := startMultiProtocolNode(t)
 
@@ -96,8 +100,14 @@ func TestSealStore_CLI_PerProtocol(t *testing.T) {
 			if out, err = runCLIProto(t, node, proto, "seal-store", "delete", name); err != nil {
 				t.Fatalf("[%s] seal-store delete: %v\noutput: %s", proto.name, err, out)
 			}
+			// A missing secret is reported as the seal store's own
+			// not-found refusal, with the same text on every protocol
+			// (#1647).
 			if out, err = runCLIProto(t, node, proto, "seal-store", "get", name); err == nil {
 				t.Fatalf("[%s] seal-store get after delete succeeded, output: %s", proto.name, out)
+			}
+			if !strings.Contains(out, sealStoreSecretNotFoundText) || strings.Contains(out, "key not found") {
+				t.Fatalf("[%s] seal-store get after delete output does not name the missing secret as %q\noutput: %s", proto.name, sealStoreSecretNotFoundText, out)
 			}
 		})
 	}
