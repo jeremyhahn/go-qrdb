@@ -295,10 +295,10 @@ func (e *ConflictingSOCredentialError) Error() string {
 
 // SOMatchesAdminError is returned when an SO is the admin by another name:
 // the same username, or a credential over the same key (SPKI). Strict
-// separation needs two principals, so the SO and the admin never share an
-// account or a key; first boot refuses it in either posture, since the
-// system admin is immutable and never takes the SO role. Field is
-// "username" or "key".
+// separation needs two principals, so under strict the SO and the admin
+// never share a username (any case variant) or a key. In the standard
+// posture the bootstrap admin may be enrolled as the SO, so only another
+// SO sharing the admin's key is refused. Field is "username" or "key".
 type SOMatchesAdminError struct {
 	Field string
 }
@@ -332,7 +332,8 @@ func (e *SystemSOConflictError) Error() string {
 }
 
 // SystemSOEnrollmentError wraps a failure enrolling the system SO. Op names
-// the step: "account", "certificate", "binding" or "PIN commit".
+// the step: "account", "certificate", "binding", "PIN commit", "PIN check",
+// "trust anchors", "trust refresh", "activation" or "role rollback".
 type SystemSOEnrollmentError struct {
 	Op    string
 	Cause error

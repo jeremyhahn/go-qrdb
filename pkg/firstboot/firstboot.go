@@ -272,17 +272,18 @@ type Dependencies struct {
 	Logger *slog.Logger
 
 	// SO is the system tenant's Security Officer, enrolled the way tenant
-	// create enrols a tenant SO (bootstrap.TenantProvisionConfig.SO): a
-	// separate account holding the system tenant's so role and nothing
-	// else, its certificate signed through Signer (CSRPEM) or verified
-	// against AdminCertPool (CertPEM) and bound through Binder, and its PIN
-	// committed through SOPINs.
+	// create enrols a tenant SO (bootstrap.TenantProvisionConfig.SO): an
+	// account holding the system tenant's so role, its certificate signed
+	// through Signer (CSRPEM) or verified against AdminCertPool (CertPEM)
+	// and bound through Binder, and its PIN committed through SOPINs.
 	//
 	// Optional in both postures (SPEC row 124): a deployment booted
 	// without one refuses only the SO-exclusive operations, which carry
-	// their own gates. The SO never shares the admin's username or key
-	// (*SOMatchesAdminError), in either posture: first boot never folds the
-	// SO into the immutable system admin.
+	// their own gates. Under strict separation the SO is a separate
+	// account and never shares the admin's username (any case variant) or
+	// key (*SOMatchesAdminError). In the standard posture the bootstrap
+	// admin may be named as the SO, and is granted the so role on its own
+	// account; only another SO sharing the admin's key is refused.
 	//
 	// Initialize opens SO.PIN only to commit it and never destroys it, so a
 	// caller that retries Initialize keeps it; the caller destroys it.
@@ -439,9 +440,10 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 		}
 	}
 
-	// Step 5: the system SO (Dependencies.SO), a separate principal with the
-	// so role alone: under strict separation the only one that can create
-	// roles and run the built-in reconcile.
+	// Step 5: the system SO (Dependencies.SO), if one is given: under strict
+	// separation a separate principal with the so role alone, the only one
+	// that can create roles and run the built-in reconcile; in the standard
+	// posture it may be the bootstrap admin, granted the so role.
 	if err := enrollSystemSO(ctx, deps, tenantID, result); err != nil {
 		return nil, err
 	}
