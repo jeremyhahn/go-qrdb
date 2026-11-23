@@ -202,8 +202,13 @@ type startFlags struct {
 	// mtlsBindingPolicy is the auth.mtls_binding_policy string. Empty means
 	// the default, "enrolled". See qrdbconfig.AuthConfig.MTLSBindingPolicy.
 	mtlsBindingPolicy string
-	abacEnabled       bool
-	abacPolicyDir     string
+
+	// unixPeerCredentials is unix.peer_credentials: the SO_PEERCRED uid/gid
+	// to store-account mappings of the Unix socket. Empty installs no
+	// peer-credential authenticator.
+	unixPeerCredentials []auth.PeerCredentialMapping
+	abacEnabled         bool
+	abacPolicyDir       string
 	// clusterTrustDomain is the cluster-wide SPIFFE trust domain used for
 	// node identity. It is encoded into auto-generated node certificates as
 	// a URI SAN (spiffe://<clusterTrustDomain>/node/<raftAddress>) and must
@@ -912,6 +917,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	f.revocationCacheTTL = cfg.Auth.RevocationCacheTTL
 	f.auditFailurePolicy = cfg.Auth.AuditFailurePolicy
 	f.mtlsBindingPolicy = cfg.Auth.MTLSBindingPolicy
+	f.unixPeerCredentials = cfg.Unix.PeerCredentialMappings()
 	// ABAC decorator: config-only (no CLI flag).
 	f.abacEnabled = cfg.Auth.ABAC.Enabled
 	f.abacPolicyDir = cfg.Auth.ABAC.PolicyDir
@@ -2414,7 +2420,7 @@ func runStart(f *startFlags) (err error) {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.clusterTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), svcNode.PendingAdmins, firstAdminPins(svcNode.BarrierInit), svcNode.CertTargets, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe, svcNode.Watch)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.clusterTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), svcNode.PendingAdmins, firstAdminPins(svcNode.BarrierInit), svcNode.CertTargets, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe, svcNode.Watch, f.unixPeerCredentials)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -4572,7 +4578,7 @@ func daemonPendingTTLGate(host service.Host) (func() error, user.Option) {
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, clusterTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, pendingAdmins middleware.PendingTenantAdmins, pins middleware.FirstAdminPins, certTargets middleware.CertTargetGuard, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, clusterTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, pendingAdmins middleware.PendingTenantAdmins, pins middleware.FirstAdminPins, certTargets middleware.CertTargetGuard, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher, peerCreds []auth.PeerCredentialMapping) (*authBootstrapResult, error) {
 	_ = node
 	var adminWatchWG sync.WaitGroup
 	// watchCtx is a child of ctx (sigCtx) with its OWN cancel
@@ -4777,6 +4783,9 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		CertTargetGuard:    certTargets,
 		RevocationCacheTTL: revocationTTL,
 		MTLSBindingPolicy:  bindingPolicy,
+		// unix.peer_credentials: a Unix-socket caller's SO_PEERCRED uid/gid
+		// bound to a store account, whose roles decide (go-qrdb#1651).
+		PeerCredentials: peerCreds,
 	})
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "auth middleware", Err: err}

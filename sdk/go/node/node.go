@@ -4197,6 +4197,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		RateLimiter:         n.rateLimiter,
 		// A principal of a suspended or disabled tenant is refused.
 		TenantStatusReader: svcNode.Tenant,
+		// unix.peer_credentials: a Unix-socket caller's SO_PEERCRED uid/gid
+		// bound to a store account, whose roles decide (go-qrdb#1651).
+		PeerCredentials: cfg.Unix.PeerCredentialMappings(),
 	})
 	if err != nil {
 		return &AuthMiddlewareWiringError{Err: err}
