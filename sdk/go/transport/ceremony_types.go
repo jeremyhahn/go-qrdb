@@ -74,8 +74,9 @@ type CeremonyInitializeRequest struct {
 	// enrols (go-qrdb#1128), with exactly one of SOCSRPEM (signed under the
 	// system tenant) and SOCertPEM (adopted; verified against
 	// AdminCertPoolPEM through SOChainPEM). Its PIN is SOPin. It is optional
-	// in both separation-of-duties postures: without an SO the SO-exclusive
-	// operations are refused.
+	// in both separation-of-duties postures: without an SO a strict node
+	// refuses only the SO-exclusive operations, and a standard node lets
+	// its admin perform them.
 	SOUsername string `json:"so_username,omitempty"`
 	SOCSRPEM   string `json:"so_csr_pem,omitempty"`
 	SOCertPEM  string `json:"so_cert_pem,omitempty"`
