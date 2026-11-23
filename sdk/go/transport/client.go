@@ -1172,7 +1172,10 @@ type TenantClient interface {
 	GetTenant(ctx context.Context, tenantID string) (*GetTenantResponse, error)
 
 	// ListTenants lists the tenants the caller may list, narrowed to
-	// req.Status when it is set. A nil req is no filter.
+	// req.Status when it is set. A nil req is no filter. Against a server
+	// older than the filter, which drops it, a filtered request is refused
+	// with *CapabilityUnsupportedError (EnforceStatusFilter); the network
+	// transports check it, embedded is the same build.
 	ListTenants(ctx context.Context, req *ListTenantsRequest) (*ListTenantsResponse, error)
 
 	// ListDeletedTenants returns one page of retired tenant ids with their
