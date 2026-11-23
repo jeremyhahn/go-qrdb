@@ -1128,6 +1128,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	}
 
 	n.Database = service.NewDatabaseService(dbManager, placementOpts...)
+	wireLogReclaimer(n)
 
 	// Vector storage uses the directory when one is available, exactly as
 	// before go-qrdb#578; what #578 adds is infra.Backend deciding what
@@ -1447,6 +1448,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			// options so neither set is dropped when the tenant service exists.
 			dbOpts = append(dbOpts, placementOpts...)
 			n.Database = service.NewDatabaseService(dbManager, dbOpts...)
+			wireLogReclaimer(n)
 		}
 		// dbManager.Open warned for the barrier records it can classify
 		// alone; a volume- or raft-isolated tenant's needs the tenant
@@ -1556,6 +1558,20 @@ func buildLogService(resolver service.AuditShardResolver, databases service.LogD
 		return nil, nil
 	}
 	return svc, err
+}
+
+// wireLogReclaimer hands n.Database the verifiable-log service, so a dropped
+// database's logs are deleted and a database later created under the same
+// name starts with none. A build without the verifiable log has nothing to
+// reclaim.
+func wireLogReclaimer(n *Node) {
+	db, ok := n.Database.(interface{ SetLogReclaimer(service.LogReclaimer) })
+	if !ok {
+		return
+	}
+	if r, ok := n.Log.(service.LogReclaimer); ok {
+		db.SetLogReclaimer(r)
+	}
 }
 
 func buildDEKService(provider dek.Provider, resolver tenant.StoreResolver, keyWrapRegistry keywrap.Registry, keyWrapProvider keywrap.Provider, keyDir string) (service.DEKServicer, error) {

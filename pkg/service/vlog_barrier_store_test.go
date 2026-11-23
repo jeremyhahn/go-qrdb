@@ -287,6 +287,38 @@ func TestLogService_RecycledStandaloneBarrierDropsTheChain(t *testing.T) {
 	}
 }
 
+// TestLogService_DropDatabaseLogsOnAStandaloneBarrierReclaimsEveryLog proves
+// a dropped database's logs on a barrier tenant's standalone store are
+// deleted: its logs no longer list, the old log reads as not found, a second
+// reclaim finds nothing left, and a database recreated under the same name
+// starts its log again at index 0.
+func TestLogService_DropDatabaseLogsOnAStandaloneBarrierReclaimsEveryLog(t *testing.T) {
+	f := newStandaloneBarrierFixture(t)
+	f.createAndAppend(t, [][]byte{[]byte("one"), []byte("two")})
+	second := LogRef{Database: barrierTenantRef.Database, Log: "second"}
+	if _, err := f.svc.CreateLog(f.ctx, &CreateLogRequest{LogRef: second, Origin: "example.test/vault/second", SigningKeyType: vlog.SignatureEd25519}); err != nil {
+		t.Fatalf("CreateLog second: %v", err)
+	}
+	if err := f.svc.(*logService).DropDatabaseLogs(f.ctx, "vault", barrierTenantRef.Database); err != nil {
+		t.Fatalf("DropDatabaseLogs: %v", err)
+	}
+	listed, err := f.svc.ListLogs(f.ctx, &ListLogsRequest{Database: barrierTenantRef.Database})
+	if err != nil || len(listed.Logs) != 0 {
+		t.Fatalf("ListLogs after the drop = %+v, %v; want none", listed, err)
+	}
+	var notFound *vlog.LogNotFoundError
+	if _, err := f.svc.Head(f.ctx, &HeadRequest{LogRef: barrierTenantRef}); !errors.As(err, &notFound) {
+		t.Fatalf("Head of the dropped log = %v; want LogNotFoundError", err)
+	}
+	if err := f.svc.(*logService).DropDatabaseLogs(f.ctx, "vault", barrierTenantRef.Database); err != nil {
+		t.Fatalf("DropDatabaseLogs of an already reclaimed database: %v", err)
+	}
+	f.createAndAppend(t, [][]byte{[]byte("fresh")})
+	if size := f.headSize(t); size != 1 {
+		t.Fatalf("head size of the recreated log = %d, want 1", size)
+	}
+}
+
 // unbatchedKVStore hides every capability of its store but KVStore.
 type unbatchedKVStore struct{ kvstore.KVStore }
 

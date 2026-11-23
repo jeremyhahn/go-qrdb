@@ -583,3 +583,36 @@ func (s *logService) ExpireBodies(ctx context.Context, req *ExpireBodiesRequest)
 	}
 	return &ExpireBodiesResponse{Expired: expired}, nil
 }
+
+// DropDatabaseLogs reclaims every log of tenantID's dropped database where
+// its name now routes: the tenant's Raft group (a barrier tenant's home group,
+// else the system shard) or a barrier tenant's standalone barrier store. A
+// barrier database's own store went with its backend and holds nothing here.
+// The command is bounded (vlog.Chain.DropDatabase), so it is proposed again
+// until a step deletes nothing. Called once the database's drop has
+// committed, so a database created again under the name sees no old log or
+// key. A group where the verifiable log is not active holds no logs.
+func (s *logService) DropDatabaseLogs(ctx context.Context, tenantID, name string) error {
+	g, err := s.admit(ctx, tenantID, name, logFeatures)
+	if err != nil {
+		if _, inactive := errors.AsType[*LogFeatureNotActiveError](err); inactive {
+			return nil
+		}
+		return err
+	}
+	id := vlog.LogID{TenantID: tenantID, Database: name}
+	for {
+		deleted, err := g.propose(ctx, id, func() ([]byte, error) {
+			return protocol.EncodeVerifiableLogDropDatabase(tenantID, name)
+		})
+		if err != nil {
+			return err
+		}
+		if deleted == 0 {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+}

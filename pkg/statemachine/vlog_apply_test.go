@@ -143,6 +143,21 @@ func TestApplyVerifiableLog_DispatchesEverySubtype(t *testing.T) {
 	if head.CheckpointSize != 4 || string(head.Checkpoint) != "signed-4" || head.BodiesFrom != 2 {
 		t.Fatalf("head = %+v, want checkpoint 4 and bodies from 2", head)
 	}
+
+	// The database's drop reclaims the log: the first step deletes its
+	// records, the next reports nothing left, and the name is free again.
+	if v := apply(p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database))); v == 0 {
+		t.Fatal("DropDatabase deleted no records")
+	}
+	if v := apply(p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database))); v != 0 {
+		t.Fatalf("second DropDatabase = %d, want 0", v)
+	}
+	if _, err := vlog.ReadHead(stg, applyLog); err == nil {
+		t.Fatal("ReadHead of the dropped log succeeded")
+	}
+	if v := apply(p(protocol.EncodeVerifiableLogCreate(applyLog, applyDescriptor(true)))); v != 0 {
+		t.Fatalf("Create after the drop = %d, want 0", v)
+	}
 }
 
 // TestApplyVerifiableLog_Refusals pins that every deterministic consequence of

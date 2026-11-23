@@ -613,6 +613,95 @@ func (c *Chain) ExpireBodies(w Writer, id LogID, cutoff uint64) (expired int, er
 	return expired, nil
 }
 
+// DropDatabase reclaims the logs of tenantID's database: every record under
+// each of its logs' prefixes (descriptor, head, entries, tree nodes,
+// checkpoints and signing-key records) is deleted and the log forgotten, so a
+// database created again under the name starts with no logs. The audit
+// instance is never touched: its retention is audit Prune.
+//
+// One call deletes at most MaxPrunePerCommand of the logs' records plus the
+// descriptor and head of each log it finished, so a command stays bounded;
+// the caller repeats it until it reports 0. A log's descriptor and head go
+// last, in the call that deletes its final other record, so a node restored
+// between two calls finds every remaining log whole (restoreLogs refuses a
+// descriptor without a head).
+func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database string) (deleted int, err error) {
+	if tenantID == "" || database == "" || strings.ContainsRune(tenantID, '/') || strings.ContainsRune(database, '/') {
+		return 0, &InvalidLogNameError{Name: tenantID + "/" + database}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	prefix := make([]byte, 0, len(LogTablePrefix)+len(tenantID)+len(database)+2)
+	prefix = append(prefix, LogTablePrefix...)
+	prefix = append(prefix, tenantID...)
+	prefix = append(prefix, '/')
+	prefix = append(prefix, database...)
+	prefix = append(prefix, '/')
+	audit := AuditLogID(tenantID)
+
+	it := r.NewIterator(&storage.IteratorOptions{LowerBound: prefix, UpperBound: prefixEnd(prefix)})
+	var (
+		complete []LogID
+		current  LogID
+		seen     bool
+		budget   = MaxPrunePerCommand
+	)
+	exhausted := false
+	for ok := it.SeekToFirst(); ok && it.Valid(); {
+		key := bytes.Clone(it.Key())
+		id, idPrefix, parsed := parseLogPrefix(key)
+		if !parsed {
+			_ = it.Close()
+			return deleted, &CorruptTableError{Key: string(key), Reason: "key outside any log's prefix"}
+		}
+		if id == audit {
+			ok = it.Seek(prefixEnd(idPrefix))
+			continue
+		}
+		if seen && id != current {
+			complete = append(complete, current)
+		}
+		current, seen = id, true
+		if bytes.Equal(key, descriptorKey(id)) || bytes.Equal(key, logHeadKey(id)) {
+			ok = it.Next()
+			continue
+		}
+		if budget == 0 {
+			exhausted = true
+			break
+		}
+		if err := w.Delete(key); err != nil {
+			_ = it.Close()
+			return deleted, &TableWriteError{Err: err}
+		}
+		deleted++
+		budget--
+		ok = it.Next()
+	}
+	if err := it.Error(); err != nil {
+		_ = it.Close()
+		return deleted, &TableReadError{Err: err}
+	}
+	if err := it.Close(); err != nil {
+		return deleted, &TableReadError{Err: err}
+	}
+	if seen && !exhausted {
+		complete = append(complete, current)
+	}
+	for _, id := range complete {
+		for _, k := range [][]byte{logHeadKey(id), descriptorKey(id)} {
+			if err := w.Delete(k); err != nil {
+				return deleted, &TableWriteError{Err: err}
+			}
+			deleted++
+		}
+		delete(c.logs, id)
+	}
+	return deleted, nil
+}
+
 // AuditDatabase and AuditLog name a tenant's audit instance: the log AuditLog
 // in the tenant's reserved system database (lifecycle.SystemDatabase).
 const (

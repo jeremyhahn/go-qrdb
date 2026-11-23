@@ -88,6 +88,16 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 		}
 		return uint64(next.Version), logs.RotateKey(r, w, id, next, record)
 	},
+	protocol.VerifiableLogSubtypeDropDatabase: func(logs *vlog.Chain, r storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
+		database, err := protocol.DecodeVerifiableLogDropDatabase(tenantID, body)
+		if err != nil {
+			return 0, err
+		}
+		// Bounded: the result is the number of records this step deleted,
+		// and the proposer repeats the command until it is 0.
+		deleted, err := logs.DropDatabase(r, w, tenantID, database)
+		return uint64(deleted), err
+	},
 }
 
 // vlogRefusals recognise the vlog errors a command is refused with that the

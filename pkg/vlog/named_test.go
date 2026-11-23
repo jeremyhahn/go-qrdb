@@ -764,6 +764,94 @@ func TestChain_ExpireBodies_CapsPerCommand(t *testing.T) {
 	}
 }
 
+// TestChain_DropDatabase_ReclaimsEveryLogOfTheDatabase drops a database
+// whose logs need more than one bounded command: every record goes, the logs
+// are forgotten, a node restored between two commands finds every remaining
+// log whole, another database's log is untouched, and a log created again
+// under the dropped name starts empty.
+func TestChain_DropDatabase_ReclaimsEveryLogOfTheDatabase(t *testing.T) {
+	c, stg := mustCreate(t, true)
+	sibling := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "keys"}
+	other := LogID{TenantID: testLog.TenantID, Database: "other", Log: testLog.Log}
+	for _, id := range []LogID{sibling, other} {
+		if err := c.Create(stg, id, testDescriptor(true)); err != nil {
+			t.Fatalf("Create %v: %v", id, err)
+		}
+	}
+	const n = MaxPrunePerCommand + 7
+	for from := 0; from < n; from += MaxAppendPerCommand {
+		if _, err := c.AppendEntries(stg, testLog, entries(from, min(MaxAppendPerCommand, n-from))); err != nil {
+			t.Fatalf("AppendEntries: %v", err)
+		}
+	}
+	for _, id := range []LogID{sibling, other} {
+		if _, err := c.AppendEntries(stg, id, entries(0, 3)); err != nil {
+			t.Fatalf("AppendEntries %v: %v", id, err)
+		}
+	}
+
+	first, err := c.DropDatabase(stg, stg, testLog.TenantID, testLog.Database)
+	if err != nil || first < MaxPrunePerCommand {
+		t.Fatalf("first DropDatabase = %d, %v; want at least the cap %d", first, err, MaxPrunePerCommand)
+	}
+	if err := NewChain().Restore(stg); err != nil {
+		t.Fatalf("Restore between two drop commands: %v", err)
+	}
+	commands := 1
+	for {
+		got, err := c.DropDatabase(stg, stg, testLog.TenantID, testLog.Database)
+		if err != nil {
+			t.Fatalf("DropDatabase: %v", err)
+		}
+		if got == 0 {
+			break
+		}
+		if commands++; commands > 10 {
+			t.Fatal("DropDatabase did not converge")
+		}
+	}
+	if commands < 2 {
+		t.Fatalf("the drop took %d commands; want the bound to split it", commands)
+	}
+
+	dbPrefix := []byte(LogTablePrefix + testLog.TenantID + "/" + testLog.Database + "/")
+	it := stg.NewIterator(&storage.IteratorOptions{LowerBound: dbPrefix, UpperBound: prefixEnd(dbPrefix)})
+	if it.SeekToFirst() && it.Valid() {
+		t.Errorf("record %q of the dropped database remains", it.Key())
+	}
+	_ = it.Close()
+
+	restored := NewChain()
+	if err := restored.Restore(stg); err != nil {
+		t.Fatalf("Restore after the drop: %v", err)
+	}
+	for _, ch := range []*Chain{c, restored} {
+		for _, id := range []LogID{testLog, sibling} {
+			if _, err := ch.AppendEntries(stg, id, entries(0, 1)); !errors.As(err, new(*LogNotFoundError)) {
+				t.Fatalf("AppendEntries to dropped %v = %v; want LogNotFoundError", id, err)
+			}
+		}
+	}
+	if first, err := restored.AppendEntries(stg, other, entries(3, 1)); err != nil || first != 3 {
+		t.Fatalf("AppendEntries to the other database's log = %d, %v; want index 3", first, err)
+	}
+	if err := restored.Create(stg, testLog, testDescriptor(true)); err != nil {
+		t.Fatalf("Create again under the dropped name: %v", err)
+	}
+	if first, err := restored.AppendEntries(stg, testLog, entries(0, 1)); err != nil || first != 0 {
+		t.Fatalf("AppendEntries to the recreated log = %d, %v; want index 0", first, err)
+	}
+}
+
+func TestChain_DropDatabase_RefusesAnInvalidName(t *testing.T) {
+	c, stg := mustCreate(t, false)
+	for _, name := range [][2]string{{"", "ledger"}, {"acme", ""}, {"acme", "a/b"}} {
+		if _, err := c.DropDatabase(stg, stg, name[0], name[1]); !errors.As(err, new(*InvalidLogNameError)) {
+			t.Errorf("DropDatabase(%q, %q) = %v; want InvalidLogNameError", name[0], name[1], err)
+		}
+	}
+}
+
 func TestChain_ExpireBodies_Refusals(t *testing.T) {
 	c, stg := mustCreate(t, false)
 	mustAppend(t, c, stg, 0, 3)

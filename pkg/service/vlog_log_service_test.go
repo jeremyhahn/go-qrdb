@@ -39,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // staticSignerProvider hands out one signer, or fails.
@@ -1332,5 +1333,98 @@ func TestLogService_ExpireBodies_Refusals(t *testing.T) {
 	var badName *vlog.InvalidLogNameError
 	if _, err := svc.ExpireBodies(ctx, &ExpireBodiesRequest{LogRef: LogRef{Database: "d"}}); !errors.As(err, &badName) {
 		t.Errorf("no log name: err = %v, want InvalidLogNameError", err)
+	}
+}
+
+// TestLogService_DropDatabaseLogs_ProposesUntilNothingRemains proves the
+// reclaim of a dropped database on its raft group proposes the bounded
+// drop-database command again until an apply deletes nothing, and that a
+// refused apply is returned.
+func TestLogService_DropDatabaseLogs_ProposesUntilNothingRemains(t *testing.T) {
+	deletes := []uint64{uint64(vlog.MaxPrunePerCommand), 3, 0}
+	var cmds [][]byte
+	propose := func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+		cmds = append(cmds, append([]byte(nil), cmd...))
+		v := deletes[0]
+		deletes = deletes[1:]
+		return sm.Result{Value: v}, nil
+	}
+	host := &mockHost{
+		syncProposeFn: propose,
+		proposeWithModeFn: func(ctx context.Context, shard uint64, cmd []byte, _ writemode.Mode) (sm.Result, error) {
+			return propose(ctx, shard, cmd)
+		},
+	}
+	svc := newTestLogService(t, host, nil).(*logService)
+	if err := svc.DropDatabaseLogs(acmeCtx(), "acme", testLogRef.Database); err != nil {
+		t.Fatalf("DropDatabaseLogs: %v", err)
+	}
+	if len(cmds) != 3 {
+		t.Fatalf("proposed %d commands, want 3 (until an apply deletes nothing)", len(cmds))
+	}
+	for _, cmd := range cmds {
+		subtype, tenantID, body := decodeLogCommand(t, cmd)
+		database, err := protocol.DecodeVerifiableLogDropDatabase(tenantID, body)
+		if subtype != protocol.VerifiableLogSubtypeDropDatabase || tenantID != "acme" || err != nil || database != testLogRef.Database {
+			t.Fatalf("decoded drop = %d, %q, %q, %v", subtype, tenantID, database, err)
+		}
+	}
+
+	refusal := protocol.EncodeAppError(protocol.AppErrorConflict, "vlog: refused")
+	refusing, _ := recordingHost(sm.Result{Data: refusal})
+	var conflict *CommandConflictError
+	if err := newTestLogService(t, refusing, nil).(*logService).DropDatabaseLogs(acmeCtx(), "acme", testLogRef.Database); !errors.As(err, &conflict) {
+		t.Fatalf("refused drop = %v; want CommandConflictError", err)
+	}
+}
+
+// stubLogReclaimer records every reclaim and returns err.
+type stubLogReclaimer struct {
+	calls [][2]string
+	err   error
+}
+
+func (r *stubLogReclaimer) DropDatabaseLogs(_ context.Context, tenantID, database string) error {
+	r.calls = append(r.calls, [2]string{tenantID, database})
+	return r.err
+}
+
+// TestDatabaseService_DropReclaimsTheDatabasesLogs proves Drop and
+// DropForTenant reclaim the dropped database's verifiable logs once the
+// manager drop commits, and return a failed reclaim instead of reporting the
+// drop done.
+func TestDatabaseService_DropReclaimsTheDatabasesLogs(t *testing.T) {
+	ctx := tenantCtx("tenant-delta")
+	for _, admin := range []bool{false, true} {
+		svc := newTestDatabaseService(t).(*DatabaseService)
+		r := &stubLogReclaimer{}
+		svc.SetLogReclaimer(r)
+		if _, err := svc.CreateForTenant(ctx, testDBConfig("logged")); err != nil {
+			t.Fatalf("CreateForTenant: %v", err)
+		}
+		drop := func() error {
+			if admin {
+				return svc.Drop(context.Background(), "logged")
+			}
+			return svc.DropForTenant(ctx, "logged")
+		}
+		if err := drop(); err != nil {
+			t.Fatalf("drop (admin %v): %v", admin, err)
+		}
+		if len(r.calls) != 1 || r.calls[0] != [2]string{"tenant-delta", "logged"} {
+			t.Fatalf("reclaims (admin %v) = %v; want one for tenant-delta/logged", admin, r.calls)
+		}
+		if _, err := svc.Get("logged"); err == nil {
+			t.Fatalf("the database survived its drop (admin %v)", admin)
+		}
+
+		failing := &stubLogReclaimer{err: errors.New("reclaim refused")}
+		svc.SetLogReclaimer(failing)
+		if _, err := svc.CreateForTenant(ctx, testDBConfig("logged")); err != nil {
+			t.Fatalf("CreateForTenant again: %v", err)
+		}
+		if err := drop(); !errors.Is(err, failing.err) {
+			t.Fatalf("drop with a failing reclaim (admin %v) = %v; want the reclaim error", admin, err)
+		}
 	}
 }

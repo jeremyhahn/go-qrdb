@@ -81,6 +81,11 @@ const (
 	// audit instance, the log system/audit. Only the replicated audit
 	// logger proposes it, once featuregate.VerifiableLogAudit is enabled.
 	VerifiableLogSubtypeAuditAppend byte = 6
+
+	// VerifiableLogSubtypeDropDatabase reclaims the logs of a dropped
+	// database, a bounded number of records per command (vlog.Chain
+	// DropDatabase); the database service repeats it until it deletes 0.
+	VerifiableLogSubtypeDropDatabase byte = 7
 )
 
 // The presence byte of a Create or RotateKey body's key record.
@@ -208,6 +213,34 @@ func EncodeVerifiableLogExpireBodies(id vlog.LogID, cutoff uint64) ([]byte, erro
 	return encodeVerifiableLog(VerifiableLogSubtypeExpireBodies, id, 8, func(buf []byte) []byte {
 		return binary.BigEndian.AppendUint64(buf, cutoff)
 	})
+}
+
+// EncodeVerifiableLogDropDatabase encodes one bounded step of reclaiming the
+// logs of tenantID's dropped database. The log name field is empty: the
+// command names a database, not one log.
+func EncodeVerifiableLogDropDatabase(tenantID, database string) ([]byte, error) {
+	if tenantID == "" || database == "" {
+		return nil, &InvalidCommandError{Reason: "verifiable log drop database: tenant id and database required"}
+	}
+	for _, f := range []struct{ name, value string }{
+		{"verifiable log tenant id", tenantID},
+		{"verifiable log database", database},
+	} {
+		if err := checkUint16Len(len(f.value), f.name); err != nil {
+			return nil, err
+		}
+	}
+	size, err := addSizes(headerSize, 1, 2, len(tenantID), 2, len(database), 2)
+	if err != nil {
+		return nil, err
+	}
+	buf := make([]byte, 0, size)
+	buf = append(buf, OpVerifiableLog, VerifiableLogSubtypeDropDatabase)
+	buf = binary.BigEndian.AppendUint16(buf, uint16(len(tenantID)))
+	buf = append(buf, tenantID...)
+	buf = binary.BigEndian.AppendUint16(buf, uint16(len(database)))
+	buf = append(buf, database...)
+	return binary.BigEndian.AppendUint16(buf, 0), nil
 }
 
 // encodeVerifiableLog frames one OpVerifiableLog command: the op byte, the
@@ -382,6 +415,19 @@ func DecodeVerifiableLogExpireBodies(tenantID string, body []byte) (vlog.LogID, 
 		return vlog.LogID{}, 0, &InvalidCommandError{Reason: "verifiable log expire bodies: cutoff malformed"}
 	}
 	return id, binary.BigEndian.Uint64(rest), nil
+}
+
+// DecodeVerifiableLogDropDatabase decodes the body
+// EncodeVerifiableLogDropDatabase wrote, returning the database it names.
+func DecodeVerifiableLogDropDatabase(tenantID string, body []byte) (string, error) {
+	id, rest, err := decodeLogName(tenantID, body)
+	if err != nil {
+		return "", err
+	}
+	if id.Database == "" || id.Log != "" || len(rest) != 0 {
+		return "", &InvalidCommandError{Reason: "verifiable log drop database: malformed"}
+	}
+	return id.Database, nil
 }
 
 // decodeLogName reads the database and log names every body opens with and

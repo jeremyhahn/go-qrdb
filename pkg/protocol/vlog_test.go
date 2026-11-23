@@ -274,6 +274,35 @@ func TestEncodeVerifiableLogExpireBodies_RoundTrips(t *testing.T) {
 	}
 }
 
+func TestEncodeVerifiableLogDropDatabase_RoundTrips(t *testing.T) {
+	cmd, err := EncodeVerifiableLogDropDatabase(testLogID.TenantID, testLogID.Database)
+	if err != nil {
+		t.Fatalf("EncodeVerifiableLogDropDatabase: %v", err)
+	}
+	if len(cmd) != cap(cmd) {
+		t.Fatalf("len = %d, cap = %d: size precomputed wrongly", len(cmd), cap(cmd))
+	}
+	tenantID, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeDropDatabase)
+	database, err := DecodeVerifiableLogDropDatabase(tenantID, body)
+	if err != nil {
+		t.Fatalf("DecodeVerifiableLogDropDatabase: %v", err)
+	}
+	if tenantID != testLogID.TenantID || database != testLogID.Database {
+		t.Fatalf("got (%q, %q)", tenantID, database)
+	}
+	if _, err := EncodeVerifiableLogDropDatabase(testLogID.TenantID, ""); err == nil {
+		t.Fatal("EncodeVerifiableLogDropDatabase with no database encoded")
+	}
+	logCmd, err := EncodeVerifiableLogExpireBodies(testLogID, 1)
+	if err != nil {
+		t.Fatalf("EncodeVerifiableLogExpireBodies: %v", err)
+	}
+	tenantID, body = splitVerifiableLog(t, logCmd, VerifiableLogSubtypeExpireBodies)
+	if _, err := DecodeVerifiableLogDropDatabase(tenantID, body); err == nil {
+		t.Fatal("DecodeVerifiableLogDropDatabase accepted a command naming a log")
+	}
+}
+
 func TestEncodeVerifiableLog_EmptyTenantIDRoundTrips(t *testing.T) {
 	id := vlog.LogID{Database: "system", Log: "audit"}
 	cmd, err := EncodeVerifiableLogExpireBodies(id, 3)

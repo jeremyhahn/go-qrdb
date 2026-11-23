@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"sort"
@@ -857,7 +858,10 @@ type DatabaseService struct {
 	dataRootResolver   TenantDataRootResolver
 	localNodeID        string
 	raftHost           RaftHost
-	logger             *slog.Logger
+	// logReclaimer deletes a dropped database's verifiable logs; nil
+	// without the verifiable-log service.
+	logReclaimer LogReclaimer
+	logger       *slog.Logger
 
 	// scaleLeaderWaitTimeout/scaleLeaderWaitInterval bound
 	// waitForShardLeaderKnown, called by scaleUp/scaleDown before issuing a
@@ -929,6 +933,30 @@ func (s *DatabaseService) SetDistributor(d KeyDistributor, lookup TenantBarrierL
 // lifecycle.BuildServices). Thread-safety: this must be called before any
 // tenant database creation requests are served.
 func (s *DatabaseService) SetRaftHost(h RaftHost) { s.raftHost = h }
+
+// LogReclaimer deletes every verifiable log a dropped database held, so a
+// database later created under the same name starts with no logs.
+type LogReclaimer interface {
+	DropDatabaseLogs(ctx context.Context, tenantID, database string) error
+}
+
+// SetLogReclaimer wires the verifiable-log service that reclaims a dropped
+// database's logs. Drop and DropForTenant call it once the manager drop has
+// committed; its failure is returned, and a retried drop reclaims again (the
+// reclaim is idempotent).
+func (s *DatabaseService) SetLogReclaimer(r LogReclaimer) { s.logReclaimer = r }
+
+// reclaimLogs deletes name's verifiable logs through the wired reclaimer. A
+// drop with no known tenant or no reclaimer has no logs to reclaim.
+func (s *DatabaseService) reclaimLogs(ctx context.Context, tenantID, name string) error {
+	if s.logReclaimer == nil || tenantID == "" {
+		return nil
+	}
+	if err := s.logReclaimer.DropDatabaseLogs(ctx, tenantID, name); err != nil {
+		return fmt.Errorf("reclaim the verifiable logs of dropped database %q: %w", name, err)
+	}
+	return nil
+}
 
 // Create creates a new database with the given configuration and returns
 // its runtime information. Equivalent to CreateWithCredentials with an empty
@@ -1073,6 +1101,9 @@ func (s *DatabaseService) Drop(ctx context.Context, name string) error {
 		if hadPlacement && owned && isReclamationFailure(err) {
 			s.clearRaftPlacementFence(ctx, tenantID, name)
 		}
+		return err
+	}
+	if err := s.reclaimLogs(ctx, tenantID, name); err != nil {
 		return err
 	}
 
@@ -2183,6 +2214,9 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 				return cerr
 			}
 			if committed {
+				if err := s.reclaimLogs(ctx, tenantID, name); err != nil {
+					return err
+				}
 				return s.finishRaftPlacementTeardown(ctx, tenantID, name)
 			}
 			// Defense in depth: the upfront GetForTenantIgnoringFence check
@@ -2206,6 +2240,10 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 		if wasDedicatedWAL {
 			_, _ = s.quotaUsage.DecrementQuotaUsage(ctx, tenantID, quota.ResourceDedicatedWALGroups, 1)
 		}
+	}
+
+	if err := s.reclaimLogs(ctx, tenantID, name); err != nil {
+		return err
 	}
 
 	// Phase 4c-1b: remove the database's placement entry so the reconciler
