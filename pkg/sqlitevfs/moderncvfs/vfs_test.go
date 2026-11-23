@@ -42,7 +42,7 @@ type openFn func(params url.Values) (*sqlitevfs.Store, error)
 
 var (
 	registerOnce sync.Once
-	registerErr  error
+	errRegister  error
 	// openers maps a database name to the openFn of the test that owns it:
 	// VFS qrdb is registered once per process, so its one Opener dispatches.
 	openers sync.Map
@@ -53,7 +53,7 @@ var (
 func setup(t *testing.T, name string, open openFn) {
 	t.Helper()
 	registerOnce.Do(func() {
-		registerErr = Register(func(_ context.Context, name string, params url.Values) (*sqlitevfs.Store, error) {
+		errRegister = Register(func(_ context.Context, name string, params url.Values) (*sqlitevfs.Store, error) {
 			v, ok := openers.Load(name)
 			if !ok {
 				return nil, fmt.Errorf("no store for %q", name)
@@ -61,8 +61,8 @@ func setup(t *testing.T, name string, open openFn) {
 			return v.(openFn)(params)
 		})
 	})
-	if registerErr != nil {
-		t.Fatalf("Register: %v", registerErr)
+	if errRegister != nil {
+		t.Fatalf("Register: %v", errRegister)
 	}
 	openers.Store(name, open)
 	t.Cleanup(func() { openers.Delete(name) })

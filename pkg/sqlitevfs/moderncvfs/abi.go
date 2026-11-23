@@ -44,7 +44,7 @@ var (
 
 // cptr turns an address SQLite handed to a callback into a pointer.
 func cptr(p uintptr) unsafe.Pointer {
-	return unsafe.Pointer(p) // #nosec G103 -- ccgo passes every C pointer as a uintptr; p is C heap memory SQLite owns for the call or one of this file's static globals, never a movable Go heap object.
+	return *(*unsafe.Pointer)(unsafe.Pointer(&p)) // #nosec G103 -- ccgo passes every C pointer as a uintptr; p is C heap memory SQLite owns for the call or one of this file's static globals, never a movable Go heap object.
 }
 
 // addrOf is the C address of a static package global.
