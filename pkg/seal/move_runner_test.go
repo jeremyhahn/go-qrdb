@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
@@ -102,6 +103,94 @@ func TestMoveStepRunner_CopyReopensFromDestination(t *testing.T) {
 	mustExist(t, filepath.Join(fx.dst(), "MANIFEST-000001"))
 	mustExist(t, fx.src)
 	if err := r.SettleMoveStep(context.Background(), runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("settle copy: %v", err)
+	}
+}
+
+// barrierStores is a TenantStoreCloser over the registry's own volume tenant
+// barrier, the close and reopen a running node's MoveStoreCloser ends in:
+// CloseVolumeTenant, then ReopenVolumeTenant and a credential-free unseal of
+// the system-managed tenant.
+type barrierStores struct {
+	reg  *BarrierRegistry
+	open string
+}
+
+func (s *barrierStores) CloseTenantStores(ctx context.Context, tenantID string) error {
+	return s.reg.CloseVolumeTenant(ctx, tenantID)
+}
+
+func (s *barrierStores) OpenTenantStores(ctx context.Context, tenantID string) error {
+	if err := s.reg.ReopenVolumeTenant(ctx, tenantID); err != nil {
+		return err
+	}
+	tb, err := s.reg.GetTenant(tenantID)
+	if err != nil {
+		return err
+	}
+	if err := tb.Unseal(ctx, Credentials{}); err != nil && !errors.Is(err, ErrAlreadyUnsealed) {
+		return err
+	}
+	root, err := s.reg.RequireInsideLocalPool(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	s.open = root
+	return nil
+}
+
+// TestMoveStepRunner_CopyMovesOpenPebbleStore drives the copy step over a
+// volume tenant whose barrier lives in a real per-tenant Pebble store, as on a
+// running node: the copy must close that store at the source, so the reopen
+// from the destination opens a fresh store there and reads back the record
+// written before the move.
+func TestMoveStepRunner_CopyMovesOpenPebbleStore(t *testing.T) {
+	ctx := context.Background()
+	perTenantReg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
+	fx := newMoveFixture(t, WithPerTenantRegistry(perTenantReg))
+	if err := fx.reg.system.Initialize(ctx, MustCredentials(ctx, []byte("pool-test-pass"))); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+	_, tb, err := fx.reg.RegisterVolumeTenant(ctx, moveTestTenant, true)
+	if err != nil {
+		t.Fatalf("RegisterVolumeTenant: %v", err)
+	}
+	if err := tb.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("tenant Initialize: %v", err)
+	}
+	if err := tb.Barrier().Put(ctx, "move/record", []byte("before-move")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	assertPebbleAtPath(t, filepath.Join(fx.src, "barrier"))
+
+	stores := &barrierStores{reg: fx.reg}
+	r, err := NewMoveStepRunner(fx.reg, moveTestNode, stores)
+	if err != nil {
+		t.Fatalf("NewMoveStepRunner: %v", err)
+	}
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if stores.open != fx.dst() {
+		t.Fatalf("open = %q, want the destination %q", stores.open, fx.dst())
+	}
+	assertPebbleAtPath(t, filepath.Join(fx.dst(), "barrier"))
+	moved, err := fx.reg.GetTenant(moveTestTenant)
+	if err != nil {
+		t.Fatalf("GetTenant after copy: %v", err)
+	}
+	got, err := moved.Barrier().Get(ctx, "move/record")
+	if err != nil {
+		t.Fatalf("Get after copy: %v", err)
+	}
+	if string(got) != "before-move" {
+		t.Fatalf("record = %q, want %q", got, "before-move")
+	}
+	if err := moved.Barrier().Put(ctx, "move/after", []byte("after-move")); err != nil {
+		t.Fatalf("Put after copy: %v", err)
+	}
+	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
 		t.Fatalf("settle copy: %v", err)
 	}
 }

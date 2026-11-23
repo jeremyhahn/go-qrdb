@@ -253,11 +253,13 @@ func (r *BarrierRegistry) ReopenVolumeTenant(ctx context.Context, tenantID strin
 	return err
 }
 
-// CloseVolumeTenant closes tenantID's barrier on this node; a tenant not
-// open here is a no-op. It is the barrier half of a TenantStoreCloser's
-// close.
-func (r *BarrierRegistry) CloseVolumeTenant(tenantID string) error {
-	if err := r.RemoveTenant(tenantID); err != nil && !errors.Is(err, ErrTenantNotFound) {
+// CloseVolumeTenant closes tenantID's barrier and its per-tenant Pebble
+// store on this node, so nothing holds the tenant's directory under the
+// source pool while a move copies it and the reopen from the destination
+// opens a fresh store entry; a tenant not open here is a no-op. It is the
+// barrier half of a TenantStoreCloser's close.
+func (r *BarrierRegistry) CloseVolumeTenant(ctx context.Context, tenantID string) error {
+	if err := r.ReleaseTenant(ctx, tenantID); err != nil && !errors.Is(err, ErrTenantNotFound) {
 		return err
 	}
 	return nil

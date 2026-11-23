@@ -28,7 +28,7 @@ type MoveShardLifecycle interface {
 // MoveBarriers is the part of seal.BarrierRegistry a MoveStoreCloser
 // drives: closing and reopening one tenant's barrier.
 type MoveBarriers interface {
-	CloseVolumeTenant(tenantID string) error
+	CloseVolumeTenant(ctx context.Context, tenantID string) error
 	ReopenVolumeTenant(ctx context.Context, tenantID string) error
 }
 
@@ -100,7 +100,7 @@ func NewMoveStoreCloser(shards MoveShardLifecycle, barriers MoveBarriers, caught
 // CloseTenantStores stops every shard of tenantID started on this node and
 // its Host, then closes its barrier, and remembers what it stopped for the
 // reopen.
-func (c *MoveStoreCloser) CloseTenantStores(_ context.Context, tenantID string) error {
+func (c *MoveStoreCloser) CloseTenantStores(ctx context.Context, tenantID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	dbs := append([]string(nil), c.closed[tenantID]...)
@@ -123,7 +123,7 @@ func (c *MoveStoreCloser) CloseTenantStores(_ context.Context, tenantID string) 
 		}
 		c.closedHost[tenantID] = true
 	}
-	return c.barriers.CloseVolumeTenant(tenantID)
+	return c.barriers.CloseVolumeTenant(ctx, tenantID)
 }
 
 // OpenTenantStores reopens tenantID's barrier, restarts the shards and Host

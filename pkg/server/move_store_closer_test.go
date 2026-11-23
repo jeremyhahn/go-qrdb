@@ -47,7 +47,7 @@ type fakeMoveBarriers struct {
 	err   error
 }
 
-func (f *fakeMoveBarriers) CloseVolumeTenant(tenantID string) error {
+func (f *fakeMoveBarriers) CloseVolumeTenant(_ context.Context, tenantID string) error {
 	f.calls = append(f.calls, "close "+tenantID)
 	return f.err
 }
