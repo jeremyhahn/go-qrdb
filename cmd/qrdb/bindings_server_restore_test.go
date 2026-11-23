@@ -18,6 +18,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -125,5 +128,36 @@ func TestRestoreEmbedded_WithManager_SavesNewProfile(t *testing.T) {
 	}
 	if p.Name != "Local Server" {
 		t.Fatalf("saved profile name = %q, want %q", p.Name, "Local Server")
+	}
+}
+
+// TestRestoreEmbedded_WithManager_FailedStartReturnsError proves a restore
+// whose embedded server cannot start (its data directory is a regular file)
+// returns an error and never makes the failed profile the active one.
+func TestRestoreEmbedded_WithManager_FailedStartReturnsError(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "data-file")
+	if err := os.WriteFile(notADir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg := &EmbeddedConfig{
+		DataDir:        notADir,
+		StorageBackend: "pebble",
+		SealConfig:     &SealConfig{Mode: "none"},
+	}
+	m, srv := newRestoreFixture(t, cfg)
+
+	err := srv.RestoreEmbedded()
+	if err == nil {
+		t.Fatal("RestoreEmbedded on an unusable data directory returned nil; want the start failure")
+	}
+	var ese *EmbeddedServerError
+	if !errors.As(err, &ese) {
+		t.Fatalf("RestoreEmbedded error = %T: %v; want *EmbeddedServerError", err, err)
+	}
+	if active := m.GetActiveProfileID(); active != "" {
+		t.Fatalf("active profile after a failed restore = %q; want none", active)
+	}
+	if _, err := m.ActiveClient(); err == nil {
+		t.Fatal("ActiveClient after a failed restore returned a client")
 	}
 }

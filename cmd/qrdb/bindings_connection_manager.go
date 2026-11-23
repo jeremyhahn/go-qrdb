@@ -19,6 +19,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -753,8 +754,15 @@ func (b *ConnectionManagerBinding) restoreEmbedded(cfg *EmbeddedConfig) error {
 		profileID = id
 	}
 
-	if _, err := b.Connect(profileID); err != nil {
+	state, err := b.Connect(profileID)
+	if err != nil {
 		return err
+	}
+	// Connect reports a failed server start (a locked or unusable data
+	// directory) as an error state, not an error: the restore has failed
+	// then, and the failed profile must not become the active one.
+	if state != nil && state.Status == connectionStatusError {
+		return &EmbeddedServerError{Op: "restore", Err: errors.New(state.Error)}
 	}
 	return b.SetActive(profileID)
 }
