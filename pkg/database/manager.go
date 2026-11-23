@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -347,6 +348,11 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	if err := m.validateDataDir(cfg.TenantID, cfg.Name, cfg.DataDir); err != nil {
 		return nil, err
 	}
+	// validateDataDir sees only the databases open here; the catalog holds
+	// every tenant's, the unopened ones included.
+	if err := m.recordRootConflict(ctx, keyFor(cfg.TenantID, cfg.Name), cfg.Name, cfg.DataDir); err != nil {
+		return nil, err
+	}
 	if cfg.Barrier != nil && cfg.Barrier.Enabled {
 		if err := barrierDataPathError(cfg); err != nil {
 			return nil, err
@@ -475,6 +481,9 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	}
 	undo.backends = append(undo.backends, backend)
 	if err := m.backendRootConflict(keyFor(cfg.TenantID, cfg.Name), cfg.Name, backend); err != nil {
+		return nil, undo.run(ctx, err)
+	}
+	if err := m.ownedRecordRootConflict(ctx, keyFor(cfg.TenantID, cfg.Name), cfg.Name, backend); err != nil {
 		return nil, undo.run(ctx, err)
 	}
 
@@ -623,27 +632,8 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 		dataDir = meta.DataDir
 	}
 
-	// Default missing mode to embedded for backward compat.
-	mode := meta.Mode
-	if mode == "" {
-		mode = ModeEmbedded
-	}
-
-	cfg := DatabaseConfig{
-		TenantID:     meta.TenantID,
-		Name:         meta.Name,
-		Backend:      meta.Backend,
-		Protocol:     meta.Protocol,
-		DataDir:      meta.DataDir,
-		Mode:         mode,
-		StorageCodec: meta.StorageCodec,
-		Replicas:     meta.Replicas,
-		DedicatedWAL: meta.DedicatedWAL,
-		Raft:         meta.Raft,
-		Barrier:      meta.Barrier,
-		Connection:   meta.Connection,
-		SQL:          meta.SQL,
-	}
+	// A missing mode defaults to embedded (configFromMeta).
+	cfg := configFromMeta(meta)
 	if meta.Barrier != nil && meta.Barrier.Enabled && !cfg.HasDedicatedStore() {
 		return nil, &SharedStoreBarrierUnsupportedError{Name: name, Backend: cfg.Backend}
 	}
@@ -895,6 +885,11 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	if err := m.backendRootConflict(key, name, db.rawBackend); err != nil {
 		return &DropError{Name: name, Err: err}
 	}
+	// The same against every catalog record, opened here or not: a tenant
+	// whose databases this node has not opened still has its data there.
+	if err := m.ownedRecordRootConflict(ctx, key, name, db.rawBackend); err != nil {
+		return &DropError{Name: name, Err: err}
+	}
 
 	// 0. Fence: refuse every new caller before the data they would touch
 	//    starts being reclaimed (go-qrdb#482). The IN-MEMORY flag is set
@@ -1006,6 +1001,11 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    binding's root) has it removed too, so a recreate starts empty.
 	if owner, ok := db.rawBackend.(DataRootOwner); ok {
 		if root := owner.DataRoot(); root != "" {
+			// Re-checked here, at the removal: a record created since the
+			// check before the fence may have its root inside this one.
+			if err := m.recordRootConflict(ctx, key, name, root); err != nil {
+				return &DropError{Name: name, Err: err}
+			}
 			if err := os.RemoveAll(root); err != nil {
 				return &DropError{Name: name, Err: err}
 			}
@@ -1916,6 +1916,123 @@ func (m *Manager) backendRootConflict(self dbKey, name string, backend Backend) 
 		return &InvalidDataDirError{Name: name, DataDir: root, Err: err}
 	}
 	return m.ownedRootConflict(self, name, root, resolved)
+}
+
+// RecordRootResolver is implemented by a BackendFactory whose backends own a
+// store directory of their own (DataRootOwner). RecordRoot names the
+// directory Create would open for the database cfg describes, without
+// opening it, so a database that is recorded in the catalog but not open on
+// this node (OpenAll does not open every record) still has its root checked
+// before a create claims it or a drop removes it. An empty root owns nothing
+// on disk.
+type RecordRootResolver interface {
+	RecordRoot(cfg DatabaseConfig) (string, error)
+}
+
+// RecordRootUnresolvedError is returned when the store root of a recorded
+// database -- TenantID's With -- cannot be resolved while Name's root is
+// checked against it. The check fails closed: the create is refused, and a
+// drop removes nothing.
+type RecordRootUnresolvedError struct {
+	Name     string
+	TenantID string
+	With     string
+	Err      error
+}
+
+func (e *RecordRootUnresolvedError) Error() string {
+	if e.With == "" {
+		return fmt.Sprintf("database %q: the catalog records' store roots cannot be checked: %v", e.Name, e.Err)
+	}
+	return fmt.Sprintf("database %q: the store root of database %q (tenant %q) cannot be resolved: %v", e.Name, e.With, e.TenantID, e.Err)
+}
+
+func (e *RecordRootUnresolvedError) Unwrap() error { return e.Err }
+
+// configFromMeta is the DatabaseConfig a catalog record opens with.
+func configFromMeta(meta DatabaseMeta) DatabaseConfig {
+	mode := meta.Mode
+	if mode == "" {
+		mode = ModeEmbedded
+	}
+	return DatabaseConfig{
+		TenantID:     meta.TenantID,
+		Name:         meta.Name,
+		Backend:      meta.Backend,
+		Protocol:     meta.Protocol,
+		DataDir:      meta.DataDir,
+		Mode:         mode,
+		StorageCodec: meta.StorageCodec,
+		Replicas:     meta.Replicas,
+		DedicatedWAL: meta.DedicatedWAL,
+		Raft:         meta.Raft,
+		Barrier:      meta.Barrier,
+		Connection:   meta.Connection,
+		SQL:          meta.SQL,
+	}
+}
+
+// recordRootConflict checks root -- a data_dir being created or a store root
+// being created or removed -- against the roots of every OTHER database in
+// the catalog, of every tenant, whether or not this node has it open: its
+// explicit data_dir and the store root the factory resolves for it
+// (RecordRootResolver), the way the open path would. A root that equals,
+// contains or lies inside one of them is a *DataDirConflictError. A root
+// that cannot be resolved, or a catalog that cannot be listed, fails closed
+// with *RecordRootUnresolvedError. An empty root owns nothing and passes.
+func (m *Manager) recordRootConflict(ctx context.Context, self dbKey, name, root string) error {
+	if strings.TrimSpace(root) == "" {
+		return nil
+	}
+	resolved, err := resolveDataDir(root)
+	if err != nil {
+		return &InvalidDataDirError{Name: name, DataDir: root, Err: err}
+	}
+	cat, err := m.catalog("check store roots")
+	if err != nil {
+		return err
+	}
+	metas, err := cat.List(ctx)
+	if err != nil {
+		return &RecordRootUnresolvedError{Name: name, Err: err}
+	}
+	resolver, _ := m.factory.(RecordRootResolver)
+	for _, meta := range metas {
+		if keyFor(meta.TenantID, meta.Name) == self {
+			continue
+		}
+		roots := []string{meta.DataDir}
+		if resolver != nil {
+			r, rerr := resolver.RecordRoot(configFromMeta(meta))
+			if rerr != nil {
+				return &RecordRootUnresolvedError{Name: name, TenantID: meta.TenantID, With: meta.Name, Err: rerr}
+			}
+			roots = append(roots, r)
+		}
+		for _, r := range roots {
+			if strings.TrimSpace(r) == "" {
+				continue
+			}
+			otherRoot, rerr := resolveDataDir(r)
+			if rerr != nil {
+				return &RecordRootUnresolvedError{Name: name, TenantID: meta.TenantID, With: meta.Name, Err: rerr}
+			}
+			if pathContains(resolved, otherRoot) || pathContains(otherRoot, resolved) {
+				return &DataDirConflictError{Name: name, DataDir: root, With: meta.Name}
+			}
+		}
+	}
+	return nil
+}
+
+// ownedRecordRootConflict is recordRootConflict for the store root backend
+// owns (DataRootOwner); a backend that owns none passes.
+func (m *Manager) ownedRecordRootConflict(ctx context.Context, self dbKey, name string, backend Backend) error {
+	owner, ok := backend.(DataRootOwner)
+	if !ok {
+		return nil
+	}
+	return m.recordRootConflict(ctx, self, name, owner.DataRoot())
 }
 
 func pathContains(base, candidate string) bool {
