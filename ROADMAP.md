@@ -120,6 +120,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **separation-of-duties** — SO separation of duties is enforced in compliance mode only; the optional SO holds in both postures — [#1128](../../issues/1128), [#1042](../../issues/1042), [docs/identity-rbac/](docs/identity-rbac/) — in progress
 - **desktop-gui** — the Wails desktop application — [docs/desktop-gui/](docs/desktop-gui/) — in progress
 - **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — [#1613](../../issues/1613), PR [#729](../../pulls/729), [docs/databases/](docs/databases/), [docs/plans/1613-verifiable-log.md](docs/plans/1613-verifiable-log.md) — in progress: serving barrier-isolated tenants and barrier-enabled databases awaits the owner's decision on where their logs live
+- **seal-store-transports** — seal store data and management verbs are embedded-only and every remote transport refuses them; seal and unseal stay on every transport; permissions on all six transports (owner ruling 1234) — [#1647](../../issues/1647), PR [#1687](../../pulls/1687), [docs/barrier-seal/](docs/barrier-seal/) — in progress
 
 ## Next
 
