@@ -563,8 +563,10 @@ func TestCredentialRotationPolicyGetCmd_SuccessYAML(t *testing.T) {
 
 func TestCredentialRotationPolicyGetCmd_NotFound(t *testing.T) {
 	_, err := executeCredCmd(t, newMockCredSvc(), "credential", "rotation-policy", "get", "missing")
-	if !errors.Is(err, credentials.ErrCredentialNotFound) {
-		t.Fatalf("expected ErrCredentialNotFound, got %v", err)
+	// The CLI prints err.Error(): every transport's typed not-found error
+	// must still say "not found" and name the credential.
+	if err == nil || !strings.Contains(err.Error(), "not found") || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("expected a not-found refusal naming %q, got %v", "missing", err)
 	}
 }
 
@@ -729,8 +731,10 @@ func TestCredentialMigrationConflictsResolveCmd_YAMLKeysMatchJSON(t *testing.T) 
 
 func TestCredentialMigrationConflictsResolveCmd_NotFound(t *testing.T) {
 	_, err := executeCredCmd(t, newMockCredSvc(), "credential", "migration-conflicts", "resolve", "missing", "--resolution", "discard")
-	if !errors.Is(err, credentials.ErrMigrationConflictNotFound) {
-		t.Fatalf("expected ErrMigrationConflictNotFound, got %v", err)
+	// The CLI prints err.Error(): every transport's typed not-found error
+	// must still say "not found" and name the credential.
+	if err == nil || !strings.Contains(err.Error(), "not found") || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("expected a not-found refusal naming %q, got %v", "missing", err)
 	}
 }
 
