@@ -451,9 +451,13 @@ tenant:
   once-record written beside it. An unmarked proposal is appended as before
   activation, the event, head and tree records and nothing else, so a
   rolling upgrade leaves the same raw state on every replica. Only marked
-  appends write or consult once-records, so a marked retry of a
-  pre-activation unmarked proposal can leave a second event, identical on
-  every replica ([../multi-tenancy/architecture.md](../multi-tenancy/architecture.md)).
+  appends write once-records; an unmarked one consults them read-only
+  (`vlog.Chain.HasOnce`) and appends nothing when a marked append of the
+  same identity has applied, so a pre-activation unmarked proposal that
+  applies after its marked retry leaves one event (before activation no
+  once-record exists, so its apply and replay are unchanged). One that
+  applies before the retry is proposed leaves no once-record, and that retry
+  still appends a second event, identical on every replica ([../multi-tenancy/architecture.md](../multi-tenancy/architecture.md)).
 - Both state-machine families (`pkg/store.PebbleStateMachine`,
   `pkg/engine.MVCCEngine`) dispatch the opcode to `Chain`, restore it on open
   and on snapshot recovery, and resync it after a failed apply, as the lease
@@ -506,7 +510,20 @@ What proposes `OpAuditAppend`, and how a caller reads back what it proposed:
   stay allowed; and tightening such a tenant to strict
   (its policy or the floor) is refused with the same error, read through
   `SystemShardAuditResolver.SystemAuditRoute` (a recorded `system` route, or
-  none recorded and a chain on the system shard). A home-group write while `verifiable-log-audit` is not active
+  none recorded and a chain on the system shard). A `system` route refused
+  this way with no chain behind it is retired (compare-and-delete), so the
+  tenant is not stranded on an empty system route; but a zero committed head
+  does not prove no append is in flight, so `ReplicatedLogger.Emit` holds the
+  route it resolved (`SystemShardAuditResolver.HoldAuditAppend`) from
+  resolution until its proposal returns, re-reading the route after it counts
+  itself, and a refusal retires no route while one is held: the tightening's
+  probe still sees it and refuses. Only a `home` route, which is never
+  retired, is cached; a `system` route is read from the route store on every
+  call, so another node or resolver sees a retired and re-recorded route.
+  Residual: the hold is per resolver, so a refusal on another node, or on
+  this node's separate log resolver, can retire a route an append here still
+  holds, and a proposal that returned on a timeout can still apply.
+  A home-group write while `verifiable-log-audit` is not active
   on every replica is refused as unavailable with
   `*service.AuditHomeNotActiveError`. Without home groups (standalone) a
   barrier tenant stays on the system shard and a dedicated-isolation tenant is
