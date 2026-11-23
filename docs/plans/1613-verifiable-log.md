@@ -115,6 +115,29 @@ fsync-stall-leadership, lean-node-build and barrier-passphrase-change to
 Complete (SPEC marks them shipped), is left to a lane launched with them
 allowed.
 
+## Codex verify at 28ecaf0d9b
+
+- F1 (system database's logs on the system shard): only the system tenant's
+  audit instance (`system`/`vlog.AuditLogID`) goes to the system shard; every
+  other log of a barrier tenant, in the `system` database too, goes to its
+  own group or barrier store and is refused while the barrier is sealed.
+- F2 (`__vlog/` outside the migration): `MigrateEncryption` stages, journals,
+  verifies and commits `service.BarrierLogKeyspace` beside the home store's
+  records, and the standalone log store admits each operation through the
+  home-store gate (`service.LogStoreAdmission`), so the migration fences and
+  drains it.
+- F3 (subtype 7 under `verifiable-log`): the drop sub-type is gated behind
+  its own feature, `featuregate.VerifiableLogDrop`; a database with no logs
+  proposes nothing, and one whose logs sit on a group without the feature is
+  refused with `LogFeatureNotActiveError` before anything is fenced.
+- F4 (reclamation after the catalog release): a dropped database's logs are
+  reclaimed inside the fenced teardown, before `Manager.Drop` releases the
+  name; subtype 7 carries the incarnation and deletes only that
+  incarnation's logs, and a failed reclamation leaves the database fenced
+  and droppable on retry.
+- F5 (dedicated tenants' drops): a drop needs no log work for a tenant
+  without verifiable logs (volume or raft isolation), so their drops succeed.
+
 ## Remains
 
 - Open, Tenant item (F3 proof half): a standalone node composes an ungated
