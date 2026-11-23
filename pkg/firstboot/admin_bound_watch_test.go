@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
+	"github.com/stretchr/testify/require"
 )
 
 // hubNotifyingKVStore wraps the real in-memory store and notifies a REAL
@@ -148,16 +149,10 @@ func TestWatchForAdminBound_RealHubObservesAddCertBinding(t *testing.T) {
 	}()
 
 	// WatchForAdminBound resolves the admin's ID and establishes its watch
-	// before this test writes the binding; poll for the watcher's
-	// registration rather than sleeping a fixed duration, so the test is
-	// not flaky under load.
-	deadline := time.Now().Add(5 * time.Second)
-	for hub.WatchCount() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("WatchForAdminBound never registered a watcher on the hub")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	// before this test writes the binding; wait for the watcher's
+	// registration with require.Eventually rather than sleeping a fixed
+	// duration, so the test is not flaky under load.
+	require.Eventually(t, func() bool { return hub.WatchCount() > 0 }, 5*time.Second, time.Millisecond, "WatchForAdminBound never registered a watcher on the hub")
 
 	if _, err := userSvc.AddCertBinding(ctx, created.ID, validSPKIThumbprintForTest(), 0); err != nil {
 		t.Fatalf("AddCertBinding: %v", err)
@@ -223,13 +218,7 @@ func TestWatchForAdminBound_ContextCanceledReturnsNil(t *testing.T) {
 		done <- WatchForAdminBound(watchCtx, userSvc, hub, notifier)
 	}()
 
-	deadline := time.Now().Add(5 * time.Second)
-	for hub.WatchCount() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("WatchForAdminBound never registered a watcher on the hub")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.Eventually(t, func() bool { return hub.WatchCount() > 0 }, 5*time.Second, time.Millisecond, "WatchForAdminBound never registered a watcher on the hub")
 	cancel()
 
 	select {
@@ -309,19 +298,14 @@ func bootNodeAwaiting(t *testing.T, ctx context.Context, userSvc user.UserServic
 	return probe
 }
 
-// awaitNotAwaiting polls probe until it reports not-awaiting or the timeout
-// elapses, failing the test in the latter case. Polling, not a fixed sleep,
-// is what makes this deterministic under load rather than merely likely to
-// pass: the watch event's delivery latency is not bounded by this test.
+// awaitNotAwaiting waits, with require.Eventually, until probe reports
+// not-awaiting or the timeout elapses, failing the test in the latter case.
+// Eventually, not a fixed sleep, is what makes this deterministic under load
+// rather than merely likely to pass: the watch event's delivery latency is
+// not bounded by this test.
 func awaitNotAwaiting(t *testing.T, probe *AwaitingAdminCredentialProbe, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for probe.AwaitingAdminCredential() {
-		if time.Now().After(deadline) {
-			t.Fatalf("probe still reports awaiting after %v", timeout)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.Eventuallyf(t, func() bool { return !probe.AwaitingAdminCredential() }, timeout, time.Millisecond, "probe still reports awaiting after %v", timeout)
 }
 
 // TestThreeNodeCluster_FollowersLeaveAwaitingViaWatch_NoRestart is the
@@ -346,13 +330,7 @@ func TestThreeNodeCluster_FollowersLeaveAwaitingViaWatch_NoRestart(t *testing.T)
 
 	// All 3 watchers must be registered before the bind commits, or the
 	// write could land before a watch exists to observe it.
-	deadline := time.Now().Add(5 * time.Second)
-	for hub.WatchCount() < 3 {
-		if time.Now().After(deadline) {
-			t.Fatalf("only %d of 3 watchers registered on the hub", hub.WatchCount())
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.Eventually(t, func() bool { return hub.WatchCount() >= 3 }, 5*time.Second, time.Millisecond, "fewer than 3 watchers registered on the hub")
 
 	// Node 1 performs the reissue: the write commits through the
 	// replicated user store (here: the shared store every node reads and
@@ -390,13 +368,7 @@ func TestThreeNodeCluster_LeaderChange_RemainingNodesLeaveAwaitingViaWatch(t *te
 	node2 := bootNodeAwaiting(t, ctx, userSvc, hub) // follower throughout
 	node3 := bootNodeAwaiting(t, ctx, userSvc, hub) // wins an election, binds the admin
 
-	deadline := time.Now().Add(5 * time.Second)
-	for hub.WatchCount() < 3 {
-		if time.Now().After(deadline) {
-			t.Fatalf("only %d of 3 watchers registered on the hub", hub.WatchCount())
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.Eventually(t, func() bool { return hub.WatchCount() >= 3 }, 5*time.Second, time.Millisecond, "fewer than 3 watchers registered on the hub")
 
 	// Node 3, the NEW leader after the simulated election, performs the
 	// reissue and is told directly, exactly as node 1 was in the
@@ -574,13 +546,7 @@ func TestWatchForAdminBound_TransientLookupFailureRetries(t *testing.T) {
 	// wait below fails. With the fix the retries succeed, the watch
 	// registers, and the bind below must be observed exactly as the
 	// real-hub evidence test proves for a lookup that never failed.
-	deadline := time.Now().Add(5 * time.Second)
-	for hub.WatchCount() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("WatchForAdminBound never registered a watcher after its retries succeeded")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.Eventually(t, func() bool { return hub.WatchCount() > 0 }, 5*time.Second, time.Millisecond, "WatchForAdminBound never registered a watcher after its retries succeeded")
 	if _, err := userSvc.AddCertBinding(ctx, created.ID, validSPKIThumbprintForTest(), 0); err != nil {
 		t.Fatalf("AddCertBinding: %v", err)
 	}
