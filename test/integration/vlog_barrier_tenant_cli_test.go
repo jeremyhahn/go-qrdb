@@ -349,6 +349,18 @@ func testVlogBarrierTenantNamedDatabase(t *testing.T, node *multiProtoNode, prot
 		}
 	}
 	createDB()
+	// The database's data is served from the system store and fenced there,
+	// while its logs are fenced in the home group: both take writes.
+	key := "barrier-key-" + proto.name
+	putKV := func(value string) {
+		if out, err := runQRDB(t, node.cli, conn, "--database", dbName, "kv", "put", key, value); err != nil {
+			t.Fatalf("[%s] kv put in %s: %v\noutput: %s", proto.name, dbName, err, out)
+		}
+		if out, err := runQRDB(t, node.cli, conn, "--database", dbName, "kv", "get", key); err != nil || strings.TrimSpace(out) != value {
+			t.Fatalf("[%s] kv get in %s = %q (err=%v), want %q", proto.name, dbName, out, err, value)
+		}
+	}
+	putKV("first-incarnation")
 	created := vlogTenantJSON[vlogwire.CreateResult](t, node, proto, conn, "create", "--origin", vlogCLIOrigin, "--database", dbName, "--log", logName)
 	if created.Log != logName || created.Database != dbName {
 		t.Fatalf("[%s] vlog create in %s = %+v, want log %q of database %q", proto.name, dbName, created, logName, dbName)
@@ -362,6 +374,10 @@ func testVlogBarrierTenantNamedDatabase(t *testing.T, node *multiProtoNode, prot
 		t.Fatalf("[%s] database drop %s: %v\noutput: %s", proto.name, dbName, err, out)
 	}
 	createDB()
+	if out, err := runQRDB(t, node.cli, conn, "--database", dbName, "kv", "get", key); err == nil && strings.TrimSpace(out) == "first-incarnation" {
+		t.Fatalf("[%s] kv get in the recreated %s = %q; want the dropped incarnation's key gone", proto.name, dbName, out)
+	}
+	putKV("second-incarnation")
 	out, err := runQRDB(t, node.cli, conn, "vlog", "head", "--database", dbName, "--log", logName)
 	if err == nil || !strings.Contains(strings.ToLower(out), "not found") {
 		t.Fatalf("[%s] head of the dropped incarnation's log = %v: %s; want not found", proto.name, err, out)
