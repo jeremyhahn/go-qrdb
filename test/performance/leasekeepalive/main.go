@@ -273,6 +273,8 @@ func waitHealthy(client *http.Client, port int, timeout time.Duration) error {
 	url := fmt.Sprintf("https://127.0.0.1:%d/health", port)
 	deadline := time.Now().Add(timeout)
 	var lastErr error
+	poll := time.NewTicker(100 * time.Millisecond)
+	defer poll.Stop()
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(url)
 		if err == nil {
@@ -284,7 +286,7 @@ func waitHealthy(client *http.Client, port int, timeout time.Duration) error {
 		} else {
 			lastErr = err
 		}
-		time.Sleep(100 * time.Millisecond)
+		<-poll.C
 	}
 	return &benchError{Step: "wait healthy :" + strconv.Itoa(port), Err: lastErr}
 }
@@ -299,6 +301,8 @@ func waitLeader(client *http.Client, ports []int, timeout time.Duration) (int, e
 	}
 	deadline := time.Now().Add(timeout)
 	var lastErr error
+	poll := time.NewTicker(100 * time.Millisecond)
+	defer poll.Stop()
 	for time.Now().Before(deadline) {
 		for i, port := range ports {
 			url := fmt.Sprintf("https://127.0.0.1:%d/status", port)
@@ -320,7 +324,7 @@ func waitLeader(client *http.Client, ports []int, timeout time.Duration) (int, e
 				}
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		<-poll.C
 	}
 	return 0, &benchError{Step: "wait leader", Err: lastErr}
 }
