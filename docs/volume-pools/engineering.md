@@ -316,8 +316,15 @@ directory into its place. A destination that cannot be read back fails the
 copy or the verify; that removes only the staging directory, so the source
 stays byte for byte intact and the stores reopen from the destination, which
 the journal still names. A rerun after a crash first removes a leftover
-staging directory and treats a source already missing as removed. An abort
-or retire step cannot back out further: its failures are counted and it is
+staging directory and treats a source already missing as removed. When the
+tenant's directory is itself a mount point, it cannot be removed or renamed
+onto (EBUSY, EXDEV across the mount): the removal empties it and leaves it,
+and the copy-back keeps the directory and swaps its contents in place. It
+copies the verified staging tree into `.qrdb-copyback` inside the mounted
+directory, verifies it there, moves each child up with a durable rename,
+syncs the directory and removes both staging directories; a rerun after a
+crash part way through empties the directory again and redoes the swap. An
+abort or retire step cannot back out further: its failures are counted and it is
 retried.
 
 A move's node set is not fixed at admission. Before granting a copy step
@@ -670,7 +677,10 @@ refusal, and deleted and re-created.
   copy-back whose verify fails leaves the source unchanged and no staging
   directory) and `TestMoveStepRunner_CopyBackRerunAfterSourceRemoved` (a
   crash between the source's removal and the rename: the rerun removes the
-  stale staging directory and rebuilds the source from the destination);
+  stale staging directory and rebuilds the source from the destination) and
+  `TestMoveStepRunner_CopyBackOntoMountPointSource` (a source directory that
+  is a mount point is kept and its contents swapped, including a rerun after
+  a swap that failed part way; a rerun after success leaves it unchanged);
 - `pkg/seal` (`move_settle_failure_test.go`, the real catalog, reconciler and
   step runner over a destination that never reopens):
   `TestMoveSettle_PermanentDestinationReopenFailureThenCancel` and
