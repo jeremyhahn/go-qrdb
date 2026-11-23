@@ -23,12 +23,13 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
-	"github.com/transparency-dev/merkle/proof"
-	"github.com/transparency-dev/merkle/rfc6962"
 )
 
 var applyLog = vlog.LogID{TenantID: "acme", Database: "certs", Log: "issued"}
