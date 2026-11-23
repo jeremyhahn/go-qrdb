@@ -26,54 +26,52 @@ to [../shamir-custody/api.md](../shamir-custody/api.md).
 ## Seal store (named secrets)
 
 The node's seal store holds named secrets. Every entry is encrypted under the
-system barrier, so a sealed node serves none of them. Put and Get refuse a
-plaintext connection on every SDK transport (REST, gRPC, Unix, QUIC and MCP)
-before the secret reaches the wire. `enable-encryption` re-encrypts the seal
-store under the new root key, rolls it forward at the next boot after a crash
-past the commit point, and compacts the plaintext history out of the seal
-store's files.
+system barrier, so a sealed node serves none of them. `enable-encryption`
+re-encrypts the seal store under the new root key, rolls it forward at the next
+boot after a crash past the commit point, and compacts the plaintext history
+out of the seal store's files.
 
-| Operation | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.SealStore()`) | `scp` permission |
-|---|---|---|---|---|---|---|
-| Put | `POST /v1/seal-store/secrets/{name}` | `SealStorePut` | `sealstore.Put` | `qrdb_seal_store_put` | `SealStorePut` | `seal:store_manage` |
-| Get | `GET /v1/seal-store/secrets/{name}` | `SealStoreGet` | `sealstore.Get` | `qrdb_seal_store_get` | `SealStoreGet` | `seal:store_manage` |
-| List | `GET /v1/seal-store/secrets` | `SealStoreList` | `sealstore.List` | `qrdb_seal_store_list` | `SealStoreList` | `seal:store_manage` |
-| Delete | `DELETE /v1/seal-store/secrets/{name}` | `SealStoreDelete` | `sealstore.Delete` | `qrdb_seal_store_delete` | `SealStoreDelete` | `seal:store_manage` |
-| Reseal | `POST /v1/seal-store/secrets/{name}/reseal` | `SealStoreReseal` | `sealstore.Reseal` | `qrdb_seal_store_reseal` | `SealStoreReseal` | `seal:store_manage` |
-| Status | `GET /v1/seal-store/status` | `SealStoreStatus` | `sealstore.Status` | `qrdb_seal_store_status` | `SealStoreStatus` | `seal:store_manage` |
+Seal-store data is **embedded-only** (ruling 1234): only the embedded transport
+(`--transport embedded`, the desktop/GUI build) serves the seal-store verbs.
+The node serves no seal-store route on any network transport: no REST
+`/v1/seal-store` route, no gRPC or Unix `SealStore*` RPC, no QUIC `sealstore.*`
+method and no MCP `qrdb_seal_store_*` tool. Every remote SDK transport (gRPC
+incl. gRPC-Web, Unix, REST, QUIC and MCP) refuses each verb before any I/O with
+`*transport.EmbeddedOnlyError`, which matches `errors.Is(err,
+transport.ErrEmbeddedOnly)` and names the operation and the transport. The
+list of embedded-only operations is `transport.EmbeddedOnlyOperations`; a
+refusal carried over the wire uses the `EMBEDDED_ONLY` reason
+(`transport.ReasonEmbeddedOnly`). Seal and unseal stay on every transport
+(`Client.Barrier()`, `qrdb barrier seal|unseal`).
+
+| Operation | Embedded (`Client.SealStore()`) | `scp` permission |
+|---|---|---|
+| Put | `SealStorePut` | `seal:store_manage` |
+| Get | `SealStoreGet` | `seal:store_manage` |
+| List | `SealStoreList` | `seal:store_manage` |
+| Delete | `SealStoreDelete` | `seal:store_manage` |
+| Reseal | `SealStoreReseal` | `seal:store_manage` |
+| Status | `SealStoreStatus` | `seal:store_manage` |
 
 The CLI verbs for these operations are `qrdb seal-store put|get|list|delete|reseal|status`,
 documented in [cli.md](cli.md#qrdb-seal-store).
 
 A secret name is one opaque segment: it may not be empty, `.` or `..`, or
-contain `/`, `\` or a control character. The server refuses such a name with
-`seal.ErrInvalidSecretName` (REST answers 400), and the SDK refuses it before
-the wire with `transport.ErrSealStoreInvalidName`. A record stored before this
-rule (for example `tls/key` in an upgraded embedded deployment) still shows in
-List and stays readable, deletable and resealable in-process through the
-embedded `seal.SealStore`: Get, Delete and Reseal accept such a name only when
-its record exists, Put never creates one, and the network transports and the
-SDK keep refusing it. REST and MCP send or return
-a secret only over https and refuse a redirect to `http://` or another host
-(`transport.BarrierSecretRequiresTLSError`). Reseal replaces the record in one
-write, and Put, Delete and Reseal are serialized, so a failed reseal leaves the
-old record. `enable-encryption` re-encrypts every seal-store record under the
-new root key and leaves no plaintext copy.
+contain `/`, `\` or a control character. The store refuses such a name with
+`seal.ErrInvalidSecretName`. A record stored before this rule (for example
+`tls/key` in an upgraded embedded deployment) still shows in List and stays
+readable, deletable and resealable through the embedded `seal.SealStore`: Get,
+Delete and Reseal accept such a name only when its record exists, and Put never
+creates one. Reseal replaces the record in one write, and Put, Delete and
+Reseal are serialized, so a failed reseal leaves the old record.
 
-A missing secret, an invalid name and a sealed seal-store barrier carry a
-structured refusal reason on every transport (`SEAL_STORE_SECRET_NOT_FOUND`,
-`SEAL_STORE_INVALID_SECRET_NAME` and `SEAL_STORE_BARRIER_SEALED`, the
-`transport.ReasonSealStore*` constants), and every SDK client rebuilds the seal
-sentinel from it. So `errors.Is(err, sdk.ErrSealStoreSecretNotFound)` holds
-over gRPC, Unix, REST, QUIC and MCP as it does embedded (and likewise
-`seal.ErrInvalidSecretName` and `sdk.ErrSealStoreBarrierSealed`); a missing
-secret is no longer a `*transport.KeyNotFoundError`. The statuses are
-unchanged: REST answers 404, 400 and 503, gRPC and Unix `NotFound`,
-`InvalidArgument` and `Unavailable`.
-
-A node served without a seal store answers every seal store call
-`Unimplemented` (the service is not configured): its REST server mounts no
-`/v1/seal-store` routes and its MCP server lists no `qrdb_seal_store_*` tools.
+A missing secret, an invalid name and a sealed seal-store barrier surface as
+`sdk.ErrSealStoreSecretNotFound`, `seal.ErrInvalidSecretName` and
+`sdk.ErrSealStoreBarrierSealed`. The structured refusal reasons
+`SEAL_STORE_SECRET_NOT_FOUND`, `SEAL_STORE_INVALID_SECRET_NAME` and
+`SEAL_STORE_BARRIER_SEALED` (the `transport.ReasonSealStore*` constants) stay
+for the other RPCs that can surface those sentinels, such as the seal-store
+PIN backend.
 
 A Shamir barrier is unsealed, sealed and rekeyed, and root tokens are minted,
 only by a quorum of authenticated share holders: `POST /v1/barrier/quorum/*`

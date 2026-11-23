@@ -8,7 +8,9 @@ every CLI binary in the stack** (`qrdb`, `xkmsctl`, `quicbaasctl`,
 `platformctl`). The verbs are `status`, `init`, `init-shamir`, `unseal`,
 `seal`, `cluster-unseal`, `rekey`, `enable-encryption`, `recovery`, `officer` and `quorum`.
 The node seal store of named secrets has its own group, `qrdb seal-store`
-(`put`, `get`, `list`, `delete`, `reseal`, `status`).
+(`put`, `get`, `list`, `delete`, `reseal`, `status`); it is embedded-only
+(`--transport embedded`), while `qrdb barrier seal|unseal` work on every
+transport.
 
 A Shamir barrier is unsealed, sealed, rekeyed and recovered only by a quorum
 of authenticated share holders. `officer`, `quorum`, `rekey`, `init-shamir`
@@ -272,8 +274,12 @@ qrdb barrier enable-encryption --strategy shamir \
 
 Operates the node seal store of named secrets
 ([api.md](api.md)). Every verb needs `seal:store_manage`, a system-tenant
-Security Officer grant; any other caller is refused. The store is node-local:
-a network route reaches the store of the node it connects to.
+Security Officer grant; any other caller is refused. The store is node-local
+and embedded-only (ruling 1234): the verbs run only on `--transport embedded`
+(the desktop/GUI build). Every network transport (gRPC, REST, QUIC, MCP, unix)
+refuses each verb before any I/O with an embedded-only error naming the verb,
+and the command exits non-zero. Seal and unseal stay on every transport:
+`qrdb barrier seal` and `qrdb barrier unseal`.
 
 | Verb | Synopsis | Text output | `--output json`/`yaml` |
 |------|----------|-------------|------------------------|
@@ -335,8 +341,9 @@ and `test/integration/barrier_permutations_cli_test.go`. The cluster-scope
 encryption migration test (`test/integration/cluster_enable_encryption_test.go`)
 runs under `make integration-test-barrier-seal`, as do
 `test/integration/seal_store_cli_test.go` and
-`test/integration/seal_store_sdk_test.go`, which exercise the seal store
-through the CLI and the SDK on every network transport;
+`test/integration/seal_store_sdk_test.go`, which prove that every network
+transport refuses the seal-store verbs as embedded-only through the CLI and
+the SDK while barrier seal and unseal keep working;
 `cmd/qrdb/seal_store_cmd_test.go` covers the embedded transport. CI runs them in the
 `integration-features` shard whose feature list includes `barrier-seal`
 (`.github/workflows/ci.yml`), required by `ci-gate`.
