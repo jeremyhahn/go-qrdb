@@ -175,12 +175,35 @@ allowed.
     - Append apply does not compare the descriptor's incarnation itself. The
       fence keeps stale logs from arising.
 
+## mg1655a
+
+- Merge: main `241f4cdb39` merged into the row branch (merge commit). The
+  only textual conflict was `CHANGELOG.md` (both sides' Changed lines kept).
+- Codex round 4 P1-a (mixed-version descriptors): a create records its
+  database's incarnation only while `featuregate.VerifiableLogDrop` (shipped
+  with this PR's wire) is active on the log's group; before that the log is
+  created legacy (no incarnation), so every replica persists the same
+  descriptor bytes. Picked over refusing the create, so a rolling upgrade
+  keeps creating logs. A key rotation of a log that records an incarnation
+  is refused with `LogFeatureNotActiveError` (`verifiable-log-drop`) until
+  the feature is active; a legacy log rotates as before
+  (`TestLogService_IncarnationWritesWaitForDropFeature`).
+- Codex round 4 P1-b (legacy logs hidden): `vlog.IncarnationRequest` treats
+  a descriptor without an incarnation as a legacy log of the database that
+  holds its name: reads and lists answer it, append and rotation work, and
+  a drop reclaims it through `DropDatabase` as before. No lazy stamping
+  (`TestIncarnationRequest_LegacyLogIsVisible`, and the service test above).
+- CLI E2E: `TestVlog_CLI_PerProtocol` run unchanged and green; the CLI
+  cannot create a pre-upgrade log (a fresh node has every feature active).
+- Out of this lane: Codex round 4 P1-c (barrier-tenant fence marker,
+  `pkg/server/store_resolver.go`) belongs to lane fx1655c.
+
 ## Remains
 
-- This slice did not run the vlog CLI E2E (`TestVlog_CLI_PerProtocol`,
-  `TestVlog_CLI_BarrierTenant_*`, `TestVlog_CLI_BarrierDatabase_PerProtocol`,
-  `-tags=codec_json,raft,integration`) after the fence. Run it before
-  promotion.
+- `TestVlog_CLI_PerProtocol` ran green in mg1655a;
+  `TestVlog_CLI_BarrierTenant_*` and `TestVlog_CLI_BarrierDatabase_PerProtocol`
+  (`-tags=codec_json,raft,integration`) were not re-run after the fence. Run
+  them before promotion.
 
 - Open, Tenant item (F3 proof half): a standalone node composes an ungated
   host (`cmd/qrdbd/start.go`), so its replicated audit logger keeps

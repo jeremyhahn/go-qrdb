@@ -571,7 +571,12 @@ descriptor, a head, its entries, its Merkle tree nodes and its checkpoints,
 keyed by tenant, database and log name. `vlog.IsTableKey` matches both
 prefixes, so every reserved-key refusal and the replica hash cover the second
 table exactly as they cover this one, and `Chain.Restore` rebuilds both
-together: a malformed record in either fails the restore.
+together: a malformed record in either fails the restore. A log's descriptor
+records its database's incarnation only once `featuregate.VerifiableLogDrop`
+is active on its group, so a replica that predates the field never persists
+other descriptor bytes than its peers; a log without one is legacy and
+belongs to whichever database holds its name, for reads, lists, writes and a
+drop alike.
 
 ### The hash chain stays linear under Raft because it is assigned at apply time
 
