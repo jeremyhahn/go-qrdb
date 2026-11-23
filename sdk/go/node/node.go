@@ -3789,20 +3789,6 @@ func resolveNodeSealStrategies(ctx context.Context, cfg *qrdbconfig.Config, nOpt
 // attemptAutoUnseal
 // ---------------------------------------------------------------------------
 
-// attemptAutoUnseal tries to unseal the barrier without operator interaction.
-// It returns true when the barrier is unsealed after the attempt.
-//
-// Auto-unseal strategies:
-//   - StrategyNone: no credentials required; Initialize with empty creds.
-//   - StrategyPassphrase with passphrase supplied via WithSealPassphrase.
-//   - Hardware-backed strategies (HardwareBacked() == true): attempt unseal
-//     with empty credentials; the strategy retrieves the key from hardware.
-//
-// Operator-unseal strategies (returns false, leaving barrier sealed):
-//   - StrategyShamir: shares are never persisted server-side; the operator
-//     must submit quorum shares via the barrier API.
-//   - StrategyPassphrase without a supplied passphrase.
-//
 // bootPendingRecordStore is the pending-record store startup reads and
 // writes the ceremony's hand-off records through: the system shard's KV
 // with SyncRead redirected to a local StaleRead (raftbackend.BootstrapAdapter),
@@ -3862,6 +3848,19 @@ func (n *Node) bootIdentityServices(svcNode *lifecycle.Node) (user.UserServicer,
 	return users, roles, nil
 }
 
+// attemptAutoUnseal tries to unseal the barrier without operator interaction.
+// It returns true when the barrier is unsealed after the attempt.
+//
+// Auto-unseal strategies:
+//   - StrategyNone: no credentials required; Initialize with empty creds.
+//   - StrategyPassphrase with passphrase supplied via WithSealPassphrase.
+//   - Hardware-backed strategies (HardwareBacked() == true): attempt unseal
+//     with empty credentials; the strategy retrieves the key from hardware.
+//
+// Operator-unseal strategies (returns false, leaving barrier sealed):
+//   - StrategyShamir: shares are never persisted server-side; the operator
+//     must submit quorum shares via the barrier API.
+//   - StrategyPassphrase without a supplied passphrase.
 func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCfg qrdbconfig.SealConfig, passphrase []byte, log *slog.Logger) bool {
 	strategyID := seal.StrategyID(sealCfg.Strategy)
 	if strategyID == "" {
