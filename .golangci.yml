@@ -524,10 +524,6 @@ linters:
       - path: pkg/server/
         linters:
           - goconst
-      # Exclude codec from goconst (format type names)
-      - path: pkg/codec/
-        linters:
-          - goconst
       # Exclude operations from goconst (status strings)
       - path: pkg/operations/
         linters:

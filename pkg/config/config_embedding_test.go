@@ -16,7 +16,7 @@ package config
 import (
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 func TestEmbeddingConfig_Defaults(t *testing.T) {
@@ -57,14 +57,14 @@ func TestEmbeddingConfig_YAMLRoundTrip(t *testing.T) {
 	}
 
 	// Marshal to YAML.
-	b, err := yaml.Marshal(original)
+	b, err := gocodecyaml.New[EmbeddingConfig]().Marshal(original)
 	if err != nil {
 		t.Fatalf("yaml.Marshal: %v", err)
 	}
 
 	// Unmarshal back.
 	var decoded EmbeddingConfig
-	if err := yaml.Unmarshal(b, &decoded); err != nil {
+	if err := gocodecyaml.New[EmbeddingConfig]().Unmarshal(b, &decoded); err != nil {
 		t.Fatalf("yaml.Unmarshal: %v", err)
 	}
 

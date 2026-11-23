@@ -108,9 +108,8 @@ function writeSealConfig(
   mkdirSync(poolDir, { recursive: true });
 
   // The codec section is required when using --config so that the codec
-  // registry validation passes. The qrdbd binary is built without the
-  // codec_msgpack build tag so the DefaultConfig's "msgpack" value fails
-  // at runtime. Explicitly select "json" which is always registered.
+  // registry validation passes. Explicitly select "json", the default
+  // storage codec, so the fixture does not depend on the config default.
   const lines = [
     "codec:",
     '  storage_codec: "json"',

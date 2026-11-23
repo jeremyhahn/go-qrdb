@@ -44,7 +44,7 @@ WORKDIR /build
 # to tell an internal build from a GitHub one. No such discriminator has been
 # designed -- the four properties one would have to satisfy are recorded on
 # #302 -- and choosing one is the owner's call, so this stops at saying what
-# happened, exactly as .devcontainer/Dockerfile does.
+# happened, exactly as the dev stage of build/docker/devcontainer/Dockerfile does.
 #
 # The stub modules stand in for any sibling `replace => ../go-quicraft`
 # directive, whose path does not exist inside the build. Measured on this
