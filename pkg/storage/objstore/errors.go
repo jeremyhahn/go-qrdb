@@ -98,6 +98,31 @@ func (e *NamespaceOwnedError) Error() string {
 // wanted owner reaches none of its objects.
 func (e *NamespaceOwnedError) NamespaceOwnedByAnother() bool { return true }
 
+// ClaimUndoError is returned by New when an open that wrote its owner marker
+// failed afterwards (Err) and giving that claim back failed too (Undo): the
+// namespace may stay reserved for an owner whose open never completed, so
+// the caller records it for a later release (ReleaseOwner, as that owner).
+type ClaimUndoError struct {
+	// Provider is the provider of the failed open.
+	Provider string
+	// Err is the failure of the open.
+	Err error
+	// Undo is the failure of giving the claim back.
+	Undo error
+}
+
+func (e *ClaimUndoError) Error() string {
+	return "objstore: " + strconv.Quote(e.Provider) + " open failed (" + e.Err.Error() +
+		") and its namespace claim was not given back: " + e.Undo.Error()
+}
+
+// Unwrap returns the open's failure and the undo's.
+func (e *ClaimUndoError) Unwrap() []error { return []error{e.Err, e.Undo} }
+
+// NamespaceClaimUndoFailed marks the error for a caller that cannot import
+// this package: the namespace claim of a failed open is still in place.
+func (e *ClaimUndoError) NamespaceClaimUndoFailed() bool { return true }
+
 type FormatMarkerMissingError struct {
 	// Provider is the go-objstore provider whose store was refused.
 	Provider string

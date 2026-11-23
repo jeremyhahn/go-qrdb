@@ -320,10 +320,23 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	// a corrupt journal fails the open rather than silently serving a
 	// half-applied batch.
 	if err := e.recoverJournal(); err != nil {
-		return nil, err
+		return nil, e.undoClaim(err)
 	}
 	opened = true
 	return e, nil
+}
+
+// undoClaim gives back the namespace claim this open wrote (claimNamespace)
+// when the open fails after it, with ReleaseClaim's rules: a namespace this
+// open claimed fresh is given back whole; on data that was there before only
+// the owner marker this open wrote is removed; a namespace that was already
+// this owner's is left as it was. It returns cause, or *ClaimUndoError when
+// the undo fails too, before the open releases its providers.
+func (e *Engine) undoClaim(cause error) error {
+	if err := e.ReleaseClaim(); err != nil {
+		return &ClaimUndoError{Provider: e.provider, Err: cause, Undo: err}
+	}
+	return cause
 }
 
 // Provider returns the go-objstore provider backing this engine.

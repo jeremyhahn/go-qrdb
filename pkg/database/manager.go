@@ -478,6 +478,17 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	cfg.Incarnation = incarnation
 	backend, err := m.factory.Create(cfg, dataDir)
 	if err != nil {
+		// An open that wrote its owner marker and failed after it gives
+		// the claim back itself; when that undo failed too the namespace
+		// stays reserved for this incarnation, which no backend survives
+		// to release, so the release is recorded for retryNamespaceReleases.
+		var unreleased claimUndoFailed
+		if errors.As(err, &unreleased) && unreleased.NamespaceClaimUndoFailed() {
+			if _, lerr := m.recordRelease(key, cfg, incarnation); lerr != nil {
+				m.logger.Warn("failed to record the namespace release of a failed create",
+					slog.String("name", cfg.Name), slog.Any("error", lerr))
+			}
+		}
 		return nil, undo.run(ctx, err)
 	}
 	undo.backends = append(undo.backends, backend)
@@ -957,6 +968,12 @@ func (m *Manager) releaseDatabaseNamespace(key dbKey, cfg DatabaseConfig) error 
 // is owned by another owner (objstore.NamespaceOwnedError).
 type namespaceOwnedByAnother interface {
 	NamespaceOwnedByAnother() bool
+}
+
+// claimUndoFailed is an open that wrote its owner marker, failed, and could
+// not give the claim back (objstore.ClaimUndoError).
+type claimUndoFailed interface {
+	NamespaceClaimUndoFailed() bool
 }
 
 func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {

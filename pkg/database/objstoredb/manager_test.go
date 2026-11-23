@@ -17,6 +17,7 @@ package objstoredb_test
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -461,6 +462,58 @@ func (s releaseFaultStore) Delete(name string) error {
 // releaseLostArmed makes the owner marker's next delete land and then
 // report errReleaseFault (releaseFaultStore.Delete).
 var releaseLostArmed atomic.Bool
+
+// journalReadFails makes every commit journal read fail while set: an open
+// that claimed its namespace and then cannot recover the journal.
+var journalReadFails atomic.Bool
+
+func (s releaseFaultStore) Get(name string) (io.ReadCloser, error) {
+	if name == "qrdb-objstore-journal" && journalReadFails.Load() {
+		return nil, errReleaseFault
+	}
+	return s.Storage.Get(name)
+}
+
+// TestManager_FailedCreateClaimUndoIsRetried: a create whose open claimed
+// the namespace, failed, and could not give the claim back records a release
+// entry for its incarnation, and the next retry releases the namespace.
+func TestManager_FailedCreateClaimUndoIsRetried(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "objects")
+	otherRoot := filepath.Join(base, "other")
+	dataDir := t.TempDir()
+	mgr := newManager(t, dataDir)
+	t.Cleanup(func() {
+		journalReadFails.Store(false)
+		releaseFaultArmed.Store(false)
+	})
+	journalReadFails.Store(true)
+	releaseFaultArmed.Store(true)
+	var undo *objstore.ClaimUndoError
+	if _, err := mgr.Create(releaseFaultObjstore(t, "blobs", root)); !errors.As(err, &undo) {
+		t.Fatalf("Create = %v, want *objstore.ClaimUndoError", err)
+	}
+	journalReadFails.Store(false)
+	if !hasOwnerMarker(t, root) {
+		t.Fatal("the failed undo left no owner marker; the test fault did not hold")
+	}
+	if len(releaseLedgerFiles(t, dataDir)) == 0 {
+		t.Fatal("the failed create recorded no release entry for its claim")
+	}
+	// The next object-storage create retries the recorded release.
+	if _, err := mgr.Create(localObjstore("other", otherRoot)); err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+	if left := releaseLedgerFiles(t, dataDir); len(left) != 0 {
+		t.Fatalf("the retried release kept %v", left)
+	}
+	if left := objects(t, root); len(left) != 0 {
+		t.Fatalf("the retried release left %v", left)
+	}
+	if _, err := mgr.Create(releaseFaultObjstore(t, "blobs", root)); err != nil {
+		t.Fatalf("Create after the retried release: %v", err)
+	}
+}
 
 // afterDeleteCatalog runs after once, the first time a catalog delete
 // succeeds: a drop paused between its catalog delete and its namespace

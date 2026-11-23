@@ -4,8 +4,10 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -143,4 +145,105 @@ func TestClaimOwner_ProviderFaults(t *testing.T) {
 		var owned *NamespaceOwnedError
 		assert.True(t, errors.As(e.claimOwner("db-b"), &owned))
 	})
+}
+
+// claimUndoStore is a shared in-memory bucket whose journal read and owner
+// marker delete fail while armed: an open whose claim landed and whose
+// journal recovery then failed, and the undo of that claim.
+type claimUndoStore struct {
+	objcommon.Storage
+	journalGetFails  *atomic.Bool
+	ownerDeleteFails *atomic.Bool
+}
+
+func (s claimUndoStore) Get(name string) (io.ReadCloser, error) {
+	if name == journalName && s.journalGetFails.Load() {
+		return nil, errProvider
+	}
+	return s.Storage.Get(name)
+}
+
+func (s claimUndoStore) Delete(name string) error {
+	if name == ownerMarkerName && s.ownerDeleteFails.Load() {
+		return errProvider
+	}
+	return s.Storage.Delete(name)
+}
+
+// claimUndoProvider registers a provider over claimUndoStore and returns its
+// name, the raw bucket opener and the two fault switches.
+func claimUndoProvider(t *testing.T) (string, func(bucket string) objcommon.Storage, *atomic.Bool, *atomic.Bool) {
+	t.Helper()
+	var journalGetFails, ownerDeleteFails atomic.Bool
+	shared := sharedBucketCreator()
+	provider := "owner-test-claim-undo-" + strings.ReplaceAll(t.Name(), "/", "-")
+	require.NoError(t, RegisterProvider(provider, ProviderCredentials{},
+		func(settings map[string]string, creds objcommon.Credentials) (objcommon.Storage, error) {
+			inner, err := shared(settings, creds)
+			if err != nil {
+				return nil, err
+			}
+			return claimUndoStore{Storage: inner, journalGetFails: &journalGetFails, ownerDeleteFails: &ownerDeleteFails}, nil
+		}))
+	raw := func(bucket string) objcommon.Storage {
+		s, err := shared(map[string]string{"bucket": bucket}, objcommon.Credentials{})
+		require.NoError(t, err)
+		return s
+	}
+	return provider, raw, &journalGetFails, &ownerDeleteFails
+}
+
+func bucketNames(t *testing.T, s objcommon.Storage) []string {
+	t.Helper()
+	names, err := s.List("")
+	require.NoError(t, err)
+	return names
+}
+
+// TestNew_JournalRecoveryFailureReleasesClaim: an open that claimed its
+// namespace and then failed (journal recovery) gives the claim back, as
+// ReleaseClaim does: a fresh namespace whole, and on data already there only
+// the owner marker it wrote.
+func TestNew_JournalRecoveryFailureReleasesClaim(t *testing.T) {
+	t.Run("fresh namespace", func(t *testing.T) {
+		provider, raw, journalGetFails, _ := claimUndoProvider(t)
+		settings := map[string]string{"bucket": "fresh"}
+		journalGetFails.Store(true)
+		_, err := New(provider, settings, WithOwner("db-a"))
+		require.ErrorIs(t, err, errProvider)
+		assert.Empty(t, bucketNames(t, raw("fresh")), "the failed open left objects")
+		journalGetFails.Store(false)
+		e, err := New(provider, settings, WithOwner("db-b"))
+		require.NoError(t, err, "another owner is refused a namespace no database holds")
+		require.NoError(t, e.Close())
+	})
+	t.Run("pre-existing data", func(t *testing.T) {
+		provider, raw, journalGetFails, _ := claimUndoProvider(t)
+		settings := map[string]string{"bucket": "used"}
+		unowned, err := New(provider, settings)
+		require.NoError(t, err)
+		require.NoError(t, unowned.Set([]byte("k"), []byte("v")))
+		require.NoError(t, unowned.Close())
+		before := bucketNames(t, raw("used"))
+		journalGetFails.Store(true)
+		_, err = New(provider, settings, WithOwner("db-a"))
+		require.ErrorIs(t, err, errProvider)
+		assert.ElementsMatch(t, before, bucketNames(t, raw("used")), "the failed open must remove only the owner marker it wrote")
+		assert.NotContains(t, bucketNames(t, raw("used")), ownerMarkerName)
+	})
+}
+
+// TestNew_ClaimUndoFailureIsReported: when giving the claim back fails too,
+// New's error is *ClaimUndoError carrying both the open's cause and the
+// undo's, so the caller can record the namespace for a later release.
+func TestNew_ClaimUndoFailureIsReported(t *testing.T) {
+	provider, raw, journalGetFails, ownerDeleteFails := claimUndoProvider(t)
+	journalGetFails.Store(true)
+	ownerDeleteFails.Store(true)
+	_, err := New(provider, map[string]string{"bucket": "stuck"}, WithOwner("db-a"))
+	var undo *ClaimUndoError
+	require.ErrorAs(t, err, &undo)
+	assert.ErrorIs(t, undo.Err, errProvider)
+	assert.ErrorIs(t, undo.Undo, errProvider)
+	assert.Contains(t, bucketNames(t, raw("stuck")), ownerMarkerName)
 }
