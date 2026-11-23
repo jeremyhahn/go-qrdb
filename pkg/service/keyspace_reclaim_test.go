@@ -1378,6 +1378,49 @@ func TestKeyspaceReclaim_BarrierTenantFencesDataAndLogMarkers(t *testing.T) {
 	assert.ErrorAs(t, broken.FenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", ""), &unavailable)
 }
 
+// TestKeyspaceReclaim_PreUpgradeBarrierTenantLogMarker: a barrier
+// tenant's database created before its logs had a marker of their own in
+// the home group has only the system store's data marker (Codex round 1
+// P1 at 9428bf8de4). Its first log write initializes the log marker to
+// the live incarnation, never over a present one; a drop before any log
+// write still tombstones the absent log marker, the tombstone outlives
+// the reclamation, and the next database created under the name claims
+// it.
+func TestKeyspaceReclaim_PreUpgradeBarrierTenantLogMarker(t *testing.T) {
+	ctx := context.Background()
+	key := DropFenceKey("acme", "ledger")
+	marker := func(kv *memoryKVSvc) string {
+		t.Helper()
+		v, err := kv.Get(ctx, key)
+		if err != nil {
+			return "<absent>"
+		}
+		return string(v)
+	}
+	preUpgrade := func() (*KeyspaceReclaimService, *memoryKVSvc) {
+		t.Helper()
+		system, home := newMemoryKVSvc(), newMemoryKVSvc()
+		require.NoError(t, system.Put(ctx, key, []byte("inc-a")))
+		svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
+		svc.SetStoreResolver(&fixedStoreResolver{logKV: home})
+		return svc, home
+	}
+
+	svc, home := preUpgrade()
+	require.NoError(t, svc.InitDatabaseLogFence(ctx, "acme", "ledger", "inc-a"))
+	assert.Equal(t, "inc-a", marker(home), "the first log write initializes the log marker")
+	require.NoError(t, svc.InitDatabaseLogFence(ctx, "acme", "ledger", "inc-stale"))
+	assert.Equal(t, "inc-a", marker(home), "a present log marker is never overwritten")
+
+	svc, home = preUpgrade()
+	require.NoError(t, svc.FenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", ""))
+	assert.Equal(t, string(dropFenceTombstone), marker(home), "the drop tombstones an absent log marker")
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", ""))
+	assert.Equal(t, string(dropFenceTombstone), marker(home), "the log tombstone outlives the reclamation")
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-b", ""))
+	assert.Equal(t, "inc-b", marker(home), "the successor claims the log marker")
+}
+
 // pausingKV parks the first ListAll -- the first read a reclamation makes
 // after it has resolved its fence target -- until resume is closed, so
 // another caller can run between a reclamation's resolution and its
