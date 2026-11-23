@@ -248,6 +248,37 @@ func TestAuthenticate_ChainFallthrough(t *testing.T) {
 	}
 }
 
+// declinedLaterMethodMiddleware chains an mTLS authenticator failing with
+// first, then the peer-credential authenticator with one uid mapping, which
+// declines (auth.ErrUnauthenticated) every request carrying no peer
+// credential -- every request that did not arrive on the Unix socket.
+func declinedLaterMethodMiddleware(first error) *AuthMiddleware {
+	uid := uint32(1000)
+	return newTestMiddleware(&mockAuthorizer{},
+		WithAuthenticator(&mockAuthenticator{name: "mtls", err: first}),
+		WithAuthenticator(auth.NewPeerCredentialAuthenticator([]auth.PeerCredentialMapping{{UID: &uid, TenantID: "t1", Username: "pc-user"}})),
+	)
+}
+
+// TestAuthenticate_DeclinedLaterMethodKeepsEarlierError pins the chain's
+// error rule: an authenticator that declines with the plain
+// auth.ErrUnauthenticated ("no credential of my kind") never overwrites an
+// earlier method's error, so an mTLS revocation-lookup failure survives the
+// peer-credential authenticator appended after it. When every method
+// declines, the answer is still auth.ErrUnauthenticated.
+func TestAuthenticate_DeclinedLaterMethodKeepsEarlierError(t *testing.T) {
+	_, _, err := declinedLaterMethodMiddleware(&auth.RevocationCheckError{Err: errors.New("kv read failed")}).Authenticate(context.Background())
+	var rce *auth.RevocationCheckError
+	if !errors.As(err, &rce) {
+		t.Fatalf("Authenticate err = %v, want the earlier *auth.RevocationCheckError", err)
+	}
+
+	_, _, err = declinedLaterMethodMiddleware(auth.ErrUnauthenticated).Authenticate(context.Background())
+	if !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("Authenticate err = %v when every method declines, want auth.ErrUnauthenticated", err)
+	}
+}
+
 func TestAuthenticate_AllFail_ReturnsUnauthenticated(t *testing.T) {
 	f1 := &mockAuthenticator{name: "a1", err: auth.ErrNoPeerCertificate}
 	f2 := &mockAuthenticator{name: "a2", err: auth.ErrUnauthenticated}

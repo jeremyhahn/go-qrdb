@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 const chainCertSubject = "cert-subject"
@@ -174,13 +175,15 @@ func TestBuildAuthMiddleware_RefusesReplacingMTLSWithNothing(t *testing.T) {
 func TestBuildAuthMiddleware_PeerCredentialsLastInChain(t *testing.T) {
 	uid := uint32(1000)
 	stub := &stubAuthenticator{token: "Bearer good"}
+	// The mapped account exists: a peer credential whose account does not
+	// resolve is refused (auth.ErrPeerCredentialAccountMissing).
 	mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{
 		Enabled:             true,
 		RoleService:         adminRoleService(),
-		UserService:         &fakeUserService{},
+		UserService:         &fakeUserService{u: &user.User{ID: 11, TenantID: tenantid.System, Username: "pc-user", Lifecycle: user.LifecycleActive}},
 		MTLSBindingPolicy:   auth.MTLSBindingEnrolled,
 		ExtraAuthenticators: afterMTLS(stub),
-		PeerCredentials:     []auth.PeerCredentialMapping{{UID: &uid, Username: "pc-user"}},
+		PeerCredentials:     []auth.PeerCredentialMapping{{UID: &uid, TenantID: tenantid.System, Username: "pc-user"}},
 	})
 	require.NoError(t, err)
 	cred := auth.PeerCredential{UID: uid, GID: 1000, PID: 1}
@@ -196,6 +199,39 @@ func TestBuildAuthMiddleware_PeerCredentialsLastInChain(t *testing.T) {
 	_, id, err = mw.Authenticate(auth.WithPeerCredential(context.Background(), cred))
 	require.NoError(t, err)
 	assert.Equal(t, "1000", id.Metadata["peer_uid"], "the peer credential alone must authenticate")
+}
+
+// revocationFailingAuthenticator fails every request with a revocation-lookup
+// failure, the error the mTLS authenticator returns when the revocation store
+// cannot be read (retryable, 503 / UNAVAILABLE).
+type revocationFailingAuthenticator struct{}
+
+func (revocationFailingAuthenticator) Name() string { return "revocation-failing" }
+
+func (revocationFailingAuthenticator) Authenticate(context.Context) (*auth.Identity, error) {
+	return nil, &auth.RevocationCheckError{Err: errors.New("kv read failed")}
+}
+
+// TestBuildAuthMiddleware_PeerCredentialDeclineKeepsRevocationCheckError pins
+// that the peer-credential authenticator wiring appends last declines without
+// masking an earlier method's error: on a TCP request (no peer credential) a
+// revocation-lookup failure ahead of it is still the answer, not
+// auth.ErrUnauthenticated.
+func TestBuildAuthMiddleware_PeerCredentialDeclineKeepsRevocationCheckError(t *testing.T) {
+	uid := uint32(1000)
+	mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{
+		Enabled:             true,
+		RoleService:         adminRoleService(),
+		UserService:         &fakeUserService{},
+		MTLSBindingPolicy:   auth.MTLSBindingEnrolled,
+		ExtraAuthenticators: afterMTLS(revocationFailingAuthenticator{}),
+		PeerCredentials:     []auth.PeerCredentialMapping{{UID: &uid, TenantID: tenantid.System, Username: "pc-user"}},
+	})
+	require.NoError(t, err)
+
+	_, _, err = mw.Authenticate(context.Background())
+	var rce *auth.RevocationCheckError
+	require.ErrorAs(t, err, &rce, "the peer-credential decline must not replace the revocation-lookup failure")
 }
 
 // TestBuildAuthMiddleware_NoPeerCredentialsNoAuthenticator: with no mapping

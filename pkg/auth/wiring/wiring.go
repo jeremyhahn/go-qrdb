@@ -510,7 +510,9 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	// every embedder placement: an explicit credential (a certificate or a
 	// bearer token) wins over the ambient identity of the connecting
 	// process. Only the Unix transport binds a peer credential, so on every
-	// other transport it refuses as unauthenticated.
+	// other transport it declines (auth.ErrUnauthenticated), and the chain
+	// never lets that decline mask an earlier method's error: an mTLS
+	// revocation-lookup failure stays the retryable unavailable answer.
 	if len(cfg.PeerCredentials) > 0 {
 		chain = append(chain, auth.NewPeerCredentialAuthenticator(cfg.PeerCredentials))
 	}

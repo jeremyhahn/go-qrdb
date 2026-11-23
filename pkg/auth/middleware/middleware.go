@@ -450,7 +450,17 @@ func (m *AuthMiddleware) authenticate(ctx context.Context) (context.Context, *au
 	for _, authn := range m.authenticators {
 		id, err := authn.Authenticate(ctx)
 		if err != nil {
-			lastErr = err
+			// A decline (isChainDecline) never overwrites an earlier method's
+			// error: an mTLS revocation-lookup failure
+			// (*auth.RevocationCheckError, retryable 503) must not become a
+			// 401 because a later method -- the peer-credential authenticator
+			// on every non-Unix request, say -- had nothing to check. Any
+			// other error replaces lastErr, and a decline replaces an
+			// earlier decline, so when every method declines the answer is
+			// still the last decline (auth.ErrUnauthenticated).
+			if lastErr == nil || !isChainDecline(err) || isChainDecline(lastErr) {
+				lastErr = err
+			}
 			continue
 		}
 		identity = id
@@ -470,6 +480,15 @@ func (m *AuthMiddleware) authenticate(ctx context.Context) (context.Context, *au
 	}
 
 	return m.finalizeIdentity(ctx, identity, method)
+}
+
+// isChainDecline reports whether err is an authenticator's decline -- "no
+// credential of my kind on this request" -- rather than a verdict on a
+// credential it was given: auth.ErrUnauthenticated, or auth.ErrNoPeerCertificate
+// (no client certificate on the connection). authenticate never lets a decline
+// replace an earlier method's error.
+func isChainDecline(err error) bool {
+	return errors.Is(err, auth.ErrUnauthenticated) || errors.Is(err, auth.ErrNoPeerCertificate)
 }
 
 // tenantIAMSealedMetadataKey marks an identity whose tenant's IAM store was
