@@ -117,18 +117,27 @@ allowed.
 
 ## Remains
 
-- A standalone node composes an ungated host, so its replicated audit logger
-  keeps `OpAuditAppend` for every tenant (`docs/databases/engineering.md`,
-  "The switch"): its events are written, but there is no verifiable audit
-  instance to prove. This is the same for every tenant and on main, not a
-  barrier gap; gating the standalone host is a change to `cmd/qrdbd`.
-- Drop of a barrier database, question for the coordinator: `Manager.drop`
-  (`pkg/database/manager.go`) removes only the manager's own per-database
-  directory, not a `--data-dir` the caller chose. Re-creating a barrier
-  database over the old folder finds the old encrypted files. Whether drop may
-  delete a caller-owned directory is a destructive-delete policy call; until
-  it is ruled, the user guide says to re-create in a new `--data-dir`, and the
-  CLI E2E does so.
+- Open, Tenant item (F3 proof half): a standalone node composes an ungated
+  host (`cmd/qrdbd/start.go`), so its replicated audit logger keeps
+  `OpAuditAppend` for every tenant (`docs/databases/engineering.md`, "The
+  switch"): its events are written to the system shard
+  (`TestBuildServices_StandaloneBarrierTenantsAuditIsWrittenToTheSystemShard`
+  covers that half), but there is no verifiable audit instance to prove. The
+  same holds for every tenant and on main, not a barrier gap; gating the
+  standalone host is a change to `cmd/qrdbd`, outside this row's paths.
+- Drop of a database, decided by convention (ruling 109): dropping a database
+  never deletes a directory the caller chose; it reclaims only what qrdb
+  created under its own data root (the logs in the store, the manager's
+  per-database directory under the node's data directory), as PostgreSQL's
+  DROP TABLESPACE leaves the tablespace's directory. The drop path already
+  does this: `Manager.drop` (`pkg/database/manager.go`) removes only
+  `m.dbDir`, `Chain.DropDatabase` (`pkg/vlog/named.go`) deletes store
+  records only, and `pkg/service/database_service.go` removes no directory,
+  so no code changed. `TestDatabaseService_DropLeavesACallerChosenDataDirInPlace`
+  (`pkg/service/database_drop_dir_test.go`) proves a caller-chosen
+  `--data-dir` and a file in it survive the drop. Re-creating a barrier
+  database therefore takes a new `--data-dir` (the user guide and the CLI
+  E2E do so).
 - The SPEC, `pm/rows.md` and ROADMAP.md moves above.
 
 ## Out of scope
