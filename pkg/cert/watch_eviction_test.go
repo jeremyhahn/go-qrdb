@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -180,14 +182,7 @@ var _ WatchPrefixer = (*fakeWatchService)(nil)
 // -delivered event rather than racing it.
 func pollUntil(t *testing.T, check func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if check() {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("pollUntil: condition never became true")
+	require.Eventually(t, check, 2*time.Second, time.Millisecond, "pollUntil: condition never became true")
 }
 
 // ---------------------------------------------------------------------------

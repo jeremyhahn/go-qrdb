@@ -254,13 +254,7 @@ func newGate(t *testing.T, members MembershipSource) *Gate {
 // eventually polls cond for up to two seconds.
 func eventually(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal(msg)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	require.Eventually(t, cond, 2*time.Second, 5*time.Millisecond, msg)
 }
 
 // A group holding a replica whose binary does not advertise the feature --
