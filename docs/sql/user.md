@@ -53,7 +53,9 @@ you asked for.
 the server as read-only tables under reserved names: `qrdb_ts_datapoints` and
 `qrdb_ts_metrics` when the time-series engine is compiled in,
 `qrdb_vector_namespaces` and `qrdb_vector_vectors` when the vector engine is.
-A server built without an engine has no tables for it.
+A server built without an engine has no tables for it. `SHOW TABLES` lists
+them beside your own tables over the MySQL wire, the PostgreSQL wire and the
+CLI.
 
 ```sql
 SELECT * FROM qrdb_ts_metrics;

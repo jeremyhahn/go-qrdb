@@ -825,6 +825,11 @@ statement text alone cannot express:
   message execute in order; the last one's result is returned.
 - **`uuid_generate_v4()` / `gen_random_uuid()`** are built in;
   `CREATE EXTENSION` is a no-op.
+- **`SHOW`.** Session parameter `SHOW` statements drivers send
+  (`SHOW search_path`, `SHOW server_version`, ...) are answered as no-ops,
+  while `SHOW TABLES` and `SHOW FULL TABLES` run on the engine, over the
+  simple and the extended protocol, and list the same tables as on the MySQL
+  wire, with the `SHOW` command tag.
 - **A seal reaches sessions and statements opened before it.** While the
   node's sealed-window probe is closed (its barrier sealed, or a cluster seal
   holding it, cutting it off or not yet confirmed), a new session is refused
@@ -869,12 +874,14 @@ QRDB-specific string:
 | Node sealed (new session, or any statement of an open one) | SQLSTATE **57P03**; MySQL `sql/mysql: barrier sealed` | including Execute of a statement prepared before the seal, and MySQL `COM_INIT_DB` |
 | Seal state unconfirmed (cut off from the cluster seal records, or not yet read them; the barrier is not sealed) | SQLSTATE **57P03**, `sql/pgsql: seal state unconfirmed: …`; MySQL **1105**, `sql/mysql: seal state unconfirmed: …` | retryable; refused at the same points as a seal, never reported as `barrier sealed` |
 | Foreign key violations | MySQL **1451** / **1452** | see [gorm.md](gorm.md) |
+| Reserved table name (`CREATE TABLE` / `RENAME TABLE` / `ALTER TABLE ... RENAME TO` a `qrdb_` engine table name) | MySQL **1105** (SQLSTATE **HY000**); SQLSTATE **XXUUU** | neither wire's error table maps `ReservedTableNameError` yet; the message names the reserved table |
 
 Named Go error types on the QRDB side: `RowKeyTooLargeError`,
 `RowValueTooLargeError`, `RowTransactionTooLargeError`, `WriteSetLimitError`,
 `TransactionSnapshotExpiredError`, `CrossDatabaseTransactionError`,
 `ReadOnlyTransactionError`, `NonTransactionalTableError`,
-`TransactionConflictError`, `IsolationRangeReadError`.
+`TransactionConflictError`, `IsolationRangeReadError`,
+`ReservedTableNameError`.
 
 **Fail-closed paths**, each stated in full above: an unmodelled statement kind
 on an armed database is denied; a cached plan whose result type changed is
