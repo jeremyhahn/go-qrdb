@@ -80,7 +80,33 @@ type LocalBindingFactory struct {
 	// database's vector service consults, as the shared vector service
 	// does; nil means no requirement.
 	policy tenant.ClusterIsolationPolicyReader
+	// sharedData reports whether the shared store holds keys under a
+	// database's namespace; nil means it is not probed (see
+	// WithSharedKeyspaceProbe).
+	sharedData SharedKeyspaceProbe
 }
+
+// SharedKeyspaceProbe reports whether the shared store holds any key under
+// tenantID's database db namespace (tenant.ComposeNamespace). An error means
+// the store could not be read.
+type SharedKeyspaceProbe func(tenantID, db string) (bool, error)
+
+// LegacySharedKeyspaceError is returned when a backend: memory database's
+// binding cannot be resolved because the shared store could not be probed for
+// the data it held before the binding change.
+type LegacySharedKeyspaceError struct {
+	TenantID string
+	Database string
+	Err      error
+}
+
+// Error returns a human-readable description.
+func (e *LegacySharedKeyspaceError) Error() string {
+	return "lifecycle: probe the shared store for database " + e.TenantID + "/" + e.Database + ": " + e.Err.Error()
+}
+
+// Unwrap returns the probe failure.
+func (e *LegacySharedKeyspaceError) Unwrap() error { return e.Err }
 
 // NewLocalBindingFactory returns a factory for node. enc is the node
 // encryptor every on-disk binding store writes through (nil or disabled
@@ -121,6 +147,18 @@ func (f *LocalBindingFactory) WithTenantEncryptors(lookup func(string) (*atrest.
 // the shared vector service does. It returns f.
 func (f *LocalBindingFactory) WithIsolationPolicy(r tenant.ClusterIsolationPolicyReader) *LocalBindingFactory {
 	f.policy = r
+	return f
+}
+
+// WithSharedKeyspaceProbe sets the probe that tells a backend: memory
+// database recorded before the binding change from a fresh one. Such a
+// database was served from its namespace of the shared store, which kept its
+// data across restarts; it has no binding root or data_dir on disk to
+// recognise it by. While the shared store holds keys under its namespace it
+// keeps that shared route rather than open as a new, empty memory store.
+// Moving it is a relocation (slice 3b.8), not done here.
+func (f *LocalBindingFactory) WithSharedKeyspaceProbe(p SharedKeyspaceProbe) *LocalBindingFactory {
+	f.sharedData = p
 	return f
 }
 
@@ -272,6 +310,17 @@ func (f *LocalBindingFactory) resolveLocal(cfg *database.DatabaseConfig) (*datab
 	}
 	if b.Kind != database.BindingLocal || b.DatabaseBarrier {
 		return nil, nil
+	}
+	if b.Backend == database.BackendMemory && f.sharedData != nil {
+		// A probe that fails is an error, never "no data": opening an
+		// empty store would hide the database's shared data.
+		legacy, err := f.sharedData(b.TenantID, b.Database)
+		if err != nil {
+			return nil, &LegacySharedKeyspaceError{TenantID: b.TenantID, Database: b.Database, Err: err}
+		}
+		if legacy {
+			return nil, nil
+		}
 	}
 	if b.Backend == database.BackendObjstore {
 		if p := f.storageCfg.Objstore.Provider; p != "" && p != "local" {
