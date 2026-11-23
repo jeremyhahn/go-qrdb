@@ -3,7 +3,8 @@
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
-Three command groups: `qrdb users`, `qrdb roles` and `qrdb abac policy`.
+Four command groups: `qrdb users`, `qrdb roles`, `qrdb groups` and
+`qrdb abac policy`.
 Authentication factors are
 [../auth-factors/cli.md](../auth-factors/cli.md); certificate issuance is
 [../certificate-authority/cli.md](../certificate-authority/cli.md).
@@ -460,6 +461,66 @@ system Admin role without it. Run `qrdb roles reconcile` as the system Admin
 first; that converges the system tenant and grants the permission. Then run
 `--all-tenants`.
 
+## Groups
+
+An IAM group is a named set of roles of one tenant; every member of the group
+holds the group's roles in addition to its own, from its next request on.
+Group names are unique within a tenant. A group carries only roles of its own
+tenant, and only users of that tenant can be members.
+
+### `qrdb groups create`
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--name` | string | group name, unique within the tenant (required) |
+| `--tenant-id` | string | tenant; defaults to the caller's own |
+| `--description` | string | free text |
+| `--roles` | string | comma-separated **role IDs** the group grants |
+
+### `qrdb groups get <id>` / `get-by-name <name>` / `delete <id>`
+
+`get-by-name` takes `--tenant-id`. `delete` first removes the group from every
+member, then deletes it.
+
+### `qrdb groups list`
+
+Flags: `--tenant-id`, `--page`, `--page-size`.
+
+### `qrdb groups update <id>`
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--name` | string | new name |
+| `--description` | string | new description; set only when the flag is given |
+| `--roles` | string | comma-separated role IDs **replacing** the group's roles; `--roles ""` clears them; unchanged when the flag is absent |
+
+### `qrdb groups add-member` / `remove-member`
+
+| Flag | Type |
+|---|---|
+| `--user` | string — user **ID** |
+| `--group` | string — group **ID** |
+
+### `qrdb groups members <group-id>`
+
+Lists the members: user ID, username and tenant.
+
+```bash
+ROLE=$(qrdb roles get-by-name operator --output json | jq -r .id)
+GROUP=$(qrdb groups create --name ops --roles "$ROLE" --output json | jq -r .id)
+qrdb groups add-member --user 1f2e... --group "$GROUP"
+qrdb groups members "$GROUP"
+qrdb groups remove-member --user 1f2e... --group "$GROUP"
+```
+
+The guards are the role guards. Giving a group roles (`create`, `update
+--roles`) is refused unless the caller may assign every one of those roles, as
+`roles assign` requires. Adding a member is refused unless the caller may
+assign every role the group carries. Under strict separation only the
+Security Officer may put the `so` role on a group or take it away through a
+group. A tenant's Admin holds every `groups:*` verb except `groups:delete`,
+which stays with the Security Officer, as `roles:delete` does.
+
 ## ABAC policies
 
 `qrdb abac policy` manages the stored ABAC policy documents of the caller's
@@ -593,6 +654,8 @@ The `qrdb users`, `qrdb enroll`, `qrdb roles` and `qrdb abac policy`
 commands are driven through the CLI binary on every transport of one node by the
 `_PerProtocol` suites `make integration-test-identity-rbac` runs
 (`roles_cli_test.go`, `users_cli_test.go`, `invitation_cli_test.go`,
-`abac_policy_cli_test.go`). Per-transport accounting, including every gap: the
+`abac_policy_cli_test.go`). `qrdb groups` is driven on every protocol by
+`test/integration/api/cli_groups_test.go` (lifecycle, and membership granting
+the group's roles as the member's own `roles own-permissions` shows). Per-transport accounting, including every gap: the
 `identity-rbac` row of
 [`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).

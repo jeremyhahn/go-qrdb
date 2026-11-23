@@ -361,6 +361,30 @@ a certificate or token attribute: setting `--attribute organization=acme`
 cannot satisfy a policy that trusts the organization in the caller's
 certificate. See [../auth/abac.md](../auth/abac.md).
 
+## Giving a set of people the same roles: groups
+
+A group is a named set of roles inside one tenant. Everyone you add to the
+group holds its roles on top of their own, from their next request; remove
+them and the roles go with it. Change the group's roles and every member's
+access changes with it.
+
+```bash
+ROLE=$(qrdb roles get-by-name operator --output json | jq -r .id)
+GROUP=$(qrdb groups create --name on-call --roles "$ROLE" --output json | jq -r .id)
+qrdb groups add-member --user "$ALICE_ID" --group "$GROUP"
+qrdb groups members "$GROUP"
+qrdb groups update "$GROUP" --roles "$ROLE,$READER_ROLE"   # replaces the set
+qrdb groups remove-member --user "$ALICE_ID" --group "$GROUP"
+```
+
+The group, its roles and its members are all of the same tenant. You can
+give a group, or add someone to a group, only roles you could assign to them
+directly; putting the `so` role on a group, or taking it away through one, is
+the Security Officer's alone under strict separation. A tenant Admin manages
+groups; deleting one is the Security Officer's, as deleting a role is.
+`qrdb roles own-permissions`, run by the member, shows what they hold through
+their groups. Every verb: [cli.md](cli.md#groups).
+
 ## Letting an application act inside your tenant
 
 Some applications embed qrdb and run their own **service principal** — for

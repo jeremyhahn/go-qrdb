@@ -443,6 +443,19 @@ See [bootstrap.md](../bootstrap.md) for the full bootstrap sequence.
 
 Roles are assigned to users via `pkg/user/` role assignment (many-to-many: a user can hold multiple roles). Only SO and Admin can create and modify roles and user-role assignments; only SO can delete a role.
 
+### IAM Groups
+
+A user also holds the roles of every IAM group it is a member of (`pkg/group`,
+`qrdb groups`). A group carries roles of its own tenant only, and its roles are
+unioned with the user's own when the identity is bound, so a group never adds
+a role the tenant does not have. The `groups:*` verbs are granted like their
+`roles:*` counterparts: SO holds all seven (`groups:create`, `groups:read`,
+`groups:update`, `groups:delete`, `groups:list`, `groups:add_member`,
+`groups:remove_member`), Admin all but `groups:delete`, Auditor `groups:list`
+and `groups:read`. Giving a group a role, or adding a member to a group, is
+held to the role-assignment rules, the strict-separation SO rule included.
+See [identity-rbac/api.md](../identity-rbac/api.md#capability-matrix--iam-groups).
+
 ## Compliance Mapping
 
 | Standard | Requirement | Coverage |

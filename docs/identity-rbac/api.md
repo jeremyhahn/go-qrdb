@@ -168,6 +168,44 @@ IDs. `sdk.SystemRoleID(tenantID, name)` returns one role's ID, and
 (UUIDv8) ID; there is no legacy UUIDv5 alias. An empty tenant ID means the
 system tenant, and each call returns a fresh map the caller may change.
 
+## Capability matrix — IAM groups
+
+A group (`pkg/group`) is a named set of roles of one tenant; a member holds
+the group's roles in addition to its own. The roles are unioned in when the
+identity is bound, on every request, so a membership or group change applies
+from the member's next request. The group is not a scope of its own: only
+roles of the group's tenant, and only users of that tenant, take part.
+
+| Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.Groups()`) | `scp` permission |
+|---|---|---|---|---|---|---|
+| Create group | `POST /groups` (201) | `CreateGroup` | `group.Create` | `qrdb_group_create` | `CreateGroup` | `groups:create` |
+| Get group | `GET /groups/{id}` | `GetGroup` | `group.Get` | `qrdb_group_get` | `GetGroup` | `groups:read` |
+| Get group by name | `GET /groups/by-name?tenantID=&name=` | `GetGroupByName` | `group.GetByName` | `qrdb_group_get_by_name` | `GetGroupByName` | `groups:read` |
+| Update group | `PUT /groups/{id}` | `UpdateGroup` | `group.Update` | `qrdb_group_update` | `UpdateGroup` | `groups:update` |
+| Delete group (members first) | `DELETE /groups/{id}` (204) | `DeleteGroup` | `group.Delete` | `qrdb_group_delete` | `DeleteGroup` | `groups:delete` |
+| List groups | `GET /groups/list?tenantID=&page=&pageSize=` | `ListGroups` | `group.List` | `qrdb_group_list` | `ListGroups` | `groups:list` |
+| Add member | `POST /groups/members/add` (204) | `AddGroupMember` | `group.AddMember` | `qrdb_group_add_member` | `AddGroupMember` | `groups:add_member` |
+| Remove member | `POST /groups/members/remove` (204) | `RemoveGroupMember` | `group.RemoveMember` | `qrdb_group_remove_member` | `RemoveGroupMember` | `groups:remove_member` |
+| List members | `GET /groups/members?groupID=` | `ListGroupMembers` | `group.ListMembers` | `qrdb_group_list_members` | `ListGroupMembers` | `groups:read` |
+
+The JSON body of a group on REST, QUIC and MCP is
+`{"id", "tenantID", "name", "description", "roleIDs", "createdAt",
+"updatedAt"}`; a member is `{"userID", "username", "tenantID"}`; a membership
+write is `{"userID", "groupID"}`. An update sets only the fields it carries:
+REST and QUIC `roleIDs` replaces the role set when present (`[]` clears it),
+gRPC sets `role_ids` when `set_role_ids` is true, and the MCP `role_ids`
+argument is comma-separated (empty clears).
+
+The guards are the role guards (`pkg/auth/middleware/role_assignment.go`):
+giving a group roles at create, or adding roles at update, requires the
+caller to be allowed to assign each one, as `AssignRole` does; adding a
+member requires that for every role the group carries; under strict
+separation only the tenant's Security Officer may put the `so` role on a
+group or take it from a member through one. Every verb acts in the caller's
+own tenant unless the caller is of the system tenant, as the role verbs do.
+The built-in `so` role holds every `groups:*` verb, `admin` all but
+`groups:delete`, and `auditor` `groups:list` and `groups:read`.
+
 ## Capability matrix — stored ABAC policies
 
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.ABACPolicies()`) | `scp` permission |
@@ -1004,6 +1042,10 @@ of its own, and the listing never contains one.
 | Redeemed key already bound to an account of the tenant | 409 | `ALREADY_EXISTS` |
 | Re-inviting an account that already holds a credential or is not pending | 409 | `FAILED_PRECONDITION` |
 | Re-inviting an account while a concurrent re-invite or redemption of it commits first (`invite.ErrReissueConflict`; retry) | 409 | `ABORTED` |
+| Group not found, or of another tenant (`group.GroupNotFoundError`) | 404 | `NOT_FOUND` |
+| Group name already used in the tenant (`group.GroupNameTakenError`) | 409 | `ALREADY_EXISTS` |
+| Group role that is not a role of the group's tenant (`group.RoleNotInTenantError`), or a malformed group request (`group.ValidationError`) | 400 | `INVALID_ARGUMENT` |
+| Group verb on a node with no group service, or a user store that cannot hold memberships (`user.GroupMembershipUnsupportedError`) | 501 | `UNIMPLEMENTED` |
 
 ## Pagination
 

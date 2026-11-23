@@ -558,6 +558,40 @@ normalized target tenant. And every user — the system tenant's included — ma
 hold a binding only in its own tenant; any other is refused with
 `user.RoleBindingTenantError`.
 
+### IAM groups resolve to roles
+
+A user record also carries `GroupIDs`: the IAM groups (`pkg/group`) it is a
+member of. A group is a named set of role IDs of one tenant, and it is not a
+fourth authorization input: when `finalizeIdentity` binds the record, it
+unions the roles of every group in `GroupIDs` that resolves in the user's own
+tenant into the identity's `Roles` (`AuthMiddleware.effectiveRoles`,
+installed by `WithGroupResolver`), and carries the group IDs as
+`Identity.Groups` (ABAC `subject.groups`). From there the identity is
+authorized exactly as one holding those roles directly, the SO deny-list and
+the Owner strip included. The union fails closed: a group that is gone, of
+another tenant, or cannot be read adds nothing, and the request goes on with
+the user's own roles. Because the union is made on every request, a
+membership or group change applies from the next request, like a withdrawn
+binding.
+
+Two stores split the state. The group store (`group.NewStore`, over the auth
+store) holds the group records, claims each name within its tenant
+atomically, and refuses a role of another tenant
+(`group.RoleNotInTenantError`, `WithRoleLookup`). Membership is the user
+record's own field, written by `user.GroupMembership` with compare-and-swap,
+so a member's groups are read with its record and nothing else. Deleting a
+group first strips it from every member (`WithMemberRevoker`), then deletes
+the record.
+
+Every transport reaches the stores through one path, `groupauthz.Service`
+(`pkg/group/groupauthz`): the permission check in the target tenant, then the
+escalation guards in `pkg/auth/middleware/role_assignment.go`.
+`AuthorizeGroupRoles` holds a group's role set to the `AssignRole` rules for
+each role it adds; `AuthorizeGroupMembership` holds adding a member to them
+for every role the group carries and requires the user to be of the group's
+tenant; `AuthorizeGroupMemberRemoval` keeps taking the `so` role away
+through a group the Security Officer's alone under strict separation.
+
 ### Alternatives rejected
 
 - **Passwords.** Rejected outright — the user model is passwordless. There is no

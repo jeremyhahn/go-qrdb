@@ -1563,6 +1563,12 @@ unchecked call panics rather than failing cleanly.
 - The email login key is a tenant-scoped secondary index at
   `__sys:user_idx/email/{tenantID}/{normalized-email}`, maintained by the same
   functions that write the record so the two cannot drift.
+- IAM groups (`pkg/group`) are at `__sys:groups/id/<id>`, with a per-tenant
+  index under `__sys:groups/tenant/` and the tenant-scoped name claim under
+  `__sys:group_idx/name/`, in the system auth store (no per-tenant barrier
+  routing yet). Membership is not a group record: it is the member's own
+  `User.GroupIDs`, written with compare-and-swap by `user.GroupMembership`.
+  A group delete strips every member first, then removes the record.
 - Stored ABAC policies are tenant-scoped: each is one JSON record at
   `__sys:abac_policy/<name>` in the tenant's own store, resolved through
   `tenant.StoreResolver`, so no tenant's policies share a keyspace with
@@ -1604,6 +1610,14 @@ part of the on-disk contract. Changing it invalidates every existing binding.
 
 **Integration target:** `make integration-test-identity-rbac` (no Docker; selection in `test/integration/features.mk`). It runs the role, user and invitation CLI suites per protocol. Per-transport accounting is the `identity-rbac` row of `test/integration/COVERAGE.md`.
 
+- **IAM groups**: `pkg/group` (store, name claim, same-tenant roles,
+  revoke-before-delete), `pkg/user` group membership, the middleware role
+  union and the three group guards, `pkg/group/groupauthz`, and each
+  transport's handlers (`*_groups_test.go` in `pkg/api/{rest,grpc,quic,mcp}`
+  and `sdk/go/transport/embedded`). The CLI E2E is
+  `test/integration/api/cli_groups_test.go`: the lifecycle on every protocol,
+  and a member without roles of its own gaining, then losing, the group
+  role's permission per its own `roles own-permissions`.
 - **Unit**: `MatchesCert` for each `CertBindingKind`, thumbprint stability
   across certificate renewal for the same key, effective-permission resolution
   over `RoleIDs` ∪ `RoleBindings`, `Parse` rejecting unregistered strings, and
