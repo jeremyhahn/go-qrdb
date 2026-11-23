@@ -415,6 +415,59 @@ func TestCatalog_FailMoveStep_SuccessClearsTheCount(t *testing.T) {
 	}
 }
 
+func TestCatalog_WaitMoveStep(t *testing.T) {
+	cat, kv, tx := newAdmittedMove(t)
+	ctx := context.Background()
+	var invalid *InvalidMoveRequestError
+	if _, err := cat.WaitMoveStep(ctx, "acme", "", "move copy step failed: node sealed"); !errors.As(err, &invalid) {
+		t.Fatalf("WaitMoveStep with no node error = %v, want *InvalidMoveRequestError", err)
+	}
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatalf("GrantMoveStep: %v", err)
+	}
+	var conflict *MoveConflictError
+	if _, err := cat.WaitMoveStep(ctx, "acme", "n2", "move copy step failed: node sealed"); !errors.As(err, &conflict) {
+		t.Fatalf("WaitMoveStep by a node not holding the step error = %v, want *MoveConflictError", err)
+	}
+	for i := 0; i < DefaultMoveStepAttempts+1; i++ {
+		m, err := cat.WaitMoveStep(ctx, "acme", "n1", "move copy step failed: node sealed")
+		if err != nil {
+			t.Fatalf("WaitMoveStep #%d: %v", i+1, err)
+		}
+		if m.State != MoveStateCopying || m.StepNode != "n1" || m.StepAttempts != 0 || m.Error != "move copy step failed: node sealed" {
+			t.Fatalf("WaitMoveStep #%d move = %+v, want copying on n1, 0 attempts, the reason", i+1, m)
+		}
+	}
+	// An unchanged reason writes nothing: no raft write per tick while
+	// the node stays sealed.
+	rawBefore := mustGet(t, kv, MoveKey("acme"))
+	tx.mu.Lock()
+	versionBefore := tx.versions[MoveKey("acme")]
+	tx.mu.Unlock()
+	if _, err := cat.WaitMoveStep(ctx, "acme", "n1", "move copy step failed: node sealed"); err != nil {
+		t.Fatalf("WaitMoveStep unchanged: %v", err)
+	}
+	tx.mu.Lock()
+	versionAfter := tx.versions[MoveKey("acme")]
+	tx.mu.Unlock()
+	if versionAfter != versionBefore || !bytes.Equal(rawBefore, mustGet(t, kv, MoveKey("acme"))) {
+		t.Fatalf("an unchanged wait rewrote the journal (version %d -> %d)", versionBefore, versionAfter)
+	}
+	// A new reason is recorded.
+	if m, err := cat.WaitMoveStep(ctx, "acme", "n1", "move copy step failed: pool unavailable"); err != nil || m.Error != "move copy step failed: pool unavailable" {
+		t.Fatalf("WaitMoveStep new reason = %+v, %v", m, err)
+	}
+	// A recorded cancel still aborts.
+	rewriteRecord(t, kv, MoveKey("acme"), func(m *Move) { m.CancelRequested = true })
+	m, err := cat.WaitMoveStep(ctx, "acme", "n1", "move copy step failed: node sealed")
+	if err != nil {
+		t.Fatalf("WaitMoveStep with a cancel: %v", err)
+	}
+	if m.State != MoveStateAborting || m.CancelRequested || m.StepNode != "" || m.Error != "cancelled by operator" {
+		t.Fatalf("WaitMoveStep with a cancel move = %+v, want aborting, cancelled by operator", m)
+	}
+}
+
 func TestCatalog_GrantMoveStep_CopiedRefused(t *testing.T) {
 	cat, _, _ := newAdmittedMove(t)
 	ctx := context.Background()

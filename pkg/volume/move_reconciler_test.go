@@ -1173,3 +1173,89 @@ func TestMoveReconciler_PhaseCatalogErrorReturned(t *testing.T) {
 		t.Fatalf("ReconcileOnce over an unknown state: %v", err)
 	}
 }
+
+// sealedRunner answers err for node's copy step while err is set, as a
+// sealed node (or one whose destination pool is unavailable) does; every
+// other step succeeds. It ignores step.Attempt, which a waiting step does
+// not raise.
+type sealedRunner struct {
+	node  string
+	err   error
+	steps []MoveStep
+}
+
+func (r *sealedRunner) RunMoveStep(_ context.Context, step MoveStep) error {
+	r.steps = append(r.steps, step)
+	if r.err != nil && step.NodeID == r.node && step.Phase == MoveStepPhaseCopy {
+		return r.err
+	}
+	return nil
+}
+
+// assertStepWaits ticks the reconciler past the attempt bound while the
+// runner answers a waiting error, and checks the move held: still copying
+// on n1, no attempt counted, the reason in Error, n1 pending, and no fail
+// transition recorded.
+func assertStepWaits(t *testing.T, waitErr error, wantReason string) {
+	t.Helper()
+	cat, kv, _ := newAdmittedMove(t)
+	log := &transitionLog{}
+	runner := &sealedRunner{node: "n1", err: waitErr}
+	r := newTestReconciler(t, cat, runner, WithMoveTransitionRecorder(log))
+	pathBefore := storedAssignment(t, kv, "acme").Path
+	reconcilePasses(t, r, DefaultMoveStepAttempts+2)
+	m := storedMove(t, kv, "acme")
+	if m == nil {
+		t.Fatal("journal deleted: the move aborted while its node waited")
+	}
+	if m.State != MoveStateCopying || m.StepNode != "n1" || m.StepAttempts != 0 {
+		t.Fatalf("move = state %q step %q attempts %d, want copying on n1 with 0 attempts", m.State, m.StepNode, m.StepAttempts)
+	}
+	if !strings.Contains(m.Error, wantReason) {
+		t.Fatalf("move error = %q, want it to name %q", m.Error, wantReason)
+	}
+	if !contains(m.NodesPending, "n1") {
+		t.Fatalf("NodesPending = %v, want n1 still pending", m.NodesPending)
+	}
+	for _, c := range log.calls {
+		if c.transition == MoveTransitionFail {
+			t.Fatalf("transition %+v recorded for a waiting step", c)
+		}
+	}
+	// The unseal: the same step runs and the move completes.
+	runner.err = nil
+	reconcilePasses(t, r, 6)
+	if m := storedMove(t, kv, "acme"); m != nil {
+		t.Fatalf("journal = %+v, want deleted after the move completed", m)
+	}
+	if a := storedAssignment(t, kv, "acme"); a.Pool != "bulk" || a.Path != pathBefore {
+		t.Fatalf("assignment = %+v, want bulk", a)
+	}
+}
+
+func TestMoveReconciler_SealedNodeStepWaits(t *testing.T) {
+	assertStepWaits(t, &NodeSealedError{Op: "move step"}, "node sealed")
+}
+
+func TestMoveReconciler_UnavailableDestinationStepWaits(t *testing.T) {
+	err := &MoveStepError{NodeID: "n1", Phase: MoveStepPhaseCopy, Err: &PoolUnavailableError{Pool: "bulk", NodeID: "n1"}}
+	assertStepWaits(t, err, "pool unavailable")
+}
+
+func TestMoveReconciler_CancelWhileSealedAborts(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	runner := &sealedRunner{node: "n1", err: &NodeSealedError{Op: "move step"}}
+	r := newTestReconciler(t, cat, runner)
+	reconcilePasses(t, r, 1)
+	if _, err := cat.CancelMove(context.Background(), "acme"); err != nil {
+		t.Fatalf("CancelMove: %v", err)
+	}
+	reconcilePasses(t, r, 1)
+	m := storedMove(t, kv, "acme")
+	if m == nil {
+		t.Fatal("journal deleted before the abort steps ran")
+	}
+	if m.State != MoveStateAborting || m.Error != "cancelled by operator" || m.StepAttempts != 0 {
+		t.Fatalf("move = state %q error %q attempts %d, want aborting, cancelled by operator, 0", m.State, m.Error, m.StepAttempts)
+	}
+}
