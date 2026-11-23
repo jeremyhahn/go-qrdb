@@ -705,10 +705,12 @@ func TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart(t *testing.T) {
 
 // TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite starts a
 // move of a raft tenant on all three nodes, stops one replica so the move
-// cannot complete, has the two running replicas acknowledge a new write
-// mid-move, cancels, and restarts the stopped replica: the move rolls back,
-// the tenant stays on default, and every node serves every acknowledged
-// write.
+// cannot complete, waits until a running replica has resumed on the
+// destination (its copy recorded and its step released), writes through
+// that replica, cancels, and restarts the stopped replica: the move rolls
+// back, the tenant stays on default, and every node serves every
+// acknowledged write. A move that grants the stopped replica first is let
+// end and retried on a fresh tenant.
 func TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite(t *testing.T) {
 	t.Parallel()
 	nodes, dirs := volumeMoveClusterStart(t)
@@ -717,12 +719,30 @@ func TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite(t *testing.T)
 	// writer) is owned by the test that starts it, so it must outlive one
 	// transport's pass. Every failure names its transport.
 	for _, proto := range multiProtocols {
-		mt, conns := volumeMoveClusterSeed(t, nodes, proto, "vk")
-		volumeMoveClusterStartMove(t, nodes[0], proto, mt.tenantID)
-		nodes[2].stop(t)
+		var mt volumeMoveTenant
+		var conns [3][]string
+		resumed := -1
+		for attempt := 0; resumed < 0; attempt++ {
+			if attempt >= volumeMoveCancelAttempts {
+				t.Fatalf("[%s] no move reached a replica resumed on the destination in %d attempts: each granted the stopped node 3 first", proto.name, volumeMoveCancelAttempts)
+			}
+			mt, conns = volumeMoveClusterSeed(t, nodes, proto, "vk")
+			volumeMoveClusterStartMove(t, nodes[0], proto, mt.tenantID)
+			nodes[2].stop(t)
+			if resumed = volumeMoveClusterResumedNode(t, nodes[0], proto, mt.tenantID); resumed >= 0 {
+				break
+			}
+			// The stopped node 3 holds the step with nothing copied: bring
+			// it back, let that move end, and retry on a fresh tenant.
+			nodes[2].startAgain(t, fmt.Sprintf("[vmove-cluster-node3-%s-retry%d] ", strings.ToLower(proto.name), attempt))
+			volumeMoveClusterWaitGone(t, nodes[0], proto, mt.tenantID)
+			t.Logf("[%s] attempt %d: the move of %s granted the stopped node 3 first; retrying on a fresh tenant", proto.name, attempt+1, mt.tenantID)
+		}
 
+		// The write goes through a replica that already resumed on the
+		// destination, after its copy was recorded and its step released.
 		ackedKey, ackedValue := "acked", "acked-mid-move-"+mt.tenantID
-		volumeMoveClusterPut(t, nodes[0], proto, mt, conns[0], ackedKey, ackedValue)
+		volumeMoveClusterPut(t, nodes[resumed], proto, mt, conns[resumed], ackedKey, ackedValue)
 
 		out, err := runCLIProto(t, nodes[0], proto, "--output", "json", "volume-pool", "cancel-move", mt.tenantID)
 		if err != nil {
@@ -839,6 +859,57 @@ func volumeMoveClusterSettlingNode(t *testing.T, node *multiProtoNode, proto mul
 		return idx
 	}
 	t.Fatalf("[%s] move of %s neither settled nor ended within %s; last get-move (err=%v): %s", proto.name, tenantID, volumeMoveDeadline, err, out)
+	return -1
+}
+
+// volumeMoveClusterResumedNode polls get-move on node until a running
+// replica (fixture node 1 or 2; node 3 is stopped) is in nodesCopied and no
+// longer holds the step: its copy is recorded and the runner reopened it
+// from the destination and released the step once it caught up. It returns
+// that replica's fixture index, or -1 when the stopped node 3 holds the
+// step with nothing copied (the move cannot reach a resumed replica).
+func volumeMoveClusterResumedNode(t *testing.T, node *multiProtoNode, proto multiProtocol, tenantID string) int {
+	t.Helper()
+	idx := -1
+	var out string
+	var err error
+	if pollUntil(volumeMoveDeadline, 10*time.Millisecond, func() bool {
+		out, err = runCLIProto(t, node, proto, "--output", "json", "volume-pool", "get-move", tenantID)
+		if err != nil {
+			if volumeMoveIsNoMove(out) {
+				t.Fatalf("[%s] move of %s ended with node 3 stopped; last get-move: %s", proto.name, tenantID, out)
+			}
+			return false
+		}
+		var m cliVolumePoolMoveJSON
+		if json.Unmarshal([]byte(out), &m) != nil {
+			return false
+		}
+		if m.State == "admitted" {
+			return false
+		}
+		if m.State != "copying" {
+			t.Fatalf("[%s] move of %s is %s with node 3 stopped, want copying: %s", proto.name, tenantID, m.State, out)
+		}
+		if m.StepNode == "3" && len(m.NodesCopied) == 0 {
+			return true
+		}
+		for _, copied := range m.NodesCopied {
+			if copied == m.StepNode {
+				continue
+			}
+			for i := range 2 {
+				if copied == strconv.Itoa(i+1) {
+					idx = i
+					return true
+				}
+			}
+		}
+		return false
+	}) {
+		return idx
+	}
+	t.Fatalf("[%s] move of %s reached no resumed replica within %s; last get-move (err=%v): %s", proto.name, tenantID, volumeMoveDeadline, err, out)
 	return -1
 }
 
