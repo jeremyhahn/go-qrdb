@@ -46,10 +46,9 @@ type Assignment struct {
 	// joined onto the pool's opened Volume.Root() by the resolving layer.
 	Path          string `json:"path"`
 	ReservedBytes int64  `json:"reservedBytes"`
-	// Retiring is set by FenceTenantDelete in the same conditional
-	// transaction that proves no move journal exists. AdmitMove refuses a
-	// retiring assignment, so a delete and a move admission are serialized
-	// by the replicated catalog: whichever commits first wins.
+	// Retiring reports that tenant delete fenced this assignment
+	// (Catalog.FenceForDelete): AdmitMove refuses it, so no move can be
+	// admitted over a tenant being torn down (decision Q10).
 	Retiring bool `json:"retiring,omitempty"`
 }
 

@@ -15,6 +15,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 )
 
 // readyReport is a fresh NodeReport mapping pool in state.
@@ -544,6 +546,108 @@ func TestCatalog_Move_Q10RefusalsAfterAdmit(t *testing.T) {
 		if !reflect.DeepEqual(inUse.Tenants, []string{"acme"}) {
 			t.Fatalf("DeletePool(%q) tenants = %v, want [acme]", pool, inUse.Tenants)
 		}
+	}
+}
+
+// interposeTx runs before once, ahead of the first transaction it carries:
+// a racing write lands between a CAS's read and its commit, with no sleeps.
+type interposeTx struct {
+	*fakeTx
+	before func()
+}
+
+func (t *interposeTx) Execute(ctx context.Context, compares []lock.Compare, successOps, failureOps []lock.Op) (*lock.TransactionResponse, error) {
+	if f := t.before; f != nil {
+		t.before = nil
+		f()
+	}
+	return t.fakeTx.Execute(ctx, compares, successOps, failureOps)
+}
+
+func TestCatalog_FenceForDelete_ThenAdmitRefused(t *testing.T) {
+	cat, kv, _ := newMoveTestCatalog(t)
+	ctx := context.Background()
+	if err := cat.FenceForDelete(ctx, "acme"); err != nil {
+		t.Fatalf("FenceForDelete: %v", err)
+	}
+	var conflict *MoveConflictError
+	if _, err := cat.AdmitMove(ctx, admitAcme()); !errors.As(err, &conflict) || conflict.Reason != "tenant is being deleted" {
+		t.Fatalf("AdmitMove after the fence error = %v, want *MoveConflictError tenant is being deleted", err)
+	}
+	if storedMove(t, kv, "acme") != nil {
+		t.Fatal("journal written over a retiring tenant")
+	}
+	if got := poolReserved(t, kv, "bulk"); got != 0 {
+		t.Fatalf("bulk reserved = %d, want 0", got)
+	}
+	if err := cat.Release(ctx, "acme"); err != nil {
+		t.Fatalf("Release of a retiring tenant: %v", err)
+	}
+	if got := poolReserved(t, kv, "fast"); got != 0 {
+		t.Fatalf("fast reserved after release = %d, want 0", got)
+	}
+}
+
+func TestCatalog_FenceForDelete_AfterAdmitRefused(t *testing.T) {
+	cat, kv, _ := newMoveTestCatalog(t)
+	ctx := context.Background()
+	if _, err := cat.AdmitMove(ctx, admitAcme()); err != nil {
+		t.Fatalf("AdmitMove: %v", err)
+	}
+	var conflict *MoveConflictError
+	if err := cat.FenceForDelete(ctx, "acme"); !errors.As(err, &conflict) {
+		t.Fatalf("FenceForDelete with a journal error = %v, want *MoveConflictError", err)
+	}
+	var a Assignment
+	if err := json.Unmarshal(mustGet(t, kv, AssignmentKey("acme")), &a); err != nil {
+		t.Fatalf("decode assignment: %v", err)
+	}
+	if a.Retiring {
+		t.Fatal("assignment marked retiring although a move runs")
+	}
+}
+
+func TestCatalog_FenceForDelete_Idempotent(t *testing.T) {
+	cat, kv, _ := newMoveTestCatalog(t)
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if err := cat.FenceForDelete(ctx, "acme"); err != nil {
+			t.Fatalf("FenceForDelete #%d: %v", i+1, err)
+		}
+	}
+	var a Assignment
+	if err := json.Unmarshal(mustGet(t, kv, AssignmentKey("acme")), &a); err != nil {
+		t.Fatalf("decode assignment: %v", err)
+	}
+	if !a.Retiring || a.Pool != "fast" || a.ReservedBytes != 200 {
+		t.Fatalf("assignment = %+v, want retiring on fast with 200 reserved", a)
+	}
+	if err := cat.FenceForDelete(ctx, "other"); err != nil {
+		t.Fatalf("FenceForDelete of an unassigned tenant: %v", err)
+	}
+}
+
+// A fence that lands between AdmitMove's reads and its commit fails the
+// admit's transaction; the retry sees the retiring assignment and refuses.
+func TestCatalog_FenceForDelete_RacesAdmit(t *testing.T) {
+	cat, kv, tx := newMoveTestCatalog(t)
+	ctx := context.Background()
+	fenceCat, _, _ := newMoveTestCatalog(t)
+	fenceCat.kv, fenceCat.tx = kv, tx
+	var fenceErr error
+	cat.tx = &interposeTx{fakeTx: tx, before: func() { fenceErr = fenceCat.FenceForDelete(ctx, "acme") }}
+	var conflict *MoveConflictError
+	if _, err := cat.AdmitMove(ctx, admitAcme()); !errors.As(err, &conflict) || conflict.Reason != "tenant is being deleted" {
+		t.Fatalf("AdmitMove racing the fence error = %v, want *MoveConflictError tenant is being deleted", err)
+	}
+	if fenceErr != nil {
+		t.Fatalf("FenceForDelete: %v", fenceErr)
+	}
+	if storedMove(t, kv, "acme") != nil {
+		t.Fatal("journal written over a fenced tenant")
+	}
+	if got := poolReserved(t, kv, "bulk"); got != 0 {
+		t.Fatalf("bulk reserved = %d, want 0", got)
 	}
 }
 

@@ -263,6 +263,18 @@ Both composers (cmd/qrdbd and `sdk/go/node`) wire the move through
   `volume_pool.move_<transition>` event per journal transition, with
   `node_id` and `phase` attributes.
 
+A reopen that fails at runtime (a catch-up timeout, a cancelled context, a
+failed barrier reopen or shard attach) does not strand the tenant until the
+next boot. `MoveStoreCloser` records the tenant as pending a reopen
+(`PendingReopen`) and releases the move hold, so the tenant stays unserved
+because its barrier or stores are closed, not because of the hold. Every
+`TenantMoveWorker.Tick`, on every node, calls `RetryReopen` once for each
+pending tenant: a tenant a move step holds is left to that step, the barrier
+is reopened only if no earlier attempt reopened it, only shards and the Host
+not already started are attached, each replica waits for catch-up with the
+same poll, and a self-managed tenant still comes back sealed. A fresh close
+of the tenant supersedes its pending reopen.
+
 ### Composition options
 
 | Option | Package | Effect |

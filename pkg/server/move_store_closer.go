@@ -71,6 +71,11 @@ type MoveStoreCloser struct {
 	mu         sync.Mutex
 	closed     map[string][]string
 	closedHost map[string]bool
+	// barrierOpen names each closed tenant whose barrier a reopen has
+	// already reopened, so a retry does not reopen it twice.
+	barrierOpen map[string]bool
+	// pending names each tenant whose reopen failed; RetryReopen finishes it.
+	pending map[string]bool
 
 	// holdMu guards held apart from mu: the placement reconciler reads the
 	// hold while CloseTenantStores holds mu across its shard closes.
@@ -146,7 +151,14 @@ func (c *MoveStoreCloser) CloseTenantStores(ctx context.Context, tenantID string
 		}
 		c.closedHost[tenantID] = true
 	}
-	return c.barriers.CloseVolumeTenant(ctx, tenantID)
+	if err := c.barriers.CloseVolumeTenant(ctx, tenantID); err != nil {
+		return err
+	}
+	// A fresh close supersedes a pending reopen: the next OpenTenantStores
+	// reopens the barrier again.
+	delete(c.barrierOpen, tenantID)
+	delete(c.pending, tenantID)
+	return nil
 }
 
 // HoldsTenant reports whether a move step holds tenantID's stores: from the
@@ -174,51 +186,136 @@ func (c *MoveStoreCloser) release(tenantID string) {
 	delete(c.held, tenantID)
 }
 
+// tryHold holds tenantID unless something already holds it.
+func (c *MoveStoreCloser) tryHold(tenantID string) bool {
+	c.holdMu.Lock()
+	defer c.holdMu.Unlock()
+	if c.held[tenantID] {
+		return false
+	}
+	if c.held == nil {
+		c.held = map[string]bool{}
+	}
+	c.held[tenantID] = true
+	return true
+}
+
 // OpenTenantStores reopens tenantID's barrier, restarts the shards and Host
 // CloseTenantStores stopped, and returns once each shard reports caught up
 // or ctx ends.
 func (c *MoveStoreCloser) OpenTenantStores(ctx context.Context, tenantID string) error {
-	// Released on every return: once the move gives up reopening, the
-	// reconciler is the retry for whatever is left detached.
+	// Released on every return: a failed reopen leaves the tenant pending,
+	// and RetryReopen (driven by the move worker's tick) finishes it. The
+	// tenant stays unserved meanwhile because its barrier or stores are
+	// closed, not because of the hold.
 	defer c.release(tenantID)
+	return c.reopen(ctx, tenantID)
+}
+
+// reopen runs the reopen path for tenantID idempotently: the barrier is
+// reopened once per close, a Host or shard already started is not attached
+// again, and every shard waits for its replica to catch up. Any failure
+// marks the tenant pending a reopen; success clears every record of the
+// close.
+func (c *MoveStoreCloser) reopen(ctx context.Context, tenantID string) error {
 	c.mu.Lock()
-	dbs := c.closed[tenantID]
+	dbs := append([]string(nil), c.closed[tenantID]...)
 	host := c.closedHost[tenantID]
+	barrierOpen := c.barrierOpen[tenantID]
 	c.mu.Unlock()
-	if err := c.barriers.ReopenVolumeTenant(ctx, tenantID); err != nil {
+	fail := func(err error) error {
+		c.mu.Lock()
+		if c.pending == nil {
+			c.pending = map[string]bool{}
+		}
+		c.pending[tenantID] = true
+		c.mu.Unlock()
 		return err
+	}
+	if !barrierOpen {
+		if err := c.barriers.ReopenVolumeTenant(ctx, tenantID); err != nil {
+			return fail(err)
+		}
+		c.mu.Lock()
+		if c.barrierOpen == nil {
+			c.barrierOpen = map[string]bool{}
+		}
+		c.barrierOpen[tenantID] = true
+		c.mu.Unlock()
 	}
 	if sr, ok := c.barriers.(MoveSealedBarriers); ok && sr.TenantBarrierSealed(tenantID) {
 		// A self-managed barrier stays sealed until its administrator
 		// unseals it, and Attach refuses a sealed barrier: the reopen is
 		// done, and the shard reconciler (on the unseal notification) and
 		// Services attach the stores once it serves.
-		c.mu.Lock()
-		delete(c.closed, tenantID)
-		delete(c.closedHost, tenantID)
-		c.mu.Unlock()
+		c.finishReopen(tenantID)
 		return nil
 	}
-	if host {
+	if host && !c.hosts.Started(tenantID) {
 		if err := c.hosts.Attach(ctx, tenantID); err != nil {
-			return err
+			return fail(err)
+		}
+	}
+	started := map[string]bool{}
+	if c.shards != nil && len(dbs) > 0 {
+		for _, s := range c.shards.ListStarted() {
+			if s.TenantID == tenantID {
+				started[s.Database] = true
+			}
 		}
 	}
 	for _, db := range dbs {
+		if started[db] {
+			continue
+		}
 		if err := c.shards.Attach(ctx, tenantID, db); err != nil {
-			return err
+			return fail(err)
 		}
 	}
 	for _, db := range dbs {
 		if err := c.awaitCaughtUp(ctx, tenantID, db); err != nil {
-			return err
+			return fail(err)
 		}
 	}
+	c.finishReopen(tenantID)
+	return nil
+}
+
+// finishReopen forgets tenantID's close once its stores serve again.
+func (c *MoveStoreCloser) finishReopen(tenantID string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	delete(c.closed, tenantID)
 	delete(c.closedHost, tenantID)
+	delete(c.barrierOpen, tenantID)
+	delete(c.pending, tenantID)
+}
+
+// PendingReopen lists, sorted, each tenant whose last reopen failed and
+// has not been retried to success.
+func (c *MoveStoreCloser) PendingReopen() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, 0, len(c.pending))
+	for id := range c.pending {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RetryReopen reruns the reopen path for a tenant PendingReopen lists. It
+// does nothing for a tenant not pending, or one a move step holds (that
+// step owns the stores). A self-managed tenant still comes back sealed.
+func (c *MoveStoreCloser) RetryReopen(ctx context.Context, tenantID string) error {
+	c.mu.Lock()
+	pending := c.pending[tenantID]
 	c.mu.Unlock()
-	return nil
+	if !pending || !c.tryHold(tenantID) {
+		return nil
+	}
+	defer c.release(tenantID)
+	return c.reopen(ctx, tenantID)
 }
 
 func (c *MoveStoreCloser) awaitCaughtUp(ctx context.Context, tenantID, db string) error {

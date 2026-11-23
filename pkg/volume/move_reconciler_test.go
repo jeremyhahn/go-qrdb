@@ -770,6 +770,111 @@ func TestMoveReconciler_CopySettlesOnlyOnRecordedCAS(t *testing.T) {
 	})
 }
 
+// flakySettleRunner runs every step and fails the first failSettle settles
+// of phase.
+type flakySettleRunner struct {
+	phase      string
+	failSettle int
+	settles    []MoveStep
+}
+
+func (f *flakySettleRunner) RunMoveStep(context.Context, MoveStep) error { return nil }
+
+func (f *flakySettleRunner) SettleMoveStep(_ context.Context, step MoveStep) error {
+	f.settles = append(f.settles, step)
+	if step.Phase == f.phase && f.failSettle > 0 {
+		f.failSettle--
+		return errors.New("settle failed")
+	}
+	return nil
+}
+
+// TestMoveReconciler_CopySettleFailureHoldsTheStep: a copy step whose settle
+// fails stays recorded and granted to its node, so the leader grants no
+// other node a step; the node's next pass settles again and releases it.
+func TestMoveReconciler_CopySettleFailureHoldsTheStep(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	runner := &flakySettleRunner{phase: MoveStepPhaseCopy, failSettle: 1}
+	r := newTestReconciler(t, cat, runner)
+	if err := tick(ctx, r); err == nil {
+		t.Fatal("tick with a failed settle: nil error, want the settle failure")
+	}
+	m := storedMove(t, kv, "acme")
+	if m.StepNode != "n1" || !m.StepSettling || !contains(m.NodesCopied, "n1") {
+		t.Fatalf("move after the failed settle = %+v, want n1 copied and settling", m)
+	}
+	if g, err := cat.GrantMoveStep(ctx, "acme"); err != nil || g.StepNode != "n1" {
+		t.Fatalf("GrantMoveStep while n1 settles = %+v, %v, want the step kept by n1", g, err)
+	}
+	if err := tick(ctx, r); err != nil {
+		t.Fatalf("tick after the settle recovers: %v", err)
+	}
+	m = storedMove(t, kv, "acme")
+	if m.StepNode == "n1" || (m.StepSettling && m.StepNode == "n1") {
+		t.Fatalf("move after the retried settle = %+v, want n1's step released", m)
+	}
+	n1Settles := 0
+	for _, s := range runner.settles {
+		if s.NodeID == "n1" && s.Phase == MoveStepPhaseCopy {
+			n1Settles++
+		}
+	}
+	if n1Settles != 2 {
+		t.Fatalf("n1 copy settles = %d, want 2 (failed, then retried)", n1Settles)
+	}
+}
+
+// TestMoveReconciler_AbortSettleFailureKeepsJournal: a copied node's abort
+// step whose settle fails keeps the journal and the destination
+// reservation; once the settle succeeds the abort finishes and frees both.
+func TestMoveReconciler_AbortSettleFailureKeepsJournal(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	reserved := poolReserved(t, kv, "bulk")
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatalf("GrantMoveStep: %v", err)
+	}
+	if _, err := cat.CompleteMoveStep(ctx, "acme", "n1"); err != nil {
+		t.Fatalf("CompleteMoveStep n1: %v", err)
+	}
+	if m, err := cat.CancelMove(ctx, "acme"); err != nil || m.State != MoveStateAborting {
+		t.Fatalf("CancelMove = %+v, %v, want aborting", m, err)
+	}
+	runner := &flakySettleRunner{phase: MoveStepPhaseAbort, failSettle: 1}
+	r := newTestReconciler(t, cat, runner)
+	if err := tick(ctx, r); err == nil {
+		t.Fatal("tick with a failed abort settle: nil error, want the settle failure")
+	}
+	m := storedMove(t, kv, "acme")
+	if m == nil || m.StepNode != "n1" || !m.StepSettling || !m.StepCopied {
+		t.Fatalf("move after the failed abort settle = %+v, want n1 settling its copied abort", m)
+	}
+	if got := poolReserved(t, kv, "bulk"); got != reserved {
+		t.Fatalf("bulk reserved = %d after the failed settle, want %d", got, reserved)
+	}
+	for i := 0; i < 6 && storedMove(t, kv, "acme") != nil; i++ {
+		if err := tick(ctx, r); err != nil {
+			t.Fatalf("tick %d after the settle recovers: %v", i, err)
+		}
+	}
+	if storedMove(t, kv, "acme") != nil {
+		t.Fatal("journal kept after the abort settled")
+	}
+	if got := poolReserved(t, kv, "bulk"); got != 0 {
+		t.Fatalf("bulk reserved = %d after the abort, want 0", got)
+	}
+	retried := false
+	for _, s := range runner.settles[1:] {
+		if s.NodeID == "n1" && s.Phase == MoveStepPhaseAbort && s.Copied {
+			retried = true
+		}
+	}
+	if !runner.settles[0].Copied || !retried {
+		t.Fatalf("settles = %+v, want n1's copied abort settled, then retried", runner.settles)
+	}
+}
+
 func TestMoveReconciler_CancelBeforeCopyStartsAbortsUncopied(t *testing.T) {
 	cat, kv, _ := newAdmittedMove(t)
 	ctx := context.Background()
