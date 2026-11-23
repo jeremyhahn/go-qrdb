@@ -546,6 +546,33 @@ func TestRunFirstBoot_AdminAlreadyExists(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestRunFirstBoot_PendingSystemSOReadFaultFailsStart pins Unit 7's fail-closed
+// rule (PR #1579 per-file review): a bound admin's fast path must not read a
+// pending system SO store fault as "nothing pending" and serve without the
+// SO; the start fails with the fault instead.
+func TestRunFirstBoot_PendingSystemSOReadFaultFailsStart(t *testing.T) {
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return &user.User{
+				ID: 9001, Username: "admin", System: true, Lifecycle: user.LifecycleActive,
+				CertBindings: []user.CertBinding{{Thumbprint: "abc", NotAfter: time.Now().Add(365 * 24 * time.Hour)}},
+			}, nil
+		},
+	}
+	sentinel := errors.New("pending store unavailable")
+	pendingStore := &mockKVServicer{
+		getFn: func(_ context.Context, key string) ([]byte, error) {
+			if key == firstboot.PendingSystemSOKey {
+				return nil, sentinel
+			}
+			return nil, &service.KeyNotFoundError{Key: key}
+		},
+	}
+
+	err := runFirstBoot(context.Background(), &mockRaftNode{}, testLeaderWait, 1, userSvc, &mockRoleServicer{}, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, pendingStore, nil, nil, nil, soTrustSeams{})
+	require.ErrorIs(t, err, sentinel, "a pending system SO read fault must fail the start")
+}
+
 // TestRunFirstBoot_AdminSystemButUnbound_FallsThroughToRepair is the
 // go-qrdb#548 review's item 2 fix: an admin that already exists and is
 // already the System user, but holds NO live certificate binding -- the
