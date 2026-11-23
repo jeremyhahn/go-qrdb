@@ -17,6 +17,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -40,6 +41,23 @@ type PoolNotHealthyOnNodeError struct {
 	// "unavailable", "unmapped", "no_report"), or empty when the node
 	// has no report for this pool at all.
 	State string
+}
+
+// TenantMovingReplicaError refuses a new replica of a tenant whose volume
+// pool move is journalled: the move copies only the replica nodes it
+// captured at admission, so a replica added mid-move would get no copy
+// step yet be cut over to an uncopied directory. Placement retries the
+// replica once the move ends and the assignment names its final pool.
+type TenantMovingReplicaError struct {
+	TenantID string
+	FromPool string
+	ToPool   string
+	State    string
+}
+
+func (e *TenantMovingReplicaError) Error() string {
+	return fmt.Sprintf("lifecycle: tenant %q is moving from pool %q to %q (%s); a new replica waits for the move to end",
+		e.TenantID, e.FromPool, e.ToPool, e.State)
 }
 
 // Error implements the error interface.
@@ -94,6 +112,15 @@ func newVolumePoolHealthFilter(allocator volume.Allocator, volumeSvc volume.Serv
 				return nil
 			}
 			return err
+		}
+
+		if m, err := volumeSvc.GetMove(ctx, tenantID); err == nil && m != nil {
+			return &TenantMovingReplicaError{TenantID: tenantID, FromPool: m.FromPool, ToPool: m.ToPool, State: m.State}
+		} else if err != nil {
+			var noMove *volume.MoveNotFoundError
+			if !errors.As(err, &noMove) {
+				return err
+			}
 		}
 
 		nodeID, err := resolveNodeID(ctx, raftAddr, raftAddrToNodeID, members)
