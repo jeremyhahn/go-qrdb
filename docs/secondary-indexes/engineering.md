@@ -185,6 +185,17 @@ func (m Message) CompoundIndexes() []index.CompoundIndexDef {
 Registered automatically when the DAO is constructed. **Field order is
 significant** — the first field is the leading prefix field.
 
+A definition with `Unique: true` admits one key per value tuple. A KV-engine
+transaction carrying `CmdFlagOrderedUnique` (a guarded batch or a unit of work
+on `sdk.NewEmbeddedKVStore`) checks its unique compound indexes over all its
+writes in op order before it applies (`checkCompoundUniqueBatch`, reading the
+index through the batch with `CompoundIndex.GetCompoundInBatch`), and applies
+its puts with the same batch-visible check (`PutCompoundBatchOrdered`). Two
+writes of one transaction that share a tuple are refused with `ErrConflict` and
+write nothing; a tuple moved from one key to another in op order is admitted.
+An unflagged transaction keeps the committed-storage check, so an existing log
+replays unchanged (#1649; `TestEmbeddedKVStore_GuardedBatchUniqueCompoundTuple`).
+
 ## Invariants
 
 - **Index names are `{database}.{entityType}.{FieldName}`.** A bare field name
