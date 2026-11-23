@@ -21,6 +21,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -60,6 +62,7 @@ type mockCredSvc struct {
 	policyName   string
 	policy       credentials.RotationPolicy
 	policyGot    string
+	policyNext   time.Time
 
 	conflictsErr error
 	resolvedName string
@@ -202,7 +205,10 @@ func (m *mockCredSvc) CredentialRotationPolicy(_ context.Context, name string) (
 	if name == "missing" {
 		return nil, credentials.ErrCredentialNotFound
 	}
-	return &service.CredentialRotationPolicyStatus{Policy: credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}}, nil
+	return &service.CredentialRotationPolicyStatus{
+		Policy:       credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2},
+		NextRotation: m.policyNext,
+	}, nil
 }
 
 func (m *mockCredSvc) CredentialMigrationConflicts(_ context.Context) ([]credentials.CredentialMigrationConflictError, error) {
@@ -546,10 +552,13 @@ func TestCredentialRotationPolicyGetCmd_SuccessYAML(t *testing.T) {
 	if svc.policyGot != "rk" {
 		t.Errorf("service was asked for %q, want rk", svc.policyGot)
 	}
-	if !strings.Contains(out, "rk") || !strings.Contains(out, "1h0m0s") ||
-		!strings.Contains(out, "enabled: true") || !strings.Contains(out, "versions: 2") {
-		t.Errorf("expected the policy in YAML, got: %q", out)
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("decode YAML %q: %v", out, err)
 	}
+	requireCredDoc(t, "yaml", doc, map[string]string{
+		"name": "rk", "enabled": "true", "interval": "1h0m0s", "retain_versions": "2",
+	})
 }
 
 func TestCredentialRotationPolicyGetCmd_NotFound(t *testing.T) {
@@ -612,9 +621,110 @@ func TestCredentialMigrationConflictsResolveCmd_SuccessYAML(t *testing.T) {
 	if svc.resolvedName != "db" || svc.resolution != credentials.MigrationDiscard {
 		t.Errorf("service saw %q %q, want db discard", svc.resolvedName, svc.resolution)
 	}
-	if !strings.Contains(out, "db") || !strings.Contains(out, "discard") {
-		t.Errorf("expected the resolution in YAML, got: %q", out)
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("decode YAML %q: %v", out, err)
 	}
+	requireCredDoc(t, "yaml", doc, map[string]string{"name": "db", "resolution": "discard"})
+}
+
+// credOutputDocs runs one credential verb with --output json and again with
+// --output yaml against the same double and returns both decoded documents.
+func credOutputDocs(t *testing.T, svc *mockCredSvc, args ...string) (jsonDoc, yamlDoc map[string]any) {
+	t.Helper()
+	jsonOut, err := executeCredCmd(t, svc, append([]string{"--output", "json"}, args...)...)
+	if err != nil {
+		t.Fatalf("%v --output json: %v", args, err)
+	}
+	yamlOut, err := executeCredCmd(t, svc, append([]string{"--output", "yaml"}, args...)...)
+	if err != nil {
+		t.Fatalf("%v --output yaml: %v", args, err)
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &jsonDoc); err != nil {
+		t.Fatalf("decode JSON %q: %v", jsonOut, err)
+	}
+	if err := yaml.Unmarshal([]byte(yamlOut), &yamlDoc); err != nil {
+		t.Fatalf("decode YAML %q: %v", yamlOut, err)
+	}
+	return jsonDoc, yamlDoc
+}
+
+// requireCredDoc requires doc to hold exactly the keys of want, each with the
+// wanted value in its printed form (JSON numbers decode as float64, YAML
+// integers as int; both print as the same digits).
+func requireCredDoc(t *testing.T, format string, doc map[string]any, want map[string]string) {
+	t.Helper()
+	if len(doc) != len(want) {
+		t.Errorf("%s keys = %v, want exactly the keys of %v", format, doc, want)
+	}
+	for key, value := range want {
+		got, ok := doc[key]
+		if !ok {
+			t.Errorf("%s output has no %q key: %v", format, key, doc)
+			continue
+		}
+		if fmt.Sprint(got) != value {
+			t.Errorf("%s %s = %v, want %s", format, key, got, value)
+		}
+	}
+}
+
+func TestCredentialRotationPolicyGetCmd_YAMLKeysMatchJSON(t *testing.T) {
+	svc := newMockCredSvc()
+	svc.policyNext = time.Date(2026, 11, 24, 9, 30, 0, 0, time.UTC)
+	jsonDoc, yamlDoc := credOutputDocs(t, svc, "credential", "rotation-policy", "get", "rk")
+	if svc.policyGot != "rk" {
+		t.Errorf("service was asked for %q, want rk", svc.policyGot)
+	}
+	want := map[string]string{
+		"name": "rk", "enabled": "true", "interval": "1h0m0s", "retain_versions": "2",
+		"next_rotation": "2026-11-24T09:30:00Z",
+	}
+	requireCredDoc(t, "json", jsonDoc, want)
+	requireCredDoc(t, "yaml", yamlDoc, want)
+}
+
+func TestCredentialRotationPolicySetCmd_YAMLKeysMatchJSON(t *testing.T) {
+	svc := newMockCredSvc()
+	jsonDoc, yamlDoc := credOutputDocs(t, svc, "credential", "rotation-policy", "set", "rk",
+		"--enabled", "--interval", "24h", "--retain-versions", "2")
+	wantPolicy := credentials.RotationPolicy{Enabled: true, Interval: 24 * time.Hour, RetainVersions: 2}
+	if svc.policyName != "rk" || svc.policy != wantPolicy {
+		t.Errorf("service saw %q %+v, want rk %+v", svc.policyName, svc.policy, wantPolicy)
+	}
+	want := map[string]string{"name": "rk", "enabled": "true", "interval": "24h", "retain_versions": "2"}
+	requireCredDoc(t, "json", jsonDoc, want)
+	requireCredDoc(t, "yaml", yamlDoc, want)
+}
+
+func TestCredentialMigrationConflictsListCmd_YAMLKeysMatchJSON(t *testing.T) {
+	jsonDoc, yamlDoc := credOutputDocs(t, newMockCredSvc(), "credential", "migration-conflicts", "list")
+	want := map[string]string{"name": "db", "value": "true", "versions": "false", "policy": "true"}
+	for format, doc := range map[string]map[string]any{"json": jsonDoc, "yaml": yamlDoc} {
+		if len(doc) != 1 {
+			t.Errorf("%s keys = %v, want only conflicts", format, doc)
+		}
+		list, ok := doc["conflicts"].([]any)
+		if !ok || len(list) != 1 {
+			t.Fatalf("%s conflicts = %#v, want a list of one", format, doc["conflicts"])
+		}
+		entry, ok := list[0].(map[string]any)
+		if !ok {
+			t.Fatalf("%s conflicts[0] = %#v, want a mapping", format, list[0])
+		}
+		requireCredDoc(t, format+" conflicts[0]", entry, want)
+	}
+}
+
+func TestCredentialMigrationConflictsResolveCmd_YAMLKeysMatchJSON(t *testing.T) {
+	svc := newMockCredSvc()
+	jsonDoc, yamlDoc := credOutputDocs(t, svc, "credential", "migration-conflicts", "resolve", "db", "--resolution", "import")
+	if svc.resolvedName != "db" || svc.resolution != credentials.MigrationImport {
+		t.Errorf("service saw %q %q, want db import", svc.resolvedName, svc.resolution)
+	}
+	want := map[string]string{"name": "db", "resolution": "import"}
+	requireCredDoc(t, "json", jsonDoc, want)
+	requireCredDoc(t, "yaml", yamlDoc, want)
 }
 
 func TestCredentialMigrationConflictsResolveCmd_NotFound(t *testing.T) {
