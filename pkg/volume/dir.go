@@ -90,7 +90,7 @@ func (e *notADirectoryError) Error() string { return "path exists but is not a d
 // bits, which is the only check that is correct under every permission
 // model (POSIX mode bits, ACLs, a read-only bind mount).
 func probeWritable(dir string) error {
-	f, err := os.CreateTemp(dir, ".qrdb-volume-probe-*")
+	f, err := os.CreateTemp(dir, ReservedPathPrefix+"volume-probe-*")
 	if err != nil {
 		return err
 	}

@@ -853,11 +853,19 @@ func (c *Catalog) AdmitMove(ctx context.Context, req MoveAdmitRequest) (*Move, e
 // Allocator: Reserve / Resolve / Release
 // ---------------------------------------------------------------------------
 
+// ReservedPathPrefix begins every pool-root name that belongs to the node,
+// not to a tenant: a move's copy-back staging directory and the volume probe
+// (dir.go). No assignment path, and so no tenant directory, may begin with
+// it, so a node-local directory under a pool root can never be a tenant's.
+const ReservedPathPrefix = ".qrdb-"
+
 // ValidateAssignmentPath reports whether path is one clean path component:
-// non-empty, with no path separator, and not "." or ".." (invariant 2).
+// non-empty, with no path separator, not "." or ".." (invariant 2), and not
+// beginning with ReservedPathPrefix.
 func ValidateAssignmentPath(tenantID, path string) error {
 	if path == "" || path != filepath.Base(path) || path == "." || path == ".." ||
-		strings.ContainsRune(path, '/') || strings.ContainsRune(path, filepath.Separator) {
+		strings.ContainsRune(path, '/') || strings.ContainsRune(path, filepath.Separator) ||
+		strings.HasPrefix(path, ReservedPathPrefix) {
 		return &InvalidAssignmentPathError{TenantID: tenantID, Path: path}
 	}
 	return nil

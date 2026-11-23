@@ -311,9 +311,13 @@ func (m *MoveStepRunner) placements(ctx context.Context, step volume.MoveStep) (
 
 // copyBackStagingName is the directory, in the source pool beside the
 // tenant's own, that a copy-back fills and verifies before it replaces the
-// source. It is one path component, as placementRoot requires.
+// source. It is one path component, as placementRoot requires. It begins
+// with volume.ReservedPathPrefix, which no assignment path or tenant id may
+// begin with, so it is never another tenant's directory: a staging directory
+// found there can only be this tenant's earlier attempt, and copy-back
+// removes it before it stages again.
 func copyBackStagingName(path string) string {
-	return path + ".copyback"
+	return volume.ReservedPathPrefix + "copyback." + path
 }
 
 // copyBackInPlaceName is the directory, inside a source root that is a mount
