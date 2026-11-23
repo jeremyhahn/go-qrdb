@@ -185,6 +185,11 @@ type Move struct {
 	// StepAttempts counts the failed attempts of StepNode's step.
 	StepAttempts int    `json:"stepAttempts,omitempty"`
 	Error        string `json:"error,omitempty"`
+	// CancelRequested reports an operator cancel that arrived while
+	// StepNode held a copy step: the step keeps its holder, which awaits
+	// its copy; CompleteMoveStep or FailMoveStep then turns the move
+	// aborting with the step's real copied state.
+	CancelRequested bool `json:"cancelRequested,omitempty"`
 	// ReservedBytes is the reservation taken on ToPool at admit: the
 	// tenant's Assignment.ReservedBytes at that moment. A later abort
 	// releases it; cut over keeps it as the tenant's reservation.

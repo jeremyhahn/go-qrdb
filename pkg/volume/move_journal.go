@@ -146,6 +146,9 @@ func (c *Catalog) GrantMoveStep(ctx context.Context, tenantID string) (*Move, er
 		if m.StepNode != "" {
 			return nil
 		}
+		if m.CancelRequested {
+			return &MoveConflictError{TenantID: tenantID, Reason: "move is cancelling: no step to grant"}
+		}
 		if len(m.NodesPending) == 0 {
 			return &MoveConflictError{TenantID: tenantID, Reason: "move is " + m.State + ": no step to grant"}
 		}
@@ -181,6 +184,11 @@ func (c *Catalog) CompleteMoveStep(ctx context.Context, tenantID, nodeID string)
 		sort.Strings(m.NodesCopied)
 		m.StepNode = ""
 		m.StepAttempts = 0
+		if m.CancelRequested {
+			m.CancelRequested = false
+			m.State = MoveStateAborting
+			return nil
+		}
 		m.Error = ""
 		if len(m.NodesPending) == 0 {
 			m.NodesPending = nil
@@ -209,6 +217,14 @@ func (c *Catalog) FailMoveStep(ctx context.Context, tenantID, nodeID, reason str
 	return c.updateMove(ctx, tenantID, func(m *Move) error {
 		if err := holdsStep(m, MoveStateCopying, nodeID); err != nil {
 			return err
+		}
+		if m.CancelRequested {
+			m.CancelRequested = false
+			m.State = MoveStateAborting
+			m.StepNode = ""
+			m.StepAttempts = 0
+			m.Error = "cancelled by operator"
+			return nil
 		}
 		m.StepAttempts++
 		m.Error = reason
@@ -469,12 +485,29 @@ func (c *Catalog) CancelMove(ctx context.Context, tenantID string) (*Move, error
 	if current == nil {
 		return nil, &MoveNotFoundError{TenantID: tenantID}
 	}
-	if current.State == MoveStateAborting {
+	if current.State == MoveStateAborting || current.CancelRequested {
 		return current, nil
 	}
 	return c.updateMove(ctx, tenantID, func(m *Move) error {
+		if m.CancelRequested {
+			return nil
+		}
 		switch m.State {
-		case MoveStateAdmitted, MoveStateCopying, MoveStateCopied:
+		case MoveStateCopying:
+			if m.StepNode != "" {
+				// A copy is running: its holder awaits it, and the step's
+				// completion or failure turns the move aborting with the
+				// node's real copied state, so abort copies the
+				// destination's writes back when the destination went live.
+				m.CancelRequested = true
+				m.Error = "cancelled by operator"
+				return nil
+			}
+			m.State = MoveStateAborting
+			m.StepAttempts = 0
+			m.Error = "cancelled by operator"
+			return nil
+		case MoveStateAdmitted, MoveStateCopied:
 			m.State = MoveStateAborting
 			m.StepNode = ""
 			m.StepAttempts = 0

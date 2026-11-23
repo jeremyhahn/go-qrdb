@@ -654,6 +654,79 @@ func TestMoveReconciler_CancelThenAbort(t *testing.T) {
 	}
 }
 
+// cancelDuringCopyRunner cancels the move from inside its first copy step:
+// the operator's cancel lands while the copy runs.
+type cancelDuringCopyRunner struct {
+	cat     *Catalog
+	copyErr error
+	steps   []MoveStep
+}
+
+func (c *cancelDuringCopyRunner) RunMoveStep(ctx context.Context, step MoveStep) error {
+	c.steps = append(c.steps, step)
+	if step.Phase != MoveStepPhaseCopy {
+		return nil
+	}
+	m, err := c.cat.CancelMove(ctx, step.TenantID)
+	if err != nil {
+		return err
+	}
+	if m.State != MoveStateCopying || !m.CancelRequested || m.StepNode != step.NodeID {
+		return errors.New("cancel did not wait for the running copy")
+	}
+	return c.copyErr
+}
+
+func TestMoveReconciler_CancelDuringCopyAwaitsIt(t *testing.T) {
+	for name, tc := range map[string]struct {
+		copyErr  error
+		n1Copied bool
+	}{
+		"copy completes": {n1Copied: true},
+		"copy fails":     {copyErr: errors.New("disk full")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cat, kv, _ := newAdmittedMove(t)
+			runner := &cancelDuringCopyRunner{cat: cat, copyErr: tc.copyErr}
+			r := newTestReconciler(t, cat, runner)
+			reconcilePasses(t, r, 3)
+			want := []MoveStep{
+				{TenantID: "acme", NodeID: "n1", FromPool: "fast", ToPool: "bulk", Attempt: 1, Phase: MoveStepPhaseCopy},
+				{TenantID: "acme", NodeID: "n1", FromPool: "fast", ToPool: "bulk", Attempt: 1, Phase: MoveStepPhaseAbort, Copied: tc.n1Copied},
+				{TenantID: "acme", NodeID: "n2", FromPool: "fast", ToPool: "bulk", Attempt: 1, Phase: MoveStepPhaseAbort},
+			}
+			if !reflect.DeepEqual(runner.steps, want) {
+				t.Fatalf("steps = %+v, want %+v", runner.steps, want)
+			}
+			if m := storedMove(t, kv, "acme"); m != nil {
+				t.Fatalf("journal = %+v, want deleted", m)
+			}
+		})
+	}
+}
+
+func TestMoveReconciler_CancelBeforeCopyStartsAbortsUncopied(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.CancelMove(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	runner := &scriptedRunner{}
+	r := newTestReconciler(t, cat, runner)
+	if err := r.RunLocalSteps(ctx, "n1"); err != nil {
+		t.Fatalf("RunLocalSteps: %v", err)
+	}
+	if len(runner.steps) != 0 {
+		t.Fatalf("steps = %+v, want no copy after the cancel", runner.steps)
+	}
+	if s := storedMove(t, kv, "acme"); s.State != MoveStateAborting || s.StepNode != "" || len(s.NodesCopied) != 0 {
+		t.Fatalf("journal = %+v, want aborting with n1 uncopied", s)
+	}
+}
+
 func TestMoveReconciler_AbortFailureRetried(t *testing.T) {
 	cat, kv, _ := copiedMove(t)
 	if _, err := cat.CancelMove(context.Background(), "acme"); err != nil {

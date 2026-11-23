@@ -612,7 +612,7 @@ func TestCatalog_CancelMove(t *testing.T) {
 			if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := cat.FailMoveStep(ctx, "acme", "n1", "x", 0); err != nil {
+			if _, err := cat.CompleteMoveStep(ctx, "acme", "n1"); err != nil {
 				t.Fatal(err)
 			}
 			return cat, kv, tx
@@ -673,22 +673,56 @@ func TestCatalog_CancelMove(t *testing.T) {
 	})
 }
 
-func TestCatalog_CancelMove_InFlightStepRefused(t *testing.T) {
-	cat, kv, _ := newAdmittedMove(t)
+func TestCatalog_CancelMove_AwaitsRunningCopy(t *testing.T) {
 	ctx := context.Background()
-	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
-		t.Fatal(err)
+	cancelRunning := func(t *testing.T) (*Catalog, *fakeKV) {
+		t.Helper()
+		cat, kv, _ := newAdmittedMove(t)
+		if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+			t.Fatal(err)
+		}
+		m, err := cat.CancelMove(ctx, "acme")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.State != MoveStateCopying || m.StepNode != "n1" || !m.CancelRequested || m.Error != "cancelled by operator" {
+			t.Fatalf("CancelMove = %+v, want copying, n1 still holding, cancel requested", m)
+		}
+		raw := mustGet(t, kv, MoveKey("acme"))
+		if again, err := cat.CancelMove(ctx, "acme"); err != nil || !again.CancelRequested {
+			t.Fatalf("second CancelMove = %+v, %v", again, err)
+		}
+		if !bytes.Equal(raw, mustGet(t, kv, MoveKey("acme"))) {
+			t.Fatal("cancelling a cancelling move wrote the journal")
+		}
+		return cat, kv
 	}
-	if _, err := cat.CancelMove(ctx, "acme"); err != nil {
-		t.Fatal(err)
-	}
-	_, err := cat.CompleteMoveStep(ctx, "acme", "n1")
-	wantConflict(t, "CompleteMoveStep after cancel", err)
-	_, err = cat.FailMoveStep(ctx, "acme", "n1", "x", 0)
-	wantConflict(t, "FailMoveStep after cancel", err)
-	if s := storedMove(t, kv, "acme"); s.State != MoveStateAborting || !reflect.DeepEqual(s.NodesPending, []string{"n1", "n2"}) {
-		t.Fatalf("journal = %+v, want aborting with both nodes pending", s)
-	}
+	t.Run("copy completes", func(t *testing.T) {
+		cat, kv := cancelRunning(t)
+		if _, err := cat.CompleteMoveStep(ctx, "acme", "n1"); err != nil {
+			t.Fatalf("CompleteMoveStep after cancel: %v", err)
+		}
+		s := storedMove(t, kv, "acme")
+		if s.State != MoveStateAborting || s.StepNode != "" || s.CancelRequested ||
+			!reflect.DeepEqual(s.NodesCopied, []string{"n1"}) || !reflect.DeepEqual(s.NodesPending, []string{"n2"}) {
+			t.Fatalf("journal = %+v, want aborting with n1 copied", s)
+		}
+		m, err := cat.GrantAbortStep(ctx, "acme")
+		if err != nil || m.StepNode != "n1" {
+			t.Fatalf("GrantAbortStep = %+v, %v; want n1 (copied, copies back)", m, err)
+		}
+	})
+	t.Run("copy fails", func(t *testing.T) {
+		cat, kv := cancelRunning(t)
+		if _, err := cat.FailMoveStep(ctx, "acme", "n1", "x", 0); err != nil {
+			t.Fatalf("FailMoveStep after cancel: %v", err)
+		}
+		s := storedMove(t, kv, "acme")
+		if s.State != MoveStateAborting || s.StepNode != "" || s.CancelRequested || len(s.NodesCopied) != 0 ||
+			!reflect.DeepEqual(s.NodesPending, []string{"n1", "n2"}) || s.Error != "cancelled by operator" {
+			t.Fatalf("journal = %+v, want aborting with both nodes pending", s)
+		}
+	})
 }
 
 func TestCatalog_AbortSteps(t *testing.T) {

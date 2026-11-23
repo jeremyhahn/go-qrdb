@@ -263,6 +263,15 @@ func (r *MoveReconciler) runStep(ctx context.Context, m Move, p moveStepPhase) e
 	if p.name == MoveStepPhaseAbort {
 		step.Copied = contains(m.NodesCopied, m.StepNode)
 	}
+	if p.name == MoveStepPhaseCopy && m.CancelRequested {
+		// Cancelled before this node started its copy: the source stays
+		// authoritative, so the move aborts with the node uncopied.
+		if _, err := p.fail(ctx, m.TenantID, step.NodeID, "cancelled by operator"); err != nil {
+			return err
+		}
+		r.recordTransition(ctx, MoveTransitionFail, m.TenantID, step.NodeID, step.Phase)
+		return nil
+	}
 	if runErr := r.runner.RunMoveStep(ctx, step); runErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
