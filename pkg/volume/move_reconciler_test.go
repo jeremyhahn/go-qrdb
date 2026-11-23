@@ -931,6 +931,53 @@ func TestMoveReconciler_CopySettleFailureHoldsTheStep(t *testing.T) {
 	}
 }
 
+// blockingSettleRunner blocks each settle until release yields its result,
+// telling entered first.
+type blockingSettleRunner struct {
+	entered chan MoveStep
+	release chan error
+}
+
+func (b *blockingSettleRunner) RunMoveStep(context.Context, MoveStep) error { return nil }
+
+func (b *blockingSettleRunner) SettleMoveStep(_ context.Context, step MoveStep) error {
+	b.entered <- step
+	return <-b.release
+}
+
+// TestMoveReconciler_ResumedSettleDoesNotReleaseUntilSettled: a fresh
+// reconciler (a restarted node) finding its step recorded but settling keeps
+// the step granted while the settle runs, and releases it only once the
+// settle returns nil.
+func TestMoveReconciler_ResumedSettleDoesNotReleaseUntilSettled(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	if err := tick(ctx, newTestReconciler(t, cat, &flakySettleRunner{phase: MoveStepPhaseCopy, failSettle: 1})); err == nil {
+		t.Fatal("tick with a failed settle: nil error, want the settle failure")
+	}
+	if m := storedMove(t, kv, "acme"); m.StepNode != "n1" || !m.StepSettling {
+		t.Fatalf("move before the restart = %+v, want n1 settling", m)
+	}
+	runner := &blockingSettleRunner{entered: make(chan MoveStep), release: make(chan error)}
+	r := newTestReconciler(t, cat, runner)
+	done := make(chan error, 1)
+	go func() { done <- tick(ctx, r) }()
+	step := <-runner.entered
+	if step.NodeID != "n1" || step.Phase != MoveStepPhaseCopy {
+		t.Fatalf("resumed settle = %+v, want n1's copy", step)
+	}
+	if m := storedMove(t, kv, "acme"); m.StepNode != "n1" || !m.StepSettling {
+		t.Fatalf("move while the resumed settle runs = %+v, want n1's step still held", m)
+	}
+	runner.release <- nil
+	if err := <-done; err != nil {
+		t.Fatalf("tick after the settle: %v", err)
+	}
+	if m := storedMove(t, kv, "acme"); m.StepNode == "n1" || !contains(m.NodesCopied, "n1") {
+		t.Fatalf("move after the settle = %+v, want n1 copied and its step released", m)
+	}
+}
+
 // TestMoveReconciler_AbortSettleFailureKeepsJournal: a copied node's abort
 // step whose settle fails keeps the journal and the destination
 // reservation; once the settle succeeds the abort finishes and frees both.
