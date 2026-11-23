@@ -139,8 +139,8 @@ qrdb credential rotation-policy get smtp-password
 List the credentials whose copy on the node you are talking to differs from
 the replicated record and was kept when the node migrated its records (see
 [architecture.md](architecture.md#prefix-migration)), with the parts that
-differ. No flags. Never prints a value. An empty list prints nothing. Needs
-`credentials:list`.
+differ. No flags. Never prints a value. An empty list prints nothing, or
+`{"conflicts": []}` with `--output json`. Needs `credentials:list`.
 
 ```bash
 qrdb credential migration-conflicts list
@@ -163,8 +163,10 @@ qrdb credential migration-conflicts resolve smtp-password --resolution import
 # migration conflict for smtp-password resolved: import
 ```
 
-A name with no conflict on the node fails with not-found; a resolution other
-than `import` or `discard` fails with invalid-argument.
+A name with no conflict on the node fails with not-found (`credentials:
+migration conflict not found`); a resolution other than `import` or `discard`
+fails with invalid-argument (`credentials: migration resolution must be import
+or discard`). Both exit non-zero and change nothing.
 
 ## `qrdb credential versions <name>`
 
@@ -217,6 +219,12 @@ QUIC, MCP and Unix. `TestCredential_CLI_RotationPolicy_PerProtocol` runs
 read back, an invalid one and any policy on a `manual` store are refused with
 the typed error, and a disabled one reads back with nothing scheduled.
 `TestCredential_CLI_Cluster_OneStore_PerProtocol` sets a policy through one
-node of a three-node cluster and reads it through another. `migration-conflicts`
-is covered by `cmd/qrdb` unit tests and by each SDK transport's tests: a stock
-cluster has no pre-upgrade copies to conflict.
+node of a three-node cluster and reads it through another.
+`TestCredential_CLI_MigrationConflicts_PerProtocol` runs `migration-conflicts
+list` and `resolve` over the same five: the list is empty in table and JSON
+form, and a resolve of a name with no conflict, with an unknown resolution or
+with no `--resolution` is refused with the typed error and a non-zero exit. A
+stock cluster has no pre-upgrade copies to conflict, so the import and discard
+paths are covered by `pkg/credentials` and each SDK transport's tests.
+`TestCredential_CLI_TenantStores_PerProtocol` also checks that a rotation
+policy set in one tenant governs that tenant's credential only.

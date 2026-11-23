@@ -47,7 +47,11 @@ methods included, and each SDK transport (embedded, gRPC, MCP, QUIC, REST,
 Unix) implements it against the column above. The embedded transport checks
 the same `scp` permission in process. A refused policy surfaces as the typed
 `InvalidRotationPolicyError` text, `credentials: invalid rotation policy:
-<reason>`, on every transport.
+<reason>`, on every transport, and a resolution other than `import` or
+`discard` as `credentials: migration resolution must be import or discard`.
+Without `credentials:rotate` the embedded transport refuses set rotation
+policy, read rotation policy and resolve, and without `credentials:list` the
+conflict list, each with `auth.ErrUnauthorized`.
 
 **Every operation acts on the caller's own store**, chosen from the tenant of
 the authenticated principal: the platform's store for a system principal, the
@@ -118,7 +122,8 @@ carries a value:
 ```
 
 The list is the serving node's own: each node reports only the copies it
-kept, so an operator asks each node in turn.
+kept, so an operator asks each node in turn. A node with no conflicts answers
+`{ "conflicts": [] }`.
 
 Resolve a migration conflict (the name travels in the path on REST and in the
 body elsewhere):
