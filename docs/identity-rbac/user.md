@@ -554,6 +554,15 @@ router of your own, build the middleware from the SDK (`sdk` is
   `RESTMiddleware(routes, router)` method. A request whose method has no
   registered entry on a registered path is refused. A path you did not register
   needs an authenticated caller but no permission, so register every route.
+- `sdk.HoldsSystemRole(ctx, resolver, tenantID, roleIDs, roleName)` reports
+  whether `roleIDs` holds the built-in role `roleName` in the tenant, matching
+  the persisted role ID through an `sdk.RoleNameResolver`, never the name. A
+  nil resolver is an `sdk.RoleResolverRequiredError` (use `errors.As`).
+- `sdk.Permission*` names the keys, certs, passwords (including
+  `sdk.PermissionPasswordsOverrideOwnership`), ssh, pin and piv permissions,
+  `sdk.PermissionDevicesOnboard` and `sdk.PermissionDevicePair`, `DeviceRevoke`,
+  `DeviceShare` and `DeviceSync`, so a consumer checks them without importing
+  `pkg/permission`.
 
 ## Troubleshooting
 
