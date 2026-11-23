@@ -192,18 +192,23 @@ func TestLogService_ReadsABarrierTenantsAuditInstanceWhereItsLoggerWrites(t *tes
 		rfc6962.DefaultHasher.HashLeaf(leaf.Body), resp.Hashes, head.Head.Root); err != nil {
 		t.Fatalf("VerifyInclusion: %v", err)
 	}
-	listed, err := svc.ListLogs(ctx, &ListLogsRequest{Database: vlog.AuditDatabase})
-	if err != nil {
-		t.Fatalf("ListLogs: %v", err)
-	}
-	if !slices.Contains(listed.Logs, vlog.AuditLogID("vault")) {
-		t.Fatalf("ListLogs = %v, want it to name %v", listed.Logs, vlog.AuditLogID("vault"))
-	}
 	if _, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("forged")}}); !errors.As(err, new(*vlog.ReservedLogError)) {
 		t.Fatalf("Append(audit) = %v, want *vlog.ReservedLogError", err)
 	}
 	if *homeCalls != 0 {
 		t.Fatalf("the home group saw %d audit calls, want none: the logger writes the system shard", *homeCalls)
+	}
+	// Listing the system database also reads the home group, which holds
+	// the tenant's other system logs; the audit log comes from the shard.
+	home.syncReadFn = func(context.Context, uint64, interface{}) (interface{}, error) {
+		return []vlog.LogID{{TenantID: "vault", Database: vlog.AuditDatabase, Log: "releases"}}, nil
+	}
+	listed, err := svc.ListLogs(ctx, &ListLogsRequest{Database: vlog.AuditDatabase})
+	if err != nil {
+		t.Fatalf("ListLogs: %v", err)
+	}
+	if !slices.Contains(listed.Logs, vlog.AuditLogID("vault")) || len(listed.Logs) != 2 {
+		t.Fatalf("ListLogs = %v, want %v and system/releases", listed.Logs, vlog.AuditLogID("vault"))
 	}
 }
 

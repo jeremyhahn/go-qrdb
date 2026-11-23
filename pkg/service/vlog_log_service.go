@@ -19,6 +19,8 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"sync"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -69,7 +71,7 @@ var _ vlog.SigningKeyReader = (*logKeyReader)(nil)
 
 // ReadSigningKey reads id's k/<version> record.
 func (r *logKeyReader) ReadSigningKey(ctx context.Context, id vlog.LogID, version uint32) (*vlog.SigningKey, error) {
-	return logRead[*vlog.SigningKey](ctx, r.route, id.TenantID, id.Database, vlog.KeyRequest{ID: id, Version: version})
+	return logRead[*vlog.SigningKey](ctx, r.route, id, vlog.KeyRequest{ID: id, Version: version})
 }
 
 // logRefusalErrors rebuild the typed vlog error of each log-refusal reason
@@ -98,8 +100,9 @@ func (s *logService) logID(ctx context.Context, ref LogRef, op string) (vlog.Log
 
 // resolve is the logRoute's resolution of tenantID's database name to the
 // target its logs are applied in and read from.
-func (r *logRoute) resolve(ctx context.Context, tenantID, name string) (logTarget, error) {
-	if name == vlog.AuditDatabase && r.audit != nil {
+func (r *logRoute) resolve(ctx context.Context, id vlog.LogID) (logTarget, error) {
+	tenantID, name := id.TenantID, id.Database
+	if isAuditLog(id) && r.audit != nil {
 		return r.auditGroup(ctx, tenantID)
 	}
 	db, err := r.databases.GetOwned(name, tenantID)
@@ -271,7 +274,7 @@ var (
 // refused while any of features is not active there, and returns the apply's
 // value.
 func (s *logService) propose(ctx context.Context, id vlog.LogID, features []feature.Feature, encode func() ([]byte, error)) (uint64, error) {
-	g, err := s.admit(ctx, id.TenantID, id.Database, features)
+	g, err := s.admit(ctx, id, features)
 	if err != nil {
 		return 0, err
 	}
@@ -286,8 +289,9 @@ type logGroup struct {
 // admit resolves the tenant's target and refuses the write while any of
 // features is not active there. A write that mints a key admits first, so a
 // refused tenant never has a key created for it.
-func (s *logService) admit(ctx context.Context, tenantID, db string, features []feature.Feature) (logGroup, error) {
-	target, err := s.route.resolve(ctx, tenantID, db)
+func (s *logService) admit(ctx context.Context, id vlog.LogID, features []feature.Feature) (logGroup, error) {
+	tenantID := id.TenantID
+	target, err := s.route.resolve(ctx, id)
 	if err != nil {
 		return logGroup{}, err
 	}
@@ -330,9 +334,9 @@ func (g logGroup) propose(ctx context.Context, id vlog.LogID, encode func() ([]b
 }
 
 // read answers one vlog.Request from the tenant's group.
-func logRead[T any](ctx context.Context, route *logRoute, tenantID, db string, req vlog.Request) (T, error) {
+func logRead[T any](ctx context.Context, route *logRoute, id vlog.LogID, req vlog.Request) (T, error) {
 	var zero T
-	target, err := route.resolve(ctx, tenantID, db)
+	target, err := route.resolve(ctx, id)
 	if err != nil {
 		return zero, err
 	}
@@ -369,7 +373,7 @@ func (s *logService) CreateLog(ctx context.Context, req *CreateLogRequest) (*Cre
 		VerifierKeys:      req.VerifierKeys,
 		AllowExpireBodies: req.AllowExpireBodies,
 	}
-	g, err := s.admit(ctx, id.TenantID, id.Database, logKeyFeatures)
+	g, err := s.admit(ctx, id, logKeyFeatures)
 	if err != nil {
 		return nil, err
 	}
@@ -401,11 +405,11 @@ func (s *logService) RotateKey(ctx context.Context, req *RotateKeyRequest) (*Rot
 	if err != nil {
 		return nil, err
 	}
-	desc, err := logRead[*vlog.Descriptor](ctx, s.route, id.TenantID, id.Database, vlog.DescriptorRequest{ID: id})
+	desc, err := logRead[*vlog.Descriptor](ctx, s.route, id, vlog.DescriptorRequest{ID: id})
 	if err != nil {
 		return nil, err
 	}
-	g, err := s.admit(ctx, id.TenantID, id.Database, logKeyFeatures)
+	g, err := s.admit(ctx, id, logKeyFeatures)
 	if err != nil {
 		return nil, err
 	}
@@ -446,11 +450,42 @@ func (s *logService) ListLogs(ctx context.Context, req *ListLogsRequest) (*ListL
 		return nil, err
 	}
 	target := routingTenant(own)
-	logs, err := logRead[[]vlog.LogID](ctx, s.route, target, req.Database, vlog.ListRequest{TenantID: target, Database: req.Database})
+	dbID := vlog.LogID{TenantID: target, Database: req.Database}
+	listReq := vlog.ListRequest{TenantID: target, Database: req.Database}
+	logs, err := logRead[[]vlog.LogID](ctx, s.route, dbID, listReq)
 	if err != nil {
 		return nil, err
 	}
-	return &ListLogsResponse{Logs: logs}, nil
+	if req.Database != vlog.AuditDatabase || s.route.audit == nil {
+		return &ListLogsResponse{Logs: logs}, nil
+	}
+	// The audit log lives on the system shard while every other log of the
+	// system database lives where the tenant's data does: merge the two.
+	auditID := vlog.LogID{TenantID: target, Database: vlog.AuditDatabase, Log: vlog.AuditLog}
+	audit, err := logRead[[]vlog.LogID](ctx, s.route, auditID, listReq)
+	if err != nil {
+		return nil, err
+	}
+	merged := make([]vlog.LogID, 0, len(logs)+1)
+	for _, id := range logs {
+		if !isAuditLog(id) {
+			merged = append(merged, id)
+		}
+	}
+	for _, id := range audit {
+		if isAuditLog(id) {
+			merged = append(merged, id)
+		}
+	}
+	slices.SortFunc(merged, func(a, b vlog.LogID) int { return strings.Compare(a.Log, b.Log) })
+	return &ListLogsResponse{Logs: merged}, nil
+}
+
+// isAuditLog reports whether id names a tenant's audit log (system/audit),
+// the one log that is served by the system shard whatever the tenant's
+// barrier: every other log of the system database is the tenant's own data.
+func isAuditLog(id vlog.LogID) bool {
+	return id.Database == vlog.AuditDatabase && id.Log == vlog.AuditLog
 }
 
 // Append appends entries to a log.
@@ -465,7 +500,7 @@ func (s *logService) Append(ctx context.Context, req *AppendRequest) (*AppendRes
 		// A plain log created under the audit name before the instance
 		// existed has no Audit in its descriptor and keeps its own entries;
 		// the apply refuses the instance again from committed state.
-		desc, err := logRead[*vlog.Descriptor](ctx, s.route, id.TenantID, id.Database, vlog.DescriptorRequest{ID: id})
+		desc, err := logRead[*vlog.Descriptor](ctx, s.route, id, vlog.DescriptorRequest{ID: id})
 		if err != nil {
 			return nil, err
 		}
@@ -488,7 +523,7 @@ func (s *logService) GetEntries(ctx context.Context, req *GetEntriesRequest) (*G
 	if err != nil {
 		return nil, err
 	}
-	entries, err := logRead[[]vlog.Entry](ctx, s.route, id.TenantID, id.Database, vlog.GetRequest{ID: id, From: req.From, Limit: req.Limit})
+	entries, err := logRead[[]vlog.Entry](ctx, s.route, id, vlog.GetRequest{ID: id, From: req.From, Limit: req.Limit})
 	if err != nil {
 		return nil, err
 	}
@@ -501,7 +536,7 @@ func (s *logService) ProveInclusion(ctx context.Context, req *InclusionRequest) 
 	if err != nil {
 		return nil, err
 	}
-	hashes, err := logRead[[][]byte](ctx, s.route, id.TenantID, id.Database, vlog.InclusionRequest{ID: id, Index: req.Index, Size: req.Size})
+	hashes, err := logRead[[][]byte](ctx, s.route, id, vlog.InclusionRequest{ID: id, Index: req.Index, Size: req.Size})
 	if err != nil {
 		return nil, err
 	}
@@ -514,7 +549,7 @@ func (s *logService) ProveConsistency(ctx context.Context, req *ConsistencyReque
 	if err != nil {
 		return nil, err
 	}
-	hashes, err := logRead[[][]byte](ctx, s.route, id.TenantID, id.Database, vlog.ConsistencyRequest{ID: id, Size1: req.Size1, Size2: req.Size2})
+	hashes, err := logRead[[][]byte](ctx, s.route, id, vlog.ConsistencyRequest{ID: id, Size1: req.Size1, Size2: req.Size2})
 	if err != nil {
 		return nil, err
 	}
@@ -527,7 +562,7 @@ func (s *logService) Head(ctx context.Context, req *HeadRequest) (*HeadResponse,
 	if err != nil {
 		return nil, err
 	}
-	head, err := logRead[*vlog.Head](ctx, s.route, id.TenantID, id.Database, vlog.HeadRequest{ID: id})
+	head, err := logRead[*vlog.Head](ctx, s.route, id, vlog.HeadRequest{ID: id})
 	if err != nil {
 		return nil, err
 	}
@@ -545,7 +580,7 @@ func (s *logService) SignHead(ctx context.Context, req *SignHeadRequest) (*SignH
 	if err != nil {
 		return nil, err
 	}
-	desc, err := logRead[*vlog.Descriptor](ctx, s.route, id.TenantID, id.Database, vlog.DescriptorRequest{ID: id})
+	desc, err := logRead[*vlog.Descriptor](ctx, s.route, id, vlog.DescriptorRequest{ID: id})
 	if err != nil {
 		return nil, err
 	}
@@ -553,7 +588,7 @@ func (s *logService) SignHead(ctx context.Context, req *SignHeadRequest) (*SignH
 	if !ok {
 		return nil, &vlog.KeyNotFoundError{ID: id, Version: vlog.FirstKeyVersion}
 	}
-	head, err := logRead[*vlog.Head](ctx, s.route, id.TenantID, id.Database, vlog.HeadRequest{ID: id})
+	head, err := logRead[*vlog.Head](ctx, s.route, id, vlog.HeadRequest{ID: id})
 	if err != nil {
 		return nil, err
 	}
@@ -609,7 +644,7 @@ func (s *logService) ExpireBodies(ctx context.Context, req *ExpireBodiesRequest)
 // committed, so a database created again under the name sees no old log or
 // key. A group where the verifiable log is not active holds no logs.
 func (s *logService) DropDatabaseLogs(ctx context.Context, tenantID, name string) error {
-	g, err := s.admit(ctx, tenantID, name, logFeatures)
+	g, err := s.admit(ctx, vlog.LogID{TenantID: tenantID, Database: name}, logFeatures)
 	if err != nil {
 		if _, inactive := errors.AsType[*LogFeatureNotActiveError](err); inactive {
 			return nil
