@@ -472,14 +472,14 @@ func TestCLIMultiProtocolCredentialRotateWithGracePeriod(t *testing.T) {
 // scheduler's passes over it rotate nothing, and the value, the version list
 // and the next rotation read back over every protocol stay as they were.
 //
-// The api harness runs against an already started qrdbd and cannot set
-// seal.credential_rotation_check_period, so the wait covers one check period
-// of QRDB_CREDENTIAL_ROTATION_CHECK_PERIOD (default the shipped 1m) past the
-// due time. The protocols run in parallel, so the suite waits that long once.
+// config.test.yaml sets seal.credential_rotation_check_period to 1s; a stack
+// started with another period names it in QRDB_CREDENTIAL_ROTATION_CHECK_PERIOD.
+// The wait ends on the server-reported next rotation lying two check periods
+// in the past. The protocols run in parallel.
 func TestCLIMultiProtocolCredentialScheduledRotationNoValueSource(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
-	period, err := time.ParseDuration(getEnv("QRDB_CREDENTIAL_ROTATION_CHECK_PERIOD", "1m"))
+	period, err := time.ParseDuration(getEnv("QRDB_CREDENTIAL_ROTATION_CHECK_PERIOD", "1s"))
 	if err != nil || period <= 0 {
 		t.Fatalf("QRDB_CREDENTIAL_ROTATION_CHECK_PERIOD: %v, want a positive Go duration", err)
 	}
@@ -541,19 +541,45 @@ func TestCLIMultiProtocolCredentialScheduledRotationNoValueSource(t *testing.T) 
 			assertEqual(t, "v1", before.value, fmt.Sprintf("[%s] stored value", proto))
 			assertEqual(t, 1, len(before.versions), fmt.Sprintf("[%s] versions before the policy falls due", proto))
 
-			// The policy is due one interval after it was set; a pass of the
-			// scheduler has run past it once a check period has also gone by.
-			deadline := time.Now().Add(time.Second + period + 5*time.Second)
-			ticker := time.NewTicker(time.Second)
-			defer ticker.Stop()
-			for time.Now().Before(deadline) {
-				<-ticker.C
+			due, err := time.Parse(time.RFC3339Nano, before.next)
+			if err != nil {
+				t.Fatalf("[%s] next rotation %q: %v", proto, before.next, err)
+			}
+			// Every poll asserts nothing changed; the wait ends on the
+			// server's own next rotation lying two check periods in the
+			// past, by which time at least one scheduler pass ran on the
+			// due policy.
+			overdue := eventuallyCredential(time.Second+4*period+30*time.Second, 250*time.Millisecond, func() bool {
 				now := observe()
 				assertEqual(t, before.value, now.value, fmt.Sprintf("[%s] value changed with no value source", proto))
 				assertEqual(t, fmt.Sprint(before.versions), fmt.Sprint(now.versions), fmt.Sprintf("[%s] versions changed with no value source", proto))
 				assertEqual(t, before.next, now.next, fmt.Sprintf("[%s] next rotation moved with no value source", proto))
+				return time.Since(due) >= 2*period
+			})
+			if !overdue {
+				t.Fatalf("[%s] next rotation %s never fell two check periods (%s) overdue", proto, before.next, period)
 			}
 		})
+	}
+}
+
+// eventuallyCredential calls cond on every tick of interval until it
+// reports true (true) or wait has passed (false). It sleeps on no fixed
+// window: a condition met on the first call returns at once.
+func eventuallyCredential(wait, interval time.Duration, cond func() bool) bool {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	expired := time.NewTimer(wait)
+	defer expired.Stop()
+	for {
+		if cond() {
+			return true
+		}
+		select {
+		case <-ticker.C:
+		case <-expired.C:
+			return false
+		}
 	}
 }
 

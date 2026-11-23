@@ -534,7 +534,8 @@ with the credential and are removed with it by `delete`.
   (`TestSealCredentialRotationCheckPeriodDuration_HandBuilt`). On every CLI
   protocol, an enabled policy that falls due on a `qrdbd` with no value
   source leaves the value, the version list and the next rotation unchanged
-  across a check period
+  until the next rotation is two check periods overdue; the api harness's
+  `config.test.yaml` sets the period to 1s
   (`TestCLIMultiProtocolCredentialScheduledRotationNoValueSource`).
 - **One store**: an unbound service fails every verb with
   `ErrStoreUnavailable`, `BindStore` refuses nil and replaces a bound store,
