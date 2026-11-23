@@ -203,6 +203,34 @@ test.describe("Admin - Tenant CRUD", () => {
     ).toBeVisible({ timeout: LOAD_TIMEOUT });
   });
 
+  // TenantDetail's info form saves through client.tenants.update, which the
+  // Wails client sends to TenantBinding.Update(tenantId, req). The mocked
+  // binding applies the name, so the success toast and the form's reloaded
+  // value both prove the desktop path end to end.
+  test("rename tenant saves through the desktop binding", async ({ page }) => {
+    await navigateToTenants(page);
+
+    await page
+      .locator("tr")
+      .filter({ hasText: "default" })
+      .first()
+      .click();
+    await expect(
+      page.locator("h2").filter({ hasText: "Tenant Quotas" }),
+    ).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    const main = page.locator("main");
+    const nameInput = main.getByLabel("Name", { exact: true });
+    await expect(nameInput).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await nameInput.fill("Renamed Default");
+    await main.getByRole("button", { name: "Save", exact: true }).click();
+
+    const alert = page.locator('[role="alert"]');
+    await expect(alert).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(alert).toContainText('Tenant "default" updated.');
+    await expect(nameInput).toHaveValue("Renamed Default");
+  });
+
   // -------------------------------------------------------------------------
   // Delete
   // -------------------------------------------------------------------------
