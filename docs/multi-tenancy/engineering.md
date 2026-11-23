@@ -1087,8 +1087,10 @@ and holds at most `max_sqlite_databases` of them (`TenantQuotas` field 17;
 `qrdb tenant update-quotas --max-sqlite-databases N`; config sets the cluster
 defaults (`tenant.default_entitlements.allow_sqlite_vfs`,
 `tenant.default_quotas.max_sqlite_databases`). The database count cap is a soft
-bound ([../sqlite-vfs/architecture.md](../sqlite-vfs/architecture.md)): it
-gates only the creation of a new database, and a database the tenant already
+bound ([../sqlite-vfs/architecture.md](../sqlite-vfs/architecture.md)): two
+concurrent creators can both pass at the limit minus one, so it limits growth
+and the storage quota stays the hard bound. It gates only the creation of a
+new database, and a database the tenant already
 holds opens with neither the entitlement nor a free slot.
 
 ## Deployment requirement
