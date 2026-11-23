@@ -1229,12 +1229,20 @@ type Node struct {
 	// volumeCatalog is the catalog attachVolumeCatalog built; the tenant
 	// move worker runs over it (startTenantMoves).
 	volumeCatalog *volume.Catalog
-	// moveWorkerStarted is set once startTenantMoves started the worker; a
-	// recycle of the service graph does not start a second one.
-	moveWorkerStarted bool
-	openVolumes       *volume.OpenVolumes
-	volumePoolRows    []openedVolumePool
-	perTenantReg      pebbleStorage.PerTenantRegistry
+	// stopMoveWorker cancels the tenant move worker startTenantMoves started
+	// over the current data plane and waits for it to exit; nil when none
+	// runs. The worker is tracked by bgWG, and teardownDataPlane stops it so
+	// the rebuild (completeStandaloneBoot) starts a new one over the new
+	// catalog and tenant service. Written only by the lifecycle-gated boot,
+	// teardown and Close paths.
+	stopMoveWorker func()
+	// standaloneTenantInfra is the tenant infrastructure the first
+	// standalone boot built; its runtimes survive a system-scope recycle,
+	// so the rebuild wires the new move worker onto it.
+	standaloneTenantInfra *server.TenantInfra
+	openVolumes    *volume.OpenVolumes
+	volumePoolRows []openedVolumePool
+	perTenantReg   pebbleStorage.PerTenantRegistry
 	// volumeReporter publishes this node's volume-pool health on a lease
 	// once the data-plane services exist (see startVolumeReporter). Nil
 	// when no volume pool is configured.
@@ -1890,6 +1898,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 			// is not wired in the embedded standalone node yet (Phase 2).
 		})
 		if tiErr != nil {
+			n.stopTenantMoveWorker()
 			n.stopVolumeReporter()
 			_ = svcNode.Stop(context.Background())
 			_ = localHost.Close()
@@ -1906,6 +1915,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		if n.tenantHostsHolder != nil {
 			n.tenantHostsHolder.Store(ti.Hosts)
 		}
+		n.standaloneTenantInfra = ti
 		n.startTenantMoves(svcNode, ti, nil, pending.cfg.Raft.ReplicaID, pending.cfg)
 	} else if n.tenantHosts != nil && svcNode.Tenant != nil {
 		// A system-scope recycle rebuilt the tenant service; the runtimes
@@ -1913,9 +1923,14 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		// the first one, so its deleted-tenant reconcile still stops a retired
 		// tenant's host before removing its directories.
 		server.WireTenantRuntimeCloser(svcNode.Tenant, n.tenantHosts, n.raftBackend)
+		// teardownDataPlane stopped the old plane's move worker; wire a new
+		// one over the rebuilt catalog and tenant service, on the surviving
+		// tenant runtimes, so moves admitted after the recycle run.
+		n.startTenantMoves(svcNode, n.standaloneTenantInfra, nil, pending.cfg.Raft.ReplicaID, pending.cfg)
 	}
 
 	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts, true); err != nil {
+		n.stopTenantMoveWorker()
 		n.stopVolumeReporter()
 		_ = svcNode.Stop(context.Background())
 		_ = localHost.Close()
@@ -2201,6 +2216,10 @@ func (n *Node) startReclaimSweepStandalone(sweeper *service.ReclaimSweeper) {
 // left mid-sweep against a backend about to close. It is a no-op on a
 // clustered node and when the sweepers are already stopped.
 func (n *Node) stopStandaloneSweepers() {
+	// The tenant move worker steps through this data plane's catalog, tenant
+	// service and host too; teardownDataPlane comes here first, so the
+	// rebuild's completeStandaloneBoot starts a new worker over the new graph.
+	n.stopTenantMoveWorker()
 	if n.stopLeaseExpiry != nil {
 		n.stopLeaseExpiry()
 		n.stopLeaseExpiry = nil
@@ -2543,6 +2562,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			VolumeNodeID:       strconv.FormatUint(pending.cfg.Raft.ReplicaID, 10),
 		})
 		if tiErr != nil {
+			n.stopTenantMoveWorker()
 			n.stopVolumeReporter()
 			_ = svcNode.Stop(context.Background())
 			_ = host.Close()
@@ -2607,6 +2627,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			n.bgCancel = nil
 		}
 		n.bgWG.Wait()
+		n.stopTenantMoveWorker()
 		n.stopVolumeReporter()
 		_ = svcNode.Stop(context.Background())
 		n.svcNode.Store(nil)
@@ -2653,6 +2674,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			n.bgCancel = nil
 		}
 		n.bgWG.Wait()
+		n.stopTenantMoveWorker()
 		n.stopVolumeReporter()
 		_ = svcNode.Stop(context.Background())
 		n.svcNode.Store(nil)
@@ -2770,7 +2792,7 @@ func (n *Node) startTenantMoves(svcNode *lifecycle.Node, ti *server.TenantInfra,
 			policy = p
 		}
 	}
-	if n.moveWorkerStarted || n.volumeCatalog == nil || barrierRegistry == nil || svcNode == nil {
+	if n.stopMoveWorker != nil || n.volumeCatalog == nil || barrierRegistry == nil || svcNode == nil {
 		return
 	}
 	tenants, ok := svcNode.Tenant.(server.TenantMoveService)
@@ -2800,8 +2822,29 @@ func (n *Node) startTenantMoves(svcNode *lifecycle.Node, ti *server.TenantInfra,
 		}
 		return
 	}
-	n.moveWorkerStarted = true
-	go worker.Run(n.background())
+	ctx, cancel := context.WithCancel(n.background())
+	done := make(chan struct{})
+	n.bgWG.Add(1)
+	go func() {
+		defer n.bgWG.Done()
+		defer close(done)
+		worker.Run(ctx)
+	}()
+	n.stopMoveWorker = func() {
+		cancel()
+		<-done
+	}
+}
+
+// stopTenantMoveWorker cancels the tenant move worker of the current data
+// plane and waits for it to exit, so no move step runs against a catalog,
+// tenant service or host about to close. A no-op when none runs.
+func (n *Node) stopTenantMoveWorker() {
+	if n.stopMoveWorker == nil {
+		return
+	}
+	n.stopMoveWorker()
+	n.stopMoveWorker = nil
 }
 
 // stopVolumeReporter closes n.volumeReporter, if started. Reporter.Close is
@@ -2945,6 +2988,7 @@ func (n *Node) Close() error {
 	record(n.stopMemberRecord())
 	// Stop the volume-pool Reporter's refresh goroutine before svcNode/host
 	// below: see stopVolumeReporter's doc comment.
+	n.stopTenantMoveWorker()
 	n.stopVolumeReporter()
 
 	// Retract every handle this node published BEFORE stopping what backs
@@ -5331,6 +5375,7 @@ func (n *Node) closeSeal() {
 	barrier := n.barrier.Swap(nil)
 	_ = service.SealWholeNode(context.Background(), nil, barrierRegistry, barrier, n.wholeNodeDatabases())
 	n.credCoreSvc = nil
+	n.stopTenantMoveWorker()
 	n.stopVolumeReporter()
 	if n.perTenantReg != nil {
 		_ = n.perTenantReg.CloseAll(context.Background())
