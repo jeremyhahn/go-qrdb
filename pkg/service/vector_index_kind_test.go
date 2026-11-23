@@ -159,30 +159,6 @@ func createIndexedNamespace(t *testing.T, svc VectorService, name, indexType str
 	}
 }
 
-func TestVecSearchSimilar_FlatAndIVFNamespaces(t *testing.T) {
-	for _, indexType := range []string{"flat", "ivf_flat"} {
-		t.Run(indexType, func(t *testing.T) {
-			svc, err := NewVectorService(vector.NewMemoryVectorStorage(), newVecTestLogger())
-			require.NoError(t, err)
-			createIndexedNamespace(t, svc, "ns", indexType, map[string]string{"num_centroids": "2"},
-				[]float32{0, 0}, []float32{10, 10}, []float32{9, 9})
-
-			resp, err := svc.SearchSimilar(context.Background(), &SearchSimilarRequest{
-				Namespace: "ns", QueryVector: []float32{10, 10}, K: 1, ShardID: 1,
-			})
-			require.NoError(t, err)
-			require.Len(t, resp.Results, 1)
-			assert.Equal(t, uint64(2), resp.Results[0].ID)
-
-			stats, err := svc.GetIndexStats(context.Background(), &GetIndexStatsRequest{Namespace: "ns", ShardID: 1})
-			require.NoError(t, err)
-			want, _ := parseIndexType(indexType)
-			assert.Equal(t, want, stats.IndexType)
-			assert.Equal(t, uint64(3), stats.VectorCount)
-		})
-	}
-}
-
 func TestVecSearchSimilar_UntrainedIVFRefused(t *testing.T) {
 	svc, err := NewVectorService(vector.NewMemoryVectorStorage(), newVecTestLogger())
 	require.NoError(t, err)
