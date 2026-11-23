@@ -133,6 +133,49 @@ func TestHandleParse_SelectFromKV(t *testing.T) {
 	assert.Len(t, stmts, 1)
 }
 
+// TestHandleParse_ShowTablesReachesEngine proves SHOW TABLES and SHOW FULL
+// TABLES are not swallowed as PostgreSQL session no-ops: HandleParse does not
+// take the no-op branch, the translator passes the statement through, and
+// executing it lists the database's tables (kv at least) with a real
+// completion tag instead of the no-op "OK". Session parameter SHOW statements
+// stay no-ops.
+func TestHandleParse_ShowTablesReachesEngine(t *testing.T) {
+	h := newTestParseHandler(t)
+	ctx := context.Background()
+
+	for _, query := range []string{"SHOW TABLES", "show tables;", "SHOW FULL TABLES", "show full tables from qrdb"} {
+		t.Run(query, func(t *testing.T) {
+			upper := strings.ToUpper(strings.TrimSpace(query))
+			require.False(t, h.isNoopStatement(upper), "SHOW TABLES must reach the engine")
+
+			stmts, err := h.HandleParse(ctx, wire.Query{Query: query, SimpleQuery: true})
+			require.NoError(t, err)
+			require.Len(t, stmts, 1)
+
+			trimmed := strings.TrimRight(strings.TrimSpace(query), "; ")
+			translated, err := h.translator.Translate(trimmed)
+			require.NoError(t, err)
+			assert.Equal(t, strings.ToUpper(trimmed), strings.ToUpper(strings.TrimRight(strings.TrimSpace(translated), "; ")),
+				"the translator passes SHOW TABLES through unchanged")
+
+			writer := &mockDataWriter{}
+			err = h.executeDeferredCallback(ctx, writer, nil, trimmed, translated, nil, nil, nil, statementScope{})
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, writer.rowCount, 1, "SHOW TABLES lists kv")
+			assert.NotEqual(t, "OK", writer.completeTag, "SHOW TABLES must not answer the no-op tag")
+		})
+	}
+
+	for _, query := range []string{"SHOW search_path", "SHOW server_version"} {
+		t.Run(query, func(t *testing.T) {
+			assert.True(t, h.isNoopStatement(strings.ToUpper(query)), "session parameter SHOW stays a no-op")
+			stmts, err := h.HandleParse(ctx, wire.Query{Query: query, SimpleQuery: true})
+			require.NoError(t, err)
+			require.Len(t, stmts, 1)
+		})
+	}
+}
+
 func TestHandleParse_InvalidSQL(t *testing.T) {
 	h := newTestParseHandler(t)
 	_, err := h.HandleParse(context.Background(), wire.Query{Query: "INVALID SYNTAX HERE !@#$", SimpleQuery: true})
@@ -331,6 +374,19 @@ func TestIsNoopStatement(t *testing.T) {
 		assert.True(t, h.isNoopStatement("DEALLOCATE ALL"))
 		assert.True(t, h.isNoopStatement("LISTEN CHANNEL1"))
 		assert.True(t, h.isNoopStatement("UNLISTEN *"))
+		assert.True(t, h.isNoopStatement("SHOW SERVER_VERSION"))
+		assert.True(t, h.isNoopStatement("SHOW TRANSACTION_ISOLATION;"))
+		assert.True(t, h.isNoopStatement("SHOW TABLESPACE"))
+	})
+
+	t.Run("SHOW TABLES reaches the engine", func(t *testing.T) {
+		assert.False(t, h.isNoopStatement("SHOW TABLES"))
+		assert.False(t, h.isNoopStatement("SHOW TABLES;"))
+		assert.False(t, h.isNoopStatement("SHOW\tTABLES ;"))
+		assert.False(t, h.isNoopStatement("SHOW FULL TABLES"))
+		assert.False(t, h.isNoopStatement("SHOW  FULL\n TABLES FROM QRDB"))
+		assert.False(t, h.isNoopStatement("SHOW TABLES IN QRDB LIKE 'K%'"))
+		assert.False(t, h.isNoopStatement("SHOW FULL TABLES WHERE TABLE_TYPE = 'BASE TABLE'"))
 	})
 
 	t.Run("non-noop statements", func(t *testing.T) {
