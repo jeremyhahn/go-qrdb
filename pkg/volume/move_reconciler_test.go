@@ -1238,6 +1238,91 @@ func TestMoveReconciler_SealedNodeStepWaits(t *testing.T) {
 	assertStepWaits(t, &NodeSealedError{Op: "move step"}, "node sealed")
 }
 
+// sealedSettleRunner copies every step and answers a copy settle on node
+// with err: a replica whose self-managed tenant reopens sealed.
+type sealedSettleRunner struct {
+	node    string
+	err     error
+	steps   []MoveStep
+	settles []MoveStep
+}
+
+func (r *sealedSettleRunner) RunMoveStep(_ context.Context, step MoveStep) error {
+	r.steps = append(r.steps, step)
+	return nil
+}
+
+func (r *sealedSettleRunner) SettleMoveStep(_ context.Context, step MoveStep) error {
+	r.settles = append(r.settles, step)
+	if r.err != nil && step.NodeID == r.node && step.Phase == MoveStepPhaseCopy {
+		return r.err
+	}
+	return nil
+}
+
+// TestMoveReconciler_SealedSettleHoldsTheStep: a replica whose tenant
+// reopens sealed has not settled its copy step: the step stays settling on
+// it, uncounted, with the reason recorded and no other node granted, until
+// the unseal and catch-up let the settle finish and release it.
+func TestMoveReconciler_SealedSettleHoldsTheStep(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	cat.SetMoveCutoverRecorder(&fakeRecorder{})
+	log := &transitionLog{}
+	runner := &sealedSettleRunner{node: "n1", err: &TenantSealedError{TenantID: "acme"}}
+	r := newTestReconciler(t, cat, runner, WithMoveTransitionRecorder(log))
+	reconcilePasses(t, r, DefaultMoveStepAttempts+2)
+	m := storedMove(t, kv, "acme")
+	if m == nil {
+		t.Fatal("journal deleted: the move aborted while its replica stayed sealed")
+	}
+	if m.State != MoveStateCopying || m.StepNode != "n1" || !m.StepSettling || m.StepAttempts != 0 {
+		t.Fatalf("move = state %q step %q settling %v attempts %d, want copying, n1 settling, 0 attempts",
+			m.State, m.StepNode, m.StepSettling, m.StepAttempts)
+	}
+	if want := "move copy step waiting: tenant sealed"; m.Error != want {
+		t.Fatalf("move error = %q, want %q", m.Error, want)
+	}
+	for _, s := range runner.steps {
+		if s.NodeID != "n1" {
+			t.Fatalf("step %+v granted while n1 stays sealed", s)
+		}
+	}
+	for _, c := range log.calls {
+		if c.transition == MoveTransitionFail {
+			t.Fatalf("transition %+v recorded for a sealed settle", c)
+		}
+	}
+	// The unseal and catch-up: the settle finishes and the move completes.
+	runner.err = nil
+	reconcilePasses(t, r, 8)
+	if m := storedMove(t, kv, "acme"); m != nil {
+		t.Fatalf("journal = %+v, want deleted after the move completed", m)
+	}
+}
+
+// TestMoveReconciler_CancelDuringSealedSettleAborts: a cancel recorded while
+// a replica's settle waits for its unseal aborts the move, the node kept in
+// NodesCopied so the abort copies it back.
+func TestMoveReconciler_CancelDuringSealedSettleAborts(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	runner := &sealedSettleRunner{node: "n1", err: &TenantSealedError{TenantID: "acme"}}
+	r := newTestReconciler(t, cat, runner)
+	if err := tick(ctx, r); err != nil {
+		t.Fatalf("tick with a sealed settle: %v", err)
+	}
+	if m, err := cat.CancelMove(ctx, "acme"); err != nil || !m.CancelRequested {
+		t.Fatalf("CancelMove = %+v, %v, want the cancel recorded", m, err)
+	}
+	if err := tick(ctx, r); err != nil {
+		t.Fatalf("tick with a sealed settle after the cancel: %v", err)
+	}
+	m := storedMove(t, kv, "acme")
+	if m == nil || m.State != MoveStateAborting || m.CancelRequested || !contains(m.NodesCopied, "n1") {
+		t.Fatalf("move after the cancelled sealed settle = %+v, want aborting with n1 copied", m)
+	}
+}
+
 func TestMoveReconciler_UnavailableDestinationStepWaits(t *testing.T) {
 	err := &MoveStepError{NodeID: "n1", Phase: MoveStepPhaseCopy, Err: &PoolUnavailableError{Pool: "bulk", NodeID: "n1"}}
 	assertStepWaits(t, err, "pool unavailable")

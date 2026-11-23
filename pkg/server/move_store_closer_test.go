@@ -14,6 +14,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 type fakeMoveShards struct {
@@ -52,8 +54,15 @@ func (f *fakeMoveShards) ListStarted() []StartedShard {
 }
 
 type fakeMoveBarriers struct {
-	calls []string
-	err   error
+	calls  []string
+	err    error
+	sealed map[string]bool
+}
+
+// TenantBarrierSealed makes the fake a MoveSealedBarriers: a tenant in
+// sealed reopens sealed (a self-managed barrier awaiting its unseal).
+func (f *fakeMoveBarriers) TenantBarrierSealed(tenantID string) bool {
+	return f.sealed[tenantID]
 }
 
 func (f *fakeMoveBarriers) CloseVolumeTenant(_ context.Context, tenantID string) error {
@@ -230,6 +239,73 @@ func TestMoveStoreCloser_RetryReopenFinishesAFailedReopen(t *testing.T) {
 	}
 	if want := []string{"close acme/a", "attach acme/a"}; !reflect.DeepEqual(shards.calls, want) {
 		t.Fatalf("shard calls = %v, want %v", shards.calls, want)
+	}
+}
+
+// A self-managed tenant whose barrier reopens sealed is not reopened: the
+// reopen answers *volume.TenantSealedError and stays pending, so the move
+// step that called it keeps settling, and a retry once the administrator
+// unseals attaches every closed shard and awaits its catch-up without a
+// second barrier reopen.
+func TestMoveStoreCloser_SealedReopenStaysPendingUntilUnseal(t *testing.T) {
+	shards := &fakeMoveShards{started: map[StartedShard]bool{
+		{TenantID: "acme", Database: "a"}: true,
+		{TenantID: "acme", Database: "b"}: true,
+	}}
+	barriers := &fakeMoveBarriers{}
+	var caughtUp []string
+	c, err := NewMoveStoreCloser(shards, barriers, func(_ context.Context, tenantID, db string) (bool, error) {
+		caughtUp = append(caughtUp, tenantID+"/"+db)
+		return true, nil
+	}, time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	ctx := context.Background()
+	if err := c.CloseTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	barriers.sealed = map[string]bool{"acme": true}
+	err = c.OpenTenantStores(ctx, "acme")
+	var sealed *volume.TenantSealedError
+	if !errors.As(err, &sealed) || sealed.TenantID != "acme" {
+		t.Fatalf("open of a sealed tenant = %v, want *volume.TenantSealedError for acme", err)
+	}
+	if got := c.PendingReopen(); !reflect.DeepEqual(got, []string{"acme"}) {
+		t.Fatalf("pending = %v, want [acme]", got)
+	}
+	if c.HoldsTenant("acme") {
+		t.Fatal("acme held after the sealed reopen")
+	}
+	if want := []string{"close acme/a", "close acme/b"}; !reflect.DeepEqual(shards.calls, want) {
+		t.Fatalf("shard calls while sealed = %v, want %v", shards.calls, want)
+	}
+	if len(caughtUp) != 0 {
+		t.Fatalf("catch-up awaited while sealed: %v", caughtUp)
+	}
+	// A retry while still sealed stays pending and attaches nothing.
+	if err := c.RetryReopen(ctx, "acme"); !errors.As(err, &sealed) {
+		t.Fatalf("sealed retry = %v, want *volume.TenantSealedError", err)
+	}
+	if want := []string{"close acme/a", "close acme/b"}; !reflect.DeepEqual(shards.calls, want) {
+		t.Fatalf("shard calls after a sealed retry = %v, want %v", shards.calls, want)
+	}
+	// The administrator unseals: the retry attaches and awaits catch-up.
+	barriers.sealed = nil
+	if err := c.RetryReopen(ctx, "acme"); err != nil {
+		t.Fatalf("retry after the unseal: %v", err)
+	}
+	if got := c.PendingReopen(); len(got) != 0 {
+		t.Fatalf("pending after the unseal = %v", got)
+	}
+	if want := []string{"close acme/a", "close acme/b", "attach acme/a", "attach acme/b"}; !reflect.DeepEqual(shards.calls, want) {
+		t.Fatalf("shard calls = %v, want %v", shards.calls, want)
+	}
+	if want := []string{"acme/a", "acme/b"}; !reflect.DeepEqual(caughtUp, want) {
+		t.Fatalf("caught up = %v, want %v", caughtUp, want)
+	}
+	if want := []string{"close acme", "reopen acme"}; !reflect.DeepEqual(barriers.calls, want) {
+		t.Fatalf("barrier calls = %v, want %v", barriers.calls, want)
 	}
 }
 

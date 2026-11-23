@@ -414,6 +414,20 @@ func (e *NodeSealedError) Error() string {
 	return "volume: node barrier is sealed: " + e.Op + " not proposed"
 }
 
+// TenantSealedError is returned when a move step reopens a self-managed
+// tenant whose barrier stays sealed until its administrator unseals it: the
+// replica's stores are not attached and it has not caught up, so the step
+// is not settled. The step keeps settling, uncounted, until the unseal and
+// the catch-up.
+type TenantSealedError struct {
+	TenantID string
+}
+
+// Error implements error.
+func (e *TenantSealedError) Error() string {
+	return "volume: tenant barrier is sealed: " + e.TenantID + " awaits its administrator's unseal"
+}
+
 // EncodeError is returned when a record cannot be marshaled to JSON.
 type EncodeError struct {
 	Err error
