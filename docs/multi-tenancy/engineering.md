@@ -1040,9 +1040,23 @@ cluster floor. If the policy is now strict it returns the
 or floor refuses the write. A handle resolved before a tightening therefore
 cannot write to the node-keyed WAL afterwards. The system tenant and prefix
 tenants get no check, and other tenants pay one tenant and floor read per
-write. Residual: a write that has already passed the check and is in flight
-when the tightening commits still applies. The check is not part of the
-tightening's fence.
+write.
+
+A write that has already passed the check and is in flight when the
+tightening commits is refused at apply time. Before its node-key log probe,
+the tightening writes a fresh isolation epoch to the system store, under
+`tenant.IsolationEpochKeys` (the tenant's key, or the `__cluster` key for the
+floor). `strictWriteGuard` reads both epoch keys at propose time, before its
+policy recheck, and the guard rides in the write's own Raft command
+(`service.WithGuardedWriteCheck`, `OpGuarded`): every replica compares the
+keys to the values read and refuses the write if either moved. Either the
+write applied before the epoch write, and the tightening's probe sees its
+log, or it applies after and is refused. An epoch refusal is reported as
+`StrictTenantSharedStoreError` when the tenant is now strict, else as the
+retryable guard refusal (`WriteGuardRefusedError`). Two residuals remain: a
+group with guarded writes off (`featuregate.GuardedWrites`, a mixed-version
+group) has only the propose-time recheck, and node-local vector writes carry
+no guard.
 
 Both barrier bootstrap fallbacks (`AuthorizeTenantBarrierInit`,
 `AuthorizeTenantBarrierSealedOp`) return a `*RateLimitedError` immediately,
