@@ -584,6 +584,8 @@ refusal, and deleted and re-created.
 
 ## Test strategy
 
+A raft-tenant move is covered by the three-node E2E (`TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart`, `TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite` in `test/integration/volume_move_cli_test.go`): a replica restart during the move, and a cancel after an acknowledged write, on every transport.
+
 **Unit, per package, in memory:**
 
 - `pkg/volume`: registry, `dir` provider (including statfs, writability and
