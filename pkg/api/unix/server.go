@@ -54,6 +54,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -77,6 +78,7 @@ type Server struct {
 	socketPath        string
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
+	groupSvc          group.GroupServicer
 	certProv          cert.CertProvider
 	certEnroll        service.CertEnrollmentServicer
 	invitationSvc     service.InvitationServicer
@@ -292,6 +294,11 @@ func WithUserService(svc user.UserServicer) ServerOption {
 // WithRoleService configures the Unix socket server with a role management service.
 func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
+}
+
+// WithGroupService sets the IAM group store.
+func WithGroupService(svc group.GroupServicer) ServerOption {
+	return func(s *Server) { s.groupSvc = svc }
 }
 
 // WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every RPC
@@ -737,6 +744,9 @@ func (s *Server) Start() error {
 	}
 	if s.roleSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterRoleService(s.roleSvc))
+	}
+	if s.groupSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterGroupService(s.groupSvc))
 	}
 	if s.certProv != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterCertProvider(s.certProv))

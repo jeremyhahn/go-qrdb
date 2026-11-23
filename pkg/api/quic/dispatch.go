@@ -288,6 +288,15 @@ func (s *Server) buildHandlers() {
 	s.handle("user.Unsuspend", permission.UsersUnsuspend, s.handleUnsuspendUser)
 
 	// Role management
+	s.handle("group.Create", permission.GroupsCreate, s.handleCreateGroup)
+	s.handle("group.Get", permission.GroupsRead, s.handleGetGroup)
+	s.handle("group.GetByName", permission.GroupsRead, s.handleGetGroupByName)
+	s.handle("group.Update", permission.GroupsUpdate, s.handleUpdateGroup)
+	s.handle("group.Delete", permission.GroupsDelete, s.handleDeleteGroup)
+	s.handle("group.List", permission.GroupsList, s.handleListGroups)
+	s.handle("group.AddMember", permission.GroupsAddMember, s.handleAddGroupMember)
+	s.handle("group.RemoveMember", permission.GroupsRemoveMember, s.handleRemoveGroupMember)
+	s.handle("group.ListMembers", permission.GroupsRead, s.handleListGroupMembers)
 	s.handle("role.Create", permission.RolesCreate, s.handleCreateRole)
 	s.handle("role.Get", permission.RolesRead, s.handleGetRole)
 	s.handle("role.GetByName", permission.RolesRead, s.handleGetRoleByName)

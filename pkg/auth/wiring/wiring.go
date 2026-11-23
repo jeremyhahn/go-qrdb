@@ -185,6 +185,11 @@ type AuthMiddlewareConfig struct {
 	RoleServiceFallback role.RoleServicer
 	UserServiceFallback user.UserServicer
 
+	// GroupResolver is the IAM group store identity binding reads the
+	// roles of a user's groups from (middleware.WithGroupResolver). Nil
+	// leaves identities with their direct roles only.
+	GroupResolver middleware.GroupResolver
+
 	// StrictSeparation enables strict separation-of-duties posture: the
 	// authorizer's (AuthorizerConfig.StrictSeparation) and the middleware's
 	// SO-exclusive so-role gate (middleware.WithStrictSeparation).
@@ -569,6 +574,9 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	}
 	if cfg.RoleServiceFallback != nil {
 		opts = append(opts, middleware.WithRoleResolverFallback(cfg.RoleServiceFallback))
+	}
+	if cfg.GroupResolver != nil {
+		opts = append(opts, middleware.WithGroupResolver(cfg.GroupResolver))
 	}
 	if cfg.AuditLogger != nil {
 		opts = append(opts,

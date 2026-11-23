@@ -345,6 +345,17 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"GET", "/users/by-cert-thumbprint/AbC-_123", permission.UsersGetByCertThumbprint},
 		{"GET", "/users/by-username/admin", permission.UsersRead},
 
+		// IAM groups, including the per-group family.
+		{"POST", "/groups", permission.GroupsCreate},
+		{"GET", "/groups/list", permission.GroupsList},
+		{"GET", "/groups/by-name", permission.GroupsRead},
+		{"GET", "/groups/members", permission.GroupsRead},
+		{"POST", "/groups/members/add", permission.GroupsAddMember},
+		{"POST", "/groups/members/remove", permission.GroupsRemoveMember},
+		{"GET", "/groups/g-1", permission.GroupsRead},
+		{"PUT", "/groups/g-1", permission.GroupsUpdate},
+		{"DELETE", "/groups/g-1", permission.GroupsDelete},
+
 		// Roles, including the per-role family.
 		{"POST", "/roles", permission.RolesCreate},
 		{"GET", "/roles/list", permission.RolesList},

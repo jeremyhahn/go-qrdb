@@ -42,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/invite"
@@ -967,6 +968,12 @@ var identityRules = []rule{
 	// A grantor may grant only permissions it holds (go-qrdb#1278).
 	as(&role.GrantExceedsHolderError{}, PermissionDenied),
 	as(&role.ValidationError{}, InvalidArgument),
+	// IAM groups map like their role equivalents.
+	as(&group.GroupNotFoundError{}, NotFound),
+	as(&group.GroupNameTakenError{}, AlreadyExists),
+	as(&group.RoleNotInTenantError{}, InvalidArgument),
+	as(&group.ValidationError{}, InvalidArgument),
+	as(&user.GroupMembershipUnsupportedError{}, Unimplemented),
 	as(&role.InvalidPermissionError{}, InvalidArgument),
 	as(&cert.CertNotFoundError{}, NotFound),
 	as(&cert.CertRevokedError{}, FailedPrecondition),

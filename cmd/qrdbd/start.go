@@ -64,6 +64,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -2843,6 +2844,7 @@ func runStart(f *startFlags) (err error) {
 			serverOpts = append(serverOpts,
 				server.WithUserService(mgmtResult.servedUserSvc),
 				server.WithRoleService(mgmtResult.servedRoleSvc),
+				server.WithGroupService(mgmtResult.servedGroupSvc),
 			)
 			// Compliance audit logger is always wired so the /v1/audit/events
 			// endpoint is available regardless of auth-enabled state.
@@ -4180,8 +4182,11 @@ type mgmtBootstrapResult struct {
 	roleSvc       role.RoleServicer
 	servedUserSvc user.UserServicer // resolver-routed service exposed on the API surface
 	servedRoleSvc role.RoleServicer // resolver-routed service exposed on the API surface
-	bootUserSvc   user.UserServicer // StaleRead-backed fallback for auth middleware
-	bootRoleSvc   role.RoleServicer // StaleRead-backed fallback for RBAC authorizer
+	// servedGroupSvc is the IAM group store, over the system tenant's
+	// confined runtime view (groups are keyed by tenant inside it).
+	servedGroupSvc group.GroupServicer
+	bootUserSvc    user.UserServicer // StaleRead-backed fallback for auth middleware
+	bootRoleSvc    role.RoleServicer // StaleRead-backed fallback for RBAC authorizer
 
 	// storeResolver maps a tenant to the store holding its IAM data. It is
 	// the same resolver servedUserSvc and servedRoleSvc route through, and it
@@ -4525,13 +4530,27 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		storeResolver = resolver
 	}
 
+	// IAM groups: one store over the system tenant's confined runtime view,
+	// keyed by tenant inside it. Deleting a group revokes it from every
+	// member through the served user store; a group's roles are looked up
+	// in the served role store, so a role of another tenant is refused.
+	groupMembers, err := user.NewGroupMembership(servedUserSvc)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "group membership", Err: err}
+	}
+	servedGroupSvc, err := group.NewStore(systemStore, group.WithRoleLookup(servedRoleSvc), group.WithMemberRevoker(groupMembers))
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "group store", Err: err}
+	}
+
 	return &mgmtBootstrapResult{
-		userSvc:       userSvc,
-		roleSvc:       roleSvc,
-		servedUserSvc: servedUserSvc,
-		servedRoleSvc: servedRoleSvc,
-		bootUserSvc:   bootUserSvc,
-		bootRoleSvc:   bootRoleSvc,
+		userSvc:        userSvc,
+		roleSvc:        roleSvc,
+		servedUserSvc:  servedUserSvc,
+		servedRoleSvc:  servedRoleSvc,
+		servedGroupSvc: servedGroupSvc,
+		bootUserSvc:    bootUserSvc,
+		bootRoleSvc:    bootRoleSvc,
 
 		storeResolver:     storeResolver,
 		tenantSvc:         tenantSvc,
@@ -4746,6 +4765,7 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		Enabled:             true,
 		RoleService:         mgmt.servedRoleSvc,
 		RoleServiceFallback: mgmt.bootRoleSvc,
+		GroupResolver:       mgmt.servedGroupSvc,
 		UserService:         mgmt.servedUserSvc,
 		UserServiceFallback: mgmt.bootUserSvc,
 		StrictSeparation:    strictSoD,

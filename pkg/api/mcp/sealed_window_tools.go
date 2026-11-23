@@ -103,6 +103,7 @@ func builtinToolCatalogue() []serverTool {
 		ragTools(nil),
 		userTools(nil, nil, nil, nil),
 		roleTools(nil, nil, nil),
+		groupTools(nil, nil, nil, nil),
 		roleReconcileAllTools(nil, nil),
 		certTools(nil, nil),
 		enrollmentTools(nil, nil),
