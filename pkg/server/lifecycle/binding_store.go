@@ -18,8 +18,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
@@ -123,6 +126,45 @@ func (f *LocalBindingFactory) materializes(isolation tenant.IsolationType) bool 
 // *MaterializedBinding over its own store; any other is opened by the
 // embedded factory at dataDir, unchanged.
 func (f *LocalBindingFactory) Create(cfg database.DatabaseConfig, dataDir string) (database.Backend, error) {
+	b, err := f.resolveLocal(&cfg)
+	if err != nil {
+		return nil, err
+	}
+	if b == nil {
+		return f.fallback.Create(cfg, dataDir)
+	}
+	// A database recorded before the binding change keeps its data in the
+	// store it was created with, at dataDir: while its binding root does
+	// not exist and that store holds data, it opens there as before, not
+	// as a new, empty materialized store. Moving it to the binding root is
+	// a relocation (slice 3b.8), not done here. A fresh create has no data
+	// at dataDir and gets its materialized binding.
+	if preBindingData(b.DataRoot, dataDir) {
+		return f.fallback.Create(cfg, dataDir)
+	}
+	return f.open(b)
+}
+
+// RecordRoot is the store root Create opens for the database cfg describes,
+// without opening it (database.RecordRootResolver): the materialized
+// binding's root, or "" for a database served from the fallback store,
+// which owns no root of its own. The manager checks it for every catalog
+// record, opened on this node or not, before a create claims a root or a
+// drop removes one.
+func (f *LocalBindingFactory) RecordRoot(cfg database.DatabaseConfig) (string, error) {
+	if !f.node.RaftMode && cfg.Backend == database.BackendRaft {
+		return "", nil
+	}
+	b, err := f.resolveLocal(&cfg)
+	if err != nil || b == nil {
+		return "", err
+	}
+	return b.DataRoot, nil
+}
+
+// resolveLocal is the local binding Create materializes for cfg, or nil when
+// cfg's database is served from the fallback store.
+func (f *LocalBindingFactory) resolveLocal(cfg *database.DatabaseConfig) (*database.Binding, error) {
 	// A standalone node has no Raft host: a backend: raft record is
 	// refused, on create and when a recorded database is provisioned, the
 	// way ResolveBinding refuses it, never served from an unreplicated
@@ -130,29 +172,47 @@ func (f *LocalBindingFactory) Create(cfg database.DatabaseConfig, dataDir string
 	if !f.node.RaftMode && cfg.Backend == database.BackendRaft {
 		return nil, &database.RaftBackendUnavailableError{Name: cfg.Name}
 	}
-	if !f.mayQualify(&cfg) {
-		return f.fallback.Create(cfg, dataDir)
+	if !f.mayQualify(cfg) {
+		return nil, nil
 	}
 	t, err := f.tenant(cfg.TenantID)
 	if err != nil {
 		return nil, &BindingOpenError{TenantID: cfg.TenantID, Database: cfg.Name, Backend: cfg.Backend, Err: err}
 	}
 	if !f.materializes(t.Isolation) {
-		return f.fallback.Create(cfg, dataDir)
+		return nil, nil
 	}
-	b, err := database.ResolveBinding(&cfg, t, f.node)
+	b, err := database.ResolveBinding(cfg, t, f.node)
 	if err != nil {
 		return nil, err
 	}
 	if b.Kind != database.BindingLocal || b.DatabaseBarrier {
-		return f.fallback.Create(cfg, dataDir)
+		return nil, nil
 	}
 	if b.Backend == database.BackendObjstore {
 		if p := f.storageCfg.Objstore.Provider; p != "" && p != "local" {
 			return nil, &RemoteObjstoreBindingUnsupportedError{TenantID: b.TenantID, Database: b.Database, Provider: p}
 		}
 	}
-	return f.open(b)
+	return b, nil
+}
+
+// preBindingData reports a database whose data predates its binding: the
+// binding root does not exist, and the store at dataDir, where the database
+// was opened before, holds data. A memory store (no root) has nothing at
+// rest to keep.
+func preBindingData(root, dataDir string) bool {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(dataDir) == "" {
+		return false
+	}
+	if filepath.Clean(root) == filepath.Clean(dataDir) {
+		return false
+	}
+	if _, err := os.Stat(root); !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	entries, err := os.ReadDir(dataDir)
+	return err == nil && len(entries) > 0
 }
 
 // Close releases the embedded factory.

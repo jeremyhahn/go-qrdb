@@ -229,6 +229,66 @@ func TestLocalBindingFactory_NonQualifyingDelegates(t *testing.T) {
 	}
 }
 
+// The manager checks every catalog record's binding root through the
+// factory, opened on this node or not.
+var _ database.RecordRootResolver = (*lifecycle.LocalBindingFactory)(nil)
+
+// TestLocalBindingFactory_PreBindingDataKept proves a database recorded
+// before the binding change keeps reading the data in the store it was
+// created with: reopened through the binding factory, with no binding root
+// on disk, it opens that store, not a new empty one. A fresh create of
+// another database still gets its materialized binding, and RecordRoot names
+// the root Create opens.
+func TestLocalBindingFactory_PreBindingDataKept(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	legacy := database.DatabaseConfig{TenantID: bindingTenant, Name: "legacy", Backend: database.BackendPebble}
+	legacyDir := filepath.Join(dir, "legacy-data")
+
+	// Written the way the database was served before the binding change.
+	before, err := database.NewEmbeddedBackendFactory().Create(legacy, legacyDir)
+	if err != nil {
+		t.Fatalf("pre-binding Create: %v", err)
+	}
+	if err := before.Put(ctx, []byte("k"), []byte("v")); err != nil {
+		t.Fatalf("pre-binding Put: %v", err)
+	}
+	if err := before.Close(); err != nil {
+		t.Fatalf("pre-binding Close: %v", err)
+	}
+
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
+	be, err := f.Create(legacy, legacyDir)
+	if err != nil {
+		t.Fatalf("reopen legacy: %v", err)
+	}
+	if _, ok := be.(*lifecycle.MaterializedBinding); ok {
+		t.Fatal("a database with pre-binding data was reopened as a new materialized store")
+	}
+	got, err := be.Get(ctx, []byte("k"))
+	if err != nil || string(got) != "v" {
+		t.Fatalf("legacy Get(k) = %q, %v; want v", got, err)
+	}
+	if err := be.Close(); err != nil {
+		t.Fatalf("legacy Close: %v", err)
+	}
+
+	fresh := database.DatabaseConfig{TenantID: bindingTenant, Name: "fresh", Backend: database.BackendPebble}
+	fb, err := f.Create(fresh, filepath.Join(dir, "fresh-data"))
+	if err != nil {
+		t.Fatalf("Create fresh: %v", err)
+	}
+	defer func() { _ = fb.Close() }()
+	mb, ok := fb.(*lifecycle.MaterializedBinding)
+	if !ok {
+		t.Fatalf("fresh backend = %T, want *lifecycle.MaterializedBinding", fb)
+	}
+	root, err := f.RecordRoot(fresh)
+	if err != nil || root != mb.DataRoot() {
+		t.Fatalf("RecordRoot(fresh) = %q, %v; want %q", root, err, mb.DataRoot())
+	}
+}
+
 func TestLocalBindingFactory_ErrorsTyped(t *testing.T) {
 	t.Run("resolve binding", func(t *testing.T) {
 		f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: t.TempDir()}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
