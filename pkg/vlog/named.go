@@ -916,6 +916,73 @@ func AuditDescriptor(tenantID string, treeStart uint64) Descriptor {
 	}
 }
 
+// IncarnationRequest answers Request only from logs created under
+// Incarnation, the incarnation of the database the log's name resolves to
+// now. A request naming one log is answered *LogNotFoundError when that
+// log's descriptor records another incarnation -- a log of an earlier
+// database of the name that survived its drop -- and a ListRequest leaves
+// such logs out. The descriptor is read in the same snapshot as the request,
+// so the check and the answer see one commit.
+type IncarnationRequest struct {
+	Request     Request
+	Incarnation string
+}
+
+func (q IncarnationRequest) read(r storage.Reader) (any, error) {
+	if list, ok := q.Request.(ListRequest); ok {
+		return q.readList(r, list)
+	}
+	if id, ok := requestLogID(q.Request); ok {
+		desc, err := ReadDescriptor(r, id)
+		if err != nil {
+			return nil, err
+		}
+		if desc.Incarnation != q.Incarnation {
+			return nil, &LogNotFoundError{ID: id}
+		}
+	}
+	return q.Request.read(r)
+}
+
+// readList answers list without the logs of another incarnation.
+func (q IncarnationRequest) readList(r storage.Reader, list ListRequest) (any, error) {
+	ids, err := List(r, list.TenantID, list.Database)
+	if err != nil {
+		return nil, err
+	}
+	live := ids[:0:0]
+	for _, id := range ids {
+		desc, err := ReadDescriptor(r, id)
+		if err != nil {
+			return nil, err
+		}
+		if desc.Incarnation == q.Incarnation {
+			live = append(live, id)
+		}
+	}
+	return live, nil
+}
+
+// requestLogID returns the log req names, false for a request naming none.
+func requestLogID(req Request) (LogID, bool) {
+	switch q := req.(type) {
+	case HeadRequest:
+		return q.ID, true
+	case GetRequest:
+		return q.ID, true
+	case InclusionRequest:
+		return q.ID, true
+	case ConsistencyRequest:
+		return q.ID, true
+	case DescriptorRequest:
+		return q.ID, true
+	case KeyRequest:
+		return q.ID, true
+	default:
+		return LogID{}, false
+	}
+}
+
 // AppendAudit appends one event to tenantID's linear chain exactly as Append
 // does, and the record's bytes -- the marshaled event with its PrevHash -- as
 // the next leaf of the tenant's audit instance. The instance's first append

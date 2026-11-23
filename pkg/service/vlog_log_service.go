@@ -283,8 +283,42 @@ func (s *logService) propose(ctx context.Context, id vlog.LogID, features []feat
 }
 
 // logGroup is the target a log write has been admitted to.
+//
+// incarnation is the incarnation of the database the log's name resolved to
+// at admission, empty for a name no database holds. guard, when set, is that
+// incarnation's drop fence (DropFenceGuard): every command proposed through
+// g carries it, so the state machine refuses the write on every replica once
+// the database's drop has fenced it, and a write admitted before a drop
+// stays refused after the name is created again, whatever it waited on in
+// between (a signer provider minting its key, a slow proposal).
 type logGroup struct {
-	target logTarget
+	target      logTarget
+	incarnation string
+	fence       logFence
+}
+
+// logFence fences one log write to the database incarnation it was admitted
+// under. The zero logFence fences nothing: a log whose name no droppable
+// database holds, the audit instance, a reclamation.
+//
+//   - guard is the incarnation's drop fence (DropFenceGuard), carried inside
+//     the Raft command (OpGuarded), so every replica refuses the write once
+//     the drop's tombstone (FenceDatabaseKeyspace) has landed in the group
+//     -- the tenant's group or the system shard, which holds the marker of
+//     every database whose logs it holds (docs/plans/1613-verifiable-log.md).
+//   - live re-resolves the database and refuses the write unless the
+//     incarnation is still the live one. A standalone barrier store checks
+//     it under the lock its apply and the drop's reclamation both hold, so a
+//     write admitted before a drop either applies before the reclamation
+//     deletes it or is refused after.
+type logFence struct {
+	guard *WriteGuard
+	live  func() error
+}
+
+// fencedLogTarget is a logTarget that applies a logFence with the write.
+type fencedLogTarget interface {
+	proposeFenced(ctx context.Context, cmd []byte, fence logFence) (sm.Result, error)
 }
 
 // admit resolves the tenant's target and refuses the write while any of
@@ -308,7 +342,80 @@ func (s *logService) admit(ctx context.Context, id vlog.LogID, features []featur
 	if err := target.serving(); err != nil {
 		return logGroup{}, err
 	}
-	return logGroup{target: target}, nil
+	g := logGroup{target: target}
+	if !s.route.fenced(id) {
+		return g, nil
+	}
+	// The incarnation is resolved once, here: every command proposed
+	// through g is fenced to it, so a write that waits past a drop (a signer
+	// minting its key) is refused even once the name is created again. A
+	// name no database holds has no drop to fence against.
+	db, err := s.route.databases.GetOwned(id.Database, tenantID)
+	if err != nil {
+		if _, dropping := errors.AsType[*database.DroppingError](err); dropping {
+			return logGroup{}, err
+		}
+		return g, nil
+	}
+	g.incarnation = db.Incarnation()
+	if g.fence, err = s.route.fence(tenantID, id.Database, g.incarnation); err != nil {
+		return logGroup{}, err
+	}
+	return g, nil
+}
+
+// fenced reports whether a write to id is fenced to its database's
+// incarnation: every log of a named database but the audit instance, which
+// lives on the system shard with the reserved system database, and the
+// default database's, which cannot be dropped (database.CheckDroppable).
+func (r *logRoute) fenced(id vlog.LogID) bool {
+	if id.TenantID == "" || id.Database == "" || id.Database == tenant.DefaultDatabase {
+		return false
+	}
+	return !isAuditLog(id) || r.audit == nil
+}
+
+// fence returns the logFence of incarnation of tenantID's database name.
+func (r *logRoute) fence(tenantID, name, incarnation string) (logFence, error) {
+	guard, err := DropFenceGuard(tenantID, name, incarnation)
+	if err != nil {
+		return logFence{}, err
+	}
+	return logFence{guard: &guard, live: func() error {
+		return r.liveIncarnation(tenantID, name, incarnation)
+	}}, nil
+}
+
+// liveIncarnation refuses with *database.DroppingError, as not stored,
+// unless incarnation is the live incarnation of tenantID's database name: a
+// database being dropped, dropped, or created again under the name since.
+func (r *logRoute) liveIncarnation(tenantID, name, incarnation string) error {
+	db, err := r.databases.GetOwned(name, tenantID)
+	if err == nil && db.Incarnation() == incarnation {
+		return nil
+	}
+	if err != nil {
+		if _, notFound := errors.AsType[*database.NotFoundError](err); !notFound {
+			if _, dropping := errors.AsType[*database.DroppingError](err); !dropping {
+				return err
+			}
+		}
+	}
+	return markNotStored(&database.DroppingError{Name: name, TenantID: tenantID})
+}
+
+// proposeFenced proposes cmd wrapped in fence's drop-fence guard, which the
+// group's state machine checks in the same command (OpGuarded); a refusal
+// comes back as the result checkResultError reads as *database.DroppingError.
+func (t raftTarget) proposeFenced(ctx context.Context, cmd []byte, fence logFence) (sm.Result, error) {
+	if fence.guard != nil {
+		guarded, err := fence.guard.wrap(cmd)
+		if err != nil {
+			return sm.Result{}, err
+		}
+		cmd = guarded
+	}
+	return t.propose(ctx, cmd)
 }
 
 // propose sends one encoded OpVerifiableLog command for the log id to g and
@@ -318,7 +425,7 @@ func (g logGroup) propose(ctx context.Context, id vlog.LogID, encode func() ([]b
 	if err != nil {
 		return 0, &EncodeRequestError{Err: err}
 	}
-	result, err := g.target.propose(ctx, cmd)
+	result, err := g.proposeCmd(ctx, cmd)
 	if err != nil {
 		return 0, err
 	}
@@ -334,12 +441,37 @@ func (g logGroup) propose(ctx context.Context, id vlog.LogID, encode func() ([]b
 	return result.Value, nil
 }
 
-// read answers one vlog.Request from the tenant's group.
+// proposeCmd proposes cmd to g's target under g's fence. A target that
+// cannot carry the fence in the write itself (a barrier database's own
+// store, which goes with the database's backend) checks the incarnation is
+// still live first.
+func (g logGroup) proposeCmd(ctx context.Context, cmd []byte) (sm.Result, error) {
+	if g.fence.live == nil {
+		return g.target.propose(ctx, cmd)
+	}
+	if fenced, ok := g.target.(fencedLogTarget); ok {
+		return fenced.proposeFenced(ctx, cmd, g.fence)
+	}
+	if err := g.fence.live(); err != nil {
+		return sm.Result{}, err
+	}
+	return g.target.propose(ctx, cmd)
+}
+
+// read answers one vlog.Request from the tenant's group. A log of a live
+// database is read only while its descriptor records that database's
+// incarnation (vlog.IncarnationRequest), so no log of an earlier database of
+// the name is ever served to its successor.
 func logRead[T any](ctx context.Context, route *logRoute, id vlog.LogID, req vlog.Request) (T, error) {
 	var zero T
 	target, err := route.resolve(ctx, id)
 	if err != nil {
 		return zero, err
+	}
+	if id.TenantID != "" && id.Database != "" && (!isAuditLog(id) || route.audit == nil) {
+		if db, err := route.databases.GetOwned(id.Database, id.TenantID); err == nil {
+			req = vlog.IncarnationRequest{Request: req, Incarnation: db.Incarnation()}
+		}
 	}
 	return targetRead[T](ctx, target, req)
 }
@@ -386,9 +518,14 @@ func (s *logService) CreateLog(ctx context.Context, req *CreateLogRequest) (*Cre
 	}
 	// The log records the incarnation of the database it is created in, so
 	// a stale drop of an earlier incarnation leaves it alone (vlog.Chain.
-	// DropDatabase). A name no database holds records none.
-	if db, err := s.route.databases.GetOwned(id.Database, id.TenantID); err == nil {
-		desc.Incarnation = db.Incarnation()
+	// DropDatabase) and a successor's reads refuse it. It is the one the
+	// write was admitted under and is fenced to. A name no database holds
+	// records none.
+	desc.Incarnation = g.incarnation
+	if !s.route.fenced(id) {
+		if db, err := s.route.databases.GetOwned(id.Database, id.TenantID); err == nil {
+			desc.Incarnation = db.Incarnation()
+		}
 	}
 	resp := &CreateLogResponse{ID: id}
 	encode := func() ([]byte, error) { return protocol.EncodeVerifiableLogCreate(id, desc) }

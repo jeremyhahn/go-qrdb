@@ -117,6 +117,16 @@ func (s *barrierLogStore) translateStoreError(err error) error {
 // propose applies one encoded OpVerifiableLog command to the tenant
 // barrier's store and returns the apply's result.
 func (s *barrierLogStore) propose(ctx context.Context, cmd []byte) (sm.Result, error) {
+	return s.proposeFenced(ctx, cmd, logFence{})
+}
+
+// proposeFenced is propose for a write fenced to its database's incarnation.
+// The store has no Raft group to carry a drop-fence guard: fence.live is
+// checked under s.mu, which the drop's reclamation (DropDatabaseLogs) also
+// proposes under, after the drop has fenced the database. A write that holds
+// s.mu first applies and is reclaimed; one that takes it after finds the
+// database dropping, dropped or created again and stores nothing.
+func (s *barrierLogStore) proposeFenced(ctx context.Context, cmd []byte, fence logFence) (sm.Result, error) {
 	release, err := s.admitOp()
 	if err != nil {
 		return sm.Result{}, err
@@ -126,6 +136,11 @@ func (s *barrierLogStore) propose(ctx context.Context, cmd []byte) (sm.Result, e
 	defer s.mu.Unlock()
 	if s.sealed() {
 		return sm.Result{}, tenant.ErrTenantSealed
+	}
+	if fence.live != nil {
+		if err := fence.live(); err != nil {
+			return sm.Result{}, err
+		}
 	}
 	r := barrierKVReader{ctx: ctx, kv: s.kv}
 	res, err := s.logs.apply(r, func(ops []storage.BufferedOp) error {

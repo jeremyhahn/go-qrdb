@@ -144,8 +144,43 @@ allowed.
   again; packed and separate applies leave the same table
   (`TestChain_DropDatabase_PackedBatchMatchesSeparateUpdates`,
   `TestApplyVerifiableLog_AppendAndDropInOneBatch`).
+- Codex round 3 P1-2 (writes and reads across a drop and re-create): a log
+  write is fenced to the database incarnation it was admitted under.
+  - `logService.admit` takes the live incarnation from
+    `database.Manager.GetOwned`. A dropping database is refused at once.
+  - Raft groups (shared, and dedicated raft): the command is wrapped in the
+    drop-fence guard (`DropFenceGuard`, `OpGuarded`). The group's apply
+    compares the marker `KeyspaceReclaimService` keeps in that same group, so
+    a create paused in the signer across a drop and re-create is refused with
+    `*database.DroppingError`, and stores no log and no software key record.
+  - Standalone barrier store (no group): the incarnation is checked under
+    `s.mu`, the lock the drop's reclamation (`DropDatabaseLogs`) takes too.
+  - Reads: `vlog.IncarnationRequest` answers a log whose descriptor names an
+    earlier incarnation with `LogNotFoundError`, and a list leaves it out.
+  - Tests: `TestLogService_CreatePausedAcrossDropAndRecreateIsRefused`,
+    `TestLogService_ReadRefusesAnEarlierIncarnationsLog` and
+    `TestLogService_StandaloneBarrierStoreFencesAPausedCreate`. They live in
+    the `qrdb_vlog`-tagged `pkg/service/vlog_log_service_test.go`, so run them
+    with that tag.
+  - Residuals:
+    - A barrier database's own store is dropped with its backend, and gets
+      only a pre-propose incarnation check, which is not atomic with the
+      apply.
+    - The audit instance and default-database logs are unfenced, since they
+      cannot be dropped.
+    - A legacy database with an empty incarnation is guarded as "marker
+      absent".
+    - An external (HSM/KMS) provider keeps a key it minted for a create
+      that is then refused.
+    - Append apply does not compare the descriptor's incarnation itself. The
+      fence keeps stale logs from arising.
 
 ## Remains
+
+- This slice did not run the vlog CLI E2E (`TestVlog_CLI_PerProtocol`,
+  `TestVlog_CLI_BarrierTenant_*`, `TestVlog_CLI_BarrierDatabase_PerProtocol`,
+  `-tags=codec_json,raft,integration`) after the fence. Run it before
+  promotion.
 
 - Open, Tenant item (F3 proof half): a standalone node composes an ungated
   host (`cmd/qrdbd/start.go`), so its replicated audit logger keeps
