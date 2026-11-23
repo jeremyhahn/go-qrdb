@@ -148,9 +148,10 @@ func TestMigrateLegacy_ClaimLostToAnotherWriter(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		claim []byte
+		want  error
 	}{
-		{name: "unparseable claim", claim: []byte("not json")},
-		{name: "empty claim", claim: []byte{}},
+		{name: "unparseable claim", claim: []byte("not json"), want: ErrCorruptMigrationClaim},
+		{name: "empty claim", claim: []byte{}, want: ErrStoreUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			legacy := seal.NewMemoryBackend()
@@ -168,7 +169,7 @@ func TestMigrateLegacy_ClaimLostToAnotherWriter(t *testing.T) {
 			svc := newMigratingService(t, legacy)
 			require.NoError(t, svc.BindStore(ctx, shared))
 			require.True(t, fired)
-			assert.ErrorIs(t, svc.MigrateLegacy(ctx), ErrStoreUnavailable)
+			assert.ErrorIs(t, svc.MigrateLegacy(ctx), tc.want)
 			assert.Len(t, legacyKeys(t, legacy), 3, "the copy is kept")
 			_, err := shared.MemoryBackend.Get(ctx, credentialPrefix+"db")
 			assert.ErrorIs(t, err, seal.ErrSecretNotFound, "nothing is installed under a claim not read")
@@ -271,9 +272,47 @@ func TestMigrateLegacy_SettledClaimUnparseable(t *testing.T) {
 	require.NoError(t, svc.BindStore(ctx, shared))
 	require.True(t, garbled)
 	disarmAll(shared)
-	assert.ErrorIs(t, svc.MigrateLegacy(ctx), ErrStoreUnavailable)
+	// writeWinningCopy's re-read of the garbled claim is typed corrupt.
+	err := svc.MigrateLegacy(ctx)
+	assert.ErrorIs(t, err, ErrCorruptMigrationClaim)
+	assert.NotErrorIs(t, err, ErrStoreUnavailable)
+	got, gerr := shared.MemoryBackend.Get(ctx, claimKey)
+	require.NoError(t, gerr)
+	assert.Equal(t, []byte("garbled"), got, "the claim is never overwritten")
 	assert.Equal(t, "fresh", retrieveRaw(t, shared.MemoryBackend, credentialPrefix+"db"))
 	assert.Len(t, legacyKeys(t, legacy), 3)
+}
+
+// TestLoadOrClaim_UndecodableClaimIsTypedCorrupt pins that a claim
+// record that does not decode refuses the name as corrupt, not as a
+// retryable outage, and is never overwritten.
+func TestLoadOrClaim_UndecodableClaimIsTypedCorrupt(t *testing.T) {
+	ctx := context.Background()
+	claimKey := MigrationClaimPrefix + "k"
+	garbage := []byte("not-json-claim-bytes")
+	legacy := seal.NewMemoryBackend()
+	writeLegacy(t, legacy, "k", "v2", "v1", nil)
+	home := seal.NewMemoryBackend()
+	require.NoError(t, home.Put(ctx, claimKey, garbage))
+	svc := newMigratingService(t, legacy)
+	require.NoError(t, svc.BindStore(ctx, home))
+
+	verbs := map[string]func() error{
+		"store":    func() error { return svc.StoreCredential(ctx, "k", []byte("v3")) },
+		"retrieve": func() error { _, err := svc.RetrieveCredentialBuffer(ctx, "k"); return err },
+		"migrate":  func() error { return svc.MigrateLegacy(ctx) },
+	}
+	for name, verb := range verbs {
+		err := verb()
+		require.ErrorIs(t, err, ErrCorruptMigrationClaim, name)
+		assert.NotErrorIs(t, err, ErrStoreUnavailable, name)
+		assert.Contains(t, err.Error(), "k", name)
+		assert.NotContains(t, err.Error(), string(garbage), name)
+	}
+	got, err := home.Get(ctx, claimKey)
+	require.NoError(t, err)
+	assert.Equal(t, garbage, got, "the claim is never overwritten")
+	assert.Len(t, legacyKeys(t, legacy), 3, "the legacy copy is kept")
 }
 
 func retrieveRaw(t *testing.T, st Store, key string) string {

@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash"
 	"io"
 	"log/slog"
@@ -389,7 +390,10 @@ func (s *CredentialService) loadOrClaim(ctx context.Context, name string, ours m
 }
 
 // loadClaim reads and decodes the claim at key. A claim the store could not
-// read is an error, not a claim nobody holds.
+// read is an error, not a claim nobody holds. A claim that is present but
+// does not decode is ErrCorruptMigrationClaim, naming the credential and
+// never the bytes: it is not a claim nobody holds either, so the caller
+// never overwrites it, and it is not an outage a retry clears.
 func (s *CredentialService) loadClaim(ctx context.Context, key string) (migrationClaim, bool, error) {
 	raw, err := s.store.Get(ctx, key)
 	if err != nil {
@@ -400,7 +404,11 @@ func (s *CredentialService) loadClaim(ctx context.Context, key string) (migratio
 	}
 	var claim migrationClaim
 	if err := json.Unmarshal(raw, &claim); err != nil {
-		return migrationClaim{}, false, nil
+		name := strings.TrimPrefix(key, MigrationClaimPrefix)
+		return migrationClaim{}, false, &OperationError{
+			Op:    "decode migration claim",
+			Cause: fmt.Errorf("%w: %s", ErrCorruptMigrationClaim, name),
+		}
 	}
 	return claim, true, nil
 }

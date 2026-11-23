@@ -17,6 +17,7 @@ package errclass
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -32,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -484,6 +486,19 @@ func TestClassify_ResolveErrorDefinitiveCausesAreNotUnavailable(t *testing.T) {
 				t.Errorf("got %s, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestClassify_CorruptMigrationClaimIsDataLoss pins that an undecodable
+// migration claim is DataLoss, not the retryable Unavailable of a store
+// that is not bound yet: a retry never repairs the record.
+func TestClassify_CorruptMigrationClaimIsDataLoss(t *testing.T) {
+	err := &credentials.OperationError{
+		Op:    "migrate",
+		Cause: &credentials.OperationError{Op: "decode migration claim", Cause: fmt.Errorf("%w: k", credentials.ErrCorruptMigrationClaim)},
+	}
+	if got := Classify(err); got != DataLoss {
+		t.Fatalf("Classify = %v, want DataLoss", got)
 	}
 }
 

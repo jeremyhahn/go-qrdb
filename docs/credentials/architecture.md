@@ -80,7 +80,11 @@ a move cut short copies again on the next operation. A name the data plane
 already holds any record of is not moved: neither copy changes, the data
 plane's records stay authoritative, and the move reports the names (never
 values) in a `LayoutConflictError`, logged once as a warning. Every value the
-move decrypted is wiped after its write attempt.
+move decrypted is wiped after its write attempt. A move cut after a batch
+applied but before its source records were deleted finishes on the next
+operation by deleting them, without writing the batch again. A source store
+that is sealed moves nothing: the move stays pending and every credential
+verb returns `seal.ErrSealed` until the source unseals.
 
 **The prefixes are reached only through the credential verbs.** Every record
 under the four prefixes above is a secret or governs one, so the embedded
@@ -172,7 +176,9 @@ whole or not at all, so a rerun that finds an incomplete claim of its own
 writes again. Before deleting its old
 records a node writes a settled note under the old prefix and deletes the
 note last, so a rerun interrupted mid-deletion finishes the deletion instead
-of reading the remainder as a different copy.
+of reading the remainder as a different copy. A claim record that does not
+decode is never overwritten: the migration fails with `ErrStoreUnavailable`
+and the node serves no credential verb until the record is repaired.
 
 **A delete leaves a tombstone.** Deleting a credential writes a deletion
 tombstone claim for the name in the same guarded write as the delete (or
@@ -292,7 +298,10 @@ which shares the node-wide store's audit logger. **The tenant barrier is read
 once, as the migration source:** records it holds under the old
 `credentials/` layout move into the home store (`MigrateLegacy`) before the
 first verb is served, once per barrier, and a failed migration refuses the
-verb. So a tenant's credential operations land in the same audit trail.
+verb. A later call on a migrated barrier writes nothing; a failed migration
+is retried on the next call, and a tenant barrier sealed while it is read
+fails the migration and the store move with `seal.ErrSealed`.
+So a tenant's credential operations land in the same audit trail.
 The `credentials:*` permissions are tenant self-scope
 (`pkg/permission/self_scope.go`): a tenant administrator can grant them inside
 the tenant, and a grant never reaches another tenant's store or the platform's.
