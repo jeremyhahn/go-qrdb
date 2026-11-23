@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 func TestConfig_Validate_DatabaseSQLConcurrency(t *testing.T) {
@@ -43,7 +43,7 @@ func TestConfig_Validate_DatabaseSQLConcurrency(t *testing.T) {
 func TestConfig_DatabaseSQL_YAMLShape(t *testing.T) {
 	var db DatabaseConfig
 	doc := "name: shop\nbackend: pebble\nsql:\n  concurrency: pessimistic\n"
-	if err := yaml.Unmarshal([]byte(doc), &db); err != nil {
+	if err := gocodecyaml.New[DatabaseConfig]().Unmarshal([]byte(doc), &db); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if db.SQL == nil || db.SQL.Concurrency != "pessimistic" {

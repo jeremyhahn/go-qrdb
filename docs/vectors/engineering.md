@@ -294,6 +294,17 @@ configured metric and index type. `TestVectorService_RestartPreservesConfiguredM
 PebbleDB-backed store, with a query vector chosen so that L2 and cosine
 ranking disagree.
 
+**Encoding.** Vector commands and their results, the stored vector and
+namespace records (`pkg/storage/vector/schema`), the state machine snapshot and
+the consensus snapshot's namespace map are MessagePack, encoded and decoded
+through go-codec's msgpack codec (`github.com/jeremyhahn/go-codec/pkg/msgpack`);
+nothing in the vector path calls a MessagePack library directly. The bytes are
+the ones the earlier direct encoding wrote, so stored records, Raft log entries
+and snapshots from before the move decode unchanged. The `*BytesUnchanged`
+tests in `pkg/statemachine` and `pkg/storage/vector/schema` pin every command
+op, both result types, both records and both snapshots against fixed hex
+literals.
+
 **Close and in-flight operations.** `PebbleVectorStorage` admits every
 operation through the close gate `pkg/storage/pebble`'s store uses: an
 operation holds a shared lock from its closed check to its last DB call, and

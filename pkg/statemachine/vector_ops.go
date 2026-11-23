@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/vmihailenco/msgpack/v5"
+	gocodecmsgpack "github.com/jeremyhahn/go-codec/pkg/msgpack"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api"
 )
@@ -228,9 +228,24 @@ type UpdateNamespaceResult struct {
 	RequiresRebuild bool `msgpack:"requires_rebuild"`
 }
 
+// The vector Raft commands, results and snapshots are MessagePack encoded
+// through go-codec; the bytes are pinned by TestVectorEncoding_BytesUnchanged
+// and the snapshot fixtures. Encoding takes the pointer, as before (a nil
+// value still encodes as nil); decoding fills a value.
+var (
+	vectorCommandEncoder         = gocodecmsgpack.New[*VectorCommand]()
+	vectorCommandDecoder         = gocodecmsgpack.New[VectorCommand]()
+	vectorResultEncoder          = gocodecmsgpack.New[*VectorResult]()
+	vectorResultDecoder          = gocodecmsgpack.New[VectorResult]()
+	updateNamespaceResultEncoder = gocodecmsgpack.New[*UpdateNamespaceResult]()
+	updateNamespaceResultDecoder = gocodecmsgpack.New[UpdateNamespaceResult]()
+	vectorSnapshotEncoder        = gocodecmsgpack.New[*VectorSnapshot]()
+	vectorSnapshotDecoder        = gocodecmsgpack.New[VectorSnapshot]()
+)
+
 // Encode serializes a VectorCommand to bytes using msgpack.
 func (cmd *VectorCommand) Encode() ([]byte, error) {
-	data, err := msgpack.Marshal(cmd)
+	data, err := vectorCommandEncoder.Marshal(cmd)
 	if err != nil {
 		return nil, api.NewEncodeError("VectorCommand.Encode", "vector command", err)
 	}
@@ -240,7 +255,7 @@ func (cmd *VectorCommand) Encode() ([]byte, error) {
 // DecodeVectorCommand deserializes a VectorCommand from bytes.
 func DecodeVectorCommand(data []byte) (*VectorCommand, error) {
 	var cmd VectorCommand
-	if err := msgpack.Unmarshal(data, &cmd); err != nil {
+	if err := vectorCommandDecoder.Unmarshal(data, &cmd); err != nil {
 		return nil, api.NewDecodeError("DecodeVectorCommand", "vector command", err)
 	}
 	return &cmd, nil
@@ -248,7 +263,7 @@ func DecodeVectorCommand(data []byte) (*VectorCommand, error) {
 
 // Encode serializes a VectorResult to bytes using msgpack.
 func (r *VectorResult) Encode() ([]byte, error) {
-	data, err := msgpack.Marshal(r)
+	data, err := vectorResultEncoder.Marshal(r)
 	if err != nil {
 		return nil, api.NewEncodeError("VectorResult.Encode", "vector result", err)
 	}
@@ -257,7 +272,7 @@ func (r *VectorResult) Encode() ([]byte, error) {
 
 // Decode deserializes a VectorResult from bytes.
 func (r *VectorResult) Decode(data []byte) error {
-	if err := msgpack.Unmarshal(data, r); err != nil {
+	if err := vectorResultDecoder.Unmarshal(data, r); err != nil {
 		return api.NewDecodeError("VectorResult.Decode", "vector result", err)
 	}
 	return nil
@@ -265,7 +280,7 @@ func (r *VectorResult) Decode(data []byte) error {
 
 // Encode serializes an UpdateNamespaceResult to bytes using msgpack.
 func (r *UpdateNamespaceResult) Encode() ([]byte, error) {
-	data, err := msgpack.Marshal(r)
+	data, err := updateNamespaceResultEncoder.Marshal(r)
 	if err != nil {
 		return nil, api.NewEncodeError("UpdateNamespaceResult.Encode", "update namespace result", err)
 	}
@@ -274,7 +289,7 @@ func (r *UpdateNamespaceResult) Encode() ([]byte, error) {
 
 // Decode deserializes an UpdateNamespaceResult from bytes.
 func (r *UpdateNamespaceResult) Decode(data []byte) error {
-	if err := msgpack.Unmarshal(data, r); err != nil {
+	if err := updateNamespaceResultDecoder.Unmarshal(data, r); err != nil {
 		return api.NewDecodeError("UpdateNamespaceResult.Decode", "update namespace result", err)
 	}
 	return nil

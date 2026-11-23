@@ -15,7 +15,9 @@
 package statemachine
 
 import (
+	"encoding/hex"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -24,6 +26,150 @@ import (
 
 	vectorStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
+
+// encodingFixtureCommand returns a VectorCommand for op with the namespace,
+// vector, metadata and node fields set. Every map holds one key: MessagePack
+// map order is not sorted, so a multi-key map has no single encoding.
+func encodingFixtureCommand(op VectorOp) *VectorCommand {
+	return &VectorCommand{
+		Op:        op,
+		Namespace: "docs",
+		ID:        42,
+		Vector:    []float32{0.5, -1.25, 3},
+		Metadata:  map[string]interface{}{"color": "red"},
+		Timestamp: 1700000000,
+		NodeID:    "node-1",
+	}
+}
+
+// TestVectorEncoding_BytesUnchanged pins the MessagePack encoding of every
+// VectorCommand op, VectorResult and UpdateNamespaceResult: Raft log entries
+// already written must decode unchanged after a codec change.
+func TestVectorEncoding_BytesUnchanged(t *testing.T) {
+	type cmdCase struct {
+		name string
+		cmd  *VectorCommand
+		want string
+	}
+	with := func(op VectorOp, edit func(*VectorCommand)) *VectorCommand {
+		c := encodingFixtureCommand(op)
+		if edit != nil {
+			edit(c)
+		}
+		return c
+	}
+	cmds := []cmdCase{
+		{"UpsertVector", with(OpUpsertVector, nil), "87a26f70cc01a26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31"},
+		{"DeleteVector", with(OpDeleteVector, nil), "87a26f70cc02a26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31"},
+		{"BatchUpsert", with(OpBatchUpsert, func(c *VectorCommand) {
+			c.IDs = []uint64{1, 2}
+			c.Vectors = [][]float32{{1, 2, 3}, {4, 5, 6}}
+			c.BatchMeta = []map[string]interface{}{{"k": "a"}, {"k": "b"}}
+		}), "8aa26f70cc03a26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31a369647392cf0000000000000001cf0000000000000002a4766563739293ca3f800000ca40000000ca4040000093ca40800000ca40a00000ca40c00000aa62617463685f6d6574619281a16ba16181a16ba162"},
+		{"CreateNamespace", with(OpCreateNamespace, func(c *VectorCommand) {
+			c.Dimension = 3
+			c.DistanceMetric = "cosine"
+			c.IndexType = "hnsw"
+			c.IndexParams = map[string]string{"m": "16"}
+			c.NamespaceMetadata = map[string]string{"team": "search"}
+			c.TenantID = "tenant-a"
+			c.OwnerUserID = "user-1"
+			c.Quotas = &NamespaceQuotas{MaxVectors: 1000, MaxStorageBytes: 1 << 20, MaxDimensions: 512, RateLimitQPS: 10, RateLimitWritesQPS: 5, MaxBatchSize: 100}
+			c.Labels = map[string]string{"env": "test"}
+		}), "de0010a26f70cc04a26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31a364696dce00000003ab646973745f6d6574726963a6636f73696e65a86964785f74797065a4686e7377aa6964785f706172616d7381a16da23136a76e735f6d65746181a47465616da6736561726368a974656e616e745f6964a874656e616e742d61ad6f776e65725f757365725f6964a6757365722d31a671756f74617386aa4d6178566563746f7273d300000000000003e8af4d617853746f726167654279746573d30000000000100000ad4d617844696d656e73696f6e73d200000200ac526174654c696d6974515053d20000000ab2526174654c696d6974577269746573515053d200000005ac4d6178426174636853697a65d200000064a66c6162656c7381a3656e76a474657374"},
+		{"DeleteNamespace", with(OpDeleteNamespace, nil), "87a26f70cc05a26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31"},
+		{"UpdateMetadata", with(OpUpdateMetadata, func(c *VectorCommand) { c.Merge = true; c.Version = 3 }), "89a26f70cc06a26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a56d65726765c3a3766572cf0000000000000003a27473d3000000006553f100a46e6f6465a66e6f64652d31"},
+		{"SearchSimilar", with(OpSearchSimilar, func(c *VectorCommand) {
+			c.K = 5
+			c.EfSearch = 64
+			c.MaxResults = 10
+			c.MinScore = 0.25
+		}), "8ba26f70cc07a26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31a16b05a2656640a36d61780aa96d696e5f73636f7265ca3e800000"},
+		{"GetVector", with(OpGetVector, nil), "87a26f70cc08a26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31"},
+		{"SearchByID", with(OpSearchByID, func(c *VectorCommand) { c.K = 5; c.EfSearch = 64 }), "89a26f70cc09a26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31a16b05a2656640"},
+		{"ListVectors", with(OpListVectors, func(c *VectorCommand) { c.Limit = 20; c.Offset = 40; c.Cursor = "c1" }), "8aa26f70cc0aa26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31a56c696d697414a66f666673657428a6637572736f72a26331"},
+		{"GetNamespaceInfo", with(OpGetNamespaceInfo, nil), "87a26f70cc0ba26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31"},
+		{"ListNamespaces", with(OpListNamespaces, nil), "87a26f70cc0ca26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31"},
+		{"UpdateNamespace", with(OpUpdateNamespace, func(c *VectorCommand) {
+			c.IndexParams = map[string]string{"ef_construction": "200"}
+		}), "88a26f70cc0da26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31aa6964785f706172616d7381af65665f636f6e737472756374696f6ea3323030"},
+		{"GetStats", with(OpGetStats, nil), "87a26f70cc0ea26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31"},
+		{"RebuildIndex", with(OpRebuildIndex, func(c *VectorCommand) { c.JobID = "job-1" }), "88a26f70cc0fa26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31a66a6f625f6964a56a6f622d31"},
+		{"GetIndexProgress", with(OpGetIndexProgress, func(c *VectorCommand) { c.JobID = "job-1" }), "88a26f70cc10a26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31a66a6f625f6964a56a6f622d31"},
+		{"HealthCheck", with(OpHealthCheck, nil), "87a26f70cc11a26e73a4646f6373a26964cf000000000000002aa376656393ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a27473d3000000006553f100a46e6f6465a66e6f64652d31"},
+	}
+	for _, tc := range cmds {
+		t.Run("Command/"+tc.name, func(t *testing.T) {
+			got, err := tc.cmd.Encode()
+			require.NoError(t, err)
+			if hex.EncodeToString(got) != tc.want {
+				t.Fatalf("encoding changed:\n got %s\nwant %s", hex.EncodeToString(got), tc.want)
+			}
+			raw, err := hex.DecodeString(tc.want)
+			require.NoError(t, err)
+			decoded, err := DecodeVectorCommand(raw)
+			require.NoError(t, err)
+			if !reflect.DeepEqual(decoded, tc.cmd) {
+				t.Fatalf("decoded %+v, want %+v", decoded, tc.cmd)
+			}
+		})
+	}
+
+	result := &VectorResult{
+		Success:   true,
+		Error:     "partial",
+		Version:   9,
+		Timestamp: 1700000000,
+		Results: []VectorSearchResult{
+			{ID: 1, Score: 0.75, Vector: []float32{1, 2}, Metadata: map[string]interface{}{"k": "v"}},
+		},
+		Metadata:        map[string]interface{}{"color": "red"},
+		Vector:          []float32{0.5, -1.25},
+		VectorID:        42,
+		Vectors:         []VectorData{{ID: 2, Vector: []float32{3, 4}, Metadata: map[string]interface{}{"k": "w"}, Version: 1, CreatedAt: 10, UpdatedAt: 11}},
+		NamespaceInfo:   &NamespaceData{Name: "docs", Dimension: 2, VectorCount: 1, CreatedAt: 10, UpdatedAt: 11},
+		Namespaces:      []string{"docs", "img"},
+		NextCursor:      "c2",
+		TotalCount:      7,
+		Updated:         true,
+		RequiresRebuild: true,
+		VectorStats:     &VectorStats{VectorCount: 1, Dimension: 2, IndexSize: 3, StorageSize: 4},
+		IndexProgress:   &IndexProgress{InProgress: true, VectorsProcessed: 5, TotalVectors: 10, PercentComplete: 50, JobID: "job-1"},
+		HealthStatus:    &HealthStatus{Healthy: true, Message: "ok", LeaderID: 1, ShardID: 2, NodeCount: 3},
+	}
+	t.Run("VectorResult", func(t *testing.T) {
+		const want = "de0012a773756363657373c3a56572726f72a77061727469616ca3766572cf0000000000000009a27473d3000000006553f100a7726573756c74739184a26964cf0000000000000001a573636f7265ca3f400000a376656392ca3f800000ca40000000a46d65746181a16ba176a46d65746181a5636f6c6f72a3726564a376656392ca3f000000cabfa00000a67665635f6964cf000000000000002aa7766563746f72739186a26964cf0000000000000002a376656392ca40400000ca40800000a46d65746181a16ba177a3766572cf0000000000000001a763726561746564d3000000000000000aa775706461746564d3000000000000000ba76e735f696e666f85a46e616d65a4646f6373a364696dce00000002a5636f756e74cf0000000000000001a763726561746564d3000000000000000aa775706461746564d3000000000000000baa6e616d6573706163657392a4646f6373a3696d67ab6e6578745f637572736f72a26332a5746f74616ccf0000000000000007a775706461746564c3b072657175697265735f72656275696c64c3ac766563746f725f737461747384ac766563746f725f636f756e74cf0000000000000001a964696d656e73696f6ece00000002aa696e6465785f73697a65cf0000000000000003ac73746f726167655f73697a65cf0000000000000004ae696e6465785f70726f677265737385ab696e5f70726f6772657373c3b1766563746f72735f70726f636573736564cf0000000000000005ad746f74616c5f766563746f7273cf000000000000000ab070657263656e745f636f6d706c657465cb4049000000000000a66a6f625f6964a56a6f622d31ad6865616c74685f73746174757385a76865616c746879c3a76d657373616765a26f6ba96c65616465725f6964cf0000000000000001a873686172645f6964cf0000000000000002aa6e6f64655f636f756e7403"
+		got, err := result.Encode()
+		require.NoError(t, err)
+		if hex.EncodeToString(got) != want {
+			t.Fatalf("encoding changed:\n got %s\nwant %s", hex.EncodeToString(got), want)
+		}
+		raw, err := hex.DecodeString(want)
+		require.NoError(t, err)
+		decoded := &VectorResult{}
+		require.NoError(t, decoded.Decode(raw))
+		if !reflect.DeepEqual(decoded, result) {
+			t.Fatalf("decoded %+v, want %+v", decoded, result)
+		}
+	})
+
+	update := &UpdateNamespaceResult{Updated: true, RequiresRebuild: true}
+	t.Run("UpdateNamespaceResult", func(t *testing.T) {
+		const want = "82a775706461746564c3b072657175697265735f72656275696c64c3"
+		got, err := update.Encode()
+		require.NoError(t, err)
+		if hex.EncodeToString(got) != want {
+			t.Fatalf("encoding changed:\n got %s\nwant %s", hex.EncodeToString(got), want)
+		}
+		raw, err := hex.DecodeString(want)
+		require.NoError(t, err)
+		decoded := &UpdateNamespaceResult{}
+		require.NoError(t, decoded.Decode(raw))
+		if !reflect.DeepEqual(decoded, update) {
+			t.Fatalf("decoded %+v, want %+v", decoded, update)
+		}
+	})
+}
 
 func TestVectorCommand_Encode_Decode(t *testing.T) {
 	t.Run("UpsertCommand", func(t *testing.T) {

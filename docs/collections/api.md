@@ -172,6 +172,8 @@ bounded by an operator action.
 | Index definition with no `field_name`, or with no secondary-index service | 400 | `INVALID_ARGUMENT` — `service.CollectionInvalidIndexError` |
 | A declared index's name is held by another index | 409 | `FAILED_PRECONDITION` — `index.OwnershipError`; the create leaves nothing behind |
 | Two index definitions naming the same field | 400 | `INVALID_ARGUMENT` — `service.CollectionInvalidIndexError` |
+| Index definitions with a non-json storage codec (the collection's, else the database default) | 400 | `INVALID_ARGUMENT` — `service.CollectionInvalidIndexError` |
+| Insert, update or upsert into an indexed collection whose storage codec is not json | 400 | `INVALID_ARGUMENT` — `service.CollectionInvalidIndexError`; nothing is written |
 | A write decided against a collection since dropped and created again | 409 | `ABORTED` — retry writes into the new collection |
 | A write whose outcome is unknown (its fence or retraction failed) | 500 | `INTERNAL` — the document may be stored |
 | A create or drop lost a race to a concurrent one | 409 | `ABORTED` — `service.CollectionStateConflictError` |

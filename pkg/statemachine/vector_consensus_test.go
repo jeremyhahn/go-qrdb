@@ -27,7 +27,6 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vmihailenco/msgpack/v5"
 
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
@@ -259,7 +258,7 @@ func createTestVectorLogger(t *testing.T) *logger.Logger {
 // encodeVectorCmd encodes a VectorCommand to bytes for use in Update entries.
 func encodeVectorCmd(t *testing.T, cmd *VectorCommand) []byte {
 	t.Helper()
-	data, err := msgpack.Marshal(cmd)
+	data, err := vectorCommandEncoder.Marshal(cmd)
 	require.NoError(t, err)
 	return data
 }

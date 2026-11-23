@@ -27,8 +27,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	gocodecmsgpack "github.com/jeremyhahn/go-codec/pkg/msgpack"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-	"github.com/vmihailenco/msgpack/v5"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
@@ -76,6 +76,9 @@ type ConsensusNamespaceInfo struct {
 	// written before it was tracked decodes it empty (namespaceMetricLocked).
 	DistanceMetric string `msgpack:"metric,omitempty"`
 }
+
+// consensusNamespacesCodec encodes the namespace map a snapshot carries.
+var consensusNamespacesCodec = gocodecmsgpack.New[map[string]*ConsensusNamespaceInfo]()
 
 // VectorShardID is the default shard ID for vector operations.
 const VectorShardID uint64 = 2
@@ -796,7 +799,7 @@ func (v *VectorConsensusFSM) SaveSnapshot(_ context.Context, w io.Writer, _ <-ch
 	defer v.mu.RUnlock()
 
 	// Encode namespace metadata
-	data, err := msgpack.Marshal(v.namespaces)
+	data, err := consensusNamespacesCodec.Marshal(v.namespaces)
 	if err != nil {
 		return api.NewSnapshotOperationError("VectorConsensusFSM.SaveSnapshot", "marshal namespaces", err)
 	}
@@ -834,7 +837,7 @@ func (v *VectorConsensusFSM) RecoverFromSnapshot(ctx context.Context, r io.Reade
 	// Decode namespace metadata into a fresh map: the snapshot is the whole
 	// state, so a namespace it does not name must not survive the install.
 	namespaces := make(map[string]*ConsensusNamespaceInfo)
-	if err := msgpack.Unmarshal(data, &namespaces); err != nil {
+	if err := consensusNamespacesCodec.Unmarshal(data, &namespaces); err != nil {
 		return api.NewSnapshotOperationError("VectorConsensusFSM.RecoverFromSnapshot", "unmarshal namespaces", err)
 	}
 

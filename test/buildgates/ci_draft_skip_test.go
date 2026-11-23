@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 // draftSkipCIPath is the workflow whose draft skip ruling 214 requires.
@@ -41,7 +41,7 @@ func loadDraftSkipWorkflow(t *testing.T) draftSkipWorkflow {
 		t.Fatalf("read %s: %v", draftSkipCIPath, err)
 	}
 	var wf draftSkipWorkflow
-	if err := yaml.Unmarshal(raw, &wf); err != nil {
+	if err := gocodecyaml.New[draftSkipWorkflow]().Unmarshal(raw, &wf); err != nil {
 		t.Fatalf("parse %s: %v", draftSkipCIPath, err)
 	}
 	// Discovery floor: every assertion below is inside a loop.
