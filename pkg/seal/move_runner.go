@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"syscall"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
@@ -170,6 +172,12 @@ func (m *MoveStepRunner) copyStep(ctx context.Context, step volume.MoveStep) err
 // after a crash at any point before the journal CAS first removes a
 // leftover staging directory and treats a source already missing as
 // removed: the destination stays authoritative until the CAS.
+//
+// A source root that is itself a mount point cannot be removed or renamed
+// onto (EBUSY, or EXDEV across the mount): RemoveDataRoot empties it and
+// leaves it in place, and copyBack then keeps the root and swaps its
+// contents instead (swapIntoMountedRoot). A rerun after a crash part way
+// through the swap empties the root again and redoes it.
 func (m *MoveStepRunner) copyBack(ctx context.Context, step volume.MoveStep) error {
 	if err := m.stores.CloseTenantStores(ctx, step.TenantID); err != nil {
 		return err
@@ -220,9 +228,53 @@ func (m *MoveStepRunner) copyBack(ctx context.Context, step volume.MoveStep) err
 		return fail(err)
 	}
 	if err := m.renameFn()(staging, src); err != nil {
-		return fail(err)
+		if !errors.Is(err, syscall.EBUSY) && !errors.Is(err, syscall.EXDEV) {
+			return fail(err)
+		}
+		if err := m.swapIntoMountedRoot(ctx, staging, src); err != nil {
+			return fail(err)
+		}
 	}
 	return nil
+}
+
+// swapIntoMountedRoot finishes a copy-back whose source root is a mount
+// point, already emptied by RemoveDataRoot: it copies the verified staging
+// tree into copyBackInPlaceName inside the root (a rename across the mount
+// fails with EXDEV, so the tree must first reach the mounted filesystem),
+// verifies it there, moves each child up into the root with a durable
+// rename, syncs the root, and removes the inner and the staging directories.
+// The root itself is kept. Every step is redone by a rerun: copyBack empties
+// the root again first, inner directory included.
+func (m *MoveStepRunner) swapIntoMountedRoot(ctx context.Context, staging, root string) error {
+	inner := filepath.Join(root, copyBackInPlaceName)
+	manifest, err := volume.CopyTree(ctx, staging, inner)
+	if err == nil {
+		err = volume.VerifyCopy(ctx, inner, manifest)
+	}
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(inner)
+	if err != nil {
+		return err
+	}
+	rename := m.renameFn()
+	for _, e := range entries {
+		if e.Name() == copyBackInPlaceName {
+			return fmt.Errorf("copy-back: the tenant tree holds %q, the in-place staging name", copyBackInPlaceName)
+		}
+		if err := rename(filepath.Join(inner, e.Name()), filepath.Join(root, e.Name())); err != nil {
+			return err
+		}
+	}
+	if err := m.reg.RemoveDataRoot(ctx, inner); err != nil {
+		return err
+	}
+	if err := fsync.Dir(root); err != nil {
+		return err
+	}
+	return m.reg.RemoveDataRoot(ctx, staging)
 }
 
 func (m *MoveStepRunner) abortUncopied(ctx context.Context, step volume.MoveStep) error {
