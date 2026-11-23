@@ -28,8 +28,8 @@ import (
 	"testing"
 	"time"
 
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -553,7 +553,7 @@ func TestCredentialRotationPolicyGetCmd_SuccessYAML(t *testing.T) {
 		t.Errorf("service was asked for %q, want rk", svc.policyGot)
 	}
 	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+	if err := gocodecyaml.New[map[string]any]().Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatalf("decode YAML %q: %v", out, err)
 	}
 	requireCredDoc(t, "yaml", doc, map[string]string{
@@ -622,7 +622,7 @@ func TestCredentialMigrationConflictsResolveCmd_SuccessYAML(t *testing.T) {
 		t.Errorf("service saw %q %q, want db discard", svc.resolvedName, svc.resolution)
 	}
 	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+	if err := gocodecyaml.New[map[string]any]().Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatalf("decode YAML %q: %v", out, err)
 	}
 	requireCredDoc(t, "yaml", doc, map[string]string{"name": "db", "resolution": "discard"})
@@ -643,7 +643,7 @@ func credOutputDocs(t *testing.T, svc *mockCredSvc, args ...string) (jsonDoc, ya
 	if err := json.Unmarshal([]byte(jsonOut), &jsonDoc); err != nil {
 		t.Fatalf("decode JSON %q: %v", jsonOut, err)
 	}
-	if err := yaml.Unmarshal([]byte(yamlOut), &yamlDoc); err != nil {
+	if err := gocodecyaml.New[map[string]any]().Unmarshal([]byte(yamlOut), &yamlDoc); err != nil {
 		t.Fatalf("decode YAML %q: %v", yamlOut, err)
 	}
 	return jsonDoc, yamlDoc
