@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -45,7 +46,9 @@ type indeterminateStore struct {
 }
 
 func (s *indeterminateStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
-	if !s.armed {
+	// The fault is the record write's: the generation counter the catalog
+	// advances first writes through.
+	if !s.armed || !strings.HasPrefix(key, CatalogKeyPrefix) {
 		return s.MemoryKVStore.PutIfAbsent(ctx, key, value)
 	}
 	s.armed = false

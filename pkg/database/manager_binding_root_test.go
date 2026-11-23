@@ -92,7 +92,7 @@ func TestManager_InfoCarriesTheDescribedBinding(t *testing.T) {
 	if _, err := m.Create(DatabaseConfig{Name: "a", Backend: BackendMemory}); err != nil {
 		t.Fatalf("Create a: %v", err)
 	}
-	want := &DatabaseBinding{Kind: BindingLocal, Encryption: "tenant+database"}
+	want := &DatabaseBinding{Kind: BindingLocal, Encryption: "tenant+database", Generation: 1}
 	db, err := m.Get("a")
 	if err != nil {
 		t.Fatalf("Get a: %v", err)
@@ -127,6 +127,36 @@ func TestManager_InfoCarriesTheDescribedBinding(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("ListForTenant does not report a")
+	}
+}
+
+func TestManager_RecreateGivesHigherGeneration(t *testing.T) {
+	ctx := context.Background()
+	f := &describingFactory{binding: &Binding{Kind: BindingLocal, Encryptor: EncryptorNode}}
+	m := newDescribingManager(t, f)
+	first, err := m.Create(DatabaseConfig{Name: "a", Backend: BackendMemory})
+	if err != nil {
+		t.Fatalf("Create a: %v", err)
+	}
+	g1 := first.Info().Binding.Generation
+	if g1 == 0 {
+		t.Fatal("a created database reports generation 0")
+	}
+	if err := first.Backend().Put(ctx, []byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := m.Drop(ctx, "a"); err != nil {
+		t.Fatalf("Drop a: %v", err)
+	}
+	second, err := m.Create(DatabaseConfig{Name: "a", Backend: BackendMemory})
+	if err != nil {
+		t.Fatalf("Create a again: %v", err)
+	}
+	if g2 := second.Info().Binding.Generation; g2 <= g1 {
+		t.Fatalf("recreated generation = %d, want above %d", g2, g1)
+	}
+	if v, err := second.Backend().Get(ctx, []byte("k")); err != nil || v != nil {
+		t.Fatalf("recreated database Get(k) = %q, %v; want empty", v, err)
 	}
 }
 

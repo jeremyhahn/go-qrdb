@@ -728,6 +728,13 @@ type DatabaseMeta struct {
 	// existed, which reopens the database with an empty one.
 	Incarnation string `json:"incarnation,omitempty"`
 
+	// Generation is the number the catalog gave this create of the
+	// tenant's name: one higher than any earlier create of the name, kept
+	// by a per-name counter that a drop leaves (KVCatalog.Create). Zero in
+	// a record written before generations existed. Generations are
+	// monotonic, not dense.
+	Generation uint64 `json:"generation,omitempty"`
+
 	// OwnerNode is the node that holds a database whose backend is not raft:
 	// the identity (Manager.SetLocalNode) of the node that created it. Only
 	// that node opens the database's store; every other node forwards the
@@ -785,4 +792,9 @@ type DatabaseBinding struct {
 	// "tenant", or "tenant+database" when the database has its own barrier
 	// over the tenant's.
 	Encryption string `json:"encryption"`
+	// Generation numbers the create of this database's name: every create
+	// of the tenant's name records one higher than any earlier create of
+	// it, so a name dropped and created again reports a higher generation
+	// (DatabaseMeta.Generation).
+	Generation uint64 `json:"generation"`
 }

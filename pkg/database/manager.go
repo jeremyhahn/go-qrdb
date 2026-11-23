@@ -497,6 +497,17 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		return nil, undo.run(ctx, err)
 	}
 	undo.catalog, undo.incarnation = cat, incarnation
+	// The catalog numbered this create (DatabaseMeta.Generation); read the
+	// record back for it. A failed read leaves generation 0 in this node's
+	// memory only: the record holds the number and every open reads it.
+	if recorded, gerr := cat.Get(ctx, meta.TenantID, meta.Name); gerr == nil && recorded.Incarnation == meta.Incarnation {
+		meta.Generation = recorded.Generation
+	} else if gerr != nil {
+		m.logger.Debug("database generation not read back",
+			slog.String("tenant", meta.TenantID),
+			slog.String("name", meta.Name),
+			slog.String("error", gerr.Error()))
+	}
 
 	// Open storage backend via factory.
 	backend, err := m.factory.Create(cfg, dataDir)
@@ -2022,7 +2033,7 @@ func (m *Manager) describeBinding(meta DatabaseMeta) *DatabaseBinding {
 			slog.String("error", err.Error()))
 		return nil
 	}
-	return b.Describe(meta.OwnerNode)
+	return b.Describe(meta.OwnerNode, meta.Generation)
 }
 
 // RecordBindings returns the binding of every catalog record (ListRecords)

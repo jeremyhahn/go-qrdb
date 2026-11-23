@@ -46,7 +46,7 @@ func full() *database.DatabaseInfo {
 		Barrier:      &database.DatabaseBarrierConfig{Enabled: true, Mode: "shamir", SharesRequired: 2, SharesTotal: 3},
 		Connection:   &database.DatabaseConnectionConfig{Transport: "grpc", Address: "db.example.com:63000", CAFile: "/etc/qrdb/ca.pem"},
 		SQL:          &database.SQLConfig{Concurrency: database.ConcurrencyPessimistic},
-		Binding:      &database.DatabaseBinding{Kind: database.BindingLocal, Nodes: []string{"n1"}, Encryption: "tenant+database"},
+		Binding:      &database.DatabaseBinding{Kind: database.BindingLocal, Nodes: []string{"n1"}, Encryption: "tenant+database", Generation: 5},
 	}
 }
 
@@ -87,7 +87,7 @@ func TestInfo_CarriesEveryFieldAndNoSecret(t *testing.T) {
 	if out.SQL == nil || out.SQL.Concurrency != "pessimistic" {
 		t.Errorf("sql = %+v", out.SQL)
 	}
-	if b := out.Binding; b == nil || b.Kind != "local" || len(b.Nodes) != 1 || b.Nodes[0] != "n1" || b.Encryption != "tenant+database" {
+	if b := out.Binding; b == nil || b.Kind != "local" || len(b.Nodes) != 1 || b.Nodes[0] != "n1" || b.Encryption != "tenant+database" || b.Generation != 5 {
 		t.Errorf("binding = %+v", out.Binding)
 	}
 	encoded, err := json.Marshal(out)
@@ -119,7 +119,7 @@ func TestInfoProto_CarriesEveryFieldAndNoSecret(t *testing.T) {
 	if out.GetSql().GetConcurrency() != "pessimistic" {
 		t.Errorf("sql = %v", out.GetSql())
 	}
-	if b := out.GetBinding(); b.GetKind() != "local" || len(b.GetNodes()) != 1 || b.GetNodes()[0] != "n1" || b.GetEncryption() != "tenant+database" {
+	if b := out.GetBinding(); b.GetKind() != "local" || len(b.GetNodes()) != 1 || b.GetNodes()[0] != "n1" || b.GetEncryption() != "tenant+database" || b.GetGeneration() != 5 {
 		t.Errorf("binding = %v", out.GetBinding())
 	}
 	encoded, err := protojson.Marshal(out)

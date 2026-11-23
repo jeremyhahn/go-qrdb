@@ -3,6 +3,7 @@ package database
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"sync"
@@ -22,6 +23,52 @@ const CatalogKeyPrefix = "__sys:dbcatalog/"
 // key, so a record written under one is found under the other.
 func CatalogKey(tenantID, name string) string {
 	return CatalogKeyPrefix + tenantid.Normalize(tenantID) + "/" + name
+}
+
+// catalogGenerationPrefix is the key prefix of the per-name generation
+// counters (catalogGenerationKey).
+const catalogGenerationPrefix = "__sys:dbgeneration/"
+
+// catalogGenerationKey is the key of the generation counter of tenantID's
+// database name: the highest generation any create of the name was given,
+// as 8 big-endian bytes. It lives in the same store as the name's record
+// and Delete never removes it, so there is one key per name ever created
+// and a name created again after a drop counts on from its last create.
+func catalogGenerationKey(tenantID, name string) string {
+	return catalogGenerationPrefix + tenantid.Normalize(tenantID) + "/" + name
+}
+
+// nextGeneration advances the generation counter at key in store by one,
+// by compare-and-swap (retrying a lost swap), and returns the new value.
+// A counter that is absent, or not 8 bytes, counts from zero.
+func nextGeneration(ctx context.Context, store kvstore.AtomicKVStore, key string) (uint64, error) {
+	for {
+		current, err := store.Get(ctx, key)
+		if err != nil {
+			return 0, err
+		}
+		var last uint64
+		if len(current) == 8 {
+			last = binary.BigEndian.Uint64(current)
+		}
+		next := make([]byte, 8)
+		binary.BigEndian.PutUint64(next, last+1)
+		var swapped bool
+		if current == nil {
+			swapped, err = store.PutIfAbsent(ctx, key, next)
+		} else {
+			swapped, err = store.CompareAndSwap(ctx, key, current, next)
+		}
+		if err != nil {
+			return 0, err
+		}
+		if swapped {
+			return last + 1, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
 }
 
 // RootClaimKeyPrefix is the system-store key prefix of the root claims of
@@ -69,7 +116,10 @@ func rootClaim(meta DatabaseMeta) ([]byte, error) {
 type Catalog interface {
 	// Create records meta. It returns *AlreadyExistsError when a record of
 	// the same tenant and name exists, so two nodes creating one name cannot
-	// both succeed.
+	// both succeed. The record it writes carries the create's generation
+	// (DatabaseMeta.Generation), one higher than any earlier create of the
+	// tenant's name, whatever meta.Generation holds; a drop does not reset
+	// the count.
 	Create(ctx context.Context, meta DatabaseMeta) error
 
 	// Update applies mutate to the record of tenantID's database name and
@@ -357,13 +407,21 @@ func (c *KVCatalog) storeFor(ctx context.Context, tenantID string) (kvstore.Atom
 // Create implements Catalog.
 func (c *KVCatalog) Create(ctx context.Context, meta DatabaseMeta) error {
 	key := CatalogKey(meta.TenantID, meta.Name)
-	data, err := json.Marshal(meta)
-	if err != nil {
-		return &CatalogWriteError{Key: key, Err: err}
-	}
 	store, inHome, err := c.storeFor(ctx, meta.TenantID)
 	if err != nil {
 		return err
+	}
+	// Number this create first: the name's counter advances whether or not
+	// the record write below succeeds, so generations are monotonic, not
+	// dense, and no two creates of a name ever share one.
+	generation, err := nextGeneration(ctx, store, catalogGenerationKey(meta.TenantID, meta.Name))
+	if err != nil {
+		return &CatalogWriteError{Key: key, Err: err}
+	}
+	meta.Generation = generation
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return &CatalogWriteError{Key: key, Err: err}
 	}
 	// A record in an isolated tenant's home is claimed in the system store
 	// first, so no instant exists in which the record holds a root that a

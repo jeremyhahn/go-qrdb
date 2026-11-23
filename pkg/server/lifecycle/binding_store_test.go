@@ -1460,9 +1460,9 @@ func TestLocalBindingFactory_DescribeBinding(t *testing.T) {
 		if err != nil || b == nil {
 			t.Fatalf("DescribeBinding(%s) = %v, %v; want a binding", cfg.Name, b, err)
 		}
-		got := b.Describe("")
-		if got.Kind != database.BindingLocal || got.Encryption != "node" || got.Nodes != nil {
-			t.Fatalf("DescribeBinding(%s).Describe = %+v; want local, node, no nodes", cfg.Name, got)
+		got := b.Describe("", 3)
+		if got.Kind != database.BindingLocal || got.Encryption != "node" || got.Nodes != nil || got.Generation != 3 {
+			t.Fatalf("DescribeBinding(%s).Describe = %+v; want local, node, no nodes, generation 3", cfg.Name, got)
 		}
 	}
 	_, err := f.DescribeBinding(database.DatabaseConfig{TenantID: bindingTenant, Name: "orders", Backend: database.BackendRaft})

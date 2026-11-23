@@ -212,11 +212,11 @@ type Binding struct {
 // (DatabaseMeta.OwnerNode), empty when any node opens it: a standalone
 // record then names no node, and a raft binding names its replicas only
 // once raft bindings are described. A nil binding describes nothing.
-func (b *Binding) Describe(owner string) *DatabaseBinding {
+func (b *Binding) Describe(owner string, generation uint64) *DatabaseBinding {
 	if b == nil {
 		return nil
 	}
-	out := &DatabaseBinding{Kind: b.Kind, Encryption: string(b.Encryptor)}
+	out := &DatabaseBinding{Kind: b.Kind, Encryption: string(b.Encryptor), Generation: generation}
 	if b.DatabaseBarrier {
 		out.Encryption += "+database"
 	}

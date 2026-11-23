@@ -48,35 +48,36 @@ func bindTenant(isolation tenant.IsolationType) BindingTenant {
 // "+database" when the database has its own barrier), and the owner node.
 func TestBinding_Describe_EncryptionAndNodes(t *testing.T) {
 	cases := []struct {
-		name    string
-		binding Binding
-		owner   string
-		want    DatabaseBinding
+		name       string
+		binding    Binding
+		owner      string
+		generation uint64
+		want       DatabaseBinding
 	}{
-		{"prefix tenant local", Binding{Kind: BindingLocal, Encryptor: EncryptorNode}, "",
-			DatabaseBinding{Kind: BindingLocal, Encryption: "node"}},
-		{"barrier tenant", Binding{Kind: BindingLocal, Encryptor: EncryptorTenant}, "",
-			DatabaseBinding{Kind: BindingLocal, Encryption: "tenant"}},
-		{"database barrier", Binding{Kind: BindingLocal, Encryptor: EncryptorTenant, DatabaseBarrier: true}, "",
-			DatabaseBinding{Kind: BindingLocal, Encryption: "tenant+database"}},
-		{"owner node", Binding{Kind: BindingLocal, Encryptor: EncryptorNode}, "n1",
-			DatabaseBinding{Kind: BindingLocal, Encryption: "node", Nodes: []string{"n1"}}},
-		{"raft without owner", Binding{Kind: BindingRaft, Encryptor: EncryptorNode}, "",
+		{"prefix tenant local", Binding{Kind: BindingLocal, Encryptor: EncryptorNode}, "", 1,
+			DatabaseBinding{Kind: BindingLocal, Encryption: "node", Generation: 1}},
+		{"barrier tenant", Binding{Kind: BindingLocal, Encryptor: EncryptorTenant}, "", 2,
+			DatabaseBinding{Kind: BindingLocal, Encryption: "tenant", Generation: 2}},
+		{"database barrier", Binding{Kind: BindingLocal, Encryptor: EncryptorTenant, DatabaseBarrier: true}, "", 3,
+			DatabaseBinding{Kind: BindingLocal, Encryption: "tenant+database", Generation: 3}},
+		{"owner node", Binding{Kind: BindingLocal, Encryptor: EncryptorNode}, "n1", 7,
+			DatabaseBinding{Kind: BindingLocal, Encryption: "node", Nodes: []string{"n1"}, Generation: 7}},
+		{"raft without owner", Binding{Kind: BindingRaft, Encryptor: EncryptorNode}, "", 0,
 			DatabaseBinding{Kind: BindingRaft, Encryption: "node"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.binding.Describe(tc.owner)
+			got := tc.binding.Describe(tc.owner, tc.generation)
 			if got == nil {
 				t.Fatal("Describe returned nil")
 			}
 			if !reflect.DeepEqual(*got, tc.want) {
-				t.Fatalf("Describe(%q) = %+v, want %+v", tc.owner, *got, tc.want)
+				t.Fatalf("Describe(%q, %d) = %+v, want %+v", tc.owner, tc.generation, *got, tc.want)
 			}
 		})
 	}
 	var nilBinding *Binding
-	if got := nilBinding.Describe("n1"); got != nil {
+	if got := nilBinding.Describe("n1", 1); got != nil {
 		t.Fatalf("nil binding described as %+v", got)
 	}
 }

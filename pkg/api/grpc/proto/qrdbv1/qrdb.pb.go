@@ -17965,7 +17965,11 @@ type DatabaseBindingInfo struct {
 	// encryption names whose key encrypts the store at rest: "node",
 	// "tenant", or "tenant+database" when the database has its own barrier
 	// over the tenant's.
-	Encryption    string `protobuf:"bytes,3,opt,name=encryption,proto3" json:"encryption,omitempty"`
+	Encryption string `protobuf:"bytes,3,opt,name=encryption,proto3" json:"encryption,omitempty"`
+	// generation numbers the create of the database's name: every create
+	// of the tenant's name gets one higher than any earlier create of it,
+	// so a name dropped and created again reports a higher generation.
+	Generation    uint64 `protobuf:"varint,4,opt,name=generation,proto3" json:"generation,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -18019,6 +18023,13 @@ func (x *DatabaseBindingInfo) GetEncryption() string {
 		return x.Encryption
 	}
 	return ""
+}
+
+func (x *DatabaseBindingInfo) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
 }
 
 // DatabaseRaftInfo is a database's Raft configuration as a response reports
@@ -36869,13 +36880,16 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"compaction\x18\x11 \x01(\v2!.qrdb.v1.DatabaseCompactionConfigR\n" +
 	"compaction\x125\n" +
 	"\x16compaction_unavailable\x18\x12 \x01(\bR\x15compactionUnavailable\x126\n" +
-	"\abinding\x18\x13 \x01(\v2\x1c.qrdb.v1.DatabaseBindingInfoR\abindingJ\x04\b\x02\x10\x03R\x06engine\"_\n" +
+	"\abinding\x18\x13 \x01(\v2\x1c.qrdb.v1.DatabaseBindingInfoR\abindingJ\x04\b\x02\x10\x03R\x06engine\"\x7f\n" +
 	"\x13DatabaseBindingInfo\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x14\n" +
 	"\x05nodes\x18\x02 \x03(\tR\x05nodes\x12\x1e\n" +
 	"\n" +
 	"encryption\x18\x03 \x01(\tR\n" +
-	"encryption\"\xfb\x03\n" +
+	"encryption\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x04 \x01(\x04R\n" +
+	"generation\"\xfb\x03\n" +
 	"\x10DatabaseRaftInfo\x12!\n" +
 	"\fcluster_mode\x18\x01 \x01(\tR\vclusterMode\x12\x1d\n" +
 	"\n" +

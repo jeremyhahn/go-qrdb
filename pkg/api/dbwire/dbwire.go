@@ -79,7 +79,7 @@ func Info(info *database.DatabaseInfo) *transport.DatabaseInfo {
 	out.Compaction = Compaction(info.Compaction)
 	out.CompactionUnavailable = info.CompactionUnavailable
 	if b := info.Binding; b != nil {
-		out.Binding = &transport.DatabaseBinding{Kind: string(b.Kind), Nodes: append([]string(nil), b.Nodes...), Encryption: b.Encryption}
+		out.Binding = &transport.DatabaseBinding{Kind: string(b.Kind), Nodes: append([]string(nil), b.Nodes...), Encryption: b.Encryption, Generation: b.Generation}
 	}
 	return out
 }
@@ -202,7 +202,7 @@ func InfoProto(info *database.DatabaseInfo) *pb.DatabaseInfoResponse {
 	out.Compaction = compactionpb.ToProto(info.Compaction)
 	out.CompactionUnavailable = info.CompactionUnavailable
 	if b := info.Binding; b != nil {
-		out.Binding = &pb.DatabaseBindingInfo{Kind: string(b.Kind), Nodes: append([]string(nil), b.Nodes...), Encryption: b.Encryption}
+		out.Binding = &pb.DatabaseBindingInfo{Kind: string(b.Kind), Nodes: append([]string(nil), b.Nodes...), Encryption: b.Encryption, Generation: b.Generation}
 	}
 	return out
 }

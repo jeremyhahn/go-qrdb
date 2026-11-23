@@ -79,6 +79,10 @@ type DatabaseBinding struct {
 	// "tenant", or "tenant+database" when the database has its own barrier
 	// over the tenant's.
 	Encryption string `json:"encryption"`
+	// Generation numbers the create of the database's name: every create
+	// of the tenant's name gets one higher than any earlier create of it,
+	// so a name dropped and created again reports a higher generation.
+	Generation uint64 `json:"generation"`
 }
 
 // DatabaseRaftInfo is a database's Raft configuration as a response reports
