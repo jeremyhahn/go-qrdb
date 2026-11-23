@@ -16,6 +16,7 @@ package middleware
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -25,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // RESTMiddleware returns an http.Handler that wraps the given handler with
@@ -141,6 +143,15 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			ctx, identity, authnErr = m.authenticate(ctx)
 		}
 		if authnErr != nil {
+			// A forward from a node across a release gap is refused with the
+			// typed gap (409), never handed to a module fallback and never
+			// collapsed to the opaque 401: the assertion verified, and the
+			// forwarder needs both releases to see why it was refused.
+			var gap *release.GapError
+			if errors.As(authnErr, &gap) {
+				WriteJSONError(w, http.StatusConflict, gap.Error())
+				return
+			}
 			// qrdb's own authenticators produced no identity. If the matched
 			// route belongs to a capability module that registered an
 			// authentication fallback (a session-token plane qrdb does not

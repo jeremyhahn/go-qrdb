@@ -33,6 +33,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -252,6 +253,61 @@ func TestOnBehalf_ForgedSignatureRejected(t *testing.T) {
 	if rec.Code != http.StatusForbidden && rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401/403, got %d", rec.Code)
 	}
+}
+
+// asRelease runs build with the process stamped as release v -- the release
+// a forwarding node announces in the assertion build signs -- and restores
+// the previous release before returning.
+func asRelease[T any](v string, build func() T) T {
+	restore := release.SetForTesting(v)
+	defer restore()
+	return build()
+}
+
+// assertRESTReleaseGap checks a REST on-behalf request was refused with the
+// release gap: 409 naming the channel and both releases, handler not run.
+// A module fallback answering instead would render 401, not 409.
+func assertRESTReleaseGap(t *testing.T, r *http.Request, peer string) {
+	t.Helper()
+	rec, ran, _ := runOnBehalf(t, r, &user.User{ID: obAliceID, Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive}, &capturingAuthorizer{})
+	if ran {
+		t.Fatal("handler ran for a forward across a release gap")
+	}
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d (%s); want 409", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{"replica-forwarding", `0.59.0`, `\"` + peer + `\"`} {
+		if !bytes.Contains(rec.Body.Bytes(), []byte(want)) {
+			t.Fatalf("body %s does not name %s", rec.Body.String(), want)
+		}
+	}
+}
+
+// TestOnBehalf_ReleaseGapIsRefusedWith409 proves the REST ingress refuses a
+// forward from a node two minors away with 409 and the typed gap (channel
+// replica-forwarding, both releases), never the opaque 401 and never by
+// serving it.
+func TestOnBehalf_ReleaseGapIsRefusedWith409(t *testing.T) {
+	cert, key := obNodeCert(t, obNodeID)
+	body := []byte("x")
+	r := asRelease("0.61.0", func() *http.Request {
+		return buildOnBehalfRequest(t, cert, key, obAliceSubject, "acme", obNodeID, time.Now(), body, http.MethodPut, "/kv/foo")
+	})
+	t.Cleanup(release.SetForTesting("0.59.0"))
+	assertRESTReleaseGap(t, r, "0.61.0")
+}
+
+// TestOnBehalf_MissingReleaseIsAGap proves an assertion announcing no
+// release (a forwarder from before the field existed) is refused by a
+// stamped receiver the same way.
+func TestOnBehalf_MissingReleaseIsAGap(t *testing.T) {
+	cert, key := obNodeCert(t, obNodeID)
+	body := []byte("x")
+	r := asRelease("", func() *http.Request {
+		return buildOnBehalfRequest(t, cert, key, obAliceSubject, "acme", obNodeID, time.Now(), body, http.MethodPut, "/kv/foo")
+	})
+	t.Cleanup(release.SetForTesting("0.59.0"))
+	assertRESTReleaseGap(t, r, "")
 }
 
 // TestOnBehalf_NonClusterPeerRejected: a user cert (no node SAN) presenting a

@@ -61,6 +61,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // HTTP header names carrying the on-behalf assertion and its signature. The
@@ -154,6 +155,14 @@ type CallerAssertion struct {
 	// that agrees with Subject and TenantID. omitempty keeps every other
 	// assertion byte-identical to the form before the field existed.
 	Delegation string `json:"delegation,omitempty"`
+
+	// ReleaseVersion is the forwarding node's release (release.Version()).
+	// The receiving node checks it with release.Check on the
+	// replica-forwarding channel once the signature and binding verify, and
+	// refuses a forward from a release that is not adjacent with the typed
+	// *release.GapError (rolling-upgrades clauses (2) and (3)). It is signed
+	// with every other field, so a forwarder cannot claim another release.
+	ReleaseVersion string `json:"release_version"`
 }
 
 // NewCallerAssertion builds a request-bound assertion for the given caller and
@@ -173,6 +182,7 @@ func NewCallerAssertion(subject, tenantID, method, path, bodySHA256, forwarderNo
 		ForwarderNodeID: forwarderNodeID,
 		IssuedAtUnix:    now.Unix(),
 		ExpiresAtUnix:   now.Add(ttl).Unix(),
+		ReleaseVersion:  release.Version(),
 	}
 }
 
