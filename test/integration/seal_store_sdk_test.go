@@ -23,7 +23,11 @@ import (
 	"testing"
 	"time"
 
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	qrdbnode "github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	grpctransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/grpc"
 	mcptransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp"
@@ -153,5 +157,134 @@ func TestSealStore_SDK_EmbeddedOnly_PerProtocol(t *testing.T) {
 
 			assertSealStoreSDKRefused(t, ctx, client, proto, "after unseal")
 		})
+	}
+}
+
+// embeddedSealStorePassphrase is the passphrase fixture of the embedded
+// seal-store lifecycle node: WithSealPassphrase initializes the node with it
+// and every BarrierUnseal below presents it.
+const embeddedSealStorePassphrase = "embedded-seal-store-passphrase-1647"
+
+// TestSealStore_SDK_Embedded_Lifecycle proves the one surface that serves
+// seal-store data (ruling 1234): an in-process passphrase-sealed node's
+// embedded client puts, gets, lists, reports, reseals and deletes a sealed
+// secret through Client.SealStore(); with the barrier sealed every verb is
+// refused by the node's sealed gate (seal.ErrSealed), and
+// after BarrierUnseal the stored secret reads back unchanged.
+func TestSealStore_SDK_Embedded_Lifecycle(t *testing.T) {
+	t.Parallel()
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Raft.DataDir = t.TempDir()
+	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = string(seal.StrategyPassphrase)
+	cfg.Seal.RootKeyPath = "root-key"
+	cfg.Seal.CredentialStrategy = "barrier"
+	cfg.Protocols.REST = false
+	cfg.Protocols.GRPC = false
+	cfg.Protocols.QUIC = false
+	cfg.Protocols.Unix = false
+	cfg.Protocols.MCP = false
+	// The suite drives the seal store's data path in process; seal-store
+	// authorization (permission.SealStoreManage) has its own coverage in
+	// sdk/go/transport/embedded.
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false)
+
+	n, err := qrdbnode.NewStandaloneNode(context.Background(), cfg, nil,
+		qrdbnode.WithSealPassphrase([]byte(embeddedSealStorePassphrase)))
+	if err != nil {
+		t.Fatalf("NewStandaloneNode: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Close() })
+	if n.IsSealed() {
+		t.Fatal("the passphrase node booted sealed")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	client := n.Client()
+	store := client.SealStore()
+	secret := []byte("embedded-seal-store-secret")
+
+	if err := store.SealStorePut(ctx, &transport.SealStorePutRequest{Name: "alpha", Secret: secret}); err != nil {
+		t.Fatalf("SealStorePut: %v", err)
+	}
+	got, err := store.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "alpha"})
+	if err != nil {
+		t.Fatalf("SealStoreGet: %v", err)
+	}
+	if got.Name != "alpha" || string(got.Secret) != string(secret) {
+		t.Fatalf("SealStoreGet = {%q, %q}, want {alpha, %q}", got.Name, got.Secret, secret)
+	}
+	list, err := store.SealStoreList(ctx)
+	if err != nil {
+		t.Fatalf("SealStoreList: %v", err)
+	}
+	if len(list.Names) != 1 || list.Names[0] != "alpha" {
+		t.Fatalf("SealStoreList = %v, want [alpha]", list.Names)
+	}
+	status, err := store.SealStoreStatus(ctx)
+	if err != nil {
+		t.Fatalf("SealStoreStatus: %v", err)
+	}
+	if !status.Available || status.SecretCount != 1 {
+		t.Fatalf("SealStoreStatus = %+v, want available with 1 secret", status)
+	}
+	if err := store.SealStoreReseal(ctx, &transport.SealStoreResealRequest{Name: "alpha"}); err != nil {
+		t.Fatalf("SealStoreReseal: %v", err)
+	}
+	if got, err := store.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "alpha"}); err != nil || string(got.Secret) != string(secret) {
+		t.Fatalf("SealStoreGet after reseal = %v, %v; want %q", got, err, secret)
+	}
+	if err := store.SealStorePut(ctx, &transport.SealStorePutRequest{Name: "beta", Secret: []byte("second")}); err != nil {
+		t.Fatalf("SealStorePut beta: %v", err)
+	}
+	if err := store.SealStoreDelete(ctx, &transport.SealStoreDeleteRequest{Name: "beta"}); err != nil {
+		t.Fatalf("SealStoreDelete: %v", err)
+	}
+	if _, err := store.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "beta"}); !errors.Is(err, sdk.ErrSealStoreSecretNotFound) {
+		t.Fatalf("SealStoreGet after delete = %v, want sdk.ErrSealStoreSecretNotFound", err)
+	}
+
+	if err := client.Barrier().BarrierSeal(ctx); err != nil {
+		t.Fatalf("BarrierSeal: %v", err)
+	}
+	sealedCalls := map[string]func() error{
+		transport.OpSealStorePut: func() error {
+			return store.SealStorePut(ctx, &transport.SealStorePutRequest{Name: "gamma", Secret: []byte("x")})
+		},
+		transport.OpSealStoreGet: func() error {
+			_, err := store.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "alpha"})
+			return err
+		},
+		transport.OpSealStoreDelete: func() error {
+			return store.SealStoreDelete(ctx, &transport.SealStoreDeleteRequest{Name: "alpha"})
+		},
+		transport.OpSealStoreList: func() error {
+			_, err := store.SealStoreList(ctx)
+			return err
+		},
+		transport.OpSealStoreReseal: func() error {
+			return store.SealStoreReseal(ctx, &transport.SealStoreResealRequest{Name: "alpha"})
+		},
+	}
+	for op, call := range sealedCalls {
+		// The node's embedded seal gate refuses before the store runs, so
+		// the refusal is the barrier's own seal.ErrSealed; the store's
+		// sdk.ErrSealStoreBarrierSealed is its in-store guard behind it.
+		if err := call(); !errors.Is(err, seal.ErrSealed) {
+			t.Fatalf("sealed %s = %v, want seal.ErrSealed", op, err)
+		}
+	}
+
+	if err := client.Barrier().BarrierUnseal(ctx, &transport.BarrierUnsealRequest{Secret: []byte(embeddedSealStorePassphrase)}); err != nil {
+		t.Fatalf("BarrierUnseal: %v", err)
+	}
+	got, err = store.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "alpha"})
+	if err != nil {
+		t.Fatalf("SealStoreGet after unseal: %v", err)
+	}
+	if string(got.Secret) != string(secret) {
+		t.Fatalf("SealStoreGet after unseal = %q, want %q", got.Secret, secret)
 	}
 }
