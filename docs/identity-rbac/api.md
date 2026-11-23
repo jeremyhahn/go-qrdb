@@ -459,6 +459,14 @@ transports send `Authorization: Bearer <token>` (gRPC and Unix as the
 `authorization` metadata key) on every request, data and admin alike. The root
 sdk mirrors both options as `sdk.WithBearerToken` and `sdk.WithTokenSource`.
 
+The `qrdb` CLI sends a bearer from the root flag `--bearer-token-file <path>`
+on rest, grpc, mcp and unix over TLS. The flag names a file, never the token,
+so the token stays out of `ps` and shell history. The file is read on every
+request, with surrounding whitespace trimmed, so a token rotated in place is
+used without a restart. An unreadable file is refused before any connection,
+with an invalid-argument error that names the flag. A read error names the path only,
+never the content. `quic` refuses the flag, and `qrdb enroll` ignores it.
+
 ```go
 tr, err := rest.New(
 	transport.WithAddress("https://127.0.0.1:8443"),
