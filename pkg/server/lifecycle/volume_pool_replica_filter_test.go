@@ -161,9 +161,9 @@ func TestVolumePoolHealthFilter_JournalledMoveRefusesNewReplica(t *testing.T) {
 			filter := newVolumePoolHealthFilter(allocator, volumeSvc, map[string]string{"10.0.0.1:7000": "1"}, nil)
 
 			err := filter("tenant-a", 1, "10.0.0.1:7000")
-			var target *TenantMovingReplicaError
+			var target *volume.TenantMovingReplicaError
 			if !errors.As(err, &target) {
-				t.Fatalf("filter() = %v, want *TenantMovingReplicaError", err)
+				t.Fatalf("filter() = %v, want *volume.TenantMovingReplicaError", err)
 			}
 			if target.TenantID != "tenant-a" || target.FromPool != "fast" || target.ToPool != "slow" || target.State != state {
 				t.Fatalf("TenantMovingReplicaError = %+v, want tenant-a fast->slow %s", target, state)

@@ -257,6 +257,12 @@ func WithBarrierLookup(lookup TenantBarrierLookup) DatabaseServiceOption {
 	return func(s *DatabaseService) { s.barrierLookup = lookup }
 }
 
+// WithMoveFence sets the fence scale-up consults before it adds a replica:
+// a tenant mid volume pool move is refused (see MoveFence).
+func WithMoveFence(fence MoveFence) DatabaseServiceOption {
+	return func(s *DatabaseService) { s.moveFence = fence }
+}
+
 // WithLocalNodeID sets the local Raft node ID passed to KeyDistributor as
 // selfNodeID so the distributor skips the local replica (which already holds
 // the key). It should be set to the node's Raft address (the same value that
@@ -854,6 +860,7 @@ type DatabaseService struct {
 	placementScheduler *placement.Scheduler
 	keyDistributor     KeyDistributor
 	barrierLookup      TenantBarrierLookup
+	moveFence          MoveFence
 	dataRootResolver   TenantDataRootResolver
 	localNodeID        string
 	raftHost           RaftHost
@@ -2604,6 +2611,11 @@ func scaleInfoFromPlacement(db *database.Database, p *placement.Placement) *data
 // placement AND admitted as observers) is rolled back, so a
 // partially-applied scale-up plus a retry never double-reserves.
 func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db *database.Database, p *placement.Placement, targetReplicas, delta int) (*database.DatabaseInfo, error) {
+	// A tenant mid volume pool move keeps its replica set until the move
+	// ends: a replica added now gets no copy step (volume.TenantMovingReplicaError).
+	if err := s.checkMoveFence(ctx, tenantID); err != nil {
+		return nil, err
+	}
 	if s.quotaChecker != nil {
 		if err := s.quotaChecker.CheckN(ctx, tenantID, quota.ResourceReplicasPerGroup, int64(targetReplicas)); err != nil {
 			return nil, err
@@ -2658,7 +2670,13 @@ func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db
 	for _, r := range newReplicas {
 		// Placement must be persisted BEFORE key delivery is attempted, not
 		// after -- see addObserverReplica's doc comment for the receiver
-		// placement-gate rationale this ordering satisfies.
+		// placement-gate rationale this ordering satisfies. The move fence
+		// is read again before each add: a move admitted mid-loop refuses
+		// the rest.
+		if err := s.checkMoveFence(ctx, tenantID); err != nil {
+			loopErr = err
+			break
+		}
 		updated, kerr, _, err := addObserverReplica(ctx, s.raftHost, s.placementStore, s.keyDistributor, s.barrierLookup, current, r, s.localNodeID)
 		current = updated
 		if kerr != nil {
@@ -2701,6 +2719,15 @@ func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db
 	}
 
 	return scaleInfoFromPlacement(db, current), nil
+}
+
+// checkMoveFence answers the composed MoveFence's refusal for tenantID, nil
+// when no fence is composed or the tenant is not moving.
+func (s *DatabaseService) checkMoveFence(ctx context.Context, tenantID string) error {
+	if s.moveFence == nil {
+		return nil
+	}
+	return s.moveFence(ctx, tenantID)
 }
 
 // scaleDown implements the C.3 scale-down sequence: no quota check (freeing

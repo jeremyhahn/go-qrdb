@@ -37,6 +37,7 @@ func TestClassify_VolumeMoveErrors(t *testing.T) {
 		want Class
 	}{
 		{"MoveConflictError", conflict, FailedPrecondition},
+		{"TenantMovingReplicaError", &volume.TenantMovingReplicaError{TenantID: "t", FromPool: "a", ToPool: "b", State: "copying"}, FailedPrecondition},
 		{"MoveToUnencryptedPoolError", &volume.MoveToUnencryptedPoolError{TenantID: "t", FromPool: "a", ToPool: "b"}, FailedPrecondition},
 		{"MoveNotFoundError", &volume.MoveNotFoundError{TenantID: "t"}, NotFound},
 		{"InvalidMoveRequestError", &volume.InvalidMoveRequestError{Reason: "empty tenant"}, InvalidArgument},

@@ -8,7 +8,56 @@
 
 package volume
 
-import "strconv"
+import (
+	"context"
+	"errors"
+	"strconv"
+)
+
+// TenantMovingReplicaError refuses a change to the replica set of a tenant
+// whose volume pool move is journalled, in any state: a replica added
+// mid-move would hold the tenant on its source pool past cut over, and a
+// replica removed mid-move would leave a copy step that never completes.
+// The placement scheduler's filter, the rebalancer's MOVE and scale-up all
+// answer it; the caller retries once the move ends. It unwraps to a
+// *MoveConflictError, so it classifies as a move conflict
+// (FailedPrecondition).
+type TenantMovingReplicaError struct {
+	TenantID string
+	FromPool string
+	ToPool   string
+	State    string
+}
+
+// Error implements the error interface.
+func (e *TenantMovingReplicaError) Error() string {
+	return "volume: tenant " + strconv.Quote(e.TenantID) + " is moving from pool " + strconv.Quote(e.FromPool) +
+		" to " + strconv.Quote(e.ToPool) + " (" + e.State + "); its replica set changes after the move ends"
+}
+
+// Unwrap answers the move conflict the refusal is.
+func (e *TenantMovingReplicaError) Unwrap() error {
+	return &MoveConflictError{TenantID: e.TenantID, Reason: "replica set change during a move (" + e.State + ")"}
+}
+
+// RefuseReplicaChangeIfMoving answers *TenantMovingReplicaError when the
+// tenant has a move journal in any state, nil when it has none
+// (*MoveNotFoundError), and any other read error as is: the fence fails
+// closed on a journal it cannot read.
+func RefuseReplicaChangeIfMoving(ctx context.Context, svc Service, tenantID string) error {
+	m, err := svc.GetMove(ctx, tenantID)
+	if err != nil {
+		var noMove *MoveNotFoundError
+		if errors.As(err, &noMove) {
+			return nil
+		}
+		return err
+	}
+	if m == nil {
+		return nil
+	}
+	return &TenantMovingReplicaError{TenantID: tenantID, FromPool: m.FromPool, ToPool: m.ToPool, State: m.State}
+}
 
 // PoolNotFoundError is returned when a request names a pool the catalog
 // does not have.
