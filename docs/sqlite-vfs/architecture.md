@@ -99,6 +99,8 @@ sqlite/<db-name>/stage/<commit-id>/page/<pgno>   staged page of an oversized com
 At transaction start (`xLock(SHARED)`), the VFS pins the current MVCC
 revision. Every `xRead` serves `page@revision`, giving the whole SQLite
 transaction a consistent snapshot without holding any server-side state.
+A connection that stays at SHARED after its own commit (an open read
+statement) reads on at that commit's revision, not the newest one.
 A local page cache (invalidated by a watch on the namespace, or by
 revision comparison at snapshot pin) keeps warm reads off the network.
 
@@ -108,7 +110,9 @@ revision comparison at snapshot pin) keeps warm reads off the network.
 `SQLITE_IOCAP_BATCH_ATOMIC`, so SQLite skips its rollback journal and
 delegates atomicity to the VFS: at commit (`xFileControl(COMMIT_PHASETWO)` /
 `xSync`), the buffered pages plus the meta record are submitted as **one
-atomic batch proposal**. Rollback discards the buffer. A commit above the
+atomic batch proposal**. Rollback discards the buffer; a rollback SQLite
+plays back from its journal over pages it already wrote (a cache spill)
+restores the snapshot's bytes, so that commit writes no revision. A commit above the
 stage threshold stages its pages and publishes them with the server-side
 prefix move (`OpMVCCMovePrefix`, gated by the `prefix-move` cluster feature),
 the meta record and truncated-page deletes at the same one revision.
