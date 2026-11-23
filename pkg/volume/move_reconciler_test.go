@@ -12,9 +12,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -299,7 +302,7 @@ func TestMoveReconciler_AbortsAfterBoundedAttempts(t *testing.T) {
 				}
 			}
 			m := storedMove(t, kv, "acme")
-			if m == nil || m.State != MoveStateAborting || m.Error != boom.Error() ||
+			if m == nil || m.State != MoveStateAborting || !strings.HasSuffix(m.Error, ": "+moveStepErrorClass(boom)) ||
 				!reflect.DeepEqual(m.NodesPending, []string{"n1", "n2"}) {
 				t.Fatalf("journal = %+v, want aborting with n1 pending", m)
 			}
@@ -323,6 +326,45 @@ func TestMoveReconciler_FailureThenSuccess(t *testing.T) {
 	m := storedMove(t, kv, "acme")
 	if m == nil || m.State != MoveStateCopying || !reflect.DeepEqual(m.NodesCopied, []string{"n1"}) || m.Error != "" {
 		t.Fatalf("journal = %+v, want n1 copied", m)
+	}
+}
+
+// TestMoveReconciler_FailureIsSanitized: a step error carrying a node-local
+// path (a RemoveDataRoot failure) is persisted in the replicated journal as a
+// typed class with a fixed message, never with the path.
+func TestMoveReconciler_FailureIsSanitized(t *testing.T) {
+	cat, kv, _ := newAdmittedMove(t)
+	pathErr := &fs.PathError{Op: "remove", Path: "/srv/pool-a/tenants/acme", Err: fs.ErrPermission}
+	runner := &scriptedRunner{fail: map[string][]error{"n1": {pathErr}}}
+	r := newTestReconciler(t, cat, runner)
+	if err := tick(context.Background(), r); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	m := storedMove(t, kv, "acme")
+	if m == nil {
+		t.Fatal("journal missing")
+	}
+	if strings.Contains(m.Error, "/srv") || strings.Contains(m.Error, "acme") {
+		t.Fatalf("journal error %q carries a path", m.Error)
+	}
+	if want := "move " + MoveStepPhaseCopy + " step failed: permission denied"; m.Error != want {
+		t.Fatalf("journal error = %q, want %q", m.Error, want)
+	}
+}
+
+func TestMoveStepErrorClass(t *testing.T) {
+	cases := map[string]error{
+		"timed out":                         context.DeadlineExceeded,
+		"cancelled":                         context.Canceled,
+		"no space left on the pool":         fmt.Errorf("write /x: %w", syscall.ENOSPC),
+		"path does not exist":               &fs.PathError{Op: "open", Path: "/x", Err: fs.ErrNotExist},
+		"path already exists":               &fs.PathError{Op: "mkdir", Path: "/x", Err: fs.ErrExist},
+		"internal error (see the node log)": errors.New("/srv/secret/path"),
+	}
+	for want, err := range cases {
+		if got := moveStepErrorClass(err); got != want {
+			t.Errorf("moveStepErrorClass(%v) = %q, want %q", err, got, want)
+		}
 	}
 }
 
@@ -573,7 +615,7 @@ func TestMoveReconciler_RetireFailureRetried(t *testing.T) {
 	r := newTestReconciler(t, cat, runner)
 	reconcilePasses(t, r, 4)
 	m := storedMove(t, kv, "acme")
-	if m.State != MoveStateCutover || m.StepNode != "n1" || m.StepAttempts != 4 || m.Error != boom.Error() {
+	if m.State != MoveStateCutover || m.StepNode != "n1" || m.StepAttempts != 4 || !strings.HasSuffix(m.Error, ": "+moveStepErrorClass(boom)) {
 		t.Fatalf("journal = %+v, want cutover, n1 retrying", m)
 	}
 	reconcilePasses(t, r, 2)

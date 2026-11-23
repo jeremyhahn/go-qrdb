@@ -11,7 +11,9 @@ package volume
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
+	"syscall"
 )
 
 // MoveReconciler advances every tenant move's journal one node step at a
@@ -269,7 +271,7 @@ func (r *MoveReconciler) runStep(ctx context.Context, m Move, p moveStepPhase) e
 			slog.String("tenant", step.TenantID), slog.String("node", step.NodeID),
 			slog.String("phase", step.Phase), slog.Int("attempt", step.Attempt),
 			slog.String("error", runErr.Error()))
-		if _, err := p.fail(ctx, m.TenantID, step.NodeID, runErr.Error()); err != nil {
+		if _, err := p.fail(ctx, m.TenantID, step.NodeID, sanitizeMoveStepError(step.Phase, runErr)); err != nil {
 			return err
 		}
 		r.recordTransition(ctx, MoveTransitionFail, m.TenantID, step.NodeID, step.Phase)
@@ -288,6 +290,57 @@ func (r *MoveReconciler) runStep(ctx context.Context, m Move, p moveStepPhase) e
 		}
 	}
 	return nil
+}
+
+// sanitizeMoveStepError returns the message a failed step persists in the
+// replicated journal: the step phase and a typed class with a fixed message.
+// The raw error, which may carry node-local mount paths, is only logged on
+// the node that ran the step (docs/SPEC.md: no data-root paths leave a node).
+func sanitizeMoveStepError(phase string, err error) string {
+	return "move " + phase + " step failed: " + moveStepErrorClass(err)
+}
+
+// moveStepErrorClass maps err to a fixed, path-free class.
+func moveStepErrorClass(err error) string {
+	var (
+		mismatch    *ManifestMismatchError
+		unavailable *PoolUnavailableError
+		sealed      *NodeSealedError
+		closed      *ClosedVolumeError
+		open        *OpenError
+		notDir      *notADirectoryError
+		unsupported *unsupportedEntryError
+	)
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timed out"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.As(err, &mismatch):
+		return "manifest mismatch"
+	case errors.As(err, &unavailable):
+		return "pool unavailable"
+	case errors.As(err, &sealed):
+		return "node sealed"
+	case errors.As(err, &closed):
+		return "volume closed"
+	case errors.As(err, &open):
+		return "volume open failed"
+	case errors.As(err, &notDir):
+		return "path is not a directory"
+	case errors.As(err, &unsupported):
+		return "unsupported directory entry"
+	case errors.Is(err, syscall.ENOSPC):
+		return "no space left on the pool"
+	case errors.Is(err, fs.ErrPermission):
+		return "permission denied"
+	case errors.Is(err, fs.ErrNotExist):
+		return "path does not exist"
+	case errors.Is(err, fs.ErrExist):
+		return "path already exists"
+	default:
+		return "internal error (see the node log)"
+	}
 }
 
 // MoveStepSettler is the optional half of a MoveStepRunner that runs after
