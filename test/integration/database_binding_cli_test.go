@@ -359,16 +359,26 @@ func TestDatabaseBinding_CLI_InfoReportsTheBinding_PerProtocol(t *testing.T) {
 
 // TestDatabaseBinding_CLI_RecreateGivesNewGeneration_PerProtocol drops a
 // database and creates it again under the same name over the CLI on every
-// transport, and asserts the binding block reports a higher generation for
-// the new database than for the one it replaced, in JSON and table output.
+// transport, in a prefix tenant, and asserts the drop removes the store
+// directory, the new database does not serve the dropped one's key, and the
+// binding block reports a higher generation for the new database than for the
+// one it replaced, in JSON and table output.
 func TestDatabaseBinding_CLI_RecreateGivesNewGeneration_PerProtocol(t *testing.T) {
 	node := startStandaloneModeNodeWithConfig(t, "pebble", "")
+
+	const tenantID = "regen-acme"
+	createTenant(t, node, multiProtocols[0], tenantID, "Regen Acme", "prefix", false)
+	perms := append(append([]string{}, dataPlanePermissions...), "databases:delete")
+	cert, key := provisionTenantIdentity(t, node, tenantID, "db-admin", perms)
 
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
-			conn := node.cliArgsFor(proto)
+			conn := tenantCLIArgsForProto(node, proto, cert, key)
 			name := "regen-" + proto.name
+			kvKey := "regen-key-" + proto.name
+			value := "regen-value-" + proto.name
+			root := filepath.Join(node.dataDir, "tenants", tenantID, "databases", name)
 
 			generation := func(t *testing.T, step string) uint64 {
 				t.Helper()
@@ -392,17 +402,30 @@ func TestDatabaseBinding_CLI_RecreateGivesNewGeneration_PerProtocol(t *testing.T
 			if out, err := runQRDB(t, node.cli, conn, "database", "create", name, "--backend", "file"); err != nil {
 				t.Fatalf("[%s] database create %s: %v\n%s", proto.name, name, err, out)
 			}
+			if out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "put", kvKey, value); err != nil {
+				t.Fatalf("[%s] kv put: %v\n%s", proto.name, err, out)
+			}
 			first := generation(t, "first create")
+			if _, err := os.Stat(root); err != nil {
+				t.Fatalf("[%s] binding root %s: %v", proto.name, root, err)
+			}
 
 			if out, err := runQRDB(t, node.cli, conn, "database", "drop", name); err != nil {
 				t.Fatalf("[%s] database drop %s: %v\n%s", proto.name, name, err, out)
 			}
+			if _, err := os.Stat(root); !os.IsNotExist(err) {
+				t.Fatalf("[%s] binding root %s survives DROP (stat err %v)", proto.name, root, err)
+			}
+
 			if out, err := runQRDB(t, node.cli, conn, "database", "create", name, "--backend", "file"); err != nil {
 				t.Fatalf("[%s] database recreate %s: %v\n%s", proto.name, name, err, out)
 			}
 			second := generation(t, "recreate")
 			if second <= first {
 				t.Fatalf("[%s] recreated %s has generation %d, want more than %d", proto.name, name, second, first)
+			}
+			if out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "get", kvKey); err == nil && strings.Contains(out, value) {
+				t.Fatalf("[%s] the recreated database serves the dropped database's key: %q", proto.name, out)
 			}
 
 			out, err := runQRDB(t, node.cli, conn, "database", "info", name)
