@@ -17,7 +17,7 @@ package engine
 import (
 	"testing"
 
-	"github.com/fxamacker/cbor/v2"
+	gocodeccbor "github.com/jeremyhahn/go-codec/pkg/cbor"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
@@ -36,9 +36,9 @@ import (
 // CBOR, unreadable to the JSON index extractor.
 func cborDocument(t *testing.T) string {
 	t.Helper()
-	b, err := cbor.Marshal(map[string]string{"email": "a@example.com"})
+	b, err := gocodeccbor.New[map[string]string]().Marshal(map[string]string{"email": "a@example.com"})
 	if err != nil {
-		t.Fatalf("cbor.Marshal: %v", err)
+		t.Fatalf("cbor Marshal: %v", err)
 	}
 	return string(b)
 }
