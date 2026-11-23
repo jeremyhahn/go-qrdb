@@ -220,6 +220,8 @@ func testIndexLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 			proto.name, kprefix, idxUnique, out)
 	}
 
+	testScopedUniqueIndexOverProtocol(t, node, proto, kprefix)
+
 	// --- create (sparse index) tolerates missing field values. ---------
 	out, err = runCLIProto(t, node, proto, "index", "create", idxSparse, "--field", fieldOptional, "--sparse")
 	if err != nil {
@@ -300,6 +302,56 @@ func testIndexLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	}
 	if !strings.Contains(out, "OK") {
 		t.Fatalf("[%s] index drop %s (already dropped): expected idempotent OK, got: %s", proto.name, idxSparse, out)
+	}
+}
+
+// testScopedUniqueIndexOverProtocol proves `index create --key-prefix`
+// reaches the server over proto (#1649): a unique index scoped to
+// "<kprefix>a/" refuses a duplicate value only under that prefix, a key
+// outside it with the same value is written, and a query answers only the
+// keys inside the scope. Before the transports carried the prefix the
+// server indexed the whole keyspace, so the write under "<kprefix>b/" was
+// refused.
+func testScopedUniqueIndexOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol, kprefix string) {
+	t.Helper()
+
+	idxScoped := "idx-scoped-" + proto.name
+	// A field no other subtest or step indexes (see the comment on field
+	// names in testIndexLifecycleOverProtocol).
+	fieldScoped := "scoped-" + proto.name
+	scope := kprefix + "a/"
+	value := `{"` + fieldScoped + `":"same"}`
+
+	out, err := runCLIProto(t, node, proto, "index", "create", idxScoped,
+		"--field", fieldScoped, "--unique", "--key-prefix", scope)
+	if err != nil {
+		t.Fatalf("[%s] index create %s --field %s --unique --key-prefix %s: %v\noutput: %s",
+			proto.name, idxScoped, fieldScoped, scope, err, out)
+	}
+
+	for _, k := range []string{scope + "1", kprefix + "b/1"} {
+		out, err = runCLIProto(t, node, proto, "kv", "put", k, value)
+		if err != nil {
+			t.Fatalf("[%s] kv put %s: %v (a key outside the scope %s must not meet the unique index)\noutput: %s",
+				proto.name, k, err, scope, out)
+		}
+	}
+	out, err = runCLIProto(t, node, proto, "kv", "put", scope+"2", value)
+	if err == nil {
+		t.Fatalf("[%s] kv put %s2 with a duplicate value inside the scope of unique index %s succeeded, want a conflict (output: %s)",
+			proto.name, scope, idxScoped, out)
+	}
+
+	out, err = runCLIProto(t, node, proto, "--output", "json", "index", "query", idxScoped, "--value", "same")
+	if err != nil {
+		t.Fatalf("[%s] index query %s --value same: %v\noutput: %s", proto.name, idxScoped, err, out)
+	}
+	var resp transport.IndexQueryResponse
+	if jerr := json.Unmarshal([]byte(out), &resp); jerr != nil {
+		t.Fatalf("[%s] decode `index query` JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if len(resp.Keys) != 1 || resp.Keys[0] != scope+"1" {
+		t.Fatalf("[%s] index query %s --value same = %v, want exactly [%s1]", proto.name, idxScoped, resp.Keys, scope)
 	}
 }
 
