@@ -324,24 +324,14 @@ func (s *PebbleVectorStorage) UpsertVector(ctx context.Context, namespace string
 		return err
 	}
 
-	// Delete old metadata indexes if this is an update
+	// Delete the index entries of the record this write replaces, before the
+	// new ones are set: a re-write at the same version (UpdateMetadata
+	// writes Version 1) would otherwise leave a changed field's old value
+	// indexed. Pebble applies batch operations in order, so an unchanged
+	// field is deleted and then set again.
+	deleteStoredIndexEntries(s.db, batch, namespace, vec.ID, vec.Version)
 	if vec.Version > 1 {
-		oldVectorKey := schema.EncodeVectorKey(namespace, vec.ID, vec.Version-1)
-		oldValue, closer, err := s.db.Get(oldVectorKey)
-		if err == nil {
-			oldVec, decodeErr := schema.DecodeVectorValue(oldValue)
-			_ = closer.Close() //nolint:gosec // G104: Error deliberately ignored - cleanup during error path
-			if decodeErr == nil {
-				// Delete old metadata indexes
-				for field, fieldValue := range oldVec.Metadata {
-					metaKey := schema.EncodeMetadataKey(namespace, field, fieldValue, vec.ID, vec.Version-1)
-					_ = batch.Delete(metaKey, pebble.NoSync) //nolint:gosec // G104: Error deliberately ignored - batch operation, checked on commit
-
-					reverseKey := schema.EncodeReverseKey(namespace, vec.ID, field, vec.Version-1)
-					_ = batch.Delete(reverseKey, pebble.NoSync) //nolint:gosec // G104: Error deliberately ignored - batch operation, checked on commit
-				}
-			}
-		}
+		deleteStoredIndexEntries(s.db, batch, namespace, vec.ID, vec.Version-1)
 	}
 
 	// Create metadata indexes
@@ -375,6 +365,26 @@ func (s *PebbleVectorStorage) UpsertVector(ctx context.Context, namespace string
 	s.metrics.vectorsStored.Inc()
 
 	return nil
+}
+
+// deleteStoredIndexEntries adds to batch a delete of every metadata index
+// key and reverse index key of the vector stored in db under namespace, id
+// and version. Nothing is deleted when no such vector is stored or it does
+// not decode.
+func deleteStoredIndexEntries(db *pebble.DB, batch *pebble.Batch, namespace string, id, version uint64) {
+	value, closer, err := db.Get(schema.EncodeVectorKey(namespace, id, version))
+	if err != nil {
+		return
+	}
+	stored, decodeErr := schema.DecodeVectorValue(value)
+	_ = closer.Close() //nolint:gosec // G104: the value is decoded; a close error leaves nothing to undo
+	if decodeErr != nil {
+		return
+	}
+	for field, fieldValue := range stored.Metadata {
+		_ = batch.Delete(schema.EncodeMetadataKey(namespace, field, fieldValue, id, version), pebble.NoSync) //nolint:gosec // G104: batch operation, checked on commit
+		_ = batch.Delete(schema.EncodeReverseKey(namespace, id, field, version), pebble.NoSync)              //nolint:gosec // G104: batch operation, checked on commit
+	}
 }
 
 // GetVector retrieves a vector by ID.

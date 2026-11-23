@@ -65,6 +65,13 @@ func (b *vectorBatch) UpsertVector(namespace string, vec *VectorValue) error {
 		return err
 	}
 
+	// Delete the index entries of the stored record this write replaces
+	// before the new ones are set, as PebbleVectorStorage.UpsertVector does.
+	deleteStoredIndexEntries(b.db, b.batch, namespace, vec.ID, vec.Version)
+	if vec.Version > 1 {
+		deleteStoredIndexEntries(b.db, b.batch, namespace, vec.ID, vec.Version-1)
+	}
+
 	// Create metadata indexes
 	for field, fieldValue := range vec.Metadata {
 		metaKey := schema.EncodeMetadataKey(namespace, field, fieldValue, vec.ID, vec.Version)
