@@ -67,6 +67,11 @@ func (d *Database) CreateIndexedTable(ctx *sqle.Context, name string, schema sql
 // rather than being accepted and only discovered as a decode failure on the
 // first row.
 func (d *Database) createTable(ctx *sqle.Context, name string, schema sqle.PrimaryKeySchema, pkIdxDef *sqle.IndexDef, collation sqle.CollationID, comment string) error {
+	// The engine tables' reserved names are refused before anything else,
+	// whether or not the engine is compiled in (OD-12 B).
+	if isReservedTableName(name) {
+		return &ReservedTableNameError{Name: name}
+	}
 	if err := d.ValidateSchema(schema.Schema); err != nil {
 		return err
 	}
@@ -163,6 +168,11 @@ func (d *Database) DropTable(ctx *sqle.Context, name string) error {
 // service.TableDataPrefix/TableIndexPrefix), never from its name, so this
 // is a pure catalog operation: no data key changes and no data moves.
 func (d *Database) RenameTable(ctx *sqle.Context, oldName, newName string) error {
+	// A table may not be renamed onto a reserved engine table name, whether
+	// or not the engine is compiled in (OD-12 B).
+	if isReservedTableName(newName) {
+		return &ReservedTableNameError{Name: newName}
+	}
 	if d.registry == nil {
 		return &RelationalCatalogUnavailableError{Operation: "RENAME TABLE"}
 	}

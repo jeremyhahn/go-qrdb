@@ -33,8 +33,8 @@ func TestNewNamespacesTable(t *testing.T) {
 	tbl := NewNamespacesTable()
 
 	require.NotNil(t, tbl)
-	assert.Equal(t, "namespaces", tbl.Name())
-	assert.Equal(t, "namespaces", tbl.String())
+	assert.Equal(t, "qrdb_vector_namespaces", tbl.Name())
+	assert.Equal(t, "qrdb_vector_namespaces", tbl.String())
 }
 
 func TestNamespacesTable_Schema(t *testing.T) {
@@ -47,22 +47,22 @@ func TestNamespacesTable_Schema(t *testing.T) {
 	assert.Equal(t, "name", schema[0].Name)
 	assert.True(t, schema[0].PrimaryKey)
 	assert.False(t, schema[0].Nullable)
-	assert.Equal(t, "namespaces", schema[0].Source)
+	assert.Equal(t, "qrdb_vector_namespaces", schema[0].Source)
 
 	assert.Equal(t, "dimensions", schema[1].Name)
 	assert.False(t, schema[1].PrimaryKey)
 	assert.False(t, schema[1].Nullable)
-	assert.Equal(t, "namespaces", schema[1].Source)
+	assert.Equal(t, "qrdb_vector_namespaces", schema[1].Source)
 
 	assert.Equal(t, "distance", schema[2].Name)
 	assert.False(t, schema[2].PrimaryKey)
 	assert.True(t, schema[2].Nullable)
-	assert.Equal(t, "namespaces", schema[2].Source)
+	assert.Equal(t, "qrdb_vector_namespaces", schema[2].Source)
 
 	assert.Equal(t, "index_type", schema[3].Name)
 	assert.False(t, schema[3].PrimaryKey)
 	assert.True(t, schema[3].Nullable)
-	assert.Equal(t, "namespaces", schema[3].Source)
+	assert.Equal(t, "qrdb_vector_namespaces", schema[3].Source)
 }
 
 func TestNamespacesTable_Collation(t *testing.T) {
@@ -79,7 +79,7 @@ func TestNamespacesTable_Partitions(t *testing.T) {
 
 	p, err := iter.Next(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, []byte("namespaces"), p.Key())
+	assert.Equal(t, []byte("qrdb_vector_namespaces"), p.Key())
 
 	_, err = iter.Next(ctx)
 	assert.ErrorIs(t, err, io.EOF)
@@ -98,5 +98,5 @@ func TestNamespacesTable_PartitionRows_Empty(t *testing.T) {
 
 func TestNamespacesPartition_Key(t *testing.T) {
 	p := &namespacesPartition{}
-	assert.Equal(t, []byte("namespaces"), p.Key())
+	assert.Equal(t, []byte("qrdb_vector_namespaces"), p.Key())
 }

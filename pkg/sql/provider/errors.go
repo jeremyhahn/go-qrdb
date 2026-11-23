@@ -155,6 +155,20 @@ type ReservedDatabaseNameError struct {
 	Name string
 }
 
+// ReservedTableNameError is returned when CREATE TABLE or RENAME TABLE names
+// one of the reserved engine table names (qrdb_ts_datapoints,
+// qrdb_ts_metrics, qrdb_vector_namespaces, qrdb_vector_vectors; OD-12 B).
+// The names are refused whether or not the engine is compiled in, so a
+// relational table never takes a name a build with the engine would serve.
+type ReservedTableNameError struct {
+	Name string
+}
+
+// Error implements the error interface.
+func (e *ReservedTableNameError) Error() string {
+	return "provider: table name is reserved: " + e.Name
+}
+
 // Error returns a human-readable description.
 func (e *ReservedDatabaseNameError) Error() string {
 	return "provider: database name is reserved: " + e.Name

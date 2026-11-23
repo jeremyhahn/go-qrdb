@@ -22,8 +22,8 @@ import (
 	"github.com/dolthub/vitess/go/sqltypes"
 )
 
-// vectorsTableName is the fixed name of the vectors table.
-const vectorsTableName = "vectors"
+// vectorsTableName is the reserved name of the vector table (OD-12 B).
+const vectorsTableName = "qrdb_vector_vectors"
 
 // vectorsSchema defines the SQL schema for the vectors table.
 var vectorsSchema = sqle.Schema{
@@ -100,5 +100,5 @@ type vectorsPartition struct{}
 
 // Key returns the partition key.
 func (p *vectorsPartition) Key() []byte {
-	return []byte("vectors")
+	return []byte(vectorsTableName)
 }

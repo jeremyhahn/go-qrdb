@@ -22,8 +22,9 @@ import (
 	"github.com/dolthub/vitess/go/sqltypes"
 )
 
-// datapointsTableName is the fixed name of the datapoints table.
-const datapointsTableName = "datapoints"
+// datapointsTableName is the reserved name of the time-series datapoints
+// table (OD-12 B).
+const datapointsTableName = "qrdb_ts_datapoints"
 
 // datapointsSchema defines the SQL schema for the datapoints table.
 var datapointsSchema = sqle.Schema{
@@ -107,5 +108,5 @@ type datapointsPartition struct{}
 
 // Key returns the partition key.
 func (p *datapointsPartition) Key() []byte {
-	return []byte("datapoints")
+	return []byte(datapointsTableName)
 }

@@ -33,8 +33,8 @@ func TestNewVectorsTable(t *testing.T) {
 	tbl := NewVectorsTable()
 
 	require.NotNil(t, tbl)
-	assert.Equal(t, "vectors", tbl.Name())
-	assert.Equal(t, "vectors", tbl.String())
+	assert.Equal(t, "qrdb_vector_vectors", tbl.Name())
+	assert.Equal(t, "qrdb_vector_vectors", tbl.String())
 }
 
 func TestVectorsTable_Schema(t *testing.T) {
@@ -47,17 +47,17 @@ func TestVectorsTable_Schema(t *testing.T) {
 	assert.Equal(t, "id", schema[0].Name)
 	assert.True(t, schema[0].PrimaryKey)
 	assert.False(t, schema[0].Nullable)
-	assert.Equal(t, "vectors", schema[0].Source)
+	assert.Equal(t, "qrdb_vector_vectors", schema[0].Source)
 
 	assert.Equal(t, "embedding", schema[1].Name)
 	assert.False(t, schema[1].PrimaryKey)
 	assert.False(t, schema[1].Nullable)
-	assert.Equal(t, "vectors", schema[1].Source)
+	assert.Equal(t, "qrdb_vector_vectors", schema[1].Source)
 
 	assert.Equal(t, "metadata", schema[2].Name)
 	assert.False(t, schema[2].PrimaryKey)
 	assert.True(t, schema[2].Nullable)
-	assert.Equal(t, "vectors", schema[2].Source)
+	assert.Equal(t, "qrdb_vector_vectors", schema[2].Source)
 }
 
 func TestVectorsTable_Collation(t *testing.T) {
@@ -74,7 +74,7 @@ func TestVectorsTable_Partitions(t *testing.T) {
 
 	p, err := iter.Next(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, []byte("vectors"), p.Key())
+	assert.Equal(t, []byte("qrdb_vector_vectors"), p.Key())
 
 	_, err = iter.Next(ctx)
 	assert.ErrorIs(t, err, io.EOF)
@@ -93,5 +93,5 @@ func TestVectorsTable_PartitionRows_Empty(t *testing.T) {
 
 func TestVectorsPartition_Key(t *testing.T) {
 	p := &vectorsPartition{}
-	assert.Equal(t, []byte("vectors"), p.Key())
+	assert.Equal(t, []byte("qrdb_vector_vectors"), p.Key())
 }

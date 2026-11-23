@@ -26,6 +26,7 @@ import (
 	"github.com/dolthub/vitess/go/mysql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/entity"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -230,8 +231,8 @@ func WithRegistry(reg service.Registry) func(*Provider) {
 // query service, and similar embedded contexts). Optional functional options
 // (e.g. WithReadOnly, WithPrescopedKV, WithRegistry) configure the served
 // tables' capabilities and namespace scoping. Every compiled-in engine's
-// tables are always exposed (OD-12): there is no per-database engine
-// selector to scope them by.
+// tables are always exposed under reserved qrdb_ names (OD-12 B): there is
+// no per-database engine selector to scope them by.
 func NewProvider(dbName string, kvSvc service.KVServicer, opts ...func(*Provider)) *Provider {
 	p := &Provider{
 		dbName:    dbName,
@@ -623,8 +624,9 @@ func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 }
 
 // Database is a sql.Database backed by the QRDB KV service. Every
-// compiled-in engine's tables are exposed (OD-12: there is no per-database
-// engine selector to scope them by). When collectionSvc is set, collection
+// compiled-in engine's tables are exposed under reserved qrdb_ names
+// (OD-12 B: there is no per-database engine selector to scope them by, and
+// an engine that is not compiled in has no table). When collectionSvc is set, collection
 // names are dynamically resolved as additional SQL tables. When indexSvc is
 // set, KV and collection tables use secondary index acceleration for WHERE
 // clause evaluation.
@@ -656,24 +658,71 @@ func (d *Database) Name() string {
 	return d.name
 }
 
-// allTableNames lists all table names served by the database, in
-// alphabetical order.
-var allTableNames = []string{
+// builtinTable is one table every database serves without a catalog entry:
+// the kv table, and the tables of each compiled-in engine.
+type builtinTable struct {
+	// name is the table's SQL name.
+	name string
+	// feature is the capability that compiles the table in; "" means the
+	// table is always present.
+	feature string
+}
+
+// builtinTables lists every built-in table, in alphabetical order. The
+// engine tables carry reserved qrdb_ names (OD-12 B) so that a user table,
+// entity or collection named metrics, vectors, datapoints or namespaces
+// keeps working, and each is served only when its engine is compiled in.
+var builtinTables = []builtinTable{
+	{name: tableName},
+	{name: datapointsTableName, feature: "timeSeries"},
+	{name: metricsTableName, feature: "timeSeries"},
+	{name: namespacesTableName, feature: "vector"},
+	{name: vectorsTableName, feature: "vector"},
+}
+
+// reservedTableNames are the engine table names no CREATE TABLE or RENAME
+// TABLE may take, whether or not the engine is compiled in.
+var reservedTableNames = []string{
 	datapointsTableName,
-	tableName,
 	metricsTableName,
 	namespacesTableName,
 	vectorsTableName,
 }
 
-// hasTable reports whether the given table name is one of the database's
-// built-in tables. It is always one of allTableNames (OD-12: every database
-// exposes every compiled-in engine's tables; there is no per-database engine
-// selector to scope them by).
-func (d *Database) hasTable(name string) bool {
-	for _, t := range allTableNames {
-		if t == name {
+// isReservedTableName reports whether name, compared case-insensitively, is
+// one of the reserved engine table names.
+func isReservedTableName(name string) bool {
+	lower := strings.ToLower(name)
+	for _, t := range reservedTableNames {
+		if t == lower {
 			return true
+		}
+	}
+	return false
+}
+
+// servedBuiltinTableNames returns the names of the built-in tables this
+// binary serves, in alphabetical order: the kv table and the tables of every
+// compiled-in engine.
+func servedBuiltinTableNames() []string {
+	names := make([]string, 0, len(builtinTables))
+	for _, t := range builtinTables {
+		if t.feature == "" || capabilities.Has(t.feature) {
+			names = append(names, t.name)
+		}
+	}
+	return names
+}
+
+// hasTable reports whether the given table name is one of the database's
+// built-in tables: the kv table, or a compiled-in engine's table under its
+// reserved qrdb_ name (OD-12 B: every database exposes every compiled-in
+// engine's tables; there is no per-database engine selector to scope them
+// by, and an engine that is not compiled in has no table).
+func (d *Database) hasTable(name string) bool {
+	for _, t := range builtinTables {
+		if t.name == name {
+			return t.feature == "" || capabilities.Has(t.feature)
 		}
 	}
 	return false
@@ -873,12 +922,12 @@ func (d *Database) maybeReadOnly(t sqle.Table) sqle.Table {
 	return t
 }
 
-// GetTableNames returns available table names: every built-in table (OD-12:
+// GetTableNames returns available table names: the kv table and every
+// compiled-in engine's tables under their reserved qrdb_ names (OD-12 B:
 // there is no per-database engine selector to scope them by), plus every
 // entity, relational and collection table the database serves.
 func (d *Database) GetTableNames(ctx *sqle.Context) ([]string, error) {
-	tables := make([]string, len(allTableNames))
-	copy(tables, allTableNames)
+	tables := servedBuiltinTableNames()
 
 	// Append entity type names from the global entity registry.
 	for _, reg := range entity.Global().ListForDatabase(d.name) {

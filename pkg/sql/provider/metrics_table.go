@@ -22,8 +22,9 @@ import (
 	"github.com/dolthub/vitess/go/sqltypes"
 )
 
-// metricsTableName is the fixed name of the metrics table.
-const metricsTableName = "metrics"
+// metricsTableName is the reserved name of the time-series metrics table
+// (OD-12 B).
+const metricsTableName = "qrdb_ts_metrics"
 
 // metricsSchema defines the SQL schema for the metrics table.
 var metricsSchema = sqle.Schema{
@@ -100,5 +101,5 @@ type metricsPartition struct{}
 
 // Key returns the partition key.
 func (p *metricsPartition) Key() []byte {
-	return []byte("metrics")
+	return []byte(metricsTableName)
 }

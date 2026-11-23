@@ -33,8 +33,8 @@ func TestNewMetricsTable(t *testing.T) {
 	tbl := NewMetricsTable()
 
 	require.NotNil(t, tbl)
-	assert.Equal(t, "metrics", tbl.Name())
-	assert.Equal(t, "metrics", tbl.String())
+	assert.Equal(t, "qrdb_ts_metrics", tbl.Name())
+	assert.Equal(t, "qrdb_ts_metrics", tbl.String())
 }
 
 func TestMetricsTable_Schema(t *testing.T) {
@@ -47,17 +47,17 @@ func TestMetricsTable_Schema(t *testing.T) {
 	assert.Equal(t, "name", schema[0].Name)
 	assert.True(t, schema[0].PrimaryKey)
 	assert.False(t, schema[0].Nullable)
-	assert.Equal(t, "metrics", schema[0].Source)
+	assert.Equal(t, "qrdb_ts_metrics", schema[0].Source)
 
 	assert.Equal(t, "tag_count", schema[1].Name)
 	assert.False(t, schema[1].PrimaryKey)
 	assert.True(t, schema[1].Nullable)
-	assert.Equal(t, "metrics", schema[1].Source)
+	assert.Equal(t, "qrdb_ts_metrics", schema[1].Source)
 
 	assert.Equal(t, "point_count", schema[2].Name)
 	assert.False(t, schema[2].PrimaryKey)
 	assert.True(t, schema[2].Nullable)
-	assert.Equal(t, "metrics", schema[2].Source)
+	assert.Equal(t, "qrdb_ts_metrics", schema[2].Source)
 }
 
 func TestMetricsTable_Collation(t *testing.T) {
@@ -74,7 +74,7 @@ func TestMetricsTable_Partitions(t *testing.T) {
 
 	p, err := iter.Next(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, []byte("metrics"), p.Key())
+	assert.Equal(t, []byte("qrdb_ts_metrics"), p.Key())
 
 	_, err = iter.Next(ctx)
 	assert.ErrorIs(t, err, io.EOF)
@@ -93,5 +93,5 @@ func TestMetricsTable_PartitionRows_Empty(t *testing.T) {
 
 func TestMetricsPartition_Key(t *testing.T) {
 	p := &metricsPartition{}
-	assert.Equal(t, []byte("metrics"), p.Key())
+	assert.Equal(t, []byte("qrdb_ts_metrics"), p.Key())
 }
