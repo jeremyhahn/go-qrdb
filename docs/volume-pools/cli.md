@@ -118,7 +118,10 @@ entitled to, and prints the journalled move. The move then runs in the
 background, node by node; follow it with `get-move`. Needs
 `volume_pools:move`. Refused when the tenant is not entitled to the pool, when
 a move is already journalled for it, and when the move goes from an encrypted
-pool to an unencrypted one (no flag allows that).
+pool to an unencrypted one (no flag allows that). Stopping `qrdbd` during a
+move (SIGTERM, or a system encryption migration) waits for the current move
+step to return before any tenant store closes, and the move resumes at the
+next start.
 
 | Flag | Type | Default | Required | Meaning |
 |---|---|---|---|---|
