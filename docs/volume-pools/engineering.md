@@ -584,7 +584,7 @@ refusal, and deleted and re-created.
 
 ## Test strategy
 
-A raft-tenant move is covered by the three-node E2E (`TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart`, `TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite` in `test/integration/volume_move_cli_test.go`): a replica restart during the move, and a cancel after an acknowledged write, on every transport.
+A raft-tenant move is covered by the three-node E2E (`TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart`, `TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite`, `TestVolumePool_CLI_MoveTenant_ThreeNode_RestartWhileSettling` in `test/integration/volume_move_cli_test.go`): a replica restart during the move, a cancel after an acknowledged write, and a restart of the replica whose copy step is settling (get-move shows state `copying` with `stepNode` already in `nodesCopied`; a settle missed by the poll is retried on a fresh tenant), on every transport. After a completed move each test checks, on every node, that `<default pool>/<tenant>` is gone and `<second pool>/<tenant>` exists; after a cancel the reverse; and in both cases that no copy-back staging directory (`<tenant>.copyback` in the source pool, `.qrdb-copyback` inside a tenant directory) is left. The move shutdown E2E (`volume_move_shutdown_cli_test.go`) runs in the `volume_pools` integration target.
 
 **Unit, per package, in memory:**
 
