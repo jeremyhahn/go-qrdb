@@ -423,6 +423,42 @@ func TestCompoundIndex_ScanCompound_WithRangeBounds(t *testing.T) {
 	assert.Equal(t, []string{"messages/1", "messages/2"}, scanEntityKeys(result))
 }
 
+// TestCompoundIndex_ScanCompound_CaseSensitiveRangeBounds checks that a
+// case-sensitive index keeps the range bounds' case: the stored entries and
+// the prefix keep it, so folding only the bounds would miss (red, B) in [A, C).
+func TestCompoundIndex_ScanCompound_CaseSensitiveRangeBounds(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:          "test.casescan.Team_State",
+		FieldNames:    []string{"Team", "State"},
+		ValueTypes:    []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+		CaseSensitive: true,
+	})
+
+	require.NoError(t, idx.PutCompound([]byte("messages/1"), [][]byte{[]byte("red"), []byte("B")}))
+	require.NoError(t, idx.PutCompound([]byte("messages/2"), [][]byte{[]byte("red"), []byte("D")}))
+
+	result, err := idx.ScanCompound([][]byte{[]byte("red")}, []byte("A"), []byte("C"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"messages/1"}, scanEntityKeys(result))
+}
+
+// TestCompoundIndex_ScanCompound_CaseInsensitiveRangeBounds guards the
+// folding path: a case-insensitive index stores (red, b) folded and still
+// finds it with upper-case bounds [A, C).
+func TestCompoundIndex_ScanCompound_CaseInsensitiveRangeBounds(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.casefold.Team_State",
+		FieldNames: []string{"Team", "State"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+	})
+
+	require.NoError(t, idx.PutCompound([]byte("messages/1"), [][]byte{[]byte("red"), []byte("b")}))
+
+	result, err := idx.ScanCompound([][]byte{[]byte("red")}, []byte("A"), []byte("C"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"messages/1"}, scanEntityKeys(result))
+}
+
 func TestCompoundIndex_DeleteCompoundBatch(t *testing.T) {
 	idx := newTestCompoundIndex(t, IndexConfig{
 		Name:       "test.delbatch.F1_F2",

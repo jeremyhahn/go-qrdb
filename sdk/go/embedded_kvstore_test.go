@@ -583,6 +583,52 @@ func TestEmbeddedKVStore_ScanCompoundIndexPrefixOnly(t *testing.T) {
 	}
 }
 
+// embeddedCaseWidget is an entity whose (Team, State) compound index is
+// case-sensitive.
+type embeddedCaseWidget struct {
+	ID    uint64 `json:"id"`
+	Team  string `json:"team"`
+	State string `json:"state"`
+}
+
+func (w *embeddedCaseWidget) EntityID() uint64      { return w.ID }
+func (w *embeddedCaseWidget) SetEntityID(id uint64) { w.ID = id }
+
+func (w *embeddedCaseWidget) CompoundIndexes() []CompoundIndexDef {
+	return []CompoundIndexDef{{Fields: []string{"Team", "State"}, CaseSensitive: true}}
+}
+
+// TestEmbeddedKVStore_ScanCompoundIndex_CaseSensitiveRange pins that a range
+// scan on a case-sensitive compound index keeps its bounds' case: (red, B)
+// lies in [A, C) and (red, D) does not.
+func TestEmbeddedKVStore_ScanCompoundIndex_CaseSensitiveRange(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	dao, err := NewDAO(store, "casewidget", func() *embeddedCaseWidget { return &embeddedCaseWidget{} })
+	if err != nil {
+		t.Fatalf("NewDAO: %v", err)
+	}
+	for i, w := range []*embeddedCaseWidget{
+		{ID: 1, Team: "red", State: "B"},
+		{ID: 2, Team: "red", State: "D"},
+	} {
+		if err := dao.Save(ctx, w); err != nil {
+			t.Fatalf("Save %d: %v", i, err)
+		}
+	}
+	got, err := store.ScanCompoundIndex(ctx, "casewidget.Team_State", [][]byte{[]byte("red")}, []byte("A"), []byte("C"))
+	if err != nil {
+		t.Fatalf("ScanCompoundIndex: %v", err)
+	}
+	keys := 0
+	for _, entityKeys := range got {
+		keys += len(entityKeys)
+	}
+	if keys != 1 {
+		t.Fatalf("ScanCompoundIndex = %q; want 1 entity key", got)
+	}
+}
+
 // TestEmbeddedKVStore_ScanCallbackMayReadWhileWriterPending runs a Scan whose
 // callback waits for a concurrent writer to finish and then reads and writes
 // the store: the callback runs outside the store lock, so nothing deadlocks.

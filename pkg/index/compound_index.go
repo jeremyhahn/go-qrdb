@@ -330,7 +330,7 @@ func (idx *CompoundIndex) ScanCompound(prefixValues [][]byte, rangeStart, rangeE
 	var lowerBound, upperBound []byte
 
 	if rangeStart != nil {
-		normalizedStart, _ := NormalizeFieldValue(rangeStart, IndexConfig{ValueType: rangeType})
+		normalizedStart, _ := NormalizeFieldValue(rangeStart, IndexConfig{ValueType: rangeType, CaseSensitive: idx.config.CaseSensitive})
 		encodedStart := EncodeCompoundValue([][]byte{normalizedStart}, []IndexValueType{rangeType})
 		combined := make([]byte, 0, len(encodedPrefix)+len(encodedStart))
 		combined = append(combined, encodedPrefix...)
@@ -341,7 +341,7 @@ func (idx *CompoundIndex) ScanCompound(prefixValues [][]byte, rangeStart, rangeE
 	}
 
 	if rangeEnd != nil {
-		normalizedEnd, _ := NormalizeFieldValue(rangeEnd, IndexConfig{ValueType: rangeType})
+		normalizedEnd, _ := NormalizeFieldValue(rangeEnd, IndexConfig{ValueType: rangeType, CaseSensitive: idx.config.CaseSensitive})
 		encodedEnd := EncodeCompoundValue([][]byte{normalizedEnd}, []IndexValueType{rangeType})
 		combined := make([]byte, 0, len(encodedPrefix)+len(encodedEnd))
 		combined = append(combined, encodedPrefix...)
