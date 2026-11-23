@@ -361,9 +361,12 @@ func (b *BarrierBackend) ReleaseOwner() error {
 	return r.ReleaseOwner()
 }
 
-// FreshlyClaimed forwards backendReleaser.FreshlyClaimed to the wrapped
-// backend.
-func (b *BarrierBackend) FreshlyClaimed() bool {
+// ReleaseClaim forwards a failed create's claim release (backendReleaser)
+// to the wrapped backend.
+func (b *BarrierBackend) ReleaseClaim() error {
 	r, ok := b.inner.(backendReleaser)
-	return ok && r.FreshlyClaimed()
+	if !ok {
+		return nil
+	}
+	return r.ReleaseClaim()
 }

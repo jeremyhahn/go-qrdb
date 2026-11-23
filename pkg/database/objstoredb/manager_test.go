@@ -20,6 +20,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -388,6 +389,37 @@ func TestManager_FailedCreateReleasesFreshNamespace(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestManager_FailedCreateOntoExistingDataDropsOwnerMarker: a create that
+// fails after its opener claimed a namespace that already held data gives
+// the claim back. The data and the format marker stay, the owner marker it
+// wrote goes, so a differently named database may open the namespace.
+func TestManager_FailedCreateOntoExistingDataDropsOwnerMarker(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "objects")
+	unowned, err := objstore.New("local", map[string]string{"path": root})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := unowned.Set([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := unowned.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	before := objects(t, root)
+	mgr := newManager(t, t.TempDir())
+	mgr.SetKeyspaceReclaimer(failUnfenceReclaimer{})
+	if _, err := mgr.Create(localObjstore("blobs", root)); !errors.Is(err, errUnfenceFault) {
+		t.Fatalf("Create = %v, want the unfence fault", err)
+	}
+	if after := objects(t, root); !slices.Equal(after, before) {
+		t.Fatalf("the failed create left %v, want %v", after, before)
+	}
+	mgr.SetKeyspaceReclaimer(nil)
+	if _, err := mgr.Create(localObjstore("other", root)); err != nil {
+		t.Fatalf("Create of another database after the failed create: %v", err)
+	}
 }
 
 // TestManager_SecondDatabaseCannotReachAnothersNamespace pins that a database

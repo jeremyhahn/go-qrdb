@@ -120,10 +120,14 @@ type Engine struct {
 	// emptyAtOpen is set when the open found the namespace holding no
 	// object at all and wrote the format marker into it
 	// (ensureFormatMarkerFor); freshClaim when, in addition, this open
-	// wrote the owner marker (claimOwner). A failed create releases a
-	// freshly claimed namespace (FreshlyClaimed) and leaves any other alone.
-	emptyAtOpen bool
-	freshClaim  bool
+	// wrote the owner marker (claimOwner). ownerWritten is set whenever
+	// this open wrote the owner marker, onto an empty namespace or onto
+	// one that already held data. A failed create gives the claim back
+	// (ReleaseClaim): a freshly claimed namespace is released whole, and
+	// otherwise only the owner marker this open wrote is removed.
+	emptyAtOpen  bool
+	freshClaim   bool
+	ownerWritten bool
 
 	// beforeEnter, when set, runs in enter between its first closed check
 	// and lifeMu. Tests use it to hold a call in that gap; it is nil in
@@ -828,17 +832,54 @@ func (e *Engine) claimOwner(owner string) error {
 	if err := e.store.Put(ownerMarkerName, strings.NewReader(owner)); err != nil {
 		return err
 	}
+	e.ownerWritten = true
 	e.freshClaim = e.emptyAtOpen
 	return nil
 }
 
-// FreshlyClaimed reports whether this open claimed its namespace new: it
-// wrote the owner marker into a namespace that held no object before. A
-// create that fails after the open releases such a namespace
-// (ReleaseOwner); a namespace that already held data, or was already this
-// owner's, is left alone.
-func (e *Engine) FreshlyClaimed() bool {
-	return e.freshClaim
+// ReleaseClaim gives back the claim this open made, for a create that fails
+// after the open. A namespace this open claimed new (it held no object
+// before) is released whole (ReleaseOwner). On a namespace that already held
+// data, only the owner marker this open wrote is deleted, and only while it
+// still names this engine's owner; the data and the format marker stay. A
+// namespace this open did not claim (unowned, or already this owner's) is
+// left alone.
+func (e *Engine) ReleaseClaim() error {
+	if e.freshClaim {
+		return e.ReleaseOwner()
+	}
+	if !e.ownerWritten {
+		return nil
+	}
+	leave, err := e.enter()
+	if err != nil {
+		return err
+	}
+	defer leave()
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+	if e.namespace != "" {
+		defer lockNamespace(e.namespace)()
+	}
+	rc, err := e.store.Get(ownerMarkerName)
+	if err != nil {
+		if notFound(err) {
+			return nil
+		}
+		return err
+	}
+	found, readErr := io.ReadAll(rc)
+	_ = rc.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if string(found) != e.owner {
+		return nil
+	}
+	if err := e.store.Delete(ownerMarkerName); err != nil && !notFound(err) {
+		return err
+	}
+	return nil
 }
 
 // ownerConflict is the one ownership rule: nil when found (the owner marker's

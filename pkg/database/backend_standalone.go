@@ -336,12 +336,13 @@ func (b *StandaloneBackend) Reclaim() error {
 // backendReleaser is a store or Backend that owns a provider namespace
 // outside the node's data directory (the object-storage engine, and the
 // backends that forward to it): ReleaseOwner gives the namespace up, and
-// FreshlyClaimed reports an open that claimed it new. A drop
-// releases the namespace after the catalog delete (Manager.drop), and a
-// failed create releases one its open freshly claimed (createUndo.run).
+// ReleaseClaim gives back what an open claimed. A drop releases the
+// namespace after the catalog delete (Manager.drop), and a failed create
+// gives back its open's claim (createUndo.run): a namespace claimed new is
+// released, an owner marker written onto existing data is removed.
 type backendReleaser interface {
 	ReleaseOwner() error
-	FreshlyClaimed() bool
+	ReleaseClaim() error
 }
 
 // ReleaseOwner forwards backendReleaser.ReleaseOwner; a store with no
@@ -356,8 +357,14 @@ func (b *StandaloneBackend) ReleaseOwner() error {
 	return r.ReleaseOwner()
 }
 
-// FreshlyClaimed forwards backendReleaser.FreshlyClaimed.
-func (b *StandaloneBackend) FreshlyClaimed() bool {
+// ReleaseClaim forwards backendReleaser.ReleaseClaim; a store with no
+// namespace of its own has no claim to give back.
+func (b *StandaloneBackend) ReleaseClaim() error {
 	r, ok := b.store.(backendReleaser)
-	return ok && r.FreshlyClaimed()
+	if !ok {
+		return nil
+	}
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+	return r.ReleaseClaim()
 }
