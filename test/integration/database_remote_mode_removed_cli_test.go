@@ -77,3 +77,54 @@ func TestDatabase_CLI_UpdateConnectionRemoved_PerProtocol(t *testing.T) {
 		})
 	}
 }
+
+// TestDatabase_CLI_RemoteModeRefused_PerProtocol asserts, on every
+// transport, that `database create` takes no remote-mode or connection flag:
+// each is refused as an unknown flag, no database is created, and the same
+// create without it succeeds as a local database (OD-9 A).
+func TestDatabase_CLI_RemoteModeRefused_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	refused := [][]string{
+		{"--mode", "remote"},
+		{"--remote"},
+		{"--address", "127.0.0.1:9443"},
+		{"--conn-transport", "grpc"},
+		{"--connection", "{}"},
+	}
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			dbName := fmt.Sprintf("noremotecreate-%s-%d", proto.name, time.Now().UnixNano())
+			t.Cleanup(func() {
+				_, _ = runCLIProto(t, node, proto, "database", "drop", dbName)
+			})
+			for _, flags := range refused {
+				args := append([]string{"database", "create", dbName, "--backend", "pebble"}, flags...)
+				out, err := runCLIProto(t, node, proto, args...)
+				if err == nil {
+					t.Fatalf("[%s] database create %v: want unknown flag, got success\noutput: %s", proto.name, flags, out)
+				}
+				if !strings.Contains(out+err.Error(), "unknown flag") {
+					t.Fatalf("[%s] database create %v: want unknown flag, got %v\noutput: %s", proto.name, flags, err, out)
+				}
+				if info, err := runCLIProto(t, node, proto, "database", "info", dbName); err == nil {
+					t.Fatalf("[%s] database create %v was refused but created %s:\n%s", proto.name, flags, dbName, info)
+				}
+			}
+
+			if out, err := runCLIProto(t, node, proto, "database", "create", dbName, "--backend", "pebble"); err != nil {
+				t.Fatalf("[%s] database create %s: %v\noutput: %s", proto.name, dbName, err, out)
+			}
+			raw, err := runCLIProto(t, node, proto, "--output", "json", "database", "info", dbName)
+			if err != nil {
+				t.Fatalf("[%s] database info %s: %v\noutput: %s", proto.name, dbName, err, raw)
+			}
+			lower := strings.ToLower(raw)
+			if strings.Contains(lower, `"connection"`) || strings.Contains(lower, `"remote"`) || !strings.Contains(lower, `"mode": "embedded"`) {
+				t.Fatalf("[%s] database info %s names remote mode or a connection:\n%s", proto.name, dbName, raw)
+			}
+		})
+	}
+}
