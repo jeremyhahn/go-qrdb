@@ -34,6 +34,7 @@ type memSealStore struct {
 	mu      sync.Mutex
 	secrets map[string][]byte
 	reseals int
+	sealed  bool // the seal store's barrier is sealed: every Get refuses
 }
 
 var _ service.SealStoreServicer = (*memSealStore)(nil)
@@ -54,6 +55,9 @@ func (m *memSealStore) Put(_ context.Context, name string, secret []byte) error 
 func (m *memSealStore) Get(_ context.Context, name string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.sealed {
+		return nil, &seal.SealStoreError{Op: "get", Key: name, Err: seal.ErrSealStoreBarrierSealed}
+	}
 	s, ok := m.secrets[name]
 	if !ok {
 		return nil, m.missing("get", name)
@@ -164,11 +168,21 @@ func TestGRPCSealStore_ServerErrors(t *testing.T) {
 	tr := connectSealStoreTransport(t, newMemSealStore())
 	ctx := context.Background()
 	var nf *transport.KeyNotFoundError
-	if _, err := tr.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "absent"}); !errors.As(err, &nf) {
-		t.Fatalf("SealStoreGet of a missing secret = %v, want KeyNotFoundError", err)
+	_, err := tr.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "absent"})
+	if !errors.Is(err, seal.ErrSealStoreSecretNotFound) || errors.As(err, &nf) {
+		t.Fatalf("SealStoreGet of a missing secret = %v, want errors.Is seal.ErrSealStoreSecretNotFound, not KeyNotFoundError", err)
 	}
-	if err := tr.SealStoreDelete(ctx, &transport.SealStoreDeleteRequest{Name: "absent"}); err == nil {
-		t.Fatal("SealStoreDelete of a missing secret succeeded")
+	err = tr.SealStoreDelete(ctx, &transport.SealStoreDeleteRequest{Name: "absent"})
+	if !errors.Is(err, seal.ErrSealStoreSecretNotFound) || errors.As(err, &nf) {
+		t.Fatalf("SealStoreDelete of a missing secret = %v, want errors.Is seal.ErrSealStoreSecretNotFound, not KeyNotFoundError", err)
+	}
+
+	// A seal store whose barrier is sealed refuses with its own sentinel.
+	sealedStore := newMemSealStore()
+	sealedStore.sealed = true
+	sealedTr := connectSealStoreTransport(t, sealedStore)
+	if _, err := sealedTr.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "a"}); !errors.Is(err, seal.ErrSealStoreBarrierSealed) {
+		t.Fatalf("SealStoreGet on a sealed seal-store barrier = %v, want errors.Is seal.ErrSealStoreBarrierSealed", err)
 	}
 	if err := tr.SealStoreReseal(ctx, &transport.SealStoreResealRequest{Name: "absent"}); err == nil {
 		t.Fatal("SealStoreReseal of a missing secret succeeded")

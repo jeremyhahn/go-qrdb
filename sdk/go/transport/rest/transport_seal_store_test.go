@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -181,6 +182,52 @@ func TestRESTSealStore_ForbiddenIsAnError(t *testing.T) {
 	var re *transport.RequestError
 	if !errors.As(err, &re) || re.StatusCode != http.StatusForbidden {
 		t.Fatalf("SealStoreStatus = %v, want a 403 RequestError", err)
+	}
+}
+
+// sealStoreRefusal answers as the REST server's writeErrorJSON does for a
+// seal-store error: the status, the message and the structured refusal
+// reason errclass.Refusal attaches.
+func sealStoreRefusal(t *testing.T, status int, sentinel error) http.HandlerFunc {
+	t.Helper()
+	reason, ok := transport.BarrierRefusal(sentinel)
+	if !ok {
+		t.Fatalf("BarrierRefusal(%v) has no reason", sentinel)
+	}
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(transport.ErrorResponse{Error: sentinel.Error(), Code: reason})
+	}
+}
+
+// TestRESTSealStore_MissingSecretIsSealStoreNotFound proves a missing
+// secret, an invalid name and a sealed seal-store barrier reach a REST caller
+// as the seal sentinel the embedded transport returns (#1647).
+func TestRESTSealStore_MissingSecretIsSealStoreNotFound(t *testing.T) {
+	rs := &routerServer{}
+	srv := httptest.NewTLSServer(rs)
+	t.Cleanup(srv.Close)
+	rt := newWiredTransport(srv)
+	rs.handle(exactPath(http.MethodGet, "/v1/seal-store/secrets/absent"), sealStoreRefusal(t, http.StatusNotFound, seal.ErrSealStoreSecretNotFound))
+	rs.handle(exactPath(http.MethodDelete, "/v1/seal-store/secrets/absent"), sealStoreRefusal(t, http.StatusNotFound, seal.ErrSealStoreSecretNotFound))
+	rs.handle(exactPath(http.MethodGet, "/v1/seal-store/secrets/bad"), sealStoreRefusal(t, http.StatusBadRequest, seal.ErrInvalidSecretName))
+	rs.handle(exactPath(http.MethodGet, "/v1/seal-store/secrets/sealed"), sealStoreRefusal(t, http.StatusServiceUnavailable, seal.ErrSealStoreBarrierSealed))
+	ctx := context.Background()
+	var nf *transport.KeyNotFoundError
+	_, err := rt.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "absent"})
+	if !errors.Is(err, seal.ErrSealStoreSecretNotFound) || errors.As(err, &nf) {
+		t.Fatalf("SealStoreGet of a missing secret = %v, want errors.Is seal.ErrSealStoreSecretNotFound, not KeyNotFoundError", err)
+	}
+	err = rt.SealStoreDelete(ctx, &transport.SealStoreDeleteRequest{Name: "absent"})
+	if !errors.Is(err, seal.ErrSealStoreSecretNotFound) || errors.As(err, &nf) {
+		t.Fatalf("SealStoreDelete of a missing secret = %v, want errors.Is seal.ErrSealStoreSecretNotFound, not KeyNotFoundError", err)
+	}
+	if _, err := rt.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "bad"}); !errors.Is(err, seal.ErrInvalidSecretName) {
+		t.Fatalf("SealStoreGet of an invalid name = %v, want errors.Is seal.ErrInvalidSecretName", err)
+	}
+	if _, err := rt.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "sealed"}); !errors.Is(err, seal.ErrSealStoreBarrierSealed) {
+		t.Fatalf("SealStoreGet on a sealed seal-store barrier = %v, want errors.Is seal.ErrSealStoreBarrierSealed", err)
 	}
 }
 

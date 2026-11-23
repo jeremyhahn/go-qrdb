@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -125,6 +126,53 @@ func TestE2E_SealStorePermissionDenied(t *testing.T) {
 				t.Fatalf("SealStore%s status = %d, want %d (permission denied)", name, re.StatusCode, wire.StatusPermissionDenied)
 			}
 		})
+	}
+}
+
+// sealStoreRefusalFrame encodes the error frame the QUIC server sends for a
+// seal-store error: the status, the message and the structured refusal
+// reason errclass.Refusal attaches. The e2e harness frames every error body
+// as plain message text, so the decoding is exercised on mapWireError
+// directly.
+func sealStoreRefusalFrame(t *testing.T, status uint16, sentinel error) []byte {
+	t.Helper()
+	reason, ok := transport.BarrierRefusal(sentinel)
+	if !ok {
+		t.Fatalf("BarrierRefusal(%v) has no reason", sentinel)
+	}
+	body, err := wire.EncodeErrorPayload(status, wire.ErrorPayload{
+		Message: sentinel.Error(),
+		Info:    &wire.ErrorInfo{Domain: transport.RefusalDomain, Reason: reason},
+	})
+	if err != nil {
+		t.Fatalf("EncodeErrorPayload: %v", err)
+	}
+	return body
+}
+
+// TestE2E_SealStoreMissingSecretIsSealStoreNotFound proves a missing secret,
+// an invalid name and a sealed seal-store barrier reach a QUIC caller as the
+// seal sentinel the embedded transport returns (#1647), not as a
+// KeyNotFoundError.
+func TestE2E_SealStoreMissingSecretIsSealStoreNotFound(t *testing.T) {
+	cases := []struct {
+		method   string
+		status   uint16
+		sentinel error
+	}{
+		{"sealstore.Get", wire.StatusNotFound, seal.ErrSealStoreSecretNotFound},
+		{"sealstore.Delete", wire.StatusNotFound, seal.ErrSealStoreSecretNotFound},
+		{"sealstore.Put", wire.StatusInvalidArgument, seal.ErrInvalidSecretName},
+		{"sealstore.Get", wire.StatusUnavailable, seal.ErrSealStoreBarrierSealed},
+	}
+	for _, tc := range cases {
+		err := mapWireError(tc.method, tc.status, sealStoreRefusalFrame(t, tc.status, tc.sentinel))
+		if !errors.Is(err, tc.sentinel) {
+			t.Fatalf("%s %s = %v, want errors.Is %v", tc.method, wire.StatusName(tc.status), err, tc.sentinel)
+		}
+		if _, ok := errors.AsType[*transport.KeyNotFoundError](err); ok {
+			t.Fatalf("%s %s = %v, want no KeyNotFoundError", tc.method, wire.StatusName(tc.status), err)
+		}
 	}
 }
 

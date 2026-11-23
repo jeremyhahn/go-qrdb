@@ -153,11 +153,13 @@ func TestUnixSealStore_ServerErrors(t *testing.T) {
 	tr := connectSealStoreTransport(t, newMemSealStore())
 	ctx := context.Background()
 	var nf *transport.KeyNotFoundError
-	if _, err := tr.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "absent"}); !errors.As(err, &nf) {
-		t.Fatalf("SealStoreGet of a missing secret = %v, want KeyNotFoundError", err)
+	_, err := tr.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "absent"})
+	if !errors.Is(err, seal.ErrSealStoreSecretNotFound) || errors.As(err, &nf) {
+		t.Fatalf("SealStoreGet of a missing secret = %v, want errors.Is seal.ErrSealStoreSecretNotFound, not KeyNotFoundError", err)
 	}
-	if err := tr.SealStoreDelete(ctx, &transport.SealStoreDeleteRequest{Name: "absent"}); err == nil {
-		t.Fatal("SealStoreDelete of a missing secret succeeded")
+	err = tr.SealStoreDelete(ctx, &transport.SealStoreDeleteRequest{Name: "absent"})
+	if !errors.Is(err, seal.ErrSealStoreSecretNotFound) || errors.As(err, &nf) {
+		t.Fatalf("SealStoreDelete of a missing secret = %v, want errors.Is seal.ErrSealStoreSecretNotFound, not KeyNotFoundError", err)
 	}
 	if err := tr.SealStoreReseal(ctx, &transport.SealStoreResealRequest{Name: "absent"}); err == nil {
 		t.Fatal("SealStoreReseal of a missing secret succeeded")
