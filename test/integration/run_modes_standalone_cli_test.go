@@ -42,9 +42,17 @@ import (
 // "storage:" section in extraYAML joins the storage block).
 func writeStandaloneModeConfig(t *testing.T, backend, extraYAML string) string {
 	t.Helper()
+	return writeStandaloneModeConfigSealed(t, backend, extraYAML, "passphrase")
+}
+
+// writeStandaloneModeConfigSealed is writeStandaloneModeConfig with the
+// seal strategy named: "passphrase" (an encrypting system barrier) or
+// "none" (a barrier present but encrypting nothing).
+func writeStandaloneModeConfigSealed(t *testing.T, backend, extraYAML, strategy string) string {
+	t.Helper()
 	// An extraYAML that opens with its own storage section (storage tuning)
 	// continues this one: YAML refuses a repeated top-level key.
-	yaml := fmt.Sprintf("seal:\n  enabled: true\n  strategy: passphrase\nstorage:\n  backend: %q\n", backend) +
+	yaml := fmt.Sprintf("seal:\n  enabled: true\n  strategy: %s\nstorage:\n  backend: %q\n", strategy, backend) +
 		strings.TrimPrefix(extraYAML, "storage:\n")
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "qrdbd.yaml")
@@ -69,12 +77,26 @@ func startStandaloneModeNode(t *testing.T, backend string) *multiProtoNode {
 // subject is a top-level configuration section.
 func startStandaloneModeNodeWithConfig(t *testing.T, backend, extraYAML string) *multiProtoNode {
 	t.Helper()
+	return startStandaloneModeNodeSealed(t, backend, extraYAML, "passphrase")
+}
+
+// startStandaloneModeNodeUnencrypted is startStandaloneModeNodeWithConfig
+// with the "none" seal strategy: the system barrier is present but
+// encrypts nothing, so a binding a barrier would refuse (objstore) can
+// provision.
+func startStandaloneModeNodeUnencrypted(t *testing.T, backend, extraYAML string) *multiProtoNode {
+	t.Helper()
+	return startStandaloneModeNodeSealed(t, backend, extraYAML, "none")
+}
+
+func startStandaloneModeNodeSealed(t *testing.T, backend, extraYAML, strategy string) *multiProtoNode {
+	t.Helper()
 
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 	ca := generateTestCA(t)
 	dataDir := t.TempDir()
-	cfgPath := writeStandaloneModeConfig(t, backend, extraYAML)
+	cfgPath := writeStandaloneModeConfigSealed(t, backend, extraYAML, strategy)
 
 	sockDir, err := os.MkdirTemp("", "qrdb-sa-")
 	if err != nil {
@@ -91,7 +113,10 @@ func startStandaloneModeNodeWithConfig(t *testing.T, backend, extraYAML string) 
 	mcpPort := tcpPorts[2]
 	quicPort := quicPorts[0]
 
-	const passphrase = "standalone-mode-harness-passphrase"
+	passphrase := "standalone-mode-harness-passphrase"
+	if strategy == "none" {
+		passphrase = ""
+	}
 
 	args := []string{
 		"start",
