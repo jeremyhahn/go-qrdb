@@ -1,5 +1,3 @@
-//go:build codec_msgpack
-
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //

@@ -20,8 +20,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -629,10 +629,9 @@ func (c *DatabaseConfig) Validate() error {
 
 	// Validate per-database storage codec when specified.
 	if c.StorageCodec != "" {
-		available := codec.AvailableCodecs()
 		found := false
-		for _, name := range available {
-			if name == c.StorageCodec {
+		for _, ct := range dao.DocumentCodecs() {
+			if string(ct) == c.StorageCodec {
 				found = true
 				break
 			}
