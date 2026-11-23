@@ -666,6 +666,109 @@ func TestHandleCredentialResolveMigrationConflict_NilServiceAndEmptyName(t *test
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
+// credErrMapService fails the rotation-policy and migration-conflict verbs
+// with err, so a table test can pin the status each typed error maps to.
+type credErrMapService struct {
+	*coverageCredentialService
+	err error
+}
+
+func (m *credErrMapService) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
+	return m.err
+}
+
+func (m *credErrMapService) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
+	return nil, m.err
+}
+
+func (m *credErrMapService) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return nil, m.err
+}
+
+func (m *credErrMapService) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
+	return m.err
+}
+
+// credentialTypedErrorStatuses is the REST status of every credential typed
+// error the rotation-policy and migration-conflict verbs can carry
+// (docs/credentials/api.md, "Status and error mapping"). The last three are
+// raised only at boot or by the scheduler, never by a verb; they keep the
+// default internal class, the same on every transport.
+var credentialTypedErrorStatuses = []struct {
+	name string
+	err  error
+	want int
+}{
+	{"invalid rotation policy", &credentials.InvalidRotationPolicyError{Reason: "x"}, http.StatusBadRequest},
+	{"invalid resolution", credentials.ErrInvalidMigrationResolution, http.StatusBadRequest},
+	{"conflict not found", credentials.ErrMigrationConflictNotFound, http.StatusNotFound},
+	{"credential not found", credentials.ErrCredentialNotFound, http.StatusNotFound},
+	{"meta contended", credentials.ErrRotationMetaContended, http.StatusConflict},
+	{"no value source", credentials.ErrNoRotationValueSource, http.StatusInternalServerError},
+	{"layout conflict", &credentials.LayoutConflictError{Names: []string{"a"}}, http.StatusInternalServerError},
+	{"migration conflict", &credentials.CredentialMigrationConflictError{Name: "a", Value: true}, http.StatusInternalServerError},
+}
+
+func TestHandleCredential_RotationAndConflictVerbs_TypedErrorStatus(t *testing.T) {
+	verbs := []struct{ method, path, body string }{
+		{http.MethodPut, "/v1/credentials/db/rotation-policy", `{"enabled":false}`},
+		{http.MethodGet, "/v1/credentials/db/rotation-policy", ``},
+		{http.MethodGet, "/v1/credentials/migration-conflicts", ``},
+		{http.MethodPost, "/v1/credentials/db/migration-resolve", `{"resolution":"import"}`},
+	}
+	for _, tc := range credentialTypedErrorStatuses {
+		for _, v := range verbs {
+			t.Run(tc.name+" "+v.method+" "+v.path, func(t *testing.T) {
+				s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+					WithCredentialService(&credErrMapService{coverageCredentialService: newCoverageCredentialService(), err: tc.err}))
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(v.method, v.path, strings.NewReader(v.body))
+				if v.path == "/v1/credentials/migration-conflicts" {
+					s.handleCredentialMigrationConflicts(rec, req)
+				} else {
+					s.handleCredentialByPath(rec, req)
+				}
+				assertStatus(t, rec, tc.want)
+			})
+		}
+	}
+}
+
+// TestHandleCredentialResolveMigrationConflict_RefusesUnknownResolution pins
+// that a resolution other than import or discard reaches the service, whose
+// ErrInvalidMigrationResolution is a 400, and an empty name is a 400 before
+// the body is read.
+func TestHandleCredentialResolveMigrationConflict_RefusesUnknownResolution(t *testing.T) {
+	var got credentials.MigrationResolution
+	svc := &resolveRecordingService{coverageCredentialService: newCoverageCredentialService(), got: &got}
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0", WithCredentialService(svc))
+	rec := httptest.NewRecorder()
+	s.handleCredentialByPath(rec, httptest.NewRequest(http.MethodPost, "/v1/credentials/db/migration-resolve",
+		strings.NewReader(`{"resolution":"merge"}`)))
+	assertStatus(t, rec, http.StatusBadRequest)
+	if got != "merge" {
+		t.Fatalf("service saw resolution %q, want merge", got)
+	}
+	rec = httptest.NewRecorder()
+	s.handleCredentialResolveMigrationConflict(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"resolution":"import"}`)), "")
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+// resolveRecordingService records the resolution it is given and refuses any
+// but import or discard, as credentials.CredentialService does.
+type resolveRecordingService struct {
+	*coverageCredentialService
+	got *credentials.MigrationResolution
+}
+
+func (m *resolveRecordingService) CredentialResolveMigrationConflict(_ context.Context, _ string, how credentials.MigrationResolution) error {
+	*m.got = how
+	if how != credentials.MigrationImport && how != credentials.MigrationDiscard {
+		return credentials.ErrInvalidMigrationResolution
+	}
+	return nil
+}
+
 func TestHandleCredentialByPath_DispatchGC(t *testing.T) {
 	svc := newCoverageCredentialService()
 	called := false

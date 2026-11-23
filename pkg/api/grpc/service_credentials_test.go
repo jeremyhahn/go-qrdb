@@ -512,6 +512,93 @@ func TestCredentialResolveMigrationConflict_Proto(t *testing.T) {
 	}
 }
 
+// errCredentialServicerProto fails the rotation-policy and migration-conflict
+// verbs with err.
+type errCredentialServicerProto struct {
+	*fakeCredentialServicerProto
+	err error
+}
+
+func (f *errCredentialServicerProto) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
+	return f.err
+}
+
+func (f *errCredentialServicerProto) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
+	return nil, f.err
+}
+
+func (f *errCredentialServicerProto) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return nil, f.err
+}
+
+func (f *errCredentialServicerProto) CredentialResolveMigrationConflict(_ context.Context, _ string, how credentials.MigrationResolution) error {
+	if f.err == nil && how != credentials.MigrationImport && how != credentials.MigrationDiscard {
+		return credentials.ErrInvalidMigrationResolution
+	}
+	return f.err
+}
+
+// TestCredentialRotationAndConflictRPCs_TypedErrorCode pins the gRPC code of
+// every credential typed error the four verbs can carry; REST, QUIC, MCP and
+// Unix pin the same classes (docs/credentials/api.md, "Status and error
+// mapping"). The last three are raised only at boot or by the scheduler and
+// keep the default internal class.
+func TestCredentialRotationAndConflictRPCs_TypedErrorCode(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want codes.Code
+	}{
+		{"invalid rotation policy", &credentials.InvalidRotationPolicyError{Reason: "x"}, codes.InvalidArgument},
+		{"invalid resolution", credentials.ErrInvalidMigrationResolution, codes.InvalidArgument},
+		{"conflict not found", credentials.ErrMigrationConflictNotFound, codes.NotFound},
+		{"credential not found", credentials.ErrCredentialNotFound, codes.NotFound},
+		{"empty name", credentials.ErrEmptyCredentialName, codes.InvalidArgument},
+		{"meta contended", credentials.ErrRotationMetaContended, codes.Aborted},
+		{"no value source", credentials.ErrNoRotationValueSource, codes.Internal},
+		{"layout conflict", &credentials.LayoutConflictError{Names: []string{"a"}}, codes.Internal},
+		{"migration conflict", &credentials.CredentialMigrationConflictError{Name: "a", Value: true}, codes.Internal},
+	}
+	ctx := context.Background()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &qrdbServiceServer{credentialSvc: &errCredentialServicerProto{fakeCredentialServicerProto: &fakeCredentialServicerProto{}, err: tc.err}}
+			_, err := s.CredentialSetRotationPolicy(ctx, &pb.CredentialSetRotationPolicyRequest{Name: "db"})
+			if codeOf(err) != tc.want {
+				t.Errorf("set: code %s, want %s", codeOf(err), tc.want)
+			}
+			_, err = s.CredentialRotationPolicy(ctx, &pb.CredentialRotationPolicyRequest{Name: "db"})
+			if codeOf(err) != tc.want {
+				t.Errorf("get: code %s, want %s", codeOf(err), tc.want)
+			}
+			_, err = s.CredentialMigrationConflicts(ctx, &pb.CredentialMigrationConflictsRequest{})
+			if codeOf(err) != tc.want {
+				t.Errorf("list: code %s, want %s", codeOf(err), tc.want)
+			}
+			_, err = s.CredentialResolveMigrationConflict(ctx, &pb.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"})
+			if codeOf(err) != tc.want {
+				t.Errorf("resolve: code %s, want %s", codeOf(err), tc.want)
+			}
+		})
+	}
+}
+
+// TestCredentialResolveMigrationConflict_RefusesUnknownResolution_Proto pins
+// that a resolution other than import or discard, and an empty name, are
+// INVALID_ARGUMENT.
+func TestCredentialResolveMigrationConflict_RefusesUnknownResolution_Proto(t *testing.T) {
+	s := &qrdbServiceServer{credentialSvc: &errCredentialServicerProto{fakeCredentialServicerProto: &fakeCredentialServicerProto{}}}
+	if _, err := s.CredentialResolveMigrationConflict(context.Background(),
+		&pb.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "merge"}); codeOf(err) != codes.InvalidArgument {
+		t.Fatalf("unknown resolution: code %s, want InvalidArgument", codeOf(err))
+	}
+	empty := &qrdbServiceServer{credentialSvc: &errCredentialServicerProto{fakeCredentialServicerProto: &fakeCredentialServicerProto{}, err: credentials.ErrEmptyCredentialName}}
+	if _, err := empty.CredentialResolveMigrationConflict(context.Background(),
+		&pb.CredentialResolveMigrationConflictRequest{Resolution: "import"}); codeOf(err) != codes.InvalidArgument {
+		t.Fatalf("empty name: code %s, want InvalidArgument", codeOf(err))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // CredentialRetrieveVersion
 // ---------------------------------------------------------------------------
