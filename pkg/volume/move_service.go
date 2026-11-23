@@ -8,7 +8,12 @@
 
 package volume
 
-import "context"
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+)
 
 // moveAdmissionBox lets an interface value sit in an atomic.Pointer.
 type moveAdmissionBox struct{ a MoveAdmission }
@@ -143,26 +148,82 @@ func (c *Catalog) GetMove(ctx context.Context, tenantID string) (*Move, error) {
 // through it, so a node that crashed after its step's journal write opens
 // from the directory the journal names for it.
 func (c *Catalog) ResolveForNode(ctx context.Context, tenantID, nodeID string) (*Assignment, error) {
-	a, err := c.Resolve(ctx, tenantID)
-	if err != nil {
-		return nil, err
-	}
 	if nodeID == "" {
-		return a, nil
+		return c.Resolve(ctx, tenantID)
 	}
-	m, _, err := c.readMove(ctx, tenantID)
+	// The assignment and the journal are two keys: a cut-over (or the
+	// retire that deletes the journal) between their reads would pair the
+	// source assignment with a journal that no longer says so, naming the
+	// source directory retirement may delete. Read the assignment again
+	// after the journal and retry the pair until both reads of it agree.
+	for range resolveForNodeAttempts {
+		a, raw, err := c.resolveRaw(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		m, _, err := c.readMove(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		after, rawAfter, err := c.resolveRaw(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		if after.Pool != a.Pool || !bytes.Equal(raw, rawAfter) {
+			continue // the assignment changed between the reads
+		}
+		return resolveAgainstMove(after, m, nodeID), nil
+	}
+	return nil, &ResolveInconsistentError{TenantID: tenantID, Attempts: resolveForNodeAttempts}
+}
+
+// resolveForNodeAttempts bounds ResolveForNode's validate-and-retry of the
+// assignment/journal read pair.
+const resolveForNodeAttempts = 8
+
+// ResolveInconsistentError reports that ResolveForNode's assignment changed
+// between its reads on every one of Attempts tries.
+type ResolveInconsistentError struct {
+	TenantID string
+	Attempts int
+}
+
+func (e *ResolveInconsistentError) Error() string {
+	return fmt.Sprintf("volume: tenant %q assignment changed during each of %d resolve attempts", e.TenantID, e.Attempts)
+}
+
+// resolveRaw is Resolve that also returns the stored record's bytes.
+func (c *Catalog) resolveRaw(ctx context.Context, tenantID string) (*Assignment, []byte, error) {
+	raw, err := c.kv.Get(ctx, AssignmentKey(tenantID))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	if raw == nil {
+		return nil, nil, &AssignmentNotFoundError{TenantID: tenantID}
+	}
+	var a Assignment
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return nil, nil, &CorruptRecordError{Key: AssignmentKey(tenantID), Err: err}
+	}
+	if err := ValidateAssignmentPath(tenantID, a.Path); err != nil {
+		return nil, nil, err
+	}
+	return &a, raw, nil
+}
+
+// resolveAgainstMove applies the move journal m's per-node view to the
+// assignment a read consistently with it: a copied node of a move in flight
+// resolves to the destination.
+func resolveAgainstMove(a *Assignment, m *Move, nodeID string) *Assignment {
 	if m == nil || m.State == MoveStateCutover || m.State == MoveStateAdmitted || !contains(m.NodesCopied, nodeID) {
-		return a, nil
+		return a
 	}
 	if a.Pool != m.FromPool {
 		// The assignment no longer names the move's source: the move's
 		// view is stale, so the assignment stands.
-		return a, nil
+		return a
 	}
 	moved := *a
 	moved.Pool = m.ToPool
-	return &moved, nil
+	return &moved
 }
