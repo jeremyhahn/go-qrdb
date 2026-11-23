@@ -52,7 +52,7 @@ type Workload struct {
 	dial     Dialer
 	rec      *history.Recorder
 	classify Classifier
-	keys     []string
+	keys     *keyspace
 	kinds    []weightedKind
 	// sleep takes a client's backoff pause; tests replace sleepContext with
 	// a recording fake so no test waits on a real timer.
@@ -104,7 +104,7 @@ func New(cfg Config, dial Dialer, rec *history.Recorder, opts ...Option) (*Workl
 		rec:      rec,
 		classify: DefaultClassifier,
 		sleep:    sleepContext,
-		keys:     make([]string, cfg.Keys),
+		keys:     newKeyspace(cfg.KeyPrefix, cfg.Keys, cfg.KeyMaxOps, cfg.KeyMaxIndeterminate),
 		outcomes: map[history.Outcome]*atomic.Uint64{
 			history.OutcomeOK:            new(atomic.Uint64),
 			history.OutcomeFail:          new(atomic.Uint64),
@@ -116,9 +116,6 @@ func New(cfg Config, dial Dialer, rec *history.Recorder, opts ...Option) (*Workl
 	}
 	if w.classify == nil {
 		return nil, &ConfigError{Field: "classifier", Reason: "must not be nil"}
-	}
-	for i := range w.keys {
-		w.keys[i] = cfg.KeyPrefix + "/k" + strconv.Itoa(i)
 	}
 	cum := 0
 	for _, kw := range []struct {
@@ -138,8 +135,9 @@ func New(cfg Config, dial Dialer, rec *history.Recorder, opts ...Option) (*Workl
 	return w, nil
 }
 
-// Keys returns the keys the run contends on.
-func (w *Workload) Keys() []string { return append([]string(nil), w.keys...) }
+// Keys returns every key the run has used so far: each slot's first key, and
+// every key that replaced a retired one.
+func (w *Workload) Keys() []string { return w.keys.all() }
 
 // Stats returns the counts recorded so far.
 func (w *Workload) Stats() Stats {
@@ -179,7 +177,7 @@ func (w *Workload) FinalRead(ctx context.Context) error {
 	c := w.newClient(w.cfg.Clients)
 	defer c.drop()
 	var unread []string
-	for _, key := range w.keys {
+	for _, key := range w.keys.all() {
 		if !c.readUntilAnswered(ctx, key) {
 			unread = append(unread, key)
 		}
@@ -242,11 +240,15 @@ func (c *client) run(ctx context.Context) {
 		if !c.connect(ctx) {
 			continue
 		}
-		key := c.w.keys[c.rng.IntN(len(c.w.keys))]
+		slot := c.rng.IntN(c.w.cfg.Keys)
+		kind := c.pick()
+		key, lease := c.w.keys.acquire(slot, kind != history.KindGet)
+		outcome := ops[kind](c, ctx, key)
+		c.w.keys.release(lease, outcome)
 		// Every failed operation is followed by a pause, so a node that
 		// refuses or times out is retried at a bounded rate, not in a loop
 		// that floods the history.
-		if ops[c.pick()](c, ctx, key) != history.OutcomeOK {
+		if outcome != history.OutcomeOK {
 			c.backoff(ctx)
 		}
 		n++
