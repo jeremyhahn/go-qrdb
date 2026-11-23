@@ -20,11 +20,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
@@ -295,7 +292,8 @@ func TestRaftBackendFactory_ReattachPersistence(t *testing.T) {
 }
 
 // writeAndAwaitLogRange writes n KV entries through svcs and returns the
-// shard's log range: it polls for up to wait until the first index rises above
+// shard's log range: it reads the range once, then, for a positive wait, polls
+// for up to wait until the first index rises above
 // one, so a shard that does not compact reports its uncompacted range rather
 // than failing here.
 func writeAndAwaitLogRange(ctx context.Context, t *testing.T, host *quicraft.Host, svcs *DatabaseServices, shardID uint64, n int, wait time.Duration) quicraft.LogRange {
@@ -305,24 +303,25 @@ func writeAndAwaitLogRange(ctx context.Context, t *testing.T, host *quicraft.Hos
 			t.Fatalf("KV.Put %d: %v", i, err)
 		}
 	}
-	var (
-		mu    sync.Mutex
-		lr    quicraft.LogRange
-		lrErr error
-	)
-	// The quiet reporter lets a shard that never compacts report its
-	// uncompacted range; the caller judges it.
-	assert.Eventually(quietReporter{}, func() bool {
-		got, err := host.LogRange(shardID)
-		mu.Lock()
-		defer mu.Unlock()
-		lr, lrErr = got, err
-		return err != nil || got.FirstIndex > 1
-	}, wait, 20*time.Millisecond)
-	mu.Lock()
-	defer mu.Unlock()
-	if lrErr != nil {
-		t.Fatalf("LogRange: %v", lrErr)
+	// One unconditional synchronous read, so a zero wait still observes the
+	// shard's range rather than a zero value.
+	lr, err := host.LogRange(shardID)
+	if err != nil {
+		t.Fatalf("LogRange: %v", err)
+	}
+	if wait <= 0 || lr.FirstIndex > 1 {
+		return lr
+	}
+	// Poll until the first index rises above one or wait ends; a shard that
+	// never compacts reports its uncompacted range and the caller judges it.
+	deadline := time.Now().Add(wait)
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for lr.FirstIndex <= 1 && time.Now().Before(deadline) {
+		<-ticker.C
+		if lr, err = host.LogRange(shardID); err != nil {
+			t.Fatalf("LogRange: %v", err)
+		}
 	}
 	return lr
 }
@@ -378,7 +377,12 @@ func TestRaftBackendFactory_DefaultSnapshotSettings_KeepsLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Services: %v", err)
 	}
-	if lr := writeAndAwaitLogRange(ctx, t, host, svcs, shardID, 100, 0); lr.FirstIndex > 1 {
+	const written = 100
+	lr := writeAndAwaitLogRange(ctx, t, host, svcs, shardID, written, 0)
+	if lr.LastIndex < written {
+		t.Fatalf("log range = [%d, %d]: the read must cover the %d written entries", lr.FirstIndex, lr.LastIndex, written)
+	}
+	if lr.FirstIndex > 1 {
 		t.Fatalf("log range = [%d, %d]: the default cadence compacted a hundred-entry log", lr.FirstIndex, lr.LastIndex)
 	}
 }
