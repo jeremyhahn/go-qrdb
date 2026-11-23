@@ -148,7 +148,7 @@ func newSession(
 func (s *Session) readFromConnectStream() {
 	parser := http3.NewCapsuleParser(s.str)
 	for {
-		c, err := parseNextCapsule(parser)
+		c, err := parseNextCapsule(parser, s.flowControlEnabled)
 		if err != nil {
 			switch {
 			case errors.Is(err, io.EOF):
