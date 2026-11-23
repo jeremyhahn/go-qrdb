@@ -25,6 +25,7 @@ are not reconstructed here — their history is in the git log.
 ### Added
 
 - `database info` and `database list` report a read-only `binding` block on every transport (gRPC `DatabaseBindingInfo`, REST, QUIC, Unix, MCP, both SDKs and the CLI table output): the binding kind (`local` or `raft`), the owning node when one is recorded and the encryption scope (`node` or `tenant`, with `+database` for a per-database barrier), as the server's binding resolver decides it (docs/databases/api.md, #923).
+- The `binding` block reports the database's `generation` on every transport (gRPC `DatabaseBindingInfo.generation`, field 4) and in the CLI table output: the catalog keeps a per-name counter that a drop never removes, so a database dropped and created again under the same name reports a higher generation than the one it replaced (docs/databases/api.md, #923).
 
 ### Changed
 

@@ -97,14 +97,25 @@ type DatabaseBinding struct {
 	Kind       BindingKind `json:"kind"`            // local | raft
 	Nodes      []string    `json:"nodes,omitempty"` // the owning node, when one is recorded
 	Encryption string      `json:"encryption"`      // node | tenant | node+database | tenant+database
+	Generation uint64      `json:"generation"`      // this create of the name; higher than any earlier one
 }
 ```
 
+The generation comes from a per-name counter the catalog keeps beside the
+record, under `__sys:dbgeneration/<tenant>/<name>` (8 bytes, big-endian) in the
+same store as the record, so an isolated tenant's counter lives in its home
+store. `KVCatalog.Create` advances the counter (`PutIfAbsent` for the first
+create, `CompareAndSwap` after, retrying a lost swap) before it writes the
+record, and stores the number as `DatabaseMeta.Generation`. A drop removes the
+record but never the counter, so a recreated name always gets a higher
+generation than the database it replaces. Generations rise but are not dense:
+a create that fails, or finds the name taken, has still advanced the counter.
+The manager reads the record back after a successful create to learn the
+number; if that read fails, the open handle on this node reports 0 until it is
+reopened, while the record and every other node report the stored value.
+
 ### Types (target)
 
-`DatabaseBinding` gains `Generation uint64` (`json:"generation"`), which
-increments on every create of this name; the catalog does not record a
-generation yet.
 `DatabaseRaftConfig` gains `StateStorage string`
 (`json:"stateStorage,omitempty"`: `pebble | file | memory`) and carries no shard
 ID, which the cluster issues. `UpdateDatabaseConnection`,

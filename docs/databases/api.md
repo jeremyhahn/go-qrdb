@@ -199,19 +199,21 @@ transport, reporting what the resolver decided:
 ```json
 { "name": "orders", "tenantId": "acme", "backend": "file", "status": "open",
   "binding": { "kind": "local", "nodes": ["node-1"],
-               "encryption": "tenant+database" } }
+               "encryption": "tenant+database", "generation": 3 } }
 ```
 
 `kind` is `local` or `raft`; `nodes` names the owning node when the catalog
 records one (absent otherwise); `encryption` is the scope whose key encrypts
 the store at rest, `node` or `tenant`, with `+database` appended when the
-database has its own barrier. The block is absent when the server cannot
-resolve the binding. gRPC carries it as `DatabaseBindingInfo binding = 19` on
-`DatabaseInfoResponse`; the CLI table output prints it under `Binding:`.
+database has its own barrier. `generation` numbers this create of the name: a
+database dropped and created again under the same name reports a higher
+generation than the one it replaced, so a client can tell them apart.
+Generations rise but may skip values (a create that fails still uses one up).
+The block is absent when the server cannot resolve the binding. gRPC carries it
+as `DatabaseBindingInfo binding = 19` on `DatabaseInfoResponse` (`generation` is
+its field 4); the CLI table output prints it under `Binding:`.
 
-Target: the block gains `generation`, which increments each time the name is
-created so a dropped-and-recreated database is distinguishable from its
-predecessor, and a raft binding lists its replica nodes.
+Target: a raft binding lists its replica nodes.
 The `connection` block and the update-connection capability are removed on
 every transport (OD-9).
 
