@@ -158,6 +158,63 @@ That gate holds such an embedding to a dependency graph without the Raft host,
 PebbleDB, the network API servers or the unused feature packages. The graph
 does not meet that target yet, and the gate keeps it from growing.
 
+### DAO stores over your own storage or the node's services
+
+A DAO (`sdk.NewDAO`, `sdk.NewDAOTransactional`) runs over any `sdk.KVStore`.
+Three constructors give you one:
+
+| Store | Use it when | Indexes it maintains | Guarded batches |
+|---|---|---|---|
+| `sdk.NewEmbeddedKVStore(storage.Storage)` | you own the storage (for example `sdkstorage.NewPebbleStorage`) and want no node at all | single-field and unique indexes, and compound indexes (`sdk.CompoundIndexDef`), updated on every write | no: `NewDAOTransactional` and a unit of work need a guarded multi-key write this store does not offer |
+| `server.NewServiceKVStore(kv, index, txn)` (package `sdk/go/server`) | you run a node and want the DAO over its services, `n.Services().KV`, `.Index` and `.Transaction` | single-field and unique indexes. Compound definitions are refused with `sdk.ErrKVIndexUnsupported`: the query builder (`Find().Where(...)`) answers compound-field lookups by scanning, and a named compound-index query (`QueryByCompoundIndex`) returns that error | yes: `PutAllIfAllUnchanged` applies a batch all-or-nothing, so `NewDAOTransactional` and `sdk.NewDAOUnitOfWork` work over it |
+| `sdk.NewKVStoreAdapter(client)` | your code talks to a node through a client (`n.Client()` or a remote transport), with authorization on every call | the node's indexes, through the client | see the adapter's Go doc; the parity test does not cover this store |
+
+The embedded store refuses to index a nested entity type (an entity type
+containing `/`) with `sdk.ErrKVIndexUnsupported`, so a DAO over it scans for
+that type instead.
+
+The embedded and service stores give a DAO the same results for save, get,
+list, index lookup, unique refusal, a unique value moved from one entity to
+another, and delete. `sdk/go/conformance` `TestDAOStoreParity` checks this on
+a standalone node and on a single-node raft group. The only difference it
+allows is the named compound-index query.
+
+A DAO with a unique index over your own Pebble storage
+(`ExampleNewEmbeddedKVStore` in `sdk/go/example_dao_stores_test.go`, compiled
+and run by `go test`):
+
+```go
+stg, err := sdkstorage.NewPebbleStorage(sdkstorage.DefaultPebbleConfig(dir))
+if err != nil {
+	return err
+}
+defer stg.Close()
+
+store, err := sdk.NewEmbeddedKVStore(stg)
+if err != nil {
+	return err
+}
+accounts, err := sdk.NewDAO(store, "account", func() *Account { return &Account{} })
+if err != nil {
+	return err
+}
+if err := accounts.Save(ctx, &Account{ID: 1, Email: "ada@example.test"}); err != nil {
+	return err
+}
+found, err := accounts.QueryOneByIndex(ctx, "Email", "ada@example.test")
+```
+
+To build the same DAO over a running node's services:
+
+```go
+svc := n.Services()
+store, err := server.NewServiceKVStore(svc.KV, svc.Index, svc.Transaction)
+if err != nil {
+	return err
+}
+accounts, err := sdk.NewDAOTransactional(store, "account", func() *Account { return &Account{} })
+```
+
 ### Injecting hardware crypto options
 
 `serverOpts` is forwarded verbatim to `server.New`. Pass
