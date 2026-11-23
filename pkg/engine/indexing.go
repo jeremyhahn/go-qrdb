@@ -410,6 +410,23 @@ func RemoveIndexesBatch(batch storage.Batch, indexes map[string]index.Index, ind
 // belonging to other databases and other tenants (go-qrdb#410). A nil scope
 // backfills everything, which is the unscoped index.
 func BackfillIndex(scanner func() ([]*service.KeyValue, error), idx index.Index, fieldName string, scope []byte) {
+	backfill(scanner, fieldName, scope, idx.Put)
+}
+
+// BackfillIndexBatch is BackfillIndex writing the entries into batch rather
+// than committing them itself: the index-create apply backfills in the batch
+// that writes the index's catalog record, so a batch that fails to commit
+// leaves neither the record nor any entry behind.
+func BackfillIndexBatch(scanner func() ([]*service.KeyValue, error), idx index.BatchableIndex, batch storage.Batch, fieldName string, scope []byte) {
+	backfill(scanner, fieldName, scope, func(key, val []byte) error {
+		return idx.PutBatch(batch, key, val)
+	})
+}
+
+// backfill is the loop BackfillIndex and BackfillIndexBatch share: it puts,
+// through put, the field value of every in-scope JSON document scanner
+// yields.
+func backfill(scanner func() ([]*service.KeyValue, error), fieldName string, scope []byte, put func(key, val []byte) error) {
 	kvs, err := scanner()
 	if err != nil {
 		// The scan must not fail an index-create apply (returning an error
@@ -436,7 +453,7 @@ func BackfillIndex(scanner func() ([]*service.KeyValue, error), idx index.Index,
 		}
 
 		val := UnquoteJSON(raw)
-		if err := idx.Put(kv.Key, val); err != nil {
+		if err := put(kv.Key, val); err != nil {
 			// A single entry's insert must not abort the backfill (that would
 			// leave the index even more incomplete), but the resulting gap is
 			// an operability hazard — log it so it is observable, mirroring

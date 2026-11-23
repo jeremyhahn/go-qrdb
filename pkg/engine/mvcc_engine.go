@@ -2485,6 +2485,14 @@ func (e *MVCCEngine) handleVerifiableLog(_ *mvcc.Store, _ *lease.Lessor, batch s
 // Index handlers
 // ---------------------------------------------------------------------------
 
+// batchClearableIndex is an index the apply path clears and backfills in the
+// apply batch (index.StoragePebbleIndex), so its entries change atomically
+// with its catalog record.
+type batchClearableIndex interface {
+	index.BatchableIndex
+	ClearBatch(batch storage.Batch) error
+}
+
 // handleIndexCreate creates a new secondary index, storage-backed via
 // index.NewStoragePebbleIndex so it works identically over every
 // storage.Storage implementation. After creation, existing data is
@@ -2569,14 +2577,27 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	// older encoding, which would sort among the new ones out of numeric
 	// order. Clearing and backfilling is the rebuild a stale definition
 	// gets.
-	if err := idx.Clear(); err != nil {
-		return sm.Result{}, nil, err
-	}
+	//
+	// Both the clear and the backfill are queued into the apply batch, the
+	// one the catalog record below is written in, so a batch that fails to
+	// commit leaves the old definition and its terms exactly as they were.
 	start, end := backfillRange(scope)
-	BackfillIndex(func() ([]*service.KeyValue, error) {
+	scan := func() ([]*service.KeyValue, error) {
 		kvs, _, _, err := store.RangeInBatch(batch, start, end)
 		return kvs, err
-	}, idx, fieldName, scope)
+	}
+	if bIdx, ok := idx.(batchClearableIndex); ok {
+		if err := bIdx.ClearBatch(batch); err != nil {
+			_ = idx.Close()
+			return sm.Result{}, nil, err
+		}
+		BackfillIndexBatch(scan, bIdx, batch, fieldName, scope)
+	} else {
+		if err := idx.Clear(); err != nil {
+			return sm.Result{}, nil, err
+		}
+		BackfillIndex(scan, idx, fieldName, scope)
+	}
 
 	// The definition is recorded in the index catalog, in the same batch as
 	// the entries the backfill wrote, so a fresh engine over this storage
@@ -2691,7 +2712,14 @@ func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, batch stora
 	delete(e.indexValueTypes, name)
 	e.indexMu.Unlock()
 
-	if err := idx.Clear(); err != nil {
+	// The entries are removed in the batch that deletes the catalog record,
+	// so a batch that fails to commit keeps the definition and every entry.
+	if bIdx, ok := idx.(batchClearableIndex); ok {
+		if err := bIdx.ClearBatch(batch); err != nil {
+			_ = idx.Close()
+			return sm.Result{}, nil, err
+		}
+	} else if err := idx.Clear(); err != nil {
 		return sm.Result{}, nil, err
 	}
 	if err := idx.Close(); err != nil {
