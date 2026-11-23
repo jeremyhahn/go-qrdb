@@ -923,6 +923,26 @@ func TestStoreRefusesCorruptRecords(t *testing.T) {
 	}
 }
 
+func TestTxnChangeCounter(t *testing.T) {
+	s := newTestStore(t, newTestBackend(t), "app.db")
+
+	empty := begin(t, s)
+	if got := empty.ChangeCounter(); got != 0 {
+		t.Fatalf("ChangeCounter of an empty store = %d, want 0", got)
+	}
+	if err := empty.Rollback(t.Context()); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	seed(t, s, 0x01)
+	seed(t, s, 0x02)
+	txn := begin(t, s)
+	defer func() { _ = txn.Rollback(context.Background()) }()
+	if got := txn.ChangeCounter(); got != 2 {
+		t.Fatalf("ChangeCounter after two commits = %d, want 2", got)
+	}
+}
+
 func TestTxnIOEdgeCases(t *testing.T) {
 	s := newTestStore(t, newTestBackend(t), "app.db")
 
