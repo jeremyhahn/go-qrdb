@@ -30,7 +30,7 @@ default role set in a single transactional ceremony**.
 | `--admin-cert-pool` | string | — | PEM trust-anchor bundle `--admin-cert` and `--so-cert` must chain to; only valid with `--admin-cert` or `--so-cert` (so a CSR or generated admin can still present an SO certificate), and required unless the certificate was issued by this deployment's own CA |
 | `--admin-generate` | bool | `false` | selects the dev/test-only GENERATE path explicitly (mutually exclusive with `--admin-csr`/`--admin-cert`) |
 | `--so-username` | string | — | the system tenant's Security Officer, enrolled at first boot with only the `so` role and `--so-pin` as its PIN; needs exactly one of `--so-csr`/`--so-cert`. Optional in both postures |
-| `--so-csr` | string | — | path to a PEM CSR for the system SO, signed under the system tenant; its key must not be the admin's (mutually exclusive with `--so-cert`) |
+| `--so-csr` | string | — | path to a PEM CSR for the system SO, signed under the system tenant; its key must not be the admin's unless, in the standard posture, the SO is the admin (mutually exclusive with `--so-cert`) |
 | `--so-cert` | string | — | path to a PEM certificate the system SO already holds, naming the system tenant; verified against `--admin-cert-pool` or this deployment's own CA and refused without the client-auth profile (digital signature key usage, client authentication EKU); an `--admin-cert-pool` it chains to becomes system tenant trust anchors, loaded into runtime client trust before the SO is bound (mutually exclusive with `--so-csr`) |
 | `--so-chain` | string | — | path to PEM intermediates for `--so-cert`; only valid with `--so-cert` |
 
@@ -55,8 +55,10 @@ equivalent dual-control pair; see
 
 **The system SO flags are all-or-nothing**: none at all, or `--so-username`
 with exactly one of `--so-csr` and `--so-cert`. `qrdb init` refuses a partial
-set before it calls the server. The SO must be a different principal from the
-admin, by username and by key; the ceremony refuses one that is not with
+set before it calls the server. Under strict separation the SO must be a
+different principal from the admin, by username and by key; in the standard
+posture `--so-username admin` names the admin as the SO, and only another SO
+holding the admin's key is refused. The ceremony refuses either case with
 `*ceremony.SystemSORejectedError` (400). The SO's PIN is `--so-pin`: the
 ceremony keeps it only as its hash, and first boot commits that hash as the
 SO's PIN record. On success `qrdb init` prints the SO's certificate as

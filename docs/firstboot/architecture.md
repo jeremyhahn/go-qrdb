@@ -273,7 +273,8 @@ constraints are in [../identity-rbac/](../identity-rbac/) and
 or a certificate with its chain, and the SO PIN, either as a
 `secure.Secret` or as its `auth.HashSOPIN` record) names a system-tenant
 Security Officer. First boot enrols it after the admin. It creates the
-account with only the `so` role, signs or adopts and binds its certificate,
+account with only the `so` role (in the standard posture an SO named `admin`
+is the bootstrap admin, which is granted `so` instead), signs or adopts and binds its certificate,
 and commits the PIN through `Dependencies.SOPINs`. `Initialize` opens a
 `secure.Secret` PIN only to commit it; the caller destroys it. Enrolment is idempotent: an existing account under that
 username that holds the system `so` role, and under strict separation not
@@ -282,7 +283,9 @@ the `admin` role, is the SO. Any other holder of the username is
 `*firstboot.SystemSOEnrollmentError`. An SO given in part is
 `*firstboot.IncompleteSOError`, one with both a CSR and a certificate is
 `*firstboot.ConflictingSOCredentialError`, and an SO that shares the admin's
-username or key is `*firstboot.SOMatchesAdminError`. The pre-flight then
+username (any case) or key under strict separation, or, in the standard
+posture, an SO other than the admin that holds the admin's key, is
+`*firstboot.SOMatchesAdminError`. The pre-flight then
 refuses, before any write and each as `*firstboot.MissingSOSeamError`, an SO
 whose enrolment seams are not wired: `Users` not implementing `UpdateUser`
 (it records the SO's bound key and grants the bootstrap admin the SO role);
@@ -300,8 +303,9 @@ SO-exclusive operations (role create and the built-in reconciles run only as
 a separate SO, and the assignment gate keeps the system admin from becoming
 one), so it boots and serves but cannot manage its roles until an SO is
 enrolled. The node's strict posture always wins: the ceremony
-(`CeremonyService.SetSeparationOfDuties`) refuses an SO username no SPIFFE ID
-can carry with `*ceremony.SystemSORejectedError` before any write, and every
+(`CeremonyService.SetSeparationOfDuties`) judges a named SO under it, refusing
+the admin as SO with `*ceremony.SystemSORejectedError` before any write (an SO
+username no SPIFFE ID can carry is refused in either posture), and every
 sealed-window composition (`qrdbd` and the embedded node) carries the
 posture. The embedded node ORs `Node.StrictSeparation()` into the caller's
 `Dependencies`, tenant create takes an optional SO in both postures, and the
@@ -315,7 +319,8 @@ committed PIN.
 `SOChainPEM`, verified like a BYOC admin certificate). The SO PIN is
 `SOPin`. Bad inputs are `*ceremony.SystemSORejectedError`: among them a
 presented certificate whose subject CN is not `SOUsername`, and an SO key that
-is the admin's, compared from the supplied CSRs or certificates before
+is the admin's (under strict separation, or for an SO other than the admin
+in the standard posture), compared from the supplied CSRs or certificates before
 anything is provisioned. The ceremony holds the PIN only as its hash, never
 the PIN. Before `Initialize` reports success it records the issued SO in the
 system barrier (`ceremony.CeremonyService.PendingSystemSO`), so a node that

@@ -145,7 +145,7 @@ qrdb init --so-pin SOPIN --user-pin USERPIN --barrier-strategy none \
 ```
 
 `--so-csr` is a CSR made with the SO's own key, which must not be the admin's
-key. `--so-cert` (with `--so-chain` for intermediates) adopts a certificate the
+key (the standard posture alone lets the admin itself be named as the SO). `--so-cert` (with `--so-chain` for intermediates) adopts a certificate the
 SO already holds. It must be a client certificate: its key usage includes
 digital signature and its extended key usage includes client authentication.
 When it chains to `--admin-cert-pool`, first boot stores that pool as system
@@ -159,7 +159,8 @@ only role create and the built-in role reconciles until an SO is enrolled.
 ## Troubleshooting
 
 **"ceremony: system SO rejected".** The SO flags named the admin's username
-or key, no SO PIN, a CSR that does not parse, a certificate that does not
+or key under strict separation (or, in the standard posture, an SO other than
+the admin holding the admin's key), no SO PIN, a CSR that does not parse, a certificate that does not
 verify under the system tenant, or a certificate without the client-auth
 profile (`*ceremony.ClientAuthProfileError`). Nothing is created or bound, so
 fix the named input and re-run `qrdb init`.
