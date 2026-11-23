@@ -166,6 +166,12 @@ type Condition struct {
 	Expression string `json:"expression,omitempty" yaml:"expression,omitempty"`
 }
 
+// ResourceOwnerContextKey is the CheckRequest.Context key that carries the
+// owner of the object an operation acts on. The decorator sets it from
+// auth.ResourceOwnerFromContext; conditions read it as resource.owner, and
+// subject.owns_resource compares it with the subject id.
+const ResourceOwnerContextKey = "resource_owner"
+
 // CheckRequest represents an authorization check request.
 type CheckRequest struct {
 	// Subject is the principal requesting access.
