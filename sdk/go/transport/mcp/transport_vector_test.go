@@ -1040,10 +1040,10 @@ func TestGetCompactionProgress_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Vector tests with metadata and shard ID to exercise optional branches
+// Vector tests with metadata to exercise optional branches
 // ---------------------------------------------------------------------------
 
-func TestUpsertVector_WithMetadataAndShardID(t *testing.T) {
+func TestUpsertVector_WithMetadata(t *testing.T) {
 	svc := newMockVectorSvc()
 	tr, cleanup := connectVectorInProcess(t, svc)
 	defer cleanup()
@@ -1053,40 +1053,9 @@ func TestUpsertVector_WithMetadataAndShardID(t *testing.T) {
 		ID:        42,
 		Vector:    []float32{0.1},
 		Metadata:  map[string]interface{}{"k": "v"},
-		ShardID:   7,
 	})
 	if err != nil {
 		t.Fatalf("UpsertVector: %v", err)
-	}
-}
-
-func TestGetVector_WithShardID(t *testing.T) {
-	svc := newMockVectorSvc()
-	tr, cleanup := connectVectorInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.GetVector(context.Background(), &transport.GetVectorRequest{
-		Namespace: "ns1",
-		ID:        42,
-		ShardID:   7,
-	})
-	if err != nil {
-		t.Fatalf("GetVector: %v", err)
-	}
-}
-
-func TestDeleteVector_WithShardID(t *testing.T) {
-	svc := newMockVectorSvc()
-	tr, cleanup := connectVectorInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.DeleteVector(context.Background(), &transport.DeleteVectorRequest{
-		Namespace: "ns1",
-		ID:        42,
-		ShardID:   7,
-	})
-	if err != nil {
-		t.Fatalf("DeleteVector: %v", err)
 	}
 }
 
@@ -1102,7 +1071,6 @@ func TestCreateNamespace_WithMetadata(t *testing.T) {
 		IndexType:      "HNSW",
 		IndexConfig:    map[string]string{"M": "16"},
 		Metadata:       map[string]interface{}{"k": "v"},
-		ShardID:        7,
 	})
 	if err != nil {
 		t.Fatalf("CreateNamespace: %v", err)

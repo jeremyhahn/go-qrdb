@@ -17,8 +17,8 @@
  * Database creation wizard state store.
  *
  * Implements a dynamic step-based state machine for creating new databases.
- * The step sequence adapts based on the selected database mode (embedded vs
- * remote), skipping irrelevant configuration steps.
+ * The step sequence adapts to the server's topology (standalone or raft),
+ * skipping irrelevant configuration steps.
  */
 
 import type { SealMode, EmbeddedSealConfig } from '@qrdb/sdk';
@@ -30,19 +30,14 @@ import type { SealMode, EmbeddedSealConfig } from '@qrdb/sdk';
 /** All possible step identifiers in the database creation wizard. */
 export type DatabaseWizardStep =
     | 'name'
-    | 'mode'
     | 'storage'
     | 'raft'
-    | 'connection'
     | 'sql'
     | 'barrier'
     | 'summary'
     | 'creating'
     | 'holders'
     | 'complete';
-
-/** Whether the database is embedded locally or connects to a remote server. */
-export type DatabaseMode = 'embedded' | 'remote';
 
 /** The type of data engine powering the database. */
 export type EngineType = 'kv' | 'timeseries' | 'vector';
@@ -72,15 +67,6 @@ export interface DatabaseRaftConfig {
     raftGroups: RaftGroupsConfig | null;
 }
 
-/** Remote connection configuration. */
-export interface DatabaseConnectionConfig {
-    transport: string;
-    address: string;
-    caFile: string;
-    certFile: string;
-    keyFile: string;
-}
-
 /** Shape of the reactive database wizard state. */
 export interface DatabaseWizardState {
     /** Current active step in the wizard flow. */
@@ -89,8 +75,6 @@ export interface DatabaseWizardState {
     name: string;
     /** Engine type: kv, timeseries, or vector. */
     engine: EngineType;
-    /** Embedded or remote mode (inherited from the active connection). */
-    mode: DatabaseMode;
     /** Server topology mode (set by MainApp before opening the wizard). */
     serverMode: 'standalone' | 'raft';
     /** Storage backend (embedded only). */
@@ -111,8 +95,6 @@ export interface DatabaseWizardState {
      * entitlement and the `max_dedicated_wal_groups` quota. Defaults to false.
      */
     dedicatedWal: boolean;
-    /** Remote connection configuration (remote only, null when not applicable). */
-    connectionConfig: DatabaseConnectionConfig | null;
     /** Whether MySQL wire protocol is enabled. */
     sqlMySQL: boolean;
     /** Whether PostgreSQL wire protocol is enabled. */
@@ -208,14 +190,12 @@ export const dbWizardStore: DatabaseWizardState = $state({
     currentStep: 'name',
     name: '',
     engine: 'kv',
-    mode: 'embedded',
     serverMode: 'standalone',
     backend: 'pebble',
     dataDir: '',
     raftConfig: { ...defaultRaftConfig },
     replicas: 1,
     dedicatedWal: false,
-    connectionConfig: null,
     sqlMySQL: false,
     sqlPostgreSQL: false,
     etcdEnabled: false,
@@ -269,14 +249,12 @@ export function resetDatabaseWizard(): void {
     dbWizardStore.currentStep = 'name';
     dbWizardStore.name = '';
     dbWizardStore.engine = 'kv';
-    dbWizardStore.mode = 'embedded';
     dbWizardStore.serverMode = 'standalone';
     dbWizardStore.backend = 'pebble';
     dbWizardStore.dataDir = '';
     dbWizardStore.raftConfig = { ...defaultRaftConfig };
     dbWizardStore.replicas = 1;
     dbWizardStore.dedicatedWal = false;
-    dbWizardStore.connectionConfig = null;
     dbWizardStore.sqlMySQL = false;
     dbWizardStore.sqlPostgreSQL = false;
     dbWizardStore.etcdEnabled = false;

@@ -22,7 +22,12 @@
 package integration_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -76,4 +81,67 @@ func TestDatabase_CLI_UpdateConnectionRemoved_PerProtocol(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDatabase_CLI_RemoteModeRefused_PerProtocol asserts remote mode cannot
+// be asked for at create or at config (OD-9 A). The CLI has no create flag
+// that names a mode or a connection, so on every transport such a create is
+// refused by the CLI and no database is made; and a node whose config file
+// carries a `databases[]` entry with a `connection:` block refuses to start
+// with the strict decode's unknown-key error.
+func TestDatabase_CLI_RemoteModeRefused_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			dbName := fmt.Sprintf("remotemode-%s-%d", proto.name, time.Now().UnixNano())
+			t.Cleanup(func() {
+				_, _ = runCLIProto(t, node, proto, "database", "drop", dbName)
+			})
+			for _, flags := range [][]string{
+				{"--mode", "remote"},
+				{"--connection-address", "127.0.0.1:1"},
+			} {
+				args := append([]string{"database", "create", dbName, "--backend", "pebble"}, flags...)
+				out, err := runCLIProto(t, node, proto, args...)
+				if err == nil {
+					t.Fatalf("[%s] database create %v: want an unknown flag, it succeeded\noutput: %s", proto.name, flags, out)
+				}
+				if !strings.Contains(out+err.Error(), "unknown flag: "+flags[0]) {
+					t.Fatalf("[%s] database create %v: want unknown flag %s, got %v\noutput: %s", proto.name, flags, flags[0], err, out)
+				}
+			}
+			if out, err := runCLIProto(t, node, proto, "database", "info", dbName); err == nil {
+				t.Fatalf("[%s] a refused remote create made database %s:\n%s", proto.name, dbName, out)
+			}
+		})
+	}
+
+	t.Run("config", func(t *testing.T) {
+		bin := buildBinary(t)
+		extra := "databases:\n  - name: \"app\"\n    backend: \"pebble\"\n    connection:\n      transport: \"tcp\"\n      address: \"127.0.0.1:1\"\n"
+		cfgPath := writeStandaloneModeConfig(t, "pebble", extra)
+		dataDir := t.TempDir()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, bin, "start", "--config", cfgPath, "--mode", "standalone", "--data-dir", dataDir)
+		out, err := cmd.CombinedOutput()
+		if ctx.Err() != nil {
+			t.Fatalf("qrdbd started with a connection block in databases[]; output:\n%s", out)
+		}
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("qrdbd start: want a non-zero exit, got %v\noutput: %s", err, out)
+		}
+		want := `unknown key "databases[0].connection"`
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("qrdbd start: want %q in the output, got:\n%s", want, out)
+		}
+		if _, statErr := os.Stat(filepath.Join(dataDir, "databases", "app")); statErr == nil {
+			t.Fatalf("qrdbd refused the config but left a store for database app under %s", dataDir)
+		}
+	})
 }

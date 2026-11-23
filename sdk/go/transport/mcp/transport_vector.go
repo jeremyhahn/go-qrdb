@@ -346,10 +346,6 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 		args["index_config"] = string(data)
 	}
 
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
-	}
-
 	text, err := t.callTool(ctx, "qrdb_vector_create_namespace", args)
 	if err != nil {
 		return nil, err
@@ -422,9 +418,6 @@ func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNa
 	args := map[string]any{
 		"namespace": req.Namespace,
 	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
-	}
 
 	text, err := t.callTool(ctx, "qrdb_vector_delete_namespace", args)
 	if err != nil {
@@ -451,9 +444,6 @@ func (t *Transport) ListNamespaces(ctx context.Context, req *transport.ListNames
 	}
 
 	args := map[string]any{}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
-	}
 
 	text, err := t.callTool(ctx, "qrdb_vector_list_namespaces", args)
 	if err != nil {
@@ -486,9 +476,6 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 
 	args := map[string]any{
 		"namespace": req.Namespace,
-	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
 	}
 
 	text, err := t.callTool(ctx, "qrdb_vector_get_namespace_info", args)
@@ -544,10 +531,6 @@ func (t *Transport) UpsertVector(ctx context.Context, req *transport.UpsertVecto
 		args["metadata"] = string(metaJSON)
 	}
 
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
-	}
-
 	text, callErr := t.callTool(ctx, "qrdb_vector_upsert", args)
 	if callErr != nil {
 		return nil, callErr
@@ -576,9 +559,6 @@ func (t *Transport) GetVector(ctx context.Context, req *transport.GetVectorReque
 	args := map[string]any{
 		"namespace": req.Namespace,
 		"id":        req.ID,
-	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
 	}
 
 	// REAL CROSS-TRANSPORT PARITY BUG (found + fixed): this used to swallow
@@ -629,9 +609,6 @@ func (t *Transport) DeleteVector(ctx context.Context, req *transport.DeleteVecto
 		"namespace": req.Namespace,
 		"id":        req.ID,
 	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
-	}
 
 	text, err := t.callTool(ctx, "qrdb_vector_delete", args)
 	if err != nil {
@@ -680,9 +657,6 @@ func (t *Transport) BatchUpsert(ctx context.Context, req *transport.BatchUpsertR
 		"namespace": req.Namespace,
 		"vectors":   string(data),
 	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
-	}
 
 	text, callErr := t.callTool(ctx, "qrdb_vector_batch_upsert", args)
 	if callErr != nil {
@@ -719,9 +693,6 @@ func (t *Transport) BatchDeleteVectors(ctx context.Context, req *transport.Batch
 		"namespace": req.Namespace,
 		"ids":       string(idsJSON),
 	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
-	}
 
 	text, callErr := t.callTool(ctx, "qrdb_vector_batch_delete", args)
 	if callErr != nil {
@@ -756,9 +727,6 @@ func (t *Transport) ListVectors(ctx context.Context, req *transport.ListVectorsR
 	}
 	if req.Cursor != "" {
 		args["cursor"] = req.Cursor
-	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
 	}
 
 	text, err := t.callTool(ctx, "qrdb_vector_list", args)
@@ -802,9 +770,6 @@ func (t *Transport) UpdateMetadata(ctx context.Context, req *transport.UpdateVec
 		"id":        req.ID,
 		"metadata":  string(metaJSON),
 	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
-	}
 
 	text, callErr := t.callTool(ctx, "qrdb_vector_update_metadata", args)
 	if callErr != nil {
@@ -846,9 +811,6 @@ func (t *Transport) SearchSimilar(ctx context.Context, req *transport.SearchSimi
 	}
 	if req.MinScore > 0 {
 		args["min_score"] = req.MinScore
-	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
 	}
 
 	text, callErr := t.callTool(ctx, "qrdb_vector_search_similar", args)
@@ -894,9 +856,6 @@ func (t *Transport) SearchByMetadata(ctx context.Context, req *transport.SearchB
 	}
 	if req.Offset > 0 {
 		args["offset"] = int64(req.Offset)
-	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
 	}
 
 	text, callErr := t.callTool(ctx, "qrdb_vector_search_by_metadata", args)
@@ -957,9 +916,6 @@ func (t *Transport) HybridSearch(ctx context.Context, req *transport.HybridSearc
 	if req.RerankingAlgorithm != "" {
 		args["reranking_algorithm"] = req.RerankingAlgorithm
 	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
-	}
 
 	text, callErr := t.callTool(ctx, "qrdb_vector_hybrid_search", args)
 	if callErr != nil {
@@ -997,9 +953,6 @@ func (t *Transport) SearchByID(ctx context.Context, req *transport.SearchByIDReq
 		"id":        req.ID,
 		"k":         req.K,
 	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
-	}
 
 	text, err := t.callTool(ctx, "qrdb_vector_search_by_id", args)
 	if err != nil {
@@ -1033,9 +986,6 @@ func (t *Transport) RebuildIndex(ctx context.Context, req *transport.RebuildInde
 
 	args := map[string]any{
 		"namespace": req.Namespace,
-	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
 	}
 
 	text, err := t.callTool(ctx, "qrdb_vector_rebuild_index", args)
@@ -1107,9 +1057,6 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 	args := map[string]any{
 		"namespace": req.Namespace,
 	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
-	}
 
 	text, err := t.callTool(ctx, "qrdb_vector_get_index_stats", args)
 	if err != nil {
@@ -1157,9 +1104,6 @@ func (t *Transport) CompactNamespace(ctx context.Context, req *transport.Compact
 	args := map[string]any{
 		"namespace": req.Namespace,
 	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
-	}
 
 	text, err := t.callTool(ctx, "qrdb_vector_compact_namespace", args)
 	if err != nil {
@@ -1190,9 +1134,6 @@ func (t *Transport) GetCompactionProgress(ctx context.Context, req *transport.Ge
 	args := map[string]any{
 		"namespace":    req.Namespace,
 		"operation_id": req.OperationID,
-	}
-	if req.ShardID != 0 {
-		args["shard_id"] = req.ShardID
 	}
 
 	text, err := t.callTool(ctx, "qrdb_vector_get_compaction_progress", args)
