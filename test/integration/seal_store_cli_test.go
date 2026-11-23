@@ -17,155 +17,122 @@
 package integration_test
 
 import (
-	"encoding/json"
-	"fmt"
-	"slices"
+	"bytes"
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// sealStoreGetDisplay mirrors transport.SealStoreGetResponse's wire JSON
-// shape, decoded from `seal-store get --output json`.
-type sealStoreGetDisplay struct {
-	Name   string `json:"name"`
-	Secret []byte `json:"secret"`
+// embeddedOnlySealPassphrase initialises every node these tests start.
+const embeddedOnlySealPassphrase = "correct-horse-battery-staple-1647"
+
+// startEmbeddedOnlySealNode starts a passphrase-barrier qrdbd serving every
+// transport, initialises it over proto and waits for the full server. It
+// returns the node and the CLI binary.
+func startEmbeddedOnlySealNode(t *testing.T, proto multiProtocol) (*sealNodeAllTransports, string) {
+	t.Helper()
+	binary := buildBinary(t)
+	cli := buildCLIBinary(t)
+
+	configPath := writeSealConfig(t, "passphrase", 0, 0)
+	dataDir := t.TempDir()
+	sockDir, err := os.MkdirTemp("", "qrdb-ss-")
+	if err != nil {
+		t.Fatalf("startEmbeddedOnlySealNode: socket dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	unixSocket := filepath.Join(sockDir, "qrdbd.sock")
+
+	raftPorts := allocatePorts(t, 1)
+	quicPorts := allocatePorts(t, 1)
+	tcpPorts := allocateTCPPorts(t, 3)
+
+	node := startSealNodeAllTransports(t, binary, dataDir, configPath,
+		raftPorts[0], tcpPorts[0], tcpPorts[1], quicPorts[0], tcpPorts[2], unixSocket)
+	waitForBarrierReachable(t, cli, node.noAuthFlagsFor(proto), 60*time.Second)
+	node.initSystem(t, cli, proto, "--barrier-strategy", "passphrase", "--passphrase", embeddedOnlySealPassphrase)
+	node.waitForFullBoot(t)
+	return node, cli
 }
 
-// sealStoreStatusDisplay mirrors transport.SealStoreStatusResponse's wire
-// JSON shape, decoded from `seal-store status --output json`.
-type sealStoreStatusDisplay struct {
-	Available   bool     `json:"available"`
-	SecretCount int      `json:"secret_count"`
-	SecretNames []string `json:"secret_names"`
+// runCLISplitStdin runs the CLI with stdin and returns stdout and stderr
+// apart.
+func runCLISplitStdin(t *testing.T, binary, stdin string, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Stdin = strings.NewReader(stdin)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err = cmd.Run()
+	return outBuf.String(), errBuf.String(), err
 }
 
-// TestSealStore_CLI_PerProtocol drives `qrdb seal-store put/get/list/status/
-// reseal/delete` through the CLI binary over every network transport sharing
-// one multiProtoNode, as the bootstrap admin (system-tenant Security Officer,
-// holder of seal:store_manage).
-// sealStoreSecretNotFoundText is the text of seal.ErrSealStoreSecretNotFound
-// the CLI prints for a missing secret on every protocol.
-const sealStoreSecretNotFoundText = "sealstore secret not found"
-
-func TestSealStore_CLI_PerProtocol(t *testing.T) {
-	node := startMultiProtocolNode(t)
-
-	for _, proto := range multiProtocols {
-		proto := proto
-		t.Run(proto.name, func(t *testing.T) {
-			name := "cli-e2e-" + proto.name
-			secret := "seal-store-cli-secret-" + proto.name
-
-			out, err := runCLIProtoStdin(t, node, proto, secret, "seal-store", "put", name)
-			if err != nil {
-				t.Fatalf("[%s] seal-store put: %v\noutput: %s", proto.name, err, out)
-			}
-
-			out, err = runCLIProto(t, node, proto, "--output", "json", "seal-store", "get", name)
-			if err != nil {
-				t.Fatalf("[%s] seal-store get: %v\noutput: %s", proto.name, err, out)
-			}
-			var got sealStoreGetDisplay
-			if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
-				t.Fatalf("[%s] decode `seal-store get` JSON: %v\noutput: %s", proto.name, jerr, out)
-			}
-			if got.Name != name || string(got.Secret) != secret {
-				t.Fatalf("[%s] seal-store get = {%q, %q}, want {%q, %q}", proto.name, got.Name, got.Secret, name, secret)
-			}
-
-			out, err = runCLIProto(t, node, proto, "seal-store", "list")
-			if err != nil {
-				t.Fatalf("[%s] seal-store list: %v\noutput: %s", proto.name, err, out)
-			}
-			if !slices.Contains(strings.Fields(out), name) {
-				t.Fatalf("[%s] seal-store list lacks %q\noutput: %s", proto.name, name, out)
-			}
-
-			out, err = runCLIProto(t, node, proto, "--output", "json", "seal-store", "status")
-			if err != nil {
-				t.Fatalf("[%s] seal-store status: %v\noutput: %s", proto.name, err, out)
-			}
-			var status sealStoreStatusDisplay
-			if jerr := json.Unmarshal([]byte(out), &status); jerr != nil {
-				t.Fatalf("[%s] decode `seal-store status` JSON: %v\noutput: %s", proto.name, jerr, out)
-			}
-			if !status.Available || !slices.Contains(status.SecretNames, name) {
-				t.Fatalf("[%s] seal-store status = %+v, want available with %q", proto.name, status, name)
-			}
-
-			if out, err = runCLIProto(t, node, proto, "seal-store", "reseal", name); err != nil {
-				t.Fatalf("[%s] seal-store reseal: %v\noutput: %s", proto.name, err, out)
-			}
-			if out, err = runCLIProto(t, node, proto, "seal-store", "delete", name); err != nil {
-				t.Fatalf("[%s] seal-store delete: %v\noutput: %s", proto.name, err, out)
-			}
-			// A missing secret is reported as the seal store's own
-			// not-found refusal, with the same text on every protocol
-			// (#1647).
-			if out, err = runCLIProto(t, node, proto, "seal-store", "get", name); err == nil {
-				t.Fatalf("[%s] seal-store get after delete succeeded, output: %s", proto.name, out)
-			}
-			if !strings.Contains(out, sealStoreSecretNotFoundText) || strings.Contains(out, "key not found") {
-				t.Fatalf("[%s] seal-store get after delete output does not name the missing secret as %q\noutput: %s", proto.name, sealStoreSecretNotFoundText, out)
-			}
-		})
+// assertSealStoreCLIRefused runs every `qrdb seal-store` verb and requires
+// each to exit non-zero with stderr naming the verb as embedded-only.
+func assertSealStoreCLIRefused(t *testing.T, cli string, proto multiProtocol, flags []string, phase string) {
+	t.Helper()
+	verbs := []struct {
+		op    string
+		stdin string
+		args  []string
+	}{
+		{transport.OpSealStorePut, "seal-store-cli-secret", []string{"seal-store", "put", "alpha"}},
+		{transport.OpSealStoreGet, "", []string{"seal-store", "get", "alpha"}},
+		{transport.OpSealStoreList, "", []string{"seal-store", "list"}},
+		{transport.OpSealStoreDelete, "", []string{"seal-store", "delete", "alpha"}},
+		{transport.OpSealStoreReseal, "", []string{"seal-store", "reseal", "alpha"}},
+		{transport.OpSealStoreStatus, "", []string{"seal-store", "status"}},
+	}
+	for _, v := range verbs {
+		stdout, stderr, err := runCLISplitStdin(t, cli, v.stdin, append(append([]string{}, flags...), v.args...)...)
+		if err == nil {
+			t.Fatalf("[%s %s] %v succeeded, want the embedded-only refusal\nstdout: %s", proto.name, phase, v.args, stdout)
+		}
+		if !strings.Contains(stderr, "embedded-only") || !strings.Contains(stderr, v.op) {
+			t.Fatalf("[%s %s] %v stderr does not name %s as embedded-only\nstderr: %s", proto.name, phase, v.args, v.op, stderr)
+		}
 	}
 }
 
-// TestSealStore_CLI_DeniedWithoutStoreManage_PerProtocol drives `qrdb
-// seal-store` as a tenant identity, which cannot hold seal:store_manage
-// (ScopeCross), on every network transport: get, list, status, reseal and
-// delete each fail as a permission denial that leaks no secret, and the
-// admin's control secret is unchanged afterwards. runQRDB has no stdin form,
-// so the refused put is covered by the SDK refusal test, not driven here.
-func TestSealStore_CLI_DeniedWithoutStoreManage_PerProtocol(t *testing.T) {
-	node := startMultiProtocolNode(t)
-
+// TestSealStore_CLI_EmbeddedOnly_PerProtocol: over every network transport
+// each `qrdb seal-store` verb is refused as embedded-only (ruling 1234),
+// while `qrdb barrier seal` and `qrdb barrier unseal` keep working on the
+// same transport; the verbs stay refused after the seal/unseal cycle.
+func TestSealStore_CLI_EmbeddedOnly_PerProtocol(t *testing.T) {
+	t.Parallel()
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
-			control := "cli-deny-" + proto.name
-			controlSecret := "seal-store-cli-control-" + proto.name
+			t.Parallel()
+			node, cli := startEmbeddedOnlySealNode(t, proto)
+			flags := node.adminFlagsFor(proto)
 
-			if out, err := runCLIProtoStdin(t, node, proto, controlSecret, "seal-store", "put", control); err != nil {
-				t.Fatalf("[%s] admin seal-store put: %v\noutput: %s", proto.name, err, out)
+			assertSealStoreCLIRefused(t, cli, proto, flags, "unsealed")
+
+			if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "seal", "-y", "--so-pin", sealNodeSOPIN)...); err != nil {
+				t.Fatalf("[%s] barrier seal: %v\nstderr: %s", proto.name, err, stderr)
 			}
-
-			tenantID := fmt.Sprintf("sealdeny-%s-%d", proto.name, time.Now().UnixNano())
-			createTenant(t, node, proto, tenantID, "Seal Store Denied", "prefix", false)
-			cert, key := provisionTenantIdentity(t, node, tenantID, "seal-denied", []string{"admin:health"})
-			conn := tenantCLIArgsForProto(node, proto, cert, key)
-
-			for _, args := range [][]string{
-				{"seal-store", "get", control},
-				{"seal-store", "list"},
-				{"seal-store", "status"},
-				{"seal-store", "reseal", control},
-				{"seal-store", "delete", control},
-			} {
-				verb := strings.Join(args, " ")
-				out, err := runQRDB(t, node.cli, conn, args...)
-				if err == nil {
-					t.Fatalf("[%s] CLI %s succeeded for a caller without seal:store_manage: %s", proto.name, verb, out)
-				}
-				assertKVReadDeniedOutput(t, proto, verb, out, controlSecret)
+			if status := barrierStatus(t, cli, flags); !status.Sealed {
+				t.Fatalf("[%s] barrier status after seal = %+v, want sealed", proto.name, status)
+			}
+			if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+				"barrier", "unseal", "--passphrase", embeddedOnlySealPassphrase)...); err != nil {
+				t.Fatalf("[%s] barrier unseal: %v\nstderr: %s", proto.name, err, stderr)
+			}
+			if status := barrierStatus(t, cli, flags); status.Sealed {
+				t.Fatalf("[%s] barrier status after unseal = %+v, want unsealed", proto.name, status)
 			}
 
-			out, err := runCLIProto(t, node, proto, "--output", "json", "seal-store", "get", control)
-			if err != nil {
-				t.Fatalf("[%s] admin seal-store get after refusals: %v\noutput: %s", proto.name, err, out)
-			}
-			var got sealStoreGetDisplay
-			if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
-				t.Fatalf("[%s] decode `seal-store get` JSON: %v\noutput: %s", proto.name, jerr, out)
-			}
-			if string(got.Secret) != controlSecret {
-				t.Fatalf("[%s] control secret = %q after refused delete/reseal, want %q", proto.name, got.Secret, controlSecret)
-			}
-			if out, err := runCLIProto(t, node, proto, "seal-store", "delete", control); err != nil {
-				t.Fatalf("[%s] admin seal-store delete: %v\noutput: %s", proto.name, err, out)
-			}
+			assertSealStoreCLIRefused(t, cli, proto, flags, "after unseal")
 		})
 	}
 }
