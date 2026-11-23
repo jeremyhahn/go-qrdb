@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -83,6 +84,69 @@ func TestSealGatedStore_ServesOnlyWhileTheSystemBarrierIsUnsealed(t *testing.T) 
 		if !errors.Is(err, seal.ErrSealed) {
 			t.Errorf("%s while sealed = %v, want seal.ErrSealed", verb, err)
 		}
+	}
+}
+
+// sealingReadStore is a credentials.Store whose Get and List seal the
+// system barrier while the read is in flight, then return their own
+// values: a seal that lands between the gate's admission and the read's
+// return.
+type sealingReadStore struct {
+	credentials.Store
+	gate  *seal.StorageBarrier
+	value []byte
+	keys  []string
+}
+
+func (s *sealingReadStore) Get(context.Context, string) ([]byte, error) {
+	if err := s.gate.Seal(); err != nil {
+		return nil, err
+	}
+	return s.value, nil
+}
+
+func (s *sealingReadStore) List(context.Context, string) ([]string, error) {
+	if err := s.gate.Seal(); err != nil {
+		return nil, err
+	}
+	return s.keys, nil
+}
+
+// TestSealGatedStore_GetSealedDuringReadReturnsErrSealed: a seal that
+// lands while a Get is in flight withholds the credential bytes: the
+// gate returns seal.ErrSealed, no slice, and zeroes the read's buffer.
+func TestSealGatedStore_GetSealedDuringReadReturnsErrSealed(t *testing.T) {
+	gate := gateTestBarrier(t, "system-pass")
+	inner := &sealingReadStore{gate: gate, value: []byte("secret")}
+	s := sealGatedStore{Store: inner, barrier: gate}
+
+	got, err := s.Get(context.Background(), "k")
+	if !errors.Is(err, seal.ErrSealed) {
+		t.Fatalf("Get sealed during the read: err = %v, want seal.ErrSealed", err)
+	}
+	if got != nil {
+		t.Fatalf("Get sealed during the read returned %q, want nil", got)
+	}
+	for i, c := range inner.value {
+		if c != 0 {
+			t.Fatalf("read buffer byte %d = %#x after the seal, want zeroed", i, c)
+		}
+	}
+}
+
+// TestSealGatedStore_ListSealedDuringReadReturnsErrSealed: a seal that
+// lands while a List is in flight withholds the key names.
+func TestSealGatedStore_ListSealedDuringReadReturnsErrSealed(t *testing.T) {
+	gate := gateTestBarrier(t, "system-pass")
+	inner := &sealingReadStore{gate: gate, keys: []string{"tenant/a/cred"}}
+	s := sealGatedStore{Store: inner, barrier: gate}
+
+	got, err := s.List(context.Background(), "")
+	if !errors.Is(err, seal.ErrSealed) {
+		t.Fatalf("List sealed during the read: err = %v, want seal.ErrSealed", err)
+	}
+	if got != nil {
+		t.Fatalf("List sealed during the read returned %q, want nil", got)
 	}
 }
 

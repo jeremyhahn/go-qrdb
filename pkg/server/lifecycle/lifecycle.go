@@ -1691,7 +1691,14 @@ func (s sealGatedStore) Get(ctx context.Context, key string) ([]byte, error) {
 	if err := s.open(); err != nil {
 		return nil, err
 	}
-	return s.Store.Get(ctx, key)
+	b, err := s.Store.Get(ctx, key)
+	// A seal that lands while the read is in flight withholds the bytes:
+	// the gate holds through the read, not only at its admission.
+	if sealErr := s.open(); sealErr != nil {
+		clear(b)
+		return nil, sealErr
+	}
+	return b, err
 }
 
 func (s sealGatedStore) Put(ctx context.Context, key string, value []byte) error {
@@ -1712,7 +1719,11 @@ func (s sealGatedStore) List(ctx context.Context, prefix string) ([]string, erro
 	if err := s.open(); err != nil {
 		return nil, err
 	}
-	return s.Store.List(ctx, prefix)
+	keys, err := s.Store.List(ctx, prefix)
+	if sealErr := s.open(); sealErr != nil {
+		return nil, sealErr
+	}
+	return keys, err
 }
 
 func (s sealGatedStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
