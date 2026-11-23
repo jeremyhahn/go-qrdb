@@ -18,10 +18,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -735,42 +739,76 @@ func recodeDirPlaintext(t *testing.T, dir string, secrets map[string]string) []s
 func TestRecodeSystemBarrier_SealStoreRetiresPlaintextHistory(t *testing.T) {
 	ctx := context.Background()
 	sealDir := filepath.Join(t.TempDir(), "seal")
-	store, err := pebblestore.New(&pebblestore.Config{DataDir: sealDir, SyncWrites: true})
+	store, retirer, err := openSealStore(sealDir)
 	if err != nil {
-		t.Fatalf("pebble New: %v", err)
+		t.Fatalf("openSealStore: %v", err)
 	}
 	backend := seal.NewStorageAdapter(store)
 	source := newRecodeSourceBarrierOn(t, backend)
-	secrets := map[string]string{"alpha": "alpha-history-secret", "beta": "beta-history-secret"}
-	putRecodeSealStoreSecrets(t, source, secrets)
-	if err := store.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
+	large, probes := recodeLargeSecret()
+	secrets := map[string]string{"alpha": "alpha-history-secret", "beta": "beta-history-secret", "large": large}
+	// Several WAL rotations before the migration, so the plaintext sits in
+	// more than one log and in tables; the last write stays in the live WAL.
+	putRecodeSealStoreSecrets(t, source, map[string]string{"large": large})
+	for i := 0; i < 3; i++ {
+		if err := store.Flush(); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		putRecodeSealStoreSecrets(t, source, secrets)
 	}
-	if hits := recodeDirPlaintext(t, sealDir, secrets); len(hits) == 0 {
-		t.Fatal("no plaintext on disk before the migration: the check below proves nothing")
+	check := map[string]string{"alpha": secrets["alpha"], "beta": secrets["beta"]}
+	for i, p := range probes {
+		check[fmt.Sprintf("probe-%d", i)] = p
+	}
+	if hits := recodeDirPlaintext(t, sealDir, check); len(hits) < 2 {
+		t.Fatalf("plaintext in %v before the migration, want it in several files: the check below proves little", hits)
 	}
 	walDir := filepath.Join(t.TempDir(), "wal")
 	if err := os.MkdirAll(walDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	if err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts(), sealStoreCompactor(store)); err != nil {
+	if err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts(), func() error { return retirer.Retire(ctx) }); err != nil {
 		t.Fatalf("recodeSystemBarrier: %v", err)
+	}
+	// Every file, recycled-log candidates included, is read while the store
+	// is still open (Retire returned only once the obsolete files were gone),
+	// and again after Close.
+	if hits := recodeDirPlaintext(t, sealDir, check); len(hits) != 0 {
+		t.Fatalf("plaintext seal-store history survives in %v after the retirement", hits)
 	}
 	_ = source.Close()
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if hits := recodeDirPlaintext(t, sealDir, secrets); len(hits) != 0 {
+	if hits := recodeDirPlaintext(t, sealDir, check); len(hits) != 0 {
 		t.Fatalf("plaintext seal-store history survives in %v", hits)
 	}
 
-	reopened, err := pebblestore.New(&pebblestore.Config{DataDir: sealDir, SyncWrites: true})
+	reopened, _, err := openSealStore(sealDir)
 	if err != nil {
-		t.Fatalf("pebble reopen: %v", err)
+		t.Fatalf("reopen: %v", err)
 	}
 	defer func() { _ = reopened.Close() }()
 	assertRecodeSealStoreKeyed(t, seal.NewStorageAdapter(reopened), secrets)
+}
+
+// recodeLargeSecret returns a 1 MiB incompressible text secret (larger than
+// a WAL block) and probes cut from it at intervals: a record split across
+// WAL blocks is not contiguous on disk, but each probe is.
+func recodeLargeSecret() (string, []string) {
+	var b strings.Builder
+	seed := sha256.Sum256([]byte("large-history-secret"))
+	for b.Len() < 1<<20 {
+		seed = sha256.Sum256(seed[:])
+		b.WriteString(hex.EncodeToString(seed[:]))
+	}
+	s := b.String()
+	var probes []string
+	for off := 0; off+48 <= len(s); off += 64 << 10 {
+		probes = append(probes, s[off:off+48])
+	}
+	return s, probes
 }
 
 func TestRecodeSystemBarrier_EmptyWALCommits(t *testing.T) {

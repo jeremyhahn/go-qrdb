@@ -266,7 +266,7 @@ func handleSystemMigration(
 	stores := systemMigrationStores(f.dataDir, f.smType, f.smStorage)
 	walDir := filepath.Join(f.dataDir, "wal")
 
-	rerr := recodeSystemBarrier(context.Background(), sealSub.SealBarrier, stores, walDir, req.opts, sealStoreCompactor(sealSub.SealStore))
+	rerr := recodeSystemBarrier(context.Background(), sealSub.SealBarrier, stores, walDir, req.opts, func() error { return sealSub.SealStoreRetirer.Retire(context.Background()) })
 	// The recycle has consumed the unlock credential; destroy the credential the
 	// reconciler handed off (the system-scope path owns it — the reconciler can't
 	// destroy it because this recycle runs async across the in-process reboot).
