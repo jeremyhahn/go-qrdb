@@ -16,9 +16,11 @@ package quic
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
@@ -81,6 +83,71 @@ func TestSOExclusive_RoleCreateAndReconcile(t *testing.T) {
 					t.Fatalf("status = %v, want StatusPermissionDenied: %v", code, err)
 				}
 			})
+		}
+	}
+}
+
+// TestSOExclusive_PostureGatesEveryRoleOp holds the QUIC create role,
+// per-tenant reconcile and all-tenants reconcile to the exact posture gate
+// (go-qrdb#1129): under strict separation an Admin without the SO role is
+// refused StatusPermissionDenied with SO_ROLE_REQUIRED and an SO holding
+// Admin with SO_ROLE_CONFLICT; a separate SO passes. Under the standard
+// posture all three callers pass, the Admin keeping its SO duties.
+func TestSOExclusive_PostureGatesEveryRoleOp(t *testing.T) {
+	sys := tenantid.System
+	ops := []struct {
+		name    string
+		payload string
+		call    func(*Server, context.Context, []byte) ([]byte, error)
+	}{
+		{name: "create role", payload: `{"name":"reviewer","tenantID":"` + sys + `","permissions":["kv:get"]}`,
+			call: (*Server).handleCreateRole},
+		{name: "reconcile built-in roles", payload: `{"tenantID":"` + sys + `"}`,
+			call: (*Server).handleReconcileRoles},
+		{name: "reconcile every tenant", call: (*Server).handleReconcileRolesAllTenants},
+	}
+	callers := []struct {
+		name       string
+		roleNames  []string
+		wantReason string
+	}{
+		{name: "admin without SO", roleNames: []string{role.RoleNameAdmin}, wantReason: auth.ReasonSORoleRequired},
+		{name: "SO holding admin", roleNames: []string{role.RoleNameAdmin, role.RoleNameSO}, wantReason: auth.ReasonSORoleConflict},
+		{name: "separate SO", roleNames: []string{role.RoleNameSO}},
+	}
+	for _, strict := range []bool{true, false} {
+		for _, op := range ops {
+			for _, c := range callers {
+				t.Run(op.name+"/"+c.name+"/strict="+strconv.FormatBool(strict), func(t *testing.T) {
+					roles := authtest.BindingRoles(t)
+					sysCtx := tenant.WithTenantID(context.Background(), sys)
+					roleIDs := make([]string, 0, len(c.roleNames))
+					for _, name := range c.roleNames {
+						r, err := roles.GetRoleByName(sysCtx, sys, name)
+						if err != nil {
+							t.Fatalf("system %s role: %v", name, err)
+						}
+						roleIDs = append(roleIDs, r.ID)
+					}
+					mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithStrictSeparation(strict))
+					srv := NewServer(nil, nil, "localhost:0", WithRoleService(roles),
+						WithTenantService(liveQUICTenants(t, "acme")), WithAuthMiddleware(mw))
+					ctx := auth.WithIdentity(sysCtx, &auth.Identity{Subject: "system-caller", TenantID: sys, Roles: roleIDs})
+					_, err := op.call(srv, ctx, []byte(op.payload))
+					if !strict || c.wantReason == "" {
+						if err != nil {
+							t.Fatalf("want admitted, got %v", err)
+						}
+						return
+					}
+					if code, _ := mapServiceError(err); code != wire.StatusPermissionDenied {
+						t.Fatalf("status = %v, want StatusPermissionDenied: %v", code, err)
+					}
+					if info := errorPayloadOf(err).Info; info == nil || info.Reason != c.wantReason {
+						t.Fatalf("refusal info = %+v, want reason %q", info, c.wantReason)
+					}
+				})
+			}
 		}
 	}
 }

@@ -16,13 +16,16 @@ package grpc
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
@@ -82,6 +85,77 @@ func TestSOExclusive_RoleCreateAndReconcile(t *testing.T) {
 					t.Fatalf("code = %v, want %v: %v", got, c.want, err)
 				}
 			})
+		}
+	}
+}
+
+// TestSOExclusive_PostureGatesEveryRoleOp holds the gRPC create role,
+// per-tenant reconcile and all-tenants reconcile to the exact posture gate
+// (go-qrdb#1129): under strict separation an Admin without the SO role is
+// refused PermissionDenied with SO_ROLE_REQUIRED and an SO holding Admin
+// with SO_ROLE_CONFLICT; a separate SO passes. Under the standard posture
+// all three callers pass, the Admin keeping its SO duties.
+func TestSOExclusive_PostureGatesEveryRoleOp(t *testing.T) {
+	sys := tenantid.System
+	ops := []struct {
+		name string
+		call func(*qrdbServiceServer, context.Context) error
+	}{
+		{name: "create role", call: func(s *qrdbServiceServer, ctx context.Context) error {
+			_, err := s.CreateRole(ctx, &pb.CreateRoleRequest{Name: "reviewer", TenantId: sys, Permissions: []string{"kv:get"}})
+			return err
+		}},
+		{name: "reconcile built-in roles", call: func(s *qrdbServiceServer, ctx context.Context) error {
+			_, err := s.ReconcileBuiltInRoles(ctx, &pb.ReconcileBuiltInRolesRequest{TenantId: sys})
+			return err
+		}},
+		{name: "reconcile every tenant", call: func(s *qrdbServiceServer, ctx context.Context) error {
+			_, err := s.ReconcileBuiltInRolesAllTenants(ctx, &emptypb.Empty{})
+			return err
+		}},
+	}
+	callers := []struct {
+		name       string
+		roleNames  []string
+		wantReason string
+	}{
+		{name: "admin without SO", roleNames: []string{role.RoleNameAdmin}, wantReason: auth.ReasonSORoleRequired},
+		{name: "SO holding admin", roleNames: []string{role.RoleNameAdmin, role.RoleNameSO}, wantReason: auth.ReasonSORoleConflict},
+		{name: "separate SO", roleNames: []string{role.RoleNameSO}},
+	}
+	for _, strict := range []bool{true, false} {
+		for _, op := range ops {
+			for _, c := range callers {
+				t.Run(op.name+"/"+c.name+"/strict="+strconv.FormatBool(strict), func(t *testing.T) {
+					roles := authtest.BindingRoles(t)
+					sysCtx := tenant.WithTenantID(context.Background(), sys)
+					roleIDs := make([]string, 0, len(c.roleNames))
+					for _, name := range c.roleNames {
+						r, err := roles.GetRoleByName(sysCtx, sys, name)
+						if err != nil {
+							t.Fatalf("system %s role: %v", name, err)
+						}
+						roleIDs = append(roleIDs, r.ID)
+					}
+					mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithStrictSeparation(strict))
+					srv := &qrdbServiceServer{roleSvc: roles, tenantSvc: liveGRPCTenants(t, "acme"), authMW: mw}
+					ctx := auth.WithIdentity(sysCtx, &auth.Identity{Subject: "system-caller", TenantID: sys, Roles: roleIDs})
+					err := op.call(srv, ctx)
+					if !strict || c.wantReason == "" {
+						if err != nil {
+							t.Fatalf("want admitted, got %v", err)
+						}
+						return
+					}
+					st := status.Convert(err)
+					if st.Code() != codes.PermissionDenied {
+						t.Fatalf("code = %v, want PermissionDenied: %v", st.Code(), err)
+					}
+					if reason, _, ok := refusalFromStatus(st); !ok || reason != c.wantReason {
+						t.Fatalf("reason = %q (%v), want %q", reason, ok, c.wantReason)
+					}
+				})
+			}
 		}
 	}
 }
