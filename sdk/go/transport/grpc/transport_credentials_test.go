@@ -49,6 +49,7 @@ type fakeCredentialServicer struct {
 	listVersionsFn func(ctx context.Context, name string) ([]credentials.CredentialVersion, error)
 	gcExpiredFn    func(ctx context.Context, name string) (int, error)
 	setPolicyFn    func(ctx context.Context, name string, policy credentials.RotationPolicy) error
+	conflictsFn    func(ctx context.Context) ([]credentials.CredentialMigrationConflictError, error)
 }
 
 func (f *fakeCredentialServicer) CredentialStore(_ context.Context, _ string, _ []byte) error {
@@ -142,7 +143,10 @@ func (f *fakeCredentialServicer) CredentialRotationPolicy(_ context.Context, nam
 	return &service.CredentialRotationPolicyStatus{Policy: credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}}, nil
 }
 
-func (f *fakeCredentialServicer) CredentialMigrationConflicts(_ context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+func (f *fakeCredentialServicer) CredentialMigrationConflicts(ctx context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	if f.conflictsFn != nil {
+		return f.conflictsFn(ctx)
+	}
 	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
 }
 
@@ -564,6 +568,27 @@ func TestTransportCredential_MigrationConflicts_AfterClose(t *testing.T) {
 	var ce *transport.ClosedError
 	if _, err := closed.CredentialMigrationConflicts(context.Background()); !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+// TestTransportCredential_MigrationConflicts_StoreUnavailable pins the typed
+// refusal of a listing the service cannot serve: a store not yet bound comes
+// back as codes.Unavailable, not as an empty list.
+func TestTransportCredential_MigrationConflicts_StoreUnavailable(t *testing.T) {
+	svc := &fakeCredentialServicer{
+		conflictsFn: func(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+			return nil, credentials.ErrStoreUnavailable
+		},
+	}
+	addr, stop := startCredentialServer(t, svc)
+	defer stop()
+	tr, cleanup := connectCredentialTransport(t, addr)
+	defer cleanup()
+
+	resp, err := tr.CredentialMigrationConflicts(context.Background())
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.StatusCode != int(codes.Unavailable) {
+		t.Fatalf("expected an Unavailable RequestError, got %T: %v (resp %+v)", err, err, resp)
 	}
 }
 
