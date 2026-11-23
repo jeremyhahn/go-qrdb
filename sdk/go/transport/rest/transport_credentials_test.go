@@ -474,14 +474,14 @@ func TestCredentialRotationPolicy_Success(t *testing.T) {
 
 func TestCredentialRotationPolicy_ServerError(t *testing.T) {
 	rt, srv := newCredentialsTestTransport(t)
-	srv.policyFailCode.Store(int64(http.StatusNotFound))
+	srv.policyFailCode.Store(int64(http.StatusInternalServerError))
 
 	_, err := rt.CredentialRotationPolicy(context.Background(), "missing")
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected *transport.RequestError, got %T (%v)", err, err)
 	}
-	if reqErr.StatusCode != http.StatusNotFound {
+	if reqErr.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status = %d", reqErr.StatusCode)
 	}
 }
@@ -496,6 +496,57 @@ func TestCredentialRotationPolicy_EmptyNameAndAfterClose(t *testing.T) {
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected *transport.ClosedError, got %v", err)
+	}
+}
+
+// TestCredentialRotationPolicy_NotFoundIsKeyNotFound pins the REST answer of
+// the rotation-policy and migration-conflict verbs to the typed not-found
+// error the gRPC, QUIC, Unix and MCP transports return: a 404 is a
+// *transport.KeyNotFoundError carrying the server's message, and any other
+// status stays a *transport.RequestError.
+func TestCredentialRotationPolicy_NotFoundIsKeyNotFound(t *testing.T) {
+	verbs := map[string]func(rt *Transport) error{
+		"CredentialSetRotationPolicy": func(rt *Transport) error {
+			return rt.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{Name: "missing", Enabled: true, Interval: "1h0m0s"})
+		},
+		"CredentialRotationPolicy": func(rt *Transport) error {
+			_, err := rt.CredentialRotationPolicy(context.Background(), "missing")
+			return err
+		},
+		"CredentialResolveMigrationConflict": func(rt *Transport) error {
+			return rt.CredentialResolveMigrationConflict(context.Background(), &transport.CredentialResolveMigrationConflictRequest{Name: "missing"})
+		},
+	}
+	for name, call := range verbs {
+		t.Run(name, func(t *testing.T) {
+			var status atomic.Int64
+			httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				code := int(status.Load())
+				http.Error(w, "credential not found: missing", code)
+			}))
+			t.Cleanup(httpSrv.Close)
+			rt := newWiredTransport(httpSrv)
+
+			status.Store(http.StatusNotFound)
+			err := call(rt)
+			var knf *transport.KeyNotFoundError
+			if !errors.As(err, &knf) {
+				t.Fatalf("404: expected *transport.KeyNotFoundError, got %T (%v)", err, err)
+			}
+			if !strings.Contains(knf.Error(), "not found") {
+				t.Errorf("404: error %q does not say not found", knf.Error())
+			}
+
+			status.Store(http.StatusInternalServerError)
+			err = call(rt)
+			var reqErr *transport.RequestError
+			if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusInternalServerError {
+				t.Fatalf("500: expected *transport.RequestError with status 500, got %T (%v)", err, err)
+			}
+			if errors.As(err, &knf) {
+				t.Errorf("500: unexpected *transport.KeyNotFoundError")
+			}
+		})
 	}
 }
 
@@ -577,9 +628,9 @@ func TestCredentialResolveMigrationConflict_Refused(t *testing.T) {
 	srv.migrationFailCode.Store(int64(http.StatusNotFound))
 	err := rt.CredentialResolveMigrationConflict(context.Background(),
 		&transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"})
-	var reqErr *transport.RequestError
-	if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404 *transport.RequestError, got %v", err)
+	var knf *transport.KeyNotFoundError
+	if !errors.As(err, &knf) {
+		t.Fatalf("expected *transport.KeyNotFoundError for a 404, got %T (%v)", err, err)
 	}
 	_ = rt.Close()
 	err = rt.CredentialResolveMigrationConflict(context.Background(),

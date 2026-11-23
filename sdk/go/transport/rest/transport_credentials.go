@@ -172,7 +172,7 @@ func (t *Transport) CredentialSetRotationPolicy(ctx context.Context, req *transp
 	}
 
 	path := credentialPath(req.Name, "/rotation-policy")
-	return t.putJSONDecode(ctx, "CredentialSetRotationPolicy", path, req, nil)
+	return notFoundError(t.putJSONDecode(ctx, "CredentialSetRotationPolicy", path, req, nil))
 }
 
 // CredentialRotationPolicy reads a credential's scheduled rotation policy
@@ -188,7 +188,7 @@ func (t *Transport) CredentialRotationPolicy(ctx context.Context, name string) (
 	path := credentialPath(name, "/rotation-policy")
 	var resp transport.CredentialRotationPolicyResponse
 	if err := t.getJSONDecode(ctx, "CredentialRotationPolicy", path, &resp); err != nil {
-		return nil, err
+		return nil, notFoundError(err)
 	}
 	return &resp, nil
 }
@@ -221,7 +221,7 @@ func (t *Transport) CredentialResolveMigrationConflict(ctx context.Context, req 
 	}
 
 	path := credentialPath(req.Name, "/migration-resolve")
-	return t.postJSONDecode(ctx, "CredentialResolveMigrationConflict", path, req, nil)
+	return notFoundError(t.postJSONDecode(ctx, "CredentialResolveMigrationConflict", path, req, nil))
 }
 
 // CredentialListVersions returns the version history (current +
