@@ -69,6 +69,7 @@ require (
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/src-d/go-errors.v1 v1.0.0
 	gopkg.in/yaml.v3 v3.0.1
+	modernc.org/libc v1.80.1
 	modernc.org/sqlite v1.63.0
 	software.sslmate.com/src/go-pkcs12 v0.7.4
 )
@@ -225,7 +226,6 @@ require (
 	google.golang.org/api v0.309.0 // indirect
 	google.golang.org/genproto v0.0.0-20261026165753-2ffab32bce7e // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261026165753-2ffab32bce7e // indirect
-	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
