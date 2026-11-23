@@ -2654,6 +2654,54 @@ func TestKVEngine_RegisterEntityType_UniqueCompoundIndex(t *testing.T) {
 	}
 }
 
+// TestKVEngine_LegacyTransactionKeepsUnorderedUniqueCheck pins the replay
+// contract on the KV engine: a transaction without the ordered-unique flag
+// keeps the delete-only unique check, so moving a unique value between keys
+// by overwrite is refused and writes nothing; the same ops with the flag
+// commit.
+func TestKVEngine_LegacyTransactionKeepsUnorderedUniqueCheck(t *testing.T) {
+	setup := func(t *testing.T) *KVEngine {
+		t.Helper()
+		stg := memory.NewStorage()
+		t.Cleanup(func() { _ = stg.Close() })
+		eng := NewKVEngine(stg)
+		cmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: true}))
+		seed := mustEncode(protocol.EncodeTransaction(nil, [][]byte{
+			mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:1"), []byte(`{"name":"x"}`), nil, 0)),
+		}, nil))
+		res := applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: cmd}, {Index: 2, Cmd: seed}})
+		if !txnSucceeded(t, res[1]) {
+			t.Fatal("seed transaction did not run its success branch")
+		}
+		return eng
+	}
+	ops := [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:1"), []byte(`{"name":"y"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:2"), []byte(`{"name":"x"}`), nil, 0)),
+	}
+
+	t.Run("legacy refused", func(t *testing.T) {
+		eng := setup(t)
+		cmd := mustEncode(protocol.EncodeTransaction(nil, ops, nil))
+		res := applyKVEntries(t, eng, []sm.Entry{{Index: 3, Cmd: cmd}})[0]
+		_, kind, ok := protocol.DecodeAppErrorKind(res.Data)
+		if !ok || kind != protocol.AppErrorConflict {
+			t.Fatalf("result data = %q, want a conflict application error", res.Data)
+		}
+		mustLookupValue(t, eng, "user:1", `{"name":"x"}`)
+		mustLookupAbsent(t, eng, "user:2")
+	})
+	t.Run("flagged commits", func(t *testing.T) {
+		eng := setup(t)
+		cmd := mustEncode(protocol.EncodeTransactionFlags(nil, ops, nil, protocol.CmdFlagOrderedUnique))
+		if !txnSucceeded(t, applyKVEntries(t, eng, []sm.Entry{{Index: 3, Cmd: cmd}})[0]) {
+			t.Fatal("the flagged move should run its success branch")
+		}
+		mustLookupValue(t, eng, "user:1", `{"name":"y"}`)
+		mustLookupValue(t, eng, "user:2", `{"name":"x"}`)
+	})
+}
+
 // indexSetFailingStorage wraps storage.Storage and, while failIndexSet is
 // set, fails every Set of a key outside entityPrefix: the index entry
 // writes a backfill makes. Every other call is forwarded unchanged.

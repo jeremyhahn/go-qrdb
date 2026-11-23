@@ -477,7 +477,7 @@ func (s *BatchService) execute(ctx context.Context, ops []Op, proposeCmd func(cm
 
 	var revision int64
 	if len(writeOps) > 0 {
-		cmd, encErr := protocol.EncodeBatch(writeOps)
+		cmd, encErr := protocol.EncodeBatchFlags(writeOps, uniqueCheckFlags(s.host, s.shardID))
 		if encErr != nil {
 			return nil, &EncodeRequestError{Err: encErr}
 		}
@@ -616,14 +616,14 @@ func (s *BatchService) ExecuteEntity(ctx context.Context, req *BatchEntityReques
 		encodedOps[i] = encoded
 	}
 
-	cmd, encErr := protocol.EncodeBatch(encodedOps)
-	if encErr != nil {
-		return nil, &EncodeRequestError{Err: encErr}
-	}
-
 	shardID := s.shardID
 	if req.ShardID != 0 {
 		shardID = req.ShardID
+	}
+
+	cmd, encErr := protocol.EncodeBatchFlags(encodedOps, uniqueCheckFlags(s.host, shardID))
+	if encErr != nil {
+		return nil, &EncodeRequestError{Err: encErr}
 	}
 
 	result, err := propose(ctx, s.host, shardID, cmd)
@@ -1318,7 +1318,7 @@ func (s *BatchService) proposeImportOps(ctx context.Context, result *ImportResul
 	}
 
 	for _, chunk := range buildImportProposalChunks(ops, keys, rowNums) {
-		cmd, encErr := protocol.EncodeBatch(chunk.ops)
+		cmd, encErr := protocol.EncodeBatchFlags(chunk.ops, uniqueCheckFlags(s.host, s.shardID))
 		if encErr != nil {
 			return nil, &EncodeRequestError{Err: encErr}
 		}

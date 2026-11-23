@@ -222,6 +222,80 @@ func CheckUniqueViolationsBatch(batch storage.Batch, indexes map[string]index.In
 	return nil
 }
 
+// indexedPut is a (key, value) write evaluated for unique-constraint
+// admissibility by checkUniqueViolationsBatchUnordered.
+type indexedPut struct {
+	Key   []byte
+	Value []byte
+}
+
+// checkUniqueViolationsBatchUnordered is the legacy unique pre-check, the
+// semantics every OpTransaction and OpBatch command without the
+// protocol.CmdFlagOrderedUnique trailer keeps, so a log written by an older
+// binary (or proposed before the cluster feature ordered-unique-check was
+// enabled) replays to the same state it committed. Op order is ignored: only
+// a key DELETED in the set frees the unique values it holds, a put may update
+// its own key's entry, and two puts mapping different keys to one unique
+// value conflict. An overwrite does not free the overwritten key's values, so
+// moving a value between keys is refused. Like CheckUniqueViolationsBatch it
+// modifies no index and returns a *UniqueConstraintError on the first
+// conflict.
+func checkUniqueViolationsBatchUnordered(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, puts []indexedPut, deletedKeys [][]byte) error {
+	if len(indexes) == 0 || len(puts) == 0 {
+		return nil
+	}
+	deleted := make(map[string]struct{}, len(deletedKeys))
+	for _, k := range deletedKeys {
+		deleted[string(k)] = struct{}{}
+	}
+	// pending records the key each (index, value) is claimed by within this
+	// batch, so an intra-batch duplicate is caught too.
+	pending := make(map[string][]byte)
+	for _, p := range puts {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(p.Value, &fields) != nil {
+			continue // not JSON; nothing to index
+		}
+		for idxName, idx := range indexes {
+			if !KeyInScope(indexScopes[idxName], p.Key) {
+				continue
+			}
+			u, ok := idx.(uniqueIndexChecker)
+			if !ok || !u.IsUnique() {
+				continue
+			}
+			fieldName, ok := indexFields[idxName]
+			if !ok {
+				continue
+			}
+			raw, exists := fields[fieldName]
+			if !exists {
+				continue
+			}
+			fieldVal := UnquoteJSON(raw)
+			existing, err := getIndexValues(batch, idx, fieldVal)
+			if err != nil {
+				return err
+			}
+			for _, k := range existing {
+				if bytes.Equal(k, p.Key) {
+					continue // the key updating its own entry
+				}
+				if _, isDeleted := deleted[string(k)]; isDeleted {
+					continue // the conflicting key is removed in this batch
+				}
+				return &UniqueConstraintError{Index: idxName, Field: fieldName}
+			}
+			mapKey := idxName + "\x00" + string(fieldVal)
+			if prev, seen := pending[mapKey]; seen && !bytes.Equal(prev, p.Key) {
+				return &UniqueConstraintError{Index: idxName, Field: fieldName}
+			}
+			pending[mapKey] = p.Key
+		}
+	}
+	return nil
+}
+
 // UpdateIndexes extracts JSON field values from the written value and updates
 // every registered secondary index whose key scope covers key (see
 // indexScopes and ComposeIndexScope; an index with no scope covers the whole

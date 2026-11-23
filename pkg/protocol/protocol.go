@@ -1254,6 +1254,23 @@ func EncodeCompare(key []byte, target, result byte, value []byte, version, creat
 // EncodeTransaction creates a binary Transaction command.
 // Format: [op:1][compareCount:4 LE][compares...][successCount:4 LE][successOps...][failureCount:4 LE][failureOps...].
 func EncodeTransaction(compares, successOps, failureOps [][]byte) ([]byte, error) {
+	return EncodeTransactionFlags(compares, successOps, failureOps, 0)
+}
+
+// CmdFlagOrderedUnique marks an OpTransaction or OpBatch command whose unique
+// index pre-check replays the writes in op order (a write of a key releases
+// the value that key held), rather than the legacy check in which only a
+// deleted key frees its value. It is carried as a one-byte trailer after the
+// last op and is proposed only once the cluster feature ordered-unique-check
+// is enabled for the group: an older binary ignores the trailer and would
+// apply the command with its legacy check, so an ungated trailer would let
+// replicas diverge.
+const CmdFlagOrderedUnique byte = 0x01
+
+// EncodeTransactionFlags encodes a transaction command as EncodeTransaction
+// does and, when flags is not 0, appends flags as a one-byte trailer after the
+// failure ops. With flags 0 the bytes are exactly EncodeTransaction's.
+func EncodeTransactionFlags(compares, successOps, failureOps [][]byte, flags byte) ([]byte, error) {
 	// Measure and validate all three collections before allocating any of them,
 	// so a malformed element in the third does not cost a buffer sized for the
 	// whole transaction. framedSlicesSize is the measuring half of the
@@ -1265,6 +1282,12 @@ func EncodeTransaction(compares, successOps, failureOps [][]byte) ([]byte, error
 			return nil, err
 		}
 		if size, err = addSize(size, n); err != nil {
+			return nil, err
+		}
+	}
+	if flags != 0 {
+		var err error
+		if size, err = addSize(size, 1); err != nil {
 			return nil, err
 		}
 	}
@@ -1285,8 +1308,13 @@ func EncodeTransaction(compares, successOps, failureOps [][]byte) ([]byte, error
 		return nil, err
 	}
 	off += n
-	if _, err := encodeFramedSlices(buf[off:], failureOps); err != nil {
+	n, err = encodeFramedSlices(buf[off:], failureOps)
+	if err != nil {
 		return nil, err
+	}
+	off += n
+	if flags != 0 {
+		buf[off] = flags
 	}
 
 	return buf, nil
@@ -1295,6 +1323,13 @@ func EncodeTransaction(compares, successOps, failureOps [][]byte) ([]byte, error
 // EncodeBatch creates a binary Batch command.
 // Format: [op:1][opCount:4 LE][ops...].
 func EncodeBatch(ops [][]byte) ([]byte, error) {
+	return EncodeBatchFlags(ops, 0)
+}
+
+// EncodeBatchFlags encodes a batch command as EncodeBatch does and, when flags
+// is not 0, appends flags as a one-byte trailer after the last op. With flags
+// 0 the bytes are exactly EncodeBatch's.
+func EncodeBatchFlags(ops [][]byte, flags byte) ([]byte, error) {
 	// Measure and validate before allocating, as EncodeTransaction does.
 	n, err := framedSlicesSize(ops)
 	if err != nil {
@@ -1304,6 +1339,11 @@ func EncodeBatch(ops [][]byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if flags != 0 {
+		if size, err = addSize(size, 1); err != nil {
+			return nil, err
+		}
+	}
 
 	buf := make([]byte, size)
 	off := 0
@@ -1311,8 +1351,13 @@ func EncodeBatch(ops [][]byte) ([]byte, error) {
 	buf[off] = OpBatch
 	off++
 
-	if _, err := encodeFramedSlices(buf[off:], ops); err != nil {
+	n, err = encodeFramedSlices(buf[off:], ops)
+	if err != nil {
 		return nil, err
+	}
+	off += n
+	if flags != 0 {
+		buf[off] = flags
 	}
 
 	return buf, nil
@@ -1880,6 +1925,9 @@ type DecodedTransaction struct {
 	Compares   []DecodedCompare
 	SuccessOps []DecodedOp
 	FailureOps []DecodedOp
+	// Flags is the command's flag trailer (CmdFlag*), 0 when the command
+	// carries none, as every command an older binary proposed does.
+	Flags byte
 }
 
 // maxPrealloc bounds how many elements a decoder will reserve capacity for up
@@ -2014,47 +2062,78 @@ func DecodeTransaction(payload []byte) (DecodedTransaction, error) {
 		return DecodedTransaction{}, err
 	}
 
+	flags, err := decodeFlagTrailer(payload[off:], "txn")
+	if err != nil {
+		return DecodedTransaction{}, err
+	}
+
 	return DecodedTransaction{
 		Compares:   compares,
 		SuccessOps: successOps,
 		FailureOps: failureOps,
+		Flags:      flags,
 	}, nil
+}
+
+// decodeFlagTrailer reads the optional one-byte flag trailer after a
+// transaction's failure ops or a batch's last op: no bytes is flags 0, one
+// byte is the flags, and anything longer is not a command any encoder writes.
+func decodeFlagTrailer(rest []byte, label string) (byte, error) {
+	switch len(rest) {
+	case 0:
+		return 0, nil
+	case 1:
+		return rest[0], nil
+	default:
+		return 0, &InvalidCommandError{Reason: label + ": trailing bytes after the last op"}
+	}
 }
 
 // DecodeBatch decodes a batch payload into individual operations.
 func DecodeBatch(payload []byte) ([]DecodedOp, error) {
+	ops, _, err := DecodeBatchFlags(payload)
+	return ops, err
+}
+
+// DecodeBatchFlags decodes a batch payload as DecodeBatch does and returns the
+// command's flag trailer (CmdFlag*), 0 when it carries none.
+func DecodeBatchFlags(payload []byte) ([]DecodedOp, byte, error) {
 	if len(payload) < frameSize {
-		return nil, &InvalidCommandError{Reason: "batch: payload too short"}
+		return nil, 0, &InvalidCommandError{Reason: "batch: payload too short"}
 	}
 
 	off := 0
 	opCount, err := decodeCount(binary.LittleEndian.Uint32(payload[off:]),
 		len(payload)-off-frameSize, "batch: op")
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	off += frameSize
 
 	ops := make([]DecodedOp, 0, preallocSize(opCount))
 	for i := 0; i < opCount; i++ {
 		if off+frameSize > len(payload) {
-			return nil, &InvalidCommandError{Reason: "batch: truncated op length"}
+			return nil, 0, &InvalidCommandError{Reason: "batch: truncated op length"}
 		}
 		rawLen := binary.LittleEndian.Uint32(payload[off:])
 		off += frameSize
 		oLen, lerr := decodeLen(rawLen, len(payload)-off, "batch: op exceeds payload")
 		if lerr != nil {
-			return nil, lerr
+			return nil, 0, lerr
 		}
 		op, _, err := DecodeOp(payload[off : off+oLen])
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		ops = append(ops, op)
 		off += oLen
 	}
 
-	return ops, nil
+	flags, err := decodeFlagTrailer(payload[off:], "batch")
+	if err != nil {
+		return nil, 0, err
+	}
+	return ops, flags, nil
 }
 
 // ---------------------------------------------------------------------------

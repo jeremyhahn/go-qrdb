@@ -168,6 +168,38 @@ func TestCheckUniqueViolationsBatch_OverwriteWithOtherValueFreesValue(t *testing
 	}
 }
 
+// TestCheckUniqueViolationsBatchUnordered_MoveRefused pins the legacy check
+// every unflagged transaction or batch keeps: an overwrite does not free the
+// overwritten key's value, so moving it to another key is refused.
+func TestCheckUniqueViolationsBatchUnordered_MoveRefused(t *testing.T) {
+	indexes, fields := uniqueNameIndex(t, map[string]string{"A": "alice"})
+	puts := []indexedPut{
+		{Key: []byte("A"), Value: nameDoc(t, "bob")},
+		{Key: []byte("B"), Value: nameDoc(t, "alice")},
+	}
+	requireUniqueConflict(t, checkUniqueViolationsBatchUnordered(nil, indexes, fields, nil, puts, nil))
+}
+
+// TestCheckUniqueViolationsBatchUnordered_DeletedKeyFreesValue: in the legacy
+// check a key deleted anywhere in the set frees its value, and a put may
+// update its own key's entry.
+func TestCheckUniqueViolationsBatchUnordered_DeletedKeyFreesValue(t *testing.T) {
+	indexes, fields := uniqueNameIndex(t, map[string]string{"A": "alice"})
+	puts := []indexedPut{{Key: []byte("B"), Value: nameDoc(t, "alice")}}
+	if err := checkUniqueViolationsBatchUnordered(nil, indexes, fields, nil, puts, [][]byte{[]byte("A")}); err != nil {
+		t.Fatalf("A is deleted in the set; expected nil, got: %v", err)
+	}
+	own := []indexedPut{{Key: []byte("A"), Value: nameDoc(t, "alice")}}
+	if err := checkUniqueViolationsBatchUnordered(nil, indexes, fields, nil, own, nil); err != nil {
+		t.Fatalf("A rewriting its own value; expected nil, got: %v", err)
+	}
+	dup := []indexedPut{
+		{Key: []byte("C"), Value: nameDoc(t, "carol")},
+		{Key: []byte("D"), Value: nameDoc(t, "carol")},
+	}
+	requireUniqueConflict(t, checkUniqueViolationsBatchUnordered(nil, indexes, fields, nil, dup, nil))
+}
+
 func TestCheckUniqueViolationsBatch_NonJSONOverwriteFreesValue(t *testing.T) {
 	indexes, fields := uniqueNameIndex(t, map[string]string{"A": "alice"})
 	writes := []indexedWrite{

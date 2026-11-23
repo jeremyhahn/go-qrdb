@@ -149,11 +149,74 @@ func TestMVCCEngine_UniqueConflictIsAnAppErrorOnEveryWritePath(t *testing.T) {
 // gives b@example.com to user:3 is applied, as ordered apply admits it; the
 // reverse order, which claims the value before user:2 releases it, is a
 // conflict application error that changes nothing.
-func TestMVCCEngine_BatchMovesUniqueValueBetweenKeys(t *testing.T) {
-	encoders := map[string]func(ops [][]byte) []byte{
+// flaggedUniqueEncoders encode an op set as a transaction and as a batch that
+// carry protocol.CmdFlagOrderedUnique, the commands proposed once the cluster
+// feature ordered-unique-check is enabled.
+func flaggedUniqueEncoders() map[string]func(ops [][]byte) []byte {
+	return map[string]func(ops [][]byte) []byte{
+		"transaction": func(ops [][]byte) []byte {
+			return mustEncode(protocol.EncodeTransactionFlags(nil, ops, nil, protocol.CmdFlagOrderedUnique))
+		},
+		"batch": func(ops [][]byte) []byte {
+			return mustEncode(protocol.EncodeBatchFlags(ops, protocol.CmdFlagOrderedUnique))
+		},
+	}
+}
+
+// TestMVCCEngine_LegacyCommandKeepsUnorderedUniqueCheck pins the replay
+// contract: a transaction or batch without the ordered-unique flag (every
+// command an older binary proposed) keeps the delete-only unique check, so
+// moving a unique value from one key to another by overwrite is refused and
+// writes nothing, exactly as it was when the entry was first applied. The
+// same ops carrying the flag commit.
+func TestMVCCEngine_LegacyCommandKeepsUnorderedUniqueCheck(t *testing.T) {
+	legacy := map[string]func(ops [][]byte) []byte{
 		"transaction": func(ops [][]byte) []byte { return mustEncode(protocol.EncodeTransaction(nil, ops, nil)) },
 		"batch":       func(ops [][]byte) []byte { return mustEncode(protocol.EncodeBatch(ops)) },
 	}
+	flagged := flaggedUniqueEncoders()
+	moveOps := func(t *testing.T) [][]byte {
+		return [][]byte{
+			mvccOpsCmd(t, protocol.OpMVCCPut, "user:2", faultDocC),
+			mvccOpsCmd(t, protocol.OpMVCCPut, "user:3", faultDocB),
+		}
+	}
+	for name, encode := range legacy {
+		t.Run(name+" legacy refused", func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			before := eng.Store().CurrentRevision()
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: encode(moveOps(t))}})
+			_, kind, ok := protocol.DecodeAppErrorKind(results[0].Data)
+			if !ok || kind != protocol.AppErrorConflict {
+				t.Fatalf("result data = %q, want a conflict application error", results[0].Data)
+			}
+			if after := eng.Store().CurrentRevision(); after != before {
+				t.Fatalf("revision %d -> %d: a refused write must change nothing", before, after)
+			}
+			got, err := eng.Store().Get([]byte("user:2"))
+			if err != nil || string(got.Value) != faultDocB {
+				t.Fatalf("user:2 = %v, %v; want %s", got, err, faultDocB)
+			}
+			if got, err := eng.Store().Get([]byte("user:3")); err == nil && got != nil {
+				t.Fatalf("user:3 = %q, want absent", got.Value)
+			}
+		})
+		t.Run(name+" flagged commits", func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: flagged[name](moveOps(t))}})
+			if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); ok {
+				t.Fatalf("result data = %q (kind %v), want the move applied", results[0].Data, kind)
+			}
+			got, err := eng.Store().Get([]byte("user:3"))
+			if err != nil || string(got.Value) != faultDocB {
+				t.Fatalf("user:3 = %v, %v; want %s", got, err, faultDocB)
+			}
+		})
+	}
+}
+
+func TestMVCCEngine_BatchMovesUniqueValueBetweenKeys(t *testing.T) {
+	encoders := flaggedUniqueEncoders()
 	for name, encode := range encoders {
 		t.Run(name+" release then claim", func(t *testing.T) {
 			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)

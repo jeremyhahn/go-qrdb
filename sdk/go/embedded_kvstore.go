@@ -186,7 +186,10 @@ func embeddedGuardedTxn(guards []kvstore.Guard, writes []kvstore.KV) ([]byte, er
 		}
 		ops = append(ops, op)
 	}
-	return protocol.EncodeTransaction(compares, ops, nil)
+	// The embedded store is one binary with no group to gate, so the
+	// transaction carries the ordered unique check at once (a batch that
+	// moves a unique value between keys commits, as ordered apply does).
+	return protocol.EncodeTransactionFlags(compares, ops, nil, protocol.CmdFlagOrderedUnique)
 }
 
 // embeddedUniqueConflict rebuilds the *engine.UniqueConstraintError the KV
