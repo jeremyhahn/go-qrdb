@@ -26,7 +26,8 @@ package sdk_test
 //   pkg/storage             sdkstorage.Storage, sdkstorage.StorageIteratorOptions
 //   pkg/storage/pebble      sdkstorage.NewPebbleStorage, sdkstorage.DefaultPebbleConfig
 //   pkg/service             sdk.KVServicer (service-backed store: sdk/go/server,
-//                           see TestNewServiceKVStore_RequiresTransactionService)
+//                           proven over a booted node in sdk/go/conformance
+//                           TestServiceKVStore_* and TestDAOStoreParity)
 //   pkg/engine              sdk.NewEmbeddedKVStore
 
 import (
