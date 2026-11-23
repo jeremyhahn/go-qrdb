@@ -258,6 +258,49 @@ func TestVFS_SharedAfterCommitReadsOwnCommit(t *testing.T) {
 	}
 }
 
+// TestVFS_RollbackAfterCacheSpillWritesNoRevision: a ROLLBACK after the
+// page cache spilled into the database file plays the journal back and
+// syncs; the restored pages equal the snapshot, so no revision is
+// written (o8).
+func TestVFS_RollbackAfterCacheSpillWritesNoRevision(t *testing.T) {
+	ctx := context.Background()
+	b := newBackend(t)
+	setup(t, "spill.db", plainOpener(b, "spill.db"))
+	db := openDB(t, "spill.db", "")
+	mustExec(t, db, "create table t(a integer primary key, b blob)")
+	mustExec(t, db, "insert into t(b) values(randomblob(100))")
+	before := revision(t, b)
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("Conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "pragma cache_size=10"); err != nil {
+		t.Fatalf("cache_size: %v", err)
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	for i := 0; i < 200; i++ {
+		mustExec(t, tx, "insert into t(b) values(randomblob(1000))")
+	}
+	if spilled := revision(t, b); spilled != before {
+		t.Fatalf("revision moved from %d to %d before the rollback", before, spilled)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	var n int
+	if err := conn.QueryRowContext(ctx, "select count(*) from t").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("rows after rollback = %d, %v; want 1", n, err)
+	}
+	if after := revision(t, b); after != before {
+		t.Fatalf("revision moved from %d to %d across a rollback after a cache spill", before, after)
+	}
+}
+
 func TestVFS_ReopenReadsCommittedRows(t *testing.T) {
 	b := newBackend(t)
 	setup(t, "reopen.db", plainOpener(b, "reopen.db"))

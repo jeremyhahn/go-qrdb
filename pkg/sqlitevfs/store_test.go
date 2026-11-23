@@ -975,6 +975,52 @@ func TestStoreBeginAt(t *testing.T) {
 	}
 }
 
+func TestTxnCommitNoNetChangeWritesNoRevision(t *testing.T) {
+	b := newTestBackend(t)
+	s := newTestStore(t, b, "app.db")
+	rev := seed(t, s, 0x01, 0x02)
+
+	// Spilled writes and a page past the end, then the journal played
+	// back over them and the file truncated to its old size.
+	txn := beginReserved(t, s)
+	writePages(t, txn, 0xAA, 0xBB, 0xCC)
+	writePages(t, txn, 0x01, 0x02)
+	if err := txn.Truncate(2 * testPageSize); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+	if got := commit(t, txn); got != rev {
+		t.Fatalf("no-net-change Commit = revision %d, want the pinned %d", got, rev)
+	}
+	if got := revOf(t, b); got != rev {
+		t.Fatalf("backend revision moved from %d to %d", rev, got)
+	}
+
+	// Only new pages spilled: the played-back pages are written once,
+	// equal to the snapshot, and the file shrinks back.
+	txn = beginReserved(t, s)
+	writePages(t, txn, 0x01, 0x02, 0xCC, 0xDD)
+	if err := txn.Truncate(2 * testPageSize); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+	if got := commit(t, txn); got != rev {
+		t.Fatalf("no-net-change Commit after a shrink = revision %d, want the pinned %d", got, rev)
+	}
+
+	// A rewrite with one real change commits only that change.
+	txn = beginReserved(t, s)
+	writePages(t, txn, 0xAA, 0xBB)
+	writePages(t, txn, 0x01, 0x09)
+	next := commit(t, txn)
+	if next == rev {
+		t.Fatal("a commit with a changed page wrote no revision")
+	}
+	check := begin(t, s)
+	defer func() { _ = check.Rollback(context.Background()) }()
+	if got := readAll(t, check); !bytes.Equal(got, pagesOf(0x01, 0x09)) {
+		t.Fatalf("file after the rewrite commit is not pages 0x01, 0x09")
+	}
+}
+
 func TestTxnIOEdgeCases(t *testing.T) {
 	s := newTestStore(t, newTestBackend(t), "app.db")
 

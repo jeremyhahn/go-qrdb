@@ -15,6 +15,7 @@
 package sqlitevfs
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -334,7 +335,12 @@ type Txn struct {
 	floor uint32
 	dirty map[uint32][]byte
 	wrote bool
-	done  bool
+	// rewrote is set once a page already in dirty is written again or the
+	// file shrinks (a cache spill, then the final write, or a journal
+	// played back over it and the file truncated to its old size); only
+	// then does Commit compare dirty pages with the snapshot.
+	rewrote bool
+	done    bool
 	// reserved is set once Reserve succeeded; token is the writer lock's
 	// fencing token while this transaction holds it (held is true).
 	reserved bool
@@ -552,6 +558,9 @@ func (t *Txn) WriteAt(p []byte, off int64) (int, error) {
 		return 0, fmt.Errorf("%w: offset %d is past the last page", ErrInvalidPageNumber, off)
 	}
 	pgno := uint32(idx) + 1 //nolint:gosec // G115: idx < MaxUint32
+	if _, ok := t.dirty[pgno]; ok {
+		t.rewrote = true
+	}
 	t.dirty[pgno] = append([]byte(nil), p...)
 	if pgno > t.meta.PageCount {
 		t.meta.PageCount = pgno
@@ -587,6 +596,9 @@ func (t *Txn) Truncate(size int64) error {
 		return fmt.Errorf("%w: size %d is past the last page", ErrInvalidPageNumber, size)
 	}
 	count := uint32(size / pageSize) //nolint:gosec // G115: bounded above
+	if count < t.meta.PageCount {
+		t.rewrote = true
+	}
 	for pgno := range t.dirty {
 		if pgno > count {
 			delete(t.dirty, pgno)
@@ -603,7 +615,10 @@ func (t *Txn) Truncate(size int64) error {
 // Commit sends the buffered pages, the deletes of the pages the transaction
 // truncated away, and the new meta record in one Backend.Commit, and returns
 // its revision. A transaction with no writes commits nothing and returns the
-// pinned revision. The transaction is done afterwards, whether or not the
+// pinned revision; so does one whose writes leave the file as the snapshot
+// had it: once a page was written twice or the file shrank, the dirty pages equal to the
+// snapshot's copies are dropped (dropUnchanged), and with none left, the
+// same page size and count and no page truncated away, nothing is written. The transaction is done afterwards, whether or not the
 // commit succeeded. A held writer lock is released afterwards, whether or not
 // the commit succeeded, with the same ctx; a Release error is ignored (after
 // a successful commit the data is committed and the lease expires on its
@@ -644,6 +659,16 @@ func (t *Txn) Commit(ctx context.Context) (int64, error) {
 // commitWrites is Commit's write path; the caller releases the writer lock.
 func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 	if !t.wrote {
+		return t.rev, nil
+	}
+	if t.rewrote {
+		if err := t.dropUnchanged(ctx); err != nil {
+			return 0, err
+		}
+	}
+	if len(t.dirty) == 0 && t.floor >= t.base.PageCount && t.meta.PageCount == t.base.PageCount && t.meta.PageSize == t.base.PageSize {
+		// Every write was undone (a journal played back over its own
+		// writes): nothing to commit, no revision.
 		return t.rev, nil
 	}
 	if t.held {
@@ -715,6 +740,37 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("sqlitevfs: commit %q: %w", t.store.db, err)
 	}
 	return rev, nil
+}
+
+// dropUnchanged drops from the write set every dirty page whose bytes equal
+// the snapshot's copy at rev (an absent page within the snapshot's page
+// count reads as zeros), so a journal played back over the transaction's
+// own writes leaves nothing to commit. Pages past the snapshot (or past a
+// truncation floor) are new and kept. Reads use ctx, Commit's.
+func (t *Txn) dropUnchanged(ctx context.Context) error {
+	if t.meta.PageSize != t.base.PageSize {
+		return nil
+	}
+	for pgno, page := range t.dirty {
+		if pgno > t.floor || pgno > t.base.PageCount {
+			continue
+		}
+		key, err := PageKey(t.store.db, pgno)
+		if err != nil {
+			return err
+		}
+		value, found, err := t.store.backend.GetAt(ctx, key, t.rev)
+		if err != nil {
+			return fmt.Errorf("sqlitevfs: commit %q: read page %d at revision %d: %w", t.store.db, pgno, t.rev, err)
+		}
+		if !found {
+			value = make([]byte, len(page))
+		}
+		if bytes.Equal(value, page) {
+			delete(t.dirty, pgno)
+		}
+	}
+	return nil
 }
 
 // readSet returns the read checks a commit carries. A transaction holding
