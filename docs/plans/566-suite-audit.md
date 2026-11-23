@@ -434,3 +434,38 @@ One row per test function this branch deletes (`git diff origin/main...HEAD -- '
 | fold-src/sealed-ceremony-ca-row-1 | merged (--no-ff) | adds sdk/go/node/sealed_ceremony_ca_test.go and docs/plans/1.md, updates sealed_window_mount_test.go; merged cleanly against current main, Sealed tests in sdk/go/node pass |
 | fold-src/sealed-ceremony-ca-wip | merged with -s ours | superseded by the sealed-ceremony-ca row-1 ref (same test file; its go.sum change is noise) |
 | fold-src/ci-bigdisk-docker | merged with -s ours | superseded by ruling 617 (#1582, ci.yml jobs on the self-hosted pools) |
+
+## Sleep sweep 3 (rw566f)
+
+Package order 3 (pkg/server, pkg/server/lifecycle) and 4 (pkg/sql/mysql): every
+time.Sleep in the files below either became a bounded testify poll on the same
+condition, or stays because the sleep is what the test measures. Helpers that
+return their last observation (and let the caller judge it) poll with
+assert.Eventually and a quiet reporter, so the deadline does not add a second
+failure.
+
+| File | Line | Replaced by / kept and why |
+|---|---|---|
+| pkg/server/namespaced_watch_leak_test.go | 76 | settledNamespacedGoroutines: assert.Eventually on two equal consecutive goroutine counts (5s, 10ms), last sample returned |
+| pkg/server/namespaced_watch_leak_test.go | 91 | namespacedGoroutinesAtMost: assert.Eventually on the count falling to the bound, last sample returned to the leak assertion |
+| pkg/server/namespaced_watch_terminal_test.go | 79 | awaitHubEviction: require.Eventually on hub.WatchCount() == 0 (30s) |
+| pkg/server/prebound_quic_test.go | 112 | kept: paces the test's own dials across the stale-timer window, which is the behaviour under test |
+| pkg/server/raft_backend_factory_identity_test.go | 185 | require.EventuallyWithT on some founder accepting a write (raftharness.Bound), last Put error reported |
+| pkg/server/raft_backend_factory_lock_test.go | 235 | awaitStarting: require.Eventuallyf on the start being in f.starting |
+| pkg/server/raft_backend_factory_lock_test.go | 521 | require.Eventually on the seal listing the barrier in f.sealing (5s) |
+| pkg/server/raft_backend_factory_test.go | 317 | writeAndAwaitLogRange: assert.Eventually on FirstIndex > 1 or a LogRange error, last range returned |
+| pkg/server/raft_backend_factory_test.go | 617 | RestoreShardOnline retry: retryWhileReadIndexNotReady |
+| pkg/server/raft_backend_migrate_test.go | 49 | getWhenReadable: new shared retryWhileReadIndexNotReady (assert.Eventually, 15s, 200ms, attempts serialised, last error returned) |
+| pkg/server/raft_promoter_identity_test.go | 72 | require.Eventually on observer 2 in the follower's membership (raftharness.Bound) |
+| pkg/server/served_watch_test.go | 138 | drained: require.Eventually on len(ch) == 0 (5s) |
+| pkg/server/served_watch_transport_test.go | 193 | waitFor: require.Eventually on cond (5s) |
+| pkg/server/server_etcd_guard_test.go | 167 | require.Eventually on streams.Len() == 0 (5s) |
+| pkg/server/tenant_shard_reconciler_test.go | 331 | awaitCondition: assert.Eventually on cond (reconcileConvergeBound), bool to the caller |
+| pkg/server/system_shard_settling_test.go | 196, 198, 248 | kept: inside synctest.Test, the sleeps advance the fake clock |
+| pkg/server/lifecycle/trust_anchors_test.go | 245 | waitTrusted: require.Eventuallyf on VerifyPeerChain succeeding |
+| pkg/sql/mysql/idle_timeout_wire_test.go | 107 | kept: the active connection's traffic below the idle bound is what the test proves keeps it open |
+| pkg/sql/mysql/idle_timeout_wire_test.go | 142 | require.EventuallyWithT on the NOWAIT lock succeeding, last error reported |
+| pkg/sql/mysql/row_lock_wire_test.go | 186 | require.EventuallyWithT on the NOWAIT lock succeeding, last error reported |
+| pkg/sql/mysql/sealed_cursor_wire_test.go | 258 | require.EventuallyWithT on a fetch failing, then requireSealedEnd on that error |
+| pkg/sql/mysql/sealed_session_wire_test.go | 105 | require.EventuallyWithT on the ping reading as a closed connection |
+| pkg/sql/mysql/sealed_session_wire_test.go | 162 | assert.Eventually on the statement being refused; rollback then FailNow on timeout |
