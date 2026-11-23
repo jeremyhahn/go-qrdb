@@ -242,7 +242,7 @@ database exposes every engine, so the tabs are not gated by engine:
 
 | Tab          | Description                              |
 |--------------|------------------------------------------|
-| Data         | Browse, search, create, edit key-values  |
+| Data         | Browse, search, create, edit key-values (`KVExplorer.svelte`): Go to key, Keys only, as-of revision browse, value at revision, restore and compact to a revision, lease id on save |
 | Collections  | Collection management                    |
 | Indexes      | Create, drop, query secondary indexes    |
 | Transactions | Build and execute transactions           |
@@ -266,12 +266,13 @@ The admin navigation (`components/sidebar/AdminNav.svelte`):
 | Topology         | Shard topology; Raft mode only                 |
 | Rebalance        | Shard rebalancing; Raft mode only              |
 | Seal Manager     | Initialize, seal, unseal, rotate, rekey; for Shamir barriers a Security Officers panel handles CSR enrollment, claim status, and quorum seal votes (single-admin seal is blocked). When no encryption barrier is configured (strategy `none`) it shows an "Encryption Not Configured" panel — no Seal/Unseal controls, since there is nothing to seal — with [migration guidance](../seal/enabling-encryption.md) for enabling encryption |
-| Tenants          | Tenant lifecycle, per-tenant barrier strategy and officer management |
-| Users            | Create, edit, enable/disable user accounts     |
+| Tenants          | Tenant lifecycle, per-tenant barrier strategy and officer management, volume pool picker; a tenant's detail view edits quotas, entitlements and trust anchors |
+| Users            | Create, edit, enable/disable, delete user accounts; add and remove certificate bindings; look a user up by certificate thumbprint; invite a user |
+| Volume Pools     | Create, edit, delete volume pools and list the tenants on each |
 | Roles            | Create, edit, assign/unassign roles            |
 | Certificates     | Generate, export, revoke client certificates   |
 | Credentials      | Named credential management                    |
-| Databases        | Create, drop, configure databases and protocols |
+| Databases        | Create, drop, configure databases and protocols; a database's detail view manages its Shamir holders (initialize, register, revoke, unenrol, rekey) |
 | Backups          | Backup and restore                             |
 | Daemon           | Start/stop the local `qrdbd` process; shown only for **external** profiles on desktop builds — embedded ("Local Server") profiles run in-process and hide this panel |
 | Audit Log        | Browse and search audit trail entries          |
@@ -298,6 +299,9 @@ single-node steps.
 No login screen exists. Authentication is handled entirely via mTLS
 client certificates at the TLS handshake level. The identity displayed
 in the GUI header is extracted from the client certificate Subject CN.
+An administrator invites a user from the Users view (`InviteUserModal.svelte`);
+the invited user redeems the invitation with **Redeem Invitation** in the
+connection manager (`RedeemInvitationModal.svelte`).
 
 ## Testing
 

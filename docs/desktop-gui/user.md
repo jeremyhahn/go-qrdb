@@ -80,6 +80,11 @@ data directory, set in the storage step.
 The application shows what the server can actually do — views are gated on the
 server's reported capabilities, so a server without vectors has no vector view.
 Your identity appears in the header, read from your client certificate.
+Every SDK operation the server offers has a place in the application (see the
+[UI coverage matrix](../gui/coverage-matrix.md)): the Data tab browses keys and
+their revisions, the Users view invites users and manages certificate bindings,
+**Redeem Invitation** in the connection manager accepts an invitation, and the
+admin area manages volume pools, tenant trust anchors and database holders.
 
 ## In a browser
 
