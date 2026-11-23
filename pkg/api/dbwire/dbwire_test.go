@@ -44,7 +44,6 @@ func full() *database.DatabaseInfo {
 		DedicatedWAL: true,
 		Raft:         dbwiretest.RaftConfig(),
 		Barrier:      &database.DatabaseBarrierConfig{Enabled: true, Mode: "shamir", SharesRequired: 2, SharesTotal: 3},
-		Connection:   &database.DatabaseConnectionConfig{Transport: "grpc", Address: "db.example.com:63000", CAFile: "/etc/qrdb/ca.pem"},
 		SQL:          &database.SQLConfig{Concurrency: database.ConcurrencyPessimistic},
 		Binding:      &database.DatabaseBinding{Kind: database.BindingLocal, Nodes: []string{"n1"}, Encryption: "tenant+database", Generation: 5},
 	}
@@ -110,8 +109,8 @@ func TestInfoProto_CarriesEveryFieldAndNoSecret(t *testing.T) {
 	if r.GetMulticast().GetMulticastGroup() != in.Raft.Multicast.MulticastGroup || r.GetDns().GetDomain() != "example.com" || r.GetToken().GetClusterSize() != 3 {
 		t.Errorf("raft discovery = %v", r)
 	}
-	if out.GetBarrier().GetSharesTotal() != 3 || out.GetConnection().GetRemoteAddress() != "db.example.com:63000" {
-		t.Errorf("barrier/connection = %v / %v", out.GetBarrier(), out.GetConnection())
+	if out.GetBarrier().GetSharesTotal() != 3 {
+		t.Errorf("barrier = %v", out.GetBarrier())
 	}
 	if out.GetSql().GetConcurrency() != "pessimistic" {
 		t.Errorf("sql = %v", out.GetSql())
@@ -150,7 +149,7 @@ func TestInfo_OptionalBlocksAbsent(t *testing.T) {
 		t.Errorf("JSON invented blocks: %+v", j)
 	}
 	p := dbwire.InfoProto(in)
-	if p.GetRaft() != nil || p.GetBarrier() != nil || p.GetConnection() != nil || p.GetSql() != nil || p.GetProtocol().GetEtcd() != nil || p.GetBinding() != nil {
+	if p.GetRaft() != nil || p.GetBarrier() != nil || p.GetSql() != nil || p.GetProtocol().GetEtcd() != nil || p.GetBinding() != nil {
 		t.Errorf("protobuf invented blocks: %v", p)
 	}
 	r := dbwire.Info(&database.DatabaseInfo{Raft: &database.DatabaseRaftConfig{ClusterMode: database.RaftLocal}}).Raft

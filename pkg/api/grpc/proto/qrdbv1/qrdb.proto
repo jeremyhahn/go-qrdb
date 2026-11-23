@@ -1021,11 +1021,6 @@ service QRDBService {
         option (qrdb.v1.permission) = "databases:update";
     }
 
-    // DatabaseUpdateConnection updates the remote connection configuration.
-    rpc DatabaseUpdateConnection(DatabaseUpdateConnectionRequest) returns (DatabaseInfoResponse) {
-        option (qrdb.v1.permission) = "databases:update";
-    }
-
     // DatabaseUpdateSQL updates a database's SQL settings -- its
     // sql.concurrency (optimistic or pessimistic). See docs/row-locking/.
     rpc DatabaseUpdateSQL(DatabaseUpdateSQLRequest) returns (DatabaseInfoResponse) {
@@ -4055,7 +4050,9 @@ message DatabaseInfoResponse {
     // request messages', less the secrets.
     DatabaseRaftInfo raft = 9;
     DatabaseBarrierInfo barrier = 10;
-    DatabaseConnectionConfig connection = 11;
+    // Field 11 was the remote-mode connection block (removed, OD-9 A).
+    reserved 11;
+    reserved "connection";
     string tenant_id = 12;
     // replicas is the replication factor of a dedicated-raft database. Zero for
     // non-raft databases.
@@ -4315,16 +4312,6 @@ message DatabaseBarrierConfig {
     string secret = 5;
 }
 
-// DatabaseConnectionConfig holds remote connection settings.
-message DatabaseConnectionConfig {
-    string remote_address = 1;
-    bool use_tls = 2;
-    string transport = 3;
-    string ca_file = 4;
-    string cert_file = 5;
-    string key_file = 6;
-}
-
 // DatabaseUpdateProtocolRequest updates the wire protocol configuration.
 message DatabaseUpdateProtocolRequest {
     string name = 1;
@@ -4357,12 +4344,6 @@ message DatabaseScaleRequest {
 message DatabaseUpdateBarrierRequest {
     string name = 1;
     DatabaseBarrierConfig barrier = 2;
-}
-
-// DatabaseUpdateConnectionRequest updates the remote connection configuration.
-message DatabaseUpdateConnectionRequest {
-    string name = 1;
-    DatabaseConnectionConfig connection = 2;
 }
 
 // DatabaseUpdateSQLRequest updates a database's SQL settings. An unset sql

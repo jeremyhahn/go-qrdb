@@ -59,9 +59,6 @@ func (f *fakeDatabaseServicer) UpdateRaft(_ string, _ *database.DatabaseRaftConf
 func (f *fakeDatabaseServicer) UpdateBarrier(_ string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: "testdb"}, nil
 }
-func (f *fakeDatabaseServicer) UpdateConnection(_ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return &database.DatabaseInfo{Name: "testdb"}, nil
-}
 func (f *fakeDatabaseServicer) SealDatabase(_ context.Context, _ string) error { return nil }
 func (f *fakeDatabaseServicer) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
 	return nil
@@ -102,10 +99,6 @@ func (f *fakeDatabaseServicer) UpdateRaftForTenant(_ context.Context, _ string, 
 func (f *fakeDatabaseServicer) UpdateBarrierForTenant(_ context.Context, _ string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: "testdb"}, nil
 }
-func (f *fakeDatabaseServicer) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return &database.DatabaseInfo{Name: "testdb"}, nil
-}
-
 func (f *fakeDatabaseServicer) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
 }

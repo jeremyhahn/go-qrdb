@@ -109,6 +109,28 @@ storage:
 	}
 }
 
+// TestConfig_DatabaseConnectionKeyRefused asserts that remote mode's
+// `connection` block is gone from a `databases[]` entry (OD-9 A): the strict
+// decode refuses it as an unknown field.
+func TestConfig_DatabaseConnectionKeyRefused(t *testing.T) {
+	path := writeTemp(t, `
+databases:
+  - name: "app"
+    backend: "pebble"
+    connection:
+      transport: "tcp"
+      address: "127.0.0.1:63003"
+`)
+	_, err := Load(path)
+	var ufe *UnknownFieldError
+	if !errors.As(err, &ufe) {
+		t.Fatalf("Load: got %v (%T), want *UnknownFieldError", err, err)
+	}
+	if ufe.Path != "databases[0].connection" {
+		t.Errorf("Path: got %q, want %q", ufe.Path, "databases[0].connection")
+	}
+}
+
 // TestLoad_CompiledOutFeatureKey_IsKnownNotUnknown is requirement #2: a key
 // for a feature this binary may not have compiled in (protocols.mysql
 // without build tag qrdb_mysql) must never be reported as unknown -- pkg/

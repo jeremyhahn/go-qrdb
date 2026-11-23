@@ -1134,68 +1134,6 @@ func TestManager_UpdateBarrier_IdempotentRefresh_Allowed(t *testing.T) {
 	}
 }
 
-func TestManager_UpdateConnection_NotFound(t *testing.T) {
-	mgr := newTestManager(t)
-	defer func() { _ = mgr.Close() }()
-
-	conn := &DatabaseConnectionConfig{Transport: "grpc", Address: "127.0.0.1:9090"}
-	err := mgr.UpdateConnection("nonexistent", conn)
-	if err == nil {
-		t.Fatal("UpdateConnection() returned nil, want *NotFoundError")
-	}
-	var notFoundErr *NotFoundError
-	if !errors.As(err, &notFoundErr) {
-		t.Fatalf("UpdateConnection() error type = %T, want *NotFoundError", err)
-	}
-}
-
-func TestManager_UpdateConnection_InvalidConfig(t *testing.T) {
-	mgr := newTestManager(t)
-	defer func() { _ = mgr.Close() }()
-
-	cfg := validMemoryConfig("conn-invalid-db")
-	if _, err := mgr.Create(cfg); err != nil {
-		t.Fatalf("Create() returned unexpected error: %v", err)
-	}
-
-	// Missing address should fail validation.
-	err := mgr.UpdateConnection("conn-invalid-db", &DatabaseConnectionConfig{Transport: "grpc", Address: ""})
-	if err == nil {
-		t.Fatal("UpdateConnection() returned nil, want error for invalid connection config")
-	}
-	var connErr *ConnectionRequiredError
-	if !errors.As(err, &connErr) {
-		t.Fatalf("UpdateConnection() error type = %T, want *ConnectionRequiredError", err)
-	}
-}
-
-func TestManager_UpdateConnection_Success(t *testing.T) {
-	mgr := newTestManager(t)
-	defer func() { _ = mgr.Close() }()
-
-	cfg := validMemoryConfig("conn-update-db")
-	if _, err := mgr.Create(cfg); err != nil {
-		t.Fatalf("Create() returned unexpected error: %v", err)
-	}
-
-	conn := &DatabaseConnectionConfig{Transport: "grpc", Address: "127.0.0.1:9090"}
-	if err := mgr.UpdateConnection("conn-update-db", conn); err != nil {
-		t.Fatalf("UpdateConnection() returned unexpected error: %v", err)
-	}
-
-	db, err := mgr.Get("conn-update-db")
-	if err != nil {
-		t.Fatalf("Get() returned unexpected error: %v", err)
-	}
-	info := db.Info()
-	if info.Connection == nil {
-		t.Fatal("Info().Connection = nil, want non-nil after UpdateConnection")
-	}
-	if info.Connection.Transport != "grpc" {
-		t.Errorf("Connection.Transport = %q, want %q", info.Connection.Transport, "grpc")
-	}
-}
-
 func TestManager_UpdateEtcd_NilConfig(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
@@ -1223,21 +1161,6 @@ func TestManager_UpdateRaft_NilConfig(t *testing.T) {
 	// nil raft config should be accepted.
 	if err := mgr.UpdateRaft("raft-nil-db", nil); err != nil {
 		t.Fatalf("UpdateRaft(nil) returned unexpected error: %v", err)
-	}
-}
-
-func TestManager_UpdateConnection_NilConfig(t *testing.T) {
-	mgr := newTestManager(t)
-	defer func() { _ = mgr.Close() }()
-
-	cfg := validMemoryConfig("conn-nil-db")
-	if _, err := mgr.Create(cfg); err != nil {
-		t.Fatalf("Create() returned unexpected error: %v", err)
-	}
-
-	// nil connection config should be accepted.
-	if err := mgr.UpdateConnection("conn-nil-db", nil); err != nil {
-		t.Fatalf("UpdateConnection(nil) returned unexpected error: %v", err)
 	}
 }
 

@@ -187,22 +187,6 @@ func (s *qrdbServiceServer) DatabaseUpdateBarrier(ctx context.Context, req *pb.D
 	return dbwire.InfoProto(info), nil
 }
 
-// DatabaseUpdateConnection updates the remote connection configuration.
-func (s *qrdbServiceServer) DatabaseUpdateConnection(ctx context.Context, req *pb.DatabaseUpdateConnectionRequest) (*pb.DatabaseInfoResponse, error) {
-	if s.databaseSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
-	}
-
-	conn := protoConnectionConfigToDomain(req.GetConnection())
-
-	info, err := s.databaseSvc.UpdateConnectionForTenant(ctx, req.GetName(), conn)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return dbwire.InfoProto(info), nil
-}
-
 // DatabaseUpdateSQL updates a database's SQL settings -- its
 // sql.concurrency. An unset sql restores the defaults.
 func (s *qrdbServiceServer) DatabaseUpdateSQL(ctx context.Context, req *pb.DatabaseUpdateSQLRequest) (*pb.DatabaseInfoResponse, error) {
@@ -414,20 +398,5 @@ func protoBarrierConfigToDomain(b *pb.DatabaseBarrierConfig) *database.DatabaseB
 		Mode:           b.GetMode(),
 		SharesRequired: int(b.GetSharesRequired()),
 		SharesTotal:    int(b.GetSharesTotal()),
-	}
-}
-
-// protoConnectionConfigToDomain converts a DatabaseConnectionConfig proto
-// to a domain DatabaseConnectionConfig.
-func protoConnectionConfigToDomain(c *pb.DatabaseConnectionConfig) *database.DatabaseConnectionConfig {
-	if c == nil {
-		return nil
-	}
-	return &database.DatabaseConnectionConfig{
-		Transport: c.GetTransport(),
-		Address:   c.GetRemoteAddress(),
-		CAFile:    c.GetCaFile(),
-		CertFile:  c.GetCertFile(),
-		KeyFile:   c.GetKeyFile(),
 	}
 }

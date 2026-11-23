@@ -41,7 +41,6 @@ type bindingDatabaseService struct {
 	updateProtocolFn func(name string, proto database.ProtocolConfig) (*database.DatabaseInfo, error)
 	updateRaftFn     func(name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
 	updateBarrierFn  func(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
-	updateConnFn     func(name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
 	updateEtcdFn     func(name string, cfg *database.EtcdConfig) (*database.DatabaseInfo, error)
 	scaleFn          func(name string, targetReplicas int) (*database.DatabaseInfo, error)
 }
@@ -89,13 +88,6 @@ func (m *bindingDatabaseService) UpdateRaft(name string, cfg *database.DatabaseR
 func (m *bindingDatabaseService) UpdateBarrier(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	if m.updateBarrierFn != nil {
 		return m.updateBarrierFn(name, cfg)
-	}
-	return &database.DatabaseInfo{Name: name}, nil
-}
-
-func (m *bindingDatabaseService) UpdateConnection(name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if m.updateConnFn != nil {
-		return m.updateConnFn(name, cfg)
 	}
 	return &database.DatabaseInfo{Name: name}, nil
 }
@@ -158,10 +150,6 @@ func (m *bindingDatabaseService) UpdateRaftForTenant(_ context.Context, name str
 
 func (m *bindingDatabaseService) UpdateBarrierForTenant(_ context.Context, name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateBarrier(name, cfg)
-}
-
-func (m *bindingDatabaseService) UpdateConnectionForTenant(_ context.Context, name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return m.UpdateConnection(name, cfg)
 }
 
 func (m *bindingDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
@@ -737,7 +725,3 @@ func TestDatabaseBinding_UpdateEtcd_SetsName(t *testing.T) {
 		t.Errorf("expected req.Name=%q, got %q", "etcddb", req.Name)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// UpdateConnection tests
-// ---------------------------------------------------------------------------

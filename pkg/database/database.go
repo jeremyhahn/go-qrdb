@@ -413,18 +413,6 @@ func sameSQL(a, b *SQLConfig) bool {
 	return *a == *b
 }
 
-// updateConnection atomically replaces the connection configuration.
-func (d *Database) updateConnection(conn *DatabaseConnectionConfig) {
-	for {
-		old := d.config.Load()
-		updated := *old
-		updated.Connection = conn
-		if d.config.CompareAndSwap(old, &updated) {
-			return
-		}
-	}
-}
-
 // reportedStatus returns StatusDropping when a drop is fencing the database
 // (see Dropping), overriding whatever Status() would otherwise answer. This
 // is the ONLY place StatusDropping is exposed -- the underlying status field
@@ -455,7 +443,6 @@ func (d *Database) Info() DatabaseInfo {
 		DedicatedWAL: cfg.DedicatedWAL,
 		Raft:         cfg.Raft,
 		Barrier:      cfg.Barrier,
-		Connection:   cfg.Connection,
 		SQL:          cfg.SQL,
 		OwnerNode:    d.ownerNode,
 		Binding:      d.binding,

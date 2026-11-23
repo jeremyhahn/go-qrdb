@@ -120,10 +120,6 @@ func (m *mockDatabaseService) UpdateBarrier(_ string, _ *database.DatabaseBarrie
 	return nil, nil
 }
 
-func (m *mockDatabaseService) UpdateConnection(_ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
-}
-
 func (m *mockDatabaseService) SealDatabase(_ context.Context, _ string) error {
 	return nil
 }
@@ -179,10 +175,6 @@ func (m *mockDatabaseService) UpdateRaftForTenant(_ context.Context, name string
 
 func (m *mockDatabaseService) UpdateBarrierForTenant(_ context.Context, name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateBarrier(name, cfg)
-}
-
-func (m *mockDatabaseService) UpdateConnectionForTenant(_ context.Context, name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return m.UpdateConnection(name, cfg)
 }
 
 func (m *mockDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
@@ -479,6 +471,49 @@ func TestHandleCreateDatabase_ServiceError(t *testing.T) {
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusConflict)
+}
+
+// TestDatabaseRoutes_NoConnectionVerb asserts remote mode's update-connection
+// verb is gone (OD-9 A): PATCH and POST on the old connection sub-path fall
+// through to the by-name router, which answers 405 for an unknown sub-path,
+// and the service is never asked.
+func TestDatabaseRoutes_NoConnectionVerb(t *testing.T) {
+	dbSvc := newMockDatabaseService()
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithDatabaseService(dbSvc))
+
+	for _, method := range []string{http.MethodPatch, http.MethodPost} {
+		body := `{"transport":"tcp","address":"127.0.0.1:63003"}`
+		req := httptest.NewRequest(method, "/v1/databases/app/connection", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.dispatch(rec, req)
+		assertStatus(t, rec, http.StatusMethodNotAllowed)
+	}
+}
+
+// TestHandleCreateDatabase_ConnectionRefused asserts a create body carrying
+// remote mode's `connection` block is refused by the strict decode as an
+// unknown field before the service is asked.
+func TestHandleCreateDatabase_ConnectionRefused(t *testing.T) {
+	dbSvc := newMockDatabaseService()
+	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
+		t.Fatalf("create reached the service with %+v", cfg)
+		return nil, nil
+	}
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithDatabaseService(dbSvc))
+
+	body := `{"name":"app","backend":"pebble","connection":{"transport":"tcp","address":"127.0.0.1:63003"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+	if !strings.Contains(rec.Body.String(), "connection") {
+		t.Errorf("body = %q, want the unknown field named", rec.Body.String())
+	}
 }
 
 // TestHandleCreateDatabase_InvalidRaftStateStorage pins that a raft create

@@ -81,11 +81,6 @@ func databaseTools(dbSvc service.DatabaseServicer) []serverTool {
 			Handler: handleDatabaseUpdateBarrier(dbSvc),
 		},
 		{
-			Tool:    toolDatabaseUpdateConnection(),
-			Perm:    permission.DatabasesUpdate,
-			Handler: handleDatabaseUpdateConnection(dbSvc),
-		},
-		{
 			Tool:    toolDatabaseUpdateSQL(),
 			Perm:    permission.DatabasesUpdate,
 			Handler: handleDatabaseUpdateSQL(dbSvc),
@@ -560,64 +555,6 @@ func handleDatabaseUpdateBarrier(dbSvc service.DatabaseServicer) mcpserver.ToolH
 		data, jsonErr := json.Marshal(dbwire.Info(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_barrier", Err: jsonErr}
-		}
-
-		return mcp.NewToolResultText(string(data)), nil
-	}
-}
-
-// toolDatabaseUpdateConnection defines the qrdb_database_update_connection
-// tool schema.
-func toolDatabaseUpdateConnection() mcp.Tool {
-	return mcp.NewTool("qrdb_database_update_connection",
-		mcp.WithDescription("Update the remote connection configuration for a database."),
-		mcp.WithString("name",
-			mcp.Required(),
-			mcp.Description("The database name to update."),
-		),
-		mcp.WithString("transport",
-			mcp.Description("Connection transport (tcp, quic)."),
-		),
-		mcp.WithString("remote_address",
-			mcp.Description("The remote server address (host:port) for proxy connections."),
-		),
-		mcp.WithString("ca_file",
-			mcp.Description("TLS CA certificate file path."),
-		),
-		mcp.WithString("cert_file",
-			mcp.Description("TLS client certificate file path."),
-		),
-		mcp.WithString("key_file",
-			mcp.Description("TLS client key file path."),
-		),
-	)
-}
-
-// handleDatabaseUpdateConnection returns a tool handler that delegates to
-// dbSvc.UpdateConnection.
-func handleDatabaseUpdateConnection(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		name := mcp.ParseString(req, "name", "")
-		if name == "" {
-			return mcp.NewToolResultError("name is required"), nil
-		}
-
-		connCfg := &database.DatabaseConnectionConfig{
-			Transport: mcp.ParseString(req, "transport", ""),
-			Address:   mcp.ParseString(req, "remote_address", ""),
-			CAFile:    mcp.ParseString(req, "ca_file", ""),
-			CertFile:  mcp.ParseString(req, "cert_file", ""),
-			KeyFile:   mcp.ParseString(req, "key_file", ""),
-		}
-
-		info, err := dbSvc.UpdateConnectionForTenant(ctx, name, connCfg)
-		if err != nil {
-			return nil, &ToolError{Tool: "qrdb_database_update_connection", Err: err}
-		}
-
-		data, jsonErr := json.Marshal(dbwire.Info(info))
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_database_update_connection", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil

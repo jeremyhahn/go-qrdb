@@ -293,15 +293,6 @@ func (m *Manager) UpdateBarrierForTenant(ctx context.Context, name string, barri
 	return m.updateBarrier(db, barrier)
 }
 
-// UpdateConnectionForTenant updates connection config after verifying tenant ownership.
-func (m *Manager) UpdateConnectionForTenant(ctx context.Context, name string, conn *DatabaseConnectionConfig) error {
-	db, err := m.GetOwned(name, tenant.FromContext(ctx))
-	if err != nil {
-		return err
-	}
-	return m.updateConnection(db, conn)
-}
-
 // UpdateSQLForTenant updates the SQL settings after verifying tenant
 // ownership.
 func (m *Manager) UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *SQLConfig) error {

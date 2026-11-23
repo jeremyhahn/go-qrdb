@@ -81,9 +81,6 @@ type DatabaseServicer interface {
 	// UpdateBarrier updates the encryption barrier configuration for a database.
 	UpdateBarrier(name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
 
-	// UpdateConnection updates the remote connection configuration for a database.
-	UpdateConnection(name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
-
 	// UpdateSQL updates a database's SQL settings -- its sql.concurrency.
 	UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error)
 
@@ -126,9 +123,6 @@ type DatabaseServicer interface {
 
 	// UpdateBarrierForTenant updates barrier config with tenant enforcement.
 	UpdateBarrierForTenant(ctx context.Context, name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
-
-	// UpdateConnectionForTenant updates connection config with tenant enforcement.
-	UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
 
 	// UpdateSQLForTenant updates SQL settings with tenant enforcement.
 	UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error)
@@ -1299,20 +1293,6 @@ func (s *DatabaseService) UpdateBarrier(name string, barrier *database.DatabaseB
 	return &info, nil
 }
 
-// UpdateConnection updates the remote connection configuration for the named
-// database and returns the updated runtime information.
-func (s *DatabaseService) UpdateConnection(name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if err := s.manager.UpdateConnection(name, conn); err != nil {
-		return nil, err
-	}
-	db, err := s.manager.Get(name)
-	if err != nil {
-		return nil, err
-	}
-	info := db.Info()
-	return &info, nil
-}
-
 // UpdateSQL updates the SQL settings of the named database -- its
 // sql.concurrency, see docs/row-locking/ -- and returns the updated runtime
 // information.
@@ -2258,15 +2238,6 @@ func (s *DatabaseService) UpdateRaftForTenant(ctx context.Context, name string, 
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateBarrierForTenant(ctx context.Context, name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	if err := s.manager.UpdateBarrierForTenant(ctx, name, barrier); err != nil {
-		return nil, err
-	}
-	return s.GetForTenant(ctx, name)
-}
-
-// UpdateConnectionForTenant updates the remote connection configuration for the named
-// database with tenant enforcement and returns the updated runtime information.
-func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if err := s.manager.UpdateConnectionForTenant(ctx, name, conn); err != nil {
 		return nil, err
 	}
 	return s.GetForTenant(ctx, name)

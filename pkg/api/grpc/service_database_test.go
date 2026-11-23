@@ -63,9 +63,6 @@ func TestGRPC_DatabaseUpdate_ReturnsDatabase(t *testing.T) {
 		"DatabaseUpdateRaft": func(c pb.QRDBServiceClient) (*pb.DatabaseInfoResponse, error) {
 			return c.DatabaseUpdateRaft(context.Background(), &pb.DatabaseUpdateRaftRequest{Name: "testdb"})
 		},
-		"DatabaseUpdateConnection": func(c pb.QRDBServiceClient) (*pb.DatabaseInfoResponse, error) {
-			return c.DatabaseUpdateConnection(context.Background(), &pb.DatabaseUpdateConnectionRequest{Name: "testdb"})
-		},
 	}
 	client, cleanup := startTestServerFull(t, WithDatabaseService(newMockDatabaseService()))
 	defer cleanup()
@@ -116,10 +113,6 @@ func TestGRPC_Database_NilService(t *testing.T) {
 		},
 		"DatabaseUpdateBarrier": func(c pb.QRDBServiceClient) error {
 			_, err := c.DatabaseUpdateBarrier(context.Background(), &pb.DatabaseUpdateBarrierRequest{Name: "db"})
-			return err
-		},
-		"DatabaseUpdateConnection": func(c pb.QRDBServiceClient) error {
-			_, err := c.DatabaseUpdateConnection(context.Background(), &pb.DatabaseUpdateConnectionRequest{Name: "db"})
 			return err
 		},
 	}
@@ -194,9 +187,6 @@ func TestProtoConfigToDomain_NilInputIsNil(t *testing.T) {
 	if got := protoBarrierConfigToDomain(nil); got != nil {
 		t.Errorf("protoBarrierConfigToDomain(nil) = %+v, want nil", got)
 	}
-	if got := protoConnectionConfigToDomain(nil); got != nil {
-		t.Errorf("protoConnectionConfigToDomain(nil) = %+v, want nil", got)
-	}
 }
 
 func TestProtoRaftConfigToDomain_WithMulticast(t *testing.T) {
@@ -252,22 +242,5 @@ func TestProtoRaftConfigToDomain_WithToken(t *testing.T) {
 	}
 	if result.Token.ClusterSize != 3 {
 		t.Fatalf("expected ClusterSize=3, got %d", result.Token.ClusterSize)
-	}
-}
-
-func TestProtoConnectionConfigToDomain_WithValues(t *testing.T) {
-	result := protoConnectionConfigToDomain(&pb.DatabaseConnectionConfig{
-		Transport:     "grpc",
-		RemoteAddress: "127.0.0.1:9000",
-		CaFile:        "/etc/ca.pem",
-	})
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if result.Transport != "grpc" {
-		t.Fatalf("expected Transport 'grpc', got %q", result.Transport)
-	}
-	if result.Address != "127.0.0.1:9000" {
-		t.Fatalf("expected Address '127.0.0.1:9000', got %q", result.Address)
 	}
 }

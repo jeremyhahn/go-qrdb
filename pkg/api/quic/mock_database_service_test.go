@@ -56,9 +56,6 @@ func (m *mockDatabaseServiceQuic) UpdateRaft(_ string, _ *database.DatabaseRaftC
 func (m *mockDatabaseServiceQuic) UpdateBarrier(_ string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{}, nil
 }
-func (m *mockDatabaseServiceQuic) UpdateConnection(_ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return &database.DatabaseInfo{}, nil
-}
 func (m *mockDatabaseServiceQuic) SealDatabase(ctx context.Context, name string) error {
 	if m.sealFn != nil {
 		return m.sealFn(ctx, name)
@@ -112,10 +109,6 @@ func (m *mockDatabaseServiceQuic) UpdateRaftForTenant(ctx context.Context, name 
 func (m *mockDatabaseServiceQuic) UpdateBarrierForTenant(ctx context.Context, name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateBarrier(name, barrier)
 }
-func (m *mockDatabaseServiceQuic) UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return m.UpdateConnection(name, conn)
-}
-
 func (m *mockDatabaseServiceQuic) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
 }

@@ -41,7 +41,6 @@ type DatabaseMode = database.DatabaseMode
 // DatabaseMode constants.
 const (
 	ModeEmbedded = database.ModeEmbedded
-	ModeRemote   = database.ModeRemote
 )
 
 // StatusType identifies the status of a database.
@@ -227,9 +226,6 @@ type DBStorageCreateError = database.StorageCreateError
 
 // DBInvalidModeError is returned when a database mode is invalid.
 type DBInvalidModeError = database.InvalidModeError
-
-// DBConnectionRequiredError is returned when a connection config is required.
-type DBConnectionRequiredError = database.ConnectionRequiredError
 
 // DBInvalidRaftClusterModeError is returned when a Raft cluster mode is invalid.
 type DBInvalidRaftClusterModeError = database.InvalidRaftClusterModeError

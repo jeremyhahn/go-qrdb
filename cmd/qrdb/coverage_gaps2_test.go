@@ -402,9 +402,8 @@ func TestDaemonBinding_Restart_WithTrackedProcess(t *testing.T) {
 // implemented via injected function fields for complete update command coverage.
 type fullFnDatabaseService struct {
 	fnDatabaseService
-	updateRaftFn       func(name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
-	updateBarrierFn    func(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
-	updateConnectionFn func(name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
+	updateRaftFn    func(name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
+	updateBarrierFn func(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
 }
 
 func (m *fullFnDatabaseService) UpdateRaft(name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
@@ -417,13 +416,6 @@ func (m *fullFnDatabaseService) UpdateRaft(name string, cfg *database.DatabaseRa
 func (m *fullFnDatabaseService) UpdateBarrier(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	if m.updateBarrierFn != nil {
 		return m.updateBarrierFn(name, cfg)
-	}
-	return nil, &database.NotFoundError{Name: name}
-}
-
-func (m *fullFnDatabaseService) UpdateConnection(name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if m.updateConnectionFn != nil {
-		return m.updateConnectionFn(name, cfg)
 	}
 	return nil, &database.NotFoundError{Name: name}
 }
@@ -478,10 +470,6 @@ func (m *fullFnDatabaseService) UpdateRaftForTenant(_ context.Context, name stri
 
 func (m *fullFnDatabaseService) UpdateBarrierForTenant(_ context.Context, name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateBarrier(name, cfg)
-}
-
-func (m *fullFnDatabaseService) UpdateConnectionForTenant(_ context.Context, name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return m.UpdateConnection(name, cfg)
 }
 
 func (m *fullFnDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
@@ -643,9 +631,6 @@ func TestDatabaseUpdate_JSONFormat(t *testing.T) {
 		return info(name), nil
 	}
 	svc.updateBarrierFn = func(name string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
-		return info(name), nil
-	}
-	svc.updateConnectionFn = func(name string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 		return info(name), nil
 	}
 	for _, args := range [][]string{
