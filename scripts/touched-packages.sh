@@ -36,9 +36,18 @@
 #   - a .go path whose directory holds no .go file (a deleted package) prints
 #     ALL: its importers cannot be read from the work tree.
 # A renamed file counts at both ends (git diff --no-renames).
-# A package prints when it changed or its Imports, TestImports or XTestImports
-# (one `go list ./...` under `make -s print-build-tags`) name a changed
-# package. Nothing changed in Go prints nothing. $GO overrides `go`.
+# A package is selected when it changed or its Imports, TestImports or
+# XTestImports name a changed package in any listing: one `go list ./...`
+# under `make -s print-build-tags`, plus one per line `<tag> <WITH_flag>=1` of
+# `make -s print-optional-test-tags` under those tags and <tag> (qrdb_fts:
+# pkg/fts imports pkg/storage only under it). A selected package prints
+# ./<dir> when the default listing has it; it also prints
+# `./<dir> <WITH_flag>=1` when its file set (GoFiles, TestGoFiles,
+# XTestGoFiles) under <tag> differs from the default one or only exists under
+# <tag>. `make test-pkg PKG=$line`, unquoted, turns that second word into the
+# make variable that adds <tag> to BUILD_TAGS. Nothing changed in Go prints
+# nothing. The listings run with -mod=readonly, so go.sum is never written.
+# $GO overrides `go`.
 
 set -euo pipefail
 
@@ -147,18 +156,56 @@ for d in "${!changed[@]}"; do
 	fi
 done
 
-listing=$("$GO" list -tags "$tags" -f '{{.ImportPath}}{{"\t"}}{{join .Imports " "}} {{join .TestImports " "}} {{join .XTestImports " "}}' ./...)
+# One line per package: import path, its Imports/TestImports/XTestImports, and
+# its file set (GoFiles/TestGoFiles/XTestGoFiles). -mod=readonly: reading the
+# graph never writes go.sum, whatever GOFLAGS says.
+fmt='{{.ImportPath}}{{"\t"}}{{join .Imports " "}} {{join .TestImports " "}} {{join .XTestImports " "}}{{"\t"}}{{join .GoFiles " "}} {{join .TestGoFiles " "}} {{join .XTestGoFiles " "}}'
+list() {
+	"$GO" list -mod=readonly -tags "$1" -f "$fmt" ./...
+}
+
+# hit <pkg> <imports>: true when <pkg> changed or imports a changed package.
+hit() {
+	[ -z "${want[$1]:-}" ] || return 0
+	local i
+	for i in $2; do
+		[ -z "${want[$i]:-}" ] || return 0
+	done
+	return 1
+}
+
+default=$(list "$tags")
+optional=$(make -s --no-print-directory print-optional-test-tags)
 
 {
-	for d in "${!changed[@]}"; do
-		if [ "$d" = . ]; then echo .; else echo "./$d"; fi
-	done
-	while IFS=$'\t' read -r pkg imports; do
-		for i in $imports; do
-			if [ -n "${want[$i]:-}" ]; then
-				rel "$pkg"
-				break
+	declare -A files=() sel=() listed=()
+	while IFS=$'\t' read -r pkg imports fs; do
+		[ -n "$pkg" ] || continue
+		files["$pkg"]=$fs
+		listed["$pkg"]=1
+		if hit "$pkg" "$imports"; then sel["$pkg"]=1; fi
+	done <<<"$default"
+	# Each supported default-off tag: a package selected under it whose file
+	# set differs from the default one (or that only exists under the tag)
+	# also prints `./<dir> <WITH_flag>=1`, so `make test-pkg PKG=$line`
+	# compiles it with the tag.
+	while read -r tag flag; do
+		[ -n "$tag" ] || continue
+		while IFS=$'\t' read -r pkg imports fs; do
+			[ -n "$pkg" ] || continue
+			listed["$pkg"]=1
+			hit "$pkg" "$imports" || continue
+			sel["$pkg"]=1
+			if [ -z "${files[$pkg]+x}" ] || [ "${files[$pkg]}" != "$fs" ]; then
+				echo "$(rel "$pkg") $flag"
 			fi
-		done
-	done <<<"$listing"
+		done <<<"$(list "$tags $tag")"
+	done <<<"$optional"
+	# A changed directory no listing shows still prints, as before.
+	for p in "${!want[@]}"; do
+		[ -n "${listed[$p]:-}" ] || rel "$p"
+	done
+	for p in "${!sel[@]}"; do
+		[ -z "${files[$p]+x}" ] || rel "$p"
+	done
 } | sort -u

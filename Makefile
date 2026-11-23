@@ -1318,6 +1318,17 @@ FTS_TAGS := $(strip $(BUILD_TAGS)) qrdb_fts
 test-fts:
 	$(GOTEST) -tags "$(FTS_TAGS)" $(PKG_FTS)
 
+# print-optional-test-tags prints one line per supported default-off build tag:
+# `<tag> <WITH_flag>=1`, where the WITH_ flag adds the tag to BUILD_TAGS (so
+# `make test-pkg PKG=<dir> WITH_QRDB_FTS=1` compiles under the same tags as
+# test-fts). scripts/touched-packages.sh reads the importer graph under each
+# tag and prints `./<dir> <WITH_flag>=1` for packages with files behind it.
+# Every entry must be a rung in SUPPORTED_TAG_SETS (print-tag-sets); gpu and
+# qrdbd_webui are not rungs and stay out.
+.PHONY: print-optional-test-tags
+print-optional-test-tags:
+	@echo "qrdb_fts WITH_QRDB_FTS=1"
+
 .PHONY: test-sql
 test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql test-sql-query test-sql-catalog test-sql-privilege test-sql-pgcatalog
 
@@ -2768,7 +2779,10 @@ test-publication-bound:
 # scripts/touched-features.sh and scripts/touched-packages.sh print what a diff
 # must re-run: the integration-test-<feature> targets (from the features.mk
 # table, via print-integration-feature-map) and the changed packages plus their
-# direct importers. Their suites feed paths through --files.
+# direct importers, read under BUILD_TAGS and under each print-optional-test-tags
+# tag; a package with files behind such a tag also prints a tagged line
+# `./<dir> WITH_<FLAG>=1` for `make test-pkg PKG=`. Their suites feed paths
+# through --files.
 .PHONY: test-touched-features test-touched-packages
 test-touched-features:
 	@./scripts/touched-features_test.sh
