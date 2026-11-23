@@ -111,6 +111,13 @@ type Descriptor struct {
 	// existed has no Audit, keeps its own entries, and is never
 	// reinterpreted (docs/databases/architecture.md §7).
 	Audit bool `json:"audit,omitempty"`
+
+	// Incarnation is the incarnation of the database the log was created in
+	// (database.Database.Incarnation), set by the log service, never by the
+	// caller. DropDatabase deletes only logs of the incarnation it names, so
+	// a stale drop leaves the logs of a database created again under the
+	// name alone. Empty where the database recorded none.
+	Incarnation string `json:"incarnation,omitempty"`
 }
 
 // Key returns the log's key at version.
@@ -625,7 +632,7 @@ func (c *Chain) ExpireBodies(w Writer, id LogID, cutoff uint64) (expired int, er
 // last, in the call that deletes its final other record, so a node restored
 // between two calls finds every remaining log whole (restoreLogs refuses a
 // descriptor without a head).
-func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database string) (deleted int, err error) {
+func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database, incarnation string) (deleted int, err error) {
 	if tenantID == "" || database == "" || strings.ContainsRune(tenantID, '/') || strings.ContainsRune(database, '/') {
 		return 0, &InvalidLogNameError{Name: tenantID + "/" + database}
 	}
@@ -659,6 +666,17 @@ func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database stri
 		if id == audit {
 			ok = it.Seek(prefixEnd(idPrefix))
 			continue
+		}
+		if !seen || id != current {
+			other, err := c.otherIncarnation(r, id, incarnation)
+			if err != nil {
+				_ = it.Close()
+				return deleted, err
+			}
+			if other {
+				ok = it.Seek(prefixEnd(idPrefix))
+				continue
+			}
 		}
 		if seen && id != current {
 			complete = append(complete, current)
@@ -700,6 +718,27 @@ func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database stri
 		delete(c.logs, id)
 	}
 	return deleted, nil
+}
+
+// otherIncarnation reports whether log id was created in another incarnation
+// of its database than incarnation: a log that recorded one, and a different
+// one, belongs to a database created again under the name since, and a drop
+// of the earlier incarnation leaves it alone. A log that recorded none was
+// created before incarnations were recorded and goes with any drop.
+func (c *Chain) otherIncarnation(r storage.Reader, id LogID, incarnation string) (bool, error) {
+	dk := descriptorKey(id)
+	raw, err := c.stagedGet(r)(dk)
+	if err != nil {
+		return false, &TableReadError{Err: err}
+	}
+	if raw == nil {
+		return false, nil
+	}
+	var desc Descriptor
+	if err := json.Unmarshal(raw, &desc); err != nil {
+		return false, &CorruptTableError{Key: string(dk), Reason: "malformed descriptor"}
+	}
+	return desc.Incarnation != "" && desc.Incarnation != incarnation, nil
 }
 
 // AuditDatabase and AuditLog name a tenant's audit instance: the log AuditLog

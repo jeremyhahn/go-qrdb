@@ -340,6 +340,12 @@ func logRead[T any](ctx context.Context, route *logRoute, id vlog.LogID, req vlo
 	if err != nil {
 		return zero, err
 	}
+	return targetRead[T](ctx, target, req)
+}
+
+// targetRead answers one vlog.Request from target.
+func targetRead[T any](ctx context.Context, target logTarget, req vlog.Request) (T, error) {
+	var zero T
 	result, err := target.read(ctx, req)
 	if err != nil {
 		return zero, err
@@ -376,6 +382,12 @@ func (s *logService) CreateLog(ctx context.Context, req *CreateLogRequest) (*Cre
 	g, err := s.admit(ctx, id, logKeyFeatures)
 	if err != nil {
 		return nil, err
+	}
+	// The log records the incarnation of the database it is created in, so
+	// a stale drop of an earlier incarnation leaves it alone (vlog.Chain.
+	// DropDatabase). A name no database holds records none.
+	if db, err := s.route.databases.GetOwned(id.Database, id.TenantID); err == nil {
+		desc.Incarnation = db.Incarnation()
 	}
 	resp := &CreateLogResponse{ID: id}
 	encode := func() ([]byte, error) { return protocol.EncodeVerifiableLogCreate(id, desc) }
@@ -635,31 +647,28 @@ func (s *logService) ExpireBodies(ctx context.Context, req *ExpireBodiesRequest)
 	return &ExpireBodiesResponse{Expired: expired}, nil
 }
 
-// DropDatabaseLogs reclaims every log of tenantID's dropped database where
-// its name now routes: the tenant's Raft group (a barrier tenant's home group,
-// else the system shard) or a barrier tenant's standalone barrier store. A
-// barrier database's own store went with its backend and holds nothing here.
-// The command is bounded (vlog.Chain.DropDatabase), so it is proposed again
-// until a step deletes nothing. Called once the database's drop has
-// committed, so a database created again under the name sees no old log or
-// key. A group where the verifiable log is not active holds no logs.
-func (s *logService) DropDatabaseLogs(ctx context.Context, tenantID, name string) error {
-	g, err := s.admit(ctx, vlog.LogID{TenantID: tenantID, Database: name}, logFeatures)
-	if err != nil {
-		if _, inactive := errors.AsType[*LogFeatureNotActiveError](err); inactive {
-			return nil
-		}
-		// A volume- or raft-isolated tenant has no verifiable logs: its
-		// audit trail cannot be placed, so no log of it was ever created.
-		if _, dedicated := errors.AsType[*DedicatedTenantAuditNotSupportedError](err); dedicated {
-			return nil
-		}
+// DropDatabaseLogs reclaims every log of tenantID's database name, of the
+// dropped incarnation, where its name routes once the database's own backend
+// is gone: the tenant's Raft group (a barrier tenant's home group, else the
+// system shard) or a barrier tenant's standalone barrier store. A barrier
+// database's own store goes with its backend and holds nothing here. The
+// command is bounded (vlog.Chain.DropDatabase), so it is proposed again until
+// a step deletes nothing. database.Manager runs it inside the drop's fenced
+// teardown, before the catalog record is deleted and the name released, so a
+// failure leaves the drop retryable and a database created again under the
+// name sees no old log or key. A database with no logs proposes nothing; one
+// with logs is refused with *LogFeatureNotActiveError while
+// featuregate.VerifiableLogDrop is not active on its group, because a replica
+// without the sub-type would halt on it.
+func (s *logService) DropDatabaseLogs(ctx context.Context, tenantID, name, incarnation string) error {
+	g, ok, err := s.dropGroup(ctx, tenantID, name)
+	if err != nil || !ok {
 		return err
 	}
 	id := vlog.LogID{TenantID: tenantID, Database: name}
 	for {
 		deleted, err := g.propose(ctx, id, func() ([]byte, error) {
-			return protocol.EncodeVerifiableLogDropDatabase(tenantID, name)
+			return protocol.EncodeVerifiableLogDropDatabase(tenantID, name, incarnation)
 		})
 		if err != nil {
 			return err
@@ -671,4 +680,48 @@ func (s *logService) DropDatabaseLogs(ctx context.Context, tenantID, name string
 			return err
 		}
 	}
+}
+
+// CheckDropDatabaseLogs answers, before a drop starts, the refusal
+// DropDatabaseLogs would give inside its teardown: nil when the database has
+// no logs to reclaim or its group can reclaim them, else the typed error. A
+// drop checked first is refused with nothing fenced or changed.
+func (s *logService) CheckDropDatabaseLogs(ctx context.Context, tenantID, name string) error {
+	_, _, err := s.dropGroup(ctx, tenantID, name)
+	return err
+}
+
+// dropGroup admits the reclamation of tenantID's database name's logs. ok is
+// false when there is nothing to reclaim: a group where the verifiable log is
+// not active, a volume- or raft-isolated tenant (whose audit trail cannot be
+// placed, so no log of it was ever created), or a database with no logs.
+func (s *logService) dropGroup(ctx context.Context, tenantID, name string) (logGroup, bool, error) {
+	target, err := s.route.raft(ctx, tenantID)
+	if err != nil {
+		if _, dedicated := errors.AsType[*DedicatedTenantAuditNotSupportedError](err); dedicated {
+			return logGroup{}, false, nil
+		}
+		return logGroup{}, false, err
+	}
+	if !target.featureEnabled(featuregate.VerifiableLog) {
+		return logGroup{}, false, nil
+	}
+	if err := target.serving(); err != nil {
+		return logGroup{}, false, err
+	}
+	logs, err := targetRead[[]vlog.LogID](ctx, target, vlog.ListRequest{TenantID: tenantID, Database: name})
+	if err != nil {
+		return logGroup{}, false, err
+	}
+	if len(logs) == 0 {
+		return logGroup{}, false, nil
+	}
+	if !target.featureEnabled(featuregate.VerifiableLogDrop) {
+		var shardID uint64
+		if rt, ok := target.(raftTarget); ok {
+			shardID = rt.shardID
+		}
+		return logGroup{}, false, &LogFeatureNotActiveError{TenantID: tenantID, ShardID: shardID, Feature: featuregate.VerifiableLogDrop}
+	}
+	return logGroup{target: target}, true, nil
 }

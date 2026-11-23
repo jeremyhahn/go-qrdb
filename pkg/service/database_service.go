@@ -937,23 +937,37 @@ func (s *DatabaseService) SetRaftHost(h RaftHost) { s.raftHost = h }
 // LogReclaimer deletes every verifiable log a dropped database held, so a
 // database later created under the same name starts with no logs.
 type LogReclaimer interface {
-	DropDatabaseLogs(ctx context.Context, tenantID, database string) error
+	database.DatabaseLogReclaimer
+	// CheckDropDatabaseLogs refuses, before anything is fenced, a drop
+	// whose logs DropDatabaseLogs could not reclaim.
+	CheckDropDatabaseLogs(ctx context.Context, tenantID, database string) error
 }
 
 // SetLogReclaimer wires the verifiable-log service that reclaims a dropped
-// database's logs. Drop and DropForTenant call it once the manager drop has
-// committed; its failure is returned, and a retried drop reclaims again (the
-// reclaim is idempotent).
-func (s *DatabaseService) SetLogReclaimer(r LogReclaimer) { s.logReclaimer = r }
+// database's logs. The manager runs it inside the drop's fenced teardown,
+// before the catalog record is deleted and the name released
+// (database.Manager.SetLogReclaimer), so a failure leaves the database
+// fenced and a retried drop reclaims again (the reclaim is idempotent). Drop
+// and DropForTenant check it first, so a drop it would refuse is refused
+// before anything is fenced.
+func (s *DatabaseService) SetLogReclaimer(r LogReclaimer) {
+	s.logReclaimer = r
+	if r == nil {
+		s.manager.SetLogReclaimer(nil)
+		return
+	}
+	s.manager.SetLogReclaimer(r)
+}
 
-// reclaimLogs deletes name's verifiable logs through the wired reclaimer. A
-// drop with no known tenant or no reclaimer has no logs to reclaim.
-func (s *DatabaseService) reclaimLogs(ctx context.Context, tenantID, name string) error {
+// checkLogs refuses a drop whose verifiable logs the wired reclaimer could
+// not reclaim. A drop with no known tenant or no reclaimer has no logs to
+// reclaim.
+func (s *DatabaseService) checkLogs(ctx context.Context, tenantID, name string) error {
 	if s.logReclaimer == nil || tenantID == "" {
 		return nil
 	}
-	if err := s.logReclaimer.DropDatabaseLogs(ctx, tenantID, name); err != nil {
-		return fmt.Errorf("reclaim the verifiable logs of dropped database %q: %w", name, err)
+	if err := s.logReclaimer.CheckDropDatabaseLogs(ctx, tenantID, name); err != nil {
+		return fmt.Errorf("reclaim the verifiable logs of database %q: %w", name, err)
 	}
 	return nil
 }
@@ -1088,6 +1102,10 @@ func (s *DatabaseService) Drop(ctx context.Context, name string) error {
 		}
 	}
 
+	if err := s.checkLogs(ctx, tenantID, name); err != nil {
+		return err
+	}
+
 	var hadPlacement, owned bool
 	if tenantID != "" {
 		var err error
@@ -1101,9 +1119,6 @@ func (s *DatabaseService) Drop(ctx context.Context, name string) error {
 		if hadPlacement && owned && isReclamationFailure(err) {
 			s.clearRaftPlacementFence(ctx, tenantID, name)
 		}
-		return err
-	}
-	if err := s.reclaimLogs(ctx, tenantID, name); err != nil {
 		return err
 	}
 
@@ -2201,6 +2216,10 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 		return dbErr
 	}
 
+	if err := s.checkLogs(ctx, tenantID, name); err != nil {
+		return err
+	}
+
 	hadPlacement, owned, err := s.dropRaftPlacement(ctx, tenantID, name)
 	if err != nil {
 		return err
@@ -2214,9 +2233,6 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 				return cerr
 			}
 			if committed {
-				if err := s.reclaimLogs(ctx, tenantID, name); err != nil {
-					return err
-				}
 				return s.finishRaftPlacementTeardown(ctx, tenantID, name)
 			}
 			// Defense in depth: the upfront GetForTenantIgnoringFence check
@@ -2240,10 +2256,6 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 		if wasDedicatedWAL {
 			_, _ = s.quotaUsage.DecrementQuotaUsage(ctx, tenantID, quota.ResourceDedicatedWALGroups, 1)
 		}
-	}
-
-	if err := s.reclaimLogs(ctx, tenantID, name); err != nil {
-		return err
 	}
 
 	// Phase 4c-1b: remove the database's placement entry so the reconciler

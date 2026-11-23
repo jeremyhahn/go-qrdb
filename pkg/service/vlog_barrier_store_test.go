@@ -299,7 +299,7 @@ func TestLogService_DropDatabaseLogsOnAStandaloneBarrierReclaimsEveryLog(t *test
 	if _, err := f.svc.CreateLog(f.ctx, &CreateLogRequest{LogRef: second, Origin: "example.test/vault/second", SigningKeyType: vlog.SignatureEd25519}); err != nil {
 		t.Fatalf("CreateLog second: %v", err)
 	}
-	if err := f.svc.(*logService).DropDatabaseLogs(f.ctx, "vault", barrierTenantRef.Database); err != nil {
+	if err := f.svc.(*logService).DropDatabaseLogs(f.ctx, "vault", barrierTenantRef.Database, ""); err != nil {
 		t.Fatalf("DropDatabaseLogs: %v", err)
 	}
 	listed, err := f.svc.ListLogs(f.ctx, &ListLogsRequest{Database: barrierTenantRef.Database})
@@ -310,7 +310,7 @@ func TestLogService_DropDatabaseLogsOnAStandaloneBarrierReclaimsEveryLog(t *test
 	if _, err := f.svc.Head(f.ctx, &HeadRequest{LogRef: barrierTenantRef}); !errors.As(err, &notFound) {
 		t.Fatalf("Head of the dropped log = %v; want LogNotFoundError", err)
 	}
-	if err := f.svc.(*logService).DropDatabaseLogs(f.ctx, "vault", barrierTenantRef.Database); err != nil {
+	if err := f.svc.(*logService).DropDatabaseLogs(f.ctx, "vault", barrierTenantRef.Database, ""); err != nil {
 		t.Fatalf("DropDatabaseLogs of an already reclaimed database: %v", err)
 	}
 	f.createAndAppend(t, [][]byte{[]byte("fresh")})

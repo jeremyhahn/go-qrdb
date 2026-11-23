@@ -790,7 +790,7 @@ func TestChain_DropDatabase_ReclaimsEveryLogOfTheDatabase(t *testing.T) {
 		}
 	}
 
-	first, err := c.DropDatabase(stg, stg, testLog.TenantID, testLog.Database)
+	first, err := c.DropDatabase(stg, stg, testLog.TenantID, testLog.Database, "")
 	if err != nil || first < MaxPrunePerCommand {
 		t.Fatalf("first DropDatabase = %d, %v; want at least the cap %d", first, err, MaxPrunePerCommand)
 	}
@@ -799,7 +799,7 @@ func TestChain_DropDatabase_ReclaimsEveryLogOfTheDatabase(t *testing.T) {
 	}
 	commands := 1
 	for {
-		got, err := c.DropDatabase(stg, stg, testLog.TenantID, testLog.Database)
+		got, err := c.DropDatabase(stg, stg, testLog.TenantID, testLog.Database, "")
 		if err != nil {
 			t.Fatalf("DropDatabase: %v", err)
 		}
@@ -846,7 +846,7 @@ func TestChain_DropDatabase_ReclaimsEveryLogOfTheDatabase(t *testing.T) {
 func TestChain_DropDatabase_RefusesAnInvalidName(t *testing.T) {
 	c, stg := mustCreate(t, false)
 	for _, name := range [][2]string{{"", "ledger"}, {"acme", ""}, {"acme", "a/b"}} {
-		if _, err := c.DropDatabase(stg, stg, name[0], name[1]); !errors.As(err, new(*InvalidLogNameError)) {
+		if _, err := c.DropDatabase(stg, stg, name[0], name[1], ""); !errors.As(err, new(*InvalidLogNameError)) {
 			t.Errorf("DropDatabase(%q, %q) = %v; want InvalidLogNameError", name[0], name[1], err)
 		}
 	}

@@ -220,20 +220,24 @@ func EncodeVerifiableLogExpireBodies(id vlog.LogID, cutoff uint64) ([]byte, erro
 
 // EncodeVerifiableLogDropDatabase encodes one bounded step of reclaiming the
 // logs of tenantID's dropped database. The log name field is empty: the
-// command names a database, not one log.
-func EncodeVerifiableLogDropDatabase(tenantID, database string) ([]byte, error) {
+// command names a database, not one log. incarnation is the dropped
+// database's (database.Database.Incarnation): apply deletes only logs created
+// under it, or under no recorded incarnation, so a stale drop leaves the logs
+// of a database created again under the name alone.
+func EncodeVerifiableLogDropDatabase(tenantID, database, incarnation string) ([]byte, error) {
 	if tenantID == "" || database == "" {
 		return nil, &InvalidCommandError{Reason: "verifiable log drop database: tenant id and database required"}
 	}
 	for _, f := range []struct{ name, value string }{
 		{"verifiable log tenant id", tenantID},
 		{"verifiable log database", database},
+		{"verifiable log database incarnation", incarnation},
 	} {
 		if err := checkUint16Len(len(f.value), f.name); err != nil {
 			return nil, err
 		}
 	}
-	size, err := addSizes(headerSize, 1, 2, len(tenantID), 2, len(database), 2)
+	size, err := addSizes(headerSize, 1, 2, len(tenantID), 2, len(database), 2, 2, len(incarnation))
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +247,9 @@ func EncodeVerifiableLogDropDatabase(tenantID, database string) ([]byte, error) 
 	buf = append(buf, tenantID...)
 	buf = binary.BigEndian.AppendUint16(buf, uint16(len(database)))
 	buf = append(buf, database...)
-	return binary.BigEndian.AppendUint16(buf, 0), nil
+	buf = binary.BigEndian.AppendUint16(buf, 0)
+	buf = binary.BigEndian.AppendUint16(buf, uint16(len(incarnation)))
+	return append(buf, incarnation...), nil
 }
 
 // encodeVerifiableLog frames one OpVerifiableLog command: the op byte, the
@@ -421,16 +427,21 @@ func DecodeVerifiableLogExpireBodies(tenantID string, body []byte) (vlog.LogID, 
 }
 
 // DecodeVerifiableLogDropDatabase decodes the body
-// EncodeVerifiableLogDropDatabase wrote, returning the database it names.
-func DecodeVerifiableLogDropDatabase(tenantID string, body []byte) (string, error) {
+// EncodeVerifiableLogDropDatabase wrote, returning the database it names and
+// that database's incarnation.
+func DecodeVerifiableLogDropDatabase(tenantID string, body []byte) (database, incarnation string, err error) {
 	id, rest, err := decodeLogName(tenantID, body)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	if id.Database == "" || id.Log != "" || len(rest) != 0 {
-		return "", &InvalidCommandError{Reason: "verifiable log drop database: malformed"}
+	if id.Database == "" || id.Log != "" || len(rest) < 2 {
+		return "", "", &InvalidCommandError{Reason: "verifiable log drop database: malformed"}
 	}
-	return id.Database, nil
+	n := int(binary.BigEndian.Uint16(rest))
+	if len(rest) != 2+n {
+		return "", "", &InvalidCommandError{Reason: "verifiable log drop database: malformed"}
+	}
+	return id.Database, string(rest[2:]), nil
 }
 
 // decodeLogName reads the database and log names every body opens with and

@@ -275,30 +275,35 @@ func TestEncodeVerifiableLogExpireBodies_RoundTrips(t *testing.T) {
 }
 
 func TestEncodeVerifiableLogDropDatabase_RoundTrips(t *testing.T) {
-	cmd, err := EncodeVerifiableLogDropDatabase(testLogID.TenantID, testLogID.Database)
-	if err != nil {
-		t.Fatalf("EncodeVerifiableLogDropDatabase: %v", err)
+	for _, incarnation := range []string{"inc-1", ""} {
+		cmd, err := EncodeVerifiableLogDropDatabase(testLogID.TenantID, testLogID.Database, incarnation)
+		if err != nil {
+			t.Fatalf("EncodeVerifiableLogDropDatabase: %v", err)
+		}
+		if len(cmd) != cap(cmd) {
+			t.Fatalf("len = %d, cap = %d: size precomputed wrongly", len(cmd), cap(cmd))
+		}
+		tenantID, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeDropDatabase)
+		database, gotIncarnation, err := DecodeVerifiableLogDropDatabase(tenantID, body)
+		if err != nil {
+			t.Fatalf("DecodeVerifiableLogDropDatabase: %v", err)
+		}
+		if tenantID != testLogID.TenantID || database != testLogID.Database || gotIncarnation != incarnation {
+			t.Fatalf("got (%q, %q, %q)", tenantID, database, gotIncarnation)
+		}
+		if _, _, err := DecodeVerifiableLogDropDatabase(tenantID, body[:len(body)-1]); incarnation != "" && err == nil {
+			t.Fatal("DecodeVerifiableLogDropDatabase accepted a truncated incarnation")
+		}
 	}
-	if len(cmd) != cap(cmd) {
-		t.Fatalf("len = %d, cap = %d: size precomputed wrongly", len(cmd), cap(cmd))
-	}
-	tenantID, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeDropDatabase)
-	database, err := DecodeVerifiableLogDropDatabase(tenantID, body)
-	if err != nil {
-		t.Fatalf("DecodeVerifiableLogDropDatabase: %v", err)
-	}
-	if tenantID != testLogID.TenantID || database != testLogID.Database {
-		t.Fatalf("got (%q, %q)", tenantID, database)
-	}
-	if _, err := EncodeVerifiableLogDropDatabase(testLogID.TenantID, ""); err == nil {
+	if _, err := EncodeVerifiableLogDropDatabase(testLogID.TenantID, "", "inc-1"); err == nil {
 		t.Fatal("EncodeVerifiableLogDropDatabase with no database encoded")
 	}
 	logCmd, err := EncodeVerifiableLogExpireBodies(testLogID, 1)
 	if err != nil {
 		t.Fatalf("EncodeVerifiableLogExpireBodies: %v", err)
 	}
-	tenantID, body = splitVerifiableLog(t, logCmd, VerifiableLogSubtypeExpireBodies)
-	if _, err := DecodeVerifiableLogDropDatabase(tenantID, body); err == nil {
+	tenantID, body := splitVerifiableLog(t, logCmd, VerifiableLogSubtypeExpireBodies)
+	if _, _, err := DecodeVerifiableLogDropDatabase(tenantID, body); err == nil {
 		t.Fatal("DecodeVerifiableLogDropDatabase accepted a command naming a log")
 	}
 }

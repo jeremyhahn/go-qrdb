@@ -1338,8 +1338,8 @@ func TestLogService_ExpireBodies_Refusals(t *testing.T) {
 
 // TestLogService_DropDatabaseLogs_ProposesUntilNothingRemains proves the
 // reclaim of a dropped database on its raft group proposes the bounded
-// drop-database command again until an apply deletes nothing, and that a
-// refused apply is returned.
+// drop-database command, carrying the dropped incarnation, again until an
+// apply deletes nothing, and that a refused apply is returned.
 func TestLogService_DropDatabaseLogs_ProposesUntilNothingRemains(t *testing.T) {
 	deletes := []uint64{uint64(vlog.MaxPrunePerCommand), 3, 0}
 	var cmds [][]byte
@@ -1354,9 +1354,10 @@ func TestLogService_DropDatabaseLogs_ProposesUntilNothingRemains(t *testing.T) {
 		proposeWithModeFn: func(ctx context.Context, shard uint64, cmd []byte, _ writemode.Mode) (sm.Result, error) {
 			return propose(ctx, shard, cmd)
 		},
+		syncReadFn: oneLogListed,
 	}
 	svc := newTestLogService(t, host, nil).(*logService)
-	if err := svc.DropDatabaseLogs(acmeCtx(), "acme", testLogRef.Database); err != nil {
+	if err := svc.DropDatabaseLogs(acmeCtx(), "acme", testLogRef.Database, "inc-1"); err != nil {
 		t.Fatalf("DropDatabaseLogs: %v", err)
 	}
 	if len(cmds) != 3 {
@@ -1364,40 +1365,116 @@ func TestLogService_DropDatabaseLogs_ProposesUntilNothingRemains(t *testing.T) {
 	}
 	for _, cmd := range cmds {
 		subtype, tenantID, body := decodeLogCommand(t, cmd)
-		database, err := protocol.DecodeVerifiableLogDropDatabase(tenantID, body)
-		if subtype != protocol.VerifiableLogSubtypeDropDatabase || tenantID != "acme" || err != nil || database != testLogRef.Database {
-			t.Fatalf("decoded drop = %d, %q, %q, %v", subtype, tenantID, database, err)
+		database, incarnation, err := protocol.DecodeVerifiableLogDropDatabase(tenantID, body)
+		if subtype != protocol.VerifiableLogSubtypeDropDatabase || tenantID != "acme" || err != nil || database != testLogRef.Database || incarnation != "inc-1" {
+			t.Fatalf("decoded drop = %d, %q, %q, %q, %v", subtype, tenantID, database, incarnation, err)
 		}
 	}
 
 	refusal := protocol.EncodeAppError(protocol.AppErrorConflict, "vlog: refused")
 	refusing, _ := recordingHost(sm.Result{Data: refusal})
+	refusing.syncReadFn = oneLogListed
 	var conflict *CommandConflictError
-	if err := newTestLogService(t, refusing, nil).(*logService).DropDatabaseLogs(acmeCtx(), "acme", testLogRef.Database); !errors.As(err, &conflict) {
+	if err := newTestLogService(t, refusing, nil).(*logService).DropDatabaseLogs(acmeCtx(), "acme", testLogRef.Database, "inc-1"); !errors.As(err, &conflict) {
 		t.Fatalf("refused drop = %v; want CommandConflictError", err)
 	}
 }
 
-// stubLogReclaimer records every reclaim and returns err.
-type stubLogReclaimer struct {
-	calls [][2]string
-	err   error
+// oneLogListed answers a list read with one log of the database named.
+func oneLogListed(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
+	req, ok := query.(vlog.ListRequest)
+	if !ok {
+		return nil, errors.New("unexpected read")
+	}
+	return []vlog.LogID{{TenantID: req.TenantID, Database: req.Database, Log: "l"}}, nil
 }
 
-func (r *stubLogReclaimer) DropDatabaseLogs(_ context.Context, tenantID, database string) error {
-	r.calls = append(r.calls, [2]string{tenantID, database})
+// dropGateOffHost is a raft host on which every feature but
+// featuregate.VerifiableLogDrop is active.
+type dropGateOffHost struct{ *mockHost }
+
+func (h *dropGateOffHost) FeatureEnabled(_ uint64, f feature.Feature) bool {
+	return f != featuregate.VerifiableLogDrop
+}
+
+// TestLogService_DropDatabaseLogs_GateOff proves a drop on a group where
+// featuregate.VerifiableLogDrop is not active proposes nothing: a database
+// with logs is refused with the gate's typed error (before and inside the
+// teardown), and one with no logs needs no proposal and succeeds.
+func TestLogService_DropDatabaseLogs_GateOff(t *testing.T) {
+	for _, listed := range []bool{true, false} {
+		inner, cmds := recordingHost(sm.Result{})
+		inner.syncReadFn = func(ctx context.Context, shard uint64, query interface{}) (interface{}, error) {
+			if listed {
+				return oneLogListed(ctx, shard, query)
+			}
+			return []vlog.LogID{}, nil
+		}
+		built, err := NewLogService(LogServiceConfig{
+			Resolver:  &fixedShardResolver{host: &dropGateOffHost{mockHost: inner}, shardID: 4},
+			Databases: noDatabases(t),
+			Signers:   &staticSignerProvider{},
+		})
+		if err != nil {
+			t.Fatalf("NewLogService: %v", err)
+		}
+		svc := built.(*logService)
+		for name, drop := range map[string]func() error{
+			"check": func() error { return svc.CheckDropDatabaseLogs(acmeCtx(), "acme", testLogRef.Database) },
+			"drop":  func() error { return svc.DropDatabaseLogs(acmeCtx(), "acme", testLogRef.Database, "inc-1") },
+		} {
+			err := drop()
+			var inactive *LogFeatureNotActiveError
+			if listed && (!errors.As(err, &inactive) || inactive.Feature != featuregate.VerifiableLogDrop) {
+				t.Fatalf("%s with logs = %v; want LogFeatureNotActiveError for %s", name, err, featuregate.VerifiableLogDrop)
+			}
+			if !listed && err != nil {
+				t.Fatalf("%s with no logs = %v; want nil", name, err)
+			}
+		}
+		if len(*cmds) != 0 {
+			t.Fatalf("a drop with the gate off proposed %d commands (logs listed %v), want none", len(*cmds), listed)
+		}
+	}
+}
+
+// stubLogReclaimer records every reclaim and check and returns err / checkErr.
+type stubLogReclaimer struct {
+	calls    [][2]string
+	checks   int
+	inTear   []bool
+	err      error
+	checkErr error
+	svc      *DatabaseService
+}
+
+func (r *stubLogReclaimer) DropDatabaseLogs(_ context.Context, tenantID, name, _ string) error {
+	r.calls = append(r.calls, [2]string{tenantID, name})
+	if r.svc != nil {
+		// Inside the fenced teardown the database is still in the catalog,
+		// fenced: its name is not released yet.
+		_, err := r.svc.manager.Get(name)
+		var dropping *database.DroppingError
+		r.inTear = append(r.inTear, errors.As(err, &dropping))
+	}
 	return r.err
 }
 
+func (r *stubLogReclaimer) CheckDropDatabaseLogs(context.Context, string, string) error {
+	r.checks++
+	return r.checkErr
+}
+
 // TestDatabaseService_DropReclaimsTheDatabasesLogs proves Drop and
-// DropForTenant reclaim the dropped database's verifiable logs once the
-// manager drop commits, and return a failed reclaim instead of reporting the
-// drop done.
+// DropForTenant reclaim the dropped database's verifiable logs inside the
+// manager's fenced teardown, before the name is released; that a failed
+// reclaim leaves the database droppable on retry; and that a refused check
+// refuses the drop with nothing fenced.
 func TestDatabaseService_DropReclaimsTheDatabasesLogs(t *testing.T) {
 	ctx := tenantCtx("tenant-delta")
 	for _, admin := range []bool{false, true} {
 		svc := newTestDatabaseService(t).(*DatabaseService)
-		r := &stubLogReclaimer{}
+		r := &stubLogReclaimer{svc: svc}
 		svc.SetLogReclaimer(r)
 		if _, err := svc.CreateForTenant(ctx, testDBConfig("logged")); err != nil {
 			t.Fatalf("CreateForTenant: %v", err)
@@ -1411,13 +1488,18 @@ func TestDatabaseService_DropReclaimsTheDatabasesLogs(t *testing.T) {
 		if err := drop(); err != nil {
 			t.Fatalf("drop (admin %v): %v", admin, err)
 		}
-		if len(r.calls) != 1 || r.calls[0] != [2]string{"tenant-delta", "logged"} {
-			t.Fatalf("reclaims (admin %v) = %v; want one for tenant-delta/logged", admin, r.calls)
+		if len(r.calls) != 1 || r.calls[0] != [2]string{"tenant-delta", "logged"} || r.checks != 1 {
+			t.Fatalf("reclaims (admin %v) = %v, checks %d; want one of each for tenant-delta/logged", admin, r.calls, r.checks)
+		}
+		if !r.inTear[0] {
+			t.Fatalf("reclaim (admin %v) ran after the database left the catalog; want it inside the fenced teardown", admin)
 		}
 		if _, err := svc.Get("logged"); err == nil {
 			t.Fatalf("the database survived its drop (admin %v)", admin)
 		}
 
+		// A failed reclaim fails the drop and leaves the database fenced
+		// in the catalog, so a retry finishes it.
 		failing := &stubLogReclaimer{err: errors.New("reclaim refused")}
 		svc.SetLogReclaimer(failing)
 		if _, err := svc.CreateForTenant(ctx, testDBConfig("logged")); err != nil {
@@ -1425,6 +1507,35 @@ func TestDatabaseService_DropReclaimsTheDatabasesLogs(t *testing.T) {
 		}
 		if err := drop(); !errors.Is(err, failing.err) {
 			t.Fatalf("drop with a failing reclaim (admin %v) = %v; want the reclaim error", admin, err)
+		}
+		var dropping *database.DroppingError
+		if _, err := svc.manager.Get("logged"); !errors.As(err, &dropping) {
+			t.Fatalf("after a failed reclaim (admin %v) Get = %v; want the database still fenced", admin, err)
+		}
+		retry := &stubLogReclaimer{}
+		svc.SetLogReclaimer(retry)
+		if err := drop(); err != nil {
+			t.Fatalf("retried drop (admin %v): %v", admin, err)
+		}
+		if len(retry.calls) != 1 {
+			t.Fatalf("retried drop (admin %v) reclaimed %d times, want once", admin, len(retry.calls))
+		}
+
+		// A refused check refuses the drop before anything is fenced.
+		refusing := &stubLogReclaimer{checkErr: &LogFeatureNotActiveError{TenantID: "tenant-delta", Feature: featuregate.VerifiableLogDrop}}
+		svc.SetLogReclaimer(refusing)
+		if _, err := svc.CreateForTenant(ctx, testDBConfig("logged")); err != nil {
+			t.Fatalf("CreateForTenant a third time: %v", err)
+		}
+		var inactive *LogFeatureNotActiveError
+		if err := drop(); !errors.As(err, &inactive) {
+			t.Fatalf("drop with the gate off (admin %v) = %v; want LogFeatureNotActiveError", admin, err)
+		}
+		if len(refusing.calls) != 0 {
+			t.Fatalf("a refused check (admin %v) still reclaimed", admin)
+		}
+		if _, err := svc.manager.Get("logged"); err != nil {
+			t.Fatalf("a refused drop (admin %v) left the database unreachable: %v", admin, err)
 		}
 	}
 }

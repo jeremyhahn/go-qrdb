@@ -146,10 +146,10 @@ func TestApplyVerifiableLog_DispatchesEverySubtype(t *testing.T) {
 
 	// The database's drop reclaims the log: the first step deletes its
 	// records, the next reports nothing left, and the name is free again.
-	if v := apply(p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database))); v == 0 {
+	if v := apply(p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database, ""))); v == 0 {
 		t.Fatal("DropDatabase deleted no records")
 	}
-	if v := apply(p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database))); v != 0 {
+	if v := apply(p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database, ""))); v != 0 {
 		t.Fatalf("second DropDatabase = %d, want 0", v)
 	}
 	if _, err := vlog.ReadHead(stg, applyLog); err == nil {
@@ -279,6 +279,48 @@ func TestApplyVerifiableLog_Refusals(t *testing.T) {
 			t.Fatalf("result %+v, want a capability refusal", res)
 		}
 	})
+}
+
+// TestApplyVerifiableLog_StaleDropKeepsARecreatedDatabasesLogs pins the
+// incarnation guard of the drop sub-type: a drop naming the dropped
+// incarnation leaves the logs of the database created again under the name,
+// which recorded its own incarnation, untouched, and a drop naming that
+// incarnation reclaims them.
+func TestApplyVerifiableLog_StaleDropKeepsARecreatedDatabasesLogs(t *testing.T) {
+	p := payloadOf(t)
+	logs, stg := vlog.NewChain(), memory.NewStorage()
+	desc := applyDescriptor(false)
+	desc.Incarnation = "inc-new"
+	if v := mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogCreate(applyLog, desc))); v != 0 {
+		t.Fatalf("Create = %d, want 0", v)
+	}
+	mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogAppend(applyLog, [][]byte{[]byte("a")})))
+
+	if v := mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database, "inc-old"))); v != 0 {
+		t.Fatalf("stale DropDatabase deleted %d records, want 0", v)
+	}
+	if head, err := vlog.ReadHead(stg, applyLog); err != nil || head.Size != 1 {
+		t.Fatalf("ReadHead after the stale drop = %+v, %v; want the log intact", head, err)
+	}
+	if v := mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database, "inc-new"))); v == 0 {
+		t.Fatal("DropDatabase of the log's own incarnation deleted nothing")
+	}
+	if _, err := vlog.ReadHead(stg, applyLog); err == nil {
+		t.Fatal("ReadHead of the dropped log succeeded")
+	}
+}
+
+// mustApply applies payload and fails on a Go error or a refusal.
+func mustApply(t *testing.T, logs *vlog.Chain, stg *memory.MemoryStorage, payload []byte) uint64 {
+	t.Helper()
+	res, err := ApplyVerifiableLog(logs, stg, stg, payload)
+	if err != nil {
+		t.Fatalf("ApplyVerifiableLog: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(res.Data); ok {
+		t.Fatalf("refused: %+v", res)
+	}
+	return res.Value
 }
 
 // TestApplyVerifiableLog_CreateWithKey covers a Create carrying the log's
