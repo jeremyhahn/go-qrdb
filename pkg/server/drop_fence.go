@@ -40,11 +40,15 @@ import (
 // database scope -- a test, or a composition with nothing to drop -- gets.
 type dbGuard struct {
 	guard service.WriteGuard
+	// check, when set, is run before each write is proposed
+	// (service.WithWriteCheck): the shared-store view's recheck of the
+	// tenant's isolation policy (restServiceRegistry.strictWriteCheck).
+	check func(context.Context) error
 }
 
-// scope returns ctx carrying the view's write guard.
+// scope returns ctx carrying the view's write guard and write check.
 func (g dbGuard) scope(ctx context.Context) context.Context {
-	return service.WithWriteGuard(ctx, g.guard)
+	return service.WithWriteCheck(service.WithWriteGuard(ctx, g.guard), g.check)
 }
 
 // dropFence is the check-then-write fence the vector view still uses.

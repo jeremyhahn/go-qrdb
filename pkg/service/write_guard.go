@@ -182,6 +182,36 @@ func WriteGuardFrom(ctx context.Context) WriteGuard {
 	return g
 }
 
+// writeCheckKey is the context key for the request's write checks.
+type writeCheckKey struct{}
+
+// WithWriteCheck returns a context whose writes first run check, after any
+// check ctx already carries; a check's error refuses the write before it is
+// proposed. Unlike a WriteGuard it is decided on the proposing node at
+// propose time, not by the state machine at apply time: it is for a policy
+// the log cannot compare, such as a tenant's effective isolation policy.
+// A nil check returns ctx unchanged.
+func WithWriteCheck(ctx context.Context, check func(context.Context) error) context.Context {
+	if check == nil {
+		return ctx
+	}
+	existing, _ := ctx.Value(writeCheckKey{}).([]func(context.Context) error)
+	checks := append(append([]func(context.Context) error(nil), existing...), check)
+	return context.WithValue(ctx, writeCheckKey{}, checks)
+}
+
+// CheckWrite runs the write checks ctx carries (WithWriteCheck), in order,
+// and returns the first error. Every proposal runs it (guardCommand).
+func CheckWrite(ctx context.Context) error {
+	checks, _ := ctx.Value(writeCheckKey{}).([]func(context.Context) error)
+	for _, check := range checks {
+		if err := check(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // containsFrame reports whether frames already holds an encoded compare
 // equal to f.
 func containsFrame(frames [][]byte, f []byte) bool {
@@ -198,6 +228,9 @@ func containsFrame(frames [][]byte, f []byte) bool {
 // gate has not enabled guarded writes for the group: a replica that cannot
 // apply OpGuarded would refuse it while its peers apply it.
 func guardCommand(ctx context.Context, host Host, shardID uint64, cmd []byte) ([]byte, error) {
+	if err := CheckWrite(ctx); err != nil {
+		return nil, err
+	}
 	g := WriteGuardFrom(ctx)
 	if g.IsZero() {
 		return cmd, nil

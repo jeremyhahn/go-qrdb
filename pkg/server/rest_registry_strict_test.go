@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -112,6 +113,65 @@ func TestResolve_OperatorAccessTenantKeepsTheSharedStore(t *testing.T) {
 	}
 	if got := string(shared.store["bt/system/routed"]); got != "yes" {
 		t.Fatalf("shared store bt/system/routed = %q, want yes; keys = %v", got, storeKeys(shared))
+	}
+}
+
+// writeCheckingKV is the shared store's KV double run the way the real KV
+// service runs a write: the context's write checks are run before the
+// command is proposed (service.CheckWrite, from the propose path), so a
+// refusal installed by the resolved view reaches the caller as the real
+// service returns it.
+type writeCheckingKV struct {
+	*mockKVService
+}
+
+func (k writeCheckingKV) Put(ctx context.Context, key string, value []byte) error {
+	if err := service.CheckWrite(ctx); err != nil {
+		return err
+	}
+	return k.mockKVService.Put(ctx, key, value)
+}
+
+// TestRestRegistry_ResolvedHandleWriteRefusedAfterStrictTightening: a
+// barrier tenant resolves its implicit default database under
+// operator-access, the floor then tightens to strict, and a write through
+// the already-resolved handle is refused with the strict refusal resolve
+// returns, never reaching the node-keyed store. A floor that cannot be read
+// at write time fails closed; a tenant that stays non-strict still writes.
+func TestRestRegistry_ResolvedHandleWriteRefusedAfterStrictTightening(t *testing.T) {
+	rr, shared := newStrictSharedRegistry(t, tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyOperatorAccess, nil)
+	rr.dbReg.Register("system", &DatabaseServices{Name: "system", KV: writeCheckingKV{shared}})
+	kv, err := rr.KVService("bt", "system")
+	if err != nil {
+		t.Fatalf("KVService(operator-access): %v", err)
+	}
+	if err := kv.Put(context.Background(), "before", []byte("yes")); err != nil {
+		t.Fatalf("Put before tightening: %v", err)
+	}
+
+	svc := rr.tenantSvc.(*floorTenantSvc)
+	svc.floor = tenant.ClusterIsolationPolicyStrict
+	err = kv.Put(context.Background(), "after", []byte("no"))
+	var strictErr *rest.StrictTenantSharedStoreError
+	if !errors.As(err, &strictErr) {
+		t.Fatalf("Put after strict tightening: err = %v, want *rest.StrictTenantSharedStoreError", err)
+	}
+	if _, ok := shared.store["bt/system/after"]; ok {
+		t.Fatal("the refused write reached the shared node-keyed store")
+	}
+
+	svc.floor = tenant.ClusterIsolationPolicyOperatorAccess
+	svc.floorErr = errors.New("floor unavailable")
+	if err := kv.Put(context.Background(), "unreadable", []byte("no")); err == nil {
+		t.Fatal("a floor that cannot be read at write time must fail the write closed")
+	}
+
+	svc.floorErr = nil
+	if err := kv.Put(context.Background(), "still", []byte("yes")); err != nil {
+		t.Fatalf("Put by a non-strict tenant: %v", err)
+	}
+	if got := string(shared.store["bt/system/still"]); got != "yes" {
+		t.Fatalf("shared store bt/system/still = %q, want yes", got)
 	}
 }
 

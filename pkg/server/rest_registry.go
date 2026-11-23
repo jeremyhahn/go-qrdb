@@ -442,6 +442,52 @@ func (r *restServiceRegistry) refuseStrictSharedStore(tenantID, db string, isola
 	return &rest.StrictTenantSharedStoreError{TenantID: tenantID, Database: db}
 }
 
+// strictWriteCheck returns the write-time recheck a shared-store view runs
+// before each write it proposes: it reads the tenant's record and the
+// cluster floor again and refuses (*rest.StrictTenantSharedStoreError, as
+// resolve does) once the effective policy is strict, so a handle resolved
+// before a tightening cannot keep writing to the node-keyed log. A record or
+// floor that cannot be read fails the write closed. It is nil -- no recheck
+// -- where resolve never refuses: no tenant record (no tenant service, the
+// system-tenant fallback), a prefix tenant, the system tenant.
+//
+// A write already past the recheck when the tightening commits still
+// applies; the tightening's probe does not wait for writes in flight.
+func (r *restServiceRegistry) strictWriteCheck(tenantID, db string, info *tenant.TenantInfo) func(context.Context) error {
+	if r.tenantSvc == nil || info == nil || tenantID == r.systemTenant || info.EffectiveIsolationType() == tenant.IsolationPrefix {
+		return nil
+	}
+	return func(context.Context) error {
+		lookupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		current, err := r.tenantSvc.GetTenant(lookupCtx, tenantID)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if current == nil {
+			return &rest.TenantNotFoundError{TenantID: tenantID}
+		}
+		return r.refuseStrictSharedStore(tenantID, db, current.EffectiveIsolationType(), current)
+	}
+}
+
+// vectorFenceCheck is the vector view's check-then-write fence: the drop
+// fence check, then the write-time isolation recheck.
+func (f databaseFence) vectorFenceCheck() func() error {
+	if f.writeCheck == nil {
+		return f.vectorCheck
+	}
+	drop, isolation := f.vectorCheck, f.writeCheck
+	return func() error {
+		if drop != nil {
+			if err := drop(); err != nil {
+				return err
+			}
+		}
+		return isolation(context.Background())
+	}
+}
+
 // resolveShared returns (tenant, db)'s composite-namespaced, quota-wrapped
 // view of the shared service set: resolve's final branch, without the
 // existence check that precedes it there. The reclaim-store resolver uses it
@@ -467,6 +513,10 @@ func (r *restServiceRegistry) resolveShared(tenantID, db string, info *tenant.Te
 	if err != nil {
 		return nil, err
 	}
+	// Resolve refused a strict tenant, but the handle outlives the check: a
+	// tightening committed after it (the probe sees an empty implicit
+	// database) must still keep this view's writes off the node-keyed log.
+	fence.writeCheck = r.strictWriteCheck(tenantID, db, info)
 	out := r.applyQuota(r.applyComposite(svcs, tenantID, db, fence), tenantID, info)
 	out.Placement = service.StorePlacementShared
 	return out, nil
@@ -849,6 +899,11 @@ type databaseFence struct {
 	guard       service.WriteGuard
 	vectorCheck func() error
 
+	// writeCheck, when set, is run before every write through the views,
+	// the vector view's included: the shared-store recheck of the tenant's
+	// isolation policy (strictWriteCheck).
+	writeCheck func(context.Context) error
+
 	// binding identifies the database the fence was built for -- owner,
 	// name, incarnation -- for the views' compaction policy.
 	binding compaction.Binding
@@ -952,7 +1007,7 @@ type managedRecord struct {
 // consults -- see the doc comment above the lease-view construction below.
 func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bool) *DatabaseServices {
 	out := *svcs
-	g := dbGuard{guard: f.guard}
+	g := dbGuard{guard: f.guard, check: f.writeCheck}
 	if svcs.KV != nil {
 		// prefix is already the full "<tenant>/<db>/" namespace (or
 		// empty), so it is used as given.
@@ -1007,7 +1062,7 @@ func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bo
 	}
 	if svcs.Vector != nil {
 		vec := newNamespacedVectorService(svcs.Vector, prefix)
-		vec.dropFence = dropFence{check: f.vectorCheck}
+		vec.dropFence = dropFence{check: f.vectorFenceCheck()}
 		out.Vector = vec
 	}
 	return &out
