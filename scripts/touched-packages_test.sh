@@ -44,6 +44,10 @@
 #                       pkg/lease/errors.go prints ./pkg/lease and also the
 #                       source ./pkg/ratelimit with its importer
 #                       ./pkg/clientlimit
+#   optional listing    a go whose listing under qrdb_fts fails: exit 2,
+#   fails               nothing on stdout, stderr names qrdb_fts
+#   default listing     a go whose every package listing fails: exit 2,
+#   fails               nothing on stdout
 #   bad args            no arguments exit 2
 #   go.sum untouched    the suite leaves go.sum byte for byte as it found it
 
@@ -62,6 +66,9 @@ fail() {
 }
 
 has() { printf '%s\n' "$1" | grep -qxF "$2"; }
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
 
 got=$(printf 'pkg/ratelimit/token_bucket.go\n' | "$script" --files 2>&1)
 rc=$?
@@ -141,8 +148,6 @@ fi
 
 # moved file: a base tree with pkg/lease/errors.go at pkg/ratelimit/errors.go,
 # so the diff base..HEAD is a rename out of pkg/ratelimit.
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
 blob=$(git rev-parse HEAD:pkg/lease/errors.go)
 GIT_INDEX_FILE="$tmp/index" git read-tree HEAD
 GIT_INDEX_FILE="$tmp/index" git update-index --force-remove pkg/lease/errors.go
@@ -157,6 +162,21 @@ if [ -n "$base" ]; then
 else
 	fail "fixture commit: git commit-tree made no base commit, moved file cases not run"
 fi
+
+# Unreadable listings: fake go binaries that fail one `go list` and run the
+# real go for everything else.
+realgo=$(command -v "${GO:-go}")
+printf '#!/bin/sh\nfor a in "$@"; do\n\tcase $a in\n\t*qrdb_fts*)\n\t\techo "fake go: listing under qrdb_fts fails" >&2\n\t\texit 1\n\t\t;;\n\tesac\ndone\nexec "%s" "$@"\n' "$realgo" >"$tmp/go-fails-tagged"
+printf '#!/bin/sh\nif [ "$1" = list ] && [ "${2:-}" = -m ]; then exec "%s" "$@"; fi\nif [ "$1" = list ]; then\n\techo "fake go: package listing fails" >&2\n\texit 1\nfi\nexec "%s" "$@"\n' "$realgo" "$realgo" >"$tmp/go-fails-list"
+chmod +x "$tmp/go-fails-tagged" "$tmp/go-fails-list"
+
+got=$(printf 'pkg/storage/storage.go\n' | GO="$tmp/go-fails-tagged" "$script" --files 2>"$tmp/err")
+rc=$?
+if [ "$rc" -eq 2 ] && [ -z "$got" ] && grep -qF qrdb_fts "$tmp/err"; then pass "optional listing fails"; else fail "optional listing fails: rc=$rc want 2, stdout [$got] want empty, stderr [$(cat "$tmp/err")]"; fi
+
+got=$(printf 'pkg/storage/storage.go\n' | GO="$tmp/go-fails-list" "$script" --files 2>"$tmp/err")
+rc=$?
+if [ "$rc" -eq 2 ] && [ -z "$got" ]; then pass "default listing fails"; else fail "default listing fails: rc=$rc want 2, stdout [$got] want empty, stderr [$(cat "$tmp/err")]"; fi
 
 "$script" </dev/null >/dev/null 2>&1
 rc=$?

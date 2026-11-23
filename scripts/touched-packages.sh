@@ -47,6 +47,8 @@
 # <tag>. `make test-pkg PKG=$line`, unquoted, turns that second word into the
 # make variable that adds <tag> to BUILD_TAGS. Nothing changed in Go prints
 # nothing. The listings run with -mod=readonly, so go.sum is never written.
+# An unreadable listing (go list fails under the default tags or any optional
+# tag) exits 2 and prints nothing.
 # $GO overrides `go`.
 
 set -euo pipefail
@@ -174,8 +176,24 @@ hit() {
 	return 1
 }
 
-default=$(list "$tags")
 optional=$(make -s --no-print-directory print-optional-test-tags)
+
+# Every listing runs here, before the selection block: an unreadable listing
+# exits 2 and prints nothing, never a partial (default-only) selection.
+if ! default=$(list "$tags"); then
+	echo "touched-packages.sh: go list under the default tags failed; the importer graph is unreadable" >&2
+	exit 2
+fi
+opt_flags=() opt_lists=()
+while read -r tag flag; do
+	[ -n "$tag" ] || continue
+	if ! listing=$(list "$tags $tag"); then
+		echo "touched-packages.sh: go list under the default tags plus $tag failed; the importer graph under $tag is unreadable" >&2
+		exit 2
+	fi
+	opt_flags+=("$flag")
+	opt_lists+=("$listing")
+done <<<"$optional"
 
 {
 	declare -A files=() sel=() listed=()
@@ -189,8 +207,8 @@ optional=$(make -s --no-print-directory print-optional-test-tags)
 	# set differs from the default one (or that only exists under the tag)
 	# also prints `./<dir> <WITH_flag>=1`, so `make test-pkg PKG=$line`
 	# compiles it with the tag.
-	while read -r tag flag; do
-		[ -n "$tag" ] || continue
+	for i in "${!opt_lists[@]}"; do
+		flag=${opt_flags[$i]}
 		while IFS=$'\t' read -r pkg imports fs; do
 			[ -n "$pkg" ] || continue
 			listed["$pkg"]=1
@@ -199,8 +217,8 @@ optional=$(make -s --no-print-directory print-optional-test-tags)
 			if [ -z "${files[$pkg]+x}" ] || [ "${files[$pkg]}" != "$fs" ]; then
 				echo "$(rel "$pkg") $flag"
 			fi
-		done <<<"$(list "$tags $tag")"
-	done <<<"$optional"
+		done <<<"${opt_lists[$i]}"
+	done
 	# A changed directory no listing shows still prints, as before.
 	for p in "${!want[@]}"; do
 		[ -n "${listed[$p]:-}" ] || rel "$p"
