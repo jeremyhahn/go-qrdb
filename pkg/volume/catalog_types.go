@@ -188,8 +188,18 @@ type Move struct {
 	// is offline for a move at a time (decision Q1 B).
 	StepNode string `json:"stepNode,omitempty"`
 	// StepAttempts counts the failed attempts of StepNode's step.
-	StepAttempts int    `json:"stepAttempts,omitempty"`
-	Error        string `json:"error,omitempty"`
+	StepAttempts int `json:"stepAttempts,omitempty"`
+	// StepSettling reports that StepNode's copy or abort step is recorded
+	// (RecordMoveStep, RecordAbortStep) but the node has not yet settled
+	// it: reopened its stores and caught up (copy), or reopened the source
+	// and removed the destination (abort). The node keeps the step, so no
+	// other node is granted one and the journal survives, until
+	// ReleaseMoveStep records the settle durably.
+	StepSettling bool `json:"stepSettling,omitempty"`
+	// StepCopied is, for a settling abort step, whether StepNode had been
+	// copied: its settle reopens the source and removes the destination.
+	StepCopied bool   `json:"stepCopied,omitempty"`
+	Error      string `json:"error,omitempty"`
 	// CancelRequested reports an operator cancel that arrived while
 	// StepNode held a copy step: the step keeps its holder, which awaits
 	// its copy; CompleteMoveStep or FailMoveStep then turns the move
