@@ -55,6 +55,19 @@ write, and Put, Delete and Reseal are serialized, so a failed reseal leaves the
 old record. `enable-encryption` re-encrypts every seal-store record under the
 new root key and leaves no plaintext copy.
 
+A seal-store refusal keeps its type on every SDK transport (gRPC, Unix, REST,
+QUIC and MCP), as it does embedded: a missing secret satisfies
+`errors.Is(err, seal.ErrSealStoreSecretNotFound)` (re-exported as
+`sdk.ErrSealStoreSecretNotFound`), an invalid name `seal.ErrInvalidSecretName`,
+and a seal store whose own barrier is sealed `seal.ErrSealStoreBarrierSealed`
+(`sdk.ErrSealStoreBarrierSealed`). The server carries each as a structured
+refusal reason, `SEAL_STORE_SECRET_NOT_FOUND`, `SEAL_STORE_INVALID_SECRET_NAME`
+and `SEAL_STORE_BARRIER_SEALED` (`sdk/go/transport/refusal.go`), and each keeps
+its wire class from `pkg/api/errclass`: NotFound, InvalidArgument and
+Unavailable. A missing secret is no longer a `*transport.KeyNotFoundError`. A
+node that is itself sealed still answers the sealed-window refusal (`SEALED`)
+before any seal-store reason.
+
 A node served without a seal store answers every seal store call
 `Unimplemented` (the service is not configured): its REST server mounts no
 `/v1/seal-store` routes and its MCP server lists no `qrdb_seal_store_*` tools.
