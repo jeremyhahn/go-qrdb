@@ -25,7 +25,7 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Update barrier | `PATCH /v1/databases/{name}/barrier` | `DatabaseUpdateBarrier` | `db.UpdateBarrier` | `qrdb_database_update_barrier` | `UpdateDatabaseBarrier` | `databases:update` |
 | Update SQL settings | `PATCH /v1/databases/{name}/sql` | `DatabaseUpdateSQL` | `db.UpdateSQL` | `qrdb_database_update_sql` | `UpdateDatabaseSQL` | `databases:update` |
 | Update compaction policy | `PATCH /v1/databases/{name}/compaction` | `DatabaseUpdateCompaction` | `db.UpdateCompaction` | `qrdb_database_update_compaction` | `UpdateDatabaseCompaction` | `mvcc:compact` (`ScopeSelfStrict`) |
-| Update connection | `PATCH /v1/databases/{name}/connection` | `DatabaseUpdateConnection` | `db.UpdateConnection` | `qrdb_database_update_connection` | `UpdateDatabaseConnection` | `databases:update` |
+| Update connection | `PATCH /v1/databases/{name}/connection` | `DatabaseUpdateConnection` | `db.UpdateConnection` | `qrdb_database_update_connection` | — (removed, OD-9) | `databases:update` |
 | Scale | `PATCH /v1/databases/{name}/scale` | `DatabaseScale` | `db.Scale` | `qrdb_database_scale` | `ScaleDatabase` | `databases:scale` |
 | Seal | `POST /v1/databases/{name}/seal` | `DatabaseSeal` | `db.Seal` | `qrdb_database_seal` | `SealDatabase` | `databases:seal` |
 | Unseal | `POST /v1/databases/{name}/unseal` | `DatabaseUnseal` | `db.Unseal` | `qrdb_database_unseal` | `UnsealDatabase` | `databases:unseal` |
@@ -214,8 +214,9 @@ as `DatabaseBindingInfo binding = 19` on `DatabaseInfoResponse` (`generation` is
 its field 4); the CLI table output prints it under `Binding:`.
 
 Target: a raft binding lists its replica nodes.
-The `connection` block and the update-connection capability are removed on
-every transport (OD-9).
+Remote mode is removed (OD-9 A). The CLI and both SDKs no longer offer the
+update-connection verb or send a `connection` block (rw923w slice 19); the
+server-side verb, the `connection` fields and the gRPC RPC go in slice 20.
 
 ### Updates, scale and unseal
 

@@ -224,19 +224,8 @@ qrdb database update-etcd k8s --enabled --listen-addr :2379
 | `--replica-id` | uint64 | raft replica ID |
 | `--raft-address` | string | raft address, `host:port` |
 
-### `qrdb database update-connection <name>`
-
-For a database backed by a remote node. The connection is recorded and never
-used — no remote proxy is constructed. The target design removes it, with
-remote mode (OD-9).
-
-| Flag | Type | Default | Meaning |
-|---|---|---|---|
-| `--address` | string | — | remote database address, `host:port` |
-| `--conn-transport` | string | `tcp` | `tcp \| quic` |
-| `--conn-ca-file` | string | — | connection TLS CA certificate |
-| `--conn-cert-file` | string | — | connection TLS client certificate |
-| `--conn-key-file` | string | — | connection TLS client key |
+There is no `update-connection` verb: remote-mode databases are removed
+(OD-9 A).
 
 ## Scoping data-plane commands
 
