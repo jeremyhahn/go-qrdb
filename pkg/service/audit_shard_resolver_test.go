@@ -15,15 +15,19 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -577,6 +581,259 @@ func TestSystemShardAuditResolver_ReleaseWaitsForInFlightAppend(t *testing.T) {
 	}
 	if recorded, _ := routes.Get(ctx, AuditRouteKey("widgets")); recorded != nil {
 		t.Fatalf("route after the in-flight append returned = %q, want it released", recorded)
+	}
+}
+
+// epochIsolationLookup is a tighteningIsolationLookup that also reads the
+// tenant's and the floor's isolation epochs (tenant.IsolationEpochReader)
+// from a settable map, logging every read it serves in order.
+type epochIsolationLookup struct {
+	*tighteningIsolationLookup
+	mu       sync.Mutex
+	epochs   map[string][]byte
+	epochErr error
+	calls    []string
+}
+
+func newEpochIsolationLookup(policy tenant.TenantIsolationPolicy, floor tenant.ClusterIsolationPolicy, epochs map[string][]byte) *epochIsolationLookup {
+	return &epochIsolationLookup{
+		tighteningIsolationLookup: &tighteningIsolationLookup{floorIsolationLookup: barrierTenantLookup(policy, floor)},
+		epochs:                    epochs,
+	}
+}
+
+func (l *epochIsolationLookup) record(call string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, call)
+}
+
+func (l *epochIsolationLookup) log() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.calls)
+}
+
+func (l *epochIsolationLookup) IsolationEpochs(context.Context, string) (map[string][]byte, error) {
+	l.record("IsolationEpochs")
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.epochErr != nil {
+		return nil, l.epochErr
+	}
+	return maps.Clone(l.epochs), nil
+}
+
+func (l *epochIsolationLookup) setEpoch(key string, value []byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.epochs == nil {
+		l.epochs = make(map[string][]byte)
+	}
+	l.epochs[key] = value
+}
+
+func (l *epochIsolationLookup) IsolationTightening(ctx context.Context, tenantID string) (bool, error) {
+	l.record("IsolationTightening")
+	return l.tighteningIsolationLookup.IsolationTightening(ctx, tenantID)
+}
+
+func (l *epochIsolationLookup) GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error) {
+	l.record("GetTenant")
+	return l.tighteningIsolationLookup.GetTenant(ctx, tenantID)
+}
+
+// routedResolver is a resolver over system with home groups attached and
+// widgets' audit route recorded as route ("" records none).
+func routedResolver(t *testing.T, system *chainShard, lookup AuditIsolationLookup, route string) *SystemShardAuditResolver {
+	t.Helper()
+	homes, _ := homeShard()
+	r := NewSystemShardAuditResolver(system.host, 1, lookup)
+	routes := newMemRouteStore()
+	if route != "" {
+		if _, err := routes.PutIfAbsent(context.Background(), AuditRouteKey("widgets"), []byte(route)); err != nil {
+			t.Fatalf("PutIfAbsent: %v", err)
+		}
+	}
+	r.SetHomeGroupSource(homes, routes)
+	return r
+}
+
+// heldAppends reports how many appends r counts on tenantID's system route.
+func heldAppends(r *SystemShardAuditResolver, tenantID string) int {
+	r.holdMu.Lock()
+	defer r.holdMu.Unlock()
+	return r.inflight[tenantID]
+}
+
+// TestSystemShardAuditResolver_HoldAuditAppendGuardsSystemRouteOnIsolationEpochs:
+// an append held on a recorded system route carries one value-equal compare
+// per isolation epoch key of the tenant and the floor, holding the values
+// read (an absent key compared as absent); a home route, the system tenant
+// and a lookup that cannot read epochs get the zero guard; a failed epoch
+// read fails the append and leaves no hold behind.
+func TestSystemShardAuditResolver_HoldAuditAppendGuardsSystemRouteOnIsolationEpochs(t *testing.T) {
+	ctx := context.Background()
+	keys := tenant.IsolationEpochKeys("widgets")
+	newLookup := func() *epochIsolationLookup {
+		return newEpochIsolationLookup(tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyOperatorAccess,
+			map[string][]byte{keys[0]: []byte("epoch-1")})
+	}
+
+	t.Run("recorded system route", func(t *testing.T) {
+		lookup := newLookup()
+		r := routedResolver(t, newChainShard(3, auditActive()), lookup, AuditRouteSystem)
+		_, shardID, release, guard, err := r.HoldAuditAppend(ctx, "widgets")
+		if err != nil || shardID != 1 {
+			t.Fatalf("HoldAuditAppend = shard %d, %v; want the system shard", shardID, err)
+		}
+		defer release()
+		if heldAppends(r, "widgets") != 1 {
+			t.Fatalf("held = %d, want 1", heldAppends(r, "widgets"))
+		}
+		if len(guard.compares) != len(keys) {
+			t.Fatalf("guard has %d compares, want %d", len(guard.compares), len(keys))
+		}
+		for i, frame := range guard.compares {
+			c, _, err := protocol.DecodeCompare(frame)
+			if err != nil {
+				t.Fatalf("DecodeCompare: %v", err)
+			}
+			if string(c.Key) != keys[i] || c.Target != byte(CompareValue) || c.Result != byte(CompareEqual) {
+				t.Fatalf("compare %d = key %q target %d result %d; want %q value-equal", i, c.Key, c.Target, c.Result, keys[i])
+			}
+			if want := lookup.epochs[keys[i]]; !bytes.Equal(c.Value, want) {
+				t.Fatalf("compare %d value = %q, want %q", i, c.Value, want)
+			}
+		}
+		if c, _, _ := protocol.DecodeCompare(guard.compares[1]); len(c.Value) != 0 {
+			t.Fatalf("absent floor epoch compared as %q, want absent", c.Value)
+		}
+	})
+
+	t.Run("home route", func(t *testing.T) {
+		r := routedResolver(t, newChainShard(3, auditActive()), newLookup(), AuditRouteHome)
+		_, _, release, guard, err := r.HoldAuditAppend(ctx, "widgets")
+		if err != nil {
+			t.Fatalf("HoldAuditAppend: %v", err)
+		}
+		release()
+		if !guard.IsZero() {
+			t.Fatal("home route carries a guard, want the zero guard")
+		}
+	})
+
+	t.Run("system tenant", func(t *testing.T) {
+		lookup := newLookup()
+		r := routedResolver(t, newChainShard(3, auditActive()), lookup, "")
+		_, _, release, guard, err := r.HoldAuditAppend(ctx, tenantid.System)
+		if err != nil {
+			t.Fatalf("HoldAuditAppend: %v", err)
+		}
+		release()
+		if !guard.IsZero() {
+			t.Fatal("system tenant carries a guard, want the zero guard")
+		}
+		if slices.Contains(lookup.log(), "IsolationEpochs") {
+			t.Fatalf("calls = %v, want no IsolationEpochs read", lookup.log())
+		}
+	})
+
+	t.Run("lookup without the epoch reader", func(t *testing.T) {
+		lookup := newLookup().tighteningIsolationLookup
+		r := routedResolver(t, newChainShard(3, auditActive()), lookup, AuditRouteSystem)
+		_, _, release, guard, err := r.HoldAuditAppend(ctx, "widgets")
+		if err != nil {
+			t.Fatalf("HoldAuditAppend: %v", err)
+		}
+		release()
+		if !guard.IsZero() {
+			t.Fatal("lookup without IsolationEpochs yields a guard, want the zero guard")
+		}
+	})
+
+	t.Run("epoch read error", func(t *testing.T) {
+		lookup := newLookup()
+		readErr := errors.New("epoch read failed")
+		lookup.epochErr = readErr
+		r := routedResolver(t, newChainShard(0, auditActive()), lookup, AuditRouteSystem)
+		_, _, release, guard, err := r.HoldAuditAppend(ctx, "widgets")
+		if !errors.Is(err, readErr) || release != nil || !guard.IsZero() {
+			t.Fatalf("HoldAuditAppend = release %v, guard zero %v, %v; want %v and nothing held", release != nil, guard.IsZero(), err, readErr)
+		}
+		if heldAppends(r, "widgets") != 0 {
+			t.Fatalf("held = %d after a failed epoch read, want 0", heldAppends(r, "widgets"))
+		}
+	})
+}
+
+// TestSystemShardAuditResolver_HoldReadsEpochsBeforeStrictCheck: the
+// epochs the guard compares are read before the strict check (the marker
+// and the tenant), so a tightening that wrote its epoch after the read is
+// refused at apply time and one that wrote it before is seen by the check.
+func TestSystemShardAuditResolver_HoldReadsEpochsBeforeStrictCheck(t *testing.T) {
+	ctx := context.Background()
+	for name, policy := range map[string]tenant.TenantIsolationPolicy{
+		"appended": tenant.TenantIsolationPolicyInherit,
+		"refused":  tenant.TenantIsolationPolicyStrict,
+	} {
+		t.Run(name, func(t *testing.T) {
+			lookup := newEpochIsolationLookup(policy, tenant.ClusterIsolationPolicyOperatorAccess, nil)
+			r := routedResolver(t, newChainShard(0, auditActive()), lookup, AuditRouteSystem)
+			_, _, release, _, err := r.HoldAuditAppend(ctx, "widgets")
+			if release != nil {
+				release()
+			}
+			var refused *tenant.SystemAuditRouteError
+			if (policy == tenant.TenantIsolationPolicyStrict) != errors.As(err, &refused) {
+				t.Fatalf("HoldAuditAppend: %v", err)
+			}
+			calls := lookup.log()
+			if slices.Index(calls, "IsolationEpochs") < 0 || slices.Index(calls, "IsolationTightening") < 0 {
+				t.Fatalf("calls = %v, want IsolationEpochs and IsolationTightening", calls)
+			}
+			// Each attempt reads the epochs first: every strict-check read
+			// follows an epoch read.
+			if calls[0] != "IsolationEpochs" {
+				t.Fatalf("calls = %v, want IsolationEpochs first", calls)
+			}
+		})
+	}
+}
+
+// TestSystemShardAuditResolver_AuditGuardRefusalMapsOnlyEpochKeys: a
+// refused guard is reported as the strict refusal only when it is on one of
+// the tenant's isolation epoch keys and the tenant is now strict or being
+// tightened; any other refusal stays the retryable one.
+func TestSystemShardAuditResolver_AuditGuardRefusalMapsOnlyEpochKeys(t *testing.T) {
+	ctx := context.Background()
+	keys := tenant.IsolationEpochKeys("widgets")
+	for name, tc := range map[string]struct {
+		key        string
+		policy     tenant.TenantIsolationPolicy
+		floor      tenant.ClusterIsolationPolicy
+		tightening bool
+		wantStrict bool
+	}{
+		"not an epoch key":         {key: "widgets/data", policy: tenant.TenantIsolationPolicyStrict},
+		"epoch key, not strict":    {key: keys[0], policy: tenant.TenantIsolationPolicyInherit, floor: tenant.ClusterIsolationPolicyOperatorAccess},
+		"epoch key, tenant strict": {key: keys[0], policy: tenant.TenantIsolationPolicyStrict, wantStrict: true},
+		"floor key, floor strict":  {key: keys[1], floor: tenant.ClusterIsolationPolicyStrict, wantStrict: true},
+		"epoch key, tightening":    {key: keys[0], policy: tenant.TenantIsolationPolicyInherit, floor: tenant.ClusterIsolationPolicyOperatorAccess, tightening: true, wantStrict: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lookup := newEpochIsolationLookup(tc.policy, tc.floor, nil)
+			lookup.tightening = tc.tightening
+			r := routedResolver(t, newChainShard(0, auditActive()), lookup, AuditRouteSystem)
+			err := r.auditGuardRefusal(ctx, "widgets", &WriteGuardRefusedError{Key: tc.key})
+			var refused *tenant.SystemAuditRouteError
+			if got := errors.As(err, &refused); got != tc.wantStrict || (!tc.wantStrict && err != nil) {
+				t.Fatalf("auditGuardRefusal = %v, want strict refusal %v", err, tc.wantStrict)
+			}
+			if tc.wantStrict && refused.TenantID != "widgets" {
+				t.Fatalf("refused tenant = %q, want widgets", refused.TenantID)
+			}
+		})
 	}
 }
 
