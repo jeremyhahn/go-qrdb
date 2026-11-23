@@ -213,6 +213,13 @@ The catalog half of a move's admit step, called by `MoveTenant`
   ("move copy step waiting: node sealed"), no attempt is counted, the move
   never aborts on it and an unchanged reason writes nothing; a recorded
   cancel still aborts, as in `FailMoveStep`;
+- `Catalog.WaitSettleStep`: a settling step whose replica's self-managed
+  tenant reopened sealed (`*TenantSealedError`) waits the same way: the
+  step stays settling on its node, so the leader grants no other node a
+  step, `Error` names the reason ("move copy step waiting: tenant sealed"),
+  no attempt is counted and an unchanged reason writes nothing; a cancel
+  recorded on a copying move aborts it with the node kept in `NodesCopied`,
+  as in `FailSettleStep`; a node holding no settling step is refused;
 - `Catalog.CutOverMove`: one transaction pointing the assignment at the
   destination pool and setting the journal `cutover` (the commit point);
 - `Catalog.MarkMoveTenantRecorded`: records on the journal that the tenant
@@ -288,8 +295,17 @@ because its barrier or stores are closed, not because of the hold. Every
 pending tenant: a tenant a move step holds is left to that step, the barrier
 is reopened only if no earlier attempt reopened it, only shards and the Host
 not already started are attached, each replica waits for catch-up with the
-same poll, and a self-managed tenant still comes back sealed. A fresh close
-of the tenant supersedes its pending reopen.
+same poll. A self-managed tenant whose barrier reopens sealed is not
+reopened: `OpenTenantStores` answers `*volume.TenantSealedError` and the
+tenant stays pending (logged at Debug by the retry, one per tick), its
+closed stores still recorded; the move step's settle does not finish, so
+`MoveReconciler` keeps the step settling on that node through
+`Catalog.WaitSettleStep` instead of granting the next replica its step, and
+the first retry after the administrator's unseal attaches the stores and
+awaits their catch-up, after which the next settle releases the step. Steps
+that settle nothing (a failed copy's reopen, a failed copy-back, an
+uncopied abort) treat the sealed reopen as done. A fresh close of the tenant
+supersedes its pending reopen.
 
 The list of a tenant's local replicas comes from durable placement as well
 as from the started shards (`WithMoveLocalReplicas`, wired by
@@ -644,6 +660,14 @@ A raft-tenant move is covered by the three-node E2E (`TestVolumePool_CLI_MoveTen
   `TestMoveReconciler_FullMoveCutsOverAndRetires`, `_CopiedWaitsForRecorder`,
   `_RecorderErrorRetried`, `_RetireFailureRetried`, `_CancelThenAbort`,
   `_AbortFailureRetried`, `_StepPhases`, `_PhaseCatalogErrorReturned`;
+- a settle that waits for its tenant's unseal: `pkg/volume`
+  `TestCatalog_WaitSettleStep`, `TestMoveReconciler_SealedSettleHoldsTheStep`
+  (the step stays settling on its node, uncounted, no other node granted,
+  then completes) and `_CancelDuringSealedSettleAborts`; `pkg/server`
+  `TestMoveStoreCloser_SealedReopenStaysPendingUntilUnseal` and
+  `_SelfManagedTenantAwaitsUnseal` (pending while sealed, the retry after
+  the unseal attaches and awaits catch-up); `pkg/seal`
+  `TestMoveStepRunner_SealedReopenSettlesOnlyAfterUnseal`;
 - `pkg/volume` (a copy step that waits): `TestCatalog_WaitMoveStep` (no
   attempt counted, no write while the reason is unchanged, a cancel still
   aborts), `TestMoveReconciler_SealedNodeStepWaits`,
