@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -115,5 +116,50 @@ func TestBuildServices_StandalonePebbleRefusesCredentialReadsWhenSealed(t *testi
 			buf.Destroy()
 		}
 		t.Fatalf("CredentialRetrieveVersionBuffer after sealing: err = %v, want seal.ErrSealed", err)
+	}
+}
+
+// TestTenantBarrier_SealedRefusesMoveAndMigration: a sealed tenant barrier
+// is never read as an empty store. Its migration into the tenant's home
+// store refuses the derived service, and a store move out of it refuses the
+// next credential verb, both with seal.ErrSealed, and nothing is copied.
+func TestTenantBarrier_SealedRefusesMoveAndMigration(t *testing.T) {
+	ctx := context.Background()
+	_, _, parent := newTestBarrier(t)
+	tenant, _, tenantSvc := newTestBarrier(t)
+	if err := tenantSvc.StoreCredential(ctx, "tenant-db", []byte("v1-secret")); err != nil {
+		t.Fatalf("StoreCredential on the tenant barrier: %v", err)
+	}
+	if err := tenant.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	home, err := credentials.NewKVStore(kvstoretest.NewGuardedMemoryStore())
+	if err != nil {
+		t.Fatalf("NewKVStore: %v", err)
+	}
+	if svc, err := parent.ForTenant(ctx, home, tenant); !errors.Is(err, seal.ErrSealed) || svc != nil {
+		t.Fatalf("ForTenant on a sealed tenant barrier: svc = %v, err = %v, want nil and seal.ErrSealed", svc, err)
+	}
+
+	_, _, mover := newTestBarrier(t)
+	dest := seal.NewMemoryBackend()
+	if err := mover.BindStoreFrom(ctx, dest, tenant); err != nil {
+		t.Fatalf("BindStoreFrom: a failed move must not fail the bind: %v", err)
+	}
+	if buf, err := mover.RetrieveCredentialBuffer(ctx, "tenant-db"); !errors.Is(err, seal.ErrSealed) {
+		if buf != nil {
+			buf.Destroy()
+		}
+		t.Fatalf("RetrieveCredentialBuffer with a move pending from a sealed barrier: err = %v, want seal.ErrSealed", err)
+	}
+	keys, err := dest.List(ctx, "")
+	if err != nil {
+		t.Fatalf("dest.List: %v", err)
+	}
+	for _, k := range keys {
+		if strings.Contains(k, "tenant-db") {
+			t.Fatalf("record %q was copied out of a sealed barrier", k)
+		}
 	}
 }

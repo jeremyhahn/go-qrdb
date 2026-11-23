@@ -2,6 +2,7 @@ package credentials
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -152,4 +153,97 @@ func TestNewKVStore_FailedReadIsNotSecretNotFound(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	assert.NotErrorIs(t, err, seal.ErrSecretNotFound)
 	assert.Nil(t, got)
+}
+
+// writeCountingStore counts the writes a home store receives and, while
+// armed, refuses the first one with errInjected.
+type writeCountingStore struct {
+	Store
+	writes atomic.Int64
+	armed  atomic.Bool
+}
+
+func (w *writeCountingStore) write() error {
+	w.writes.Add(1)
+	if w.armed.CompareAndSwap(true, false) {
+		return errInjected
+	}
+	return nil
+}
+
+func (w *writeCountingStore) Put(ctx context.Context, key string, value []byte) error {
+	if err := w.write(); err != nil {
+		return err
+	}
+	return w.Store.Put(ctx, key, value)
+}
+
+func (w *writeCountingStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if err := w.write(); err != nil {
+		return false, err
+	}
+	return w.Store.PutIfAbsent(ctx, key, value)
+}
+
+func (w *writeCountingStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if err := w.write(); err != nil {
+		return false, err
+	}
+	return w.Store.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
+func (w *writeCountingStore) Delete(ctx context.Context, key string) error {
+	if err := w.write(); err != nil {
+		return err
+	}
+	return w.Store.Delete(ctx, key)
+}
+
+func requireTenantValue(t *testing.T, svc *CredentialService, name, want string) {
+	t.Helper()
+	buf, err := svc.RetrieveCredentialBuffer(auditCtx(), name)
+	require.NoError(t, err)
+	defer buf.Destroy()
+	equal, err := buf.EqualBytes([]byte(want))
+	require.NoError(t, err)
+	assert.True(t, equal, "credential %q must resolve to %q", name, want)
+}
+
+// A tenant barrier's legacy records migrate into the tenant's home store
+// on the first ForTenant call; a second call for the same barrier writes
+// nothing to the home store.
+func TestForTenant_MigratesLegacyOnceIntoHome(t *testing.T) {
+	home := &writeCountingStore{Store: newHomeStore(t)}
+	legacy := newLegacyBarrier(t)
+	writeLegacy(t, legacy, "tenant-db", "v2", "v1", nil)
+	parent := newBarrierService(t)
+
+	first, err := parent.ForTenant(context.Background(), home, legacy)
+	require.NoError(t, err)
+	require.Positive(t, home.writes.Load(), "the first call must migrate into the home store")
+	requireTenantValue(t, first, "tenant-db", "v2")
+
+	before := home.writes.Load()
+	second, err := parent.ForTenant(context.Background(), home, legacy)
+	require.NoError(t, err)
+	assert.Equal(t, before, home.writes.Load(), "a second ForTenant for the same barrier must migrate nothing")
+	requireTenantValue(t, second, "tenant-db", "v2")
+}
+
+// A tenant migration that fails refuses the derived service, and the next
+// ForTenant call migrates the barrier and serves its credentials.
+func TestForTenant_FailedMigrationRefusedThenRetrySucceeds(t *testing.T) {
+	home := &writeCountingStore{Store: newHomeStore(t)}
+	home.armed.Store(true)
+	legacy := newLegacyBarrier(t)
+	writeLegacy(t, legacy, "tenant-db", "v2", "v1", nil)
+	parent := newBarrierService(t)
+
+	svc, err := parent.ForTenant(context.Background(), home, legacy)
+	require.ErrorIs(t, err, errInjected, "a failed tenant migration must refuse the derived service")
+	assert.Nil(t, svc)
+
+	svc, err = parent.ForTenant(context.Background(), home, legacy)
+	require.NoError(t, err, "the retry must migrate the barrier")
+	requireTenantValue(t, svc, "tenant-db", "v2")
 }

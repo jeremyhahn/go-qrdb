@@ -3,6 +3,8 @@ package credentials
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -241,6 +243,56 @@ func TestEnsureLayoutMoved_FailedMoveIsRetried(t *testing.T) {
 	requireMovedAndClean(t, first, second, "db", keys)
 	svc.layoutMu.Lock()
 	assert.Nil(t, svc.layoutFrom)
+	svc.layoutMu.Unlock()
+}
+
+// moveBatchCounter counts the guarded move batches (those writing a move
+// marker) that reach the wrapped store.
+type moveBatchCounter struct {
+	Store
+	batches atomic.Int64
+}
+
+func (m *moveBatchCounter) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	for _, w := range writes {
+		if strings.HasPrefix(w.Key, LayoutMovedPrefix) {
+			m.batches.Add(1)
+			break
+		}
+	}
+	return m.Store.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
+// TestEnsureLayoutMoved_CutAfterBatchFinishesOnNextOperation: a store move
+// that stops after the destination batch applied and before the source
+// delete is finished by the service's next operation, which copies nothing
+// a second time and deletes the earlier store's records.
+func TestEnsureLayoutMoved_CutAfterBatchFinishesOnNextOperation(t *testing.T) {
+	ctx := context.Background()
+	first, second := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	svc := newUnboundService(t)
+	require.NoError(t, svc.BindStore(ctx, first))
+	require.NoError(t, svc.StoreCredential(ctx, "db", []byte("v1")))
+
+	from := &faultyStore{Store: first, op: "delete", key: credentialPrefix + "db"}
+	to := &moveBatchCounter{Store: second}
+	require.NoError(t, svc.BindStoreFrom(ctx, to, from), "a failed move does not fail the bind")
+	require.True(t, from.fired, "the move stopped at the source delete")
+	require.Equal(t, int64(1), to.batches.Load(), "the destination batch applied once")
+	held, err := holdsKey(ctx, first, credentialPrefix+"db")
+	require.NoError(t, err)
+	require.True(t, held, "the source record outlives the cut")
+
+	assert.Equal(t, "v1", retrieveString(t, svc, "db"), "the next operation serves the moved value")
+	assert.Equal(t, int64(1), to.batches.Load(), "the finishing pass copies nothing twice")
+	for _, prefix := range layoutPrefixes {
+		left, err := first.List(ctx, prefix)
+		require.NoError(t, err)
+		assert.Empty(t, left, "the next operation deletes the earlier store's records")
+	}
+	assert.Empty(t, transientMoveRecords(t, second), "no marker outlives the finished move")
+	svc.layoutMu.Lock()
+	assert.Nil(t, svc.layoutFrom, "no move stays pending")
 	svc.layoutMu.Unlock()
 }
 
