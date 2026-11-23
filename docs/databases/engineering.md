@@ -891,9 +891,11 @@ Invariants:
   batch.** No engine writes to its store outside the batch: time-series points,
   metric and tag indexes, secondary index entries, vector records and vector
   metadata indexes are all batch writes, committed atomically with the entry
-  that produced them, on every backend. Time-series points, metric and tag
-  indexes and secondary index entries already are; vector records and vector
-  metadata indexes are not.
+  that produced them, on every backend. A non-shared database's vectors live
+  in its binding store: its vector service has no storage of its own and
+  proposes every write as an `OpVector*` command through the binding's apply
+  host, reading back through the engine's vector lookups. There is no
+  per-database `<root>/vector` store.
 - **New Raft commands are cluster-feature-gated.** The drop fence, the vector
   commands and the retention command are proposed only when the cluster feature
   gate reports every member of the group supports them; otherwise the
