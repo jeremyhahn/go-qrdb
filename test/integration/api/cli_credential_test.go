@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -461,6 +462,97 @@ func TestCLIMultiProtocolCredentialRotateWithGracePeriod(t *testing.T) {
 				t.Fatalf("[%s] credential gc failed: %v", proto, err)
 			}
 			assertContains(t, stdout, "reaped 0", fmt.Sprintf("[%s] credential gc should report 0 reaped versions before grace expiry", proto))
+		})
+	}
+}
+
+// TestCLIMultiProtocolCredentialScheduledRotationNoValueSource drives a
+// scheduled rotation on a qrdbd that ships no rotation value source
+// (docs/plans/1201.md "Out of scope"): an enabled policy falls due, the
+// scheduler's passes over it rotate nothing, and the value, the version list
+// and the next rotation read back over every protocol stay as they were.
+//
+// The api harness runs against an already started qrdbd and cannot set
+// seal.credential_rotation_check_period, so the wait covers one check period
+// of QRDB_CREDENTIAL_ROTATION_CHECK_PERIOD (default the shipped 1m) past the
+// due time. The protocols run in parallel, so the suite waits that long once.
+func TestCLIMultiProtocolCredentialScheduledRotationNoValueSource(t *testing.T) {
+	cfg := LoadTestConfig()
+	requireCLI(t, cfg)
+	period, err := time.ParseDuration(getEnv("QRDB_CREDENTIAL_ROTATION_CHECK_PERIOD", "1m"))
+	if err != nil || period <= 0 {
+		t.Fatalf("QRDB_CREDENTIAL_ROTATION_CHECK_PERIOD: %v, want a positive Go duration", err)
+	}
+
+	for _, proto := range AllProtocols() {
+		t.Run(string(proto), func(t *testing.T) {
+			t.Parallel()
+			if !cfg.IsProtocolAvailable(t, proto) {
+				t.Fatalf("server not available for protocol %s", proto)
+			}
+			name := fmt.Sprintf("cred-sched-nosrc-%s-%d", proto, testTimestamp())
+			t.Cleanup(func() {
+				execCLIWithProtocol(t, cfg, proto, "credential", "delete", name) //nolint:errcheck
+			})
+			cli := func(args ...string) string {
+				t.Helper()
+				stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, args...)
+				if err != nil {
+					t.Fatalf("[%s] %v failed: %v\nstdout: %s\nstderr: %s", proto, args, err, stdout, stderr)
+				}
+				return stdout
+			}
+
+			cli("credential", "rotate", name, "--value", "v1")
+			// One second is the smallest interval the wire form carries.
+			cli("credential", "rotation-policy", "set", name, "--enabled", "--interval", "1s", "--retain-versions", "1")
+
+			type observed struct {
+				value    string
+				versions []uint64
+				next     string
+			}
+			observe := func() observed {
+				t.Helper()
+				var o observed
+				o.value = strings.TrimSpace(cli("credential", "retrieve", name))
+				for _, v := range parseCredentialListVersionsResponse(t, proto, cli("--output", "json", "credential", "versions", name)).Versions {
+					o.versions = append(o.versions, v.Version)
+				}
+				var policy map[string]any
+				if err := json.Unmarshal([]byte(cli("--output", "json", "credential", "rotation-policy", "get", name)), &policy); err != nil {
+					t.Fatalf("[%s] rotation-policy get --output json: %v", proto, err)
+				}
+				if enabled, _ := policy["enabled"].(bool); !enabled {
+					t.Fatalf("[%s] rotation-policy get reports the policy disabled: %v", proto, policy)
+				}
+				for _, key := range []string{"next_rotation", "nextRotation"} {
+					if s, ok := policy[key].(string); ok {
+						o.next = s
+					}
+				}
+				if o.next == "" {
+					t.Fatalf("[%s] rotation-policy get reports no next rotation: %v", proto, policy)
+				}
+				return o
+			}
+
+			before := observe()
+			assertEqual(t, "v1", before.value, fmt.Sprintf("[%s] stored value", proto))
+			assertEqual(t, 1, len(before.versions), fmt.Sprintf("[%s] versions before the policy falls due", proto))
+
+			// The policy is due one interval after it was set; a pass of the
+			// scheduler has run past it once a check period has also gone by.
+			deadline := time.Now().Add(time.Second + period + 5*time.Second)
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for time.Now().Before(deadline) {
+				<-ticker.C
+				now := observe()
+				assertEqual(t, before.value, now.value, fmt.Sprintf("[%s] value changed with no value source", proto))
+				assertEqual(t, fmt.Sprint(before.versions), fmt.Sprint(now.versions), fmt.Sprintf("[%s] versions changed with no value source", proto))
+				assertEqual(t, before.next, now.next, fmt.Sprintf("[%s] next rotation moved with no value source", proto))
+			}
 		})
 	}
 }

@@ -42,7 +42,8 @@ are not reconstructed here — their history is in the git log.
   policy on a `manual` service is refused with `InvalidRotationPolicyError`.
   A tenant's credential store of record is now its replicated home store; the
   tenant barrier is read once, as the migration source of the old layout
-  (part 1 of #1201).
+  (part 1 of #1201). A Buffer a failing rotation value source or
+  `credential://` retrieve still returns is now destroyed, not leaked.
 - **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
 - **Every node rotates due credentials on a ticker, and the rotation policy is
   set and read on every server transport.** `pkg/server` checks every

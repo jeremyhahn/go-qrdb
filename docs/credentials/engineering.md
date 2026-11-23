@@ -449,7 +449,11 @@ changed at the database, an API key issued by its provider. That knowledge
 belongs to the application that embeds qrdb, so it supplies the source through
 `credentials.WithRotationValueSource`. Without one, every due rotation fails
 with `ErrNoRotationValueSource` and the credential stays due, so a source wired
-in later picks it up on its next check.
+in later picks it up on its next check. Each due credential is reported by
+name and keeps its value, versions and `NextRotation`; a source that answers
+`ErrNoRotationValueSource` for one credential leaves the next due one in the
+same pass to rotate. A source that fails but still returns a Buffer has that
+Buffer destroyed, so no copy of a value it produced outlives the attempt.
 
 ## Persistence
 
@@ -506,7 +510,8 @@ with the credential and are removed with it by `delete`.
   borrow tracing so no read holds a borrow past its callback), the service
   (`CredentialWireValue` copies out and destroys, and fails closed on a nil or
   already-destroyed Buffer), the resolver (the retrieved Buffer is consumed and
-  destroyed; a nil Buffer without an error fails closed), `BufferFromWire`
+  destroyed; a nil Buffer without an error fails closed; a Buffer returned
+  with an error is destroyed, `TestCredentialResolver_FailedRetrieveDestroysItsBuffer`), `BufferFromWire`
   (moves, wipes, refuses empty), and each of the six SDK transports (success,
   server error, nil request, closed transport).
 - **Rotation policy**: validation and the `manual` refusal, scheduling and
@@ -517,6 +522,20 @@ with the credential and are removed with it by `delete`.
   a restarted service), a policy changed during a rotation, the prune, the
   reaper or a rotation keeping it, and pruning to `RetainVersions`. The embedder's value source reaches the
   store through `node.WithCredentialRotationValueSource`.
+- **A pass with no value** (`pkg/credentials/scheduled_faults_test.go`): with
+  no source every due credential is reported by name and keeps its value,
+  versions and `NextRotation`
+  (`TestRotateDue_NoValueSourceLeavesEachCredential`); a source with no value
+  for one credential lets the next rotate in the same pass
+  (`TestRotateDue_SourceDeclinesOneNextStillRotates`); a failing source's
+  Buffer is destroyed (`TestRotateDue_SourceErrorWithValueDestroysIt`).
+  `seal.credential_rotation_check_period` refuses zero, negative and
+  unparsable values through `Load` and on a hand-built configuration
+  (`TestSealCredentialRotationCheckPeriodDuration_HandBuilt`). On every CLI
+  protocol, an enabled policy that falls due on a `qrdbd` with no value
+  source leaves the value, the version list and the next rotation unchanged
+  across a check period
+  (`TestCLIMultiProtocolCredentialScheduledRotationNoValueSource`).
 - **One store**: an unbound service fails every verb with
   `ErrStoreUnavailable`, `BindStore` refuses nil and replaces a bound store,
   and two services bound to one store see each other's credential and policy
