@@ -193,22 +193,25 @@ database's state-machine store (OD-8).
                "sharesRequired": 3, "sharesTotal": 5 } }
 ```
 
-`DatabaseInfo` gains a read-only `binding` block reporting what the resolver
-decided:
+`database info` and `database list` carry a read-only `binding` block on every
+transport, reporting what the resolver decided:
 
 ```json
-{ "name": "billing", "tenantId": "acme", "backend": "raft", "status": "open",
-  "shardId": 4107, "replicas": 3,
-  "binding": { "kind": "raft", "nodes": ["node-1", "node-2", "node-3"],
-               "encryption": "tenant+database", "generation": 1 } }
+{ "name": "orders", "tenantId": "acme", "backend": "file", "status": "open",
+  "binding": { "kind": "local", "nodes": ["node-1"],
+               "encryption": "tenant+database" } }
 ```
 
-`kind` is `local` or `raft`; `nodes` is the owning node of a local binding or
-the replica nodes of a raft one; `encryption` is `node`, `tenant` or
-`tenant+database`; `generation` increments each time the name is created, so a
-dropped-and-recreated database is distinguishable from its predecessor.
+`kind` is `local` or `raft`; `nodes` names the owning node when the catalog
+records one (absent otherwise); `encryption` is the scope whose key encrypts
+the store at rest, `node` or `tenant`, with `+database` appended when the
+database has its own barrier. The block is absent when the server cannot
+resolve the binding. gRPC carries it as `DatabaseBindingInfo binding = 19` on
+`DatabaseInfoResponse`; the CLI table output prints it under `Binding:`.
 
-`DatabaseInfoResponse` gains a `DatabaseBindingInfo binding` message field.
+Target: the block gains `generation`, which increments each time the name is
+created so a dropped-and-recreated database is distinguishable from its
+predecessor, and a raft binding lists its replica nodes.
 The `connection` block and the update-connection capability are removed on
 every transport (OD-9).
 

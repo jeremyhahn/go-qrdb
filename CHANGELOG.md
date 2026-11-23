@@ -22,6 +22,10 @@ are not reconstructed here — their history is in the git log.
 - An open Pebble store now refuses every read (get, list, exists, iterator, snapshot) once its barrier seals, so memtable and block-cache data is not served after a seal; the refusal maps to Unavailable on every transport (#923).
 - A `backend: memory` database whose data predates its own store keeps its shared-store route on qrdbd and the SDK standalone node, which now install the shared-keyspace probe, instead of being materialized empty (#923).
 
+### Added
+
+- `database info` and `database list` report a read-only `binding` block on every transport (gRPC `DatabaseBindingInfo`, REST, QUIC, Unix, MCP, both SDKs and the CLI table output): the binding kind (`local` or `raft`), the owning node when one is recorded and the encryption scope (`node` or `tenant`, with `+database` for a per-database barrier), as the server's binding resolver decides it (docs/databases/api.md, #923).
+
 ### Changed
 
 - **Breaking:** the SQL engine tables are renamed to `qrdb_ts_datapoints`, `qrdb_ts_metrics`, `qrdb_vector_namespaces` and `qrdb_vector_vectors` and are served only when their engine is compiled in; the four names are reserved for `CREATE TABLE` and `RENAME TABLE`, and `metrics`, `vectors`, `datapoints` and `namespaces` are ordinary user table names (#923).

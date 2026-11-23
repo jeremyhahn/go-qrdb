@@ -77,26 +77,39 @@ policy from the store: `Compaction` is then unknown, not off. `Name` is
 `json:"-"` on the update and scale requests: it travels in the path, not the
 body.
 
+### Binding block
+
+`DatabaseInfo` carries `Binding *DatabaseBinding` (`json:"binding,omitempty"`),
+read-only: it reports what the resolver decided, so an operator can see where a
+database's data lives without reading the server's configuration. The manager
+asks its backend factory through the optional `BindingDescriber` interface
+(`DescribeBinding(cfg DatabaseConfig) (*Binding, error)`); the server's
+`LocalBindingFactory` answers with the same `ResolveBinding` the open path uses,
+and `Binding.Describe(owner)` turns the result into the block. A factory that
+does not implement the interface, or a resolve error (logged at debug), leaves
+the block absent. The block reaches `database info` and `database list` on every
+transport: gRPC `DatabaseBindingInfo` (field 19 of `DatabaseInfoResponse`),
+REST, MCP, QUIC, the Unix socket, both SDKs and the CLI table output.
+
+```go
+// DatabaseBinding is the resolved placement of the database's storage.
+type DatabaseBinding struct {
+	Kind       BindingKind `json:"kind"`            // local | raft
+	Nodes      []string    `json:"nodes,omitempty"` // the owning node, when one is recorded
+	Encryption string      `json:"encryption"`      // node | tenant | node+database | tenant+database
+}
+```
+
 ### Types (target)
 
-`DatabaseInfo` gains `Binding *DatabaseBinding` (`json:"binding,omitempty"`),
-read-only: it reports what the resolver decided, so an operator can see where a
-database's data lives without reading the server's configuration.
+`DatabaseBinding` gains `Generation uint64` (`json:"generation"`), which
+increments on every create of this name; the catalog does not record a
+generation yet.
 `DatabaseRaftConfig` gains `StateStorage string`
 (`json:"stateStorage,omitempty"`: `pebble | file | memory`) and carries no shard
 ID, which the cluster issues. `UpdateDatabaseConnection`,
 `UpdateDatabaseConnectionRequest`, `DatabaseConnectionConfig`, the `Connection`
 field and remote mode are removed.
-
-```go
-// DatabaseBinding is the resolved placement of the database's storage.
-type DatabaseBinding struct {
-	Kind       string   `json:"kind"`            // local | raft
-	Nodes      []string `json:"nodes,omitempty"` // owning node (local) or replica nodes (raft)
-	Encryption string   `json:"encryption"`      // node | tenant | tenant+database
-	Generation uint64   `json:"generation"`      // increments on every create of this name
-}
-```
 
 ### Server-side binding
 
