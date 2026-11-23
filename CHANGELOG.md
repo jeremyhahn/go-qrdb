@@ -155,16 +155,17 @@ are not reconstructed here — their history is in the git log.
   postures; under strict separation of duties the system SO alone runs role
   create and the built-in role reconciles.
   A malformed SO, a presented certificate whose subject CN is not the SO
-  username, or an SO that is the admin by username or key (compared from the
-  supplied CSRs or certificates before anything is provisioned), is
+  username, or, under strict separation, an SO that is the admin by username or
+  key (compared from the supplied CSRs or certificates before anything is
+  provisioned), is
   `*ceremony.SystemSORejectedError`, classified `INVALID_ARGUMENT` / 400 on
   every transport. Initialize records the issued SO in the system barrier
   before it reports success, so a node that crashes before the replicated
   record is written recovers it on restart (`*ceremony.SystemSOPersistError`
   on failure). A store fault reading the pending record fails the boot and
   refuses consumption; only not-found means no SO. An adopted SO certificate
-  keeps the trust pool that validated it through the handoff, a strict restart
-  of a bound admin with no enrolled SO is refused, and an enrolment retry
+  keeps the trust pool that validated it through the handoff, a restart of
+  a bound admin with a pending SO still to enrol takes the full first boot, and an enrolment retry
   that finds a different committed SO PIN still fails. The SO is signed or
   adopted before the PIN is provisioned or the barrier initialised, so a
   signing fault leaves the node awaiting init and a retry completes. A
@@ -177,8 +178,7 @@ are not reconstructed here — their history is in the git log.
   EKU) is refused with `*ceremony.ClientAuthProfileError` before anything is
   bound. First boot stores the adopted SO's pool as system tenant trust
   anchors and refreshes runtime client trust before it binds the SO, so the
-  SO can authenticate over mTLS. An embedded upgrade recognises an SO that
-  is already enrolled, as the daemon does, instead of refusing strict boot.
+  SO can authenticate over mTLS.
 - **Tenant create takes an optional Security Officer** (#1042): `so_username`,
   `so_pin` and exactly one of `so_csr_pem` / `so_cert_pem` (with
   `so_chain_pem`), on REST, gRPC, QUIC, MCP, Unix and embedded, and as
