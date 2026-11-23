@@ -177,21 +177,12 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 		filepath.Join(f.dataDir, "wal"),
 	}
 	// A committed journal that names the seal-store keyspace means the
-	// recovery below rolls the re-encrypted seal-store records forward; the
-	// plaintext versions they replace are then compacted out of the store.
-	pending, _ := seal.LoadMigrationJournalFrom(sigCtx, sealBackend, barrierCfg.RootKeyPath)
-	if rerr := refuseCommittedJournalWithoutStagingRoot(sigCtx, sealBackend, barrierCfg.RootKeyPath, pending); rerr != nil {
+	// recovery rolls the re-encrypted seal-store records forward; the
+	// plaintext versions they replace are then retired from the store's
+	// files under a durable marker (recoverSystemMigration).
+	if rerr := recoverSystemMigration(sigCtx, sealBackend, sealRetirer, barrierCfg.RootKeyPath, sysStoreDirs); rerr != nil {
 		_ = sealStore.Close()
 		return nil, &SealBarrierError{Err: rerr}
-	}
-	if rerr := database.RecoverInterruptedMigration(sigCtx, sealBackend, barrierCfg.RootKeyPath, sysStoreDirs); rerr != nil {
-		slog.Warn("system encryption-migration crash recovery failed; manual reconcile may be required",
-			slog.Any("error", rerr))
-	} else if pending != nil && pending.Committed() && journalNamesSealStore(pending) {
-		if cerr := sealRetirer.Retire(sigCtx); cerr != nil {
-			slog.Warn("compacting the seal store's plaintext history after encryption-migration recovery failed",
-				slog.Any("error", cerr))
-		}
 	}
 
 	// The system barrier resolves its strategies through the same registry an
@@ -514,6 +505,93 @@ func (r *sealStoreRetirer) Retire(ctx context.Context) error {
 	if r == nil || r.store == nil {
 		return nil
 	}
+	if err := r.mark(); err != nil {
+		return err
+	}
+	if sealStoreRetireFault != nil {
+		if err := sealStoreRetireFault(); err != nil {
+			return err
+		}
+	}
+	if err := r.retireFiles(ctx); err != nil {
+		return err
+	}
+	if err := r.store.Delete(sealStoreRetireMarker); err != nil {
+		return fmt.Errorf("clear the plaintext-retirement marker: %w", err)
+	}
+	return nil
+}
+
+// sealStoreRetireMarker is the seal-store key that records a plaintext
+// retirement still owed. It is written (synced) before the retirement starts,
+// and at boot before RecoverInterruptedMigration clears a committed journal
+// naming the seal store, and deleted only once the retirement succeeds, so
+// each boot retries while it exists.
+var sealStoreRetireMarker = []byte("qrdbd/seal-store/retire-plaintext")
+
+// sealStoreRetireFault, when set (tests only), fails Retire right after the
+// marker is written: a crash or failure before the files are retired.
+var sealStoreRetireFault func() error
+
+// mark records that a retirement is owed. A nil retirer owes none.
+func (r *sealStoreRetirer) mark() error {
+	if r == nil || r.store == nil {
+		return nil
+	}
+	if err := r.store.Set(sealStoreRetireMarker, []byte{1}); err != nil {
+		return fmt.Errorf("write the plaintext-retirement marker: %w", err)
+	}
+	return nil
+}
+
+// marked reports whether a retirement is owed.
+func (r *sealStoreRetirer) marked() (bool, error) {
+	if r == nil || r.store == nil {
+		return false, nil
+	}
+	return r.store.Exists(sealStoreRetireMarker)
+}
+
+// RetirePending runs Retire when the marker records one owed.
+func (r *sealStoreRetirer) RetirePending(ctx context.Context) error {
+	owed, err := r.marked()
+	if err != nil || !owed {
+		return err
+	}
+	return r.Retire(ctx)
+}
+
+// recoverSystemMigration is the boot-time reconcile of a system-scope
+// enable-encryption interrupted by a crash (see initSealSubsystem). A
+// committed journal without its staging root key is refused. A committed
+// journal naming the seal store marks a plaintext retirement owed BEFORE
+// database.RecoverInterruptedMigration rolls the records forward and clears
+// the journal; then any owed retirement runs, and a failure is returned with
+// the marker kept, so the next boot retries. A recovery failure itself stays
+// a warning, as before: the journal survives it.
+func recoverSystemMigration(ctx context.Context, backend seal.StorageBackend, retirer *sealStoreRetirer, rootKeyPath string, storeDirs []string) error {
+	pending, _ := seal.LoadMigrationJournalFrom(ctx, backend, rootKeyPath)
+	if err := refuseCommittedJournalWithoutStagingRoot(ctx, backend, rootKeyPath, pending); err != nil {
+		return err
+	}
+	if pending != nil && pending.Committed() && journalNamesSealStore(pending) {
+		if err := retirer.mark(); err != nil {
+			return err
+		}
+	}
+	if rerr := database.RecoverInterruptedMigration(ctx, backend, rootKeyPath, storeDirs); rerr != nil {
+		slog.Warn("system encryption-migration crash recovery failed; manual reconcile may be required",
+			slog.Any("error", rerr))
+		return nil
+	}
+	if err := retirer.RetirePending(ctx); err != nil {
+		return fmt.Errorf("retire the seal store's plaintext history: %w", err)
+	}
+	return nil
+}
+
+// retireFiles is Retire's work past the marker.
+func (r *sealStoreRetirer) retireFiles(ctx context.Context) error {
 	before, err := sealStorePlaintextFiles(r.dir)
 	if err != nil {
 		return err

@@ -793,6 +793,66 @@ func TestRecodeSystemBarrier_SealStoreRetiresPlaintextHistory(t *testing.T) {
 	assertRecodeSealStoreKeyed(t, seal.NewStorageAdapter(reopened), secrets)
 }
 
+func TestRecoverInterruptedSystemMigration_RetiresUnderDurableMarker(t *testing.T) {
+	ctx := context.Background()
+	sealDir := filepath.Join(t.TempDir(), "seal")
+	store, retirer, err := openSealStore(sealDir)
+	if err != nil {
+		t.Fatalf("openSealStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	backend := seal.NewStorageAdapter(store)
+	source := newRecodeSourceBarrierOn(t, backend)
+	large, probes := recodeLargeSecret()
+	secrets := map[string]string{"alpha": "alpha-marker-secret", "large": large}
+	putRecodeSealStoreSecrets(t, source, secrets)
+	check := map[string]string{"alpha": secrets["alpha"]}
+	for i, p := range probes {
+		check[fmt.Sprintf("probe-%d", i)] = p
+	}
+	walDir := filepath.Join(t.TempDir(), "wal")
+	if err := os.MkdirAll(walDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// The migration crashes past the commit point, before the records are
+	// copied and the plaintext retired: the journal is kept.
+	setRecodeSealStoreCommitFault(t, func() error { return errRecodeSealStoreCrash })
+	err = recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts(), func() error { return retirer.Retire(ctx) })
+	if !errors.Is(err, errRecodeSealStoreCrash) {
+		t.Fatalf("err = %v, want %v", err, errRecodeSealStoreCrash)
+	}
+	// Closing the source barrier closes the store under it: it stays open
+	// across the two simulated boots below.
+	defer func() { _ = source.Close() }()
+
+	// Boot 1: recovery clears the journal, then the retirement aborts.
+	prev := sealStoreRetireFault
+	sealStoreRetireFault = func() error { return errRecodeSealStoreCrash }
+	t.Cleanup(func() { sealStoreRetireFault = prev })
+	if err := recoverSystemMigration(ctx, backend, retirer, "system/root-key", nil); !errors.Is(err, errRecodeSealStoreCrash) {
+		t.Fatalf("boot with a failing retirement: err = %v, want %v", err, errRecodeSealStoreCrash)
+	}
+	if j, _ := seal.LoadMigrationJournalFrom(ctx, backend, "system/root-key"); j != nil {
+		t.Fatalf("journal at phase %q after recovery, want it cleared", j.Phase)
+	}
+	if owed, merr := retirer.marked(); merr != nil || !owed {
+		t.Fatalf("retirement marker after the failed retirement = %v (err %v), want it kept", owed, merr)
+	}
+
+	// Boot 2: the marker alone drives the retirement, then goes.
+	sealStoreRetireFault = nil
+	if err := recoverSystemMigration(ctx, backend, retirer, "system/root-key", nil); err != nil {
+		t.Fatalf("boot after the failed retirement: %v", err)
+	}
+	if owed, merr := retirer.marked(); merr != nil || owed {
+		t.Fatalf("retirement marker after the retirement = %v (err %v), want it gone", owed, merr)
+	}
+	if hits := recodeDirPlaintext(t, sealDir, check); len(hits) != 0 {
+		t.Fatalf("plaintext seal-store history survives in %v", hits)
+	}
+	assertRecodeSealStoreKeyed(t, backend, secrets)
+}
+
 // recodeLargeSecret returns a 1 MiB incompressible text secret (larger than
 // a WAL block) and probes cut from it at intervals: a record split across
 // WAL blocks is not contiguous on disk, but each probe is.
