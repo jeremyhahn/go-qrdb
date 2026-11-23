@@ -1009,8 +1009,11 @@ var volumeRules = []rule{
 	// A tenant move refused by admit, a journal step, cut over, retire,
 	// abort or cancel: a state conflict.
 	as(&volume.MoveConflictError{}, FailedPrecondition),
-	// An encrypted to unencrypted move: Q9 refused outright (ruling 1115).
+	// An encrypted to unencrypted move without the operator's audited
+	// allow_unencrypted_destination flag (Q9, ruling 1234), and a flagged
+	// drop with no audit sink wired.
 	as(&volume.MoveToUnencryptedPoolError{}, FailedPrecondition),
+	as(&volume.MoveEncryptionDropUnauditedError{}, FailedPrecondition),
 	as(&volume.MoveNotFoundError{}, NotFound),
 	as(&volume.InvalidMoveRequestError{}, InvalidArgument),
 	// The move journal changed under every compare-and-swap; nothing was

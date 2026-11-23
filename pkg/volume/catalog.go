@@ -680,6 +680,44 @@ func (c *Catalog) providerOpensLockable(name string, fallback bool) bool {
 	return fallback
 }
 
+// poolsDropEncryption is decision Q9's rule: a move from source to dest
+// drops encryption when source's provider opens Lockable volumes and
+// dest's does not. An unknown source provider counts as Lockable and an
+// unknown destination provider as not, so neither lets a downgrade through
+// unnoticed.
+func (c *Catalog) poolsDropEncryption(source, dest *Pool) bool {
+	return c.providerOpensLockable(source.Provider, true) &&
+		!c.providerOpensLockable(dest.Provider, false)
+}
+
+// moveDropsEncryption reads, without writing anything, whether moving
+// tenantID to toPool drops its at-rest encryption (AdmitMove's Q9 rule,
+// ruling 1234), and the tenant's current pool. AdmitMove re-applies the
+// rule in its own transaction, so a pool change between this read and the
+// admit refuses the move rather than dropping encryption unaudited.
+func (c *Catalog) moveDropsEncryption(ctx context.Context, tenantID, toPool string) (fromPool string, drops bool, err error) {
+	raw, err := c.kv.Get(ctx, AssignmentKey(tenantID))
+	if err != nil {
+		return "", false, err
+	}
+	if raw == nil {
+		return "", false, &AssignmentNotFoundError{TenantID: tenantID}
+	}
+	var assignment Assignment
+	if err := json.Unmarshal(raw, &assignment); err != nil {
+		return "", false, &CorruptRecordError{Key: AssignmentKey(tenantID), Err: err}
+	}
+	dest, _, err := c.getPoolRaw(ctx, toPool)
+	if err != nil {
+		return "", false, err
+	}
+	source, _, err := c.getPoolRaw(ctx, assignment.Pool)
+	if err != nil {
+		return "", false, err
+	}
+	return assignment.Pool, c.poolsDropEncryption(source, dest), nil
+}
+
 // AdmitMove is the catalog half of a tenant move's admit step ("The move,
 // phase by phase" step 1, docs/decisions/volume-pool-tenant-moves.md). In
 // one transaction it reserves the tenant's Assignment.ReservedBytes on
@@ -691,8 +729,10 @@ func (c *Catalog) providerOpensLockable(name string, fallback bool) bool {
 // Before the transaction it refuses, with *MoveConflictError, a second move
 // (Q10), a move to the current pool, and a destination that is not Mapped
 // and StateReady in a fresh report from every replica node (Q3). It refuses
-// a Lockable-to-non-Lockable move with *MoveToUnencryptedPoolError (decision
-// Q9, the interim refusal under ruling 1115), checked before Q3. The
+// a Lockable-to-non-Lockable move with *MoveToUnencryptedPoolError unless
+// req.AllowEncryptionDrop (decision Q9, ruling 1234: MoveTenant sets it only
+// after auditing the drop), checked before Q3; an admitted drop is
+// journalled as Move.EncryptionDropped. The
 // tenant-kind and AllowedVolumePools checks belong to the caller in the
 // tenant layer: MoveTenant calls AdmitMove once the wired MoveAdmission
 // admitted the move and supplied the replica nodes.
@@ -756,11 +796,11 @@ func (c *Catalog) AdmitMove(ctx context.Context, req MoveAdmitRequest) (*Move, e
 			return nil, err
 		}
 
-		// Q9 (interim, ruling 1115): an unknown source counts as Lockable
-		// and an unknown destination as not, so neither lets a downgrade
-		// through.
-		if c.providerOpensLockable(source.Provider, true) &&
-			!c.providerOpensLockable(dest.Provider, false) {
+		// Q9 (ruling 1234): a downgrade is admitted only when MoveTenant
+		// audited it under the operator's allow_unencrypted_destination
+		// flag; the journal records it.
+		dropsEncryption := c.poolsDropEncryption(source, dest)
+		if dropsEncryption && !req.AllowEncryptionDrop {
 			return nil, &MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: assignment.Pool, ToPool: req.ToPool}
 		}
 
@@ -821,6 +861,8 @@ func (c *Catalog) AdmitMove(ctx context.Context, req MoveAdmitRequest) (*Move, e
 			NodesPending:  nodes,
 			ReservedBytes: reserveBytes,
 			AdmittedAt:    now,
+			// A plain-to-plain move under AllowEncryptionDrop drops nothing.
+			EncryptionDropped: dropsEncryption,
 		}
 		moveData, err := json.Marshal(move)
 		if err != nil {

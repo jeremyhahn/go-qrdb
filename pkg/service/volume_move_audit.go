@@ -24,9 +24,19 @@ import (
 )
 
 // ActionVolumePoolMoveStart records the start of a tenant move between
-// volume pools: the event carries the destination pool and its outcome the
-// source pool.
+// volume pools: the event carries the destination pool, the operator's
+// allow_unencrypted_destination flag and whether the move drops encryption
+// (encryption_dropped, decision Q9, ruling 1234), and its outcome the source
+// pool.
 const ActionVolumePoolMoveStart = "volume_pool.move_start"
+
+// ActionVolumePoolMoveEncryptionDrop records a tenant move that drops the
+// tenant's at-rest encryption under the operator's explicit
+// allow_unencrypted_destination flag (decision Q9, ruling 1234). It is
+// written fail-closed before the move_start record, whatever the configured
+// audit policy, and carries from_pool, to_pool, encryption "dropped" and the
+// flag.
+const ActionVolumePoolMoveEncryptionDrop = "volume_pool.move_encryption_drop"
 
 // volumeMoveAuditComponent labels a move-start record that could not be
 // written, on qrdb_audit_write_failures_total{component=...}.
@@ -56,31 +66,63 @@ func NewVolumeMoveAudit(logger audit.AuditLogger, policy audit.FailurePolicy) vo
 }
 
 // moveStartEvent builds the record of req's start, without an outcome.
-func moveStartEvent(ctx context.Context, req volume.MoveTenantRequest) audit.AuditEvent {
-	var actor string
-	if id := auth.IdentityFromContext(ctx); id != nil {
-		actor = id.Subject
-	}
+func moveStartEvent(ctx context.Context, req volume.MoveTenantRequest, facts volume.MoveStartFacts) audit.AuditEvent {
 	return audit.AuditEvent{
-		Actor:    actor,
+		Actor:    moveActor(ctx),
 		TenantID: req.TenantID,
 		Resource: "volume_pool",
 		Action:   ActionVolumePoolMoveStart,
 		Attributes: map[string]any{
-			"to_pool": req.ToPool,
+			"to_pool":                       req.ToPool,
+			"allow_unencrypted_destination": req.AllowUnencryptedDestination,
+			"encryption_dropped":            facts.EncryptionDropped,
+		},
+	}
+}
+
+// moveActor is the operator's identity subject on ctx, or empty.
+func moveActor(ctx context.Context) string {
+	if id := auth.IdentityFromContext(ctx); id != nil {
+		return id.Subject
+	}
+	return ""
+}
+
+// moveEncryptionDropEvent is the record of a move that drops the tenant's
+// at-rest encryption under the operator's allow_unencrypted_destination
+// flag (decision Q9, ruling 1234).
+func moveEncryptionDropEvent(ctx context.Context, req volume.MoveTenantRequest, facts volume.MoveStartFacts) audit.AuditEvent {
+	return audit.AuditEvent{
+		Actor:    moveActor(ctx),
+		TenantID: req.TenantID,
+		Resource: "volume_pool",
+		Action:   ActionVolumePoolMoveEncryptionDrop,
+		Outcome:  audit.OutcomePermitted,
+		Attributes: map[string]any{
+			"from_pool":                     facts.FromPool,
+			"to_pool":                       req.ToPool,
+			"encryption":                    "dropped",
+			"allow_unencrypted_destination": req.AllowUnencryptedDestination,
 		},
 	}
 }
 
 // BeginMoveStart implements volume.MoveStartAuditor.
-func (a *volumeMoveAudit) BeginMoveStart(ctx context.Context, req volume.MoveTenantRequest) (func(*volume.Move, error), error) {
-	ev := moveStartEvent(ctx, req)
+func (a *volumeMoveAudit) BeginMoveStart(ctx context.Context, req volume.MoveTenantRequest, facts volume.MoveStartFacts) (func(*volume.Move, error), error) {
+	if facts.EncryptionDropped {
+		// Ruling 1234: the drop is recorded fail-closed whatever the
+		// configured policy; a write failure refuses the start.
+		if err := audit.EmitGated(ctx, a.audit, volumeMoveAuditComponent, audit.FailClosed, moveEncryptionDropEvent(ctx, req, facts)); err != nil {
+			return nil, err
+		}
+	}
+	ev := moveStartEvent(ctx, req, facts)
 	ev.Outcome = audit.OutcomePermitted
 	if err := audit.EmitGated(ctx, a.audit, volumeMoveAuditComponent, a.policy, ev); err != nil {
 		return nil, err
 	}
 	return func(m *volume.Move, err error) {
-		out := moveStartEvent(ctx, req)
+		out := moveStartEvent(ctx, req, facts)
 		if m != nil {
 			out.Attributes["from_pool"] = m.FromPool
 		}

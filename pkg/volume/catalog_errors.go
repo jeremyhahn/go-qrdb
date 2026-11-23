@@ -254,9 +254,10 @@ func (e *MoveConflictError) Error() string {
 
 // MoveToUnencryptedPoolError is returned by Catalog.AdmitMove for a move from
 // a pool whose provider opens Lockable volumes to one whose provider does
-// not. Decision Q9 is with the owner, and until it is answered the build
-// refuses such a move outright, whatever the request carries (ruling 1115).
-// It classifies as FailedPrecondition (errclass); no transport carries it yet.
+// not, when the request does not carry the operator's explicit, audited
+// allow_unencrypted_destination flag (decision Q9, ruling 1234). The
+// message names the flag as the remedy. It classifies as
+// FailedPrecondition (errclass).
 type MoveToUnencryptedPoolError struct {
 	TenantID string
 	FromPool string
@@ -268,7 +269,27 @@ func (e *MoveToUnencryptedPoolError) Error() string {
 	return "volume: move of tenant " + strconv.Quote(e.TenantID) +
 		" from pool " + strconv.Quote(e.FromPool) +
 		" to pool " + strconv.Quote(e.ToPool) +
-		" refused: the source pool is encrypted (Lockable) and the destination is not"
+		" refused: the source pool is encrypted (Lockable) and the destination is not" +
+		"; set allow_unencrypted_destination (qrdb volume-pool move-tenant --allow-unencrypted-destination) to drop encryption"
+}
+
+// MoveEncryptionDropUnauditedError is returned by Catalog.MoveTenant for a
+// move under allow_unencrypted_destination that drops the tenant's at-rest
+// encryption while no MoveStartAuditor is wired: a drop is always audited
+// (decision Q9, ruling 1234), so an unaudited one never happens. It
+// classifies as FailedPrecondition (errclass).
+type MoveEncryptionDropUnauditedError struct {
+	TenantID string
+	FromPool string
+	ToPool   string
+}
+
+// Error implements the error interface.
+func (e *MoveEncryptionDropUnauditedError) Error() string {
+	return "volume: move of tenant " + strconv.Quote(e.TenantID) +
+		" from pool " + strconv.Quote(e.FromPool) +
+		" to pool " + strconv.Quote(e.ToPool) +
+		" refused: dropping encryption needs an audit sink"
 }
 
 // MoveJournalConflictError is returned by a move-journal step transition

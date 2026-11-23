@@ -220,6 +220,10 @@ type Move struct {
 	// TenantRecorded reports that the tenant record names ToPool (the
 	// wired MoveCutoverRecorder ran after cut over); retire waits on it.
 	TenantRecorded bool `json:"tenantRecorded,omitempty"`
+	// EncryptionDropped reports a move from a Lockable pool to a
+	// non-Lockable one, admitted only with the operator's audited
+	// allow_unencrypted_destination flag (decision Q9, ruling 1234).
+	EncryptionDropped bool `json:"encryptionDropped,omitempty"`
 	// AdmittedAt is when AdmitMove wrote the journal.
 	AdmittedAt time.Time `json:"admittedAt"`
 	// UpdatedAt is when the journal last changed state or step.
@@ -271,6 +275,11 @@ type MoveAdmitRequest struct {
 	// ReplicaNodes is every node holding a replica of the tenant, supplied
 	// by the caller; each must report ToPool ready (decision Q3).
 	ReplicaNodes []string
+	// AllowEncryptionDrop admits a Lockable-to-non-Lockable move (decision
+	// Q9, ruling 1234). Only Catalog.MoveTenant sets it, after the drop was
+	// audited; without it AdmitMove refuses the downgrade with
+	// *MoveToUnencryptedPoolError.
+	AllowEncryptionDrop bool
 }
 
 // MoveTenantRequest is the operator's request to move a tenant between
@@ -280,6 +289,24 @@ type MoveTenantRequest struct {
 	TenantID string
 	// ToPool is the destination pool.
 	ToPool string
+	// AllowUnencryptedDestination is the operator's explicit
+	// allow_unencrypted_destination flag (decision Q9, ruling 1234): it
+	// permits a move from a Lockable pool to a non-Lockable one, which
+	// drops the tenant's at-rest encryption. The drop is audited fail-closed
+	// through the wired MoveStartAuditor; without one it is refused.
+	AllowUnencryptedDestination bool
+}
+
+// MoveStartFacts is what Catalog.MoveTenant read before admitting a move
+// and hands its MoveStartAuditor (decision Q9, ruling 1234).
+type MoveStartFacts struct {
+	// FromPool is the tenant's pool when the start was read; empty when
+	// the request does not carry allow_unencrypted_destination.
+	FromPool string
+	// EncryptionDropped reports that the move goes from a Lockable pool to
+	// a non-Lockable one under the operator's flag: the auditor records the
+	// drop fail-closed before anything is admitted.
+	EncryptionDropped bool
 }
 
 // MoveAdmission is the tenant layer's half of a move's admit step ("The
@@ -295,9 +322,11 @@ type MoveAdmission interface {
 // MoveStartAuditor audits the start of a tenant move ("The move, phase by
 // phase" step 1). BeginMoveStart is called before anything is admitted: an error
 // refuses the start and nothing is admitted. Otherwise settle is called
-// exactly once with Catalog.AdmitMove's answer.
+// exactly once with Catalog.AdmitMove's answer. facts tells it whether the
+// move drops the tenant's encryption (decision Q9, ruling 1234): such a
+// start must be recorded fail-closed, whatever the configured audit policy.
 type MoveStartAuditor interface {
-	BeginMoveStart(ctx context.Context, req MoveTenantRequest) (settle func(*Move, error), err error)
+	BeginMoveStart(ctx context.Context, req MoveTenantRequest, facts MoveStartFacts) (settle func(*Move, error), err error)
 }
 
 // MoveCutoverRecorder is the tenant layer's half of a move's cut over: it

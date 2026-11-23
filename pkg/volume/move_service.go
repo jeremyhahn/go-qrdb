@@ -101,9 +101,26 @@ func (c *Catalog) MoveTenant(ctx context.Context, req MoveTenantRequest) (*Move,
 	if err != nil {
 		return nil, err
 	}
+	// Q9 (ruling 1234): under the operator's flag, read whether the move
+	// drops encryption, so the drop is audited fail-closed before anything
+	// is admitted. AdmitMove re-applies the rule in its transaction and
+	// admits a drop only with AllowEncryptionDrop: a pool change after this
+	// read refuses rather than drops encryption unaudited.
+	var facts MoveStartFacts
+	if req.AllowUnencryptedDestination {
+		fromPool, drops, err := c.moveDropsEncryption(ctx, req.TenantID, req.ToPool)
+		if err != nil {
+			return nil, err
+		}
+		facts = MoveStartFacts{FromPool: fromPool, EncryptionDropped: drops}
+	}
+	auditor := c.currentMoveAuditor()
+	if facts.EncryptionDropped && auditor == nil {
+		return nil, &MoveEncryptionDropUnauditedError{TenantID: req.TenantID, FromPool: facts.FromPool, ToPool: req.ToPool}
+	}
 	settle := func(*Move, error) {}
-	if auditor := c.currentMoveAuditor(); auditor != nil {
-		s, err := auditor.BeginMoveStart(ctx, req)
+	if auditor != nil {
+		s, err := auditor.BeginMoveStart(ctx, req, facts)
 		if err != nil {
 			return nil, err
 		}
@@ -112,9 +129,10 @@ func (c *Catalog) MoveTenant(ctx context.Context, req MoveTenantRequest) (*Move,
 		}
 	}
 	m, err := c.AdmitMove(ctx, MoveAdmitRequest{
-		TenantID:     req.TenantID,
-		ToPool:       req.ToPool,
-		ReplicaNodes: nodes,
+		TenantID:            req.TenantID,
+		ToPool:              req.ToPool,
+		ReplicaNodes:        nodes,
+		AllowEncryptionDrop: facts.EncryptionDropped,
 	})
 	settle(m, err)
 	if err != nil {
