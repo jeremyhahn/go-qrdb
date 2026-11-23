@@ -62,6 +62,13 @@ type MoveStoreCloser struct {
 	mu         sync.Mutex
 	closed     map[string][]string
 	closedHost map[string]bool
+
+	// holdMu guards held apart from mu: the placement reconciler reads the
+	// hold while CloseTenantStores holds mu across its shard closes.
+	holdMu sync.Mutex
+	// held names each tenant whose stores a move step has closed or is
+	// closing; the placement reconciler leaves a held tenant alone.
+	held map[string]bool
 }
 
 // MoveStoreCloserOption configures a MoveStoreCloser.
@@ -100,7 +107,14 @@ func NewMoveStoreCloser(shards MoveShardLifecycle, barriers MoveBarriers, caught
 // CloseTenantStores stops every shard of tenantID started on this node and
 // its Host, then closes its barrier, and remembers what it stopped for the
 // reopen.
-func (c *MoveStoreCloser) CloseTenantStores(ctx context.Context, tenantID string) error {
+func (c *MoveStoreCloser) CloseTenantStores(ctx context.Context, tenantID string) (err error) {
+	c.hold(tenantID)
+	defer func() {
+		if err != nil {
+			// A failed close leaves the tenant to the reconciler again.
+			c.release(tenantID)
+		}
+	}()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	dbs := append([]string(nil), c.closed[tenantID]...)
@@ -126,10 +140,38 @@ func (c *MoveStoreCloser) CloseTenantStores(ctx context.Context, tenantID string
 	return c.barriers.CloseVolumeTenant(ctx, tenantID)
 }
 
+// HoldsTenant reports whether a move step holds tenantID's stores: from the
+// start of CloseTenantStores until OpenTenantStores returns. The placement
+// reconciler neither re-attaches a held tenant's shards nor registers its
+// barrier shell, so nothing reopens the tenant's directory mid-move.
+func (c *MoveStoreCloser) HoldsTenant(tenantID string) bool {
+	c.holdMu.Lock()
+	defer c.holdMu.Unlock()
+	return c.held[tenantID]
+}
+
+func (c *MoveStoreCloser) hold(tenantID string) {
+	c.holdMu.Lock()
+	defer c.holdMu.Unlock()
+	if c.held == nil {
+		c.held = map[string]bool{}
+	}
+	c.held[tenantID] = true
+}
+
+func (c *MoveStoreCloser) release(tenantID string) {
+	c.holdMu.Lock()
+	defer c.holdMu.Unlock()
+	delete(c.held, tenantID)
+}
+
 // OpenTenantStores reopens tenantID's barrier, restarts the shards and Host
 // CloseTenantStores stopped, and returns once each shard reports caught up
 // or ctx ends.
 func (c *MoveStoreCloser) OpenTenantStores(ctx context.Context, tenantID string) error {
+	// Released on every return: once the move gives up reopening, the
+	// reconciler is the retry for whatever is left detached.
+	defer c.release(tenantID)
 	c.mu.Lock()
 	dbs := c.closed[tenantID]
 	host := c.closedHost[tenantID]

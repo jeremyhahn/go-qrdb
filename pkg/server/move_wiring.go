@@ -104,6 +104,11 @@ func WireTenantMoves(cfg TenantMoveConfig) (*TenantMoveWorker, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.Infra != nil && cfg.Infra.Reconciler != nil {
+		// The reconciler must not re-attach a shard (or register a barrier
+		// shell) between a move closing the tenant's shards and its barrier.
+		cfg.Infra.Reconciler.SetMoveHold(stores)
+	}
 	runner, err := seal.NewMoveStepRunner(cfg.BarrierReg, cfg.NodeID, stores)
 	if err != nil {
 		return nil, err

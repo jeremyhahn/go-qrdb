@@ -20,15 +20,24 @@ type fakeMoveShards struct {
 	started map[StartedShard]bool
 	calls   []string
 	err     error
+	// onClose and onAttach, when set, run at the start of Close and Attach.
+	onClose  func()
+	onAttach func()
 }
 
 func (f *fakeMoveShards) Attach(_ context.Context, tenantID, db string) error {
+	if f.onAttach != nil {
+		f.onAttach()
+	}
 	f.calls = append(f.calls, "attach "+tenantID+"/"+db)
 	f.started[StartedShard{TenantID: tenantID, Database: db}] = true
 	return f.err
 }
 
 func (f *fakeMoveShards) Close(tenantID, db string) error {
+	if f.onClose != nil {
+		f.onClose()
+	}
 	f.calls = append(f.calls, "close "+tenantID+"/"+db)
 	delete(f.started, StartedShard{TenantID: tenantID, Database: db})
 	return f.err
@@ -88,6 +97,81 @@ func TestMoveStoreCloser_CloseThenReopenAwaitsCatchUp(t *testing.T) {
 	}
 	if len(shards.started) != 3 || reads < 3 {
 		t.Fatalf("started = %v, catch-up reads = %d", shards.started, reads)
+	}
+}
+
+// TestMoveStoreCloser_HoldsTenantAcrossMove proves the placement reconciler's
+// hold: HoldsTenant is true before the first shard closes (so before the
+// barrier closes) and stays true until OpenTenantStores returns.
+func TestMoveStoreCloser_HoldsTenantAcrossMove(t *testing.T) {
+	shards := &fakeMoveShards{started: map[StartedShard]bool{
+		{TenantID: "acme", Database: "a"}: true,
+	}}
+	barriers := &fakeMoveBarriers{}
+	caughtUp := func(context.Context, string, string) (bool, error) { return true, nil }
+	c, err := NewMoveStoreCloser(shards, barriers, caughtUp, time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	if c.HoldsTenant("acme") {
+		t.Fatal("acme held before any move")
+	}
+	var heldAtClose, otherAtClose, heldAtAttach bool
+	shards.onClose = func() {
+		heldAtClose = c.HoldsTenant("acme")
+		otherAtClose = c.HoldsTenant("other")
+	}
+	shards.onAttach = func() { heldAtAttach = c.HoldsTenant("acme") }
+	ctx := context.Background()
+	if err := c.CloseTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if !heldAtClose || otherAtClose {
+		t.Fatalf("at shard close: acme held = %v, other held = %v", heldAtClose, otherAtClose)
+	}
+	if !c.HoldsTenant("acme") {
+		t.Fatal("acme released after close, before reopen")
+	}
+	if err := c.OpenTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if !heldAtAttach {
+		t.Fatal("acme released before its shards were re-attached")
+	}
+	if c.HoldsTenant("acme") {
+		t.Fatal("acme still held after OpenTenantStores returned")
+	}
+}
+
+// TestMoveStoreCloser_FailedStepsReleaseHold: neither a failed close nor a
+// failed reopen leaves the tenant held forever.
+func TestMoveStoreCloser_FailedStepsReleaseHold(t *testing.T) {
+	shards := &fakeMoveShards{started: map[StartedShard]bool{
+		{TenantID: "acme", Database: "a"}: true,
+	}}
+	barriers := &fakeMoveBarriers{}
+	c, err := NewMoveStoreCloser(shards, barriers, nil, time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	ctx := context.Background()
+	shards.err = errors.New("close failed")
+	if err := c.CloseTenantStores(ctx, "acme"); err == nil {
+		t.Fatal("close: want error")
+	}
+	if c.HoldsTenant("acme") {
+		t.Fatal("acme held after a failed close")
+	}
+	shards.err = nil
+	if err := c.CloseTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	barriers.err = errors.New("reopen failed")
+	if err := c.OpenTenantStores(ctx, "acme"); err == nil {
+		t.Fatal("open: want error")
+	}
+	if c.HoldsTenant("acme") {
+		t.Fatal("acme held after a failed reopen")
 	}
 }
 

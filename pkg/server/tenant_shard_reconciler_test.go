@@ -543,6 +543,82 @@ func TestTenantShardReconciler_BarrierNotReadyDefers(t *testing.T) {
 	}
 }
 
+// fakeMoveHold is a MoveHold the test flips.
+type fakeMoveHold struct {
+	mu   sync.Mutex
+	held map[string]bool
+}
+
+func (h *fakeMoveHold) HoldsTenant(tenantID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.held[tenantID]
+}
+
+func (h *fakeMoveHold) set(tenantID string, held bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.held[tenantID] = held
+}
+
+// countingShellRegistrar records each RegisterTenantShell call.
+type countingShellRegistrar struct {
+	mu      sync.Mutex
+	tenants []string
+}
+
+func (s *countingShellRegistrar) RegisterTenantShell(_ context.Context, tenantID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tenants = append(s.tenants, tenantID)
+	return nil
+}
+
+func (s *countingShellRegistrar) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.tenants)
+}
+
+// TestTenantShardReconciler_MoveHoldDefers: while a volume-pool move holds a
+// tenant, the reconciler neither attaches its shard (barrier unsealed) nor
+// registers its barrier shell (barrier missing); once released it attaches.
+func TestTenantShardReconciler_MoveHoldDefers(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	barriers := newFakeBarrierReadiness()
+	barriers.markReady("acme")
+	p := placement1("acme", "orders", 1001)
+	r, _ := newTestReconciler(t, factory, barriers, p)
+	hold := &fakeMoveHold{held: map[string]bool{"acme": true}}
+	r.SetMoveHold(hold)
+	shells := &countingShellRegistrar{}
+	r.SetShellRegistrar(shells)
+
+	r.ReconcileOnce(context.Background())
+	if factory.attachCount() != 0 {
+		t.Fatalf("Attach called %d times while the move holds acme", factory.attachCount())
+	}
+
+	// A held tenant whose barrier is missing gets no shell either.
+	missing := newFakeBarrierReadiness()
+	rMissing, _ := newTestReconciler(t, factory, missing, placement1("acme", "orders", 1001))
+	rMissing.SetMoveHold(hold)
+	rMissing.SetShellRegistrar(shells)
+	rMissing.ReconcileOnce(context.Background())
+	if shells.count() != 0 || factory.attachCount() != 0 {
+		t.Fatalf("held tenant: shells = %d, attaches = %d, want 0 and 0", shells.count(), factory.attachCount())
+	}
+
+	hold.set("acme", false)
+	r.ReconcileOnce(context.Background())
+	if factory.attachCount() != 1 || !factory.isStarted("acme", "orders") {
+		t.Fatalf("after release: attaches = %d, started = %v", factory.attachCount(), factory.isStarted("acme", "orders"))
+	}
+	if shells.count() != 0 {
+		t.Fatalf("shells = %d after release with a ready barrier, want 0", shells.count())
+	}
+}
+
 // deferralSignal is a slog.Handler that reports, on deferred, each time the
 // reconciler logs that it deferred a shard for its barrier: the record is
 // written after the barrier was found sealed, so a test acting on it knows
