@@ -1004,6 +1004,18 @@ registry through `tenant.IsolationChangeWiring`. No probe, or a probe error,
 fails the change closed. A patch naming the current isolation type changes
 nothing and consults no probe.
 
+A tightening to strict also asks a `tenant.NodeKeyLogProbe` which of the
+tenant's databases have their log on the shared, node-keyed WAL;
+`service.NodeKeyLogProbe` is the implementation, wired in
+`lifecycle.BuildServices`. It counts the tenant's catalog records by data
+route and, in the shared system shard, the tenant's data under every name
+that shard serves it without a catalog record: `system`
+(`WithSharedNamespaces`) and the names `lifecycle.Infra.SharedDatabaseNames`
+lists -- the configured SQL default database and the databases registered in
+the shared database registry -- read each time the probe runs
+(`WithSharedNamespaceNames`), deduplicated against the catalog records. A
+read error fails the tightening closed.
+
 Both barrier bootstrap fallbacks (`AuthorizeTenantBarrierInit`,
 `AuthorizeTenantBarrierSealedOp`) return a `*RateLimitedError` immediately,
 next to the audit-failure check: the limiter refuses before RBAC is consulted,
