@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -229,6 +230,44 @@ const credentialMigrationsRoot = InternalKeyPrefixSystem + "credential-migration
 
 func TestHardConfinedKeys_TheCredentialMigrationPrefixIsConfinedWhole(t *testing.T) {
 	requireConfinedWhole(t, credentialMigrationsRoot, credentialMigrationsRoot+"db-pass")
+}
+
+const credentialMigrationImportsRoot = InternalKeyPrefixSystem + "credential-migration-imports/"
+
+// TestHardConfinedKeys_TheCredentialMigrationImportPrefixIsConfinedWhole
+// verifies the import records are confined as the claims are: one deleted
+// through the embedded KV would let a retried conflict import write a stale
+// legacy copy over a newer credential.
+func TestHardConfinedKeys_TheCredentialMigrationImportPrefixIsConfinedWhole(t *testing.T) {
+	if credentials.MigrationImportPrefix != credentialMigrationImportsRoot {
+		t.Fatalf("MigrationImportPrefix = %q, want %q", credentials.MigrationImportPrefix, credentialMigrationImportsRoot)
+	}
+	requireConfinedWhole(t, credentialMigrationImportsRoot, credentialMigrationImportsRoot+"ZGItcGFzcw/0123abcd")
+}
+
+// TestHardConfinedKV_FiltersMigrationImportRecordsFromAScan verifies a scan
+// over the system prefix returns no import record.
+func TestHardConfinedKV_FiltersMigrationImportRecordsFromAScan(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeKV()
+	key := credentialMigrationImportsRoot + "ZGItcGFzcw/0123abcd"
+	fake.store[key] = []byte("1")
+	fake.store["ordinary/a"] = []byte("1")
+	confined := NewHardConfinedKV(fake)
+	for _, prefix := range []string{"", InternalKeyPrefixSystem} {
+		pairs, err := confined.Scan(ctx, prefix)
+		if err != nil {
+			t.Fatalf("Scan(%q): %v", prefix, err)
+		}
+		if _, ok := pairs[key]; ok {
+			t.Fatalf("Scan(%q) returned the import record %q", prefix, key)
+		}
+	}
+	if err := confined.Delete(ctx, key); err == nil {
+		t.Fatalf("Delete(%q) succeeded, want a refusal", key)
+	} else {
+		assertHardConfinedError(t, err)
+	}
 }
 
 // TestHardConfinedKeys_TheCredentialSidecarPrefixesAreConfinedWhole verifies

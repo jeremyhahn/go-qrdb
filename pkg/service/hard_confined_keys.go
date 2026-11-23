@@ -108,6 +108,10 @@ var hardConfinedMaterialPrefixes = []string{
 // the copy a credential's migration settled on and whether its import is
 // complete, so a Put through the embedded KV would redirect or replay a
 // migration.
+// credentials.MigrationImportPrefix holds the migration import records: each
+// tells a retried conflict import that its copy is already committed, so one
+// deleted through the embedded KV would let the retry import a stale value
+// over a newer credential.
 // credentials.MetaKeyPrefix, VersionKeyPrefix and StagedKeyPrefix hold a
 // credential's metadata, its retained versions and its staged rotation
 // values: former and future secret values, and the record that says which
@@ -133,6 +137,7 @@ var hardConfinedMaterialPrefixes = []string{
 var hardConfinedWholePrefixes = []string{
 	InternalKeyPrefixSystem + "credentials/",
 	credentials.MigrationClaimPrefix,
+	credentials.MigrationImportPrefix,
 	credentials.MetaKeyPrefix,
 	credentials.VersionKeyPrefix,
 	credentials.StagedKeyPrefix,
