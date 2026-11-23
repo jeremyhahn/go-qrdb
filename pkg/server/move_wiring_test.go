@@ -13,6 +13,7 @@ import (
 	"errors"
 	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +103,48 @@ func TestMoveReplicaNodeSource(t *testing.T) {
 	}
 	m.shardErr = errors.New("no leader")
 	if _, err := src.MoveReplicaNodes(ctx, "acme"); !errors.Is(err, m.shardErr) {
+		t.Fatalf("membership error = %v", err)
+	}
+}
+
+func TestLocalMoveReplicas(t *testing.T) {
+	ctx := context.Background()
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	m := &fakeMoveMembership{nodes: map[uint64]string{1: "127.0.0.1:7001", 2: "127.0.0.1:7002", 3: "127.0.0.1:7003"}}
+	if localMoveReplicas(nil, store, 1) != nil || localMoveReplicas(m, nil, 1) != nil || localMoveReplicas(m, store, 0) != nil {
+		t.Fatal("nil membership, nil placements or replica ID 0 must return nil")
+	}
+	put := func(tenant, db string, addrs ...string) {
+		t.Helper()
+		p := &placement.Placement{TenantID: tenant, Database: db, ShardID: 100, RF: len(addrs), LeaderReplicaID: 1}
+		for i, a := range addrs {
+			p.Replicas = append(p.Replicas, placement.Replica{ReplicaID: uint64(i + 1), NodeID: a, RaftAddr: a})
+		}
+		if err := store.Put(ctx, p); err != nil {
+			t.Fatalf("Put %s/%s: %v", tenant, db, err)
+		}
+	}
+	put("acme", "c", "127.0.0.1:7003", "127.0.0.1:7002")
+	put("acme", "a", "127.0.0.1:7002", "127.0.0.1:7003")
+	put("acme", "b", "127.0.0.1:7001", "127.0.0.1:7002")
+	put("other", "a", "127.0.0.1:7003")
+	local := localMoveReplicas(m, store, 3)
+	got, err := local(ctx, "acme")
+	if err != nil || !reflect.DeepEqual(got, []string{"a", "c"}) {
+		t.Fatalf("local replicas = %v, %v; want [a c]", got, err)
+	}
+	if got, err := local(ctx, "nobody"); err != nil || len(got) != 0 {
+		t.Fatalf("tenant without placement = %v, %v; want none", got, err)
+	}
+	delete(m.nodes, 3)
+	if _, err := local(ctx, "acme"); err == nil || !strings.Contains(err.Error(), "replica 3") {
+		t.Fatalf("replica absent from the membership = %v, want an error naming replica 3", err)
+	}
+	m.shardErr = errors.New("no leader")
+	if _, err := local(ctx, "acme"); !errors.Is(err, m.shardErr) {
 		t.Fatalf("membership error = %v", err)
 	}
 }

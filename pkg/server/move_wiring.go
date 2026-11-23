@@ -11,6 +11,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strconv"
@@ -180,6 +181,9 @@ func newMoveStores(cfg TenantMoveConfig) (*MoveStoreCloser, error) {
 	if cfg.Infra != nil && cfg.Infra.Hosts != nil {
 		opts = append(opts, WithMoveTenantHosts(cfg.Infra.Hosts))
 	}
+	if local := localMoveReplicas(cfg.Membership, cfg.Placements, cfg.ReplicaID); local != nil {
+		opts = append(opts, WithMoveLocalReplicas(local))
+	}
 	var caughtUp ReplicaCaughtUp
 	if host, ok := cfg.Membership.(*quicraft.Host); ok && host != nil && cfg.Placements != nil {
 		caughtUp = readIndexCaughtUp(quicraftShardSource{host: host}, cfg.Placements)
@@ -329,4 +333,41 @@ func (s *moveReplicaNodeSource) MoveReplicaNodes(ctx context.Context, tenantID s
 	}
 	sort.Strings(nodes)
 	return nodes, nil
+}
+
+// localMoveReplicas returns the MoveLocalReplicas of the node with system
+// replica replicaID: the databases of a tenant whose durable placement puts a
+// replica at this node's raft address. Nil placements, nil membership or a
+// zero replicaID return nil: the closer then works from the started shards
+// alone. An IsolationVolume tenant has no placement and one replica, so it
+// lists nothing here and keeps its Host path.
+func localMoveReplicas(membership MoveMembership, placements *placement.Store, replicaID uint64) MoveLocalReplicas {
+	if placements == nil || membership == nil || replicaID == 0 {
+		return nil
+	}
+	return func(ctx context.Context, tenantID string) ([]string, error) {
+		m, err := membership.SyncGetShardMembership(ctx, shard.ShardKV)
+		if err != nil {
+			return nil, err
+		}
+		addr, ok := m.Nodes[replicaID]
+		if !ok {
+			return nil, fmt.Errorf("move: replica %d is not a member of the system shard", replicaID)
+		}
+		ps, err := placements.ListForTenant(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		var dbs []string
+		for _, p := range ps {
+			for _, r := range p.Replicas {
+				if r.RaftAddr == addr {
+					dbs = append(dbs, p.Database)
+					break
+				}
+			}
+		}
+		sort.Strings(dbs)
+		return dbs, nil
+	}
 }
