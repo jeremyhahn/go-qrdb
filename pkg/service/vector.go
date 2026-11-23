@@ -1737,6 +1737,12 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 			batchVectors[i] = vec.Vector
 			batchMeta[i] = vec.Metadata
 		}
+		// A replica that predates vector-metadata-json ignores a batch's
+		// metadata, so until the gate is active the command carries none:
+		// every replica then applies the same batch (docs/SPEC.md 175(4)).
+		if format != vector.MetadataFormatJSON {
+			batchMeta = nil
+		}
 
 		cmd := statemachine.NewBatchUpsertCommand(scoped, batchIDs, batchVectors, batchMeta, format, v.nodeID)
 		if err := v.proposeToRaft(ctx, cmd); err != nil {

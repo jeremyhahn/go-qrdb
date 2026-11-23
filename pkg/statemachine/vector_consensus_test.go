@@ -967,13 +967,16 @@ func TestVectorConsensusFSM_BatchUpsert(t *testing.T) {
 	// The batch command built by NewBatchUpsertCommand carries each
 	// vector's metadata through the Raft log: the applied records hold it,
 	// in the command's format, and a vector the batch gave none holds none.
+	// A legacy-format batch stores no metadata even when it carries some,
+	// as a replica that predates vector-metadata-json does (docs/SPEC.md
+	// 175(4)), so replicas of either version apply the same records.
 	for _, tc := range []struct {
 		name   string
 		format uint8
 		want   map[string]interface{}
 	}{
 		{name: "json", format: vectorStorage.MetadataFormatJSON, want: map[string]interface{}{"color": "red", "hot": true}},
-		{name: "legacy", format: vectorStorage.MetadataFormatLegacy, want: map[string]interface{}{"color": "red", "hot": "true"}},
+		{name: "legacy", format: vectorStorage.MetadataFormatLegacy},
 	} {
 		t.Run("batch upsert keeps each vector's metadata ("+tc.name+")", func(t *testing.T) {
 			log := createTestVectorLogger(t)
@@ -990,8 +993,12 @@ func TestVectorConsensusFSM_BatchUpsert(t *testing.T) {
 
 			first := storage.vectors["meta-ns"][1]
 			require.NotNil(t, first)
-			assert.Equal(t, tc.format, first.MetadataFormat)
-			assert.Equal(t, tc.want, vectorStorage.DecodeMetadata(first.MetadataFormat, first.Metadata))
+			if tc.want == nil {
+				assert.Empty(t, first.Metadata)
+			} else {
+				assert.Equal(t, tc.format, first.MetadataFormat)
+				assert.Equal(t, tc.want, vectorStorage.DecodeMetadata(first.MetadataFormat, first.Metadata))
+			}
 
 			second := storage.vectors["meta-ns"][2]
 			require.NotNil(t, second)

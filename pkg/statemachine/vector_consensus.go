@@ -607,8 +607,10 @@ func (v *VectorConsensusFSM) applyBatchUpsert(ctx context.Context, cmd *VectorCo
 				Version:   1,
 			}
 			// Each vector keeps the metadata the batch carried for it, in
-			// the command's format, as the single-vector upsert does.
-			if cmd.BatchMeta != nil && i < len(cmd.BatchMeta) {
+			// the command's format, as the single-vector upsert does. A
+			// legacy-format batch stores none, as a replica that predates
+			// vector-metadata-json does, so mixed-version replicas agree.
+			if cmd.MetadataFormat != vectorStorage.MetadataFormatLegacy && i < len(cmd.BatchMeta) {
 				vecs[i].Metadata = CommandMetadata(cmd.MetadataFormat, cmd.BatchMeta[i])
 				vecs[i].MetadataFormat = cmd.MetadataFormat
 			}

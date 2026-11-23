@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
 
@@ -331,6 +332,64 @@ func TestUpsert_MetadataFormatFollowsTheFeatureGate(t *testing.T) {
 					t.Fatalf("record %d: format %d topic %q, want format %d topic %q",
 						id, rec.MetadataFormat, rec.Metadata["topic"], tc.format, tc.stored)
 				}
+			}
+		})
+	}
+}
+
+// TestRaftBatchUpsert_MetadataFollowsTheFeatureGate checks that a batch
+// proposed through Raft carries its metadata only once vector-metadata-json
+// is active: a replica that predates the gate ignores a batch's metadata, so
+// a legacy-format command carrying some would leave replicas disagreeing
+// (docs/SPEC.md 175(4)).
+func TestRaftBatchUpsert_MetadataFollowsTheFeatureGate(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		active bool
+		format uint8
+	}{
+		{"gated off", false, vector.MetadataFormatLegacy},
+		{"gated on", true, vector.MetadataFormatJSON},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := vector.NewMemoryVectorStorage()
+			if err := store.CreateNamespace(ctx, &vector.NamespaceInfo{Name: scopedFromContext(ctx, "typed"), Dimension: 2}); err != nil {
+				t.Fatalf("CreateNamespace: %v", err)
+			}
+			var proposed []*statemachine.VectorCommand
+			node := &mockRaftNode{
+				syncProposeFn: func(_ context.Context, _ uint64, data []byte) error {
+					cmd, err := statemachine.DecodeVectorCommand(data)
+					if err != nil {
+						return err
+					}
+					proposed = append(proposed, cmd)
+					return nil
+				},
+			}
+			gates := &gatedRaftNode{enabled: map[feature.Feature]bool{featuregate.VectorMetadataJSON: tc.active}}
+			svc, err := NewVectorService(store, newVecTestLogger(), WithRaftNode(node), WithFeatureGates(gates), WithNodeID("node-1"))
+			if err != nil {
+				t.Fatalf("NewVectorService: %v", err)
+			}
+			if _, err := svc.BatchUpsert(ctx, &BatchUpsertRequest{
+				Namespace: "typed", Vectors: []*VectorData{{ID: 1, Vector: []float32{1, 0}, Metadata: map[string]interface{}{"topic": "news"}}},
+			}); err != nil {
+				t.Fatalf("BatchUpsert: %v", err)
+			}
+			if len(proposed) != 1 {
+				t.Fatalf("proposed %d commands, want 1", len(proposed))
+			}
+			cmd := proposed[0]
+			if cmd.MetadataFormat != tc.format {
+				t.Fatalf("command format %d, want %d", cmd.MetadataFormat, tc.format)
+			}
+			if tc.active && (len(cmd.BatchMeta) != 1 || cmd.BatchMeta[0]["topic"] != "news") {
+				t.Fatalf("gated on: command metadata %v, want the batch's", cmd.BatchMeta)
+			}
+			if !tc.active && cmd.BatchMeta != nil {
+				t.Fatalf("gated off: command carries metadata %v, want none", cmd.BatchMeta)
 			}
 		})
 	}
