@@ -183,7 +183,7 @@ func digestProblems(body []byte, floor int) (problems, consumers []string) {
 	for _, k := range slices.Sorted(maps.Keys(wf.Env)) {
 		if v := wf.Env[k]; lanRegistryVar.MatchString(v) || strings.Contains(v, "secrets.CI_IMAGE_REGISTRY") {
 			problems = append(problems, "ci.yml's workflow env "+k+" holds the LAN CI registry: want it in the env "+
-				"of the steps that reach it alone, as "+lanRegistrySecret)
+				"of the jobs that reach it alone, from "+lanRegistrySecret)
 		}
 	}
 	producer, ok := wf.Jobs[digestProducer]
@@ -388,16 +388,13 @@ func registryProblems(name string, job digestJob) []string {
 // commit built, which is what the GHCR rules above guard. The address is a
 // secret, which the runner masks in every log line; a repository variable is
 // not masked, and a run: script that interpolates it with ${{ }} is printed
-// expanded, so the address reaches a step only through that step's env
-// (CI_REGISTRY, ci-template v1.54, ruling 1137) and a script only as
-// "$CI_REGISTRY". The step env binds the secret on a self-hosted runner
-// alone, so a GitHub-hosted runner never receives the address, and the
-// step's if: requires a self-hosted runner, since a secret cannot gate an
-// if: and the runner context can. No job or workflow env holds it. The
-// address is never written down.
+// expanded, so the address reaches a step only through the job's env
+// (CI_REGISTRY, which the steps' if: conditions read) and a script only as
+// "$CI_REGISTRY". The address is never written down.
 const (
 	lanRegistryEnv    = "CI_REGISTRY"
-	lanRegistrySecret = "${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}"
+	lanRegistrySecret = "${{ secrets.CI_IMAGE_REGISTRY }}"
+	lanRegistryCond   = "env.CI_REGISTRY != ''"
 	lanSelfHosted     = "runner.environment != 'github-hosted'"
 	lanPushID         = "registry"
 	lanPushTag        = "${{ github.run_id }}-${{ github.run_attempt }}"
@@ -483,15 +480,11 @@ func lanLeakProblems(name string, job digestJob) []string {
 	viaVar := func(where, v string) {
 		if lanRegistryVar.MatchString(v) {
 			problems = append(problems, where+" reads vars.CI_IMAGE_REGISTRY: a repository variable is not masked; "+
-				"want "+lanRegistrySecret+" in the env of the step that reaches it")
+				"want "+lanRegistrySecret+" in the job's env")
 		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(job.Env)) {
 		viaVar(name+"'s job env "+k, job.Env[k])
-		if v := job.Env[k]; k == lanRegistryEnv || strings.Contains(v, "secrets.CI_IMAGE_REGISTRY") {
-			problems = append(problems, name+"'s job env "+k+" holds the LAN CI registry: every step on every runner, "+
-				"GitHub-hosted too, would receive it; want "+lanRegistrySecret+" in the env of the step that reaches it")
-		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(job.Outputs)) {
 		if v := job.Outputs[k]; strings.Contains(v, "CI_IMAGE_REGISTRY") || strings.Contains(v, lanRegistryEnv) {
@@ -508,10 +501,6 @@ func lanLeakProblems(name string, job digestJob) []string {
 		viaVar(where+"'s run:", s.Run)
 		for _, k := range slices.Sorted(maps.Keys(s.Env)) {
 			viaVar(where+"'s env "+k, s.Env[k])
-			if v := s.Env[k]; strings.Contains(v, "secrets.CI_IMAGE_REGISTRY") && v != lanRegistrySecret {
-				problems = append(problems, where+"'s env "+k+" binds the LAN CI registry as "+strconv.Quote(v)+
-					"; want exactly "+lanRegistrySecret+": a GitHub-hosted runner never receives the address")
-			}
 		}
 		for _, k := range slices.Sorted(maps.Keys(s.With)) {
 			viaVar(where+"'s with "+k, s.With[k])
@@ -532,16 +521,19 @@ func lanRegistryProblems(name string, job digestJob, s digestStep) (problems []s
 	if holdsRegistryToken(s.Env) || lanLogin.MatchString(s.Run) || lanLogin.MatchString(s.Uses) {
 		problems = append(problems, where+" takes a credential to the LAN CI registry, which needs none")
 	}
-	if v, bound := s.Env[lanRegistryEnv]; !bound || v != lanRegistrySecret {
-		problems = append(problems, where+" reaches the LAN CI registry with step env "+lanRegistryEnv+" "+strconv.Quote(v)+
-			"; want "+lanRegistrySecret+": a secret is masked in every log line, and a GitHub-hosted runner never receives it")
+	if v := job.Env[lanRegistryEnv]; v != lanRegistrySecret {
+		problems = append(problems, name+" reaches the LAN CI registry with job env "+lanRegistryEnv+" "+strconv.Quote(v)+
+			"; want "+lanRegistrySecret+": a secret is masked in every log line, and the steps' if: reads the job's env")
 	}
-	if !condHasTerm(s.If, lanSelfHosted) {
+	if !condHasTerm(s.If, lanRegistryCond) {
 		problems = append(problems, where+" reaches the LAN CI registry under if: "+strconv.Quote(s.If)+
-			"; want "+lanSelfHosted+" among its && terms: a GitHub-hosted runner cannot reach it and holds no address, "+
-			"so it keeps the artifact path alone")
+			"; want "+lanRegistryCond+" among its && terms: an unset secret keeps the artifact path alone")
 	}
 	if isPush {
+		if !condHasTerm(s.If, lanSelfHosted) {
+			problems = append(problems, where+" pushes to the LAN CI registry without "+lanSelfHosted+
+				": a GitHub-hosted runner cannot reach it")
+		}
 		problems = append(problems, lanScriptProblems(where, s.Run, false)...)
 		if strings.TrimSpace(s.Run) != lanPushRun {
 			problems = append(problems, where+" runs "+strconv.Quote(firstLine(s.Run))+"; want the canonical push, "+
@@ -649,7 +641,7 @@ func lanDownloadProblems(name string, s, pull digestStep, f imageFamily, retry s
 		if t == want || (retry != "" && t == retry) {
 			continue
 		}
-		if t == lanSelfHosted || t == producerOutTerm(f.lan) || !slices.Contains(pullTerms, t) {
+		if t == lanRegistryCond || t == producerOutTerm(f.lan) || !slices.Contains(pullTerms, t) {
 			problems = append(problems, where+" also requires "+strconv.Quote(t)+
 				", which a skipped or failed pull does not imply: the job would load no image")
 		}
@@ -983,6 +975,8 @@ jobs:
       it_ref: ${{ steps.push.outputs.it_ref }}
       registry_toolchain_tag: ${{ steps.registry.outputs.toolchain_tag }}
       registry_it_tag: ${{ steps.registry.outputs.it_tag }}
+    env:
+      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}
     steps:
       - name: Name the images
         id: names
@@ -1050,9 +1044,8 @@ jobs:
         run: toolchain_ref=$(scripts/ci-image.sh push "$TOOLCHAIN_IMAGE" go-qrdb-toolchain)
       - name: Push to the LAN CI registry
         id: registry
-        if: ${{ runner.environment != 'github-hosted' }}
+        if: ${{ env.CI_REGISTRY != '' && runner.environment != 'github-hosted' }}
         env:
-          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ github.run_id }}-${{ github.run_attempt }}
           TOOLCHAIN_IMAGE: ${{ steps.build.outputs.toolchain_image }}
           IT_IMAGE: ${{ steps.build.outputs.it_image }}
@@ -1076,12 +1069,13 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     needs: [preflight, docker-build]
+    env:
+      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}
     steps:
       - name: Pull the toolchain image from the LAN CI registry
         id: pull_toolchain
-        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && runner.environment != 'github-hosted' }}
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
         env:
-          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
@@ -1125,13 +1119,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: [docker-build]
     env:
+      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}
       FULL: 'true'
     steps:
       - name: Pull the integration image from the LAN CI registry
         id: pull_it
-        if: ${{ env.FULL == 'true' && needs.docker-build.outputs.registry_it_tag != '' && runner.environment != 'github-hosted' }}
+        if: ${{ env.FULL == 'true' && needs.docker-build.outputs.registry_it_tag != '' && env.CI_REGISTRY != '' }}
         env:
-          CI_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}
           TAG: ${{ needs.docker-build.outputs.registry_it_tag }}
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
@@ -1300,20 +1294,20 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		{name: "a LAN push with no timeout", old: lanTimeout + `docker push -q "$ref"`, new: `docker push -q "$ref"`},
 		{name: "a LAN pull with no timeout", old: lanTimeout + `docker pull -q "$REF"`, new: `docker pull -q "$REF"`},
 		{name: "a LAN pull with a bound of its own", old: lanTimeout + `docker pull -q "$REF"`, new: `timeout 99999 docker pull -q "$REF"`},
-		{name: "a LAN pull without the self-hosted check",
-			old: "if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && runner.environment != 'github-hosted' }}",
+		{name: "a LAN pull without the registry check",
+			old: "if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}",
 			new: "if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' }}"},
 		{name: "a LAN pull without the tag check",
-			old: "if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && runner.environment != 'github-hosted' }}",
-			new: "if: ${{ runner.environment != 'github-hosted' }}"},
+			old: "if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}",
+			new: "if: ${{ env.CI_REGISTRY != '' }}"},
 		{name: "a LAN pull of the other family's tag", old: "TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}",
 			new: "TAG: ${{ needs.docker-build.outputs.registry_it_tag }}"},
 		{name: "a LAN pull checked against the other family's ID",
 			old: "toolchain_tag }}\n          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}\n          ID: ${{ needs.docker-build.outputs.toolchain_id }}",
 			new: "toolchain_tag }}\n          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}\n          ID: ${{ needs.docker-build.outputs.it_id }}"},
 		{name: "a LAN pull under another id", old: "        id: pull_toolchain\n", new: "        id: pull\n"},
-		{name: "a LAN push on a GitHub-hosted runner", old: "        id: registry\n        if: ${{ runner.environment != 'github-hosted' }}\n",
-			new: "        id: registry\n"},
+		{name: "a LAN push on a GitHub-hosted runner", old: "env.CI_REGISTRY != '' && runner.environment != 'github-hosted'",
+			new: "env.CI_REGISTRY != ''"},
 		{name: "a LAN push with the token", old: "          TAG: ${{ github.run_id }}-${{ github.run_attempt }}\n",
 			new: "          TAG: ${{ github.run_id }}-${{ github.run_attempt }}\n          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"},
 		{name: "the workflow env holds the token", old: "env:\n  CI_PUBLISH:", new: "env:\n  GH: ${{ secrets.GITHUB_TOKEN }}\n  CI_PUBLISH:"},
@@ -1337,7 +1331,7 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 			old: "        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}\n", new: ""},
 		{name: "a download gated on the registry",
 			old: "if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}",
-			new: "if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && runner.environment != 'github-hosted' }}"},
+			new: "if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && env.CI_REGISTRY != '' }}"},
 		{name: "a download widened past the pull", old: "if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}",
 			new: "if: ${{ steps.pull_toolchain.outputs.pulled != 'true' || always() }}"},
 		{name: "an integration download without the fallback term",
@@ -1356,25 +1350,12 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 			new: `ref="${{ env.CI_REGISTRY }}/go-qrdb/$2:$TAG"`},
 		{name: "a run: masking the registry variable", old: "      - name: make lint\n",
 			new: "      - name: Mask\n        run: echo \"::add-mask::${{ vars.CI_IMAGE_REGISTRY }}\"\n      - name: make lint\n"},
-		{name: "the registry from a variable", old: "CI_REGISTRY: " + lanRegistrySecret,
-			new: "CI_REGISTRY: ${{ runner.environment != 'github-hosted' && vars.CI_IMAGE_REGISTRY || '' }}"},
-		{name: "a pull without the registry step env",
-			old: "registry_toolchain_tag != '' && runner.environment != 'github-hosted' }}\n        env:\n          CI_REGISTRY: " + lanRegistrySecret + "\n",
-			new: "registry_toolchain_tag != '' && runner.environment != 'github-hosted' }}\n        env:\n"},
-		{name: "a push without the registry step env",
-			old: "        env:\n          CI_REGISTRY: " + lanRegistrySecret + "\n          TAG: ${{ github.run_id }}",
-			new: "        env:\n          TAG: ${{ github.run_id }}"},
-		// v1.54 (ruling 1137): the address reaches a self-hosted step alone.
-		{name: "an unguarded registry step env", old: "CI_REGISTRY: " + lanRegistrySecret,
-			new: "CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}"},
-		{name: "a registry step env bound for a hosted runner", old: "CI_REGISTRY: " + lanRegistrySecret,
-			new: "CI_REGISTRY: ${{ runner.environment == 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }}"},
-		{name: "the registry in a job env", old: "    needs: [preflight, docker-build]\n    steps:\n      - name: Pull the toolchain",
-			new: "    needs: [preflight, docker-build]\n    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n    steps:\n      - name: Pull the toolchain"},
-		{name: "the guarded registry in a job env", old: "    needs: [preflight, docker-build]\n    steps:\n      - name: Pull the toolchain",
-			new: "    needs: [preflight, docker-build]\n    env:\n      CI_REGISTRY: " + lanRegistrySecret + "\n    steps:\n      - name: Pull the toolchain"},
-		{name: "a mask step with an unguarded secret", old: "      - name: make lint\n",
-			new: "      - name: Mask\n        env:\n          CI_IMAGE_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n        run: scripts/ci-mask-lan.sh\n      - name: make lint\n"},
+		{name: "the registry from a variable", old: "    needs: [preflight, docker-build]\n    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n",
+			new: "    needs: [preflight, docker-build]\n    env:\n      CI_REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}\n"},
+		{name: "a pull job without the registry env", old: "    needs: [preflight, docker-build]\n    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n",
+			new: "    needs: [preflight, docker-build]\n"},
+		{name: "a producer without the registry env", old: "    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n    steps:\n      - name: Name the images\n",
+			new: "    steps:\n      - name: Name the images\n"},
 		{name: "the registry in the workflow env", old: "env:\n  CI_PUBLISH:", new: "env:\n  CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n  CI_PUBLISH:"},
 		{name: "an output naming the registry", old: "      registry_it_tag: ${{ steps.registry.outputs.it_tag }}\n",
 			new: "      registry_it_tag: ${{ steps.registry.outputs.it_tag }}\n      registry: ${{ env.CI_REGISTRY }}\n"},

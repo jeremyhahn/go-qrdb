@@ -96,17 +96,17 @@ const (
 	runnerJobFloor      = 30
 	// hostedJobFloor, under ci.yml's count (19 jobs: 10 on the literal
 	// ubuntu-latest, 8 on preflight's runner or runner_docker output, which
-	// the balanced runner pool sends hosted on a tie and to the less-used
-	// pool otherwise, ruling 1137; preflight on its own v1.52
-	// expression): a regression of the workflow off the hosted runner fails
-	// here.
+	// is the GitHub-hosted runner or the Dells' bigdisk pools by the balanced
+	// selection, ruling 1137, and hosted whenever the selection cannot count;
+	// preflight on its own v1.52 expression): a regression of the workflow
+	// onto any other runner fails here.
 	hostedJobFloor = 15
 
 	// The three runs-on expressions of ci-template v1.53 (ruling 1087), the
 	// only "${{" runs-on ci.yml may carry, byte-exact. preflightRunsOn picks
 	// the bigdisk runner for this repository on github.com and ubuntu-latest
 	// otherwise (v1.52); the other two read preflight's selection (v1.48,
-	// ruling 1024).
+	// ruling 1024; balanced since v1.54, ruling 1137).
 	preflightRunsOn    = `${{ github.server_url == 'https://github.com' && (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_PREFLIGHT_RUNS_ON || '["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
 	runnerDockerRunsOn = `${{ fromJSON(needs.preflight.outputs.runner_docker) }}`
 	runnerRunsOn       = `${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}`
@@ -241,7 +241,7 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 			// Owner rulings 999 and 1006: the default.
 		case file == ciFile && (runsOn == preflightRunsOn || runsOn == runnerDockerRunsOn || runsOn == runnerRunsOn):
 			// ci-template v1.53 (ruling 1087): preflight's v1.52 expression
-			// and the balanced runner pool's selection (v1.54, ruling 1137).
+			// and the runner selection (ruling 1024; balanced, ruling 1137).
 		case runsOn == "" || strings.Contains(runsOn, "${{"):
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+" nor one self-hosted label (owner ruling 999)")
 		default:
@@ -554,8 +554,8 @@ func TestCIRunners(t *testing.T) {
 	}
 	hosted := 0
 	for _, job := range wf.Jobs {
-		// Hosted on a tie; preflight's balanced runner pool sends a job to
-		// the less-used pool otherwise (ruling 1137).
+		// The literal hosted runner, or preflight's balanced selection
+		// (ruling 1137), hosted whenever it cannot count.
 		switch job.RunsOn.Value {
 		case hostedRunner, runnerDockerRunsOn, runnerRunsOn:
 			hosted++
@@ -579,9 +579,9 @@ func TestCIServerURLAbsentFromCI(t *testing.T) {
 	// workflows' runs-on expressions and so names github.server_url in its
 	// python; that is the lint's text, not a dependency of ci.yml on the host.
 	// ci-template v1.53 (ruling 1087) also names it in preflight's v1.52
-	// runs-on (preflightRunsOn, exact) and, since v1.54, in the env of the step
-	// Balanced runner pool (ruling 1137), which selects no self-hosted runner
-	// off github.com. Those three are stripped; any other server_url fails.
+	// runs-on (preflightRunsOn, exact) and in the env of the step Balanced
+	// runner pool (ruling 1137), which selects no self-hosted runner off
+	// github.com. Those three are stripped; any other server_url fails.
 	body := readCIBody(t)
 	if i := strings.Index(body, runnerLabelsStep); i >= 0 {
 		if end := strings.Index(body[i:], "\n          PY\n"); end >= 0 {
@@ -631,22 +631,25 @@ func TestCIRunnerLabelsStepPresent(t *testing.T) {
 // scripts/ci-mask-lan.sh in preflight (Codex round 1 on #1671);
 // jobOutputHandoffTestsStep runs ci-template v1.54's job-output handoff
 // tests (no registry address in a job output, H1 to H5); rowJobTestsStep
-// runs ci-template v1.55's Row job tests (R0 to R12).
+// runs ci-template v1.55's Row job tests (R0 to R12); codeReviewTestsStep
+// runs code-review.yml v5.12.11's template tests (#1666), which load the
+// expression evaluator from code-review-v51210-tests.py.
 const (
 	runnerSelectTestsStep     = "- name: Runner select tests (go-qrdb #1671)\n        run: python3 -I .github/workflows/testdata/runner-select-tests.py\n"
 	lanMaskTestsStep          = "- name: LAN mask tests (go-qrdb #1671)\n        run: python3 -I .github/workflows/testdata/ci-mask-lan-tests.py\n"
 	jobOutputHandoffTestsStep = "- name: Job output handoff tests (ci-template v1.54)\n        run: python3 -I .github/workflows/testdata/job-output-handoff-tests.py\n"
 	rowJobTestsStep           = "- name: Row job tests (ci-template v1.55)\n        run: python3 -I .github/workflows/testdata/row-job-tests.py\n"
+	codeReviewTestsStep       = "- name: Code review workflow tests (v5.12.11)\n        run: python3 -I .github/workflows/testdata/code-review-v51211-tests.py\n"
 )
 
 func TestCIRunnerSelectAndMaskTestsPresent(t *testing.T) {
 	body := readCIBody(t)
-	for _, step := range []string{runnerSelectTestsStep, lanMaskTestsStep, jobOutputHandoffTestsStep, rowJobTestsStep} {
+	for _, step := range []string{runnerSelectTestsStep, lanMaskTestsStep, jobOutputHandoffTestsStep, rowJobTestsStep, codeReviewTestsStep} {
 		if n := strings.Count(body, step); n != 1 {
 			t.Errorf("ci.yml has %d %q steps, want exactly one", n, step)
 		}
 	}
-	for _, name := range []string{"runner-select-tests.py", "ci-mask-lan-tests.py", "job-output-handoff-tests.py", "row-job-tests.py"} {
+	for _, name := range []string{"runner-select-tests.py", "ci-mask-lan-tests.py", "job-output-handoff-tests.py", "row-job-tests.py", "code-review-v51211-tests.py", "code-review-v51210-tests.py"} {
 		p := filepath.Join(repoRoot(t), ".github", "workflows", "testdata", name)
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("ci.yml runs .github/workflows/testdata/%s, which is missing: %v", name, err)
