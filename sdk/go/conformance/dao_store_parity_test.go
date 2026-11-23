@@ -10,6 +10,9 @@ import (
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	sdkstorage "github.com/jeremyhahn/go-qrdb/sdk/go/storage"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 )
 
 // parityDAOs are the DAOs one parity run drives over a single store.
@@ -31,6 +34,7 @@ type parityStep struct {
 const (
 	embeddedStoreKind = "embedded"
 	serviceStoreKind  = "service"
+	clientStoreKind   = "client"
 )
 
 func parityOutcome(err error) string {
@@ -142,7 +146,7 @@ func parityScenario() []parityStep {
 		// maintains it (sdk/go/embedded_kvstore.go, QueryCompoundIndex).
 		{name: "compound index by name", run: func(ctx context.Context, d parityDAOs) string {
 			return widgetIDs(d.widgets.QueryByCompoundIndex(ctx, "widget.Team_State", []interface{}{"red", "open"}))
-		}, want: map[string]string{embeddedStoreKind: "[1]", serviceStoreKind: "index unsupported"}},
+		}, want: map[string]string{embeddedStoreKind: "[1]", serviceStoreKind: "index unsupported", clientStoreKind: "index unsupported"}},
 	}
 }
 
@@ -180,23 +184,55 @@ func newEmbeddedParityStore(t *testing.T) sdk.KVStore {
 func TestDAOStoreParity(t *testing.T) {
 	for _, c := range serviceStoreCells() {
 		t.Run(c.name(), func(t *testing.T) {
-			ctx := boundedCtx(t)
 			embedded := newParityDAOs(t, newEmbeddedParityStore(t))
 			service := newParityDAOs(t, bootServiceStore(t, c))
-			for _, step := range parityScenario() {
-				gotEmbedded := step.run(ctx, embedded)
-				gotService := step.run(ctx, service)
-				if step.want != nil {
-					if gotEmbedded != step.want[embeddedStoreKind] || gotService != step.want[serviceStoreKind] {
-						t.Fatalf("%s: embedded %q, service %q; want embedded %q, service %q", step.name,
-							gotEmbedded, gotService, step.want[embeddedStoreKind], step.want[serviceStoreKind])
-					}
-					continue
-				}
-				if gotEmbedded != gotService {
-					t.Fatalf("%s: embedded %q, service %q; want the same", step.name, gotEmbedded, gotService)
-				}
-			}
+			runParityScenario(t, embedded, serviceStoreKind, service)
 		})
+	}
+}
+
+// TestDAOStoreParity_ClientStore runs the same table over the third DAO
+// store, the client adapter a remote embedder holds (sdk.NewKVStoreAdapter,
+// the store Client.KVStore returns), on every transport of the matrix: a
+// standalone pebble node is booted per transport and the DAO talks to it
+// over that wire, step by step against a fresh embedded store.
+func TestDAOStoreParity_ClientStore(t *testing.T) {
+	for _, tk := range transportKinds {
+		c := cell{backend: database.BackendPebble, mode: standalone, transport: tk}
+		t.Run(c.name(), func(t *testing.T) {
+			cl := c.boot(t)
+			idx, ok := cl.kv.(transport.IndexClient)
+			if !ok {
+				t.Fatalf("the matrix's KV client does not implement transport.IndexClient")
+			}
+			store, err := sdk.NewKVStoreAdapter(cl.kv, idx)
+			if err != nil {
+				t.Fatalf("NewKVStoreAdapter: %v", err)
+			}
+			embedded := newParityDAOs(t, newEmbeddedParityStore(t))
+			runParityScenario(t, embedded, clientStoreKind, newParityDAOs(t, store))
+		})
+	}
+}
+
+// runParityScenario runs parityScenario step by step against the embedded
+// store and the store of the named kind, requiring the same outcome on both
+// except where a step's want names each kind's by-design answer.
+func runParityScenario(t *testing.T, embedded parityDAOs, otherKind string, other parityDAOs) {
+	t.Helper()
+	ctx := boundedCtx(t)
+	for _, step := range parityScenario() {
+		gotEmbedded := step.run(ctx, embedded)
+		gotOther := step.run(ctx, other)
+		if step.want != nil {
+			if gotEmbedded != step.want[embeddedStoreKind] || gotOther != step.want[otherKind] {
+				t.Fatalf("%s: embedded %q, %s %q; want embedded %q, %s %q", step.name,
+					gotEmbedded, otherKind, gotOther, step.want[embeddedStoreKind], otherKind, step.want[otherKind])
+			}
+			continue
+		}
+		if gotEmbedded != gotOther {
+			t.Fatalf("%s: embedded %q, %s %q; want the same", step.name, gotEmbedded, otherKind, gotOther)
+		}
 	}
 }
