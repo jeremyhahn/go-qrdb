@@ -67,6 +67,8 @@ type SealWatch struct {
 	// hold on it (registered by Open); nil when the filesystem has none.
 	gate  *quiesce.Gate
 	lease *quiesce.Lease
+	// dir is the directory Open registered lease under.
+	dir string
 
 	mu         sync.Mutex
 	episode    *sealEpisode // the current episode, or the next one to begin
@@ -202,7 +204,21 @@ func (w *SealWatch) Close() {
 	if w == nil {
 		return
 	}
-	w.lease.Unregister()
+	unregisterLease(w.dir, w.lease)
+}
+
+// leaseUnregisterHook is a test seam, nil in production: it runs with the
+// store's directory each time Open or SealWatch.Close unregisters the
+// store's quiesce lease.
+var leaseUnregisterHook func(dir string)
+
+// unregisterLease unregisters lease, the quiesce lease of the store at dir,
+// and reports it to leaseUnregisterHook.
+func unregisterLease(dir string, lease *quiesce.Lease) {
+	lease.Unregister()
+	if leaseUnregisterHook != nil {
+		leaseUnregisterHook(dir)
+	}
 }
 
 // Flush flushes db's memtable and waits for it, like DB.Flush, but returns a
@@ -312,15 +328,16 @@ func Open(dir string, opts *pebble.Options, isSealed func(error) bool) (*pebble.
 	// holds the lease: a seal drains it, and a closed gate refuses it.
 	lease := seals.gate.Register(dir)
 	if err := lease.Acquire(); err != nil {
-		lease.Unregister()
+		unregisterLease(dir, lease)
 		return nil, nil, &SealedError{Err: ErrBarrierSealed}
 	}
 	db, err := pebble.Open(dir, o)
 	lease.Release()
 	if err != nil {
-		lease.Unregister()
+		unregisterLease(dir, lease)
 		return nil, nil, err
 	}
 	seals.lease = lease
+	seals.dir = dir
 	return db, seals, nil
 }

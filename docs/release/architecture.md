@@ -422,7 +422,7 @@ shards run in parallel. Sharding pays the per-job setup once per shard rather
 than once per feature (engineering.md, "Per-feature integration jobs").
 `ci-gate` needs the job once and reads its aggregate result, which is
 `failure` when any shard fails. `integration-standalone` runs the Docker `test/integration/api`
-suites on the `.devcontainer/` image.
+suites on the `dev-integration` stage image of `build/docker/devcontainer/Dockerfile`.
 
 `test/buildgates/ci_tiers_test.go`,
 `test/buildgates/ci_image_digest_test.go` and
