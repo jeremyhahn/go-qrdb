@@ -182,3 +182,47 @@ func TestEmbeddedServiceRegistry_HeldWriteRefusedAfterCompletedDrop(t *testing.T
 		t.Fatal("a dropped database still resolves")
 	}
 }
+
+// TestEmbeddedServiceRegistry_LookupErrorFailsClosed checks that a database
+// manager lookup failing with anything other than not-found refuses the
+// resolution: no service is returned and the lookup's error is the answer,
+// rather than the name falling through to the shared service graph.
+func TestEmbeddedServiceRegistry_LookupErrorFailsClosed(t *testing.T) {
+	reg, mgr := startRegistryNode(t)
+	mgr.SetCatalog(failingCatalog{})
+
+	svc, err := reg.KVService(tenantid.System, "ledger")
+	var readErr *database.CatalogReadError
+	if !errors.As(err, &readErr) {
+		t.Fatalf("KVService err = %v, want the catalog read error", err)
+	}
+	if svc != nil {
+		t.Fatal("a failed lookup returned a service")
+	}
+	if _, err := reg.VectorService(tenantid.System, "ledger"); !errors.As(err, &readErr) {
+		t.Fatalf("VectorService err = %v, want the catalog read error", err)
+	}
+}
+
+// TestEmbeddedServiceRegistry_NotFoundThenSealedCreateIsRefused checks that
+// a name first resolved as not found, then created sealed, resolves to the
+// sealed refusal: the record read at resolution decides, never an earlier
+// answer or a second catalog lookup.
+func TestEmbeddedServiceRegistry_NotFoundThenSealedCreateIsRefused(t *testing.T) {
+	reg, mgr := startRegistryNode(t)
+
+	var notFound *service.DatabaseNotFoundError
+	if _, err := reg.KVService(tenantid.System, "vault"); !errors.As(err, &notFound) {
+		t.Fatalf("KVService before create err = %v, want DatabaseNotFoundError", err)
+	}
+	createMemoryDatabase(t, mgr, "vault").SetStatus(database.StatusSealed)
+
+	svc, err := reg.KVService(tenantid.System, "vault")
+	var sealed *service.BarrierSealedError
+	if !errors.As(err, &sealed) || sealed.Database != "vault" {
+		t.Fatalf("KVService after sealed create err = %v, want BarrierSealedError for vault", err)
+	}
+	if svc != nil {
+		t.Fatal("a sealed database returned a service")
+	}
+}
