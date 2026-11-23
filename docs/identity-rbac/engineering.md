@@ -1186,6 +1186,16 @@ matrix through both the embedded transport and a REST server sharing one
 `AuthMiddleware` and one `*authtest.Tenants` service, and fails if the two
 ever disagree.
 
+**Test fixture: a fixed caller pairs with its user record.** The chain
+discards every role an authenticator returns (SPEC `authz-claim-roles`), so
+`authtest.FixedAuthenticator` alone authenticates a role-less caller. A test
+that needs the fixed identity's roles also wires the authenticator's own
+read-only store, `authmw.WithUserService(fa.Users())`: it resolves the
+CURRENT identity (so `Set` keeps working) to an active record whose `RoleIDs`,
+`RoleBindings` and `Attributes` are the identity's, and answers every other
+account `*user.UserNotFoundError`. A resolved identity's `Subject` is the
+record's user id (`auth.UserSubject`); assert on `AccountName()` or `UserID`.
+
 **The embedded transport's ENTIRE operation surface is authorized, not only
 tenant administration.** One pluggable auth chain serves every transport, so
 an embedded KV `Put`, a `GetUser`, a
