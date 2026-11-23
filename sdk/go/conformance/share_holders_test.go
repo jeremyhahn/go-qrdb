@@ -623,8 +623,10 @@ func (e *holderE2E) enrolAndInitialize() {
 			Designated:    req.Designated,
 		})
 	}
-	// Strict separation of duties (forced under FIPS 140-3) refuses a
-	// ceremony without a system SO distinct from the admin.
+	// The ceremony names a system SO distinct from the admin. Under strict
+	// separation of duties (forced under FIPS 140-3) validateSystemSOInputs
+	// refuses an SO that is the admin by name or key; a ceremony naming no
+	// SO is admitted in either posture.
 	_, soCSR, err := certtest.NewCSR("ciso")
 	if err != nil {
 		e.t.Fatalf("system SO CSR: %v", err)
