@@ -33,7 +33,8 @@ only when go-qrdb itself is the main module.
   and truncates a WT_CLOSE_SESSION message instead of rejecting one that is
   over 1024 bytes or not UTF-8.
 
-Return to the upstream module once a release fixes all six.
+Return to the upstream module once a release fixes all ten patches below
+("Dropping this copy").
 
 ## Patches
 
@@ -43,6 +44,8 @@ Return to the upstream module once a release fixes all six.
    stream. If `HTTPStream` fails, the session is refused with the error. A
    second session without flow control is refused before any header is
    written.
+   Upstream: quic-go/webtransport-go#377, #380, #381 open; #378 closed
+   unmerged (2026-11-23).
 2. **Bounded pre-session buffering** (`session_manager.go`). A connection
    buffers at most 16 streams per unknown session
    (`maxBufferedStreamsPerSession`) and 64 in total
@@ -50,6 +53,7 @@ Return to the upstream module once a release fixes all six.
    that recently closed, is reset at once with WT_BUFFERED_STREAM_REJECTED
    (0x3994bd84). The cleanup deadline starts with the first buffered stream
    for a session and is never renewed.
+   Upstream: none filed (2026-11-23).
 3. **Bounded accept queue** (`streams_map_incoming.go`, `session.go`,
    `config.go`). At most `Config.MaxIncomingStreams` /
    `MaxIncomingUniStreams` streams (`defaultMaxPendingStreams`, 100, when
@@ -58,38 +62,46 @@ Return to the upstream module once a release fixes all six.
    WT_BUFFERED_STREAM_REJECTED and its stream credit returned; the session
    stays up. A stream past a negotiated WT_MAX_STREAMS limit still closes the
    session with WT_FLOW_CONTROL_ERROR.
+   Upstream: none filed (2026-11-23).
 4. **No lock across the stream map** (`session.go`). `OpenStream` and
    `OpenUniStream` no longer hold the session's close lock while opening. At
    the peer's stream limit the map queues WT_STREAMS_BLOCKED, and with a full
    capsule queue that closes the session, which takes the same lock.
+   Upstream: none filed (2026-11-23).
 5. **Local cancel ends the session-gone wait** (`receive_stream.go`,
    `send_stream.go`). After the peer resets a stream with WT_SESSION_GONE,
    Read and Write wait for the session to close. `CancelRead` and
    `CancelWrite` take the stream out of the session's map, so they now end
    that wait themselves, with the local `StreamError`.
+   Upstream: issue quic-go/webtransport-go#373, PR #374 open (2026-11-23).
 6. **CancelWrite and Close do not wait for the stream header**
    (`send_stream.go`). Write sends the stream header without holding the
    header lock. A `CancelWrite` or `Close` during that send returns at once;
    Write finishes the header, then cancels or closes the stream and returns
    their error without sending its payload.
+   Upstream: none filed (2026-11-23).
 7. **Every queued stream wakes an acceptor** (`streams_map_incoming.go`).
    The accept queue's notification channel holds one signal. Taking a stream
    off the queue while others remain re-arms it, so a second `AcceptStream`
    or `AcceptUniStream` caller waiting at the same time is woken for the next
    stream.
+   Upstream: none filed (2026-11-23).
 8. **Session shutdown resets a cancelled stream** (`send_stream.go`).
    Session shutdown resets the send stream with WT_SESSION_GONE even after a
    local `CancelWrite`. That cancel's reset waits for the stream header, so
    only the session's reset ends a header write that never gets credit.
+   Upstream: none filed (2026-11-23).
 9. **A clean CONNECT FIN is a remote close** (`session.go`). A FIN on the
    CONNECT stream closes the session like WT_CLOSE_SESSION with code 0 and an
    empty message, and the session answers with a FIN, not a reset. A FIN
    inside a capsule is still H3_DATAGRAM_ERROR. A known capsule whose body
    ends before its field (`capsule.go`) is H3_DATAGRAM_ERROR too.
+   Upstream: none filed (2026-11-23).
 10. **WT_CLOSE_SESSION messages are validated** (`capsule.go`,
     `session.go`). A message over 1024 bytes is rejected before its body is
     read, and one that is not UTF-8 after; either closes the session with
     H3_MESSAGE_ERROR.
+    Upstream: none filed (2026-11-23).
 
 ## Tests
 
@@ -115,3 +127,26 @@ patch 10 replaces. go-qrdb's
 `pkg/api/rest` `TestWebTransport_PreSessionStreamFloodIsBounded` floods a
 server over raw QUIC, and `TestWebTransport_SessionStreamLimitsConfigured`
 holds the REST server to configured session limits.
+
+## Dropping this copy
+
+Condition: a tagged upstream webtransport-go release that builds against
+the quic-go version go-qrdb requires and covers every patch above, so that
+each patch's entry under "Tests" passes against that release.
+
+Steps, all in one PR:
+
+1. Add the upstream `require` at that tag to go.mod, through node-prep
+   (lanes build with GOPROXY=off).
+2. Switch every import of
+   `github.com/jeremyhahn/go-qrdb/internal/webtransport` to
+   `github.com/quic-go/webtransport-go`.
+3. Delete `internal/webtransport` outright, with no compatibility shim.
+4. Drop the httpsfv hold comment in go.mod.
+5. Delete the gate test `test/buildgates/webtransport_copy_test.go`, which
+   holds this README to an `Upstream:` line per patch and this section.
+6. Update the SPEC row for this copy and `docs/api-server/engineering.md`.
+
+A patch that upstream does not take blocks the drop: keep the copy, rebase
+the remaining patches onto the new upstream tag, and update NOTICE, this
+README and each `Upstream:` line.
