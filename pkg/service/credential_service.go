@@ -181,7 +181,18 @@ type CredentialService struct {
 	creds   *credentials.CredentialService
 	tenants CredentialTenantBarriers
 	homes   atomic.Pointer[homeSourceBox]
+
+	// storeLookupTimeout bounds each tenant's store lookup in
+	// CredentialRotateDue; zero means credentialStoreLookupTimeout. Tests
+	// shorten it.
+	storeLookupTimeout time.Duration
 }
+
+// credentialStoreLookupTimeout bounds one tenant's store lookup in the
+// rotation sweep. The scheduler's context carries no deadline, so a tenant
+// whose home store never answers would otherwise hold the sweep, and every
+// tenant after it, forever.
+const credentialStoreLookupTimeout = 30 * time.Second
 
 // Compile-time interface check.
 var _ CredentialServicer = (*CredentialService)(nil)
@@ -453,7 +464,7 @@ func (s *CredentialService) CredentialRotateDue(ctx context.Context, now time.Ti
 			continue
 		}
 		tctx := tenant.WithTenantID(ctx, id)
-		c, err := s.store(tctx)
+		c, err := s.boundedStore(tctx)
 		var sealed *BarrierSealedError
 		var unbound *CapabilityUnsupportedError
 		if errors.As(err, &sealed) || errors.As(err, &unbound) {
@@ -472,6 +483,20 @@ func (s *CredentialService) CredentialRotateDue(ctx context.Context, now time.Ti
 		}
 	}
 	return rotated, errors.Join(errs...)
+}
+
+// boundedStore resolves ctx's tenant store under storeLookupTimeout, so a
+// home store that never answers is reported for that tenant and the sweep
+// goes on to the next one. The returned store keeps no reference to the
+// bounded context: its rotations run under ctx.
+func (s *CredentialService) boundedStore(ctx context.Context) (*credentials.CredentialService, error) {
+	timeout := s.storeLookupTimeout
+	if timeout <= 0 {
+		timeout = credentialStoreLookupTimeout
+	}
+	lctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return s.store(lctx)
 }
 
 // CredentialTenantRotationError reports the scheduled rotations of one

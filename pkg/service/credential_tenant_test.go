@@ -479,6 +479,52 @@ func TestCredentialService_RotateDueReportsATenantFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), `tenant "acme"`)
 }
 
+// stallHomes is a tenant.HomeStoreSource whose lookup of one tenant's home
+// never answers: it ends only with the caller's context. Every other
+// tenant's home comes from the wrapped memoryHomes.
+type stallHomes struct {
+	*memoryHomes
+	stalled string
+}
+
+func (h stallHomes) HomeStore(ctx context.Context, tenantID string) (kvstore.KVStore, error) {
+	if tenantID == h.stalled {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return h.memoryHomes.HomeStore(ctx, tenantID)
+}
+
+// TestRotateDue_StalledTenantStoreDoesNotBlockLaterTenants: a tenant whose
+// store lookup never answers is reported and skipped at the lookup bound;
+// the sweep goes on to the next tenant, whose due credential rotates.
+func TestRotateDue_StalledTenantStoreDoesNotBlockLaterTenants(t *testing.T) {
+	f := newTenantCredentialFixture(t, credentials.WithRotationValueSource(
+		func(ctx context.Context, _, _ string) (*secure.Buffer, error) {
+			return secure.NewBufferFromBytes([]byte(tenant.FromContext(ctx) + "-rotated"))
+		}))
+	policy := credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 1}
+	for _, ctx := range []context.Context{f.acme, f.globex} {
+		require.NoError(t, f.svc.CredentialStore(ctx, "db-pass", []byte("secret")))
+		require.NoError(t, f.svc.CredentialSetRotationPolicy(ctx, "db-pass", policy))
+	}
+	svc := f.svc.(*CredentialService)
+	svc.storeLookupTimeout = 50 * time.Millisecond
+	svc.SetTenantHomes(stallHomes{memoryHomes: f.homes, stalled: "acme"})
+
+	parent, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	rotated, err := svc.CredentialRotateDue(parent, time.Now().Add(2*time.Hour))
+	require.NoError(t, parent.Err(), "the sweep ran to the parent's deadline")
+	assert.Equal(t, 1, rotated)
+	var tenantErr *CredentialTenantRotationError
+	require.ErrorAs(t, err, &tenantErr)
+	assert.Equal(t, "acme", tenantErr.TenantID)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	svc.SetTenantHomes(f.homes)
+	assert.Equal(t, "globex-rotated", retrieveTenantCredential(f.globex, t, f.svc, "db-pass"))
+}
+
 // TestCredentialService_TenantMigrationConflictResolves verifies a tenant's
 // node-local credentials/ record that differs from its replicated record is
 // listed as a conflict for that tenant alone, and that importing it makes
