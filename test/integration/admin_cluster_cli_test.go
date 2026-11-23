@@ -322,6 +322,18 @@ func startMultiProtocolClusterWithNodeConfig(t *testing.T, spareCount int, nodeY
 		}
 	}
 
+	// Each node knows its peers, so a stalled restart can dump every
+	// cluster node's goroutines (dumpClusterStacks), not only its own.
+	for i, n := range nodes {
+		if n == nil {
+			continue
+		}
+		for j, peer := range nodes {
+			if j != i && peer != nil {
+				n.clusterPeers = append(n.clusterPeers, peer)
+			}
+		}
+	}
 	return nodes, spares
 }
 

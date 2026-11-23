@@ -27,11 +27,13 @@
 package integration_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -87,6 +89,12 @@ type multiProtoNode struct {
 	startArgs []string
 	proc      *exec.Cmd
 
+	// clusterPeers are the other nodes of the node's cluster fixture
+	// (startMultiProtocolClusterWithNodeConfig); a stalled startAgain dumps
+	// their goroutines with its own (dumpClusterStacks). Empty for a
+	// single-node fixture.
+	clusterPeers []*multiProtoNode
+
 	// clusterRestPorts are the admin ports of every node of the node's
 	// cluster (startMultiProtocolCluster), where restart waits for a leader.
 	clusterRestPorts []int
@@ -128,7 +136,7 @@ func (n *multiProtoNode) startAgain(t *testing.T, prefix string) {
 	n.proc = startNode(t, n.bin, n.startArgs, prefix)
 
 	waitForBarrierStatusReachable(t, n.ca, n.restPort, 90*time.Second)
-	unsealOnlyBarrierWithSecret(t, n.ca, n.restPort, []byte(n.passphrase))
+	n.unsealOrDumpCluster(t)
 	waitForHealthy(t, n.dataDir, 60*time.Second)
 	waitForAdmin(t, n.ca.Pool, n.restPort, 90*time.Second)
 	leaderPorts := []int{n.restPort}
@@ -138,6 +146,43 @@ func (n *multiProtoNode) startAgain(t *testing.T, prefix string) {
 	waitForLeaderViaAdmin(t, n.ca, leaderPorts, 60*time.Second)
 	for _, proto := range multiProtocols {
 		waitForCLIProtoReady(t, n, proto, 60*time.Second)
+	}
+}
+
+// unsealOrDumpCluster unseals a restarted node with the client and budget of
+// unsealOnlyBarrierWithSecret. When the unseal fails, it first dumps the
+// goroutines of the node and of every cluster peer (dumpClusterStacks), so a
+// stalled boot leaves each node's stacks in its log, then fails the test.
+func (n *multiProtoNode) unsealOrDumpCluster(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), barrierBootTimeout)
+	defer cancel()
+	client := mtlsHTTPClient(t, n.ca, barrierBootTimeout)
+	statusClient := mtlsHTTPClient(t, n.ca, 5*time.Second)
+	if err := unsealInitializedBarrier(ctx, client, statusClient, n.restPort, []byte(n.passphrase)); err != nil {
+		dumpClusterStacks(t, append([]*multiProtoNode{n}, n.clusterPeers...)...)
+		t.Fatalf("unsealOnlyBarrierWithSecret: %v", err)
+	}
+}
+
+// dumpClusterStacks sends SIGQUIT to every node whose process still runs and
+// waits, at most 5 s each, for it to exit: the Go runtime writes every
+// goroutine's stack to the node's stderr, which reaches the node's log. A
+// node that does not exit in time is left for the test's cleanup to kill.
+func dumpClusterStacks(t *testing.T, nodes ...*multiProtoNode) {
+	t.Helper()
+	for _, n := range nodes {
+		if n == nil || n.proc == nil || n.proc.Process == nil || n.proc.ProcessState != nil {
+			continue
+		}
+		if err := n.proc.Process.Signal(syscall.SIGQUIT); err != nil {
+			t.Logf("dumpClusterStacks: node on admin port %d: SIGQUIT: %v", n.restPort, err)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := spawnedDaemon(t, n.proc).WaitContext(ctx)
+		cancel()
+		t.Logf("dumpClusterStacks: node on admin port %d dumped its goroutines (exit: %v)", n.restPort, err)
 	}
 }
 
