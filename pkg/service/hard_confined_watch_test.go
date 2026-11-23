@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -323,10 +324,17 @@ func TestHardConfinedWatch_WatchEntityTypeFilterGoroutineExitsOnContextDone(t *t
 	// exactly the blocking send this test targets.
 	fake.entityTypeChan <- WatchEntityEvent{EntityType: subPathType, ID: "ordinary-id"}
 
-	// Give the goroutine a moment to reach its blocking send before
-	// canceling, so this test actually exercises that send rather than
-	// racing ahead of it.
-	time.Sleep(20 * time.Millisecond)
+	// entityTypeChan has capacity 1, so once it is empty the forwarding
+	// goroutine has taken the event and is at (or about to reach) its
+	// blocking send on `ch`. Wait for that before canceling, so this test
+	// exercises that send rather than racing ahead of it.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(fake.entityTypeChan) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the forwarding goroutine never took the event off entityTypeChan")
+		}
+		runtime.Gosched()
+	}
 	cancel()
 
 	select {
