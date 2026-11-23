@@ -75,6 +75,11 @@ check "hosted: no RUNNER_TEMP exits 2" '[ $rc = 2 ]'
 run GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted RUNNER_TEMP="$tmp/rt0" -- bash "$SH"
 check "self-hosted, no CI_CACHE_ROOT: under \$RUNNER_TEMP/ci-cache" \
   '[ $rc = 0 ] && case $out in "CI_CACHE_DIR=$tmp/rt0/ci-cache/"?*) true ;; *) false ;; esac'
+# The stages bind-mount <dir>/gobuild and <dir>/golangci at /cache and point
+# GOCACHE and GOLANGCI_LINT_CACHE there: the fallback root's generation has
+# both, as writable directories, before any stage runs.
+check "self-hosted, no CI_CACHE_ROOT: the generation has writable gobuild and golangci" \
+  'd=${out#CI_CACHE_DIR=}; [ -d "$d/gobuild" ] && [ -w "$d/gobuild" ] && [ -d "$d/golangci" ] && [ -w "$d/golangci" ]'
 run GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted -- bash "$SH"
 check "self-hosted, no CI_CACHE_ROOT nor RUNNER_TEMP exits 2" '[ $rc = 2 ]'
 
@@ -163,8 +168,10 @@ check "du fails, prints nothing: warns, a new generation is current" \
 mkdir -p "$b4/$h2/gobuild"
 run CI_CACHE_ROOT="$r4" CI_CACHE_MAX_GB=5 FAKE_DU_GB=9 PATH="$fakedu:$PATH" -- bash "$SH"
 h3=$(cat "$b4/current" 2>/dev/null)
+# Every generation has gobuild and golangci, so the fake du's 9 GB is read
+# for each: 18 GB in all.
 check "du fails, prints a size over the cap: a new generation is current" \
-  '[ $rc = 0 ] && [ "$h3" != "$h2" ] && [ "$out" = "CI_CACHE_DIR=$b4/$h3" ] && [[ $err == *"9 GB, over the 5 GB cap"* ]]'
+  '[ $rc = 0 ] && [ "$h3" != "$h2" ] && [ "$out" = "CI_CACHE_DIR=$b4/$h3" ] && [[ $err == *"18 GB, over the 5 GB cap"* ]]'
 mkdir -p "$b4/$h3/gobuild"
 run CI_CACHE_ROOT="$r4" CI_CACHE_MAX_GB=5 FAKE_DU_GB=2 PATH="$fakedu:$PATH" -- bash "$SH"
 check "du fails, prints a size under the cap: the same generation" \

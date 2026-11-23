@@ -159,6 +159,10 @@ select_locked() {
     mv -f -- "$base/current.tmp.$$" "$base/current"
   fi
   touch "$base/$cur/.last-use"
+  # The stages bind-mount these two at /cache/gobuild and /cache/golangci
+  # (scripts/in-toolchain-image.sh) and GOCACHE/GOLANGCI_LINT_CACHE point
+  # there: the generation has them before any stage runs, whatever the root.
+  mkdir -p "$base/$cur/gobuild" "$base/$cur/golangci"
   for e in "$base"/* "$base"/.[!.]*; do
     [ -e "$e" ] || [ -L "$e" ] || continue
     name=${e##*/}
