@@ -18,6 +18,7 @@ package integration_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -351,6 +352,65 @@ func TestDatabaseBinding_CLI_InfoReportsTheBinding_PerProtocol(t *testing.T) {
 			}
 			if !strings.Contains(out, "Binding:") || !strings.Contains(out, "Kind:       local") {
 				t.Fatalf("[%s] table output lacks the binding block:\n%s", proto.name, out)
+			}
+		})
+	}
+}
+
+// TestDatabaseBinding_CLI_RecreateGivesNewGeneration_PerProtocol drops a
+// database and creates it again under the same name over the CLI on every
+// transport, and asserts the binding block reports a higher generation for
+// the new database than for the one it replaced, in JSON and table output.
+func TestDatabaseBinding_CLI_RecreateGivesNewGeneration_PerProtocol(t *testing.T) {
+	node := startStandaloneModeNodeWithConfig(t, "pebble", "")
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			conn := node.cliArgsFor(proto)
+			name := "regen-" + proto.name
+
+			generation := func(t *testing.T, step string) uint64 {
+				t.Helper()
+				out, err := runQRDB(t, node.cli, conn, "--output", "json", "database", "info", name)
+				if err != nil {
+					t.Fatalf("[%s] %s: database info %s: %v\n%s", proto.name, step, name, err, out)
+				}
+				var info transport.DatabaseInfo
+				if jerr := json.Unmarshal([]byte(out), &info); jerr != nil {
+					t.Fatalf("[%s] %s: decode database info JSON: %v\n%s", proto.name, step, jerr, out)
+				}
+				if info.Binding == nil {
+					t.Fatalf("[%s] %s: database info carries no binding block:\n%s", proto.name, step, out)
+				}
+				if info.Binding.Generation == 0 {
+					t.Fatalf("[%s] %s: binding generation is 0:\n%s", proto.name, step, out)
+				}
+				return info.Binding.Generation
+			}
+
+			if out, err := runQRDB(t, node.cli, conn, "database", "create", name, "--backend", "file"); err != nil {
+				t.Fatalf("[%s] database create %s: %v\n%s", proto.name, name, err, out)
+			}
+			first := generation(t, "first create")
+
+			if out, err := runQRDB(t, node.cli, conn, "database", "drop", name); err != nil {
+				t.Fatalf("[%s] database drop %s: %v\n%s", proto.name, name, err, out)
+			}
+			if out, err := runQRDB(t, node.cli, conn, "database", "create", name, "--backend", "file"); err != nil {
+				t.Fatalf("[%s] database recreate %s: %v\n%s", proto.name, name, err, out)
+			}
+			second := generation(t, "recreate")
+			if second <= first {
+				t.Fatalf("[%s] recreated %s has generation %d, want more than %d", proto.name, name, second, first)
+			}
+
+			out, err := runQRDB(t, node.cli, conn, "database", "info", name)
+			if err != nil {
+				t.Fatalf("[%s] database info (table) %s: %v\n%s", proto.name, name, err, out)
+			}
+			if want := fmt.Sprintf("Generation: %d", second); !strings.Contains(out, want) {
+				t.Fatalf("[%s] table output lacks %q:\n%s", proto.name, want, out)
 			}
 		})
 	}
