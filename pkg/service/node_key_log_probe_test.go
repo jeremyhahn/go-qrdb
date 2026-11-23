@@ -193,6 +193,62 @@ func TestNodeKeyLogDatabases_IgnoresEmptyDefaultNamespace(t *testing.T) {
 	}
 }
 
+// sharedVectorNamespaces is a fake of the system shard's vector service: it
+// answers ListNamespaces with fixed names, ignoring the request's prefix so
+// the reader's own filter is what is tested.
+type sharedVectorNamespaces struct {
+	names []string
+	err   error
+}
+
+func (v sharedVectorNamespaces) ListNamespaces(context.Context, *ListNamespacesRequest) (*ListNamespacesResponse, error) {
+	if v.err != nil {
+		return nil, v.err
+	}
+	resp := &ListNamespacesResponse{}
+	for _, n := range v.names {
+		resp.Namespaces = append(resp.Namespaces, &NamespaceInfo{Namespace: n})
+	}
+	return resp, nil
+}
+
+// TestNodeKeyLogProbe_VectorOnlyTenantRefusesStrict: a barrier tenant whose
+// only data in the implicit default database is a vector namespace has no
+// catalog record and no KV key, yet its vectors are on the shared node-keyed
+// log, so the probe reports the database; a tenant with no vectors there is
+// not reported, and a vector read error fails the probe closed.
+func TestNodeKeyLogProbe_VectorOnlyTenantRefusesStrict(t *testing.T) {
+	vec := sharedVectorNamespaces{names: []string{
+		tenant.ComposeNamespace("bt", tenant.DefaultDatabase) + "embeddings",
+		tenant.ComposeNamespace("other", "appdb") + "docs",
+	}}
+	reader := NewKVSharedNamespaceReader(sharedShardKeys{}, WithSharedVectorNamespaces(vec))
+	probe := NewNodeKeyLogProbe(unopenableCatalog{}, WithSharedNamespaces(reader, tenant.DefaultDatabase, "appdb"))
+
+	got, err := probe.NodeKeyLogDatabases(context.Background(), "bt")
+	if err != nil {
+		t.Fatalf("NodeKeyLogDatabases: %v", err)
+	}
+	if len(got) != 1 || got[0] != tenant.DefaultDatabase {
+		t.Fatalf("vector-only tenant: got %v, want [%s]", got, tenant.DefaultDatabase)
+	}
+
+	clean, err := probe.NodeKeyLogDatabases(context.Background(), "clean")
+	if err != nil {
+		t.Fatalf("NodeKeyLogDatabases clean: %v", err)
+	}
+	if len(clean) != 0 {
+		t.Fatalf("clean tenant: got %v, want none", clean)
+	}
+
+	failing := NewNodeKeyLogProbe(unopenableCatalog{}, WithSharedNamespaces(
+		NewKVSharedNamespaceReader(sharedShardKeys{}, WithSharedVectorNamespaces(sharedVectorNamespaces{err: errors.New("vector store unavailable")})),
+		tenant.DefaultDatabase))
+	if _, err := failing.NodeKeyLogDatabases(context.Background(), "bt"); err == nil {
+		t.Fatal("a vector read error must fail the probe")
+	}
+}
+
 // TestCreateForTenant_BarrierPebbleBlocksTightening: a barrier tenant's
 // pebble database is served from the shared system shard, so once created
 // the probe a tightening consults lists it.

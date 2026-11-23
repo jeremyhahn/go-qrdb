@@ -16,6 +16,7 @@ package service
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -144,23 +145,86 @@ type SharedNamespaceKV interface {
 	ListAll(ctx context.Context, prefix string) ([]string, error)
 }
 
+// SharedVectorNamespaces is the part of the system shard's vector service a
+// KVSharedNamespaceReader needs: the vector namespaces it holds. Vectors are
+// not KV keys, so a tenant holding only embeddings in a shared database has
+// no key under the database's KV prefixes.
+type SharedVectorNamespaces interface {
+	ListNamespaces(ctx context.Context, req *ListNamespacesRequest) (*ListNamespacesResponse, error)
+}
+
 // KVSharedNamespaceReader is a SharedNamespaceReader over the system shard's
-// KV store: a tenant holds data in a database's shared namespace when any key
-// sits under one of the namespace's physical prefixes (NamespacedKeyPrefixes).
+// stores: a tenant holds data in a database's shared namespace when any key
+// sits under one of the namespace's physical prefixes (NamespacedKeyPrefixes)
+// or, with WithSharedVectorNamespaces, any vector namespace begins with the
+// composite namespace (the prefix keyspace reclamation deletes by).
 type KVSharedNamespaceReader struct {
-	kv SharedNamespaceKV
+	kv     SharedNamespaceKV
+	vector SharedVectorNamespaces
 }
 
 var _ SharedNamespaceReader = (*KVSharedNamespaceReader)(nil)
 
+// KVSharedNamespaceReaderOption configures a KVSharedNamespaceReader.
+type KVSharedNamespaceReaderOption func(*KVSharedNamespaceReader)
+
+// WithSharedVectorNamespaces makes the reader also count the system shard's
+// vector namespaces, read through vec. A nil vec is ignored (a composition
+// that serves no vectors). A list error fails the read, so the tightening
+// fails closed.
+func WithSharedVectorNamespaces(vec SharedVectorNamespaces) KVSharedNamespaceReaderOption {
+	return func(r *KVSharedNamespaceReader) {
+		r.vector = vec
+	}
+}
+
 // NewKVSharedNamespaceReader returns a reader over kv, typically the node's
 // system-shard KV service.
-func NewKVSharedNamespaceReader(kv SharedNamespaceKV) *KVSharedNamespaceReader {
-	return &KVSharedNamespaceReader{kv: kv}
+func NewKVSharedNamespaceReader(kv SharedNamespaceKV, opts ...KVSharedNamespaceReaderOption) *KVSharedNamespaceReader {
+	r := &KVSharedNamespaceReader{kv: kv}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // HasTenantData implements SharedNamespaceReader.
 func (r *KVSharedNamespaceReader) HasTenantData(ctx context.Context, tenantID, db string) (bool, error) {
+	has, err := r.hasKeys(ctx, tenantID, db)
+	if err != nil || has {
+		return has, err
+	}
+	return r.hasVectors(ctx, tenantID, db)
+}
+
+// hasVectors reports whether any vector namespace of the shared vector store
+// begins with the tenant's composite namespace for db.
+func (r *KVSharedNamespaceReader) hasVectors(ctx context.Context, tenantID, db string) (bool, error) {
+	if r.vector == nil {
+		return false, nil
+	}
+	ns := tenant.ComposeNamespace(tenantID, db)
+	if ns == "" {
+		return false, nil
+	}
+	resp, err := r.vector.ListNamespaces(ctx, &ListNamespacesRequest{Prefix: ns})
+	if err != nil {
+		return false, err
+	}
+	if resp == nil {
+		return false, nil
+	}
+	for _, info := range resp.Namespaces {
+		if info != nil && strings.HasPrefix(info.Namespace, ns) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// hasKeys reports whether any KV key sits under the tenant's composite
+// namespace prefixes for db.
+func (r *KVSharedNamespaceReader) hasKeys(ctx context.Context, tenantID, db string) (bool, error) {
 	for _, prefix := range NamespacedKeyPrefixes(tenant.ComposeNamespace(tenantID, db)) {
 		keys, err := r.kv.ListAll(ctx, prefix)
 		if err != nil {

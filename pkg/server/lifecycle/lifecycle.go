@@ -1438,7 +1438,13 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		// holds there is on a node-keyed log too.
 		var probeOpts []service.NodeKeyLogProbeOption
 		if n.KV != nil {
-			probeOpts = append(probeOpts, service.WithSharedNamespaces(service.NewKVSharedNamespaceReader(n.KV), SystemDatabase))
+			var readerOpts []service.KVSharedNamespaceReaderOption
+			if n.Vector != nil {
+				// Vectors are not KV keys: a tenant holding only embeddings in a
+				// shared database is still on the node-keyed log.
+				readerOpts = append(readerOpts, service.WithSharedVectorNamespaces(n.Vector))
+			}
+			probeOpts = append(probeOpts, service.WithSharedNamespaces(service.NewKVSharedNamespaceReader(n.KV, readerOpts...), SystemDatabase))
 			if infra.SharedDatabaseNames != nil {
 				probeOpts = append(probeOpts, service.WithSharedNamespaceNames(infra.SharedDatabaseNames))
 			}
