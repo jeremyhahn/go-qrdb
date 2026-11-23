@@ -242,9 +242,8 @@ func TestNode_PreboundListenersSurviveMigration(t *testing.T) {
 	require.True(t, h3Healthy(pool, addr), "HTTP/3 must still answer on the same pre-bound socket after the migration")
 	// Keep asking for longer than the ended lifetime's closed-connection
 	// timer runs: HTTP/3 must keep answering after it fires.
-	for start := time.Now(); time.Since(start) < staleH3TimerWindow; time.Sleep(100 * time.Millisecond) {
-		require.True(t, h3Healthy(pool, addr), "HTTP/3 stopped answering %v after the migration", time.Since(start))
-	}
+	require.Never(t, func() bool { return !h3Healthy(pool, addr) }, staleH3TimerWindow, 100*time.Millisecond,
+		"HTTP/3 stopped answering after the migration")
 	require.NoError(t, grpcAnswers(pool, grpcLn.Addr().String()), "gRPC must still answer on the same port after the migration")
 
 	require.NoError(t, n.Close())
