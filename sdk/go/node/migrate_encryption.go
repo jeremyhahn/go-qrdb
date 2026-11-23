@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -296,7 +297,7 @@ type nodeMigrationProvider struct {
 // handled here; tenant scope is routed by the scoped router in Node.encMigrator
 // to TenantHostRegistry.MigrateEncryption before nodeMigrationProvider is
 // consulted, so the tenant branch below is defensive dead code.
-func (p *nodeMigrationProvider) StoreDirs(_ context.Context, scope service.BarrierScope) (service.MigrationStores, error) {
+func (p *nodeMigrationProvider) StoreDirs(ctx context.Context, scope service.BarrierScope) (service.MigrationStores, error) {
 	n := p.node
 	if scope.Kind != service.ScopeSystem {
 		return service.MigrationStores{}, &MigrationNotSupportedError{Reason: "tenant scope is handled by TenantHostRegistry via the scoped router; nodeMigrationProvider is system-only"}
@@ -313,10 +314,61 @@ func (p *nodeMigrationProvider) StoreDirs(_ context.Context, scope service.Barri
 	if externalPebbleWAL(n.retainedStandalone.cfg, dataDir) != "" && len(existingDirs(pebbleDir)) > 0 {
 		return service.MigrationStores{}, &MigrationNotSupportedError{Reason: "the pebble store keeps its write-ahead log outside its directory (storage.wal_dir); encryption migration moves the store directory alone"}
 	}
-	return service.MigrationStores{
+	stores := service.MigrationStores{
 		Pebble: existingDirs(pebbleDir, filepath.Join(dataDir, "vector")),
 		File:   existingDirs(filepath.Join(dataDir, "file")),
-	}, nil
+	}
+	pebbleRoots, fileRoots, err := p.databaseStoreDirs(ctx)
+	if err != nil {
+		return service.MigrationStores{}, err
+	}
+	stores.Pebble = append(stores.Pebble, pebbleRoots...)
+	stores.File = append(stores.File, fileRoots...)
+	return stores, nil
+}
+
+// databaseStoreDirs lists the store directories of every database the
+// node barrier encrypts in a store of its own (a system or prefix-tenant
+// database the binding factory materializes, an explicit data_dir
+// included), opened on this node or not: the swap re-encrypts them with
+// the base store, so each reopens under the new barrier. A database with
+// its own barrier, or an isolated tenant's, is encrypted by another
+// barrier and left alone. An objstore database cannot be encrypted at
+// rest, and a Pebble database whose write-ahead log lives under
+// storage.wal_dir would lose its WAL-only records: both refuse the
+// migration before anything is minted or quiesced.
+func (p *nodeMigrationProvider) databaseStoreDirs(ctx context.Context) (pebbleDirs, fileDirs []string, err error) {
+	n := p.node
+	if n.dbManager == nil {
+		return nil, nil, nil
+	}
+	bindings, err := n.dbManager.RecordBindings(ctx)
+	if err != nil {
+		return nil, nil, &MigrationNotSupportedError{Reason: "the database catalog cannot be listed: " + err.Error()}
+	}
+	walDir := ""
+	if n.retainedStandalone.cfg != nil {
+		walDir = n.retainedStandalone.cfg.Storage.WALDir
+	}
+	for _, b := range bindings {
+		if b.Encryptor != database.EncryptorNode || b.DataRoot == "" {
+			continue
+		}
+		switch b.Backend {
+		case database.BackendObjstore:
+			return nil, nil, &MigrationNotSupportedError{Reason: "database " + b.TenantID + "/" + b.Database + " is stored in objstore, which cannot encrypt at rest"}
+		case database.BackendPebble:
+			db := existingDirs(filepath.Join(b.DataRoot, "pebble"))
+			if walDir != "" && len(db) > 0 {
+				return nil, nil, &MigrationNotSupportedError{Reason: "database " + b.TenantID + "/" + b.Database + " keeps its write-ahead log under storage.wal_dir; encryption migration moves the store directory alone"}
+			}
+			pebbleDirs = append(pebbleDirs, db...)
+		case database.BackendFile:
+			fileDirs = append(fileDirs, existingDirs(filepath.Join(b.DataRoot, "file"))...)
+		}
+		pebbleDirs = append(pebbleDirs, existingDirs(filepath.Join(b.DataRoot, "vector"))...)
+	}
+	return pebbleDirs, fileDirs, nil
 }
 
 // existingDirs returns those of candidates that are existing directories.

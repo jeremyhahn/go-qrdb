@@ -1958,6 +1958,41 @@ type RecordRootResolver interface {
 	RecordRoot(cfg DatabaseConfig) (string, error)
 }
 
+// RecordBindingResolver is implemented by a BackendFactory that
+// materializes some databases in a store of their own. RecordBinding is
+// the binding Create would open for the database cfg describes, without
+// opening it, or nil for a database it serves from the fallback store.
+type RecordBindingResolver interface {
+	RecordBinding(cfg DatabaseConfig) (*Binding, error)
+}
+
+// RecordBindings returns the binding of every catalog record (ListRecords)
+// that the backend factory materializes in a store of its own, opened on
+// this node or not. A factory that materializes nothing returns none. A
+// record whose binding cannot be resolved fails the listing: a caller
+// that rewrites every database's store must not miss one.
+func (m *Manager) RecordBindings(ctx context.Context) ([]*Binding, error) {
+	resolver, ok := m.factory.(RecordBindingResolver)
+	if !ok {
+		return nil, nil
+	}
+	metas, err := m.ListRecords(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Binding
+	for _, meta := range metas {
+		b, err := resolver.RecordBinding(configFromMeta(meta))
+		if err != nil {
+			return nil, &RecordRootUnresolvedError{Name: meta.Name, TenantID: meta.TenantID, With: meta.Name, Err: err}
+		}
+		if b != nil {
+			out = append(out, b)
+		}
+	}
+	return out, nil
+}
+
 // RecordRootUnresolvedError is returned when the store root of a recorded
 // database -- TenantID's With -- cannot be resolved while Name's root is
 // checked against it. The check fails closed: the create is refused, and a

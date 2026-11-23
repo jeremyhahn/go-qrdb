@@ -164,6 +164,18 @@ func (f *LocalBindingFactory) RecordRoot(cfg database.DatabaseConfig) (string, e
 	return b.DataRoot, nil
 }
 
+// RecordBinding is the local binding Create materializes for the database
+// cfg describes, without opening it (database.RecordBindingResolver), or
+// nil for a database served from the fallback store. A node-wide
+// operation over every database's own store (an encryption migration)
+// reads it for every catalog record, opened on this node or not.
+func (f *LocalBindingFactory) RecordBinding(cfg database.DatabaseConfig) (*database.Binding, error) {
+	if !f.node.RaftMode && cfg.Backend == database.BackendRaft {
+		return nil, nil
+	}
+	return f.resolveLocal(&cfg)
+}
+
 // resolveLocal is the local binding Create materializes for cfg, or nil when
 // cfg's database is served from the fallback store.
 func (f *LocalBindingFactory) resolveLocal(cfg *database.DatabaseConfig) (*database.Binding, error) {
