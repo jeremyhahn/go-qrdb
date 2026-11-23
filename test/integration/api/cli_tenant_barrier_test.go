@@ -19,7 +19,14 @@ type tenantEntitlementsJSON struct {
 	AllowDedicatedRaft        bool     `json:"allow_dedicated_raft"`
 	AllowVolumeStorage        bool     `json:"allow_volume_storage"`
 	AllowSystemManagedBarrier bool     `json:"allow_system_managed_barrier"`
+	AllowSQLiteVFS            bool     `json:"allow_sqlite_vfs"`
 	AllowedBarrierModes       []string `json:"allowed_barrier_modes"`
+}
+
+// tenantQuotasJSON is the subset of the CLI's JSON tenant quotas the
+// sqlite-vfs e2e reads.
+type tenantQuotasJSON struct {
+	MaxSQLiteDatabases int64 `json:"max_sqlite_databases"`
 }
 
 // tenantInfoJSON mirrors the JSON shape of transport.TenantInfo as produced
@@ -29,6 +36,7 @@ type tenantInfoJSON struct {
 	Name          string                  `json:"name"`
 	IsolationType string                  `json:"isolation_type"`
 	Entitlements  *tenantEntitlementsJSON `json:"entitlements"`
+	Quotas        *tenantQuotasJSON       `json:"quotas"`
 }
 
 // getTenantJSON runs `tenant get <id> --output json` and decodes the result.
@@ -106,6 +114,7 @@ func TestCLIMultiProtocolTenantSetEntitlement(t *testing.T) {
 				"--allow-dedicated-raft",
 				"--allow-volume-storage",
 				"--allow-system-managed-barrier",
+				"--allow-sqlite-vfs",
 				"--allowed-barrier-modes", "none,passphrase,shamir",
 			)
 			if err != nil {
@@ -129,6 +138,8 @@ func TestCLIMultiProtocolTenantSetEntitlement(t *testing.T) {
 				fmt.Sprintf("[%s] broad AllowVolumeStorage should be true", proto))
 			assertTrue(t, info.Entitlements.AllowSystemManagedBarrier,
 				fmt.Sprintf("[%s] broad AllowSystemManagedBarrier should be true", proto))
+			assertTrue(t, info.Entitlements.AllowSQLiteVFS,
+				fmt.Sprintf("[%s] broad AllowSQLiteVFS should be true", proto))
 			assertStringSliceEqual(t, info.Entitlements.AllowedBarrierModes,
 				[]string{"none", "passphrase", "shamir"},
 				fmt.Sprintf("[%s] broad AllowedBarrierModes", proto))
@@ -160,11 +171,70 @@ func TestCLIMultiProtocolTenantSetEntitlement(t *testing.T) {
 				fmt.Sprintf("[%s] narrow AllowVolumeStorage should be false (replaced, not merged)", proto))
 			assertFalse(t, info.Entitlements.AllowSystemManagedBarrier,
 				fmt.Sprintf("[%s] narrow AllowSystemManagedBarrier should be false (replaced, not merged)", proto))
+			assertFalse(t, info.Entitlements.AllowSQLiteVFS,
+				fmt.Sprintf("[%s] narrow AllowSQLiteVFS should be false (replaced, not merged)", proto))
 			assertStringSliceEqual(t, info.Entitlements.AllowedBarrierModes,
 				[]string{"passphrase"},
 				fmt.Sprintf("[%s] narrow AllowedBarrierModes", proto))
 
 			t.Logf("[%s] tenant set-entitlement permutations passed for: %s", proto, tenantID)
+		})
+	}
+}
+
+// TestCLIMultiProtocolTenantUpdateQuotasSQLiteDatabases sets the SQLite
+// database cap through `tenant update-quotas --max-sqlite-databases` on every
+// transport and reads it back with `tenant get`, then clears it to unlimited.
+func TestCLIMultiProtocolTenantUpdateQuotasSQLiteDatabases(t *testing.T) {
+	cfg := LoadTestConfig()
+	requireCLI(t, cfg)
+
+	for _, proto := range AllProtocols() {
+		t.Run(string(proto), func(t *testing.T) {
+			if !cfg.IsProtocolAvailable(t, proto) {
+				t.Fatalf("server not available for protocol %s", proto)
+			}
+
+			ts := testTimestamp()
+			tenantID := fmt.Sprintf("sqlq-tenant-%s-%d", proto, ts)
+			tenantName := fmt.Sprintf("SQLite Quota Tenant %s %d", proto, ts)
+
+			t.Cleanup(func() {
+				execCLIWithProtocol(t, cfg, proto, "tenant", "delete", tenantID) //nolint:errcheck
+			})
+
+			adminArgs := adminCSRArgsForTenant(t, cfg, proto, tenantID+"-admin")
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, append([]string{
+				"tenant", "create", "--id", tenantID, "--name", tenantName}, adminArgs...)...)
+			if err != nil {
+				t.Logf("stdout: %s", stdout)
+				t.Logf("stderr: %s", stderr)
+				t.Fatalf("[%s] tenant create failed: %v", proto, err)
+			}
+
+			for _, want := range []int64{3, 0} {
+				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
+					"tenant", "update-quotas", tenantID,
+					"--max-sqlite-databases", fmt.Sprintf("%d", want),
+				)
+				if err != nil {
+					t.Logf("stdout: %s", stdout)
+					t.Logf("stderr: %s", stderr)
+					t.Fatalf("[%s] tenant update-quotas --max-sqlite-databases %d failed: %v", proto, want, err)
+				}
+				assertContains(t, stdout, tenantID,
+					fmt.Sprintf("[%s] update-quotas response should contain tenant ID", proto))
+
+				info := getTenantJSON(t, cfg, proto, tenantID)
+				if info.Quotas == nil {
+					t.Fatalf("[%s] tenant get after update-quotas: quotas is nil", proto)
+				}
+				if info.Quotas.MaxSQLiteDatabases != want {
+					t.Fatalf("[%s] MaxSQLiteDatabases = %d, want %d", proto, info.Quotas.MaxSQLiteDatabases, want)
+				}
+			}
+
+			t.Logf("[%s] tenant update-quotas --max-sqlite-databases passed for: %s", proto, tenantID)
 		})
 	}
 }
