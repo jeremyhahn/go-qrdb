@@ -84,7 +84,9 @@ nothing is created. Raise the pool's capacity or choose another pool.
   `qrdb volume-pool get-move acme` (it answers not found once the move has
   ended), and stop it before its cut over with
   `qrdb volume-pool cancel-move acme`. A move from an encrypted pool to an
-  unencrypted one is always refused.
+  unencrypted one is always refused. An auto-unseal tenant is unsealed again
+  when the move reopens it; a self-managed tenant comes back sealed after a
+  move, as after a restart, until its admin unseals it.
 - **Retire a pool:** move or delete its tenants, then
   `qrdb volume-pool delete fast`. Remove the mapping from each node's
   configuration afterwards.
