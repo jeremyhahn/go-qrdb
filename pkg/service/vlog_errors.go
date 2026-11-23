@@ -15,6 +15,7 @@
 package service
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
@@ -47,4 +48,22 @@ func (e *LogFeatureNotActiveError) Error() string {
 	return "service: verifiable log write not yet active for tenant " + strconv.Quote(e.TenantID) +
 		" (shard " + strconv.FormatUint(e.ShardID, 10) + "): the cluster feature gate has not activated " +
 		string(e.Feature) + " on every replica of this shard"
+}
+
+// ReservedKeyError refuses a kv operation on the verifiable log's reserved
+// keyspace (vlog.TablePrefix, vlog.LogTablePrefix). A barrier database keeps
+// its logs and their signing-key records in its own backend; only the log
+// service writes or reads them, never the kv surface. Range is set when a
+// delete range overlapped the reserved keyspace rather than naming a key in
+// it.
+type ReservedKeyError struct {
+	Key   string
+	Range bool
+}
+
+func (e *ReservedKeyError) Error() string {
+	if e.Range {
+		return fmt.Sprintf("kv: delete range overlaps the reserved verifiable-log keyspace %q", e.Key)
+	}
+	return fmt.Sprintf("kv: key %q is in the reserved verifiable-log keyspace", e.Key)
 }

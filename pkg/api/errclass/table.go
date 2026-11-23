@@ -420,6 +420,9 @@ var vlogRules = []rule{
 	as(&vlog.ExpireNotAllowedError{}, FailedPrecondition),
 	as(&vlog.ReservedLogError{}, PermissionDenied),
 	as(&vlog.NotAuditLogError{}, InvalidArgument),
+	// A kv key or delete range inside the verifiable log's reserved
+	// keyspace: only the log service reads or writes it.
+	as(&service.ReservedKeyError{}, InvalidArgument),
 	as(&vlog.CheckpointRootMismatchError{}, FailedPrecondition),
 	as(&vlog.InvalidSigningKeyError{}, FailedPrecondition),
 	// Another rotation applied first: the caller retries against the new key.
