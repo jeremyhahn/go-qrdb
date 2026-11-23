@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	sm "github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -325,7 +326,7 @@ func TestMVCCEngine_FailedIndexBatchKeepsTheCommittedIndex(t *testing.T) {
 		populate(t, eng)
 
 		stg.fail.Store(true)
-		err := eng.Update(context.Background(), []sm.Entry{catalogDrop(t, 4, protocol.IndexDropOptions{})}, make([]sm.Result, 1))
+		err := eng.Update(context.Background(), []sm.Entry{catalogDrop(t, 4, protocol.IndexDropOptions{Catalog: true})}, make([]sm.Result, 1))
 		if !errors.Is(err, errCommitRefused) {
 			t.Fatalf("Update = %v, want the commit fault", err)
 		}
@@ -386,6 +387,71 @@ func catalogKeys(t *testing.T, stg storage.Storage) []string {
 		t.Fatalf("iterate the catalog: %v", err)
 	}
 	return keys
+}
+
+// allKeys lists every key the storage holds, in order.
+func allKeys(t *testing.T, stg storage.Storage) []string {
+	t.Helper()
+	it := stg.NewIterator(&storage.IteratorOptions{})
+	defer func() { _ = it.Close() }()
+	var keys []string
+	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+		keys = append(keys, string(it.Key()))
+	}
+	if err := it.Error(); err != nil {
+		t.Fatalf("iterate the storage: %v", err)
+	}
+	return keys
+}
+
+// TestMVCCEngine_IndexDropWithoutCatalogClearsCommittedOnly checks that a
+// drop proposed before the index-catalog feature is active clears the
+// committed entries only, as a member that predates the feature does: a put
+// earlier in the same batch keeps its entries, so mixed-version members
+// commit the same keys. A drop under the feature clears them in the batch.
+func TestMVCCEngine_IndexDropWithoutCatalogClearsCommittedOnly(t *testing.T) {
+	run := func(t *testing.T, drop protocol.IndexDropOptions) []string {
+		t.Helper()
+		stg := memory.NewStorage()
+		t.Cleanup(func() { _ = stg.Close() })
+		eng := openCatalogEngine(t, stg)
+		applyMVCCEntries(t, eng, []sm.Entry{
+			catalogCreate(t, 1, protocol.IndexCreateOptions{KeyPrefix: "user/"}),
+			mvccPutEntry(2, []byte("user/1"), []byte(`{"email":"a@example.com"}`), 0),
+		})
+		// One Update applies both entries in one batch.
+		applyMVCCEntries(t, eng, []sm.Entry{
+			mvccPutEntry(3, []byte("user/2"), []byte(`{"email":"b@example.com"}`), 0),
+			catalogDrop(t, 4, drop),
+		})
+		wantIndexNotFound(t, eng)
+		return allKeys(t, stg)
+	}
+
+	base := run(t, protocol.IndexDropOptions{})
+	gated := run(t, protocol.IndexDropOptions{Catalog: true})
+
+	// The gated drop removes the batch's entries too, so its keys are the
+	// base keys less the entries the base keeps for the put in the batch.
+	for _, k := range gated {
+		if !slices.Contains(base, k) {
+			t.Fatalf("gated drop left key %q the base drop does not", k)
+		}
+	}
+	var kept []string
+	for _, k := range base {
+		if !slices.Contains(gated, k) {
+			kept = append(kept, k)
+		}
+	}
+	if len(kept) == 0 {
+		t.Fatalf("base drop kept no entry of the put in its batch; keys %q", base)
+	}
+	for _, k := range kept {
+		if strings.Contains(k, "user/1") {
+			t.Fatalf("base drop kept committed entry %q; only the batch's put may survive", k)
+		}
+	}
 }
 
 // A create proposed before index-catalog is active on the group writes no
