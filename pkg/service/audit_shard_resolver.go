@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -127,9 +128,12 @@ type AuditAppendResolver interface {
 
 // AuditAppendHolder is a resolver that holds the route an append resolved
 // by until its proposal returns (SystemShardAuditResolver.HoldAuditAppend).
-// The appender calls release once the proposal has returned.
+// The appender calls release once the proposal has returned, and proposes
+// under guard (WithWriteGuard): on a system route it compares the tenant's
+// isolation epochs, so an append in flight across a strict tightening is
+// refused at apply time; elsewhere it is the zero guard.
 type AuditAppendHolder interface {
-	HoldAuditAppend(ctx context.Context, tenantID string) (host Host, shardID uint64, release func(), err error)
+	HoldAuditAppend(ctx context.Context, tenantID string) (host Host, shardID uint64, release func(), guard WriteGuard, err error)
 }
 
 // auditHomeGroupSource boxes the attached source and route store for the
@@ -298,30 +302,104 @@ const maxAuditRouteHoldAttempts = 3
 // release is never nil on success and is safe to call more than once.
 //
 // The hold is per resolver: a release on another node, or on another
-// resolver of this node, does not see it (docs/audit/architecture.md).
-func (r *SystemShardAuditResolver) HoldAuditAppend(ctx context.Context, tenantID string) (Host, uint64, func(), error) {
+// resolver of this node, does not see it, and a proposal that returned on a
+// timeout can still apply. The returned guard backs it at apply time: on a
+// system route it compares the tenant's and the floor's isolation epochs,
+// read before the strict check, so an append that applies after a
+// tightening wrote its epoch is refused on every replica, and one that
+// applied before is on the chain the tightening's probe reads. A home route
+// or the system tenant gets the zero guard. Guards are enforced only once
+// featuregate.GuardedWrites is on (docs/audit/architecture.md).
+func (r *SystemShardAuditResolver) HoldAuditAppend(ctx context.Context, tenantID string) (Host, uint64, func(), WriteGuard, error) {
 	routed := tenantid.Normalize(tenantID)
 	for range maxAuditRouteHoldAttempts {
+		// Read before the strict check resolveRoute runs: a tightening
+		// writes the epoch before its probe, so an append whose guard holds
+		// at apply time applied before the probe looked.
+		epochs, guarded, err := r.isolationEpochs(ctx, routed)
+		if err != nil {
+			return nil, 0, nil, WriteGuard{}, err
+		}
 		host, shardID, route, err := r.resolveRoute(ctx, routed, true, true)
 		if err != nil {
-			return nil, 0, nil, err
+			return nil, 0, nil, WriteGuard{}, err
 		}
 		homes := r.homes.Load()
 		if route != AuditRouteSystem || homes == nil {
-			return host, shardID, func() {}, nil
+			return host, shardID, func() {}, WriteGuard{}, nil
 		}
 		release := r.holdSystemRoute(routed)
 		recorded, err := homes.routes.Get(ctx, AuditRouteKey(routed))
 		if err != nil {
 			release()
-			return nil, 0, nil, err
+			return nil, 0, nil, WriteGuard{}, err
 		}
 		if string(recorded) == AuditRouteSystem {
-			return host, shardID, release, nil
+			if !guarded {
+				return host, shardID, release, WriteGuard{}, nil
+			}
+			guard, err := isolationEpochGuard(routed, epochs)
+			if err != nil {
+				release()
+				return nil, 0, nil, WriteGuard{}, err
+			}
+			return host, shardID, release, guard, nil
 		}
 		release()
 	}
-	return nil, 0, nil, &tenant.SystemAuditRouteError{TenantID: routed}
+	return nil, 0, nil, WriteGuard{}, &tenant.SystemAuditRouteError{TenantID: routed}
+}
+
+// isolationEpochs reads tenantID's and the floor's isolation epochs when the
+// lookup can (tenant.IsolationEpochReader) and tenantID is not the system
+// tenant; guarded reports whether it read them. A lookup without the reader
+// gets no guard, as refuseStrictSystemAppend's optional
+// IsolationTightening read does.
+func (r *SystemShardAuditResolver) isolationEpochs(ctx context.Context, tenantID string) (map[string][]byte, bool, error) {
+	if tenantid.IsSystem(tenantID) {
+		return nil, false, nil
+	}
+	reader, ok := r.isolation.(tenant.IsolationEpochReader)
+	if !ok {
+		return nil, false, nil
+	}
+	epochs, err := reader.IsolationEpochs(ctx, tenantID)
+	if err != nil {
+		return nil, false, err
+	}
+	return epochs, true, nil
+}
+
+// isolationEpochGuard compares each of tenant.IsolationEpochKeys(tenantID)
+// to the value in epochs; an absent key compares as absent.
+func isolationEpochGuard(tenantID string, epochs map[string][]byte) (WriteGuard, error) {
+	keys := tenant.IsolationEpochKeys(tenantID)
+	compares := make([]Compare, 0, len(keys))
+	for _, key := range keys {
+		compares = append(compares, Compare{
+			Key:    []byte(key),
+			Target: CompareValue,
+			Result: CompareEqual,
+			Value:  epochs[key],
+		})
+	}
+	return NewWriteGuard(compares...)
+}
+
+// auditGuardRefusal names a system-routed append's refused epoch guard: the
+// *tenant.SystemAuditRouteError refuseStrictSystemAppend returns when e is
+// on one of tenantID's isolation epoch keys and the tenant is now strict or
+// being tightened, else nil (the append reports the retryable refusal).
+func (r *SystemShardAuditResolver) auditGuardRefusal(ctx context.Context, tenantID string, e *WriteGuardRefusedError) error {
+	routed := tenantid.Normalize(tenantID)
+	if e == nil || !slices.Contains(tenant.IsolationEpochKeys(routed), e.Key) {
+		return nil
+	}
+	var refused *tenant.SystemAuditRouteError
+	if err := r.refuseStrictSystemAppend(ctx, routed); errors.As(err, &refused) {
+		return err
+	}
+	return nil
 }
 
 // holdSystemRoute counts one in-flight append on tenantID's system route

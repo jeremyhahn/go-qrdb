@@ -36,9 +36,11 @@ import (
 // logical-prefix tenant, mirroring SystemShardAuditResolver's own
 // nil-isolation behavior.
 //
-// It forwards the three reads the audit and log resolvers make: GetTenant,
-// ClusterIsolationPolicy (the cluster floor) and IsolationTightening (the
-// in-flight strict-tightening marker the system-route append check reads).
+// It forwards the four reads the audit and log resolvers make: GetTenant,
+// ClusterIsolationPolicy (the cluster floor), IsolationTightening (the
+// in-flight strict-tightening marker the system-route append check reads)
+// and IsolationEpochs (the tenant's and the floor's isolation epochs a
+// system-routed append's apply-time guard compares).
 type nodeAuditIsolationLookup struct {
 	node *Node
 }
@@ -76,6 +78,24 @@ func (l *nodeAuditIsolationLookup) IsolationTightening(ctx context.Context, tena
 		return false, fmt.Errorf("lifecycle: tenant service %T does not report strict tightening for tenant %q", l.node.Tenant, tenantID)
 	}
 	return reader.IsolationTightening(ctx, tenantID)
+}
+
+var _ tenant.IsolationEpochReader = (*nodeAuditIsolationLookup)(nil)
+
+// IsolationEpochs implements tenant.IsolationEpochReader: the values of
+// tenant.IsolationEpochKeys(tenantID) a system-routed append's guard
+// compares at apply time. With no tenant service there is no epoch: an
+// empty map. A tenant service that does not report the epochs is an error,
+// as for IsolationTightening: the append fails closed.
+func (l *nodeAuditIsolationLookup) IsolationEpochs(ctx context.Context, tenantID string) (map[string][]byte, error) {
+	if l.node.Tenant == nil {
+		return map[string][]byte{}, nil
+	}
+	reader, ok := l.node.Tenant.(tenant.IsolationEpochReader)
+	if !ok {
+		return nil, fmt.Errorf("lifecycle: tenant service %T does not report isolation epochs for tenant %q", l.node.Tenant, tenantID)
+	}
+	return reader.IsolationEpochs(ctx, tenantID)
 }
 
 var _ tenant.ClusterIsolationPolicyReader = (*nodeAuditIsolationLookup)(nil)

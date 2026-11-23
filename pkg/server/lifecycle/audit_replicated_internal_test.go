@@ -173,6 +173,48 @@ func TestNodeAuditIsolationLookup_ForwardsIsolationTightening(t *testing.T) {
 	}
 }
 
+// fakeEpochTenantServicer extends fakeTenantServicer with the isolation
+// epoch read *tenant.TenantService and the KV-routed service implement.
+type fakeEpochTenantServicer struct {
+	fakeTenantServicer
+	epochs map[string][]byte
+	err    error
+}
+
+// IsolationEpochs implements tenant.IsolationEpochReader.
+func (f *fakeEpochTenantServicer) IsolationEpochs(context.Context, string) (map[string][]byte, error) {
+	return f.epochs, f.err
+}
+
+func TestNodeAuditIsolationLookup_ForwardsIsolationEpochs(t *testing.T) {
+	ctx := context.Background()
+
+	n := &Node{}
+	l := &nodeAuditIsolationLookup{node: n}
+	got, err := l.IsolationEpochs(ctx, "acme")
+	if err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("nil Tenant: IsolationEpochs = (%v, %v), want (empty map, nil)", got, err)
+	}
+
+	key := tenant.IsolationEpochKeys("acme")[0]
+	n.Tenant = &fakeEpochTenantServicer{epochs: map[string][]byte{key: []byte("e1")}}
+	got, err = l.IsolationEpochs(ctx, "acme")
+	if err != nil || string(got[key]) != "e1" {
+		t.Fatalf("forwarded epochs: IsolationEpochs = (%v, %v), want %s=e1", got, err, key)
+	}
+
+	readErr := errors.New("epoch read failed")
+	n.Tenant = &fakeEpochTenantServicer{err: readErr}
+	if _, err = l.IsolationEpochs(ctx, "acme"); !errors.Is(err, readErr) {
+		t.Fatalf("forwarded error: IsolationEpochs = %v, want %v", err, readErr)
+	}
+
+	n.Tenant = &fakeTenantServicer{}
+	if got, err = l.IsolationEpochs(ctx, "acme"); err == nil {
+		t.Fatalf("servicer without the method: IsolationEpochs = (%v, nil), want an error (fail closed)", got)
+	}
+}
+
 // systemRouteStore answers every recorded audit route as the system route.
 type systemRouteStore struct{}
 
