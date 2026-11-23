@@ -283,7 +283,7 @@ The same operations are available on every transport via `index.IndexServicer` (
 
 ## Engine Tables
 
-Every database serves the built-in engine tables under reserved names (OD-12 B, docs/databases/architecture.md): `qrdb_ts_datapoints` and `qrdb_ts_metrics` (`timeseries_table.go`, `metrics_table.go`) only when `capabilities.Has("timeSeries")`, and `qrdb_vector_namespaces` and `qrdb_vector_vectors` (`namespaces_table.go`, `vector_table.go`) only when `capabilities.Has("vector")`, so a build without the `qrdb_ts` or `qrdb_vector` tag has no table for that engine. `pkg/sql/provider.Database` resolves the engine tables before the relational catalog; they are read-only. `CreateTable` and `RenameTable` (`relational_ddl.go`) refuse the four names case-insensitively with `*ReservedTableNameError` (`errors.go`, "provider: table name is reserved: <name>") whether or not the engine is compiled in. The old unprefixed names `datapoints`, `metrics`, `namespaces` and `vectors` are no longer engine tables and are ordinary user table names.
+Every database serves the built-in engine tables under reserved names (OD-12 B, docs/databases/architecture.md): `qrdb_ts_datapoints` and `qrdb_ts_metrics` (`timeseries_table.go`, `metrics_table.go`) only when `capabilities.Has("timeSeries")`, and `qrdb_vector_namespaces` and `qrdb_vector_vectors` (`namespaces_table.go`, `vector_table.go`) only when `capabilities.Has("vector")`, so a build without the `qrdb_ts` or `qrdb_vector` tag has no table for that engine. `pkg/sql/provider.Database` resolves the engine tables before the relational catalog; they are read-only. `CreateTable` and `RenameTable` (`relational_ddl.go`) refuse the four names case-insensitively with `*ReservedTableNameError` (`errors.go`, "provider: table name is reserved: <name>"), which reaches clients as MySQL 1103 (SQLSTATE 42000) / PostgreSQL SQLSTATE 42939 (built as a `*mysql.SQLError`), whether or not the engine is compiled in. The old unprefixed names `datapoints`, `metrics`, `namespaces` and `vectors` are no longer engine tables and are ordinary user table names.
 
 ## Relational Tables
 
@@ -874,14 +874,15 @@ QRDB-specific string:
 | Node sealed (new session, or any statement of an open one) | SQLSTATE **57P03**; MySQL `sql/mysql: barrier sealed` | including Execute of a statement prepared before the seal, and MySQL `COM_INIT_DB` |
 | Seal state unconfirmed (cut off from the cluster seal records, or not yet read them; the barrier is not sealed) | SQLSTATE **57P03**, `sql/pgsql: seal state unconfirmed: …`; MySQL **1105**, `sql/mysql: seal state unconfirmed: …` | retryable; refused at the same points as a seal, never reported as `barrier sealed` |
 | Foreign key violations | MySQL **1451** / **1452** | see [gorm.md](gorm.md) |
-| Reserved table name (`CREATE TABLE` / `RENAME TABLE` / `ALTER TABLE ... RENAME TO` a `qrdb_` engine table name) | MySQL **1105** (SQLSTATE **HY000**); SQLSTATE **XXUUU** | neither wire's error table maps `ReservedTableNameError` yet; the message names the reserved table |
+| Reserved table name (`CREATE TABLE` / `RENAME TABLE` / `ALTER TABLE ... RENAME TO` a `qrdb_` engine table name) | MySQL **1103** `ER_WRONG_TABLE_NAME` (SQLSTATE **42000**); SQLSTATE **42939** `reserved_name` | the message names the reserved table |
+| Reserved database name (`CREATE DATABASE` / `DROP DATABASE` of `mysql` or `pg_catalog`) | MySQL **1102** `ER_WRONG_DB_NAME` (SQLSTATE **42000**); SQLSTATE **42939** `reserved_name` | the message names the reserved database |
 
 Named Go error types on the QRDB side: `RowKeyTooLargeError`,
 `RowValueTooLargeError`, `RowTransactionTooLargeError`, `WriteSetLimitError`,
 `TransactionSnapshotExpiredError`, `CrossDatabaseTransactionError`,
 `ReadOnlyTransactionError`, `NonTransactionalTableError`,
 `TransactionConflictError`, `IsolationRangeReadError`,
-`ReservedTableNameError`.
+`ReservedTableNameError`, `ReservedDatabaseNameError`.
 
 **Fail-closed paths**, each stated in full above: an unmodelled statement kind
 on an armed database is denied; a cached plan whose result type changed is
