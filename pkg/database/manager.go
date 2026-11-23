@@ -857,10 +857,12 @@ func (m *Manager) SetLogReclaimer(r DatabaseLogReclaimer) {
 	m.logReclaimer.Store(&logReclaimerRef{r: r})
 }
 
-// reclaimLogs runs the wired DatabaseLogReclaimer for db, if any.
+// reclaimLogs runs the wired DatabaseLogReclaimer for db, if any. A database
+// with no tenant is reclaimed too: the reclaimer resolves its tenant ("" is
+// the system tenant's logs).
 func (m *Manager) reclaimLogs(ctx context.Context, db *Database) error {
 	ref := m.logReclaimer.Load()
-	if ref == nil || db.TenantID() == "" {
+	if ref == nil {
 		return nil
 	}
 	return ref.r.DropDatabaseLogs(ctx, db.TenantID(), db.Name(), db.Incarnation())

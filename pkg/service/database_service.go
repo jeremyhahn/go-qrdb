@@ -960,10 +960,10 @@ func (s *DatabaseService) SetLogReclaimer(r LogReclaimer) {
 }
 
 // checkLogs refuses a drop whose verifiable logs the wired reclaimer could
-// not reclaim. A drop with no known tenant or no reclaimer has no logs to
-// reclaim.
+// not reclaim. A drop with no reclaimer has no logs to reclaim; a database
+// with no tenant is checked too, its logs being the system tenant's.
 func (s *DatabaseService) checkLogs(ctx context.Context, tenantID, name string) error {
-	if s.logReclaimer == nil || tenantID == "" {
+	if s.logReclaimer == nil {
 		return nil
 	}
 	if err := s.logReclaimer.CheckDropDatabaseLogs(ctx, tenantID, name); err != nil {

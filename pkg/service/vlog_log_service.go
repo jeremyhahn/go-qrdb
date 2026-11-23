@@ -841,6 +841,7 @@ func (s *logService) ExpireBodies(ctx context.Context, req *ExpireBodiesRequest)
 // featuregate.VerifiableLogDrop is not active on its group, because a replica
 // without the sub-type would halt on it.
 func (s *logService) DropDatabaseLogs(ctx context.Context, tenantID, name, incarnation string) error {
+	tenantID = routingTenant(tenantID)
 	g, ok, err := s.dropGroup(ctx, tenantID, name)
 	if err != nil || !ok {
 		return err
@@ -867,7 +868,7 @@ func (s *logService) DropDatabaseLogs(ctx context.Context, tenantID, name, incar
 // no logs to reclaim or its group can reclaim them, else the typed error. A
 // drop checked first is refused with nothing fenced or changed.
 func (s *logService) CheckDropDatabaseLogs(ctx context.Context, tenantID, name string) error {
-	_, _, err := s.dropGroup(ctx, tenantID, name)
+	_, _, err := s.dropGroup(ctx, routingTenant(tenantID), name)
 	return err
 }
 

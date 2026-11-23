@@ -41,6 +41,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -1392,6 +1393,54 @@ func oneLogListed(_ context.Context, _ uint64, query interface{}) (interface{}, 
 	return []vlog.LogID{{TenantID: req.TenantID, Database: req.Database, Log: "l"}}, nil
 }
 
+// TestLogService_DropDatabaseLogs_UntenantedActsOnTheSystemTenant proves
+// DropDatabaseLogs and CheckDropDatabaseLogs of a database with no tenant
+// list and delete the logs filed under the system tenant, where the log
+// service keeps an untenanted database's logs (routingTenant).
+func TestLogService_DropDatabaseLogs_UntenantedActsOnTheSystemTenant(t *testing.T) {
+	var listed []string
+	var cmds [][]byte
+	deletes := []uint64{1, 0}
+	propose := func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+		cmds = append(cmds, append([]byte(nil), cmd...))
+		v := deletes[0]
+		deletes = deletes[1:]
+		return sm.Result{Value: v}, nil
+	}
+	host := &mockHost{
+		syncProposeFn: propose,
+		proposeWithModeFn: func(ctx context.Context, shard uint64, cmd []byte, _ writemode.Mode) (sm.Result, error) {
+			return propose(ctx, shard, cmd)
+		},
+		syncReadFn: func(ctx context.Context, shard uint64, query interface{}) (interface{}, error) {
+			if req, ok := query.(vlog.ListRequest); ok {
+				listed = append(listed, req.TenantID)
+			}
+			return oneLogListed(ctx, shard, query)
+		},
+	}
+	svc := newTestLogService(t, host, nil).(*logService)
+	if err := svc.CheckDropDatabaseLogs(context.Background(), "", testLogRef.Database); err != nil {
+		t.Fatalf("CheckDropDatabaseLogs: %v", err)
+	}
+	if err := svc.DropDatabaseLogs(context.Background(), "", testLogRef.Database, "inc-1"); err != nil {
+		t.Fatalf("DropDatabaseLogs: %v", err)
+	}
+	if len(listed) != 2 || listed[0] != tenantid.System || listed[1] != tenantid.System {
+		t.Fatalf("listed tenants = %q; want the system tenant for the check and the drop", listed)
+	}
+	if len(cmds) != 2 {
+		t.Fatalf("proposed %d commands, want 2 (until an apply deletes nothing)", len(cmds))
+	}
+	for _, cmd := range cmds {
+		_, tenantID, body := decodeLogCommand(t, cmd)
+		database, _, err := protocol.DecodeVerifiableLogDropDatabase(tenantID, body)
+		if tenantID != tenantid.System || err != nil || database != testLogRef.Database {
+			t.Fatalf("decoded drop = %q, %q, %v; want the system tenant's %q", tenantID, database, err, testLogRef.Database)
+		}
+	}
+}
+
 // dropGateOffHost is a raft host on which every feature but
 // featuregate.VerifiableLogDrop is active.
 type dropGateOffHost struct{ *mockHost }
@@ -1473,6 +1522,25 @@ func (r *stubLogReclaimer) CheckDropDatabaseLogs(context.Context, string, string
 // manager's fenced teardown, before the name is released; that a failed
 // reclaim leaves the database droppable on retry; and that a refused check
 // refuses the drop with nothing fenced.
+// TestDatabaseService_DropOfAnUntenantedDatabaseReclaimsItsLogs proves an
+// admin Drop of a database created with no tenant checks and reclaims its
+// verifiable logs (the reclaimer files them under the system tenant), so a
+// re-created database of the same name starts with none.
+func TestDatabaseService_DropOfAnUntenantedDatabaseReclaimsItsLogs(t *testing.T) {
+	svc := newTestDatabaseService(t).(*DatabaseService)
+	r := &stubLogReclaimer{svc: svc}
+	svc.SetLogReclaimer(r)
+	if _, err := svc.Create(testDBConfig("plain")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := svc.Drop(context.Background(), "plain"); err != nil {
+		t.Fatalf("Drop: %v", err)
+	}
+	if len(r.calls) != 1 || r.calls[0] != [2]string{"", "plain"} || r.checks != 1 {
+		t.Fatalf("reclaims = %v, checks %d; want one of each for the untenanted database plain", r.calls, r.checks)
+	}
+}
+
 func TestDatabaseService_DropReclaimsTheDatabasesLogs(t *testing.T) {
 	ctx := tenantCtx("tenant-delta")
 	for _, admin := range []bool{false, true} {
