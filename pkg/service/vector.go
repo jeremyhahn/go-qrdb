@@ -1731,12 +1731,14 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 	if v.raftNode != nil {
 		batchIDs := make([]uint64, len(req.Vectors))
 		batchVectors := make([][]float32, len(req.Vectors))
+		batchMeta := make([]map[string]interface{}, len(req.Vectors))
 		for i, vec := range req.Vectors {
 			batchIDs[i] = vec.ID
 			batchVectors[i] = vec.Vector
+			batchMeta[i] = vec.Metadata
 		}
 
-		cmd := statemachine.NewBatchUpsertCommand(scoped, batchIDs, batchVectors, format, v.nodeID)
+		cmd := statemachine.NewBatchUpsertCommand(scoped, batchIDs, batchVectors, batchMeta, format, v.nodeID)
 		if err := v.proposeToRaft(ctx, cmd); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("batch_upsert", "raft_error").Inc()

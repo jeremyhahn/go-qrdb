@@ -421,15 +421,17 @@ func NewUpdateMetadataCommand(namespace string, id uint64, metadata map[string]i
 	}
 }
 
-// NewBatchUpsertCommand creates a new batch upsert command whose metadata is
+// NewBatchUpsertCommand creates a new batch upsert command carrying each
+// vector's metadata (metadata[i] for ids[i]; nil when the batch has none),
 // stored in format (see VectorCommand.MetadataFormat).
-func NewBatchUpsertCommand(namespace string, ids []uint64, vectors [][]float32, format uint8, nodeID string) *VectorCommand {
+func NewBatchUpsertCommand(namespace string, ids []uint64, vectors [][]float32, metadata []map[string]interface{}, format uint8, nodeID string) *VectorCommand {
 	return &VectorCommand{
 		Op:             OpBatchUpsert,
 		MetadataFormat: format,
 		Namespace:      namespace,
 		IDs:            ids,
 		Vectors:        vectors,
+		BatchMeta:      metadata,
 		Timestamp:      time.Now().UnixNano(),
 		NodeID:         nodeID,
 	}

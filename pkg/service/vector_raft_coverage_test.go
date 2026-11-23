@@ -18,9 +18,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
 
 // =============================================================================
@@ -89,6 +92,85 @@ func TestVectorService_ProposeToRaft_RaftError(t *testing.T) {
 	require.Error(t, err)
 
 	requireErrorAs[*ProposeError](t, err)
+}
+
+// =============================================================================
+// Batch writes on a Raft-configured service
+// =============================================================================
+
+// countingVectorStorage is the service's view of the vector store; it counts
+// the batch deletes the service issues against storage directly, which a
+// Raft-configured service must never do.
+type countingVectorStorage struct {
+	*vector.MemoryVectorStorage
+	directBatchDeletes int
+}
+
+func (s *countingVectorStorage) BatchDeleteVectors(ctx context.Context, namespace string, ids []uint64) error {
+	s.directBatchDeletes++
+	return s.MemoryVectorStorage.BatchDeleteVectors(ctx, namespace, ids)
+}
+
+// raftAppliedVectorService builds a Raft-configured vector service whose
+// Raft node applies every proposal into a vector consensus FSM over the
+// same store, as a committed entry is applied on each replica. proposeErr,
+// when set, fails every proposal before it is applied. It returns the
+// service, its storage view and the commands the node was asked to apply.
+func raftAppliedVectorService(t *testing.T, proposeErr error) (VectorService, *countingVectorStorage, *[]*statemachine.VectorCommand) {
+	t.Helper()
+	ctx := context.Background()
+	mem := vector.NewMemoryVectorStorage()
+	scoped := scopedFromContext(ctx, "docs")
+	require.NoError(t, mem.CreateNamespace(ctx, &vector.NamespaceInfo{Name: scoped, Dimension: 2}))
+
+	log, err := logger.New(logger.Default())
+	require.NoError(t, err)
+	fsm := statemachine.NewVectorConsensusFSMWithStorage(VectorShardID, 1, mem, log)
+	t.Cleanup(func() { _ = fsm.Close(context.Background()) })
+
+	var applied []*statemachine.VectorCommand
+	var index uint64
+	node := &mockRaftNode{
+		syncProposeFn: func(ctx context.Context, _ uint64, data []byte) error {
+			if proposeErr != nil {
+				return proposeErr
+			}
+			cmd, err := statemachine.DecodeVectorCommand(data)
+			if err != nil {
+				return err
+			}
+			applied = append(applied, cmd)
+			index++
+			results := make([]sm.Result, 1)
+			return fsm.Update(ctx, []sm.Entry{{Index: index, Cmd: data}}, results)
+		},
+	}
+	store := &countingVectorStorage{MemoryVectorStorage: mem}
+	svc, err := NewVectorService(store, newVecTestLogger(), WithRaftNode(node), WithNodeID("node-1"))
+	require.NoError(t, err)
+	return svc, store, &applied
+}
+
+// TestVectorService_RaftBatchUpsertKeepsMetadata checks that a batch upsert
+// on a Raft-configured service stores each vector's metadata: the proposed
+// command carries it and the applied record returns it on read.
+func TestVectorService_RaftBatchUpsertKeepsMetadata(t *testing.T) {
+	svc, _, applied := raftAppliedVectorService(t, nil)
+	ctx := context.Background()
+
+	_, err := svc.BatchUpsert(ctx, &BatchUpsertRequest{Namespace: "docs", Vectors: []*VectorData{
+		{ID: 1, Vector: []float32{1, 0}, Metadata: map[string]interface{}{"color": "red"}},
+		{ID: 2, Vector: []float32{0, 1}, Metadata: map[string]interface{}{"color": "blue"}},
+	}})
+	require.NoError(t, err)
+	require.Len(t, *applied, 1)
+	require.Len(t, (*applied)[0].BatchMeta, 2)
+
+	for id, want := range map[uint64]string{1: "red", 2: "blue"} {
+		got, err := svc.GetVector(ctx, &GetVectorRequest{Namespace: "docs", ID: id, IncludeMetadata: true})
+		require.NoError(t, err)
+		require.Equal(t, want, got.Metadata["color"], "vector %d", id)
+	}
 }
 
 // vectorTestError is a test error type for vector tests.

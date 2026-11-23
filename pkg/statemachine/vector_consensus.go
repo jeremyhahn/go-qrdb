@@ -602,6 +602,12 @@ func (v *VectorConsensusFSM) applyBatchUpsert(ctx context.Context, cmd *VectorCo
 				UpdatedAt: now,
 				Version:   1,
 			}
+			// Each vector keeps the metadata the batch carried for it, in
+			// the command's format, as the single-vector upsert does.
+			if cmd.BatchMeta != nil && i < len(cmd.BatchMeta) {
+				vecs[i].Metadata = CommandMetadata(cmd.MetadataFormat, cmd.BatchMeta[i])
+				vecs[i].MetadataFormat = cmd.MetadataFormat
+			}
 		}
 
 		if err := v.storage.BatchUpsertVectors(ctx, cmd.Namespace, vecs); err != nil {

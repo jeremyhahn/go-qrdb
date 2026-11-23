@@ -955,6 +955,42 @@ func TestVectorConsensusFSM_BatchUpsert(t *testing.T) {
 		require.Error(t, err)
 		require.NoError(t, fsm.Close(context.Background()))
 	})
+
+	// The batch command built by NewBatchUpsertCommand carries each
+	// vector's metadata through the Raft log: the applied records hold it,
+	// in the command's format, and a vector the batch gave none holds none.
+	for _, tc := range []struct {
+		name   string
+		format uint8
+		want   map[string]interface{}
+	}{
+		{name: "json", format: vectorStorage.MetadataFormatJSON, want: map[string]interface{}{"color": "red", "hot": true}},
+		{name: "legacy", format: vectorStorage.MetadataFormatLegacy, want: map[string]interface{}{"color": "red", "hot": "true"}},
+	} {
+		t.Run("batch upsert keeps each vector's metadata ("+tc.name+")", func(t *testing.T) {
+			log := createTestVectorLogger(t)
+			storage := newMockVectorStorage()
+			fsm := NewVectorConsensusFSMWithStorage(VectorShardID, 1, storage, log)
+
+			cmd := NewBatchUpsertCommand("meta-ns", []uint64{1, 2},
+				[][]float32{{1.0, 0.0}, {0.0, 1.0}},
+				[]map[string]interface{}{{"color": "red", "hot": true}, nil},
+				tc.format, "node-1")
+			results := make([]sm.Result, 1)
+			require.NoError(t, fsm.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: encodeVectorCmd(t, cmd)}}, results))
+			assert.Equal(t, uint64(2), results[0].Value)
+
+			first := storage.vectors["meta-ns"][1]
+			require.NotNil(t, first)
+			assert.Equal(t, tc.format, first.MetadataFormat)
+			assert.Equal(t, tc.want, vectorStorage.DecodeMetadata(first.MetadataFormat, first.Metadata))
+
+			second := storage.vectors["meta-ns"][2]
+			require.NotNil(t, second)
+			assert.Empty(t, second.Metadata)
+			require.NoError(t, fsm.Close(context.Background()))
+		})
+	}
 }
 
 // =============================================================================

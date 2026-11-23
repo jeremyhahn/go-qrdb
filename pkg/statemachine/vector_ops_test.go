@@ -81,7 +81,7 @@ func TestVectorCommand_Encode_Decode(t *testing.T) {
 			vectors[i] = make([]float32, 128)
 		}
 
-		cmd := NewBatchUpsertCommand("test_ns", ids, vectors, vectorStorage.MetadataFormatJSON, "test-node")
+		cmd := NewBatchUpsertCommand("test_ns", ids, vectors, nil, vectorStorage.MetadataFormatJSON, "test-node")
 		require.NotNil(t, cmd)
 
 		data, err := cmd.Encode()
@@ -241,7 +241,7 @@ func TestVectorCommand_Size(t *testing.T) {
 			vectors[i] = make([]float32, 256)
 		}
 
-		cmd := NewBatchUpsertCommand("test", ids, vectors, vectorStorage.MetadataFormatJSON, "node")
+		cmd := NewBatchUpsertCommand("test", ids, vectors, nil, vectorStorage.MetadataFormatJSON, "node")
 		size := cmd.Size()
 		assert.Greater(t, size, 100000) // Should be > 100KB
 	})
