@@ -44,7 +44,7 @@ func TestVecBatchUpsert_IVFRefusesWrongDimensionBeforeWriting(t *testing.T) {
 	assert.Equal(t, 2, mismatch.Expected)
 	assert.Equal(t, 3, mismatch.Actual)
 
-	stats, err := svc.GetIndexStats(ctx, &GetIndexStatsRequest{Namespace: "ns", ShardID: 1})
+	stats, err := svc.GetIndexStats(ctx, &GetIndexStatsRequest{Namespace: "ns"})
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), stats.VectorCount, "no vector of a refused batch is written")
 
@@ -55,7 +55,7 @@ func TestVecBatchUpsert_IVFRefusesWrongDimensionBeforeWriting(t *testing.T) {
 	require.NoError(t, err)
 
 	found, err := svc.SearchSimilar(ctx, &SearchSimilarRequest{
-		Namespace: "ns", QueryVector: []float32{10, 10}, K: 1, ShardID: 1,
+		Namespace: "ns", QueryVector: []float32{10, 10}, K: 1,
 	})
 	require.NoError(t, err)
 	require.Len(t, found.Results, 1)

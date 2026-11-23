@@ -234,11 +234,11 @@ func createIndexedNamespace(t *testing.T, svc VectorService, name, indexType str
 	t.Helper()
 	ctx := context.Background()
 	_, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
-		Namespace: name, Dimension: 2, IndexType: indexType, IndexConfig: config, ShardID: 1,
+		Namespace: name, Dimension: 2, IndexType: indexType, IndexConfig: config,
 	})
 	require.NoError(t, err)
 	for i, vec := range vectors {
-		_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: name, ID: uint64(i + 1), Vector: vec, ShardID: 1})
+		_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: name, ID: uint64(i + 1), Vector: vec})
 		require.NoError(t, err)
 	}
 }
@@ -252,13 +252,13 @@ func TestVecSearchSimilar_FlatAndIVFNamespaces(t *testing.T) {
 				[]float32{0, 0}, []float32{10, 10}, []float32{9, 9})
 
 			resp, err := svc.SearchSimilar(context.Background(), &SearchSimilarRequest{
-				Namespace: "ns", QueryVector: []float32{10, 10}, K: 1, ShardID: 1,
+				Namespace: "ns", QueryVector: []float32{10, 10}, K: 1,
 			})
 			require.NoError(t, err)
 			require.Len(t, resp.Results, 1)
 			assert.Equal(t, uint64(2), resp.Results[0].ID)
 
-			stats, err := svc.GetIndexStats(context.Background(), &GetIndexStatsRequest{Namespace: "ns", ShardID: 1})
+			stats, err := svc.GetIndexStats(context.Background(), &GetIndexStatsRequest{Namespace: "ns"})
 			require.NoError(t, err)
 			want, _ := parseIndexType(indexType)
 			assert.Equal(t, want, stats.IndexType)
@@ -273,7 +273,7 @@ func TestVecSearchSimilar_UntrainedIVFRefused(t *testing.T) {
 	createIndexedNamespace(t, svc, "ns", "IVF", nil, []float32{1, 1})
 
 	resp, err := svc.SearchSimilar(context.Background(), &SearchSimilarRequest{
-		Namespace: "ns", QueryVector: []float32{1, 1}, K: 1, ShardID: 1,
+		Namespace: "ns", QueryVector: []float32{1, 1}, K: 1,
 	})
 	assert.Nil(t, resp)
 	untrained := requireErrorAs[*VectorIndexUntrainedError](t, err)

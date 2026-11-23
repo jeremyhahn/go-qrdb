@@ -451,7 +451,6 @@ func TestVectorService_CreateNamespace_Success(t *testing.T) {
 			"ef_construction": "200",
 		},
 		Metadata: map[string]interface{}{"desc": "test"},
-		ShardID:  1,
 	}
 
 	resp, err := svc.CreateNamespace(context.Background(), req)
@@ -552,7 +551,6 @@ func TestVectorService_DeleteNamespace_Success(t *testing.T) {
 
 	req := &DeleteNamespaceRequest{
 		Namespace: "test-namespace",
-		ShardID:   1,
 	}
 
 	resp, err := svc.DeleteNamespace(context.Background(), req)
@@ -733,7 +731,6 @@ func TestVectorService_GetNamespaceInfo_Success(t *testing.T) {
 
 	req := &GetNamespaceInfoRequest{
 		Namespace: "test-namespace",
-		ShardID:   1,
 	}
 
 	resp, err := svc.GetNamespaceInfo(context.Background(), req)
@@ -813,7 +810,6 @@ func TestVectorService_UpsertVector_Success(t *testing.T) {
 		ID:        1,
 		Vector:    []float32{1.0, 2.0, 3.0},
 		Metadata:  map[string]interface{}{"type": "test"},
-		ShardID:   1,
 	}
 
 	resp, err := svc.UpsertVector(context.Background(), req)
@@ -942,7 +938,6 @@ func TestVectorService_GetVector_Success(t *testing.T) {
 		ID:              1,
 		IncludeVector:   true,
 		IncludeMetadata: true,
-		ShardID:         1,
 	}
 
 	resp, err := svc.GetVector(context.Background(), req)
@@ -1050,7 +1045,6 @@ func TestVectorService_DeleteVector_Success(t *testing.T) {
 	req := &DeleteVectorRequest{
 		Namespace: "test-namespace",
 		ID:        1,
-		ShardID:   1,
 	}
 
 	resp, err := svc.DeleteVector(context.Background(), req)
@@ -1142,7 +1136,6 @@ func TestVectorService_BatchUpsert_Success(t *testing.T) {
 	req := &BatchUpsertRequest{
 		Namespace: "test-namespace",
 		Vectors:   vectors,
-		ShardID:   1,
 	}
 
 	resp, err := svc.BatchUpsert(context.Background(), req)
@@ -1225,7 +1218,6 @@ func TestVectorService_SearchSimilar_Success(t *testing.T) {
 	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{
 		Namespace: "search-namespace",
 		Dimension: 3,
-		ShardID:   1,
 	})
 	require.NoError(t, err)
 
@@ -1234,14 +1226,12 @@ func TestVectorService_SearchSimilar_Success(t *testing.T) {
 		Namespace: "search-namespace",
 		ID:        1,
 		Vector:    []float32{1.0, 0.0, 0.0},
-		ShardID:   1,
 	})
 	require.NoError(t, err)
 	_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
 		Namespace: "search-namespace",
 		ID:        2,
 		Vector:    []float32{0.0, 1.0, 0.0},
-		ShardID:   1,
 	})
 	require.NoError(t, err)
 
@@ -1252,7 +1242,6 @@ func TestVectorService_SearchSimilar_Success(t *testing.T) {
 		EfSearch:        50,
 		IncludeVectors:  true,
 		IncludeMetadata: true,
-		ShardID:         1,
 	}
 
 	resp, err := svc.SearchSimilar(ctx, req)
@@ -1367,7 +1356,6 @@ func TestVectorService_SearchByMetadata_Success(t *testing.T) {
 		Limit:           10,
 		IncludeVectors:  true,
 		IncludeMetadata: true,
-		ShardID:         1,
 	}
 
 	resp, err := svc.SearchByMetadata(ctx, req)
@@ -1424,7 +1412,6 @@ func TestVectorService_HybridSearch_Success(t *testing.T) {
 	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{
 		Namespace: "hybrid-namespace",
 		Dimension: 3,
-		ShardID:   1,
 	})
 	require.NoError(t, err)
 
@@ -1434,7 +1421,6 @@ func TestVectorService_HybridSearch_Success(t *testing.T) {
 		ID:        1,
 		Vector:    []float32{1.0, 0.0, 0.0},
 		Metadata:  map[string]interface{}{"category": "A"},
-		ShardID:   1,
 	})
 	require.NoError(t, err)
 	_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
@@ -1442,7 +1428,6 @@ func TestVectorService_HybridSearch_Success(t *testing.T) {
 		ID:        2,
 		Vector:    []float32{0.9, 0.1, 0.0},
 		Metadata:  map[string]interface{}{"category": "A"},
-		ShardID:   1,
 	})
 	require.NoError(t, err)
 	_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
@@ -1450,7 +1435,6 @@ func TestVectorService_HybridSearch_Success(t *testing.T) {
 		ID:        3,
 		Vector:    []float32{0.8, 0.2, 0.0},
 		Metadata:  map[string]interface{}{"category": "B"},
-		ShardID:   1,
 	})
 	require.NoError(t, err)
 
@@ -1462,7 +1446,6 @@ func TestVectorService_HybridSearch_Success(t *testing.T) {
 		MetadataFilter:  map[string]interface{}{"category": "A"},
 		IncludeVectors:  true,
 		IncludeMetadata: true,
-		ShardID:         1,
 	}
 
 	resp, err := svc.HybridSearch(ctx, req)
@@ -1498,7 +1481,6 @@ func TestVectorService_RebuildIndex_Sync_Success(t *testing.T) {
 	req := &RebuildIndexRequest{
 		Namespace: "test-namespace",
 		Async:     false,
-		ShardID:   1,
 	}
 
 	resp, err := svc.RebuildIndex(ctx, req)
@@ -1527,7 +1509,6 @@ func TestVectorService_RebuildIndex_Async_Success(t *testing.T) {
 	req := &RebuildIndexRequest{
 		Namespace: "test-namespace",
 		Async:     true,
-		ShardID:   1,
 	}
 
 	resp, err := svc.RebuildIndex(ctx, req)
@@ -1809,7 +1790,6 @@ func TestVectorService_GetIndexStats_Success(t *testing.T) {
 
 	req := &GetIndexStatsRequest{
 		Namespace: "test-namespace",
-		ShardID:   1,
 	}
 
 	resp, err := svc.GetIndexStats(ctx, req)
@@ -1970,7 +1950,6 @@ func TestVectorService_SearchSimilar_WithMinScore(t *testing.T) {
 	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{
 		Namespace: "filter-namespace",
 		Dimension: 3,
-		ShardID:   1,
 	})
 	require.NoError(t, err)
 
@@ -1978,7 +1957,6 @@ func TestVectorService_SearchSimilar_WithMinScore(t *testing.T) {
 		Namespace: "filter-namespace",
 		ID:        1,
 		Vector:    []float32{1.0, 0.0, 0.0},
-		ShardID:   1,
 	})
 	require.NoError(t, err)
 
@@ -1987,7 +1965,6 @@ func TestVectorService_SearchSimilar_WithMinScore(t *testing.T) {
 		QueryVector: []float32{1.0, 0.0, 0.0},
 		K:           5,
 		MinScore:    0.5, // Filter by minimum score
-		ShardID:     1,
 	}
 
 	resp, err := svc.SearchSimilar(ctx, req)
@@ -2020,7 +1997,6 @@ func TestVectorService_BatchUpsert_LargeBatch(t *testing.T) {
 	req := &BatchUpsertRequest{
 		Namespace: "test-namespace",
 		Vectors:   vectors,
-		ShardID:   1,
 	}
 
 	resp, err := svc.BatchUpsert(context.Background(), req)
@@ -2056,7 +2032,6 @@ func TestVectorService_SearchByMetadata_WithPagination(t *testing.T) {
 		Filters:   map[string]interface{}{"category": "A"},
 		Limit:     5,
 		Offset:    0,
-		ShardID:   1,
 	}
 
 	resp, err := svc.SearchByMetadata(ctx, req)
@@ -2085,8 +2060,7 @@ func TestVectorService_RebuildIndex_WithCustomConfig(t *testing.T) {
 			"m":               "32",
 			"ef_construction": "400",
 		},
-		Async:   false,
-		ShardID: 1,
+		Async: false,
 	}
 
 	resp, err := svc.RebuildIndex(ctx, req)
