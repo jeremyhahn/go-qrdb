@@ -90,6 +90,12 @@ type BarrierRegistry struct {
 	// journal's answer and redoes the step.
 	moveOpenPools sync.Map
 
+	// volumeRoots maps a tenant ID to the volumeRoot its volume-mode
+	// barrier was registered at (registerVolumeTenant): the data root and
+	// the barrier it belongs to, so a stale entry for a barrier since
+	// unregistered never answers for a new one (VolumeTenantDataRoot).
+	volumeRoots sync.Map
+
 	// volumeNodeID is this node's ID for the move journal's per-node view
 	// (volume.Catalog.ResolveForNode); empty resolves as the assignment.
 	volumeNodeID atomic.Value
@@ -1213,6 +1219,7 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID str
 	if err != nil {
 		return "", nil, err
 	}
+	r.volumeRoots.Store(tenantID, volumeRoot{dataRoot: dataRoot, barrier: tb})
 	// Persist the posture so RestoreVolumeTenants can recover it on this or
 	// any other node after a restart; WHERE the tenant lives needs nothing
 	// persisted here -- the catalog's Assignment already is that record.
@@ -1230,6 +1237,34 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID str
 			slog.String("barrier_path", barrierPath))
 	}
 	return dataRoot, tb, nil
+}
+
+// volumeRoot is the data root a volume-mode tenant barrier was registered
+// at, with the barrier itself (BarrierRegistry.volumeRoots).
+type volumeRoot struct {
+	dataRoot string
+	barrier  *TenantBarrier
+}
+
+// VolumeTenantDataRoot returns the registered barrier of tenantID and the
+// data root registerVolumeTenant opened it at. ok is false when no barrier
+// is registered; a registered barrier whose root was not recorded (one not
+// registered through a volume pool) returns an empty root with ok true.
+func (r *BarrierRegistry) VolumeTenantDataRoot(tenantID string) (string, *TenantBarrier, bool) {
+	v, found := r.tenants.Load(tenantID)
+	if !found {
+		return "", nil, false
+	}
+	tb, _ := v.(*TenantBarrier)
+	if tb == nil {
+		return "", nil, false
+	}
+	if rv, ok := r.volumeRoots.Load(tenantID); ok {
+		if root, _ := rv.(volumeRoot); root.barrier == tb {
+			return root.dataRoot, tb, true
+		}
+	}
+	return "", tb, true
 }
 
 // RegisterTenantDefault creates and registers a tenant barrier with

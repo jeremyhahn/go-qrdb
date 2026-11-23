@@ -257,19 +257,52 @@ func (m *MoveStepRunner) assignmentPath(ctx context.Context, tenantID string) (s
 // sealed until its admin unseals it, as after a restart. A successful
 // re-attach ends the hold CloseVolumeTenant began. It is the barrier half of
 // a TenantStoreCloser's reopen.
+//
+// It is idempotent: a settle pass that reopened the tenant but failed to
+// release its step retries it, and boot's RestoreVolumeTenants may already
+// have registered a tenant whose journal still records the step settling.
+// A barrier already registered at the data root RequireInsideLocalPool
+// resolves now is reused (no second registration, which RegisterTenant
+// would refuse), the hold still ends, and an auto-unseal tenant left sealed
+// is unsealed (an unsealed one is left as is). A barrier registered at any
+// other data root -- the other pool's directory -- fails closed with
+// *VolumeTenantRootMismatchError rather than serve the wrong directory.
 func (r *BarrierRegistry) ReopenVolumeTenant(ctx context.Context, tenantID string) error {
 	autoUnseal, _, err := r.loadTenantBarrierPosture(ctx, tenantID)
 	if err != nil {
 		return err
 	}
-	if _, _, err = r.ReattachVolumeTenant(ctx, tenantID, autoUnseal); err != nil {
+	registeredRoot, tb, registered := r.VolumeTenantDataRoot(tenantID)
+	if registered {
+		wantRoot, rerr := r.RequireInsideLocalPool(ctx, tenantID)
+		if rerr != nil {
+			return rerr
+		}
+		if registeredRoot != wantRoot {
+			return &VolumeTenantRootMismatchError{TenantID: tenantID, Registered: registeredRoot, Want: wantRoot}
+		}
+	} else if _, tb, err = r.ReattachVolumeTenant(ctx, tenantID, autoUnseal); err != nil {
 		return err
 	}
 	r.moveHeld.Delete(tenantID)
-	if !autoUnseal {
+	if !autoUnseal || !tb.IsSealed() {
 		return nil
 	}
 	return r.UnsealTenant(ctx, tenantID, Credentials{})
+}
+
+// VolumeTenantRootMismatchError reports that ReopenVolumeTenant found the
+// tenant's barrier already registered at a data root other than the one its
+// volume pool assignment resolves to on this node now. Registered is empty
+// when the barrier was not registered through a volume pool.
+type VolumeTenantRootMismatchError struct {
+	TenantID   string
+	Registered string
+	Want       string
+}
+
+func (e *VolumeTenantRootMismatchError) Error() string {
+	return fmt.Sprintf("seal: tenant %q barrier is registered at data root %q, not the resolved %q", e.TenantID, e.Registered, e.Want)
 }
 
 // TenantBarrierSealed reports whether tenantID's barrier is registered on

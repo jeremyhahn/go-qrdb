@@ -301,6 +301,139 @@ func TestBarrierRegistry_MoveHoldRefusesFreshRegistration(t *testing.T) {
 	}
 }
 
+// newReopenFixture registers moveTestTenant through its volume pool with
+// the given posture, initializes it and writes one record.
+func newReopenFixture(t *testing.T, autoUnseal bool) *moveFixture {
+	t.Helper()
+	ctx := context.Background()
+	perTenantReg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
+	fx := newMoveFixture(t, WithPerTenantRegistry(perTenantReg))
+	if err := fx.reg.system.Initialize(ctx, MustCredentials(ctx, []byte("pool-test-pass"))); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+	_, tb, err := fx.reg.RegisterVolumeTenant(ctx, moveTestTenant, autoUnseal)
+	if err != nil {
+		t.Fatalf("RegisterVolumeTenant: %v", err)
+	}
+	creds := Credentials{}
+	if !autoUnseal {
+		creds = MustCredentials(ctx, []byte("tenant-pass"))
+	}
+	if err := tb.Initialize(ctx, creds); err != nil {
+		t.Fatalf("tenant Initialize: %v", err)
+	}
+	if tb.IsSealed() {
+		if err := tb.Unseal(ctx, creds); err != nil {
+			t.Fatalf("tenant Unseal: %v", err)
+		}
+	}
+	if err := tb.Barrier().Put(ctx, "reopen/record", []byte("kept")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	return fx
+}
+
+// assertReopened checks the hold ended and the tenant's seal state.
+func assertReopened(t *testing.T, fx *moveFixture, wantSealed bool) *TenantBarrier {
+	t.Helper()
+	if _, held := fx.reg.moveHeld.Load(moveTestTenant); held {
+		t.Fatal("move hold still set after ReopenVolumeTenant")
+	}
+	tb, err := fx.reg.GetTenant(moveTestTenant)
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	if tb.IsSealed() != wantSealed {
+		t.Fatalf("sealed = %v, want %v", tb.IsSealed(), wantSealed)
+	}
+	return tb
+}
+
+// A settle pass that reopened the tenant but failed to release its step
+// reopens it again: the second ReopenVolumeTenant reuses the registered
+// barrier instead of failing on ErrTenantAlreadyExists.
+func TestReopenVolumeTenant_TwiceAutoUnseal(t *testing.T) {
+	ctx := context.Background()
+	fx := newReopenFixture(t, true)
+	if err := fx.reg.CloseVolumeTenant(ctx, moveTestTenant); err != nil {
+		t.Fatalf("CloseVolumeTenant: %v", err)
+	}
+	for i := range 2 {
+		if err := fx.reg.ReopenVolumeTenant(ctx, moveTestTenant); err != nil {
+			t.Fatalf("ReopenVolumeTenant #%d: %v", i+1, err)
+		}
+		tb := assertReopened(t, fx, false)
+		got, err := tb.Barrier().Get(ctx, "reopen/record")
+		if err != nil || string(got) != "kept" {
+			t.Fatalf("read after reopen #%d = %q, %v; want kept", i+1, got, err)
+		}
+	}
+	// An auto-unseal tenant sealed while registered is unsealed again.
+	if err := fx.reg.SealTenant(moveTestTenant); err != nil {
+		t.Fatalf("SealTenant: %v", err)
+	}
+	if err := fx.reg.ReopenVolumeTenant(ctx, moveTestTenant); err != nil {
+		t.Fatalf("ReopenVolumeTenant of a sealed registered tenant: %v", err)
+	}
+	assertReopened(t, fx, false)
+}
+
+// A self-managed tenant stays sealed through both reopens.
+func TestReopenVolumeTenant_TwiceSelfManagedStaysSealed(t *testing.T) {
+	ctx := context.Background()
+	fx := newReopenFixture(t, false)
+	if err := fx.reg.CloseVolumeTenant(ctx, moveTestTenant); err != nil {
+		t.Fatalf("CloseVolumeTenant: %v", err)
+	}
+	for i := range 2 {
+		if err := fx.reg.ReopenVolumeTenant(ctx, moveTestTenant); err != nil {
+			t.Fatalf("ReopenVolumeTenant #%d: %v", i+1, err)
+		}
+		assertReopened(t, fx, true)
+	}
+}
+
+// A restart restores the tenant while its journal still records the step
+// settling; the settle pass's ReopenVolumeTenant then finds it registered
+// at the same root and succeeds, and the tenant serves reads.
+func TestReopenVolumeTenant_AfterRestoreVolumeTenants(t *testing.T) {
+	ctx := context.Background()
+	fx := newReopenFixture(t, true)
+	if err := fx.reg.CloseVolumeTenant(ctx, moveTestTenant); err != nil {
+		t.Fatalf("CloseVolumeTenant: %v", err)
+	}
+	fx.reg.moveHeld.Delete(moveTestTenant) // the restart drops the memory-only hold
+	if err := fx.reg.RestoreVolumeTenants(ctx); err != nil {
+		t.Fatalf("RestoreVolumeTenants: %v", err)
+	}
+	if _, err := fx.reg.GetTenant(moveTestTenant); err != nil {
+		t.Fatalf("GetTenant after restore: %v", err)
+	}
+	if err := fx.reg.ReopenVolumeTenant(ctx, moveTestTenant); err != nil {
+		t.Fatalf("ReopenVolumeTenant after restore: %v", err)
+	}
+	tb := assertReopened(t, fx, false)
+	got, err := tb.Barrier().Get(ctx, "reopen/record")
+	if err != nil || string(got) != "kept" {
+		t.Fatalf("read after restore and reopen = %q, %v; want kept", got, err)
+	}
+}
+
+// A barrier registered at the other pool's directory is refused rather
+// than served from the wrong directory.
+func TestReopenVolumeTenant_RefusesBarrierOnOtherPool(t *testing.T) {
+	ctx := context.Background()
+	fx := newReopenFixture(t, true) // registered at the source
+	fx.putJournal(t, journal(volume.MoveStateCopying, moveTestNode))
+	fx.reg.SetVolumeNodeID(moveTestNode) // now resolves to the destination
+	err := fx.reg.ReopenVolumeTenant(ctx, moveTestTenant)
+	var mm *VolumeTenantRootMismatchError
+	if !errors.As(err, &mm) || mm.Registered != fx.src || mm.Want != fx.dst() {
+		t.Fatalf("ReopenVolumeTenant = %v, want *VolumeTenantRootMismatchError registered %q want %q", err, fx.src, fx.dst())
+	}
+}
+
 func TestMoveStepRunner_FailedCopyReopensFromSource(t *testing.T) {
 	fx, stores, r := newRunnerFixture(t)
 	truncateOnCopy(t, fx.reg)
