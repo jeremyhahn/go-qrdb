@@ -371,6 +371,9 @@ func (c *CachedRemote) store(objName string, data []byte) error {
 // syncDir fsyncs the cache dir through its root, returning the first error of
 // open, sync and close.
 func (c *CachedRemote) syncDir() error {
+	if !cacheDirSyncSupported {
+		return nil
+	}
 	d, err := c.root.Open(".")
 	if err != nil {
 		return err
