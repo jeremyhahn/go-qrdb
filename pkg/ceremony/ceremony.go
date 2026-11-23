@@ -101,8 +101,9 @@ type CeremonyService struct {
 	mofnInitInFlight bool
 
 	// strictSoD is the node's resolved strict separation-of-duties posture
-	// (SetSeparationOfDuties): under it Initialize refuses a ceremony that
-	// names no system SO, before any write.
+	// (SetSeparationOfDuties): under it Initialize refuses, before any
+	// write, a system SO that is the bootstrap admin by name or key; a
+	// ceremony naming no system SO passes (the SO is optional).
 	strictSoD bool
 }
 
@@ -342,10 +343,12 @@ func (s *CeremonyService) SetAuditFailurePolicy(p audit.FailurePolicy) {
 
 // SetSeparationOfDuties sets the node's strict separation-of-duties posture,
 // as wiring.ResolveStrictSeparation resolves it. Under it Initialize refuses,
-// with *SystemSORejectedError and before any write, a ceremony whose options
-// name no system SO: first boot could never enrol one, and the node would be
-// refused at every boot. The posture is the node's, never the caller's: no
-// InitializeOptions field can relax it.
+// with *SystemSORejectedError and before any write, a system SO that is the
+// bootstrap admin (any case variant of its username, or its supplied key);
+// the standard posture lets the admin be the SO. The SO is optional in both
+// postures: a ceremony naming none passes (validateSystemSOInputs). The
+// posture is the node's, never the caller's: no InitializeOptions field can
+// relax it.
 func (s *CeremonyService) SetSeparationOfDuties(strict bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -559,8 +562,8 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	// unsealed. The SO's only durable handoff is the record in that barrier,
 	// so an SO issuance that failed after it came up would leave an unsealed
 	// barrier with no SO, which a composer reads as an initialized node and
-	// boots into a first boot strict separation refuses, with no listener
-	// left to retry the ceremony on. Failing here leaves the barrier
+	// boots into a first boot without the SO the operator named, with no
+	// listener left to retry the ceremony on. Failing here leaves the barrier
 	// uninitialized and the ceremony awaiting a retry.
 	systemSO, err := issueSystemSO(ctx, ca, s.deps.TrustDomain, opts, caBundle)
 	if err != nil {
@@ -750,7 +753,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	if !isMofN {
 		// The barrier is unsealed by now: record the issued system SO in it
 		// before reporting success, so a crash before the composer copies
-		// it into the replicated store cannot strand strict first boot.
+		// it into the replicated store cannot strand first boot without it.
 		if err := s.persistIssuedSystemSOLocked(ctx, systemSO); err != nil {
 			s.abandonSingleAdminInitLocked()
 			s.mu.Unlock()

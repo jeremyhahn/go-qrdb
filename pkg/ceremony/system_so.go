@@ -270,8 +270,8 @@ const pendingSystemSOKey = "ceremony/pending-system-so"
 // Initialize has unsealed by now (for M-of-N, Distribute calls it before the
 // Shamir initialization commits). The composer copies the SO into the
 // replicated store only once that store exists; a node that crashes before
-// then reads it back here on restart (PendingSystemSO), so strict first boot
-// is never stranded without its SO. The record carries the SO PIN only as
+// then reads it back here on restart (PendingSystemSO), so first boot is
+// never stranded without the SO the ceremony issued. The record carries the SO PIN only as
 // its hash, and the barrier encrypts it. Callers hold s.mu.
 func (s *CeremonyService) persistIssuedSystemSOLocked(ctx context.Context, so *IssuedSystemSO) error {
 	if so == nil {

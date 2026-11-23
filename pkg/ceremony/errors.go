@@ -589,7 +589,8 @@ func (e *AdminCredentialRejectedError) Unwrap() error { return e.Cause }
 // SystemSORejectedError wraps the reason the system SO named by
 // InitializeOptions could not be issued: a username with no certificate
 // input (or the reverse), both SOCSRPEM and SOCertPEM, the admin's
-// username or key, no SOPin, a CSR that does not parse, or a presented
+// username (under strict separation only) or key (under strict separation,
+// or held by an SO that is not the admin), no SOPin, a CSR that does not parse, or a presented
 // certificate that does not verify under the system tenant, or one whose
 // subject CN is not SOUsername.
 type SystemSORejectedError struct {
