@@ -99,10 +99,9 @@ func WriteIssuedSystemSOIfAny(ctx context.Context, core *ceremony.CeremonyServic
 }
 
 // PendingSystemSO returns the system SO the ceremony recorded, as the
-// SOConfig first boot enrols, or nil when there is no record, it is
-// consumed, or the store cannot read it now (read as absent, as
-// AwaitPendingAdminCert reads the admin's). A record that does not decode
-// is a fault, not an absence.
+// SOConfig first boot enrols, or nil when there is no record or it is
+// consumed. A store that cannot read it now, or a record that does not
+// decode, is a fault (a *PendingAdminCertStoreError), not an absence.
 func PendingSystemSO(ctx context.Context, store PendingAdminCertStore) (*SOConfig, error) {
 	if store == nil {
 		return nil, nil
