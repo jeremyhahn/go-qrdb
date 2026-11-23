@@ -27,7 +27,7 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 const (
@@ -45,17 +45,18 @@ var devcontainerPinFiles = []string{
 }
 
 // devcontainerArgs decodes services.devcontainer.build.args of a compose file;
-// yaml.v3 resolves the `<<` merge keys, and an empty passthrough arg decodes
+// go-codec yaml (yaml.v3 underneath) resolves the `<<` merge keys, and an empty passthrough arg decodes
 // as nil (returned as "").
 func devcontainerArgs(raw []byte) (map[string]string, error) {
-	var doc struct {
+	type composeDoc struct {
 		Services map[string]struct {
 			Build struct {
 				Args map[string]any `yaml:"args"`
 			} `yaml:"build"`
 		} `yaml:"services"`
 	}
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
+	var doc composeDoc
+	if err := gocodecyaml.New[composeDoc]().Unmarshal(raw, &doc); err != nil {
 		return nil, err
 	}
 	out := map[string]string{}

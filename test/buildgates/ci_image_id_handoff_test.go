@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 var (
@@ -28,7 +28,7 @@ var (
 // does not name the verified image ID.
 func imageIDProblems(body []byte) ([]string, error) {
 	var wf digestWorkflow
-	if err := yaml.Unmarshal(body, &wf); err != nil {
+	if err := gocodecyaml.New[digestWorkflow]().Unmarshal(body, &wf); err != nil {
 		return nil, err
 	}
 	names := make([]string, 0, len(wf.Jobs))
@@ -152,7 +152,7 @@ var producerIDFamilies = map[string]string{
 // per-run tag created from the ID); an always() step removes the per-run tags.
 func producerIDProblems(body []byte) ([]string, error) {
 	var wf digestWorkflow
-	if err := yaml.Unmarshal(body, &wf); err != nil {
+	if err := gocodecyaml.New[digestWorkflow]().Unmarshal(body, &wf); err != nil {
 		return nil, err
 	}
 	job, ok := wf.Jobs[digestProducer]
@@ -283,7 +283,7 @@ var pruneRun = regexp.MustCompile(`^scripts/ci-image\.sh prune ([1-9][0-9]*)$`)
 // always() on self-hosted runners, after the job's last save or load.
 func pruneProblems(body []byte) ([]string, error) {
 	var wf digestWorkflow
-	if err := yaml.Unmarshal(body, &wf); err != nil {
+	if err := gocodecyaml.New[digestWorkflow]().Unmarshal(body, &wf); err != nil {
 		return nil, err
 	}
 	names := make([]string, 0, len(wf.Jobs))

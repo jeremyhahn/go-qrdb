@@ -14,7 +14,17 @@
 package schema
 
 import (
-	"github.com/vmihailenco/msgpack/v5"
+	gocodecmsgpack "github.com/jeremyhahn/go-codec/pkg/msgpack"
+)
+
+// The stored values are MessagePack encoded through go-codec; the bytes are
+// pinned by TestSchemaEncoding_BytesUnchanged. Encoding takes the pointer, as
+// before (a nil value still encodes as nil); decoding fills a value.
+var (
+	vectorValueEncoder   = gocodecmsgpack.New[*VectorValue]()
+	vectorValueDecoder   = gocodecmsgpack.New[VectorValue]()
+	namespaceInfoEncoder = gocodecmsgpack.New[*NamespaceInfo]()
+	namespaceInfoDecoder = gocodecmsgpack.New[NamespaceInfo]()
 )
 
 // VectorValue represents a stored vector with metadata.
@@ -50,13 +60,13 @@ type NamespaceInfo struct {
 
 // EncodeVectorValue serializes a VectorValue using MessagePack.
 func EncodeVectorValue(v *VectorValue) ([]byte, error) {
-	return msgpack.Marshal(v)
+	return vectorValueEncoder.Marshal(v)
 }
 
 // DecodeVectorValue deserializes a VectorValue from MessagePack.
 func DecodeVectorValue(data []byte) (*VectorValue, error) {
 	var v VectorValue
-	err := msgpack.Unmarshal(data, &v)
+	err := vectorValueDecoder.Unmarshal(data, &v)
 	if err != nil {
 		return nil, err
 	}
@@ -65,13 +75,13 @@ func DecodeVectorValue(data []byte) (*VectorValue, error) {
 
 // EncodeNamespaceInfo serializes namespace metadata using MessagePack.
 func EncodeNamespaceInfo(info *NamespaceInfo) ([]byte, error) {
-	return msgpack.Marshal(info)
+	return namespaceInfoEncoder.Marshal(info)
 }
 
 // DecodeNamespaceInfo deserializes namespace metadata from MessagePack.
 func DecodeNamespaceInfo(data []byte) (*NamespaceInfo, error) {
 	var info NamespaceInfo
-	err := msgpack.Unmarshal(data, &info)
+	err := namespaceInfoDecoder.Unmarshal(data, &info)
 	if err != nil {
 		return nil, err
 	}

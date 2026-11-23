@@ -18,7 +18,7 @@ import (
 	"errors"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 // TestAuthABACConfig_Validation verifies the auth.abac validation rule:
@@ -81,7 +81,7 @@ func TestAuthABACConfig_Validation(t *testing.T) {
 func TestAuthABACConfig_YAMLRoundTrip(t *testing.T) {
 	in := []byte("auth:\n  abac:\n    enabled: true\n    policy_dir: /etc/qrdb/abac\n")
 	var cfg Config
-	if err := yaml.Unmarshal(in, &cfg); err != nil {
+	if err := gocodecyaml.New[Config]().Unmarshal(in, &cfg); err != nil {
 		t.Fatalf("yaml.Unmarshal() error = %v", err)
 	}
 	if !cfg.Auth.ABAC.Enabled {
@@ -91,12 +91,12 @@ func TestAuthABACConfig_YAMLRoundTrip(t *testing.T) {
 		t.Errorf("auth.abac.policy_dir = %q, want /etc/qrdb/abac", cfg.Auth.ABAC.PolicyDir)
 	}
 
-	out, err := yaml.Marshal(&cfg.Auth.ABAC)
+	out, err := gocodecyaml.New[*AuthABACConfig]().Marshal(&cfg.Auth.ABAC)
 	if err != nil {
 		t.Fatalf("yaml.Marshal() error = %v", err)
 	}
 	var round AuthABACConfig
-	if err := yaml.Unmarshal(out, &round); err != nil {
+	if err := gocodecyaml.New[AuthABACConfig]().Unmarshal(out, &round); err != nil {
 		t.Fatalf("yaml.Unmarshal(round) error = %v", err)
 	}
 	if round != cfg.Auth.ABAC {

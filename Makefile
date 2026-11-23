@@ -375,12 +375,6 @@ WITH_QRDB_GPU      ?= 0
 WITH_QRDB_EMBEDDED ?= 1
 WITH_QRDBD_WEBUI   ?= 0
 
-# Optional codec flags (1 = enabled, 0 = disabled; all default ON)
-WITH_CODEC_MSGPACK  ?= 1
-WITH_CODEC_YAML     ?= 1
-WITH_CODEC_BSON     ?= 1
-WITH_CODEC_PROTOBUF ?= 1
-
 # Object-storage (go-objstore) cloud backends, used by the objstore storage
 # backend and the backup/restore targets. These gate code in go-objstore (the
 # SDKs live THERE, never in qrdb's module): qrdb stays cloud-SDK-free and simple
@@ -479,18 +473,6 @@ endif
 ifeq ($(WITH_QRDBD_WEBUI),1)
   BUILD_TAGS += qrdbd_webui
 endif
-ifeq ($(WITH_CODEC_MSGPACK),1)
-  BUILD_TAGS += codec_msgpack
-endif
-ifeq ($(WITH_CODEC_YAML),1)
-  BUILD_TAGS += codec_yaml
-endif
-ifeq ($(WITH_CODEC_BSON),1)
-  BUILD_TAGS += codec_bson
-endif
-ifeq ($(WITH_CODEC_PROTOBUF),1)
-  BUILD_TAGS += codec_protobuf
-endif
 # Object-storage (go-objstore) cloud backends.
 ifeq ($(WITH_AWS_S3),1)
   BUILD_TAGS += awss3
@@ -576,7 +558,6 @@ PKG_SQL_QUERY      := ./pkg/sql/query/...
 PKG_SQL_CATALOG    := ./pkg/sql/catalog/...
 PKG_SQL_PRIVILEGE  := ./pkg/sql/privilege/...
 PKG_SQL_PGCATALOG  := ./pkg/sql/pgcatalog/...
-PKG_CODEC          := ./pkg/codec/...
 PKG_ETCD           := ./pkg/api/etcd/...
 PKG_DATABASE       := ./pkg/database/...
 PKG_QUIC           := ./pkg/api/quic/...
@@ -1317,10 +1298,6 @@ test-sql-privilege:
 .PHONY: test-sql-pgcatalog
 test-sql-pgcatalog:
 	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_PGCATALOG)
-
-.PHONY: test-codec
-test-codec:
-	$(GOTEST) $(TAG_FLAG) $(PKG_CODEC)
 
 .PHONY: test-etcd
 test-etcd:
@@ -2430,10 +2407,6 @@ coverage-sql-pgcatalog: | _cover-dir
 	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-pgcatalog.out $(PKG_SQL_PGCATALOG)
 	$(call check-coverage,$(COVER_DIR)/sql-pgcatalog.out,sql-pgcatalog)
 
-.PHONY: coverage-codec
-coverage-codec: | _cover-dir
-	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/codec.out $(PKG_CODEC)
-	$(call check-coverage,$(COVER_DIR)/codec.out,codec)
 
 .PHONY: coverage-etcd
 coverage-etcd: | _cover-dir
@@ -3349,6 +3322,15 @@ TEST_TAGS_SETS := $(LINT_TAGS) $(NOMYSQL_TAGS) $(NOPGSQL_TAGS) $(NOSQLFAMILY_TAG
 # refusal lives in the service layer every transport shares.
 TEST_TAGS_PKGS := ./cmd/qrdbd/... ./cmd/qrdb/... ./pkg/service
 
+# CODEC_CBOR_TAGS / CODEC_CBOR_TEST_PKGS: the CBOR codec (pkg/dao) and its
+# document-storage behavior (pkg/service) compile only under codec_cbor,
+# which no other set enables, so `make test-tags` runs these two packages
+# once more with it. Called with `go test` directly rather than through
+# scripts/test-tags.sh, whose discovery floor (MIN_PACKAGES=3) is sized for
+# TEST_TAGS_PKGS.
+CODEC_CBOR_TAGS := $(LINT_TAGS),codec_cbor
+CODEC_CBOR_TEST_PKGS := ./pkg/dao ./pkg/service
+
 # vet-tags sweeps EVERY Go module in the tree, each with its own tag sets.
 #
 # The logic lives in scripts/vet-modules.sh, not here, and that is the point:
@@ -3395,10 +3377,13 @@ vet-tags:
 # full rationale and why this is scoped to ./cmd/... rather than the whole
 # tree. Runs with `go test` directly (no -race): TEST_TAGS_SETS already
 # multiplies the command-surface suite by five, and the packages it covers
-# are raced on their own by `make test`/CI's existing race job.
+# are raced on their own by `make test`/CI's existing race job. A second
+# run tests CODEC_CBOR_TEST_PKGS under CODEC_CBOR_TAGS, the only gate that
+# compiles the codec_cbor CBOR codec and its collection-storage tests.
 .PHONY: test-tags
 test-tags:
 	GOTEST="$(GO) test" GOLIST="$(GO) list" ./scripts/test-tags.sh "$(TEST_TAGS_SETS)" "$(TEST_TAGS_PKGS)"
+	$(GO) test -count=1 -tags=$(CODEC_CBOR_TAGS) $(CODEC_CBOR_TEST_PKGS)
 
 # print-tag-sets prints the declared combinations, one per line, so that
 # anything needing them -- a CI matrix, a doc, a one-off sweep -- READS the
