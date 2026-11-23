@@ -912,6 +912,30 @@ func (m *Manager) reclaimDatabaseObjects(key dbKey, db *Database) error {
 	return errors.Join(reclaimErr, backend.Close())
 }
 
+// releaseDatabaseNamespace gives up the provider namespace an
+// object-storage database owned, once its catalog record is gone (drop,
+// step 6). The database's backend is closed by then (step 2), so the
+// namespace is opened again from the configuration, as its owner, and
+// released (backendReleaser.ReleaseOwner): the owner marker goes only when
+// it names this database and nothing foreign remains. Reclaim keeps the
+// marker so a drop that fails before its catalog delete is retried by the
+// same owner, and no other database claims the namespace meanwhile.
+func (m *Manager) releaseDatabaseNamespace(key dbKey, db *Database) error {
+	cfg := db.Config()
+	if cfg.Backend != BackendObjstore {
+		return nil
+	}
+	backend, err := m.factory.Create(cfg, m.dbDir(key.tenant, cfg.Name))
+	if err != nil {
+		return err
+	}
+	var releaseErr error
+	if r, ok := backend.(backendReleaser); ok {
+		releaseErr = r.ReleaseOwner()
+	}
+	return errors.Join(releaseErr, backend.Close())
+}
+
 func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	name := key.name
 	cat, err := m.catalog("drop database")
@@ -1055,6 +1079,17 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    adjacent to it, so the window in which the two disagree is as narrow
 	//    as it can be made without a persisted marker (go-qrdb#425).
 	m.databases.CompareAndDelete(key, db)
+
+	// 6. The provider namespace an object-storage database owned. Only now,
+	//    with the record gone, does the owner marker go: until the record
+	//    is deleted a retry of this drop reopens the namespace as its owner,
+	//    and no other database may claim it. The drop is complete whatever
+	//    the release returns; a release that fails leaves the namespace
+	//    reserved, and is logged.
+	if err := m.releaseDatabaseNamespace(key, db); err != nil {
+		m.logger.Warn("database dropped; object-storage namespace not released",
+			slog.String("name", name), slog.String("error", err.Error()))
+	}
 
 	m.logger.Info("database dropped", slog.String("name", name))
 	return nil

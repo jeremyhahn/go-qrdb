@@ -277,6 +277,119 @@ func TestManager_DropResumesAfterReclaimWithForeignObject(t *testing.T) {
 	}
 }
 
+// TestManager_DropKeepsNamespaceUntilCatalogDelete is PR #1577 Codex round
+// 4 (A): a drop whose catalog delete fails after the reclamation still owns
+// the namespace, so a second database configured onto it is refused, the
+// drop's retry finishes, and only then does the namespace open for another
+// database.
+func TestManager_DropKeepsNamespaceUntilCatalogDelete(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "objects")
+	dataDir := t.TempDir()
+	mgr := newManager(t, dataDir)
+	db, err := mgr.Create(localObjstore("blobs", root))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := db.Backend().Put(ctx, []byte("key"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	cat := &failDeleteOnceCatalog{Catalog: databasetest.Catalog(dataDir)}
+	mgr.SetCatalog(cat)
+
+	if err := mgr.Drop(ctx, "blobs"); !errors.Is(err, errCatalogDeleteFault) {
+		t.Fatalf("Drop = %v, want the catalog delete fault", err)
+	}
+	var owned *objstore.NamespaceOwnedError
+	if _, err := mgr.Create(localObjstore("other", root)); !errors.As(err, &owned) {
+		t.Fatalf("Create onto the dropping namespace = %v, want *NamespaceOwnedError", err)
+	}
+	if err := mgr.DropForTenant(ctx, "blobs"); err != nil {
+		t.Fatalf("drop retry: %v", err)
+	}
+	if left := objects(t, root); len(left) != 0 {
+		t.Fatalf("the drop left %v", left)
+	}
+	other, err := mgr.Create(localObjstore("other", root))
+	if err != nil {
+		t.Fatalf("Create after the drop: %v", err)
+	}
+	if err := other.Backend().Put(ctx, []byte("key"), []byte("w")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+}
+
+// errUnfenceFault fails a create after its backend opened.
+var errUnfenceFault = errors.New("injected unfence fault")
+
+// failUnfenceReclaimer refuses UnfenceDatabaseKeyspace, the create step
+// that runs after the database's backend has opened (and claimed its
+// namespace).
+type failUnfenceReclaimer struct{}
+
+func (failUnfenceReclaimer) ReclaimDatabaseKeyspace(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func (failUnfenceReclaimer) FenceDatabaseKeyspace(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func (failUnfenceReclaimer) UnfenceDatabaseKeyspace(context.Context, string, string, string, string) error {
+	return errUnfenceFault
+}
+
+// TestManager_FailedCreateReleasesFreshNamespace is PR #1577 Codex round 4
+// (B): a create that fails after its opener claimed a new namespace
+// releases it, so another database may use it; a create onto a namespace
+// that already held data leaves that data as it was.
+func TestManager_FailedCreateReleasesFreshNamespace(t *testing.T) {
+	t.Run("fresh namespace is released", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "objects")
+		mgr := newManager(t, t.TempDir())
+		mgr.SetKeyspaceReclaimer(failUnfenceReclaimer{})
+		if _, err := mgr.Create(localObjstore("blobs", root)); !errors.Is(err, errUnfenceFault) {
+			t.Fatalf("Create = %v, want the unfence fault", err)
+		}
+		if left := objects(t, root); len(left) != 0 {
+			t.Fatalf("the failed create left %v", left)
+		}
+		mgr.SetKeyspaceReclaimer(nil)
+		if _, err := mgr.Create(localObjstore("other", root)); err != nil {
+			t.Fatalf("Create after the failed create: %v", err)
+		}
+	})
+	t.Run("pre-existing data is kept", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "objects")
+		unowned, err := objstore.New("local", map[string]string{"path": root})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if err := unowned.Set([]byte("k"), []byte("v")); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		if err := unowned.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		before := objects(t, root)
+		mgr := newManager(t, t.TempDir())
+		mgr.SetKeyspaceReclaimer(failUnfenceReclaimer{})
+		if _, err := mgr.Create(localObjstore("blobs", root)); !errors.Is(err, errUnfenceFault) {
+			t.Fatalf("Create = %v, want the unfence fault", err)
+		}
+		after := objects(t, root)
+		for _, path := range before {
+			found := false
+			for _, p := range after {
+				found = found || p == path
+			}
+			if !found {
+				t.Errorf("the failed create deleted %s", path)
+			}
+		}
+	})
+}
+
 // TestManager_SecondDatabaseCannotReachAnothersNamespace pins that a database
 // owns its provider namespace: a second database configured onto the first's
 // path is refused, cannot read or reclaim its objects, and the first still

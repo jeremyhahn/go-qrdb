@@ -350,3 +350,20 @@ func (b *BarrierBackend) Reclaim() error {
 	}
 	return r.Reclaim()
 }
+
+// ReleaseOwner forwards a namespace release (backendReleaser) to the
+// wrapped backend.
+func (b *BarrierBackend) ReleaseOwner() error {
+	r, ok := b.inner.(backendReleaser)
+	if !ok {
+		return nil
+	}
+	return r.ReleaseOwner()
+}
+
+// FreshlyClaimed forwards backendReleaser.FreshlyClaimed to the wrapped
+// backend.
+func (b *BarrierBackend) FreshlyClaimed() bool {
+	r, ok := b.inner.(backendReleaser)
+	return ok && r.FreshlyClaimed()
+}

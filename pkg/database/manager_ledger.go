@@ -210,6 +210,15 @@ func (u *createUndo) mkdirAll(path string) error {
 // cause.
 func (u *createUndo) run(ctx context.Context, cause error) error {
 	for i := len(u.backends) - 1; i >= 0; i-- {
+		// A backend whose open claimed its provider namespace new (an
+		// object-storage database onto an empty bucket or path) gives it
+		// up: what this create wrote is reclaimed and the owner marker
+		// released, so the failed create reserves nothing. A namespace
+		// that held data before, or was already this owner's, is left as
+		// it was.
+		if r, ok := u.backends[i].(backendReleaser); ok && r.FreshlyClaimed() {
+			_ = r.ReleaseOwner()
+		}
 		_ = u.backends[i].Close()
 	}
 	if u.barrier && u.m.barrierMgr != nil {
