@@ -29,13 +29,16 @@ import (
 // count as the expected count, and the meta record metaValue and the
 // truncated-page deletes apply at the same one revision, which it returns.
 // A live staged count other than the pages it wrote is ErrPublishConflict
-// and publishes nothing.
+// and publishes nothing. The publish carries the commit's read set (reads,
+// see Txn.readSet), so an optimistic staged commit whose reads moved
+// conflicts at publish with ErrSnapshotChanged, and its stage keys are swept
+// like any other publish failure.
 //
 // Staged keys are never read as pages: readers see the old pages until the
 // publish revision and the new ones from it. On a staging or publish
 // failure commitStaged deletes every stage key it wrote in one best-effort
 // Backend.Commit and returns the original error wrapped with the db name.
-func (t *Txn) commitStaged(ctx context.Context, metaValue []byte, deletes [][]byte) (int64, error) {
+func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []byte, deletes [][]byte) (int64, error) {
 	s := t.store
 	commitID, err := newCommitID()
 	if err != nil {
@@ -53,7 +56,7 @@ func (t *Txn) commitStaged(ctx context.Context, metaValue []byte, deletes [][]by
 			// The cleanup ignores the caller's cancellation
 			// (context.WithoutCancel), so a cancelled ctx cannot leave
 			// staged keys behind.
-			_, _ = s.backend.Commit(context.WithoutCancel(ctx), nil, staged)
+			_, _ = s.backend.Commit(context.WithoutCancel(ctx), nil, nil, staged)
 		}
 		return 0, fmt.Errorf("sqlitevfs: staged commit %q: %w", s.db, err)
 	}
@@ -65,7 +68,7 @@ func (t *Txn) commitStaged(ctx context.Context, metaValue []byte, deletes [][]by
 		if len(chunk) == 0 {
 			return nil
 		}
-		if _, err := s.backend.Commit(ctx, chunk, nil); err != nil {
+		if _, err := s.backend.Commit(ctx, nil, chunk, nil); err != nil {
 			return err
 		}
 		staged = append(staged, chunkKeys...)
@@ -101,7 +104,7 @@ func (t *Txn) commitStaged(ctx context.Context, metaValue []byte, deletes [][]by
 	if err != nil {
 		return fail(err)
 	}
-	rev, err := s.backend.Publish(ctx, stagePrefix, pagePrefix, int64(len(pgnos)), puts, deletes)
+	rev, err := s.backend.Publish(ctx, stagePrefix, pagePrefix, int64(len(pgnos)), reads, puts, deletes)
 	if err != nil {
 		return fail(err)
 	}

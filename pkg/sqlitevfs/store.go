@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"sync"
 )
 
@@ -35,18 +36,34 @@ type Backend interface {
 	// at rev is found=false with a nil error; err is a failed read.
 	GetAt(ctx context.Context, key []byte, rev int64) (value []byte, found bool, err error)
 	// Commit applies every put and every delete at one new revision, or
-	// none of them, and returns that revision.
-	Commit(ctx context.Context, puts map[string][]byte, deletes [][]byte) (rev int64, err error)
+	// none of them, and returns that revision. Every read check is
+	// evaluated atomically with the write: one that fails is
+	// ErrSnapshotChanged and writes nothing.
+	Commit(ctx context.Context, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (rev int64, err error)
 	// Publish, at one new revision, puts dst + (key without src) for
 	// every key live under prefix src with that key's newest committed
 	// value, deletes those source keys, and applies puts and deletes; or
 	// does none of it. A live count under src other than expectedKeys is
 	// ErrPublishConflict and writes nothing; empty or overlapping src and
-	// dst, or expectedKeys < 1, is ErrInvalidPublish.
-	Publish(ctx context.Context, src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (rev int64, err error)
+	// dst, or expectedKeys < 1, is ErrInvalidPublish. The read checks are
+	// Commit's: a failed one is ErrSnapshotChanged and writes nothing, and
+	// a backend that cannot evaluate them atomically with the move refuses
+	// a non-empty set with ErrReadCheckUnsupported.
+	Publish(ctx context.Context, src, dst []byte, expectedKeys int64, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (rev int64, err error)
 	// Keys returns every key with a live value at revision rev that
 	// starts with prefix, in key order.
 	Keys(ctx context.Context, prefix []byte, rev int64) ([][]byte, error)
+}
+
+// ReadCheck is one entry of a commit's read set: the commit applies only if
+// Key's live state is unchanged since revision Rev. Found is whether Key had
+// a live value at Rev: when true, Key must still have a live value whose mod
+// revision is at most Rev; when false, Key must still have no live value (an
+// absent key stays absent).
+type ReadCheck struct {
+	Key   []byte
+	Rev   int64
+	Found bool
 }
 
 // Store is the page store of one SQLite database file over a Backend.
@@ -65,6 +82,12 @@ type Store struct {
 	// the lock named lockKey; nil is the no-lock (optimistic/local) Store.
 	writer  WriterLock
 	lockKey string
+
+	// optimistic is the opt-in optimistic writer mode (Q3 A): no writer
+	// lock, and every commit carries the transaction's read set, so a
+	// commit that read a page another writer changed since the snapshot is
+	// ErrSnapshotChanged (the binding's SQLITE_BUSY_SNAPSHOT).
+	optimistic bool
 
 	// mu guards seenGen and seen: the meta generation of this Store's last
 	// snapshot pin, and whether it has pinned one.
@@ -124,6 +147,20 @@ func WithWriterLock(w WriterLock) Option {
 	}
 }
 
+// WithOptimistic selects optimistic writer mode (Q3 A, opt-in per
+// connection): the Store takes no writer lock, a transaction records every
+// page it reads from its snapshot, and Commit sends that read set with the
+// write, so a commit that read a page another writer has since changed (or
+// created) is ErrSnapshotChanged and writes nothing, while writers whose
+// reads and writes are disjoint both commit. NewStore refuses it together
+// with WithWriterLock (ErrOptimisticWithWriterLock).
+func WithOptimistic() Option {
+	return func(s *Store) error {
+		s.optimistic = true
+		return nil
+	}
+}
+
 // NewStore returns the page store of database db over b. A nil backend is
 // refused with ErrNilBackend and an invalid name with ErrInvalidDatabaseName.
 func NewStore(b Backend, db string, opts ...Option) (*Store, error) {
@@ -150,6 +187,9 @@ func NewStore(b Backend, db string, opts ...Option) (*Store, error) {
 		if err := opt(s); err != nil {
 			return nil, err
 		}
+	}
+	if s.optimistic && s.writer != nil {
+		return nil, ErrOptimisticWithWriterLock
 	}
 	return s, nil
 }
@@ -235,7 +275,7 @@ func (s *Store) BumpGeneration(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	newRev, err := s.backend.Commit(ctx, map[string][]byte{string(s.metaKey): value}, nil)
+	newRev, err := s.backend.Commit(ctx, nil, map[string][]byte{string(s.metaKey): value}, nil)
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: bump generation of %q: %w", s.db, err)
 	}
@@ -256,7 +296,7 @@ func (s *Store) sweepStages(ctx context.Context, rev int64) error {
 	if len(keys) == 0 {
 		return nil
 	}
-	_, err = s.backend.Commit(ctx, nil, keys)
+	_, err = s.backend.Commit(ctx, nil, nil, keys)
 	return err
 }
 
@@ -289,6 +329,9 @@ type Txn struct {
 	reserved bool
 	held     bool
 	token    int64
+	// reads is the read set of an optimistic transaction: every page key
+	// read from the snapshot at rev, and whether it had a live value.
+	reads map[string]bool
 }
 
 // Revision returns the revision the transaction reads at.
@@ -429,6 +472,12 @@ func (t *Txn) page(pgno uint32) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sqlitevfs: read page %d of %q at revision %d: %w", pgno, t.store.db, t.rev, err)
 	}
+	if t.store.optimistic {
+		if t.reads == nil {
+			t.reads = make(map[string]bool)
+		}
+		t.reads[string(key)] = found
+	}
 	if !found {
 		return make([]byte, t.meta.PageSize), nil
 	}
@@ -554,6 +603,14 @@ func (t *Txn) Truncate(size int64) error {
 // commits between the check and the write. BumpGeneration (restore) does not
 // take the lock: a restore racing a commit is caught at the next Begin.
 //
+// Without a writer lock the meta record Commit re-read is a read check of
+// the write itself, so a commit landing between that read and the write is
+// ErrSnapshotChanged too. In optimistic mode (WithOptimistic) the write also
+// carries every page the transaction read from its snapshot, present or
+// absent: a page another writer changed or created since the snapshot is
+// ErrSnapshotChanged and nothing is written; a moved page count or page size
+// is too, and otherwise the change counter advances from the newest record.
+//
 // When the dirty pages total more than the Store's stage threshold, the
 // pages go through staging and one publish (Q2 A, commitStaged) instead.
 // Every read and write Commit makes uses its own ctx, not Begin's.
@@ -581,7 +638,7 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: commit %q: %w", t.store.db, err)
 	}
-	current, _, err := t.store.readMeta(ctx, now)
+	current, metaFound, err := t.store.readMeta(ctx, now)
 	if err != nil {
 		return 0, err
 	}
@@ -591,8 +648,20 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 	if t.store.writer != nil && current.ChangeCounter != t.base.ChangeCounter {
 		return 0, fmt.Errorf("%w: %q moved from change counter %d to %d", ErrSnapshotChanged, t.store.db, t.base.ChangeCounter, current.ChangeCounter)
 	}
+	counter := t.base.ChangeCounter
+	if t.store.optimistic {
+		// Disjoint writers may commit in any order, so the change
+		// counter advances from the newest record; a moved page size or
+		// page count is a moved file this snapshot cannot merge into.
+		if current.PageSize != t.base.PageSize || current.PageCount != t.base.PageCount {
+			return 0, fmt.Errorf("%w: %q moved from %d pages of %d bytes to %d pages of %d bytes",
+				ErrSnapshotChanged, t.store.db, t.base.PageCount, t.base.PageSize, current.PageCount, current.PageSize)
+		}
+		counter = current.ChangeCounter
+	}
+	reads := t.readSet(now, metaFound)
 	t.meta.Generation = t.base.Generation
-	t.meta.ChangeCounter = t.base.ChangeCounter + 1
+	t.meta.ChangeCounter = counter + 1
 	metaValue, err := t.meta.MarshalBinary()
 	if err != nil {
 		return 0, err
@@ -613,7 +682,7 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 		dirtyBytes += len(page)
 	}
 	if dirtyBytes > t.store.stageThreshold {
-		return t.commitStaged(ctx, metaValue, deletes)
+		return t.commitStaged(ctx, reads, metaValue, deletes)
 	}
 	puts := make(map[string][]byte, len(t.dirty)+1)
 	puts[string(t.store.metaKey)] = metaValue
@@ -624,11 +693,35 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 		}
 		puts[string(key)] = page
 	}
-	rev, err := t.store.backend.Commit(ctx, puts, deletes)
+	rev, err := t.store.backend.Commit(ctx, reads, puts, deletes)
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: commit %q: %w", t.store.db, err)
 	}
 	return rev, nil
+}
+
+// readSet returns the read checks a commit carries. A transaction holding
+// the writer lock carries none: no other page store writer commits while it
+// holds it. Without one, the meta record read at revision now (found or not)
+// must be unchanged at the write, which makes Commit's generation (and, in
+// optimistic mode, file size) check atomic with it; in optimistic mode every
+// page the transaction read from its snapshot must also be unchanged since
+// rev, in key order.
+func (t *Txn) readSet(now int64, metaFound bool) []ReadCheck {
+	if t.store.writer != nil {
+		return nil
+	}
+	reads := make([]ReadCheck, 0, len(t.reads)+1)
+	reads = append(reads, ReadCheck{Key: t.store.metaKey, Rev: now, Found: metaFound})
+	keys := make([]string, 0, len(t.reads))
+	for key := range t.reads {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		reads = append(reads, ReadCheck{Key: []byte(key), Rev: t.rev, Found: t.reads[key]})
+	}
+	return reads
 }
 
 // Rollback discards the buffer and releases a held writer lock. The

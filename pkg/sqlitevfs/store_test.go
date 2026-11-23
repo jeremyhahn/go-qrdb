@@ -40,11 +40,11 @@ type failingBackend struct {
 	*MVCCBackend
 }
 
-func (f *failingBackend) Commit(context.Context, map[string][]byte, [][]byte) (int64, error) {
+func (f *failingBackend) Commit(context.Context, []ReadCheck, map[string][]byte, [][]byte) (int64, error) {
 	return 0, errInjected
 }
 
-func (f *failingBackend) Publish(context.Context, []byte, []byte, int64, map[string][]byte, [][]byte) (int64, error) {
+func (f *failingBackend) Publish(context.Context, []byte, []byte, int64, []ReadCheck, map[string][]byte, [][]byte) (int64, error) {
 	return 0, errInjected
 }
 
@@ -69,7 +69,7 @@ func newStagingBackend(t *testing.T) *stagingBackend {
 	return &stagingBackend{MVCCBackend: newTestBackend(t), failStageAfter: -1}
 }
 
-func (b *stagingBackend) Commit(ctx context.Context, puts map[string][]byte, deletes [][]byte) (int64, error) {
+func (b *stagingBackend) Commit(ctx context.Context, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	staging := len(puts) > 0
 	for k := range puts {
 		if !bytes.Contains([]byte(k), []byte(stageSegment)) {
@@ -77,12 +77,12 @@ func (b *stagingBackend) Commit(ctx context.Context, puts map[string][]byte, del
 		}
 	}
 	if !staging {
-		return b.MVCCBackend.Commit(ctx, puts, deletes)
+		return b.MVCCBackend.Commit(ctx, reads, puts, deletes)
 	}
 	if b.failStageAfter >= 0 && b.stageCommits >= b.failStageAfter {
 		return 0, errInjected
 	}
-	rev, err := b.MVCCBackend.Commit(ctx, puts, deletes)
+	rev, err := b.MVCCBackend.Commit(ctx, reads, puts, deletes)
 	if err != nil {
 		return 0, err
 	}
@@ -93,7 +93,7 @@ func (b *stagingBackend) Commit(ctx context.Context, puts map[string][]byte, del
 	return rev, nil
 }
 
-func (b *stagingBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (int64, error) {
+func (b *stagingBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys int64, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	b.publishes++
 	if b.onPublish != nil {
 		b.onPublish()
@@ -101,7 +101,7 @@ func (b *stagingBackend) Publish(ctx context.Context, src, dst []byte, expectedK
 	if b.failPublish {
 		return 0, errInjected
 	}
-	return b.MVCCBackend.Publish(ctx, src, dst, expectedKeys, puts, deletes)
+	return b.MVCCBackend.Publish(ctx, src, dst, expectedKeys, reads, puts, deletes)
 }
 
 // revOf returns b's current revision, failing the test on a read error.
@@ -677,9 +677,9 @@ func (b *ctxBackend) GetAt(ctx context.Context, key []byte, rev int64) ([]byte, 
 	return b.MVCCBackend.GetAt(ctx, key, rev)
 }
 
-func (b *ctxBackend) Commit(ctx context.Context, puts map[string][]byte, deletes [][]byte) (int64, error) {
+func (b *ctxBackend) Commit(ctx context.Context, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	b.commitCtx = ctx
-	return b.MVCCBackend.Commit(ctx, puts, deletes)
+	return b.MVCCBackend.Commit(ctx, reads, puts, deletes)
 }
 
 func TestStoreReadsWithBeginContext(t *testing.T) {
@@ -714,7 +714,7 @@ func TestStoreReadsWithBeginContext(t *testing.T) {
 
 func TestMVCCBackendHonoursDoneContext(t *testing.T) {
 	b := newTestBackend(t)
-	if _, err := b.Commit(t.Context(), map[string][]byte{"src/1": []byte("a")}, nil); err != nil {
+	if _, err := b.Commit(t.Context(), nil, map[string][]byte{"src/1": []byte("a")}, nil); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 	before := revOf(t, b)
@@ -725,11 +725,11 @@ func TestMVCCBackendHonoursDoneContext(t *testing.T) {
 		"GetAt":    func() error { _, _, err := b.GetAt(ctx, []byte("src/1"), before); return err },
 		"Keys":     func() error { _, err := b.Keys(ctx, []byte("src/"), before); return err },
 		"Commit": func() error {
-			_, err := b.Commit(ctx, map[string][]byte{"new": []byte("x")}, [][]byte{[]byte("src/1")})
+			_, err := b.Commit(ctx, nil, map[string][]byte{"new": []byte("x")}, [][]byte{[]byte("src/1")})
 			return err
 		},
 		"Publish": func() error {
-			_, err := b.Publish(ctx, []byte("src/"), []byte("dst/"), 1, map[string][]byte{"new": []byte("x")}, nil)
+			_, err := b.Publish(ctx, []byte("src/"), []byte("dst/"), 1, nil, map[string][]byte{"new": []byte("x")}, nil)
 			return err
 		},
 	}
@@ -782,11 +782,11 @@ func (b *errBackend) Keys(ctx context.Context, prefix []byte, rev int64) ([][]by
 	return b.MVCCBackend.Keys(ctx, prefix, rev)
 }
 
-func (b *errBackend) Commit(ctx context.Context, puts map[string][]byte, deletes [][]byte) (int64, error) {
+func (b *errBackend) Commit(ctx context.Context, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	if b.failCommit {
 		return 0, errInjected
 	}
-	return b.MVCCBackend.Commit(ctx, puts, deletes)
+	return b.MVCCBackend.Commit(ctx, reads, puts, deletes)
 }
 
 func TestStoreBackendErrors(t *testing.T) {
@@ -894,7 +894,7 @@ func TestStoreRefusesCorruptRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PageKey: %v", err)
 	}
-	if _, err := b.Commit(t.Context(), map[string][]byte{string(pageKey): []byte("short")}, nil); err != nil {
+	if _, err := b.Commit(t.Context(), nil, map[string][]byte{string(pageKey): []byte("short")}, nil); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 	txn := begin(t, s)
@@ -907,7 +907,7 @@ func TestStoreRefusesCorruptRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MetaKey: %v", err)
 	}
-	rev, err := b.Commit(t.Context(), map[string][]byte{string(metaKey): []byte("garbage")}, nil)
+	rev, err := b.Commit(t.Context(), nil, map[string][]byte{string(metaKey): []byte("garbage")}, nil)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -968,11 +968,11 @@ func TestTxnIOEdgeCases(t *testing.T) {
 
 func TestPublishCountMismatchWritesNothing(t *testing.T) {
 	b := newTestBackend(t)
-	if _, err := b.Commit(t.Context(), map[string][]byte{"src/1": []byte("a")}, nil); err != nil {
+	if _, err := b.Commit(t.Context(), nil, map[string][]byte{"src/1": []byte("a")}, nil); err != nil {
 		t.Fatal(err)
 	}
 	before := revOf(t, b)
-	_, err := b.Publish(t.Context(), []byte("src/"), []byte("dst/"), 2, map[string][]byte{"other": []byte("x")}, nil)
+	_, err := b.Publish(t.Context(), []byte("src/"), []byte("dst/"), 2, nil, map[string][]byte{"other": []byte("x")}, nil)
 	if !errors.Is(err, ErrPublishConflict) {
 		t.Fatalf("Publish with a count mismatch = %v, want ErrPublishConflict", err)
 	}
@@ -1000,7 +1000,7 @@ func TestPublishRefusesInvalidRequest(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := b.Publish(t.Context(), []byte(tc.src), []byte(tc.dst), tc.expected, nil, nil)
+			_, err := b.Publish(t.Context(), []byte(tc.src), []byte(tc.dst), tc.expected, nil, nil, nil)
 			if !errors.Is(err, ErrInvalidPublish) {
 				t.Fatalf("Publish = %v, want ErrInvalidPublish", err)
 			}
@@ -1250,7 +1250,7 @@ func TestReserveSweepsAbandonedStages(t *testing.T) {
 	for _, key := range b.stageKeys {
 		leftovers[string(key)] = pageOf(0xEE)
 	}
-	if _, err := b.MVCCBackend.Commit(t.Context(), leftovers, nil); err != nil {
+	if _, err := b.MVCCBackend.Commit(t.Context(), nil, leftovers, nil); err != nil {
 		t.Fatalf("rewrite stage keys: %v", err)
 	}
 	if _, err := locker.TryLock(ctx, lock.LockOptions{Key: sa.lockKey, HolderID: "a", TTL: time.Minute}); err != nil {
@@ -1330,15 +1330,15 @@ func TestMVCCBackendKeys(t *testing.T) {
 	if keys, err := b.Keys(t.Context(), []byte("p/"), 0); err != nil || keys != nil {
 		t.Fatalf("Keys at revision 0 = %q, %v", keys, err)
 	}
-	rev1, err := b.Commit(t.Context(), map[string][]byte{"p/a": []byte("1"), "q/a": []byte("x")}, nil)
+	rev1, err := b.Commit(t.Context(), nil, map[string][]byte{"p/a": []byte("1"), "q/a": []byte("x")}, nil)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	rev2, err := b.Commit(t.Context(), map[string][]byte{"p/b": []byte("2")}, nil)
+	rev2, err := b.Commit(t.Context(), nil, map[string][]byte{"p/b": []byte("2")}, nil)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	rev3, err := b.Commit(t.Context(), nil, [][]byte{[]byte("p/a")})
+	rev3, err := b.Commit(t.Context(), nil, nil, [][]byte{[]byte("p/a")})
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}

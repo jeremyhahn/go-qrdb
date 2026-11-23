@@ -14,7 +14,10 @@
 
 package sqlitevfs
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	// ErrInvalidDatabaseName is returned for a database name that is empty,
@@ -63,6 +66,18 @@ var (
 	// NewLockerWriter for a nil locker, an empty holder id or a
 	// non-positive TTL.
 	ErrInvalidOption = errors.New("sqlitevfs: invalid option")
+
+	// ErrOptimisticWithWriterLock is returned by NewStore when both
+	// WithOptimistic and WithWriterLock are given: optimistic mode is the
+	// no-lock writer (Q3 A), so the two are exclusive. It wraps
+	// ErrInvalidOption.
+	ErrOptimisticWithWriterLock = fmt.Errorf("%w: optimistic mode and a writer lock are exclusive", ErrInvalidOption)
+
+	// ErrReadCheckUnsupported is returned by a Backend.Publish that cannot
+	// evaluate a non-empty read set atomically with the prefix move (the
+	// service path: OpMVCCMovePrefix carries no compares). It writes
+	// nothing; the check is refused, never approximated.
+	ErrReadCheckUnsupported = errors.New("sqlitevfs: backend cannot check a read set atomically with a publish")
 
 	// ErrBusy is returned when the database's writer lock is held by
 	// another writer, or when this transaction's lease on it was lost

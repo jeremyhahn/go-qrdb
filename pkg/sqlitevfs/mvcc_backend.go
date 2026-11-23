@@ -123,14 +123,50 @@ func prefixEnd(prefix []byte) []byte {
 // Commit writes every put and every delete into one storage batch at
 // revision CurrentRevision()+1, commits it, and publishes the revision. Any
 // error closes the batch uncommitted and leaves the revision unchanged. A
-// commit with nothing to write returns the current revision.
-func (b *MVCCBackend) Commit(ctx context.Context, puts map[string][]byte, deletes [][]byte) (int64, error) {
+// commit with nothing to write returns the current revision. The read
+// checks are evaluated first under the same lock (checkReadsLocked): a failed
+// one is ErrSnapshotChanged and writes nothing.
+func (b *MVCCBackend) Commit(ctx context.Context, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := b.checkReadsLocked(reads); err != nil {
+		return 0, err
+	}
 	return b.commitLocked(puts, deletes)
+}
+
+// checkReadsLocked evaluates every read check against the newest committed
+// revision; b.mu must be held, so no commit lands between the check and the
+// batch that follows it. A moved key is ErrSnapshotChanged.
+func (b *MVCCBackend) checkReadsLocked(reads []ReadCheck) error {
+	if len(reads) == 0 {
+		return nil
+	}
+	now := b.store.CurrentRevision()
+	for _, r := range reads {
+		var modRev int64
+		found := false
+		if now > 0 {
+			kv, err := b.store.GetAtRevision(r.Key, now)
+			if err != nil {
+				var notFound *mvcc.KeyNotFoundError
+				var noRevision *mvcc.RevisionNotFoundError
+				if !errors.As(err, &notFound) && !errors.As(err, &noRevision) {
+					return fmt.Errorf("sqlitevfs: read check %q at revision %d: %w", r.Key, now, err)
+				}
+			} else {
+				found = true
+				modRev = kv.ModRevision
+			}
+		}
+		if found != r.Found || (found && modRev > r.Rev) {
+			return fmt.Errorf("%w: %q changed since revision %d", ErrSnapshotChanged, r.Key, r.Rev)
+		}
+	}
+	return nil
 }
 
 // Publish lists the keys live under src at CurrentRevision(), puts each
@@ -140,7 +176,7 @@ func (b *MVCCBackend) Commit(ctx context.Context, puts map[string][]byte, delete
 // ErrPublishConflict and writes nothing. This is the local-process path
 // only; the replicated path is ServiceBackend over the server's
 // OpMVCCMovePrefix.
-func (b *MVCCBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (int64, error) {
+func (b *MVCCBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys int64, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -149,6 +185,9 @@ func (b *MVCCBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := b.checkReadsLocked(reads); err != nil {
+		return 0, err
+	}
 	rev := b.store.CurrentRevision()
 	keys, err := b.Keys(ctx, src, rev)
 	if err != nil {

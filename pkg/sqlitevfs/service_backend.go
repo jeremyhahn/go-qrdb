@@ -132,27 +132,61 @@ func (b *ServiceBackend) Keys(ctx context.Context, prefix []byte, rev int64) ([]
 // returns its revision. Nothing to write returns the current revision. A
 // transaction past the tenant's storage quota (a *quota.ExceededError) is
 // ErrFull, joined with the cause.
-func (b *ServiceBackend) Commit(ctx context.Context, puts map[string][]byte, deletes [][]byte) (int64, error) {
+func (b *ServiceBackend) Commit(ctx context.Context, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	if len(puts) == 0 && len(deletes) == 0 {
 		return b.Revision(ctx)
 	}
-	resp, err := b.txn.Execute(ctx, nil, writeOps(puts, deletes), nil)
+	resp, err := b.txn.Execute(ctx, readCompares(reads), writeOps(puts, deletes), nil)
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: commit transaction: %w", full(err))
 	}
-	if resp == nil || !resp.Succeeded {
+	if resp == nil {
+		return 0, errors.New("sqlitevfs: commit transaction returned no response")
+	}
+	if !resp.Succeeded {
+		if len(reads) > 0 {
+			return 0, fmt.Errorf("%w: a read check failed at revision %d", ErrSnapshotChanged, resp.Revision)
+		}
 		return 0, errors.New("sqlitevfs: commit transaction did not succeed")
 	}
 	return resp.Revision, nil
 }
 
+// readCompares returns each read check as service compares: a key read
+// live at Rev must still be live (ModRevision greater than 0) with
+// ModRevision less than Rev+1; a key read absent must still read
+// ModRevision 0, which a key never written or no longer live does.
+func readCompares(reads []ReadCheck) []service.Compare {
+	if len(reads) == 0 {
+		return nil
+	}
+	cmps := make([]service.Compare, 0, 2*len(reads))
+	for _, r := range reads {
+		if !r.Found {
+			cmps = append(cmps, service.Compare{Key: r.Key, Target: service.CompareModRevision, Result: service.CompareEqual, ModRevision: 0})
+			continue
+		}
+		cmps = append(cmps,
+			service.Compare{Key: r.Key, Target: service.CompareModRevision, Result: service.CompareGreater, ModRevision: 0},
+			service.Compare{Key: r.Key, Target: service.CompareModRevision, Result: service.CompareLess, ModRevision: r.Rev + 1},
+		)
+	}
+	return cmps
+}
+
 // Publish sends one server-side prefix move. A *service.CommandConflictError
 // (a live source count other than expectedKeys at apply) is
 // ErrPublishConflict. A move past the tenant's storage quota (a
-// *quota.ExceededError) is ErrFull, joined with the cause.
-func (b *ServiceBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys int64, puts map[string][]byte, deletes [][]byte) (int64, error) {
+// *quota.ExceededError) is ErrFull, joined with the cause. A non-empty read
+// set is refused with ErrReadCheckUnsupported before anything is sent:
+// OpMVCCMovePrefix carries no compares, and a compare read before the move
+// would not be atomic with it.
+func (b *ServiceBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys int64, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
 	if err := validatePublish(src, dst, expectedKeys); err != nil {
 		return 0, err
+	}
+	if len(reads) > 0 {
+		return 0, fmt.Errorf("%w: %d read checks on the publish of %q", ErrReadCheckUnsupported, len(reads), src)
 	}
 	rev, err := b.kv.MovePrefix(ctx, &service.MovePrefixRequest{
 		Src:          string(src),

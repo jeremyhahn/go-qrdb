@@ -92,12 +92,12 @@ func (d *serviceDouble) MovePrefix(ctx context.Context, req *service.MovePrefixR
 		return 0, d.moveErr
 	}
 	if d.strayUnder {
-		if _, err := d.b.Commit(ctx, map[string][]byte{req.Src + "\xff\xff\xff\xff": []byte("stray")}, nil); err != nil {
+		if _, err := d.b.Commit(ctx, nil, map[string][]byte{req.Src + "\xff\xff\xff\xff": []byte("stray")}, nil); err != nil {
 			return 0, err
 		}
 	}
 	puts, deletes := splitOps(req.Ops)
-	rev, err := d.b.Publish(ctx, []byte(req.Src), []byte(req.Dst), req.ExpectedKeys, puts, deletes)
+	rev, err := d.b.Publish(ctx, []byte(req.Src), []byte(req.Dst), req.ExpectedKeys, nil, puts, deletes)
 	if errors.Is(err, ErrPublishConflict) {
 		return 0, &service.CommandConflictError{Message: err.Error()}
 	}
@@ -113,7 +113,7 @@ func (d *serviceDouble) Execute(ctx context.Context, compares []service.Compare,
 		return nil, d.execErr
 	}
 	puts, deletes := splitOps(successOps)
-	rev, err := d.b.Commit(ctx, puts, deletes)
+	rev, err := d.b.Commit(ctx, nil, puts, deletes)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +159,7 @@ type callKey struct{}
 
 func TestServiceBackendPassesCallContext(t *testing.T) {
 	sb, d := newServiceBackend(t)
-	if _, err := sb.Commit(t.Context(), map[string][]byte{"src/a": []byte("1")}, nil); err != nil {
+	if _, err := sb.Commit(t.Context(), nil, map[string][]byte{"src/a": []byte("1")}, nil); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 	rev := revOf(t, sb)
@@ -173,11 +173,11 @@ func TestServiceBackendPassesCallContext(t *testing.T) {
 		{"GetAt", "GetAtRevision", func(ctx context.Context) error { _, _, err := sb.GetAt(ctx, []byte("src/a"), rev); return err }},
 		{"Keys", "Range", func(ctx context.Context) error { _, err := sb.Keys(ctx, []byte("src/"), rev); return err }},
 		{"Commit", "Execute", func(ctx context.Context) error {
-			_, err := sb.Commit(ctx, map[string][]byte{"k": []byte("v")}, nil)
+			_, err := sb.Commit(ctx, nil, map[string][]byte{"k": []byte("v")}, nil)
 			return err
 		}},
 		{"Publish", "MovePrefix", func(ctx context.Context) error {
-			_, err := sb.Publish(ctx, []byte("src/"), []byte("dst/"), 1, nil, nil)
+			_, err := sb.Publish(ctx, []byte("src/"), []byte("dst/"), 1, nil, nil, nil)
 			return err
 		}},
 	}
@@ -199,7 +199,7 @@ func TestServiceBackendPassesCallContext(t *testing.T) {
 
 func TestServiceBackendGetAt(t *testing.T) {
 	sb, d := newServiceBackend(t)
-	rev, err := sb.Commit(t.Context(), map[string][]byte{"k": []byte("v")}, nil)
+	rev, err := sb.Commit(t.Context(), nil, map[string][]byte{"k": []byte("v")}, nil)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestServiceBackendKeysPages(t *testing.T) {
 		puts[key] = []byte("v")
 		want = append(want, key)
 	}
-	rev, err := sb.Commit(t.Context(), puts, nil)
+	rev, err := sb.Commit(t.Context(), nil, puts, nil)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -251,11 +251,11 @@ func TestServiceBackendKeysPages(t *testing.T) {
 
 func TestServiceBackendCommitNothing(t *testing.T) {
 	sb, _ := newServiceBackend(t)
-	before, err := sb.Commit(t.Context(), map[string][]byte{"k": []byte("v")}, nil)
+	before, err := sb.Commit(t.Context(), nil, map[string][]byte{"k": []byte("v")}, nil)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	rev, err := sb.Commit(t.Context(), nil, nil)
+	rev, err := sb.Commit(t.Context(), nil, nil, nil)
 	if err != nil || rev != before || revOf(t, sb) != before {
 		t.Fatalf("empty Commit = %d, %v; backend at %d; want %d", rev, err, revOf(t, sb), before)
 	}
@@ -323,12 +323,12 @@ func TestServiceBackendQuotaIsErrFull(t *testing.T) {
 	puts := map[string][]byte{"k": []byte("v")}
 	commit := func(sb *ServiceBackend, d *serviceDouble, err error) error {
 		d.execErr = err
-		_, got := sb.Commit(t.Context(), puts, nil)
+		_, got := sb.Commit(t.Context(), nil, puts, nil)
 		return got
 	}
 	publish := func(sb *ServiceBackend, d *serviceDouble, err error) error {
 		d.moveErr = err
-		_, got := sb.Publish(t.Context(), []byte("src/"), []byte("dst/"), 1, puts, nil)
+		_, got := sb.Publish(t.Context(), []byte("src/"), []byte("dst/"), 1, nil, puts, nil)
 		return got
 	}
 	tests := []struct {
@@ -385,7 +385,7 @@ func TestServiceBackendSweepAndBump(t *testing.T) {
 		}
 		leftovers[string(key)] = pageOf(0xEE)
 	}
-	if _, err := sb.Commit(t.Context(), leftovers, nil); err != nil {
+	if _, err := sb.Commit(t.Context(), nil, leftovers, nil); err != nil {
 		t.Fatalf("Commit leftovers: %v", err)
 	}
 	rev := revOf(t, sb)
