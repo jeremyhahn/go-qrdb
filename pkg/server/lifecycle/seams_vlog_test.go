@@ -117,37 +117,65 @@ func TestBuildServices_LogServiceRoutesBarrierTenantsToTheirHome(t *testing.T) {
 	}
 }
 
-// auditedBarrierTenants is a barrier tenant whose replicated audit is
-// entitled, so the opt-in logger hands its events to the replicated writer.
-type auditedBarrierTenants struct{ barrierTenants }
+// TestBuildServices_StandaloneBarrierTenantsAuditIsWrittenToTheSystemShard:
+// on a composed standalone node whose barrier tenant's home is attached by
+// AttachLocalTenantHomes, the tenant's audit events are written to the
+// system shard, as on main, and read back from it; the log service routes
+// the audit instance to the same shard. A standalone node gates no feature,
+// so it holds no verifiable audit instance for any tenant (OpAuditAppend);
+// the provable trail is a raft node's (TestLogService_ReadsABarrierTenants
+// AuditInstanceWhereItsLoggerWrites in pkg/service).
+func TestBuildServices_StandaloneBarrierTenantsAuditIsWrittenToTheSystemShard(t *testing.T) {
+	mvcc, err := engine.NewMVCCEngine(memory.NewStorage(), engine.WithMVCCLogs(vlog.NewChain()))
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	// A standalone node's system shard is a local backend that gates no
+	// features (cmd/qrdbd), so its replicated audit keeps OpAuditAppend.
+	host := backend.NewLocalBackend(mvcc)
+	t.Cleanup(func() { _ = host.Close() })
+	node, registry := buildRoutedIAMNodeOn(t, host)
+	ctx := context.Background()
+	if _, err := node.Tenant.CreateTenant(ctx, "vault", "Vault", tenant.IsolationBarrier); err != nil {
+		t.Fatalf("CreateTenant(barrier): %v", err)
+	}
+	if err := registry.InitializeTenant(ctx, "vault", seal.Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant(barrier): %v", err)
+	}
+	node.Tenant = auditedTenants{TenantServicer: node.Tenant}
+	vault := tenant.WithTenantID(ctx, "vault")
 
-func (auditedBarrierTenants) ReplicatedAuditEnabled(context.Context, string) (bool, error) {
-	return true, nil
+	for _, action := range []string{"secret.read", "secret.write"} {
+		if err := node.ReplicatedAudit.Emit(vault, audit.AuditEvent{TenantID: "vault", Action: action}); err != nil {
+			t.Fatalf("Emit(%s): %v", action, err)
+		}
+	}
+	page, err := node.ReplicatedAudit.Query(vault, audit.Filter{TenantID: "vault"})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, ev := range page.Events {
+		seen[ev.Action] = true
+	}
+	if !seen["secret.read"] || !seen["secret.write"] {
+		t.Fatalf("Query = %+v, want both audited events read back from the system shard", page.Events)
+	}
+	// The log service routes the audit instance where the logger writes:
+	// the system shard, never the tenant's home store.
+	_, headErr := node.Log.Head(vault, &service.HeadRequest{LogRef: service.LogRef{Database: vlog.AuditDatabase, Log: vlog.AuditLog}})
+	var unavailable *service.BarrierStoreUnavailableError
+	if errors.As(headErr, &unavailable) || errors.Is(headErr, tenant.ErrTenantSealed) {
+		t.Fatalf("Head(audit) = %v, want it routed to the system shard, not the barrier home", headErr)
+	}
 }
 
-// TestBuildServices_AuditAndLogShareTheBarrierTenantsGroup pins that the
-// composed node's audit writer and log reader resolve a barrier tenant's
-// audit trail through the same resolver: with no home group attached both
-// refuse with the same error, and neither falls back to the system shard.
-func TestBuildServices_AuditAndLogShareTheBarrierTenantsGroup(t *testing.T) {
-	device := &recordingHeadSigners{}
-	node := buildSeamNode(t, lifecycle.Infra{HeadSignerProvider: device})
-	node.Tenant = auditedBarrierTenants{}
-	ctx := tenant.WithTenantID(context.Background(), "vault")
+// auditedTenants is a composed node's tenant service with replicated audit
+// entitled for every tenant.
+type auditedTenants struct{ tenant.TenantServicer }
 
-	emitErr := node.ReplicatedAudit.Emit(ctx, audit.AuditEvent{TenantID: "vault", Action: "secret.read"})
-	var emitRefused *service.BarrierStoreUnavailableError
-	if !errors.As(emitErr, &emitRefused) || emitRefused.TenantID != "vault" {
-		t.Fatalf("Emit = %v, want *service.BarrierStoreUnavailableError for vault", emitErr)
-	}
-	_, headErr := node.Log.Head(ctx, &service.HeadRequest{LogRef: service.LogRef{Database: "system", Log: "audit"}})
-	var headRefused *service.BarrierStoreUnavailableError
-	if !errors.As(headErr, &headRefused) || headRefused.TenantID != "vault" {
-		t.Fatalf("Head = %v, want *service.BarrierStoreUnavailableError for vault", headErr)
-	}
-	if len(device.created) != 0 {
-		t.Fatalf("device asked to create %+v for a refused tenant", device.created)
-	}
+func (auditedTenants) ReplicatedAuditEnabled(context.Context, string) (bool, error) {
+	return true, nil
 }
 
 // TestBuildServices_LogServiceServesBarrierDatabases: the composed log
