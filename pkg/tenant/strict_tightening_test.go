@@ -17,6 +17,7 @@ package tenant
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -535,6 +536,72 @@ func TestTightenToStrict_RefusesACommitPastItsLease(t *testing.T) {
 		})
 	if !errors.Is(err, ErrTighteningLeaseExpired) {
 		t.Fatalf("guardedUpdate past the lease = %v, want ErrTighteningLeaseExpired", err)
+	}
+}
+
+// TestTightenToStrict_WritesIsolationEpochBeforeProbe: a tightening to
+// strict writes a fresh value to the epoch key of its scope before its
+// node-key log probe runs, so a shared-store write guarded on the epoch it
+// read before then is refused at apply time.
+func TestTightenToStrict_WritesIsolationEpochBeforeProbe(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name, prefix, key string
+	}{
+		{"tenant", tighteningPrefix + "acme/", isolationEpochPrefix + "acme"},
+		{"floor", clusterTighteningPrefix, clusterEpochKey},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemMarkerStore()
+			before := []byte("earlier-epoch")
+			_ = store.Put(ctx, tc.key, before)
+			var seen []byte
+			probe := &fixedProbe{}
+			probe.during = func() {
+				store.mu.Lock()
+				seen = append([]byte(nil), store.kv[tc.key]...)
+				store.mu.Unlock()
+			}
+			var g isolationChangeGuard
+			g.SetNodeKeyLogProbe(probe)
+			g.SetAuditRouteProbe(noSystemAuditRoute{})
+			committed := false
+			err := g.tightenToStrict(ctx, store, tc.prefix, true,
+				func(context.Context) ([]string, error) { return []string{"acme"}, nil },
+				func(context.Context) error { committed = true; return nil })
+			if err != nil || !committed {
+				t.Fatalf("tightenToStrict = %v (committed %v), want a commit", err, committed)
+			}
+			if len(seen) == 0 || string(seen) == string(before) {
+				t.Fatalf("the probe read epoch %q, want a fresh one (before %q)", seen, before)
+			}
+			after, err := store.Get(ctx, tc.key)
+			if err != nil || string(after) != string(seen) {
+				t.Fatalf("epoch after the tightening = (%q, %v), want %q kept", after, err, seen)
+			}
+			if !slices.Contains(IsolationEpochKeys("acme"), tc.key) {
+				t.Fatalf("IsolationEpochKeys(acme) = %v, missing %q", IsolationEpochKeys("acme"), tc.key)
+			}
+		})
+	}
+}
+
+// TestIsolationEpochs_AbsentKeysAreOmitted: a key no tightening wrote is
+// absent from the map IsolationEpochs returns; a written one is present.
+func TestIsolationEpochs_AbsentKeysAreOmitted(t *testing.T) {
+	ctx := context.Background()
+	store := newMemMarkerStore()
+	got, err := isolationEpochs(ctx, store, "acme")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("isolationEpochs over an empty store = (%v, %v), want an empty map", got, err)
+	}
+	_ = store.Put(ctx, clusterEpochKey, []byte("floor"))
+	got, err = isolationEpochs(ctx, store, "acme")
+	if err != nil || len(got) != 1 || string(got[clusterEpochKey]) != "floor" {
+		t.Fatalf("isolationEpochs = (%v, %v), want only the floor epoch", got, err)
+	}
+	if _, ok := got[isolationEpochPrefix+"acme"]; ok {
+		t.Fatal("an unwritten tenant epoch is present in the map")
 	}
 }
 

@@ -61,6 +61,62 @@ const (
 	clusterTighteningPrefix = tighteningPrefix + "__cluster/"
 )
 
+// isolationEpochPrefix keys the isolation epochs: one fixed key per tenant
+// (isolationEpochPrefix + tenant) and one for the cluster floor
+// (isolationEpochPrefix + "__cluster"), in the system store. Every
+// tightening to strict writes a fresh random value to the key of its scope
+// before its node-key log probe runs; the key is never deleted. A
+// shared-store write carries a guard comparing both keys to the values it
+// read at propose time (service.WithGuardedWriteCheck), so a write in flight
+// across a tightening is refused at apply time on every replica: the
+// marker keys above carry a nonce and cannot be compared.
+const (
+	isolationEpochPrefix = "__sys:isolation-epoch/"
+	clusterEpochKey      = isolationEpochPrefix + "__cluster"
+)
+
+// IsolationEpochKeys returns the epoch keys a write of tenantID's to the
+// shared store is guarded on: the tenant's own, then the cluster floor's.
+func IsolationEpochKeys(tenantID string) []string {
+	return []string{isolationEpochPrefix + tenantID, clusterEpochKey}
+}
+
+// isolationEpochKeyFor returns the epoch key of the tightening whose markers
+// go under markerPrefix: the floor's for clusterTighteningPrefix, else the
+// tenant's of tighteningPrefix + tenant + "/".
+func isolationEpochKeyFor(markerPrefix string) string {
+	if markerPrefix == clusterTighteningPrefix {
+		return clusterEpochKey
+	}
+	return isolationEpochPrefix + strings.TrimSuffix(strings.TrimPrefix(markerPrefix, tighteningPrefix), "/")
+}
+
+// IsolationEpochReader reads the isolation epochs governing tenantID's
+// shared-store writes (IsolationEpochKeys) from the system store. A key no
+// tightening has written is absent from the map.
+type IsolationEpochReader interface {
+	IsolationEpochs(ctx context.Context, tenantID string) (map[string][]byte, error)
+}
+
+// isolationEpochs reads IsolationEpochKeys(tenantID) from store.
+func isolationEpochs(ctx context.Context, store markerStore, tenantID string) (map[string][]byte, error) {
+	out := make(map[string][]byte, 2)
+	for _, key := range IsolationEpochKeys(tenantID) {
+		value, err := store.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, seal.ErrSecretNotFound) {
+				continue
+			}
+			return nil, &StoreError{Op: "isolation-epoch-read", Err: err}
+		}
+		if value == nil {
+			continue
+		}
+		out[key] = value
+	}
+	return out, nil
+}
+
 // NodeKeyLogProbe lists a tenant's raft databases whose log is on the
 // shared, node-keyed WAL. service.NodeKeyLogProbe is the implementation.
 type NodeKeyLogProbe interface {
@@ -135,6 +191,8 @@ var (
 	_ StrictTighteningWiring    = (*kvTenantService)(nil)
 	_ IsolationTighteningReader = (*TenantService)(nil)
 	_ IsolationTighteningReader = (*kvTenantService)(nil)
+	_ IsolationEpochReader      = (*TenantService)(nil)
+	_ IsolationEpochReader      = (*kvTenantService)(nil)
 )
 
 // ErrNodeKeyLogsUnverifiable refuses a tightening to strict that affects a
@@ -296,6 +354,16 @@ func (g *isolationChangeGuard) tightenToStrict(ctx context.Context, store marker
 		return &StoreError{Op: "isolation-tightening-mark", Err: err}
 	}
 	defer func() { _ = store.Delete(context.WithoutCancel(ctx), key) }()
+	// The epoch is written BEFORE the probe: a shared-store write guarded
+	// on the epoch it read either applied before this write, and the probe
+	// below counts its data, or applies after it and is refused.
+	var epoch [16]byte
+	if _, err := rand.Read(epoch[:]); err != nil {
+		return &StoreError{Op: "isolation-epoch-write", Err: err}
+	}
+	if err := store.Put(ctx, isolationEpochKeyFor(markerPrefix), []byte(hex.EncodeToString(epoch[:]))); err != nil {
+		return &StoreError{Op: "isolation-epoch-write", Err: err}
+	}
 	ids, err := tenants(ctx)
 	if err != nil {
 		return err
@@ -415,6 +483,16 @@ func (s *TenantService) IsolationTightening(ctx context.Context, tenantID string
 // IsolationTightening implements IsolationTighteningReader.
 func (s *kvTenantService) IsolationTightening(ctx context.Context, tenantID string) (bool, error) {
 	return isolationTightening(ctx, s.store, tenantID)
+}
+
+// IsolationEpochs implements IsolationEpochReader.
+func (s *TenantService) IsolationEpochs(ctx context.Context, tenantID string) (map[string][]byte, error) {
+	return isolationEpochs(ctx, s.store, tenantID)
+}
+
+// IsolationEpochs implements IsolationEpochReader.
+func (s *kvTenantService) IsolationEpochs(ctx context.Context, tenantID string) (map[string][]byte, error) {
+	return isolationEpochs(ctx, s.store, tenantID)
 }
 
 // guardedUpdate runs update, UpdateTenant's commit, under tightenToStrict
