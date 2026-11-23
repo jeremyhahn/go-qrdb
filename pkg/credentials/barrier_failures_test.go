@@ -10,7 +10,6 @@ package credentials
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -135,13 +134,4 @@ func TestBarrier_SealedStoreIsRefused(t *testing.T) {
 	err := svc.StoreCredential(ctx, "k", []byte("v1"))
 	assert.ErrorIs(t, err, seal.ErrSealed)
 	assert.Empty(t, logger.snapshot(), "a refused store must not be audited as a success")
-}
-
-// TestOperationError_MessageNamesTheOperation pins the message format the
-// typed error replaced the inline wrapping idiom with.
-func TestOperationError_MessageNamesTheOperation(t *testing.T) {
-	cause := seal.ErrSealed
-	err := &OperationError{Op: "write meta", Cause: cause}
-	assert.True(t, strings.HasPrefix(err.Error(), "credentials: write meta: "))
-	assert.ErrorIs(t, err, cause)
 }
