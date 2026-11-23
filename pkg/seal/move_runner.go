@@ -242,23 +242,47 @@ func (m *MoveStepRunner) assignmentPath(ctx context.Context, tenantID string) (s
 
 // ReopenVolumeTenant re-registers tenantID's barrier from the directory
 // RequireInsideLocalPool resolves, with the posture its last registration
-// persisted, as boot's ReattachVolumeTenant does. It is the barrier half of
+// persisted, and unseals an auto-unseal tenant through the system barrier,
+// as boot's RestoreVolumeTenants does: the tenant's host and shards attach
+// right after and read through the barrier. A self-managed tenant stays
+// sealed until its admin unseals it, as after a restart. A successful
+// re-attach ends the hold CloseVolumeTenant began. It is the barrier half of
 // a TenantStoreCloser's reopen.
 func (r *BarrierRegistry) ReopenVolumeTenant(ctx context.Context, tenantID string) error {
 	autoUnseal, _, err := r.loadTenantBarrierPosture(ctx, tenantID)
 	if err != nil {
 		return err
 	}
-	_, _, err = r.ReattachVolumeTenant(ctx, tenantID, autoUnseal)
-	return err
+	if _, _, err = r.ReattachVolumeTenant(ctx, tenantID, autoUnseal); err != nil {
+		return err
+	}
+	r.moveHeld.Delete(tenantID)
+	if !autoUnseal {
+		return nil
+	}
+	return r.UnsealTenant(ctx, tenantID, Credentials{})
+}
+
+// TenantMoveHeldError is a fresh registration of a volume tenant refused
+// because a move step on this node holds the tenant's stores closed: the
+// move's own reopen opens them again, from whichever pool the move settles.
+type TenantMoveHeldError struct {
+	TenantID string
+}
+
+func (e *TenantMoveHeldError) Error() string {
+	return "qrdb/seal: tenant " + e.TenantID + " is held closed by a volume-pool move step"
 }
 
 // CloseVolumeTenant closes tenantID's barrier and its per-tenant Pebble
 // store on this node, so nothing holds the tenant's directory under the
 // source pool while a move copies it and the reopen from the destination
-// opens a fresh store entry; a tenant not open here is a no-op. It is the
-// barrier half of a TenantStoreCloser's close.
+// opens a fresh store entry; a tenant not open here is a no-op. Until
+// ReopenVolumeTenant, a fresh registration of the tenant (a placement-driven
+// barrier shell) is refused with *TenantMoveHeldError. It is the barrier
+// half of a TenantStoreCloser's close.
 func (r *BarrierRegistry) CloseVolumeTenant(ctx context.Context, tenantID string) error {
+	r.moveHeld.Store(tenantID, struct{}{})
 	if err := r.ReleaseTenant(ctx, tenantID); err != nil && !errors.Is(err, ErrTenantNotFound) {
 		return err
 	}

@@ -54,6 +54,13 @@ type BarrierRegistry struct {
 	// brings back -- each with the error of its last re-unseal attempt.
 	// An explicit tenant seal removes a tenant (SealTenant).
 	nodeSealed map[string]error
+
+	// moveHeld holds the volume tenants (tenantID -> struct{}) a move step
+	// closed on this node and has not reopened yet (CloseVolumeTenant,
+	// ReopenVolumeTenant). A fresh registration of one is refused, so a
+	// placement-driven barrier shell cannot open the tenant's store while
+	// the move copies its directory.
+	moveHeld sync.Map
 	// unsealGate, when set, vetoes a tenant's re-unseal (WithTenantUnsealGate).
 	unsealGate func(tenantID string) bool
 
@@ -1156,6 +1163,11 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID str
 	// misconfigured-but-unsealed call still reports ITS OWN error.
 	if r.system == nil || r.system.IsSealed() {
 		return "", nil, ErrSealed
+	}
+	// A move step holds the tenant closed: only its own reopen (a re-attach)
+	// may open the store again.
+	if _, held := r.moveHeld.Load(tenantID); held && !mustExist {
+		return "", nil, &TenantMoveHeldError{TenantID: tenantID}
 	}
 
 	dataRoot, err := r.RequireInsideLocalPool(ctx, tenantID)

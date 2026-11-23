@@ -128,8 +128,8 @@ func (s *barrierStores) OpenTenantStores(ctx context.Context, tenantID string) e
 	if err != nil {
 		return err
 	}
-	if err := tb.Unseal(ctx, Credentials{}); err != nil && !errors.Is(err, ErrAlreadyUnsealed) {
-		return err
+	if tb.IsSealed() {
+		return ErrSealed // the reopen must unseal an auto-unseal tenant itself
 	}
 	root, err := s.reg.RequireInsideLocalPool(ctx, tenantID)
 	if err != nil {
@@ -192,6 +192,55 @@ func TestMoveStepRunner_CopyMovesOpenPebbleStore(t *testing.T) {
 	}
 	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
 		t.Fatalf("settle copy: %v", err)
+	}
+}
+
+// TestBarrierRegistry_MoveHoldRefusesFreshRegistration pins the hold a move
+// step's close puts on a volume tenant: until the step's reopen, a fresh
+// registration (the placement reconciler's barrier shell) is refused with
+// *TenantMoveHeldError, and the reopen itself re-attaches the tenant
+// unsealed, ending the hold.
+func TestBarrierRegistry_MoveHoldRefusesFreshRegistration(t *testing.T) {
+	ctx := context.Background()
+	perTenantReg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
+	fx := newMoveFixture(t, WithPerTenantRegistry(perTenantReg))
+	if err := fx.reg.system.Initialize(ctx, MustCredentials(ctx, []byte("pool-test-pass"))); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+	_, tb, err := fx.reg.RegisterVolumeTenant(ctx, moveTestTenant, true)
+	if err != nil {
+		t.Fatalf("RegisterVolumeTenant: %v", err)
+	}
+	if err := tb.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("tenant Initialize: %v", err)
+	}
+
+	if err := fx.reg.CloseVolumeTenant(ctx, moveTestTenant); err != nil {
+		t.Fatalf("CloseVolumeTenant: %v", err)
+	}
+	_, _, err = fx.reg.RegisterVolumeTenant(ctx, moveTestTenant, true)
+	var held *TenantMoveHeldError
+	if !errors.As(err, &held) || held.TenantID != moveTestTenant {
+		t.Fatalf("RegisterVolumeTenant while held = %v, want *TenantMoveHeldError for %q", err, moveTestTenant)
+	}
+
+	if err := fx.reg.ReopenVolumeTenant(ctx, moveTestTenant); err != nil {
+		t.Fatalf("ReopenVolumeTenant: %v", err)
+	}
+	reopened, err := fx.reg.GetTenant(moveTestTenant)
+	if err != nil {
+		t.Fatalf("GetTenant after reopen: %v", err)
+	}
+	if reopened.IsSealed() {
+		t.Fatal("auto-unseal tenant is sealed after the reopen, want unsealed")
+	}
+	if err := fx.reg.CloseVolumeTenant(ctx, moveTestTenant); err != nil {
+		t.Fatalf("second CloseVolumeTenant: %v", err)
+	}
+	fx.reg.moveHeld.Delete(moveTestTenant)
+	if _, _, err := fx.reg.RegisterVolumeTenant(ctx, moveTestTenant, true); err != nil {
+		t.Fatalf("RegisterVolumeTenant after the hold ended: %v", err)
 	}
 }
 
