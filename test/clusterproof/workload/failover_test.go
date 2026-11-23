@@ -106,6 +106,19 @@ func (c *halfOpenConn) Put(ctx context.Context, key string, value []byte, opts .
 	return nil
 }
 
+// Get hangs like Put: a read on a half-open session is never answered.
+func (c *halfOpenConn) Get(ctx context.Context, key string, opts ...transport.ReadOption) ([]byte, error) {
+	if c.dead || c.h.hangs(c.endpoint) {
+		c.dead = true
+		return nil, context.DeadlineExceeded
+	}
+	v, err := c.Conn.Get(ctx, key, opts...)
+	if err == nil || isA[*transport.KeyNotFoundError](err) {
+		c.h.answer(c.endpoint)
+	}
+	return v, err
+}
+
 func noPause(w *Workload) { w.sleep = func(context.Context, time.Duration) {} }
 
 func TestRunFailsOverFromHalfOpenSessions(t *testing.T) {
@@ -148,6 +161,54 @@ func TestRunFailsOverFromHalfOpenSessions(t *testing.T) {
 	for id := range cfg.Clients {
 		if op, ok := last[id]; !ok || op.Outcome != history.OutcomeOK {
 			t.Errorf("client %d: last operation %+v, want ok once every node healed", id, op)
+		}
+	}
+}
+
+// TestRunFailsOverFromHalfOpenReads is #1637 fx1637e: a read the classifier
+// calls failed because it went unanswered must still fail the client over,
+// or a read-only client stays pinned to a half-open session.
+func TestRunFailsOverFromHalfOpenReads(t *testing.T) {
+	cfg := testConfig("n1", "n2", "n3")
+	cfg.Clients, cfg.OpsPerClient = 3, 200
+	cfg.Mix = Mix{Get: 1}
+	h := newHalfOpenCluster(30,
+		[]string{"n1"},       // n1 dies; its client must move on
+		[]string{"n2", "n3"}, // only the healed n1 answers
+		[]string{"n1", "n3"}, // only n2 answers
+		[]string{"n1", "n2"}, // only n3 answers
+		nil,                  // every node healed
+	)
+
+	hist, _, err := run(t, cfg, h.dial, noPause)
+	if err != nil {
+		t.Fatalf("FinalRead: %v", err)
+	}
+	// No ledger check: a read-only history holds no acknowledged write, so
+	// the ledger calls it vacuous by construction.
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.phase != len(h.phases)-1 {
+		t.Fatalf("run ended in fault phase %d of %d: read-only clients stopped completing reads", h.phase, len(h.phases)-1)
+	}
+	for _, c := range []struct {
+		endpoint string
+		phase    int
+	}{{"n1", 1}, {"n2", 2}, {"n3", 3}} {
+		if h.answered[c.phase][c.endpoint] == 0 {
+			t.Errorf("%s answered no read in phase %d after it healed", c.endpoint, c.phase)
+		}
+	}
+	last := make(map[int]history.Op)
+	for _, op := range hist {
+		if op.Client < cfg.Clients {
+			last[op.Client] = op
+		}
+	}
+	for id := range cfg.Clients {
+		if op, ok := last[id]; !ok || op.Kind != history.KindGet || op.Outcome != history.OutcomeOK {
+			t.Errorf("client %d: last operation %+v, want an ok read once every node healed", id, op)
 		}
 	}
 }

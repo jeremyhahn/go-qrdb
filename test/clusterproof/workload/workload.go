@@ -326,7 +326,7 @@ func (c *client) finish(p history.Pending, kind history.Kind, out *history.Outpu
 	if outcome == history.OutcomeOK {
 		c.pause.reset()
 	}
-	if outcome == history.OutcomeIndeterminate || connectionLost(err) {
+	if outcome == history.OutcomeIndeterminate || connectionLost(err) || unanswered(err) {
 		c.failover()
 	}
 	return outcome
@@ -335,7 +335,9 @@ func (c *client) finish(p history.Pending, kind history.Kind, out *history.Outpu
 // failover drops the client's connection and moves it to the next endpoint.
 // A definite rejection is an answer and keeps the connection; a connection
 // whose operation was not answered -- timed out or lost -- is never trusted
-// again: a session left half-open by a kill, a pause
+// again, even a read the classifier calls failed (a read has no effect, so
+// the history stays correct, but a timed-out read is no answer): a session
+// left half-open by a kill, a pause
 // or a partition can time out every later operation without ever reporting
 // the connection lost, which pinned a client to it for the rest of a soak.
 // The next operation dials afresh on the next endpoint, so a client keeps
