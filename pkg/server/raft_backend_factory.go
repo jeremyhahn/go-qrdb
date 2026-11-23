@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -231,6 +232,9 @@ type raftDatabaseInfoSource interface {
 // RaftBackendFactory is safe for concurrent use.
 type RaftBackendFactory struct {
 	host *quicraft.Host
+	// nodeGroupRoot is {nodeDataDir}/tenants (WithNodeGroupRoot); empty
+	// means a purge accepts only a local volume pool path.
+	nodeGroupRoot string
 	// leaderOf reads a shard's current leader replica. It is the host's
 	// LeaderID; LeadsShard reads leadership through it alone.
 	leaderOf       func(shardID uint64) (replicaID uint64, known bool, err error)
@@ -378,6 +382,30 @@ type TenantIsolationLookup func(ctx context.Context, tenantID string) (tenant.Is
 // (the node encryptor); without it, every tenant needs a tenant barrier.
 func WithTenantIsolation(lookup TenantIsolationLookup) RaftBackendOption {
 	return func(f *RaftBackendFactory) { f.isolation = lookup }
+}
+
+// WithNodeGroupRoot names the node-dir root, {nodeDataDir}/tenants, under
+// which IsolationRootResolver places a prefix or barrier tenant's groups. A
+// purge accepts a shard directory inside it as well as one inside a local
+// volume pool; without it, only a volume pool path is purged.
+func WithNodeGroupRoot(nodeDataDir string) RaftBackendOption {
+	return func(f *RaftBackendFactory) {
+		if nodeDataDir != "" {
+			f.nodeGroupRoot = filepath.Join(nodeDataDir, "tenants")
+		}
+	}
+}
+
+// requirePurgeablePath fails unless dir is strictly inside the node group
+// root or inside one of this node's local volume pools.
+func (f *RaftBackendFactory) requirePurgeablePath(dir string) error {
+	if f.nodeGroupRoot != "" {
+		if rel, err := filepath.Rel(f.nodeGroupRoot, filepath.Clean(dir)); err == nil &&
+			rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			return nil
+		}
+	}
+	return f.barrierReg.RequirePathInsideLocalPools(context.Background(), dir)
 }
 
 // groupBarrier returns the barrier a tenant's database groups run under: the
@@ -1728,10 +1756,10 @@ func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string) error {
 	if err := f.stopShard(rs); err != nil {
 		return err
 	}
-	// Delete only inside this node's own volume pool: a shard directory is
-	// resolved locally, so anything else is a path this node does not own,
-	// and is refused however the shard came to name it.
-	if err := f.barrierReg.RequirePathInsideLocalPools(context.Background(), rs.dataDir); err != nil {
+	// Delete only inside this node's own volume pool or its node group root:
+	// a shard directory is resolved locally, so anything else is a path this
+	// node does not own, and is refused however the shard came to name it.
+	if err := f.requirePurgeablePath(rs.dataDir); err != nil {
 		return &RaftBackendError{TenantID: tenantID, Database: db, Op: "purge-data-dir", Err: err}
 	}
 	if err := os.RemoveAll(rs.dataDir); err != nil {

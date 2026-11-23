@@ -323,6 +323,7 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 				cfg.Manager.SetRaftReplicaNodes(PlacementReplicaNodes(cfg.PlacementStore))
 			}
 			raftOpts = append(raftOpts,
+				WithNodeGroupRoot(nodeDataDir),
 				WithPlacementInfoSource(cfg.PlacementStore, cfg.RaftAddr,
 					IsolationRootResolver(isolation, nodeDataDir, cfg.BarrierReg.LocalTenantDataRoot)))
 		}

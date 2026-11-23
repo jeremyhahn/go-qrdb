@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -406,6 +407,113 @@ func TestDatabaseBinding_CLI_RaftModeLocalBackendOwnStore_PerProtocol(t *testing
 				t.Fatalf("[%s] the dropped database's store %s still exists (%v)", proto.name, root, err)
 			}
 		})
+	}
+}
+
+// TestDatabaseBinding_CLI_PrefixTenantRaftDatabaseOwnGroup_PerProtocol: on
+// a raft-mode node, a backend: raft database of a prefix tenant and of a
+// barrier tenant runs its own Raft group (OD-1 A) on every transport: its
+// group's store sits under {DataDir}/tenants/<tenant>/databases/<db>, the
+// binding block reports kind raft, the replica nodes and the encryption
+// scope, drop removes the group's directory, and a recreate is empty with a
+// higher generation.
+func TestDatabaseBinding_CLI_PrefixTenantRaftDatabaseOwnGroup_PerProtocol(t *testing.T) {
+	// A backend: raft database needs the raft isolation entitlement, an
+	// auto-unsealed barrier tenant its own, and the raft backend factory a
+	// volume pool for the barrier registry.
+	node := startMultiProtocolNodeWithConfig(t, "mvcc", "storage:\n  volume_pools:\n    - name: default\n      path: "+strconv.Quote(t.TempDir())+`
+tenant:
+  default_entitlements:
+    allowed_isolation_modes:
+      - prefix
+      - barrier
+      - raft
+    allow_dedicated_raft: true
+    allow_system_managed_barrier: true
+`)
+	createVolumePoolCLI(t, node.cli, node.cliArgsFor(multiProtocols[0]), "default")
+
+	tenants := []struct {
+		id, isolation, encryption string
+		autoUnseal                bool
+	}{
+		{"raftgrp-prefix", "prefix", "node", false},
+		{"raftgrp-vault", "barrier", "tenant", true},
+	}
+	perms := append(append([]string{}, dataPlanePermissions...), "databases:delete")
+	for _, tn := range tenants {
+		createTenant(t, node, multiProtocols[0], tn.id, "Raft Group "+tn.isolation, tn.isolation, tn.autoUnseal)
+		cert, key := provisionTenantIdentity(t, node, tn.id, "db-admin", perms)
+		for _, proto := range multiProtocols {
+			proto := proto
+			tn := tn
+			t.Run(tn.isolation+"/"+proto.name, func(t *testing.T) {
+				conn := tenantCLIArgsForProto(node, proto, cert, key)
+				name := "grp-" + proto.name
+				root := filepath.Join(node.dataDir, "tenants", tn.id, "databases", name)
+				info := func() transport.DatabaseInfo {
+					t.Helper()
+					out, err := runQRDB(t, node.cli, conn, "--output", "json", "database", "info", name)
+					if err != nil {
+						t.Fatalf("[%s] database info %s: %v\n%s", proto.name, name, err, out)
+					}
+					var di transport.DatabaseInfo
+					if jerr := json.Unmarshal([]byte(out), &di); jerr != nil {
+						t.Fatalf("[%s] decode database info JSON: %v\n%s", proto.name, jerr, out)
+					}
+					if di.Binding == nil {
+						t.Fatalf("[%s] database info has no binding block\n%s", proto.name, out)
+					}
+					return di
+				}
+
+				if out, err := runQRDB(t, node.cli, conn, "database", "create", name, "--backend", "raft"); err != nil {
+					t.Fatalf("[%s] database create: %v\n%s", proto.name, err, out)
+				}
+				if out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "put", "k1", "v1"); err != nil {
+					t.Fatalf("[%s] kv put: %v\n%s", proto.name, err, out)
+				}
+				out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "get", "k1")
+				if err != nil || !strings.Contains(out, "v1") {
+					t.Fatalf("[%s] kv get = %q, %v; want v1", proto.name, out, err)
+				}
+
+				first := info()
+				if first.Binding.Kind != "raft" || first.Binding.Encryption != tn.encryption || len(first.Binding.Nodes) == 0 {
+					t.Fatalf("[%s] binding = %+v, want kind raft, encryption %s and the replica nodes", proto.name, first.Binding, tn.encryption)
+				}
+				entries, err := os.ReadDir(root)
+				if err != nil || len(entries) == 0 {
+					t.Fatalf("[%s] the database's own group %s is missing or empty (%d entries, %v)", proto.name, root, len(entries), err)
+				}
+				if !strings.HasPrefix(entries[0].Name(), "shard-") {
+					t.Fatalf("[%s] %s holds %q, want the group's shard-<N> directory", proto.name, root, entries[0].Name())
+				}
+
+				if out, err := runQRDB(t, node.cli, conn, "database", "drop", name); err != nil {
+					t.Fatalf("[%s] database drop: %v\n%s", proto.name, err, out)
+				}
+				// The placement delete hands the group to the shard
+				// reconciler, which stops it and purges its directory.
+				shardDir := filepath.Join(root, entries[0].Name())
+				if !pollUntil(30*time.Second, 50*time.Millisecond, func() bool {
+					_, err := os.Stat(shardDir)
+					return os.IsNotExist(err)
+				}) {
+					t.Fatalf("[%s] the dropped group's directory %s still exists", proto.name, shardDir)
+				}
+
+				if out, err := runQRDB(t, node.cli, conn, "database", "create", name, "--backend", "raft"); err != nil {
+					t.Fatalf("[%s] database recreate: %v\n%s", proto.name, err, out)
+				}
+				if out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "get", "k1"); err == nil && strings.Contains(out, "v1") {
+					t.Fatalf("[%s] the recreated database serves the dropped key: %q", proto.name, out)
+				}
+				if again := info(); again.Binding.Generation <= first.Binding.Generation {
+					t.Fatalf("[%s] recreate generation %d, want above %d", proto.name, again.Binding.Generation, first.Binding.Generation)
+				}
+			})
+		}
 	}
 }
 
