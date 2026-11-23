@@ -526,11 +526,32 @@ func (s *KeyspaceReclaimService) UnfenceDatabaseKeyspace(ctx context.Context, te
 	if err != nil {
 		return err
 	}
+	var logPrior []byte
+	logPresent, logClaimed := false, false
 	if logKV != nil {
+		if incarnation != "" {
+			logPrior, logPresent, err = readMarker(ctx, logKV, key)
+			if err != nil {
+				return &DropFenceError{TenantID: tenantID, Database: db, Op: "mark live", Err: err}
+			}
+		}
 		if err := markLive(ctx, logKV, tenantID, db, key, incarnation, claim); err != nil {
 			return err
 		}
+		// A marker that already held this incarnation was not this call's
+		// claim: a later failure leaves it as it was.
+		logClaimed = incarnation != "" && !(logPresent && bytes.Equal(logPrior, []byte(incarnation)))
 	}
+	err = s.unfenceDataMarker(ctx, store, tenantID, db, key, incarnation, claim)
+	if err != nil && logClaimed {
+		return releaseLogClaim(ctx, logKV, key, []byte(incarnation), logPrior, logPresent, err)
+	}
+	return err
+}
+
+// unfenceDataMarker marks the data store's side of a create live: the
+// per-database store's claim, or the shared store's marker.
+func (s *KeyspaceReclaimService) unfenceDataMarker(ctx context.Context, store FenceStore, tenantID, db, key, incarnation, claim string) error {
 	if store.PerDatabase {
 		if err := s.claimReclaimStore(ctx, tenantID, db, incarnation, claim); err != nil {
 			return err
@@ -544,6 +565,26 @@ func (s *KeyspaceReclaimService) UnfenceDatabaseKeyspace(ctx context.Context, te
 		return nil
 	}
 	return markLive(ctx, store.KV, tenantID, db, key, incarnation, claim)
+}
+
+// releaseLogClaim puts a home-group log marker this create marked live
+// back to what it held before (absent, or the tombstone it claimed from)
+// once a later claim of the same create fails, so the undone create leaves
+// no live marker under an incarnation no catalog holds. The release runs
+// under a rollback context: the create's own deadline may be what failed.
+func releaseLogClaim(ctx context.Context, kv ReclaimKV, key string, live, prior []byte, present bool, err error) error {
+	rbCtx, cancel := database.DropRollbackContext(ctx)
+	defer cancel()
+	var releaseErr error
+	if present {
+		_, releaseErr = kv.CompareAndSwap(rbCtx, key, live, prior)
+	} else {
+		_, releaseErr = kv.CompareAndDelete(rbCtx, key, live)
+	}
+	if releaseErr != nil {
+		return &MarkerReleaseError{Key: key, Err: err, ReleaseErr: releaseErr}
+	}
+	return err
 }
 
 // claimReclaimStore marks incarnation live for a dedicated-raft (tenantID,
