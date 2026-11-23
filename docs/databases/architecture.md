@@ -406,10 +406,22 @@ has to reclaim the keyspace. `DROP DATABASE` therefore reclaims, in this order:
    [engineering.md](engineering.md), "Range delete command"). On a shard that has not activated the
    `range-delete` cluster feature, the rest of the prefix is deleted one key
    per proposal instead.
-2. Its barrier, if it had one.
-3. Its configuration directory, which for a database with a dedicated store
+2. **Its verifiable logs** — reclaimed inside the same fenced teardown,
+   before the catalog entry goes, by `OpVerifiableLog` subtype 7
+   (`DropDatabase`), which `featuregate.VerifiableLogDrop` gates. The
+   command is guarded by the dropped database's incarnation, so a log a
+   re-created database of the same name already holds is never touched, and
+   each step is bounded by `vlog.MaxPrunePerCommand`, a completed log's
+   descriptor and head counting against the same budget; the service
+   proposes steps until one deletes nothing. A drop whose group could not
+   reclaim them is refused before anything is fenced. Today only a tenant's
+   database runs this step: an untenanted (platform) database's logs, which
+   the log service keeps under the `system` tenant, are not yet reclaimed
+   (row 1613, open).
+3. Its barrier, if it had one.
+4. Its configuration directory, which for a database with a dedicated store
    also holds that store's files.
-4. Its catalog entry.
+5. Its catalog entry.
 
 **Fence first, dependents next, the record that makes the database
 resolvable last.** The dependents-before-record half is what makes a residue
@@ -425,7 +437,7 @@ The fence has two halves, and they answer different questions:
   catalog record) answers "may a caller resolve this database now?".
   `Manager.Get` — the seam every read and write path resolves a database
   through — refuses with `database.DroppingError` for the whole of steps
-  1-3, even though the catalog entry itself does not go until step 4.
+  1-4, even though the catalog entry itself does not go until step 5.
 - **The store fence** answers "may this write apply?", for writes that were
   resolved, checked and proposed before the drop began. Each database has a
   fence marker — `service.DropFenceKey(tenant, db)`, under the reserved
@@ -442,7 +454,12 @@ The fence has two halves, and they answer different questions:
   race: a write applied before the fence landed before it and is removed by
   the reclamation that follows; a write applied after it is refused and its
   caller receives `database.DroppingError`. There is no check-then-write
-  window, because there is no separate check.
+  window, because there is no separate check. A barrier tenant's database
+  keeps its data marker on the system store and gets a second, log-only
+  marker in its home group, where its verifiable logs live
+  (`StoreResolver.LogFenceTarget`): it is marked live on create,
+  tombstoned before the data marker on drop, and cleared when the
+  reclamation ends.
 
 **Once the drop removes the catalog record, the database does not exist.**
 The catalog is replicated, so every node applies the removal and releases
@@ -988,7 +1005,7 @@ The engine half of the log and the replicated audit chain share one mechanism
 | Dispatch | `pkg/engine/mvcc_engine.go` (`handleAuditAppend`, `handleVerifiableLog`), `pkg/store/pebble.go` (`pebbleHandleAuditAppend`, `pebbleHandleVerifiableLog`), `pkg/statemachine/vlog_apply.go` (`ApplyVerifiableLog`) | Both families apply both opcodes, answer `audit.QueryRequest`, `audit.VerifyRequest` and `vlog.Request` (`HeadRequest`, `GetRequest`, `InclusionRequest`, `ConsistencyRequest`) in their read path, restore the registry on open and snapshot recovery, and resync it after a failed apply. |
 | Attachment | `pkg/store/factory.go` (`WithLogs`), `pkg/store/mvcc.go` and `pkg/store/pebble.go` (`SetLogs`), `pkg/engine/mvcc_engine.go` (`WithMVCCLogs`), `cmd/qrdbd/start.go` (`buildSMCreateFunc`), `pkg/server/tenant_host.go` (`newDataPlaneCreateFunc`), `pkg/server/lifecycle/local.go` (`NewLocalEngine`) | Every create function builds a fresh `vlog.Chain` for each state machine it creates, unconditionally: the system shard, every tenant and database group, and every local engine. No two state machines share heads. |
 | Proposer and reader | `pkg/service/audit_replicated_logger.go` (`ReplicatedLogger`), `audit_optin_logger.go`, `audit_shard_resolver.go`, `audit_errors.go` | Routes every audit append to the system shard (`SystemShardAuditResolver`; a dedicated-isolation tenant is refused with `DedicatedTenantAuditNotSupportedError`), checks the gate, sets the timestamp, proposes — `OpVerifiableLog`/`AuditAppend` to the tenant's audit instance (`vlog.AuditLogID`) once `featuregate.VerifiableLog` and `featuregate.VerifiableLogAudit` are enabled for the group, `OpAuditAppend` before (§7); reads back through `SyncRead`. |
-| Log service | `pkg/service/vlog_service.go` (`LogService`, its requests and responses), `vlog_log_service.go` (`qrdb_vlog`), `vlog_log_service_stub.go`, `vlog_errors.go` | Confines each request to the caller's tenant, routes it through `NewSystemShardAuditResolver` (`pkg/server/lifecycle/lifecycle.go`), which sends a barrier tenant's own logs, those of its `system` database too, to its home group (on a standalone node, to the `__vlog/` keyspace of the tenant barrier's own store, `vlog_barrier_store.go`, whose every operation passes the home-store gate, `LogStoreAdmission`, so an encryption migration fences, drains and re-encrypts it); only a barrier tenant's audit instance (`system`/`vlog.AuditLogID`) is written and read on the system shard, under the system barrier, as on main: the log service reads it through the replicated audit logger's own resolver (`ResolveAuditShard`, `pkg/service/audit_shard_resolver.go`; `logRoute.auditGroup` in `vlog_log_service.go`), so the audit reader and writer always use one group; a sealed barrier refuses with its own error, and a node without the group with `BarrierStoreUnavailableError` (§3); looks the database a call names up in the `LogDatabaseLookup` (the node's `database.Manager`) a composer must pass and serves a barrier-enabled database's logs from the database's own barrier store (`vlog_database_store.go`), refusing with `BarrierSealedError` while it is sealed and with `database.BarrierOffDataPathError` for a legacy raft barrier record; refuses a write with `LogFeatureNotActiveError` until `featuregate.VerifiableLog` is active on the group, and a create or key rotation until `featuregate.VerifiableLogKeys` is too, before any key is minted; proposes `OpVerifiableLog` and answers reads as `vlog.Request` values. A drop reclaims the database's logs inside `database.Manager`'s fenced teardown, before the name is released, with the incarnation-guarded subtype 7 that `featuregate.VerifiableLogDrop` gates. `SignHead` reads the descriptor and head, signs through the `vlog.HeadSignerProvider` the log's `KeyRef` names, and proposes the checkpoint. Without `qrdb_vlog`, `NewLogService` refuses with `vlog.NotCompiledError`. Composed by `server.WithLogService` (wired by `qrdbd` and `sdk/go/node`) and by `embedded.WithLogService`. |
+| Log service | `pkg/service/vlog_service.go` (`LogService`, its requests and responses), `vlog_log_service.go` (`qrdb_vlog`), `vlog_log_service_stub.go`, `vlog_errors.go` | Confines each request to the caller's tenant, routes it through `NewSystemShardAuditResolver` (`pkg/server/lifecycle/lifecycle.go`), which sends a barrier tenant's own logs, those of its `system` database too, to its home group (on a standalone node, to the `__vlog/` keyspace of the tenant barrier's own store, `vlog_barrier_store.go`, whose every operation passes the home-store gate, `LogStoreAdmission`, so an encryption migration fences, drains and re-encrypts it); only a barrier tenant's audit instance (`system`/`vlog.AuditLogID`) is written and read on the system shard, under the system barrier, as on main: the log service reads it through the replicated audit logger's own resolver (`ResolveAuditShard`, `pkg/service/audit_shard_resolver.go`; `logRoute.auditGroup` in `vlog_log_service.go`), so the audit reader and writer always use one group; a sealed barrier refuses with its own error, and a node without the group with `BarrierStoreUnavailableError` (§3); looks the database a call names up in the `LogDatabaseLookup` (the node's `database.Manager`) a composer must pass and serves a barrier-enabled database's logs from the database's own barrier store (`vlog_database_store.go`), refusing with `BarrierSealedError` while it is sealed and with `database.BarrierOffDataPathError` for a legacy raft barrier record; refuses a write with `LogFeatureNotActiveError` until `featuregate.VerifiableLog` is active on the group, and a create or key rotation until `featuregate.VerifiableLogKeys` is too, before any key is minted; proposes `OpVerifiableLog` and answers reads as `vlog.Request` values. A drop of a tenant's database reclaims its logs inside `database.Manager`'s fenced teardown (an untenanted database's are not yet reclaimed, see "What a drop reclaims"), before the name is released, with the incarnation-guarded subtype 7 that `featuregate.VerifiableLogDrop` gates. `SignHead` admits first, reads the descriptor and head through the admitted group under its incarnation, signs through the `vlog.HeadSignerProvider` the log's `KeyRef` names, and proposes the checkpoint through that same group, so a signer paused across a drop and re-create of its database is refused with `database.DroppingError`; `RotateKey` re-reads the descriptor under the admitted incarnation. Without `qrdb_vlog`, `NewLogService` refuses with `vlog.NotCompiledError`. Composed by `server.WithLogService` (wired by `qrdbd` and `sdk/go/node`) and by `embedded.WithLogService`. |
 | Node-local trail | `pkg/audit/chain_file_logger.go`, `chain_verify.go`, `trail.go`, `trail_dir.go`, `verify.go` | The hash-chained NDJSON file a node writes, its rotation-set verifier and the trail composition. A separate mechanism from the replicated chain. |
 
 ### Design
