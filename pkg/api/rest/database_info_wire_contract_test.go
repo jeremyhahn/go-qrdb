@@ -79,14 +79,7 @@ func fullDatabaseInfo() *database.DatabaseInfo {
 			Token: &database.TokenDiscoveryConfig{Endpoint: "https://db.example.com/discovery", Token: "example-token", ClusterSize: 3, Timeout: "30s"},
 		},
 		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: "shamir", SharesRequired: 2, SharesTotal: 3},
-		Connection: &database.DatabaseConnectionConfig{
-			Transport: "grpc",
-			Address:   "db.example.com:63000",
-			CAFile:    "/etc/qrdb/ca.pem",
-			CertFile:  "/etc/qrdb/client.pem",
-			KeyFile:   "/etc/qrdb/client-key.pem",
-		},
-		SQL: &database.SQLConfig{Concurrency: database.ConcurrencyPessimistic},
+		SQL:     &database.SQLConfig{Concurrency: database.ConcurrencyPessimistic},
 		// Every compaction key is set, so each is on the wire to compare:
 		// this is a wire fixture, not a valid policy.
 		Compaction: &compaction.Policy{Mode: compaction.Period, RetainRevisions: 500, RetainPeriod: "720h"},

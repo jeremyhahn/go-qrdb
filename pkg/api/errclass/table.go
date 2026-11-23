@@ -551,7 +551,6 @@ var databaseRules = []rule{
 	// A database configuration that fails validation is the caller's error,
 	// not the server's: each of these used to reach REST as a 500.
 	as(&database.InvalidModeError{Mode: "x"}, InvalidArgument),
-	as(&database.ConnectionRequiredError{}, InvalidArgument),
 	as(&database.InvalidRaftClusterModeError{Mode: "x"}, InvalidArgument),
 	as(&database.InvalidRaftStateStorageError{StateStorage: "x"}, InvalidArgument),
 	as(&database.InvalidDiscoveryMethodError{Method: "x"}, InvalidArgument),

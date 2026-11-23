@@ -130,13 +130,6 @@ func (m *mockDatabaseSvc) UpdateBarrier(_ string, barrier *database.DatabaseBarr
 	return m.infoResp, nil
 }
 
-func (m *mockDatabaseSvc) UpdateConnection(_ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if m.updConnErr != nil {
-		return nil, m.updConnErr
-	}
-	return m.infoResp, nil
-}
-
 func (m *mockDatabaseSvc) SealDatabase(_ context.Context, _ string) error { return nil }
 
 func (m *mockDatabaseSvc) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
@@ -187,10 +180,6 @@ func (m *mockDatabaseSvc) UpdateRaftForTenant(_ context.Context, name string, r 
 
 func (m *mockDatabaseSvc) UpdateBarrierForTenant(_ context.Context, name string, b *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateBarrier(name, b)
-}
-
-func (m *mockDatabaseSvc) UpdateConnectionForTenant(_ context.Context, name string, c *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return m.UpdateConnection(name, c)
 }
 
 func (m *mockDatabaseSvc) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {

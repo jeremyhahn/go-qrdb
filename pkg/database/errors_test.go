@@ -360,22 +360,6 @@ func TestInvalidModeError_TypeAssertion(t *testing.T) {
 	}
 }
 
-func TestConnectionRequiredError_Message(t *testing.T) {
-	err := &ConnectionRequiredError{}
-	want := "database: connection configuration is required for remote mode"
-	if got := err.Error(); got != want {
-		t.Errorf("Error() = %q, want %q", got, want)
-	}
-}
-
-func TestConnectionRequiredError_TypeAssertion(t *testing.T) {
-	var err error = &ConnectionRequiredError{}
-	var target *ConnectionRequiredError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As failed for *ConnectionRequiredError")
-	}
-}
-
 func TestInvalidRaftClusterModeError_Message(t *testing.T) {
 	tests := []struct {
 		name string
@@ -580,7 +564,6 @@ func TestAllErrorTypes_ImplementErrorInterface(t *testing.T) {
 		&DropError{Name: "x", Err: cause},
 		&StorageCreateError{Name: "x", Backend: "y", Err: cause},
 		&InvalidModeError{Mode: "x"},
-		&ConnectionRequiredError{},
 		&InvalidRaftClusterModeError{Mode: "x"},
 		&InvalidDiscoveryMethodError{Method: "x"},
 		&DiscoveryConfigRequiredError{Method: "x"},

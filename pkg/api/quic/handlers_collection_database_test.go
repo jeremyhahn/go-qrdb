@@ -1086,72 +1086,12 @@ func TestHandleDatabaseUpdateBarrier_NilBarrier(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// handleDatabaseUpdateConnection
-// ---------------------------------------------------------------------------
-
-func TestHandleDatabaseUpdateConnection_NilService(t *testing.T) {
-	srv := newTestServer(&mockKVService{}, &mockAdminService{})
-	connCfg := database.DatabaseConnectionConfig{Transport: "grpc", Address: "localhost:9000"}
-	payload, _ := json.Marshal(map[string]interface{}{"name": "db", "connection": connCfg})
-	_, err := srv.handleDatabaseUpdateConnection(context.Background(), payload)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestHandleDatabaseUpdateConnection_Success(t *testing.T) {
-	dbSvc := &mockDatabaseService{
-		updateConnectionFn: func(name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-			return &database.DatabaseInfo{Name: name}, nil
-		},
-	}
-	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithDatabaseService(dbSvc))
-	connCfg := database.DatabaseConnectionConfig{Transport: "grpc", Address: "remotehost:9000"}
-	payload, _ := json.Marshal(map[string]interface{}{"name": "mydb", "connection": connCfg})
-	resp, err := srv.handleDatabaseUpdateConnection(context.Background(), payload)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var info database.DatabaseInfo
-	if err := json.Unmarshal(resp, &info); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if info.Name != "mydb" {
-		t.Errorf("expected name 'mydb', got %q", info.Name)
-	}
-}
-
-func TestHandleDatabaseUpdateConnection_NilConnection(t *testing.T) {
-	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithDatabaseService(&mockDatabaseService{}))
-	payload, _ := json.Marshal(map[string]interface{}{"name": "db"})
-	_, err := srv.handleDatabaseUpdateConnection(context.Background(), payload)
-	if err == nil {
-		t.Fatal("expected error for nil connection config")
-	}
-	var argErr *InvalidArgumentError
-	if !errors.As(err, &argErr) {
-		t.Fatalf("expected *InvalidArgumentError, got %T", err)
-	}
-}
-
-func TestHandleDatabaseUpdateConnection_EmptyName(t *testing.T) {
-	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithDatabaseService(&mockDatabaseService{}))
-	connCfg := database.DatabaseConnectionConfig{Transport: "grpc", Address: "h:9000"}
-	payload, _ := json.Marshal(map[string]interface{}{"name": "", "connection": connCfg})
-	_, err := srv.handleDatabaseUpdateConnection(context.Background(), payload)
-	if err == nil {
-		t.Fatal("expected error for empty name")
-	}
-}
-
 func TestHandleDatabaseUpdateConfig_UnmarshalError(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithDatabaseService(&mockDatabaseService{}))
 	handlers := map[string]func(context.Context, []byte) ([]byte, error){
-		"Etcd":       srv.handleDatabaseUpdateEtcd,
-		"Raft":       srv.handleDatabaseUpdateRaft,
-		"Barrier":    srv.handleDatabaseUpdateBarrier,
-		"Connection": srv.handleDatabaseUpdateConnection,
+		"Etcd":    srv.handleDatabaseUpdateEtcd,
+		"Raft":    srv.handleDatabaseUpdateRaft,
+		"Barrier": srv.handleDatabaseUpdateBarrier,
 	}
 	for name, handle := range handlers {
 		t.Run(name, func(t *testing.T) {
@@ -1170,9 +1110,6 @@ func TestHandleDatabaseUpdateConfig_ServiceError(t *testing.T) {
 		updateEtcdFn:    func(string, *database.EtcdConfig) (*database.DatabaseInfo, error) { return nil, svcErr },
 		updateRaftFn:    func(string, *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) { return nil, svcErr },
 		updateBarrierFn: func(string, *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) { return nil, svcErr },
-		updateConnectionFn: func(string, *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-			return nil, svcErr
-		},
 	}))
 	tests := map[string]struct {
 		handle  func(context.Context, []byte) ([]byte, error)
@@ -1182,9 +1119,6 @@ func TestHandleDatabaseUpdateConfig_ServiceError(t *testing.T) {
 		"Raft": {srv.handleDatabaseUpdateRaft, map[string]interface{}{"name": "db", "raft": database.DatabaseRaftConfig{ShardID: 1}}},
 		"Barrier": {srv.handleDatabaseUpdateBarrier, map[string]interface{}{
 			"name": "db", "barrier": database.DatabaseBarrierConfig{Mode: "shamir"},
-		}},
-		"Connection": {srv.handleDatabaseUpdateConnection, map[string]interface{}{
-			"name": "db", "connection": database.DatabaseConnectionConfig{Transport: "grpc", Address: "h:9000"},
 		}},
 	}
 	for name, tc := range tests {

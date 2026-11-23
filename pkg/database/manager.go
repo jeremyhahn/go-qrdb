@@ -1425,28 +1425,6 @@ func (m *Manager) RecordShamirScheme(db *Database, threshold, total int) error {
 	return m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Barrier = &next })
 }
 
-// UpdateConnection updates the remote connection configuration for a database.
-// It updates both the in-memory config and the catalog record.
-func (m *Manager) UpdateConnection(name string, conn *DatabaseConnectionConfig) error {
-	db, err := m.loadDatabase(name)
-	if err != nil {
-		return err
-	}
-	return m.updateConnection(db, conn)
-}
-
-// updateConnection is UpdateConnection on a resolved database.
-func (m *Manager) updateConnection(db *Database, conn *DatabaseConnectionConfig) error {
-	if conn != nil {
-		if err := conn.Validate(); err != nil {
-			return err
-		}
-	}
-	db.updateConnection(conn)
-
-	return m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Connection = conn })
-}
-
 // UpdateSQL replaces the SQL settings of a database, in memory and in its
 // catalog record. A nil sqlCfg restores the defaults.
 func (m *Manager) UpdateSQL(name string, sqlCfg *SQLConfig) error {
@@ -1492,7 +1470,6 @@ func metaFromConfig(cfg DatabaseConfig, dropping bool, incarnation string) Datab
 		DedicatedWAL: cfg.DedicatedWAL,
 		Raft:         cfg.Raft,
 		Barrier:      cfg.Barrier,
-		Connection:   cfg.Connection,
 		SQL:          cfg.SQL,
 		Dropping:     dropping,
 		Incarnation:  incarnation,
@@ -2101,7 +2078,6 @@ func configFromMeta(meta DatabaseMeta) DatabaseConfig {
 		DedicatedWAL: meta.DedicatedWAL,
 		Raft:         meta.Raft,
 		Barrier:      meta.Barrier,
-		Connection:   meta.Connection,
 		SQL:          meta.SQL,
 	}
 }

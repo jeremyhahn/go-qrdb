@@ -92,7 +92,6 @@ func remoteInfo(meta DatabaseMeta) DatabaseInfo {
 		DedicatedWAL: meta.DedicatedWAL,
 		Raft:         meta.Raft,
 		Barrier:      meta.Barrier,
-		Connection:   meta.Connection,
 		SQL:          meta.SQL,
 		OwnerNode:    meta.OwnerNode,
 	}

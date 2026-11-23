@@ -48,7 +48,6 @@ func TestDatabaseConfinement(t *testing.T) {
 		"qrdb_database_update_etcd":          {"name": "vault"},
 		"qrdb_database_update_raft":          {"name": "vault"},
 		"qrdb_database_update_barrier":       {"name": "vault"},
-		"qrdb_database_update_connection":    {"name": "vault"},
 		"qrdb_database_seal":                 {"name": "vault"},
 		"qrdb_database_unseal":               {"name": "vault", "secret": "c2VjcmV0"},
 		"qrdb_database_barrier_status":       {"name": "vault"},

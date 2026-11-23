@@ -178,15 +178,6 @@ func InfoProto(info *database.DatabaseInfo) *pb.DatabaseInfoResponse {
 			SharesTotal:    int32(b.SharesTotal),
 		}
 	}
-	if c := info.Connection; c != nil {
-		out.Connection = &pb.DatabaseConnectionConfig{
-			Transport:     c.Transport,
-			RemoteAddress: c.Address,
-			CaFile:        c.CAFile,
-			CertFile:      c.CertFile,
-			KeyFile:       c.KeyFile,
-		}
-	}
 	if s := info.SQL; s != nil {
 		out.Sql = &pb.DatabaseSQLConfig{Concurrency: string(s.Concurrency)}
 	}

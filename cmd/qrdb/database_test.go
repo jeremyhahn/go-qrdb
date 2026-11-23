@@ -87,10 +87,6 @@ func (m *fnDatabaseService) UpdateBarrier(_ string, _ *database.DatabaseBarrierC
 	return nil, nil
 }
 
-func (m *fnDatabaseService) UpdateConnection(_ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
-}
-
 func (m *fnDatabaseService) SealDatabase(_ context.Context, _ string) error {
 	return nil
 }
@@ -149,10 +145,6 @@ func (m *fnDatabaseService) UpdateRaftForTenant(_ context.Context, name string, 
 
 func (m *fnDatabaseService) UpdateBarrierForTenant(_ context.Context, name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateBarrier(name, cfg)
-}
-
-func (m *fnDatabaseService) UpdateConnectionForTenant(_ context.Context, name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return m.UpdateConnection(name, cfg)
 }
 
 func (m *fnDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {

@@ -197,7 +197,6 @@ const (
 	QRDBService_DatabaseUpdateRaft_FullMethodName                 = "/qrdb.v1.QRDBService/DatabaseUpdateRaft"
 	QRDBService_DatabaseScale_FullMethodName                      = "/qrdb.v1.QRDBService/DatabaseScale"
 	QRDBService_DatabaseUpdateBarrier_FullMethodName              = "/qrdb.v1.QRDBService/DatabaseUpdateBarrier"
-	QRDBService_DatabaseUpdateConnection_FullMethodName           = "/qrdb.v1.QRDBService/DatabaseUpdateConnection"
 	QRDBService_DatabaseUpdateSQL_FullMethodName                  = "/qrdb.v1.QRDBService/DatabaseUpdateSQL"
 	QRDBService_DatabaseUpdateCompaction_FullMethodName           = "/qrdb.v1.QRDBService/DatabaseUpdateCompaction"
 	QRDBService_BarrierInitialize_FullMethodName                  = "/qrdb.v1.QRDBService/BarrierInitialize"
@@ -741,8 +740,6 @@ type QRDBServiceClient interface {
 	DatabaseScale(ctx context.Context, in *DatabaseScaleRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
 	// DatabaseUpdateBarrier updates the encryption barrier configuration.
 	DatabaseUpdateBarrier(ctx context.Context, in *DatabaseUpdateBarrierRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
-	// DatabaseUpdateConnection updates the remote connection configuration.
-	DatabaseUpdateConnection(ctx context.Context, in *DatabaseUpdateConnectionRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
 	// DatabaseUpdateSQL updates a database's SQL settings -- its
 	// sql.concurrency (optimistic or pessimistic). See docs/row-locking/.
 	DatabaseUpdateSQL(ctx context.Context, in *DatabaseUpdateSQLRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
@@ -2659,16 +2656,6 @@ func (c *qRDBServiceClient) DatabaseUpdateBarrier(ctx context.Context, in *Datab
 	return out, nil
 }
 
-func (c *qRDBServiceClient) DatabaseUpdateConnection(ctx context.Context, in *DatabaseUpdateConnectionRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(DatabaseInfoResponse)
-	err := c.cc.Invoke(ctx, QRDBService_DatabaseUpdateConnection_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *qRDBServiceClient) DatabaseUpdateSQL(ctx context.Context, in *DatabaseUpdateSQLRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DatabaseInfoResponse)
@@ -4092,8 +4079,6 @@ type QRDBServiceServer interface {
 	DatabaseScale(context.Context, *DatabaseScaleRequest) (*DatabaseInfoResponse, error)
 	// DatabaseUpdateBarrier updates the encryption barrier configuration.
 	DatabaseUpdateBarrier(context.Context, *DatabaseUpdateBarrierRequest) (*DatabaseInfoResponse, error)
-	// DatabaseUpdateConnection updates the remote connection configuration.
-	DatabaseUpdateConnection(context.Context, *DatabaseUpdateConnectionRequest) (*DatabaseInfoResponse, error)
 	// DatabaseUpdateSQL updates a database's SQL settings -- its
 	// sql.concurrency (optimistic or pessimistic). See docs/row-locking/.
 	DatabaseUpdateSQL(context.Context, *DatabaseUpdateSQLRequest) (*DatabaseInfoResponse, error)
@@ -4859,9 +4844,6 @@ func (UnimplementedQRDBServiceServer) DatabaseScale(context.Context, *DatabaseSc
 }
 func (UnimplementedQRDBServiceServer) DatabaseUpdateBarrier(context.Context, *DatabaseUpdateBarrierRequest) (*DatabaseInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateBarrier not implemented")
-}
-func (UnimplementedQRDBServiceServer) DatabaseUpdateConnection(context.Context, *DatabaseUpdateConnectionRequest) (*DatabaseInfoResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateConnection not implemented")
 }
 func (UnimplementedQRDBServiceServer) DatabaseUpdateSQL(context.Context, *DatabaseUpdateSQLRequest) (*DatabaseInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateSQL not implemented")
@@ -8105,24 +8087,6 @@ func _QRDBService_DatabaseUpdateBarrier_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
-func _QRDBService_DatabaseUpdateConnection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DatabaseUpdateConnectionRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).DatabaseUpdateConnection(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_DatabaseUpdateConnection_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).DatabaseUpdateConnection(ctx, req.(*DatabaseUpdateConnectionRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _QRDBService_DatabaseUpdateSQL_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DatabaseUpdateSQLRequest)
 	if err := dec(in); err != nil {
@@ -10541,10 +10505,6 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DatabaseUpdateBarrier",
 			Handler:    _QRDBService_DatabaseUpdateBarrier_Handler,
-		},
-		{
-			MethodName: "DatabaseUpdateConnection",
-			Handler:    _QRDBService_DatabaseUpdateConnection_Handler,
 		},
 		{
 			MethodName: "DatabaseUpdateSQL",

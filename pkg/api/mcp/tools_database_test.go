@@ -35,16 +35,15 @@ import (
 
 // mockDatabaseService implements service.DatabaseServicer for testing.
 type mockDatabaseService struct {
-	createFn           func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error)
-	getFn              func(name string) (*database.DatabaseInfo, error)
-	listFn             func() ([]database.DatabaseInfo, error)
-	dropFn             func(name string) error
-	updateProtocolFn   func(name string, proto database.ProtocolConfig) (*database.DatabaseInfo, error)
-	updateEtcdFn       func(name string, cfg *database.EtcdConfig) (*database.DatabaseInfo, error)
-	updateRaftFn       func(name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
-	updateBarrierFn    func(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
-	updateConnectionFn func(name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
-	scaleFn            func(name string, targetReplicas int) (*database.DatabaseInfo, error)
+	createFn         func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error)
+	getFn            func(name string) (*database.DatabaseInfo, error)
+	listFn           func() ([]database.DatabaseInfo, error)
+	dropFn           func(name string) error
+	updateProtocolFn func(name string, proto database.ProtocolConfig) (*database.DatabaseInfo, error)
+	updateEtcdFn     func(name string, cfg *database.EtcdConfig) (*database.DatabaseInfo, error)
+	updateRaftFn     func(name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
+	updateBarrierFn  func(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
+	scaleFn          func(name string, targetReplicas int) (*database.DatabaseInfo, error)
 }
 
 func newMockDatabaseService() *mockDatabaseService {
@@ -126,13 +125,6 @@ func (m *mockDatabaseService) UpdateBarrier(name string, cfg *database.DatabaseB
 	return &database.DatabaseInfo{Name: name, Status: database.StatusOpen}, nil
 }
 
-func (m *mockDatabaseService) UpdateConnection(name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if m.updateConnectionFn != nil {
-		return m.updateConnectionFn(name, cfg)
-	}
-	return &database.DatabaseInfo{Name: name, Status: database.StatusOpen}, nil
-}
-
 func (m *mockDatabaseService) SealDatabase(_ context.Context, _ string) error {
 	return nil
 }
@@ -190,10 +182,6 @@ func (m *mockDatabaseService) UpdateBarrierForTenant(_ context.Context, name str
 	return m.UpdateBarrier(name, cfg)
 }
 
-func (m *mockDatabaseService) UpdateConnectionForTenant(_ context.Context, name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return m.UpdateConnection(name, cfg)
-}
-
 func (m *mockDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
 }
@@ -231,7 +219,6 @@ func TestDatabaseTools_Registration(t *testing.T) {
 		"qrdb_database_update_raft",
 		"qrdb_database_scale",
 		"qrdb_database_update_barrier",
-		"qrdb_database_update_connection",
 		"qrdb_database_update_sql",
 		"qrdb_database_update_compaction",
 		"qrdb_database_seal",

@@ -53,10 +53,6 @@ func TestDatabaseService_OtherTenantsDatabase_IndistinguishableFromMissing(t *te
 			_, err := svc.UpdateBarrierForTenant(intruder, n, nil)
 			return err
 		},
-		"UpdateConnectionForTenant": func(n string) error {
-			_, err := svc.UpdateConnectionForTenant(intruder, n, nil)
-			return err
-		},
 		"SealDatabase":          func(n string) error { return svc.SealDatabase(intruder, n) },
 		"UnsealDatabase":        func(n string) error { return svc.UnsealDatabase(intruder, n, seal.Credentials{}) },
 		"DatabaseBarrierStatus": func(n string) error { _, err := svc.DatabaseBarrierStatus(intruder, n); return err },

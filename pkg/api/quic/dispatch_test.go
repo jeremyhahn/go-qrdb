@@ -201,7 +201,6 @@ var expectedMethods = []string{
 	"db.UpdateRaft",
 	"db.Scale",
 	"db.UpdateBarrier",
-	"db.UpdateConnection",
 	"db.UpdateSQL",
 	"db.UpdateCompaction",
 	"db.Seal",

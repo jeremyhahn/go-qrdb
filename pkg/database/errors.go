@@ -689,15 +689,6 @@ func (e *InvalidModeError) Error() string {
 	return "database: invalid database mode: " + strconv.Quote(e.Mode)
 }
 
-// ConnectionRequiredError is returned when a remote-mode database is missing
-// its connection configuration.
-type ConnectionRequiredError struct{}
-
-// Error returns a human-readable description of the missing connection config.
-func (e *ConnectionRequiredError) Error() string {
-	return "database: connection configuration is required for remote mode"
-}
-
 // InvalidRaftClusterModeError is returned when an unrecognized Raft cluster
 // mode is specified.
 type InvalidRaftClusterModeError struct {

@@ -576,49 +576,6 @@ func TestDatabaseService_UpdateBarrierForTenant_SystemTenantRoutesToAdmin(t *tes
 	}
 }
 
-func TestDatabaseService_UpdateConnectionForTenant_Success(t *testing.T) {
-	svc := newTestDatabaseService(t)
-	ctx := tenantCtx("tenant-conn")
-
-	if _, err := svc.CreateForTenant(ctx, testDBConfig("t-conn-db")); err != nil {
-		t.Fatalf("CreateForTenant() error: %v", err)
-	}
-
-	connCfg := &database.DatabaseConnectionConfig{
-		Transport: "grpc",
-		Address:   "localhost:9090",
-		CAFile:    "/certs/ca.pem",
-	}
-	info, err := svc.UpdateConnectionForTenant(ctx, "t-conn-db", connCfg)
-	if err != nil {
-		t.Fatalf("UpdateConnectionForTenant() error: %v", err)
-	}
-	if info.Name != "t-conn-db" {
-		t.Errorf("Name = %q, want %q", info.Name, "t-conn-db")
-	}
-	if info.Connection == nil || info.Connection.Transport != "grpc" {
-		t.Error("Connection.Transport != grpc")
-	}
-}
-
-func TestDatabaseService_UpdateConnectionForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
-	svc := newTestDatabaseService(t)
-
-	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-conn-db")); err != nil {
-		t.Fatalf("CreateForTenant() as system error: %v", err)
-	}
-	info, err := svc.UpdateConnectionForTenant(context.Background(), "sys-conn-db", &database.DatabaseConnectionConfig{
-		Transport: "grpc",
-		Address:   "localhost:9090",
-	})
-	if err != nil {
-		t.Fatalf("UpdateConnectionForTenant() as system error: %v", err)
-	}
-	if info.Connection == nil || info.Connection.Transport != "grpc" {
-		t.Error("Connection.Transport != grpc")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // BatchService - ExecuteWithMode (0% covered)
 // ---------------------------------------------------------------------------
