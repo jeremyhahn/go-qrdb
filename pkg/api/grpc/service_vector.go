@@ -273,7 +273,6 @@ func (s *qrdbServiceServer) VectorCreateNamespace(ctx context.Context, req *pb.V
 		DistanceMetric: metric,
 		IndexType:      protoIndexTypeToString[req.GetIndexType()],
 		IndexConfig:    indexConfig,
-		ShardID:        req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -334,7 +333,6 @@ func (s *qrdbServiceServer) VectorDeleteNamespace(ctx context.Context, req *pb.V
 
 	_, err := vectorSvc.DeleteNamespace(ctx, &service.DeleteNamespaceRequest{
 		Namespace: req.GetNamespace(),
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -349,9 +347,7 @@ func (s *qrdbServiceServer) VectorListNamespaces(ctx context.Context, req *pb.Ve
 		return nil, mapServiceError(svcErr)
 	}
 
-	resp, err := vectorSvc.ListNamespaces(ctx, &service.ListNamespacesRequest{
-		ShardID: req.GetShardId(),
-	})
+	resp, err := vectorSvc.ListNamespaces(ctx, &service.ListNamespacesRequest{})
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -376,7 +372,6 @@ func (s *qrdbServiceServer) VectorGetNamespaceInfo(ctx context.Context, req *pb.
 
 	info, err := vectorSvc.GetNamespaceInfo(ctx, &service.GetNamespaceInfoRequest{
 		Namespace: req.GetNamespace(),
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -428,7 +423,6 @@ func (s *qrdbServiceServer) VectorUpsert(ctx context.Context, req *pb.VectorUpse
 		ID:        id,
 		Vector:    req.GetVector(),
 		Metadata:  metadata,
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -458,7 +452,6 @@ func (s *qrdbServiceServer) VectorGet(ctx context.Context, req *pb.VectorGetRequ
 		IncludeVector:   true,
 		IncludeMetadata: true,
 		Consistency:     vectorConsistencyFromProto(req.GetConsistency()),
-		ShardID:         req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -486,7 +479,6 @@ func (s *qrdbServiceServer) VectorDelete(ctx context.Context, req *pb.VectorDele
 	_, err = vectorSvc.DeleteVector(ctx, &service.DeleteVectorRequest{
 		Namespace: req.GetNamespace(),
 		ID:        id,
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -513,7 +505,6 @@ func (s *qrdbServiceServer) VectorBatchUpsert(ctx context.Context, req *pb.Vecto
 	resp, err := vectorSvc.BatchUpsert(ctx, &service.BatchUpsertRequest{
 		Namespace: req.GetNamespace(),
 		Vectors:   vectors,
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -540,7 +531,6 @@ func (s *qrdbServiceServer) VectorBatchDelete(ctx context.Context, req *pb.Vecto
 	resp, err := vectorSvc.BatchDeleteVectors(ctx, &service.BatchDeleteVectorsRequest{
 		Namespace: req.GetNamespace(),
 		IDs:       ids,
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -571,7 +561,6 @@ func (s *qrdbServiceServer) VectorList(ctx context.Context, req *pb.VectorListRe
 		Namespace: req.GetNamespace(),
 		Limit:     int(req.GetLimit()),
 		Cursor:    req.GetCursor(),
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -615,7 +604,6 @@ func (s *qrdbServiceServer) VectorUpdateMetadata(ctx context.Context, req *pb.Ve
 		Namespace: req.GetNamespace(),
 		ID:        id,
 		Metadata:  metadata,
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -641,7 +629,6 @@ func (s *qrdbServiceServer) VectorSearchSimilar(ctx context.Context, req *pb.Vec
 		EfSearch:    int(req.GetEfSearch()),
 		MinScore:    float32(req.GetMinScore()),
 		Consistency: vectorConsistencyFromProto(req.GetConsistency()),
-		ShardID:     req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -676,7 +663,6 @@ func (s *qrdbServiceServer) VectorSearchByMetadata(ctx context.Context, req *pb.
 		Limit:       int(req.GetLimit()),
 		Offset:      int(req.GetOffset()),
 		Consistency: vectorConsistencyFromProto(req.GetConsistency()),
-		ShardID:     req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -716,7 +702,6 @@ func (s *qrdbServiceServer) VectorHybridSearch(ctx context.Context, req *pb.Vect
 		MetadataFilter: metadataFilter,
 		K:              int(req.GetK()),
 		Consistency:    vectorConsistencyFromProto(req.GetConsistency()),
-		ShardID:        req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -751,7 +736,6 @@ func (s *qrdbServiceServer) VectorSearchByID(ctx context.Context, req *pb.Vector
 		ID:          id,
 		K:           int(req.GetK()),
 		Consistency: vectorConsistencyFromProto(req.GetConsistency()),
-		ShardID:     req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -795,7 +779,6 @@ func (s *qrdbServiceServer) VectorRebuildIndex(ctx context.Context, req *pb.Vect
 
 	resp, err := vectorSvc.RebuildIndex(ctx, &service.RebuildIndexRequest{
 		Namespace: req.GetNamespace(),
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -841,7 +824,6 @@ func (s *qrdbServiceServer) VectorGetIndexStats(ctx context.Context, req *pb.Vec
 
 	stats, err := vectorSvc.GetIndexStats(ctx, &service.GetIndexStatsRequest{
 		Namespace: req.GetNamespace(),
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -874,7 +856,6 @@ func (s *qrdbServiceServer) VectorCompactNamespace(ctx context.Context, req *pb.
 
 	resp, err := vectorSvc.CompactNamespace(ctx, &service.CompactNamespaceRequest{
 		Namespace: req.GetNamespace(),
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -895,7 +876,6 @@ func (s *qrdbServiceServer) VectorGetCompactionProgress(ctx context.Context, req
 	progress, err := vectorSvc.GetCompactionProgress(ctx, &service.GetCompactionProgressRequest{
 		Namespace:   req.GetNamespace(),
 		OperationID: req.GetJobId(),
-		ShardID:     req.GetShardId(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)

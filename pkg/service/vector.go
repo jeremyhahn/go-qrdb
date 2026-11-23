@@ -2080,7 +2080,6 @@ func (v *vectorService) HybridSearch(ctx context.Context, req *HybridSearchReque
 		MinScore:        req.MinScore,
 		IncludeVectors:  req.IncludeVectors,
 		IncludeMetadata: true,
-		ShardID:         req.ShardID,
 		Consistency:     req.Consistency,
 	}
 
@@ -3097,7 +3096,6 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 			deleteReq := &DeleteVectorRequest{
 				Namespace: req.Namespace,
 				ID:        id,
-				ShardID:   req.ShardID,
 			}
 
 			_, deleteErr := v.DeleteVector(ctx, deleteReq)
@@ -3284,7 +3282,6 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 		ID:        req.ID,
 		Vector:    existingVector.Embedding,
 		Metadata:  newMetadata,
-		ShardID:   req.ShardID,
 	}
 
 	resp, err := v.UpsertVector(ctx, upsertReq)
@@ -3350,7 +3347,6 @@ func (v *vectorService) SearchByID(ctx context.Context, req *SearchByIDRequest) 
 		IncludeVectors:  req.IncludeVectors,
 		IncludeMetadata: req.IncludeMetadata,
 		MetadataFilter:  req.MetadataFilter,
-		ShardID:         req.ShardID,
 		Consistency:     req.Consistency,
 	}
 

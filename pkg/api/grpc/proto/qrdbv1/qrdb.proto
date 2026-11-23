@@ -2738,7 +2738,8 @@ message VectorCreateNamespaceRequest {
     DistanceMetric distance_metric = 3;
     VectorIndexType index_type = 4;
     string index_params_json = 5;
-    uint64 shard_id = 6;
+    reserved 6;
+    reserved "shard_id";
 }
 
 // VectorCreateNamespaceResponse is the result of a namespace creation.
@@ -2767,12 +2768,14 @@ message VectorUpdateNamespaceResponse {
 // VectorDeleteNamespaceRequest removes a namespace and all its vectors.
 message VectorDeleteNamespaceRequest {
     string namespace = 1;
-    uint64 shard_id = 2;
+    reserved 2;
+    reserved "shard_id";
 }
 
 // VectorListNamespacesRequest lists all vector namespaces.
 message VectorListNamespacesRequest {
-    uint64 shard_id = 1;
+    reserved 1;
+    reserved "shard_id";
 }
 
 // VectorListNamespacesResponse returns all namespace names.
@@ -2783,7 +2786,8 @@ message VectorListNamespacesResponse {
 // VectorGetNamespaceInfoRequest retrieves namespace metadata.
 message VectorGetNamespaceInfoRequest {
     string namespace = 1;
-    uint64 shard_id = 2;
+    reserved 2;
+    reserved "shard_id";
 }
 
 // VectorNamespaceInfo contains metadata about a vector namespace.
@@ -2823,7 +2827,8 @@ message VectorUpsertRequest {
     string id = 2;
     repeated float vector = 3;
     string metadata_json = 4;
-    uint64 shard_id = 5;
+    reserved 5;
+    reserved "shard_id";
 }
 
 // VectorUpsertResponse is the result of a vector upsert.
@@ -2838,14 +2843,16 @@ message VectorGetRequest {
     string namespace = 1;
     string id = 2;
     ConsistencyLevel consistency = 3;
-    uint64 shard_id = 4;
+    reserved 4;
+    reserved "shard_id";
 }
 
 // VectorDeleteRequest removes a single vector by ID.
 message VectorDeleteRequest {
     string namespace = 1;
     string id = 2;
-    uint64 shard_id = 3;
+    reserved 3;
+    reserved "shard_id";
 }
 
 // VectorBatchError describes a failure for a single vector in a batch.
@@ -2858,7 +2865,8 @@ message VectorBatchError {
 message VectorBatchUpsertRequest {
     string namespace = 1;
     repeated VectorDataProto vectors = 2;
-    uint64 shard_id = 3;
+    reserved 3;
+    reserved "shard_id";
 }
 
 // VectorBatchUpsertResponse is the result of a batch upsert.
@@ -2872,7 +2880,8 @@ message VectorBatchUpsertResponse {
 message VectorBatchDeleteRequest {
     string namespace = 1;
     repeated string ids = 2;
-    uint64 shard_id = 3;
+    reserved 3;
+    reserved "shard_id";
 }
 
 // VectorBatchDeleteResponse is the result of a batch delete.
@@ -2888,7 +2897,8 @@ message VectorListRequest {
     int32 limit = 2;
     int32 offset = 3;
     string cursor = 4;
-    uint64 shard_id = 5;
+    reserved 5;
+    reserved "shard_id";
 }
 
 // VectorListResponse contains a paginated list of vectors.
@@ -2903,7 +2913,8 @@ message VectorUpdateMetadataRequest {
     string namespace = 1;
     string id = 2;
     string metadata_json = 3;
-    uint64 shard_id = 4;
+    reserved 4;
+    reserved "shard_id";
 }
 
 // ---------------------------------------------------------------------------
@@ -2926,7 +2937,8 @@ message VectorSearchSimilarRequest {
     int32 ef_search = 4;
     double min_score = 5;
     ConsistencyLevel consistency = 6;
-    uint64 shard_id = 7;
+    reserved 7;
+    reserved "shard_id";
 }
 
 // VectorSearchSimilarResponse contains similarity search results.
@@ -2942,7 +2954,8 @@ message VectorSearchByMetadataRequest {
     int32 limit = 3;
     int32 offset = 4;
     ConsistencyLevel consistency = 5;
-    uint64 shard_id = 6;
+    reserved 6;
+    reserved "shard_id";
 }
 
 // VectorSearchByMetadataResponse contains metadata search results.
@@ -2960,7 +2973,8 @@ message VectorHybridSearchRequest {
     double vector_weight = 5;
     double metadata_weight = 6;
     ConsistencyLevel consistency = 7;
-    uint64 shard_id = 8;
+    reserved 8;
+    reserved "shard_id";
 }
 
 // VectorHybridSearchResponse contains hybrid search results.
@@ -2975,7 +2989,8 @@ message VectorSearchByIDRequest {
     string id = 2;
     int32 k = 3;
     ConsistencyLevel consistency = 4;
-    uint64 shard_id = 5;
+    reserved 5;
+    reserved "shard_id";
 }
 
 // ---------------------------------------------------------------------------
@@ -2985,7 +3000,8 @@ message VectorSearchByIDRequest {
 // VectorRebuildIndexRequest triggers an asynchronous index rebuild.
 message VectorRebuildIndexRequest {
     string namespace = 1;
-    uint64 shard_id = 2;
+    reserved 2;
+    reserved "shard_id";
 }
 
 // VectorRebuildIndexResponse is the result of an index rebuild request.
@@ -2999,7 +3015,8 @@ message VectorRebuildIndexResponse {
 message VectorGetRebuildProgressRequest {
     string namespace = 1;
     string job_id = 2;
-    uint64 shard_id = 3;
+    reserved 3;
+    reserved "shard_id";
 }
 
 // VectorRebuildProgress describes the current state of a rebuild job.
@@ -3015,7 +3032,8 @@ message VectorRebuildProgress {
 // VectorGetIndexStatsRequest queries index statistics.
 message VectorGetIndexStatsRequest {
     string namespace = 1;
-    uint64 shard_id = 2;
+    reserved 2;
+    reserved "shard_id";
 }
 
 // VectorIndexStats describes the current state of a namespace's vector index.
@@ -3035,7 +3053,8 @@ message VectorIndexStats {
 // VectorCompactNamespaceRequest triggers asynchronous namespace compaction.
 message VectorCompactNamespaceRequest {
     string namespace = 1;
-    uint64 shard_id = 2;
+    reserved 2;
+    reserved "shard_id";
 }
 
 // VectorCompactNamespaceResponse is the result of a compaction request.
@@ -3048,7 +3067,8 @@ message VectorCompactNamespaceResponse {
 message VectorGetCompactionProgressRequest {
     string namespace = 1;
     string job_id = 2;
-    uint64 shard_id = 3;
+    reserved 3;
+    reserved "shard_id";
 }
 
 // VectorCompactionProgress describes the current state of a compaction job.

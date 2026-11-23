@@ -8236,7 +8236,6 @@ type VectorCreateNamespaceRequest struct {
 	DistanceMetric  DistanceMetric         `protobuf:"varint,3,opt,name=distance_metric,json=distanceMetric,proto3,enum=qrdb.v1.DistanceMetric" json:"distance_metric,omitempty"`
 	IndexType       VectorIndexType        `protobuf:"varint,4,opt,name=index_type,json=indexType,proto3,enum=qrdb.v1.VectorIndexType" json:"index_type,omitempty"`
 	IndexParamsJson string                 `protobuf:"bytes,5,opt,name=index_params_json,json=indexParamsJson,proto3" json:"index_params_json,omitempty"`
-	ShardId         uint64                 `protobuf:"varint,6,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -8304,13 +8303,6 @@ func (x *VectorCreateNamespaceRequest) GetIndexParamsJson() string {
 		return x.IndexParamsJson
 	}
 	return ""
-}
-
-func (x *VectorCreateNamespaceRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorCreateNamespaceResponse is the result of a namespace creation.
@@ -8502,7 +8494,6 @@ func (x *VectorUpdateNamespaceResponse) GetTimestamp() int64 {
 type VectorDeleteNamespaceRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,2,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8544,17 +8535,9 @@ func (x *VectorDeleteNamespaceRequest) GetNamespace() string {
 	return ""
 }
 
-func (x *VectorDeleteNamespaceRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
-}
-
 // VectorListNamespacesRequest lists all vector namespaces.
 type VectorListNamespacesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	ShardId       uint64                 `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8587,13 +8570,6 @@ func (x *VectorListNamespacesRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use VectorListNamespacesRequest.ProtoReflect.Descriptor instead.
 func (*VectorListNamespacesRequest) Descriptor() ([]byte, []int) {
 	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{130}
-}
-
-func (x *VectorListNamespacesRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorListNamespacesResponse returns all namespace names.
@@ -8645,7 +8621,6 @@ func (x *VectorListNamespacesResponse) GetNamespaces() []string {
 type VectorGetNamespaceInfoRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,2,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8685,13 +8660,6 @@ func (x *VectorGetNamespaceInfoRequest) GetNamespace() string {
 		return x.Namespace
 	}
 	return ""
-}
-
-func (x *VectorGetNamespaceInfoRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorNamespaceInfo contains metadata about a vector namespace.
@@ -8899,7 +8867,6 @@ type VectorUpsertRequest struct {
 	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
 	Vector        []float32              `protobuf:"fixed32,3,rep,packed,name=vector,proto3" json:"vector,omitempty"`
 	MetadataJson  string                 `protobuf:"bytes,4,opt,name=metadata_json,json=metadataJson,proto3" json:"metadata_json,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,5,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8960,13 +8927,6 @@ func (x *VectorUpsertRequest) GetMetadataJson() string {
 		return x.MetadataJson
 	}
 	return ""
-}
-
-func (x *VectorUpsertRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorUpsertResponse is the result of a vector upsert.
@@ -9036,7 +8996,6 @@ type VectorGetRequest struct {
 	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
 	Consistency   ConsistencyLevel       `protobuf:"varint,3,opt,name=consistency,proto3,enum=qrdb.v1.ConsistencyLevel" json:"consistency,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,4,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9092,19 +9051,11 @@ func (x *VectorGetRequest) GetConsistency() ConsistencyLevel {
 	return ConsistencyLevel_CONSISTENCY_LEVEL_UNSPECIFIED
 }
 
-func (x *VectorGetRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
-}
-
 // VectorDeleteRequest removes a single vector by ID.
 type VectorDeleteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,3,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9151,13 +9102,6 @@ func (x *VectorDeleteRequest) GetId() string {
 		return x.Id
 	}
 	return ""
-}
-
-func (x *VectorDeleteRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorBatchError describes a failure for a single vector in a batch.
@@ -9218,7 +9162,6 @@ type VectorBatchUpsertRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	Vectors       []*VectorDataProto     `protobuf:"bytes,2,rep,name=vectors,proto3" json:"vectors,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,3,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9265,13 +9208,6 @@ func (x *VectorBatchUpsertRequest) GetVectors() []*VectorDataProto {
 		return x.Vectors
 	}
 	return nil
-}
-
-func (x *VectorBatchUpsertRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorBatchUpsertResponse is the result of a batch upsert.
@@ -9340,7 +9276,6 @@ type VectorBatchDeleteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	Ids           []string               `protobuf:"bytes,2,rep,name=ids,proto3" json:"ids,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,3,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9387,13 +9322,6 @@ func (x *VectorBatchDeleteRequest) GetIds() []string {
 		return x.Ids
 	}
 	return nil
-}
-
-func (x *VectorBatchDeleteRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorBatchDeleteResponse is the result of a batch delete.
@@ -9464,7 +9392,6 @@ type VectorListRequest struct {
 	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
 	Offset        int32                  `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
 	Cursor        string                 `protobuf:"bytes,4,opt,name=cursor,proto3" json:"cursor,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,5,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9525,13 +9452,6 @@ func (x *VectorListRequest) GetCursor() string {
 		return x.Cursor
 	}
 	return ""
-}
-
-func (x *VectorListRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorListResponse contains a paginated list of vectors.
@@ -9601,7 +9521,6 @@ type VectorUpdateMetadataRequest struct {
 	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
 	MetadataJson  string                 `protobuf:"bytes,3,opt,name=metadata_json,json=metadataJson,proto3" json:"metadata_json,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,4,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9655,13 +9574,6 @@ func (x *VectorUpdateMetadataRequest) GetMetadataJson() string {
 		return x.MetadataJson
 	}
 	return ""
-}
-
-func (x *VectorUpdateMetadataRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorSearchResultProto is a single result from a similarity search.
@@ -9742,7 +9654,6 @@ type VectorSearchSimilarRequest struct {
 	EfSearch      int32                  `protobuf:"varint,4,opt,name=ef_search,json=efSearch,proto3" json:"ef_search,omitempty"`
 	MinScore      float64                `protobuf:"fixed64,5,opt,name=min_score,json=minScore,proto3" json:"min_score,omitempty"`
 	Consistency   ConsistencyLevel       `protobuf:"varint,6,opt,name=consistency,proto3,enum=qrdb.v1.ConsistencyLevel" json:"consistency,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,7,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9819,13 +9730,6 @@ func (x *VectorSearchSimilarRequest) GetConsistency() ConsistencyLevel {
 	return ConsistencyLevel_CONSISTENCY_LEVEL_UNSPECIFIED
 }
 
-func (x *VectorSearchSimilarRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
-}
-
 // VectorSearchSimilarResponse contains similarity search results.
 type VectorSearchSimilarResponse struct {
 	state         protoimpl.MessageState     `protogen:"open.v1"`
@@ -9887,7 +9791,6 @@ type VectorSearchByMetadataRequest struct {
 	Limit         int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
 	Offset        int32                  `protobuf:"varint,4,opt,name=offset,proto3" json:"offset,omitempty"`
 	Consistency   ConsistencyLevel       `protobuf:"varint,5,opt,name=consistency,proto3,enum=qrdb.v1.ConsistencyLevel" json:"consistency,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,6,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9957,13 +9860,6 @@ func (x *VectorSearchByMetadataRequest) GetConsistency() ConsistencyLevel {
 	return ConsistencyLevel_CONSISTENCY_LEVEL_UNSPECIFIED
 }
 
-func (x *VectorSearchByMetadataRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
-}
-
 // VectorSearchByMetadataResponse contains metadata search results.
 type VectorSearchByMetadataResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -10027,7 +9923,6 @@ type VectorHybridSearchRequest struct {
 	VectorWeight        float64                `protobuf:"fixed64,5,opt,name=vector_weight,json=vectorWeight,proto3" json:"vector_weight,omitempty"`
 	MetadataWeight      float64                `protobuf:"fixed64,6,opt,name=metadata_weight,json=metadataWeight,proto3" json:"metadata_weight,omitempty"`
 	Consistency         ConsistencyLevel       `protobuf:"varint,7,opt,name=consistency,proto3,enum=qrdb.v1.ConsistencyLevel" json:"consistency,omitempty"`
-	ShardId             uint64                 `protobuf:"varint,8,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -10111,13 +10006,6 @@ func (x *VectorHybridSearchRequest) GetConsistency() ConsistencyLevel {
 	return ConsistencyLevel_CONSISTENCY_LEVEL_UNSPECIFIED
 }
 
-func (x *VectorHybridSearchRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
-}
-
 // VectorHybridSearchResponse contains hybrid search results.
 type VectorHybridSearchResponse struct {
 	state         protoimpl.MessageState     `protogen:"open.v1"`
@@ -10178,7 +10066,6 @@ type VectorSearchByIDRequest struct {
 	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
 	K             int32                  `protobuf:"varint,3,opt,name=k,proto3" json:"k,omitempty"`
 	Consistency   ConsistencyLevel       `protobuf:"varint,4,opt,name=consistency,proto3,enum=qrdb.v1.ConsistencyLevel" json:"consistency,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,5,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10241,18 +10128,10 @@ func (x *VectorSearchByIDRequest) GetConsistency() ConsistencyLevel {
 	return ConsistencyLevel_CONSISTENCY_LEVEL_UNSPECIFIED
 }
 
-func (x *VectorSearchByIDRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
-}
-
 // VectorRebuildIndexRequest triggers an asynchronous index rebuild.
 type VectorRebuildIndexRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,2,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10292,13 +10171,6 @@ func (x *VectorRebuildIndexRequest) GetNamespace() string {
 		return x.Namespace
 	}
 	return ""
-}
-
-func (x *VectorRebuildIndexRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorRebuildIndexResponse is the result of an index rebuild request.
@@ -10367,7 +10239,6 @@ type VectorGetRebuildProgressRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	JobId         string                 `protobuf:"bytes,2,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,3,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10414,13 +10285,6 @@ func (x *VectorGetRebuildProgressRequest) GetJobId() string {
 		return x.JobId
 	}
 	return ""
-}
-
-func (x *VectorGetRebuildProgressRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorRebuildProgress describes the current state of a rebuild job.
@@ -10512,7 +10376,6 @@ func (x *VectorRebuildProgress) GetError() string {
 type VectorGetIndexStatsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,2,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10552,13 +10415,6 @@ func (x *VectorGetIndexStatsRequest) GetNamespace() string {
 		return x.Namespace
 	}
 	return ""
-}
-
-func (x *VectorGetIndexStatsRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorIndexStats describes the current state of a namespace's vector index.
@@ -10650,7 +10506,6 @@ func (x *VectorIndexStats) GetDiskUsage() int64 {
 type VectorCompactNamespaceRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,2,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10690,13 +10545,6 @@ func (x *VectorCompactNamespaceRequest) GetNamespace() string {
 		return x.Namespace
 	}
 	return ""
-}
-
-func (x *VectorCompactNamespaceRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorCompactNamespaceResponse is the result of a compaction request.
@@ -10757,7 +10605,6 @@ type VectorGetCompactionProgressRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	JobId         string                 `protobuf:"bytes,2,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	ShardId       uint64                 `protobuf:"varint,3,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10804,13 +10651,6 @@ func (x *VectorGetCompactionProgressRequest) GetJobId() string {
 		return x.JobId
 	}
 	return ""
-}
-
-func (x *VectorGetCompactionProgressRequest) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 // VectorCompactionProgress describes the current state of a compaction job.
@@ -36000,15 +35840,14 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\n" +
 	"replica_id\x18\x02 \x01(\x04R\treplicaId\x12#\n" +
 	"\rapplied_index\x18\x03 \x01(\x04R\fappliedIndex\x12\x12\n" +
-	"\x04hash\x18\x04 \x01(\x04R\x04hash\"\x9c\x02\n" +
+	"\x04hash\x18\x04 \x01(\x04R\x04hash\"\x91\x02\n" +
 	"\x1cVectorCreateNamespaceRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x1c\n" +
 	"\tdimension\x18\x02 \x01(\x05R\tdimension\x12@\n" +
 	"\x0fdistance_metric\x18\x03 \x01(\x0e2\x17.qrdb.v1.DistanceMetricR\x0edistanceMetric\x127\n" +
 	"\n" +
 	"index_type\x18\x04 \x01(\x0e2\x18.qrdb.v1.VectorIndexTypeR\tindexType\x12*\n" +
-	"\x11index_params_json\x18\x05 \x01(\tR\x0findexParamsJson\x12\x19\n" +
-	"\bshard_id\x18\x06 \x01(\x04R\ashardId\"W\n" +
+	"\x11index_params_json\x18\x05 \x01(\tR\x0findexParamsJsonJ\x04\b\x06\x10\aR\bshard_id\"W\n" +
 	"\x1dVectorCreateNamespaceResponse\x12\x18\n" +
 	"\acreated\x18\x01 \x01(\bR\acreated\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\"\xab\x01\n" +
@@ -36020,19 +35859,16 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x1dVectorUpdateNamespaceResponse\x12\x18\n" +
 	"\aupdated\x18\x01 \x01(\bR\aupdated\x12)\n" +
 	"\x10requires_rebuild\x18\x02 \x01(\bR\x0frequiresRebuild\x12\x1c\n" +
-	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\"W\n" +
+	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\"L\n" +
 	"\x1cVectorDeleteNamespaceRequest\x12\x1c\n" +
-	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x19\n" +
-	"\bshard_id\x18\x02 \x01(\x04R\ashardId\"8\n" +
-	"\x1bVectorListNamespacesRequest\x12\x19\n" +
-	"\bshard_id\x18\x01 \x01(\x04R\ashardId\">\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespaceJ\x04\b\x02\x10\x03R\bshard_id\"-\n" +
+	"\x1bVectorListNamespacesRequestJ\x04\b\x01\x10\x02R\bshard_id\">\n" +
 	"\x1cVectorListNamespacesResponse\x12\x1e\n" +
 	"\n" +
 	"namespaces\x18\x01 \x03(\tR\n" +
-	"namespaces\"X\n" +
+	"namespaces\"M\n" +
 	"\x1dVectorGetNamespaceInfoRequest\x12\x1c\n" +
-	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x19\n" +
-	"\bshard_id\x18\x02 \x01(\x04R\ashardId\"\xe4\x03\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespaceJ\x04\b\x02\x10\x03R\bshard_id\"\xe4\x03\n" +
 	"\x13VectorNamespaceInfo\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x1c\n" +
 	"\tdimension\x18\x02 \x01(\x05R\tdimension\x12@\n" +
@@ -36057,87 +35893,78 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x05 \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\"\x9b\x01\n" +
+	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\"\x90\x01\n" +
 	"\x13VectorUpsertRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x16\n" +
 	"\x06vector\x18\x03 \x03(\x02R\x06vector\x12#\n" +
-	"\rmetadata_json\x18\x04 \x01(\tR\fmetadataJson\x12\x19\n" +
-	"\bshard_id\x18\x05 \x01(\x04R\ashardId\"h\n" +
+	"\rmetadata_json\x18\x04 \x01(\tR\fmetadataJsonJ\x04\b\x05\x10\x06R\bshard_id\"h\n" +
 	"\x14VectorUpsertResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\x03R\aversion\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x12\x18\n" +
-	"\acreated\x18\x03 \x01(\bR\acreated\"\x98\x01\n" +
+	"\acreated\x18\x03 \x01(\bR\acreated\"\x8d\x01\n" +
 	"\x10VectorGetRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12;\n" +
-	"\vconsistency\x18\x03 \x01(\x0e2\x19.qrdb.v1.ConsistencyLevelR\vconsistency\x12\x19\n" +
-	"\bshard_id\x18\x04 \x01(\x04R\ashardId\"^\n" +
+	"\vconsistency\x18\x03 \x01(\x0e2\x19.qrdb.v1.ConsistencyLevelR\vconsistencyJ\x04\b\x04\x10\x05R\bshard_id\"S\n" +
 	"\x13VectorDeleteRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x0e\n" +
-	"\x02id\x18\x02 \x01(\tR\x02id\x12\x19\n" +
-	"\bshard_id\x18\x03 \x01(\x04R\ashardId\"8\n" +
+	"\x02id\x18\x02 \x01(\tR\x02idJ\x04\b\x03\x10\x04R\bshard_id\"8\n" +
 	"\x10VectorBatchError\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"\x87\x01\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"|\n" +
 	"\x18VectorBatchUpsertRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x122\n" +
-	"\avectors\x18\x02 \x03(\v2\x18.qrdb.v1.VectorDataProtoR\avectors\x12\x19\n" +
-	"\bshard_id\x18\x03 \x01(\x04R\ashardId\"\x84\x01\n" +
+	"\avectors\x18\x02 \x03(\v2\x18.qrdb.v1.VectorDataProtoR\avectorsJ\x04\b\x03\x10\x04R\bshard_id\"\x84\x01\n" +
 	"\x19VectorBatchUpsertResponse\x12\x1c\n" +
 	"\tsucceeded\x18\x01 \x01(\x05R\tsucceeded\x12\x16\n" +
 	"\x06failed\x18\x02 \x01(\x05R\x06failed\x121\n" +
-	"\x06errors\x18\x03 \x03(\v2\x19.qrdb.v1.VectorBatchErrorR\x06errors\"e\n" +
+	"\x06errors\x18\x03 \x03(\v2\x19.qrdb.v1.VectorBatchErrorR\x06errors\"Z\n" +
 	"\x18VectorBatchDeleteRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
-	"\x03ids\x18\x02 \x03(\tR\x03ids\x12\x19\n" +
-	"\bshard_id\x18\x03 \x01(\x04R\ashardId\"\x80\x01\n" +
+	"\x03ids\x18\x02 \x03(\tR\x03idsJ\x04\b\x03\x10\x04R\bshard_id\"\x80\x01\n" +
 	"\x19VectorBatchDeleteResponse\x12\x18\n" +
 	"\adeleted\x18\x01 \x01(\x05R\adeleted\x12\x16\n" +
 	"\x06failed\x18\x02 \x01(\x05R\x06failed\x121\n" +
-	"\x06errors\x18\x03 \x03(\v2\x19.qrdb.v1.VectorBatchErrorR\x06errors\"\x92\x01\n" +
+	"\x06errors\x18\x03 \x03(\v2\x19.qrdb.v1.VectorBatchErrorR\x06errors\"\x87\x01\n" +
 	"\x11VectorListRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x16\n" +
 	"\x06offset\x18\x03 \x01(\x05R\x06offset\x12\x16\n" +
-	"\x06cursor\x18\x04 \x01(\tR\x06cursor\x12\x19\n" +
-	"\bshard_id\x18\x05 \x01(\x04R\ashardId\"\x7f\n" +
+	"\x06cursor\x18\x04 \x01(\tR\x06cursorJ\x04\b\x05\x10\x06R\bshard_id\"\x7f\n" +
 	"\x12VectorListResponse\x122\n" +
 	"\avectors\x18\x01 \x03(\v2\x18.qrdb.v1.VectorDataProtoR\avectors\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +
 	"nextCursor\x12\x14\n" +
-	"\x05total\x18\x03 \x01(\x03R\x05total\"\x8b\x01\n" +
+	"\x05total\x18\x03 \x01(\x03R\x05total\"\x80\x01\n" +
 	"\x1bVectorUpdateMetadataRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12#\n" +
-	"\rmetadata_json\x18\x03 \x01(\tR\fmetadataJson\x12\x19\n" +
-	"\bshard_id\x18\x04 \x01(\x04R\ashardId\"|\n" +
+	"\rmetadata_json\x18\x03 \x01(\tR\fmetadataJsonJ\x04\b\x04\x10\x05R\bshard_id\"|\n" +
 	"\x17VectorSearchResultProto\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05score\x18\x02 \x01(\x01R\x05score\x12\x16\n" +
 	"\x06vector\x18\x03 \x03(\x02R\x06vector\x12#\n" +
-	"\rmetadata_json\x18\x04 \x01(\tR\fmetadataJson\"\xf2\x01\n" +
+	"\rmetadata_json\x18\x04 \x01(\tR\fmetadataJson\"\xe7\x01\n" +
 	"\x1aVectorSearchSimilarRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x16\n" +
 	"\x06vector\x18\x02 \x03(\x02R\x06vector\x12\f\n" +
 	"\x01k\x18\x03 \x01(\x05R\x01k\x12\x1b\n" +
 	"\tef_search\x18\x04 \x01(\x05R\befSearch\x12\x1b\n" +
 	"\tmin_score\x18\x05 \x01(\x01R\bminScore\x12;\n" +
-	"\vconsistency\x18\x06 \x01(\x0e2\x19.qrdb.v1.ConsistencyLevelR\vconsistency\x12\x19\n" +
-	"\bshard_id\x18\a \x01(\x04R\ashardId\"m\n" +
+	"\vconsistency\x18\x06 \x01(\x0e2\x19.qrdb.v1.ConsistencyLevelR\vconsistencyJ\x04\b\a\x10\bR\bshard_id\"m\n" +
 	"\x1bVectorSearchSimilarResponse\x12:\n" +
 	"\aresults\x18\x01 \x03(\v2 .qrdb.v1.VectorSearchResultProtoR\aresults\x12\x12\n" +
-	"\x04took\x18\x02 \x01(\x03R\x04took\"\xe6\x01\n" +
+	"\x04took\x18\x02 \x01(\x03R\x04took\"\xdb\x01\n" +
 	"\x1dVectorSearchByMetadataRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12!\n" +
 	"\ffilters_json\x18\x02 \x01(\tR\vfiltersJson\x12\x14\n" +
 	"\x05limit\x18\x03 \x01(\x05R\x05limit\x12\x16\n" +
 	"\x06offset\x18\x04 \x01(\x05R\x06offset\x12;\n" +
-	"\vconsistency\x18\x05 \x01(\x0e2\x19.qrdb.v1.ConsistencyLevelR\vconsistency\x12\x19\n" +
-	"\bshard_id\x18\x06 \x01(\x04R\ashardId\"j\n" +
+	"\vconsistency\x18\x05 \x01(\x0e2\x19.qrdb.v1.ConsistencyLevelR\vconsistencyJ\x04\b\x06\x10\aR\bshard_id\"j\n" +
 	"\x1eVectorSearchByMetadataResponse\x122\n" +
 	"\aresults\x18\x01 \x03(\v2\x18.qrdb.v1.VectorDataProtoR\aresults\x12\x14\n" +
-	"\x05total\x18\x02 \x01(\x03R\x05total\"\xb9\x02\n" +
+	"\x05total\x18\x02 \x01(\x03R\x05total\"\xae\x02\n" +
 	"\x19VectorHybridSearchRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x16\n" +
 	"\x06vector\x18\x02 \x03(\x02R\x06vector\x122\n" +
@@ -36145,28 +35972,24 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x01k\x18\x04 \x01(\x05R\x01k\x12#\n" +
 	"\rvector_weight\x18\x05 \x01(\x01R\fvectorWeight\x12'\n" +
 	"\x0fmetadata_weight\x18\x06 \x01(\x01R\x0emetadataWeight\x12;\n" +
-	"\vconsistency\x18\a \x01(\x0e2\x19.qrdb.v1.ConsistencyLevelR\vconsistency\x12\x19\n" +
-	"\bshard_id\x18\b \x01(\x04R\ashardId\"l\n" +
+	"\vconsistency\x18\a \x01(\x0e2\x19.qrdb.v1.ConsistencyLevelR\vconsistencyJ\x04\b\b\x10\tR\bshard_id\"l\n" +
 	"\x1aVectorHybridSearchResponse\x12:\n" +
 	"\aresults\x18\x01 \x03(\v2 .qrdb.v1.VectorSearchResultProtoR\aresults\x12\x12\n" +
-	"\x04took\x18\x02 \x01(\x03R\x04took\"\xad\x01\n" +
+	"\x04took\x18\x02 \x01(\x03R\x04took\"\xa2\x01\n" +
 	"\x17VectorSearchByIDRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\f\n" +
 	"\x01k\x18\x03 \x01(\x05R\x01k\x12;\n" +
-	"\vconsistency\x18\x04 \x01(\x0e2\x19.qrdb.v1.ConsistencyLevelR\vconsistency\x12\x19\n" +
-	"\bshard_id\x18\x05 \x01(\x04R\ashardId\"T\n" +
+	"\vconsistency\x18\x04 \x01(\x0e2\x19.qrdb.v1.ConsistencyLevelR\vconsistencyJ\x04\b\x05\x10\x06R\bshard_id\"I\n" +
 	"\x19VectorRebuildIndexRequest\x12\x1c\n" +
-	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x19\n" +
-	"\bshard_id\x18\x02 \x01(\x04R\ashardId\"k\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespaceJ\x04\b\x02\x10\x03R\bshard_id\"k\n" +
 	"\x1aVectorRebuildIndexResponse\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x18\n" +
 	"\astarted\x18\x02 \x01(\bR\astarted\x12\x1c\n" +
-	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\"q\n" +
+	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\"f\n" +
 	"\x1fVectorGetRebuildProgressRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x15\n" +
-	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12\x19\n" +
-	"\bshard_id\x18\x03 \x01(\x04R\ashardId\"\xb8\x01\n" +
+	"\x06job_id\x18\x02 \x01(\tR\x05jobIdJ\x04\b\x03\x10\x04R\bshard_id\"\xb8\x01\n" +
 	"\x15VectorRebuildProgress\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1a\n" +
@@ -36175,10 +35998,9 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"started_at\x18\x04 \x01(\x03R\tstartedAt\x12\x1f\n" +
 	"\vfinished_at\x18\x05 \x01(\x03R\n" +
 	"finishedAt\x12\x14\n" +
-	"\x05error\x18\x06 \x01(\tR\x05error\"U\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\"J\n" +
 	"\x1aVectorGetIndexStatsRequest\x12\x1c\n" +
-	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x19\n" +
-	"\bshard_id\x18\x02 \x01(\x04R\ashardId\"\x90\x02\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespaceJ\x04\b\x02\x10\x03R\bshard_id\"\x90\x02\n" +
 	"\x10VectorIndexStats\x12!\n" +
 	"\fvector_count\x18\x01 \x01(\x03R\vvectorCount\x12\x1c\n" +
 	"\tdimension\x18\x02 \x01(\x05R\tdimension\x12@\n" +
@@ -36187,17 +36009,15 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"index_type\x18\x04 \x01(\x0e2\x18.qrdb.v1.VectorIndexTypeR\tindexType\x12!\n" +
 	"\fmemory_usage\x18\x05 \x01(\x03R\vmemoryUsage\x12\x1d\n" +
 	"\n" +
-	"disk_usage\x18\x06 \x01(\x03R\tdiskUsage\"X\n" +
+	"disk_usage\x18\x06 \x01(\x03R\tdiskUsage\"M\n" +
 	"\x1dVectorCompactNamespaceRequest\x12\x1c\n" +
-	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x19\n" +
-	"\bshard_id\x18\x02 \x01(\x04R\ashardId\"Q\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespaceJ\x04\b\x02\x10\x03R\bshard_id\"Q\n" +
 	"\x1eVectorCompactNamespaceResponse\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x18\n" +
-	"\astarted\x18\x02 \x01(\bR\astarted\"t\n" +
+	"\astarted\x18\x02 \x01(\bR\astarted\"i\n" +
 	"\"VectorGetCompactionProgressRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x15\n" +
-	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12\x19\n" +
-	"\bshard_id\x18\x03 \x01(\x04R\ashardId\"\xbb\x01\n" +
+	"\x06job_id\x18\x02 \x01(\tR\x05jobIdJ\x04\b\x03\x10\x04R\bshard_id\"\xbb\x01\n" +
 	"\x18VectorCompactionProgress\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1a\n" +

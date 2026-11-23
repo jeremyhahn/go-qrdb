@@ -279,9 +279,6 @@ type CreateNamespaceRequest struct {
 
 	// Metadata contains additional namespace metadata
 	Metadata map[string]interface{}
-
-	// ShardID is the target shard for this namespace
-	ShardID uint64
 }
 
 // CreateNamespaceResponse contains the result of namespace creation.
@@ -337,9 +334,6 @@ type UpdateNamespaceResponse struct {
 type DeleteNamespaceRequest struct {
 	// Namespace is the namespace to delete
 	Namespace string
-
-	// ShardID is the target shard
-	ShardID uint64
 }
 
 // DeleteNamespaceResponse contains the result of namespace deletion.
@@ -364,9 +358,6 @@ type ListNamespacesRequest struct {
 
 	// Offset is the pagination offset
 	Offset int
-
-	// ShardID is the target shard
-	ShardID uint64
 }
 
 // ListNamespacesResponse contains the list of namespaces.
@@ -385,9 +376,6 @@ type ListNamespacesResponse struct {
 type GetNamespaceInfoRequest struct {
 	// Namespace is the namespace name
 	Namespace string
-
-	// ShardID is the target shard
-	ShardID uint64
 }
 
 // GetNamespaceInfoResponse contains namespace information.
@@ -467,9 +455,6 @@ type UpsertVectorRequest struct {
 
 	// Metadata contains user-defined attributes
 	Metadata map[string]interface{}
-
-	// ShardID is the target shard
-	ShardID uint64
 }
 
 // UpsertVectorResponse contains the result of vector upsert.
@@ -500,9 +485,6 @@ type GetVectorRequest struct {
 
 	// IncludeMetadata includes metadata in response
 	IncludeMetadata bool
-
-	// ShardID is the target shard
-	ShardID uint64
 
 	// Consistency specifies read consistency level
 	Consistency ConsistencyLevel
@@ -539,9 +521,6 @@ type DeleteVectorRequest struct {
 
 	// ID is the vector identifier
 	ID uint64
-
-	// ShardID is the target shard
-	ShardID uint64
 }
 
 // DeleteVectorResponse contains the result of vector deletion.
@@ -560,9 +539,6 @@ type BatchUpsertRequest struct {
 
 	// Vectors contains the vectors to upsert
 	Vectors []*VectorData
-
-	// ShardID is the target shard
-	ShardID uint64
 }
 
 // BatchUpsertResponse contains the result of batch upsert.
@@ -590,9 +566,6 @@ type BatchDeleteVectorsRequest struct {
 
 	// IDs contains the vector identifiers to delete
 	IDs []uint64
-
-	// ShardID is the target shard
-	ShardID uint64
 }
 
 // BatchDeleteVectorsResponse contains the result of batch deletion.
@@ -630,9 +603,6 @@ type ListVectorsRequest struct {
 	// IncludeMetadata includes metadata in response
 	IncludeMetadata bool
 
-	// ShardID is the target shard
-	ShardID uint64
-
 	// Consistency specifies read consistency level
 	Consistency ConsistencyLevel
 }
@@ -668,9 +638,6 @@ type UpdateVectorMetadataRequest struct {
 
 	// DeleteKeys contains metadata keys to delete (only when MergeMetadata is true)
 	DeleteKeys []string
-
-	// ShardID is the target shard
-	ShardID uint64
 }
 
 // UpdateVectorMetadataResponse contains the result of metadata update.
@@ -739,9 +706,6 @@ type SearchSimilarRequest struct {
 	// MetadataFilter filters results by metadata
 	MetadataFilter map[string]interface{}
 
-	// ShardID is the target shard
-	ShardID uint64
-
 	// Consistency specifies read consistency level
 	Consistency ConsistencyLevel
 }
@@ -802,9 +766,6 @@ type SearchByMetadataRequest struct {
 	// IncludeMetadata includes metadata in results
 	IncludeMetadata bool
 
-	// ShardID is the target shard
-	ShardID uint64
-
 	// Consistency specifies read consistency level
 	Consistency ConsistencyLevel
 }
@@ -855,9 +816,6 @@ type HybridSearchRequest struct {
 
 	// IncludeMetadata includes metadata in results
 	IncludeMetadata bool
-
-	// ShardID is the target shard
-	ShardID uint64
 
 	// Consistency specifies read consistency level
 	Consistency ConsistencyLevel
@@ -910,9 +868,6 @@ type SearchByIDRequest struct {
 	// ExcludeSelf excludes the source vector from results (default: true)
 	ExcludeSelf bool
 
-	// ShardID is the target shard
-	ShardID uint64
-
 	// Consistency specifies read consistency level
 	Consistency ConsistencyLevel
 }
@@ -946,9 +901,6 @@ type RebuildIndexRequest struct {
 
 	// Async indicates if rebuild should run asynchronously
 	Async bool
-
-	// ShardID is the target shard
-	ShardID uint64
 }
 
 // RebuildIndexResponse contains the result of index rebuild.
@@ -1027,9 +979,6 @@ type GetRebuildProgressResponse struct {
 type GetIndexStatsRequest struct {
 	// Namespace is the target namespace
 	Namespace string
-
-	// ShardID is the target shard
-	ShardID uint64
 }
 
 // GetIndexStatsResponse contains index statistics.
@@ -1101,9 +1050,6 @@ type CompactNamespaceRequest struct {
 
 	// TimeoutMs is the maximum time to wait (in milliseconds) for sync operations
 	TimeoutMs int64
-
-	// ShardID is the target shard
-	ShardID uint64
 }
 
 // CompactNamespaceResponse contains the result of compaction.
@@ -1131,9 +1077,6 @@ type GetCompactionProgressRequest struct {
 
 	// OperationID is the compaction operation ID (optional)
 	OperationID string
-
-	// ShardID is the target shard
-	ShardID uint64
 }
 
 // GetCompactionProgressResponse contains compaction progress information.
