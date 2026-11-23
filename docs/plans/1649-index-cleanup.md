@@ -37,3 +37,24 @@ overwrites (with non-JSON, or JSON carrying a different value) as still
 holding its old unique value, so a batch that releases a value from key A
 and gives it to key B in the same batch is refused. Only deleted keys are
 excluded today. Not changed in this lane.
+
+## rw1649h: the cleanup is versioned by `CmdFlagOrderedUnique`
+
+Codex round 3 P1 1 on PR #1706: the unconditional removal above changed
+how an existing, unflagged log replays (a non-JSON
+overwrite of A, then an unflagged write of B with A's old unique value, was
+refused when committed and would commit on replay). The exported
+`UpdateIndexesBatch` and `UpdateCompoundIndexesBatch` are back to the
+merge-base semantics: a new value that is not JSON returns at once and the
+old entries are kept. The cleanup lives in the unexported
+`updateIndexesBatch` / `updateCompoundIndexesBatch` with `ordered=true`,
+called only from the apply of a transaction (KV and MVCC engines) or batch
+(MVCC engine) proposed with `protocol.CmdFlagOrderedUnique`. A plain put's
+value is the unframed payload remainder and carries no trailer, so a plain
+non-JSON overwrite (and `PutWithIndexes`) keeps the stale entry as on the
+base; versioning it needs a flagged put op behind `ordered-unique-check`
+(owner decision, see docs/plans/1649.md). `UpdateIndexes` (no batch, no
+replicated caller) still removes the old entries. Tests:
+`TestKVEngine_LegacyNonJSONOverwriteReplay`,
+`TestMVCCEngine_LegacyNonJSONOverwriteReplay`, and legacy plus
+ordered/flagged twins of the NonJSONReplacement and NonJSONOverwrite tests.
