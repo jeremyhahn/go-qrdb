@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-enclave"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clock"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // infoDomain is the HPKE info domain-separation prefix. Bumping it breaks
@@ -53,14 +54,16 @@ func recipientPublicKey(pub *ecdsa.PublicKey) ([]byte, error) {
 }
 
 // sealInfo builds the canonical, unambiguous HPKE `info` binding the full
-// delivery context — Meta plus the per-delivery Nonce and IssuedAt. Because
-// Open re-derives this from the received envelope, ANY tampering with a bound
-// field (including the freshness/replay fields) makes decryption fail, so the
+// delivery context — the sender's announced release, Meta, and the
+// per-delivery Nonce and IssuedAt. Because Open re-derives this from the
+// received envelope, ANY tampering with a bound field (including the
+// release and the freshness/replay fields) makes decryption fail, so the
 // otherwise-plaintext envelope metadata is authenticated without a signature.
 // Every field is length-prefixed so no two distinct contexts can collide.
-func sealInfo(meta Meta, nonce []byte, issuedAt time.Time) []byte {
+func sealInfo(meta Meta, releaseVersion string, nonce []byte, issuedAt time.Time) []byte {
 	var b []byte
 	b = appendLP(b, []byte(infoDomain))
+	b = appendLP(b, []byte(releaseVersion))
 	b = appendLP(b, []byte(meta.TenantID))
 	b = appendLP(b, []byte(meta.Database))
 	b = appendU64(b, meta.ShardID)
@@ -111,16 +114,18 @@ func Seal(recipientPub *ecdsa.PublicKey, meta Meta, plaintext []byte) (*Envelope
 	}
 	issuedAt := time.Now().UTC()
 
-	info := sealInfo(meta, nonce, issuedAt)
+	rel := release.Version()
+	info := sealInfo(meta, rel, nonce, issuedAt)
 	payload, err := p256.Seal(pk, info, plaintext)
 	if err != nil {
 		return nil, err
 	}
 	return &Envelope{
-		Meta:     meta,
-		Payload:  payload,
-		Nonce:    nonce,
-		IssuedAt: issuedAt,
+		Meta:           meta,
+		Payload:        payload,
+		Nonce:          nonce,
+		IssuedAt:       issuedAt,
+		ReleaseVersion: rel,
 	}, nil
 }
 
@@ -219,7 +224,7 @@ func (r *Receiver) Open(env *Envelope) ([]byte, error) {
 	if issued.After(now.Add(maxClockSkew)) || issued.Before(now.Add(-r.ttl)) {
 		return nil, ErrExpired
 	}
-	info := sealInfo(env.Meta, env.Nonce, env.IssuedAt)
+	info := sealInfo(env.Meta, env.ReleaseVersion, env.Nonce, env.IssuedAt)
 	plaintext, err := p256.Open(r.dec, info, env.Payload)
 	if err != nil {
 		return nil, ErrDecrypt
