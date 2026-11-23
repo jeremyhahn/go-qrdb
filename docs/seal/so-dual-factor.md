@@ -34,8 +34,7 @@ every SO-gated operation is refused on every transport. It is never skipped.
 
 An embedded node (`sdk/go/node`) also commits each tenant SO's PIN through
 the authenticator passed with `server.WithSOAuthenticator`. A tenant create
-that names an SO, which strict separation of duties (forced under FIPS
-140-3) requires, needs it: without the option the node refuses the create
+that names an SO needs it, in either posture: without the option the node refuses the create
 with an error that names `server.WithSOAuthenticator` and wraps
 `*bootstrap.MissingProvisioningSeamError`.
 
