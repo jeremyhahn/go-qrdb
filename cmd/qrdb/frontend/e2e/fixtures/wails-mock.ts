@@ -47,6 +47,9 @@ export interface MockTenantInfo {
     allow_system_managed_barrier?: boolean;
     allow_dedicated_wal?: boolean;
   } | null;
+  isolation_type?: string;
+  description?: string;
+  metadata?: Record<string, string>;
   created_at: string;
   updated_at: string;
 }
@@ -753,6 +756,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         SealBinding: {
+          // SealBinding.EnableEncryption(req) returns cmd/qrdb's
+          // EnableEncryptionResult: the migration starts and the scope is
+          // the tenant's when req.tenant_id is set, else the system's.
+          EnableEncryption: async (req: { tenant_id?: string; strategy?: string }) => {
+            maybeReject("SealBinding.EnableEncryption");
+            return { status: "migration_started", scope: req?.tenant_id ? "tenant" : "system" };
+          },
           // SealBinding.Unseal(secret): credential barriers only. A Shamir
           // barrier opens through a holder quorum, and the real binding
           // refuses this call for it.
@@ -2970,6 +2980,29 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               shamir_threshold: tb.shamir_threshold ?? 0,
               shamir_total: tb.shamir_total ?? 0,
             };
+          },
+          // TenantBinding.Update(tenantID, req): the path id wins over
+          // req.tenant_id, as in the Go binding; only present fields apply.
+          Update: async (
+            tenantId: string,
+            req: {
+              tenant_id?: string;
+              name?: string;
+              isolation_type?: string;
+              description?: string | null;
+              metadata?: Record<string, string>;
+            },
+          ) => {
+            maybeReject("TenantBinding.Update");
+            const s = getState();
+            const t = s.tenants.find((t: { id: string }) => t.id === tenantId);
+            if (!t) throw new Error(`tenant "${tenantId}" not found`);
+            if (req?.name) t.name = req.name;
+            if (req?.isolation_type) t.isolation_type = req.isolation_type;
+            if (req?.description !== undefined && req.description !== null) t.description = req.description;
+            if (req?.metadata !== undefined) t.metadata = req.metadata;
+            t.updated_at = new Date().toISOString();
+            return { tenant: { ...t } };
           },
           UpdateQuotas: async (req: { tenant_id: string; quotas: MockTenantInfo["quotas"] }) => {
             maybeReject("TenantBinding.UpdateQuotas");
