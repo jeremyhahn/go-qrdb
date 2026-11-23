@@ -34,7 +34,10 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	api "github.com/jeremyhahn/go-qrdb/pkg/api"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -514,6 +517,43 @@ func (v *vectorService) admit(access func() error) error {
 	return access()
 }
 
+// admitIndexRead gates a read served from the in-memory index of namespace
+// on the store under it. A service built over an apply host (a
+// materialized database's binding store, WithVectorApplyHost) keeps its
+// HNSW indexes in memory, so a cached search never reaches the store and
+// would answer from a sealed barrier. One engine lookup of the namespace
+// through the host runs first: a sealed store refuses it, surfaced as
+// *BarrierSealedError, and a dropped namespace answers not-found. A service
+// without an apply host (the node's shared vector store) is unchanged.
+func (v *vectorService) admitIndexRead(ctx context.Context, namespace string) error {
+	if v.applyHost == nil {
+		return nil
+	}
+	if _, err := v.storage.GetNamespaceInfo(ctx, namespace); err != nil {
+		return translateVectorSealed(err)
+	}
+	return nil
+}
+
+// translateVectorSealed maps a sealed-barrier refusal of the store under a
+// vector service to *BarrierSealedError, the typed error every transport maps
+// to its sealed status (HTTP 503 / gRPC Unavailable). Any other error is
+// returned unchanged.
+func translateVectorSealed(err error) error {
+	if sealed, ok := errors.AsType[*BarrierSealedError](err); ok {
+		return sealed
+	}
+	if _, ok := errors.AsType[*database.SealedError](err); ok {
+		return &BarrierSealedError{}
+	}
+	// A barrier-encrypted binding store reports the barrier's own sealed
+	// error, or the quiesce gate a seal closes, on the read it refuses.
+	if errors.Is(err, seal.ErrSealed) || errors.Is(err, quiesce.ErrSealing) {
+		return &BarrierSealedError{}
+	}
+	return err
+}
+
 // startBackground runs job on its own goroutine under the service's
 // background context, which Close cancels and waits for. It refuses with
 // VectorServiceClosedError once Close has begun: the closed check and the
@@ -661,13 +701,18 @@ func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (
 	v.indexMu.RUnlock()
 
 	if exists {
+		// A cached index answers only once the store under it admits the
+		// read: a sealed binding store refuses it.
+		if err := v.admitIndexRead(ctx, namespace); err != nil {
+			return nil, err
+		}
 		return index, nil
 	}
 
 	// Index doesn't exist, check if namespace exists in storage
 	info, err := v.storage.GetNamespaceInfo(ctx, namespace)
 	if err != nil {
-		return nil, err
+		return nil, translateVectorSealed(err)
 	}
 
 	if err := checkStoredGeometry(namespace, info); err != nil {
@@ -812,6 +857,9 @@ func invalidVectorFromStorage(_ string, _ uint64, err error) error {
 // namespace is the caller's LOGICAL namespace, never the tenant-scoped storage
 // key, so an error message cannot leak another tenant's key layout.
 func vectorStorageError(op, namespace string, id uint64, err error) error {
+	if sealed, ok := errors.AsType[*BarrierSealedError](translateVectorSealed(err)); ok {
+		return sealed
+	}
 	for _, row := range vectorStorageErrors {
 		if errors.Is(err, row.sentinel) {
 			return row.typed(namespace, id, err)
@@ -1857,6 +1905,12 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 				v.metrics.operationErrors.With("search_similar", "unsupported_geometry").Inc()
 			}
 			return nil, unsupported
+		}
+		if sealed, ok := errors.AsType[*BarrierSealedError](translateVectorSealed(err)); ok {
+			if v.metrics != nil {
+				v.metrics.operationErrors.With("search_similar", "barrier_sealed").Inc()
+			}
+			return nil, sealed
 		}
 		v.logger.WithFields(map[string]interface{}{
 			"namespace": req.Namespace,
