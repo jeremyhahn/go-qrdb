@@ -890,6 +890,7 @@ are not reconstructed here — their history is in the git log.
 
 - **Breaking:** remote-mode databases leave the clients (OD-9 A): the CLI's `qrdb database update-connection`, the Go SDK's `UpdateDatabaseConnection` and `DatabaseConnectionConfig` and the `Connection` field of its database types, and the TypeScript SDK's `updateDatabaseConnection` and connection types are deleted (#923).
 - **Breaking:** remote-mode databases leave the server (OD-9 A): `mode: remote`, the `connection` block of database create and `DatabaseInfo`, REST `PATCH /v1/databases/{name}/connection`, gRPC `DatabaseUpdateConnection` (field 11 of `DatabaseInfoResponse` reserved), QUIC `db.UpdateConnection` and the MCP tool `qrdb_database_update_connection` are deleted; REST refuses a `connection` field on create as an unknown field (#923).
+- **Breaking:** no client sends a vector shard ID (OD-14 A): the database's binding decides the vector shard. The CLI's `--shard-id` is gone from every `qrdb vector` verb, `ShardID` from the Go SDK's twenty-one vector request types and every Go transport (gRPC, Unix, QUIC, REST, MCP, embedded), and `shardId` from the TypeScript SDK's vector request types and its REST and desktop transports. The server still accepts `shard_id` on the wire until it is removed there (#923).
 - The dev container's internal module-forge path (GITEA_HOST, MODULE_FORGE_TOKEN); modules resolve from the public proxy.
 
 ## [0.58.0-alpha] - 2026-10-27

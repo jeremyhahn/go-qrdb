@@ -50,7 +50,7 @@ The examples are REST bodies. Namespace creation:
 
 ```json
 { "namespace": "docs", "dimension": 768,
-  "distance_metric": "cosine", "index_type": "hnsw", "shard_id": 0 }
+  "distance_metric": "cosine", "index_type": "hnsw" }
 ```
 
 `distance_metric`: `cosine` · `euclidean` (alias `l2`) · `dot_product` ·
@@ -71,24 +71,24 @@ Upsert:
 ```json
 { "namespace": "docs", "id": 1,
   "vector": [0.12, 0.98, -0.44],
-  "metadata": { "source": "manual.pdf", "page": 3 },
-  "shard_id": 0 }
+  "metadata": { "source": "manual.pdf", "page": 3 } }
 ```
 
 Vector IDs are `uint64` JSON numbers. `vector` length must equal the namespace `dimension`.
 
-**`shard_id` selects nothing today** (see architecture.md "Current state").
-Target: it is removed from all twenty requests on every transport (OD-14 A);
-the database named by the request's database scope decides where the
-namespace lives. Every capability is then served for every database on every
-backend, including volume- and raft-isolated tenants, where it is refused as
-not implemented today.
+**`shard_id` selects nothing, and no client sends it** (OD-14 A): neither
+SDK's vector requests nor any `qrdb vector` verb carries a shard ID; the
+database named by the request's database scope decides where the namespace
+lives. The server still accepts the field on the wire until it is removed from
+all twenty requests on every transport. Target: every capability is then
+served for every database on every backend, including volume- and
+raft-isolated tenants, where it is refused as not implemented today.
 
 Similarity search:
 
 ```json
 { "namespace": "docs", "query_vector": [0.1, 0.2, 0.3],
-  "k": 10, "min_score": 0.75, "ef_search": 200, "shard_id": 0 }
+  "k": 10, "min_score": 0.75, "ef_search": 200 }
 ```
 
 `ef_search` applies to HNSW indexes only. `min_score` is a post-filter. gRPC
