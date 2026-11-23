@@ -54,8 +54,9 @@ func TestCleanupRotation_SkipsARecreatedCredential(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, before.History, after.History, "a recreated credential's history was trimmed")
 	for _, h := range after.History {
-		_, err := svc.RetrieveCredentialVersionBuffer(ctx, "k", h.Version)
+		buf, err := svc.RetrieveCredentialVersionBuffer(ctx, "k", h.Version)
 		require.NoError(t, err, "version %d reaped", h.Version)
+		buf.Destroy()
 	}
 }
 
