@@ -98,6 +98,11 @@ type ReservedRootsReporter interface {
 // A database's DatabaseMeta is its record in the replicated Catalog, not a
 // file under its directory.
 type Manager struct {
+	// raftReplicas names the replica nodes of a backend: raft database's
+	// own Raft group for the binding block; unset, no nodes are reported
+	// (see SetRaftReplicaNodes).
+	raftReplicas atomic.Pointer[RaftReplicaNodes]
+
 	logger     *slog.Logger
 	dataDir    string
 	databases  sync.Map // dbKey -> *Database
@@ -563,6 +568,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	db.incarnation = incarnation
 	db.ownerNode = meta.OwnerNode
 	db.binding = m.describeBinding(meta)
+	db.bindingNodes = m.bindingNodesFor(meta, db.binding)
 
 	// Mark the new incarnation live in the store holding the database's
 	// data. This is the LAST fallible step before the database becomes
@@ -756,6 +762,7 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 	db.incarnation = meta.Incarnation
 	db.ownerNode = meta.OwnerNode
 	db.binding = m.describeBinding(meta)
+	db.bindingNodes = m.bindingNodesFor(meta, db.binding)
 
 	if actual, loaded := m.databases.LoadOrStore(key, db); loaded {
 		// Another goroutine opened it concurrently.
@@ -2010,7 +2017,45 @@ func (m *Manager) describeBinding(meta DatabaseMeta) *DatabaseBinding {
 			slog.String("error", err.Error()))
 		return nil
 	}
+	if b.Kind == BindingRaft && b.Raft != nil && len(b.Raft.Nodes) == 0 {
+		b.Raft.Nodes = m.raftReplicaNodes(meta.TenantID, meta.Name)
+	}
 	return b.Describe(meta.OwnerNode, meta.Generation)
+}
+
+// raftReplicaNodes names the replica nodes of tenantID/db's own Raft group
+// through the installed reader, or none without one.
+func (m *Manager) raftReplicaNodes(tenantID, db string) []string {
+	nodes := m.raftReplicas.Load()
+	if nodes == nil {
+		return nil
+	}
+	return (*nodes)(tenantID, db)
+}
+
+// bindingNodesFor is the reader Info names a raft binding's replicas with,
+// or nil for any other binding.
+func (m *Manager) bindingNodesFor(meta DatabaseMeta, b *DatabaseBinding) func() []string {
+	if b == nil || b.Kind != BindingRaft {
+		return nil
+	}
+	tenantID, name := meta.TenantID, meta.Name
+	return func() []string { return m.raftReplicaNodes(tenantID, name) }
+}
+
+// RaftReplicaNodes names the replica nodes of the Raft group a backend:
+// raft database runs on, or none when it is not placed.
+type RaftReplicaNodes func(tenantID, db string) []string
+
+// SetRaftReplicaNodes installs the reader the binding block of a backend:
+// raft database takes its replica nodes from (the replicated placement
+// table on a raft-mode node). A nil reader removes it.
+func (m *Manager) SetRaftReplicaNodes(nodes RaftReplicaNodes) {
+	if nodes == nil {
+		m.raftReplicas.Store(nil)
+		return
+	}
+	m.raftReplicas.Store(&nodes)
 }
 
 // RecordBindings returns the binding of every catalog record (ListRecords)

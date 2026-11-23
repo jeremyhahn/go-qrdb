@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -39,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -261,6 +263,13 @@ type RaftBackendFactory struct {
 	// OnSealing observer, so each barrier gets exactly one however many of
 	// its shards start. Guarded by mu.
 	sealWatched map[*seal.StorageBarrier]struct{}
+	// isolation reports a tenant's isolation, so a prefix tenant's group
+	// (which has no tenant barrier) runs under the node barrier. Nil means
+	// every tenant must have a tenant barrier.
+	isolation TenantIsolationLookup
+	// legacyProbe is the REST registry's legacy shared-route probe
+	// (ServesOwnGroup); guarded by mu.
+	legacyProbe LegacySharedProbe
 	// sealing records the watched barriers that have begun to seal and not
 	// been unsealed since: no shard of theirs starts while one is listed, so
 	// nothing opens a tenant's WAL between the seal's drain of its shards and
@@ -361,6 +370,101 @@ type RaftBackendOption func(*RaftBackendFactory)
 // Host has a transport: without it such a Host's shards are never sent a
 // command an older replica could not apply (see raftbackend.HostAdapter.
 // FeatureEnabled).
+// TenantIsolationLookup reports a tenant's isolation mode.
+type TenantIsolationLookup func(ctx context.Context, tenantID string) (tenant.IsolationType, error)
+
+// WithTenantIsolation sets the tenant isolation lookup. With it, a backend:
+// raft database of a prefix tenant runs its own group under the node barrier
+// (the node encryptor); without it, every tenant needs a tenant barrier.
+func WithTenantIsolation(lookup TenantIsolationLookup) RaftBackendOption {
+	return func(f *RaftBackendFactory) { f.isolation = lookup }
+}
+
+// groupBarrier returns the barrier a tenant's database groups run under: the
+// tenant barrier for a barrier, volume or raft tenant, the node barrier for a
+// prefix tenant (nodeScoped). Anything else fails closed.
+func (f *RaftBackendFactory) groupBarrier(ctx context.Context, tenantID string) (tb *seal.TenantBarrier, nodeScoped bool, err error) {
+	tb, err = f.barrierReg.GetTenant(tenantID)
+	if err == nil {
+		return tb, false, nil
+	}
+	if !errors.Is(err, seal.ErrTenantNotFound) || f.isolation == nil {
+		return nil, false, err
+	}
+	iso, lerr := f.isolation(ctx, tenantID)
+	if lerr != nil {
+		return nil, false, lerr
+	}
+	if iso != tenant.IsolationPrefix {
+		return nil, false, err
+	}
+	sys := f.barrierReg.SystemBarrier()
+	if sys == nil {
+		return nil, false, err
+	}
+	return seal.WrapTenantBarrier(tenantID, sys), true, nil
+}
+
+// HostsShard reports whether this factory has started the (tenant, db) group.
+func (f *RaftBackendFactory) HostsShard(tenantID, db string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.shards[raftShardKey{tenantID: tenantID, database: db}]
+	return ok
+}
+
+// HostsDatabase reports whether (tenant, db) is a backend: raft database
+// this factory serves: its group is started here, or its info source knows
+// its shard.
+func (f *RaftBackendFactory) HostsDatabase(tenantID, db string) bool {
+	if f == nil {
+		return false
+	}
+	if f.HostsShard(tenantID, db) {
+		return true
+	}
+	// A dropping database still routes here, so its fence refuses requests.
+	_, _, ok := f.dbInfo.databaseInfo(tenantID, db, true)
+	return ok
+}
+
+// LegacySharedProbe reports whether the shard that served a non-raft
+// tenant's raft database before OD-1 A still holds its keys, so it keeps
+// that route until relocation (3b.8).
+type LegacySharedProbe func(tenantID, db string, isolation tenant.IsolationType) (bool, error)
+
+// SetLegacySharedProbe installs the probe ServesOwnGroup uses when its
+// caller passes none (the drop fence's store resolver).
+func (f *RaftBackendFactory) SetLegacySharedProbe(probe LegacySharedProbe) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.legacyProbe = probe
+}
+
+// ServesOwnGroup reports whether a non-raft tenant's database is served from
+// its own Raft group (OD-1 A): this factory hosts its shard and the probe
+// (probe, else the installed one) finds no legacy keys under its prefix in
+// the shard that served it before. Request routing and the drop fence both
+// apply this one rule.
+func (f *RaftBackendFactory) ServesOwnGroup(tenantID, db string, isolation tenant.IsolationType, probe LegacySharedProbe) (bool, error) {
+	if !f.HostsDatabase(tenantID, db) {
+		return false, nil
+	}
+	if probe == nil {
+		f.mu.Lock()
+		probe = f.legacyProbe
+		f.mu.Unlock()
+	}
+	if probe == nil {
+		return true, nil
+	}
+	legacy, err := probe(tenantID, db, isolation)
+	if err != nil {
+		return false, err
+	}
+	return !legacy, nil
+}
+
 func WithFeatureGate(gate *featuregate.Gate) RaftBackendOption {
 	return func(f *RaftBackendFactory) { f.featureGate = gate }
 }
@@ -430,6 +534,40 @@ func WithMultiplexLogDB(mux *database.MultiplexLogDB) RaftBackendOption {
 // (*seal.BarrierRegistry).LocalTenantDataRoot.
 type LocalRootResolver func(ctx context.Context, tenantID string) (string, error)
 
+// TenantServiceIsolation adapts a tenant service to a TenantIsolationLookup.
+func TenantServiceIsolation(svc tenant.TenantServicer) TenantIsolationLookup {
+	return func(ctx context.Context, tenantID string) (tenant.IsolationType, error) {
+		info, err := svc.GetTenant(ctx, tenantID)
+		if err != nil {
+			return "", err
+		}
+		return info.IsolationType, nil
+	}
+}
+
+// IsolationRootResolver resolves the root a tenant's database groups live
+// under (OD-1 A): a volume or raft tenant's own data root (tenantRoot), and
+// for a prefix or barrier tenant, which has no data root of its own,
+// {nodeDataDir}/tenants/<tenant> on the node's data dir. A group's data then
+// sits at {root}/databases/<db>/shard-<N>.
+func IsolationRootResolver(lookup TenantIsolationLookup, nodeDataDir string, tenantRoot LocalRootResolver) LocalRootResolver {
+	return func(ctx context.Context, tenantID string) (string, error) {
+		iso, err := lookup(ctx, tenantID)
+		if err != nil {
+			return "", err
+		}
+		switch iso {
+		case tenant.IsolationPrefix, tenant.IsolationBarrier:
+			if nodeDataDir == "" {
+				return "", fmt.Errorf("server: no node data dir for the raft groups of %s tenant %q", iso, tenantID)
+			}
+			return filepath.Join(nodeDataDir, "tenants", tenantID), nil
+		default:
+			return tenantRoot(ctx, tenantID)
+		}
+	}
+}
+
 // WithPlacementInfoSource makes the replicated placement table the source of
 // truth for resolving a dedicated-raft database's shard. When a placement entry
 // for (tenant, db) exists and assigns a replica to localNodeID, that entry's
@@ -460,6 +598,29 @@ func WithPlacementInfoSource(store *placement.Store, localNodeID string, resolve
 			localRootResolver: res,
 			logger:            f.logger,
 		}
+	}
+}
+
+// PlacementReplicaNodes reads the replica nodes of a backend: raft
+// database's own Raft group from the replicated placement table, for the
+// binding block database info reports. A database without a placement entry,
+// or one the table cannot be read for, names none.
+func PlacementReplicaNodes(store *placement.Store) database.RaftReplicaNodes {
+	return func(tenantID, db string) []string {
+		if store == nil {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), placementResolveTimeout)
+		defer cancel()
+		p, err := store.Get(ctx, tenantID, db)
+		if err != nil || p == nil {
+			return nil
+		}
+		nodes := make([]string, 0, len(p.Replicas))
+		for _, r := range p.Replicas {
+			nodes = append(nodes, r.NodeID)
+		}
+		return nodes
 	}
 }
 
@@ -914,7 +1075,7 @@ type shardStartPlan struct {
 // shard, so the caller MUST NOT hold f.mu. forceJoin re-enters the join
 // bootstrap window for an ObserverReady replica that has no persisted state.
 func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string, honorFence, forceJoin bool) (*shardStartPlan, error) {
-	tb, err := f.barrierReg.GetTenant(tenantID)
+	tb, nodeScoped, err := f.groupBarrier(ctx, tenantID)
 	if err != nil {
 		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "barrier-lookup", Err: err}
 	}
@@ -922,9 +1083,13 @@ func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string,
 		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: seal.ErrSealed}
 	}
 	// The observer is registered under f.mu, which guards sealWatched; it is
-	// released before the Raft reads below.
+	// released before the Raft reads below. A prefix tenant's group runs
+	// under the node barrier, whose seal pauses every shard of the node, so
+	// it registers no per-tenant observer.
 	f.mu.Lock()
-	f.watchSealLocked(tenantID, tb)
+	if !nodeScoped {
+		f.watchSealLocked(tenantID, tb)
+	}
 	f.mu.Unlock()
 
 	// M2: single store.Get covers both the shard info and the placement entry.
@@ -1025,6 +1190,10 @@ func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string,
 		dedicatedWAL = pInfo.DedicatedWAL
 	} else {
 		dedicatedWAL = f.dbInfo.dedicatedWAL(tenantID, db)
+	}
+	if nodeScoped {
+		// The per-tenant-KEY WAL needs a tenant key; a prefix tenant has none.
+		dedicatedWAL = false
 	}
 
 	local := map[uint64]string{f.localReplicaID: f.localRaftAddr}

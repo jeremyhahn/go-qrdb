@@ -308,10 +308,23 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 		}
 	}
 	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePoolConfigured && cfg.Host != nil {
-		var raftOpts []RaftBackendOption
+		// OD-1 A: every backend: raft database runs its own group, whatever
+		// its tenant's isolation; the lookup lets a prefix tenant's group run
+		// under the node barrier and roots a prefix or barrier tenant's
+		// groups on the node data dir.
+		isolation := TenantServiceIsolation(cfg.TenantSvc)
+		raftOpts := []RaftBackendOption{WithTenantIsolation(isolation)}
 		if cfg.PlacementStore != nil {
+			nodeDataDir := ""
+			if cfg.Manager != nil {
+				nodeDataDir = cfg.Manager.DataDir()
+				// database info names the replicas of each raft
+				// database's own group from the same table.
+				cfg.Manager.SetRaftReplicaNodes(PlacementReplicaNodes(cfg.PlacementStore))
+			}
 			raftOpts = append(raftOpts,
-				WithPlacementInfoSource(cfg.PlacementStore, cfg.RaftAddr, cfg.BarrierReg.LocalTenantDataRoot))
+				WithPlacementInfoSource(cfg.PlacementStore, cfg.RaftAddr,
+					IsolationRootResolver(isolation, nodeDataDir, cfg.BarrierReg.LocalTenantDataRoot)))
 		}
 		if cfg.MultiplexLogDB != nil {
 			raftOpts = append(raftOpts, WithMultiplexLogDB(cfg.MultiplexLogDB))

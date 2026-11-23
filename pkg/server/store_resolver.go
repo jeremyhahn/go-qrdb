@@ -109,6 +109,14 @@ type raftFenceSource interface {
 	FenceServices(ctx context.Context, tenantID, db, incarnation string) (*DatabaseServices, error)
 }
 
+// raftGroupSource is the raft fence source that also serves non-raft
+// tenants' raft databases from their own groups (*RaftBackendFactory).
+type raftGroupSource interface {
+	// ServesOwnGroup reports whether a non-raft tenant's database runs its
+	// own Raft group (OD-1 A), with nil selecting the installed legacy probe.
+	ServesOwnGroup(tenantID, db string, isolation tenant.IsolationType, probe LegacySharedProbe) (bool, error)
+}
+
 // Compile-time check: the production source is the factory.
 var _ raftFenceSource = (*RaftBackendFactory)(nil)
 
@@ -212,6 +220,20 @@ func (r *storeResolver) FenceTarget(ctx context.Context, tenantID, db, incarnati
 		return service.FenceStore{}, false, nil
 	}
 	isolation := info.EffectiveIsolationType()
+	group := isolation == tenant.IsolationRaft
+	if groups, ok := r.raft.(raftGroupSource); ok && !group && groups != nil {
+		// OD-1 A: a prefix, barrier or volume tenant's backend: raft database
+		// runs its own group, so its fence goes there -- the same rule the
+		// request path applies (restServiceRegistry.isRaftGroupDatabase).
+		own, err := groups.ServesOwnGroup(tenantID, db, isolation, nil)
+		if err != nil {
+			return service.FenceStore{}, true, err
+		}
+		group = own
+	}
+	if group {
+		return r.raftFenceTarget(ctx, tenantID, db, incarnation, isolation)
+	}
 	switch isolation {
 	case tenant.IsolationVolume:
 		if isNilTenantServices(r.hosts) {
@@ -222,21 +244,25 @@ func (r *storeResolver) FenceTarget(ctx context.Context, tenantID, db, incarnati
 			return service.FenceStore{}, true, err
 		}
 		return service.FenceStore{KV: svcs.KV}, true, nil
-	case tenant.IsolationRaft:
-		if r.raft == nil {
-			return service.FenceStore{}, true, &rest.IsolationBackendUnavailableError{TenantID: tenantID, Isolation: string(isolation)}
-		}
-		svcs, err := r.raft.FenceServices(ctx, tenantID, db, incarnation)
-		if errors.Is(err, ErrRaftDatabaseUnknown) {
-			return service.FenceStore{PerDatabase: true}, true, nil
-		}
-		if err != nil {
-			return service.FenceStore{}, true, err
-		}
-		return service.FenceStore{KV: svcs.KV, PerDatabase: true}, true, nil
 	default:
 		return service.FenceStore{}, false, nil
 	}
+}
+
+// raftFenceTarget is the fence store of a database that runs its own Raft
+// group: the group's own store, fenced per database.
+func (r *storeResolver) raftFenceTarget(ctx context.Context, tenantID, db, incarnation string, isolation tenant.IsolationType) (service.FenceStore, bool, error) {
+	if r.raft == nil {
+		return service.FenceStore{}, true, &rest.IsolationBackendUnavailableError{TenantID: tenantID, Isolation: string(isolation)}
+	}
+	svcs, err := r.raft.FenceServices(ctx, tenantID, db, incarnation)
+	if errors.Is(err, ErrRaftDatabaseUnknown) {
+		return service.FenceStore{PerDatabase: true}, true, nil
+	}
+	if err != nil {
+		return service.FenceStore{}, true, err
+	}
+	return service.FenceStore{KV: svcs.KV, PerDatabase: true}, true, nil
 }
 
 // isNilTenantServices reports whether the source is absent, including the

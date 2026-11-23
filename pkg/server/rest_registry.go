@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
@@ -62,12 +63,18 @@ var errNotDedicatedDatabaseBarrier = errors.New("server: database has no dedicat
 //
 // restServiceRegistry is safe for concurrent use.
 type restServiceRegistry struct {
-	dbReg        *DatabaseServiceRegistry
-	barrierReg   *seal.BarrierRegistry
-	tenantSvc    tenant.TenantServicer
-	catalog      DatabaseCatalog
-	tenantHosts  *TenantHostRegistry
-	raftBackend  *RaftBackendFactory
+	dbReg       *DatabaseServiceRegistry
+	barrierReg  *seal.BarrierRegistry
+	tenantSvc   tenant.TenantServicer
+	catalog     DatabaseCatalog
+	tenantHosts *TenantHostRegistry
+	raftBackend *RaftBackendFactory
+
+	// raftGroupNotLegacy caches the (tenant, db) raft databases whose
+	// pre-OD-1 shard holds no keys under their prefix, so they are served
+	// from their own group (legacySharedRaftDatabase).
+	raftGroupNotLegacy sync.Map
+
 	accountant   *quota.Accountant
 	systemTenant string
 
@@ -214,13 +221,18 @@ func withTenantHostRegistry(reg *TenantHostRegistry) RESTRegistryOption {
 }
 
 // withRaftBackendFactory sets the dedicated per-database raft shard factory.
-// When configured, IsolationRaft tenants are routed to their database's
-// dedicated Raft shard on the shared system Host (full engines on the tenant's
-// own DataRoot) instead of the shared system service set. Other isolation modes
-// are unaffected.
+// When configured, every backend: raft database -- an IsolationRaft tenant's,
+// and a prefix, barrier or volume tenant's (OD-1 A) -- is routed to its own
+// dedicated Raft shard on the shared system Host instead of the shared system
+// service set or the tenant's volume shard. The registry installs its legacy
+// probe on the factory, so the drop fence (storeResolver.FenceTarget) routes
+// a raft database exactly as resolve does.
 func withRaftBackendFactory(f *RaftBackendFactory) RESTRegistryOption {
 	return func(r *restServiceRegistry) {
 		r.raftBackend = f
+		if f != nil {
+			f.SetLegacySharedProbe(r.legacySharedRaftDatabase)
+		}
 	}
 }
 
@@ -389,6 +401,22 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 		return nil, err
 	}
 
+	// OD-1 A: every backend: raft database runs its own Raft group, whatever
+	// the tenant's isolation -- a prefix tenant's under the node barrier, a
+	// barrier or volume tenant's under its tenant barrier -- with its keys at
+	// the root of the group's store. A legacy raft database whose keys still
+	// sit under its prefix in the shared or volume shard keeps that route
+	// until relocation (3b.8).
+	if isolation != tenant.IsolationRaft {
+		raftGroup, err := r.isRaftGroupDatabase(tenantID, db, isolation, managed)
+		if err != nil {
+			return nil, err
+		}
+		if raftGroup {
+			return r.resolveRaftGroup(tenantID, db, info)
+		}
+	}
+
 	// IsolationVolume tenants are backed by a dedicated per-tenant Raft Host on
 	// their own DataRoot (full engines, encrypted under the tenant DEK). The
 	// per-tenant Host exposes one shard shared by all the tenant's databases;
@@ -443,42 +471,7 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 		// by (tenantID, db) — which preserves tenant ownership — so it is the
 		// correct existence authority. A genuinely unknown database surfaces as
 		// ErrRaftDatabaseUnknown, mapped to a 404 below.
-		base, err := r.raftBackend.Services(context.Background(), tenantID, db)
-		if err != nil {
-			if errors.Is(err, ErrRaftDatabaseUnknown) {
-				return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
-			}
-			return nil, err
-		}
-		// Every write to the dedicated shard carries the database's drop
-		// fence guard, and DROP DATABASE writes the fence into this same
-		// shard before tearing it down (KeyspaceReclaimService.
-		// FenceDatabaseKeyspace), so a write resolved before the drop and
-		// applied after the fence is refused by the shard's own state
-		// machine. The replicated placement marker RaftBackendFactory checks
-		// at resolution refuses new handles; the guard is what refuses the
-		// ones already in hand.
-		//
-		// The views are wrapped without a namespace (the shard IS the
-		// database's keyspace), and Watch and Lease are left exactly as
-		// RaftBackendFactory built them. Collection keeps the instance the
-		// factory built -- routing it through the composite cache keyed by
-		// the empty prefix every raft database shares would thrash that
-		// cache -- and carries the guard on the context of its writes.
-		// The shard is the incarnation: a database created again under
-		// this name gets a new shard, so the guard carries no incarnation
-		// and the marker is absent while the database is live.
-		fence, err := newDatabaseFence(tenantID, db, "", func() error { return r.raftBackend.RefuseIfDropping(tenantID, db) })
-		if err != nil {
-			return nil, err
-		}
-		fenced := fence.apply(base, "", false)
-		if base.Collection != nil {
-			fenced.Collection = &guardedCollectionService{dbGuard: dbGuard{guard: fence.guard}, inner: base.Collection}
-		}
-		svcs := r.applyQuota(fenced, tenantID, info)
-		svcs.Placement = service.StorePlacementShard
-		return svcs, nil
+		return r.resolveRaftGroup(tenantID, db, info)
 	}
 
 	// A specific database may carry its OWN encryption barrier over its OWN
@@ -566,6 +559,108 @@ func (r *restServiceRegistry) resolveShared(tenantID, db string, info *tenant.Te
 // here, directly over the database's own encrypting Backend()
 // (buildDedicatedStoreServices); it fails closed when the database's barrier
 // is sealed rather than falling back to the shared (unencrypted) store.
+// resolveRaftGroup serves a backend: raft database from its own Raft group
+// through the raft backend factory (OD-1 A), for a tenant of any isolation.
+func (r *restServiceRegistry) resolveRaftGroup(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, error) {
+	base, err := r.raftBackend.Services(context.Background(), tenantID, db)
+	if err != nil {
+		if errors.Is(err, ErrRaftDatabaseUnknown) {
+			return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
+		}
+		return nil, err
+	}
+	// Every write to the dedicated shard carries the database's drop
+	// fence guard, and DROP DATABASE writes the fence into this same
+	// shard before tearing it down (KeyspaceReclaimService.
+	// FenceDatabaseKeyspace), so a write resolved before the drop and
+	// applied after the fence is refused by the shard's own state
+	// machine. The replicated placement marker RaftBackendFactory checks
+	// at resolution refuses new handles; the guard is what refuses the
+	// ones already in hand.
+	//
+	// The views are wrapped without a namespace (the shard IS the
+	// database's keyspace), and Watch and Lease are left exactly as
+	// RaftBackendFactory built them. Collection keeps the instance the
+	// factory built -- routing it through the composite cache keyed by
+	// the empty prefix every raft database shares would thrash that
+	// cache -- and carries the guard on the context of its writes.
+	// The shard is the incarnation: a database created again under
+	// this name gets a new shard, so the guard carries no incarnation
+	// and the marker is absent while the database is live.
+	fence, err := newDatabaseFence(tenantID, db, "", func() error { return r.raftBackend.RefuseIfDropping(tenantID, db) })
+	if err != nil {
+		return nil, err
+	}
+	fenced := fence.apply(base, "", false)
+	if base.Collection != nil {
+		fenced.Collection = &guardedCollectionService{dbGuard: dbGuard{guard: fence.guard}, inner: base.Collection}
+	}
+	svcs := r.applyQuota(fenced, tenantID, info)
+	svcs.Placement = service.StorePlacementShard
+	return svcs, nil
+}
+
+// isRaftGroupDatabase reports whether a non-raft tenant's database is a
+// backend: raft database served from its own group: the raft backend
+// factory knows its shard, the open database (when this node has it) says
+// backend raft without a database barrier (that layering is 3b.5), and it
+// is not a legacy database whose keys still sit under its prefix in the
+// shared or volume shard.
+func (r *restServiceRegistry) isRaftGroupDatabase(tenantID, db string, isolation tenant.IsolationType, managed managedRecord) (bool, error) {
+	if r.raftBackend == nil {
+		return false, nil
+	}
+	if managed.db != nil {
+		cfg := managed.db.Config()
+		if cfg.Backend != database.BackendRaft || (cfg.Barrier != nil && cfg.Barrier.Enabled) {
+			return false, nil
+		}
+	}
+	return r.raftBackend.ServesOwnGroup(tenantID, db, isolation, r.legacySharedRaftDatabase)
+}
+
+// legacySharedRaftDatabase reports whether the shard that served a raft
+// database before OD-1 A (the shared system shard for a prefix or barrier
+// tenant, the tenant's volume shard for a volume tenant) still holds keys
+// under the database's namespace. Such a database keeps its shared route
+// until relocation (3b.8). Only the "not legacy" verdict is cached: new
+// writes go to the group, so no keys can appear under the prefix later.
+func (r *restServiceRegistry) legacySharedRaftDatabase(tenantID, db string, isolation tenant.IsolationType) (bool, error) {
+	cacheKey := tenantID + "\x00" + db
+	if _, ok := r.raftGroupNotLegacy.Load(cacheKey); ok {
+		return false, nil
+	}
+	ctx := context.Background()
+	var kv service.KVServicer
+	if isolation == tenant.IsolationVolume {
+		if r.tenantHosts == nil {
+			// No volume shard is served here, so none can hold legacy data.
+			r.raftGroupNotLegacy.Store(cacheKey, struct{}{})
+			return false, nil
+		}
+		base, err := r.tenantHosts.Services(ctx, tenantID)
+		if err != nil {
+			return false, err
+		}
+		kv = base.KV
+	} else if shared := r.dbReg.Default(); shared != nil {
+		kv = shared.KV
+	}
+	if kv == nil {
+		r.raftGroupNotLegacy.Store(cacheKey, struct{}{})
+		return false, nil
+	}
+	keys, err := kv.List(ctx, tenant.ComposeNamespace(tenantID, db))
+	if err != nil {
+		return false, err
+	}
+	if len(keys) > 0 {
+		return true, nil
+	}
+	r.raftGroupNotLegacy.Store(cacheKey, struct{}{})
+	return false, nil
+}
+
 func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, error) {
 	dbase, ok := r.ownedDatabase(tenantID, db)
 	if !ok {

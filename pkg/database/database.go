@@ -103,6 +103,10 @@ type Database struct {
 	// (Manager.describeBinding). Set once, like ownerNode, before the
 	// database is published; nil where the node describes no bindings.
 	binding *DatabaseBinding
+	// bindingNodes names a raft binding's replica nodes when Info is
+	// served: its placement is written after the database opens, so the
+	// nodes cannot be fixed with binding. Nil for every other binding.
+	bindingNodes func() []string
 }
 
 // NewDatabase creates a Database from the given config and backend.
@@ -446,6 +450,13 @@ func (d *Database) Info() DatabaseInfo {
 		SQL:          cfg.SQL,
 		OwnerNode:    d.ownerNode,
 		Binding:      d.binding,
+	}
+	if d.binding != nil && len(d.binding.Nodes) == 0 && d.bindingNodes != nil {
+		if nodes := d.bindingNodes(); len(nodes) > 0 {
+			b := *d.binding
+			b.Nodes = nodes
+			info.Binding = &b
+		}
 	}
 	if cfg.Raft != nil {
 		info.ShardID = cfg.Raft.ShardID
