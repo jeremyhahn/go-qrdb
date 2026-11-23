@@ -495,6 +495,11 @@ const (
 	PasswordsLock Permission = "passwords:lock"
 	// PasswordsUnlock grants access to unlock the password vault.
 	PasswordsUnlock Permission = "passwords:unlock"
+	// PasswordsOverrideOwnership lets the holder act on a shared password it
+	// does not own: read, update, delete or re-share it whatever its owner.
+	// go-qrdb stores no passwords; the store that owns the shared passwords
+	// (go-xkms) enforces it by asking the PDP for this permission.
+	PasswordsOverrideOwnership Permission = "passwords:override_ownership"
 )
 
 // ---------------------------------------------------------------------------
@@ -539,6 +544,28 @@ const (
 	// for the caller's own tenant's devices: committing the image so the
 	// device no longer rolls back to the previous one.
 	OTAConfirm Permission = "ota:confirm"
+)
+
+// ---------------------------------------------------------------------------
+// Device pairing and sharing permissions
+// ---------------------------------------------------------------------------
+
+// The singular "device" resource is the SPEC's name for the pairing and
+// sharing family; it stands beside devices:onboard. Every one acts in the
+// caller's own tenant only (ScopeSelf).
+const (
+	// DevicePair grants access to pair a device to a user or account in the
+	// caller's own tenant.
+	DevicePair Permission = "device:pair"
+	// DeviceRevoke grants access to revoke a paired device in the caller's
+	// own tenant.
+	DeviceRevoke Permission = "device:revoke"
+	// DeviceShare grants access to share a device's access with another
+	// identity in the caller's own tenant.
+	DeviceShare Permission = "device:share"
+	// DeviceSync grants access to sync state across a user's paired devices
+	// in the caller's own tenant.
+	DeviceSync Permission = "device:sync"
 )
 
 // ---------------------------------------------------------------------------
@@ -1206,6 +1233,7 @@ var categories = []Category{
 		Permissions: []Permission{
 			PasswordsRead, PasswordsWrite, PasswordsDelete,
 			PasswordsGenerate, PasswordsLock, PasswordsUnlock,
+			PasswordsOverrideOwnership,
 		},
 	},
 	{
@@ -1220,6 +1248,13 @@ var categories = []Category{
 		Group: "Device Services",
 		Permissions: []Permission{
 			DevicesOnboard,
+		},
+	},
+	{
+		Name:  "Device Sharing",
+		Group: "Device Services",
+		Permissions: []Permission{
+			DevicePair, DeviceRevoke, DeviceShare, DeviceSync,
 		},
 	},
 	{

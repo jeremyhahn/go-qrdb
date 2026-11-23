@@ -69,6 +69,7 @@ var goldenSOPermissions = []permission.Permission{
 	permission.BackendsList, permission.BackendsRead,
 	permission.PINRead, permission.PINWrite,
 	permission.PIVRead, permission.PIVWrite, permission.PIVDelete,
+	permission.PasswordsOverrideOwnership,
 	permission.AuditRead, permission.AuditQuery, permission.AuditDelete, permission.AuditVerify, permission.AuditVerifyReplicated,
 	permission.AdminHealth, permission.AdminStatus, permission.AdminPeers,
 	permission.AdminAddMember, permission.AdminRemoveMember,
@@ -97,6 +98,7 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.PIVRead, permission.PIVWrite, permission.PIVDelete,
 	permission.PasswordsRead, permission.PasswordsWrite, permission.PasswordsDelete,
 	permission.PasswordsGenerate, permission.PasswordsLock, permission.PasswordsUnlock,
+	permission.PasswordsOverrideOwnership,
 	permission.SSHRead, permission.SSHWrite, permission.SSHDelete,
 	permission.SealUnseal, permission.SealSeal, permission.SealStatus,
 	permission.SealOfficerRegister, permission.SealOfficerList, permission.SealOfficerRevoke,
@@ -181,6 +183,7 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.ACMEEABRead, permission.ACMEEABList,
 	permission.ACMEEABCreate, permission.ACMEEABDelete,
 	permission.DevicesOnboard, permission.OTAActivate, permission.OTAConfirm,
+	permission.DevicePair, permission.DeviceRevoke, permission.DeviceShare, permission.DeviceSync,
 	permission.ABACPoliciesCreate, permission.ABACPoliciesRead, permission.ABACPoliciesList,
 	permission.ABACPoliciesUpdate, permission.ABACPoliciesDelete,
 }

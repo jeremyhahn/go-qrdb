@@ -649,8 +649,17 @@ ships updates gates on these exact strings through the same PDP:
 | `devices:onboard` | Admit a device into the caller's own tenant and bind its identity there. |
 | `ota:activate` | Activate a staged update image on the tenant's own devices. |
 | `ota:confirm` | Confirm an activated image, so the device no longer rolls back. |
+| `device:pair` | Pair a device to a user or account in the caller's own tenant. |
+| `device:revoke` | Revoke a paired device in the caller's own tenant. |
+| `device:share` | Share a device's access with another identity in the tenant. |
+| `device:sync` | Sync state across a user's paired devices in the tenant. |
 
-All three are `ScopeSelf`: each tenant onboards and updates its own devices,
+The four `device:*` permissions (the singular resource is the SPEC's name)
+stand beside `devices:onboard` in the "Device Sharing" category; like it they
+are granted to the tenant **`admin`** and reach **`owner`**, which holds every
+registered permission, and no other built-in role.
+
+All of them are `ScopeSelf`: each tenant onboards and updates its own devices,
 and a grant held in one tenant reaches no other — the system tenant's included,
 since `ScopeSelf` carries no system-tenant lift. The confinement is checked
 against the target tenant the handler names (`AuthorizeTenant`), never against
@@ -751,6 +760,16 @@ transport, and gets the same answer on each: allowed in the holder's tenant,
 denied with a reason in any other. Asking about an identity other than the
 caller needs `permissions:resolve` in that identity's tenant, and is never
 answered across tenants.
+
+### Shared-password ownership override
+
+`passwords:override_ownership` lets its holder act on a shared password it does
+not own: read, update, delete or re-share it whatever its owner. It is
+`ScopeSelf` like the rest of `passwords:*`, declared a governance duty, and
+held by the **`so`** and the **`admin`** (and so by **`owner`**). qrdb stores no
+passwords: the consumer's password store (go-xkms) enforces the override by
+asking the PDP for this permission before it lets a non-owner act on a shared
+record.
 
 ## The canonical login key
 

@@ -615,7 +615,10 @@ func TestAll_TotalCount(t *testing.T) {
 	//   total.
 	// + 1 roles:reconcile_all, the platform operator's all-tenant built-in
 	//   role convergence (ScopeCross) = 412 total.
-	const expectedTotal = 412
+	// + 4 device pairing/sharing perms (device:pair, device:revoke,
+	//   device:share, device:sync; ScopeSelf) + 1 passwords:override_ownership
+	//   (ScopeSelf, Admin and Security Officer) = 417 total.
+	const expectedTotal = 417
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)
