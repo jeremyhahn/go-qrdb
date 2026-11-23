@@ -45,22 +45,35 @@ func moveVTenant() volume.MoveTenantRequest {
 	return volume.MoveTenantRequest{TenantID: "vtenant", ToPool: "default"}
 }
 
-// movingAllocator wraps the real catalog and answers GetMove with move or
-// err, standing in for a tenant whose move journal is (or is not) present.
+// movingAllocator wraps the real catalog and answers the delete fence as a
+// catalog with move's journal (or err from the store) would; with neither
+// it delegates to the real catalog's fence.
 type movingAllocator struct {
 	volume.Allocator
-	move *volume.Move
-	err  error
+	move     *volume.Move
+	err      error
+	unfenced int
 }
 
-func (m *movingAllocator) GetMove(_ context.Context, tenantID string) (*volume.Move, error) {
+func (m *movingAllocator) FenceTenantDelete(ctx context.Context, tenantID string) error {
 	if m.err != nil {
-		return nil, m.err
+		return m.err
 	}
-	if m.move == nil {
-		return nil, &volume.MoveNotFoundError{TenantID: tenantID}
+	if m.move != nil {
+		return &volume.MoveConflictError{TenantID: tenantID, Reason: "tenant delete is refused while a move runs"}
 	}
-	return m.move, nil
+	if f, ok := m.Allocator.(moveFencer); ok {
+		return f.FenceTenantDelete(ctx, tenantID)
+	}
+	return nil
+}
+
+func (m *movingAllocator) UnfenceTenantDelete(ctx context.Context, tenantID string) error {
+	m.unfenced++
+	if f, ok := m.Allocator.(moveFencer); ok {
+		return f.UnfenceTenantDelete(ctx, tenantID)
+	}
+	return nil
 }
 
 // TestDeleteTenant_RefusedWhileMoving: a delete of a moving tenant returns

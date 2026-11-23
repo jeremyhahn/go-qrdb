@@ -131,6 +131,11 @@ type fakeTx struct {
 	// compare is evaluated -- a transaction the store could not run, as
 	// opposed to forceFailures' CAS miss.
 	failExecute error
+
+	// beforeExecute, when set, runs once at the start of the next Execute,
+	// before its compares are evaluated: a concurrent writer committing
+	// between a caller's reads and its transaction.
+	beforeExecute func()
 }
 
 func newFakeTx(kv *fakeKV) *fakeTx {
@@ -151,7 +156,12 @@ func (t *fakeTx) Execute(ctx context.Context, compares []lock.Compare, successOp
 		t.mu.Unlock()
 		return &lock.TransactionResponse{Succeeded: false}, nil
 	}
+	hook := t.beforeExecute
+	t.beforeExecute = nil
 	t.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 
 	for _, c := range compares {
 		key := string(c.Key)
