@@ -92,6 +92,13 @@ var (
 	// ErrMigrationConflictNotFound is returned when the named credential
 	// has no unresolved migration conflict on this node.
 	ErrMigrationConflictNotFound = errors.New("credentials: migration conflict not found")
+
+	// ErrCorruptMigrationClaim is returned when a credential's migration
+	// claim record exists but does not decode. Every verb on that name is
+	// refused until an operator removes the record; a retry never helps,
+	// and the record is never overwritten. The error names the credential,
+	// never the record's bytes.
+	ErrCorruptMigrationClaim = errors.New("credentials: migration claim is corrupt")
 )
 
 // InvalidRotationPolicyError is returned by SetRotationPolicy for a policy
