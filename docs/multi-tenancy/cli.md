@@ -240,6 +240,11 @@ principal of it is refused on every transport (`403` / `PERMISSION_DENIED`,
 `tenant is not active`); `--status active` restores access on the next
 request. `tenant get` prints `Status:` and `tenant list` a `STATUS` column.
 
+`tenant list --status <active|suspended|disabled>` lists only the tenants with
+that status; without the flag it lists them all. Any other value, `deleted`
+included, is refused (`400`, naming the allowed statuses); retired ids are
+listed by `tenant list-deleted`.
+
 ```
 $ qrdb tenant update acme --status suspended
 $ qrdb tenant get acme
@@ -248,6 +253,7 @@ Name:       Acme Corp
 Status:     suspended
 ...
 $ qrdb tenant update acme --status active
+$ qrdb tenant list --status suspended
 ```
 
 Note the restriction: `update` accepts only `barrier` and `prefix`, and any
