@@ -92,6 +92,8 @@ bumps the format major version and cannot be read by an older Pebble.
 WAL must be durable on a local disk exactly like `backend: pebble`; one rule
 for both modes is simpler and costs nothing. C is not available.
 
+**Decided (convention, ruling 109): A.**
+
 ### OS-3 — Ownership: a prefix per Pebble instance, or shared across replicas?
 
 - **A: one bucket prefix and one `CreatorID` per owning instance, never
@@ -131,6 +133,8 @@ Note for OS-6: whole-object AEAD means a ranged read must either fetch the
 whole object or the wrapper must seal in fixed-size chunks; C should seal in
 chunks so a future ranged read can decrypt only the chunks it covers.
 
+**Decided (convention, ruling 109): C.**
+
 ### OS-5 — The encoded-name layout and the stores written in it
 
 - **A: refuse at open, no migration** — the LSM store carries its own format
@@ -146,6 +150,8 @@ chunks so a future ranged read can decrypt only the chunks it covers.
 rather than misread it; B and C keep the deleted engine as a compatibility
 surface, which the project does not do, and backup/restore already moves data
 between formats.
+
+**Decided (convention, ruling 109): A.**
 
 ### OS-6 — go-objstore has no ranged read
 
@@ -169,6 +175,9 @@ whole object only.
 interim cache is a performance caveat, not a correctness one, and Pebble's
 `SecondaryCacheSizeBytes` absorbs repeated block reads. Missing API, to file
 on go-objstore: a byte-range read on `common.Storage` (not in v0.9.1-alpha).
+
+**Decided (convention, ruling 109): A.** The interim cache is
+`objstore.CachedRemote`; the go-objstore ranged read is still to be requested.
 
 ### OS-7 — Lifting "objstore is refused as a hot apply path"
 

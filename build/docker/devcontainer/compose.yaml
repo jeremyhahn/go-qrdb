@@ -13,6 +13,20 @@
 #                on the daemon's host, so CI copies the checkout in instead
 #                (scripts/in-toolchain-image.sh).
 #
+# The developer services build the dev* and gpu stages of the same Dockerfile
+# and run no CI stage:
+#
+#   devcontainer, client-build, e2e, benchmark  target: dev-deps; the VS Code
+#                container (.devcontainer.json), `make ci`, `make test-e2e`
+#                and the benchmarks, with the worktree bind-mounted.
+#   devcontainer-gpu  target: gpu; the CUDA image.
+#
+# A bare `docker compose build` of them needs GO_IMAGE and TRIVY_IMAGE in the
+# environment (the shared global ARGs have no default); make exports both.
+# VS Code gets the two pins from the generated compose.pins.yaml overlay,
+# written from scripts/tool-pins.sh by scripts/devcontainer-pins.sh (the
+# .devcontainer.json initializeCommand).
+#
 # SECURITY POSTURE (x-posture, both services):
 #
 #   cap_drop ALL, no cap_add: the suites bind loopback ports above 1024, write
@@ -68,6 +82,117 @@ x-posture: &posture
       hard: 65536
   working_dir: /src
 
+# The analyser pins this image bakes in (#322). `make ci` runs the whole gate
+# INSIDE the devcontainer, so these four binaries are what judge a developer's
+# tree, and `.github/workflows/ci.yml`'s env block declares what judges CI's.
+# They were allowed to differ: gosec and govulncheck installed at `@latest` and
+# golangci-lint at v2.7.2 against ci.yml's pin, so one commit could be
+# analysed by two different analysers with nothing in either result saying so.
+#
+# THE KEYS BELOW CARRY NO VALUE ON PURPOSE. That is compose's
+# environment-passthrough form: the arg is taken from the environment if the
+# variable is set, and OMITTED ENTIRELY if it is not, so the Dockerfile's ARG
+# default applies. Writing `GOSEC_VERSION: ${GOSEC_VERSION}` instead would pass
+# an EMPTY STRING when the variable is unset, and an explicitly empty build arg
+# overrides a default and trips the Dockerfile's guard.
+#
+# Measured 2026-09-05 on a two-service probe, because the two forms are one
+# character apart in appearance and opposite in effect:
+#
+#   args: {FOO: }          FOO unset -> RUN sees FOO=[defaultvalue]
+#   args: {FOO: ${FOO}}    FOO unset -> RUN sees FOO=[]
+#
+# So this form is what keeps VS Code "Reopen in Container" and a bare
+# `docker compose build` working (#302, ruled 2026-09-05), while `make`
+# entrypoints still win: the Makefile `export`s the four variables, so a build
+# through make uses the Makefile's values and a build around it falls back to
+# the Dockerfile defaults, which #323 asserts are the same numbers.
+#
+# Do not "fix" these into `${VAR}`. It looks more explicit and it silently
+# removes the fallback.
+x-go-scanner-pins: &go-scanner-pins
+  GOLANGCI_LINT_VERSION:
+  GOSEC_VERSION:
+  GOVULNCHECK_VERSION:
+  # The Dockerfile's global FROM ${GO_IMAGE} (the CI stages) and global
+  # FROM ${TRIVY_IMAGE} AS trivy have no default; BuildKit resolves every
+  # global FROM even for a dev or gpu target, so every service needs both.
+  GO_IMAGE:
+  TRIVY_IMAGE:
+
+# devcontainer-gpu builds the gpu stage, which runs no security suite and
+# therefore bakes no trivy; only TRIVY_VERSION is withheld from it, since
+# passing it would declare a build arg that stage does not consume.
+# TRIVY_IMAGE is not a stage arg but a global FROM input every target needs,
+# so it lives in go-scanner-pins above.
+x-scanner-pins: &scanner-pins
+  <<: *go-scanner-pins
+  TRIVY_VERSION:
+
+# Fleet dev-cache passthrough (devops.md §2a). Unset, empty or unreachable
+# means no proxy -- the behaviour without the cache -- so every entry below
+# is the interpolated ${VAR:-} form, never the scanner-pins passthrough
+# form above: an empty dev-cache address is itself meaningful here (skip
+# it), not an error to guard against. No address lives in this tracked
+# file: a machine with no build/docker/devcontainer/.env supplies none of these and
+# every build and run behaves exactly as it did before the cache existed.
+# DEVCACHE_APT_PROXY and DEVCACHE_NPM_REGISTRY are ALSO build args, because
+# the Dockerfile needs them at image-build time (apt's Acquire::http::Proxy,
+# npm's registry) -- the other six only ever matter at container run time.
+x-devcache-build-args: &devcache-build-args
+  DEVCACHE_APT_PROXY: ${DEVCACHE_APT_PROXY:-}
+  DEVCACHE_NPM_REGISTRY: ${DEVCACHE_NPM_REGISTRY:-}
+
+# GOPROXY keeps the existing GOPRIVATE semantics below: GOPRIVATE already
+# forces every github.com/jeremyhahn/* module to resolve direct (bypassing
+# any GOPROXY, public or private), so adding the dev-cache's Athens mirror
+# ahead of the public proxy here cannot send a private module anywhere it
+# does not already go -- private modules must never reach a public proxy,
+# and GOPRIVATE is what guarantees that, unchanged. The list ends at the
+# public proxy, with or without the mirror, and has no direct entry
+# (ci-template v1.34.1, dependency-resolution.md §7a).
+x-devcache-env: &devcache-env
+  - DEVCACHE_APT_PROXY=${DEVCACHE_APT_PROXY:-}
+  - DEVCACHE_NPM_REGISTRY=${DEVCACHE_NPM_REGISTRY:-}
+  - DEVCACHE_GOPROXY=${DEVCACHE_GOPROXY:-}
+  - DEVCACHE_GOPRIVATE=${DEVCACHE_GOPRIVATE:-}
+  - DEVCACHE_DOCKER_MIRROR=${DEVCACHE_DOCKER_MIRROR:-}
+  - DEVCACHE_MCR_MIRROR=${DEVCACHE_MCR_MIRROR:-}
+  - DEVCACHE_GHCR_MIRROR=${DEVCACHE_GHCR_MIRROR:-}
+  - DEVCACHE_PLAYWRIGHT_HOST=${DEVCACHE_PLAYWRIGHT_HOST:-}
+  - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|}https://proxy.golang.org
+
+# devcontainer, client-build, benchmark and e2e all bind-mount the worktree
+# over /workspace/go-qrdb (below) and run `go build`/`go test` against that
+# mount, never against anything baked into the image. Before this comment none
+# of them named a `target:`, so compose built the DEFAULT target -- the LAST
+# stage in the developer Dockerfile, `integration` -- for every one of them.
+# That stage exists for test/integration/api's stack, which runs on a Gitea
+# job container with no source mount and genuinely needs `COPY . .` and the
+# two binaries `integration` compiles from it (see the Dockerfile). None of
+# the four services here need either: `_ci`, `_build-client`,
+# `_bench-qrdb-kv-fair` and `_test-e2e*` all build and test from the mounted
+# source themselves.
+#
+# The cost of that accident (go-qrdb#294): `COPY . .` invalidates on any file
+# in the build context, so it and the `RUN go build` layer after it rebuild on
+# every source edit, and neither Go build cache mount nor Docker layer cache
+# survives that invalidation -- each rebuild recompiles both binaries cold.
+# Measured on this host, `make ci` after a one-line test-file edit:
+#
+#   target defaulted to `integration` (unfixed)   1:56  (COPY 1.7s + go build
+#                                                          105.6s + export 6.4s)
+#   target: deps (this fix)                  0:00  (stage builds nothing
+#                                                          past the tool
+#                                                          installs; unaffected
+#                                                          by any source edit)
+#
+# `toolchain` (now `dev`) is the stage the Dockerfile already documents as the
+# development target -- "The image ends here for development: no source, so
+# the devcontainer service's bind mount supplies it" -- these four services
+# just never named it. Naming it here is what makes
+# `scripts/check-compose-targets.sh` start checking this file: see the
+# comment there for why it was excluded until a target existed to check.
 services:
   integration:
     <<: *posture
@@ -101,6 +226,232 @@ services:
       GOPROXY: "off"
       HOME: /tmp
 
+  devcontainer:
+    build:
+      context: ../../..
+      dockerfile: build/docker/devcontainer/Dockerfile
+      target: dev-deps
+      args:
+        <<: [*scanner-pins, *devcache-build-args]
+      secrets:
+        - gomodauth
+    image: go-qrdb-dev:latest
+    volumes:
+      - ../../..:/workspace/go-qrdb
+      - ../../../../go-quicraft:/workspace/go-quicraft
+      - ../../../../go-truststrap:/workspace/go-truststrap
+      - ../../../../go-objstore:/workspace/go-objstore
+      - go-build-cache:/root/.cache/go-build
+    working_dir: /workspace/go-qrdb
+    environment: *devcache-env
+    # NO runtime module credentials, and no go-mod-cache volume, because
+    # neither is needed: `dev-deps` runs `go mod download` under the BuildKit
+    # secret, so /go/pkg/mod is already populated IN THE IMAGE LAYER.
+    #
+    # Measured: `docker run --network none` against this image, with no volume
+    # and no credentials, builds a package that imports github.com/jeremyhahn/*
+    # successfully. A named volume mounted at /go/pkg/mod would SHADOW that
+    # baked cache -- Docker seeds an empty volume from the image once, but a
+    # volume that already exists is never re-seeded, so a stale one would send
+    # `go build` to the network without the credentials to get there.
+    # qrdbd mlocks its protected memory (go-qrdb#114). IPC_LOCK lifts the
+    # RLIMIT_MEMLOCK ceiling and the unlimited memlock ulimit removes it, so an
+    # unconfigured node gets the full 64 MiB secure-memory budget instead of
+    # one derived from Docker's small default limit. See docs/deployment/.
+    cap_add:
+      - NET_ADMIN
+      - IPC_LOCK
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+  client-build:
+    build:
+      context: ../../..
+      dockerfile: build/docker/devcontainer/Dockerfile
+      target: dev-deps
+      args:
+        <<: [*scanner-pins, *devcache-build-args]
+      secrets:
+        - gomodauth
+    image: go-qrdb-dev:latest
+    volumes:
+      - ../../..:/workspace/go-qrdb
+      - ../../../../go-quicraft:/workspace/go-quicraft
+      - ../../../../go-truststrap:/workspace/go-truststrap
+      - ../../../../go-objstore:/workspace/go-objstore
+      - go-build-cache:/root/.cache/go-build
+    working_dir: /workspace/go-qrdb
+    environment:
+      # Dev-cache passthrough (devops.md §2a). Every module, first-party
+      # github.com/jeremyhahn/* included, resolves from the public proxy;
+      # the dev cache, when set, is tried first.
+      - DEVCACHE_APT_PROXY=${DEVCACHE_APT_PROXY:-}
+      - DEVCACHE_NPM_REGISTRY=${DEVCACHE_NPM_REGISTRY:-}
+      - DEVCACHE_GOPROXY=${DEVCACHE_GOPROXY:-}
+      - DEVCACHE_GOPRIVATE=${DEVCACHE_GOPRIVATE:-}
+      - DEVCACHE_DOCKER_MIRROR=${DEVCACHE_DOCKER_MIRROR:-}
+      - DEVCACHE_MCR_MIRROR=${DEVCACHE_MCR_MIRROR:-}
+      - DEVCACHE_GHCR_MIRROR=${DEVCACHE_GHCR_MIRROR:-}
+      - DEVCACHE_PLAYWRIGHT_HOST=${DEVCACHE_PLAYWRIGHT_HOST:-}
+      - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|}https://proxy.golang.org
+    command: ["make", "_build-client"]
+
+  e2e:
+    build:
+      context: ../../..
+      dockerfile: build/docker/devcontainer/Dockerfile
+      target: dev-deps
+      args:
+        <<: [*scanner-pins, *devcache-build-args]
+      secrets:
+        - gomodauth
+    image: go-qrdb-e2e:latest
+    volumes:
+      - ../../..:/workspace/go-qrdb
+      - ../../../../go-quicraft:/workspace/go-quicraft
+      - ../../../../go-truststrap:/workspace/go-truststrap
+      - ../../../../go-objstore:/workspace/go-objstore
+      - go-build-cache:/root/.cache/go-build
+    working_dir: /workspace/go-qrdb
+    environment:
+      - CI=true
+      # Dev-cache passthrough (devops.md §2a): see the client-build service
+      # above.
+      - DEVCACHE_APT_PROXY=${DEVCACHE_APT_PROXY:-}
+      - DEVCACHE_NPM_REGISTRY=${DEVCACHE_NPM_REGISTRY:-}
+      - DEVCACHE_GOPROXY=${DEVCACHE_GOPROXY:-}
+      - DEVCACHE_GOPRIVATE=${DEVCACHE_GOPRIVATE:-}
+      - DEVCACHE_DOCKER_MIRROR=${DEVCACHE_DOCKER_MIRROR:-}
+      - DEVCACHE_MCR_MIRROR=${DEVCACHE_MCR_MIRROR:-}
+      - DEVCACHE_GHCR_MIRROR=${DEVCACHE_GHCR_MIRROR:-}
+      - DEVCACHE_PLAYWRIGHT_HOST=${DEVCACHE_PLAYWRIGHT_HOST:-}
+      - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|}https://proxy.golang.org
+    command: ["make", "_test-e2e"]
+    # The e2e suite starts qrdbd; same locked-memory caps as devcontainer.
+    cap_add:
+      - IPC_LOCK
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+  devcontainer-gpu:
+    build:
+      context: ../../..
+      dockerfile: build/docker/devcontainer/Dockerfile
+      target: gpu
+      args: *go-scanner-pins
+      secrets:
+        - gomodauth
+    image: go-qrdb-gpu-dev:latest
+    volumes:
+      - ../../..:/workspace/go-qrdb
+      - ../../../../go-quicraft:/workspace/go-quicraft
+      - ../../../../go-truststrap:/workspace/go-truststrap
+      - ../../../../go-objstore:/workspace/go-objstore
+    working_dir: /workspace/go-qrdb
+    # qrdbd mlocks its protected memory (go-qrdb#114). IPC_LOCK lifts the
+    # RLIMIT_MEMLOCK ceiling and the unlimited memlock ulimit removes it, so an
+    # unconfigured node gets the full 64 MiB secure-memory budget instead of
+    # one derived from Docker's small default limit. See docs/deployment/.
+    cap_add:
+      - NET_ADMIN
+      - IPC_LOCK
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  benchmark:
+    build:
+      context: ../../..
+      dockerfile: build/docker/devcontainer/Dockerfile
+      target: dev-deps
+      args:
+        <<: [*scanner-pins, *devcache-build-args]
+      secrets:
+        - gomodauth
+    image: go-qrdb-dev:latest
+    volumes:
+      - ../../..:/workspace/go-qrdb
+      - ../../../../go-quicraft:/workspace/go-quicraft
+      - ../../../../go-truststrap:/workspace/go-truststrap
+      - ../../../../go-objstore:/workspace/go-objstore
+      - go-build-cache:/root/.cache/go-build
+    working_dir: /workspace/go-qrdb
+    environment: *devcache-env
+    # Same reason as devcontainer's identical block above: `dev` bakes
+    # no module cache, so `_bench-qrdb-kv-fair`'s `go test` resolves
+    # github.com/jeremyhahn/* at runtime and needs these.
+    # qrdbd mlocks its protected memory (go-qrdb#114). IPC_LOCK lifts the
+    # RLIMIT_MEMLOCK ceiling and the unlimited memlock ulimit removes it, so an
+    # unconfigured node gets the full 64 MiB secure-memory budget instead of
+    # one derived from Docker's small default limit. See docs/deployment/.
+    cap_add:
+      - NET_ADMIN
+      - IPC_LOCK
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+# The BuildKit secret that carries the internal Gitea module credentials into
+# `go mod download`. Every service above that builds a dev* or the gpu stage
+# of build/docker/devcontainer/Dockerfile declares it, so the compose entrypoints
+# authenticate exactly the way `make integration-image`'s `docker build
+# --secret` does -- before #302 they did not, and `make ci` therefore died
+# inside the image build with an `unknown revision` that read like a gate
+# failure. devcontainer-gpu was added to that set by #305, which gave
+# the gpu stage the same secret mount the dev stages already had.
+#
+# GOMODAUTH is exported by the Makefile's $(stage-gomodauth) prelude and read
+# straight out of the environment -- there is no file (#326).
+#
+# The previous form was `file: ${GOMODAUTH_FILE:-/dev/null}`, staging the live
+# token into /tmp behind an EXIT trap that a SIGKILL does not run; a twelve-hour-old
+# copy was found on disk. An environment source writes nothing, so there is
+# nothing to leave behind.
+#
+# The unprovisioned path is preserved and is what makes a bare
+# `docker compose build` and the VS Code devcontainer work: an UNSET or EMPTY
+# GOMODAUTH mounts an empty secret rather than failing, which is byte-for-byte
+# what the Dockerfile saw when no secret was supplied at all. Measured both
+# ways on compose 2.40.3 before this replaced the /dev/null default.
+secrets:
+  gomodauth:
+    environment: GOMODAUTH
+
+# go-build-cache backs the `dev-deps` services' /root/.cache/go-build
+# (go-qrdb#294). `docker compose run --rm` discards the container's writable
+# layer on exit, so without it nothing a run COMPILES survives to the next one
+# and every `make ci` pays a cold build.
+#
+# A named volume is the right tool for this one: GOCACHE is immutable,
+# content-addressed compiler output keyed by a hash of the inputs, so a stale
+# entry is unreachable rather than wrong, and concurrent writers cannot corrupt
+# each other.
+#
+# THERE IS DELIBERATELY NO go-mod-cache VOLUME. The module cache is baked into
+# the image by `dev-deps`, and a named volume at /go/pkg/mod would SHADOW it:
+# Docker seeds an empty volume from the image once, but a volume that already
+# exists is never re-seeded, so a stale one from an earlier image would send
+# `go build` to the network -- for private modules, without the credentials to
+# get there. Measured: `docker run --network none` with no volume and no
+# credentials builds a package importing github.com/jeremyhahn/* successfully,
+# which is the property that makes the volume unnecessary as well as unsafe.
 volumes:
   gocache:
   toolchain-gocache:
+  go-build-cache:
