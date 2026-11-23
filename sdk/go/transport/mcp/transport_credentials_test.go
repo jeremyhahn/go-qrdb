@@ -48,6 +48,7 @@ type mockCredentialSvc struct {
 	listVersionsErr    error
 	gcExpiredErr       error
 	setPolicyErr       error
+	conflictsErr       error
 
 	// Configurable strategy / responses.
 	strategy       string
@@ -210,6 +211,9 @@ func (m *mockCredentialSvc) CredentialRotationPolicy(_ context.Context, name str
 }
 
 func (m *mockCredentialSvc) CredentialMigrationConflicts(_ context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	if m.conflictsErr != nil {
+		return nil, m.conflictsErr
+	}
 	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
 }
 
@@ -627,8 +631,9 @@ func TestCredentialRotationPolicy_NotFound(t *testing.T) {
 	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
 	defer cleanup()
 
-	if _, err := tr.CredentialRotationPolicy(context.Background(), "missing"); err == nil {
-		t.Fatal("expected an error for an unknown credential")
+	var nf *transport.KeyNotFoundError
+	if _, err := tr.CredentialRotationPolicy(context.Background(), "missing"); !errors.As(err, &nf) {
+		t.Fatalf("expected KeyNotFoundError for an unknown credential, got %T: %v", err, err)
 	}
 }
 
@@ -653,6 +658,22 @@ func TestCredentialMigrationConflicts_Closed(t *testing.T) {
 	var ce *transport.ClosedError
 	if _, err := tr.CredentialMigrationConflicts(context.Background()); !errors.As(err, &ce) {
 		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+// TestCredentialMigrationConflicts_StoreUnavailable pins the typed refusal
+// of a listing the service cannot serve: a store not yet bound comes back
+// as the tool's Unavailable code, not as an empty list.
+func TestCredentialMigrationConflicts_StoreUnavailable(t *testing.T) {
+	svc := newMockCredentialSvc()
+	svc.conflictsErr = credentials.ErrStoreUnavailable
+	tr, cleanup := connectCredentialInProcess(t, svc)
+	defer cleanup()
+
+	resp, err := tr.CredentialMigrationConflicts(context.Background())
+	var outer, inner *transport.RequestError
+	if !errors.As(err, &outer) || !errors.As(outer.Err, &inner) || inner.StatusCode != int(wire.CodeUnavailable) {
+		t.Fatalf("expected an Unavailable tool refusal, got %T: %v (resp %+v)", err, err, resp)
 	}
 }
 
@@ -687,7 +708,13 @@ func TestCredentialResolveMigrationConflict_UnknownResolution(t *testing.T) {
 
 	err := tr.CredentialResolveMigrationConflict(context.Background(),
 		&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "merge"})
-	if err == nil || !strings.Contains(err.Error(), credentials.ErrInvalidMigrationResolution.Error()) {
+	// The typed code first: the text alone would pass on any refusal
+	// that happens to quote it.
+	var outer, inner *transport.RequestError
+	if !errors.As(err, &outer) || !errors.As(outer.Err, &inner) || inner.StatusCode != int(wire.CodeInvalidArgument) {
+		t.Fatalf("expected an InvalidArgument tool refusal, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), credentials.ErrInvalidMigrationResolution.Error()) {
 		t.Fatalf("expected ErrInvalidMigrationResolution text, got %v", err)
 	}
 }
