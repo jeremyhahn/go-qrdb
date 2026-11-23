@@ -821,11 +821,23 @@ func TestRecoverInterruptedSystemMigration_RetiresUnderDurableMarker(t *testing.
 	if !errors.Is(err, errRecodeSealStoreCrash) {
 		t.Fatalf("err = %v, want %v", err, errRecodeSealStoreCrash)
 	}
-	// Closing the source barrier closes the store under it: it stays open
-	// across the two simulated boots below.
-	defer func() { _ = source.Close() }()
+	// The crash is a process exit: the migration's target barrier has closed
+	// the store under it, so each simulated boot below reopens the seal store
+	// as a real boot does.
+	_ = source.Close()
+	_ = store.Close()
+	reboot := func() {
+		t.Helper()
+		_ = store.Close()
+		store, retirer, err = openSealStore(sealDir)
+		if err != nil {
+			t.Fatalf("reopen the seal store: %v", err)
+		}
+		backend = seal.NewStorageAdapter(store)
+	}
 
 	// Boot 1: recovery clears the journal, then the retirement aborts.
+	reboot()
 	prev := sealStoreRetireFault
 	sealStoreRetireFault = func() error { return errRecodeSealStoreCrash }
 	t.Cleanup(func() { sealStoreRetireFault = prev })
@@ -841,15 +853,21 @@ func TestRecoverInterruptedSystemMigration_RetiresUnderDurableMarker(t *testing.
 
 	// Boot 2: the marker alone drives the retirement, then goes.
 	sealStoreRetireFault = nil
+	reboot()
 	if err := recoverSystemMigration(ctx, backend, retirer, "system/root-key", nil); err != nil {
 		t.Fatalf("boot after the failed retirement: %v", err)
 	}
 	if owed, merr := retirer.marked(); merr != nil || owed {
 		t.Fatalf("retirement marker after the retirement = %v (err %v), want it gone", owed, merr)
 	}
+	// Scan a closed store: an open one deletes obsolete files under the walk.
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 	if hits := recodeDirPlaintext(t, sealDir, check); len(hits) != 0 {
 		t.Fatalf("plaintext seal-store history survives in %v", hits)
 	}
+	reboot()
 	assertRecodeSealStoreKeyed(t, backend, secrets)
 }
 
