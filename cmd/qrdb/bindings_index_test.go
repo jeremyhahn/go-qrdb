@@ -102,6 +102,39 @@ func TestIndexBinding_Create_UniqueIndex(t *testing.T) {
 	}
 }
 
+// TestIndexBinding_Create_CaseInsensitive proves IndexBinding.Create forwards
+// case_insensitive: a case-variant lookup finds the stored document and a
+// case-variant duplicate is refused by the unique index.
+func TestIndexBinding_Create_CaseInsensitive(t *testing.T) {
+	b, esb := newTestIndexBinding(t)
+	defer func() { _ = esb.StopEmbedded() }()
+	kv := NewKVBinding(testLogger(t), b.conn)
+
+	if err := b.Create("", IndexCreateParams{
+		Name:            "email-ci",
+		FieldName:       "email",
+		Unique:          true,
+		CaseInsensitive: true,
+	}); err != nil {
+		t.Fatalf("Create case-insensitive index: %v", err)
+	}
+	if err := kv.Put("", "user:1", `{"email":"Alice@Example.com"}`); err != nil {
+		t.Fatalf("Put user:1: %v", err)
+	}
+
+	resp, err := b.Query("", "email-ci", "ALICE@example.COM")
+	if err != nil {
+		t.Fatalf("Query case variant: %v", err)
+	}
+	if len(resp.Keys) != 1 || resp.Keys[0] != "user:1" {
+		t.Fatalf("case-variant lookup keys = %v; want [user:1]", resp.Keys)
+	}
+
+	if err := kv.Put("", "user:2", `{"email":"alice@example.com"}`); err == nil {
+		t.Fatal("Put of a case-variant duplicate succeeded; want a unique-index refusal")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // IndexBinding.Drop
 // ---------------------------------------------------------------------------
