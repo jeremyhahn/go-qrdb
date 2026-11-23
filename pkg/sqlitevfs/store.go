@@ -333,6 +333,12 @@ type Txn struct {
 	reads map[string]bool
 }
 
+// ChangeCounter is the meta change counter of the transaction's
+// snapshot: the count of write transactions committed before it.
+func (t *Txn) ChangeCounter() uint64 {
+	return t.base.ChangeCounter
+}
+
 // Revision returns the revision the transaction reads at.
 func (t *Txn) Revision() int64 {
 	return t.rev
