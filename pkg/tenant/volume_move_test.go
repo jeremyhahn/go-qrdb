@@ -45,6 +45,65 @@ func moveVTenant() volume.MoveTenantRequest {
 	return volume.MoveTenantRequest{TenantID: "vtenant", ToPool: "default"}
 }
 
+// movingAllocator wraps the real catalog and answers GetMove with move or
+// err, standing in for a tenant whose move journal is (or is not) present.
+type movingAllocator struct {
+	volume.Allocator
+	move *volume.Move
+	err  error
+}
+
+func (m *movingAllocator) GetMove(_ context.Context, tenantID string) (*volume.Move, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.move == nil {
+		return nil, &volume.MoveNotFoundError{TenantID: tenantID}
+	}
+	return m.move, nil
+}
+
+// TestDeleteTenant_RefusedWhileMoving: a delete of a moving tenant returns
+// the move conflict before any tombstone or teardown, leaving its metadata,
+// data root and barrier intact; once the move is gone the delete proceeds.
+func TestDeleteTenant_RefusedWhileMoving(t *testing.T) {
+	ctx := context.Background()
+	svc, reg := newVolumeService(t)
+	if _, err := svc.CreateTenant(ctx, "vtenant", "Volume Tenant", IsolationVolume); err != nil {
+		t.Fatalf("CreateTenant(volume): %v", err)
+	}
+	wrapped := &movingAllocator{Allocator: svc.volumeAllocator, move: &volume.Move{TenantID: "vtenant"}}
+	svc.volumeAllocator = wrapped
+
+	var conflict *volume.MoveConflictError
+	if err := svc.DeleteTenant(ctx, "vtenant"); !errors.As(err, &conflict) {
+		t.Fatalf("DeleteTenant(moving) = %v, want *volume.MoveConflictError", err)
+	}
+	if _, err := svc.GetTenant(ctx, "vtenant"); err != nil {
+		t.Fatalf("metadata gone after a refused delete: %v", err)
+	}
+	if _, tombstoned, err := svc.deletedAt(ctx, "vtenant"); err != nil || tombstoned {
+		t.Fatalf("tombstoned = %v (%v), want no tombstone", tombstoned, err)
+	}
+	if _, err := reg.LocalTenantDataRoot(ctx, "vtenant"); err != nil {
+		t.Fatalf("data root gone after a refused delete: %v", err)
+	}
+	if _, err := reg.GetTenant("vtenant"); err != nil {
+		t.Fatalf("barrier gone after a refused delete: %v", err)
+	}
+
+	// A journal read that fails fails closed.
+	wrapped.err = errors.New("journal unreadable")
+	if err := svc.DeleteTenant(ctx, "vtenant"); err == nil {
+		t.Fatal("DeleteTenant with an unreadable journal succeeded, want it refused")
+	}
+
+	wrapped.err, wrapped.move = nil, nil
+	if err := svc.DeleteTenant(ctx, "vtenant"); err != nil {
+		t.Fatalf("DeleteTenant after the move: %v", err)
+	}
+}
+
 func TestAdmitTenantMove_TenantNotFound(t *testing.T) {
 	svc, _ := newVolumeService(t)
 	svc.SetMoveReplicaNodeSource(&fakeMoveNodes{nodes: []string{"1"}})

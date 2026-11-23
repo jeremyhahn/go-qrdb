@@ -1690,7 +1690,12 @@ func (s *TenantService) deleteTenant(ctx context.Context, tenantID string, mint 
 		return err
 	}
 
-	// 1. Bottom-up refusal.
+	// 1. Bottom-up refusal. A tenant whose volume move is running is
+	//    refused first (decision Q10), before any tombstone or teardown:
+	//    the move worker still owns its data and barrier.
+	if err := s.refuseIfMoving(ctx, tenantID); err != nil {
+		return err
+	}
 	if err := s.refuseIfDatabasesRemain(ctx, tenantID); err != nil {
 		return err
 	}
@@ -1707,6 +1712,36 @@ func (s *TenantService) deleteTenant(ctx context.Context, tenantID string, mint 
 
 	// 4 and 5.
 	return s.finishTeardown(ctx, tenantID)
+}
+
+// moveReader is the part of the volume catalog refuseIfMoving reads. The
+// catalog (*volume.Catalog) implements it; an allocator that does not has no
+// move journal, so no tenant of it can be moving.
+type moveReader interface {
+	GetMove(ctx context.Context, tenantID string) (*volume.Move, error)
+}
+
+// refuseIfMoving returns *volume.MoveConflictError while tenantID has a move
+// journal (decision Q10). A journal read that fails, or does not decode,
+// fails closed: the delete is refused rather than tearing down data a move
+// may still own.
+func (s *TenantService) refuseIfMoving(ctx context.Context, tenantID string) error {
+	reader, ok := s.volumeAllocator.(moveReader)
+	if !ok || reader == nil {
+		return nil
+	}
+	m, err := reader.GetMove(ctx, tenantID)
+	if err != nil {
+		var notFound *volume.MoveNotFoundError
+		if errors.As(err, &notFound) {
+			return nil
+		}
+		return err
+	}
+	if m == nil {
+		return nil
+	}
+	return &volume.MoveConflictError{TenantID: tenantID, Reason: "tenant delete is refused while a move runs"}
 }
 
 // fence runs DeleteTenant's steps 2 and 3: retire the id, then remove the
