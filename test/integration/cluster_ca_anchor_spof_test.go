@@ -236,8 +236,8 @@ func adminCertTemplate(t *testing.T) *x509.Certificate {
 
 // systemSOCertPEM issues the system SO a certificate under the CA at
 // caPath/caKeyPath, for a BYO-TLS founder's ceremony: such a node has no
-// CeremonyCA to sign an SO CSR, and strict separation of duties (forced
-// under FIPS 140-3) refuses a ceremony with no system SO.
+// CeremonyCA to sign an SO CSR. The SO is optional; the founder names one
+// as every bootAdminIdentity ceremony does (systemSOArgs).
 func systemSOCertPEM(t *testing.T, caPath, caKeyPath string) []byte {
 	t.Helper()
 	soKey, _, _ := generateNodeKeypairAndIdentity(t)
@@ -389,8 +389,8 @@ func throwawayAdminCertAndPool(t *testing.T, cn string) (leafPEM, poolPEM, soPEM
 	now := time.Now().UnixNano()
 	leafPEM = issue(cn, now+1)
 	// The system SO, under the same issuer: a BYO-TLS node has no
-	// CeremonyCA to sign an SO CSR, and strict separation of duties (forced
-	// under FIPS 140-3) refuses a ceremony with no system SO.
+	// CeremonyCA to sign an SO CSR. The SO is optional; the ceremony names
+	// one as every bootAdminIdentity ceremony does (systemSOArgs).
 	soPEM = issue(systemSOUsername, now+2)
 	poolPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
 	return leafPEM, poolPEM, soPEM

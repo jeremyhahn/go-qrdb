@@ -228,16 +228,7 @@ func TestSeparationPosture_CLI_SystemSO_PerProtocol(t *testing.T) {
 			soConn := tenantCLIArgsForProto(n, proto, n.systemSOCert, n.systemSOKey)
 			denied := func(caller, name, out string, err error) {
 				t.Helper()
-				if err == nil {
-					t.Fatalf("[%s] strict separation: %s ran as the system %s: %s", proto.name, name, caller, out)
-				}
-				lower := strings.ToLower(out)
-				if !strings.Contains(lower, "separation of duties") &&
-					!strings.Contains(lower, "so role required") &&
-					!strings.Contains(lower, "permission denied") &&
-					!strings.Contains(lower, "forbidden") {
-					t.Fatalf("[%s] %s as the system %s must be refused as a permission denial, got: %s", proto.name, name, caller, out)
-				}
+				requireSORefusal(t, proto.name, name+" as the system "+caller, out, err)
 			}
 			ops := func(caller string) map[string][]string {
 				return map[string][]string{
@@ -356,16 +347,24 @@ func (pt *postureTenant) soExclusiveOps(t *testing.T, caller string, conn []stri
 			}
 			continue
 		}
-		if err == nil {
-			t.Fatalf("[%s] strict separation: %s ran as %s: %s", pt.proto.name, name, caller, out)
-		}
-		lower := strings.ToLower(out)
-		if !strings.Contains(lower, "separation of duties") &&
-			!strings.Contains(lower, "so role required") &&
-			!strings.Contains(lower, "permission denied") &&
-			!strings.Contains(lower, "forbidden") {
-			t.Fatalf("[%s] %s as %s must be refused as a permission denial, got: %s", pt.proto.name, name, caller, out)
-		}
+		requireSORefusal(t, pt.proto.name, name+" as "+caller, out, err)
+	}
+}
+
+// requireSORefusal asserts that what was refused with the typed SO refusal
+// every transport carries (auth.SORoleRequiredError's "SO role required" or
+// auth.SORoleConflictError's "separation of duties: ..."), not merely with a
+// non-zero exit or some other permission denial: a refusal for another
+// reason (a grantor's holdings, a missing permission) would pass a looser
+// check with the SO gate removed.
+func requireSORefusal(t *testing.T, proto, what, out string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("[%s] strict separation: %s ran: %s", proto, what, out)
+	}
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "so role required") && !strings.Contains(lower, "separation of duties") {
+		t.Fatalf("[%s] %s must be refused with the typed SO refusal, got: %s", proto, what, out)
 	}
 }
 
@@ -469,9 +468,9 @@ func startPostureNode(t *testing.T, dataDir string, separation, enrollSO bool) (
 		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
 		Logger: slog.New(slog.DiscardHandler),
 	}
-	// A strict first boot needs a system SO: the start that turns strict
-	// enrolls one, and a later strict start carries that enrollment, as
-	// a composer reading the consumed pending SO record does.
+	// The SO is optional in both postures; the start that turns strict
+	// enrolls one here, and a later strict start carries that enrollment,
+	// as a composer reading the consumed pending SO record does.
 	if separation {
 		if enrollSO {
 			postureSO(t, cfg.Auth.EffectiveClusterTrustDomain(), n, &deps)

@@ -340,9 +340,10 @@ func bootAdminIdentityVia(t *testing.T, cli string, connArgs []string, soPin, us
 const systemSOUsername = "system-so"
 
 // systemSOArgs returns the `qrdb init` flags naming a system SO: a username
-// and a CSR over a fresh key. A daemon under FIPS 140-3 runs separation of
-// duties strict, which refuses a ceremony with no system SO; standard mode
-// accepts one, so the fixture always sends it.
+// and a CSR over a fresh key. The SO is optional in both postures; the
+// fixture always sends one so a daemon under FIPS 140-3, which runs
+// separation of duties strict and keeps the SO-exclusive operations to an
+// SO, still has one, and a standard daemon accepts it alike.
 func systemSOArgs(t *testing.T) []string {
 	t.Helper()
 	csrPath := filepath.Join(t.TempDir(), "system-so-csr.pem")

@@ -340,9 +340,10 @@ func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, ex
 	grpcPort := mustFlagPort(t, args, "--grpc-port")
 	quicPort := mustFlagPort(t, args, "--quic-port")
 	mcpPort := mustFlagPort(t, args, "--mcp-port")
-	// Strict separation refuses to boot without a system SO (#1128): the
-	// ceremony names one by a presented certificate, which the harness keeps
-	// whether or not the ceremony's reply arrives.
+	// Strict separation keeps the SO-exclusive operations to a system SO
+	// (#1128), which is optional: the ceremony of a strict node names one by
+	// a presented certificate, which the harness keeps whether or not the
+	// ceremony's reply arrives.
 	strict := strings.Contains(extraYAML, strictSeparationYAML)
 	var soCeremony map[string]any
 	var systemSO *qrdbdharness.KeyPair
