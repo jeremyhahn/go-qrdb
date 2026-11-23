@@ -708,12 +708,25 @@ func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error {
 // propose returns a non-nil pending channel when the outcome is ambiguous (the
 // add may still commit; go-quicraft does not cancel it). ProposeBound then
 // returns propose's error at once but leaves the lock held until pending is
-// closed (the outcome is known) or the Gate closes, so an add that commits
-// late cannot pass a recheck made against the membership before it. Any other
-// binding runs propose with no lock and no check, and ignores pending.
-func (g *Gate) ProposeBound(shardID uint64, b ConfigBinding, propose func() (pending <-chan struct{}, err error)) error {
+// closed (the outcome is definitive) or the Gate closes, so an add that
+// commits late cannot pass a recheck made against the membership before it.
+// propose gets the Gate's stop channel, closed by Close: once it closes,
+// propose gives up resolving the outcome (and closes pending), so nothing
+// keeps proposing the add after the Gate is gone. Any other binding runs
+// propose with no lock, no check and the closed Unfenced stop, and ignores
+// pending.
+// Unfenced is the stop a bound proposal gets when nothing fences it (no Gate,
+// a binding that is not Required, another shard): already closed, so an
+// ambiguous outcome is returned as is and nothing resolves it afterwards.
+var Unfenced <-chan struct{} = func() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
+func (g *Gate) ProposeBound(shardID uint64, b ConfigBinding, propose func(stop <-chan struct{}) (pending <-chan struct{}, err error)) error {
 	if !b.Required || shardID != g.systemShard {
-		_, err := propose()
+		_, err := propose(Unfenced)
 		return err
 	}
 	g.proposeMu.Lock()
@@ -721,7 +734,7 @@ func (g *Gate) ProposeBound(shardID uint64, b ConfigBinding, propose func() (pen
 		g.proposeMu.Unlock()
 		return err
 	}
-	pending, err := propose()
+	pending, err := propose(g.fenceStop)
 	if pending == nil {
 		g.proposeMu.Unlock()
 		return err

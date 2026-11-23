@@ -99,7 +99,7 @@ func TestProposeBound_SerializesRequiredBindings(t *testing.T) {
 	readsWhileHeld := make(chan int, 1)
 	firstDone := make(chan error, 1)
 	go func() {
-		firstDone <- g.ProposeBound(systemShard, bound, func() (<-chan struct{}, error) {
+		firstDone <- g.ProposeBound(systemShard, bound, func(<-chan struct{}) (<-chan struct{}, error) {
 			close(entered)
 			<-release1
 			readsWhileHeld <- reads()
@@ -115,7 +115,7 @@ func TestProposeBound_SerializesRequiredBindings(t *testing.T) {
 	secondStarted, secondDone := make(chan struct{}), make(chan error, 1)
 	go func() {
 		close(secondStarted)
-		secondDone <- g.ProposeBound(systemShard, bound, func() (<-chan struct{}, error) {
+		secondDone <- g.ProposeBound(systemShard, bound, func(<-chan struct{}) (<-chan struct{}, error) {
 			secondProposed <- struct{}{}
 			return nil, nil
 		})
@@ -139,7 +139,7 @@ func TestProposeBound_SerializesRequiredBindings(t *testing.T) {
 		{systemShard + 1, ConfigBinding{ConfigChangeID: 0, Required: true}},
 	} {
 		ran := false
-		require.NoError(t, g.ProposeBound(b.shard, b.binding, func() (<-chan struct{}, error) { ran = true; return nil, nil }))
+		require.NoError(t, g.ProposeBound(b.shard, b.binding, func(<-chan struct{}) (<-chan struct{}, error) { ran = true; return nil, nil }))
 		assert.True(t, ran, "shard %d binding %+v did not propose", b.shard, b.binding)
 	}
 	assert.Equal(t, before, reads(), "an unbound or other-shard binding must not be checked")
@@ -164,7 +164,7 @@ func TestProposeBound_AmbiguousAddStaysFenced(t *testing.T) {
 	ambiguous := errors.New("add timed out, outcome unknown")
 
 	pending := make(chan struct{})
-	err := g.ProposeBound(systemShard, bound, func() (<-chan struct{}, error) {
+	err := g.ProposeBound(systemShard, bound, func(<-chan struct{}) (<-chan struct{}, error) {
 		return pending, ambiguous
 	})
 	require.ErrorIs(t, err, ambiguous, "ProposeBound must return the ambiguous add's error at once")
@@ -174,7 +174,7 @@ func TestProposeBound_AmbiguousAddStaysFenced(t *testing.T) {
 	secondProposed := make(chan struct{}, 1)
 	secondDone := make(chan error, 1)
 	go func() {
-		secondDone <- g.ProposeBound(systemShard, bound, func() (<-chan struct{}, error) {
+		secondDone <- g.ProposeBound(systemShard, bound, func(<-chan struct{}) (<-chan struct{}, error) {
 			secondProposed <- struct{}{}
 			return nil, nil
 		})
@@ -195,7 +195,7 @@ func TestProposeBound_AmbiguousAddStaysFenced(t *testing.T) {
 	// An outcome that never arrives is released when the Gate closes.
 	never := make(chan struct{})
 	current := ConfigBinding{ConfigChangeID: 1, Required: true}
-	require.ErrorIs(t, g.ProposeBound(systemShard, current, func() (<-chan struct{}, error) {
+	require.ErrorIs(t, g.ProposeBound(systemShard, current, func(<-chan struct{}) (<-chan struct{}, error) {
 		return never, ambiguous
 	}), ambiguous)
 	require.False(t, g.proposeMu.TryLock(), "an ambiguous add released the proposal lock before its outcome")
@@ -204,11 +204,45 @@ func TestProposeBound_AmbiguousAddStaysFenced(t *testing.T) {
 	g.proposeMu.Unlock()
 
 	// After Close an ambiguous add is not fenced at all.
-	require.ErrorIs(t, g.ProposeBound(systemShard, current, func() (<-chan struct{}, error) {
+	require.ErrorIs(t, g.ProposeBound(systemShard, current, func(<-chan struct{}) (<-chan struct{}, error) {
 		return never, ambiguous
 	}), ambiguous)
 	require.True(t, g.proposeMu.TryLock(), "a closed Gate fenced an ambiguous add")
 	g.proposeMu.Unlock()
+}
+
+// ProposeBound passes a fenced proposal the Gate's stop, which closes when
+// the Gate closes, and an unfenced one the closed Unfenced stop.
+func TestProposeBound_PassesTheGateStop(t *testing.T) {
+	members := threeNodes()
+	members.set(systemShard, 0, map[uint64]string{1: "n1:7000", 2: "n2:7000", 3: "n3:7000"})
+	g := newGate(t, members)
+	ambiguous := errors.New("add timed out, outcome unknown")
+
+	var stop <-chan struct{}
+	require.ErrorIs(t, g.ProposeBound(systemShard, ConfigBinding{Required: true}, func(s <-chan struct{}) (<-chan struct{}, error) {
+		stop = s
+		return make(chan struct{}), ambiguous
+	}), ambiguous)
+	require.NotNil(t, stop)
+	select {
+	case <-stop:
+		t.Fatal("a fenced proposal's stop was closed while the Gate is open")
+	default:
+	}
+	require.NoError(t, g.Close())
+	<-stop
+
+	var unfenced <-chan struct{}
+	require.NoError(t, g.ProposeBound(systemShard, ConfigBinding{}, func(s <-chan struct{}) (<-chan struct{}, error) {
+		unfenced = s
+		return nil, nil
+	}))
+	select {
+	case <-unfenced:
+	default:
+		t.Fatal("an unfenced proposal's stop was open")
+	}
 }
 
 func TestAdmitReplicaAt_BindsTheSystemShardConfiguration(t *testing.T) {

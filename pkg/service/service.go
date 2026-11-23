@@ -1282,11 +1282,12 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 // lock (featuregate.Gate.ProposeBound), so no other bound add through this
 // node commits between the recheck and this add's append. A request whose
 // wait timed out after it may have reached raft returns its error at once,
-// but the lock stays held until the add's outcome is delivered (pending).
+// but the lock stays held until the add's outcome is definitive (pending), or
+// until the gate closes (stop), which also stops resolving it.
 func (s *AdminService) requestAddBound(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, binding featuregate.ConfigBinding,
-	request func(context.Context, uint64, uint64, string, string, uint64) (<-chan struct{}, error)) error {
-	return proposeBound(s.host, shardID, binding, func() (<-chan struct{}, error) {
-		return request(ctx, shardID, replicaID, raftAddr, identity, binding.ConfigChangeID)
+	request func(context.Context, <-chan struct{}, uint64, uint64, string, string, uint64) (<-chan struct{}, error)) error {
+	return proposeBound(s.host, shardID, binding, func(stop <-chan struct{}) (<-chan struct{}, error) {
+		return request(ctx, stop, shardID, replicaID, raftAddr, identity, binding.ConfigChangeID)
 	})
 }
 
@@ -1310,15 +1311,17 @@ func (s *AdminService) membershipResultOf(rs *quicraft.RequestState) membershipR
 // may already have reached raft (a *quicraft.MaybeAppliedError wrapping
 // quicraft.ErrTimeout: go-quicraft does not cancel it, so it can still
 // commit), it returns the error with a pending channel that is closed once
-// the add's final result is delivered on ResultC (at once if rs was released).
-// Any other outcome is final and returns a nil pending. rs is not released
-// before that delivery.
-func (s *AdminService) awaitAdd(rs membershipResult, a pendingAdd) (pending <-chan struct{}, err error) {
+// resolveAdd settles the add definitively from the shard's committed
+// membership, or once stop closes (the gate that fences the add closed). A
+// stop that is already closed (an unfenced add) returns the error with a nil
+// pending and resolves nothing. Any other outcome is final and returns a nil
+// pending.
+func (s *AdminService) awaitAdd(rs membershipResult, a pendingAdd, stop <-chan struct{}) (pending <-chan struct{}, err error) {
 	_, err = rs.Result()
 	if err == nil {
 		return nil, nil
 	}
-	if !ambiguousAdd(err) {
+	if !ambiguousAdd(err) || stopped(stop) {
 		return nil, err
 	}
 	// go-quicraft completes a RequestState once (ResultC "receives exactly
@@ -1329,9 +1332,32 @@ func (s *AdminService) awaitAdd(rs membershipResult, a pendingAdd) (pending <-ch
 	resolved := make(chan struct{})
 	go func() {
 		defer close(resolved)
-		s.resolveAdd(a)
+		s.resolveAdd(a, stop)
 	}()
 	return resolved, err
+}
+
+// stopped reports whether stop is closed.
+func stopped(stop <-chan struct{}) bool {
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// stopContext returns a context that ends after timeout or once stop closes.
+func stopContext(stop <-chan struct{}, timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 // ambiguousAdd reports whether err leaves an add's outcome unknown: the wait
@@ -1359,17 +1385,19 @@ const (
 // the committed membership (the add, or a later re-proposal of it,
 // committed), the shard's configuration change ID moved past the bound one
 // (Raft keeps one configuration change in flight, so an add bound to an
-// older configuration can no longer commit), or the host is closed. While
-// neither is seen it proposes the add again under the same binding, which
-// forces an outcome: success commits it, ErrStaleConfigChange means the
-// membership moved (the next read settles it), and anything else -- a change
-// still pending, no leader, another ambiguous wait -- is retried.
-func (s *AdminService) resolveAdd(a pendingAdd) {
+// older configuration can no longer commit), or the host is closed. It also
+// returns once stop closes (the gate fencing the add closed), which cancels
+// the attempt in flight. While none is seen it proposes the add again under
+// the same binding, which forces an outcome: success commits it,
+// ErrStaleConfigChange means the membership moved (the next read settles
+// it), and anything else -- a change still pending, no leader, another
+// ambiguous wait -- is retried.
+func (s *AdminService) resolveAdd(a pendingAdd, stop <-chan struct{}) {
 	for {
-		if s.addSettled(a) {
+		if stopped(stop) || s.addSettled(a, stop) || stopped(stop) {
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), ambiguousAddAttemptTimeout)
+		ctx, cancel := stopContext(stop, ambiguousAddAttemptTimeout)
 		rs, err := a.repropose(ctx)
 		if err == nil {
 			_, err = s.membershipResultOf(rs).Result()
@@ -1382,15 +1410,20 @@ func (s *AdminService) resolveAdd(a pendingAdd) {
 			continue
 		}
 		timer := time.NewTimer(ambiguousAddRetryInterval)
-		<-timer.C
+		select {
+		case <-stop:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 	}
 }
 
 // addSettled reads the shard's membership linearizably and reports whether
 // the ambiguous add a is settled (see resolveAdd). A closed host settles it:
-// nothing can commit through it any more.
-func (s *AdminService) addSettled(a pendingAdd) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), ambiguousAddAttemptTimeout)
+// nothing can commit through it any more. A closed stop cancels the read.
+func (s *AdminService) addSettled(a pendingAdd, stop <-chan struct{}) bool {
+	ctx, cancel := stopContext(stop, ambiguousAddAttemptTimeout)
 	defer cancel()
 	m, err := s.host.SyncGetShardMembership(ctx, a.shardID)
 	if err != nil || m == nil {
@@ -1409,7 +1442,7 @@ func (s *AdminService) addSettled(a pendingAdd) bool {
 // configuration change configChangeID (0 skips the ordering check), and
 // waits for the result; pending is non-nil when that wait ended with the
 // outcome unknown (awaitAdd).
-func (s *AdminService) requestAdd(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) (<-chan struct{}, error) {
+func (s *AdminService) requestAdd(ctx context.Context, stop <-chan struct{}, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) (<-chan struct{}, error) {
 	propose := func(ctx context.Context) (*quicraft.RequestState, error) {
 		return s.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, raftAddr, identity, configChangeID)
 	}
@@ -1419,7 +1452,7 @@ func (s *AdminService) requestAdd(ctx context.Context, shardID, replicaID uint64
 	}
 	pending, err := s.awaitAdd(s.membershipResultOf(rs), pendingAdd{
 		shardID: shardID, replicaID: replicaID, configChangeID: configChangeID, repropose: propose,
-	})
+	}, stop)
 	if err != nil {
 		return pending, s.translateMembershipError("add", err)
 	}
@@ -1466,7 +1499,7 @@ func (s *AdminService) AddObserverMember(ctx context.Context, shardID, replicaID
 // requestAddObserver proposes the observer addition bound to configChangeID
 // and waits for its result, as requestAdd does for a voter (an ambiguous
 // timeout returns a pending channel the same way).
-func (s *AdminService) requestAddObserver(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) (<-chan struct{}, error) {
+func (s *AdminService) requestAddObserver(ctx context.Context, stop <-chan struct{}, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) (<-chan struct{}, error) {
 	propose := func(ctx context.Context) (*quicraft.RequestState, error) {
 		return s.host.RequestAddObserverWithIdentity(ctx, shardID, replicaID, raftAddr, identity, configChangeID)
 	}
@@ -1476,7 +1509,7 @@ func (s *AdminService) requestAddObserver(ctx context.Context, shardID, replicaI
 	}
 	pending, err := s.awaitAdd(s.membershipResultOf(rs), pendingAdd{
 		shardID: shardID, replicaID: replicaID, configChangeID: configChangeID, repropose: propose,
-	})
+	}, stop)
 	if err != nil {
 		return pending, s.translateMembershipError("add-observer", err)
 	}

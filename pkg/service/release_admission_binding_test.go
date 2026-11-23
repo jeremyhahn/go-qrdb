@@ -170,7 +170,7 @@ func (h *bindingHost) CheckConfigBinding(shardID uint64, b featuregate.ConfigBin
 	return h.gate.CheckConfigBinding(shardID, b)
 }
 
-func (h *bindingHost) ProposeBound(shardID uint64, b featuregate.ConfigBinding, propose func() (<-chan struct{}, error)) error {
+func (h *bindingHost) ProposeBound(shardID uint64, b featuregate.ConfigBinding, propose func(<-chan struct{}) (<-chan struct{}, error)) error {
 	if h.entered != nil {
 		h.entered <- struct{}{}
 	}
@@ -859,7 +859,7 @@ func TestAwaitAdd_OnlyAnAmbiguousTimeoutIsPending(t *testing.T) {
 		{"delivered maybe-applied", &quicraft.MaybeAppliedError{Err: quicraft.ErrShardNotReady}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pending, err := svc.awaitAdd(resultStub{err: tc.err, c: make(chan quicraft.RequestResult)}, a)
+			pending, err := svc.awaitAdd(resultStub{err: tc.err, c: make(chan quicraft.RequestResult)}, a, make(chan struct{}))
 			if !errors.Is(err, tc.err) || (tc.err == nil) != (err == nil) {
 				t.Fatalf("err = %v, want %v", err, tc.err)
 			}
@@ -888,7 +888,7 @@ func TestAwaitAdd_SweeperConsumedCompletionStillResolves(t *testing.T) {
 		pendingAdd{shardID: bindingSystemShard, replicaID: 9, repropose: func(context.Context) (*quicraft.RequestState, error) {
 			t.Error("a committed add was proposed again")
 			return nil, quicraft.ErrClosed
-		}})
+		}}, make(chan struct{}))
 	if !errors.Is(err, quicraft.ErrTimeout) || pending == nil {
 		t.Fatalf("awaitAdd = (%v, %v), want a pending timeout", pending, err)
 	}
@@ -920,7 +920,7 @@ func TestAwaitAdd_TimerWonThenSweeperCompletionKeepsFence(t *testing.T) {
 		return h.RequestAddNodeWithIdentity(ctx, bindingSystemShard, 9, "n9:1", "", 0)
 	}
 	pending, err := svc.awaitAdd(resultStub{err: ambiguous, c: sweeper},
-		pendingAdd{shardID: bindingSystemShard, replicaID: 9, repropose: propose})
+		pendingAdd{shardID: bindingSystemShard, replicaID: 9, repropose: propose}, make(chan struct{}))
 	if !errors.Is(err, quicraft.ErrTimeout) || pending == nil {
 		t.Fatalf("awaitAdd = (%v, %v), want a pending timeout", pending, err)
 	}
@@ -945,5 +945,92 @@ func TestAwaitAdd_TimerWonThenSweeperCompletionKeepsFence(t *testing.T) {
 	case <-pending:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the fence was never released after the add committed")
+	}
+}
+
+// An ambiguous add whose membership never settles is resolved until the
+// gate fencing it closes: closing stop cancels the re-proposal in flight,
+// closes pending, and nothing proposes the add or reads the membership
+// after that.
+func TestAwaitAdd_GateCloseStopsTheResolution(t *testing.T) {
+	h := newBindingHostAt(t, 0)
+	svc, ok := NewAdminService(h).(*AdminService)
+	if !ok {
+		t.Fatal("NewAdminService did not return *AdminService")
+	}
+	var (
+		mu        sync.Mutex
+		proposals int
+		attempt   error
+	)
+	inFlight := make(chan struct{})
+	propose := func(ctx context.Context) (*quicraft.RequestState, error) {
+		mu.Lock()
+		proposals++
+		first := proposals == 1
+		mu.Unlock()
+		if first {
+			close(inFlight)
+		}
+		<-ctx.Done()
+		mu.Lock()
+		attempt = ctx.Err()
+		mu.Unlock()
+		return nil, ctx.Err()
+	}
+	stop := make(chan struct{})
+	ambiguous := &quicraft.MaybeAppliedError{Err: quicraft.ErrTimeout}
+	pending, err := svc.awaitAdd(resultStub{err: ambiguous, c: make(chan quicraft.RequestResult)},
+		pendingAdd{shardID: bindingSystemShard, replicaID: 9, repropose: propose}, stop)
+	if !errors.Is(err, quicraft.ErrTimeout) || pending == nil {
+		t.Fatalf("awaitAdd = (%v, %v), want a pending timeout", pending, err)
+	}
+	<-inFlight
+	h.mu.Lock()
+	reads := h.membershipReads
+	h.mu.Unlock()
+	select {
+	case <-pending:
+		t.Fatal("the fence was released before the gate closed")
+	default:
+	}
+	close(stop)
+	<-pending
+	mu.Lock()
+	defer mu.Unlock()
+	if proposals != 1 {
+		t.Errorf("the add was proposed %d times, want 1 (none after the gate closed)", proposals)
+	}
+	if !errors.Is(attempt, context.Canceled) {
+		t.Errorf("the re-proposal in flight ended with %v, want it cancelled by the gate close", attempt)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.membershipReads != reads {
+		t.Errorf("membership read %d times after the gate closed", h.membershipReads-reads)
+	}
+}
+
+// An ambiguous add nothing fences (a closed stop) returns its error with no
+// pending, and nothing resolves it: no re-proposal, no membership read.
+func TestAwaitAdd_UnfencedAmbiguousAddIsNotResolved(t *testing.T) {
+	h := newBindingHostAt(t, 0)
+	svc, ok := NewAdminService(h).(*AdminService)
+	if !ok {
+		t.Fatal("NewAdminService did not return *AdminService")
+	}
+	ambiguous := &quicraft.MaybeAppliedError{Err: quicraft.ErrTimeout}
+	pending, err := svc.awaitAdd(resultStub{err: ambiguous, c: make(chan quicraft.RequestResult)},
+		pendingAdd{shardID: bindingSystemShard, replicaID: 9, repropose: func(context.Context) (*quicraft.RequestState, error) {
+			t.Error("an unfenced ambiguous add was proposed again")
+			return nil, quicraft.ErrClosed
+		}}, featuregate.Unfenced)
+	if !errors.Is(err, quicraft.ErrTimeout) || pending != nil {
+		t.Fatalf("awaitAdd = (%v, %v), want the timeout and no pending", pending, err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.membershipReads != 0 {
+		t.Errorf("an unfenced ambiguous add read the membership %d times", h.membershipReads)
 	}
 }
