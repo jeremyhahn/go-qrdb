@@ -165,7 +165,7 @@ Three constructors give you one:
 
 | Store | Use it when | Indexes it maintains | Guarded batches |
 |---|---|---|---|
-| `sdk.NewEmbeddedKVStore(storage.Storage)` | you own the storage (for example `sdkstorage.NewPebbleStorage`) and want no node at all | single-field and unique indexes, and compound indexes (`sdk.CompoundIndexDef`), updated on every write | no: `NewDAOTransactional` and a unit of work need a guarded multi-key write this store does not offer |
+| `sdk.NewEmbeddedKVStore(storage.Storage)` | you own the storage (for example `sdkstorage.NewPebbleStorage`) and want no node at all | single-field and unique indexes, and compound indexes (`sdk.CompoundIndexDef`), updated on every write | yes: `PutAllIfAllUnchanged` applies the batch as one KV-engine transaction, all-or-nothing, with the unique check and index updates of the same step (a unique conflict is `ErrConflict`), so `NewDAOTransactional` and `sdk.NewDAOUnitOfWork` work over it |
 | `server.NewServiceKVStore(kv, index, txn)` (package `sdk/go/server`) | you run a node and want the DAO over its services, `n.Services().KV`, `.Index` and `.Transaction` | single-field and unique indexes. Compound definitions are refused with `sdk.ErrKVIndexUnsupported`: the query builder (`Find().Where(...)`) answers compound-field lookups by scanning, and a named compound-index query (`QueryByCompoundIndex`) returns that error | yes: `PutAllIfAllUnchanged` applies a batch all-or-nothing, so `NewDAOTransactional` and `sdk.NewDAOUnitOfWork` work over it |
 | `sdk.NewKVStoreAdapter(client)` | your code talks to a node through a client (`n.Client()` or a remote transport), with authorization on every call | the node's single-field and unique indexes, through the client; a named compound-index query returns `sdk.ErrKVIndexUnsupported`, as on the service store | yes: `PutAllIfAllUnchanged` sends the batch to the node as one guarded transaction, all-or-nothing (`kvstore_adapter_guarded_batch_test.go`), so `NewDAOTransactional` and `sdk.NewDAOUnitOfWork` work over it |
 
@@ -181,12 +181,18 @@ group, and `TestDAOStoreParity_ClientStore` runs the same table over the
 client store on REST, gRPC, QUIC, MCP, Unix and the embedded transport. The
 only difference either allows is the named compound-index query: the
 embedded store answers it, and the service and client stores return
-`sdk.ErrKVIndexUnsupported`. `TestDAOClientStore_CLI_PerProtocol`
+`sdk.ErrKVIndexUnsupported`. The table also runs a unit of work of two saves,
+a guarded batch whose stale guard is refused and writes nothing, and a
+guarded batch refused on a unique conflict that writes nothing, with the same
+outcome on all three stores. Only the embedded store types that refusal as
+`ErrConflict`; the service and client stores refuse it with their own error.
+`TestDAOClientStore_CLI_PerProtocol`
 (`test/integration`) shows that a DAO over each of REST, gRPC, QUIC, MCP and
 Unix and the `qrdb` CLI on the same transport see the same records. A DAO
 save is read by `qrdb kv get`. A `qrdb kv put` is found through the DAO's
 unique index and holds its unique value. A `qrdb kv del` is seen by the DAO
-and frees the value.
+and frees the value. A unit of work committed through the client store is
+read back by `qrdb kv get`.
 
 A DAO with a unique index over your own Pebble storage
 (`ExampleNewEmbeddedKVStore` in `sdk/go/example_dao_stores_test.go`, compiled
