@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestClusteredNode_FailedBootLeavesNoDatabaseKey: a clustered boot that fails
@@ -55,13 +56,16 @@ func TestClusteredNode_FailedBootLeavesNoDatabaseKey(t *testing.T) {
 			return
 		}
 		if _, err := n.dbManager.CreateWithCredentials(ctx, database.DatabaseConfig{
-			TenantID: "acme", Name: "secure", Backend: database.BackendMemory,
+			// A database barrier needs a persistent backend, and the
+			// binding factory resolves the database's tenant: the system
+			// tenant exists on every node.
+			TenantID: tenantid.System, Name: "secure", Backend: database.BackendFile,
 			DataDir: t.TempDir(),
 			Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
 		}, seal.MustCredentials(context.Background(), []byte("db-pass-123456"))); err != nil {
 			t.Errorf("create the database mid-boot: %v", err)
 		}
-		if st, err := bm.BarrierStatus("secure", "acme"); err != nil || st.Sealed {
+		if st, err := bm.BarrierStatus("secure", tenantid.System); err != nil || st.Sealed {
 			t.Errorf("precondition: the database barrier is not unsealed mid-boot (%+v, %v)", st, err)
 		}
 		cancel()
@@ -74,8 +78,8 @@ func TestClusteredNode_FailedBootLeavesNoDatabaseKey(t *testing.T) {
 	if bm == nil {
 		t.Fatal("the hook never ran")
 	}
-	enc := bm.GetBarrier("secure", "acme")
-	st, serr := bm.BarrierStatus("secure", "acme")
+	enc := bm.GetBarrier("secure", tenantid.System)
+	st, serr := bm.BarrierStatus("secure", tenantid.System)
 	if serr != nil || !st.Sealed || enc == nil || !enc.IsSealed() {
 		t.Fatalf("the database key outlived the failed boot (status %+v, %v)", st, serr)
 	}
