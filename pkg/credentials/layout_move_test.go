@@ -187,6 +187,62 @@ func TestMoveLayout_MovesWholeSets(t *testing.T) {
 	requireValue(t, to, credentialPrefix+"unrelated", "x")
 }
 
+// TestMoveLayout_MovesMigrationImportRecords verifies an import record moves
+// with its credential, and one a deleted credential left moves on its own.
+func TestMoveLayout_MovesMigrationImportRecords(t *testing.T) {
+	ctx := context.Background()
+	from, to := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	keys := append(putLayout(t, from, "db", "v"), importKey("db", "d1"))
+	require.NoError(t, from.Put(ctx, importKey("db", "d1"), []byte("v@"+importKey("db", "d1"))))
+	orphan := importKey("gone", "d2")
+	require.NoError(t, from.Put(ctx, orphan, []byte("v@"+orphan)))
+	keys = append(keys, orphan)
+
+	require.NoError(t, moveLayout(ctx, from, to))
+
+	for _, key := range keys {
+		requireValue(t, to, key, "v@"+key)
+		requireAbsent(t, from, key)
+	}
+	left, err := from.List(ctx, MigrationImportPrefix)
+	require.NoError(t, err)
+	assert.Empty(t, left, "no import record stays in the earlier store")
+}
+
+// TestBindStoreFrom_ImportRetriedAfterMoveImportsNothing verifies a conflict
+// import whose cleanup failed, retried after the store moved, finds its
+// import record in the new store and imports nothing over a newer value.
+func TestBindStoreFrom_ImportRetriedAfterMoveImportsNothing(t *testing.T) {
+	ctx := context.Background()
+	legacyA, shared, moved := seal.NewMemoryBackend(), seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	legacyB := &faultyStore{Store: seal.NewMemoryBackend()}
+	writeLegacy(t, legacyA, "db", "v2", "v1", nil)
+	writeLegacy(t, legacyB, "db", "kept", "kept-old", nil)
+	require.NoError(t, newMigratingService(t, legacyA).BindStore(ctx, shared))
+	nodeB := newMigratingService(t, legacyB)
+	require.NoError(t, nodeB.BindStore(ctx, shared))
+
+	// The import commits, then the note that opens the cleanup fails.
+	legacyB.mu.Lock()
+	legacyB.op, legacyB.key, legacyB.fired = "put", legacyMigrationNotePrefix+"db", false
+	legacyB.mu.Unlock()
+	require.ErrorIs(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport), errInjected)
+	_, err := nodeB.rotateBarrier(ctx, "db", RotateOptions{NewValue: []byte("newer")})
+	require.NoError(t, err)
+
+	require.NoError(t, nodeB.BindStoreFrom(ctx, moved, shared))
+	imports, err := shared.List(ctx, MigrationImportPrefix)
+	require.NoError(t, err)
+	assert.Empty(t, imports, "the import record leaves the earlier store")
+
+	require.NoError(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport))
+	assert.Equal(t, "newer", retrieveString(t, nodeB, "db"), "a retried import must not import the kept copy again")
+	assert.Empty(t, legacyKeys(t, legacyB), "the kept copy is deleted")
+	conflicts, err := nodeB.ListMigrationConflicts(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
 func TestMoveLayout_RefusedGuardMovesNothing(t *testing.T) {
 	ctx := context.Background()
 	from := &captureStore{Store: seal.NewMemoryBackend()}

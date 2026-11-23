@@ -17,8 +17,11 @@ import (
 // layoutPrefixes are the key prefixes the replicated layout keeps a
 // credential's records under: the current value, the metadata document
 // (which carries the rotation policy and the rotation history), every
-// version, a staged rotation, and the migration claims.
-var layoutPrefixes = []string{credentialPrefix, MetaKeyPrefix, VersionKeyPrefix, StagedKeyPrefix, MigrationClaimPrefix}
+// version, a staged rotation, the migration claims, and the migration
+// import records. An import record moves with its credential, so a conflict
+// import retried against the destination finds its copy already committed;
+// one a deleted credential left moves in a set of its own.
+var layoutPrefixes = []string{credentialPrefix, MetaKeyPrefix, VersionKeyPrefix, StagedKeyPrefix, MigrationClaimPrefix, MigrationImportPrefix}
 
 // LayoutMovedPrefix keys the move marker a layout move writes into the
 // destination store in the same guarded batch as a credential's records:
@@ -132,10 +135,10 @@ type layoutSet struct {
 }
 
 // layoutSetOf names the credential a replicated-layout key belongs to and
-// the name segment its version and staged keys carry.
+// the name segment its version, staged and migration import keys carry.
 func layoutSetOf(prefix, key string) (name, enc string) {
 	rest := strings.TrimPrefix(key, prefix)
-	if prefix != VersionKeyPrefix && prefix != StagedKeyPrefix {
+	if prefix != VersionKeyPrefix && prefix != StagedKeyPrefix && prefix != MigrationImportPrefix {
 		return rest, encodedName(rest)
 	}
 	seg, _, _ := strings.Cut(rest, "/")
