@@ -16,6 +16,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 
 	"github.com/cockroachdb/pebble/v2/objstorage/remote"
@@ -66,8 +67,10 @@ const objstoreLSMCacheDir = "objstore-lsm-cache"
 // It is the composition NewLocalStorage's objstore case will call once the
 // flat engine is replaced (object-storage-lsm slice 4b); nothing calls it yet.
 // Neither it nor the returned storage closes the go-objstore store, matching
-// the flat Engine's Close.
-func newObjstoreLSMStorage(dataDir string, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig) (*pebbleStorage.PebbleStorage, error) {
+// the flat Engine's Close. The local object cache it builds is closed on any
+// failure after it is built and by the returned storage's Close: Pebble
+// never closes a remote.Storage it is given.
+func newObjstoreLSMStorage(dataDir string, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig) (*objstoreLSMStorage, error) {
 	if enc.Enabled() && enc.Barrier().IsSealed() {
 		return nil, &ObjstoreBarrierSealedError{}
 	}
@@ -96,10 +99,28 @@ func newObjstoreLSMStorage(dataDir string, enc *atrest.Encryptor, storageCfg qrd
 	if enc.Enabled() {
 		encrypted, err := objstore.NewEncryptedRemote(cached, enc.Barrier())
 		if err != nil {
-			return nil, err
+			return nil, errors.Join(err, cached.Close())
 		}
 		shared = encrypted
 	}
 	cfg := localPebbleConfig(filepath.Join(dataDir, objstoreLSMDir), enc, storageCfg)
-	return pebbleStorage.New(cfg, remotelsm.WithRemote(shared, objstoreLSMLocator, remote.CreateOnSharedAll))
+	stg, err := pebbleStorage.New(cfg, remotelsm.WithRemote(shared, objstoreLSMLocator, remote.CreateOnSharedAll))
+	if err != nil {
+		return nil, errors.Join(err, cached.Close())
+	}
+	return &objstoreLSMStorage{PebbleStorage: stg, cache: cached}, nil
+}
+
+// objstoreLSMStorage is the object-storage-lsm engine: the Pebble storage
+// plus the local object cache under it, which its Close releases after the
+// storage.
+type objstoreLSMStorage struct {
+	*pebbleStorage.PebbleStorage
+	cache *objstore.CachedRemote
+}
+
+// Close closes the Pebble storage, then the object cache (its directory
+// lock and root). Both are idempotent, so a second Close is a no-op.
+func (s *objstoreLSMStorage) Close() error {
+	return errors.Join(s.PebbleStorage.Close(), s.cache.Close())
 }

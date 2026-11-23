@@ -27,6 +27,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cockroachdb/pebble/v2/objstorage/remote"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -225,5 +227,51 @@ func TestObjstoreLSM_ArchiveTierRefused(t *testing.T) {
 	var archive *objstore.ArchiveTierUnsupportedError
 	if !errors.As(err, &archive) {
 		t.Fatalf("err = %v; want *objstore.ArchiveTierUnsupportedError", err)
+	}
+}
+
+// TestObjstoreLSM_CloseReleasesTheCache pins that the returned storage's
+// Close closes the local object cache too: a second open over the same
+// data dir takes the cache directory's lock only if the first released it.
+func TestObjstoreLSM_CloseReleasesTheCache(t *testing.T) {
+	dataDir := t.TempDir()
+	stg, err := newObjstoreLSMStorage(dataDir, atrest.New(nil), qrdbconfig.StorageConfig{})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := stg.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := stg.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	reopened, err := newObjstoreLSMStorage(dataDir, atrest.New(nil), qrdbconfig.StorageConfig{})
+	if err != nil {
+		t.Fatalf("reopen after Close: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("reopened Close: %v", err)
+	}
+}
+
+// TestObjstoreLSM_PebbleOpenFailureReleasesTheCache pins that a Pebble open
+// failure after the cache is built closes the cache: its directory is left
+// unlocked for the next open.
+func TestObjstoreLSM_PebbleOpenFailureReleasesTheCache(t *testing.T) {
+	dataDir := t.TempDir()
+	// A regular file where Pebble's directory belongs fails pebble.New.
+	if err := os.WriteFile(filepath.Join(dataDir, objstoreLSMDir), []byte("not a dir"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := newObjstoreLSMStorage(dataDir, atrest.New(nil), qrdbconfig.StorageConfig{}); err == nil {
+		t.Fatal("open over a file at the Pebble dir succeeded; want an error")
+	}
+	// The inner storage is never called: only the directory lock is probed.
+	cache, err := objstore.NewCachedRemote(struct{ remote.Storage }{}, filepath.Join(dataDir, objstoreLSMCacheDir))
+	if err != nil {
+		t.Fatalf("cache dir still locked after a failed open: %v", err)
+	}
+	if err := cache.Close(); err != nil {
+		t.Fatalf("cache Close: %v", err)
 	}
 }
