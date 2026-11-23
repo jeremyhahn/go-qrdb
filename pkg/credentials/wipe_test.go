@@ -138,7 +138,7 @@ func TestRotateBarrier_WipesTheGuardCopy(t *testing.T) {
 
 			_, err := svc.RotateCredential(ctx, "db", RotateOptions{NewValue: []byte("v2"), GracePeriod: tc.grace})
 			if tc.fail {
-				require.Error(t, err)
+				require.ErrorIs(t, err, quicraft.ErrShardNotReady)
 			} else {
 				require.NoError(t, err)
 			}
