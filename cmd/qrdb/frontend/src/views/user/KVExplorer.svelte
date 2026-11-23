@@ -606,6 +606,24 @@
     return (indices) => handleBulkDelete(indices, selectedIn);
   }
 
+  // Set when the explorer unmounts, so a bulk delete still awaiting a
+  // request sends no more once the view is gone.
+  let destroyed = false;
+  $effect(() => () => {
+    destroyed = true;
+  });
+
+  /**
+   * Reports whether a bulk delete started under profile scope s may send its
+   * next request. A database switch keeps sending to the captured client,
+   * which still names the old database; an unmount (a profile switch
+   * unmounts the workspace before the shared client is retargeted) or a
+   * different active profile stops the loop.
+   */
+  function bulkDeleteServerUnchanged(s: RevisionSupportScope): boolean {
+    return !destroyed && revisionScope.profileId === s.profileId;
+  }
+
   async function handleBulkDelete(indices: Set<number>, selectedIn: number): Promise<void> {
     // A selection made in an older database names rows of that listing.
     if (!isCurrentScope(selectedIn)) return;
@@ -614,6 +632,9 @@
     // captured here, never the one a later switch installs.
     const deleteClient = client;
     const gen = scopeGeneration;
+    // The browser client is shared and a profile connect retargets it in
+    // place, so the profile the keys were listed under is captured too.
+    const startScope = revisionScope;
     loading = true;
     const keysToDelete: string[] = [];
     for (const idx of indices) {
@@ -621,7 +642,15 @@
     }
     let successCount = 0;
     let failCount = 0;
+    let stopped = false;
     for (const key of keysToDelete) {
+      // Checked before every delete, not after the loop: a profile connect
+      // or an unmount while a delete is in flight must not send the
+      // remaining keys to another server.
+      if (!bulkDeleteServerUnchanged(startScope)) {
+        stopped = true;
+        break;
+      }
       try {
         await deleteClient.kv.delete(key);
         successCount++;
@@ -629,13 +658,25 @@
         failCount++;
       }
     }
-    if (failCount === 0) {
+    if (stopped) {
+      const left = keysToDelete.length - successCount - failCount;
+      showToast(
+        "warning",
+        `Bulk delete stopped after the connection changed: deleted ${successCount}, failed ${failCount}, not sent ${left}`,
+      );
+    } else if (failCount === 0) {
       showToast("success", `Deleted ${successCount} entries`);
     } else {
       showToast("warning", `Deleted ${successCount}, failed ${failCount}`);
     }
     // After a switch the new database's view is left to its own listing.
-    if (!isCurrentScope(gen) || client !== deleteClient) return;
+    if (
+      destroyed ||
+      !isCurrentScope(gen) ||
+      client !== deleteClient ||
+      revisionScope.profileId !== startScope.profileId
+    )
+      return;
     selectedEntry = null;
     await loadEntries();
     loading = false;
