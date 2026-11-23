@@ -397,7 +397,7 @@ func (b *StorageBarrier) OnSealing(fn func(context.Context) error)
 | `seal.BarrierRegistry.RequireInsideLocalPool` | checks against the pool's opened `Volume.Root()` |
 | `seal.BarrierRegistry.RunMoveCopyStep(ctx, nodeID, tenantID, toPool) (*volume.Manifest, error)` | the move's node step on this node's pools: resolve both directories, copy, verify, remove a partial destination through `RemoveDataRoot`; the move step runner's copy step calls it |
 | `tenant.TenantService.AdmitTenantMove(ctx, volume.MoveTenantRequest) ([]string, error)` | implements `volume.MoveAdmission`: the tenant exists, is `volume` or `raft` (not the system tenant), is entitled to `ToPool`; returns its replica nodes |
-| `tenant.TenantService.RecordTenantPoolMoved(ctx, tenantID, fromPool, toPool) error` | implements `volume.MoveCutoverRecorder`: makes the tenant record name `toPool`; idempotent; a tenant naming another pool is `*volume.MoveConflictError`, a missing tenant `ErrTenantNotFound`; nothing wires it in this build |
+| `tenant.TenantService.RecordTenantPoolMoved(ctx, tenantID, fromPool, toPool) error` | implements `volume.MoveCutoverRecorder`: makes the tenant record name `toPool`; idempotent; a tenant naming another pool is `*volume.MoveConflictError`, a missing tenant `ErrTenantNotFound`; `server.WireTenantMoves` sets it as the catalog's cut-over recorder |
 | `tenant.MoveReplicaNodeSource` / `tenant.MoveReplicaNodeWiring` | the optional source of a tenant's replica node IDs and its setter; with none set `AdmitTenantMove` returns `*volume.MoveNotImplementedError` |
 | `service.NewVolumeMoveAudit(logger, policy) volume.MoveStartAuditor` | audits a move's start as `volume_pool.move_start` (`to_pool`, `from_pool` on the outcome); gated by the failure policy before admit, best-effort outcome after |
 | `seal.ErrMoveStepInvalid` | `RunMoveCopyStep` called without a node ID or destination pool |
@@ -496,7 +496,7 @@ Every error is typed. Each classification below is the row added to
 | `*volume.InvalidMoveRequestError{Reason}` | `AdmitMove` got an empty tenant or pool, no replica nodes, or an empty or duplicate node ID; `MoveTenant` an empty tenant or pool; `GetMove` an empty tenant | `InvalidArgument` (400) |
 | `*volume.MoveNotFoundError{TenantID}` | `GetMove` or `CancelMove` found no journal for the tenant | `NotFound` (404) |
 | `*volume.NodeSealedError{Op}` | the node barrier is sealed and a write the node would propose on its own behalf is refused | `Unavailable` (503) |
-| `*volume.MoveNotImplementedError` | `MoveTenant` in a composition that wired no `MoveAdmission`, or a tenant service with no replica-node source (every daemon in this build) | `Unimplemented`, the existing row |
+| `*volume.MoveNotImplementedError` | `MoveTenant` in a composition that wired no `MoveAdmission`, or a tenant service with no replica-node source (a composition without the move wiring; `qrdbd` and the embedded node both call `server.WireTenantMoves`) | `Unimplemented`, the existing row |
 
 **Fail-closed paths.** An unreadable catalog or assignment fails the create, the
 move and the resolution. Nothing falls back to a default path or a fresh pick.
@@ -758,7 +758,7 @@ Metrics:
 
 Audit: every catalog change, assignment change and move transition is an
 audit record naming the operator identity (a move's start is
-`volume_pool.move_start` through `service.NewVolumeMoveAudit`; later transitions arrive with the reconciler); every
+`volume_pool.move_start` through `service.NewVolumeMoveAudit`; every later transition is `volume_pool.move_<transition>` through `service.NewVolumeMoveTransitionAudit`); every
 `Lockable` unlock and lock attempt is an audit record naming the pool and,
 on failure, the error, under actions `volume_unlock` / `volume_lock`
 (`pkg/seal.VolumeLifecycle`, subject `seal`, since these run inside the
