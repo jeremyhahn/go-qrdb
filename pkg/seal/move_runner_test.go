@@ -937,3 +937,54 @@ func TestMoveStepRunner_BootAfterAbortCASRemovesDestination(t *testing.T) {
 		t.Fatalf("root = %q, %v; want the source", root, err)
 	}
 }
+
+// TestMoveStepRunner_BootAfterAbortDeletionOpensFromSource pins the third
+// abort crash point: the node crashed after the abort CAS and after the
+// destination was deleted, before the journal was removed. The boot finds
+// no destination and opens the tenant from the source, and so does a boot
+// after the journal is gone.
+func TestMoveStepRunner_BootAfterAbortDeletionOpensFromSource(t *testing.T) {
+	fx, stores, r := newRunnerFixture(t)
+	ctx := context.Background()
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("settle copy: %v", err)
+	}
+	stores.write("w1")
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseAbort, true)); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	if err := os.RemoveAll(fx.dst()); err != nil {
+		t.Fatalf("delete destination: %v", err)
+	}
+	fx.reg.moveOpenPools.Delete(moveTestTenant) // the crash
+	fx.reg.SetVolumeNodeID(moveTestNode)
+
+	fx.putJournal(t, journal(volume.MoveStateAborting))
+	if err := fx.reg.RestoreVolumeTenants(ctx); err != nil {
+		t.Fatalf("restore after the destination deletion: %v", err)
+	}
+	assertGone(t, fx.dst())
+	mustExist(t, filepath.Join(fx.src, "w1"))
+	if root, err := fx.reg.RequireInsideLocalPool(ctx, moveTestTenant); err != nil || root != fx.src {
+		t.Fatalf("root = %q, %v; want the source", root, err)
+	}
+
+	fx.reg.moveOpenPools.Delete(moveTestTenant) // a second crash
+	raw, err := fx.kv.Get(ctx, volume.MoveKey(moveTestTenant))
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	if ok, err := fx.kv.CompareAndDelete(ctx, volume.MoveKey(moveTestTenant), raw); err != nil || !ok {
+		t.Fatalf("delete journal: %v, %v", ok, err)
+	}
+	if err := fx.reg.RestoreVolumeTenants(ctx); err != nil {
+		t.Fatalf("restore after the journal removal: %v", err)
+	}
+	assertGone(t, fx.dst())
+	if root, err := fx.reg.RequireInsideLocalPool(ctx, moveTestTenant); err != nil || root != fx.src {
+		t.Fatalf("root after the journal removal = %q, %v; want the source", root, err)
+	}
+}
