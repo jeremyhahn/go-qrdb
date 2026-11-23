@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterkeys"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
@@ -745,6 +746,148 @@ func TestHandler_TamperedPayload(t *testing.T) {
 	// collapse to a single opaque 403 to avoid a reconstruction oracle.
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("expected 403 (ErrDecrypt), got %d", rec.Code)
+	}
+}
+
+// releaseGapFixture is a self-managed key delivery from a leader to a
+// follower whose sealing release and receiving release a test sets apart.
+type releaseGapFixture struct {
+	ctx         context.Context
+	srv         *httptest.Server
+	sender      *clusterkeys.Sender
+	leader      *seal.StorageBarrier
+	followerReg *seal.BarrierRegistry
+	replica     placement.Replica
+	meta        keydelivery.Meta
+}
+
+func newReleaseGapFixture(t *testing.T) *releaseGapFixture {
+	t.Helper()
+	ctx := context.Background()
+	leaderReg, leaderAlloc := newTestRegistry(t)
+	initTestSystemBarrier(t, leaderReg)
+	leaderBarrier := initLeaderTenant(t, leaderReg, leaderAlloc, "tenant-gap")
+
+	ca := newTestCA(t)
+	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
+	followerDataRoot := t.TempDir()
+	p := newTestPlacement("tenant-gap", "db-main", 1, 2, "follower-node-1", followerDataRoot)
+	followerReg, followerAlloc := newTestRegistry(t)
+	initTestSystemBarrier(t, followerReg)
+	sealtest.ReserveVolumeTenant(t, followerAlloc, "tenant-gap")
+	_, srv := newTestReceiverFull(t, ca, follower, "follower-node-1", followerReg, &staticPlacementGetter{p: p})
+
+	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
+	if err != nil {
+		t.Fatalf("NewSender: %v", err)
+	}
+	return &releaseGapFixture{
+		ctx:         ctx,
+		srv:         srv,
+		sender:      sender,
+		leader:      leaderBarrier,
+		followerReg: followerReg,
+		replica:     placement.Replica{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower-node-1:9000", DataRoot: followerDataRoot},
+		meta: keydelivery.Meta{
+			TenantID:     "tenant-gap",
+			Database:     "db-main",
+			ShardID:      1,
+			ReplicaID:    2,
+			TargetNodeID: "follower-node-1",
+			Mode:         keydelivery.ModeSelfManaged,
+		},
+	}
+}
+
+// seal seals the leader's tenant blob for the follower under the release
+// in force when it is called.
+func (f *releaseGapFixture) seal(t *testing.T) []byte {
+	t.Helper()
+	blob, err := f.leader.ExportSealedBlob(f.ctx)
+	if err != nil {
+		t.Fatalf("ExportSealedBlob: %v", err)
+	}
+	env, err := f.sender.SealFor(f.ctx, f.replica, f.meta, blob)
+	if err != nil {
+		t.Fatalf("SealFor: %v", err)
+	}
+	body, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	return body
+}
+
+// post sends a sealed envelope to the follower's key-delivery route and
+// returns the status and the decoded JSON body.
+func (f *releaseGapFixture) post(t *testing.T, body []byte) (int, map[string]string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(f.ctx, http.MethodPost, f.srv.URL+"/v1/cluster/keydelivery", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := f.srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST keydelivery: %v", err)
+	}
+	defer resp.Body.Close()
+	out := map[string]string{}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out
+}
+
+func (f *releaseGapFixture) imported() bool {
+	_, err := f.followerReg.GetTenant("tenant-gap")
+	return err == nil
+}
+
+// TestHandler_ReleaseGapRefusedBeforeOpen pins SPEC rolling upgrades clauses
+// (2)-(3) on the key-delivery channel: a receiver refuses an envelope whose
+// sender release is not adjacent with 409 naming its own release, before the
+// placement gate and Open, so nothing is imported and the replay nonce is
+// not consumed (the same envelope is accepted once the releases are
+// adjacent).
+func TestHandler_ReleaseGapRefusedBeforeOpen(t *testing.T) {
+	f := newReleaseGapFixture(t)
+	t.Cleanup(release.SetForTesting("0.58.0-alpha"))
+	body := f.seal(t)
+
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	code, out := f.post(t, body)
+	if code != http.StatusConflict {
+		t.Fatalf("delivery across a release gap: status %d, want 409", code)
+	}
+	if out["release_version"] != "0.60.0-alpha" {
+		t.Fatalf("refusal release_version = %q, want 0.60.0-alpha", out["release_version"])
+	}
+	if f.imported() {
+		t.Fatal("a refused delivery must not import the tenant barrier")
+	}
+
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	if code, _ := f.post(t, body); code != http.StatusOK {
+		t.Fatalf("same envelope to an adjacent receiver: status %d, want 200 (nonce must not be consumed by the refusal)", code)
+	}
+	if !f.imported() {
+		t.Fatal("the accepted delivery must import the tenant barrier")
+	}
+}
+
+// TestHandler_AdjacentReleaseAccepted pins that a sender one minor release
+// behind the receiver delivers.
+func TestHandler_AdjacentReleaseAccepted(t *testing.T) {
+	f := newReleaseGapFixture(t)
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	body := f.seal(t)
+
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	if code, out := f.post(t, body); code != http.StatusOK {
+		t.Fatalf("adjacent delivery: status %d (%v), want 200", code, out)
+	}
+	if !f.imported() {
+		t.Fatal("the adjacent delivery must import the tenant barrier")
 	}
 }
 

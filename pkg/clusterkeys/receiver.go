@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -176,6 +177,10 @@ func NewReceiver(
 //	   certificate refused if it has been REVOKED (401) or if its revocation
 //	   status cannot be read (503) — see revocationRefusal.
 //	b. JSON-decode the keydelivery.Envelope (400 on malformed body).
+//	b2. Release check: the sender's announced release must be adjacent to
+//	   this node's (release.Check, channel "key-delivery"); a gap answers 409
+//	   naming this node's release, before the placement gate and Open, so a
+//	   refused envelope consumes no replay nonce.
 //	c. Placement-table gate: this node must appear as the replica assigned for
 //	   the envelope's (tenant, database, shard, replica) (403 on mismatch).
 //	d. keydelivery.Receiver.Open: HPKE decryption + freshness + replay guard.
@@ -247,6 +252,21 @@ func (r *Receiver) Handler() http.HandlerFunc {
 		var env keydelivery.Envelope
 		if err := json.NewDecoder(req.Body).Decode(&env); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "malformed envelope")
+			return
+		}
+
+		// --- b2: release check -------------------------------------------
+		// Key delivery negotiates its wire version like enrolment: the
+		// sender announces its release in the envelope (bound into the HPKE
+		// info, so a rewrite fails Open) and a release that is not adjacent
+		// is refused here, before the placement gate and Open, so nothing
+		// is decrypted and the replay nonce stays unconsumed.
+		if err := release.Check(keyDeliveryChannel, env.ReleaseVersion); err != nil {
+			r.logger.Warn("clusterkeys: key delivery refused: release gap",
+				slog.String("local_release", release.Version()),
+				slog.String("peer_release", env.ReleaseVersion),
+				slog.String("tenant", env.TenantID))
+			writeGapRefusal(w, err)
 			return
 		}
 
@@ -408,4 +428,14 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 // writeJSONError writes a JSON error response body.
 func writeJSONError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// writeGapRefusal answers a key delivery refused on a release gap: 409 with
+// the error and this node's release, so the sender reports a typed
+// *release.GapError naming both releases.
+func writeGapRefusal(w http.ResponseWriter, err error) {
+	writeJSON(w, http.StatusConflict, map[string]string{
+		"error":           err.Error(),
+		"release_version": release.Version(),
+	})
 }
