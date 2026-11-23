@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,10 +21,12 @@ const volumeMoveDeadline = 3 * time.Minute
 // cliVolumePoolMoveJSON is the slice of `qrdb volume-pool move-tenant|get-move
 // --output json` the move tests assert on.
 type cliVolumePoolMoveJSON struct {
-	TenantID string `json:"tenantId"`
-	FromPool string `json:"fromPool"`
-	ToPool   string `json:"toPool"`
-	State    string `json:"state"`
+	TenantID    string   `json:"tenantId"`
+	FromPool    string   `json:"fromPool"`
+	ToPool      string   `json:"toPool"`
+	State       string   `json:"state"`
+	NodesCopied []string `json:"nodesCopied"`
+	StepNode    string   `json:"stepNode"`
 }
 
 // TestVolumePool_CLI_MoveTenant_PerProtocol drives `qrdb volume-pool
@@ -474,7 +477,7 @@ func startVolumeMoveNode(t *testing.T) *multiProtoNode {
 // back from every node, and a new write lands and replicates.
 func TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart(t *testing.T) {
 	t.Parallel()
-	nodes := volumeMoveClusterStart(t)
+	nodes, dirs := volumeMoveClusterStart(t)
 
 	// No t.Run per transport: the restarted node's process (and its log
 	// writer) is owned by the test that starts it, so it must outlive one
@@ -491,6 +494,7 @@ func TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart(t *testing.T) {
 				t.Fatalf("[%s] node %d: after the move tenant %s is on pool %q, want second", proto.name, i+1, mt.tenantID, pool)
 			}
 		}
+		volumeMoveClusterExpectDirs(t, proto, dirs, mt.tenantID, false, true)
 		volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, mt.key, mt.value)
 
 		afterKey, afterValue := "after", "after-the-move-"+mt.tenantID
@@ -508,7 +512,7 @@ func TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart(t *testing.T) {
 // write.
 func TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite(t *testing.T) {
 	t.Parallel()
-	nodes := volumeMoveClusterStart(t)
+	nodes, dirs := volumeMoveClusterStart(t)
 
 	// No t.Run per transport: the restarted node's process (and its log
 	// writer) is owned by the test that starts it, so it must outlive one
@@ -540,6 +544,7 @@ func TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite(t *testing.T)
 				t.Fatalf("[%s] node %d: after the cancel tenant %s is on pool %q, want default", proto.name, i+1, mt.tenantID, pool)
 			}
 		}
+		volumeMoveClusterExpectDirs(t, proto, dirs, mt.tenantID, true, false)
 		volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, mt.key, mt.value)
 		volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, ackedKey, ackedValue)
 
@@ -547,6 +552,95 @@ func TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite(t *testing.T)
 		volumeMoveClusterPut(t, nodes[2], proto, mt, conns[2], afterKey, afterValue)
 		volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, afterKey, afterValue)
 	}
+}
+
+// TestVolumePool_CLI_MoveTenant_ThreeNode_RestartWhileSettling restarts the
+// replica whose copy step is settling (get-move shows state copying with the
+// step node already in nodesCopied) and requires the move to complete anyway:
+// every node on the second pool, every value readable everywhere, a write on
+// the restarted node replicated, and no tenant directory left in the default
+// pool or staging directory anywhere. A settle can end before a poll sees it,
+// so each transport tries up to volumeMoveCancelAttempts fresh tenants.
+func TestVolumePool_CLI_MoveTenant_ThreeNode_RestartWhileSettling(t *testing.T) {
+	t.Parallel()
+	nodes, dirs := volumeMoveClusterStart(t)
+
+	// No t.Run per transport: the restarted node's process (and its log
+	// writer) is owned by the test that starts it, so it must outlive one
+	// transport's pass. Every failure names its transport.
+	for _, proto := range multiProtocols {
+		hit := false
+		for attempt := 0; attempt < volumeMoveCancelAttempts && !hit; attempt++ {
+			mt, conns := volumeMoveClusterSeed(t, nodes, proto, "vs")
+			volumeMoveClusterStartMove(t, nodes[0], proto, mt.tenantID)
+
+			stepIdx := volumeMoveClusterSettlingNode(t, nodes[0], proto, mt.tenantID)
+			if stepIdx < 0 {
+				volumeMoveClusterWaitGone(t, nodes[0], proto, mt.tenantID)
+				continue
+			}
+			hit = true
+
+			nodes[stepIdx].stop(t)
+			nodes[stepIdx].startAgain(t, fmt.Sprintf("[vmove-settle-node%d-%s] ", stepIdx+1, strings.ToLower(proto.name)))
+
+			volumeMoveClusterWaitGone(t, nodes[(stepIdx+1)%len(nodes)], proto, mt.tenantID)
+			for i, node := range nodes {
+				if pool := volumeMoveTenantPool(t, node, proto, mt.tenantID); pool != "second" {
+					t.Fatalf("[%s] node %d: after a restart while node %d settled, tenant %s is on pool %q, want second", proto.name, i+1, stepIdx+1, mt.tenantID, pool)
+				}
+			}
+			volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, mt.key, mt.value)
+
+			afterKey, afterValue := "after", "after-the-settle-restart-"+mt.tenantID
+			volumeMoveClusterPut(t, nodes[stepIdx], proto, mt, conns[stepIdx], afterKey, afterValue)
+			volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, afterKey, afterValue)
+			volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, mt.key, mt.value)
+			volumeMoveClusterExpectDirs(t, proto, dirs, mt.tenantID, false, true)
+		}
+		if !hit {
+			t.Fatalf("[%s] no move of %d tenants was seen with a copy step settling", proto.name, volumeMoveCancelAttempts)
+		}
+	}
+}
+
+// volumeMoveClusterSettlingNode polls get-move until the move of tenantID
+// shows a settling copy step (state copying, stepNode already in nodesCopied)
+// and returns the fixture index of that step's node, or -1 once the move has
+// ended without a poll seeing it settle. The journal's node ID is the
+// daemon's replica ID, which the cluster fixture sets to index+1.
+func volumeMoveClusterSettlingNode(t *testing.T, node *multiProtoNode, proto multiProtocol, tenantID string) int {
+	t.Helper()
+	idx := -1
+	var out string
+	var err error
+	if pollUntil(volumeMoveDeadline, 10*time.Millisecond, func() bool {
+		out, err = runCLIProto(t, node, proto, "--output", "json", "volume-pool", "get-move", tenantID)
+		if err != nil {
+			return volumeMoveIsNoMove(out)
+		}
+		var m cliVolumePoolMoveJSON
+		if json.Unmarshal([]byte(out), &m) != nil || m.State != "copying" || m.StepNode == "" {
+			return false
+		}
+		for _, copied := range m.NodesCopied {
+			if copied != m.StepNode {
+				continue
+			}
+			for i := range 3 {
+				if m.StepNode == strconv.Itoa(i+1) {
+					idx = i
+					return true
+				}
+			}
+			t.Fatalf("[%s] move of %s settles on node %q, which is not a fixture replica ID", proto.name, tenantID, m.StepNode)
+		}
+		return false
+	}) {
+		return idx
+	}
+	t.Fatalf("[%s] move of %s neither settled nor ended within %s; last get-move (err=%v): %s", proto.name, tenantID, volumeMoveDeadline, err, out)
+	return -1
 }
 
 // volumeMoveClusterYAML is volumeMoveYAML without its seal block, which the
@@ -558,15 +652,57 @@ func volumeMoveClusterYAML(defaultDir, secondDir string) string {
 // volumeMoveClusterStart starts a three-node cluster whose nodes each hold
 // their own default and second pool directories, and creates both pools in
 // the replicated catalog.
-func volumeMoveClusterStart(t *testing.T) [3]*multiProtoNode {
+func volumeMoveClusterStart(t *testing.T) ([3]*multiProtoNode, [3]volumeMovePoolDirs) {
 	t.Helper()
-	nodes, _ := startMultiProtocolClusterWithNodeConfig(t, 0, func(int) string {
-		return volumeMoveClusterYAML(t.TempDir(), t.TempDir())
+	var dirs [3]volumeMovePoolDirs
+	for i := range dirs {
+		dirs[i] = volumeMovePoolDirs{def: t.TempDir(), second: t.TempDir()}
+	}
+	nodes, _ := startMultiProtocolClusterWithNodeConfig(t, 0, func(i int) string {
+		return volumeMoveClusterYAML(dirs[i].def, dirs[i].second)
 	})
 	for _, pool := range []string{"default", "second"} {
 		createVolumePoolCLI(t, nodes[0].cli, nodes[0].cliArgsFor(multiProtocols[0]), pool)
 	}
-	return nodes
+	return nodes, dirs
+}
+
+// volumeMovePoolDirs is one cluster node's default and second pool directory.
+type volumeMovePoolDirs struct {
+	def, second string
+}
+
+// volumeMoveClusterExpectDirs requires, on every node, that the tenant's
+// directory <pool>/<tenantID> exists in the default and second pools exactly
+// as wanted, and that no copy-back staging directory is left behind: no
+// <tenantID>.copyback in the default pool and no .qrdb-copyback inside either
+// tenant directory.
+func volumeMoveClusterExpectDirs(t *testing.T, proto multiProtocol, dirs [3]volumeMovePoolDirs, tenantID string, wantDefault, wantSecond bool) {
+	t.Helper()
+	exists := func(path string) bool {
+		_, err := os.Stat(path)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("[%s] stat %s: %v", proto.name, path, err)
+		}
+		return err == nil
+	}
+	for i, d := range dirs {
+		for _, c := range []struct {
+			pool, dir string
+			want      bool
+		}{{"default", d.def, wantDefault}, {"second", d.second, wantSecond}} {
+			tenantDir := filepath.Join(c.dir, tenantID)
+			if got := exists(tenantDir); got != c.want {
+				t.Fatalf("[%s] node %d: tenant %s directory in pool %s exists=%v, want %v", proto.name, i+1, tenantID, c.pool, got, c.want)
+			}
+			if exists(filepath.Join(tenantDir, ".qrdb-copyback")) {
+				t.Fatalf("[%s] node %d: tenant %s left a .qrdb-copyback staging directory in pool %s", proto.name, i+1, tenantID, c.pool)
+			}
+		}
+		if exists(filepath.Join(d.def, tenantID+".copyback")) {
+			t.Fatalf("[%s] node %d: tenant %s left a %s.copyback staging directory in the default pool", proto.name, i+1, tenantID, tenantID)
+		}
+	}
 }
 
 // volumeMoveClusterSeed creates a raft tenant (placed on every node of the
