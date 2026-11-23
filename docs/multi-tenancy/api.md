@@ -533,8 +533,11 @@ leaks to a caller with no access to the tier.
 Every node applies the `tenant.isolation_policy` configuration key (`strict`
 or `operator-access`) to the cluster isolation-policy floor before it serves.
 The floor only tightens, and cannot become `strict` over tenants that are not:
-a refused transition is logged and the stored floor stands. The key predates
-the verbs below and is not behind their gate.
+a refused transition is logged and the stored floor stands. The key waits for
+the same activation check as the verbs below: it is written once the
+`strict-isolation` and `guarded-writes` features are active, and retried in
+the background until then (a floor that already holds the value needs no
+write).
 
 The floor and a tenant's policy have transport verbs, refused until the
 `strict-isolation` feature is active. A standalone node is active from the

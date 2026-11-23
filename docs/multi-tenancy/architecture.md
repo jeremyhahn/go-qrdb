@@ -766,8 +766,9 @@ committed meanwhile is kept rather than refused.
   or `strict`), applied through `UpdateTenant`, which refuses a loosening
   with `IsolationPolicyChangeError`. The policy governs isolated tenants only.
   The cluster floor is configured with `tenant.isolation_policy`
-  (`QRDB_TENANT_ISOLATION_POLICY`); no transport or CLI exposes a policy
-  get/set verb, and `tenant.ClusterIsolationPolicyReader` is consulted live by
+  (`QRDB_TENANT_ISOLATION_POLICY`), written once the strict-isolation
+  activation check passes (the same check as the isolation-policy verbs) and
+  retried in the background until then, and `tenant.ClusterIsolationPolicyReader` is consulted live by
   `pkg/service/vector.go`'s `validateTenantCreate`.
 - **No system-tenant lift, under every policy.** The `ScopeSelf` case of
   `rbac.RBACAuthorizer.Authorize` and `tenant.EffectiveTenant` give a system-tenant identity
@@ -1420,7 +1421,7 @@ form within its startup budget.
 
 | Setting | Where | Values | Who sets it |
 |---|---|---|---|
-| Cluster floor | `__sys:cluster/isolation_policy` | unset (read as `operator-access`), `operator-access`, `strict` | The config key `tenant.isolation_policy`, which each node applies at start through `TenantService.SetClusterIsolationPolicy`. A value the stored floor already holds is a no-op. A node in FIPS 140 mode tightens it to `strict` at start and refuses to serve unless it reads `strict` back. Every node applies both, `qrdbd` and an SDK node (`sdk/go/node`) alike, through `pkg/server/lifecycle/isolation_floor.go`, after its tenant home stores attach and before it serves. The floor verbs (`qrdb cluster-isolation-policy get|set` and their REST, gRPC, QUIC and MCP forms) read and set it, refused until the `strict-isolation` feature is active. |
+| Cluster floor | `__sys:cluster/isolation_policy` | unset (read as `operator-access`), `operator-access`, `strict` | The config key `tenant.isolation_policy`, which each node applies at start through `TenantService.SetClusterIsolationPolicy`. A value the stored floor already holds is a no-op. A node in FIPS 140 mode tightens it to `strict` at start and refuses to serve unless it reads `strict` back. Every node applies both, `qrdbd` and an SDK node (`sdk/go/node`) alike, through `pkg/server/lifecycle/isolation_floor.go`, after its tenant home stores attach and before it serves. The configured floor waits for the strict-isolation activation check, like the verbs: a clustered node writes it once `strict-isolation` and `guarded-writes` are active, retrying in the background until then. The floor verbs (`qrdb cluster-isolation-policy get|set` and their REST, gRPC, QUIC and MCP forms) read and set it, refused until the `strict-isolation` feature is active. |
 | Tenant policy | the tenant's registry entry (`isolation_policy`) | `inherit` (empty, the default) or `strict` | The Go API: `tenant.WithIsolationPolicy` at create, or a `TenantPatch.IsolationPolicy` on update. On the transports, a tenant update's `isolation_policy` field and `qrdb tenant update --isolation-policy`, refused until the `strict-isolation` feature is active. |
 
 `tenant.EffectiveIsolationPolicy` is `strict` when either setting is `strict`.
@@ -1547,7 +1548,12 @@ feature judged cluster-wide. It adds no Raft command.
   rollout): until guarded-writes is active a group proposes every write guard
   unguarded, so a tightening committed then would leave an in-flight
   shared-store write or audit append with only the propose-time recheck.
-  Activation is permanent, so once both are active no guard is dropped again.
+  The configured floor (`tenant.isolation_policy`) waits for the same check:
+  a node does not write it until both are active and retries in the
+  background until then (a floor that already holds the value needs no
+  write). Activation is permanent, so once both are active no guard is
+  dropped again. The FIPS-140 start path, which tightens the floor to
+  `strict` before a FIPS node serves, does not wait (an open owner question).
 - **Active:** once every member advertises both features, as above; a
   standalone node gates nothing.
 - **Not gated:** keying placements and key-delivery envelopes by the opaque
