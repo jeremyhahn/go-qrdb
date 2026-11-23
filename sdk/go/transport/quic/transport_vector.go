@@ -118,7 +118,6 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 		DistanceMetric:  metric,
 		IndexType:       indexTypeToProto[req.IndexType],
 		IndexParamsJson: indexParamsJSON,
-		ShardId:         req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -195,7 +194,6 @@ func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNa
 
 	payload, err := proto.Marshal(&pb.VectorDeleteNamespaceRequest{
 		Namespace: req.Namespace,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -216,9 +214,7 @@ func (t *Transport) ListNamespaces(ctx context.Context, req *transport.ListNames
 		return nil, &transport.ClosedError{}
 	}
 
-	payload, err := proto.Marshal(&pb.VectorListNamespacesRequest{
-		ShardId: req.ShardID,
-	})
+	payload, err := proto.Marshal(&pb.VectorListNamespacesRequest{})
 	if err != nil {
 		return nil, &marshalError{Err: err}
 	}
@@ -256,7 +252,6 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 
 	payload, err := proto.Marshal(&pb.VectorGetNamespaceInfoRequest{
 		Namespace: req.Namespace,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -319,7 +314,6 @@ func (t *Transport) UpsertVector(ctx context.Context, req *transport.UpsertVecto
 		Id:           formatVectorID(req.ID),
 		Vector:       req.Vector,
 		MetadataJson: metadataJSON,
-		ShardId:      req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -354,7 +348,6 @@ func (t *Transport) GetVector(ctx context.Context, req *transport.GetVectorReque
 		Namespace:   req.Namespace,
 		Id:          formatVectorID(req.ID),
 		Consistency: vectorConsistencyToProto(req.Consistency),
-		ShardId:     req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -401,7 +394,6 @@ func (t *Transport) DeleteVector(ctx context.Context, req *transport.DeleteVecto
 	payload, err := proto.Marshal(&pb.VectorDeleteRequest{
 		Namespace: req.Namespace,
 		Id:        formatVectorID(req.ID),
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -434,7 +426,6 @@ func (t *Transport) BatchUpsert(ctx context.Context, req *transport.BatchUpsertR
 	payload, err := proto.Marshal(&pb.VectorBatchUpsertRequest{
 		Namespace: req.Namespace,
 		Vectors:   pbVectors,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -471,7 +462,6 @@ func (t *Transport) BatchDeleteVectors(ctx context.Context, req *transport.Batch
 	payload, err := proto.Marshal(&pb.VectorBatchDeleteRequest{
 		Namespace: req.Namespace,
 		Ids:       ids,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -513,7 +503,6 @@ func (t *Transport) ListVectors(ctx context.Context, req *transport.ListVectorsR
 		Namespace: req.Namespace,
 		Limit:     int32(req.Limit),
 		Cursor:    req.Cursor,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -561,7 +550,6 @@ func (t *Transport) UpdateMetadata(ctx context.Context, req *transport.UpdateVec
 		Namespace:    req.Namespace,
 		Id:           formatVectorID(req.ID),
 		MetadataJson: metadataJSON,
-		ShardId:      req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -596,7 +584,6 @@ func (t *Transport) SearchSimilar(ctx context.Context, req *transport.SearchSimi
 		EfSearch:    int32(req.EfSearch),
 		MinScore:    float64(req.MinScore),
 		Consistency: vectorConsistencyToProto(req.Consistency),
-		ShardId:     req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -641,7 +628,6 @@ func (t *Transport) SearchByMetadata(ctx context.Context, req *transport.SearchB
 		Limit:       int32(req.Limit),
 		Offset:      int32(req.Offset),
 		Consistency: vectorConsistencyToProto(req.Consistency),
-		ShardId:     req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -691,7 +677,6 @@ func (t *Transport) HybridSearch(ctx context.Context, req *transport.HybridSearc
 		MetadataFiltersJson: metadataFiltersJSON,
 		K:                   int32(req.K),
 		Consistency:         vectorConsistencyToProto(req.Consistency),
-		ShardId:             req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -730,7 +715,6 @@ func (t *Transport) SearchByID(ctx context.Context, req *transport.SearchByIDReq
 		Id:          formatVectorID(req.ID),
 		K:           int32(req.K),
 		Consistency: vectorConsistencyToProto(req.Consistency),
-		ShardId:     req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -772,7 +756,6 @@ func (t *Transport) RebuildIndex(ctx context.Context, req *transport.RebuildInde
 
 	payload, err := proto.Marshal(&pb.VectorRebuildIndexRequest{
 		Namespace: req.Namespace,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -850,7 +833,6 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 
 	payload, err := proto.Marshal(&pb.VectorGetIndexStatsRequest{
 		Namespace: req.Namespace,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -889,7 +871,6 @@ func (t *Transport) CompactNamespace(ctx context.Context, req *transport.Compact
 
 	payload, err := proto.Marshal(&pb.VectorCompactNamespaceRequest{
 		Namespace: req.Namespace,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -921,7 +902,6 @@ func (t *Transport) GetCompactionProgress(ctx context.Context, req *transport.Ge
 	payload, err := proto.Marshal(&pb.VectorGetCompactionProgressRequest{
 		Namespace: req.Namespace,
 		JobId:     req.OperationID,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
