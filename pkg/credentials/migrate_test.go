@@ -789,6 +789,63 @@ func TestResolveMigrationConflict_ImportRacingAcrossDerivedServices(t *testing.T
 	assert.Equal(t, 1, already, "the other reports the copy already imported")
 }
 
+// When another derived service commits the same copy between this one's
+// import-record check and its batch, the refused batch re-reads the import
+// record; a failure of that read surfaces, and nothing is written twice.
+func TestResolveMigrationConflict_ImportRecordReadFailsAfterRefusedBatch(t *testing.T) {
+	ctx := context.Background()
+	al := &fakeAuditLogger{}
+	faulty := &faultyStore{Store: newHomeStore(t), fired: true}
+	home := &getHookStore{Store: getFaultStore{faulty}}
+	legacyA := seal.NewMemoryBackend()
+	legacyB := newLegacyBarrier(t)
+	writeLegacy(t, legacyA, "db", "v2", "v1", nil)
+	writeLegacy(t, legacyB, "db", "kept", "kept-old", nil)
+	require.NoError(t, newMigratingService(t, legacyA).BindStore(ctx, home))
+	parent := newUnboundServiceWith(t, WithAuditLogger(al))
+	first, err := parent.ForTenant(ctx, home, legacyB)
+	require.NoError(t, err)
+	second, err := parent.ForTenant(ctx, home, legacyB)
+	require.NoError(t, err)
+	imported := importKey("db", keptCopyDigest(t, second, "db"))
+
+	fired := false
+	home.onGet = func(key string) {
+		if fired || key != metaKey("db") {
+			return
+		}
+		fired = true
+		require.NoError(t, first.ResolveMigrationConflict(ctx, "db", MigrationImport))
+		faulty.mu.Lock()
+		faulty.op, faulty.key, faulty.fired = "get", imported, false
+		faulty.mu.Unlock()
+	}
+	err = second.ResolveMigrationConflict(ctx, "db", MigrationImport)
+	home.onGet = nil
+	require.True(t, fired)
+	require.ErrorIs(t, err, errInjected)
+	var opErr *OperationError
+	require.ErrorAs(t, err, &opErr)
+	assert.Equal(t, "read migration import", opErr.Op)
+
+	imports, err := second.store.List(ctx, MigrationImportPrefix)
+	require.NoError(t, err)
+	assert.Len(t, imports, 1, "only one import is written")
+	meta, err := second.loadBarrierMeta(ctx, "db")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(3), meta.CurrentVersion, "the copy is imported as one version")
+	assert.Equal(t, "kept", retrieveString(t, second, "db"))
+
+	// The first resolution deleted the shared kept copy, so a clean retry
+	// finds nothing left to import.
+	require.ErrorIs(t, second.ResolveMigrationConflict(ctx, "db", MigrationImport), ErrMigrationConflictNotFound)
+	assert.Equal(t, "kept", retrieveString(t, second, "db"), "the retry imports nothing again")
+	assert.Empty(t, legacyKeys(t, legacyB))
+	conflicts, err := second.ListMigrationConflicts(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
 // TestMigrateLegacy_DeleteAfterCompletedMigrationSettlesALaterDifferingCopy
 // verifies a delete after a completed migration leaves a tombstone: a later
 // node's pre-upgrade copy, differing or the same, is deleted and installs

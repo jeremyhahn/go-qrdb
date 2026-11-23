@@ -436,18 +436,28 @@ func TestResolveMigrationConflict_CopyGone(t *testing.T) {
 func TestResolveMigrationConflict_ReadFaults(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		fault func(legacy, shared *faultBackend)
+		fault func(svc *CredentialService, legacy, shared *faultBackend)
+		// op, when set, is the Op of the *OperationError the fault surfaces.
+		op string
 	}{
-		{name: "copy unreadable", fault: func(l, _ *faultBackend) { arm(&l.failList, legacyCredentialPrefix+"db") }},
-		{name: "replicated metadata unreadable", fault: func(_, s *faultBackend) { arm(&s.failGet, metaKey("db")) }},
+		{name: "copy unreadable", fault: func(_ *CredentialService, l, _ *faultBackend) { arm(&l.failList, legacyCredentialPrefix+"db") }},
+		{name: "replicated metadata unreadable", fault: func(_ *CredentialService, _, s *faultBackend) { arm(&s.failGet, metaKey("db")) }},
+		{name: "import record unreadable", op: "read migration import", fault: func(svc *CredentialService, _, s *faultBackend) {
+			arm(&s.failGet, importKey("db", keptCopyDigest(t, svc, "db")))
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			svc, legacy, shared := twoConflictNode(t)
-			tc.fault(legacy, shared)
+			tc.fault(svc, legacy, shared)
 
 			err := svc.ResolveMigrationConflict(ctx, "db", MigrationImport)
 			require.ErrorIs(t, err, errInjectedFault)
+			if tc.op != "" {
+				var opErr *OperationError
+				require.ErrorAs(t, err, &opErr)
+				assert.Equal(t, tc.op, opErr.Op)
+			}
 			disarmAll(legacy)
 			disarmAll(shared)
 			requireConflicts(t, svc, "db", "db2")
@@ -459,6 +469,65 @@ func TestResolveMigrationConflict_ReadFaults(t *testing.T) {
 			assert.Equal(t, "kept", retrieveString(t, svc, "db"))
 		})
 	}
+}
+
+// keptCopyDigest returns the claim digest of the service's legacy copy of
+// name: the digest its import record is keyed by.
+func keptCopyDigest(t *testing.T, svc *CredentialService, name string) string {
+	t.Helper()
+	copies, err := svc.loadLegacy(context.Background(), name)
+	require.NoError(t, err)
+	defer wipeCopies(copies)
+	c, ok := copies[name]
+	require.True(t, ok, "the legacy copy of %q is present", name)
+	return c.record.claim().Digest
+}
+
+// pendingMoveNode binds a service whose legacy copy is migrated into one
+// store, then rebinds it onto another with the layout move failed, so the
+// move is still pending. arm fails the next listing of the source layout.
+func pendingMoveNode(t *testing.T) (svc *CredentialService, arm func()) {
+	t.Helper()
+	ctx := context.Background()
+	raw, moved := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	shared := &faultyStore{Store: raw, fired: true}
+	legacy := seal.NewMemoryBackend()
+	writeLegacy(t, legacy, "db", "v2", "v1", nil)
+	svc = newMigratingService(t, legacy)
+	require.NoError(t, svc.BindStore(ctx, raw))
+
+	arm = func() {
+		shared.mu.Lock()
+		shared.op, shared.key, shared.fired = "list", layoutPrefixes[0], false
+		shared.mu.Unlock()
+	}
+	arm()
+	require.NoError(t, svc.BindStoreFrom(ctx, moved, shared), "a failed move does not fail the bind")
+	return svc, arm
+}
+
+func TestMigrateLegacy_RefusedWhileLayoutMovePending(t *testing.T) {
+	ctx := context.Background()
+	svc, arm := pendingMoveNode(t)
+	arm()
+	require.ErrorIs(t, svc.MigrateLegacy(ctx), errInjected, "migration refuses while the move is pending")
+
+	require.NoError(t, svc.MigrateLegacy(ctx))
+	assert.Equal(t, "v2", retrieveString(t, svc, "db"), "the moved credential is retrievable")
+}
+
+func TestListMigrationConflicts_RefusedWhileLayoutMovePending(t *testing.T) {
+	ctx := context.Background()
+	svc, arm := pendingMoveNode(t)
+	arm()
+	conflicts, err := svc.ListMigrationConflicts(ctx)
+	require.ErrorIs(t, err, errInjected, "the listing refuses while the move is pending")
+	assert.Nil(t, conflicts)
+
+	conflicts, err = svc.ListMigrationConflicts(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+	assert.Equal(t, "v2", retrieveString(t, svc, "db"), "the moved credential is retrievable")
 }
 
 // While the legacy copy cannot be migrated, every verb is refused with the
