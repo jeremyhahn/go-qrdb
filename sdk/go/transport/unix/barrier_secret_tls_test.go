@@ -17,7 +17,6 @@ package unix
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"net"
 	"testing"
 
@@ -32,35 +31,6 @@ import (
 func TestBarrierSecret_RequiresTLS(t *testing.T) {
 	serverTLS, clientTLS := sotest.TLSPair(t)
 	sotest.RunBarrierSecretTLS(t, "unix", secretTarget(t, nil, nil), secretTarget(t, serverTLS, clientTLS))
-}
-
-// TestSealStoreSecret_RequiresTLS proves Put and Get of a seal-store secret
-// refuse a plaintext socket before any wire call, and reach the server over
-// TLS: a Unix socket has no exemption.
-func TestSealStoreSecret_RequiresTLS(t *testing.T) {
-	ctx := context.Background()
-	plain := secretTarget(t, nil, nil)
-	ep := sealStoreEndpoints{t: plain.Client.(*Transport)}
-	var tlsErr *transport.BarrierSecretRequiresTLSError
-	if err := ep.PutSealStoreSecret(ctx, "alpha", []byte("alpha-secret")); !errors.As(err, &tlsErr) {
-		t.Fatalf("Put over plaintext: err = %v, want *transport.BarrierSecretRequiresTLSError", err)
-	}
-	if _, err := ep.GetSealStoreSecret(ctx, "alpha"); !errors.As(err, &tlsErr) {
-		t.Fatalf("Get over plaintext: err = %v, want *transport.BarrierSecretRequiresTLSError", err)
-	}
-	if n := plain.Reached(); n != 0 {
-		t.Fatalf("plaintext seal-store secret calls reached the server %d times, want 0", n)
-	}
-
-	serverTLS, clientTLS := sotest.TLSPair(t)
-	secure := secretTarget(t, serverTLS, clientTLS)
-	sep := sealStoreEndpoints{t: secure.Client.(*Transport)}
-	if err := sep.PutSealStoreSecret(ctx, "alpha", []byte("alpha-secret")); errors.As(err, &tlsErr) {
-		t.Fatalf("Put over TLS refused: %v", err)
-	}
-	if n := secure.Reached(); n == 0 {
-		t.Fatal("Put over TLS never reached the server")
-	}
 }
 
 // secretTarget serves a SecretProbe on a Unix socket, over TLS when serverTLS

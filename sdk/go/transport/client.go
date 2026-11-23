@@ -1138,8 +1138,9 @@ type CredentialClient interface {
 // Seal store operations
 // ---------------------------------------------------------------------------
 
-// SealStoreClient manages the node's sealed named-secret store. Every transport implements it
-// (embedded in process, the network transports through NewRemoteSealStoreClient); each call requires seal:store_manage.
+// SealStoreClient manages the node's sealed named-secret store. It is embedded only; every
+// remote transport refuses each verb with *EmbeddedOnlyError (ruling 1234, EmbeddedOnlyOperations).
+// On the embedded transport each call requires seal:store_manage.
 type SealStoreClient interface {
 	// SealStorePut stores a secret in the seal store.
 	SealStorePut(ctx context.Context, req *SealStorePutRequest) error

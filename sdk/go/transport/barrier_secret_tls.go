@@ -40,10 +40,6 @@ const (
 	// BarrierSecretUserPIN is the user PIN provisioned into a node's PIN
 	// backend.
 	BarrierSecretUserPIN BarrierSecretKind = "user PIN"
-	// BarrierSecretSealStore is a secret stored in, or read from, the seal
-	// store.
-	// #nosec G101 -- barrier-secret kind label used in refusal messages, not a credential.
-	BarrierSecretSealStore BarrierSecretKind = "seal-store secret"
 
 	// soPINSecret is a request's own SO PIN field. It is refused with
 	// SOPINRequiresTLSError, the SO PIN's error however the caller supplied
@@ -409,21 +405,6 @@ func (s databaseUnsealSecret) barrierSecret() BarrierSecretKind {
 	return secretIf(bool(s), BarrierSecretUnsealKey)
 }
 
-// SealStoreSecret is the BarrierSecretCarrier for a seal-store put or get,
-// whose secret travels in the request or the response rather than in a
-// request field. present is true for any call that sends or returns a secret.
-func SealStoreSecret(present bool) BarrierSecretCarrier {
-	return sealStoreSecret(present)
-}
-
-// sealStoreSecret records only whether a seal-store call carries a secret,
-// never the secret.
-type sealStoreSecret bool
-
-func (s sealStoreSecret) barrierSecret() BarrierSecretKind {
-	return secretIf(bool(s), BarrierSecretSealStore)
-}
-
 var (
 	_ BarrierSecretCarrier = CreateDatabaseRequest{}
 	_ BarrierSecretCarrier = UpdateDatabaseBarrierRequest{}
@@ -444,5 +425,4 @@ var (
 	_ BarrierSecretCarrier = (*TenantQuorumSubmitRequest)(nil)
 	_ BarrierSecretCarrier = (*CreateTenantRequest)(nil)
 	_ BarrierSecretCarrier = (*DatabaseQuorumSubmitRequest)(nil)
-	_ BarrierSecretCarrier = sealStoreSecret(false)
 )

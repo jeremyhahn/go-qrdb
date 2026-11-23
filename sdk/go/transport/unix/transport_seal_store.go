@@ -17,135 +17,42 @@ package unix
 import (
 	"context"
 
-	"google.golang.org/protobuf/types/known/emptypb"
-
-	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// Compile-time interface assertions.
-var (
-	_ transport.SealStoreClient    = (*Transport)(nil)
-	_ transport.SealStoreEndpoints = sealStoreEndpoints{}
-)
+// The seal-store verbs are embedded-only (ruling 1234,
+// transport.EmbeddedOnlyOperations): the unix socket counts as remote
+// (embedded-only means in-process only) and refuses each with
+// *transport.EmbeddedOnlyError and no I/O. Seal and unseal stay on this
+// transport (transport_barrier.go).
+var _ transport.SealStoreClient = (*Transport)(nil)
 
-// sealStoreEndpoints is the gRPC wire half of the shared remote
-// SealStoreClient: one SealStore* RPC per call, each gated server-side on
-// seal:store_manage.
-type sealStoreEndpoints struct {
-	t *Transport
+// SealStorePut is embedded-only; it returns *transport.EmbeddedOnlyError.
+func (t *Transport) SealStorePut(context.Context, *transport.SealStorePutRequest) error {
+	return transport.RefuseEmbeddedOnly("unix", transport.OpSealStorePut)
 }
 
-func (t *Transport) sealStore() transport.SealStoreClient {
-	return transport.NewRemoteSealStoreClient(sealStoreEndpoints{t: t})
+// SealStoreGet is embedded-only; it returns *transport.EmbeddedOnlyError.
+func (t *Transport) SealStoreGet(context.Context, *transport.SealStoreGetRequest) (*transport.SealStoreGetResponse, error) {
+	return nil, transport.RefuseEmbeddedOnly("unix", transport.OpSealStoreGet)
 }
 
-// SealStorePut stores a secret in the node's seal store.
-func (t *Transport) SealStorePut(ctx context.Context, req *transport.SealStorePutRequest) error {
-	return t.sealStore().SealStorePut(ctx, req)
+// SealStoreDelete is embedded-only; it returns *transport.EmbeddedOnlyError.
+func (t *Transport) SealStoreDelete(context.Context, *transport.SealStoreDeleteRequest) error {
+	return transport.RefuseEmbeddedOnly("unix", transport.OpSealStoreDelete)
 }
 
-// SealStoreGet retrieves a secret from the node's seal store.
-func (t *Transport) SealStoreGet(ctx context.Context, req *transport.SealStoreGetRequest) (*transport.SealStoreGetResponse, error) {
-	return t.sealStore().SealStoreGet(ctx, req)
+// SealStoreList is embedded-only; it returns *transport.EmbeddedOnlyError.
+func (t *Transport) SealStoreList(context.Context) (*transport.SealStoreListResponse, error) {
+	return nil, transport.RefuseEmbeddedOnly("unix", transport.OpSealStoreList)
 }
 
-// SealStoreDelete deletes a secret from the node's seal store.
-func (t *Transport) SealStoreDelete(ctx context.Context, req *transport.SealStoreDeleteRequest) error {
-	return t.sealStore().SealStoreDelete(ctx, req)
+// SealStoreReseal is embedded-only; it returns *transport.EmbeddedOnlyError.
+func (t *Transport) SealStoreReseal(context.Context, *transport.SealStoreResealRequest) error {
+	return transport.RefuseEmbeddedOnly("unix", transport.OpSealStoreReseal)
 }
 
-// SealStoreList lists the names in the node's seal store.
-func (t *Transport) SealStoreList(ctx context.Context) (*transport.SealStoreListResponse, error) {
-	return t.sealStore().SealStoreList(ctx)
-}
-
-// SealStoreReseal reseals a secret under the current barrier key.
-func (t *Transport) SealStoreReseal(ctx context.Context, req *transport.SealStoreResealRequest) error {
-	return t.sealStore().SealStoreReseal(ctx, req)
-}
-
-// SealStoreStatus returns the node seal store's status.
-func (t *Transport) SealStoreStatus(ctx context.Context) (*transport.SealStoreStatusResponse, error) {
-	return t.sealStore().SealStoreStatus(ctx)
-}
-
-// PutSealStoreSecret calls SealStorePut.
-func (e sealStoreEndpoints) PutSealStoreSecret(ctx context.Context, name string, secret []byte) error {
-	if e.t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	if err := e.t.requireTLS(transport.SealStoreSecret(true)); err != nil {
-		return err
-	}
-	if _, err := e.t.client.SealStorePut(ctx, &pb.SealStorePutRequest{Name: name, Secret: secret}); err != nil {
-		return mapGRPCError("SealStorePut", err)
-	}
-	return nil
-}
-
-// GetSealStoreSecret calls SealStoreGet.
-func (e sealStoreEndpoints) GetSealStoreSecret(ctx context.Context, name string) ([]byte, error) {
-	if e.t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if err := e.t.requireTLS(transport.SealStoreSecret(true)); err != nil {
-		return nil, err
-	}
-	resp, err := e.t.client.SealStoreGet(ctx, &pb.SealStoreNameRequest{Name: name})
-	if err != nil {
-		return nil, mapGRPCError("SealStoreGet", err)
-	}
-	return resp.GetSecret(), nil
-}
-
-// DeleteSealStoreSecret calls SealStoreDelete.
-func (e sealStoreEndpoints) DeleteSealStoreSecret(ctx context.Context, name string) error {
-	if e.t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	if _, err := e.t.client.SealStoreDelete(ctx, &pb.SealStoreNameRequest{Name: name}); err != nil {
-		return mapGRPCError("SealStoreDelete", err)
-	}
-	return nil
-}
-
-// ListSealStoreSecrets calls SealStoreList.
-func (e sealStoreEndpoints) ListSealStoreSecrets(ctx context.Context) ([]string, error) {
-	if e.t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	resp, err := e.t.client.SealStoreList(ctx, &emptypb.Empty{})
-	if err != nil {
-		return nil, mapGRPCError("SealStoreList", err)
-	}
-	return resp.GetNames(), nil
-}
-
-// ResealSealStoreSecret calls SealStoreReseal.
-func (e sealStoreEndpoints) ResealSealStoreSecret(ctx context.Context, name string) error {
-	if e.t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	if _, err := e.t.client.SealStoreReseal(ctx, &pb.SealStoreNameRequest{Name: name}); err != nil {
-		return mapGRPCError("SealStoreReseal", err)
-	}
-	return nil
-}
-
-// GetSealStoreStatus calls SealStoreStatus.
-func (e sealStoreEndpoints) GetSealStoreStatus(ctx context.Context) (*transport.SealStoreStatusResponse, error) {
-	if e.t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	resp, err := e.t.client.SealStoreStatus(ctx, &emptypb.Empty{})
-	if err != nil {
-		return nil, mapGRPCError("SealStoreStatus", err)
-	}
-	return &transport.SealStoreStatusResponse{
-		Available:   resp.GetAvailable(),
-		SealerID:    resp.GetSealerId(),
-		SecretCount: int(resp.GetSecretCount()),
-		SecretNames: resp.GetSecretNames(),
-	}, nil
+// SealStoreStatus is embedded-only; it returns *transport.EmbeddedOnlyError.
+func (t *Transport) SealStoreStatus(context.Context) (*transport.SealStoreStatusResponse, error) {
+	return nil, transport.RefuseEmbeddedOnly("unix", transport.OpSealStoreStatus)
 }
