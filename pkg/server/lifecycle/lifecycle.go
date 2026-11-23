@@ -895,7 +895,14 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// APIs through a host-backed ShardSnapshotProvider. Both are functional only
 	// on a clustered Raft host; on the single-node LocalBackend, Rebalance has
 	// no peers to balance and Backup reports BackupUnsupportedError per shard.
-	n.Rebalance = service.NewRebalanceService(infra.Host)
+	// Every replica-set change of a tenant mid volume pool move is refused:
+	// the scheduler's filter (below), the rebalancer's MOVE and scale-up
+	// read the same move journal through one fence.
+	var moveFence service.MoveFence
+	if infra.BarrierRegistry != nil {
+		moveFence = newMoveFence(infra.BarrierRegistry)
+	}
+	n.Rebalance = service.NewRebalanceService(infra.Host, service.WithRebalanceMoveFence(moveFence))
 	var backupOpts []service.BackupServiceOption
 	if infra.BackupSink != nil {
 		backupOpts = append(backupOpts, service.WithBackupSink(infra.BackupSink))
@@ -1084,6 +1091,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 				service.WithPlacementStore(store),
 				service.WithPlacementScheduler(scheduler),
 				service.WithDatabaseLogger(log),
+				service.WithMoveFence(moveFence),
 			}
 		}
 	}

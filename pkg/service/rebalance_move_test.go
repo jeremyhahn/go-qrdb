@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // ---------------------------------------------------------------------------
@@ -1210,6 +1211,115 @@ func TestMoveTenantGroupShard_HappyPath_NoKeyDelivery(t *testing.T) {
 	}
 	if foundSrc {
 		t.Error("src node-a:9100 still present in updated placement")
+	}
+}
+
+// movingFence answers a *volume.TenantMovingReplicaError for every call
+// from the refuseFrom'th on (1-based), nil before it, counting the calls.
+type movingFence struct {
+	calls      int
+	refuseFrom int
+}
+
+func (f *movingFence) fence(_ context.Context, tenantID string) error {
+	f.calls++
+	if f.calls >= f.refuseFrom {
+		return &volume.TenantMovingReplicaError{TenantID: tenantID, FromPool: "fast", ToPool: "slow", State: volume.MoveStateCopying}
+	}
+	return nil
+}
+
+// TestMoveTenantGroupShard_MoveFence_RefusesMovingTenant: a rebalance MOVE
+// of a tenant with a volume pool move journal is refused before any
+// placement write or membership change (round 3 P1 2).
+func TestMoveTenantGroupShard_MoveFence_RefusesMovingTenant(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+	store := newTestPlacementStore(t, p)
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	fence := &movingFence{refuseFrom: 1}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		moveFence:      fence.fence,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	err := svc.moveTenantGroupShard(context.Background(), move, p)
+	var moving *volume.TenantMovingReplicaError
+	if !errors.As(err, &moving) {
+		t.Fatalf("moveTenantGroupShard = %v, want *volume.TenantMovingReplicaError", err)
+	}
+	var rme *RebalanceMoveError
+	if !errors.As(err, &rme) || rme.Step != "volume-move" {
+		t.Fatalf("moveTenantGroupShard = %v, want a RebalanceMoveError at step volume-move", err)
+	}
+	if len(host.observerCalls) != 0 || len(host.removeCalls) != 0 {
+		t.Fatalf("membership changed: %d adds, %d removes; want none", len(host.observerCalls), len(host.removeCalls))
+	}
+	current, gerr := store.Get(context.Background(), p.TenantID, p.Database)
+	if gerr != nil {
+		t.Fatalf("store.Get: %v", gerr)
+	}
+	if len(current.Replicas) != len(p.Replicas) || current.RF != p.RF {
+		t.Fatalf("placement written: %d replicas RF %d, want %d replicas RF %d", len(current.Replicas), current.RF, len(p.Replicas), p.RF)
+	}
+}
+
+// TestMoveTenantGroupShard_MoveFence_AdmittedMidMoveKeepsSource: a move
+// admitted after the destination was added refuses the source removal, so
+// the replica the journal recorded is not removed.
+func TestMoveTenantGroupShard_MoveFence_AdmittedMidMoveKeepsSource(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+	store := newTestPlacementStore(t, p)
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	fence := &movingFence{refuseFrom: 2}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		moveFence:      fence.fence,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	err := svc.moveTenantGroupShard(context.Background(), move, p)
+	var moving *volume.TenantMovingReplicaError
+	if !errors.As(err, &moving) {
+		t.Fatalf("moveTenantGroupShard = %v, want *volume.TenantMovingReplicaError", err)
+	}
+	if len(host.observerCalls) != 1 {
+		t.Fatalf("AddObserver called %d times, want 1", len(host.observerCalls))
+	}
+	if len(host.removeCalls) != 0 {
+		t.Fatalf("RemoveFollowerNode called %d times, want 0", len(host.removeCalls))
+	}
+	current, gerr := store.Get(context.Background(), p.TenantID, p.Database)
+	if gerr != nil {
+		t.Fatalf("store.Get: %v", gerr)
+	}
+	if _, ok := findReplicaByAddr(current, "node-a:9100"); !ok {
+		t.Fatal("source node-a:9100 removed from the placement; want it kept")
+	}
+}
+
+func TestWithRebalanceMoveFence_SetsField(t *testing.T) {
+	fence := &movingFence{refuseFrom: 1}
+	svc, ok := NewRebalanceService(hostForMove(t), WithRebalanceMoveFence(fence.fence)).(*RebalanceService)
+	if !ok {
+		t.Fatal("NewRebalanceService did not return *RebalanceService")
+	}
+	if svc.moveFence == nil {
+		t.Fatal("moveFence not set by WithRebalanceMoveFence")
+	}
+	if err := svc.checkMoveFence(context.Background(), "acme"); err == nil {
+		t.Fatal("checkMoveFence = nil, want the fence's refusal")
+	}
+	if err := (&RebalanceService{}).checkMoveFence(context.Background(), "acme"); err != nil {
+		t.Fatalf("checkMoveFence with no fence = %v, want nil", err)
 	}
 }
 

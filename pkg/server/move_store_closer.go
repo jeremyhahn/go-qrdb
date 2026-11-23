@@ -11,6 +11,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -57,6 +58,14 @@ type ReplicaCaughtUp func(ctx context.Context, tenantID, db string) (bool, error
 // reopened replica's catch-up state.
 const DefaultMoveCatchUpPoll = 100 * time.Millisecond
 
+// DefaultMoveCatchUpTimeout bounds how long OpenTenantStores waits for one
+// reopened replica to catch up before the settle step fails.
+const DefaultMoveCatchUpTimeout = 2 * time.Minute
+
+// ErrMoveCatchUpTimeout is returned when a reopened replica has not caught
+// up within the catch-up timeout.
+var ErrMoveCatchUpTimeout = errors.New("server: reopened replica did not catch up in time")
+
 // MoveStoreCloser is the seal.TenantStoreCloser over this node's shard
 // lifecycle, tenant host registry and barrier registry: a tenant-move step
 // closes the tenant's shard replicas (or its Host) and barrier on this
@@ -67,6 +76,8 @@ type MoveStoreCloser struct {
 	barriers MoveBarriers
 	caughtUp ReplicaCaughtUp
 	poll     time.Duration
+	// catchUpTimeout bounds each replica's catch-up wait.
+	catchUpTimeout time.Duration
 
 	mu         sync.Mutex
 	closed     map[string][]string
@@ -98,6 +109,17 @@ func WithMoveTenantHosts(hosts MoveTenantHosts) MoveStoreCloserOption {
 	}
 }
 
+// WithMoveCatchUpTimeout bounds how long OpenTenantStores waits for each
+// reopened replica to catch up; a non-positive timeout keeps
+// DefaultMoveCatchUpTimeout.
+func WithMoveCatchUpTimeout(timeout time.Duration) MoveStoreCloserOption {
+	return func(c *MoveStoreCloser) {
+		if timeout > 0 {
+			c.catchUpTimeout = timeout
+		}
+	}
+}
+
 // NewMoveStoreCloser returns the closer over shards and barriers. shards
 // may be nil on a node with no IsolationRaft factory; caughtUp may be nil
 // when every started replica counts as caught up (a node with no shard
@@ -111,7 +133,8 @@ func NewMoveStoreCloser(shards MoveShardLifecycle, barriers MoveBarriers, caught
 		poll = DefaultMoveCatchUpPoll
 	}
 	c := &MoveStoreCloser{shards: shards, barriers: barriers, caughtUp: caughtUp, poll: poll,
-		closed: map[string][]string{}, closedHost: map[string]bool{}}
+		catchUpTimeout: DefaultMoveCatchUpTimeout,
+		closed:         map[string][]string{}, closedHost: map[string]bool{}}
 	for _, opt := range opts {
 		opt(c)
 	}
@@ -322,6 +345,8 @@ func (c *MoveStoreCloser) awaitCaughtUp(ctx context.Context, tenantID, db string
 	if c.caughtUp == nil {
 		return nil
 	}
+	deadline := time.NewTimer(c.catchUpTimeout)
+	defer deadline.Stop()
 	ticker := time.NewTicker(c.poll)
 	defer ticker.Stop()
 	for {
@@ -335,6 +360,8 @@ func (c *MoveStoreCloser) awaitCaughtUp(ctx context.Context, tenantID, db string
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("%w: tenant %s database %s after %s", ErrMoveCatchUpTimeout, tenantID, db, c.catchUpTimeout)
 		case <-ticker.C:
 		}
 	}

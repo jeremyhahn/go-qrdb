@@ -11,6 +11,7 @@ package volume
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sort"
 	"time"
@@ -157,6 +158,89 @@ func (c *Catalog) GrantMoveStep(ctx context.Context, tenantID string) (*Move, er
 		m.State = MoveStateCopying
 		return nil
 	})
+}
+
+// errMoveNodesUnchanged stops SyncMoveNodes' compare-and-swap when the
+// journal already names the replica set: nothing is written.
+var errMoveNodesUnchanged = errors.New("volume: move nodes unchanged")
+
+// SyncMoveNodes brings a copying move's node set up to the tenant's current
+// replica set, nodes: a node in nodes the journal does not name becomes
+// pending (a copied move goes back to copying, so cut over waits for it),
+// and a pending node absent from nodes that holds no step is dropped. A
+// copied node stays copied, and the stepped node keeps its step. Only an
+// admitted, copying or copied move with no cancel requested is synced;
+// any other is returned unchanged. changed reports a journal write. An
+// empty nodes or node id is *InvalidMoveRequestError.
+func (c *Catalog) SyncMoveNodes(ctx context.Context, tenantID string, nodes []string) (*Move, bool, error) {
+	if tenantID == "" {
+		return nil, false, &InvalidMoveRequestError{Reason: "empty tenant id"}
+	}
+	if len(nodes) == 0 {
+		return nil, false, &InvalidMoveRequestError{Reason: "empty move node set"}
+	}
+	for _, n := range nodes {
+		if n == "" {
+			return nil, false, &InvalidMoveRequestError{Reason: "empty node id"}
+		}
+	}
+	var unchanged *Move
+	m, err := c.updateMove(ctx, tenantID, func(m *Move) error {
+		if !syncMoveNodes(m, nodes) {
+			snapshot := cloneMove(m)
+			unchanged = &snapshot
+			return errMoveNodesUnchanged
+		}
+		return nil
+	})
+	if errors.Is(err, errMoveNodesUnchanged) {
+		return unchanged, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return m, true, nil
+}
+
+// syncMoveNodes applies SyncMoveNodes' rules to m and reports a change.
+func syncMoveNodes(m *Move, nodes []string) bool {
+	if m.CancelRequested {
+		return false
+	}
+	switch m.State {
+	case MoveStateAdmitted, MoveStateCopying, MoveStateCopied:
+	default:
+		return false
+	}
+	changed := false
+	pending := make([]string, 0, len(m.NodesPending)+len(nodes))
+	for _, n := range m.NodesPending {
+		if n == m.StepNode || contains(nodes, n) {
+			pending = append(pending, n)
+			continue
+		}
+		changed = true
+	}
+	for _, n := range nodes {
+		if contains(pending, n) || contains(m.NodesCopied, n) || n == m.StepNode {
+			continue
+		}
+		pending = append(pending, n)
+		changed = true
+	}
+	if !changed {
+		return false
+	}
+	sort.Strings(pending)
+	m.NodesPending = pending
+	switch {
+	case m.State == MoveStateCopied && len(pending) > 0:
+		m.State = MoveStateCopying
+	case m.State == MoveStateCopying && m.StepNode == "" && len(pending) == 0:
+		m.NodesPending = nil
+		m.State = MoveStateCopied
+	}
+	return true
 }
 
 // CompleteMoveStep records that nodeID finished its step of a tenant move
@@ -309,6 +393,55 @@ func (c *Catalog) FailMoveStep(ctx context.Context, tenantID, nodeID, reason str
 		}
 		return nil
 	})
+}
+
+// FailSettleStep records that nodeID's recorded step failed to settle: the
+// step stays settling and its attempt count rises, so a settle that can
+// never finish (a replica that never catches up) is bounded. For a copy
+// step a cancel recorded meanwhile, or the maxAttempts-th failure, aborts
+// the move with the node copied, as a cancel after the copy would; the
+// abort steps then restore the source. A step settling in any later phase
+// cannot abort further: its attempt is counted and it is retried. A
+// non-positive maxAttempts uses DefaultMoveStepAttempts.
+func (c *Catalog) FailSettleStep(ctx context.Context, tenantID, nodeID, reason string, maxAttempts int) (*Move, error) {
+	if nodeID == "" {
+		return nil, &InvalidMoveRequestError{Reason: "empty node id"}
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = DefaultMoveStepAttempts
+	}
+	return c.updateMove(ctx, tenantID, func(m *Move) error {
+		if !m.StepSettling || m.StepNode != nodeID {
+			return &MoveConflictError{TenantID: m.TenantID, NodeID: nodeID, Reason: "node holds no settling move step"}
+		}
+		if m.State != MoveStateCopying {
+			m.StepAttempts++
+			m.Error = reason
+			return nil
+		}
+		if m.CancelRequested {
+			m.CancelRequested = false
+			abortSettlingCopy(m, "cancelled by operator")
+			return nil
+		}
+		m.StepAttempts++
+		m.Error = reason
+		if m.StepAttempts >= maxAttempts {
+			abortSettlingCopy(m, reason)
+		}
+		return nil
+	})
+}
+
+// abortSettlingCopy turns m's settling copy step into an abort: the node
+// stays in NodesCopied, so the abort steps restore the source on it.
+func abortSettlingCopy(m *Move, reason string) {
+	m.State = MoveStateAborting
+	m.StepNode = ""
+	m.StepSettling = false
+	m.StepCopied = false
+	m.StepAttempts = 0
+	m.Error = reason
 }
 
 // holdsStep refuses, with *MoveConflictError, a step settled by a node that

@@ -314,6 +314,37 @@ func TestMoveStoreCloser_Errors(t *testing.T) {
 	}
 }
 
+// A replica that never catches up fails the reopen once the catch-up
+// timeout passes, so the settle step fails instead of polling forever, and
+// the tenant stays pending for RetryReopen.
+func TestMoveStoreCloser_CatchUpTimeout(t *testing.T) {
+	shards := &fakeMoveShards{started: map[StartedShard]bool{{TenantID: "acme", Database: "a"}: true}}
+	never, err := NewMoveStoreCloser(shards, &fakeMoveBarriers{}, func(context.Context, string, string) (bool, error) {
+		return false, nil
+	}, time.Millisecond, WithMoveCatchUpTimeout(5*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	ctx := context.Background()
+	if err := never.CloseTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	err = never.OpenTenantStores(ctx, "acme")
+	if !errors.Is(err, ErrMoveCatchUpTimeout) {
+		t.Fatalf("open = %v, want ErrMoveCatchUpTimeout", err)
+	}
+	if got := never.PendingReopen(); len(got) != 1 || got[0] != "acme" {
+		t.Fatal("timed-out reopen not left pending")
+	}
+	if never.catchUpTimeout != 5*time.Millisecond {
+		t.Fatalf("catchUpTimeout = %v", never.catchUpTimeout)
+	}
+	def, _ := NewMoveStoreCloser(shards, &fakeMoveBarriers{}, nil, 0, WithMoveCatchUpTimeout(0))
+	if def.catchUpTimeout != DefaultMoveCatchUpTimeout {
+		t.Fatalf("default catchUpTimeout = %v", def.catchUpTimeout)
+	}
+}
+
 type fakeMoveHosts struct {
 	started map[string]bool
 	calls   []string

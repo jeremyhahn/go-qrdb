@@ -75,7 +75,10 @@ type TenantMoveConfig struct {
 	Transitions volume.MoveTransitionRecorder
 	// Interval is the tick; a non-positive one is DefaultTenantMoveInterval.
 	Interval time.Duration
-	Logger   *slog.Logger
+	// CatchUpTimeout bounds how long a settle step waits for each reopened
+	// replica to catch up; a non-positive one is DefaultMoveCatchUpTimeout.
+	CatchUpTimeout time.Duration
+	Logger         *slog.Logger
 }
 
 // TenantMoveWorker runs a node's share of the tenant moves: every tick it
@@ -130,7 +133,16 @@ func WireTenantMoves(cfg TenantMoveConfig) (*TenantMoveWorker, error) {
 	if err != nil {
 		return nil, err
 	}
-	opts := []volume.MoveReconcilerOption{volume.WithMoveReconcilerLogger(logger)}
+	// One replica-set source: admit lists a tenant's move nodes from it, and
+	// the reconciler resyncs a copying move from it before each grant and
+	// before cut over, so a replica added or removed after admit is copied
+	// or dropped.
+	nodes := &moveReplicaNodeSource{
+		membership: cfg.Membership,
+		placements: cfg.Placements,
+		local:      cfg.NodeID,
+	}
+	opts := []volume.MoveReconcilerOption{volume.WithMoveReconcilerLogger(logger), volume.WithMoveNodeSource(nodes)}
 	if cfg.Transitions != nil {
 		opts = append(opts, volume.WithMoveTransitionRecorder(cfg.Transitions))
 	}
@@ -143,11 +155,7 @@ func WireTenantMoves(cfg TenantMoveConfig) (*TenantMoveWorker, error) {
 	if cfg.StartAudit != nil {
 		cfg.Catalog.SetMoveStartAuditor(cfg.StartAudit)
 	}
-	cfg.Tenants.SetMoveReplicaNodeSource(&moveReplicaNodeSource{
-		membership: cfg.Membership,
-		placements: cfg.Placements,
-		local:      cfg.NodeID,
-	})
+	cfg.Tenants.SetMoveReplicaNodeSource(nodes)
 	interval := cfg.Interval
 	if interval <= 0 {
 		interval = DefaultTenantMoveInterval
@@ -165,7 +173,7 @@ func WireTenantMoves(cfg TenantMoveConfig) (*TenantMoveWorker, error) {
 // newMoveStores is the TenantStoreCloser over cfg's tenant runtimes.
 func newMoveStores(cfg TenantMoveConfig) (*MoveStoreCloser, error) {
 	var shards MoveShardLifecycle
-	var opts []MoveStoreCloserOption
+	opts := []MoveStoreCloserOption{WithMoveCatchUpTimeout(cfg.CatchUpTimeout)}
 	if cfg.Infra != nil && cfg.Infra.Raft != nil {
 		shards = cfg.Infra.Raft
 	}
@@ -194,7 +202,25 @@ func readIndexCaughtUp(probe shardLeaderSource, placements *placement.Store) Rep
 		if p == nil {
 			return true, nil
 		}
-		return probe.ReadReady(ctx, p.ShardID) == nil, nil
+		return readProbeOutcome(ctx, probe.ReadReady(ctx, p.ShardID))
+	}
+}
+
+// readProbeOutcome sorts one ReadReady result: nil is caught up; a leader
+// that has not yet committed in its term, or a probe that ran out its own
+// timeout while the caller still waits, is "not yet"; a shard that is gone
+// or a closed host never catches up, and every other error is returned so
+// the settle fails instead of polling forever.
+func readProbeOutcome(ctx context.Context, err error) (bool, error) {
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, quicraft.ErrReadIndexNotReady):
+		return false, nil
+	case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
+		return false, nil
+	default:
+		return false, err
 	}
 }
 
