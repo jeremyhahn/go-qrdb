@@ -539,3 +539,48 @@ func TestManager_SealedTenantNeitherBlocksNorEscapesRoots(t *testing.T) {
 		}
 	})
 }
+
+// TestManager_RootFreedAfterAFailedMaterializedCreate proves an isolated
+// tenant's create whose record write fails after its root claim leaves no
+// claim behind: once the tenant seals, a create of another database on the
+// same root is not refused by the failed create's claim.
+func TestManager_RootFreedAfterAFailedMaterializedCreate(t *testing.T) {
+	ctx := context.Background()
+	m, _, dir := newRootedManager(t)
+	boom := errors.New("home write failed")
+	home := &recordFailingStore{MemoryKVStore: kvstore.NewMemoryKVStore(), fail: boom}
+	homes := &sealableHomes{
+		isolatedHomes: isolatedHomes{homes: map[string]kvstore.KVStore{"iso": home}},
+		sealed:        map[string]bool{},
+	}
+	system := kvstore.NewMemoryKVStore()
+	cat, err := NewKVCatalog(system, homes)
+	if err != nil {
+		t.Fatalf("NewKVCatalog: %v", err)
+	}
+	m.SetCatalog(cat)
+	isoRoot := filepath.Join(dir, "iso-root", "app")
+
+	if _, err := m.Create(DatabaseConfig{TenantID: "iso", Name: "app", Backend: BackendMemory, DataDir: isoRoot}); !errors.Is(err, boom) {
+		t.Fatalf("Create iso/app over a failing home: err = %v, want the home write error", err)
+	}
+	if _, err := m.Get("app"); err == nil {
+		t.Fatal("the failed database is registered")
+	}
+	var leftover []string
+	if err := system.Scan(ctx, RootClaimKeyPrefix, func(key string, _ []byte) error {
+		leftover = append(leftover, key)
+		return nil
+	}); err != nil {
+		t.Fatalf("Scan claims: %v", err)
+	}
+	if len(leftover) != 0 {
+		t.Fatalf("root claims after the failed create = %v, want none", leftover)
+	}
+
+	home.fail = nil
+	homes.sealed["iso"] = true
+	if _, err := m.Create(DatabaseConfig{Name: "reuse", Backend: BackendMemory, DataDir: filepath.Join(dir, "iso-root")}); err != nil {
+		t.Fatalf("Create reuse over the failed create's root: %v", err)
+	}
+}
