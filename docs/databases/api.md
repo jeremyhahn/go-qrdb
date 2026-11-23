@@ -499,8 +499,11 @@ standalone barrier store. A node with neither refuses with
 `BarrierStoreUnavailableError`, `Unavailable` on every transport:
 `503 Service Unavailable` over REST, `UNAVAILABLE` over gRPC.
 
-A log in a barrier-enabled database is served from the database's own barrier
-store, encrypted under the database's key. While the database is sealed every
+A log in a barrier-enabled database lives where its tenant's logs do: in the
+Raft group the tenant resolves to, or the node's local store on a standalone
+node. Each entry body and software key is sealed under the database's barrier
+key before it is proposed, so the group holds only ciphertext of it, while the
+leaf hash commits to the plaintext. While the database is sealed every
 log call that names it is refused with `BarrierSealedError`: `Unavailable` on
 every transport, `503 Service Unavailable` over REST, `UNAVAILABLE` over gRPC.
 After the unseal the log is served unchanged. A legacy barrier record on a
