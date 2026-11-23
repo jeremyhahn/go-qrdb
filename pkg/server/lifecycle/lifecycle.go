@@ -2394,6 +2394,33 @@ func StateMachineKeepsRevisionHistory(smType string) bool {
 	return keepsRevisionHistory(statemachine.Describe, smType)
 }
 
+// SharedNames returns an Infra.SharedDatabaseNames source: the configured
+// SQL default database and, when registryList is non-nil, the names it
+// returns each time it is called (the shared database registry's
+// databases). Empty names and SystemDatabase are dropped and the result is
+// deduplicated. registryList may return nil while the registry does not
+// exist yet (go-qrdb#1565).
+func SharedNames(sqlDefault string, registryList func() []string) func() []string {
+	return func() []string {
+		seen := map[string]bool{"": true, SystemDatabase: true}
+		var out []string
+		add := func(name string) {
+			if seen[name] {
+				return
+			}
+			seen[name] = true
+			out = append(out, name)
+		}
+		add(sqlDefault)
+		if registryList != nil {
+			for _, name := range registryList() {
+				add(name)
+			}
+		}
+		return out
+	}
+}
+
 // keepsRevisionHistory applies StateMachineKeepsRevisionHistory's rule to
 // the descriptor describe returns for smType, so a test can supply a
 // test-local registry instead of registering into the process-global one.
