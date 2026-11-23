@@ -572,8 +572,35 @@ used after. The sleeps named at the end of the table stay, with the reason.
 | pkg/sql/internal/sessionguard/sessionguard_test.go | 180, 206 | kept: a fixed 20ms window after the stream ends proves no further callback fires; there is no condition to wait on |
 | pkg/backend/group_commit_test.go | 70 | kept: injected store latency that lets commits group, not a wait |
 | pkg/trustanchor/kv_atomic_test.go | 43 | kept: injected store latency, not a wait |
-| pkg/statemachine/raft_keylength_test.go | 86 | kept in this sweep: backoff between proposals while the raft cluster settles; left to a pkg/statemachine sweep |
-| pkg/statemachine/replica_storage_cluster_test.go | 109 | kept in this sweep: backoff between attempts while the raft cluster settles; left to a pkg/statemachine sweep |
-| pkg/api/*, pkg/sql/mysql, pkg/sql/pgsql wire tests | - | kept in this sweep: outside sweep 6's packages (pkg/sql/mysql is in the sweep 3 table) |
-| pkg/firstboot, pkg/rowlock | - | kept in this sweep: outside sweep 6's packages (pkg/rowlock is in an earlier sweep table) |
+| pkg/statemachine/raft_keylength_test.go | 86 | kept in this sweep: backoff between proposals while the raft cluster settles; left to a pkg/statemachine sweep; replaced in sweep 7 |
+| pkg/statemachine/replica_storage_cluster_test.go | 109 | kept in this sweep: backoff between attempts while the raft cluster settles; left to a pkg/statemachine sweep; replaced in sweep 7 |
+| pkg/api/*, pkg/sql/mysql, pkg/sql/pgsql wire tests | - | kept in this sweep: outside sweep 6's packages (pkg/sql/mysql is in the sweep 3 table); pkg/api/* and pkg/sql/pgsql replaced in sweep 7 |
+| pkg/firstboot, pkg/rowlock | - | kept in this sweep: outside sweep 6's packages (pkg/rowlock is in an earlier sweep table); replaced in sweep 7 |
 | pkg/watch, pkg/lock, pkg/credentials/versioned_test.go | - | kept: time.Sleep appears only in comments |
+
+## Sleep sweep 7 (rw566j)
+
+Package order 7 (pkg/api/connlimit, pkg/api/grpc, pkg/api/quic, pkg/sql/pgsql,
+pkg/statemachine, pkg/firstboot, pkg/rowlock, and pkg/api/etcd recorded):
+the last deadline-loop time.Sleep polls left by sweep 6 became bounded testify
+polls on the same condition with the same bound and tick, and the one fixed
+sleep standing in for a "stays uncancelled" check became assert.Never over the
+same window. Line numbers are those before the sweep. Helpers keep their
+signature and callers, and a caller that words its own failure keeps that
+text: the statemachine retries poll with a quiet reporter and hand the last
+error (mutex-guarded, since a timed-out poll can return while its last attempt
+still runs) back to the caller. The injected latency in pkg/api/etcd stays,
+with the reason.
+
+| File | Line | Replaced by / kept and why |
+|---|---|---|
+| pkg/api/connlimit/connlimit_test.go | 146 | TestListenerReleasesSlotOnClose: require.Eventuallyf (2s, 20ms) whose condition dials, sets the read deadline, closes and returns true on the timeout read, same failure message |
+| pkg/api/grpc/enable_encryption_ctx_test.go | 47 | TestBarrierEnableEncryption_MigrationKeepsTheRequestValues: assert.Never on call.ctx.Err() != nil over the same 50ms window (tick 1ms) |
+| pkg/api/quic/replica_forward_test.go | 462 | TestReplicaForwardQUIC_ADeadTargetsConnectionIsNotReused: require.Eventuallyf on the forwarder no longer caching the dead target (10s, 50ms), same message |
+| pkg/api/quic/server_stop_stream_race_test.go | 148 | awaitAcceptClosing: require.Eventuallyf on srv.acceptClosing read under acceptClosingMu (5s, 1ms), same message |
+| pkg/sql/pgsql/sealed_session_wire_test.go | 101 | TestPostgresWire_SealClosesAnOpenSession: require.EventuallyWithT (5s, 20ms) whose body runs the Exec that reads the close and asserts conn.PgConn().IsClosed(), as the sweep 3 mysql twin |
+| pkg/statemachine/raft_keylength_test.go | 86 | propose: assert.EventuallyWithT with a quiet reporter (30s, 200ms), round-robin attempt counter and 10s per-attempt context kept, the last error returned so the caller's failure text is unchanged |
+| pkg/statemachine/replica_storage_cluster_test.go | 109 | assert.EventuallyWithT with a quiet reporter (30s, 200ms), attempt counter and 10s per-attempt context kept, the last error checked after with the same "propose: %v" failure |
+| pkg/firstboot/role_race_cluster_test.go | 234 | waitShardReadableWithin: one require.EventuallyWithT over every host's SyncGetShardMembership (same bound, 10ms), each attempt keeps its shardReadyPollAttempt timeout, a host that answered is not asked again, the last error reported (mirrors pkg/bootstrap, sweep 6) |
+| pkg/rowlock/session_test.go | 202 | TestSession_IdleLeaseIsRevoked: require.Eventuallyf on !leaseAlive (5s, 50ms) with the existing message; the trailing assert.False dropped |
+| pkg/api/etcd/watch_compacted_test.go | 168 | kept: injected latency in overlapDetectingStream.Send that widens the window in which two Sends could overlap, not a wait |

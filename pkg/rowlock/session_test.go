@@ -198,11 +198,8 @@ func TestSession_IdleLeaseIsRevoked(t *testing.T) {
 	id := o.lease.id
 	require.NoError(t, o.Release(context.Background()))
 
-	deadline := time.Now().Add(5 * time.Second)
-	for leaseAlive(t, s, id) && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
-	assert.False(t, leaseAlive(t, s, id), "a lease no transaction used for a TTL is revoked")
+	require.Eventuallyf(t, func() bool { return !leaseAlive(t, s, id) }, 5*time.Second, 50*time.Millisecond,
+		"a lease no transaction used for a TTL is revoked")
 	sess.mu.Lock()
 	assert.Empty(t, sess.leases)
 	sess.mu.Unlock()

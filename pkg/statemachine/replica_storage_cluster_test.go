@@ -27,6 +27,7 @@ import (
 
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -98,17 +99,17 @@ func TestReplicaStorageFactory_ThreeReplicaClusterOpensEveryReplica(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			deadline := time.Now().Add(30 * time.Second)
-			for attempt := 0; ; attempt++ {
+			var lastErr lastError
+			attempt := 0
+			assert.EventuallyWithT(quietReporter{}, func(collect *assert.CollectT) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				_, err = c.Hosts[attempt%len(c.Hosts)].SyncPropose(ctx, shardID, cmd)
+				_, err := c.Hosts[attempt%len(c.Hosts)].SyncPropose(ctx, shardID, cmd)
 				cancel()
-				if err == nil || time.Now().After(deadline) {
-					break
-				}
-				time.Sleep(200 * time.Millisecond)
-			}
-			if err != nil {
+				attempt++
+				lastErr.set(err)
+				assert.NoError(collect, err)
+			}, 30*time.Second, 200*time.Millisecond)
+			if err := lastErr.get(); err != nil {
 				t.Fatalf("propose: %v", err)
 			}
 			for i, h := range c.Hosts {
