@@ -241,9 +241,17 @@ func TestNode_PreboundListenersSurviveMigration(t *testing.T) {
 	require.True(t, restHealthy(pool, addr), "REST must still answer on the same port after the migration")
 	require.True(t, h3Healthy(pool, addr), "HTTP/3 must still answer on the same pre-bound socket after the migration")
 	// Keep asking for longer than the ended lifetime's closed-connection
-	// timer runs: HTTP/3 must keep answering after it fires.
-	require.Never(t, func() bool { return !h3Healthy(pool, addr) }, staleH3TimerWindow, 100*time.Millisecond,
-		"HTTP/3 stopped answering after the migration")
+	// timer runs: HTTP/3 must keep answering after it fires. Each probe runs
+	// synchronously and its result is asserted, and one more probe runs after
+	// the window ends, so a probe crossing the window's end is asserted too.
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	windowStart := time.Now()
+	for probe := 1; time.Since(windowStart) < staleH3TimerWindow; probe++ {
+		require.True(t, h3Healthy(pool, addr), "HTTP/3 stopped answering after the migration (probe %d)", probe)
+		<-ticker.C
+	}
+	require.True(t, h3Healthy(pool, addr), "HTTP/3 stopped answering after the stale timer window ended")
 	require.NoError(t, grpcAnswers(pool, grpcLn.Addr().String()), "gRPC must still answer on the same port after the migration")
 
 	require.NoError(t, n.Close())
