@@ -13,6 +13,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- A materialized database's vector writes (upsert, batch upsert, delete, metadata update, namespace create, update and delete) now carry the database's drop-fence write guard in their Raft proposal, so a write that passed the drop check and proposed after `DROP DATABASE` fenced the database is refused at apply time; the shared node vector store keeps the check-before-write (#923).
+
 ### Changed
 
 - A standalone node's non-shared database keeps its vectors in its own binding store (memory, file, pebble or objstore), written through its apply host under its encryptor; the separate per-database Pebble vector store under `<root>/vector` is gone (#923).
