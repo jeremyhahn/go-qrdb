@@ -1,0 +1,370 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package group
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"slices"
+	"sort"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+)
+
+const (
+	// keyPrefixPrimary is the prefix for primary group records.
+	keyPrefixPrimary = "__sys:groups/id/"
+
+	// keyPrefixTenant is the prefix for the per-tenant group index.
+	keyPrefixTenant = "__sys:groups/tenant/"
+
+	// keyPrefixName is the prefix for the per-tenant name index.
+	keyPrefixName = "__sys:group_idx/name/"
+
+	// defaultPageSize is the page size used when the caller supplies none.
+	defaultPageSize = 100
+
+	// maxNameLength bounds a group name.
+	maxNameLength = 256
+)
+
+var _ GroupServicer = (*kvGroupStore)(nil)
+
+// Option configures a group store.
+type Option func(*kvGroupStore)
+
+// WithRoleLookup sets the role resolver CreateGroup and UpdateGroup check
+// every role against. Without it the store refuses any non-empty RoleIDs.
+func WithRoleLookup(roles RoleLookup) Option {
+	return func(s *kvGroupStore) { s.roles = roles }
+}
+
+// WithMemberRevoker sets the revoker DeleteGroup strips members with.
+// Without it DeleteGroup refuses to delete, so no member record is left
+// naming a group that no longer exists.
+func WithMemberRevoker(rv MemberRevoker) Option {
+	return func(s *kvGroupStore) { s.revoker = rv }
+}
+
+// kvGroupStore implements GroupServicer over a kvstore.KVStore, with the key
+// layout and name-claim pattern of pkg/role's store.
+type kvGroupStore struct {
+	store   kvstore.KVStore
+	roles   RoleLookup
+	revoker MemberRevoker
+}
+
+// NewStore returns a GroupServicer over store. The store must implement
+// kvstore.AtomicKVStore so a name is claimed atomically.
+func NewStore(store kvstore.KVStore, opts ...Option) (GroupServicer, error) {
+	if store == nil {
+		return nil, &StoreError{Op: "new", Detail: "kvstore must not be nil"}
+	}
+	if _, ok := store.(kvstore.AtomicKVStore); !ok {
+		return nil, ErrStoreNotAtomic
+	}
+	s := &kvGroupStore{store: store}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
+}
+
+// CreateGroup persists a new group, claiming its name first.
+func (s *kvGroupStore) CreateGroup(ctx context.Context, req *CreateGroupRequest) (created *Group, retErr error) {
+	if req == nil {
+		return nil, &ValidationError{Field: "request", Reason: "must not be nil"}
+	}
+	if err := validateName(req.Name); err != nil {
+		return nil, err
+	}
+	tenantID := tenantid.Normalize(req.TenantID)
+	roleIDs, err := s.checkRoles(ctx, tenantID, req.RoleIDs)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	g := &Group{
+		ID:          uuid.New().String(),
+		TenantID:    tenantID,
+		Name:        req.Name,
+		Description: req.Description,
+		RoleIDs:     roleIDs,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	data, err := json.Marshal(g)
+	if err != nil {
+		return nil, &StoreError{Op: "create", Detail: "marshal", Err: err}
+	}
+	atomicStore := s.store.(kvstore.AtomicKVStore)
+	nameKey := nameIndexKey(tenantID, g.Name)
+	idBytes := []byte(g.ID)
+	stored, err := atomicStore.PutIfAbsent(ctx, nameKey, idBytes)
+	if err != nil {
+		return nil, &StoreError{Op: "create", Detail: "claim name index", Err: err}
+	}
+	if !stored {
+		return nil, &GroupNameTakenError{Name: g.Name, TenantID: tenantID}
+	}
+	// Every failure after the claim releases it, secondary indexes first and
+	// the primary record last, as pkg/role's CreateRole does.
+	var written []string
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		cctx := context.WithoutCancel(ctx)
+		for _, k := range written {
+			_ = s.store.Delete(cctx, k)
+		}
+		_, _ = atomicStore.CompareAndDelete(cctx, nameKey, idBytes)
+	}()
+	pk := primaryKey(g.ID)
+	if err := s.store.Put(ctx, pk, data); err != nil {
+		return nil, &StoreError{Op: "create", Detail: "put primary", Err: err}
+	}
+	written = append([]string{pk}, written...)
+	tk := tenantIndexKey(tenantID, g.ID)
+	if err := s.store.Put(ctx, tk, idBytes); err != nil {
+		return nil, &StoreError{Op: "create", Detail: "put tenant index", Err: err}
+	}
+	written = append([]string{tk}, written...)
+	return g, nil
+}
+
+// GetGroup returns the group with the given ID. A non-system caller reads
+// only groups of its own tenant, as pkg/role's GetRole.
+func (s *kvGroupStore) GetGroup(ctx context.Context, id string) (*Group, error) {
+	if id == "" {
+		return nil, &ValidationError{Field: "id", Reason: "must not be empty"}
+	}
+	data, err := s.store.Get(ctx, primaryKey(id))
+	if err != nil {
+		return nil, &StoreError{Op: "get", Detail: "primary lookup", Err: err}
+	}
+	if data == nil {
+		return nil, &GroupNotFoundError{ID: id}
+	}
+	var g Group
+	if err := json.Unmarshal(data, &g); err != nil {
+		return nil, &StoreError{Op: "get", Detail: "unmarshal", Err: err}
+	}
+	if ctxTenant := tenant.FromContext(ctx); !tenantid.IsSystem(ctxTenant) && g.TenantID != ctxTenant {
+		return nil, &GroupNotFoundError{ID: id}
+	}
+	return &g, nil
+}
+
+// GetGroupByName returns the group of tenantID with the given name.
+func (s *kvGroupStore) GetGroupByName(ctx context.Context, tenantID, name string) (*Group, error) {
+	if name == "" {
+		return nil, &ValidationError{Field: "name", Reason: "must not be empty"}
+	}
+	tenantID = tenantid.Normalize(tenantID)
+	id, err := s.store.Get(ctx, nameIndexKey(tenantID, name))
+	if err != nil {
+		return nil, &StoreError{Op: "get by name", Detail: "name index lookup", Err: err}
+	}
+	if id == nil {
+		return nil, &GroupNotFoundError{Name: name, TenantID: tenantID}
+	}
+	g, err := s.GetGroup(ctx, string(id))
+	var nf *GroupNotFoundError
+	if errors.As(err, &nf) {
+		return nil, &GroupNotFoundError{Name: name, TenantID: tenantID}
+	}
+	return g, err
+}
+
+// UpdateGroup changes the name, description or role set of a group. A
+// rename claims the new name before the record is rewritten and releases the
+// old one after.
+func (s *kvGroupStore) UpdateGroup(ctx context.Context, req *UpdateGroupRequest) (*Group, error) {
+	if req == nil {
+		return nil, &ValidationError{Field: "request", Reason: "must not be nil"}
+	}
+	g, err := s.GetGroup(ctx, req.ID)
+	if err != nil {
+		return nil, err
+	}
+	if req.RoleIDs != nil {
+		roleIDs, err := s.checkRoles(ctx, g.TenantID, req.RoleIDs)
+		if err != nil {
+			return nil, err
+		}
+		g.RoleIDs = roleIDs
+	}
+	if req.Description != nil {
+		g.Description = *req.Description
+	}
+	atomicStore := s.store.(kvstore.AtomicKVStore)
+	idBytes := []byte(g.ID)
+	oldName := g.Name
+	renamed := req.Name != "" && req.Name != oldName
+	if renamed {
+		if err := validateName(req.Name); err != nil {
+			return nil, err
+		}
+		stored, err := atomicStore.PutIfAbsent(ctx, nameIndexKey(g.TenantID, req.Name), idBytes)
+		if err != nil {
+			return nil, &StoreError{Op: "update", Detail: "claim name index", Err: err}
+		}
+		if !stored {
+			return nil, &GroupNameTakenError{Name: req.Name, TenantID: g.TenantID}
+		}
+		g.Name = req.Name
+	}
+	g.UpdatedAt = time.Now().UTC()
+	data, err := json.Marshal(g)
+	if err == nil {
+		err = s.store.Put(ctx, primaryKey(g.ID), data)
+	}
+	if err != nil {
+		if renamed {
+			_, _ = atomicStore.CompareAndDelete(context.WithoutCancel(ctx), nameIndexKey(g.TenantID, g.Name), idBytes)
+		}
+		return nil, &StoreError{Op: "update", Detail: "put primary", Err: err}
+	}
+	if renamed {
+		if _, err := atomicStore.CompareAndDelete(ctx, nameIndexKey(g.TenantID, oldName), idBytes); err != nil {
+			return nil, &StoreError{Op: "update", Detail: "release old name", Err: err}
+		}
+	}
+	return g, nil
+}
+
+// DeleteGroup strips the group from every member, then removes its indexes
+// and its record. Members are stripped first, so a member never names a
+// group whose record is gone for longer than an interrupted delete, which a
+// retry finishes.
+func (s *kvGroupStore) DeleteGroup(ctx context.Context, id string) error {
+	g, err := s.GetGroup(ctx, id)
+	if err != nil {
+		return err
+	}
+	if s.revoker == nil {
+		return &StoreError{Op: "delete", Detail: "no member revoker configured"}
+	}
+	if _, err := s.revoker.RevokeGroup(ctx, g.TenantID, g.ID); err != nil {
+		return &StoreError{Op: "delete", Detail: "revoke members", Err: err}
+	}
+	atomicStore := s.store.(kvstore.AtomicKVStore)
+	if _, err := atomicStore.CompareAndDelete(ctx, nameIndexKey(g.TenantID, g.Name), []byte(g.ID)); err != nil {
+		return &StoreError{Op: "delete", Detail: "name index", Err: err}
+	}
+	if err := s.store.Delete(ctx, tenantIndexKey(g.TenantID, g.ID)); err != nil {
+		return &StoreError{Op: "delete", Detail: "tenant index", Err: err}
+	}
+	if err := s.store.Delete(ctx, primaryKey(g.ID)); err != nil {
+		return &StoreError{Op: "delete", Detail: "primary", Err: err}
+	}
+	return nil
+}
+
+// ListGroups returns a page of the tenant's groups ordered by ID.
+func (s *kvGroupStore) ListGroups(ctx context.Context, req *ListGroupsRequest) (*ListGroupsResponse, error) {
+	if req == nil {
+		return nil, &ValidationError{Field: "request", Reason: "must not be nil"}
+	}
+	tenantID := tenantid.Normalize(req.TenantID)
+	page := max(req.Page, 1)
+	pageSize := req.PageSize
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
+	}
+	var ids []string
+	err := s.store.Scan(ctx, keyPrefixTenant+tenantID+"/", func(_ string, value []byte) error {
+		ids = append(ids, string(value))
+		return nil
+	})
+	if err != nil {
+		return nil, &StoreError{Op: "list", Detail: "scan tenant index", Err: err}
+	}
+	sort.Strings(ids)
+	total := len(ids)
+	start := min((page-1)*pageSize, total)
+	end := min(start+pageSize, total)
+	groups := make([]*Group, 0, end-start)
+	for _, id := range ids[start:end] {
+		g, err := s.GetGroup(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		groups = append(groups, g)
+	}
+	return &ListGroupsResponse{Groups: groups, Total: total, HasMore: end < total}, nil
+}
+
+// checkRoles refuses any role that does not resolve to a live role of
+// tenantID, and returns the set de-duplicated and sorted.
+func (s *kvGroupStore) checkRoles(ctx context.Context, tenantID string, roleIDs []string) ([]string, error) {
+	out := []string{}
+	for _, id := range roleIDs {
+		if id == "" {
+			return nil, &ValidationError{Field: "role_ids", Reason: "must not contain an empty id"}
+		}
+		if slices.Contains(out, id) {
+			continue
+		}
+		if s.roles == nil {
+			return nil, &RoleNotInTenantError{RoleID: id, TenantID: tenantID}
+		}
+		r, err := s.roles.GetRole(tenant.WithTenantID(ctx, tenantID), id)
+		var nf *role.RoleNotFoundError
+		if errors.As(err, &nf) {
+			return nil, &RoleNotInTenantError{RoleID: id, TenantID: tenantID}
+		}
+		if err != nil {
+			return nil, &StoreError{Op: "check roles", Detail: "role lookup", Err: err}
+		}
+		if r.TenantID != tenantID || r.Deleting {
+			return nil, &RoleNotInTenantError{RoleID: id, TenantID: tenantID}
+		}
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// validateName applies the group name rules.
+func validateName(name string) error {
+	if name == "" {
+		return &ValidationError{Field: "name", Reason: "must not be empty"}
+	}
+	if len(name) > maxNameLength {
+		return &ValidationError{Field: "name", Reason: "must not exceed 256 bytes"}
+	}
+	return nil
+}
+
+func primaryKey(id string) string {
+	return keyPrefixPrimary + id
+}
+
+func tenantIndexKey(tenantID, groupID string) string {
+	return keyPrefixTenant + tenantID + "/" + groupID
+}
+
+func nameIndexKey(tenantID, name string) string {
+	return keyPrefixName + tenantID + "/" + name
+}
