@@ -253,6 +253,47 @@ func TestRESTServiceRegistry_MaterializedHandleResolvedBeforeDropIsFenced(t *tes
 	assertDroppingError(t, reclaim.err, name)
 }
 
+// A handle resolved before Drop and used after the name is created again is
+// refused: it belongs to the dropped incarnation, so its write lands neither
+// in the dropped database nor in the new one under the same name.
+func TestRESTServiceRegistry_MaterializedHandleFromBeforeDropRefusedAfterRecreate(t *testing.T) {
+	const tenantID, name = "acme", "orders"
+	ctx := context.Background()
+	dbMgr, _, _ := newFencedMaterializedManager(t)
+	cfg := database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}
+	if _, err := dbMgr.Create(cfg); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	stale, err := r.resolve(tenantID, name)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if err := dbMgr.DropForTenant(tenant.WithTenantID(ctx, tenantID), name); err != nil {
+		t.Fatalf("DropForTenant: %v", err)
+	}
+	if _, err := dbMgr.Create(cfg); err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+
+	// The materialized store is the incarnation: the stale handle's views
+	// are over the dropped database's own store, which Drop closed, so the
+	// refusal is that store's -- the recreated database is another store.
+	if err := stale.KV.Put(ctx, "stale", []byte("v")); err == nil {
+		t.Fatal("a handle from the dropped incarnation accepted a write after the name was recreated")
+	}
+	fresh, err := r.resolve(tenantID, name)
+	if err != nil {
+		t.Fatalf("resolve the recreated database: %v", err)
+	}
+	if got, err := fresh.KV.Get(ctx, "stale"); err == nil && got != nil {
+		t.Fatalf("the recreated database holds the stale handle's write %q", got)
+	}
+	if err := fresh.KV.Put(ctx, "fresh", []byte("v")); err != nil {
+		t.Fatalf("Put on the recreated database: %v", err)
+	}
+}
+
 // TestRESTServiceRegistry_MaterializedScheduledCompactionRuns pins F5's
 // second half: the compaction record a materialized database's policy writes
 // is guarded on the marker in its own store, which CompactionScheduleGuard
