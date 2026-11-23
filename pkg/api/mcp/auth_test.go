@@ -18,8 +18,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
@@ -57,5 +60,26 @@ func TestAdmitWhenUnauthenticated_ReleaseGapIsNeverAnonymous(t *testing.T) {
 	err, _ := replicaForwardingGap()
 	if admitWhenUnauthenticated(nil, anonymousRequest{}, err) {
 		t.Fatal("a release gap was admitted as an anonymous request")
+	}
+}
+
+// TestAdmitAnonymous_ReleaseGapRefusesEvenAPublicToolCall proves the gap is
+// refused before any anonymous admission rule runs, a public tool call
+// included: a cluster serves nothing across a release gap.
+func TestAdmitAnonymous_ReleaseGapRefusesEvenAPublicToolCall(t *testing.T) {
+	err, _ := replicaForwardingGap()
+	r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"qrdb_health"}}`))
+	perms := authmw.NewMCPToolRegistry()
+	if rerr := perms.RegisterPublic("qrdb_health"); rerr != nil {
+		t.Fatalf("RegisterPublic: %v", rerr)
+	}
+	s := &Server{toolPerms: perms}
+	// The same call with no credential at all is admitted: the refusal
+	// below is the gap's, not the registry's.
+	if _, ok := s.admitAnonymous(httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"qrdb_health"}}`)), auth.ErrUnauthenticated); !ok {
+		t.Fatal("the public tool call was not admitted anonymously")
+	}
+	if _, ok := s.admitAnonymous(r, err); ok {
+		t.Fatal("a release gap was admitted as an anonymous public tool call")
 	}
 }
