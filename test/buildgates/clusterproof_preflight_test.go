@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 // preflightDiffStep is the id of the preflight step that sets clusterproof.
@@ -39,7 +39,7 @@ func preflightScript(t *testing.T) (string, map[string]string) {
 		t.Fatal(err)
 	}
 	var wf preflightWorkflow
-	if err := yaml.Unmarshal(b, &wf); err != nil {
+	if err := gocodecyaml.New[preflightWorkflow]().Unmarshal(b, &wf); err != nil {
 		t.Fatal(err)
 	}
 	for _, s := range wf.Jobs["preflight"].Steps {
