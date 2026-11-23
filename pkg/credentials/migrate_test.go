@@ -431,13 +431,26 @@ func (h *putAllHookStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvs
 // its selection again and fences that claim too.
 func TestMigrateLegacy_DeleteBeforePeerMigrates(t *testing.T) {
 	ctx := context.Background()
-	for _, racing := range []bool{false, true} {
-		t.Run(map[bool]string{false: "no claim", true: "claim written mid-delete"}[racing], func(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		racing, stored bool
+	}{
+		{name: "no claim", stored: true},
+		{name: "claim written mid-delete", racing: true, stored: true},
+		// The replicated store holds nothing under the name while a
+		// peer still has a pre-upgrade copy: the delete still leaves
+		// the tombstone that settles it.
+		{name: "never stored"},
+	} {
+		racing := tc.racing
+		t.Run(tc.name, func(t *testing.T) {
 			mem := seal.NewMemoryBackend()
 			shared := &putAllHookStore{Store: mem}
 			nodeA := newUnboundService(t)
 			require.NoError(t, nodeA.BindStore(ctx, shared))
-			require.NoError(t, nodeA.StoreCredential(ctx, "db", []byte("fresh")))
+			if tc.stored {
+				require.NoError(t, nodeA.StoreCredential(ctx, "db", []byte("fresh")))
+			}
 			fired := false
 			if racing {
 				shared.onPutAll = func(writes []kvstore.KV) {
@@ -475,6 +488,29 @@ func TestMigrateLegacy_DeleteBeforePeerMigrates(t *testing.T) {
 			assert.Empty(t, conflicts)
 		})
 	}
+}
+
+// TestDeleteCredential_AbsentNameTombstonedOnce: deleting a name the store
+// never held writes the tombstone once; a repeated delete finds the claim
+// already settled and writes nothing.
+func TestDeleteCredential_AbsentNameTombstonedOnce(t *testing.T) {
+	ctx := context.Background()
+	mem := seal.NewMemoryBackend()
+	shared := &putAllHookStore{Store: mem}
+	svc := newUnboundService(t)
+	require.NoError(t, svc.BindStore(ctx, shared))
+	batches := 0
+	shared.onPutAll = func([]kvstore.KV) { batches++ }
+
+	require.NoError(t, svc.DeleteCredential(ctx, "gone"))
+	assert.Equal(t, 1, batches, "the first delete writes the tombstone")
+	claim, ok, err := svc.loadClaim(ctx, MigrationClaimPrefix+"gone")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.True(t, claim.Deleted && claim.Complete)
+
+	require.NoError(t, svc.DeleteCredential(ctx, "gone"))
+	assert.Equal(t, 1, batches, "a repeated delete of a tombstoned absent name writes nothing")
 }
 
 // TestMigrateLegacy_CrashThenPeerDeletesAndRestores verifies a credential

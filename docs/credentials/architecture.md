@@ -180,7 +180,11 @@ settles a pending or completed claim into one), guarded on the claim it read, so
 written meanwhile makes the delete select again. A legacy copy migrated after
 the delete predates it: the tombstone settles it, its old records are deleted
 and nothing of it is installed, whether or not a credential was stored under
-the name since.
+the name since. A delete of a name this node's replicated store does not
+hold still writes the tombstone, since another node may keep a pre-upgrade
+copy; only a repeated delete, finding the tombstone already there, writes
+nothing. The `qrdb` desktop embedded boot builds its credential core on the
+boot's audit trail, so its migration is audited like the daemon's.
 
 **Resolving a conflict.** A caller of `CredentialServicer` lists a node's
 conflicts (`CredentialMigrationConflicts`) and settles each one

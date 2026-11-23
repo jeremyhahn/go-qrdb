@@ -179,7 +179,7 @@ func initEmbeddedBarrier(dataDir string, sealCfg *SealConfig, trail audit.AuditL
 	// "Storage"); until then it fails closed.
 	credSvc, credErr := credentials.NewCredentialService(
 		&credentials.Config{Strategy: "barrier"}, nil, slog.Default(),
-		credentials.WithLegacyStore(b))
+		credentials.WithLegacyStore(b), credentials.WithAuditLogger(trail))
 	if credErr != nil {
 		_ = sealStore.Close()
 		return nil, nil, nil, "", &EmbeddedBarrierError{Step: "credential", Err: credErr}

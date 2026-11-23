@@ -1050,9 +1050,12 @@ func (s *CredentialService) deleteBarrierAll(ctx context.Context, name string) e
 			secure.Wipe(rawValue)
 			return err
 		}
-		// A name with nothing to delete and no pending claim gets no
-		// tombstone: there is no deleted value a migration could restore.
-		if rawMeta == nil && rawValue == nil && len(writes) == 0 && (fence == nil || rawClaim == nil) {
+		// A name absent here still gets the deletion tombstone: another
+		// node may hold a pre-upgrade copy its later migration would
+		// install, undoing the delete. Only a name whose claim is
+		// already settled (no fence to write) with nothing else left is
+		// a no-op, so a repeated delete writes nothing.
+		if rawMeta == nil && rawValue == nil && len(writes) == 0 && fence == nil {
 			return nil
 		}
 		writes = append(writes, kvstore.KV{Key: metaK, Delete: true}, kvstore.KV{Key: valueK, Delete: true})
