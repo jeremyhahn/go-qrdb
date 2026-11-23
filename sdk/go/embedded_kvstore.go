@@ -49,7 +49,8 @@ var ErrEmbeddedStorageRequired = errors.New("sdk: embedded KV store needs a stor
 // committing the batch and backfilling a newly registered index run as one
 // step and two writers never leave a stale or duplicate index entry. Reads
 // share a lock and run concurrently with each other. A Scan callback runs
-// under the read lock and must not write to the store.
+// on a snapshot taken under the read lock and invoked after the lock is
+// released, so it may read from or write to the store.
 func NewEmbeddedKVStore(stg storage.Storage) (KVStore, error) {
 	if stg == nil {
 		return nil, ErrEmbeddedStorageRequired
@@ -105,22 +106,49 @@ func (s *embeddedKVStore) Scan(ctx context.Context, prefix string, fn func(key s
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	entries, err := s.scanSnapshot(ctx, prefix)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(e.key, e.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// scanEntry is one copied key/value pair of a Scan snapshot.
+type scanEntry struct {
+	key   string
+	value []byte
+}
+
+// scanSnapshot copies every pair under prefix while holding the read lock,
+// so Scan can run its callback after the lock is released.
+func (s *embeddedKVStore) scanSnapshot(ctx context.Context, prefix string) ([]scanEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	opts := &storage.IteratorOptions{LowerBound: []byte(prefix), UpperBound: prefixUpperBound([]byte(prefix))}
 	it := s.stg.NewIterator(opts)
 	defer func() { _ = it.Close() }()
+	var entries []scanEntry
 	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
-		key := string(it.Key())
-		value := append([]byte(nil), it.Value()...)
-		if err := fn(key, value); err != nil {
-			return err
-		}
+		entries = append(entries, scanEntry{
+			key:   string(it.Key()),
+			value: append([]byte(nil), it.Value()...),
+		})
 	}
-	return it.Error()
+	if err := it.Error(); err != nil {
+		return nil, err
+	}
+	return entries, nil
 }
 
 func (s *embeddedKVStore) List(ctx context.Context, prefix string) ([]string, error) {
@@ -271,11 +299,21 @@ func embeddedScan(result interface{}, err error) (map[string][][]byte, error) {
 	if result == nil {
 		return map[string][][]byte{}, nil
 	}
-	scan, ok := result.(map[string][][]byte)
-	if !ok {
-		return nil, fmt.Errorf("sdk: index scan returned %T, want map[string][][]byte", result)
+	switch scan := result.(type) {
+	case map[string][][]byte:
+		return scan, nil
+	case [][]byte:
+		// A compound scan with no range bounds is a pure leading-field
+		// prefix lookup: the engine answers it with the matching entity
+		// keys alone, without their compound values. The keys are grouped
+		// under the empty compound value, in index order.
+		if len(scan) == 0 {
+			return map[string][][]byte{}, nil
+		}
+		return map[string][][]byte{"": scan}, nil
+	default:
+		return nil, fmt.Errorf("sdk: index scan returned %T, want map[string][][]byte or [][]byte", result)
 	}
-	return scan, nil
 }
 
 // prefixUpperBound returns the smallest key greater than every key with the

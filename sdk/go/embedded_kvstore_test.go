@@ -502,6 +502,90 @@ func TestEmbeddedKVStore_ScanStopsWhenContextCancelledMidway(t *testing.T) {
 	}
 }
 
+// TestEmbeddedKVStore_ScanCompoundIndexPrefixOnly scans a registered compound
+// index with no range bounds, the pure leading-field prefix lookup the engine
+// answers with entity keys alone.
+func TestEmbeddedKVStore_ScanCompoundIndexPrefixOnly(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	dao, err := NewDAO(store, "widget", func() *embeddedWidget { return &embeddedWidget{} })
+	if err != nil {
+		t.Fatalf("NewDAO: %v", err)
+	}
+	for i, w := range []*embeddedWidget{
+		{ID: 1, Name: "alpha", Team: "red", State: "open"},
+		{ID: 2, Name: "beta", Team: "red", State: "closed"},
+		{ID: 3, Name: "gamma", Team: "blue", State: "open"},
+	} {
+		if err := dao.Save(ctx, w); err != nil {
+			t.Fatalf("Save %d: %v", i, err)
+		}
+	}
+	cases := []struct {
+		name   string
+		prefix [][]byte
+		want   int
+	}{
+		{name: "leading field", prefix: [][]byte{[]byte("red")}, want: 2},
+		{name: "full prefix", prefix: [][]byte{[]byte("red"), []byte("open")}, want: 1},
+		{name: "no match", prefix: [][]byte{[]byte("green")}, want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := store.ScanCompoundIndex(ctx, "widget.Team_State", tc.prefix, nil, nil)
+			if err != nil {
+				t.Fatalf("ScanCompoundIndex: %v", err)
+			}
+			keys := 0
+			for _, entityKeys := range got {
+				keys += len(entityKeys)
+			}
+			if keys != tc.want {
+				t.Fatalf("ScanCompoundIndex = %q; want %d entity keys", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEmbeddedKVStore_ScanCallbackMayReadWhileWriterPending runs a Scan whose
+// callback waits for a concurrent writer to finish and then reads and writes
+// the store: the callback runs outside the store lock, so nothing deadlocks.
+func TestEmbeddedKVStore_ScanCallbackMayReadWhileWriterPending(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	if err := store.Put(ctx, "p/1", []byte("one")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	inCallback := make(chan struct{})
+	writerDone := make(chan error, 1)
+	go func() {
+		<-inCallback
+		writerDone <- store.Put(ctx, "w/1", []byte("written"))
+	}()
+	var read []byte
+	err := store.Scan(ctx, "p/", func(key string, _ []byte) error {
+		close(inCallback)
+		if err := <-writerDone; err != nil {
+			return err
+		}
+		got, err := store.Get(ctx, "w/1")
+		if err != nil {
+			return err
+		}
+		read = got
+		return store.Put(ctx, "p/2", []byte("from callback"))
+	})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if string(read) != "written" {
+		t.Fatalf("callback Get = %q, want %q", read, "written")
+	}
+	if got, err := store.Get(ctx, "p/2"); err != nil || string(got) != "from callback" {
+		t.Fatalf("Get p/2 = %q, %v; want the callback's write", got, err)
+	}
+}
+
 func TestEmbeddedKVStore_ClosedStorageListReturnsError(t *testing.T) {
 	store, stg := newEmbeddedTestStore(t)
 	if err := store.Put(context.Background(), "l/1", []byte("v")); err != nil {
@@ -563,8 +647,10 @@ func TestEmbeddedKeysAndScanResults(t *testing.T) {
 		{name: "engine error", err: boom, wantErr: boom},
 		{name: "missing index", err: missing, want: 0},
 		{name: "nil result", want: 0},
-		{name: "wrong type", result: [][]byte{}, anyErr: true},
+		{name: "wrong type", result: "nope", anyErr: true},
 		{name: "scan", result: map[string][][]byte{"v": {[]byte("k")}}, want: 1},
+		{name: "prefix keys", result: [][]byte{[]byte("a"), []byte("b")}, want: 1},
+		{name: "prefix no keys", result: [][]byte{}, want: 0},
 	}
 	for _, tc := range scanCases {
 		t.Run("scan/"+tc.name, func(t *testing.T) {
