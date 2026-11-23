@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -257,6 +258,126 @@ func TestConnectStreamFINClosesSessionCleanly(t *testing.T) {
 	require.NoError(t, clientStr.SetReadDeadline(time.Now().Add(scaleDuration(time.Second))))
 	_, err = io.ReadAll(clientStr)
 	require.NoError(t, err, "the session reset the CONNECT stream instead of closing it")
+}
+
+// TestSimultaneousCloseAndPeerFINClosesConnectStream races a local
+// CloseWithError against the peer's FIN on the CONNECT stream. Whichever side
+// wins, the server must finish its write side (WT_CLOSE_SESSION and FIN, or a
+// reset): the client never waits for a FIN that does not come.
+func TestSimultaneousCloseAndPeerFINClosesConnectStream(t *testing.T) {
+	const iterations = 200
+	for i := range iterations {
+		ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(time.Second))
+		clientConn, serverConn := newConnPair(t, newUDPConnLocalhost(t), newUDPConnLocalhost(t))
+
+		clientStr, err := clientConn.OpenStreamSync(ctx)
+		require.NoError(t, err)
+		// Without flow control the server ignores this capsule; it only makes
+		// the stream visible to AcceptStream before the race starts.
+		_, err = clientStr.Write(maxStreamsBidiCapsule{MaximumStreams: 1}.Append(nil))
+		require.NoError(t, err)
+		serverStr, err := serverConn.AcceptStream(ctx)
+		require.NoError(t, err)
+		sess := newSession(context.Background(), 42, serverConn, quicHTTP3Stream{serverStr}, "", sessionFlowControl{})
+
+		start := make(chan struct{})
+		closeErrCh := make(chan error, 1)
+		finErrCh := make(chan error, 1)
+		go func() {
+			<-start
+			closeErrCh <- sess.CloseWithError(1337, "bye")
+		}()
+		go func() {
+			<-start
+			finErrCh <- clientStr.Close()
+		}()
+		close(start)
+		require.NoError(t, <-closeErrCh, "iteration %d", i)
+		// The server's STOP_SENDING may cancel the client's write side before
+		// its FIN goes out; that is a valid outcome of the race.
+		<-finErrCh
+
+		require.NoError(t, clientStr.SetReadDeadline(time.Now().Add(scaleDuration(time.Second))))
+		_, err = io.ReadAll(clientStr)
+		if err != nil {
+			var netErr net.Error
+			require.False(t, errors.As(err, &netErr) && netErr.Timeout(),
+				"iteration %d: the server left the CONNECT write side open: %v", i, err)
+			var strErr *quic.StreamError
+			require.ErrorAs(t, err, &strErr, "iteration %d", i)
+		}
+		cancel()
+	}
+}
+
+// recordingHTTP3Stream records the writer's calls that finish a CONNECT
+// stream's write side.
+type recordingHTTP3Stream struct {
+	mockHTTP3Stream
+	mu           sync.Mutex
+	tryWriteAlls int
+	closes       int
+	cancelWrites int
+}
+
+func (s *recordingHTTP3Stream) TryWriteAll([]byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tryWriteAlls++
+	return nil
+}
+
+func (s *recordingHTTP3Stream) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closes++
+	return nil
+}
+
+func (s *recordingHTTP3Stream) CancelWrite(quic.StreamErrorCode) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancelWrites++
+}
+
+// TestWriterCancelWithPendingCloseCapsuleFinishesStream drives the writer's
+// cancelled-context exit with a close capsule still pending: the interleaving
+// where the reader cancels the session on the peer's FIN after a local
+// CloseWithError queued WT_CLOSE_SESSION but before the writer picked it up.
+func TestWriterCancelWithPendingCloseCapsuleFinishesStream(t *testing.T) {
+	str := &recordingHTTP3Stream{mockHTTP3Stream: mockHTTP3Stream{bytes.NewReader(nil)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sess := &Session{
+		str:                 str,
+		ctx:                 ctx,
+		pendingCloseCapsule: &closeSessionCapsule{ErrorCode: 1337, Message: "bye"},
+		capsuleQueueUpdated: make(chan struct{}),
+	}
+
+	sess.writeToConnectStream()
+
+	str.mu.Lock()
+	defer str.mu.Unlock()
+	require.Equal(t, 1, str.tryWriteAlls, "the WT_CLOSE_SESSION capsule was not written")
+	require.Equal(t, 1, str.closes, "the CONNECT write side was not closed")
+	require.Zero(t, str.cancelWrites)
+}
+
+// TestWriterCancelWithoutCloseResetsStream checks the writer's cancelled-context
+// exit with neither a FIN nor a close capsule pending resets the write side.
+func TestWriterCancelWithoutCloseResetsStream(t *testing.T) {
+	str := &recordingHTTP3Stream{mockHTTP3Stream: mockHTTP3Stream{bytes.NewReader(nil)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sess := &Session{str: str, ctx: ctx, capsuleQueueUpdated: make(chan struct{})}
+
+	sess.writeToConnectStream()
+
+	str.mu.Lock()
+	defer str.mu.Unlock()
+	require.Equal(t, 1, str.cancelWrites, "the CONNECT write side was left open")
+	require.Zero(t, str.closes)
 }
 
 // TestConnectStreamFINInsideCapsuleIsAnError: a FIN that cuts a capsule

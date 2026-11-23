@@ -216,28 +216,20 @@ func (s *Session) writeToConnectStream() {
 		select {
 		case <-s.ctx.Done():
 			// The reader cancels the context as soon as it sees the peer's
-			// FIN, which may be before this goroutine picks up the signal.
-			s.capsuleQueueMx.Lock()
-			fin := s.pendingFIN
-			s.capsuleQueueMx.Unlock()
-			if fin {
-				_ = s.str.Close() // the session is already closed
-			}
+			// FIN, which may be before this goroutine picks up the signal:
+			// either the FIN closed the session (pendingFIN), or a local
+			// CloseWithError raced the peer's FIN and queued WT_CLOSE_SESSION
+			// first (pendingCloseCapsule). Both still finish the stream.
+			s.finishConnectStream()
 			return
 		case <-s.capsuleQueueUpdated:
 		}
 
 		for {
 			s.capsuleQueueMx.Lock()
-			if s.pendingFIN {
+			if s.pendingFIN || s.pendingCloseCapsule != nil {
 				s.capsuleQueueMx.Unlock()
-				_ = s.str.Close() // the session is already closed
-				return
-			}
-			if s.pendingCloseCapsule != nil {
-				closeCapsule := *s.pendingCloseCapsule
-				s.capsuleQueueMx.Unlock()
-				_ = closeSessionStream(s.str, closeCapsule)
+				s.finishConnectStream()
 				return
 			}
 			if len(s.capsuleQueue) == 0 {
@@ -271,6 +263,26 @@ func (s *Session) writeToConnectStream() {
 			}
 			s.capsuleQueueMx.Unlock()
 		}
+	}
+}
+
+// finishConnectStream completes or resets the CONNECT stream's write side as
+// the writer exits: a FIN answers the peer's FIN, a pending WT_CLOSE_SESSION
+// is written and followed by a FIN (bounded by the write deadline
+// closeWithError set), and otherwise the write side is reset, so no exit
+// leaves it open.
+func (s *Session) finishConnectStream() {
+	s.capsuleQueueMx.Lock()
+	fin := s.pendingFIN
+	closeCapsule := s.pendingCloseCapsule
+	s.capsuleQueueMx.Unlock()
+	switch {
+	case fin:
+		_ = s.str.Close() // the session is already closed
+	case closeCapsule != nil:
+		_ = closeSessionStream(s.str, *closeCapsule)
+	default:
+		s.str.CancelWrite(WTSessionGoneErrorCode)
 	}
 }
 
