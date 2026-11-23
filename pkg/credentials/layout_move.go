@@ -378,6 +378,17 @@ func moveLayoutSet(ctx context.Context, from, to Store, move layoutMove, set *la
 		guards = append(guards, kvstore.Guard{Key: key})
 		writes = append(writes, kvstore.KV{Key: key, Value: value})
 	}
+	// The name's own records are guarded absent whether or not the source
+	// holds them: a credential stored without a migration claim has no
+	// claim key in set.keys, yet a store and delete of the name on to
+	// since the probe leaves its claim as a tombstone there. Guarding it
+	// (and the value and metadata keys) makes such a delete refuse the
+	// batch, so the older source copy never comes back after it.
+	for _, key := range []string{credentialPrefix + set.name, MetaKeyPrefix + set.name, MigrationClaimPrefix + set.name} {
+		if !slices.Contains(set.keys, key) {
+			guards = append(guards, kvstore.Guard{Key: key})
+		}
+	}
 	// The fence is one key per name for every source: of two sources
 	// moving the same name, the batch that lands second finds it and
 	// writes nothing. The settlement record is the durable form of the

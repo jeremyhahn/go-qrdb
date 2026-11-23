@@ -512,6 +512,46 @@ func TestMoveLayout_DeletedCredentialNotResurrected(t *testing.T) {
 	}
 }
 
+// racingStore runs race once, just before the first guarded batch reaches
+// the wrapped store: the window between the move's probe and its batch.
+type racingStore struct {
+	Store
+	race func()
+}
+
+func (r *racingStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if race := r.race; race != nil {
+		r.race = nil
+		race()
+	}
+	return r.Store.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
+func TestMoveLayout_DeleteBetweenProbeAndBatchNotUndone(t *testing.T) {
+	ctx := context.Background()
+	first, second := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	old := newUnboundService(t)
+	require.NoError(t, old.BindStore(ctx, first))
+	require.NoError(t, old.StoreCredential(ctx, "db", []byte("stale")))
+	keys, err := first.List(ctx, MigrationClaimPrefix+"db")
+	require.NoError(t, err)
+	require.Empty(t, keys, "a stored credential carries no migration claim")
+
+	other := newUnboundService(t)
+	require.NoError(t, other.BindStore(ctx, second))
+	to := &racingStore{Store: second, race: func() {
+		require.NoError(t, other.StoreCredential(ctx, "db", []byte("fresh")))
+		require.NoError(t, other.DeleteCredential(ctx, "db"))
+	}}
+
+	var conflict *LayoutConflictError
+	require.ErrorAs(t, moveLayout(ctx, first, to), &conflict)
+	assert.Equal(t, []string{"db"}, conflict.Names)
+	_, err = other.retrieveBytes(ctx, "db")
+	require.ErrorIs(t, err, ErrCredentialNotFound)
+	requireAbsent(t, second, credentialPrefix+"db")
+}
+
 // TestMoveLayout_SettledNameFencesLaterSource covers a later source's first
 // move after an earlier source's move of the same name finished and the
 // credential was deleted from the destination: no marker, fence, conflict
