@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -51,13 +52,16 @@ type cliVolumePoolMoveJSON struct {
 // of every transport prove it.
 func TestVolumePool_CLI_MoveTenant_PerProtocol(t *testing.T) {
 	t.Parallel()
-	node := startVolumeMoveNode(t)
+	node, dirs := startVolumeMoveNodeWithDirs(t)
 
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
 			t.Run("cancel", func(t *testing.T) {
 				testVolumeMoveOverProtocol(t, node, proto)
+			})
+			t.Run("cancel-after-resume", func(t *testing.T) {
+				testVolumeMoveCancelAfterResumeOverProtocol(t, node, dirs, proto)
 			})
 			t.Run("complete", func(t *testing.T) {
 				testVolumeMoveCompletesOverProtocol(t, node, proto)
@@ -95,6 +99,8 @@ func testVolumeMoveOverProtocol(t *testing.T, node *multiProtoNode, proto multiP
 	// --- a principal without volume_pools:move is refused ------------------
 	if out, err := runQRDB(t, node.cli, mt.conn, "volume-pool", "move-tenant", tenantID, "--to", "second"); err == nil {
 		t.Fatalf("[%s] move-tenant by a principal without volume_pools:move must be refused, got: %s", proto.name, out)
+	} else if !volumeMoveIsPermissionDenied(out) {
+		t.Fatalf("[%s] move-tenant by a principal without volume_pools:move: want PERMISSION_DENIED, got: %v\noutput: %s", proto.name, err, out)
 	}
 	if out, err := runCLIProto(t, node, proto, "volume-pool", "get-move", tenantID); err == nil {
 		t.Fatalf("[%s] a refused move-tenant started a move: %s", proto.name, out)
@@ -116,6 +122,134 @@ func testVolumeMoveOverProtocol(t *testing.T, node *multiProtoNode, proto multiP
 		}
 		t.Logf("[%s] attempt %d: the move of %s ended before its cancel; retrying on a fresh tenant", proto.name, attempt+1, mt.tenantID)
 	}
+}
+
+// testVolumeMoveCancelAfterResumeOverProtocol cancels a single-replica
+// move after the replica's copy is recorded (nodesCopied holds it, so the
+// runner reopens it from the destination) while the CLI writes through
+// it. A single-replica move cuts over in the pass that releases the
+// settled step, so the write and the cancel go in together during the
+// settle, the cancel recorded against the step (path (b) copy-back): every
+// write the CLI acknowledged reads back after cancel-move returns, the
+// move is gone, the tenant is on "default" and the destination pool holds
+// no tenant directory (decision volume-pool-tenant-moves, "Tests that
+// would prove it", Integration). A move that ends before its cancel is
+// checked as completed and retried on a fresh tenant.
+func testVolumeMoveCancelAfterResumeOverProtocol(t *testing.T, node *multiProtoNode, dirs volumeMovePoolDirs, proto multiProtocol) {
+	t.Helper()
+	for attempt := 0; attempt < volumeMoveCancelAttempts; attempt++ {
+		mt := seedVolumeMoveTenant(t, node, proto, "vr", attempt)
+		if volumeMoveCancelAfterResume(t, node, dirs, proto, mt) {
+			return
+		}
+		t.Logf("[%s] attempt %d: the move of %s ended before a cancel after resume; retrying on a fresh tenant", proto.name, attempt+1, mt.tenantID)
+	}
+	t.Fatalf("[%s] no cancel-move after resume took effect in %d attempts", proto.name, volumeMoveCancelAttempts)
+}
+
+// volumeMoveCancelAfterResume runs one attempt of
+// testVolumeMoveCancelAfterResumeOverProtocol and reports whether the
+// cancel took effect after the replica's copy was recorded.
+func volumeMoveCancelAfterResume(t *testing.T, node *multiProtoNode, dirs volumeMovePoolDirs, proto multiProtocol, mt volumeMoveTenant) bool {
+	t.Helper()
+	if out, err := runCLIProto(t, node, proto, "--output", "json", "volume-pool", "move-tenant", mt.tenantID, "--to", "second"); err != nil {
+		t.Fatalf("[%s] volume-pool move-tenant: %v\noutput: %s", proto.name, err, out)
+	}
+
+	resumed := false
+	var out string
+	var err error
+	if !pollUntil(volumeMoveDeadline, 10*time.Millisecond, func() bool {
+		out, err = runCLIProto(t, node, proto, "--output", "json", "volume-pool", "get-move", mt.tenantID)
+		if err != nil {
+			return volumeMoveIsNoMove(out)
+		}
+		var m cliVolumePoolMoveJSON
+		if json.Unmarshal([]byte(out), &m) != nil {
+			return false
+		}
+		// The replica's copy is recorded and its step still held: the
+		// runner is reopening it from the destination (settling). A
+		// single-replica move cuts over in the same pass that releases the
+		// step, so the cancel must be recorded against the settling step.
+		if m.State == "copied" || (m.State == "copying" && m.StepNode != "" && slices.Contains(m.NodesCopied, m.StepNode)) {
+			resumed = true
+			return true
+		}
+		return m.State == "cutover"
+	}) {
+		t.Fatalf("[%s] move of %s neither recorded a copy nor ended within %s; last get-move (err=%v): %s", proto.name, mt.tenantID, volumeMoveDeadline, err, out)
+	}
+
+	resumedKey, resumedValue := "resumed", "written-after-resume-"+mt.tenantID
+	cancelled := false
+	if resumed {
+		// The write goes in while the replica resumes on the destination;
+		// the cancel is sent alongside it, so it lands before the cut over
+		// the step's release would otherwise start.
+		putErr := make(chan error, 1)
+		go func() {
+			var pout string
+			var perr error
+			if pollUntil(volumeMoveDeadline, 200*time.Millisecond, func() bool {
+				pout, perr = runQRDB(t, node.cli, mt.conn, "--database", mt.dbName, "kv", "put", resumedKey, resumedValue)
+				return perr == nil
+			}) {
+				putErr <- nil
+				return
+			}
+			putErr <- fmt.Errorf("kv put %s not acknowledged within %s: %v; output: %s", resumedKey, volumeMoveDeadline, perr, pout)
+		}()
+		out, err = runCLIProto(t, node, proto, "--output", "json", "volume-pool", "cancel-move", mt.tenantID)
+		switch {
+		case err == nil:
+			var m cliVolumePoolMoveJSON
+			if jerr := json.Unmarshal([]byte(out), &m); jerr != nil {
+				t.Fatalf("[%s] decode cancel-move JSON: %v\noutput: %s", proto.name, jerr, out)
+			}
+			if m.TenantID != mt.tenantID || (m.State != "aborting" && m.State != "copying") {
+				t.Fatalf("[%s] cancel-move after resume = %+v, want the move of %s aborting or its cancel recorded", proto.name, m, mt.tenantID)
+			}
+			cancelled = true
+		case volumeMoveIsNoMove(out), strings.Contains(strings.ToLower(out), "cannot cancel"):
+		default:
+			t.Fatalf("[%s] volume-pool cancel-move after resume: %v\noutput: %s", proto.name, err, out)
+		}
+		if perr := <-putErr; perr != nil {
+			t.Fatalf("[%s] tenant %s: %v", proto.name, mt.tenantID, perr)
+		}
+	}
+
+	volumeMoveClusterWaitGone(t, node, proto, mt.tenantID)
+	wantPool := "second"
+	if cancelled {
+		wantPool = "default"
+	}
+	if pool := volumeMoveTenantPool(t, node, proto, mt.tenantID); pool != wantPool {
+		t.Fatalf("[%s] after the move (cancelled after resume=%v) tenant %s is on pool %q, want %s", proto.name, cancelled, mt.tenantID, pool, wantPool)
+	}
+	volumeMoveExpectValue(t, node, proto, mt, mt.key, mt.value)
+	if resumed {
+		volumeMoveExpectValue(t, node, proto, mt, resumedKey, resumedValue)
+	}
+	if !cancelled {
+		return false
+	}
+
+	afterKey, afterValue := "after", "after-the-cancel-"+mt.tenantID
+	if out, err := runQRDB(t, node.cli, mt.conn, "--database", mt.dbName, "kv", "put", afterKey, afterValue); err != nil {
+		t.Fatalf("[%s] tenant kv put after the cancel: %v\noutput: %s", proto.name, err, out)
+	}
+	volumeMoveExpectValue(t, node, proto, mt, afterKey, afterValue)
+	volumeMoveExpectValue(t, node, proto, mt, resumedKey, resumedValue)
+	for _, leftover := range []string{filepath.Join(dirs.second, mt.tenantID), filepath.Join(dirs.def, mt.tenantID+".copyback")} {
+		if _, serr := os.Stat(leftover); serr == nil {
+			t.Fatalf("[%s] the cancelled move of %s left %s behind", proto.name, mt.tenantID, leftover)
+		} else if !os.IsNotExist(serr) {
+			t.Fatalf("[%s] stat %s: %v", proto.name, leftover, serr)
+		}
+	}
+	return true
 }
 
 // volumeMoveCancelAttempts bounds the fresh tenants the cancel case tries
@@ -324,6 +458,13 @@ func volumeMoveIsNoMove(out string) bool {
 	return strings.Contains(lower, "not found") || strings.Contains(lower, "no move journalled") || strings.Contains(lower, "status 404")
 }
 
+// volumeMoveIsPermissionDenied reports whether a CLI answer is the
+// PERMISSION_DENIED refusal, as every transport's CLI error prints it.
+func volumeMoveIsPermissionDenied(out string) bool {
+	lower := strings.ToLower(out)
+	return strings.Contains(lower, "permission denied") || strings.Contains(lower, "permission_denied") || strings.Contains(lower, "permissiondenied")
+}
+
 // volumeMoveTenantPool returns the volume pool `qrdb tenant get` names for
 // tenantID.
 func volumeMoveTenantPool(t *testing.T, node *multiProtoNode, proto multiProtocol, tenantID string) string {
@@ -382,13 +523,22 @@ tenant:
 // "default", "second" and "stranger" pools in the replicated catalog.
 func startVolumeMoveNode(t *testing.T) *multiProtoNode {
 	t.Helper()
+	n, _ := startVolumeMoveNodeWithDirs(t)
+	return n
+}
+
+// startVolumeMoveNodeWithDirs is startVolumeMoveNode that also returns the
+// node's default and second pool directories, for tests that stat them.
+func startVolumeMoveNodeWithDirs(t *testing.T) (*multiProtoNode, volumeMovePoolDirs) {
+	t.Helper()
 
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 	ca := generateTestCA(t)
 	dataDir := t.TempDir()
 	cfgPath := filepath.Join(t.TempDir(), "qrdbd.yaml")
-	if err := os.WriteFile(cfgPath, []byte(volumeMoveYAML(t.TempDir(), t.TempDir())), 0o600); err != nil {
+	dirs := volumeMovePoolDirs{def: t.TempDir(), second: t.TempDir()}
+	if err := os.WriteFile(cfgPath, []byte(volumeMoveYAML(dirs.def, dirs.second)), 0o600); err != nil {
 		t.Fatalf("startVolumeMoveNode: config: %v", err)
 	}
 
@@ -466,7 +616,7 @@ func startVolumeMoveNode(t *testing.T) *multiProtoNode {
 	for _, pool := range []string{"default", "second", "stranger"} {
 		createVolumePoolCLI(t, cli, n.cliArgsFor(multiProtocols[0]), pool)
 	}
-	return n
+	return n, dirs
 }
 
 // TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart moves a raft
