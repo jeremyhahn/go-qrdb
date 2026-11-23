@@ -120,7 +120,6 @@ func (r *logRoute) resolve(ctx context.Context, tenantID, name string) (logTarge
 	return r.raft(ctx, tenantID)
 }
 
-// raft resolves tenantID's group as a raftTarget.
 // auditGroup returns the group the replicated audit logger writes tenantID's
 // audit trail to. The reserved system database, the audit instance's home,
 // is read and written there, so the audit reader and writer always use one
@@ -133,6 +132,7 @@ func (r *logRoute) auditGroup(ctx context.Context, tenantID string) (logTarget, 
 	return raftTarget{host: host, shardID: shardID}, nil
 }
 
+// raft resolves tenantID's group as a raftTarget.
 func (r *logRoute) raft(ctx context.Context, tenantID string) (logTarget, error) {
 	host, shardID, err := r.resolver.ResolveAuditShard(ctx, tenantID)
 	if err != nil {
