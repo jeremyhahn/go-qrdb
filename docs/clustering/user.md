@@ -540,7 +540,11 @@ a membership change that would place a replica on such a node is refused
 protocol through TLS ALPN from the list a release speaks (today
 `qrdb-quic/3`); a client offering none of them is refused in the handshake
 with TLS alert 120 (`no_application_protocol`, QUIC error `0x178`), and the
-Go SDK reports that as a typed, non-retryable refusal.
+Go SDK reports that as a typed, non-retryable refusal. A node embedded through
+the Go SDK that the release check refuses after it is built is quarantined:
+it withdraws its advertisements, closes its Raft host, refuses every
+data-plane call with the refusal (`Node.Refusal` returns it), and needs a
+release that fits and a restart.
 
 Release admission is checked against the system-shard membership it read and
 rechecked immediately before the membership change is proposed, so a
@@ -626,9 +630,11 @@ a new member if the release notes call out a bootstrap wire change.
 **A node refuses to start: "the cluster has activated feature ...".** The
 cluster activated a feature this node's release does not implement. Install a
 release that does; activation cannot be undone. A node embedded in an
-application through the Go SDK cannot refuse to start after it is built:
-it logs the same error, takes no part in the feature, and reports its health
-as `degraded` until it is upgraded.
+application through the Go SDK that the release check refuses (an activated
+feature it lacks, or a release gap to the cluster's members) is quarantined:
+it withdraws its advertisements, closes its Raft host (it neither votes nor
+replicates), and refuses every data-plane call with the refusal, which
+`Node.Refusal` returns. Install a release that fits and restart it.
 
 **Writes stall while reads keep working, and `slow raft WAL fsync` is
 logged.** A follower's disk is slow to fsync its write-ahead log. The leader

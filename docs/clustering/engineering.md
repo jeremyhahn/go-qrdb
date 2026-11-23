@@ -485,12 +485,13 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   barrier, so the advertisement proposes nothing while the barrier is sealed
   ([../barrier-seal/engineering.md](../barrier-seal/engineering.md)). `qrdbd` does this synchronously after provisioning, so a refused
   binary never serves; `sdk/go/node` does it in the background once the system
-  shard has a leader, because a clustered node is built before its peers. It
-  cannot refuse to start after the fact, so under a refusal it never
-  advertises, logs the error, and reports itself **degraded**: the gate keeps
-  the refusal (`Gate.Refusal`) and `raftbackend.HostAdapter.HealthCheck` turns
-  an `ok` verdict into `degraded`, which every transport's health check
-  serves. A `qrdbd` node with no gate still runs `featuregate.CheckActivated`
+  shard has a leader, because a clustered node is built before its peers. Under
+  a refusal it quarantines itself (`Node.quarantine`), the embedded
+  equivalent of `qrdbd` exiting: it keeps the refusal (`Node.Refusal`),
+  withdraws its member record and feature advertisement, and closes its Raft
+  host, so it no longer votes or replicates; its seal probe
+  (`Node.refusalProbe`) then reports it sealed, so the embedded transport
+  refuses every data-plane call with the refusal. A `qrdbd` node with no gate still runs `featuregate.CheckActivated`
   at startup.
 - **Admission** is `service.ReplicaAdmitter` (`AdmitReplica`), implemented by
   `raftbackend.HostAdapter` and `qrdbd`'s raft host adapter from the gate.
@@ -519,9 +520,17 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   concurrent additions through the leader from recheck to commit, and the
   later one is refused with `*release.GapError` (REST 409). An add whose
   result times out ambiguously (go-quicraft's `*MaybeAppliedError`: it may
-  still commit) returns its error at once but keeps the lock until its
-  `RequestState` delivers the final result or the gate closes, so no later
-  add is rechecked against a membership it may yet change. Residuals, closed
+  still commit) returns its error at once but keeps the lock until
+  `AdminService.resolveAdd` settles it definitively: go-quicraft completes a
+  `RequestState` once, and the timed-out wait may have been that completion,
+  so nothing waits on it again. `resolveAdd` reads the membership
+  linearizably until it sees the replica, the configuration change ID move
+  past the bound one, the host close, or the gate close (`Gate.ProposeBound`
+  passes the gate's stop, which also cancels the attempt in flight),
+  re-proposing the add under the same binding meanwhile to force an outcome,
+  so no later add is rechecked against a membership it may yet change. An add
+  nothing fences (no gate, a binding that is not `Required`) gets the closed
+  `featuregate.Unfenced` stop and is not resolved. Residuals, closed
   by go-quicraft 1192 (see [../plans/1628.md](../plans/1628.md)): a
   leadership change while an add is in flight, and a member restarted onto
   another release whose `Gate.Start` restart check ran before the add
