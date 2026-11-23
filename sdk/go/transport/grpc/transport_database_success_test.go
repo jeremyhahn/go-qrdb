@@ -199,9 +199,4 @@ func TestGRPCDatabase_AllMethods_Success(t *testing.T) {
 			t.Fatalf("UpdateDatabaseBarrier: %v", err)
 		}
 	})
-	t.Run("UpdateDatabaseConnection", func(t *testing.T) {
-		if _, err := tr.UpdateDatabaseConnection(ctx, transport.UpdateDatabaseConnectionRequest{Name: "testdb"}); err != nil {
-			t.Fatalf("UpdateDatabaseConnection: %v", err)
-		}
-	})
 }

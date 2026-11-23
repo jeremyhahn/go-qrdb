@@ -210,10 +210,6 @@ func malformedCalls() map[string]malformedCall {
 			_, err := tr.UpdateDatabaseCompaction(ctx, transport.UpdateDatabaseCompactionRequest{Name: "app"})
 			return err
 		}},
-		"UpdateDatabaseConnection": {"qrdb_database_update_connection", func(ctx context.Context, tr *Transport) error {
-			_, err := tr.UpdateDatabaseConnection(ctx, transport.UpdateDatabaseConnectionRequest{Name: "app"})
-			return err
-		}},
 
 		// MVCC.
 		"PutWithLease": {"qrdb_mvcc_put_with_lease", func(ctx context.Context, tr *Transport) error {

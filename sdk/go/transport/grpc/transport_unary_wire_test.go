@@ -204,10 +204,6 @@ func unaryCalls() map[string]func(context.Context, *Transport) error {
 			_, err := tr.UpdateDatabaseCompaction(ctx, transport.UpdateDatabaseCompactionRequest{Name: "app"})
 			return err
 		},
-		"UpdateDatabaseConnection": func(ctx context.Context, tr *Transport) error {
-			_, err := tr.UpdateDatabaseConnection(ctx, transport.UpdateDatabaseConnectionRequest{Name: "app"})
-			return err
-		},
 		"PutWithLease": func(ctx context.Context, tr *Transport) error {
 			_, err := tr.PutWithLease(ctx, "k", []byte("v"), 1)
 			return err

@@ -150,17 +150,6 @@
             },
           }
         : {}),
-      ...(dbWizardStore.mode === "remote" && dbWizardStore.connectionConfig !== null
-        ? {
-            connection: {
-              transport: dbWizardStore.connectionConfig.transport,
-              address: dbWizardStore.connectionConfig.address,
-              ...(dbWizardStore.connectionConfig.caFile ? { caFile: dbWizardStore.connectionConfig.caFile } : {}),
-              ...(dbWizardStore.connectionConfig.certFile ? { certFile: dbWizardStore.connectionConfig.certFile } : {}),
-              ...(dbWizardStore.connectionConfig.keyFile ? { keyFile: dbWizardStore.connectionConfig.keyFile } : {}),
-            },
-          }
-        : {}),
       ...(dbWizardStore.sqlMySQL || dbWizardStore.sqlPostgreSQL
         ? {
             protocol: {

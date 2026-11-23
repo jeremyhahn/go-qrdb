@@ -426,10 +426,6 @@ func TestPrintDatabaseInfo_Table_WithAllFields(t *testing.T) {
 		Barrier: &transport.DatabaseBarrierInfo{
 			Enabled: true,
 		},
-		Connection: &transport.DatabaseConnectionConfig{
-			Transport: "grpc",
-			Address:   "localhost:5000",
-		},
 	}
 	err := printDatabaseInfo(info)
 	if err != nil {
@@ -547,14 +543,6 @@ func TestDatabaseUpdateRaftCmd_MissingArg(t *testing.T) {
 func TestDatabaseUpdateBarrierCmd_MissingArg(t *testing.T) {
 	dbSvc := &fnDatabaseService{}
 	_, err := executeDatabaseCmd(t, dbSvc, "update-barrier")
-	if err == nil {
-		t.Fatal("expected error for missing database name argument")
-	}
-}
-
-func TestDatabaseUpdateConnectionCmd_MissingArg(t *testing.T) {
-	dbSvc := &fnDatabaseService{}
-	_, err := executeDatabaseCmd(t, dbSvc, "update-connection")
 	if err == nil {
 		t.Fatal("expected error for missing database name argument")
 	}

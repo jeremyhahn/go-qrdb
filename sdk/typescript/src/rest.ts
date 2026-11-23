@@ -113,7 +113,6 @@ import type {
     DaemonStatus,
     DatabaseBarrierConfig,
     DatabaseBarrierStatus,
-    DatabaseConnectionConfig,
     DatabaseRaftConfig,
     DatabaseProtocolConfig,
     DatabaseSQLConfig,
@@ -1949,16 +1948,6 @@ export class RestClient implements Client {
                 return normalizeDatabaseBarrierStatus(await this.fetchJSON<DatabaseBarrierStatus>(
                     `/v1/databases/${encodeURIComponent(name)}/barrier/status`,
                 ));
-            },
-            updateConnection: async (name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo> => {
-                this.ensureConnected();
-                return this.fetchJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/connection`,
-                    {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(connection),
-                    },
-                );
             },
             scale: async (name: string, targetReplicas: number): Promise<DatabaseInfo> => {
                 this.ensureConnected();

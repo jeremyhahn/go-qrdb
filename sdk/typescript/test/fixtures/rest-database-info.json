@@ -63,13 +63,6 @@
     "sharesRequired": 2,
     "sharesTotal": 3
   },
-  "connection": {
-    "transport": "grpc",
-    "address": "db.example.com:63000",
-    "caFile": "/etc/qrdb/ca.pem",
-    "certFile": "/etc/qrdb/client.pem",
-    "keyFile": "/etc/qrdb/client-key.pem"
-  },
   "sql": {
     "concurrency": "pessimistic"
   },

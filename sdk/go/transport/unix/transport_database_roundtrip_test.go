@@ -383,26 +383,6 @@ func TestUnixRT_UpdateDatabaseBarrier_MetadataFields(t *testing.T) {
 	}
 }
 
-func TestUnixRT_UpdateDatabaseConnection(t *testing.T) {
-	svc := &mockDatabaseSvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithDatabaseService(svc))
-	defer cleanup()
-
-	resp, err := tr.UpdateDatabaseConnection(context.Background(), transport.UpdateDatabaseConnectionRequest{
-		Name: "db1",
-		Connection: &transport.DatabaseConnectionConfig{
-			Transport: "tcp",
-			Address:   "10.0.0.1:5000",
-		},
-	})
-	if err != nil {
-		t.Fatalf("UpdateDatabaseConnection: %v", err)
-	}
-	if resp.Connection == nil || resp.Connection.Address != "10.0.0.1:5000" {
-		t.Errorf("got %+v, want address=10.0.0.1:5000", resp.Connection)
-	}
-}
-
 func TestUnixRT_CreateDatabase_PropagatesCfg(t *testing.T) {
 	svc := &mockDatabaseSvc{
 		createFn: func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {

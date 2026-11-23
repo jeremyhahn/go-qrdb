@@ -1529,13 +1529,6 @@ func TestEmbeddedDatabase_Create(t *testing.T) {
 					SharesRequired: 3,
 					SharesTotal:    5,
 				},
-				Connection: &database.DatabaseConnectionConfig{
-					Transport: "grpc",
-					Address:   "127.0.0.1:5000",
-					CAFile:    "/ca",
-					CertFile:  "/cert",
-					KeyFile:   "/key",
-				},
 			}, nil
 		},
 	}
@@ -1560,13 +1553,6 @@ func TestEmbeddedDatabase_Create(t *testing.T) {
 			SharesRequired: 3,
 			SharesTotal:    5,
 		},
-		Connection: &transport.DatabaseConnectionConfig{
-			Transport: "grpc",
-			Address:   "127.0.0.1:5000",
-			CAFile:    "/ca",
-			CertFile:  "/cert",
-			KeyFile:   "/key",
-		},
 	})
 	if err != nil {
 		t.Fatalf("CreateDatabase: %v", err)
@@ -1585,9 +1571,6 @@ func TestEmbeddedDatabase_Create(t *testing.T) {
 	}
 	if resp.Barrier == nil || !resp.Barrier.Enabled {
 		t.Errorf("Barrier = %+v", resp.Barrier)
-	}
-	if resp.Connection == nil || resp.Connection.Address != "127.0.0.1:5000" {
-		t.Errorf("Connection = %+v", resp.Connection)
 	}
 }
 
@@ -1860,45 +1843,6 @@ func TestEmbeddedDatabase_UpdateBarrier_Error(t *testing.T) {
 	}
 	tr := newExtTransport(t, WithDatabaseService(svc))
 	_, err := tr.UpdateDatabaseBarrier(context.Background(), transport.UpdateDatabaseBarrierRequest{})
-	if !errors.Is(err, errSentinel) {
-		t.Errorf("expected errSentinel, got %v", err)
-	}
-}
-
-func TestEmbeddedDatabase_UpdateConnection(t *testing.T) {
-	tr := newExtTransport(t, WithDatabaseService(&mockDatabaseService{}))
-	resp, err := tr.UpdateDatabaseConnection(context.Background(), transport.UpdateDatabaseConnectionRequest{
-		Name: "db1",
-		Connection: &transport.DatabaseConnectionConfig{
-			Transport: "grpc",
-			Address:   "127.0.0.1:5000",
-		},
-	})
-	if err != nil {
-		t.Fatalf("UpdateDatabaseConnection: %v", err)
-	}
-	if resp.Connection == nil || resp.Connection.Transport != "grpc" {
-		t.Errorf("Connection = %+v", resp.Connection)
-	}
-}
-
-func TestEmbeddedDatabase_UpdateConnection_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.UpdateDatabaseConnection(context.Background(), transport.UpdateDatabaseConnectionRequest{})
-	var nilErr *NilServiceError
-	if !errors.As(err, &nilErr) {
-		t.Fatalf("expected NilServiceError, got %T", err)
-	}
-}
-
-func TestEmbeddedDatabase_UpdateConnection_Error(t *testing.T) {
-	svc := &mockDatabaseService{
-		updateConnectionFn: func(string, *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-			return nil, errSentinel
-		},
-	}
-	tr := newExtTransport(t, WithDatabaseService(svc))
-	_, err := tr.UpdateDatabaseConnection(context.Background(), transport.UpdateDatabaseConnectionRequest{})
 	if !errors.Is(err, errSentinel) {
 		t.Errorf("expected errSentinel, got %v", err)
 	}

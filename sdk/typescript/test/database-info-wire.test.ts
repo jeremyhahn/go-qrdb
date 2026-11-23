@@ -29,7 +29,6 @@ import type {
     DatabaseBarrierConfig,
     DatabaseBindingInfo,
     DatabaseCompactionConfig,
-    DatabaseConnectionConfig,
     DatabaseEtcdProtocolInfo,
     DatabaseInfo,
     DatabaseProtocolInfo,
@@ -63,7 +62,6 @@ const databaseInfoKeys = {
     dedicatedWal: true,
     raft: true,
     barrier: true,
-    connection: true,
 } satisfies Record<keyof DatabaseInfo, true>;
 
 const protocolKeys = { mysql: true, postgresql: true, etcd: true } satisfies Record<keyof DatabaseProtocolInfo, true>;
@@ -120,14 +118,6 @@ const barrierKeys = {
     sharesTotal: true,
 } satisfies Record<keyof DatabaseBarrierConfig, true>;
 
-const connectionKeys = {
-    transport: true,
-    address: true,
-    caFile: true,
-    certFile: true,
-    keyFile: true,
-} satisfies Record<keyof DatabaseConnectionConfig, true>;
-
 const sqlKeys = { concurrency: true } satisfies Record<keyof DatabaseSQLConfig, true>;
 
 const compactionKeys = {
@@ -157,7 +147,6 @@ const objects: ReadonlyArray<{
     { path: 'raft.dns', declared: dnsKeys, untyped: [] },
     { path: 'raft.token', declared: tokenKeys, untyped: [] },
     { path: 'barrier', declared: barrierKeys, untyped: [] },
-    { path: 'connection', declared: connectionKeys, untyped: [] },
     { path: 'sql', declared: sqlKeys, untyped: [] },
     { path: 'compaction', declared: compactionKeys, untyped: [] },
     { path: 'binding', declared: bindingKeys, untyped: [] },

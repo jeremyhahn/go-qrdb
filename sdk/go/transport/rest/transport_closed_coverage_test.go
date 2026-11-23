@@ -192,10 +192,6 @@ func TestRESTDatabase_UpdateMethods_Closed(t *testing.T) {
 			_, e := rt.UpdateDatabaseBarrier(ctx, transport.UpdateDatabaseBarrierRequest{})
 			return e
 		}},
-		{"UpdateDatabaseConnection", func() error {
-			_, e := rt.UpdateDatabaseConnection(ctx, transport.UpdateDatabaseConnectionRequest{})
-			return e
-		}},
 	}
 
 	for _, c := range cases {
@@ -293,15 +289,6 @@ func TestRESTDatabase_UpdateMethods_Success(t *testing.T) {
 		})
 		if _, err := rt.UpdateDatabaseBarrier(context.Background(), transport.UpdateDatabaseBarrierRequest{Name: "db"}); err != nil {
 			t.Fatalf("UpdateDatabaseBarrier: %v", err)
-		}
-	})
-	t.Run("UpdateDatabaseConnection", func(t *testing.T) {
-		rt, rs, _ := newExtTransport(t)
-		rs.handle(pathPrefix(http.MethodPatch, "/v1/databases/"), func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(w, &transport.DatabaseInfo{})
-		})
-		if _, err := rt.UpdateDatabaseConnection(context.Background(), transport.UpdateDatabaseConnectionRequest{Name: "db"}); err != nil {
-			t.Fatalf("UpdateDatabaseConnection: %v", err)
 		}
 	})
 }

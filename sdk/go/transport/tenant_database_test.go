@@ -165,18 +165,6 @@ func (m *mockDatabaseClient) ScaleDatabase(_ context.Context, req ScaleDatabaseR
 	return info, nil
 }
 
-func (m *mockDatabaseClient) UpdateDatabaseConnection(_ context.Context, req UpdateDatabaseConnectionRequest) (*DatabaseInfo, error) {
-	if m.updateErr != nil {
-		return nil, m.updateErr
-	}
-	info, ok := m.databases[req.Name]
-	if !ok {
-		return nil, &DatabaseNotFoundError{Name: req.Name}
-	}
-	info.Connection = req.Connection
-	return info, nil
-}
-
 func (m *mockDatabaseClient) UpdateDatabaseSQL(_ context.Context, req UpdateDatabaseSQLRequest) (*DatabaseInfo, error) {
 	if m.updateErr != nil {
 		return nil, m.updateErr
@@ -260,10 +248,6 @@ func (f *failingDatabaseClient) UpdateDatabaseBarrier(_ context.Context, _ Updat
 }
 
 func (f *failingDatabaseClient) ScaleDatabase(_ context.Context, _ ScaleDatabaseRequest) (*DatabaseInfo, error) {
-	return nil, f.err
-}
-
-func (f *failingDatabaseClient) UpdateDatabaseConnection(_ context.Context, _ UpdateDatabaseConnectionRequest) (*DatabaseInfo, error) {
 	return nil, f.err
 }
 
@@ -803,48 +787,6 @@ func TestTenantDatabaseClient_UpdateBarrier_CrossTenantDenied(t *testing.T) {
 	_, err := tc.UpdateDatabaseBarrier(context.Background(), UpdateDatabaseBarrierRequest{
 		Name:    "otherdb",
 		Barrier: &DatabaseBarrierConfig{Enabled: true},
-	})
-	if err == nil {
-		t.Fatal("expected access denied error")
-	}
-	var accessErr *TenantDatabaseAccessDeniedError
-	if !errors.As(err, &accessErr) {
-		t.Fatalf("expected TenantDatabaseAccessDeniedError, got %T", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// UpdateDatabaseConnection tests
-// ---------------------------------------------------------------------------
-
-func TestTenantDatabaseClient_UpdateConnection_Success(t *testing.T) {
-	mock := newMockDatabaseClient()
-	mock.databases["mydb"] = &DatabaseInfo{TenantID: "acme", Name: "mydb", Status: "open"}
-
-	tc, _ := WithTenantDatabase(mock, "acme")
-	info, err := tc.UpdateDatabaseConnection(context.Background(), UpdateDatabaseConnectionRequest{
-		Name:       "mydb",
-		Connection: &DatabaseConnectionConfig{Transport: "quic", Address: "10.0.0.1:9000"},
-	})
-	if err != nil {
-		t.Fatalf("UpdateDatabaseConnection failed: %v", err)
-	}
-	if info.Connection == nil {
-		t.Fatal("expected connection config to be set")
-	}
-	if info.Connection.Transport != "quic" {
-		t.Errorf("expected transport 'quic', got %q", info.Connection.Transport)
-	}
-}
-
-func TestTenantDatabaseClient_UpdateConnection_CrossTenantDenied(t *testing.T) {
-	mock := newMockDatabaseClient()
-	mock.databases["otherdb"] = &DatabaseInfo{TenantID: "other-tenant", Name: "otherdb", Status: "open"}
-
-	tc, _ := WithTenantDatabase(mock, "acme")
-	_, err := tc.UpdateDatabaseConnection(context.Background(), UpdateDatabaseConnectionRequest{
-		Name:       "otherdb",
-		Connection: &DatabaseConnectionConfig{Transport: "quic", Address: "10.0.0.1:9000"},
 	})
 	if err == nil {
 		t.Fatal("expected access denied error")

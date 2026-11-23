@@ -1403,17 +1403,3 @@ func TestUpdateDatabaseBarrier_JSONDecodeError(t *testing.T) {
 		t.Fatal("expected JSON decode error")
 	}
 }
-
-func TestUpdateDatabaseConnection_JSONDecodeError(t *testing.T) {
-	tr, cleanup := connectStubInProcess(t, map[string]string{
-		"qrdb_database_update_connection": `not-json`,
-	})
-	defer cleanup()
-
-	_, err := tr.UpdateDatabaseConnection(context.Background(), transport.UpdateDatabaseConnectionRequest{
-		Name: "db1",
-	})
-	if err == nil {
-		t.Fatal("expected JSON decode error")
-	}
-}

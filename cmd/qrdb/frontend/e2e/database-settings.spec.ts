@@ -16,8 +16,8 @@
  */
 
 // Mocked-tier e2e for the per-database settings forms in the admin database
-// detail: database.updateSQL, updateCompaction, updateRaft, updateBarrier and
-// updateConnection. The Wails mock applies each request to the database entry
+// detail: database.updateSQL, updateCompaction, updateRaft and updateBarrier.
+// The Wails mock applies each request to the database entry
 // of its state, so a test reads the entry back to assert what the form sent.
 
 import {
@@ -77,11 +77,12 @@ async function storedDb(page: Page): Promise<Record<string, unknown>> {
 test.describe("Admin - Database settings forms", () => {
   test.use({ mockState: stateWithDb });
 
-  test("renders all five settings forms", async ({ page }) => {
+  test("renders all four settings forms and no remote connection form", async ({ page }) => {
     const main = await openDetail(page);
-    for (const id of ["sql", "compaction", "raft", "barrier", "connection"]) {
+    for (const id of ["sql", "compaction", "raft", "barrier"]) {
       await expect(main.getByTestId(`db-settings-${id}`)).toBeVisible();
     }
+    await expect(main.getByTestId("db-settings-connection")).toHaveCount(0);
   });
 
   test("updateSQL saves the concurrency mode", async ({ page }) => {
@@ -262,71 +263,6 @@ test.describe("Admin - Database settings forms", () => {
     expect((await storedDb(page)).barrier).toEqual(before);
   });
 
-  test("updateConnection saves the remote connection", async ({ page }) => {
-    const main = await openDetail(page);
-    const form = main.getByTestId("db-settings-connection");
-    await form.getByLabel("Transport").selectOption("quic");
-    await form.getByLabel("Address").fill("db.example.com:9443");
-    await form.getByLabel("CA file").fill("/etc/qrdb/ca.pem");
-    await form.getByRole("button", { name: "Save Connection" }).click();
-
-    await expect(form.getByTestId("outcome-success")).toHaveText(
-      "Connection configuration saved.",
-    );
-    expect((await storedDb(page)).connection).toEqual({
-      transport: "quic",
-      address: "db.example.com:9443",
-      caFile: "/etc/qrdb/ca.pem",
-    });
-  });
-
-  test("a new REST connection takes an http(s) URL, not host:port", async ({ page }) => {
-    const main = await openDetail(page);
-    const form = main.getByTestId("db-settings-connection");
-    const save = form.getByRole("button", { name: "Save Connection" });
-    await form.getByLabel("Transport").selectOption("rest");
-
-    await form.getByLabel("Address").fill("db.example.com:8080");
-    await expect(form.getByText("Address must be an http:// or https:// URL.")).toBeVisible();
-    await expect(save).toBeDisabled();
-    await form.getByLabel("Address").fill("ftp://db.example.com");
-    await expect(save).toBeDisabled();
-
-    await form.getByLabel("Address").fill("https://db.example.com");
-    await expect(form.getByTestId("validation-error")).toHaveCount(0);
-    await save.click();
-
-    await expect(form.getByTestId("outcome-success")).toHaveText(
-      "Connection configuration saved.",
-    );
-    expect((await storedDb(page)).connection).toEqual({
-      transport: "rest",
-      address: "https://db.example.com",
-    });
-  });
-
-  test.describe("with an existing REST connection", () => {
-    test.use({
-      mockState: {
-        ...stateWithDb,
-        databases: [{
-          name: DB_NAME,
-          backend: "pebble",
-          status: "open",
-          connection: { transport: "rest", address: "https://db.example.com" },
-        }],
-      },
-    });
-
-    test("the form opens valid with Save enabled", async ({ page }) => {
-      const main = await openDetail(page);
-      const form = main.getByTestId("db-settings-connection");
-      await expect(form.getByLabel("Address")).toHaveValue("https://db.example.com");
-      await expect(form.getByTestId("validation-error")).toHaveCount(0);
-      await expect(form.getByRole("button", { name: "Save Connection" })).toBeEnabled();
-    });
-  });
-
   test("a server error shows the error state and keeps the stored value", async ({
     page,
   }) => {
@@ -397,7 +333,7 @@ test.describe("User workspace - database settings", () => {
     const main = await openWorkspaceSettings(page, DB_NAME);
     await expect(main.getByTestId("db-settings-sql")).toBeVisible();
     await expect(main.getByTestId("db-settings-compaction")).toBeVisible();
-    for (const id of ["raft", "barrier", "connection"]) {
+    for (const id of ["raft", "barrier"]) {
       await expect(main.getByTestId(`db-settings-${id}`)).toHaveCount(0);
     }
   });

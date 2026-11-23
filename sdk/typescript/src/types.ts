@@ -2757,20 +2757,6 @@ export interface DatabaseBarrierRequest extends DatabaseBarrierConfig {
     readonly secret?: string;
 }
 
-/** Remote connection configuration for a database. */
-export interface DatabaseConnectionConfig {
-    /** Transport protocol (e.g. "rest", "grpc", "unix"). */
-    readonly transport: string;
-    /** Server address. */
-    readonly address: string;
-    /** Path to the CA certificate file. */
-    readonly caFile?: string;
-    /** Path to the client certificate file. */
-    readonly certFile?: string;
-    /** Path to the client private key file. */
-    readonly keyFile?: string;
-}
-
 /** Request to update Raft configuration for a database. */
 export interface UpdateDatabaseRaftRequest {
     /** Raft consensus configuration. */
@@ -2781,12 +2767,6 @@ export interface UpdateDatabaseRaftRequest {
 export interface UpdateDatabaseBarrierRequest {
     /** Encryption barrier configuration. */
     readonly barrier: DatabaseBarrierConfig;
-}
-
-/** Request to update connection configuration for a database. */
-export interface UpdateDatabaseConnectionRequest {
-    /** Remote connection configuration. */
-    readonly connection: DatabaseConnectionConfig;
 }
 
 /** Status of the qrdbd daemon process. */
@@ -2840,8 +2820,6 @@ export interface DatabaseInfo {
     readonly raft?: DatabaseRaftInfo;
     /** Encryption barrier configuration. */
     readonly barrier?: DatabaseBarrierConfig;
-    /** Remote connection configuration. */
-    readonly connection?: DatabaseConnectionConfig;
     /** Read-only binding block: what the server's binding resolver decided
      * for the database. Absent where the server describes no bindings. */
     readonly binding?: DatabaseBindingInfo;
@@ -2892,8 +2870,6 @@ export interface CreateDatabaseRequest {
     /** Encryption barrier configuration, with the passphrase that
      * initialises it. */
     readonly barrier?: DatabaseBarrierRequest;
-    /** Remote connection configuration. */
-    readonly connection?: DatabaseConnectionConfig;
 }
 
 /** Request to update SQL wire protocol configuration for a database. */

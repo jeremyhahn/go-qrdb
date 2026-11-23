@@ -97,7 +97,6 @@ import type {
     DocumentResponse,
     DatabaseBarrierConfig,
     DatabaseBarrierStatus,
-    DatabaseConnectionConfig,
     DatabaseRaftConfig,
     DatabaseProtocolConfig,
     DatabaseSQLConfig,
@@ -1249,9 +1248,6 @@ export class WailsClient implements Client {
             },
             barrierStatus: async (name: string): Promise<DatabaseBarrierStatus> => {
                 return normalizeDatabaseBarrierStatus(await b.BarrierStatus(name) as DatabaseBarrierStatus);
-            },
-            updateConnection: async (name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo> => {
-                return b.UpdateConnection(name, { connection }) as Promise<DatabaseInfo>;
             },
             scale: async (name: string, targetReplicas: number): Promise<DatabaseInfo> => {
                 return b.Scale(name, targetReplicas) as Promise<DatabaseInfo>;

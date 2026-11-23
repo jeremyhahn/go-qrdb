@@ -147,9 +147,6 @@ func TestMCPDatabase_AfterClose(t *testing.T) {
 	if _, err := tr.UpdateDatabaseBarrier(context.Background(), transport.UpdateDatabaseBarrierRequest{}); !errors.As(err, &ce) {
 		t.Errorf("UpdateDatabaseBarrier: %v", err)
 	}
-	if _, err := tr.UpdateDatabaseConnection(context.Background(), transport.UpdateDatabaseConnectionRequest{}); !errors.As(err, &ce) {
-		t.Errorf("UpdateDatabaseConnection: %v", err)
-	}
 }
 
 // ===========================================================================

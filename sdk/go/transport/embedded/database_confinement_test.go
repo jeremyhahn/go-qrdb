@@ -60,10 +60,6 @@ func TestDatabaseConfinement(t *testing.T) {
 			_, err := tr.UpdateDatabaseBarrier(ctx, transport.UpdateDatabaseBarrierRequest{Name: "vault"})
 			return err
 		},
-		"update connection": func(ctx context.Context, tr *Transport) error {
-			_, err := tr.UpdateDatabaseConnection(ctx, transport.UpdateDatabaseConnectionRequest{Name: "vault"})
-			return err
-		},
 		"update sql": func(ctx context.Context, tr *Transport) error {
 			_, err := tr.UpdateDatabaseSQL(ctx, transport.UpdateDatabaseSQLRequest{Name: "vault"})
 			return err

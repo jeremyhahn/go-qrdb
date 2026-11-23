@@ -94,9 +94,6 @@ type DatabaseRaftConfig = database.DatabaseRaftConfig
 // DatabaseBarrierConfig holds barrier-specific configuration.
 type DatabaseBarrierConfig = database.DatabaseBarrierConfig
 
-// DatabaseConnectionConfig holds connection configuration.
-type DatabaseConnectionConfig = database.DatabaseConnectionConfig
-
 // ProtocolConfig holds protocol configuration for a database.
 type ProtocolConfig = database.ProtocolConfig
 

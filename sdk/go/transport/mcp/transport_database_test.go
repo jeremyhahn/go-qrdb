@@ -471,27 +471,3 @@ func TestUpdateDatabaseBarrier_MetadataFields(t *testing.T) {
 		t.Errorf("SharesTotal = %d, want 3", got.SharesTotal)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// UpdateDatabaseConnection
-// ---------------------------------------------------------------------------
-
-func TestUpdateDatabaseConnection_Success(t *testing.T) {
-	svc := newMockDatabaseSvc()
-	tr, cleanup := connectDatabaseInProcess(t, svc)
-	defer cleanup()
-
-	info, err := tr.UpdateDatabaseConnection(context.Background(), transport.UpdateDatabaseConnectionRequest{
-		Name: "db1",
-		Connection: &transport.DatabaseConnectionConfig{
-			Transport: "quic",
-			Address:   "localhost:5000",
-		},
-	})
-	if err != nil {
-		t.Fatalf("UpdateDatabaseConnection: %v", err)
-	}
-	if info == nil {
-		t.Fatal("expected non-nil info")
-	}
-}

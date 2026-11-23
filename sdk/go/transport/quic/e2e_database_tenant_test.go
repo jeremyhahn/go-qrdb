@@ -172,24 +172,6 @@ func TestE2E_UpdateDatabaseBarrier_HappyPath(t *testing.T) {
 	}
 }
 
-func TestE2E_UpdateDatabaseConnection_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("db.UpdateConnection", func(_ []byte) (uint16, []byte) {
-		info := transport.DatabaseInfo{Name: "db"}
-		b, _ := json.Marshal(info)
-		return wire.StatusOK, b
-	})
-	resp, err := tr.UpdateDatabaseConnection(context.Background(), transport.UpdateDatabaseConnectionRequest{
-		Name: "db", Connection: &transport.DatabaseConnectionConfig{Transport: "quic", Address: "host:1"},
-	})
-	if err != nil {
-		t.Fatalf("UpdateDatabaseConnection: %v", err)
-	}
-	if resp == nil {
-		t.Fatalf("nil resp")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Tenant (proto + JSON for barrier methods)
 // ---------------------------------------------------------------------------
