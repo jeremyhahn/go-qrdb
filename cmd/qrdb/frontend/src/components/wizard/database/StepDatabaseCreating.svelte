@@ -109,7 +109,6 @@
     console.debug("[StepDatabaseCreating] runCreate started", {
       name: dbWizardStore.name,
       engine: dbWizardStore.engine,
-      mode: dbWizardStore.mode,
     });
     let phaseIdx = 0;
 
@@ -125,9 +124,8 @@
     const req = {
       name: dbWizardStore.name,
       engine: dbWizardStore.engine,
-      mode: dbWizardStore.mode,
       backend: dbWizardStore.backend || "pebble",
-      ...(dbWizardStore.mode === "embedded" && dbWizardStore.dataDir
+      ...(dbWizardStore.dataDir
         ? { dataDir: dbWizardStore.dataDir }
         : {}),
       // Replication factor and dedicated WAL for a dedicated-raft database.
@@ -139,7 +137,7 @@
             ...(dbWizardStore.dedicatedWal ? { dedicatedWal: true } : {}),
           }
         : {}),
-      ...(dbWizardStore.mode === "embedded" && dbWizardStore.raftConfig !== null
+      ...(dbWizardStore.raftConfig !== null
         ? {
             raft: {
               clusterMode: dbWizardStore.raftConfig.clusterMode,

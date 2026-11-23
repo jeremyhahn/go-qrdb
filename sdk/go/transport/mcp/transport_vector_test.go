@@ -1040,7 +1040,7 @@ func TestGetCompactionProgress_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Vector tests with metadata and shard ID to exercise optional branches
+// Vector tests with metadata to exercise optional branches
 // ---------------------------------------------------------------------------
 
 func TestUpsertVector_WithMetadata(t *testing.T) {

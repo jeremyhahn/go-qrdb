@@ -159,9 +159,11 @@ Supporting facts:
   engine (`pkg/engine/kv_engine.go`) is not composed by any production
   composition root. The objstore batch is atomic (all-or-nothing after
   recovery, via a commit journal), matching the file backend.
-- **Remote mode is removed** (OD-9 A): there is no `mode: remote`, no
-  `connection` block and no update-connection verb on any transport; a
-  database that proxies to another node is a client configuration.
+- There are no remote-mode databases (OD-9 A): the only database mode is
+  `embedded`, a create or a config entry carrying `mode: remote` or a
+  `connection` block is refused, and no transport has an update-connection
+  verb. A stored record that still says `mode: remote` fails to open with the
+  invalid-mode error; its `connection` block is ignored on decode.
 - The etcd protocol serves a database of any backend on a raft-mode node;
   nothing on the data path checks the backend (the target design adds that
   check, "Combinations that are refused").
@@ -1854,8 +1856,10 @@ persisted, and never constructed; the data goes to a local store.
 - B: implement a full multi-model proxy over the SDK client, every engine.
 - C: keep a KV-only proxy and refuse other engines — contradicts rule 1.
 - **Chosen: A.** A database that proxies to another node is a client
-  configuration, which the SDK already provides. Shipped (#923): the clients
-  and the server on all six transports.
+  configuration, which the SDK already provides.
+- **Done** (row 923, rw923s slices 19-20): the clients, the CLI, every server
+  transport and the gRPC surface no longer carry remote mode; a create or
+  config naming it is refused.
 
 **OD-10 — Relocating existing shared-shard data.** Databases whose data is in
 the shared system shard (or a volume tenant's shared shard) move to their own

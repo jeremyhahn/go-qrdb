@@ -434,14 +434,12 @@ func newVectorNamespaceDeleteCmd() *cobra.Command {
 
 // newVectorNamespaceListCmd creates the "vector namespace list" subcommand.
 func newVectorNamespaceListCmd() *cobra.Command {
-
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "list",
 		Short: "List all vector namespaces",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			req := &transport.ListNamespacesRequest{}
-			resp, err := client.Vector().ListNamespaces(cmd.Context(), req)
+			resp, err := client.Vector().ListNamespaces(cmd.Context(), &transport.ListNamespacesRequest{})
 			if err != nil {
 				return err
 			}
@@ -459,8 +457,6 @@ func newVectorNamespaceListCmd() *cobra.Command {
 			}
 		},
 	}
-
-	return cmd
 }
 
 // newVectorNamespaceInfoCmd creates the "vector namespace info" subcommand.
