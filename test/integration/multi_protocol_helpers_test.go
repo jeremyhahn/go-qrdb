@@ -87,6 +87,10 @@ type multiProtoNode struct {
 	startArgs []string
 	proc      *exec.Cmd
 
+	// clusterRestPorts are the admin ports of every node of the node's
+	// cluster (startMultiProtocolCluster), where restart waits for a leader.
+	clusterRestPorts []int
+
 	// configPath is the daemon's --config file when the fixture wrote one
 	// (startMultiProtocolNodeWithConfig); a test rewrites it before restart
 	// to restart the node under another setting.
@@ -103,17 +107,35 @@ type multiProtoNode struct {
 // restart; any other fails the test.
 func (n *multiProtoNode) restart(t *testing.T, prefix string) {
 	t.Helper()
+	n.stop(t)
+	n.startAgain(t, prefix)
+}
+
+// stop stops the node's retained process; startAgain brings it back.
+func (n *multiProtoNode) stop(t *testing.T) {
+	t.Helper()
 	if n.proc == nil || n.bin == "" {
 		t.Fatal("restart: this node's fixture did not retain its process")
 	}
 	stopNode(t, n.proc, 15*time.Second)
+}
+
+// startAgain starts a node that stop stopped, unseals it and waits until every
+// transport serves. A cluster node (clusterRestPorts set) waits for a leader
+// anywhere in the cluster: a follower leads no shard of its own.
+func (n *multiProtoNode) startAgain(t *testing.T, prefix string) {
+	t.Helper()
 	n.proc = startNode(t, n.bin, n.startArgs, prefix)
 
 	waitForBarrierStatusReachable(t, n.ca, n.restPort, 90*time.Second)
 	unsealOnlyBarrierWithSecret(t, n.ca, n.restPort, []byte(n.passphrase))
 	waitForHealthy(t, n.dataDir, 60*time.Second)
 	waitForAdmin(t, n.ca.Pool, n.restPort, 90*time.Second)
-	waitForLeaderViaAdmin(t, n.ca, []int{n.restPort}, 60*time.Second)
+	leaderPorts := []int{n.restPort}
+	if len(n.clusterRestPorts) > 0 {
+		leaderPorts = n.clusterRestPorts
+	}
+	waitForLeaderViaAdmin(t, n.ca, leaderPorts, 60*time.Second)
 	for _, proto := range multiProtocols {
 		waitForCLIProtoReady(t, n, proto, 60*time.Second)
 	}
