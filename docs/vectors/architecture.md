@@ -259,8 +259,11 @@ not from a vector-specific shard. The `shard_id` field is removed (OD-14).
 - **Target: vector storage is tenant-safe and barrier-encrypted.** Namespaces
   are part of one database's store, and vector payloads pass through that
   database's binding encryptor — see [../barrier-seal/](../barrier-seal/). A
-  sealed barrier fails vector reads and writes closed. Shipped, this holds only
-  for the node's own barrier (see "Current state").
+  sealed barrier fails vector reads and writes closed. A materialized
+  database's vector service serves its cached in-memory index only after one
+  namespace read through the binding store, so a sealed barrier fails searches
+  closed (`*BarrierSealedError`, 503 / `UNAVAILABLE`) even on a warm index.
+  Shipped, this holds only for the node's own barrier (see "Current state").
 - Each of the twenty vector capabilities carries its own `vector:*` permission,
   including the read-only ones (`vector:get_index_stats`,
   `vector:namespace_list`), so index topology is not readable by anyone with
