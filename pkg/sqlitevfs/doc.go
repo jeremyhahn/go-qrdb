@@ -35,6 +35,18 @@
 // meta change counter moved) cannot reserve (ErrSnapshotChanged), and the
 // lock holder sweeps the stages a crashed writer left.
 //
+// A Store built WithOptimistic (Q3 A, the opt-in alternative to the writer
+// lock) takes no lock: each transaction records the pages it read, including
+// pages read as absent, and Commit checks that read set atomically with its
+// write. If any read page changed, Commit fails with ErrSnapshotChanged and
+// writes nothing. Writers on disjoint pages both commit. The meta record is
+// checked at the commit revision rather than the snapshot revision, since
+// every commit rewrites it. A moved page count or page size is a conflict.
+// ServiceBackend cannot check a read set on a staged publish (MovePrefix
+// carries no compares), so it refuses one with ErrReadCheckUnsupported.
+// That holds for any Store without a writer lock, because the meta check is
+// always sent.
+//
 // The package is unwired. No SQLite engine is linked and no VFS is
 // registered. ServiceBackend runs a Store over the server's MVCC and
 // transaction services, and NewLockServiceWriter takes its writer lock from
@@ -42,7 +54,6 @@
 // constructs a Store yet. A commit past the tenant's storage quota fails
 // with ErrFull and leaves the database whole. Every Backend call takes the
 // caller's context, and a transaction reads with the context Begin was
-// given. The engine binding, the
-// optimistic read-set check, the database count cap and the sqlite-vfs
+// given. The engine binding, the database count cap and the sqlite-vfs
 // entitlement, a page cache and every transport are later slices.
 package sqlitevfs

@@ -194,7 +194,8 @@ func commit(t *testing.T, txn *Txn) int64 {
 // revision.
 func seed(t *testing.T, s *Store, fills ...byte) int64 {
 	t.Helper()
-	txn := begin(t, s)
+	// Reserve is a no-op on a Store without a writer lock.
+	txn := beginReserved(t, s)
 	writePages(t, txn, fills...)
 	return commit(t, txn)
 }
@@ -1310,8 +1311,9 @@ func TestStoreWithoutWriterLock(t *testing.T) {
 	}
 	writePages(t, txn, 0x02)
 	commit(t, txn)
-	// Without the lock two writers on one snapshot both commit (the
-	// optimistic read-set check is a later slice); the counter still counts.
+	// Without the lock and without WithOptimistic, two writers on one
+	// snapshot both commit (the read-set check is opt-in; see
+	// TestOptimistic_*); the counter still counts.
 	one, two := begin(t, s), begin(t, s)
 	writePages(t, one, 0x03)
 	writePages(t, two, 0x04)
@@ -1361,5 +1363,127 @@ func TestMVCCBackendKeys(t *testing.T) {
 		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
 			t.Fatalf("Keys at %d = %v, want %v", tc.rev, got, tc.want)
 		}
+	}
+}
+
+func newOptimisticStore(t *testing.T, b Backend) *Store {
+	t.Helper()
+	s, err := NewStore(b, "app.db", WithOptimistic(), WithStageThreshold(2*testPageSize), WithStageChunkBytes(testPageSize))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	return s
+}
+
+// readPage reads page pgno through txn, which records it in an optimistic
+// transaction's read set.
+func readPage(t *testing.T, txn *Txn, pgno int64) []byte {
+	t.Helper()
+	p := make([]byte, testPageSize)
+	if n, err := txn.ReadAt(p, (pgno-1)*testPageSize); err != nil || n != testPageSize {
+		t.Fatalf("ReadAt page %d = %d, %v", pgno, n, err)
+	}
+	return p
+}
+
+// writePage writes one page at pgno through txn.
+func writePage(t *testing.T, txn *Txn, pgno int64, fill byte) {
+	t.Helper()
+	if n, err := txn.WriteAt(pageOf(fill), (pgno-1)*testPageSize); err != nil || n != testPageSize {
+		t.Fatalf("WriteAt page %d = %d, %v", pgno, n, err)
+	}
+}
+
+func TestOptimistic_DisjointPagesBothCommit(t *testing.T) {
+	b := newTestBackend(t)
+	s := newOptimisticStore(t, b)
+	seed(t, s, 0x01, 0x02)
+	one, two := begin(t, s), begin(t, s)
+	readPage(t, one, 1)
+	writePage(t, one, 1, 0x11)
+	readPage(t, two, 2)
+	writePage(t, two, 2, 0x22)
+	commit(t, one)
+	commit(t, two)
+	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x11, 0x22)) {
+		t.Fatal("two disjoint optimistic commits do not both read back")
+	}
+	if got := changeCounter(t, s); got != 3 {
+		t.Fatalf("change counter = %d, want 3", got)
+	}
+}
+
+func TestOptimistic_OverlappingReadConflicts(t *testing.T) {
+	b := newTestBackend(t)
+	s := newOptimisticStore(t, b)
+	seed(t, s, 0x01, 0x02)
+	reader, writer := begin(t, s), begin(t, s)
+	if got := readPage(t, reader, 1); !bytes.Equal(got, pageOf(0x01)) {
+		t.Fatal("page 1 does not read the seeded bytes")
+	}
+	writePage(t, reader, 2, 0x22)
+	writePage(t, writer, 1, 0x11)
+	commit(t, writer)
+	rev := revOf(t, b)
+	if _, err := reader.Commit(t.Context()); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("Commit over a changed read = %v, want ErrSnapshotChanged", err)
+	}
+	if revOf(t, b) != rev {
+		t.Fatalf("a refused optimistic commit wrote: revision %d, want %d", revOf(t, b), rev)
+	}
+	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x11, 0x02)) {
+		t.Fatal("a refused optimistic commit changed the pages")
+	}
+}
+
+func TestOptimistic_AbsentPageCreatedConflicts(t *testing.T) {
+	b := newTestBackend(t)
+	s := newOptimisticStore(t, b)
+	// Only page 3 is written, so pages 1 and 2 are absent keys.
+	seeded := begin(t, s)
+	writePage(t, seeded, 3, 0x03)
+	commit(t, seeded)
+	reader, writer := begin(t, s), begin(t, s)
+	if got := readPage(t, reader, 2); !bytes.Equal(got, pageOf(0x00)) {
+		t.Fatal("an absent page does not read as zeros")
+	}
+	writePage(t, reader, 1, 0x11)
+	writePage(t, writer, 2, 0x22)
+	commit(t, writer)
+	rev := revOf(t, b)
+	if _, err := reader.Commit(t.Context()); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("Commit over a page read as absent and since created = %v, want ErrSnapshotChanged", err)
+	}
+	if revOf(t, b) != rev {
+		t.Fatalf("a refused optimistic commit wrote: revision %d, want %d", revOf(t, b), rev)
+	}
+}
+
+func TestOptimistic_StagedCommitConflictsAtPublish(t *testing.T) {
+	b := newStagingBackend(t)
+	s := newOptimisticStore(t, b)
+	seed(t, s, 0x01, 0x02)
+	reader, writer := begin(t, s), begin(t, s)
+	readPage(t, reader, 1)
+	writePages(t, reader, 0x11, 0x12, 0x13)
+	writePage(t, writer, 1, 0x21)
+	commit(t, writer)
+	if _, err := reader.Commit(t.Context()); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("staged Commit over a changed read = %v, want ErrSnapshotChanged", err)
+	}
+	if b.stageCommits == 0 || b.publishes != 1 {
+		t.Fatalf("conflicting staged commit: %d stage commits, %d publishes, want some and 1", b.stageCommits, b.publishes)
+	}
+	assertNoStageKeyLive(t, b)
+	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x21, 0x02)) {
+		t.Fatal("a refused staged commit changed the pages")
+	}
+}
+
+func TestOptimistic_RefusesWriterLock(t *testing.T) {
+	b := newTestBackend(t)
+	_, err := NewStore(b, "app.db", WithOptimistic(), WithWriterLock(newWriter(t, newMemLocker(), "a")))
+	if !errors.Is(err, ErrOptimisticWithWriterLock) || !errors.Is(err, ErrInvalidOption) {
+		t.Fatalf("NewStore(WithOptimistic, WithWriterLock) = %v, want ErrOptimisticWithWriterLock", err)
 	}
 }

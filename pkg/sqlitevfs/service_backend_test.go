@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -106,18 +107,70 @@ func (d *serviceDouble) MovePrefix(ctx context.Context, req *service.MovePrefixR
 
 func (d *serviceDouble) Execute(ctx context.Context, compares []service.Compare, successOps, _ []service.Op) (*service.TransactionResponse, error) {
 	d.record("Execute", ctx)
-	if len(compares) != 0 {
-		return nil, errors.New("serviceDouble: compares are not modelled")
-	}
 	if d.execErr != nil {
 		return nil, d.execErr
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// As the service does, the compares and the success ops are one atomic
+	// step: a failed compare fails the whole transaction and applies nothing.
+	d.b.mu.Lock()
+	defer d.b.mu.Unlock()
+	now := d.b.store.CurrentRevision()
+	for _, c := range compares {
+		ok, err := d.compareHolds(c, now)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return &service.TransactionResponse{Succeeded: false, Revision: now}, nil
+		}
+	}
 	puts, deletes := splitOps(successOps)
-	rev, err := d.b.Commit(ctx, nil, puts, deletes)
+	rev, err := d.b.commitLocked(puts, deletes)
 	if err != nil {
 		return nil, err
 	}
 	return &service.TransactionResponse{Succeeded: true, Revision: rev}, nil
+}
+
+// compareHolds evaluates one compare against the live state at now, the way
+// the service does: an absent key has mod revision 0. Only the mod revision
+// target is modelled, since that is all the backend sends.
+func (d *serviceDouble) compareHolds(c service.Compare, now int64) (bool, error) {
+	if c.Target != service.CompareModRevision {
+		return false, fmt.Errorf("serviceDouble: compare target %v is not modelled", c.Target)
+	}
+	var modRev int64
+	if now > 0 {
+		kv, err := d.b.store.GetAtRevision(c.Key, now)
+		switch {
+		case err == nil:
+			modRev = kv.ModRevision
+		case isMVCCNotFound(err):
+		default:
+			return false, err
+		}
+	}
+	switch c.Result {
+	case service.CompareEqual:
+		return modRev == c.ModRevision, nil
+	case service.CompareNotEqual:
+		return modRev != c.ModRevision, nil
+	case service.CompareGreater:
+		return modRev > c.ModRevision, nil
+	case service.CompareLess:
+		return modRev < c.ModRevision, nil
+	default:
+		return false, fmt.Errorf("serviceDouble: compare result %v is not modelled", c.Result)
+	}
+}
+
+func isMVCCNotFound(err error) bool {
+	var notFound *mvcc.KeyNotFoundError
+	var noRevision *mvcc.RevisionNotFoundError
+	return errors.As(err, &notFound) || errors.As(err, &noRevision)
 }
 
 func splitOps(ops []service.Op) (map[string][]byte, [][]byte) {
@@ -263,14 +316,17 @@ func TestServiceBackendCommitNothing(t *testing.T) {
 
 func TestServiceBackendStoreCommits(t *testing.T) {
 	sb, d := newServiceBackend(t)
-	s := newStagingStore(t, sb, "app.db")
+	// A staged commit over the service publishes with MovePrefix, which
+	// carries no compares, so it needs the writer lock (see
+	// TestServiceBackendStagedReadSetRefused).
+	s := newLockedStore(t, sb, newMemLocker(), "a")
 	seed(t, s, 0x01, 0x02)
 	if d.moves != 0 {
 		t.Fatalf("a 2-page commit published %d times", d.moves)
 	}
 	old := begin(t, s)
 
-	txn := begin(t, s)
+	txn := beginReserved(t, s)
 	writePages(t, txn, 0x11, 0x12, 0x13)
 	before := revOf(t, sb)
 	rev := commit(t, txn)
@@ -298,16 +354,88 @@ func TestServiceBackendStoreCommits(t *testing.T) {
 
 func TestServiceBackendPublishConflict(t *testing.T) {
 	sb, d := newServiceBackend(t)
-	s := newStagingStore(t, sb, "app.db")
+	s := newLockedStore(t, sb, newMemLocker(), "a")
 	seed(t, s, 0x01, 0x02)
 	d.strayUnder = true
-	txn := begin(t, s)
+	txn := beginReserved(t, s)
 	writePages(t, txn, 0x11, 0x12, 0x13)
 	if _, err := txn.Commit(t.Context()); !errors.Is(err, ErrPublishConflict) {
 		t.Fatalf("Commit with a stray staged key = %v, want ErrPublishConflict", err)
 	}
 	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x01, 0x02)) {
 		t.Fatal("a conflicting publish changed the pages")
+	}
+}
+
+// TestServiceBackendStagedReadSetRefused: without a writer lock every commit
+// carries a read set, and MovePrefix cannot check one, so a staged publish is
+// refused before anything is published and its stage keys are swept.
+func TestServiceBackendStagedReadSetRefused(t *testing.T) {
+	for name, s := range map[string]func(Backend) (*Store, error){
+		"unlocked": func(b Backend) (*Store, error) {
+			return NewStore(b, "app.db", WithStageThreshold(2*testPageSize), WithStageChunkBytes(testPageSize))
+		},
+		"optimistic": func(b Backend) (*Store, error) {
+			return NewStore(b, "app.db", WithOptimistic(), WithStageThreshold(2*testPageSize), WithStageChunkBytes(testPageSize))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sb, d := newServiceBackend(t)
+			store, err := s(sb)
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			seed(t, store, 0x01, 0x02)
+			txn := begin(t, store)
+			writePages(t, txn, 0x11, 0x12, 0x13)
+			if _, err := txn.Commit(t.Context()); !errors.Is(err, ErrReadCheckUnsupported) {
+				t.Fatalf("staged Commit with a read set = %v, want ErrReadCheckUnsupported", err)
+			}
+			if d.moves != 0 {
+				t.Fatalf("a refused publish moved %d times", d.moves)
+			}
+			if got := readAll(t, begin(t, store)); !bytes.Equal(got, pagesOf(0x01, 0x02)) {
+				t.Fatal("a refused staged commit changed the pages")
+			}
+			root, err := StageRoot("app.db")
+			if err != nil {
+				t.Fatalf("StageRoot: %v", err)
+			}
+			if keys, err := sb.Keys(t.Context(), root, revOf(t, sb)); err != nil || len(keys) != 0 {
+				t.Fatalf("stage keys after the refusal = %q, %v", keys, err)
+			}
+		})
+	}
+}
+
+// TestOptimistic_ServiceConflict: over the service the read set travels as
+// compares in the commit's own transaction, so a changed read fails it whole.
+func TestOptimistic_ServiceConflict(t *testing.T) {
+	sb, _ := newServiceBackend(t)
+	s := newOptimisticStore(t, sb)
+	seed(t, s, 0x01, 0x02)
+	one, two := begin(t, s), begin(t, s)
+	readPage(t, one, 1)
+	writePage(t, one, 1, 0x11)
+	readPage(t, two, 2)
+	writePage(t, two, 2, 0x22)
+	commit(t, one)
+	commit(t, two)
+
+	reader, writer := begin(t, s), begin(t, s)
+	readPage(t, reader, 1)
+	writePage(t, reader, 2, 0x32)
+	writePage(t, writer, 1, 0x41)
+	commit(t, writer)
+	rev := revOf(t, sb)
+	if _, err := reader.Commit(t.Context()); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("service Commit over a changed read = %v, want ErrSnapshotChanged", err)
+	}
+	if revOf(t, sb) != rev {
+		t.Fatalf("a failed compare wrote: revision %d, want %d", revOf(t, sb), rev)
+	}
+	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x41, 0x22)) {
+		t.Fatal("service optimistic commits do not read back")
 	}
 }
 
