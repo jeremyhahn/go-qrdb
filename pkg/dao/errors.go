@@ -58,6 +58,18 @@ func (e SerializationFailedError) Unwrap() error {
 	return e.Cause
 }
 
+// CodecPanicError reports a value an encoder library panicked on (yaml.v3
+// panics on, for example, a func value) instead of returning an error. The
+// codec recovers the panic and returns this as the encoding error.
+type CodecPanicError struct {
+	Codec CodecType
+	Value string
+}
+
+func (e *CodecPanicError) Error() string {
+	return fmt.Sprintf("dao: %s encoder panicked: %s", e.Codec, e.Value)
+}
+
 // DeserializationFailedError indicates entity deserialization failed.
 type DeserializationFailedError struct {
 	EntityType string

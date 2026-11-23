@@ -40,7 +40,7 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 // credentialJobs are the jobs that run a step which could print the forge
@@ -88,7 +88,7 @@ type ciLogWorkflow struct {
 func parseLogWorkflow(t *testing.T, body string) ciLogWorkflow {
 	t.Helper()
 	var wf ciLogWorkflow
-	if err := yaml.Unmarshal([]byte(body), &wf); err != nil {
+	if err := gocodecyaml.New[ciLogWorkflow]().Unmarshal([]byte(body), &wf); err != nil {
 		t.Fatalf("parse workflow: %v", err)
 	}
 	return wf
@@ -273,7 +273,7 @@ func TestEnvPrintProblems_CanFail(t *testing.T) {
 		`printenv GIT_CONFIG_KEY_0`,
 		`set -x`,
 		`set -o xtrace`,
-		`cat .devcontainer/.env`,
+		`cat build/docker/devcontainer/.env`,
 		`cat "$RUNNER_TEMP/gomodauth.env"`,
 		`tail "$MODULE_ENV_FILE"`,
 	} {

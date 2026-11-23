@@ -38,7 +38,8 @@
 # test/buildgates/integration_image_tag_test.go fails on a literal tag here.
 x-int-image: &int-image "${QRDB_INT_IMAGE:?QRDB_INT_IMAGE is unset, run this stack through make}"
 
-# The analyser pins .devcontainer/Dockerfile bakes in (#322), plus
+# The analyser pins the dev stages of build/docker/devcontainer/Dockerfile
+# bake in (#322), plus
 # QRDB_BUILD_TAGS (go-qrdb#555), the feature-tag set its qrdbd/qrdb builds
 # compile with. These three services build the same Dockerfile the
 # devcontainer does, so they take the same args, or an integration build and a
@@ -51,14 +52,18 @@ x-int-image: &int-image "${QRDB_INT_IMAGE:?QRDB_INT_IMAGE is unset, run this sta
 # empty string instead and trip the Dockerfile's guard (QRDB_BUILD_TAGS has
 # none, but an empty string would still build qrdbd/qrdb with no feature tags
 # at all, which is just as wrong). The reasoning, and the measurement behind
-# it, is in .devcontainer/docker-compose.yml next to the same block; the
-# Makefile `export`s the variables so `make` builds win.
+# it, is in build/docker/devcontainer/compose.yaml next to the same block; the
+# Makefile `export`s the variables so `make` builds win. GO_IMAGE and
+# TRIVY_IMAGE are the Dockerfile's global ARGs (its CI stages' FROMs), which
+# have no default: BuildKit resolves every global FROM for any target.
 x-scanner-pins: &scanner-pins
   GOLANGCI_LINT_VERSION:
   GOSEC_VERSION:
   GOVULNCHECK_VERSION:
   TRIVY_VERSION:
   QRDB_BUILD_TAGS:
+  GO_IMAGE:
+  TRIVY_IMAGE:
 
 services:
   # The stack's network namespace holder (see the top of this file). It only
@@ -85,8 +90,8 @@ services:
   qrdbd:
     build:
       context: ../../..
-      dockerfile: .devcontainer/Dockerfile
-      target: integration
+      dockerfile: build/docker/devcontainer/Dockerfile
+      target: dev-integration
       args: *scanner-pins
       secrets:
         - gomodauth
@@ -244,8 +249,8 @@ services:
   qrdbd-shamir:
     build:
       context: ../../..
-      dockerfile: .devcontainer/Dockerfile
-      target: integration
+      dockerfile: build/docker/devcontainer/Dockerfile
+      target: dev-integration
       args: *scanner-pins
       secrets:
         - gomodauth
@@ -401,8 +406,8 @@ services:
   integration-tests:
     build:
       context: ../../..
-      dockerfile: .devcontainer/Dockerfile
-      target: integration
+      dockerfile: build/docker/devcontainer/Dockerfile
+      target: dev-integration
       args: *scanner-pins
       secrets:
         - gomodauth
@@ -520,8 +525,8 @@ volumes:
     driver: local
 
 # The BuildKit secret that carries the internal Gitea module credentials into
-# `go mod download`. Every service above that builds .devcontainer/Dockerfile
-# declares it, so the compose entrypoints authenticate exactly the way
+# `go mod download`. Every service above that builds
+# build/docker/devcontainer/Dockerfile declares it, so the compose entrypoints authenticate exactly the way
 # `make integration-image`'s `docker build --secret` does -- before #302 they
 # did not, and `make ci` therefore died inside the image build with an
 # `unknown revision` that read like a gate failure.

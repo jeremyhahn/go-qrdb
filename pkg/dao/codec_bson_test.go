@@ -1,5 +1,3 @@
-//go:build codec_bson
-
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
