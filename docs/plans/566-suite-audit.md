@@ -407,6 +407,16 @@ One row per test function this branch deletes (`git diff origin/main...HEAD -- '
 | pkg/service | TestHostShardSnapshotProvider_SnapshotShard_ContextCanceledDuringPoll | wall-clock wait replaced by the first host poll callback canceling ctx | itself |
 | pkg/rowlock | TestSession_LeaseInUseIsNotIdle | wall-clock wait replaced by a fake clock (half-TTL steps, each after a renewal, to two TTLs past the grant) | itself |
 | pkg/api/connlimit | TestQUICListenerReleasesSlotOnConnectionClose | wall-clock wait replaced by the server conn's context ending and the counter emptying (bounded deadline) | itself |
+| pkg/index | TestExtendedMemoryIndex_ContextCancellation | wall-clock wait replaced by waiting on the timed-out context's Done | itself |
+| pkg/embedding | TestEmbed_CancelledContext | wall-clock wait replaced by the handler returning when the request context ends | itself |
+| pkg/service | TestVectorService_GetRebuildProgress_EstimatedTimeRemaining | wall-clock wait removed (the only assertion, ElapsedTimeMs >= 0, needs no elapsed time) | itself |
+| pkg/service | TestHardConfinedWatch_WatchEntityTypeFilterGoroutineExitsOnContextDone | wall-clock wait replaced by the forwarder draining the capacity-1 event channel before cancel (bounded deadline) | itself |
+| cmd/qrdbd | TestCertReloader_FileWatch_DebounceReloadError | wall-clock wait replaced by a recording slog handler receiving "debounced reload failed" (bounded deadline) | itself |
+| cmd/qrdbd | TestCertReloader_FileWatch_WatcherError | wall-clock wait replaced by a recording slog handler receiving "filesystem watcher error" (bounded deadline) | itself |
+| pkg/rowlock | TestKeepalive_RevokedLease_MarksTheOwnerLost | wall-clock wait loop replaced by require.Eventually on the lease's lost flag | itself |
+| pkg/rowlock | waitWaiting (helper) | wall-clock wait loop replaced by require.Eventuallyf on the waiter gauge | its callers |
+| pkg/rowlock | waitQueued (helper) | wall-clock wait loop replaced by require.Eventuallyf on the queue depth | its callers |
+| pkg/sql/internal/sessionguard | closeCounter / waitClosed (helpers) | wall-clock wait loop replaced by a channel closed on the first close (bounded deadline) | their callers |
 
 ## Folded refs
 
