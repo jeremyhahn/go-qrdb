@@ -497,3 +497,25 @@ go-qrdb local prefix writes them (testify in its own group).
 | cmd/qrdbd/reset_signal_race_test.go | 108 | kept: lets an in-flight SIGTERM land before the helper process exits; the window is what the race test proves |
 | cmd/qrdbd/signal_dispatch_test.go | 95 | kept: 2 retry intervals after stop prove no later signal outlives the daemon |
 | cmd/qrdbd/unseal_ceremony_test.go | 468, 477 | initializeCeremony: require.EventuallyWithTf over the same POST (readinessTimeout, signalRetryInterval), last error or status reported |
+
+## Sleep sweep 5 (rw566h)
+
+Package order 5 (pkg/service, pkg/volume, pkg/credentials): every time.Sleep
+left in the test files below either became a bounded testify poll on the same
+condition, or stays because the elapsed time is what the test proves. Line
+numbers are those before the sweep. Helpers that return a value capture it
+inside the poll condition and return it after; signatures and callers are
+unchanged.
+
+| File | Line | Replaced by / kept and why |
+|---|---|---|
+| pkg/service/batch_import_session_leader_test.go | 98 | waitForLeaderExcept: require.Eventuallyf on a host reporting a known, non-excluded leader (raftharness.Bound, 20ms), host index and replica id captured in the condition |
+| pkg/service/fsync_stall_leadership_test.go | 142 | (*fsyncStallCluster).leader: require.Eventuallyf on agreedLeader() != 0 (raftharness.Bound, 10ms), id and term captured in the condition |
+| pkg/service/invitation_test.go | 461 | kept: the token's expiry is judged by the invitation store's Lookup against the wall clock; InvitationDeps.Now only feeds bring-your-own certificate verification, so 1ms past a 1ns TTL is the only way to reach an expired token without a production change |
+| pkg/service/reclaim_job_test.go | 786 | kept: paces the SetStoreResolver churn against Run for the 100ms context; the interleaving is what -race proves, there is no condition to wait on |
+| pkg/service/watch_entity_terminal_test.go | 67 | awaitEviction: require.EventuallyWithT on hub.WatchCount() == 0 (30s, 1ms), the last count reported |
+| pkg/volume/reporter_seal_test.go | 169, 176 | kept: inside synctest.Test the sleeps advance the fake clock past the report intervals the test counts refreshes over |
+| pkg/volume/reporter_seal_test.go | 203 | kept: inside synctest.Test the sleep advances the fake clock two report intervals |
+| pkg/volume/reporter_test.go | 261 | TestReporter_StartRetriesAFailedInitialReport: require.EventuallyWithT over the same mvcc.Get (5s, 5ms), the last raw and err reported |
+| pkg/credentials/retrieve_buffer_test.go | 110 | require.EventuallyWithT on len(svc.waiters["late"]) == waiters read under waitersMu (5s, 1ms), the last count reported |
+| pkg/credentials/waiter_cancel_test.go | 87 | waitUntil deleted; its one caller in TestRetrieveManual_CancelDeregistersWaiter is require.Eventually on the same condition (2s, 1ms) with the same failure message |
