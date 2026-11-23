@@ -141,6 +141,46 @@ describe('batch.importContent', () => {
         }
     });
 
+    it('keeps every session request on the origin it began on across a reconnect', async () => {
+        const client = await connected();
+        const other = 'https://127.0.0.1:63003';
+        const urls: string[] = [];
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            urls.push(url);
+            if (url.endsWith('/batch/import/begin')) {
+                // A connect to another server lands right after begin.
+                void client.connection.connect(other);
+                return json(200, { session_id: 's1' });
+            }
+            if (url.endsWith('/commit')) return json(200, { total: 1, succeeded: 1, failed: 0 });
+            if (url.endsWith('/health')) return json(200, { status: 'ok' });
+            return new Response(null, { status: 204 });
+        }));
+        // The body is still being read when the first reconnect lands.
+        let release: (b: ArrayBuffer) => void = () => undefined;
+        const pending = new Promise<ArrayBuffer>((resolve) => {
+            release = resolve;
+        });
+        class SlowBlob extends Blob {
+            override arrayBuffer(): Promise<ArrayBuffer> {
+                return pending;
+            }
+        }
+
+        const done = client.batch.importContent(new SlowBlob(['id,name\n1,a\n']), opts);
+        void client.connection.connect(other);
+        release(new TextEncoder().encode('id,name\n1,a\n').buffer as ArrayBuffer);
+        await done;
+
+        const session = urls.filter((u) => u.includes('/batch/import/'));
+        expect(session.length).toBe(3);
+        for (const u of session) {
+            expect(u.startsWith('https://localhost:63002/')).toBe(true);
+        }
+        // The reconnects themselves did reach the other server.
+        expect(urls.some((u) => u.startsWith(other))).toBe(true);
+    });
+
     it('accepts a Blob', async () => {
         const client = await connected();
         const calls = stubServer((c) => {

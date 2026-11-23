@@ -1028,18 +1028,26 @@ export class RestClient implements Client {
      * the session (best effort) and rethrows the original error.
      */
     private async importContentSession(data: Uint8Array | Blob, opts: ImportContentOptions): Promise<ImportResult> {
+        // Every session request (begin, append, commit, abort) goes to the
+        // server and database the session began on: an immutable client
+        // snapshot taken before the first await, so a connect to another
+        // address (or a scope change) while the body is read or a chunk is
+        // in flight never splits one session across two origins. The
+        // database is the one the options name, else the client's own scope;
+        // each request carries that database's header.
+        const scope =
+            typeof opts.database === 'string' && opts.database !== ''
+                ? opts.database === DATABASE_DEFAULT_SCOPE
+                    ? ''
+                    : opts.database
+                : this.activeDatabase;
+        const target = new RestClient(this.baseUrl, scope);
+        target.connected = this.connected;
+        target.serverVersion = this.serverVersion;
         // A copy into a plain ArrayBuffer: fetch's BodyInit refuses a view
         // over a SharedArrayBuffer.
         const bytes: Uint8Array<ArrayBuffer> =
             data instanceof Uint8Array ? new Uint8Array(data) : new Uint8Array(await data.arrayBuffer());
-        // Every session request (begin, append, commit, abort) goes to the
-        // database the options name, through a client scoped to it, so each
-        // carries that database's header; without one the client's own
-        // scope applies.
-        const target: RestClient =
-            typeof opts.database === 'string' && opts.database !== ''
-                ? (this.databaseScoped(opts.database) as RestClient)
-                : this;
         const begin = await target.fetchJSON<{ sessionId: string }>('/batch/import/begin', {
             method: 'POST',
             ...jsonBody({
