@@ -100,6 +100,36 @@ func TestConsumePendingSystemSOAfterFirstBoot(t *testing.T) {
 		}
 	})
 
+	// The handoff is consumed only for the exact SO this first boot
+	// enrolled (firstboot.ConsumeEnrolledSystemSO, as the embedded node
+	// does): a record naming another SO stays pending for the next start.
+	t.Run("a different pending SO stays pending", func(t *testing.T) {
+		store := newConsumeTestStore()
+		store.records[firstboot.PendingSystemSOKey] = []byte(`{"username":"otherofficer"}`)
+		if err := consumePendingSystemSOAfterFirstBoot(ctx, store, &firstboot.SOConfig{Username: "secofficer"}); err != nil {
+			t.Fatalf("consume = %v, want nil", err)
+		}
+		if firstboot.SystemSOConsumed(ctx, store) {
+			t.Fatal("first boot consumed a pending system SO record it did not enrol")
+		}
+		if store.puts != 0 {
+			t.Fatalf("consume of another SO's record wrote %d times, want 0", store.puts)
+		}
+	})
+
+	t.Run("a failed read fails the boot", func(t *testing.T) {
+		store := newConsumeTestStore()
+		store.records[firstboot.PendingSystemSOKey] = []byte(`{not json`)
+		err := consumePendingSystemSOAfterFirstBoot(ctx, store, &firstboot.SOConfig{Username: "secofficer"})
+		var bootErr *AuthBootstrapError
+		if !errors.As(err, &bootErr) {
+			t.Fatalf("consume with an unreadable record = %v (%T), want *AuthBootstrapError", err, err)
+		}
+		if store.puts != 0 {
+			t.Fatalf("consume of an unreadable record wrote %d times, want 0", store.puts)
+		}
+	})
+
 	t.Run("a failed write fails the boot", func(t *testing.T) {
 		store := newConsumeTestStore()
 		store.records[firstboot.PendingSystemSOKey] = []byte(`{"username":"secofficer"}`)

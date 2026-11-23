@@ -5175,7 +5175,8 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 }
 
 // consumePendingSystemSOAfterFirstBoot marks the pending system SO record
-// consumed once this node's first boot has run with it: the SO is enrolled,
+// consumed once this node's first boot has run with it (and only if it still
+// names that SO): the SO is enrolled,
 // or was enrolled and deleted since (firstboot.Result.SORetired). It runs
 // before the node serves, so no account mutation can see the record still
 // pending; a failed write fails the boot. Nodes that only waited for the
@@ -5184,7 +5185,11 @@ func consumePendingSystemSOAfterFirstBoot(ctx context.Context, store firstboot.P
 	if pendingSO == nil {
 		return nil
 	}
-	if err := firstboot.ClearPendingSystemSO(ctx, store); err != nil {
+	// Only the exact record this first boot enrolled is consumed
+	// (firstboot.ConsumeEnrolledSystemSO, as the embedded node does): a
+	// record naming another SO stays pending for the next start, and an
+	// unreadable one fails the boot rather than being overwritten.
+	if _, err := firstboot.ConsumeEnrolledSystemSO(ctx, store, pendingSO); err != nil {
 		return &AuthBootstrapError{Step: "consume pending system SO", Err: err}
 	}
 	return nil
