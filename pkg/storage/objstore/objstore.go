@@ -443,6 +443,22 @@ func lockNamespace(namespace string) func() {
 // canonical form (canonicalS3Endpoint, canonicalAzureEndpoint), so every
 // spelling of one effective endpoint, the omitted default included, is one
 // namespace.
+// NamespaceKey names the provider namespace provider and settings address:
+// two configurations with one key share one namespace (a symlinked local
+// root and its target, two spellings of one endpoint). Inline credentials
+// are refused as New refuses them, and a walked root that does not resolve
+// is an error.
+func NamespaceKey(provider string, settings map[string]string) (string, error) {
+	if err := RejectCredentialSettings(settings); err != nil {
+		return "", err
+	}
+	canonical, err := canonicalNamespace(provider, settings)
+	if err != nil {
+		return "", err
+	}
+	return namespaceKey(provider, canonical), nil
+}
+
 func namespaceKey(provider string, settings map[string]string) string {
 	var endpoint string
 	switch provider {
@@ -1308,8 +1324,8 @@ func (e *Engine) reclaimLocked() error {
 // owner and nothing else remains. A namespace still holding foreign objects
 // keeps the marker, so its owner can reopen it; a marker naming another
 // owner, or an unowned engine, deletes no marker. A drop calls it once the
-// database's catalog record is gone; a failed create calls it on a
-// namespace its open freshly claimed (FreshlyClaimed). No write follows it.
+// database's catalog record is gone; a failed create gives its claim back
+// with ReleaseClaim instead. No write follows it.
 func (e *Engine) ReleaseOwner() error {
 	leave, err := e.enter()
 	if err != nil {

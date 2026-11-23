@@ -575,6 +575,111 @@ func TestManager_ReleaseLedgerKeepsEveryIncarnation(t *testing.T) {
 	}
 }
 
+// dropThenRecreate creates "blobs" on rootA, drops it with the namespace
+// release failing, then re-creates "blobs" on root (the create's own retry
+// of that release failing too), puts a key in it and closes the manager.
+func dropThenRecreate(t *testing.T, dataDir, rootA, root string) {
+	t.Helper()
+	ctx := context.Background()
+	mgr := newManager(t, dataDir)
+	t.Cleanup(func() { releaseFaultArmed.Store(false) })
+	if _, err := mgr.Create(releaseFaultObjstore(t, "blobs", rootA)); err != nil {
+		t.Fatalf("Create on rootA: %v", err)
+	}
+	releaseFaultArmed.Store(true)
+	if err := mgr.Drop(ctx, "blobs"); err != nil {
+		t.Fatalf("Drop: %v", err)
+	}
+	if releaseFaultArmed.Load() {
+		t.Fatal("the drop never deleted the owner marker")
+	}
+	releaseFaultArmed.Store(true)
+	db, err := mgr.Create(releaseFaultObjstore(t, "blobs", root))
+	if err != nil {
+		t.Fatalf("re-Create: %v", err)
+	}
+	if releaseFaultArmed.Load() {
+		t.Fatal("the re-create did not retry the recorded release")
+	}
+	if err := db.Backend().Put(ctx, []byte("key"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+// reopenAndGetBlobs opens every database of dataDir in a new Manager and
+// checks the re-created "blobs" still reads its key.
+func reopenAndGetBlobs(t *testing.T, dataDir string) *database.Manager {
+	t.Helper()
+	ctx := context.Background()
+	next := newManager(t, dataDir)
+	if err := next.OpenAll(ctx); err != nil {
+		t.Fatalf("OpenAll: %v", err)
+	}
+	blobs, err := next.Get("blobs")
+	if err != nil {
+		t.Fatalf("Get(blobs): %v", err)
+	}
+	got, err := blobs.Backend().Get(ctx, []byte("key"))
+	if err != nil || string(got) != "v" {
+		t.Fatalf("blobs Get(key) = %q, %v; want \"v\"", got, err)
+	}
+	return next
+}
+
+// TestManager_RecreatedNameOnAnotherNamespaceReleasesTheOld pins that the
+// release retry gives back a dropped database's namespace when its name was
+// re-created on another namespace, and leaves the live one alone.
+func TestManager_RecreatedNameOnAnotherNamespaceReleasesTheOld(t *testing.T) {
+	base := t.TempDir()
+	rootA := filepath.Join(base, "a")
+	rootB := filepath.Join(base, "b")
+	dataDir := t.TempDir()
+	dropThenRecreate(t, dataDir, rootA, rootB)
+
+	next := reopenAndGetBlobs(t, dataDir)
+	if _, err := next.Create(releaseFaultObjstore(t, "other", rootA)); err != nil {
+		t.Fatalf("Create on the old namespace after the retried release: %v", err)
+	}
+}
+
+// TestManager_RecreatedNameOnTheSameNamespaceKeepsIt pins that the release
+// retry never releases a namespace the re-created database holds: the entry
+// is forgotten and the owner marker stays.
+func TestManager_RecreatedNameOnTheSameNamespaceKeepsIt(t *testing.T) {
+	rootA := filepath.Join(t.TempDir(), "a")
+	dataDir := t.TempDir()
+	dropThenRecreate(t, dataDir, rootA, rootA)
+
+	next := reopenAndGetBlobs(t, dataDir)
+	var owned *objstore.NamespaceOwnedError
+	var inUse *objstore.NamespaceInUseError
+	if _, err := next.Create(releaseFaultObjstore(t, "other", rootA)); !errors.As(err, &owned) && !errors.As(err, &inUse) {
+		t.Fatalf("Create on the live namespace = %v, want an objstore owner refusal", err)
+	}
+	var left []string
+	err := filepath.WalkDir(filepath.Join(dataDir, "releasing"), func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if !d.IsDir() {
+			left = append(left, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the release ledger: %v", err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("release ledger still holds %v, want no entry", left)
+	}
+}
+
 // TestManager_SecondDatabaseCannotReachAnothersNamespace pins that a database
 // owns its provider namespace: a second database configured onto the first's
 // path is refused, cannot read or reclaim its objects, and the first still

@@ -16,8 +16,9 @@
 // into pkg/database's EmbeddedBackendFactory. pkg/database does not import the
 // engine, so a lean embedder stays free of go-objstore; the node composers
 // (qrdbd, the server lifecycle and the Go SDK node) pass
-// database.WithObjectStorage(objstoredb.Open) and
-// database.WithObjectStorageValidator(objstoredb.ValidateSettings), as
+// database.WithObjectStorage(objstoredb.Open),
+// database.WithObjectStorageValidator(objstoredb.ValidateSettings) and
+// database.WithObjectStorageNamespace(objstoredb.Namespace), as
 // NewBackendFactory does.
 package objstoredb
 
@@ -65,7 +66,21 @@ func namespaceOwner(cfg database.DatabaseConfig) string {
 // wired in.
 func NewBackendFactory() *database.EmbeddedBackendFactory {
 	return database.NewEmbeddedBackendFactory(database.WithObjectStorage(Open),
-		database.WithObjectStorageValidator(ValidateSettings))
+		database.WithObjectStorageValidator(ValidateSettings),
+		database.WithObjectStorageNamespace(Namespace))
+}
+
+// errNoObjstoreConfig is Namespace's refusal of a configuration with no
+// object storage.
+var errNoObjstoreConfig = errors.New("objstoredb: the database has no object-storage configuration")
+
+// Namespace is the database.ObjectStorageNamespacer of an objstore database:
+// the namespace key (objstore.NamespaceKey) of its provider and settings.
+func Namespace(cfg database.DatabaseConfig) (string, error) {
+	if cfg.Objstore == nil {
+		return "", errNoObjstoreConfig
+	}
+	return objstore.NamespaceKey(cfg.Objstore.Provider, cfg.Objstore.Settings)
 }
 
 // ValidateSettings is the database.ObjectStorageSettingsValidator the node

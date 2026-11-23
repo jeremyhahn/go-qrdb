@@ -298,8 +298,10 @@ func releaseEntryFile(incarnation string) (string, error) {
 // the next retry and is logged. An entry whose name a drop is still working
 // on here, or whose catalog record still carries the drop's fence, is left
 // to that drop. An entry whose name has a live record again was re-created:
-// that database holds the namespace now (the owner is the tenant and name),
-// so the entry is forgotten. Each entry is handled under its name's claim,
+// when that database holds the entry's namespace (the owner is the tenant
+// and name) the entry is forgotten; when it provably holds another one
+// (ObjectStorageNamespacer) the old namespace is released; when that cannot
+// be told the entry is kept and logged. Each entry is handled under its name's claim,
 // so no create or open of the name runs meanwhile.
 func (m *Manager) retryNamespaceReleases(ctx context.Context) {
 	cat, err := m.catalog("retry object-storage namespace releases")
@@ -332,18 +334,32 @@ func (m *Manager) retryNamespaceRelease(ctx context.Context, cat Catalog, entry 
 	}
 	meta, err := cat.Get(ctx, entry.TenantID, entry.Name)
 	if err == nil {
-		if meta.Dropping {
+		if meta.Incarnation == entry.Incarnation && meta.Dropping {
+			// The drop that recorded the entry is still under way.
 			return
 		}
-		if err := m.forgetRelease(key.tenant, key.name, entry.file); err != nil {
-			warn("failed to forget the namespace release entry of a re-created database", err)
+		// The name was re-created. The entry is forgotten only when the
+		// live database holds the entry's namespace, and released only when
+		// it provably holds another one; on any doubt the entry is kept,
+		// since ReleaseOwner reclaims records the live database may share.
+		live := DatabaseConfig{TenantID: entry.TenantID, Name: entry.Name, Backend: meta.Backend, Objstore: meta.Objstore}
+		same, err := m.sameObjectStorageNamespace(entry.config(), live)
+		if err != nil {
+			warn("object-storage namespace release of a re-created name kept: namespace unknown", err)
+			return
 		}
-		return
-	}
-	var notFound *NotFoundError
-	if !errors.As(err, &notFound) {
-		warn("object-storage namespace release not retried", err)
-		return
+		if same {
+			if err := m.forgetRelease(key.tenant, key.name, entry.file); err != nil {
+				warn("failed to forget the namespace release entry of a re-created database", err)
+			}
+			return
+		}
+	} else {
+		var notFound *NotFoundError
+		if !errors.As(err, &notFound) {
+			warn("object-storage namespace release not retried", err)
+			return
+		}
 	}
 	if err := m.releaseDatabaseNamespace(key, entry.config()); err != nil {
 		warn("object-storage namespace release retry failed", err)
@@ -355,6 +371,26 @@ func (m *Manager) retryNamespaceRelease(ctx context.Context, cat Catalog, entry 
 	}
 	m.logger.Info("object-storage namespace of a dropped database released",
 		slog.String("tenant", entry.TenantID), slog.String("name", entry.Name))
+}
+
+// sameObjectStorageNamespace reports whether the live configuration holds
+// the dropped one's provider namespace. A live database that is not object
+// storage holds no namespace, so it is another one. An error -- no
+// namespacer wired, a root that no longer resolves -- means it cannot be
+// told.
+func (m *Manager) sameObjectStorageNamespace(dropped, live DatabaseConfig) (bool, error) {
+	droppedKey, err := objectStorageNamespace(m.factory, dropped)
+	if err != nil {
+		return false, err
+	}
+	if live.Backend != BackendObjstore || live.Objstore == nil {
+		return false, nil
+	}
+	liveKey, err := objectStorageNamespace(m.factory, live)
+	if err != nil {
+		return false, err
+	}
+	return droppedKey == liveKey, nil
 }
 
 // createUndo removes what a failed Create made, and nothing it did not.

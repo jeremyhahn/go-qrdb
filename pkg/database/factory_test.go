@@ -682,6 +682,34 @@ func TestEmbeddedBackendFactory_ObjstoreNotWired(t *testing.T) {
 	}
 }
 
+// TestEmbeddedBackendFactory_ObjectStorageNamespace pins the namespace seam:
+// a wired namespacer answers for the factory and through
+// objectStorageNamespace; with none wired, or a factory without the seam,
+// the namespace is ErrObjectStorageNamespaceUnknown.
+func TestEmbeddedBackendFactory_ObjectStorageNamespace(t *testing.T) {
+	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{Provider: "local"}}
+	wired := NewEmbeddedBackendFactory(WithObjectStorageNamespace(func(c DatabaseConfig) (string, error) {
+		return "ns:" + c.Objstore.Provider, nil
+	}))
+	for name, get := range map[string]func() (string, error){
+		"method": func() (string, error) { return wired.ObjectStorageNamespace(cfg) },
+		"helper": func() (string, error) { return objectStorageNamespace(wired, cfg) },
+	} {
+		got, err := get()
+		if err != nil || got != "ns:local" {
+			t.Fatalf("%s: namespace = %q, %v; want \"ns:local\"", name, got, err)
+		}
+	}
+
+	bare := NewEmbeddedBackendFactory()
+	if _, err := bare.ObjectStorageNamespace(cfg); !errors.Is(err, ErrObjectStorageNamespaceUnknown) {
+		t.Fatalf("unwired namespace error = %v, want ErrObjectStorageNamespaceUnknown", err)
+	}
+	if _, err := objectStorageNamespace(nil, cfg); !errors.Is(err, ErrObjectStorageNamespaceUnknown) {
+		t.Fatalf("seamless factory namespace error = %v, want ErrObjectStorageNamespaceUnknown", err)
+	}
+}
+
 // A sealed node's manager refuses an objstore database before anything is
 // created, while an unsealed node's manager opens it.
 func TestManager_SealedNodeRefusesObjstoreDatabase(t *testing.T) {

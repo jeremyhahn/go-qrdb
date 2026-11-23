@@ -16,6 +16,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -39,8 +40,9 @@ type BackendFactory interface {
 // EmbeddedBackendFactory creates standalone backends backed by local storage
 // engines (memory, file, pebble).
 type EmbeddedBackendFactory struct {
-	objectStorage         ObjectStorageOpener
-	objectStorageValidate ObjectStorageSettingsValidator
+	objectStorage          ObjectStorageOpener
+	objectStorageValidate  ObjectStorageSettingsValidator
+	objectStorageNamespace ObjectStorageNamespacer
 }
 
 // ObjectStorageSettingsValidator checks a database's Objstore provider
@@ -110,6 +112,53 @@ func validateObjectStorage(factory BackendFactory, cfg DatabaseConfig) error {
 		return &ObjectStorageNotWiredError{Name: cfg.Name}
 	}
 	return v.ValidateObjectStorage(cfg)
+}
+
+// ObjectStorageNamespacer names the provider namespace an object-storage
+// database's configuration resolves to: two configurations with one key
+// address one namespace (a symlinked local root and its target, two
+// spellings of one endpoint). A seam, as ObjectStorageSettingsValidator is,
+// so this package does not import the object-storage engine.
+type ObjectStorageNamespacer func(cfg DatabaseConfig) (string, error)
+
+// ErrObjectStorageNamespaceUnknown is returned by ObjectStorageNamespace
+// when no ObjectStorageNamespacer is wired: the namespace of a configuration
+// cannot be told, so nothing may be released on the strength of it.
+var ErrObjectStorageNamespaceUnknown = errors.New("database: object-storage namespace unknown: no namespacer is wired")
+
+// WithObjectStorageNamespace wires the namespacer the manager uses to tell
+// whether a dropped database's namespace is the one a re-created database of
+// its name holds (the namespace release retry).
+func WithObjectStorageNamespace(ns ObjectStorageNamespacer) EmbeddedBackendFactoryOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.objectStorageNamespace = ns
+	}
+}
+
+// ObjectStorageNamespace returns the namespace key of cfg's object storage
+// (ObjectStorageNamespacer), or ErrObjectStorageNamespaceUnknown when no
+// namespacer is wired.
+func (f *EmbeddedBackendFactory) ObjectStorageNamespace(cfg DatabaseConfig) (string, error) {
+	if f.objectStorageNamespace == nil {
+		return "", ErrObjectStorageNamespaceUnknown
+	}
+	return f.objectStorageNamespace(cfg)
+}
+
+// objectStorageNamespacing is the namespacer side of a BackendFactory.
+type objectStorageNamespacing interface {
+	ObjectStorageNamespace(cfg DatabaseConfig) (string, error)
+}
+
+// objectStorageNamespace returns the namespace key of cfg's object storage
+// through factory, or ErrObjectStorageNamespaceUnknown when factory has no
+// namespacer.
+func objectStorageNamespace(factory BackendFactory, cfg DatabaseConfig) (string, error) {
+	n, ok := factory.(objectStorageNamespacing)
+	if !ok {
+		return "", ErrObjectStorageNamespaceUnknown
+	}
+	return n.ObjectStorageNamespace(cfg)
 }
 
 // NewEmbeddedBackendFactory creates a new EmbeddedBackendFactory.
