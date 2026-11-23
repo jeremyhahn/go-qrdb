@@ -214,8 +214,10 @@ func TestE2E_CredentialRotationPolicy_ServerError(t *testing.T) {
 	srv.SetResponder("credential.RotationPolicy", func(_ []byte) (uint16, []byte) {
 		return wire.StatusNotFound, nil
 	})
-	if _, err := tr.CredentialRotationPolicy(context.Background(), "missing"); err == nil {
-		t.Fatal("expected an error for an unknown credential")
+	_, err := tr.CredentialRotationPolicy(context.Background(), "missing")
+	var nf *transport.KeyNotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("expected a KeyNotFoundError for an unknown credential, got %T: %v", err, err)
 	}
 }
 
@@ -241,8 +243,10 @@ func TestE2E_CredentialMigrationConflicts_ServerError(t *testing.T) {
 	srv.SetResponder("credential.MigrationConflicts", func(_ []byte) (uint16, []byte) {
 		return wire.StatusInvalidArgument, nil
 	})
-	if _, err := tr.CredentialMigrationConflicts(context.Background()); err == nil {
-		t.Fatal("expected an error from a refusing server")
+	_, err := tr.CredentialMigrationConflicts(context.Background())
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.StatusCode != int(wire.StatusInvalidArgument) {
+		t.Fatalf("expected an InvalidArgument RequestError from a refusing server, got %T: %v", err, err)
 	}
 }
 
@@ -274,9 +278,11 @@ func TestE2E_CredentialResolveMigrationConflict_ServerError(t *testing.T) {
 	srv.SetResponder("credential.ResolveMigrationConflict", func(_ []byte) (uint16, []byte) {
 		return wire.StatusNotFound, nil
 	})
-	if err := tr.CredentialResolveMigrationConflict(context.Background(),
-		&transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"}); err == nil {
-		t.Fatal("expected an error for a name with no conflict")
+	err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"})
+	var nf *transport.KeyNotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("expected a KeyNotFoundError for a name with no conflict, got %T: %v", err, err)
 	}
 }
 
