@@ -1059,7 +1059,11 @@ strict tenant's database create and an isolated tenant's placement until both
 `featuregate.StrictIsolation` and `featuregate.GuardedWrites` are active
 (`strictIsolationRequired`), and activation is permanent, so no group proposes
 a guard unguarded after a tightening can commit. One residual remains:
-node-local vector writes carry no guard.
+vector writes carry no guard. Every host, clustered or not, writes vectors to
+a node-local store with no Raft command for the guard to ride in, so the
+vector view only rechecks before the write; how to close it (replicate vector
+writes through the engine's raft group, fence per process, or refuse them in
+a shared store) is an open owner question (`docs/plans/1565.md`).
 
 Both barrier bootstrap fallbacks (`AuthorizeTenantBarrierInit`,
 `AuthorizeTenantBarrierSealedOp`) return a `*RateLimitedError` immediately,

@@ -633,6 +633,10 @@ carries no guard: it cannot be dropped.
 Two writes are not Raft proposals and so cannot carry the guard. **Vector
 writes** go to a node-local vector store: they are refused by a check made
 before the write, which leaves a window between the check and the write.
+This holds on every host, clustered ones included: no composition gives the
+vector service a Raft node, so the isolation epoch guard of a strict
+tightening has no command to ride in either (an open owner question,
+`docs/plans/1565.md`).
 **A database with a dedicated local store** (an explicit data directory)
 writes to that store directly; its drop closes and removes the whole store,
 so a late write has no keyspace to survive in, and the check before the
