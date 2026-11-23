@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"sort"
 	"sync"
 	"time"
@@ -98,6 +99,21 @@ type MVCCEngine struct {
 	// indexValueTypes holds the term encoding each index was built with (see
 	// IndexCreateValueType). Guarded by indexMu with the maps above.
 	indexValueTypes map[string]index.IndexValueType
+
+	// readerIndexes is the index set readers (Lookup) see. The maps above
+	// are the apply view: a create or drop changes them as it is applied,
+	// so later entries of the same batch maintain the new set, but the
+	// batch carrying its backfill or its clear commits only afterwards.
+	// publishReaderIndexes copies the apply view here once the batch has
+	// committed (the post-commit seam DeliverNotifications), so no reader
+	// finds a definition ahead of its committed entries. A failed commit
+	// never publishes; restoreIndexes rebuilds both views from storage.
+	// indexPublishPending marks an apply view not yet published, and
+	// indexRetired holds the indexes a rebuild or drop replaced, closed
+	// once readers can no longer reach them. Guarded by indexMu.
+	readerIndexes       map[string]index.Index
+	indexPublishPending bool
+	indexRetired        []index.Index
 
 	lessor     *lease.Lessor
 	logs       *vlog.Chain
@@ -399,6 +415,17 @@ func (e *MVCCEngine) restoreIndexes() error {
 			closeErr = err
 		}
 	}
+	for _, idx := range e.indexRetired {
+		if err := idx.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	e.indexRetired = nil
+	// The rebuilt set is the committed one: readers see it at once.
+	defer func() {
+		e.readerIndexes = nil
+		e.indexPublishPending = false
+	}()
 	e.indexes = make(map[string]index.Index, len(defs))
 	e.indexFields = make(map[string]string, len(defs))
 	e.indexScopes = make(map[string][]byte, len(defs))
@@ -594,6 +621,9 @@ func (e *MVCCEngine) VectorIndex() *VectorIndexManager {
 // DeliverNotifications sends accumulated notifications to the watch hub.
 // Called after a batch is committed. Safe to call with nil hub or empty slice.
 func (e *MVCCEngine) DeliverNotifications(notifications []Notification) {
+	// The batch has committed: index creates and drops it applied become
+	// visible to readers now, never ahead of their entries.
+	e.publishReaderIndexes()
 	if e.hub == nil || len(notifications) == 0 {
 		return
 	}
@@ -810,8 +840,8 @@ func (e *MVCCEngine) LookupAt(_ context.Context, r storage.Reader, rev int64, qu
 
 	case service.IndexListRequest:
 		e.indexMu.RLock()
-		names := make([]string, 0, len(e.indexes))
-		for name := range e.indexes {
+		names := make([]string, 0, len(e.readerIndexSet()))
+		for name := range e.readerIndexSet() {
 			names = append(names, name)
 		}
 		e.indexMu.RUnlock()
@@ -932,7 +962,7 @@ var _ readerBoundIndex = (*index.StoragePebbleIndex)(nil)
 // readerIndex returns the named index as a readerBoundIndex.
 func (e *MVCCEngine) readerIndex(name string) (readerBoundIndex, error) {
 	e.indexMu.RLock()
-	idx, ok := e.indexes[name]
+	idx, ok := e.readerIndexSet()[name]
 	e.indexMu.RUnlock()
 	if !ok {
 		return nil, &index.NotFoundError{Name: name}
@@ -1026,6 +1056,10 @@ func (e *MVCCEngine) Close(_ context.Context) error {
 	for _, idx := range e.indexes {
 		_ = idx.Close()
 	}
+	for _, idx := range e.indexRetired {
+		_ = idx.Close()
+	}
+	e.indexRetired = nil
 	return nil
 }
 
@@ -2546,17 +2580,10 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 			return sm.Result{Value: 1}, nil, nil
 		}
 		// A different value type rebuilds the index at the requested one (see
-		// IndexCreateValueType). The stale index is unpublished first, so a
-		// concurrent Lookup finds no index rather than one being cleared.
-		delete(e.indexes, name)
-		delete(e.indexFields, name)
-		delete(e.indexScopes, name)
-		delete(e.indexOwners, name)
-		delete(e.indexValueTypes, name)
-		if err := existing.Close(); err != nil {
-			e.indexMu.Unlock()
-			return sm.Result{}, nil, err
-		}
+		// IndexCreateValueType). The stale index leaves the apply view
+		// now; readers keep it, over its committed terms, until the batch
+		// carrying the rebuild commits, and it is closed then.
+		e.unpublishIndex(name, existing)
 	}
 
 	idx, scope, idxErr := e.openIndex(name, opts)
@@ -2611,6 +2638,11 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 		}
 		BackfillIndexBatch(scan, bIdx, batch, fieldName, scope)
 	} else {
+		if exists {
+			e.indexMu.Lock()
+			e.withdrawReaderIndex(name)
+			e.indexMu.Unlock()
+		}
 		if err := idx.Clear(); err != nil {
 			return sm.Result{}, nil, err
 		}
@@ -2702,11 +2734,77 @@ func (e *MVCCEngine) openIndex(name string, opts protocol.IndexCreateOptions) (i
 // publishIndex records idx and its definition in the engine's five index
 // maps. The caller holds e.indexMu.
 func (e *MVCCEngine) publishIndex(name, fieldName string, idx index.Index, scope []byte, opts protocol.IndexCreateOptions) {
+	e.holdReaderIndexes()
 	e.indexes[name] = idx
 	e.indexFields[name] = fieldName
 	e.indexScopes[name] = scope
 	e.indexOwners[name] = opts.Owner
 	e.indexValueTypes[name] = IndexCreateValueType(opts)
+	e.indexPublishPending = true
+}
+
+// unpublishIndex removes name from the apply view and retires idx: readers
+// keep it until the batch removing it commits (publishReaderIndexes), and
+// it is closed then. The caller holds e.indexMu.
+func (e *MVCCEngine) unpublishIndex(name string, idx index.Index) {
+	e.holdReaderIndexes()
+	delete(e.indexes, name)
+	delete(e.indexFields, name)
+	delete(e.indexScopes, name)
+	delete(e.indexOwners, name)
+	delete(e.indexValueTypes, name)
+	e.indexRetired = append(e.indexRetired, idx)
+	e.indexPublishPending = true
+}
+
+// publishReaderIndexes makes the apply view's index set the one readers see
+// and closes the indexes it replaced. It runs only after the batch the
+// creates and drops were applied in has committed.
+func (e *MVCCEngine) publishReaderIndexes() {
+	e.indexMu.Lock()
+	defer e.indexMu.Unlock()
+	if !e.indexPublishPending {
+		return
+	}
+	e.readerIndexes = nil
+	for _, idx := range e.indexRetired {
+		_ = idx.Close()
+	}
+	e.indexRetired = nil
+	e.indexPublishPending = false
+}
+
+// holdReaderIndexes snapshots the committed index set for readers before the
+// first create or drop of a batch changes the apply view. The caller holds
+// e.indexMu.
+func (e *MVCCEngine) holdReaderIndexes() {
+	if e.indexPublishPending {
+		return
+	}
+	e.readerIndexes = maps.Clone(e.indexes)
+	e.indexPublishPending = true
+}
+
+// withdrawReaderIndex takes name out of the reader view at once. A create or
+// drop applied without the index-catalog feature rewrites the index's
+// committed entries directly, outside the apply batch, as a member that
+// predates the feature does; moving that write after the commit would change
+// the keys the group stores. Readers therefore stop seeing the index before
+// its committed entries change, rather than read it half cleared, and see
+// whatever the batch publishes once it commits. Callers hold indexMu.
+func (e *MVCCEngine) withdrawReaderIndex(name string) {
+	e.holdReaderIndexes()
+	delete(e.readerIndexes, name)
+}
+
+// readerIndexSet is the index set a reader sees: the committed snapshot
+// while a batch's creates or drops are applied but not committed, the apply
+// view otherwise. The caller holds e.indexMu (read or write).
+func (e *MVCCEngine) readerIndexSet() map[string]index.Index {
+	if e.indexPublishPending {
+		return e.readerIndexes
+	}
+	return e.indexes
 }
 
 // handleIndexDrop removes a secondary index and clears all its entries.
@@ -2737,11 +2835,9 @@ func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, batch stora
 		e.indexMu.Unlock()
 		return sm.Result{}, nil, err
 	}
-	delete(e.indexes, name)
-	delete(e.indexFields, name)
-	delete(e.indexScopes, name)
-	delete(e.indexOwners, name)
-	delete(e.indexValueTypes, name)
+	// Readers keep the index until the batch dropping it commits; it is
+	// closed then (publishReaderIndexes).
+	e.unpublishIndex(name, idx)
 	e.indexMu.Unlock()
 
 	// The entries are removed in the batch that deletes the catalog record,
@@ -2755,11 +2851,13 @@ func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, batch stora
 			_ = idx.Close()
 			return sm.Result{}, nil, err
 		}
-	} else if err := idx.Clear(); err != nil {
-		return sm.Result{}, nil, err
-	}
-	if err := idx.Close(); err != nil {
-		return sm.Result{}, nil, err
+	} else {
+		e.indexMu.Lock()
+		e.withdrawReaderIndex(name)
+		e.indexMu.Unlock()
+		if err := idx.Clear(); err != nil {
+			return sm.Result{}, nil, err
+		}
 	}
 
 	return sm.Result{Value: 1}, nil, nil

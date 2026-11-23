@@ -499,3 +499,205 @@ func TestMVCCEngine_UncataloguedRebuildClearsTheRecord(t *testing.T) {
 		t.Fatalf("catalog keys after an uncatalogued rebuild = %q, want none", keys)
 	}
 }
+
+// commitHookStorage runs hook as each batch commits, before the batch is
+// applied, so a test can read the engine while a batch it applied is still
+// uncommitted. A hook returning an error refuses the commit.
+type commitHookStorage struct {
+	storage.Storage
+	hook func() error
+}
+
+func (s *commitHookStorage) Batch() storage.Batch {
+	return &commitHookBatch{Batch: s.Storage.Batch(), s: s}
+}
+
+type commitHookBatch struct {
+	storage.Batch
+	s *commitHookStorage
+}
+
+func (b *commitHookBatch) Commit() error {
+	if hook := b.s.hook; hook != nil {
+		if err := hook(); err != nil {
+			return err
+		}
+	}
+	return b.Batch.Commit()
+}
+
+// onCommit sets the hook for the next Update and reports whether it ran.
+func onCommit(stg *commitHookStorage, hook func() error) *bool {
+	ran := new(bool)
+	stg.hook = func() error {
+		*ran = true
+		return hook()
+	}
+	return ran
+}
+
+func populateEmails(t *testing.T, eng *MVCCEngine, first uint64) {
+	t.Helper()
+	applyMVCCEntries(t, eng, []sm.Entry{
+		mvccPutEntry(first, []byte("user/1"), []byte(`{"email":"a@example.com"}`), 0),
+		mvccPutEntry(first+1, []byte("user/2"), []byte(`{"email":"5.0"}`), 0),
+	})
+}
+
+// An index a batch creates, rebuilds or drops changes for readers only once
+// that batch commits: until then a Lookup is served by the definition and
+// terms already committed, never by an index the batch is still backfilling.
+func TestMVCCEngine_IndexNotVisibleBeforeBackfillCommits(t *testing.T) {
+	numeric := protocol.IndexCreateOptions{Numeric: true, Catalog: true}
+	lexical := protocol.IndexCreateOptions{Catalog: true}
+
+	open := func(t *testing.T) (*commitHookStorage, *MVCCEngine) {
+		t.Helper()
+		stg := &commitHookStorage{Storage: memory.NewStorage()}
+		t.Cleanup(func() { _ = stg.Close() })
+		return stg, openCatalogEngine(t, stg)
+	}
+	update := func(t *testing.T, eng *MVCCEngine, entry sm.Entry) {
+		t.Helper()
+		if err := eng.Update(context.Background(), []sm.Entry{entry}, make([]sm.Result, 1)); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+	}
+	lookup := func(eng *MVCCEngine, email string) []string {
+		keys, _ := lookupEmail(eng, email)
+		return keys
+	}
+
+	t.Run("create", func(t *testing.T) {
+		stg, eng := open(t)
+		populateEmails(t, eng, 1)
+		var during error
+		ran := onCommit(stg, func() error {
+			_, during = lookupEmail(eng, "a@example.com")
+			return nil
+		})
+		update(t, eng, catalogCreate(t, 3, catalogOpts))
+		var nf *index.NotFoundError
+		if !*ran || !errors.As(during, &nf) {
+			t.Fatalf("lookup before the create committed = %v, want index not found", during)
+		}
+		wantEmailKeys(t, eng, "a@example.com", "user/1")
+	})
+
+	t.Run("rebuild", func(t *testing.T) {
+		stg, eng := open(t)
+		applyMVCCEntries(t, eng, []sm.Entry{catalogCreate(t, 1, numeric)})
+		populateEmails(t, eng, 2)
+		var numericTerm, lexicalTerm []string
+		ran := onCommit(stg, func() error {
+			numericTerm, lexicalTerm = lookup(eng, "5"), lookup(eng, "5.0")
+			return nil
+		})
+		update(t, eng, catalogCreate(t, 4, lexical))
+		if !*ran || !slices.Equal(numericTerm, []string{"user/2"}) {
+			t.Fatalf("lookup 5 before the rebuild committed = %v, want the numeric index's user/2", numericTerm)
+		}
+		if !slices.Equal(lexicalTerm, []string{"user/2"}) {
+			t.Fatalf("lookup 5.0 before the rebuild committed = %v, want the numeric index's user/2", lexicalTerm)
+		}
+		wantIndexType(t, eng, lexical)
+		wantEmailKeys(t, eng, "5")
+		wantEmailKeys(t, eng, "5.0", "user/2")
+	})
+
+	t.Run("drop", func(t *testing.T) {
+		stg, eng := open(t)
+		applyMVCCEntries(t, eng, []sm.Entry{catalogCreate(t, 1, catalogOpts)})
+		populateEmails(t, eng, 2)
+		var during []string
+		ran := onCommit(stg, func() error {
+			during = lookup(eng, "a@example.com")
+			return nil
+		})
+		update(t, eng, catalogDrop(t, 4, protocol.IndexDropOptions{Catalog: true}))
+		if !*ran || !slices.Equal(during, []string{"user/1"}) {
+			t.Fatalf("lookup before the drop committed = %v, want the committed user/1", during)
+		}
+		wantIndexNotFound(t, eng)
+	})
+}
+
+// A batch that fails to commit leaves readers on the definition already
+// committed: the index it would have replaced or dropped keeps answering,
+// over its committed terms, before the failure and after it, and still takes
+// the writes of later batches.
+func TestMVCCEngine_FailedCommitKeepsThePriorIndexDefinition(t *testing.T) {
+	numeric := protocol.IndexCreateOptions{Numeric: true, Catalog: true}
+	lexical := protocol.IndexCreateOptions{Catalog: true}
+	for _, tc := range []struct {
+		name  string
+		entry func(t *testing.T) sm.Entry
+	}{
+		{"rebuild", func(t *testing.T) sm.Entry { return catalogCreate(t, 4, lexical) }},
+		{"drop", func(t *testing.T) sm.Entry { return catalogDrop(t, 4, protocol.IndexDropOptions{Catalog: true}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stg := &commitHookStorage{Storage: memory.NewStorage()}
+			defer func() { _ = stg.Close() }()
+			eng := openCatalogEngine(t, stg)
+			applyMVCCEntries(t, eng, []sm.Entry{catalogCreate(t, 1, numeric)})
+			populateEmails(t, eng, 2)
+
+			var during []string
+			var duringErr error
+			ran := onCommit(stg, func() error {
+				during, duringErr = lookupEmail(eng, "5")
+				return errCommitRefused
+			})
+			err := eng.Update(context.Background(), []sm.Entry{tc.entry(t)}, make([]sm.Result, 1))
+			if !errors.Is(err, errCommitRefused) {
+				t.Fatalf("Update = %v, want the commit fault", err)
+			}
+			if !*ran || duringErr != nil || !slices.Equal(during, []string{"user/2"}) {
+				t.Fatalf("lookup 5 during the failed commit = %v, %v; want the numeric index's user/2", during, duringErr)
+			}
+			stg.hook = nil
+
+			wantIndexType(t, eng, numeric)
+			wantEmailKeys(t, eng, "5", "user/2")
+			applyMVCCEntries(t, eng, []sm.Entry{
+				mvccPutEntry(5, []byte("user/3"), []byte(`{"email":"5"}`), 0),
+			})
+			wantEmailKeys(t, eng, "5", "user/2", "user/3")
+		})
+	}
+}
+
+// Without the index-catalog feature a drop clears the index's committed
+// entries directly, as a member that predates the feature does, before the
+// batch commits. Readers lose the index before that clear starts rather than
+// read it half cleared.
+func TestMVCCEngine_UncataloguedDropNeverServesAHalfClearedIndex(t *testing.T) {
+	stg := &commitHookStorage{Storage: memory.NewStorage()}
+	defer func() { _ = stg.Close() }()
+	eng := openCatalogEngine(t, stg)
+	applyMVCCEntries(t, eng, []sm.Entry{uncataloguedCreate(t, 1, protocol.IndexCreateOptions{})})
+	populateEmails(t, eng, 2)
+	wantEmailKeys(t, eng, "a@example.com", "user/1")
+
+	var seen []error
+	ran := onCommit(stg, func() error {
+		keys, err := lookupEmail(eng, "a@example.com")
+		if err == nil && !slices.Equal(keys, []string{"user/1"}) {
+			err = errors.New("served a half-cleared index: " + strings.Join(keys, ","))
+		}
+		seen = append(seen, err)
+		return nil
+	})
+	applyMVCCEntries(t, eng, []sm.Entry{catalogDrop(t, 4, protocol.IndexDropOptions{})})
+	if !*ran {
+		t.Fatal("no batch committed during the drop")
+	}
+	for _, err := range seen {
+		var nf *index.NotFoundError
+		if !errors.As(err, &nf) {
+			t.Fatalf("lookup while the drop applied = %v, want index not found", err)
+		}
+	}
+	wantIndexNotFound(t, eng)
+}

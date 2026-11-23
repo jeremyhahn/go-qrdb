@@ -483,6 +483,16 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 			if serr := undo.settleCatalog(ctx, cat, incarnation, err); serr != nil {
 				return nil, serr
 			}
+			// Settled: no record of this create survives, so the root
+			// claim the catalog kept for it is released.
+			if rel, ok := cat.(createClaimReleaser); ok {
+				relCtx, cancel := DropRollbackContext(ctx)
+				rerr := rel.ReleaseCreateClaim(relCtx, meta)
+				cancel()
+				if rerr != nil {
+					return nil, errors.Join(err, rerr)
+				}
+			}
 		}
 		return nil, undo.run(ctx, err)
 	}

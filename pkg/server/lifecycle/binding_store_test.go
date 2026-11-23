@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -286,6 +287,97 @@ func TestLocalBindingFactory_PreBindingDataKept(t *testing.T) {
 	root, err := f.RecordRoot(fresh)
 	if err != nil || root != mb.DataRoot() {
 		t.Fatalf("RecordRoot(fresh) = %q, %v; want %q", root, err, mb.DataRoot())
+	}
+}
+
+// TestLocalBindingFactory_LegacyMemoryDatabaseKeepsSharedRoute proves a
+// backend: memory database recorded before the binding change, whose data
+// lives under its namespace of the shared store, is not reopened as a new,
+// empty materialized memory store: it keeps the shared route, and no binding
+// is recorded for it. A probe that cannot read the shared store fails the
+// open rather than hide that data.
+func TestLocalBindingFactory_LegacyMemoryDatabaseKeepsSharedRoute(t *testing.T) {
+	dir := t.TempDir()
+	legacy := database.DatabaseConfig{TenantID: bindingTenant, Name: "legacy", Backend: database.BackendMemory}
+	var probed []string
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants).
+		WithSharedKeyspaceProbe(func(tenantID, db string) (bool, error) {
+			probed = append(probed, tenantID+"/"+db)
+			return db == "legacy", nil
+		})
+
+	be, err := f.Create(legacy, filepath.Join(dir, "legacy-data"))
+	if err != nil {
+		t.Fatalf("Create legacy: %v", err)
+	}
+	defer func() { _ = be.Close() }()
+	if _, ok := be.(*lifecycle.MaterializedBinding); ok {
+		t.Fatal("a memory database with shared data was opened as a new materialized store")
+	}
+	if want := []string{bindingTenant + "/legacy"}; !slices.Equal(probed, want) {
+		t.Fatalf("probed %q, want %q", probed, want)
+	}
+	if b, err := f.RecordBinding(legacy); err != nil || b != nil {
+		t.Fatalf("RecordBinding(legacy) = %v, %v; want no binding", b, err)
+	}
+	if root, err := f.RecordRoot(legacy); err != nil || root != "" {
+		t.Fatalf("RecordRoot(legacy) = %q, %v; want none", root, err)
+	}
+
+	boom := errors.New("shared store unreadable")
+	failing := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants).
+		WithSharedKeyspaceProbe(func(string, string) (bool, error) { return false, boom })
+	got, err := failing.Create(legacy, filepath.Join(dir, "legacy-data"))
+	var probeErr *lifecycle.LegacySharedKeyspaceError
+	if !errors.As(err, &probeErr) || !errors.Is(err, boom) || probeErr.Error() == "" {
+		t.Fatalf("Create over an unreadable shared store = %T, %v; want *LegacySharedKeyspaceError", got, err)
+	}
+}
+
+// TestLocalBindingFactory_FreshMemoryDatabaseIsMaterialized proves a
+// backend: memory database with no data under its shared namespace -- a
+// fresh create, or one reopened after the binding change -- is materialized
+// in its own store, and only backend: memory consults the probe.
+func TestLocalBindingFactory_FreshMemoryDatabaseIsMaterialized(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	var probed []string
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants).
+		WithSharedKeyspaceProbe(func(tenantID, db string) (bool, error) {
+			probed = append(probed, tenantID+"/"+db)
+			return false, nil
+		})
+
+	fresh := database.DatabaseConfig{TenantID: bindingTenant, Name: "fresh", Backend: database.BackendMemory}
+	be, err := f.Create(fresh, filepath.Join(dir, "fresh-data"))
+	if err != nil {
+		t.Fatalf("Create fresh: %v", err)
+	}
+	defer func() { _ = be.Close() }()
+	mb, ok := be.(*lifecycle.MaterializedBinding)
+	if !ok {
+		t.Fatalf("fresh backend = %T, want *lifecycle.MaterializedBinding", be)
+	}
+	if err := mb.Put(ctx, []byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if b, err := f.RecordBinding(fresh); err != nil || b == nil {
+		t.Fatalf("RecordBinding(fresh) = %v, %v; want its binding", b, err)
+	}
+
+	pebble := database.DatabaseConfig{TenantID: bindingTenant, Name: "disk", Backend: database.BackendPebble}
+	pb, err := f.Create(pebble, filepath.Join(dir, "disk-data"))
+	if err != nil {
+		t.Fatalf("Create pebble: %v", err)
+	}
+	defer func() { _ = pb.Close() }()
+	for _, p := range probed {
+		if p != bindingTenant+"/fresh" {
+			t.Fatalf("probe consulted for %q; only backend: memory is probed", p)
+		}
+	}
+	if len(probed) == 0 {
+		t.Fatal("the probe was never consulted for the memory database")
 	}
 }
 
