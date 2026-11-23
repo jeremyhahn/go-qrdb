@@ -16,9 +16,10 @@
 -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getClient, isDesktop } from "@qrdb/sdk";
+  import { getClient, isDesktop, TransportError } from "@qrdb/sdk";
   import type { Client, SealStatus } from "@qrdb/sdk";
-  import { Lock, XCircle } from "lucide-svelte";
+  import { Lock, Ticket, XCircle } from "lucide-svelte";
+  import RedeemInvitationModal from "./components/RedeemInvitationModal.svelte";
   import MainApp from "./views/MainApp.svelte";
   import SealManager from "./views/admin/SealManager.svelte";
   import { isClusterHeldError } from "./lib/clusterHeld.ts";
@@ -43,14 +44,21 @@
    *   held          - Node barrier unsealed, but a cluster seal holds the node
    *                   (status refused with 503 SEALED). The Seal Manager is
    *                   shown alone and offers the cluster unseal.
+   *   unauthenticated - Web mode: the page's own server refused the status
+   *                   read with 401/403, as an initialized auth-enabled server
+   *                   does for a visitor with no client certificate. An
+   *                   invitee redeems an invitation here (the redeem route is
+   *                   public), or retries once a credential is in place.
    *   app           - Fully ready; MainApp handles empty state and connections.
    *   error         - Unrecoverable startup failure.
    */
-  type AppState = "loading" | "init" | "unseal" | "held" | "app" | "error";
+  type AppState = "loading" | "init" | "unseal" | "held" | "unauthenticated" | "app" | "error";
 
   let appState: AppState = $state("loading");
   let client: Client | null = $state(null);
   let errorMessage: string = $state("");
+  /** Whether the redeem-an-invitation modal is open (unauthenticated state). */
+  let showRedeem: boolean = $state(false);
 
   // Unseal state
   let sealStatus = $state<SealStatus | null>(null);
@@ -111,6 +119,14 @@
               enterClusterHeld();
               return;
             }
+            // The page's own server refusing an unauthenticated status read
+            // is not a startup failure either: an invitee has no credential
+            // yet, and invitation redemption is public. Offer it.
+            if (origin === window.location.origin && isAuthRefusal(err)) {
+              console.debug("[App] initialize: status refused unauthenticated");
+              appState = "unauthenticated";
+              return;
+            }
             throw err;
           }
           sealStatus = status;
@@ -147,6 +163,14 @@
       showToast("error", msg);
       appState = "error";
     }
+  }
+
+  /**
+   * Whether a request was refused for want of authentication or permission:
+   * the SDK's TransportError carrying HTTP 401 or 403.
+   */
+  function isAuthRefusal(err: unknown): boolean {
+    return err instanceof TransportError && (err.statusCode === 401 || err.statusCode === 403);
   }
 
   /**
@@ -328,6 +352,33 @@
   <main class="mx-auto min-h-screen max-w-4xl p-6" data-testid="app-cluster-held">
     <SealManager {client} onClusterReleased={initialize} />
   </main>
+
+{:else if appState === "unauthenticated" && client !== null}
+  <div class="flex min-h-screen items-center justify-center">
+    <div class="card bg-base-200 w-96 shadow-xl" data-testid="app-unauthenticated">
+      <div class="card-body items-center text-center">
+        <h2 class="card-title">Sign-in Required</h2>
+        <p class="text-base-content/70 text-sm">
+          This server requires a client certificate. If you were sent an invitation, redeem it
+          to receive your credentials.
+        </p>
+        <div class="card-actions mt-4">
+          <button
+            class="btn btn-primary"
+            data-testid="app-redeem-invitation"
+            onclick={() => (showRedeem = true)}
+          >
+            <Ticket class="h-4 w-4" />
+            Redeem Invitation
+          </button>
+          <button class="btn btn-ghost" data-testid="app-unauthenticated-retry" onclick={initialize}>
+            Retry
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <RedeemInvitationModal {client} open={showRedeem} onClose={() => (showRedeem = false)} />
 
 {:else if appState === "error"}
   <div class="flex min-h-screen items-center justify-center">

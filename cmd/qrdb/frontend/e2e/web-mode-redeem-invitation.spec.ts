@@ -76,4 +76,68 @@ test.describe("Web Mode - Redeem Invitation", () => {
     expect(posted[0]!.host).toBe(pageHost);
     expect(posted[0]!.body).toContain("inv-token-erin");
   });
+
+  // An initialized auth-enabled server refuses the status read of a visitor
+  // with no client certificate. The page must not dead-end on the
+  // Connection Error card: an invitee redeems from the start screen.
+  test("an unauthenticated status refusal offers invitation redemption", async ({ page }) => {
+    const posted: string[] = [];
+    await page.route("**/v1/barrier/status", (route) =>
+      route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "authentication required" }),
+      }),
+    );
+    await page.route("**/invitations/redeem", async (route) => {
+      posted.push(route.request().postData() ?? "");
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          username: "erin",
+          userID: "user-1",
+          tenantID: "default",
+          certPEM: "-----BEGIN CERTIFICATE-----\nMOCK-erin\n-----END CERTIFICATE-----",
+        }),
+      });
+    });
+
+    await page.goto("/");
+    await expect(page.getByTestId("app-unauthenticated")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.getByRole("heading", { name: "Connection Error" })).toHaveCount(0);
+    await expect(page.getByTestId("app-unauthenticated-retry")).toBeVisible();
+
+    await page.getByTestId("app-redeem-invitation").click();
+    await expect(page.getByRole("heading", { name: "Redeem Invitation" })).toBeVisible();
+    await page.locator("#redeem-tenant").fill("default");
+    await page.locator("#redeem-token").fill("inv-token-erin");
+    await page.locator("#redeem-csr").fill(CSR_PEM);
+    await page.getByRole("button", { name: "Redeem", exact: true }).click();
+
+    await expect(page.getByRole("heading", { name: "Invitation redeemed" })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toContain("inv-token-erin");
+  });
+
+  // Any other status failure is still a startup failure: the error card,
+  // with no redemption offered.
+  test("a server error on the status read still shows the error card", async ({ page }) => {
+    await page.route("**/v1/barrier/status", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "internal error" }),
+      }),
+    );
+
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Connection Error" })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(page.getByTestId("app-unauthenticated")).toHaveCount(0);
+    await expect(page.getByTestId("app-redeem-invitation")).toHaveCount(0);
+  });
 });
