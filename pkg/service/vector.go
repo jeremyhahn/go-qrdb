@@ -53,6 +53,8 @@ type vectorService struct {
 	storage        vector.Storage
 	raftNode       interfaces.RaftNode
 	featureGates   FeatureGatedHost // cluster feature gates; nil reads the raft node's
+	applyHost      Host             // set by WithVectorApplyHost: storage is NewHostVectorStorage over it
+	applyShardID   uint64           // the shard applyHost applies vector commands on
 	shardID        uint64
 	nodeID         string
 	hnswIndexes    map[string]interfaces.HNSWIndex // Map scoped-namespace -> HNSW index
@@ -218,6 +220,18 @@ func WithRaftNode(raftNode interfaces.RaftNode) VectorServiceOption {
 func WithFeatureGates(gates FeatureGatedHost) VectorServiceOption {
 	return func(v *vectorService) {
 		v.featureGates = gates
+	}
+}
+
+// WithVectorApplyHost makes the service's storage NewHostVectorStorage over
+// host: every write is an OpVector* command in host's apply batch on
+// shardID, and every read an engine lookup through host. NewVectorService
+// must then be given a nil storage. When host implements FeatureGatedHost
+// and no WithFeatureGates was given, it also serves as the feature gates.
+func WithVectorApplyHost(host Host, shardID uint64) VectorServiceOption {
+	return func(v *vectorService) {
+		v.applyHost = host
+		v.applyShardID = shardID
 	}
 }
 
@@ -408,10 +422,6 @@ func NewVectorService(
 	logger interfaces.Logger,
 	opts ...VectorServiceOption,
 ) (VectorService, error) {
-	if storage == nil {
-		return nil, &api.RequiredFieldError{Field: "storage"}
-	}
-
 	if logger == nil {
 		return nil, &api.RequiredFieldError{Field: "logger"}
 	}
@@ -429,6 +439,21 @@ func NewVectorService(
 	// Apply functional options
 	for _, opt := range opts {
 		opt(svc)
+	}
+	switch {
+	case svc.applyHost != nil && storage != nil:
+		svc.bgCancel()
+		return nil, &VectorStorageConflictError{}
+	case svc.applyHost != nil:
+		svc.storage = NewHostVectorStorage(svc.applyHost, svc.applyShardID)
+		if svc.featureGates == nil {
+			if gates, ok := svc.applyHost.(FeatureGatedHost); ok {
+				svc.featureGates = gates
+			}
+		}
+	case storage == nil:
+		svc.bgCancel()
+		return nil, &api.RequiredFieldError{Field: "storage"}
 	}
 
 	// Initialize metrics
