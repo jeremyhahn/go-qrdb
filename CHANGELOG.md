@@ -15,7 +15,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
-- **Replica forwarding negotiates the release (#1628).** A forwarded request carries the forwarder's release in its signed on-behalf assertion, and a node refuses a forward across a release gap with `release.GapError` (REST 409, gRPC/QUIC `FAILED_PRECONDITION`) instead of serving it.
+- **Replica forwarding negotiates the release (#1628).** A forwarded request carries the forwarder's release in its signed on-behalf assertion, and a node refuses a forward across a release gap with `release.GapError` (REST and MCP 409 with the gap as the JSON error body, gRPC/QUIC `FAILED_PRECONDITION`) instead of serving it; MCP never admits such a forward as an anonymous public call.
 
 - **Rolling-upgrade matrix, mixed clusters (#1628).** CLI e2e tests over every transport: clusters of two N and one N+1, and one N and two N+1, serve every node and forward writes in both directions across a leadership transfer; the probe's gated put takes the N path until activation; after activation the N binary refuses to start with `UnsupportedFeatureError` and the node rejoins on N+1; raft-tenant barrier keys reach every node with the leader on either release.
 - **Rolling-upgrade matrix, first slice (#1628).** A test-only `qrdb_upgrade_probe` build is the synthetic N+1 (feature `upgrade-probe`, opcode `0xF0`, proposed only once every member supports it); CLI e2e tests over every transport roll a three-node cluster from N to N+1 under writes, and roll one node back before activation, with no acknowledged write lost. The clusterproof inventory takes a per-node `image`, and `Cluster.Replace` moves one node to another image on its data.

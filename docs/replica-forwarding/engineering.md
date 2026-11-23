@@ -256,7 +256,7 @@ would react inside a rebalance MOVE's own steps and fail the MOVE.
 | `*replicaforward.MemberLookupError` | the member records could not be read, including a read the forward timeout cut off -- the lookup runs under that timeout on every path, the leader hop included | as above; on the leader hop, the follower's own refusal (`*service.NotLeaderError` or `*service.AdminCredentialNotLeaderError`, `Unavailable`) |
 | `*replicaforward.SendError` | the forward failed after it may have reached a target | `Unavailable` (`DeadlineExceeded` when the caller's deadline passed) |
 | `*forward.ForwardUnsignedError` | no authenticated caller, or no node signing identity | logged; the caller gets the refusal |
-| `*release.GapError` (channel `replica-forwarding`) | the receiving node's release is not adjacent to the release the forwarder announced in its verified assertion, or the assertion announces none | `FailedPrecondition`: REST 409, gRPC and QUIC `FAILED_PRECONDITION`, naming both releases; the request is not served |
+| `*release.GapError` (channel `replica-forwarding`) | the receiving node's release is not adjacent to the release the forwarder announced in its verified assertion, or the assertion announces none | `FailedPrecondition`: REST and MCP 409 (the gap as the JSON error body, no bearer challenge), gRPC and QUIC `FAILED_PRECONDITION`, naming both releases; the request is not served, and MCP refuses it before any anonymous public-tool admission |
 | `*replicaforward.RefusalDecodeError` | refusal metadata that does not decode | the refusal is answered as is |
 | the target's own error | anything the target answers | relayed verbatim |
 
