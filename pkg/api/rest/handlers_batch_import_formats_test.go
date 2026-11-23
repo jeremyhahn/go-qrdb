@@ -21,7 +21,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 func TestHandleBatchImportFormats_ListsFormatsAndCodecs(t *testing.T) {
@@ -38,12 +38,12 @@ func TestHandleBatchImportFormats_ListsFormatsAndCodecs(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v (%s)", err, rr.Body.String())
 	}
-	wantFormats := codec.ImportFormats()
+	wantFormats := service.ImportFormats()
 	if !reflect.DeepEqual(got.Formats, wantFormats) {
 		t.Errorf("formats = %v, want %v", got.Formats, wantFormats)
 	}
-	if !reflect.DeepEqual(got.Codecs, codec.AvailableCodecs()) {
-		t.Errorf("codecs = %v, want %v", got.Codecs, codec.AvailableCodecs())
+	if !reflect.DeepEqual(got.Codecs, documentCodecNames()) {
+		t.Errorf("codecs = %v, want %v", got.Codecs, documentCodecNames())
 	}
 	if len(got.Codecs) == 0 {
 		t.Error("codecs is empty; at least one codec is compiled in")
@@ -59,8 +59,8 @@ func TestHandleBatchImportFormats_ResponseDoesNotAliasList(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	got.Formats[0] = "mutated"
-	if codec.ImportFormats()[0] != "auto" {
-		t.Fatalf("response aliases the shared format list: %v", codec.ImportFormats())
+	if service.ImportFormats()[0] != "auto" {
+		t.Fatalf("response aliases the shared format list: %v", service.ImportFormats())
 	}
 }
 

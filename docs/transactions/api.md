@@ -120,7 +120,7 @@ it; the desktop app imports from a path with `importFile`.
 `collection` is refused with `422` (`importing into a collection ... is not
 supported`), the same refusal the desktop binding's `ImportFile` makes; the
 rows are never written to KV in its place. `format` is one of the list
-`GET /batch/import/formats` reports (`codec.ImportFormats`, shared with the
+`GET /batch/import/formats` reports (`service.ImportFormats`, shared with the
 desktop binding's `AvailableImportFormats`). Response:
 
 ```json

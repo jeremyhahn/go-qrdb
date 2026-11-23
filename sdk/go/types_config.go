@@ -17,6 +17,7 @@ package sdk
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // AvailableCodecs returns the sorted names of the storage codecs a
@@ -32,7 +33,7 @@ func AvailableCodecs() []string {
 
 // ImportFormats returns the batch import file formats, "auto" first: the
 // same list the server reports on GET /batch/import/formats.
-var ImportFormats = codec.ImportFormats
+var ImportFormats = service.ImportFormats
 
 // ---------------------------------------------------------------------------
 // Daemon configuration

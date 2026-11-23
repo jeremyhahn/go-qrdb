@@ -17,7 +17,8 @@ package rest
 import (
 	"net/http"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
+	"github.com/jeremyhahn/go-qrdb/pkg/dao"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // batchImportFormatsResponse is the body of GET /batch/import/formats.
@@ -31,7 +32,19 @@ type batchImportFormatsResponse struct {
 // desktop binding's AvailableImportFormats and AvailableCodecs offer.
 func (s *Server) handleBatchImportFormats(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, batchImportFormatsResponse{
-		Formats: codec.ImportFormats(),
-		Codecs:  codec.AvailableCodecs(),
+		Formats: service.ImportFormats(),
+		Codecs:  documentCodecNames(),
 	})
+}
+
+// documentCodecNames returns the sorted names of the storage codecs a
+// collection or database accepts (dao.DocumentCodecs), the list the SDK's
+// AvailableCodecs reports.
+func documentCodecNames() []string {
+	codecs := dao.DocumentCodecs()
+	names := make([]string, len(codecs))
+	for i, ct := range codecs {
+		names[i] = string(ct)
+	}
+	return names
 }
