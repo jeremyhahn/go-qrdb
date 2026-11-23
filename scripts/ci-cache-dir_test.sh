@@ -71,6 +71,13 @@ check "hosted: \$RUNNER_TEMP/ci-cache" '[ $rc = 0 ] && [ "$out" = "CI_CACHE_DIR=
 run RUNNER_ENVIRONMENT=github-hosted -- bash "$SH"
 check "hosted: no RUNNER_TEMP exits 2" '[ $rc = 2 ]'
 
+# --- self-hosted runner, no CI_CACHE_ROOT --------------------------------------
+run GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted RUNNER_TEMP="$tmp/rt0" -- bash "$SH"
+check "self-hosted, no CI_CACHE_ROOT: under \$RUNNER_TEMP/ci-cache" \
+  '[ $rc = 0 ] && case $out in "CI_CACHE_DIR=$tmp/rt0/ci-cache/"?*) true ;; *) false ;; esac'
+run GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted -- bash "$SH"
+check "self-hosted, no CI_CACHE_ROOT nor RUNNER_TEMP exits 2" '[ $rc = 2 ]'
+
 # --- argument checks ---------------------------------------------------------
 run CI_CACHE_ROOT="$tmp" CI_CACHE_MAX_GB=x -- bash "$SH"
 check "bad CI_CACHE_MAX_GB exits 2" '[ $rc = 2 ]'

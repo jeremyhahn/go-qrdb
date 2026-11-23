@@ -316,7 +316,8 @@ epoch() {
 # CI_IMAGE_LOCK names it. Otherwise, on a self-hosted pool runner it is on the
 # host's data array, the one directory the pool's runner containers share
 # (scripts/ci-cache-dir.sh: $CI_CACHE_ROOT/gh-runner-cache, else
-# $CI_CACHE_ROOT): each runner container has its own temp dir and shares only
+# $CI_CACHE_ROOT; CI_CACHE_ROOT is set in the runner host's env file, and
+# with it unset there is no shared directory, never $RUNNER_TEMP): each runner container has its own temp dir and shares only
 # the Docker daemon, so a temp-dir lock there would let prune remove an image
 # another runner holds (#1597 Codex round 2). A pool runner with neither has no
 # shared lock: lock_file prints nothing, and prune keeps every image. A hosted
@@ -326,7 +327,8 @@ lock_file() {
 	if [ -n "${CI_IMAGE_LOCK:-}" ]; then
 		printf '%s\n' "$CI_IMAGE_LOCK"
 	elif [ "${GITHUB_ACTIONS:-}" = true ] && [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
-		local root=${CI_CACHE_ROOT:-/mnt/raid0} d
+		local root=${CI_CACHE_ROOT:-} d
+		[ -n "$root" ] || return 0
 		for d in "$root/gh-runner-cache" "$root"; do
 			if [ -d "$d" ] && [ -w "$d" ]; then
 				printf '%s\n' "$d/qrdb-ci-image.lock"

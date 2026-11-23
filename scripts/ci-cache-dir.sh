@@ -12,13 +12,17 @@
 #     restores and saves.
 #   - A self-hosted pool host keeps its disk: $RUNNER_TEMP is on the root
 #     filesystem and outlives the job, and the cache there grew to 168 GB
-#     (#1596). The cache is a persistent base directory on the data array:
+#     (#1596). The cache root is the CI_CACHE_ROOT input, set in the runner
+#     host's env file to a persistent directory on the host's data array. When
+#     it is unset the root is $RUNNER_TEMP/ci-cache (the directory a hosted
+#     runner uses), which the job's end-of-job cleanup removes, so the cache
+#     lives for one job only; with neither set the script exits 2. Under the
+#     chosen root the cache is a base directory:
 #       $CI_CACHE_ROOT/gh-runner-cache/go-qrdb/ci-cache  when
 #           $CI_CACHE_ROOT/gh-runner-cache is a writable directory, else
 #       $CI_CACHE_ROOT/go-qrdb-ci-cache                  when $CI_CACHE_ROOT
 #           is a writable directory, else
-#       none (CI_CACHE_DIR empty: the named volumes), never $RUNNER_TEMP.
-#     CI_CACHE_ROOT defaults to /mnt/raid0.
+#       none (CI_CACHE_DIR empty: the named volumes).
 #
 # Generations. Every self-hosted job on a host shares the base, and a running
 # stage has <gen>/gobuild and <gen>/golangci bind-mounted: deleting them under
@@ -40,8 +44,8 @@
 # Deletion goes through scripts/ci-cache-clean.sh: the stages give the
 # cache's files to their uid 10001, which the runner's user cannot delete, so
 # the helper deletes them as root in the toolchain image, and a failure is a
-# ::warning::, never a failed job. The legacy $RUNNER_TEMP/ci-cache is
-# removed the same way before any stage runs.
+# ::warning::, never a failed job. When CI_CACHE_ROOT is set, the legacy
+# $RUNNER_TEMP/ci-cache is removed the same way before any stage runs.
 #
 # Notices go to stderr: stdout is the environment file.
 set -euo pipefail
@@ -58,7 +62,17 @@ if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
   exit 0
 fi
 
-root=${CI_CACHE_ROOT:-/mnt/raid0}
+legacy=
+if [ -n "${CI_CACHE_ROOT:-}" ]; then
+  root=$CI_CACHE_ROOT
+  legacy=${RUNNER_TEMP:-}
+elif [ -n "${RUNNER_TEMP:-}" ]; then
+  root=$RUNNER_TEMP/ci-cache
+  mkdir -p "$root" 2>/dev/null || true
+else
+  echo "ci-cache-dir: neither CI_CACHE_ROOT nor RUNNER_TEMP is set on a self-hosted runner" >&2
+  exit 2
+fi
 cap=${CI_CACHE_MAX_GB:-40}
 case $cap in
   '' | *[!0-9]*)
@@ -82,9 +96,10 @@ named_volumes() {
 }
 
 # The legacy cache in the pool host's temp dir holds stage-owned files: delete
-# it before any stage runs. No stage on a self-hosted runner writes there.
-if [ -n "${RUNNER_TEMP:-}" ]; then
-  clean "$RUNNER_TEMP/ci-cache"
+# it before any stage runs when CI_CACHE_ROOT puts the cache elsewhere; with
+# no CI_CACHE_ROOT that directory is the root itself.
+if [ -n "$legacy" ]; then
+  clean "$legacy/ci-cache"
 fi
 
 writable_dir() { [ -d "$1" ] && [ -w "$1" ]; }
