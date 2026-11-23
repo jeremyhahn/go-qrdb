@@ -53,6 +53,11 @@ type MoveStepRunner struct {
 	reg    *BarrierRegistry
 	nodeID string
 	stores TenantStoreCloser
+
+	// rename is the rename copy-back moves a staged tree with; nil means
+	// fsync.Rename. A same-package test swaps it to model a source root that
+	// is a mount point.
+	rename func(oldpath, newpath string) error
 }
 
 // NewMoveStepRunner returns the runner for nodeID over reg and stores. A
@@ -214,7 +219,7 @@ func (m *MoveStepRunner) copyBack(ctx context.Context, step volume.MoveStep) err
 	if err := m.reg.RemoveDataRoot(ctx, src); err != nil {
 		return fail(err)
 	}
-	if err := fsync.Rename(staging, src); err != nil {
+	if err := m.renameFn()(staging, src); err != nil {
 		return fail(err)
 	}
 	return nil
@@ -257,6 +262,20 @@ func (m *MoveStepRunner) placements(ctx context.Context, step volume.MoveStep) (
 // source. It is one path component, as placementRoot requires.
 func copyBackStagingName(path string) string {
 	return path + ".copyback"
+}
+
+// copyBackInPlaceName is the directory, inside a source root that is a mount
+// point, a copy-back stages the tree in before it moves each child up into the
+// root: a rename across the mount fails with EXDEV, so this staging must lie
+// on the mounted filesystem itself.
+const copyBackInPlaceName = ".qrdb-copyback"
+
+// renameFn returns the rename copy-back uses.
+func (m *MoveStepRunner) renameFn() func(oldpath, newpath string) error {
+	if m.rename != nil {
+		return m.rename
+	}
+	return fsync.Rename
 }
 
 // removePlacement removes this node's directory for tenantID on pool, if

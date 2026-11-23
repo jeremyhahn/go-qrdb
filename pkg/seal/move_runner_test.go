@@ -15,9 +15,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"syscall"
 	"testing"
 
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
@@ -562,6 +565,126 @@ func TestMoveStepRunner_CopyBackRerunAfterSourceRemoved(t *testing.T) {
 	}
 	mustExist(t, filepath.Join(fx.src, "w1"))
 	assertGone(t, staging)
+}
+
+// mountedSourceRemover is an OS remover for which root is a mount point: its
+// children go, but rmdir of root itself fails with EBUSY, as the kernel does.
+type mountedSourceRemover struct {
+	osDirectoryRemover
+	root string
+}
+
+func (m mountedSourceRemover) Remove(path string) error {
+	if filepath.Clean(path) == m.root {
+		return &os.PathError{Op: "remove", Path: path, Err: syscall.EBUSY}
+	}
+	return os.Remove(path)
+}
+
+func (m mountedSourceRemover) RemoveAll(path string) error {
+	if filepath.Clean(path) != m.root {
+		return os.RemoveAll(path)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(path, e.Name())); err != nil {
+			return err
+		}
+	}
+	return &os.PathError{Op: "unlinkat", Path: path, Err: syscall.EBUSY}
+}
+
+// mountPointRename models rename(2) when root is a mount point: renaming root
+// itself, or onto it, fails with EBUSY, and a rename whose ends lie on
+// different sides of the mount fails with EXDEV. failAt, when positive, makes
+// the failAt-th otherwise-allowed rename into root fail once with EIO, a crash
+// part way through a swap.
+func mountPointRename(root string, failAt int) func(oldpath, newpath string) error {
+	inside := func(p string) bool {
+		return p == root || strings.HasPrefix(p, root+string(filepath.Separator))
+	}
+	n := 0
+	return func(oldpath, newpath string) error {
+		o, d := filepath.Clean(oldpath), filepath.Clean(newpath)
+		if o == root || d == root {
+			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: syscall.EBUSY}
+		}
+		if inside(o) != inside(d) {
+			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: syscall.EXDEV}
+		}
+		if inside(d) {
+			n++
+			if n == failAt {
+				return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: syscall.EIO}
+			}
+		}
+		return fsync.Rename(oldpath, newpath)
+	}
+}
+
+func TestMoveStepRunner_CopyBackOntoMountPointSource(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		failAt int
+	}{
+		{name: "clean", failAt: 0},
+		{name: "rerun after a partial swap", failAt: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx, stores, r := newRunnerFixture(t)
+			ctx := context.Background()
+			if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+				t.Fatalf("copy: %v", err)
+			}
+			if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+				t.Fatalf("settle copy: %v", err)
+			}
+			stores.write("w1")
+			stores.write("w2")
+			root := filepath.Clean(fx.src)
+			fx.reg.remover = mountedSourceRemover{root: root}
+			r.rename = mountPointRename(root, tc.failAt)
+			before, err := os.Stat(root)
+			if err != nil {
+				t.Fatalf("stat source: %v", err)
+			}
+			abort := runnerStep(volume.MoveStepPhaseAbort, true)
+			if tc.failAt > 0 {
+				if err := r.RunMoveStep(ctx, abort); err == nil {
+					t.Fatalf("abort with a failing swap rename succeeded")
+				}
+			}
+			staging := filepath.Join(fx.defaultRoot, copyBackStagingName(fx.path))
+			check := func(what string) {
+				t.Helper()
+				if got, want := mustManifest(t, root), mustManifest(t, fx.dst()); !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s: source differs from the destination", what)
+				}
+				mustExist(t, filepath.Join(root, "w1"))
+				mustExist(t, filepath.Join(root, "w2"))
+				assertGone(t, staging)
+				assertGone(t, filepath.Join(root, copyBackInPlaceName))
+				after, err := os.Stat(root)
+				if err != nil {
+					t.Fatalf("%s: stat source: %v", what, err)
+				}
+				if !os.SameFile(before, after) {
+					t.Fatalf("%s: the mount-point source root was replaced, not kept", what)
+				}
+			}
+			if err := r.RunMoveStep(ctx, abort); err != nil {
+				t.Fatalf("abort: %v", err)
+			}
+			check("abort")
+			if err := r.RunMoveStep(ctx, abort); err != nil {
+				t.Fatalf("abort rerun: %v", err)
+			}
+			check("abort rerun")
+		})
+	}
 }
 
 // TestMoveStepRunner_AbortRedoneBeforeCAS is the first abort crash point:
