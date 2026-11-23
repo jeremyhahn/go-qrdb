@@ -362,7 +362,7 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 	if err != nil {
 		return nil, openErr(err)
 	}
-	if b.Backend == database.BackendObjstore && enc.Enabled() {
+	if b.Backend == database.BackendObjstore && enc.Encrypts() {
 		return nil, &ObjstoreBindingEncryptionUnsupportedError{TenantID: b.TenantID, Database: b.Database}
 	}
 	storageCfg := bindingStorageConfig(f.storageCfg, b)

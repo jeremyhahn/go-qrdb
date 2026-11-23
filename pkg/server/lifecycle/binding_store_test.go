@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -949,6 +950,63 @@ func TestLocalBindingFactory_EncryptedObjstoreRefused(t *testing.T) {
 		}
 		_ = materialized(t, db)
 	})
+}
+
+// TestLocalBindingFactory_PlaintextBarrierAdmitsObjstore proves the objstore
+// refusal keys on whether the barrier encrypts, not on its presence: a node
+// barrier under seal strategy none (which writes plaintext) admits an
+// objstore binding, while an encrypting strategy refuses it.
+func TestLocalBindingFactory_PlaintextBarrierAdmitsObjstore(t *testing.T) {
+	cases := []struct {
+		name    string
+		barrier func(*testing.T) *seal.StorageBarrier
+		refused bool
+	}{
+		{name: "strategy none admits", barrier: newNoneStrategyBarrier, refused: false},
+		{name: "passphrase strategy refuses", barrier: newUnsealedBarrier, refused: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, atrest.New(tc.barrier(t)), qrdbconfig.StorageConfig{}, prefixTenants)
+			defer func() { _ = f.Close() }()
+			bound, err := f.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "app", Backend: database.BackendObjstore}, dir)
+			var refused *lifecycle.ObjstoreBindingEncryptionUnsupportedError
+			if tc.refused {
+				if !errors.As(err, &refused) {
+					t.Fatalf("Create: err = %v, want *ObjstoreBindingEncryptionUnsupportedError", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if bound == nil {
+				t.Fatal("Create returned no binding")
+			}
+		})
+	}
+}
+
+// newNoneStrategyBarrier returns an initialized node barrier whose active
+// strategy is seal.StrategyNone.
+func newNoneStrategyBarrier(t *testing.T) *seal.StorageBarrier {
+	t.Helper()
+	ctx := context.Background()
+	barrier, err := seal.NewStorageBarrier(slog.New(slog.NewTextHandler(io.Discard, nil)), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "binding-none-root-key", DeploymentID: 1}, seal.NewNoneStrategy())
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := barrier.InitializeWithStrategy(ctx, seal.NewNoneStrategy(), seal.Credentials{}); err != nil {
+		t.Fatalf("InitializeWithStrategy: %v", err)
+	}
+	if barrier.IsSealed() {
+		if err := barrier.UnsealWithStrategy(ctx, seal.NewNoneStrategy(), seal.Credentials{}); err != nil {
+			t.Fatalf("UnsealWithStrategy: %v", err)
+		}
+	}
+	return barrier
 }
 
 // TestLocalBindingFactory_RaftOnStandaloneRefused proves a backend: raft
