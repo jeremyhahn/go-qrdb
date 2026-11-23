@@ -434,3 +434,25 @@ One row per test function this branch deletes (`git diff origin/main...HEAD -- '
 | fold-src/sealed-ceremony-ca-row-1 | merged (--no-ff) | adds sdk/go/node/sealed_ceremony_ca_test.go and docs/plans/1.md, updates sealed_window_mount_test.go; merged cleanly against current main, Sealed tests in sdk/go/node pass |
 | fold-src/sealed-ceremony-ca-wip | merged with -s ours | superseded by the sealed-ceremony-ca row-1 ref (same test file; its go.sum change is noise) |
 | fold-src/ci-bigdisk-docker | merged with -s ours | superseded by ruling 617 (#1582, ci.yml jobs on the self-hosted pools) |
+
+## Sleep sweep 2 (rw566e)
+
+Package order 4: cmd/qrdbd, pkg/volume, pkg/clienttrust and sdk/go test files the other 566 lanes do not touch. Line numbers are the launch base's.
+
+| File | Line | Replaced by / kept and why |
+|---|---|---|
+| cmd/qrdbd/cert_reload_test.go | 344 | require.Eventually on the loaded certificate changing, then the content assert |
+| cmd/qrdbd/cert_reload_test.go | 365 | assert.Never over three debounce intervals: an unrelated file write never swaps the certificate |
+| cmd/qrdbd/cert_reload_test.go | 478 | assert.Never over three debounce intervals: no reload after Stop |
+| cmd/qrdbd/cert_reload_test.go | 592 | require.Eventually on the loaded certificate changing (key in a separate directory) |
+| cmd/qrdbd/unseal_ceremony_test.go | 467, 476 | ticker wait between retries of the deadline-bounded initialize poll |
+| cmd/qrdbd/reclaim_sweep_test.go | 116, 140 | require.Eventually on the resolver having recorded a sweep |
+| pkg/volume/reporter_seal_test.go | 168, 175, 202 | kept: synctest fake-clock advance; the report interval is the thing under test, synctest.Wait follows |
+| pkg/clienttrust/pool_test.go | 1285, 1449, 2440 | kept: already deadline-bounded polls with t.Fatal on timeout |
+| sdk/go/transport/embedded/transport_watch_test.go | 106, 121 | ticker wait in the deadline-bounded goroutine-count helpers (no testify: Eventually's goroutine would skew the count) |
+| sdk/go/transport/embedded/transport_watch_test.go | 286 | ticker wait in awaitEviction's deadline-bounded poll on the hub's watcher count |
+| sdk/go/transport/coalescing_test.go | 261, 273 | kept: synctest fake-clock advance to either side of the batch window, which is the thing under test |
+| sdk/go/node/tenant_undo_watch_test.go | 42, 101 | ticker wait in the deadline-bounded feature-gate and undo-acknowledgement polls |
+| sdk/go/node/cluster_formation_test.go | 219, 610, 688, 726, 1246 | ticker wait in the deadline-bounded leader, gate-settle, joiner-read, admit and lease-reap polls (bodies call t.Fatalf, so not Eventually) |
+| sdk/go/coordination_test.go | 1035 | kept: positions the renewal at the halfway mark of the 4 s lease lifetime; the wall-clock deadline is the thing under test |
+| sdk/go/coordination_test.go | 1046 | ticker wait in the deadline-bounded poll for the keepalive reaching the fake |
