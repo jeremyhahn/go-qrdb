@@ -173,8 +173,9 @@ qrdb credential migration-conflicts resolve smtp-password --resolution import
 # migration conflict for smtp-password resolved: import
 ```
 
-A name with no conflict on the node fails with not-found (`credentials:
-migration conflict not found`); a resolution other than `import` or `discard`
+A name with no conflict on the node fails with not-found (the Go SDK returns
+`*transport.KeyNotFoundError` on every transport; the message says "not
+found" and names the credential); a resolution other than `import` or `discard`
 fails with invalid-argument (`credentials: migration resolution must be import
 or discard`). Both exit non-zero and change nothing.
 
