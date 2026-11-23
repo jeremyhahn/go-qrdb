@@ -496,8 +496,11 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// A database whose local binding is materialized has its own store,
 	// engine and host (lifecycle.LocalBindingFactory): it is served from
 	// that host, never from a namespace of the shared store.
-	if dbase, ms, ok := r.materializedDatabase(tenantID, db); ok {
-		return r.resolveMaterialized(tenantID, db, info, dbase, ms)
+	// The record is the one managedDatabase already resolved: no second
+	// lookup, so a failing catalog read surfaced above as an error and can
+	// never fall through to the shared store below.
+	if ms, ok := materializedStoreOf(managed.db); ok {
+		return r.resolveMaterialized(tenantID, db, info, managed.db, ms)
 	}
 
 	// A database is a key-namespace layered over the shared service set, so
@@ -591,17 +594,35 @@ func servesFromNodeLocalStore(cfg *database.DatabaseConfig) bool {
 
 // materializedDatabase returns tenantID's database db when the Manager opened
 // it in its own store (a materializedStore backend): every path that serves
-// such a database must use its own host, never the shared store.
-func (r *restServiceRegistry) materializedDatabase(tenantID, db string) (*database.Database, materializedStore, bool) {
-	dbase, ok := r.ownedDatabase(tenantID, db)
-	if !ok {
-		return nil, nil, false
+// such a database must use its own host, never the shared store. A database
+// that does not exist is (nil, nil, false, nil); any other lookup failure is
+// returned, so a transient catalog error never reads as "not materialized".
+func (r *restServiceRegistry) materializedDatabase(tenantID, db string) (*database.Database, materializedStore, bool, error) {
+	if db == "" || r.dbManager == nil {
+		return nil, nil, false, nil
+	}
+	dbase, err := r.dbManager.GetOwned(db, tenantID)
+	if err != nil {
+		var notFound *database.NotFoundError
+		if errors.As(err, &notFound) {
+			return nil, nil, false, nil
+		}
+		return nil, nil, false, err
+	}
+	ms, ok := materializedStoreOf(dbase)
+	return dbase, ms, ok, nil
+}
+
+// materializedStoreOf reports whether dbase, a catalog record the caller has
+// already looked up, is opened in its own store (a materializedStore
+// backend). It performs no lookup of its own, so it has no failure to
+// mistake for "not materialized".
+func materializedStoreOf(dbase *database.Database) (materializedStore, bool) {
+	if dbase == nil {
+		return nil, false
 	}
 	ms, ok := dbase.Backend().(materializedStore)
-	if !ok {
-		return nil, nil, false
-	}
-	return dbase, ms, true
+	return ms, ok
 }
 
 // ownedDatabase returns the catalog record for db when tenantID owns it

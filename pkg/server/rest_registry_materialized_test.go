@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -191,6 +192,74 @@ func TestRESTServiceRegistry_MaterializedDatabaseServedFromItsOwnHost(t *testing
 	}
 	if got, err := service.NewKVService(fresh.Host(), fresh.ShardID()).Get(ctx, "k2"); err != nil || !bytes.Equal(got, value) {
 		t.Fatalf("recreated own host Get = %q, %v; want %q", got, err, value)
+	}
+}
+
+// flakyGetCatalog answers the first `allow` Gets from the wrapped catalog and
+// fails every later one, standing in for a catalog read that fails
+// transiently in the middle of a request's resolution.
+type flakyGetCatalog struct {
+	database.Catalog
+	allow atomic.Int32
+}
+
+var errCatalogUnavailable = errors.New("catalog unavailable")
+
+func (c *flakyGetCatalog) Get(ctx context.Context, tenantID, name string) (database.DatabaseMeta, error) {
+	if c.allow.Add(-1) < 0 {
+		return database.DatabaseMeta{}, errCatalogUnavailable
+	}
+	return c.Catalog.Get(ctx, tenantID, name)
+}
+
+// A catalog lookup that fails after the database's record was resolved never
+// reads as "not materialized": resolve serves the record it already holds
+// from the database's own host, and the journaled collection path returns
+// the error. Neither writes into the shared (control-plane) store.
+func TestRESTServiceRegistry_MaterializedLookupErrorNeverFallsToShared(t *testing.T) {
+	const tenantID, name = "acme", "orders"
+	ctx := context.Background()
+	dir := t.TempDir()
+	factory := &fakeMaterializingFactory{}
+	dbMgr := databasetest.NewManager(nil, dir, database.WithBackendFactory(factory))
+	cfg := database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}
+	if _, err := dbMgr.Create(cfg); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fake := factory.last(t)
+	flaky := &flakyGetCatalog{Catalog: databasetest.Catalog(dir)}
+	dbMgr.SetCatalog(flaky)
+
+	shared := newFilledRegistry()
+	r := NewRESTServiceRegistry(shared, nil, "system", withDatabaseManager(dbMgr)).(*restServiceRegistry)
+
+	flaky.allow.Store(1)
+	value := []byte("materialized-value")
+	svcs, err := r.resolve(tenantID, name)
+	if err == nil {
+		if svcs.Placement != service.StorePlacementNode {
+			t.Fatalf("Placement = %q, want %q", svcs.Placement, service.StorePlacementNode)
+		}
+		if err := svcs.KV.Put(ctx, "k", value); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		got, gerr := service.NewKVService(fake.Host(), fake.ShardID()).Get(ctx, "k")
+		if gerr != nil || !bytes.Equal(got, value) {
+			t.Fatalf("own host Get = %q, %v; want %q", got, gerr, value)
+		}
+	}
+
+	flaky.allow.Store(0)
+	if _, err := r.resolve(tenantID, name); !errors.Is(err, errCatalogUnavailable) {
+		t.Fatalf("resolve with a failing catalog = %v, want %v", err, errCatalogUnavailable)
+	}
+	if _, err := r.journaledCollectionService(tenantID, name); !errors.Is(err, errCatalogUnavailable) {
+		t.Fatalf("journaledCollectionService with a failing catalog = %v, want %v", err, errCatalogUnavailable)
+	}
+	for _, key := range []string{"k", tenantID + "/" + name + "/k"} {
+		if got, err := shared.Default().KV.Get(ctx, key); err == nil && got != nil {
+			t.Fatalf("shared store holds %q = %q", key, got)
+		}
 	}
 }
 

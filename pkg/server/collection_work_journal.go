@@ -157,7 +157,13 @@ func (r *restServiceRegistry) journaledCollectionService(tenantID, db string) (s
 		// A database the Manager opened in its own store is served from
 		// its own host, exactly as resolve serves it, never from the
 		// shared store's composite below.
-		if dbase, ms, ok := r.materializedDatabase(tenantID, db); ok {
+		// A failed lookup is an error, never "not materialized": the
+		// shared store is not this database's store.
+		dbase, ms, ok, err := r.materializedDatabase(tenantID, db)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			svcs, err := r.resolveMaterialized(tenantID, db, info, dbase, ms)
 			if err != nil {
 				return nil, err
