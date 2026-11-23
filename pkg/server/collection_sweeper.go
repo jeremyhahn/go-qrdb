@@ -311,12 +311,19 @@ func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepT
 		}
 	}
 	if s.opts.dbManager != nil {
-		for _, info := range s.opts.dbManager.List() {
-			dbase, err := s.opts.dbManager.GetOwned(info.Name, info.TenantID)
+		// Every recorded database, not only the open ones: a lazily
+		// opened isolated-tenant or prefix database is opened here so its
+		// collection work is swept after a restart without a request.
+		for _, ref := range s.recordedDatabases(ctx) {
+			info := ref
+			if _, err := s.opts.dbManager.Open(ctx, info.tenantID, info.name); err != nil {
+				continue
+			}
+			dbase, err := s.opts.dbManager.GetOwned(info.name, info.tenantID)
 			if err != nil {
 				continue
 			}
-			owner := info.TenantID
+			owner := info.tenantID
 			if owner == "" {
 				owner = tenantid.System
 			}
@@ -329,13 +336,13 @@ func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepT
 					return nil, err
 				}
 				out = append(out, targets...)
-				out = append(out, collectionSweepTarget{Tenant: owner, Database: info.Name})
+				out = append(out, collectionSweepTarget{Tenant: owner, Database: info.name})
 				continue
 			}
 			if cfg := dbase.Config(); !servesFromNodeLocalStore(&cfg) {
 				continue
 			}
-			out = append(out, collectionSweepTarget{Tenant: owner, Database: info.Name})
+			out = append(out, collectionSweepTarget{Tenant: owner, Database: info.name})
 		}
 	}
 	return out, nil

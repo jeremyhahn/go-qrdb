@@ -1574,6 +1574,35 @@ func (m *Manager) updateMeta(ctx context.Context, db *Database, mutate func(*Dat
 	return cat.Update(ctx, db.TenantID(), db.Name(), db.Incarnation(), mutate)
 }
 
+// ListRecords returns every database record the catalog holds, open on
+// this node or not: the system store's, and an isolated tenant's in its
+// home store. Records being dropped are left out. Background maintenance
+// enumerates these, not List, so a database nothing has opened since a
+// restart is still reached.
+func (m *Manager) ListRecords(ctx context.Context) ([]DatabaseMeta, error) {
+	cat, err := m.catalog("list database records")
+	if err != nil {
+		return nil, err
+	}
+	var metas []DatabaseMeta
+	if all, ok := cat.(AllTenantsCatalog); ok {
+		metas, err = all.ListAll(ctx)
+	} else {
+		metas, err = cat.List(ctx)
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := metas[:0]
+	for _, meta := range metas {
+		if meta.Dropping {
+			continue
+		}
+		out = append(out, meta)
+	}
+	return out, nil
+}
+
 // List returns information about all open databases, sorted by name.
 func (m *Manager) List() []DatabaseInfo {
 	var infos []DatabaseInfo

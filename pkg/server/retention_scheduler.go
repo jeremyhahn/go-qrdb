@@ -254,8 +254,8 @@ func (s *Server) materializedStores(ctx context.Context) []namedMaterializedStor
 		return nil
 	}
 	var out []namedMaterializedStore
-	for _, info := range s.opts.dbManager.List() {
-		db, err := s.opts.dbManager.Open(ctx, info.TenantID, info.Name)
+	for _, ref := range s.recordedDatabases(ctx) {
+		db, err := s.opts.dbManager.Open(ctx, ref.tenantID, ref.name)
 		if err != nil || db == nil {
 			continue
 		}
@@ -263,7 +263,46 @@ func (s *Server) materializedStores(ctx context.Context) []namedMaterializedStor
 		if !ok {
 			continue
 		}
-		out = append(out, namedMaterializedStore{name: "materialized " + tenantid.Normalize(info.TenantID) + "/" + info.Name, store: ms})
+		out = append(out, namedMaterializedStore{name: "materialized " + tenantid.Normalize(ref.tenantID) + "/" + ref.name, store: ms})
+	}
+	return out
+}
+
+// recordedDatabase names one database the catalog records.
+type recordedDatabase struct {
+	tenantID string
+	name     string
+}
+
+// recordedDatabases lists every database the Manager's catalog records,
+// open on this node or not: an isolated-tenant or prefix database is
+// opened lazily, by its first request, so after a restart Manager.List
+// holds none of them, and background maintenance enumerating it would
+// never reach them. When the catalog cannot be listed, the open
+// databases are still maintained.
+func (s *Server) recordedDatabases(ctx context.Context) []recordedDatabase {
+	if s.opts.dbManager == nil {
+		return nil
+	}
+	seen := make(map[recordedDatabase]bool)
+	var out []recordedDatabase
+	add := func(tenantID, name string) {
+		ref := recordedDatabase{tenantID: tenantid.Normalize(tenantID), name: name}
+		if seen[ref] {
+			return
+		}
+		seen[ref] = true
+		out = append(out, recordedDatabase{tenantID: tenantID, name: name})
+	}
+	metas, err := s.opts.dbManager.ListRecords(ctx)
+	if err != nil && s.logger != nil {
+		s.logger.Warn("background maintenance cannot list the database catalog; only open databases are maintained", "err", err)
+	}
+	for i := range metas {
+		add(metas[i].TenantID, metas[i].Name)
+	}
+	for _, info := range s.opts.dbManager.List() {
+		add(info.TenantID, info.Name)
 	}
 	return out
 }

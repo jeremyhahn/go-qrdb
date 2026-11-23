@@ -405,3 +405,94 @@ func TestRetentionScheduler_SweepsMaterializedDatabase(t *testing.T) {
 		t.Fatalf("points after retention = %+v, want only the live point", res.Points)
 	}
 }
+
+// reopeningFactory hands a database the backend it was first created
+// with when a later Manager opens it again, standing in for a store
+// whose files outlive a restart.
+type reopeningFactory struct {
+	inner  *fakeMaterializingFactory
+	mu     sync.Mutex
+	byName map[string]database.Backend
+	opens  int
+}
+
+func (f *reopeningFactory) Create(cfg database.DatabaseConfig, dataDir string) (database.Backend, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.opens++
+	key := cfg.TenantID + "/" + cfg.Name
+	if b, ok := f.byName[key]; ok {
+		return b, nil
+	}
+	b, err := f.inner.Create(cfg, dataDir)
+	if err != nil {
+		return nil, err
+	}
+	f.byName[key] = b
+	return b, nil
+}
+
+func (f *reopeningFactory) Close() error { return nil }
+
+// After a restart nothing has opened an isolated-tenant database: the
+// retention pass reaches it from the catalog, opens it, and applies its
+// policy without any foreground request.
+func TestRetentionScheduler_SweepsUnopenedDatabaseAfterRestart(t *testing.T) {
+	const tenantID, name, metric = "acme", "metrics", "cpu.usage"
+	ctx := context.Background()
+	dir := t.TempDir()
+	inner := &fakeMaterializingFactory{}
+	factory := &reopeningFactory{inner: inner, byName: map[string]database.Backend{}}
+	before := databasetest.NewManager(nil, dir, database.WithBackendFactory(factory))
+	if _, err := before.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fake := inner.last(t)
+	ts := service.NewTimeSeriesService(fake.Host(), fake.ShardID())
+
+	now := time.Now().UTC().Truncate(time.Second)
+	expired := &service.DataPoint{Metric: metric, Value: 1, Timestamp: now.Add(-2 * time.Hour)}
+	live := &service.DataPoint{Metric: metric, Value: 2, Timestamp: now.Add(-time.Minute)}
+	for _, p := range []*service.DataPoint{expired, live} {
+		if err := ts.WritePoint(ctx, p); err != nil {
+			var notCompiled *timeseries.NotCompiledError
+			if errors.As(err, &notCompiled) || strings.Contains(err.Error(), (&timeseries.NotCompiledError{}).Error()) {
+				t.Skipf("time series not built: %v", err)
+			}
+			t.Fatalf("WritePoint: %v", err)
+		}
+	}
+	if err := ts.SetRetentionPolicy(ctx, metric, &service.RetentionPolicy{Duration: time.Hour}); err != nil {
+		t.Fatalf("SetRetentionPolicy: %v", err)
+	}
+
+	// The restarted node's Manager shares the catalog and has opened
+	// nothing.
+	after := databasetest.NewManager(nil, dir, database.WithBackendFactory(factory))
+	if open := after.List(); len(open) != 0 {
+		t.Fatalf("restarted Manager has %d open databases, want 0", len(open))
+	}
+	opensBefore := factory.opens
+
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{}, WithDatabaseManager(after))
+	s := &retentionScheduler{
+		stores:   srv.retentionStores,
+		interval: time.Hour,
+		now:      func() time.Time { return now },
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	if n := s.passOnce(ctx); n != 1 {
+		t.Fatalf("retention pass swept %d metrics, want 1", n)
+	}
+	if factory.opens == opensBefore {
+		t.Fatal("the retention pass never opened the unopened database")
+	}
+
+	res, err := ts.QueryRich(ctx, &service.QueryRequest{Metric: metric, StartTime: now.Add(-24 * time.Hour), EndTime: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("QueryRich: %v", err)
+	}
+	if len(res.Points) != 1 || res.Points[0].Value != live.Value {
+		t.Fatalf("points after retention = %+v, want only the live point", res.Points)
+	}
+}
