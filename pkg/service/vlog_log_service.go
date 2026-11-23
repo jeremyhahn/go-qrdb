@@ -269,6 +269,13 @@ func (t raftTarget) featureEnabled(f feature.Feature) bool {
 var (
 	logFeatures    = []feature.Feature{featuregate.VerifiableLog}
 	logKeyFeatures = []feature.Feature{featuregate.VerifiableLog, featuregate.VerifiableLogKeys}
+	// logIncarnationFeatures gates a key rotation of a log whose descriptor
+	// records its database's incarnation: a replica without
+	// featuregate.VerifiableLogDrop decodes the descriptor without the field
+	// and would persist it dropped. A create on such a group records no
+	// incarnation instead (CreateLog), so the log is legacy and belongs to
+	// the database holding its name (vlog.IncarnationRequest).
+	logIncarnationFeatures = []feature.Feature{featuregate.VerifiableLog, featuregate.VerifiableLogKeys, featuregate.VerifiableLogDrop}
 )
 
 // propose sends one encoded OpVerifiableLog command to the tenant's group,
@@ -520,12 +527,18 @@ func (s *logService) CreateLog(ctx context.Context, req *CreateLogRequest) (*Cre
 	// a stale drop of an earlier incarnation leaves it alone (vlog.Chain.
 	// DropDatabase) and a successor's reads refuse it. It is the one the
 	// write was admitted under and is fenced to. A name no database holds
-	// records none.
+	// records none. Until featuregate.VerifiableLogDrop is active on the
+	// group, a replica there would decode the descriptor without the field
+	// and persist other bytes than its peers, so the log records none and is
+	// a legacy log of the database holding its name.
 	desc.Incarnation = g.incarnation
 	if !s.route.fenced(id) {
 		if db, err := s.route.databases.GetOwned(id.Database, id.TenantID); err == nil {
 			desc.Incarnation = db.Incarnation()
 		}
+	}
+	if !g.target.featureEnabled(featuregate.VerifiableLogDrop) {
+		desc.Incarnation = ""
 	}
 	resp := &CreateLogResponse{ID: id}
 	encode := func() ([]byte, error) { return protocol.EncodeVerifiableLogCreate(id, desc) }
@@ -559,7 +572,11 @@ func (s *logService) RotateKey(ctx context.Context, req *RotateKeyRequest) (*Rot
 	if err != nil {
 		return nil, err
 	}
-	g, err := s.admit(ctx, id, logKeyFeatures)
+	features := logKeyFeatures
+	if desc.Incarnation != "" {
+		features = logIncarnationFeatures
+	}
+	g, err := s.admit(ctx, id, features)
 	if err != nil {
 		return nil, err
 	}

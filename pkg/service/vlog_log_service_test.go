@@ -1793,6 +1793,86 @@ func TestLogService_ReadRefusesAnEarlierIncarnationsLog(t *testing.T) {
 	}
 }
 
+// TestLogService_IncarnationWritesWaitForDropFeature proves a group on which
+// featuregate.VerifiableLogDrop is not yet active -- a replica there would
+// decode a create's descriptor without the incarnation and persist other
+// bytes than its peers -- records no incarnation on a create, and serves the
+// resulting legacy log to the database that holds its name (read, list,
+// append, rotate), while a key rotation of a log that records one is refused
+// with *LogFeatureNotActiveError until every replica carries it.
+func TestLogService_IncarnationWritesWaitForDropFeature(t *testing.T) {
+	g := newFenceGroup(t)
+	mgr := databasetest.NewManager(nil, t.TempDir(), database.WithKeyspaceReclaimer(markerReclaimer{mu: &g.mu, store: g.store}))
+	t.Cleanup(func() { _ = mgr.Close() })
+	newSvc := func(host Host) LogService {
+		svc, err := NewLogService(LogServiceConfig{
+			Resolver:  &fixedShardResolver{host: host, shardID: 1},
+			Databases: mgr,
+			Signers:   newHSMProvider(),
+		})
+		if err != nil {
+			t.Fatalf("NewLogService: %v", err)
+		}
+		return svc
+	}
+	mixed := newSvc(&featureHost{mockHost: g.host(t), active: map[feature.Feature]bool{featuregate.VerifiableLog: true, featuregate.VerifiableLogKeys: true}})
+	upgraded := newSvc(&gatedHost{mockHost: g.host(t), enabled: map[uint64]bool{1: true}})
+	ctx := acmeCtx()
+	live := createAcmeLedger(t, mgr)
+	readDesc := func(id vlog.LogID) *vlog.Descriptor {
+		t.Helper()
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		desc, err := vlog.ReadDescriptor(g.store, id)
+		if err != nil {
+			t.Fatalf("descriptor %v: %v", id, err)
+		}
+		return desc
+	}
+
+	created, err := mixed.CreateLog(ctx, &CreateLogRequest{LogRef: testLogRef, Origin: "example.test/acme/events", SigningKeyType: vlog.SignatureEd25519})
+	if err != nil {
+		t.Fatalf("CreateLog before the drop feature: %v", err)
+	}
+	if desc := readDesc(created.ID); desc.Incarnation != "" {
+		t.Fatalf("create before the drop feature recorded incarnation %q; want none", desc.Incarnation)
+	}
+	for name, svc := range map[string]LogService{"mixed": mixed, "upgraded": upgraded} {
+		if _, err := svc.Append(ctx, &AppendRequest{LogRef: testLogRef, Entries: [][]byte{[]byte(name)}}); err != nil {
+			t.Fatalf("%s: Append to the legacy log: %v", name, err)
+		}
+		if _, err := svc.Head(ctx, &HeadRequest{LogRef: testLogRef}); err != nil {
+			t.Fatalf("%s: Head of the legacy log in incarnation %q: %v", name, live, err)
+		}
+		listed, err := svc.ListLogs(ctx, &ListLogsRequest{Database: "ledger"})
+		if err != nil || len(listed.Logs) != 1 {
+			t.Fatalf("%s: ListLogs = %v, %v; want the legacy log", name, listed, err)
+		}
+		if _, err := svc.RotateKey(ctx, &RotateKeyRequest{LogRef: testLogRef, SigningKeyType: vlog.SignatureEd25519}); err != nil {
+			t.Fatalf("%s: RotateKey of the legacy log: %v", name, err)
+		}
+	}
+	if desc := readDesc(created.ID); desc.Incarnation != "" || len(desc.Keys) != 3 {
+		t.Fatalf("legacy log after two rotations = %+v; want no incarnation and three keys", desc)
+	}
+
+	stamped := LogRef{Database: "ledger", Log: "stamped"}
+	made, err := upgraded.CreateLog(ctx, &CreateLogRequest{LogRef: stamped, Origin: "example.test/acme/stamped", SigningKeyType: vlog.SignatureEd25519})
+	if err != nil {
+		t.Fatalf("CreateLog with the drop feature: %v", err)
+	}
+	if desc := readDesc(made.ID); desc.Incarnation != live {
+		t.Fatalf("create with the drop feature recorded %q; want %q", desc.Incarnation, live)
+	}
+	var inactive *LogFeatureNotActiveError
+	if _, err := mixed.RotateKey(ctx, &RotateKeyRequest{LogRef: stamped, SigningKeyType: vlog.SignatureEd25519}); !errors.As(err, &inactive) || inactive.Feature != featuregate.VerifiableLogDrop {
+		t.Fatalf("RotateKey of a log recording an incarnation before the drop feature = %v; want LogFeatureNotActiveError for %s", err, featuregate.VerifiableLogDrop)
+	}
+	if desc := readDesc(made.ID); len(desc.Keys) != 1 {
+		t.Fatalf("refused rotation left %d keys; want 1", len(desc.Keys))
+	}
+}
+
 // TestLogService_StandaloneBarrierStoreFencesAPausedCreate proves the
 // standalone barrier store, which has no group to carry the drop-fence
 // guard, refuses a create paused in the signer across its database's drop
