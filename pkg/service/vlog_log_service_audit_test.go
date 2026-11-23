@@ -155,7 +155,7 @@ func TestLogService_ReadsABarrierTenantsAuditInstanceFromItsHomeGroup(t *testing
 	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
 		"vault": {ID: "vault", IsolationType: tenant.IsolationBarrier},
 	}}
-	resolver := NewSystemShardAuditResolver(system, 1, lookup,
+	resolver := NewSystemShardLogResolver(system, 1, lookup,
 		&fakeLogGroups{host: home, homes: map[string]uint64{"vault": 9}})
 	logger := NewReplicatedLogger(resolver)
 	ctx := tenant.WithTenantID(context.Background(), "vault")
@@ -209,7 +209,7 @@ func TestLogService_SealedBarrierTenantRefusesItsAuditTrail(t *testing.T) {
 	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
 		"vault": {ID: "vault", IsolationType: tenant.IsolationBarrier},
 	}}
-	resolver := NewSystemShardAuditResolver(system, 1, lookup,
+	resolver := NewSystemShardLogResolver(system, 1, lookup,
 		&fakeLogGroups{sealed: map[string]bool{"vault": true}})
 	logger := NewReplicatedLogger(resolver)
 	ctx := tenant.WithTenantID(context.Background(), "vault")

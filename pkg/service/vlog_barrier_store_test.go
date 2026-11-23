@@ -359,14 +359,14 @@ func (s *barrierStoreGroupSource) TenantLogStore(_ context.Context, tenantID str
 func TestSystemShardAuditResolver_TenantLogStoreForwardsToItsGroups(t *testing.T) {
 	ctx := context.Background()
 	var unavailable *BarrierStoreUnavailableError
-	if _, _, err := NewSystemShardAuditResolver(nil, 1, nil, homeGroupSource{}).TenantLogStore(ctx, "vault"); !errors.As(err, &unavailable) || unavailable.TenantID != "vault" {
+	if _, _, err := NewSystemShardLogResolver(nil, 1, nil, homeGroupSource{}).TenantLogStore(ctx, "vault"); !errors.As(err, &unavailable) || unavailable.TenantID != "vault" {
 		t.Fatalf("TenantLogStore without a store source = %v, want BarrierStoreUnavailableError for vault", err)
 	}
-	if _, _, err := NewSystemShardAuditResolver(nil, 1, nil, nil).TenantLogStore(ctx, "vault"); !errors.As(err, &unavailable) {
+	if _, _, err := NewSystemShardLogResolver(nil, 1, nil, nil).TenantLogStore(ctx, "vault"); !errors.As(err, &unavailable) {
 		t.Fatalf("TenantLogStore without groups = %v, want BarrierStoreUnavailableError", err)
 	}
 	src := &barrierStoreGroupSource{}
-	if _, _, err := NewSystemShardAuditResolver(nil, 1, nil, src).TenantLogStore(ctx, "vault"); err == nil || err.Error() != "served" || src.tenantID != "vault" {
+	if _, _, err := NewSystemShardLogResolver(nil, 1, nil, src).TenantLogStore(ctx, "vault"); err == nil || err.Error() != "served" || src.tenantID != "vault" {
 		t.Fatalf("TenantLogStore = %v (asked for %q), want the source's answer for vault", err, src.tenantID)
 	}
 }

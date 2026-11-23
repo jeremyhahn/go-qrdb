@@ -841,9 +841,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// audit appends and reads as it refuses its other writes. Prefix,
 	// system and unregistered tenants keep the system shard.
 	n.logGroups = &logGroups{host: infra.Host}
-	logResolver := service.NewSystemShardAuditResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n}, n.logGroups)
+	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n}, n.logGroups)
+	auditResolver := service.NewSystemShardAuditResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
 	n.ReplicatedAudit = service.NewOptInAuditLogger(
-		service.NewReplicatedLogger(logResolver),
+		service.NewReplicatedLogger(auditResolver),
 		&nodeAuditEntitlementLookup{node: n},
 		infra.ReplicatedAuditPlatformEnabled,
 	)
