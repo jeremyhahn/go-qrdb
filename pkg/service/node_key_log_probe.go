@@ -35,31 +35,122 @@ type TenantDatabaseLister interface {
 // tenant to strict (tenant.NodeKeyLogProbe).
 type NodeKeyLogProbe struct {
 	lister TenantDatabaseLister
+
+	// shared reads the shared system shard's composite namespaces; implicit
+	// names the databases a tenant reaches there without a catalog record
+	// (the default database, the SQL default). Both are optional.
+	shared   SharedNamespaceReader
+	implicit []string
 }
 
 var _ tenant.NodeKeyLogProbe = (*NodeKeyLogProbe)(nil)
 
+// SharedNamespaceReader reports whether a tenant holds data in the shared
+// system shard under a database's composite namespace
+// (tenant.ComposeNamespace). The system shard's WAL is under the node key, so
+// such data is on a node-keyed log whether or not the catalog has a record of
+// the database: the implicit default database never has one.
+type SharedNamespaceReader interface {
+	HasTenantData(ctx context.Context, tenantID, db string) (bool, error)
+}
+
+// NodeKeyLogProbeOption configures a NodeKeyLogProbe.
+type NodeKeyLogProbeOption func(*NodeKeyLogProbe)
+
+// WithSharedNamespaces makes the probe also report each implicit database
+// name whose shared composite namespace holds data, read through reader. A
+// read error fails the probe, so the tightening fails closed.
+func WithSharedNamespaces(reader SharedNamespaceReader, implicit ...string) NodeKeyLogProbeOption {
+	return func(p *NodeKeyLogProbe) {
+		p.shared = reader
+		p.implicit = append([]string(nil), implicit...)
+	}
+}
+
 // NewNodeKeyLogProbe returns a probe over lister, typically the node's
 // database.Manager.
-func NewNodeKeyLogProbe(lister TenantDatabaseLister) *NodeKeyLogProbe {
-	return &NodeKeyLogProbe{lister: lister}
+func NewNodeKeyLogProbe(lister TenantDatabaseLister, opts ...NodeKeyLogProbeOption) *NodeKeyLogProbe {
+	p := &NodeKeyLogProbe{lister: lister}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // NodeKeyLogDatabases implements tenant.NodeKeyLogProbe. It reads the
 // replicated catalog's records, so a database created through another node
-// counts, and so does one that does not open on this node.
+// counts, and so does one that does not open on this node. With
+// WithSharedNamespaces it also reports each implicit database whose shared
+// namespace holds the tenant's data.
 func (p *NodeKeyLogProbe) NodeKeyLogDatabases(ctx context.Context, tenantID string) ([]string, error) {
-	metas, err := p.lister.TenantRecords(tenant.WithTenantID(ctx, tenantID), tenantID)
+	tctx := tenant.WithTenantID(ctx, tenantID)
+	metas, err := p.lister.TenantRecords(tctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
 	var out []string
+	seen := make(map[string]struct{})
 	for i := range metas {
 		if metas[i].TenantID == tenantID && onNodeKeyLog(metas[i].Backend, metas[i].DataDir, metas[i].Barrier, metas[i].DedicatedWAL) {
 			out = append(out, metas[i].Name)
+			seen[metas[i].Name] = struct{}{}
+		}
+	}
+	if p.shared == nil {
+		return out, nil
+	}
+	for _, name := range p.implicit {
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		has, err := p.shared.HasTenantData(tctx, tenantID, name)
+		if err != nil {
+			return nil, err
+		}
+		if has {
+			out = append(out, name)
 		}
 	}
 	return out, nil
+}
+
+// SharedNamespaceKV is the part of the system shard's KV store a
+// KVSharedNamespaceReader needs.
+type SharedNamespaceKV interface {
+	ListAll(ctx context.Context, prefix string) ([]string, error)
+}
+
+// KVSharedNamespaceReader is a SharedNamespaceReader over the system shard's
+// KV store: a tenant holds data in a database's shared namespace when any key
+// sits under one of the namespace's physical prefixes (NamespacedKeyPrefixes).
+type KVSharedNamespaceReader struct {
+	kv SharedNamespaceKV
+}
+
+var _ SharedNamespaceReader = (*KVSharedNamespaceReader)(nil)
+
+// NewKVSharedNamespaceReader returns a reader over kv, typically the node's
+// system-shard KV service.
+func NewKVSharedNamespaceReader(kv SharedNamespaceKV) *KVSharedNamespaceReader {
+	return &KVSharedNamespaceReader{kv: kv}
+}
+
+// HasTenantData implements SharedNamespaceReader.
+func (r *KVSharedNamespaceReader) HasTenantData(ctx context.Context, tenantID, db string) (bool, error) {
+	for _, prefix := range NamespacedKeyPrefixes(tenant.ComposeNamespace(tenantID, db)) {
+		keys, err := r.kv.ListAll(ctx, prefix)
+		if err != nil {
+			return false, err
+		}
+		if len(keys) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // onNodeKeyLog reports whether a raft- or barrier-isolated tenant's

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -80,6 +81,65 @@ func TestNodeKeyLogDatabases_CountsUnopenableRecords(t *testing.T) {
 	}
 	if want := []string{"broken"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("NodeKeyLogDatabases = %v, want %v: an unopenable shared-WAL database must still refuse strict", got, want)
+	}
+}
+
+// sharedShardKeys is a system-shard KV double: ListAll returns the stored
+// keys under prefix, or err.
+type sharedShardKeys struct {
+	keys []string
+	err  error
+}
+
+func (s sharedShardKeys) ListAll(_ context.Context, prefix string) ([]string, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	var out []string
+	for _, k := range s.keys {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, k)
+		}
+	}
+	return out, nil
+}
+
+// TestNodeKeyLogDatabases_ReportsImplicitDefaultNamespaceWithData: the
+// implicit default database has no catalog record, but the tenant's keys in
+// its shared namespace are on the system shard's node-keyed WAL, so a strict
+// tightening must see it. Another tenant's keys there do not count.
+func TestNodeKeyLogDatabases_ReportsImplicitDefaultNamespaceWithData(t *testing.T) {
+	kv := sharedShardKeys{keys: []string{
+		tenant.ComposeNamespace("bt", tenant.DefaultDatabase) + "k1",
+		tenant.ComposeNamespace("other", "appdb") + "k2",
+	}}
+	probe := NewNodeKeyLogProbe(unopenableCatalog{}, WithSharedNamespaces(NewKVSharedNamespaceReader(kv), tenant.DefaultDatabase, "appdb"))
+	got, err := probe.NodeKeyLogDatabases(context.Background(), "bt")
+	if err != nil {
+		t.Fatalf("NodeKeyLogDatabases: %v", err)
+	}
+	if want := []string{tenant.DefaultDatabase}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("NodeKeyLogDatabases = %v, want %v", got, want)
+	}
+
+	// A read error fails the probe: the tightening fails closed.
+	failing := NewNodeKeyLogProbe(unopenableCatalog{}, WithSharedNamespaces(NewKVSharedNamespaceReader(sharedShardKeys{err: errors.New("shard unavailable")}), tenant.DefaultDatabase))
+	if _, err := failing.NodeKeyLogDatabases(context.Background(), "bt"); err == nil {
+		t.Fatal("NodeKeyLogDatabases over a failing shard read = nil error, want the read error")
+	}
+}
+
+// TestNodeKeyLogDatabases_IgnoresEmptyDefaultNamespace: a tenant that never
+// wrote its implicit default database does not block a strict tightening.
+func TestNodeKeyLogDatabases_IgnoresEmptyDefaultNamespace(t *testing.T) {
+	kv := sharedShardKeys{keys: []string{tenant.ComposeNamespace("other", tenant.DefaultDatabase) + "k"}}
+	probe := NewNodeKeyLogProbe(unopenableCatalog{}, WithSharedNamespaces(NewKVSharedNamespaceReader(kv), tenant.DefaultDatabase))
+	got, err := probe.NodeKeyLogDatabases(context.Background(), "bt")
+	if err != nil {
+		t.Fatalf("NodeKeyLogDatabases: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("NodeKeyLogDatabases = %v, want none", got)
 	}
 }
 

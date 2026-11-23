@@ -1425,7 +1425,14 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// governed tenant whose audit chain is on the system shard, under the
 	// node key, which a strict tightening refuses as well.
 	if w, ok := n.Tenant.(tenant.StrictTighteningWiring); ok {
-		w.SetNodeKeyLogProbe(service.NewNodeKeyLogProbe(dbManager))
+		// The implicit default database has no catalog record, and the shared
+		// system shard serves it under the node key: data a tenant already
+		// holds there is on a node-keyed log too.
+		var probeOpts []service.NodeKeyLogProbeOption
+		if n.KV != nil {
+			probeOpts = append(probeOpts, service.WithSharedNamespaces(service.NewKVSharedNamespaceReader(n.KV), SystemDatabase))
+		}
+		w.SetNodeKeyLogProbe(service.NewNodeKeyLogProbe(dbManager, probeOpts...))
 		w.SetAuditRouteProbe(auditResolver)
 	}
 

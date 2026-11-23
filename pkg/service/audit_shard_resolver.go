@@ -481,6 +481,10 @@ var _ tenant.AuditRouteProbe = (*SystemShardAuditResolver)(nil)
 // hasSystemChain reports whether tenantID's replicated audit chain already
 // has records on the system shard.
 func (r *SystemShardAuditResolver) hasSystemChain(ctx context.Context, tenantID string) (bool, error) {
+	if r.host == nil {
+		// No system shard is wired, so it holds no chain.
+		return false, nil
+	}
 	result, err := r.host.SyncRead(ctx, r.shardID, audit.VerifyRequest{TenantID: tenantID})
 	if err != nil {
 		return false, &ReadError{Err: err}
