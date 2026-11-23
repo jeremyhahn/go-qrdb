@@ -17,20 +17,31 @@ package node
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // createDatabase creates a kv database on the node through its client.
 func createDatabase(ctx context.Context, t *testing.T, n *Node, name string) {
 	t.Helper()
+	createDatabaseOn(ctx, t, n, name, database.BackendMemory)
+}
+
+// createDatabaseOn creates the database name on backend. A database is
+// materialized in its own store, so only a persistent backend keeps its data
+// across a restart: a memory database is, by its contract, non-persistent.
+func createDatabaseOn(ctx context.Context, t *testing.T, n *Node, name string, backend database.BackendType) {
+	t.Helper()
 	_, err := n.Client().Database().CreateDatabase(ctx, transport.CreateDatabaseRequest{
-		Name: name, Backend: string(database.BackendMemory),
+		Name: name, Backend: string(backend),
 	})
 	require.NoError(t, err)
 }
@@ -104,7 +115,7 @@ func TestStandaloneNode_DatabasesSurviveRestart(t *testing.T) {
 	cfg := newTenantIsolationConfig(t)
 	n, err := NewStandaloneNode(ctx, cfg, nil)
 	require.NoError(t, err)
-	createDatabase(ctx, t, n, "ledger")
+	createDatabaseOn(ctx, t, n, "ledger", database.BackendPebble)
 	scoped, err := n.Client().DatabaseScoped("ledger")
 	require.NoError(t, err)
 	require.NoError(t, scoped.KV().Put(ctx, "k", []byte("v")))
@@ -118,4 +129,35 @@ func TestStandaloneNode_DatabasesSurviveRestart(t *testing.T) {
 	got, err := scoped.KV().Get(ctx, "k")
 	require.NoError(t, err, "the database did not survive the restart")
 	require.Equal(t, "v", string(got))
+}
+
+// TestStandaloneNode_DatabaseLivesUnderItsBindingRoot pins that the standalone
+// node opens a database through the shared binding factory: a pebble database
+// of a prefix tenant is materialized in its own store under its binding root
+// (<data_dir>/tenants/<tenant>/databases/<name>), and the catalog reopens that
+// store on the next boot, so what was written is read back.
+func TestStandaloneNode_DatabaseLivesUnderItsBindingRoot(t *testing.T) {
+	ctx := context.Background()
+	cfg := newTenantIsolationConfig(t)
+	n, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	createDatabaseOn(ctx, t, n, "orders", database.BackendPebble)
+	scoped, err := n.Client().DatabaseScoped("orders")
+	require.NoError(t, err)
+	require.NoError(t, scoped.KV().Put(ctx, "order/1", []byte("open")))
+	require.NoError(t, n.Close())
+
+	root := filepath.Join(cfg.Raft.DataDir, "tenants", tenantid.System, "databases", "orders")
+	info, err := os.Stat(root)
+	require.NoError(t, err, "the database has no store under its binding root")
+	require.True(t, info.IsDir())
+
+	n, err = NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+	scoped, err = n.Client().DatabaseScoped("orders")
+	require.NoError(t, err)
+	got, err := scoped.KV().Get(ctx, "order/1")
+	require.NoError(t, err, "the materialized database was not reopened from its binding root")
+	require.Equal(t, "open", string(got))
 }
