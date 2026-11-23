@@ -929,7 +929,6 @@ export class WailsClient implements Client {
                     distanceMetric: distanceMetricToIpcWire(req.distanceMetric),
                     indexType: indexTypeToIpcWire(req.indexType),
                     indexConfig: req.indexParams,
-                    shardId: req.shardId,
                 })) as Promise<CreateNamespaceResponse>;
             },
             deleteNamespace: async (req: DeleteNamespaceRequest): Promise<void> => {

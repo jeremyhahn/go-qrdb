@@ -1424,7 +1424,6 @@ export class RestClient implements Client {
                             distance_metric: distanceMetricToRestWire(req.distanceMetric),
                             index_type: indexTypeToRestWire(req.indexType),
                             index_config: req.indexParams,
-                            shard_id: req.shardId,
                         }),
                     },
                 );
@@ -1436,10 +1435,10 @@ export class RestClient implements Client {
                 );
             },
             listNamespaces: async (
-                req: ListNamespacesRequest,
+                _req: ListNamespacesRequest,
             ): Promise<ListNamespacesResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<ListNamespacesResponse>(`/vector/namespaces${buildQuery({ shard_id: req.shardId })}`,
+                const resp = await this.fetchJSON<ListNamespacesResponse>('/vector/namespaces',
                 );
                 // Namespace entries that arrive as info objects carry wire
                 // enum strings; convert them to the SDK's numeric enums.
@@ -1452,7 +1451,6 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 const info = await this.fetchJSON<NamespaceInfo>(`/vector/namespace/info${buildQuery({
                         namespace: req.namespace,
-                        shard_id: req.shardId,
                     })}`,
                 );
                 return normalizeVectorEnumFields(info);
@@ -1472,7 +1470,6 @@ export class RestClient implements Client {
                         namespace: req.namespace,
                         id: req.id,
                         consistency: req.consistency,
-                        shard_id: req.shardId,
                     })}`,
                 );
                 return normalizeVectorIDField(vec);
@@ -1514,7 +1511,6 @@ export class RestClient implements Client {
                         limit: req.limit,
                         offset: req.offset,
                         cursor: req.cursor,
-                        shard_id: req.shardId,
                     })}`,
                 );
                 return {
@@ -1581,7 +1577,6 @@ export class RestClient implements Client {
                 return this.fetchJSON<RebuildProgress>(`/vector/index/rebuild/progress${buildQuery({
                         namespace: req.namespace,
                         job_id: req.jobId,
-                        shard_id: req.shardId,
                     })}`,
                 );
             },
@@ -1589,7 +1584,6 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 const stats = await this.fetchJSON<IndexStats>(`/vector/index/stats${buildQuery({
                         namespace: req.namespace,
-                        shard_id: req.shardId,
                     })}`,
                 );
                 return normalizeVectorEnumFields(stats);
@@ -1609,7 +1603,6 @@ export class RestClient implements Client {
                 return this.fetchJSON<CompactionProgress>(`/vector/compact/progress${buildQuery({
                         namespace: req.namespace,
                         job_id: req.jobId,
-                        shard_id: req.shardId,
                     })}`,
                 );
             },

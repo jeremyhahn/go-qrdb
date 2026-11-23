@@ -290,7 +290,6 @@ func newVectorNamespaceCreateCmd() *cobra.Command {
 		dimension      uint32
 		distanceMetric string
 		indexType      string
-		shardID        uint64
 	)
 
 	cmd := &cobra.Command{
@@ -312,7 +311,6 @@ func newVectorNamespaceCreateCmd() *cobra.Command {
 				Dimension:      dimension,
 				DistanceMetric: dm,
 				IndexType:      it,
-				ShardID:        shardID,
 			}
 
 			resp, err := client.Vector().CreateNamespace(cmd.Context(), req)
@@ -337,7 +335,6 @@ func newVectorNamespaceCreateCmd() *cobra.Command {
 	cmd.Flags().Uint32Var(&dimension, "dimension", 0, "Vector dimensionality")
 	cmd.Flags().StringVar(&distanceMetric, "distance-metric", "cosine", "Distance metric: cosine, euclidean, dot-product, manhattan")
 	cmd.Flags().StringVar(&indexType, "index-type", "hnsw", "Index type: hnsw, flat, ivf-flat")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("dimension")
 
@@ -408,7 +405,6 @@ func newVectorNamespaceUpdateCmd() *cobra.Command {
 func newVectorNamespaceDeleteCmd() *cobra.Command {
 	var (
 		namespace string
-		shardID   uint64
 	)
 
 	cmd := &cobra.Command{
@@ -418,7 +414,6 @@ func newVectorNamespaceDeleteCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			req := &transport.DeleteNamespaceRequest{
 				Namespace: namespace,
-				ShardID:   shardID,
 			}
 			resp, err := client.Vector().DeleteNamespace(cmd.Context(), req)
 			if err != nil {
@@ -432,7 +427,6 @@ func newVectorNamespaceDeleteCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 
 	return cmd
@@ -440,16 +434,13 @@ func newVectorNamespaceDeleteCmd() *cobra.Command {
 
 // newVectorNamespaceListCmd creates the "vector namespace list" subcommand.
 func newVectorNamespaceListCmd() *cobra.Command {
-	var shardID uint64
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all vector namespaces",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			req := &transport.ListNamespacesRequest{
-				ShardID: shardID,
-			}
+			req := &transport.ListNamespacesRequest{}
 			resp, err := client.Vector().ListNamespaces(cmd.Context(), req)
 			if err != nil {
 				return err
@@ -469,8 +460,6 @@ func newVectorNamespaceListCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
-
 	return cmd
 }
 
@@ -478,7 +467,6 @@ func newVectorNamespaceListCmd() *cobra.Command {
 func newVectorNamespaceInfoCmd() *cobra.Command {
 	var (
 		namespace string
-		shardID   uint64
 	)
 
 	cmd := &cobra.Command{
@@ -488,7 +476,6 @@ func newVectorNamespaceInfoCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			req := &transport.GetNamespaceInfoRequest{
 				Namespace: namespace,
-				ShardID:   shardID,
 			}
 			info, err := client.Vector().GetNamespaceInfo(cmd.Context(), req)
 			if err != nil {
@@ -500,7 +487,6 @@ func newVectorNamespaceInfoCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 
 	return cmd
@@ -517,7 +503,6 @@ func newVectorUpsertCmd() *cobra.Command {
 		idStr       string
 		vectorStr   string
 		metadataStr string
-		shardID     uint64
 	)
 
 	cmd := &cobra.Command{
@@ -538,7 +523,6 @@ func newVectorUpsertCmd() *cobra.Command {
 				Namespace: namespace,
 				ID:        id,
 				Vector:    vec,
-				ShardID:   shardID,
 			}
 
 			if metadataStr != "" {
@@ -573,7 +557,6 @@ func newVectorUpsertCmd() *cobra.Command {
 	cmd.Flags().StringVar(&idStr, "id", "", "Vector ID (uint64)")
 	cmd.Flags().StringVar(&vectorStr, "vector", "", "Comma-separated float values")
 	cmd.Flags().StringVar(&metadataStr, "metadata", "", "JSON metadata object")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("id")
 	_ = cmd.MarkFlagRequired("vector")
@@ -587,7 +570,6 @@ func newVectorGetCmd() *cobra.Command {
 		namespace   string
 		idStr       string
 		consistency string
-		shardID     uint64
 	)
 
 	cmd := &cobra.Command{
@@ -608,7 +590,6 @@ func newVectorGetCmd() *cobra.Command {
 				Namespace:   namespace,
 				ID:          id,
 				Consistency: cl,
-				ShardID:     shardID,
 			}
 
 			resp, err := client.Vector().GetVector(cmd.Context(), req)
@@ -623,7 +604,6 @@ func newVectorGetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
 	cmd.Flags().StringVar(&idStr, "id", "", "Vector ID (uint64)")
 	cmd.Flags().StringVar(&consistency, "consistency", "", "Consistency level: default, leader, any")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("id")
 
@@ -635,7 +615,6 @@ func newVectorDeleteCmd() *cobra.Command {
 	var (
 		namespace string
 		idStr     string
-		shardID   uint64
 	)
 
 	cmd := &cobra.Command{
@@ -650,7 +629,6 @@ func newVectorDeleteCmd() *cobra.Command {
 			req := &transport.DeleteVectorRequest{
 				Namespace: namespace,
 				ID:        id,
-				ShardID:   shardID,
 			}
 			resp, err := client.Vector().DeleteVector(cmd.Context(), req)
 			if err != nil {
@@ -664,7 +642,6 @@ func newVectorDeleteCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
 	cmd.Flags().StringVar(&idStr, "id", "", "Vector ID (uint64)")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("id")
 
@@ -676,7 +653,6 @@ func newVectorBatchUpsertCmd() *cobra.Command {
 	var (
 		namespace string
 		file      string
-		shardID   uint64
 	)
 
 	cmd := &cobra.Command{
@@ -706,7 +682,6 @@ func newVectorBatchUpsertCmd() *cobra.Command {
 			req := &transport.BatchUpsertRequest{
 				Namespace: namespace,
 				Vectors:   vectors,
-				ShardID:   shardID,
 			}
 
 			resp, err := client.Vector().BatchUpsert(cmd.Context(), req)
@@ -730,7 +705,6 @@ func newVectorBatchUpsertCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
 	cmd.Flags().StringVar(&file, "file", "", "JSON file path (use \"-\" for stdin)")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("file")
 
@@ -742,7 +716,6 @@ func newVectorBatchDeleteCmd() *cobra.Command {
 	var (
 		namespace string
 		idsStr    string
-		shardID   uint64
 	)
 
 	cmd := &cobra.Command{
@@ -758,7 +731,6 @@ func newVectorBatchDeleteCmd() *cobra.Command {
 			req := &transport.BatchDeleteVectorsRequest{
 				Namespace: namespace,
 				IDs:       ids,
-				ShardID:   shardID,
 			}
 
 			resp, err := client.Vector().BatchDeleteVectors(cmd.Context(), req)
@@ -787,7 +759,6 @@ func newVectorBatchDeleteCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
 	cmd.Flags().StringVar(&idsStr, "ids", "", "Comma-separated vector IDs (uint64)")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("ids")
 
@@ -800,7 +771,6 @@ func newVectorListCmd() *cobra.Command {
 		namespace string
 		limit     int
 		cursor    string
-		shardID   uint64
 	)
 
 	cmd := &cobra.Command{
@@ -812,7 +782,6 @@ func newVectorListCmd() *cobra.Command {
 				Namespace: namespace,
 				Limit:     limit,
 				Cursor:    cursor,
-				ShardID:   shardID,
 			}
 
 			resp, err := client.Vector().ListVectors(cmd.Context(), req)
@@ -849,7 +818,6 @@ func newVectorListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum number of vectors to return")
 	cmd.Flags().StringVar(&cursor, "cursor", "", "Pagination cursor")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 
 	return cmd
@@ -861,7 +829,6 @@ func newVectorUpdateMetadataCmd() *cobra.Command {
 		namespace   string
 		idStr       string
 		metadataStr string
-		shardID     uint64
 	)
 
 	cmd := &cobra.Command{
@@ -882,7 +849,6 @@ func newVectorUpdateMetadataCmd() *cobra.Command {
 				Namespace: namespace,
 				ID:        id,
 				Metadata:  md,
-				ShardID:   shardID,
 			}
 
 			resp, err := client.Vector().UpdateMetadata(cmd.Context(), req)
@@ -900,7 +866,6 @@ func newVectorUpdateMetadataCmd() *cobra.Command {
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
 	cmd.Flags().StringVar(&idStr, "id", "", "Vector ID (uint64)")
 	cmd.Flags().StringVar(&metadataStr, "metadata", "", "JSON metadata object")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("id")
 	_ = cmd.MarkFlagRequired("metadata")
@@ -921,7 +886,6 @@ func newVectorSearchCmd() *cobra.Command {
 		efSearch    int
 		minScore    float64
 		consistency string
-		shardID     uint64
 	)
 
 	cmd := &cobra.Command{
@@ -945,7 +909,6 @@ func newVectorSearchCmd() *cobra.Command {
 				EfSearch:    efSearch,
 				MinScore:    float32(minScore),
 				Consistency: cl,
-				ShardID:     shardID,
 			}
 
 			resp, err := client.Vector().SearchSimilar(cmd.Context(), req)
@@ -963,7 +926,6 @@ func newVectorSearchCmd() *cobra.Command {
 	cmd.Flags().IntVar(&efSearch, "ef-search", 0, "HNSW ef parameter for search")
 	cmd.Flags().Float64Var(&minScore, "min-score", 0, "Minimum similarity score threshold")
 	cmd.Flags().StringVar(&consistency, "consistency", "", "Consistency level: default, leader, any")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("vector")
 	_ = cmd.MarkFlagRequired("k")
@@ -979,7 +941,6 @@ func newVectorSearchMetadataCmd() *cobra.Command {
 		limit       int
 		offset      int
 		consistency string
-		shardID     uint64
 	)
 
 	cmd := &cobra.Command{
@@ -1002,7 +963,6 @@ func newVectorSearchMetadataCmd() *cobra.Command {
 				Limit:       limit,
 				Offset:      offset,
 				Consistency: cl,
-				ShardID:     shardID,
 			}
 
 			resp, err := client.Vector().SearchByMetadata(cmd.Context(), req)
@@ -1038,7 +998,6 @@ func newVectorSearchMetadataCmd() *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum number of results")
 	cmd.Flags().IntVar(&offset, "offset", 0, "Number of results to skip")
 	cmd.Flags().StringVar(&consistency, "consistency", "", "Consistency level: default, leader, any")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("filters")
 
@@ -1055,7 +1014,6 @@ func newVectorSearchHybridCmd() *cobra.Command {
 		efSearch    int
 		minScore    float64
 		consistency string
-		shardID     uint64
 	)
 
 	cmd := &cobra.Command{
@@ -1084,7 +1042,6 @@ func newVectorSearchHybridCmd() *cobra.Command {
 				EfSearch:       efSearch,
 				MinScore:       float32(minScore),
 				Consistency:    cl,
-				ShardID:        shardID,
 			}
 
 			resp, err := client.Vector().HybridSearch(cmd.Context(), req)
@@ -1103,7 +1060,6 @@ func newVectorSearchHybridCmd() *cobra.Command {
 	cmd.Flags().IntVar(&efSearch, "ef-search", 0, "HNSW ef parameter for search")
 	cmd.Flags().Float64Var(&minScore, "min-score", 0, "Minimum similarity score threshold")
 	cmd.Flags().StringVar(&consistency, "consistency", "", "Consistency level: default, leader, any")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("vector")
 	_ = cmd.MarkFlagRequired("filters")
@@ -1119,7 +1075,6 @@ func newVectorSearchByIDCmd() *cobra.Command {
 		idStr       string
 		k           int
 		consistency string
-		shardID     uint64
 	)
 
 	cmd := &cobra.Command{
@@ -1141,7 +1096,6 @@ func newVectorSearchByIDCmd() *cobra.Command {
 				ID:          id,
 				K:           k,
 				Consistency: cl,
-				ShardID:     shardID,
 			}
 
 			resp, err := client.Vector().SearchByID(cmd.Context(), req)
@@ -1157,7 +1111,6 @@ func newVectorSearchByIDCmd() *cobra.Command {
 	cmd.Flags().StringVar(&idStr, "id", "", "Source vector ID (uint64)")
 	cmd.Flags().IntVar(&k, "k", 0, "Number of nearest neighbors")
 	cmd.Flags().StringVar(&consistency, "consistency", "", "Consistency level: default, leader, any")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("id")
 	_ = cmd.MarkFlagRequired("k")
@@ -1173,7 +1126,6 @@ func newVectorSearchByIDCmd() *cobra.Command {
 func newVectorRebuildIndexCmd() *cobra.Command {
 	var (
 		namespace string
-		shardID   uint64
 	)
 
 	cmd := &cobra.Command{
@@ -1183,7 +1135,6 @@ func newVectorRebuildIndexCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			req := &transport.RebuildIndexRequest{
 				Namespace: namespace,
-				ShardID:   shardID,
 			}
 
 			resp, err := client.Vector().RebuildIndex(cmd.Context(), req)
@@ -1207,7 +1158,6 @@ func newVectorRebuildIndexCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 
 	return cmd
@@ -1251,7 +1201,6 @@ func newVectorRebuildProgressCmd() *cobra.Command {
 func newVectorIndexStatsCmd() *cobra.Command {
 	var (
 		namespace string
-		shardID   uint64
 	)
 
 	cmd := &cobra.Command{
@@ -1261,7 +1210,6 @@ func newVectorIndexStatsCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			req := &transport.GetIndexStatsRequest{
 				Namespace: namespace,
-				ShardID:   shardID,
 			}
 
 			stats, err := client.Vector().GetIndexStats(cmd.Context(), req)
@@ -1287,7 +1235,6 @@ func newVectorIndexStatsCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 
 	return cmd
@@ -1301,7 +1248,6 @@ func newVectorIndexStatsCmd() *cobra.Command {
 func newVectorCompactCmd() *cobra.Command {
 	var (
 		namespace string
-		shardID   uint64
 	)
 
 	cmd := &cobra.Command{
@@ -1311,7 +1257,6 @@ func newVectorCompactCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			req := &transport.CompactNamespaceRequest{
 				Namespace: namespace,
-				ShardID:   shardID,
 			}
 
 			resp, err := client.Vector().CompactNamespace(cmd.Context(), req)
@@ -1334,7 +1279,6 @@ func newVectorCompactCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 
 	return cmd
@@ -1345,7 +1289,6 @@ func newVectorCompactProgressCmd() *cobra.Command {
 	var (
 		namespace   string
 		operationID string
-		shardID     uint64
 	)
 
 	cmd := &cobra.Command{
@@ -1356,7 +1299,6 @@ func newVectorCompactProgressCmd() *cobra.Command {
 			req := &transport.GetCompactionProgressRequest{
 				Namespace:   namespace,
 				OperationID: operationID,
-				ShardID:     shardID,
 			}
 
 			progress, err := client.Vector().GetCompactionProgress(cmd.Context(), req)
@@ -1370,7 +1312,6 @@ func newVectorCompactProgressCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
 	cmd.Flags().StringVar(&operationID, "operation-id", "", "Compaction operation ID")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("operation-id")
 

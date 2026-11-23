@@ -74,16 +74,13 @@ func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNa
 }
 
 // ListNamespaces returns all vector namespaces. Maps to
-// GET /vector/namespaces with optional shard_id query parameter.
+// GET /vector/namespaces.
 func (t *Transport) ListNamespaces(ctx context.Context, req *transport.ListNamespacesRequest) (*transport.ListNamespacesResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
 	params := url.Values{}
-	if req.ShardID > 0 {
-		params.Set("shard_id", strconv.FormatUint(req.ShardID, 10))
-	}
 
 	reqURL := t.baseURL + "/vector/namespaces"
 	if encoded := params.Encode(); encoded != "" {
@@ -117,7 +114,7 @@ func (t *Transport) ListNamespaces(ctx context.Context, req *transport.ListNames
 }
 
 // GetNamespaceInfo returns metadata about a namespace. Maps to
-// GET /vector/namespace/info?namespace=X with optional shard_id.
+// GET /vector/namespace/info?namespace=X.
 func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetNamespaceInfoRequest) (*transport.GetNamespaceInfoResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -125,9 +122,6 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 
 	params := url.Values{}
 	params.Set("namespace", req.Namespace)
-	if req.ShardID > 0 {
-		params.Set("shard_id", strconv.FormatUint(req.ShardID, 10))
-	}
 
 	reqURL := t.baseURL + "/vector/namespace/info?" + params.Encode()
 
@@ -194,9 +188,6 @@ func (t *Transport) GetVector(ctx context.Context, req *transport.GetVectorReque
 	}
 	if req.Consistency > 0 {
 		params.Set("consistency", strconv.FormatUint(uint64(req.Consistency), 10))
-	}
-	if req.ShardID > 0 {
-		params.Set("shard_id", strconv.FormatUint(req.ShardID, 10))
 	}
 
 	reqURL := t.baseURL + "/vector/get?" + params.Encode()
@@ -292,9 +283,6 @@ func (t *Transport) ListVectors(ctx context.Context, req *transport.ListVectorsR
 	}
 	if req.Consistency > 0 {
 		params.Set("consistency", strconv.FormatUint(uint64(req.Consistency), 10))
-	}
-	if req.ShardID > 0 {
-		params.Set("shard_id", strconv.FormatUint(req.ShardID, 10))
 	}
 
 	reqURL := t.baseURL + "/vector/list?" + params.Encode()
@@ -458,7 +446,7 @@ func (t *Transport) GetRebuildProgress(ctx context.Context, req *transport.GetRe
 }
 
 // GetIndexStats returns statistics about a namespace's vector index.
-// Maps to GET /vector/index/stats?namespace=X with optional shard_id.
+// Maps to GET /vector/index/stats?namespace=X.
 func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexStatsRequest) (*transport.GetIndexStatsResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -466,9 +454,6 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 
 	params := url.Values{}
 	params.Set("namespace", req.Namespace)
-	if req.ShardID > 0 {
-		params.Set("shard_id", strconv.FormatUint(req.ShardID, 10))
-	}
 
 	reqURL := t.baseURL + "/vector/index/stats?" + params.Encode()
 
@@ -527,9 +512,6 @@ func (t *Transport) GetCompactionProgress(ctx context.Context, req *transport.Ge
 	}
 	if req.OperationID != "" {
 		params.Set("operation_id", req.OperationID)
-	}
-	if req.ShardID > 0 {
-		params.Set("shard_id", strconv.FormatUint(req.ShardID, 10))
 	}
 
 	reqURL := t.baseURL + "/vector/compact/progress"

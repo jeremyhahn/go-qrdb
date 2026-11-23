@@ -967,8 +967,6 @@ export interface CreateNamespaceRequest {
     readonly indexType: VectorIndexType;
     /** Algorithm-specific index configuration parameters. */
     readonly indexParams?: Readonly<Record<string, unknown>>;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Result of a namespace creation. */
@@ -983,14 +981,10 @@ export interface CreateNamespaceResponse {
 export interface DeleteNamespaceRequest {
     /** Namespace to delete. */
     readonly namespace: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Parameters for listing vector namespaces. */
 export interface ListNamespacesRequest {
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Response containing namespace names. */
@@ -1003,8 +997,6 @@ export interface ListNamespacesResponse {
 export interface GetNamespaceInfoRequest {
     /** Namespace name. */
     readonly namespace: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Metadata about a vector namespace. */
@@ -1051,8 +1043,6 @@ export interface UpsertVectorRequest {
     readonly vector: readonly number[];
     /** Arbitrary metadata key-value pairs. */
     readonly metadata?: Readonly<Record<string, unknown>>;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Result of a vector upsert. */
@@ -1073,8 +1063,6 @@ export interface GetVectorRequest {
     readonly id: string;
     /** Consistency level (0 = default). */
     readonly consistency?: number;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Parameters for deleting a single vector. */
@@ -1083,8 +1071,6 @@ export interface DeleteVectorRequest {
     readonly namespace: string;
     /** Vector identifier. */
     readonly id: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Parameters for bulk vector upserts. */
@@ -1093,8 +1079,6 @@ export interface BatchUpsertRequest {
     readonly namespace: string;
     /** Vectors to upsert. */
     readonly vectors: readonly VectorData[];
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Result of a batch upsert operation. */
@@ -1121,8 +1105,6 @@ export interface BatchDeleteVectorsRequest {
     readonly namespace: string;
     /** Vector identifiers to delete. */
     readonly ids: readonly string[];
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Result of a batch vector deletion. */
@@ -1145,8 +1127,6 @@ export interface ListVectorsRequest {
     readonly offset?: number;
     /** Cursor for cursor-based pagination. */
     readonly cursor?: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Paginated list of vectors. */
@@ -1167,8 +1147,6 @@ export interface UpdateMetadataRequest {
     readonly id: string;
     /** New metadata key-value pairs (replaces existing metadata). */
     readonly metadata: Readonly<Record<string, unknown>>;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** A single result from a similarity search. */
@@ -1197,8 +1175,6 @@ export interface SearchSimilarRequest {
     readonly minScore?: number;
     /** Consistency level (0 = default). */
     readonly consistency?: number;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Results of a similarity search. */
@@ -1221,8 +1197,6 @@ export interface SearchByMetadataRequest {
     readonly offset?: number;
     /** Consistency level (0 = default). */
     readonly consistency?: number;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Results of a metadata search. */
@@ -1249,8 +1223,6 @@ export interface HybridSearchRequest {
     readonly metadataWeight: number;
     /** Consistency level (0 = default). */
     readonly consistency?: number;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Results of a hybrid search. */
@@ -1271,16 +1243,12 @@ export interface SearchByIDRequest {
     readonly k: number;
     /** Consistency level (0 = default). */
     readonly consistency?: number;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Parameters for triggering an index rebuild. */
 export interface RebuildIndexRequest {
     /** Target namespace. */
     readonly namespace: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Result of an index rebuild request. */
@@ -1299,8 +1267,6 @@ export interface GetRebuildProgressRequest {
     readonly namespace: string;
     /** Job identifier. */
     readonly jobId: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Current state of an index rebuild job. */
@@ -1323,8 +1289,6 @@ export interface RebuildProgress {
 export interface GetIndexStatsRequest {
     /** Target namespace. */
     readonly namespace: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Statistics about a namespace's vector index. */
@@ -1347,8 +1311,6 @@ export interface IndexStats {
 export interface CompactNamespaceRequest {
     /** Target namespace. */
     readonly namespace: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Result of a compaction request. */
@@ -1365,8 +1327,6 @@ export interface GetCompactionProgressRequest {
     readonly namespace: string;
     /** Job identifier. */
     readonly jobId: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Current state of a compaction job. */
