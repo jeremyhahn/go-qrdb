@@ -19,6 +19,7 @@ import (
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -44,6 +45,7 @@ import (
 type storeResolver struct {
 	hosts        tenantServicesSource
 	raft         raftFenceSource
+	barrier      homeFenceSource
 	tenantSvc    tenant.TenantServicer
 	systemTenant string
 }
@@ -53,6 +55,15 @@ type storeResolver struct {
 // replicated placement entry is marked dropping (see FenceServices).
 type raftFenceSource interface {
 	FenceServices(ctx context.Context, tenantID, db, incarnation string) (*DatabaseServices, error)
+}
+
+// homeFenceSource is the one method the resolver needs from
+// RaftBackendFactory for a barrier tenant: the engines of the tenant's home
+// group (database.TenantHomeName), the group the tenant's logs are proposed
+// to (service.LogGroupSource.TenantHomeGroup) and so the group whose state
+// machine evaluates their drop fence (OpGuarded).
+type homeFenceSource interface {
+	Services(ctx context.Context, tenantID, db string) (*DatabaseServices, error)
 }
 
 // Compile-time check: the production source is the factory.
@@ -120,8 +131,10 @@ func (r *storeResolver) ReclaimTarget(ctx context.Context, tenantID string) (ser
 
 // FenceTarget returns the store holding the (tenantID, db) database's data,
 // for its drop fence: the per-tenant Host for a volume-isolated tenant, the
-// database's own shard for a raft-isolated one, and dedicated=false -- the
-// system store -- for everything else.
+// database's own shard for a raft-isolated one, the tenant's home group for
+// a barrier-isolated one on a node that has it (its logs are proposed and
+// fenced there; go-qrdb#1655), and dedicated=false -- the system store --
+// for everything else.
 //
 // Only a tenant that does not exist (tenant.ErrTenantNotFound) falls back
 // to the system store, for the reason ReclaimTarget gives: a database
@@ -177,6 +190,26 @@ func (r *storeResolver) FenceTarget(ctx context.Context, tenantID, db, incarnati
 			return service.FenceStore{}, true, err
 		}
 		return service.FenceStore{KV: svcs.KV, PerDatabase: true}, true, nil
+	case tenant.IsolationBarrier:
+		// A barrier tenant's logs are proposed to its home group, whose
+		// state machine evaluates their drop fence, so the marker goes
+		// there. The home group holds every one of the tenant's databases,
+		// as the system store does, so it is not per-database. A node with
+		// no home group (no Raft backend, or the group unknown) proposes
+		// them to the tenant barrier's own store instead, which checks the
+		// incarnation is live rather than reading a marker: the system
+		// store, as before.
+		if r.barrier == nil {
+			return service.FenceStore{}, false, nil
+		}
+		svcs, err := r.barrier.Services(ctx, tenantID, database.TenantHomeName)
+		if errors.Is(err, ErrRaftDatabaseUnknown) {
+			return service.FenceStore{}, false, nil
+		}
+		if err != nil {
+			return service.FenceStore{}, true, err
+		}
+		return service.FenceStore{KV: svcs.KV}, true, nil
 	default:
 		return service.FenceStore{}, false, nil
 	}

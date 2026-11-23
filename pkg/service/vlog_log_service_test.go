@@ -1753,6 +1753,73 @@ func TestLogService_CreatePausedAcrossDropAndRecreateIsRefused(t *testing.T) {
 	}
 }
 
+// TestLogService_BarrierTenantNamedDatabaseIsFencedInItsHomeGroup proves a
+// barrier tenant's named database, whose logs are proposed to the tenant's
+// home group and whose marker the drop fence keeps in that same group
+// (storeResolver.FenceTarget, go-qrdb#1655), creates a log while live, and
+// that a write admitted under it is refused once it is dropped and created
+// again. The system shard, which holds the marker of a prefix tenant's
+// database, is never written.
+func TestLogService_BarrierTenantNamedDatabaseIsFencedInItsHomeGroup(t *testing.T) {
+	home := newFenceGroup(t)
+	system := newFenceGroup(t)
+	mgr := databasetest.NewManager(nil, t.TempDir(), database.WithKeyspaceReclaimer(markerReclaimer{mu: &home.mu, store: home.store}))
+	t.Cleanup(func() { _ = mgr.Close() })
+	svc, err := NewLogService(LogServiceConfig{
+		Resolver:  &fixedShardResolver{host: &gatedHost{mockHost: home.host(t), enabled: map[uint64]bool{1: true}}, shardID: 1},
+		Databases: mgr,
+		Signers:   newPausingSigners(),
+	})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	mgr.SetLogReclaimer(svc.(*logService))
+	ctx := acmeCtx()
+	first := createAcmeLedger(t, mgr)
+	if got := home.marker(t, "acme", "ledger"); string(got) != first {
+		t.Fatalf("home group marker = %q, want the live incarnation %q", got, first)
+	}
+
+	created, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: testLogRef, Origin: "example.test/acme/events"})
+	if err != nil {
+		t.Fatalf("CreateLog in the live database: %v", err)
+	}
+	if created.ID.Database != "ledger" {
+		t.Fatalf("created %+v, want a log of acme/ledger", created.ID)
+	}
+	// A handle admitted under the first incarnation.
+	old, err := svc.(*logService).admit(ctx, created.ID, nil)
+	if err != nil {
+		t.Fatalf("admit under the live incarnation: %v", err)
+	}
+	if old.incarnation != first {
+		t.Fatalf("admitted incarnation = %q, want %q", old.incarnation, first)
+	}
+
+	if err := mgr.DropForTenant(ctx, "ledger"); err != nil {
+		t.Fatalf("drop acme/ledger: %v", err)
+	}
+	second := createAcmeLedger(t, mgr)
+	if second == first {
+		t.Fatalf("recreated acme/ledger kept incarnation %q", first)
+	}
+
+	res, err := old.proposeCmd(ctx, []byte{protocol.OpVerifiableLog})
+	if err == nil {
+		err = checkResultError(res)
+	}
+	var dropping *database.DroppingError
+	if !errors.As(err, &dropping) || dropping.Name != "ledger" || dropping.TenantID != "acme" {
+		t.Fatalf("write admitted before the drop = %v, want DroppingError for acme/ledger", err)
+	}
+	if _, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: testLogRef, Origin: "example.test/acme/events"}); err != nil {
+		t.Fatalf("CreateLog in the recreated database: %v", err)
+	}
+	if got := system.marker(t, "acme", "ledger"); got != nil {
+		t.Fatalf("system shard marker = %q, want none: the barrier tenant's group holds it", got)
+	}
+}
+
 // TestLogService_ReadRefusesAnEarlierIncarnationsLog proves a log an
 // earlier database of the name left behind -- here because the drop ran
 // with no log reclaimer -- is not served to the database created again

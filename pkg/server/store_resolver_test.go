@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -249,6 +250,8 @@ func TestStoreResolver_FenceTargetRoutesEachIsolationMode(t *testing.T) {
 	raftKV := newMockKVService()
 	hosts := &stubTenantServices{svcs: &DatabaseServices{KV: volumeKV}}
 	raft := &stubRaftFence{svcs: &DatabaseServices{KV: raftKV}}
+	barrierKV := newMockKVService()
+	barrier := &stubBarrierFence{kv: barrierKV}
 
 	tests := []struct {
 		name            string
@@ -272,6 +275,13 @@ func TestStoreResolver_FenceTargetRoutesEachIsolationMode(t *testing.T) {
 			wantKV:          raftKV,
 			wantDedicated:   true,
 			wantPerDatabase: true,
+		},
+		{
+			name:          "barrier isolation: the tenant's home group, where its logs are proposed",
+			resolver:      &storeResolver{hosts: hosts, raft: raft, barrier: barrier, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationBarrier}, systemTenant: tenantid.System},
+			tenantID:      "acme",
+			wantKV:        barrierKV,
+			wantDedicated: true,
 		},
 		{
 			name:     "prefix isolation: the system store",
@@ -308,6 +318,65 @@ func TestStoreResolver_FenceTargetRoutesEachIsolationMode(t *testing.T) {
 			}
 		})
 	}
+}
+
+// stubBarrierFence is a homeFenceSource whose every tenant's home group
+// resolves to kv, or err; it records the database it was asked for.
+type stubBarrierFence struct {
+	kv   *mockKVService
+	err  error
+	asks []string
+}
+
+func (s *stubBarrierFence) Services(_ context.Context, _, db string) (*DatabaseServices, error) {
+	s.asks = append(s.asks, db)
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &DatabaseServices{KV: s.kv}, nil
+}
+
+// TestStoreResolver_FenceTargetBarrierTenantUsesItsHomeGroup pins where a
+// barrier tenant's named database is fenced: in the home group its logs are
+// proposed to (go-qrdb#1655), for any of its databases, a barrier database
+// among them; and on the system store where it has no home group.
+func TestStoreResolver_FenceTargetBarrierTenantUsesItsHomeGroup(t *testing.T) {
+	homeKV := newMockKVService()
+	barrierTenant := &isolatedTenantServicer{isolation: tenant.IsolationBarrier}
+	for _, db := range []string{"orders", "sealed-ledger"} {
+		home := &stubBarrierFence{kv: homeKV}
+		r := &storeResolver{barrier: home, tenantSvc: barrierTenant, systemTenant: tenantid.System}
+		store, dedicated, err := r.FenceTarget(context.Background(), "acme", db, "inc-1")
+		if err != nil {
+			t.Fatalf("%s: FenceTarget: %v", db, err)
+		}
+		if !dedicated || store.PerDatabase || store.KV != service.ReclaimKV(homeKV) {
+			t.Fatalf("%s: (dedicated, perDatabase, home) = (%v, %v, %v), want the shared home group", db, dedicated, store.PerDatabase, store.KV == service.ReclaimKV(homeKV))
+		}
+		if len(home.asks) != 1 || home.asks[0] != database.TenantHomeName {
+			t.Fatalf("%s: resolved %v, want the home group %q", db, home.asks, database.TenantHomeName)
+		}
+	}
+
+	t.Run("no home group: the system store", func(t *testing.T) {
+		for _, r := range []*storeResolver{
+			{tenantSvc: barrierTenant, systemTenant: tenantid.System},
+			{barrier: &stubBarrierFence{err: ErrRaftDatabaseUnknown}, tenantSvc: barrierTenant, systemTenant: tenantid.System},
+		} {
+			_, dedicated, err := r.FenceTarget(context.Background(), "acme", "orders", "inc-1")
+			if err != nil || dedicated {
+				t.Fatalf("(dedicated, err) = (%v, %v), want the system store", dedicated, err)
+			}
+		}
+	})
+
+	t.Run("a sealed home group is unavailable, not the system store", func(t *testing.T) {
+		r := &storeResolver{barrier: &stubBarrierFence{err: tenant.ErrTenantSealed}, tenantSvc: barrierTenant, systemTenant: tenantid.System}
+		_, dedicated, err := r.FenceTarget(context.Background(), "acme", "orders", "inc-1")
+		if !dedicated || !errors.Is(err, tenant.ErrTenantSealed) {
+			t.Fatalf("(dedicated, err) = (%v, %v), want (true, ErrTenantSealed)", dedicated, err)
+		}
+	})
 }
 
 // TestStoreResolver_FenceTargetNeverFallsBackOnFailure covers every way the

@@ -255,6 +255,7 @@ func testVlogBarrierTenantOverProtocol(t *testing.T, node *multiProtoNode, proto
 	certPath, keyPath := node.ca.generateClientCertForTenant(t, tenantID)
 	provisionTenantIdentityFor(t, node, tenantID, "vlog-barrier-"+proto.name, append([]string{
 		"tenant_barrier:status", "tenant_barrier:seal", "tenant_barrier:unseal", "vlog:sign_head",
+		"databases:create", "databases:create_raft", "databases:read", "databases:delete",
 	}, vlogTenantPermissions...), certPath)
 	conn := tenantCLIArgsForProto(node, proto, certPath, keyPath)
 	logName := "barrier-" + proto.name
@@ -329,6 +330,49 @@ func testVlogBarrierTenantOverProtocol(t *testing.T, node *multiProtoNode, proto
 	head6 := vlogTenantJSON[vlogwire.Head](t, node, proto, conn, "head", "--log", logName)
 	resigned := vlogTenantJSON[vlogwire.SignHeadResult](t, node, proto, conn, "sign-head", "--log", logName)
 	verifyBarrierCheckpoint(t, proto, created, rotated.Key, resigned.Checkpoint, 6, head6.Root)
+
+	testVlogBarrierTenantNamedDatabase(t, node, proto, conn)
+}
+
+// testVlogBarrierTenantNamedDatabase drives a log in a named database of the
+// barrier tenant: its logs are proposed to the tenant's home group, which is
+// where the database's drop fence is kept (go-qrdb#1655), so a live
+// database serves them, and once it is dropped and created again its old
+// log is gone and a new one is created under the new incarnation.
+func testVlogBarrierTenantNamedDatabase(t *testing.T, node *multiProtoNode, proto multiProtocol, conn []string) {
+	t.Helper()
+	dbName := "ledger-" + proto.name
+	logName := "named-" + proto.name
+	createDB := func() {
+		if out, err := runQRDB(t, node.cli, conn, "database", "create", dbName); err != nil {
+			t.Fatalf("[%s] database create %s: %v\noutput: %s", proto.name, dbName, err, out)
+		}
+	}
+	createDB()
+	created := vlogTenantJSON[vlogwire.CreateResult](t, node, proto, conn, "create", "--origin", vlogCLIOrigin, "--database", dbName, "--log", logName)
+	if created.Log != logName || created.Database != dbName {
+		t.Fatalf("[%s] vlog create in %s = %+v, want log %q of database %q", proto.name, dbName, created, logName, dbName)
+	}
+	vlogTenantJSON[vlogwire.AppendResult](t, node, proto, conn, "append", "--database", dbName, "--log", logName, "--entry", "n0")
+	if head := vlogTenantJSON[vlogwire.Head](t, node, proto, conn, "head", "--database", dbName, "--log", logName); head.Size != 1 {
+		t.Fatalf("[%s] head of %s/%s = size %d, want 1", proto.name, dbName, logName, head.Size)
+	}
+
+	if out, err := runQRDB(t, node.cli, conn, "database", "drop", dbName); err != nil {
+		t.Fatalf("[%s] database drop %s: %v\noutput: %s", proto.name, dbName, err, out)
+	}
+	createDB()
+	out, err := runQRDB(t, node.cli, conn, "vlog", "head", "--database", dbName, "--log", logName)
+	if err == nil || !strings.Contains(strings.ToLower(out), "not found") {
+		t.Fatalf("[%s] head of the dropped incarnation's log = %v: %s; want not found", proto.name, err, out)
+	}
+	again := vlogTenantJSON[vlogwire.CreateResult](t, node, proto, conn, "create", "--origin", vlogCLIOrigin, "--database", dbName, "--log", logName)
+	if again.Log != logName || again.Database != dbName {
+		t.Fatalf("[%s] vlog create in the recreated %s = %+v", proto.name, dbName, again)
+	}
+	if head := vlogTenantJSON[vlogwire.Head](t, node, proto, conn, "head", "--database", dbName, "--log", logName); head.Size != 0 {
+		t.Fatalf("[%s] head of the recreated log = size %d, want 0", proto.name, head.Size)
+	}
 }
 
 // verifyBarrierCheckpoint verifies note, a checkpoint of created's log, under
