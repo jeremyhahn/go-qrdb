@@ -242,7 +242,7 @@ func volumeMoveCancelAfterResume(t *testing.T, node *multiProtoNode, dirs volume
 	}
 	volumeMoveExpectValue(t, node, proto, mt, afterKey, afterValue)
 	volumeMoveExpectValue(t, node, proto, mt, resumedKey, resumedValue)
-	for _, leftover := range []string{filepath.Join(dirs.second, mt.tenantID), filepath.Join(dirs.def, mt.tenantID+".copyback")} {
+	for _, leftover := range []string{filepath.Join(dirs.second, mt.tenantID), filepath.Join(dirs.def, ".qrdb-copyback."+mt.tenantID)} {
 		if _, serr := os.Stat(leftover); serr == nil {
 			t.Fatalf("[%s] the cancelled move of %s left %s behind", proto.name, mt.tenantID, leftover)
 		} else if !os.IsNotExist(serr) {
@@ -974,7 +974,7 @@ type volumeMovePoolDirs struct {
 // volumeMoveClusterExpectDirs requires, on every node, that the tenant's
 // directory <pool>/<tenantID> exists in the default and second pools exactly
 // as wanted, and that no copy-back staging directory is left behind: no
-// <tenantID>.copyback in the default pool and no .qrdb-copyback inside either
+// .qrdb-copyback.<tenantID> in the default pool and no .qrdb-copyback inside either
 // tenant directory.
 func volumeMoveClusterExpectDirs(t *testing.T, proto multiProtocol, dirs [3]volumeMovePoolDirs, tenantID string, wantDefault, wantSecond bool) {
 	t.Helper()
@@ -998,8 +998,8 @@ func volumeMoveClusterExpectDirs(t *testing.T, proto multiProtocol, dirs [3]volu
 				t.Fatalf("[%s] node %d: tenant %s left a .qrdb-copyback staging directory in pool %s", proto.name, i+1, tenantID, c.pool)
 			}
 		}
-		if exists(filepath.Join(d.def, tenantID+".copyback")) {
-			t.Fatalf("[%s] node %d: tenant %s left a %s.copyback staging directory in the default pool", proto.name, i+1, tenantID, tenantID)
+		if exists(filepath.Join(d.def, ".qrdb-copyback."+tenantID)) {
+			t.Fatalf("[%s] node %d: tenant %s left a .qrdb-copyback.%s staging directory in the default pool", proto.name, i+1, tenantID, tenantID)
 		}
 	}
 }

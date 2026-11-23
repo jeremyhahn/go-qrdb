@@ -316,8 +316,8 @@ abort steps restore the source on it. The node stays copied because a shard
 may have attached from the destination and acknowledged raft entries before
 the settle failed. Its copy-back (`MoveStepRunner.copyBack`) never removes
 the source first: it copies the destination's tree into a staging directory
-beside the tenant's directory in the source pool (`<path>.copyback`) and
-verifies it there, and only then removes the source and renames the staging
+beside the tenant's directory in the source pool (`.qrdb-copyback.<path>`)
+and verifies it there, and only then removes the source and renames the staging
 directory into its place. A destination that cannot be read back fails the
 copy or the verify; that removes only the staging directory, so the source
 stays byte for byte intact and the stores reopen from the destination, which
@@ -590,7 +590,7 @@ refusal, and deleted and re-created.
 
 ## Test strategy
 
-A raft-tenant move is covered by the three-node E2E (`TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart`, `TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite`, `TestVolumePool_CLI_MoveTenant_ThreeNode_RestartWhileSettling` in `test/integration/volume_move_cli_test.go`): a replica restart during the move, a cancel after an acknowledged write, and a restart of the replica whose copy step is settling (get-move shows state `copying` with `stepNode` already in `nodesCopied`; a settle missed by the poll is retried on a fresh tenant), on every transport. After a completed move each test checks, on every node, that `<default pool>/<tenant>` is gone and `<second pool>/<tenant>` exists; after a cancel the reverse; and in both cases that no copy-back staging directory (`<tenant>.copyback` in the source pool, `.qrdb-copyback` inside a tenant directory) is left. The move shutdown E2E (`volume_move_shutdown_cli_test.go`) runs in the `volume_pools` integration target.
+A raft-tenant move is covered by the three-node E2E (`TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart`, `TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite`, `TestVolumePool_CLI_MoveTenant_ThreeNode_RestartWhileSettling` in `test/integration/volume_move_cli_test.go`): a replica restart during the move, a cancel after an acknowledged write, and a restart of the replica whose copy step is settling (get-move shows state `copying` with `stepNode` already in `nodesCopied`; a settle missed by the poll is retried on a fresh tenant), on every transport. After a completed move each test checks, on every node, that `<default pool>/<tenant>` is gone and `<second pool>/<tenant>` exists; after a cancel the reverse; and in both cases that no copy-back staging directory (`.qrdb-copyback.<tenant>` in the source pool, `.qrdb-copyback` inside a tenant directory) is left. The `.qrdb-` pool-root prefix (`volume.ReservedPathPrefix`) belongs to the node: `ValidateAssignmentPath` refuses an assignment path and `tenant.ValidateTenantIDShape` a tenant id that begins with it, so the staging directory a copy-back removes before it stages can only be that tenant's own earlier attempt, never another tenant's directory (an old `<path>.copyback` staging name could be tenant `<path>.copyback`'s). The move shutdown E2E (`volume_move_shutdown_cli_test.go`) runs in the `volume_pools` integration target.
 
 **Unit, per package, in memory:**
 
