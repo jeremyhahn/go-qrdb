@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // rootedBackend is a backend that owns a store root of its own, the way a
@@ -395,6 +397,145 @@ func TestManager_RootsCheckIsolatedTenantRecords(t *testing.T) {
 		}
 		if _, err := m.Get("evil"); err == nil {
 			t.Fatal("the refused database is registered")
+		}
+	})
+}
+
+// sealableHomes is isolatedHomes whose listed tenants can be sealed: a sealed
+// tenant's home resolves to tenant.ErrTenantSealed, the way the tenant
+// package's resolver answers for a barrier sealed on this node.
+type sealableHomes struct {
+	isolatedHomes
+	sealed map[string]bool
+}
+
+func (h *sealableHomes) Resolve(ctx context.Context, tenantID string) (kvstore.KVStore, error) {
+	if h.sealed[tenantID] {
+		return nil, tenant.ErrTenantSealed
+	}
+	return h.isolatedHomes.Resolve(ctx, tenantID)
+}
+
+func (h *sealableHomes) TenantIDs(context.Context) ([]string, error) {
+	ids := make([]string, 0, len(h.homes))
+	for id := range h.homes {
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// TestManager_SealedTenantNeitherBlocksNorEscapesRoots proves one sealed
+// isolated tenant does not block another tenant's create and drop, nor hide
+// healthy databases from maintenance, while its own database's root stays
+// reserved through the root claim recorded at create.
+func TestManager_SealedTenantNeitherBlocksNorEscapesRoots(t *testing.T) {
+	ctx := context.Background()
+	newSealed := func(t *testing.T) (*Manager, *KVCatalog, *sealableHomes, string, string) {
+		t.Helper()
+		m, _, dir := newRootedManager(t)
+		homes := &sealableHomes{
+			isolatedHomes: isolatedHomes{homes: map[string]kvstore.KVStore{"iso": kvstore.NewMemoryKVStore()}},
+			sealed:        map[string]bool{},
+		}
+		cat, err := NewKVCatalog(kvstore.NewMemoryKVStore(), homes)
+		if err != nil {
+			t.Fatalf("NewKVCatalog: %v", err)
+		}
+		m.SetCatalog(cat)
+		isoRoot := filepath.Join(dir, "iso-root", "app")
+		return m, cat, homes, dir, isoRoot
+	}
+
+	t.Run("claimed at create", func(t *testing.T) {
+		m, cat, homes, dir, isoRoot := newSealed(t)
+		if err := cat.Create(ctx, DatabaseMeta{TenantID: "iso", Name: "app", Incarnation: "i1", Backend: BackendMemory, DataDir: isoRoot}); err != nil {
+			t.Fatalf("record iso/app: %v", err)
+		}
+		homes.sealed["iso"] = true
+
+		if _, err := m.Create(DatabaseConfig{Name: "a", Backend: BackendMemory, DataDir: filepath.Join(dir, "elsewhere")}); err != nil {
+			t.Fatalf("Create a with iso sealed: %v", err)
+		}
+		if err := m.Drop(ctx, "a"); err != nil {
+			t.Fatalf("Drop a with iso sealed: %v", err)
+		}
+		_, err := m.Create(DatabaseConfig{Name: "evil", Backend: BackendMemory, DataDir: filepath.Join(dir, "iso-root")})
+		var conflict *DataDirConflictError
+		if !errors.As(err, &conflict) || conflict.With != "app" {
+			t.Fatalf("Create evil over the sealed tenant's root: err = %v, want *DataDirConflictError with app", err)
+		}
+	})
+
+	t.Run("maintenance lists healthy databases", func(t *testing.T) {
+		m, cat, homes, _, isoRoot := newSealed(t)
+		if err := cat.Create(ctx, DatabaseMeta{TenantID: "iso", Name: "app", Incarnation: "i1", Backend: BackendMemory, DataDir: isoRoot}); err != nil {
+			t.Fatalf("record iso/app: %v", err)
+		}
+		if _, err := m.Create(DatabaseConfig{Name: "healthy", Backend: BackendMemory}); err != nil {
+			t.Fatalf("Create healthy: %v", err)
+		}
+		homes.sealed["iso"] = true
+
+		metas, err := cat.ListAll(ctx)
+		var skipped *TenantsSkippedError
+		if !errors.As(err, &skipped) || len(skipped.Tenants) != 1 || skipped.Tenants[0].TenantID != "iso" {
+			t.Fatalf("ListAll err = %v, want *TenantsSkippedError naming iso", err)
+		}
+		if !errors.Is(err, tenant.ErrTenantSealed) {
+			t.Fatalf("ListAll err = %v, want it to match tenant.ErrTenantSealed", err)
+		}
+		if len(metas) != 1 || metas[0].Name != "healthy" {
+			t.Fatalf("ListAll metas = %v, want the healthy database", metas)
+		}
+		records, err := m.ListRecords(ctx)
+		if err != nil || len(records) != 1 || records[0].Name != "healthy" {
+			t.Fatalf("ListRecords = %v, %v; want the healthy database", records, err)
+		}
+	})
+
+	t.Run("unindexed sealed tenant fails closed until listed unsealed", func(t *testing.T) {
+		m, cat, homes, dir, isoRoot := newSealed(t)
+		// A record written before root claims existed: in the home only.
+		data, err := json.Marshal(DatabaseMeta{TenantID: "iso", Name: "app", Incarnation: "i1", Backend: BackendMemory, DataDir: isoRoot})
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if err := homes.homes["iso"].Put(ctx, CatalogKey("iso", "app"), data); err != nil {
+			t.Fatalf("legacy record: %v", err)
+		}
+		homes.sealed["iso"] = true
+		_, err = m.Create(DatabaseConfig{Name: "a", Backend: BackendMemory, DataDir: filepath.Join(dir, "elsewhere")})
+		var unresolved *RecordRootUnresolvedError
+		if !errors.As(err, &unresolved) {
+			t.Fatalf("Create a over an unindexed sealed tenant: err = %v, want *RecordRootUnresolvedError", err)
+		}
+
+		homes.sealed["iso"] = false
+		if _, err := cat.ListAll(ctx); err != nil {
+			t.Fatalf("ListAll unsealed: %v", err)
+		}
+		homes.sealed["iso"] = true
+		if _, err := m.Create(DatabaseConfig{Name: "a", Backend: BackendMemory, DataDir: filepath.Join(dir, "elsewhere")}); err != nil {
+			t.Fatalf("Create a once iso is indexed: %v", err)
+		}
+		_, err = m.Create(DatabaseConfig{Name: "evil", Backend: BackendMemory, DataDir: filepath.Join(dir, "iso-root")})
+		var conflict *DataDirConflictError
+		if !errors.As(err, &conflict) || conflict.With != "app" {
+			t.Fatalf("Create evil over the indexed sealed root: err = %v, want *DataDirConflictError with app", err)
+		}
+	})
+
+	t.Run("delete releases the claim", func(t *testing.T) {
+		m, cat, homes, dir, isoRoot := newSealed(t)
+		if err := cat.Create(ctx, DatabaseMeta{TenantID: "iso", Name: "app", Incarnation: "i1", Backend: BackendMemory, DataDir: isoRoot}); err != nil {
+			t.Fatalf("record iso/app: %v", err)
+		}
+		if err := cat.Delete(ctx, "iso", "app", "i1", ""); err != nil {
+			t.Fatalf("Delete iso/app: %v", err)
+		}
+		homes.sealed["iso"] = true
+		if _, err := m.Create(DatabaseConfig{Name: "reuse", Backend: BackendMemory, DataDir: filepath.Join(dir, "iso-root")}); err != nil {
+			t.Fatalf("Create over a deleted sealed tenant's root: %v", err)
 		}
 	})
 }

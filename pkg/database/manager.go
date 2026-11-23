@@ -1591,7 +1591,9 @@ func (m *Manager) updateMeta(ctx context.Context, db *Database, mutate func(*Dat
 // this node or not: the system store's, and an isolated tenant's in its
 // home store. Records being dropped are left out. Background maintenance
 // enumerates these, not List, so a database nothing has opened since a
-// restart is still reached.
+// restart is still reached. A tenant whose home is sealed here is
+// skipped (*TenantsSkippedError): maintenance cannot reach its stores
+// anyway, and every other tenant's databases are still listed.
 func (m *Manager) ListRecords(ctx context.Context) ([]DatabaseMeta, error) {
 	cat, err := m.catalog("list database records")
 	if err != nil {
@@ -1603,7 +1605,8 @@ func (m *Manager) ListRecords(ctx context.Context) ([]DatabaseMeta, error) {
 	} else {
 		metas, err = cat.List(ctx)
 	}
-	if err != nil {
+	var skipped *TenantsSkippedError
+	if err != nil && !errors.As(err, &skipped) {
 		return nil, err
 	}
 	out := metas[:0]
@@ -2071,8 +2074,12 @@ func (m *Manager) recordRootConflict(ctx context.Context, self dbKey, name, root
 	}
 	// Every tenant's records, an isolated tenant's in its home store
 	// included, opened on this node or not: List sees the system store only.
+	// A sealed tenant's roots come from its root claims in the system
+	// store, so a sealed tenant neither blocks this check nor escapes it.
 	var metas []DatabaseMeta
-	if all, ok := cat.(AllTenantsCatalog); ok {
+	if roots, ok := cat.(RootListingCatalog); ok {
+		metas, err = roots.ListRoots(ctx)
+	} else if all, ok := cat.(AllTenantsCatalog); ok {
 		metas, err = all.ListAll(ctx)
 	} else {
 		metas, err = cat.List(ctx)
