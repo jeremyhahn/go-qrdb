@@ -386,7 +386,7 @@ func TestUnixRT_IndexCreate_FlagsSurviveTheRoundTrip(t *testing.T) {
 		wantValueType     index.IndexValueType
 		wantCaseSensitive bool
 	}{
-		{"every flag", transport.IndexConfig{Unique: true, Sparse: true, Numeric: true, CaseInsensitive: true},
+		{"every flag", transport.IndexConfig{Unique: true, Sparse: true, Numeric: true, CaseInsensitive: true, KeyPrefix: "member/"},
 			index.IndexValueTypeNumeric, false},
 		{"zero config", transport.IndexConfig{}, index.IndexValueTypeString, true},
 	} {
@@ -413,6 +413,9 @@ func TestUnixRT_IndexCreate_FlagsSurviveTheRoundTrip(t *testing.T) {
 			}
 			if got[0].CaseSensitive != tc.wantCaseSensitive {
 				t.Errorf("CaseSensitive = %v; want %v", got[0].CaseSensitive, tc.wantCaseSensitive)
+			}
+			if got[0].KeyPrefix != tc.cfg.KeyPrefix {
+				t.Errorf("KeyPrefix = %q; want %q — the scope never reached the service", got[0].KeyPrefix, tc.cfg.KeyPrefix)
 			}
 		})
 	}
