@@ -57,6 +57,9 @@ func TestVlog_CLI_BarrierTenant_PerProtocol(t *testing.T) {
 func TestVlog_CLI_BarrierTenant_Standalone_PerProtocol(t *testing.T) {
 	t.Parallel()
 	node := startStandaloneModeNodeWithConfig(t, "pebble", standaloneBarrierTenantYAML(t.TempDir()))
+	// A barrier tenant registers through the pooled path, and the catalog
+	// holds no pool until one is created (startTenantEntitlementNode).
+	createVolumePoolCLI(t, node.cli, node.cliArgsFor(multiProtocols[0]), "default")
 
 	for _, proto := range multiProtocols {
 		proto := proto
