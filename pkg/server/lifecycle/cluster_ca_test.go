@@ -49,11 +49,15 @@ type flakyClusterCAProvider struct {
 	transientErr   error // when set, answered instead of NotLeaderError for those calls
 	permanentErr   error // when set, answered immediately, never retried
 	calls          int
+	onCall         func() // when set, run at the top of every Certificate call
 }
 
 func (f *flakyClusterCAProvider) Signer(context.Context) (crypto.Signer, error) { return nil, nil }
 
 func (f *flakyClusterCAProvider) Certificate(context.Context) (*x509.Certificate, error) {
+	if f.onCall != nil {
+		f.onCall()
+	}
 	f.calls++
 	if f.permanentErr != nil {
 		return nil, f.permanentErr
@@ -356,10 +360,14 @@ func TestAwaitClusterCACertificate_DeadlineExceeded(t *testing.T) {
 func TestAwaitClusterCACertificate_CtxCanceledDuringBackoff(t *testing.T) {
 	stub := &flakyClusterCAProvider{notLeaderCalls: 1000000}
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		cancel()
-	}()
+	defer cancel()
+	// The first Certificate call answers NotLeaderError and cancels ctx, so
+	// the cancel is in place when AwaitClusterCACertificate enters its backoff.
+	stub.onCall = func() {
+		if stub.calls == 0 {
+			cancel()
+		}
+	}
 
 	start := time.Now()
 	_, err := AwaitClusterCACertificate(ctx, stub, time.Minute, time.Second, 5*time.Second)
