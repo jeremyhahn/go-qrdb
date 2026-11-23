@@ -18,11 +18,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
@@ -187,6 +191,135 @@ func TestRESTServiceRegistry_MaterializedDatabaseServedFromItsOwnHost(t *testing
 	}
 	if got, err := service.NewKVService(fresh.Host(), fresh.ShardID()).Get(ctx, "k2"); err != nil || !bytes.Equal(got, value) {
 		t.Fatalf("recreated own host Get = %q, %v; want %q", got, err, value)
+	}
+}
+
+// writeAfterFence is a reclaimer that, once the drop fence has landed and
+// before the Manager closes the database, writes through a handle resolved
+// before the drop: the race the drop fence exists for.
+type writeAfterFence struct {
+	*service.KeyspaceReclaimService
+	write func() error
+	err   error
+}
+
+func (w *writeAfterFence) FenceDatabaseKeyspace(ctx context.Context, tenantID, db, incarnation, claim string) error {
+	if err := w.KeyspaceReclaimService.FenceDatabaseKeyspace(ctx, tenantID, db, incarnation, claim); err != nil {
+		return err
+	}
+	if w.write != nil {
+		w.err = w.write()
+	}
+	return nil
+}
+
+// newFencedMaterializedManager returns a Manager materializing acme's
+// databases, whose reclaimer keeps each materialized database's drop fence in
+// its own store (storeResolver.materializedFenceTarget).
+func newFencedMaterializedManager(t *testing.T) (*database.Manager, *fakeMaterializingFactory, *writeAfterFence) {
+	t.Helper()
+	factory := &fakeMaterializingFactory{}
+	dbMgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(factory))
+	t.Cleanup(func() { _ = dbMgr.Close() })
+	reclaim := &writeAfterFence{KeyspaceReclaimService: service.NewKeyspaceReclaimService(service.ReclaimTarget{KV: newMockKVService()})}
+	reclaim.SetStoreResolver(&storeResolver{databases: dbMgr, systemTenant: tenantid.System})
+	dbMgr.SetKeyspaceReclaimer(reclaim)
+	return dbMgr, factory, reclaim
+}
+
+// TestRESTServiceRegistry_MaterializedHandleResolvedBeforeDropIsFenced pins
+// F5: a materialized database's views carry the drop-fence guard, checked
+// against the marker in its own store, so a handle resolved before Drop is
+// refused with *database.DroppingError once the fence lands.
+func TestRESTServiceRegistry_MaterializedHandleResolvedBeforeDropIsFenced(t *testing.T) {
+	const tenantID, name = "acme", "orders"
+	ctx := context.Background()
+	dbMgr, _, reclaim := newFencedMaterializedManager(t)
+	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	svcs, err := r.resolve(tenantID, name)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if err := svcs.KV.Put(ctx, "before", []byte("v")); err != nil {
+		t.Fatalf("Put before the drop: %v", err)
+	}
+	reclaim.write = func() error { return svcs.KV.Put(ctx, "after", []byte("v")) }
+	if err := dbMgr.DropForTenant(tenant.WithTenantID(ctx, tenantID), name); err != nil {
+		t.Fatalf("DropForTenant: %v", err)
+	}
+	assertDroppingError(t, reclaim.err, name)
+}
+
+// TestRESTServiceRegistry_MaterializedScheduledCompactionRuns pins F5's
+// second half: the compaction record a materialized database's policy writes
+// is guarded on the marker in its own store, which CompactionScheduleGuard
+// finds live, so the scheduler compacts it.
+func TestRESTServiceRegistry_MaterializedScheduledCompactionRuns(t *testing.T) {
+	const tenantID, name = "acme", "orders"
+	ctx := context.Background()
+	dbMgr, _, _ := newFencedMaterializedManager(t)
+	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	svcs, err := r.resolve(tenantID, name)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := svcs.KV.Put(ctx, "k", []byte{byte('a' + i)}); err != nil {
+			t.Fatalf("Put %d: %v", i, err)
+		}
+	}
+	holder, ok := svcs.MVCC.(service.CompactionPolicyHolder)
+	if !ok {
+		t.Fatalf("MVCC view %T holds no compaction policy", svcs.MVCC)
+	}
+	if err := holder.SetCompactionPolicy(ctx, &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 1}); err != nil {
+		t.Fatalf("SetCompactionPolicy: %v", err)
+	}
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{}, WithDatabaseManager(dbMgr))
+	s := &compactionScheduler{
+		stores:   srv.compactionStores,
+		interval: time.Hour,
+		now:      time.Now,
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	if n := s.passOnce(ctx); n != 1 {
+		t.Fatalf("compaction pass compacted %d stores, want the materialized database's 1", n)
+	}
+}
+
+// TestStoreResolver_FenceTargetMaterializedDatabase pins where FenceTarget
+// sends a materialized database's drop fence: its own store, per database;
+// a stale incarnation is refused as superseded; and a database the Manager
+// does not hold keeps the system store.
+func TestStoreResolver_FenceTargetMaterializedDatabase(t *testing.T) {
+	const tenantID, name = "acme", "orders"
+	ctx := context.Background()
+	dbMgr, _, _ := newFencedMaterializedManager(t)
+	db, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	r := &storeResolver{databases: dbMgr, systemTenant: tenantid.System}
+
+	store, dedicated, err := r.FenceTarget(ctx, tenantID, name, db.Incarnation())
+	if err != nil || !dedicated || !store.PerDatabase || store.KV == nil {
+		t.Fatalf("FenceTarget = (%+v, %v, %v), want the database's own store, per database", store, dedicated, err)
+	}
+
+	_, dedicated, err = r.FenceTarget(ctx, tenantID, name, "a-superseded-incarnation")
+	var superseded *database.DropSupersededError
+	if !errors.As(err, &superseded) || !dedicated {
+		t.Fatalf("FenceTarget(stale incarnation) = (%v, %v), want *database.DropSupersededError", dedicated, err)
+	}
+
+	if _, dedicated, err := r.FenceTarget(ctx, tenantID, "missing", ""); err != nil || dedicated {
+		t.Fatalf("FenceTarget(unknown database) = (%v, %v), want the system store", dedicated, err)
 	}
 }
 

@@ -296,14 +296,18 @@ func (r *restServiceRegistry) resolveMaterialized(tenantID, db string, info *ten
 		return svcs
 	})
 	incarnation := dbase.Incarnation()
-	// The fence carries no drop-fence write guard: that guard compares the
-	// fence key in the store the write lands in, and the drop fence is kept
-	// in the shared store, never in this database's own store, so the guard
-	// would refuse every write. Manager.Drop fences the record, then closes
-	// and removes this store itself; the vector view keeps its check.
-	fence := databaseFence{
-		vectorCheck: func() error { return r.refuseIfDropping(tenantID, db, true, incarnation) },
-		binding:     compaction.Binding{Tenant: tenantID, Database: db, Incarnation: incarnation},
+	// The drop fence lives in this database's own store
+	// (storeResolver.materializedFenceTarget), where every write below lands,
+	// so each write carries the guard and a handle resolved before a drop is
+	// refused once Manager.Drop fences it. The store is the incarnation -- a
+	// drop removes the binding root, a create under the name opens a new one
+	// -- so the guard and the compaction binding carry no incarnation and the
+	// marker is absent while the database is live, as for a dedicated-raft
+	// database's shard; CompactionScheduleGuard finds the same marker. The
+	// vector view keeps its check against the catalog's incarnation.
+	fence, err := newDatabaseFence(tenantID, db, "", func() error { return r.refuseIfDropping(tenantID, db, true, incarnation) })
+	if err != nil {
+		return nil, err
 	}
 	fenced := fence.apply(base, "", false)
 	if base.Collection != nil {

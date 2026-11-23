@@ -1707,18 +1707,27 @@ func (s *Server) wireTenantHostShards() {
 //     so both the reclamation (go-qrdb#412) and the drop fence go there;
 //   - a raft-isolated tenant's database has a shard of its own, so its drop
 //     fence goes into that shard -- the Raft group its writes are guarded
-//     in.
+//     in;
+//   - a database the Manager materialized in its own store keeps its drop
+//     fence in that store, where its writes are guarded.
 //
 // It is a no-op without the reclaim service, because then there is nothing to
-// attach it to, and without either registry, because then every database's
+// attach it to, and without any of the three, because then every database's
 // data is in the system store the reclaim service already targets.
 func (s *Server) wireStoreResolver() {
-	if s.opts.keyspaceReclaim == nil || (s.opts.tenantHosts == nil && s.opts.raftBackend == nil) {
+	if s.opts.keyspaceReclaim == nil || (s.opts.tenantHosts == nil && s.opts.raftBackend == nil && s.opts.dbManager == nil) {
 		return
 	}
-	resolver := &storeResolver{
-		tenantSvc:    s.opts.tenantSvc,
-		systemTenant: tenantid.System,
+	resolver := &storeResolver{systemTenant: tenantid.System}
+	// Without a volume or raft registry no tenant's isolation moves its data
+	// out of the system store, so the tenant lookup is left unset.
+	if s.opts.tenantHosts != nil || s.opts.raftBackend != nil {
+		resolver.tenantSvc = s.opts.tenantSvc
+	}
+	// A database the Manager materialized in its own store keeps its drop
+	// fence there (storeResolver.materializedFenceTarget).
+	if s.opts.dbManager != nil {
+		resolver.databases = s.opts.dbManager
 	}
 	if s.opts.tenantHosts != nil {
 		resolver.hosts = s.opts.tenantHosts

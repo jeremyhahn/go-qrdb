@@ -19,6 +19,7 @@ import (
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -44,8 +45,45 @@ import (
 type storeResolver struct {
 	hosts        tenantServicesSource
 	raft         raftFenceSource
+	databases    ownedDatabaseSource
 	tenantSvc    tenant.TenantServicer
 	systemTenant string
+}
+
+// ownedDatabaseSource is the catalog FenceTarget asks for a database the
+// Manager has open (database.Manager.GetOwnedIgnoringFence: the drop
+// asks after its local fence is set), to find one materialized in its own
+// store.
+type ownedDatabaseSource interface {
+	GetOwnedIgnoringFence(name, tenantID string) (*database.Database, error)
+}
+
+// materializedFenceTarget answers FenceTarget for a database the Manager
+// opened in its own store (a materializedStore backend): its drop fence lives
+// in that store, where its writes and its scheduled compactions are guarded.
+// The store is the incarnation -- a drop removes its binding root and a
+// create under the name opens a new one -- so it is a per-database target,
+// as a dedicated-raft database's shard is: the marker is absent while the
+// database is live. A database open under another incarnation is refused with
+// *database.DropSupersededError. ok is false for any other database, and for
+// one not open yet: a create marks its incarnation live before the Manager
+// holds it, in the store a per-database drop tombstones (claimReclaimStore).
+func (r *storeResolver) materializedFenceTarget(tenantID, db, incarnation string) (service.FenceStore, bool, error) {
+	if r.databases == nil || db == "" {
+		return service.FenceStore{}, false, nil
+	}
+	dbase, err := r.databases.GetOwnedIgnoringFence(db, tenantID)
+	if err != nil || dbase == nil {
+		return service.FenceStore{}, false, nil
+	}
+	ms, ok := dbase.Backend().(materializedStore)
+	if !ok {
+		return service.FenceStore{}, false, nil
+	}
+	if incarnation != "" && dbase.Incarnation() != incarnation {
+		return service.FenceStore{}, true, &database.DropSupersededError{Name: db, TenantID: tenantID}
+	}
+	return service.FenceStore{KV: service.NewKVService(ms.Host(), ms.ShardID()), PerDatabase: true}, true, nil
 }
 
 // raftFenceSource is the one method the resolver needs from
@@ -141,6 +179,9 @@ func (r *storeResolver) ReclaimTarget(ctx context.Context, tenantID string) (ser
 // incarnation's: it is refused with *database.DropSupersededError (see
 // RaftBackendFactory.FenceServices).
 func (r *storeResolver) FenceTarget(ctx context.Context, tenantID, db, incarnation string) (service.FenceStore, bool, error) {
+	if store, ok, err := r.materializedFenceTarget(tenantID, db, incarnation); ok {
+		return store, true, err
+	}
 	if r.tenantSvc == nil || tenantID == "" || tenantID == r.systemTenant {
 		return service.FenceStore{}, false, nil
 	}
