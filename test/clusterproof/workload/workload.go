@@ -294,10 +294,16 @@ func (c *client) drop() {
 	}
 }
 
-// opContext bounds one operation by OpTimeout but not by ctx's cancellation:
-// stopping the run must not turn an operation in flight into a timeout.
+// opContext bounds one operation by OpTimeout and by ctx's deadline, whichever
+// comes first, but not by ctx's cancellation: stopping the run must not turn an
+// operation in flight into a timeout, while a deadline -- the post-run phase's
+// -- still bounds the final verification reads.
 func (c *client) opContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), time.Duration(c.w.cfg.OpTimeout))
+	deadline := time.Now().Add(time.Duration(c.w.cfg.OpTimeout))
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	return context.WithDeadline(context.WithoutCancel(ctx), deadline)
 }
 
 // nextValue returns a value no other operation in the run writes.
