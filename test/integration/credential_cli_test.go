@@ -54,6 +54,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	qrdbnode "github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"gopkg.in/yaml.v3"
 )
 
 // credentialVersionCLIJSON mirrors transport.CredentialVersionInfo.
@@ -939,6 +940,27 @@ func testCredentialRotationPolicyOverProtocol(t *testing.T, barrier, manual *mul
 	if _, terr := time.Parse(time.RFC3339, policy.NextRotation); terr != nil {
 		t.Fatalf("[%s] an enabled policy must schedule its next rotation, got %q: %v", proto.name, policy.NextRotation, terr)
 	}
+	// The YAML rendering carries the JSON key names and the same values.
+	yamlOut, err := runCLIProto(t, barrier, proto, "--output", "yaml", "credential", "rotation-policy", "get", name)
+	if err != nil {
+		t.Fatalf("[%s] rotation-policy get yaml: %v\noutput: %s", proto.name, err, yamlOut)
+	}
+	var yamlPolicy map[string]any
+	if yerr := yaml.Unmarshal([]byte(yamlOut), &yamlPolicy); yerr != nil {
+		t.Fatalf("[%s] decode rotation-policy YAML: %v\noutput: %s", proto.name, yerr, yamlOut)
+	}
+	wantYAML := map[string]any{
+		"name": name, "enabled": true, "interval": "24h0m0s", "retain_versions": 2,
+		"next_rotation": policy.NextRotation,
+	}
+	if len(yamlPolicy) != len(wantYAML) {
+		t.Fatalf("[%s] rotation-policy YAML keys = %v, want exactly %v", proto.name, yamlPolicy, wantYAML)
+	}
+	for key, want := range wantYAML {
+		if got, ok := yamlPolicy[key]; !ok || got != want {
+			t.Fatalf("[%s] rotation-policy YAML %s = %#v, want %#v\noutput: %s", proto.name, key, got, want, yamlOut)
+		}
+	}
 
 	// (b) an invalid policy is refused with the typed error and changes
 	// nothing; a manual-strategy store refuses any policy.
@@ -1000,6 +1022,17 @@ func testCredentialMigrationConflictsOverProtocol(t *testing.T, node *multiProto
 	var conflicts []map[string]any
 	if raw, ok := listed["conflicts"]; !ok || json.Unmarshal(raw, &conflicts) != nil || conflicts == nil || len(conflicts) != 0 {
 		t.Fatalf("[%s] migration-conflicts list = %s, want an empty conflicts array", proto.name, out)
+	}
+	yamlOut, err := runCLIProto(t, node, proto, "--output", "yaml", "credential", "migration-conflicts", "list")
+	if err != nil {
+		t.Fatalf("[%s] migration-conflicts list yaml: %v\noutput: %s", proto.name, err, yamlOut)
+	}
+	var yamlListed map[string]any
+	if yerr := yaml.Unmarshal([]byte(yamlOut), &yamlListed); yerr != nil {
+		t.Fatalf("[%s] decode migration-conflicts YAML: %v\noutput: %s", proto.name, yerr, yamlOut)
+	}
+	if yamlConflicts, ok := yamlListed["conflicts"].([]any); len(yamlListed) != 1 || !ok || len(yamlConflicts) != 0 {
+		t.Fatalf("[%s] migration-conflicts list YAML = %q, want only a conflicts key holding an empty list", proto.name, yamlOut)
 	}
 	table, err := runCLIProto(t, node, proto, "credential", "migration-conflicts", "list")
 	if err != nil || strings.TrimSpace(table) != "" {
