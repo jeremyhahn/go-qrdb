@@ -37,9 +37,15 @@ func (failingAfterOpenHook) AfterOpen(*pebble.DB, vfs.FS, string) error {
 }
 
 func TestNew_AfterOpenFailureUnregistersSealWatch(t *testing.T) {
+	var unregistered []string
+	prev := leaseUnregisterHook
+	leaseUnregisterHook = func(dir string) { unregistered = append(unregistered, dir) }
+	t.Cleanup(func() { leaseUnregisterHook = prev })
+
 	var gate quiesce.Gate
 	fs := quiesceFS{FS: vfs.NewMem(), gate: &gate}
 	for i := range 3 {
+		unregistered = unregistered[:0]
 		config := DefaultConfig("db")
 		config.FS = fs
 		s, err := New(config, WithOpenHook(failingAfterOpenHook{}))
@@ -53,8 +59,10 @@ func TestNew_AfterOpenFailureUnregistersSealWatch(t *testing.T) {
 		if !errors.As(err, &opErr) || opErr.Op != "open" {
 			t.Fatalf("attempt %d: err = %v; want a *storage.OpError for open", i, err)
 		}
-		if got := gate.Registered(); got != 0 {
-			t.Fatalf("attempt %d: gate holds %d leases; want 0", i, got)
+		// Open registered exactly one lease and succeeded, so the AfterOpen
+		// failure must unregister it through SealWatch.Close, once.
+		if len(unregistered) != 1 {
+			t.Fatalf("attempt %d: %d lease unregisters %v; want 1", i, len(unregistered), unregistered)
 		}
 	}
 }
