@@ -24,6 +24,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	qerrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -726,5 +727,187 @@ func TestPrefixUpperBound(t *testing.T) {
 				t.Fatalf("prefixUpperBound(%q) = %q, want %q", tc.prefix, got, tc.want)
 			}
 		})
+	}
+}
+
+func embeddedGuarded(t *testing.T, store KVStore) MultiGuardedBatchKVStore {
+	t.Helper()
+	guarded, ok := store.(MultiGuardedBatchKVStore)
+	if !ok {
+		t.Fatalf("NewEmbeddedKVStore returned %T, want a MultiGuardedBatchKVStore", store)
+	}
+	return guarded
+}
+
+func embeddedGetString(t *testing.T, store KVStore, key string) string {
+	t.Helper()
+	v, err := store.Get(context.Background(), key)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", key, err)
+	}
+	if v == nil {
+		return "<absent>"
+	}
+	return string(v)
+}
+
+func TestEmbeddedKVStore_PutAllIfAllUnchanged_AppliesAndRefuses(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	guarded := embeddedGuarded(t, store)
+
+	applied, err := guarded.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{{Key: "claim"}},
+		[]kvstore.KV{{Key: "claim", Value: []byte("held")}, {Key: "a", Value: []byte("1")}, {Key: "b", Value: []byte("2")}})
+	if err != nil || !applied {
+		t.Fatalf("fresh absence guard: applied = %v, err = %v; want applied", applied, err)
+	}
+	if got := embeddedGetString(t, store, "a") + embeddedGetString(t, store, "b"); got != "12" {
+		t.Fatalf("after applied batch a+b = %q, want 12", got)
+	}
+
+	applied, err = guarded.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{{Key: "claim"}},
+		[]kvstore.KV{{Key: "c", Value: []byte("3")}})
+	if err != nil || applied {
+		t.Fatalf("stale absence guard: applied = %v, err = %v; want not applied, nil", applied, err)
+	}
+	if got := embeddedGetString(t, store, "c"); got != "<absent>" {
+		t.Fatalf("refused batch wrote c = %q", got)
+	}
+
+	applied, err = guarded.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{{Key: "missing", Value: []byte{}}},
+		[]kvstore.KV{{Key: "d", Value: []byte("4")}})
+	if err != nil || applied {
+		t.Fatalf("non-nil empty guard on an absent key: applied = %v, err = %v; want not applied", applied, err)
+	}
+
+	applied, err = guarded.PutAllIfUnchanged(ctx, "claim", []byte("held"),
+		[]kvstore.KV{{Key: "a", Delete: true}, {Key: "b", Value: []byte("22")}})
+	if err != nil || !applied {
+		t.Fatalf("value guard with a delete: applied = %v, err = %v; want applied", applied, err)
+	}
+	if got := embeddedGetString(t, store, "a"); got != "<absent>" {
+		t.Fatalf("deleted key a = %q, want absent", got)
+	}
+	if got := embeddedGetString(t, store, "b"); got != "22" {
+		t.Fatalf("b = %q, want 22", got)
+	}
+
+	applied, err = guarded.PutAllIfUnchanged(ctx, "claim", []byte("other"),
+		[]kvstore.KV{{Key: "b", Value: []byte("x")}})
+	if err != nil || applied {
+		t.Fatalf("mismatched value guard: applied = %v, err = %v; want not applied", applied, err)
+	}
+}
+
+func TestEmbeddedKVStore_PutAllIfAllUnchanged_MaintainsIndexes(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	guarded := embeddedGuarded(t, store)
+	members, err := NewDAO(store, "member", func() *embeddedMember { return &embeddedMember{} })
+	if err != nil {
+		t.Fatalf("NewDAO: %v", err)
+	}
+	record := func(id uint64, email string) []byte {
+		b, merr := json.Marshal(&embeddedMember{ID: id, Email: email})
+		if merr != nil {
+			t.Fatalf("Marshal: %v", merr)
+		}
+		return b
+	}
+
+	applied, err := guarded.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{{Key: "member/1"}},
+		[]kvstore.KV{{Key: "member/1", Value: record(1, "a@example.com")}})
+	if err != nil || !applied {
+		t.Fatalf("guarded insert: applied = %v, err = %v", applied, err)
+	}
+	if hit, qerr := members.QueryOneByIndex(ctx, "Email", "a@example.com"); qerr != nil || hit.ID != 1 {
+		t.Fatalf("QueryOneByIndex after guarded insert = %+v, %v; want ID 1", hit, qerr)
+	}
+
+	applied, err = guarded.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{
+		{Key: "member/2", Value: record(2, "b@example.com")},
+		{Key: "member/3", Value: record(3, "a@example.com")},
+	})
+	if err == nil || applied {
+		t.Fatalf("taken unique value: applied = %v, err = %v; want an error", applied, err)
+	}
+	var conflict *qerrors.QRDBError
+	if !errors.As(err, &conflict) || conflict.Code != qerrors.ErrConflict {
+		t.Fatalf("taken unique value: err = %v (%T), want a QRDBError ErrConflict", err, err)
+	}
+	var uce *engine.UniqueConstraintError
+	if !errors.As(err, &uce) || uce.Field == "" {
+		t.Fatalf("taken unique value: err = %v, want an *engine.UniqueConstraintError cause", err)
+	}
+	for _, key := range []string{"member/2", "member/3"} {
+		if got := embeddedGetString(t, store, key); got != "<absent>" {
+			t.Fatalf("refused batch wrote %s = %q", key, got)
+		}
+	}
+
+	applied, err = guarded.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{
+		{Key: "member/1", Delete: true},
+		{Key: "member/4", Value: record(4, "a@example.com")},
+	})
+	if err != nil || !applied {
+		t.Fatalf("moving the value from member/1 to member/4: applied = %v, err = %v", applied, err)
+	}
+	if hit, qerr := members.QueryOneByIndex(ctx, "Email", "a@example.com"); qerr != nil || hit.ID != 4 {
+		t.Fatalf("QueryOneByIndex after the move = %+v, %v; want ID 4", hit, qerr)
+	}
+}
+
+func TestEmbeddedKVStore_PutAllIfAllUnchanged_EmptyKeyRefused(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	guarded := embeddedGuarded(t, store)
+	for _, tc := range []struct {
+		name   string
+		guards []kvstore.Guard
+		writes []kvstore.KV
+		field  string
+		index  int
+	}{
+		{"guard", []kvstore.Guard{{Key: "ok"}, {Key: ""}}, []kvstore.KV{{Key: "k", Value: []byte("v")}}, "guard", 1},
+		{"write", nil, []kvstore.KV{{Key: "k", Value: []byte("v")}, {Key: ""}}, "write", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			applied, err := guarded.PutAllIfAllUnchanged(ctx, tc.guards, tc.writes)
+			var empty *kvstore.EmptyKeyError
+			if applied || !errors.As(err, &empty) || empty.Field != tc.field || empty.Index != tc.index {
+				t.Fatalf("applied = %v, err = %v; want EmptyKeyError{%s %d}", applied, err, tc.field, tc.index)
+			}
+			if got := embeddedGetString(t, store, "k"); got != "<absent>" {
+				t.Fatalf("refused batch wrote k = %q", got)
+			}
+		})
+	}
+}
+
+func TestEmbeddedKVStore_UnitOfWork(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	members, err := NewDAOTransactional(store, "member", func() *embeddedMember { return &embeddedMember{} })
+	if err != nil {
+		t.Fatalf("NewDAOTransactional: %v", err)
+	}
+	uow := NewDAOUnitOfWork(store)
+	for _, m := range []*embeddedMember{{ID: 1, Email: "one@example.com"}, {ID: 2, Email: "two@example.com"}} {
+		if err := RegisterDAOSave(uow, GenericDAO[*embeddedMember](members), m); err != nil {
+			t.Fatalf("RegisterDAOSave %d: %v", m.ID, err)
+		}
+	}
+	if err := uow.Commit(ctx); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	for _, id := range []uint64{1, 2} {
+		got, err := members.Get(ctx, id)
+		if err != nil || got.ID != id {
+			t.Fatalf("Get(%d) after commit = %+v, %v", id, got, err)
+		}
 	}
 }

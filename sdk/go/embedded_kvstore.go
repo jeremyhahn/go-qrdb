@@ -22,9 +22,13 @@ import (
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
+	qerrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // errEmbeddedStorageRequired is returned by NewEmbeddedKVStore when it is
@@ -38,6 +42,12 @@ var errEmbeddedStorageRequired = errors.New("sdk: embedded KV store needs a stor
 // when it owns its storage (for example sdkstorage.NewPebbleStorage) and runs
 // no server.
 //
+// The store is a MultiGuardedBatchKVStore: PutAllIfUnchanged and
+// PutAllIfAllUnchanged apply a guarded batch as one KV-engine transaction,
+// all-or-nothing, with the unique-index check and index updates of the same
+// step, so NewDAOTransactional and NewDAOUnitOfWork run over it as they do
+// over the service and client stores.
+//
 // Get reports an absent key as (nil, nil); every other storage failure is
 // returned. A query on an index that was never registered reports no matches.
 // A definition the engine cannot maintain exactly (a caller-qualified index
@@ -46,8 +56,8 @@ var errEmbeddedStorageRequired = errors.New("sdk: embedded KV store needs a stor
 // refused with ErrKVIndexUnsupported, so a DAO downgrades that query kind to
 // a full scan instead of querying an index nobody built.
 //
-// The store is safe for concurrent use. Put, Delete and RegisterEntityIndexes
-// are serialized, so reading a key's old value, checking unique indexes,
+// The store is safe for concurrent use. Put, Delete, the guarded batches and
+// RegisterEntityIndexes are serialized, so reading a key's old value, checking unique indexes,
 // committing the batch and backfilling a newly registered index run as one
 // step and two writers never leave a stale or duplicate index entry. Reads
 // share a lock and run concurrently with each other. A Scan callback runs
@@ -61,6 +71,8 @@ func NewEmbeddedKVStore(stg storage.Storage) (KVStore, error) {
 }
 
 // embeddedKVStore is the KVStore NewEmbeddedKVStore returns.
+var _ kvstore.MultiGuardedBatchKVStore = (*embeddedKVStore)(nil)
+
 type embeddedKVStore struct {
 	stg storage.Storage
 	eng *engine.KVEngine
@@ -76,6 +88,122 @@ func (s *embeddedKVStore) Put(ctx context.Context, key string, value []byte) err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.eng.PutWithIndexes([]byte(key), value)
+}
+
+// PutAllIfUnchanged applies writes only while guardKey holds guardValue (nil:
+// absent); it is PutAllIfAllUnchanged with one guard.
+func (s *embeddedKVStore) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+	return s.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: guardKey, Value: guardValue}}, writes)
+}
+
+// PutAllIfAllUnchanged applies writes, in order, only while every guard
+// holds: a nil Guard.Value requires the key to be absent, any other value
+// requires it to be present and equal. The guards and writes go to the KV
+// engine as one transaction, so the batch is all-or-nothing and runs the
+// ordered unique-index check and the index updates of the same step. A
+// unique-index conflict writes nothing and returns, as Put does, a
+// *errors.QRDBError with Code ErrConflict; its cause is the engine's
+// *engine.UniqueConstraintError. applied is false, with a nil error, when a guard did not hold.
+func (s *embeddedKVStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	for i, g := range guards {
+		if g.Key == "" {
+			return false, &kvstore.EmptyKeyError{Field: "guard", Index: i}
+		}
+	}
+	for i, w := range writes {
+		if w.Key == "" {
+			return false, &kvstore.EmptyKeyError{Field: "write", Index: i}
+		}
+	}
+	cmd, err := embeddedGuardedTxn(guards, writes)
+	if err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	results := make([]sm.Result, 1)
+	if err := s.eng.Update(ctx, []sm.Entry{{Cmd: cmd}}, results); err != nil {
+		return false, err
+	}
+	data := results[0].Data
+	if msg, kind, ok := protocol.DecodeAppErrorKind(data); ok {
+		if kind == protocol.AppErrorConflict {
+			var cause error = errors.New(msg)
+			if uce := embeddedUniqueConflict(msg); uce != nil {
+				cause = uce
+			}
+			return false, &qerrors.QRDBError{Code: qerrors.ErrConflict, Op: "embedded.PutAllIfAllUnchanged", Err: cause}
+		}
+		return false, fmt.Errorf("embedded kv store: guarded batch refused: %s", msg)
+	}
+	return len(data) > 0 && data[0] == 1, nil
+}
+
+// embeddedGuardedTxn encodes a guarded batch as one KV-engine transaction:
+// each guard becomes the compares the service store's guarded batch uses
+// (absent: version == 0; expected value: version > 0 and value ==), each
+// write a put or delete op in order, and there is no failure branch.
+func embeddedGuardedTxn(guards []kvstore.Guard, writes []kvstore.KV) ([]byte, error) {
+	compares := make([][]byte, 0, len(guards)*2)
+	addCompare := func(key string, target service.CompareTarget, result service.CompareResult, value []byte) error {
+		c, err := protocol.EncodeCompare([]byte(key), byte(target), byte(result), value, 0, 0, 0)
+		if err != nil {
+			return err
+		}
+		compares = append(compares, c)
+		return nil
+	}
+	for _, g := range guards {
+		if g.Value == nil {
+			if err := addCompare(g.Key, service.CompareVersion, service.CompareEqual, nil); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if err := addCompare(g.Key, service.CompareVersion, service.CompareGreater, nil); err != nil {
+			return nil, err
+		}
+		if err := addCompare(g.Key, service.CompareValue, service.CompareEqual, g.Value); err != nil {
+			return nil, err
+		}
+	}
+	ops := make([][]byte, 0, len(writes))
+	for _, w := range writes {
+		var (
+			op  []byte
+			err error
+		)
+		if w.Delete {
+			op, err = protocol.EncodeOp(protocol.OpMVCCDelete, []byte(w.Key), nil, nil, 0)
+		} else {
+			op, err = protocol.EncodeOp(protocol.OpMVCCPut, []byte(w.Key), w.Value, nil, 0)
+		}
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, op)
+	}
+	return protocol.EncodeTransaction(compares, ops, nil)
+}
+
+// embeddedUniqueConflict rebuilds the *engine.UniqueConstraintError the KV
+// engine reported as a conflict app error (asAppErrResult encodes its
+// message), so the caller can name the index and field. It returns nil when the
+// message is not the engine's unique-constraint message.
+func embeddedUniqueConflict(msg string) *engine.UniqueConstraintError {
+	const prefix = "engine: unique constraint violation on index "
+	rest, ok := strings.CutPrefix(msg, prefix)
+	if !ok {
+		return nil
+	}
+	idx, field, ok := strings.Cut(rest, " (field ")
+	if !ok || !strings.HasSuffix(field, ")") {
+		return nil
+	}
+	return &engine.UniqueConstraintError{Index: idx, Field: strings.TrimSuffix(field, ")")}
 }
 
 func (s *embeddedKVStore) Get(ctx context.Context, key string) ([]byte, error) {
