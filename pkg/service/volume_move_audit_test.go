@@ -29,7 +29,7 @@ func TestVolumeMoveAudit_RecordsTheStart(t *testing.T) {
 	a := NewVolumeMoveAudit(ring, audit.FailClosed)
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "root"})
 	req := volume.MoveTenantRequest{TenantID: "acme", ToPool: "bulk"}
-	settle, err := a.BeginMoveStart(ctx, req)
+	settle, err := a.BeginMoveStart(ctx, req, volume.MoveStartFacts{})
 	if err != nil {
 		t.Fatalf("BeginMoveStart: %v", err)
 	}
@@ -52,9 +52,12 @@ func TestVolumeMoveAudit_RecordsTheStart(t *testing.T) {
 		if ev.Attributes["to_pool"] != "bulk" {
 			t.Fatalf("event %d attributes = %v, want to_pool=bulk", i, ev.Attributes)
 		}
-		// Only to_pool, and on the outcome from_pool: no consent flag
-		// attribute (decision Q9 is refused outright, ruling 1115).
-		if wantKeys := i + 1; len(ev.Attributes) != wantKeys {
+		// to_pool, ruling 1234's allow_unencrypted_destination and
+		// encryption_dropped, and on the outcome from_pool.
+		if ev.Attributes["allow_unencrypted_destination"] != false || ev.Attributes["encryption_dropped"] != false {
+			t.Fatalf("event %d attributes = %v, want allow_unencrypted_destination=false encryption_dropped=false", i, ev.Attributes)
+		}
+		if wantKeys := i + 3; len(ev.Attributes) != wantKeys {
 			t.Fatalf("event %d attributes = %v, want %d keys", i, ev.Attributes, wantKeys)
 		}
 	}
@@ -69,7 +72,7 @@ func TestVolumeMoveAudit_RecordsTheStart(t *testing.T) {
 func TestVolumeMoveAudit_FailureOutcome(t *testing.T) {
 	ring := audit.NewRingBuffer(16)
 	a := NewVolumeMoveAudit(ring, audit.FailClosed)
-	settle, err := a.BeginMoveStart(context.Background(), volume.MoveTenantRequest{TenantID: "acme", ToPool: "bulk"})
+	settle, err := a.BeginMoveStart(context.Background(), volume.MoveTenantRequest{TenantID: "acme", ToPool: "bulk"}, volume.MoveStartFacts{})
 	if err != nil {
 		t.Fatalf("BeginMoveStart: %v", err)
 	}
@@ -88,12 +91,76 @@ func TestVolumeMoveAudit_GateFollowsThePolicy(t *testing.T) {
 	req := volume.MoveTenantRequest{TenantID: "acme", ToPool: "bulk"}
 	sink := &refusingAuditLogger{err: errors.New("audit sink unavailable")}
 	var gate *audit.GateError
-	if _, err := NewVolumeMoveAudit(sink, audit.FailClosed).BeginMoveStart(ctx, req); !errors.As(err, &gate) {
+	if _, err := NewVolumeMoveAudit(sink, audit.FailClosed).BeginMoveStart(ctx, req, volume.MoveStartFacts{}); !errors.As(err, &gate) {
 		t.Fatalf("fail-closed BeginMoveStart = %v, want *audit.GateError", err)
 	}
-	settle, err := NewVolumeMoveAudit(sink, audit.FailOpen).BeginMoveStart(ctx, req)
+	settle, err := NewVolumeMoveAudit(sink, audit.FailOpen).BeginMoveStart(ctx, req, volume.MoveStartFacts{})
 	if err != nil {
 		t.Fatalf("fail-open BeginMoveStart: %v", err)
+	}
+	settle(&volume.Move{FromPool: "fast"}, nil)
+}
+
+// TestVolumeMoveAudit_EncryptionDropRecord: ruling 1234, a start that drops
+// the tenant's at-rest encryption first writes a
+// volume_pool.move_encryption_drop record, then the move_start record,
+// both carrying the operator's flag.
+func TestVolumeMoveAudit_EncryptionDropRecord(t *testing.T) {
+	ring := audit.NewRingBuffer(16)
+	a := NewVolumeMoveAudit(ring, audit.FailClosed)
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "root"})
+	req := volume.MoveTenantRequest{TenantID: "acme", ToPool: "bulk", AllowUnencryptedDestination: true}
+	settle, err := a.BeginMoveStart(ctx, req, volume.MoveStartFacts{FromPool: "fast", EncryptionDropped: true})
+	if err != nil {
+		t.Fatalf("BeginMoveStart: %v", err)
+	}
+	settle(&volume.Move{TenantID: "acme", FromPool: "fast", ToPool: "bulk", EncryptionDropped: true}, nil)
+	evs := ring.Snapshot()
+	if len(evs) != 3 {
+		t.Fatalf("recorded %d events, want the drop, the permitted start and its outcome", len(evs))
+	}
+	drop := evs[0]
+	if drop.Action != ActionVolumePoolMoveEncryptionDrop || drop.Outcome != audit.OutcomePermitted {
+		t.Fatalf("first event = %s/%s, want %s/%s", drop.Action, drop.Outcome, ActionVolumePoolMoveEncryptionDrop, audit.OutcomePermitted)
+	}
+	if drop.Actor != "root" || drop.TenantID != "acme" || drop.Resource != "volume_pool" {
+		t.Fatalf("drop record = %+v, want Actor=root TenantID=acme Resource=volume_pool", drop)
+	}
+	wantDrop := map[string]any{"from_pool": "fast", "to_pool": "bulk", "encryption": "dropped", "allow_unencrypted_destination": true}
+	if len(drop.Attributes) != len(wantDrop) {
+		t.Fatalf("drop attributes = %v, want %v", drop.Attributes, wantDrop)
+	}
+	for k, v := range wantDrop {
+		if drop.Attributes[k] != v {
+			t.Fatalf("drop attributes = %v, want %v", drop.Attributes, wantDrop)
+		}
+	}
+	for i, want := range []string{audit.OutcomePermitted, audit.OutcomeSuccess} {
+		ev := evs[i+1]
+		if ev.Action != ActionVolumePoolMoveStart || ev.Outcome != want {
+			t.Fatalf("event %d = %s/%s, want %s/%s", i+1, ev.Action, ev.Outcome, ActionVolumePoolMoveStart, want)
+		}
+		if ev.Attributes["allow_unencrypted_destination"] != true || ev.Attributes["encryption_dropped"] != true {
+			t.Fatalf("event %d attributes = %v, want allow_unencrypted_destination=true encryption_dropped=true", i+1, ev.Attributes)
+		}
+	}
+}
+
+// TestVolumeMoveAudit_EncryptionDropFailsClosedUnderFailOpen: the drop
+// record is fail-closed whatever the configured policy; a start that drops
+// nothing still follows the policy.
+func TestVolumeMoveAudit_EncryptionDropFailsClosedUnderFailOpen(t *testing.T) {
+	ctx := context.Background()
+	sink := &refusingAuditLogger{err: errors.New("audit sink unavailable")}
+	a := NewVolumeMoveAudit(sink, audit.FailOpen)
+	req := volume.MoveTenantRequest{TenantID: "acme", ToPool: "bulk", AllowUnencryptedDestination: true}
+	var gate *audit.GateError
+	if _, err := a.BeginMoveStart(ctx, req, volume.MoveStartFacts{FromPool: "fast", EncryptionDropped: true}); !errors.As(err, &gate) {
+		t.Fatalf("fail-open drop BeginMoveStart = %v, want *audit.GateError", err)
+	}
+	settle, err := a.BeginMoveStart(ctx, req, volume.MoveStartFacts{FromPool: "fast"})
+	if err != nil {
+		t.Fatalf("fail-open non-drop BeginMoveStart: %v", err)
 	}
 	settle(&volume.Move{FromPool: "fast"}, nil)
 }

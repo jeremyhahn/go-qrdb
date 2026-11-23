@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -480,6 +481,10 @@ func TestCatalog_AdmitMove_Q9LockableToPlainRefused(t *testing.T) {
 	if target.TenantID != "acme" || target.FromPool != "fast" || target.ToPool != "bulk" {
 		t.Fatalf("refusal = %+v, want acme fast to bulk", target)
 	}
+	// Ruling 1234: the refusal names the operator's remedy.
+	if !strings.Contains(err.Error(), "allow_unencrypted_destination") {
+		t.Fatalf("refusal %q does not name allow_unencrypted_destination", err.Error())
+	}
 	if storedMove(t, kv, "acme") != nil {
 		t.Fatal("journal written for a refused encrypted-to-unencrypted move")
 	}
@@ -487,6 +492,43 @@ func TestCatalog_AdmitMove_Q9LockableToPlainRefused(t *testing.T) {
 		t.Fatalf("bulk reserved = %d, want 0", got)
 	}
 	assertAssignedTo(t, cat, "fast", 200)
+}
+
+// TestCatalog_AdmitMove_Q9AllowedDropIsJournalled: ruling 1234, an admit
+// request that carries AllowEncryptionDrop (MoveTenant sets it only after
+// the drop was audited) admits a Lockable-to-plain move and journals the
+// drop; a plain-to-plain admit journals no drop.
+func TestCatalog_AdmitMove_Q9AllowedDropIsJournalled(t *testing.T) {
+	ctx := context.Background()
+	cat, kv := newQ9Catalog(t, "luks2", "dir")
+	req := admitAcme()
+	req.AllowEncryptionDrop = true
+	m, err := cat.AdmitMove(ctx, req)
+	if err != nil {
+		t.Fatalf("AdmitMove luks2 to dir with AllowEncryptionDrop: %v", err)
+	}
+	if !m.EncryptionDropped {
+		t.Fatalf("admitted move = %+v, want EncryptionDropped", m)
+	}
+	if stored := storedMove(t, kv, "acme"); stored == nil || !stored.EncryptionDropped {
+		t.Fatalf("journal = %+v, want EncryptionDropped", stored)
+	}
+	got, err := cat.GetMove(ctx, "acme")
+	if err != nil || !got.EncryptionDropped {
+		t.Fatalf("GetMove = %+v, %v, want EncryptionDropped", got, err)
+	}
+
+	plain, plainKV := newQ9Catalog(t, "dir", "dir")
+	pm, err := plain.AdmitMove(ctx, req)
+	if err != nil {
+		t.Fatalf("AdmitMove dir to dir: %v", err)
+	}
+	if pm.EncryptionDropped {
+		t.Fatalf("dir-to-dir move = %+v, want no EncryptionDropped", pm)
+	}
+	if stored := storedMove(t, plainKV, "acme"); stored == nil || stored.EncryptionDropped {
+		t.Fatalf("dir-to-dir journal = %+v, want no EncryptionDropped", stored)
+	}
 }
 
 func TestCatalog_AdmitMove_Q9PlainToLockable(t *testing.T) {
@@ -696,13 +738,15 @@ func (a *recordingAdmission) AdmitTenantMove(_ context.Context, req MoveTenantRe
 type recordingAuditor struct {
 	beginErr    error
 	begins      []MoveTenantRequest
+	facts       []MoveStartFacts
 	settles     int
 	settledMove *Move
 	settledErr  error
 }
 
-func (a *recordingAuditor) BeginMoveStart(_ context.Context, req MoveTenantRequest) (func(*Move, error), error) {
+func (a *recordingAuditor) BeginMoveStart(_ context.Context, req MoveTenantRequest, facts MoveStartFacts) (func(*Move, error), error) {
 	a.begins = append(a.begins, req)
+	a.facts = append(a.facts, facts)
 	if a.beginErr != nil {
 		return nil, a.beginErr
 	}
@@ -839,7 +883,11 @@ func TestCatalog_MoveTenant_NoAuditorWired(t *testing.T) {
 	}
 }
 
-func TestCatalog_MoveTenant_Q9RefusedOutright(t *testing.T) {
+// TestCatalog_MoveTenant_Q9WithoutFlagRefused: without the operator's
+// allow_unencrypted_destination a Lockable-to-plain move is refused
+// (ruling 1234), the auditor's settle sees the refusal and nothing is
+// journalled.
+func TestCatalog_MoveTenant_Q9WithoutFlagRefused(t *testing.T) {
 	cat, kv := newQ9Catalog(t, "luks2", "dir")
 	cat.SetMoveAdmission(&recordingAdmission{nodes: []string{"n1", "n2"}})
 	aud := &recordingAuditor{}
@@ -851,8 +899,86 @@ func TestCatalog_MoveTenant_Q9RefusedOutright(t *testing.T) {
 	if len(aud.begins) != 1 || aud.settles != 1 || aud.settledMove != nil || !errors.As(aud.settledErr, &refused) {
 		t.Fatalf("auditor begins=%d settles=%d move=%v err=%v", len(aud.begins), aud.settles, aud.settledMove, aud.settledErr)
 	}
+	if aud.facts[0].EncryptionDropped {
+		t.Fatalf("facts = %+v, want no EncryptionDropped without the flag", aud.facts[0])
+	}
 	if storedMove(t, kv, "acme") != nil {
 		t.Fatal("journal written for a refused move")
+	}
+}
+
+// TestCatalog_MoveTenant_Q9FlagAuditsTheDrop: with the flag the auditor is
+// told the move drops encryption (and from which pool) before anything is
+// admitted, and the admitted move journals the drop.
+func TestCatalog_MoveTenant_Q9FlagAuditsTheDrop(t *testing.T) {
+	cat, kv := newQ9Catalog(t, "luks2", "dir")
+	cat.SetMoveAdmission(&recordingAdmission{nodes: []string{"n1", "n2"}})
+	aud := &recordingAuditor{}
+	cat.SetMoveStartAuditor(aud)
+	req := moveAcme()
+	req.AllowUnencryptedDestination = true
+	m, err := cat.MoveTenant(context.Background(), req)
+	if err != nil {
+		t.Fatalf("MoveTenant luks2 to dir with the flag: %v", err)
+	}
+	if !m.EncryptionDropped {
+		t.Fatalf("move = %+v, want EncryptionDropped", m)
+	}
+	want := MoveStartFacts{FromPool: "fast", EncryptionDropped: true}
+	if len(aud.facts) != 1 || aud.facts[0] != want {
+		t.Fatalf("auditor facts = %+v, want [%+v]", aud.facts, want)
+	}
+	if aud.settles != 1 || aud.settledErr != nil || aud.settledMove == nil {
+		t.Fatalf("auditor settles=%d move=%v err=%v", aud.settles, aud.settledMove, aud.settledErr)
+	}
+	if stored := storedMove(t, kv, "acme"); stored == nil || !stored.EncryptionDropped {
+		t.Fatalf("journal = %+v, want EncryptionDropped", stored)
+	}
+}
+
+// TestCatalog_MoveTenant_Q9DropWithoutAuditorRefused: a drop that no audit
+// sink can record never happens.
+func TestCatalog_MoveTenant_Q9DropWithoutAuditorRefused(t *testing.T) {
+	cat, kv := newQ9Catalog(t, "luks2", "dir")
+	cat.SetMoveAdmission(&recordingAdmission{nodes: []string{"n1", "n2"}})
+	req := moveAcme()
+	req.AllowUnencryptedDestination = true
+	var unaudited *MoveEncryptionDropUnauditedError
+	if _, err := cat.MoveTenant(context.Background(), req); !errors.As(err, &unaudited) {
+		t.Fatalf("MoveTenant error = %v, want *MoveEncryptionDropUnauditedError", err)
+	}
+	if unaudited.TenantID != "acme" || unaudited.FromPool != "fast" || unaudited.ToPool != "bulk" {
+		t.Fatalf("refusal = %+v, want acme fast to bulk", unaudited)
+	}
+	if storedMove(t, kv, "acme") != nil {
+		t.Fatal("journal written for an unaudited encryption drop")
+	}
+	if got := poolReserved(t, kv, "bulk"); got != 0 {
+		t.Fatalf("bulk reserved = %d, want 0", got)
+	}
+}
+
+// TestCatalog_MoveTenant_Q9FlagOnPlainMoveNoDrop: the flag on a move that
+// drops nothing admits it as usual and tells the auditor no drop.
+func TestCatalog_MoveTenant_Q9FlagOnPlainMoveNoDrop(t *testing.T) {
+	cat, kv := newQ9Catalog(t, "dir", "dir")
+	cat.SetMoveAdmission(&recordingAdmission{nodes: []string{"n1", "n2"}})
+	aud := &recordingAuditor{}
+	cat.SetMoveStartAuditor(aud)
+	req := moveAcme()
+	req.AllowUnencryptedDestination = true
+	m, err := cat.MoveTenant(context.Background(), req)
+	if err != nil {
+		t.Fatalf("MoveTenant dir to dir with the flag: %v", err)
+	}
+	if m.EncryptionDropped {
+		t.Fatalf("move = %+v, want no EncryptionDropped", m)
+	}
+	if len(aud.facts) != 1 || aud.facts[0].EncryptionDropped || aud.facts[0].FromPool != "fast" {
+		t.Fatalf("auditor facts = %+v, want fast, no drop", aud.facts)
+	}
+	if stored := storedMove(t, kv, "acme"); stored == nil || stored.EncryptionDropped {
+		t.Fatalf("journal = %+v, want no EncryptionDropped", stored)
 	}
 }
 
