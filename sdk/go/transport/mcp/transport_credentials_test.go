@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -212,7 +213,10 @@ func (m *mockCredentialSvc) CredentialMigrationConflicts(_ context.Context) ([]c
 	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
 }
 
-func (m *mockCredentialSvc) CredentialResolveMigrationConflict(_ context.Context, name string, _ credentials.MigrationResolution) error {
+func (m *mockCredentialSvc) CredentialResolveMigrationConflict(_ context.Context, name string, how credentials.MigrationResolution) error {
+	if how != credentials.MigrationImport && how != credentials.MigrationDiscard {
+		return credentials.ErrInvalidMigrationResolution
+	}
 	if name == "missing" {
 		return credentials.ErrMigrationConflictNotFound
 	}
@@ -671,6 +675,20 @@ func TestCredentialResolveMigrationConflict_NotFound(t *testing.T) {
 	var nf *transport.KeyNotFoundError
 	if !errors.As(err, &nf) {
 		t.Fatalf("expected KeyNotFoundError, got %T: %v", err, err)
+	}
+}
+
+// TestCredentialResolveMigrationConflict_UnknownResolution pins that an
+// unknown resolution travels to the tool unchanged and comes back refused
+// with the ErrInvalidMigrationResolution text.
+func TestCredentialResolveMigrationConflict_UnknownResolution(t *testing.T) {
+	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
+	defer cleanup()
+
+	err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "merge"})
+	if err == nil || !strings.Contains(err.Error(), credentials.ErrInvalidMigrationResolution.Error()) {
+		t.Fatalf("expected ErrInvalidMigrationResolution text, got %v", err)
 	}
 }
 

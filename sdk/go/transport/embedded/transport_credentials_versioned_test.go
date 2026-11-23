@@ -157,7 +157,10 @@ func (m *mockCredentialService) CredentialMigrationConflicts(_ context.Context) 
 	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
 }
 
-func (m *mockCredentialService) CredentialResolveMigrationConflict(_ context.Context, name string, _ credentials.MigrationResolution) error {
+func (m *mockCredentialService) CredentialResolveMigrationConflict(_ context.Context, name string, how credentials.MigrationResolution) error {
+	if how != credentials.MigrationImport && how != credentials.MigrationDiscard {
+		return credentials.ErrInvalidMigrationResolution
+	}
 	if name == "missing" {
 		return credentials.ErrMigrationConflictNotFound
 	}
@@ -510,6 +513,18 @@ func TestEmbeddedCredential_ResolveMigrationConflict_SuccessAndNotFound(t *testi
 	if err := handleCredentialResolveMigrationConflict(context.Background(), tr,
 		&transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"}, nil); !errors.Is(err, credentials.ErrMigrationConflictNotFound) {
 		t.Fatalf("expected ErrMigrationConflictNotFound, got %v", err)
+	}
+}
+
+// TestEmbeddedCredential_ResolveMigrationConflict_UnknownResolution pins
+// that the embedded transport hands an unknown resolution to the service
+// unchanged and surfaces its ErrInvalidMigrationResolution.
+func TestEmbeddedCredential_ResolveMigrationConflict_UnknownResolution(t *testing.T) {
+	tr := newCredentialTransport(t, &mockCredentialService{})
+	err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "merge"})
+	if !errors.Is(err, credentials.ErrInvalidMigrationResolution) {
+		t.Fatalf("expected ErrInvalidMigrationResolution, got %v", err)
 	}
 }
 

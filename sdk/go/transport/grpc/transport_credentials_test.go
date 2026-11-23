@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,7 +146,10 @@ func (f *fakeCredentialServicer) CredentialMigrationConflicts(_ context.Context)
 	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
 }
 
-func (f *fakeCredentialServicer) CredentialResolveMigrationConflict(_ context.Context, name string, _ credentials.MigrationResolution) error {
+func (f *fakeCredentialServicer) CredentialResolveMigrationConflict(_ context.Context, name string, how credentials.MigrationResolution) error {
+	if how != credentials.MigrationImport && how != credentials.MigrationDiscard {
+		return credentials.ErrInvalidMigrationResolution
+	}
 	if name == "missing" {
 		return credentials.ErrMigrationConflictNotFound
 	}
@@ -577,6 +581,22 @@ func TestTransportCredential_ResolveMigrationConflict_SuccessAndNotFound(t *test
 	if err := tr.CredentialResolveMigrationConflict(context.Background(),
 		&transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"}); !errors.As(err, &nf) {
 		t.Fatalf("expected KeyNotFoundError, got %T: %v", err, err)
+	}
+}
+
+// TestTransportCredential_ResolveMigrationConflict_UnknownResolution pins
+// that an unknown resolution travels to the server unchanged and comes back
+// refused with the ErrInvalidMigrationResolution text.
+func TestTransportCredential_ResolveMigrationConflict_UnknownResolution(t *testing.T) {
+	addr, stop := startCredentialServer(t, &fakeCredentialServicer{})
+	defer stop()
+	tr, cleanup := connectCredentialTransport(t, addr)
+	defer cleanup()
+
+	err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "merge"})
+	if err == nil || !strings.Contains(err.Error(), credentials.ErrInvalidMigrationResolution.Error()) {
+		t.Fatalf("expected ErrInvalidMigrationResolution text, got %v", err)
 	}
 }
 
