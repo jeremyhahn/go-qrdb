@@ -213,7 +213,9 @@ dependency is pending the owner (owner queue 288).
 5. **Quota/entitlement accounting** — pages are opaque to the entity/SQL
    planes; per-tenant quotas need to count the namespace. Creation is gated
    by `sqlitevfs.Admit` (entitlement and count cap), not yet called by the
-   server. See
+   server. An operator sets both on any transport with
+   `qrdb tenant set-entitlement --allow-sqlite-vfs` and
+   `qrdb tenant update-quotas --max-sqlite-databases`. See
    [Q5](../decisions/sqlite-vfs-build.md#q5-quota-and-entitlement-accounting).
 
 ## Non-goals

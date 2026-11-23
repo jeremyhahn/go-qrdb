@@ -1251,12 +1251,14 @@ model.
 (`0`), `max_replicas_per_group` (`3`), `max_total_replicas` (`3`),
 `max_storage_bytes` (`1073741824`, 1 GiB), `max_database_size_bytes` (`0`),
 `max_dedicated_wal_groups` (`0`), `system_barrier_quota` (`0`: unavailable;
-`-1` unlimited; greater than 0 a byte cap).
+`-1` unlimited; greater than 0 a byte cap), `max_sqlite_databases` (`0`:
+unlimited, as is `-1`; the most sqlite-vfs databases the tenant may hold).
 
 `default_entitlements` keys: `allowed_isolation_modes` (default
 `["prefix"]`), `allow_dedicated_raft`, `allow_volume_storage`,
 `allow_system_managed_barrier`, `allow_dedicated_wal`,
-`allowed_barrier_modes`, `allowed_volume_pools`, `allow_replicated_audit`
+`allowed_barrier_modes`, `allowed_volume_pools`, `allow_replicated_audit`,
+`allow_sqlite_vfs` (the tenant may create sqlite-vfs databases)
 (the booleans default `false`, the lists empty).
 
 **Vector namespace creation and the cluster isolation-policy floor**
