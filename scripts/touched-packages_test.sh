@@ -40,6 +40,10 @@
 #   untagged            pkg/ratelimit/token_bucket.go prints no WITH_ line
 #   rung                every print-optional-test-tags tag is an element of a
 #                       print-tag-sets line (a supported tag set)
+#   tag over            each print-optional-test-tags WITH_ flag adds its tag
+#   GO_BUILD_TAGS       to print-build-tags under GO_BUILD_TAGS='codec_json
+#                       raft' (none without a flag), and `make -n test-pkg
+#                       PKG=./pkg/fts ... WITH_QRDB_FTS=1` tests with qrdb_fts
 #   moved file          base..HEAD renaming pkg/ratelimit/errors.go to
 #                       pkg/lease/errors.go prints ./pkg/lease and also the
 #                       source ./pkg/ratelimit with its importer
@@ -145,6 +149,41 @@ $optional
 EOF
 	[ "$rung_ok" -eq 0 ] || pass "rung"
 fi
+
+# tag over GO_BUILD_TAGS: GO_BUILD_TAGS replaces the composed set, but each
+# print-optional-test-tags WITH_ flag still adds its tag on top, so the
+# `make test-pkg PKG=<dir> WITH_<FLAG>=1` lines compile the tag under CI's
+# override too.
+over_ok=1
+if [ -z "$optional" ]; then
+	over_ok=0
+	fail "tag over GO_BUILD_TAGS: print-optional-test-tags printed nothing"
+fi
+while read -r tag flag; do
+	[ -n "$tag" ] || continue
+	bt=$(make -s --no-print-directory -C "$here/.." print-build-tags GO_BUILD_TAGS='codec_json raft' "$flag" 2>&1)
+	words=$(printf '%s\n' "$bt" | tr ' ' '\n')
+	if ! has "$words" "$tag" || ! has "$words" codec_json || ! has "$words" raft; then
+		over_ok=0
+		fail "tag over GO_BUILD_TAGS: print-build-tags GO_BUILD_TAGS='codec_json raft' $flag printed [$bt], want codec_json raft $tag"
+	fi
+done <<EOF
+$optional
+EOF
+bt=$(make -s --no-print-directory -C "$here/.." print-build-tags GO_BUILD_TAGS='codec_json raft' 2>&1)
+if has "$(printf '%s\n' "$bt" | tr ' ' '\n')" qrdb_fts; then
+	over_ok=0
+	fail "tag over GO_BUILD_TAGS: print-build-tags GO_BUILD_TAGS='codec_json raft' without a flag printed [$bt], want no qrdb_fts"
+fi
+dry=$(make -n --no-print-directory -C "$here/.." test-pkg PKG=./pkg/fts GO_BUILD_TAGS='codec_json raft' WITH_QRDB_FTS=1 2>&1)
+case $dry in
+*"go test"*-tags*qrdb_fts*) ;;
+*)
+	over_ok=0
+	fail "tag over GO_BUILD_TAGS: make -n test-pkg PKG=./pkg/fts WITH_QRDB_FTS=1 printed no go test line with qrdb_fts in -tags [$dry]"
+	;;
+esac
+[ "$over_ok" -eq 0 ] || pass "tag over GO_BUILD_TAGS"
 
 # moved file: a base tree with pkg/lease/errors.go at pkg/ratelimit/errors.go,
 # so the diff base..HEAD is a rename out of pkg/ratelimit.

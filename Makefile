@@ -508,9 +508,18 @@ ifeq ($(WITH_AZURE_ARCHIVE),1)
   BUILD_TAGS += azurearchive
 endif
 # GO_BUILD_TAGS is CI's one copy of the tag set (ci-template v1.21,
-# devcontainer.md §6); when it is set it replaces the composed set.
+# devcontainer.md §6); when it is set it replaces the composed set, except
+# for the tags of the print-optional-test-tags WITH_ flags re-added below.
 ifneq ($(strip $(GO_BUILD_TAGS)),)
   BUILD_TAGS := $(strip $(GO_BUILD_TAGS))
+endif
+# GO_BUILD_TAGS replaces the composed set, but a WITH_ flag that
+# print-optional-test-tags names is an explicit request for that tag and is
+# added on top (once), so the `make test-pkg PKG=<dir> WITH_<FLAG>=1` lines
+# scripts/touched-packages.sh prints compile the tag under CI's override too.
+# Nothing in CI sets these flags, so no CI tag set changes.
+ifeq ($(WITH_QRDB_FTS),1)
+  BUILD_TAGS := $(strip $(filter-out qrdb_fts,$(BUILD_TAGS)) qrdb_fts)
 endif
 DESKTOP_TAGS := desktop production webkit2_41 $(BUILD_TAGS)
 
@@ -1324,7 +1333,9 @@ test-fts:
 # test-fts). scripts/touched-packages.sh reads the importer graph under each
 # tag and prints `./<dir> <WITH_flag>=1` for packages with files behind it.
 # Every entry must be a rung in SUPPORTED_TAG_SETS (print-tag-sets); gpu and
-# qrdbd_webui are not rungs and stay out.
+# qrdbd_webui are not rungs and stay out. Every entry's WITH_ flag must also
+# be re-added after the GO_BUILD_TAGS block (the "tag over GO_BUILD_TAGS"
+# case of scripts/touched-packages_test.sh checks it).
 .PHONY: print-optional-test-tags
 print-optional-test-tags:
 	@echo "qrdb_fts WITH_QRDB_FTS=1"
