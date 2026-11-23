@@ -176,7 +176,7 @@ of reading the remainder as a different copy.
 
 **A delete leaves a tombstone.** Deleting a credential writes a deletion
 tombstone claim for the name in the same guarded write as the delete (or
-settles a pending claim into one), guarded on the claim it read, so a claim
+settles a pending or completed claim into one), guarded on the claim it read, so a claim
 written meanwhile makes the delete select again. A legacy copy migrated after
 the delete predates it: the tombstone settles it, its old records are deleted
 and nothing of it is installed, whether or not a credential was stored under
@@ -198,7 +198,8 @@ import is recorded per copy under `__sys:credential-migration-imports/`, in the
 import's own guarded write and outside the credential's metadata, so it
 survives a delete of the credential: an import retried after a failed cleanup
 only deletes the old records and never recreates a deleted credential or
-overwrites a replacement. Resolving a
+overwrites a replacement. The import records are confined from the embedded
+KV like the claims, and a store move carries them with their credential. Resolving a
 name that has no conflict on the node is `ErrMigrationConflictNotFound`; a
 resolution other than the two is `ErrInvalidMigrationResolution`. Conflicts are per node: each node lists and
 resolves only the copies it kept. The verbs are listed per transport in

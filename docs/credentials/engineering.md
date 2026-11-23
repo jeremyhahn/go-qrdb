@@ -281,7 +281,10 @@ than change the interface.
   copy only while the name's records are absent. A `barrier` delete that finds
   that claim pending marks it complete in the same guarded batch that removes
   the value, metadata and versions, so the retry, on any node, restores none of
-  the deleted value, history or policy and only removes the legacy copy. The
+  the deleted value, history or policy and only removes the legacy copy. A
+  delete that finds the claim complete marks it deleted too, so a later
+  node's differing pre-upgrade copy is removed, not reported as a conflict
+  to import. The
   settled claim stops nothing else: a credential stored under the name after
   the delete is kept, and the retry does not overwrite it.
 - **GC reaps only expired historical versions** — it never touches the current
@@ -459,7 +462,10 @@ embedded transport's KV, MVCC, batch, transaction and watch services confine
 each of those prefixes whole (`pkg/service/hard_confined_keys.go`,
 `hardConfinedWholePrefixes`): an embedded caller with KV permission cannot
 read or replace a record under any of them, and only the credential verbs
-reach them.
+reach them. The migration claims (`__sys:credential-migrations/`) and import
+records (`__sys:credential-migration-imports/`) are confined whole the same
+way, and a store move (`BindStoreFrom`) carries a credential's import
+records with it.
 `manual` credentials are **not persisted at all** — they live only in memory
 for the life of the process, which is why a restart re-blocks retrieval until
 an operator submits again.
