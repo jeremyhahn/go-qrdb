@@ -256,6 +256,7 @@ func testVlogBarrierTenantOverProtocol(t *testing.T, node *multiProtoNode, proto
 	provisionTenantIdentityFor(t, node, tenantID, "vlog-barrier-"+proto.name, append([]string{
 		"tenant_barrier:status", "tenant_barrier:seal", "tenant_barrier:unseal", "vlog:sign_head",
 		"databases:create", "databases:create_raft", "databases:read", "databases:delete",
+		"kv:put", "kv:get",
 	}, vlogTenantPermissions...), certPath)
 	conn := tenantCLIArgsForProto(node, proto, certPath, keyPath)
 	logName := "barrier-" + proto.name
