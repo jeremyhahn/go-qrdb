@@ -27,6 +27,8 @@
 #   docs only           docs/leases/user.md prints nothing
 #   nested module       sdk/go/node/close_race_test.go (sdk/go has its own
 #                       go.mod) prints nothing
+#   testdata go.mod     scripts/depscheck/testdata/parse/go.mod is a fixture,
+#   fixture             not a nested module: prints ./scripts/depscheck
 #   go.mod              prints ALL
 #   deleted package     a .go path whose directory holds no .go file prints ALL
 #   moved file          base..HEAD renaming pkg/ratelimit/errors.go to
@@ -67,6 +69,10 @@ got=$(printf 'sdk/go/node/close_race_test.go\n' | "$script" --files 2>&1)
 rc=$?
 if [ "$rc" -eq 0 ] && [ -z "$got" ]; then pass "nested module"; else fail "nested module: rc=$rc got [$got]"; fi
 
+got=$(printf 'scripts/depscheck/testdata/parse/go.mod\n' | "$script" --files 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ] && has "$got" ./scripts/depscheck; then pass "testdata go.mod fixture"; else fail "testdata go.mod fixture: rc=$rc got [$got]"; fi
+
 got=$(printf 'go.mod\n' | "$script" --files 2>&1)
 rc=$?
 if [ "$rc" -eq 0 ] && [ "$got" = ALL ]; then pass "go.mod"; else fail "go.mod: rc=$rc got [$got]"; fi
@@ -84,11 +90,15 @@ GIT_INDEX_FILE="$tmp/index" git read-tree HEAD
 GIT_INDEX_FILE="$tmp/index" git update-index --force-remove pkg/lease/errors.go
 GIT_INDEX_FILE="$tmp/index" git update-index --add --cacheinfo "100644,$blob,pkg/ratelimit/errors.go"
 tree=$(GIT_INDEX_FILE="$tmp/index" git write-tree)
-base=$(git -c commit.gpgsign=false commit-tree -m "touched-packages_test base" "$tree")
-got=$("$script" "$base" HEAD 2>&1)
-rc=$?
-if [ "$rc" -eq 0 ] && has "$got" ./pkg/lease; then pass "moved file destination"; else fail "moved file destination: rc=$rc got [$got]"; fi
-if [ "$rc" -eq 0 ] && has "$got" ./pkg/ratelimit && has "$got" ./pkg/clientlimit; then pass "moved file source"; else fail "moved file source: rc=$rc got [$got]"; fi
+base=$(git -c commit.gpgsign=false -c user.name=touched-packages-test -c user.email=touched-packages-test@example.invalid commit-tree -m "touched-packages_test base" "$tree")
+if [ -n "$base" ]; then
+	got=$("$script" "$base" HEAD 2>&1)
+	rc=$?
+	if [ "$rc" -eq 0 ] && has "$got" ./pkg/lease; then pass "moved file destination"; else fail "moved file destination: rc=$rc got [$got]"; fi
+	if [ "$rc" -eq 0 ] && has "$got" ./pkg/ratelimit && has "$got" ./pkg/clientlimit; then pass "moved file source"; else fail "moved file source: rc=$rc got [$got]"; fi
+else
+	fail "fixture commit: git commit-tree made no base commit, moved file cases not run"
+fi
 
 "$script" </dev/null >/dev/null 2>&1
 rc=$?

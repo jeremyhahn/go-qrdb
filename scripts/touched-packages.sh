@@ -28,7 +28,8 @@
 # Per changed path:
 #   - a docs-only path (ci.yml's DOCS_ONLY_PATTERN, read from ci.yml) is ignored;
 #   - a path inside a nested module (a directory below the root with its own
-#     go.mod, from git ls-files) is ignored: those have their own suites;
+#     go.mod, from git ls-files) is ignored: those have their own suites
+#     (a go.mod under a testdata/ directory is a fixture, not a module);
 #   - go.mod, go.sum or Makefile prints the single line ALL;
 #   - otherwise the owning directory (a /testdata/... suffix stripped to its
 #     package) counts when it holds a .go file in the work tree;
@@ -83,7 +84,7 @@ nested=()
 while IFS= read -r m; do
 	[ "$m" = "go.mod" ] && continue
 	nested+=("$(dirname "$m")")
-done < <(git ls-files '*go.mod')
+done < <(git ls-files -- 'go.mod' '*/go.mod' ':(exclude,glob)testdata/**' ':(exclude,glob)**/testdata/**')
 
 declare -A changed=()
 while IFS= read -r p; do
