@@ -258,3 +258,106 @@ func TestMVCCEngine_FailedCommitRestoresTheIndexes(t *testing.T) {
 		}
 	})
 }
+
+// wantIndexType fails unless eng serves catalogIdx at value type want.
+func wantIndexType(t *testing.T, eng *MVCCEngine, want protocol.IndexCreateOptions) {
+	t.Helper()
+	eng.indexMu.RLock()
+	got, ok := eng.indexValueTypes[catalogIdx]
+	eng.indexMu.RUnlock()
+	if !ok {
+		t.Fatal("the index is not served")
+	}
+	if w := IndexCreateValueType(want); got != w {
+		t.Fatalf("value type = %v, want %v", got, w)
+	}
+}
+
+// reopenCatalogEngine closes eng and opens a fresh engine over stg, which
+// replays nothing: what it serves is what the committed batches left.
+func reopenCatalogEngine(t *testing.T, eng *MVCCEngine, stg storage.Storage) *MVCCEngine {
+	t.Helper()
+	if err := eng.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	return openCatalogEngine(t, stg)
+}
+
+// The clear and the backfill of an index create or drop are queued in the
+// apply batch that writes (or deletes) the catalog record, so a batch that
+// fails at Commit -- after every inner write was queued -- leaves the
+// definition and its entries exactly as the last committed batch did, on the
+// live engine and on one reopened over the storage.
+func TestMVCCEngine_FailedIndexBatchKeepsTheCommittedIndex(t *testing.T) {
+	// "5.0" is the term 5 to a numeric index and the string "5.0" to a
+	// lexical one, so a lookup of "5" tells which terms the index holds.
+	numeric := protocol.IndexCreateOptions{Numeric: true}
+	lexical := protocol.IndexCreateOptions{}
+	populate := func(t *testing.T, eng *MVCCEngine) {
+		t.Helper()
+		applyMVCCEntries(t, eng, []sm.Entry{
+			mvccPutEntry(2, []byte("user/1"), []byte(`{"email":"a@example.com"}`), 0),
+			mvccPutEntry(3, []byte("user/2"), []byte(`{"email":"b@example.com"}`), 0),
+		})
+	}
+	populateNumbers := func(t *testing.T, eng *MVCCEngine) {
+		t.Helper()
+		applyMVCCEntries(t, eng, []sm.Entry{
+			mvccPutEntry(2, []byte("user/1"), []byte(`{"email":"5.0"}`), 0),
+		})
+	}
+
+	t.Run("drop", func(t *testing.T) {
+		stg := &commitFailingStorage{Storage: memory.NewStorage()}
+		defer func() { _ = stg.Close() }()
+		eng := openCatalogEngine(t, stg)
+		applyMVCCEntries(t, eng, []sm.Entry{catalogCreate(t, 1, catalogOpts)})
+		populate(t, eng)
+
+		stg.fail.Store(true)
+		err := eng.Update(context.Background(), []sm.Entry{catalogDrop(t, 4, protocol.IndexDropOptions{})}, make([]sm.Result, 1))
+		if !errors.Is(err, errCommitRefused) {
+			t.Fatalf("Update = %v, want the commit fault", err)
+		}
+		stg.fail.Store(false)
+		for _, e := range []*MVCCEngine{eng, reopenCatalogEngine(t, eng, stg)} {
+			wantIndexType(t, e, catalogOpts)
+			wantEmailKeys(t, e, "a@example.com", "user/1")
+			wantEmailKeys(t, e, "b@example.com", "user/2")
+		}
+	})
+
+	t.Run("failed rebuild", func(t *testing.T) {
+		stg := &commitFailingStorage{Storage: memory.NewStorage()}
+		defer func() { _ = stg.Close() }()
+		eng := openCatalogEngine(t, stg)
+		applyMVCCEntries(t, eng, []sm.Entry{catalogCreate(t, 1, numeric)})
+		populateNumbers(t, eng)
+		wantEmailKeys(t, eng, "5", "user/1")
+
+		stg.fail.Store(true)
+		err := eng.Update(context.Background(), []sm.Entry{catalogCreate(t, 3, lexical)}, make([]sm.Result, 1))
+		if !errors.Is(err, errCommitRefused) {
+			t.Fatalf("Update = %v, want the commit fault", err)
+		}
+		stg.fail.Store(false)
+		for _, e := range []*MVCCEngine{eng, reopenCatalogEngine(t, eng, stg)} {
+			wantIndexType(t, e, numeric)
+			wantEmailKeys(t, e, "5", "user/1")
+		}
+	})
+
+	t.Run("rebuild", func(t *testing.T) {
+		stg := &commitFailingStorage{Storage: memory.NewStorage()}
+		defer func() { _ = stg.Close() }()
+		eng := openCatalogEngine(t, stg)
+		applyMVCCEntries(t, eng, []sm.Entry{catalogCreate(t, 1, numeric)})
+		populateNumbers(t, eng)
+		applyMVCCEntries(t, eng, []sm.Entry{catalogCreate(t, 3, lexical)})
+		for _, e := range []*MVCCEngine{eng, reopenCatalogEngine(t, eng, stg)} {
+			wantIndexType(t, e, lexical)
+			wantEmailKeys(t, e, "5")
+			wantEmailKeys(t, e, "5.0", "user/1")
+		}
+	})
+}
