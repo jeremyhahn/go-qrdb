@@ -570,7 +570,14 @@ func (r *sealStoreRetirer) RetirePending(ctx context.Context) error {
 // the marker kept, so the next boot retries. A recovery failure itself stays
 // a warning, as before: the journal survives it.
 func recoverSystemMigration(ctx context.Context, backend seal.StorageBackend, retirer *sealStoreRetirer, rootKeyPath string, storeDirs []string) error {
-	pending, _ := seal.LoadMigrationJournalFrom(ctx, backend, rootKeyPath)
+	// Only an absent journal (nil, nil) means no pending migration: a failed
+	// read must stop the boot, or a second read inside the recovery could
+	// roll a committed seal-store migration forward with no retirement
+	// marker written first.
+	pending, lerr := seal.LoadMigrationJournalFrom(ctx, backend, rootKeyPath)
+	if lerr != nil {
+		return fmt.Errorf("read the system encryption-migration journal: %w", lerr)
+	}
 	if err := refuseCommittedJournalWithoutStagingRoot(ctx, backend, rootKeyPath, pending); err != nil {
 		return err
 	}
