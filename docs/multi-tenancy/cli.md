@@ -243,7 +243,10 @@ request. `tenant get` prints `Status:` and `tenant list` a `STATUS` column.
 `tenant list --status <active|suspended|disabled>` lists only the tenants with
 that status; without the flag it lists them all. Any other value, `deleted`
 included, is refused (`400`, naming the allowed statuses); retired ids are
-listed by `tenant list-deleted`.
+listed by `tenant list-deleted`. Against a server older than the filter, which
+drops it and answers every tenant, the CLI and the Go SDK refuse the answer
+(`unsupported capability: server ignored the tenant list status filter`, exit
+status non-zero) rather than print an unfiltered list; upgrade the server.
 
 ```
 $ qrdb tenant update acme --status suspended
