@@ -1398,8 +1398,9 @@ authenticated value — whether or not the authenticator set one.
 | Stored role carries a permission this build does not define | reported on read via `RetiredPermissions`; **no read fails** | — |
 | Duplicate username within a tenant | refused | yes |
 | Unix peer whose `SO_PEERCRED` uid and gid match no `unix.peer_credentials` mapping (`auth.PeerCredentialAuthenticator`, last in the chain) | `auth.ErrPeerCredentialUnmapped`: `peer_credential_unmapped`, `UNAUTHENTICATED` | **yes** |
-| Request with no peer credential in its context (every transport but Unix, and Unix off Linux) | the peer-credential authenticator declines with `ErrUnauthenticated`; the chain's verdict stands | **yes** |
+| Request with no peer credential in its context (every transport but Unix, and Unix off Linux) | the peer-credential authenticator declines with `ErrUnauthenticated`; a decline (`ErrUnauthenticated` or `ErrNoPeerCertificate`) never replaces an earlier method's error, so an mTLS `*auth.RevocationCheckError` stays 503 / `UNAVAILABLE`; when every method declines the answer is `ErrUnauthenticated` | **yes** |
 | Mapped account absent (never created, deleted, or no user store to resolve it) | `auth.ErrPeerCredentialAccountMissing`: `peer_credential_account_missing`, `UNAUTHENTICATED`; refused before any policy, ABAC `subject.authenticated` included | **yes** |
+| Mapped account's tenant IAM sealed (the lookup returns `tenant.ErrTenantSealed`) | `*middleware.StoreUnavailableError` wrapping `tenant.ErrTenantSealed` (503 / `UNAVAILABLE`, retryable); never admitted unenriched, so the sealed-window barrier status/unseal fallback cannot admit it | **yes** |
 | Mapped account's `auth_methods` set without `peercred` | refused as for any other method; never a grant from the mapping | **yes** |
 | Stored ABAC policy document or name invalid, does not decode, or does not compile | `*service.PolicyInvalidError` (400 / `INVALID_ARGUMENT`), nothing written | **yes** |
 | Policy create of a name the tenant already holds | `*service.PolicyExistsError` (409 / `ALREADY_EXISTS`) | **yes** |

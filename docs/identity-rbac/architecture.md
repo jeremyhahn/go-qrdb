@@ -102,15 +102,21 @@ credential presented on the socket still decides the request first.
   `SO_PEERCRED` (uid, gid, pid) from each accepted connection before the TLS
   handshake and carries it with the connection; the gRPC interceptors put it
   in the request context (`auth.WithPeerCredential`). Only the Unix transport
-  sets it, so on every other transport the authenticator declines. Other
-  platforms carry no peer credential.
+  sets it, so on every other transport the authenticator declines. A decline
+  never masks an earlier method's error in the chain: an mTLS
+  revocation-lookup failure stays 503 / `UNAVAILABLE`. Other platforms carry
+  no peer credential.
 - **A mapping names an account, never a role.** A mapping takes a uid, or a
   primary gid, to a tenant and username. A uid match wins over a gid match.
   The bound identity is filled from the stored account like every other
   identity, so the account's roles decide through the one PDP. A mapped
   account that does not exist, or was deleted, is refused
   (`peer_credential_account_missing`, `UNAUTHENTICATED`), so no policy, an
-  ABAC `subject.authenticated` allow included, can admit it. An
+  ABAC `subject.authenticated` allow included, can admit it. While the
+  tenant's IAM is sealed the account cannot be checked, so the peer is
+  refused with the retryable sealed answer (`*middleware.StoreUnavailableError`
+  wrapping `tenant.ErrTenantSealed`), not admitted unenriched to the
+  sealed-window barrier status/unseal fallback as other methods are. An
   account whose `auth_methods` are set must list `peercred`.
 - **An unmapped peer is refused.** A peer whose uid and gid match no mapping
   is refused with `peer_credential_unmapped` (`UNAUTHENTICATED`). With no
