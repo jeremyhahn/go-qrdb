@@ -491,7 +491,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     const certStore = new Map<string, {
       serial: string;
       username: string;
-      tenantId: string;
+      tenantID: string;
       issuedAt: string;
       expiresAt: string;
       revoked: boolean;
