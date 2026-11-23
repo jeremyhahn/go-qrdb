@@ -649,6 +649,11 @@ func (s *logService) DropDatabaseLogs(ctx context.Context, tenantID, name string
 		if _, inactive := errors.AsType[*LogFeatureNotActiveError](err); inactive {
 			return nil
 		}
+		// A volume- or raft-isolated tenant has no verifiable logs: its
+		// audit trail cannot be placed, so no log of it was ever created.
+		if _, dedicated := errors.AsType[*DedicatedTenantAuditNotSupportedError](err); dedicated {
+			return nil
+		}
 		return err
 	}
 	id := vlog.LogID{TenantID: tenantID, Database: name}
