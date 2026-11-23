@@ -1625,26 +1625,26 @@ func DecodeMVCCMovePrefix(payload []byte) (src, dst []byte, expectedKeys int64, 
 		return nil, nil, 0, nil, nil, &InvalidCommandError{Reason: "move prefix: expected key count below 1"}
 	}
 	ops = []DecodedOp{}
-	if err = readFrames("op", func(b []byte) error {
+	if ferr := readFrames("op", func(b []byte) error {
 		op, _, derr := DecodeOp(b)
 		if derr != nil {
 			return derr
 		}
 		ops = append(ops, op)
 		return nil
-	}); err != nil {
-		return nil, nil, 0, nil, nil, err
+	}); ferr != nil {
+		return nil, nil, 0, nil, nil, ferr
 	}
 	compares = []DecodedCompare{}
-	if err = readFrames("compare", func(b []byte) error {
+	if ferr := readFrames("compare", func(b []byte) error {
 		cmp, _, derr := DecodeCompare(b)
 		if derr != nil {
 			return derr
 		}
 		compares = append(compares, cmp)
 		return nil
-	}); err != nil {
-		return nil, nil, 0, nil, nil, err
+	}); ferr != nil {
+		return nil, nil, 0, nil, nil, ferr
 	}
 	if off != len(payload) {
 		return nil, nil, 0, nil, nil, &InvalidCommandError{Reason: "move prefix: trailing bytes after the last compare"}
