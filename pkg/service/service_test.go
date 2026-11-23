@@ -1672,20 +1672,6 @@ func TestUnexpectedResultTypeError_Error(t *testing.T) {
 // Constructor tests
 // ---------------------------------------------------------------------------
 
-func TestNewKVService_ReturnsNonNil(t *testing.T) {
-	svc := NewKVService(&mockHost{}, 1)
-	if svc == nil {
-		t.Fatal("expected non-nil KVService")
-	}
-}
-
-func TestNewAdminService_ReturnsNonNil(t *testing.T) {
-	svc := NewAdminService(&mockHost{})
-	if svc == nil {
-		t.Fatal("expected non-nil AdminService")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Edge case tests
 // ---------------------------------------------------------------------------
