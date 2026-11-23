@@ -52,8 +52,14 @@ func OpenStore(provider string, settings map[string]string, opts ...Option) (obj
 	for _, opt := range opts {
 		opt(&o)
 	}
-	store, _, _, release, err := openStore(provider, settings, o)
-	release()
+	store, create, creds, release, err := openStore(provider, settings, o)
+	defer release()
+	if err != nil {
+		return nil, err
+	}
+	// As New does, but with no journal: a store on a symlinked root is
+	// reopened on its physical root, else its walk lists nothing.
+	store, _, err = canonicalStore(provider, create, settings, store, creds)
 	if err != nil {
 		return nil, err
 	}

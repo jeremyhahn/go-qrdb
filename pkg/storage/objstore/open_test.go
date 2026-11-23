@@ -17,6 +17,7 @@ package objstore_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -102,5 +103,53 @@ func TestOpenStore_LSMStoreRefusedByFlatEngine(t *testing.T) {
 	}
 	if mismatch.Found != "3" {
 		t.Fatalf("Found = %q; want \"3\"", mismatch.Found)
+	}
+}
+
+// TestOpenStore_SymlinkRootFormatAndList: a local bucket whose root is a
+// symlink is opened on its physical root, so a fresh one takes the LSM format
+// marker, a marked one passes the format check on reopen, and its Remote lists
+// the objects written through it.
+func TestOpenStore_SymlinkRootFormatAndList(t *testing.T) {
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	ctx := context.Background()
+	open := func() *objstore.Remote {
+		t.Helper()
+		store, err := objstore.OpenStore("local", map[string]string{"path": link})
+		if err != nil {
+			t.Fatalf("OpenStore: %v", err)
+		}
+		if err := objstore.EnsureLSMFormat(ctx, store); err != nil {
+			t.Fatalf("EnsureLSMFormat on the symlinked root: %v", err)
+		}
+		rs, err := objstore.NewRemote(store, "lsm")
+		if err != nil {
+			t.Fatalf("NewRemote: %v", err)
+		}
+		return rs
+	}
+	w, err := open().CreateObject("000001.sst")
+	if err != nil {
+		t.Fatalf("CreateObject: %v", err)
+	}
+	if _, err := w.Write([]byte("sst")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	names, err := open().List("", "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(names) != 1 || names[0] != "000001.sst" {
+		t.Fatalf("List on the symlinked root = %v; want [000001.sst]", names)
+	}
+	if _, err := os.Stat(filepath.Join(target, "lsm", "000001.sst")); err != nil {
+		t.Fatalf("the object must sit under the physical root: %v", err)
 	}
 }
