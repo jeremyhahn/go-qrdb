@@ -6,7 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -122,6 +126,88 @@ func TestEmbeddedCredential_RotationVerbsWhenClosed(t *testing.T) {
 			t.Errorf("%s: expected ClosedError, got %T: %v", name, err, err)
 		}
 	}
+}
+
+// authzCredentialTransport builds an embedded transport with a credential
+// service behind the auth middleware, granting only perms.
+func authzCredentialTransport(t *testing.T, perms ...permission.Permission) *Transport {
+	t.Helper()
+	tr, err := New(newMockKVService(), &mockAdminService{},
+		WithCredentialService(&mockCredentialService{}),
+		WithAuthMiddleware(authmw.New(grantOnlyAuthz(perms...), authmw.WithRoleResolver(authtest.BuiltInRoles(t)))))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return tr
+}
+
+// rotationVerbCalls runs the four rotation-policy and migration-conflict verbs
+// against tr and returns each verb's error.
+func rotationVerbCalls(ctx context.Context, tr *Transport) map[string]error {
+	return map[string]error{
+		"CredentialSetRotationPolicy": tr.CredentialSetRotationPolicy(ctx, &transport.CredentialSetRotationPolicyRequest{
+			Name: "db", Enabled: true, Interval: "1h", RetainVersions: 2,
+		}),
+		"CredentialRotationPolicy": func() error { _, err := tr.CredentialRotationPolicy(ctx, "db"); return err }(),
+		"CredentialMigrationConflicts": func() error {
+			_, err := tr.CredentialMigrationConflicts(ctx)
+			return err
+		}(),
+		"CredentialResolveMigrationConflict": tr.CredentialResolveMigrationConflict(ctx,
+			&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"}),
+	}
+}
+
+func TestEmbeddedCredential_RotationVerbsRequirePermission(t *testing.T) {
+	ctx := ctxFor(&auth.Identity{Subject: "operator", TenantID: "acme"})
+
+	t.Run("granted", func(t *testing.T) {
+		tr := authzCredentialTransport(t, permission.CredentialsRotate, permission.CredentialsList)
+		for name, err := range rotationVerbCalls(ctx, tr) {
+			if err != nil {
+				t.Errorf("%s with credentials:rotate and credentials:list: %v", name, err)
+			}
+		}
+	})
+
+	t.Run("neither", func(t *testing.T) {
+		tr := authzCredentialTransport(t, permission.KVGet)
+		for name, err := range rotationVerbCalls(ctx, tr) {
+			if !errors.Is(err, auth.ErrUnauthorized) {
+				t.Errorf("%s without credential permissions: err = %v (%T); want auth.ErrUnauthorized", name, err, err)
+			}
+		}
+	})
+
+	t.Run("list only", func(t *testing.T) {
+		tr := authzCredentialTransport(t, permission.CredentialsList)
+		for name, err := range rotationVerbCalls(ctx, tr) {
+			if name == "CredentialMigrationConflicts" {
+				if err != nil {
+					t.Errorf("%s with credentials:list: %v", name, err)
+				}
+				continue
+			}
+			if !errors.Is(err, auth.ErrUnauthorized) {
+				t.Errorf("%s without credentials:rotate: err = %v (%T); want auth.ErrUnauthorized", name, err, err)
+			}
+		}
+	})
+
+	t.Run("rotate only", func(t *testing.T) {
+		tr := authzCredentialTransport(t, permission.CredentialsRotate)
+		for name, err := range rotationVerbCalls(ctx, tr) {
+			if name == "CredentialMigrationConflicts" {
+				if !errors.Is(err, auth.ErrUnauthorized) {
+					t.Errorf("%s without credentials:list: err = %v (%T); want auth.ErrUnauthorized", name, err, err)
+				}
+				continue
+			}
+			if err != nil {
+				t.Errorf("%s with credentials:rotate: %v", name, err)
+			}
+		}
+	})
 }
 
 func TestEmbeddedVector_Dispatch_UpdateNamespace(t *testing.T) {
