@@ -9,6 +9,7 @@
 package seal
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -565,6 +566,48 @@ func TestMoveStepRunner_CopyBackRerunAfterSourceRemoved(t *testing.T) {
 	}
 	mustExist(t, filepath.Join(fx.src, "w1"))
 	assertGone(t, staging)
+}
+
+// A copy-back's staging directory must not be a name any tenant can hold: a
+// tenant whose directory sits beside the source under the old staging name
+// "<path>.copyback" keeps its tree byte for byte through a copied-node abort.
+func TestMoveStepRunner_CopyBackLeavesATenantNamedLikeTheOldStaging(t *testing.T) {
+	fx, stores, r := newRunnerFixture(t)
+	ctx := context.Background()
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("settle copy: %v", err)
+	}
+	stores.write("w1")
+	other := filepath.Join(fx.defaultRoot, fx.path+".copyback")
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatalf("other tenant: %v", err)
+	}
+	otherFile := filepath.Join(other, "barrier")
+	want := []byte("another tenant's barrier")
+	if err := os.WriteFile(otherFile, want, 0o600); err != nil {
+		t.Fatalf("other tenant file: %v", err)
+	}
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseAbort, true)); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	got, err := os.ReadFile(otherFile)
+	if err != nil {
+		t.Fatalf("the other tenant's directory was removed: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("the other tenant's file = %q, want %q", got, want)
+	}
+	if got, want := mustManifest(t, fx.src), mustManifest(t, fx.dst()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("restored source differs from the destination")
+	}
+	mustExist(t, filepath.Join(fx.src, "w1"))
+	assertGone(t, filepath.Join(fx.defaultRoot, copyBackStagingName(fx.path)))
+	if err := volume.ValidateAssignmentPath("acme", copyBackStagingName("acme")); err == nil {
+		t.Fatalf("ValidateAssignmentPath accepts the staging name %q", copyBackStagingName("acme"))
+	}
 }
 
 // mountedSourceRemover is an OS remover for which root is a mount point: its
