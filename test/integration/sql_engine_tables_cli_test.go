@@ -5,10 +5,15 @@ package integration_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
+
+	gomysql "github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // sqlEngineTables names every built-in engine table with the schema columns
@@ -107,6 +112,29 @@ func TestSQLEngineTables_UserTablesNamedLikeEngineTables(t *testing.T) {
 		if !strings.Contains(msg, "reserved") || !strings.Contains(msg, name) {
 			t.Fatalf("[%s] %s error = %q, want it to name the reserved table %s", wire, stmt, err.Error(), name)
 		}
+		// Record the code each wire sends for the refusal today; neither
+		// wire's error table maps *provider.ReservedTableNameError yet.
+		var pgErr *pgconn.PgError
+		var myErr *gomysql.MySQLError
+		switch {
+		case errors.As(err, &pgErr):
+			t.Logf("[%s] %s refused with SQLSTATE %s", wire, stmt, pgErr.Code)
+		case errors.As(err, &myErr):
+			t.Logf("[%s] %s refused with MySQL error %d (SQLSTATE %s)", wire, stmt, myErr.Number, string(myErr.SQLState[:]))
+		default:
+			t.Logf("[%s] %s refused with %T", wire, stmt, err)
+		}
+	}
+
+	wantListed := []string{"metrics", "vectors", "datapoints", "namespaces",
+		"qrdb_ts_datapoints", "qrdb_ts_metrics", "qrdb_vector_namespaces", "qrdb_vector_vectors"}
+	assertListed := func(t *testing.T, wire string, listed map[string]bool) {
+		t.Helper()
+		for _, want := range wantListed {
+			if !listed[want] {
+				t.Fatalf("[%s] SHOW TABLES = %v, want it to list %s", wire, listed, want)
+			}
+		}
 	}
 
 	t.Run("mysql", func(t *testing.T) {
@@ -178,31 +206,57 @@ func TestSQLEngineTables_UserTablesNamedLikeEngineTables(t *testing.T) {
 		}
 	})
 
-	// Both wires share the node's default database, so one SHOW TABLES over
-	// the MySQL wire lists every user table created above beside the engine
-	// tables. (SHOW TABLES over the PostgreSQL wire answers no rows today,
-	// so the listing is read over MySQL.)
-	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
-	rows, err := db.Query("SHOW TABLES")
-	if err != nil {
-		t.Fatalf("SHOW TABLES: %v", err)
-	}
-	defer rows.Close()
-	listed := map[string]bool{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatalf("SHOW TABLES scan: %v", err)
+	// Both wires share the node's default database, so SHOW TABLES over
+	// either wire lists every user table created above beside the engine
+	// tables. Both wires are read: MySQL, then PostgreSQL with pgx's
+	// default (extended) protocol and with the simple query protocol.
+	t.Run("show tables mysql", func(t *testing.T) {
+		db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
+		rows, err := db.Query("SHOW TABLES")
+		if err != nil {
+			t.Fatalf("[mysql] SHOW TABLES: %v", err)
 		}
-		listed[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("SHOW TABLES rows: %v", err)
-	}
-	for _, want := range []string{"metrics", "vectors", "datapoints", "namespaces",
-		"qrdb_ts_datapoints", "qrdb_ts_metrics", "qrdb_vector_namespaces", "qrdb_vector_vectors"} {
-		if !listed[want] {
-			t.Fatalf("SHOW TABLES = %v, want it to list %s", listed, want)
+		defer rows.Close()
+		listed := map[string]bool{}
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				t.Fatalf("[mysql] SHOW TABLES scan: %v", err)
+			}
+			listed[name] = true
 		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("[mysql] SHOW TABLES rows: %v", err)
+		}
+		assertListed(t, "mysql", listed)
+	})
+
+	for _, mode := range []struct {
+		name string
+		exec pgx.QueryExecMode
+	}{
+		{"show tables pgsql extended", pgx.QueryExecModeCacheStatement},
+		{"show tables pgsql simple", pgx.QueryExecModeSimpleProtocol},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
+			rows, err := conn.Query(context.Background(), "SHOW TABLES", mode.exec)
+			if err != nil {
+				t.Fatalf("[%s] SHOW TABLES: %v", mode.name, err)
+			}
+			defer rows.Close()
+			listed := map[string]bool{}
+			for rows.Next() {
+				var name string
+				if err := rows.Scan(&name); err != nil {
+					t.Fatalf("[%s] SHOW TABLES scan: %v", mode.name, err)
+				}
+				listed[name] = true
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("[%s] SHOW TABLES rows: %v", mode.name, err)
+			}
+			assertListed(t, mode.name, listed)
+		})
 	}
 }
