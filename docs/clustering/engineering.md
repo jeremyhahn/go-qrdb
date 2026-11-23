@@ -517,7 +517,11 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   skips index 0; it accepts a config change only on the shard leader and
   refuses a second while one is uncommitted, so the lock serializes
   concurrent additions through the leader from recheck to commit, and the
-  later one is refused with `*release.GapError` (REST 409). Residuals, closed
+  later one is refused with `*release.GapError` (REST 409). An add whose
+  result times out ambiguously (go-quicraft's `*MaybeAppliedError`: it may
+  still commit) returns its error at once but keeps the lock until its
+  `RequestState` delivers the final result or the gate closes, so no later
+  add is rechecked against a membership it may yet change. Residuals, closed
   by go-quicraft 1192 (see [../plans/1628.md](../plans/1628.md)): a
   leadership change while an add is in flight, and a member restarted onto
   another release whose `Gate.Start` restart check ran before the add
