@@ -3429,20 +3429,26 @@ jobs:
           exempt = set(os.environ.get("ROW_EXEMPT_LABELS", "").split())
           prefixes = os.environ.get("ROW_EXEMPT_BRANCHES", "").split()
           rule = "every pull request corresponds to one SPEC row (ci-template v1.55, ruling 1136)"
-          labels = set()
+          # A successful live read is the label set alone: a label removed
+          # since the event no longer counts. The event's labels are only the
+          # fallback when there is no URL/token or the read fails.
+          event = set()
           try:
-              labels |= {str(x) for x in json.loads(os.environ.get("EVENT_LABELS") or "[]") or []}
+              event = {str(x) for x in json.loads(os.environ.get("EVENT_LABELS") or "[]") or []}
           except ValueError:
               pass
+          labels = None
           url, tok = os.environ.get("LABELS_URL", ""), os.environ.get("JOB_TOKEN", "")
           if url and tok:
               try:
                   req = urllib.request.Request(url, headers={"Authorization": "Bearer " + tok,
                                                              "Accept": "application/vnd.github+json"})
                   with urllib.request.urlopen(req, timeout=20) as r:
-                      labels |= {l["name"] for l in json.load(r)}
+                      labels = {l["name"] for l in json.load(r)}
               except Exception as e:
                   print(f"::warning::Row: the live labels could not be read ({type(e).__name__}); the event's labels are used")
+          if labels is None:
+              labels = event
           hit = sorted(labels & exempt)
           if hit:
               print(f"Row: exempt label '{hit[0]}'; no row is required")

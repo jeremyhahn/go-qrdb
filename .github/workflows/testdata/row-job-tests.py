@@ -22,14 +22,19 @@ whose base commit holds the rows and whose head commit adds one more:
   R10 a merge-train/ branch: green.
   R11 the labels API unreachable: a ::warning, the event's labels used.
   R12 no base commit: red.
+  R13 a removed exempt label does not exempt: the event has ci, the live read
+      has none, so a non-row branch is red (the live labels alone count).
 
 Run: python3 -I software/templates/github-actions/testdata/row-job-tests.py [ci.yml]
 """
+import http.server
+import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 YML = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(HERE), "ci.yml")
@@ -126,6 +131,26 @@ def run(body, cwd, head, base, labels="[]", url=""):
     return r.returncode, r.stdout + r.stderr
 
 
+def live_labels(names):
+    """A loopback labels API that answers every GET with the given labels."""
+    payload = json.dumps([{"name": n} for n in names]).encode()
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_port}/labels"
+
+
 def main():
     text = open(YML).read()
     job = job_text(text)
@@ -159,6 +184,13 @@ def main():
               f"R11 labels API unreachable: warning, event labels used (rc {rc})")
         rc, out = run(body, r, "row/41-store", "")
         check(rc == 1 and "::error::Row: no base commit" in out, f"R12 no base commit: red (rc {rc})")
+        srv, url = live_labels(["bug"])
+        try:
+            rc, out = run(body, r, "fix/lint", base, labels='["ci"]', url=url)
+        finally:
+            srv.shutdown()
+        check(rc == 1 and "::warning::" not in out and "::error::Row: head branch 'fix/lint' is not row/<n>-*" in out,
+              f"R13 a removed exempt label does not exempt: the live labels alone, red (rc {rc})")
     print(f"{'ALL PASS' if not FAILS else f'{len(FAILS)} FAILED'}")
     sys.exit(1 if FAILS else 0)
 
