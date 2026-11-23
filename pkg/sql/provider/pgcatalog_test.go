@@ -169,10 +169,9 @@ func TestProviderReservesPGCatalogName(t *testing.T) {
 	prov := h.newPGProvider("gorm")
 
 	for _, name := range []string{pgcatalog.SchemaName, "PG_CATALOG", MySQLSchemaName} {
-		var reserved *ReservedDatabaseNameError
-		require.ErrorAsf(t, prov.CreateDatabase(ctx, name), &reserved, "CREATE DATABASE %q", name)
-		assert.Equal(t, name, reserved.Name)
-		require.ErrorAsf(t, prov.DropDatabase(ctx, name), &reserved, "DROP DATABASE %q", name)
+		want := "provider: database name is reserved: " + name
+		assertReservedNameSQLError(t, prov.CreateDatabase(ctx, name), ErrCodeReservedDatabaseName, want)
+		assertReservedNameSQLError(t, prov.DropDatabase(ctx, name), ErrCodeReservedDatabaseName, want)
 	}
 }
 

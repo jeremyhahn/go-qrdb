@@ -56,6 +56,8 @@ func TestSQLStateFor(t *testing.T) {
 		{"null into not null", sql.ErrInsertIntoNonNullableProvidedNull.New("c"), codes.NotNullViolation, true},
 		{"lock deadlock / serialization failure", sql.ErrLockDeadlock.Wrap(errors.New("conflict"), "detail"), codes.SerializationFailure, true},
 		{"table layout unsupported", mysql.NewSQLError(provider.ErrCodeTableLayoutUnsupported, "HY000", "re-create"), codes.ObjectNotInPrerequisiteState, true},
+		{"reserved table name", mysql.NewSQLError(provider.ErrCodeReservedTableName, "42000", "reserved"), codes.ReservedName, true},
+		{"reserved database name", mysql.NewSQLError(provider.ErrCodeReservedDatabaseName, "42000", "reserved"), codes.ReservedName, true},
 		{"other mysql error keeps default", mysql.NewSQLError(1105, "HY000", "boom"), "", false},
 		{"unmapped error keeps default", errors.New("boom"), "", false},
 	}

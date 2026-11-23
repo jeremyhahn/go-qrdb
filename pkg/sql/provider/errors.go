@@ -24,6 +24,7 @@ import (
 	"strconv"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/vitess/go/mysql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -151,6 +152,11 @@ func (e *MutableOperationNotSupportedError) Error() string {
 //     only write against the PostgreSQL system catalogue that is reachable
 //     at all: none of its relations implements a write-capability
 //     interface, so DML against one is refused during analysis.
+//
+// It is the refusal's message source: the refusal reaches clients as the
+// *mysql.SQLError reservedDatabaseSQLError builds from it, MySQL 1102
+// (ErrCodeReservedDatabaseName, SQLSTATE 42000) and PostgreSQL SQLSTATE
+// 42939.
 type ReservedDatabaseNameError struct {
 	Name string
 }
@@ -160,6 +166,10 @@ type ReservedDatabaseNameError struct {
 // qrdb_ts_metrics, qrdb_vector_namespaces, qrdb_vector_vectors; OD-12 B).
 // The names are refused whether or not the engine is compiled in, so a
 // relational table never takes a name a build with the engine would serve.
+//
+// It is the refusal's message source: the refusal reaches clients as the
+// *mysql.SQLError reservedTableSQLError builds from it, MySQL 1103
+// (ErrCodeReservedTableName, SQLSTATE 42000) and PostgreSQL SQLSTATE 42939.
 type ReservedTableNameError struct {
 	Name string
 }
@@ -172,6 +182,39 @@ func (e *ReservedTableNameError) Error() string {
 // Error returns a human-readable description.
 func (e *ReservedDatabaseNameError) Error() string {
 	return "provider: database name is reserved: " + e.Name
+}
+
+// ErrCodeReservedTableName is the MySQL error number CREATE TABLE, RENAME
+// TABLE and ALTER TABLE ... RENAME TO a reserved engine table name fail
+// with: MySQL's own ER_WRONG_TABLE_NAME (1103, SQLSTATE 42000), the error
+// MySQL raises for a table name the server will not accept. MySQL has no
+// "reserved name" error; this is the closest documented one. PostgreSQL
+// clients receive SQLSTATE 42939 (reserved_name) for the same refusal.
+const ErrCodeReservedTableName = mysql.ERWrongTableName
+
+// ErrCodeReservedDatabaseName is the MySQL error number CREATE DATABASE and
+// DROP DATABASE of a reserved schema name (MySQLSchemaName,
+// pgcatalog.SchemaName) fail with: MySQL's own ER_WRONG_DB_NAME (1102,
+// SQLSTATE 42000), the error MySQL raises for a database name the server
+// will not accept. PostgreSQL clients receive SQLSTATE 42939
+// (reserved_name) for the same refusal.
+const ErrCodeReservedDatabaseName = mysql.ERWrongDbName
+
+// reservedTableSQLError renders the reserved table name refusal as the
+// MySQL wire error. A *mysql.SQLError is the one shape sql.CastSQLError
+// forwards verbatim -- any other error, however well typed, reaches a
+// client as the generic 1105 -- so the refusal is built in that shape,
+// carrying ReservedTableNameError's message, which names the table.
+func reservedTableSQLError(name string) *mysql.SQLError {
+	return mysql.NewSQLError(ErrCodeReservedTableName, mysql.SSClientError, "%s", (&ReservedTableNameError{Name: name}).Error())
+}
+
+// reservedDatabaseSQLError renders the reserved database name refusal as
+// the MySQL wire error, in the shape and for the reason
+// reservedTableSQLError gives, carrying ReservedDatabaseNameError's
+// message, which names the database.
+func reservedDatabaseSQLError(name string) *mysql.SQLError {
+	return mysql.NewSQLError(ErrCodeReservedDatabaseName, mysql.SSClientError, "%s", (&ReservedDatabaseNameError{Name: name}).Error())
 }
 
 // IndexLookupError is returned when an index lookup operation fails

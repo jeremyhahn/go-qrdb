@@ -18,11 +18,11 @@ package provider
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
+	"github.com/dolthub/vitess/go/mysql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -114,10 +114,7 @@ func TestDatabase_CreateTable_ReservedEngineTableNameRefused(t *testing.T) {
 		for _, spelling := range []string{tc.name, mixedCase(tc.name)} {
 			t.Run(spelling, func(t *testing.T) {
 				err := db.CreateTable(ctx, spelling, oneColumnSchema(spelling), sqle.Collation_Default, "")
-				var reserved *ReservedTableNameError
-				require.True(t, errors.As(err, &reserved), "got %v", err)
-				assert.Equal(t, spelling, reserved.Name)
-				assert.Equal(t, "provider: table name is reserved: "+spelling, err.Error())
+				assertReservedNameSQLError(t, err, ErrCodeReservedTableName, "provider: table name is reserved: "+spelling)
 			})
 		}
 	}
@@ -125,6 +122,18 @@ func TestDatabase_CreateTable_ReservedEngineTableNameRefused(t *testing.T) {
 	names, err := h.tableSvc.ListTables(context.Background(), "shop")
 	require.NoError(t, err)
 	assert.Empty(t, names, "a refused CREATE TABLE writes nothing")
+}
+
+// assertReservedNameSQLError asserts err is the *mysql.SQLError a reserved
+// name refusal reaches clients as: the code, SQLSTATE 42000 and a message
+// naming the reserved name.
+func assertReservedNameSQLError(t *testing.T, err error, code int, message string) {
+	t.Helper()
+	var sqlErr *mysql.SQLError
+	require.ErrorAs(t, err, &sqlErr, "got %v", err)
+	assert.Equal(t, code, sqlErr.Num)
+	assert.Equal(t, "42000", sqlErr.SQLState())
+	assert.Contains(t, sqlErr.Message, message)
 }
 
 func TestDatabase_RenameTable_ToReservedEngineTableNameRefused(t *testing.T) {
@@ -137,9 +146,7 @@ func TestDatabase_RenameTable_ToReservedEngineTableNameRefused(t *testing.T) {
 		for _, spelling := range []string{tc.name, mixedCase(tc.name)} {
 			t.Run(spelling, func(t *testing.T) {
 				err := db.RenameTable(ctx, "widgets", spelling)
-				var reserved *ReservedTableNameError
-				require.True(t, errors.As(err, &reserved), "got %v", err)
-				assert.Equal(t, spelling, reserved.Name)
+				assertReservedNameSQLError(t, err, ErrCodeReservedTableName, "provider: table name is reserved: "+spelling)
 			})
 		}
 	}

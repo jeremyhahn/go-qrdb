@@ -519,7 +519,7 @@ func providerSessionTenantID(ctx *sqle.Context) string {
 // attribute the database.
 func (p *Provider) CreateDatabase(ctx *sqle.Context, name string) error {
 	if strings.EqualFold(name, MySQLSchemaName) || strings.EqualFold(name, pgcatalog.SchemaName) {
-		return &ReservedDatabaseNameError{Name: name}
+		return reservedDatabaseSQLError(name)
 	}
 	if p.manager == nil {
 		return &MutableOperationNotSupportedError{Operation: "CREATE DATABASE"}
@@ -593,7 +593,7 @@ func (p *Provider) authorizeLifecycle(ctx context.Context, tenantID, operation s
 // that is a replicated operation that must stay cancellable.
 func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 	if strings.EqualFold(name, MySQLSchemaName) || strings.EqualFold(name, pgcatalog.SchemaName) {
-		return &ReservedDatabaseNameError{Name: name}
+		return reservedDatabaseSQLError(name)
 	}
 	if p.manager == nil {
 		return &MutableOperationNotSupportedError{Operation: "DROP DATABASE"}

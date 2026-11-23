@@ -70,7 +70,7 @@ func (d *Database) createTable(ctx *sqle.Context, name string, schema sqle.Prima
 	// The engine tables' reserved names are refused before anything else,
 	// whether or not the engine is compiled in (OD-12 B).
 	if isReservedTableName(name) {
-		return &ReservedTableNameError{Name: name}
+		return reservedTableSQLError(name)
 	}
 	if err := d.ValidateSchema(schema.Schema); err != nil {
 		return err
@@ -171,7 +171,7 @@ func (d *Database) RenameTable(ctx *sqle.Context, oldName, newName string) error
 	// A table may not be renamed onto a reserved engine table name, whether
 	// or not the engine is compiled in (OD-12 B).
 	if isReservedTableName(newName) {
-		return &ReservedTableNameError{Name: newName}
+		return reservedTableSQLError(newName)
 	}
 	if d.registry == nil {
 		return &RelationalCatalogUnavailableError{Operation: "RENAME TABLE"}
