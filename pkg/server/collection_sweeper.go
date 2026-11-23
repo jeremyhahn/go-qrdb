@@ -316,12 +316,24 @@ func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepT
 			if err != nil {
 				continue
 			}
-			if cfg := dbase.Config(); !servesFromNodeLocalStore(&cfg) {
-				continue
-			}
 			owner := info.TenantID
 			if owner == "" {
 				owner = tenantid.System
+			}
+			// A database the Manager opened in its own store journals its
+			// collection work there: scan that journal, and sweep the
+			// database itself for CREATING/DROPPING collections.
+			if ms, ok := dbase.Backend().(materializedStore); ok {
+				targets, err := s.journaledTargets(ctx, service.NewKVService(ms.Host(), ms.ShardID()), known)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, targets...)
+				out = append(out, collectionSweepTarget{Tenant: owner, Database: info.Name})
+				continue
+			}
+			if cfg := dbase.Config(); !servesFromNodeLocalStore(&cfg) {
+				continue
 			}
 			out = append(out, collectionSweepTarget{Tenant: owner, Database: info.Name})
 		}

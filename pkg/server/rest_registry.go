@@ -287,6 +287,12 @@ func (r *restServiceRegistry) resolveMaterialized(tenantID, db string, info *ten
 		if v := ms.Vector(); v != nil {
 			svcs.Vector = v
 		}
+		// Collection creates and drops journal their work in this
+		// database's own store, as the composite does in the shared one,
+		// so the collection sweeper finishes one a crash interrupted.
+		if cs, ok := svcs.Collection.(*service.CollectionService); ok {
+			svcs.Collection = cs.WithWorkJournal(collectionJournalFor(svcs, tenantID))
+		}
 		return svcs
 	})
 	incarnation := dbase.Incarnation()
@@ -306,6 +312,18 @@ func (r *restServiceRegistry) resolveMaterialized(tenantID, db string, info *ten
 	svcs := r.applyQuota(fenced, tenantID, info)
 	svcs.Placement = service.StorePlacementNode
 	return svcs, nil
+}
+
+// SweepStuckCollections forwards the collection sweeper's pass to the inner
+// service when it sweeps, so a fenced materialized database still finishes
+// a collection create or drop a crash left CREATING or DROPPING. An inner
+// service that does not sweep sweeps nothing.
+func (g *guardedCollectionService) SweepStuckCollections(ctx context.Context, database string, staleAfter time.Duration) (service.CollectionSweepResult, error) {
+	sweeper, ok := g.inner.(service.CollectionSweeper)
+	if !ok {
+		return service.CollectionSweepResult{}, nil
+	}
+	return sweeper.SweepStuckCollections(ctx, database, staleAfter)
 }
 
 // withReclaimOrigin sets this node's identity as recorded on the reclaim-job
