@@ -92,7 +92,7 @@ func TestMergeSeamOptions_UnsetCertProviderLeavesTheBuiltInOnTheServer(t *testin
 
 	// The merged seams reach buildServerOpts as caller options, which win;
 	// an unset cert seam must not take the built-in login CA off the server.
-	opts := buildServerOpts(n.Services(), nil, nil, mergeSeamOptions(nodeOptions{}, nil), true)
+	opts := buildServerOpts(n.Services(), nil, nil, nil, mergeSeamOptions(nodeOptions{}, nil), true)
 	require.Same(t, builtIn, server.ResolveCryptoOptions(opts...).CertProvider)
 }
 
@@ -101,6 +101,6 @@ func TestMergeSeamOptions_SetCertProviderReachesTheServer(t *testing.T) {
 	o := &nodeOptions{}
 	WithCertProvider(composerCertProvider{})(o)
 
-	opts := buildServerOpts(n.Services(), nil, nil, mergeSeamOptions(*o, nil), true)
+	opts := buildServerOpts(n.Services(), nil, nil, nil, mergeSeamOptions(*o, nil), true)
 	require.Equal(t, composerCertProvider{}, server.ResolveCryptoOptions(opts...).CertProvider)
 }

@@ -78,6 +78,25 @@ func TestStandaloneNode_NamedDatabasesResolve(t *testing.T) {
 	require.Error(t, unknown.KV().Put(ctx, "k", []byte("v")), "an unknown database accepted a write")
 }
 
+// A named database lives in its own store, and its services are built with
+// the node's configured limits: index.max_indexes holds there as it does on
+// the node's default database, rather than the package default (unlimited).
+func TestStandaloneNode_MaterializedDatabaseKeepsTheIndexLimit(t *testing.T) {
+	ctx := context.Background()
+	cfg := newTenantIsolationConfig(t)
+	cfg.Index.MaxIndexes = 1
+	n, err := NewStandaloneNode(ctx, cfg, nil, WithTenantIsolation())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+	createDatabase(ctx, t, n, "ledger")
+
+	ledger, err := n.Client().DatabaseScoped("ledger")
+	require.NoError(t, err)
+	require.NoError(t, ledger.Index().IndexCreate(ctx, "by_a", "a", transport.IndexConfig{}))
+	require.Error(t, ledger.Index().IndexCreate(ctx, "by_b", "b", transport.IndexConfig{}),
+		"a materialized database accepted an index past index.max_indexes")
+}
+
 // The embedded leg of the sealed-database refusal the network transports are
 // held to (pkg/server TestSealedDatabase_RefusedOnEveryTransport): a client
 // scoped to a database through the node's embedded transport is refused

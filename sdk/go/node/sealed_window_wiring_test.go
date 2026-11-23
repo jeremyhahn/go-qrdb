@@ -36,7 +36,7 @@ func TestBuildServerOpts_ServesTheReplicatedAuditChainOnTheNetworkTransports(t *
 	require.NotNil(t, svcNode)
 	require.NotNil(t, svcNode.ReplicatedAudit, "BuildServices always builds the replicated audit logger")
 
-	opts := buildServerOpts(svcNode, nil, nil, nil, true)
+	opts := buildServerOpts(svcNode, nil, nil, nil, nil, true)
 	require.Same(t, svcNode.ReplicatedAudit, server.ResolveCryptoOptions(opts...).ReplicatedAuditLogger)
 }
 
@@ -48,7 +48,7 @@ func TestBuildServerOpts_CallerReplicatedAuditLoggerWins(t *testing.T) {
 	require.NotNil(t, svcNode)
 
 	own := *svcNode.ReplicatedAudit
-	opts := buildServerOpts(svcNode, nil, nil, []server.ServerOption{server.WithReplicatedAuditLogger(&own)}, true)
+	opts := buildServerOpts(svcNode, nil, nil, nil, []server.ServerOption{server.WithReplicatedAuditLogger(&own)}, true)
 	require.Same(t, &own, server.ResolveCryptoOptions(opts...).ReplicatedAuditLogger)
 }
 

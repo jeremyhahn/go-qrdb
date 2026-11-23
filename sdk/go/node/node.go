@@ -4339,7 +4339,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 
 	// Build multi-protocol server.
 	serverCfg := buildNodeServerConfig(cfg)
-	allOpts := buildServerOpts(svcNode, ceremonySvc, n.dbManager, callerOpts, standalone)
+	allOpts := buildServerOpts(svcNode, cfg, ceremonySvc, n.dbManager, callerOpts, standalone)
 	fwdOpt, fwdErr := n.replicaForwardingOption(cfg, standalone, placementChangesOf(svcNode), featureClient)
 	if fwdErr != nil {
 		_ = client.Close()
@@ -4816,7 +4816,7 @@ func principalRoles(u *user.User) []string {
 // Without them no named database resolved on the node's server, so a
 // database-scoped client was refused outright and RAG, which is bound to the
 // registry, refused every call.
-func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServicer, dbManager *database.Manager, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
+func buildServerOpts(svcNode *lifecycle.Node, cfg *qrdbconfig.Config, ceremonySvc service.CeremonyServicer, dbManager *database.Manager, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
 	var shardID uint64
 	if !standalone {
 		shardID = shard.ShardKV
@@ -4943,6 +4943,14 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	}
 	if dbManager != nil {
 		opts = append(opts, server.WithDatabaseManager(dbManager))
+	}
+	// A materialized database (one the Manager opened in its own store) gets
+	// its import-session, index and time-series services built with this
+	// node's configured limits, as cmd/qrdbd wires them; without this they
+	// fell back to package defaults, so index.max_indexes and the other
+	// service limits held on the system database alone.
+	if cfg != nil {
+		opts = append(opts, server.WithBindingServiceConfig(cfg.ImportSession, cfg.Index, cfg.TimeSeries))
 	}
 	// The cluster-wide, per-tenant-opt-in replicated audit chain, served on every
 	// network transport as it is on the embedded one and on qrdbd. Without it a
