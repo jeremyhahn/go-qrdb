@@ -41,6 +41,7 @@ review.
 | Node release version | `VERSION` passed as `-X main.version` (default `dev`), shown only by `qrdbd version`; peers do not exchange it | `cmd/qrdbd` |
 | Capabilities RPC | 19 booleans, no server version | `CapabilitiesResponse` |
 | SDK user create | sends `pending_ttl_seconds` (#1587, on main after v0.58.5-alpha, in no release yet). An older server drops it; the SDK then sees an account with no expiry and deletes it (`transport.EnforcePendingTTL`). This is an undo after the fact, not a refusal (#1601) | `sdk/go/transport` |
+| SDK tenant list | sends the `status` filter (#1651, on the row branch, in no release yet). An older server drops it and answers every tenant; the SDK's network transports and the CLI refuse the answer with `*transport.CapabilityUnsupportedError` and no tenants (`transport.EnforceStatusFilter`). A typed refusal after the fact: the server did the unfiltered read | `sdk/go/transport` |
 | Test infrastructure | the clusterproof inventory has one image for the whole cluster; nothing builds an older release | `test/clusterproof` |
 
 Documents that say version equality is required today and change with this row:
@@ -98,6 +99,9 @@ merges on that recorded approval of its text, as the rules of
    open for review. The options are a server release version in the capabilities
    response, a per-feature capability bit, or a typed refusal from the server.
    The SPEC row requires only that the field is never silently dropped.
+   The tenant list `status` filter (#1651) is answered by a client-side check
+   of the returned statuses (`transport.EnforceStatusFilter`), so it needs no
+   capability bit; that settles this field only, and the question stays open.
 
 ## Test plan
 
