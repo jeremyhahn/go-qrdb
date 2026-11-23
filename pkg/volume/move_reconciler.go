@@ -210,7 +210,10 @@ func (r *MoveReconciler) resyncThenGrant(ctx context.Context, m *Move) error {
 // is run again, which is how a node resumes after a crash. A step held by
 // another node is skipped.
 //
-// A step's failure is recorded in the journal, not returned. A catalog
+// A step's failure is recorded in the journal, not returned. A copy step
+// that cannot run because the node is sealed or its destination pool is
+// unavailable waits: the journal records the reason and counts no attempt,
+// and the next pass runs the step again (Catalog.WaitMoveStep). A catalog
 // error for one tenant is collected and the pass goes on; the joined
 // errors are returned. A cancelled ctx stops the pass with ctx.Err().
 func (r *MoveReconciler) RunLocalSteps(ctx context.Context, nodeID string) error {
@@ -307,7 +310,9 @@ func (r *MoveReconciler) abortPhase() moveStepPhase {
 	}
 }
 
-// runStep runs the step m holds in phase p and settles it.
+// runStep runs the step m holds in phase p and settles it. A copy step the
+// runner answers with a waiting error (moveStepWaits) is recorded with
+// Catalog.WaitMoveStep: no attempt counted, no fail transition.
 func (r *MoveReconciler) runStep(ctx context.Context, m Move, p moveStepPhase) error {
 	step := MoveStep{
 		TenantID: m.TenantID,
@@ -341,6 +346,18 @@ func (r *MoveReconciler) runStep(ctx context.Context, m Move, p moveStepPhase) e
 	if runErr := r.runner.RunMoveStep(ctx, step); runErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
+		}
+		if p.name == MoveStepPhaseCopy && moveStepWaits(runErr) {
+			// The node is sealed or its destination pool unavailable: the
+			// step waits for the unseal, counts no attempt and records no
+			// fail transition.
+			r.logger.Info("volume: move step waiting",
+				slog.String("tenant", step.TenantID), slog.String("node", step.NodeID),
+				slog.String("phase", step.Phase), slog.String("error", runErr.Error()))
+			if _, err := r.cat.WaitMoveStep(ctx, m.TenantID, step.NodeID, waitingMoveStepReason(step.Phase, runErr)); err != nil {
+				return err
+			}
+			return nil
 		}
 		r.logger.Warn("volume: move step failed",
 			slog.String("tenant", step.TenantID), slog.String("node", step.NodeID),
@@ -435,6 +452,25 @@ func (r *MoveReconciler) copyRecorded(ctx context.Context, tenantID string, step
 	}
 	cur, _, err := r.cat.readMove(ctx, tenantID)
 	return err == nil && cur != nil && contains(cur.NodesCopied, step.NodeID)
+}
+
+// moveStepWaits reports whether err means the step cannot run yet rather
+// than that it failed: the node is sealed (*NodeSealedError) or its
+// destination pool is locked or not open (*PoolUnavailableError), through
+// any wrapping, *MoveStepError included. Such a step waits for the unseal.
+func moveStepWaits(err error) bool {
+	var (
+		sealed      *NodeSealedError
+		unavailable *PoolUnavailableError
+	)
+	return errors.As(err, &sealed) || errors.As(err, &unavailable)
+}
+
+// waitingMoveStepReason is the journal's Error for a waiting step:
+// "move copy step waiting: node sealed", with the same fixed classes as
+// sanitizeMoveStepError and no paths or node detail.
+func waitingMoveStepReason(phase string, err error) string {
+	return "move " + phase + " step waiting: " + moveStepErrorClass(err)
 }
 
 // sanitizeMoveStepError returns the message a failed step persists in the

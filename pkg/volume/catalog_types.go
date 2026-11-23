@@ -186,7 +186,9 @@ type Move struct {
 	// StepNode is the node granted the current step: at most one replica
 	// is offline for a move at a time (decision Q1 B).
 	StepNode string `json:"stepNode,omitempty"`
-	// StepAttempts counts the failed attempts of StepNode's step.
+	// StepAttempts counts the failed attempts of StepNode's step. A copy
+	// step that waits on a sealed node or an unavailable destination pool
+	// (Catalog.WaitMoveStep) counts no attempt.
 	StepAttempts int `json:"stepAttempts,omitempty"`
 	// StepSettling reports that StepNode's copy or abort step is recorded
 	// (RecordMoveStep, RecordAbortStep) but the node has not yet settled

@@ -1199,6 +1199,7 @@ func (r *sealedRunner) RunMoveStep(_ context.Context, step MoveStep) error {
 func assertStepWaits(t *testing.T, waitErr error, wantReason string) {
 	t.Helper()
 	cat, kv, _ := newAdmittedMove(t)
+	cat.SetMoveCutoverRecorder(&fakeRecorder{})
 	log := &transitionLog{}
 	runner := &sealedRunner{node: "n1", err: waitErr}
 	r := newTestReconciler(t, cat, runner, WithMoveTransitionRecorder(log))

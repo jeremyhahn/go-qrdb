@@ -365,7 +365,9 @@ func releaseSettledStep(m *Move, nodeID string) (*moveRelease, error) {
 // failed (DefaultMoveStepAttempts when maxAttempts <= 0) the move is
 // aborting and the step released; the node stays pending. A node that does
 // not hold the step, or a move no longer copying (cancelled), is refused
-// with *MoveConflictError.
+// with *MoveConflictError. A step that cannot run because its node is
+// sealed or its destination pool unavailable is not a failure: it goes to
+// WaitMoveStep, which counts no attempt.
 func (c *Catalog) FailMoveStep(ctx context.Context, tenantID, nodeID, reason string, maxAttempts int) (*Move, error) {
 	if nodeID == "" {
 		return nil, &InvalidMoveRequestError{Reason: "empty node id"}
@@ -377,12 +379,7 @@ func (c *Catalog) FailMoveStep(ctx context.Context, tenantID, nodeID, reason str
 		if err := holdsStep(m, MoveStateCopying, nodeID); err != nil {
 			return err
 		}
-		if m.CancelRequested {
-			m.CancelRequested = false
-			m.State = MoveStateAborting
-			m.StepNode = ""
-			m.StepAttempts = 0
-			m.Error = "cancelled by operator"
+		if abortIfCancelled(m) {
 			return nil
 		}
 		m.StepAttempts++
@@ -391,6 +388,66 @@ func (c *Catalog) FailMoveStep(ctx context.Context, tenantID, nodeID, reason str
 			m.State = MoveStateAborting
 			m.StepNode = ""
 		}
+		return nil
+	})
+}
+
+// abortIfCancelled turns a copying move with a recorded cancel into an
+// aborting one, the node's step uncounted, and reports whether it did.
+// FailMoveStep and WaitMoveStep share it so a cancel aborts the same way
+// whether the node's step failed or waits.
+func abortIfCancelled(m *Move) bool {
+	if !m.CancelRequested {
+		return false
+	}
+	m.CancelRequested = false
+	m.State = MoveStateAborting
+	m.StepNode = ""
+	m.StepAttempts = 0
+	m.Error = "cancelled by operator"
+	return true
+}
+
+// WaitMoveStep records that nodeID holds the copy step but cannot run it
+// yet: the node is sealed, or its destination volume is locked or not
+// open (decision "The move, phase by phase", Q3). Unlike FailMoveStep it
+// counts no attempt and never aborts the move: the step stays granted to
+// the node, the node stays in NodesPending, and the journal's Error
+// carries reason until the step runs after the unseal. A recorded cancel
+// still aborts the move, exactly as FailMoveStep does.
+//
+// A node stays sealed for many reconciler ticks, so WaitMoveStep writes
+// nothing when the journal already records reason and no cancel: it reads
+// the journal first and returns it unchanged, so a waiting node costs no
+// raft write per tick; only a new reason or a cancel goes through the CAS.
+func (c *Catalog) WaitMoveStep(ctx context.Context, tenantID, nodeID, reason string) (*Move, error) {
+	if nodeID == "" {
+		return nil, &InvalidMoveRequestError{Reason: "empty node id"}
+	}
+	if tenantID == "" {
+		return nil, &InvalidMoveRequestError{Reason: "empty tenant id"}
+	}
+	current, _, err := c.readMove(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if current == nil {
+		return nil, &MoveNotFoundError{TenantID: tenantID}
+	}
+	if err := holdsStep(current, MoveStateCopying, nodeID); err != nil {
+		return nil, err
+	}
+	if !current.CancelRequested && current.Error == reason {
+		return current, nil
+	}
+	return c.updateMove(ctx, tenantID, func(m *Move) error {
+		if err := holdsStep(m, MoveStateCopying, nodeID); err != nil {
+			return err
+		}
+		if abortIfCancelled(m) {
+			return nil
+		}
+		m.Error = reason
 		return nil
 	})
 }
