@@ -216,12 +216,24 @@ store checks the incarnation is live instead). No new key scheme.
   checks incarnation liveness and reads no marker; its marker stays where
   the tenant's isolation puts it (no sealed-store fence target added).
 
-## Remains
+## rw1613c
 
-- `TestVlog_CLI_PerProtocol` ran green in mg1655a;
-  `TestVlog_CLI_BarrierTenant_*` and `TestVlog_CLI_BarrierDatabase_PerProtocol`
-  (`-tags=codec_json,raft,integration`) were not re-run after the fence. Run
-  them before promotion.
+The barrier CLI e2e re-run after the fx1655c home-group fence
+(`-tags=codec_json,raft,integration`, foreground, one target at a time), each
+on rest, grpc, quic, mcp and unix:
+
+- `TestVlog_CLI_BarrierTenant_PerProtocol` (raft tenant, home group, sealed
+  refusal, every verb and proof, named-database live + drop/re-create): pass
+  on all five.
+- `TestVlog_CLI_BarrierTenant_Standalone_PerProtocol` (standalone barrier
+  store, `FenceTarget` keeps the system store): pass on all five.
+- `TestVlog_CLI_BarrierDatabase_PerProtocol` (the database's own barrier
+  store, drop and re-create under a new data dir): pass on all five.
+
+No failure, so no code or test change; `TestVlog_CLI_PerProtocol` ran green
+in mg1655a.
+
+## Remains
 
 - Open, Tenant item (F3 proof half): a standalone node composes an ungated
   host (`cmd/qrdbd/start.go`), so its replicated audit logger keeps
