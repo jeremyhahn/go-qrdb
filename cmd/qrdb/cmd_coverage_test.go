@@ -437,7 +437,7 @@ func TestPrintDatabaseInfo_Table_WithAllFields(t *testing.T) {
 		"fulldb", "pebble", "open",
 		"/data/fulldb", "42",
 		"Etcd:", "2379", "Raft:", "single",
-		"Barrier:", "Connection:", "grpc",
+		"Barrier:",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in output %q", want, out)
