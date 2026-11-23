@@ -49,8 +49,7 @@ import (
 // network scheme the driver has. A valid token runs a query, a token source
 // is consulted on every query, a missing or wrong token is refused as
 // unauthenticated, and a plaintext DSN with a token source is refused without
-// the token source being consulted (on gRPC with
-// *transport.BearerRequiresTLSError).
+// the token source being consulted, with *transport.BearerRequiresTLSError.
 func TestSQLDriver_BearerAuthenticatesOnRESTAndGRPC(t *testing.T) {
 	token := strings.TrimPrefix(hostBearerToken, "Bearer ")
 	for _, bt := range bearerTransports() {
@@ -93,16 +92,8 @@ func TestSQLDriver_BearerAuthenticatesOnRESTAndGRPC(t *testing.T) {
 			err := sqlSelectOne(ctx, t, bt.name+"://"+addr(n)+"/bearersql", plain, 1)
 			require.Error(t, err, "plaintext with a token source was admitted")
 			require.Zero(t, plain.n.Load(), "the token source was consulted on a plaintext connection")
-			if bt.name == "grpc" {
-				var tlsErr *transport.BearerRequiresTLSError
-				require.True(t, errors.As(err, &tlsErr), "plaintext with a token source: err = %v, want *transport.BearerRequiresTLSError", err)
-			} else {
-				// The REST client's Connect health probe reports every
-				// failed probe, the bearer round tripper's TLS refusal
-				// included, as a ConnectionError.
-				var connErr *transport.ConnectionError
-				require.True(t, errors.As(err, &connErr), "plaintext with a token source: err = %v, want *transport.ConnectionError", err)
-			}
+			var tlsErr *transport.BearerRequiresTLSError
+			require.True(t, errors.As(err, &tlsErr), "plaintext with a token source: err = %v, want *transport.BearerRequiresTLSError", err)
 		})
 	}
 }
