@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -72,13 +73,21 @@ type bindingHost struct {
 	ambiguousReplica   uint64
 	ambiguousDelivered chan quicraft.RequestResult
 	entered            chan struct{}
+	// ambiguousSettled is set once the ambiguous add committed or its
+	// proposal was lost; until then a re-proposal is refused as a second
+	// configuration change in flight (inFlightRefusals counts them).
+	ambiguousSettled bool
+	inFlightRefusals int
+	membershipReads  int
 }
 
 // ambiguousResult is the result go-quicraft reports for an add whose wait
-// (RequestState.Result's deadline) ended after it was handed to raft: a
-// *quicraft.MaybeAppliedError wrapping quicraft.ErrTimeout, with the final
-// result delivered later on ResultC. go-quicraft exports no way to build such
-// a RequestState, so the test substitutes it through AdminService.resultOf.
+// (RequestState.Result's deadline, or the pending-proposal sweeper) ended
+// after it was handed to raft: a *quicraft.MaybeAppliedError wrapping
+// quicraft.ErrTimeout. go-quicraft completes a RequestState once, and that
+// one completion is what Result consumed, so ResultC never delivers again (c
+// is never sent on). go-quicraft exports no way to build such a
+// RequestState, so the test substitutes it through AdminService.resultOf.
 type ambiguousResult struct {
 	c chan quicraft.RequestResult
 }
@@ -104,8 +113,33 @@ func (h *bindingHost) commitAmbiguous() {
 	h.mu.Lock()
 	h.members[h.ambiguousReplica] = h.ambiguousAddr
 	h.configChangeID++
+	h.ambiguousSettled = true
 	h.mu.Unlock()
-	h.ambiguousDelivered <- quicraft.RequestResult{}
+}
+
+// dropAmbiguous loses the ambiguous add's proposal (a leader change dropped
+// the uncommitted entry): nothing is pending any more, and a re-proposal of
+// the add is handled like any other.
+func (h *bindingHost) dropAmbiguous() {
+	h.mu.Lock()
+	h.ambiguousSettled = true
+	h.mu.Unlock()
+}
+
+// SyncGetShardMembership is the linearizable read of the committed
+// membership: the members and the configuration change ID.
+func (h *bindingHost) SyncGetShardMembership(_ context.Context, shardID uint64) (*quicraft.Membership, error) {
+	if shardID != bindingSystemShard {
+		return nil, errors.New("shard not hosted")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.membershipReads++
+	m := &quicraft.Membership{ConfigChangeID: h.configChangeID, Nodes: map[uint64]string{}}
+	for id, addr := range h.members {
+		m.Nodes[id] = addr
+	}
+	return m, nil
 }
 
 var (
@@ -174,6 +208,15 @@ func (h *bindingHost) RequestAddNodeWithIdentity(_ context.Context, shardID, rep
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.ambiguousRS != nil && !h.ambiguousSettled {
+		// The ambiguous add is still in raft: the host's stale check runs,
+		// then the worker refuses a second configuration change in flight.
+		if configChangeIndex != 0 && configChangeIndex != h.configChangeID {
+			return nil, quicraft.ErrStaleConfigChange
+		}
+		h.inFlightRefusals++
+		return nil, quicraft.ErrRejected
+	}
 	h.indexes = append(h.indexes, configChangeIndex)
 	if configChangeIndex != 0 && configChangeIndex != h.configChangeID {
 		return nil, quicraft.ErrStaleConfigChange
@@ -800,7 +843,12 @@ func (r resultStub) ResultC() <-chan quicraft.RequestResult {
 // raft; that pending closes once the result is delivered, or at once when the
 // request state was released.
 func TestAwaitAdd_OnlyAnAmbiguousTimeoutIsPending(t *testing.T) {
-	ambiguous := &quicraft.MaybeAppliedError{Err: quicraft.ErrTimeout}
+	h := newBindingHostAt(t, 0)
+	svc, ok := NewAdminService(h).(*AdminService)
+	if !ok {
+		t.Fatal("NewAdminService did not return *AdminService")
+	}
+	a := pendingAdd{shardID: bindingSystemShard, replicaID: 9}
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -811,7 +859,7 @@ func TestAwaitAdd_OnlyAnAmbiguousTimeoutIsPending(t *testing.T) {
 		{"delivered maybe-applied", &quicraft.MaybeAppliedError{Err: quicraft.ErrShardNotReady}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pending, err := awaitAdd(resultStub{err: tc.err, c: make(chan quicraft.RequestResult)})
+			pending, err := svc.awaitAdd(resultStub{err: tc.err, c: make(chan quicraft.RequestResult)}, a)
 			if !errors.Is(err, tc.err) || (tc.err == nil) != (err == nil) {
 				t.Fatalf("err = %v, want %v", err, tc.err)
 			}
@@ -820,23 +868,82 @@ func TestAwaitAdd_OnlyAnAmbiguousTimeoutIsPending(t *testing.T) {
 			}
 		})
 	}
+}
 
-	delivered := make(chan quicraft.RequestResult, 1)
-	pending, err := awaitAdd(resultStub{err: ambiguous, c: delivered})
+// TestAwaitAdd_SweeperConsumedCompletionStillResolves: the one completion
+// was the sweeper's ambiguous one, consumed by Result, so ResultC never
+// delivers again; the fence is released once the membership read shows the
+// add committed, with no second value.
+func TestAwaitAdd_SweeperConsumedCompletionStillResolves(t *testing.T) {
+	h := newBindingHostAt(t, 0)
+	svc, ok := NewAdminService(h).(*AdminService)
+	if !ok {
+		t.Fatal("NewAdminService did not return *AdminService")
+	}
+	h.mu.Lock()
+	h.members[9] = "n9:1"
+	h.mu.Unlock()
+	ambiguous := &quicraft.MaybeAppliedError{Err: quicraft.ErrTimeout}
+	pending, err := svc.awaitAdd(resultStub{err: ambiguous, c: make(chan quicraft.RequestResult)},
+		pendingAdd{shardID: bindingSystemShard, replicaID: 9, repropose: func(context.Context) (*quicraft.RequestState, error) {
+			t.Error("a committed add was proposed again")
+			return nil, quicraft.ErrClosed
+		}})
 	if !errors.Is(err, quicraft.ErrTimeout) || pending == nil {
 		t.Fatalf("awaitAdd = (%v, %v), want a pending timeout", pending, err)
 	}
 	select {
 	case <-pending:
-		t.Fatal("pending closed before the result was delivered")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the fence was never released for a committed add")
+	}
+}
+
+// TestAwaitAdd_TimerWonThenSweeperCompletionKeepsFence: Result's own timer
+// won and the sweeper's ambiguous completion then lands on ResultC; that is
+// no outcome, so the fence holds while the add is still in raft and is
+// released only when the membership shows it settled.
+func TestAwaitAdd_TimerWonThenSweeperCompletionKeepsFence(t *testing.T) {
+	h := newBindingHostAt(t, 0)
+	svc, ok := NewAdminService(h).(*AdminService)
+	if !ok {
+		t.Fatal("NewAdminService did not return *AdminService")
+	}
+	h.mu.Lock()
+	h.ambiguousRS = newCompletedRequestState(quicraft.RequestResult{})
+	h.ambiguousAddr, h.ambiguousReplica = "n9:1", 9
+	h.mu.Unlock()
+	sweeper := make(chan quicraft.RequestResult, 1)
+	sweeper <- quicraft.RequestResult{}
+	ambiguous := &quicraft.MaybeAppliedError{Err: quicraft.ErrTimeout}
+	propose := func(ctx context.Context) (*quicraft.RequestState, error) {
+		return h.RequestAddNodeWithIdentity(ctx, bindingSystemShard, 9, "n9:1", "", 0)
+	}
+	pending, err := svc.awaitAdd(resultStub{err: ambiguous, c: sweeper},
+		pendingAdd{shardID: bindingSystemShard, replicaID: 9, repropose: propose})
+	if !errors.Is(err, quicraft.ErrTimeout) || pending == nil {
+		t.Fatalf("awaitAdd = (%v, %v), want a pending timeout", pending, err)
+	}
+	// The resolver has read the membership and been refused once: the add
+	// is still in flight, and the fence must still hold.
+	for {
+		h.mu.Lock()
+		refused := h.inFlightRefusals
+		h.mu.Unlock()
+		if refused > 0 {
+			break
+		}
+		runtime.Gosched()
+	}
+	select {
+	case <-pending:
+		t.Fatal("the fence was released while the add was still in raft")
 	default:
 	}
-	delivered <- quicraft.RequestResult{}
-	<-pending
-
-	pending, err = awaitAdd(resultStub{err: ambiguous})
-	if err == nil || pending == nil {
-		t.Fatalf("awaitAdd on a released state = (%v, %v), want a pending timeout", pending, err)
+	h.commitAmbiguous()
+	select {
+	case <-pending:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the fence was never released after the add committed")
 	}
-	<-pending
 }

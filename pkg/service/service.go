@@ -1313,25 +1313,96 @@ func (s *AdminService) membershipResultOf(rs *quicraft.RequestState) membershipR
 // the add's final result is delivered on ResultC (at once if rs was released).
 // Any other outcome is final and returns a nil pending. rs is not released
 // before that delivery.
-func awaitAdd(rs membershipResult) (pending <-chan struct{}, err error) {
+func (s *AdminService) awaitAdd(rs membershipResult, a pendingAdd) (pending <-chan struct{}, err error) {
 	_, err = rs.Result()
 	if err == nil {
 		return nil, nil
 	}
-	if !errors.As(err, new(*quicraft.MaybeAppliedError)) || !errors.Is(err, quicraft.ErrTimeout) {
+	if !ambiguousAdd(err) {
 		return nil, err
 	}
+	// go-quicraft completes a RequestState once (ResultC "receives exactly
+	// one value"), and the timed-out wait may itself have been that value
+	// (the pending-proposal sweeper's ambiguous completion), so nothing
+	// waits on it again: the add is resolved from the shard's committed
+	// membership while the fence stays held.
 	resolved := make(chan struct{})
-	resultC := rs.ResultC()
-	if resultC == nil {
-		close(resolved)
-		return resolved, err
-	}
 	go func() {
 		defer close(resolved)
-		<-resultC
+		s.resolveAdd(a)
 	}()
 	return resolved, err
+}
+
+// ambiguousAdd reports whether err leaves an add's outcome unknown: the wait
+// timed out (go-quicraft's *MaybeAppliedError around ErrTimeout) and the add
+// may still commit.
+func ambiguousAdd(err error) bool {
+	return errors.As(err, new(*quicraft.MaybeAppliedError)) && errors.Is(err, quicraft.ErrTimeout)
+}
+
+// pendingAdd is an add whose outcome is unknown, with the way to propose it
+// again bound to the same configuration change ID.
+type pendingAdd struct {
+	shardID, replicaID, configChangeID uint64
+	repropose                          func(context.Context) (*quicraft.RequestState, error)
+}
+
+// ambiguousAddAttemptTimeout bounds each membership read and re-proposal of
+// an ambiguous add's resolution; ambiguousAddRetryInterval paces them.
+const (
+	ambiguousAddAttemptTimeout = 5 * time.Second
+	ambiguousAddRetryInterval  = 250 * time.Millisecond
+)
+
+// resolveAdd returns once the ambiguous add a is settled: the replica is in
+// the committed membership (the add, or a later re-proposal of it,
+// committed), the shard's configuration change ID moved past the bound one
+// (Raft keeps one configuration change in flight, so an add bound to an
+// older configuration can no longer commit), or the host is closed. While
+// neither is seen it proposes the add again under the same binding, which
+// forces an outcome: success commits it, ErrStaleConfigChange means the
+// membership moved (the next read settles it), and anything else -- a change
+// still pending, no leader, another ambiguous wait -- is retried.
+func (s *AdminService) resolveAdd(a pendingAdd) {
+	for {
+		if s.addSettled(a) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), ambiguousAddAttemptTimeout)
+		rs, err := a.repropose(ctx)
+		if err == nil {
+			_, err = s.membershipResultOf(rs).Result()
+		}
+		cancel()
+		switch {
+		case err == nil, errors.Is(err, quicraft.ErrClosed):
+			return
+		case errors.Is(err, quicraft.ErrStaleConfigChange):
+			continue
+		}
+		timer := time.NewTimer(ambiguousAddRetryInterval)
+		<-timer.C
+	}
+}
+
+// addSettled reads the shard's membership linearizably and reports whether
+// the ambiguous add a is settled (see resolveAdd). A closed host settles it:
+// nothing can commit through it any more.
+func (s *AdminService) addSettled(a pendingAdd) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), ambiguousAddAttemptTimeout)
+	defer cancel()
+	m, err := s.host.SyncGetShardMembership(ctx, a.shardID)
+	if err != nil || m == nil {
+		return errors.Is(err, quicraft.ErrClosed)
+	}
+	if _, ok := m.Nodes[a.replicaID]; ok {
+		return true
+	}
+	if _, ok := m.Observers[a.replicaID]; ok {
+		return true
+	}
+	return a.configChangeID != 0 && m.ConfigChangeID != a.configChangeID
 }
 
 // requestAdd proposes adding replicaID with its identity, ordered after the
@@ -1339,11 +1410,16 @@ func awaitAdd(rs membershipResult) (pending <-chan struct{}, err error) {
 // waits for the result; pending is non-nil when that wait ended with the
 // outcome unknown (awaitAdd).
 func (s *AdminService) requestAdd(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) (<-chan struct{}, error) {
-	rs, err := s.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, raftAddr, identity, configChangeID)
+	propose := func(ctx context.Context) (*quicraft.RequestState, error) {
+		return s.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, raftAddr, identity, configChangeID)
+	}
+	rs, err := propose(ctx)
 	if err != nil {
 		return nil, s.translateMembershipError("add", err)
 	}
-	pending, err := awaitAdd(s.membershipResultOf(rs))
+	pending, err := s.awaitAdd(s.membershipResultOf(rs), pendingAdd{
+		shardID: shardID, replicaID: replicaID, configChangeID: configChangeID, repropose: propose,
+	})
 	if err != nil {
 		return pending, s.translateMembershipError("add", err)
 	}
@@ -1391,11 +1467,16 @@ func (s *AdminService) AddObserverMember(ctx context.Context, shardID, replicaID
 // and waits for its result, as requestAdd does for a voter (an ambiguous
 // timeout returns a pending channel the same way).
 func (s *AdminService) requestAddObserver(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) (<-chan struct{}, error) {
-	rs, err := s.host.RequestAddObserverWithIdentity(ctx, shardID, replicaID, raftAddr, identity, configChangeID)
+	propose := func(ctx context.Context) (*quicraft.RequestState, error) {
+		return s.host.RequestAddObserverWithIdentity(ctx, shardID, replicaID, raftAddr, identity, configChangeID)
+	}
+	rs, err := propose(ctx)
 	if err != nil {
 		return nil, s.translateMembershipError("add-observer", err)
 	}
-	pending, err := awaitAdd(s.membershipResultOf(rs))
+	pending, err := s.awaitAdd(s.membershipResultOf(rs), pendingAdd{
+		shardID: shardID, replicaID: replicaID, configChangeID: configChangeID, repropose: propose,
+	})
 	if err != nil {
 		return pending, s.translateMembershipError("add-observer", err)
 	}
