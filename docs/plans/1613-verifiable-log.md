@@ -263,8 +263,8 @@ in mg1655a.
   database therefore takes a new `--data-dir` (the user guide and the CLI
   E2E do so).
 - The SPEC, `pm/rows.md` and ROADMAP.md moves above.
-- An untenanted (platform) database's verifiable logs survive its drop
-  (rw1613f): `Manager.reclaimLogs` (`pkg/database/manager.go`) and
+- CLOSED by rw1613g: an untenanted (platform) database's verifiable logs
+  survived its drop (rw1613f): `Manager.reclaimLogs` (`pkg/database/manager.go`) and
   `DatabaseService.checkLogs` skip a database whose tenant ID is empty, while
   the log service keeps its logs under the `system` tenant
   (`routingTenant`). Fix: drop both empty-tenant guards and route the tenant
@@ -311,9 +311,29 @@ in mg1655a.
 - RED on every transport (wip bd2d1fe03): the test runs as an untenanted
   identity, whose database logs the drop never reclaims (see Remains); list
   and head hide them by incarnation, but `create` of the same name is
-  refused "already exists". No fix landed in this slice.
+  refused "already exists". No fix landed in this slice (fixed by rw1613g).
 - docs/databases/architecture.md: the logs step of "What a drop reclaims",
   the barrier tenant's log-only fence marker, and `SignHead` admitting first.
+
+## rw1613g
+
+- Failing first, each RED at cd4ace6eb:
+  `TestManager_Drop_ReclaimLogsOfAnUntenantedDatabase`
+  (`pkg/database/manager_fence_test.go`, the reclaimer was never called),
+  `TestDatabaseService_DropOfAnUntenantedDatabaseReclaimsItsLogs` (no check,
+  no reclaim) and
+  `TestLogService_DropDatabaseLogs_UntenantedActsOnTheSystemTenant` (the drop
+  command was refused "tenant id and database required")
+  (`pkg/service/vlog_log_service_test.go`).
+- Fix: `Manager.reclaimLogs` and `DatabaseService.checkLogs` no longer skip
+  an empty tenant; `logService.DropDatabaseLogs` and `CheckDropDatabaseLogs`
+  map the tenant through `routingTenant`, so an untenanted database's logs are
+  listed and deleted under the `system` tenant. Tenanted drops are unchanged.
+- `TestVlog_CLI_DatabaseDrop_PerProtocol` (rw1613f) now passes on every
+  transport, shared-store and dedicated-raft, with no test change; the
+  rw1613f gap is closed.
+- docs/databases/architecture.md: "What a drop reclaims" and the log service
+  row no longer call the untenanted case open.
 
 ## Out of scope
 
