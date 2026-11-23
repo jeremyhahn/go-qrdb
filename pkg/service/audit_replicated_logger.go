@@ -81,7 +81,20 @@ func (l *ReplicatedLogger) Emit(ctx context.Context, ev audit.AuditEvent) error 
 	if appends, ok := l.resolver.(AuditAppendResolver); ok {
 		resolve = appends.ResolveAuditAppend
 	}
+	release := func() {}
+	if holds, ok := l.resolver.(AuditAppendHolder); ok {
+		// The route stays held until the proposal returns, so a refused
+		// append cannot retire the system route this one is proposing by.
+		resolve = func(ctx context.Context, tenantID string) (Host, uint64, error) {
+			host, shardID, held, err := holds.HoldAuditAppend(ctx, tenantID)
+			if held != nil {
+				release = held
+			}
+			return host, shardID, err
+		}
+	}
 	host, shardID, err := resolve(ctx, target)
+	defer release()
 	if err != nil {
 		return err
 	}
