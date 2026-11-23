@@ -821,8 +821,9 @@ type QRDBServiceClient interface {
 	TenantCreate(ctx context.Context, in *TenantCreateRequest, opts ...grpc.CallOption) (*TenantCreateResponse, error)
 	// TenantGet retrieves a tenant by ID.
 	TenantGet(ctx context.Context, in *TenantGetRequest, opts ...grpc.CallOption) (*TenantResponse, error)
-	// TenantList returns metadata for all registered tenants.
-	TenantList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*TenantListResponse, error)
+	// TenantList returns metadata for the tenants the caller may list,
+	// optionally narrowed to one status.
+	TenantList(ctx context.Context, in *TenantListRequest, opts ...grpc.CallOption) (*TenantListResponse, error)
 	// TenantUpdate applies a partial update to an existing tenant.
 	TenantUpdate(ctx context.Context, in *TenantUpdateRequest, opts ...grpc.CallOption) (*TenantResponse, error)
 	// TenantDelete removes a tenant and its metadata.
@@ -2959,7 +2960,7 @@ func (c *qRDBServiceClient) TenantGet(ctx context.Context, in *TenantGetRequest,
 	return out, nil
 }
 
-func (c *qRDBServiceClient) TenantList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*TenantListResponse, error) {
+func (c *qRDBServiceClient) TenantList(ctx context.Context, in *TenantListRequest, opts ...grpc.CallOption) (*TenantListResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TenantListResponse)
 	err := c.cc.Invoke(ctx, QRDBService_TenantList_FullMethodName, in, out, cOpts...)
@@ -4172,8 +4173,9 @@ type QRDBServiceServer interface {
 	TenantCreate(context.Context, *TenantCreateRequest) (*TenantCreateResponse, error)
 	// TenantGet retrieves a tenant by ID.
 	TenantGet(context.Context, *TenantGetRequest) (*TenantResponse, error)
-	// TenantList returns metadata for all registered tenants.
-	TenantList(context.Context, *emptypb.Empty) (*TenantListResponse, error)
+	// TenantList returns metadata for the tenants the caller may list,
+	// optionally narrowed to one status.
+	TenantList(context.Context, *TenantListRequest) (*TenantListResponse, error)
 	// TenantUpdate applies a partial update to an existing tenant.
 	TenantUpdate(context.Context, *TenantUpdateRequest) (*TenantResponse, error)
 	// TenantDelete removes a tenant and its metadata.
@@ -4950,7 +4952,7 @@ func (UnimplementedQRDBServiceServer) TenantCreate(context.Context, *TenantCreat
 func (UnimplementedQRDBServiceServer) TenantGet(context.Context, *TenantGetRequest) (*TenantResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TenantGet not implemented")
 }
-func (UnimplementedQRDBServiceServer) TenantList(context.Context, *emptypb.Empty) (*TenantListResponse, error) {
+func (UnimplementedQRDBServiceServer) TenantList(context.Context, *TenantListRequest) (*TenantListResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TenantList not implemented")
 }
 func (UnimplementedQRDBServiceServer) TenantUpdate(context.Context, *TenantUpdateRequest) (*TenantResponse, error) {
@@ -8646,7 +8648,7 @@ func _QRDBService_TenantGet_Handler(srv interface{}, ctx context.Context, dec fu
 }
 
 func _QRDBService_TenantList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
+	in := new(TenantListRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -8658,7 +8660,7 @@ func _QRDBService_TenantList_Handler(srv interface{}, ctx context.Context, dec f
 		FullMethod: QRDBService_TenantList_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).TenantList(ctx, req.(*emptypb.Empty))
+		return srv.(QRDBServiceServer).TenantList(ctx, req.(*TenantListRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }

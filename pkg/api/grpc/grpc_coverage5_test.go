@@ -767,7 +767,7 @@ func TestTenant_List_Mini_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithTenantService(tenantSvc))
 	defer cleanup()
 
-	_, err := client.TenantList(context.Background(), &emptypb.Empty{})
+	_, err := client.TenantList(context.Background(), &pb.TenantListRequest{})
 	if err != nil {
 		t.Fatalf("TenantList failed: %v", err)
 	}
@@ -777,7 +777,7 @@ func TestTenant_List_Mini_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.TenantList(context.Background(), &emptypb.Empty{})
+	_, err := client.TenantList(context.Background(), &pb.TenantListRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

@@ -1213,8 +1213,9 @@ service QRDBService {
         option (qrdb.v1.permission) = "tenants:read";
     }
 
-    // TenantList returns metadata for all registered tenants.
-    rpc TenantList(google.protobuf.Empty) returns (TenantListResponse) {
+    // TenantList returns metadata for the tenants the caller may list,
+    // optionally narrowed to one status.
+    rpc TenantList(TenantListRequest) returns (TenantListResponse) {
         option (qrdb.v1.permission) = "tenants:list";
     }
 
@@ -5015,7 +5016,16 @@ message TenantGetRequest {
     string id = 1;
 }
 
-// TenantListResponse returns all tenants.
+// TenantListRequest filters the tenant listing. An empty status lists every
+// tenant the caller may list; "active", "suspended" or "disabled" lists only
+// the tenants in that status; any other value is refused with
+// INVALID_ARGUMENT. Deleted tenants are not a status: they are listed by
+// TenantListDeleted.
+message TenantListRequest {
+    string status = 1;
+}
+
+// TenantListResponse returns the listed tenants.
 message TenantListResponse {
     repeated TenantResponse tenants = 1;
 }

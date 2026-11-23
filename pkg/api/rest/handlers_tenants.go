@@ -348,6 +348,10 @@ func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if tenants, err = tenant.FilterByStatus(tenants, tenant.Status(r.URL.Query().Get("status"))); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
 
 	resp := make([]*tenantResponse, len(tenants))
 	for i := range tenants {

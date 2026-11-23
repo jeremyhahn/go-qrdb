@@ -35,7 +35,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -264,7 +263,7 @@ func TenantIsolation(t *testing.T, start StartFunc) {
 
 	t.Run("ListShowsATenantAdminOnlyItsOwnTenant", func(t *testing.T) {
 		f := newFixture(t, start)
-		resp, err := f.client.TenantList(callCtx(t), &emptypb.Empty{})
+		resp, err := f.client.TenantList(callCtx(t), &pb.TenantListRequest{})
 		if err != nil {
 			t.Fatalf("acme admin list = %v", err)
 		}
@@ -272,7 +271,7 @@ func TenantIsolation(t *testing.T, start StartFunc) {
 			t.Fatalf("acme admin listed %v, want [acme]", got)
 		}
 		f.operator()
-		resp, err = f.client.TenantList(callCtx(t), &emptypb.Empty{})
+		resp, err = f.client.TenantList(callCtx(t), &pb.TenantListRequest{})
 		if err != nil {
 			t.Fatalf("operator list = %v", err)
 		}
