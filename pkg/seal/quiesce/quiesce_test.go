@@ -337,6 +337,23 @@ func TestLease_UnregisterTwiceIsSafe(t *testing.T) {
 	}
 }
 
+func TestGate_RegisteredCountsUnregister(t *testing.T) {
+	var g Gate
+	a := g.Register("a")
+	g.Register("b")
+	if got := g.Registered(); got != 2 {
+		t.Fatalf("Registered = %d; want 2", got)
+	}
+	a.Unregister()
+	if got := g.Registered(); got != 1 {
+		t.Fatalf("Registered = %d; want 1", got)
+	}
+	var nilGate *Gate
+	if got := nilGate.Registered(); got != 0 {
+		t.Fatalf("nil gate Registered = %d; want 0", got)
+	}
+}
+
 // TestGate_ConcurrentAcquireAndSealNeverLosesAHold runs writers against a
 // seal: every write admitted before the drain returns must have finished.
 func TestGate_ConcurrentAcquireAndSealNeverLosesAHold(t *testing.T) {

@@ -166,7 +166,8 @@ type OpenHook interface {
 	Apply(o *pebble.Options)
 	// AfterOpen runs after Open on a store that is not ReadOnly. fs is the
 	// options' FS (vfs.Default when unset) and dir is Config.DataDir. On an
-	// error New closes the database and returns a *storage.OpError.
+	// error New closes the seal watch and the database and returns a
+	// *storage.OpError.
 	AfterOpen(db *pebble.DB, fs vfs.FS, dir string) error
 }
 
@@ -214,6 +215,9 @@ func New(config *Config, opts ...Option) (*PebbleStorage, error) {
 			fs = vfs.Default
 		}
 		if err := s.hook.AfterOpen(db, fs, config.DataDir); err != nil {
+			// Close the seal watch first: it unregisters the quiesce lease
+			// Open registered, which the failed open would otherwise leak.
+			seals.Close()
 			_ = db.Close()
 			return nil, &storage.OpError{Op: "open", Err: err}
 		}

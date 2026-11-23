@@ -541,7 +541,7 @@ func TestEncryptedRemote_InnerFaults(t *testing.T) {
 // removal and the CachedRemote's Close.
 func restoreMode(t *testing.T, dir string) {
 	t.Helper()
-	t.Cleanup(func() { require.NoError(t, os.Chmod(dir, 0o700)) })
+	t.Cleanup(func() { require.NoError(t, os.Chmod(dir, 0o700)) }) // #nosec G302 -- restores the directory mode t.TempDir and the CachedRemote's Close need; not a secret file's mode
 }
 
 // skipIfRoot skips a test that needs directory permission bits to deny
@@ -607,7 +607,7 @@ func TestCachedRemote_CacheDirFaults(t *testing.T) {
 		dir := t.TempDir()
 		skipIfRoot(t)
 		c := newTestCachedRemote(t, inner, dir)
-		require.NoError(t, os.Chmod(dir, 0o500))
+		require.NoError(t, os.Chmod(dir, 0o500)) // #nosec G302 -- r-x: the cache directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
 		restoreMode(t, dir)
 
 		_, _, err := c.createTemp()
@@ -621,7 +621,7 @@ func TestCachedRemote_CacheDirFaults(t *testing.T) {
 		dir := t.TempDir()
 		skipIfRoot(t)
 		c := newTestCachedRemote(t, inner, dir)
-		require.NoError(t, os.Chmod(dir, 0o300))
+		require.NoError(t, os.Chmod(dir, 0o300)) // #nosec G302 -- -wx: the cache directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
 		restoreMode(t, dir)
 		require.ErrorIs(t, c.syncDir(), fs.ErrPermission)
 	})

@@ -214,9 +214,11 @@ func (c *CachedRemote) openCached(objName string) (rd remote.ObjectReader, size 
 	}
 }
 
-// CreateObject returns a writer that forwards to the inner storage's writer
-// and, once its Close succeeds, stores the object in the cache under the
-// object's lock. An unmappable name is refused with an *InvalidObjectNameError.
+// CreateObject returns a writer that forwards to the inner storage's writer.
+// Its Close runs the remote commit and, once that succeeds, the cache
+// publication, both under the object's lock, so a Delete either precedes both
+// or follows both. An unmappable name is refused with an
+// *InvalidObjectNameError.
 func (c *CachedRemote) CreateObject(objName string) (io.WriteCloser, error) {
 	if err := c.checkName(objName); err != nil {
 		return nil, err
@@ -234,8 +236,8 @@ func (c *CachedRemote) List(prefix, delimiter string) ([]string, error) {
 }
 
 // Delete removes the object from the inner storage and its cache file, both
-// under the object's lock, so a concurrent ReadObject cannot store the file
-// again afterwards. The inner error is returned first; a missing cache file is
+// under the object's lock, so neither a concurrent ReadObject nor a writer's
+// Close can store the file again afterwards. The inner error is returned first; a missing cache file is
 // not an error. An unmappable name is refused with an *InvalidObjectNameError.
 func (c *CachedRemote) Delete(objName string) error {
 	if err := c.checkName(objName); err != nil {
@@ -423,8 +425,11 @@ func (w *cacheWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Close closes the inner writer and, only when that succeeds, stores the
-// object in the cache. A second Close is a no-op returning nil.
+// Close takes the object's lock, closes the inner writer (the remote commit)
+// and, only when that succeeds, stores the object in the cache, both under the
+// lock: a concurrent Delete either precedes both, so the commit recreates the
+// object, or follows both, so it removes the object and its cache file. A
+// second Close is a no-op returning nil.
 func (w *cacheWriter) Close() error {
 	if w.closed {
 		return nil
@@ -432,10 +437,10 @@ func (w *cacheWriter) Close() error {
 	w.closed = true
 	data := w.buf.Bytes()
 	w.buf = bytes.Buffer{}
+	unlock := w.c.lock(w.objName)
+	defer unlock()
 	if err := w.inner.Close(); err != nil {
 		return err
 	}
-	unlock := w.c.lock(w.objName)
-	defer unlock()
 	return w.c.store(w.objName, data)
 }

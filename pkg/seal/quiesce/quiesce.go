@@ -88,6 +88,17 @@ func (g *Gate) Register(name string) *Lease {
 	return l
 }
 
+// Registered returns the number of leases registered on the gate and not yet
+// unregistered. A nil gate has none.
+func (g *Gate) Registered() int {
+	if g == nil {
+		return 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.leases)
+}
+
 // Close marks the gate sealing: every Acquire after it refuses with
 // ErrSealing. It is idempotent.
 func (g *Gate) Close() {

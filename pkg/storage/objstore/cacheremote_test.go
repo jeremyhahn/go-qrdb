@@ -486,6 +486,92 @@ func TestCachedRemote_DeleteDuringFetchLeavesNoCacheFile(t *testing.T) {
 	requireLocksReleased(t, c)
 }
 
+// commitBlockingRemote hands out writers whose Close commits to the wrapped
+// storage, signals committed and then holds until release is closed.
+type commitBlockingRemote struct {
+	remote.Storage
+	committed chan struct{}
+	release   chan struct{}
+}
+
+func (b *commitBlockingRemote) CreateObject(objName string) (io.WriteCloser, error) {
+	w, err := b.Storage.CreateObject(objName)
+	if err != nil {
+		return nil, err
+	}
+	return &commitBlockingWriter{WriteCloser: w, b: b}, nil
+}
+
+type commitBlockingWriter struct {
+	io.WriteCloser
+	b *commitBlockingRemote
+}
+
+func (w *commitBlockingWriter) Close() error {
+	err := w.WriteCloser.Close()
+	w.b.committed <- struct{}{}
+	<-w.b.release
+	return err
+}
+
+// lockWaiters reports whether objName's lock has at least n references: its
+// holder and the callers queued on it.
+func lockWaiters(c *CachedRemote, objName string, n int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	l, ok := c.locks[objName]
+	return ok && l.refs >= n
+}
+
+func TestCachedRemote_DeleteDuringWriterCloseLeavesNoStaleCache(t *testing.T) {
+	rs := newTestRemote(t, memory.New(), "db1")
+	b := &commitBlockingRemote{Storage: rs, committed: make(chan struct{}, 1), release: make(chan struct{})}
+	c := newTestCachedRemote(t, b, t.TempDir())
+
+	w, err := c.CreateObject("000012.sst")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("written"))
+	require.NoError(t, err)
+
+	closeDone := make(chan struct{})
+	var closeErr error
+	go func() {
+		defer close(closeDone)
+		closeErr = w.Close()
+	}()
+	<-b.committed
+
+	delDone := make(chan struct{})
+	var delErr error
+	go func() {
+		defer close(delDone)
+		delErr = c.Delete("000012.sst")
+	}()
+	// Delete either returns, which is the defect, or queues on the object's
+	// lock the writer's Close holds (a second reference on it).
+	for !lockWaiters(c, "000012.sst", 2) {
+		select {
+		case <-delDone:
+			t.Fatal("Delete returned while a writer's Close of the object held its lock")
+		default:
+		}
+		runtime.Gosched()
+	}
+	close(b.release)
+	<-closeDone
+	<-delDone
+
+	require.NoError(t, closeErr)
+	require.NoError(t, delErr)
+	_, err = c.root.Stat(c.name("000012.sst"))
+	require.True(t, os.IsNotExist(err))
+	_, err = c.Size("000012.sst")
+	require.True(t, c.IsNotExistError(err))
+	_, _, err = c.ReadObject(context.Background(), "000012.sst")
+	require.True(t, c.IsNotExistError(err))
+	requireLocksReleased(t, c)
+}
+
 func TestCachedRemote_RefusesUnmappableNames(t *testing.T) {
 	dir := t.TempDir()
 	rs := newTestRemote(t, memory.New(), "db1")

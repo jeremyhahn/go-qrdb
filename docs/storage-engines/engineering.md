@@ -482,7 +482,9 @@ the same status.
 > the store opener `objstore.OpenStore` (`pkg/storage/objstore/open.go`, with
 > `ArchiveTierUnsupportedError`), the local object cache
 > `objstore.CachedRemote` (`pkg/storage/objstore/cacheremote.go`, OS-6 A
-> interim, local dir `objstore-lsm-cache`, with `InvalidObjectNameError`) and the composed opener in
+> interim, local dir `objstore-lsm-cache`, with `InvalidObjectNameError`; a
+> write's remote commit and its cache publication run under the object's lock,
+> so a concurrent Delete cannot leave a cache entry for a deleted object) and the composed opener in
 > `pkg/server/lifecycle/objstore_lsm.go` (prefix "lsm", locator "qrdb", local
 > dir `objstore-lsm`, a sealed barrier refused with
 > `ObjstoreBarrierSealedError`) exist, all unwired; **nothing else below is

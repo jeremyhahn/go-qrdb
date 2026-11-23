@@ -120,14 +120,19 @@ func roundTripObjstoreLSM(t *testing.T, dataDir string, enc *atrest.Encryptor) (
 	}
 	var tables bytes.Buffer
 	sharedDir := filepath.Join(dataDir, "objstore", objstoreLSMPrefix)
-	walkErr := filepath.WalkDir(sharedDir, func(path string, d fs.DirEntry, err error) error {
+	root, err := os.OpenRoot(sharedDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = root.Close() }()
+	walkErr := fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".sst") {
 			return nil
 		}
-		raw, err := os.ReadFile(path)
+		raw, err := root.ReadFile(path)
 		if err != nil {
 			return err
 		}
