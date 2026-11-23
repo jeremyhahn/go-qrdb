@@ -282,9 +282,12 @@ Before adding to it:
 
 **Version skew.** A client that does not know a status reads it as an
 unrecognised number and falls through to its generic request error, never a
-misclassification. The server
-and the Go SDK ship from one repository, so a mixed deployment loses precision
-on old clients and nothing else.
+misclassification. An older client
+loses status precision and nothing else. A cluster that mixes `qrdbd` releases
+is bounded by the adjacency rule of
+[rolling upgrades](../rolling-upgrades/engineering.md#adjacent-releases); a
+new SDK request field that an older server would drop is clause (5) of that
+row, still open under its Q5.
 
 ### QUIC protocol version and response acknowledgement
 
