@@ -167,12 +167,19 @@ func TestServiceKVStore_CompoundEntityFallsBackToScan(t *testing.T) {
 				t.Fatalf("Save %d: %v", w.ID, err)
 			}
 		}
-		hits, err := widgets.QueryByCompoundIndex(ctx, "widget.Team_State", []interface{}{"red", "open"})
+		// The DAO's query builder finds the entity by its compound fields;
+		// with no compound index behind it, it scans.
+		hits, err := widgets.Find(ctx).Where("Team = ?", "red").Where("State = ?", "open").Execute()
 		if err != nil || len(hits) != 1 || hits[0].ID != 1 {
-			t.Fatalf("QueryByCompoundIndex = %+v, %v; want ID 1", hits, err)
+			t.Fatalf("Find(Team, State) = %+v, %v; want ID 1", hits, err)
 		}
 		// By design (pkg/server/lifecycle/kv_adapter.go, QueryCompoundIndex):
-		// the service store maintains no compound index and says so.
+		// the service store maintains no compound index and says so, both
+		// to a named compound-index query through the DAO and to the store
+		// call itself, rather than answering empty.
+		if _, err := widgets.QueryByCompoundIndex(ctx, "widget.Team_State", []interface{}{"red", "open"}); !errors.Is(err, sdk.ErrKVIndexUnsupported) {
+			t.Fatalf("QueryByCompoundIndex = %v; want ErrKVIndexUnsupported", err)
+		}
 		_, err = store.QueryCompoundIndex(ctx, "widget.Team_State", [][]byte{[]byte("red"), []byte("open")})
 		if !errors.Is(err, sdk.ErrKVIndexUnsupported) {
 			t.Fatalf("store.QueryCompoundIndex = %v; want ErrKVIndexUnsupported", err)
