@@ -323,6 +323,8 @@ func (s *KeyspaceReclaimService) ReclaimDatabaseKeyspace(ctx context.Context, te
 	if fence.PerDatabase {
 		markerKV = target.KV
 	}
+	// The log marker is read under no write guard: it is a read.
+	unguarded := ctx
 	var stillFenced func(context.Context) error
 	if markerKV != nil {
 		guard, err := dropFencedGuard(tenantID, db, claim)
@@ -361,8 +363,32 @@ func (s *KeyspaceReclaimService) ReclaimDatabaseKeyspace(ctx context.Context, te
 	// incarnation (a database created before incarnations) is satisfied by
 	// an absent marker, so removing it would readmit such a write paused
 	// across the drop. The next database created under the name claims it
-	// (UnfenceDatabaseKeyspace).
-	return nil
+	// (UnfenceDatabaseKeyspace). It is still read: a reclamation of a drop
+	// whose name a successor claimed, or another drop took over, reports
+	// the drop superseded even when no data was left to refuse it.
+	logKV, err := s.logFenceKV(unguarded, tenantID, db, incarnation)
+	if err != nil || logKV == nil {
+		return err
+	}
+	return ownLogTombstone(unguarded, logKV, tenantID, db, claim)
+}
+
+// ownLogTombstone reports whether the (tenantID, db) log-only marker in kv
+// is still the tombstone of the drop claim, without removing it: an absent
+// marker or this drop's tombstone is nil, a live marker (a successor) or
+// another drop's tombstone is a *database.DropSupersededError.
+func ownLogTombstone(ctx context.Context, kv ReclaimKV, tenantID, db, claim string) error {
+	current, present, err := readMarker(ctx, kv, DropFenceKey(tenantID, db))
+	if err != nil {
+		return &DropFenceError{TenantID: tenantID, Database: db, Op: "read", Err: err}
+	}
+	if !present {
+		return nil
+	}
+	if !isDropFenceTombstone(current) {
+		return &database.DropSupersededError{Name: db, TenantID: tenantID}
+	}
+	return ownTombstone(current, claim, tenantID, db)
 }
 
 // FenceDatabaseKeyspace fences incarnation of the (tenantID, db) database in
