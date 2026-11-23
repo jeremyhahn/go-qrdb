@@ -1258,11 +1258,17 @@ func assertControl(t *testing.T, where string, reads []engineRead) {
 func assertNoMarkerUnder(t *testing.T, root string) {
 	t.Helper()
 	files := 0
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	scoped, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatalf("OpenRoot %s: %v", root, err)
+	}
+	defer func() { _ = scoped.Close() }()
+	rootFS := scoped.FS()
+	err = fs.WalkDir(rootFS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		data, err := os.ReadFile(path)
+		data, err := fs.ReadFile(rootFS, path)
 		if err != nil {
 			return err
 		}
