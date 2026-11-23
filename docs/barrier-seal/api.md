@@ -48,7 +48,12 @@ documented in [cli.md](cli.md#qrdb-seal-store).
 A secret name is one opaque segment: it may not be empty, `.` or `..`, or
 contain `/`, `\` or a control character. The server refuses such a name with
 `seal.ErrInvalidSecretName` (REST answers 400), and the SDK refuses it before
-the wire with `transport.ErrSealStoreInvalidName`. REST and MCP send or return
+the wire with `transport.ErrSealStoreInvalidName`. A record stored before this
+rule (for example `tls/key` in an upgraded embedded deployment) still shows in
+List and stays readable, deletable and resealable in-process through the
+embedded `seal.SealStore`: Get, Delete and Reseal accept such a name only when
+its record exists, Put never creates one, and the network transports and the
+SDK keep refusing it. REST and MCP send or return
 a secret only over https and refuse a redirect to `http://` or another host
 (`transport.BarrierSecretRequiresTLSError`). Reseal replaces the record in one
 write, and Put, Delete and Reseal are serialized, so a failed reseal leaves the
