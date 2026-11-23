@@ -1241,6 +1241,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	n.Embedding = embSvc
 	n.RAG = ragSvc
 
+	// iamResolver is the tenant store resolver user and role routing use;
+	// the group store routes through the same one (nil: no routing).
+	var iamResolver tenant.StoreResolver
+
 	// Seal-gated services: only constructed when a barrier is provided.
 	if infra.SealBarrier != nil {
 		if err := n.buildSealServices(ctx, infra, log, authStore); err != nil {
@@ -1286,6 +1290,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 				return nil, &RoleServiceError{Err: err}
 			}
 			n.Role = routedRoles
+			iamResolver = resolver
 
 			if err := n.buildUserAuthFactorService(ctx, resolver, authStore, infra.AuditLogger, log); err != nil {
 				return nil, err
@@ -1359,6 +1364,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			return nil, &RoleServiceError{Err: roerr}
 		}
 		n.Role = routedRoles
+		iamResolver = resolver
 
 		if uafErr := n.buildUserAuthFactorService(ctx, resolver, authStore, infra.AuditLogger, log); uafErr != nil {
 			return nil, uafErr
@@ -1508,14 +1514,23 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// provisioned with seal.enabled: true, with data moved into it through
 	// backup/restore or an application-level re-seed (see
 	// docs/barrier-seal/user.md).
-	// IAM groups (go-qrdb#1651): one store over the auth store, its records
-	// keyed by tenant; membership lives on the (final, possibly routed) user
-	// record and the group's roles are checked against the role service.
+	// IAM groups (go-qrdb#1651): routed per tenant through the resolver
+	// user and role routing use, so a dedicated-isolation tenant's groups
+	// live inside its barrier and a sealed tenant's fail closed; without
+	// routing, one store over the auth store, its records keyed by tenant.
+	// Membership lives on the (final, possibly routed) user record and the
+	// group's roles are checked against the role service.
 	groupMembers, err := user.NewGroupMembership(n.User)
 	if err != nil {
 		return nil, &GroupServiceError{Err: err}
 	}
-	groupSvc, err := group.NewStore(authStore, group.WithRoleLookup(n.Role), group.WithMemberRevoker(groupMembers))
+	groupOpts := []group.Option{group.WithRoleLookup(n.Role), group.WithMemberRevoker(groupMembers)}
+	var groupSvc group.GroupServicer
+	if iamResolver != nil {
+		groupSvc, err = group.NewRoutingService(iamResolver, groupOpts...)
+	} else {
+		groupSvc, err = group.NewStore(authStore, groupOpts...)
+	}
 	if err != nil {
 		return nil, &GroupServiceError{Err: err}
 	}

@@ -4530,15 +4530,24 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		storeResolver = resolver
 	}
 
-	// IAM groups: one store over the system tenant's confined runtime view,
-	// keyed by tenant inside it. Deleting a group revokes it from every
-	// member through the served user store; a group's roles are looked up
-	// in the served role store, so a role of another tenant is refused.
+	// IAM groups: routed per tenant like users and roles, so a
+	// dedicated-isolation tenant's groups live inside its barrier and a
+	// sealed tenant's groups fail closed; without a tenant service, one
+	// store over the system tenant's confined runtime view, keyed by tenant
+	// inside it. Deleting a group revokes it from every member through the
+	// served user store; a group's roles are looked up in the served role
+	// store, so a role of another tenant is refused.
 	groupMembers, err := user.NewGroupMembership(servedUserSvc)
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "group membership", Err: err}
 	}
-	servedGroupSvc, err := group.NewStore(systemStore, group.WithRoleLookup(servedRoleSvc), group.WithMemberRevoker(groupMembers))
+	groupOpts := []group.Option{group.WithRoleLookup(servedRoleSvc), group.WithMemberRevoker(groupMembers)}
+	var servedGroupSvc group.GroupServicer
+	if storeResolver != nil {
+		servedGroupSvc, err = group.NewRoutingService(storeResolver, groupOpts...)
+	} else {
+		servedGroupSvc, err = group.NewStore(systemStore, groupOpts...)
+	}
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "group store", Err: err}
 	}

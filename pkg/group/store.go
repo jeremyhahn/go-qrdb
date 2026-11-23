@@ -65,12 +65,68 @@ func WithMemberRevoker(rv MemberRevoker) Option {
 	return func(s *kvGroupStore) { s.revoker = rv }
 }
 
+// WithIdentityIndex makes the store claim every group id it creates in index
+// (kind tenant.IdentityGroup) and release the claim when the group is
+// deleted, so a router (NewRoutingService) can find the tenant that owns an
+// id without searching every tenant's store. pkg/role does the same.
+func WithIdentityIndex(index tenant.IdentityIndex) Option {
+	return func(s *kvGroupStore) { s.identity = index }
+}
+
+// recordIdentity claims id for tenantID; it returns the claim token, or ""
+// when no index is configured.
+func (s *kvGroupStore) recordIdentity(ctx context.Context, id, tenantID string) (string, error) {
+	if s.identity == nil {
+		return "", nil
+	}
+	return s.identity.Record(ctx, tenant.IdentityGroup, id, tenantID)
+}
+
+// releaseClaim gives back the claim a failed create took. A stale claim was
+// already replaced, so there is nothing left to release.
+func (s *kvGroupStore) releaseClaim(ctx context.Context, id, token string) {
+	if s.identity == nil || token == "" {
+		return
+	}
+	_ = s.identity.Forget(ctx, tenant.IdentityGroup, id, token)
+}
+
+// forgetIdentity releases the claim on id held by tenantID once its group is
+// deleted. A claim held by another tenant is a conflict, not a release.
+func (s *kvGroupStore) forgetIdentity(ctx context.Context, id, tenantID string) error {
+	if s.identity == nil {
+		return nil
+	}
+	claim, held, err := s.identity.Lookup(ctx, tenant.IdentityGroup, id)
+	if err != nil {
+		return err
+	}
+	if !held {
+		return nil
+	}
+	if tenantid.IsSystem(tenantID) {
+		tenantID = tenantid.System
+	}
+	if claim.Tenant != tenantID {
+		return &tenant.IdentityClaimConflictError{Kind: tenant.IdentityGroup, ID: id}
+	}
+	if ferr := s.identity.Forget(ctx, tenant.IdentityGroup, id, claim.Token); ferr != nil {
+		var stale *tenant.IdentityClaimStaleError
+		if errors.As(ferr, &stale) {
+			return nil
+		}
+		return ferr
+	}
+	return nil
+}
+
 // kvGroupStore implements GroupServicer over a kvstore.KVStore, with the key
 // layout and name-claim pattern of pkg/role's store.
 type kvGroupStore struct {
-	store   kvstore.KVStore
-	roles   RoleLookup
-	revoker MemberRevoker
+	store    kvstore.KVStore
+	roles    RoleLookup
+	revoker  MemberRevoker
+	identity tenant.IdentityIndex
 }
 
 // NewStore returns a GroupServicer over store. The store must implement
@@ -126,6 +182,10 @@ func (s *kvGroupStore) CreateGroup(ctx context.Context, req *CreateGroupRequest)
 	if !stored {
 		return nil, &GroupNameTakenError{Name: g.Name, TenantID: tenantID}
 	}
+	// Claim the id in the identity index so a routed deployment finds the
+	// owning tenant's store by id. The id is a fresh UUID: a conflict means
+	// the index is not what this store wrote.
+	var claimToken string
 	// Every failure after the claim releases it, secondary indexes first and
 	// the primary record last, as pkg/role's CreateRole does.
 	var written []string
@@ -137,8 +197,13 @@ func (s *kvGroupStore) CreateGroup(ctx context.Context, req *CreateGroupRequest)
 		for _, k := range written {
 			_ = s.store.Delete(cctx, k)
 		}
+		s.releaseClaim(cctx, g.ID, claimToken)
 		_, _ = atomicStore.CompareAndDelete(cctx, nameKey, idBytes)
 	}()
+	claimToken, err = s.recordIdentity(ctx, g.ID, tenantID)
+	if err != nil {
+		return nil, &StoreError{Op: "create", Detail: "claim identity", Err: err}
+	}
 	pk := primaryKey(g.ID)
 	if err := s.store.Put(ctx, pk, data); err != nil {
 		return nil, &StoreError{Op: "create", Detail: "put primary", Err: err}
@@ -277,6 +342,12 @@ func (s *kvGroupStore) DeleteGroup(ctx context.Context, id string) error {
 	}
 	if err := s.store.Delete(ctx, primaryKey(g.ID)); err != nil {
 		return &StoreError{Op: "delete", Detail: "primary", Err: err}
+	}
+	// Release the id's claim last, so a stale claim cannot keep routing the
+	// id to a tenant that no longer holds it; a failure here is completed by
+	// the router's reconcile on the next delete (routingGroupService).
+	if err := s.forgetIdentity(ctx, g.ID, g.TenantID); err != nil {
+		return &StoreError{Op: "delete", Detail: "identity index", Err: err}
 	}
 	return nil
 }
