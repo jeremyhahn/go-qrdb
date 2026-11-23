@@ -21,6 +21,8 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -346,4 +348,31 @@ func TestJournalRoot_SiblingOfCleanedRoot(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "/data/db.journal", a)
 	assert.Equal(t, a, b)
+}
+
+// TestLocalRoots_RelativePathResolvesAgainstWorkingDirectory proves a relative
+// local path is reserved where the local provider opens it: against the
+// process working directory, with its journal sibling.
+func TestLocalRoots_RelativePathResolvesAgainstWorkingDirectory(t *testing.T) {
+	cwd, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	t.Chdir(cwd)
+	got, err := LocalRoots("objects")
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.Join(cwd, "objects"), filepath.Join(cwd, "objects.journal")}, got)
+}
+
+// TestLocalRoots_SymlinkedRootReservesThePhysicalJournal proves a symlinked
+// root reserves the link, its physical target and the target's journal, which
+// is where openStores keeps the commit journal.
+func TestLocalRoots_SymlinkedRootReservesThePhysicalJournal(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	target := filepath.Join(base, "target")
+	require.NoError(t, os.Mkdir(target, 0o700))
+	link := filepath.Join(base, "link")
+	require.NoError(t, os.Symlink(target, link))
+	got, err := LocalRoots(link)
+	require.NoError(t, err)
+	assert.Equal(t, []string{link, target, target + journalTreeSuffix}, got)
 }

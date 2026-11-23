@@ -17,8 +17,10 @@ package objstore
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"io"
+	"io/fs"
 	"maps"
 	"path/filepath"
 
@@ -93,6 +95,36 @@ func journalRoot(root string) (string, error) {
 		return "", err
 	}
 	return filepath.Clean(abs) + journalTreeSuffix, nil
+}
+
+// LocalRoots returns every path the local provider and openStores occupy for
+// a local settings "path": the path made absolute against the process working
+// directory (as the local provider opens a relative path), its physical
+// directory when the path exists and resolves through a symlink elsewhere, and
+// the commit-journal sibling of the physical directory (of the absolute path
+// while it does not exist yet). It is the reservation source for callers that
+// must never hand these paths to another store or remove them.
+func LocalRoots(path string) ([]string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	abs = filepath.Clean(abs)
+	roots := []string{abs}
+	physical := abs
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		physical = filepath.Clean(resolved)
+		if physical != abs {
+			roots = append(roots, physical)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	journal, err := journalRoot(physical)
+	if err != nil {
+		return nil, err
+	}
+	return append(roots, journal), nil
 }
 
 // refuseInTreeJournal fails the open of a walked provider's store that still

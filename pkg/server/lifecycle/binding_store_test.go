@@ -1080,14 +1080,102 @@ func TestLocalBindingFactory_PlaintextBarrierAdmitsObjstore(t *testing.T) {
 func TestLocalBindingFactory_ReservedRoots(t *testing.T) {
 	dir := t.TempDir()
 	wal := filepath.Join(t.TempDir(), "wal")
-	cfg := qrdbconfig.StorageConfig{WALDir: wal, Objstore: qrdbconfig.ObjstoreConfig{Settings: map[string]string{"path": "objects"}}}
-	got := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, cfg, prefixTenants).ReservedRoots()
-	want := []string{wal, filepath.Join(dir, "objects")}
+	objects := filepath.Join(t.TempDir(), "objects")
+	cfg := qrdbconfig.StorageConfig{WALDir: wal, Objstore: qrdbconfig.ObjstoreConfig{Settings: map[string]string{"path": objects}}}
+	got, err := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, cfg, prefixTenants).ReservedRoots()
+	if err != nil {
+		t.Fatalf("ReservedRoots: %v", err)
+	}
+	want := []string{wal, objects, objects + ".journal"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("ReservedRoots = %v, want %v", got, want)
 	}
-	if got := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{WALDir: "wal"}, prefixTenants).ReservedRoots(); len(got) != 0 {
-		t.Fatalf("ReservedRoots with a relative wal_dir = %v, want none", got)
+}
+
+// TestLocalBindingFactory_ReservedRootsFollowTheWorkingDirectory proves a
+// relative objstore path and wal_dir are reserved where storage opens them,
+// against the process working directory, never under the node data directory.
+func TestLocalBindingFactory_ReservedRootsFollowTheWorkingDirectory(t *testing.T) {
+	cwd, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+	dir := t.TempDir()
+	cfg := qrdbconfig.StorageConfig{WALDir: "wal", Objstore: qrdbconfig.ObjstoreConfig{Settings: map[string]string{"path": "objects"}}}
+	got, err := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, cfg, prefixTenants).ReservedRoots()
+	if err != nil {
+		t.Fatalf("ReservedRoots: %v", err)
+	}
+	want := []string{filepath.Join(cwd, "wal"), filepath.Join(cwd, "objects"), filepath.Join(cwd, "objects.journal")}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("ReservedRoots = %v, want %v", got, want)
+	}
+	for _, p := range got {
+		if p == filepath.Join(dir, "objects") {
+			t.Fatalf("ReservedRoots reserves %s under the data directory, not the opened store", p)
+		}
+	}
+}
+
+// TestLocalBindingFactory_ReservedRootsDefaultObjstoreJournal proves the
+// default local object store reserves its journal sibling.
+func TestLocalBindingFactory_ReservedRootsDefaultObjstoreJournal(t *testing.T) {
+	dir := t.TempDir()
+	got, err := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants).ReservedRoots()
+	if err != nil {
+		t.Fatalf("ReservedRoots: %v", err)
+	}
+	want := []string{filepath.Join(dir, "objstore"), filepath.Join(dir, "objstore.journal")}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("ReservedRoots = %v, want %v", got, want)
+	}
+}
+
+// TestLocalBindingFactory_RelativeObjstoreRootRefusedAsDataDir proves a
+// Manager over the factory refuses a data_dir over the cwd-relative object
+// store, its journal or the working directory above them, and the store's
+// files stay.
+func TestLocalBindingFactory_RelativeObjstoreRootRefusedAsDataDir(t *testing.T) {
+	cwd, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+	dir := t.TempDir()
+	objects := filepath.Join(cwd, "objects")
+	journal := objects + ".journal"
+	var markers []string
+	for _, d := range []string{objects, journal} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		marker := filepath.Join(d, "marker")
+		if err := os.WriteFile(marker, []byte("node store"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		markers = append(markers, marker)
+	}
+	cfg := qrdbconfig.StorageConfig{Objstore: qrdbconfig.ObjstoreConfig{Settings: map[string]string{"path": "objects"}}}
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, cfg, prefixTenants)
+	mgr := database.NewManager(slog.Default(), dir, database.WithBackendFactory(f))
+	cat, err := database.NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.SetCatalog(cat)
+	t.Cleanup(func() { _ = mgr.Close() })
+	for i, dataDir := range []string{objects, journal, cwd} {
+		_, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: fmt.Sprintf("db%d", i), Backend: database.BackendFile, DataDir: dataDir})
+		var reserved *database.DataDirReservedPathError
+		if !errors.As(err, &reserved) {
+			t.Fatalf("Create with data_dir %s: err = %v, want *database.DataDirReservedPathError", dataDir, err)
+		}
+	}
+	for _, marker := range markers {
+		if _, err := os.Stat(marker); err != nil {
+			t.Fatalf("node store file after the refused creates: %v", err)
+		}
 	}
 }
 

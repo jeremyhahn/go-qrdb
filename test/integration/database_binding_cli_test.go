@@ -353,6 +353,50 @@ func TestDatabaseBinding_CLI_ProvisionedFourBackendsOwnStores_PerProtocol(t *tes
 	}
 }
 
+// TestDatabaseBinding_CLI_ObjstoreJournalRefusedAsDataDir_PerProtocol proves,
+// on every transport, that `qrdb database create --data-dir` refuses the
+// node's local object store and its commit-journal sibling as a database data
+// directory, and that both trees survive the refusals and keep serving.
+func TestDatabaseBinding_CLI_ObjstoreJournalRefusedAsDataDir_PerProtocol(t *testing.T) {
+	// Absolute: the daemon's working directory is the source tree.
+	store := filepath.Join(t.TempDir(), "objects")
+	journal := store + ".journal"
+	extra := "storage:\n  objstore:\n    provider: local\n    settings:\n      path: " + strconv.Quote(store) + "\n" +
+		"databases:\n  - name: \"nd-objstore\"\n    backend: objstore\n"
+	node := startStandaloneModeNodeUnencrypted(t, "objstore", extra)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			conn := node.cliArgsFor(proto)
+			for i, dataDir := range []string{journal, store} {
+				name := "claim-" + proto.name + "-" + strconv.Itoa(i)
+				out, err := runQRDB(t, node.cli, conn, "database", "create", name, "--backend", "file", "--data-dir", dataDir)
+				if err == nil || !strings.Contains(out, "reserved path") {
+					t.Fatalf("[%s] database create --data-dir %s = %q, %v; want a reserved path refusal", proto.name, dataDir, out, err)
+				}
+			}
+		})
+	}
+
+	for _, dir := range []string{store, journal} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("node object store tree %s after the refused creates: %v", dir, err)
+		}
+	}
+	for _, proto := range multiProtocols {
+		conn := node.cliArgsFor(proto)
+		key, value := "journal-key-"+proto.name, "journal-value-"+proto.name
+		if out, err := runQRDB(t, node.cli, conn, "--database", "nd-objstore", "kv", "put", key, value); err != nil {
+			t.Fatalf("[%s] kv put nd-objstore: %v\n%s", proto.name, err, out)
+		}
+		out, err := runQRDB(t, node.cli, conn, "--database", "nd-objstore", "kv", "get", key)
+		if err != nil || !strings.Contains(out, value) {
+			t.Fatalf("[%s] kv get nd-objstore = %q, %v; want %q", proto.name, out, err, value)
+		}
+	}
+}
+
 // TestDatabaseBinding_CLI_ObjstoreRefusedUnderEncryptingBarrier: under an
 // encrypting system barrier, an objstore database is refused on every
 // protocol (lifecycle.ObjstoreBindingEncryptionUnsupportedError) and no

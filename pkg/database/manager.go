@@ -70,14 +70,18 @@ const (
 // prevents one database's DataDir from being pointed at another's.
 var reservedDataSubdirs = []string{"seal", "wal", "snapshot", "snapshots", "system", "raft", "meta",
 	// The node's own control-plane stores, one per storage engine.
-	"pebble", "file", "vector", "objstore"}
+	"pebble", "file", "vector", "objstore",
+	// The default local object store's commit-journal sibling.
+	"objstore.journal"}
 
 // ReservedRootsReporter is implemented by a BackendFactory that knows node
-// stores living outside the manager's data root (an absolute write-ahead
-// log directory, a local object-store location). The Manager refuses a
-// database data directory overlapping any of them, and never removes one.
+// stores at the paths storage opens them (the write-ahead log directory, a
+// local object store, its physical root and its commit-journal sibling). The
+// Manager refuses a database data directory overlapping any of them, and never
+// removes one. An error means a store's location cannot be resolved; the
+// Manager then refuses the data directory (fail closed).
 type ReservedRootsReporter interface {
-	ReservedRoots() []string
+	ReservedRoots() ([]string, error)
 }
 
 // Manager manages the lifecycle of all databases. It creates isolated
@@ -2267,7 +2271,13 @@ func (m *Manager) reservedPathConflict(name, dataDir, resolved, root string) err
 		reserved = append(reserved, filepath.Join(root, sub))
 	}
 	if r, ok := m.factory.(ReservedRootsReporter); ok {
-		for _, p := range r.ReservedRoots() {
+		roots, err := r.ReservedRoots()
+		if err != nil {
+			// A node store whose location cannot be resolved cannot be
+			// protected: refuse the data directory rather than risk it.
+			return &InvalidDataDirError{Name: name, DataDir: dataDir, Err: err}
+		}
+		for _, p := range roots {
 			if strings.TrimSpace(p) == "" {
 				continue
 			}
