@@ -115,6 +115,24 @@ func TestVlog_CLI_BarrierDatabase_PerProtocol(t *testing.T) {
 	}
 }
 
+// TestVlog_CLI_BarrierDatabase_Standalone_PerProtocol is the standalone half
+// of option A (ruling 1234): a standalone node has no Raft group, so a
+// barrier database's logs live in the node's local store, each entry and the
+// signing key sealed under the database's barrier key. Every verb is served
+// unsealed, refused sealed, and the log is unchanged after the unseal; no
+// entry is in plaintext anywhere under the node's data root.
+func TestVlog_CLI_BarrierDatabase_Standalone_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startStandaloneModeNode(t, "pebble")
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testVlogBarrierDatabaseOverProtocol(t, node, proto)
+		})
+	}
+}
+
 // vlogBarrierDatabasePassphrase is the barrier secret of every database
 // TestVlog_CLI_BarrierDatabase_PerProtocol creates.
 const vlogBarrierDatabasePassphrase = "vlog-barrier-database-passphrase"
