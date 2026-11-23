@@ -174,17 +174,10 @@ func TestMySQLWire_ClosedConnection_ReleasesItsLocks(t *testing.T) {
 	// Drop the holder's connection outright, mid-transaction.
 	_ = holder.Raw(func(any) error { return driver.ErrBadConn })
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	require.EventuallyWithT(t, func(ct *assert.CollectT) {
 		err := drain(other, "SELECT * FROM accounts WHERE id = 1 FOR UPDATE NOWAIT")
-		if err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the dropped connection's lock was never released: %v", err)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		assert.NoError(ct, err, "the dropped connection's lock was never released")
+	}, 5*time.Second, 20*time.Millisecond)
 }
 
 // Under CLIENT_MULTI_STATEMENTS one COM_QUERY carries several statements.
