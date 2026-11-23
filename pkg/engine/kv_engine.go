@@ -1514,6 +1514,14 @@ func defaultLogger() *logger.Logger {
 // scope is declared at registration and composed with the namespace the index
 // name carries, so it holds for a bare, a per-tenant and a per-(tenant,
 // database) key alike, with nothing about the layout assumed here.
+//
+// It is the standalone helper (the embedded store's write, sdk.NewEmbeddedKVStore)
+// and has no log to replay, so it maintains the indexes in order: an overwrite
+// whose new value is not a JSON object, or carries none of an index's fields,
+// removes the previous value's entries, so a unique value the record held is
+// released. The replicated plain put (handleKVPut, the MVCC put) keeps the
+// exported updaters' merge-base semantics, where such an overwrite leaves the
+// old entries, so existing logs replay unchanged.
 func (e *KVEngine) PutWithIndexes(key, value []byte) error {
 	// A fault reading the previous value is returned, not taken for "no
 	// previous value": that would write the key without retracting the
@@ -1534,10 +1542,10 @@ func (e *KVEngine) PutWithIndexes(key, value []byte) error {
 	if err := batch.Set(key, value); err != nil {
 		return err
 	}
-	if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, value, prevKv); err != nil {
+	if err := updateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, value, prevKv, true); err != nil {
 		return err
 	}
-	if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, key, value, prevKv); err != nil {
+	if err := updateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, key, value, prevKv, true); err != nil {
 		return err
 	}
 	return batch.Commit()

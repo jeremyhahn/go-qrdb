@@ -40,7 +40,9 @@ var errEmbeddedStorageRequired = errors.New("sdk: embedded KV store needs a stor
 // in-process over stg, with secondary indexes maintained atomically on every
 // Put and Delete. It is the store an embedding application hands to NewDAO
 // when it owns its storage (for example sdkstorage.NewPebbleStorage) and runs
-// no server.
+// no server. An overwrite whose value is not a JSON object, or carries none of
+// an index's fields, removes the record's old secondary and compound index
+// entries, so a unique value it held is released.
 //
 // The store is a MultiGuardedBatchKVStore: PutAllIfUnchanged and
 // PutAllIfAllUnchanged apply a guarded batch as one KV-engine transaction,

@@ -2783,17 +2783,17 @@ func TestKVEngine_OrderedTransactionAfterLegacyNonJSONOverwriteCompound(t *testi
 	}); err != nil {
 		t.Fatalf("RegisterEntityType: %v", err)
 	}
-	if err := eng.PutWithIndexes([]byte("sessions/1"), []byte(value)); err != nil {
-		t.Fatalf("PutWithIndexes sessions/1 JSON: %v", err)
-	}
-	if err := eng.PutWithIndexes([]byte("sessions/1"), []byte("not-json")); err != nil {
-		t.Fatalf("PutWithIndexes sessions/1 non-JSON: %v", err)
-	}
+	// The legacy state comes from the replicated plain put, which keeps the
+	// merge-base semantics; PutWithIndexes (standalone) now releases the entry.
+	applyKVEntries(t, eng, []sm.Entry{
+		kvPutEntry(1, "sessions/1", value),
+		kvPutEntry(2, "sessions/1", "not-json"),
+	})
 	txn := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
 		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("sessions/1"), []byte(`{"user_id":"u2","device_id":"d1"}`), nil, 0)),
 		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("sessions/2"), []byte(value), nil, 0)),
 	}, nil, protocol.CmdFlagOrderedUnique))
-	res := applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: txn}})
+	res := applyKVEntries(t, eng, []sm.Entry{{Index: 3, Cmd: txn}})
 	_, kind, ok := protocol.DecodeAppErrorKind(res[0].Data)
 	if !ok || kind != protocol.AppErrorConflict {
 		t.Fatalf("result data = %q, want a conflict application error", res[0].Data)
@@ -3215,16 +3215,19 @@ func TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesUniqueValue(t *testing.
 
 	// An unflagged (plain) non-JSON overwrite keeps the old entry, as every
 	// replica of an existing log applied it.
-	t.Run("legacy keeps the entry", func(t *testing.T) {
+	t.Run("put with indexes releases", func(t *testing.T) {
 		eng := setup(t)
 		if err := eng.PutWithIndexes([]byte("member/1"), []byte("not-json")); err != nil {
 			t.Fatalf("PutWithIndexes member/1 non-JSON: %v", err)
 		}
-		if ids := lookupA(t, eng); len(ids) != 1 || string(ids[0]) != "member/1" {
-			t.Errorf("lookup a = %q, want the kept entry for member/1", ids)
+		if ids := lookupA(t, eng); len(ids) != 0 {
+			t.Errorf("lookup a = %q, want no entries after the non-JSON overwrite", ids)
 		}
-		if err := eng.PutWithIndexes([]byte("member/2"), []byte(`{"email":"a"}`)); err == nil {
-			t.Fatal("PutWithIndexes member/2 with the still-held value succeeded, want a unique refusal")
+		if err := eng.PutWithIndexes([]byte("member/2"), []byte(`{"email":"a"}`)); err != nil {
+			t.Fatalf("PutWithIndexes member/2 with the released value: %v", err)
+		}
+		if ids := lookupA(t, eng); len(ids) != 1 || string(ids[0]) != "member/2" {
+			t.Errorf("lookup a = %q, want [member/2]", ids)
 		}
 	})
 	// A transaction proposed with ordered-unique-check releases the value.
@@ -3281,16 +3284,19 @@ func TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesCompoundUniqueValue(t *
 	}
 
 	// An unflagged (plain) non-JSON overwrite keeps the old compound entry.
-	t.Run("legacy keeps the entry", func(t *testing.T) {
+	t.Run("put with indexes releases", func(t *testing.T) {
 		eng := setup(t)
 		if err := eng.PutWithIndexes([]byte("sessions/1"), []byte("not-json")); err != nil {
 			t.Fatalf("PutWithIndexes sessions/1 non-JSON: %v", err)
 		}
-		if ids := holders(t, eng); len(ids) != 1 || string(ids[0]) != "sessions/1" {
-			t.Errorf("compound holders = %q, want the kept entry for sessions/1", ids)
+		if ids := holders(t, eng); len(ids) != 0 {
+			t.Errorf("compound holders = %q, want no entries after the non-JSON overwrite", ids)
 		}
-		if err := eng.PutWithIndexes([]byte("sessions/2"), value); err == nil {
-			t.Fatal("PutWithIndexes sessions/2 with the still-held tuple succeeded, want a unique refusal")
+		if err := eng.PutWithIndexes([]byte("sessions/2"), value); err != nil {
+			t.Fatalf("PutWithIndexes sessions/2 with the released tuple: %v", err)
+		}
+		if ids := holders(t, eng); len(ids) != 1 || string(ids[0]) != "sessions/2" {
+			t.Errorf("compound holders = %q, want [sessions/2]", ids)
 		}
 	})
 	// A transaction proposed with ordered-unique-check releases the tuple.

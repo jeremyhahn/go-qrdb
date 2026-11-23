@@ -1009,3 +1009,78 @@ func TestEmbeddedKVStore_GuardedBatchUniqueCompoundTuple(t *testing.T) {
 		}
 	})
 }
+
+// assertEmbeddedOverwriteReleasesEmail drives one indexed record through an
+// overwrite whose value carries no email and checks that the record's old
+// unique entry is gone: the lookup is empty, another key takes the value, and a
+// later Delete of the overwritten record leaves the new owner's entry alone.
+func assertEmbeddedOverwriteReleasesEmail(t *testing.T, overwrite []byte) {
+	t.Helper()
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	registerEmbeddedEmailIndex(t, store, "member", true)
+	if err := store.Put(ctx, "member/1", embeddedEmailValue("x")); err != nil {
+		t.Fatalf("Put member/1: %v", err)
+	}
+	if err := store.Put(ctx, "member/1", overwrite); err != nil {
+		t.Fatalf("overwrite member/1 with %q: %v", overwrite, err)
+	}
+	keys, err := store.QueryIndex(ctx, "member.Email", []byte("x"))
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("QueryIndex after overwrite = %q, %v; want no keys", keys, err)
+	}
+	if err := store.Put(ctx, "member/2", embeddedEmailValue("x")); err != nil {
+		t.Fatalf("Put member/2 with the released value: %v", err)
+	}
+	if err := store.Delete(ctx, "member/1"); err != nil {
+		t.Fatalf("Delete member/1: %v", err)
+	}
+	keys, err = store.QueryIndex(ctx, "member.Email", []byte("x"))
+	if err != nil || len(keys) != 1 || string(keys[0]) != "member/2" {
+		t.Fatalf("QueryIndex after Delete = %q, %v; want [member/2]", keys, err)
+	}
+}
+
+func TestEmbeddedKVStore_NonJSONOverwriteReleasesUniqueValue(t *testing.T) {
+	assertEmbeddedOverwriteReleasesEmail(t, []byte("raw"))
+}
+
+func TestEmbeddedKVStore_FieldlessOverwriteReleasesUniqueValue(t *testing.T) {
+	assertEmbeddedOverwriteReleasesEmail(t, []byte(`{"other":1}`))
+}
+
+func TestEmbeddedKVStore_NonJSONOverwriteReleasesCompoundTuple(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newEmbeddedTestStore(t)
+	if _, err := NewDAO(store, "seat", func() *embeddedSeat { return &embeddedSeat{} }); err != nil {
+		t.Fatalf("NewDAO: %v", err)
+	}
+	record := func(id uint64) []byte {
+		b, err := json.Marshal(&embeddedSeat{ID: id, Team: "red", Seat: "a1"})
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		return b
+	}
+	tuple := [][]byte{[]byte("red"), []byte("a1")}
+	if err := store.Put(ctx, "seat/1", record(1)); err != nil {
+		t.Fatalf("Put seat/1: %v", err)
+	}
+	if err := store.Put(ctx, "seat/1", []byte("raw")); err != nil {
+		t.Fatalf("overwrite seat/1: %v", err)
+	}
+	keys, err := store.QueryCompoundIndex(ctx, "seat.Team_Seat", tuple)
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("QueryCompoundIndex after overwrite = %q, %v; want no keys", keys, err)
+	}
+	if err := store.Put(ctx, "seat/2", record(2)); err != nil {
+		t.Fatalf("Put seat/2 with the released tuple: %v", err)
+	}
+	if err := store.Delete(ctx, "seat/1"); err != nil {
+		t.Fatalf("Delete seat/1: %v", err)
+	}
+	keys, err = store.QueryCompoundIndex(ctx, "seat.Team_Seat", tuple)
+	if err != nil || len(keys) != 1 || string(keys[0]) != "seat/2" {
+		t.Fatalf("QueryCompoundIndex after Delete = %q, %v; want [seat/2]", keys, err)
+	}
+}
