@@ -348,7 +348,13 @@ var ErrMigrationStagingRootUnreadable = errors.New("qrdb/database: migration sta
 //     staging intact, because committing the staged records without a key
 //     to adopt would leave every record unreadable. A Shamir target's
 //     staged wrapped root key is adopted before the envelope, in
-//     seal.AdoptMigratedRootKey's order.
+//     seal.AdoptMigratedRootKey's order. When the staging envelope's
+//     strategy or the journal's TargetStrategy names Shamir, the staged
+//     wrapped key must read back nonempty: a missing (not-found or nil)
+//     or empty one returns ErrMigrationStagingRootUnreadable with nothing
+//     touched, because a Shamir envelope without its wrapped key cannot
+//     recover the root key. For any other target a missing or empty
+//     wrapped key means there is nothing to adopt.
 //   - Not committed (pending/copying/verifying/failed): ROLL BACK — discard the
 //     keyed staging copies and staged snapshots, and restore any pre-migration
 //     backups.
@@ -383,11 +389,18 @@ func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBacken
 			stagingRoot = blob
 			adopt = true
 			wrappedPath := seal.WrappedRootKeyPath(j.StagingRootKeyPath)
+			// A Shamir target (named by the staging envelope or the
+			// journal) cannot be recovered without its wrapped key: a
+			// missing or empty one refuses the roll-forward untouched.
+			shamir := strategyOf(blob) == seal.StrategyShamir || j.TargetStrategy == seal.StrategyShamir
 			wblob, werr := backend.Get(ctx, wrappedPath)
 			switch {
-			case werr == nil:
+			case werr == nil && len(wblob) > 0:
 				stagingWrapped = wblob
-			case errors.Is(werr, seal.ErrSecretNotFound):
+			case werr == nil, errors.Is(werr, seal.ErrSecretNotFound):
+				if shamir {
+					return fmt.Errorf("%w: %s: missing or empty wrapped key for a Shamir target", ErrMigrationStagingRootUnreadable, wrappedPath)
+				}
 				// Not a Shamir target: no wrapped key to adopt.
 			default:
 				return fmt.Errorf("%w: %s: %w", ErrMigrationStagingRootUnreadable, wrappedPath, werr)
@@ -479,7 +492,16 @@ func unionDirs(a, b []string) []string {
 // blob, or "" when absent/undecodable.
 func persistedStrategy(ctx context.Context, backend seal.StorageBackend, rootKeyPath string) seal.StrategyID {
 	blob, err := backend.Get(ctx, rootKeyPath)
-	if err != nil || len(blob) == 0 {
+	if err != nil {
+		return ""
+	}
+	return strategyOf(blob)
+}
+
+// strategyOf decodes the "strategy" field of a sealed root-key envelope
+// blob. An empty or undecodable blob yields "".
+func strategyOf(blob []byte) seal.StrategyID {
+	if len(blob) == 0 {
 		return ""
 	}
 	var sealed struct {

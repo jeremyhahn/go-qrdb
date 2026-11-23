@@ -23,6 +23,8 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -35,6 +37,9 @@ type faultBackend struct {
 	seal.StorageBackend
 	failGet func(key string) bool
 	failPut func(key string) bool
+	// nilGet, when set, answers a Get of key with (nil, nil): the shape
+	// seal.StorageAdapter over Pebble returns for a missing key.
+	nilGet func(key string) bool
 	// failGetN, when set, fails the n-th Get (1-based) of key.
 	failGetN func(key string, n int) bool
 	gets     map[string]int
@@ -45,6 +50,9 @@ type faultBackend struct {
 func (f *faultBackend) Get(ctx context.Context, key string) ([]byte, error) {
 	if f.failGet != nil && f.failGet(key) {
 		return nil, errBackendFault
+	}
+	if f.nilGet != nil && f.nilGet(key) {
+		return nil, nil
 	}
 	if f.failGetN != nil {
 		if f.gets == nil {
@@ -331,17 +339,20 @@ func TestRecoverInterruptedMigration_StagingWrappedReadFails(t *testing.T) {
 // canonical envelope, then deletes both staging keys.
 func TestRecoverInterruptedMigration_ShamirWrappedKeyAdoptedBeforeEnvelope(t *testing.T) {
 	ctx := context.Background()
-	mem := stagedRecoveryFixture(t)
-	wrapped := []byte("staged-shamir-wrapped-root-key")
-	if err := mem.Put(ctx, seal.WrappedRootKeyPath("root-key.migrating"), wrapped); err != nil {
-		t.Fatalf("put staging wrapped key: %v", err)
+	mem := shamirStagedRecoveryFixture(t)
+	wrapped, err := mem.Get(ctx, seal.WrappedRootKeyPath("root-key.migrating"))
+	if err != nil || len(wrapped) == 0 {
+		t.Fatalf("staged wrapped key: %d bytes, err %v", len(wrapped), err)
 	}
 	backend := &faultBackend{StorageBackend: mem}
 	if err := RecoverInterruptedMigration(ctx, backend, "root-key", nil); err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
 	if got, err := mem.Get(ctx, seal.WrappedRootKeyPath("root-key")); err != nil || string(got) != string(wrapped) {
-		t.Fatalf("canonical wrapped key = %q (err %v), want %q", got, err, wrapped)
+		t.Fatalf("canonical wrapped key = %d bytes (err %v), want the staged %d bytes", len(got), err, len(wrapped))
+	}
+	if got := persistedStrategy(ctx, mem, "root-key"); got != seal.StrategyShamir {
+		t.Fatalf("canonical strategy = %q, want shamir", got)
 	}
 	wrappedAt, envelopeAt := -1, -1
 	for i, key := range backend.puts {
@@ -370,10 +381,7 @@ func TestRecoverInterruptedMigration_ShamirWrappedKeyAdoptedBeforeEnvelope(t *te
 // before cleanup, so the journal and staging keys stay for the next boot.
 func TestRecoverInterruptedMigration_ShamirWrappedPutFails(t *testing.T) {
 	ctx := context.Background()
-	mem := stagedRecoveryFixture(t)
-	if err := mem.Put(ctx, seal.WrappedRootKeyPath("root-key.migrating"), []byte("wrapped")); err != nil {
-		t.Fatalf("put staging wrapped key: %v", err)
-	}
+	mem := shamirStagedRecoveryFixture(t)
 	backend := &faultBackend{
 		StorageBackend: mem,
 		failPut:        func(key string) bool { return key == seal.WrappedRootKeyPath("root-key") },
@@ -388,5 +396,129 @@ func TestRecoverInterruptedMigration_ShamirWrappedPutFails(t *testing.T) {
 	}
 	if got := persistedStrategy(ctx, mem, "root-key"); got != seal.StrategyNone {
 		t.Fatalf("canonical strategy = %q, want none (envelope not written)", got)
+	}
+}
+
+// shamirStagedRecoveryFixture is stagedRecoveryFixture with a real Shamir
+// target: the staging sibling at root-key.migrating is minted 2-of-3 by
+// MintKeyedShamirSibling from the none barrier at root-key through a real
+// holder ceremony, so the staging envelope names shamir and its wrapped
+// unseal-domain root key sits at WrappedRootKeyPath("root-key.migrating").
+// The journal names a Shamir target.
+func shamirStagedRecoveryFixture(t *testing.T) *seal.MemoryBackend {
+	t.Helper()
+	ctx := context.Background()
+	mem := seal.NewMemoryBackend()
+	none := initNoneBarrierBackend(t, mem, "root-key")
+	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
+	svc, err := ceremony.NewDatabaseCeremonyService("acme", "system", mem,
+		ceremony.HolderDeps{CA: ca, TrustDomain: holderTrustDomain}, reencTestLogger())
+	if err != nil {
+		t.Fatalf("ceremony service: %v", err)
+	}
+	none.SetCeremonyDistributor(svc)
+	for _, name := range []string{"alice", "bob", "carol"} {
+		h := newDBHolder(t, name)
+		if _, err := svc.RegisterOfficer(ctx, ceremony.RegisterOfficerRequest{Username: h.name, CSRPEM: h.csr, Enroller: "db-admin"}); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	if _, _, err := none.MintKeyedShamirSibling(ctx, ".migrating", 2, 3); err != nil {
+		t.Fatalf("mint shamir sibling: %v", err)
+	}
+	if got := persistedStrategy(ctx, mem, "root-key.migrating"); got != seal.StrategyShamir {
+		t.Fatalf("staging strategy = %q, want shamir", got)
+	}
+	if err := mem.Put(ctx, recoveryLiveKey, []byte(recoveryLiveValue)); err != nil {
+		t.Fatalf("put live record: %v", err)
+	}
+	if err := mem.Put(ctx, recoveryStagingKey, []byte(recoveryStaged)); err != nil {
+		t.Fatalf("put staged record: %v", err)
+	}
+	j := &seal.MigrationJournal{
+		SourceStrategy: seal.StrategyNone, TargetStrategy: seal.StrategyShamir,
+		Mechanism: seal.MechanismSwap, Phase: seal.PhaseCommitting,
+		StagingRootKeyPath: "root-key.migrating",
+		StagedRecords:      []seal.StagedRecords{{Prefix: "store/", StagingPrefix: "store.migrating/"}},
+	}
+	jblob, _ := json.Marshal(j)
+	if err := mem.Put(ctx, "root-key.migration", jblob); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+	return mem
+}
+
+// TestRecoverInterruptedMigration_ShamirWrappedKeyMissing: a committed
+// Shamir migration whose staged wrapped key is gone refuses the
+// roll-forward with nothing touched (Codex round-2 P1 on #1687).
+func TestRecoverInterruptedMigration_ShamirWrappedKeyMissing(t *testing.T) {
+	ctx := context.Background()
+	mem := shamirStagedRecoveryFixture(t)
+	if err := mem.Delete(ctx, seal.WrappedRootKeyPath("root-key.migrating")); err != nil {
+		t.Fatalf("delete staged wrapped key: %v", err)
+	}
+	if err := RecoverInterruptedMigration(ctx, mem, "root-key", nil); !errors.Is(err, ErrMigrationStagingRootUnreadable) {
+		t.Fatalf("Recover err = %v, want ErrMigrationStagingRootUnreadable", err)
+	}
+	assertRecoveryUntouched(t, mem)
+}
+
+// TestRecoverInterruptedMigration_ShamirWrappedKeyEmpty: an empty staged
+// wrapped key is refused like a missing one.
+func TestRecoverInterruptedMigration_ShamirWrappedKeyEmpty(t *testing.T) {
+	ctx := context.Background()
+	mem := shamirStagedRecoveryFixture(t)
+	if err := mem.Put(ctx, seal.WrappedRootKeyPath("root-key.migrating"), []byte{}); err != nil {
+		t.Fatalf("empty staged wrapped key: %v", err)
+	}
+	if err := RecoverInterruptedMigration(ctx, mem, "root-key", nil); !errors.Is(err, ErrMigrationStagingRootUnreadable) {
+		t.Fatalf("Recover err = %v, want ErrMigrationStagingRootUnreadable", err)
+	}
+	assertRecoveryUntouched(t, mem)
+}
+
+// TestRecoverInterruptedMigration_ShamirWrappedKeyNilNil: the Pebble
+// adapter's (nil, nil) answer for a missing staged wrapped key is refused
+// like a not-found error.
+func TestRecoverInterruptedMigration_ShamirWrappedKeyNilNil(t *testing.T) {
+	ctx := context.Background()
+	mem := shamirStagedRecoveryFixture(t)
+	backend := &faultBackend{
+		StorageBackend: mem,
+		nilGet:         func(key string) bool { return key == seal.WrappedRootKeyPath("root-key.migrating") },
+	}
+	if err := RecoverInterruptedMigration(ctx, backend, "root-key", nil); !errors.Is(err, ErrMigrationStagingRootUnreadable) {
+		t.Fatalf("Recover err = %v, want ErrMigrationStagingRootUnreadable", err)
+	}
+	assertRecoveryUntouched(t, mem)
+	if blob, err := mem.Get(ctx, seal.WrappedRootKeyPath("root-key.migrating")); err != nil || len(blob) == 0 {
+		t.Fatalf("staged wrapped key after the refusal: %d bytes, err %v; want it kept", len(blob), err)
+	}
+}
+
+// TestRecoverInterruptedMigration_PassphraseWrappedKeyNilNil: a passphrase
+// target has no wrapped key, so a (nil, nil) read of it means nothing to
+// adopt and the roll-forward completes.
+func TestRecoverInterruptedMigration_PassphraseWrappedKeyNilNil(t *testing.T) {
+	ctx := context.Background()
+	mem := stagedRecoveryFixture(t)
+	backend := &faultBackend{
+		StorageBackend: mem,
+		nilGet:         func(key string) bool { return key == seal.WrappedRootKeyPath("root-key.migrating") },
+	}
+	if err := RecoverInterruptedMigration(ctx, backend, "root-key", nil); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := persistedStrategy(ctx, mem, "root-key"); got != seal.StrategyPassphrase {
+		t.Fatalf("canonical strategy = %q, want passphrase", got)
+	}
+	if got, err := mem.Get(ctx, recoveryLiveKey); err != nil || string(got) != recoveryStaged {
+		t.Fatalf("live record = %q (err %v), want %q", got, err, recoveryStaged)
+	}
+	if _, err := mem.Get(ctx, seal.WrappedRootKeyPath("root-key")); !errors.Is(err, seal.ErrSecretNotFound) {
+		t.Fatalf("canonical wrapped key: err %v, want none adopted", err)
+	}
+	if j, err := seal.LoadMigrationJournalFrom(ctx, mem, "root-key"); err != nil || j != nil {
+		t.Fatalf("journal after recovery = %+v (err %v), want cleared", j, err)
 	}
 }
