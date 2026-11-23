@@ -157,6 +157,92 @@ func TestRoleReconcileAllTenantsTool_StrictSeparationIsSOExclusive(t *testing.T)
 	}
 }
 
+// TestRoleTools_SOExclusivePostureGate holds the MCP role create, per-tenant
+// reconcile and all-tenants reconcile tools to the exact posture gate
+// (go-qrdb#1129): under strict separation an Admin without the SO role gets
+// SORoleRequiredError and an SO holding Admin SORoleConflictError naming its
+// tenant; a separate SO passes. Under the standard posture all three callers
+// pass, the Admin keeping its SO duties.
+func TestRoleTools_SOExclusivePostureGate(t *testing.T) {
+	sys := tenantid.System
+	type handlerFor func(*authmw.AuthMiddleware, role.RoleServicer) func(context.Context) error
+	ops := []struct {
+		name string
+		h    handlerFor
+	}{
+		{name: "create role", h: func(mw *authmw.AuthMiddleware, roles role.RoleServicer) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := handleRoleCreate(roles, mw)(ctx, makeReq(map[string]any{
+					"name": "reviewer", "tenant_id": sys, "permissions": "kv:get"}))
+				return err
+			}
+		}},
+		{name: "reconcile built-in roles", h: func(mw *authmw.AuthMiddleware, roles role.RoleServicer) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := handleRoleReconcile(roles, mw)(ctx, makeReq(map[string]any{"tenant_id": sys}))
+				return err
+			}
+		}},
+		{name: "reconcile every tenant", h: func(mw *authmw.AuthMiddleware, roles role.RoleServicer) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := handleRoleReconcileAllTenants(mw, roles, liveMCPTenants(t, "acme"))(ctx, mcp.CallToolRequest{})
+				return err
+			}
+		}},
+	}
+	callers := []struct {
+		name      string
+		roleNames []string
+		required  bool
+		conflict  bool
+	}{
+		{name: "admin without SO", roleNames: []string{role.RoleNameAdmin}, required: true},
+		{name: "SO holding admin", roleNames: []string{role.RoleNameAdmin, role.RoleNameSO}, conflict: true},
+		{name: "separate SO", roleNames: []string{role.RoleNameSO}},
+	}
+	for _, strict := range []bool{true, false} {
+		posture := "standard"
+		if strict {
+			posture = "strict"
+		}
+		for _, op := range ops {
+			for _, c := range callers {
+				t.Run(op.name+"/"+c.name+"/"+posture, func(t *testing.T) {
+					roles := authtest.BindingRoles(t)
+					sysCtx := tenant.WithTenantID(context.Background(), sys)
+					roleIDs := make([]string, 0, len(c.roleNames))
+					for _, name := range c.roleNames {
+						r, err := roles.GetRoleByName(sysCtx, sys, name)
+						if err != nil {
+							t.Fatalf("system %s role: %v", name, err)
+						}
+						roleIDs = append(roleIDs, r.ID)
+					}
+					mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithStrictSeparation(strict))
+					ctx := auth.WithIdentity(sysCtx, &auth.Identity{Subject: "system-caller", TenantID: sys, Roles: roleIDs})
+					err := op.h(mw, roles)(ctx)
+					switch {
+					case strict && c.required:
+						var required *auth.SORoleRequiredError
+						if !errors.As(err, &required) {
+							t.Fatalf("err = %v, want SORoleRequiredError", err)
+						}
+					case strict && c.conflict:
+						var conflict *auth.SORoleConflictError
+						if !errors.As(err, &conflict) || conflict.TenantID != sys {
+							t.Fatalf("err = %v, want SORoleConflictError for tenant %q", err, sys)
+						}
+					default:
+						if err != nil {
+							t.Fatalf("want admitted, got %v", err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 // TestRoleReconcileAllTenantsTool_RegisteredOnlyWithBothServices: the tool
 // needs the tenant service, so a server without it does not offer it.
 func TestRoleReconcileAllTenantsTool_RegisteredOnlyWithBothServices(t *testing.T) {
