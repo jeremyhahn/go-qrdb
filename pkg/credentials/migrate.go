@@ -474,13 +474,17 @@ func (s *CredentialService) writeWinningCopy(ctx context.Context, name string, r
 }
 
 // deletionFence reads the name's migration claim for a delete and returns
-// the claim settled (Complete) when an install is still pending, or nil
-// when there is no claim to fence. The delete writes it in its own batch,
+// the claim rewritten as a deletion tombstone (Complete and Deleted), or nil
+// when there is nothing to rewrite: the claim is already a tombstone, or it
+// does not decode. Every delete leaves a tombstone, whether the claim was
+// pending, complete or absent. The delete writes it in its own batch,
 // guarded on the raw claim it returns: a node whose interrupted install
-// left the claim pending then finds it complete when it retries and
-// restores nothing, so a completed delete is never undone by a legacy
-// copy that predates it. A credential stored under the name afterwards is
-// not blocked: a settled claim only stops the legacy install.
+// left the claim pending then finds it settled when it retries and restores
+// nothing, and a node whose pre-upgrade copy differs from the completed
+// claim deletes that copy instead of reporting it as a conflict to import,
+// so a completed delete is never undone by a legacy copy that predates it.
+// A credential stored under the name afterwards is not blocked: a tombstone
+// only stops the legacy install.
 func (s *CredentialService) deletionFence(ctx context.Context, name string) (raw, fenced []byte, err error) {
 	raw, err = s.store.Get(ctx, MigrationClaimPrefix+name)
 	if err != nil {
@@ -496,9 +500,10 @@ func (s *CredentialService) deletionFence(ctx context.Context, name string) (raw
 		// copy another node migrates later restores nothing.
 		raw = nil
 		claim = migrationClaim{Complete: true, Deleted: true}
-	case json.Unmarshal(raw, &claim) != nil || claim.Complete:
+	case json.Unmarshal(raw, &claim) != nil || claim.Deleted:
 		return raw, nil, nil
 	default:
+		// A pending claim is settled and a completed one tombstoned.
 		claim.Complete, claim.Deleted = true, true
 	}
 	fenced, err = json.Marshal(claim)

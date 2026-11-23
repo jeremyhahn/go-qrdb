@@ -748,6 +748,46 @@ func TestResolveMigrationConflict_ImportRacingAcrossDerivedServices(t *testing.T
 	assert.Equal(t, 1, already, "the other reports the copy already imported")
 }
 
+// TestMigrateLegacy_DeleteAfterCompletedMigrationSettlesALaterDifferingCopy
+// verifies a delete after a completed migration leaves a tombstone: a later
+// node's pre-upgrade copy, differing or the same, is deleted and installs
+// nothing, and is not reported as a conflict to import.
+func TestMigrateLegacy_DeleteAfterCompletedMigrationSettlesALaterDifferingCopy(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name          string
+		value, before string
+	}{
+		{name: "differing copy", value: "kept", before: "kept-old"},
+		{name: "same copy", value: "v2", before: "v1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := newHomeStore(t)
+			legacyA := seal.NewMemoryBackend()
+			legacyB := newLegacyBarrier(t)
+			writeLegacy(t, legacyA, "db", "v2", "v1", nil)
+			writeLegacy(t, legacyB, "db", tc.value, tc.before, nil)
+			nodeA := newMigratingService(t, legacyA)
+			require.NoError(t, nodeA.BindStore(ctx, home))
+			claim, ok, err := nodeA.loadClaim(ctx, MigrationClaimPrefix+"db")
+			require.NoError(t, err)
+			require.True(t, ok)
+			require.True(t, claim.Complete, "node A's migration completed its claim")
+			require.NoError(t, nodeA.DeleteCredential(ctx, "db"))
+
+			parent := newUnboundServiceWith(t)
+			nodeB, err := parent.ForTenant(ctx, home, legacyB)
+			require.NoError(t, err)
+			conflicts, err := nodeB.ListMigrationConflicts(ctx)
+			require.NoError(t, err)
+			assert.Empty(t, conflicts, "a copy older than the delete is settled, not a conflict")
+			assert.Empty(t, legacyKeys(t, legacyB), "node B's pre-upgrade copy is deleted")
+			_, err = nodeB.retrieveBytes(ctx, "db")
+			assert.ErrorIs(t, err, ErrCredentialNotFound, "the deleted credential stays absent")
+		})
+	}
+}
+
 // TestResolveMigrationConflict_Discard verifies discarding deletes the kept
 // copy, leaves the replicated record and audits every dropped record.
 func TestResolveMigrationConflict_Discard(t *testing.T) {
