@@ -2702,6 +2702,71 @@ func TestKVEngine_LegacyTransactionKeepsUnorderedUniqueCheck(t *testing.T) {
 	})
 }
 
+// A flagged transaction checks a unique compound index across all its
+// writes in op order: two keys cannot claim one tuple, and a tuple an
+// earlier overwrite released may be taken by a later write.
+func TestKVEngine_FlaggedTransactionChecksUniqueCompoundAcrossWrites(t *testing.T) {
+	setup := func(t *testing.T) *KVEngine {
+		t.Helper()
+		stg := memory.NewStorage()
+		t.Cleanup(func() { _ = stg.Close() })
+		eng := NewKVEngine(stg)
+		if err := eng.RegisterEntityType("sessions", []EntityIndex{
+			{FieldNames: []string{"UserID", "DeviceID"}, JSONFieldNames: []string{"user_id", "device_id"}, Unique: true},
+		}); err != nil {
+			t.Fatalf("RegisterEntityType: %v", err)
+		}
+		seed := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+			mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("sessions/1"), []byte(`{"user_id":"u","device_id":"d1"}`), nil, 0)),
+		}, nil, protocol.CmdFlagOrderedUnique))
+		if !txnSucceeded(t, applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: seed}})[0]) {
+			t.Fatal("seed transaction did not run its success branch")
+		}
+		return eng
+	}
+	flagged := func(ops ...[]byte) []byte {
+		return mustEncode(protocol.EncodeTransactionFlags(nil, ops, nil, protocol.CmdFlagOrderedUnique))
+	}
+	put := func(k, v string) []byte {
+		return mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte(k), []byte(v), nil, 0))
+	}
+
+	t.Run("two keys one tuple refused", func(t *testing.T) {
+		eng := setup(t)
+		cmd := flagged(put("sessions/2", `{"user_id":"u","device_id":"d2"}`), put("sessions/3", `{"user_id":"u","device_id":"d2"}`))
+		res := applyKVEntries(t, eng, []sm.Entry{{Index: 2, Cmd: cmd}})[0]
+		_, kind, ok := protocol.DecodeAppErrorKind(res.Data)
+		if !ok || kind != protocol.AppErrorConflict {
+			t.Fatalf("result data = %q, want a conflict application error", res.Data)
+		}
+		mustLookupAbsent(t, eng, "sessions/2")
+		mustLookupAbsent(t, eng, "sessions/3")
+	})
+	t.Run("a committed tuple refused", func(t *testing.T) {
+		eng := setup(t)
+		cmd := flagged(put("sessions/2", `{"user_id":"u","device_id":"d1"}`))
+		res := applyKVEntries(t, eng, []sm.Entry{{Index: 2, Cmd: cmd}})[0]
+		_, kind, ok := protocol.DecodeAppErrorKind(res.Data)
+		if !ok || kind != protocol.AppErrorConflict {
+			t.Fatalf("result data = %q, want a conflict application error", res.Data)
+		}
+		mustLookupAbsent(t, eng, "sessions/2")
+	})
+	t.Run("move commits", func(t *testing.T) {
+		eng := setup(t)
+		cmd := flagged(put("sessions/1", `{"user_id":"u","device_id":"d2"}`), put("sessions/2", `{"user_id":"u","device_id":"d1"}`))
+		if !txnSucceeded(t, applyKVEntries(t, eng, []sm.Entry{{Index: 2, Cmd: cmd}})[0]) {
+			t.Fatal("the flagged move should run its success branch")
+		}
+		mustLookupValue(t, eng, "sessions/1", `{"user_id":"u","device_id":"d2"}`)
+		mustLookupValue(t, eng, "sessions/2", `{"user_id":"u","device_id":"d1"}`)
+		keys, err := eng.compoundIndexes["sessions.UserID_DeviceID"].GetCompound([][]byte{[]byte("u"), []byte("d1")})
+		if err != nil || len(keys) != 1 || string(keys[0]) != "sessions/2" {
+			t.Fatalf("index (u, d1) = %q, %v; want [sessions/2]", keys, err)
+		}
+	})
+}
+
 // indexSetFailingStorage wraps storage.Storage and, while failIndexSet is
 // set, fails every Set of a key outside entityPrefix: the index entry
 // writes a backfill makes. Every other call is forwarded unchanged.

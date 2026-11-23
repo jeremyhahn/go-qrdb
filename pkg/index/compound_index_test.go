@@ -184,6 +184,62 @@ func TestCompoundIndex_BatchOperations(t *testing.T) {
 	assert.Len(t, keys, 2)
 }
 
+// GetCompoundInBatch reads through the batch: an entry staged in it is seen
+// before commit, and a committed entry the batch deleted is not.
+func TestCompoundIndex_GetCompoundInBatch_ReadsTheBatch(t *testing.T) {
+	s, err := pebbleStorage.New(pebbleStorage.TestConfig(t.TempDir()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	idx, err := NewCompoundIndex(s, IndexConfig{
+		Name:       "test.reactions.MessageID_AuthorUUID",
+		FieldNames: []string{"MessageID", "AuthorUUID"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+		Unique:     true,
+		Type:       IndexTypeUnique,
+	}, testCompoundLogger(t))
+	require.NoError(t, err)
+
+	committed := [][]byte{[]byte("msg-1"), []byte("user-a")}
+	require.NoError(t, idx.PutCompound([]byte("reactions/1"), committed))
+
+	batch := s.Batch()
+	defer func() { _ = batch.Close() }()
+
+	staged := [][]byte{[]byte("msg-2"), []byte("user-b")}
+	require.NoError(t, idx.PutCompoundBatch(batch, []byte("reactions/2"), staged))
+	require.NoError(t, idx.DeleteCompoundBatch(batch, []byte("reactions/1"), committed))
+
+	keys, err := idx.GetCompoundInBatch(batch, staged)
+	require.NoError(t, err)
+	assert.Equal(t, [][]byte{[]byte("reactions/2")}, keys, "an entry staged in the batch is seen")
+
+	keys, err = idx.GetCompoundInBatch(batch, committed)
+	require.NoError(t, err)
+	assert.Empty(t, keys, "a committed entry the batch deleted is not seen")
+
+	keys, err = idx.GetCompound(staged)
+	require.NoError(t, err)
+	assert.Empty(t, keys, "GetCompound reads committed storage only")
+}
+
+// CompoundTuple is equal for two value lists exactly when they index under one
+// tuple: a case-insensitive index folds case.
+func TestCompoundIndex_CompoundTuple_Normalizes(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.users.Org_Email",
+		FieldNames: []string{"Org", "Email"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+		Unique:     true,
+		Type:       IndexTypeUnique,
+	})
+	a := idx.CompoundTuple([][]byte{[]byte("acme"), []byte("A@example.com")})
+	b := idx.CompoundTuple([][]byte{[]byte("acme"), []byte("a@example.com")})
+	c := idx.CompoundTuple([][]byte{[]byte("acme"), []byte("b@example.com")})
+	assert.Equal(t, a, b)
+	assert.NotEqual(t, a, c)
+}
+
 func TestCompoundIndex_Clear(t *testing.T) {
 	idx := newTestCompoundIndex(t, IndexConfig{
 		Name:       "test.messages.ConversationID_Timestamp",

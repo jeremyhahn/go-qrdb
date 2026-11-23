@@ -793,6 +793,18 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 		}
 		return sm.Result{}, verr
 	}
+	// A flagged command also checks the unique compound indexes across its
+	// writes in op order, and applies them through the batch; an unflagged one
+	// keeps the committed-storage check, so an existing log replays unchanged.
+	orderedUnique := txn.Flags&protocol.CmdFlagOrderedUnique != 0
+	if orderedUnique {
+		if verr := checkCompoundUniqueBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, writesFromOps(ops)); verr != nil {
+			if res, handled, aerr := asAppErrResult(verr); handled {
+				return res, aerr
+			}
+			return sm.Result{}, verr
+		}
+	}
 
 	// Watch notifications are collected during the batch and emitted only after
 	// a successful commit, so a failed commit publishes nothing.
@@ -832,7 +844,7 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 				}
 			}
 			if len(e.compoundIndexes) > 0 {
-				if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, op.Key, op.Value, prevKv); err != nil {
+				if err := updateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, op.Key, op.Value, prevKv, orderedUnique); err != nil {
 					return sm.Result{}, err
 				}
 			}

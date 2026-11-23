@@ -19,6 +19,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
+	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	qkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
@@ -291,6 +294,77 @@ func checkUniqueViolationsBatchUnordered(batch storage.Batch, indexes map[string
 				return &UniqueConstraintError{Index: idxName, Field: fieldName}
 			}
 			pending[mapKey] = p.Key
+		}
+	}
+	return nil
+}
+
+// checkCompoundUniqueBatch pre-checks the unique compound indexes over a set
+// of writes in op order, reading each index through batch, the check
+// CheckUniqueViolationsBatch makes for single-field indexes. A tuple held by
+// a key an earlier write of the set overwrote or deleted is free for the
+// writes after it, and two writes of the set cannot claim one tuple for two
+// keys. It reads only, so a violation refuses the whole set before anything
+// is staged; apply (PutCompoundBatchOrdered) then admits exactly what it
+// admits. Indexes are visited in name order so the refusal names the same
+// index on every replica.
+func checkCompoundUniqueBatch(batch storage.Batch, compoundIndexes map[string]*index.CompoundIndex, compoundIndexFields map[string][]string, compoundIndexScopes map[string][]byte, writes []indexedWrite) error {
+	if len(compoundIndexes) == 0 || len(writes) == 0 {
+		return nil
+	}
+	names := slices.Sorted(maps.Keys(compoundIndexes))
+	// released holds the keys whose committed entries an earlier write of the
+	// set replaced; pending records the key each (index, tuple) is claimed by
+	// within the set, and claims indexes those by key so a later write of the
+	// same key drops the key's earlier claims.
+	released := make(map[string]struct{})
+	pending := make(map[string]string)
+	claims := make(map[string][]string)
+	for _, w := range writes {
+		key := string(w.Key)
+		for _, mapKey := range claims[key] {
+			if pending[mapKey] == key {
+				delete(pending, mapKey)
+			}
+		}
+		delete(claims, key)
+		released[key] = struct{}{}
+		if w.Delete {
+			continue
+		}
+		fields := parseIndexFields(w.Value)
+		if fields == nil {
+			continue // not a JSON object; nothing to index
+		}
+		for _, idxName := range names {
+			idx := compoundIndexes[idxName]
+			if !idx.Config().Unique || !KeyInScope(compoundIndexScopes[idxName], w.Key) {
+				continue
+			}
+			fieldNames, ok := compoundIndexFields[idxName]
+			if !ok {
+				continue
+			}
+			values := extractCompoundFieldValues(fields, fieldNames)
+			if values == nil {
+				continue // sparse: a missing field indexes nothing
+			}
+			conflict := &UniqueConstraintError{Index: idxName, Field: strings.Join(fieldNames, ",")}
+			existing, err := idx.GetCompoundInBatch(batch, values)
+			if err != nil {
+				return err
+			}
+			for _, k := range existing {
+				if _, isReleased := released[string(k)]; !isReleased {
+					return conflict
+				}
+			}
+			mapKey := idxName + "\x00" + string(idx.CompoundTuple(values))
+			if prev, seen := pending[mapKey]; seen && prev != key {
+				return conflict
+			}
+			pending[mapKey] = key
+			claims[key] = append(claims[key], mapKey)
 		}
 	}
 	return nil
@@ -609,6 +683,13 @@ func UnquoteJSON(raw json.RawMessage) []byte {
 // value's compound entries are always removed; a new value that is not a JSON
 // object, or lacks any of the fields, adds no entry.
 func UpdateCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]*index.CompoundIndex, compoundIndexFields map[string][]string, compoundIndexScopes map[string][]byte, key, value []byte, prevKv *qkv.KeyValue) error {
+	return updateCompoundIndexesBatch(batch, compoundIndexes, compoundIndexFields, compoundIndexScopes, key, value, prevKv, false)
+}
+
+// updateCompoundIndexesBatch is UpdateCompoundIndexesBatch; ordered checks a
+// unique index through the batch (PutCompoundBatchOrdered), as an op-ordered
+// (CmdFlagOrderedUnique) transaction applies, instead of committed storage.
+func updateCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]*index.CompoundIndex, compoundIndexFields map[string][]string, compoundIndexScopes map[string][]byte, key, value []byte, prevKv *qkv.KeyValue, ordered bool) error {
 	if len(compoundIndexes) == 0 {
 		return nil
 	}
@@ -645,7 +726,11 @@ func UpdateCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]
 		}
 		newValues := extractCompoundFieldValues(newFields, fieldNames)
 		if newValues != nil {
-			if err := idx.PutCompoundBatch(batch, key, newValues); err != nil {
+			put := idx.PutCompoundBatch
+			if ordered {
+				put = idx.PutCompoundBatchOrdered
+			}
+			if err := put(batch, key, newValues); err != nil {
 				return err
 			}
 		}

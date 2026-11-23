@@ -103,7 +103,7 @@ func (idx *CompoundIndex) PutCompound(entityKey []byte, fieldValues [][]byte) er
 	compoundValue := EncodeCompoundValue(normalizedValues, idx.valueTypes())
 
 	if idx.config.Unique {
-		if err := idx.checkUniqueConstraint(entityKey, compoundValue); err != nil {
+		if err := idx.checkUniqueConstraint(idx.storage, entityKey, compoundValue); err != nil {
 			idx.metrics.uniqueViolations.Inc()
 			idx.metrics.errors.Inc()
 			return err
@@ -127,18 +127,31 @@ func (idx *CompoundIndex) PutCompound(entityKey []byte, fieldValues [][]byte) er
 
 // PutCompoundBatch queues a compound index entry into the provided batch.
 func (idx *CompoundIndex) PutCompoundBatch(batch storage.Batch, entityKey []byte, fieldValues [][]byte) error {
+	return idx.putCompoundBatch(batch, idx.storage, entityKey, fieldValues)
+}
+
+// PutCompoundBatchOrdered is PutCompoundBatch with the unique check read
+// through the batch, so an entry an earlier write of the same batch staged
+// or deleted counts: the check an op-ordered command applies under. An
+// overwrite or delete releases its key's tuple for the writes after it, and
+// two writes of one batch cannot claim one tuple for two keys.
+func (idx *CompoundIndex) PutCompoundBatchOrdered(batch storage.Batch, entityKey []byte, fieldValues [][]byte) error {
+	return idx.putCompoundBatch(batch, batch, entityKey, fieldValues)
+}
+
+// putCompoundBatch stages the entry in batch after checking a unique index
+// against unique.
+func (idx *CompoundIndex) putCompoundBatch(batch storage.Batch, unique storage.Reader, entityKey []byte, fieldValues [][]byte) error {
 	start := time.Now()
 	defer func() {
 		idx.metrics.putLatency.Observe(time.Since(start).Seconds())
 	}()
 	idx.metrics.putOps.Inc()
 
-	normalizedValues := idx.normalizeFieldValues(fieldValues)
-
-	compoundValue := EncodeCompoundValue(normalizedValues, idx.valueTypes())
+	compoundValue := idx.CompoundTuple(fieldValues)
 
 	if idx.config.Unique {
-		if err := idx.checkUniqueConstraint(entityKey, compoundValue); err != nil {
+		if err := idx.checkUniqueConstraint(unique, entityKey, compoundValue); err != nil {
 			idx.metrics.uniqueViolations.Inc()
 			idx.metrics.errors.Inc()
 			return err
@@ -162,19 +175,33 @@ func (idx *CompoundIndex) PutCompoundBatch(batch storage.Batch, entityKey []byte
 
 // GetCompound retrieves all entity keys matching an exact compound value.
 func (idx *CompoundIndex) GetCompound(fieldValues [][]byte) ([][]byte, error) {
+	return idx.getCompound(idx.storage, fieldValues, "index.CompoundIndex.GetCompound")
+}
+
+// GetCompoundInBatch is GetCompound read through r, typically a
+// storage.Batch: an entry staged in the batch is seen before commit, and a
+// committed entry the batch deleted is not.
+func (idx *CompoundIndex) GetCompoundInBatch(r storage.Reader, fieldValues [][]byte) ([][]byte, error) {
+	return idx.getCompound(r, fieldValues, "index.CompoundIndex.GetCompoundInBatch")
+}
+
+// CompoundTuple returns the normalized, encoded tuple fieldValues index
+// under. Two value lists claim one unique tuple exactly when their
+// CompoundTuple bytes are equal.
+func (idx *CompoundIndex) CompoundTuple(fieldValues [][]byte) []byte {
+	return EncodeCompoundValue(idx.normalizeFieldValues(fieldValues), idx.valueTypes())
+}
+
+func (idx *CompoundIndex) getCompound(r storage.Reader, fieldValues [][]byte, op string) ([][]byte, error) {
 	start := time.Now()
 	defer func() {
 		idx.metrics.getLatency.Observe(time.Since(start).Seconds())
 	}()
 	idx.metrics.getOps.Inc()
 
-	normalizedValues := idx.normalizeFieldValues(fieldValues)
+	prefix := idx.buildValuePrefix(idx.CompoundTuple(fieldValues))
 
-	compoundValue := EncodeCompoundValue(normalizedValues, idx.valueTypes())
-
-	prefix := idx.buildValuePrefix(compoundValue)
-
-	iter := idx.storage.NewIterator(&storage.IteratorOptions{
+	iter := r.NewIterator(&storage.IteratorOptions{
 		LowerBound: prefix,
 		UpperBound: storageIncrementBytes(prefix),
 		OnlyKeys:   true,
@@ -196,7 +223,7 @@ func (idx *CompoundIndex) GetCompound(fieldValues [][]byte) ([][]byte, error) {
 		return nil, errors.Wrapf(
 			err,
 			errors.ErrStorage,
-			"index.CompoundIndex.GetCompound",
+			op,
 			"iterator error",
 		)
 	}
@@ -535,10 +562,10 @@ func (idx *CompoundIndex) normalizeFieldValues(values [][]byte) [][]byte {
 }
 
 // checkUniqueConstraint verifies that the compound value is unique.
-func (idx *CompoundIndex) checkUniqueConstraint(entityKey, compoundValue []byte) error {
+func (idx *CompoundIndex) checkUniqueConstraint(r storage.Reader, entityKey, compoundValue []byte) error {
 	prefix := idx.buildValuePrefix(compoundValue)
 
-	iter := idx.storage.NewIterator(&storage.IteratorOptions{
+	iter := r.NewIterator(&storage.IteratorOptions{
 		LowerBound: prefix,
 		UpperBound: storageIncrementBytes(prefix),
 		OnlyKeys:   true,

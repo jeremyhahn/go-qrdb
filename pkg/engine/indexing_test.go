@@ -1772,6 +1772,76 @@ func TestUpdateCompoundIndexesBatch_MissingFieldsKey(t *testing.T) {
 	}
 }
 
+// uniqueCompoundFixture returns a unique compound index over sessions/* on
+// {user_id, device_id}, seeded with sessions/1 = (u, d1).
+func uniqueCompoundFixture(t *testing.T) (*memory.MemoryStorage, map[string]*index.CompoundIndex, map[string][]string, map[string][]byte) {
+	t.Helper()
+	stg := memory.NewStorage()
+	t.Cleanup(func() { _ = stg.Close() })
+	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+		Name:       "sessions.UserID_DeviceID",
+		Type:       index.IndexTypeUnique,
+		FieldNames: []string{"UserID", "DeviceID"},
+		Unique:     true,
+		KeyPrefix:  "sessions/",
+	}, indexTestLogger(t))
+	if err != nil {
+		t.Fatalf("NewCompoundIndex: %v", err)
+	}
+	indexes := map[string]*index.CompoundIndex{"sessions.UserID_DeviceID": idx}
+	fields := map[string][]string{"sessions.UserID_DeviceID": {"user_id", "device_id"}}
+	scopes := map[string][]byte{"sessions.UserID_DeviceID": []byte("sessions/")}
+	seed := stg.Batch()
+	if err := UpdateCompoundIndexesBatch(seed, indexes, fields, scopes, []byte("sessions/1"), []byte(`{"user_id":"u","device_id":"d1"}`), nil); err != nil {
+		t.Fatalf("seed index entry: %v", err)
+	}
+	if err := seed.Set([]byte("sessions/1"), []byte(`{"user_id":"u","device_id":"d1"}`)); err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	return stg, indexes, fields, scopes
+}
+
+func TestCheckCompoundUniqueBatch(t *testing.T) {
+	put := func(k, v string) indexedWrite { return indexedWrite{Key: []byte(k), Value: []byte(v)} }
+	del := func(k string) indexedWrite { return indexedWrite{Key: []byte(k), Delete: true} }
+	tupleD1 := `{"user_id":"u","device_id":"d1"}`
+	tupleD2 := `{"user_id":"u","device_id":"d2"}`
+	cases := []struct {
+		name     string
+		writes   []indexedWrite
+		conflict bool
+	}{
+		{"two new keys claim one tuple", []indexedWrite{put("sessions/2", tupleD2), put("sessions/3", tupleD2)}, true},
+		{"a new key takes a committed tuple", []indexedWrite{put("sessions/2", tupleD1)}, true},
+		{"case-folded duplicate", []indexedWrite{put("sessions/2", tupleD2), put("sessions/3", `{"user_id":"U","device_id":"D2"}`)}, true},
+		{"one key written twice", []indexedWrite{put("sessions/2", tupleD2), put("sessions/2", tupleD2)}, false},
+		{"overwrite then move", []indexedWrite{put("sessions/1", tupleD2), put("sessions/2", tupleD1)}, false},
+		{"delete then take", []indexedWrite{del("sessions/1"), put("sessions/2", tupleD1)}, false},
+		{"take before the release", []indexedWrite{put("sessions/2", tupleD1), del("sessions/1")}, true},
+		{"in-set claim released by overwrite", []indexedWrite{put("sessions/2", tupleD2), put("sessions/2", `{"user_id":"v"}`), put("sessions/3", tupleD2)}, false},
+		{"out of scope", []indexedWrite{put("other/2", tupleD1)}, false},
+		{"missing field is sparse", []indexedWrite{put("sessions/2", `{"user_id":"u"}`), put("sessions/3", `{"user_id":"u"}`)}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stg, indexes, fields, scopes := uniqueCompoundFixture(t)
+			batch := stg.Batch()
+			defer func() { _ = batch.Close() }()
+			err := checkCompoundUniqueBatch(batch, indexes, fields, scopes, tc.writes)
+			var uce *UniqueConstraintError
+			if tc.conflict && !errors.As(err, &uce) {
+				t.Fatalf("err = %v, want *UniqueConstraintError", err)
+			}
+			if !tc.conflict && err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test helper
 // ---------------------------------------------------------------------------
