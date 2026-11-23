@@ -287,9 +287,16 @@ func (r *MoveReconciler) runStep(ctx context.Context, m Move, p moveStepPhase) e
 		return nil
 	}
 	if _, err := p.complete(ctx, m.TenantID, step.NodeID); err != nil {
-		return err
+		if !r.copyRecorded(ctx, m.TenantID, step) {
+			// The journal does not name the destination: it stays closed
+			// and the next tick redoes the copy from the source.
+			return err
+		}
+		// The write landed though its reply failed: the journal names the
+		// destination, so settle on it.
+	} else {
+		r.recordTransition(ctx, MoveTransitionComplete, m.TenantID, step.NodeID, step.Phase)
 	}
-	r.recordTransition(ctx, MoveTransitionComplete, m.TenantID, step.NodeID, step.Phase)
 	if settler, ok := r.runner.(MoveStepSettler); ok {
 		if err := settler.SettleMoveStep(ctx, step); err != nil {
 			r.logger.Warn("volume: settling the move step after its journal write failed",
@@ -299,6 +306,17 @@ func (r *MoveReconciler) runStep(ctx context.Context, m Move, p moveStepPhase) e
 		}
 	}
 	return nil
+}
+
+// copyRecorded reports whether the journal records step's node copied
+// after a CompleteMoveStep whose reply failed: a copy step whose write
+// landed must still settle, or the node would keep its stores closed.
+func (r *MoveReconciler) copyRecorded(ctx context.Context, tenantID string, step MoveStep) bool {
+	if step.Phase != MoveStepPhaseCopy {
+		return false
+	}
+	cur, _, err := r.cat.readMove(ctx, tenantID)
+	return err == nil && cur != nil && contains(cur.NodesCopied, step.NodeID)
 }
 
 // sanitizeMoveStepError returns the message a failed step persists in the

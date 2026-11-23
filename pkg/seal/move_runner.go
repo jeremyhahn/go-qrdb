@@ -65,9 +65,12 @@ func NewMoveStepRunner(reg *BarrierRegistry, nodeID string, stores TenantStoreCl
 
 // RunMoveStep runs step on this node:
 //   - copy: closes the tenant's stores, copies and verifies the source
-//     into the destination (RunMoveCopyStep), reopens the stores from the
-//     destination and returns once the replicas report caught up; a failed
-//     copy reopens from the source;
+//     into the destination (RunMoveCopyStep) and leaves the stores closed:
+//     nothing serves from the destination until the journal names it for
+//     this node (CompleteMoveStep records the node copied), so a crash or a
+//     failed journal write cannot roll back over an acknowledged write;
+//     SettleMoveStep then reopens from the destination; a failed copy
+//     reopens from the source;
 //   - abort with Copied: closes the stores and copies the destination back
 //     over the source, verified; the stores stay closed until
 //     SettleMoveStep, after the journal CAS;
@@ -103,21 +106,29 @@ func (m *MoveStepRunner) RunMoveStep(ctx context.Context, step volume.MoveStep) 
 }
 
 // SettleMoveStep runs the part of step that must follow the journal CAS:
-// for an abort of a copied node, the stores reopen from the source (the
+// for a copy, the stores open from the destination the journal now names
+// for this node; for an abort of a copied node, the stores reopen from the source (the
 // journal now names it for this node) and the destination is removed.
 // Every other phase has nothing left to do.
 func (m *MoveStepRunner) SettleMoveStep(ctx context.Context, step volume.MoveStep) error {
 	if step.NodeID != m.nodeID {
 		return &MoveStepNodeError{StepNode: step.NodeID, LocalNode: m.nodeID}
 	}
-	if step.Phase != volume.MoveStepPhaseAbort || !step.Copied {
+	switch {
+	case step.Phase == volume.MoveStepPhaseCopy:
+		// The journal now records this node copied, so the destination is
+		// authoritative here: open the stores from it.
+		m.reg.moveOpenPools.Store(step.TenantID, step.ToPool)
+		return m.stores.OpenTenantStores(ctx, step.TenantID)
+	case step.Phase == volume.MoveStepPhaseAbort && step.Copied:
+		m.reg.moveOpenPools.Delete(step.TenantID)
+		if err := m.stores.OpenTenantStores(ctx, step.TenantID); err != nil {
+			return err
+		}
+		return m.removePlacement(ctx, step.TenantID, step.ToPool)
+	default:
 		return nil
 	}
-	m.reg.moveOpenPools.Delete(step.TenantID)
-	if err := m.stores.OpenTenantStores(ctx, step.TenantID); err != nil {
-		return err
-	}
-	return m.removePlacement(ctx, step.TenantID, step.ToPool)
 }
 
 func (m *MoveStepRunner) copyStep(ctx context.Context, step volume.MoveStep) error {
@@ -131,10 +142,8 @@ func (m *MoveStepRunner) copyStep(ctx context.Context, step volume.MoveStep) err
 		}
 		return err
 	}
-	m.reg.moveOpenPools.Store(step.TenantID, step.ToPool)
-	if err := m.stores.OpenTenantStores(ctx, step.TenantID); err != nil {
-		return err
-	}
+	// The stores stay closed: the destination serves only once the journal
+	// records this node copied, in SettleMoveStep.
 	return nil
 }
 

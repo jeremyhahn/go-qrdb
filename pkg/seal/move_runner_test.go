@@ -97,13 +97,17 @@ func TestMoveStepRunner_CopyReopensFromDestination(t *testing.T) {
 	if err := r.RunMoveStep(context.Background(), runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
 		t.Fatalf("copy: %v", err)
 	}
-	if stores.closes != 1 || stores.open != fx.dst() {
-		t.Fatalf("closes = %d, open = %q, want 1 close and the destination open", stores.closes, stores.open)
+	// Before the journal CAS nothing serves from the destination.
+	if stores.closes != 1 || stores.open != "" {
+		t.Fatalf("closes = %d, open = %q, want 1 close and nothing open before the CAS", stores.closes, stores.open)
 	}
 	mustExist(t, filepath.Join(fx.dst(), "MANIFEST-000001"))
 	mustExist(t, fx.src)
 	if err := r.SettleMoveStep(context.Background(), runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
 		t.Fatalf("settle copy: %v", err)
+	}
+	if stores.open != fx.dst() {
+		t.Fatalf("open after settle = %q, want the destination %q", stores.open, fx.dst())
 	}
 }
 
@@ -172,6 +176,12 @@ func TestMoveStepRunner_CopyMovesOpenPebbleStore(t *testing.T) {
 	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
 		t.Fatalf("copy: %v", err)
 	}
+	if _, err := fx.reg.GetTenant(moveTestTenant); err == nil {
+		t.Fatal("GetTenant before the copy CAS: the tenant is open, want it closed")
+	}
+	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("settle copy: %v", err)
+	}
 	if stores.open != fx.dst() {
 		t.Fatalf("open = %q, want the destination %q", stores.open, fx.dst())
 	}
@@ -190,8 +200,55 @@ func TestMoveStepRunner_CopyMovesOpenPebbleStore(t *testing.T) {
 	if err := moved.Barrier().Put(ctx, "move/after", []byte("after-move")); err != nil {
 		t.Fatalf("Put after copy: %v", err)
 	}
-	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
-		t.Fatalf("settle copy: %v", err)
+}
+
+// TestMoveStepRunner_FailedCopyCASKeepsEveryWrite: a copy whose journal
+// write fails (or a crash before it) leaves the destination closed, so no
+// write lands on it; the source still holds every acknowledged write when
+// the move rolls back to it.
+func TestMoveStepRunner_FailedCopyCASKeepsEveryWrite(t *testing.T) {
+	ctx := context.Background()
+	perTenantReg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
+	fx := newMoveFixture(t, WithPerTenantRegistry(perTenantReg))
+	if err := fx.reg.system.Initialize(ctx, MustCredentials(ctx, []byte("pool-test-pass"))); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+	_, tb, err := fx.reg.RegisterVolumeTenant(ctx, moveTestTenant, true)
+	if err != nil {
+		t.Fatalf("RegisterVolumeTenant: %v", err)
+	}
+	if err := tb.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("tenant Initialize: %v", err)
+	}
+	if err := tb.Barrier().Put(ctx, "move/acked", []byte("acknowledged")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	stores := &barrierStores{reg: fx.reg}
+	r, err := NewMoveStepRunner(fx.reg, moveTestNode, stores)
+	if err != nil {
+		t.Fatalf("NewMoveStepRunner: %v", err)
+	}
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	// The CAS fails here: SettleMoveStep never runs.
+	if _, err := fx.reg.GetTenant(moveTestTenant); err == nil {
+		t.Fatal("GetTenant after a copy without its CAS: open, want closed (no write may land on the destination)")
+	}
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseAbort, false)); err != nil {
+		t.Fatalf("abort uncopied: %v", err)
+	}
+	if stores.open != fx.src {
+		t.Fatalf("open = %q, want the source %q", stores.open, fx.src)
+	}
+	back, err := fx.reg.GetTenant(moveTestTenant)
+	if err != nil {
+		t.Fatalf("GetTenant after abort: %v", err)
+	}
+	got, err := back.Barrier().Get(ctx, "move/acked")
+	if err != nil || string(got) != "acknowledged" {
+		t.Fatalf("Get after abort = %q, %v; want %q", got, err, "acknowledged")
 	}
 }
 
@@ -264,6 +321,9 @@ func TestMoveStepRunner_SingleReplicaAbortKeepsEveryWrite(t *testing.T) {
 	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
 		t.Fatalf("copy: %v", err)
 	}
+	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("settle copy: %v", err)
+	}
 	stores.write("w1")
 	stores.write("w2")
 	abort := runnerStep(volume.MoveStepPhaseAbort, true)
@@ -291,6 +351,9 @@ func TestMoveStepRunner_CorruptCopyBackKeepsDestination(t *testing.T) {
 	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
 		t.Fatalf("copy: %v", err)
 	}
+	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("settle copy: %v", err)
+	}
 	stores.write("w1")
 	truncateOnCopy(t, fx.reg)
 	err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseAbort, true))
@@ -312,6 +375,9 @@ func TestMoveStepRunner_AbortRedoneBeforeCAS(t *testing.T) {
 	ctx := context.Background()
 	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
 		t.Fatalf("copy: %v", err)
+	}
+	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("settle copy: %v", err)
 	}
 	stores.write("w1")
 	abort := runnerStep(volume.MoveStepPhaseAbort, true)
@@ -486,6 +552,9 @@ func TestMoveStepRunner_BootAfterAbortCASRemovesDestination(t *testing.T) {
 	ctx := context.Background()
 	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
 		t.Fatalf("copy: %v", err)
+	}
+	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("settle copy: %v", err)
 	}
 	stores.write("w1")
 	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseAbort, true)); err != nil {

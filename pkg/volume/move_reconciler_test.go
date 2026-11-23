@@ -705,6 +705,71 @@ func TestMoveReconciler_CancelDuringCopyAwaitsIt(t *testing.T) {
 	}
 }
 
+// casHookRunner runs hook inside the first copy step, between the copy and
+// the reconciler's CompleteMoveStep, and records every settle.
+type casHookRunner struct {
+	hook    func(step MoveStep)
+	hooked  bool
+	settles []MoveStep
+}
+
+func (h *casHookRunner) RunMoveStep(_ context.Context, step MoveStep) error {
+	if step.Phase == MoveStepPhaseCopy && !h.hooked {
+		h.hooked = true
+		h.hook(step)
+	}
+	return nil
+}
+
+func (h *casHookRunner) SettleMoveStep(_ context.Context, step MoveStep) error {
+	h.settles = append(h.settles, step)
+	return nil
+}
+
+// TestMoveReconciler_CopySettlesOnlyOnRecordedCAS: the destination opens
+// (SettleMoveStep) only once the journal records the node copied. A
+// failed journal write settles nothing, so the node never serves from an
+// unrecorded destination; a write whose reply failed but which landed
+// still settles on the destination.
+func TestMoveReconciler_CopySettlesOnlyOnRecordedCAS(t *testing.T) {
+	t.Run("journal write fails", func(t *testing.T) {
+		cat, kv, _ := newAdmittedMove(t)
+		runner := &casHookRunner{}
+		runner.hook = func(MoveStep) {
+			m := storedMove(t, kv, "acme")
+			m.StepNode = ""
+			putMove(t, kv, m)
+		}
+		r := newTestReconciler(t, cat, runner)
+		if err := tick(context.Background(), r); err == nil {
+			t.Fatal("tick with a failed copy CAS: nil error, want the conflict")
+		}
+		if len(runner.settles) != 0 {
+			t.Fatalf("settles = %+v, want none: the journal does not name the destination", runner.settles)
+		}
+		if m := storedMove(t, kv, "acme"); contains(m.NodesCopied, "n1") {
+			t.Fatalf("NodesCopied = %v, want n1 unrecorded", m.NodesCopied)
+		}
+	})
+	t.Run("journal write lands, reply fails", func(t *testing.T) {
+		cat, kv, _ := newAdmittedMove(t)
+		runner := &casHookRunner{}
+		runner.hook = func(step MoveStep) {
+			if _, err := cat.CompleteMoveStep(context.Background(), step.TenantID, step.NodeID); err != nil {
+				t.Fatalf("CompleteMoveStep in the hook: %v", err)
+			}
+		}
+		r := newTestReconciler(t, cat, runner)
+		_ = tick(context.Background(), r) // the reconciler's own CAS conflicts
+		if len(runner.settles) == 0 || runner.settles[0].NodeID != "n1" || runner.settles[0].Phase != MoveStepPhaseCopy {
+			t.Fatalf("settles = %+v, want n1's copy settled", runner.settles)
+		}
+		if m := storedMove(t, kv, "acme"); !contains(m.NodesCopied, "n1") {
+			t.Fatalf("NodesCopied = %v, want n1", m.NodesCopied)
+		}
+	})
+}
+
 func TestMoveReconciler_CancelBeforeCopyStartsAbortsUncopied(t *testing.T) {
 	cat, kv, _ := newAdmittedMove(t)
 	ctx := context.Background()
