@@ -96,7 +96,7 @@ test.describe("Embedded server panel - saved config", () => {
   });
 
   test("a profile-started embedded server shows running with Stop enabled", async ({ page }) => {
-    await waitForConnectionManager(page);
+    await openPanel(page);
     // Restore connects the saved embedded profile through the connection
     // manager, so the started server is registered there: the panel reads
     // its state from the profile, not from the global embedded binding.
