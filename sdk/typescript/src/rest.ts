@@ -1534,6 +1534,24 @@ export class RestClient implements Client {
             },
             deleteSeries: async (req: TSDeleteRequest): Promise<TSDeleteResponse> => {
                 this.ensureConnected();
+                // The server parses ?tags= as comma-separated key=value pairs
+                // and trims each part: a ',' or '=' inside a key or value, or
+                // edge whitespace, would name another series filter than the
+                // caller's, and an empty key is dropped (a wider delete).
+                // Refuse it before anything is deleted.
+                for (const t of req.tags ?? []) {
+                    if (t.key === '') {
+                        throw new ConfigError('tags.key', 'an empty tag key is dropped by the series filter');
+                    }
+                    for (const [field, part] of [['key', t.key], ['value', t.value]] as const) {
+                        if (part.includes(',') || part.includes('=') || part !== part.trim()) {
+                            throw new ConfigError(
+                                `tags.${field}`,
+                                `"${part}" contains ',' or '=' or edge whitespace, which the series filter cannot carry`,
+                            );
+                        }
+                    }
+                }
                 const tags = req.tags && req.tags.length > 0
                     ? req.tags.map((t) => `${t.key}=${t.value}`).join(',')
                     : undefined;

@@ -20,6 +20,7 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { RestClient } from '../src/rest.js';
+import { ConfigError } from '../src/errors.js';
 
 const base = 'https://localhost:63002';
 
@@ -72,6 +73,48 @@ describe('time-series tag keys (REST)', () => {
         expect(resp.aggregatedValue).toBe(2.5);
         expect(resp.groupedResults?.[0].tags).toEqual(userTags);
         expect(resp.groupedResults?.[0].aggregatedValue).toBe(3);
+    });
+
+    it('deleteSeries refuses a tag filter the server cannot parse and sends nothing', async () => {
+        const client = await connected();
+        const urls: string[] = [];
+        vi.stubGlobal('fetch', async (url: string) => {
+            urls.push(url);
+            return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+        });
+
+        for (const tags of [
+            [{ key: 'host', value: 'a,b' }],
+            [{ key: 'host', value: 'a=b' }],
+            [{ key: 'ho=st', value: 'a' }],
+            [{ key: 'ho,st', value: 'a' }],
+            [{ key: 'host', value: ' a' }],
+            [{ key: 'host ', value: 'a' }],
+            [{ key: '', value: 'a' }],
+        ]) {
+            await expect(client.timeSeries!.deleteSeries({ metric: 'cpu', tags })).rejects.toThrow(ConfigError);
+        }
+        expect(urls).toEqual([]);
+    });
+
+    it('deleteSeries sends a plain tag filter as DELETE /ts/series/<metric>?tags=', async () => {
+        const client = await connected();
+        const sent: { url: string; method: string }[] = [];
+        vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+            sent.push({ url, method: init?.method ?? 'GET' });
+            return new Response(JSON.stringify({ status: 'ok' }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        });
+
+        await client.timeSeries!.deleteSeries({ metric: 'cpu', tags: [{ key: 'hostName', value: 'node1' }] });
+
+        expect(sent.length).toBe(1);
+        expect(sent[0]!.method).toBe('DELETE');
+        const u = new URL(sent[0]!.url);
+        expect(`${u.origin}${u.pathname}`).toBe(`${base}/ts/series/cpu`);
+        expect(u.searchParams.get('tags')).toBe('hostName=node1');
     });
 
     it('writePoint and writeBatch send user tag keys verbatim', async () => {
