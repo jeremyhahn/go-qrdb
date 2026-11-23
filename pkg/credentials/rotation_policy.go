@@ -560,6 +560,12 @@ func (s *CredentialService) rotateClaimed(ctx context.Context, name string, clai
 	}
 	value, err := s.rotationSource(ctx, name, claim.Op)
 	if err != nil {
+		// A source that fails may still hand back a buffer: it is
+		// destroyed, so no copy of a value it produced outlives the
+		// attempt.
+		if value != nil {
+			value.Destroy()
+		}
 		return time.Time{}, err
 	}
 	if value == nil {

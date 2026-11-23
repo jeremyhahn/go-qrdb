@@ -2,6 +2,7 @@ package credentials
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // scheduledOpts claims "k" for a scheduled rotation and returns the options
@@ -302,4 +304,111 @@ func TestCleanupRotation_MarkerKeptUnlessNamed(t *testing.T) {
 			assert.Equal(t, tc.marker, meta.PendingCleanup)
 		})
 	}
+}
+
+// rotationState is what a scheduled pass must leave alone on a credential
+// it could not rotate: the current value, the version list and the next
+// due time.
+type rotationState struct {
+	value   string
+	version uint64
+	history int
+	next    time.Time
+}
+
+func readRotationState(t *testing.T, svc *CredentialService, name string) rotationState {
+	t.Helper()
+	ctx := context.Background()
+	current, _, err := svc.loadBarrierCurrent(ctx, name)
+	require.NoError(t, err)
+	meta, err := svc.loadBarrierMeta(ctx, name)
+	require.NoError(t, err)
+	_, next, err := svc.RotationStatus(ctx, name)
+	require.NoError(t, err)
+	return rotationState{value: string(current), version: meta.CurrentVersion, history: len(meta.History), next: next}
+}
+
+// TestRotateDue_NoValueSourceLeavesEachCredential pins the row item "a pass
+// with no value source": every due credential is reported by name wrapping
+// ErrNoRotationValueSource, and its value, versions and next due time are
+// untouched.
+func TestRotateDue_NoValueSourceLeavesEachCredential(t *testing.T) {
+	svc, _ := newFaultRotationService(t)
+	svc.rotationSource = nil
+	setFaultPolicy(t, svc, "a", 3)
+	setFaultPolicy(t, svc, "b", 3)
+	before := map[string]rotationState{"a": readRotationState(t, svc, "a"), "b": readRotationState(t, svc, "b")}
+
+	n, err := svc.RotateDue(t.Context(), rotationEpoch.Add(2*time.Hour))
+	require.Zero(t, n)
+	require.ErrorIs(t, err, ErrNoRotationValueSource)
+	for _, name := range []string{"a", "b"} {
+		requireRotationErrorFor(t, err, name)
+		assert.Equal(t, before[name], readRotationState(t, svc, name), "%s changed by a pass with no value source", name)
+	}
+}
+
+// TestRotateDue_SourceDeclinesOneNextStillRotates pins that a source with no
+// value for one credential reports that credential alone: the next due
+// credential in the same pass still rotates.
+func TestRotateDue_SourceDeclinesOneNextStillRotates(t *testing.T) {
+	svc, _ := newFaultRotationService(t)
+	setFaultPolicy(t, svc, "a", 3)
+	setFaultPolicy(t, svc, "b", 3)
+	svc.rotationSource = func(_ context.Context, name, _ string) (*secure.Buffer, error) {
+		if name == "a" {
+			return nil, ErrNoRotationValueSource
+		}
+		return secure.NewBufferFromBytes([]byte("rotated-" + name))
+	}
+	beforeA := readRotationState(t, svc, "a")
+	beforeB := readRotationState(t, svc, "b")
+
+	n, err := svc.RotateDue(t.Context(), rotationEpoch.Add(2*time.Hour))
+	require.Equal(t, 1, n)
+	require.ErrorIs(t, err, ErrNoRotationValueSource)
+	requireRotationErrorFor(t, err, "a")
+	assert.Equal(t, beforeA, readRotationState(t, svc, "a"), "a changed although its source had no value")
+	afterB := readRotationState(t, svc, "b")
+	assert.Equal(t, "rotated-b", afterB.value)
+	assert.Greater(t, afterB.version, beforeB.version, "b's version did not advance")
+	assert.Equal(t, beforeB.history+1, afterB.history, "b's previous value was not kept")
+	assert.True(t, afterB.next.After(beforeB.next), "b's next rotation did not advance")
+}
+
+// requireRotationErrorFor asserts err joins a *RotationError naming name.
+func requireRotationErrorFor(t *testing.T, err error, name string) {
+	t.Helper()
+	joined, ok := err.(interface{ Unwrap() []error })
+	require.True(t, ok, "error %v is not joined", err)
+	for _, e := range joined.Unwrap() {
+		var rotErr *RotationError
+		if errors.As(e, &rotErr) && rotErr.Name == name {
+			return
+		}
+	}
+	t.Fatalf("error %v reports no *RotationError for %q", err, name)
+}
+
+// TestRotateDue_SourceErrorWithValueDestroysIt pins the cr1548a fix in
+// rotateClaimed: a source that fails yet hands back a buffer still has that
+// buffer destroyed, so no copy of a value it produced outlives the attempt.
+func TestRotateDue_SourceErrorWithValueDestroysIt(t *testing.T) {
+	svc, _ := newFaultRotationService(t)
+	setFaultPolicy(t, svc, "k", 3)
+	before := readRotationState(t, svc, "k")
+	var handed *secure.Buffer
+	svc.rotationSource = func(context.Context, string, string) (*secure.Buffer, error) {
+		buf, err := secure.NewBufferFromBytes([]byte("half-made"))
+		require.NoError(t, err)
+		handed = buf
+		return buf, errInjectedFault
+	}
+
+	n, err := svc.RotateDue(t.Context(), rotationEpoch.Add(2*time.Hour))
+	require.Zero(t, n)
+	require.ErrorIs(t, err, errInjectedFault)
+	require.NotNil(t, handed)
+	assert.False(t, handed.IsAlive(), "the buffer a failing source returned was not destroyed")
+	assert.Equal(t, before, readRotationState(t, svc, "k"))
 }

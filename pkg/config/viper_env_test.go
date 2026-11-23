@@ -173,6 +173,25 @@ func TestSealCredentialRotationCheckPeriod_InvalidRejected(t *testing.T) {
 	}
 }
 
+// TestSealCredentialRotationCheckPeriodDuration_HandBuilt pins the accessor
+// on a configuration built without Load, the path the server's rotation
+// scheduler falls back to the default on: unset is the 1m default, and a
+// zero, negative or unparsable period is a ValidationError, never a
+// non-positive period a ticker would panic on.
+func TestSealCredentialRotationCheckPeriodDuration_HandBuilt(t *testing.T) {
+	got, err := SealConfig{}.CredentialRotationCheckPeriodDuration()
+	if err != nil || got != time.Minute {
+		t.Fatalf("unset: got %v, %v; want 1m, nil", got, err)
+	}
+	for _, period := range []string{"0", "0s", "-30s", "every minute"} {
+		got, err := SealConfig{CredentialRotationCheckPeriod: period}.CredentialRotationCheckPeriodDuration()
+		var verr *ValidationError
+		if !errors.As(err, &verr) || verr.Field != "seal.credential_rotation_check_period" || got > 0 {
+			t.Fatalf("period %q: got %v, %v; want a ValidationError on seal.credential_rotation_check_period", period, got, err)
+		}
+	}
+}
+
 // TestSealDrainTimeout_DefaultAndOverride covers the seal.drain_timeout
 // plumbing: the 10s default when unset, a YAML override, and a
 // QRDB_SEAL_DRAIN_TIMEOUT env override.
