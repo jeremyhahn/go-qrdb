@@ -20,6 +20,7 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
@@ -92,11 +93,26 @@ func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, 
 		// set the create applies over, so two creates proposed through
 		// different nodes cannot both take the last slot (go-qrdb#1088).
 		MaxIndexes: gatedCommandCap(s.host, s.shardID, s.maxIndexes),
+		// The definition goes into the replicated index catalog only once
+		// every member of the group writes it (featuregate.IndexCatalog).
+		Catalog: s.catalogEnabled(),
 	})
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
 	return s.proposeIndexCommand(ctx, config.Owner, cmd)
+}
+
+// catalogEnabled reports whether a create proposed now records its
+// definition in the index catalog: on a host that gates no features (a
+// standalone node, the only replica) always, on a gated group only once
+// featuregate.IndexCatalog is active on the shard, so no replica writes a
+// catalog record another replica would not.
+func (s *IndexService) catalogEnabled() bool {
+	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.IndexCatalog) {
+		return false
+	}
+	return true
 }
 
 // DropIndex removes a secondary index through Raft consensus, whoever

@@ -234,6 +234,19 @@ const VerifiableLogAudit feature.Feature = "verifiable-log-audit"
 // does not sweep until the feature is active cluster-wide.
 const PendingUserTTL feature.Feature = "pending-user-ttl"
 
+// IndexCatalog gates the index catalog: the record of a secondary index's
+// definition that the apply batch of its create writes (index.CatalogKey),
+// from which an engine opened over storage that outlived the create -- a
+// reopened standalone store, a snapshot recovery -- restores the index. The
+// record is replicated state: it is in replica hashes and travels in
+// snapshots. A member that predates it writes no record, so a group whose
+// members disagree would diverge; the index service therefore proposes a
+// create that writes the record (protocol.IndexCreateOptions.Catalog) only
+// once the feature is active on the group. An index created before then is
+// not in the catalog and is not restored on a fresh engine until it is
+// created again.
+const IndexCatalog feature.Feature = "index-catalog"
+
 // VectorManhattan is the Manhattan (L1) distance metric on a FLAT or IVF
 // vector namespace: record metric value 3 (pkg/vector DistanceManhattan),
 // which a binary from before it refuses as an unknown metric while its
@@ -262,7 +275,7 @@ const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL}
+var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL, IndexCatalog}
 
 // Supported returns the features this binary implements.
 func Supported() []feature.Feature {

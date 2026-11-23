@@ -17,13 +17,79 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
+
+// catalogGatedHost is a FeatureGatedHost that answers index-catalog as
+// active and records every create it is proposed.
+type catalogGatedHost struct {
+	mockHost
+	active  bool
+	asked   []feature.Feature
+	creates []protocol.IndexCreateOptions
+}
+
+func newCatalogGatedHost(t *testing.T, active bool) *catalogGatedHost {
+	t.Helper()
+	h := &catalogGatedHost{active: active}
+	h.syncProposeFn = func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+		_, _, opts, err := protocol.DecodeIndexCreateOpts(cmd[1:])
+		if err != nil {
+			t.Fatalf("DecodeIndexCreateOpts: %v", err)
+		}
+		h.creates = append(h.creates, opts)
+		return sm.Result{Value: 1}, nil
+	}
+	return h
+}
+
+func (h *catalogGatedHost) FeatureEnabled(_ uint64, f feature.Feature) bool {
+	h.asked = append(h.asked, f)
+	return h.active && f == featuregate.IndexCatalog
+}
+
+var _ FeatureGatedHost = (*catalogGatedHost)(nil)
+
+// A create writes the replicated index catalog only once every member of
+// the group does: on a gated host the create is proposed with Catalog set
+// exactly when index-catalog is active, and on a host that gates nothing (a
+// standalone node, the only replica) always.
+func TestIndexService_CreateIndex_CatalogFollowsTheGate(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		host := newCatalogGatedHost(t, active)
+		svc := NewIndexService(host, 1)
+		if err := svc.CreateIndex(context.Background(), "idx", "f", IndexConfig{}); err != nil {
+			t.Fatalf("CreateIndex (gate %v): %v", active, err)
+		}
+		if len(host.creates) != 1 || host.creates[0].Catalog != active {
+			t.Fatalf("gate %v: proposed creates %+v, want one with Catalog=%v", active, host.creates, active)
+		}
+		if !slices.Contains(host.asked, featuregate.IndexCatalog) {
+			t.Fatalf("gate %v: asked %v, want %s", active, host.asked, featuregate.IndexCatalog)
+		}
+	}
+
+	var proposed []byte
+	host := &mockHost{syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+		proposed = cmd
+		return sm.Result{Value: 1}, nil
+	}}
+	if err := NewIndexService(host, 1).CreateIndex(context.Background(), "idx", "f", IndexConfig{}); err != nil {
+		t.Fatalf("CreateIndex on an ungated host: %v", err)
+	}
+	if _, _, opts, err := protocol.DecodeIndexCreateOpts(proposed[1:]); err != nil || !opts.Catalog {
+		t.Fatalf("ungated create = %+v (%v), want Catalog set", opts, err)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // NewIndexService

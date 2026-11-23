@@ -272,6 +272,15 @@ const (
 	// would silently reinterpret every replayed log entry as case-insensitive
 	// (go-qrdb#34).
 	IndexFlagCaseInsensitive byte = 1 << 3
+
+	// IndexFlagCatalog marks a create proposed under the index-catalog
+	// cluster feature (featuregate.IndexCatalog): the apply path records the
+	// definition in the index catalog only for such a create. The catalog
+	// record is replicated state (it is in replica hashes and snapshots), so
+	// a replica that predates the catalog -- which writes none -- would
+	// diverge from one that wrote it; the proposer sets the flag only once
+	// every member of the group supports the feature.
+	IndexFlagCatalog byte = 1 << 4
 )
 
 // headerSize is 1 byte for the op code.
@@ -727,6 +736,14 @@ type IndexCreateOptions struct {
 	// the proposer, because two nodes proposing creates for the same shard
 	// each see the count before the other's create applies (go-qrdb#1088).
 	MaxIndexes uint32
+
+	// Catalog records the definition in the index catalog when the create
+	// applies (IndexFlagCatalog). The proposer sets it only under the
+	// index-catalog cluster feature, so every replica of a group writes the
+	// same catalog records; a create without it writes none, and an engine
+	// opened over storage that outlived it restores no such index until it
+	// is created again under the feature.
+	Catalog bool
 }
 
 // IndexDropOptions carries the properties an OpIndexDrop command encodes.
@@ -762,6 +779,9 @@ func (o IndexCreateOptions) Flags() byte {
 	if o.CaseInsensitive {
 		flags |= IndexFlagCaseInsensitive
 	}
+	if o.Catalog {
+		flags |= IndexFlagCatalog
+	}
 	return flags
 }
 
@@ -772,6 +792,7 @@ func indexCreateOptionsFromFlags(flags byte) IndexCreateOptions {
 		Sparse:          flags&IndexFlagSparse != 0,
 		Numeric:         flags&IndexFlagNumeric != 0,
 		CaseInsensitive: flags&IndexFlagCaseInsensitive != 0,
+		Catalog:         flags&IndexFlagCatalog != 0,
 	}
 }
 

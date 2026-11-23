@@ -46,7 +46,17 @@ var catalogOpts = protocol.IndexCreateOptions{
 	Owner:           "collection:users",
 }
 
+// catalogCreate is a create proposed under the index-catalog feature, the
+// only kind that records its definition (see uncataloguedCreate).
 func catalogCreate(t *testing.T, entry uint64, opts protocol.IndexCreateOptions) sm.Entry {
+	t.Helper()
+	opts.Catalog = true
+	return uncataloguedCreate(t, entry, opts)
+}
+
+// uncataloguedCreate is the create exactly as given: with opts.Catalog clear
+// it is what a proposer sends before index-catalog is active on its group.
+func uncataloguedCreate(t *testing.T, entry uint64, opts protocol.IndexCreateOptions) sm.Entry {
 	t.Helper()
 	return sm.Entry{Index: entry, Cmd: mustEncode(protocol.EncodeIndexCreateOpts(catalogIdx, "email", opts))}
 }
@@ -360,4 +370,66 @@ func TestMVCCEngine_FailedIndexBatchKeepsTheCommittedIndex(t *testing.T) {
 			wantEmailKeys(t, e, "5.0", "user/1")
 		}
 	})
+}
+
+// catalogKeys lists the keys stg holds in the index catalog.
+func catalogKeys(t *testing.T, stg storage.Storage) []string {
+	t.Helper()
+	start, end := index.CatalogRange()
+	it := stg.NewIterator(&storage.IteratorOptions{LowerBound: start, UpperBound: end})
+	defer func() { _ = it.Close() }()
+	var keys []string
+	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+		keys = append(keys, string(it.Key()))
+	}
+	if err := it.Error(); err != nil {
+		t.Fatalf("iterate the catalog: %v", err)
+	}
+	return keys
+}
+
+// A create proposed before index-catalog is active on the group writes no
+// catalog record: the catalog is in replica hashes and snapshots, and a
+// member that predates it writes none, so the group's replicas hash alike.
+// The index is served as before; a fresh engine over the storage restores
+// it only once it is created again under the feature.
+func TestMVCCEngine_UncataloguedCreateWritesNoCatalogRecord(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	first := openCatalogEngine(t, stg)
+	applyMVCCEntries(t, first, []sm.Entry{uncataloguedCreate(t, 1, catalogOpts)})
+	applyMVCCEntries(t, first, []sm.Entry{
+		mvccPutEntry(2, []byte("user/1"), []byte(`{"email":"a@example.com"}`), 0),
+	})
+	wantEmailKeys(t, first, "a@example.com", "user/1")
+	if keys := catalogKeys(t, stg); len(keys) != 0 {
+		t.Fatalf("an uncatalogued create wrote catalog keys %q", keys)
+	}
+
+	eng := reopenCatalogEngine(t, first, stg)
+	wantIndexNotFound(t, eng)
+
+	// Created again under the feature, the index is recorded and restored.
+	applyMVCCEntries(t, eng, []sm.Entry{catalogCreate(t, 3, catalogOpts)})
+	if keys := catalogKeys(t, stg); len(keys) != 1 {
+		t.Fatalf("catalog keys after a catalogued create = %q, want one", keys)
+	}
+	eng = reopenCatalogEngine(t, eng, stg)
+	wantEmailKeys(t, eng, "a@example.com", "user/1")
+}
+
+// A catalogued definition replaced by an uncatalogued rebuild leaves no
+// record behind, so a fresh engine never restores the definition the log
+// has since replaced.
+func TestMVCCEngine_UncataloguedRebuildClearsTheRecord(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	eng := openCatalogEngine(t, stg)
+	applyMVCCEntries(t, eng, []sm.Entry{catalogCreate(t, 1, protocol.IndexCreateOptions{Numeric: true})})
+	applyMVCCEntries(t, eng, []sm.Entry{uncataloguedCreate(t, 2, protocol.IndexCreateOptions{})})
+	if keys := catalogKeys(t, stg); len(keys) != 0 {
+		t.Fatalf("catalog keys after an uncatalogued rebuild = %q, want none", keys)
+	}
 }

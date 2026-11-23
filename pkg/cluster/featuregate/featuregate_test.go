@@ -554,8 +554,8 @@ func TestNew_Validates(t *testing.T) {
 
 // The advertised names are exactly this binary's features.
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys), string(VectorManhattan), string(CommandCaps), string(LockCreateRevisionToken), string(TransactionReads), string(VerifiableLogAudit), string(PendingUserTTL)}, SupportedNames())
+	assert.Equal(t, []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL, IndexCatalog}, Supported())
+	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys), string(VectorManhattan), string(CommandCaps), string(LockCreateRevisionToken), string(TransactionReads), string(VerifiableLogAudit), string(PendingUserTTL), string(IndexCatalog)}, SupportedNames())
 }
 
 // TestCheckActivated_AdoptsTenantUndoActivation pins that this binary
@@ -595,6 +595,24 @@ func TestGate_PendingUserTTLActivation(t *testing.T) {
 	require.NoError(t, g.CheckActivated(context.Background(), kv))
 	assert.True(t, g.Activated(PendingUserTTL))
 	assert.True(t, g.Enabled(0, PendingUserTTL))
+}
+
+// TestGate_IndexCatalogActivation pins that this binary writes the index
+// catalog: the feature is supported, off until activated, and on once its
+// activation record is read.
+func TestGate_IndexCatalogActivation(t *testing.T) {
+	assert.Equal(t, feature.Feature("index-catalog"), IndexCatalog)
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.CheckActivated(context.Background(), newMemKV()))
+	assert.False(t, g.Enabled(0, IndexCatalog))
+
+	kv := newMemKV()
+	_, err := kv.PutIfAbsent(context.Background(), ActivationPrefix+string(IndexCatalog), []byte(`{}`))
+	require.NoError(t, err)
+	g = newGate(t, threeNodes())
+	require.NoError(t, g.CheckActivated(context.Background(), kv))
+	assert.True(t, g.Activated(IndexCatalog))
+	assert.True(t, g.Enabled(0, IndexCatalog))
 }
 
 // TestCheckActivated_AdoptsPerNodeBarrierKeysActivation pins that this binary

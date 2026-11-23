@@ -2509,6 +2509,35 @@ func TestEncodeIndexCreate_BufferSize(t *testing.T) {
 	}
 }
 
+// TestIndexCreateOpts_CatalogRoundTrips: the index-catalog flag survives
+// the wire with every other option, and a create without it -- every
+// command written before the flag existed -- decodes with it clear.
+func TestIndexCreateOpts_CatalogRoundTrips(t *testing.T) {
+	for _, want := range []IndexCreateOptions{
+		{Catalog: true},
+		{},
+		{Unique: true, CaseInsensitive: true, KeyPrefix: "user/", Owner: "collection:users", MaxIndexes: 3, Catalog: true},
+	} {
+		payload, err := EncodeIndexCreateOpts("idx", "email", want)
+		if err != nil {
+			t.Fatalf("EncodeIndexCreateOpts(%+v): %v", want, err)
+		}
+		if got := payload[0]; got != OpIndexCreate {
+			t.Fatalf("op = %d, want OpIndexCreate", got)
+		}
+		name, field, got, err := DecodeIndexCreateOpts(payload[1:])
+		if err != nil || name != "idx" || field != "email" {
+			t.Fatalf("Decode = %q/%q (%v)", name, field, err)
+		}
+		if got != want {
+			t.Fatalf("round trip = %+v, want %+v", got, want)
+		}
+		if flagged := want.Flags()&IndexFlagCatalog != 0; flagged != want.Catalog {
+			t.Fatalf("Flags() catalog bit = %v, want %v", flagged, want.Catalog)
+		}
+	}
+}
+
 func TestEncodeIndexDrop_BufferSize(t *testing.T) {
 	encoded := mustEncode(EncodeIndexDrop("idx"))
 	// Expected: 1 (op) + 2 (nameLen) + 3 (name) = 6

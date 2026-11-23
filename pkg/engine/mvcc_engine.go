@@ -2605,9 +2605,23 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	// replays the create -- restores the index (see restoreIndexes). The
 	// record is the create payload itself, so the restored definition is the
 	// one applied here.
-	if err := batch.Set(index.CatalogKey(name), payload); err != nil {
-		_ = idx.Close()
-		return sm.Result{}, nil, err
+	//
+	// Only a create proposed under the index-catalog feature
+	// (opts.Catalog) writes the record: the record is in replica hashes and
+	// snapshots, so writing it for a create a member that predates the
+	// catalog also applies would diverge the group. A create without it
+	// still clears a record an earlier create under the name left, so a
+	// fresh engine never restores a definition the log has since replaced.
+	if opts.Catalog {
+		if err := batch.Set(index.CatalogKey(name), payload); err != nil {
+			_ = idx.Close()
+			return sm.Result{}, nil, err
+		}
+	} else if exists {
+		if err := batch.Delete(index.CatalogKey(name)); err != nil {
+			_ = idx.Close()
+			return sm.Result{}, nil, err
+		}
 	}
 
 	e.indexMu.Lock()

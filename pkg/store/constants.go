@@ -55,7 +55,14 @@ const metaKeyLastApplied = "\x00__quicraft_last_applied__"
 //   - the secondary-index catalog (index.CatalogPrefix): a snapshot that
 //     dropped it would hand the recovering replica index entries with no
 //     index definition, so every lookup on an index created before the
-//     snapshot would answer "index not found".
+//     snapshot would answer "index not found". Because the catalog is in
+//     the hash, a create writes its record only when it was proposed under
+//     the index-catalog cluster feature (featuregate.IndexCatalog,
+//     protocol.IndexCreateOptions.Catalog): a member that predates the
+//     catalog writes none, and a group whose members disagreed would
+//     diverge. An index created before the feature was active has no
+//     record and is not restored on a fresh engine until it is created
+//     again.
 func isNodeLocalKey(k []byte) bool {
 	return len(k) > 0 && k[0] == '\x00' &&
 		!lease.IsTableKey(k) && !compaction.IsTableKey(k) && !vlog.IsTableKey(k) && !importstage.IsTableKey(k) &&
