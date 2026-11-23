@@ -2039,6 +2039,135 @@ func TestLogService_BarrierTenantNamedDatabaseIsFencedInItsHomeGroup(t *testing.
 	}
 }
 
+// storeLogFenceInit is the LogFenceInitializer KeyspaceReclaimService is,
+// over one group's store: it writes the incarnation as the database's log
+// marker only when the marker is absent.
+type storeLogFenceInit struct {
+	mu    *sync.Mutex
+	store *memory.MemoryStorage
+	calls int
+}
+
+func (i *storeLogFenceInit) InitDatabaseLogFence(_ context.Context, tenantID, db, incarnation string) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.calls++
+	key := []byte(DropFenceKey(tenantID, db))
+	if v, err := i.store.Get(key); err != nil || v != nil {
+		return err
+	}
+	return i.store.Set(key, []byte(incarnation))
+}
+
+// TestLogService_PreUpgradeDatabaseLogFenceIsInitializedAtFirstLogWrite
+// proves a barrier tenant's database created before its logs were fenced
+// in its home group -- no marker there -- is refused every log write
+// without a LogFenceInitializer (Codex round 1 P1 at 9428bf8de4), and with
+// one has its marker initialized to the live incarnation at the first
+// write, once per incarnation.
+func TestLogService_PreUpgradeDatabaseLogFenceIsInitializedAtFirstLogWrite(t *testing.T) {
+	home := newFenceGroup(t)
+	mgr := databasetest.NewManager(nil, t.TempDir(), database.WithKeyspaceReclaimer(markerReclaimer{mu: &home.mu, store: home.store}))
+	t.Cleanup(func() { _ = mgr.Close() })
+	svc, err := NewLogService(LogServiceConfig{
+		Resolver:  &fixedShardResolver{host: &gatedHost{mockHost: home.host(t), enabled: map[uint64]bool{1: true}}, shardID: 1},
+		Databases: mgr,
+		Signers:   newPausingSigners(),
+	})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	ctx := acmeCtx()
+	first := createAcmeLedger(t, mgr)
+	// The pre-upgrade shape: no log marker in the group holding the logs.
+	home.mu.Lock()
+	err = home.store.Delete([]byte(DropFenceKey("acme", "ledger")))
+	home.mu.Unlock()
+	if err != nil {
+		t.Fatalf("delete the home group marker: %v", err)
+	}
+
+	var dropping *database.DroppingError
+	if _, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: testLogRef, Origin: "example.test/acme/events"}); !errors.As(err, &dropping) {
+		t.Fatalf("CreateLog with no initializer = %v, want DroppingError (the absent marker refuses the guard)", err)
+	}
+	fenceInit := &storeLogFenceInit{mu: &home.mu, store: home.store}
+	svc.(*logService).SetLogFenceInitializer(fenceInit)
+	if _, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: testLogRef, Origin: "example.test/acme/events"}); err != nil {
+		t.Fatalf("CreateLog in a pre-upgrade database = %v, want it admitted under %q", err, first)
+	}
+	if got := home.marker(t, "acme", "ledger"); string(got) != first {
+		t.Fatalf("home group marker = %q, want the live incarnation %q", got, first)
+	}
+	if _, err := svc.Append(ctx, &AppendRequest{LogRef: testLogRef, Entries: [][]byte{[]byte("e")}}); err != nil {
+		t.Fatalf("Append after the marker was initialized: %v", err)
+	}
+	if fenceInit.calls != 1 {
+		t.Fatalf("initializer asked %d times, want once per incarnation", fenceInit.calls)
+	}
+}
+
+// secondLookupFails answers the first GetOwned from the registry and
+// every later one with err: a registry that fails between two lookups of
+// one admission.
+type secondLookupFails struct {
+	inner LogDatabaseLookup
+	err   error
+	mu    sync.Mutex
+	calls int
+}
+
+func (l *secondLookupFails) GetOwned(name, tenantID string) (*database.Database, error) {
+	l.mu.Lock()
+	l.calls++
+	n := l.calls
+	l.mu.Unlock()
+	if n > 1 {
+		return nil, l.err
+	}
+	return l.inner.GetOwned(name, tenantID)
+}
+
+// TestLogService_AdmitFencesToItsOneDatabaseLookup proves a write is
+// fenced to the incarnation of the one lookup that resolved its target:
+// a registry that fails afterwards cannot leave it unfenced (Codex round
+// 1 P1 at 9428bf8de4), so the drop that follows refuses it.
+func TestLogService_AdmitFencesToItsOneDatabaseLookup(t *testing.T) {
+	g := newFenceGroup(t)
+	mgr := databasetest.NewManager(nil, t.TempDir(), database.WithKeyspaceReclaimer(markerReclaimer{mu: &g.mu, store: g.store}))
+	t.Cleanup(func() { _ = mgr.Close() })
+	first := createAcmeLedger(t, mgr)
+	unavailable := errors.New("database registry unavailable")
+	svc, err := NewLogService(LogServiceConfig{
+		Resolver:  &fixedShardResolver{host: &gatedHost{mockHost: g.host(t), enabled: map[uint64]bool{1: true}}, shardID: 1},
+		Databases: &secondLookupFails{inner: mgr, err: unavailable},
+		Signers:   newPausingSigners(),
+	})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	ctx := acmeCtx()
+	id := vlog.LogID{TenantID: "acme", Database: "ledger", Log: "events"}
+	h, err := svc.(*logService).admit(ctx, id, nil)
+	if err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	if h.incarnation != first || h.fence.guard == nil {
+		t.Fatalf("admitted incarnation %q, guard %v; want fenced to %q by the one lookup", h.incarnation, h.fence.guard, first)
+	}
+	if err := mgr.DropForTenant(ctx, "ledger"); err != nil {
+		t.Fatalf("drop acme/ledger: %v", err)
+	}
+	res, err := h.proposeCmd(ctx, []byte{protocol.OpVerifiableLog})
+	if err == nil {
+		err = checkResultError(res)
+	}
+	var dropping *database.DroppingError
+	if !errors.As(err, &dropping) || dropping.Name != "ledger" || dropping.TenantID != "acme" {
+		t.Fatalf("write admitted before the drop = %v, want DroppingError for acme/ledger", err)
+	}
+}
+
 // TestLogService_ReadRefusesAnEarlierIncarnationsLog proves a log an
 // earlier database of the name left behind -- here because the drop ran
 // with no log reclaimer -- is not served to the database created again
