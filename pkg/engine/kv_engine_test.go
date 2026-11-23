@@ -2743,6 +2743,65 @@ func TestKVEngine_LegacyNonJSONOverwriteReplay(t *testing.T) {
 	})
 }
 
+// TestKVEngine_OrderedTransactionAfterLegacyNonJSONOverwrite: a legacy plain
+// non-JSON overwrite keeps user:1's stale x entry. A flagged transaction that
+// moves user:1 to y and gives x to user:2 must not treat that entry as
+// released (the value user:1 holds carries no email, so apply cannot retract
+// it): the set is refused as a conflict, not failed at apply.
+func TestKVEngine_OrderedTransactionAfterLegacyNonJSONOverwrite(t *testing.T) {
+	stg := memory.NewStorage()
+	t.Cleanup(func() { _ = stg.Close() })
+	eng := NewKVEngine(stg)
+	create := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true}))
+	applyKVEntries(t, eng, []sm.Entry{
+		{Index: 1, Cmd: create},
+		kvPutEntry(2, "user:1", `{"email":"x"}`),
+		kvPutEntry(3, "user:1", "not-json"),
+	})
+	txn := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:1"), []byte(`{"email":"y"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:2"), []byte(`{"email":"x"}`), nil, 0)),
+	}, nil, protocol.CmdFlagOrderedUnique))
+	res := applyKVEntries(t, eng, []sm.Entry{{Index: 4, Cmd: txn}})
+	_, kind, ok := protocol.DecodeAppErrorKind(res[0].Data)
+	if !ok || kind != protocol.AppErrorConflict {
+		t.Fatalf("result data = %q, want a conflict application error", res[0].Data)
+	}
+	mustLookupValue(t, eng, "user:1", "not-json")
+	mustLookupAbsent(t, eng, "user:2")
+}
+
+// TestKVEngine_OrderedTransactionAfterLegacyNonJSONOverwriteCompound is the
+// compound-index twin: the stale (u1, d1) tuple of sessions/1 stays held.
+func TestKVEngine_OrderedTransactionAfterLegacyNonJSONOverwriteCompound(t *testing.T) {
+	value := `{"user_id":"u1","device_id":"d1"}`
+	stg := memory.NewStorage()
+	t.Cleanup(func() { _ = stg.Close() })
+	eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+	if err := eng.RegisterEntityType("sessions", []EntityIndex{
+		{FieldNames: []string{"UserID", "DeviceID"}, JSONFieldNames: []string{"user_id", "device_id"}, Unique: true},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType: %v", err)
+	}
+	if err := eng.PutWithIndexes([]byte("sessions/1"), []byte(value)); err != nil {
+		t.Fatalf("PutWithIndexes sessions/1 JSON: %v", err)
+	}
+	if err := eng.PutWithIndexes([]byte("sessions/1"), []byte("not-json")); err != nil {
+		t.Fatalf("PutWithIndexes sessions/1 non-JSON: %v", err)
+	}
+	txn := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("sessions/1"), []byte(`{"user_id":"u2","device_id":"d1"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("sessions/2"), []byte(value), nil, 0)),
+	}, nil, protocol.CmdFlagOrderedUnique))
+	res := applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: txn}})
+	_, kind, ok := protocol.DecodeAppErrorKind(res[0].Data)
+	if !ok || kind != protocol.AppErrorConflict {
+		t.Fatalf("result data = %q, want a conflict application error", res[0].Data)
+	}
+	mustLookupValue(t, eng, "sessions/1", "not-json")
+	mustLookupAbsent(t, eng, "sessions/2")
+}
+
 // TestKVEngine_OrderedTransactionCaseInsensitiveReleaseThenDuplicate pins that
 // a flagged transaction claiming one case-folded unique term twice (A releases
 // "alpha", then B "ALPHA" and C "alpha") is refused as a conflict result by

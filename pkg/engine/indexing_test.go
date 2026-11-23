@@ -666,6 +666,9 @@ func TestCheckUniqueViolationsBatch_CaseInsensitiveReleaseThenDuplicate(t *testi
 	if err := UpdateIndexesBatch(seed, indexes, fields, nil, []byte("A"), []byte(`{"name":"alpha"}`), nil); err != nil {
 		t.Fatalf("seed UpdateIndexesBatch: %v", err)
 	}
+	if err := seed.Set([]byte("A"), []byte(`{"name":"alpha"}`)); err != nil {
+		t.Fatalf("seed Set: %v", err)
+	}
 	if err := seed.Commit(); err != nil {
 		t.Fatalf("seed Commit: %v", err)
 	}
@@ -677,10 +680,54 @@ func TestCheckUniqueViolationsBatch_CaseInsensitiveReleaseThenDuplicate(t *testi
 	}
 	batch := stg.Batch()
 	defer func() { _ = batch.Close() }()
-	err = CheckUniqueViolationsBatch(batch, indexes, fields, nil, writes)
+	prev := func(k []byte) ([]byte, error) { return batch.Get(k) }
+	if err := CheckUniqueViolationsBatch(batch, indexes, fields, nil, writes[:2], prev); err != nil {
+		t.Fatalf("CheckUniqueViolationsBatch(A to beta, B to ALPHA) = %v, want nil (A releases alpha first)", err)
+	}
+	err = CheckUniqueViolationsBatch(batch, indexes, fields, nil, writes, prev)
 	var uce *UniqueConstraintError
 	if !errors.As(err, &uce) {
 		t.Fatalf("CheckUniqueViolationsBatch = %v, want *UniqueConstraintError (B and C claim one case-folded term)", err)
+	}
+}
+
+// TestCheckUniqueViolationsBatch_StaleEntryNotReleased: A holds "not-json"
+// with a stale x entry (left by a legacy plain non-JSON overwrite). Writing A
+// releases only the entries its prior value carries, none here, so B's claim
+// of x is refused: apply could not retract A's entry.
+func TestCheckUniqueViolationsBatch_StaleEntryNotReleased(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	idx, err := index.NewStoragePebbleIndex(stg, index.IndexConfig{
+		Name: "users.Email", Type: index.IndexTypeUnique, Unique: true,
+	}, indexTestLogger(t))
+	if err != nil {
+		t.Fatalf("NewStoragePebbleIndex: %v", err)
+	}
+	indexes := map[string]index.Index{"users.Email": idx}
+	fields := map[string]string{"users.Email": "email"}
+
+	seed := stg.Batch()
+	if err := UpdateIndexesBatch(seed, indexes, fields, nil, []byte("A"), []byte(`{"email":"x"}`), nil); err != nil {
+		t.Fatalf("seed UpdateIndexesBatch: %v", err)
+	}
+	if err := seed.Set([]byte("A"), []byte("not-json")); err != nil {
+		t.Fatalf("seed Set: %v", err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed Commit: %v", err)
+	}
+
+	writes := []indexedWrite{
+		{Key: []byte("A"), Value: []byte(`{"email":"y"}`)},
+		{Key: []byte("B"), Value: []byte(`{"email":"x"}`)},
+	}
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+	err = CheckUniqueViolationsBatch(batch, indexes, fields, nil, writes, func(k []byte) ([]byte, error) { return batch.Get(k) })
+	var uce *UniqueConstraintError
+	if !errors.As(err, &uce) {
+		t.Fatalf("CheckUniqueViolationsBatch = %v, want *UniqueConstraintError (A's stale x entry stays held)", err)
 	}
 }
 
@@ -1874,24 +1921,34 @@ func TestCheckCompoundUniqueBatch(t *testing.T) {
 		name     string
 		writes   []indexedWrite
 		conflict bool
+		// stale overwrites sessions/1 with a non-JSON value before the check
+		// and keeps its d1 entry, as a legacy plain overwrite leaves it.
+		stale bool
 	}{
-		{"two new keys claim one tuple", []indexedWrite{put("sessions/2", tupleD2), put("sessions/3", tupleD2)}, true},
-		{"a new key takes a committed tuple", []indexedWrite{put("sessions/2", tupleD1)}, true},
-		{"case-folded duplicate", []indexedWrite{put("sessions/2", tupleD2), put("sessions/3", `{"user_id":"U","device_id":"D2"}`)}, true},
-		{"one key written twice", []indexedWrite{put("sessions/2", tupleD2), put("sessions/2", tupleD2)}, false},
-		{"overwrite then move", []indexedWrite{put("sessions/1", tupleD2), put("sessions/2", tupleD1)}, false},
-		{"delete then take", []indexedWrite{del("sessions/1"), put("sessions/2", tupleD1)}, false},
-		{"take before the release", []indexedWrite{put("sessions/2", tupleD1), del("sessions/1")}, true},
-		{"in-set claim released by overwrite", []indexedWrite{put("sessions/2", tupleD2), put("sessions/2", `{"user_id":"v"}`), put("sessions/3", tupleD2)}, false},
-		{"out of scope", []indexedWrite{put("other/2", tupleD1)}, false},
-		{"missing field is sparse", []indexedWrite{put("sessions/2", `{"user_id":"u"}`), put("sessions/3", `{"user_id":"u"}`)}, false},
+		{"two new keys claim one tuple", []indexedWrite{put("sessions/2", tupleD2), put("sessions/3", tupleD2)}, true, false},
+		{"a new key takes a committed tuple", []indexedWrite{put("sessions/2", tupleD1)}, true, false},
+		{"case-folded duplicate", []indexedWrite{put("sessions/2", tupleD2), put("sessions/3", `{"user_id":"U","device_id":"D2"}`)}, true, false},
+		{"one key written twice", []indexedWrite{put("sessions/2", tupleD2), put("sessions/2", tupleD2)}, false, false},
+		{"overwrite then move", []indexedWrite{put("sessions/1", tupleD2), put("sessions/2", tupleD1)}, false, false},
+		{"delete then take", []indexedWrite{del("sessions/1"), put("sessions/2", tupleD1)}, false, false},
+		{"take before the release", []indexedWrite{put("sessions/2", tupleD1), del("sessions/1")}, true, false},
+		{"in-set claim released by overwrite", []indexedWrite{put("sessions/2", tupleD2), put("sessions/2", `{"user_id":"v"}`), put("sessions/3", tupleD2)}, false, false},
+		{"out of scope", []indexedWrite{put("other/2", tupleD1)}, false, false},
+		{"missing field is sparse", []indexedWrite{put("sessions/2", `{"user_id":"u"}`), put("sessions/3", `{"user_id":"u"}`)}, false, false},
+		{"stale tuple not released", []indexedWrite{put("sessions/1", tupleD2), put("sessions/2", tupleD1)}, true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			stg, indexes, fields, scopes := uniqueCompoundFixture(t)
 			batch := stg.Batch()
 			defer func() { _ = batch.Close() }()
-			err := checkCompoundUniqueBatch(batch, indexes, fields, scopes, tc.writes)
+			if tc.stale {
+				if err := batch.Set([]byte("sessions/1"), []byte("not-json")); err != nil {
+					t.Fatalf("stage the non-JSON overwrite: %v", err)
+				}
+			}
+			prev := func(k []byte) ([]byte, error) { return batch.Get(k) }
+			err := checkCompoundUniqueBatch(batch, indexes, fields, scopes, tc.writes, prev)
 			var uce *UniqueConstraintError
 			if tc.conflict && !errors.As(err, &uce) {
 				t.Fatalf("err = %v, want *UniqueConstraintError", err)

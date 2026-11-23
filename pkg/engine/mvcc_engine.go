@@ -1106,11 +1106,23 @@ func deleteKeysFromOps(ops []protocol.DecodedOp) [][]byte {
 // protocol.CmdFlagOrderedUnique, else the legacy unordered check every command
 // proposed before the cluster feature ordered-unique-check keeps, so an
 // existing log replays unchanged.
-func checkUniqueForOps(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, ops []protocol.DecodedOp, flags byte) error {
+func checkUniqueForOps(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, ops []protocol.DecodedOp, flags byte, prev func(key []byte) ([]byte, error)) error {
 	if flags&protocol.CmdFlagOrderedUnique != 0 {
-		return CheckUniqueViolationsBatch(batch, indexes, indexFields, indexScopes, writesFromOps(ops))
+		return CheckUniqueViolationsBatch(batch, indexes, indexFields, indexScopes, writesFromOps(ops), prev)
 	}
 	return checkUniqueViolationsBatchUnordered(batch, indexes, indexFields, indexScopes, putsFromOps(ops), deleteKeysFromOps(ops))
+}
+
+// mvccPriorValueReader reads the value a key holds before an ordered set
+// through batch (nil when absent), for the ordered unique pre-check.
+func mvccPriorValueReader(s *mvcc.Store, batch storage.Batch) func(key []byte) ([]byte, error) {
+	return func(key []byte) ([]byte, error) {
+		kv, err := getInBatchAllowingAbsence(s, batch, key)
+		if err != nil || kv == nil {
+			return nil, err
+		}
+		return kv.Value, nil
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1790,7 +1802,7 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 	// (read-only, delete-aware) so a violation rejects the transaction
 	// atomically via a non-fatal application error — no partial writes, no
 	// consensus stall.
-	if verr := checkUniqueForOps(batch, e.indexes, e.indexFields, e.indexScopes, ops, txn.Flags); verr != nil {
+	if verr := checkUniqueForOps(batch, e.indexes, e.indexFields, e.indexScopes, ops, txn.Flags, mvccPriorValueReader(s, batch)); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -2066,7 +2078,7 @@ func (e *MVCCEngine) applyDecodedBatch(s *mvcc.Store, lr *lease.Lessor, batch st
 	// Pre-validate unique-index constraints for the whole batch (read-only,
 	// delete-aware) so a violation rejects the batch atomically via a non-fatal
 	// application error rather than stalling consensus mid-apply.
-	if verr := checkUniqueForOps(batch, e.indexes, e.indexFields, e.indexScopes, ops, flags); verr != nil {
+	if verr := checkUniqueForOps(batch, e.indexes, e.indexFields, e.indexScopes, ops, flags, mvccPriorValueReader(s, batch)); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}

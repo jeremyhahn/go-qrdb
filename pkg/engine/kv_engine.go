@@ -787,7 +787,10 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 	// consensus stall — matching the MVCC and batch handlers. Read through
 	// the batch so a uniqueness check sees an index write staged earlier in
 	// this same batch (storage.Reader).
-	if verr := checkUniqueForOps(batch, e.indexes, e.indexFields, e.indexScopes, ops, txn.Flags); verr != nil {
+	// The ordered check releases only the entries a key's prior value
+	// carries, read through the batch as the apply loop below reads it.
+	prior := func(k []byte) ([]byte, error) { return batch.Get(k) }
+	if verr := checkUniqueForOps(batch, e.indexes, e.indexFields, e.indexScopes, ops, txn.Flags, prior); verr != nil {
 		if res, handled, aerr := asAppErrResult(verr); handled {
 			return res, aerr
 		}
@@ -798,7 +801,7 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 	// keeps the committed-storage check, so an existing log replays unchanged.
 	orderedUnique := txn.Flags&protocol.CmdFlagOrderedUnique != 0
 	if orderedUnique {
-		if verr := checkCompoundUniqueBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, writesFromOps(ops)); verr != nil {
+		if verr := checkCompoundUniqueBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, writesFromOps(ops), prior); verr != nil {
 			if res, handled, aerr := asAppErrResult(verr); handled {
 				return res, aerr
 			}

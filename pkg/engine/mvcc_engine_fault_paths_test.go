@@ -262,6 +262,35 @@ func TestMVCCEngine_LegacyNonJSONOverwriteReplay(t *testing.T) {
 	}
 }
 
+// TestMVCCEngine_OrderedTransactionAfterLegacyNonJSONOverwrite: after a legacy
+// plain non-JSON overwrite keeps user:1's stale faultDocA entry, a flagged set
+// that moves user:1 to faultDocC and gives faultDocA to user:3 is refused as
+// a conflict: the value user:1 holds carries no email, so apply could not
+// retract the stale entry and the earlier write must not release it.
+func TestMVCCEngine_OrderedTransactionAfterLegacyNonJSONOverwrite(t *testing.T) {
+	for name, encode := range flaggedUniqueEncoders() {
+		t.Run(name, func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			overwrite := mustEncode(protocol.EncodeMVCCPut([]byte("user:1"), []byte("not-json"), 0))
+			set := encode([][]byte{
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:1", faultDocC),
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:3", faultDocA),
+			})
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: overwrite}, {Index: 11, Cmd: set}})
+			_, kind, ok := protocol.DecodeAppErrorKind(results[1].Data)
+			if !ok || kind != protocol.AppErrorConflict {
+				t.Fatalf("result data = %q, want a conflict application error", results[1].Data)
+			}
+			if got, err := eng.Store().Get([]byte("user:1")); err != nil || string(got.Value) != "not-json" {
+				t.Fatalf("user:1 = %v, %v; want the non-JSON overwrite", got, err)
+			}
+			if got, err := eng.Store().Get([]byte("user:3")); err == nil && got != nil {
+				t.Fatalf("user:3 = %q, want absent", got.Value)
+			}
+		})
+	}
+}
+
 func TestMVCCEngine_BatchMovesUniqueValueBetweenKeys(t *testing.T) {
 	encoders := flaggedUniqueEncoders()
 	for name, encode := range encoders {
