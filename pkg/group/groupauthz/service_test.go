@@ -20,6 +20,10 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -137,5 +141,64 @@ func TestGroupService_LifecycleAndMembership(t *testing.T) {
 	}
 	if _, err := f.svc.Get(ctx, g.ID); !errors.As(err, &nf) {
 		t.Fatalf("get deleted: %v, want *GroupNotFoundError", err)
+	}
+}
+
+// Dropping a role from a group, or deleting the group, unassigns the role
+// from every member: under strict separation a non-SO caller may not remove
+// the so role that way, and the SO may.
+func TestGroupService_RoleRemovalSOGate(t *testing.T) {
+	roles := authtest.BuiltInRoles(t, "acme")
+	gen, err := dao.NewSnowflakeGenerator(1)
+	if err != nil {
+		t.Fatalf("id gen: %v", err)
+	}
+	users, err := user.NewStore(kvstore.NewMemoryKVStore(), gen)
+	if err != nil {
+		t.Fatalf("user store: %v", err)
+	}
+	members, err := user.NewGroupMembership(users)
+	if err != nil {
+		t.Fatalf("membership: %v", err)
+	}
+	groups, err := group.NewStore(kvstore.NewMemoryKVStore(), group.WithRoleLookup(roles), group.WithMemberRevoker(members))
+	if err != nil {
+		t.Fatalf("group store: %v", err)
+	}
+	mw := middleware.New(rbac.New(roles), middleware.WithRoleResolver(roles), middleware.WithStrictSeparation(true))
+	svc := New(groups, users, roles, mw)
+	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
+	caller := func(roleIDs ...string) context.Context {
+		ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "acme-caller", TenantID: "acme", Roles: roleIDs})
+		return tenant.WithTenantID(ctx, "acme")
+	}
+	// groups:delete is SO-exclusive among the built-in roles; a tenant role
+	// carrying it puts a non-SO caller in front of the role-change gate.
+	keeper := authtest.CustomRole(t, roles, "acme", "group-keeper", permission.GroupsRead, permission.GroupsUpdate, permission.GroupsDelete)
+	asAdmin, asSO := caller(admin, keeper), caller(admin, so)
+	g, err := groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "signers", RoleIDs: []string{so}})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	var refused *middleware.SORoleRequiredError
+	if _, err := svc.Update(asAdmin, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{}}); !errors.As(err, &refused) {
+		t.Fatalf("admin drops so from the group: %v, want *SORoleRequiredError", err)
+	}
+	if err := svc.Delete(asAdmin, g.ID); !errors.As(err, &refused) {
+		t.Fatalf("admin deletes a group carrying so: %v, want *SORoleRequiredError", err)
+	}
+	if got, err := svc.Get(asSO, g.ID); err != nil || !slices.Equal(got.RoleIDs, []string{so}) {
+		t.Fatalf("group after refusals = %+v, %v", got, err)
+	}
+	desc := "kept"
+	if _, err := svc.Update(asAdmin, &group.UpdateGroupRequest{ID: g.ID, Description: &desc}); err != nil {
+		t.Fatalf("admin update leaving roles: %v", err)
+	}
+	if _, err := svc.Update(asSO, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{}}); err != nil {
+		t.Fatalf("SO drops so from the group: %v", err)
+	}
+	if err := svc.Delete(asAdmin, g.ID); err != nil {
+		t.Fatalf("admin deletes a group with no so: %v", err)
 	}
 }

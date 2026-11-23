@@ -245,6 +245,17 @@ func (m *AuthMiddleware) AuthorizeGroupMemberRemoval(ctx context.Context, userSv
 	return m.authorizeSORoleChange(ctx, target, append(slices.Clip(held), g.RoleIDs...), held)
 }
 
+// AuthorizeGroupRoleRemoval gates removing roles from group g, either by an
+// update that drops them or by deleting the group. Every member loses the
+// removed roles, so it is a role unassignment for each member: under strict
+// separation only the SO may remove the so role through a group.
+func (m *AuthMiddleware) AuthorizeGroupRoleRemoval(ctx context.Context, g *group.Group, removed []string) error {
+	if m == nil || g == nil || len(removed) == 0 {
+		return nil
+	}
+	return m.authorizeSORoleChange(ctx, tenantid.Normalize(g.TenantID), slices.Clone(removed), nil)
+}
+
 // AuthorizeRoleAssignmentWriteOnCreate authorizes and validates a
 // CreateUser request's RoleIDs, applying AuthorizeRoleAssignmentWrite's gate
 // to the create path: roles:assign in the tenant the record will be created

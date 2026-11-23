@@ -102,11 +102,19 @@ func (s *Service) Update(ctx context.Context, req *group.UpdateGroupRequest) (*g
 		return nil, err
 	}
 	if req.RoleIDs != nil {
-		var added []string
+		var added, removed []string
 		for _, rid := range req.RoleIDs {
 			if !slices.Contains(g.RoleIDs, rid) {
 				added = append(added, rid)
 			}
+		}
+		for _, rid := range g.RoleIDs {
+			if !slices.Contains(req.RoleIDs, rid) {
+				removed = append(removed, rid)
+			}
+		}
+		if err := s.Auth.AuthorizeGroupRoleRemoval(ctx, g, removed); err != nil {
+			return nil, err
 		}
 		if err := s.Auth.AuthorizeGroupRoles(ctx, s.Roles, g.TenantID, added); err != nil {
 			return nil, err
@@ -119,6 +127,9 @@ func (s *Service) Update(ctx context.Context, req *group.UpdateGroupRequest) (*g
 func (s *Service) Delete(ctx context.Context, id string) error {
 	g, err := s.read(ctx, id, permission.GroupsDelete)
 	if err != nil {
+		return err
+	}
+	if err := s.Auth.AuthorizeGroupRoleRemoval(ctx, g, g.RoleIDs); err != nil {
 		return err
 	}
 	return s.Groups.DeleteGroup(ctx, g.ID)

@@ -129,6 +129,29 @@ func TestAuthorizeGroupMembership_Guard(t *testing.T) {
 	})
 }
 
+// Removing roles from a group, or deleting it, unassigns those roles from
+// every member: under strict separation only the SO may remove so that way.
+func TestAuthorizeGroupRoleRemoval_SOGate(t *testing.T) {
+	f := newSORoleFixture(t)
+	carrying := &group.Group{ID: "g-so", TenantID: "acme", RoleIDs: []string{f.so, f.userRole}}
+	for _, tc := range []struct {
+		name    string
+		ctx     context.Context
+		removed []string
+		check   func(t *testing.T, err error)
+	}{
+		{"admin removes so", f.caller(f.admin), []string{f.so}, wantErrorAs[*SORoleRequiredError]},
+		{"admin deletes a group carrying so", f.caller(f.admin), carrying.RoleIDs, wantErrorAs[*SORoleRequiredError]},
+		{"SO removes so", f.caller(f.so), []string{f.so}, wantNoError},
+		{"admin removes a non-so role", f.caller(f.admin), []string{f.userRole}, wantNoError},
+		{"nothing removed", f.caller(f.admin), nil, wantNoError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.check(t, f.mw.AuthorizeGroupRoleRemoval(tc.ctx, carrying, tc.removed))
+		})
+	}
+}
+
 func TestAuthorizeGroupRoles_Guard(t *testing.T) {
 	builtIn, custom, roles := grantRuleFixture()
 	mw := mwWithPerms(permission.GroupsUpdate, permission.KeysSign)
