@@ -494,7 +494,8 @@ Both are refused, before the provider is asked, while the
 tenant's group (`LogFeatureNotActiveError`). A barrier-isolated tenant's logs
 and keys are in its own barrier-sealed home group ([architecture.md](architecture.md),
 "Isolation"). While that barrier is sealed every log call is refused with the
-tenant's sealed error. A node with no such group (standalone) refuses with
+tenant's sealed error. On a standalone node they are in the tenant's own
+standalone barrier store. A node with neither refuses with
 `BarrierStoreUnavailableError`, `Unavailable` on every transport:
 `503 Service Unavailable` over REST, `UNAVAILABLE` over gRPC.
 
@@ -552,6 +553,7 @@ allow it `FailedPrecondition`.
 | A create or barrier update carrying a secret, an unseal, or a holder's quorum submission, on a connection without TLS or redirected to `http` | not sent | not sent — the SDK returns `sdk.BarrierSecretRequiresTLSError`, naming the transport and the kind of secret, never its value |
 | A REST or MCP create, barrier update, unseal or quorum submission carrying a secret, redirected (307 or 308) to a host other than the one it was sent to | not sent — the SDK returns `sdk.BarrierSecretForeignHostError`, naming the transport, the kind of secret and both hosts, never its value. A redirect to the same host is followed | not applicable — gRPC and Unix do not redirect |
 | Operating on a sealed database | 503 | `UNAVAILABLE` |
+| A kv key in, or a delete range over, a barrier database's reserved verifiable-log keyspace | 400 | `INVALID_ARGUMENT` — `service.ReservedKeyError` |
 | Operating on a database whose drop is in flight | 409 | `ABORTED` — `database.DroppingError` |
 | A second `DROP DATABASE` for the same database while one is already running on this node | 409 | `ABORTED` — `database.DropInProgressError` |
 | A write that was accepted before a drop and reached the store after it | 409 | `ABORTED` — `database.DroppingError`; nothing was written |

@@ -1082,20 +1082,26 @@ advertises it.
 
 **Isolation.** A log is applied into the log registry of the group it routes
 to; every group's state machine carries one, and its snapshot and restore carry
-the registry with the rest of the group. The log service routes through
-`service.NewSystemShardAuditResolver`; the replicated audit logger and the log
-service share that one resolver (`pkg/server/lifecycle/lifecycle.go`), so a
-tenant's audit trail is written and read in the same group. A prefix tenant's logs, and the system
+the registry with the rest of the group. The log service routes a tenant's logs through
+`service.NewSystemShardLogResolver`, and the reserved `system` database (the
+audit instance) through `service.NewSystemShardAuditResolver`, the resolver
+the replicated audit logger writes with (`LogServiceConfig.AuditResolver`,
+`pkg/server/lifecycle/lifecycle.go`), so a tenant's audit trail is written and
+read in the same group. A barrier tenant's audit trail stays on the system
+shard, as before; moving it off needs a coordinated migration. A prefix tenant's logs, and the system
 tenant's, are in the system shard, under the system barrier. A barrier-isolated
 tenant's logs, entries and sealed head-signing keys are in the tenant's home
 group (`database.TenantHomeName`), whose WAL and snapshots are under the
 tenant's own key; a sealed tenant barrier refuses every log call, read or
 write, with `tenant.ErrTenantSealed`, as it refuses the tenant's other reads.
 The groups come from the dedicated-Raft services `AttachTenantHomes` attaches
-(`pkg/server/lifecycle/log_groups.go`). Where there is no such group the call
-fails closed with `BarrierStoreUnavailableError`, classed `Unavailable` by
-`pkg/api/errclass`: on a standalone node, whose barrier homes are KV stores
-with no log state machine. A database named by a call is looked up in the
+(`pkg/server/lifecycle/log_groups.go`). On a standalone node the logs are applied to and read from the tenant's own
+standalone barrier store (`pkg/service/vlog_barrier_store.go`, attached by
+`AttachLocalTenantHomes`). Where there is neither the call fails closed with
+`BarrierStoreUnavailableError`, classed `Unavailable` by `pkg/api/errclass`.
+The kv surface refuses a key in, or a delete range over, the reserved log
+keyspace with `service.ReservedKeyError` (`InvalidArgument`); dropping a
+database reclaims its logs, so a re-created name starts empty. A database named by a call is looked up in the
 node's database registry before the call is routed. A barrier-enabled
 database's logs are applied to and read from the database's own barrier backend
 (`pkg/service/vlog_database_store.go`), so they are encrypted under the
