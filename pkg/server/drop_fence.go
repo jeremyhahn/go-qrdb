@@ -21,7 +21,8 @@ import (
 )
 
 // dbGuard is embedded by every namespaced view whose writes are Raft
-// proposals -- KV, MVCC, batch, transaction, time-series and index -- and
+// proposals -- KV, MVCC, batch, transaction, time-series, index and a
+// materialized database's vectors -- and
 // carries the write guard of the database incarnation the view is scoped
 // to: its drop-fence marker holds exactly that incarnation
 // (service.DropFenceGuard).
@@ -47,12 +48,15 @@ func (g dbGuard) scope(ctx context.Context) context.Context {
 	return service.WithWriteGuard(ctx, g.guard)
 }
 
-// dropFence is the check-then-write fence the vector view still uses.
+// dropFence is the check-then-write fence the vector view keeps alongside
+// its dbGuard.
 //
-// Vector writes are the one namespaced write that is not a Raft proposal:
-// the vector service stores embeddings in a node-local store, so there is no
-// replicated command for a guard to ride on, and the check here runs before
-// the write rather than inside it. See docs/databases/engineering.md for
+// The shared node vector store's writes are the one namespaced write that is
+// not a Raft proposal: that vector service stores embeddings in a node-local
+// store, so there is no replicated command for a guard to ride on, and the
+// check here runs before the write rather than inside it. A materialized
+// database's vector service writes through its store's Raft host instead,
+// so its writes carry the dbGuard and are refused at apply time. See docs/databases/engineering.md for
 // what that leaves open.
 type dropFence struct {
 	// check reports whether the database the view is scoped to is being

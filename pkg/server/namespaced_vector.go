@@ -31,7 +31,19 @@ import (
 // non-system tenants. This is redundant but correct — it never weakens
 // isolation — and keeps a single tenant.ComposeNamespace formula in use
 // across every engine.
+//
+// Every write carries two fences. dbGuard attaches the database's write
+// guard to the context passed to inner, so when inner proposes its writes
+// through Raft -- a materialized database's vector service writes through
+// service.WithVectorApplyHost, every write an OpVector* proposal -- the
+// guard rides in the same command and the state machine refuses, at apply
+// time, a write that had not applied before Drop fenced the database: an
+// upsert that passed the check below, paused, and proposed after the drop
+// is refused all the same. dropFence is the check-before-write the shared
+// node vector store still needs: its writes are not proposals, so no command
+// carries the guard there and the guard is a no-op.
 type namespacedVectorService struct {
+	dbGuard
 	dropFence
 	inner  service.VectorServicer
 	prefix string
@@ -82,7 +94,7 @@ func (s *namespacedVectorService) CreateNamespace(ctx context.Context, req *serv
 	err := s.guardedWrite(func() error {
 		cp := *req
 		cp.Namespace = s.prefix + req.Namespace
-		out, err := s.inner.CreateNamespace(ctx, &cp)
+		out, err := s.inner.CreateNamespace(s.scope(ctx), &cp)
 		if err != nil {
 			return err
 		}
@@ -103,7 +115,7 @@ func (s *namespacedVectorService) UpdateNamespace(ctx context.Context, req *serv
 	err := s.guardedWrite(func() error {
 		cp := *req
 		cp.Namespace = s.prefix + req.Namespace
-		out, err := s.inner.UpdateNamespace(ctx, &cp)
+		out, err := s.inner.UpdateNamespace(s.scope(ctx), &cp)
 		if err != nil {
 			return err
 		}
@@ -124,7 +136,7 @@ func (s *namespacedVectorService) DeleteNamespace(ctx context.Context, req *serv
 	err := s.guardedWrite(func() error {
 		cp := *req
 		cp.Namespace = s.prefix + req.Namespace
-		out, err := s.inner.DeleteNamespace(ctx, &cp)
+		out, err := s.inner.DeleteNamespace(s.scope(ctx), &cp)
 		if err != nil {
 			return err
 		}
@@ -173,7 +185,7 @@ func (s *namespacedVectorService) UpsertVector(ctx context.Context, req *service
 	err := s.guardedWrite(func() error {
 		cp := *req
 		cp.Namespace = s.prefix + req.Namespace
-		out, err := s.inner.UpsertVector(ctx, &cp)
+		out, err := s.inner.UpsertVector(s.scope(ctx), &cp)
 		if err != nil {
 			return err
 		}
@@ -204,7 +216,7 @@ func (s *namespacedVectorService) DeleteVector(ctx context.Context, req *service
 	err := s.guardedWrite(func() error {
 		cp := *req
 		cp.Namespace = s.prefix + req.Namespace
-		out, err := s.inner.DeleteVector(ctx, &cp)
+		out, err := s.inner.DeleteVector(s.scope(ctx), &cp)
 		if err != nil {
 			return err
 		}
@@ -224,7 +236,7 @@ func (s *namespacedVectorService) BatchUpsert(ctx context.Context, req *service.
 	err := s.guardedWrite(func() error {
 		cp := *req
 		cp.Namespace = s.prefix + req.Namespace
-		out, err := s.inner.BatchUpsert(ctx, &cp)
+		out, err := s.inner.BatchUpsert(s.scope(ctx), &cp)
 		if err != nil {
 			return err
 		}
@@ -244,7 +256,7 @@ func (s *namespacedVectorService) BatchDeleteVectors(ctx context.Context, req *s
 	err := s.guardedWrite(func() error {
 		cp := *req
 		cp.Namespace = s.prefix + req.Namespace
-		out, err := s.inner.BatchDeleteVectors(ctx, &cp)
+		out, err := s.inner.BatchDeleteVectors(s.scope(ctx), &cp)
 		if err != nil {
 			return err
 		}
@@ -275,7 +287,7 @@ func (s *namespacedVectorService) UpdateMetadata(ctx context.Context, req *servi
 	err := s.guardedWrite(func() error {
 		cp := *req
 		cp.Namespace = s.prefix + req.Namespace
-		out, err := s.inner.UpdateMetadata(ctx, &cp)
+		out, err := s.inner.UpdateMetadata(s.scope(ctx), &cp)
 		if err != nil {
 			return err
 		}
@@ -340,7 +352,7 @@ func (s *namespacedVectorService) RebuildIndex(ctx context.Context, req *service
 	err := s.guardedWrite(func() error {
 		cp := *req
 		cp.Namespace = s.prefix + req.Namespace
-		out, err := s.inner.RebuildIndex(ctx, &cp)
+		out, err := s.inner.RebuildIndex(s.scope(ctx), &cp)
 		if err != nil {
 			return err
 		}
@@ -384,7 +396,7 @@ func (s *namespacedVectorService) CompactNamespace(ctx context.Context, req *ser
 	err := s.guardedWrite(func() error {
 		cp := *req
 		cp.Namespace = s.prefix + req.Namespace
-		out, err := s.inner.CompactNamespace(ctx, &cp)
+		out, err := s.inner.CompactNamespace(s.scope(ctx), &cp)
 		if err != nil {
 			return err
 		}

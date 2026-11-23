@@ -304,7 +304,11 @@ func (r *restServiceRegistry) resolveMaterialized(tenantID, db string, info *ten
 	// -- so the guard and the compaction binding carry no incarnation and the
 	// marker is absent while the database is live, as for a dedicated-raft
 	// database's shard; CompactionScheduleGuard finds the same marker. The
-	// vector view keeps its check against the catalog's incarnation.
+	// vector view's writes are OpVector* proposals through this store's host
+	// (service.WithVectorApplyHost), so they carry the guard too: an upsert
+	// that passed the check and proposed after the drop is refused at apply
+	// time. The view also keeps its check against the catalog's incarnation,
+	// which is what fences the shared node vector store's node-local writes.
 	fence, err := newDatabaseFence(tenantID, db, "", func() error { return r.refuseIfDropping(tenantID, db, true, incarnation) })
 	if err != nil {
 		return nil, err
@@ -919,8 +923,11 @@ func (r *restServiceRegistry) checkTenantBarrier(tenantID string) error {
 // Every write-capable view also carries fence.guard, the database's drop
 // fence guard (see dbGuard): each write it proposes is refused by the state
 // machine once DROP DATABASE has fenced the database -- or the name has been
-// created again -- in the same Raft command as the write. The vector view, whose writes are not Raft
-// proposals, is given fence.vectorCheck instead (see dropFence).
+// created again -- in the same Raft command as the write. The vector view
+// carries the guard as well (its writes are proposals when its servicer
+// writes through a Raft host, as a materialized database's does) and is also
+// given fence.vectorCheck, which is what fences the shared node vector
+// store, whose writes are not Raft proposals (see dropFence).
 //
 // Collection is REBUILT over the wrapped engines rather than copied. This
 // comment previously claimed the opposite — that Collection "is intentionally
@@ -948,8 +955,8 @@ func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, tenantID, d
 
 // databaseFence is what a database's views need to refuse writes once DROP
 // DATABASE has fenced it: the write guard every Raft write carries, and the
-// check the vector view -- whose writes are not Raft proposals -- runs
-// before it writes.
+// check the vector view also runs before it writes, for the shared node
+// vector store, whose writes are not Raft proposals.
 type databaseFence struct {
 	guard       service.WriteGuard
 	vectorCheck func() error
@@ -1112,6 +1119,7 @@ func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bo
 	}
 	if svcs.Vector != nil {
 		vec := newNamespacedVectorService(svcs.Vector, prefix)
+		vec.dbGuard = g
 		vec.dropFence = dropFence{check: f.vectorCheck}
 		out.Vector = vec
 	}
