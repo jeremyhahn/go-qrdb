@@ -294,6 +294,44 @@ func (c *KVCatalog) store(ctx context.Context, tenantID string) (kvstore.AtomicK
 
 // storeFor is store, and whether the store is the tenant's home (not the
 // system store).
+// createClaimReleaser is implemented by a catalog whose Create keeps a root
+// claim when the record write's outcome is unknown. The manager calls it once
+// settlement finds no record of that create, so the claim is released only
+// when the record is definitively absent.
+type createClaimReleaser interface {
+	ReleaseCreateClaim(ctx context.Context, meta DatabaseMeta) error
+}
+
+// ReleaseCreateClaim deletes the root claim a Create with an unknown outcome
+// kept, after the caller has settled that no record of meta's incarnation
+// survives. A record of meta's incarnation still in the tenant's home keeps
+// the claim. It is a no-op for a tenant whose records are not in its home.
+func (c *KVCatalog) ReleaseCreateClaim(ctx context.Context, meta DatabaseMeta) error {
+	store, inHome, err := c.storeFor(ctx, meta.TenantID)
+	if err != nil {
+		return err
+	}
+	if !inHome {
+		return nil
+	}
+	unlock := c.lockClaims(meta.TenantID)
+	defer unlock()
+	data, err := store.Get(ctx, CatalogKey(meta.TenantID, meta.Name))
+	if err != nil {
+		return err
+	}
+	if data != nil {
+		var stored DatabaseMeta
+		if err := json.Unmarshal(data, &stored); err != nil {
+			return err
+		}
+		if stored.Incarnation == meta.Incarnation {
+			return nil
+		}
+	}
+	return c.releaseClaim(ctx, rootClaimKey(meta.TenantID, meta.Incarnation, meta.Name))
+}
+
 func (c *KVCatalog) storeFor(ctx context.Context, tenantID string) (kvstore.AtomicKVStore, bool, error) {
 	if c.homes == nil || tenantid.IsSystem(tenantID) {
 		return c.system, false, nil
@@ -358,7 +396,12 @@ func (c *KVCatalog) Create(ctx context.Context, meta DatabaseMeta) error {
 	stored, err := store.PutIfAbsent(ctx, key, data)
 	if err != nil {
 		writeErr := &CatalogWriteError{Key: key, Err: err}
-		if claimKey != "" {
+		// A write that may have committed keeps its claim: the record
+		// it may have left must stay visible to a sealed-tenant root
+		// listing. The manager releases the claim once settlement finds
+		// the record definitively absent (ReleaseCreateClaim); a crash
+		// before that leaves a claim the reaper frees.
+		if claimKey != "" && !createOutcomeUnknown(writeErr) {
 			if releaseErr := c.releaseClaim(ctx, claimKey); releaseErr != nil {
 				return errors.Join(writeErr, releaseErr)
 			}

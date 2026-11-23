@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -163,5 +164,104 @@ func TestKVCatalog_ReapSkipsASealedTenant(t *testing.T) {
 	roots, err := cat.ListRoots(ctx)
 	if err != nil || len(roots) != 2 {
 		t.Fatalf("ListRoots = %v, %v; want both sealed claims", roots, err)
+	}
+}
+
+func TestKVCatalog_CreateTimeoutAfterCommitKeepsTheClaim(t *testing.T) {
+	ctx := context.Background()
+	home := &indeterminateStore{MemoryKVStore: kvstore.NewMemoryKVStore(), armed: true}
+	cat, system := newTestCatalog(t, &isolatedHomes{homes: map[string]kvstore.KVStore{"iso": home}})
+	meta := DatabaseMeta{TenantID: "iso", Name: "app", Incarnation: "i1", Backend: BackendMemory}
+
+	err := cat.Create(ctx, meta)
+	if !createOutcomeUnknown(err) {
+		t.Fatalf("Create err = %v, want an outcome-unknown catalog write error", err)
+	}
+	if !claimExists(t, system, "iso", "i1", "app") {
+		t.Fatal("a create whose record may have committed released its root claim")
+	}
+	if err := cat.ReleaseCreateClaim(ctx, meta); err != nil {
+		t.Fatalf("ReleaseCreateClaim over the surviving record: %v", err)
+	}
+	if !claimExists(t, system, "iso", "i1", "app") {
+		t.Fatal("ReleaseCreateClaim released the claim of a record that survives")
+	}
+	if err := home.Delete(ctx, CatalogKey("iso", "app")); err != nil {
+		t.Fatalf("Delete record: %v", err)
+	}
+	if err := cat.ReleaseCreateClaim(ctx, meta); err != nil {
+		t.Fatalf("ReleaseCreateClaim: %v", err)
+	}
+	if claimExists(t, system, "iso", "i1", "app") {
+		t.Fatal("ReleaseCreateClaim kept the claim of an absent record")
+	}
+}
+
+func TestManager_CreateCommitThenTimeoutFailedSettleThenSealKeepsRootChecked(t *testing.T) {
+	ctx := context.Background()
+	m, _, dir := newRootedManager(t)
+	home := &indeterminateStore{MemoryKVStore: kvstore.NewMemoryKVStore(), armed: true}
+	homes := &sealableHomes{
+		isolatedHomes: isolatedHomes{homes: map[string]kvstore.KVStore{"iso": home}},
+		sealed:        map[string]bool{},
+	}
+	cat, err := NewKVCatalog(kvstore.NewMemoryKVStore(), homes)
+	if err != nil {
+		t.Fatalf("NewKVCatalog: %v", err)
+	}
+	getErr := errors.New("catalog unreachable")
+	m.SetCatalog(&settleFaultCatalog{Catalog: cat, getErr: getErr})
+	isoRoot := filepath.Join(dir, "iso-root", "app")
+
+	_, err = m.Create(DatabaseConfig{TenantID: "iso", Name: "app", Backend: BackendMemory, DataDir: isoRoot})
+	var orphan *CatalogOrphanError
+	if !errors.As(err, &orphan) {
+		t.Fatalf("Create err = %v, want *CatalogOrphanError", err)
+	}
+	m.SetCatalog(cat)
+	homes.sealed["iso"] = true
+
+	roots, err := cat.ListRoots(ctx)
+	if err != nil {
+		t.Fatalf("ListRoots: %v", err)
+	}
+	found := false
+	for _, r := range roots {
+		if r.TenantID == "iso" && r.Name == "app" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ListRoots = %v, want the unsettled create's root", roots)
+	}
+	if _, err := m.Create(DatabaseConfig{Name: "evil", Backend: BackendMemory, DataDir: filepath.Join(dir, "iso-root")}); err == nil {
+		t.Fatal("a create over the unsettled record's root was not refused")
+	}
+}
+
+func TestManager_CreateCommitThenTimeoutSettledReleasesTheClaim(t *testing.T) {
+	ctx := context.Background()
+	m := NewManager(nil, t.TempDir(), WithKeyspaceReclaimer(&spyReclaimer{}))
+	t.Cleanup(func() { _ = m.Close() })
+	home := &indeterminateStore{MemoryKVStore: kvstore.NewMemoryKVStore(), armed: true}
+	system := kvstore.NewMemoryKVStore()
+	cat, err := NewKVCatalog(system, &isolatedHomes{homes: map[string]kvstore.KVStore{"iso": home}})
+	if err != nil {
+		t.Fatalf("NewKVCatalog: %v", err)
+	}
+	m.SetCatalog(cat)
+
+	if _, err := m.Create(DatabaseConfig{TenantID: "iso", Name: "app", Backend: BackendMemory}); err == nil {
+		t.Fatal("Create over an indeterminate write succeeded")
+	}
+	var leftover []string
+	if err := system.Scan(ctx, RootClaimKeyPrefix, func(key string, _ []byte) error {
+		leftover = append(leftover, key)
+		return nil
+	}); err != nil {
+		t.Fatalf("Scan claims: %v", err)
+	}
+	if len(leftover) != 0 {
+		t.Fatalf("root claims after the settled create = %v, want none", leftover)
 	}
 }
