@@ -677,13 +677,6 @@ func TestKVServiceAdapter_ScanCompoundIndex_RefusesEmptyValues(t *testing.T) {
 // kvServiceAdapter compile-time interface check
 // ---------------------------------------------------------------------------
 
-func TestKVServiceAdapter_ImplementsKVStore(t *testing.T) {
-	mock := &mockKVServicer{}
-	adapter := newKVServiceAdapter(mock, nil, nil)
-	// Confirm the adapter satisfies kvstore.KVStore at runtime.
-	require.NotNil(t, adapter)
-}
-
 // ListAll mirrors List on this double: it applies no internal-key guard,
 // so the filtered and unfiltered enumerations are the same call.
 func (m *mockKVServicer) ListAll(ctx context.Context, prefix string) ([]string, error) {

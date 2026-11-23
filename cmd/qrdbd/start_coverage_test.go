@@ -1580,11 +1580,6 @@ func TestResolveAutoConfig_PartialExplicitFlags(t *testing.T) {
 // newKVServiceAdapter: ensure adapter creation and identity
 // ---------------------------------------------------------------------------
 
-func TestNewKVServiceAdapter_ReturnsNonNil(t *testing.T) {
-	adapter := newKVServiceAdapter(&mockKVServicer{}, nil, nil)
-	require.NotNil(t, adapter)
-}
-
 // ---------------------------------------------------------------------------
 // generateAdminClientCert: valid CA cert but CA key is a different key than
 // what signed the CA cert (will fail at CreateCertificate or earlier)
