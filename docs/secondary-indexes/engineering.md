@@ -220,7 +220,10 @@ replays unchanged (#1649; `TestEmbeddedKVStore_GuardedBatchUniqueCompoundTuple`)
 - **A transaction or batch is checked in op order.** A value released by an
   earlier delete or overwrite of its holder may be taken by a later op of the
   same set, and not by an earlier one, so the pre-check admits exactly what
-  ordered apply admits. This holds for a command proposed once the cluster
+  ordered apply admits. An earlier write releases only the entries the key's
+  prior value carries (the entries apply removes), so an entry left stale by a
+  legacy plain non-JSON overwrite stays held and a set giving its value to
+  another key is refused as a conflict. This holds for a command proposed once the cluster
   feature `ordered-unique-check` (`featuregate.OrderedUniqueCheck`) is enabled
   for the group, at once on a standalone or embedded store: such a command
   carries the `protocol.CmdFlagOrderedUnique` trailer byte. A command without
