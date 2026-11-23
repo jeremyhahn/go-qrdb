@@ -453,6 +453,8 @@ func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret s
 	// The listener accepts before the handler is necessarily wired, so this
 	// retries until the endpoint answers rather than betting on one attempt.
 	deadline := time.Now().Add(readinessTimeout)
+	retry := time.NewTicker(signalRetryInterval)
+	defer retry.Stop()
 	var lastErr error
 	for time.Now().Before(deadline) {
 		req, rerr := http.NewRequestWithContext(context.Background(),
@@ -465,7 +467,7 @@ func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret s
 		resp, derr := client.Do(req)
 		if derr != nil {
 			lastErr = derr
-			time.Sleep(signalRetryInterval)
+			<-retry.C
 			continue
 		}
 		_ = resp.Body.Close()
@@ -474,7 +476,7 @@ func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret s
 			return
 		}
 		lastErr = fmt.Errorf("status %d", resp.StatusCode)
-		time.Sleep(signalRetryInterval)
+		<-retry.C
 	}
 	t.Fatalf("ceremony initialize never succeeded within %v: %v", readinessTimeout, lastErr)
 }

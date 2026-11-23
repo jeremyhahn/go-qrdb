@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -109,13 +111,9 @@ func TestStartReclaimSweeper_StandaloneDaemonSweepsAsTheLeader(t *testing.T) {
 
 	startReclaimSweeper(ctx, sweeper, time.Millisecond, nil, nil)
 
-	deadline := time.Now().Add(5 * time.Second)
-	for len(resolver.sweeps()) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the standalone daemon's sweeper never swept")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.Eventually(t, func() bool {
+		return len(resolver.sweeps()) > 0
+	}, 5*time.Second, time.Millisecond, "the standalone daemon's sweeper never swept")
 	for _, leader := range resolver.sweeps() {
 		if !leader {
 			t.Fatal("a standalone daemon must sweep as the owner of shared-store jobs")
@@ -133,13 +131,9 @@ func TestStartReclaimSweeper_ClusteredFollowerStillSweeps(t *testing.T) {
 
 	startReclaimSweeper(ctx, sweeper, time.Millisecond, systemShardLeader(&stubLeaderIDs{id: 9, ok: true}, 3), nil)
 
-	deadline := time.Now().Add(5 * time.Second)
-	for len(resolver.sweeps()) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("a follower's sweeper never swept")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.Eventually(t, func() bool {
+		return len(resolver.sweeps()) > 0
+	}, 5*time.Second, time.Millisecond, "a follower's sweeper never swept")
 	if resolver.sweeps()[0] {
 		t.Fatal("a follower must not claim system-shard leadership")
 	}
