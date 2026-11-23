@@ -124,7 +124,7 @@ func (t *Transport) ListTenants(ctx context.Context, req *transport.ListTenantsR
 		tenants[i] = tenantconv.ToTenantInfo(pt)
 	}
 
-	return &transport.ListTenantsResponse{Tenants: tenants}, nil
+	return transport.EnforceStatusFilter(req, &transport.ListTenantsResponse{Tenants: tenants})
 }
 
 // ListDeletedTenants returns one page of retired tenant ids via the Unix gRPC-over-UDS

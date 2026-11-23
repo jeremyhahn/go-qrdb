@@ -292,7 +292,7 @@ func (t *Transport) ListTenants(ctx context.Context, req *transport.ListTenantsR
 		tenants[i] = mcpTenantInfoToTransport(&raw[i])
 	}
 
-	return &transport.ListTenantsResponse{Tenants: tenants}, nil
+	return transport.EnforceStatusFilter(req, &transport.ListTenantsResponse{Tenants: tenants})
 }
 
 // DeleteTenant removes a tenant by calling the qrdb_tenant_delete MCP tool.

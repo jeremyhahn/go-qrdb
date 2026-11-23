@@ -281,7 +281,7 @@ func (t *Transport) ListTenants(ctx context.Context, req *transport.ListTenantsR
 		}
 		out.Tenants = append(out.Tenants, rt.toTenantInfo())
 	}
-	return out, nil
+	return transport.EnforceStatusFilter(req, out)
 }
 
 // ListDeletedTenants returns one page of retired tenant ids. Maps to
