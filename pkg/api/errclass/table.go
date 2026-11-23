@@ -1165,6 +1165,8 @@ var credentialRules = []rule{
 	is(credentials.ErrMigrationConflictNotFound, NotFound),
 	is(credentials.ErrInvalidMigrationResolution, InvalidArgument),
 	is(credentials.ErrRotationMetaContended, Aborted),
+	// An undecodable migration claim is a corrupt record a retry never repairs.
+	is(credentials.ErrCorruptMigrationClaim, DataLoss),
 	// The replicated credential store is bound once the node has unsealed
 	// and its system shard's KV has started; a call before then is retryable.
 	is(credentials.ErrStoreUnavailable, Unavailable),
