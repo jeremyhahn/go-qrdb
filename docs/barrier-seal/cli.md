@@ -343,7 +343,15 @@ runs under `make integration-test-barrier-seal`, as do
 `test/integration/seal_store_cli_test.go` and
 `test/integration/seal_store_sdk_test.go`, which prove that every network
 transport refuses the seal-store verbs as embedded-only through the CLI and
-the SDK while barrier seal and unseal keep working;
-`cmd/qrdb/seal_store_cmd_test.go` covers the embedded transport. CI runs them in the
+the SDK while barrier seal and unseal keep working.
+`TestSealStore_GRPCWeb_EmbeddedOnly` proves gRPC-Web (`/grpc-web/` on the REST
+listener) answers every removed seal-store method Unimplemented and unseals
+the barrier. `TestSealStore_SDK_Embedded_Lifecycle` proves the embedded
+transport, the one surface that serves seal-store data, end to end on a real
+passphrase-sealed node: put, get, list, status, reseal and delete through
+`Client.SealStore()`, refusal while sealed, and the secret read back unchanged
+after unseal. `cmd/qrdb/seal_store_cmd_test.go` covers the CLI verbs on the
+embedded transport over a test store: the CLI build does not link a node
+in-process (`--transport embedded` is the desktop build's). CI runs them in the
 `integration-features` shard whose feature list includes `barrier-seal`
 (`.github/workflows/ci.yml`), required by `ci-gate`.
