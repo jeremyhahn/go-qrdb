@@ -50,3 +50,21 @@ Verdicts: ok = nothing to fix; fixed in <commit subject>.
 | pkg/service/watch_entity_terminal_test.go | awaitEviction helper | watch.Hub.WatchCount reaching zero | ok | same condition and bound |
 | pkg/service/mvcc_service_test.go | constructor and mock-interface tests removed; compile-time guards added | mocks satisfy the interfaces the service type-asserts | ok | 566-audit-2 |
 | pkg/service/backend_kv_test.go, batch_service_test.go, collection_service_test.go, credential_service_test.go, database_service_test.go, index_service_test.go, lease_service_test.go, proposer_test.go, rebalance_move_test.go, rebalance_service_test.go, service_test.go, timeseries_service_test.go, transaction_service_test.go, watch_service_test.go | ReturnsNonNil / Implements tests removed | constructor return types or compile-time guards | ok | 566-audit-2 |
+
+## sdk/go
+
+| File | Changed tests | Caller chain checked | Verdict | Note |
+|---|---|---|---|---|
+| sdk/go/node/cluster_formation_test.go | awaitAgreedLeader, TestRunningCluster_AddReplica_Identity (two loops), advertiseJoiner, TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleared: sleep → ticker | node leader / membership / unseal state polled by the unchanged loop condition | ok | only the pause between polls changed; each loop still exits on its observed condition or its deadline |
+| sdk/go/node/compaction_replicated_test.go | setPolicy helper | policy read-back loop | ok | as above |
+| sdk/go/node/embedded_cluster_ca_test.go | retryUntil helper | f() until nil or ctx done | ok | the pause now also wakes on ctx.Done; the return still reports f's error |
+| sdk/go/node/prebound_listener_test.go | TestNode_PreboundListenersSurviveMigration | h3Healthy probes across the stale HTTP/3 timer window | ok | every probe asserted, plus one after the window ends: stronger than before |
+| sdk/go/node/tenant_isolation_test.go | awaitReadIndexReady helper | ReadIndex ready loop | ok | ticker only |
+| sdk/go/node/tenant_undo_watch_test.go | awaitFeatureActive, TestClusteredNode_FollowersAcknowledgeAnUndoWhileServing | feature gate / undo ack loops | ok | ticker only |
+| sdk/go/conformance/compaction_node_test.go, compaction_policy_test.go, coordination_parity_test.go, harness_test.go, share_holders_test.go | TestNodeKeyspaceCompaction_OnEveryTransport, TestCompactionPolicy_OnEveryTransport, assertLeaseExpiryDeletesKeys, awaitWritable, holderE2E.dial | per-transport polling loops | ok | ticker only; conditions and deadlines unchanged |
+| sdk/go/coordination_test.go | blockedRenewal and the five TestLease_* deadline tests, TestLease_OwnershipEndsAtTheDeadlineNotTheNextPoll: wall-clock ranges → synctest bubble | Lease renew / Done / poll loop over fakeLease | ok | the deadlines are now asserted as exact instants (4 s, 6 s, 7 s) instead of ranges; the acknowledged-renewal test now proves the extension reaches send+TTL, where it used to check only 1 s past the renew |
+| sdk/go/driver/pool_test.go | assertPoolDrained | sql.DB stats loop | ok | ticker only |
+| sdk/go/driver/connector_network_test.go, stmt_test.go | interface-compliance tests removed | compile-time guards | ok | 566-audit-5 |
+| sdk/go/testutil/qrdbdharness/daemon_test.go, relay_test.go | waitForTail, waitCount | daemon log tail, relay counters | ok | ticker only |
+| sdk/go/transport/embedded/seal_watch_test.go, transport_watch_test.go | TestWatch_OtherTenantSealLeavesTheStream, settledGoroutineCount, goroutinesAtMost, awaitEviction | watch stream / goroutine count / hub count loops | ok | ticker only; a ticker starts no goroutine, so the goroutine counts are not disturbed |
+| sdk/go/transport/mcp/transport_database_scope_test.go, transport_guarded_test.go; sdk/go/transport/quic/transport_credentials_test.go, transport_guarded_test.go; sdk/go/transport/unix/transport_guarded_test.go | Implements tests removed | compile-time guards | ok | 566-audit-5 |
