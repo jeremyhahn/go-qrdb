@@ -30,6 +30,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- A `backend: raft` database of a prefix, barrier or volume tenant runs its own Raft group (#923).
 - **Breaking:** the SQL engine tables are renamed to `qrdb_ts_datapoints`, `qrdb_ts_metrics`, `qrdb_vector_namespaces` and `qrdb_vector_vectors` and are served only when their engine is compiled in; the four names are reserved for `CREATE TABLE` and `RENAME TABLE`, and `metrics`, `vectors`, `datapoints` and `namespaces` are ordinary user table names (#923).
 - A standalone node's non-shared database keeps its vectors in its own binding store (memory, file, pebble or objstore), written through its apply host under its encryptor; the separate per-database Pebble vector store under `<root>/vector` is gone (#923).
 - On a standalone node a prefix tenant's plain database (no per-database barrier, no explicit data directory, not raft) now lives in its own store under `<data-dir>/tenants/<tenant>/databases/<name>`, on its own backend, written through the node encryptor and served from its own host on every transport; `DROP DATABASE` removes that directory. Raft mode, the system tenant and volume and raft tenants are unchanged (barrier tenants: next entry). An existing standalone node's prefix-tenant databases created before this release are not moved: while such a database has no store under its binding root and its earlier store holds data, it keeps opening on that store and serves its data from there; moving it to its own store is a later slice (docs/databases/architecture.md, #923).
