@@ -157,6 +157,8 @@ func TestHandleParse_ShowTablesReachesEngine(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, strings.ToUpper(trimmed), strings.ToUpper(strings.TrimRight(strings.TrimSpace(translated), "; ")),
 				"the translator passes SHOW TABLES through unchanged")
+			require.True(t, statementReturnsRows(translated, nil),
+				"SHOW TABLES returns rows, so Describe declares its columns (extended protocol)")
 
 			writer := &mockDataWriter{}
 			err = h.executeDeferredCallback(ctx, writer, nil, trimmed, translated, nil, nil, nil, statementScope{})

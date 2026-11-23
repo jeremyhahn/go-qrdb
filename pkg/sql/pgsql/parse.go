@@ -613,7 +613,10 @@ func statementReturnsRows(translated string, preparsed sqlparser.Statement) bool
 		return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(translated)), "SELECT")
 	}
 	switch stmt.(type) {
-	case sqlparser.SelectStatement, *sqlparser.Explain:
+	case sqlparser.SelectStatement, *sqlparser.Explain, *sqlparser.Show:
+		// SHOW (SHOW TABLES, the only SHOW that reaches the engine on this
+		// wire) returns rows: Describe must declare its columns, or the
+		// extended protocol refuses the rows it sends.
 		return true
 	}
 	return false
