@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,4 +120,70 @@ func TestSealSubsystemRecoverInterrupted_JournalReadFailureStopsBoot(t *testing.
 	if owed, merr := retirer.marked(); merr != nil || owed {
 		t.Fatalf("retirement marker after the failed read = %v (err %v), want none written", owed, merr)
 	}
+}
+
+// TestSealSubsystemRecoverInterrupted_RollForwardFailureStopsBoot: a failed
+// staged-record copy stops the boot (no log-and-continue), the committed
+// journal and staged records stay, and the next boot completes the roll
+// forward, so a seal-store write after it is not replayed over at the
+// restart after that.
+func TestSealSubsystemRecoverInterrupted_RollForwardFailureStopsBoot(t *testing.T) {
+	ctx := context.Background()
+	sealDir, secrets := crashRecodeSealStorePastCommit(t)
+	store, retirer, err := openSealStore(sealDir)
+	if err != nil {
+		t.Fatalf("reopen the seal store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	reboot := func() seal.StorageBackend {
+		t.Helper()
+		_ = store.Close()
+		store, retirer, err = openSealStore(sealDir)
+		if err != nil {
+			t.Fatalf("reopen the seal store: %v", err)
+		}
+		return seal.NewStorageAdapter(store)
+	}
+
+	// Boot 1: the staged-record delete fails; the boot stops with it.
+	backend := seal.NewStorageAdapter(store)
+	faulty := &faultRecoverBackend{StorageBackend: backend, failStagedDelete: true}
+	if err := recoverSystemMigration(ctx, faulty, retirer, "system/root-key", nil); !errors.Is(err, errRecoverFault) {
+		t.Fatalf("boot with a failing roll-forward: err = %v, want %v", err, errRecoverFault)
+	}
+	assertRecoverJournalPending(t, backend)
+
+	// Boot 2: the fault is gone; the roll-forward completes.
+	backend = reboot()
+	if err := recoverSystemMigration(ctx, backend, retirer, "system/root-key", nil); err != nil {
+		t.Fatalf("boot after the failed roll-forward: %v", err)
+	}
+	assertRecodeSealStoreKeyed(t, backend, secrets)
+
+	// A seal-store write after the recovery survives the next restart. A
+	// barrier's Close closes the store under it, so each barrier above and
+	// below runs on a freshly opened store, as a real boot does.
+	backend = reboot()
+	strategy, err := seal.NewSoftwareStrategy(ctx, []byte("daemon-migrate-pw"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	keyed, err := seal.NewStorageBarrier(slog.New(slog.DiscardHandler), backend,
+		seal.BarrierConfig{RootKeyPath: "system/root-key"}, strategy)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := keyed.Unseal(ctx, seal.MustCredentials(ctx, []byte("daemon-migrate-pw"))); err != nil {
+		t.Fatalf("Unseal keyed barrier: %v", err)
+	}
+	secrets["alpha"] = "alpha-rewritten-after-recovery"
+	putRecodeSealStoreSecrets(t, keyed, map[string]string{"alpha": secrets["alpha"]})
+	_ = keyed.Close()
+
+	// Boot 3: nothing is pending; the rewrite stands.
+	backend = reboot()
+	if err := recoverSystemMigration(ctx, backend, retirer, "system/root-key", nil); err != nil {
+		t.Fatalf("boot after the rewrite: %v", err)
+	}
+	assertRecodeSealStoreKeyed(t, backend, secrets)
 }

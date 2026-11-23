@@ -567,8 +567,9 @@ func (r *sealStoreRetirer) RetirePending(ctx context.Context) error {
 // journal naming the seal store marks a plaintext retirement owed BEFORE
 // database.RecoverInterruptedMigration rolls the records forward and clears
 // the journal; then any owed retirement runs, and a failure is returned with
-// the marker kept, so the next boot retries. A recovery failure itself stays
-// a warning, as before: the journal survives it.
+// the marker kept, so the next boot retries. A failed journal read or a
+// failed recovery is returned too, and stops the boot: the journal survives
+// it, and the next boot retries the roll-forward.
 func recoverSystemMigration(ctx context.Context, backend seal.StorageBackend, retirer *sealStoreRetirer, rootKeyPath string, storeDirs []string) error {
 	// Only an absent journal (nil, nil) means no pending migration: a failed
 	// read must stop the boot, or a second read inside the recovery could
@@ -586,10 +587,12 @@ func recoverSystemMigration(ctx context.Context, backend seal.StorageBackend, re
 			return err
 		}
 	}
+	// A failed recovery stops the boot: past root-key adoption, a committed
+	// journal and staged old values left behind would replay over any later
+	// seal-store write at the next restart. The journal survives the
+	// failure, so the next boot retries the roll-forward.
 	if rerr := database.RecoverInterruptedMigration(ctx, backend, rootKeyPath, storeDirs); rerr != nil {
-		slog.Warn("system encryption-migration crash recovery failed; manual reconcile may be required",
-			slog.Any("error", rerr))
-		return nil
+		return fmt.Errorf("recover the interrupted system encryption migration: %w", rerr)
 	}
 	if err := retirer.RetirePending(ctx); err != nil {
 		return fmt.Errorf("retire the seal store's plaintext history: %w", err)
