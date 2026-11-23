@@ -169,3 +169,60 @@ func testStrictTenantVectorOnlyTighteningOverProtocol(t *testing.T, node *multiP
 		t.Fatalf("[%s] tenant policy is strict after a refused tightening\noutput: %s", proto.name, got)
 	}
 }
+
+// sqlDefaultDatabaseName is the SQL default database the node in
+// TestStrictTenant_SQLDefaultDatabaseTenantTighteningRefused_PerProtocol
+// declares with --sql-database.
+const sqlDefaultDatabaseName = "sqldefault"
+
+// TestStrictTenant_SQLDefaultDatabaseTenantTighteningRefused_PerProtocol
+// proves, through the real qrdbd binary, that the strict tightening's
+// node-key log probe reads the SQL default database: a non-strict barrier
+// tenant that wrote under the SQL default (which every tenant may address in
+// the shared store) is refused the tightening to strict with the probe's
+// "has databases on the node-keyed WAL" error, over every transport, and its
+// policy stays non-strict. The SQL default reaches the probe only through
+// qrdbd's SharedDatabaseNames wiring (lifecycle.SharedNames in
+// cmd/qrdbd/start.go); the audit-route refusal alone does not name the
+// node-keyed WAL, so it cannot pass this test.
+func TestStrictTenant_SQLDefaultDatabaseTenantTighteningRefused_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startTenantEntitlementNodeWithArgs(t, []string{"--sql-database", sqlDefaultDatabaseName})
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			testStrictTenantSQLDefaultTighteningOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testStrictTenantSQLDefaultTighteningOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	suffix := fmt.Sprintf("%s-%d", proto.name, time.Now().UnixNano())
+	tenantID := "strict-sqldef-" + suffix
+	createTenant(t, node, proto, tenantID, "Strict SQL Default", "barrier", true)
+	certPath, keyPath := provisionTenantIdentity(t, node, tenantID, "sqldef-user", dataPlanePermissions)
+	conn := tenantCLIArgsForProto(node, proto, certPath, keyPath)
+	sys := node.cliArgsFor(proto)
+
+	if out, err := runQRDBRetryingUnavailable(t, node.cli, conn, "--database", sqlDefaultDatabaseName, "kv", "put", "greeting", "hello"); err != nil {
+		t.Fatalf("[%s] kv put into the SQL default database %s: %v\noutput: %s", proto.name, sqlDefaultDatabaseName, err, out)
+	}
+
+	out, err := runQRDB(t, node.cli, sys, "tenant", "update", tenantID, "--isolation-policy", "strict")
+	if err == nil {
+		t.Fatalf("[%s] tightening a tenant with data under the SQL default database to strict succeeded\noutput: %s", proto.name, out)
+	}
+	for _, want := range []string{tenantID, "node-keyed WAL"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("[%s] tightening refusal output lacks %q:\n%s", proto.name, want, out)
+		}
+	}
+	got, err := runQRDB(t, node.cli, sys, "tenant", "get", tenantID)
+	if err != nil {
+		t.Fatalf("[%s] tenant get after the refusal: %v\noutput: %s", proto.name, err, got)
+	}
+	if strings.Contains(got, "Isolation policy: strict") {
+		t.Fatalf("[%s] tenant policy is strict after a refused tightening\noutput: %s", proto.name, got)
+	}
+}
