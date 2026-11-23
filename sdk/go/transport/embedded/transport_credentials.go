@@ -16,6 +16,7 @@ package embedded
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
@@ -178,7 +179,7 @@ func (t *Transport) CredentialSetRotationPolicy(ctx context.Context, req *transp
 	if err != nil {
 		return err
 	}
-	return t.credentialSvc.CredentialSetRotationPolicy(ctx, req.Name, policy)
+	return credentialNotFound(req.Name, t.credentialSvc.CredentialSetRotationPolicy(ctx, req.Name, policy))
 }
 
 // CredentialRotationPolicy returns a named credential's scheduled rotation
@@ -199,7 +200,7 @@ func (t *Transport) CredentialRotationPolicy(ctx context.Context, name string) (
 	}
 	status, err := t.credentialSvc.CredentialRotationPolicy(ctx, name)
 	if err != nil {
-		return nil, err
+		return nil, credentialNotFound(name, err)
 	}
 	return &transport.CredentialRotationPolicyResponse{
 		Name:           name,
@@ -260,7 +261,17 @@ func (t *Transport) CredentialResolveMigrationConflict(ctx context.Context, req 
 	if req == nil {
 		return &InvalidRequestError{Method: "CredentialResolveMigrationConflict"}
 	}
-	return t.credentialSvc.CredentialResolveMigrationConflict(ctx, req.Name, credentials.MigrationResolution(req.Resolution))
+	return credentialNotFound(req.Name, t.credentialSvc.CredentialResolveMigrationConflict(ctx, req.Name, credentials.MigrationResolution(req.Resolution)))
+}
+
+// credentialNotFound answers the credential service's not-found sentinels
+// for name with the *transport.KeyNotFoundError the gRPC, QUIC, Unix, MCP and
+// REST transports return for them; any other error passes through unchanged.
+func credentialNotFound(name string, err error) error {
+	if errors.Is(err, credentials.ErrCredentialNotFound) || errors.Is(err, credentials.ErrMigrationConflictNotFound) {
+		return &transport.KeyNotFoundError{Key: name}
+	}
+	return err
 }
 
 // CredentialListVersions returns the version history (current + non-expired

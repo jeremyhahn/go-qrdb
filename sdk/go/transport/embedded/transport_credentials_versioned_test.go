@@ -459,8 +459,8 @@ func TestEmbeddedCredential_RotationPolicy_Success(t *testing.T) {
 
 func TestEmbeddedCredential_RotationPolicy_NotFoundAndClosed(t *testing.T) {
 	tr := newCredentialTransport(t, &mockCredentialService{})
-	if _, err := tr.CredentialRotationPolicy(context.Background(), "missing"); !errors.Is(err, credentials.ErrCredentialNotFound) {
-		t.Fatalf("expected ErrCredentialNotFound, got %v", err)
+	if _, err := tr.CredentialRotationPolicy(context.Background(), "missing"); !errors.As(err, new(*transport.KeyNotFoundError)) {
+		t.Fatalf("expected *transport.KeyNotFoundError, got %T (%v)", err, err)
 	}
 	var closed *transport.ClosedError
 	if _, err := closedCredentialTransport(t).CredentialRotationPolicy(context.Background(), "db"); !errors.As(err, &closed) {
@@ -511,8 +511,8 @@ func TestEmbeddedCredential_ResolveMigrationConflict_SuccessAndNotFound(t *testi
 		t.Fatalf("CredentialResolveMigrationConflict: %v", err)
 	}
 	if err := handleCredentialResolveMigrationConflict(context.Background(), tr,
-		&transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"}, nil); !errors.Is(err, credentials.ErrMigrationConflictNotFound) {
-		t.Fatalf("expected ErrMigrationConflictNotFound, got %v", err)
+		&transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"}, nil); !errors.As(err, new(*transport.KeyNotFoundError)) {
+		t.Fatalf("expected *transport.KeyNotFoundError, got %T (%v)", err, err)
 	}
 }
 

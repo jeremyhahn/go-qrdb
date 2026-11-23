@@ -11,6 +11,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -53,7 +54,7 @@ func TestEmbeddedCredential_Dispatch_RotationPolicy(t *testing.T) {
 	if resp == nil || resp.Name != "db" || !resp.Enabled {
 		t.Fatalf("get dispatch returned %+v", resp)
 	}
-	if err := tr.Request(ctx, "CredentialRotationPolicy", &transport.CredentialRotationPolicyRequest{Name: "missing"}, &resp); !errors.Is(err, credentials.ErrCredentialNotFound) {
+	if err := tr.Request(ctx, "CredentialRotationPolicy", &transport.CredentialRotationPolicyRequest{Name: "missing"}, &resp); !errors.As(err, new(*transport.KeyNotFoundError)) {
 		t.Fatalf("get dispatch of a missing credential: %v", err)
 	}
 }
@@ -86,6 +87,67 @@ func TestEmbeddedCredential_ReadsSurfaceServiceErrors(t *testing.T) {
 	}
 	if err := tr.Request(ctx, "CredentialMigrationConflicts", nil, nil); !errors.Is(err, errCredential) {
 		t.Errorf("CredentialMigrationConflicts dispatch: %v", err)
+	}
+}
+
+// sentinelCredentialService answers the rotation-policy and migration-conflict
+// verbs with err, as the credential service does for a name it does not hold.
+type sentinelCredentialService struct {
+	mockCredentialService
+	err error
+}
+
+func (s *sentinelCredentialService) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
+	return s.err
+}
+
+func (s *sentinelCredentialService) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
+	return nil, s.err
+}
+
+func (s *sentinelCredentialService) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
+	return s.err
+}
+
+// TestEmbeddedCredential_RotationVerbsNotFoundIsKeyNotFound pins the embedded
+// answer of the rotation-policy and migration-conflict verbs to the typed
+// not-found error the wire transports return: both not-found sentinels become
+// *transport.KeyNotFoundError{Key: name}, and any other error passes through
+// unchanged.
+func TestEmbeddedCredential_RotationVerbsNotFoundIsKeyNotFound(t *testing.T) {
+	ctx := context.Background()
+	verbs := map[string]func(tr *Transport) error{
+		"CredentialSetRotationPolicy": func(tr *Transport) error {
+			return tr.CredentialSetRotationPolicy(ctx, &transport.CredentialSetRotationPolicyRequest{Name: "missing", Enabled: true, Interval: "1h0m0s"})
+		},
+		"CredentialRotationPolicy": func(tr *Transport) error {
+			_, err := tr.CredentialRotationPolicy(ctx, "missing")
+			return err
+		},
+		"CredentialResolveMigrationConflict": func(tr *Transport) error {
+			return tr.CredentialResolveMigrationConflict(ctx, &transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: string(credentials.MigrationDiscard)})
+		},
+	}
+	sentinels := []error{credentials.ErrCredentialNotFound, credentials.ErrMigrationConflictNotFound}
+	for verb, call := range verbs {
+		for _, sentinel := range sentinels {
+			t.Run(verb+"/"+sentinel.Error(), func(t *testing.T) {
+				err := call(newCredentialTransport(t, &sentinelCredentialService{err: sentinel}))
+				var knf *transport.KeyNotFoundError
+				if !errors.As(err, &knf) {
+					t.Fatalf("expected *transport.KeyNotFoundError, got %T (%v)", err, err)
+				}
+				if knf.Key != "missing" {
+					t.Errorf("Key = %q, want %q", knf.Key, "missing")
+				}
+			})
+		}
+		t.Run(verb+"/other", func(t *testing.T) {
+			err := call(newCredentialTransport(t, &sentinelCredentialService{err: errCredential}))
+			if err != errCredential {
+				t.Fatalf("err = %T (%v), want errCredential unchanged", err, err)
+			}
+		})
 	}
 }
 
