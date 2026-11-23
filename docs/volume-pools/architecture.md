@@ -288,7 +288,13 @@ directory and its destination directory on the destination pool, copies the
 closed tree, verifies the copy against its SHA-256 manifest, and on a failure
 removes the partial destination through the inside-pool guard, never the
 source. The node-side `seal.MoveStepRunner` calls it for the node's granted
-copy step.
+copy step. The copy step leaves the destination closed: the runner opens it,
+and lets it serve writes, only after `CompleteMoveStep` has recorded the
+node copied in the journal, so a crash or a failed journal write before that
+rolls back to a source that holds every acknowledged write. A self-managed
+tenant's barrier comes back sealed after its step, as after a restart: the
+step completes with the tenant's stores closed, and they attach on its
+administrator's unseal.
 
 The catalog admits a move through `volume.Catalog.AdmitMove`: one
 transaction reserves the tenant's bytes on the destination pool and writes
@@ -298,7 +304,10 @@ replica node (Q3) and that no move already runs (Q10). A move off a Lockable
 pool onto one that is not is refused outright with
 `*volume.MoveToUnencryptedPoolError` (Q9, the owner's ruling, no flag). The source reservation and the assignment stay, so the tenant counts
 on both pools while it moves. While a journal exists, tenant delete, a quota
-change, a second move and deleting either pool are refused. `MoveTenant` is
+change, a second move and deleting either pool are refused. So is a new
+replica of the tenant: the journal's replica set is fixed at admission, and
+the volume-pool placement filter refuses the replica with
+`*lifecycle.TenantMovingReplicaError` until the journal is gone. `MoveTenant` is
 the only caller of `AdmitMove`.
 
 The move reconciler (`volume.MoveReconciler.ReconcileOnce`) advances the
