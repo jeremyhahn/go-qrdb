@@ -84,6 +84,9 @@ func newRemote(store objcommon.Storage, prefix string, ops remoteDirOps) (*Remot
 	r := &Remote{store: store, prefix: prefix, ops: ops}
 	if pa, ok := store.(objcommon.PathAccessor); ok {
 		if root := pa.LocalPath(); root != "" {
+			if err := ensureDurableRoot(root, ops); err != nil {
+				return nil, err
+			}
 			if err := ensureDurablePrefix(root, prefix, ops); err != nil {
 				return nil, err
 			}
@@ -113,6 +116,32 @@ var defaultRemoteDirOps = remoteDirOps{
 // before the sync. A "." or ".." segment is refused, as it would leave root.
 // Windows cannot flush a directory handle (cacheDirSyncSupported), so there
 // the directories are only created.
+// ensureDurableRoot makes the bucket root's own directory entry durable: the
+// local provider creates root and any missing ancestors with MkdirAll and
+// fsyncs none of their parents, so it fsyncs the parent of root and of every
+// ancestor up to the file system root. Which ancestors MkdirAll created is
+// unknown here, so every one is synced. The sync is skipped where
+// cacheDirSyncSupported is false.
+func ensureDurableRoot(root string, ops remoteDirOps) error {
+	if !cacheDirSyncSupported {
+		return nil
+	}
+	dir, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	for {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil
+		}
+		if err := ops.syncDir(parent); err != nil {
+			return err
+		}
+		dir = parent
+	}
+}
+
 func ensureDurablePrefix(root, prefix string, ops remoteDirOps) error {
 	parent := filepath.Clean(root)
 	for _, part := range strings.Split(prefix, "/") {

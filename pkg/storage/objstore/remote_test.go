@@ -745,6 +745,77 @@ func recordingDirOps(events *[]string, root string) remoteDirOps {
 	}
 }
 
+// rootSyncEvents is the recordingDirOps record of ensureDurableRoot over root:
+// a sync of the parent of root and of every ancestor up to the file system
+// root, each relative to root. It is empty where directory sync is not
+// supported.
+func rootSyncEvents(t *testing.T, root string) []string {
+	t.Helper()
+	if !cacheDirSyncSupported {
+		return nil
+	}
+	dir, err := filepath.Abs(root)
+	require.NoError(t, err)
+	var events []string
+	for {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return events
+		}
+		rel, err := filepath.Rel(root, parent)
+		require.NoError(t, err)
+		events = append(events, "sync "+filepath.ToSlash(rel))
+		dir = parent
+	}
+}
+
+// TestNewRemote_DirSyncFreshBucketRoot: a local bucket at a fresh path outside
+// any Pebble directory, which the provider creates with MkdirAll, has its own
+// directory entry and every ancestor's made durable before the prefix and any
+// object.
+func TestNewRemote_DirSyncFreshBucketRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "fresh", "bucket")
+	local, err := OpenStore("local", map[string]string{"path": root})
+	require.NoError(t, err)
+	require.DirExists(t, root)
+	var events []string
+	store := &pathStore{Storage: local, root: root, events: &events}
+	rs, err := newRemote(store, "lsm", recordingDirOps(&events, root))
+	require.NoError(t, err)
+	want := append(rootSyncEvents(t, root), "mkdir lsm", "sync .")
+	if cacheDirSyncSupported {
+		require.Equal(t, []string{"sync ..", "sync ../.."}, want[:2], "the bucket root's and the fresh parent's entries")
+	} else {
+		want = []string{"mkdir lsm"}
+	}
+	require.Equal(t, want, events)
+	require.NoError(t, writeObject(rs, "000001.sst", "sst"))
+}
+
+// TestNewRemote_DirSyncRootFault: a sync fault on the bucket root's parent is
+// NewRemote's error.
+func TestNewRemote_DirSyncRootFault(t *testing.T) {
+	if !cacheDirSyncSupported {
+		t.Skip("directory sync is not supported on this platform")
+	}
+	root := t.TempDir()
+	boom := errors.New("boom")
+	parent := filepath.Dir(root)
+	var events []string
+	store := &pathStore{Storage: memory.New(), root: root, events: &events}
+	_, err := newRemote(store, "lsm", remoteDirOps{
+		mkdir: defaultRemoteDirOps.mkdir,
+		syncDir: func(name string) error {
+			if name == parent {
+				return boom
+			}
+			return defaultRemoteDirOps.syncDir(name)
+		},
+	})
+	require.ErrorIs(t, err, boom)
+	require.NoDirExists(t, filepath.Join(root, "lsm"), "nothing is created under an undurable root")
+}
+
 func TestNewRemote_DirSyncBeforeFirstPut(t *testing.T) {
 	root := t.TempDir()
 	var events []string
@@ -757,11 +828,11 @@ func TestNewRemote_DirSyncBeforeFirstPut(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, w.Close())
 
-	want := []string{
+	want := append(rootSyncEvents(t, root),
 		"mkdir lsm", "sync .", "mkdir lsm/a", "sync lsm",
 		"put lsm/a/000001.sst",
 		"mkdir lsm", "sync .", "mkdir lsm/a", "sync lsm",
-	}
+	)
 	if !cacheDirSyncSupported {
 		want = []string{"mkdir lsm", "mkdir lsm/a", "put lsm/a/000001.sst"}
 	}
@@ -778,7 +849,7 @@ func TestNewRemote_DirSyncExistingPrefixStillSynced(t *testing.T) {
 	store := &pathStore{Storage: memory.New(), root: root, events: &events}
 	_, err := newRemote(store, "lsm", recordingDirOps(&events, root))
 	require.NoError(t, err)
-	want := []string{"mkdir lsm", "sync ."}
+	want := append(rootSyncEvents(t, root), "mkdir lsm", "sync .")
 	if !cacheDirSyncSupported {
 		want = []string{"mkdir lsm"}
 	}
