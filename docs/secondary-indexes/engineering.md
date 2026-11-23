@@ -206,6 +206,10 @@ significant** — the first field is the leading prefix field.
   unique constraint enforceable.
 - **A unique index rejects the write, it does not overwrite.** Violating
   uniqueness fails the entity write.
+- **A transaction or batch is checked in op order.** A value released by an
+  earlier delete or overwrite of its holder may be taken by a later op of the
+  same set, and not by an earlier one, so the pre-check admits exactly what
+  ordered apply admits.
 - **A sparse index simply omits entities missing the field** — it does not index
   them under a zero value, which would make "missing" and "empty" the same
   query.
