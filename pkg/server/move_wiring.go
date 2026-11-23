@@ -82,11 +82,25 @@ type TenantMoveConfig struct {
 // runs this node's own steps (RunLocalSteps) and, while this node leads
 // the system shard, the leader pass (ReconcileOnce).
 type TenantMoveWorker struct {
-	reconciler *volume.MoveReconciler
+	reconciler moveSteps
+	reopens    moveReopener
 	nodeID     string
 	leads      func() bool
 	interval   time.Duration
 	logger     *slog.Logger
+}
+
+// moveSteps is the part of volume.MoveReconciler the worker's tick drives.
+type moveSteps interface {
+	RunLocalSteps(ctx context.Context, nodeID string) error
+	ReconcileOnce(ctx context.Context) error
+}
+
+// moveReopener is the part of MoveStoreCloser the worker's tick drives to
+// finish a reopen a move step left failed.
+type moveReopener interface {
+	PendingReopen() []string
+	RetryReopen(ctx context.Context, tenantID string) error
 }
 
 // WireTenantMoves wires cfg's catalog to its tenant service, audit and
@@ -140,6 +154,7 @@ func WireTenantMoves(cfg TenantMoveConfig) (*TenantMoveWorker, error) {
 	}
 	return &TenantMoveWorker{
 		reconciler: reconciler,
+		reopens:    stores,
 		nodeID:     cfg.NodeID,
 		leads:      systemLeaderCheck(cfg.Membership, cfg.ReplicaID),
 		interval:   interval,
@@ -202,11 +217,27 @@ func (w *TenantMoveWorker) Tick(ctx context.Context) {
 	if err := w.reconciler.RunLocalSteps(ctx, w.nodeID); err != nil {
 		w.logger.Warn("volume: tenant move steps failed on this node", slog.String("error", err.Error()))
 	}
-	if !w.leads() {
+	if w.leads() {
+		if err := w.reconciler.ReconcileOnce(ctx); err != nil {
+			w.logger.Warn("volume: tenant move leader pass failed", slog.String("error", err.Error()))
+		}
+	}
+	w.retryReopens(ctx)
+}
+
+// retryReopens retries, once each, every tenant whose move step closed its
+// stores and then failed to reopen them, so a transient failure (a
+// catch-up timeout, a cancelled context) does not strand the tenant until
+// the next boot. Every node runs it: the stores are local.
+func (w *TenantMoveWorker) retryReopens(ctx context.Context) {
+	if w.reopens == nil {
 		return
 	}
-	if err := w.reconciler.ReconcileOnce(ctx); err != nil {
-		w.logger.Warn("volume: tenant move leader pass failed", slog.String("error", err.Error()))
+	for _, tenantID := range w.reopens.PendingReopen() {
+		if err := w.reopens.RetryReopen(ctx, tenantID); err != nil {
+			w.logger.Warn("volume: tenant store reopen retry failed",
+				slog.String("tenant", tenantID), slog.String("error", err.Error()))
+		}
 	}
 }
 

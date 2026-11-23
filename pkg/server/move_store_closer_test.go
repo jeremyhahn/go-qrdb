@@ -175,6 +175,109 @@ func TestMoveStoreCloser_FailedStepsReleaseHold(t *testing.T) {
 	}
 }
 
+func TestMoveStoreCloser_RetryReopenFinishesAFailedReopen(t *testing.T) {
+	shards := &fakeMoveShards{started: map[StartedShard]bool{
+		{TenantID: "acme", Database: "a"}: true,
+	}}
+	barriers := &fakeMoveBarriers{}
+	catchUpErr := errors.New("catch-up timed out")
+	failCatchUp := true
+	c, err := NewMoveStoreCloser(shards, barriers, func(context.Context, string, string) (bool, error) {
+		if failCatchUp {
+			return false, catchUpErr
+		}
+		return true, nil
+	}, time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	ctx := context.Background()
+	if err := c.RetryReopen(ctx, "acme"); err != nil {
+		t.Fatalf("retry of a tenant never closed: %v", err)
+	}
+	if err := c.CloseTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := c.OpenTenantStores(ctx, "acme"); !errors.Is(err, catchUpErr) {
+		t.Fatalf("open = %v, want the catch-up error", err)
+	}
+	if c.HoldsTenant("acme") {
+		t.Fatal("acme held after a failed reopen")
+	}
+	if got := c.PendingReopen(); !reflect.DeepEqual(got, []string{"acme"}) {
+		t.Fatalf("pending = %v, want [acme]", got)
+	}
+	// A retry while a move step holds the tenant leaves it to that step.
+	c.hold("acme")
+	if err := c.RetryReopen(ctx, "acme"); err != nil {
+		t.Fatalf("held retry: %v", err)
+	}
+	c.release("acme")
+	failCatchUp = false
+	if err := c.RetryReopen(ctx, "acme"); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if got := c.PendingReopen(); len(got) != 0 {
+		t.Fatalf("pending after the retry = %v", got)
+	}
+	if c.HoldsTenant("acme") {
+		t.Fatal("acme held after the retry")
+	}
+	// The barrier reopened once, and the shard attached once: the retry
+	// does not redo a reopen step that already succeeded.
+	if want := []string{"close acme", "reopen acme"}; !reflect.DeepEqual(barriers.calls, want) {
+		t.Fatalf("barrier calls = %v, want %v", barriers.calls, want)
+	}
+	if want := []string{"close acme/a", "attach acme/a"}; !reflect.DeepEqual(shards.calls, want) {
+		t.Fatalf("shard calls = %v, want %v", shards.calls, want)
+	}
+}
+
+func TestMoveStoreCloser_PermanentReopenFailureStaysPending(t *testing.T) {
+	shards := &fakeMoveShards{started: map[StartedShard]bool{
+		{TenantID: "acme", Database: "a"}: true,
+	}}
+	barriers := &fakeMoveBarriers{}
+	c, err := NewMoveStoreCloser(shards, barriers, nil, time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	ctx := context.Background()
+	if err := c.CloseTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	boom := errors.New("reopen failed")
+	barriers.err = boom
+	if err := c.OpenTenantStores(ctx, "acme"); !errors.Is(err, boom) {
+		t.Fatalf("open = %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := c.RetryReopen(ctx, "acme"); !errors.Is(err, boom) {
+			t.Fatalf("retry %d = %v, want the reopen error", i, err)
+		}
+		if c.HoldsTenant("acme") {
+			t.Fatalf("acme held after retry %d", i)
+		}
+		if got := c.PendingReopen(); !reflect.DeepEqual(got, []string{"acme"}) {
+			t.Fatalf("pending after retry %d = %v", i, got)
+		}
+	}
+	// A fresh close supersedes the pending reopen.
+	barriers.err = nil
+	if err := c.CloseTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+	if got := c.PendingReopen(); len(got) != 0 {
+		t.Fatalf("pending after a fresh close = %v", got)
+	}
+	if err := c.OpenTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if !shards.started[StartedShard{TenantID: "acme", Database: "a"}] {
+		t.Fatal("acme/a not served after the reopen")
+	}
+}
+
 func TestMoveStoreCloser_Errors(t *testing.T) {
 	if _, err := NewMoveStoreCloser(nil, nil, nil, 0); err == nil {
 		t.Fatal("nil barriers accepted")

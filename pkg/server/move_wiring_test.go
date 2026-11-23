@@ -11,6 +11,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
 	"testing"
 
@@ -144,5 +145,77 @@ func TestReadIndexCaughtUp(t *testing.T) {
 func TestWireTenantMoves_RefusesAnIncompleteConfig(t *testing.T) {
 	if _, err := WireTenantMoves(TenantMoveConfig{NodeID: "1"}); err == nil {
 		t.Fatal("a config with no catalog, registry or tenant service was wired")
+	}
+}
+
+// countingMoveSteps stands in for the move reconciler: it counts the passes.
+type countingMoveSteps struct{ local, leader int }
+
+func (s *countingMoveSteps) RunLocalSteps(context.Context, string) error {
+	s.local++
+	return nil
+}
+
+func (s *countingMoveSteps) ReconcileOnce(context.Context) error {
+	s.leader++
+	return nil
+}
+
+func TestTenantMoveWorker_TickRetriesAFailedReopen(t *testing.T) {
+	shards := &fakeMoveShards{started: map[StartedShard]bool{
+		{TenantID: "acme", Database: "a"}: true,
+	}}
+	barriers := &fakeMoveBarriers{}
+	stores, err := NewMoveStoreCloser(shards, barriers, nil, 0)
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	ctx := context.Background()
+	if err := stores.CloseTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	barriers.err = errors.New("reopen failed")
+	if err := stores.OpenTenantStores(ctx, "acme"); err == nil {
+		t.Fatal("open: want error")
+	}
+	steps := &countingMoveSteps{}
+	w := &TenantMoveWorker{
+		reconciler: steps,
+		reopens:    stores,
+		nodeID:     "n1",
+		leads:      func() bool { return false },
+		interval:   DefaultTenantMoveInterval,
+		logger:     slog.Default(),
+	}
+	// The failure persists: each tick retries once and the tenant stays
+	// pending and unheld.
+	w.Tick(ctx)
+	w.Tick(ctx)
+	if got := stores.PendingReopen(); !reflect.DeepEqual(got, []string{"acme"}) {
+		t.Fatalf("pending = %v, want [acme]", got)
+	}
+	if stores.HoldsTenant("acme") {
+		t.Fatal("acme held after a failed retry")
+	}
+	if want := []string{"close acme", "reopen acme", "reopen acme", "reopen acme"}; !reflect.DeepEqual(barriers.calls, want) {
+		t.Fatalf("barrier calls = %v, want %v", barriers.calls, want)
+	}
+	// The failure clears: the next tick serves the tenant again, without
+	// a restart, on a node that does not lead.
+	barriers.err = nil
+	w.Tick(ctx)
+	if got := stores.PendingReopen(); len(got) != 0 {
+		t.Fatalf("pending after the recovering tick = %v", got)
+	}
+	if !shards.started[StartedShard{TenantID: "acme", Database: "a"}] {
+		t.Fatal("acme/a not served after the recovering tick")
+	}
+	if steps.local != 3 || steps.leader != 0 {
+		t.Fatalf("passes local=%d leader=%d, want 3 and 0", steps.local, steps.leader)
+	}
+	// Nothing pending: a tick retries nothing.
+	w.Tick(ctx)
+	if n := len(barriers.calls); n != 5 {
+		t.Fatalf("barrier calls after an idle tick = %d, want 5", n)
 	}
 }
