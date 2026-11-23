@@ -403,6 +403,10 @@ One row per test function this branch deletes (`git diff origin/main...HEAD -- '
 | pkg/server | TestRunStartupRead_ContextEnds | wall-clock wait replaced by a channel-free order: the read func cancels on its first call | itself |
 | pkg/server | TestRunStartupRead_ContextEndsMidAttempt | wall-clock wait replaced by a channel-free order: the read func cancels while in flight | itself |
 | pkg/server | TestRunStartupRead_ReportsAnAttemptThatOutlivesItsBound | wall-clock wait replaced by the attempt returning once the log holds its second progress line (bounded deadline) | itself |
+| pkg/server/lifecycle | TestAwaitClusterCACertificate_CtxCanceledDuringBackoff | wall-clock wait replaced by the provider's first Certificate call canceling ctx before the backoff | itself |
+| pkg/service | TestHostShardSnapshotProvider_SnapshotShard_ContextCanceledDuringPoll | wall-clock wait replaced by the first host poll callback canceling ctx | itself |
+| pkg/rowlock | TestSession_LeaseInUseIsNotIdle | wall-clock wait replaced by a fake clock (half-TTL steps, each after a renewal, to two TTLs past the grant) | itself |
+| pkg/api/connlimit | TestQUICListenerReleasesSlotOnConnectionClose | wall-clock wait replaced by the server conn's context ending and the counter emptying (bounded deadline) | itself |
 
 ## Folded refs
 
