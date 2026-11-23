@@ -398,6 +398,11 @@ One row per test function this branch deletes (`git diff origin/main...HEAD -- '
 | Package | Test | Change | Test that pins the path |
 |---|---|---|---|
 | pkg/tenant | TestCreateTenant_ConcurrentCreateAndDeleteNeverResurrect | 50 to 10 iterations; stays for the race detector | TestCreateTenant_RefusedWhenADeleteRetiresTheIdMidCreate (deterministic interleave) |
+| pkg/server | TestBuildDataPlaneServices_ImportSession_LeaseExpiryReclaims | wall-clock wait replaced by a fake clock (the Lessor's clock advances past the TTL) | itself |
+| pkg/server/lifecycle | TestStartLocalLeaseExpiry_StopWaitsAndStaysStopped | wall-clock wait replaced by a fake clock (BlockUntil before stop, no waiters after, Advance past TTL and sweeps) | itself |
+| pkg/server | TestRunStartupRead_ContextEnds | wall-clock wait replaced by a channel-free order: the read func cancels on its first call | itself |
+| pkg/server | TestRunStartupRead_ContextEndsMidAttempt | wall-clock wait replaced by a channel-free order: the read func cancels while in flight | itself |
+| pkg/server | TestRunStartupRead_ReportsAnAttemptThatOutlivesItsBound | wall-clock wait replaced by the attempt returning once the log holds its second progress line (bounded deadline) | itself |
 
 ## Folded refs
 
