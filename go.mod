@@ -36,7 +36,7 @@ require (
 	// go-objstore v0.9.1-alpha resolve to it by minimum version selection.
 	github.com/jeremyhahn/go-enclave v0.12.0-alpha
 	github.com/jeremyhahn/go-objstore v0.9.1-alpha
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.58.0-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.58.5-alpha
 	// go-quicraft: the newest tag (#944), built on go-enclave v0.10.0-alpha.
 	github.com/jeremyhahn/go-quicraft v0.24.3-alpha
 	github.com/jeremyhahn/go-truststrap v0.7.1-alpha
