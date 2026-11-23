@@ -433,18 +433,33 @@ func UpdateIndexes(indexes map[string]index.Index, indexFields map[string]string
 // queues index updates into the provided batch for atomic commit. Only the
 // indexes whose key scope covers key are touched (see indexScopes). If the key
 // had a previous value with different indexed fields, the old index entries
-// are removed first. The new value need not be JSON: one that is not a JSON
-// object adds no entry, and the old entries are removed all the same. Each
+// are removed first. A new value that is not JSON is skipped and the old
+// entries are kept (see updateIndexesBatch for the ordered cleanup). Each
 // index must implement index.BatchableIndex.
 func UpdateIndexesBatch(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, key, value []byte, prevKv *qkv.KeyValue) error {
+	return updateIndexesBatch(batch, indexes, indexFields, indexScopes, key, value, prevKv, false)
+}
+
+// updateIndexesBatch is UpdateIndexesBatch with the non-JSON cleanup
+// versioned by ordered. With ordered false (every command without
+// protocol.CmdFlagOrderedUnique, and every existing log) a new value that is
+// not JSON returns at once and the previous value's entries are kept, as the
+// binaries that committed those logs applied them. With ordered true (a
+// transaction or batch proposed with ordered-unique-check) such a value adds
+// no entry and the previous value's entries are removed, releasing a unique
+// value the record held.
+func updateIndexesBatch(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, key, value []byte, prevKv *qkv.KeyValue, ordered bool) error {
 	if len(indexes) == 0 || !anyIndexInScope(indexes, indexScopes, key) {
 		return nil
 	}
 
-	// Parse the new value as a flat JSON object. A value that is not one
-	// indexes nothing, but the previous value's entries are still removed
-	// below, so overwriting a record with non-JSON bytes releases them.
-	newFields := parseIndexFields(value)
+	// Parse the new value as a flat JSON object.
+	var newFields map[string]json.RawMessage
+	if ordered {
+		newFields = parseIndexFields(value)
+	} else if json.Unmarshal(value, &newFields) != nil {
+		return nil // not JSON; nothing to index, old entries kept
+	}
 
 	// Parse the old value (if any) for index cleanup.
 	var oldFields map[string]json.RawMessage
@@ -679,24 +694,32 @@ func UnquoteJSON(raw json.RawMessage) []byte {
 // UpdateCompoundIndexesBatch extracts JSON field values and queues compound
 // index updates into the provided batch, for every compound index whose key
 // scope covers key (see compoundIndexScopes). Each compound index has multiple
-// JSON field names; all are extracted from a single JSON parse. The previous
-// value's compound entries are always removed; a new value that is not a JSON
-// object, or lacks any of the fields, adds no entry.
+// JSON field names; all are extracted from a single JSON parse. A new value
+// that is not JSON is skipped and the previous value's compound entries are
+// kept; one lacking any of the fields adds no entry.
 func UpdateCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]*index.CompoundIndex, compoundIndexFields map[string][]string, compoundIndexScopes map[string][]byte, key, value []byte, prevKv *qkv.KeyValue) error {
 	return updateCompoundIndexesBatch(batch, compoundIndexes, compoundIndexFields, compoundIndexScopes, key, value, prevKv, false)
 }
 
 // updateCompoundIndexesBatch is UpdateCompoundIndexesBatch; ordered checks a
 // unique index through the batch (PutCompoundBatchOrdered), as an op-ordered
-// (CmdFlagOrderedUnique) transaction applies, instead of committed storage.
+// (CmdFlagOrderedUnique) transaction applies, instead of committed storage,
+// and removes the previous value's compound entries when the new value is not
+// JSON (unordered keeps them, as existing logs were applied).
 func updateCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]*index.CompoundIndex, compoundIndexFields map[string][]string, compoundIndexScopes map[string][]byte, key, value []byte, prevKv *qkv.KeyValue, ordered bool) error {
 	if len(compoundIndexes) == 0 {
 		return nil
 	}
 
-	// A new value that is not a JSON object adds no entry, but the previous
-	// value's entries are still removed below.
-	newFields := parseIndexFields(value)
+	// A new value that is not JSON: unordered (existing logs) returns at once
+	// and keeps the previous value's entries; ordered adds no entry but still
+	// removes the previous value's entries below.
+	var newFields map[string]json.RawMessage
+	if ordered {
+		newFields = parseIndexFields(value)
+	} else if json.Unmarshal(value, &newFields) != nil {
+		return nil
+	}
 
 	var oldFields map[string]json.RawMessage
 	if prevKv != nil && len(prevKv.Value) > 0 {

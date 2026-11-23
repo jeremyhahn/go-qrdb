@@ -1819,7 +1819,7 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 			reads[i] = read
 			continue
 		}
-		opNotifs, opErr := e.executeDecodedOpWithNotify(s, lr, batch, op, rev)
+		opNotifs, opErr := e.executeDecodedOpWithNotify(s, lr, batch, op, rev, txn.Flags)
 		if opErr != nil {
 			return sm.Result{}, nil, opErr
 		}
@@ -2076,7 +2076,7 @@ func (e *MVCCEngine) applyDecodedBatch(s *mvcc.Store, lr *lease.Lessor, batch st
 	rev := s.CurrentRevision() + 1
 	var notifs []Notification
 	for _, op := range ops {
-		opNotifs, opErr := e.executeDecodedOpWithNotify(s, lr, batch, op, rev)
+		opNotifs, opErr := e.executeDecodedOpWithNotify(s, lr, batch, op, rev, flags)
 		if opErr != nil {
 			return sm.Result{}, nil, opErr
 		}
@@ -2106,8 +2106,9 @@ func decodedCompareToService(dc protocol.DecodedCompare) service.Compare {
 // executeDecodedOpWithNotify executes a single decoded operation (Put or
 // Delete) within a batch at the given revision and returns watch
 // notifications. Used by both transaction and batch handlers. Secondary
-// indexes are updated for put and delete operations.
-func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, op protocol.DecodedOp, rev int64) ([]Notification, error) {
+// indexes are updated for put and delete operations; flags are the command's
+// protocol.CmdFlag* bits (see updateIndexesBatch for CmdFlagOrderedUnique).
+func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, op protocol.DecodedOp, rev int64, flags byte) ([]Notification, error) {
 	switch op.Type {
 	case protocol.OpMVCCPut:
 		prevKv, err := getInBatchAllowingAbsence(s, batch, op.Key)
@@ -2116,7 +2117,11 @@ func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor,
 		}
 		// Validate index constraints before writing to the batch so that a
 		// unique violation aborts the operation without leaving partial state.
-		if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, prevKv); err != nil {
+		// Only a command proposed with ordered-unique-check releases the
+		// previous value's entries on a non-JSON overwrite; an unflagged one
+		// replays as the binary that committed it applied it.
+		ordered := flags&protocol.CmdFlagOrderedUnique != 0
+		if err := updateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, prevKv, ordered); err != nil {
 			return nil, err
 		}
 		kvResult, err := s.PutInBatch(batch, op.Key, op.Value, op.LeaseID, rev)

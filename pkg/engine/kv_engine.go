@@ -839,7 +839,7 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 				return sm.Result{}, err
 			}
 			if len(e.indexes) > 0 {
-				if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, prevKv); err != nil {
+				if err := updateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, prevKv, orderedUnique); err != nil {
 					return sm.Result{}, err
 				}
 			}

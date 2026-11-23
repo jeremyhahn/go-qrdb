@@ -215,6 +215,53 @@ func TestMVCCEngine_LegacyCommandKeepsUnorderedUniqueCheck(t *testing.T) {
 	}
 }
 
+// TestMVCCEngine_LegacyNonJSONOverwriteReplay pins the replay of an existing,
+// unflagged log: a plain non-JSON overwrite of user:1 keeps its unique entry,
+// so a later unflagged transaction or batch claiming user:1's old value is
+// refused as the committing binary refused it. A command proposed with
+// ordered-unique-check that overwrites user:1 with non-JSON bytes itself
+// releases the value for a later write of the same set.
+func TestMVCCEngine_LegacyNonJSONOverwriteReplay(t *testing.T) {
+	legacy := map[string]func(ops [][]byte) []byte{
+		"transaction": func(ops [][]byte) []byte { return mustEncode(protocol.EncodeTransaction(nil, ops, nil)) },
+		"batch":       func(ops [][]byte) []byte { return mustEncode(protocol.EncodeBatch(ops)) },
+	}
+	flagged := flaggedUniqueEncoders()
+	for name, encode := range legacy {
+		t.Run(name+" legacy refused", func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			overwrite := mustEncode(protocol.EncodeMVCCPut([]byte("user:1"), []byte("not-json"), 0))
+			claim := encode([][]byte{mvccOpsCmd(t, protocol.OpMVCCPut, "user:3", faultDocA)})
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: overwrite}, {Index: 11, Cmd: claim}})
+			if got, err := eng.Store().Get([]byte("user:1")); err != nil || string(got.Value) != "not-json" {
+				t.Fatalf("user:1 = %v, %v; want the non-JSON overwrite", got, err)
+			}
+			_, kind, ok := protocol.DecodeAppErrorKind(results[1].Data)
+			if !ok || kind != protocol.AppErrorConflict {
+				t.Fatalf("result data = %q, want a conflict application error", results[1].Data)
+			}
+			if got, err := eng.Store().Get([]byte("user:3")); err == nil && got != nil {
+				t.Fatalf("user:3 = %q, want absent", got.Value)
+			}
+		})
+		t.Run(name+" flagged commits", func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			ops := [][]byte{
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:1", "not-json"),
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:3", faultDocA),
+			}
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: flagged[name](ops)}})
+			if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); ok {
+				t.Fatalf("result data = %q (kind %v), want the set applied", results[0].Data, kind)
+			}
+			got, err := eng.Store().Get([]byte("user:3"))
+			if err != nil || string(got.Value) != faultDocA {
+				t.Fatalf("user:3 = %v, %v; want %s", got, err, faultDocA)
+			}
+		})
+	}
+}
+
 func TestMVCCEngine_BatchMovesUniqueValueBetweenKeys(t *testing.T) {
 	encoders := flaggedUniqueEncoders()
 	for name, encode := range encoders {

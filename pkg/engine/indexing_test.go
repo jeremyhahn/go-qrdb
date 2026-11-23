@@ -583,54 +583,65 @@ func TestUpdateIndexesBatch_NonJSON(t *testing.T) {
 // indexed JSON value with non-JSON bytes: the old entry must be removed and
 // nothing added for the new value.
 func TestUpdateIndexesBatch_NonJSONReplacementRemovesOldEntry(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
+	for _, tc := range []struct {
+		name    string
+		ordered bool
+		wantOld int
+	}{
+		{name: "ordered removes", ordered: true, wantOld: 0},
+		{name: "legacy keeps", ordered: false, wantOld: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stg := memory.NewStorage()
+			defer func() { _ = stg.Close() }()
 
-	log := indexTestLogger(t)
-	idx, err := index.NewStoragePebbleIndex(stg, index.IndexConfig{
-		Name:          "by_name",
-		Type:          index.IndexTypeNormal,
-		CaseSensitive: true,
-	}, log)
-	if err != nil {
-		t.Fatalf("NewStoragePebbleIndex: %v", err)
-	}
+			log := indexTestLogger(t)
+			idx, err := index.NewStoragePebbleIndex(stg, index.IndexConfig{
+				Name:          "by_name",
+				Type:          index.IndexTypeNormal,
+				CaseSensitive: true,
+			}, log)
+			if err != nil {
+				t.Fatalf("NewStoragePebbleIndex: %v", err)
+			}
 
-	indexes := map[string]index.Index{"by_name": idx}
-	indexFields := map[string]string{"by_name": "name"}
-	key := []byte("user:1")
-	oldValue := []byte(`{"name":"alice"}`)
+			indexes := map[string]index.Index{"by_name": idx}
+			indexFields := map[string]string{"by_name": "name"}
+			key := []byte("user:1")
+			oldValue := []byte(`{"name":"alice"}`)
 
-	b1 := stg.Batch()
-	if bErr := UpdateIndexesBatch(b1, indexes, indexFields, nil, key, oldValue, nil); bErr != nil {
-		t.Fatalf("first UpdateIndexesBatch: %v", bErr)
-	}
-	if cErr := b1.Commit(); cErr != nil {
-		t.Fatalf("Commit: %v", cErr)
-	}
+			b1 := stg.Batch()
+			if bErr := UpdateIndexesBatch(b1, indexes, indexFields, nil, key, oldValue, nil); bErr != nil {
+				t.Fatalf("first UpdateIndexesBatch: %v", bErr)
+			}
+			if cErr := b1.Commit(); cErr != nil {
+				t.Fatalf("Commit: %v", cErr)
+			}
 
-	prevKv := &qkv.KeyValue{Key: key, Value: oldValue}
-	b2 := stg.Batch()
-	if bErr := UpdateIndexesBatch(b2, indexes, indexFields, nil, key, []byte("not-json"), prevKv); bErr != nil {
-		t.Fatalf("second UpdateIndexesBatch: %v", bErr)
-	}
-	if cErr := b2.Commit(); cErr != nil {
-		t.Fatalf("Commit: %v", cErr)
-	}
+			prevKv := &qkv.KeyValue{Key: key, Value: oldValue}
+			b2 := stg.Batch()
+			if bErr := updateIndexesBatch(b2, indexes, indexFields, nil, key, []byte("not-json"), prevKv, tc.ordered); bErr != nil {
+				t.Fatalf("second updateIndexesBatch: %v", bErr)
+			}
+			if cErr := b2.Commit(); cErr != nil {
+				t.Fatalf("Commit: %v", cErr)
+			}
 
-	ids, err := idx.Get([]byte("alice"))
-	if err != nil {
-		t.Fatalf("Get(alice): %v", err)
-	}
-	if len(ids) != 0 {
-		t.Errorf("expected old index entry removed, got %v", ids)
-	}
-	all, err := idx.GetAll()
-	if err != nil {
-		t.Fatalf("GetAll: %v", err)
-	}
-	if len(all) != 0 {
-		t.Errorf("expected nothing indexed after non-JSON overwrite, got %v", all)
+			ids, err := idx.Get([]byte("alice"))
+			if err != nil {
+				t.Fatalf("Get(alice): %v", err)
+			}
+			if len(ids) != tc.wantOld {
+				t.Errorf("Get(alice) = %v, want %d entries after the non-JSON overwrite", ids, tc.wantOld)
+			}
+			all, err := idx.GetAll()
+			if err != nil {
+				t.Fatalf("GetAll: %v", err)
+			}
+			if len(all) != tc.wantOld {
+				t.Errorf("GetAll = %v, want %d entries after the non-JSON overwrite", all, tc.wantOld)
+			}
+		})
 	}
 }
 
@@ -1364,46 +1375,57 @@ func TestUpdateCompoundIndexesBatch_UpdateRemovesOldEntry(t *testing.T) {
 // an indexed JSON value with non-JSON bytes: the old compound entry must be
 // removed.
 func TestUpdateCompoundIndexesBatch_NonJSONReplacementRemovesOldEntry(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
+	for _, tc := range []struct {
+		name    string
+		ordered bool
+		wantOld int
+	}{
+		{name: "ordered removes", ordered: true, wantOld: 0},
+		{name: "legacy keeps", ordered: false, wantOld: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stg := memory.NewStorage()
+			defer func() { _ = stg.Close() }()
 
-	log := indexTestLogger(t)
-	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
-		Name:       "items.Cat_Tag",
-		FieldNames: []string{"Cat", "Tag"},
-	}, log)
-	if err != nil {
-		t.Fatalf("NewCompoundIndex: %v", err)
-	}
+			log := indexTestLogger(t)
+			idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+				Name:       "items.Cat_Tag",
+				FieldNames: []string{"Cat", "Tag"},
+			}, log)
+			if err != nil {
+				t.Fatalf("NewCompoundIndex: %v", err)
+			}
 
-	compoundIndexes := map[string]*index.CompoundIndex{"items.Cat_Tag": idx}
-	compoundFields := map[string][]string{"items.Cat_Tag": {"cat", "tag"}}
-	key := []byte("items/1")
-	oldValue := []byte(`{"cat":"electronics","tag":"phone"}`)
+			compoundIndexes := map[string]*index.CompoundIndex{"items.Cat_Tag": idx}
+			compoundFields := map[string][]string{"items.Cat_Tag": {"cat", "tag"}}
+			key := []byte("items/1")
+			oldValue := []byte(`{"cat":"electronics","tag":"phone"}`)
 
-	b1 := stg.Batch()
-	if err := UpdateCompoundIndexesBatch(b1, compoundIndexes, compoundFields, nil, key, oldValue, nil); err != nil {
-		t.Fatalf("first UpdateCompoundIndexesBatch: %v", err)
-	}
-	if err := b1.Commit(); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
+			b1 := stg.Batch()
+			if err := UpdateCompoundIndexesBatch(b1, compoundIndexes, compoundFields, nil, key, oldValue, nil); err != nil {
+				t.Fatalf("first UpdateCompoundIndexesBatch: %v", err)
+			}
+			if err := b1.Commit(); err != nil {
+				t.Fatalf("Commit: %v", err)
+			}
 
-	prevKv := &qkv.KeyValue{Key: key, Value: oldValue}
-	b2 := stg.Batch()
-	if err := UpdateCompoundIndexesBatch(b2, compoundIndexes, compoundFields, nil, key, []byte("not-json"), prevKv); err != nil {
-		t.Fatalf("second UpdateCompoundIndexesBatch: %v", err)
-	}
-	if err := b2.Commit(); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
+			prevKv := &qkv.KeyValue{Key: key, Value: oldValue}
+			b2 := stg.Batch()
+			if err := updateCompoundIndexesBatch(b2, compoundIndexes, compoundFields, nil, key, []byte("not-json"), prevKv, tc.ordered); err != nil {
+				t.Fatalf("second updateCompoundIndexesBatch: %v", err)
+			}
+			if err := b2.Commit(); err != nil {
+				t.Fatalf("Commit: %v", err)
+			}
 
-	old, err := idx.GetCompound([][]byte{[]byte("electronics"), []byte("phone")})
-	if err != nil {
-		t.Fatalf("GetCompound (old): %v", err)
-	}
-	if len(old) != 0 {
-		t.Errorf("expected old compound entry removed, got %v", old)
+			old, err := idx.GetCompound([][]byte{[]byte("electronics"), []byte("phone")})
+			if err != nil {
+				t.Fatalf("GetCompound (old): %v", err)
+			}
+			if len(old) != tc.wantOld {
+				t.Errorf("GetCompound (old) = %v, want %d entries after the non-JSON overwrite", old, tc.wantOld)
+			}
+		})
 	}
 }
 

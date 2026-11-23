@@ -2702,6 +2702,47 @@ func TestKVEngine_LegacyTransactionKeepsUnorderedUniqueCheck(t *testing.T) {
 	})
 }
 
+// TestKVEngine_LegacyNonJSONOverwriteReplay pins the replay of an existing,
+// unflagged log: a plain non-JSON overwrite of A keeps A's unique entry, so a
+// later unflagged write of B with A's old value is refused exactly as the
+// binary that committed the log refused it. Only a transaction proposed with
+// ordered-unique-check releases the value through a non-JSON overwrite.
+func TestKVEngine_LegacyNonJSONOverwriteReplay(t *testing.T) {
+	setup := func(t *testing.T) *KVEngine {
+		t.Helper()
+		stg := memory.NewStorage()
+		t.Cleanup(func() { _ = stg.Close() })
+		eng := NewKVEngine(stg)
+		create := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true}))
+		applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: create}, kvPutEntry(2, "user:1", `{"email":"x"}`)})
+		mustLookupValue(t, eng, "user:1", `{"email":"x"}`)
+		return eng
+	}
+	claimB := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:2"), []byte(`{"email":"x"}`), nil, 0))
+
+	t.Run("legacy refused", func(t *testing.T) {
+		eng := setup(t)
+		txn := mustEncode(protocol.EncodeTransaction(nil, [][]byte{claimB}, nil))
+		res := applyKVEntries(t, eng, []sm.Entry{kvPutEntry(3, "user:1", "not-json"), {Index: 4, Cmd: txn}})
+		mustLookupValue(t, eng, "user:1", "not-json")
+		_, kind, ok := protocol.DecodeAppErrorKind(res[1].Data)
+		if !ok || kind != protocol.AppErrorConflict {
+			t.Fatalf("result data = %q, want a conflict application error", res[1].Data)
+		}
+		mustLookupAbsent(t, eng, "user:2")
+	})
+	t.Run("flagged commits", func(t *testing.T) {
+		eng := setup(t)
+		overwrite := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:1"), []byte("not-json"), nil, 0))
+		txn := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{overwrite, claimB}, nil, protocol.CmdFlagOrderedUnique))
+		if !txnSucceeded(t, applyKVEntries(t, eng, []sm.Entry{{Index: 3, Cmd: txn}})[0]) {
+			t.Fatal("the flagged overwrite and claim should run its success branch")
+		}
+		mustLookupValue(t, eng, "user:1", "not-json")
+		mustLookupValue(t, eng, "user:2", `{"email":"x"}`)
+	})
+}
+
 // A flagged transaction checks a unique compound index across all its
 // writes in op order: two keys cannot claim one tuple, and a tuple an
 // earlier overwrite released may be taken by a later write.
@@ -3059,76 +3100,129 @@ func TestKVEngine_PutWithIndexes_UpdateExistingKey(t *testing.T) {
 // released, so another key can take the value and a lookup of it no longer
 // returns the overwritten key.
 func TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesUniqueValue(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
-	if err := eng.RegisterEntityType("member", []EntityIndex{
-		{FieldName: "Email", JSONFieldName: "email", Unique: true},
-	}); err != nil {
-		t.Fatalf("RegisterEntityType: %v", err)
+	setup := func(t *testing.T) *KVEngine {
+		t.Helper()
+		stg := memory.NewStorage()
+		t.Cleanup(func() { _ = stg.Close() })
+		eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+		if err := eng.RegisterEntityType("member", []EntityIndex{
+			{FieldName: "Email", JSONFieldName: "email", Unique: true},
+		}); err != nil {
+			t.Fatalf("RegisterEntityType: %v", err)
+		}
+		if err := eng.PutWithIndexes([]byte("member/1"), []byte(`{"email":"a"}`)); err != nil {
+			t.Fatalf("PutWithIndexes member/1 JSON: %v", err)
+		}
+		return eng
+	}
+	lookupA := func(t *testing.T, eng *KVEngine) [][]byte {
+		t.Helper()
+		result, err := eng.Lookup(context.Background(), index.IndexQueryRequest{
+			IndexName: "member.Email",
+			Value:     []byte("a"),
+		})
+		if err != nil {
+			t.Fatalf("Lookup a: %v", err)
+		}
+		return result.([][]byte)
 	}
 
-	if err := eng.PutWithIndexes([]byte("member/1"), []byte(`{"email":"a"}`)); err != nil {
-		t.Fatalf("PutWithIndexes member/1 JSON: %v", err)
-	}
-	if err := eng.PutWithIndexes([]byte("member/1"), []byte("not-json")); err != nil {
-		t.Fatalf("PutWithIndexes member/1 non-JSON: %v", err)
-	}
-
-	result, err := eng.Lookup(context.Background(), index.IndexQueryRequest{
-		IndexName: "member.Email",
-		Value:     []byte("a"),
+	// An unflagged (plain) non-JSON overwrite keeps the old entry, as every
+	// replica of an existing log applied it.
+	t.Run("legacy keeps the entry", func(t *testing.T) {
+		eng := setup(t)
+		if err := eng.PutWithIndexes([]byte("member/1"), []byte("not-json")); err != nil {
+			t.Fatalf("PutWithIndexes member/1 non-JSON: %v", err)
+		}
+		if ids := lookupA(t, eng); len(ids) != 1 || string(ids[0]) != "member/1" {
+			t.Errorf("lookup a = %q, want the kept entry for member/1", ids)
+		}
+		if err := eng.PutWithIndexes([]byte("member/2"), []byte(`{"email":"a"}`)); err == nil {
+			t.Fatal("PutWithIndexes member/2 with the still-held value succeeded, want a unique refusal")
+		}
 	})
-	if err != nil {
-		t.Fatalf("Lookup a: %v", err)
-	}
-	if ids := result.([][]byte); len(ids) != 0 {
-		t.Errorf("expected no keys for the overwritten value, got %q", ids)
-	}
-
-	if err := eng.PutWithIndexes([]byte("member/2"), []byte(`{"email":"a"}`)); err != nil {
-		t.Fatalf("PutWithIndexes member/2 with the released value: %v", err)
-	}
+	// A transaction proposed with ordered-unique-check releases the value.
+	t.Run("flagged releases", func(t *testing.T) {
+		eng := setup(t)
+		cmd := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+			mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("member/1"), []byte("not-json"), nil, 0)),
+		}, nil, protocol.CmdFlagOrderedUnique))
+		if !txnSucceeded(t, applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: cmd}})[0]) {
+			t.Fatal("the flagged non-JSON overwrite should run its success branch")
+		}
+		if ids := lookupA(t, eng); len(ids) != 0 {
+			t.Errorf("expected no keys for the overwritten value, got %q", ids)
+		}
+		if err := eng.PutWithIndexes([]byte("member/2"), []byte(`{"email":"a"}`)); err != nil {
+			t.Fatalf("PutWithIndexes member/2 with the released value: %v", err)
+		}
+	})
 }
 
 // TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesCompoundUniqueValue is
 // the compound-index twin of the test above.
 func TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesCompoundUniqueValue(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
-	if err := eng.RegisterEntityType("sessions", []EntityIndex{
-		{FieldNames: []string{"UserID", "DeviceID"}, JSONFieldNames: []string{"user_id", "device_id"}, Unique: true},
-	}); err != nil {
-		t.Fatalf("RegisterEntityType: %v", err)
-	}
-	if len(eng.compoundIndexes) != 1 {
-		t.Fatalf("expected 1 compound index, got %d", len(eng.compoundIndexes))
-	}
-
 	value := []byte(`{"user_id":"u1","device_id":"d1"}`)
-	if err := eng.PutWithIndexes([]byte("sessions/1"), value); err != nil {
-		t.Fatalf("PutWithIndexes sessions/1 JSON: %v", err)
+	setup := func(t *testing.T) *KVEngine {
+		t.Helper()
+		stg := memory.NewStorage()
+		t.Cleanup(func() { _ = stg.Close() })
+		eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+		if err := eng.RegisterEntityType("sessions", []EntityIndex{
+			{FieldNames: []string{"UserID", "DeviceID"}, JSONFieldNames: []string{"user_id", "device_id"}, Unique: true},
+		}); err != nil {
+			t.Fatalf("RegisterEntityType: %v", err)
+		}
+		if len(eng.compoundIndexes) != 1 {
+			t.Fatalf("expected 1 compound index, got %d", len(eng.compoundIndexes))
+		}
+		if err := eng.PutWithIndexes([]byte("sessions/1"), value); err != nil {
+			t.Fatalf("PutWithIndexes sessions/1 JSON: %v", err)
+		}
+		return eng
 	}
-	if err := eng.PutWithIndexes([]byte("sessions/1"), []byte("not-json")); err != nil {
-		t.Fatalf("PutWithIndexes sessions/1 non-JSON: %v", err)
+	holders := func(t *testing.T, eng *KVEngine) [][]byte {
+		t.Helper()
+		var all [][]byte
+		for name, idx := range eng.compoundIndexes {
+			ids, err := idx.GetCompound([][]byte{[]byte("u1"), []byte("d1")})
+			if err != nil {
+				t.Fatalf("GetCompound %s: %v", name, err)
+			}
+			all = append(all, ids...)
+		}
+		return all
 	}
 
-	for name, idx := range eng.compoundIndexes {
-		ids, err := idx.GetCompound([][]byte{[]byte("u1"), []byte("d1")})
-		if err != nil {
-			t.Fatalf("GetCompound %s: %v", name, err)
+	// An unflagged (plain) non-JSON overwrite keeps the old compound entry.
+	t.Run("legacy keeps the entry", func(t *testing.T) {
+		eng := setup(t)
+		if err := eng.PutWithIndexes([]byte("sessions/1"), []byte("not-json")); err != nil {
+			t.Fatalf("PutWithIndexes sessions/1 non-JSON: %v", err)
 		}
-		if len(ids) != 0 {
-			t.Errorf("expected no keys for the overwritten compound value in %s, got %q", name, ids)
+		if ids := holders(t, eng); len(ids) != 1 || string(ids[0]) != "sessions/1" {
+			t.Errorf("compound holders = %q, want the kept entry for sessions/1", ids)
 		}
-	}
-
-	if err := eng.PutWithIndexes([]byte("sessions/2"), value); err != nil {
-		t.Fatalf("PutWithIndexes sessions/2 with the released value: %v", err)
-	}
+		if err := eng.PutWithIndexes([]byte("sessions/2"), value); err == nil {
+			t.Fatal("PutWithIndexes sessions/2 with the still-held tuple succeeded, want a unique refusal")
+		}
+	})
+	// A transaction proposed with ordered-unique-check releases the tuple.
+	t.Run("flagged releases", func(t *testing.T) {
+		eng := setup(t)
+		cmd := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+			mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("sessions/1"), []byte("not-json"), nil, 0)),
+		}, nil, protocol.CmdFlagOrderedUnique))
+		if !txnSucceeded(t, applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: cmd}})[0]) {
+			t.Fatal("the flagged non-JSON overwrite should run its success branch")
+		}
+		if ids := holders(t, eng); len(ids) != 0 {
+			t.Errorf("expected no keys for the overwritten compound value, got %q", ids)
+		}
+		if err := eng.PutWithIndexes([]byte("sessions/2"), value); err != nil {
+			t.Fatalf("PutWithIndexes sessions/2 with the released value: %v", err)
+		}
+	})
 }
 
 func TestKVEngine_DeleteWithIndexes_RemovesKey(t *testing.T) {
