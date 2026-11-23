@@ -417,6 +417,15 @@ One row per test function this branch deletes (`git diff origin/main...HEAD -- '
 | pkg/rowlock | waitWaiting (helper) | wall-clock wait loop replaced by require.Eventuallyf on the waiter gauge | its callers |
 | pkg/rowlock | waitQueued (helper) | wall-clock wait loop replaced by require.Eventuallyf on the queue depth | its callers |
 | pkg/sql/internal/sessionguard | closeCounter / waitClosed (helpers) | wall-clock wait loop replaced by a channel closed on the first close (bounded deadline) | their callers |
+| pkg/firstboot | TestWatchForAdminBound_RealHubObservesAddCertBinding | wall-clock wait loop replaced by require.Eventually on the hub's watch count | itself |
+| pkg/firstboot | TestWatchForAdminBound_ContextCanceledReturnsNil | wall-clock wait loop replaced by require.Eventually on the hub's watch count | itself |
+| pkg/firstboot | TestWatchForAdminBound_TransientLookupFailureRetries | wall-clock wait loop replaced by require.Eventually on the hub's watch count | itself |
+| pkg/firstboot | TestThreeNodeCluster_FollowersLeaveAwaitingViaWatch_NoRestart | wall-clock wait loop replaced by require.Eventually on the hub's watch count reaching 3 | itself |
+| pkg/firstboot | TestThreeNodeCluster_LeaderChange_RemainingNodesLeaveAwaitingViaWatch | wall-clock wait loop replaced by require.Eventually on the hub's watch count reaching 3 | itself |
+| pkg/firstboot | awaitNotAwaiting (helper) | wall-clock wait loop replaced by require.Eventuallyf on the probe leaving awaiting | its callers |
+| pkg/server | waitForCounts (helper) | wall-clock wait loop replaced by assert.Eventually on every transport's open/close counts | its callers |
+| pkg/server | TestModuleConnObserver_SeesEveryListener | two wall-clock wait loops (raw TLS dial balance, QUIC/HTTP3 balance) replaced by assert.Eventually on the per-transport counts | itself |
+| pkg/api/connlimit | waitForAccepted (helper) | wall-clock wait loop replaced by require.Eventuallyf on the accepted-connection count | its callers |
 
 ## Folded refs
 
