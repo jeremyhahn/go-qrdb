@@ -26,7 +26,8 @@ import (
 
 // TestTransport_CredentialSetRotationPolicy_RetainVersionsRange pins that a
 // retention count outside int32 is rejected before narrowing, so it never
-// reaches the server as a wrapped count.
+// reaches the server as a wrapped count, while both int32 bounds are sent
+// unchanged.
 func TestTransport_CredentialSetRotationPolicy_RetainVersionsRange(t *testing.T) {
 	calls := 0
 	var got int
@@ -49,6 +50,8 @@ func TestTransport_CredentialSetRotationPolicy_RetainVersionsRange(t *testing.T)
 		{"wraps to 1", -4294967295, true},
 		{"above MaxInt32", math.MaxInt32 + 1, true},
 		{"in range", 3, false},
+		{"at MinInt32", math.MinInt32, false},
+		{"at MaxInt32", math.MaxInt32, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := calls
