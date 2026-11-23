@@ -69,6 +69,58 @@ func TestVector_CLI_NoShardIDFlag_PerProtocol(t *testing.T) {
 			if out, err = runCLIProto(t, node, proto, "vector", "namespace", "delete", "--namespace", ns); err != nil {
 				t.Fatalf("[%s] namespace delete: %v\noutput: %s", proto.name, err, out)
 			}
+
+			assertVectorsStayInTheirDatabase(t, node, proto)
 		})
+	}
+}
+
+// assertVectorsStayInTheirDatabase creates the same namespace in two
+// databases of one tenant, upserts a different vector into each, and asserts
+// a search in each database finds only that database's vector: with no shard
+// ID on the request, the database's binding picks the store.
+func assertVectorsStayInTheirDatabase(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	suffix := fmt.Sprintf("%s-%d", proto.name, time.Now().UnixNano())
+	dbs := []struct {
+		name string
+		id   uint64
+	}{
+		{name: "vecdb-a-" + suffix, id: 11},
+		{name: "vecdb-b-" + suffix, id: 22},
+	}
+	const ns = "shared-ns"
+	for _, db := range dbs {
+		steps := [][]string{
+			{"database", "create", db.name},
+			{"--database", db.name, "vector", "namespace", "create",
+				"--namespace", ns, "--dimension", "4", "--distance-metric", "cosine", "--index-type", "hnsw"},
+			{"--database", db.name, "vector", "upsert",
+				"--namespace", ns, "--id", fmt.Sprint(db.id), "--vector", "1,0,0,0"},
+		}
+		for _, step := range steps {
+			if out, err := runCLIProto(t, node, proto, step...); err != nil {
+				t.Fatalf("[%s] %v: %v\noutput: %s", proto.name, step, err, out)
+			}
+		}
+	}
+	for _, db := range dbs {
+		out, err := runCLIProto(t, node, proto, "--output", "json", "--database", db.name, "vector", "search",
+			"--namespace", ns, "--vector", "1,0,0,0", "--k", "10")
+		if err != nil {
+			t.Fatalf("[%s] search in %s: %v\noutput: %s", proto.name, db.name, err, out)
+		}
+		var resp vectorSearchResponseJSON
+		if jerr := json.Unmarshal([]byte(out), &resp); jerr != nil {
+			t.Fatalf("[%s] decode search in %s: %v\noutput: %s", proto.name, db.name, jerr, out)
+		}
+		if len(resp.Results) != 1 || resp.Results[0].ID != db.id {
+			t.Fatalf("[%s] search in %s = %+v, want only id=%d", proto.name, db.name, resp.Results, db.id)
+		}
+	}
+	for _, db := range dbs {
+		if out, err := runCLIProto(t, node, proto, "database", "drop", db.name); err != nil {
+			t.Fatalf("[%s] database drop %s: %v\noutput: %s", proto.name, db.name, err, out)
+		}
 	}
 }
