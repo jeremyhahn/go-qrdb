@@ -16,6 +16,9 @@ are not reconstructed here — their history is in the git log.
 ### Fixed
 
 - A materialized database's vector writes (upsert, batch upsert, delete, metadata update, namespace create, update and delete) now carry the database's drop-fence write guard in their Raft proposal, so a write that passed the drop check and proposed after `DROP DATABASE` fenced the database is refused at apply time; the shared node vector store keeps the check-before-write (#923).
+- A materialized database's cached vector search now goes through its binding store first, so a sealed barrier refuses it instead of serving the cached index (#923).
+- An open Pebble store now refuses every read (get, list, exists, iterator, snapshot) once its barrier seals, so memtable and block-cache data is not served after a seal; the refusal maps to Unavailable on every transport (#923).
+- A `backend: memory` database whose data predates its own store keeps its shared-store route on qrdbd and the SDK standalone node, which now install the shared-keyspace probe, instead of being materialized empty (#923).
 
 ### Changed
 

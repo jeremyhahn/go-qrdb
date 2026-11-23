@@ -358,7 +358,11 @@ A Pebble store on an encrypting file system (`pkg/seal/encfs`) cannot finish a
 flush, a WAL rotation or a compaction once its barrier's key is gone, and
 Pebble panics when it cannot create the WAL file a flush needs. The seal watch
 (`pkg/storage/pebble.SealWatch`) already refuses new work under a **sealed**
-barrier; the work that matters is the work **already in flight** when the
+barrier, reads included: once its barrier seals, an open Pebble store refuses
+every read (`Get`, `List`, `Exists`, `NewIterator`, `Snapshot`) with the typed
+sealed error, so data still in the memtable or the block cache is not served
+after a seal. The refusal maps to `Unavailable` (`pkg/api/errclass`), as the
+file backend's sealed read does. The work that matters is the work **already in flight** when the
 seal arrives. `StorageBarrier.Seal` therefore drains it before the key leaves
 memory:
 

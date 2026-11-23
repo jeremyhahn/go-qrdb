@@ -343,7 +343,12 @@ database, a drop is:
    (`service.DropFenceGuard`), so a write proposed before the fence and applied after it is refused on every
    replica, from the same log. The guard applies to every engine's writes,
    vector and time series included, and to local bindings exactly as to raft
-   ones, because both apply through the same engine. The fence is behind the
+   ones, because both apply through the same engine. A materialized
+   database's vector writes are `OpVector*` proposals through its own host
+   (`service.WithVectorApplyHost`), so they carry the guard in the same
+   command and a vector write delayed across the drop is refused at apply
+   time; only the shared node vector store, whose writes are not proposals,
+   keeps a check before the write (`dropFence`). The fence is behind the
    cluster feature gate: a drop in a group whose members do not all
    support it is refused with a typed error, never run unfenced.
 2. **Destroy the store** — stop and purge the Raft group on every replica, or
@@ -481,7 +486,12 @@ The fence has two halves, and they answer different questions:
   race: a write applied before the fence landed before it and is removed by
   the reclamation that follows; a write applied after it is refused and its
   caller receives `database.DroppingError`. There is no check-then-write
-  window, because there is no separate check.
+  window, because there is no separate check. This holds for a materialized
+  database's vector writes too: they are `OpVector*` proposals through the
+  database's own host and carry the guard like any other write. The one
+  exception is the shared node vector store, whose vector writes are not
+  proposals: the namespaced vector service checks the fence before each
+  write (`dropFence`) there.
 
 **Once the drop removes the catalog record, the database does not exist.**
 The catalog is replicated, so every node applies the removal and releases
