@@ -281,6 +281,9 @@ The same operations are available on every transport via `index.IndexServicer` (
 
 **On user-defined relational tables (see "Relational Tables" below), index DDL is supported**: `CREATE INDEX`, `DROP INDEX`, and `ALTER TABLE ... RENAME INDEX` all work. `CREATE INDEX` on a non-empty table populates the index from existing rows (`sql.IndexBuildingTable`) rather than leaving it empty until the next write.
 
+## Engine Tables
+
+Every database serves the built-in engine tables under reserved names (OD-12 B, docs/databases/architecture.md): `qrdb_ts_datapoints` and `qrdb_ts_metrics` (`timeseries_table.go`, `metrics_table.go`) only when `capabilities.Has("timeSeries")`, and `qrdb_vector_namespaces` and `qrdb_vector_vectors` (`namespaces_table.go`, `vector_table.go`) only when `capabilities.Has("vector")`, so a build without the `qrdb_ts` or `qrdb_vector` tag has no table for that engine. `pkg/sql/provider.Database` resolves the engine tables before the relational catalog; they are read-only. `CreateTable` and `RenameTable` (`relational_ddl.go`) refuse the four names case-insensitively with `*ReservedTableNameError` (`errors.go`, "provider: table name is reserved: <name>") whether or not the engine is compiled in. The old unprefixed names `datapoints`, `metrics`, `namespaces` and `vectors` are no longer engine tables and are ordinary user table names.
 
 ## Relational Tables
 
