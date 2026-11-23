@@ -54,7 +54,10 @@ type Identity struct {
 	TenantID string
 
 	// Roles contains the IDENTIFIERS of the roles assigned to this identity.
-	// The authentication middleware sets it from the user record's RoleIDs.
+	// The authentication middleware sets it ONLY from the bound user
+	// record's RoleIDs and discards whatever an authenticator, a token's
+	// claims or a forwarded assertion carried (SPEC authz-claim-roles): an
+	// identity with no user record carries no roles.
 	// A role NAME found here did not come from the role store, so to ask
 	// whether the identity holds a named system role, resolve the name
 	// through the role store (role.HoldsSystemRole) rather than comparing
@@ -191,6 +194,12 @@ func ParseUserSubject(subject string) (uint64, bool) {
 }
 
 // Authenticator validates incoming requests and extracts identity.
+//
+// An authenticator establishes WHO is calling: Subject, TenantID and
+// Metadata. It never establishes what the caller may do: the Roles,
+// RoleBindings, Attributes and TenantOwner it returns are discarded by the
+// authentication chain, which takes roles and bindings only from the user
+// record the identity binds to (SPEC authz-claim-roles).
 type Authenticator interface {
 	// Authenticate extracts and validates identity from the request context.
 	// Returns ErrUnauthenticated if no valid credentials are found.

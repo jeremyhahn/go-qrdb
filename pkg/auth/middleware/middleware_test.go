@@ -515,9 +515,10 @@ func TestAuthenticate_UserNotFound(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Roles should remain from base identity.
-	if len(identity.Roles) != 1 || identity.Roles[0] != "original" {
-		t.Errorf("expected original roles preserved, got %v", identity.Roles)
+	// A subject with no user record carries no roles: the authenticator's
+	// claimed role list is discarded (SPEC authz-claim-roles).
+	if identity.Roles != nil {
+		t.Errorf("claimed roles survived an unresolved subject: %v", identity.Roles)
 	}
 }
 
@@ -532,8 +533,10 @@ func TestAuthenticate_NoUserService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(identity.Roles) != 1 || identity.Roles[0] != "dev" {
-		t.Errorf("expected roles [dev], got %v", identity.Roles)
+	// With no user store there is no role source: the authenticator's
+	// claimed role list is discarded (SPEC authz-claim-roles).
+	if identity.Roles != nil {
+		t.Errorf("claimed roles survived with no user store: %v", identity.Roles)
 	}
 }
 

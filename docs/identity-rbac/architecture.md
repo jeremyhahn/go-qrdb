@@ -78,6 +78,18 @@ chain stays first-success-wins; a composer that wants its checks applied to
 certificate-bearing requests places its authenticator ahead of mTLS or in its
 place, rather than qrdb running a second, conjunctive chain beside the first.
 
+**An authenticator says who, never what** (SPEC `authz-claim-roles`). An
+authenticator — qrdb's mTLS, a consumer's bearer, a capability module's REST
+fallback (the JWT plane go-xkms's FIDO2/PIV logins mint) — establishes the
+caller's `Subject`, `TenantID` and metadata. The `Roles`, `RoleBindings`,
+`Attributes` and `TenantOwner` it returns are discarded by `finalizeIdentity`
+before anything else; a role list read from a token's claims is never an
+authorization source, and there is no claim-to-role mapping. The roles an
+identity is authorized on are the `RoleIDs` and `RoleBindings` of the go-qrdb
+user record it binds to. A subject with no record, a tenant whose IAM is
+sealed and a node with no user store configured all carry no roles: RBAC
+default-denies them and only the `IdentityGated` surface stays reachable.
+
 ### The Unix peer-credential authenticator
 
 A local process on the Unix socket can be identified by the kernel rather than
@@ -484,9 +496,9 @@ and roles — the routed services resolve a system-tenant caller into the
 tenant it names, and the system-tenant scope rule admits it there.
 
 All three fields influence an authorization decision. `finalizeIdentity`
-carries `RoleBindings` and `Attributes` onto the authenticated identity
-alongside `RoleIDs`. The user store is their only source: whatever the
-authenticator carried in is always cleared, and the store's current state
+carries `RoleIDs` (as the identity's `Roles`), `RoleBindings` and
+`Attributes` onto the authenticated identity. The user store is the only
+source of all three: whatever the authenticator carried in is always cleared, and the store's current state
 replaces it, so a withdrawn binding or a cleared attribute stops applying on
 the next request — including when the record is not found, the tenant is
 sealed, or no user store is configured at all (then the identity carries

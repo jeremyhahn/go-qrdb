@@ -77,7 +77,7 @@ func TestClusterAdminScope(t *testing.T) {
 			serverCfg.ClientAuth = tls.RequireAnyClientCert
 			clientCfg.Certificates = serverCfg.Certificates
 			srv := NewServer(nil, admin, "127.0.0.1:0", WithTLS(serverCfg),
-				WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))))
+				WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller), authmw.WithUserService(caller.Users()))))
 			if err := srv.Start(); err != nil {
 				t.Fatalf("start server: %v", err)
 			}

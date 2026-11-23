@@ -225,7 +225,7 @@ func TestTenantStatus_SystemAdminControlPlaneOnNonActiveTenantPasses(t *testing.
 	tenants := statusTenants(t)
 	setStatus(t, tenants, "acme", tenant.StatusSuspended)
 	m := builtInMiddleware(t,
-		WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: authtest.AdminIdentity(tenantid.System, "root")}),
+		withFixedIdentity(authtest.AdminIdentity(tenantid.System, "root")),
 		WithTenantStatusReader(tenants))
 	ctx, _, err := m.Authenticate(context.Background())
 	if err != nil {
