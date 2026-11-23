@@ -1,4 +1,4 @@
-//go:build qrdb_embedded
+//go:build qrdb_embedded && !integration
 
 // Copyright 2026 Jeremy Hahn
 //
