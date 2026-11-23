@@ -3014,6 +3014,12 @@ export interface TenantQuotas {
      * default. Wire name: `max_dedicated_wal_groups`.
      */
     readonly maxDedicatedWalGroups: number;
+    /**
+     * Maximum number of SQLite databases the tenant may hold in the
+     * sqlite-vfs page store (a soft bound). `0` or `-1` = unlimited.
+     * Wire name: `max_sqlite_databases`.
+     */
+    readonly maxSqliteDatabases?: number;
     /** Maximum number of collections across all databases. */
     readonly maxCollections: number;
     /** Maximum total KV entries. */
@@ -3065,6 +3071,12 @@ export interface TenantEntitlements {
      * `max_dedicated_wal_groups` quota. Wire name: `allow_dedicated_wal`.
      */
     readonly allowDedicatedWal?: boolean;
+    /**
+     * Whether the tenant may create SQLite databases in the sqlite-vfs page
+     * store (the sqlite-vfs entitlement; fail-closed). Wire name:
+     * `allow_sqlite_vfs`.
+     */
+    readonly allowSqliteVfs?: boolean;
     /**
      * Dedicated-barrier sealing strategies the isolated tenant may select
      * (none/passphrase/shamir or an xkms hardware strategy id). Empty permits

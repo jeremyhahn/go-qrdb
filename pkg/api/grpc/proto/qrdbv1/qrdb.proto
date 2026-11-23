@@ -4872,6 +4872,10 @@ message TenantQuotas {
     // max_dedicated_wal_groups caps the number of dedicated-raft groups a tenant
     // may grant a dedicated WAL. -1 = unlimited; 0 = default (no dedicated WAL).
     int64 max_dedicated_wal_groups = 16;
+    // max_sqlite_databases caps the number of SQLite databases a tenant may
+    // hold in the sqlite-vfs page store (Q5 A; a soft bound, counted at
+    // admission). -1 = unlimited; 0 = default (unlimited).
+    int64 max_sqlite_databases = 17;
 }
 
 // TenantEntitlements describes which isolation tiers and dedicated-storage
@@ -4893,6 +4897,10 @@ message TenantEntitlements {
     // catalog) a volume/raft tenant may be placed on. The first entry is
     // the tenant's default pool. Fail-closed: empty entitles no pool.
     repeated string allowed_volume_pools    = 7;
+    // allow_sqlite_vfs permits a tenant to create SQLite databases in the
+    // sqlite-vfs page store (the sqlite-vfs entitlement, Q5 A). Fail-closed:
+    // false refuses every new SQLite database.
+    bool allow_sqlite_vfs                   = 8;
 }
 
 // TenantRefusal is the answering node's own view of why it will not serve

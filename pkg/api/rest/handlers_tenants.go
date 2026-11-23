@@ -140,6 +140,9 @@ type setTenantQuotasRequest struct {
 	// MaxDedicatedWALGroups caps the number of dedicated-raft groups a tenant
 	// may opt into a per-tenant-key WAL: -1 = unlimited.
 	MaxDedicatedWALGroups int64 `json:"max_dedicated_wal_groups"`
+	// MaxSQLiteDatabases caps the number of SQLite databases the tenant may
+	// hold in the sqlite-vfs page store (a soft bound): -1 or 0 = unlimited.
+	MaxSQLiteDatabases int64 `json:"max_sqlite_databases"`
 }
 
 // setTenantEntitlementsRequest is the JSON payload for
@@ -150,6 +153,9 @@ type setTenantEntitlementsRequest struct {
 	AllowVolumeStorage        bool     `json:"allow_volume_storage,omitempty"`
 	AllowSystemManagedBarrier bool     `json:"allow_system_managed_barrier,omitempty"`
 	AllowDedicatedWAL         bool     `json:"allow_dedicated_wal,omitempty"`
+	// AllowSQLiteVFS grants the sqlite-vfs entitlement: the tenant may create
+	// SQLite databases in the sqlite-vfs page store.
+	AllowSQLiteVFS bool `json:"allow_sqlite_vfs,omitempty"`
 	// AllowedBarrierModes lists the dedicated-barrier sealing strategies the
 	// isolated tenant may select (none/passphrase/shamir or an xkms hardware id).
 	AllowedBarrierModes []string `json:"allowed_barrier_modes,omitempty"`
@@ -692,6 +698,7 @@ func (s *Server) handleSetTenantQuotas(w http.ResponseWriter, r *http.Request, i
 		MaxTSMetrics:          req.MaxTSMetrics,
 		SystemBarrierQuota:    req.SystemBarrierQuota,
 		MaxDedicatedWALGroups: req.MaxDedicatedWALGroups,
+		MaxSQLiteDatabases:    req.MaxSQLiteDatabases,
 	}
 
 	ctx := r.Context()
@@ -722,6 +729,7 @@ func (s *Server) handleSetTenantEntitlements(w http.ResponseWriter, r *http.Requ
 		AllowVolumeStorage:        req.AllowVolumeStorage,
 		AllowSystemManagedBarrier: req.AllowSystemManagedBarrier,
 		AllowDedicatedWAL:         req.AllowDedicatedWAL,
+		AllowSQLiteVFS:            req.AllowSQLiteVFS,
 		AllowedBarrierModes:       req.AllowedBarrierModes,
 		AllowedVolumePools:        req.AllowedVolumePools,
 	}

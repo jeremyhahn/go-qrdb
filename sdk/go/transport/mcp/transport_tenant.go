@@ -370,6 +370,7 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 		"max_backups":             req.Quotas.MaxBackups,
 		"max_vector_dims":         req.Quotas.MaxVectorDims,
 		"max_ts_metrics":          req.Quotas.MaxTSMetrics,
+		"max_sqlite_databases":    req.Quotas.MaxSQLiteDatabases,
 	}
 
 	text, err := t.callTool(ctx, "qrdb_tenant_update_quotas", args)
@@ -402,6 +403,7 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 		"allow_volume_storage":         req.Entitlements.AllowVolumeStorage,
 		"allow_system_managed_barrier": req.Entitlements.AllowSystemManagedBarrier,
 		"allow_dedicated_wal":          req.Entitlements.AllowDedicatedWAL,
+		"allow_sqlite_vfs":             req.Entitlements.AllowSQLiteVFS,
 		"allowed_barrier_modes":        strings.Join(req.Entitlements.AllowedBarrierModes, ","),
 	}
 

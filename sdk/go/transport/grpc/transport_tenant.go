@@ -213,6 +213,7 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 			MaxTsMetrics:          req.Quotas.MaxTSMetrics,
 			SystemBarrierQuota:    req.Quotas.SystemBarrierQuota,
 			MaxDedicatedWalGroups: req.Quotas.MaxDedicatedWALGroups,
+			MaxSqliteDatabases:    req.Quotas.MaxSQLiteDatabases,
 		},
 	})
 	if err != nil {
@@ -241,6 +242,7 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 			AllowSystemManagedBarrier: req.Entitlements.AllowSystemManagedBarrier,
 			AllowedBarrierModes:       req.Entitlements.AllowedBarrierModes,
 			AllowDedicatedWal:         req.Entitlements.AllowDedicatedWAL,
+			AllowSqliteVfs:            req.Entitlements.AllowSQLiteVFS,
 			AllowedVolumePools:        req.Entitlements.AllowedVolumePools,
 		},
 	})

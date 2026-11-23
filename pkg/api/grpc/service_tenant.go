@@ -286,6 +286,7 @@ func (s *qrdbServiceServer) TenantUpdateQuotas(ctx context.Context, req *pb.Tena
 		MaxTSMetrics:          pbQ.GetMaxTsMetrics(),
 		SystemBarrierQuota:    pbQ.GetSystemBarrierQuota(),
 		MaxDedicatedWALGroups: pbQ.GetMaxDedicatedWalGroups(),
+		MaxSQLiteDatabases:    pbQ.GetMaxSqliteDatabases(),
 	}
 
 	if err := s.authorizeTenantTarget(ctx, req.GetId(), permission.TenantsSetQuotas); err != nil {
@@ -318,6 +319,7 @@ func (s *qrdbServiceServer) TenantUpdateEntitlements(ctx context.Context, req *p
 		AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
 		AllowedBarrierModes:       pbE.GetAllowedBarrierModes(),
 		AllowDedicatedWAL:         pbE.GetAllowDedicatedWal(),
+		AllowSQLiteVFS:            pbE.GetAllowSqliteVfs(),
 		AllowedVolumePools:        pbE.GetAllowedVolumePools(),
 	}
 
@@ -377,6 +379,7 @@ func entitlementsToProto(e *quota.Entitlements) *pb.TenantEntitlements {
 		AllowSystemManagedBarrier: e.AllowSystemManagedBarrier,
 		AllowedBarrierModes:       e.AllowedBarrierModes,
 		AllowDedicatedWal:         e.AllowDedicatedWAL,
+		AllowSqliteVfs:            e.AllowSQLiteVFS,
 		AllowedVolumePools:        e.AllowedVolumePools,
 	}
 }
@@ -403,6 +406,7 @@ func quotaToProto(q *quota.Quotas) *pb.TenantQuotas {
 		MaxTsMetrics:          q.MaxTSMetrics,
 		SystemBarrierQuota:    q.SystemBarrierQuota,
 		MaxDedicatedWalGroups: q.MaxDedicatedWALGroups,
+		MaxSqliteDatabases:    q.MaxSQLiteDatabases,
 	}
 }
 

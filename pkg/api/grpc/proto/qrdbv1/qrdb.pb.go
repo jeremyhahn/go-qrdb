@@ -22965,8 +22965,12 @@ type TenantQuotas struct {
 	// max_dedicated_wal_groups caps the number of dedicated-raft groups a tenant
 	// may grant a dedicated WAL. -1 = unlimited; 0 = default (no dedicated WAL).
 	MaxDedicatedWalGroups int64 `protobuf:"varint,16,opt,name=max_dedicated_wal_groups,json=maxDedicatedWalGroups,proto3" json:"max_dedicated_wal_groups,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// max_sqlite_databases caps the number of SQLite databases a tenant may
+	// hold in the sqlite-vfs page store (Q5 A; a soft bound, counted at
+	// admission). -1 = unlimited; 0 = default (unlimited).
+	MaxSqliteDatabases int64 `protobuf:"varint,17,opt,name=max_sqlite_databases,json=maxSqliteDatabases,proto3" json:"max_sqlite_databases,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *TenantQuotas) Reset() {
@@ -23111,6 +23115,13 @@ func (x *TenantQuotas) GetMaxDedicatedWalGroups() int64 {
 	return 0
 }
 
+func (x *TenantQuotas) GetMaxSqliteDatabases() int64 {
+	if x != nil {
+		return x.MaxSqliteDatabases
+	}
+	return 0
+}
+
 // TenantEntitlements describes which isolation tiers and dedicated-storage
 // features a tenant's plan permits.
 type TenantEntitlements struct {
@@ -23131,8 +23142,12 @@ type TenantEntitlements struct {
 	// catalog) a volume/raft tenant may be placed on. The first entry is
 	// the tenant's default pool. Fail-closed: empty entitles no pool.
 	AllowedVolumePools []string `protobuf:"bytes,7,rep,name=allowed_volume_pools,json=allowedVolumePools,proto3" json:"allowed_volume_pools,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// allow_sqlite_vfs permits a tenant to create SQLite databases in the
+	// sqlite-vfs page store (the sqlite-vfs entitlement, Q5 A). Fail-closed:
+	// false refuses every new SQLite database.
+	AllowSqliteVfs bool `protobuf:"varint,8,opt,name=allow_sqlite_vfs,json=allowSqliteVfs,proto3" json:"allow_sqlite_vfs,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *TenantEntitlements) Reset() {
@@ -23212,6 +23227,13 @@ func (x *TenantEntitlements) GetAllowedVolumePools() []string {
 		return x.AllowedVolumePools
 	}
 	return nil
+}
+
+func (x *TenantEntitlements) GetAllowSqliteVfs() bool {
+	if x != nil {
+		return x.AllowSqliteVfs
+	}
+	return false
 }
 
 // TenantRefusal is the answering node's own view of why it will not serve
@@ -37200,7 +37222,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\acsr_pem\x18\x03 \x01(\tR\x06csrPem\x12\x12\n" +
 	"\x04role\x18\x04 \x01(\tR\x04role\"4\n" +
 	"\x17CeremonySignCSRResponse\x12\x19\n" +
-	"\bcert_pem\x18\x01 \x01(\tR\acertPem\"\xa4\x05\n" +
+	"\bcert_pem\x18\x01 \x01(\tR\acertPem\"\xd6\x05\n" +
 	"\fTenantQuotas\x12#\n" +
 	"\rmax_databases\x18\x01 \x01(\x03R\fmaxDatabases\x12&\n" +
 	"\x0fmax_raft_groups\x18\x02 \x01(\x03R\rmaxRaftGroups\x12'\n" +
@@ -37219,7 +37241,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x16max_replicas_per_group\x18\r \x01(\x03R\x13maxReplicasPerGroup\x12,\n" +
 	"\x12max_total_replicas\x18\x0e \x01(\x03R\x10maxTotalReplicas\x120\n" +
 	"\x14system_barrier_quota\x18\x0f \x01(\x03R\x12systemBarrierQuota\x127\n" +
-	"\x18max_dedicated_wal_groups\x18\x10 \x01(\x03R\x15maxDedicatedWalGroups\"\x87\x03\n" +
+	"\x18max_dedicated_wal_groups\x18\x10 \x01(\x03R\x15maxDedicatedWalGroups\x120\n" +
+	"\x14max_sqlite_databases\x18\x11 \x01(\x03R\x12maxSqliteDatabases\"\xb1\x03\n" +
 	"\x12TenantEntitlements\x126\n" +
 	"\x17allowed_isolation_modes\x18\x01 \x03(\tR\x15allowedIsolationModes\x120\n" +
 	"\x14allow_dedicated_raft\x18\x02 \x01(\bR\x12allowDedicatedRaft\x120\n" +
@@ -37227,7 +37250,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x1callow_system_managed_barrier\x18\x04 \x01(\bR\x19allowSystemManagedBarrier\x122\n" +
 	"\x15allowed_barrier_modes\x18\x05 \x03(\tR\x13allowedBarrierModes\x12.\n" +
 	"\x13allow_dedicated_wal\x18\x06 \x01(\bR\x11allowDedicatedWal\x120\n" +
-	"\x14allowed_volume_pools\x18\a \x03(\tR\x12allowedVolumePools\"=\n" +
+	"\x14allowed_volume_pools\x18\a \x03(\tR\x12allowedVolumePools\x12(\n" +
+	"\x10allow_sqlite_vfs\x18\b \x01(\bR\x0eallowSqliteVfs\"=\n" +
 	"\rTenantRefusal\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"\xa7\x04\n" +

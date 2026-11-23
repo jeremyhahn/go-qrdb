@@ -956,6 +956,9 @@ func TestHandleSetTenantQuotas_Success(t *testing.T) {
 			if q.MaxKeys != 1000 {
 				t.Fatalf("MaxKeys = %d, want 1000", q.MaxKeys)
 			}
+			if q.MaxSQLiteDatabases != 3 {
+				t.Fatalf("MaxSQLiteDatabases = %d, want 3", q.MaxSQLiteDatabases)
+			}
 			info := testTenantInfo()
 			info.Quotas = q
 			return info, nil
@@ -963,7 +966,7 @@ func TestHandleSetTenantQuotas_Success(t *testing.T) {
 	}
 	srv := newTenantServer(svc)
 
-	body := `{"max_keys":1000}`
+	body := `{"max_keys":1000,"max_sqlite_databases":3}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/quotas", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)

@@ -728,6 +728,8 @@ func TestHandleTenantUpdateQuotas_Success(t *testing.T) {
 		"id":            "acme",
 		"max_databases": float64(5),
 		"max_keys":      float64(1000),
+
+		"max_sqlite_databases": float64(3),
 	})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -744,6 +746,9 @@ func TestHandleTenantUpdateQuotas_Success(t *testing.T) {
 	}
 	if info.ID != "acme" {
 		t.Errorf("expected id 'acme', got %q", info.ID)
+	}
+	if info.Quotas == nil || info.Quotas.MaxSQLiteDatabases != 3 {
+		t.Errorf("expected MaxSQLiteDatabases 3, got %+v", info.Quotas)
 	}
 }
 

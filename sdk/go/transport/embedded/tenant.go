@@ -75,6 +75,7 @@ func mapQuotas(q *quota.Quotas) *transport.TenantQuotas {
 		MaxTSMetrics:          q.MaxTSMetrics,
 		SystemBarrierQuota:    q.SystemBarrierQuota,
 		MaxDedicatedWALGroups: q.MaxDedicatedWALGroups,
+		MaxSQLiteDatabases:    q.MaxSQLiteDatabases,
 	}
 }
 
@@ -87,6 +88,7 @@ func mapEntitlements(e *quota.Entitlements) *transport.TenantEntitlements {
 		AllowSystemManagedBarrier: e.AllowSystemManagedBarrier,
 		AllowedBarrierModes:       e.AllowedBarrierModes,
 		AllowDedicatedWAL:         e.AllowDedicatedWAL,
+		AllowSQLiteVFS:            e.AllowSQLiteVFS,
 		AllowedVolumePools:        e.AllowedVolumePools,
 	}
 }
@@ -491,6 +493,7 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 		MaxTSMetrics:          req.Quotas.MaxTSMetrics,
 		SystemBarrierQuota:    req.Quotas.SystemBarrierQuota,
 		MaxDedicatedWALGroups: req.Quotas.MaxDedicatedWALGroups,
+		MaxSQLiteDatabases:    req.Quotas.MaxSQLiteDatabases,
 	}
 
 	info, err := t.tenantSvc.UpdateQuotas(ctx, req.TenantID, q)
@@ -533,6 +536,7 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 		AllowSystemManagedBarrier: req.Entitlements.AllowSystemManagedBarrier,
 		AllowedBarrierModes:       req.Entitlements.AllowedBarrierModes,
 		AllowDedicatedWAL:         req.Entitlements.AllowDedicatedWAL,
+		AllowSQLiteVFS:            req.Entitlements.AllowSQLiteVFS,
 		AllowedVolumePools:        req.Entitlements.AllowedVolumePools,
 	}
 

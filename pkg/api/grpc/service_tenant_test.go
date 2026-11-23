@@ -693,8 +693,9 @@ func TestGRPC_TenantUpdateQuotas_Success(t *testing.T) {
 	resp, err := client.TenantUpdateQuotas(context.Background(), &pb.TenantUpdateQuotasRequest{
 		Id: "acme",
 		Quotas: &pb.TenantQuotas{
-			MaxDatabases: 5,
-			MaxKeys:      1000,
+			MaxDatabases:       5,
+			MaxKeys:            1000,
+			MaxSqliteDatabases: 3,
 		},
 	})
 	if err != nil {
@@ -708,6 +709,32 @@ func TestGRPC_TenantUpdateQuotas_Success(t *testing.T) {
 	}
 	if resp.GetQuotas().GetMaxDatabases() != 5 {
 		t.Errorf("expected MaxDatabases 5, got %d", resp.GetQuotas().GetMaxDatabases())
+	}
+	if resp.GetQuotas().GetMaxSqliteDatabases() != 3 {
+		t.Errorf("expected MaxSqliteDatabases 3, got %d", resp.GetQuotas().GetMaxSqliteDatabases())
+	}
+}
+
+// TestGRPC_TenantUpdateEntitlements_SQLiteVFS proves the sqlite-vfs
+// entitlement crosses the gRPC boundary both ways: the request's
+// allow_sqlite_vfs reaches the service, and the echoed tenant carries it back.
+func TestGRPC_TenantUpdateEntitlements_SQLiteVFS(t *testing.T) {
+	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
+		WithTenantService(newMockTenantService()))
+	defer cleanup()
+
+	resp, err := client.TenantUpdateEntitlements(context.Background(), &pb.TenantUpdateEntitlementsRequest{
+		Id:           "acme",
+		Entitlements: &pb.TenantEntitlements{AllowSqliteVfs: true, AllowDedicatedWal: true},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetEntitlements().GetAllowSqliteVfs() {
+		t.Errorf("expected AllowSqliteVfs true, got %+v", resp.GetEntitlements())
+	}
+	if !resp.GetEntitlements().GetAllowDedicatedWal() {
+		t.Errorf("expected AllowDedicatedWal true, got %+v", resp.GetEntitlements())
 	}
 }
 
@@ -849,8 +876,16 @@ func TestQuotaToProto_AllFields(t *testing.T) {
 		MaxBackups:      9,
 		MaxVectorDims:   10,
 		MaxTSMetrics:    11,
+
+		MaxSQLiteDatabases: 12,
 	}
 	got := quotaToProto(q)
+	if got.GetMaxSqliteDatabases() != 12 {
+		t.Errorf("MaxSqliteDatabases: expected 12, got %d", got.GetMaxSqliteDatabases())
+	}
+	if e := entitlementsToProto(&quota.Entitlements{AllowSQLiteVFS: true}); !e.GetAllowSqliteVfs() {
+		t.Errorf("AllowSqliteVfs: expected true, got %+v", e)
+	}
 	if got == nil {
 		t.Fatal("expected non-nil result")
 	}
