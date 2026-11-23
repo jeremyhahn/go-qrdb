@@ -29,13 +29,16 @@ import (
 
 // TestTransport_CredentialSetRotationPolicy_RetainVersionsRange pins that a
 // retention count outside int32 is rejected before narrowing, so it never
-// reaches the server as a wrapped count.
+// reaches the server as a wrapped count, while both int32 bounds are sent
+// unchanged.
 func TestTransport_CredentialSetRotationPolicy_RetainVersionsRange(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("credential.SetRotationPolicy", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, nil
 	})
 
+	// The rejected cases run first: LastRequest keeps the last request the
+	// server saw, so a rejection must find none recorded.
 	for _, tc := range []struct {
 		name   string
 		count  int
@@ -45,6 +48,8 @@ func TestTransport_CredentialSetRotationPolicy_RetainVersionsRange(t *testing.T)
 		{"wraps to 1", -4294967295, true},
 		{"above MaxInt32", math.MaxInt32 + 1, true},
 		{"in range", 3, false},
+		{"at MinInt32", math.MinInt32, false},
+		{"at MaxInt32", math.MaxInt32, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tr.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
