@@ -453,7 +453,11 @@ a role the tenant does not have. The `groups:*` verbs are granted like their
 `groups:update`, `groups:delete`, `groups:list`, `groups:add_member`,
 `groups:remove_member`), Admin all but `groups:delete`, Auditor `groups:list`
 and `groups:read`. Giving a group a role, or adding a member to a group, is
-held to the role-assignment rules, the strict-separation SO rule included.
+held to the role-assignment rules, the strict-separation SO rule included;
+under strict separation only the Security Officer can drop `so` from a group's
+roles or delete a group that carries `so`. A group is stored in its tenant's
+own store, like a role: inside a dedicated-isolation tenant's barrier, and
+unreadable while that tenant is sealed.
 See [identity-rbac/api.md](../identity-rbac/api.md#capability-matrix--iam-groups).
 
 ## Compliance Mapping

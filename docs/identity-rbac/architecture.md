@@ -574,8 +574,16 @@ the user's own roles. Because the union is made on every request, a
 membership or group change applies from the next request, like a withdrawn
 binding.
 
-Two stores split the state. The group store (`group.NewStore`, over the auth
-store) holds the group records, claims each name within its tenant
+Two stores split the state. The group store holds the group records in the
+store of the tenant that owns them, routed per tenant exactly like roles:
+`group.NewRoutingService` resolves every operation through the tenant
+`StoreResolver`, so a dedicated-isolation tenant's groups live inside its own
+barrier and a sealed tenant's groups fail closed with `tenant.ErrTenantSealed`.
+By-id operations find the owning tenant in the identity index (kind
+`tenant.IdentityGroup`), which each per-tenant store claims at create and
+releases at delete; a delete whose record is already gone reconciles the stale
+claim. A node without a resolver serves `group.NewStore` over the auth store.
+The store claims each name within its tenant
 atomically, and refuses a role of another tenant
 (`group.RoleNotInTenantError`, `WithRoleLookup`). Membership is the user
 record's own field, written by `user.GroupMembership` with compare-and-swap,
@@ -590,7 +598,11 @@ escalation guards in `pkg/auth/middleware/role_assignment.go`.
 each role it adds; `AuthorizeGroupMembership` holds adding a member to them
 for every role the group carries and requires the user to be of the group's
 tenant; `AuthorizeGroupMemberRemoval` keeps taking the `so` role away
-through a group the Security Officer's alone under strict separation.
+through a group the Security Officer's alone under strict separation, and
+`AuthorizeGroupRoleRemoval` does the same for the group itself: an update that
+drops `so` from a group's roles, or the delete of a group that carries `so`, is
+refused (`SORoleRequiredError`) unless the caller is the tenant's Security
+Officer.
 
 ### Alternatives rejected
 
