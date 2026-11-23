@@ -184,17 +184,21 @@ func TestRelationalAccessorsAreBuiltPerCall(t *testing.T) {
 // what routes a database with its own dedicated barrier store away from the
 // owning tenant's shared services, so a dropped manager silently sends
 // dedicated-store databases back to the shared keyspace.
-func TestWithDatabaseManagerStoresTheManager(t *testing.T) {
+func TestWithRegistryDatabaseManagerStoresTheManager(t *testing.T) {
 	r := &restServiceRegistry{}
 
-	withDatabaseManager(nil)(r)
-	if r.dbManager != nil {
-		t.Error("withDatabaseManager(nil) must leave the manager unset")
+	WithRegistryDatabaseManager(nil)(r)
+	if r.dbManager != nil || r.catalog != nil {
+		t.Error("WithRegistryDatabaseManager(nil) must leave the manager and catalog unset")
 	}
 
 	mgr := &database.Manager{}
-	withDatabaseManager(mgr)(r)
+	WithRegistryDatabaseManager(mgr)(r)
 	if r.dbManager != mgr {
-		t.Error("withDatabaseManager did not store the supplied manager")
+		t.Error("WithRegistryDatabaseManager did not store the supplied manager")
+	}
+	cat, ok := r.catalog.(*managerCatalog)
+	if !ok || cat.manager != mgr {
+		t.Error("WithRegistryDatabaseManager did not make the manager the registry's catalog")
 	}
 }

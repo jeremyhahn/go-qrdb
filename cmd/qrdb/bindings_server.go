@@ -49,7 +49,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
-	qrdbtenant "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -89,8 +88,12 @@ type EmbeddedServerBinding struct {
 	localBackend *backend.LocalBackend
 	storage      storage.Storage // underlying storage (pebble/file/memory) that must be closed on stop
 	watchHub     *watch.Hub
-	svcNode      *lifecycle.Node      // owns all service lifecycle (vector, db, etc.)
-	sealBarrier  *seal.StorageBarrier // owns the persistent seal store; closed on stop to release its file lock
+	svcNode      *lifecycle.Node // owns all service lifecycle (vector, db, etc.)
+	// dbManager is the node's one database manager: the lifecycle node's
+	// database service and the service registry's catalog and drop fence
+	// both read it. Closed on stop, after the node.
+	dbManager   *database.Manager
+	sealBarrier *seal.StorageBarrier // owns the persistent seal store; closed on stop to release its file lock
 	// auditTrail is the compliance audit trail, when EmbeddedConfig.Audit
 	// enables one; closed on stop.
 	auditTrail audit.AuditLogger
@@ -261,6 +264,16 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		b.sealBarrier = embeddedBarrier
 	}
 
+	// One database manager serves the node, as in qrdbd: the lifecycle
+	// node's database service creates and drops through it, and the
+	// service registry resolves each named database's record, sealed state
+	// and drop fence from it, so a write resolved before DROP DATABASE is
+	// refused rather than landing after reclamation or in a same-named
+	// replacement.
+	dbManager := database.NewManager(slog.Default(), dataDir,
+		database.WithDefaults(database.Defaults{RunMode: database.RunModeStandalone}))
+	b.dbManager = dbManager
+
 	// Build all services via the shared lifecycle package.
 	//
 	// SealEnabled is unconditionally true: unlike seal.enabled in the daemon
@@ -276,6 +289,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		Host:                   svcHost,
 		WatchHub:               hub,
 		DataDir:                dataDir,
+		DatabaseManager:        dbManager,
 		SealBarrier:            embeddedBarrier,
 		SealEnabled:            true,
 		BarrierRegistry:        embeddedRegistry,
@@ -292,6 +306,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	})
 	if svcErr != nil {
 		hub.Close()
+		b.closeDatabaseManager()
 		if b.sealBarrier != nil {
 			_ = b.sealBarrier.Close()
 			b.sealBarrier = nil
@@ -357,7 +372,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	// The node's per-(tenant, database) service registry, which every
 	// network transport resolves requests through: without it the embedded
 	// transport cannot scope a connection to a named database.
-	opts = append(opts, embedded.WithServiceRegistry(embeddedServiceRegistry(svcNode, embeddedRegistry, cfg.RaftEnabled)))
+	opts = append(opts, embedded.WithServiceRegistry(embeddedServiceRegistry(svcNode, dbManager, embeddedRegistry, cfg.RaftEnabled)))
 
 	// Collection service uses KV + index from the node.
 	opts = append(opts, embedded.WithCollectionService(svcNode.Collection))
@@ -387,6 +402,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 			_ = b.svcNode.Stop(context.Background())
 			b.svcNode = nil
 		}
+		b.closeDatabaseManager()
 		if b.host != nil {
 			_ = b.host.Close()
 			b.host = nil
@@ -425,174 +441,39 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 
 // embeddedServiceRegistry builds the embedded node's per-(tenant, database)
 // service registry the way qrdbd's does: the system database is registered
-// over the node's service graph, and any other database that exists for the
-// tenant resolves to a namespaced view of it. barrierReg is the embedded
-// barrier registry the node was built with (nil when the barrier is
-// unavailable); raftEnabled selects the shard the graph is served by (zero
-// for the engine-direct local backend).
-func embeddedServiceRegistry(svcNode *lifecycle.Node, barrierReg *seal.BarrierRegistry, raftEnabled bool) service.Registry {
+// over the node's service graph, and any other database resolves through
+// dbManager, the node's database manager. One record lookup decides each
+// resolution: a lookup error fails closed, a name with no record is not
+// found, a sealed database is refused, a database with its own barrier over
+// its own store is served from that store, and every other database is a
+// namespaced view of the graph whose writes carry the database's drop fence,
+// so a handle resolved before DROP DATABASE is refused after it. barrierReg
+// is the embedded barrier registry the node was built with (nil when the
+// barrier is unavailable); raftEnabled selects the shard the graph is served
+// by (zero for the engine-direct local backend).
+func embeddedServiceRegistry(svcNode *lifecycle.Node, dbManager *database.Manager, barrierReg *seal.BarrierRegistry, raftEnabled bool) service.Registry {
 	var shardID uint64
 	if raftEnabled {
 		shardID = defaultShardID
 	}
 	dbReg := server.NewDatabaseServiceRegistry(lifecycle.SystemDatabase)
 	dbReg.Register(lifecycle.SystemDatabase, svcNode.DatabaseServices(lifecycle.SystemDatabase, shardID))
-	var regOpts []server.RESTRegistryOption
+	regOpts := []server.RESTRegistryOption{server.WithRegistryDatabaseManager(dbManager)}
 	if svcNode.Tenant != nil {
 		regOpts = append(regOpts, server.WithTenantServicer(svcNode.Tenant))
 	}
-	if svcNode.Database != nil {
-		regOpts = append(regOpts, server.WithDatabaseCatalog(&embeddedDatabaseCatalog{databases: svcNode.Database}))
+	return server.NewRESTServiceRegistry(dbReg, barrierReg, tenantid.System, regOpts...)
+}
+
+// closeDatabaseManager closes the node's database manager, once.
+func (b *EmbeddedServerBinding) closeDatabaseManager() {
+	if b.dbManager == nil {
+		return
 	}
-	reg := server.NewRESTServiceRegistry(dbReg, barrierReg, tenantid.System, regOpts...)
-	if svcNode.Database == nil {
-		return reg
+	if err := b.dbManager.Close(); err != nil {
+		b.logger.Warn("embedded: database manager close failed", "error", err)
 	}
-	return &embeddedBarrierGuard{next: reg, databases: svcNode.Database}
-}
-
-// embeddedBarrierGuard refuses a named database whose own barrier the
-// embedded service registry cannot honour. The REST registry it wraps holds
-// no database.Manager (lifecycle.BuildServices keeps the one it opens), so
-// its refuseSealedDatabase and resolveDedicatedDatabaseBarrier resolve
-// nothing; without this guard a sealed database, or one carrying its own
-// passphrase or Shamir barrier over its own store, would be served from the
-// shared service graph. A sealed database is refused as the REST server
-// refuses it (service.BarrierSealedError); an unsealed database whose barrier
-// sits on its own data path is refused as unserved
-// (service.DatabaseNotFoundError, the REST registry's answer for a database
-// it does not serve) rather than read and written in the shared keyspace.
-type embeddedBarrierGuard struct {
-	next      service.Registry
-	databases service.DatabaseServicer
-}
-
-// refuse reports the error the embedded node returns for (tenantID, db), or
-// nil when the database may be served from the shared service graph. The
-// default (empty) database and a database the catalog does not know are left
-// to the wrapped registry.
-func (g *embeddedBarrierGuard) refuse(tenantID, db string) error {
-	if db == "" {
-		return nil
-	}
-	info, err := g.databases.GetForTenant(qrdbtenant.WithTenantID(context.Background(), tenantID), db)
-	if err != nil || info == nil {
-		return nil
-	}
-	if info.Status == database.StatusSealed {
-		return &service.BarrierSealedError{TenantID: tenantID, Database: db}
-	}
-	if info.Barrier != nil && info.Barrier.Enabled &&
-		info.Backend != database.BackendRaft && strings.TrimSpace(info.DataDir) != "" {
-		return &service.DatabaseNotFoundError{TenantID: tenantID, Database: db}
-	}
-	return nil
-}
-
-// guardResolve applies refuse ahead of one of the wrapped registry's
-// resolvers.
-func guardResolve[T any](g *embeddedBarrierGuard, tenantID, db string, resolve func(string, string) (T, error)) (T, error) {
-	if err := g.refuse(tenantID, db); err != nil {
-		var zero T
-		return zero, err
-	}
-	return resolve(tenantID, db)
-}
-
-// StreamRefusal implements service.StreamRefuser: an open stream on a
-// database the guard refuses is ended, and otherwise the wrapped registry's
-// own refusal (if it reports one) applies.
-func (g *embeddedBarrierGuard) StreamRefusal(tenantID, db string) error {
-	if err := g.refuse(tenantID, db); err != nil {
-		return err
-	}
-	if refuser, ok := g.next.(service.StreamRefuser); ok {
-		return refuser.StreamRefusal(tenantID, db)
-	}
-	return nil
-}
-
-// KVService implements service.Registry.
-func (g *embeddedBarrierGuard) KVService(tenantID, db string) (service.KVServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.KVService)
-}
-
-// MVCCService implements service.Registry.
-func (g *embeddedBarrierGuard) MVCCService(tenantID, db string) (service.MVCCKVServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.MVCCService)
-}
-
-// WatchService implements service.Registry.
-func (g *embeddedBarrierGuard) WatchService(tenantID, db string) (service.WatchServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.WatchService)
-}
-
-// LeaseService implements service.Registry.
-func (g *embeddedBarrierGuard) LeaseService(tenantID, db string) (service.LeaseServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.LeaseService)
-}
-
-// IndexService implements service.Registry.
-func (g *embeddedBarrierGuard) IndexService(tenantID, db string) (service.IndexServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.IndexService)
-}
-
-// TimeSeriesService implements service.Registry.
-func (g *embeddedBarrierGuard) TimeSeriesService(tenantID, db string) (service.TimeSeriesServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.TimeSeriesService)
-}
-
-// VectorService implements service.Registry.
-func (g *embeddedBarrierGuard) VectorService(tenantID, db string) (service.VectorServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.VectorService)
-}
-
-// TransactionService implements service.Registry.
-func (g *embeddedBarrierGuard) TransactionService(tenantID, db string) (service.TransactionServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.TransactionService)
-}
-
-// BatchService implements service.Registry.
-func (g *embeddedBarrierGuard) BatchService(tenantID, db string) (service.BatchServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.BatchService)
-}
-
-// TableService implements service.Registry.
-func (g *embeddedBarrierGuard) TableService(tenantID, db string) (service.TableServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.TableService)
-}
-
-// SequenceService implements service.Registry.
-func (g *embeddedBarrierGuard) SequenceService(tenantID, db string) (service.SequenceServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.SequenceService)
-}
-
-// PrivilegeService implements service.Registry.
-func (g *embeddedBarrierGuard) PrivilegeService(tenantID, db string) (service.PrivilegeServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.PrivilegeService)
-}
-
-// CollectionService implements service.Registry.
-func (g *embeddedBarrierGuard) CollectionService(tenantID, db string) (service.CollectionServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.CollectionService)
-}
-
-// LockService implements service.Registry.
-func (g *embeddedBarrierGuard) LockService(tenantID, db string) (service.LockServicer, error) {
-	return guardResolve(g, tenantID, db, g.next.LockService)
-}
-
-// embeddedDatabaseCatalog reports a database as existing when the node's
-// database service finds it owned by the tenant, so a name that was never
-// created resolves to "not found" instead of a namespaced view.
-type embeddedDatabaseCatalog struct {
-	databases service.DatabaseServicer
-}
-
-// DatabaseExists implements server.DatabaseCatalog.
-func (c *embeddedDatabaseCatalog) DatabaseExists(tenantID, name string) bool {
-	_, err := c.databases.GetForTenant(qrdbtenant.WithTenantID(context.Background(), tenantID), name)
-	return err == nil
+	b.dbManager = nil
 }
 
 // embeddedClusterTrustDomain is the trust domain the embedded node issues
@@ -659,6 +540,7 @@ func (b *EmbeddedServerBinding) StopEmbedded() error {
 		_ = b.svcNode.Stop(context.Background())
 		b.svcNode = nil
 	}
+	b.closeDatabaseManager()
 	if b.host != nil {
 		_ = b.host.Close()
 		b.host = nil

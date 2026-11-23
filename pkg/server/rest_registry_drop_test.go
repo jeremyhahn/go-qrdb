@@ -52,7 +52,7 @@ func TestRESTServiceRegistry_RefusesPreRegisteredDatabaseWhileDropping(t *testin
 	}
 	fenceDropping(t, dir, db)
 
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", withDatabaseManager(dbMgr))
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", WithRegistryDatabaseManager(dbMgr))
 
 	_, err = r.KVService("system", "mydb")
 	var dropping *database.DroppingError
@@ -89,7 +89,7 @@ func TestRESTServiceRegistry_PreRegisteredDatabaseResolvesWhenNotDropping(t *tes
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", withDatabaseManager(dbMgr))
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", WithRegistryDatabaseManager(dbMgr))
 
 	svc, err := r.KVService("system", "mydb")
 	if err != nil {
@@ -125,7 +125,7 @@ func TestRESTServiceRegistry_CrossTenantDroppingDatabaseIndistinguishableFromMis
 	// record is ever consulted, which would make this test pass without
 	// exercising the fix at all.
 	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system",
-		withDatabaseManager(dbMgr), WithDatabaseCatalog(newManagerCatalog(dbMgr)))
+		WithRegistryDatabaseManager(dbMgr))
 
 	_, ownedErr := r.KVService("globex", "acme-ledger")
 	_, missingErr := r.KVService("globex", "nobody-has-this")
@@ -256,7 +256,7 @@ func TestNamespacedVectorService_StaleHandleRefusedAfterCompletedDrop_EmptyIncar
 	svcs.Vector = workingVec{}
 	reg.Register("orders", svcs)
 
-	r := NewRESTServiceRegistry(reg, nil, "system", withDatabaseManager(dbMgr))
+	r := NewRESTServiceRegistry(reg, nil, "system", WithRegistryDatabaseManager(dbMgr))
 
 	stale, err := r.VectorService("system", "orders")
 	if err != nil {
@@ -284,7 +284,7 @@ func TestNamespacedVectorService_StaleHandleRefusedAfterCompletedDrop_EmptyIncar
 func TestRESTServiceRegistry_UnmanagedDatabaseUnaffectedByDropFence(t *testing.T) {
 	dbMgr := databasetest.NewManager(nil, t.TempDir())
 
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", withDatabaseManager(dbMgr))
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", WithRegistryDatabaseManager(dbMgr))
 
 	svc, err := r.KVService("system", "mydb")
 	if err != nil {
