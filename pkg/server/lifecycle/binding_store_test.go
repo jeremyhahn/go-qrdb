@@ -989,6 +989,24 @@ func TestLocalBindingFactory_PlaintextBarrierAdmitsObjstore(t *testing.T) {
 	}
 }
 
+// TestLocalBindingFactory_ReservedRoots proves the factory reports the node
+// stores its storage config places outside the data directory: an absolute
+// wal_dir and the local object-store path (a relative one resolved against
+// the data directory); a relative wal_dir is under the data root already.
+func TestLocalBindingFactory_ReservedRoots(t *testing.T) {
+	dir := t.TempDir()
+	wal := filepath.Join(t.TempDir(), "wal")
+	cfg := qrdbconfig.StorageConfig{WALDir: wal, Objstore: qrdbconfig.ObjstoreConfig{Settings: map[string]string{"path": "objects"}}}
+	got := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, cfg, prefixTenants).ReservedRoots()
+	want := []string{wal, filepath.Join(dir, "objects")}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("ReservedRoots = %v, want %v", got, want)
+	}
+	if got := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{WALDir: "wal"}, prefixTenants).ReservedRoots(); len(got) != 0 {
+		t.Fatalf("ReservedRoots with a relative wal_dir = %v, want none", got)
+	}
+}
+
 // strictPolicy is a ClusterIsolationPolicyReader pinned to strict.
 type strictPolicy struct{}
 

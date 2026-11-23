@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -137,6 +138,74 @@ func TestManager_DropNeverRemovesAnotherRoot(t *testing.T) {
 	}
 	if _, err := m.Get("b"); err != nil {
 		t.Fatalf("b after the refused drop: %v", err)
+	}
+}
+
+// reservingFactory is a rootedFactory that reports node stores outside the
+// data root, as the node binding factory does for an absolute wal_dir.
+type reservingFactory struct {
+	*rootedFactory
+	reserved []string
+}
+
+func (f *reservingFactory) ReservedRoots() []string { return f.reserved }
+
+// TestManager_DataDirOverNodeStoresRefused proves a data directory equal to,
+// inside or above a node store is refused at create: the control-plane
+// engine stores under the data root, and a store the factory reports outside
+// it (an external write-ahead log directory).
+func TestManager_DataDirOverNodeStoresRefused(t *testing.T) {
+	dir := t.TempDir()
+	external := filepath.Join(t.TempDir(), "ext", "wal")
+	f := &reservingFactory{rootedFactory: &rootedFactory{node: dir, roots: map[string]*string{}}, reserved: []string{external}}
+	m := newCatalogManager(slog.Default(), dir, WithBackendFactory(f))
+	t.Cleanup(func() { _ = m.Close() })
+	cases := []string{
+		filepath.Join(dir, "pebble"),
+		filepath.Join(dir, "pebble", "inner"),
+		filepath.Join(dir, "file"),
+		filepath.Join(dir, "vector"),
+		filepath.Join(dir, "objstore"),
+		external,
+		filepath.Join(external, "inner"),
+		filepath.Dir(external),
+	}
+	for i, dataDir := range cases {
+		_, err := m.Create(DatabaseConfig{Name: fmt.Sprintf("db%d", i), Backend: BackendFile, DataDir: dataDir})
+		var reserved *DataDirReservedPathError
+		if !errors.As(err, &reserved) {
+			t.Fatalf("Create with data_dir %s: err = %v, want *DataDirReservedPathError", dataDir, err)
+		}
+	}
+	if _, err := m.Create(DatabaseConfig{Name: "ok", Backend: BackendFile, DataDir: filepath.Join(t.TempDir(), "own")}); err != nil {
+		t.Fatalf("Create with an unreserved data_dir: %v", err)
+	}
+}
+
+// TestManager_DropNeverRemovesANodeStore proves a drop whose owned root is a
+// node store (a record written before the reservation) is refused and the
+// store's files stay.
+func TestManager_DropNeverRemovesANodeStore(t *testing.T) {
+	m, f, dir := newRootedManager(t)
+	if _, err := m.Create(DatabaseConfig{Name: "b", Backend: BackendMemory}); err != nil {
+		t.Fatalf("Create b: %v", err)
+	}
+	control := filepath.Join(dir, "pebble")
+	if err := os.MkdirAll(control, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(control, "MANIFEST")
+	if err := os.WriteFile(marker, []byte("control plane"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	*f.roots["b"] = control
+	err := m.Drop(context.Background(), "b")
+	var reserved *DataDirReservedPathError
+	if !errors.As(err, &reserved) {
+		t.Fatalf("Drop b: err = %v, want *DataDirReservedPathError", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("control-plane store after the refused drop: %v", err)
 	}
 }
 

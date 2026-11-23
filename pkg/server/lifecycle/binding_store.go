@@ -123,6 +123,26 @@ func (f *LocalBindingFactory) WithIsolationPolicy(r tenant.ClusterIsolationPolic
 	return f
 }
 
+// ReservedRoots reports the node stores this factory's storage config
+// places outside the node data directory: an absolute storage.wal_dir and
+// a local object-store location (settings path, relative paths resolved
+// against the node data directory). The database Manager refuses a data
+// directory overlapping any of them and never removes one
+// (database.ReservedRootsReporter).
+func (f *LocalBindingFactory) ReservedRoots() []string {
+	var roots []string
+	if wal := f.storageCfg.WALDir; wal != "" && filepath.IsAbs(wal) {
+		roots = append(roots, wal)
+	}
+	if p := f.storageCfg.Objstore.Settings["path"]; p != "" {
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(f.node.DataDir, p)
+		}
+		roots = append(roots, p)
+	}
+	return roots
+}
+
 // lateIsolationPolicy reads the cluster isolation policy from the tenant
 // service each call, because the service exists only once the node's
 // services are built, after the manager that opens databases.

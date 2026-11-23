@@ -68,7 +68,17 @@ const (
 // defense-in-depth complement to -- not a substitute for -- the exhaustive
 // per-database collision check in validateDataDir, which is what actually
 // prevents one database's DataDir from being pointed at another's.
-var reservedDataSubdirs = []string{"seal", "wal", "snapshot", "snapshots", "system", "raft", "meta"}
+var reservedDataSubdirs = []string{"seal", "wal", "snapshot", "snapshots", "system", "raft", "meta",
+	// The node's own control-plane stores, one per storage engine.
+	"pebble", "file", "vector", "objstore"}
+
+// ReservedRootsReporter is implemented by a BackendFactory that knows node
+// stores living outside the manager's data root (an absolute write-ahead
+// log directory, a local object-store location). The Manager refuses a
+// database data directory overlapping any of them, and never removes one.
+type ReservedRootsReporter interface {
+	ReservedRoots() []string
+}
 
 // Manager manages the lifecycle of all databases. It creates isolated
 // storage directories for each database and provides CRUD operations.
@@ -1004,6 +1014,9 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 			// Re-checked here, at the removal: a record created since the
 			// check before the fence may have its root inside this one.
 			if err := m.recordRootConflict(ctx, key, name, root); err != nil {
+				return &DropError{Name: name, Err: err}
+			}
+			if err := m.removableRoot(name, root); err != nil {
 				return &DropError{Name: name, Err: err}
 			}
 			if err := os.RemoveAll(root); err != nil {
@@ -2177,27 +2190,8 @@ func (m *Manager) validateDataDir(tenantID, name, dataDir string) error {
 		return err
 	}
 
-	// Never the manager's own data root, and never an ancestor of it: both
-	// would fold every other database's barrier metadata and default
-	// storage inside this one
-	// database's view.
-	if pathContains(resolved, root) {
-		return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: root}
-	}
-
-	// Never the shared catalog directory itself.
-	catalog := filepath.Join(root, databasesDir)
-	if resolved == catalog {
-		return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: catalog}
-	}
-
-	// Never a node-internal reserved subtree (see reservedDataSubdirs), in
-	// either nesting direction.
-	for _, sub := range reservedDataSubdirs {
-		reserved := filepath.Join(root, sub)
-		if pathContains(reserved, resolved) || pathContains(resolved, reserved) {
-			return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: reserved}
-		}
+	if err := m.reservedPathConflict(name, dataDir, resolved, root); err != nil {
+		return err
 	}
 
 	// Never inside -- or the parent of -- this database's own catalog
@@ -2239,6 +2233,65 @@ func (m *Manager) validateDataDir(tenantID, name, dataDir string) error {
 		return true
 	})
 	return conflict
+}
+
+// reservedPathConflict refuses a resolved path that overlaps a node store:
+// the manager's data root or an ancestor of it, the shared catalog
+// directory, a node-internal reserved subtree (reservedDataSubdirs, the
+// control-plane engine stores included) in either nesting direction, or a
+// store the backend factory reports outside the root (ReservedRootsReporter).
+// root is the resolved manager data root.
+func (m *Manager) reservedPathConflict(name, dataDir, resolved, root string) error {
+	// Never the manager's own data root, and never an ancestor of it: both
+	// would fold every other database's barrier metadata and default
+	// storage inside this one database's view.
+	if pathContains(resolved, root) {
+		return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: root}
+	}
+
+	// Never the shared catalog directory itself.
+	catalog := filepath.Join(root, databasesDir)
+	if resolved == catalog {
+		return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: catalog}
+	}
+
+	reserved := make([]string, 0, len(reservedDataSubdirs))
+	for _, sub := range reservedDataSubdirs {
+		reserved = append(reserved, filepath.Join(root, sub))
+	}
+	if r, ok := m.factory.(ReservedRootsReporter); ok {
+		for _, p := range r.ReservedRoots() {
+			if strings.TrimSpace(p) == "" {
+				continue
+			}
+			rp, err := resolveDataDir(p)
+			if err != nil {
+				return &InvalidDataDirError{Name: name, DataDir: dataDir, Err: err}
+			}
+			reserved = append(reserved, rp)
+		}
+	}
+	for _, rp := range reserved {
+		if pathContains(rp, resolved) || pathContains(resolved, rp) {
+			return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: rp}
+		}
+	}
+	return nil
+}
+
+// removableRoot refuses to remove a database's owned store root that
+// overlaps a node store (reservedPathConflict): a record written before a
+// reservation existed must not take the control plane with it on drop.
+func (m *Manager) removableRoot(name, dataRoot string) error {
+	resolved, err := resolveDataDir(dataRoot)
+	if err != nil {
+		return &InvalidDataDirError{Name: name, DataDir: dataRoot, Err: err}
+	}
+	root, err := resolveDataDir(m.dataDir)
+	if err != nil {
+		return &InvalidDataDirError{Name: name, DataDir: dataRoot, Err: err}
+	}
+	return m.reservedPathConflict(name, dataRoot, resolved, root)
 }
 
 // writeFileAtomic writes data to dir/name through a temp-file, fsync, rename
