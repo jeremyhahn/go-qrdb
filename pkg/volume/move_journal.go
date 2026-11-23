@@ -161,8 +161,10 @@ func (c *Catalog) GrantMoveStep(ctx context.Context, tenantID string) (*Move, er
 
 // CompleteMoveStep records that nodeID finished its step of a tenant move
 // ("The move, phase by phase" step 3): the node leaves NodesPending for
-// NodesCopied and the step is released. With no node left pending the move
-// is copied, ready for cut over; otherwise it stays copying. A node that
+// NodesCopied, so the destination is authoritative for it, but it keeps the
+// step settling (StepSettling) until AckMoveStep after it reopened and
+// caught up there; the ack then makes the move copied (no node left
+// pending), aborting (a cancel arrived) or leaves it copying. A node that
 // does not hold the step, or a move no longer copying (cancelled), is
 // refused with *MoveConflictError.
 func (c *Catalog) CompleteMoveStep(ctx context.Context, tenantID, nodeID string) (*Move, error) {
@@ -173,6 +175,9 @@ func (c *Catalog) CompleteMoveStep(ctx context.Context, tenantID, nodeID string)
 		if err := holdsStep(m, MoveStateCopying, nodeID); err != nil {
 			return err
 		}
+		if m.StepSettling {
+			return nil // already recorded: a retry after a lost reply
+		}
 		pending := make([]string, 0, len(m.NodesPending))
 		for _, n := range m.NodesPending {
 			if n != nodeID {
@@ -182,21 +187,54 @@ func (c *Catalog) CompleteMoveStep(ctx context.Context, tenantID, nodeID string)
 		m.NodesPending = pending
 		m.NodesCopied = append(m.NodesCopied, nodeID)
 		sort.Strings(m.NodesCopied)
+		// The destination is authoritative for nodeID from here, but the
+		// node keeps the step until AckMoveStep: it has not yet reopened
+		// and caught up on it.
+		m.StepSettling = true
+		return nil
+	})
+}
+
+// AckMoveStep releases nodeID's settling step (StepSettling) after its
+// SettleMoveStep succeeded. A copy step then moves on as CompleteMoveStep
+// did before the hold: aborting on a cancel requested meanwhile, copied
+// when no node is pending, else copying (the next node's grant follows).
+// A copied-abort step releases its node; the last node's ack releases the
+// ToPool reservation and deletes the journal.
+func (c *Catalog) AckMoveStep(ctx context.Context, tenantID, nodeID string) (*Move, error) {
+	if nodeID == "" {
+		return nil, &InvalidMoveRequestError{Reason: "empty node id"}
+	}
+	return c.casMove(ctx, tenantID, func(m *Move) (*moveRelease, error) {
+		if m.StepNode == "" || m.StepNode != nodeID || !m.StepSettling {
+			return nil, &MoveConflictError{TenantID: m.TenantID, NodeID: nodeID, Reason: "node does not hold a settling move step"}
+		}
 		m.StepNode = ""
 		m.StepAttempts = 0
-		if m.CancelRequested {
-			m.CancelRequested = false
-			m.State = MoveStateAborting
-			return nil
-		}
-		m.Error = ""
-		if len(m.NodesPending) == 0 {
+		m.StepSettling = false
+		switch m.State {
+		case MoveStateCopying:
+			if m.CancelRequested {
+				m.CancelRequested = false
+				m.State = MoveStateAborting
+				return nil, nil
+			}
+			m.Error = ""
+			if len(m.NodesPending) == 0 {
+				m.NodesPending = nil
+				m.State = MoveStateCopied
+			}
+			return nil, nil
+		case MoveStateAborting:
+			if len(m.NodesCopied) > 0 || len(m.NodesPending) > 0 {
+				return nil, nil
+			}
+			m.NodesCopied = nil
 			m.NodesPending = nil
-			m.State = MoveStateCopied
-		} else {
-			m.State = MoveStateCopying
+			return &moveRelease{Pool: m.ToPool, Bytes: m.ReservedBytes}, nil
+		default:
+			return nil, &MoveConflictError{TenantID: m.TenantID, NodeID: nodeID, Reason: "move is " + m.State + ": no step to settle"}
 		}
-		return nil
 	})
 }
 
@@ -217,6 +255,9 @@ func (c *Catalog) FailMoveStep(ctx context.Context, tenantID, nodeID, reason str
 	return c.updateMove(ctx, tenantID, func(m *Move) error {
 		if err := holdsStep(m, MoveStateCopying, nodeID); err != nil {
 			return err
+		}
+		if m.StepSettling {
+			return &MoveConflictError{TenantID: m.TenantID, NodeID: nodeID, Reason: "the move step is recorded and settling"}
 		}
 		if m.CancelRequested {
 			m.CancelRequested = false

@@ -60,7 +60,7 @@ func TestCatalog_CompleteMoveStep(t *testing.T) {
 	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
 		t.Fatalf("GrantMoveStep: %v", err)
 	}
-	m, err := cat.CompleteMoveStep(ctx, "acme", "n1")
+	m, err := completeAndAck(ctx, cat, "acme", "n1")
 	if err != nil {
 		t.Fatalf("CompleteMoveStep n1: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestCatalog_CompleteMoveStep(t *testing.T) {
 	if err != nil || m.StepNode != "n2" {
 		t.Fatalf("GrantMoveStep after n1 = %+v, %v, want step n2", m, err)
 	}
-	m, err = cat.CompleteMoveStep(ctx, "acme", "n2")
+	m, err = completeAndAck(ctx, cat, "acme", "n2")
 	if err != nil {
 		t.Fatalf("CompleteMoveStep n2: %v", err)
 	}
@@ -82,6 +82,88 @@ func TestCatalog_CompleteMoveStep(t *testing.T) {
 	got, err := cat.GetMove(ctx, "acme")
 	if err != nil || got.State != MoveStateCopied {
 		t.Fatalf("GetMove = %+v, %v, want copied", got, err)
+	}
+}
+
+// completeAndAck completes nodeID's step and, when the journal holds it
+// settling, acks it: the path of a step whose settle succeeded.
+func completeAndAck(ctx context.Context, cat *Catalog, tenantID, nodeID string) (*Move, error) {
+	m, err := cat.CompleteMoveStep(ctx, tenantID, nodeID)
+	if err != nil || !m.StepSettling {
+		return m, err
+	}
+	return cat.AckMoveStep(ctx, tenantID, nodeID)
+}
+
+func TestCatalog_SettlingCopyStepHoldsTheMove(t *testing.T) {
+	cat, _, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatalf("GrantMoveStep: %v", err)
+	}
+	m, err := cat.CompleteMoveStep(ctx, "acme", "n1")
+	if err != nil {
+		t.Fatalf("CompleteMoveStep n1: %v", err)
+	}
+	if m.StepNode != "n1" || !m.StepSettling || m.State != MoveStateCopying ||
+		!reflect.DeepEqual(m.NodesCopied, []string{"n1"}) || !reflect.DeepEqual(m.NodesPending, []string{"n2"}) {
+		t.Fatalf("move after complete n1 = %+v, want n1 settling, copied [n1]", m)
+	}
+	if m, err = cat.GrantMoveStep(ctx, "acme"); err != nil || m.StepNode != "n1" {
+		t.Fatalf("GrantMoveStep while n1 settles = %+v, %v, want the step kept by n1", m, err)
+	}
+	var conflict *MoveConflictError
+	if _, err := cat.FailMoveStep(ctx, "acme", "n1", "late", 3); !errors.As(err, &conflict) {
+		t.Fatalf("FailMoveStep of a settling step error = %v, want *MoveConflictError", err)
+	}
+	if m, err = cat.CompleteMoveStep(ctx, "acme", "n1"); err != nil || !m.StepSettling || len(m.NodesCopied) != 1 {
+		t.Fatalf("repeated CompleteMoveStep = %+v, %v, want an idempotent settling step", m, err)
+	}
+	if _, err := cat.AckMoveStep(ctx, "acme", "n2"); !errors.As(err, &conflict) {
+		t.Fatalf("AckMoveStep by a non-holder error = %v, want *MoveConflictError", err)
+	}
+	if m, err = cat.AckMoveStep(ctx, "acme", "n1"); err != nil || m.StepNode != "" || m.StepSettling || m.State != MoveStateCopying {
+		t.Fatalf("AckMoveStep n1 = %+v, %v, want the step released, copying", m, err)
+	}
+	if _, err := cat.AckMoveStep(ctx, "acme", "n1"); !errors.As(err, &conflict) {
+		t.Fatalf("second AckMoveStep error = %v, want *MoveConflictError", err)
+	}
+	if m, err = cat.GrantMoveStep(ctx, "acme"); err != nil || m.StepNode != "n2" {
+		t.Fatalf("GrantMoveStep after the ack = %+v, %v, want n2", m, err)
+	}
+	if m, err = cat.CompleteMoveStep(ctx, "acme", "n2"); err != nil || m.State != MoveStateCopying || !m.StepSettling {
+		t.Fatalf("CompleteMoveStep n2 = %+v, %v, want copying with n2 settling", m, err)
+	}
+	if _, err := cat.CutOverMove(ctx, "acme"); !errors.As(err, &conflict) {
+		t.Fatalf("CutOverMove while the last step settles error = %v, want *MoveConflictError", err)
+	}
+	if m, err = cat.AckMoveStep(ctx, "acme", "n2"); err != nil || m.State != MoveStateCopied || m.NodesPending != nil {
+		t.Fatalf("AckMoveStep n2 = %+v, %v, want copied", m, err)
+	}
+}
+
+func TestCatalog_SettlingCopyStepCancelAbortsAtAck(t *testing.T) {
+	cat, _, _ := newAdmittedMove(t)
+	ctx := context.Background()
+	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
+		t.Fatalf("GrantMoveStep: %v", err)
+	}
+	if _, err := cat.CompleteMoveStep(ctx, "acme", "n1"); err != nil {
+		t.Fatalf("CompleteMoveStep: %v", err)
+	}
+	m, err := cat.CancelMove(ctx, "acme")
+	if err != nil || !m.CancelRequested || m.State != MoveStateCopying || m.StepNode != "n1" {
+		t.Fatalf("CancelMove while n1 settles = %+v, %v, want cancel requested, n1 kept", m, err)
+	}
+	var conflict *MoveConflictError
+	if _, err := cat.GrantAbortStep(ctx, "acme"); !errors.As(err, &conflict) {
+		t.Fatalf("GrantAbortStep before the ack error = %v, want *MoveConflictError", err)
+	}
+	if m, err = cat.AckMoveStep(ctx, "acme", "n1"); err != nil || m.State != MoveStateAborting || m.CancelRequested || m.StepNode != "" {
+		t.Fatalf("AckMoveStep = %+v, %v, want aborting with no step", m, err)
+	}
+	if m, err = cat.GrantAbortStep(ctx, "acme"); err != nil || m.StepNode != "n1" {
+		t.Fatalf("GrantAbortStep = %+v, %v, want the copied n1 first", m, err)
 	}
 }
 
@@ -145,7 +227,7 @@ func TestCatalog_FailMoveStep_SuccessClearsTheCount(t *testing.T) {
 	if _, err := cat.FailMoveStep(ctx, "acme", "n1", "copy failed", 0); err != nil {
 		t.Fatalf("FailMoveStep: %v", err)
 	}
-	m, err := cat.CompleteMoveStep(ctx, "acme", "n1")
+	m, err := completeAndAck(ctx, cat, "acme", "n1")
 	if err != nil {
 		t.Fatalf("CompleteMoveStep: %v", err)
 	}
@@ -161,7 +243,7 @@ func TestCatalog_GrantMoveStep_CopiedRefused(t *testing.T) {
 		if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
 			t.Fatalf("GrantMoveStep: %v", err)
 		}
-		if _, err := cat.CompleteMoveStep(ctx, "acme", n); err != nil {
+		if _, err := completeAndAck(ctx, cat, "acme", n); err != nil {
 			t.Fatalf("CompleteMoveStep %s: %v", n, err)
 		}
 	}
@@ -271,7 +353,7 @@ func copiedMove(t *testing.T) (*Catalog, *fakeKV, *fakeTx) {
 		if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
 			t.Fatalf("GrantMoveStep: %v", err)
 		}
-		if _, err := cat.CompleteMoveStep(ctx, "acme", n); err != nil {
+		if _, err := completeAndAck(ctx, cat, "acme", n); err != nil {
 			t.Fatalf("CompleteMoveStep %s: %v", n, err)
 		}
 	}
@@ -612,7 +694,7 @@ func TestCatalog_CancelMove(t *testing.T) {
 			if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := cat.CompleteMoveStep(ctx, "acme", "n1"); err != nil {
+			if _, err := completeAndAck(ctx, cat, "acme", "n1"); err != nil {
 				t.Fatal(err)
 			}
 			return cat, kv, tx
@@ -699,7 +781,7 @@ func TestCatalog_CancelMove_AwaitsRunningCopy(t *testing.T) {
 	}
 	t.Run("copy completes", func(t *testing.T) {
 		cat, kv := cancelRunning(t)
-		if _, err := cat.CompleteMoveStep(ctx, "acme", "n1"); err != nil {
+		if _, err := completeAndAck(ctx, cat, "acme", "n1"); err != nil {
 			t.Fatalf("CompleteMoveStep after cancel: %v", err)
 		}
 		s := storedMove(t, kv, "acme")
@@ -731,7 +813,7 @@ func TestCatalog_AbortSteps(t *testing.T) {
 	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cat.CompleteMoveStep(ctx, "acme", "n1"); err != nil {
+	if _, err := completeAndAck(ctx, cat, "acme", "n1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := cat.CancelMove(ctx, "acme"); err != nil {
@@ -790,7 +872,7 @@ func TestCatalog_ResolveForNode(t *testing.T) {
 	if _, err := cat.GrantMoveStep(ctx, "acme"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cat.CompleteMoveStep(ctx, "acme", "n1"); err != nil {
+	if _, err := completeAndAck(ctx, cat, "acme", "n1"); err != nil {
 		t.Fatal(err)
 	}
 	if got := pool("n1"); got != "bulk" {
