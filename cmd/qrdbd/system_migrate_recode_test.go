@@ -711,6 +711,32 @@ func TestRecodeSystemBarrier_SealStoreCommitFailureKeepsJournal(t *testing.T) {
 	}
 }
 
+var errRecodeSealStoreRetire = errors.New("injected seal-store retirement failure")
+
+func TestRecodeSystemBarrier_SealStoreRetireFailureKeepsJournal(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	source := newRecodeSourceBarrierOn(t, backend)
+	putRecodeSealStoreSecrets(t, source, map[string]string{"alpha": "alpha-retire-secret", "beta": "beta-retire-secret"})
+	walDir := filepath.Join(t.TempDir(), "wal")
+	if err := os.MkdirAll(walDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	retire := func() error { return errRecodeSealStoreRetire }
+	err := recodeSystemBarrier(ctx, source, service.MigrationStores{}, walDir, validSystemMigrateOpts(), retire)
+	if !errors.Is(err, errRecodeSealStoreRetire) || !strings.Contains(err.Error(), "retire seal-store plaintext history") {
+		t.Fatalf("err = %v, want %v under \"retire seal-store plaintext history\"", err, errRecodeSealStoreRetire)
+	}
+	j, err := seal.LoadMigrationJournalFrom(ctx, backend, "system/root-key")
+	if err != nil {
+		t.Fatalf("LoadMigrationJournalFrom: %v", err)
+	}
+	if j == nil || !j.Committed() || !journalNamesSealStore(j) {
+		t.Fatalf("journal = %+v, want a committed journal naming the seal-store keyspace", j)
+	}
+}
+
 // recodeDirPlaintext lists the files under dir holding any secret's plaintext.
 func recodeDirPlaintext(t *testing.T, dir string, secrets map[string]string) []string {
 	t.Helper()
