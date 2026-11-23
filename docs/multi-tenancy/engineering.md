@@ -1020,6 +1020,30 @@ database and the shared registry's `DatabaseServiceRegistry.List`, and the
 `qrdb` bindings server, which has neither, declares an empty source, so its
 probe reads `system` alone.
 
+"The tenant's data" under a shared name is its keys and its vector
+namespaces. `service.KVSharedNamespaceReader` first lists the tenant's keys
+under the composite prefix and, when the node runs a vector service
+(`WithSharedVectorNamespaces`, wired in `lifecycle.BuildServices`), then
+lists the shared store's vector namespaces and counts any under the same
+`tenant.ComposeNamespace` prefix keyspace reclaim matches. A tenant whose only
+shared-store data is a vector namespace is therefore refused strict, and a
+vector list error fails the tightening closed, as a key read error does.
+
+The isolation policy is also rechecked when a shared-store write is proposed,
+not only when the handle is resolved. `RestRegistry.resolveShared` gives each
+shared view a write check (`strictWriteCheck`); `dbGuard.scope` puts it in the
+write context with `service.WithWriteCheck`, and `guardCommand` runs
+`service.CheckWrite` before the command is proposed. The vector view runs the
+same check after its drop fence. The check rereads the tenant record and the
+cluster floor. If the policy is now strict it returns the
+`StrictTenantSharedStoreError` that resolve returns, and an unreadable record
+or floor refuses the write. A handle resolved before a tightening therefore
+cannot write to the node-keyed WAL afterwards. The system tenant and prefix
+tenants get no check, and other tenants pay one tenant and floor read per
+write. Residual: a write that has already passed the check and is in flight
+when the tightening commits still applies. The check is not part of the
+tightening's fence.
+
 Both barrier bootstrap fallbacks (`AuthorizeTenantBarrierInit`,
 `AuthorizeTenantBarrierSealedOp`) return a `*RateLimitedError` immediately,
 next to the audit-failure check: the limiter refuses before RBAC is consulted,

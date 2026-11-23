@@ -109,3 +109,63 @@ func testStrictTenantDefaultDatabaseOverProtocol(t *testing.T, node *multiProtoN
 		}
 	}
 }
+
+// vectorOnlyPermissions lets a tenant identity create and drop a vector
+// namespace without any KV permission, so the only data the tenant holds in
+// the shared default store is a vector namespace.
+var vectorOnlyPermissions = []string{
+	"databases:read", "databases:list",
+	"vector:namespace_create", "vector:namespace_delete",
+	"vector:namespace_list", "vector:namespace_info",
+	"admin:health",
+}
+
+// TestStrictTenant_VectorOnlyTenantTighteningRefused_PerProtocol proves,
+// over every transport, that a barrier tenant whose only data in the shared
+// default store is a vector namespace cannot be tightened to strict: the
+// node-key log probe counts the tenant's vector namespaces as well as its
+// keys, so the shared store's node-keyed WAL is seen to hold the tenant's
+// data and the tightening is refused, leaving the tenant's policy as it was.
+func TestStrictTenant_VectorOnlyTenantTighteningRefused_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startTenantEntitlementNode(t)
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			testStrictTenantVectorOnlyTighteningOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testStrictTenantVectorOnlyTighteningOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	suffix := fmt.Sprintf("%s-%d", proto.name, time.Now().UnixNano())
+	tenantID := "strict-vec-" + suffix
+	createTenant(t, node, proto, tenantID, "Strict Vector Only", "barrier", true)
+	certPath, keyPath := provisionTenantIdentity(t, node, tenantID, "vec-user", vectorOnlyPermissions)
+	conn := tenantCLIArgsForProto(node, proto, certPath, keyPath)
+	sys := node.cliArgsFor(proto)
+
+	ns := "embeddings-" + suffix
+	if out, err := runQRDB(t, node.cli, conn, "vector", "namespace", "create",
+		"--namespace", ns, "--dimension", "2", "--distance-metric", "cosine"); err != nil {
+		t.Fatalf("[%s] vector namespace create in the shared default store: %v\noutput: %s", proto.name, err, out)
+	}
+
+	out, err := runQRDB(t, node.cli, sys, "tenant", "update", tenantID, "--isolation-policy", "strict")
+	if err == nil {
+		t.Fatalf("[%s] tightening a tenant with a vector namespace on the node-keyed WAL to strict succeeded\noutput: %s", proto.name, out)
+	}
+	for _, want := range []string{tenantID, "node-keyed WAL"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("[%s] tightening refusal output lacks %q:\n%s", proto.name, want, out)
+		}
+	}
+	got, err := runQRDB(t, node.cli, sys, "tenant", "get", tenantID)
+	if err != nil {
+		t.Fatalf("[%s] tenant get after the refusal: %v\noutput: %s", proto.name, err, got)
+	}
+	if strings.Contains(got, "Isolation policy: strict") {
+		t.Fatalf("[%s] tenant policy is strict after a refused tightening\noutput: %s", proto.name, got)
+	}
+}
