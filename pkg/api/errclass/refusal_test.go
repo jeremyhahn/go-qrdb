@@ -75,6 +75,21 @@ func TestRefusal_barrierSentinels(t *testing.T) {
 			t.Fatalf("RefusalError(%q) = %v, want %v", reason, got, sentinel)
 		}
 	}
+	sealStore := map[error]string{
+		seal.ErrSealStoreSecretNotFound: transport.ReasonSealStoreSecretNotFound,
+		seal.ErrInvalidSecretName:       transport.ReasonSealStoreInvalidSecretName,
+		seal.ErrSealStoreBarrierSealed:  transport.ReasonSealStoreBarrierSealed,
+	}
+	for sentinel, want := range sealStore {
+		err := &seal.SealStoreError{Op: "get", Key: "db-password", Err: sentinel}
+		reason, md, ok := Refusal(err)
+		if !ok || reason != want || md != nil {
+			t.Fatalf("Refusal(%v) = %q, %v, %v; want %q, nil, true", err, reason, md, ok, want)
+		}
+		if got := transport.RefusalError(reason, md); !errors.Is(got, sentinel) {
+			t.Fatalf("RefusalError(%q) = %v, want %v", reason, got, sentinel)
+		}
+	}
 }
 
 // TestRefusal_vlog checks each verifiable-log refusal a client rebuilds typed
