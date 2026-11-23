@@ -34,14 +34,12 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	vectorstorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -499,59 +497,82 @@ func TestLocalBindingFactory_WALDirPerBinding(t *testing.T) {
 	}
 }
 
-// TestLocalBindingFactory_OwnVectorStore proves a materialized database
-// keeps its vectors in its own store under its binding root, and reads
-// them back from that store after the database closes.
-func TestLocalBindingFactory_OwnVectorStore(t *testing.T) {
-	dir := t.TempDir()
+// TestLocalBindingFactory_VectorsInBindingStore proves a materialized
+// database keeps its vectors in its binding store, through the apply host,
+// on every backend: a restarted binding reads them back, and nothing is
+// written under <root>/vector.
+func TestLocalBindingFactory_VectorsInBindingStore(t *testing.T) {
 	ctx := tenant.WithTenantID(context.Background(), bindingTenant)
-	cfg := database.DatabaseConfig{TenantID: bindingTenant, Name: "vecs", Backend: database.BackendPebble}
-	mgr := newBindingManager(t, dir, nil)
-	db, err := mgr.Create(cfg)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	mb := materialized(t, db)
-	if mb.Vector() == nil {
-		t.Fatal("binding has no vector service")
-	}
-	root := mb.DataRoot()
-	if _, err := mb.Vector().CreateNamespace(ctx, &service.CreateNamespaceRequest{Namespace: "ns", Dimension: 2, DistanceMetric: "COSINE"}); err != nil {
-		_ = mgr.Close()
-		if strings.Contains(err.Error(), "qrdb_vector") {
-			t.Skipf("vector not built: %v", err)
+	open := func(t *testing.T, dir string, b database.BackendType) *lifecycle.MaterializedBinding {
+		t.Helper()
+		f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
+		t.Cleanup(func() { _ = f.Close() })
+		be, err := f.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "vecs", Backend: b}, dir)
+		if err != nil {
+			t.Fatalf("Create: %v", err)
 		}
-		t.Fatalf("CreateNamespace: %v", err)
+		mb, ok := be.(*lifecycle.MaterializedBinding)
+		if !ok {
+			t.Fatalf("Create returned %T, want *lifecycle.MaterializedBinding", be)
+		}
+		if mb.Vector() == nil {
+			t.Fatal("binding has no vector service")
+		}
+		return mb
 	}
-	if _, err := mb.Vector().UpsertVector(ctx, &service.UpsertVectorRequest{Namespace: "ns", ID: 3, Vector: []float32{0, 1}}); err != nil {
-		t.Fatalf("UpsertVector: %v", err)
+	search := func(t *testing.T, mb *lifecycle.MaterializedBinding) {
+		t.Helper()
+		resp, err := mb.Vector().SearchSimilar(ctx, &service.SearchSimilarRequest{Namespace: "ns", QueryVector: []float32{0, 1}, K: 1})
+		if err != nil {
+			t.Fatalf("SearchSimilar: %v", err)
+		}
+		if len(resp.Results) != 1 || resp.Results[0].ID != 3 {
+			t.Fatalf("SearchSimilar = %+v, want id 3", resp.Results)
+		}
 	}
-	if err := mgr.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	cases := []struct {
+		backend  database.BackendType
+		survives bool
+	}{
+		{database.BackendMemory, false},
+		{database.BackendFile, true},
+		{database.BackendPebble, true},
+		{database.BackendObjstore, true},
 	}
-	if _, err := os.Stat(filepath.Join(root, "vector")); err != nil {
-		t.Fatalf("no vector store under the binding root: %v", err)
-	}
-
-	log, err := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
-	if err != nil {
-		t.Fatalf("logger: %v", err)
-	}
-	vs, err := vectorstorage.NewPebbleVectorStorage(vectorstorage.DefaultConfig(filepath.Join(root, "vector")), logger.NewAdapter(log), vectorstorage.WithEncryptor(atrest.New(nil)))
-	if err != nil {
-		t.Fatalf("reopen vector store: %v", err)
-	}
-	defer func() { _ = vs.Close() }()
-	reopened, err := service.NewVectorService(vs, logger.NewAdapter(log))
-	if err != nil {
-		t.Fatalf("NewVectorService: %v", err)
-	}
-	resp, err := reopened.SearchSimilar(ctx, &service.SearchSimilarRequest{Namespace: "ns", QueryVector: []float32{0, 1}, K: 1})
-	if err != nil {
-		t.Fatalf("SearchSimilar after reopen: %v", err)
-	}
-	if len(resp.Results) != 1 || resp.Results[0].ID != 3 {
-		t.Fatalf("SearchSimilar after reopen = %+v, want id 3", resp.Results)
+	for _, tc := range cases {
+		t.Run(string(tc.backend), func(t *testing.T) {
+			dir := t.TempDir()
+			mb := open(t, dir, tc.backend)
+			root := mb.DataRoot()
+			if _, err := mb.Vector().CreateNamespace(ctx, &service.CreateNamespaceRequest{Namespace: "ns", Dimension: 2, DistanceMetric: "COSINE"}); err != nil {
+				_ = mb.Close()
+				if strings.Contains(err.Error(), "qrdb_vector") {
+					t.Skipf("vector not built: %v", err)
+				}
+				t.Fatalf("CreateNamespace: %v", err)
+			}
+			if _, err := mb.Vector().UpsertVector(ctx, &service.UpsertVectorRequest{Namespace: "ns", ID: 3, Vector: []float32{0, 1}}); err != nil {
+				t.Fatalf("UpsertVector: %v", err)
+			}
+			search(t, mb)
+			if err := mb.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if root != "" {
+				if _, err := os.Stat(filepath.Join(root, "vector")); !os.IsNotExist(err) {
+					t.Fatalf("a vector store exists under the binding root (%v)", err)
+				}
+			}
+			if !tc.survives {
+				return
+			}
+			reopened := open(t, dir, tc.backend)
+			defer func() { _ = reopened.Close() }()
+			search(t, reopened)
+			if _, err := os.Stat(filepath.Join(root, "vector")); !os.IsNotExist(err) {
+				t.Fatalf("a vector store exists under the binding root after restart (%v)", err)
+			}
+		})
 	}
 }
 

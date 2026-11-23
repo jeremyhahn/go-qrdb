@@ -37,7 +37,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
-	vectorstorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -466,7 +465,7 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 		return nil, openErr(errors.Join(err, stg.Close()))
 	}
 	local := backend.NewLocalBackend(eng)
-	vec, closeVec, err := newBindingVector(b, enc, local, f.policy)
+	vec, closeVec, err := newBindingVector(local, f.policy)
 	if err != nil {
 		return nil, openErr(errors.Join(err, local.Close(), stg.Close()))
 	}
@@ -483,42 +482,29 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 	}, nil
 }
 
-// newBindingVector builds the binding's own vector service, over storage
-// under the binding root, with the constructor the node's vector service
-// uses (service.NewVectorService, the qrdb_vector build-tag seam). A
-// memory binding keeps its vectors in memory, as its KV; every other
-// backend keeps them in a Pebble store under <root>/vector, encrypted with
-// the binding's encryptor. The returned close stops the service before the
-// storage beneath it.
-func newBindingVector(b *database.Binding, enc *atrest.Encryptor, host any, policy tenant.ClusterIsolationPolicyReader) (service.VectorServicer, func() error, error) {
+// newBindingVector builds the binding's own vector service with the
+// constructor the node's vector service uses (service.NewVectorService, the
+// qrdb_vector build-tag seam). It has no storage of its own: through
+// service.WithVectorApplyHost every write is an OpVector* proposal into the
+// binding's local backend and every read an engine vector lookup, so the
+// vectors live in the binding store under the binding's encryptor, whatever
+// its backend. There is no per-database <root>/vector store. The feature
+// gates come from the host. The returned close stops the service.
+func newBindingVector(local *backend.LocalBackend, policy tenant.ClusterIsolationPolicyReader) (service.VectorServicer, func() error, error) {
 	log := logger.NewAdapter(newMinimalLogger(slog.Default()))
-	var vs vectorstorage.Storage
-	if b.Backend == database.BackendMemory || b.DataRoot == "" {
-		vs = vectorstorage.NewMemoryVectorStorage()
-	} else {
-		pvs, err := vectorstorage.NewPebbleVectorStorage(vectorstorage.DefaultConfig(filepath.Join(b.DataRoot, "vector")), log, vectorstorage.WithEncryptor(enc))
-		if err != nil {
-			return nil, nil, &VectorStorageError{Err: err}
-		}
-		vs = pvs
-	}
-	var opts []service.VectorServiceOption
-	if gates, ok := host.(service.FeatureGatedHost); ok {
-		opts = append(opts, service.WithFeatureGates(gates))
-	}
+	opts := []service.VectorServiceOption{service.WithVectorApplyHost(local, shard.ShardKV)}
 	if policy != nil {
 		opts = append(opts, service.WithClusterIsolationPolicyReader(policy))
 	}
-	svc, err := service.NewVectorService(vs, log, opts...)
+	svc, err := service.NewVectorService(nil, log, opts...)
 	if err != nil {
-		return nil, nil, errors.Join(&VectorServiceError{Err: err}, vs.Close())
+		return nil, nil, &VectorServiceError{Err: err}
 	}
 	closeFn := func() error {
-		var svcErr error
 		if c, ok := svc.(io.Closer); ok {
-			svcErr = c.Close()
+			return c.Close()
 		}
-		return errors.Join(svcErr, vs.Close())
+		return nil
 	}
 	return svc, closeFn, nil
 }

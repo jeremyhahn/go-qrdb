@@ -366,7 +366,6 @@ func (p *nodeMigrationProvider) databaseStoreDirs(ctx context.Context) (pebbleDi
 		case database.BackendFile:
 			fileDirs = append(fileDirs, existingDirs(filepath.Join(b.DataRoot, "file"))...)
 		}
-		pebbleDirs = append(pebbleDirs, existingDirs(filepath.Join(b.DataRoot, "vector"))...)
 	}
 	return pebbleDirs, fileDirs, nil
 }
