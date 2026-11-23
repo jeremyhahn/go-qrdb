@@ -1956,7 +1956,26 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Config, enc *atrest.Encryptor, shared backend.SMAdapter) (*database.Manager, error) {
 	defaults := standaloneDatabaseDefaults(cfg)
 	dbManager := database.NewManager(n.logger, dataDir, database.WithDefaults(defaults))
-	bf := lifecycle.NewNodeBindingFactory(dataDir, defaults, enc, cfg.Storage,
+	if err := n.installBindingFactory(dbManager, dataDir, defaults, enc, cfg.Storage, false,
+		lifecycle.SharedStoreKeyspaceProbe(shared)); err != nil {
+		_ = dbManager.Close()
+		return nil, err
+	}
+	n.dbManager = dbManager
+	return dbManager, nil
+}
+
+// installBindingFactory installs the daemon's binding factory
+// (lifecycle.NewNodeBindingFactory) on dbManager, on a standalone and a
+// raft-mode node alike: a memory, file, pebble or objstore database is
+// materialized in its own store under its binding root, sealed under enc, with
+// its tenant and tenant barrier resolved live from the services built after
+// the manager. On a raft-mode node (raftMode) a backend: raft database stays
+// on the Manager's raft path. probe keeps a backend: memory database whose
+// data predates its own store on the shared route it lives in.
+func (n *Node) installBindingFactory(dbManager *database.Manager, dataDir string, defaults database.Defaults,
+	enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig, raftMode bool, probe lifecycle.SharedKeyspaceProbe) error {
+	bf := lifecycle.NewNodeBindingFactory(dataDir, defaults, enc, storageCfg,
 		func() tenant.TenantServicer {
 			if svcNode := n.svcNode.Load(); svcNode != nil {
 				return svcNode.Tenant
@@ -1964,15 +1983,19 @@ func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Conf
 			return nil
 		},
 		n.barrierRegistry.Load, n.watchHubOpts...).
-		// A backend: memory database whose data predates its own store
-		// keeps the shared route it lives in.
-		WithSharedKeyspaceProbe(lifecycle.SharedStoreKeyspaceProbe(shared))
-	if err := dbManager.SetBackendFactory(bf); err != nil {
-		_ = dbManager.Close()
-		return nil, err
+		WithSharedKeyspaceProbe(probe)
+	if raftMode {
+		bf = bf.WithRaftMode()
 	}
-	n.dbManager = dbManager
-	return dbManager, nil
+	return dbManager.SetBackendFactory(bf)
+}
+
+// systemShardKeyspaceProbe probes the legacy shared route of a raft-mode node
+// on this replica's system shard.
+func systemShardKeyspaceProbe(host *quicraft.Host) lifecycle.SharedKeyspaceProbe {
+	return lifecycle.LookupKeyspaceProbe(func(ctx context.Context, query interface{}) (interface{}, error) {
+		return host.StaleRead(ctx, shard.ShardKV, query)
+	})
 }
 
 // closeDatabaseManager closes the node's database catalog, if open.
@@ -2393,8 +2416,15 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// with BuildTenantInfra (reattachRaftTenants walks manager.List()). The
 	// node owns the manager's lifetime; lifecycle does NOT add a closer for an
 	// externally-supplied manager.
+	clusteredDefaults := clusteredDatabaseDefaults(pending.cfg)
 	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir,
-		database.WithDefaults(clusteredDatabaseDefaults(pending.cfg)))
+		database.WithDefaults(clusteredDefaults))
+	if err := n.installBindingFactory(dbManager, pending.cfg.Raft.DataDir, clusteredDefaults, encryptor,
+		pending.cfg.Storage, true, systemShardKeyspaceProbe(host)); err != nil {
+		_ = host.Close()
+		_ = dbManager.Close()
+		return &HostCreateError{Err: err}
+	}
 	n.dbManager = dbManager
 
 	gate, err := raftbackend.NewFeatureGate(host, pending.cfg.Raft.ReplicaID, shard.ShardKV)
@@ -3462,8 +3492,15 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	// authorization wrappers (embedded and network) resolve the node's
 	// database_defaults against the same manager. The node owns its
 	// lifetime; lifecycle adds no closer for a supplied manager.
+	clusteredDefaults := clusteredDatabaseDefaults(cfg)
 	dbManager := database.NewManager(n.logger, dataDir,
-		database.WithDefaults(clusteredDatabaseDefaults(cfg)))
+		database.WithDefaults(clusteredDefaults))
+	if err := n.installBindingFactory(dbManager, dataDir, clusteredDefaults, nil,
+		cfg.Storage, true, systemShardKeyspaceProbe(host)); err != nil {
+		_ = host.Close()
+		_ = dbManager.Close()
+		return nil, err
+	}
 	n.dbManager = dbManager
 
 	infra, err := withCryptoInfra(lifecycle.Infra{

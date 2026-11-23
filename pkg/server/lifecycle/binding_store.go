@@ -163,6 +163,14 @@ func (f *LocalBindingFactory) WithSharedKeyspaceProbe(p SharedKeyspaceProbe) *Lo
 	return f
 }
 
+// WithRaftMode marks the factory's node as a raft-mode node: a backend: raft
+// database is then left to the Manager's raft path (nil, nil) instead of
+// refused, and every other local kind is materialized as on a standalone node.
+func (f *LocalBindingFactory) WithRaftMode() *LocalBindingFactory {
+	f.node.RaftMode = true
+	return f
+}
+
 // SharedStoreKeyspaceProbe probes the shared engine a standalone node composes
 // (NewLocalEngine) for a database's legacy data. The shared route stores a
 // database's keys under tenant.ComposeNamespace(tenantID, db), so the probe
@@ -170,8 +178,15 @@ func (f *LocalBindingFactory) WithSharedKeyspaceProbe(p SharedKeyspaceProbe) *Lo
 // stops at the first live key. A lookup error is returned, never read as "no
 // data".
 func SharedStoreKeyspaceProbe(eng backend.SMAdapter) SharedKeyspaceProbe {
+	return LookupKeyspaceProbe(eng.Lookup)
+}
+
+// LookupKeyspaceProbe is SharedStoreKeyspaceProbe over any read of the shared
+// store's state machine: a raft-mode node passes a local read of its system
+// shard, so a legacy memory database keeps its shared route there too.
+func LookupKeyspaceProbe(lookup func(ctx context.Context, query interface{}) (interface{}, error)) SharedKeyspaceProbe {
 	return func(tenantID, db string) (bool, error) {
-		res, err := eng.Lookup(context.Background(), &statemachine.PrefixQuery{
+		res, err := lookup(context.Background(), &statemachine.PrefixQuery{
 			Prefix: []byte(tenant.ComposeNamespace(tenantID, db)),
 			Limit:  1,
 		})
@@ -298,7 +313,8 @@ func (f *LocalBindingFactory) RecordRoot(cfg database.DatabaseConfig) (string, e
 
 // RecordBinding is the local binding Create materializes for the database
 // cfg describes, without opening it (database.RecordBindingResolver), or
-// nil for a database served from the fallback store. A node-wide
+// nil for a database served from the fallback store (on a raft-mode node, a
+// backend: raft database, which the Manager serves on its raft path). A node-wide
 // operation over every database's own store (an encryption migration)
 // reads it for every catalog record, opened on this node or not.
 func (f *LocalBindingFactory) RecordBinding(cfg database.DatabaseConfig) (*database.Binding, error) {
@@ -419,11 +435,10 @@ func (f *LocalBindingFactory) Close() error {
 	return f.fallback.Close()
 }
 
-// mayQualify reports the checks that need no tenant lookup.
+// mayQualify reports the checks that need no tenant lookup. They are the same
+// on a standalone and a raft-mode node: a raft-mode node materializes a
+// memory, file, pebble or objstore database the way a standalone node does.
 func (f *LocalBindingFactory) mayQualify(cfg *database.DatabaseConfig) bool {
-	if f.node.RaftMode {
-		return false
-	}
 	// The system database lives on the control-plane store.
 	if tenantid.IsSystem(cfg.TenantID) && cfg.Name == SystemDatabase {
 		return false
@@ -431,6 +446,9 @@ func (f *LocalBindingFactory) mayQualify(cfg *database.DatabaseConfig) bool {
 	if database.IsTenantHome(cfg.Name) {
 		return false
 	}
+	// A backend: raft database is not this factory's on a raft-mode node:
+	// the Manager keeps its raft path for it (standalone nodes refuse it
+	// before this check).
 	return cfg.Backend != database.BackendRaft
 }
 

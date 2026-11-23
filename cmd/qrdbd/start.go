@@ -1836,16 +1836,10 @@ func runStart(f *startFlags) (err error) {
 					return lerr
 				}
 				local := backend.NewLocalBackend(eng)
-				// A prefix tenant's plain database is materialized in
-				// its own store under its binding root, written through
-				// the node encryptor (docs/databases/architecture.md).
-				bf := lifecycle.NewNodeBindingFactory(f.dataDir, dbDefaults, enc, f.storageConfig,
+				if _, err := installBindingFactory(dbManager, f.dataDir, dbDefaults, enc, f.storageConfig,
 					func() tenant.TenantServicer { return bindingTenants },
-					func() *seal.BarrierRegistry { return bindingBarriers }, watchHubOpts...).
-					// A backend: memory database whose data predates its
-					// own store keeps the shared route it lives in.
-					WithSharedKeyspaceProbe(lifecycle.SharedStoreKeyspaceProbe(eng))
-				if err := dbManager.SetBackendFactory(bf); err != nil {
+					func() *seal.BarrierRegistry { return bindingBarriers }, false,
+					lifecycle.SharedStoreKeyspaceProbe(eng), watchHubOpts...); err != nil {
 					_ = local.Close()
 					_ = stg.Close()
 					return err
@@ -1867,6 +1861,19 @@ func runStart(f *startFlags) (err error) {
 					return gerr
 				}
 				featureGate = gate
+				// The owner node materializes a local-kind database the
+				// way a standalone node does (OD-2: other nodes forward
+				// to it); the legacy shared route is probed on this
+				// replica's system shard.
+				if _, err := installBindingFactory(dbManager, f.dataDir, dbDefaults, enc, f.storageConfig,
+					func() tenant.TenantServicer { return bindingTenants },
+					func() *seal.BarrierRegistry { return bindingBarriers }, true,
+					lifecycle.LookupKeyspaceProbe(func(ctx context.Context, query interface{}) (interface{}, error) {
+						return host.StaleRead(ctx, shard.ShardKV, query)
+					}), watchHubOpts...); err != nil {
+					_ = shutdownNode(host)
+					return err
+				}
 				svcHost = newHostAdapter(host, raftbackend.WithFeatureGate(featureGate))
 				rnode = host
 				nodeCloser = host

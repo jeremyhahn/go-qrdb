@@ -256,8 +256,11 @@ func TestLocalBindingFactory_NonQualifyingDelegates(t *testing.T) {
 		{"explicit data_dir with database barrier", database.BindingNode{}, prefixTenants,
 			database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble, DataDir: "explicit",
 				Barrier: &database.DatabaseBarrierConfig{Enabled: true}}},
-		{"raft mode node", database.BindingNode{RaftMode: true}, prefixTenants,
-			database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble}},
+		// A raft-mode node materializes local kinds
+		// (TestLocalBindingFactory_RaftModeLocalBackendMaterializes); a
+		// raft database stays on the Manager's raft path.
+		{"raft database on a raft mode node", database.BindingNode{RaftMode: true}, prefixTenants,
+			database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendRaft}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1485,6 +1488,55 @@ func TestLocalBindingFactory_RaftOnStandaloneRefused(t *testing.T) {
 			}
 			t.Fatalf("Create raft for %q: err = %v, want *RaftBackendUnavailableError", tenantID, err)
 		}
+	}
+}
+
+// TestLocalBindingFactory_RaftModeLocalBackendMaterializes proves a raft-mode
+// node gives a prefix tenant's pebble database its own store at its binding
+// root, exactly as a standalone node does, while a backend: raft record is not
+// the local factory's (nil, nil: the Manager keeps its raft path).
+func TestLocalBindingFactory_RaftModeLocalBackendMaterializes(t *testing.T) {
+	dir := t.TempDir()
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir, RaftMode: true}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
+	defer func() { _ = f.Close() }()
+
+	b, err := f.RecordBinding(database.DatabaseConfig{TenantID: bindingTenant, Name: "orders", Backend: database.BackendPebble})
+	if err != nil || b == nil {
+		t.Fatalf("RecordBinding(pebble) in raft mode = %v, %v; want a local binding", b, err)
+	}
+	if b.Kind != database.BindingLocal {
+		t.Fatalf("RecordBinding(pebble).Kind = %q, want %q", b.Kind, database.BindingLocal)
+	}
+	if rel, rerr := filepath.Rel(dir, b.DataRoot); rerr != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		t.Fatalf("RecordBinding(pebble).DataRoot = %q, want a root under %q", b.DataRoot, dir)
+	}
+	root, err := f.RecordRoot(database.DatabaseConfig{TenantID: bindingTenant, Name: "orders", Backend: database.BackendPebble})
+	if err != nil || root != b.DataRoot {
+		t.Fatalf("RecordRoot(pebble) = %q, %v; want %q", root, err, b.DataRoot)
+	}
+
+	raftCfg := database.DatabaseConfig{TenantID: bindingTenant, Name: "ledger", Backend: database.BackendRaft}
+	if rb, rerr := f.RecordBinding(raftCfg); rb != nil || rerr != nil {
+		t.Fatalf("RecordBinding(raft) in raft mode = %v, %v; want nil, nil", rb, rerr)
+	}
+	if rr, rerr := f.RecordRoot(raftCfg); rr != "" || rerr != nil {
+		t.Fatalf("RecordRoot(raft) in raft mode = %q, %v; want \"\", nil", rr, rerr)
+	}
+}
+
+// TestLocalBindingFactory_RaftModeDescribeBinding proves database info's
+// binding block on a raft-mode node reports a pebble database as local under
+// the node encryptor.
+func TestLocalBindingFactory_RaftModeDescribeBinding(t *testing.T) {
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: t.TempDir(), RaftMode: true}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
+	defer func() { _ = f.Close() }()
+	b, err := f.DescribeBinding(database.DatabaseConfig{TenantID: bindingTenant, Name: "orders", Backend: database.BackendPebble})
+	if err != nil || b == nil {
+		t.Fatalf("DescribeBinding(pebble) in raft mode = %v, %v; want a binding", b, err)
+	}
+	got := b.Describe("", 1)
+	if got.Kind != database.BindingLocal || got.Encryption != "node" {
+		t.Fatalf("DescribeBinding(pebble).Describe = %+v; want kind local, encryption node", got)
 	}
 }
 
