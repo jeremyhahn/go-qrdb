@@ -911,3 +911,101 @@ func TestEmbeddedKVStore_UnitOfWork(t *testing.T) {
 		}
 	}
 }
+
+// embeddedSeat declares a unique compound index (Team, Seat): one key per
+// tuple.
+type embeddedSeat struct {
+	ID   uint64 `json:"id"`
+	Team string `json:"team"`
+	Seat string `json:"seat"`
+}
+
+func (s *embeddedSeat) EntityID() uint64      { return s.ID }
+func (s *embeddedSeat) SetEntityID(id uint64) { s.ID = id }
+func (s *embeddedSeat) CompoundIndexes() []CompoundIndexDef {
+	return []CompoundIndexDef{{Fields: []string{"Team", "Seat"}, Unique: true}}
+}
+
+// TestEmbeddedKVStore_GuardedBatchUniqueCompoundTuple pins that a guarded
+// batch and a DAO unit of work on the embedded store that save two
+// entities sharing one unique compound tuple are refused with ErrConflict
+// and write nothing (#1649, Codex P1 2 on PR #1706).
+func TestEmbeddedKVStore_GuardedBatchUniqueCompoundTuple(t *testing.T) {
+	ctx := context.Background()
+	record := func(id uint64, team, seat string) []byte {
+		b, err := json.Marshal(&embeddedSeat{ID: id, Team: team, Seat: seat})
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		return b
+	}
+	wantConflict := func(t *testing.T, err error) {
+		t.Helper()
+		var conflict *qerrors.QRDBError
+		if !errors.As(err, &conflict) || conflict.Code != qerrors.ErrConflict {
+			t.Fatalf("err = %v (%T), want a QRDBError ErrConflict", err, err)
+		}
+	}
+
+	t.Run("guarded batch", func(t *testing.T) {
+		store, _ := newEmbeddedTestStore(t)
+		if _, err := NewDAO(store, "seat", func() *embeddedSeat { return &embeddedSeat{} }); err != nil {
+			t.Fatalf("NewDAO: %v", err)
+		}
+		guarded := embeddedGuarded(t, store)
+		applied, err := guarded.PutAllIfAllUnchanged(ctx,
+			[]kvstore.Guard{{Key: "seat/1"}, {Key: "seat/2"}},
+			[]kvstore.KV{
+				{Key: "seat/1", Value: record(1, "red", "a1")},
+				{Key: "seat/2", Value: record(2, "red", "a1")},
+			})
+		if err == nil || applied {
+			t.Fatalf("two keys, one unique tuple: applied = %v, err = %v; want refused", applied, err)
+		}
+		wantConflict(t, err)
+		for _, key := range []string{"seat/1", "seat/2"} {
+			if got := embeddedGetString(t, store, key); got != "<absent>" {
+				t.Fatalf("refused batch wrote %s = %q", key, got)
+			}
+		}
+		hits, err := store.ScanCompoundIndex(ctx, "seat.Team_Seat", [][]byte{[]byte("red")}, nil, nil)
+		if err != nil {
+			t.Fatalf("ScanCompoundIndex: %v", err)
+		}
+		if len(hits) != 0 {
+			t.Fatalf("refused batch left index entries %q", hits)
+		}
+
+		applied, err = guarded.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{
+			{Key: "seat/1", Value: record(1, "red", "a1")},
+			{Key: "seat/2", Value: record(2, "red", "a2")},
+		})
+		if err != nil || !applied {
+			t.Fatalf("distinct tuples: applied = %v, err = %v", applied, err)
+		}
+	})
+
+	t.Run("unit of work", func(t *testing.T) {
+		store, _ := newEmbeddedTestStore(t)
+		seats, err := NewDAOTransactional(store, "seat", func() *embeddedSeat { return &embeddedSeat{} })
+		if err != nil {
+			t.Fatalf("NewDAOTransactional: %v", err)
+		}
+		uow := NewDAOUnitOfWork(store)
+		for _, s := range []*embeddedSeat{{ID: 1, Team: "red", Seat: "a1"}, {ID: 2, Team: "red", Seat: "a1"}} {
+			if err := RegisterDAOSave(uow, GenericDAO[*embeddedSeat](seats), s); err != nil {
+				t.Fatalf("RegisterDAOSave %d: %v", s.ID, err)
+			}
+		}
+		err = uow.Commit(ctx)
+		if err == nil {
+			t.Fatal("Commit of two saves with one unique tuple succeeded; want refused")
+		}
+		wantConflict(t, err)
+		for _, id := range []uint64{1, 2} {
+			if got, gerr := seats.Get(ctx, id); gerr == nil {
+				t.Fatalf("refused unit of work wrote seat %d = %+v", id, got)
+			}
+		}
+	})
+}
