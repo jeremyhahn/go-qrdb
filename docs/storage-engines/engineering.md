@@ -230,7 +230,17 @@ The volume pool surface is in
   owner and nothing else remains (a namespace still holding foreign objects
   keeps it). `ReleaseClaim` gives back a failed create's claim: a namespace
   the open claimed fresh is released whole, and on pre-existing data only the
-  owner marker the open wrote goes, while it still names this owner.
+  owner marker the open wrote goes, while it still names this owner. A
+  database's owner (`objstoredb.Open`) names its tenant, its name and its
+  incarnation (`DatabaseConfig.Incarnation`, set by the manager before every
+  open, never persisted), so a database of the same tenant and name created
+  after a drop is refused the namespace while the dropped incarnation still
+  holds it, and the dropped incarnation's release, retried later, is refused
+  a namespace its successor owns and reclaims nothing of it. An `objstore.New`
+  that wrote its owner marker and then fails (commit journal recovery) gives
+  the claim back with `ReleaseClaim`'s rules before releasing its providers;
+  when that undo fails too it returns `objstore.ClaimUndoError` carrying both
+  causes.
 
 ## Configuration
 

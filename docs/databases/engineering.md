@@ -686,7 +686,22 @@ Invariants:
     namespace the open claimed fresh is reclaimed and released, on a
     namespace that held data before only the owner marker the open wrote is
     deleted (the data stays), and one already this database's is left as
-    it was, so a failed create reserves no bucket or path.
+    it was, so a failed create reserves no bucket or path. An open that
+    wrote its owner marker and failed after it gives the claim back itself;
+    when that undo fails as well (`objstore.ClaimUndoError`) no backend is
+    left to release it, so `Manager.create` records a ledger entry for the
+    new incarnation and `retryNamespaceReleases` releases the namespace.
+  - **The namespace owner names the incarnation.** Every object-storage
+    database gets an incarnation, with or without a keyspace reclaimer, and
+    the manager opens its namespace as that incarnation
+    (`DatabaseConfig.Incarnation`: from the new incarnation at create, the
+    catalog record at open, the ledger entry at a retried release). A
+    release by a dropped incarnation is refused a namespace another
+    incarnation owns (`NamespaceOwnedError`, or `NamespaceInUseError` while
+    the successor is open in this process); the release counts as done,
+    reclaims nothing and forgets its entry. A re-create of the name on the
+    same namespace is refused until the dropped incarnation's release
+    completes.
   - **A failed drop is rolled back completely or not at all.** The rollback
     always restores the marker to the database's incarnation — a fence
     write that reported failure may have committed — under
