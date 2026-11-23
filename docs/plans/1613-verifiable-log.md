@@ -505,6 +505,42 @@ the Raft group its tenant resolves to (`r.raft(ctx, tenantID)`).
   "vector support not compiled" (they need `qrdb_vector`); this lane changed
   no Go code in the package, so that is the tag set, not a regression.
 
+## rw1613w5 (Codex round 5 at 06a8907fc0)
+
+- P1-1, a failed create strands the home-group log marker:
+  `KeyspaceReclaimService.UnfenceDatabaseKeyspace` marked a barrier tenant's
+  home-group log marker live, then claimed the data marker (system store or
+  per-database store); a failure there released only the data marker, and
+  the create's undo left the log marker live under an incarnation no catalog
+  holds, refusing every later create of the name. Fix: the log marker is read
+  before it is marked live; when the data claim (`unfenceDataMarker`:
+  `claimReclaimStore`, `clearMarker` or the system `markLive`) fails,
+  `releaseLogClaim` swaps it from the incarnation back to its prior value, or
+  deletes it when it was absent, under `database.DropRollbackContext`; a
+  failed release is a `MarkerReleaseError`. A marker that already held the
+  incarnation is left. Test `TestUnfence_FailedDataClaimReleasesTheLogMarker`
+  (fresh name, after a drop, already live): failed before the fix (marker
+  still present / `"inc-a"` instead of the tombstone), passes after, and the
+  retry with a new incarnation holds both markers.
+- P1-2, the per-incarnation log-store cache outlives a drop: its cache part
+  closed with rw1613w3's deletion of `databaseLogStore` and its stores map.
+  The residue, `logRoute.inited` (one entry per incarnation, never removed),
+  is now emptied for (tenant, name) by `logService.DropDatabaseLogs` once
+  the drop succeeds (`logRoute.forgetFences`); no new cache. Test
+  `TestLogService_DropForgetsTheLogFenceIncarnation`: failed before the fix
+  (one entry after the drop), passes after.
+- `docs/databases/api.md`: the "database's own barrier store" paragraph now
+  says the parent group or the standalone node's local store, sealed under
+  the database's barrier key. `architecture.md` describes no create rollback
+  of the markers and is unchanged; CHANGELOG lists no unreleased fixes.
+- Commands, each passing: `gofmt -l pkg/service` (empty);
+  `go test -count=1 -tags=codec_json,raft,qrdb_vlog -run
+  '^(TestUnfence_|TestKeyspaceReclaim_|TestDatabaseCreate_|TestLogService_)'
+  ./pkg/service/`; without `qrdb_vlog` the `TestLogService_` tests compile
+  out (`vlog_log_service*.go` are `//go:build qrdb_vlog`). Integration
+  (`-tags=codec_json,raft,integration,qrdb_vlog`): the four barrier-database,
+  barrier-tenant and drop CLI tests, every transport.
+
 ## Out of scope
 
 The go-xkms provider and transparency log (the seam rows on the other side);
