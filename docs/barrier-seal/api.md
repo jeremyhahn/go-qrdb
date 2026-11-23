@@ -65,15 +65,18 @@ Delete and Reseal accept such a name only when its record exists, and Put never
 creates one. Reseal replaces the record in one write, and Put, Delete and
 Reseal are serialized, so a failed reseal leaves the old record.
 
-A missing secret, an invalid name and a sealed seal-store barrier surface as
-`sdk.ErrSealStoreSecretNotFound`, `seal.ErrInvalidSecretName` and
-`sdk.ErrSealStoreBarrierSealed`, matched with `errors.Is` on the embedded
-transport. The sentinels are embedded-only: only `seal.SealStore` returns them,
-and no remote RPC serves it (the node's PIN backend persists through the seal
-backend directly, not the seal store), so they have no structured refusal
-reason. On a node's embedded client a sealed barrier is refused by the node's
-seal gate first, with `seal.ErrSealed`; `sdk.ErrSealStoreBarrierSealed` is the
-store's own guard behind it.
+On a node's embedded client (`sdk/go/node`), a seal-store call made while the
+node barrier is sealed is refused by the node's seal gate before the store
+runs: the caller sees `seal.ErrSealed` (`errors.Is(err, seal.ErrSealed)`), not
+`sdk.ErrSealStoreBarrierSealed`, which is only the store's own in-store guard
+behind the gate and reaches a caller only through a `seal.SealStore` used
+directly. A missing secret and an invalid name surface as
+`sdk.ErrSealStoreSecretNotFound` and `seal.ErrInvalidSecretName`, matched with
+`errors.Is`. The sentinels are embedded-only: only `seal.SealStore` returns
+them, the embedded transport returns them unclassified, and no remote RPC
+serves the store (the node's PIN backend persists through the seal backend
+directly, not the seal store), so they have neither an `errclass` row nor a
+structured refusal reason.
 
 A Shamir barrier is unsealed, sealed and rekeyed, and root tokens are minted,
 only by a quorum of authenticated share holders: `POST /v1/barrier/quorum/*`
