@@ -74,6 +74,7 @@ import type {
     RebalanceClient,
     RedeemInvitationOptions,
     RoleClient,
+    GroupClient,
     SealClient,
     ServerConfigClient,
     SQLClient,
@@ -123,6 +124,12 @@ import type {
     NodeCompactionBody,
     MintJoinTokenResponse,
     CreateNamespaceResponse,
+    Group,
+    CreateGroupRequest,
+    UpdateGroupRequest,
+    ListGroupsRequest,
+    ListGroupsResponse,
+    GroupMember,
     CreateRoleRequest,
     CreateUserRequest,
     CollectionInfo,
@@ -544,6 +551,54 @@ function jsonBody(data: unknown): RequestInit {
  * Builds a JSON request body from an object already in wire form, without
  * re-casing any key (see holderEnrolmentWire).
  */
+/** Group wire shape: the REST groups handlers use Go-style ID keys. */
+interface GroupWire {
+    readonly id?: string;
+    readonly tenantID?: string;
+    readonly name?: string;
+    readonly description?: string;
+    readonly roleIDs?: readonly string[] | null;
+    readonly createdAt?: string;
+    readonly updatedAt?: string;
+}
+
+/** Group member wire shape (userID is a uint64 JSON number). */
+interface GroupMemberWire {
+    readonly userID?: number | string;
+    readonly username?: string;
+    readonly tenantID?: string;
+}
+
+/** Maps a REST group onto the SDK's camelCase Group. */
+function groupFromWire(w: GroupWire): Group {
+    return {
+        id: w.id ?? '',
+        tenantId: w.tenantID ?? '',
+        name: w.name ?? '',
+        description: w.description ?? '',
+        roleIds: [...(w.roleIDs ?? [])],
+        createdAt: w.createdAt ?? '',
+        updatedAt: w.updatedAt ?? '',
+    };
+}
+
+/** Maps a REST group member onto the SDK's GroupMember. */
+function groupMemberFromWire(w: GroupMemberWire): GroupMember {
+    return {
+        userId: w.userID === undefined ? '' : String(w.userID),
+        username: w.username ?? '',
+        tenantId: w.tenantID ?? '',
+    };
+}
+
+/**
+ * Converts a decimal user ID to the uint64 JSON number the REST handlers
+ * decode; anything else is sent as given so the server reports it.
+ */
+function userIdToWire(userId: string): number | string {
+    return /^\d+$/.test(userId) ? Number(userId) : userId;
+}
+
 function wireBody(data: Record<string, unknown>): RequestInit {
     return {
         headers: { 'Content-Type': 'application/json' },
@@ -1737,6 +1792,95 @@ export class RestClient implements Client {
     // -----------------------------------------------------------------------
     // Roles
     // -----------------------------------------------------------------------
+
+    /**
+     * IAM group management over REST. Removing the Security Officer role
+     * from a group, or deleting a group that carries it, is refused unless
+     * the caller is the tenant's Security Officer.
+     */
+    get groups(): GroupClient {
+        return {
+            create: async (req: CreateGroupRequest): Promise<Group> => {
+                this.ensureConnected();
+                const body: Record<string, unknown> = { name: req.name };
+                if (req.tenantId !== undefined) body['tenantID'] = req.tenantId;
+                if (req.description !== undefined) body['description'] = req.description;
+                if (req.roleIds !== undefined) body['roleIDs'] = [...req.roleIds];
+                return groupFromWire(await this.fetchJSON<GroupWire>('/groups', {
+                    method: 'POST',
+                    ...wireBody(body),
+                }));
+            },
+            get: async (id: string): Promise<Group> => {
+                this.ensureConnected();
+                return groupFromWire(await this.fetchJSON<GroupWire>(
+                    `/groups/${encodeURIComponent(id)}`,
+                ));
+            },
+            getByName: async (name: string, tenantId?: string): Promise<Group> => {
+                this.ensureConnected();
+                return groupFromWire(await this.fetchJSON<GroupWire>(`/groups/by-name${buildQuery({
+                    tenantID: tenantId,
+                    name,
+                })}`));
+            },
+            update: async (req: UpdateGroupRequest): Promise<Group> => {
+                this.ensureConnected();
+                const body: Record<string, unknown> = {};
+                if (req.name !== undefined) body['name'] = req.name;
+                if (req.description !== undefined) body['description'] = req.description;
+                if (req.roleIds !== undefined) body['roleIDs'] = [...req.roleIds];
+                return groupFromWire(await this.fetchJSON<GroupWire>(
+                    `/groups/${encodeURIComponent(req.id)}`,
+                    { method: 'PUT', ...wireBody(body) },
+                ));
+            },
+            delete: async (id: string): Promise<void> => {
+                this.ensureConnected();
+                await this.fetchVoid(`/groups/${encodeURIComponent(id)}`,
+                    { method: 'DELETE' },
+                );
+            },
+            list: async (req?: ListGroupsRequest): Promise<ListGroupsResponse> => {
+                this.ensureConnected();
+                const resp = await this.fetchJSON<{
+                    groups?: readonly GroupWire[] | null;
+                    total?: number;
+                    hasMore?: boolean;
+                }>(`/groups/list${buildQuery({
+                    tenantID: req?.tenantId,
+                    page: req?.page,
+                    pageSize: req?.pageSize,
+                })}`);
+                return {
+                    groups: (resp.groups ?? []).map(groupFromWire),
+                    total: resp.total ?? 0,
+                    hasMore: resp.hasMore ?? false,
+                };
+            },
+            addMember: async (groupId: string, userId: string): Promise<void> => {
+                this.ensureConnected();
+                await this.fetchVoid('/groups/members/add', {
+                    method: 'POST',
+                    ...wireBody({ userID: userIdToWire(userId), groupID: groupId }),
+                });
+            },
+            removeMember: async (groupId: string, userId: string): Promise<void> => {
+                this.ensureConnected();
+                await this.fetchVoid('/groups/members/remove', {
+                    method: 'POST',
+                    ...wireBody({ userID: userIdToWire(userId), groupID: groupId }),
+                });
+            },
+            members: async (groupId: string): Promise<readonly GroupMember[]> => {
+                this.ensureConnected();
+                const resp = await this.fetchJSON<{ members?: readonly GroupMemberWire[] | null }>(
+                    `/groups/members${buildQuery({ groupID: groupId })}`,
+                );
+                return (resp.members ?? []).map(groupMemberFromWire);
+            },
+        };
+    }
 
     /** @inheritdoc */
     get roles(): RoleClient {
