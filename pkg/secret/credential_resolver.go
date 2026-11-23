@@ -96,6 +96,11 @@ func (r *CredentialResolver) Resolve(ctx context.Context, raw string) (*SecretVa
 	}
 	buf, err := r.retrieve(ctx, name)
 	if err != nil {
+		// A retrieve that fails may still hand back a buffer: it is
+		// destroyed, so no copy of the value outlives the failure.
+		if buf != nil {
+			buf.Destroy()
+		}
 		// A missing credential is a distinct, expected condition; surface it as a
 		// typed SecretNotFoundError so callers can tell "no such credential" apart
 		// from a backend failure.

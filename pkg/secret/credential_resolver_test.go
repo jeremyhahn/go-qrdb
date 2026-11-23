@@ -252,3 +252,26 @@ func TestCredentialResolver_NilBufferWithoutErrorFailsClosed(t *testing.T) {
 		t.Fatalf("expected ResolutionFailedError, got %T: %v", err, err)
 	}
 }
+
+// TestCredentialResolver_FailedRetrieveDestroysItsBuffer pins the cr1548a
+// fix: a retrieve that fails yet hands back a buffer has that buffer
+// destroyed, for a missing credential and for any other failure alike.
+func TestCredentialResolver_FailedRetrieveDestroysItsBuffer(t *testing.T) {
+	for _, cause := range []error{credentials.ErrCredentialNotFound, errors.New("backend down")} {
+		var handed *secure.Buffer
+		r := secret.NewCredentialResolver(func(context.Context, string) (*secure.Buffer, error) {
+			buf, err := secure.NewBufferFromBytes([]byte("partial"))
+			if err != nil {
+				t.Fatalf("NewBufferFromBytes: %v", err)
+			}
+			handed = buf
+			return buf, cause
+		})
+		if _, err := r.Resolve(context.Background(), "credential://db"); err == nil {
+			t.Fatalf("cause %v: Resolve succeeded, want an error", cause)
+		}
+		if handed == nil || handed.IsAlive() {
+			t.Fatalf("cause %v: the buffer a failing retrieve returned was not destroyed", cause)
+		}
+	}
+}
