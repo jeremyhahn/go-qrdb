@@ -19,6 +19,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // dial opens n connections to ln's address and returns them still open;
@@ -149,19 +151,11 @@ func TestListenerReleasesSlotOnClose(t *testing.T) {
 // connections, or the test times out.
 func waitForAccepted(t *testing.T, a *acceptedConns, n int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	require.Eventuallyf(t, func() bool {
 		a.mu.Lock()
-		got := len(a.conns)
-		a.mu.Unlock()
-		if got >= n {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("server accepted %d connections, want at least %d", got, n)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		defer a.mu.Unlock()
+		return len(a.conns) >= n
+	}, 2*time.Second, time.Millisecond, "server accepted fewer than %d connections", n)
 }
 
 func TestListenerUnlimitedWhenMaxNonPositive(t *testing.T) {
