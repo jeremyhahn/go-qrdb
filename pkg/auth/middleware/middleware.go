@@ -507,7 +507,9 @@ func IdentityIAMSealed(identity *auth.Identity) bool {
 // IdentityGated surface stays reachable. A peer credential
 // (auth.MethodPeerCred) is the exception: its mapped account must resolve, so
 // a missing account, or no user store at all, is refused with
-// auth.ErrPeerCredentialAccountMissing (checkUnresolvedPeerCred). A transient
+// auth.ErrPeerCredentialAccountMissing (checkUnresolvedPeerCred), and a
+// tenant whose IAM is sealed refuses it with the retryable sealed answer
+// instead of admitting it unenriched (checkSealedPeerCred). A transient
 // store failure returns StoreUnavailableError so clients retry rather than
 // being denied with stale/empty roles.
 func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Identity, method authMethod) (context.Context, *auth.Identity, error) {
@@ -641,6 +643,9 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			// bootstrap endpoints (tenant barrier init, officer claims),
 			// which is exactly the surface a sealed tenant may reach.
 			if errors.Is(err, tenant.ErrTenantSealed) {
+				if rerr := checkSealedPeerCred(method, err); rerr != nil {
+					return ctx, nil, rerr
+				}
 				if identity.Metadata == nil {
 					identity.Metadata = make(map[string]string)
 				}
@@ -1396,10 +1401,27 @@ func checkAuthMethod(u *user.User, method authMethod) error {
 // identified anyone and is refused with auth.ErrPeerCredentialAccountMissing
 // (UNAUTHENTICATED) rather than admitted unresolved, where an ABAC
 // subject.authenticated allow could still grant it. Every other method keeps
-// the unresolved-account rule of finalizeIdentity.
+// the unresolved-account rule of finalizeIdentity. An account that cannot be
+// looked up because its tenant's IAM is sealed is checkSealedPeerCred's case.
 func checkUnresolvedPeerCred(method authMethod) error {
 	if method.known && method.name == auth.MethodPeerCred {
 		return auth.ErrPeerCredentialAccountMissing
+	}
+	return nil
+}
+
+// checkSealedPeerCred refuses a peer-credential login whose tenant's IAM is
+// sealed (sealed is the lookup's tenant.ErrTenantSealed). The mapped account
+// cannot be read, so it cannot be shown to exist, be enabled or permit the
+// peer-credential method; admitting the identity unenriched, as the sealed
+// window admits every other method, would let a mapping to a deleted,
+// disabled or mTLS-only account reach the sealed-window barrier status and
+// unseal fallback. It is answered with *StoreUnavailableError wrapping the
+// sealed error, the retryable sealed answer (pkg/api/errclass), never an
+// admission. Every other method keeps the sealed-window behaviour.
+func checkSealedPeerCred(method authMethod, sealed error) error {
+	if method.known && method.name == auth.MethodPeerCred {
+		return &StoreUnavailableError{Err: sealed}
 	}
 	return nil
 }

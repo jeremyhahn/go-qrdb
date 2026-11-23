@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -82,6 +84,53 @@ func TestAuthenticate_PeerCredentialMissingAccountRefused(t *testing.T) {
 	users := &mockUserServicer{err: &user.UserNotFoundError{Lookup: "pc-user"}}
 	_, id, err := peerCredMiddlewareWith(authz, users).Authenticate(peerCredContext())
 	requireAccountMissing(t, id, err, authz)
+}
+
+// requireSealedRefusal asserts a peer credential whose tenant IAM is sealed
+// was refused with the sealed answer (a retryable *StoreUnavailableError
+// wrapping tenant.ErrTenantSealed), with no identity and no authorizer call.
+func requireSealedRefusal(t *testing.T, id *auth.Identity, err error, authz *mockAuthorizer) {
+	t.Helper()
+	var unavailable *StoreUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("Authenticate err = %v, want *StoreUnavailableError", err)
+	}
+	if !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("Authenticate err = %v, want it to wrap tenant.ErrTenantSealed", err)
+	}
+	if id != nil {
+		t.Fatalf("Authenticate returned identity %+v with the refusal, want nil", id)
+	}
+	if n := authz.calls.Load(); n != 0 {
+		t.Fatalf("authorizer consulted %d times for a refused peer credential, want 0", n)
+	}
+}
+
+// TestAuthenticate_PeerCredentialSealedTenantRefused pins that a peer
+// credential is never admitted unresolved while its tenant's IAM is sealed:
+// the mapped account cannot be verified (it may be deleted, disabled or
+// mTLS-only), so the request gets the sealed answer instead of an identity.
+func TestAuthenticate_PeerCredentialSealedTenantRefused(t *testing.T) {
+	authz := &mockAuthorizer{}
+	users := &mockUserServicer{err: tenant.ErrTenantSealed}
+	_, id, err := peerCredMiddlewareWith(authz, users).Authenticate(peerCredContext())
+	requireSealedRefusal(t, id, err, authz)
+}
+
+// TestAuthenticate_PeerCredentialSealedTenantNotSealedWindowAdmitted pins
+// that the refusal closes the sealed-window fallback too: the context the
+// refused authentication leaves carries no sealed-marked identity, so
+// AuthorizeTenantBarrierSealedOp does not admit barrier status or unseal.
+func TestAuthenticate_PeerCredentialSealedTenantNotSealedWindowAdmitted(t *testing.T) {
+	authz := &mockAuthorizer{}
+	m := peerCredMiddlewareWith(authz, &mockUserServicer{err: tenant.ErrTenantSealed})
+	ctx, id, err := m.Authenticate(peerCredContext())
+	requireSealedRefusal(t, id, err, authz)
+	for _, perm := range []permission.Permission{permission.TenantBarrierStatus, permission.TenantBarrierUnseal} {
+		if aerr := m.AuthorizeTenantBarrierSealedOp(ctx, peerCredTestTenant, perm); aerr == nil {
+			t.Fatalf("sealed-window %s admitted a refused peer credential", perm)
+		}
+	}
 }
 
 // TestAuthenticate_PeerCredentialNoUserStoreRefused: with no user store the
