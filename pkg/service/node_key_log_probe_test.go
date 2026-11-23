@@ -129,6 +129,56 @@ func TestNodeKeyLogDatabases_ReportsImplicitDefaultNamespaceWithData(t *testing.
 	}
 }
 
+// TestNodeKeyLogDatabases_ReadsCallTimeSharedNames proves the probe reads
+// the names WithSharedNamespaceNames lists -- the SQL default database and
+// the shared registry's databases -- when it runs, not when it is built,
+// and dedupes them against the fixed names.
+func TestNodeKeyLogDatabases_ReadsCallTimeSharedNames(t *testing.T) {
+	kv := sharedShardKeys{keys: []string{
+		tenant.ComposeNamespace("bt", "sqldefault") + "k1",
+		tenant.ComposeNamespace("bt", "registered") + "k2",
+		tenant.ComposeNamespace("other", "sqldefault") + "k3",
+	}}
+	var names []string
+	probe := NewNodeKeyLogProbe(unopenableCatalog{},
+		WithSharedNamespaces(NewKVSharedNamespaceReader(kv), tenant.DefaultDatabase),
+		WithSharedNamespaceNames(func() []string { return names }))
+
+	got, err := probe.NodeKeyLogDatabases(context.Background(), "bt")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("NodeKeyLogDatabases before any name is listed = (%v, %v), want none", got, err)
+	}
+
+	names = []string{"sqldefault", "registered", tenant.DefaultDatabase, "sqldefault", ""}
+	got, err = probe.NodeKeyLogDatabases(context.Background(), "bt")
+	if err != nil {
+		t.Fatalf("NodeKeyLogDatabases: %v", err)
+	}
+	if want := []string{"sqldefault", "registered"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("NodeKeyLogDatabases = %v, want %v", got, want)
+	}
+
+	// A tenant with no data under those names is not reported.
+	got, err = probe.NodeKeyLogDatabases(context.Background(), "clean")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("NodeKeyLogDatabases(clean) = (%v, %v), want none", got, err)
+	}
+
+	// Without a shared reader the names are not read.
+	bare := NewNodeKeyLogProbe(unopenableCatalog{}, WithSharedNamespaceNames(func() []string { return names }))
+	if got, err := bare.NodeKeyLogDatabases(context.Background(), "bt"); err != nil || len(got) != 0 {
+		t.Fatalf("NodeKeyLogDatabases without a shared reader = (%v, %v), want none", got, err)
+	}
+
+	// A read error on a call-time name fails the probe closed.
+	failing := NewNodeKeyLogProbe(unopenableCatalog{},
+		WithSharedNamespaces(NewKVSharedNamespaceReader(sharedShardKeys{err: errors.New("shard unavailable")})),
+		WithSharedNamespaceNames(func() []string { return []string{"sqldefault"} }))
+	if _, err := failing.NodeKeyLogDatabases(context.Background(), "bt"); err == nil {
+		t.Fatal("NodeKeyLogDatabases over a failing shard read = nil error, want the read error")
+	}
+}
+
 // TestNodeKeyLogDatabases_IgnoresEmptyDefaultNamespace: a tenant that never
 // wrote its implicit default database does not block a strict tightening.
 func TestNodeKeyLogDatabases_IgnoresEmptyDefaultNamespace(t *testing.T) {

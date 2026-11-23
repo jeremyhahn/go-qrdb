@@ -123,6 +123,14 @@ type Infra struct {
 	// migrations before service construction) should pass it here.
 	DatabaseManager *database.Manager
 
+	// SharedDatabaseNames, when non-nil, lists the database names besides
+	// SystemDatabase that the shared system store serves a tenant without a
+	// catalog record: the configured SQL default database and every
+	// database registered in the shared database registry. The node-key
+	// log probe calls it each time it runs, so a tightening to strict also
+	// sees a tenant's data under those names (go-qrdb#1565).
+	SharedDatabaseNames func() []string
+
 	// DatabaseDefaults are the node's database_defaults, filled into a
 	// database record at creation by the manager BuildServices creates
 	// when DatabaseManager is nil.
@@ -1431,6 +1439,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		var probeOpts []service.NodeKeyLogProbeOption
 		if n.KV != nil {
 			probeOpts = append(probeOpts, service.WithSharedNamespaces(service.NewKVSharedNamespaceReader(n.KV), SystemDatabase))
+			if infra.SharedDatabaseNames != nil {
+				probeOpts = append(probeOpts, service.WithSharedNamespaceNames(infra.SharedDatabaseNames))
+			}
 		}
 		w.SetNodeKeyLogProbe(service.NewNodeKeyLogProbe(dbManager, probeOpts...))
 		w.SetAuditRouteProbe(auditResolver)

@@ -41,6 +41,10 @@ type NodeKeyLogProbe struct {
 	// (the default database, the SQL default). Both are optional.
 	shared   SharedNamespaceReader
 	implicit []string
+	// names, when set, lists further implicit databases at call time (the
+	// configured SQL default, the shared registry's databases), so a name
+	// registered after the probe is built is still read.
+	names func() []string
 }
 
 var _ tenant.NodeKeyLogProbe = (*NodeKeyLogProbe)(nil)
@@ -64,6 +68,18 @@ func WithSharedNamespaces(reader SharedNamespaceReader, implicit ...string) Node
 	return func(p *NodeKeyLogProbe) {
 		p.shared = reader
 		p.implicit = append([]string(nil), implicit...)
+	}
+}
+
+// WithSharedNamespaceNames adds a call-time source of implicit database
+// names the probe reads in the shared system shard, besides the fixed
+// names given to WithSharedNamespaces: the configured SQL default database
+// and every database registered in the shared registry. It has no effect
+// without a SharedNamespaceReader. Names are deduplicated against the
+// catalog records and the fixed names.
+func WithSharedNamespaceNames(names func() []string) NodeKeyLogProbeOption {
+	return func(p *NodeKeyLogProbe) {
+		p.names = names
 	}
 }
 
@@ -99,7 +115,11 @@ func (p *NodeKeyLogProbe) NodeKeyLogDatabases(ctx context.Context, tenantID stri
 	if p.shared == nil {
 		return out, nil
 	}
-	for _, name := range p.implicit {
+	implicit := p.implicit
+	if p.names != nil {
+		implicit = append(append([]string(nil), implicit...), p.names()...)
+	}
+	for _, name := range implicit {
 		if name == "" {
 			continue
 		}
