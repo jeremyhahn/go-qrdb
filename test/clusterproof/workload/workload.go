@@ -26,8 +26,9 @@
 // The workload survives node loss. An operation that times out or loses its
 // connection is recorded and the client carries on: a write whose answer
 // never came is indeterminate, never ok and never fail (see Classifier). A
-// client whose connection drops dials again, moving to the next endpoint when
-// its own will not answer, so a dead node slows the run without stopping it.
+// client whose connection drops, or whose operation goes unanswered, dials
+// the next endpoint afresh, so a dead node or a half-open session slows the
+// run without stopping it.
 //
 // After the load phase, FinalRead reads every key once more, so the ledger can
 // check each key's acknowledged writes against what the cluster now holds.
@@ -317,10 +318,24 @@ func (c *client) finish(p history.Pending, kind history.Kind, out *history.Outpu
 	if outcome == history.OutcomeOK {
 		c.pause.reset()
 	}
-	if connectionLost(err) {
-		c.drop()
+	if outcome == history.OutcomeIndeterminate || connectionLost(err) {
+		c.failover()
 	}
 	return outcome
+}
+
+// failover drops the client's connection and moves it to the next endpoint.
+// A definite rejection is an answer and keeps the connection; a connection
+// whose operation was not answered -- timed out or lost -- is never trusted
+// again: a session left half-open by a kill, a pause
+// or a partition can time out every later operation without ever reporting
+// the connection lost, which pinned a client to it for the rest of a soak.
+// The next operation dials afresh on the next endpoint, so a client keeps
+// completing operations on the nodes that answer, and returns to a healed
+// node when its rotation comes back round.
+func (c *client) failover() {
+	c.drop()
+	c.endpoint = (c.endpoint + 1) % len(c.w.cfg.Endpoints)
 }
 
 func (c *client) put(ctx context.Context, key string) history.Outcome {
@@ -407,8 +422,11 @@ func (c *client) readUntilAnswered(ctx context.Context, key string) bool {
 		if answered {
 			return true
 		}
-		c.drop()
-		c.endpoint = (c.endpoint + 1) % len(c.w.cfg.Endpoints)
+		// An unanswered read has already failed the client over; a refused
+		// one moves on too, since the final read wants any node's answer.
+		if c.conn != nil {
+			c.failover()
+		}
 		c.backoff(ctx)
 	}
 	return false
