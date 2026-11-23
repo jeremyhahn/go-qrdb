@@ -143,7 +143,6 @@ type Server struct {
 	ceremonyCA        ceremony.CeremonyCA
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
-	sealStoreSvc      service.SealStoreServicer
 	tenantSvc         tenant.TenantServicer
 	volumeSvc         volume.Service
 	backupSvc         service.BackupServicer
@@ -703,13 +702,6 @@ func WithUserService(svc user.UserServicer) ServerOption {
 // WithRoleService attaches a RoleServicer for role management operations.
 func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
-}
-
-// WithSealStoreService attaches the node's seal store, served on the
-// /v1/seal-store routes (seal:store_manage). Without it the routes are not
-// registered.
-func WithSealStoreService(svc service.SealStoreServicer) ServerOption {
-	return func(s *Server) { s.sealStoreSvc = svc }
 }
 
 // WithTenantService attaches a TenantServicer for tenant lifecycle management
@@ -2300,15 +2292,6 @@ func (s *Server) registerRoutes() {
 	s.routeIf(rolesOn, http.MethodPost, "/roles/unassign", permission.RolesUnassign, s.handleUnassignRole)
 	s.routeIf(rolesOn, http.MethodGet, "/permissions", permission.PermissionsList, s.handleListPermissions)
 	s.routeIf(rolesOn, http.MethodGet, "/permissions/catalog", permission.PermissionsList, s.handleListPermissionCatalog)
-	// Seal store routes: the node's seal store, node-scoped
-	// seal:store_manage on every verb.
-	sealStoreOn := s.sealStoreSvc != nil
-	s.routeIf(sealStoreOn, http.MethodPost, "/v1/seal-store/secrets/{name}", permission.SealStoreManage, s.handleSealStorePut)
-	s.routeIf(sealStoreOn, http.MethodGet, "/v1/seal-store/secrets/{name}", permission.SealStoreManage, s.handleSealStoreGet)
-	s.routeIf(sealStoreOn, http.MethodDelete, "/v1/seal-store/secrets/{name}", permission.SealStoreManage, s.handleSealStoreDelete)
-	s.routeIf(sealStoreOn, http.MethodGet, "/v1/seal-store/secrets", permission.SealStoreManage, s.handleSealStoreList)
-	s.routeIf(sealStoreOn, http.MethodPost, "/v1/seal-store/secrets/{name}/reseal", permission.SealStoreManage, s.handleSealStoreReseal)
-	s.routeIf(sealStoreOn, http.MethodGet, "/v1/seal-store/status", permission.SealStoreManage, s.handleSealStoreStatus)
 	// The caller's own grants need authentication only: the identity is the
 	// authenticated one, never a request parameter.
 	s.routeIf(rolesOn, http.MethodGet, "/permissions/own", permission.IdentityGated, s.handleListOwnPermissions)

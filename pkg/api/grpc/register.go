@@ -132,12 +132,6 @@ func WithRegisterBarrierService(svc service.BarrierServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.barrierSvc = svc }
 }
 
-// WithRegisterSealStoreService attaches the node's seal store for the
-// registered gRPC service.
-func WithRegisterSealStoreService(svc service.SealStoreServicer) RegisterOption {
-	return func(s *qrdbServiceServer) { s.sealStoreSvc = svc }
-}
-
 // WithRegisterEncryptionMigrator attaches the enable-encryption migrator for the registered gRPC service.
 func WithRegisterEncryptionMigrator(m service.EncryptionMigrator) RegisterOption {
 	return func(s *qrdbServiceServer) { s.encMigrator = m }

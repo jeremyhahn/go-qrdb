@@ -205,12 +205,6 @@ const (
 	QRDBService_BarrierChangePassphrase_FullMethodName            = "/qrdb.v1.QRDBService/BarrierChangePassphrase"
 	QRDBService_BarrierSeal_FullMethodName                        = "/qrdb.v1.QRDBService/BarrierSeal"
 	QRDBService_BarrierStatus_FullMethodName                      = "/qrdb.v1.QRDBService/BarrierStatus"
-	QRDBService_SealStorePut_FullMethodName                       = "/qrdb.v1.QRDBService/SealStorePut"
-	QRDBService_SealStoreGet_FullMethodName                       = "/qrdb.v1.QRDBService/SealStoreGet"
-	QRDBService_SealStoreDelete_FullMethodName                    = "/qrdb.v1.QRDBService/SealStoreDelete"
-	QRDBService_SealStoreList_FullMethodName                      = "/qrdb.v1.QRDBService/SealStoreList"
-	QRDBService_SealStoreReseal_FullMethodName                    = "/qrdb.v1.QRDBService/SealStoreReseal"
-	QRDBService_SealStoreStatus_FullMethodName                    = "/qrdb.v1.QRDBService/SealStoreStatus"
 	QRDBService_BarrierClusterUnseal_FullMethodName               = "/qrdb.v1.QRDBService/BarrierClusterUnseal"
 	QRDBService_BarrierShamirInitialize_FullMethodName            = "/qrdb.v1.QRDBService/BarrierShamirInitialize"
 	QRDBService_BarrierEnableEncryption_FullMethodName            = "/qrdb.v1.QRDBService/BarrierEnableEncryption"
@@ -771,24 +765,6 @@ type QRDBServiceClient interface {
 	BarrierSeal(ctx context.Context, in *BarrierSealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierStatus returns the current barrier state.
 	BarrierStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierStatusResponse, error)
-	// SealStorePut stores a named secret in the node's seal store, the
-	// secret store beneath the node barrier. Requires seal:store_manage.
-	SealStorePut(ctx context.Context, in *SealStorePutRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	// SealStoreGet returns a named secret from the node's seal store.
-	// Requires seal:store_manage.
-	SealStoreGet(ctx context.Context, in *SealStoreNameRequest, opts ...grpc.CallOption) (*SealStoreGetResponse, error)
-	// SealStoreDelete deletes a named secret from the node's seal store.
-	// Requires seal:store_manage.
-	SealStoreDelete(ctx context.Context, in *SealStoreNameRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	// SealStoreList lists the names stored in the node's seal store.
-	// Requires seal:store_manage.
-	SealStoreList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*SealStoreListResponse, error)
-	// SealStoreReseal reseals a named secret under the current barrier key.
-	// Requires seal:store_manage.
-	SealStoreReseal(ctx context.Context, in *SealStoreNameRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	// SealStoreStatus returns the node seal store's status. Requires
-	// seal:store_manage.
-	SealStoreStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*SealStoreStatusResponse, error)
 	// BarrierClusterUnseal clears a cluster-wide seal of the node barrier. It
 	// unseals nothing: the receiving node must already have unsealed itself.
 	BarrierClusterUnseal(ctx context.Context, in *BarrierClusterUnsealRequest, opts ...grpc.CallOption) (*ClusterSealState, error)
@@ -2763,66 +2739,6 @@ func (c *qRDBServiceClient) BarrierStatus(ctx context.Context, in *emptypb.Empty
 	return out, nil
 }
 
-func (c *qRDBServiceClient) SealStorePut(ctx context.Context, in *SealStorePutRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
-	err := c.cc.Invoke(ctx, QRDBService_SealStorePut_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) SealStoreGet(ctx context.Context, in *SealStoreNameRequest, opts ...grpc.CallOption) (*SealStoreGetResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SealStoreGetResponse)
-	err := c.cc.Invoke(ctx, QRDBService_SealStoreGet_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) SealStoreDelete(ctx context.Context, in *SealStoreNameRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
-	err := c.cc.Invoke(ctx, QRDBService_SealStoreDelete_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) SealStoreList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*SealStoreListResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SealStoreListResponse)
-	err := c.cc.Invoke(ctx, QRDBService_SealStoreList_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) SealStoreReseal(ctx context.Context, in *SealStoreNameRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
-	err := c.cc.Invoke(ctx, QRDBService_SealStoreReseal_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) SealStoreStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*SealStoreStatusResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SealStoreStatusResponse)
-	err := c.cc.Invoke(ctx, QRDBService_SealStoreStatus_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *qRDBServiceClient) BarrierClusterUnseal(ctx context.Context, in *BarrierClusterUnsealRequest, opts ...grpc.CallOption) (*ClusterSealState, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ClusterSealState)
@@ -4200,24 +4116,6 @@ type QRDBServiceServer interface {
 	BarrierSeal(context.Context, *BarrierSealRequest) (*emptypb.Empty, error)
 	// BarrierStatus returns the current barrier state.
 	BarrierStatus(context.Context, *emptypb.Empty) (*BarrierStatusResponse, error)
-	// SealStorePut stores a named secret in the node's seal store, the
-	// secret store beneath the node barrier. Requires seal:store_manage.
-	SealStorePut(context.Context, *SealStorePutRequest) (*emptypb.Empty, error)
-	// SealStoreGet returns a named secret from the node's seal store.
-	// Requires seal:store_manage.
-	SealStoreGet(context.Context, *SealStoreNameRequest) (*SealStoreGetResponse, error)
-	// SealStoreDelete deletes a named secret from the node's seal store.
-	// Requires seal:store_manage.
-	SealStoreDelete(context.Context, *SealStoreNameRequest) (*emptypb.Empty, error)
-	// SealStoreList lists the names stored in the node's seal store.
-	// Requires seal:store_manage.
-	SealStoreList(context.Context, *emptypb.Empty) (*SealStoreListResponse, error)
-	// SealStoreReseal reseals a named secret under the current barrier key.
-	// Requires seal:store_manage.
-	SealStoreReseal(context.Context, *SealStoreNameRequest) (*emptypb.Empty, error)
-	// SealStoreStatus returns the node seal store's status. Requires
-	// seal:store_manage.
-	SealStoreStatus(context.Context, *emptypb.Empty) (*SealStoreStatusResponse, error)
 	// BarrierClusterUnseal clears a cluster-wide seal of the node barrier. It
 	// unseals nothing: the receiving node must already have unsealed itself.
 	BarrierClusterUnseal(context.Context, *BarrierClusterUnsealRequest) (*ClusterSealState, error)
@@ -4985,24 +4883,6 @@ func (UnimplementedQRDBServiceServer) BarrierSeal(context.Context, *BarrierSealR
 }
 func (UnimplementedQRDBServiceServer) BarrierStatus(context.Context, *emptypb.Empty) (*BarrierStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierStatus not implemented")
-}
-func (UnimplementedQRDBServiceServer) SealStorePut(context.Context, *SealStorePutRequest) (*emptypb.Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method SealStorePut not implemented")
-}
-func (UnimplementedQRDBServiceServer) SealStoreGet(context.Context, *SealStoreNameRequest) (*SealStoreGetResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method SealStoreGet not implemented")
-}
-func (UnimplementedQRDBServiceServer) SealStoreDelete(context.Context, *SealStoreNameRequest) (*emptypb.Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method SealStoreDelete not implemented")
-}
-func (UnimplementedQRDBServiceServer) SealStoreList(context.Context, *emptypb.Empty) (*SealStoreListResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method SealStoreList not implemented")
-}
-func (UnimplementedQRDBServiceServer) SealStoreReseal(context.Context, *SealStoreNameRequest) (*emptypb.Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method SealStoreReseal not implemented")
-}
-func (UnimplementedQRDBServiceServer) SealStoreStatus(context.Context, *emptypb.Empty) (*SealStoreStatusResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method SealStoreStatus not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierClusterUnseal(context.Context, *BarrierClusterUnsealRequest) (*ClusterSealState, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierClusterUnseal not implemented")
@@ -8369,114 +8249,6 @@ func _QRDBService_BarrierStatus_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
-func _QRDBService_SealStorePut_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SealStorePutRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).SealStorePut(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_SealStorePut_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).SealStorePut(ctx, req.(*SealStorePutRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_SealStoreGet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SealStoreNameRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).SealStoreGet(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_SealStoreGet_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).SealStoreGet(ctx, req.(*SealStoreNameRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_SealStoreDelete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SealStoreNameRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).SealStoreDelete(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_SealStoreDelete_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).SealStoreDelete(ctx, req.(*SealStoreNameRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_SealStoreList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).SealStoreList(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_SealStoreList_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).SealStoreList(ctx, req.(*emptypb.Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_SealStoreReseal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SealStoreNameRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).SealStoreReseal(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_SealStoreReseal_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).SealStoreReseal(ctx, req.(*SealStoreNameRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_SealStoreStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).SealStoreStatus(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_SealStoreStatus_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).SealStoreStatus(ctx, req.(*emptypb.Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _QRDBService_BarrierClusterUnseal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BarrierClusterUnsealRequest)
 	if err := dec(in); err != nil {
@@ -10801,30 +10573,6 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "BarrierStatus",
 			Handler:    _QRDBService_BarrierStatus_Handler,
-		},
-		{
-			MethodName: "SealStorePut",
-			Handler:    _QRDBService_SealStorePut_Handler,
-		},
-		{
-			MethodName: "SealStoreGet",
-			Handler:    _QRDBService_SealStoreGet_Handler,
-		},
-		{
-			MethodName: "SealStoreDelete",
-			Handler:    _QRDBService_SealStoreDelete_Handler,
-		},
-		{
-			MethodName: "SealStoreList",
-			Handler:    _QRDBService_SealStoreList_Handler,
-		},
-		{
-			MethodName: "SealStoreReseal",
-			Handler:    _QRDBService_SealStoreReseal_Handler,
-		},
-		{
-			MethodName: "SealStoreStatus",
-			Handler:    _QRDBService_SealStoreStatus_Handler,
 		},
 		{
 			MethodName: "BarrierClusterUnseal",

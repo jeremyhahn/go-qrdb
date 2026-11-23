@@ -45,6 +45,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -53,6 +54,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // expectedToolPerms is the authoritative tool -> permission table for the MCP
@@ -180,12 +182,6 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_permissions_own":                    permission.IdentityGated,
 	"qrdb_permissions_catalog":                permission.PermissionsList,
 	"qrdb_permissions_authorize":              permission.IdentityGated,
-	"qrdb_seal_store_put":                     permission.SealStoreManage,
-	"qrdb_seal_store_get":                     permission.SealStoreManage,
-	"qrdb_seal_store_delete":                  permission.SealStoreManage,
-	"qrdb_seal_store_list":                    permission.SealStoreManage,
-	"qrdb_seal_store_reseal":                  permission.SealStoreManage,
-	"qrdb_seal_store_status":                  permission.SealStoreManage,
 	"qrdb_role_reconcile_builtin":             permission.RolesCreate,
 	"qrdb_role_reconcile_builtin_all_tenants": permission.RolesReconcileAll,
 	"qrdb_cert_issue":                         permission.CertsIssue,
@@ -443,7 +439,6 @@ func newFullyWiredGuardServer(t *testing.T, extra ...ServerOption) *Server {
 		WithRAG(&mockRAGSvc{}),
 		WithUserService(&mockUserService{}),
 		WithRoleService(&mockRoleService{}),
-		WithSealStoreService(newStubSealStore()),
 		WithCertProvider(&mockCertProvider{}),
 		WithCertEnrollment(&fakeCertEnrollTool{}),
 		WithCollectionService(newMockCollectionService()),
@@ -595,5 +590,44 @@ func TestToolMappingGuard_DefaultDenyRegression(t *testing.T) {
 	}
 	if authz.calls != 4 {
 		t.Errorf("authorizer consulted %d times for allowed tools, want 4", authz.calls)
+	}
+}
+
+// namesSealStore reports whether name, lowercased with non-letters removed,
+// contains "sealstore".
+func namesSealStore(name string) bool {
+	letters := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c >= 'a' && c <= 'z' {
+			letters = append(letters, c)
+		}
+	}
+	return strings.Contains(string(letters), "sealstore")
+}
+
+// TestToolMappingGuard_NoEmbeddedOnlyTools: the seal-store verbs are
+// embedded-only (ruling 1234, transport.EmbeddedOnlyOperations), so neither
+// the fully wired server nor the sealed-window catalogue serves a seal-store
+// tool.
+func TestToolMappingGuard_NoEmbeddedOnlyTools(t *testing.T) {
+	srv := newFullyWiredGuardServer(t)
+	for name := range srv.MCPServer().ListTools() {
+		if namesSealStore(name) {
+			t.Errorf("MCP tool %q serves an embedded-only seal-store verb (%v)", name, transport.EmbeddedOnlyOperations)
+		}
+	}
+	for _, st := range builtinToolCatalogue() {
+		if namesSealStore(st.Tool.Name) {
+			t.Errorf("builtin (sealed-window) catalogue names embedded-only seal-store tool %q", st.Tool.Name)
+		}
+	}
+	for name := range expectedToolPerms {
+		if namesSealStore(name) {
+			t.Errorf("expectedToolPerms lists embedded-only seal-store tool %q", name)
+		}
 	}
 }

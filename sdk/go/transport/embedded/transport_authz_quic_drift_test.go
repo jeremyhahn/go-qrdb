@@ -82,8 +82,8 @@ import (
 //     declarations in transport_authz_coverage_test.go, not this table.
 //
 // A QUIC method in neither map fails the test outright (missingCoverage,
-// below): every one of QUIC's 294 current entries is accounted for by
-// construction, so a 295th method added without updating EITHER map is the
+// below): every one of QUIC's 235 current entries is accounted for by
+// construction, so a 236th method added without updating EITHER map is the
 // condition this guard exists to catch.
 var quicToEmbeddedMethod = map[string]string{
 	"admin.AddMember":               "AddMember",
@@ -233,12 +233,6 @@ var quicToEmbeddedMethod = map[string]string{
 	"role.ListPermissions":          "ListPermissions",
 	"role.ListPermissionCatalog":    "PermissionClient.List",
 	"role.ResolvePermissions":       "ResolvePermissions",
-	"sealstore.Delete":              "SealStoreDelete",
-	"sealstore.Get":                 "SealStoreGet",
-	"sealstore.List":                "SealStoreList",
-	"sealstore.Put":                 "SealStorePut",
-	"sealstore.Reseal":              "SealStoreReseal",
-	"sealstore.Status":              "SealStoreStatus",
 	"sql.Query":                     "Query",
 	"ts.Aggregate":                  "TSAggregate",
 	"ts.DeleteSeries":               "TSDeleteSeries",

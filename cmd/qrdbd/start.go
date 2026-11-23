@@ -2931,12 +2931,6 @@ func runStart(f *startFlags) (err error) {
 			if pinBackend != nil {
 				serverOpts = append(serverOpts, server.WithPINBackend(pinBackend))
 			}
-			// The seal store is served on the unsealed node's server too, not
-			// only on the sealed-phase server awaitUnseal builds; sealSub is
-			// nil on plaintext deployments, which have no seal store.
-			if sealSub != nil && sealSub.SealStoreSvc != nil {
-				serverOpts = append(serverOpts, server.WithSealStoreService(sealSub.SealStoreSvc))
-			}
 			if ceremonySvc != nil {
 				serverOpts = append(serverOpts, server.WithCeremonyService(ceremonySvc))
 			}

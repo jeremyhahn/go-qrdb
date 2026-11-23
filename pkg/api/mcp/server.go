@@ -68,7 +68,6 @@ type Server struct {
 	ragSvc       service.RAGServicer
 	userSvc      user.UserServicer
 	roleSvc      role.RoleServicer
-	sealStoreSvc service.SealStoreServicer
 	certProv     cert.CertProvider
 	certEnroll   service.CertEnrollmentServicer
 	invitations  service.InvitationServicer
@@ -442,14 +441,6 @@ func WithUserService(svc user.UserServicer) ServerOption {
 func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) {
 		s.roleSvc = svc
-	}
-}
-
-// WithSealStoreService serves the node seal store as the qrdb_seal_store_*
-// tools, each gated by seal:store_manage.
-func WithSealStoreService(svc service.SealStoreServicer) ServerOption {
-	return func(s *Server) {
-		s.sealStoreSvc = svc
 	}
 }
 
@@ -881,9 +872,6 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	if s.roleSvc != nil && s.userSvc != nil {
 		s.addTools(roleTools(s.roleSvc, s.userSvc, s.authMW)...)
-	}
-	if s.sealStoreSvc != nil {
-		s.addTools(sealStoreTools(s.sealStoreSvc)...)
 	}
 	if s.roleSvc != nil && s.tenantSvc != nil {
 		s.addTools(roleReconcileAllTools(s.roleSvc, s.tenantSvc)...)
