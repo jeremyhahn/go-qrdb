@@ -3013,16 +3013,18 @@ func waitForNodeToTrustClient(t *testing.T, client *http.Client, adminPort int, 
 
 	url := fmt.Sprintf("https://127.0.0.1:%d/health", adminPort)
 	var lastErr error
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	ok := pollUntil(timeout, 250*time.Millisecond, func() bool {
 		resp, err := client.Get(url)
 		if err == nil {
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
-			return
+			return true
 		}
 		lastErr = err
-		time.Sleep(250 * time.Millisecond)
+		return false
+	})
+	if ok {
+		return
 	}
 	t.Fatalf("node on port %d did not accept the client certificate within %v: %v", adminPort, timeout, lastErr)
 }
