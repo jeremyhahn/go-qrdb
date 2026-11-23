@@ -1040,11 +1040,13 @@ func blockedRenewal(t *testing.T, keepAliveErr error) (Lease, *fakeLease, chan s
 	// Let the keepalive reach the fake and block there, so what follows really
 	// does exercise the in-flight window rather than racing past it.
 	waitUntil := time.Now().Add(time.Second)
+	poll := time.NewTicker(5 * time.Millisecond)
+	defer poll.Stop()
 	for lease.keepAlives() == 0 {
 		if time.Now().After(waitUntil) {
 			t.Fatal("the keepalive never reached the transport: the in-flight window was never entered")
 		}
-		time.Sleep(5 * time.Millisecond)
+		<-poll.C
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("the renewal reached the transport only after %v of a 4s lifetime, "+

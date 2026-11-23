@@ -356,11 +356,10 @@ func TestCertReloader_FileWatch_IgnoresUnrelatedFiles(t *testing.T) {
 	unrelated := filepath.Join(dir, "unrelated.txt")
 	require.NoError(t, os.WriteFile(unrelated, []byte("hello"), 0o600))
 
-	// Give sufficient time for any spurious reload.
-	time.Sleep(300 * time.Millisecond)
-
-	current := r.cert.Load()
-	assert.Equal(t, origLoaded, current,
+	// Observe the reloader for three debounce intervals: no spurious reload.
+	assert.Never(t, func() bool {
+		return r.cert.Load() != origLoaded
+	}, 300*time.Millisecond, 10*time.Millisecond,
 		"writing an unrelated file must not trigger a reload")
 }
 
@@ -469,11 +468,10 @@ func TestCertReloader_Stop_NoReloadAfterStop(t *testing.T) {
 	require.NoError(t, os.WriteFile(certPath, newCert, 0o600))
 	require.NoError(t, os.WriteFile(keyPath, newKey, 0o600))
 
-	// Wait longer than debounce interval.
-	time.Sleep(300 * time.Millisecond)
-
-	current := r.cert.Load()
-	assert.Equal(t, origLoaded, current,
+	// Observe the reloader for three debounce intervals: no reload after Stop.
+	assert.Never(t, func() bool {
+		return r.cert.Load() != origLoaded
+	}, 300*time.Millisecond, 10*time.Millisecond,
 		"filesystem events after Stop must not trigger a reload")
 }
 
