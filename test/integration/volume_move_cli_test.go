@@ -31,9 +31,11 @@ type cliVolumePoolMoveJSON struct {
 // "stranger", that no tenant is entitled to. Per transport a volume tenant
 // placed on "default" starts a move to "second": move-tenant and get-move show
 // it, cancel-move aborts it, get-move follows it until it ends, and a
-// cancelled tenant stays on "default". The test does not wait for a cut over,
-// because the copy step cannot yet reopen the tenant's barrier store from the
-// destination while the source store stays registered. Refusals on every transport: a tenant
+// cancelled tenant stays on "default". Per transport a second volume tenant on
+// "default" moves to "second" without a cancel: get-move follows the move
+// until it is gone, the tenant is then on "second", the key it wrote before
+// the move reads back over its own CLI identity, and a write after the move
+// reads back too. Refusals on every transport: a tenant
 // with no move answers not found to get-move and cancel-move, a move to a
 // pool the tenant is not entitled to is refused, and a principal without
 // volume_pools:move is refused and starts nothing. The refusal of a move from
@@ -46,7 +48,12 @@ func TestVolumePool_CLI_MoveTenant_PerProtocol(t *testing.T) {
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
-			testVolumeMoveOverProtocol(t, node, proto)
+			t.Run("cancel", func(t *testing.T) {
+				testVolumeMoveOverProtocol(t, node, proto)
+			})
+			t.Run("complete", func(t *testing.T) {
+				testVolumeMoveCompletesOverProtocol(t, node, proto)
+			})
 		})
 	}
 }
@@ -169,6 +176,74 @@ func testVolumeMoveOverProtocol(t *testing.T, node *multiProtoNode, proto multiP
 		if pool := volumeMoveTenantPool(t, node, proto, tenantID); pool != "default" {
 			t.Fatalf("[%s] after cancel-move tenant %s is on pool %q, want default", proto.name, tenantID, pool)
 		}
+	}
+}
+
+// testVolumeMoveCompletesOverProtocol moves a fresh volume tenant from
+// "default" to "second" over proto and proves the move completed: the tenant
+// is placed on "second" and its data, written before the move, reads back
+// over its own CLI identity, as does a write made after it.
+func testVolumeMoveCompletesOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	suffix := fmt.Sprintf("%s-%d", strings.ToLower(proto.name), time.Now().UnixNano())
+	tenantID := "vc-" + suffix
+	dbName := "moved-" + suffix
+	const key, afterKey = "greeting", "after"
+	value := "before-the-move-" + suffix
+	afterValue := "after-the-move-" + suffix
+
+	createTenant(t, node, proto, tenantID, "Moved Tenant", "volume", true)
+	if pool := volumeMoveTenantPool(t, node, proto, tenantID); pool != "default" {
+		t.Fatalf("[%s] tenant %s placed on pool %q, want default", proto.name, tenantID, pool)
+	}
+	certPath, keyPath := provisionTenantIdentity(t, node, tenantID, "mover", dataPlanePermissions)
+	conn := tenantCLIArgsForProto(node, proto, certPath, keyPath)
+	if out, err := runQRDB(t, node.cli, conn, "database", "create", dbName, "--backend", "pebble"); err != nil {
+		t.Fatalf("[%s] tenant database create: %v\noutput: %s", proto.name, err, out)
+	}
+	if out, err := runQRDB(t, node.cli, conn, "--database", dbName, "kv", "put", key, value); err != nil {
+		t.Fatalf("[%s] tenant kv put: %v\noutput: %s", proto.name, err, out)
+	}
+
+	out, err := runCLIProto(t, node, proto, "--output", "json", "volume-pool", "move-tenant", tenantID, "--to", "second")
+	if err != nil {
+		t.Fatalf("[%s] volume-pool move-tenant: %v\noutput: %s", proto.name, err, out)
+	}
+
+	deadline := time.Now().Add(volumeMoveDeadline)
+	for {
+		out, err = runCLIProto(t, node, proto, "--output", "json", "volume-pool", "get-move", tenantID)
+		if err != nil {
+			if !volumeMoveIsNoMove(out) {
+				t.Fatalf("[%s] volume-pool get-move: %v\noutput: %s", proto.name, err, out)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("[%s] move of %s did not end within %s; last get-move: %s", proto.name, tenantID, volumeMoveDeadline, out)
+		}
+	}
+
+	if pool := volumeMoveTenantPool(t, node, proto, tenantID); pool != "second" {
+		t.Fatalf("[%s] after the move tenant %s is on pool %q, want second", proto.name, tenantID, pool)
+	}
+	out, err = runQRDB(t, node.cli, conn, "--database", dbName, "kv", "get", key)
+	if err != nil {
+		t.Fatalf("[%s] tenant kv get after the move: %v\noutput: %s", proto.name, err, out)
+	}
+	if !strings.Contains(out, value) {
+		t.Fatalf("[%s] kv get %s after the move = %q, want %q", proto.name, key, out, value)
+	}
+	if out, err := runQRDB(t, node.cli, conn, "--database", dbName, "kv", "put", afterKey, afterValue); err != nil {
+		t.Fatalf("[%s] tenant kv put after the move: %v\noutput: %s", proto.name, err, out)
+	}
+	out, err = runQRDB(t, node.cli, conn, "--database", dbName, "kv", "get", afterKey)
+	if err != nil {
+		t.Fatalf("[%s] tenant kv get of the post-move key: %v\noutput: %s", proto.name, err, out)
+	}
+	if !strings.Contains(out, afterValue) {
+		t.Fatalf("[%s] kv get %s after the move = %q, want %q", proto.name, afterKey, out, afterValue)
 	}
 }
 
