@@ -84,8 +84,9 @@ func planSO(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmentMo
 		return nil, err
 	}
 	// Tenant create is handed the PIN itself; a hashed record is first
-	// boot's hand-off alone.
-	if so.PIN == nil {
+	// boot's hand-off alone, so it never stands in for a missing or
+	// destroyed PIN here.
+	if !so.PIN.IsAlive() {
 		return nil, &firstboot.IncompleteSOError{Field: "so_pin"}
 	}
 	// The SO is told apart from the admin, or found to be it, by key as well
