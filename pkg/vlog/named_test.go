@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -840,6 +841,129 @@ func TestChain_DropDatabase_ReclaimsEveryLogOfTheDatabase(t *testing.T) {
 	}
 	if first, err := restored.AppendEntries(stg, testLog, entries(0, 1)); err != nil || first != 0 {
 		t.Fatalf("AppendEntries to the recreated log = %d, %v; want index 0", first, err)
+	}
+}
+
+// tableKeys lists every key of stg under prefix, in order.
+func tableKeys(t *testing.T, stg storage.Storage, prefix []byte) []string {
+	t.Helper()
+	it := stg.NewIterator(&storage.IteratorOptions{LowerBound: prefix, UpperBound: prefixEnd(prefix)})
+	var keys []string
+	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+		keys = append(keys, string(it.Key()))
+	}
+	if err := it.Error(); err != nil {
+		t.Fatalf("iterate: %v", err)
+	}
+	_ = it.Close()
+	return keys
+}
+
+// dropScenario runs, on a committed log of testLog's database and one of
+// another database, the commands Create sibling, AppendEntries to both logs,
+// optionally ExpireBodies, then DropDatabase until it reports 0: all in one
+// Update when packed, else each in its own. It returns every key left in the
+// table, the records the drop reported deleted and, unpacked, the records
+// under the database's prefix just before the drop.
+func dropScenario(t *testing.T, packed, expire bool) (remaining []string, deleted, before int) {
+	t.Helper()
+	c, stg := mustCreate(t, true)
+	other := LogID{TenantID: testLog.TenantID, Database: "other", Log: testLog.Log}
+	if err := c.Create(stg, other, testDescriptor(true)); err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+	for _, id := range []LogID{testLog, other} {
+		if _, err := c.AppendEntries(stg, id, entries(0, 2)); err != nil {
+			t.Fatalf("AppendEntries %v: %v", id, err)
+		}
+	}
+	sibling := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "keys"}
+	dbPrefix := []byte(LogTablePrefix + testLog.TenantID + "/" + testLog.Database + "/")
+
+	b := &batch{}
+	begin := func() {
+		if !packed {
+			c.BeginUpdate()
+			b = &batch{}
+		}
+	}
+	end := func() {
+		if !packed {
+			b.commit(t, stg)
+		}
+	}
+	c.BeginUpdate()
+	begin()
+	if err := c.Create(b, sibling, testDescriptor(true)); err != nil {
+		t.Fatalf("Create sibling: %v", err)
+	}
+	end()
+	begin()
+	if _, err := c.AppendEntries(b, testLog, entries(2, 5)); err != nil {
+		t.Fatalf("AppendEntries: %v", err)
+	}
+	end()
+	begin()
+	if _, err := c.AppendEntries(b, sibling, entries(0, 3)); err != nil {
+		t.Fatalf("AppendEntries sibling: %v", err)
+	}
+	end()
+	if expire {
+		begin()
+		if got, err := c.ExpireBodies(b, testLog, 4); err != nil || got != 4 {
+			t.Fatalf("ExpireBodies = %d, %v; want 4", got, err)
+		}
+		end()
+	}
+	if !packed {
+		before = len(tableKeys(t, stg, dbPrefix))
+	}
+	for commands := 0; ; commands++ {
+		if commands > 10 {
+			t.Fatal("DropDatabase did not converge")
+		}
+		begin()
+		got, err := c.DropDatabase(stg, b, testLog.TenantID, testLog.Database, "")
+		end()
+		if err != nil {
+			t.Fatalf("DropDatabase: %v", err)
+		}
+		if got == 0 {
+			break
+		}
+		deleted += got
+	}
+	if packed {
+		b.commit(t, stg)
+	}
+
+	if left := tableKeys(t, stg, dbPrefix); len(left) != 0 {
+		t.Fatalf("records %q of the dropped database remain", left)
+	}
+	if err := NewChain().Restore(stg); err != nil {
+		t.Fatalf("Restore after the drop: %v", err)
+	}
+	return tableKeys(t, stg, []byte(LogTablePrefix)), deleted, before
+}
+
+func TestChain_DropDatabase_PackedBatchMatchesSeparateUpdates(t *testing.T) {
+	for _, expire := range []bool{false, true} {
+		t.Run("expire="+strconv.FormatBool(expire), func(t *testing.T) {
+			packed, packedDeleted, _ := dropScenario(t, true, expire)
+			separate, separateDeleted, before := dropScenario(t, false, expire)
+			if !slices.Equal(packed, separate) {
+				t.Fatalf("packed drop leaves %q; separate Updates leave %q", packed, separate)
+			}
+			if len(packed) == 0 {
+				t.Fatal("the other database's log was reclaimed too")
+			}
+			if separateDeleted != before {
+				t.Fatalf("separate drop reported %d deleted; the database held %d records", separateDeleted, before)
+			}
+			if packedDeleted != separateDeleted {
+				t.Fatalf("packed drop reported %d deleted; separate Updates %d", packedDeleted, separateDeleted)
+			}
+		})
 	}
 }
 

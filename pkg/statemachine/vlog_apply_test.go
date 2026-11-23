@@ -20,9 +20,11 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
@@ -321,6 +323,105 @@ func mustApply(t *testing.T, logs *vlog.Chain, stg *memory.MemoryStorage, payloa
 		t.Fatalf("refused: %+v", res)
 	}
 	return res.Value
+}
+
+// bufferedBatch is an apply batch: writes are buffered and reach the storage
+// only at commit, so a reader of the storage does not see them before.
+type bufferedBatch struct {
+	ops []struct {
+		key, value []byte
+		del        bool
+	}
+}
+
+func (b *bufferedBatch) Set(key, value []byte) error {
+	b.ops = append(b.ops, struct {
+		key, value []byte
+		del        bool
+	}{key: bytes.Clone(key), value: bytes.Clone(value)})
+	return nil
+}
+
+func (b *bufferedBatch) Delete(key []byte) error {
+	b.ops = append(b.ops, struct {
+		key, value []byte
+		del        bool
+	}{key: bytes.Clone(key), del: true})
+	return nil
+}
+
+func (b *bufferedBatch) commit(t *testing.T, stg *memory.MemoryStorage) {
+	t.Helper()
+	for _, op := range b.ops {
+		var err error
+		if op.del {
+			err = stg.Delete(op.key)
+		} else {
+			err = stg.Set(op.key, op.value)
+		}
+		if err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+	}
+	b.ops = nil
+}
+
+func TestApplyVerifiableLog_AppendAndDropInOneBatch(t *testing.T) {
+	p := payloadOf(t)
+	run := func(packed bool) (*memory.MemoryStorage, uint64) {
+		logs, stg := vlog.NewChain(), memory.NewStorage()
+		desc := applyDescriptor(false)
+		desc.Incarnation = "inc-1"
+		mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogCreate(applyLog, desc)))
+		mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogAppend(applyLog, [][]byte{[]byte("a")})))
+
+		var deleted uint64
+		logs.BeginUpdate()
+		b := &bufferedBatch{}
+		for _, payload := range [][]byte{
+			p(protocol.EncodeVerifiableLogAppend(applyLog, [][]byte{[]byte("b"), []byte("c"), []byte("d")})),
+			p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database, "inc-1")),
+		} {
+			res, err := ApplyVerifiableLog(logs, stg, b, payload)
+			if err != nil {
+				t.Fatalf("ApplyVerifiableLog: %v", err)
+			}
+			if _, ok := protocol.DecodeAppError(res.Data); ok {
+				t.Fatalf("refused: %+v", res)
+			}
+			deleted = res.Value
+			if !packed {
+				b.commit(t, stg)
+				logs.BeginUpdate()
+			}
+		}
+		b.commit(t, stg)
+		if err := vlog.NewChain().Restore(stg); err != nil {
+			t.Fatalf("Restore after the drop: %v", err)
+		}
+		if _, err := vlog.ReadHead(stg, applyLog); err == nil {
+			t.Fatal("ReadHead of the dropped log succeeded")
+		}
+		return stg, deleted
+	}
+	packedStg, packed := run(true)
+	separateStg, separate := run(false)
+	if packed != separate {
+		t.Fatalf("packed drop deleted %d records; separate applies %d", packed, separate)
+	}
+	keys := func(stg *memory.MemoryStorage) []string {
+		it := stg.NewIterator(&storage.IteratorOptions{})
+		var out []string
+		for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+			out = append(out, string(it.Key()))
+		}
+		_ = it.Close()
+		return out
+	}
+	pk, sk := keys(packedStg), keys(separateStg)
+	if !slices.Equal(pk, sk) {
+		t.Fatalf("packed apply leaves %q; separate applies leave %q", pk, sk)
+	}
 }
 
 // TestApplyVerifiableLog_CreateWithKey covers a Create carrying the log's

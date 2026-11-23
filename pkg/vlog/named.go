@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -323,6 +324,124 @@ func (c *Chain) stagedGet(r storage.Reader) getFunc {
 	}
 }
 
+// stagingWriter is the Writer the named-log commands stage through: every
+// Set and Delete reaching w is mirrored into c.staged (a deletion as a nil
+// value), so a later command of the same Update reads and enumerates the
+// batch as it will commit, whatever r sees. The caller holds c.mu.
+type stagingWriter struct {
+	c *Chain
+	w Writer
+}
+
+func (s stagingWriter) Set(key, value []byte) error {
+	if err := s.w.Set(key, value); err != nil {
+		return err
+	}
+	if value == nil {
+		value = []byte{}
+	}
+	s.c.staged[string(key)] = value
+	return nil
+}
+
+func (s stagingWriter) Delete(key []byte) error {
+	if err := s.w.Delete(key); err != nil {
+		return err
+	}
+	s.c.staged[string(key)] = nil
+	return nil
+}
+
+// staging wraps w so its writes are recorded in c.staged; a Writer already
+// wrapped is returned as is. The caller holds c.mu.
+func (c *Chain) staging(w Writer) Writer {
+	if s, ok := w.(stagingWriter); ok && s.c == c {
+		return w
+	}
+	return stagingWriter{c: c, w: w}
+}
+
+// batchCursor walks the keys under one prefix as the current Update will
+// leave them: the committed iterator's keys merged, in order, with the keys
+// staged under the prefix, less every key the Update deleted.
+type batchCursor struct {
+	it     storage.Iterator
+	itOK   bool
+	staged map[string][]byte
+	keys   []string // staged keys under the prefix, sorted
+	si     int
+	key    []byte
+	fromIt bool
+	fromS  bool
+}
+
+func newBatchCursor(it storage.Iterator, staged map[string][]byte, prefix []byte) *batchCursor {
+	b := &batchCursor{it: it, staged: staged}
+	for k := range staged {
+		if strings.HasPrefix(k, string(prefix)) {
+			b.keys = append(b.keys, k)
+		}
+	}
+	slices.Sort(b.keys)
+	return b
+}
+
+func (b *batchCursor) first() bool {
+	b.itOK, b.si = b.it.SeekToFirst(), 0
+	return b.settle()
+}
+
+func (b *batchCursor) next() bool {
+	b.advance()
+	return b.settle()
+}
+
+func (b *batchCursor) seek(target []byte) bool {
+	b.itOK = b.it.Seek(target)
+	for b.si < len(b.keys) && b.keys[b.si] < string(target) {
+		b.si++
+	}
+	return b.settle()
+}
+
+func (b *batchCursor) advance() {
+	if b.fromIt {
+		b.itOK = b.it.Next()
+	}
+	if b.fromS {
+		b.si++
+	}
+}
+
+func (b *batchCursor) settle() bool {
+	for {
+		b.itOK = b.itOK && b.it.Valid()
+		hasS := b.si < len(b.keys)
+		if !b.itOK && !hasS {
+			return false
+		}
+		b.fromIt, b.fromS = b.itOK, hasS
+		if b.itOK && hasS {
+			switch cmp := bytes.Compare(b.it.Key(), []byte(b.keys[b.si])); {
+			case cmp < 0:
+				b.fromS = false
+			case cmp > 0:
+				b.fromIt = false
+			}
+		}
+		if b.fromIt {
+			b.key = bytes.Clone(b.it.Key())
+		} else {
+			b.key = []byte(b.keys[b.si])
+		}
+		if v, ok := b.staged[string(b.key)]; ok && v == nil {
+			b.advance()
+			continue
+		}
+		return true
+	}
+}
+
 // Create stages a new log's descriptor and empty head into w. It refuses an
 // invalid name or descriptor, a descriptor recording more than the first key,
 // and a log that already exists. A key the descriptor records is held by its
@@ -366,6 +485,7 @@ func (c *Chain) create(w Writer, id LogID, desc Descriptor, key *SigningKey) err
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	w = c.staging(w)
 
 	if c.auditInstanceLocked(id) {
 		return &ReservedLogError{ID: id}
@@ -412,6 +532,7 @@ func (c *Chain) RotateKey(r storage.Reader, w Writer, id LogID, next HeadKey, re
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	w = c.staging(w)
 
 	if _, ok := c.logs[id]; !ok {
 		return &LogNotFoundError{ID: id}
@@ -454,6 +575,7 @@ func (c *Chain) AppendEntries(w Writer, id LogID, entries [][]byte) (first uint6
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	w = c.staging(w)
 
 	if c.auditInstanceLocked(id) {
 		return 0, &ReservedLogError{ID: id}
@@ -537,6 +659,7 @@ func (c *Chain) Checkpoint(r storage.Reader, w Writer, id LogID, size uint64, ro
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	w = c.staging(w)
 
 	st, ok := c.logs[id]
 	if !ok {
@@ -589,6 +712,7 @@ func (c *Chain) ExpireBodies(w Writer, id LogID, cutoff uint64) (expired int, er
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	w = c.staging(w)
 
 	if c.auditInstanceLocked(id) {
 		// The audit instance's retention is audit Prune (OpAuditPrune),
@@ -632,6 +756,12 @@ func (c *Chain) ExpireBodies(w Writer, id LogID, cutoff uint64) (expired int, er
 // last, in the call that deletes its final other record, so a node restored
 // between two calls finds every remaining log whole (restoreLogs refuses a
 // descriptor without a head).
+//
+// The records it walks are r's merged with the current Update's staged
+// writes and deletions: a log created, or entries, nodes, checkpoints or keys
+// staged earlier in the same apply batch are reclaimed too, and a record the
+// batch already deleted is neither deleted again nor counted, so the result
+// does not depend on how commands are packed into batches.
 func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database, incarnation string) (deleted int, err error) {
 	if tenantID == "" || database == "" || strings.ContainsRune(tenantID, '/') || strings.ContainsRune(database, '/') {
 		return 0, &InvalidLogNameError{Name: tenantID + "/" + database}
@@ -648,7 +778,9 @@ func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database, inc
 	prefix = append(prefix, '/')
 	audit := AuditLogID(tenantID)
 
+	w = c.staging(w)
 	it := r.NewIterator(&storage.IteratorOptions{LowerBound: prefix, UpperBound: prefixEnd(prefix)})
+	cur := newBatchCursor(it, c.staged, prefix)
 	var (
 		complete []LogID
 		current  LogID
@@ -656,15 +788,15 @@ func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database, inc
 		budget   = MaxPrunePerCommand
 	)
 	exhausted := false
-	for ok := it.SeekToFirst(); ok && it.Valid(); {
-		key := bytes.Clone(it.Key())
+	for ok := cur.first(); ok; {
+		key := cur.key
 		id, idPrefix, parsed := parseLogPrefix(key)
 		if !parsed {
 			_ = it.Close()
 			return deleted, &CorruptTableError{Key: string(key), Reason: "key outside any log's prefix"}
 		}
 		if id == audit {
-			ok = it.Seek(prefixEnd(idPrefix))
+			ok = cur.seek(prefixEnd(idPrefix))
 			continue
 		}
 		if !seen || id != current {
@@ -674,7 +806,7 @@ func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database, inc
 				return deleted, err
 			}
 			if other {
-				ok = it.Seek(prefixEnd(idPrefix))
+				ok = cur.seek(prefixEnd(idPrefix))
 				continue
 			}
 		}
@@ -683,7 +815,7 @@ func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database, inc
 		}
 		current, seen = id, true
 		if bytes.Equal(key, descriptorKey(id)) || bytes.Equal(key, logHeadKey(id)) {
-			ok = it.Next()
+			ok = cur.next()
 			continue
 		}
 		if budget == 0 {
@@ -696,7 +828,7 @@ func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database, inc
 		}
 		deleted++
 		budget--
-		ok = it.Next()
+		ok = cur.next()
 	}
 	if err := it.Error(); err != nil {
 		_ = it.Close()

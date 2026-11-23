@@ -137,6 +137,13 @@ allowed.
   and droppable on retry.
 - F5 (dedicated tenants' drops): a drop needs no log work for a tenant
   without verifiable logs (volume or raft isolation), so their drops succeed.
+- Codex round 2 P1 (batch-dependent reclamation): `vlog.Chain.DropDatabase`
+  walks committed storage merged with the current Update's staged writes and
+  deletions, so a log created or appended earlier in the same apply batch is
+  reclaimed whole and a record the batch already deleted is not counted
+  again; packed and separate applies leave the same table
+  (`TestChain_DropDatabase_PackedBatchMatchesSeparateUpdates`,
+  `TestApplyVerifiableLog_AppendAndDropInOneBatch`).
 
 ## Remains
 
