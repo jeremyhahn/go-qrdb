@@ -1,24 +1,15 @@
 # go-qrdb specification
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-20
-> Conflicts with this document are defects. Fix them here first.
-> **Rules of this file.** This project carries `docs/SPEC.md` (what it is, and every feature with its requirements and status) and [`ROADMAP.md`](../ROADMAP.md) (what is complete and what remains). The two agree. A feature listed here, in any status, is never deleted: not its docs, its code or its issues. Removing or re-scoping a feature needs the owner's change to this file. The feature folders `docs/<feature>/` stay the detail behind each row. The owner approves this file and ROADMAP.md before they merge.
+> Conflicts with this document are defects. Fix them here first. **Rules of this file.** This project carries `docs/SPEC.md` (what it is, and every feature with its requirements and status) and [`ROADMAP.md`](../ROADMAP.md) (what is complete and what remains). The two agree. A feature listed here, in any status, is never deleted: not its docs, its code or its issues. Removing or re-scoping a feature needs the owner's change to this file. The feature folders `docs/<feature>/` stay the detail behind each row. The owner approves this file and ROADMAP.md before they merge.
 
 ## Purpose
 
-go-qrdb (QuicRaft DB) is the cluster engine and database system for every project in the stack. The stack is one product in layers, each project a library and framework for the one above, inheriting all of its functionality and re-exporting every lower service through its own SDK. go-qrdb embeds go-quicraft, the Raft library, and builds on it a distributed key-value store and the database services over it, run embedded, standalone or Raft-clustered. Its SDK, `sdk/go`, and its service interfaces are the base of everything above:
-
-- go-xkms adds hardware crypto, auth factors, KMS, CA, ACME and TPM policies as services on top of go-qrdb through the `ServiceModule` abstraction, so the go-qrdb client works unchanged against an xkms node;
-- go-quicbaas, the application-layer framework, exposes the database services via go-qrdb and composes go-xkms on top with the hardware crypto implementations passed in, so every go-qrdb seam is filled by hardware crypto.
-
-Terms: [GLOSSARY.md](GLOSSARY.md).
+go-qrdb (QuicRaft DB) is the cluster engine and database system for every project in the stack. The stack is one product in layers, each project a library and framework for the one above, inheriting all of its functionality and re-exporting every lower service through its own SDK. go-qrdb embeds go-quicraft, the Raft library, and builds on it a distributed key-value store and the database services over it, run embedded, standalone or Raft-clustered. Its SDK, `sdk/go`, and its service interfaces are the base of everything above: go-xkms adds hardware crypto, auth factors, KMS, CA, ACME and TPM policies as services on top of go-qrdb through the `ServiceModule` abstraction, so the go-qrdb client works unchanged against an xkms node; go-quicbaas, the application-layer framework, exposes the database services via go-qrdb and composes go-xkms on top with the hardware crypto implementations passed in, so every go-qrdb seam is filled by hardware crypto. Terms: [GLOSSARY.md](GLOSSARY.md).
 
 ## Boundaries
 
-go-qrdb embeds go-quicraft as a library and inherits from it:
-
-- multi-group Raft consensus and the QUIC Raft transport, through `quicraft.Host`, on which every shard of the store runs;
-- the `EpochBarrier`, the L1 sealing strategies `StrategyNone` and `StrategyPassphrase`, the software strategy, its KDF and AEAD primitives, and Shamir secret sharing.
+go-qrdb embeds go-quicraft as a library and inherits from it: multi-group Raft consensus and the QUIC Raft transport, through `quicraft.Host`, on which every shard of the store runs; and the `EpochBarrier`, the L1 sealing strategies `StrategyNone` and `StrategyPassphrase`, the software strategy, its KDF and AEAD primitives, and Shamir secret sharing.
 
 go-qrdb re-exports those through `sdk/go`: `EpochBarrier`, `EpochBarrierConfig`, `DefaultEpochBarrierConfig`, `StrategyNone`, `StrategyPassphrase`, `SealingStrategy`, `Credentials`, `SoftwareStrategy` and the KDF and AEAD types (`types_seal.go`, `types_seal_strategy.go`); the Shamir share types (`types_shamir.go`); `ErrDecryptionFailed`; and `RaftMTLSConfig` (`sdk/go/node`).
 
@@ -195,14 +186,9 @@ Status is one of **shipped** (on main and documented), **in progress** (an open 
 - `qrdb` CLI: [cmd/qrdb](../cmd/qrdb/); each feature's `cli.md`.
 - `qrdbd` daemon: [cmd/qrdbd](../cmd/qrdbd/), [configuration/](configuration/).
 - REST over HTTP/2 and HTTP/3: [pkg/api/rest](../pkg/api/rest/), [sdk/go/transport/rest](../sdk/go/transport/rest/), [api-server/](api-server/).
-- gRPC: [pkg/api/grpc](../pkg/api/grpc/), [sdk/go/transport/grpc](../sdk/go/transport/grpc/).
-- QUIC: [pkg/api/quic](../pkg/api/quic/), [sdk/go/transport/quic](../sdk/go/transport/quic/).
-- MCP: [pkg/api/mcp](../pkg/api/mcp/), [sdk/go/transport/mcp](../sdk/go/transport/mcp/).
-- Unix socket: [pkg/api/unix](../pkg/api/unix/), [sdk/go/transport/unix](../sdk/go/transport/unix/).
+- gRPC: [pkg/api/grpc](../pkg/api/grpc/), [sdk/go/transport/grpc](../sdk/go/transport/grpc/); QUIC: [pkg/api/quic](../pkg/api/quic/), [sdk/go/transport/quic](../sdk/go/transport/quic/); MCP: [pkg/api/mcp](../pkg/api/mcp/), [sdk/go/transport/mcp](../sdk/go/transport/mcp/); Unix socket: [pkg/api/unix](../pkg/api/unix/), [sdk/go/transport/unix](../sdk/go/transport/unix/).
 - Embedded, in process: [sdk/go/transport/embedded](../sdk/go/transport/embedded/), [embedding.md](embedding.md).
-- SQL core, `qrdb_sql`: [pkg/sql](../pkg/sql/), [sql/](sql/).
-- MySQL wire protocol, `qrdb_mysql`: [pkg/sql/mysql](../pkg/sql/mysql/), [sql/](sql/).
-- PostgreSQL wire protocol, `qrdb_pgsql`: [pkg/sql/pgsql](../pkg/sql/pgsql/), [sql/](sql/).
+- SQL, [sql/](sql/): core, `qrdb_sql`, [pkg/sql](../pkg/sql/); MySQL wire protocol, `qrdb_mysql`, [pkg/sql/mysql](../pkg/sql/mysql/); PostgreSQL wire protocol, `qrdb_pgsql`, [pkg/sql/pgsql](../pkg/sql/pgsql/).
 - etcd v3 protocol, `qrdb_etcd`: [pkg/api/etcd](../pkg/api/etcd/), [etcd-compatibility/](etcd-compatibility/).
 
 ## Release criteria

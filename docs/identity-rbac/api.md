@@ -78,6 +78,7 @@ see [Status and error mapping](#status-and-error-mapping).
 | Assign role | `POST /roles/assign` | `AssignRole` | `role.Assign` | `qrdb_role_assign` | `AssignRole` | `roles:assign` |
 | Unassign role | `POST /roles/unassign` | `UnassignRole` | `role.Unassign` | `qrdb_role_unassign` | `UnassignRole` | `roles:unassign` |
 | List permissions | `GET /permissions` | `ListPermissions` | `role.ListPermissions` | `qrdb_permissions_list` | `Client.Permissions()` | `permissions:list` |
+| List the permission catalog (with scopes) | `GET /permissions/catalog` | `ListPermissionCatalog` | `role.ListPermissionCatalog` | `qrdb_permissions_catalog` | `Client.Permissions().List` / `Lookup` / `LookupScope` | `permissions:list` |
 | Resolve role permissions | `POST /roles/resolve-permissions` | `ResolveRolePermissions` | `role.ResolvePermissions` | `qrdb_permissions_resolve` | `ResolvePermissions` | `permissions:resolve` |
 | List own effective permissions | `GET /permissions/own` | `ListOwnPermissions` | `role.ListOwnPermissions` | `qrdb_permissions_own` | `Client.RBAC().ListOwnPermissions` | identity-gated |
 | Authorize an identity | `POST /permissions/authorize` | `Authorize` | `role.Authorize` | `qrdb_permissions_authorize` | `Client.RBAC().Authorize` | identity-gated; `permissions:resolve` for another identity |
@@ -107,15 +108,39 @@ applies here once: a system Admin role stored before `roles:reconcile_all`
 existed lacks it. The single-tenant reconcile of the system tenant, which needs
 only `roles:create`, grants it. Run that first.
 
-`Client.Permissions()` and `Client.RBAC()` return **nil** on a transport that
-does not implement the corresponding provider. Nil-check them; the nil is not
-an error value.
+**Permission catalog.** `ListPermissionCatalog` takes no request and answers
+every registered permission with its resource, action and scope, sorted by
+name:
+
+```json
+{"permissions": [{"name": "kv:get", "resource": "kv", "action": "get", "scope": "self"}]}
+```
+
+`Client.Permissions()` is a required capability: every transport (embedded,
+gRPC, REST, QUIC, Unix, MCP) implements `transport.PermissionProvider`, so it
+never returns nil on an open client (it returns nil only after `Close`). The
+remote transports serve it over `ListPermissionCatalog`. `Lookup` and
+`LookupScope` return `*transport.PermissionNotFoundError` for an unknown name,
+and `LookupScope` returns an error, never `self`, when an entry has an empty
+scope. `Client.RBAC()` still returns **nil** on a transport that does not
+implement `RBACProvider`; nil-check it.
+
+`CustodianGroups()` and `Shares()` are not part of this capability set: they
+were removed when share holders were unified (b53a019c15) and the
+ShareService was deleted (f704da972e).
 
 **Own permissions and Authorize are identity-gated.** Any authenticated
 caller may list its own effective permissions and ask whether it may perform
 an action: neither needs a grant of its own, because the answer is about the
-caller. The own-permissions answer is the caller's roles resolved and every
-wildcard expanded, deduplicated and sorted, with each entry's scope:
+caller. A grant admits a required permission when it is the exact
+`resource:action`, `resource:*`, `*:action` or `*:*` (whole-segment wildcards
+only; a glob prefix such as `ke*:sign` admits nothing). That rule is
+`permission.Matches` (one grant) and `permission.Granted` (a resolved set),
+which the RBAC authorizer calls and the Go SDK re-exports as
+`sdk.PermissionMatches` and `sdk.PermissionGranted`, so an embedding service
+decides with the server's own matcher. The own-permissions answer is the
+caller's roles resolved and every wildcard expanded, deduplicated and sorted,
+with each entry's scope:
 
 ```json
 {"permissions": [{"name": "kv:get", "resource": "kv", "action": "get", "scope": "self"}]}
@@ -643,8 +668,9 @@ build no longer defines. It is drift between what the tenant was seeded with and
 what the server now grants — visible on an ordinary listing, **before**
 `POST /roles/reconcile` is run to repair it. It is absent when there is none,
 and a whole-segment wildcard (`keys:*`) never appears in it, because the
-authorizer expands wildcards at authorization time and there is no registry
-entry for one to lose.
+authorizer matches wildcards at authorization time (`permission.Granted`,
+re-exported as `sdk.PermissionGranted`) and there is no registry entry for one
+to lose.
 
 `ReconcileRolesResponse` — the body of `POST /roles/reconcile`:
 
