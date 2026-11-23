@@ -250,6 +250,9 @@ func toolVolumePoolMoveTenant() mcp.Tool {
 		mcp.WithDescription("Start moving a tenant's volume to another pool it is entitled to. Answers the admitted move journal; the move runs in the background."),
 		mcp.WithString("tenant", mcp.Required(), mcp.Description("The tenant id.")),
 		mcp.WithString("to_pool", mcp.Required(), mcp.Description("The destination pool name.")),
+		mcp.WithBoolean("allow_unencrypted_destination",
+			mcp.Description("Allow a move from an encrypted (Lockable) pool to an unencrypted one: drops the tenant's at-rest encryption and is audited (volume_pool.move_encryption_drop). Default false: such a move is refused."),
+		),
 	)
 }
 
@@ -263,7 +266,11 @@ func handleVolumePoolMoveTenant(svc volume.Service) mcpserver.ToolHandlerFunc {
 		if toPool == "" {
 			return mcp.NewToolResultError("to_pool is required"), nil
 		}
-		m, err := svc.MoveTenant(ctx, volume.MoveTenantRequest{TenantID: tenant, ToPool: toPool})
+		m, err := svc.MoveTenant(ctx, volume.MoveTenantRequest{
+			TenantID:                    tenant,
+			ToPool:                      toPool,
+			AllowUnencryptedDestination: mcp.ParseBoolean(req, "allow_unencrypted_destination", false),
+		})
 		return volumePoolMoveResult("qrdb_volume_pool_move_tenant", m, err)
 	}
 }

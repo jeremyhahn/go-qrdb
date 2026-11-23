@@ -15,6 +15,7 @@
 package rest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -348,7 +349,13 @@ func TestHandleVolumePoolMoves(t *testing.T) {
 		MoveTenantFn: func(_ context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
 			gotReq = req
 			if req.ToPool == "plain" {
-				return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+				if !req.AllowUnencryptedDestination {
+					return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+				}
+				dropped := *move
+				dropped.ToPool = req.ToPool
+				dropped.EncryptionDropped = true
+				return &dropped, nil
 			}
 			return move, nil
 		},
@@ -367,8 +374,35 @@ func TestHandleVolumePoolMoves(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil || got.ToPool != "b" || got.StepNode != "n1" || got.State != "copying" {
 		t.Fatalf("move body = %+v, %v", got, err)
 	}
-	if gotReq.TenantID != "t1" || gotReq.ToPool != "b" {
-		t.Fatalf("service request = %+v, want tenant t1 to pool b", gotReq)
+	if gotReq.TenantID != "t1" || gotReq.ToPool != "b" || gotReq.AllowUnencryptedDestination {
+		t.Fatalf("service request = %+v, want tenant t1 to pool b, no flag", gotReq)
+	}
+	if bytes.Contains(rr.Body.Bytes(), []byte("encryptionDropped")) {
+		t.Fatalf("move body %s answers encryptionDropped for a move that drops nothing", rr.Body.String())
+	}
+
+	// Ruling 1234: the optional body carries the operator's flag, and the
+	// drop is answered.
+	req = volumePoolRequest(http.MethodPost, "/v1/volume-pools/plain/tenants/t1/move", "plain", `{"allowUnencryptedDestination": true}`)
+	req.SetPathValue("tenant", "t1")
+	rr = httptest.NewRecorder()
+	srv.handleVolumePoolMoveTenant(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("flagged move: status = %d, want 202 (%s)", rr.Code, rr.Body.String())
+	}
+	got = volume.Move{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil || !got.EncryptionDropped || !gotReq.AllowUnencryptedDestination {
+		t.Fatalf("flagged move body = %+v, %v; service request = %+v", got, err, gotReq)
+	}
+
+	// A malformed body is a 400, and nothing reaches the service.
+	gotReq = volume.MoveTenantRequest{}
+	req = volumePoolRequest(http.MethodPost, "/v1/volume-pools/plain/tenants/t1/move", "plain", `{"allowUnencryptedDestination":`)
+	req.SetPathValue("tenant", "t1")
+	rr = httptest.NewRecorder()
+	srv.handleVolumePoolMoveTenant(rr, req)
+	if rr.Code != http.StatusBadRequest || gotReq.TenantID != "" {
+		t.Fatalf("malformed body: status = %d, service request = %+v, want 400 and no call", rr.Code, gotReq)
 	}
 
 	req = volumePoolRequest(http.MethodPost, "/v1/volume-pools/plain/tenants/t1/move", "plain", "")

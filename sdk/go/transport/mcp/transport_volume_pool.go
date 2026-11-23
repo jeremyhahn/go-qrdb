@@ -180,7 +180,11 @@ func (t *Transport) MoveTenant(ctx context.Context, req *transport.MoveVolumePoo
 	if req == nil {
 		return nil, &transport.RequestError{Method: "MoveTenant", Err: &transport.NilRequestError{}}
 	}
-	return t.volumeMoveTool(ctx, "MoveTenant", "qrdb_volume_pool_move_tenant", map[string]any{"tenant": req.TenantID, "to_pool": req.ToPool})
+	args := map[string]any{"tenant": req.TenantID, "to_pool": req.ToPool}
+	if req.AllowUnencryptedDestination {
+		args["allow_unencrypted_destination"] = true
+	}
+	return t.volumeMoveTool(ctx, "MoveTenant", "qrdb_volume_pool_move_tenant", args)
 }
 
 // GetMove answers a tenant's move in progress by calling the

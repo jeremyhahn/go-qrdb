@@ -5218,6 +5218,11 @@ message VolumePoolListTenantsResponse {
 message VolumePoolMoveTenantRequest {
     string tenant  = 1;
     string to_pool = 2;
+    // allow_unencrypted_destination is the operator's explicit flag to
+    // move a tenant from an encrypted (Lockable) pool to an unencrypted one,
+    // dropping its at-rest encryption; the drop is audited fail-closed
+    // (decision Q9, ruling 1234).
+    bool   allow_unencrypted_destination = 3;
 }
 
 // VolumePoolGetMoveRequest names the tenant whose move to answer.
@@ -5251,6 +5256,9 @@ message VolumePoolMove {
     // until the journal first changes.
     string   admitted_at           = 14;
     string   updated_at            = 15;
+    // encryption_dropped reports a move admitted under
+    // allow_unencrypted_destination that drops the tenant's encryption.
+    bool     encryption_dropped    = 16;
 }
 
 // TenantUpdateRequest applies a partial update to an existing tenant.

@@ -181,7 +181,11 @@ func (s *Server) handleVolumePoolMoveTenant(ctx context.Context, payload []byte)
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	m, err := s.volumeSvc.MoveTenant(ctx, volume.MoveTenantRequest{TenantID: req.GetTenant(), ToPool: req.GetToPool()})
+	m, err := s.volumeSvc.MoveTenant(ctx, volume.MoveTenantRequest{
+		TenantID:                    req.GetTenant(),
+		ToPool:                      req.GetToPool(),
+		AllowUnencryptedDestination: req.GetAllowUnencryptedDestination(),
+	})
 	if err != nil {
 		return nil, err
 	}

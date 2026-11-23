@@ -260,9 +260,15 @@ func TestVolumePoolMoves_WireShapeAndRefusals(t *testing.T) {
 		T: t,
 		MoveTenantFn: func(_ context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
 			if req.ToPool == "plain" {
-				return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+				if !req.AllowUnencryptedDestination {
+					return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+				}
+				dropped := *move
+				dropped.ToPool = req.ToPool
+				dropped.EncryptionDropped = true
+				return &dropped, nil
 			}
-			if req.TenantID != "t1" || req.ToPool != "b" {
+			if req.TenantID != "t1" || req.ToPool != "b" || req.AllowUnencryptedDestination {
 				t.Fatalf("MoveTenant(%+v)", req)
 			}
 			return move, nil
@@ -290,11 +296,17 @@ func TestVolumePoolMoves_WireShapeAndRefusals(t *testing.T) {
 	if got.GetTenantId() != "t1" || got.GetFromPool() != "a" || got.GetToPool() != "b" || got.GetState() != "copying" ||
 		len(got.GetNodesCopied()) != 1 || got.GetNodesPending()[0] != "n2" || got.GetStepNode() != "n2" ||
 		got.GetStepAttempts() != 1 || got.GetReservedBytes() != 64 ||
-		got.GetAdmittedAt() != volumePoolTestTime.UTC().Format(time.RFC3339Nano) || got.GetUpdatedAt() != "" {
+		got.GetAdmittedAt() != volumePoolTestTime.UTC().Format(time.RFC3339Nano) || got.GetUpdatedAt() != "" || got.GetEncryptionDropped() {
 		t.Fatalf("move = %+v", got)
 	}
 	_, err = s.VolumePoolMoveTenant(ctx, &pb.VolumePoolMoveTenantRequest{Tenant: "t1", ToPool: "plain"})
 	requireCode(t, err, codes.FailedPrecondition)
+	// Ruling 1234: the operator's flag reaches the service and the drop is
+	// answered.
+	got, err = s.VolumePoolMoveTenant(ctx, &pb.VolumePoolMoveTenantRequest{Tenant: "t1", ToPool: "plain", AllowUnencryptedDestination: true})
+	if err != nil || !got.GetEncryptionDropped() {
+		t.Fatalf("flagged VolumePoolMoveTenant = %+v, %v, want EncryptionDropped", got, err)
+	}
 
 	if got, err = s.VolumePoolGetMove(ctx, &pb.VolumePoolGetMoveRequest{Tenant: "t1"}); err != nil || got.GetState() != "copying" {
 		t.Fatalf("VolumePoolGetMove = %+v, %v", got, err)

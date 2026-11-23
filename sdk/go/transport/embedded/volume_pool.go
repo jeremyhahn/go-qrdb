@@ -200,7 +200,7 @@ func (t *Transport) MoveTenant(ctx context.Context, req *transport.MoveVolumePoo
 		if req == nil {
 			return nil, &transport.RequestError{Method: "MoveTenant", Err: &transport.NilRequestError{}}
 		}
-		return t.volumeSvc.MoveTenant(ctx, volume.MoveTenantRequest{TenantID: req.TenantID, ToPool: req.ToPool})
+		return t.volumeSvc.MoveTenant(ctx, volume.MoveTenantRequest{TenantID: req.TenantID, ToPool: req.ToPool, AllowUnencryptedDestination: req.AllowUnencryptedDestination})
 	})
 }
 
@@ -262,6 +262,7 @@ func volumePoolMoveFromCatalog(m *volume.Move) *transport.VolumePoolMove {
 		ReservedBytes:       m.ReservedBytes,
 		SourceReservedBytes: m.SourceReservedBytes,
 		TenantRecorded:      m.TenantRecorded,
+		EncryptionDropped:   m.EncryptionDropped,
 		AdmittedAt:          m.AdmittedAt,
 		UpdatedAt:           m.UpdatedAt,
 	}

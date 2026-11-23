@@ -2142,13 +2142,21 @@ export interface VolumePoolClient {
      * Starts moving a tenant's volume to another pool the tenant is
      * entitled to. The move runs in the background, one replica at a time;
      * follow it with getMove. A move from an encrypted pool to an
-     * unencrypted one is refused. Requires `volume_pools:move`.
+     * unencrypted one is refused unless allowUnencryptedDestination is set:
+     * that drops the tenant's at-rest encryption and is audited
+     * (ruling 1234). Requires `volume_pools:move`.
      *
      * @param tenant - The tenant ID.
      * @param toPool - The destination pool.
+     * @param options - allowUnencryptedDestination permits the
+     *   encrypted-to-unencrypted move; it defaults to false.
      * @returns The admitted move journal.
      */
-    moveTenant(tenant: string, toPool: string): Promise<VolumePoolMove>;
+    moveTenant(
+        tenant: string,
+        toPool: string,
+        options?: { allowUnencryptedDestination?: boolean },
+    ): Promise<VolumePoolMove>;
 
     /**
      * Returns a tenant's volume move in progress. A tenant with no move
@@ -2198,6 +2206,11 @@ export interface VolumePoolMove {
     readonly sourceReservedBytes?: number;
     /** Whether the tenant record already names the destination pool. */
     readonly tenantRecorded?: boolean;
+    /**
+     * Whether the move drops the tenant's at-rest encryption: an
+     * encrypted-to-unencrypted move started with allowUnencryptedDestination.
+     */
+    readonly encryptionDropped?: boolean;
     /** RFC 3339 time the move was admitted. */
     readonly admittedAt: string;
     /** RFC 3339 time the journal last changed. */

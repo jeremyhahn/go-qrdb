@@ -25054,11 +25054,16 @@ func (x *VolumePoolListTenantsResponse) GetNextPageToken() string {
 
 // VolumePoolMoveTenantRequest starts moving tenant to to_pool.
 type VolumePoolMoveTenantRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Tenant        string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
-	ToPool        string                 `protobuf:"bytes,2,opt,name=to_pool,json=toPool,proto3" json:"to_pool,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	ToPool string                 `protobuf:"bytes,2,opt,name=to_pool,json=toPool,proto3" json:"to_pool,omitempty"`
+	// allow_unencrypted_destination is the operator's explicit flag to
+	// move a tenant from an encrypted (Lockable) pool to an unencrypted one,
+	// dropping its at-rest encryption; the drop is audited fail-closed
+	// (decision Q9, ruling 1234).
+	AllowUnencryptedDestination bool `protobuf:"varint,3,opt,name=allow_unencrypted_destination,json=allowUnencryptedDestination,proto3" json:"allow_unencrypted_destination,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *VolumePoolMoveTenantRequest) Reset() {
@@ -25103,6 +25108,13 @@ func (x *VolumePoolMoveTenantRequest) GetToPool() string {
 		return x.ToPool
 	}
 	return ""
+}
+
+func (x *VolumePoolMoveTenantRequest) GetAllowUnencryptedDestination() bool {
+	if x != nil {
+		return x.AllowUnencryptedDestination
+	}
+	return false
 }
 
 // VolumePoolGetMoveRequest names the tenant whose move to answer.
@@ -25215,10 +25227,13 @@ type VolumePoolMove struct {
 	TenantRecorded      bool                   `protobuf:"varint,13,opt,name=tenant_recorded,json=tenantRecorded,proto3" json:"tenant_recorded,omitempty"`
 	// admitted_at and updated_at are RFC 3339 (UTC); updated_at is empty
 	// until the journal first changes.
-	AdmittedAt    string `protobuf:"bytes,14,opt,name=admitted_at,json=admittedAt,proto3" json:"admitted_at,omitempty"`
-	UpdatedAt     string `protobuf:"bytes,15,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AdmittedAt string `protobuf:"bytes,14,opt,name=admitted_at,json=admittedAt,proto3" json:"admitted_at,omitempty"`
+	UpdatedAt  string `protobuf:"bytes,15,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	// encryption_dropped reports a move admitted under
+	// allow_unencrypted_destination that drops the tenant's encryption.
+	EncryptionDropped bool `protobuf:"varint,16,opt,name=encryption_dropped,json=encryptionDropped,proto3" json:"encryption_dropped,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *VolumePoolMove) Reset() {
@@ -25354,6 +25369,13 @@ func (x *VolumePoolMove) GetUpdatedAt() string {
 		return x.UpdatedAt
 	}
 	return ""
+}
+
+func (x *VolumePoolMove) GetEncryptionDropped() bool {
+	if x != nil {
+		return x.EncryptionDropped
+	}
+	return false
 }
 
 // TenantUpdateRequest applies a partial update to an existing tenant.
@@ -37694,14 +37716,15 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"used_bytes\x18\x03 \x01(\x03R\tusedBytes\"|\n" +
 	"\x1dVolumePoolListTenantsResponse\x123\n" +
 	"\atenants\x18\x01 \x03(\v2\x19.qrdb.v1.VolumePoolTenantR\atenants\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"N\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x92\x01\n" +
 	"\x1bVolumePoolMoveTenantRequest\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x17\n" +
-	"\ato_pool\x18\x02 \x01(\tR\x06toPool\"2\n" +
+	"\ato_pool\x18\x02 \x01(\tR\x06toPool\x12B\n" +
+	"\x1dallow_unencrypted_destination\x18\x03 \x01(\bR\x1ballowUnencryptedDestination\"2\n" +
 	"\x18VolumePoolGetMoveRequest\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\"5\n" +
 	"\x1bVolumePoolCancelMoveRequest\x12\x16\n" +
-	"\x06tenant\x18\x01 \x01(\tR\x06tenant\"\x82\x04\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\"\xb1\x04\n" +
 	"\x0eVolumePoolMove\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1b\n" +
 	"\tfrom_pool\x18\x02 \x01(\tR\bfromPool\x12\x17\n" +
@@ -37720,7 +37743,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\vadmitted_at\x18\x0e \x01(\tR\n" +
 	"admittedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x0f \x01(\tR\tupdatedAt\"\xf4\x01\n" +
+	"updated_at\x18\x0f \x01(\tR\tupdatedAt\x12-\n" +
+	"\x12encryption_dropped\x18\x10 \x01(\bR\x11encryptionDropped\"\xf4\x01\n" +
 	"\x13TenantUpdateRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12%\n" +

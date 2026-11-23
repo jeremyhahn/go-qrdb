@@ -328,7 +328,12 @@ func TestVolumePoolMoves(t *testing.T) {
 		MoveTenantFn: func(_ context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
 			got = req
 			if req.ToPool == "plain" {
-				return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+				if !req.AllowUnencryptedDestination {
+					return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+				}
+				dropped := *move
+				dropped.ToPool, dropped.EncryptionDropped = req.ToPool, true
+				return &dropped, nil
 			}
 			return move, nil
 		},
@@ -339,8 +344,11 @@ func TestVolumePoolMoves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("move-tenant: %v", err)
 	}
-	if got.TenantID != "t1" || got.ToPool != "b" {
+	if got.TenantID != "t1" || got.ToPool != "b" || got.AllowUnencryptedDestination {
 		t.Fatalf("request = %+v", got)
+	}
+	if strings.Contains(out, "Encryption:") {
+		t.Fatalf("move-tenant without a drop printed an encryption line:\n%s", out)
 	}
 	for _, want := range []string{"State:      copying", "To pool:    b", "n1", "copied", "n2", "pending", "Step node:  n2"} {
 		if !strings.Contains(out, want) {
@@ -363,6 +371,21 @@ func TestVolumePoolMoves(t *testing.T) {
 	var q9 *volume.MoveToUnencryptedPoolError
 	if _, err := executeVolumePoolCmd(t, svc, "table", "move-tenant", "t1", "--to", "plain"); !errors.As(err, &q9) {
 		t.Fatalf("err = %v, want MoveToUnencryptedPoolError", err)
+	}
+	if got.AllowUnencryptedDestination {
+		t.Fatalf("move-tenant without --allow-unencrypted-destination sent the flag: %+v", got)
+	}
+	// Ruling 1234: the flag reaches the request and the dropped encryption
+	// prints.
+	out, err = executeVolumePoolCmd(t, svc, "table", "move-tenant", "t1", "--to", "plain", "--allow-unencrypted-destination")
+	if err != nil {
+		t.Fatalf("move-tenant --allow-unencrypted-destination: %v", err)
+	}
+	if !got.AllowUnencryptedDestination || got.ToPool != "plain" {
+		t.Fatalf("request = %+v, want allow_unencrypted_destination", got)
+	}
+	if !strings.Contains(out, "Encryption: dropped") {
+		t.Fatalf("move-tenant output missing %q:\n%s", "Encryption: dropped", out)
 	}
 	var nf *volume.MoveNotFoundError
 	if _, err := executeVolumePoolCmd(t, svc, "table", "cancel-move", "none"); !errors.As(err, &nf) {

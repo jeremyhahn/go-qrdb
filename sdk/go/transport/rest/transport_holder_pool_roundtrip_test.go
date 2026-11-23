@@ -180,6 +180,20 @@ func TestRESTVolumePools_MoveVerbsHitTheirRoutes(t *testing.T) {
 	m, err := rt.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{TenantID: "acme", ToPool: "fast pool"})
 	check("MoveTenant", m, err, "copying")
 	assertCall(t, wr.last(t), http.MethodPost, "/v1/volume-pools/fast%20pool/tenants/acme/move")
+	if b := wr.last(t).Body; len(b) != 0 || m.EncryptionDropped {
+		t.Fatalf("MoveTenant without the flag: body = %v, encryptionDropped = %v", b, m.EncryptionDropped)
+	}
+	dropped := move("copying")
+	dropped.EncryptionDropped = true
+	wr.reply(http.MethodPost, "/v1/volume-pools/fast pool/tenants/acme/move", dropped)
+	m, err = rt.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{
+		TenantID: "acme", ToPool: "fast pool", AllowUnencryptedDestination: true,
+	})
+	check("MoveTenant with the flag", m, err, "copying")
+	assertCall(t, wr.last(t), http.MethodPost, "/v1/volume-pools/fast%20pool/tenants/acme/move")
+	if b := wr.last(t).Body; b["allowUnencryptedDestination"] != true || len(b) != 1 || !m.EncryptionDropped {
+		t.Fatalf("MoveTenant with the flag: body = %v, encryptionDropped = %v", b, m.EncryptionDropped)
+	}
 	m, err = rt.GetMove(ctx, "acme")
 	check("GetMove", m, err, "copying")
 	assertCall(t, wr.last(t), http.MethodGet, "/v1/tenants/acme/volume-move")

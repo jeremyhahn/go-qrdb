@@ -139,7 +139,11 @@ func (s *qrdbServiceServer) VolumePoolMoveTenant(ctx context.Context, req *pb.Vo
 	if s.volumeSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "volume"})
 	}
-	m, err := s.volumeSvc.MoveTenant(ctx, volume.MoveTenantRequest{TenantID: req.GetTenant(), ToPool: req.GetToPool()})
+	m, err := s.volumeSvc.MoveTenant(ctx, volume.MoveTenantRequest{
+		TenantID:                    req.GetTenant(),
+		ToPool:                      req.GetToPool(),
+		AllowUnencryptedDestination: req.GetAllowUnencryptedDestination(),
+	})
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -190,6 +194,7 @@ func VolumePoolMoveToProto(m *volume.Move) *pb.VolumePoolMove {
 		ReservedBytes:       m.ReservedBytes,
 		SourceReservedBytes: m.SourceReservedBytes,
 		TenantRecorded:      m.TenantRecorded,
+		EncryptionDropped:   m.EncryptionDropped,
 	}
 	if m.StepAttempts > 0 && m.StepAttempts <= math.MaxInt32 {
 		out.StepAttempts = int32(m.StepAttempts)

@@ -244,15 +244,21 @@ func newVolumePoolTenantsCmd() *cobra.Command {
 
 func newVolumePoolMoveTenantCmd() *cobra.Command {
 	var toPool string
+	var allowUnencrypted bool
 	cmd := &cobra.Command{
 		Use:   "move-tenant <tenant> --to <pool>",
 		Short: "Move a tenant's volume to another pool",
 		Long: "Start moving a tenant's volume to another pool the tenant is entitled to. The move runs in the " +
 			"background, one replica at a time; follow it with get-move. A move from an encrypted pool to an " +
-			"unencrypted one is refused. Requires volume_pools:move.",
+			"unencrypted one needs --allow-unencrypted-destination: it drops the tenant's at-rest encryption and " +
+			"is audited (ruling 1234). Requires volume_pools:move.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			m, err := client.VolumePools().MoveTenant(cmd.Context(), &transport.MoveVolumePoolTenantRequest{TenantID: args[0], ToPool: toPool})
+			m, err := client.VolumePools().MoveTenant(cmd.Context(), &transport.MoveVolumePoolTenantRequest{
+				TenantID:                    args[0],
+				ToPool:                      toPool,
+				AllowUnencryptedDestination: allowUnencrypted,
+			})
 			if err != nil {
 				return err
 			}
@@ -261,6 +267,8 @@ func newVolumePoolMoveTenantCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&toPool, "to", "", "Destination pool (required)")
 	_ = cmd.MarkFlagRequired("to")
+	cmd.Flags().BoolVar(&allowUnencrypted, "allow-unencrypted-destination", false,
+		"Allow a move from an encrypted pool to an unencrypted one; this drops the tenant's at-rest encryption and is audited")
 	return cmd
 }
 
@@ -309,6 +317,9 @@ func printVolumePoolMove(m *transport.VolumePoolMove) error {
 		_, _ = fmt.Fprintf(outputWriter, "To pool:    %s\n", m.ToPool)
 		_, _ = fmt.Fprintf(outputWriter, "State:      %s\n", m.State)
 		_, _ = fmt.Fprintf(outputWriter, "Reserved:   %s\n", formatBytes(m.ReservedBytes))
+		if m.EncryptionDropped {
+			_, _ = fmt.Fprintf(outputWriter, "Encryption: dropped\n")
+		}
 		if m.StepNode != "" {
 			_, _ = fmt.Fprintf(outputWriter, "Step node:  %s (failed attempts %d)\n", m.StepNode, m.StepAttempts)
 		}

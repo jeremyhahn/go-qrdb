@@ -189,7 +189,7 @@ func (t *Transport) MoveTenant(ctx context.Context, req *transport.MoveVolumePoo
 	if req == nil {
 		return nil, &transport.RequestError{Method: "MoveTenant", Err: &transport.NilRequestError{}}
 	}
-	return t.volumeMoveCall(ctx, "MoveTenant", "volumepool.MoveTenant", &pb.VolumePoolMoveTenantRequest{Tenant: req.TenantID, ToPool: req.ToPool})
+	return t.volumeMoveCall(ctx, "MoveTenant", "volumepool.MoveTenant", &pb.VolumePoolMoveTenantRequest{Tenant: req.TenantID, ToPool: req.ToPool, AllowUnencryptedDestination: req.AllowUnencryptedDestination})
 }
 
 // GetMove answers a tenant's move in progress via the QUIC
@@ -235,6 +235,7 @@ func (t *Transport) volumeMoveCall(ctx context.Context, method, quicMethod strin
 		ReservedBytes:       m.GetReservedBytes(),
 		SourceReservedBytes: m.GetSourceReservedBytes(),
 		TenantRecorded:      m.GetTenantRecorded(),
+		EncryptionDropped:   m.GetEncryptionDropped(),
 	}
 	out.AdmittedAt, _ = time.Parse(time.RFC3339Nano, m.GetAdmittedAt())
 	out.UpdatedAt, _ = time.Parse(time.RFC3339Nano, m.GetUpdatedAt())

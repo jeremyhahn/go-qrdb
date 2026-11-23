@@ -17,6 +17,8 @@ package rest
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -78,6 +80,15 @@ type listVolumePoolsResponse struct {
 }
 
 // createVolumePoolRequest is the JSON payload for POST /v1/volume-pools.
+// moveVolumePoolTenantRequest is the optional JSON payload for POST
+// /v1/volume-pools/{pool}/tenants/{tenant}/move. An empty body is the zero
+// value: no flag.
+type moveVolumePoolTenantRequest struct {
+	// AllowUnencryptedDestination is the operator's explicit, audited
+	// allow_unencrypted_destination flag (decision Q9, ruling 1234).
+	AllowUnencryptedDestination bool `json:"allowUnencryptedDestination"`
+}
+
 type createVolumePoolRequest struct {
 	Name          string  `json:"name"`
 	Provider      string  `json:"provider,omitempty"`
@@ -339,9 +350,20 @@ func (s *Server) handleVolumePoolMoveTenant(w http.ResponseWriter, r *http.Reque
 		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "tenant"})
 		return
 	}
+	var body moveVolumePoolTenantRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), volumePoolRequestTimeout)
 	defer cancel()
-	m, err := s.volumeSvc.MoveTenant(ctx, volume.MoveTenantRequest{TenantID: tenant, ToPool: pool})
+	m, err := s.volumeSvc.MoveTenant(ctx, volume.MoveTenantRequest{
+		TenantID:                    tenant,
+		ToPool:                      pool,
+		AllowUnencryptedDestination: body.AllowUnencryptedDestination,
+	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

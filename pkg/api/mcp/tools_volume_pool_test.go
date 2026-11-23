@@ -291,7 +291,16 @@ func TestHandleVolumePoolMoves(t *testing.T) {
 		T: t,
 		MoveTenantFn: func(_ context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
 			if req.ToPool == "plain" {
-				return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+				if !req.AllowUnencryptedDestination {
+					return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+				}
+				dropped := *move
+				dropped.ToPool = req.ToPool
+				dropped.EncryptionDropped = true
+				return &dropped, nil
+			}
+			if req.AllowUnencryptedDestination {
+				t.Fatalf("MoveTenant(%+v): flag set without being sent", req)
 			}
 			return move, nil
 		},
@@ -320,6 +329,16 @@ func TestHandleVolumePoolMoves(t *testing.T) {
 	var q9 *volume.MoveToUnencryptedPoolError
 	if !errors.As(err, &q9) {
 		t.Fatalf("Q9: err = %v, want MoveToUnencryptedPoolError", err)
+	}
+	// Ruling 1234: the optional boolean reaches the service and the drop
+	// is answered.
+	res, err = invokeTool(t, moveH, "qrdb_volume_pool_move_tenant", map[string]any{"tenant": "t1", "to_pool": "plain", "allow_unencrypted_destination": true})
+	if err != nil {
+		t.Fatalf("flagged move: %v", err)
+	}
+	got = volume.Move{}
+	if err := json.Unmarshal([]byte(resultText(t, res)), &got); err != nil || !got.EncryptionDropped {
+		t.Fatalf("flagged move = %+v, %v, want EncryptionDropped", got, err)
 	}
 	_, err = invokeTool(t, cancelH, "qrdb_volume_pool_cancel_move", map[string]any{"tenant": "none"})
 	var nf *volume.MoveNotFoundError

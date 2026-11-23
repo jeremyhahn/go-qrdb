@@ -167,7 +167,10 @@ func (t *Transport) MoveTenant(ctx context.Context, req *transport.MoveVolumePoo
 	}
 	var m transport.VolumePoolMove
 	path := "/v1/volume-pools/" + url.PathEscape(req.ToPool) + "/tenants/" + url.PathEscape(req.TenantID) + "/move"
-	if err := t.postJSONDecode(ctx, "MoveTenant", path, struct{}{}, &m); err != nil {
+	body := struct {
+		AllowUnencryptedDestination bool `json:"allowUnencryptedDestination,omitempty"`
+	}{AllowUnencryptedDestination: req.AllowUnencryptedDestination}
+	if err := t.postJSONDecode(ctx, "MoveTenant", path, body, &m); err != nil {
 		return nil, err
 	}
 	return &m, nil

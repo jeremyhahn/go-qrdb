@@ -247,7 +247,16 @@ func TestHandleVolumePoolMoves(t *testing.T) {
 		T: t,
 		MoveTenantFn: func(_ context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
 			if req.ToPool == "plain" {
-				return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+				if !req.AllowUnencryptedDestination {
+					return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+				}
+				dropped := *move
+				dropped.ToPool = req.ToPool
+				dropped.EncryptionDropped = true
+				return &dropped, nil
+			}
+			if req.AllowUnencryptedDestination {
+				t.Fatalf("MoveTenant(%+v): flag set without being sent", req)
 			}
 			return move, nil
 		},
@@ -269,6 +278,16 @@ func TestHandleVolumePoolMoves(t *testing.T) {
 	_, err = srv.handleVolumePoolMoveTenant(ctx, mustMarshal(t, &pb.VolumePoolMoveTenantRequest{Tenant: "t1", ToPool: "plain"}))
 	if got := ServiceErrorStatus(err); got != 9 {
 		t.Fatalf("Q9 refusal status = %d, want FailedPrecondition (9)", got)
+	}
+	// Ruling 1234: the operator's flag reaches the service and the drop is
+	// answered.
+	out, err = srv.handleVolumePoolMoveTenant(ctx, mustMarshal(t, &pb.VolumePoolMoveTenantRequest{Tenant: "t1", ToPool: "plain", AllowUnencryptedDestination: true}))
+	if err != nil {
+		t.Fatalf("flagged MoveTenant: %v", err)
+	}
+	var dropped pb.VolumePoolMove
+	if err := proto.Unmarshal(out, &dropped); err != nil || !dropped.GetEncryptionDropped() {
+		t.Fatalf("flagged move = %+v, %v, want EncryptionDropped", &dropped, err)
 	}
 	_, err = srv.handleVolumePoolCancelMove(ctx, mustMarshal(t, &pb.VolumePoolCancelMoveRequest{Tenant: "none"}))
 	if got := ServiceErrorStatus(err); got != 6 {

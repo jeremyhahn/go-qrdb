@@ -258,7 +258,11 @@ func TestMCP_VolumePool_MoveVerbs(t *testing.T) {
 			if req.TenantID != "acme" || req.ToPool != "fast" {
 				t.Errorf("MoveTenant(%+v)", req)
 			}
-			return move(req.TenantID, "copying"), nil
+			m := move(req.TenantID, "copying")
+			// The fake drops encryption exactly when the flag arrives, so
+			// the flag's wire leg and encryptionDropped's decode both show.
+			m.EncryptionDropped = req.AllowUnencryptedDestination
+			return m, nil
 		},
 		GetMoveFn: func(_ context.Context, id string) (*volume.Move, error) {
 			if id != "acme" {
@@ -289,6 +293,19 @@ func TestMCP_VolumePool_MoveVerbs(t *testing.T) {
 		t.Fatalf("MoveTenant: %v", err)
 	}
 	want("MoveTenant", m, "copying")
+	if m.EncryptionDropped {
+		t.Fatalf("MoveTenant without the flag decoded encryptionDropped: %+v", m)
+	}
+	m, err = tr.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{
+		TenantID: "acme", ToPool: "fast", AllowUnencryptedDestination: true,
+	})
+	if err != nil {
+		t.Fatalf("MoveTenant with the flag: %v", err)
+	}
+	want("MoveTenant with the flag", m, "copying")
+	if !m.EncryptionDropped {
+		t.Fatalf("MoveTenant with the flag: encryptionDropped not decoded: %+v", m)
+	}
 	if m, err = tr.GetMove(ctx, "acme"); err != nil {
 		t.Fatalf("GetMove: %v", err)
 	}

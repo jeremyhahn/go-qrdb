@@ -160,25 +160,33 @@ type VolumePoolClient interface {
 type MoveVolumePoolTenantRequest struct {
 	TenantID string `json:"tenantId"`
 	ToPool   string `json:"toPool"`
+	// AllowUnencryptedDestination is the operator's explicit
+	// allow_unencrypted_destination flag: it permits a move from an
+	// encrypted (Lockable) pool to an unencrypted one, dropping the tenant's
+	// at-rest encryption; the drop is audited (decision Q9, ruling 1234).
+	AllowUnencryptedDestination bool `json:"allowUnencryptedDestination,omitempty"`
 }
 
 // VolumePoolMove is a tenant move's journal: its state, the nodes that
 // copied, are still pending and retired their source copy, and the node
 // running the current step (docs/decisions/volume-pool-tenant-moves.md).
 type VolumePoolMove struct {
-	TenantID            string    `json:"tenantId"`
-	FromPool            string    `json:"fromPool"`
-	ToPool              string    `json:"toPool"`
-	State               string    `json:"state"`
-	NodesCopied         []string  `json:"nodesCopied,omitempty"`
-	NodesPending        []string  `json:"nodesPending,omitempty"`
-	NodesRetired        []string  `json:"nodesRetired,omitempty"`
-	StepNode            string    `json:"stepNode,omitempty"`
-	StepAttempts        int       `json:"stepAttempts,omitempty"`
-	Error               string    `json:"error,omitempty"`
-	ReservedBytes       int64     `json:"reservedBytes"`
-	SourceReservedBytes int64     `json:"sourceReservedBytes,omitempty"`
-	TenantRecorded      bool      `json:"tenantRecorded,omitempty"`
-	AdmittedAt          time.Time `json:"admittedAt"`
-	UpdatedAt           time.Time `json:"updatedAt"`
+	TenantID            string   `json:"tenantId"`
+	FromPool            string   `json:"fromPool"`
+	ToPool              string   `json:"toPool"`
+	State               string   `json:"state"`
+	NodesCopied         []string `json:"nodesCopied,omitempty"`
+	NodesPending        []string `json:"nodesPending,omitempty"`
+	NodesRetired        []string `json:"nodesRetired,omitempty"`
+	StepNode            string   `json:"stepNode,omitempty"`
+	StepAttempts        int      `json:"stepAttempts,omitempty"`
+	Error               string   `json:"error,omitempty"`
+	ReservedBytes       int64    `json:"reservedBytes"`
+	SourceReservedBytes int64    `json:"sourceReservedBytes,omitempty"`
+	TenantRecorded      bool     `json:"tenantRecorded,omitempty"`
+	// EncryptionDropped reports a move admitted under
+	// AllowUnencryptedDestination that drops the tenant's encryption.
+	EncryptionDropped bool      `json:"encryptionDropped,omitempty"`
+	AdmittedAt        time.Time `json:"admittedAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
 }

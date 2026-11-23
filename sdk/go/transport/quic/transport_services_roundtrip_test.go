@@ -466,6 +466,12 @@ func TestQUICRoundTrip_VolumePools_MoveVerbs(t *testing.T) {
 	got := make(chan string, 8)
 	svc := &volumetest.Service{T: t,
 		MoveTenantFn: func(_ context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
+			if req.AllowUnencryptedDestination {
+				got <- "MoveTenant " + req.TenantID + "->" + req.ToPool + " allow_unencrypted_destination"
+				m := move(req.TenantID, "copying")
+				m.EncryptionDropped = true
+				return m, nil
+			}
 			got <- "MoveTenant " + req.TenantID + "->" + req.ToPool
 			return move(req.TenantID, "copying"), nil
 		},
@@ -504,6 +510,16 @@ func TestQUICRoundTrip_VolumePools_MoveVerbs(t *testing.T) {
 	}
 	m, err := tr.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{TenantID: "acme", ToPool: "fast"})
 	check("MoveTenant", m, err, "MoveTenant acme->fast", "copying")
+	if m.EncryptionDropped {
+		t.Fatalf("MoveTenant without the flag decoded encryptionDropped: %+v", m)
+	}
+	m, err = tr.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{
+		TenantID: "acme", ToPool: "fast", AllowUnencryptedDestination: true,
+	})
+	check("MoveTenant allow", m, err, "MoveTenant acme->fast allow_unencrypted_destination", "copying")
+	if !m.EncryptionDropped {
+		t.Fatalf("MoveTenant with the flag: encryptionDropped not decoded: %+v", m)
+	}
 	m, err = tr.GetMove(ctx, "acme")
 	check("GetMove", m, err, "GetMove acme", "copying")
 	m, err = tr.CancelMove(ctx, "acme")

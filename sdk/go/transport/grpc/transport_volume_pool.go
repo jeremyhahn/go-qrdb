@@ -153,7 +153,7 @@ func (t *Transport) MoveTenant(ctx context.Context, req *transport.MoveVolumePoo
 	if req == nil {
 		return nil, &transport.RequestError{Method: "MoveTenant", Err: &transport.NilRequestError{}}
 	}
-	resp, err := t.client.VolumePoolMoveTenant(ctx, &pb.VolumePoolMoveTenantRequest{Tenant: req.TenantID, ToPool: req.ToPool})
+	resp, err := t.client.VolumePoolMoveTenant(ctx, &pb.VolumePoolMoveTenantRequest{Tenant: req.TenantID, ToPool: req.ToPool, AllowUnencryptedDestination: req.AllowUnencryptedDestination})
 	if err != nil {
 		return nil, mapGRPCError("MoveTenant", err)
 	}
@@ -203,6 +203,7 @@ func volumePoolMoveFromProto(m *pb.VolumePoolMove) *transport.VolumePoolMove {
 		ReservedBytes:       m.GetReservedBytes(),
 		SourceReservedBytes: m.GetSourceReservedBytes(),
 		TenantRecorded:      m.GetTenantRecorded(),
+		EncryptionDropped:   m.GetEncryptionDropped(),
 	}
 	out.AdmittedAt, _ = time.Parse(time.RFC3339Nano, m.GetAdmittedAt())
 	out.UpdatedAt, _ = time.Parse(time.RFC3339Nano, m.GetUpdatedAt())
