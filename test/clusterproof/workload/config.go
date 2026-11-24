@@ -45,6 +45,15 @@ type Config struct {
 	Clients int `json:"clients"`
 	// Keys is the size of the key space the clients contend on.
 	Keys int `json:"keys"`
+	// KeyMaxOps and KeyMaxIndeterminate retire a key, Jepsen's independent
+	// keys: once a key has taken KeyMaxOps operations, or a write issued on
+	// it could take its indeterminate writes past KeyMaxIndeterminate, the
+	// key is retired and a fresh one takes its place. Each of the Keys slots
+	// so holds one live key at a time, and every key's history stays small
+	// enough for the linearizability search to decide. Zero means
+	// DefaultKeyMaxOps and DefaultKeyMaxIndeterminate.
+	KeyMaxOps           int `json:"key_max_ops,omitempty"`
+	KeyMaxIndeterminate int `json:"key_max_indeterminate,omitempty"`
 	// KeyPrefix namespaces this run's keys, so a rerun against the same
 	// cluster starts from absent keys. Empty means a fresh random prefix.
 	KeyPrefix string `json:"key_prefix,omitempty"`
@@ -100,6 +109,13 @@ const (
 	DefaultOpTimeout     = 5 * time.Second
 	DefaultRedialBackoff = 250 * time.Millisecond
 	DefaultMaxBackoff    = 4 * time.Second
+
+	// DefaultKeyMaxOps bounds the operations one key takes.
+	DefaultKeyMaxOps = 1000
+	// DefaultKeyMaxIndeterminate is the linearizability checker's
+	// DefaultMaxIndeterminate: no key the workload writes holds more
+	// indeterminate writes than the checker will search.
+	DefaultKeyMaxIndeterminate = 16
 )
 
 // Duration is a time.Duration that reads and writes as a Go duration string
@@ -162,6 +178,12 @@ func (c *Config) Normalize() error {
 	if c.Keys == 0 {
 		c.Keys = DefaultKeys
 	}
+	if c.KeyMaxOps == 0 {
+		c.KeyMaxOps = DefaultKeyMaxOps
+	}
+	if c.KeyMaxIndeterminate == 0 {
+		c.KeyMaxIndeterminate = DefaultKeyMaxIndeterminate
+	}
 	if c.Mix == (Mix{}) {
 		c.Mix = DefaultMix
 	}
@@ -199,6 +221,10 @@ func (c Config) Validate() error {
 		return &ConfigError{Field: "clients", Reason: "must be at least 1"}
 	case c.Keys < 1:
 		return &ConfigError{Field: "keys", Reason: "must be at least 1"}
+	case c.KeyMaxOps < 1:
+		return &ConfigError{Field: "key_max_ops", Reason: "must be at least 1"}
+	case c.KeyMaxIndeterminate < 1:
+		return &ConfigError{Field: "key_max_indeterminate", Reason: "must be at least 1"}
 	case c.KeyPrefix == "":
 		return &ConfigError{Field: "key_prefix", Reason: "must not be empty"}
 	case c.Mix.Put < 0 || c.Mix.Get < 0 || c.Mix.Delete < 0 || c.Mix.CAS < 0:

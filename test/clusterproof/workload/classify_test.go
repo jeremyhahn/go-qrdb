@@ -18,6 +18,8 @@ package workload
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -109,6 +111,41 @@ func TestConnectionLost(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if got := connectionLost(tc.err); got != tc.want {
 				t.Fatalf("connectionLost(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// netTimeout is a transport error that says only that it timed out, as a
+// QUIC stream's deadline error does.
+type netTimeout struct{}
+
+func (netTimeout) Error() string { return "i/o timeout" }
+func (netTimeout) Timeout() bool { return true }
+
+func TestUnanswered(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want bool
+	}{
+		"nil":                         {nil, false},
+		"deadline":                    {context.DeadlineExceeded, true},
+		"wrapped deadline":            {fmt.Errorf("get: %w", context.DeadlineExceeded), true},
+		"grpc deadline exceeded":      {status.Error(codes.DeadlineExceeded, "slow"), true},
+		"wrapped grpc deadline":       {grpcWrapped(codes.DeadlineExceeded), true},
+		"quic request deadline":       {&transport.RequestError{Method: "Get", Err: context.DeadlineExceeded}, true},
+		"quic request timeout":        {&transport.RequestError{Method: "Get", Err: netTimeout{}}, true},
+		"canceled":                    {context.Canceled, false},
+		"not found":                   {&transport.KeyNotFoundError{Key: "k"}, false},
+		"not leader":                  {&transport.NotLeaderError{}, false},
+		"grpc invalid argument":       {status.Error(codes.InvalidArgument, "bad"), false},
+		"quic request rejected":       {&transport.RequestError{Method: "Get", StatusCode: 400, Err: errors.New("bad request")}, false},
+		"connection lost is not this": {&transport.ClosedError{}, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := unanswered(tc.err); got != tc.want {
+				t.Fatalf("unanswered(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}

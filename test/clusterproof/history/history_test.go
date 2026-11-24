@@ -19,6 +19,7 @@ package history
 import (
 	"bytes"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -261,6 +262,40 @@ func TestRecorder_StampsAndKeepsOutcome(t *testing.T) {
 	}
 	if err := r.History().Validate(); err != nil {
 		t.Fatalf("recorded history invalid: %v", err)
+	}
+}
+
+func TestRecorder_TakeHandsTheHistoryOver(t *testing.T) {
+	r := NewRecorder(&stepClock{})
+	logs := []*Log{r.Log(1), r.Log(2), r.Log(3)}
+	for i := range 30 {
+		l := logs[i%len(logs)]
+		p := l.Call(KindPut, "k", &Input{Value: "v"})
+		l.Return(p, OutcomeOK, &Output{}, nil)
+	}
+	want := r.History()
+	got := r.Take()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Take returned %d ops unlike History's %d", len(got), len(want))
+	}
+	if len(got) != 30 {
+		t.Fatalf("Take returned %d ops, want 30", len(got))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].CallNS > got[i].CallNS {
+			t.Fatalf("Take is not sorted at %d", i)
+		}
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("taken history invalid: %v", err)
+	}
+	if h := r.History(); len(h) != 0 {
+		t.Fatalf("History after Take has %d ops, want none", len(h))
+	}
+	for _, l := range logs {
+		if l.ops != nil {
+			t.Fatalf("client %d still holds %d ops after Take", l.client, len(l.ops))
+		}
 	}
 }
 
