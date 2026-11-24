@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/internal/publicpath"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -90,10 +91,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		// unauthenticated; each exact path here is a route that self-authorizes.
 		// The same routes are registered as RESTRoutePublic in the registry so
 		// the server's default-deny startup assertion accounts for them.
-		if r.URL.Path == "/v1/ca/bootstrap" ||
-			r.URL.Path == "/v1/config/initialized" ||
-			r.URL.Path == "/v1/cluster/keydelivery" ||
-			r.URL.Path == "/v1/cluster/nodekey" {
+		if publicpath.Is(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
