@@ -254,7 +254,10 @@ func (r barrierKVReader) Get(key []byte) ([]byte, error) {
 }
 
 // NewIterator returns an ascending iterator over the keys in opts' bounds.
-// The scan is narrowed to the hex prefix the two bounds share.
+// The key listing is narrowed to the hex prefix the two bounds share, and
+// lists keys only: an entry body is read (and decrypted) only for a position
+// whose Value is asked for, so a caller that seeks past bodies never loads
+// them.
 func (r barrierKVReader) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
 	var lower, upper []byte
 	if opts != nil {
@@ -267,33 +270,114 @@ func (r barrierKVReader) NewIterator(opts *storage.IteratorOptions) storage.Iter
 	if upper != nil {
 		scan += sharedPrefix(hex.EncodeToString(lower), hex.EncodeToString(upper))
 	}
-	type kv struct{ key, value []byte }
-	var kvs []kv
-	err := r.kv.Scan(r.ctx, scan, func(stored string, value []byte) error {
-		k, err := hex.DecodeString(strings.TrimPrefix(stored, barrierLogPrefix))
-		if err != nil {
-			return err
-		}
-		if lower != nil && bytes.Compare(k, lower) < 0 {
-			return nil
-		}
-		if upper != nil && bytes.Compare(k, upper) >= 0 {
-			return nil
-		}
-		kvs = append(kvs, kv{key: k, value: append([]byte(nil), value...)})
-		return nil
-	})
+	stored, err := r.kv.List(r.ctx, scan)
 	if err != nil {
 		return storage.NewSliceIterator(nil, nil, err)
 	}
-	sort.Slice(kvs, func(i, j int) bool { return bytes.Compare(kvs[i].key, kvs[j].key) < 0 })
-	keys := make([][]byte, len(kvs))
-	values := make([][]byte, len(kvs))
-	for i := range kvs {
-		keys[i], values[i] = kvs[i].key, kvs[i].value
+	keys := make([][]byte, 0, len(stored))
+	for _, s := range stored {
+		k, err := hex.DecodeString(strings.TrimPrefix(s, barrierLogPrefix))
+		if err != nil {
+			return storage.NewSliceIterator(nil, nil, err)
+		}
+		if lower != nil && bytes.Compare(k, lower) < 0 {
+			continue
+		}
+		if upper != nil && bytes.Compare(k, upper) >= 0 {
+			continue
+		}
+		keys = append(keys, k)
 	}
-	return storage.NewSliceIterator(keys, values, nil)
+	sort.Slice(keys, func(i, j int) bool { return bytes.Compare(keys[i], keys[j]) < 0 })
+	return &barrierKeyIterator{r: r, keys: keys, pos: -1}
 }
+
+// barrierKeyIterator iterates a sorted barrier log key listing. Values are
+// read only for positions whose Value is asked for, one Get per position,
+// cached until the position changes. A Get error ends the iteration: the
+// iterator turns invalid and every later positioning call returns false.
+type barrierKeyIterator struct {
+	r      barrierKVReader
+	keys   [][]byte
+	pos    int
+	valid  bool
+	value  []byte
+	loaded bool
+	err    error
+}
+
+func (it *barrierKeyIterator) setPos(pos int) bool {
+	it.value, it.loaded = nil, false
+	if it.err != nil {
+		it.valid = false
+		return false
+	}
+	it.pos = pos
+	it.valid = pos >= 0 && pos < len(it.keys)
+	return it.valid
+}
+
+// SeekToFirst positions the iterator at the first key.
+func (it *barrierKeyIterator) SeekToFirst() bool { return it.setPos(0) }
+
+// SeekToLast positions the iterator at the last key.
+func (it *barrierKeyIterator) SeekToLast() bool { return it.setPos(len(it.keys) - 1) }
+
+// Seek positions the iterator at the first key >= target.
+func (it *barrierKeyIterator) Seek(target []byte) bool {
+	return it.setPos(sort.Search(len(it.keys), func(i int) bool {
+		return bytes.Compare(it.keys[i], target) >= 0
+	}))
+}
+
+// Next advances the iterator to the next key.
+func (it *barrierKeyIterator) Next() bool {
+	if !it.valid {
+		return it.setPos(len(it.keys))
+	}
+	return it.setPos(it.pos + 1)
+}
+
+// Prev moves the iterator to the previous key.
+func (it *barrierKeyIterator) Prev() bool {
+	if !it.valid {
+		return it.setPos(-1)
+	}
+	return it.setPos(it.pos - 1)
+}
+
+// Valid reports whether the iterator is positioned at a key.
+func (it *barrierKeyIterator) Valid() bool { return it.valid }
+
+// Key returns the current key, or nil when the iterator is invalid.
+func (it *barrierKeyIterator) Key() []byte {
+	if !it.valid {
+		return nil
+	}
+	return it.keys[it.pos]
+}
+
+// Value reads the current entry body on first use at this position.
+func (it *barrierKeyIterator) Value() []byte {
+	if !it.valid {
+		return nil
+	}
+	if !it.loaded {
+		v, err := it.r.kv.Get(it.r.ctx, barrierLogKey(it.keys[it.pos]))
+		if err != nil {
+			it.err, it.valid, it.value = err, false, nil
+			return nil
+		}
+		it.value, it.loaded = v, true
+	}
+	return it.value
+}
+
+// Error returns the listing or body read error, if any.
+func (it *barrierKeyIterator) Error() error { return it.err }
+
+// Close releases nothing: the iterator holds only the key listing.
+func (it *barrierKeyIterator) Close() error { return nil }
 
 // sharedPrefix returns the longest common prefix of a and b.
 func sharedPrefix(a, b string) string {
