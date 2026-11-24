@@ -1473,6 +1473,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		}
 	}
 
+	// DELETE TENANT releases the log service's standalone barrier store for
+	// the tenant, so tenant churn does not grow it until shutdown.
+	wireTenantLogsCloser(n.Tenant, n.Log)
+
 	// The vector namespace create guard (validateTenantCreate) reads the
 	// cluster-wide isolation floor; n.Tenant is the reader, and it exists
 	// only now, after n.Vector was already built above. This replaces the
@@ -1580,6 +1584,56 @@ func wireLogReclaimer(n *Node) {
 	if r, ok := n.Log.(service.LogReclaimer); ok {
 		db.SetLogReclaimer(r)
 	}
+}
+
+// tenantLogsForgetter is the log service's tenant eviction
+// (service.logService.ForgetTenantLogs).
+type tenantLogsForgetter interface {
+	ForgetTenantLogs(tenantID string)
+}
+
+// tenantLogsCloser is the tenant runtime closer that runs the closer wired
+// before it (nil runs none) and then evicts the tenant's log state. The
+// eviction cannot fail.
+type tenantLogsCloser struct {
+	prior tenant.TenantRuntimeCloser
+	logs  tenantLogsForgetter
+}
+
+var _ tenant.TenantRuntimeCloser = (*tenantLogsCloser)(nil)
+
+// CloseTenantRuntime implements tenant.TenantRuntimeCloser.
+func (c *tenantLogsCloser) CloseTenantRuntime(ctx context.Context, tenantID string) error {
+	if c.prior != nil {
+		if err := c.prior.CloseTenantRuntime(ctx, tenantID); err != nil {
+			return err
+		}
+	}
+	c.logs.ForgetTenantLogs(tenantID)
+	return nil
+}
+
+// wireTenantLogsCloser chains the log service's tenant eviction onto the
+// tenant service's runtime closer, keeping any closer already wired. A
+// tenant service without the wiring surface, or a log service without the
+// eviction, is left alone. server.WireTenantRuntimeCloser, run later, keeps
+// this closer as its next.
+func wireTenantLogsCloser(svc tenant.TenantServicer, logs service.LogService) {
+	forgetter, ok := logs.(tenantLogsForgetter)
+	if !ok {
+		return
+	}
+	w, ok := svc.(tenant.ResidueWiring)
+	if !ok {
+		return
+	}
+	g, ok := svc.(interface {
+		TenantRuntimeCloser() tenant.TenantRuntimeCloser
+	})
+	if !ok {
+		return
+	}
+	w.SetTenantRuntimeCloser(&tenantLogsCloser{prior: g.TenantRuntimeCloser(), logs: forgetter})
 }
 
 func buildDEKService(provider dek.Provider, resolver tenant.StoreResolver, keyWrapRegistry keywrap.Registry, keyWrapProvider keywrap.Provider, keyDir string) (service.DEKServicer, error) {

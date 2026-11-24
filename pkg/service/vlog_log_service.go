@@ -167,6 +167,12 @@ func (r *logRoute) raft(ctx context.Context, tenantID string) (logTarget, error)
 func (r *logRoute) barrierStore(ctx context.Context, src LogBarrierStoreSource, tenantID string) (logTarget, error) {
 	barrier, kv, err := src.TenantLogStore(ctx, tenantID)
 	if err != nil {
+		// A tenant whose store cannot be had no longer keeps the one built
+		// for it: a deleted tenant's barrier, log registry and staged
+		// bodies are not held until shutdown.
+		r.mu.Lock()
+		delete(r.barriers, tenantID)
+		r.mu.Unlock()
 		if isSealedError(err) {
 			return nil, tenant.ErrTenantSealed
 		}
@@ -904,6 +910,24 @@ func (r *logRoute) forgetFences(tenantID, name string) {
 	r.inited.Range(func(k, _ any) bool {
 		if key, ok := k.(dbStoreKey); ok && key.tenant == tenantID && key.name == name {
 			r.inited.Delete(k)
+		}
+		return true
+	})
+}
+
+// ForgetTenantLogs releases what the log service holds for tenantID: the
+// standalone barrier tenant's log store (its barrier, log registry and
+// staged entry bodies or signing-key records) and the incarnations its
+// fences were initialised for. DELETE TENANT calls it through the tenant
+// runtime closer, so tenant churn does not grow the route until shutdown.
+// A later write to the name builds a fresh store.
+func (s *logService) ForgetTenantLogs(tenantID string) {
+	s.route.mu.Lock()
+	delete(s.route.barriers, tenantID)
+	s.route.mu.Unlock()
+	s.route.inited.Range(func(k, _ any) bool {
+		if key, ok := k.(dbStoreKey); ok && key.tenant == tenantID {
+			s.route.inited.Delete(k)
 		}
 		return true
 	})

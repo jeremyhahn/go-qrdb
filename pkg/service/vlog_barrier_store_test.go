@@ -343,6 +343,56 @@ func TestLogService_RecycledStandaloneBarrierDropsTheChain(t *testing.T) {
 	}
 }
 
+// TestLogService_ForgetTenantLogsReleasesTheStandaloneStore proves DELETE
+// TENANT's eviction drops the standalone barrier tenant's log store, chain
+// and staged bodies included, and that a later write builds a fresh one.
+func TestLogService_ForgetTenantLogsReleasesTheStandaloneStore(t *testing.T) {
+	f := newStandaloneBarrierFixture(t)
+	f.createAndAppend(t, [][]byte{[]byte("one")})
+	before := f.route.barriers["vault"]
+	if before == nil {
+		t.Fatal("no store for vault after an append")
+	}
+	forgetter, ok := f.svc.(interface{ ForgetTenantLogs(string) })
+	if !ok {
+		t.Fatalf("%T has no ForgetTenantLogs", f.svc)
+	}
+	forgetter.ForgetTenantLogs("vault")
+	if s, held := f.route.barriers["vault"]; held {
+		t.Fatalf("store %p still held after ForgetTenantLogs", s)
+	}
+	if _, err := f.svc.Append(f.ctx, &AppendRequest{LogRef: barrierTenantRef, Entries: [][]byte{[]byte("two")}}); err != nil {
+		t.Fatalf("Append after ForgetTenantLogs: %v", err)
+	}
+	after := f.route.barriers["vault"]
+	if after == nil || after == before {
+		t.Fatalf("store after forget = %p, before = %p; want a fresh store", after, before)
+	}
+	if size := f.headSize(t); size != 2 {
+		t.Fatalf("head size after forget = %d, want 2 (the log persists on the barrier)", size)
+	}
+}
+
+// TestLogService_FailedTenantLogStoreLookupEvicts proves a tenant whose
+// store lookup fails (its barrier removed) no longer keeps the store built
+// for it.
+func TestLogService_FailedTenantLogStoreLookupEvicts(t *testing.T) {
+	f := newStandaloneBarrierFixture(t)
+	f.createAndAppend(t, [][]byte{[]byte("one")})
+	if f.route.barriers["vault"] == nil {
+		t.Fatal("no store for vault after an append")
+	}
+	if err := f.reg.RemoveTenant("vault"); err != nil {
+		t.Fatalf("RemoveTenant: %v", err)
+	}
+	if _, err := f.svc.Append(f.ctx, &AppendRequest{LogRef: barrierTenantRef, Entries: [][]byte{[]byte("two")}}); err == nil {
+		t.Fatal("Append on a removed barrier succeeded; want the lookup refused")
+	}
+	if s, held := f.route.barriers["vault"]; held {
+		t.Fatalf("store %p still held after a failed lookup", s)
+	}
+}
+
 // migrateVault replaces vault's registered barrier the way an encryption
 // migration's commit does (seal.BarrierRegistry.ReplaceTenantBarrier):
 // the registry then holds a new, initialized barrier over its own backend,
