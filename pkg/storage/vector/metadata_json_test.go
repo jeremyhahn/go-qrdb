@@ -18,7 +18,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/vmihailenco/msgpack/v5"
+	gocodecmsgpack "github.com/jeremyhahn/go-codec/pkg/msgpack"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema"
 )
@@ -120,7 +120,13 @@ func TestMetadataFormatSurvivesRecordEncoding(t *testing.T) {
 			t.Fatalf("format %d decoded as %d with %q", format, out.MetadataFormat, out.Metadata["k"])
 		}
 	}
-	old, err := msgpack.Marshal(map[string]interface{}{"id": uint64(7), "meta": map[string]string{"k": "\x01true"}, "ver": uint64(1)})
+	// preFormatRecord mirrors a vector record written before meta_fmt existed.
+	type preFormatRecord struct {
+		ID   uint64            `msgpack:"id"`
+		Meta map[string]string `msgpack:"meta"`
+		Ver  uint64            `msgpack:"ver"`
+	}
+	old, err := gocodecmsgpack.New[*preFormatRecord]().Marshal(&preFormatRecord{ID: 7, Meta: map[string]string{"k": "\x01true"}, Ver: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
