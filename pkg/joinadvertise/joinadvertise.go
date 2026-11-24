@@ -16,7 +16,8 @@
 // signing member publishing a pre-membership feature advertisement for a
 // node it just issued a leaf to, so the operator's member add can admit it
 // once a cluster feature has activated, even though the node itself is not
-// running yet and cannot advertise for itself.
+// running yet and cannot advertise for itself. The record is leased where
+// the state machine has leases and a plain KV record where it has none.
 //
 // It is its own package, rather than living in pkg/clusterenroll (which
 // defines the FeatureAdvertiser interface it implements) or
@@ -55,29 +56,46 @@ const DefaultTTL = 15 * time.Minute
 // because the signing member already holds them with no SDK round-trip to
 // itself needed.
 //
-// It writes exactly once per join (a lease grant plus one PutWithLease,
-// never a keepalive loop): the record is a stopgap for the window before the
+// On a state machine without leases it writes the record with a plain KV
+// Put instead.
+//
+// It writes exactly once per join (a lease grant plus one PutWithLease, or
+// one Put, never a keepalive loop): the record is a stopgap for the window before the
 // joined node is added and starts advertising for itself, not a thing the
 // signing member keeps alive on the joiner's behalf forever.
 type Advertiser struct {
 	lease service.LeaseServicer
 	mvcc  service.MVCCKVServicer
+	kv    KVWriter
 	ttl   time.Duration
 }
 
-// New returns an Advertiser, or nil when leaseSvc or mvcc is nil -- the
-// state machine type this node runs does not implement one of them (see
-// service.LeaseServicer's own doc on "memory"/"disk" state machines). A nil
+// KVWriter is the plain KV write an Advertiser falls back to on a state
+// machine without leases.
+type KVWriter interface {
+	Put(ctx context.Context, key string, value []byte) error
+}
+
+// New returns an Advertiser that writes a leased record when leaseSvc and
+// mvcc are both set. When either is nil -- the state machine type this node
+// runs does not implement one of them (see service.LeaseServicer's own doc
+// on "memory"/"disk" state machines) -- it returns one that writes the same
+// record with kv.Put and no lease, which the joined member deletes once its
+// release is recorded (featuregate.Gate.StartAdmission). It returns nil only
+// when kv is nil as well. A nil
 // *Advertiser is intentionally NOT assigned to a
 // clusterenroll.FeatureAdvertiser variable by callers (that would produce a
 // non-nil interface wrapping a nil pointer); callers check New's result
 // before assigning, so HandleJoinRequest sees a true nil interface and skips
 // advertising silently, exactly as when none was configured at all.
-func New(leaseSvc service.LeaseServicer, mvcc service.MVCCKVServicer) *Advertiser {
-	if leaseSvc == nil || mvcc == nil {
-		return nil
+func New(leaseSvc service.LeaseServicer, mvcc service.MVCCKVServicer, kv KVWriter) *Advertiser {
+	if leaseSvc != nil && mvcc != nil {
+		return &Advertiser{lease: leaseSvc, mvcc: mvcc, ttl: DefaultTTL}
 	}
-	return &Advertiser{lease: leaseSvc, mvcc: mvcc, ttl: DefaultTTL}
+	if kv != nil {
+		return &Advertiser{kv: kv}
+	}
+	return nil
 }
 
 // AdvertiseJoiner implements clusterenroll.FeatureAdvertiser. features is
@@ -100,11 +118,17 @@ func (a *Advertiser) AdvertiseJoiner(ctx context.Context, replicaID uint64, raft
 		return &EncodeError{Err: err}
 	}
 
+	key := featuregate.AdvertisementPrefix + strconv.FormatUint(replicaID, 10)
+	if a.lease == nil {
+		if err := a.kv.Put(ctx, key, data); err != nil {
+			return &WriteError{Err: err}
+		}
+		return nil
+	}
 	granted, err := a.lease.Grant(ctx, int64(a.ttl.Seconds()))
 	if err != nil {
 		return &LeaseError{Err: err}
 	}
-	key := featuregate.AdvertisementPrefix + strconv.FormatUint(replicaID, 10)
 	if _, err := a.mvcc.PutWithLease(ctx, key, data, granted.ID); err != nil {
 		_ = a.lease.Revoke(ctx, granted.ID)
 		return &WriteError{Err: err}

@@ -2346,7 +2346,7 @@ func (s *Server) startREST() error {
 	}
 	if s.opts.clusterJoinProvider != nil {
 		restOpts = append(restOpts, rest.WithClusterJoin(s.opts.clusterJoinProvider, s.opts.clusterJoinStore, s.opts.clusterJoinTrustDomain))
-		if a := joinadvertise.New(s.opts.leaseSvc, s.opts.mvccSvc); a != nil {
+		if a := joinadvertise.New(s.opts.leaseSvc, s.opts.mvccSvc, s.opts.kvSvc); a != nil {
 			restOpts = append(restOpts, rest.WithClusterJoinAdvertiser(a))
 		}
 	}

@@ -239,7 +239,7 @@ func TestAdmission_JoinerIsAdmittedWhileAFeatureGateIsActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build CSR: %v", err)
 	}
-	advertiser := joinadvertise.New(leaseSvc, mvccSvc)
+	advertiser := joinadvertise.New(leaseSvc, mvccSvc, nil)
 	if advertiser == nil {
 		t.Fatal("joinadvertise.New returned nil with both services configured")
 	}

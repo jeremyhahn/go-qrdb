@@ -445,6 +445,10 @@ type Gate struct {
 	// finding one this binary lacks; see ActivationsLoaded.
 	loaded atomic.Bool
 
+	// unleased is set by StartAdmission: recordRelease then deletes this
+	// member's own unleased joiner record.
+	unleased atomic.Bool
+
 	runMu   sync.Mutex
 	started bool
 	cancel  context.CancelFunc
@@ -978,11 +982,33 @@ func (g *Gate) AdmitReplicaAt(shardID uint64, raftAddr string) (ConfigBinding, e
 	if err != nil {
 		return ConfigBinding{}, err
 	}
+	supports := g.Supports
+	if g.unleased.Load() {
+		// An admission-only gate keeps no cached view, so the candidate's
+		// features are read from the stored records.
+		ctx, cancel := context.WithTimeout(context.Background(), admitReadTimeout)
+		view, err := g.admissionView(ctx)
+		cancel()
+		if err != nil {
+			return ConfigBinding{}, err
+		}
+		supports = func(addr string, f feature.Feature) bool {
+			if g.Supports(addr, f) {
+				return true
+			}
+			for _, rec := range view {
+				if rec.Address == addr && slices.Contains(rec.Features, string(f)) {
+					return true
+				}
+			}
+			return false
+		}
+	}
 	for _, f := range supported {
 		if !g.Activated(f) && !g.decide(shardID, f, false) {
 			continue
 		}
-		if !g.Supports(raftAddr, f) {
+		if !supports(raftAddr, f) {
 			return ConfigBinding{}, &UnsupportedReplicaError{ShardID: shardID, Address: raftAddr, Feature: f}
 		}
 	}
@@ -1318,6 +1344,12 @@ func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
 	}
 	releases := parseReleases(keys)
 	g.releases.Store(&releases)
+	if g.unleased.Load() {
+		joiner := AdvertisementPrefix + strconv.FormatUint(self.ReplicaID, 10)
+		if err := kv.Delete(ctx, joiner); err != nil {
+			g.logger.Debug("feature gate: joiner record not deleted", "key", joiner, "error", err)
+		}
+	}
 	g.retireIntents(ctx, kv, self, releases)
 	return nil
 }
@@ -1759,6 +1791,38 @@ func (g *Gate) Start(ctx context.Context, kv ActivationKV, adverts ...cluster.Me
 	}
 	g.wg.Add(1)
 	go g.run(runCtx, kv, adverts, events)
+	return nil
+}
+
+// StartAdmission starts the gate for release admission alone, on a node
+// whose state machine has no leases. It checks its arguments as Start does,
+// runs CheckActivated and EnforceRelease, and then keeps kv and adverts so
+// admitRelease, CheckConfigBinding and claimRelease read them afresh. It
+// starts no watch, no refresh loop and no activation: an unleased record
+// cannot show that a node is still running, so no feature is activated from
+// one. adverts hold the joiners' unleased records; a committed member is
+// judged by its recorded release. Once this member's release is recorded its
+// own joiner record is deleted. A second Start or StartAdmission returns a
+// ConfigError; Close releases the gate.
+func (g *Gate) StartAdmission(ctx context.Context, kv ActivationKV, adverts ...cluster.MembershipStore) error {
+	if kv == nil || len(adverts) == 0 || slices.Contains(adverts, nil) {
+		return &ConfigError{Field: "store"}
+	}
+	g.runMu.Lock()
+	defer g.runMu.Unlock()
+	if g.started {
+		return &ConfigError{Field: "already started"}
+	}
+	if err := g.CheckActivated(ctx, kv); err != nil {
+		return err
+	}
+	g.unleased.Store(true)
+	if err := g.EnforceRelease(ctx, kv); err != nil {
+		g.unleased.Store(false)
+		return err
+	}
+	g.stores.Store(&admissionStores{kv: kv, adverts: slices.Clone(adverts)})
+	g.started = true
 	return nil
 }
 

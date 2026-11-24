@@ -262,6 +262,46 @@ func newGate(t *testing.T, members MembershipSource) *Gate {
 	return g
 }
 
+// startAdmissionGate starts replica 1 for release admission alone over kv
+// and an unleased store, with every member recorded at 0.59.
+func startAdmissionGate(t *testing.T) (*Gate, *memKV, *leaseStore) {
+	t.Helper()
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	kv, store := newMemKV(), newLeaseStore()
+	allOnRelease(t, kv, "0.59.0-alpha")
+	joiner := AdvertisementPrefix + "1"
+	_, err := kv.PutIfAbsent(context.Background(), joiner, []byte(`{"node_id":1}`))
+	require.NoError(t, err)
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.StartAdmission(context.Background(), kv, store))
+	assert.False(t, kv.has(joiner), "the member's own joiner record outlived its release record")
+	var cfg *ConfigError
+	require.ErrorAs(t, g.StartAdmission(context.Background(), kv, store), &cfg)
+	require.ErrorAs(t, g.Start(context.Background(), kv, store), &cfg)
+	return g, kv, store
+}
+
+func TestStartAdmission_AdmitsAnAnnouncedSameReleaseCandidate(t *testing.T) {
+	g, _, store := startAdmissionGate(t)
+	store.advertiseRelease(t, 4, "n4:7000", "0.59.0-alpha")
+	binding, err := g.AdmitReplicaAt(systemShard, "n4:7000")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"0.59.0-alpha"}, binding.CandidateReleases)
+	assert.False(t, g.Activated(GuardedWrites), "an admission-only gate activated a feature")
+}
+
+func TestStartAdmission_RefusesAReleaseGap(t *testing.T) {
+	g, _, store := startAdmissionGate(t)
+	store.advertiseRelease(t, 5, "n5:7000", "0.61.0-alpha")
+	_, err := g.AdmitReplicaAt(systemShard, "n5:7000")
+	var gap *release.GapError
+	require.ErrorAs(t, err, &gap)
+
+	_, err = g.AdmitReplicaAt(systemShard, "n6:7000")
+	var unannounced *UnannouncedCandidateError
+	require.ErrorAs(t, err, &unannounced)
+}
+
 // eventually polls cond for up to two seconds.
 func eventually(t *testing.T, cond func() bool, msg string) {
 	t.Helper()

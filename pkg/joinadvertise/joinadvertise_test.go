@@ -55,23 +55,26 @@ func newTestServices(t *testing.T) (service.LeaseServicer, service.MVCCKVService
 func TestNew_NilWithoutBothServices(t *testing.T) {
 	leaseSvc, mvccSvc := newTestServices(t)
 
-	if joinadvertise.New(nil, mvccSvc) != nil {
+	if joinadvertise.New(nil, mvccSvc, nil) != nil {
 		t.Error("New(nil, mvccSvc) should be nil")
 	}
-	if joinadvertise.New(leaseSvc, nil) != nil {
+	if joinadvertise.New(leaseSvc, nil, nil) != nil {
 		t.Error("New(leaseSvc, nil) should be nil")
 	}
-	if joinadvertise.New(nil, nil) != nil {
-		t.Error("New(nil, nil) should be nil")
+	if joinadvertise.New(nil, nil, nil) != nil {
+		t.Error("New(nil, nil, nil) should be nil")
 	}
-	if joinadvertise.New(leaseSvc, mvccSvc) == nil {
+	if joinadvertise.New(nil, mvccSvc, mapKV{}) == nil {
+		t.Error("New(nil, mvccSvc, kv) should not be nil")
+	}
+	if joinadvertise.New(leaseSvc, mvccSvc, nil) == nil {
 		t.Error("New(leaseSvc, mvccSvc) should not be nil")
 	}
 }
 
 func TestAdvertiseJoiner_WritesALeaseBackedRecordSupportsReads(t *testing.T) {
 	leaseSvc, mvccSvc := newTestServices(t)
-	a := joinadvertise.New(leaseSvc, mvccSvc)
+	a := joinadvertise.New(leaseSvc, mvccSvc, nil)
 
 	ctx := context.Background()
 	err := a.AdvertiseJoiner(ctx, 4, "10.0.0.4:63001", featuregate.SupportedNames(), "0.59.0-alpha")
@@ -112,7 +115,7 @@ func TestAdvertiseJoiner_WritesALeaseBackedRecordSupportsReads(t *testing.T) {
 
 func TestAdvertiseJoiner_DropsUnknownFeatureNames(t *testing.T) {
 	leaseSvc, mvccSvc := newTestServices(t)
-	a := joinadvertise.New(leaseSvc, mvccSvc)
+	a := joinadvertise.New(leaseSvc, mvccSvc, nil)
 
 	ctx := context.Background()
 	claimed := append([]string{"a-feature-this-binary-has-never-heard-of"}, featuregate.SupportedNames()...)
@@ -137,7 +140,7 @@ func TestAdvertiseJoiner_DropsUnknownFeatureNames(t *testing.T) {
 
 func TestAdvertiseJoiner_ZeroFeaturesWritesAnEmptyAdvertisement(t *testing.T) {
 	leaseSvc, mvccSvc := newTestServices(t)
-	a := joinadvertise.New(leaseSvc, mvccSvc)
+	a := joinadvertise.New(leaseSvc, mvccSvc, nil)
 
 	ctx := context.Background()
 	if err := a.AdvertiseJoiner(ctx, 9, "10.0.0.9:63001", nil, ""); err != nil {
@@ -157,6 +160,40 @@ func TestAdvertiseJoiner_ZeroFeaturesWritesAnEmptyAdvertisement(t *testing.T) {
 	}
 }
 
+// mapKV is a KVWriter recording each Put.
+type mapKV map[string][]byte
+
+func (m mapKV) Put(_ context.Context, key string, value []byte) error {
+	m[key] = value
+	return nil
+}
+
+func TestAdvertiseJoiner_WritesAnUnleasedRecordWithoutLease(t *testing.T) {
+	_, mvccSvc := newTestServices(t)
+	kv := mapKV{}
+	a := joinadvertise.New(nil, mvccSvc, kv)
+	if a == nil {
+		t.Fatal("New(nil, mvccSvc, kv) = nil, want an unleased Advertiser")
+	}
+	if err := a.AdvertiseJoiner(context.Background(), 4, "10.0.0.4:63001", featuregate.SupportedNames(), "0.59.0-alpha"); err != nil {
+		t.Fatalf("AdvertiseJoiner: %v", err)
+	}
+	data, ok := kv[featuregate.AdvertisementPrefix+"4"]
+	if !ok {
+		t.Fatal("no record written under the advertisement prefix")
+	}
+	var member cluster.Member
+	if err := json.Unmarshal(data, &member); err != nil {
+		t.Fatalf("unmarshal advertised record: %v", err)
+	}
+	if member.NodeID != 4 || member.Address != "10.0.0.4:63001" || member.ReleaseVersion != "0.59.0-alpha" {
+		t.Errorf("record = %+v, want node 4 at 10.0.0.4:63001 on 0.59.0-alpha", member)
+	}
+	if len(member.Features) != len(featuregate.SupportedNames()) {
+		t.Errorf("Features = %v, want %v", member.Features, featuregate.SupportedNames())
+	}
+}
+
 // fakeLeaseServicer wraps a real LeaseServicer but fails every Grant, to
 // exercise AdvertiseJoiner's lease-failure path without needing a second
 // kind of real backend fault.
@@ -170,7 +207,7 @@ func (f *fakeLeaseServicer) Grant(context.Context, int64) (*lease.Lease, error) 
 
 func TestAdvertiseJoiner_LeaseGrantFailure(t *testing.T) {
 	_, mvccSvc := newTestServices(t)
-	a := joinadvertise.New(&fakeLeaseServicer{}, mvccSvc)
+	a := joinadvertise.New(&fakeLeaseServicer{}, mvccSvc, nil)
 
 	err := a.AdvertiseJoiner(context.Background(), 4, "10.0.0.4:63001", nil, "")
 	var leaseErr *joinadvertise.LeaseError
@@ -192,7 +229,7 @@ func (f *fakeMVCCServicer) PutWithLease(context.Context, string, []byte, int64) 
 
 func TestAdvertiseJoiner_WriteFailureRevokesTheLease(t *testing.T) {
 	leaseSvc, mvccSvc := newTestServices(t)
-	a := joinadvertise.New(leaseSvc, &fakeMVCCServicer{MVCCKVServicer: mvccSvc})
+	a := joinadvertise.New(leaseSvc, &fakeMVCCServicer{MVCCKVServicer: mvccSvc}, nil)
 
 	err := a.AdvertiseJoiner(context.Background(), 4, "10.0.0.4:63001", nil, "")
 	var writeErr *joinadvertise.WriteError
