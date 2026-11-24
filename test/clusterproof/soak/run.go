@@ -17,12 +17,13 @@
 package soak
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"sync"
@@ -78,6 +79,10 @@ type Options struct {
 	// the cluster after the last heal, and the final read.
 	HealTimeout     time.Duration
 	RecoveryTimeout time.Duration
+	// PostTimeout bounds the whole post-duration phase (heals, liveness,
+	// final read, replicas) by one deadline; zero derives it from the
+	// two above.
+	PostTimeout time.Duration
 
 	// Seal is the node seal type the cluster runs under, one of sealTypes.
 	Seal string
@@ -138,7 +143,11 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	}
 	infos := o.inspect(ctx)
 
-	events := &eventLog{origin: origin}
+	if o.Progress != nil {
+		// The ticker, the nemesis player and the phases all print.
+		o.Progress = &lockedWriter{w: o.Progress}
+	}
+	events := &eventLog{origin: origin, progress: o.Progress}
 	player := &nemesis.Player{Nemeses: o.Nemeses, Targets: o.Targets, Recorder: events, HealTimeout: o.HealTimeout}
 	loadCtx, stopLoad := context.WithCancel(ctx)
 	defer stopLoad()
@@ -161,31 +170,48 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	if playErr != nil && ctx.Err() == nil && events.failures() == 0 {
 		status.Errors = append(status.Errors, "nemesis: "+playErr.Error())
 	}
-	status.Unhealed = o.healAll(ctx)
+	// One deadline bounds the whole post-duration phase, so the verdict
+	// and the bundle are written however the cluster behaves after the
+	// last heal (#1637: a run that stalled here never wrote either).
+	deadline := time.Now().Add(o.postTimeout())
+	healCtx, cancelHeal := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	defer cancelHeal()
+	pctx, cancelPost := context.WithDeadline(ctx, deadline)
+	defer cancelPost()
+
+	o.phase(origin, "healing")
+	status.Unhealed = o.healAll(healCtx)
 	healedAt := time.Now()
 
+	o.phase(origin, "liveness")
 	switch {
 	case ctx.Err() != nil:
 		run.Liveness = Observation{Status: StatusUnavailable, Detail: "not checked: the run was interrupted"}
 	case len(status.Unhealed) > 0:
 		run.Liveness = Observation{Status: StatusUnavailable, Detail: "not checked: a fault did not heal"}
 	default:
-		run.Liveness = o.liveness(ctx, wcfg.KeyPrefix, healedAt)
+		run.Liveness = o.liveness(pctx, wcfg.KeyPrefix, healedAt)
 	}
-	if ctx.Err() == nil {
-		fctx, cancel := context.WithTimeout(ctx, o.RecoveryTimeout)
+	if ctx.Err() == nil && pctx.Err() == nil {
+		o.phase(origin, "final read")
+		fctx, cancel := context.WithTimeout(pctx, o.RecoveryTimeout)
 		if err := w.FinalRead(fctx); err != nil && ctx.Err() == nil {
 			status.Errors = append(status.Errors, "final read: "+err.Error())
 		}
 		cancel()
 	}
-	run.Replicas = o.replicas(ctx)
+	o.phase(origin, "replicas")
+	run.Replicas = o.replicas(pctx)
+	if ctx.Err() == nil && pctx.Err() != nil {
+		status.Errors = append(status.Errors, "post-run phase: not finished within "+o.postTimeout().String())
+	}
+	o.phase(origin, "writing bundle")
 	status.Interrupted = ctx.Err() != nil
 	run.Status = status
 	run.Stats = WorkloadStats{OK: stats.OK, Fail: stats.Fail, Indeterminate: stats.Indeterminate, DialFailures: stats.DialFailures}
 	run.Ended = time.Now().UTC().Format(time.RFC3339Nano)
 
-	return o.writeBundle(bw, rec.History(), events.snapshot(), run, infos)
+	return o.writeBundle(bw, rec.Take(), events.snapshot(), run, infos)
 }
 
 // writeBundle writes the evidence, decodes it again, derives the verdict from
@@ -194,10 +220,12 @@ func Run(ctx context.Context, o Options) (Result, error) {
 // bundle reproduce the verdict exactly.
 func (o *Options) writeBundle(bw *bundleWriter, h history.History, events []EventRecord, run RunRecord, infos []NodeInfo) (Result, error) {
 	res := Result{Bundle: o.Bundle}
-	historyData, err := encodeHistory(h)
-	if err != nil {
-		return res, &BundleError{Path: o.Bundle, Reason: "cannot encode " + fileHistory, Err: err}
+	if err := bw.writeStream(fileHistory, func(w io.Writer) error { return history.Encode(w, h) }); err != nil {
+		return res, err
 	}
+	// The written member is the evidence from here on: drop the recorded
+	// copy, so the decoded one is the only history this run still holds.
+	h = nil
 	eventData, err := encodeLines(events)
 	if err != nil {
 		return res, &BundleError{Path: o.Bundle, Reason: "cannot encode " + fileNemesis, Err: err}
@@ -209,7 +237,7 @@ func (o *Options) writeBundle(bw *bundleWriter, h history.History, events []Even
 	files := []struct {
 		rel  string
 		data []byte
-	}{{fileHistory, historyData}, {fileNemesis, eventData}, {fileRun, runData}}
+	}{{fileNemesis, eventData}, {fileRun, runData}}
 	for _, info := range infos {
 		data, err := encodeJSON(info)
 		if err != nil {
@@ -226,7 +254,13 @@ func (o *Options) writeBundle(bw *bundleWriter, h history.History, events []Even
 		}
 	}
 
-	ev, err := decodeEvidence(o.Bundle, historyData, eventData, runData)
+	hp := filepath.Join(bw.dir, filepath.FromSlash(fileHistory))
+	hf, err := os.Open(hp)
+	if err != nil {
+		return res, &BundleError{Path: o.Bundle, Reason: "cannot read " + fileHistory, Err: err}
+	}
+	ev, err := decodeEvidence(o.Bundle, hf, eventData, runData)
+	_ = hf.Close()
 	if err != nil {
 		return res, err
 	}
@@ -235,10 +269,13 @@ func (o *Options) writeBundle(bw *bundleWriter, h history.History, events []Even
 	if err != nil {
 		return res, &BundleError{Path: o.Bundle, Reason: "cannot derive the verdict", Err: err}
 	}
+	if err := bw.writeStream(fileTimeline, func(w io.Writer) error { return encodeTimeline(w, d.timeline) }); err != nil {
+		return res, err
+	}
 	for _, f := range []struct {
 		rel  string
 		data []byte
-	}{{fileTimeline, d.timeline}, {fileTimings, d.timings}, {fileVerdict, d.verdict}} {
+	}{{fileTimings, d.timings}, {fileVerdict, d.verdict}} {
 		if err := bw.write(f.rel, f.data); err != nil {
 			return res, err
 		}
@@ -253,9 +290,9 @@ func (o *Options) writeBundle(bw *bundleWriter, h history.History, events []Even
 
 // decodeEvidence reads the recorded evidence back from its bytes, as a check
 // does.
-func decodeEvidence(dir string, historyData, eventData, runData []byte) (evidence, error) {
+func decodeEvidence(dir string, historyR io.Reader, eventData, runData []byte) (evidence, error) {
 	var ev evidence
-	h, err := history.Decode(bytes.NewReader(historyData))
+	h, err := history.Decode(historyR)
 	if err != nil {
 		return ev, &BundleError{Path: dir, Reason: "malformed " + fileHistory, Err: err}
 	}
@@ -385,7 +422,10 @@ func (o *Options) inspect(ctx context.Context) []NodeInfo {
 func (o *Options) healAll(ctx context.Context) []string {
 	var unhealed []string
 	for _, name := range slices.Sorted(maps.Keys(o.Nemeses)) {
-		hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), o.HealTimeout)
+		// Run hands in a context that outlives the run's cancellation but
+		// carries the post-run deadline: a heal still runs after an
+		// interrupt, never past the deadline.
+		hctx, cancel := context.WithTimeout(ctx, o.HealTimeout)
 		err := o.Nemeses[name].Heal(hctx)
 		cancel()
 		if err != nil {
@@ -393,6 +433,26 @@ func (o *Options) healAll(ctx context.Context) []string {
 		}
 	}
 	return unhealed
+}
+
+// postTimeout is the one deadline over the post-duration phase: every
+// heal, E4's liveness wait, the final read and the replica comparison.
+// PostTimeout zero is one heal per configured fault plus RecoveryTimeout
+// for each of the three cluster checks.
+func (o *Options) postTimeout() time.Duration {
+	if o.PostTimeout > 0 {
+		return o.PostTimeout
+	}
+	return time.Duration(len(o.Nemeses))*o.HealTimeout + 3*o.RecoveryTimeout
+}
+
+// phase prints the start of a post-duration phase on the progress writer,
+// so a stall is attributable to the phase that did not end.
+func (o *Options) phase(origin time.Time, name string) {
+	if o.Progress == nil {
+		return
+	}
+	fmt.Fprintf(o.Progress, "clusterproof: %s: %s\n", time.Since(origin).Round(time.Second), name)
 }
 
 // liveness is E4: every node reports every shard it hosts led, and takes a
@@ -578,9 +638,24 @@ func (c runClock) Now() int64 { return int64(time.Since(c.origin)) }
 // eventLog records nemesis events on the run's clock.
 type eventLog struct {
 	origin time.Time
+	// progress, when set, receives one line per fault event as it
+	// happens: name, targets and result.
+	progress io.Writer
 
 	mu     sync.Mutex
 	events []EventRecord
+}
+
+// lockedWriter serialises the progress lines of concurrent writers.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 var _ nemesis.Recorder = (*eventLog)(nil)
@@ -593,6 +668,14 @@ func (l *eventLog) Record(e nemesis.Event) {
 	l.mu.Lock()
 	l.events = append(l.events, r)
 	l.mu.Unlock()
+	if l.progress != nil && e.Nemesis != "" {
+		result := "ok"
+		if e.Error != "" {
+			result = "error: " + e.Error
+		}
+		fmt.Fprintf(l.progress, "clusterproof: %s: window %d %s %v %v %v: %s\n",
+			e.Time.Sub(l.origin).Round(time.Second), e.Window, e.Nemesis, e.Op, e.Phase, e.Targets, result)
+	}
 }
 
 func (l *eventLog) snapshot() []EventRecord {
