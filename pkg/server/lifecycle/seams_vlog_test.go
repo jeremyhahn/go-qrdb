@@ -21,12 +21,14 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -131,7 +133,8 @@ func TestBuildServices_StandaloneBarrierTenantsAuditIsWrittenToTheSystemShard(t 
 		t.Fatalf("NewMVCCEngine: %v", err)
 	}
 	// A standalone node's system shard is a local backend that gates no
-	// features (cmd/qrdbd), so its replicated audit keeps OpAuditAppend.
+	// features (cmd/qrdbd): every replica is this process, so its
+	// replicated audit is the tenant's audit instance.
 	host := backend.NewLocalBackend(mvcc)
 	t.Cleanup(func() { _ = host.Close() })
 	node, registry := buildRoutedIAMNodeOn(t, host)
@@ -163,10 +166,83 @@ func TestBuildServices_StandaloneBarrierTenantsAuditIsWrittenToTheSystemShard(t 
 	}
 	// The log service routes the audit instance where the logger writes:
 	// the system shard, never the tenant's home store.
-	_, headErr := node.Log.Head(vault, &service.HeadRequest{LogRef: service.LogRef{Database: vlog.AuditDatabase, Log: vlog.AuditLog}})
+	head, headErr := node.Log.Head(vault, &service.HeadRequest{LogRef: service.LogRef{Database: vlog.AuditDatabase, Log: vlog.AuditLog}})
 	var unavailable *service.BarrierStoreUnavailableError
 	if errors.As(headErr, &unavailable) || errors.Is(headErr, tenant.ErrTenantSealed) {
 		t.Fatalf("Head(audit) = %v, want it routed to the system shard, not the barrier home", headErr)
+	}
+	// A single-binary host writes the trail as the tenant's audit instance:
+	// both events are leaves of the system shard's vault/system/audit.
+	if headErr != nil || head.Head.Size < 2 {
+		t.Fatalf("Head(audit) = %+v, %v; want the audit instance holding both events", head, headErr)
+	}
+}
+
+// TestBuildServices_StandaloneAuditSwitchKeepsTheChainContinuous pins the
+// switch on a standalone node whose trail predates it: the system shard (a
+// local backend) holds events committed as OpAuditAppend, the replicated
+// logger then writes the tenant's audit instance, and Query reads every
+// event while VerifyTenantChain folds the pre-switch records and the
+// instance's leaves into one continuous chain from genesis (leaf 0 carries
+// the pre-switch PrevHash, docs/databases/engineering.md "The switch").
+func TestBuildServices_StandaloneAuditSwitchKeepsTheChainContinuous(t *testing.T) {
+	mvcc, err := engine.NewMVCCEngine(memory.NewStorage(), engine.WithMVCCLogs(vlog.NewChain()))
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	host := backend.NewLocalBackend(mvcc)
+	t.Cleanup(func() { _ = host.Close() })
+	node, registry := buildRoutedIAMNodeOn(t, host)
+	ctx := context.Background()
+	if _, err := node.Tenant.CreateTenant(ctx, "vault", "Vault", tenant.IsolationBarrier); err != nil {
+		t.Fatalf("CreateTenant(barrier): %v", err)
+	}
+	if err := registry.InitializeTenant(ctx, "vault", seal.Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant(barrier): %v", err)
+	}
+	node.Tenant = auditedTenants{TenantServicer: node.Tenant}
+	vault := tenant.WithTenantID(ctx, "vault")
+	auditRef := service.LogRef{Database: vlog.AuditDatabase, Log: vlog.AuditLog}
+
+	// The trail an earlier binary wrote: OpAuditAppend, no tree node.
+	for _, action := range []string{"pre.one", "pre.two"} {
+		cmd, err := protocol.EncodeAuditAppend("vault", audit.AuditEvent{TenantID: "vault", Action: action, Timestamp: time.Now().UTC()})
+		if err != nil {
+			t.Fatalf("EncodeAuditAppend(%s): %v", action, err)
+		}
+		if _, err := host.SyncPropose(ctx, 0, cmd); err != nil {
+			t.Fatalf("SyncPropose(%s): %v", action, err)
+		}
+	}
+	if _, err := node.Log.Head(vault, &service.HeadRequest{LogRef: auditRef}); err == nil {
+		t.Fatal("the pre-switch trail already has an audit instance")
+	}
+	for _, action := range []string{"post.one", "post.two"} {
+		if err := node.ReplicatedAudit.Emit(vault, audit.AuditEvent{TenantID: "vault", Action: action}); err != nil {
+			t.Fatalf("Emit(%s): %v", action, err)
+		}
+	}
+
+	head, err := node.Log.Head(vault, &service.HeadRequest{LogRef: auditRef})
+	if err != nil || head.Head.Size != 2 {
+		t.Fatalf("Head(audit) = %+v, %v; want the two post-switch leaves", head, err)
+	}
+	page, err := node.ReplicatedAudit.Query(vault, audit.Filter{TenantID: "vault"})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, ev := range page.Events {
+		seen[ev.Action] = true
+	}
+	for _, action := range []string{"pre.one", "pre.two", "post.one", "post.two"} {
+		if !seen[action] {
+			t.Fatalf("Query = %+v, want %s read back across the switch", page.Events, action)
+		}
+	}
+	report, err := node.ReplicatedAudit.VerifyTenantChain(vault, "vault")
+	if err != nil || !report.Verified || !report.Genesis || report.Records < 4 {
+		t.Fatalf("VerifyTenantChain = %+v, %v; want one continuous chain from genesis across the switch", report, err)
 	}
 }
 

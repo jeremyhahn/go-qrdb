@@ -176,12 +176,49 @@ func TestReplicatedLogger_Emit_ProposesToTheAuditInstance(t *testing.T) {
 	}
 }
 
+// TestReplicatedLogger_Emit_UngatedHostProposesToTheAuditInstance pins a
+// single-binary host (no FeatureGatedHost: a standalone node's local
+// backend) in a build that applies the verifiable-log opcode: every replica
+// is this process, so the trail is the tenant's audit instance, the
+// AuditAppend sub-type to vlog.AuditLogID(tenant).
+func TestReplicatedLogger_Emit_UngatedHostProposesToTheAuditInstance(t *testing.T) {
+	if !ungatedHostAppliesAuditInstance {
+		t.Skip("a build without qrdb_vlog keeps OpAuditAppend (TestReplicatedLogger_Emit_AuditInstanceNeedsItsOwnGate)")
+	}
+	host, cmds := recordingHost(sm.Result{Value: 1})
+	logger := NewReplicatedLogger(&fixedShardResolver{host: host, shardID: 1})
+	if err := logger.Emit(context.Background(), fixedAuditEvent("acme")); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if len(*cmds) != 1 {
+		t.Fatalf("propose was called %d times, want 1", len(*cmds))
+	}
+	cmd := (*cmds)[0]
+	if cmd[0] != protocol.OpVerifiableLog {
+		t.Fatalf("op = %d, want OpVerifiableLog (%d)", cmd[0], protocol.OpVerifiableLog)
+	}
+	subtype, tenantID, body, err := protocol.DecodeVerifiableLogCommand(cmd[1:])
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if subtype != protocol.VerifiableLogSubtypeAuditAppend || tenantID != "acme" {
+		t.Fatalf("subtype %d tenant %q, want audit append on acme", subtype, tenantID)
+	}
+	id, entries, err := protocol.DecodeVerifiableLogAuditAppend(tenantID, body)
+	if err != nil {
+		t.Fatalf("decode append: %v", err)
+	}
+	if id != vlog.AuditLogID("acme") || len(entries) != 1 {
+		t.Fatalf("append to %v with %d entries, want acme/system/audit with 1", id, len(entries))
+	}
+}
+
 // TestReplicatedLogger_Emit_AuditInstanceNeedsItsOwnGate pins that only
 // featuregate.VerifiableLogAudit switches Emit to the audit instance: a
 // binary that advertises VerifiableLog but predates the instance would
 // refuse the append while its peers chain it, so with VerifiableLog alone,
-// as with neither gate or a host that gates nothing, Emit proposes
-// OpAuditAppend.
+// as with neither gate, Emit proposes OpAuditAppend. A host that gates
+// nothing keeps OpAuditAppend only in a build without qrdb_vlog.
 func TestReplicatedLogger_Emit_AuditInstanceNeedsItsOwnGate(t *testing.T) {
 	cases := []struct {
 		name string
@@ -208,8 +245,14 @@ func TestReplicatedLogger_Emit_AuditInstanceNeedsItsOwnGate(t *testing.T) {
 			if len(*cmds) != 1 {
 				t.Fatalf("propose was called %d times, want 1", len(*cmds))
 			}
-			if op := (*cmds)[0][0]; op != protocol.OpAuditAppend {
-				t.Fatalf("op = %d, want OpAuditAppend (%d)", op, protocol.OpAuditAppend)
+			want := byte(protocol.OpAuditAppend)
+			if tc.name == "ungated host" && ungatedHostAppliesAuditInstance {
+				// A single-binary host in the qrdb_vlog build writes the
+				// audit instance (TestReplicatedLogger_Emit_UngatedHost...).
+				want = protocol.OpVerifiableLog
+			}
+			if op := (*cmds)[0][0]; op != want {
+				t.Fatalf("op = %d, want %d", op, want)
 			}
 		})
 	}

@@ -322,6 +322,14 @@ func readLog(r storage.Reader, req vlog.Request, sealed func(error) bool) (inter
 	return v, nil
 }
 
+// init turns on the audit instance for a single-binary host: this build
+// carries the verifiable-log feature, so a standalone node's audit trail is
+// the tenant's audit instance as a gated group's is once it enables
+// featuregate.VerifiableLogAudit (ReplicatedLogger.Emit).
+func init() {
+	ungatedHostAppliesAuditInstance = true
+}
+
 var (
 	errNotALogCommand     = errors.New("vlog database store: the command is not a verifiable log command")
 	errReverseUnsupported = errors.New("vlog database store: reverse iteration is not supported")
