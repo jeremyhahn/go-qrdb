@@ -425,6 +425,38 @@ name is validated at every write, so it cannot carry a NUL byte or a `/` for
 the key layout to protect against. No tenant or database prefix is part of
 any key: the store belongs to one database.
 
+### Metadata format and the `vector-metadata-json` gate
+
+A vector record carries a metadata format version beside its metadata map:
+
+- **Version 1 (`MetadataFormatJSON`)** stores each value as its canonical
+  JSON text (`vector.EncodeMetadataValue`), so a number, a boolean, an array
+  or an object reads back with its JSON type, and a typed filter predicate
+  (`hot = true`, `price = 9.5`) matches the index entry the same value wrote.
+- **A record without a version is legacy (`MetadataFormatLegacy`).** Its
+  values are the verbatim `%v` strings an earlier binary wrote, and they read
+  back as strings. Legacy records stay readable and filterable: an empty
+  filter list lists them alongside version 1 records, and a filter whose
+  predicates are all strings matches them too; a filter with any non-string
+  predicate skips them, since a legacy record holds only strings. A merge
+  update of a version 1 record keeps version 1; a merge into a legacy record
+  under a version 1 command upgrades the stored values first.
+
+A binary from before the format ignores a command's format and would store
+and filter the JSON text as plain strings, so the format is gated by the
+`vector-metadata-json` cluster feature (`featuregate.VectorMetadataJSON`),
+checked against the vector shard's group in `vectorService.metadataFormat`.
+
+- **Until every replica of the group advertises it and it is activated**,
+  upserts and metadata updates are proposed in the legacy format, and a
+  batch upsert carries no metadata: the Raft apply stores none for a
+  legacy-format batch, as a replica that predates the feature does, so
+  replicas of either version apply the same records.
+- **Once it is active** every write is version 1. Activation is permanent,
+  like every cluster feature's: a binary that does not implement it is
+  refused at start (`featuregate.CheckActivated`), so an older binary cannot
+  rejoin the group. A host that gates nothing writes version 1 at once.
+
 **Precondition (not yet enforced in code): the `storage.Batch` an apply
 handler receives is the store of EXACTLY ONE database.** The key layout above
 has no tenant or database prefix because it relies on this; it is an
