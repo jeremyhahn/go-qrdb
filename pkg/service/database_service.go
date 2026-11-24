@@ -1544,14 +1544,17 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	if err := RefuseEtcdNotCompiled(cfg.Protocol.Etcd); err != nil {
 		return nil, err
 	}
-	if tenantid.IsSystem(tenant.FromContext(ctx)) {
-		// The system tenant creates its own databases. A tenant named in
-		// the request is discarded, as a tenant caller's is: no caller
-		// creates a database in another tenant.
-		cfg.TenantID = ""
-		return s.createWithCredentials(ctx, cfg, creds)
-	}
 	tenantID := tenant.FromContext(ctx)
+	// The system tenant takes this same path, so its databases get the
+	// tenant root, the topology defaulting, the replication-factor clamp and
+	// a replicated placement on their replicas. Only the plan gates are
+	// skipped for it: it has no tenant record, no entitlements and no
+	// quotas, so neither is consulted nor metered. A tenant named in the
+	// request is discarded: no caller creates a database in another tenant.
+	system := tenantid.IsSystem(tenantID)
+	if system {
+		cfg.TenantID = ""
+	}
 
 	// A caller-supplied DataDir is never trusted for a tenant-scoped create:
 	// it is only ever set below, computed server-side from the tenant's own
@@ -1563,8 +1566,11 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// otherwise be pointed at another database's directory, a reserved
 	// system path, or anywhere outside the intended storage tree;
 	// database.Manager.validateDataDir provides defense-in-depth on top of
-	// this for every caller, including the system-tenant path above.
-	cfg.DataDir = ""
+	// this for every caller. The system tenant, the platform operator, keeps
+	// a DataDir it names (a barrier-enabled database needs its own store).
+	if !system {
+		cfg.DataDir = ""
+	}
 
 	// IsolationVolume tenants store every database on their dedicated DataRoot
 	// ({DataRoot}/databases/{db}) and run a per-tenant Raft Host. IsolationRaft
@@ -1582,7 +1588,7 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// backend, so an unnamed cluster mode falls back to local after the
 	// node's database_defaults are resolved.
 	var dedicatedRaft bool
-	if s.tenantInfo != nil {
+	if s.tenantInfo != nil && !system {
 		info, err := s.tenantInfo.GetTenant(ctx, tenantID)
 		if err != nil {
 			return nil, err
@@ -1666,7 +1672,7 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// tenant's plan permits the requested isolation tier / dedicated feature.
 	// Raft-backed databases are a dedicated tier requiring both the "raft"
 	// isolation-mode entitlement and the dedicated_raft feature.
-	if s.entitlementChecker != nil && cfg.Backend == database.BackendRaft {
+	if s.entitlementChecker != nil && !system && cfg.Backend == database.BackendRaft {
 		if err := s.entitlementChecker.CheckIsolation(ctx, tenantID, quota.IsolationModeRaft); err != nil {
 			return nil, err
 		}
@@ -1715,7 +1721,7 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	if cfg.DedicatedWAL {
 		if cfg.Backend != database.BackendRaft {
 			cfg.DedicatedWAL = false
-		} else {
+		} else if !system {
 			if s.entitlementChecker != nil {
 				if err := s.entitlementChecker.CheckFeature(ctx, tenantID, quota.FeatureDedicatedWAL); err != nil {
 					return nil, err
@@ -1731,7 +1737,7 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 
 	// Numeric quota plane: database count, plus raft-group count, per-group
 	// replication-factor cap, and aggregate replica budget for raft databases.
-	if s.quotaChecker != nil {
+	if s.quotaChecker != nil && !system {
 		if err := s.quotaChecker.Check(ctx, tenantID, quota.ResourceDatabases); err != nil {
 			return nil, err
 		}
@@ -1780,7 +1786,7 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 		}
 	}
 
-	if cfg.Backend == database.BackendRaft && s.quotaUsage != nil {
+	if cfg.Backend == database.BackendRaft && s.quotaUsage != nil && !system {
 		if _, err := s.quotaUsage.IncrementQuotaUsage(ctx, tenantID, quota.ResourceRaftGroups, 1); err != nil {
 			return nil, err
 		}
@@ -1800,7 +1806,13 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 		}
 	}
 
-	db, err := s.manager.CreateForTenantWithCredentials(ctx, cfg, creds)
+	// The manager records a system-tenant database with no tenant ID (the
+	// system tenant's own catalog); every other tenant's carries its ID.
+	createDB := s.manager.CreateForTenantWithCredentials
+	if system {
+		createDB = s.manager.CreateWithCredentials
+	}
+	db, err := createDB(ctx, cfg, creds)
 	if err != nil {
 		releaseReservations()
 		return nil, err
