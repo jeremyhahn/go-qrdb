@@ -54,10 +54,8 @@
   /** Human-readable labels for each step, keyed by step ID. */
   const stepLabels: Readonly<Record<DatabaseWizardStep, string>> = {
     name: "Name",
-    mode: "Mode", // retained for type compatibility, not shown in steps
     storage: "Storage",
     raft: "Raft",
-    connection: "Connection",
     sql: "Protocols",
     barrier: "Barrier",
     summary: "Summary",
