@@ -165,7 +165,7 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
 ## Component placement
 
 - A new package implementing the page store against the service layer,
-  plus a thin engine binding per tier. The page store core exists unwired
+  plus a thin engine binding per tier. The page store core exists
   in `pkg/sqlitevfs` (keyspace, meta record, snapshot reads, one-batch
   commit on the local MVCC store), with the staged commit and publish for
   oversized transactions (Q2), the meta generation check (Q4), and the
@@ -185,9 +185,14 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
   entitlement and a free slot under the tenant's SQLite-database count cap
   (a soft bound), and an existing one opens with neither. The gate and its
   admin surface (the entitlement and the cap on every transport, the CLI and
-  config defaults) are built; the server does not call the gate yet: no
-  engine binding, server construction of a Store or SQLite database
-  transport is built.
+  config defaults) are built. The tier 1 engine binding
+  (`pkg/sqlitevfs/moderncvfs` on `modernc.org/sqlite`, see
+  [usage.md](usage.md)) is built, and so is the Q4 restore hook: every
+  scope's MVCC service in `pkg/server` is wrapped so a restore to a
+  revision that changed a key under `sqlite/<db>/` bumps that database's
+  generation. The one item not built is the server constructing a Store
+  for a caller (owner item o1, in [../plans/926.md](../plans/926.md)),
+  which is also where the server will call the gate.
 - If any tier requires CGo (`mattn`, the loadable extension), that binding
   lives in its **own Go module**: CGo must not enter the root module's
   dependency graph. The pure-Go tier via `modernc.org/sqlite` avoids CGo
@@ -201,8 +206,8 @@ Each question is answered with options, a recommendation and its reason in
 the decision record
 [../decisions/sqlite-vfs-build.md](../decisions/sqlite-vfs-build.md),
 where the questions are decided by convention under ruling 109, then
-adopted by Tenant Agent ruling 1115 (2026-11-22); the SQLite engine
-dependency is pending the owner (owner queue 288).
+adopted by Tenant Agent ruling 1115 (2026-11-22); owner ruling 1234
+approved the SQLite engine dependency (`modernc.org/sqlite`).
 
 1. **WAL-mode support** — advertise batch-atomic and force rollback-journal
    semantics (simpler), or replicate WAL frames dqlite-style (harder,
@@ -216,7 +221,9 @@ dependency is pending the owner (owner queue 288).
    [Q3](../decisions/sqlite-vfs-build.md#q3-multi-writer-default-and-how-sqlite_busy-surfaces).
 4. **Backup/restore interplay** — the page namespace must participate in
    qrdb's existing backup, PITR and tenant-barrier machinery; encryption
-   comes free via the barrier, but restore semantics need definition. See
+   comes free via the barrier. Decided A: a restore to a revision bumps the
+   generation of each database it touched, built as the restore hook in
+   `pkg/server` (see [usage.md](usage.md#restore)). See
    [Q4](../decisions/sqlite-vfs-build.md#q4-backup-restore-and-pitr-interplay).
 5. **Quota/entitlement accounting** — pages are opaque to the entity/SQL
    planes; per-tenant quotas need to count the namespace. Creation is gated

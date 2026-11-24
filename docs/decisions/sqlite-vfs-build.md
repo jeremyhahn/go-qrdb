@@ -334,10 +334,19 @@ Built so far (unwired):
   and the config defaults.
 
 Built since: the tier 1 binding on `modernc.org/sqlite` (owner ruling 1234),
-`moderncvfs.Register`, registering VFS `qrdb` over the page store.
+`moderncvfs.Register`, registering VFS `qrdb` over the page store
+([usage](../sqlite-vfs/usage.md)); and the Q4 A restore hook: a restore to
+a revision through a scope's MVCC service that changed a key under
+`sqlite/<db>/` bumps that database's generation past every earlier one
+(`Store.BumpGenerationAfterRestore`, wrapped around every scope's MVCC
+service in `pkg/server`), on the prefix, volume and raft isolation types.
 
 Still to come: the server
 constructing a Store for a caller (open for the owner, o1), which is also
-where `sqlitevfs.Admit` is called: only that caller waits on o1.
+where `sqlitevfs.Admit` is called: only that caller waits on o1. The
+restore hook bumps after the restore's own write, not in it; a commit in
+between is not overwritten, but a store that saw the restored generation
+is not told of it (o9, open for the owner, in
+[docs/plans/926.md](../plans/926.md)).
 Registering `sqlitevfs.CountDatabases` as the `sqlite_databases` quota
 counter also waits on o1, since it reads the scope a Store lives in.

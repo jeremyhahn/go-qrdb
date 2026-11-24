@@ -35,8 +35,9 @@ import (
 //
 // The bump is a second write after the restore's own. A commit that lands
 // between them is never overwritten (the bump's read check refuses a moved
-// meta and retries past it), but a store that already saw the restored
-// generation is not told about that commit. Closing that window needs the
+// meta and retries past it), but a transaction that begins in between is
+// not told of the restore when the restored generation equals the one its
+// store saw. Closing that window needs the
 // restore op to write the bump in its own revision; docs/plans/926.md
 // records it as o9 for the owner.
 type sqliteRestoreMVCC struct {
