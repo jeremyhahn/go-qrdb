@@ -1128,6 +1128,43 @@ func TestIncarnationRequest_LegacyLogIsVisible(t *testing.T) {
 	}
 }
 
+func TestIncarnationRequest_StrictRefusesALegacyLog(t *testing.T) {
+	c, stg := mustCreate(t, true)
+	const live = "inc-live"
+	owned := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "owned"}
+	desc := testDescriptor(true)
+	desc.Incarnation = live
+	if err := c.Create(stg, owned, desc); err != nil {
+		t.Fatalf("Create owned: %v", err)
+	}
+	list := ListRequest{TenantID: testLog.TenantID, Database: testLog.Database}
+	for _, strict := range []bool{false, true} {
+		_, err := IncarnationRequest{Request: DescriptorRequest{ID: testLog}, Incarnation: live, Strict: strict}.read(stg)
+		if strict && !errors.As(err, new(*LogNotFoundError)) {
+			t.Fatalf("strict read of the legacy log = %v; want LogNotFoundError", err)
+		}
+		if !strict && err != nil {
+			t.Fatalf("read of the legacy log: %v", err)
+		}
+		got, err := IncarnationRequest{Request: DescriptorRequest{ID: owned}, Incarnation: live, Strict: strict}.read(stg)
+		if d, ok := got.(*Descriptor); err != nil || !ok || d.Incarnation != live {
+			t.Fatalf("read (strict %v) of the live incarnation's log = %#v, %v; want its descriptor", strict, got, err)
+		}
+		listed, err := IncarnationRequest{Request: list, Incarnation: live, Strict: strict}.read(stg)
+		if err != nil {
+			t.Fatalf("list (strict %v): %v", strict, err)
+		}
+		ids, _ := listed.([]LogID)
+		want := 2
+		if strict {
+			want = 1
+		}
+		if len(ids) != want || !slices.Contains(ids, owned) || slices.Contains(ids, testLog) == strict {
+			t.Fatalf("list (strict %v) = %v; want the owned log%s", strict, ids, map[bool]string{false: " and the legacy log", true: " only"}[strict])
+		}
+	}
+}
+
 // TestChain_DropDatabase_KeepsAnotherIncarnationsLogs pins that a drop
 // under one incarnation deletes that incarnation's logs and the legacy logs
 // (no incarnation recorded) and keeps every record of another incarnation's

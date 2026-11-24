@@ -1048,6 +1048,8 @@ func AuditDescriptor(tenantID string, treeStart uint64) Descriptor {
 type IncarnationRequest struct {
 	Request     Request
 	Incarnation string
+	// Strict refuses legacy logs (no incarnation recorded) as another incarnation's.
+	Strict bool
 }
 
 // owns reports whether desc belongs to the database incarnation q reads
@@ -1056,6 +1058,9 @@ type IncarnationRequest struct {
 // its group could not carry one), which belongs to whichever database holds
 // its name, as otherIncarnation treats it for a drop.
 func (q IncarnationRequest) owns(desc *Descriptor) bool {
+	if q.Strict {
+		return desc.Incarnation == q.Incarnation
+	}
 	return desc.Incarnation == "" || desc.Incarnation == q.Incarnation
 }
 

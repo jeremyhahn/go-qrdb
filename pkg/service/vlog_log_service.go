@@ -135,6 +135,13 @@ func (r *logRoute) resolve(ctx context.Context, id vlog.LogID) (logTarget, *data
 	return target, db, err
 }
 
+// barrierDatabase reports whether id names a log of a barrier-enabled
+// database in the catalog.
+func (r *logRoute) barrierDatabase(id vlog.LogID) bool {
+	db, err := r.databases.GetOwned(id.Database, id.TenantID)
+	return err == nil && db.BarrierEnabled()
+}
+
 // auditGroup returns the group the replicated audit logger writes tenantID's
 // audit trail to. The reserved system database, the audit instance's home,
 // is read and written there, so the audit reader and writer always use one
@@ -531,7 +538,9 @@ func logRead[T any](ctx context.Context, route *logRoute, id vlog.LogID, req vlo
 		return zero, err
 	}
 	if db != nil && id.TenantID != "" && id.Database != "" {
-		req = vlog.IncarnationRequest{Request: req, Incarnation: db.Incarnation()}
+		// A barrier database never reads a log without its incarnation: such
+		// a log was written in plaintext before the database existed.
+		req = vlog.IncarnationRequest{Request: req, Incarnation: db.Incarnation(), Strict: db.BarrierEnabled()}
 	}
 	return targetRead[T](ctx, target, req)
 }
@@ -542,8 +551,9 @@ func logRead[T any](ctx context.Context, route *logRoute, id vlog.LogID, req vlo
 // re-create between the read and the propose cannot hand the predecessor's
 // state to the successor.
 func groupRead[T any](ctx context.Context, g logGroup, req vlog.Request) (T, error) {
-	if g.incarnation != "" {
-		req = vlog.IncarnationRequest{Request: req, Incarnation: g.incarnation}
+	_, strict := g.target.(*barrierDatabaseTarget)
+	if g.incarnation != "" || strict {
+		req = vlog.IncarnationRequest{Request: req, Incarnation: g.incarnation, Strict: strict}
 	}
 	return targetRead[T](ctx, g.target, req)
 }
@@ -731,7 +741,12 @@ func (s *logService) Append(ctx context.Context, req *AppendRequest) (*AppendRes
 	if err != nil {
 		return nil, err
 	}
-	if vlog.IsAuditLog(id) {
+	// A barrier database's append reads the descriptor first, under its
+	// incarnation: a plaintext log created under the name before the
+	// database existed answers LogNotFoundError instead of taking sealed
+	// entries. A log's incarnation never changes, so the read stays true.
+	audit := vlog.IsAuditLog(id)
+	if audit || s.route.barrierDatabase(id) {
 		// Only the replicated audit logger appends to the audit instance,
 		// with its own sub-type: a client's entry is never an audit event.
 		// A plain log created under the audit name before the instance
@@ -741,7 +756,7 @@ func (s *logService) Append(ctx context.Context, req *AppendRequest) (*AppendRes
 		if err != nil {
 			return nil, err
 		}
-		if desc.Audit {
+		if audit && desc.Audit {
 			return nil, &vlog.ReservedLogError{ID: id}
 		}
 	}

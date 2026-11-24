@@ -382,11 +382,14 @@ func TestLogService_BarrierDatabaseLogsLiveInTheParentGroup(t *testing.T) {
 }
 
 // newCreateOverLogsService wires a DatabaseService and a parent-group
-// LogService over one barrier-capable manager, with the log service as the
-// database service's reclaimer when wired is true.
+// LogService over one barrier-capable manager whose incarnations are marked
+// in the group's store, with the log service as the database service's
+// reclaimer when wired is true.
 func newCreateOverLogsService(t *testing.T, wired bool) (LogService, *DatabaseService) {
 	t.Helper()
-	svc, mgr, _ := newParentGroupBarrierService(t, t.TempDir(), newFenceGroup(t), nil)
+	g := newFenceGroup(t)
+	mgr := newBarrierDatabaseManager(t, t.TempDir(), database.WithKeyspaceReclaimer(markerReclaimer{mu: &g.mu, store: g.store}))
+	svc, _ := newParentGroupLogService(t, g, mgr, nil)
 	dbs := NewDatabaseService(mgr).(*DatabaseService)
 	if wired {
 		dbs.SetLogReclaimer(svc.(*logService))
@@ -482,6 +485,33 @@ func TestLogService_BarrierDatabaseCreateWithNoLogsSucceeds(t *testing.T) {
 	ctx := context.Background()
 	if _, err := dbs.CreateWithCredentials(ctx, legacyBarrierConfig("fresh", filepath.Join(t.TempDir(), "fresh")), seal.MustCredentials(ctx, []byte(barrierDatabasePass))); err != nil {
 		t.Fatalf("barrier create over a name with no logs: %v", err)
+	}
+}
+
+func TestLogService_BarrierDatabaseHidesAPlaintextLogCreatedBeforeIt(t *testing.T) {
+	// With the reclaimer unwired the create-time check is bypassed, as a
+	// CreateLog racing the create past it would be.
+	svc, dbs := newCreateOverLogsService(t, false)
+	ctx := context.Background()
+	ref := LogRef{Database: "legacy", Log: "events"}
+	createLegacyLog(t, svc, ctx, ref)
+	if _, err := dbs.CreateWithCredentials(ctx, legacyBarrierConfig("legacy", filepath.Join(t.TempDir(), "legacy")), seal.MustCredentials(ctx, []byte(barrierDatabasePass))); err != nil {
+		t.Fatalf("barrier create with the check bypassed: %v", err)
+	}
+	if got, err := svc.GetEntries(ctx, &GetEntriesRequest{LogRef: ref}); !errors.As(err, new(*vlog.LogNotFoundError)) {
+		t.Fatalf("GetEntries of the plaintext log = %+v, %v; want LogNotFoundError", got, err)
+	}
+	if got, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("sealed-entry-0003")}}); !errors.As(err, new(*vlog.LogNotFoundError)) {
+		t.Fatalf("Append to the plaintext log = %+v, %v; want LogNotFoundError", got, err)
+	}
+	listed, err := svc.ListLogs(ctx, &ListLogsRequest{Database: "legacy"})
+	if err != nil {
+		t.Fatalf("ListLogs: %v", err)
+	}
+	for _, l := range listed.Logs {
+		if l.Log == ref.Log {
+			t.Fatalf("ListLogs = %+v; want the plaintext log left out", listed.Logs)
+		}
 	}
 }
 
@@ -712,7 +742,7 @@ const barrierDatabasePass = "db-pass"
 // newBarrierDatabaseManager returns a pebble database manager with a database
 // barrier manager over an initialised system barrier, holding acme's unsealed
 // passphrase barrier database "secure", every file it writes under dir.
-func newBarrierDatabaseManager(t *testing.T, dir string) *database.Manager {
+func newBarrierDatabaseManager(t *testing.T, dir string, opts ...database.ManagerOption) *database.Manager {
 	t.Helper()
 	system, _ := newTestSoftwareBarrier(t)
 	ctx := context.Background()
@@ -723,7 +753,7 @@ func newBarrierDatabaseManager(t *testing.T, dir string) *database.Manager {
 	if err != nil {
 		t.Fatalf("NewDatabaseBarrierManager: %v", err)
 	}
-	mgr := databasetest.NewManager(nil, filepath.Join(dir, "manager"), database.WithBarrierManager(bm))
+	mgr := databasetest.NewManager(nil, filepath.Join(dir, "manager"), append([]database.ManagerOption{database.WithBarrierManager(bm)}, opts...)...)
 	t.Cleanup(func() { _ = mgr.Close() })
 	createBarrierDatabase(t, mgr, "acme", filepath.Join(dir, "acme"))
 	return mgr
