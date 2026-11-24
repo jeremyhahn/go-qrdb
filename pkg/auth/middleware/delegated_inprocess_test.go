@@ -65,6 +65,40 @@ func TestAuthenticateDelegation_BindsTheDelegatedCaller(t *testing.T) {
 	}
 }
 
+// groupsVerifier returns the wrapped verifier's identity with IAM groups
+// set, as a verifier that copied them from the certificate would.
+type groupsVerifier struct {
+	inner  DelegationVerifier
+	groups []string
+}
+
+func (v groupsVerifier) VerifyDelegation(ctx context.Context, der []byte) (*auth.Identity, error) {
+	id, err := v.inner.VerifyDelegation(ctx, der)
+	if id != nil {
+		id.Groups = v.groups
+	}
+	return id, err
+}
+
+func TestAuthenticateDelegation_DropsInboundGroups(t *testing.T) {
+	// A delegated identity acts only on its grant's scope: IAM groups (which
+	// would grant their roles) never reach the bound identity, whatever the
+	// verifier returned.
+	d := authtest.NewDelegation(t, dlgGrant)
+	m := dlgLeader(t, groupsVerifier{inner: d.Authenticator, groups: []string{"g-admins"}})
+
+	ctx, id, err := m.AuthenticateDelegation(context.Background(), []*x509.Certificate{d.Certificate})
+	if err != nil {
+		t.Fatalf("AuthenticateDelegation: %v", err)
+	}
+	if len(id.Groups) != 0 {
+		t.Fatalf("delegated identity groups = %v, want none", id.Groups)
+	}
+	if bound := auth.IdentityFromContext(ctx); bound == nil || len(bound.Groups) != 0 {
+		t.Fatalf("context identity = %+v, want no groups", bound)
+	}
+}
+
 // TestAuthenticateDelegation_Refused proves every certificate the delegation
 // verifier refuses, and every call it cannot judge, is refused with its typed
 // error and binds no identity.
