@@ -2480,8 +2480,13 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 		// scope — idempotent success so Raft Apply does not stall on
 		// duplicate create proposals. Existence is otherwise keyed by name
 		// only: a same-owner re-create diverging in field or uniqueness is a
-		// no-op and the original definition wins.
-		if e.indexValueTypes[name] == valueType && bytes.Equal(e.indexScopes[name], scope) {
+		// no-op and the original definition wins. A key-scope difference
+		// rebuilds the index only for a command carrying
+		// protocol.IndexCreateOptions.Rescope, proposed once
+		// featuregate.IndexRescope is enabled: one without it (an older
+		// proposer, a historical log) keeps the existing index and its
+		// original scope, as every replica of the merge base does.
+		if e.indexValueTypes[name] == valueType && (!opts.Rescope || bytes.Equal(e.indexScopes[name], scope)) {
 			e.indexMu.Unlock()
 			return sm.Result{Value: 1}, nil, nil
 		}

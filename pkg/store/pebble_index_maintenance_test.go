@@ -273,7 +273,7 @@ func TestPebbleStateMachine_IndexCreate_KeyPrefixChangeRebuilds(t *testing.T) {
 	put(3, "txmember/1", `{"email":"b@x"}`)
 	want("unscoped index", "b@x", "txmember/1")
 
-	create(4, protocol.IndexCreateOptions{KeyPrefix: "member/"})
+	create(4, protocol.IndexCreateOptions{KeyPrefix: "member/", Rescope: true})
 	want("scoped re-create", "b@x")
 	want("scoped re-create", "a@x", "member/1")
 
@@ -284,7 +284,7 @@ func TestPebbleStateMachine_IndexCreate_KeyPrefixChangeRebuilds(t *testing.T) {
 	want("after put", "b@x", "member/2")
 
 	// The same scoped create again is a no-op.
-	create(6, protocol.IndexCreateOptions{KeyPrefix: "member/"})
+	create(6, protocol.IndexCreateOptions{KeyPrefix: "member/", Rescope: true})
 	want("repeated create", "b@x", "member/2")
 	want("repeated create", "a@x", "member/1")
 
@@ -293,9 +293,32 @@ func TestPebbleStateMachine_IndexCreate_KeyPrefixChangeRebuilds(t *testing.T) {
 	want("scoped index", "c@x")
 
 	// Back to database-wide: txmember keys are indexed again.
-	create(8, protocol.IndexCreateOptions{})
+	create(8, protocol.IndexCreateOptions{Rescope: true})
 	want("unscoped re-create", "c@x", "txmember/2")
 	want("unscoped re-create", "a@x", "member/1")
+}
+
+// A scoped re-create without the rescope flag keeps the existing index and
+// its original scope, as the merge base does: an older proposer or a
+// historical log replays the same on every replica.
+func TestPebbleStateMachine_IndexCreate_KeyPrefixChangeWithoutRescopeKeepsTheIndex(t *testing.T) {
+	s := openExtendedStore(t)
+	create := func(entry uint64, opts protocol.IndexCreateOptions) []sm.Result {
+		t.Helper()
+		opts.Unique = true
+		cmd := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", opts))
+		return applyExtEntries(t, s, []sm.Entry{{Index: entry, Cmd: cmd}})
+	}
+	create(1, protocol.IndexCreateOptions{})
+	applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: mustEncode(kv.EncodePut([]byte("txmember/1"), []byte(`{"email":"b@x"}`)))}})
+
+	res := create(3, protocol.IndexCreateOptions{KeyPrefix: "member/"})
+	if res[0].Value != 1 {
+		t.Fatalf("re-create without Rescope: result %+v, want idempotent success", res[0])
+	}
+	if got := indexQueryKeys(t, s, "by_email", "b@x"); len(got) != 1 || !containsKey(got, "txmember/1") {
+		t.Fatalf("b@x matched %v, want [txmember/1] (the unscoped index is kept)", got)
+	}
 }
 
 // TestPebbleStateMachine_IndexCreate_KeyPrefixChangeKeepsOwnership pins that
@@ -310,7 +333,7 @@ func TestPebbleStateMachine_IndexCreate_KeyPrefixChangeKeepsOwnership(t *testing
 		{Index: 3, Cmd: mustEncode(kv.EncodePut([]byte("txmember/1"), []byte(`{"email":"b@x"}`)))},
 	})
 
-	createB := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true, Owner: "collection:b", KeyPrefix: "member/"}))
+	createB := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true, Owner: "collection:b", KeyPrefix: "member/", Rescope: true}))
 	res := applyExtEntries(t, s, []sm.Entry{{Index: 4, Cmd: createB}})
 	if _, _, ok := protocol.DecodeIndexOwnershipError(res[0].Data); !ok {
 		t.Fatalf("a create by another owner was not refused: result %+v", res[0])

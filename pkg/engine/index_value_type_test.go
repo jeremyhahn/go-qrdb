@@ -229,7 +229,7 @@ func TestHandleIndexCreate_KeyPrefixChangeRebuilds(t *testing.T) {
 				}
 			}
 
-			applyEmailIndexCreate(t, c.eng, 4, protocol.IndexCreateOptions{KeyPrefix: "member/"})
+			applyEmailIndexCreate(t, c.eng, 4, protocol.IndexCreateOptions{KeyPrefix: "member/", Rescope: true})
 			assertScoped("scoped re-create")
 
 			results := make([]sm.Result, 1)
@@ -246,7 +246,7 @@ func TestHandleIndexCreate_KeyPrefixChangeRebuilds(t *testing.T) {
 			}
 
 			// The same scoped create again is a no-op.
-			applyEmailIndexCreate(t, c.eng, 6, protocol.IndexCreateOptions{KeyPrefix: "member/"})
+			applyEmailIndexCreate(t, c.eng, 6, protocol.IndexCreateOptions{KeyPrefix: "member/", Rescope: true})
 			if got := emailLookup(t, c.eng, "b@x"); !slices.Equal(got, []string{"member/2"}) {
 				t.Fatalf("repeated create: b@x matched %v, want [member/2]", got)
 			}
@@ -267,7 +267,7 @@ func TestHandleIndexCreate_KeyPrefixChangeRebuilds(t *testing.T) {
 			// Back to database-wide: txmember keys are indexed again. (b@x
 			// is held by member/2 and txmember/1 alike, so the unique
 			// backfill keeps one of them; c@x has a single holder.)
-			applyEmailIndexCreate(t, c.eng, 8, protocol.IndexCreateOptions{})
+			applyEmailIndexCreate(t, c.eng, 8, protocol.IndexCreateOptions{Rescope: true})
 			if got := emailLookup(t, c.eng, "c@x"); !slices.Equal(got, []string{"txmember/2"}) {
 				t.Fatalf("unscoped re-create: c@x matched %v, want [txmember/2]", got)
 			}
@@ -278,11 +278,32 @@ func TestHandleIndexCreate_KeyPrefixChangeRebuilds(t *testing.T) {
 	}
 }
 
+// A scoped re-create without the rescope flag keeps the existing index and
+// its original scope, as the merge base does: an older proposer or a
+// historical log replays the same on every replica.
+func TestHandleIndexCreate_KeyPrefixChangeWithoutRescopeKeepsTheIndex(t *testing.T) {
+	for name, c := range valueTypeEngines(t) {
+		t.Run(name, func(t *testing.T) {
+			applyEmailIndexCreate(t, c.eng, 1, protocol.IndexCreateOptions{})
+			if err := c.eng.Update(context.Background(), []sm.Entry{
+				c.put(2, "txmember/1", `{"email":"b@x"}`),
+			}, make([]sm.Result, 1)); err != nil {
+				t.Fatalf("put: %v", err)
+			}
+
+			applyEmailIndexCreate(t, c.eng, 3, protocol.IndexCreateOptions{KeyPrefix: "member/"})
+			if got := emailLookup(t, c.eng, "b@x"); !slices.Equal(got, []string{"txmember/1"}) {
+				t.Fatalf("b@x matched %v, want [txmember/1] (the unscoped index is kept)", got)
+			}
+		})
+	}
+}
+
 // A scoped re-create that follows a write in the same apply batch must leave
 // the index as two separate applies would: the entry the write staged in the
 // batch is outside the new scope, so the rebuild must drop it too.
 func TestHandleIndexCreate_KeyPrefixChangeInOneBatchMatchesSeparateApplies(t *testing.T) {
-	scoped := protocol.IndexCreateOptions{KeyPrefix: "member/", Unique: true}
+	scoped := protocol.IndexCreateOptions{KeyPrefix: "member/", Rescope: true, Unique: true}
 	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", scoped))
 
 	for _, grouped := range []bool{true, false} {
@@ -335,7 +356,7 @@ func TestHandleIndexCreate_KeyPrefixChangeKeepsOwnership(t *testing.T) {
 				t.Fatalf("put: %v", err)
 			}
 
-			res := applyEmailIndexCreate(t, c.eng, 4, protocol.IndexCreateOptions{Owner: "collection:b", KeyPrefix: "member/"})
+			res := applyEmailIndexCreate(t, c.eng, 4, protocol.IndexCreateOptions{Owner: "collection:b", KeyPrefix: "member/", Rescope: true})
 			if _, _, ok := protocol.DecodeIndexOwnershipError(res.Data); !ok {
 				t.Fatalf("a create by another owner was not refused: result %+v", res)
 			}

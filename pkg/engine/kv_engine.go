@@ -1042,7 +1042,12 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
 			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil
 		}
-		if e.indexValueTypes[name] == valueType && bytes.Equal(e.indexScopes[name], scope) {
+		// A key-scope difference rebuilds the index only for a command
+		// carrying protocol.IndexCreateOptions.Rescope, proposed once
+		// featuregate.IndexRescope is enabled: one without it (an older
+		// proposer, a historical log) keeps the existing index and its
+		// original scope, as every replica of the merge base does.
+		if e.indexValueTypes[name] == valueType && (!opts.Rescope || bytes.Equal(e.indexScopes[name], scope)) {
 			return sm.Result{}, nil
 		}
 		if err := existing.Close(); err != nil {

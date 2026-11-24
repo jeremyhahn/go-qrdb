@@ -2348,8 +2348,13 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 		// no-op (original wins). A different value type
 		// (engine.IndexCreateValueType) or key scope falls through and
 		// rebuilds the index at the requested one: the clear below removes
-		// the old terms and the backfill covers only the new scope.
-		if s.indexValueTypes[name] == valueType && bytes.Equal(s.indexScopes[name], scope) {
+		// the old terms and the backfill covers only the new scope. A
+		// key-scope difference rebuilds only for a command carrying
+		// protocol.IndexCreateOptions.Rescope, proposed once
+		// featuregate.IndexRescope is enabled: one without it (an older
+		// proposer, a historical log) keeps the existing index and its
+		// original scope, as every replica of the merge base does.
+		if s.indexValueTypes[name] == valueType && (!opts.Rescope || bytes.Equal(s.indexScopes[name], scope)) {
 			return sm.Result{Value: 1}, nil, nil
 		}
 		if err := existing.Close(); err != nil {

@@ -230,6 +230,14 @@ replays unchanged (#1649; `TestEmbeddedKVStore_GuardedBatchUniqueCompoundTuple`)
   it, written by an older binary or proposed before the feature was enabled,
   keeps the legacy check, in which only a key deleted in the set frees its
   values (an overwrite does not), so a log replays to the state it committed.
+- **A key-scope change rebuilds only a flagged create.** A same-owner
+  re-create with a different key scope rebuilds the index at the new scope
+  only for a command carrying the rescope flag
+  (`protocol.IndexCreateOptions.Rescope`), proposed once the cluster feature
+  `index-rescope` (`featuregate.IndexRescope`) is enabled for the group, and at
+  once on a standalone or embedded store. A command without it, written by an
+  older binary or proposed before the feature was enabled, keeps the existing
+  index and its original scope, so every replica and every replay agrees.
 - **A sparse index simply omits entities missing the field** — it does not index
   them under a zero value, which would make "missing" and "empty" the same
   query.
