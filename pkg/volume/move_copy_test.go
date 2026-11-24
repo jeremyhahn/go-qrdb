@@ -44,7 +44,7 @@ func moveFixture(t *testing.T) string {
 		{"big.dat", big, 0o644},
 		{"secret.dat", []byte("secret"), 0o600},
 	}
-	if err := os.MkdirAll(filepath.Join(src, "a", "b", "c"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(src, "a", "b", "c"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(filepath.Join(src, "emptydir"), 0o750); err != nil {
@@ -77,6 +77,7 @@ func snapshot(t *testing.T, root string) map[string]string {
 		}
 		v := info.Mode().String()
 		if d.Type().IsRegular() {
+			// #nosec G122 -- the tree being walked is a t.TempDir() this test created and no other process can reach, so there is no window between the walk and the read
 			b, err := os.ReadFile(p)
 			if err != nil {
 				return err
@@ -247,6 +248,7 @@ func TestCopyTreeRefusals(t *testing.T) {
 					t.Fatal(err)
 				}
 				// mkfifo(1) keeps the test portable to build on every GOOS.
+				// #nosec G204 -- argv is the literal mkfifo and a path under this test's t.TempDir(); no input reaches it
 				if out, err := exec.Command("mkfifo", filepath.Join(s, "fifo")).CombinedOutput(); err != nil {
 					t.Skipf("mkfifo: %v: %s", err, out)
 				}
@@ -354,12 +356,12 @@ func TestVerifyCopyMismatch(t *testing.T) {
 		}},
 		{"byte flipped", "a/top.dat", "digest", func(t *testing.T, dst string) {
 			p := filepath.Join(dst, "a", "top.dat")
-			if err := os.WriteFile(p, []byte("tOp"), 0o640); err != nil {
+			if err := os.WriteFile(p, []byte("tOp"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"added file", "a/b/new.dat", "extra", func(t *testing.T, dst string) {
-			if err := os.WriteFile(filepath.Join(dst, "a", "b", "new.dat"), []byte("n"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(dst, "a", "b", "new.dat"), []byte("n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -456,6 +458,7 @@ func fifoDir(t *testing.T) string {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// #nosec G204 -- argv is the literal mkfifo and a path under this test's t.TempDir(); no input reaches it
 	if out, err := exec.Command("mkfifo", filepath.Join(dir, "fifo")).CombinedOutput(); err != nil {
 		t.Skipf("mkfifo: %v: %s", err, out)
 	}
