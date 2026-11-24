@@ -3,6 +3,7 @@ package featuregate
 import (
 	"context"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -162,4 +163,64 @@ func TestProposeBound_UncommittedAddWithdrawsItsIntent(t *testing.T) {
 	assert.NotEmpty(t, intentsOf(t, kv, "n4:7000"), "an ambiguous add withdrew its intent before its outcome")
 	close(pending)
 	eventually(t, func() bool { return len(intentsOf(t, kv, "n4:7000")) == 0 }, "a resolved, uncommitted add kept its intent")
+}
+
+// allOnRelease records rel for members 1, 2 and 3 of threeNodes.
+func allOnRelease(t *testing.T, kv ActivationKV, rel string) {
+	t.Helper()
+	for id, addr := range map[uint64]string{1: "n1:7000", 2: "n2:7000", 3: "n3:7000"} {
+		_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+strconv.FormatUint(id, 10)+"/"+rel, []byte(addr))
+		require.NoError(t, err)
+	}
+}
+
+// A member restarting onto 0.58 while a 0.60 candidate's add is claimed is
+// refused on the intent, as it would be on the member, and its 0.58 record
+// -- written before the check -- is withdrawn, the earlier one kept.
+func TestEnforceRelease_RefusesARestartAcrossAClaimedCandidate(t *testing.T) {
+	kv := newMemKV()
+	allOnRelease(t, kv, "0.59.0-alpha")
+	_, err := kv.PutIfAbsent(context.Background(), ReleaseIntentPrefix+"n5:7000/0.60.0-alpha", []byte("n5:7000"))
+	require.NoError(t, err)
+	t.Cleanup(release.SetForTesting("0.58.0-alpha"))
+	g := newGate(t, threeNodes())
+
+	var gap *release.GapError
+	require.ErrorAs(t, g.EnforceRelease(context.Background(), kv), &gap)
+	assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.58.0-alpha", Peer: "0.60.0-alpha"}, *gap)
+	require.ErrorAs(t, g.Refusal(), &gap, "the refusal is kept for health reporting")
+	assert.False(t, kv.has(ReleasePrefix+"1/0.58.0-alpha"), "a refused restart left its record")
+	assert.True(t, kv.has(ReleasePrefix+"1/0.59.0-alpha"), "a refused restart removed an earlier record")
+}
+
+// The reverse order: the 0.58 restart records first, while the leader's
+// view still shows the member on 0.59, so the 0.60 candidate passes
+// admission and its recheck; the claim then finds the 0.58 record and
+// refuses the add.
+func TestProposeBound_RefusesAnAddAcrossARecordedRestart(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	kv, store := newMemKV(), newLeaseStore()
+	allOnRelease(t, kv, "0.59.0-alpha")
+	for id, addr := range map[uint64]string{1: "n1:7000", 2: "n2:7000", 3: "n3:7000"} {
+		store.advertiseRelease(t, id, addr, "0.59.0-alpha")
+	}
+	store.advertiseRelease(t, 5, "n5:7000", "0.60.0-alpha")
+	leader, err := New(Config{Self: Self{ReplicaID: 2}, SystemShardID: systemShard, Members: threeNodes(), RefreshInterval: time.Hour})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = leader.Close() })
+	require.NoError(t, leader.Start(context.Background(), kv, store))
+	binding, err := leader.AdmitReplicaAt(systemShard, "n5:7000")
+	require.NoError(t, err)
+
+	restore := release.SetForTesting("0.58.0-alpha")
+	require.NoError(t, newGate(t, threeNodes()).EnforceRelease(context.Background(), kv), "no intent is claimed yet")
+	restore()
+	require.True(t, kv.has(ReleasePrefix+"1/0.58.0-alpha"))
+
+	ran := false
+	var gap *release.GapError
+	require.ErrorAs(t, leader.ProposeBound(systemShard, binding, func(<-chan struct{}) (<-chan struct{}, error) { ran = true; return nil, nil }), &gap)
+	assert.False(t, ran, "the add was proposed across the recorded restart")
+	assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.58.0-alpha", Peer: "0.60.0-alpha"}, *gap)
+	assert.Empty(t, intentsOf(t, kv, "n5:7000"))
 }

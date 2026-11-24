@@ -1381,6 +1381,23 @@ func (g *Gate) checkRestartRelease(ctx context.Context, kv ActivationKV) error {
 	recorded := parseReleases(keys)
 	view := *g.view.Load()
 	own := release.Version()
+	// Every live admission intent is a release about to join: a restart
+	// must stay adjacent to it as to a member. The list is linearizable,
+	// read after EnforceRelease wrote this node's record (see
+	// claimRelease).
+	intents, err := listIntents(ctx, kv)
+	if err != nil {
+		return err
+	}
+	for _, in := range intents {
+		if !releasesAdjacent(own, in.rel) {
+			g.logger.Error("feature gate: refusing to start on a release gap to an admitted candidate",
+				"release", own,
+				"candidate", in.addr,
+				"candidate_release", in.rel)
+			return &release.GapError{Channel: releaseChannel, Local: own, Peer: in.rel}
+		}
+	}
 	for _, m := range committedMembers(system) {
 		rels := recorded[m.id]
 		// Every release any live record announces is checked: sources
@@ -1560,7 +1577,40 @@ func (g *Gate) EnforceRelease(ctx context.Context, kv ActivationKV) error {
 	if kv == nil {
 		return &ConfigError{Field: "store"}
 	}
+	// A joiner that is not yet a member of the system shard has no release
+	// to record or check: admission judges it, and the refresh records its
+	// release once it is a member.
+	self, err := g.AdvertisedSelf()
+	if err != nil {
+		var notMember *NotAMemberError
+		if errors.As(err, &notMember) {
+			return nil
+		}
+		return err
+	}
+	// The running release is written before it is checked: an admission
+	// claims its intent before it lists the records, and this restart
+	// records before it lists the intents, so of the two at least one sees
+	// the other (see claimRelease). A record already on file needs no
+	// write. A check that refuses deletes the record only when this call
+	// created it, never an earlier one.
+	key := ReleasePrefix + strconv.FormatUint(self.ReplicaID, 10) + "/" + release.Version()
+	keys, err := listReleases(ctx, kv)
+	if err != nil {
+		return err
+	}
+	created := false
+	if !slices.Contains(keys, key) {
+		if created, err = kv.PutIfAbsent(ctx, key, []byte(self.Address)); err != nil {
+			return &StoreError{Op: "record release", Err: err}
+		}
+	}
 	if err := g.checkRestartRelease(ctx, kv); err != nil {
+		if created {
+			if derr := kv.Delete(ctx, key); derr != nil {
+				g.logger.Error("feature gate: refused release record not withdrawn", "key", key, "error", derr)
+			}
+		}
 		var gap *release.GapError
 		if errors.As(err, &gap) {
 			g.releaseRefusal.Store(gap)
@@ -1569,9 +1619,8 @@ func (g *Gate) EnforceRelease(ctx context.Context, kv ActivationKV) error {
 	}
 	// The running release must be on record before the node reports the
 	// check passed: an unrecorded release would let the next binary skip
-	// the gap check against it. A joiner that is not yet a member of the
-	// system shard has no release to record: admission judges it, and the
-	// refresh records its release once it is a member. Every other record
+	// the gap check against it. recordRelease now only removes this
+	// member's earlier records and reloads the history. Every record
 	// failure refuses the start.
 	if err := g.recordRelease(ctx, kv); err != nil {
 		var notMember *NotAMemberError

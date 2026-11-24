@@ -1039,14 +1039,24 @@ func (s failingRefreshStore) ListMembers(ctx context.Context) ([]cluster.Member,
 	return nil, errors.New("unavailable")
 }
 
-// onceReadableKV reads its activations for Start and fails every later read.
+// onceReadableKV serves Start's one linearizable read of each prefix (the
+// activations, and the release intents the restart check lists) and fails
+// every later read.
 type onceReadableKV struct {
 	*memKV
-	reads atomic.Int32
+	readMu sync.Mutex
+	read   map[string]bool
 }
 
 func (k *onceReadableKV) ListAll(ctx context.Context, prefix string) ([]string, error) {
-	if k.reads.Add(1) == 1 {
+	k.readMu.Lock()
+	first := !k.read[prefix]
+	if k.read == nil {
+		k.read = map[string]bool{}
+	}
+	k.read[prefix] = true
+	k.readMu.Unlock()
+	if first {
 		return k.memKV.ListAll(ctx, prefix)
 	}
 	return nil, errors.New("not leader")
