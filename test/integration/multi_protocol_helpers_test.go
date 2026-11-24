@@ -700,6 +700,8 @@ type sicacCluster struct {
 	bootstrapPorts []int
 	dataDirs       [3]string
 	peers          string
+	// sm, when set, replaces the state machine type every node starts with.
+	sm string
 
 	founderIdentity, founderPin, node2Identity string
 	adminCertPath, adminKeyPath, caPath        string
@@ -724,7 +726,15 @@ func (c *sicacCluster) joinArgs(i int) []string {
 func (c *sicacCluster) baseArgs(i int, peers string) []string {
 	c.dataDirs[i] = c.t.TempDir()
 	cfgPath := writeSealYAML(c.t, tenantEntitlementYAML("none", c.t.TempDir())+peerAdminURLsYAML(c.peerAdminURLs))
-	return c.listeners[i].startArgs(cfgPath, c.dataDirs[i], peers, uint64(i+1))
+	args := c.listeners[i].startArgs(cfgPath, c.dataDirs[i], peers, uint64(i+1))
+	if c.sm != "" {
+		for j := 0; j+1 < len(args); j++ {
+			if args[j] == "--sm" {
+				args[j+1] = c.sm
+			}
+		}
+	}
+	return args
 }
 
 // bringUp runs node i's `qrdb init` in its sealed window, which is REST-only
@@ -764,7 +774,13 @@ func (c *sicacCluster) nodeFor(i int) *multiProtoNode {
 // serves the CLI.
 func startSelfIssuedCAFounders(t *testing.T, bins [3]string) *sicacCluster {
 	t.Helper()
-	c := &sicacCluster{t: t, bins: bins, cli: buildCLIBinary(t), peerAdminURLs: make(map[string]string, 3)}
+	return startSelfIssuedCAFoundersOn(t, bins, "")
+}
+
+// startSelfIssuedCAFoundersOn is startSelfIssuedCAFounders with every node on state machine type sm ("" keeps the default).
+func startSelfIssuedCAFoundersOn(t *testing.T, bins [3]string, sm string) *sicacCluster {
+	t.Helper()
+	c := &sicacCluster{t: t, bins: bins, cli: buildCLIBinary(t), peerAdminURLs: make(map[string]string, 3), sm: sm}
 	for i := range c.listeners {
 		c.listeners[i] = allocateMultiProtoListeners(t, fmt.Sprintf("qrdb-sicac-%d-", i+1))
 		c.peerAdminURLs[c.listeners[i].raftAddr()] = c.listeners[i].adminURL()

@@ -88,6 +88,43 @@ func TestRollingUpgrade_EnrolmentAcrossVersions_CLI(t *testing.T) {
 	}
 }
 
+// TestRollingUpgrade_EnrolmentWithoutLeases_CLI checks that a member add is admitted on a state machine without leases.
+func TestRollingUpgrade_EnrolmentWithoutLeases_CLI(t *testing.T) {
+	old := buildReleaseBinary(t, "0.58.0-alpha")
+	next := buildReleaseBinary(t, "0.59.0-alpha")
+	for _, row := range []struct {
+		name           string
+		founder, joins string
+	}{
+		{"same release", next, next},
+		{"newer joiner", old, next},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			c := startSelfIssuedCAFoundersOn(t, [3]string{row.founder, row.founder, row.joins}, "memory")
+			c.startJoiner()
+			c.admitJoiner()
+			for _, proto := range multiProtocols {
+				waitForCLIProtoReady(t, c.nodes[2], proto, 60*time.Second)
+			}
+
+			for _, proto := range multiProtocols {
+				key := "no-leases-" + strings.ReplaceAll(row.name, " ", "-") + "-" + proto.name
+				if out, err := runCLIProto(t, c.nodes[0], proto, "kv", "put", key, proto.name); err != nil {
+					t.Fatalf("[%s] kv put on the founder: %v\noutput: %s", proto.name, err, out)
+				}
+				var last string
+				if !pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
+					out, err := runCLIProto(t, c.nodes[2], proto, "kv", "get", key)
+					last = strings.TrimSpace(out)
+					return err == nil && last == proto.name
+				}) {
+					t.Fatalf("[%s] kv get on the joiner = %q, want %q", proto.name, last, proto.name)
+				}
+			}
+		})
+	}
+}
+
 // TestRollingUpgrade_VersionGapRefused_CLI: a joiner two minor releases ahead
 // of the founders is refused at enrolment with an error naming both
 // releases, the founders still list exactly their two members over every
