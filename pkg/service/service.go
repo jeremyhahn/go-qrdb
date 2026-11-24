@@ -1315,7 +1315,7 @@ func (s *AdminService) membershipResultOf(rs *quicraft.RequestState) membershipR
 // *quicraft.MaybeAppliedError: a timeout, or a persistence, apply or shard
 // failure after the proposal may have reached raft; go-quicraft does not
 // cancel it, so it can still commit), it returns the error with a pending channel that is closed once
-// resolveAdd settles the add definitively from the shard's committed
+// resolveAdd ends the resolution from the shard's committed
 // membership, or once stop closes (the gate that fences the add closed). A
 // stop that is already closed (an unfenced add) returns the error with a nil
 // pending and resolves nothing. Any other outcome is final and returns a nil
@@ -1386,19 +1386,19 @@ const (
 	ambiguousAddRetryInterval  = 250 * time.Millisecond
 )
 
-// resolveAdd returns once the ambiguous add a is settled: the replica is in
-// the committed membership (the add, or a later re-proposal of it,
-// committed), the shard's configuration change ID is not the bound one
-// (Raft keeps one configuration change in flight, so an add bound to an
-// older configuration can no longer commit, and an add bound to 0 whose
-// shard committed a configuration without it can no longer commit either:
-// a new proposal of it would be a new add), or the host is closed. It also
-// returns once stop closes (the gate fencing the add closed), which cancels
-// the attempt in flight. While none is seen it proposes the add again under
-// the same binding, which forces an outcome: success commits it,
-// ErrStaleConfigChange means the membership moved (the next read settles
-// it), and anything else -- a change still pending, no leader, another
-// ambiguous wait -- is retried.
+// resolveAdd returns once the resolution of the ambiguous add a ends: the
+// replica is in the committed membership (the add, or a later re-proposal of
+// it, committed), the shard's configuration change ID is not the bound one
+// (a re-proposal under the same binding would be refused, so there is nothing
+// more to propose; this does not prove the original add can no longer
+// commit, since the binding is checked only at enqueue), or the host is
+// closed. It also returns once stop closes (the gate fencing the add
+// closed), which cancels the attempt in flight. When it returns, pending
+// closes and the gate's lock is freed. While none is seen it proposes the add
+// again under the same binding, which forces an outcome: success commits it,
+// ErrStaleConfigChange means the membership moved (the next read ends the
+// resolution), and anything else -- a change still pending, no leader,
+// another ambiguous wait -- is retried.
 func (s *AdminService) resolveAdd(a pendingAdd, stop <-chan struct{}) {
 	for {
 		if stopped(stop) || s.addSettled(a, stop) || stopped(stop) {
@@ -1427,8 +1427,8 @@ func (s *AdminService) resolveAdd(a pendingAdd, stop <-chan struct{}) {
 }
 
 // addSettled reads the shard's membership linearizably and reports whether
-// the ambiguous add a is settled (see resolveAdd). A closed host settles it:
-// nothing can commit through it any more. A closed stop cancels the read.
+// the resolution of the ambiguous add a ends (see resolveAdd). A closed host
+// ends it: nothing more can be proposed through it. A closed stop cancels the read.
 func (s *AdminService) addSettled(a pendingAdd, stop <-chan struct{}) bool {
 	ctx, cancel := stopContext(stop, ambiguousAddAttemptTimeout)
 	defer cancel()

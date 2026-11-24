@@ -414,6 +414,12 @@ type Gate struct {
 	// outcome is known or the Gate closes.
 	proposeMu sync.Mutex
 
+	// kept holds the intent keys of ambiguous adds whose outcome this
+	// process never saw; retireIntents does not retire them by the Own and
+	// idle rule.
+	keptMu sync.Mutex
+	kept   map[string]bool
+
 	// fenceMu guards fenceClosed and the fenceWG.Add that hands proposeMu to
 	// an ambiguous add's fence goroutine; Close sets fenceClosed, closes
 	// fenceStop and joins fenceWG.
@@ -725,8 +731,13 @@ func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error {
 // propose returns a non-nil pending channel when the outcome is ambiguous (the
 // add may still commit; go-quicraft does not cancel it). ProposeBound then
 // returns propose's error at once but leaves the lock held until pending is
-// closed (the outcome is definitive) or the Gate closes, so an add that
-// commits late cannot pass a recheck made against the membership before it.
+// closed or the Gate closes, so an add that commits late cannot pass a
+// recheck made against the membership before it. A closed pending frees this
+// node's lock; an add whose candidate is not a member then keeps its intent,
+// because go-quicraft checks the binding only at enqueue and the add can still
+// commit. The intent goes by the Recorded rule once the candidate records a
+// release, or by the Own and idle rule after this process restarts (its
+// proposal queue is gone with it); see retireIntents.
 // propose gets the Gate's stop channel, closed by Close: once it closes,
 // propose gives up resolving the outcome (and closes pending), so nothing
 // keeps proposing the add after the Gate is gone. Any other binding runs
@@ -754,7 +765,7 @@ func (g *Gate) ProposeBound(shardID uint64, b ConfigBinding, propose func(stop <
 	// proposeMu serializes adds through this node only; a leader elected
 	// while this add is in flight does not share it. The intent claim does:
 	// see claimRelease.
-	withdraw, err := g.claimRelease(b)
+	created, withdraw, err := g.claimRelease(b)
 	if err != nil {
 		g.proposeMu.Unlock()
 		return err
@@ -781,7 +792,7 @@ func (g *Gate) ProposeBound(shardID uint64, b ConfigBinding, propose func(stop <
 		select {
 		case <-pending:
 			if !g.isSystemMember(b.Candidate) {
-				withdraw()
+				g.keep(created)
 			}
 		case <-g.fenceStop:
 		}
@@ -803,20 +814,20 @@ func (g *Gate) ProposeBound(shardID uint64, b ConfigBinding, propose func(stop <
 // *release.GapError when another candidate's intent, or a committed
 // member's recorded release, is not adjacent to a candidate release, and
 // with *StoreError when the KV fails; either way it withdraws what it
-// wrote. On success withdraw deletes the intents this call created: the
-// caller runs it when the add did not commit. An add that committed keeps
+// wrote. On success created lists the intent keys this call wrote and
+// withdraw deletes them: the caller runs it when the add was refused before
+// it reached raft. An add that committed keeps
 // its intent until the member's own release record replaces it
 // (recordRelease). Before Start, with no KV, nothing is claimed.
-func (g *Gate) claimRelease(b ConfigBinding) (withdraw func(), err error) {
+func (g *Gate) claimRelease(b ConfigBinding) (created []string, withdraw func(), err error) {
 	noop := func() {}
 	stores := g.stores.Load()
 	if stores == nil || len(b.CandidateReleases) == 0 {
-		return noop, nil
+		return nil, noop, nil
 	}
 	kv := stores.kv
 	ctx, cancel := context.WithTimeout(context.Background(), admitReadTimeout)
 	defer cancel()
-	var created []string
 	withdraw = func() {
 		ctx, cancel := context.WithTimeout(context.Background(), admitReadTimeout)
 		defer cancel()
@@ -826,9 +837,9 @@ func (g *Gate) claimRelease(b ConfigBinding) (withdraw func(), err error) {
 			}
 		}
 	}
-	refuse := func(err error) (func(), error) {
+	refuse := func(err error) ([]string, func(), error) {
 		withdraw()
-		return noop, err
+		return nil, noop, err
 	}
 	// The claimant is this node's own replica ID, never 0: a gate that is
 	// not a system member cannot claim.
@@ -889,7 +900,7 @@ func (g *Gate) claimRelease(b ConfigBinding) (withdraw func(), err error) {
 			}
 		}
 	}
-	return withdraw, nil
+	return created, withdraw, nil
 }
 
 // releaseIntent is one parsed intent key.
@@ -1367,6 +1378,10 @@ func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
 //     this node has no add between claim and outcome and the intent is left
 //     over from a crashed process or a failed withdraw. proposeMu is held
 //     across the listing and the deletes so no claim can start in between.
+//     An intent kept for an ambiguous add of this process is skipped:
+//     go-quicraft checks the binding only at enqueue and the add can still
+//     commit, so it goes by the Recorded rule, or by this rule after this
+//     process restarts (its proposal queue is gone with it).
 //
 // A system-shard configuration change ID past an intent's bound ID is not
 // proof that the claimed add cannot commit: the ID is checked before the add
@@ -1396,17 +1411,51 @@ func (g *Gate) retireIntents(ctx context.Context, kv ActivationKV, self Self, re
 		}
 	}
 	for _, in := range intents {
-		retire := recordedAddrs[in.addr]
+		recorded := recordedAddrs[in.addr]
+		retire := recorded
 		if !retire && memberAddrs != nil && !memberAddrs[in.addr] {
-			retire = in.claimant == self.ReplicaID && idle
+			retire = in.claimant == self.ReplicaID && idle && !g.isKept(in.key)
 		}
 		if !retire {
 			continue
 		}
 		if err := kv.Delete(ctx, in.key); err != nil {
 			g.logger.Debug("feature gate: release intent not retired", "key", in.key, "error", err)
+			continue
+		}
+		if recorded {
+			g.unkeep(in.key)
 		}
 	}
+}
+
+// keep marks intent keys of an ambiguous add as kept.
+func (g *Gate) keep(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	g.keptMu.Lock()
+	defer g.keptMu.Unlock()
+	if g.kept == nil {
+		g.kept = make(map[string]bool)
+	}
+	for _, k := range keys {
+		g.kept[k] = true
+	}
+}
+
+// isKept reports whether key is the intent of an ambiguous add of this process.
+func (g *Gate) isKept(key string) bool {
+	g.keptMu.Lock()
+	defer g.keptMu.Unlock()
+	return g.kept[key]
+}
+
+// unkeep forgets a kept intent key once its intent is retired.
+func (g *Gate) unkeep(key string) {
+	g.keptMu.Lock()
+	defer g.keptMu.Unlock()
+	delete(g.kept, key)
 }
 
 // parseReleases maps each replica ID to the releases recorded for it by

@@ -2,6 +2,7 @@ package featuregate
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strconv"
 	"strings"
@@ -147,9 +148,8 @@ func TestProposeBound_SequentialLeadersRefuseOnALiveIntent(t *testing.T) {
 	assert.Empty(t, intentsOf(t, kv, "n4:7000"), "the member's record did not retire its intent")
 }
 
-// An add that did not commit withdraws its intent: refused outright (nil
-// pending, an error), or ambiguous and then resolved without the candidate
-// becoming a member.
+// An add refused before it reached raft (nil pending, an error) withdraws
+// its intent.
 func TestProposeBound_UncommittedAddWithdrawsItsIntent(t *testing.T) {
 	kv := newMemKV()
 	a, _, bindA, _ := twoLeaders(t, kv)
@@ -157,12 +157,74 @@ func TestProposeBound_UncommittedAddWithdrawsItsIntent(t *testing.T) {
 	refusedAdd := assert.AnError
 	require.ErrorIs(t, a.ProposeBound(systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return nil, refusedAdd }), refusedAdd)
 	assert.Empty(t, intentsOf(t, kv, "n4:7000"))
+}
+
+// waitFenceEnd waits until g's proposal lock is free.
+func waitFenceEnd(t *testing.T, g *Gate) {
+	t.Helper()
+	eventually(t, func() bool {
+		if !g.proposeMu.TryLock() {
+			return false
+		}
+		g.proposeMu.Unlock()
+		return true
+	}, "the ambiguous add's fence did not end")
+}
+
+// An ambiguous add whose resolution ended with its candidate not a member
+// (here the configuration moved on) can still commit: go-quicraft checks the
+// binding only at enqueue. Its intent stays, refusing a non-adjacent add
+// through another leader and the claimant's own record pass, until the
+// claimant restarts and its record pass retires it.
+func TestProposeBound_AmbiguousAddKeepsItsIntentAfterItsResolutionEnds(t *testing.T) {
+	kv := newMemKV()
+	a, b, bindA, bindB := twoLeaders(t, kv)
+
+	ambiguous := errors.New("add timed out, outcome unknown")
+	pending := make(chan struct{})
+	require.ErrorIs(t, a.ProposeBound(systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return pending, ambiguous }), ambiguous)
+	intent := []string{ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/1/3"}
+	require.Equal(t, intent, intentsOf(t, kv, "n4:7000"))
+
+	a.members.(*fakeMembers).set(systemShard, 4, map[uint64]string{1: "n1:7000", 2: "n2:7000", 3: "n3:7000"})
+	close(pending)
+	waitFenceEnd(t, a)
+	assert.Equal(t, intent, intentsOf(t, kv, "n4:7000"), "an ambiguous add's intent was withdrawn while the add can still commit")
+
+	var gap *release.GapError
+	require.ErrorAs(t, b.ProposeBound(systemShard, bindB, func(<-chan struct{}) (<-chan struct{}, error) {
+		t.Fatal("a non-adjacent add proposed past a kept intent")
+		return nil, nil
+	}), &gap)
+	assert.Empty(t, intentsOf(t, kv, "n5:7000"))
+
+	require.NoError(t, a.recordRelease(context.Background(), kv))
+	assert.Equal(t, intent, intentsOf(t, kv, "n4:7000"), "the claimant retired the intent of an add that can still commit")
+
+	restarted := newGate(t, threeNodes())
+	require.NoError(t, restarted.recordRelease(context.Background(), kv))
+	assert.Empty(t, intentsOf(t, kv, "n4:7000"), "the restarted claimant kept its idle intent")
+}
+
+// A kept intent goes by the Recorded rule once its candidate is a committed
+// member with a release record.
+func TestRecordRelease_RetiresAKeptIntentOnceItsCandidateRecords(t *testing.T) {
+	kv := newMemKV()
+	a, _, bindA, _ := twoLeaders(t, kv)
 
 	pending := make(chan struct{})
-	require.ErrorIs(t, a.ProposeBound(systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return pending, refusedAdd }), refusedAdd)
-	assert.NotEmpty(t, intentsOf(t, kv, "n4:7000"), "an ambiguous add withdrew its intent before its outcome")
+	require.NoError(t, a.ProposeBound(systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return pending, nil }))
 	close(pending)
-	eventually(t, func() bool { return len(intentsOf(t, kv, "n4:7000")) == 0 }, "a resolved, uncommitted add kept its intent")
+	waitFenceEnd(t, a)
+	key := ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/1/3"
+	require.True(t, a.isKept(key))
+
+	a.members.(*fakeMembers).set(systemShard, 4, map[uint64]string{1: "n1:7000", 2: "n2:7000", 3: "n3:7000", 4: "n4:7000"})
+	_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+"4/0.58.0-alpha", []byte("n4:7000"))
+	require.NoError(t, err)
+	require.NoError(t, a.recordRelease(context.Background(), kv))
+	assert.Empty(t, intentsOf(t, kv, "n4:7000"), "a recorded candidate's kept intent was not retired")
+	assert.False(t, a.isKept(key))
 }
 
 // allOnRelease records rel for members 1, 2 and 3 of threeNodes.
@@ -313,7 +375,7 @@ func TestRecordRelease_RetiresOwnIntentWhenNoAddIsInFlight(t *testing.T) {
 // TestRecordRelease_KeepsAnIntentWhileItsAddIsInFlight: while the add's
 // outcome is pending, neither the claimant's record pass (proposeMu held by
 // the fence) nor another member's (the claimant is advertised) retires the
-// intent; an outcome without a commit withdraws it.
+// intent; an outcome without a commit keeps it.
 func TestRecordRelease_KeepsAnIntentWhileItsAddIsInFlight(t *testing.T) {
 	kv := newMemKV()
 	a, b, bindA, _ := twoLeaders(t, kv)
@@ -329,5 +391,8 @@ func TestRecordRelease_KeepsAnIntentWhileItsAddIsInFlight(t *testing.T) {
 	assert.Equal(t, intent, intentsOf(t, kv, "n4:7000"), "a member retired the intent of a live claimant")
 
 	close(pending)
-	eventually(t, func() bool { return len(intentsOf(t, kv, "n4:7000")) == 0 }, "a resolved, uncommitted add kept its intent")
+	waitFenceEnd(t, a)
+	assert.Equal(t, intent, intentsOf(t, kv, "n4:7000"), "an outcome without a commit withdrew the intent")
+	require.NoError(t, a.recordRelease(context.Background(), kv))
+	assert.Equal(t, intent, intentsOf(t, kv, "n4:7000"), "an outcome without a commit let the claimant retire the intent")
 }
