@@ -181,6 +181,10 @@ func (c *Config) EffectiveCapabilities() capabilities.Capabilities {
 		PostgreSQL: capabilities.Has("pgsql"),
 		FTS:        capabilities.Has("fts"),
 
+		// Request-feature bits (owner ruling 1243): this binary honours
+		// CreateUser's pending TTL in every mode and never drops it.
+		PendingUserTTL: true,
+
 		UnencryptedAtRest: c.unencryptedAtRest(raft),
 	}
 }

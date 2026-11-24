@@ -243,10 +243,14 @@ func TestNarrowCapabilities(t *testing.T) {
 	all := capabilities.Capabilities{
 		KV: true, Batch: true, Index: true, Transaction: true, MVCC: true, Watch: true,
 		Lease: true, Lock: true, TimeSeries: true, Vector: true, Cluster: true,
+		PendingUserTTL: true,
 	}
 	got, err := NarrowCapabilities(all, "memory", "")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !got.PendingUserTTL {
+		t.Error("narrowing dropped the pendingUserTTL request-feature bit: it is a binary property, not a state-machine one")
 	}
 	if !got.KV || !got.Batch || !got.Transaction || !got.Lease {
 		t.Errorf("memory lost a capability it serves: %+v", got)
