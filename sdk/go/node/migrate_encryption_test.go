@@ -30,6 +30,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealretire"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
@@ -385,6 +386,112 @@ func TestNode_EnableEncryption_SealStoreSecretsSurvive(t *testing.T) {
 		return nil
 	}))
 	require.NotZero(t, files, "the seal store has files under %s", sealDir)
+}
+
+// failStagedDeleteBackend is a seal.StorageBackend whose Delete of a key in
+// the seal store's staging keyspace fails while fail is set.
+type failStagedDeleteBackend struct {
+	seal.StorageBackend
+	prefix string
+	fail   bool
+}
+
+var errStagedDelete = errors.New("injected staged-record delete failure")
+
+func (b *failStagedDeleteBackend) Delete(ctx context.Context, key string) error {
+	if b.fail && strings.HasPrefix(key, b.prefix) {
+		return errStagedDelete
+	}
+	return b.StorageBackend.Delete(ctx, key)
+}
+
+// TestNode_EnableEncryption_StagedDeleteFault_StaysDownUntilRecovery injects
+// a failure on the seal store's staged-record delete past the migration's
+// commit point: the migration fails, the node serves none of the moved
+// secrets rather than reopening on the adopted key, and a restart's recovery
+// completes the commit so every secret reads under the new key and an update
+// made after it survives a second restart.
+func TestNode_EnableEncryption_StagedDeleteFault_StaysDownUntilRecovery(t *testing.T) {
+	ctx := context.Background()
+	newCfg := func(dataDir string) *qrdbconfig.Config {
+		cfg := qrdbconfig.DefaultConfig()
+		cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
+		cfg.Raft.DataDir = dataDir
+		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
+		cfg.Seal.Enabled = true
+		cfg.Seal.Strategy = "none"
+		cfg.Protocols.REST = false
+		cfg.Protocols.GRPC = false
+		cfg.Protocols.QUIC = false
+		cfg.Protocols.Unix = false
+		cfg.Protocols.MCP = false
+		return cfg
+	}
+	dataDir := t.TempDir()
+	n, err := NewStandaloneNode(ctx, newCfg(dataDir), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+
+	secrets := map[string][]byte{
+		"db-primary":  []byte("staged-fault-secret-one"),
+		"api-signing": []byte("staged-fault-secret-two"),
+	}
+	for name, secret := range secrets {
+		require.NoError(t, n.Client().SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: name, Secret: secret}))
+	}
+
+	// Route the system barrier through a backend whose staged-record delete
+	// fails: the same seal store, the same barrier config.
+	fb := &failStagedDeleteBackend{
+		StorageBackend: seal.NewStorageAdapter(n.sealStore),
+		prefix:         sealretire.StagedRecords().StagingPrefix,
+		fail:           true,
+	}
+	faulty, err := seal.NewStorageBarrier(n.logger, fb, n.barrier.Load().Config(), seal.NewNoneStrategy())
+	require.NoError(t, err)
+	require.NoError(t, faulty.Unseal(ctx, seal.Credentials{}))
+	n.barrier.Store(faulty)
+	n.barrierRegistry.Load().SetSystemBarrier(faulty)
+
+	opts := seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.MustCredentials(context.Background(), []byte("staged-fault-pass")),
+	}
+	migErr := n.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, opts)
+	require.ErrorIs(t, migErr, database.ErrMigrationRecordsPending)
+	require.ErrorIs(t, migErr, errStagedDelete)
+	// Reopen refused to rebuild on the adopted key: the data plane is down.
+	require.Nil(t, n.svcNode.Load(), "the data plane must stay down while the staged commit is pending")
+	require.Nil(t, n.Client(), "no client serves reads or writes of the moved secrets while the staged commit is pending")
+	require.NoError(t, n.Close())
+
+	reopen := func(label string) *Node {
+		t.Helper()
+		rn, rerr := NewStandaloneNode(ctx, newCfg(dataDir), nil, WithSealPassphrase([]byte("staged-fault-pass")))
+		require.NoErrorf(t, rerr, "restart %s", label)
+		t.Cleanup(func() { _ = rn.Close() })
+		require.False(t, rn.IsSealed())
+		return rn
+	}
+	n2 := reopen("after the fault")
+	for name, secret := range secrets {
+		resp, gerr := n2.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: name})
+		require.NoErrorf(t, gerr, "SealStoreGet(%q) after recovery", name)
+		require.Equalf(t, secret, resp.Secret, "secret %q after recovery", name)
+	}
+	staged, err := seal.NewStorageAdapter(n2.sealStore).List(ctx, fb.prefix)
+	require.NoError(t, err)
+	require.Empty(t, staged, "recovery must delete every staged copy before serving")
+	updated := []byte("rotated-after-recovery")
+	require.NoError(t, n2.Client().SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: "db-primary", Secret: updated}))
+	require.NoError(t, n2.Close())
+
+	n3 := reopen("a second time")
+	resp, err := n3.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "db-primary"})
+	require.NoError(t, err)
+	require.Equal(t, updated, resp.Secret, "the post-recovery update must survive a second restart")
 }
 
 // TestNode_EnableEncryption_ViaEmbeddedTransport is the go-qrdb#558 SDK-wiring

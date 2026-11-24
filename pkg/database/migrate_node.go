@@ -283,10 +283,12 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	// 4. Copy each staged record over its live record, then retire the
 	// plaintext history the replaced records leave behind. A failure (or a
 	// crash) returns with the committed journal still in place, so the next
-	// boot's RecoverInterruptedMigration rolls the records forward.
+	// boot's RecoverInterruptedMigration rolls the records forward. A record
+	// commit failure is ErrMigrationRecordsPending: the caller must complete
+	// it (FinishCommittedMigration) before it serves on the adopted root.
 	if len(j.StagedRecords) > 0 {
 		if cerr := m.Source.CommitStagedRecords(ctx, j.StagedRecords); cerr != nil {
-			return fmt.Errorf("commit re-encrypted records: %w", cerr)
+			return fmt.Errorf("%w: commit re-encrypted records: %w", ErrMigrationRecordsPending, cerr)
 		}
 	}
 	if m.RetireRecords != nil {
@@ -374,6 +376,51 @@ type MigrationJournalRef = seal.MigrationJournal
 // roll-forward. RecoverInterruptedMigration returns it before touching any
 // directory, record, staging key or the journal, so a later boot retries.
 var ErrMigrationStagingRootUnreadable = errors.New("qrdb/database: migration staging root key unreadable; roll-forward refused, nothing changed")
+
+// ErrMigrationRecordsPending reports a migration past its commit point whose
+// staged barrier records (the seal store's secrets) are not all copied over
+// their live keys and deleted: the canonical root key is already the keyed
+// one, so a live record not yet replaced is unreadable, and a staged copy not
+// yet deleted would overwrite a newer write at the next roll-forward. The
+// journal is kept; the data plane must not serve until FinishCommittedMigration
+// or the boot's RecoverInterruptedMigration completes the commit.
+var ErrMigrationRecordsPending = errors.New("qrdb/database: committed migration's re-encrypted records not yet committed; the node must not serve until recovery completes them")
+
+// FinishCommittedMigration completes, over b's own backend, a migration that
+// passed its commit point but returned before its journal was finished (Run's
+// staged-record commit or plaintext retirement failed). It copies every
+// staged record over its live key and deletes the staged copy, runs retire
+// (when set), and only then marks the journal complete and removes it. A
+// failure of the record commit is ErrMigrationRecordsPending, with the journal
+// kept for the next attempt or the boot's RecoverInterruptedMigration. No
+// journal, or one before the commit point, is left untouched.
+func FinishCommittedMigration(ctx context.Context, b *seal.StorageBarrier, retire func(context.Context) error) error {
+	j, err := b.LoadMigrationJournal(ctx)
+	if err != nil {
+		return err
+	}
+	if j == nil || !j.Committed() {
+		return nil
+	}
+	if len(j.StagedRecords) > 0 {
+		if cerr := b.CommitStagedRecords(ctx, j.StagedRecords); cerr != nil {
+			return fmt.Errorf("%w: %w", ErrMigrationRecordsPending, cerr)
+		}
+	}
+	if retire != nil {
+		if rerr := retire(ctx); rerr != nil {
+			return fmt.Errorf("retire the replaced records' plaintext history: %w", rerr)
+		}
+	}
+	for _, dir := range j.StoreDirs {
+		_ = os.RemoveAll(dir + backupSuffix)
+	}
+	j.Phase = seal.PhaseComplete
+	if err := b.CheckpointMigration(ctx, j); err != nil {
+		return err
+	}
+	return b.FinishMigration(ctx)
+}
 
 // RecoverInterruptedMigration reconciles a migration that was interrupted by a
 // crash, using the persisted journal, BEFORE the data stores are opened. It is

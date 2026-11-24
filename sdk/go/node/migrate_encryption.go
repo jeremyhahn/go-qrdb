@@ -17,11 +17,13 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealretire"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
@@ -449,6 +451,28 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 		reopenStrat, serr := p.reopenStrategy(committedStrategy)
 		if serr != nil {
 			return serr
+		}
+		// A migration whose staged-record commit failed past the commit
+		// point leaves the seal store's secrets half-moved: a live record
+		// not yet replaced is unreadable under the adopted key, and a staged
+		// copy not yet deleted would overwrite a newer write at the next
+		// roll-forward. Finish that commit first; if it fails again, leave
+		// the data plane down (the journal stays) so nothing is served
+		// until the boot's recovery completes it.
+		var retire func(context.Context) error
+		if n.sealRetirer != nil {
+			retire = n.sealRetirer.Retire
+		}
+		if ferr := database.FinishCommittedMigration(ctx, n.barrier.Load(), retire); ferr != nil {
+			if errors.Is(ferr, database.ErrMigrationRecordsPending) {
+				p.creds = seal.Credentials{}
+				return &MigrationReopenError{Reason: "the migration's re-encrypted seal-store records are not committed; the node stays down until a restart recovers them", Err: ferr}
+			}
+			// The records are committed; only the plaintext retirement
+			// failed, and its marker makes the next boot retry it.
+			if n.logger != nil {
+				n.logger.Warn("encryption migration: finish the committed migration", slog.Any("error", ferr))
+			}
 		}
 		keyed, rerr := n.barrier.Load().ReopenKeyed(ctx, reopenStrat, p.creds)
 		// The caller of EnableEncryption owns the credential and destroys it
