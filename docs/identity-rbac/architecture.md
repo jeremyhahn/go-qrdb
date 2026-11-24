@@ -1034,7 +1034,7 @@ the policy is that grant written down.
   allowed in X and audited there (`auth.authorize` under X), refused in every
   other tenant and in the system tenant, and refused on the next call once the
   policy is deleted and the serial revoked; every transport applies the same
-  requirement (ruling 158).
+  requirement.
 
 ## Component boundaries
 

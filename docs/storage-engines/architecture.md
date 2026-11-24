@@ -1,20 +1,21 @@
 # Storage Engines — Architecture
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED — pending owner
-> decision — for the object-storage LSM target design.** · Scope: go-qrdb ·
+> **Status: NORMATIVE for shipped behaviour; ADOPTED, not yet built, for the
+> object-storage LSM target design.** · Scope: go-qrdb ·
 > Last verified: 2026-10-27
 >
 > This document has two layers.
 >
 > - **Current state** sections (everything through "What this feature
->   deliberately does not do") describe the code as shipped. The proposal
->   below does not change them.
-> - **Target design: object-storage LSM segment layout** is the proposed
->   design for rebuilding `pkg/storage/objstore` as an LSM segment layout,
->   future work under the SPEC row `object-storage-lsm`. The questions it
->   needs decided are listed, each with a recommendation, in "Decisions
->   needing the owner" inside that section. **Nothing in that section is
->   implemented.**
+>   deliberately does not do") describe the code as shipped. The target
+>   design below does not change them.
+> - **Target design: object-storage LSM segment layout** is the design for
+>   rebuilding `pkg/storage/objstore` as an LSM segment layout, adopted
+>   (OS-0 A) and in progress under the SPEC row
+>   `object-storage-lsm`. Its questions are listed, each with a
+>   recommendation, in "Decisions needing the owner" inside that section.
+>   **The adapter, encrypting wrapper, composition and cache are on main but
+>   not wired; the engine switch is not implemented.**
 >
 > Volume pools are documented in [../volume-pools/](../volume-pools/).
 
@@ -391,7 +392,7 @@ client into the `storage.Storage` interface for distributed mode. That makes the
 go-xkms, not only for this repo.
 
 **go-quicbaas configures the object-storage provider per go-objstore backend**
-(owner ruling 228(2), 228(3)); `pkg/storage/objstore` is the seam, and go-qrdb
+; `pkg/storage/objstore` is the seam, and go-qrdb
 designs no backend of its own. What the seam offers today and the open
 questions on what it still lacks are in
 [../decisions/object-storage-provider-seam.md](../decisions/object-storage-provider-seam.md).
@@ -554,12 +555,13 @@ Composition, conceptually:
 ### Decisions needing the owner
 
 Each question implementing this design requires deciding is answered below
-with a recommendation. Whether to adopt the design at all is the first
-decision; these are the ones that follow from adopting it. The decision
-record [../decisions/object-storage-lsm.md](../decisions/object-storage-lsm.md)
-lays out each one (OS-0, adopting the design, and OS-1 to OS-7) with its
-options, the recommendation, and the go-objstore v0.9.1-alpha API each option
-relies on, for the owner's ruling.
+with a recommendation. Adopting the design at all (OS-0) was decided as
+option A; these are the questions adopting it raises. The
+decision record
+[../decisions/object-storage-lsm.md](../decisions/object-storage-lsm.md) lays
+out each one (OS-0 and OS-1 to OS-7) with its options, the recommendation, the
+go-objstore v0.9.1-alpha API each option relies on, and which are decided and
+which are still open for the owner's ruling.
 
 **OS-1 — Is Pebble v2's remote storage a stable, supported surface?**
 No — it is real, functional and already used in production by CockroachDB, but

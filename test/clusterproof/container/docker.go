@@ -119,8 +119,18 @@ func (c *Cluster) startArgv(n Node, identities map[uint64]string) []string {
 	if c.inv.Network != HostNetwork {
 		argv = append(argv, "--ip", n.Address)
 	}
+	argv = append(argv, "--cap-add", "IPC_LOCK", "--ulimit", "memlock=-1:-1")
+	// The limits ride on the container, so a nemesis restart (docker
+	// start) keeps them. Swap is capped with memory: a node that outgrows
+	// its share is OOM-killed, which the soak sees, never left to swap the
+	// host the soak runner shares.
+	if c.inv.Memory != "" {
+		argv = append(argv, "--memory", c.inv.Memory, "--memory-swap", c.inv.Memory)
+	}
+	if c.inv.CPUs != "" {
+		argv = append(argv, "--cpus", c.inv.CPUs)
+	}
 	return append(argv,
-		"--cap-add", "IPC_LOCK", "--ulimit", "memlock=-1:-1",
 		"-v", n.TLSDir+":"+tlsMount+":ro",
 		"-v", n.Data+":"+dataMount,
 		c.inv.Image,

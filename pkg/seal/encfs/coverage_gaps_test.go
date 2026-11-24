@@ -247,7 +247,7 @@ func TestNewReadFile_NegativePayload(t *testing.T) {
 	_ = crypto // silence unused warning; we need the header for its totalSize
 
 	// physicalSize < h.totalSize() => payload = physicalSize - headerSize < 0
-	_, gotErr := newReadFile(realFile, h, int64(h.totalSize()-1))
+	_, gotErr := newReadFile(realFile, h, int64(h.totalSize()-1), false)
 	if gotErr == nil {
 		t.Error("expected error for negative payload size")
 	}

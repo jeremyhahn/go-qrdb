@@ -1,6 +1,6 @@
 # Moving a tenant between volume pools
 
-> **Status: PROPOSED — awaiting owner ruling** · Scope: go-qrdb
+> **Status: PROPOSED** · Scope: go-qrdb
 > Last verified: 2026-11-12 at main e8b579229d
 > SPEC row `volume-pool-tenant-moves` (future, phase 2). Nothing here is
 > built. Each open question lists its options, a recommendation and the
