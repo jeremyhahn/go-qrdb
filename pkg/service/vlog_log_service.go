@@ -362,7 +362,7 @@ type logGroup struct {
 //     the Raft command (OpGuarded), so every replica refuses the write once
 //     the drop's tombstone (FenceDatabaseKeyspace) has landed in the group
 //     -- the tenant's group or the system shard, which holds the marker of
-//     every database whose logs it holds (docs/plans/1613-verifiable-log.md).
+//     every database whose logs it holds.
 //   - live re-resolves the database and refuses the write unless the
 //     incarnation is still the live one. A standalone barrier store checks
 //     it under the lock its apply and the drop's reclamation both hold, so a
