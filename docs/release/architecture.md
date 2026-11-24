@@ -155,13 +155,13 @@ qrdbd and the headless qrdb CLI twice:
   release carries no separate signature; the signed tag is the provenance of
   the tree the binaries were built from.
 - **CI cross-builds arm64 in the full tier.** On a push to `main`, a
-  `workflow_dispatch` or a `ci:full` pull request, the `image` job runs
+  `workflow_dispatch` on `main` or a non-draft pull request, the `image` job runs
   `make release-cross PLATFORM=linux/arm64` in the toolchain image beside its
   native build, so a change that breaks the arm64 build, plain or FIPS, fails
-  before the tag; a plain pull request does not run it (ruling 211). Nothing runs on arm64 in CI: the
+  before the tag (ruling 211); a docs-only pull request runs no `image` job. Nothing runs on arm64 in CI: the
   arm64 integration run is a separate, pre-RC step.
 - **The integration image is scanned in the full tier.** On a push to `main`,
-  a `workflow_dispatch` or a `ci:full` pull request, the `image` job runs
+  a `workflow_dispatch` on `main` or a non-draft pull request, the `image` job runs
   `make trivy-image` over the `integration` image after its stages, with
   `--ignore-unfixed` and the module cache (`/gomodcache`) skipped (handbook
   `devops.md` §8), so a fixable vulnerability fails before the tag.
@@ -190,13 +190,15 @@ skips the code tier, and the nightly tier carries the soak:
 |---|---|---|
 | PR | every run | `preflight` (the changed-file diff, then the architecture gates, one job since ci-template v1.34), `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`, ci-template v1.28.0), `lint-gates` (`make lint-gates`), `ci-gate` |
 | Code | every run but a docs-only pull request | `image` (the build), the unit-suite jobs `coverage` (`make coverage-leg`, a matrix over `COVER_LEGS`) and `coverage-merge` (`make coverage-merge`, the repo-wide gate), `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk` (a matrix over `TEST_SDK_LEGS`), `test-typescript` |
-| Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3, as parallel legs) |
+| Full | every event but a `workflow_dispatch` off main: a push to `main`, the schedule, and every non-draft pull request that is not docs-only (ci-template v1.41, ruling 742 (2)) | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3, as parallel legs) |
 | Nightly | `workflow_dispatch` | the full tier, plus `soak` and `clusterproof-soak` |
 
-ci.yml evaluates the full-tier condition once, into its `CI_FULL_TIER`
-environment variable, which the steps it gates and `ci-gate` read; a job-level
-`if:` cannot read the environment, so each full-tier job repeats the
-expression. The nightly tier's condition is a scheduled run or a
+ci.yml evaluates the full tier's event condition once, into its
+`CI_FULL_TIER` environment variable, which the steps it gates read; a
+job-level `if:` cannot read the environment, so each full-tier job repeats
+the expression, together with the code tier's condition, so a docs-only pull
+request skips the full jobs too. `ci-gate`'s `FULL_TIER` is `CI_FULL_TIER`
+except on a docs-only pull request, where it is `false`. The nightly tier's condition is a scheduled run or a
 `workflow_dispatch`, and ci.yml carries one nightly `schedule:` (cron
 `0 4 * * *`, 04:00 UTC every night, ruling 633; host cron and timers stay
 banned): `soak` loops the `clustering` integration suite, a fresh
@@ -216,8 +218,7 @@ is docs-only (its DOCS_ONLY is `true`). In a run that selected the tier a
 skipped job fails it, and an unreadable DOCS_ONLY fails the gate. The pull-request trigger has no
 `labeled` type, because a label-triggered run would cancel the PR's run in
 progress, so adding `ci:full` starts nothing by
-itself: it takes effect on the PR's next push, an update-branch, or a
-`workflow_dispatch`.
+itself: it takes effect on the PR's next push or update-branch.
 
 Every workflow's jobs but code review's (which keep their self-hosted review
 hosts) run, for every event, on a standard GitHub-hosted `ubuntu-latest`
@@ -357,9 +358,10 @@ skipped. The gates that read `docs/` --
 request runs every one of them in the `lint-gates` job. `preflight` decides nothing off a pull request
 or under `ci:full`: those runs are never docs-only.
 
-The `ci:full` label goes on a pull request once, when it is green on the PR
-tier and ready to merge, never earlier and never twice; a `workflow_dispatch`
-of the full tier on the PR branch is the accepted alternative.
+The `ci:full` label selects no tier (ci-template v1.41): every non-draft pull
+request already runs the full tier. ci.yml reads it into `CI_FULL_LABEL`, and
+it only keeps a pull request off the docs-only path, so a docs-only change
+that must still run the code and full tiers carries it.
 
 `ci.yml`'s concurrency block has a literal `cancel-in-progress: true` and a
 `main`-specific group. A pull request's ref is one group, so a newer push to

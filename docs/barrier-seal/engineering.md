@@ -1834,7 +1834,8 @@ distinguishes them.
   reads the record before serving.
 - **Integration**: `cluster_enable_encryption_test.go` lives in the **cluster
   stage** (`make integration-test-cluster`), which CI runs in its full tier
-  (every push to `main`, every dispatch, and a `ci:full` pull request) as the
+  (every push to `main`, every dispatch on `main`, and every non-draft pull
+  request that is not docs-only) as the
   `barrier-seal` leg of the `integration-features` job
   (`make integration-test-barrier-seal`), part of the result gate, tenant-scope
   case included.
