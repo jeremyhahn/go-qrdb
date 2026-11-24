@@ -66,6 +66,7 @@ var operationPermissions = map[string]permission.Permission{
 	"Compact":           permission.MVCCCompact,
 	"CurrentRevision":   permission.MVCCCurrentRevision,
 	"RestoreToRevision": permission.MVCCRestore,
+	"MovePrefix":        permission.MVCCMovePrefix,
 
 	// Transaction / batch
 	"ExecuteTransaction": permission.TransactionExecute,

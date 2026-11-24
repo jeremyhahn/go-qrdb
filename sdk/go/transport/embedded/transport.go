@@ -489,6 +489,7 @@ var requestHandlers = map[string]requestHandler{
 	"Compact":                     handleCompact,
 	"CurrentRevision":             handleCurrentRevision,
 	"RestoreToRevision":           handleRestoreToRevision,
+	"MovePrefix":                  handleMovePrefix,
 	"ExecuteTransaction":          handleExecuteTransaction,
 	"ExecuteBatch":                handleExecuteBatch,
 	"Watch":                       handleWatch,
