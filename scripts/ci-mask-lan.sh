@@ -1,39 +1,5 @@
 #!/usr/bin/env bash
-# scripts/ci-mask-lan.sh: mask the LAN addresses a pool runner's environment
-# names (Tenant Agent ruling 887: internal addresses stay out of public
-# repositories, and their CI logs count). The pool sets the DEVCACHE_*
-# package caches, GOPROXY's LAN module proxy and the LAN CI registry; on a
-# forge, the release registry (RELEASE_REGISTRY) and the forge's own host
-# (GITHUB_SERVER_URL), which the image publishing and resolving name. A
-# BuildKit build echoes its build arguments and `go env` prints GOPROXY.
-# Run before any step that builds: for each entry of those variables whose
-# host is internal, it prints ::add-mask:: for the entry, its host:port and
-# its host, so the runner masks the address in every later line. A host is
-# internal when it is a private IPv4 address, or (ci-template v1.53, Tenant
-# Agent on trusted-firmware #821) a host name: a single label with no dot
-# (a LAN host name) or a name under .internal, .lan, .local, .localdomain,
-# .home.arpa or .corp. Public hosts and keywords (proxy.golang.org, direct,
-# off) are left.
-# v1.53 (Tenant Agent on go-quicbaas #2667): every variable whose name ends
-# in _REGISTRY is scanned (CI_REGISTRY, CI_IMAGE_REGISTRY, RELEASE_REGISTRY,
-# a copy's IT_REGISTRY), and the template's mask step sets
-# VARS_CI_IMAGE_REGISTRY from the repository variable, because a registry a
-# later step takes from `vars` is not in this step's environment otherwise. A
-# _REGISTRY_OWNER or other non-host name is not scanned.
-# Userinfo (Codex on go-qrdb #1671): an entry's authority is split at its
-# last "@" before the host is classified, so in
-# http://build.user:password@192.168.1.10:8080 the host is 192.168.1.10, not
-# the user name; a bracketed IPv6 host keeps its brackets. The userinfo and
-# its password are masked whenever present, on a public host too, and an
-# internal host also masks the authority with its userinfo. An "@" in the
-# path is no userinfo.
-# Host-name case and a terminal dot (Codex on go-xkms #2340): DNS names are
-# case-insensitive and may be written fully qualified, so cache.INTERNAL and
-# registry.lan. are internal. The host is classified from a copy, lowercased
-# with one terminal dot removed; the masks keep the entry's own spelling,
-# which is what a log line repeats.
-#
-#   usage: scripts/ci-mask-lan.sh
+# ci-mask-lan.sh: mask the LAN addresses a runner's environment names.
 set -euo pipefail
 
 # mask <value>: one ::add-mask:: command, its value escaped as workflow

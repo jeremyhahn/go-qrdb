@@ -1,6 +1,6 @@
 # Release — Compatibility policy
 
-> **Status: NORMATIVE — acknowledged by owner ruling 1243 (2026-11-24); owner choices A to G adopted as recommended** · Scope: go-qrdb · Last verified: 2026-11-24
+> **Status: NORMATIVE; choices A to G adopted as recommended** · Scope: go-qrdb · Last verified: 2026-11-24
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -22,7 +22,7 @@ What go-qrdb promises its users about change: which surfaces are public, what
 a version number says about each, and how a public thing is retired. This is
 item 9 of the public-release checklist (issue #566, recorded in
 [readiness.md](readiness.md)). The [owner choices](#owner-choices) at the end
-are settled by owner ruling 1243.
+are settled.
 
 ## Before the first release candidate
 
@@ -78,10 +78,9 @@ yet on by default.
 
 ## Owner choices
 
-Each was answered by owner ruling 1243 (2026-11-24), which adopted the
-recommendation.
+Each adopted the recommendation.
 
-| # | Question | Options | Decision (ruling 1243) |
+| # | Question | Options | Decision |
 |---|---|---|---|
 | A | What version does the first release candidate carry? | (a) `1.0.0-rc.1`; (b) `0.N.0-rc.1`, keeping the 0.x line through the first public release. | (a): semver gives 0.x no stability promise, so a policy that binds from the first RC needs MAJOR 1. |
 | B | How long does a deprecated wire field, method, CLI flag or configuration key live? | (a) until the next MAJOR, and at least two MINOR releases after the one that deprecates it; (b) until the next MAJOR only; (c) a fixed time (for example 12 months) regardless of version. | (a): removal is breaking, so it can only be a MAJOR; the two-MINOR floor stops a deprecation landing just before a MAJOR with no warning period. |
