@@ -268,10 +268,46 @@ editor line), the Verdict says so; the line here is the tip line.
 | pkg/watch/errors_test.go:TestHubClosedError_ErrorsAs | suite-audit other | pkg/watch/errors_test.go:25 TestHubClosedError_Error_ReturnsExpectedMessage | :28 `if got := err.Error(); got != want` | kept |
 | pkg/watch/errors_test.go:TestHubClosedError_NotNil | suite-audit other | pkg/watch/errors_test.go:25 TestHubClosedError_Error_ReturnsExpectedMessage | :28 `if got := err.Error(); got != want` | kept |
 
-## Remaining (rw566w3 stopped at its context budget)
+## Trimmed tests (566-suite-audit.md "Trimmed tests")
 
-- The "Trimmed tests" table of 566-suite-audit.md (32 rows, each "itself"
-  or "its callers") has no rows here yet; each needs its tip file:line and
-  the quoted wait or assertion.
-- 566-review.md per-file split (Slice 3) and the "Codex round 4 (rw566w3)"
-  section of 566.md (Slice 4) are not written.
+The table has 29 rows, not the 32 the wip note counted. A trimmed test
+keeps its name; its keeper is itself, its callers, or the deterministic
+test the audit names. Each row cites the wait or assertion that now pins
+the path.
+
+| Trimmed test (file:func) | Record | Keeper at tip (file:line func) | Assertion or guard at tip (file:line, quoted call) | Verdict |
+|---|---|---|---|---|
+| pkg/tenant/create_delete_race_test.go:TestCreateTenant_ConcurrentCreateAndDeleteNeverResurrect | suite-audit trimmed | pkg/tenant/create_delete_race_test.go:89 TestCreateTenant_RefusedWhenADeleteRetiresTheIdMidCreate | :96 `t.Fatalf("CreateTenant = %v; want *TenantDeletedError", err)` (race test itself at :207, :228 `var deleted *TenantDeletedError`) | kept |
+| pkg/server/data_plane_keyspace_test.go:TestBuildDataPlaneServices_ImportSession_LeaseExpiryReclaims | suite-audit trimmed | pkg/server/data_plane_keyspace_test.go:97 itself | :126 `fake.Advance(1100 * time.Millisecond)`; :130 `t.Fatalf("ExpiredLeaseIDs() = %v, want exactly the session's one lease", expired)` | kept |
+| pkg/server/lifecycle/local_lease_expiry_test.go:TestStartLocalLeaseExpiry_StopWaitsAndStaysStopped | suite-audit trimmed | pkg/server/lifecycle/local_lease_expiry_test.go:85 itself | :139 `fake.Advance(time.Second + 4*lease.DefaultExpiryInterval)`; :141 `t.Fatalf("a stopped sweeper revoked the lease: %v", err)` | kept |
+| pkg/server/startup_read_test.go:TestRunStartupRead_ContextEnds | suite-audit trimmed | pkg/server/startup_read_test.go:269 itself | :277 `if !errors.Is(err, context.Canceled) \|\| !errors.Is(err, quicraft.ErrReadIndexNotReady) \|\| calls != 1 {` | kept |
+| pkg/server/startup_read_test.go:TestRunStartupRead_ContextEndsMidAttempt | suite-audit trimmed | pkg/server/startup_read_test.go:329 itself | :340 `t.Fatalf("err = %#v, want one attempt ended by the caller, none by its bound", err)` | kept |
+| pkg/server/startup_read_test.go:TestRunStartupRead_ReportsAnAttemptThatOutlivesItsBound | suite-audit trimmed | pkg/server/startup_read_test.go:369 itself | :393 `t.Errorf("%d progress lines while an attempt outlived its bound, reported every 30ms, want several; log = %q", n, got)` | kept |
+| pkg/server/lifecycle/cluster_ca_test.go:TestAwaitClusterCACertificate_CtxCanceledDuringBackoff | suite-audit trimmed | pkg/server/lifecycle/cluster_ca_test.go:362 itself | :379 `t.Fatalf("Certificate calls before the cancel = %d, want 1 (blocked in the backoff)", got)` | kept |
+| pkg/service/shard_snapshot_provider_test.go:TestHostShardSnapshotProvider_SnapshotShard_ContextCanceledDuringPoll | suite-audit trimmed | pkg/service/shard_snapshot_provider_test.go:381 itself | :410 `if !errors.Is(err, context.Canceled) {` | kept |
+| pkg/rowlock/session_test.go:TestSession_LeaseInUseIsNotIdle | suite-audit trimmed | pkg/rowlock/session_test.go:208 itself | :229 `clk.Advance(ttl / 2)`; :240 `assert.True(t, leaseAlive(t, s, o.lease.id), "a held lock keeps its lease renewed")` | kept |
+| pkg/api/connlimit/quic_test.go:TestQUICListenerReleasesSlotOnConnectionClose | suite-audit trimmed | pkg/api/connlimit/quic_test.go:195 itself | :267 `t.Fatal("the first connection's slot was not released after its close")` | kept |
+| pkg/index/extended_memory_index_test.go:TestExtendedMemoryIndex_ContextCancellation | suite-audit trimmed | pkg/index/extended_memory_index_test.go:236 itself | :242 `assert.Error(t, idx.PutWithContext(ctx, []byte("entity-1"), []byte("a")))` | kept |
+| pkg/embedding/client_test.go:TestEmbed_CancelledContext | suite-audit trimmed | pkg/embedding/client_test.go:333 itself | :347 `t.Fatal("expected error for cancelled context")` | kept |
+| pkg/service/vector_service_test.go:TestVectorService_GetRebuildProgress_EstimatedTimeRemaining | suite-audit trimmed | pkg/service/vector_service_test.go:1758 itself | :1800 `assert.Equal(t, int64(3000), resp.EstimatedTimeRemainingMs)` | restored in test(service): assert the rebuild-progress time estimate (#566) |
+| pkg/service/hard_confined_watch_test.go:TestHardConfinedWatch_WatchEntityTypeFilterGoroutineExitsOnContextDone | suite-audit trimmed | pkg/service/hard_confined_watch_test.go:318 itself | :344 `t.Fatal("expected ch to close once ctx ended, not to deliver a value nobody was reading")` | kept |
+| cmd/qrdbd/start_coverage_test.go:TestCertReloader_FileWatch_DebounceReloadError | suite-audit trimmed | cmd/qrdbd/start_coverage_test.go:1919 itself | :1937 `h.waitFor(t, "debounced reload failed")` | kept |
+| cmd/qrdbd/start_coverage_test.go:TestCertReloader_FileWatch_WatcherError | suite-audit trimmed | cmd/qrdbd/start_coverage_test.go:1953 itself | :1967 `h.waitFor(t, "filesystem watcher error")` | kept |
+| pkg/rowlock/faults_test.go:TestKeepalive_RevokedLease_MarksTheOwnerLost | suite-audit trimmed | pkg/rowlock/faults_test.go:260 itself | :268 `require.Eventually(t, a.lease.lost.Load, 3*time.Second, time.Millisecond, "a lease that can no longer be renewed must be noticed")` | kept |
+| pkg/rowlock/metrics_test.go:waitWaiting (helper) | suite-audit trimmed | pkg/rowlock/metrics_test.go:71 waitWaiting | :73 `require.Eventuallyf(t, func() bool { return waiterCount(t) == n }, ...)` | kept |
+| pkg/rowlock/harness_test.go:waitQueued (helper) | suite-audit trimmed | pkg/rowlock/harness_test.go:147 waitQueued | :149 `require.Eventuallyf(t, func() bool { return len(queueOwners(t, tbl, key)) == n }, ...)` | kept |
+| pkg/sql/internal/sessionguard/sessionguard_test.go:closeCounter / waitClosed (helpers) | suite-audit trimmed | pkg/sql/internal/sessionguard/sessionguard_test.go:43 closeCounter, :57 closed, :67 waitClosed | :72 `t.Fatal("the connection was not closed")` | kept |
+| pkg/firstboot/admin_bound_watch_test.go:TestWatchForAdminBound_RealHubObservesAddCertBinding | suite-audit trimmed | pkg/firstboot/admin_bound_watch_test.go:129 itself | :156 `require.Eventually(t, func() bool { return hub.WatchCount() > 0 }, ...)` | kept |
+| pkg/firstboot/admin_bound_watch_test.go:TestWatchForAdminBound_ContextCanceledReturnsNil | suite-audit trimmed | pkg/firstboot/admin_bound_watch_test.go:199 itself | :222 `require.Eventually(t, func() bool { return hub.WatchCount() > 0 }, ...)` | kept |
+| pkg/firstboot/admin_bound_watch_test.go:TestWatchForAdminBound_TransientLookupFailureRetries | suite-audit trimmed | pkg/firstboot/admin_bound_watch_test.go:523 itself | :550 `require.Eventually(t, func() bool { return hub.WatchCount() > 0 }, ...)` | kept |
+| pkg/firstboot/admin_bound_watch_test.go:TestThreeNodeCluster_FollowersLeaveAwaitingViaWatch_NoRestart | suite-audit trimmed | pkg/firstboot/admin_bound_watch_test.go:322 itself | :334 `require.Eventually(t, func() bool { return hub.WatchCount() >= 3 }, ...)` | kept |
+| pkg/firstboot/admin_bound_watch_test.go:TestThreeNodeCluster_LeaderChange_RemainingNodesLeaveAwaitingViaWatch | suite-audit trimmed | pkg/firstboot/admin_bound_watch_test.go:362 itself | :372 `require.Eventually(t, func() bool { return hub.WatchCount() >= 3 }, ...)` | kept |
+| pkg/firstboot/admin_bound_watch_test.go:awaitNotAwaiting (helper) | suite-audit trimmed | pkg/firstboot/admin_bound_watch_test.go:307 awaitNotAwaiting | :309 `require.Eventuallyf(t, func() bool { return !probe.AwaitingAdminCredential() }, ...)` | kept |
+| pkg/server/conn_observer_test.go:waitForCounts (helper) | suite-audit trimmed | pkg/server/conn_observer_test.go:90 waitForCounts | :101 `if !assert.Eventually(t, func() bool { return len(unsatisfied()) == 0 }, ...)` | kept |
+| pkg/server/conn_observer_test.go:TestModuleConnObserver_SeesEveryListener | suite-audit trimmed | pkg/server/conn_observer_test.go:112 itself | :153 `o, c := mod.counts(tr); return o == 1 && c == 1`; :224 `o, c := mod.counts(tr); return o == c` (both in `assert.Eventually`) | kept |
+| pkg/api/connlimit/connlimit_test.go:waitForAccepted (helper) | suite-audit trimmed | pkg/api/connlimit/connlimit_test.go:147 waitForAccepted | :149 `require.Eventuallyf(t, func() bool {` | kept |
+
+The audit recorded the rebuild-progress test as trimmed to one
+`ElapsedTimeMs >= 0` assertion, which pinned nothing. Codex round 4 raised
+it as the P1. The test now seeds a job inside a synctest bubble and asserts
+the estimate, so its verdict is "restored". The other 28 are kept.
