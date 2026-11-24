@@ -14,31 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# check-mod-tidy.sh: every tracked module's go.mod and go.sum match its own
-# sources, by `GOWORK=off go mod tidy -diff`, which mutates nothing.
-#
-# The module set is every tracked go.mod in the current directory's
-# repository, not a list, so a new module is checked the day it is committed;
-# modules under a testdata/ directory are fixtures and are skipped.
-# The root go.mod missing from it means discovery failed, and an empty loop
-# must not report success. Every module is asked before failing, so one run
-# names all of them.
-#
-# `go mod tidy -diff` has two ways to exit non-zero, and they mean different
-# things:
-#
-#   - a diff on stdout: the module is NOT TIDY. The diff is printed (bounded)
-#     with the remedy.
-#   - no diff: the check COULD NOT RUN (a module download failed, a proxy
-#     timed out, the cache lacks a module under GOPROXY=off). Whether the
-#     module is tidy is UNKNOWN. The tool's stderr is printed without its
-#     `go: downloading` progress lines. This case alone is retried, once, and
-#     the output says so.
-#
-# Both fail the gate; neither passes silently.
-#
-# Usage: check-mod-tidy.sh            (from the repository root)
-# Environment: GO, the go command (default: go).
+# check-mod-tidy.sh: every tracked module's go.mod and go.sum match its sources (go mod tidy -diff).
 
 set -euo pipefail
 

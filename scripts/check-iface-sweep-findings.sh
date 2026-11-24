@@ -14,51 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# check-iface-sweep-findings.sh — the committed test/tools/ifacesweep/
-# findings/*.tsv files must never carry an absolute, machine-specific path
-# in their `file` column (go-qrdb#271 review).
-#
-# WHY THIS EXISTS
-#
-# ifacesweep prints the source file of every interface method it finds, and
-# the first version of it printed token.Position.Filename VERBATIM. That is
-# absolute — go/packages resolves it against the checkout, so the committed
-# TSV read e.g. <repo-root>/cmd/qrdbd/cluster_migrate.go, <repo-root> being
-# the absolute path of the reviewer's worktree, on 996 of 996 rows. Caught in
-# review, not by a check: the publication-bound scanner's scope is docs/*/, so
-# an absolute host path under test/tools/ was invisible to it (go-qrdb, filed
-# separately). Two things were wrong with that output, and this script is
-# against both:
-#
-#   1. It baked the reviewer's own workstation layout and worktree name into
-#      version control — the same class of leak check-publication-bound.sh
-#      exists to stop elsewhere in the tree.
-#   2. It made the file NON-DIFFABLE. `make iface-sweep` regenerates it from
-#      whatever absolute path the checkout happens to sit at, so every row
-#      changes on every other machine and a real diff (a method that became
-#      called, a new interface) is buried in checkout-path noise. The entire
-#      reason to commit a stable reference measurement is defeated by the
-#      one column that carries a location.
-#
-# main.go now relativizes every File against the module root before it is
-# ever written (relFile), and refuses to emit anything that is not clean and
-# inside that root. This script is the second, independent check on the
-# ARTIFACT rather than the tool that wrote it — a bug in main.go's next
-# revision is caught here even if nobody re-reads relFile's own reasoning at
-# the time.
-#
-# DISCOVERY FLOOR. A missing file, an empty file, or a header-only file must
-# FAIL, not pass by having nothing to check — that is exactly the failure
-# mode #337's own findings record: a check with nothing in front of it
-# reads as a clean bill of health. FLOOR below is deliberately far under the
-# ~950-1000 rows measured at the time of writing: the finding count is
-# expected to drift as the tree grows, and this script's job is to catch
-# "the artifact is gone or truncated", not to pin an exact count that would
-# make every `make iface-sweep` regeneration this script's problem too.
-#
-# Usage: check-iface-sweep-findings.sh [file...]
-#   (defaults to both committed findings files, resolved from this script's
-#   own location so it works from any invocation directory)
+# check-iface-sweep-findings.sh: the committed ifacesweep findings must not contain absolute paths.
 
 set -eu
 

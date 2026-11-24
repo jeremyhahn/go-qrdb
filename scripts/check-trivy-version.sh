@@ -15,20 +15,6 @@
 # limitations under the License.
 #
 # Fails unless a trivy binary reports exactly the pinned version.
-#
-# trivy is copied out of its official image pinned by digest (TRIVY_IMAGE in
-# scripts/tool-pins.sh). This check holds that digest to TRIVY_VERSION, so a
-# digest and version pair that disagree fails the build. The comparison is
-# exact: a substring (case-glob) test for `Version: 0.75.0` accepts `0.75.0-rc1`,
-# `0.75.0-dev` and `0.75.01`. scripts/check-trivy-version_test.sh covers those.
-#
-# `trivy --version` prints its own version on an unindented `Version: ` line;
-# the indented `  Version: ` lines below it belong to the vulnerability and
-# Java databases, and are ignored. Exactly one unindented line must be present.
-#
-# Plain POSIX sh with no grep, so it runs in any build stage.
-#
-# Usage: check-trivy-version.sh <trivy-binary> <pin>   (pin with or without v)
 
 set -eu
 

@@ -14,47 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# lockstep-modules.sh — the nested modules that are tagged in lockstep with the
-# root module (release-versioning.md P2), one per line, sorted.
-#
-# THIS IS THE ONE DERIVATION. `release-alpha` publishes this set and
-# check-tag-lockstep.sh audits it, and they call this rather than each deriving
-# it. Two derivations that agree today are one edit away from disagreeing, and
-# the failure is silent in exactly the direction that matters -- an auditor
-# narrower than the publisher passes green while a namespace goes unchecked.
-# That gap was real: the publisher was widened to discover modules while the
-# audit still hard-coded sdk/go (reviewed on PR #212).
-#
-# SCOPED TO sdk/, which is the judgement in this script. `find .` also matches
-# test/performance/{qrdb,tikv,etcd-benchmark,cmd/kvcompare}/go.mod -- local
-# benchmark harnesses that must never be tagged -- and excluding them would
-# need a hand-maintained exclusion list, which is the drift this exists to
-# remove wearing a different hat. sdk/ is the published consumer surface; a
-# module outside it is not part of the release. The failure directions decide
-# it: a module wrongly INCLUDED gets an irrevocable tag, a module wrongly
-# EXCLUDED gets a missing one that check-tag-lockstep and the Release Lockstep
-# workflow both report. Only one of those is recoverable.
-#
-# NOT THE SAME QUESTION AS scripts/vet-modules.sh, which walks the WHOLE tree
-# because `go vet` must cover every module including the benchmark harnesses.
-# Same mechanism, different predicate: "what do we compile" against "what do we
-# publish". They are deliberately not unified -- one function serving both
-# would need a mode flag, and the flag would be the bug. If you are here to
-# consolidate them, that is the reason not to. Ruled 2026-09-02.
-#
-# Usage:
-#   lockstep-modules.sh [repo-dir]                 list the modules, one per line
-#   lockstep-modules.sh --baseline <module> [dir]  print that module's baseline
-#
-# The baseline lookup lives here rather than in each caller because it parses
-# the same data this script already owns -- the lockstep set and the metadata
-# about it. That is one question with two projections, not two questions
-# wearing one helper.
-#
-# Exit status: 0 when at least one module is found, 1 otherwise. An empty set
-# is an ERROR, not an answer: a release with no lockstep leg is the skew this
-# whole mechanism exists to prevent, so "I found nothing" must never be
-# mistaken for "there are none".
+# lockstep-modules.sh: the nested modules tagged in lockstep with the root module, one per line, sorted.
 
 set -eu
 
