@@ -698,6 +698,7 @@ func TestLastAuthOnly_AnyOtherFieldDisqualifies(t *testing.T) {
 		"Attributes":   func(r *UpdateUserRequest) { r.Attributes = map[string]string{} },
 		"CertBindings": func(r *UpdateUserRequest) { r.CertBindings = []CertBinding{} },
 		"AuthMethods":  func(r *UpdateUserRequest) { r.AuthMethods = []string{} },
+		"GroupIDs":     func(r *UpdateUserRequest) { r.GroupIDs = []string{} },
 	}
 	for name, set := range disqualifying {
 		req := base()
@@ -891,6 +892,7 @@ func TestOnlyReassertsLifecycle_AnyOtherFieldDisqualifies(t *testing.T) {
 		"Attributes":   func(r *UpdateUserRequest) { r.Attributes = map[string]string{} },
 		"CertBindings": func(r *UpdateUserRequest) { r.CertBindings = []CertBinding{} },
 		"AuthMethods":  func(r *UpdateUserRequest) { r.AuthMethods = []string{} },
+		"GroupIDs":     func(r *UpdateUserRequest) { r.GroupIDs = []string{} },
 	}
 	for name, set := range disqualifying {
 		req := base()
