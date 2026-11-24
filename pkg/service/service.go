@@ -1281,7 +1281,8 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 // compare) and the request runs through its result under the gate's per-node
 // lock (featuregate.Gate.ProposeBound), so no other bound add through this
 // node commits between the recheck and this add's append. A request whose
-// wait timed out after it may have reached raft returns its error at once,
+// outcome is unknown (any maybe-applied failure after it may have reached
+// raft) returns its error at once,
 // but the lock stays held until the add's outcome is definitive (pending), or
 // until the gate closes (stop), which also stops resolving it.
 func (s *AdminService) requestAddBound(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, binding featuregate.ConfigBinding,
@@ -1307,10 +1308,10 @@ func (s *AdminService) membershipResultOf(rs *quicraft.RequestState) membershipR
 	return rs
 }
 
-// awaitAdd waits for an add's result. When the wait times out after the add
-// may already have reached raft (a *quicraft.MaybeAppliedError wrapping
-// quicraft.ErrTimeout: go-quicraft does not cancel it, so it can still
-// commit), it returns the error with a pending channel that is closed once
+// awaitAdd waits for an add's result. When the add's outcome is unknown (any
+// *quicraft.MaybeAppliedError: a timeout, or a persistence, apply or shard
+// failure after the proposal may have reached raft; go-quicraft does not
+// cancel it, so it can still commit), it returns the error with a pending channel that is closed once
 // resolveAdd settles the add definitively from the shard's committed
 // membership, or once stop closes (the gate that fences the add closed). A
 // stop that is already closed (an unfenced add) returns the error with a nil
@@ -1360,11 +1361,12 @@ func stopContext(stop <-chan struct{}, timeout time.Duration) (context.Context, 
 	return ctx, cancel
 }
 
-// ambiguousAdd reports whether err leaves an add's outcome unknown: the wait
-// timed out (go-quicraft's *MaybeAppliedError around ErrTimeout) and the add
-// may still commit.
+// ambiguousAdd reports whether err leaves an add's outcome unknown: any
+// go-quicraft *MaybeAppliedError (a timeout, or a persistence, apply or shard
+// failure after the proposal was delivered) means the entry may still commit,
+// so the add stays unresolved and fenced until resolveAdd settles it.
 func ambiguousAdd(err error) bool {
-	return errors.As(err, new(*quicraft.MaybeAppliedError)) && errors.Is(err, quicraft.ErrTimeout)
+	return errors.As(err, new(*quicraft.MaybeAppliedError))
 }
 
 // pendingAdd is an add whose outcome is unknown, with the way to propose it

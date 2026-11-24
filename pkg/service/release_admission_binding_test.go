@@ -839,32 +839,78 @@ func (r resultStub) ResultC() <-chan quicraft.RequestResult {
 	return r.c
 }
 
-// awaitAdd reports a pending outcome only for a timeout after the add reached
-// raft; that pending closes once the result is delivered, or at once when the
-// request state was released.
-func TestAwaitAdd_OnlyAnAmbiguousTimeoutIsPending(t *testing.T) {
+// awaitAdd reports a pending outcome only for a maybe-applied outcome of a
+// fenced add: a commit, a refusal before raft and a plain timeout before raft
+// are final, and so is any outcome once the gate is closed (an unfenced add).
+func TestAwaitAdd_OnlyAMaybeAppliedOutcomeIsPending(t *testing.T) {
 	h := newBindingHostAt(t, 0)
 	svc, ok := NewAdminService(h).(*AdminService)
 	if !ok {
 		t.Fatal("NewAdminService did not return *AdminService")
 	}
 	a := pendingAdd{shardID: bindingSystemShard, replicaID: 9}
+	closed := make(chan struct{})
+	close(closed)
 	for _, tc := range []struct {
-		name string
-		err  error
+		name   string
+		err    error
+		closed bool
 	}{
-		{"committed", nil},
-		{"refused before raft", quicraft.ErrStaleConfigChange},
-		{"timeout before raft", quicraft.ErrTimeout},
-		{"delivered maybe-applied", &quicraft.MaybeAppliedError{Err: quicraft.ErrShardNotReady}},
+		{"committed", nil, false},
+		{"refused before raft", quicraft.ErrStaleConfigChange, false},
+		{"plain timeout before raft", quicraft.ErrTimeout, false},
+		{"maybe-applied with the gate closed", &quicraft.MaybeAppliedError{Err: quicraft.ErrShardNotReady}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pending, err := svc.awaitAdd(resultStub{err: tc.err, c: make(chan quicraft.RequestResult)}, a, make(chan struct{}))
+			stop := make(chan struct{})
+			if tc.closed {
+				stop = closed
+			}
+			pending, err := svc.awaitAdd(resultStub{err: tc.err, c: make(chan quicraft.RequestResult)}, a, stop)
 			if !errors.Is(err, tc.err) || (tc.err == nil) != (err == nil) {
 				t.Fatalf("err = %v, want %v", err, tc.err)
 			}
 			if pending != nil {
 				t.Fatal("a final outcome returned a pending channel")
+			}
+		})
+	}
+}
+
+// Every *quicraft.MaybeAppliedError leaves the add's outcome unknown, not only
+// a timeout: go-quicraft also returns one for persistence, apply and shard
+// failures after delivery, and the entry may still commit. awaitAdd keeps each
+// pending until resolveAdd settles it from the committed membership.
+func TestAwaitAdd_EveryMaybeAppliedOutcomeIsPending(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+	}{
+		{"shard not ready", quicraft.ErrShardNotReady},
+		{"timeout", quicraft.ErrTimeout},
+		{"apply failed", errors.New("apply failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newBindingHostAt(t, 0)
+			svc, ok := NewAdminService(h).(*AdminService)
+			if !ok {
+				t.Fatal("NewAdminService did not return *AdminService")
+			}
+			h.mu.Lock()
+			h.members[9] = "n9:1"
+			h.mu.Unlock()
+			pending, err := svc.awaitAdd(resultStub{err: &quicraft.MaybeAppliedError{Err: tc.cause}, c: make(chan quicraft.RequestResult)},
+				pendingAdd{shardID: bindingSystemShard, replicaID: 9, repropose: func(context.Context) (*quicraft.RequestState, error) {
+					t.Error("a committed add was proposed again")
+					return nil, quicraft.ErrClosed
+				}}, make(chan struct{}))
+			if !errors.Is(err, tc.cause) || pending == nil {
+				t.Fatalf("awaitAdd = (%v, %v), want a pending %v", pending, err, tc.cause)
+			}
+			select {
+			case <-pending:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the fence was never released for a committed add")
 			}
 		})
 	}
