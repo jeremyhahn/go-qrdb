@@ -63,7 +63,7 @@ func toolBatchExecute() mcp.Tool {
 		mcp.WithDescription("Execute multiple operations atomically within a single MVCC revision. All operations succeed or fail together."),
 		mcp.WithString("ops",
 			mcp.Required(),
-			mcp.Description(`JSON array of operations. Each element: {"type":"put|get|delete|range","key":"<key>","value":"<base64>","range_end":"<base64>","lease_id":<int>}.`),
+			mcp.Description(`JSON array of operations. Each element: {"type":"put|get|delete|range","key":"<base64>","value":"<base64>","range_end":"<base64>","lease_id":<int>}.`),
 		),
 	)
 }

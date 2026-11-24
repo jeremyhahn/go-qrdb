@@ -15,12 +15,14 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
 	"testing"
 
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
+	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -181,6 +183,43 @@ func TestExecuteTransaction_ServiceError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// TestTransaction_BinaryRoundTrip proves compare and op keys, values and
+// range ends with 0x00, 0x80 and 0xff reach the server byte-for-byte and a
+// binary key-value read back in the response is not mangled.
+func TestTransaction_BinaryRoundTrip(t *testing.T) {
+	key := []byte{0x00, 'k', 0x80, 0xff}
+	val := []byte{0xff, 0x80, 0x00, 0xfe}
+	end := []byte{0x00, 'k', 0x80, 0xff, 0xff}
+	svc := newMockTxSvc()
+	svc.resp = &service.TransactionResponse{Succeeded: true, Revision: 9, Responses: []service.OpResponse{
+		{Succeeded: true, Kvs: []*kv.KeyValue{{Key: key, Value: val, ModRevision: 9}}, Count: 1},
+	}}
+	tr, cleanup := connectTxInProcess(t, svc)
+	defer cleanup()
+
+	resp, err := tr.ExecuteTransaction(context.Background(), &transport.TransactionRequest{
+		Compares:   []transport.Compare{{Key: key, Target: transport.CompareValue, Result: transport.CompareEqual, Value: val}},
+		SuccessOps: []transport.Op{{Type: transport.OpPut, Key: key, Value: val}, {Type: transport.OpRange, Key: key, RangeEnd: end}},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTransaction: %v", err)
+	}
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if len(svc.lastCompares) != 1 || !bytes.Equal(svc.lastCompares[0].Key, key) || !bytes.Equal(svc.lastCompares[0].Value, val) {
+		t.Fatalf("server compares = %+v", svc.lastCompares)
+	}
+	if len(svc.lastSuccess) != 2 || !bytes.Equal(svc.lastSuccess[0].Key, key) || !bytes.Equal(svc.lastSuccess[0].Value, val) ||
+		!bytes.Equal(svc.lastSuccess[1].Key, key) || !bytes.Equal(svc.lastSuccess[1].RangeEnd, end) {
+		t.Fatalf("server ops = %+v", svc.lastSuccess)
+	}
+	if len(resp.Responses) != 1 || len(resp.Responses[0].Kvs) != 1 ||
+		!bytes.Equal(resp.Responses[0].Kvs[0].Key, key) || !bytes.Equal(resp.Responses[0].Kvs[0].Value, val) {
+		t.Fatalf("response = %+v", resp.Responses)
 	}
 }
 

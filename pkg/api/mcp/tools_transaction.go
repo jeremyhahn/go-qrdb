@@ -69,11 +69,11 @@ func toolTxExecute() mcp.Tool {
 		mcp.WithDescription("Execute an atomic compare-and-swap transaction. Evaluates preconditions and atomically applies success or failure operations within a single MVCC revision."),
 		mcp.WithString("compares",
 			mcp.Required(),
-			mcp.Description(`JSON array of compare preconditions. Each element: {"key":"<key>","target":"version|create_revision|mod_revision|value","result":"equal|greater|less|not_equal","value":"<base64>","version":<int>,"create_revision":<int>,"mod_revision":<int>}.`),
+			mcp.Description(`JSON array of compare preconditions. Each element: {"key":"<base64>","target":"version|create_revision|mod_revision|value","result":"equal|greater|less|not_equal","value":"<base64>","version":<int>,"create_revision":<int>,"mod_revision":<int>}.`),
 		),
 		mcp.WithString("success",
 			mcp.Required(),
-			mcp.Description(`JSON array of operations to execute when all compares pass. Each element: {"type":"put|get|delete|range","key":"<key>","value":"<base64>","range_end":"<base64>","lease_id":<int>}.`),
+			mcp.Description(`JSON array of operations to execute when all compares pass. Each element: {"type":"put|get|delete|range","key":"<base64>","value":"<base64>","range_end":"<base64>","lease_id":<int>}.`),
 		),
 		mcp.WithString("failure",
 			mcp.Description(`JSON array of operations to execute when any compare fails. Same format as success. Defaults to empty.`),
@@ -83,7 +83,7 @@ func toolTxExecute() mcp.Tool {
 
 // txCompareJSON is the JSON representation of a transaction compare.
 type txCompareJSON struct {
-	Key            string `json:"key"`
+	Key            []byte `json:"key"`
 	Target         string `json:"target"`
 	Result         string `json:"result"`
 	Value          []byte `json:"value"`
@@ -95,7 +95,7 @@ type txCompareJSON struct {
 // txOpJSON is the JSON representation of a transaction or batch operation.
 type txOpJSON struct {
 	Type     string `json:"type"`
-	Key      string `json:"key"`
+	Key      []byte `json:"key"`
 	Value    []byte `json:"value"`
 	RangeEnd []byte `json:"range_end"`
 	LeaseID  int64  `json:"lease_id"`
@@ -135,7 +135,7 @@ func handleTxExecute(txSvc service.TransactionServicer) mcpserver.ToolHandlerFun
 				return mcp.NewToolResultError("invalid compare result: " + c.Result), nil
 			}
 			compares[i] = service.Compare{
-				Key:            []byte(c.Key),
+				Key:            c.Key,
 				Target:         target,
 				Result:         result,
 				Value:          c.Value,
@@ -186,7 +186,7 @@ func parseOps(opsStr string) ([]service.Op, error) {
 		}
 		ops[i] = service.Op{
 			Type:     opType,
-			Key:      []byte(o.Key),
+			Key:      o.Key,
 			Value:    o.Value,
 			RangeEnd: o.RangeEnd,
 			LeaseID:  o.LeaseID,

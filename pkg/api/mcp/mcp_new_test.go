@@ -15,7 +15,9 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -920,8 +922,8 @@ func TestHandleTxExecute_Success(t *testing.T) {
 	svc := &mockTransactionService{}
 	handler := handleTxExecute(svc)
 
-	compares := `[{"key":"k1","target":"version","result":"equal","version":1}]`
-	success := `[{"type":"put","key":"k1","value":"djI="}]`
+	compares := `[{"key":"azE=","target":"version","result":"equal","version":1}]`
+	success := `[{"type":"put","key":"azE=","value":"djI="}]`
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"compares": compares,
@@ -940,6 +942,45 @@ func TestHandleTxExecute_Success(t *testing.T) {
 	}
 }
 
+// TestTransaction_BinaryRoundTrip proves the tool decodes base64 compare
+// and op keys, values and range ends byte-for-byte, 0x00, 0x80 and 0xff
+// included, and answers a binary read as base64 the client decodes back.
+func TestTransaction_BinaryRoundTrip(t *testing.T) {
+	key := []byte{0x00, 'k', 0x80, 0xff}
+	val := []byte{0xff, 0x80, 0x00, 0xfe}
+	end := []byte{0x00, 'k', 0x80, 0xff, 0xff}
+	b := base64.StdEncoding.EncodeToString
+	var gotCompares []service.Compare
+	var gotOps []service.Op
+	svc := &mockTransactionService{executeFn: func(_ context.Context, compares []service.Compare, successOps, _ []service.Op) (*service.TransactionResponse, error) {
+		gotCompares, gotOps = compares, successOps
+		return &service.TransactionResponse{Succeeded: true, Revision: 9, Responses: []service.OpResponse{
+			{Succeeded: true, Count: 1, Kvs: []*kv.KeyValue{{Key: key, Value: val}}},
+		}}, nil
+	}}
+
+	result, err := handleTxExecute(svc)(context.Background(), makeReq(map[string]any{
+		"compares": `[{"key":"` + b(key) + `","target":"value","result":"equal","value":"` + b(val) + `"}]`,
+		"success":  `[{"type":"put","key":"` + b(key) + `","value":"` + b(val) + `"},{"type":"range","key":"` + b(key) + `","range_end":"` + b(end) + `"}]`,
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(gotCompares) != 1 || !bytes.Equal(gotCompares[0].Key, key) || !bytes.Equal(gotCompares[0].Value, val) {
+		t.Fatalf("compares = %+v", gotCompares)
+	}
+	if len(gotOps) != 2 || !bytes.Equal(gotOps[0].Key, key) || !bytes.Equal(gotOps[0].Value, val) || !bytes.Equal(gotOps[1].RangeEnd, end) {
+		t.Fatalf("ops = %+v", gotOps)
+	}
+	var resp service.TransactionResponse
+	if jsonErr := json.Unmarshal([]byte(resultText(t, result)), &resp); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if len(resp.Responses) != 1 || len(resp.Responses[0].Kvs) != 1 || !bytes.Equal(resp.Responses[0].Kvs[0].Key, key) || !bytes.Equal(resp.Responses[0].Kvs[0].Value, val) {
+		t.Fatalf("response = %+v", resp.Responses)
+	}
+}
+
 func TestHandleTxExecute_SucceededFalse(t *testing.T) {
 	svc := &mockTransactionService{
 		executeFn: func(_ context.Context, _ []service.Compare, _, _ []service.Op) (*service.TransactionResponse, error) {
@@ -948,8 +989,8 @@ func TestHandleTxExecute_SucceededFalse(t *testing.T) {
 	}
 	handler := handleTxExecute(svc)
 
-	compares := `[{"key":"k1","target":"version","result":"equal","version":1}]`
-	success := `[{"type":"put","key":"k1","value":"djI="}]`
+	compares := `[{"key":"azE=","target":"version","result":"equal","version":1}]`
+	success := `[{"type":"put","key":"azE=","value":"djI="}]`
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"compares": compares,
@@ -973,7 +1014,7 @@ func TestHandleTxExecute_MissingCompares(t *testing.T) {
 	handler := handleTxExecute(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"success": `[{"type":"put","key":"k1"}]`,
+		"success": `[{"type":"put","key":"azE="}]`,
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -988,7 +1029,7 @@ func TestHandleTxExecute_MissingSuccess(t *testing.T) {
 	handler := handleTxExecute(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"compares": `[{"key":"k1","target":"version","result":"equal","version":1}]`,
+		"compares": `[{"key":"azE=","target":"version","result":"equal","version":1}]`,
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1004,7 +1045,7 @@ func TestHandleTxExecute_BadComparesJSON(t *testing.T) {
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"compares": "not-json",
-		"success":  `[{"type":"put","key":"k1"}]`,
+		"success":  `[{"type":"put","key":"azE="}]`,
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1019,8 +1060,8 @@ func TestHandleTxExecute_InvalidCompareTarget(t *testing.T) {
 	handler := handleTxExecute(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"compares": `[{"key":"k1","target":"invalid","result":"equal"}]`,
-		"success":  `[{"type":"put","key":"k1"}]`,
+		"compares": `[{"key":"azE=","target":"invalid","result":"equal"}]`,
+		"success":  `[{"type":"put","key":"azE="}]`,
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1035,8 +1076,8 @@ func TestHandleTxExecute_InvalidCompareResult(t *testing.T) {
 	handler := handleTxExecute(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"compares": `[{"key":"k1","target":"version","result":"bogus"}]`,
-		"success":  `[{"type":"put","key":"k1"}]`,
+		"compares": `[{"key":"azE=","target":"version","result":"bogus"}]`,
+		"success":  `[{"type":"put","key":"azE="}]`,
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1051,7 +1092,7 @@ func TestHandleTxExecute_BadSuccessJSON(t *testing.T) {
 	handler := handleTxExecute(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"compares": `[{"key":"k1","target":"version","result":"equal","version":1}]`,
+		"compares": `[{"key":"azE=","target":"version","result":"equal","version":1}]`,
 		"success":  "not-json",
 	}))
 	if err != nil {
@@ -1067,8 +1108,8 @@ func TestHandleTxExecute_BadFailureJSON(t *testing.T) {
 	handler := handleTxExecute(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"compares": `[{"key":"k1","target":"version","result":"equal","version":1}]`,
-		"success":  `[{"type":"put","key":"k1"}]`,
+		"compares": `[{"key":"azE=","target":"version","result":"equal","version":1}]`,
+		"success":  `[{"type":"put","key":"azE="}]`,
 		"failure":  "not-json",
 	}))
 	if err != nil {
@@ -1088,8 +1129,8 @@ func TestHandleTxExecute_ServiceError(t *testing.T) {
 	handler := handleTxExecute(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"compares": `[{"key":"k1","target":"version","result":"equal","version":1}]`,
-		"success":  `[{"type":"put","key":"k1"}]`,
+		"compares": `[{"key":"azE=","target":"version","result":"equal","version":1}]`,
+		"success":  `[{"type":"put","key":"azE="}]`,
 	}))
 	if result != nil {
 		t.Error("expected nil result on service error")
@@ -1110,10 +1151,10 @@ func TestHandleTxExecute_AllCompareTargets(t *testing.T) {
 	targets := []string{"version", "create_revision", "mod_revision", "value"}
 	for _, target := range targets {
 		t.Run(target, func(t *testing.T) {
-			compares := `[{"key":"k1","target":"` + target + `","result":"equal","version":1}]`
+			compares := `[{"key":"azE=","target":"` + target + `","result":"equal","version":1}]`
 			result, err := handler(context.Background(), makeReq(map[string]any{
 				"compares": compares,
-				"success":  `[{"type":"put","key":"k1"}]`,
+				"success":  `[{"type":"put","key":"azE="}]`,
 			}))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -1132,10 +1173,10 @@ func TestHandleTxExecute_AllCompareResults(t *testing.T) {
 	results := []string{"equal", "greater", "less", "not_equal"}
 	for _, r := range results {
 		t.Run(r, func(t *testing.T) {
-			compares := `[{"key":"k1","target":"version","result":"` + r + `","version":1}]`
+			compares := `[{"key":"azE=","target":"version","result":"` + r + `","version":1}]`
 			result, err := handler(context.Background(), makeReq(map[string]any{
 				"compares": compares,
-				"success":  `[{"type":"put","key":"k1"}]`,
+				"success":  `[{"type":"put","key":"azE="}]`,
 			}))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -1148,7 +1189,7 @@ func TestHandleTxExecute_AllCompareResults(t *testing.T) {
 }
 
 func TestParseOps_ValidOps(t *testing.T) {
-	opsStr := `[{"type":"put","key":"k1","value":"djE="},{"type":"delete","key":"k2"},{"type":"get","key":"k3"},{"type":"range","key":"a","range_end":"eg=="}]`
+	opsStr := `[{"type":"put","key":"azE=","value":"djE="},{"type":"delete","key":"azI="},{"type":"get","key":"azM="},{"type":"range","key":"YQ==","range_end":"eg=="}]`
 	ops, err := parseOps(opsStr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1190,7 +1231,7 @@ func TestParseOps_EmptyArray(t *testing.T) {
 func TestParseOps_UnknownType(t *testing.T) {
 	// An unknown type refuses: defaulting it to a put would overwrite the key
 	// of an op the caller meant as a read.
-	ops, err := parseOps(`[{"type":"Get","key":"k1"}]`)
+	ops, err := parseOps(`[{"type":"Get","key":"azE="}]`)
 	var ute *UnknownOpTypeError
 	if !errors.As(err, &ute) || ute.Type != "Get" || ops != nil {
 		t.Fatalf("parseOps = (%v, %v), want *UnknownOpTypeError for %q", ops, err, "Get")
@@ -1202,9 +1243,9 @@ func TestHandleTxExecute_WithFailureOps(t *testing.T) {
 	handler := handleTxExecute(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"compares": `[{"key":"k1","target":"version","result":"equal","version":1}]`,
-		"success":  `[{"type":"put","key":"k1"}]`,
-		"failure":  `[{"type":"delete","key":"k1"}]`,
+		"compares": `[{"key":"azE=","target":"version","result":"equal","version":1}]`,
+		"success":  `[{"type":"put","key":"azE="}]`,
+		"failure":  `[{"type":"delete","key":"azE="}]`,
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1222,7 +1263,7 @@ func TestHandleBatchExecute_Success(t *testing.T) {
 	svc := &mockBatchService{revision: 9}
 	handler := handleBatchExecute(svc)
 
-	ops := `[{"type":"put","key":"k1","value":"djE="},{"type":"delete","key":"k2"}]`
+	ops := `[{"type":"put","key":"azE=","value":"djE="},{"type":"delete","key":"azI="}]`
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"ops": ops,
 	}))
@@ -1294,7 +1335,7 @@ func TestHandleBatchExecute_ServiceError(t *testing.T) {
 	handler := handleBatchExecute(svc)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
-		"ops": `[{"type":"put","key":"k1"}]`,
+		"ops": `[{"type":"put","key":"azE="}]`,
 	}))
 	if err == nil {
 		t.Fatal("expected error from service")

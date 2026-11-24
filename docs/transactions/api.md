@@ -54,7 +54,11 @@ message would exceed the pre-auth cap every other RPC is held to. See
 }
 ```
 
-Keys and values are JSON strings, sent as their bytes.
+Keys and values are JSON strings, sent as their bytes, so REST `/tx` carries
+only UTF-8 keys and values; a byte that is not valid UTF-8 does not survive.
+The MCP `qrdb_tx_execute` and `qrdb_batch_execute` tools take `key`,
+`value` and `range_end` as base64 (RFC 4648) instead, and so carry any
+bytes, `0x00` and `0xff` included.
 `target`: `version` · `create_revision` · `mod_revision` · `value`; the
 compare reads the field of the same name (`version`, `create_revision`,
 `mod_revision` or `value`).
