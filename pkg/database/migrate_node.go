@@ -94,6 +94,15 @@ type NodeStoreMigration struct {
 	FileStoreDirs []string
 	Logger        *slog.Logger
 
+	// Records are keyspaces kept in the barrier's own backend (the seal
+	// store's secrets) that the migration re-encrypts with the stores: staged
+	// under the keyed root key, verified, and committed past the point of no
+	// return, all journaled so recovery rolls them back or forward.
+	Records []seal.StagedRecords
+	// RetireRecords runs after the records commit to retire the plaintext
+	// history they leave behind; nil means nothing to retire.
+	RetireRecords func(context.Context) error
+
 	// journal optionally overrides where the crash-safe migration journal calls
 	// (Begin/Checkpoint/Finish/AdoptMigratedRootKey) are routed. When nil — the
 	// production default — they go to Source. It exists purely as a test seam for
@@ -213,6 +222,25 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 			return err
 		}
 	}
+	// Records kept in the barrier's own backend (the seal store's secrets)
+	// are staged under the keyed root key beside their live records, which
+	// stay readable until the commit. The journal names each keyspace BEFORE
+	// the first record is staged, so every later checkpoint carries it: a
+	// crash before the commit point rolls the staged set back at boot, a
+	// crash past it rolls the set forward (RecoverInterruptedMigration).
+	if len(m.Records) > 0 {
+		j.StagedRecords = append(j.StagedRecords, m.Records...)
+		if cerr := m.journalStore().CheckpointMigration(ctx, j); cerr != nil {
+			err = cerr
+			return err
+		}
+		for _, rec := range m.Records {
+			if _, serr := m.Source.StageMigratedRecords(ctx, m.Target, rec); serr != nil {
+				err = fmt.Errorf("re-encrypt records %q: %w", rec.Prefix, serr)
+				return err
+			}
+		}
+	}
 
 	// --- Verify phase: prove no data loss before the point of no return. --
 	j.Phase = seal.PhaseVerifying
@@ -222,6 +250,12 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	for _, s := range stores {
 		if verr := s.verify(ctx, s.dir, src, s.dir+keyedSuffix, dst); verr != nil {
 			err = &MigrateStoreDirError{Dir: s.dir, Err: verr}
+			return err
+		}
+	}
+	for _, rec := range m.Records {
+		if verr := m.Source.VerifyMigratedRecords(ctx, m.Target, rec); verr != nil {
+			err = fmt.Errorf("verify re-encrypted records %q: %w", rec.Prefix, verr)
 			return err
 		}
 	}
@@ -245,6 +279,20 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	// 3. Remove the pre-migration backups now that the commit is durable.
 	for _, dir := range j.StoreDirs {
 		_ = os.RemoveAll(dir + backupSuffix)
+	}
+	// 4. Copy each staged record over its live record, then retire the
+	// plaintext history the replaced records leave behind. A failure (or a
+	// crash) returns with the committed journal still in place, so the next
+	// boot's RecoverInterruptedMigration rolls the records forward.
+	if len(j.StagedRecords) > 0 {
+		if cerr := m.Source.CommitStagedRecords(ctx, j.StagedRecords); cerr != nil {
+			return fmt.Errorf("commit re-encrypted records: %w", cerr)
+		}
+	}
+	if m.RetireRecords != nil {
+		if rerr := m.RetireRecords(ctx); rerr != nil {
+			return fmt.Errorf("retire the replaced records' plaintext history: %w", rerr)
+		}
 	}
 
 	// --- Done. -----------------------------------------------------------
@@ -309,6 +357,9 @@ func swapDir(dir string) error {
 func (m *NodeStoreMigration) rollback(ctx context.Context, j *MigrationJournalRef) {
 	for _, dir := range m.dirs() {
 		_ = os.RemoveAll(dir + keyedSuffix)
+	}
+	if len(m.Records) > 0 && m.Source != nil {
+		_ = m.Source.RollbackStagedRecords(ctx, m.Records)
 	}
 	j.Phase = seal.PhaseFailed
 	_ = m.journalStore().CheckpointMigration(ctx, j)
