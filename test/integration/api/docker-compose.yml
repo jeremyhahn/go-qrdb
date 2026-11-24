@@ -1,61 +1,7 @@
-# Nothing here bind-mounts a host path — not the repository, not the siblings,
-# and not the two test configs. compose talks to the HOST daemon, so a relative
-# path is resolved there, and on a runner the job's checkout does not exist on
-# the host: `mkdir /workspace: file exists` is what a config mount produced
-# there, having worked on every developer machine. The image already carries
-# both configs via `COPY . .`, so the servers read them in place.
-#
-# No service declares container_name. A container name is global to the host, so
-# a second `docker compose up` claims the same names and SIGKILLs the first
-# run's containers — exit 137, truncated log, no failing test, which reads as
-# OOM and is not. Docker does not refuse the collision the way it refuses a
-# port. Nothing referenced those names: the tests address the servers on
-# loopback (https://127.0.0.1:63002, below). The Makefile supplies a per-run
-# project name so containers and volumes are namespaced together.
-#
-# The stack has ONE network namespace, owned by the `netns` holder service:
-# every other service joins it (`network_mode: "service:netns"`) and they talk
-# over loopback on their distinct port sets, so the servers' port sets must
-# never overlap. The holder runs with `network_mode: none`, because nothing in
-# this stack needs a network at run time: the image fetched its modules at
-# build, through the BuildKit secret below. A service per bridge attachment
-# gave the host one veth per container start and stop, and on a many-core host
-# each veth add or remove is a storm of hundreds of uevents, one per tx and rx
-# queue; this stack now adds none. Docker refuses `hostname` and `expose` on a
-# service that joins another's namespace, which is why none here declares them.
-# An overlay that needs egress (docker-compose.embedding.yml) gives the holder
-# one bridge attachment: one veth for the stack, never one per service.
-#
-# The image is per-run too. Every service built from the Dockerfile runs the
-# one tag the Makefile names for this run, QRDB_INT_IMAGE
-# (`go-qrdb-int:<INT_PROJECT>`), which `make integration-image` builds and
-# `make integration-down` removes. It was the fixed `go-qrdb-dev:latest`, and
-# concurrent runs on one host rebuilt it under each other's stacks: a CLI from
-# one tree drove a server from another. The interpolation is REQUIRED, with no
-# default, because any default is a shared tag again; compose therefore refuses
-# every command on this file, `down` included, without it -- go through make
-# (`make integration-down INT_PROJECT=...` tears a stack down by hand).
-# test/buildgates/integration_image_tag_test.go fails on a literal tag here.
+# Nothing here bind-mounts a host path; compose resolves paths on the host daemon.
 x-int-image: &int-image "${QRDB_INT_IMAGE:?QRDB_INT_IMAGE is unset, run this stack through make}"
 
-# The analyser pins the dev stages of build/docker/devcontainer/Dockerfile
-# bake in (#322), plus
-# QRDB_BUILD_TAGS (go-qrdb#555), the feature-tag set its qrdbd/qrdb builds
-# compile with. These three services build the same Dockerfile the
-# devcontainer does, so they take the same args, or an integration build and a
-# gate build of one tree would bake different analysers -- or different
-# CLI/server feature sets.
-#
-# THE KEYS CARRY NO VALUE ON PURPOSE -- compose's environment-passthrough form,
-# which takes the value from the environment when set and OMITS the arg when it
-# is not, letting the Dockerfile's ARG default apply. `${VAR}` would pass an
-# empty string instead and trip the Dockerfile's guard (QRDB_BUILD_TAGS has
-# none, but an empty string would still build qrdbd/qrdb with no feature tags
-# at all, which is just as wrong). The reasoning, and the measurement behind
-# it, is in build/docker/devcontainer/compose.yaml next to the same block; the
-# Makefile `export`s the variables so `make` builds win. GO_IMAGE and
-# TRIVY_IMAGE are the Dockerfile's global ARGs (its CI stages' FROMs), which
-# have no default: BuildKit resolves every global FROM for any target.
+# The analyser pins the dev stages bake in, plus QRDB_BUILD_TAGS.
 x-scanner-pins: &scanner-pins
   GOLANGCI_LINT_VERSION:
   GOSEC_VERSION:
@@ -66,11 +12,7 @@ x-scanner-pins: &scanner-pins
   TRIVY_IMAGE:
 
 services:
-  # The stack's network namespace holder (see the top of this file). It only
-  # holds the namespace: no capability, a read-only root, and `sleep`. Its
-  # image is the run's own, which `make integration-image` (or an `up --build`)
-  # builds before any container is created; `pull_policy: never` keeps compose
-  # from ever looking for that per-run tag in a registry.
+  # The stack's network namespace holder.
   netns:
     image: *int-image
     pull_policy: never
@@ -84,9 +26,7 @@ services:
     pids_limit: 16
     entrypoint: ["sleep", "infinity"]
 
-  # QRDB server with all protocols enabled.
-  # Uses the devcontainer image and mounts source + sibling repos so the
-  # server binary can be built with access to replace-directive dependencies.
+  # qrdbd with every protocol enabled.
   qrdbd:
     build:
       context: ../../..
@@ -96,15 +36,11 @@ services:
       secrets:
         - gomodauth
     image: *int-image
-    # Listens in the stack's namespace on 63001 udp+tcp (Raft), 63002 (REST),
-    # 63003 (gRPC), 63004 udp (QUIC API), 63005 (MCP) and 63006 (Noise
-    # bootstrap, bootstrap.noise_port's default).
+    # Ports 63001 (Raft), 63002 (REST), 63003 (gRPC), 63004 (QUIC API), 63005 (MCP), 63006 (Noise bootstrap).
     network_mode: "service:netns"
     # Required for QUIC UDP buffer settings
     privileged: true
-    # privileged already grants IPC_LOCK; the memlock ulimit is stated so the
-    # locked-memory requirement is explicit rather than a side effect (see
-    # docs/deployment/).
+    # The memlock ulimit states the locked-memory requirement.
     ulimits:
       memlock:
         soft: -1
@@ -133,49 +69,14 @@ services:
         echo "Configuring UDP buffers for QUIC..."
         echo 2500000 > /proc/sys/net/core/rmem_max 2>/dev/null || echo "Warning: Could not set rmem_max"
         echo 2500000 > /proc/sys/net/core/wmem_max 2>/dev/null || echo "Warning: Could not set wmem_max"
-        # Ensure directories exist. /data/volumes/default is this fixture's
-        # mount point for config.test.yaml's storage.volume_pools "default"
-        # entry: the "dir" provider (pkg/volume/dir.go) deliberately refuses
-        # to auto-create it (a missing mount must fail loud, not get masked
-        # by a silently-created local directory), and OpenConfiguredVolumes
-        # only warns -- never fails boot -- when a configured pool's path is
-        # missing, so an un-created mount point here leaves "default"
-        # permanently unopened on this node instead of surfacing at startup.
+        # Create the data, key and volume directories; the dir volume provider does not create its mount point.
         mkdir -p /var/run/qrdbd /data /data/volumes/default /app/build/bin /backup-keys /dek-keys
-        # qrdbd is built into the image; container start is a server start.
-        # --backup-key-dir points at the SAME shared volume the
-        # integration-tests container mounts read-write at the same path
-        # (qrdb-backup-keys), so a key file cli_backup_test.go writes there
-        # is resolvable by the "software" key-wrap provider's bare-name
-        # KeyRef, exactly as a real deployment's own operator-managed key
-        # directory would be -- the server here is a separate container,
-        # not a subprocess of the test binary, so no other path is shared.
-        #
-        # --dek-key-dir is this container's OWN, local volume (/dek-keys is
-        # not shared with the integration-tests container): the tenant DEK
-        # keyring's default key reference is the caller's tenant ID itself
-        # ("system" for this fixture's bootstrap admin, cli_tenants_test.go),
-        # never a value a test chooses per run, so the key file is
-        # provisioned once, right here, before qrdbd ever starts.
+        # qrdbd is built into the image; --backup-key-dir is the volume shared with the test container.
         head -c 32 /dev/urandom > /dek-keys/system
         echo "Starting qrdbd server..."
         /app/build/bin/qrdbd start --config /workspace/go-qrdb/test/integration/api/config.test.yaml --backup-key-dir /backup-keys --dek-key-dir /dek-keys &
         QRDBD_PID=$!
-        # Wait for the admin endpoint to come up so we can bootstrap the node.
-        #
-        # `qrdb init` is the only system bootstrap: in one call against the
-        # pre-host sealed-window listener it brings the system barrier up
-        # (passphrase strategy), provisions the SO and user PINs, and binds
-        # the bootstrap admin's certificate. qrdbd writes no admin credential
-        # of its own; the admin's key pair is generated HERE and only the CSR
-        # leaves this shell (--admin-csr), so the key never reaches the
-        # server. The credential lives under /data/admin, which the test
-        # runner mounts read-only (QRDB_TLS_CERT/QRDB_TLS_KEY).
-        #
-        # Every step fails hard: a node that did not bootstrap must not pass
-        # its health check. (Comments go HERE, not between the continuation
-        # lines below: a backslash-continued command is one logical line, so a
-        # `#` inside it comments out the remainder of the command.)
+        # Wait for the admin endpoint, then bootstrap the node.
         fail() { echo "bootstrap failed: $$1"; kill $$QRDBD_PID; exit 1; }
         QRDB="/app/build/bin/qrdb --server https://localhost:63002 --transport rest --ca-file /data/raft/ca.pem --timeout 30s"
         ADMIN=/data/admin
@@ -186,11 +87,7 @@ services:
           sleep 1
         done
         [ -s /data/raft/ca.pem ] || fail "no CA certificate at /data/raft/ca.pem"
-        # A sealed node serves only the unseal call: the sealed-window
-        # listener refuses barrier status with the typed sealed refusal
-        # ("transport: barrier sealed"), and that refusal is the proof it is
-        # up. The public /health endpoint cannot be used here: it is refused
-        # until the barrier is unsealed, and bootstrapping is what unseals it.
+        # A sealed node serves only the unseal call; its sealed refusal shows the listener is up.
         echo "Waiting for sealed-window admin listener..."
         READY=""
         for i in $$(seq 1 60); do
@@ -200,8 +97,7 @@ services:
         done
         [ -n "$$READY" ] || fail "sealed-window admin listener never answered"
         if [ -s $$ADMIN/admin.crt ]; then
-          # A restart against the persisted volume: the node is bootstrapped,
-          # and its passphrase barrier comes back sealed.
+          # A restart comes back sealed.
           echo "Unsealing the barrier..."
           $$QRDB --cert-file $$ADMIN/admin.crt --key-file $$ADMIN/admin.key \
             barrier unseal --passphrase integration-test-secret || fail "barrier unseal"
@@ -215,11 +111,7 @@ services:
             --admin-csr $$ADMIN/admin.csr > $$ADMIN/init.json || fail "qrdb init: $$(cat $$ADMIN/init.json)"
           jq -er .admin_cert_pem $$ADMIN/init.json > $$ADMIN/admin.crt || fail "qrdb init returned no admin certificate"
         fi
-        # Wait for the full-boot admin endpoint: after unseal the data plane
-        # opens, the host elects a leader, and /health flips to 200. Gating
-        # "Bootstrap complete" on /health keeps the log an accurate signal
-        # that the full server is up rather than racing the sealed-window
-        # teardown.
+        # Wait for the full-boot admin endpoint.
         echo "Waiting for admin endpoint (post-unseal full boot)..."
         HEALTHY=""
         for i in $$(seq 1 60); do
@@ -235,17 +127,7 @@ services:
         # Hand control back to qrdbd.
         wait $$QRDBD_PID
 
-  # Dedicated QRDB server configured with the Shamir M-of-N seal strategy.
-  # Runs side by side with the software-seal "qrdbd" server above, in the
-  # same network namespace, on a DISTINCT port set (64001-64006; the shared
-  # namespace makes that a requirement), data volume, and unix socket so the
-  # Shamir CLI tests exercise a real Shamir-sealed barrier without disturbing
-  # the software-seal coverage. The entrypoint mirrors qrdbd's bootstrap but
-  # bootstraps through `qrdb init` with three share holders named by their
-  # CSRs: init splits the unseal key to them (no share material in the
-  # response), and each holder claims its sealed envelope exactly once over
-  # its own certificate. The holders file the runner reads is written to a
-  # shared volume.
+  # qrdbd with the Shamir M-of-N seal.
   qrdbd-shamir:
     build:
       context: ../../..
@@ -255,15 +137,11 @@ services:
       secrets:
         - gomodauth
     image: *int-image
-    # Listens in the stack's namespace on 64001 udp+tcp (Raft), 64002 (REST),
-    # 64003 (gRPC), 64004 udp (QUIC API), 64005 (MCP) and 64006 (Noise
-    # bootstrap, set in config.test.shamir.yaml: the default is qrdbd's).
+    # Ports 64001 (Raft), 64002 (REST), 64003 (gRPC), 64004 (QUIC API), 64005 (MCP), 64006 (Noise bootstrap).
     network_mode: "service:netns"
     # Required for QUIC UDP buffer settings
     privileged: true
-    # privileged already grants IPC_LOCK; the memlock ulimit is stated so the
-    # locked-memory requirement is explicit rather than a side effect (see
-    # docs/deployment/).
+    # The memlock ulimit states the locked-memory requirement.
     ulimits:
       memlock:
         soft: -1
@@ -297,18 +175,7 @@ services:
         echo "Starting qrdbd (shamir) server..."
         /app/build/bin/qrdbd start --config /workspace/go-qrdb/test/integration/api/config.test.shamir.yaml &
         QRDBD_PID=$!
-        # Bootstrap the Shamir barrier with `qrdb init`, the only system
-        # bootstrap (docs/shamir-custody/): one call against the sealed-window
-        # listener names the three share holders by their CSRs (--officers),
-        # splits the unseal key to them, provisions the PINs and binds the
-        # bootstrap admin's certificate (--admin-csr; the admin's key never
-        # leaves this shell). Each holder then claims its sealed envelope over
-        # its own certificate. The holders file lists each holder's
-        # certificate, key and envelope, relative to /data/raft, so the
-        # integration-test runner can drive the authenticated quorum with
-        # them. Guarded on the holders file so a container restart against a
-        # persisted volume does not re-run the one-time flow. Every step fails
-        # hard: a node that did not bootstrap must not pass its health check.
+        # Bootstrap the Shamir barrier with `qrdb init` against the sealed-window listener.
         fail() { echo "bootstrap failed: $$1"; kill $$QRDBD_PID; exit 1; }
         QRDB="/app/build/bin/qrdb --server https://localhost:64002 --transport rest --ca-file /data/raft/ca.pem --timeout 30s"
         ADMIN=/data/admin
@@ -349,8 +216,7 @@ services:
               > $$OFFDIR/so-$$n.crt || fail "qrdb init issued no certificate for so-$$n"
           done
         fi
-        # Wait for the full-boot admin endpoint: after unseal the data plane
-        # opens, the host elects a leader, and /health flips to 200.
+        # Wait for the full-boot admin endpoint.
         echo "Waiting for admin endpoint (post-unseal full boot)..."
         HEALTHY=""
         for i in $$(seq 1 60); do
@@ -362,18 +228,7 @@ services:
           sleep 1
         done
         [ -n "$$HEALTHY" ] || fail "full boot never reported healthy"
-        # Claim each holder's envelope over the holder's own certificate,
-        # through the real `qrdb barrier officer claim` CLI command rather
-        # than a hand-rolled curl/openssl handshake: the envelope is
-        # delivered once, sealed to the holder's key. The CLI signs the
-        # SAME domain-separated message the server verifies
-        # (ceremony.ShareClaimMessage, via barrier_holders.go's
-        # claimSignMessage: "qrdb/share-claim/v1" NUL the scope label NUL
-        # the holder's own username NUL the raw nonce bytes -- never the
-        # bare nonce), so this is the canonical path, not a shortcut around
-        # it. The holders file lists each holder's certificate, key and
-        # envelope, relative to /data/raft, so the integration-test runner
-        # can drive the authenticated quorum with them.
+        # Each holder claims its envelope with `qrdb barrier officer claim`.
         if [ ! -s /data/raft/shamir-init.json ]; then
           echo "Claiming share-holder envelopes..."
           : > $$OFFDIR/holders.jsonl
@@ -396,11 +251,7 @@ services:
         # Hand control back to qrdbd.
         wait $$QRDBD_PID
 
-  # NOTE: the resource-heavy Ollama embedding sidecar is NOT part of the
-  # default integration stack — no test in test/integration uses it (the
-  # embedding/RAG suites are mocked unit tests run by `make test`). It lives in
-  # the opt-in docker-compose.embedding.yml overlay so the main standalone and
-  # cluster suites stay fast and light. See `make integration-test-embedding`.
+  # The Ollama sidecar is not part of the default stack.
 
   # Integration test runner
   integration-tests:
@@ -413,19 +264,13 @@ services:
         - gomodauth
     image: *int-image
     privileged: true
-    # privileged already grants IPC_LOCK; the memlock ulimit is stated so the
-    # locked-memory requirement is explicit rather than a side effect (see
-    # docs/deployment/).
+    # The memlock ulimit states the locked-memory requirement.
     ulimits:
       memlock:
         soft: -1
         hard: -1
     user: root
     # The test process's resource budget, and that of every qrdbd it spawns.
-    # The Makefile's cluster stage sets both from CLUSTER_CPUS and
-    # CLUSTER_MEM_RESERVATION (#682, the reasons are written there); 0, the
-    # fallback for every other stage and a direct `docker compose up`, is
-    # docker's "unset".
     cpus: ${INTEGRATION_CPUS:-0}
     mem_reservation: ${INTEGRATION_MEM_RESERVATION:-0}
     depends_on:
@@ -451,13 +296,7 @@ services:
       - QRDB_TLS_CA=/data/raft/ca.pem
       - QRDB_TLS_CERT=/data/admin/admin.crt
       - QRDB_TLS_KEY=/data/admin/admin.key
-      # Shared with qrdbd's own --backup-key-dir (qrdb-backup-keys, mounted
-      # read-write here too): cli_backup_test.go's writeKeyFile writes an
-      # encryption/decryption key here under its bare name, which is all
-      # --encryption-key-file / --decryption-key-file ever sends the server
-      # -- the server resolves the name against this same volume from its
-      # side, since it is a separate container, not a subprocess of this
-      # test binary.
+      # Shared with qrdbd's --backup-key-dir volume.
       - QRDB_BACKUP_KEY_DIR=/backup-keys
       # Dedicated Shamir-seal server connection (mounted read-only at /data-shamir).
       - QRDB_SHAMIR_REST_URL=https://127.0.0.1:64002
@@ -470,29 +309,15 @@ services:
       - QRDB_SHAMIR_TLS_KEY=/data-shamir/admin/admin.key
       - QRDB_SHAMIR_SHARES_FILE=/data-shamir/raft/shamir-init.json
       - INTEGRATION_TIMEOUT=60s
-      # Which Go packages the runner tests. Defaults to everything; the
-      # Makefile sets it to ./test/integration/api/... (standalone, against
-      # these servers) or ./test/integration/ (cluster + self-spawned nodes)
-      # so the two suites run in isolated stages and never contend for host CPU.
+      # Which Go packages the runner tests.
       - INTEGRATION_TEST_PKGS=${INTEGRATION_TEST_PKGS:-./test/integration/...}
-      # Optional -run regexp passed to `go test`. Empty (default) runs every
-      # test in the selected packages; overlays (e.g. docker-compose.embedding.yml)
-      # set it to scope the run to a specific suite.
+      # Optional -run regexp passed to `go test`.
       - INTEGRATION_RUN=${INTEGRATION_RUN:-}
-      # Build tags for the test compilation. The Makefile's integration stages
-      # pass the default feature set plus "integration" (INT_FEATURE_TAGS), so
-      # the test process compiles the same codecs and protocols as the binaries
-      # it drives (a DAO client built without codec_json refuses the json codec).
-      # Bare "integration" is only the fallback for a direct `docker compose up`;
-      # overlays add tags (e.g. "integration,ollama") to compile in suites
-      # gated behind extra build constraints, keeping them out of the fast run.
+      # Build tags for the test compilation.
       - INTEGRATION_TAGS=${INTEGRATION_TAGS:-integration}
-      # go test's -parallel. Empty (the default) leaves go test's own default,
-      # GOMAXPROCS; the Makefile's cluster stage sets it from CLUSTER_PARALLEL.
+      # go test's -parallel.
       - INTEGRATION_PARALLEL=${INTEGRATION_PARALLEL:-}
-      # go test's -timeout for the package. The Makefile sets it from
-      # INTEGRATION_GO_TIMEOUT; 100m is also the fallback for a direct
-      # `docker compose up`.
+      # go test's -timeout for the package.
       - INTEGRATION_GO_TIMEOUT=${INTEGRATION_GO_TIMEOUT:-100m}
     working_dir: /workspace/go-qrdb
     network_mode: "service:netns"
@@ -524,26 +349,7 @@ volumes:
   go-build-cache:
     driver: local
 
-# The BuildKit secret that carries the internal Gitea module credentials into
-# `go mod download`. Every service above that builds
-# build/docker/devcontainer/Dockerfile declares it, so the compose entrypoints authenticate exactly the way
-# `make integration-image`'s `docker build --secret` does -- before #302 they
-# did not, and `make ci` therefore died inside the image build with an
-# `unknown revision` that read like a gate failure.
-#
-# GOMODAUTH is exported by the Makefile's $(stage-gomodauth) prelude and read
-# straight out of the environment -- there is no file (#326).
-#
-# The previous form was `file: ${GOMODAUTH_FILE:-/dev/null}`, staging the live
-# token into /tmp behind an EXIT trap that a SIGKILL does not run; a twelve-hour-old
-# copy was found on disk. An environment source writes nothing, so there is
-# nothing to leave behind.
-#
-# The unprovisioned path is preserved and is what makes a bare
-# `docker compose build` and the VS Code devcontainer work: an UNSET or EMPTY
-# GOMODAUTH mounts an empty secret rather than failing, which is byte-for-byte
-# what the Dockerfile saw when no secret was supplied at all. Measured both
-# ways on compose 2.40.3 before this replaced the /dev/null default.
+# The BuildKit secret that carries module credentials into `go mod download`.
 secrets:
   gomodauth:
     environment: GOMODAUTH

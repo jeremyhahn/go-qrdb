@@ -1,68 +1,17 @@
 name: Release Lockstep
 
-# release-versioning.md P2: the nested sdk/go module is tagged in lockstep with
-# the root module. A root vX.Y.Z tag published without sdk/go/vX.Y.Z leaves the
-# two modules' latest versions mutually unbuildable for every consumer that
-# takes both at latest (go-qrdb#6).
-#
-# This workflow DETECTS a skewed release; it does not prevent one. Gitea accepts
-# a tag push and exposes the ref before any workflow starts, so by the time the
-# tag leg runs, `go get` can already resolve the skew. What it buys is latency:
-# the report lands within a minute of publication instead of days later in a
-# downstream consumer's dependency bump, which is how go-qrdb#6 surfaced and
-# what it cost. Prevention needs a server-side pre-receive policy, or a rule
-# that only a release workflow may create version tags — release policy and
-# infrastructure this repository does not own. Filed as go-qrdb#13.
-#
-# Its own workflow rather than a job in ci.yml, because it is the only check
-# that has to run on a version-tag push, and putting that trigger on ci.yml
-# would run the whole suite — build, race tests, the compose integration stack —
-# a second time for every release.
-#
-# Until go-qrdb#13 is decided, the preventive step is local and manual:
-#
-#     make check-tag-lockstep && git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z
-#
-# --atomic is load bearing and not a synonym for listing both refs: it makes the
-# server apply both ref updates or neither. Without it a push of two refs can be
-# accepted in part, publishing the skew, and nothing downstream can retract a
-# tag consumers have already resolved.
-#
-# Both tag namespaces trigger it. `v*` does not match `sdk/go/v*`, so a root-only
-# filter would leave the ORPHAN branch — an sdk/go tag published without its root
-# — with no event to fire on, waiting for the next push to main that may not
-# come. scripts/check-tag-lockstep_test.sh pins both patterns, because the
-# trigger list is the one part of this check that running the script cannot
-# exercise.
-#
-# The main and pull_request legs re-audit the whole published tag set, so an
-# out-of-band tag change — a tag deleted, moved, or pushed with the workflow
-# disabled — still surfaces on the next merge.
+# The nested modules are tagged in lockstep with the root module.
 on:
   push:
     branches: [main]
-    # Every release-tag namespace. `sdk/**/v*` is the general form, matching the
-    # same sdk/ scope scripts/lockstep-modules.sh derives, so a module added
-    # under sdk/ starts triggering this workflow without an edit here.
-    #
-    # `sdk/go/v*` is kept ALONGSIDE it deliberately, and not as redundancy: it
-    # is the pattern this workflow has always fired on, and whether this Gitea's
-    # glob implementation supports `**` cannot be verified without pushing a
-    # real tag — which is irrevocable. If `**` is unsupported the specific
-    # pattern still fires, so the failure direction is "the deeper module is not
-    # covered yet" rather than "the workflow silently stopped running at all".
+    # Every release-tag namespace.
     tags: ["v*", "sdk/go/v*", "sdk/**/v*"]
 
   pull_request:
     branches: [main]
   workflow_dispatch:                    # manual rerun — Gitea has no rerun API
 
-# Supersession control (devops.md §9, #674), ci.yml's canonical block
-# (ci-template v1.22.1): one group per ref, a PR ref's newer run cancels the
-# older, and a push to main never cancels an in-flight main run. This workflow
-# audits tags and publishes nothing, so cancelling a superseded run loses
-# nothing; a tag push is its own ref, so it supersedes only a re-push of that
-# tag.
+# One group per ref; a newer PR run cancels the older, a push to main never cancels a main run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -76,37 +25,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      # The check reads this clone's tags and the default checkout fetches none
-      # of them. A tagless clone is the vacuous-green failure mode, so the full
-      # history is fetched here and the script refuses to run without tags.
+      # The check reads this clone's tags, which the default checkout does not fetch.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
-      # The rejection branches cannot be exercised against this repository's own
-      # tag set, which is permanently valid — the fixtures cover them, and they
-      # run first so a broken check cannot pass the audit by never failing.
+      # The fixtures exercise the rejection branches first.
       - name: Lockstep check fixtures
         run: make test-tag-lockstep
 
       - name: Audit published tags
         run: make check-tag-lockstep
 
-      # go-qrdb#25: VERSION, the newest CHANGELOG release heading and the tag
-      # are three statements of one fact and nothing compared them, which is how
-      # VERSION stayed on 0.5.7-alpha through two published releases whose notes
-      # never left [Unreleased].
-      #
-      # Fixtures first, for the same reason as above: this repository's own
-      # VERSION and CHANGELOG are reconciled, so the audit below exercises only
-      # the accepting branch and a broken check would pass it by never failing.
+      # Fixtures for the VERSION, CHANGELOG and tag reconciliation.
       - name: Version reconciliation fixtures
         run: make test-version-reconciled
 
-      # RELEASE_TAG is set only on the tag leg. On the main and pull_request
-      # legs it is empty and the tag half announces that it skipped — the
-      # VERSION-vs-CHANGELOG half still runs on every push, which is the half
-      # that catches a release whose notes were never written.
+      # RELEASE_TAG is set only on the tag leg.
       - name: Reconcile VERSION, CHANGELOG and tag
         run: make check-version-reconciled RELEASE_TAG="${RELEASE_TAG}"
         env:
