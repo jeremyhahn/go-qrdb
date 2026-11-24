@@ -82,3 +82,14 @@ func (e *Encryptor) Wrap(base filesys.FS) filesys.FS {
 	}
 	return encfs.New(base, e.barrier)
 }
+
+// Barrier returns the barrier an object store's encrypting wrapper seals
+// with (objstore.EncryptedRemote), or nil when the Encryptor is disabled (nil
+// receiver or nil barrier). It is how a store that encrypts whole objects,
+// not files through Wrap, writes under the same barrier.
+func (e *Encryptor) Barrier() *seal.StorageBarrier {
+	if !e.Enabled() {
+		return nil
+	}
+	return e.barrier
+}

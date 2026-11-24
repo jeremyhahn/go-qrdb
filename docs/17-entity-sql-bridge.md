@@ -114,10 +114,7 @@ SELECT * FROM products WHERE sku = 'ABC-123';
 
 ## Codec Handling
 
-Two codecs are in play:
-
-- **DAO layer** (`dao.Codec[E]`): entity serialization, selected per DAO via `dao.WithCodec()`.
-- **Service layer** (`codec.Manager`, `pkg/codec`): storage and wire transcoding, configured per service.
+Every codec is a `go-codec` codec reached through `dao.Codec[E]`: entity serialization is selected per DAO via `dao.WithCodec()`, and the collection service encodes documents with `dao.NewCodec[map[string]any]` for the collection's storage codec (one of `dao.DocumentCodecs()`).
 
 `dao.New()` stores `MarshalFunc` and `UnmarshalFunc` closures over its codec in the registration, so the `EntityTable` encodes and decodes with the DAO's codec without importing a codec library:
 
@@ -136,17 +133,17 @@ In all cases `SELECT * FROM users` returns the same rows: the `EntityTable` call
 
 ### Supported Codecs
 
-Every `go-codec` codec is compiled in only under its build tag; `make -s print-build-tags` prints the default set.
+`go-codec` compiles JSON, YAML, TOML, MsgPack, BSON and ProtoBuf into every build; only CBOR needs a build tag. `make -s print-build-tags` prints the default set.
 
 | Codec | `dao` constant | Build tag | In the default build | Format |
 |-------|----------------|-----------|----------------------|--------|
-| JSON | `CodecJSON` | `codec_json` | yes | Human-readable |
-| YAML | `CodecYAML` | `codec_yaml` | yes | Human-readable |
-| TOML | `CodecTOML` | `codec_toml` | no | Human-readable |
-| MsgPack | `CodecMsgPack` | `codec_msgpack` | yes | Binary, compact |
-| BSON | `CodecBSON` | `codec_bson` | yes | Binary, MongoDB-compatible |
+| JSON | `CodecJSON` | none | yes | Human-readable |
+| YAML | `CodecYAML` | none | yes | Human-readable |
+| TOML | `CodecTOML` | none | yes | Human-readable |
+| MsgPack | `CodecMsgPack` | none | yes | Binary, compact |
+| BSON | `CodecBSON` | none | yes | Binary, MongoDB-compatible |
 | CBOR | `CodecCBOR` | `codec_cbor` | no | Binary, IoT-friendly |
-| ProtoBuf | `CodecProtoBuf` | `codec_protobuf` | yes | Binary, schema-based |
+| ProtoBuf | `CodecProtoBuf` | none | yes | Binary, schema-based |
 
 `dao.New()` returns a `CodecCreationError` for a codec not compiled in, and for `CodecProtoBuf`, which needs a `proto.Message` entity built with `dao.NewProtoBufCodec[E]()` and so has no SQL bridge.
 

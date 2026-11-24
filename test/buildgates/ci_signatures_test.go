@@ -32,7 +32,7 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 const (
@@ -53,7 +53,7 @@ func signaturesStep(t *testing.T) (string, map[string]string) {
 	if err != nil {
 		t.Fatalf("read ci.yml: %v", err)
 	}
-	var wf struct {
+	type signaturesWorkflow struct {
 		Jobs map[string]struct {
 			Steps []struct {
 				Name string            `yaml:"name"`
@@ -62,7 +62,8 @@ func signaturesStep(t *testing.T) (string, map[string]string) {
 			} `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
-	if err := yaml.Unmarshal(b, &wf); err != nil {
+	var wf signaturesWorkflow
+	if err := gocodecyaml.New[signaturesWorkflow]().Unmarshal(b, &wf); err != nil {
 		t.Fatalf("parse ci.yml: %v", err)
 	}
 	job, ok := wf.Jobs[sigJob]

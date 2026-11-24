@@ -76,6 +76,59 @@ func identities(inv Inventory) map[uint64]string {
 	return ids
 }
 
+// TestStartResourceLimits pins #1637: the inventory's caps reach every
+// node's docker run, swap capped with memory, and none without them.
+func TestStartResourceLimits(t *testing.T) {
+	inv := testInventory(t)
+	inv.Memory, inv.CPUs = "3g", "1"
+	r := &fakeRunner{}
+	if err := newTestCluster(t, inv, r).Start(context.Background(), identities(inv)); err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range r.runs {
+		got := strings.Join(run, " ")
+		if !strings.Contains(got, "memlock=-1:-1 --memory 3g --memory-swap 3g --cpus 1 -v ") {
+			t.Errorf("start argv lacks the caps:\n%s", got)
+		}
+	}
+
+	inv.Memory, inv.CPUs = "", ""
+	r = &fakeRunner{}
+	if err := newTestCluster(t, inv, r).Start(context.Background(), identities(inv)); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(r.runs[0], "--memory") || slices.Contains(r.runs[0], "--cpus") {
+		t.Errorf("uncapped inventory still caps: %q", r.runs[0])
+	}
+}
+
+func TestInventoryResourceLimitsValidate(t *testing.T) {
+	for _, tc := range []struct {
+		memory, cpus, field string
+	}{
+		{"3g", "1", ""},
+		{"512m", "0.5", ""},
+		{"", "", ""},
+		{"0g", "", "memory"},
+		{"3gb", "", "memory"},
+		{"-1", "", "memory"},
+		{"", "0", "cpus"},
+		{"", "one", "cpus"},
+		{"", "-2", "cpus"},
+	} {
+		inv := testInventory(t)
+		inv.Memory, inv.CPUs = tc.memory, tc.cpus
+		err := inv.Validate()
+		var ce *ConfigError
+		switch {
+		case tc.field == "" && err != nil:
+			t.Errorf("memory %q cpus %q: %v", tc.memory, tc.cpus, err)
+		case tc.field != "" && (!errors.As(err, &ce) || ce.Field != tc.field):
+			t.Errorf("memory %q cpus %q: got %v, want a %s ConfigError", tc.memory, tc.cpus, err, tc.field)
+		}
+	}
+}
+
 func TestStartHostNetwork(t *testing.T) {
 	inv := testInventory(t)
 	r := &fakeRunner{}
