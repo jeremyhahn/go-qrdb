@@ -345,8 +345,11 @@ runs under `make integration-test-barrier-seal`, as do
 transport refuses the seal-store verbs as embedded-only through the CLI and
 the SDK while barrier seal and unseal keep working.
 `TestSealStore_GRPCWeb_EmbeddedOnly` proves gRPC-Web (`/grpc-web/` on the REST
-listener) answers every removed seal-store method Unimplemented and unseals
-the barrier. `TestSealStore_SDK_Embedded_Lifecycle` proves the embedded
+listener) answers every removed seal-store method Unimplemented, refuses a
+`BarrierSeal` without the SO PIN, seals with it and unseals the barrier, the
+status read back over gRPC-Web. A raw gRPC-Web client carries the barrier SO
+PIN as the SDK does on native gRPC, in `BarrierSealRequest.so_pin`; `seal:seal`
+is not an SO-gate permission, so no `x-qrdb-so-pin` header is read for it. `TestSealStore_SDK_Embedded_Lifecycle` proves the embedded
 transport, the one surface that serves seal-store data, end to end on a real
 passphrase-sealed node: put, get, list, status, reseal and delete through
 `Client.SealStore()`, refusal while sealed, and the secret read back unchanged
