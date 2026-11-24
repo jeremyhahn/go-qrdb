@@ -2321,6 +2321,13 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 	}
 
 	valueType := engine.IndexCreateValueType(opts)
+	// The key scope composes the namespace half read back off name (every
+	// transport namespaces both keys and index names identically) with the
+	// declared half the creator named (opts.KeyPrefix, go-qrdb#410). Both
+	// maintenance on every subsequent write and this create's own backfill
+	// below apply it, which is what keeps an index named for one database
+	// from indexing another database's keys sharing this same shard.
+	scope := engine.ComposeIndexScope(name, opts.KeyPrefix)
 	existing, exists := s.indexes[name]
 	// The shard's index cap is checked against the index set the create
 	// applies over, so every replica reaches the same verdict.
@@ -2334,13 +2341,15 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
 			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
 		}
-		// Index already present under the same owner and value type —
-		// idempotent success so Raft Apply does not stall on duplicate create
-		// proposals. Existence is otherwise keyed by name only: a same-owner
-		// re-create diverging in field or uniqueness is a no-op (original
-		// wins). A different value type falls through and rebuilds the index
-		// at the requested one (engine.IndexCreateValueType).
-		if s.indexValueTypes[name] == valueType {
+		// Index already present under the same owner, value type and key
+		// scope — idempotent success so Raft Apply does not stall on
+		// duplicate create proposals. Existence is otherwise keyed by name
+		// only: a same-owner re-create diverging in field or uniqueness is a
+		// no-op (original wins). A different value type
+		// (engine.IndexCreateValueType) or key scope falls through and
+		// rebuilds the index at the requested one: the clear below removes
+		// the old terms and the backfill covers only the new scope.
+		if s.indexValueTypes[name] == valueType && bytes.Equal(s.indexScopes[name], scope) {
 			return sm.Result{Value: 1}, nil, nil
 		}
 		if err := existing.Close(); err != nil {
@@ -2377,14 +2386,8 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 		return sm.Result{}, nil, err
 	}
 
-	// The key scope composes the namespace half read back off name (every
-	// transport namespaces both keys and index names identically) with the
-	// declared half the creator named (opts.KeyPrefix, go-qrdb#410). Both
-	// maintenance on every subsequent write and this create's own backfill
-	// below apply it, which is what keeps an index named for one database
-	// from indexing another database's keys sharing this same shard.
-	scope := engine.ComposeIndexScope(name, opts.KeyPrefix)
-
+	// The composed scope bounds maintenance on every subsequent write and
+	// this create's own backfill below.
 	s.indexes[name] = idx
 	s.indexOwners[name] = opts.Owner
 	s.indexFields[name] = fieldName

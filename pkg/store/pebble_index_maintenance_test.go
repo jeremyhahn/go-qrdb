@@ -238,6 +238,88 @@ func TestPebbleStateMachine_IndexCreate_BackfillsExistingData(t *testing.T) {
 	}
 }
 
+// TestPebbleStateMachine_IndexCreate_KeyPrefixChangeRebuilds pins that a
+// same-owner re-create declaring a different key scope rebuilds the index
+// over the new scope: an index an earlier client created database-wide stops
+// holding other entities' keys once it is re-created scoped to member/
+// (Codex round 2 P1 2 on #1706).
+func TestPebbleStateMachine_IndexCreate_KeyPrefixChangeRebuilds(t *testing.T) {
+	s := openExtendedStore(t)
+	create := func(entry uint64, opts protocol.IndexCreateOptions) []sm.Result {
+		t.Helper()
+		opts.Unique = true
+		cmd := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", opts))
+		return applyExtEntries(t, s, []sm.Entry{{Index: entry, Cmd: cmd}})
+	}
+	put := func(entry uint64, key, value string) []sm.Result {
+		t.Helper()
+		return applyExtEntries(t, s, []sm.Entry{{Index: entry, Cmd: mustEncode(kv.EncodePut([]byte(key), []byte(value)))}})
+	}
+	want := func(step, value string, keys ...string) {
+		t.Helper()
+		got := indexQueryKeys(t, s, "by_email", value)
+		if len(got) != len(keys) {
+			t.Fatalf("%s: %s matched %v, want %v", step, value, got, keys)
+		}
+		for _, k := range keys {
+			if !containsKey(got, k) {
+				t.Fatalf("%s: %s matched %v, want %v", step, value, got, keys)
+			}
+		}
+	}
+
+	create(1, protocol.IndexCreateOptions{})
+	put(2, "member/1", `{"email":"a@x"}`)
+	put(3, "txmember/1", `{"email":"b@x"}`)
+	want("unscoped index", "b@x", "txmember/1")
+
+	create(4, protocol.IndexCreateOptions{KeyPrefix: "member/"})
+	want("scoped re-create", "b@x")
+	want("scoped re-create", "a@x", "member/1")
+
+	res := put(5, "member/2", `{"email":"b@x"}`)
+	if msg, ok := protocol.DecodeAppError(res[0].Data); ok {
+		t.Fatalf("put member/2 refused: %s (txmember/1 must not hold b@x)", msg)
+	}
+	want("after put", "b@x", "member/2")
+
+	// The same scoped create again is a no-op.
+	create(6, protocol.IndexCreateOptions{KeyPrefix: "member/"})
+	want("repeated create", "b@x", "member/2")
+	want("repeated create", "a@x", "member/1")
+
+	// A txmember write under the scoped index is not indexed.
+	put(7, "txmember/2", `{"email":"c@x"}`)
+	want("scoped index", "c@x")
+
+	// Back to database-wide: txmember keys are indexed again.
+	create(8, protocol.IndexCreateOptions{})
+	want("unscoped re-create", "c@x", "txmember/2")
+	want("unscoped re-create", "a@x", "member/1")
+}
+
+// TestPebbleStateMachine_IndexCreate_KeyPrefixChangeKeepsOwnership pins that
+// a create by a different owner declaring a new key scope is refused and
+// leaves the index's scope unchanged.
+func TestPebbleStateMachine_IndexCreate_KeyPrefixChangeKeepsOwnership(t *testing.T) {
+	s := openExtendedStore(t)
+	createA := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true, Owner: "collection:a"}))
+	applyExtEntries(t, s, []sm.Entry{
+		{Index: 1, Cmd: createA},
+		{Index: 2, Cmd: mustEncode(kv.EncodePut([]byte("member/1"), []byte(`{"email":"a@x"}`)))},
+		{Index: 3, Cmd: mustEncode(kv.EncodePut([]byte("txmember/1"), []byte(`{"email":"b@x"}`)))},
+	})
+
+	createB := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true, Owner: "collection:b", KeyPrefix: "member/"}))
+	res := applyExtEntries(t, s, []sm.Entry{{Index: 4, Cmd: createB}})
+	if _, _, ok := protocol.DecodeIndexOwnershipError(res[0].Data); !ok {
+		t.Fatalf("a create by another owner was not refused: result %+v", res[0])
+	}
+	if got := indexQueryKeys(t, s, "by_email", "b@x"); len(got) != 1 || !containsKey(got, "txmember/1") {
+		t.Fatalf("a refused create changed the index: b@x matched %v, want [txmember/1]", got)
+	}
+}
+
 // TestPebbleStateMachine_IndexCreate_ValueTypeChangeRebuilds holds the third
 // index-applying state machine to the rule the engines keep: a same-owner
 // re-create asking for a different value type rebuilds the index at that
