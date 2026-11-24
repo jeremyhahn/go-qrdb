@@ -5,6 +5,7 @@ bin/
 /qrdb
 /qrdbd
 /kvcompare
+/keydeliverypeer
 test/performance/kvcompare
 *.exe
 *.test
