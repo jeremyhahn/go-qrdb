@@ -40,6 +40,9 @@ It looks in this order:
 3. `$XDG_CONFIG_HOME/go-qrdb/public-release-patterns` (`~/.config/...` when
    `XDG_CONFIG_HOME` is unset).
 
+`make release-alpha` runs this gate before anything else, so a release cannot
+be cut without the pattern file or with a hit.
+
 The file is line-oriented. Blank lines and `#` lines are ignored; every other
 line is `<class>[/i] <ERE>`, where the class is `lab-address`, `lab-host` or
 `owner-path`, `/i` matches case-insensitively, and the ERE is POSIX extended.
