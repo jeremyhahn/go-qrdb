@@ -254,6 +254,8 @@ func (s *Server) handleCapabilities(ctx context.Context, _ []byte) ([]byte, erro
 		Etcd:        caps.Etcd,
 		Fts:         caps.FTS,
 
+		PendingUserTtl: caps.PendingUserTTL,
+
 		UnencryptedAtRest: caps.UnencryptedAtRest,
 	})
 	if err != nil {

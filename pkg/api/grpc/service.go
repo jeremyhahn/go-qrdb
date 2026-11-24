@@ -683,6 +683,8 @@ func (s *qrdbServiceServer) Capabilities(ctx context.Context, _ *pb.Capabilities
 		Etcd:        caps.Etcd,
 		Fts:         caps.FTS,
 
+		PendingUserTtl: caps.PendingUserTTL,
+
 		UnencryptedAtRest: caps.UnencryptedAtRest,
 	}, nil
 }

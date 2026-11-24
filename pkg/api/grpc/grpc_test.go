@@ -227,15 +227,16 @@ func newMockAdminService() *mockAdminService {
 			},
 		},
 		capsResult: &capabilities.Capabilities{
-			KV:          true,
-			MVCC:        true,
-			Transaction: true,
-			Batch:       true,
-			Watch:       true,
-			Lease:       true,
-			Index:       true,
-			TimeSeries:  false,
-			Vector:      false,
+			PendingUserTTL: true,
+			KV:             true,
+			MVCC:           true,
+			Transaction:    true,
+			Batch:          true,
+			Watch:          true,
+			Lease:          true,
+			Index:          true,
+			TimeSeries:     false,
+			Vector:         false,
 		},
 	}
 }
@@ -1044,6 +1045,9 @@ func TestGRPC_Capabilities(t *testing.T) {
 	}
 	if resp.GetVector() {
 		t.Fatal("expected Vector=false")
+	}
+	if !resp.GetPendingUserTtl() {
+		t.Fatal("expected PendingUserTtl=true: the request-feature bit must reach the wire (ruling 1243)")
 	}
 }
 

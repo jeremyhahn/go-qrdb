@@ -317,15 +317,16 @@ func (m *mockAdminService) Capabilities(ctx context.Context) (*capabilities.Capa
 		return m.capabilitiesFn(ctx)
 	}
 	return &capabilities.Capabilities{
-		KV:          true,
-		MVCC:        true,
-		Transaction: true,
-		Batch:       true,
-		Watch:       true,
-		Lease:       true,
-		Index:       true,
-		TimeSeries:  false,
-		Vector:      false,
+		PendingUserTTL: true,
+		KV:             true,
+		MVCC:           true,
+		Transaction:    true,
+		Batch:          true,
+		Watch:          true,
+		Lease:          true,
+		Index:          true,
+		TimeSeries:     false,
+		Vector:         false,
 	}, nil
 }
 
@@ -1528,6 +1529,9 @@ func TestHandleCapabilities_Success(t *testing.T) {
 	}
 	if caps.Vector {
 		t.Error("expected vector=false")
+	}
+	if !caps.PendingUserTTL {
+		t.Error("expected pendingUserTTL=true: the request-feature bit must reach the wire (ruling 1243)")
 	}
 }
 

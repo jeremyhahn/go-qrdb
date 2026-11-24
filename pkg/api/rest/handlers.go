@@ -114,6 +114,9 @@ type capabilitiesResponse struct {
 	Etcd        bool   `json:"etcd"`
 	FTS         bool   `json:"fts"`
 
+	// PendingUserTTL is a request-feature bit (owner ruling 1243).
+	PendingUserTTL bool `json:"pendingUserTTL"`
+
 	UnencryptedAtRest []string `json:"unencryptedAtRest,omitempty"`
 }
 
@@ -330,6 +333,8 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		PostgreSQL:  caps.PostgreSQL,
 		Etcd:        caps.Etcd,
 		FTS:         caps.FTS,
+
+		PendingUserTTL: caps.PendingUserTTL,
 
 		UnencryptedAtRest: caps.UnencryptedAtRest,
 	})

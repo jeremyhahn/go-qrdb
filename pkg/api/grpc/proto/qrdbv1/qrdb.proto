@@ -2631,6 +2631,11 @@ message CapabilitiesResponse {
     // unencrypted_at_rest lists, when seal is enabled, where the node keeps
     // data on disk outside the barrier's at-rest encryption. Empty otherwise.
     repeated string unencrypted_at_rest = 20;
+    // pending_user_ttl is a request-feature bit (owner ruling 1243): true
+    // when the server honours CreateUserRequest.pending_ttl and never drops
+    // it. A server that does not send it reads as false, and the Go SDK
+    // refuses a TTL-bearing create before sending it.
+    bool pending_user_ttl = 21;
 }
 
 // StartShardRequest is the request payload for StartShard.

@@ -622,15 +622,16 @@ func TestHandleCapabilities_Success(t *testing.T) {
 	adminSvc := &mockAdminService{
 		capabilitiesFn: func(_ context.Context) (*capabilities.Capabilities, error) {
 			return &capabilities.Capabilities{
-				KV:          true,
-				MVCC:        true,
-				Transaction: true,
-				Batch:       true,
-				Watch:       true,
-				Lease:       true,
-				Index:       false,
-				TimeSeries:  false,
-				Vector:      false,
+				PendingUserTTL: true,
+				KV:             true,
+				MVCC:           true,
+				Transaction:    true,
+				Batch:          true,
+				Watch:          true,
+				Lease:          true,
+				Index:          false,
+				TimeSeries:     false,
+				Vector:         false,
 			}, nil
 		},
 	}
@@ -672,6 +673,9 @@ func TestHandleCapabilities_Success(t *testing.T) {
 	}
 	if capsResp.GetVector() {
 		t.Error("expected vector to be false")
+	}
+	if !capsResp.GetPendingUserTtl() {
+		t.Error("expected pendingUserTtl to be true: the request-feature bit must reach the wire (ruling 1243)")
 	}
 }
 
