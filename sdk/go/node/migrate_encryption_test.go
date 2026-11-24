@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -370,13 +371,16 @@ func TestNode_EnableEncryption_SealStoreSecretsSurvive(t *testing.T) {
 	require.NoError(t, n2.Close())
 
 	sealDir := filepath.Join(cfg.Raft.DataDir, "seal")
+	root, err := os.OpenRoot(sealDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = root.Close() })
 	files := 0
-	require.NoError(t, filepath.WalkDir(sealDir, func(path string, d os.DirEntry, werr error) error {
+	require.NoError(t, fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil || d.IsDir() {
 			return werr
 		}
 		files++
-		data, rerr := os.ReadFile(path)
+		data, rerr := fs.ReadFile(root.FS(), path)
 		if rerr != nil {
 			return rerr
 		}
