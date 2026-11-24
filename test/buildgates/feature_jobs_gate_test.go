@@ -550,7 +550,7 @@ const featureJobFixture = `on:
 jobs:
   integration-features:
     name: Integration (shard ${{ matrix.shard }})
-    if: (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    if: (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != ''
     needs: [docker-build, preflight]
     timeout-minutes: 120
     env:
@@ -655,7 +655,7 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "no limit", old: "    timeout-minutes: 120\n", new: ""},
 		{name: "fail-fast default", old: "      fail-fast: false\n", new: ""},
 		{name: "fail-fast true", old: "fail-fast: false", new: "fail-fast: true"},
-		{name: "left the full tier", old: "    if: (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || ", new: "    if: "},
+		{name: "left the full tier", old: "    if: (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ", new: "    if: "},
 		{name: "a fixed list", old: `IT_FEATURES="$IT_FEATURES"`, new: `IT_FEATURES="cluster"`},
 		{name: "the list spliced in", old: "      IT_FEATURES: ${{ matrix.features }}\n", new: ""},
 		{name: "the list from elsewhere", old: "IT_FEATURES: ${{ matrix.features }}", new: "IT_FEATURES: audit"},

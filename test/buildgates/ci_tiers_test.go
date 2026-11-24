@@ -16,8 +16,9 @@ package buildgates
 
 // CI runs in two tiers (#674; handbook sdlc.md §5a, devops.md §1/§5/§8a; the
 // pattern is go-quicraft#294), and a third for the soak. The PR tier runs on
-// every event; the full tier runs on every event but a pull request, and on a
-// pull request labelled `ci:full` (ci-template v1.23's CI_FULL_TIER); the
+// every event; the full tier runs on every event but a workflow_dispatch off
+// main and a docs-only pull request, a non-draft pull request included
+// (ci-template v1.41's CI_FULL_TIER; `ci:full` selects no tier); the
 // nightly tier runs on schedule and workflow_dispatch only (v1.24); ci.yml's
 // nightly schedule is the one scheduler (ruling 135, restored under ruling
 // 216(1), nightly under ruling 633); m433 forbids host cron and timers, not
@@ -74,15 +75,31 @@ import (
 )
 
 const (
-	// fullTierIf is the condition every full-tier job carries (ci-template
-	// v1.23): every event but a pull request, and a pull request labelled
-	// ci:full. ci.yml's env evaluates it into CI_FULL_TIER, which ci-gate
-	// reads into FULL_TIER (fullTierGateEnv); a job-level `if:` cannot read
-	// env, so each full-tier job repeats it.
-	fullTierIf = `(github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')`
+	// fullTierEventIf is the full tier's event condition (ci-template v1.41,
+	// ruling 742 (2), #1708 item 3): every event, a non-draft pull request
+	// included, but a workflow_dispatch off main. ci.yml's env evaluates it
+	// into CI_FULL_TIER, which the full-tier steps read.
+	fullTierEventIf = "github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'"
 
-	// fullTierGateEnv is ci-gate's FULL_TIER: the workflow's CI_FULL_TIER.
-	fullTierGateEnv = "${{ env.CI_FULL_TIER }}"
+	// fullTierIf is the condition every full-tier job carries: the event
+	// condition and the code tier's, so a docs-only pull request skips the
+	// full jobs as it skips the code jobs. A job-level `if:` cannot read env,
+	// so each full-tier job repeats it.
+	fullTierIf = "(" + fullTierEventIf + ") && " + codeTierIf
+
+	// fullTierGateEnv is ci-gate's FULL_TIER: the workflow's CI_FULL_TIER on
+	// every run but a docs-only pull request, whose full-job skips it excuses.
+	fullTierGateEnv = "${{ env.CI_FULL_TIER == 'true' && needs.preflight.outputs.docs_only != 'true' }}"
+
+	// fullLabelEnv is ci.yml's CI_FULL_LABEL (v1.41): `ci:full` on a pull
+	// request turns off the docs-only path; it selects no tier. preflight's
+	// diff step reads it, never CI_FULL_TIER, or every PR would lose the
+	// docs-only path.
+	fullLabelEnv = "${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}"
+
+	// docsOnlyDiffTest is the line of preflight's diff step that opens the
+	// docs-only path.
+	docsOnlyDiffTest = `if [ "$EVENT" = pull_request ] && [ "$CI_FULL_LABEL" != true ]; then`
 
 	// nightlyIf is the `if:` of every nightly job (v1.24) and ci-gate's
 	// NIGHTLY, spelled as ci.yml spells both.
@@ -390,7 +407,26 @@ func ciTierProblems(wf ciWorkflow) []string {
 	if !ok {
 		return append(problems, "ci.yml has no "+ciGateJob+" step defining check(): the tiers have no gate")
 	}
-	if got := wf.Env["CI_FULL_TIER"]; got != "${{ "+fullTierIf+" }}" {
+	if got := wf.Env["CI_FULL_LABEL"]; got != fullLabelEnv {
+		problems = append(problems, "ci.yml's CI_FULL_LABEL is "+strconv.Quote(got)+", not "+fullLabelEnv+
+			": preflight's diff step would read no ci:full label")
+	}
+	diffStep := false
+	for _, s := range wf.Jobs[changesJob].Steps {
+		if !strings.Contains(s.Run, `[ "$EVENT" = pull_request ]`) {
+			continue
+		}
+		diffStep = true
+		if !strings.Contains(s.Run, docsOnlyDiffTest) || strings.Contains(s.Run, "CI_FULL_TIER") {
+			problems = append(problems, changesJob+"'s diff step does not read CI_FULL_LABEL alone ("+
+				strconv.Quote(docsOnlyDiffTest)+"): on CI_FULL_TIER every pull request would lose the docs-only path")
+		}
+	}
+	if !diffStep {
+		problems = append(problems, changesJob+" has no diff step testing "+strconv.Quote(`[ "$EVENT" = pull_request ]`)+
+			": docs_only would never be true")
+	}
+	if got := wf.Env["CI_FULL_TIER"]; got != "${{ "+fullTierEventIf+" }}" {
 		problems = append(problems, "ci.yml's CI_FULL_TIER is "+strconv.Quote(got)+
 			", not the full-tier condition: the steps it gates and the gate's FULL_TIER would disagree with the jobs' `if:`")
 	}
@@ -453,6 +489,12 @@ func ciTierProblems(wf ciWorkflow) []string {
 			if tierCondition(job.If) != fullTierIf {
 				problems = append(problems, "job "+name+" is tagged full in "+ciGateJob+
 					" but its `if:` is "+strconv.Quote(tierCondition(job.If))+", not the full-tier condition")
+			}
+			for _, dep := range []string{changesJob, codeTierImageJob} {
+				if !slices.Contains(needsList(job.Needs), dep) {
+					problems = append(problems, "full-tier job "+name+" does not need "+dep+
+						": its `if:` would read none of its outputs")
+				}
 			}
 			if slices.Contains(prTierJobs, name) {
 				problems = append(problems, "job "+name+" is a PR-tier job tagged full: it would stop "+
@@ -612,14 +654,20 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 env:
-  CI_FULL_TIER: ${{ ` + fullTierIf + ` }}
+  CI_FULL_TIER: ${{ ` + fullTierEventIf + ` }}
+  CI_FULL_LABEL: ` + fullLabelEnv + `
 jobs:
   build:
     steps:
       - run: make build
   preflight:
     steps:
-      - run: echo docs_only=false
+      - run: |
+          docs_only=false
+          ` + docsOnlyDiffTest + `
+            docs_only=true
+          fi
+          echo "docs_only=$docs_only"
   test-typescript:
     if: ` + codeTierIf + `
     needs: [preflight, docker-build]
@@ -627,12 +675,12 @@ jobs:
       - run: make test-typescript
   integration-x:
     if: ` + fullTierIf + `
-    needs: [build]
+    needs: [preflight, docker-build]
     steps:
       - run: make integration-test-x
   fips:
     if: ` + fullTierIf + `
-    needs: [build]
+    needs: [preflight, docker-build]
     steps:
       - run: make test
   soak-x:
@@ -688,18 +736,23 @@ func TestCITierProblems_CanFail(t *testing.T) {
 		"pull_request with labeled":             replace("ready_for_review]", "ready_for_review, labeled]"),
 		"pull_request without reopened":         replace("reopened, ready_for_review]", "ready_for_review]"),
 		"pull_request without ready_for_review": replace("reopened, ready_for_review]", "reopened]"),
-		"full job with a different if": replace("    if: "+fullTierIf+"\n    needs: [build]",
-			"    if: github.event_name == 'push'\n    needs: [build]"),
-		"full job with no if":  replace("    if: "+fullTierIf+"\n    needs: [build]", "    needs: [build]"),
+		"full job with a different if": replace("    if: "+fullTierIf+"\n    needs: [preflight, docker-build]",
+			"    if: github.event_name == 'push'\n    needs: [preflight, docker-build]"),
+		"full job with no if": replace("    if: "+fullTierIf+"\n    needs: [preflight, docker-build]", "    needs: [preflight, docker-build]"),
+		"full job on the v1.23 label if": replace("    if: "+fullTierIf+"\n",
+			"    if: (github.event_name != 'pull_request' && ("+fullTierEventIf+")) || contains(github.event.pull_request.labels.*.name, 'ci:full')\n"),
 		"pr job with an if":    replace("  build:\n    steps:", "  build:\n    if: github.event_name == 'push'\n    steps:"),
 		"full job tagged pr":   replace(`"$RESULT_INTEGRATION_X" full`, `"$RESULT_INTEGRATION_X" pr`),
 		"pr job tagged full":   replace(`"$RESULT_BUILD" pr`, `"$RESULT_BUILD" full`),
 		"untagged check line":  replace(`"$RESULT_BUILD" pr`, `"$RESULT_BUILD"`),
 		"FULL_TIER differs":    replace("FULL_TIER: "+fullTierGateEnv, "FULL_TIER: ${{ github.event_name == 'push' }}"),
-		"CI_FULL_TIER differs": replace("CI_FULL_TIER: ${{ "+fullTierIf, "CI_FULL_TIER: ${{ github.event_name == 'push'"),
-		"CI_FULL_TIER missing": replace("env:\n  CI_FULL_TIER: ${{ "+fullTierIf+" }}\n", ""),
-		"NIGHTLY differs":      replace("NIGHTLY: "+nightlyIf, "NIGHTLY: ${{ github.event_name == 'workflow_dispatch' }}"),
-		"NIGHTLY missing":      replace("          NIGHTLY: "+nightlyIf+"\n", ""),
+		"CI_FULL_TIER differs": replace("CI_FULL_TIER: ${{ "+fullTierEventIf, "CI_FULL_TIER: ${{ github.event_name == 'push'"),
+		"CI_FULL_TIER missing": replace("  CI_FULL_TIER: ${{ "+fullTierEventIf+" }}\n", ""),
+		"CI_FULL_TIER on the v1.23 label condition": replace("CI_FULL_TIER: ${{ "+fullTierEventIf+" }}",
+			"CI_FULL_TIER: ${{ (github.event_name != 'pull_request' && ("+fullTierEventIf+")) || contains(github.event.pull_request.labels.*.name, 'ci:full') }}"),
+		"FULL_TIER without the docs-only term": replace("FULL_TIER: "+fullTierGateEnv, "FULL_TIER: ${{ env.CI_FULL_TIER }}"),
+		"NIGHTLY differs":                      replace("NIGHTLY: "+nightlyIf, "NIGHTLY: ${{ github.event_name == 'workflow_dispatch' }}"),
+		"NIGHTLY missing":                      replace("          NIGHTLY: "+nightlyIf+"\n", ""),
 		"nightly job with a different if": replace("    if: "+nightlyIf+"\n    needs: [build]",
 			"    if: ${{ github.event_name == 'push' }}\n    needs: [build]"),
 		"nightly job with no if":         replace("    if: "+nightlyIf+"\n    needs: [build]", "    needs: [build]"),
@@ -751,6 +804,20 @@ func TestCITierProblems_CanFail(t *testing.T) {
 			"code-tier job test-typescript needs full-tier job integration-x"},
 		"code job needs a nightly job": {replace("    needs: [preflight, docker-build]\n", "    needs: [preflight, docker-build, soak-x]\n"),
 			"code-tier job test-typescript needs nightly-tier job soak-x"},
+		// The full tier on every non-draft PR (v1.41, #1708 item 3).
+		"CI_FULL_LABEL missing": {replace("  CI_FULL_LABEL: "+fullLabelEnv+"\n", ""),
+			"ci.yml's CI_FULL_LABEL is \"\""},
+		"preflight's diff step reads CI_FULL_TIER": {replace(docsOnlyDiffTest,
+			`if [ "$EVENT" = pull_request ] && [ "$CI_FULL_TIER" != true ]; then`),
+			changesJob + "'s diff step does not read CI_FULL_LABEL alone"},
+		"preflight has no diff step": {replace("          "+docsOnlyDiffTest+"\n            docs_only=true\n          fi\n", ""),
+			changesJob + " has no diff step"},
+		"full job without preflight in needs": {replace("    if: "+fullTierIf+"\n    needs: [preflight, docker-build]",
+			"    if: "+fullTierIf+"\n    needs: [docker-build]"),
+			"full-tier job integration-x does not need preflight"},
+		"full job without docker-build in needs": {replace("    if: "+fullTierIf+"\n    needs: [preflight, docker-build]",
+			"    if: "+fullTierIf+"\n    needs: [preflight]"),
+			"full-tier job integration-x does not need docker-build"},
 		// The clusterproof tier (#1619).
 		"CLUSTERPROOF differs": {replace("CLUSTERPROOF: "+clusterproofGateEnv, "CLUSTERPROOF: ${{ github.event_name == 'pull_request' }}"),
 			"'s CLUSTERPROOF is "},
@@ -905,7 +972,8 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 		}
 		return m
 	}
-	// A plain PR selects neither tier, a push to main the full tier alone,
+	// A docs-only PR selects neither tier (a code PR the full tier since
+	// v1.41), a push to main the full tier alone,
 	// and a schedule or workflow_dispatch both (FULL_TIER and NIGHTLY true).
 	allFull := func(result string) map[string]string { return all(full, result) }
 	allNightly := func(result string) map[string]string { return all(nightly, result) }
@@ -1030,6 +1098,9 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 		wantExit bool
 	}{
 		{"code jobs skipped on a docs-only PR", allCode("skipped"), "false", "true", false},
+		// v1.41 (#1708 item 3): FULL_TIER is false on a docs-only PR only.
+		{"full jobs skipped on a docs-only PR (FULL_TIER false)", allFull("skipped"), "false", "true", false},
+		{"full jobs skipped on a non-draft code PR", allFull("skipped"), "true", "false", true},
 		{"a docs-only PR as the runner sees it", docsOnlyRun(), "false", "true", false},
 		{"everything succeeded on a docs-only PR", nil, "false", "true", false},
 		{"code jobs skipped on a code PR", allCode("skipped"), "false", "false", true},
