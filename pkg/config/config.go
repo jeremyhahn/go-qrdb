@@ -164,6 +164,7 @@ type Config struct {
 	Protocols ProtocolsConfig `yaml:"protocols"`
 	Raft      RaftConfig      `yaml:"raft"`
 	Storage   StorageConfig   `yaml:"storage"`
+	Backup    BackupConfig    `yaml:"backup,omitempty"`
 	TLS       TLSConfig       `yaml:"tls"`
 	MTLS      MTLSConfig      `yaml:"mtls"`
 	Unix      UnixConfig      `yaml:"unix"`
@@ -884,6 +885,17 @@ type StorageConfig struct {
 // ObjstoreConfig configures the object-storage key-value backend. The backend
 // wraps a go-objstore Storage so any go-objstore provider can serve as a flat
 // KV store (suited to blob/backup workloads, not hot consensus paths).
+// BackupConfig configures where the node keeps its backup repository.
+type BackupConfig struct {
+	// Destination names the go-objstore provider backup artifacts are
+	// written to and restored from: "local" (a directory outside the data
+	// directory), "s3" (MinIO is an s3 endpoint), "azure" or "gcs". The
+	// provider is required and has no data-directory default, because a
+	// backup kept under the data directory dies with it. Unset keeps the
+	// file repository named by --backup-dir, or no durable repository.
+	Destination *ObjstoreConfig `yaml:"destination,omitempty"`
+}
+
 type ObjstoreConfig struct {
 	// Provider selects the go-objstore backend: "local", "memory", "s3",
 	// "gcs", or "azure". Empty defaults to "local", rooted under the
@@ -2448,6 +2460,14 @@ func (c *Config) Validate() error {
 	}
 	if err := c.Storage.Objstore.validate("storage.objstore"); err != nil {
 		return err
+	}
+	if d := c.Backup.Destination; d != nil {
+		if d.Provider == "" {
+			return &ValidationError{Field: "backup.destination.provider", Reason: "is required"}
+		}
+		if err := d.validate("backup.destination"); err != nil {
+			return err
+		}
 	}
 	if c.Storage.CacheSize < 0 {
 		return &ValidationError{Field: "storage.cache_size", Reason: "must not be negative"}
