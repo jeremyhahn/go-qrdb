@@ -277,3 +277,22 @@ test("an import into a collection shows the server's refusal and writes nothing 
   await expect(toast).toContainText("people");
   expect(await serverGet(page, "imp-coll/1")).toBeNull();
 });
+
+test("a Collection import with no collection name warns and sends no import", async ({ page }) => {
+  let beginRequests = 0;
+  page.on("request", (req) => {
+    if (req.url().includes("/batch/import/begin")) beginRequests++;
+  });
+  await openImport(page);
+  await page.locator('input[name="import-target"][value="collection"]').check();
+  await page.locator("#import-database").fill(DATABASE);
+  await expect(page.locator("#import-collection")).toHaveValue("");
+  await importThroughUI(page, "json", {
+    name: "nocoll.json",
+    mimeType: "application/json",
+    buffer: Buffer.from('[{"id": "imp-nocoll/1", "name": "ada"}]'),
+  });
+  await expect(page.getByText("Collection is required for a Collection import.")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  expect(beginRequests).toBe(0);
+  expect(await serverGet(page, "imp-nocoll/1")).toBeNull();
+});

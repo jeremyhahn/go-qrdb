@@ -281,6 +281,10 @@
       showToast("warning", "Key Field is required.");
       return;
     }
+    if (importTarget === "collection" && importCollection.trim() === "") {
+      showToast("warning", "Collection is required for a Collection import.");
+      return;
+    }
     importLoading = true;
     importResult = null;
     try {
@@ -293,7 +297,7 @@
         transactional: importTransactional,
         ...(importTarget === "collection" ? {
           database: importDatabase,
-          collection: importCollection,
+          collection: importCollection.trim(),
         } : {}),
       };
       importResult = browserImport && importFile !== null
