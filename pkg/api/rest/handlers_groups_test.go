@@ -100,6 +100,21 @@ func TestGroupHandlers_LifecycleAndMembership(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &ms); err != nil || len(ms.Members) != 1 || ms.Members[0].UserID != alice.ID {
 		t.Fatalf("members = %+v, %v", ms, err)
 	}
+	// userID crosses the JSON wire as a decimal string (a JavaScript client
+	// would round a uint64 JSON number above 2^53-1); a JSON number is refused.
+	if wantCell := fmt.Sprintf(`"userID":"%d"`, alice.ID); !bytes.Contains(rec.Body.Bytes(), []byte(wantCell)) {
+		t.Fatalf("members body = %s, want %s", rec.Body.String(), wantCell)
+	}
+	numeric := json.RawMessage(fmt.Sprintf(`{"userID":%d,"groupID":%q}`, alice.ID, g.ID))
+	doGroupRequest(t, s.handleAddGroupMember, http.MethodPost, "/groups/members/add", numeric, http.StatusBadRequest)
+	doGroupRequest(t, s.handleRemoveGroupMember, http.MethodPost, "/groups/members/remove", numeric, http.StatusBadRequest)
+	bigReq := httptest.NewRequest(http.MethodPost, "/groups/members/add", bytes.NewBufferString(fmt.Sprintf(`{"userID":"18446744073709551557","groupID":%q}`, g.ID)))
+	bigReq.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	s.handleAddGroupMember(rec, bigReq.WithContext(tenant.WithTenantID(context.Background(), "acme")))
+	if rec.Code == http.StatusBadRequest {
+		t.Fatalf("a decimal-string uint64 above 2^53-1 was refused as malformed: %s", rec.Body.String())
+	}
 	doGroupRequest(t, s.handleRemoveGroupMember, http.MethodPost, "/groups/members/remove", groupMemberRequest{UserID: alice.ID, GroupID: g.ID}, http.StatusNoContent)
 	doGroupRequest(t, s.handleGroup, http.MethodDelete, "/groups/"+g.ID, nil, http.StatusNoContent)
 	doGroupRequest(t, s.handleGroup, http.MethodGet, "/groups/"+g.ID, nil, http.StatusNotFound)

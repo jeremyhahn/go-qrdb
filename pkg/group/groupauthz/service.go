@@ -56,7 +56,7 @@ func New(groups group.GroupServicer, users user.UserServicer, roles role.RoleSer
 
 // Member is one member of a group.
 type Member struct {
-	UserID   uint64 `json:"userID"`
+	UserID   uint64 `json:"userID,string"`
 	Username string `json:"username"`
 	TenantID string `json:"tenantID"`
 }

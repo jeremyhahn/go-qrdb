@@ -68,13 +68,13 @@ type ListGroupsResponse struct {
 
 // GroupMemberRequest names a user and a group for a membership change.
 type GroupMemberRequest struct {
-	UserID  uint64 `json:"userID"`
+	UserID  uint64 `json:"userID,string"`
 	GroupID string `json:"groupID"`
 }
 
 // GroupMember is one member of a group.
 type GroupMember struct {
-	UserID   uint64 `json:"userID"`
+	UserID   uint64 `json:"userID,string"`
 	Username string `json:"username"`
 	TenantID string `json:"tenantID"`
 }

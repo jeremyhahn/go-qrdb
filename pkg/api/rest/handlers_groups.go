@@ -42,7 +42,7 @@ type updateGroupRequest struct {
 }
 
 type groupMemberRequest struct {
-	UserID  uint64 `json:"userID"`
+	UserID  uint64 `json:"userID,string"`
 	GroupID string `json:"groupID"`
 }
 
@@ -63,7 +63,7 @@ type listGroupsResponse struct {
 }
 
 type groupMemberResponse struct {
-	UserID   uint64 `json:"userID"`
+	UserID   uint64 `json:"userID,string"`
 	Username string `json:"username"`
 	TenantID string `json:"tenantID"`
 }

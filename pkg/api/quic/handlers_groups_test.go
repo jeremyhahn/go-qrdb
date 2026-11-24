@@ -15,9 +15,11 @@
 package quic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
@@ -87,6 +89,22 @@ func TestGroupHandlers_LifecycleAndMembership(t *testing.T) {
 	quicGroupCall(t, s.handleListGroupMembers, groupMemberWireRequest{GroupID: g.ID}, &ms)
 	if len(ms.Members) != 1 || ms.Members[0].UserID != alice.ID {
 		t.Fatalf("members = %+v", ms)
+	}
+	// userID crosses the JSON wire as a decimal string; a JSON number is refused.
+	listPayload, err := json.Marshal(groupMemberWireRequest{GroupID: g.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := s.handleListGroupMembers(tenant.WithTenantID(context.Background(), "acme"), listPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wantCell := fmt.Sprintf(`"userID":"%d"`, alice.ID); !bytes.Contains(raw, []byte(wantCell)) {
+		t.Fatalf("members body = %s, want %s", raw, wantCell)
+	}
+	numeric := []byte(fmt.Sprintf(`{"userID":%d,"groupID":%q}`, alice.ID, g.ID))
+	if _, err := s.handleRemoveGroupMember(tenant.WithTenantID(context.Background(), "acme"), numeric); err == nil {
+		t.Fatal("remove with a numeric userID succeeded, want a decode refusal")
 	}
 	quicGroupCall(t, s.handleRemoveGroupMember, groupMemberWireRequest{UserID: alice.ID, GroupID: g.ID}, nil)
 	var st statusWireResponse

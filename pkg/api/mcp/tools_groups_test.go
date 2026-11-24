@@ -112,7 +112,9 @@ func TestGroupTools_LifecycleAndMembership(t *testing.T) {
 	uid := strconv.FormatUint(alice.ID, 10)
 	callGroupTool(t, tools, ctx, "qrdb_group_add_member", map[string]any{"user_id": uid, "group_id": g.ID})
 	var ms struct {
-		Members []struct{ UserID uint64 } `json:"members"`
+		Members []struct {
+			UserID uint64 `json:"userID,string"` // the uint64 crosses the wire as a decimal string
+		} `json:"members"`
 	}
 	if err := json.Unmarshal([]byte(groupToolText(t, callGroupTool(t, tools, ctx, "qrdb_group_list_members", map[string]any{"group_id": g.ID}))), &ms); err != nil || len(ms.Members) != 1 || ms.Members[0].UserID != alice.ID {
 		t.Fatalf("members = %+v, %v", ms, err)

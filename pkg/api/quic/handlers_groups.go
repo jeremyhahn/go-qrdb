@@ -61,7 +61,7 @@ type listGroupsWireRequest struct {
 // groupMemberWireRequest is the payload for group.AddMember, group.RemoveMember
 // and (groupID only) group.ListMembers.
 type groupMemberWireRequest struct {
-	UserID  uint64 `json:"userID,omitempty"`
+	UserID  uint64 `json:"userID,omitempty,string"`
 	GroupID string `json:"groupID"`
 }
 
@@ -82,7 +82,7 @@ type listGroupsWireResponse struct {
 }
 
 type groupMemberWireResponse struct {
-	UserID   uint64 `json:"userID"`
+	UserID   uint64 `json:"userID,string"`
 	Username string `json:"username"`
 	TenantID string `json:"tenantID"`
 }
