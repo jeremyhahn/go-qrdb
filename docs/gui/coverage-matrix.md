@@ -219,6 +219,16 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Vector | `searchSimilar` | views/user/VectorView.svelte | vector.spec.ts (search form, input validation) | *verified* |
 | Vector | `updateMetadata` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
 | Vector | `upsertVector` | views/user/VectorView.svelte  | vector.spec.ts  |  |
+| Vlog | `append` | views/user/VlogView.svelte | vlog.spec.ts | *verified* |
+| Vlog | `create` | views/user/VlogView.svelte | vlog.spec.ts | *verified* |
+| Vlog | `expireBodies` | views/user/VlogView.svelte | vlog.spec.ts | *verified* |
+| Vlog | `get` | views/user/VlogView.svelte | vlog.spec.ts | *verified* |
+| Vlog | `head` | views/user/VlogView.svelte | vlog.spec.ts | *verified* |
+| Vlog | `list` | views/user/VlogView.svelte | vlog.spec.ts | *verified* |
+| Vlog | `proveConsistency` | views/user/VlogView.svelte | vlog.spec.ts | *verified* |
+| Vlog | `proveInclusion` | views/user/VlogView.svelte | vlog.spec.ts | *verified* |
+| Vlog | `rotateKey` | views/user/VlogView.svelte | vlog.spec.ts | *verified* |
+| Vlog | `signHead` | views/user/VlogView.svelte | vlog.spec.ts | *verified* |
 | VolumePool | `create` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
 | VolumePool | `delete` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
 | VolumePool | `get` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
@@ -267,12 +277,13 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 | 12 | Dashboard displays | `status.shards`, `capabilities.index`, metrics (needs an SDK method first) | views/admin/Dashboard.svelte; sdk/typescript/src/interfaces.ts, rest.ts, wails.ts for metrics; e2e/admin-dashboard.spec.ts, e2e/admin-metrics.spec.ts, e2e/dom/dashboard-displays-roundtrip.spec.ts, e2e/dom/metrics-roundtrip.spec.ts | mocked; real for metrics; **covered** |
 | 13 | Connections and embedded server | `connectionManager.deleteProfile`, `disconnect`, `saveProfile`, `setActive` (no e2e); `connection.disconnect`, `isConnected`; `config.initialized`, `isEmbeddedAvailable`; `embeddedServer.*` (6); `batch.availableCodecs` | components/ConnectionManager.svelte, stores/connection-manager.svelte.ts, views/user/BatchView.svelte; e2e/web-mode-connection-manager.spec.ts, e2e/batch.spec.ts, e2e/admin-settings-connection.spec.ts, e2e/dom/connection-profiles-roundtrip.spec.ts, new e2e/embedded-server.spec.ts (Wails mock) | mocked; **covered** |
 | 14 | Detail reads | `backups.get`, `credentials.retrieveVersion`, `collection.getDocument` | views/admin/BackupManager.svelte, views/admin/CredentialManager.svelte, views/user/CollectionView.svelte; e2e/backup-manager.spec.ts, e2e/credential-manager.spec.ts, e2e/collection-advanced.spec.ts, e2e/dom/backups-detail-roundtrip.spec.ts | mocked; **covered** |
+| 15 | Verifiable logs | `vlog.append`, `create`, `expireBodies`, `get`, `head`, `list`, `proveConsistency`, `proveInclusion`, `rotateKey`, `signHead` | views/user/VlogView.svelte; e2e/vlog.spec.ts | mocked; **covered** |
 
 ## Summary
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 219 | 218 | 218 |
+| operations | 229 | 228 | 228 |
 | displays | 12 | 12 | 12 |
 
 Operations not in UI: 1 (`database.updateBarrier`: the server refuses barrier changes after creation, so the settings form shows the barrier read-only). In UI without e2e: 0. Displays not in UI: 0. Displays with a partial field gap: 0.

@@ -85,6 +85,9 @@ Every SDK operation the server offers has a place in the application (see the
 their revisions, the Users view invites users and manages certificate bindings,
 **Redeem Invitation** in the connection manager accepts an invitation, and the
 admin area manages volume pools, tenant trust anchors and database holders.
+The Verifiable Logs tab creates logs, appends and reads entries, proves
+inclusion and consistency, signs heads, rotates the head-signing key and
+expires bodies.
 
 ## In a browser
 
