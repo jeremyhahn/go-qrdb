@@ -289,6 +289,51 @@ func TestGroupStore_DeleteClaimFreezesTheRecord(t *testing.T) {
 	}
 }
 
+// TestGroupStore_DeleteClaimIsResumable pins that a delete claim left by an
+// interrupted delete is resumed by a later delete claim (same token, guard
+// judged again) while a member claim on it still conflicts.
+func TestGroupStore_DeleteClaimIsResumable(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	g, err := f.groups.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng", RoleIDs: []string{f.acmeRole}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, token, err := f.groups.ClaimGroup(ctx, g.ID, ClaimDelete, nil)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	var judged []string
+	resumed, again, err := f.groups.ClaimGroup(ctx, g.ID, ClaimDelete, func(c *Group) error {
+		judged = c.RoleIDs
+		return nil
+	})
+	if err != nil || again != token || resumed.Claim != nil {
+		t.Fatalf("resumed claim = %+v, %q, %v; want token %q", resumed, again, err, token)
+	}
+	if !slices.Equal(judged, []string{f.acmeRole}) {
+		t.Fatalf("guard judged roles %v", judged)
+	}
+	refused := errors.New("refused")
+	if _, _, err := f.groups.ClaimGroup(ctx, g.ID, ClaimDelete, func(*Group) error { return refused }); !errors.Is(err, refused) {
+		t.Fatalf("resumed claim with a refusing guard: %v, want the guard error", err)
+	}
+	var conflict *GroupConflictError
+	if _, _, err := f.groups.ClaimGroup(ctx, g.ID, ClaimMember, nil); !errors.As(err, &conflict) {
+		t.Fatalf("member claim of a delete-claimed group: %v, want *GroupConflictError", err)
+	}
+	h, err := f.groups.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "ops"})
+	if err != nil {
+		t.Fatalf("create ops: %v", err)
+	}
+	if _, _, err := f.groups.ClaimGroup(ctx, h.ID, ClaimMember, nil); err != nil {
+		t.Fatalf("member claim: %v", err)
+	}
+	if _, _, err := f.groups.ClaimGroup(ctx, h.ID, ClaimDelete, nil); !errors.As(err, &conflict) {
+		t.Fatalf("delete claim of a member-claimed group: %v, want *GroupConflictError", err)
+	}
+}
+
 // TestGroupStore_ClaimBoundToReadVersion pins that a claim commits only over
 // the record its guard judged: a write landing while the guard runs fails
 // the claim with *GroupConflictError and leaves the group unclaimed.

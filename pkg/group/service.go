@@ -49,6 +49,8 @@ type GroupServicer interface {
 	// the claim is released (or the group deleted). A live claim already on
 	// the record, or a record changed after the read, fails with
 	// *GroupConflictError; a guard error is returned with nothing written.
+	// A delete claim is resumable by a later ClaimDelete, which runs guard
+	// again and returns the existing token with nothing written.
 	// It returns the judged group and the claim's token.
 	ClaimGroup(ctx context.Context, id, op string, guard func(*Group) error) (*Group, string, error)
 

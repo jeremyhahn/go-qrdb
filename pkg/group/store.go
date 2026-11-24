@@ -266,8 +266,10 @@ func newClaimToken() (string, error) {
 // it passes, marks that record claimed for op by compare-and-swap. A record
 // that already carries a live claim, or that changes between the read and
 // the swap, fails with *GroupConflictError; a guard error aborts with
-// nothing written. It returns the judged group (Claim nil) and the claim's
-// token.
+// nothing written. A delete claim already on the record is resumable by a
+// later ClaimDelete: guard runs again and, when it passes, the existing token
+// is returned with nothing written. It returns the judged group (Claim nil)
+// and the claim's token.
 func (s *kvGroupStore) ClaimGroup(ctx context.Context, id, op string, guard func(*Group) error) (*Group, string, error) {
 	if op != ClaimDelete && op != ClaimMember {
 		return nil, "", &ValidationError{Field: "op", Reason: "must be delete or member"}
@@ -281,7 +283,8 @@ func (s *kvGroupStore) ClaimGroup(ctx context.Context, id, op string, guard func
 		return nil, "", err
 	}
 	now := s.clock.Now().UTC()
-	if liveClaim(g, now) {
+	resume := op == ClaimDelete && g.Claim != nil && g.Claim.Op == ClaimDelete
+	if !resume && liveClaim(g, now) {
 		return nil, "", &GroupConflictError{ID: g.ID}
 	}
 	judged := *g
@@ -291,6 +294,9 @@ func (s *kvGroupStore) ClaimGroup(ctx context.Context, id, op string, guard func
 		if err := guard(&judged); err != nil {
 			return nil, "", err
 		}
+	}
+	if resume {
+		return &judged, g.Claim.Token, nil
 	}
 	token, err := newClaimToken()
 	if err != nil {

@@ -253,6 +253,7 @@ type strictFixture struct {
 	users   user.UserServicer
 	members *user.GroupMembership
 	roles   role.RoleServicer
+	revoker *flakyRevoker
 }
 
 func newStrictFixture(t *testing.T) *strictFixture {
@@ -271,13 +272,30 @@ func newStrictFixture(t *testing.T) *strictFixture {
 		t.Fatalf("membership: %v", err)
 	}
 	fake := clocktest.New()
-	groups, err := group.NewStore(kvstore.NewMemoryKVStore(), group.WithRoleLookup(roles), group.WithMemberRevoker(members), group.WithClock(fake))
+	revoker := &flakyRevoker{MemberRevoker: members}
+	groups, err := group.NewStore(kvstore.NewMemoryKVStore(), group.WithRoleLookup(roles), group.WithMemberRevoker(revoker), group.WithClock(fake))
 	if err != nil {
 		t.Fatalf("group store: %v", err)
 	}
 	mw := middleware.New(rbac.New(roles), middleware.WithRoleResolver(roles), middleware.WithStrictSeparation(true))
 	racing := &racingGroups{GroupServicer: groups}
-	return &strictFixture{svc: New(racing, users, roles, mw), groups: groups, racing: racing, users: users, members: members, roles: roles, clock: fake}
+	return &strictFixture{svc: New(racing, users, roles, mw), groups: groups, racing: racing, users: users, members: members, roles: roles, clock: fake, revoker: revoker}
+}
+
+// flakyRevoker revokes through the real membership store and then fails the
+// next fail calls, modelling a delete interrupted after a partial revoke.
+type flakyRevoker struct {
+	group.MemberRevoker
+	fail int
+}
+
+func (r *flakyRevoker) RevokeGroup(ctx context.Context, tenantID, groupID string) (int, error) {
+	n, err := r.MemberRevoker.RevokeGroup(ctx, tenantID, groupID)
+	if err == nil && r.fail > 0 {
+		r.fail--
+		return n, errors.New("revoke interrupted")
+	}
+	return n, err
 }
 
 // acmeCaller returns an acme request context for an identity with the
@@ -326,6 +344,46 @@ func TestGroupService_DeleteJudgedAgainstClaimedRecord(t *testing.T) {
 	// The refused delete left no claim behind: the SO can still update.
 	if _, err := f.groups.UpdateGroup(asSO, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{so}}); err != nil {
 		t.Fatalf("update after the refused delete: %v", err)
+	}
+}
+
+// TestGroupService_DeleteRetriesAfterAnInterruptedDelete pins that a delete
+// interrupted after its claim is retryable: a retry by a caller without the
+// role-removal authority is refused, and an authorized retry removes the
+// group and every membership naming it.
+func TestGroupService_DeleteRetriesAfterAnInterruptedDelete(t *testing.T) {
+	f := newStrictFixture(t)
+	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
+	deleter := authtest.CustomRole(t, f.roles, "acme", "group-deleter", permission.GroupsRead, permission.GroupsDelete)
+	asAdmin, asSO := acmeCaller(0, admin, deleter), acmeCaller(0, admin, so, deleter)
+	g, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "signers", RoleIDs: []string{so}})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	signer, err := f.users.CreateUser(asSO, &user.CreateUserRequest{WithoutEmailLoginKey: true, Username: "signer", TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("create signer: %v", err)
+	}
+	if _, err := f.members.AddMember(asSO, signer.ID, g.ID); err != nil {
+		t.Fatalf("add signer: %v", err)
+	}
+	f.revoker.fail = 1
+	if err := f.svc.Delete(asSO, g.ID); err == nil {
+		t.Fatal("delete succeeded with an interrupted revoke")
+	}
+	var refused *middleware.SORoleRequiredError
+	if err := f.svc.Delete(asAdmin, g.ID); !errors.As(err, &refused) {
+		t.Fatalf("admin retry of an SO group delete: %v, want *SORoleRequiredError", err)
+	}
+	if err := f.svc.Delete(asSO, g.ID); err != nil {
+		t.Fatalf("retry of the interrupted delete: %v", err)
+	}
+	var notFound *group.GroupNotFoundError
+	if _, err := f.groups.GetGroup(asSO, g.ID); !errors.As(err, &notFound) {
+		t.Fatalf("get after the retried delete: %v, want *GroupNotFoundError", err)
+	}
+	if u, err := f.users.GetUser(asSO, signer.ID); err != nil || slices.Contains(u.GroupIDs, g.ID) {
+		t.Fatalf("signer after the retried delete = %+v, %v; want no membership", u, err)
 	}
 }
 
