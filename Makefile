@@ -768,6 +768,24 @@ check-release-artifacts:
 		CRA_FIPS_MODULE='$(RELEASE_FIPS_MODULE)' CRA_TAGS='$(RELEASE_TAGS)' GO='$(GO)' \
 		./scripts/check-release-artifacts.sh
 
+# release-smoke runs every artifact of ONE platform natively
+# (scripts/release-smoke.sh, #916): for each binary x {plain, -fips} the file
+# in $(RELEASE_DIR) exists, is executable, and `<file> version` exits 0 and
+# prints v$(BUILD_VERSION). The plain variant runs with GODEBUG unset, the
+# -fips one with GODEBUG=fips140=only, so the FIPS 140-3 module's integrity
+# self-test runs at init. check-release-artifacts reads headers and build
+# info and runs nothing; integration-test runs binaries the harness builds
+# from source with cgo; neither executes what ships. PLATFORM must be the
+# host's (a foreign binary cannot run natively) and is refused otherwise:
+#   make release-cross PLATFORM=linux/arm64 && make release-smoke PLATFORM=linux/arm64
+# on an arm64 host. release-cross and release-artifacts cross-build, so they
+# do not call it.
+.PHONY: release-smoke
+release-smoke:
+	@RS_DIR='$(RELEASE_DIR)' RS_VERSION='$(BUILD_VERSION)' RS_PLATFORM='$(PLATFORM)' \
+		RS_BINARIES='$(SERVER_BINARY) $(CLIENT_BINARY)' GO='$(GO)' \
+		./scripts/release-smoke.sh
+
 # test-check-release-artifacts is check-release-artifacts' regression test
 # (in LINT_GATES): it builds a stdlib-only fixture with the release flags for
 # linux/amd64 and linux/arm64, plain and FIPS, and checks the script passes
