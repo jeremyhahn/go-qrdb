@@ -15,6 +15,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- A system-tenant raft database is placed on its replicas and stored under
+  the tenant root: its create takes the tenant create path, skipping only the
+  quota and entitlement checks, and its drop retires the placement (#923).
+
 - A barrier tenant's memory database refuses every read and write, and a cached vector search, once the tenant barrier seals, as the encrypted backends do (#923).
 - The legacy shared-store probe also finds a database whose only data is time series (raw `ts:`, `idx:metric:` and `retention:` keys), and a read fault under a prefix query is returned instead of reading as absence (#923).
 - Dropping a database evicts its cached service bundles on every transport and closes their vector services, so a dropped database's closed store and vector indexes are no longer reachable (#923).
