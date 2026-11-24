@@ -68,6 +68,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -302,6 +303,13 @@ const (
 	// key once it is committed, so its release outlives its advertisement
 	// lease and a joiner is still compared against an offline member.
 	ReleasePrefix = "__sys:cluster/features/releases/"
+
+	// ReleaseIntentPrefix is where a leader claims a bound system-shard
+	// add before proposing it: "{ReleaseIntentPrefix}{candidate address,
+	// path-escaped}/{release}", value the candidate address. It is not
+	// under ReleasePrefix, so parseReleases never reads an intent as a
+	// record. See ProposeBound.
+	ReleaseIntentPrefix = "__sys:cluster/features/release-intents/"
 
 	// DefaultRefreshInterval is how often the gate re-reads advertisements,
 	// activations and group membership, re-subscribes a lost watch, and
@@ -620,6 +628,9 @@ type ConfigBinding struct {
 	Required       bool
 	Candidate      string
 	ReleaseDigest  string
+	// CandidateReleases are the releases the candidate announced at
+	// admission; ProposeBound claims each in the system KV before the add.
+	CandidateReleases []string
 }
 
 // StaleConfigurationError is CheckConfigBinding's refusal: the system-shard
@@ -659,12 +670,10 @@ func (e *StaleConfigurationError) Error() string {
 // lock from this check until the add commits or is refused, so no other add
 // through this node commits in between. An add whose wait timed out after it
 // may have reached raft stays fenced the same way until its outcome is known.
-// Two residuals wait for go-quicraft
-// to offer a proposal-time configuration check (go-quicraft 1192,
-// docs/plans/1628.md): a leadership change while an add is in flight (the
-// new leader's adds do not share this node's lock), and a member restarted
-// onto another release whose Gate.Start restart check ran before the add
-// committed.
+// The lock is per node: a leadership change while an add is in flight, and
+// a member restarted onto another release, are serialized instead by the
+// write-then-check intent ProposeBound claims in the system KV
+// (claimRelease) and by EnforceRelease recording before it checks.
 func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error {
 	if !b.Required || shardID != g.systemShard {
 		return nil
@@ -734,8 +743,19 @@ func (g *Gate) ProposeBound(shardID uint64, b ConfigBinding, propose func(stop <
 		g.proposeMu.Unlock()
 		return err
 	}
+	// proposeMu serializes adds through this node only; a leader elected
+	// while this add is in flight does not share it. The intent claim does:
+	// see claimRelease.
+	withdraw, err := g.claimRelease(b)
+	if err != nil {
+		g.proposeMu.Unlock()
+		return err
+	}
 	pending, err := propose(g.fenceStop)
 	if pending == nil {
+		if err != nil {
+			withdraw()
+		}
 		g.proposeMu.Unlock()
 		return err
 	}
@@ -752,10 +772,154 @@ func (g *Gate) ProposeBound(shardID uint64, b ConfigBinding, propose func(stop <
 		defer g.proposeMu.Unlock()
 		select {
 		case <-pending:
+			if !g.isSystemMember(b.Candidate) {
+				withdraw()
+			}
 		case <-g.fenceStop:
 		}
 	}()
 	return err
+}
+
+// claimRelease claims b's add in the system KV before it is proposed, so
+// that two leaders in turn -- each holding only its own proposeMu -- cannot
+// both admit non-adjacent candidates (0.58 and 0.60 into an all-0.59
+// membership; go-quicraft compares no release, and no ConfigChangeID for
+// change 0). It writes an intent for every release the candidate announced,
+// then lists every intent and every recorded release linearizably: of two
+// writers that each write first and list second, at least one sees the
+// other's claim, so both may refuse (the caller admits again) but both can
+// never pass. A recorded release of a committed member is checked too, which
+// is what serializes the add against a member restart (EnforceRelease
+// writes its record before it lists the intents). It refuses with
+// *release.GapError when another candidate's intent, or a committed
+// member's recorded release, is not adjacent to a candidate release, and
+// with *StoreError when the KV fails; either way it withdraws what it
+// wrote. On success withdraw deletes the intents this call created: the
+// caller runs it when the add did not commit. An add that committed keeps
+// its intent until the member's own release record replaces it
+// (recordRelease). Before Start, with no KV, nothing is claimed.
+func (g *Gate) claimRelease(b ConfigBinding) (withdraw func(), err error) {
+	noop := func() {}
+	stores := g.stores.Load()
+	if stores == nil || len(b.CandidateReleases) == 0 {
+		return noop, nil
+	}
+	kv := stores.kv
+	ctx, cancel := context.WithTimeout(context.Background(), admitReadTimeout)
+	defer cancel()
+	var created []string
+	withdraw = func() {
+		ctx, cancel := context.WithTimeout(context.Background(), admitReadTimeout)
+		defer cancel()
+		for _, k := range created {
+			if err := kv.Delete(ctx, k); err != nil {
+				g.logger.Warn("feature gate: release intent not withdrawn", "key", k, "error", err)
+			}
+		}
+	}
+	refuse := func(err error) (func(), error) {
+		withdraw()
+		return noop, err
+	}
+	prefix := ReleaseIntentPrefix + url.PathEscape(b.Candidate) + "/"
+	for _, rel := range b.CandidateReleases {
+		ok, err := kv.PutIfAbsent(ctx, prefix+rel, []byte(b.Candidate))
+		if err != nil {
+			return refuse(&StoreError{Op: "record release intent", Err: err})
+		}
+		if ok {
+			created = append(created, prefix+rel)
+		}
+	}
+	intents, err := listIntents(ctx, kv)
+	if err != nil {
+		return refuse(err)
+	}
+	keys, err := kv.ListAll(ctx, ReleasePrefix)
+	if err != nil {
+		return refuse(&StoreError{Op: "list releases", Err: err})
+	}
+	system, err := g.members.GroupMembership(g.systemShard)
+	if err != nil {
+		return refuse(err)
+	}
+	recorded := parseReleases(keys)
+	var others []committedMember
+	var otherRels [][]string
+	for _, in := range intents {
+		if in.addr != b.Candidate {
+			others = append(others, committedMember{addr: in.addr})
+			otherRels = append(otherRels, []string{in.rel})
+		}
+	}
+	for _, m := range committedMembers(system) {
+		if m.addr != b.Candidate && len(recorded[m.id]) > 0 {
+			others = append(others, m)
+			otherRels = append(otherRels, recorded[m.id])
+		}
+	}
+	for i, m := range others {
+		for _, rel := range otherRels[i] {
+			for _, candidate := range b.CandidateReleases {
+				if !releasesAdjacent(rel, candidate) {
+					g.logger.Warn("feature gate: refusing replica on a release gap to a claimed or recorded release",
+						"address", b.Candidate,
+						"peer_release", candidate,
+						"member", m.addr,
+						"member_release", rel)
+					return refuse(&release.GapError{Channel: releaseChannel, Local: rel, Peer: candidate})
+				}
+			}
+		}
+	}
+	return withdraw, nil
+}
+
+// releaseIntent is one parsed intent key.
+type releaseIntent struct {
+	key, addr, rel string
+}
+
+// listIntents lists every live release intent linearizably.
+func listIntents(ctx context.Context, kv ActivationKV) ([]releaseIntent, error) {
+	keys, err := kv.ListAll(ctx, ReleaseIntentPrefix)
+	if err != nil {
+		return nil, &StoreError{Op: "list release intents", Err: err}
+	}
+	return parseIntents(keys), nil
+}
+
+// parseIntents parses intent keys "{ReleaseIntentPrefix}{address,
+// path-escaped}/{release}", skipping any it cannot.
+func parseIntents(keys []string) []releaseIntent {
+	out := make([]releaseIntent, 0, len(keys))
+	for _, k := range keys {
+		rest, found := strings.CutPrefix(k, ReleaseIntentPrefix)
+		escaped, rel, ok := strings.Cut(rest, "/")
+		addr, err := url.PathUnescape(escaped)
+		if !found || !ok || err != nil || addr == "" || rel == "" {
+			continue
+		}
+		out = append(out, releaseIntent{key: k, addr: addr, rel: rel})
+	}
+	return out
+}
+
+// isSystemMember reports whether addr is a committed system-shard replica
+// or witness. An unreadable membership reads as a member, so an add whose
+// outcome cannot be told keeps its intent (the safe side).
+func (g *Gate) isSystemMember(addr string) bool {
+	system, err := g.members.GroupMembership(g.systemShard)
+	if err != nil {
+		return true
+	}
+	for _, m := range committedMembers(system) {
+		if m.addr == addr {
+			return true
+		}
+	}
+	return false
 }
 
 // AdmitReplicaAt is AdmitReplica that also returns the system-shard
@@ -882,10 +1046,11 @@ func (g *Gate) admitRelease(shardID uint64, raftAddr string) (ConfigBinding, err
 	// Required even at ConfigChangeID 0: a bootstrapped membership before
 	// its first change is a checked configuration, not the absence of one.
 	return ConfigBinding{
-		ConfigChangeID: system.ConfigChangeID,
-		Required:       true,
-		Candidate:      raftAddr,
-		ReleaseDigest:  releaseDigest(candidates, members),
+		ConfigChangeID:    system.ConfigChangeID,
+		Required:          true,
+		Candidate:         raftAddr,
+		ReleaseDigest:     releaseDigest(candidates, members),
+		CandidateReleases: candidates,
 	}, nil
 }
 
@@ -1118,7 +1283,36 @@ func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
 	}
 	releases := parseReleases(keys)
 	g.releases.Store(&releases)
+	g.retireIntents(ctx, kv, self, releases)
 	return nil
+}
+
+// retireIntents deletes every release intent whose candidate is now a
+// committed member with a release record of its own (this node's, just
+// written, included): the record carries the claim from here on. It is
+// best effort; an intent left behind only keeps refusing non-adjacent adds,
+// and the next record pass retries.
+func (g *Gate) retireIntents(ctx context.Context, kv ActivationKV, self Self, releases map[uint64][]string) {
+	intents, err := listIntents(ctx, kv)
+	if err != nil || len(intents) == 0 {
+		return
+	}
+	recordedAddrs := map[string]bool{self.Address: true}
+	if system, err := g.members.GroupMembership(g.systemShard); err == nil {
+		for _, m := range committedMembers(system) {
+			if len(releases[m.id]) > 0 {
+				recordedAddrs[m.addr] = true
+			}
+		}
+	}
+	for _, in := range intents {
+		if !recordedAddrs[in.addr] {
+			continue
+		}
+		if err := kv.Delete(ctx, in.key); err != nil {
+			g.logger.Debug("feature gate: release intent not retired", "key", in.key, "error", err)
+		}
+	}
 }
 
 // parseReleases maps each replica ID to the releases recorded for it by
