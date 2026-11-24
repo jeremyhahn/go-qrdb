@@ -14,27 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# cluster-cpus.sh — the cluster stage's CPU cap, bounded by the docker host.
-#
-#   cluster-cpus.sh CPUS   print the smaller of CPUS and the docker host's CPUs
-#
-# The cluster stage caps its integration-tests container at CLUSTER_CPUS
-# (`cpus:`, docker --cpus; #682). dockerd refuses a cap above the CPUs it has
-# ("range of CPUs is from 0.01 to 4.00"), so a fixed cap of 8 never starts the
-# container on a 4-CPU runner and the job runs no test at all (#673). The cap
-# stays a bound, not a demand: on a host with fewer CPUs it is the host's
-# count, which is the budget docker would give an uncapped container there.
-#
-# The count is the docker DAEMON's (`docker info` NCPU), not this shell's
-# nproc: a CI job runs in a container of its own and starts the stack through
-# the host's dockerd, and NCPU is the figure dockerd checks --cpus against.
-#
-# The decision goes to stderr, so the job log says which budget a run had; the
-# cap alone goes to stdout. CPUS=0 is docker's "unset" and passes through
-# without asking the daemon.
-#
-# Environment:
-#   DOCKER   docker command (default: docker)
+# cluster-cpus.sh: the cluster stage's CPU cap, bounded by the docker host.
 
 set -eu
 

@@ -13,38 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# cluster-proof-ci.sh: the cluster proof on one machine, as the nightly
-# `clusterproof-soak` job runs it (docs/cluster-verification/user.md).
-#
-#   render DIR IMAGE [FAULT_IMAGE]
-#                     write a throwaway test CA, node and admin certificates,
-#                     PINs and the inventory, targets and workload files for a
-#                     three-node cluster of IMAGE on the docker network
-#                     "proof" (192.0.2.0/24, RFC 5737). Faults run in
-#                     FAULT_IMAGE (default IMAGE), which must carry the tools
-#                     the fault commands run: `make cluster-proof-fault-image`
-#                     builds one (test/clusterproof/fault.Dockerfile). The
-#                     last line on stdout is the PROOF_NODES value. Node
-#                     certificates carry spiffe://qrdb.cluster/node/<ip>:63001,
-#                     the admin certificate OU=system, CN=admin and
-#                     spiffe://system/user/admin, as the ceremony adopts it.
-#   up DIR            give each node its own CLUSTERPROOF_DISK_MB (default
-#                     1024) ext4 filesystem, loop-mounted on DIR/node-N/data,
-#                     create the network and boot the cluster with BOOT-01,
-#                     leaving it running (PROOF_KEEP=1).
-#   down DIR          remove the containers and the network, then unmount
-#                     and delete the node filesystems.
-#   logs DIR          write every node's full `docker logs` to
-#                     DIR/logs/node-N.log (beside DIR/bundle, outside the
-#                     checksummed bundle); up does the same itself
-#                     when it exits non-zero (BOOT-01 failing included).
-#
-# Every fault runs locally through docker: no ssh, no unseal (PROOF_SEAL=none).
-# The fault container shares the node's network namespace and binds the
-# node's own filesystem at /data, so disk-full fills only that node; the
-# fault's argv reaches it word by word ("$@", no shell in between). up and
-# down use sudo for the loop mounts unless run as root; render writes files
-# only.
+# cluster-proof-ci.sh: the cluster proof on one machine, as the nightly clusterproof-soak job runs it.
 set -euo pipefail
 
 readonly network=proof

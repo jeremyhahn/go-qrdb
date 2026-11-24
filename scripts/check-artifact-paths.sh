@@ -14,63 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# check-artifact-paths.sh — no committed, machine-generated reference artifact
-# may carry an absolute, workstation-specific path (go-qrdb#403).
-#
-# WHY THIS EXISTS
-#
-# check-iface-sweep-findings.sh (go-qrdb#271) closed this for exactly two
-# files -- test/tools/ifacesweep/findings/{min,full}-tags.tsv -- after the
-# first revision of that tool printed token.FileSet.Position(...).Filename
-# verbatim and baked a reviewer's own checkout path into 996 of 996 rows,
-# uncaught by review. This script is the repo-wide generalization: it covers
-# every KNOWN generated artifact, and the next one is added to ARTIFACTS
-# (and taught to artifact_shape) the day it is committed, rather than
-# rediscovering the convention in review.
-#
-# ALLOWLIST, NOT DENYLIST -- THE SECOND DESIGN, NOT THE FIRST
-#
-# The first revision of this script denied a growing list of absolute-path
-# SHAPES: /home/<user>, /Users/<user>, a Windows drive letter, a UNC share
-# (both slash directions), then a Windows extended-length path
-# (`\\?\C:\...`, `\\?\UNC\server\share\...`). Each review round found a
-# shape it did not cover, because a denylist can only be as complete as the
-# list of attacks someone has thought of.
-#
-# So this is an ALLOWLIST: for each artifact, this script knows the exact
-# SHAPE every legitimate value in its path-bearing column takes -- a Go
-# import path rooted at this module, or a path relative to the repository
-# root under one of its real top-level directories -- and rejects a value
-# in that column that is not one of those shapes, WHATEVER shape it is
-# instead. `.` and `..` path segments are excluded from both shapes for the
-# same reason: `pkg/../../home/alice/x.go` is exactly as much an escape from
-# the asserted root as an absolute path is, and a segment made entirely of
-# dots is never a legitimate package or file name.
-#
-# EXACT DISPATCH, NOT A GLOB OR A BASENAME. Matching `*.tsv` or a bare
-# `baseline.txt` against ANY file with that shape is itself a hole: a sixth
-# artifact that happens to end in `.tsv`, or an unrelated file that happens
-# to be named `baseline.txt`, would silently inherit a validator built for a
-# different file's contract. artifact_shape below matches the full
-# REPO-RELATIVE IDENTITY of each of the five known artifacts (as a path
-# suffix, so a self-test fixture under a temp directory still matches by
-# ending in that same identity) and refuses anything else, including a
-# same-named file that lives somewhere else in the tree.
-#
-# THE DISCOVERY FLOOR IS ON VALIDATED RECORDS, NOT PHYSICAL LINES. A
-# header-only or all-comments artifact clears any physical-line floor
-# trivially while validating zero path-bearing values -- the exact
-# vacuous-success shape #337 named for a missing artifact, reached instead
-# through an artifact that exists but says nothing. MIN_RECORDS counts what
-# was actually run through the allowlist: comments and blanks skipped for
-# the line-oriented formats, the header excluded for the TSV ones.
-#
-# Usage: check-artifact-paths.sh [file...]
-#   (defaults to every known generated artifact, resolved from this script's
-#   own location so it works from any invocation directory; a file argument
-#   is matched against a known artifact by the REPO-RELATIVE IDENTITY it
-#   ends in, which is how the self-test exercises each validator against
-#   synthetic fixtures placed under a matching subpath)
+# check-artifact-paths.sh: committed generated artifacts must not contain absolute paths.
 
 set -eu
 
