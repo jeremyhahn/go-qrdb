@@ -31,7 +31,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
@@ -46,16 +45,21 @@ import (
 
 // NewLocalStorage creates the node-local storage backend for a raft-free
 // composition and returns the storage interface plus an optional *pebble.DB
-// handle (non-nil only for the pebble backend). enc is the at-rest encryption
-// every on-disk backend writes through: the pebble backend installs its file
-// system and the file backend does its record I/O through it, so both are
-// encrypted under the same barrier by the same mechanism (the seal barrier's
-// encfs). A nil or disabled enc leaves them plaintext. The memory backend
-// holds nothing on disk and the objstore backend is not a local file system,
-// so both ignore enc. storageCfg is the node's storage configuration: the
-// objstore backend reads its Objstore section, and the pebble backend takes
-// its block cache size, WAL directory and open-file limit from CacheSize,
-// WALDir and MaxOpenFiles, a zero value keeping pebbleStorage.DefaultConfig's.
+// handle (non-nil for the pebble and objstore backends, which are both the
+// Pebble engine). enc is the at-rest encryption every on-disk backend writes
+// through: the pebble backend installs its file system and the file backend
+// does its record I/O through it, so both are encrypted under the same
+// barrier by the same mechanism (the seal barrier's encfs). The objstore
+// backend is the Pebble engine with its SSTables in the configured bucket
+// and its WAL and MANIFEST under <dataDir>/objstore-lsm (object-storage-lsm):
+// when enc is on, the local files go through the same encfs and every
+// SSTable object is encrypted under the same barrier. A nil or disabled enc
+// leaves them plaintext; the memory backend holds nothing on disk and
+// ignores it. storageCfg is the node's storage configuration: the objstore
+// backend reads its Objstore section, and the pebble and objstore backends
+// take their block cache size, WAL directory and open-file limit from
+// CacheSize, WALDir and MaxOpenFiles, a zero value keeping
+// pebbleStorage.DefaultConfig's.
 func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig) (storage.Storage, *pebble.DB, error) {
 	switch backendType {
 	case database.BackendMemory:
@@ -69,16 +73,11 @@ func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atre
 		return stg, nil, nil
 
 	case database.BackendObjstore:
-		objCfg := storageCfg.Objstore
-		provider, settings := resolveObjstoreSettings(objCfg, dataDir)
-		stg, err := objstore.New(provider, settings, objstore.WithCredentialFiles(objstore.CredentialFiles{
-			KeyFile:    objCfg.Credentials.KeyFile,
-			SecretFile: objCfg.Credentials.SecretFile,
-		}))
+		stg, err := newObjstoreLSMStorage(dataDir, enc, storageCfg)
 		if err != nil {
 			return nil, nil, &LocalStorageError{Backend: backendType, Err: err}
 		}
-		return stg, nil, nil
+		return stg, stg.DB(), nil
 
 	case database.BackendPebble:
 		cfg := localPebbleConfig(filepath.Join(dataDir, "pebble"), enc, storageCfg)
