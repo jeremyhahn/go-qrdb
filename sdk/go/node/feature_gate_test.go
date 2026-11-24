@@ -168,6 +168,55 @@ func TestNode_RestartReleaseGapQuarantinesTheNode(t *testing.T) {
 	assertQuarantined(t, n, l, &gap)
 }
 
+// quarantineSealDisabled runs the restart-release-gap check on a node with
+// no barrier (seal disabled) and returns it quarantined.
+func quarantineSealDisabled(t *testing.T) *Node {
+	t.Helper()
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	kv := &releaseHistoryKV{keys: map[string]bool{featuregate.ReleasePrefix + "1/0.58.0-alpha": true}}
+	n := gatedNode(t, kv, embedded.WithLeaseService(noLeases{}))
+	require.Nil(t, n.barrier.Load(), "the node must be seal-disabled")
+	assert.False(t, n.embeddedSealProbe(nil).IsSealed(), "a node not yet checked is not refused")
+	assert.False(t, n.listenerSealProbe(nil).IsSealed(), "a node not yet checked is not refused")
+	l := &closingLeader{}
+	l.known.Store(true)
+	n.startFeatureGate(l, kv)
+	n.featureWG.Wait()
+	var gap *release.GapError
+	require.ErrorAs(t, n.Refusal(), &gap)
+	t.Cleanup(func() {
+		n.bgCancel()
+		require.NoError(t, n.stopFeatureGate())
+		require.NoError(t, n.stopMemberRecord())
+	})
+	return n
+}
+
+// F3 (#1628): a seal-disabled node's embedded client consults Node.Refusal,
+// so a quarantined node refuses the caller's embedded calls.
+func TestNode_QuarantineRefusesSealDisabledEmbeddedClient(t *testing.T) {
+	n := quarantineSealDisabled(t)
+	probe := n.embeddedSealProbe(nil)
+	assert.True(t, probe.IsSealed(), "the embedded client must be refused")
+	tr, err := embedded.New(&releaseHistoryKV{keys: map[string]bool{}}, struct{ service.AdminServicer }{},
+		embedded.WithSealProbe(probe))
+	require.NoError(t, err)
+	_, err = tr.Get(context.Background(), "k")
+	require.Error(t, err, "a quarantined node's embedded Get must be refused")
+}
+
+// F3 (#1628): the probe the node hands its network listeners (REST, gRPC,
+// QUIC, unix, MCP) reports sealed once the node is quarantined, seal
+// enabled or not.
+func TestNode_QuarantineRefusesOnEveryListener(t *testing.T) {
+	n := quarantineSealDisabled(t)
+	probe := n.listenerSealProbe(nil)
+	assert.True(t, probe.IsSealed(), "every listener must refuse a quarantined node's calls")
+	sealed, unconfirmed := probe.SealState()
+	assert.True(t, sealed)
+	assert.False(t, unconfirmed)
+}
+
 func TestNode_UnsupportedFeatureQuarantinesTheNode(t *testing.T) {
 	kv := &activationKV{keys: []string{featuregate.ActivationPrefix + "future-opcode"}}
 	n := gatedNode(t, kv)

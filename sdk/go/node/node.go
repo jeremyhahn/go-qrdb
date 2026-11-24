@@ -4266,14 +4266,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// The caller's client refuses what the node's network listeners refuse:
 	// every request outside the sealed-window allowlist while the node
 	// barrier is sealed, or a cluster seal holds the node, cuts it off, or
-	// is not yet confirmed.
-	if barrier != nil {
-		var cs server.ClusterSeal
-		if n.clusterSeal != nil {
-			cs = n.clusterSeal
-		}
-		embeddedOpts = append(embeddedOpts, embedded.WithSealProbe(n.refusalProbe(server.NodeSealProbe(barrier, cs))))
-	}
+	// is not yet confirmed. The quarantine refusal holds on every transport,
+	// the embedded client included, seal enabled or not: a seal-disabled
+	// node has no barrier, so the probe consults Node.Refusal alone (a nil
+	// inner probe, never a typed-nil barrier inside the interface).
+	embeddedOpts = append(embeddedOpts, embedded.WithSealProbe(n.embeddedSealProbe(barrier)))
 	// The gate refuses a watch as it opens; a watch opened before a seal is
 	// a stream the seal must end, as it ends a network listener's.
 	if n.clusterSeal != nil {
@@ -4338,9 +4335,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if awaitingAdminCredentialProbe != nil {
 		allOpts = append(allOpts, server.WithAwaitingAdminCredentialProbe(awaitingAdminCredentialProbe))
 	}
-	if barrier != nil {
-		allOpts = append(allOpts, server.WithSealedWindowProbe(barrier))
-	}
+	// The quarantine refusal holds on every network listener (REST, gRPC,
+	// QUIC, unix, MCP), seal enabled or not: the listeners read the
+	// refusal-wrapped barrier, a nil inner probe on a seal-disabled node.
+	// applyClusterSeal wraps this probe with the cluster seal afterwards.
+	allOpts = append(allOpts, server.WithSealedWindowProbe(n.listenerSealProbe(barrier)))
 	if n.clusterSeal != nil {
 		allOpts = append(allOpts, server.WithClusterSeal(n.clusterSeal))
 	}

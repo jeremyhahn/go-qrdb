@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/release"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -153,6 +154,35 @@ func (n *Node) refusalProbe(inner embedded.SealProbe) quarantineProbe {
 type quarantineProbe struct {
 	n     *Node
 	inner embedded.SealProbe
+}
+
+// embeddedSealProbe is the seal probe the node's embedded client reads: the
+// refusal-wrapped node seal (barrier and cluster seal) when the seal is
+// enabled, Node.Refusal alone on a seal-disabled node (barrier nil). The
+// inner probe is built only from a non-nil barrier, so a typed-nil barrier
+// never reaches the interface.
+func (n *Node) embeddedSealProbe(barrier *seal.StorageBarrier) quarantineProbe {
+	var inner embedded.SealProbe
+	if barrier != nil {
+		var cs server.ClusterSeal
+		if n.clusterSeal != nil {
+			cs = n.clusterSeal
+		}
+		inner = server.NodeSealProbe(barrier, cs)
+	}
+	return n.refusalProbe(inner)
+}
+
+// listenerSealProbe is the sealed-window probe the node hands its network
+// listeners (REST, gRPC, QUIC, unix, MCP): the refusal-wrapped barrier, or
+// Node.Refusal alone on a seal-disabled node, so a quarantined node refuses
+// on every listener. The server wraps it with the cluster seal afterwards.
+func (n *Node) listenerSealProbe(barrier *seal.StorageBarrier) quarantineProbe {
+	var inner embedded.SealProbe
+	if barrier != nil {
+		inner = barrier
+	}
+	return n.refusalProbe(inner)
 }
 
 // sealStateProbe is the two-valued seal sample the transport gates read
