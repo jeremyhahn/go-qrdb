@@ -95,7 +95,7 @@ func (c *Chain) Restore(r storage.Reader) error {
 // (*TenantMismatchError) rather than overwritten -- see that error's doc
 // comment for why silently "stamping" tenantID over a conflicting value
 // would be worse than refusing.
-func (c *Chain) Append(w vlog.Writer, tenantID string, ev AuditEvent) (seq uint64, err error) {
+func (c *Chain) Append(rw vlog.ReadWriter, tenantID string, ev AuditEvent) (seq uint64, err error) {
 	if err := validateEvent(tenantID, ev); err != nil {
 		return 0, err
 	}
@@ -103,14 +103,27 @@ func (c *Chain) Append(w vlog.Writer, tenantID string, ev AuditEvent) (seq uint6
 	ev.AppendOnce = false
 	if token := onceToken(ev); token != "" {
 		if once {
-			seq, _, err = c.log.AppendOnce(w, tenantID, token, linkEvent(ev), false)
+			if head, found, err := c.log.RecordOnceIfPresent(rw, tenantID, token, matchOnceToken(token)); err != nil || found {
+				return head, err
+			}
+			seq, _, err = c.log.AppendOnce(rw, tenantID, token, linkEvent(ev), false)
 			return seq, err
 		}
 		if head, done := c.log.HasOnce(tenantID, token); done {
 			return head, nil
 		}
 	}
-	return c.log.Append(w, tenantID, linkEvent(ev))
+	return c.log.Append(rw, tenantID, linkEvent(ev))
+}
+
+// matchOnceToken accepts a stored event body whose identity is token: the
+// unmarked append of the same event a marked retry must not repeat. Stored
+// bodies never carry AppendOnce, and onceToken ignores PrevHash.
+func matchOnceToken(token string) func(body []byte) bool {
+	return func(body []byte) bool {
+		var prior AuditEvent
+		return json.Unmarshal(body, &prior) == nil && onceToken(prior) == token
+	}
 }
 
 // ActionTenantOnboard is the action of a tenant's onboarding event. Its
@@ -124,8 +137,10 @@ func (c *Chain) Append(w vlog.Writer, tenantID string, ev AuditEvent) (seq uint6
 // the same raw state as on a release without this rule; after activation
 // every replica runs a release with it, so an unmarked proposal that timed
 // out and applies after its marked retry is dropped identically everywhere.
-// An unmarked proposal that applies BEFORE its marked retry is proposed
-// leaves no once-record, so that retry still appends a second event.
+// A marked retry applying after an unmarked event of its identity appends
+// nothing: it finds that event in the tenant's event records at apply time
+// (vlog.Chain.RecordOnceIfPresent) and records its once-record then, so
+// either apply order leaves one event, on live and restored replicas alike.
 const ActionTenantOnboard = "tenant.onboard"
 
 // onceToken returns the apply-time identity of an event appended at most
@@ -147,7 +162,7 @@ func onceToken(ev AuditEvent) string {
 // its sequence S₀ (docs/databases/architecture.md §7). It returns the last
 // event's sequence. A malformed entry refuses the whole command before
 // anything is written.
-func (c *Chain) AppendToInstance(w vlog.Writer, tenantID string, entries [][]byte) (seq uint64, err error) {
+func (c *Chain) AppendToInstance(rw vlog.ReadWriter, tenantID string, entries [][]byte) (seq uint64, err error) {
 	if err := vlog.ValidateTenantID(tenantID); err != nil {
 		return 0, err
 	}
@@ -168,11 +183,17 @@ func (c *Chain) AppendToInstance(w vlog.Writer, tenantID string, entries [][]byt
 		ev.AppendOnce = false
 		token := onceToken(ev)
 		if token != "" && once {
-			seq, _, err = c.log.AppendOnce(w, tenantID, token, linkEvent(ev), true)
+			var head uint64
+			var found bool
+			if head, found, err = c.log.RecordOnceIfPresent(rw, tenantID, token, matchOnceToken(token)); err == nil && found {
+				seq = head
+			} else if err == nil {
+				seq, _, err = c.log.AppendOnce(rw, tenantID, token, linkEvent(ev), true)
+			}
 		} else if head, done := c.log.HasOnce(tenantID, token); token != "" && done {
 			seq = head
 		} else {
-			seq, err = c.log.AppendAudit(w, tenantID, linkEvent(ev))
+			seq, err = c.log.AppendAudit(rw, tenantID, linkEvent(ev))
 		}
 		if err != nil {
 			return 0, err

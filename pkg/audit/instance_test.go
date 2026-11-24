@@ -345,9 +345,103 @@ func TestChain_MarkedRetryAfterUnmarkedOriginalIsReplicaIndependent(t *testing.T
 				applyEvent(t, after, restarted, tenantID, order[1], instance)
 
 				sameTable(t, rawTable(t, restarted), rawTable(t, upgraded))
+				for _, table := range []*memory.MemoryStorage{upgraded, restarted} {
+					if n := onboardEventCount(t, table, tenantID); n != 1 {
+						t.Fatalf("tenant.onboard events = %d, want 1", n)
+					}
+				}
 			})
 		}
 	}
+}
+
+// TestChain_MarkedRetryAfterUnmarkedOriginalAppendsNothing applies an
+// unmarked onboarding event and then its marked retry, through either
+// opcode: in separate applies, across a Restore into a fresh Chain, and
+// staged into one batch. Each leaves exactly one tenant.onboard event and a
+// head at sequence 1.
+func TestChain_MarkedRetryAfterUnmarkedOriginalAppendsNothing(t *testing.T) {
+	const tenantID = "acme"
+	unmarked, marked := onboardingEvents(tenantID)
+	for _, instance := range []bool{false, true} {
+		name := map[bool]string{false: "audit append", true: "instance"}[instance]
+		t.Run(name+", separate applies", func(t *testing.T) {
+			store := memory.NewStorage()
+			c := NewChain()
+			applyEvent(t, c, store, tenantID, unmarked, instance)
+			applyEvent(t, c, store, tenantID, marked, instance)
+			requireOneOnboardEvent(t, c, store, tenantID)
+		})
+		t.Run(name+", restore between", func(t *testing.T) {
+			store := memory.NewStorage()
+			applyEvent(t, NewChain(), store, tenantID, unmarked, instance)
+			c := NewChain()
+			if err := c.Restore(store); err != nil {
+				t.Fatalf("Restore: %v", err)
+			}
+			applyEvent(t, c, store, tenantID, marked, instance)
+			requireOneOnboardEvent(t, c, store, tenantID)
+		})
+		t.Run(name+", one batch", func(t *testing.T) {
+			store := memory.NewStorage()
+			c := NewChain()
+			batch := store.Batch()
+			for _, ev := range []AuditEvent{unmarked, marked} {
+				var err error
+				if instance {
+					raw, mErr := json.Marshal(ev)
+					if mErr != nil {
+						t.Fatal(mErr)
+					}
+					_, err = c.AppendToInstance(batch, tenantID, [][]byte{raw})
+				} else {
+					_, err = c.Append(batch, tenantID, ev)
+				}
+				if err != nil {
+					t.Fatalf("apply: %v", err)
+				}
+			}
+			if err := batch.Commit(); err != nil {
+				t.Fatalf("Commit: %v", err)
+			}
+			requireOneOnboardEvent(t, c, store, tenantID)
+		})
+	}
+}
+
+// requireOneOnboardEvent fails unless store holds exactly one event record
+// for tenantID, a tenant.onboard one, and c's head is at sequence 1.
+func requireOneOnboardEvent(t *testing.T, c *Chain, store *memory.MemoryStorage, tenantID string) {
+	t.Helper()
+	if n := onboardEventCount(t, store, tenantID); n != 1 {
+		t.Fatalf("tenant.onboard events = %d, want 1", n)
+	}
+	if seq, _, _ := c.log.Head(tenantID); seq != 1 {
+		t.Fatalf("head seq = %d, want 1", seq)
+	}
+}
+
+// onboardEventCount returns how many of tenantID's event records in store
+// are tenant.onboard events, failing on any other event record.
+func onboardEventCount(t *testing.T, store *memory.MemoryStorage, tenantID string) int {
+	t.Helper()
+	it := store.NewIterator(&storage.IteratorOptions{
+		LowerBound: vlog.EventRangeStart(tenantID, 0),
+		UpperBound: vlog.EventRangeEnd(tenantID),
+	})
+	defer func() { _ = it.Close() }()
+	n := 0
+	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+		var ev AuditEvent
+		if err := json.Unmarshal(it.Value(), &ev); err != nil {
+			t.Fatalf("event record: %v", err)
+		}
+		if ev.Action != ActionTenantOnboard {
+			t.Fatalf("event action = %q, want %q", ev.Action, ActionTenantOnboard)
+		}
+		n++
+	}
+	return n
 }
 
 // TestChain_UnmarkedRepeatAfterMarkedAppendAppendsNothing: an onboarding
