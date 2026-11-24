@@ -177,19 +177,19 @@ const fenceTestPrefix = "__test:moves/"
 
 func fenceTestKey(tenantID string) string { return fenceTestPrefix + tenantID }
 
-// fenceTestRefusal is the injected refusal: production injects a
+// fenceTestRefusalError is the injected refusal: production injects a
 // *volume.TenantMovingReplicaError constructor; placement knows neither.
-type fenceTestRefusal struct {
+type fenceTestRefusalError struct {
 	TenantID string
 	Fence    string
 }
 
-func (e *fenceTestRefusal) Error() string { return "tenant " + e.TenantID + " is moving" }
+func (e *fenceTestRefusalError) Error() string { return "tenant " + e.TenantID + " is moving" }
 
 func newFencedStore(t *testing.T, kv placement.KV) *placement.Store {
 	t.Helper()
 	s, err := placement.NewStore(kv, placement.WithReplicaAddFence(fenceTestKey, func(tenantID string, fence []byte) error {
-		return &fenceTestRefusal{TenantID: tenantID, Fence: string(fence)}
+		return &fenceTestRefusalError{TenantID: tenantID, Fence: string(fence)}
 	}))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -231,9 +231,9 @@ func placementRaw(kv *fenceGuardedKV, p *placement.Placement) []byte {
 
 func requireFenceRefusal(t *testing.T, err error) {
 	t.Helper()
-	var refusal *fenceTestRefusal
+	var refusal *fenceTestRefusalError
 	if !errors.As(err, &refusal) {
-		t.Fatalf("error = %v, want the injected *fenceTestRefusal", err)
+		t.Fatalf("error = %v, want the injected *fenceTestRefusalError", err)
 	}
 	if refusal.TenantID != "t1" || refusal.Fence != "journal" {
 		t.Fatalf("refusal = %+v, want tenant t1 with the stored journal", refusal)
