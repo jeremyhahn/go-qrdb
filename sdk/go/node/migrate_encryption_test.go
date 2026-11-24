@@ -601,6 +601,37 @@ func TestNode_EnableEncryption_RootKeyAdoptAndJournalReadFault_StaysDown(t *test
 	require.Equal(t, updated, resp.Secret, "the post-recovery update must survive a second restart")
 }
 
+// TestNode_EnableEncryption_ShamirRootKeyAdoptFault_StaysDownUntilRecovery
+// injects a failure on the canonical root-key write of a Shamir target after
+// the wrapped root key is written: the node stays down, and a restart rolls
+// the migration forward so a share-holder quorum unseals it with every
+// seal-store secret intact and an update made after it survives a restart.
+func TestNode_EnableEncryption_ShamirRootKeyAdoptFault_StaysDownUntilRecovery(t *testing.T) {
+	ctx := context.Background()
+	f := newFaultNode(t, faultOptions{failRootKeyPut: true})
+	custody := sealtest.NewCustody("h1", "h2", "h3")
+	custody.Install(f.n.barrier.Load())
+	migErr := f.migrateShamir(t)
+	require.ErrorIs(t, migErr, errRootKeyPut)
+	strategy, err := canonicalRootKeyStrategy(ctx, f.n)
+	require.NoError(t, err)
+	require.Equal(t, seal.StrategyNone, strategy, "the canonical root key must still name the source strategy")
+	require.Nil(t, f.n.svcNode.Load(), "the data plane must stay down while the committed migration is unadopted")
+	require.Nil(t, f.n.Client(), "no client serves writes a restart's roll-forward would overwrite")
+	require.NoError(t, f.n.Close())
+
+	n2 := f.reopenShamir(t, custody, "after the adoption fault")
+	f.requireRecovered(t, n2)
+	updated := []byte("rotated-after-shamir-adoption-recovery")
+	require.NoError(t, n2.Client().SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: "db-primary", Secret: updated}))
+	require.NoError(t, n2.Close())
+
+	n3 := f.reopenShamir(t, custody, "a second time")
+	resp, err := n3.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "db-primary"})
+	require.NoError(t, err)
+	require.Equal(t, updated, resp.Secret, "the post-recovery update must survive a second restart")
+}
+
 // stagedFaultNode is a standalone node whose system barrier runs over a
 // failStagedDeleteBackend, holding seal-store secrets to migrate.
 type stagedFaultNode struct {
@@ -689,6 +720,43 @@ func (f *stagedFaultNode) migrate(t *testing.T) error {
 		Credentials:    seal.MustCredentials(context.Background(), []byte(stagedFaultPass)),
 	}
 	return f.n.EnableEncryption(context.Background(), service.BarrierScope{Kind: service.ScopeSystem}, opts)
+}
+
+// migrateShamir migrates the system barrier to a 2-of-3 Shamir target.
+func (f *stagedFaultNode) migrateShamir(t *testing.T) error {
+	t.Helper()
+	opts := seal.MigrationOptions{
+		TargetStrategy:  seal.StrategyShamir,
+		Mechanism:       seal.MechanismSwap,
+		Availability:    seal.AvailabilityQuiesced,
+		ShamirThreshold: 2,
+		ShamirTotal:     3,
+	}
+	return f.n.EnableEncryption(context.Background(), service.BarrierScope{Kind: service.ScopeSystem}, opts)
+}
+
+// reopenShamir restarts the node without a passphrase and unseals it with a
+// 2-of-3 quorum of custody's holders.
+func (f *stagedFaultNode) reopenShamir(t *testing.T, custody *sealtest.Custody, label string) *Node {
+	t.Helper()
+	ctx := context.Background()
+	cfg := stagedFaultConfig(f.dataDir)
+	// The system strategy registry builds the Shamir strategy from the configured M-of-N.
+	cfg.Seal.ShamirThreshold = 2
+	cfg.Seal.ShamirTotal = 3
+	rn, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoErrorf(t, err, "restart %s", label)
+	t.Cleanup(func() { _ = rn.Close() })
+	require.True(t, rn.IsSealed(), "a Shamir node never auto-unseals")
+	b := rn.barrier.Load()
+	custody.Install(b)
+	progress, err := custody.Quorum(ctx, b, seal.DomainUnseal, seal.OpUnseal, "h1", "h2")
+	require.NoErrorf(t, err, "unseal quorum %s", label)
+	require.True(t, progress.Complete)
+	require.NoError(t, rn.Unseal(ctx, seal.Credentials{}))
+	require.False(t, rn.IsSealed())
+	require.Equal(t, seal.StrategyShamir, rn.barrier.Load().Status().Strategy)
+	return rn
 }
 
 func (f *stagedFaultNode) reopen(t *testing.T, label string) *Node {
