@@ -18,10 +18,11 @@ import (
 	"context"
 	"time"
 
+	"google.golang.org/protobuf/types/known/emptypb"
+
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/group/groupauthz"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // groups returns the IAM group service, or a not-configured error.
