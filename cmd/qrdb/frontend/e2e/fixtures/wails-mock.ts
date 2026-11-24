@@ -506,6 +506,19 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
       createdAt: string;
       updatedAt: string;
     }>();
+    // Group store, in the Go transport group wire form (tenantID, roleIDs)
+    // that cmd/qrdb/bindings_groups.go takes and returns.
+    const groupStore = new Map<string, {
+      id: string;
+      tenantID: string;
+      name: string;
+      description: string;
+      roleIDs: string[];
+      createdAt: string;
+      updatedAt: string;
+    }>();
+    // Group id -> member user ids.
+    const groupMembers = new Map<string, string[]>();
 
     // Lease store
     const leaseStore = new Map<number, { id: number; ttl: number; granted_ttl: number; remaining_ttl: number }>();
@@ -1760,6 +1773,95 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           ListPermissions: async () => {
             maybeReject("RoleBinding.ListPermissions");
             return { categories: [] };
+          },
+        },
+        // GroupBinding speaks the Go transport group types: requests and
+        // responses use the keys tenantID, roleIDs, groupID and userID, as
+        // cmd/qrdb/bindings_groups.go and sdk/typescript/src/group-wire.ts
+        // define them.
+        GroupBinding: {
+          Create: async (req: { name: string; tenantID?: string; description?: string; roleIDs?: string[] }) => {
+            maybeReject("GroupBinding.Create");
+            const tenantID = req.tenantID || "default";
+            for (const g of groupStore.values()) {
+              if (g.tenantID === tenantID && g.name === req.name) {
+                throw new Error(`group "${req.name}" already exists`);
+              }
+            }
+            const id = fakeUUID();
+            const now = new Date().toISOString();
+            const group = {
+              id,
+              tenantID,
+              name: req.name,
+              description: req.description ?? "",
+              roleIDs: [...(req.roleIDs ?? [])],
+              createdAt: now,
+              updatedAt: now,
+            };
+            groupStore.set(id, group);
+            groupMembers.set(id, []);
+            return { ...group, roleIDs: [...group.roleIDs] };
+          },
+          Get: async (id: string) => {
+            maybeReject("GroupBinding.Get");
+            const group = groupStore.get(id);
+            if (!group) throw new Error(`group "${id}" not found`);
+            return { ...group, roleIDs: [...group.roleIDs] };
+          },
+          GetByName: async (req: { name: string; tenantID?: string }) => {
+            maybeReject("GroupBinding.GetByName");
+            const tenantID = req.tenantID || "default";
+            for (const g of groupStore.values()) {
+              if (g.tenantID === tenantID && g.name === req.name) {
+                return { ...g, roleIDs: [...g.roleIDs] };
+              }
+            }
+            throw new Error(`group "${req.name}" not found`);
+          },
+          Update: async (req: { id: string; name?: string; description?: string; roleIDs?: string[] }) => {
+            maybeReject("GroupBinding.Update");
+            const group = groupStore.get(req.id);
+            if (!group) throw new Error(`group "${req.id}" not found`);
+            if (req.name !== undefined) group.name = req.name;
+            if (req.description !== undefined) group.description = req.description;
+            if (req.roleIDs !== undefined) group.roleIDs = [...req.roleIDs];
+            group.updatedAt = new Date().toISOString();
+            return { ...group, roleIDs: [...group.roleIDs] };
+          },
+          Delete: async (id: string) => {
+            maybeReject("GroupBinding.Delete");
+            groupStore.delete(id);
+            groupMembers.delete(id);
+          },
+          List: async (req?: { tenantID?: string; page?: number; pageSize?: number }) => {
+            maybeReject("GroupBinding.List");
+            const groups = Array.from(groupStore.values())
+              .filter((g) => req?.tenantID === undefined || req.tenantID === "" || g.tenantID === req.tenantID)
+              .map((g) => ({ ...g, roleIDs: [...g.roleIDs] }));
+            return { groups, total: groups.length, hasMore: false };
+          },
+          AddMember: async (userID: string, groupID: string) => {
+            maybeReject("GroupBinding.AddMember");
+            if (!groupStore.has(groupID)) throw new Error(`group "${groupID}" not found`);
+            const members = groupMembers.get(groupID) ?? [];
+            if (!members.includes(userID)) groupMembers.set(groupID, [...members, userID]);
+          },
+          RemoveMember: async (userID: string, groupID: string) => {
+            maybeReject("GroupBinding.RemoveMember");
+            if (!groupStore.has(groupID)) throw new Error(`group "${groupID}" not found`);
+            groupMembers.set(groupID, (groupMembers.get(groupID) ?? []).filter((id) => id !== userID));
+          },
+          Members: async (groupID: string) => {
+            maybeReject("GroupBinding.Members");
+            const group = groupStore.get(groupID);
+            if (!group) throw new Error(`group "${groupID}" not found`);
+            const members = (groupMembers.get(groupID) ?? []).map((userID) => ({
+              userID,
+              username: userStore.get(userID)?.username ?? userID,
+              tenantID: group.tenantID,
+            }));
+            return { members };
           },
         },
         CertBinding: {
