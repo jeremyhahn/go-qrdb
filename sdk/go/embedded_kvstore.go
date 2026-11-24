@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	qerrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -28,7 +30,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // errEmbeddedStorageRequired is returned by NewEmbeddedKVStore when it is

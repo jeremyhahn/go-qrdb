@@ -9,11 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	sdkstorage "github.com/jeremyhahn/go-qrdb/sdk/go/storage"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 )
 
 // parityDAOs are the DAOs one parity run drives over a single store.
