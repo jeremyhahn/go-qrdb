@@ -735,6 +735,8 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 		Etcd:        raw.Etcd,
 		FTS:         raw.FTS,
 
+		PendingUserTTL: raw.PendingUserTTL,
+
 		UnencryptedAtRest: raw.UnencryptedAtRest,
 	}, nil
 }
@@ -1076,6 +1078,8 @@ type serverCapabilities struct {
 	PostgreSQL  bool   `json:"postgresql"`
 	Etcd        bool   `json:"etcd"`
 	FTS         bool   `json:"fts"`
+
+	PendingUserTTL bool `json:"pendingUserTTL"`
 
 	UnencryptedAtRest []string `json:"unencryptedAtRest"`
 }

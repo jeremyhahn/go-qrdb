@@ -196,6 +196,13 @@ type CapabilitiesResponse struct {
 	Etcd        bool   `json:"etcd"`
 	FTS         bool   `json:"fts"`
 
+	// PendingUserTTL is a request-feature bit (owner ruling 1243): true when
+	// the server honours CreateUserRequest.PendingTTL and never drops it. A
+	// server that does not send it (every release before the bit) reads as
+	// false; RequirePendingUserTTL then refuses a TTL-bearing create before
+	// it is sent.
+	PendingUserTTL bool `json:"pendingUserTTL"`
+
 	// UnencryptedAtRest lists, when seal is enabled, where the node keeps
 	// data on disk outside the barrier's at-rest encryption. Empty otherwise.
 	UnencryptedAtRest []string `json:"unencryptedAtRest,omitempty"`
