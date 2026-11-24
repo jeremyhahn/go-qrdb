@@ -811,6 +811,91 @@ func TestMoveReconciler_CancelDuringCopyAwaitsIt(t *testing.T) {
 	}
 }
 
+// settleCancelRunner is the single replica's step runner double: its copy
+// settle reopens the replica from the destination, takes a client write
+// there, and records the administrator's cancel through the real Catalog,
+// the CLI write and cancel landing while the copy step settles. Its
+// copy-back abort step carries the destination's writes to the source.
+type settleCancelRunner struct {
+	cat         *Catalog
+	steps       []MoveStep
+	destination []string
+	source      []string
+	cancel      *Move
+	cancelErr   error
+}
+
+func (s *settleCancelRunner) RunMoveStep(_ context.Context, step MoveStep) error {
+	s.steps = append(s.steps, step)
+	if step.Phase == MoveStepPhaseAbort && step.Copied {
+		s.source = append(s.source, s.destination...)
+	}
+	return nil
+}
+
+func (s *settleCancelRunner) SettleMoveStep(ctx context.Context, step MoveStep) error {
+	if step.Phase != MoveStepPhaseCopy {
+		return nil
+	}
+	s.destination = append(s.destination, "acked-on-destination")
+	s.cancel, s.cancelErr = s.cat.CancelMove(ctx, step.TenantID)
+	return nil
+}
+
+// TestMoveReconciler_SingleReplicaCancelWhileSettlingCopiesBack pins the
+// single-replica cancel window the CLI cannot reach: the destination reopen
+// and the release of the settled copy step run in one worker pass, so a
+// cancel recorded between them is the only one that finds the destination
+// serving and the step not yet released. That cancel keeps the step, the
+// release turns the move aborting with the node copied instead of cutting
+// over, and the abort step runs as the copy-back, so the write the
+// destination acknowledged reaches the source pool the tenant stays on.
+func TestMoveReconciler_SingleReplicaCancelWhileSettlingCopiesBack(t *testing.T) {
+	cat, kv, _ := newMoveTestCatalog(t)
+	req := admitAcme()
+	req.ReplicaNodes = []string{"n1"}
+	if _, err := cat.AdmitMove(context.Background(), req); err != nil {
+		t.Fatalf("AdmitMove: %v", err)
+	}
+	recorder := &fakeRecorder{}
+	cat.SetMoveCutoverRecorder(recorder)
+	runner := &settleCancelRunner{cat: cat}
+	r := newTestReconciler(t, cat, runner)
+
+	reconcilePasses(t, r, 1)
+	if runner.cancelErr != nil || runner.cancel == nil || !runner.cancel.CancelRequested || runner.cancel.StepNode != "n1" {
+		t.Fatalf("CancelMove inside the settle = %+v, %v, want cancel requested with n1 kept", runner.cancel, runner.cancelErr)
+	}
+	m := storedMove(t, kv, "acme")
+	if m == nil || m.State != MoveStateAborting || !reflect.DeepEqual(m.NodesCopied, []string{"n1"}) {
+		t.Fatalf("journal after the settling pass = %+v, want aborting with n1 copied", m)
+	}
+	if len(recorder.calls) != 0 {
+		t.Fatalf("recorder calls = %v, want none: the cancel wins over the cut over", recorder.calls)
+	}
+
+	reconcilePasses(t, r, 3)
+	want := []MoveStep{
+		{TenantID: "acme", NodeID: "n1", FromPool: "fast", ToPool: "bulk", Attempt: 1, Phase: MoveStepPhaseCopy},
+		{TenantID: "acme", NodeID: "n1", FromPool: "fast", ToPool: "bulk", Attempt: 1, Phase: MoveStepPhaseAbort, Copied: true},
+	}
+	if !reflect.DeepEqual(runner.steps, want) {
+		t.Fatalf("steps = %+v, want the copy then the copy-back abort", runner.steps)
+	}
+	if !reflect.DeepEqual(runner.source, []string{"acked-on-destination"}) {
+		t.Fatalf("source writes = %v, want the destination-acknowledged write copied back", runner.source)
+	}
+	if m := storedMove(t, kv, "acme"); m != nil {
+		t.Fatalf("journal = %+v, want retired", m)
+	}
+	if a := storedAssignment(t, kv, "acme"); a.Pool != "fast" {
+		t.Fatalf("assignment pool = %q, want the source pool fast", a.Pool)
+	}
+	if len(recorder.calls) != 0 || reservedOn(t, cat, "bulk") != 0 {
+		t.Fatalf("recorder calls = %v, bulk reserved = %d, want no cut over", recorder.calls, reservedOn(t, cat, "bulk"))
+	}
+}
+
 // casHookRunner runs hook inside the first copy step, between the copy and
 // the reconciler's CompleteMoveStep, and records every settle.
 type casHookRunner struct {
