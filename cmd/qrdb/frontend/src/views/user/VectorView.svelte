@@ -470,7 +470,7 @@
     return raw
       .split(",")
       .map((v) => parseFloat(v.trim()))
-      .filter((v) => !Number.isNaN(v));
+      .filter((v) => Number.isFinite(v));
   }
 
   function parseJson(raw: string): Record<string, unknown> {
@@ -630,9 +630,9 @@
       const vec = o?.vector;
       if (
         o === null || typeof o !== "object" || typeof o.id !== "string" || o.id === "" ||
-        !Array.isArray(vec) || vec.length === 0 || !vec.every((n) => typeof n === "number")
+        !Array.isArray(vec) || vec.length === 0 || !vec.every((n) => typeof n === "number" && Number.isFinite(n))
       ) {
-        showToast("warning", `Batch item ${i + 1} needs a string id and a numeric vector array.`);
+        showToast("warning", `Batch item ${i + 1} needs a string id and a vector of finite numbers.`);
         return null;
       }
       // The transports send all-digit ids as JSON numbers; past 2^53 - 1

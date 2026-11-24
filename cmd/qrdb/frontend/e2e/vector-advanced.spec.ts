@@ -461,6 +461,23 @@ test.describe("Vector View - advanced operations", () => {
     await expect(page.getByText("9007199254740993", { exact: true })).toHaveCount(0);
   });
 
+  test("batch upsert refuses a non-finite vector component", async ({ page }) => {
+    // JSON.parse reads 1e309 as Infinity, which JSON.stringify would send as null.
+    const nonFinite = '[{"id":"b1","vector":[1e309,0.2,0.3]}]';
+    await page.getByRole("button", { name: "Batch upsert" }).click();
+    const panel = page.getByLabel("Batch Upsert");
+    await expect(panel).toBeVisible();
+    await panel.getByTestId("batch-upsert-input").fill(nonFinite);
+    await panel.getByRole("button", { name: "Upsert batch" }).click();
+    await expect(
+      page.getByText("Batch item 1 needs a string id and a vector of finite numbers."),
+    ).toBeVisible({ timeout: 5_000 });
+    await expect(panel.getByTestId("batch-upsert-succeeded")).toHaveCount(0);
+
+    await panel.getByLabel("Close", { exact: true }).click();
+    await expect(page.getByText("b1", { exact: true })).toHaveCount(0);
+  });
+
   test("a late getVector response for a closed selection never reaches the editor", async ({ page }) => {
     await upsertVector(page, "v1", "0.1, 0.2, 0.3", '{"label": "first"}');
     await upsertVector(page, "v2", "0.4, 0.5, 0.6", '{"label": "second"}');
