@@ -204,8 +204,9 @@ func SharedStoreKeyspaceProbe(eng backend.SMAdapter) SharedKeyspaceProbe {
 // shard, so a legacy memory database keeps its shared route there too.
 func LookupKeyspaceProbe(lookup func(ctx context.Context, query interface{}) (interface{}, error)) SharedKeyspaceProbe {
 	return func(tenantID, db string) (bool, error) {
+		ns := tenant.ComposeNamespace(tenantID, db)
 		res, err := lookup(context.Background(), &statemachine.PrefixQuery{
-			Prefix: []byte(tenant.ComposeNamespace(tenantID, db)),
+			Prefix: []byte(ns),
 			Limit:  1,
 		})
 		if err != nil {
@@ -215,7 +216,27 @@ func LookupKeyspaceProbe(lookup func(ctx context.Context, query interface{}) (in
 		if !ok {
 			return false, fmt.Errorf("shared keyspace probe: unexpected lookup result %T", res)
 		}
-		return len(keys) > 0, nil
+		if len(keys) > 0 {
+			return true, nil
+		}
+		// A database whose only data is time series holds no MVCC
+		// metadata: its points, metric index and retention policy sit
+		// under raw keys whose namespace follows a fixed prefix.
+		res, err = lookup(context.Background(), &statemachine.RawPrefixExistsQuery{
+			Prefixes: [][]byte{
+				[]byte("ts:" + ns),
+				[]byte("idx:metric:" + ns),
+				[]byte("retention:" + ns),
+			},
+		})
+		if err != nil {
+			return false, err
+		}
+		found, ok := res.(bool)
+		if !ok {
+			return false, fmt.Errorf("shared keyspace probe: unexpected raw lookup result %T", res)
+		}
+		return found, nil
 	}
 }
 
@@ -661,6 +682,19 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 	if err != nil {
 		return nil, openErr(err)
 	}
+	if b.Backend == database.BackendMemory && b.Encryptor == database.EncryptorTenant {
+		tenantID := b.TenantID
+		stg = &sealGatedStorage{Storage: stg, check: func() error {
+			_, err := f.tenantEnc(tenantID)
+			if _, sealed := errors.AsType[*BindingBarrierSealedError](err); sealed {
+				// database.SealedError is the refusal every service
+				// translates to its sealed status, as for a sealed
+				// encrypted store.
+				return errors.Join(&database.SealedError{}, err)
+			}
+			return err
+		}}
+	}
 	hub := watch.NewHub(f.hubOpts...)
 	lr := lease.NewLessor()
 	eng, err := NewLocalEngine(b.Backend, stg, pdb, hub, lr)
@@ -711,6 +745,142 @@ func newBindingVector(local *backend.LocalBackend, policy tenant.ClusterIsolatio
 	}
 	return svc, closeFn, nil
 }
+
+// sealGatedStorage is a memory store of a tenant-barrier binding gated on
+// the barrier: a memory store holds plaintext, so no decrypt fails once the
+// tenant seals, and the gate refuses every read and write instead, through
+// the store, its batches, snapshots and iterators, with the barrier lookup's
+// error (a *database.SealedError joined with *BindingBarrierSealedError when
+// sealed). A handle resolved before
+// the seal therefore stops serving at the seal, as an encrypted store does.
+type sealGatedStorage struct {
+	storage.Storage
+	check func() error
+}
+
+func (s *sealGatedStorage) Get(key []byte) ([]byte, error) {
+	if err := s.check(); err != nil {
+		return nil, err
+	}
+	return s.Storage.Get(key)
+}
+
+func (s *sealGatedStorage) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	return gatedIterator(s.Storage.NewIterator(opts), s.check)
+}
+
+func (s *sealGatedStorage) Set(key, value []byte) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	return s.Storage.Set(key, value)
+}
+
+func (s *sealGatedStorage) Delete(key []byte) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	return s.Storage.Delete(key)
+}
+
+func (s *sealGatedStorage) DeleteRange(start, end []byte) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	return s.Storage.DeleteRange(start, end)
+}
+
+func (s *sealGatedStorage) List(prefix []byte) ([][]byte, error) {
+	if err := s.check(); err != nil {
+		return nil, err
+	}
+	return s.Storage.List(prefix)
+}
+
+func (s *sealGatedStorage) Exists(key []byte) (bool, error) {
+	if err := s.check(); err != nil {
+		return false, err
+	}
+	return s.Storage.Exists(key)
+}
+
+func (s *sealGatedStorage) Batch() storage.Batch {
+	return &sealGatedBatch{Batch: s.Storage.Batch(), check: s.check}
+}
+
+func (s *sealGatedStorage) Snapshot() (storage.Snapshot, error) {
+	if err := s.check(); err != nil {
+		return nil, err
+	}
+	snap, err := s.Storage.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	return &sealGatedSnapshot{Snapshot: snap, check: s.check}, nil
+}
+
+// sealGatedBatch refuses the batch's reads and its commit once sealed.
+type sealGatedBatch struct {
+	storage.Batch
+	check func() error
+}
+
+func (b *sealGatedBatch) Get(key []byte) ([]byte, error) {
+	if err := b.check(); err != nil {
+		return nil, err
+	}
+	return b.Batch.Get(key)
+}
+
+func (b *sealGatedBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	return gatedIterator(b.Batch.NewIterator(opts), b.check)
+}
+
+func (b *sealGatedBatch) Commit() error {
+	if err := b.check(); err != nil {
+		return err
+	}
+	return b.Batch.Commit()
+}
+
+// sealGatedSnapshot refuses a snapshot's reads once sealed.
+type sealGatedSnapshot struct {
+	storage.Snapshot
+	check func() error
+}
+
+func (s *sealGatedSnapshot) Get(key []byte) ([]byte, error) {
+	if err := s.check(); err != nil {
+		return nil, err
+	}
+	return s.Snapshot.Get(key)
+}
+
+func (s *sealGatedSnapshot) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	return gatedIterator(s.Snapshot.NewIterator(opts), s.check)
+}
+
+// sealGatedIterator positions nowhere and reports the gate's error once
+// sealed, so a scan ends with the error instead of reading as empty.
+type sealGatedIterator struct {
+	storage.Iterator
+	err error
+}
+
+func gatedIterator(it storage.Iterator, check func() error) storage.Iterator {
+	if err := check(); err != nil {
+		return &sealGatedIterator{Iterator: it, err: err}
+	}
+	return it
+}
+
+func (it *sealGatedIterator) SeekToFirst() bool  { return false }
+func (it *sealGatedIterator) SeekToLast() bool   { return false }
+func (it *sealGatedIterator) Seek(_ []byte) bool { return false }
+func (it *sealGatedIterator) Next() bool         { return false }
+func (it *sealGatedIterator) Prev() bool         { return false }
+func (it *sealGatedIterator) Valid() bool        { return false }
+func (it *sealGatedIterator) Error() error       { return it.err }
 
 // bindingStorageConfig returns the storage configuration a binding's store
 // opens with. An objstore database on the local provider lives under its

@@ -48,6 +48,9 @@ type storeResolver struct {
 	databases    ownedDatabaseSource
 	tenantSvc    tenant.TenantServicer
 	systemTenant string
+	// evictBundles drops (tenantID, db)'s cached service bundles from
+	// every transport's registry once its drop fence target is resolved.
+	evictBundles func(tenantID, db string)
 }
 
 // ownedDatabaseSource is the catalog FenceTarget asks for a database the
@@ -203,6 +206,18 @@ func (r *storeResolver) ReclaimTarget(ctx context.Context, tenantID string) (ser
 // incarnation's: it is refused with *database.DropSupersededError (see
 // RaftBackendFactory.FenceServices).
 func (r *storeResolver) FenceTarget(ctx context.Context, tenantID, db, incarnation string) (service.FenceStore, bool, error) {
+	store, ok, err := r.fenceTarget(ctx, tenantID, db, incarnation)
+	if err == nil && r.evictBundles != nil {
+		// The drop fences the database here: from now on no request may
+		// be served from a bundle cached over its store, so every cache
+		// drops and closes its entry (a recreate builds a fresh one).
+		r.evictBundles(tenantID, db)
+	}
+	return store, ok, err
+}
+
+// fenceTarget is FenceTarget without the bundle eviction.
+func (r *storeResolver) fenceTarget(ctx context.Context, tenantID, db, incarnation string) (service.FenceStore, bool, error) {
 	if store, ok, err := r.materializedFenceTarget(tenantID, db, incarnation); ok {
 		return store, true, err
 	}

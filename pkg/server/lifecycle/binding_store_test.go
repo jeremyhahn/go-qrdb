@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -40,6 +41,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -154,6 +157,82 @@ func TestSharedStoreKeyspaceProbe_ReportsOnlyItsNamespace(t *testing.T) {
 	readErr := errors.New("shared store read failed")
 	if got, err := lifecycle.SharedStoreKeyspaceProbe(failingLookup{err: readErr})("acme", "orders"); !errors.Is(err, readErr) || got {
 		t.Errorf("failing store: probe = %v, %v; want false, %v", got, err, readErr)
+	}
+}
+
+// TestSharedStoreKeyspaceProbe_SeesTimeSeriesOnlyDatabase proves the legacy
+// probe finds a database whose only data is time series: its raw keys start
+// "ts:" + namespace, not the namespace, and hold no MVCC metadata.
+func TestSharedStoreKeyspaceProbe_SeesTimeSeriesOnlyDatabase(t *testing.T) {
+	ctx := context.Background()
+	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.StorageConfig{})
+	if err != nil {
+		t.Fatalf("NewLocalStorage: %v", err)
+	}
+	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, pdb, watch.NewHub(), lease.NewLessor())
+	if err != nil {
+		_ = stg.Close()
+		t.Fatalf("NewLocalEngine: %v", err)
+	}
+	host := backend.NewLocalBackend(eng)
+	t.Cleanup(func() {
+		_ = host.Close()
+		_ = stg.Close()
+	})
+	probe := lifecycle.SharedStoreKeyspaceProbe(eng)
+
+	ts := service.NewTimeSeriesService(host, shard.ShardKV)
+	if err := ts.Write(ctx, tenant.ComposeNamespace("acme", "orders")+"cpu", 1, time.Unix(1700000000, 0), nil); err != nil {
+		t.Fatalf("write point: %v", err)
+	}
+
+	found, err := probe("acme", "orders")
+	if err != nil || !found {
+		t.Fatalf("probe(acme, orders) = %v, %v; want true, nil", found, err)
+	}
+	found, err = probe("acme", "order")
+	if err != nil || found {
+		t.Fatalf("probe(acme, order) = %v, %v; want false, nil", found, err)
+	}
+}
+
+// probeReadFaultStorage fails every point read once armed: a KV key's value
+// read under the probe's prefix scan faults through the engine.
+type probeReadFaultStorage struct {
+	storage.Storage
+	err error
+}
+
+func (s *probeReadFaultStorage) Get(key []byte) ([]byte, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.Storage.Get(key)
+}
+
+// TestSharedStoreKeyspaceProbe_ReturnsAReadFault proves a read fault under
+// the namespace is the probe's error, never a "no legacy data" false.
+func TestSharedStoreKeyspaceProbe_ReturnsAReadFault(t *testing.T) {
+	ctx := context.Background()
+	stg := &probeReadFaultStorage{Storage: memory.NewStorage()}
+	eng, err := engine.NewMVCCEngine(stg)
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	host := backend.NewLocalBackend(eng)
+	t.Cleanup(func() {
+		_ = host.Close()
+		_ = stg.Close()
+	})
+	key := tenant.ComposeNamespace("acme", "orders") + "k"
+	if err := service.NewKVService(host, shard.ShardKV).Put(ctx, key, []byte("v")); err != nil {
+		t.Fatalf("put %s: %v", key, err)
+	}
+
+	stg.err = errors.New("injected value read fault")
+	found, err := lifecycle.SharedStoreKeyspaceProbe(eng)("acme", "orders")
+	if !errors.Is(err, stg.err) || found {
+		t.Fatalf("probe = %v, %v; want false and the read fault", found, err)
 	}
 }
 
@@ -878,8 +957,15 @@ func TestLocalBindingFactory_VolumeTenantDatabaseOwnStore(t *testing.T) {
 			if dataRoot != want {
 				t.Fatalf("DataRoot = %q, want %q", dataRoot, want)
 			}
-			if len(asked) != 1 || asked[0] != bindingTenant {
+			// A memory store's seal gate looks the tenant's barrier up on
+			// every operation; every lookup is still the tenant's own.
+			if len(asked) == 0 || (b != database.BackendMemory && len(asked) != 1) {
 				t.Fatalf("tenant encryptor lookups = %v, want [%q]", asked, bindingTenant)
+			}
+			for _, id := range asked {
+				if id != bindingTenant {
+					t.Fatalf("tenant encryptor lookups = %v, want only %q", asked, bindingTenant)
+				}
 			}
 			kv := service.NewKVService(mb.Host(), mb.ShardID())
 			value := []byte("volume-tenant-plaintext-value")
@@ -2049,5 +2135,39 @@ func TestLocalBindingFactory_BarrierTenantSealRefusesReadsOnOpenStore(t *testing
 				}
 			}
 		})
+	}
+}
+
+// TestLocalBindingFactory_BarrierTenantSealRefusesMemoryReadsAndWrites proves
+// a barrier tenant's memory database, which holds no ciphertext to fail
+// decryption, still stops serving once the tenant seals: the handle resolved
+// before the seal refuses every engine's read and a KV write.
+func TestLocalBindingFactory_BarrierTenantSealRefusesMemoryReadsAndWrites(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	reg, tb := newRegisteredTenantBarrier(t)
+	mgr := newBarrierTenantManager(t, dir, atrest.New(newUnsealedBarrier(t)),
+		lifecycle.TenantBarrierEncryptorLookup(func() *seal.BarrierRegistry { return reg }))
+	defer func() { _ = mgr.Close() }()
+	db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "vault", Backend: database.BackendMemory})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mb := materialized(t, db)
+	live := newSealEngines(mb.Host(), mb.ShardID())
+	docID, withTS := live.writeEveryEngine(t, "vault")
+	assertControl(t, "open store", live.readEveryEngine("vault", docID, withTS))
+	kv := service.NewKVService(mb.Host(), mb.ShardID())
+
+	if err := tb.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	for _, r := range live.readEveryEngine("vault", docID, withTS) {
+		if r.err == nil {
+			t.Errorf("%s: a read on the memory store succeeded after its tenant barrier was sealed (got %q)", r.engine, r.got)
+		}
+	}
+	if err := kv.Put(ctx, "after", []byte(sealMVCCMarker)); err == nil {
+		t.Fatal("a write to the memory store succeeded after its tenant barrier was sealed")
 	}
 }

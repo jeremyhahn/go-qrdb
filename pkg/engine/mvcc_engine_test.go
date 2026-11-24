@@ -593,6 +593,43 @@ func TestMVCCEngine_Lookup_PrefixQuery(t *testing.T) {
 	}
 }
 
+// valueReadFaultStorage fails every point read once armed, as a storage
+// fault under a prefix scan's per-key value read.
+type valueReadFaultStorage struct {
+	storage.Storage
+	err error
+}
+
+func (s *valueReadFaultStorage) Get(key []byte) ([]byte, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.Storage.Get(key)
+}
+
+// TestMVCCEngine_Lookup_PrefixQueryReturnsAReadFault proves a prefix query
+// whose value read faults returns the fault instead of reading the key as
+// absent.
+func TestMVCCEngine_Lookup_PrefixQueryReturnsAReadFault(t *testing.T) {
+	stg := &valueReadFaultStorage{Storage: memory.NewStorage()}
+	defer func() { _ = stg.Close() }()
+	eng, err := NewMVCCEngine(stg)
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	applyMVCCEntries(t, eng, []sm.Entry{
+		mvccPutEntry(1, []byte("ns:a"), []byte("1"), 0),
+	})
+
+	stg.err = errors.New("injected value read fault")
+	got, err := eng.Lookup(context.Background(), &statemachine.PrefixQuery{Prefix: []byte("ns:")})
+	if !errors.Is(err, stg.err) {
+		t.Fatalf("Lookup = %v, %v; want the read fault", got, err)
+	}
+}
+
 func TestMVCCEngine_Lookup_PrefixQueryWithLimit(t *testing.T) {
 	eng, stg := newMVCCEngine(t)
 	defer func() { _ = stg.Close() }()

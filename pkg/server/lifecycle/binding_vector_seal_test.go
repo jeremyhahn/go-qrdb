@@ -39,7 +39,7 @@ import (
 func TestLocalBindingFactory_BarrierTenantSealFailsCachedVectorSearch(t *testing.T) {
 	ctx := context.Background()
 	search := &service.SearchSimilarRequest{Namespace: "ns", QueryVector: []float32{1, 0}, K: 2}
-	for _, b := range []database.BackendType{database.BackendFile} {
+	for _, b := range []database.BackendType{database.BackendFile, database.BackendMemory} {
 		t.Run(string(b), func(t *testing.T) {
 			dir := t.TempDir()
 			reg, tb := newRegisteredTenantBarrier(t)

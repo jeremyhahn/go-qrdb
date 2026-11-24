@@ -15,6 +15,7 @@
 package server
 
 import (
+	"io"
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -172,4 +173,74 @@ func (c *materializedServiceCache) getOrBuild(db *database.Database, build func(
 	svcs := build()
 	c.entries[key] = &dedicatedStoreServiceEntry{db: db, svcs: svcs}
 	return svcs
+}
+
+// evict drops tenantID/name's cached bundle, closing what it holds, so a
+// dropped database's closed store and vector indexes stay reachable through
+// no cache. A missing entry is a no-op.
+func (c *materializedServiceCache) evict(tenantID, name string) {
+	key := tenantID + "\x00" + name
+	c.mu.Lock()
+	e, ok := c.entries[key]
+	delete(c.entries, key)
+	c.mu.Unlock()
+	if ok {
+		closeServiceBundle(e.svcs)
+	}
+}
+
+// evict drops name's cached bundle when it was built for tenantID's
+// database, closing what it holds. The cache is keyed by name alone, so a
+// drop of another tenant's same-named database leaves the entry in place.
+func (c *dedicatedStoreServiceCache) evict(tenantID, name string) {
+	c.mu.Lock()
+	e, ok := c.entries[name]
+	if ok && e.db.TenantID() != tenantID {
+		ok = false
+	}
+	if ok {
+		delete(c.entries, name)
+	}
+	c.mu.Unlock()
+	if ok {
+		closeServiceBundle(e.svcs)
+	}
+}
+
+// closeServiceBundle closes the parts of an evicted bundle that hold
+// resources of their own: the vector service and its in-memory HNSW
+// indexes. Its store is the database's and closes with the drop.
+func closeServiceBundle(svcs *DatabaseServices) {
+	if svcs == nil {
+		return
+	}
+	if c, ok := svcs.Vector.(io.Closer); ok {
+		_ = c.Close()
+	}
+}
+
+// bundleEvictors collects the evict of every bundle cache the server's
+// transports build (each transport has its own registry and caches), so a
+// drop's fence evicts the database from all of them. The zero value is
+// ready to use.
+type bundleEvictors struct {
+	mu    sync.Mutex
+	evict []func(tenantID, name string)
+}
+
+// add registers the caches of one registry.
+func (b *bundleEvictors) add(dedicated *dedicatedStoreServiceCache, materialized *materializedServiceCache) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.evict = append(b.evict, dedicated.evict, materialized.evict)
+}
+
+// evictAll evicts tenantID/name from every registered cache.
+func (b *bundleEvictors) evictAll(tenantID, name string) {
+	b.mu.Lock()
+	fns := append([]func(string, string){}, b.evict...)
+	b.mu.Unlock()
+	for _, fn := range fns {
+		fn(tenantID, name)
+	}
 }

@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"sort"
@@ -880,6 +881,9 @@ func (e *MVCCEngine) LookupAt(_ context.Context, r storage.Reader, rev int64, qu
 	case *statemachine.PrefixQuery:
 		return e.lookupPrefix(r, q)
 
+	case *statemachine.RawPrefixExistsQuery:
+		return e.lookupRawPrefixExists(r, q)
+
 	case kv.ListQuery:
 		return e.listKeys(r, q.Prefix)
 
@@ -1025,12 +1029,21 @@ func (e *MVCCEngine) lookupPrefix(r storage.Reader, q *statemachine.PrefixQuery)
 
 	result := make(map[string][]byte)
 	count := 0
+	var readErr error
 	err := mvcc.ForEachMetaKeyWithPrefix(iter, q.Prefix, func(userKey []byte) bool {
 		if !skipFilter && isInternalKey(string(userKey)) {
 			return true
 		}
 		kvResult, getErr := e.store.GetFrom(r, userKey)
-		if getErr != nil || kvResult == nil {
+		if getErr != nil {
+			var knf *mvcc.KeyNotFoundError
+			if errors.As(getErr, &knf) {
+				return true
+			}
+			readErr = getErr
+			return false
+		}
+		if kvResult == nil {
 			return true
 		}
 		result[string(userKey)] = kvResult.Value
@@ -1040,7 +1053,40 @@ func (e *MVCCEngine) lookupPrefix(r storage.Reader, q *statemachine.PrefixQuery)
 	if err != nil {
 		return nil, err
 	}
+	if readErr != nil {
+		return nil, fmt.Errorf("prefix query: read %q: %w", q.Prefix, readErr)
+	}
 	return result, nil
+}
+
+// lookupRawPrefixExists answers a RawPrefixExistsQuery with one bounded
+// iterator per prefix over the raw keyspace: the first key found answers
+// true; an iterator fault is returned, never read as absence.
+func (e *MVCCEngine) lookupRawPrefixExists(r storage.Reader, q *statemachine.RawPrefixExistsQuery) (bool, error) {
+	for _, prefix := range q.Prefixes {
+		if len(prefix) == 0 {
+			return false, &InvalidQueryError{Reason: "raw prefix exists query: empty prefix"}
+		}
+		found, err := rawPrefixExists(r, prefix)
+		if err != nil || found {
+			return found, err
+		}
+	}
+	return false, nil
+}
+
+func rawPrefixExists(r storage.Reader, prefix []byte) (bool, error) {
+	iter := r.NewIterator(&storage.IteratorOptions{
+		LowerBound: prefix,
+		UpperBound: storage.PrefixEnd(prefix),
+		OnlyKeys:   true,
+	})
+	defer func() { _ = iter.Close() }()
+	found := iter.SeekToFirst() && iter.Valid()
+	if err := iter.Error(); err != nil {
+		return false, fmt.Errorf("raw prefix exists query: scan %q: %w", prefix, err)
+	}
+	return found, nil
 }
 
 // ---------------------------------------------------------------------------

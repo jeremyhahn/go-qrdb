@@ -149,6 +149,10 @@ var newSQLServiceFn buildSQLServiceFn
 // based on the protocol configuration and manages their lifecycles with
 // rollback on startup failure.
 type Server struct {
+	// bundleEvictors evicts a dropped database from every transport's
+	// service-bundle caches at its drop fence (storeResolver.FenceTarget).
+	bundleEvictors bundleEvictors
+
 	// autoClientCAs is the one ClientCAs pool every auto-provisioned
 	// listener configuration shares; see autoTLSClientCAs.
 	autoClientCAs struct {
@@ -1718,7 +1722,7 @@ func (s *Server) wireStoreResolver() {
 	if s.opts.keyspaceReclaim == nil || (s.opts.tenantHosts == nil && s.opts.raftBackend == nil && s.opts.dbManager == nil) {
 		return
 	}
-	resolver := &storeResolver{systemTenant: tenantid.System}
+	resolver := &storeResolver{systemTenant: tenantid.System, evictBundles: s.bundleEvictors.evictAll}
 	// Without a volume or raft registry no tenant's isolation moves its data
 	// out of the system store, so the tenant lookup is left unset.
 	if s.opts.tenantHosts != nil || s.opts.raftBackend != nil {
@@ -2464,7 +2468,11 @@ func (s *Server) buildServiceRegistry() service.Registry {
 	if s.opts.dbRegistry == nil {
 		return nil
 	}
-	return NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenantid.System, s.restRegistryOptions()...)
+	reg := NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenantid.System, s.restRegistryOptions()...)
+	if rr, ok := reg.(*restServiceRegistry); ok {
+		s.bundleEvictors.add(rr.dedicatedStore, rr.materialized)
+	}
+	return reg
 }
 
 // restRegistryOptions is the one option list every restServiceRegistry this

@@ -35,6 +35,17 @@ type PrefixQuery struct {
 	Limit int
 }
 
+// RawPrefixExistsQuery asks whether any raw storage key starts with one of
+// Prefixes. It reads the storage keyspace as written, not the MVCC metadata
+// a PrefixQuery walks, so it also sees data kept under raw keys (time-series
+// points, metric indexes, retention policies). The answer is a bool; a read
+// fault is returned as the error, never as false.
+type RawPrefixExistsQuery struct {
+	// Prefixes are the raw key prefixes to look for; an empty prefix is
+	// refused, so the query cannot match the whole keyspace by accident.
+	Prefixes [][]byte
+}
+
 // LeaseManager handles lease lifecycle operations within the FSM.
 // Implementations must be safe for concurrent use. The FSM delegates
 // lease grant, revoke, and keep-alive mutations through this interface
