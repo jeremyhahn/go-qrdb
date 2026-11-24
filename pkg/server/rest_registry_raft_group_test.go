@@ -91,18 +91,23 @@ const raftGroupValue = "raft-group-at-rest-plaintext-value-0123456789"
 // under the group's barrier).
 func assertGroupStoreUnder(t *testing.T, root string) {
 	t.Helper()
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatalf("open root %s: %v", root, err)
+	}
+	defer func() { _ = r.Close() }()
 	files := 0
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(r.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
 		files++
-		data, rerr := os.ReadFile(path)
+		data, rerr := r.ReadFile(path)
 		if rerr != nil {
 			return rerr
 		}
 		if bytes.Contains(data, []byte(raftGroupValue)) {
-			t.Errorf("%s holds the value in plaintext", path)
+			t.Errorf("%s holds the value in plaintext", filepath.Join(root, path))
 		}
 		return nil
 	})
