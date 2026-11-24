@@ -20,15 +20,19 @@ var ErrNilAdmissionChecker = errors.New("sqlitevfs: nil entitlement or quota che
 // under its quota.ResourceSQLiteDatabases limit.
 //
 // Admit takes the tenant's Backend and checkers as inputs and picks no place
-// where a Store is constructed: the caller that will construct one (still
-// open, o1) calls Admit before NewStore. It validates db first
+// where a Store is constructed. The page store lives in the application, so
+// its caller is the server's write-path gate: the commit or staged publish
+// that puts a database's meta record while none is live is admitted here
+// before it is applied (pkg/server, withSQLiteAdmission). It validates db first
 // (ValidateDatabaseName). A database whose meta record is live at the newest
 // revision already exists, and opening it is not creation: Admit returns nil
 // without either check. Otherwise it calls ents.CheckFeature (a
 // *quota.EntitlementError is returned unchanged) and then lim.Check for
 // quota.ResourceSQLiteDatabases (a *quota.ExceededError likewise). The
-// caller registers CountDatabases over the tenant's Backend as that
-// resource's counter. The system tenant is implicitly entitled and
+// server's counter for that resource is the tenant's persisted
+// sqlite_databases usage, which the gate moves by one on each create and
+// drop; CountDatabases counts the same databases from the Backend. The
+// system tenant is implicitly entitled and
 // uncapped, as tenant.Service.CheckFeature treats it.
 //
 // Admit does not create the database: its first committed Txn does. The

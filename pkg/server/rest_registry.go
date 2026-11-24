@@ -113,6 +113,12 @@ type restServiceRegistry struct {
 	// stream opened before its tenant was suspended ends on its next
 	// event. nil when the server runs no auth middleware.
 	streamAdmitter service.StreamAdmitter
+
+	// sqliteAdm gates the write that creates a SQLite VFS database and
+	// counts it in the tenant's sqlite_databases usage (row #926, o1; see
+	// withSQLiteAdmission). nil when the tenant service checks no
+	// entitlements, provides no quotas or records no usage.
+	sqliteAdm *sqliteAdmission
 }
 
 // withClusterSealRegistry makes the registry enforce cluster seals; see
@@ -167,6 +173,7 @@ func newRESTRegistry(
 	for _, opt := range opts {
 		opt(r)
 	}
+	r.sqliteAdm = newSQLiteAdmission(r.tenantSvc)
 	return r
 }
 
@@ -560,7 +567,7 @@ func (r *restServiceRegistry) refuseSealedDatabase(tenantID, db string) error {
 // returns svcs unchanged so unlimited and system-tenant workloads keep a plain
 // passthrough on the data-plane hot path.
 func (r *restServiceRegistry) applyQuota(svcs *DatabaseServices, tenantID string, info *tenant.TenantInfo) *DatabaseServices {
-	svcs = withSQLiteRestoreHook(svcs)
+	svcs = withSQLiteAdmission(withSQLiteRestoreHook(svcs), tenantID, r.sqliteAdm)
 	if r.accountant == nil || info == nil || info.Quotas == nil || tenantID == r.systemTenant {
 		return svcs
 	}

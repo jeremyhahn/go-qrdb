@@ -3,10 +3,13 @@ package server
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sqlitevfs"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // admissionEnts is a quota.EntitlementChecker granting FeatureSQLiteVFS to
@@ -212,6 +215,128 @@ func TestSQLiteVFSAdmission_CountsEachDatabaseOnce(t *testing.T) {
 			if err := s.admit(t, s.a, lockTenantA, "third"); !errors.As(err, &exceeded) {
 				t.Fatalf("Admit third at cap = %v, want *quota.ExceededError", err)
 			}
+		})
+	}
+}
+
+// gatingTenantServicer is a tenant service the registry builds its SQLite
+// creation gate over: it checks the sqlite_vfs entitlement, provides the
+// max_sqlite_databases quota and records the sqlite_databases usage.
+type gatingTenantServicer struct {
+	isolationTenantServicer
+	mu      sync.Mutex
+	allowed bool
+	max     int64
+	usage   int64
+}
+
+func (s *gatingTenantServicer) CheckIsolation(context.Context, string, string) error { return nil }
+
+func (s *gatingTenantServicer) CheckFeature(_ context.Context, tenantID, feature string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if feature == quota.FeatureSQLiteVFS && s.allowed {
+		return nil
+	}
+	return &quota.EntitlementError{TenantID: tenantID, Feature: feature}
+}
+
+func (s *gatingTenantServicer) Quotas(context.Context, string) (*quota.Quotas, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return &quota.Quotas{MaxSQLiteDatabases: s.max}, nil
+}
+
+func (s *gatingTenantServicer) GetQuotaUsage(_ context.Context, _ string, resource quota.Resource) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if resource != quota.ResourceSQLiteDatabases {
+		return 0, nil
+	}
+	return s.usage, nil
+}
+
+func (s *gatingTenantServicer) IncrementQuotaUsage(_ context.Context, _ string, resource quota.Resource, delta int64) (*tenant.TenantInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if resource == quota.ResourceSQLiteDatabases {
+		s.usage += delta
+	}
+	return nil, nil
+}
+
+func (s *gatingTenantServicer) DecrementQuotaUsage(_ context.Context, _ string, resource quota.Resource, delta int64) (*tenant.TenantInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if resource == quota.ResourceSQLiteDatabases {
+		s.usage -= delta
+	}
+	return nil, nil
+}
+
+// registryStore returns a Store of db over the registry's services of
+// tenantID's lockTestDB, the ones every transport serves.
+func registryStore(t *testing.T, reg service.Registry, tenantID, db string) *wiringStore {
+	t.Helper()
+	mvccSvc, err := reg.MVCCService(tenantID, lockTestDB)
+	if err != nil {
+		t.Fatalf("MVCCService: %v", err)
+	}
+	txnSvc, err := reg.TransactionService(tenantID, lockTestDB)
+	if err != nil {
+		t.Fatalf("TransactionService: %v", err)
+	}
+	if _, ok := txnSvc.(*sqliteAdmitTxn); !ok {
+		t.Fatalf("registry transaction servicer %T carries no SQLite creation gate", txnSvc)
+	}
+	backend, err := sqlitevfs.NewServiceBackend(mvccSvc.(sqlitevfs.ServiceKV), txnSvc.(sqlitevfs.ServiceTxn))
+	if err != nil {
+		t.Fatalf("NewServiceBackend: %v", err)
+	}
+	s, err := sqlitevfs.NewStore(backend, db)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	return &wiringStore{store: s, backend: backend}
+}
+
+// TestSQLiteVFSAdmission_RegistryGatesCreateOnEveryIsolation: the registry
+// builds the creation gate over the tenant service and puts it on the
+// services of every isolation, so the first write of a database is refused
+// without the entitlement and past max_sqlite_databases, and an existing
+// database still opens at the cap.
+func TestSQLiteVFSAdmission_RegistryGatesCreateOnEveryIsolation(t *testing.T) {
+	for name, scene := range lockScenesWith {
+		t.Run(name, func(t *testing.T) {
+			ts := &gatingTenantServicer{isolationTenantServicer: isolationTenantServicer{isolation: scene.isolation}}
+			reg := scene.build(t, ts).registry
+
+			var denied *quota.EntitlementError
+			if err := createDatabase(t, registryStore(t, reg, lockTenantA, wiringDB), 0x11); !errors.As(err, &denied) {
+				t.Fatalf("create with allow_sqlite_vfs off = %v, want *quota.EntitlementError", err)
+			}
+
+			ts.mu.Lock()
+			ts.allowed, ts.max = true, 1
+			ts.mu.Unlock()
+			first := registryStore(t, reg, lockTenantA, wiringDB)
+			if err := createDatabase(t, first, 0x21); err != nil {
+				t.Fatalf("first database: %v", err)
+			}
+			var exceeded *quota.ExceededError
+			if err := createDatabase(t, registryStore(t, reg, lockTenantA, "second.db"), 0x31); !errors.As(err, &exceeded) {
+				t.Fatalf("second database at max_sqlite_databases 1 = %v, want *quota.ExceededError", err)
+			}
+			again := registryStore(t, reg, lockTenantA, wiringDB)
+			txn, err := again.store.Begin(t.Context())
+			if err != nil {
+				t.Fatalf("Begin the first database: %v", err)
+			}
+			wiringWrite(t, txn, 0x22)
+			if _, err := txn.Commit(t.Context()); err != nil {
+				t.Fatalf("Commit to the first database at the cap: %v", err)
+			}
+			again.assertPages(t, 0x22)
 		})
 	}
 }

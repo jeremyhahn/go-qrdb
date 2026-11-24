@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sqlitevfs"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -33,6 +34,36 @@ type sqliteAdmission struct {
 	ents  quota.EntitlementChecker
 	lim   quota.Checker
 	usage service.QuotaUsageRecorder
+}
+
+// newSQLiteAdmission builds the gate's checkers over the tenant service: its
+// entitlements, a quota.Service over its quotas whose sqlite_databases
+// counter reads the persisted usage, and its usage recorder. nil when
+// tenantSvc is not all three.
+func newSQLiteAdmission(tenantSvc tenant.TenantServicer) *sqliteAdmission {
+	if tenantSvc == nil {
+		return nil
+	}
+	ents, ok := tenantSvc.(quota.EntitlementChecker)
+	if !ok {
+		return nil
+	}
+	provider, ok := tenantSvc.(quota.QuotaProvider)
+	if !ok {
+		return nil
+	}
+	usage, ok := tenantSvc.(service.QuotaUsageRecorder)
+	if !ok {
+		return nil
+	}
+	lim, err := quota.NewService(provider, nil)
+	if err != nil {
+		return nil
+	}
+	lim.RegisterCounter(quota.ResourceSQLiteDatabases, func(ctx context.Context, tenantID string) (int64, error) {
+		return tenantSvc.GetQuotaUsage(ctx, tenantID, quota.ResourceSQLiteDatabases)
+	})
+	return &sqliteAdmission{ents: ents, lim: lim, usage: usage}
 }
 
 // sqliteAdmitGate is the creation gate of one tenant's scope. The page store
