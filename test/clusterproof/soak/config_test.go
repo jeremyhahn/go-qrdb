@@ -189,6 +189,27 @@ func TestLoadOptionsKillUnderNoneNeedsNoUnseal(t *testing.T) {
 	}
 }
 
+func TestLoadOptionsDiskFullUnderSealNeedsUnseal(t *testing.T) {
+	tf := writeFile(t, "t.json", strings.Replace(targetsJSON, `  "unseal": ["ssh", "{{.Vars.host}}", "--", "true"],
+`, "", 1))
+	env := func(seal string) func(string) string {
+		return envOf(map[string]string{EnvSeal: seal, EnvNodes: nodesEnv, EnvNemesis: "disk-full", EnvDuration: "1m", EnvTargets: tf})
+	}
+	o, err := LoadOptions(env("none"), now)
+	if err != nil {
+		t.Fatalf("LoadOptions: %v", err)
+	}
+	if _, ok := o.Nemeses["disk-full"]; !ok {
+		t.Fatalf("faults %v, want disk-full", slices.Sorted(maps.Keys(o.Nemeses)))
+	}
+	for _, seal := range []string{"passphrase", "shamir"} {
+		_, err := LoadOptions(env(seal), now)
+		if _, ok := errors.AsType[*ConfigError](err); !ok || !strings.Contains(err.Error(), EnvTargets+" unseal") {
+			t.Errorf("LoadOptions of disk-full under %s without an unseal command = %v, want a ConfigError naming %s unseal", seal, err, EnvTargets)
+		}
+	}
+}
+
 // countingNode is a node that can be killed, restarted and unsealed, and
 // counts each restart and unseal its heal asks for.
 type countingNode struct {
