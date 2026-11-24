@@ -851,10 +851,20 @@ func TestRunnerProblems_Exemptions(t *testing.T) {
 		{ciFile, "gate", bigdiskFallback},
 		{reviewWorkflow, "gate", "bigdisk"},
 		{reviewWorkflow, "gate", "${{ 'ubuntu-latest' }}"},
+		// DS-10437: the CI Gate's bigdisk route holds only for a push to main
+		// and a same-repository head; a route that also takes schedule,
+		// workflow_dispatch or another branch's push to bigdisk is refused,
+		// and so is the gate's route on any other job.
+		{ciFile, "ci-gate", "${{ (github.event_name != 'pull_request' && github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"bigdisk\"]') || 'ubuntu-latest' }}"},
+		{ciFile, "build", gateRunsOn},
+		{reviewWorkflow, "build", reviewRunsOn},
 	} {
 		if p, _ := runnerProblems(c.file, []byte(label(c.job, c.runsOn))); len(p) == 0 {
 			t.Errorf("%s job %s on %q passed", c.file, c.job, c.runsOn)
 		}
+	}
+	if p, _ := runnerProblems(ciFile, []byte(label("ci-gate", gateRunsOn))); len(p) != 0 {
+		t.Errorf("ci.yml's ci-gate keeps its DS-10437 bigdisk route, got %v", p)
 	}
 	if p, _ := runnerProblems(ciFile, []byte(label("build", "gpu  # self-hosted: hardware: a fixture reason"))); len(p) != 0 {
 		t.Errorf("a hardware waiver holds in any workflow, got %v", p)

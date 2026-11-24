@@ -1096,6 +1096,7 @@ jobs:
                                       # results only; it runs on bigdisk for a push to main and a same-repository
                                       # head. A fork's head stays checked.
                                       if (job == GATE_JOB and got == OVERFLOW[0] and not fork_target
+                                              and ((ev == "push" and ref == "refs/heads/main") or (ev in PR and head == "o/r"))
                                               and path.replace("\\", "/").rsplit("/", 1)[-1] in SEL_FILES):
                                           continue
                                       if got is None or len(got) != 1 or not STANDARD.fullmatch(got[0]):
