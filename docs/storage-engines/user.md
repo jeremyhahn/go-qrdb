@@ -1,6 +1,6 @@
 # Storage Engines — User Guide
 
-> **Status: NORMATIVE for shipped behaviour; ADOPTED (owner ruling 1243), not yet
+> **Status: NORMATIVE for shipped behaviour; ADOPTED, not yet
 > built, for the "Target design" note below.** · Scope: go-qrdb · Last verified: 2026-10-27
 
 Test reference: `make integration-test-storage-engines`; coverage row: `test/integration/COVERAGE.md` `[storage-engines](../../docs/storage-engines/)`.

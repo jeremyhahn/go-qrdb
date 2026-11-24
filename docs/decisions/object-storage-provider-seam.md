@@ -8,7 +8,7 @@
 
 ## Problem
 
-Owner ruling 228(2) and 228(3) split the object-storage provider three ways:
+The object-storage provider is split three ways:
 go-quicbaas is the consumer and configures the provider per go-objstore
 backend; go-objstore supplies the backends; go-qrdb's storage API is the seam,
 and go-qrdb designs no backend of its own. Projects above go-quicbaas reach the
@@ -144,7 +144,7 @@ provider seam.
   `factory.NewBucketManager`. Dependency: go-objstore v0.9.1-alpha
   `factory.NewBucketManager`, `common.BucketManager`.
 
-**Recommendation: A.** Ruling 228(3): go-qrdb designs no backend, and bucket
+**Recommendation: A.** go-qrdb designs no backend, and bucket
 creation is account administration at the provider, which the consumer owns.
 B also needs a credential with bucket-admin rights inside go-qrdb.
 
