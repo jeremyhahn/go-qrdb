@@ -828,3 +828,11 @@ func TestBarrierEncryptorUnavailableError_Message(t *testing.T) {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
 }
+
+func TestSingleWriterBackendError_Message(t *testing.T) {
+	err := &SingleWriterBackendError{Name: "blobs", Backend: BackendObjstore}
+	want := `database: "blobs": backend "objstore" is single-writer and needs an owning node in a cluster`
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
