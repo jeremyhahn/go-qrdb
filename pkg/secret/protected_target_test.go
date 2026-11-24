@@ -25,7 +25,7 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secret"
 )
@@ -568,7 +568,7 @@ func TestSecretValue_YAMLDecodeThenProcess(t *testing.T) {
 	const doc = "database:\n  password: \"vault://db-key\"\n"
 
 	var cfg yamlConfig
-	if err := yaml.Unmarshal([]byte(doc), &cfg); err != nil {
+	if err := gocodecyaml.New[yamlConfig]().Unmarshal([]byte(doc), &cfg); err != nil {
 		t.Fatalf("yaml.Unmarshal: %v", err)
 	}
 	if cfg.Database.Password == nil || cfg.Database.Password.Raw != vaultScheme+"db-key" {
@@ -610,7 +610,7 @@ func TestSecretValue_MarshalEmitsReferenceNotPlaintext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
-	asYAML, err := yaml.Marshal(cfg)
+	asYAML, err := gocodecyaml.New[*vaultConfig]().Marshal(cfg)
 	if err != nil {
 		t.Fatalf("yaml.Marshal: %v", err)
 	}
@@ -627,7 +627,7 @@ func TestSecretValue_MarshalEmitsReferenceNotPlaintext(t *testing.T) {
 func TestSecretValue_DecodeRejectsNonScalar(t *testing.T) {
 	t.Run("yaml", func(t *testing.T) {
 		var sv secret.SecretValue
-		err := yaml.Unmarshal([]byte("{a: 1}\n"), &sv)
+		err := gocodecyaml.New[secret.SecretValue]().Unmarshal([]byte("{a: 1}\n"), &sv)
 		var decodeErr *secret.SecretValueDecodeError
 		if !errors.As(err, &decodeErr) {
 			t.Fatalf("err = %v, want SecretValueDecodeError", err)
@@ -711,11 +711,12 @@ func TestSecretValue_YAMLNullIsRefusedAtTheWalk(t *testing.T) {
 		"absent key":    "host: localhost\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			var cfg struct {
+			type hostPasswordConfig struct {
 				Host     string             `yaml:"host"`
 				Password secret.SecretValue `yaml:"password"`
 			}
-			if err := yaml.Unmarshal([]byte(doc), &cfg); err != nil {
+			var cfg hostPasswordConfig
+			if err := gocodecyaml.New[hostPasswordConfig]().Unmarshal([]byte(doc), &cfg); err != nil {
 				t.Fatalf("yaml.Unmarshal: %v", err)
 			}
 			if cfg.Password.Raw != "" {
@@ -738,7 +739,7 @@ func TestSecretValue_YAMLNullPointerFieldIsAbsent(t *testing.T) {
 	// The optional spelling: a pointer field left null stays nil, and a closed
 	// boot is happy with it.
 	var cfg yamlConfig
-	if err := yaml.Unmarshal([]byte("database:\n  password:\n"), &cfg); err != nil {
+	if err := gocodecyaml.New[yamlConfig]().Unmarshal([]byte("database:\n  password:\n"), &cfg); err != nil {
 		t.Fatalf("yaml.Unmarshal: %v", err)
 	}
 	if cfg.Database.Password != nil {
@@ -754,7 +755,7 @@ func TestSecretValue_DecodeDiscardsPreviousResolution(t *testing.T) {
 	sv := mustSecretValue(t, vaultScheme+"old", []byte(vaultPlaintext), secret.StrategyCredential)
 	sv.ExpiresAt = sv.ExpiresAt.AddDate(1, 0, 0)
 
-	if err := yaml.Unmarshal([]byte("vault://new\n"), sv); err != nil {
+	if err := gocodecyaml.New[secret.SecretValue]().Unmarshal([]byte("vault://new\n"), sv); err != nil {
 		t.Fatalf("yaml.Unmarshal: %v", err)
 	}
 	if sv.Raw != vaultScheme+"new" {

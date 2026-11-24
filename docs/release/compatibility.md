@@ -1,9 +1,6 @@
 # Release — Compatibility policy
 
-> **Status: proposed, awaiting owner acknowledgement** · Scope: go-qrdb · Last verified: 2026-11-12
-> Becomes normative once the owner acknowledges it (a ruling or a line on
-> issue #566); until then [architecture.md](architecture.md) and the pre-1.0
-> rule in [CHANGELOG.md](../../CHANGELOG.md) govern.
+> **Status: NORMATIVE; choices A to G adopted as recommended** · Scope: go-qrdb · Last verified: 2026-11-24
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -25,7 +22,7 @@ What go-qrdb promises its users about change: which surfaces are public, what
 a version number says about each, and how a public thing is retired. This is
 item 9 of the public-release checklist (issue #566, recorded in
 [readiness.md](readiness.md)). The [owner choices](#owner-choices) at the end
-must be settled before the policy is acknowledged.
+are settled.
 
 ## Before the first release candidate
 
@@ -81,16 +78,15 @@ yet on by default.
 
 ## Owner choices
 
-Each needs an answer before the status above becomes normative. The
-recommendation is listed first.
+Each adopted the recommendation.
 
-| # | Question | Options | Recommendation |
+| # | Question | Options | Decision |
 |---|---|---|---|
 | A | What version does the first release candidate carry? | (a) `1.0.0-rc.1`; (b) `0.N.0-rc.1`, keeping the 0.x line through the first public release. | (a): semver gives 0.x no stability promise, so a policy that binds from the first RC needs MAJOR 1. |
 | B | How long does a deprecated wire field, method, CLI flag or configuration key live? | (a) until the next MAJOR, and at least two MINOR releases after the one that deprecates it; (b) until the next MAJOR only; (c) a fixed time (for example 12 months) regardless of version. | (a): removal is breaking, so it can only be a MAJOR; the two-MINOR floor stops a deprecation landing just before a MAJOR with no warning period. |
 | C | Which on-disk data must a release read, and may it be downgraded? | (a) any data written by any earlier release of the same MAJOR; a format the previous MINOR cannot read is enabled only by an explicit finalize step, so a downgrade by one MINOR works until finalize; (b) only data of the previous MINOR, upgrades step by step; (c) as (a) without the finalize step. | (a): it is what lets a cluster roll back a bad upgrade, and it keeps the promise within a MAJOR. |
 | D | Which mixed-version clusters are supported during a rolling upgrade? | (a) adjacent MINOR releases (N and N+1) of one MAJOR, and any PATCH mix; (b) PATCH mixes only, MINOR upgrades take the cluster down; (c) any two releases of one MAJOR. | (a): the industry norm for replicated databases, and testable as a fixed pair in CI. |
-| E | Which releases get fixes? | (a) the latest MINOR, plus security fixes for the previous MINOR for 6 months after its successor; (b) the latest MINOR only. | (a) once there are outside users; (b) is enough for the first RC. |
+| E | Which releases get fixes? | (a) the latest MINOR, plus security fixes for the previous MINOR for 6 months after its successor; (b) the latest MINOR only. | (b) for the first RC; (a) from the first release with outside users. |
 | F | Is any root-module Go package public API? | (a) no: only `sdk/go` is; root packages users must not import move under `internal/` before the first RC; (b) every exported root package is public. | (a): keeps the promise to the surface that is documented and tested as a client, and lets the server change freely. |
 | G | Are feature-gated surfaces covered? | (a) no, until the gate is on by default; then from that release; (b) yes, from the release that adds them. | (a): a gate exists so the surface can still change. |
 

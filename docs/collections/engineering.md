@@ -247,9 +247,17 @@ and `__collection:{collection}` its data already has, with no migration. All of 
   removes the indexes it built and returns
   `service.CollectionStateConflictError{Op: "activate"}`.
 - **Index definitions are refused before anything is stored** when a
-  definition names no field, when two name the same field, or when the service
-  has no index service to build them with
+  definition names no field, when two name the same field, when the service
+  has no index service to build them with, or when the collection's effective
+  storage codec (its own, else the database default) is not `json`, because the
+  engine decodes indexed documents as JSON
   (`service.CollectionInvalidIndexError`).
+- **Document writes to an indexed collection whose effective codec is not
+  `json` are refused before anything is reserved or proposed**
+  (`service.CollectionInvalidIndexError`): a collection indexed before the
+  create-time check, or one whose database default codec changed after
+  creation. The refusal is on the propose side so committed commands replay
+  exactly as they were applied.
 - **Every per-incarnation piece of state is in an incarnation-scoped
   keyspace.** `CollectionInfo.Incarnation` is a random identifier drawn by every
   create. The document prefix, the `increment` sequence name, the process-local
@@ -437,6 +445,8 @@ and `__collection:{collection}` its data already has, with no migration. All of 
 | Index definition naming no field, or indexes on a service without an index service | `service.CollectionInvalidIndexError` — 400 / `INVALID_ARGUMENT`; nothing is stored | **yes** |
 | A derived index name another owner holds | `CollectionMetadataError{Op: "create-index"}` wrapping `*index.OwnershipError` — 409 / `FAILED_PRECONDITION`; the create is unwound | **yes** |
 | Two index definitions naming one field | `service.CollectionInvalidIndexError` — 400 / `INVALID_ARGUMENT`; nothing is stored | **yes** |
+| Index definitions on a collection whose effective storage codec is not json | `service.CollectionInvalidIndexError` — 400 / `INVALID_ARGUMENT`; nothing is stored | **yes** |
+| Insert, update or upsert into an indexed collection whose effective storage codec is not json | `service.CollectionInvalidIndexError` — 400 / `INVALID_ARGUMENT`; nothing is reserved or written | **yes** |
 | A write decided against a collection since dropped and created again | the write is retracted; `CollectionStateConflictError{Op: "write"}` — 409 / `ABORTED` | **yes** |
 | A teardown whose record was finished by somebody else | reclaims only its own incarnation's keyspace; its metadata compare-and-delete finds a newer record and removes nothing of it — `CollectionStateConflictError{Op: "teardown"}`, treated as done by the sweeper | **yes** |
 | A stored record or ledger entry whose fields do not derive from one another | the sweeper refuses it with `service.CollectionInconsistentRecordError` and leaves it for an operator | **yes** |
@@ -458,9 +468,11 @@ that then diverges.
 No collection-specific configuration keys. The collection sweeper's interval
 and staleness threshold are `server.WithCollectionSweep` options for a
 composer, defaulting to one minute and five minutes. `StorageCodec` is a per-collection
-override chosen at creation; the available codecs are those compiled in
-(`codec_json` is always present; `codec_msgpack`, `codec_yaml`, `codec_bson`,
-`codec_protobuf` are build-tag gated — see the Makefile's `WITH_CODEC_*` flags).
+override chosen at creation; the accepted codecs are `dao.DocumentCodecs()`
+(bson, json, msgpack and yaml from go-codec, plus cbor in a
+`codec_cbor` build). Protobuf cannot encode a generic document and is
+refused. TOML is refused too: it has no null value, so a document field
+set to null would be lost on write; typed entity DAOs still use TOML.
 
 ## Tenant scoping
 

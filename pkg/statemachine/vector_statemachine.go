@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-	"github.com/vmihailenco/msgpack/v5"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api"
 	"github.com/jeremyhahn/go-qrdb/pkg/errors"
@@ -1162,7 +1161,7 @@ func (vsm *VectorStateMachine) handleUpdateNamespace(ctx context.Context, cmd *V
 		RequiresRebuild: requiresRebuild,
 	}
 
-	data, err := msgpack.Marshal(&result)
+	data, err := updateNamespaceResultEncoder.Marshal(&result)
 	if err != nil {
 		return sm.Result{}, err
 	}
@@ -1828,7 +1827,7 @@ func (vsm *VectorStateMachine) SaveSnapshot(ctx context.Context, snapshotCtx int
 	}
 
 	// Encode snapshot metadata
-	data, err := msgpack.Marshal(snap)
+	data, err := vectorSnapshotEncoder.Marshal(snap)
 	if err != nil {
 		return api.NewOperationFailedError("encode snapshot", err)
 	}
@@ -1938,7 +1937,7 @@ func (vsm *VectorStateMachine) RecoverFromSnapshot(ctx context.Context, r io.Rea
 
 	// Decode snapshot
 	var snap VectorSnapshot
-	if err := msgpack.Unmarshal(data, &snap); err != nil {
+	if err := vectorSnapshotDecoder.Unmarshal(data, &snap); err != nil {
 		return api.NewOperationFailedError("decode snapshot", err)
 	}
 

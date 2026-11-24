@@ -1,6 +1,4 @@
 # 3-node TiKV cluster (1 PD + 3 TiKV stores, 3 replicas per region).
-# Uses host networking for direct host access to PD and TiKV.
-# PD default max-replicas=3, so all regions automatically get 3 replicas.
 
 volumes:
   certs:

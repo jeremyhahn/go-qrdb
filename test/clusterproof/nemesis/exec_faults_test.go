@@ -5,8 +5,10 @@ package nemesis
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/clockrate"
@@ -221,6 +223,167 @@ func TestDiskFullCustomTemplatesAndBadConfig(t *testing.T) {
 		if _, err := NewDiskFull(cfg); err == nil {
 			t.Errorf("%+v accepted", cfg)
 		}
+	}
+}
+
+// exitedDocker is the container runtime as it treats a node whose server
+// exited on ENOSPC: joining the stopped container's network namespace fails,
+// a command on the data volume alone runs, and docker start brings the
+// container back.
+type exitedDocker struct {
+	running bool
+	runs    [][]string
+}
+
+func (d *exitedDocker) Run(_ context.Context, argv []string) ([]byte, error) {
+	d.runs = append(d.runs, slices.Clone(argv))
+	if len(argv) > 1 && argv[1] == "start" {
+		d.running = true
+		return nil, nil
+	}
+	if !d.running && slices.ContainsFunc(argv, func(a string) bool { return strings.HasPrefix(a, "--net=container:") }) {
+		return nil, errors.New("cannot join network namespace of a non running container")
+	}
+	return nil, nil
+}
+
+func dockerTarget(t *testing.T, d *exitedDocker, diskExec []string) *RemoteTarget {
+	t.Helper()
+	rt, err := NewRemoteTarget(RemoteConfig{
+		Node:     "n1",
+		Vars:     map[string]string{"container": "qrdb-1", "data_dir": "/srv/n1"},
+		Exec:     []string{"docker", "run", "--rm", "--net=container:{{.Vars.container}}", "-v", "{{.Vars.data_dir}}:/data", "fault", ArgvElement},
+		DiskExec: diskExec,
+		Signal:   []string{"docker", "kill", "--signal={{.Signal}}", "{{.Vars.container}}"},
+		Restart:  []string{"docker", "start", "{{.Vars.container}}"},
+		Runner:   d,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rt
+}
+
+func TestDiskFullHealsANodeThatExitedFullThroughDiskExec(t *testing.T) {
+	ctx := context.Background()
+	d, err := NewDiskFull(DiskFullConfig{Path: "/data"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docker := &exitedDocker{running: true}
+	rt := dockerTarget(t, docker, []string{"docker", "run", "--rm", "-v", "{{.Vars.data_dir}}:/data", "fault", ArgvElement})
+	if err := d.Inject(ctx, []Target{rt}); err != nil {
+		t.Fatal(err)
+	}
+	docker.running = false // the server exited on ENOSPC
+	if err := d.Heal(ctx); err != nil {
+		t.Fatalf("heal of a node that exited full = %v", err)
+	}
+	diskPrefix := []string{"docker", "run", "--rm", "-v", "/srv/n1:/data", "fault"}
+	want := [][]string{
+		append(slices.Clone(diskPrefix), with(DefaultDiskFill, "/data")...),
+		append(slices.Clone(diskPrefix), with(DefaultDiskFree, "/data")...),
+		{"docker", "start", "qrdb-1"},
+	}
+	if !reflect.DeepEqual(docker.runs, want) {
+		t.Fatalf("runs = %q\nwant %q", docker.runs, want)
+	}
+	if !docker.running {
+		t.Fatal("heal left the node stopped")
+	}
+}
+
+func TestDiskFullWithoutDiskExecUsesExec(t *testing.T) {
+	ctx := context.Background()
+	d, err := NewDiskFull(DiskFullConfig{Path: "/data"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docker := &exitedDocker{running: true}
+	rt := dockerTarget(t, docker, nil)
+	if err := d.Inject(ctx, []Target{rt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Heal(ctx); err != nil {
+		t.Fatal(err)
+	}
+	execPrefix := []string{"docker", "run", "--rm", "--net=container:qrdb-1", "-v", "/srv/n1:/data", "fault"}
+	want := [][]string{
+		append(slices.Clone(execPrefix), with(DefaultDiskFill, "/data")...),
+		append(slices.Clone(execPrefix), with(DefaultDiskFree, "/data")...),
+		{"docker", "start", "qrdb-1"},
+	}
+	if !reflect.DeepEqual(docker.runs, want) {
+		t.Fatalf("runs = %q\nwant %q", docker.runs, want)
+	}
+}
+
+func TestDiskFullHealRestartsAfterFreeAndUnsealsASealedNode(t *testing.T) {
+	ctx := context.Background()
+	d, err := NewDiskFull(DiskFullConfig{Path: "/data"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, u := newRestarter("n1"), newUnsealer("n2")
+	if err := d.Inject(ctx, targets[Target](r, u)); err != nil {
+		t.Fatal(err)
+	}
+	r.take()
+	u.take()
+	r.fail("exec", errBoom)
+	if err := d.Heal(ctx); !errors.Is(err, errBoom) {
+		t.Fatalf("heal with a failing free = %v, want errBoom", err)
+	}
+	// A failed free does not restart: the node would refill at once.
+	assertCalls(t, r.fakeTarget, execs(with(DefaultDiskFree, "/data")))
+	assertCalls(t, u.fakeTarget, append(execs(with(DefaultDiskFree, "/data")), call{Op: "restart"}, call{Op: "unseal"}))
+	r.fail("exec", nil)
+	if err := d.Heal(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, r.fakeTarget, append(execs(with(DefaultDiskFree, "/data")), call{Op: "restart"}))
+	assertCalls(t, u.fakeTarget, nil)
+}
+
+// TestDiskFullHealExpectsTheNodeToRecover: after the disk is freed each node
+// must come back (restart, then unseal), since a torn final write no longer
+// stops the store from opening. A node that does not come back fails the heal
+// with a NotRecoveredError naming it, the fault stays pending so the soak
+// reports it as unhealed, and the heal passes once the node recovers.
+func TestDiskFullHealExpectsTheNodeToRecover(t *testing.T) {
+	ctx := context.Background()
+	d, err := NewDiskFull(DiskFullConfig{Path: "/data"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, u := newRestarter("n1"), newUnsealer("n2")
+	if err := d.Inject(ctx, targets[Target](r, u)); err != nil {
+		t.Fatal(err)
+	}
+	r.take()
+	u.take()
+	r.fail("restart", errBoom)
+	u.fail("unseal", errBoom)
+	err = d.Heal(ctx)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("heal of a node that did not come back = %v, want errBoom", err)
+	}
+	var nr *NotRecoveredError
+	if !errors.As(err, &nr) || (nr.Node != "n1" && nr.Node != "n2") {
+		t.Fatalf("heal error = %v, want *NotRecoveredError naming n1 or n2", err)
+	}
+	for _, node := range []string{"n1", "n2"} {
+		if !strings.Contains(err.Error(), "node "+node+" did not recover") {
+			t.Errorf("heal error %q does not report node %s as not recovered", err, node)
+		}
+		if strings.Contains(err.Error(), "failed closed") {
+			t.Errorf("heal error %q treats a store that refuses the open as expected", err)
+		}
+	}
+	r.fail("restart", nil)
+	u.fail("unseal", nil)
+	if err := d.Heal(ctx); err != nil {
+		t.Fatalf("heal once the node recovers = %v, want nil", err)
 	}
 }
 

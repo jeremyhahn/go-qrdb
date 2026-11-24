@@ -14,73 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# check-publication-bound.sh — AGENTS.md: "The feature folder is
-# publication-bound. Never write an internal address, host name, workstation
-# path, agent principal name or internal issue reference into one."
-#
-# WHY THIS EXISTS
-#
-# Until now the rule's only enforcement was a reviewer noticing, and the
-# measured leak rate says what that is worth. Five violations landed in a
-# single afternoon, from an author who had read AGENTS.md, against a review
-# process that caught two of them. That is not the reviewer's failing: a
-# reviewer sees ONE DIFF, and this violation is a property of the TREE. Three
-# of the five reached main and were corrected after the fact; four older ones
-# had been sitting in folders nobody touched that day.
-#
-# It is the same shape as `make vet-tags`: a whole-repo property no per-diff
-# check can see. And it fails silently in the worst way — nothing breaks, the
-# docs read fine internally, and it surfaces only when the repo publishes to
-# GitHub, where a reader hits an issue number and finds either nothing or, far
-# worse, an unrelated public issue wearing it.
-#
-# SCOPE: docs/*/ — files inside a feature folder, recursively, at any depth.
-#
-# The legacy top-level documents (docs/01-architecture.md, docs/run-modes.md,
-# docs/12-configuration.md) are DELIBERATELY out of scope, not missed by a
-# sloppy glob. AGENTS.md writes the publication-bound rule about FOLDERS, and
-# calls the top-level layout "legacy layouts, debt to migrate, never
-# precedent". Measured on this tree at the time of writing, widening to
-# docs/** would light up three internal issue references
-# (docs/01-architecture.md, docs/run-modes.md — the latter also linking
-# ../../issues/62) and ten lines of 10.0.0.x example addresses in
-# docs/12-configuration.md. None of those is a feature folder, all are on the
-# migration list, and a guard that is red on the day it lands is a guard
-# nobody arms. Widen the scope in the change that migrates them, not before.
-#
-# EVERY FILE in a feature folder is scanned, not just the five canonical
-# documents; symlinks are FOLLOWED and binary-classified files are read as
-# text. A companion reference living in the folder, a link to a document
-# living elsewhere, and a file carrying an incidental NUL byte all publish on
-# exactly the same push, and `gitea.internal` is `gitea.internal` whatever
-# else the file it sits in contains.
-#
-# FENCED CODE BLOCKS ARE NOT EXEMPT, and that is a decision, not an oversight.
-# The usual reason to exempt them is the bare `#123` pattern, which collides
-# with a shell comment in a `curl` example or a config sample — so the first
-# false positive teaches everyone to add exclusions. This check does not match
-# bare `#123` (see internal-issue-ref below), so it never has that collision,
-# and it therefore keeps the stronger property: an internal hostname inside a
-# worked example publishes just as loudly as one in prose.
-#
-# THE PATTERNS ARE DELIBERATELY NARROWER THAN THE RULE. A check looser than
-# the property it claims earns exclusions, and an excluded check is not a
-# check. What each rule does NOT match is written next to it, and the residue
-# is a human's job, not a wider regex's.
-#
-# THE INVARIANT, because the next person adding a scan needs to know which way
-# the default runs before they write `|| true` out of habit:
-#
-#   THIS SCRIPT EXITS NONZERO UNLESS IT HAS POSITIVELY ESTABLISHED THAT THE
-#   TREE IS CLEAN. AN UNKNOWN RESULT IS A FAILURE, NEVER A PASS.
-#
-# A walk that fails, a grep that cannot answer, a path it cannot represent, a
-# link that leaves the checkout, a file it did not open -- every one of those
-# is an unknown, and every one exits 1. The accounting further down is what
-# turns "did not open" from a silence into a number.
-#
-# Usage: check-publication-bound.sh [repo-dir]   (defaults to .)
-# Exit status: 0 when the feature folders are publishable, 1 otherwise.
+# check-publication-bound.sh: feature folders must not contain internal addresses, host names, paths or issue references.
 
 set -eu
 

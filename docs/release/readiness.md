@@ -1,6 +1,6 @@
 # Release — Public release readiness
 
-> **Status: INFORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-12
+> **Status: INFORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-24
 > An evidence record; [architecture.md](architecture.md) is normative.
 
 <!--
@@ -49,9 +49,9 @@ States:
 | 6 | Upstream go-objstore at an RC or public release | waits on a lower project | [go.mod](../../go.mod): `go-objstore v0.9.1-alpha`. | Needs a go-objstore RC tag, then a bump lane. |
 | 7 | Upstream go-quicraft at an RC or public release | waits on a lower project | [go.mod](../../go.mod): `go-quicraft v0.24.3-alpha`. | Needs a go-quicraft RC tag, then a bump lane. |
 | 8 | Upstream go-truststrap at an RC or public release | waits on a lower project | [go.mod](../../go.mod): `go-truststrap v0.7.1-alpha`. | Needs a go-truststrap RC tag, then a bump lane. |
-| 9 | Compatibility policy acknowledged | not met | [compatibility.md](compatibility.md) proposes the policy (status: proposed, awaiting owner acknowledgement) and lists the owner choices it needs; [CHANGELOG.md](../../CHANGELOG.md) states the pre-1.0 rule and links it. No owner acknowledgement is recorded. | Owner settles the choices in [compatibility.md](compatibility.md#owner-choices) and acknowledges the policy (a ruling or a line on #566); then mark its status normative and this row met. |
+| 9 | Compatibility policy acknowledged | met | [compatibility.md](compatibility.md) is normative and adopts [choices A to G](compatibility.md#owner-choices) as recommended; [CHANGELOG.md](../../CHANGELOG.md) states the pre-1.0 rule and links it. | None; re-check at the cut. |
 | 10 | No lab addresses, fleet hostnames or owner paths in tracked files, by a gate | not met | `make check-public-releasable`: exit 2 (make; the script exits 1). It fails closed: no fleet pattern file was readable (`$PUBLIC_RELEASE_PATTERNS_FILE` unset, no handbook or XDG copy), so it scanned nothing. `make check-publication-bound`: exit 0, 291 feature-folder files, this one included, under `docs/*/` publishable. | Run `make check-public-releasable` with the pattern file present (see [user.md](user.md)) and fix every hit; require it in the release path. |
-| 11 | No internal-only workflow files | not met | `.github/workflows/` holds `batch.yml`, `ci.yml`, `code-review.yml`, `nightly.yml`, `release-lockstep.yml`, `release.yml`. `batch.yml`, `nightly.yml`, `release.yml` and `release-lockstep.yml` run on `ubuntu-latest`; `ci.yml` routes a push to `main` and a same-repository PR to the `self-hosted` `bigdisk-docker` (Docker jobs) and `bigdisk` (Docker-free jobs) pools and a fork's PR to `ubuntu-latest` (CA ruling 617), and `code-review.yml` runs on a `codex` runner label (with a `lab-string-ok:` waiver). | Decide per file: make `ci.yml` and `code-review.yml` fall back to hosted runners on a fork with no fleet, or record why each stays; then mark met. |
+| 11 | No internal-only workflow files | not met | `.github/workflows/` holds `batch.yml`, `ci.yml`, `code-review.yml`, `nightly.yml`, `release-lockstep.yml`, `release.yml`. `batch.yml`, `nightly.yml`, `release.yml` and `release-lockstep.yml` run on `ubuntu-latest`; `ci.yml` routes a push to `main` and a same-repository PR to the `self-hosted` `bigdisk-docker` (Docker jobs) and `bigdisk` (Docker-free jobs) pools and a fork's PR to `ubuntu-latest`, and `code-review.yml` runs on a `codex` runner label (with a `lab-string-ok:` waiver). | Decide per file: make `ci.yml` and `code-review.yml` fall back to hosted runners on a fork with no fleet, or record why each stays; then mark met. |
 | 12 | sdk/go tagged in lockstep with the root module | met | `.github/workflows/release-lockstep.yml` triggers on `v*`, `sdk/go/v*` and `sdk/**/v*` tags and fails a root `vX.Y.Z` pushed without `sdk/go/vX.Y.Z`; `make check-tag-lockstep` runs the same check before the atomic push; `release.yml` audits the lockstep tags. | Confirm at the first RC that `sdk/go/v<version>` is pushed atomically with `v<version>`. |
 
 ## Gate results
@@ -63,5 +63,5 @@ States:
 
 ## Not met today
 
-Items 1, 2, 9, 10 and 11 need work here; items 4 to 8 wait on RC tags of the
+Items 1, 2, 10 and 11 need work here; items 4 to 8 wait on RC tags of the
 lower projects, in dependency order.

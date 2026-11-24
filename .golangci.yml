@@ -1,17 +1,8 @@
-# golangci-lint v2 configuration for go-qrdb
-# Derived from the shared stack baseline (conventions/project-scaffold.md).
+# golangci-lint v2 configuration for go-qrdb.
 version: "2"
 
 run:
-  # The single declaration of the lint time budget: `make lint` deliberately
-  # passes no --timeout, because a flag would override this file (#60).
-  #
-  # Sized for a cold, contended CI runner, not a warm workstation. Measured on
-  # 2026-08-21: the tagged ./... run takes 25s here with a warm golangci-lint
-  # cache and 5m29s in CI, where every container starts with an empty one —
-  # which is how the previous 5m budget failed a run that had already printed
-  # "0 issues.". This is a ceiling that stops a hung run from holding a runner,
-  # not a performance target; do not tighten it toward the observed CI time.
+  # The lint time budget; `make lint` passes no --timeout.
   timeout: 20m
   tests: true
 
@@ -25,10 +16,7 @@ formatters:
         - github.com/jeremyhahn/go-qrdb
 
 linters:
-  # devops.md §8 requires the umbrella to actually carry the security linters:
-  # staticcheck (which subsumes gosimple), errcheck, unused, ineffassign,
-  # misspell and gocritic. Installing golangci-lint with them switched off does
-  # not satisfy that section.
+  # Security linters: staticcheck, errcheck, unused, ineffassign, misspell and gocritic.
   enable:
     - errcheck
     - gocritic
@@ -88,9 +76,7 @@ linters:
       min-len: 3
       min-occurrences: 5
     gocritic:
-      # Bug-finding only. The style, opinionated, experimental and performance
-      # groups are taste, and on a codebase this size they would bury the
-      # diagnostics that matter — a noisy gate is a gate people learn to ignore.
+      # Bug-finding only.
       enabled-tags:
         - diagnostic
       disabled-checks:
@@ -115,60 +101,7 @@ linters:
         - name: increment-decrement
           severity: warning
     gosec:
-      # MEASURED, NOT INHERITED (#295). Every entry below was re-run with the
-      # rule ARMED, on both modules this file lints, and kept only where that
-      # changed the finding count. Measured 2026-09-10, with the build tags
-      # `make lint` passes and with golangci-lint's default issue caps
-      # disabled -- `--max-issues-per-linter=0 --max-same-issues=0`, without
-      # which gosec's output stops at 50 and this table would have been wrong.
-      # Re-measured 2026-10-07 on golangci-lint v2.14.0 (bundled gosec v2.29.0),
-      # the first release whose bundled gosec moved since the 2026-09-10 table:
-      #
-      #   rule   make lint   make lint-sdk
-      #   ----   ---------   -------------
-      #   G115      312           125
-      #   G704        2             0
-      #
-      # G602 (15 root / 4 sdk on the previous bundled gosec) now reports NOTHING
-      # on either module and is DELETED under the rule below.
-      #
-      # G117, G204 and G122 used to be here and report NOTHING on either module
-      # at this version. They are DELETED rather than rescoped, because an
-      # exclusion that fires on nothing is worse than an unexamined one: it
-      # reads as "the lint gate considered this class and cleared it", and
-      # re-running the tool cannot tell you otherwise -- a suppression and an
-      # inert rule are indistinguishable in the output. That is exactly how
-      # this file's G703 entry survived while suppressing nothing (#181).
-      #
-      # A COUNT IS ONLY MEANINGFUL AGAINST A SCANNER VERSION, and this leg's is
-      # pinned nowhere: golangci-lint v2.14.0 bundles gosec v2.29.0, chosen by
-      # its own go.mod. GOLANGCI_GOSEC_VERSION in the Makefile records it, and
-      # `make check-bundled-gosec` reads it back off the binary and fails when
-      # it moves -- which is the signal to re-measure this block, not to widen
-      # it.
-      #
-      # AT v2.14.0 THAT IS THE SAME GOSEC AS THE ONE `make gosec` RUNS (v2.29.0),
-      # but it was not always, and nothing makes the two move together. The two
-      # exclusion lists are still NOT copies of each other and must not be made
-      # into copies: the invocations differ (this leg drops gosec in test files,
-      # `make gosec` scans them with -tests), and GOSEC_EXCLUDE in the Makefile
-      # carries its own measurements.
-      #
-      # G602 WAS THE ONE TO UNDERSTAND BEFORE CHANGING EITHER LIST. `make gosec`
-      # runs with -tests at -severity=low (#408), so the standalone leg REACHES
-      # and PRINTS every G602 site, and each one carries an inline
-      # `#nosec G602 -- <guard>` naming the check that makes it safe. This leg's
-      # entry predated that audit and suppressed the same sites for the older
-      # bundled gosec; with the bundled gosec at v2.29.0 the inline annotations
-      # alone clear every site on both modules (measured, table above), so the
-      # entry is gone and the duplication with it.
-      #
-      # G304 and G703 are NOT here. G304 is suppressed per-path under
-      # `exclusions.rules` below, at the files an audit actually enumerated, so
-      # it stays ARMED everywhere else -- including every request-facing
-      # package. G703 is armed across this entire repository, full stop. See
-      # that block for the predicate, the enumeration and what the narrowing is
-      # protecting.
+      # Each exclusion below is measured.
       excludes:
         - G115  # 312 root / 125 sdk. Integer overflow in conversions: protocol-spec bounded IDs and length prefixes.
         - G704  # 2 root / 0 sdk. SSRF taint: the leader-forwarding client, whose URL comes from the internal peer registry.
@@ -186,147 +119,37 @@ linters:
       - comments
       - std-error-handling
     rules:
-      # ---------------------------------------------------------------------
-      # gosec G304 / G703 -- path traversal. NARROWED FROM A REPO-WIDE
-      # SUPPRESSION AFTER A REPO-WIDE AUDIT (#181, measured 2026-09-04).
-      #
-      # THE PREDICATE, so a reader can re-derive this rather than trust a list:
-      #
-      #   A G304/G703 finding here is a REAL containment defect iff a value an
-      #   unprivileged remote caller can choose -- one entering the process
-      #   through an API request (r.PathValue, r.URL.Path/Query, r.FormValue,
-      #   r.Header.Get, any field decoded from a REST/gRPC/QUIC/unix/MCP
-      #   request body, a KV key, or SQL text) rather than through
-      #   operator-controlled config, a CLI flag, or the process environment --
-      #   can reach the path argument of a filesystem operation (os.Open,
-      #   OpenFile, ReadFile, WriteFile, Stat, Create, Remove, RemoveAll,
-      #   Mkdir(All), ReadDir, Rename, http.ServeFile, or a filepath.Join
-      #   feeding one) WITHOUT a separator-aware containment check against a
-      #   fixed root.
-      #
-      # NO SITE IN THIS REPOSITORY SATISFIES THAT PREDICATE TODAY. Every
-      # request-derived value that gets near a path is either mapped through a
-      # total encoder or stopped by a containment check at the sink:
-      #
-      #   - KV keys -> pkg/storage/file: encodeKeyToPath percent-encodes a
-      #     leading "." of every segment, so no segment can be "." or "..".
-      #   - tenant ids -> pkg/seal.containedTenantPath: filepath.Rel against
-      #     the pool root, rejecting ".", "..", a "../" prefix AND any
-      #     remaining separator, so the id is exactly one component.
-      #   - database names -> pkg/database.Manager.dbDir is reached only after
-      #     a sync.Map hit on a name that passed namePattern (^[a-zA-Z0-9_-]+$)
-      #     at create; Manager.Open, the one unguarded dbDir caller, has no
-      #     caller in this repository.
-      #   - the SPA handler -> its fs.FS is an embed.FS (cmd/qrdbd), never
-      #     os.DirFS; the repository contains no os.DirFS at all.
-      #
-      # WHY THE SUPPRESSION IS NOT SIMPLY DELETED: the sites below are real and
-      # were checked one at a time. WHY IT IS NO LONGER REPO-WIDE: the previous
-      # blanket entry read "paths constructed from validated config" -- a claim
-      # about code nobody had enumerated, which silenced the rule in packages
-      # where the claim was never examined. That is exactly how a sibling repo
-      # shipped a reproduced containment failure under a green lint leg. Scoped
-      # by file, a new file-open site anywhere else goes RED and gets audited.
-      #
-      # G703 IS NOT SUPPRESSED HERE AT ALL, and the reason is the second finding
-      # of that audit. The entry this replaces was INERT: the golangci-lint of
-      # the day bundled gosec v2.28.0, whose G703 treats filepath.Clean as a
-      # sanitizer, so it reported nothing at pkg/system/openssl.go:126 -- while
-      # `make gosec` on the pinned gosec v2.29.0 reported it HIGH/HIGH. Reproduced on a
-      # two-file probe, not inferred from version numbers, and since confirmed
-      # in the analyser's own source: v2.29.0's pathtraversal.go drops Clean,
-      # Abs and url.PathEscape from its sanitizer list, noting that Clean
-      # "evaluates '..' elements instead of rejecting them, so the traversal
-      # succeeds" (securego/gosec#1721). Across the two directories that decide
-      # what gets reported -- rules/ and analyzers/ -- it is the ONLY
-      # behavioural difference between the versions: three files differ, and
-      # the other two (rules/rsa.go, analyzers/util.go) change `(int64)(x)` to
-      # `int64(x)` and nothing else.
-      #
-      # An exclusion that fires on nothing is worse than an unexamined one: it
-      # reads as "the lint gate considered path traversal and cleared it" and
-      # nothing you can run will tell you otherwise. So it is deleted rather
-      # than rescoped, and the one real site carries an inline `#nosec G703`
-      # that both scanners honour. G703 is now ARMED across this entire
-      # repository on this leg, and stays armed when the bundled gosec moves.
-      #
-      # WHY THE TWO SCANNERS DISAGREED ABOUT THIS TREE, settled by measurement
-      # (#295). The disagreement recorded here was 49 G304 + 1 G703 under gosec
-      # v2.29.0 against 18 G304 + 0 G703 on this leg, and only the G703 column
-      # was ever a VERSION difference. The rest was invocation:
-      #
-      #   - `make gosec` passed its build tags space-joined into a flag gosec
-      #     splits on commas, so that leg was scanning the UNTAGGED tree: 1044
-      #     files where the same command with the tags spelled correctly scans
-      #     1147. Fixed in the Makefile.
-      #   - `make gosec` passed no -tests, and the analyzer rules build less of
-      #     a package's SSA without the test variant, so it lost findings in
-      #     PRODUCTION files that this leg reaches. ON since #408, which
-      #     removed the export_test.go idiom gosec's file-list loader could not
-      #     typecheck (pkg/seal, sdk/go). See GOSEC_FLAGS in the Makefile.
-      #
-      # With the tags corrected and -tests supplied, gosec v2.29.0 reaches
-      # exactly this leg's G304 and G602 sets. The residue is G703 and it is the
-      # soundness difference above, not a count.
-      #
-      # THIS LEG DROPS gosec ENTIRELY IN `_test\.go` (see the test-file rule
-      # under `exclusions.rules`), so it reports nothing there and is not the
-      # authority on test files; arming it costs 295 findings, 237 of them G104
-      # from the audit mode golangci-lint's gosec runs by default (measured
-      # 2026-09-10). What #395 DID land is the other half of that: every finding
-      # a `gosec -tests` run raises in a _test.go file is now fixed at the site
-      # (39 directory and file modes tightened to 0750/0600) or carries an
-      # inline `#nosec <RULE> -- reason` that BOTH scanner versions honour.
-      #
-      # EACH RULE BELOW IS LOAD-BEARING, measured 2026-09-10 by removing all six
-      # and counting what came back: 18 findings, distributed as the per-entry
-      # counts record. None of them is inert.
+      # gosec G304 / G703, path traversal; suppressed per file where the path is not request-controlled.
       - path: ^pkg/system/openssl\.go$
         text: "G304"
         linters:
           - gosec
-        # 1 finding. parseOpenSSLConfig opens a path that findOpenSSLConfig
-        # resolved from OPENSSL_CONF or a compiled-in standard location. G703 is
-        # NOT listed here: its one site carries an inline `#nosec G703` with the
-        # reasoning next to the code, which BOTH gosec and golangci-lint honour,
-        # so the justification exists once and this file makes no claim about it.
+        # parseOpenSSLConfig opens a path from OPENSSL_CONF or a standard location.
       - path: ^pkg/clustertls/clustertls\.go$
         text: "G304"
         linters:
           - gosec
-        # 9 findings. CA/cert/key PEM paths, all from TLS config or a
-        # caller-owned data directory. No transport handler reaches these with a
-        # request value.
+        # 9 findings.
       - path: ^pkg/database/(manager|reencrypt)\.go$
         text: "G304"
         linters:
           - gosec
-        # 4 findings. Internal catalog paths: filepath.Join(dataDir,
-        # "databases", name) for a name already validated by namePattern, plus
-        # the re-encrypt copy which walks paths the manager produced.
+        # 4 findings.
       - path: ^pkg/audit/chain_file_logger\.go$
         text: "G304"
         linters:
           - gosec
-        # 2 findings. Audit log and rotated-archive paths under the
-        # operator-configured audit directory; scanFile/verifyChainFile only
-        # ever receive names this logger itself emitted.
+        # 2 findings.
       - path: ^pkg/storage/file/iterator\.go$
         text: "G304"
         linters:
           - gosec
-        # 1 finding. Reads back a path produced by filepath.Walk over the
-        # engine's own directory, whose leaves encodeKeyToPath wrote.
+        # 1 finding.
       - path: ^pkg/vector/ivf/index\.go$
         text: "G304"
         linters:
           - gosec
-        # 1 finding, and the one that reads as a version divergence but is not:
-        # this file is behind `//go:build qrdb_vector`, so `make gosec` could
-        # not see it at all while its -tags flag was mis-spelled. ivfIndex
-        # Save/Load take an explicit path from the embedding caller. No
-        # transport handler and no in-repository caller reaches them; see the PR
-        # for the guard proposed if one is ever added.
+        # ivfIndex Save/Load take an explicit path from the embedding caller.
       # Exclude deprecated grpc.DialContext warnings (still supported in 1.x)
       - text: "SA1019.*grpc\\.DialContext.*deprecated"
         linters:
@@ -339,22 +162,7 @@ linters:
       - text: "QF1012"
         linters:
           - staticcheck
-      # QF1008 and QF1011 join QF1012 above on the same ground, and #333 --
-      # which first put sdk/go under a linter at all -- is where they surfaced.
-      # Both would make the code WORSE at every site in this tree:
-      #
-      #   QF1008 "could remove embedded field from selector" fires on
-      #   v.Config.X where the line above it is `v.Config != nil`. Dropping the field promotes X through the very pointer being
-      #   nil-checked and hides the connection between the two lines.
-      #
-      #   QF1011 "could omit type from declaration" fires on
-      #   `var svc service.XServicer = ctor()` whose address is then stored in
-      #   an atomic.Pointer[service.XServicer]. The annotation states the
-      #   pointer's element type at the site instead of sending the reader to
-      #   the constructor.
-      #
-      # These are the "quickfix" tier: staticcheck's own suggestions tier, not
-      # its correctness (SA) tier. Nothing here suppresses an SA check.
+      # QF1008 and QF1011 are excluded with QF1012.
       - text: "QF1008"
         linters:
           - staticcheck
@@ -522,10 +330,6 @@ linters:
           - goconst
       # Exclude server health from goconst (health messages)
       - path: pkg/server/
-        linters:
-          - goconst
-      # Exclude codec from goconst (format type names)
-      - path: pkg/codec/
         linters:
           - goconst
       # Exclude operations from goconst (status strings)

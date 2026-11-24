@@ -27,7 +27,6 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vmihailenco/msgpack/v5"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -1093,7 +1092,7 @@ func TestVectorStateMachine_HandleUpdateNamespace(t *testing.T) {
 
 		// Decode the result to check requires_rebuild
 		var updateResult UpdateNamespaceResult
-		err = msgpack.Unmarshal(results[0].Data, &updateResult)
+		err = updateNamespaceResultDecoder.Unmarshal(results[0].Data, &updateResult)
 		require.NoError(t, err)
 		assert.True(t, updateResult.Updated)
 		assert.True(t, updateResult.RequiresRebuild) // New params require rebuild
@@ -1139,7 +1138,7 @@ func TestVectorStateMachine_HandleUpdateNamespace(t *testing.T) {
 		require.NoError(t, err)
 
 		var updateResult UpdateNamespaceResult
-		err = msgpack.Unmarshal(results[0].Data, &updateResult)
+		err = updateNamespaceResultDecoder.Unmarshal(results[0].Data, &updateResult)
 		require.NoError(t, err)
 		assert.True(t, updateResult.Updated)
 		assert.False(t, updateResult.RequiresRebuild)
@@ -1730,7 +1729,7 @@ func TestVectorStateMachine_RecoverFromSnapshot(t *testing.T) {
 			},
 			Timestamp: time.Now().UnixNano(),
 		}
-		snapData, err := msgpack.Marshal(snap)
+		snapData, err := vectorSnapshotEncoder.Marshal(snap)
 		require.NoError(t, err)
 
 		var buf bytes.Buffer
