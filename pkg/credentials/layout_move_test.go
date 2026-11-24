@@ -726,3 +726,164 @@ func TestMoveLayout_SettledNameFencesLaterSource(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, kept, "the later source keeps its copy")
 }
+
+// seedSwitchSource binds src, stores "c" (v1 rotated to v2) with a rotation
+// policy in it, and returns the policy.
+func seedSwitchSource(t *testing.T, svc *CredentialService, src Store) RotationPolicy {
+	t.Helper()
+	ctx := context.Background()
+	require.NoError(t, svc.BindStore(ctx, src))
+	require.NoError(t, svc.StoreCredential(ctx, "c", []byte("v1")))
+	_, err := svc.RotateCredential(ctx, "c", RotateOptions{NewValue: []byte("v2"), GracePeriod: time.Hour})
+	require.NoError(t, err)
+	policy := RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}
+	require.NoError(t, svc.SetRotationPolicy(ctx, "c", policy))
+	return policy
+}
+
+// requireLayoutEmpty asserts st holds no record under any layout prefix:
+// every set moved out of it whole, none left behind as a conflict.
+func requireLayoutEmpty(t *testing.T, st Store) {
+	t.Helper()
+	for _, prefix := range layoutPrefixes {
+		keys, err := st.List(context.Background(), prefix)
+		require.NoError(t, err)
+		assert.Empty(t, keys, "the earlier store keeps no %s records", prefix)
+	}
+}
+
+// blockFirstAdmit makes the first operation admitted after the call wait in
+// afterAdmit until release is closed; admitted is closed once it waits.
+func blockFirstAdmit(svc *CredentialService) (admitted, release chan struct{}) {
+	admitted, release = make(chan struct{}), make(chan struct{})
+	first := make(chan struct{}, 1)
+	first <- struct{}{}
+	svc.testHooks.afterAdmit = func() {
+		select {
+		case <-first:
+			close(admitted)
+			<-release
+		default:
+		}
+	}
+	return admitted, release
+}
+
+// TestBindStoreFrom_RequestDuringSwitchReadsTheMovedRecord proves an
+// operation that arrives while BindStoreFrom switches stores runs after the
+// destination and its pending move are published together: it finishes
+// the move first, reads the source's value from the destination, and a
+// concurrent store does not turn the move into a conflict.
+func TestBindStoreFrom_RequestDuringSwitchReadsTheMovedRecord(t *testing.T) {
+	ctx := context.Background()
+	a, b := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	svc := newUnboundService(t)
+	policy := seedSwitchSource(t, svc, a)
+
+	published, release := make(chan struct{}), make(chan struct{})
+	svc.testHooks.bindPublished = func() {
+		close(published)
+		<-release
+	}
+	bound := make(chan error, 1)
+	go func() { bound <- svc.BindStoreFrom(ctx, b, a) }()
+	<-published
+
+	type read struct {
+		val []byte
+		err error
+	}
+	got, stored := make(chan read, 1), make(chan error, 1)
+	go func() {
+		v, err := svc.retrieveBytes(ctx, "c")
+		got <- read{v, err}
+	}()
+	go func() { stored <- svc.StoreCredential(ctx, "d", []byte("vd")) }()
+	close(release)
+
+	require.NoError(t, <-bound)
+	r := <-got
+	require.NoError(t, r.err)
+	assert.Equal(t, "v2", string(r.val), "the request reads the source's value from the destination")
+	require.NoError(t, <-stored)
+
+	assert.Equal(t, "v2", retrieveString(t, svc, "c"))
+	assert.Equal(t, "v1", versionString(t, svc, "c", 1))
+	assert.Equal(t, "vd", retrieveString(t, svc, "d"))
+	gotPolicy, err := svc.RotationPolicy(ctx, "c")
+	require.NoError(t, err)
+	assert.Equal(t, policy, gotPolicy)
+	requireLayoutEmpty(t, a)
+}
+
+// TestBindStoreFrom_WaitsForInFlightOperation proves the switch waits for
+// an operation admitted on the old store: its write lands there and then
+// moves to the new store whole.
+func TestBindStoreFrom_WaitsForInFlightOperation(t *testing.T) {
+	ctx := context.Background()
+	a, b := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	svc := newUnboundService(t)
+	seedSwitchSource(t, svc, a)
+
+	admitted, release := blockFirstAdmit(svc)
+	stored := make(chan error, 1)
+	go func() { stored <- svc.StoreCredential(ctx, "d", []byte("vd")) }()
+	<-admitted
+
+	published := make(chan struct{})
+	svc.testHooks.bindPublished = func() { close(published) }
+	bound := make(chan error, 1)
+	go func() { bound <- svc.BindStoreFrom(ctx, b, a) }()
+	select {
+	case <-published:
+		t.Fatal("the store was switched under an admitted operation")
+	case err := <-bound:
+		t.Fatalf("BindStoreFrom returned (%v) before the admitted operation", err)
+	default:
+	}
+	close(release)
+	require.NoError(t, <-stored)
+	require.NoError(t, <-bound)
+
+	assert.Equal(t, "vd", retrieveString(t, svc, "d"))
+	assert.Equal(t, "v2", retrieveString(t, svc, "c"))
+	keys, err := b.List(ctx, credentialPrefix)
+	require.NoError(t, err)
+	assert.NotEmpty(t, keys, "the new store holds the moved records")
+	requireLayoutEmpty(t, a)
+}
+
+// TestBindStoreFrom_CancelledWaitLeavesStoreBound proves a BindStoreFrom
+// whose ctx ends while an operation holds admission returns ctx.Err() and
+// leaves the old store bound with no move pending.
+func TestBindStoreFrom_CancelledWaitLeavesStoreBound(t *testing.T) {
+	ctx := context.Background()
+	a, b := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	svc := newUnboundService(t)
+	seedSwitchSource(t, svc, a)
+
+	admitted, release := blockFirstAdmit(svc)
+	stored := make(chan error, 1)
+	go func() { stored <- svc.StoreCredential(ctx, "d", []byte("vd")) }()
+	<-admitted
+
+	bctx, cancel := context.WithCancel(ctx)
+	bound := make(chan error, 1)
+	go func() { bound <- svc.BindStoreFrom(bctx, b, a) }()
+	cancel()
+	require.ErrorIs(t, <-bound, context.Canceled)
+	close(release)
+	require.NoError(t, <-stored)
+
+	require.NoError(t, svc.layoutMu.LockContext(ctx))
+	pending := svc.layoutFrom
+	svc.layoutMu.Unlock()
+	assert.Nil(t, pending, "no move is pending")
+	cur, err := svc.store.current()
+	require.NoError(t, err)
+	assert.Same(t, a, cur, "the old store stays bound")
+	require.NoError(t, svc.StoreCredential(ctx, "e", []byte("ve")))
+	assert.Equal(t, "vd", retrieveString(t, svc, "d"))
+	assert.Equal(t, "ve", retrieveString(t, svc, "e"))
+	requireLayoutEmpty(t, b)
+}
