@@ -20,7 +20,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/release"
@@ -156,12 +155,25 @@ type quarantineProbe struct {
 	inner embedded.SealProbe
 }
 
-// SealState implements sealedwindow.StateProbe.
+// sealStateProbe is the two-valued seal sample the transport gates read
+// (pkg/api/sealedwindow.StateProbe, matched structurally so the lean
+// standalone embedder keeps no sdk/go/node -> pkg/api/sealedwindow edge).
+type sealStateProbe interface {
+	SealState() (sealed, unconfirmed bool)
+}
+
+// SealState implements the transport gates' two-valued seal probe.
 func (p quarantineProbe) SealState() (sealed, unconfirmed bool) {
 	if p.n.Refusal() != nil {
 		return true, false
 	}
-	return sealedwindow.Sample(p.inner)
+	if p.inner == nil {
+		return false, false
+	}
+	if sp, ok := p.inner.(sealStateProbe); ok {
+		return sp.SealState()
+	}
+	return p.inner.IsSealed(), false
 }
 
 // IsSealed implements embedded.SealProbe.
