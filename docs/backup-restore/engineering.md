@@ -175,7 +175,7 @@ proves the refusal.
 | `BackupEncryptionKeyRequiredError` | `Encryption` named explicitly, no key | **yes** |
 | `BackupCreateError` | snapshot capture failed | yes |
 | `BackupEmptyIDError` | ID empty on get/delete/verify/restore | yes |
-| `BackupNotFoundError` | no backup with that ID | yes |
+| `BackupNotFoundError` | no backup with that ID, including a delete of an unknown ID on every repository (`--backup-dir`, `backup.destination`, in-memory) | yes |
 | `BackupDecryptionFailedError` | an unregistered `KeyProviderID` (create or restore), or a bad/wrong key reference — see [../key-wrapping/](../key-wrapping/engineering.md) | **yes** |
 | `BackupVerificationFailedError` | a target shard failed verification before import -- wraps `BackupShardIntegrityError` (tampered shard ciphertext, a DIFFERENT error from `BackupDecryptionFailedError` above) or `BackupShardNotFoundError` | **yes** |
 | `BackupPlaintextRestoreNotAllowedError` | restoring a plaintext-stored backup without the caller's explicit `AllowPlaintext`/`allow_plaintext` opt-in | **yes** |
@@ -188,14 +188,30 @@ absence somebody has to notice.
 
 ## Configuration
 
-No dedicated config section. `Destination` is a per-request label, recorded
-with the backup and bound into the AAD of its manifest and shards; it does not
-select storage.
+`Destination` is a per-request label, recorded with the backup and bound into
+the AAD of its manifest and shards; it does not select storage.
 
 The durable sink an artifact is persisted to is a composition seam,
-`service.BackupSink`: `qrdbd start --backup-dir <dir>` roots a file-backed
-`backupsink.Sink`, and an embedded node has none unless the embedder passes
-`node.WithBackupSink` (or `server.WithBackupSink`), which is forwarded in the
+`service.BackupSink`, fed from one of two exclusive sources:
+
+- `qrdbd start --backup-dir <dir>` roots a file-backed `backupsink.Sink`.
+- `backup.destination` (`config.ObjstoreConfig`: `provider`, `settings`,
+  `credentials.key_file`/`secret_file`) is opened by
+  `lifecycle.OpenBackupDestination` into a go-objstore-backed
+  `backupsink.Sink`, in `cmd/qrdbd` and in `sdk/go/node` (both constructors;
+  the node closes the store in `Close`). The provider is required and has no
+  data-directory default. An empty or unknown provider, or a provider that
+  fails to open (including an unreadable credential file), is
+  `lifecycle.BackupDestinationError`, which names the provider and wraps the
+  cause. A credential pasted under `settings` is refused earlier, at
+  configuration validation.
+
+Both sources set is `BackupDestinationConflictError` (`cmd/qrdbd` for
+`--backup-dir` plus `backup.destination`; `sdk/go/node` for
+`backup.destination` plus `WithBackupSink`). `qrdbd start --restore-backup-id`
+with neither is `RestoreBackupSourceRequiredError`, which names both. An
+embedded node with no destination has no sink unless the embedder passes
+`node.WithBackupSink` (or `server.WithBackupSink`), forwarded in the
 standalone and the clustered boot paths. Without one, backups live in process
 memory only. See [extension-seams](../release/extension-seams.md).
 
