@@ -140,3 +140,21 @@ func TestDatabaseService_CreateSystemTenant_SkipsQuotaAndEntitlement(t *testing.
 		t.Errorf("entitlements consulted %d times for the system tenant, want 0", n)
 	}
 }
+
+func TestDatabaseService_DropSystemTenantRaft_RemovesPlacement(t *testing.T) {
+	svc, store, q, _ := newSystemTenantDatabaseService(t, healthyNodes("n1", "n2", "n3"))
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
+
+	if _, err := svc.CreateForTenant(ctx, systemRaftConfig("orders")); err != nil {
+		t.Fatalf("CreateForTenant: %v", err)
+	}
+	if err := svc.DropForTenant(ctx, "orders"); err != nil {
+		t.Fatalf("DropForTenant: %v", err)
+	}
+	if _, err := store.Get(ctx, tenantid.System, "orders"); !errors.Is(err, placement.ErrPlacementNotFound) {
+		t.Errorf("placement after the drop: err = %v, want not found", err)
+	}
+	if n := q.calls.Load(); n != 0 {
+		t.Errorf("quota consulted %d times for the system tenant, want 0", n)
+	}
+}

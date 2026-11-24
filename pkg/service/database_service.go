@@ -1553,7 +1553,8 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// request is discarded: no caller creates a database in another tenant.
 	system := tenantid.IsSystem(tenantID)
 	if system {
-		cfg.TenantID = ""
+		tenantID = tenantid.System
+		cfg.TenantID = tenantid.System
 	}
 
 	// A caller-supplied DataDir is never trusted for a tenant-scoped create:
@@ -1583,7 +1584,9 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// tenantBarrierAutoUnseal is captured here so the key distribution below
 	// can skip a platform-custody tenant, whose every node self-initializes
 	// under its own key, without a second GetTenant call.
-	var tenantBarrierAutoUnseal bool
+	// The system tenant has no tenant barrier: its replicas run under each
+	// node's own host-wide barrier, so it ships no key, as platform custody.
+	tenantBarrierAutoUnseal := system
 	// dedicatedRaft records that an IsolationRaft tenant forced the raft
 	// backend, so an unnamed cluster mode falls back to local after the
 	// node's database_defaults are resolved.
@@ -1806,8 +1809,9 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 		}
 	}
 
-	// The manager records a system-tenant database with no tenant ID (the
-	// system tenant's own catalog); every other tenant's carries its ID.
+	// The manager's tenant create refuses the system tenant, so its database
+	// goes through the plain create carrying the system tenant's ID: it is
+	// stored under the tenant root and keyed as its placement is.
 	createDB := s.manager.CreateForTenantWithCredentials
 	if system {
 		createDB = s.manager.CreateWithCredentials
@@ -2115,9 +2119,10 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 	tenantID := tenant.FromContext(ctx)
 	if tenantid.IsSystem(tenantID) {
 		// Bookkeeping, not ownership: ownedDatabase holds the system tenant to
-		// the one ownership rule like every tenant, but a system database was
-		// never metered against a quota nor given a placement entry
-		// (CreateForTenant serves tenants), so there is nothing to release.
+		// the one ownership rule like every tenant. A system database is
+		// never metered against a quota, so Drop releases only what it
+		// holds: its catalog record, its store and, for a raft database,
+		// its placement entry (the record carries the system tenant's ID).
 		if _, err := s.ownedDatabase(ctx, name); err != nil {
 			return err
 		}
