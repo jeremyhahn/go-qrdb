@@ -14,12 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# devcontainer-pins.sh — write build/docker/devcontainer/compose.pins.yaml, the
-# compose overlay that hands GO_IMAGE and TRIVY_IMAGE to the devcontainer
-# build. VS Code runs compose directly (not make), and the Dockerfile's global
-# FROM ${GO_IMAGE} / FROM ${TRIVY_IMAGE} have no default, so .devcontainer.json
-# runs this as its initializeCommand. scripts/tool-pins.sh stays the one source
-# of the pin values; the overlay is generated and gitignored.
+# devcontainer-pins.sh: writes the compose overlay that passes GO_IMAGE and TRIVY_IMAGE to the devcontainer build.
 
 set -eu
 

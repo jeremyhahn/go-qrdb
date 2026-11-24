@@ -14,42 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# touched-packages.sh — print the root-module packages a diff changed plus
-# their direct importers, as ./<dir> paths usable as
-# `make test-pkg PKG=./<dir>`.
-#
-# Usage:
-#   scripts/touched-packages.sh <base> <tip>   paths from git diff --name-only
-#   scripts/touched-packages.sh --files        paths on stdin, one per line
-#
-# With <base> <tip> it refuses (exit 2) unless HEAD is <tip>: packages and
-# imports are read from the work tree.
-#
-# Per changed path:
-#   - a docs-only path (ci.yml's DOCS_ONLY_PATTERN, read from ci.yml) is ignored;
-#   - a path inside a nested module (a directory below the root with its own
-#     go.mod, from git ls-files) is ignored: those have their own suites
-#     (a go.mod under a testdata/ directory is a fixture, not a module);
-#   - go.mod, go.sum or Makefile prints the single line ALL;
-#   - otherwise the owning directory (a /testdata/... suffix stripped to its
-#     package) counts when it holds a .go file in the work tree;
-#   - a .go path whose directory holds no .go file (a deleted package) prints
-#     ALL: its importers cannot be read from the work tree.
-# A renamed file counts at both ends (git diff --no-renames).
-# A package is selected when it changed or its Imports, TestImports or
-# XTestImports name a changed package in any listing: one `go list ./...`
-# under `make -s print-build-tags`, plus one per line `<tag> <WITH_flag>=1` of
-# `make -s print-optional-test-tags` under those tags and <tag> (qrdb_fts:
-# pkg/fts imports pkg/storage only under it). A selected package prints
-# ./<dir> when the default listing has it; it also prints
-# `./<dir> <WITH_flag>=1` when its file set (GoFiles, TestGoFiles,
-# XTestGoFiles) under <tag> differs from the default one or only exists under
-# <tag>. `make test-pkg PKG=$line`, unquoted, turns that second word into the
-# make variable that adds <tag> to BUILD_TAGS. Nothing changed in Go prints
-# nothing. The listings run with -mod=readonly, so go.sum is never written.
-# An unreadable listing (go list fails under the default tags or any optional
-# tag) exits 2 and prints nothing.
-# $GO overrides `go`.
+# touched-packages.sh: print the packages a diff changed plus their direct importers, as ./<dir> paths.
 
 set -euo pipefail
 
