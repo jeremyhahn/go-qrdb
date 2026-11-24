@@ -15,6 +15,12 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- A system-tenant raft shard starts on every replica ahead of time: the
+  shard reconciler no longer waits for a tenant barrier the system tenant
+  does not have (its shards run under the host-wide barrier), so the
+  replicas elect a leader and a drop removes the group from every
+  replica (#923).
+
 - A system-tenant raft database is placed on its replicas and stored under
   the tenant root: its create takes the tenant create path, skipping only the
   quota and entitlement checks, and its drop retires the placement (#923).
