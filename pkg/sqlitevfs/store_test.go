@@ -1140,6 +1140,98 @@ func TestBumpGenerationEmptyWritesNothing(t *testing.T) {
 	}
 }
 
+// metaRecordAt returns the raw meta record of db at revision rev.
+func metaRecordAt(t *testing.T, b Backend, db string, rev int64) ([]byte, Meta) {
+	t.Helper()
+	key, err := MetaKey(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, found, err := b.GetAt(t.Context(), key, rev)
+	if err != nil || !found {
+		t.Fatalf("meta of %q at %d: found=%v err=%v", db, rev, found, err)
+	}
+	var m Meta
+	if err := m.UnmarshalBinary(value); err != nil {
+		t.Fatal(err)
+	}
+	return value, m
+}
+
+// restoreMeta writes db's meta record of revision rev back as the live one,
+// the meta half of a restore to rev, and returns the revision before it.
+func restoreMeta(t *testing.T, b Backend, db string, rev int64) int64 {
+	t.Helper()
+	before := revOf(t, b)
+	value, _ := metaRecordAt(t, b, db, rev)
+	key, _ := MetaKey(db)
+	if _, err := b.Commit(t.Context(), nil, map[string][]byte{string(key): value}, nil); err != nil {
+		t.Fatal(err)
+	}
+	return before
+}
+
+func TestStoreRestoreBumpsPastEveryEarlierGeneration(t *testing.T) {
+	b := newTestBackend(t)
+	s := newTestStore(t, b, "app.db")
+	r := seed(t, s, 0x01)
+	seed(t, s, 0x02)
+
+	seen := []uint64{0}
+	for round := range 3 {
+		before := restoreMeta(t, b, "app.db", r)
+		rev, err := s.BumpGenerationAfterRestore(t.Context(), before)
+		if err != nil {
+			t.Fatalf("round %d: BumpGenerationAfterRestore: %v", round, err)
+		}
+		if rev != revOf(t, b) || rev <= before+1 {
+			t.Fatalf("round %d: bump revision %d, backend at %d, restore before %d", round, rev, revOf(t, b), before)
+		}
+		_, m := metaRecordAt(t, b, "app.db", rev)
+		for _, g := range seen {
+			if m.Generation <= g {
+				t.Fatalf("round %d: generation %d is not past the earlier %d (seen %v)", round, m.Generation, g, seen)
+			}
+		}
+		seen = append(seen, m.Generation)
+		if _, rm := metaRecordAt(t, b, "app.db", r); m.ChangeCounter != rm.ChangeCounter || m.PageCount != rm.PageCount {
+			t.Fatalf("round %d: bumped meta %+v does not keep R's %+v", round, m, rm)
+		}
+	}
+}
+
+func TestStoreRestoreNoMetaWritesNothing(t *testing.T) {
+	b := newTestBackend(t)
+	s := newTestStore(t, b, "app.db")
+	if _, err := b.Commit(t.Context(), nil, map[string][]byte{"other/1": []byte("x")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	before := revOf(t, b)
+	rev, err := s.BumpGenerationAfterRestore(t.Context(), before-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev != before || revOf(t, b) != before {
+		t.Fatalf("BumpGenerationAfterRestore with no meta = %d, backend at %d, want %d", rev, revOf(t, b), before)
+	}
+
+	// A database restored to before it existed: meta at before, none now.
+	seeded := seed(t, s, 0x01)
+	key, _ := MetaKey("app.db")
+	pageKey, _ := PageKey("app.db", 1)
+	gone, err := b.Commit(t.Context(), nil, nil, [][]byte{key, pageKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err = s.BumpGenerationAfterRestore(t.Context(), seeded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev != gone || revOf(t, b) != gone {
+		t.Fatalf("BumpGenerationAfterRestore of a removed database = %d, backend at %d, want %d", rev, revOf(t, b), gone)
+	}
+}
+
 func TestGenerationChange(t *testing.T) {
 	b := newTestBackend(t)
 	s := newTestStore(t, b, "app.db")

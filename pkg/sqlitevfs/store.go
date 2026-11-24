@@ -17,6 +17,7 @@ package sqlitevfs
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -292,6 +293,61 @@ func (s *Store) BumpGeneration(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("sqlitevfs: bump generation of %q: %w", s.db, err)
 	}
 	return newRev, nil
+}
+
+// restoreBumpAttempts bounds how often BumpGenerationAfterRestore re-reads
+// the meta record when a commit moved it between the read and the bump.
+const restoreBumpAttempts = 8
+
+// BumpGenerationAfterRestore is the restore hook of Q4 A for a restore that
+// has been applied: before is the revision the restore started from. A
+// restore writes the restored revision's meta record back, with that
+// revision's generation, so a plain Generation+1 can repeat a generation an
+// open connection already saw. This commits the current meta record with
+// Generation = max(generation at before, current generation) + 1 in one
+// Backend.Commit, guarded by a read check on the meta key so a commit that
+// lands between the read and the bump is never overwritten (the read is
+// retried). Generations only grow along the live history, so the result is
+// past every generation any connection has seen. A database with no meta
+// record at the current revision writes nothing and returns the current
+// revision. ctx bounds the reads and the commit.
+func (s *Store) BumpGenerationAfterRestore(ctx context.Context, before int64) (int64, error) {
+	var floor uint64
+	prior, found, err := s.readMeta(ctx, before)
+	if err != nil {
+		return 0, err
+	}
+	if found {
+		floor = prior.Generation
+	}
+	for range restoreBumpAttempts {
+		rev, err := s.backend.Revision(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("sqlitevfs: bump generation of %q after a restore: %w", s.db, err)
+		}
+		meta, found, err := s.readMeta(ctx, rev)
+		if err != nil {
+			return 0, err
+		}
+		if !found {
+			return rev, nil
+		}
+		meta.Generation = max(floor, meta.Generation) + 1
+		value, err := meta.MarshalBinary()
+		if err != nil {
+			return 0, err
+		}
+		check := []ReadCheck{{Key: s.metaKey, Rev: rev, Found: true}}
+		newRev, err := s.backend.Commit(ctx, check, map[string][]byte{string(s.metaKey): value}, nil)
+		if errors.Is(err, ErrSnapshotChanged) {
+			continue
+		}
+		if err != nil {
+			return 0, fmt.Errorf("sqlitevfs: bump generation of %q after a restore: %w", s.db, err)
+		}
+		return newRev, nil
+	}
+	return 0, fmt.Errorf("%w: %q: meta moved on each of %d bump attempts after a restore", ErrSnapshotChanged, s.db, restoreBumpAttempts)
 }
 
 // sweepStages deletes, in one Backend.Commit, every staged page key of the
