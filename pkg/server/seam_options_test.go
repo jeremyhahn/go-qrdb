@@ -119,3 +119,12 @@ func TestResolveCryptoOptions_CompositionSeamsAbsentKeepTheDefaults(t *testing.T
 		t.Fatalf("a seam is set with no option given: %+v", got)
 	}
 }
+
+func TestResolveCryptoOptions_BackupSinkSetEvenWhenNil(t *testing.T) {
+	if got := ResolveCryptoOptions(WithBackupSink(nil)); !got.BackupSinkSet || got.BackupSink != nil {
+		t.Fatalf("WithBackupSink(nil): BackupSinkSet=%v BackupSink=%v", got.BackupSinkSet, got.BackupSink)
+	}
+	if ResolveCryptoOptions().BackupSinkSet {
+		t.Fatal("BackupSinkSet is true with no option given")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/stretchr/testify/require"
@@ -78,6 +79,40 @@ func TestBackupDestination_ConflictWithWithBackupSink(t *testing.T) {
 	var conflict *BackupDestinationConflictError
 	require.True(t, errors.As(err, &conflict), "want *BackupDestinationConflictError, got %v", err)
 	require.Nil(t, n)
+}
+
+func TestBackupDestination_ConflictWithServerWithBackupSink(t *testing.T) {
+	sinks := []struct {
+		name string
+		opt  server.ServerOption
+	}{
+		{"sink", server.WithBackupSink(listingSink{})},
+		{"nil sink", server.WithBackupSink(nil)},
+	}
+	for _, s := range sinks {
+		t.Run("standalone "+s.name, func(t *testing.T) {
+			cfg := newTenantIsolationConfig(t)
+			cfg.Backup.Destination = localDestination(t.TempDir())
+			n, err := NewStandaloneNode(context.Background(), cfg, []server.ServerOption{s.opt})
+			if n != nil {
+				_ = n.Close()
+			}
+			var conflict *BackupDestinationConflictError
+			require.True(t, errors.As(err, &conflict), "want *BackupDestinationConflictError, got %v", err)
+			require.Nil(t, n)
+		})
+		t.Run("clustered "+s.name, func(t *testing.T) {
+			cfg := &qrdbconfig.Config{}
+			cfg.Backup.Destination = localDestination(t.TempDir())
+			n, err := NewClusteredNode(context.Background(), cfg, map[uint64]string{1: "127.0.0.1:1"}, []server.ServerOption{s.opt})
+			if n != nil {
+				_ = n.Close()
+			}
+			var conflict *BackupDestinationConflictError
+			require.True(t, errors.As(err, &conflict), "want *BackupDestinationConflictError, got %v", err)
+			require.Nil(t, n)
+		})
+	}
 }
 
 // TestBackupDestination_UnknownProvider pins that a destination naming no

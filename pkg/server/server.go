@@ -1439,6 +1439,8 @@ type CryptoOptions struct {
 	HeadSignerProvider      vlog.HeadSignerProvider
 	InvitationRedeemLimiter ratelimit.Limiter
 	HolderActLimiter        ratelimit.Limiter
+	// BackupSinkSet is true when any WithBackupSink option was applied, nil included.
+	BackupSinkSet bool
 }
 
 // ResolveCryptoOptions applies the given ServerOptions to a throwaway option
@@ -1479,6 +1481,7 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		HeadSignerProvider:      o.headSignerProvider,
 		InvitationRedeemLimiter: o.invitationRedeemLimiter,
 		HolderActLimiter:        o.holderActLimiter,
+		BackupSinkSet:           o.backupSinkSet,
 	}
 }
 
