@@ -149,9 +149,9 @@ func testVolumeMoveCancelAfterResumeOverProtocol(t *testing.T, node *multiProtoN
 		if volumeMoveCancelAfterResume(t, node, dirs, proto, mt) {
 			return
 		}
-		t.Logf("[%s] attempt %d: the move of %s ended before a cancel after resume; retrying on a fresh tenant", proto.name, attempt+1, mt.tenantID)
+		t.Logf("[%s] attempt %d: the move of %s ended, or its abort found no copied node, before a cancel after an acknowledged write; retrying on a fresh tenant", proto.name, attempt+1, mt.tenantID)
 	}
-	t.Fatalf("[%s] no cancel-move after resume took effect in %d attempts", proto.name, volumeMoveCancelAttempts)
+	t.Fatalf("[%s] no cancel-move after resume took the copy-back path in %d attempts", proto.name, volumeMoveCancelAttempts)
 }
 
 // volumeMoveCancelAfterResume runs one attempt of
@@ -189,24 +189,23 @@ func volumeMoveCancelAfterResume(t *testing.T, node *multiProtoNode, dirs volume
 	}
 
 	resumedKey, resumedValue := "resumed", "written-after-resume-"+mt.tenantID
-	cancelled := false
+	cancelled, copyBack := false, false
 	if resumed {
-		// The write goes in while the replica resumes on the destination;
-		// the cancel is sent alongside it, so it lands before the cut over
-		// the step's release would otherwise start.
-		putErr := make(chan error, 1)
-		go func() {
-			var pout string
-			var perr error
-			if pollUntil(volumeMoveDeadline, 200*time.Millisecond, func() bool {
-				pout, perr = runQRDB(t, node.cli, mt.conn, "--database", mt.dbName, "kv", "put", resumedKey, resumedValue)
-				return perr == nil
-			}) {
-				putErr <- nil
-				return
-			}
-			putErr <- fmt.Errorf("kv put %s not acknowledged within %s: %v; output: %s", resumedKey, volumeMoveDeadline, perr, pout)
-		}()
+		// The write goes in while the replica resumes on the destination
+		// (its step settling) and must be acknowledged BEFORE the cancel is
+		// sent: the cancel then lands against a copied node holding a write
+		// only the destination has, so the abort must copy it back (path
+		// (b) of the decision's single-replica test). A single-replica move
+		// cuts over in the pass that releases its settled step, so an
+		// attempt whose cut over wins the race is retried on a fresh tenant.
+		var pout string
+		var perr error
+		if !pollUntil(volumeMoveDeadline, 20*time.Millisecond, func() bool {
+			pout, perr = runQRDB(t, node.cli, mt.conn, "--database", mt.dbName, "kv", "put", resumedKey, resumedValue)
+			return perr == nil
+		}) {
+			t.Fatalf("[%s] tenant %s: kv put %s not acknowledged within %s: %v; output: %s", proto.name, mt.tenantID, resumedKey, volumeMoveDeadline, perr, pout)
+		}
 		out, err = runCLIProto(t, node, proto, "--output", "json", "volume-pool", "cancel-move", mt.tenantID)
 		switch {
 		case err == nil:
@@ -218,12 +217,17 @@ func volumeMoveCancelAfterResume(t *testing.T, node *multiProtoNode, dirs volume
 				t.Fatalf("[%s] cancel-move after resume = %+v, want the move of %s aborting or its cancel recorded", proto.name, m, mt.tenantID)
 			}
 			cancelled = true
+			// Copy-back proof: the abort begins with the node copied (it
+			// holds the acknowledged write), not abortUncopied's empty
+			// NodesCopied. A cancel recorded against the held step keeps
+			// the step's real copied state for the abort.
+			copyBack = len(m.NodesCopied) > 0 && (m.State == "aborting" || slices.Contains(m.NodesCopied, m.StepNode))
+			if !copyBack {
+				t.Logf("[%s] attempt on %s: cancel-move answered %+v (no copied node): not the copy-back path", proto.name, mt.tenantID, m)
+			}
 		case volumeMoveIsNoMove(out), strings.Contains(strings.ToLower(out), "cannot cancel"):
 		default:
 			t.Fatalf("[%s] volume-pool cancel-move after resume: %v\noutput: %s", proto.name, err, out)
-		}
-		if perr := <-putErr; perr != nil {
-			t.Fatalf("[%s] tenant %s: %v", proto.name, mt.tenantID, perr)
 		}
 	}
 
@@ -256,12 +260,15 @@ func volumeMoveCancelAfterResume(t *testing.T, node *multiProtoNode, dirs volume
 			t.Fatalf("[%s] stat %s: %v", proto.name, leftover, serr)
 		}
 	}
-	return true
+	return copyBack
 }
 
 // volumeMoveCancelAttempts bounds the fresh tenants the cancel case tries
 // before it fails: each attempt either cancels or proves a completed move.
-const volumeMoveCancelAttempts = 5
+// The single-replica cancel after resume needs the most: its cancel must
+// beat the cut over that the settled step's release starts, after the
+// write it sent was acknowledged.
+const volumeMoveCancelAttempts = 10
 
 // volumeMoveTenant is a volume tenant on "default" with one database holding
 // key=value, written through conn (the tenant's own data-plane identity).
