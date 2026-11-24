@@ -92,6 +92,16 @@ The same frontend runs against a remote `qrdbd` over its REST API. Nothing
 special is needed server-side beyond CORS being enabled, and your browser
 needs to present a client certificate as usual.
 
+## Upgrading an embedded store
+
+The embedded server now resolves every database the way `qrdbd` does, under
+your `(tenant, database)` namespace, so named databases other than the system
+database work over the embedded connection. Collections an earlier desktop
+build wrote into its embedded store carry no such namespace, and they are not
+listed after the upgrade; nothing moves or deletes them. Export them with the
+earlier desktop build and re-import them with this one -- see
+[Collections belong to your tenant](../collections/user.md#collections-belong-to-your-tenant).
+
 ## Building
 
 ```bash
