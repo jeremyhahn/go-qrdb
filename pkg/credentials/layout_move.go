@@ -97,7 +97,9 @@ func (s *CredentialService) BindStoreFrom(ctx context.Context, st, from Store) e
 
 // ensureLayoutMoved finishes a move BindStoreFrom started, once.
 func (s *CredentialService) ensureLayoutMoved(ctx context.Context) error {
-	s.layoutMu.Lock()
+	if err := s.layoutMu.LockContext(ctx); err != nil {
+		return &OperationError{Op: "move credential store", Cause: err}
+	}
 	defer s.layoutMu.Unlock()
 	if s.layoutFrom == nil {
 		return nil
@@ -106,12 +108,8 @@ func (s *CredentialService) ensureLayoutMoved(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	rctx := ctx
-	if s.rotationAttemptTimeout > 0 {
-		var cancel context.CancelFunc
-		rctx, cancel = context.WithTimeout(ctx, s.rotationAttemptTimeout)
-		defer cancel()
-	}
+	rctx, cancel := s.migrationContext(ctx)
+	defer cancel()
 	if err := moveLayout(rctx, s.layoutFrom, to); err != nil {
 		var conflict *LayoutConflictError
 		if errors.As(err, &conflict) {

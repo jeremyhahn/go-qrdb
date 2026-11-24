@@ -225,14 +225,31 @@ func (s *CredentialService) BindStore(ctx context.Context, st Store) error {
 //
 // It runs once per service and is idempotent: a run interrupted at any
 // point and run again reaches the same result. A service with no legacy
-// store, or of the manual strategy, has nothing to migrate.
+// store, or of the manual strategy, has nothing to migrate. Waiting for the
+// migration lock honours ctx, and the migration's storage I/O is bounded by
+// the rotation attempt timeout when one is set.
 func (s *CredentialService) MigrateLegacy(ctx context.Context) error {
 	if err := s.ensureLayoutMoved(ctx); err != nil {
 		return err
 	}
-	s.migrateMu.Lock()
+	if err := s.migrateMu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer s.migrateMu.Unlock()
-	return s.migrateLocked(ctx)
+	mctx, cancel := s.migrationContext(ctx)
+	defer cancel()
+	return s.migrateLocked(mctx)
+}
+
+// migrationContext bounds migration and layout-move I/O run under
+// migrateMu or layoutMu by rotationAttemptTimeout, when set: every
+// credential operation waits on those locks, and a caller such as the
+// rotation scheduler sets no deadline of its own.
+func (s *CredentialService) migrationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if s.rotationAttemptTimeout > 0 {
+		return context.WithTimeout(ctx, s.rotationAttemptTimeout)
+	}
+	return ctx, func() {}
 }
 
 // ensureMigrated runs the migration when it has not finished, before an
@@ -243,7 +260,10 @@ func (s *CredentialService) MigrateLegacy(ctx context.Context) error {
 // one lock and no store read. The error is the migration's, as an
 // OperationError with Op "migrate"; the caller serves nothing over a store
 // the node's own records have not reached. It takes migrateMu, so nothing
-// the migration or the resolve verbs call may call it.
+// the migration or the resolve verbs call may call it. Waiting for migrateMu
+// honours ctx (a cancelled caller returns ctx's error, as the OperationError
+// cause), and the migration I/O run under it is bounded by the rotation
+// attempt timeout when one is set.
 func (s *CredentialService) ensureMigrated(ctx context.Context) error {
 	if err := s.ensureLayoutMoved(ctx); err != nil {
 		return err
@@ -251,7 +271,11 @@ func (s *CredentialService) ensureMigrated(ctx context.Context) error {
 	if s.legacy == nil || s.strategy != StrategyBarrier {
 		return nil
 	}
-	s.migrateMu.Lock()
+	// A caller whose ctx ends while another holds the lock leaves the
+	// wait: a stalled holder cannot queue a cancelled RotateDue.
+	if err := s.migrateMu.LockContext(ctx); err != nil {
+		return &OperationError{Op: "migrate", Cause: err}
+	}
 	defer s.migrateMu.Unlock()
 	if s.migrated {
 		return nil
@@ -259,12 +283,8 @@ func (s *CredentialService) ensureMigrated(ctx context.Context) error {
 	// The retry holds the lock every credential operation takes first, and
 	// a caller such as the rotation scheduler sets no deadline: bound it,
 	// so a store that never answers cannot hold them all.
-	rctx := ctx
-	if s.rotationAttemptTimeout > 0 {
-		var cancel context.CancelFunc
-		rctx, cancel = context.WithTimeout(ctx, s.rotationAttemptTimeout)
-		defer cancel()
-	}
+	rctx, cancel := s.migrationContext(ctx)
+	defer cancel()
 	if err := s.migrateLocked(rctx); err != nil {
 		if cerr := rctx.Err(); cerr != nil && !errors.Is(err, cerr) {
 			err = errors.Join(cerr, err)
@@ -795,9 +815,13 @@ func (s *CredentialService) ListMigrationConflicts(ctx context.Context) ([]Crede
 	if err := s.ensureLayoutMoved(ctx); err != nil {
 		return nil, err
 	}
-	s.migrateMu.Lock()
+	if err := s.migrateMu.LockContext(ctx); err != nil {
+		return nil, err
+	}
 	defer s.migrateMu.Unlock()
-	if err := s.migrateLocked(ctx); err != nil {
+	mctx, cancel := s.migrationContext(ctx)
+	defer cancel()
+	if err := s.migrateLocked(mctx); err != nil {
 		return nil, err
 	}
 	out := make([]CredentialMigrationConflictError, 0, len(s.conflicts))
@@ -833,15 +857,19 @@ func (s *CredentialService) ResolveMigrationConflict(ctx context.Context, name s
 	if err := s.ensureLayoutMoved(ctx); err != nil {
 		return err
 	}
-	s.migrateMu.Lock()
+	if err := s.migrateMu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer s.migrateMu.Unlock()
-	if err := s.migrateLocked(ctx); err != nil {
+	mctx, cancel := s.migrationContext(ctx)
+	defer cancel()
+	if err := s.migrateLocked(mctx); err != nil {
 		return err
 	}
 	if _, ok := s.conflicts[name]; !ok {
 		return ErrMigrationConflictNotFound
 	}
-	copies, err := s.loadLegacy(ctx, name)
+	copies, err := s.loadLegacy(mctx, name)
 	if err != nil {
 		return err
 	}
@@ -856,11 +884,11 @@ func (s *CredentialService) ResolveMigrationConflict(ctx context.Context, name s
 	// on: only the deletion runs again.
 	attrs := map[string]any{"already_resolved": true}
 	if !c.settled {
-		if attrs, err = resolve(s, ctx, name, c); err != nil {
+		if attrs, err = resolve(s, mctx, name, c); err != nil {
 			return err
 		}
 	}
-	if err := s.deleteLegacy(ctx, name, c); err != nil {
+	if err := s.deleteLegacy(mctx, name, c); err != nil {
 		return err
 	}
 	delete(s.conflicts, name)

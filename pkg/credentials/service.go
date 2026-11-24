@@ -88,7 +88,7 @@ type CredentialService struct {
 	legacy Store
 	// migrateMu serializes the migration and the resolve verbs, and guards
 	// migrated and conflicts.
-	migrateMu sync.Mutex
+	migrateMu ctxMutex
 	// migrated reports that the migration from legacy ran to completion.
 	migrated bool
 	// conflicts holds the unresolved migration conflicts, by name.
@@ -99,7 +99,7 @@ type CredentialService struct {
 	// layoutMu guards layoutFrom: the store an earlier binding kept the
 	// replicated layout in, until BindStoreFrom has moved it into the
 	// bound store; nil when there is nothing to move.
-	layoutMu   sync.Mutex
+	layoutMu   ctxMutex
 	layoutFrom Store
 
 	// testHooks are interleaving seams for this package's tests; every
