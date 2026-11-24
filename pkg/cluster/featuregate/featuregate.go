@@ -306,12 +306,13 @@ const (
 
 	// ReleaseIntentPrefix is where a leader claims a bound system-shard
 	// add before proposing it: "{ReleaseIntentPrefix}{candidate address,
-	// path-escaped}/{release}/{claimant replica ID}", value the candidate
-	// address. The claimant is the replica ID of the claiming leader, so a
-	// later pass can tell an intent whose claimant is gone (retireIntents).
-	// It is not
-	// under ReleasePrefix, so parseReleases never reads an intent as a
-	// record. See ProposeBound.
+	// path-escaped}/{release}/{claimant replica ID}/{bound configuration
+	// change ID}", value the candidate address. The release is one the
+	// candidate announced, the claimant is the replica ID of the claiming
+	// leader, and the bound ID is the ConfigBinding.ConfigChangeID the add
+	// is proposed under, so a later pass can tell an intent whose add can no
+	// longer commit (retireIntents). It is not under ReleasePrefix, so
+	// parseReleases never reads an intent as a record. See ProposeBound.
 	ReleaseIntentPrefix = "__sys:cluster/features/release-intents/"
 
 	// DefaultRefreshInterval is how often the gate re-reads advertisements,
@@ -826,16 +827,15 @@ func (g *Gate) claimRelease(b ConfigBinding) (withdraw func(), err error) {
 		return noop, err
 	}
 	// The claimant is this node's own replica ID, never 0: a gate that is
-	// not a system member cannot claim, so every intent names a replica
-	// whose advertisement retireIntents can look for.
+	// not a system member cannot claim.
 	self, err := g.AdvertisedSelf()
 	if err != nil {
 		return refuse(err)
 	}
 	prefix := ReleaseIntentPrefix + url.PathEscape(b.Candidate) + "/"
-	claimant := "/" + strconv.FormatUint(self.ReplicaID, 10)
+	suffix := "/" + strconv.FormatUint(self.ReplicaID, 10) + "/" + strconv.FormatUint(b.ConfigChangeID, 10)
 	for _, rel := range b.CandidateReleases {
-		key := prefix + rel + claimant
+		key := prefix + rel + suffix
 		ok, err := kv.PutIfAbsent(ctx, key, []byte(b.Candidate))
 		if err != nil {
 			return refuse(&StoreError{Op: "record release intent", Err: err})
@@ -893,6 +893,8 @@ type releaseIntent struct {
 	key, addr, rel string
 	// claimant is the replica ID of the leader that claimed the intent.
 	claimant uint64
+	// bound is the configuration change ID the claimed add is bound to.
+	bound uint64
 }
 
 // listIntents lists every live release intent linearizably.
@@ -916,6 +918,15 @@ func parseIntents(keys []string) []releaseIntent {
 		if !found || !ok || err != nil || addr == "" {
 			continue
 		}
+		j := strings.LastIndex(tail, "/")
+		if j <= 0 {
+			continue
+		}
+		bound, err := strconv.ParseUint(tail[j+1:], 10, 64)
+		if err != nil {
+			continue
+		}
+		tail = tail[:j]
 		i := strings.LastIndex(tail, "/")
 		if i <= 0 {
 			continue
@@ -925,7 +936,7 @@ func parseIntents(keys []string) []releaseIntent {
 		if err != nil || claimant == 0 {
 			continue
 		}
-		out = append(out, releaseIntent{key: k, addr: addr, rel: rel, claimant: claimant})
+		out = append(out, releaseIntent{key: k, addr: addr, rel: rel, claimant: claimant, bound: bound})
 	}
 	return out
 }
@@ -1318,14 +1329,13 @@ func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
 //   - Recorded: its candidate is now a committed member with a release
 //     record of its own (this node's, just written, included). The record
 //     carries the claim from here on.
-//   - Lapsed claimant: its candidate is not a committed member and no
-//     advertisement lists its claimant (another node). The claimant's fence (the goroutine
-//     ProposeBound leaves waiting on the add's outcome) lives in the
-//     claimant's process, whose lease keeps its advertisement; with the
-//     lease gone the fence is gone too, so nothing will ever withdraw or
-//     record the intent. If the advertisements cannot be listed, or the
-//     gate is not started (no advertisement stores), this rule retires
-//     nothing.
+//   - Stale binding: its candidate is not a committed member, its bound
+//     configuration change ID is not 0, and the committed system-shard
+//     configuration change ID is past it, whoever the claimant is. Raft
+//     refuses an add bound to a configuration that is no longer current,
+//     so the claimed add can no longer commit and a re-proposal of it gets
+//     ErrStaleConfigChange. An intent bound to 0 is never retired by this
+//     rule: Raft does not compare configuration change 0.
 //   - Own and idle: its candidate is not a committed member, the claimant is
 //     this node, and proposeMu is free. ProposeBound holds proposeMu from
 //     before the claim until the add's outcome, so a free proposeMu means
@@ -1346,7 +1356,9 @@ func (g *Gate) retireIntents(ctx context.Context, kv ActivationKV, self Self, re
 	}
 	recordedAddrs := map[string]bool{self.Address: true}
 	var memberAddrs map[string]bool
+	var current uint64
 	if system, err := g.members.GroupMembership(g.systemShard); err == nil {
+		current = system.ConfigChangeID
 		memberAddrs = make(map[string]bool)
 		for _, m := range committedMembers(system) {
 			memberAddrs[m.addr] = true
@@ -1355,26 +1367,12 @@ func (g *Gate) retireIntents(ctx context.Context, kv ActivationKV, self Self, re
 			}
 		}
 	}
-	// An unstarted gate (EnforceRelease at boot) has no advertisement
-	// stores, only a cached view that may be empty: it cannot tell a lapsed
-	// claimant from a live one, so the lapsed rule waits for the run loop.
-	var advertised map[uint64]bool
-	if memberAddrs != nil && g.stores.Load() != nil {
-		if view, err := g.admissionView(ctx); err == nil {
-			advertised = make(map[uint64]bool, len(view))
-			for k := range view {
-				advertised[k.nodeID] = true
-			}
-		}
-	}
 	for _, in := range intents {
 		retire := recordedAddrs[in.addr]
 		if !retire && memberAddrs != nil && !memberAddrs[in.addr] {
+			stale := in.bound != 0 && current > in.bound
 			own := in.claimant == self.ReplicaID
-			// This node is alive whatever the store lists, so its own
-			// intents go by proposeMu alone.
-			lapsed := !own && advertised != nil && !advertised[in.claimant]
-			retire = lapsed || (own && idle)
+			retire = stale || (own && idle)
 		}
 		if !retire {
 			continue

@@ -126,7 +126,7 @@ func TestProposeBound_SequentialLeadersRefuseOnALiveIntent(t *testing.T) {
 	a, b, bindA, bindB := twoLeaders(t, kv)
 
 	require.NoError(t, a.ProposeBound(systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return nil, nil }))
-	assert.Equal(t, []string{ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/1"}, intentsOf(t, kv, "n4:7000"))
+	assert.Equal(t, []string{ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/1/3"}, intentsOf(t, kv, "n4:7000"))
 
 	ran := false
 	var gap *release.GapError
@@ -180,7 +180,7 @@ func allOnRelease(t *testing.T, kv ActivationKV, rel string) {
 func TestEnforceRelease_RefusesARestartAcrossAClaimedCandidate(t *testing.T) {
 	kv := newMemKV()
 	allOnRelease(t, kv, "0.59.0-alpha")
-	_, err := kv.PutIfAbsent(context.Background(), ReleaseIntentPrefix+"n5:7000/0.60.0-alpha/2", []byte("n5:7000"))
+	_, err := kv.PutIfAbsent(context.Background(), ReleaseIntentPrefix+"n5:7000/0.60.0-alpha/2/3", []byte("n5:7000"))
 	require.NoError(t, err)
 	t.Cleanup(release.SetForTesting("0.58.0-alpha"))
 	g := newGate(t, threeNodes())
@@ -225,41 +225,70 @@ func TestProposeBound_RefusesAnAddAcrossARecordedRestart(t *testing.T) {
 	assert.Empty(t, intentsOf(t, kv, "n5:7000"))
 }
 
-// TestRecordRelease_RetiresAnOrphanedIntentOfALapsedClaimant covers an
-// intent whose claiming leader died between the claim and the add's
-// outcome: no advertisement lists its claimant and its candidate never
-// joined. Before the fix it refused every later restart onto 0.60 for good;
-// one record pass on a started member now retires it.
-func TestRecordRelease_RetiresAnOrphanedIntentOfALapsedClaimant(t *testing.T) {
+// TestRecordRelease_KeepsAnUnresolvedAddsIntentAfterItsClaimantLapses covers
+// an intent whose claimant's advertisement is gone while its add, bound to
+// the current configuration, can still commit: the intent stays and keeps
+// refusing a restart across it.
+func TestRecordRelease_KeepsAnUnresolvedAddsIntentAfterItsClaimantLapses(t *testing.T) {
 	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
 	kv, store := newMemKV(), newLeaseStore()
 	allOnRelease(t, kv, "0.59.0-alpha")
 	for id, addr := range map[uint64]string{1: "n1:7000", 2: "n2:7000", 3: "n3:7000"} {
 		store.advertiseRelease(t, id, addr, "0.59.0-alpha")
 	}
-	orphan := ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/9"
-	_, err := kv.PutIfAbsent(context.Background(), orphan, []byte("n4:7000"))
+	pending := ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/9/3"
+	_, err := kv.PutIfAbsent(context.Background(), pending, []byte("n4:7000"))
 	require.NoError(t, err)
-
-	restore := release.SetForTesting("0.60.0-alpha")
-	var gap *release.GapError
-	require.ErrorAs(t, newGate(t, threeNodes()).EnforceRelease(context.Background(), kv), &gap,
-		"an unstarted gate has no advertisements to judge the claimant by")
-	assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.60.0-alpha", Peer: "0.58.0-alpha"}, *gap)
-	restore()
-	require.True(t, kv.has(orphan))
 
 	member, err := New(Config{Self: Self{ReplicaID: 2}, SystemShardID: systemShard, Members: threeNodes(), RefreshInterval: time.Hour})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = member.Close() })
 	require.NoError(t, member.Start(context.Background(), kv, store))
 	require.NoError(t, member.recordRelease(context.Background(), kv))
-	assert.False(t, kv.has(orphan), "an intent of a lapsed claimant was kept")
+	assert.True(t, kv.has(pending), "the intent of an add that can still commit was retired")
 
-	restore = release.SetForTesting("0.60.0-alpha")
-	defer restore()
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	var gap *release.GapError
+	require.ErrorAs(t, newGate(t, threeNodes()).EnforceRelease(context.Background(), kv), &gap)
+	assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.60.0-alpha", Peer: "0.58.0-alpha"}, *gap)
+}
+
+// TestRecordRelease_RetiresAnIntentOnceItsConfigurationMoved covers an intent
+// bound to an older configuration: its add can no longer commit, so one
+// record pass retires it whoever claimed it.
+func TestRecordRelease_RetiresAnIntentOnceItsConfigurationMoved(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	kv := newMemKV()
+	allOnRelease(t, kv, "0.59.0-alpha")
+	orphan := ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/9/2"
+	_, err := kv.PutIfAbsent(context.Background(), orphan, []byte("n4:7000"))
+	require.NoError(t, err)
+
+	restore := release.SetForTesting("0.60.0-alpha")
+	var gap *release.GapError
+	require.ErrorAs(t, newGate(t, threeNodes()).EnforceRelease(context.Background(), kv), &gap)
+	restore()
+
+	require.NoError(t, newGate(t, threeNodes()).recordRelease(context.Background(), kv))
+	assert.False(t, kv.has(orphan), "the intent of an add bound to an older configuration was kept")
+
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
 	require.NoError(t, newGate(t, threeNodes()).EnforceRelease(context.Background(), kv),
-		"a 0.60 restart in an all-0.59 cluster is refused after the orphan is gone")
+		"a 0.60 restart in an all-0.59 cluster is refused after the stale intent is gone")
+}
+
+// TestRecordRelease_KeepsAZeroBoundIntentOfAnotherClaimant covers an intent
+// bound to configuration change 0, which Raft never compares: only its
+// claimant or its candidate's record retires it.
+func TestRecordRelease_KeepsAZeroBoundIntentOfAnotherClaimant(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	kv := newMemKV()
+	allOnRelease(t, kv, "0.59.0-alpha")
+	unbound := ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/9/0"
+	_, err := kv.PutIfAbsent(context.Background(), unbound, []byte("n4:7000"))
+	require.NoError(t, err)
+	require.NoError(t, newGate(t, threeNodes()).recordRelease(context.Background(), kv))
+	assert.True(t, kv.has(unbound), "another claimant's intent bound to 0 was retired")
 }
 
 // TestRecordRelease_RetiresOwnIntentWhenNoAddIsInFlight covers an intent
@@ -272,8 +301,8 @@ func TestRecordRelease_RetiresOwnIntentWhenNoAddIsInFlight(t *testing.T) {
 	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
 	kv := newMemKV()
 	allOnRelease(t, kv, "0.59.0-alpha")
-	own := ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/1"
-	other := ReleaseIntentPrefix + "n5:7000/0.60.0-alpha/2"
+	own := ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/1/3"
+	other := ReleaseIntentPrefix + "n5:7000/0.60.0-alpha/2/3"
 	for key, addr := range map[string]string{own: "n4:7000", other: "n5:7000"} {
 		_, err := kv.PutIfAbsent(context.Background(), key, []byte(addr))
 		require.NoError(t, err)
@@ -281,7 +310,7 @@ func TestRecordRelease_RetiresOwnIntentWhenNoAddIsInFlight(t *testing.T) {
 	g := newGate(t, threeNodes())
 	require.NoError(t, g.recordRelease(context.Background(), kv))
 	assert.False(t, kv.has(own), "this node's idle intent was kept")
-	assert.True(t, kv.has(other), "another claimant's intent was retired without its lease being read")
+	assert.True(t, kv.has(other), "another claimant's intent bound to the current configuration was retired")
 }
 
 // TestRecordRelease_KeepsAnIntentWhileItsAddIsInFlight: while the add's
@@ -294,7 +323,7 @@ func TestRecordRelease_KeepsAnIntentWhileItsAddIsInFlight(t *testing.T) {
 
 	pending := make(chan struct{})
 	require.NoError(t, a.ProposeBound(systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return pending, nil }))
-	intent := []string{ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/1"}
+	intent := []string{ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/1/3"}
 	require.Equal(t, intent, intentsOf(t, kv, "n4:7000"))
 
 	require.NoError(t, a.recordRelease(context.Background(), kv))

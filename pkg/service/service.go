@@ -1385,9 +1385,11 @@ const (
 
 // resolveAdd returns once the ambiguous add a is settled: the replica is in
 // the committed membership (the add, or a later re-proposal of it,
-// committed), the shard's configuration change ID moved past the bound one
+// committed), the shard's configuration change ID is not the bound one
 // (Raft keeps one configuration change in flight, so an add bound to an
-// older configuration can no longer commit), or the host is closed. It also
+// older configuration can no longer commit, and an add bound to 0 whose
+// shard committed a configuration without it can no longer commit either:
+// a new proposal of it would be a new add), or the host is closed. It also
 // returns once stop closes (the gate fencing the add closed), which cancels
 // the attempt in flight. While none is seen it proposes the add again under
 // the same binding, which forces an outcome: success commits it,
@@ -1437,7 +1439,7 @@ func (s *AdminService) addSettled(a pendingAdd, stop <-chan struct{}) bool {
 	if _, ok := m.Observers[a.replicaID]; ok {
 		return true
 	}
-	return a.configChangeID != 0 && m.ConfigChangeID != a.configChangeID
+	return m.ConfigChangeID != a.configChangeID
 }
 
 // requestAdd proposes adding replicaID with its identity, ordered after the

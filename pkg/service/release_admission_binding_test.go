@@ -1057,6 +1057,29 @@ func TestAwaitAdd_GateCloseStopsTheResolution(t *testing.T) {
 	}
 }
 
+// TestAddSettled_ZeroBoundAddSettlesOnceTheConfigurationMoves covers an add
+// bound to configuration change 0: it is pending while the shard is still on
+// its initial configuration, and settled once a later configuration commits
+// without it.
+func TestAddSettled_ZeroBoundAddSettlesOnceTheConfigurationMoves(t *testing.T) {
+	h := newBindingHostAt(t, 0)
+	svc, ok := NewAdminService(h).(*AdminService)
+	if !ok {
+		t.Fatal("NewAdminService did not return *AdminService")
+	}
+	add := pendingAdd{shardID: bindingSystemShard, replicaID: 9}
+	stop := make(chan struct{})
+	if svc.addSettled(add, stop) {
+		t.Fatal("a 0-bound add was settled while the shard is on its initial configuration")
+	}
+	h.mu.Lock()
+	h.configChangeID = 7
+	h.mu.Unlock()
+	if !svc.addSettled(add, stop) {
+		t.Fatal("a 0-bound add was not settled after a later configuration committed without it")
+	}
+}
+
 // An ambiguous add nothing fences (a closed stop) returns its error with no
 // pending, and nothing resolves it: no re-proposal, no membership read.
 func TestAwaitAdd_UnfencedAmbiguousAddIsNotResolved(t *testing.T) {
