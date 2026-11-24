@@ -34,6 +34,7 @@ import (
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
+// #nosec G101 -- test fixture passphrase, not a credential.
 const quiescePassphrase = "encfs-quiesce-passphrase"
 
 // newQuiesceBarrier is an initialized, unsealed StorageBarrier under cfg.

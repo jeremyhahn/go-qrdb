@@ -29,6 +29,11 @@ type RemoteConfig struct {
 	// Exec wraps a fault's argv; it normally carries ArgvElement or
 	// {{shquote .Argv}}.
 	Exec []string
+	// DiskExec wraps a disk fault's argv (see [DiskExecer]); it carries the
+	// node's data directory but not its network namespace, so it runs on a
+	// node whose server has exited. It is optional: unset, disk faults use
+	// Exec.
+	DiskExec []string
 	// Signal signals the node's server process.
 	Signal []string
 	// Restart starts the node's server process if it is not running and is
@@ -46,16 +51,20 @@ type RemoteConfig struct {
 // RemoteTarget is the [Target] for a node on another host, reached through
 // command templates run by a [Runner].
 type RemoteTarget struct {
-	node    string
-	vars    map[string]string
-	exec    *Template
-	signal  *Template
-	restart *Template
-	unseal  *Template
-	runner  Runner
+	node     string
+	vars     map[string]string
+	exec     *Template
+	diskExec *Template
+	signal   *Template
+	restart  *Template
+	unseal   *Template
+	runner   Runner
 }
 
-var _ Unsealer = (*RemoteTarget)(nil)
+var (
+	_ Unsealer   = (*RemoteTarget)(nil)
+	_ DiskExecer = (*RemoteTarget)(nil)
+)
 
 // remoteData is what a RemoteTarget's templates render against.
 type remoteData struct {
@@ -86,6 +95,7 @@ func NewRemoteTarget(cfg RemoteConfig) (*RemoteTarget, error) {
 		optional bool
 	}{
 		{&r.exec, "exec", cfg.Exec, false},
+		{&r.diskExec, "disk_exec", cfg.DiskExec, true},
 		{&r.signal, "signal", cfg.Signal, false},
 		{&r.restart, "restart", cfg.Restart, false},
 		{&r.unseal, "unseal", cfg.Unseal, true},
@@ -118,6 +128,18 @@ func (r *RemoteTarget) Exec(ctx context.Context, argv []string) ([]byte, error) 
 		return nil, &ConfigError{Field: "argv", Reason: "command is empty"}
 	}
 	return r.run(ctx, r.exec, r.data(argv, ""), argv)
+}
+
+// DiskExec runs argv through the disk_exec template, or through the exec
+// template when none is configured.
+func (r *RemoteTarget) DiskExec(ctx context.Context, argv []string) ([]byte, error) {
+	if r.diskExec == nil {
+		return r.Exec(ctx, argv)
+	}
+	if len(argv) == 0 {
+		return nil, &ConfigError{Field: "argv", Reason: "command is empty"}
+	}
+	return r.run(ctx, r.diskExec, r.data(argv, ""), argv)
 }
 
 // Signal signals the node's server process through the Signal template.

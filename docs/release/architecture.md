@@ -191,7 +191,7 @@ skips the code tier, and the nightly tier carries the soak:
 | PR | every run | `preflight` (the changed-file diff, then the architecture gates, one job since ci-template v1.34), `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`, ci-template v1.28.0), `lint-gates` (`make lint-gates`), `ci-gate` |
 | Code | every run but a docs-only pull request | `image` (the build), the unit-suite jobs `coverage` (`make coverage-leg`, a matrix over `COVER_LEGS`) and `coverage-merge` (`make coverage-merge`, the repo-wide gate), `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk` (a matrix over `TEST_SDK_LEGS`), `test-typescript` |
 | Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3, as parallel legs) |
-| Nightly | `workflow_dispatch` | the full tier, plus `soak` |
+| Nightly | `workflow_dispatch` | the full tier, plus `soak` and `clusterproof-soak` |
 
 ci.yml evaluates the full-tier condition once, into its `CI_FULL_TIER`
 environment variable, which the steps it gates and `ci-gate` read; a job-level
@@ -201,6 +201,11 @@ expression. The nightly tier's condition is a scheduled run or a
 `0 4 * * *`, 04:00 UTC every night, ruling 633; host cron and timers stay
 banned): `soak` loops the `clustering` integration suite, a fresh
 stack each iteration, for 30 minutes and fails on the first red iteration.
+`clusterproof-soak` (#1619) runs the cluster proof itself: it builds the
+release image, boots three nodes from it on the runner
+(`make cluster-proof-ci`), soaks them under the nemesis for 30 minutes,
+checks the evidence bundle and keeps it as the `clusterproof-bundle`
+artifact ([cluster-verification/user.md](../cluster-verification/user.md)).
 
 `ci-gate` is the one required check in every tier. It fails on any result
 other than `success`, with three exceptions: a job tagged `full` that was
