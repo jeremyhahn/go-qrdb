@@ -339,3 +339,31 @@ func TestBackupDestination_GCS_NodeWritesAndSecondNodeReads(t *testing.T) {
 	_, err = second.Services().Backup.VerifyBackup(ctx, info.ID)
 	require.NoError(t, err)
 }
+
+func TestBackupDestination_GCS_PlaintextDeleteRemovesEveryObject(t *testing.T) {
+	ctx := context.Background()
+	stub, srv := newGCSStub(t, "qrdb-backups")
+	t.Setenv("STORAGE_EMULATOR_HOST", srv.URL)
+
+	cfg := newTenantIsolationConfig(t)
+	cfg.Backup.Destination = gcsDestination()
+	n, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+
+	before := stub.names()
+	info, err := n.Services().Backup.CreateBackup(ctx, service.BackupOptions{
+		Destination: "backup-destination-gcs",
+		Compression: service.CompressionNone,
+		Encryption:  service.EncryptionNone,
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, before, stub.names(), "the backup wrote no objects")
+
+	require.NoError(t, n.Services().Backup.DeleteBackup(ctx, info.ID))
+	require.Equal(t, before, stub.names())
+
+	_, err = n.Services().Backup.GetBackup(ctx, info.ID)
+	var notFound *service.BackupNotFoundError
+	require.ErrorAs(t, err, &notFound)
+}

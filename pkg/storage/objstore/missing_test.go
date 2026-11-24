@@ -158,6 +158,18 @@ func TestMissingIn_CallSites(t *testing.T) {
 		require.ErrorAs(t, err, &jwe)
 		require.ErrorIs(t, err, errProvider)
 	})
+	t.Run("Delete tolerates a missing object", func(t *testing.T) {
+		e, _ := plainEngine()
+		require.NoError(t, e.Delete([]byte("absent")))
+	})
+	t.Run("Delete of a present object removes it", func(t *testing.T) {
+		e, _ := plainEngine()
+		require.NoError(t, e.Set([]byte("present"), []byte("v")))
+		require.NoError(t, e.Delete([]byte("present")))
+		ok, err := e.Exists([]byte("present"))
+		require.NoError(t, err)
+		require.False(t, ok)
+	})
 	t.Run("recoverJournal with no journal", func(t *testing.T) {
 		e, _ := plainEngine()
 		require.NoError(t, e.recoverJournal())

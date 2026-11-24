@@ -295,7 +295,7 @@ func (e *Engine) Delete(key []byte) error {
 // caller holds writeMu.
 func (e *Engine) remove(key []byte) error {
 	name, _ := objectName(key)
-	if err := e.store.Delete(name); err != nil && !notFound(err) {
+	if err := e.store.Delete(name); err != nil && !e.missing(name, err) {
 		return err
 	}
 	return nil

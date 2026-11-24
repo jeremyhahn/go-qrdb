@@ -295,6 +295,35 @@ func TestBackupDestination_Azure_NodeWritesAndSecondNodeReads(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestBackupDestination_Azure_PlaintextDeleteRemovesEveryObject(t *testing.T) {
+	ctx := context.Background()
+	stub, srv := newAzureBlobStub(t, "devstoreaccount1", "qrdb-backups")
+	endpoint := srv.URL + "/devstoreaccount1"
+	keyFile := azureAccountKeyFile(t)
+
+	cfg := newTenantIsolationConfig(t)
+	cfg.Backup.Destination = azureDestination(endpoint, keyFile)
+	n, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+
+	before := stub.names()
+	info, err := n.Services().Backup.CreateBackup(ctx, service.BackupOptions{
+		Destination: "backup-destination-azure",
+		Compression: service.CompressionNone,
+		Encryption:  service.EncryptionNone,
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, before, stub.names(), "the backup wrote no objects")
+
+	require.NoError(t, n.Services().Backup.DeleteBackup(ctx, info.ID))
+	require.Equal(t, before, stub.names())
+
+	_, err = n.Services().Backup.GetBackup(ctx, info.ID)
+	var notFound *service.BackupNotFoundError
+	require.ErrorAs(t, err, &notFound)
+}
+
 func TestBackupDestination_Azure_MissingContainerSettingRefused(t *testing.T) {
 	_, srv := newAzureBlobStub(t, "devstoreaccount1", "qrdb-backups")
 	dest := azureDestination(srv.URL+"/devstoreaccount1", azureAccountKeyFile(t))
