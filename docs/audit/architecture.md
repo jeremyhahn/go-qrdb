@@ -455,9 +455,13 @@ tenant:
   (`vlog.Chain.HasOnce`) and appends nothing when a marked append of the
   same identity has applied, so a pre-activation unmarked proposal that
   applies after its marked retry leaves one event (before activation no
-  once-record exists, so its apply and replay are unchanged). One that
-  applies before the retry is proposed leaves no once-record, and that retry
-  still appends a second event, identical on every replica ([../multi-tenancy/architecture.md](../multi-tenancy/architecture.md)).
+  once-record exists, so its apply and replay are unchanged). In the other
+  order, a marked append first looks up an earlier event of its identity in
+  the tenant's event records (`vlog.Chain.RecordOnceIfPresent`, reading
+  through the apply batch) and, finding one, records its once-record and
+  appends nothing, so an unmarked proposal and its marked retry leave one
+  event in either apply order, on live and restored replicas; unmarked
+  commands still write nothing new ([../multi-tenancy/architecture.md](../multi-tenancy/architecture.md)).
 - Both state-machine families (`pkg/store.PebbleStateMachine`,
   `pkg/engine.MVCCEngine`) dispatch the opcode to `Chain`, restore it on open
   and on snapshot recovery, and resync it after a failed apply, as the lease

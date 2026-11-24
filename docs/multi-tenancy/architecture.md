@@ -1595,10 +1595,15 @@ feature that changes how an audit append applies.
   event is appended exactly as before activation (`vlog.Chain.Append`),
   writing the event, head and tree records and nothing else, so every
   replica holds the same raw state for it whichever release applied it.
-  Only a marked event consults and writes the once-record, and it consults
-  only once-records written by marked appends. A marked retry of a
-  pre-activation unmarked proposal can therefore leave a second event, the
-  same on every replica; a marked proposal and its marked retry leave one.
+  Only a marked event writes the once-record. A marked append first looks
+  up an earlier event of its identity in the tenant's event records
+  (`vlog.Chain.RecordOnceIfPresent`, reading through the apply batch) and,
+  finding one, records its once-record and appends nothing; an unmarked
+  event that applies after a marked one of its identity finds the
+  once-record (`vlog.Chain.HasOnce`) and appends nothing. So an unmarked
+  proposal and its marked retry leave one event in either apply order, on
+  live and restored replicas, and a marked proposal and its marked retry
+  leave one; unmarked commands still write nothing new.
   No elapsed time is taken to mean an unconfirmed proposal was lost.
   A marked event exists only once every replica supports the feature, so
   every replica skips the same unmarked entry.
