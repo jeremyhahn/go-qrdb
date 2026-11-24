@@ -1,8 +1,25 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package objstore
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -49,4 +66,29 @@ func TestEngine_MissingWithoutSentinel(t *testing.T) {
 
 	_, err = e.store.Get("absent")
 	require.False(t, notFound(err), "the wrapper must hide the sentinel")
+}
+
+func TestMissingIn(t *testing.T) {
+	cases := []struct {
+		label       string
+		name        string
+		err         error
+		existsFails bool
+		want        bool
+	}{
+		{label: "nil error", name: "absent", err: nil, want: false},
+		{label: "sentinel", name: "absent", err: objcommon.ErrKeyNotFound, want: true},
+		{label: "wrapped sentinel", name: "absent", err: fmt.Errorf("x: %w", objcommon.ErrKeyNotFound), want: true},
+		{label: "plain error on an absent object", name: "absent", err: errProvider, want: true},
+		{label: "plain error on a present object", name: "present", err: errProvider, want: false},
+		{label: "exists fault never reads as missing", name: "absent", err: errProvider, existsFails: true, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			_, fs := newFaultEngine(t)
+			require.NoError(t, fs.Storage.Put("present", strings.NewReader("v")))
+			fs.existsFails = tc.existsFails
+			require.Equal(t, tc.want, missingIn(context.Background(), fs, tc.name, tc.err))
+		})
+	}
 }
