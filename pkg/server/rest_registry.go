@@ -560,6 +560,7 @@ func (r *restServiceRegistry) refuseSealedDatabase(tenantID, db string) error {
 // returns svcs unchanged so unlimited and system-tenant workloads keep a plain
 // passthrough on the data-plane hot path.
 func (r *restServiceRegistry) applyQuota(svcs *DatabaseServices, tenantID string, info *tenant.TenantInfo) *DatabaseServices {
+	svcs = withSQLiteRestoreHook(svcs)
 	if r.accountant == nil || info == nil || info.Quotas == nil || tenantID == r.systemTenant {
 		return svcs
 	}

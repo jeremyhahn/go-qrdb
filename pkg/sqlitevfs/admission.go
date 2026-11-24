@@ -100,3 +100,23 @@ func isMetaKey(key []byte) bool {
 	name := key[len(keyRoot) : len(key)-len(metaSuffix)]
 	return len(name) > 0 && bytes.IndexByte(name, '/') < 0
 }
+
+// DatabaseOfKey returns the name of the database a key of the package's
+// layout belongs to: for any key under sqlite/<db>/ (meta, pages, stage
+// keys) it is <db> and true. Any other key is "" and false. A restore uses
+// it to find the databases whose keys it touched.
+func DatabaseOfKey(key []byte) (string, bool) {
+	if !bytes.HasPrefix(key, []byte(keyRoot)) {
+		return "", false
+	}
+	rest := key[len(keyRoot):]
+	end := bytes.IndexByte(rest, '/')
+	if end <= 0 {
+		return "", false
+	}
+	name := string(rest[:end])
+	if ValidateDatabaseName(name) != nil {
+		return "", false
+	}
+	return name, true
+}

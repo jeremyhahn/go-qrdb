@@ -1232,6 +1232,27 @@ func TestStoreRestoreNoMetaWritesNothing(t *testing.T) {
 	}
 }
 
+func TestDatabaseOfKey(t *testing.T) {
+	meta, err := MetaKey("app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage, err := StageKey("app", "0123456789abcdef0123456789abcdef", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range [][]byte{meta, stage} {
+		if db, ok := DatabaseOfKey(key); !ok || db != "app" {
+			t.Fatalf("DatabaseOfKey(%q) = %q, %v, want app, true", key, db, ok)
+		}
+	}
+	for _, key := range []string{"", "sqlite/", "sqlite//meta", "sqlite/app", "other/app/meta", "sqlitex/app/meta"} {
+		if db, ok := DatabaseOfKey([]byte(key)); ok {
+			t.Fatalf("DatabaseOfKey(%q) = %q, true, want false", key, db)
+		}
+	}
+}
+
 func TestGenerationChange(t *testing.T) {
 	b := newTestBackend(t)
 	s := newTestStore(t, b, "app.db")
