@@ -15,10 +15,13 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -302,6 +305,86 @@ func TestNode_EnableEncryption_SystemNoneToPassphrase(t *testing.T) {
 		require.NoErrorf(t, rerr, "Get(%q) after restart", k)
 		require.Equalf(t, v, string(gotR), "value for %q after restart", k)
 	}
+}
+
+// TestNode_EnableEncryption_SealStoreSecretsSurvive: the seal store's records
+// are re-encrypted by an embedded none -> passphrase enable-encryption, they
+// read back before and after a restart, and no file under <dataDir>/seal
+// still holds a secret's plaintext.
+func TestNode_EnableEncryption_SealStoreSecretsSurvive(t *testing.T) {
+	ctx := context.Background()
+
+	newCfg := func(dataDir string) *qrdbconfig.Config {
+		cfg := qrdbconfig.DefaultConfig()
+		cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
+		cfg.Raft.DataDir = dataDir
+		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
+		cfg.Seal.Enabled = true
+		cfg.Seal.Strategy = "none"
+		cfg.Protocols.REST = false
+		cfg.Protocols.GRPC = false
+		cfg.Protocols.QUIC = false
+		cfg.Protocols.Unix = false
+		cfg.Protocols.MCP = false
+		return cfg
+	}
+	cfg := newCfg(t.TempDir())
+
+	n, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+
+	secrets := map[string][]byte{
+		"db-primary":  []byte("seal-store-plaintext-secret-one"),
+		"api-signing": []byte("seal-store-plaintext-secret-two"),
+	}
+	for name, secret := range secrets {
+		require.NoError(t, n.Client().SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: name, Secret: secret}))
+	}
+
+	opts := seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.MustCredentials(context.Background(), []byte("enable-enc-pass")),
+	}
+	require.NoError(t, n.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, opts))
+
+	readAll := func(label string, n *Node) {
+		t.Helper()
+		for name, secret := range secrets {
+			resp, gerr := n.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: name})
+			require.NoErrorf(t, gerr, "SealStoreGet(%q) %s", name, label)
+			require.Equalf(t, secret, resp.Secret, "secret %q %s", name, label)
+		}
+	}
+	readAll("after migration", n)
+	require.NoError(t, n.Close())
+
+	n2, err := NewStandaloneNode(ctx, newCfg(cfg.Raft.DataDir), nil, WithSealPassphrase([]byte("enable-enc-pass")))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n2.Close() })
+	require.False(t, n2.IsSealed())
+	readAll("after restart", n2)
+	require.NoError(t, n2.Close())
+
+	sealDir := filepath.Join(cfg.Raft.DataDir, "seal")
+	files := 0
+	require.NoError(t, filepath.WalkDir(sealDir, func(path string, d os.DirEntry, werr error) error {
+		if werr != nil || d.IsDir() {
+			return werr
+		}
+		files++
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		for name, secret := range secrets {
+			require.Falsef(t, bytes.Contains(data, secret), "%s still holds the plaintext of secret %q", path, name)
+		}
+		return nil
+	}))
+	require.NotZero(t, files, "the seal store has files under %s", sealDir)
 }
 
 // TestNode_EnableEncryption_ViaEmbeddedTransport is the go-qrdb#558 SDK-wiring

@@ -23,6 +23,7 @@ import (
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealretire"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -313,10 +314,18 @@ func (p *nodeMigrationProvider) StoreDirs(_ context.Context, scope service.Barri
 	if externalPebbleWAL(n.retainedStandalone.cfg, dataDir) != "" && len(existingDirs(pebbleDir)) > 0 {
 		return service.MigrationStores{}, &MigrationNotSupportedError{Reason: "the pebble store keeps its write-ahead log outside its directory (storage.wal_dir); encryption migration moves the store directory alone"}
 	}
-	return service.MigrationStores{
+	stores := service.MigrationStores{
 		Pebble: existingDirs(pebbleDir, filepath.Join(dataDir, "vector")),
 		File:   existingDirs(filepath.Join(dataDir, "file")),
-	}, nil
+		// The seal store keeps its secrets as records in the system
+		// barrier's own backend, so they are re-encrypted with the stores
+		// and their plaintext history retired once they commit.
+		Records: []seal.StagedRecords{sealretire.StagedRecords()},
+	}
+	if n.sealRetirer != nil {
+		stores.RetireRecords = n.sealRetirer.Retire
+	}
+	return stores, nil
 }
 
 // existingDirs returns those of candidates that are existing directories.

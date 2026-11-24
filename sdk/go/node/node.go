@@ -135,6 +135,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealretire"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -822,7 +823,10 @@ type nodeSealSubsystem struct {
 	// copies it across, and copying a nil CONCRETE pointer into an interface
 	// field would produce a non-nil interface wrapping a nil receiver -- the
 	// exact shape Node.sealStore's nil checks exist to rule out.
-	sealStore   seal.LegacyStorage
+	sealStore seal.LegacyStorage
+	// sealRetirer retires the plaintext history an enable-encryption leaves
+	// in sealStore's files once the secrets are re-encrypted.
+	sealRetirer *sealretire.Retirer
 	sealDataDir string
 	// pinBackend is the software PIN backend over the node-local seal store
 	// (lifecycle.NewSealStorePINBackend). It is the node's PIN backend
@@ -866,6 +870,7 @@ func (n *Node) adoptSealSubsystem(sub *nodeSealSubsystem) {
 	n.barrier.Store(sub.barrier)
 	n.barrierRegistry.Store(sub.barrierRegistry)
 	n.sealStore = sub.sealStore
+	n.sealRetirer = sub.sealRetirer
 	n.credCoreSvc = sub.credCoreSvc
 	n.volumeLifecycle = sub.volumeLifecycle
 	n.tenantHostsHolder = sub.tenantHostsHolder
@@ -1205,6 +1210,9 @@ type Node struct {
 	// field actually holds, so canonicalRootKeyStrategy's nil check (see its
 	// doc comment) means what it says.
 	sealStore seal.LegacyStorage
+	// sealRetirer retires sealStore's plaintext history after an
+	// enable-encryption re-encrypts its secrets; nil once the node closes.
+	sealRetirer *sealretire.Retirer
 	// sealPINBackend is the software PIN backend over the node-local seal
 	// store, set when the seal subsystem is adopted. It stays the interface
 	// type so a node without one holds a true nil.
@@ -2982,6 +2990,7 @@ func (n *Node) Close() error {
 	if n.sealStore != nil {
 		record(n.sealStore.Close())
 		n.sealStore = nil
+		n.sealRetirer = nil
 	}
 	// Close the database manager last — after all raft shards, host, and
 	// storage are down — mirroring the daemon's deferred dbManager.Close()
@@ -3553,10 +3562,16 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	// ephemeral as its data plane: an in-memory Pebble FS, never a path
 	// resolved relative to wherever the process happened to be launched
 	// from.
+	//
+	// The store opens through sealretire, as the daemon's does: its vfs
+	// never recycles a WAL, and its retirer deletes the plaintext history an
+	// enable-encryption leaves in the seal store's files once the secrets
+	// are re-encrypted (sealretire.OpenConfig keeps SyncWrites on).
+	var sealFS vfs.FS
 	if dataDir == "" {
-		sealCfg.FS = vfs.NewMem()
+		sealFS = vfs.NewMem()
 	}
-	sealStore, err := pebbleStorage.New(sealCfg)
+	sealStore, sealRetirer, err := sealretire.OpenConfig(sealCfg, sealFS)
 	if err != nil {
 		return nil, &StorageCreateError{Backend: "seal", Err: err}
 	}
@@ -3591,10 +3606,31 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	// reopening the none-strategy stores over a committed journal would
 	// acknowledge writes a later successful roll-forward swaps away. The
 	// journal stays, so the next start retries.
+	//
+	// A committed journal naming the seal store marks a plaintext retirement
+	// owed BEFORE the recovery rolls the secrets forward and clears the
+	// journal; any owed retirement then runs, and a failure stops the boot
+	// with the marker kept, so the next start retries. Only an absent
+	// journal means no pending migration: a failed read stops the boot too.
+	pending, lerr := seal.LoadMigrationJournalFrom(ctx, sealBackend, barrierCfg.RootKeyPath)
+	if lerr != nil {
+		_ = sealStore.Close()
+		return nil, &StorageCreateError{Backend: "seal-recover", Err: fmt.Errorf("read the system encryption-migration journal: %w", lerr)}
+	}
+	if pending != nil && pending.Committed() && sealretire.JournalNamesSealStore(pending) {
+		if merr := sealRetirer.Mark(); merr != nil {
+			_ = sealStore.Close()
+			return nil, &StorageCreateError{Backend: "seal-retire", Err: merr}
+		}
+	}
 	if rerr := database.RecoverInterruptedMigration(ctx, sealBackend, barrierCfg.RootKeyPath,
 		[]string{filepath.Join(dataDir, "pebble"), filepath.Join(dataDir, "vector")}); rerr != nil {
 		_ = sealStore.Close()
 		return nil, &StorageCreateError{Backend: "seal-recover", Err: fmt.Errorf("recover the interrupted system encryption migration: %w", rerr)}
+	}
+	if rerr := sealRetirer.RetirePending(ctx); rerr != nil {
+		_ = sealStore.Close()
+		return nil, &StorageCreateError{Backend: "seal-retire", Err: fmt.Errorf("retire the seal store's plaintext history: %w", rerr)}
 	}
 
 	// The system barrier resolves its strategy through the same registry
@@ -3739,6 +3775,7 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 		credCoreSvc:       credCoreSvc,
 		barrierRegistry:   barrierRegistry,
 		sealStore:         sealStore,
+		sealRetirer:       sealRetirer,
 		sealDataDir:       sealDataDir,
 		pinBackend:        pinBackend,
 		volumeLifecycle:   volumeLifecycle,
@@ -5298,6 +5335,7 @@ func (n *Node) closeSeal() {
 	if n.sealStore != nil {
 		_ = n.sealStore.Close()
 		n.sealStore = nil
+		n.sealRetirer = nil
 	}
 }
 
