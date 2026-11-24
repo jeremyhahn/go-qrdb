@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // defaultReconcilerPollInterval is the fallback reconciliation period used when
@@ -646,7 +647,7 @@ func (r *TenantShardReconciler) ensureStarted(ctx context.Context, p *placement.
 	if r.barriers != nil {
 		tb, err := r.barriers.GetTenant(p.TenantID)
 		if err != nil || tb == nil {
-			r.registerShell(ctx, p.TenantID)
+			r.registerShell(ctx, p)
 		}
 		if err != nil || tb == nil || tb.IsSealed() {
 			r.logger.Debug("placement reconciler: barrier not ready, deferring shard start",
@@ -666,15 +667,38 @@ func (r *TenantShardReconciler) ensureStarted(ctx context.Context, p *placement.
 	return true
 }
 
-// registerShell registers tenantID's barrier shell on this node through the
+// registerShell registers p's tenant barrier shell on this node through the
 // installed ShellRegistrar, so that status, init and unseal reach a node
-// placement has assigned to the tenant before the node holds a key. The shell
-// is sealed, so the shard start still defers; a failure is logged and retried
-// on the next reconcile.
-func (r *TenantShardReconciler) registerShell(ctx context.Context, tenantID string) {
+// placement has assigned to the tenant before the node holds a key. A shell is
+// registered only on a node in the tenant's serving set; an unreadable serving
+// set defers the registration. The shell is sealed, so the shard start still
+// defers; a failure is logged and retried on the next reconcile.
+func (r *TenantShardReconciler) registerShell(ctx context.Context, p *placement.Placement) {
 	shells := r.shells.Load()
 	if shells == nil {
 		return
+	}
+	tenantID := p.TenantID
+	local, ok := p.ReplicaForNode(r.selfNodeID)
+	if !ok {
+		return
+	}
+	nodes, confined, err := service.PlacementServingSet(r.placement, nil)(ctx, tenantID, p.Database)
+	if err != nil {
+		r.logger.Warn("placement reconciler: tenant barrier shell deferred: serving set unreadable",
+			slog.String("tenant", tenantID),
+			slog.String("database", p.Database),
+			slog.Any("error", err))
+		return
+	}
+	if confined {
+		if serr := placement.CheckServingSet(nodes, tenantID, p.Database, local.RaftAddr); serr != nil {
+			r.logger.Warn("placement reconciler: tenant barrier shell not registered: node outside the tenant's serving set",
+				slog.String("tenant", tenantID),
+				slog.String("database", p.Database),
+				slog.Any("error", serr))
+			return
+		}
 	}
 	if err := shells.registrar.RegisterTenantShell(ctx, tenantID); err != nil {
 		r.logger.Warn("placement reconciler: tenant barrier shell registration failed, will retry",

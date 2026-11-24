@@ -1733,8 +1733,10 @@ phase 5 on.
 > `TestCreateTenant_ARefusedPlatformClaimUndoesTheCreate` (`no platform
 > signer`) and `TestCreateTenant_NoPlatformClaim` (`no platform
 > signer/barrier`, `no platform signer/volume`).
-> Not yet built: the serving-set check before a shell is registered (needs
-> `pkg/placement/serving_set.go`, draft PR #1494).
+> A placed node registers the shell only when it is in the tenant's serving
+> set (`TenantShardReconciler.registerShell`, `placement.CheckServingSet`);
+> pinned by `TestTenantShardReconciler_NoShellOutsideTheServingSet` and
+> `TestTenantShardReconciler_RegistersShellInsideTheServingSet`.
 >
 > **PN-4, owner custody under `none` and `passphrase`.** Every node serving
 > the barrier initialises its own key, and no key is shipped: the
