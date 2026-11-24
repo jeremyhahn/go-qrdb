@@ -51,7 +51,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -269,7 +268,12 @@ func fingerprint(ctx context.Context, b *seal.StorageBarrier) (string, string) {
 }
 
 func loadTLS(dir, nodeID string) (*x509.CertPool, tls.Certificate, []byte, *ecdsa.PrivateKey) {
-	caPEM, err := os.ReadFile(filepath.Clean(filepath.Join(dir, "ca.pem")))
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		fail(err.Error())
+	}
+	defer func() { _ = root.Close() }()
+	caPEM, err := root.ReadFile("ca.pem")
 	if err != nil {
 		fail(err.Error())
 	}
@@ -277,11 +281,11 @@ func loadTLS(dir, nodeID string) (*x509.CertPool, tls.Certificate, []byte, *ecds
 	if !pool.AppendCertsFromPEM(caPEM) {
 		fail("no certificate in ca.pem")
 	}
-	certPEM, err := os.ReadFile(filepath.Clean(filepath.Join(dir, nodeID+".pem")))
+	certPEM, err := root.ReadFile(nodeID + ".pem")
 	if err != nil {
 		fail(err.Error())
 	}
-	keyPEM, err := os.ReadFile(filepath.Clean(filepath.Join(dir, nodeID+"-key.pem")))
+	keyPEM, err := root.ReadFile(nodeID + "-key.pem")
 	if err != nil {
 		fail(err.Error())
 	}
