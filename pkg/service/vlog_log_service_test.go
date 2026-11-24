@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -385,12 +386,12 @@ func TestLogService_BarrierDatabaseLogsLiveInTheParentGroup(t *testing.T) {
 // LogService over one barrier-capable manager whose incarnations are marked
 // in the group's store, with the log service as the database service's
 // reclaimer when wired is true.
-func newCreateOverLogsService(t *testing.T, wired bool) (LogService, *DatabaseService) {
+func newCreateOverLogsService(t *testing.T, wired bool, opts ...DatabaseServiceOption) (LogService, *DatabaseService) {
 	t.Helper()
 	g := newFenceGroup(t)
 	mgr := newBarrierDatabaseManager(t, t.TempDir(), database.WithKeyspaceReclaimer(markerReclaimer{mu: &g.mu, store: g.store}))
 	svc, _ := newParentGroupLogService(t, g, mgr, nil)
-	dbs := NewDatabaseService(mgr).(*DatabaseService)
+	dbs := NewDatabaseService(mgr, opts...).(*DatabaseService)
 	if wired {
 		dbs.SetLogReclaimer(svc.(*logService))
 	} else {
@@ -452,19 +453,47 @@ func TestLogService_BarrierDatabaseCreateOverExistingLogsIsRefused(t *testing.T)
 }
 
 func TestLogService_BarrierDatabaseCreateForTenantOverExistingLogsIsRefused(t *testing.T) {
-	svc, dbs := newCreateOverLogsService(t, true)
-	ctx := acmeCtx()
-	ref := LogRef{Database: "legacy", Log: "events"}
-	entries := createLegacyLog(t, svc, ctx, ref)
-	_, err := dbs.CreateForTenantWithCredentials(ctx, legacyBarrierConfig("legacy", ""), seal.MustCredentials(ctx, []byte(barrierDatabasePass)))
-	exists, ok := errors.AsType[*DatabaseLogsExistError](err)
-	if !ok || exists.Logs != 1 || exists.TenantID != "acme" {
-		t.Fatalf("tenant barrier create over a name holding a log = %v; want DatabaseLogsExistError for acme's 1 log", err)
+	for _, tc := range []struct {
+		name string
+		opts []DatabaseServiceOption
+	}{
+		{name: "prefix tenant"},
+		{name: "barrier tenant", opts: []DatabaseServiceOption{WithTenantInfoLookup(&fakeTenantInfoLookup{info: &tenant.TenantInfo{ID: "acme", IsolationType: tenant.IsolationBarrier}})}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, dbs := newCreateOverLogsService(t, true, tc.opts...)
+			counting := &countingLogReclaimer{LogReclaimer: svc.(*logService)}
+			dbs.SetLogReclaimer(counting)
+			ctx := acmeCtx()
+			ref := LogRef{Database: "legacy", Log: "events"}
+			entries := createLegacyLog(t, svc, ctx, ref)
+			_, err := dbs.CreateForTenantWithCredentials(ctx, legacyBarrierConfig("legacy", ""), seal.MustCredentials(ctx, []byte(barrierDatabasePass)))
+			if !errors.As(err, new(*database.SharedStoreBarrierUnsupportedError)) {
+				t.Fatalf("tenant barrier create over a name holding a log = %v; want SharedStoreBarrierUnsupportedError", err)
+			}
+			if _, ok := errors.AsType[*DatabaseLogsExistError](err); ok {
+				t.Fatalf("tenant barrier create answered DatabaseLogsExistError: %v", err)
+			}
+			if _, err := dbs.manager.GetOwned("legacy", "acme"); err == nil {
+				t.Fatal("a refused tenant barrier create left a catalog record")
+			}
+			if n := counting.creates.Load(); n != 0 {
+				t.Fatalf("tenant barrier create ran %d log checks; want none", n)
+			}
+			assertLogReads(t, svc, ctx, ref, entries)
+		})
 	}
-	if _, err := dbs.GetForTenant(ctx, "legacy"); err == nil {
-		t.Fatal("a refused tenant barrier create left a catalog record")
-	}
-	assertLogReads(t, svc, ctx, ref, entries)
+}
+
+// countingLogReclaimer counts the create-time log checks it passes through.
+type countingLogReclaimer struct {
+	LogReclaimer
+	creates atomic.Int64
+}
+
+func (c *countingLogReclaimer) CheckCreateDatabaseLogs(ctx context.Context, tenantID, name string) error {
+	c.creates.Add(1)
+	return c.LogReclaimer.CheckCreateDatabaseLogs(ctx, tenantID, name)
 }
 
 func TestLogService_PlainDatabaseCreateOverExistingLogsAdoptsThem(t *testing.T) {
@@ -536,7 +565,6 @@ func TestLogService_BarrierDatabaseCreateRacingCreateLogLeavesNoHiddenLog(t *tes
 		ctx    context.Context
 		create func(dbs *DatabaseService, ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) error
 		held   func(dbs *DatabaseService) bool
-		shared bool
 	}{
 		{
 			name: "system tenant",
@@ -546,16 +574,6 @@ func TestLogService_BarrierDatabaseCreateRacingCreateLogLeavesNoHiddenLog(t *tes
 				return err
 			},
 			held: func(dbs *DatabaseService) bool { _, err := dbs.Get("legacy"); return err == nil },
-		},
-		{
-			name: "tenant",
-			ctx:  acmeCtx(),
-			create: func(dbs *DatabaseService, ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) error {
-				_, err := dbs.CreateForTenantWithCredentials(ctx, cfg, creds)
-				return err
-			},
-			held:   func(dbs *DatabaseService) bool { _, err := dbs.manager.GetOwned("legacy", "acme"); return err == nil },
-			shared: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -569,13 +587,7 @@ func TestLogService_BarrierDatabaseCreateRacingCreateLogLeavesNoHiddenLog(t *tes
 			if entries == nil {
 				t.Fatal("the racing CreateLog did not run")
 			}
-			if tc.shared {
-				// A tenant create clears DataDir, so the manager refuses a
-				// barrier over the shared store before marking anything live.
-				if !errors.As(err, new(*database.SharedStoreBarrierUnsupportedError)) {
-					t.Fatalf("tenant barrier create racing a CreateLog = %v; want SharedStoreBarrierUnsupportedError", err)
-				}
-			} else if exists, ok := errors.AsType[*DatabaseLogsExistError](err); !ok || exists.Logs != 1 || exists.Database != "legacy" {
+			if exists, ok := errors.AsType[*DatabaseLogsExistError](err); !ok || exists.Logs != 1 || exists.Database != "legacy" {
 				t.Fatalf("barrier create racing a CreateLog = %v; want DatabaseLogsExistError for 1 log", err)
 			}
 			if tc.held(dbs) {

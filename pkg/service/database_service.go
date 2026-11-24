@@ -975,10 +975,12 @@ func (s *DatabaseService) checkLogs(ctx context.Context, tenantID, name string) 
 	return nil
 }
 
-// checkAdoptsNoLogs refuses a barrier-enabled create over a name whose
-// tenant group already holds verifiable logs: they are plaintext with no
-// incarnation, and the barrier database would wrap them in its sealed store.
-// A database without a barrier adopts them as before.
+// checkAdoptsNoLogs refuses a barrier-enabled create in createWithCredentials
+// (the system tenant's create) over a name whose group already holds
+// verifiable logs: they are plaintext with no incarnation, and the barrier
+// database would wrap them in its sealed store. A database without a barrier
+// adopts them as before.
+// A tenant's barrier create is refused by the manager before any store is written.
 func (s *DatabaseService) checkAdoptsNoLogs(ctx context.Context, tenantID string, cfg database.DatabaseConfig) error {
 	if cfg.Barrier == nil || !cfg.Barrier.Enabled || s.logReclaimer == nil {
 		return nil
@@ -986,12 +988,14 @@ func (s *DatabaseService) checkAdoptsNoLogs(ctx context.Context, tenantID string
 	return s.logReclaimer.CheckCreateDatabaseLogs(ctx, tenantID, cfg.Name)
 }
 
-// checkCreatedAdoptsNoLogs checks again, once the manager has created db and
+// checkCreatedAdoptsNoLogs checks again in createWithCredentials (the system
+// tenant's create), once the manager has created db and
 // marked its incarnation live in the drop-fence marker that guards the name's
 // log writes, that the name holds no log: a log write admitted while the name
 // was unheld is refused by its guard from then on, so a log this check does
 // not see can no longer land. A log that landed before is left in place and
 // db is rolled back, its rollback drop reclaiming no log of the name.
+// A tenant's barrier create is refused by the manager before any store is written.
 func (s *DatabaseService) checkCreatedAdoptsNoLogs(ctx context.Context, tenantID string, cfg database.DatabaseConfig, db *database.Database) error {
 	err := s.checkAdoptsNoLogs(ctx, tenantID, cfg)
 	if err == nil {
@@ -1850,12 +1854,6 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 		}
 	}
 
-	// A barrier-enabled create over a name that already holds logs is
-	// refused before any quota reservation (DatabaseLogsExistError).
-	if err := s.checkAdoptsNoLogs(ctx, tenantID, cfg); err != nil {
-		return nil, err
-	}
-
 	// Numeric quota plane: database count, plus raft-group count, per-group
 	// replication-factor cap, and aggregate replica budget for raft databases.
 	if s.quotaChecker != nil {
@@ -1929,10 +1927,6 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 
 	db, err := s.manager.CreateForTenantWithCredentials(ctx, cfg, creds)
 	if err != nil {
-		releaseReservations()
-		return nil, err
-	}
-	if err := s.checkCreatedAdoptsNoLogs(ctx, tenantID, cfg, db); err != nil {
 		releaseReservations()
 		return nil, err
 	}
