@@ -134,11 +134,10 @@ func (s *embeddedKVStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvs
 	data := results[0].Data
 	if msg, kind, ok := protocol.DecodeAppErrorKind(data); ok {
 		if kind == protocol.AppErrorConflict {
-			var cause error = errors.New(msg)
 			if uce := embeddedUniqueConflict(msg); uce != nil {
-				cause = uce
+				return false, &qerrors.QRDBError{Code: qerrors.ErrConflict, Op: "embedded.PutAllIfAllUnchanged", Err: uce}
 			}
-			return false, &qerrors.QRDBError{Code: qerrors.ErrConflict, Op: "embedded.PutAllIfAllUnchanged", Err: cause}
+			return false, &qerrors.QRDBError{Code: qerrors.ErrConflict, Op: "embedded.PutAllIfAllUnchanged", Err: errors.New(msg)}
 		}
 		return false, fmt.Errorf("embedded kv store: guarded batch refused: %s", msg)
 	}
