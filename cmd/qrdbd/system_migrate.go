@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealretire"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -508,7 +509,7 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, store
 	// set back at boot, a crash past it rolls the set forward
 	// (database.RecoverInterruptedMigration), which also adopts the staged
 	// keyed root key, a Shamir target's wrapped root key before its envelope.
-	sealRec := seal.StagedRecords{Prefix: seal.SealStoreDefaultPrefix, StagingPrefix: sealStoreStagingPrefix}
+	sealRec := sealretire.StagedRecords()
 	j.StagedRecords = append(j.StagedRecords, sealRec)
 	if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
 		err = cerr
@@ -618,31 +619,10 @@ func recodeSystemBarrier(ctx context.Context, source *seal.StorageBarrier, store
 	return nil
 }
 
-// sealStoreStagingPrefix is the key prefix the system migration stages the
-// keyed seal-store records under. It is a sibling of
-// seal.SealStoreDefaultPrefix, so the live seal store never lists a staged
-// record.
-var sealStoreStagingPrefix = strings.TrimSuffix(seal.SealStoreDefaultPrefix, "/") + systemMigrateStagingSuffix + "/"
-
 // sealStoreCommitFault, when set by a test, runs right after the keyed root
 // key is adopted and before the staged seal-store records are copied over the
 // live ones: it simulates a crash past the commit point. Nil in production.
 var sealStoreCommitFault func() error
-
-// journalNamesSealStore reports whether a migration journal stages the seal
-// store's records, which the boot recovery then rolls forward and whose
-// plaintext history it must compact away.
-func journalNamesSealStore(j *seal.MigrationJournal) bool {
-	if j == nil {
-		return false
-	}
-	for _, rec := range j.StagedRecords {
-		if rec.Prefix == seal.SealStoreDefaultPrefix {
-			return true
-		}
-	}
-	return false
-}
 
 // systemAdoptRootKeyFault, when set (tests only), fails recodeSystemBarrier
 // right before it adopts the staged keyed root key, past the commit point.

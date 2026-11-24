@@ -39,6 +39,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealretire"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -452,7 +453,7 @@ func TestRecodeSystemBarrier_MigratesSealStore(t *testing.T) {
 			t.Fatalf("raw record %q still holds the plaintext", name)
 		}
 	}
-	staged, err := backend.List(ctx, sealStoreStagingPrefix)
+	staged, err := backend.List(ctx, sealretire.StagingPrefix)
 	if err != nil {
 		t.Fatalf("List staged: %v", err)
 	}
@@ -489,7 +490,7 @@ func TestRecodeSystemBarrier_SealStoreFailureKeepsSource(t *testing.T) {
 		// committing checkpoint they are kept as the roll-forward copy.
 		staged bool
 	}{
-		{name: "staging write", key: sealStoreStagingPrefix + seal.SealStoreDefaultPrefix + "beta", failAt: 1},
+		{name: "staging write", key: sealretire.StagingPrefix + seal.SealStoreDefaultPrefix + "beta", failAt: 1},
 		{name: "seal-store journal checkpoint", key: rootKeyPath + ".migration", failAt: 5},
 		{name: "verifying checkpoint", key: rootKeyPath + ".migration", failAt: 6},
 		{name: "root key adoption", key: rootKeyPath, failAt: 1, staged: true},
@@ -515,7 +516,7 @@ func TestRecodeSystemBarrier_SealStoreFailureKeepsSource(t *testing.T) {
 				t.Fatalf("active strategy = %q, want %q", got, seal.StrategyNone)
 			}
 			assertRecodeSealStoreSecrets(t, source, secrets)
-			staged, lerr := backend.List(ctx, sealStoreStagingPrefix)
+			staged, lerr := backend.List(ctx, sealretire.StagingPrefix)
 			if lerr != nil {
 				t.Fatalf("List staged: %v", lerr)
 			}
@@ -544,7 +545,7 @@ func assertRecodeSealStoreKeyed(t *testing.T, backend seal.StorageBackend, secre
 			t.Fatalf("raw record %q still holds the plaintext", name)
 		}
 	}
-	staged, err := backend.List(ctx, sealStoreStagingPrefix)
+	staged, err := backend.List(ctx, sealretire.StagingPrefix)
 	if err != nil {
 		t.Fatalf("List staged: %v", err)
 	}
@@ -600,7 +601,7 @@ func TestRecodeSystemBarrier_SealStoreCrashAfterCommitRollsForwardAtBoot(t *test
 		t.Fatalf("err = %v, want %v", err, errRecodeSealStoreCrash)
 	}
 	j, err := seal.LoadMigrationJournalFrom(ctx, backend, "system/root-key")
-	if err != nil || j == nil || !j.Committed() || !journalNamesSealStore(j) {
+	if err != nil || j == nil || !j.Committed() || !sealretire.JournalNamesSealStore(j) {
 		t.Fatalf("journal after the crash = %+v (err %v), want a committed journal naming the seal store", j, err)
 	}
 
@@ -706,7 +707,7 @@ func TestRecodeSystemBarrier_SealStoreCommitFailureKeepsJournal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadMigrationJournalFrom: %v", err)
 	}
-	if j == nil || !j.Committed() || !journalNamesSealStore(j) {
+	if j == nil || !j.Committed() || !sealretire.JournalNamesSealStore(j) {
 		t.Fatalf("journal = %+v, want a committed journal naming the seal-store keyspace", j)
 	}
 }
@@ -732,7 +733,7 @@ func TestRecodeSystemBarrier_SealStoreRetireFailureKeepsJournal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadMigrationJournalFrom: %v", err)
 	}
-	if j == nil || !j.Committed() || !journalNamesSealStore(j) {
+	if j == nil || !j.Committed() || !sealretire.JournalNamesSealStore(j) {
 		t.Fatalf("journal = %+v, want a committed journal naming the seal-store keyspace", j)
 	}
 }
@@ -783,7 +784,7 @@ func recodeDirPlaintext(t *testing.T, dir string, secrets map[string]string) []s
 func TestRecodeSystemBarrier_SealStoreRetiresPlaintextHistory(t *testing.T) {
 	ctx := context.Background()
 	sealDir := filepath.Join(t.TempDir(), "seal")
-	store, retirer, err := openSealStore(sealDir)
+	store, retirer, err := sealretire.Open(sealDir, nil)
 	if err != nil {
 		t.Fatalf("openSealStore: %v", err)
 	}
@@ -829,7 +830,7 @@ func TestRecodeSystemBarrier_SealStoreRetiresPlaintextHistory(t *testing.T) {
 		t.Fatalf("plaintext seal-store history survives in %v", hits)
 	}
 
-	reopened, _, err := openSealStore(sealDir)
+	reopened, _, err := sealretire.Open(sealDir, nil)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -840,7 +841,7 @@ func TestRecodeSystemBarrier_SealStoreRetiresPlaintextHistory(t *testing.T) {
 func TestRecoverInterruptedSystemMigration_RetiresUnderDurableMarker(t *testing.T) {
 	ctx := context.Background()
 	sealDir := filepath.Join(t.TempDir(), "seal")
-	store, retirer, err := openSealStore(sealDir)
+	store, retirer, err := sealretire.Open(sealDir, nil)
 	if err != nil {
 		t.Fatalf("openSealStore: %v", err)
 	}
@@ -873,7 +874,7 @@ func TestRecoverInterruptedSystemMigration_RetiresUnderDurableMarker(t *testing.
 	reboot := func() {
 		t.Helper()
 		_ = store.Close()
-		store, retirer, err = openSealStore(sealDir)
+		store, retirer, err = sealretire.Open(sealDir, nil)
 		if err != nil {
 			t.Fatalf("reopen the seal store: %v", err)
 		}
@@ -882,26 +883,24 @@ func TestRecoverInterruptedSystemMigration_RetiresUnderDurableMarker(t *testing.
 
 	// Boot 1: recovery clears the journal, then the retirement aborts.
 	reboot()
-	prev := sealStoreRetireFault
-	sealStoreRetireFault = func() error { return errRecodeSealStoreCrash }
-	t.Cleanup(func() { sealStoreRetireFault = prev })
+	retirer.SetFault(func() error { return errRecodeSealStoreCrash })
 	if err := recoverSystemMigration(ctx, backend, retirer, "system/root-key", nil); !errors.Is(err, errRecodeSealStoreCrash) {
 		t.Fatalf("boot with a failing retirement: err = %v, want %v", err, errRecodeSealStoreCrash)
 	}
 	if j, _ := seal.LoadMigrationJournalFrom(ctx, backend, "system/root-key"); j != nil {
 		t.Fatalf("journal at phase %q after recovery, want it cleared", j.Phase)
 	}
-	if owed, merr := retirer.marked(); merr != nil || !owed {
+	if owed, merr := retirer.Marked(); merr != nil || !owed {
 		t.Fatalf("retirement marker after the failed retirement = %v (err %v), want it kept", owed, merr)
 	}
 
 	// Boot 2: the marker alone drives the retirement, then goes.
-	sealStoreRetireFault = nil
+	// The reboot opens a fresh retirer, without the fault.
 	reboot()
 	if err := recoverSystemMigration(ctx, backend, retirer, "system/root-key", nil); err != nil {
 		t.Fatalf("boot after the failed retirement: %v", err)
 	}
-	if owed, merr := retirer.marked(); merr != nil || owed {
+	if owed, merr := retirer.Marked(); merr != nil || owed {
 		t.Fatalf("retirement marker after the retirement = %v (err %v), want it gone", owed, merr)
 	}
 	// Scan a closed store: an open one deletes obsolete files under the walk.

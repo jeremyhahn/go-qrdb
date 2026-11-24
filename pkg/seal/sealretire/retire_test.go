@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package sealretire
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -31,40 +33,40 @@ import (
 
 // openTestSealStore opens a seal store in a fresh directory and closes it
 // at cleanup unless the test closed it first.
-func openTestSealStore(t *testing.T) (*pebblestore.PebbleStorage, *sealStoreRetirer) {
+func openTestSealStore(t *testing.T) (*pebblestore.PebbleStorage, *Retirer) {
 	t.Helper()
-	store, retirer, err := openSealStore(t.TempDir())
+	store, retirer, err := Open(t.TempDir(), nil)
 	if err != nil {
-		t.Fatalf("openSealStore: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store, retirer
 }
 
-func TestSealStoreCompactor_NilStoreIsNoop(t *testing.T) {
-	if err := sealStoreCompactor(nil)(); err != nil {
-		t.Fatalf("sealStoreCompactor(nil)() = %v, want nil", err)
+func TestCompactor_NilStoreIsNoop(t *testing.T) {
+	if err := Compactor(nil)(); err != nil {
+		t.Fatalf("Compactor(nil)() = %v, want nil", err)
 	}
 }
 
-func TestSealStoreCompactor_EmptyStoreIsNoop(t *testing.T) {
+func TestCompactor_EmptyStoreIsNoop(t *testing.T) {
 	store, _ := openTestSealStore(t)
-	if err := sealStoreCompactor(store)(); err != nil {
+	if err := Compactor(store)(); err != nil {
 		t.Fatalf("compact an empty store: %v", err)
 	}
 }
 
-func TestSealStoreCompactor_ClosedStoreErrors(t *testing.T) {
+func TestCompactor_ClosedStoreErrors(t *testing.T) {
 	store, _ := openTestSealStore(t)
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if err := sealStoreCompactor(store)(); err == nil {
+	if err := Compactor(store)(); err == nil {
 		t.Fatal("compact a closed store = nil, want the Flush error")
 	}
 }
 
-func TestSealStoreFS_ReuseForWriteCreatesFresh(t *testing.T) {
+func TestFS_ReuseForWriteCreatesFresh(t *testing.T) {
 	mem := vfs.NewMem()
 	f, err := mem.Create("old", vfs.WriteCategoryUnspecified)
 	if err != nil {
@@ -76,7 +78,7 @@ func TestSealStoreFS_ReuseForWriteCreatesFresh(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatalf("Close old: %v", err)
 	}
-	fs := newSealStoreFS(mem)
+	fs := newFS(mem)
 
 	nf, err := fs.ReuseForWrite("old", "new", vfs.WriteCategoryUnspecified)
 	if err != nil {
@@ -109,22 +111,22 @@ func TestSealStoreFS_ReuseForWriteCreatesFresh(t *testing.T) {
 	}
 }
 
-var errSealStoreFSRemove = errors.New("injected remove failure")
+var errFSRemove = errors.New("injected remove failure")
 
-// failingRemoveFS is a vfs.FS whose Remove fails with errSealStoreFSRemove.
+// failingRemoveFS is a vfs.FS whose Remove fails with errFSRemove.
 type failingRemoveFS struct {
 	vfs.FS
 }
 
-func (failingRemoveFS) Remove(string) error { return errSealStoreFSRemove }
+func (failingRemoveFS) Remove(string) error { return errFSRemove }
 
-func TestSealStoreFS_ReuseForWriteRemoveError(t *testing.T) {
+func TestFS_ReuseForWriteRemoveError(t *testing.T) {
 	mem := vfs.NewMem()
-	fs := newSealStoreFS(failingRemoveFS{FS: mem})
+	fs := newFS(failingRemoveFS{FS: mem})
 
 	f, err := fs.ReuseForWrite("old", "new", vfs.WriteCategoryUnspecified)
-	if !errors.Is(err, errSealStoreFSRemove) {
-		t.Fatalf("ReuseForWrite err = %v, want %v", err, errSealStoreFSRemove)
+	if !errors.Is(err, errFSRemove) {
+		t.Fatalf("ReuseForWrite err = %v, want %v", err, errFSRemove)
 	}
 	if f != nil {
 		t.Fatal("ReuseForWrite returned a file with its error")
@@ -134,7 +136,7 @@ func TestSealStoreFS_ReuseForWriteRemoveError(t *testing.T) {
 	}
 }
 
-func TestSealStoreFS_RemoveWakesWaiters(t *testing.T) {
+func TestFS_RemoveWakesWaiters(t *testing.T) {
 	mem := vfs.NewMem()
 	f, err := mem.Create("victim", vfs.WriteCategoryUnspecified)
 	if err != nil {
@@ -143,7 +145,7 @@ func TestSealStoreFS_RemoveWakesWaiters(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	fs := newSealStoreFS(mem)
+	fs := newFS(mem)
 
 	ch := fs.removal()
 	if err := fs.Remove("victim"); err != nil {
@@ -161,7 +163,7 @@ func TestSealStoreFS_RemoveWakesWaiters(t *testing.T) {
 	}
 }
 
-func TestSealStorePlaintextFiles(t *testing.T) {
+func TestRetirer_PlaintextFiles(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"000001.log", "000002.sst", "OPTIONS-000003", "MANIFEST-000004"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
@@ -172,90 +174,169 @@ func TestSealStorePlaintextFiles(t *testing.T) {
 		t.Fatalf("Mkdir: %v", err)
 	}
 
-	got, err := sealStorePlaintextFiles(dir)
+	r := &Retirer{fs: newFS(vfs.Default), dir: dir}
+	got, err := r.plaintextFiles()
 	if err != nil {
-		t.Fatalf("sealStorePlaintextFiles: %v", err)
+		t.Fatalf("plaintextFiles: %v", err)
 	}
 	slices.Sort(got)
 	if want := []string{"000001.log", "000002.sst"}; !slices.Equal(got, want) {
 		t.Fatalf("files = %v, want %v", got, want)
 	}
 
-	if _, err := sealStorePlaintextFiles(filepath.Join(dir, "missing")); !errors.Is(err, os.ErrNotExist) {
+	missing := &Retirer{fs: newFS(vfs.Default), dir: filepath.Join(dir, "missing")}
+	if _, err := missing.plaintextFiles(); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing dir err = %v, want %v", err, os.ErrNotExist)
 	}
 }
 
-func TestSealStoreRetirer_NilIsNoop(t *testing.T) {
+func TestRetirer_NilIsNoop(t *testing.T) {
 	ctx := context.Background()
-	for name, r := range map[string]*sealStoreRetirer{"nil": nil, "no store": {}} {
+	for name, r := range map[string]*Retirer{"nil": nil, "no store": {}} {
 		t.Run(name, func(t *testing.T) {
+			r.SetFault(func() error { return errors.New("never run") })
 			if err := r.Retire(ctx); err != nil {
 				t.Fatalf("Retire: %v", err)
 			}
-			if err := r.mark(); err != nil {
-				t.Fatalf("mark: %v", err)
+			if err := r.Mark(); err != nil {
+				t.Fatalf("Mark: %v", err)
 			}
 			if err := r.RetirePending(ctx); err != nil {
 				t.Fatalf("RetirePending: %v", err)
 			}
-			if owed, err := r.marked(); owed || err != nil {
-				t.Fatalf("marked = %v, %v, want false, nil", owed, err)
+			if owed, err := r.Marked(); owed || err != nil {
+				t.Fatalf("Marked = %v, %v, want false, nil", owed, err)
 			}
 		})
 	}
 }
 
-func TestSealStoreRetirer_RetirePendingWithoutMarker(t *testing.T) {
+func TestRetirer_RetirePendingWithoutMarker(t *testing.T) {
 	_, r := openTestSealStore(t)
 	if err := r.RetirePending(context.Background()); err != nil {
 		t.Fatalf("RetirePending: %v", err)
 	}
-	if owed, err := r.marked(); owed || err != nil {
-		t.Fatalf("marked = %v, %v, want false, nil", owed, err)
+	if owed, err := r.Marked(); owed || err != nil {
+		t.Fatalf("Marked = %v, %v, want false, nil", owed, err)
 	}
 }
 
-func TestSealStoreRetirer_RetirePendingRunsAndClearsMarker(t *testing.T) {
+func TestRetirer_RetirePendingRunsAndClearsMarker(t *testing.T) {
 	_, r := openTestSealStore(t)
-	if err := r.mark(); err != nil {
-		t.Fatalf("mark: %v", err)
+	if err := r.Mark(); err != nil {
+		t.Fatalf("Mark: %v", err)
 	}
-	if owed, err := r.marked(); !owed || err != nil {
-		t.Fatalf("marked after mark = %v, %v, want true, nil", owed, err)
+	if owed, err := r.Marked(); !owed || err != nil {
+		t.Fatalf("Marked after Mark = %v, %v, want true, nil", owed, err)
 	}
 	if err := r.RetirePending(context.Background()); err != nil {
 		t.Fatalf("RetirePending: %v", err)
 	}
-	if owed, err := r.marked(); owed || err != nil {
-		t.Fatalf("marked after RetirePending = %v, %v, want false, nil", owed, err)
+	if owed, err := r.Marked(); owed || err != nil {
+		t.Fatalf("Marked after RetirePending = %v, %v, want false, nil", owed, err)
 	}
 }
 
-func TestSealStoreRetirer_ClosedStoreErrors(t *testing.T) {
+func TestRetirer_FaultKeepsMarker(t *testing.T) {
+	_, r := openTestSealStore(t)
+	errFault := errors.New("injected retirement failure")
+	r.SetFault(func() error { return errFault })
+	if err := r.Retire(context.Background()); !errors.Is(err, errFault) {
+		t.Fatalf("Retire with a fault = %v, want %v", err, errFault)
+	}
+	if owed, err := r.Marked(); !owed || err != nil {
+		t.Fatalf("Marked after the failed Retire = %v, %v, want the marker kept", owed, err)
+	}
+	r.SetFault(nil)
+	if err := r.RetirePending(context.Background()); err != nil {
+		t.Fatalf("RetirePending: %v", err)
+	}
+	if owed, err := r.Marked(); owed || err != nil {
+		t.Fatalf("Marked after RetirePending = %v, %v, want false, nil", owed, err)
+	}
+}
+
+func TestRetirer_ClosedStoreErrors(t *testing.T) {
 	store, r := openTestSealStore(t)
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if err := r.mark(); err == nil || !strings.Contains(err.Error(), "write the plaintext-retirement marker") {
-		t.Fatalf("mark on a closed store = %v, want the marker write error", err)
+	if err := r.Mark(); err == nil || !strings.Contains(err.Error(), "write the plaintext-retirement marker") {
+		t.Fatalf("Mark on a closed store = %v, want the marker write error", err)
 	}
-	if _, err := r.marked(); err == nil {
-		t.Fatal("marked on a closed store = nil error, want an error")
+	if _, err := r.Marked(); err == nil {
+		t.Fatal("Marked on a closed store = nil error, want an error")
 	}
 	if err := r.RetirePending(context.Background()); err == nil {
 		t.Fatal("RetirePending on a closed store = nil, want an error")
 	}
 }
 
-func TestSealStoreRetirer_RetireMissingDirErrors(t *testing.T) {
+func TestRetirer_RetireMissingDirErrors(t *testing.T) {
 	store, r := openTestSealStore(t)
-	missing := &sealStoreRetirer{store: store, fs: r.fs, dir: filepath.Join(t.TempDir(), "missing")}
+	missing := &Retirer{store: store, fs: r.fs, dir: filepath.Join(t.TempDir(), "missing")}
 	if err := missing.Retire(context.Background()); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Retire over a missing dir = %v, want %v", err, os.ErrNotExist)
 	}
-	if owed, err := missing.marked(); !owed || err != nil {
-		t.Fatalf("marked after the failed Retire = %v, %v, want the marker kept", owed, err)
+	if owed, err := missing.Marked(); !owed || err != nil {
+		t.Fatalf("Marked after the failed Retire = %v, %v, want the marker kept", owed, err)
+	}
+}
+
+// TestRetirer_InMemoryStoreRetiresPlaintext runs the retirement over a seal
+// store on an in-memory vfs (the embedded node's dataDir=="" case): the
+// overwritten plaintext is gone from every file afterwards.
+func TestRetirer_InMemoryStoreRetiresPlaintext(t *testing.T) {
+	mem := vfs.NewMem()
+	const dir = "seal"
+	if err := mem.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	store, r, err := Open(dir, mem)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	secret := []byte("in-memory plaintext secret")
+	if err := store.Set([]byte("k"), secret); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := store.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if err := store.Set([]byte("k"), []byte("replacement")); err != nil {
+		t.Fatalf("Set replacement: %v", err)
+	}
+	if err := r.Retire(context.Background()); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	names, err := mem.List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, name := range names {
+		f, oerr := mem.Open(mem.PathJoin(dir, name))
+		if oerr != nil {
+			continue
+		}
+		data, rerr := io.ReadAll(f)
+		_ = f.Close()
+		if rerr != nil {
+			continue
+		}
+		if bytes.Contains(data, secret) {
+			t.Fatalf("%s still holds the retired plaintext", name)
+		}
+	}
+}
+
+func TestStagedRecords(t *testing.T) {
+	rec := StagedRecords()
+	if rec.Prefix != seal.SealStoreDefaultPrefix || rec.StagingPrefix != StagingPrefix {
+		t.Fatalf("StagedRecords = %+v", rec)
+	}
+	if strings.HasPrefix(StagingPrefix, seal.SealStoreDefaultPrefix) {
+		t.Fatalf("StagingPrefix %q lies inside the live keyspace %q", StagingPrefix, seal.SealStoreDefaultPrefix)
 	}
 }
 
@@ -271,49 +352,8 @@ func TestJournalNamesSealStore(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := journalNamesSealStore(tc.j); got != tc.want {
-				t.Fatalf("journalNamesSealStore = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestRefuseCommittedJournalWithoutStagingRoot_Allows(t *testing.T) {
-	ctx := context.Background()
-	const rootKeyPath = "system/root-key"
-	const stagingPath = "system/root-key.staging"
-	committed := func() *seal.MigrationJournal {
-		return &seal.MigrationJournal{Phase: seal.PhaseCommitting, StagingRootKeyPath: stagingPath}
-	}
-	cases := map[string]struct {
-		j     *seal.MigrationJournal
-		setup func(t *testing.T, backend seal.StorageBackend)
-	}{
-		"nil journal":         {j: nil},
-		"uncommitted journal": {j: &seal.MigrationJournal{StagingRootKeyPath: stagingPath}},
-		"in-place commit":     {j: &seal.MigrationJournal{Phase: seal.PhaseCommitting}},
-		"canonical root keyed": {j: committed(), setup: func(t *testing.T, backend seal.StorageBackend) {
-			t.Helper()
-			blob := []byte(`{"strategy":"` + string(seal.StrategyPassphrase) + `"}`)
-			if err := backend.Put(ctx, rootKeyPath, blob); err != nil {
-				t.Fatalf("Put root key: %v", err)
-			}
-		}},
-		"staging root present": {j: committed(), setup: func(t *testing.T, backend seal.StorageBackend) {
-			t.Helper()
-			if err := backend.Put(ctx, stagingPath, []byte("sealed staging root")); err != nil {
-				t.Fatalf("Put staging root: %v", err)
-			}
-		}},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			backend := seal.NewMemoryBackend()
-			if tc.setup != nil {
-				tc.setup(t, backend)
-			}
-			if err := refuseCommittedJournalWithoutStagingRoot(ctx, backend, rootKeyPath, tc.j); err != nil {
-				t.Fatalf("refuseCommittedJournalWithoutStagingRoot = %v, want nil", err)
+			if got := JournalNamesSealStore(tc.j); got != tc.want {
+				t.Fatalf("JournalNamesSealStore = %v, want %v", got, tc.want)
 			}
 		})
 	}

@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealretire"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -49,7 +50,7 @@ func (f *faultRecoverBackend) Get(ctx context.Context, key string) ([]byte, erro
 }
 
 func (f *faultRecoverBackend) Delete(ctx context.Context, key string) error {
-	if f.failStagedDelete && strings.HasPrefix(key, sealStoreStagingPrefix) {
+	if f.failStagedDelete && strings.HasPrefix(key, sealretire.StagingPrefix) {
 		return errRecoverFault
 	}
 	return f.StorageBackend.Delete(ctx, key)
@@ -62,7 +63,7 @@ func crashRecodeSealStorePastCommit(t *testing.T) (string, map[string]string) {
 	t.Helper()
 	ctx := context.Background()
 	sealDir := filepath.Join(t.TempDir(), "seal")
-	store, retirer, err := openSealStore(sealDir)
+	store, retirer, err := sealretire.Open(sealDir, nil)
 	if err != nil {
 		t.Fatalf("openSealStore: %v", err)
 	}
@@ -90,10 +91,10 @@ func assertRecoverJournalPending(t *testing.T, backend seal.StorageBackend) {
 	t.Helper()
 	ctx := context.Background()
 	j, err := seal.LoadMigrationJournalFrom(ctx, backend, "system/root-key")
-	if err != nil || j == nil || !j.Committed() || !journalNamesSealStore(j) {
+	if err != nil || j == nil || !j.Committed() || !sealretire.JournalNamesSealStore(j) {
 		t.Fatalf("journal after the failed boot = %+v (err %v), want the committed seal-store journal kept", j, err)
 	}
-	staged, err := backend.List(ctx, sealStoreStagingPrefix)
+	staged, err := backend.List(ctx, sealretire.StagingPrefix)
 	if err != nil || len(staged) == 0 {
 		t.Fatalf("staged records after the failed boot = %v (err %v), want them kept", staged, err)
 	}
@@ -107,7 +108,7 @@ func assertRecoverJournalPending(t *testing.T, backend seal.StorageBackend) {
 func TestSealSubsystemRecoverInterrupted_JournalReadFailureStopsBoot(t *testing.T) {
 	ctx := context.Background()
 	sealDir, _ := crashRecodeSealStorePastCommit(t)
-	store, retirer, err := openSealStore(sealDir)
+	store, retirer, err := sealretire.Open(sealDir, nil)
 	if err != nil {
 		t.Fatalf("reopen the seal store: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestSealSubsystemRecoverInterrupted_JournalReadFailureStopsBoot(t *testing.
 		t.Fatalf("boot with a failing journal read: err = %v, want %v", err, errRecoverFault)
 	}
 	assertRecoverJournalPending(t, backend)
-	if owed, merr := retirer.marked(); merr != nil || owed {
+	if owed, merr := retirer.Marked(); merr != nil || owed {
 		t.Fatalf("retirement marker after the failed read = %v (err %v), want none written", owed, merr)
 	}
 }
@@ -131,7 +132,7 @@ func TestSealSubsystemRecoverInterrupted_JournalReadFailureStopsBoot(t *testing.
 func TestSealSubsystemRecoverInterrupted_RollForwardFailureStopsBoot(t *testing.T) {
 	ctx := context.Background()
 	sealDir, secrets := crashRecodeSealStorePastCommit(t)
-	store, retirer, err := openSealStore(sealDir)
+	store, retirer, err := sealretire.Open(sealDir, nil)
 	if err != nil {
 		t.Fatalf("reopen the seal store: %v", err)
 	}
@@ -139,7 +140,7 @@ func TestSealSubsystemRecoverInterrupted_RollForwardFailureStopsBoot(t *testing.
 	reboot := func() seal.StorageBackend {
 		t.Helper()
 		_ = store.Close()
-		store, retirer, err = openSealStore(sealDir)
+		store, retirer, err = sealretire.Open(sealDir, nil)
 		if err != nil {
 			t.Fatalf("reopen the seal store: %v", err)
 		}
@@ -216,7 +217,7 @@ func TestSealSubsystemRecoverInterrupted_SecondStagingReadFailureStopsBoot(t *te
 	ctx := context.Background()
 	// A barrier's Close closes the store under it, so the migration runs on
 	// a memory backend; the retirer comes from a seal store of its own.
-	store, retirer, err := openSealStore(filepath.Join(t.TempDir(), "seal"))
+	store, retirer, err := sealretire.Open(filepath.Join(t.TempDir(), "seal"), nil)
 	if err != nil {
 		t.Fatalf("openSealStore: %v", err)
 	}

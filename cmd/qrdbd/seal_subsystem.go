@@ -15,7 +15,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/pem"
@@ -25,11 +24,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
-	"sync"
-	"time"
-
-	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
@@ -38,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealretire"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -62,7 +57,7 @@ type sealSubsystem struct {
 	// SealStoreRetirer retires SealStore's plaintext history after an
 	// enable-encryption replaces its records (WAL recycling off, obsolete
 	// logs and tables deleted).
-	SealStoreRetirer *sealStoreRetirer
+	SealStoreRetirer *sealretire.Retirer
 
 	// SealBarrier is the unsealable storage barrier. Callers MUST check
 	// SealBarrier.IsSealed() before any operation that requires the
@@ -138,7 +133,7 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 	// so an unsynced write can be lost on crash even though it appeared to
 	// succeed — orphaning every file the lost root key had encrypted. See
 	// the equivalent comment in sdk/go/node's buildNodeSealSubsystem.
-	sealStore, sealRetirer, err := openSealStore(sealDataDir)
+	sealStore, sealRetirer, err := sealretire.Open(sealDataDir, nil)
 	if err != nil {
 		return nil, &SealStorageError{Err: err}
 	}
@@ -348,204 +343,6 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 	}, nil
 }
 
-// unsealNoneBarrier opens a barrier whose persisted root key names the none
-// strategy. A none barrier holds no secret, so nothing an operator supplies
-// can be checked against it: docs/seal/README.md states that such a node
-// unseals its barrier on startup, and a restarted none node would otherwise
-// wait in the sealed window for an empty unseal call. The barrier is
-// self-describing, so the persisted strategy decides, not the configured one:
-// after an enable-encryption the config still names none while the root key
-// is keyed, and that barrier stays sealed. An uninitialized barrier is left
-// alone; its first boot is the operator's init.
-// sealStoreCompactor returns the step that retires the seal store's plaintext
-// history once enable-encryption has replaced its records: a whole-store
-// compaction, which flushes the memtable (rotating the WAL that holds the old
-// writes) and rewrites every SST without the shadowed versions. A nil store
-// has no history to retire.
-func sealStoreCompactor(store *pebblestore.PebbleStorage) func() error {
-	if store == nil {
-		return func() error { return nil }
-	}
-	return func() error {
-		// Pebble refuses an unbounded manual compaction, so the range ends
-		// just past the largest key any table holds once the memtable is
-		// flushed (deleted keys included: their tombstones are in a table).
-		if err := store.Flush(); err != nil {
-			return err
-		}
-		levels, err := store.DB().SSTables()
-		if err != nil {
-			return err
-		}
-		var largest []byte
-		for _, level := range levels {
-			for _, table := range level {
-				if k := table.Largest.UserKey; largest == nil || bytes.Compare(k, largest) > 0 {
-					largest = k
-				}
-			}
-		}
-		if largest == nil {
-			return nil
-		}
-		return store.Compact(nil, append(append([]byte(nil), largest...), 0x00))
-	}
-}
-
-// sealStoreFS is the vfs.FS the seal store's Pebble runs on. It turns WAL
-// recycling off: Pebble keeps obsolete logs in its LogRecycler and reuses one
-// by renaming it to the new log's name and writing over it WITHOUT truncation,
-// so plaintext written before an enable-encryption migration would survive in
-// the reused file's tail. ReuseForWrite here removes the old log and creates
-// the new one fresh, which vfs.FS permits. Remove also wakes every waiter on
-// removal(), so the plaintext retirement can wait for Pebble's asynchronous
-// deletion of obsolete files without polling.
-type sealStoreFS struct {
-	vfs.FS
-	mu      sync.Mutex
-	removed chan struct{}
-}
-
-func newSealStoreFS(base vfs.FS) *sealStoreFS {
-	return &sealStoreFS{FS: base, removed: make(chan struct{})}
-}
-
-// ReuseForWrite creates newname fresh and deletes oldname instead of reusing it.
-func (f *sealStoreFS) ReuseForWrite(oldname, newname string, category vfs.DiskWriteCategory) (vfs.File, error) {
-	if err := f.Remove(oldname); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	return f.FS.Create(newname, category)
-}
-
-// Remove removes name and wakes the removal waiters.
-func (f *sealStoreFS) Remove(name string) error {
-	err := f.FS.Remove(name)
-	f.mu.Lock()
-	close(f.removed)
-	f.removed = make(chan struct{})
-	f.mu.Unlock()
-	return err
-}
-
-// removal returns a channel closed by the next Remove.
-func (f *sealStoreFS) removal() <-chan struct{} {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.removed
-}
-
-// openSealStore opens the seal store's Pebble on a sealStoreFS. SyncWrites is
-// forced on (see initSealSubsystem).
-func openSealStore(dir string) (*pebblestore.PebbleStorage, *sealStoreRetirer, error) {
-	fs := newSealStoreFS(vfs.Default)
-	store, err := pebblestore.New(&pebblestore.Config{DataDir: dir, SyncWrites: true, FS: fs})
-	if err != nil {
-		return nil, nil, err
-	}
-	return store, &sealStoreRetirer{store: store, fs: fs, dir: dir}, nil
-}
-
-// sealStoreRetireRotations is how many times the retirement rotates the WAL:
-// more than the LogRecycler holds (MemTableStopWritesThreshold + 1), so every
-// log written before the retirement leaves the recycler.
-// sealStoreRetireRotationKey is the scratch key the retirement writes to
-// rotate the seal store's WAL; it is deleted when the rotations end.
-var sealStoreRetireRotationKey = []byte("qrdbd/seal-store/retire-rotate")
-
-const sealStoreRetireRotations = 8
-
-// sealStoreRetireTimeout bounds the wait for Pebble's asynchronous deletion of
-// the obsolete files.
-const sealStoreRetireTimeout = time.Minute
-
-// sealStoreRetirer retires the plaintext history an enable-encryption leaves
-// in the seal store's files once its records are replaced.
-type sealStoreRetirer struct {
-	store *pebblestore.PebbleStorage
-	fs    *sealStoreFS
-	dir   string
-}
-
-// sealStorePlaintextFiles lists the WAL and table files in dir.
-func sealStorePlaintextFiles(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, e := range entries {
-		if name := e.Name(); !e.IsDir() && (strings.HasSuffix(name, ".log") || strings.HasSuffix(name, ".sst")) {
-			out = append(out, name)
-		}
-	}
-	return out, nil
-}
-
-// Retire compacts the shadowed versions out of the tables, rotates the WAL
-// until every log written before the call is obsolete, and returns once
-// each pre-existing log and each table the compaction replaced is deleted
-// from the directory (not recycled). A nil retirer has nothing to retire.
-func (r *sealStoreRetirer) Retire(ctx context.Context) error {
-	if r == nil || r.store == nil {
-		return nil
-	}
-	if err := r.mark(); err != nil {
-		return err
-	}
-	if sealStoreRetireFault != nil {
-		if err := sealStoreRetireFault(); err != nil {
-			return err
-		}
-	}
-	if err := r.retireFiles(ctx); err != nil {
-		return err
-	}
-	if err := r.store.Delete(sealStoreRetireMarker); err != nil {
-		return fmt.Errorf("clear the plaintext-retirement marker: %w", err)
-	}
-	return nil
-}
-
-// sealStoreRetireMarker is the seal-store key that records a plaintext
-// retirement still owed. It is written (synced) before the retirement starts,
-// and at boot before RecoverInterruptedMigration clears a committed journal
-// naming the seal store, and deleted only once the retirement succeeds, so
-// each boot retries while it exists.
-var sealStoreRetireMarker = []byte("qrdbd/seal-store/retire-plaintext")
-
-// sealStoreRetireFault, when set (tests only), fails Retire right after the
-// marker is written: a crash or failure before the files are retired.
-var sealStoreRetireFault func() error
-
-// mark records that a retirement is owed. A nil retirer owes none.
-func (r *sealStoreRetirer) mark() error {
-	if r == nil || r.store == nil {
-		return nil
-	}
-	if err := r.store.Set(sealStoreRetireMarker, []byte{1}); err != nil {
-		return fmt.Errorf("write the plaintext-retirement marker: %w", err)
-	}
-	return nil
-}
-
-// marked reports whether a retirement is owed.
-func (r *sealStoreRetirer) marked() (bool, error) {
-	if r == nil || r.store == nil {
-		return false, nil
-	}
-	return r.store.Exists(sealStoreRetireMarker)
-}
-
-// RetirePending runs Retire when the marker records one owed.
-func (r *sealStoreRetirer) RetirePending(ctx context.Context) error {
-	owed, err := r.marked()
-	if err != nil || !owed {
-		return err
-	}
-	return r.Retire(ctx)
-}
-
 // recoverSystemMigration is the boot-time reconcile of a system-scope
 // enable-encryption interrupted by a crash (see initSealSubsystem). A
 // committed journal without its staging root key is refused. A committed
@@ -555,7 +352,7 @@ func (r *sealStoreRetirer) RetirePending(ctx context.Context) error {
 // the marker kept, so the next boot retries. A failed journal read or a
 // failed recovery is returned too, and stops the boot: the journal survives
 // it, and the next boot retries the roll-forward.
-func recoverSystemMigration(ctx context.Context, backend seal.StorageBackend, retirer *sealStoreRetirer, rootKeyPath string, storeDirs []string) error {
+func recoverSystemMigration(ctx context.Context, backend seal.StorageBackend, retirer *sealretire.Retirer, rootKeyPath string, storeDirs []string) error {
 	// Only an absent journal (nil, nil) means no pending migration: a failed
 	// read must stop the boot, or a second read inside the recovery could
 	// roll a committed seal-store migration forward with no retirement
@@ -567,8 +364,8 @@ func recoverSystemMigration(ctx context.Context, backend seal.StorageBackend, re
 	if err := refuseCommittedJournalWithoutStagingRoot(ctx, backend, rootKeyPath, pending); err != nil {
 		return err
 	}
-	if pending != nil && pending.Committed() && journalNamesSealStore(pending) {
-		if err := retirer.mark(); err != nil {
+	if pending != nil && pending.Committed() && sealretire.JournalNamesSealStore(pending) {
+		if err := retirer.Mark(); err != nil {
 			return err
 		}
 	}
@@ -587,65 +384,15 @@ func recoverSystemMigration(ctx context.Context, backend seal.StorageBackend, re
 	return nil
 }
 
-// retireFiles is Retire's work past the marker.
-func (r *sealStoreRetirer) retireFiles(ctx context.Context) error {
-	before, err := sealStorePlaintextFiles(r.dir)
-	if err != nil {
-		return err
-	}
-	if err := sealStoreCompactor(r.store)(); err != nil {
-		return fmt.Errorf("compact: %w", err)
-	}
-	for i := 0; i < sealStoreRetireRotations; i++ {
-		if err := r.store.Set(sealStoreRetireRotationKey, []byte{byte(i)}); err != nil {
-			return fmt.Errorf("rotate write-ahead log: %w", err)
-		}
-		if err := r.store.Flush(); err != nil {
-			return fmt.Errorf("rotate write-ahead log: %w", err)
-		}
-	}
-	if err := r.store.Delete(sealStoreRetireRotationKey); err != nil {
-		return fmt.Errorf("rotate write-ahead log: %w", err)
-	}
-	levels, err := r.store.DB().SSTables()
-	if err != nil {
-		return err
-	}
-	live := map[string]bool{}
-	for _, level := range levels {
-		for _, table := range level {
-			live[fmt.Sprintf("%06d.sst", uint64(table.BackingSSTNum))] = true
-		}
-	}
-	var targets []string
-	for _, name := range before {
-		if !live[name] {
-			targets = append(targets, filepath.Join(r.dir, name))
-		}
-	}
-	waitCtx, cancel := context.WithTimeout(ctx, sealStoreRetireTimeout)
-	defer cancel()
-	for {
-		removed := r.fs.removal()
-		left := 0
-		for _, path := range targets {
-			if _, serr := os.Stat(path); serr == nil {
-				left++
-			} else if !errors.Is(serr, os.ErrNotExist) {
-				return serr
-			}
-		}
-		if left == 0 {
-			return nil
-		}
-		select {
-		case <-removed:
-		case <-waitCtx.Done():
-			return fmt.Errorf("%d seal-store files written before the retirement are not deleted: %w", left, waitCtx.Err())
-		}
-	}
-}
-
+// unsealNoneBarrier opens a barrier whose persisted root key names the none
+// strategy. A none barrier holds no secret, so nothing an operator supplies
+// can be checked against it: docs/seal/README.md states that such a node
+// unseals its barrier on startup, and a restarted none node would otherwise
+// wait in the sealed window for an empty unseal call. The barrier is
+// self-describing, so the persisted strategy decides, not the configured one:
+// after an enable-encryption the config still names none while the root key
+// is keyed, and that barrier stays sealed. An uninitialized barrier is left
+// alone; its first boot is the operator's init.
 func unsealNoneBarrier(ctx context.Context, barrier *seal.StorageBarrier) error {
 	if !barrier.IsSealed() || barrier.PersistedStrategy(ctx) != seal.StrategyNone {
 		return nil
