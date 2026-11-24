@@ -586,7 +586,7 @@ for example [../key-value/architecture.md](../key-value/architecture.md#data-flo
 - **The SDK connects without a credential.** `Connect` on every Go SDK
   network transport probes Health, which is public, so a client with no
   credential connects and is refused with the typed `Unauthenticated` error
-  at its first authenticated call (ruling 264(b)); over MCP one refusal
+  at its first authenticated call; over MCP one refusal
   capture types the refusal of `initialize` and of every `tools/call` alike.
 - **A public MCP tool cannot reach data.** A declared tool that carries any
   permission but `identity:public` — a KV, SQL, document, vector, admin, IAM or
