@@ -22,8 +22,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/spf13/cobra"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------

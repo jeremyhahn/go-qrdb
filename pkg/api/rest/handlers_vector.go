@@ -507,8 +507,7 @@ func (s *Server) handleVectorDeleteNamespace(w http.ResponseWriter, r *http.Requ
 }
 
 // handleVectorListNamespaces handles GET /vector/namespaces -- returns all
-// vector namespace names.
-// Query parameters:
+// vector namespace names. It takes no query parameters.
 func (s *Server) handleVectorListNamespaces(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	vectorSvc := s.vectorSvcFor(w, ctx)
