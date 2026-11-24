@@ -448,8 +448,9 @@ func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret s
 		// text instead, which is not valid base64 and the decoder rejects.
 		"secret":         []byte(secret),
 		"admin_generate": true,
-		// A system SO, always: under FIPS 140-3 separation of duties is
-		// strict, which refuses a ceremony without one.
+		// A system SO: the SO is optional, but the fixture names one so
+		// the strict FIPS 140-3 posture keeps an SO for the SO-exclusive
+		// operations.
 		"so_username": "system-so",
 		"so_csr_pem":  systemSOCSRPEM(t),
 	})

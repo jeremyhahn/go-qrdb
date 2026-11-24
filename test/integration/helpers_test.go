@@ -2669,7 +2669,7 @@ func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string)
 
 // initAndUnsealBarrierWith is initAndUnsealBarrier with extra
 // CeremonyInitializeRequest fields, such as the system SO a strict
-// separation node needs (startMultiProtocolNodeWithConfig).
+// separation node names (startMultiProtocolNodeWithConfig).
 func initAndUnsealBarrierWith(t *testing.T, ca *testCA, port int, passphrase string, extra map[string]any) (certPath, keyPath string) {
 	t.Helper()
 

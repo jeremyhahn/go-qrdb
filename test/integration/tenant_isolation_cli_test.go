@@ -143,8 +143,9 @@ func createTenantWithAdminCert(t *testing.T, node *multiProtoNode, proto multiPr
 		keyPath = filepath.Join(filepath.Dir(adminArgs[len(adminArgs)-1]), "key.pem")
 		certDir := t.TempDir()
 		args = append(args, adminArgs...)
-		// A tenant SO, always: a node under FIPS 140-3 runs separation of
-		// duties strict and refuses a tenant create without one.
+		// A tenant SO: the SO is optional, but the fixture names one so a
+		// tenant on a node under FIPS 140-3, which runs separation of
+		// duties strict, keeps an SO for the SO-exclusive operations.
 		soCSR := tenantSOCSR(t, node, proto, id+"-so")
 		args = append(args, "--so-username", id+"-so", "--so-csr", filepath.Join(soCSR, "csr.pem"), "--so-pin", "so-pin-1234")
 		args = append(args, "--out", certDir)
