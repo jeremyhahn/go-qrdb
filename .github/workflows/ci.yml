@@ -573,12 +573,12 @@ jobs:
       # v1.55: the Row job's check, run against a stub base and label API.
       - name: Row job tests (ci-template v1.55)
         run: python3 -I .github/workflows/testdata/row-job-tests.py
-      # code-review.yml v5.12.11 (ruling 1081) carries the handbook template's
-      # regression tests verbatim: testdata/code-review-v51211-tests.py, which
-      # loads the expression evaluator from testdata/code-review-v51210-tests.py.
-      # A fake curl forge serves every API read; nothing reaches the network.
+      # The code review template's regression tests, against a fake curl forge; nothing reaches the network.
       - name: Code review workflow tests (v5.12.11)
         run: python3 -I .github/workflows/testdata/code-review-v51211-tests.py
+      # A cancelled review is no review, and the round limit (code-review v5.12.12).
+      - name: Code review round tests
+        run: python3 -I .github/workflows/testdata/code-review-v51212-tests.py .github/workflows/code-review.yml
       # Codex round 3 P1 on #1709: the supersede job's cancel step (actions:write) ran in no test.
       - name: Supersede job tests (#1708)
         run: python3 -I .github/workflows/testdata/code-review-supersede-tests.py

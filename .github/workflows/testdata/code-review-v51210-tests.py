@@ -41,6 +41,11 @@ import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 WORKFLOW = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else HERE.parent / "code-review.yml"
+_ENV = WORKFLOW.read_text()
+NON_CODE = re.search(r"\n  NON_CODE_PATHS: '([^']*)'\n", _ENV).group(1)
+ROW_BRANCH = re.search(r"\n  ROW_BRANCH: '([^']*)'\n", _ENV).group(1)
+TRUSTED_AUTHORS = re.search(r"\n  TRUSTED_AUTHORS: '([^']*)'\n", _ENV).group(1)
+TRUSTED_PR = re.search(r"\n  TRUSTED_PR: '([^']*)'\n", _ENV).group(1)
 FAILS = []
 REQUIRED = "Code Review (codex)"
 GH = "https://github.com"
@@ -266,7 +271,7 @@ def context(action, draft, labels, label=None, server=GH, state="open", agent=""
     if label is not None:
         event["label"] = {"name": label}
     return {"github": {"server_url": server, "repository": REPO, "event": event},
-            "needs": {"scope": {"outputs": {"skip": "false"}}, "review": {"outputs": {"agent": agent}}}}
+            "needs": {"scope": {"outputs": {"skip": "false", "code": "true", "row": "true"}}, "review": {"outputs": {"agent": agent}}}}
 
 
 def simulate(jobs, ctx):
@@ -357,7 +362,10 @@ def main():
           "S4 the gate's name is the draft clause's expression")
     check(re.search(r"\n    name: [^>\n]*Code Review \(codex\)", src) is None, "S5 no job has the literal required name")
     gate_steps = texts["gate"].split("\n    steps:\n", 1)[-1]
-    check('[ "$REVIEW_RESULT" != failure ]' in gate_steps and "failure|cancelled) fail" in gate_steps
+    # v5.12.12: the review check is a case that also fails a cancelled review.
+    check(('[ "$REVIEW_RESULT" != failure ]' in gate_steps
+           or ('case "$REVIEW_RESULT" in' in gate_steps and "            failure) fail" in gate_steps))
+          and "failure|cancelled) fail" in gate_steps
           and '"$REVIEW_RESULT" = skipped' not in gate_steps and '"$SCOPE_RESULT" = skipped' not in gate_steps,
           "S6 the verdict step fails only on a failed review or a failed/cancelled scope, never on a skip")
     check("\n# v5.12.10 (2026-11-21" in src, "S7 the header has the v5.12.10 entry")
