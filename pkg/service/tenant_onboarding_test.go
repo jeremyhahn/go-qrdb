@@ -931,10 +931,15 @@ type delayedTrail struct {
 	appendOnce bool
 	delayNext  bool
 	delayed    []audit.AuditEvent
-	chain      *audit.Chain
-	store      *memory.MemoryStorage
-	head       uint64
-	emits      int
+	// applyDelayedFirst applies the delayed proposals when the next
+	// proposal arrives, before that proposal applies: the order in which a
+	// late unmarked proposal applies after the retry's trail query but
+	// before the retry itself.
+	applyDelayedFirst bool
+	chain             *audit.Chain
+	store             *memory.MemoryStorage
+	head              uint64
+	emits             int
 }
 
 func (d *delayedTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
@@ -944,6 +949,15 @@ func (d *delayedTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
 		d.delayNext = false
 		d.delayed = append(d.delayed, ev)
 		return &ProposeError{Err: context.DeadlineExceeded}
+	}
+	if d.applyDelayedFirst {
+		d.applyDelayedFirst = false
+		for _, late := range d.delayed {
+			if err := d.apply(ctx, late); err != nil {
+				return err
+			}
+		}
+		d.delayed = nil
 	}
 	return d.apply(ctx, ev)
 }
@@ -1010,8 +1024,9 @@ func newDelayedOnboarding(t *testing.T, appendOnce bool) (*TenantOnboardingServi
 // unmarked, and it is still in flight when the feature activates. The marked
 // retry goes ahead at once -- no elapsed time is taken to mean the first
 // proposal was lost -- and applies first; the delayed unmarked proposal then
-// applies as before activation (audit.Chain.Append), so the trail holds the
-// onboarding event twice, the same on every replica.
+// applies, finds the marked retry's once-record (vlog.Chain.HasOnce) and
+// appends nothing, so one onboarding event remains, the same on every
+// replica.
 func TestEmitPendingOnboardAudit_UnmarkedUncertainThenMarkedRetryLeavesOne(t *testing.T) {
 	ctx := context.Background()
 	svc, trail, pendingAudit := newDelayedOnboarding(t, false)
@@ -1036,6 +1051,46 @@ func TestEmitPendingOnboardAudit_UnmarkedUncertainThenMarkedRetryLeavesOne(t *te
 
 	if got := trail.onboardEntries(ctx, t); got != 1 {
 		t.Fatalf("trail holds %d onboarding entries, want 1 (the late unmarked proposal finds the marked retry's once-record)", got)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left != nil {
+		t.Fatalf("pending record = %q, %v; want it settled and removed", left, err)
+	}
+}
+
+// The other order: the uncertain unmarked proposal is still in flight when
+// the marked retry queries the trail (which answers empty), and applies
+// after that query but before the marked retry applies. The marked retry
+// then finds the unmarked event in the tenant's event records at apply time
+// (vlog.Chain.RecordOnceIfPresent) and appends nothing, so one onboarding
+// event remains.
+func TestEmitPendingOnboardAudit_UnmarkedAppliesBeforeMarkedRetryLeavesOne(t *testing.T) {
+	ctx := context.Background()
+	svc, trail, pendingAudit := newDelayedOnboarding(t, false)
+
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err == nil {
+		t.Fatal("first EmitPendingOnboardAudit: want the delayed proposal's error")
+	}
+	trail.appendOnce = true
+	trail.applyDelayedFirst = true
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry after audit-append-once: %v", err)
+	}
+	if trail.emits != 2 {
+		t.Fatalf("trail saw %d emits, want 2 (the marked retry goes ahead)", trail.emits)
+	}
+	if len(trail.delayed) != 0 {
+		t.Fatal("the unmarked proposal did not apply before the marked retry")
+	}
+
+	if got := trail.onboardEntries(ctx, t); got != 1 {
+		t.Fatalf("trail holds %d onboarding entries, want 1", got)
+	}
+	page, err := trail.chain.Query(trail.store, "acme", audit.Filter{TenantID: "acme", Action: ActionTenantOnboard, Limit: 100})
+	if err != nil {
+		t.Fatalf("chain Query: %v", err)
+	}
+	if page == nil || len(page.Events) != 1 {
+		t.Fatalf("replicated chain holds %v onboarding events, want exactly 1", page)
 	}
 	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left != nil {
 		t.Fatalf("pending record = %q, %v; want it settled and removed", left, err)
