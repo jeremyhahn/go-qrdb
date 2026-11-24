@@ -63,15 +63,18 @@ The extended code `SQLITE_BUSY_SNAPSHOT` is 517; `code & 0xff` is
 
 A restore to a revision through a scope's MVCC service
 (`RestoreToRevision`, the CLI's `qrdb kv restore`) that changes any key
-under `sqlite/<db>/` bumps that database's generation once, past every
-generation it has had. This holds on every isolation type (prefix, volume
-and raft). A transaction or connection open across the restore gets
-`SQLITE_BUSY_SNAPSHOT`; the next one reads the restored pages. A dry run, a
-restore that touched no `sqlite/` key and a failed restore bump nothing.
-Stage keys written after the target revision are deleted by the restore
-like any other key.
-The bump is a second write after the restore's own; see plan item o9 in
-[docs/plans/926.md](../plans/926.md) for the window between them.
+under `sqlite/<db>/` restores that database through its page store
+(`Store.RestoreToRevision`) in one commit that writes the target revision's pages and meta record and bumps the
+generation past every generation it has had. This holds on every isolation
+type (prefix, volume and raft). A transaction or connection open across the
+restore gets `SQLITE_BUSY_SNAPSHOT`; the next one reads the restored pages.
+A database that did not exist at the target revision is removed. A dry
+run, a restore that touched no `sqlite/` key and a failed restore change
+nothing. Stage keys left by abandoned commits are deleted by the restore.
+Keys outside `sqlite/` are restored by the MVCC service as before. A
+database whose writer lock is held, or that a writer changes meanwhile, is
+reported as a conflict and left as it is; a forced restore returns the
+error instead.
 
 ## Limits
 
@@ -91,9 +94,11 @@ Creating a new database is gated by `sqlitevfs.Admit`: the tenant needs the
 cap; an existing database opens with neither. An operator sets them with
 `qrdb tenant set-entitlement --allow-sqlite-vfs` and
 `qrdb tenant update-quotas --max-sqlite-databases`. A library user calling
-`NewStore` directly is not gated; the gate applies where a server builds a
-Store for a tenant.
+`NewStore` over an embedded Backend is not gated. The server gates the
+write that creates a database on its services of every isolation type: a
+commit or staged publish that puts a database's meta record while none is
+live is refused with the entitlement or quota error and writes nothing, and
+each create and drop moves the tenant's `sqlite_databases` usage by one.
 
-Server-side construction of a Store for remote callers (an SDK or transport
-surface) waits on an owner decision (plan item o1 in
-[docs/plans/926.md](../plans/926.md)).
+Opening a Store over a remote qrdb server through an SDK client is the next
+step of plan item o1 in [docs/plans/926.md](../plans/926.md).

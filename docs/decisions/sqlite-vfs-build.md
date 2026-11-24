@@ -326,8 +326,7 @@ Built so far (unwired):
   by `sqlitevfs.CountDatabases`) as a creation gate, `sqlitevfs.Admit`
   (Q5). Opening an existing database needs neither. The cap is a soft
   bound: two concurrent creators can both pass at the limit minus one, and
-  the storage quota is the hard bound. The gate is not yet called by the
-  server;
+  the storage quota is the hard bound;
 - the admin surface for both: `allow_sqlite_vfs` and `max_sqlite_databases`
   on every transport, the SDKs, `qrdb tenant set-entitlement
   --allow-sqlite-vfs`, `qrdb tenant update-quotas --max-sqlite-databases`
@@ -337,16 +336,17 @@ Built since: the tier 1 binding on `modernc.org/sqlite` (owner ruling 1234),
 `moderncvfs.Register`, registering VFS `qrdb` over the page store
 ([usage](../sqlite-vfs/usage.md)); and the Q4 A restore hook: a restore to
 a revision through a scope's MVCC service that changed a key under
-`sqlite/<db>/` bumps that database's generation past every earlier one
-(`Store.BumpGenerationAfterRestore`, wrapped around every scope's MVCC
-service in `pkg/server`), on the prefix, volume and raft isolation types.
+`sqlite/<db>/` restores that database through its page store in one commit
+that carries the generation bump past every earlier one
+(`Store.RestoreToRevision`, wrapped around every scope's MVCC service in
+`pkg/server`), on the prefix, volume and raft isolation types (o9); and the
+server's creation gate: every scope's transaction service and prefix move
+call `sqlitevfs.Admit` before a write that puts a database's meta record
+while none is live, a refusal writes nothing, and each create and drop
+moves the tenant's `sqlite_databases` usage by one, the counter the
+registry and the lifecycle quota service register for that resource (the
+server half of o1).
 
-Still to come: the server
-constructing a Store for a caller (open for the owner, o1), which is also
-where `sqlitevfs.Admit` is called: only that caller waits on o1. The
-restore hook bumps after the restore's own write, not in it; a commit in
-between is not overwritten, but a store that saw the restored generation
-is not told of it (o9, open for the owner, in
-[docs/plans/926.md](../plans/926.md)).
-Registering `sqlitevfs.CountDatabases` as the `sqlite_databases` quota
-counter also waits on o1, since it reads the scope a Store lives in.
+Still to come: the client half of o1, a Store over an SDK client (the
+prefix move on every SDK transport, a Backend and writer lock over the Go
+SDK client, and the CLI path), in [docs/plans/926.md](../plans/926.md).

@@ -189,10 +189,14 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
   (`pkg/sqlitevfs/moderncvfs` on `modernc.org/sqlite`, see
   [usage.md](usage.md)) is built, and so is the Q4 restore hook: every
   scope's MVCC service in `pkg/server` is wrapped so a restore to a
-  revision that changed a key under `sqlite/<db>/` bumps that database's
-  generation. The one item not built is the server constructing a Store
-  for a caller (owner item o1, in [../plans/926.md](../plans/926.md)),
-  which is also where the server will call the gate.
+  revision that changed a key under `sqlite/<db>/` restores that database
+  through its page store (`Store.RestoreToRevision`) in one commit that
+  carries the generation bump. The server calls the gate on its write path:
+  every scope's transaction service and prefix move admit the write that
+  puts a database's meta record while none is live, and count each create
+  and drop in the tenant's `sqlite_databases` usage. The Store stays in the
+  application; the client half of owner item o1 (a Store over an SDK
+  client, in [../plans/926.md](../plans/926.md)) is not built.
 - If any tier requires CGo (`mattn`, the loadable extension), that binding
   lives in its **own Go module**: CGo must not enter the root module's
   dependency graph. The pure-Go tier via `modernc.org/sqlite` avoids CGo
@@ -222,8 +226,9 @@ approved the SQLite engine dependency (`modernc.org/sqlite`).
 4. **Backup/restore interplay** — the page namespace must participate in
    qrdb's existing backup, PITR and tenant-barrier machinery; encryption
    comes free via the barrier. Decided A: a restore to a revision bumps the
-   generation of each database it touched, built as the restore hook in
-   `pkg/server` (see [usage.md](usage.md#restore)). See
+   generation of each database it touched, in the same commit that restores
+   the database's pages, built as the restore hook in `pkg/server` (see
+   [usage.md](usage.md#restore)). See
    [Q4](../decisions/sqlite-vfs-build.md#q4-backup-restore-and-pitr-interplay).
 5. **Quota/entitlement accounting** — pages are opaque to the entity/SQL
    planes; per-tenant quotas need to count the namespace. Creation is gated

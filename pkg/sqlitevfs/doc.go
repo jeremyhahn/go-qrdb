@@ -28,6 +28,8 @@
 // publish that moves them into page/ and updates meta at one revision
 // (Q2 A). The meta record carries a restore generation: a transaction that
 // sees it change fails with ErrSnapshotChanged after a restore (Q4 A).
+// Store.RestoreToRevision restores a database to a revision in one commit
+// that carries the generation bump.
 //
 // A Store built WithWriterLock serializes its writers through a distributed
 // lock with a lease (Q3 A): Txn.Reserve fails with ErrBusy at once on
@@ -59,6 +61,8 @@
 // Admit is the creation gate: a new database needs the sqlite-vfs
 // entitlement and a free slot under the tenant's database count cap (a soft
 // bound), and an existing one opens with neither; CountDatabases counts a
-// tenant's databases. Nothing in the server calls Admit yet. The engine
-// binding, a page cache and every transport are later slices.
+// tenant's databases. The server calls Admit on its write path, before a
+// commit or prefix move that puts a database's meta record while none is
+// live. The tier 1 engine binding is package moderncvfs; a page cache and a
+// Store over an SDK client are later slices.
 package sqlitevfs
