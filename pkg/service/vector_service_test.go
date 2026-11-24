@@ -22,6 +22,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -1755,36 +1756,60 @@ func TestVectorService_GetRebuildProgress_EmptyRequest(t *testing.T) {
 }
 
 func TestVectorService_GetRebuildProgress_EstimatedTimeRemaining(t *testing.T) {
-	storage := newMockVectorStorage()
-	logger := newMockLogger()
-	svc, err := NewVectorService(storage, logger)
-	require.NoError(t, err)
+	// The synctest bubble freezes the clock, so time.Since(StartedAt) is
+	// exactly the 1 s the job is seeded with: 2500 vectors in 1000 ms is
+	// 2.5 vectors/ms, and the 7500 left take 3000 ms.
+	synctest.Test(t, func(t *testing.T) {
+		svc, err := NewVectorService(newMockVectorStorage(), newMockLogger())
+		require.NoError(t, err)
+		vs := svc.(*vectorService)
+		ctx := context.Background()
+		now := time.Now()
+		completedAt := now
 
-	// Create namespace with vectors
-	ctx := context.Background()
-	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:        testScopedNS("test-namespace"),
-		Dimension:   128,
-		VectorCount: 10000,
+		vs.jobMu.Lock()
+		vs.rebuildJobs["running-job"] = &RebuildJobState{
+			JobID:            "running-job",
+			Namespace:        testScopedNS("test-namespace"),
+			InProgress:       true,
+			TotalVectors:     10000,
+			VectorsProcessed: 2500,
+			StartedAt:        now.Add(-time.Second),
+		}
+		vs.rebuildJobs["completed-job"] = &RebuildJobState{
+			JobID:            "completed-job",
+			Namespace:        testScopedNS("test-namespace"),
+			TotalVectors:     10000,
+			VectorsProcessed: 10000,
+			StartedAt:        now.Add(-time.Second),
+			CompletedAt:      &completedAt,
+		}
+		vs.rebuildJobs["unstarted-job"] = &RebuildJobState{
+			JobID:        "unstarted-job",
+			Namespace:    testScopedNS("test-namespace"),
+			InProgress:   true,
+			TotalVectors: 10000,
+			StartedAt:    now.Add(-time.Second),
+		}
+		vs.jobMu.Unlock()
+
+		resp, err := svc.GetRebuildProgress(ctx, &GetRebuildProgressRequest{JobID: "running-job"})
+		require.NoError(t, err)
+		assert.Equal(t, "running", resp.Status)
+		assert.Equal(t, int64(1000), resp.ElapsedTimeMs)
+		assert.Equal(t, int64(3000), resp.EstimatedTimeRemainingMs)
+		assert.InDelta(t, 25.0, resp.PercentComplete, 1e-9)
+
+		resp, err = svc.GetRebuildProgress(ctx, &GetRebuildProgressRequest{JobID: "completed-job"})
+		require.NoError(t, err)
+		assert.Equal(t, "completed", resp.Status)
+		assert.Equal(t, int64(0), resp.EstimatedTimeRemainingMs)
+
+		resp, err = svc.GetRebuildProgress(ctx, &GetRebuildProgressRequest{JobID: "unstarted-job"})
+		require.NoError(t, err)
+		assert.Equal(t, "running", resp.Status)
+		assert.Equal(t, int64(0), resp.EstimatedTimeRemainingMs)
 	})
-
-	// Start async rebuild
-	rebuildReq := &RebuildIndexRequest{
-		Namespace: "test-namespace",
-		Async:     true,
-	}
-	rebuildResp, err := svc.RebuildIndex(ctx, rebuildReq)
-	require.NoError(t, err)
-
-	// Get progress (may show estimate if in progress)
-	req := &GetRebuildProgressRequest{
-		JobID: rebuildResp.JobID,
-	}
-	resp, err := svc.GetRebuildProgress(ctx, req)
-
-	require.NoError(t, err)
-	assert.NotNil(t, resp)
-	assert.GreaterOrEqual(t, resp.ElapsedTimeMs, int64(0))
 }
 
 // =============================================================================
