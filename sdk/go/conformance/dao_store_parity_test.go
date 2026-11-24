@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	sdkstorage "github.com/jeremyhahn/go-qrdb/sdk/go/storage"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -292,6 +293,68 @@ func TestDAOStoreParity_ClientStore(t *testing.T) {
 			}
 			embedded := newParityDAOs(t, newEmbeddedParityStore(t))
 			runParityScenario(t, embedded, clientStoreKind, newParityDAOs(t, store))
+		})
+	}
+}
+
+// TestDAOStoreParity_ClientStore_ScopesAnExistingUnscopedIndex pins that a
+// DAO registering over an index the previous client adapter created
+// database-wide (no key prefix) narrows it to the entity's keys: the
+// fresh-store scenario above cannot see this, because the index never
+// existed unscoped there (Codex round 2 P1 2 on #1706).
+//
+// The embedded store needs no such case: sdk.NewEmbeddedKVStore exposes no
+// index-create surface, so its indexes come only from RegisterEntityIndexes,
+// which has always built them scoped to the entity type.
+func TestDAOStoreParity_ClientStore_ScopesAnExistingUnscopedIndex(t *testing.T) {
+	for _, tk := range transportKinds {
+		c := cell{backend: database.BackendPebble, mode: standalone, transport: tk}
+		t.Run(c.name(), func(t *testing.T) {
+			ctx := context.Background()
+			cl := c.boot(t)
+			idx, ok := cl.kv.(transport.IndexClient)
+			if !ok {
+				t.Fatalf("the matrix's KV client does not implement transport.IndexClient")
+			}
+			// The index the member DAO's unique Email registers, under the
+			// name and JSON field RegisterEntityIndexes sends, created as the
+			// previous adapter did: without a key prefix.
+			name := kvstore.EntityIndex{FieldName: "Email"}.ResolvedName("member")
+			if err := idx.IndexCreate(ctx, name, "email", transport.IndexConfig{Unique: true}); err != nil {
+				t.Fatalf("IndexCreate %s unscoped: %v", name, err)
+			}
+			store, err := sdk.NewKVStoreAdapter(cl.kv, idx)
+			if err != nil {
+				t.Fatalf("NewKVStoreAdapter: %v", err)
+			}
+
+			txMembers, err := sdk.NewDAOTransactional(store, "txmember", func() *daoMember { return &daoMember{} })
+			if err != nil {
+				t.Fatalf("NewDAOTransactional txmember: %v", err)
+			}
+			uow := sdk.NewDAOUnitOfWork(store)
+			if err := sdk.RegisterDAOSave(uow, sdk.GenericDAO[*daoMember](txMembers), &daoMember{ID: 1, Email: "old@example.test"}); err != nil {
+				t.Fatalf("RegisterDAOSave txmember: %v", err)
+			}
+			if err := uow.Commit(ctx); err != nil {
+				t.Fatalf("commit txmember: %v", err)
+			}
+
+			// Re-registration over the existing unscoped index.
+			members, err := sdk.NewDAO(store, "member", func() *daoMember { return &daoMember{} })
+			if err != nil {
+				t.Fatalf("NewDAO member: %v", err)
+			}
+			if err := members.Save(ctx, &daoMember{ID: 1, Email: "old@example.test"}); err != nil {
+				t.Fatalf("member save with a txmember's Email refused: %v (the index kept its database-wide scope)", err)
+			}
+			got, err := members.QueryByIndex(ctx, "Email", "old@example.test")
+			if err != nil {
+				t.Fatalf("member QueryByIndex Email: %v", err)
+			}
+			if len(got) != 1 || got[0].ID != 1 {
+				t.Fatalf("member QueryByIndex Email = %+v, want only member 1", got)
+			}
 		})
 	}
 }
