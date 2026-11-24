@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // defaultReconcilerPollInterval is the fallback reconciliation period used when
@@ -613,7 +614,9 @@ func (r *TenantShardReconciler) ensureStarted(ctx context.Context, p *placement.
 			slog.String("database", p.Database))
 		return false
 	}
-	if r.barriers != nil {
+	// The system tenant has no tenant barrier: its shards run under the
+	// host-wide barrier, so only a regular tenant waits for its own.
+	if r.barriers != nil && !tenantid.IsSystem(p.TenantID) {
 		tb, err := r.barriers.GetTenant(p.TenantID)
 		if err != nil || tb == nil {
 			r.registerShell(ctx, p.TenantID)

@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -544,6 +545,31 @@ func TestTenantShardReconciler_BarrierNotReadyDefers(t *testing.T) {
 	}
 	if !factory.isStarted("acme", "orders") {
 		t.Error("acme/orders should be started after barrier becomes ready")
+	}
+}
+
+// TestTenantShardReconciler_SystemTenantStartsWithoutATenantBarrier pins
+// that the system tenant's shards, which run under the host-wide barrier,
+// start ahead of time although no tenant barrier exists for them, while a
+// regular tenant without a barrier still defers and registers its shell.
+func TestTenantShardReconciler_SystemTenantStartsWithoutATenantBarrier(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	barriers := newFakeBarrierReadiness()
+	barriers.markMissing(tenantid.System)
+	barriers.markMissing("acme")
+	r, _ := newTestReconciler(t, factory, barriers,
+		placement1(tenantid.System, "catalog", 1001),
+		placement1("acme", "orders", 1002))
+	shells := &recordingShellRegistrar{}
+	r.SetShellRegistrar(shells)
+
+	r.ReconcileOnce(context.Background())
+
+	if factory.attachCount() != 1 {
+		t.Fatalf("Attach called %d times, want 1 (the system tenant's shard only)", factory.attachCount())
+	}
+	if got := shells.registered(); len(got) != 1 || got[0] != "acme" {
+		t.Fatalf("shells registered = %v, want [acme] (no shell for the system tenant)", got)
 	}
 }
 
