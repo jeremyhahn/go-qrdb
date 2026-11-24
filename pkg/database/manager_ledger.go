@@ -343,8 +343,17 @@ func (m *Manager) retryNamespaceRelease(ctx context.Context, cat Catalog, entry 
 	}
 	meta, err := cat.Get(ctx, entry.TenantID, entry.Name)
 	if err == nil {
-		if meta.Incarnation == entry.Incarnation && meta.Dropping {
-			// The drop that recorded the entry is still under way.
+		if meta.Incarnation == entry.Incarnation {
+			// The record is the entry's own incarnation: either the drop
+			// that recorded the entry is still under way, or a failed
+			// create recorded it and could not remove its own record
+			// (CatalogOrphanError). Neither is a re-created name; the entry
+			// is kept, and the record's drop releases the namespace and
+			// forgets it.
+			if !meta.Dropping {
+				m.logger.Info("object-storage namespace release kept while its own record is live",
+					slog.String("tenant", entry.TenantID), slog.String("name", entry.Name))
+			}
 			return
 		}
 		// The name was re-created. The entry is forgotten only when the
