@@ -21,14 +21,15 @@ import (
 
 // targetResolvedOperations are transport.Client methods authorized
 // individually against a target OTHER than the caller's ambient tenant
-// (a named tenant, user, or role, or a certificate's resolved owner) --
-// tenant.go, tenant_seal.go, the user/role CRUD in transport_auth.go, and
-// the role-assignment gate (role_assignment.go). Each one calls
+// (a named tenant, user, role, or group, or a certificate's resolved owner)
+// -- tenant.go, tenant_seal.go, the user/role CRUD in transport_auth.go,
+// the group CRUD and membership in transport_groups.go, and the
+// role-assignment gate (role_assignment.go). Each one calls
 // AuthMiddleware.AuthorizeTarget, AuthorizeTenantUpdate,
 // AuthorizeTenantBarrierInit, AuthorizeTenantBarrierSealedOp,
-// AuthorizeCertTenant, AuthorizeCertRevoke, AuthorizeRoleAssignmentWrite, or
-// AuthorizeRoleUnassignment directly, rather than through the ambient-self
-// operationPermissions table.
+// AuthorizeCertTenant, AuthorizeCertRevoke, AuthorizeRoleAssignmentWrite,
+// AuthorizeRoleUnassignment, or pkg/group/groupauthz directly, rather than
+// through the ambient-self operationPermissions table.
 var targetResolvedOperations = map[string]struct{}{
 	"CreateTenant":                    {},
 	"GetTenant":                       {},
@@ -88,6 +89,17 @@ var targetResolvedOperations = map[string]struct{}{
 	// authorizeTenant (AuthMiddleware.AuthorizeTenant), the same generic call
 	// authorizeCertTenant makes for the certificate verbs above.
 	"InviteUser": {},
+	// Groups authorize through pkg/group/groupauthz against the group's
+	// tenant (AuthorizeGroupRoles, AuthorizeGroupMembership, AuthorizeTenant).
+	"CreateGroup":       {},
+	"GetGroup":          {},
+	"GetGroupByName":    {},
+	"UpdateGroup":       {},
+	"DeleteGroup":       {},
+	"ListGroups":        {},
+	"AddGroupMember":    {},
+	"RemoveGroupMember": {},
+	"ListGroupMembers":  {},
 }
 
 // identityGatedOperations are the per-tenant, per-database, and node-level
