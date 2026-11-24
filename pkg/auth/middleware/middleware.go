@@ -781,7 +781,11 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			// every role of every group it belongs to that still resolves
 			// (see effectiveRoles). Groups are records too, so roles still
 			// come only from go-qrdb's own state.
-			identity.Roles = m.effectiveRoles(ctx, u)
+			roles, gerr := m.effectiveRoles(ctx, u)
+			if gerr != nil {
+				return ctx, nil, gerr
+			}
+			identity.Roles = roles
 			identity.Groups = slices.Clone(u.GroupIDs)
 			identity.RoleBindings = convertRoleBindings(u.RoleBindings)
 

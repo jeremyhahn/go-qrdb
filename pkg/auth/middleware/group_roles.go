@@ -16,6 +16,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"slices"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/group"
@@ -39,23 +40,33 @@ func WithGroupResolver(g GroupResolver) Option {
 }
 
 // effectiveRoles returns the record's RoleIDs union the RoleIDs of each group
-// in its GroupIDs, de-duplicated and sorted. A group that does not resolve,
-// or resolves to another tenant's group, contributes nothing: a lookup
-// failure narrows the identity's roles, never widens them.
-func (m *AuthMiddleware) effectiveRoles(ctx context.Context, u *user.User) []string {
+// in its GroupIDs, de-duplicated and sorted. A group that does not exist
+// (*group.GroupNotFoundError), or resolves to another tenant's group,
+// contributes nothing. Any other lookup error fails authentication with
+// *StoreUnavailableError: dropping a group the store could not read would
+// also drop the roles it carries, and with them a strict-separation
+// deny-list (the SO role's), so a transient error could widen access.
+func (m *AuthMiddleware) effectiveRoles(ctx context.Context, u *user.User) ([]string, error) {
 	if len(u.GroupIDs) == 0 || m.groups == nil {
-		return u.RoleIDs
+		return u.RoleIDs, nil
 	}
 	roles := slices.Clone(u.RoleIDs)
 	tenantID := tenantid.Normalize(u.TenantID)
 	gctx := tenant.WithTenantID(ctx, tenantID)
 	for _, gid := range u.GroupIDs {
 		g, err := m.groups.GetGroup(gctx, gid)
-		if err != nil || g == nil || g.TenantID != tenantID {
+		if err != nil {
+			var nf *group.GroupNotFoundError
+			if errors.As(err, &nf) {
+				continue
+			}
+			return nil, &StoreUnavailableError{Err: err}
+		}
+		if g == nil || g.TenantID != tenantID {
 			continue
 		}
 		roles = append(roles, g.RoleIDs...)
 	}
 	slices.Sort(roles)
-	return slices.Compact(roles)
+	return slices.Compact(roles), nil
 }

@@ -20,6 +20,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -157,13 +158,77 @@ func TestAuthorizeGroupRoles_Guard(t *testing.T) {
 	mw := mwWithPerms(permission.GroupsUpdate, permission.KeysSign)
 	var exceeds *role.GrantExceedsHolderError
 	mwNarrow := mwWithPerms(permission.GroupsUpdate)
-	if err := mwNarrow.AuthorizeGroupRoles(selfCtx(), roles, "acme", []string{custom}); !errors.As(err, &exceeds) {
+	if err := mwNarrow.AuthorizeGroupRoles(selfCtx(), roles, "acme", "", []string{custom}); !errors.As(err, &exceeds) {
 		t.Fatalf("role beyond holdings on a group: err = %v, want *role.GrantExceedsHolderError", err)
 	}
-	if err := mw.AuthorizeGroupRoles(selfCtx(), roles, "acme", []string{builtIn}); err != nil {
+	if err := mw.AuthorizeGroupRoles(selfCtx(), roles, "acme", "", []string{builtIn}); err != nil {
 		t.Fatalf("built-in role on a group: err = %v, want nil", err)
 	}
-	if err := mw.AuthorizeGroupRoles(selfCtx(), roles, "acme", []string{"r-missing"}); err == nil {
+	if err := mw.AuthorizeGroupRoles(selfCtx(), roles, "acme", "", []string{"r-missing"}); err == nil {
 		t.Fatal("unknown role on a group allowed")
+	}
+}
+
+// errGroupResolver fails every lookup with err.
+type errGroupResolver struct{ err error }
+
+func (r errGroupResolver) GetGroup(context.Context, string) (*group.Group, error) {
+	return nil, r.err
+}
+
+// TestAuthenticate_GroupLookupFailsClosed pins that a group the store could
+// not read fails authentication instead of silently dropping the group's
+// roles (and with them a strict-separation deny-list), while a group that
+// does not exist still contributes nothing.
+func TestAuthenticate_GroupLookupFailsClosed(t *testing.T) {
+	operator := role.SystemRoleID(claimRolesTenant, role.RoleNameOperator)
+	authn := func(r GroupResolver) *AuthMiddleware {
+		rec := carolRecord(operator)
+		rec.GroupIDs = []string{"g-so"}
+		return newTestMiddleware(&mockAuthorizer{},
+			WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: claimedAdmin()}),
+			WithUserService(&mockUserServicer{user: rec}),
+			WithGroupResolver(r))
+	}
+	t.Run("store error", func(t *testing.T) {
+		_, _, err := authn(errGroupResolver{err: errors.New("raft: no leader")}).authenticate(context.Background())
+		var su *StoreUnavailableError
+		if !errors.As(err, &su) {
+			t.Fatalf("err = %v, want *StoreUnavailableError", err)
+		}
+	})
+	t.Run("group not found", func(t *testing.T) {
+		_, id, err := authn(errGroupResolver{err: &group.GroupNotFoundError{ID: "g-so"}}).authenticate(context.Background())
+		if err != nil {
+			t.Fatalf("authenticate: %v", err)
+		}
+		if !slices.Equal(id.Roles, []string{operator}) {
+			t.Fatalf("Roles = %v, want the direct roles %v", id.Roles, []string{operator})
+		}
+	})
+}
+
+// TestAuthorizeGroupRoles_SelfGrantThroughGroup pins the three-step
+// escalation: an Admin creates an empty group, joins it, then puts the
+// built-in User role (keys:sign) on it. Because the caller is a member, the
+// update is judged as self-assignment and refused exactly as direct
+// self-assignment of the same role is.
+func TestAuthorizeGroupRoles_SelfGrantThroughGroup(t *testing.T) {
+	builtIn, _, roles := grantRuleFixture()
+	mw := mwWithPerms(permission.GroupsUpdate)
+	id := &auth.Identity{Subject: auth.UserSubject(1), UserID: 1, TenantID: "acme", Roles: []string{"admin"}, Groups: []string{"g-mine"}}
+	ctx := tenant.WithTenantID(auth.WithIdentity(context.Background(), id), "acme")
+
+	direct := role.ValidateSelfAssignable(ctx, roles, mw.Authorizer(), builtIn, "acme")
+	var exceeds *role.GrantExceedsHolderError
+	if !errors.As(direct, &exceeds) {
+		t.Fatalf("direct self-assignment: err = %v, want *role.GrantExceedsHolderError", direct)
+	}
+	err := mw.AuthorizeGroupRoles(ctx, roles, "acme", "g-mine", []string{builtIn})
+	if !errors.As(err, &exceeds) || err.Error() != direct.Error() {
+		t.Fatalf("built-in role on the caller's own group: err = %v, want %v", err, direct)
+	}
+	if err := mw.AuthorizeGroupRoles(ctx, roles, "acme", "g-other", []string{builtIn}); err != nil {
+		t.Fatalf("built-in role on a group the caller is not in: err = %v, want nil", err)
 	}
 }

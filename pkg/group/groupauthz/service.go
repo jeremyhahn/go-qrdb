@@ -70,7 +70,7 @@ func (s *Service) Create(ctx context.Context, req *group.CreateGroupRequest) (*g
 	if err := s.authorizeTenant(ctx, target, permission.GroupsCreate); err != nil {
 		return nil, err
 	}
-	if err := s.Auth.AuthorizeGroupRoles(ctx, s.Roles, target, req.RoleIDs); err != nil {
+	if err := s.Auth.AuthorizeGroupRoles(ctx, s.Roles, target, "", req.RoleIDs); err != nil {
 		return nil, err
 	}
 	next := *req
@@ -116,7 +116,7 @@ func (s *Service) Update(ctx context.Context, req *group.UpdateGroupRequest) (*g
 		if err := s.Auth.AuthorizeGroupRoleRemoval(ctx, g, removed); err != nil {
 			return nil, err
 		}
-		if err := s.Auth.AuthorizeGroupRoles(ctx, s.Roles, g.TenantID, added); err != nil {
+		if err := s.Auth.AuthorizeGroupRoles(ctx, s.Roles, g.TenantID, g.ID, added); err != nil {
 			return nil, err
 		}
 	}

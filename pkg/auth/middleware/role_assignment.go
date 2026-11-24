@@ -178,8 +178,11 @@ func (m *AuthMiddleware) AuthorizeRoleUnassignment(ctx context.Context, userSvc 
 // caller must be allowed to assign every one of them, exactly as AssignRole
 // requires (role.ValidateAssignable, and strict separation's SO rule: only an
 // SO may put the SO role on a group). A group carries only roles of its own
-// tenant; the group store refuses any other.
-func (m *AuthMiddleware) AuthorizeGroupRoles(ctx context.Context, roleSvc role.RoleServicer, tenantID string, roleIDs []string) error {
+// tenant; the group store refuses any other. groupID names the group being
+// updated ("" on create, which has no members yet): when the caller's own
+// identity lists it, the roles reach the caller, so they are judged with
+// role.ValidateSelfAssignable, the rule direct self-assignment uses.
+func (m *AuthMiddleware) AuthorizeGroupRoles(ctx context.Context, roleSvc role.RoleServicer, tenantID, groupID string, roleIDs []string) error {
 	if m == nil || len(roleIDs) == 0 {
 		return nil
 	}
@@ -187,7 +190,15 @@ func (m *AuthMiddleware) AuthorizeGroupRoles(ctx context.Context, roleSvc role.R
 	if err := m.authorizeSORoleChange(ctx, target, nil, slices.Clone(roleIDs)); err != nil {
 		return err
 	}
-	return validateRoleAssignment(ctx, roleSvc, m.Authorizer(), role.ValidateAssignable, target, roleIDs, nil)
+	validate := assignValidator(role.ValidateAssignable)
+	if id := auth.IdentityFromContext(ctx); id != nil && groupID != "" &&
+		slices.Contains(id.Groups, groupID) && tenantid.Normalize(id.TenantID) == target {
+		// The caller is a member of the group: a role it puts on the group
+		// reaches its own identity, so it is judged as a self-assignment,
+		// exactly as AuthorizeGroupMembership judges a self-join.
+		validate = role.ValidateSelfAssignable
+	}
+	return validateRoleAssignment(ctx, roleSvc, m.Authorizer(), validate, target, roleIDs, nil)
 }
 
 // AuthorizeGroupMembership is the escalation guard for AddGroupMember: the
