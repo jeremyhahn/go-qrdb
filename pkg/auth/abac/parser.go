@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
 
 // ConditionParser parses condition expressions from policy rules.
@@ -397,16 +399,19 @@ func resolveValue(expr string, ctx *EvalContext) interface{} {
 }
 
 // ownsResource evaluates the built-in subject.owns_resource condition: true
-// only when the request carries a non-empty string resource owner (under
-// ResourceOwnerContextKey) equal to a non-empty subject id. An absent,
-// empty or non-string owner, or an empty subject id, is false, so the
-// condition fails closed and an empty owner never matches an empty id.
+// only when the subject has a bound account (Subject.UserID != 0) and the
+// request carries a non-empty string resource owner (under
+// ResourceOwnerContextKey) equal to auth.UserSubject(Subject.UserID). An
+// absent, empty or non-string owner, or an unbound subject (a certificate
+// holder or service identity, whose ID is a name that may be all digits),
+// is false, so the condition fails closed and Subject.ID never decides
+// ownership.
 func ownsResource(ctx *EvalContext) bool {
-	if ctx == nil || ctx.Subject == nil || ctx.Subject.ID == "" {
+	if ctx == nil || ctx.Subject == nil || ctx.Subject.UserID == 0 {
 		return false
 	}
 	owner, ok := ctx.Request[ResourceOwnerContextKey].(string)
-	return ok && owner != "" && owner == ctx.Subject.ID
+	return ok && owner != "" && owner == auth.UserSubject(ctx.Subject.UserID)
 }
 
 func resolveSubjectField(parts []string, subject *Subject) interface{} {

@@ -183,8 +183,10 @@ func (d *Decorator) Reload(policies []*Policy) error {
 // The owner of the object the operation acts on, when the embedder's store
 // put one on ctx with auth.WithResourceOwner, is exposed as resource.owner
 // (request key ResourceOwnerContextKey) and drives the built-in boolean
-// subject.owns_resource: true only when that owner is non-empty and equals
-// the non-empty subject id, false otherwise (fail closed).
+// subject.owns_resource: true only when the identity has a bound account
+// (UserID != 0) and that owner is non-empty and equals
+// auth.UserSubject(UserID), false otherwise (fail closed). A certificate
+// holder or service identity, whose Subject is a name, never owns an object.
 //
 // The subject carries two attribute namespaces that are never merged:
 // identity.Metadata (authentication-derived — certificate fields, token
@@ -204,6 +206,9 @@ func (d *Decorator) Authorize(ctx context.Context, identity *auth.Identity, reso
 		// The ID is the Subject, a resolved account's immutable user id; the
 		// Name is the account name, which a rename changes.
 		subject.ID = identity.Subject
+		// UserID is the bound account (0 for a holder or service identity);
+		// subject.owns_resource reads it, not ID.
+		subject.UserID = identity.UserID
 		subject.Name = identity.AccountName()
 		subject.TenantID = identity.TenantID
 		subject.Roles = identity.Roles

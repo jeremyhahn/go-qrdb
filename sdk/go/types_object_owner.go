@@ -7,9 +7,11 @@ import (
 
 // OwnObject is the object-owner rule, the object twin of OwnTenant (the
 // tenant check): it refuses op with *ObjectOwnerDeniedError unless the
-// identity on ctx has a non-empty subject equal to the object's non-empty
-// recorded owner. It fails closed: no identity, an empty subject or an
-// object with no recorded owner is refused. An embedder that keeps its own
+// identity on ctx has a bound account (UserID != 0) whose UserSubject equals
+// the object's non-empty recorded owner. It fails closed: no identity, an
+// identity with no bound account (a certificate holder or service identity,
+// whatever its Subject reads) or an object with no recorded owner is
+// refused. An embedder that keeps its own
 // owner check calls this instead. (Aliases pkg/auth.OwnObject.)
 var OwnObject = auth.OwnObject
 

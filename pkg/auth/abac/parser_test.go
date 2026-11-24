@@ -750,20 +750,33 @@ func TestConditionParser_OwnsResource(t *testing.T) {
 		wantTrue bool
 	}{
 		{
-			name:     "owner equals subject",
+			name:     "owner equals the bound account",
 			expr:     "subject.owns_resource",
-			ctx:      &EvalContext{Subject: &Subject{ID: "user-1"}, Request: owner("user-1")},
+			ctx:      &EvalContext{Subject: &Subject{ID: "1", UserID: 1}, Request: owner("1")},
 			wantTrue: true,
 		},
 		{
 			name: "other owner",
 			expr: "subject.owns_resource",
-			ctx:  &EvalContext{Subject: &Subject{ID: "user-1"}, Request: owner("user-2")},
+			ctx:  &EvalContext{Subject: &Subject{ID: "1", UserID: 1}, Request: owner("2")},
 		},
 		{
 			name: "owner absent",
 			expr: "subject.owns_resource",
-			ctx:  &EvalContext{Subject: &Subject{ID: "user-1"}, Request: map[string]interface{}{}},
+			ctx:  &EvalContext{Subject: &Subject{ID: "1", UserID: 1}, Request: map[string]interface{}{}},
+		},
+		{
+			// A certificate holder named "7" has no bound account: its ID
+			// matching the owner string does not make it the owner.
+			name: "unbound numeric subject",
+			expr: "subject.owns_resource",
+			ctx:  &EvalContext{Subject: &Subject{ID: "7"}, Request: owner("7")},
+		},
+		{
+			// Ownership reads UserID, never ID.
+			name: "subject id differs from the bound account",
+			expr: "subject.owns_resource",
+			ctx:  &EvalContext{Subject: &Subject{ID: "7", UserID: 8}, Request: owner("7")},
 		},
 		{
 			name: "empty owner and empty subject id",
@@ -773,7 +786,7 @@ func TestConditionParser_OwnsResource(t *testing.T) {
 		{
 			name: "non-string owner",
 			expr: "subject.owns_resource",
-			ctx:  &EvalContext{Subject: &Subject{ID: "1"}, Request: owner(1)},
+			ctx:  &EvalContext{Subject: &Subject{ID: "1", UserID: 1}, Request: owner(1)},
 		},
 		{
 			name: "no subject",

@@ -61,17 +61,22 @@ func (e *ObjectOwnerDeniedError) Unwrap() error { return ErrUnauthorized }
 // recorded owner is owner, and refuses op with *ObjectOwnerDeniedError when
 // it does not. It is the object twin of tenant.OwnTenant (the tenant
 // check) and fails closed: it refuses when ctx carries no identity, when
-// the identity's subject is empty, when owner is empty (an object with no
-// recorded owner belongs to nobody), and when owner differs from the
-// identity's subject. The subject is the account's immutable user id
-// (Identity.Subject), so owner must be recorded in that form.
+// the identity has no bound account (UserID 0: a certificate holder or a
+// service identity, whose Subject is a name that may be all digits), when
+// owner is empty (an object with no recorded owner belongs to nobody), and
+// when owner differs from UserSubject(identity.UserID). Ownership is
+// decided on the bound account, never on Subject, so a holder named "7"
+// does not own account 7's objects; owner must be recorded as
+// UserSubject(userID).
 func OwnObject(ctx context.Context, owner, op string) error {
 	identity := IdentityFromContext(ctx)
 	subject := ""
+	var userID uint64
 	if identity != nil {
 		subject = identity.Subject
+		userID = identity.UserID
 	}
-	if subject == "" || owner == "" || owner != subject {
+	if userID == 0 || owner == "" || owner != UserSubject(userID) {
 		return &ObjectOwnerDeniedError{Subject: subject, Owner: owner, Op: op}
 	}
 	return nil

@@ -8,7 +8,15 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
 
-func ownerCtx(subject string) context.Context {
+// ownerCtx is a resolved account's identity: Subject is the account's
+// decimal user id and UserID is bound.
+func ownerCtx(userID uint64) context.Context {
+	return auth.WithIdentity(context.Background(), &auth.Identity{Subject: auth.UserSubject(userID), UserID: userID})
+}
+
+// holderCtx is an identity with no bound account (a certificate holder or
+// service identity): its Subject is a name, which may be all digits.
+func holderCtx(subject string) context.Context {
 	return auth.WithIdentity(context.Background(), &auth.Identity{Subject: subject})
 }
 
@@ -33,30 +41,47 @@ func assertObjectOwnerDenied(t *testing.T, err error, subject, owner string) {
 }
 
 func TestOwnObject_OwnerAllowed(t *testing.T) {
-	if err := auth.OwnObject(ownerCtx("user-1"), "user-1", "read"); err != nil {
+	if err := auth.OwnObject(ownerCtx(1), "1", "read"); err != nil {
 		t.Fatalf("OwnObject by the owner = %v, want nil", err)
 	}
 }
 
 func TestOwnObject_OtherSubjectDenied(t *testing.T) {
-	err := auth.OwnObject(ownerCtx("user-2"), "user-1", "read")
-	assertObjectOwnerDenied(t, err, "user-2", "user-1")
+	err := auth.OwnObject(ownerCtx(2), "1", "read")
+	assertObjectOwnerDenied(t, err, "2", "1")
 }
 
 func TestOwnObject_AbsentOwnerDenied(t *testing.T) {
-	err := auth.OwnObject(ownerCtx("user-1"), "", "read")
-	assertObjectOwnerDenied(t, err, "user-1", "")
+	err := auth.OwnObject(ownerCtx(1), "", "read")
+	assertObjectOwnerDenied(t, err, "1", "")
 }
 
 func TestOwnObject_NoIdentityDenied(t *testing.T) {
-	err := auth.OwnObject(context.Background(), "user-1", "read")
-	assertObjectOwnerDenied(t, err, "", "user-1")
+	err := auth.OwnObject(context.Background(), "1", "read")
+	assertObjectOwnerDenied(t, err, "", "1")
 }
 
 func TestOwnObject_EmptySubjectDenied(t *testing.T) {
 	// An empty subject never matches, not even an empty owner.
-	assertObjectOwnerDenied(t, auth.OwnObject(ownerCtx(""), "user-1", "read"), "", "user-1")
-	assertObjectOwnerDenied(t, auth.OwnObject(ownerCtx(""), "", "read"), "", "")
+	assertObjectOwnerDenied(t, auth.OwnObject(holderCtx(""), "1", "read"), "", "1")
+	assertObjectOwnerDenied(t, auth.OwnObject(holderCtx(""), "", "read"), "", "")
+}
+
+func TestOwnObject_UnboundNumericSubjectDenied(t *testing.T) {
+	// A holder named "7" has no bound account (UserID 0); its name matching
+	// account 7's owner string must not make it the owner.
+	assertObjectOwnerDenied(t, auth.OwnObject(holderCtx("7"), "7", "read"), "7", "7")
+	// Account 7 itself still owns the object.
+	if err := auth.OwnObject(ownerCtx(7), "7", "read"); err != nil {
+		t.Fatalf("OwnObject by bound account 7 = %v, want nil", err)
+	}
+}
+
+func TestOwnObject_SubjectNotTheBoundAccountDenied(t *testing.T) {
+	// The owner is matched against the bound account, never the Subject: an
+	// identity bound to account 8 whose Subject reads "7" does not own 7's object.
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "7", UserID: 8})
+	assertObjectOwnerDenied(t, auth.OwnObject(ctx, "7", "read"), "7", "7")
 }
 
 func TestResourceOwnerFromContext_UnsetAndEmpty(t *testing.T) {
