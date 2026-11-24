@@ -703,6 +703,22 @@ Docs only, the row's closing lane.
   Review (codex)" job refusals (event pull_request_target is not on the
   runner hook allow-list) and the Codex round-5 limit.
 
+## rw1613wa (Codex round 1 at f530f586035b)
+
+- P2 (`pkg/service/vlog_barrier_store.go:283`), closed by slice 1,
+  `fix(vlog): list barrier log keys and read entry bodies on demand`:
+  `barrierKVReader.NewIterator` scanned, decrypted and copied every value in
+  range before any seek. It now lists keys only (`KVStore.List`, which the
+  barrier backend serves without decrypting) and returns a
+  `barrierKeyIterator` that reads a body with one `Get` per position whose
+  `Value` is asked for, cached until the position changes. restoreLogs and
+  DropDatabase no longer decrypt the bodies they seek past.
+- Slice 2, `test(vlog): prove the barrier log iterator reads bodies on
+  demand`: `TestBarrierKVReader_IteratorReadsBodiesOnDemand` and
+  `TestBarrierKVReader_IteratorFaults` (pkg/service/vlog_barrier_iter_test.go).
+- P1 (review coverage of the 68-file diff, no defect named): left to the
+  coordinator for the next Codex round.
+
 ## Out of scope
 
 The go-xkms provider and transparency log (the seam rows on the other side);
