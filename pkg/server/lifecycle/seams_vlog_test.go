@@ -370,3 +370,91 @@ func TestBuildServices_LogServiceSealsWithTheBarrierDatabase(t *testing.T) {
 		t.Fatalf("the system shard host holds no log record of acme's barrier database")
 	}
 }
+
+func TestBuildServices_SharedTenantLogsAreFencedInTheirLogGroup(t *testing.T) {
+	dbs := databasetest.NewManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = dbs.Close() })
+	stg := memory.NewStorage()
+	mvcc, err := engine.NewMVCCEngine(stg, engine.WithMVCCLogs(vlog.NewChain()))
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	host := backend.NewLocalBackend(mvcc)
+	t.Cleanup(func() { _ = host.Close() })
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:            host,
+		WatchHub:        hub,
+		DataDir:         t.TempDir(),
+		DatabaseManager: dbs,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	t.Cleanup(func() { _ = node.Stop(context.Background()) })
+	ctx := context.Background()
+	acme := tenant.WithTenantID(ctx, "acme")
+	fenceKey := service.DropFenceKey("acme", "ledger")
+	marker := func() string {
+		t.Helper()
+		v, err := node.KV.Get(ctx, fenceKey)
+		if err != nil {
+			return ""
+		}
+		return string(v)
+	}
+	incarnation := func() string {
+		t.Helper()
+		db, err := dbs.GetOwned("ledger", "acme")
+		if err != nil {
+			t.Fatalf("GetOwned acme/ledger: %v", err)
+		}
+		if db.Incarnation() == "" {
+			t.Fatal("acme/ledger has no incarnation")
+		}
+		return db.Incarnation()
+	}
+	create := func() {
+		t.Helper()
+		if _, err := node.Database.CreateForTenant(acme, database.DatabaseConfig{Name: "ledger", Backend: database.BackendMemory}); err != nil {
+			t.Fatalf("create acme/ledger: %v", err)
+		}
+	}
+	ref := service.LogRef{Database: "ledger", Log: "events"}
+	createLog := func() error {
+		_, err := node.Log.CreateLog(acme, &service.CreateLogRequest{LogRef: ref, Origin: "db.example.com/events", SigningKeyType: vlog.SignatureEd25519})
+		return err
+	}
+
+	create()
+	first := incarnation()
+	if err := createLog(); err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	if _, err := node.Log.Append(acme, &service.AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("entry")}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if got := marker(); got != first {
+		t.Fatalf("drop-fence marker in the log group = %q, want the live incarnation %q", got, first)
+	}
+
+	if err := node.Database.DropForTenant(acme, "ledger"); err != nil {
+		t.Fatalf("DropForTenant: %v", err)
+	}
+	if got := marker(); got == first {
+		t.Fatalf("drop-fence marker still holds the dropped incarnation %q", got)
+	}
+	if _, err := node.Log.Head(acme, &service.HeadRequest{LogRef: ref}); !errors.As(err, new(*vlog.LogNotFoundError)) {
+		t.Fatalf("Head after the drop = %v, want *vlog.LogNotFoundError", err)
+	}
+
+	create()
+	second := incarnation()
+	if got := marker(); got != second {
+		t.Fatalf("drop-fence marker after the recreate = %q, want the new incarnation %q", got, second)
+	}
+	if err := createLog(); err != nil {
+		t.Fatalf("CreateLog after the recreate: %v", err)
+	}
+}
