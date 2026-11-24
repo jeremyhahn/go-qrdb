@@ -192,21 +192,46 @@ type legacyCopy struct {
 // the policy verbs and RotateDue, through ensureMigrated), which returns the
 // migration's error and does nothing else until it finishes, and on the next
 // MigrateLegacy, ListMigrationConflicts or ResolveMigrationConflict.
+//
+// The switch waits for the credential operations already in flight, which
+// finish against the old store; operations admitted after it use st. A
+// ctx that ends during that wait returns ctx.Err() and leaves the old
+// store bound.
 func (s *CredentialService) BindStore(ctx context.Context, st Store) error {
 	if isTypedNilStore(st) {
 		return ErrNilBarrier
 	}
-	if err := s.store.bind(st); err != nil {
+	if err := s.publishStore(ctx, st, nil); err != nil {
 		return err
 	}
-	// A move an earlier BindStoreFrom left pending was into the store
-	// this binding replaces.
-	s.layoutMu.Lock()
-	s.layoutFrom = nil
-	s.layoutMu.Unlock()
 	if err := s.MigrateLegacy(ctx); err != nil {
 		s.logger.Error("credential migration from the node-local layout did not finish",
 			slog.String("error", err.Error()))
+	}
+	return nil
+}
+
+// publishStore binds st and records from as its pending move (nil: none;
+// a move an earlier BindStoreFrom left pending was into the store this
+// binding replaces) in one section that holds admitMu exclusive: the
+// operations admitted before it finish against the old store, and those
+// admitted after it see the new store together with its pending move. A
+// ctx that ends while it waits leaves the binding unchanged.
+func (s *CredentialService) publishStore(ctx context.Context, st, from Store) error {
+	if err := s.admitMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.admitMu.Unlock()
+	// No admitted operation holds layoutMu now, so this does not wait on
+	// storage I/O.
+	s.layoutMu.Lock()
+	defer s.layoutMu.Unlock()
+	if err := s.store.bind(st); err != nil {
+		return err
+	}
+	s.layoutFrom = from
+	if h := s.testHooks.bindPublished; h != nil {
+		h()
 	}
 	return nil
 }
@@ -229,6 +254,10 @@ func (s *CredentialService) BindStore(ctx context.Context, st Store) error {
 // migration lock honours ctx, and the migration's storage I/O is bounded by
 // the rotation attempt timeout when one is set.
 func (s *CredentialService) MigrateLegacy(ctx context.Context) error {
+	if err := s.admitMu.RLockContext(ctx); err != nil {
+		return err
+	}
+	defer s.admitMu.RUnlock()
 	if err := s.ensureLayoutMoved(ctx); err != nil {
 		return err
 	}
@@ -264,7 +293,25 @@ func (s *CredentialService) migrationContext(ctx context.Context) (context.Conte
 // honours ctx (a cancelled caller returns ctx's error, as the OperationError
 // cause), and the migration I/O run under it is bounded by the rotation
 // attempt timeout when one is set.
-func (s *CredentialService) ensureMigrated(ctx context.Context) error {
+func (s *CredentialService) ensureMigrated(ctx context.Context) (release func(), err error) {
+	// Admission first: a store (re)binding waits for the operations
+	// admitted before it, and those admitted after it see its pending move.
+	if err := s.admitMu.RLockContext(ctx); err != nil {
+		return nil, &OperationError{Op: "migrate", Cause: err}
+	}
+	if h := s.testHooks.afterAdmit; h != nil {
+		h()
+	}
+	if err := s.ensureMigratedAdmitted(ctx); err != nil {
+		s.admitMu.RUnlock()
+		return nil, err
+	}
+	return s.admitMu.RUnlock, nil
+}
+
+// ensureMigratedAdmitted finishes a pending store move and the migration
+// for an operation that holds admitMu shared.
+func (s *CredentialService) ensureMigratedAdmitted(ctx context.Context) error {
 	if err := s.ensureLayoutMoved(ctx); err != nil {
 		return err
 	}
@@ -812,6 +859,10 @@ func legacyMeta(raw []byte) (*credentialMeta, bool) {
 // node, sorted by name. It first finishes a migration that has not run or
 // did not finish.
 func (s *CredentialService) ListMigrationConflicts(ctx context.Context) ([]CredentialMigrationConflictError, error) {
+	if err := s.admitMu.RLockContext(ctx); err != nil {
+		return nil, err
+	}
+	defer s.admitMu.RUnlock()
 	if err := s.ensureLayoutMoved(ctx); err != nil {
 		return nil, err
 	}
@@ -854,6 +905,10 @@ func (s *CredentialService) ResolveMigrationConflict(ctx context.Context, name s
 	// Resolution reads the destination's records: a move still pending
 	// would leave the source's import marker unseen and re-import the
 	// legacy copy it settled.
+	if err := s.admitMu.RLockContext(ctx); err != nil {
+		return err
+	}
+	defer s.admitMu.RUnlock()
 	if err := s.ensureLayoutMoved(ctx); err != nil {
 		return err
 	}

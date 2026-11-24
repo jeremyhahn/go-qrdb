@@ -86,6 +86,12 @@ type CredentialService struct {
 	// legacy is the node-local store holding this node's records under the
 	// old credentials/ layout, nil when there is none (WithLegacyStore).
 	legacy Store
+	// admitMu admits credential operations against store (re)binding.
+	// Every public credential operation holds it shared from admission to
+	// return; a store (re)binding holds it exclusive while it publishes
+	// the store and records the pending move, so no operation runs
+	// against a store whose move from the earlier one is not yet recorded.
+	admitMu ctxRWMutex
 	// migrateMu serializes the migration and the resolve verbs, and guards
 	// migrated and conflicts.
 	migrateMu ctxMutex
@@ -120,6 +126,12 @@ type serviceTestHooks struct {
 	// value is read and before the guarded metadata write, on the first
 	// attempt only.
 	beforePolicyWrite func()
+	// afterAdmit runs right after a credential operation is admitted
+	// (admitMu held shared).
+	afterAdmit func()
+	// bindPublished runs in BindStoreFrom after the new store and its
+	// pending move are published and before admitMu is released.
+	bindPublished func()
 }
 
 // waiterDelivery is what submitManual hands a blocked retriever: its own
@@ -320,9 +332,11 @@ func (s *CredentialService) emitAuditOutcome(ctx context.Context, action, name, 
 // For the manual strategy, the value is stored in-memory. For the barrier
 // strategy, the value is encrypted and stored via the StorageBarrier.
 func (s *CredentialService) StoreCredential(ctx context.Context, name string, value []byte) error {
-	if err := s.ensureMigrated(ctx); err != nil {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
 		return err
 	}
+	defer release()
 	if err := validateName(name); err != nil {
 		return err
 	}
@@ -359,9 +373,17 @@ func (s *CredentialService) StoreCredential(ctx context.Context, name string, va
 // transport (see docs/credentials/architecture.md, "Protected-memory
 // boundary").
 func (s *CredentialService) RetrieveCredentialBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
-	if err := s.ensureMigrated(ctx); err != nil {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
 		return nil, err
 	}
+	defer release()
+	return s.retrieveCredentialBuffer(ctx, name)
+}
+
+// retrieveCredentialBuffer is RetrieveCredentialBuffer for a caller that
+// is already admitted.
+func (s *CredentialService) retrieveCredentialBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
@@ -403,9 +425,11 @@ func (s *CredentialService) SubmitCredential(ctx context.Context, name string, v
 // before removal. For the barrier strategy, the key is deleted from
 // the StorageBarrier.
 func (s *CredentialService) DeleteCredential(ctx context.Context, name string) error {
-	if err := s.ensureMigrated(ctx); err != nil {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
 		return err
 	}
+	defer release()
 	if err := validateName(name); err != nil {
 		return err
 	}

@@ -222,9 +222,11 @@ type credentialMetaEntry struct {
 // enumerate (current strategies all can; reserved for future HSM-only
 // strategies).
 func (s *CredentialService) ListCredentials(ctx context.Context) ([]string, error) {
-	if err := s.ensureMigrated(ctx); err != nil {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
 		return nil, err
 	}
+	defer release()
 	switch s.strategy {
 	case StrategyManual:
 		s.mu.RLock()
@@ -250,9 +252,17 @@ func (s *CredentialService) ListCredentials(ctx context.Context) ([]string, erro
 // If the credential does not exist yet RotateCredential behaves
 // identically to StoreCredential and returns NewVersion == 1.
 func (s *CredentialService) RotateCredential(ctx context.Context, name string, opts RotateOptions) (*RotateResult, error) {
-	if err := s.ensureMigrated(ctx); err != nil {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
 		return nil, err
 	}
+	defer release()
+	return s.rotateCredential(ctx, name, opts)
+}
+
+// rotateCredential is RotateCredential for a caller that is already
+// admitted, such as RotateDue.
+func (s *CredentialService) rotateCredential(ctx context.Context, name string, opts RotateOptions) (*RotateResult, error) {
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
@@ -295,15 +305,17 @@ func (s *CredentialService) RotateCredential(ctx context.Context, name string, o
 // period has elapsed (GC may or may not have reaped the storage yet —
 // either way the caller is denied).
 func (s *CredentialService) RetrieveCredentialVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
-	if err := s.ensureMigrated(ctx); err != nil {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
 		return nil, err
 	}
+	defer release()
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
 
 	if version == 0 {
-		return s.RetrieveCredentialBuffer(ctx, name)
+		return s.retrieveCredentialBuffer(ctx, name)
 	}
 
 	switch s.strategy {
@@ -322,9 +334,11 @@ func (s *CredentialService) RetrieveCredentialVersionBuffer(ctx context.Context,
 //
 // Returns ErrCredentialNotFound when name does not exist.
 func (s *CredentialService) ListCredentialVersions(ctx context.Context, name string) ([]CredentialVersion, error) {
-	if err := s.ensureMigrated(ctx); err != nil {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
 		return nil, err
 	}
+	defer release()
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
@@ -347,9 +361,17 @@ func (s *CredentialService) ListCredentialVersions(ctx context.Context, name str
 // and invoke this per name on whatever cadence matches their grace
 // granularity (typically once per minute).
 func (s *CredentialService) GCExpiredVersions(ctx context.Context, name string) (int, error) {
-	if err := s.ensureMigrated(ctx); err != nil {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
 		return 0, err
 	}
+	defer release()
+	return s.gcExpiredVersions(ctx, name)
+}
+
+// gcExpiredVersions is GCExpiredVersions for a caller that is already
+// admitted, such as RotateDue's cleanup.
+func (s *CredentialService) gcExpiredVersions(ctx context.Context, name string) (int, error) {
 	if err := validateName(name); err != nil {
 		return 0, err
 	}

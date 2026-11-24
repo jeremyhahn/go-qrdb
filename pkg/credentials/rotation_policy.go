@@ -139,9 +139,11 @@ func WithRotationValueSource(src RotationValueSource) Option {
 // *InvalidRotationPolicyError, and an unknown credential with
 // ErrCredentialNotFound.
 func (s *CredentialService) SetRotationPolicy(ctx context.Context, name string, policy RotationPolicy) error {
-	if err := s.ensureMigrated(ctx); err != nil {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
 		return err
 	}
+	defer release()
 	if err := validateName(name); err != nil {
 		return err
 	}
@@ -257,9 +259,11 @@ func (s *CredentialService) NextRotation(ctx context.Context, name string) (time
 // enabled policy with no schedule, or a disabled one with a schedule. An
 // unknown credential is ErrCredentialNotFound.
 func (s *CredentialService) RotationStatus(ctx context.Context, name string) (RotationPolicy, time.Time, error) {
-	if err := s.ensureMigrated(ctx); err != nil {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
 		return RotationPolicy{}, time.Time{}, err
 	}
+	defer release()
 	meta, err := s.rotationMeta(ctx, name)
 	if err != nil {
 		return RotationPolicy{}, time.Time{}, err
@@ -314,9 +318,11 @@ func (s *CredentialService) rotationMeta(ctx context.Context, name string) (*cre
 func (s *CredentialService) RotateDue(ctx context.Context, now time.Time) (int, error) {
 	// A pass rotates nothing over a store this node's own records have
 	// not reached.
-	if err := s.ensureMigrated(ctx); err != nil {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
 		return 0, err
 	}
+	defer release()
 	if s.strategy != StrategyBarrier {
 		return 0, nil
 	}
@@ -434,7 +440,7 @@ func (s *CredentialService) cleanupRotation(ctx context.Context, name, id string
 	if err := s.reapSpentStaged(ctx, name, id); err != nil {
 		return err
 	}
-	if _, err := s.GCExpiredVersions(ctx, name); err != nil {
+	if _, err := s.gcExpiredVersions(ctx, name); err != nil {
 		return err
 	}
 	if err := s.pruneBarrierHistory(ctx, name, id); err != nil {
@@ -562,7 +568,7 @@ func (s *CredentialService) rotateClaimed(ctx context.Context, name string, clai
 	if staged != nil {
 		defer secure.Wipe(staged)
 		sched.resumed, sched.staged = true, version
-		_, err := s.RotateCredential(ctx, name, RotateOptions{NewValue: staged, retainPrevious: true, schedule: sched})
+		_, err := s.rotateCredential(ctx, name, RotateOptions{NewValue: staged, retainPrevious: true, schedule: sched})
 		return sched.next, err
 	}
 	value, err := s.rotationSource(ctx, name, claim.Op)
@@ -580,7 +586,7 @@ func (s *CredentialService) rotateClaimed(ctx context.Context, name string, clai
 	}
 	defer value.Destroy()
 	err = value.WithBytes(func(b []byte) error {
-		_, err := s.RotateCredential(ctx, name, RotateOptions{NewValue: b, retainPrevious: true, schedule: sched})
+		_, err := s.rotateCredential(ctx, name, RotateOptions{NewValue: b, retainPrevious: true, schedule: sched})
 		return err
 	})
 	return sched.next, err

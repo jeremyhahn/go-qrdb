@@ -69,17 +69,21 @@ const LayoutSourceKey = LayoutSourcePrefix + "id"
 // the node-local migration already ran. A record st already holds is
 // kept: st is the record every node reads. Each moved record is deleted
 // from from, so a later binding does not bring back one deleted since.
+//
+// st and its pending move are published together, once the credential
+// operations already in flight have finished against the old store:
+// every operation admitted after the switch finds the move pending and
+// finishes it first, so none reads or writes st before from's records are
+// in it. A ctx that ends during that wait returns ctx.Err() and leaves the
+// old store bound with no move pending.
 func (s *CredentialService) BindStoreFrom(ctx context.Context, st, from Store) error {
 	if isTypedNilStore(st) || isTypedNilStore(from) {
 		return ErrNilBarrier
 	}
-	if err := s.store.bind(st); err != nil {
+	if err := s.publishStore(ctx, st, from); err != nil {
 		return err
 	}
-	s.layoutMu.Lock()
-	s.layoutFrom = from
-	s.layoutMu.Unlock()
-	if err := s.ensureLayoutMoved(ctx); err != nil {
+	if err := s.ensureLayoutMovedAdmitted(ctx); err != nil {
 		// No migration runs while the move is pending: it would read a
 		// destination that lacks the source's records (an import marker
 		// among them) and could re-import a legacy copy they settled. The
@@ -93,6 +97,16 @@ func (s *CredentialService) BindStoreFrom(ctx context.Context, st, from Store) e
 			slog.String("error", err.Error()))
 	}
 	return nil
+}
+
+// ensureLayoutMovedAdmitted runs ensureLayoutMoved holding admitMu shared,
+// so a later (re)binding cannot replace the store under the move.
+func (s *CredentialService) ensureLayoutMovedAdmitted(ctx context.Context) error {
+	if err := s.admitMu.RLockContext(ctx); err != nil {
+		return &OperationError{Op: "move credential store", Cause: err}
+	}
+	defer s.admitMu.RUnlock()
+	return s.ensureLayoutMoved(ctx)
 }
 
 // ensureLayoutMoved finishes a move BindStoreFrom started, once.
