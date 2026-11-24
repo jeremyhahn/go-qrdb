@@ -112,6 +112,31 @@ func testUsersPendingTTLOverProtocol(t *testing.T, node *multiProtoNode, proto m
 		return u
 	}
 
+	// --- the server advertises the pending-user-ttl bit ---------------------
+	// Owner ruling 1243 (Q5 (b)): the SDK refuses a TTL-bearing create to a
+	// server without the bit, so every protocol must report it before the
+	// TTL creates below can succeed.
+	out, err = runCLIProto(t, node, proto, "--output", "json", "admin", "capabilities")
+	if err != nil {
+		t.Fatalf("[%s] admin capabilities: %v\noutput: %s", proto.name, err, out)
+	}
+	var caps struct {
+		PendingUserTTL bool `json:"pendingUserTTL"`
+	}
+	if jerr := json.Unmarshal([]byte(out), &caps); jerr != nil {
+		t.Fatalf("[%s] decode admin capabilities JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if !caps.PendingUserTTL {
+		t.Fatalf("[%s] admin capabilities pendingUserTTL = false, want true\noutput: %s", proto.name, out)
+	}
+	tableOut, err := runCLIProto(t, node, proto, "admin", "capabilities")
+	if err != nil {
+		t.Fatalf("[%s] admin capabilities (table): %v\noutput: %s", proto.name, err, tableOut)
+	}
+	if !strings.Contains(tableOut, "pendingUserTTL") {
+		t.Fatalf("[%s] admin capabilities (table): missing pendingUserTTL in output: %s", proto.name, tableOut)
+	}
+
 	// --- pending with a TTL: refused until activated ------------------------
 	held := createPending(base, "1h")
 	heldID := strconv.FormatUint(held.ID, 10)
