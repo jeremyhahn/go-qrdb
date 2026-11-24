@@ -285,6 +285,7 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 206 = 207 - db.UpdateConnection, remote mode's update-connection verb, removed with remote mode (OD-9 A, #923).
 	// 207 = 206 + role.ListPermissionCatalog (docs/18 V12).
 	// 206 = 203 + cert.DelegationPolicyPut, cert.DelegationPolicyList and
 	// cert.DelegationPolicyDelete, the tenant's standing delegation policy
@@ -368,7 +369,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 207
+	const wantCount = 206
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
