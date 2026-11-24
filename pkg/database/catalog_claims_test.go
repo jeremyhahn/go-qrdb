@@ -2,12 +2,150 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
+
+// faultStore is a real memory store that fails one method for the keys
+// (or, for Scan, the prefixes) under prefix.
+type faultStore struct {
+	*kvstore.MemoryKVStore
+	method string
+	prefix string
+	err    error
+}
+
+func newFaultStore() *faultStore { return &faultStore{MemoryKVStore: kvstore.NewMemoryKVStore()} }
+
+func (s *faultStore) failOn(method, prefix string, err error) {
+	s.method, s.prefix, s.err = method, prefix, err
+}
+
+func (s *faultStore) fault(method, key string) error {
+	if s.err != nil && s.method == method && strings.HasPrefix(key, s.prefix) {
+		return s.err
+	}
+	return nil
+}
+
+func (s *faultStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := s.fault("Get", key); err != nil {
+		return nil, err
+	}
+	return s.MemoryKVStore.Get(ctx, key)
+}
+
+func (s *faultStore) Put(ctx context.Context, key string, value []byte) error {
+	if err := s.fault("Put", key); err != nil {
+		return err
+	}
+	return s.MemoryKVStore.Put(ctx, key, value)
+}
+
+func (s *faultStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if err := s.fault("PutIfAbsent", key); err != nil {
+		return false, err
+	}
+	return s.MemoryKVStore.PutIfAbsent(ctx, key, value)
+}
+
+func (s *faultStore) Delete(ctx context.Context, key string) error {
+	if err := s.fault("Delete", key); err != nil {
+		return err
+	}
+	return s.MemoryKVStore.Delete(ctx, key)
+}
+
+func (s *faultStore) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if err := s.fault("CompareAndDelete", key); err != nil {
+		return false, err
+	}
+	return s.MemoryKVStore.CompareAndDelete(ctx, key, expected)
+}
+
+func (s *faultStore) Exists(ctx context.Context, key string) (bool, error) {
+	if err := s.fault("Exists", key); err != nil {
+		return false, err
+	}
+	return s.MemoryKVStore.Exists(ctx, key)
+}
+
+func (s *faultStore) Scan(ctx context.Context, prefix string, fn func(string, []byte) error) error {
+	if err := s.fault("Scan", prefix); err != nil {
+		return err
+	}
+	return s.MemoryKVStore.Scan(ctx, prefix, fn)
+}
+
+// faultHomes is CatalogHomes over named home stores whose InHome, Resolve
+// and TenantIDs can fail; extra ids are listed without a home.
+type faultHomes struct {
+	homes     map[string]kvstore.KVStore
+	inHomeErr map[string]error
+	extra     []string
+	idsErr    error
+}
+
+func (h *faultHomes) Resolve(_ context.Context, tenantID string) (kvstore.KVStore, error) {
+	if s, ok := h.homes[tenantID]; ok {
+		return s, nil
+	}
+	return nil, errors.New("no home for " + tenantID)
+}
+
+func (h *faultHomes) InHome(_ context.Context, tenantID string) (bool, error) {
+	if err := h.inHomeErr[tenantID]; err != nil {
+		return false, err
+	}
+	_, ok := h.homes[tenantID]
+	return ok, nil
+}
+
+func (h *faultHomes) TenantIDs(context.Context) ([]string, error) {
+	if h.idsErr != nil {
+		return nil, h.idsErr
+	}
+	ids := append([]string(nil), h.extra...)
+	for id := range h.homes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+// newFaultCatalog is a KVCatalog over a fault system store with one
+// isolated tenant "iso" whose home is a fault store.
+func newFaultCatalog(t *testing.T) (*KVCatalog, *faultStore, *faultStore, *faultHomes) {
+	t.Helper()
+	system, home := newFaultStore(), newFaultStore()
+	homes := &faultHomes{homes: map[string]kvstore.KVStore{"iso": home}}
+	cat, err := NewKVCatalog(system, homes)
+	if err != nil {
+		t.Fatalf("NewKVCatalog: %v", err)
+	}
+	return cat, system, home, homes
+}
+
+// putRecord writes meta's record straight into store, as a record the
+// catalog did not create (no claim, no index marker).
+func putRecord(t *testing.T, store kvstore.KVStore, meta DatabaseMeta) {
+	t.Helper()
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := store.Put(context.Background(), CatalogKey(meta.TenantID, meta.Name), data); err != nil {
+		t.Fatalf("Put record: %v", err)
+	}
+}
 
 // recordFailingStore is a home store whose record write fails while fail
 // is set: the root claim is written, the record is not.
@@ -94,6 +232,183 @@ func TestKVCatalog_ListAllReapsAClaimWithoutARecord(t *testing.T) {
 	}
 	if !claimExists(t, system, "iso", "i1", "app") {
 		t.Fatal("ListAll reaped the claim a live record holds")
+	}
+}
+
+// TestKVCatalog_ClaimStoreFailures drives every store failure of the claim
+// paths (create, release, reap, index, list, delete) through the public
+// catalog API: each fails with the typed error naming the failed write or
+// read, never with a partial success.
+func TestKVCatalog_ClaimStoreFailures(t *testing.T) {
+	boom := errors.New("store down")
+	app := DatabaseMeta{TenantID: "iso", Name: "app", Incarnation: "i1", Backend: BackendMemory}
+	isWrite := func(err error) bool { var e *CatalogWriteError; return errors.As(err, &e) }
+	isRead := func(err error) bool { var e *CatalogReadError; return errors.As(err, &e) }
+	isStore := func(err error) bool { var e *CatalogStoreError; return errors.As(err, &e) }
+	isBoom := func(err error) bool { return errors.Is(err, boom) }
+	isAny := func(err error) bool { return err != nil }
+	create := func(c *KVCatalog) error { return c.Create(context.Background(), app) }
+	release := func(c *KVCatalog) error { return c.ReleaseCreateClaim(context.Background(), app) }
+	listAll := func(c *KVCatalog) error { _, err := c.ListAll(context.Background()); return err }
+	listRoots := func(c *KVCatalog) error { _, err := c.ListRoots(context.Background()); return err }
+	drop := func(c *KVCatalog) error { return c.Delete(context.Background(), "iso", "app", "i1", "") }
+	update := func(c *KVCatalog) error {
+		return c.Update(context.Background(), "iso", "app", "i1", func(*DatabaseMeta) error { return nil })
+	}
+	claimPrefix := RootClaimKeyPrefix + "iso/"
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, c *KVCatalog, system, home *faultStore, homes *faultHomes)
+		op    func(*KVCatalog) error
+		want  func(error) bool
+	}{
+		{"release: claim delete fails", func(_ *testing.T, _ *KVCatalog, system, _ *faultStore, _ *faultHomes) {
+			system.failOn("Delete", claimPrefix, boom)
+		}, release, isWrite},
+		{"release: home lookup fails", func(_ *testing.T, _ *KVCatalog, _, _ *faultStore, homes *faultHomes) {
+			homes.inHomeErr = map[string]error{"iso": boom}
+		}, release, isStore},
+		{"release: record read fails", func(_ *testing.T, _ *KVCatalog, _, home *faultStore, _ *faultHomes) {
+			home.failOn("Get", CatalogKey("iso", "app"), boom)
+		}, release, isBoom},
+		{"release: record does not decode", func(t *testing.T, _ *KVCatalog, _, home *faultStore, _ *faultHomes) {
+			if err := home.Put(context.Background(), CatalogKey("iso", "app"), []byte("{")); err != nil {
+				t.Fatal(err)
+			}
+		}, release, isAny},
+		{"create: index marker read fails", func(_ *testing.T, _ *KVCatalog, system, _ *faultStore, _ *faultHomes) {
+			system.failOn("Exists", rootClaimIndexedKey("iso"), boom)
+		}, create, isRead},
+		{"create: existing records scan fails", func(_ *testing.T, _ *KVCatalog, _, home *faultStore, _ *faultHomes) {
+			home.failOn("Scan", CatalogKeyPrefix, boom)
+		}, create, isRead},
+		{"create: claim put fails", func(_ *testing.T, _ *KVCatalog, system, _ *faultStore, _ *faultHomes) {
+			system.failOn("Put", claimPrefix, boom)
+		}, create, isWrite},
+		{"create: record and claim release both fail", func(_ *testing.T, _ *KVCatalog, system, home *faultStore, _ *faultHomes) {
+			home.failOn("PutIfAbsent", CatalogKey("iso", "app"), boom)
+			system.failOn("Delete", claimPrefix, errors.New("release down"))
+		}, create, func(err error) bool { return isBoom(err) && strings.Contains(err.Error(), "release down") }},
+		{"create: duplicate and claim release fails", func(t *testing.T, c *KVCatalog, system, _ *faultStore, _ *faultHomes) {
+			if err := c.Create(context.Background(), app); err != nil {
+				t.Fatal(err)
+			}
+			system.failOn("Delete", claimPrefix, boom)
+		}, create, isWrite},
+		{"list: claim does not decode", func(t *testing.T, _ *KVCatalog, system, _ *faultStore, _ *faultHomes) {
+			if err := system.Put(context.Background(), rootClaimKey("iso", "g1", "ghost"), []byte("{")); err != nil {
+				t.Fatal(err)
+			}
+		}, listAll, func(err error) bool { return isWrite(err) && isRead(err) }},
+		{"list: claim scan fails", func(_ *testing.T, _ *KVCatalog, system, _ *faultStore, _ *faultHomes) {
+			system.failOn("Scan", claimPrefix, boom)
+		}, listAll, func(err error) bool { return isWrite(err) && isBoom(err) }},
+		{"list: stale claim delete fails", func(t *testing.T, _ *KVCatalog, system, _ *faultStore, _ *faultHomes) {
+			putClaim(t, system, DatabaseMeta{TenantID: "iso", Name: "ghost", Incarnation: "g1", Backend: BackendMemory})
+			system.failOn("CompareAndDelete", claimPrefix, boom)
+		}, listAll, isWrite},
+		{"list: index marker read fails", func(_ *testing.T, _ *KVCatalog, system, _ *faultStore, _ *faultHomes) {
+			system.failOn("Exists", rootClaimIndexedKey("iso"), boom)
+		}, listAll, isRead},
+		{"list: indexing claim put fails", func(t *testing.T, _ *KVCatalog, system, home *faultStore, _ *faultHomes) {
+			putRecord(t, home, app)
+			system.failOn("PutIfAbsent", claimPrefix, boom)
+		}, listAll, isWrite},
+		{"list: index marker write fails", func(_ *testing.T, _ *KVCatalog, system, _ *faultStore, _ *faultHomes) {
+			system.failOn("Put", rootClaimIndexedKey("iso"), boom)
+		}, listAll, isWrite},
+		{"list: home scan fails", func(_ *testing.T, _ *KVCatalog, _, home *faultStore, _ *faultHomes) {
+			home.failOn("Scan", CatalogKeyPrefix, boom)
+		}, listAll, isRead},
+		{"list: system records scan fails", func(_ *testing.T, _ *KVCatalog, system, _ *faultStore, _ *faultHomes) {
+			system.failOn("Scan", CatalogKeyPrefix, boom)
+		}, listAll, isRead},
+		{"roots: system records scan fails", func(_ *testing.T, _ *KVCatalog, system, _ *faultStore, _ *faultHomes) {
+			system.failOn("Scan", CatalogKeyPrefix, boom)
+		}, listRoots, isRead},
+		{"list: tenant ids fail", func(_ *testing.T, _ *KVCatalog, _, _ *faultStore, homes *faultHomes) {
+			homes.idsErr = boom
+		}, listAll, isStore},
+		{"list: tenant home lookup fails", func(_ *testing.T, _ *KVCatalog, _, _ *faultStore, homes *faultHomes) {
+			homes.inHomeErr = map[string]error{"iso": boom}
+		}, listAll, isStore},
+		{"roots: sealed tenant marker read fails", func(_ *testing.T, _ *KVCatalog, system, _ *faultStore, homes *faultHomes) {
+			homes.extra = []string{"sealed"}
+			homes.inHomeErr = map[string]error{"sealed": tenant.ErrTenantSealed}
+			system.failOn("Exists", rootClaimIndexedKey("sealed"), boom)
+		}, listRoots, isRead},
+		{"roots: sealed tenant claim scan fails", func(t *testing.T, _ *KVCatalog, system, _ *faultStore, homes *faultHomes) {
+			homes.extra = []string{"sealed"}
+			homes.inHomeErr = map[string]error{"sealed": tenant.ErrTenantSealed}
+			if err := system.Put(context.Background(), rootClaimIndexedKey("sealed"), []byte("1")); err != nil {
+				t.Fatal(err)
+			}
+			system.failOn("Scan", RootClaimKeyPrefix+"sealed/", boom)
+		}, listRoots, isRead},
+		{"update: record does not decode", func(t *testing.T, _ *KVCatalog, _, home *faultStore, _ *faultHomes) {
+			if err := home.Put(context.Background(), CatalogKey("iso", "app"), []byte("{")); err != nil {
+				t.Fatal(err)
+			}
+		}, update, isRead},
+		{"delete: record does not decode", func(t *testing.T, _ *KVCatalog, _, home *faultStore, _ *faultHomes) {
+			if err := home.Put(context.Background(), CatalogKey("iso", "app"), []byte("{")); err != nil {
+				t.Fatal(err)
+			}
+		}, drop, isRead},
+		{"delete: record delete fails", func(t *testing.T, c *KVCatalog, _, home *faultStore, _ *faultHomes) {
+			if err := c.Create(context.Background(), app); err != nil {
+				t.Fatal(err)
+			}
+			home.failOn("CompareAndDelete", CatalogKey("iso", "app"), boom)
+		}, drop, isWrite},
+		{"delete: claim release fails", func(t *testing.T, c *KVCatalog, system, _ *faultStore, _ *faultHomes) {
+			if err := c.Create(context.Background(), app); err != nil {
+				t.Fatal(err)
+			}
+			system.failOn("Delete", claimPrefix, boom)
+		}, drop, isWrite},
+		{"delete: reap scan fails", func(t *testing.T, c *KVCatalog, _, home *faultStore, _ *faultHomes) {
+			if err := c.Create(context.Background(), app); err != nil {
+				t.Fatal(err)
+			}
+			home.failOn("Scan", CatalogKeyPrefix, boom)
+		}, drop, isRead},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cat, system, home, homes := newFaultCatalog(t)
+			tt.setup(t, cat, system, home, homes)
+			if err := tt.op(cat); !tt.want(err) {
+				t.Fatalf("err = %v (%T), not the expected failure", err, err)
+			}
+		})
+	}
+}
+
+// TestKVCatalog_ListAllSkipsAndNamesTenants pins listAll's tenant walk: the
+// system tenant and a shared tenant are not read from a home, and every
+// sealed tenant is named in the *TenantsSkippedError.
+func TestKVCatalog_ListAllSkipsAndNamesTenants(t *testing.T) {
+	ctx := context.Background()
+	cat, _, _, homes := newFaultCatalog(t)
+	homes.extra = []string{tenantid.System, "shared", "s1", "s2"}
+	homes.inHomeErr = map[string]error{"s1": tenant.ErrTenantSealed, "s2": tenant.ErrTenantSealed}
+	if err := cat.Create(ctx, DatabaseMeta{TenantID: "iso", Name: "app", Incarnation: "i1", Backend: BackendMemory}); err != nil {
+		t.Fatalf("Create app: %v", err)
+	}
+	metas, err := cat.ListAll(ctx)
+	var skipped *TenantsSkippedError
+	if !errors.As(err, &skipped) || len(skipped.Tenants) != 2 {
+		t.Fatalf("ListAll err = %v, want a *TenantsSkippedError naming s1 and s2", err)
+	}
+	if got, want := err.Error(), "database catalog: listing skipped sealed tenants: s1, s2"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatal("the skipped-tenants error does not match tenant.ErrTenantSealed")
+	}
+	if len(metas) != 1 || metas[0].Name != "app" {
+		t.Fatalf("ListAll metas = %v, want app", metas)
 	}
 }
 
