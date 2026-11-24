@@ -67,6 +67,7 @@ var expectedMethods = []string{
 	"mvcc.Compact",
 	"mvcc.CurrentRevision",
 	"mvcc.RestoreToRevision",
+	"mvcc.MovePrefix",
 
 	// Transaction (1)
 	"tx.Transaction",
@@ -461,7 +462,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 	expectedCounts := map[string]int{
 		"kv":       8,
 		"admin":    24,
-		"mvcc":     7,
+		"mvcc":     8,
 		"tx":       1,
 		"batch":    5,
 		"lease":    5,

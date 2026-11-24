@@ -81,6 +81,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_mvcc_compact":                       permission.MVCCCompact,
 	"qrdb_mvcc_current_revision":              permission.MVCCCurrentRevision,
 	"qrdb_mvcc_restore_to_revision":           permission.MVCCRestore,
+	"qrdb_mvcc_move_prefix":                   permission.MVCCMovePrefix,
 	"qrdb_tx_execute":                         permission.TransactionExecute,
 	"qrdb_batch_execute":                      permission.BatchExecute,
 	"qrdb_batch_import_begin":                 permission.BatchExecute,

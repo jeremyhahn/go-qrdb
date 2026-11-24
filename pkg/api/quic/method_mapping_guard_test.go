@@ -79,6 +79,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"mvcc.Compact":                       permission.MVCCCompact,
 	"mvcc.CurrentRevision":               permission.MVCCCurrentRevision,
 	"mvcc.RestoreToRevision":             permission.MVCCRestore,
+	"mvcc.MovePrefix":                    permission.MVCCMovePrefix,
 	"tx.Transaction":                     permission.TransactionExecute,
 	"batch.Batch":                        permission.BatchExecute,
 	"batch.ImportBegin":                  permission.BatchExecute,

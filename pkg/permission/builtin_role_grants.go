@@ -255,6 +255,7 @@ func registerAdminGrants() {
 		// tenant's data. It stays ScopeSelf, so a tenant Admin restores only
 		// their own tenant's keys.
 		MVCCRestore,
+		MVCCMovePrefix,
 		// Database lifecycle in the Admin's own tenant (ScopeSelf;
 		// databases:barrier_status is ScopeSelfStrict). An Admin answers for
 		// its tenant's data, and under the grant rule (go-qrdb#1278) a role
@@ -404,6 +405,7 @@ func registerOperatorGrants() {
 		// auditor that can rewrite live keys from history is no longer an
 		// independent observer (FIPS 140-3 AS10.10).
 		MVCCRestore,
+		MVCCMovePrefix,
 		// Transaction
 		TransactionExecute,
 		// Batch

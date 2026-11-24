@@ -512,6 +512,11 @@ var restoreRules = []rule{
 	as(&service.CompactRevisionFutureError{}, InvalidArgument),
 	as(&service.RestoreNilRequestError{}, InvalidArgument),
 	as(&service.RestoreRevisionInvalidError{}, InvalidArgument),
+	// A MovePrefix that is not a well-formed move (empty or overlapping
+	// prefixes, a negative count, an op or compare outside both), and one
+	// served by a wrapper whose inner servicer cannot move a prefix.
+	as(&service.PrefixMoveInvalidError{}, InvalidArgument),
+	as(&service.PrefixMoveUnsupportedError{}, Unimplemented),
 	as(&service.RestoreRevisionFutureError{}, InvalidArgument),
 	as(&service.RestoreScopeEmptyError{}, InvalidArgument),
 	as(&service.RestoreScopeAmbiguousError{}, InvalidArgument),

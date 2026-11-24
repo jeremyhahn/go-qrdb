@@ -64,6 +64,11 @@ func mvccTools(mvccSvc service.MVCCKVServicer) []serverTool {
 			Perm:    permission.MVCCRestore,
 			Handler: handleMVCCRestoreToRevision(mvccSvc),
 		},
+		{
+			Tool:    toolMVCCMovePrefix(),
+			Perm:    permission.MVCCMovePrefix,
+			Handler: handleMVCCMovePrefix(mvccSvc),
+		},
 	}
 }
 
@@ -624,5 +629,133 @@ func handleMVCCRestoreToRevision(mvccSvc service.MVCCKVServicer) mcpserver.ToolH
 		}
 
 		return marshalToolResult("qrdb_mvcc_restore_to_revision", restoreResultToToolResponse(result))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Move prefix
+// ---------------------------------------------------------------------------
+
+// mvccMoveOpJSON is one op of a qrdb_mvcc_move_prefix call. Key, Value and
+// RangeEnd are []byte, base64 (RFC 4648) on the wire, so a binary key or page
+// value round-trips byte-identical; Type takes qrdb_tx_execute's op names.
+type mvccMoveOpJSON struct {
+	Type     string `json:"type"`
+	Key      []byte `json:"key"`
+	Value    []byte `json:"value,omitempty"`
+	RangeEnd []byte `json:"range_end,omitempty"`
+	LeaseID  int64  `json:"lease_id,omitempty"`
+}
+
+// mvccMoveCompareJSON is one compare of a qrdb_mvcc_move_prefix read set,
+// Key and Value base64; Target and Result take qrdb_tx_execute's names.
+type mvccMoveCompareJSON struct {
+	Key            []byte `json:"key"`
+	Target         string `json:"target"`
+	Result         string `json:"result"`
+	Value          []byte `json:"value,omitempty"`
+	Version        int64  `json:"version,omitempty"`
+	CreateRevision int64  `json:"create_revision,omitempty"`
+	ModRevision    int64  `json:"mod_revision,omitempty"`
+}
+
+// toolMVCCMovePrefix defines the qrdb_mvcc_move_prefix tool schema.
+func toolMVCCMovePrefix() mcp.Tool {
+	return mcp.NewTool("qrdb_mvcc_move_prefix",
+		mcp.WithDescription("Move every live key under src to the same suffix under dst in one MVCC revision, together with ops, once every compare holds and the live count under src equals expected_keys; otherwise nothing is written. src, dst and every key and value inside ops and compares are base64-encoded (RFC 4648). Returns {\"revision\": N}."),
+		mcp.WithString("src",
+			mcp.Required(),
+			mcp.Description("The source prefix, base64-encoded (RFC 4648)."),
+		),
+		mcp.WithString("dst",
+			mcp.Required(),
+			mcp.Description("The destination prefix, base64-encoded (RFC 4648)."),
+		),
+		mcp.WithNumber("expected_keys",
+			mcp.Description("The live key count under src the move expects; a different count writes nothing and is a conflict."),
+		),
+		mcp.WithString("ops",
+			mcp.Description("JSON array of ops applied in the same revision: [{\"type\":\"put|delete\",\"key\":\"<base64>\",\"value\":\"<base64>\"}]."),
+		),
+		mcp.WithString("compares",
+			mcp.Description("JSON array of compares that must all hold: [{\"key\":\"<base64>\",\"target\":\"mod_revision\",\"result\":\"equal\",\"mod_revision\":N}]."),
+		),
+	)
+}
+
+// handleMVCCMovePrefix returns a tool handler that delegates to the scoped
+// MVCC service's service.PrefixMover (go-qrdb#926).
+func handleMVCCMovePrefix(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
+		if rerr != nil {
+			return nil, rerr
+		}
+		src, decodeErr := base64.StdEncoding.DecodeString(mcp.ParseString(req, "src", ""))
+		if decodeErr != nil {
+			return mcp.NewToolResultError((&ValueDecodeError{Field: "src", Err: decodeErr}).Error()), nil
+		}
+		dst, decodeErr := base64.StdEncoding.DecodeString(mcp.ParseString(req, "dst", ""))
+		if decodeErr != nil {
+			return mcp.NewToolResultError((&ValueDecodeError{Field: "dst", Err: decodeErr}).Error()), nil
+		}
+
+		var opsJSON []mvccMoveOpJSON
+		if s := mcp.ParseString(req, "ops", ""); s != "" {
+			if err := json.Unmarshal([]byte(s), &opsJSON); err != nil {
+				return mcp.NewToolResultError("invalid ops JSON: " + err.Error()), nil
+			}
+		}
+		ops := make([]service.Op, len(opsJSON))
+		for i, o := range opsJSON {
+			opType, ok := mcpOpTypeMap[o.Type]
+			if !ok {
+				return mcp.NewToolResultError((&UnknownOpTypeError{Type: o.Type}).Error()), nil
+			}
+			ops[i] = service.Op{Type: opType, Key: o.Key, Value: o.Value, RangeEnd: o.RangeEnd, LeaseID: o.LeaseID}
+		}
+
+		var comparesJSON []mvccMoveCompareJSON
+		if s := mcp.ParseString(req, "compares", ""); s != "" {
+			if err := json.Unmarshal([]byte(s), &comparesJSON); err != nil {
+				return mcp.NewToolResultError("invalid compares JSON: " + err.Error()), nil
+			}
+		}
+		compares := make([]service.Compare, len(comparesJSON))
+		for i, c := range comparesJSON {
+			target, ok := compareTargetMap[c.Target]
+			if !ok {
+				return mcp.NewToolResultError("invalid compare target: " + c.Target), nil
+			}
+			result, ok := compareResultMap[c.Result]
+			if !ok {
+				return mcp.NewToolResultError("invalid compare result: " + c.Result), nil
+			}
+			compares[i] = service.Compare{
+				Key:            c.Key,
+				Target:         target,
+				Result:         result,
+				Value:          c.Value,
+				Version:        c.Version,
+				CreateRevision: c.CreateRevision,
+				ModRevision:    c.ModRevision,
+			}
+		}
+
+		mover, ok := mvccSvc.(service.PrefixMover)
+		if !ok {
+			return nil, &ToolError{Tool: "qrdb_mvcc_move_prefix", Err: &service.PrefixMoveUnsupportedError{}}
+		}
+		rev, err := mover.MovePrefix(ctx, &service.MovePrefixRequest{
+			Src:          string(src),
+			Dst:          string(dst),
+			ExpectedKeys: mcp.ParseInt64(req, "expected_keys", 0),
+			Ops:          ops,
+			Compares:     compares,
+		})
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_mvcc_move_prefix", Err: err}
+		}
+		return marshalToolResult("qrdb_mvcc_move_prefix", map[string]int64{"revision": rev})
 	}
 }

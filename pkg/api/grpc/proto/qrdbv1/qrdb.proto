@@ -120,6 +120,13 @@ service QRDBService {
         option (qrdb.v1.permission) = "mvcc:restore";
     }
 
+    // MovePrefix moves every key under src to the same suffix under dst in
+    // one revision, together with ops, after compares hold and the live
+    // count under src equals expected_keys; otherwise nothing is written.
+    rpc MovePrefix(MovePrefixRequest) returns (MovePrefixResponse) {
+        option (qrdb.v1.permission) = "mvcc:move_prefix";
+    }
+
     // -----------------------------------------------------------------------
     // Transaction operations
     // -----------------------------------------------------------------------
@@ -1929,6 +1936,23 @@ message RestoreRevisionResponse {
     int64 skipped = 5;
     int64 conflicted = 6;
     bool dry_run = 7;
+}
+
+// MovePrefixRequest re-homes every live key under src to dst in one
+// revision. expected_keys is the live count under src the caller staged;
+// ops are applied in the same revision and compares are the caller's read
+// set, evaluated before src is read.
+message MovePrefixRequest {
+    bytes src = 1;
+    bytes dst = 2;
+    int64 expected_keys = 3;
+    repeated Op ops = 4;
+    repeated Compare compares = 5;
+}
+
+// MovePrefixResponse carries the revision the move committed at.
+message MovePrefixResponse {
+    int64 revision = 1;
 }
 
 // ===========================================================================
