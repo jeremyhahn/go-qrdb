@@ -36,6 +36,13 @@ func (t *Transport) SealStorePut(ctx context.Context, req *transport.SealStorePu
 	if t.sealStoreSvc == nil {
 		return &NilServiceError{Service: "SealStore"}
 	}
+	if t.life != nil {
+		release, err := t.life.enter()
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	return t.sealStoreSvc.Put(ctx, req.Name, req.Secret)
 }
 
@@ -53,6 +60,13 @@ func (t *Transport) SealStoreGet(ctx context.Context, req *transport.SealStoreGe
 	}
 	if t.sealStoreSvc == nil {
 		return nil, &NilServiceError{Service: "SealStore"}
+	}
+	if t.life != nil {
+		release, err := t.life.enter()
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 	}
 	secret, err := t.sealStoreSvc.Get(ctx, req.Name)
 	if err != nil {
@@ -79,6 +93,13 @@ func (t *Transport) SealStoreDelete(ctx context.Context, req *transport.SealStor
 	if t.sealStoreSvc == nil {
 		return &NilServiceError{Service: "SealStore"}
 	}
+	if t.life != nil {
+		release, err := t.life.enter()
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	return t.sealStoreSvc.Delete(ctx, req.Name)
 }
 
@@ -96,6 +117,13 @@ func (t *Transport) SealStoreList(ctx context.Context) (*transport.SealStoreList
 	}
 	if t.sealStoreSvc == nil {
 		return nil, &NilServiceError{Service: "SealStore"}
+	}
+	if t.life != nil {
+		release, err := t.life.enter()
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 	}
 	names, err := t.sealStoreSvc.List(ctx)
 	if err != nil {
@@ -121,6 +149,13 @@ func (t *Transport) SealStoreReseal(ctx context.Context, req *transport.SealStor
 	if t.sealStoreSvc == nil {
 		return &NilServiceError{Service: "SealStore"}
 	}
+	if t.life != nil {
+		release, err := t.life.enter()
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	return t.sealStoreSvc.Reseal(ctx, req.Name)
 }
 
@@ -138,6 +173,13 @@ func (t *Transport) SealStoreStatus(ctx context.Context) (*transport.SealStoreSt
 	}
 	if t.sealStoreSvc == nil {
 		return nil, &NilServiceError{Service: "SealStore"}
+	}
+	if t.life != nil {
+		release, err := t.life.enter()
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 	}
 	status, err := t.sealStoreSvc.Status(ctx)
 	if err != nil {

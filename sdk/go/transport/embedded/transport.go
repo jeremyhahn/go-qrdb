@@ -203,7 +203,48 @@ type Transport struct {
 	// without monkey-patching. Defaults to time.Now().UTC at New.
 	nowFunc func() time.Time
 
+	// closed is this transport's own closed flag: Close sets it, and a
+	// database-scoped clone has its own.
 	closed atomic.Bool
+
+	// life is the lifecycle a transport shares with every database-scoped
+	// clone made from it (cloneShared copies the pointer). Closing the
+	// transport New built refuses every clone through gate and drains the
+	// seal-store calls already admitted, so a client retained across a
+	// node's data-plane teardown cannot keep writing through the old
+	// barrier. Nil (a struct-literal Transport in a test) gates nothing.
+	life *lifecycle
+
+	// scopedClone marks a database-scoped clone: its Close closes only
+	// itself, never the shared lifecycle of the transport it came from.
+	scopedClone bool
+}
+
+// lifecycle is the closed state a transport shares with its database-scoped
+// clones. enter admits a call while the lifecycle is open; shut closes it and
+// waits until every admitted call has released.
+type lifecycle struct {
+	closed atomic.Bool
+	mu     sync.RWMutex
+}
+
+// enter admits one call. The caller must invoke release when the call is
+// done. Once shut has begun it returns *transport.ClosedError.
+func (l *lifecycle) enter() (release func(), err error) {
+	l.mu.RLock()
+	if l.closed.Load() {
+		l.mu.RUnlock()
+		return nil, &transport.ClosedError{}
+	}
+	return l.mu.RUnlock, nil
+}
+
+// shut closes the lifecycle and returns only after every call enter admitted
+// before it has released.
+func (l *lifecycle) shut() {
+	l.closed.Store(true)
+	l.mu.Lock()
+	l.mu.Unlock() //nolint:staticcheck // the lock only waits out admitted calls
 }
 
 // Option configures an embedded transport.
@@ -389,6 +430,7 @@ func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Optio
 		adminSvc:      adminSvc,
 		loginSessions: newLoginSessionStore(),
 		nowFunc:       func() time.Time { return time.Now().UTC() },
+		life:          &lifecycle{},
 	}
 	for _, opt := range opts {
 		opt(t)
@@ -431,9 +473,16 @@ func (t *Transport) Connect(_ context.Context) error {
 }
 
 // Close marks the transport as closed. Subsequent operations will
-// return ClosedError.
+// return ClosedError. Closing a transport New built also closes the
+// lifecycle it shares with every database-scoped clone made from it: each
+// clone refuses every later call with ClosedError, and Close returns only
+// after the seal-store calls already admitted through any of them have
+// finished. Closing a database-scoped clone closes only that clone.
 func (t *Transport) Close() error {
 	t.closed.Store(true)
+	if !t.scopedClone && t.life != nil {
+		t.life.shut()
+	}
 	return nil
 }
 

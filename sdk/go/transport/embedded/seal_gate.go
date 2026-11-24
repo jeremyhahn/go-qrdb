@@ -19,6 +19,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // SealProbe reports whether the node must refuse every request outside the
@@ -106,7 +107,15 @@ var awaitingAdminCredentialAllowlist = sealedwindow.EmbeddedAwaitingAdminCredent
 // sealed-window decision is the same one the network listeners make
 // (sealedwindow.Decide): the embedded transport is always the regular,
 // authenticated side of the gate.
+//
+// Before either probe it refuses with *transport.ClosedError once the
+// lifecycle this transport shares with its database-scoped clones is shut
+// (the transport New built was closed), so a clone retained past its root's
+// Close serves nothing.
 func (t *Transport) gate(method string) error {
+	if t.life != nil && t.life.closed.Load() {
+		return &transport.ClosedError{}
+	}
 	if t.awaitingAdminCredentialProbe != nil && t.awaitingAdminCredentialProbe.AwaitingAdminCredential() {
 		if _, ok := awaitingAdminCredentialAllowlist[method]; !ok {
 			return &authmw.AwaitingAdminCredentialError{}
