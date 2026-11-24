@@ -562,6 +562,9 @@ jobs:
       # A fake curl forge serves every API read; nothing reaches the network.
       - name: Code review workflow tests (v5.12.11)
         run: python3 -I .github/workflows/testdata/code-review-v51211-tests.py
+      # Codex round 3 P1 on #1709: the supersede job's cancel step (actions:write) ran in no test.
+      - name: Supersede job tests (#1708)
+        run: python3 -I .github/workflows/testdata/code-review-supersede-tests.py
       - name: Runner labels (ruling 633)
         run: |
           python3 -I - <<'PY'

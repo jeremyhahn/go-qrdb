@@ -633,23 +633,25 @@ func TestCIRunnerLabelsStepPresent(t *testing.T) {
 // tests (no registry address in a job output, H1 to H5); rowJobTestsStep
 // runs ci-template v1.55's Row job tests (R0 to R12); codeReviewTestsStep
 // runs code-review.yml v5.12.11's template tests (#1666), which load the
-// expression evaluator from code-review-v51210-tests.py.
+// expression evaluator from code-review-v51210-tests.py; supersedeTestsStep
+// runs the supersede job's cancel-step tests (#1708).
 const (
 	runnerSelectTestsStep     = "- name: Runner select tests (go-qrdb #1671)\n        run: python3 -I .github/workflows/testdata/runner-select-tests.py\n"
 	lanMaskTestsStep          = "- name: LAN mask tests (go-qrdb #1671)\n        run: python3 -I .github/workflows/testdata/ci-mask-lan-tests.py\n"
 	jobOutputHandoffTestsStep = "- name: Job output handoff tests (ci-template v1.54)\n        run: python3 -I .github/workflows/testdata/job-output-handoff-tests.py\n"
 	rowJobTestsStep           = "- name: Row job tests (ci-template v1.55)\n        run: python3 -I .github/workflows/testdata/row-job-tests.py\n"
 	codeReviewTestsStep       = "- name: Code review workflow tests (v5.12.11)\n        run: python3 -I .github/workflows/testdata/code-review-v51211-tests.py\n"
+	supersedeTestsStep        = "- name: Supersede job tests (#1708)\n        run: python3 -I .github/workflows/testdata/code-review-supersede-tests.py\n"
 )
 
 func TestCIRunnerSelectAndMaskTestsPresent(t *testing.T) {
 	body := readCIBody(t)
-	for _, step := range []string{runnerSelectTestsStep, lanMaskTestsStep, jobOutputHandoffTestsStep, rowJobTestsStep, codeReviewTestsStep} {
+	for _, step := range []string{runnerSelectTestsStep, lanMaskTestsStep, jobOutputHandoffTestsStep, rowJobTestsStep, codeReviewTestsStep, supersedeTestsStep} {
 		if n := strings.Count(body, step); n != 1 {
 			t.Errorf("ci.yml has %d %q steps, want exactly one", n, step)
 		}
 	}
-	for _, name := range []string{"runner-select-tests.py", "ci-mask-lan-tests.py", "job-output-handoff-tests.py", "row-job-tests.py", "code-review-v51211-tests.py", "code-review-v51210-tests.py"} {
+	for _, name := range []string{"runner-select-tests.py", "ci-mask-lan-tests.py", "job-output-handoff-tests.py", "row-job-tests.py", "code-review-v51211-tests.py", "code-review-v51210-tests.py", "code-review-supersede-tests.py"} {
 		p := filepath.Join(repoRoot(t), ".github", "workflows", "testdata", name)
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("ci.yml runs .github/workflows/testdata/%s, which is missing: %v", name, err)
