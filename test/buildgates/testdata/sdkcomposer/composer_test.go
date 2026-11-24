@@ -22,12 +22,14 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/url"
 	"testing"
 	"time"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/server"
 )
 
 func selfSignedCA(t *testing.T) (*ecdsa.PrivateKey, *x509.Certificate) {
@@ -131,5 +133,22 @@ func TestInvoicePermissionIsReadBack(t *testing.T) {
 	got, err := InvoicePermission("billing:issue")
 	if err != nil || got != "billing:issue" {
 		t.Fatalf("InvoicePermission = %q, %v; want billing:issue", got, err)
+	}
+}
+
+func TestWebTransportErrorsAreNamed(t *testing.T) {
+	var _ func(*server.WebTransportSession, uint32, string) error = CloseWebTransport
+
+	var code uint32 = 7
+	err := fmt.Errorf("read: %w", &server.WebTransportStreamError{ErrorCode: WebTransportStreamCancel(code), Remote: true})
+	if got, remote, ok := WebTransportStreamErrorCode(err); !ok || got != code || !remote {
+		t.Fatalf("WebTransportStreamErrorCode = %d, %v, %v; want %d, true, true", got, remote, ok, code)
+	}
+	err = fmt.Errorf("session: %w", &server.WebTransportSessionError{ErrorCode: server.WebTransportSessionErrorCode(code), Remote: true})
+	if got, ok := WebTransportSessionErrorCode(err); !ok || got != code {
+		t.Fatalf("WebTransportSessionErrorCode = %d, %v; want %d, true", got, ok, code)
+	}
+	if _, _, ok := WebTransportStreamErrorCode(errors.New("other")); ok {
+		t.Fatal("WebTransportStreamErrorCode read a code out of a non-stream error")
 	}
 }
