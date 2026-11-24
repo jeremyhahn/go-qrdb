@@ -24,22 +24,21 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/sqlitevfs"
 )
 
-// sqliteRestoreMVCC is the SQLite VFS restore hook (row #926, Q4 A) over a
-// scope's MVCC service: a restore to a revision that wrote a key under
-// sqlite/<db>/ bumps that database's generation once, past every generation
-// it has had, so a page store that saw the database before the restore is
-// told (ErrSnapshotChanged, SQLITE_BUSY_SNAPSHOT) instead of trusting a page
-// cache whose header change counter the restore may have put back. A dry
-// run, a restore that touched no sqlite/ key and a failed restore bump
-// nothing.
-//
-// The bump is a second write after the restore's own. A commit that lands
-// between them is never overwritten (the bump's read check refuses a moved
-// meta and retries past it), but a transaction that begins in between is
-// not told of the restore when the restored generation equals the one its
-// store saw. Closing that window needs the
-// restore op to write the bump in its own revision; docs/plans/926.md
-// records it as o9 for the owner.
+// sqliteRestoreMVCC is the SQLite VFS restore hook (row #926, Q4 A, o9) over
+// a scope's MVCC service. A restore to a revision is planned first (a dry
+// run of the same request); the keys of the plan outside sqlite/ are then
+// restored by the inner service, scoped to exactly those keys, and each
+// SQLite database the plan touches is restored through its page store
+// (sqlitevfs.Store.RestoreToRevision): one page-store commit that writes the
+// differing pages, the size and the meta record with the generation past
+// every generation it has had. The restore and the bump are one revision, so
+// no transaction reads a half-restored file, and a page store that saw the
+// database before is told (ErrSnapshotChanged, SQLITE_BUSY_SNAPSHOT) instead
+// of trusting a page cache whose header change counter the restore may have
+// put back. A database whose restore commit kept meeting a concurrent writer
+// is reported in Conflicts (all of its plan entries), as a key the CAS
+// restore found moved; with Force its error is returned. A dry run is the
+// inner service's.
 type sqliteRestoreMVCC struct {
 	service.MVCCKVServicer
 	kv  sqlitevfs.ServiceKV
@@ -83,35 +82,70 @@ func (s *sqliteRestoreMVCC) RestoreToRevision(ctx context.Context, req *service.
 	if req == nil || req.DryRun {
 		return s.MVCCKVServicer.RestoreToRevision(ctx, req)
 	}
-	before, err := s.MVCCKVServicer.CurrentRevision(ctx)
-	if err != nil {
-		return nil, err
+	planReq := *req
+	planReq.DryRun = true
+	plan, err := s.MVCCKVServicer.RestoreToRevision(ctx, &planReq)
+	if err != nil || plan == nil {
+		return plan, err
 	}
-	result, err := s.MVCCKVServicer.RestoreToRevision(ctx, req)
-	if err != nil || result == nil {
-		return result, err
-	}
-	dbs := restoredDatabases(result.Changes)
+	dbs := restoredDatabases(plan.Changes)
 	if len(dbs) == 0 {
-		return result, nil
+		return s.MVCCKVServicer.RestoreToRevision(ctx, req)
+	}
+	result := &service.RestoreRevisionResult{
+		Revision: plan.Revision,
+		Changes:  plan.Changes,
+		Skipped:  plan.Skipped,
+	}
+	var otherKeys []string
+	for _, c := range plan.Changes {
+		if _, ok := sqlitevfs.DatabaseOfKey([]byte(c.Key)); !ok {
+			otherKeys = append(otherKeys, c.Key)
+		}
+	}
+	if len(otherKeys) > 0 {
+		keysReq := *req
+		keysReq.Prefix = ""
+		keysReq.Keys = otherKeys
+		other, err := s.MVCCKVServicer.RestoreToRevision(ctx, &keysReq)
+		if err != nil {
+			return nil, err
+		}
+		if other != nil {
+			result.Applied += other.Applied
+			result.Conflicts = append(result.Conflicts, other.Conflicts...)
+		}
 	}
 	backend, err := sqlitevfs.NewServiceBackend(s.kv, s.txn)
 	if err != nil {
-		return result, fmt.Errorf("sqlitevfs restore hook: %w", err)
+		return nil, fmt.Errorf("sqlitevfs restore hook: %w", err)
 	}
-	var errs []error
+	conflicted := make(map[string]bool)
 	for _, db := range dbs {
 		store, err := sqlitevfs.NewStore(backend, db)
 		if err == nil {
-			_, err = store.BumpGenerationAfterRestore(ctx, before)
+			_, err = store.RestoreToRevision(ctx, req.Revision)
 		}
-		if err != nil {
-			errs = append(errs, err)
+		if err == nil {
+			continue
+		}
+		if !req.Force && (errors.Is(err, sqlitevfs.ErrSnapshotChanged) || errors.Is(err, sqlitevfs.ErrBusy)) {
+			conflicted[db] = true
+			continue
+		}
+		return nil, fmt.Errorf("sqlitevfs restore hook: restore database %q to revision %d: %w", db, req.Revision, err)
+	}
+	for _, c := range plan.Changes {
+		db, ok := sqlitevfs.DatabaseOfKey([]byte(c.Key))
+		switch {
+		case !ok:
+		case conflicted[db]:
+			result.Conflicts = append(result.Conflicts, c)
+		default:
+			result.Applied++
 		}
 	}
-	if err := errors.Join(errs...); err != nil {
-		return result, fmt.Errorf("sqlitevfs restore hook: restore to revision %d applied, generation bump failed: %w", req.Revision, err)
-	}
+	result.Conflicted = len(result.Conflicts)
 	return result, nil
 }
 

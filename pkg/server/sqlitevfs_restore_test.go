@@ -263,6 +263,79 @@ func TestSQLiteVFSRestore_DryRunBumpsNothing(t *testing.T) {
 	}
 }
 
+func TestSQLiteVFSRestore_DatabaseRestoredInOneRevision(t *testing.T) {
+	for name, build := range lockScenes {
+		t.Run(name, func(t *testing.T) {
+			reg := build(t).registry
+			a := newRestoreStore(t, reg, lockTenantA)
+			r := a.restoreCommit(t, 0x11, 0x22)
+			newRestoreStore(t, reg, lockTenantA).restoreCommit(t, 0x33, 0x44, 0x55)
+			before := a.revision(t)
+			mustRestore(t, reg, r)
+
+			// The pages, the size and the bumped meta are one revision.
+			after := a.revision(t)
+			if after != before+1 {
+				t.Fatalf("revision after restoring one database = %d, want %d", after, before+1)
+			}
+			fresh := newRestoreStore(t, reg, lockTenantA)
+			txn, err := fresh.store.BeginAt(t.Context(), after)
+			if err != nil {
+				t.Fatalf("BeginAt(%d): %v", after, err)
+			}
+			if got := txn.Size(); got != 2*wiringPageSize {
+				t.Fatalf("size at %d = %d, want R's %d", after, got, 2*wiringPageSize)
+			}
+			_ = txn.Rollback(t.Context())
+			if got := fresh.generation(t); got == 0 {
+				t.Fatalf("generation at %d = 0, want bumped", after)
+			}
+			fresh.assertPages(t, 0x11, 0x22)
+		})
+	}
+}
+
+func TestSQLiteVFSRestore_MixedKeysRestoresBoth(t *testing.T) {
+	for name, build := range lockScenes {
+		t.Run(name, func(t *testing.T) {
+			reg := build(t).registry
+			mvccSvc, err := reg.MVCCService(lockTenantA, lockTestDB)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := mvccSvc.Put(t.Context(), "s/plain", []byte("old")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			a := newRestoreStore(t, reg, lockTenantA)
+			r := a.restoreCommit(t, 0x11)
+			if err := mvccSvc.Put(t.Context(), "s/plain", []byte("new")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			a.restoreCommit(t, 0x22, 0x33)
+
+			result, err := restoreScope(t, reg, lockTenantA, "s", r, false)
+			if err != nil {
+				t.Fatalf("RestoreToRevision: %v", err)
+			}
+			var plain, pages bool
+			for _, c := range result.Changes {
+				if c.Key == "s/plain" {
+					plain = true
+				} else if _, ok := sqlitevfs.DatabaseOfKey([]byte(c.Key)); ok {
+					pages = true
+				}
+			}
+			if !plain || !pages || result.Applied != len(result.Changes) || result.Conflicted != 0 {
+				t.Fatalf("restore result = %+v, want the plain key and the database applied", result)
+			}
+			if got, err := mvccSvc.Get(t.Context(), "s/plain"); err != nil || string(got) != "old" {
+				t.Fatalf("s/plain after the restore = %q, %v, want old", got, err)
+			}
+			newRestoreStore(t, reg, lockTenantA).assertPages(t, 0x11)
+		})
+	}
+}
+
 // bindingExtendedCode is the extended SQLite result code of err, -1 if err
 // is not a *sqlite.Error.
 func bindingExtendedCode(err error) int {

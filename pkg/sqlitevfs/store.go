@@ -311,7 +311,9 @@ const restoreBumpAttempts = 8
 // writer lock, reserves it (a lock another writer holds is ErrBusy). It reads
 // the meta record at rev and its pages, truncates the transaction to the
 // size at rev and writes only the pages whose bytes differ from the current
-// ones, then commits once through the normal commit path (above the stage
+// ones, deletes every stage key live now (no stage key is part of an image;
+// with a writer lock, Reserve swept them), then commits once through the
+// normal commit path (above the stage
 // threshold: staging and one publish) with Generation = max(generation now,
 // generation at rev) + 1 and the change counter advanced. Generations only
 // grow along the live history, so the result is past every generation any
@@ -369,6 +371,18 @@ func (s *Store) restoreOnce(ctx context.Context, rev int64) (int64, error) {
 	if err := t.restoreImage(rev, target); err != nil {
 		_ = t.Rollback(ctx)
 		return 0, err
+	}
+	// Reserve already swept the stages of a Store with a writer lock.
+	root, err := StageRoot(s.db)
+	if err == nil && s.writer == nil {
+		t.stageDeletes, err = s.backend.Keys(ctx, root, t.rev)
+	}
+	if err != nil {
+		_ = t.Rollback(ctx)
+		return 0, err
+	}
+	if len(t.stageDeletes) > 0 {
+		t.wrote = true
 	}
 	t.restoreGen = max(t.base.Generation, target.Generation) + 1
 	return t.Commit(ctx)
@@ -516,6 +530,9 @@ type Txn struct {
 	// the database instead (its image at the restored revision is none).
 	restoreGen uint64
 	remove     bool
+	// stageDeletes are the stage keys live at rev that a RestoreToRevision
+	// commit deletes with its write (no stage key is part of an image).
+	stageDeletes [][]byte
 }
 
 // ChangeCounter is the meta change counter of the transaction's
@@ -834,7 +851,7 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 			return 0, err
 		}
 	}
-	if !t.remove && len(t.dirty) == 0 && t.floor >= t.base.PageCount && t.meta.PageCount == t.base.PageCount && t.meta.PageSize == t.base.PageSize {
+	if !t.remove && len(t.stageDeletes) == 0 && len(t.dirty) == 0 && t.floor >= t.base.PageCount && t.meta.PageCount == t.base.PageCount && t.meta.PageSize == t.base.PageSize {
 		// Every write was undone (a journal played back over its own
 		// writes): nothing to commit, no revision.
 		return t.rev, nil
@@ -897,6 +914,7 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 		}
 		deletes = append(deletes, key)
 	}
+	deletes = append(deletes, t.stageDeletes...)
 	dirtyBytes := 0
 	for _, page := range t.dirty {
 		dirtyBytes += len(page)
