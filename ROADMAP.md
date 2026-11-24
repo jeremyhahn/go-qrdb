@@ -119,6 +119,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **arm64-release** — linux-arm64 and arm64-fips release artifacts; the integration suite once on arm64 before the RC — [#702](../../issues/702), [docs/release/](docs/release/) — in progress
 - **separation-of-duties** — SO separation of duties is enforced in compliance mode only; the optional SO holds in both postures — [#1128](../../issues/1128), [#1042](../../issues/1042), [docs/identity-rbac/](docs/identity-rbac/) — in progress
 - **desktop-gui** — the Wails desktop application — [docs/desktop-gui/](docs/desktop-gui/) — in progress
+- **webtransport-session** — WebTransport sessions (draft-ietf-webtrans-http3-16) on the REST HTTP/3 listener behind an authenticated, tenant-bound CONNECT route — [#1244](../../issues/1244), [docs/api-server/](docs/api-server/) — in progress
 - **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — [#1613](../../issues/1613), PR [#729](../../pulls/729), [docs/databases/](docs/databases/), [docs/plans/1613-verifiable-log.md](docs/plans/1613-verifiable-log.md) — in progress: serving barrier-isolated tenants and barrier-enabled databases awaits the owner's decision on where their logs live
 - **credentials** — named credentials, versioned rotation; scheduled rotation policies, their transport and CLI verbs, whole-store moves; consumer go-quicbaas — [#1201](../../issues/1201), [#1185](../../issues/1185), [docs/credentials/](docs/credentials/) — in progress
 
@@ -149,5 +150,6 @@ The cluster engine and database system for every project in the stack: embedded,
 - Up: go-truststrap v0.7.0-alpha — the cluster-enrollment bootstrap; the P-256 handshake ([#118](../../issues/118)) — clustering, fips-140-3.
 - Up: go-codec v1.4.0 — the codecs — secondary-indexes, collections.
 - standards-watch: draft-ietf-hpke-pq pinned at -05 — pkg/keydelivery (provisional: reached through Go's crypto/hpke, whose implemented revision is unconfirmed; docs/reference/README.md)
+- standards-watch: draft-ietf-webtrans-http3 pinned at -16 — pkg/api/rest (through the patched webtransport-go v0.13.0 copy in internal/webtransport; the legacy SETTINGS it sends are recorded as deviations in docs/reference/README.md)
 - Down: go-xkms — embeds go-qrdb and adds its services through `ServiceModule`; supplies hardware `Factor` and `SealStrategy` implementations.
 - Down: go-quicbaas — exposes the database services via go-qrdb and composes go-xkms; delegates first boot through `sdk/go/node`.
