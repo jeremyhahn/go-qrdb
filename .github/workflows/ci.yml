@@ -550,6 +550,9 @@ jobs:
       # Only code is code reviewed, and only on a SPEC row PR (code-review v5.12.14).
       - name: Code review code-only tests
         run: python3 -I .github/workflows/testdata/code-review-v51214-tests.py .github/workflows/code-review.yml
+      # An incomplete review is not a finding (code-review v5.12.15).
+      - name: Code review incomplete-review tests
+        run: python3 -I .github/workflows/testdata/code-review-v51215-tests.py .github/workflows/code-review.yml
       - name: Runner labels (ruling 633)
         run: |
           python3 -I - <<'PY'
