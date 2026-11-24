@@ -10,8 +10,8 @@
  * batch the server refuses surfaces the server's own error in the UI.
  *
  * The Import tab, in a browser, takes a picked file and streams it over the
- * server's chunked import session: a file in each format the server lists
- * (GET /batch/import/formats) lands its keys on the server, and a malformed
+ * server's chunked import session: a file in each format the Import tab
+ * offers lands its keys on the server, and a malformed
  * file shows the server's parse error.
  */
 
@@ -217,14 +217,18 @@ async function importThroughUI(
 }
 
 test("a file in each listed format imports through the file input", async ({ page }) => {
-  const resp = await page.request.get(`${daemon!.adminUrl}/batch/import/formats`, { ignoreHTTPSErrors: true });
-  expect(resp.ok(), `GET /batch/import/formats: HTTP ${String(resp.status())}`).toBe(true);
-  const { formats } = (await resp.json()) as { formats: string[] };
+  await openImport(page);
+  // The formats the Import tab offers: the SDK's fixed list, the one
+  // service.ImportFormats holds (the GUI adds no server API). Until the
+  // list loads the select holds a lone "auto" placeholder.
+  const options = page.locator("#import-format option");
+  await expect.poll(() => options.count(), { timeout: LOAD_TIMEOUT }).toBeGreaterThan(1);
+  const formats = (await options.evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value)))
+    .filter((value) => value !== "");
   expect(formats.length).toBeGreaterThan(0);
 
   test.setTimeout(30_000 + formats.length * LOAD_TIMEOUT);
 
-  await openImport(page);
   for (const format of formats) {
     // The previous format's toast must be gone, so this one's is fresh.
     await expect(page.locator(".toast .alert")).toHaveCount(0, { timeout: LOAD_TIMEOUT });

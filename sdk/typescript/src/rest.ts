@@ -588,11 +588,14 @@ function jsonBody(data: unknown): RequestInit {
 /** Size of one append chunk of a batch import session (1 MiB). */
 export const IMPORT_CHUNK_BYTES = 1024 * 1024;
 
-/** Wire shape of GET /batch/import/formats. */
-interface ImportFormatsWire {
-    readonly formats?: readonly string[];
-    readonly codecs?: readonly string[];
-}
+/**
+ * The batch import file formats, "auto" first: the fixed protocol list
+ * pkg/service ImportFormats holds and the desktop binding reports, so the
+ * browser client lists it without a server route (the GUI adds no server
+ * API, docs/desktop-gui/api.md). cmd/qrdb's TestImportFormatsParity_TypeScriptSDK
+ * keeps the two lists equal.
+ */
+const IMPORT_FORMATS: readonly string[] = Object.freeze(['auto', 'csv', 'json', 'ndjson', 'yaml', 'archive']);
 
 /**
  * Builds a JSON request body from an object already in wire form, without
@@ -1010,14 +1013,11 @@ export class RestClient implements Client {
                 return this.importContentSession(data, opts);
             },
             availableCodecs: async (): Promise<readonly string[]> => {
-                this.ensureConnected();
-                const resp = await this.fetchJSON<ImportFormatsWire>('/batch/import/formats');
-                return resp.codecs ?? [];
+                throw new DesktopOnlyError('batch.availableCodecs');
             },
             availableImportFormats: async (): Promise<readonly string[]> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<ImportFormatsWire>('/batch/import/formats');
-                return resp.formats ?? [];
+                return [...IMPORT_FORMATS];
             },
         };
     }

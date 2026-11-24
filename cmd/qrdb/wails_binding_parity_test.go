@@ -21,6 +21,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // wailsClientPath is the TypeScript Wails client the desktop frontend uses
@@ -219,4 +221,37 @@ func dedupeSorted(in []string) []string {
 		}
 	}
 	return out
+}
+
+// restClientPath is the TypeScript SDK's REST client, whose IMPORT_FORMATS
+// constant is the browser's list of batch import formats.
+const restClientPath = "../../sdk/typescript/src/rest.ts"
+
+// importFormatsConstRE captures the array literal of the SDK's
+// IMPORT_FORMATS constant; importFormatLiteralRE captures each string in it.
+var (
+	importFormatsConstRE  = regexp.MustCompile(`const IMPORT_FORMATS[^=]*=\s*Object\.freeze\(\[([^\]]*)\]\)`)
+	importFormatLiteralRE = regexp.MustCompile(`'([^']*)'`)
+)
+
+// TestImportFormatsParity_TypeScriptSDK keeps the browser client's import
+// format list equal to service.ImportFormats, in order: the GUI adds no
+// server API (docs/desktop-gui/api.md), so the REST client holds the list
+// the desktop binding's AvailableImportFormats reports from the service.
+func TestImportFormatsParity_TypeScriptSDK(t *testing.T) {
+	src, err := os.ReadFile(restClientPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", restClientPath, err)
+	}
+	m := importFormatsConstRE.FindStringSubmatch(string(src))
+	if m == nil {
+		t.Fatalf("%s: no IMPORT_FORMATS = Object.freeze([...]) constant found", restClientPath)
+	}
+	var got []string
+	for _, lit := range importFormatLiteralRE.FindAllStringSubmatch(m[1], -1) {
+		got = append(got, lit[1])
+	}
+	if want := service.ImportFormats(); !reflect.DeepEqual(got, want) {
+		t.Errorf("%s IMPORT_FORMATS = %q, service.ImportFormats() = %q", restClientPath, got, want)
+	}
 }

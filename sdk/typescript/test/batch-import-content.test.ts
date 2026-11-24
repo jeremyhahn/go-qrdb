@@ -9,7 +9,7 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { RestClient, IMPORT_CHUNK_BYTES } from '../src/rest.js';
-import { TransportError } from '../src/errors.js';
+import { DesktopOnlyError, TransportError } from '../src/errors.js';
 
 interface Call {
     readonly method: string;
@@ -264,15 +264,18 @@ describe('batch format listings over REST', () => {
         vi.unstubAllGlobals();
     });
 
-    it('reads formats and codecs from GET /batch/import/formats', async () => {
+    // The GUI adds no server API (docs/desktop-gui/api.md): the browser
+    // client lists the fixed import formats itself, and the codec list is
+    // the desktop binding's, so the GUI falls back to its default codec.
+    it('lists the import formats without a request and leaves codecs to the desktop', async () => {
         const client = await connected();
-        const calls = stubServer(() => json(200, { formats: ['auto', 'csv'], codecs: ['json', 'raw'] }));
+        const calls = stubServer(() => json(500, {}));
 
-        expect(await client.batch.availableImportFormats()).toEqual(['auto', 'csv']);
-        expect(await client.batch.availableCodecs()).toEqual(['json', 'raw']);
-        expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
-            'GET /batch/import/formats',
-            'GET /batch/import/formats',
-        ]);
+        const formats = await client.batch.availableImportFormats();
+        expect(formats).toEqual(['auto', 'csv', 'json', 'ndjson', 'yaml', 'archive']);
+        (formats as string[]).push('mutated');
+        expect(await client.batch.availableImportFormats()).toEqual(['auto', 'csv', 'json', 'ndjson', 'yaml', 'archive']);
+        await expect(client.batch.availableCodecs()).rejects.toBeInstanceOf(DesktopOnlyError);
+        expect(calls).toEqual([]);
     });
 });
