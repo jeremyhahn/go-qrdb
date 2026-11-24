@@ -2672,6 +2672,29 @@ func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string)
 // separation node names (startMultiProtocolNodeWithConfig).
 func initAndUnsealBarrierWith(t *testing.T, ca *testCA, port int, passphrase string, extra map[string]any) (certPath, keyPath string) {
 	t.Helper()
+	return initAndUnsealBarrierCeremony(t, ca, port, passphrase, extra, true)
+}
+
+// initAndUnsealBarrierWithoutSO runs the first-boot ceremony with no
+// security officer at all: no so_username/so_cert_pem field reaches
+// /v1/ceremony/initialize, so the node boots with no SO holder (docs/SPEC.md:
+// the SO is optional in both postures). extra must not name an SO.
+func initAndUnsealBarrierWithoutSO(t *testing.T, ca *testCA, port int, passphrase string, extra map[string]any) (certPath, keyPath string) {
+	t.Helper()
+	for _, k := range []string{"so_username", "so_cert_pem"} {
+		if _, named := extra[k]; named {
+			t.Fatalf("initAndUnsealBarrierWithoutSO: extra names %q; the no-SO ceremony must carry no SO field", k)
+		}
+	}
+	return initAndUnsealBarrierCeremony(t, ca, port, passphrase, extra, false)
+}
+
+// initAndUnsealBarrierCeremony is the shared body of initAndUnsealBarrierWith
+// and initAndUnsealBarrierWithoutSO. enrollSO is the explicit choice: when it
+// is true and extra names no SO, the harness's default system SO
+// (systemSOFields) is enrolled; when it is false no SO field is sent.
+func initAndUnsealBarrierCeremony(t *testing.T, ca *testCA, port int, passphrase string, extra map[string]any, enrollSO bool) (certPath, keyPath string) {
+	t.Helper()
 
 	_, certPath, keyPath = ca.adminIdentity(t, t.TempDir())
 	adminCertPEM, err := os.ReadFile(certPath)
@@ -2692,7 +2715,7 @@ func initAndUnsealBarrierWith(t *testing.T, ca *testCA, port int, passphrase str
 		// is not valid base64 and the decoder rejects.
 		"secret": []byte(passphrase),
 	}
-	if _, named := extra["so_username"]; !named {
+	if _, named := extra["so_username"]; enrollSO && !named {
 		for k, v := range systemSOFields(t, ca) {
 			fields[k] = v
 		}

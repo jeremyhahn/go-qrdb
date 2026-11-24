@@ -272,8 +272,9 @@ func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, ex
 // startMultiProtocolNodeWithSO is startMultiProtocolNodeWithConfig with the
 // system SO's enrolment chosen by the caller: a strict separation node's
 // ceremony names one only when enrollSO is set, since the SO is optional in
-// both postures (startStrictSeparationNodeWithoutSO). A node outside strict
-// separation never names one here, whatever enrollSO says.
+// both postures (startStrictSeparationNodeWithoutSO, whose ceremony carries
+// no SO field at all). A node outside strict separation keeps the harness's
+// default system SO, whatever enrollSO says.
 func startMultiProtocolNodeWithSO(t *testing.T, smType, extraYAML string, enrollSO bool, extraArgs ...string) *multiProtoNode {
 	t.Helper()
 
@@ -360,18 +361,26 @@ func startMultiProtocolNodeWithSO(t *testing.T, smType, extraYAML string, enroll
 	quicPort := mustFlagPort(t, args, "--quic-port")
 	mcpPort := mustFlagPort(t, args, "--mcp-port")
 	// Strict separation keeps the SO-exclusive operations to a system SO
-	// (#1128), which is optional: the ceremony of a strict node names one,
-	// unless the caller asked for none (enrollSO false), by
-	// a presented certificate, which the harness keeps whether or not the
-	// ceremony's reply arrives.
+	// (#1128), which is optional. A strict node with enrollSO set names one
+	// in its ceremony by a presented certificate, which the harness keeps
+	// whether or not the ceremony's reply arrives. A strict node without
+	// enrollSO runs the no-SO ceremony (initAndUnsealBarrierWithoutSO): no
+	// so_username/so_cert_pem field reaches /v1/ceremony/initialize, so the
+	// daemon boots with no SO holder at all. A node outside strict separation
+	// keeps the harness's default system SO (initAndUnsealBarrierWith).
 	strict := strings.Contains(extraYAML, strictSeparationYAML)
-	var soCeremony map[string]any
 	var systemSO *qrdbdharness.KeyPair
-	if strict && enrollSO {
+	var clientCert, clientKey string
+	switch {
+	case strict && enrollSO:
 		systemSO = ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(systemSOUser, "system"))
-		soCeremony = map[string]any{"so_username": systemSOUser, "so_cert_pem": mustReadFile(t, systemSO.CertPath)}
+		soCeremony := map[string]any{"so_username": systemSOUser, "so_cert_pem": mustReadFile(t, systemSO.CertPath)}
+		clientCert, clientKey = initAndUnsealBarrierWith(t, ca, restPort, passphrase, soCeremony)
+	case strict:
+		clientCert, clientKey = initAndUnsealBarrierWithoutSO(t, ca, restPort, passphrase, nil)
+	default:
+		clientCert, clientKey = initAndUnsealBarrierWith(t, ca, restPort, passphrase, nil)
 	}
-	clientCert, clientKey := initAndUnsealBarrierWith(t, ca, restPort, passphrase, soCeremony)
 
 	waitForHealthy(t, dataDir, 60*time.Second)
 	waitForAdmin(t, ca.Pool, restPort, 90*time.Second)

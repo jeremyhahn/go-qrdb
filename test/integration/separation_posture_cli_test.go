@@ -307,6 +307,7 @@ func TestSeparationPosture_CLI_StrictWithoutSO_PerProtocol(t *testing.T) {
 	}
 	for _, proto := range multiProtocols {
 		t.Run(proto.name, func(t *testing.T) {
+			assertNoSystemSOHolder(t, n, proto)
 			ops := map[string][]string{
 				"roles create": {"roles", "create", "--name", fmt.Sprintf("nso-%s-%d-sysauditor", proto.name, time.Now().UnixNano()),
 					"--permissions", "audit:read", "--tenant-id", "system"},
@@ -321,6 +322,36 @@ func TestSeparationPosture_CLI_StrictWithoutSO_PerProtocol(t *testing.T) {
 			pt := createPostureTenantWithoutSO(t, n, proto, "nso")
 			pt.soExclusiveOps(t, "admin", pt.adminConn, true)
 		})
+	}
+}
+
+// assertNoSystemSOHolder asks the node itself, over the CLI on proto, who
+// holds the system tenant's SO role, and fails if anyone does or if a user
+// named as one of the harness's system SOs exists: a strict daemon booted
+// without an SO must have none (docs/SPEC.md: the SO is optional).
+func assertNoSystemSOHolder(t *testing.T, n *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	soRoleID := role.SystemRoleID("system", role.RoleNameSO)
+	out, err := runCLIProto(t, n, proto, "--output", "json", "users", "list", "--tenant-id", "system")
+	if err != nil {
+		t.Fatalf("[%s] users list --tenant-id system: %v\noutput: %s", proto.name, err, out)
+	}
+	var users userListCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &users); jerr != nil {
+		t.Fatalf("[%s] decode users list JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if users.HasMore {
+		t.Fatalf("[%s] users list --tenant-id system is paged; the no-SO check needs every user: %s", proto.name, out)
+	}
+	for _, u := range users.Users {
+		if u.Username == systemSOUsername || u.Username == systemSOUser {
+			t.Errorf("[%s] the strict node without an SO lists the system SO user %q", proto.name, u.Username)
+		}
+		for _, id := range u.RoleIDs {
+			if id == soRoleID {
+				t.Errorf("[%s] the strict node without an SO has an SO holder: user %q holds the so role", proto.name, u.Username)
+			}
+		}
 	}
 }
 
