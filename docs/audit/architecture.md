@@ -429,9 +429,13 @@ tenant:
   `featuregate.VerifiableLogAudit` is enabled for the group,
   `ReplicatedLogger.Emit` proposes each event as `OpVerifiableLog` with the
   trusted `AuditAppend` sub-type (`protocol.VerifiableLogSubtypeAuditAppend`)
-  to it, and `OpAuditAppend` before; a host that gates nothing keeps
-  `OpAuditAppend`. Only the replicated logger proposes that sub-type: a
-  generic `Append` to the instance is refused with `vlog.ReservedLogError`.
+  to it, and `OpAuditAppend` before. A standalone node's system shard gates
+  nothing (one binary, every replica is this process), so in a `qrdb_vlog`
+  build its trail is this instance from the first event the binary writes,
+  continuous with the `OpAuditAppend` records an earlier binary left; a
+  build without `qrdb_vlog` keeps `OpAuditAppend`. Only the replicated
+  logger proposes that sub-type: a generic `Append` to the instance is
+  refused with `vlog.ReservedLogError`.
   The first such append creates the instance's descriptor with `TreeStart`
   *S₀*, the event's sequence, so leaf 0 carries the pre-switch `PrevHash` and
   the tree commits to the whole earlier chain. Every append still sets
