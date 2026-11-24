@@ -30,9 +30,12 @@ Audited on 2026-11-12 against `main` at `e8b579229d`, VERSION
 `0.58.0-alpha`; re-audited on 2026-11-23 against the row #566 branch
 (base `5dc90e44f3`), VERSION `0.58.0-alpha`; re-checked on 2026-11-23
 against the row #566 tip `116f361dcc` (base `e0faf70e32`), VERSION
-`0.58.0-alpha`: the go.mod and sdk/go/go.mod pins, VERSION, CHANGELOG
-`[Unreleased]`, the `.github/workflows/` files and their `runs-on` values,
-and the compatibility.md status are as recorded below, so every state
+`0.58.0-alpha`, and on 2026-11-24 against the row #566 tip `22d15ca325`
+(the main merge of 2026-11-24), VERSION `0.58.0-alpha`: the go.mod and
+sdk/go/go.mod pins, VERSION, CHANGELOG `[Unreleased]`, the eight
+`.github/workflows/` files, `deps-bump.yml` and `scans.yml` included,
+with their jobs and `runs-on` values (item 11, the codex and the qwen
+review jobs included), and the compatibility.md status are as recorded below, so every state
 stands.
 
 States:
@@ -57,7 +60,7 @@ States:
 | 8 | Upstream go-truststrap at an RC or public release | waits on a lower project | [go.mod](../../go.mod): `go-truststrap v0.7.1-alpha`. | Needs a go-truststrap RC tag, then a bump lane. |
 | 9 | Compatibility policy acknowledged | met | [compatibility.md](compatibility.md) is normative; owner ruling 1243 (2026-11-24) acknowledged it and adopted [choices A to G](compatibility.md#owner-choices) as recommended; [CHANGELOG.md](../../CHANGELOG.md) states the pre-1.0 rule and links it. | None; re-check at the cut. |
 | 10 | No lab addresses, fleet hostnames or owner paths in tracked files, by a gate | not met | `make check-public-releasable`: exit 2 (make; the script exits 1). It fails closed: no fleet pattern file was readable (`$PUBLIC_RELEASE_PATTERNS_FILE` unset, no handbook or XDG copy), so it scanned nothing. `make check-publication-bound`: exit 0, 291 feature-folder files, this one included, under `docs/*/` publishable. | Run `make check-public-releasable` with the pattern file present (see [user.md](user.md)) and fix every hit; require it in the release path. |
-| 11 | No internal-only workflow files | not met | `.github/workflows/` holds `batch.yml`, `ci.yml`, `code-review.yml`, `nightly.yml`, `release-lockstep.yml`, `release.yml`. `batch.yml`, `nightly.yml`, `release.yml` and `release-lockstep.yml` run on `ubuntu-latest`; `ci.yml` routes a push to `main` and a same-repository PR to the `self-hosted` `bigdisk-docker` (Docker jobs) and `bigdisk` (Docker-free jobs) pools and a fork's PR to `ubuntu-latest` (CA ruling 617), and `code-review.yml` runs on a `codex` runner label (with a `lab-string-ok:` waiver). | Decide per file: make `ci.yml` and `code-review.yml` fall back to hosted runners on a fork with no fleet, or record why each stays; then mark met. |
+| 11 | No internal-only workflow files | not met | `.github/workflows/` holds eight files. Kept as is (every job on `ubuntu-latest`): `batch.yml`, `deps-bump.yml`, `nightly.yml`, `release-lockstep.yml`, `release.yml`, `scans.yml`. Kept with a public runner: `ci.yml`. Its `preflight` job runs on a self-hosted runner for a push or a same-repository PR on GitHub (`vars.CI_PREFLIGHT_RUNS_ON`) and on `ubuntu-latest` otherwise, and picks the run's runners from the repository's hosted share and self-hosted pool counts (repository variables); a fork's PR, or a count that is unset or 0, sends every leg hosted (CA ruling 617). The hosted test and coverage legs `coverage`, `coverage-merge`, `coverage-fts`, `test-clusterproof`, `test-tags`, `test-sdk` and `fips` are pinned to `ubuntu-latest` (ruling 862), as are `test-typescript`, `clusterproof-soak`, `deps-bump-dispatch` and `signatures`; the self-hosted legs `docker-build`, `lint`, `lint-gates`, `image`, `integration-features`, `integration-standalone` and `soak` run on the preflight's Docker runner and `ci-gate` on its Docker-free runner, each a self-hosted runner or `ubuntu-latest` as the preflight chose. Not yet public: `code-review.yml`, whose `scope` and `gate` jobs run on `ubuntu-latest` but whose codex review job (`review`, with a `lab-string-ok:` waiver) and qwen review job (`review-opencode`) each run on a self-hosted runner with no hosted fallback. | Decide `code-review.yml`: give the codex and qwen review jobs a hosted fallback for a fork with no fleet, or remove the file before the flip; record why the `ci.yml` self-hosted legs stay; then mark met. |
 | 12 | sdk/go tagged in lockstep with the root module | met | `.github/workflows/release-lockstep.yml` triggers on `v*`, `sdk/go/v*` and `sdk/**/v*` tags and fails a root `vX.Y.Z` pushed without `sdk/go/vX.Y.Z`; `make check-tag-lockstep` runs the same check before the atomic push; `release.yml` audits the lockstep tags. | Confirm at the first RC that `sdk/go/v<version>` is pushed atomically with `v<version>`. |
 
 ## Gate results
