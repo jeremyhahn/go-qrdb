@@ -14,64 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# check-tool-versions.sh — every copy of a tool pin names the version
-# scripts/tool-pins.sh names (go-qrdb#323, #738).
-#
-# THE AUTHORITY IS scripts/tool-pins.sh, the one pin file of handbook
-# devcontainer.md §2. The CI image's toolchain stage
-# (build/docker/devcontainer/Dockerfile) sources it and the Makefile includes
-# it, so those two cannot disagree with it and are not compared. Two copies
-# remain, each for a reason, and this script holds each to the pin file:
-#
-#   build/docker/devcontainer/Dockerfile stage dev   the developer devcontainer's
-#   build/docker/devcontainer/Dockerfile stage gpu   ARG defaults. #322 gave those ARGs no defaults, so make's
-#                                  value was the only one; that broke VS Code
-#                                  "Reopen in Container" and a bare
-#                                  `docker compose build`, and the owner ruled on
-#                                  2026-09-05 that a workflow regression is not a
-#                                  defect fix. The defaults are a DELIBERATE
-#                                  second copy, and this script is what makes
-#                                  that safe.
-#
-# And two copies must NOT exist. A `NAME :=` (or `?=`, `=`) assignment in the
-# Makefile: the Makefile includes the pin file; an assignment after the include
-# silently overrides it, which is the #154 defect one level down -- a build
-# through `make` and a build of the CI image baking different analysers while
-# both claim the same pin. And a `NAME:` pin in .github/workflows/ci.yml: since
-# ci-template v1.21 (#798) every stage runs in the CI image, which carries the
-# tools at the pin file's versions, so a workflow pin would be a second
-# authority that nothing reads.
-#
-# WHAT DRIFT COSTS, measured. #154: the image installed gosec at `@latest`,
-# which self-reports its version as `dev` because gosec takes that string from
-# ldflags — so `make ci` printed `Gosec  : dev` and a finding under it could not
-# be attributed to a scanner version AT ALL. golangci-lint sat at v2.7.2 against
-# ci.yml's pin, so a developer's tree was linted against a different rule set
-# from the gate's while both reported passing the same gate.
-#
-# The gpu stage deliberately declares NO TRIVY_VERSION: nothing runs `make
-# security` in the GPU image, and an ARG for a tool the stage never installs is
-# a pin that pins nothing. That absence is asserted here rather than assumed.
-#
-# TRIVY_IMAGE is NOT a copy. The dev stages copy trivy out of the Dockerfile's
-# shared `trivy` stage, FROM the global `ARG TRIVY_IMAGE`, which carries no
-# default (the CI stages' rule: a build that bypasses the pin file fails
-# instead of drifting). A default on it would be a third, unchecked copy of
-# the image pin, so this script fails on one.
-#
-# DISCOVERY HAS A FLOOR. Every lookup that finds no pin is a failure, not a
-# vacuous pass: a renamed file or a reformatted assignment would otherwise turn
-# this gate into a comparison over empty strings that always agrees.
-#
-# WHAT THIS DOES NOT CHECK. That the pinned version is the version INSTALLED --
-# a pin says which analyser should be there, not which one is. That is
-# require-tool.sh's job, run by the Makefile's scanner targets and by ci.yml.
-#
-# Usage: check-tool-versions.sh [repo-dir]
-#
-#   repo-dir  defaults to the current directory
-#
-# Exit status: 0 when every pin agrees, 1 otherwise.
+# check-tool-versions.sh: every copy of a tool pin names the version in scripts/tool-pins.sh.
 
 set -eu
 

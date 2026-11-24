@@ -1,7 +1,6 @@
 # Storage Engines — Engineering Contract
 
-> **Status: NORMATIVE for shipped behaviour; ADOPTED (owner ruling
-> 1243), not yet built, for the object-storage LSM target design (see "Target design" at
+> **Status: NORMATIVE for shipped behaviour; ADOPTED, not yet built, for the object-storage LSM target design (see "Target design" at
 > the end).** · Scope: go-qrdb · Last verified: 2026-10-27
 
 ## Exported surface

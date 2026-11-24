@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The cluster proof's fault image (#1619): the tools the default nemesis
-# commands run in a fault container. partition drop/heal: iptables and
-# ip6tables (iptables); disk-full fill/free: df, dd, rm (coreutils), awk
-# (mawk) and fallocate (util-linux). Built by `make cluster-proof-fault-image`.
+# The cluster proof's fault image: iptables, coreutils, mawk and util-linux for the default nemesis commands.
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
