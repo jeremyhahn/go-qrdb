@@ -661,22 +661,42 @@ const (
 	lanMaskTestsStep          = "- name: LAN mask tests (go-qrdb #1671)\n        run: python3 -I .github/workflows/testdata/ci-mask-lan-tests.py\n"
 	jobOutputHandoffTestsStep = "- name: Job output handoff tests (ci-template v1.54)\n        run: python3 -I .github/workflows/testdata/job-output-handoff-tests.py\n"
 	rowJobTestsStep           = "- name: Row job tests (ci-template v1.55)\n        run: python3 -I .github/workflows/testdata/row-job-tests.py\n"
+	specRoadmapCheckTestsStep = "- name: SPEC and ROADMAP check tests (ci-template v1.56)\n        run: python3 -I .github/workflows/testdata/spec-roadmap-check-tests.py\n"
 	codeReviewTestsStep       = "- name: Code review workflow tests (v5.12.11)\n        run: python3 -I .github/workflows/testdata/code-review-v51211-tests.py\n"
 	supersedeTestsStep        = "- name: Supersede job tests (#1708)\n        run: python3 -I .github/workflows/testdata/code-review-supersede-tests.py\n"
 )
 
 func TestCIRunnerSelectAndMaskTestsPresent(t *testing.T) {
 	body := readCIBody(t)
-	for _, step := range []string{runnerSelectTestsStep, lanMaskTestsStep, jobOutputHandoffTestsStep, rowJobTestsStep, codeReviewTestsStep, supersedeTestsStep} {
+	for _, step := range []string{runnerSelectTestsStep, lanMaskTestsStep, jobOutputHandoffTestsStep, rowJobTestsStep, specRoadmapCheckTestsStep, codeReviewTestsStep, supersedeTestsStep} {
 		if n := strings.Count(body, step); n != 1 {
 			t.Errorf("ci.yml has %d %q steps, want exactly one", n, step)
 		}
 	}
-	for _, name := range []string{"runner-select-tests.py", "ci-mask-lan-tests.py", "job-output-handoff-tests.py", "row-job-tests.py", "code-review-v51211-tests.py", "code-review-v51210-tests.py", "code-review-supersede-tests.py"} {
+	for _, name := range []string{"runner-select-tests.py", "ci-mask-lan-tests.py", "job-output-handoff-tests.py", "row-job-tests.py", "spec-roadmap-check-tests.py", "code-review-v51211-tests.py", "code-review-v51210-tests.py", "code-review-supersede-tests.py"} {
 		p := filepath.Join(repoRoot(t), ".github", "workflows", "testdata", name)
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("ci.yml runs .github/workflows/testdata/%s, which is missing: %v", name, err)
 		}
+	}
+}
+
+// specRoadmapCheckStep is ci-template v1.56's lint step that runs the SPEC/ROADMAP agreement check.
+const specRoadmapCheckStep = "- name: SPEC and ROADMAP agree (roadmap.md §2a)\n        run: python3 -I scripts/spec-roadmap-check.py\n"
+
+// TestCISpecRoadmapCheckInLint asserts ci.yml runs scripts/spec-roadmap-check.py once and the script is executable.
+func TestCISpecRoadmapCheckInLint(t *testing.T) {
+	body := readCIBody(t)
+	if n := strings.Count(body, specRoadmapCheckStep); n != 1 {
+		t.Errorf("ci.yml has %d %q steps, want exactly one", n, specRoadmapCheckStep)
+	}
+	p := filepath.Join(repoRoot(t), "scripts", "spec-roadmap-check.py")
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("ci.yml runs scripts/spec-roadmap-check.py, which is missing: %v", err)
+	}
+	if fi.Mode().Perm()&0o111 == 0 {
+		t.Errorf("scripts/spec-roadmap-check.py has mode %v, want executable", fi.Mode().Perm())
 	}
 }
 

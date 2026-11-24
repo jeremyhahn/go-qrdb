@@ -1,4 +1,5 @@
-# ci-template: v1.55 + v1.59 runner selection + go-qrdb CUSTOMIZE blocks — canonical CI for all first-party Go repos.
+# ci-template: v1.56 + v1.59 runner selection + go-qrdb CUSTOMIZE blocks — canonical CI for all first-party Go repos.
+# v1.56: the lint job's step "SPEC and ROADMAP agree (roadmap.md §2a)" runs scripts/spec-roadmap-check.py.
 # v1.55 (2026-11-22, the Tenant Agent's 12:47Z order, owner: the Software
 # plan links every project's ROADMAP, SPEC and docs, and every piece of work
 # corresponds to a SPEC row, ruling 1136): the `row` job (Row [one SPEC row
@@ -573,6 +574,9 @@ jobs:
       # v1.55: the Row job's check, run against a stub base and label API.
       - name: Row job tests (ci-template v1.55)
         run: python3 -I .github/workflows/testdata/row-job-tests.py
+      # v1.56: the SPEC/ROADMAP agreement check, run against fixture trees.
+      - name: SPEC and ROADMAP check tests (ci-template v1.56)
+        run: python3 -I .github/workflows/testdata/spec-roadmap-check-tests.py
       # The code review template's regression tests, against a fake curl forge; nothing reaches the network.
       - name: Code review workflow tests (v5.12.11)
         run: python3 -I .github/workflows/testdata/code-review-v51211-tests.py
@@ -1636,6 +1640,10 @@ jobs:
         # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
         # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
         run: scripts/ci-mask-lan.sh
+
+      # The SPEC/ROADMAP agreement check, from the checkout, with no token and no network.
+      - name: SPEC and ROADMAP agree (roadmap.md §2a)
+        run: python3 -I scripts/spec-roadmap-check.py
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
