@@ -535,6 +535,9 @@ jobs:
       # userinfo and classifies the host after it, and every mask step runs it.
       - name: LAN mask tests (go-qrdb #1671)
         run: python3 -I .github/workflows/testdata/ci-mask-lan-tests.py
+      # Drafts are not reviewed, by job condition and by the live PR (code-review v5.12.13).
+      - name: Code review draft tests
+        run: python3 -I .github/workflows/testdata/code-review-v51213-tests.py .github/workflows/code-review.yml
       - name: Runner labels (ruling 633)
         run: |
           python3 -I - <<'PY'
