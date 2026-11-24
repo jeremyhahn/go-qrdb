@@ -334,7 +334,7 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 // the undo fails too, before the open releases its providers.
 func (e *Engine) undoClaim(cause error) error {
 	if err := e.ReleaseClaim(); err != nil {
-		return &ClaimUndoError{Provider: e.provider, Err: cause, Undo: err}
+		return &ClaimUndoError{Provider: e.provider, Err: cause, Undo: err, Fresh: e.freshClaim}
 	}
 	return cause
 }
@@ -885,6 +885,21 @@ func (e *Engine) ReleaseClaim() error {
 	if !e.ownerWritten {
 		return nil
 	}
+	return e.ReleaseOwnerMarker()
+}
+
+// FreshlyClaimed reports that this open wrote the namespace's owner marker
+// onto a namespace that held no object before: its release (ReleaseClaim, or
+// a later retry as this owner) may reclaim the whole namespace.
+func (e *Engine) FreshlyClaimed() bool { return e.freshClaim }
+
+// ReleaseOwnerMarker deletes the namespace's owner marker, and only while it
+// still names this engine's owner; every record, the commit journal and the
+// format marker stay. It gives back a claim written onto a namespace that
+// already held data (ReleaseClaim), and is the later release of such a claim
+// when giving it back failed (ClaimUndoError without Fresh), so data the
+// claimant never wrote is never reclaimed.
+func (e *Engine) ReleaseOwnerMarker() error {
 	leave, err := e.enter()
 	if err != nil {
 		return err

@@ -484,7 +484,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		// to release, so the release is recorded for retryNamespaceReleases.
 		var unreleased claimUndoFailed
 		if errors.As(err, &unreleased) && unreleased.NamespaceClaimUndoFailed() {
-			if _, lerr := m.recordRelease(key, cfg, incarnation); lerr != nil {
+			if _, lerr := m.recordRelease(key, cfg, incarnation, !unreleased.NamespaceClaimFresh()); lerr != nil {
 				m.logger.Warn("failed to record the namespace release of a failed create",
 					slog.String("name", cfg.Name), slog.Any("error", lerr))
 			}
@@ -941,7 +941,10 @@ func (m *Manager) reclaimDatabaseObjects(key dbKey, db *Database) error {
 // it names this database and nothing foreign remains. Reclaim keeps the
 // marker so a drop that fails before its catalog delete is retried by the
 // same owner, and no other database claims the namespace meanwhile.
-func (m *Manager) releaseDatabaseNamespace(key dbKey, cfg DatabaseConfig) error {
+// claimOnly releases the claim of a failed create onto a namespace that held
+// data before it (releaseEntry.ClaimOnly): only the owner marker goes, while
+// it names this incarnation, and every record stays.
+func (m *Manager) releaseDatabaseNamespace(key dbKey, cfg DatabaseConfig, claimOnly bool) error {
 	if cfg.Backend != BackendObjstore {
 		return nil
 	}
@@ -959,7 +962,11 @@ func (m *Manager) releaseDatabaseNamespace(key dbKey, cfg DatabaseConfig) error 
 	}
 	var releaseErr error
 	if r, ok := backend.(backendReleaser); ok {
-		releaseErr = r.ReleaseOwner()
+		if claimOnly {
+			releaseErr = r.ReleaseOwnerMarker()
+		} else {
+			releaseErr = r.ReleaseOwner()
+		}
 	}
 	return errors.Join(releaseErr, backend.Close())
 }
@@ -972,8 +979,11 @@ type namespaceOwnedByAnother interface {
 
 // claimUndoFailed is an open that wrote its owner marker, failed, and could
 // not give the claim back (objstore.ClaimUndoError).
+// NamespaceClaimFresh reports that the open claimed the namespace new, so its
+// release may reclaim it whole; otherwise only the owner marker is its.
 type claimUndoFailed interface {
 	NamespaceClaimUndoFailed() bool
+	NamespaceClaimFresh() bool
 }
 
 func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
@@ -1109,7 +1119,7 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	releaseFile := ""
 	if db.Config().Backend == BackendObjstore {
 		var err error
-		if releaseFile, err = m.recordRelease(key, db.Config(), db.Incarnation()); err != nil {
+		if releaseFile, err = m.recordRelease(key, db.Config(), db.Incarnation(), false); err != nil {
 			return &DropError{Name: name, Err: err}
 		}
 	}
@@ -1137,7 +1147,7 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    the release returns; a release that fails keeps its entry from
 	//    step 4, is logged, and is retried at the next boot or object-storage
 	//    create (retryNamespaceReleases).
-	if err := m.releaseDatabaseNamespace(key, db.Config()); err != nil {
+	if err := m.releaseDatabaseNamespace(key, db.Config(), false); err != nil {
 		m.logger.Warn("database dropped; object-storage namespace not released",
 			slog.String("name", name), slog.String("error", err.Error()))
 	} else if err := m.forgetRelease(key.tenant, key.name, releaseFile); err != nil {

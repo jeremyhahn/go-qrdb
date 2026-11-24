@@ -370,3 +370,13 @@ func (b *BarrierBackend) ReleaseClaim() error {
 	}
 	return r.ReleaseClaim()
 }
+
+// ReleaseOwnerMarker forwards a claim-only release (backendReleaser) to the
+// wrapped backend.
+func (b *BarrierBackend) ReleaseOwnerMarker() error {
+	r, ok := b.inner.(backendReleaser)
+	if !ok {
+		return nil
+	}
+	return r.ReleaseOwnerMarker()
+}

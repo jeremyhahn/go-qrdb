@@ -176,6 +176,12 @@ type releaseEntry struct {
 	// the ledger keeps one entry per incarnation, so a name dropped,
 	// re-created and dropped again keeps every namespace it must release.
 	Incarnation string `json:"incarnation,omitempty"`
+	// ClaimOnly is set for the claim of a failed create onto a namespace that
+	// already held data no database owned: its release removes only the
+	// owner marker (backendReleaser.ReleaseOwnerMarker), since the records,
+	// journal and format marker are not the failed create's. Unset, the
+	// release reclaims the namespace whole (ReleaseOwner).
+	ClaimOnly bool `json:"claim_only,omitempty"`
 
 	// file is the entry's file name in its name's directory
 	// (releaseEntryFile), set when the entry is read back.
@@ -189,15 +195,17 @@ func (e releaseEntry) config() DatabaseConfig {
 	return DatabaseConfig{TenantID: e.TenantID, Name: e.Name, Backend: e.Backend, Objstore: e.Objstore, Incarnation: e.Incarnation}
 }
 
-// recordRelease durably records that cfg's namespace awaits its release.
-func (m *Manager) recordRelease(key dbKey, cfg DatabaseConfig, incarnation string) (string, error) {
+// recordRelease durably records that cfg's namespace awaits its release;
+// claimOnly records the release of a claim on existing data, which removes
+// only the owner marker (releaseEntry.ClaimOnly).
+func (m *Manager) recordRelease(key dbKey, cfg DatabaseConfig, incarnation string, claimOnly bool) (string, error) {
 	file, err := releaseEntryFile(incarnation)
 	if err != nil {
 		return "", err
 	}
 	// The configuration's own tenant and name, not the key's: the namespace
 	// owner is spelled from the configuration (objstoredb).
-	data, err := json.Marshal(releaseEntry{Backend: cfg.Backend, TenantID: cfg.TenantID, Name: cfg.Name, Objstore: cfg.Objstore, Incarnation: incarnation})
+	data, err := json.Marshal(releaseEntry{Backend: cfg.Backend, TenantID: cfg.TenantID, Name: cfg.Name, Objstore: cfg.Objstore, Incarnation: incarnation, ClaimOnly: claimOnly})
 	if err != nil {
 		return "", err
 	}
@@ -362,7 +370,7 @@ func (m *Manager) retryNamespaceRelease(ctx context.Context, cat Catalog, entry 
 			return
 		}
 	}
-	if err := m.releaseDatabaseNamespace(key, entry.config()); err != nil {
+	if err := m.releaseDatabaseNamespace(key, entry.config(), entry.ClaimOnly); err != nil {
 		warn("object-storage namespace release retry failed", err)
 		return
 	}
