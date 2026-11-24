@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -126,7 +126,7 @@ func TestPolicySpec_EnabledYAMLRoundTrip(t *testing.T) {
 			if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
 				t.Fatalf("Enabled = %v, want %v", got, tt.want)
 			}
-			out, err := yaml.Marshal(&policies[0].Spec)
+			out, err := gocodecyaml.New[*PolicySpec]().Marshal(&policies[0].Spec)
 			if err != nil {
 				t.Fatalf("yaml.Marshal() error = %v", err)
 			}

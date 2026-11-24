@@ -14,8 +14,78 @@
 package schema
 
 import (
+	"encoding/hex"
+	"reflect"
 	"testing"
 )
+
+// TestSchemaEncoding_BytesUnchanged pins the stored MessagePack encoding of
+// VectorValue and NamespaceInfo: a codec change must not change one byte of
+// what is already on disk. Every map holds one key, because MessagePack map
+// order is not sorted and a multi-key map has no single encoding.
+func TestSchemaEncoding_BytesUnchanged(t *testing.T) {
+	value := &VectorValue{
+		ID:        42,
+		Embedding: []float32{0.5, -1.25, 3},
+		Metadata:  map[string]string{"color": "red"},
+		CreatedAt: 1700000000,
+		UpdatedAt: 1700000100,
+		Version:   7,
+	}
+	info := &NamespaceInfo{
+		Name:           "docs",
+		VectorCount:    3,
+		Dimension:      3,
+		CreatedAt:      1700000000,
+		UpdatedAt:      1700000100,
+		DistanceMetric: "cosine",
+		IndexType:      "hnsw",
+		IndexConfig:    map[string]string{"m": "16"},
+		Metadata:       map[string]string{"team": "search"},
+		TenantID:       "tenant-a",
+		OwnerUserID:    "user-1",
+		Labels:         map[string]string{"env": "test"},
+		StorageBytes:   4096,
+	}
+
+	t.Run("VectorValue", func(t *testing.T) {
+		const want = "86a26964cf000000000000002aa3656d6293ca3f000000cabfa00000ca40400000a46d65746181a5636f6c6f72a3726564a763726561746564d3000000006553f100a775706461746564d3000000006553f164a3766572cf0000000000000007"
+		got, err := EncodeVectorValue(value)
+		if err != nil {
+			t.Fatalf("EncodeVectorValue: %v", err)
+		}
+		if hex.EncodeToString(got) != want {
+			t.Fatalf("VectorValue encoding changed:\n got %s\nwant %s", hex.EncodeToString(got), want)
+		}
+		raw, _ := hex.DecodeString(want)
+		decoded, err := DecodeVectorValue(raw)
+		if err != nil {
+			t.Fatalf("DecodeVectorValue: %v", err)
+		}
+		if !reflect.DeepEqual(decoded, value) {
+			t.Fatalf("DecodeVectorValue = %+v, want %+v", decoded, value)
+		}
+	})
+
+	t.Run("NamespaceInfo", func(t *testing.T) {
+		const want = "8da46e616d65a4646f6373a5636f756e74cf0000000000000003a364696dce00000003a763726561746564d3000000006553f100a775706461746564d3000000006553f164af64697374616e63655f6d6574726963a6636f73696e65aa696e6465785f74797065a4686e7377ac696e6465785f636f6e66696781a16da23136a86d6574616461746181a47465616da6736561726368a974656e616e745f6964a874656e616e742d61ad6f776e65725f757365725f6964a6757365722d31a66c6162656c7381a3656e76a474657374ad73746f726167655f6279746573d30000000000001000"
+		got, err := EncodeNamespaceInfo(info)
+		if err != nil {
+			t.Fatalf("EncodeNamespaceInfo: %v", err)
+		}
+		if hex.EncodeToString(got) != want {
+			t.Fatalf("NamespaceInfo encoding changed:\n got %s\nwant %s", hex.EncodeToString(got), want)
+		}
+		raw, _ := hex.DecodeString(want)
+		decoded, err := DecodeNamespaceInfo(raw)
+		if err != nil {
+			t.Fatalf("DecodeNamespaceInfo: %v", err)
+		}
+		if !reflect.DeepEqual(decoded, info) {
+			t.Fatalf("DecodeNamespaceInfo = %+v, want %+v", decoded, info)
+		}
+	})
+}
 
 func TestEncodeDecodeVectorValue(t *testing.T) {
 	tests := []struct {

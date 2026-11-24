@@ -17,11 +17,13 @@
 package soak
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -208,33 +210,38 @@ func encodeLines[T any](items []T) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// encodeHistory is history.jsonl's bytes.
-func encodeHistory(h history.History) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := history.Encode(&buf, h); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-// derived is the bytes of the files derived from the evidence.
+// derived is the files derived from the evidence: the timeline as entries,
+// streamed when written, and the bytes of the others.
 type derived struct {
-	timeline, timings, verdict []byte
+	timeline         []TimelineEntry
+	timings, verdict []byte
 }
 
 // derive judges the evidence and spells the derived files.
 func derive(ev evidence) (Verdict, derived, error) {
 	v := judge(ev)
-	var d derived
+	d := derived{timeline: buildTimeline(ev.history, ev.events)}
 	var err error
-	if d.timeline, err = encodeLines(buildTimeline(ev.history, ev.events)); err != nil {
-		return v, d, err
-	}
 	if d.timings, err = encodeJSON(ev.timings); err != nil {
 		return v, d, err
 	}
 	d.verdict, err = encodeJSON(v)
 	return v, d, err
+}
+
+// encodeTimeline writes entries to w as JSON lines, byte for byte what
+// encodeLines makes of them, without building the whole member in memory.
+func encodeTimeline(w io.Writer, entries []TimelineEntry) error {
+	for _, e := range entries {
+		b, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(append(b, '\n')); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // bundleWriter writes a bundle's files once each and remembers their
@@ -258,6 +265,16 @@ func createBundle(dir string) (*bundleWriter, error) {
 
 // write creates rel, a slash-separated path inside the bundle.
 func (b *bundleWriter) write(rel string, data []byte) error {
+	return b.writeStream(rel, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+// writeStream creates the member rel, refusing one that exists, and fills it
+// through fill, hashing what it writes on the way: a long run's history goes
+// to disk without a second copy of it in memory.
+func (b *bundleWriter) writeStream(rel string, fill func(io.Writer) error) error {
 	if !validMember(rel) {
 		return &BundleError{Path: b.dir, Reason: "invalid member path " + rel}
 	}
@@ -269,12 +286,17 @@ func (b *bundleWriter) write(rel string, data []byte) error {
 	if err != nil {
 		return &BundleError{Path: p, Reason: "cannot create file", Err: err}
 	}
-	_, werr := f.Write(data)
+	sum := sha256.New()
+	bw := bufio.NewWriter(io.MultiWriter(f, sum))
+	werr := fill(bw)
+	if werr == nil {
+		werr = bw.Flush()
+	}
 	cerr := f.Close()
 	if werr != nil || cerr != nil {
 		return &BundleError{Path: p, Reason: "cannot write file", Err: cmp.Or(werr, cerr)}
 	}
-	b.files[rel] = digest(data)
+	b.files[rel] = hex.EncodeToString(sum.Sum(nil))
 	return nil
 }
 

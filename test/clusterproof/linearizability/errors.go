@@ -34,6 +34,24 @@ func (e *TimeoutError) Error() string {
 		" operations undecided after " + e.Timeout.String()
 }
 
+// UndecidableError reports a key holding more indeterminate writes than the
+// search can bound: each one overlaps every later operation on the key, so
+// deciding it would take memory exponential in their count. Check refuses
+// the key before any search starts.
+type UndecidableError struct {
+	Key           string
+	Ops           int
+	Indeterminate int
+	Limit         int
+}
+
+func (e *UndecidableError) Error() string {
+	return "linearizability: key " + strconv.Quote(e.Key) + ": " + strconv.Itoa(e.Ops) +
+		" operations with " + strconv.Itoa(e.Indeterminate) +
+		" indeterminate writes exceed the search bound of " + strconv.Itoa(e.Limit) +
+		"; undecidable without unbounded memory"
+}
+
 // AmbiguousCASError is a compare-and-swap with no expected value. The history
 // format cannot tell an empty comparand from an absent one, and the two mean
 // different things to a store, so the checker refuses rather than guess.
