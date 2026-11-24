@@ -231,7 +231,8 @@ func callerInGroup(ctx context.Context, userSvc user.UserServicer, target, group
 	if err != nil {
 		return false, err
 	}
-	return u != nil && tenantid.Normalize(u.TenantID) == target && slices.Contains(u.GroupIDs, groupID), nil
+	// A pending join counts: it becomes a membership once promoted.
+	return u != nil && tenantid.Normalize(u.TenantID) == target && (slices.Contains(u.GroupIDs, groupID) || slices.Contains(u.PendingGroupIDs, groupID)), nil
 }
 
 // AuthorizeGroupMembership is the escalation guard for AddGroupMember: the

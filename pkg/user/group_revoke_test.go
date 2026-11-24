@@ -87,3 +87,76 @@ func TestGroupMembership_AddRemoveRevoke(t *testing.T) {
 		t.Fatalf("add unknown user: %v, want *UserNotFoundError", err)
 	}
 }
+
+// TestGroupMembership_PendingJoins pins the pending-join lifecycle: a pending
+// entry stays out of GroupIDs, is listed by Members, is cleared by
+// RevokeGroup and DropPendingMember, and PromoteMember moves it to GroupIDs.
+func TestGroupMembership_PendingJoins(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestStore(t)
+	gm, err := NewGroupMembership(svc)
+	if err != nil {
+		t.Fatalf("NewGroupMembership: %v", err)
+	}
+	mk := func(name string) *User {
+		u, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: name, TenantID: "acme"})
+		if err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		return u
+	}
+	alice, bob, carol := mk("alice"), mk("bob"), mk("carol")
+	get := func(u *User) *User {
+		got, err := svc.GetUser(ctx, u.ID)
+		if err != nil {
+			t.Fatalf("get %s: %v", u.Username, err)
+		}
+		return got
+	}
+
+	if changed, err := gm.AddPendingMember(ctx, alice.ID, "g-eng"); err != nil || !changed {
+		t.Fatalf("pending alice: changed=%v err=%v", changed, err)
+	}
+	if changed, err := gm.AddPendingMember(ctx, alice.ID, "g-eng"); err != nil || changed {
+		t.Fatalf("pending alice again: changed=%v err=%v, want unchanged", changed, err)
+	}
+	if got := get(alice); len(got.GroupIDs) != 0 || !slices.Equal(got.PendingGroupIDs, []string{"g-eng"}) {
+		t.Fatalf("alice = GroupIDs %v pending %v; want pending only", got.GroupIDs, got.PendingGroupIDs)
+	}
+	members, err := gm.Members(ctx, "acme", "g-eng")
+	if err != nil || len(members) != 1 || members[0].ID != alice.ID {
+		t.Fatalf("members with a pending join = %v, %v; want alice", members, err)
+	}
+	if n, err := gm.RevokeGroup(ctx, "acme", "g-eng"); err != nil || n != 1 {
+		t.Fatalf("revoke = %d, %v; want 1", n, err)
+	}
+	if got := get(alice); len(got.GroupIDs) != 0 || len(got.PendingGroupIDs) != 0 {
+		t.Fatalf("alice after revoke = GroupIDs %v pending %v; want neither", got.GroupIDs, got.PendingGroupIDs)
+	}
+	if changed, err := gm.PromoteMember(ctx, alice.ID, "g-eng"); err != nil || changed {
+		t.Fatalf("promote a revoked join: changed=%v err=%v, want unchanged", changed, err)
+	}
+
+	if _, err := gm.AddPendingMember(ctx, bob.ID, "g-eng"); err != nil {
+		t.Fatalf("pending bob: %v", err)
+	}
+	if changed, err := gm.PromoteMember(ctx, bob.ID, "g-eng"); err != nil || !changed {
+		t.Fatalf("promote bob: changed=%v err=%v", changed, err)
+	}
+	if got := get(bob); !slices.Equal(got.GroupIDs, []string{"g-eng"}) || len(got.PendingGroupIDs) != 0 {
+		t.Fatalf("bob after promote = GroupIDs %v pending %v", got.GroupIDs, got.PendingGroupIDs)
+	}
+	if changed, err := gm.AddPendingMember(ctx, bob.ID, "g-eng"); err != nil || changed {
+		t.Fatalf("pending join of a member: changed=%v err=%v, want unchanged", changed, err)
+	}
+
+	if _, err := gm.AddPendingMember(ctx, carol.ID, "g-eng"); err != nil {
+		t.Fatalf("pending carol: %v", err)
+	}
+	if changed, err := gm.DropPendingMember(ctx, carol.ID, "g-eng"); err != nil || !changed {
+		t.Fatalf("drop carol: changed=%v err=%v", changed, err)
+	}
+	if got := get(carol); len(got.GroupIDs) != 0 || len(got.PendingGroupIDs) != 0 {
+		t.Fatalf("carol after drop = GroupIDs %v pending %v; want neither", got.GroupIDs, got.PendingGroupIDs)
+	}
+}

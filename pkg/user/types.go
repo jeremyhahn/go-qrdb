@@ -69,6 +69,9 @@ type User struct {
 	// the RoleIDs of every group named here that still resolves.
 	GroupIDs []string `json:"groupIDs,omitempty"`
 
+	// PendingGroupIDs lists groups whose join is not yet validated; authentication ignores it.
+	PendingGroupIDs []string `json:"pendingGroupIDs,omitempty"`
+
 	// Lifecycle is the CANONICAL account state — pending, active, suspended,
 	// locked, disabled or deleting. It is the ONLY account-state field and the
 	// single source of truth for whether this account may authenticate; see
@@ -270,6 +273,10 @@ type UpdateUserRequest struct {
 	// GroupIDs replaces the current IAM group membership when non-nil
 	// (pkg/group). An empty, non-nil slice clears it.
 	GroupIDs []string
+
+	// pendingGroupIDs replaces User.PendingGroupIDs when non-nil; only the
+	// group membership store sets it.
+	pendingGroupIDs []string
 
 	// RoleBindings replaces the tenant-scoped role bindings when non-nil.
 	RoleBindings []RoleBinding

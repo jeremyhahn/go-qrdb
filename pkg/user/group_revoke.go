@@ -29,6 +29,7 @@ import (
 // (role_revoke.go): only the store can do that.
 type groupMembershipStore interface {
 	SetGroupMembership(ctx context.Context, userID uint64, groupID string, member bool) (bool, error)
+	changeGroupMembership(ctx context.Context, userID uint64, groupID string, op membershipOp) (bool, error)
 	RevokeGroup(ctx context.Context, tenantID, groupID string) (int, error)
 	GroupMembers(ctx context.Context, tenantID, groupID string) ([]*User, error)
 }
@@ -63,14 +64,34 @@ func (g *GroupMembership) RemoveMember(ctx context.Context, userID uint64, group
 	return g.s.SetGroupMembership(ctx, userID, groupID, false)
 }
 
-// RevokeGroup removes groupID from every account in tenantID and reports how
-// many accounts it changed. DeleteGroup calls it before the group record goes.
+// AddPendingMember adds groupID to the user's PendingGroupIDs, a join that
+// authentication ignores until PromoteMember. It reports whether the record
+// changed (false when the user is already a member or already pending).
+func (g *GroupMembership) AddPendingMember(ctx context.Context, userID uint64, groupID string) (bool, error) {
+	return g.s.changeGroupMembership(ctx, userID, groupID, opAddPending)
+}
+
+// PromoteMember moves groupID from the user's PendingGroupIDs to GroupIDs. It
+// reports whether the record changed (false when no join was pending).
+func (g *GroupMembership) PromoteMember(ctx context.Context, userID uint64, groupID string) (bool, error) {
+	return g.s.changeGroupMembership(ctx, userID, groupID, opPromote)
+}
+
+// DropPendingMember removes groupID from the user's PendingGroupIDs. It
+// reports whether the record changed (false when no join was pending).
+func (g *GroupMembership) DropPendingMember(ctx context.Context, userID uint64, groupID string) (bool, error) {
+	return g.s.changeGroupMembership(ctx, userID, groupID, opDropPending)
+}
+
+// RevokeGroup removes groupID from the GroupIDs and PendingGroupIDs of every
+// account in tenantID and reports how many accounts it changed. DeleteGroup
+// calls it before the group record goes.
 func (g *GroupMembership) RevokeGroup(ctx context.Context, tenantID, groupID string) (int, error) {
 	return g.s.RevokeGroup(ctx, tenantID, groupID)
 }
 
-// Members returns the accounts of tenantID whose GroupIDs name groupID, in
-// ascending ID order.
+// Members returns the accounts of tenantID whose GroupIDs or PendingGroupIDs
+// name groupID, in ascending ID order.
 func (g *GroupMembership) Members(ctx context.Context, tenantID, groupID string) ([]*User, error) {
 	return g.s.GroupMembers(ctx, tenantID, groupID)
 }
@@ -78,6 +99,11 @@ func (g *GroupMembership) Members(ctx context.Context, tenantID, groupID string)
 // SetGroupMembership routes to the store that holds the user's tenant, found
 // the way GetUser finds it.
 func (r *routingUserService) SetGroupMembership(ctx context.Context, userID uint64, groupID string, member bool) (bool, error) {
+	return r.changeGroupMembership(ctx, userID, groupID, memberOp(member))
+}
+
+// changeGroupMembership routes to the store that holds the user's tenant.
+func (r *routingUserService) changeGroupMembership(ctx context.Context, userID uint64, groupID string, op membershipOp) (bool, error) {
 	target, err := r.targetTenant(ctx, userID, "group membership")
 	if err != nil {
 		return false, err
@@ -90,7 +116,7 @@ func (r *routingUserService) SetGroupMembership(ctx context.Context, userID uint
 	if !ok {
 		return false, &GroupMembershipUnsupportedError{}
 	}
-	return s.SetGroupMembership(ctx, userID, groupID, member)
+	return s.changeGroupMembership(ctx, userID, groupID, op)
 }
 
 // RevokeGroup routes to the store that holds tenantID's accounts. A group's
@@ -124,6 +150,12 @@ func (r *routingUserService) GroupMembers(ctx context.Context, tenantID, groupID
 // SetGroupMembership adds (member true) or removes groupID on the user's
 // record, committing against the bytes it read and retrying a lost race.
 func (s *kvUserStore) SetGroupMembership(ctx context.Context, userID uint64, groupID string, member bool) (bool, error) {
+	return s.changeGroupMembership(ctx, userID, groupID, memberOp(member))
+}
+
+// changeGroupMembership applies op for groupID to the user's record,
+// committing against the bytes it read and retrying a lost race.
+func (s *kvUserStore) changeGroupMembership(ctx context.Context, userID uint64, groupID string, op membershipOp) (bool, error) {
 	if groupID == "" {
 		return false, &ValidationError{Field: "group_id", Reason: "must not be empty"}
 	}
@@ -139,7 +171,7 @@ func (s *kvUserStore) SetGroupMembership(ctx context.Context, userID uint64, gro
 		if base == nil {
 			return false, &UserNotFoundError{ID: userID}
 		}
-		req, err := membershipRequest(userID, base, groupID, member)
+		req, err := membershipRequest(userID, base, groupID, op)
 		if err != nil {
 			return false, err
 		}
@@ -158,7 +190,8 @@ func (s *kvUserStore) SetGroupMembership(ctx context.Context, userID uint64, gro
 	return false, lastErr
 }
 
-// RevokeGroup removes groupID from the GroupIDs of every account in tenantID.
+// RevokeGroup removes groupID from the GroupIDs and PendingGroupIDs of every
+// account in tenantID.
 func (s *kvUserStore) RevokeGroup(ctx context.Context, tenantID, groupID string) (int, error) {
 	if groupID == "" {
 		return 0, &ValidationError{Field: "group_id", Reason: "must not be empty"}
@@ -170,7 +203,7 @@ func (s *kvUserStore) RevokeGroup(ctx context.Context, tenantID, groupID string)
 	}
 	changed := 0
 	for _, id := range ids {
-		ok, err := s.SetGroupMembership(ctx, id, groupID, false)
+		ok, err := s.changeGroupMembership(ctx, id, groupID, opRevoke)
 		var nf *UserNotFoundError
 		if errors.As(err, &nf) {
 			continue
@@ -185,7 +218,8 @@ func (s *kvUserStore) RevokeGroup(ctx context.Context, tenantID, groupID string)
 	return changed, nil
 }
 
-// GroupMembers scans tenantID's accounts for those whose GroupIDs name groupID.
+// GroupMembers scans tenantID's accounts for those whose GroupIDs or
+// PendingGroupIDs name groupID.
 func (s *kvUserStore) GroupMembers(ctx context.Context, tenantID, groupID string) ([]*User, error) {
 	if groupID == "" {
 		return nil, &ValidationError{Field: "group_id", Reason: "must not be empty"}
@@ -209,16 +243,16 @@ func (s *kvUserStore) GroupMembers(ctx context.Context, tenantID, groupID string
 		if err := json.Unmarshal(data, u); err != nil {
 			return nil, &StoreError{Op: "group members", Detail: "unmarshal", Err: err}
 		}
-		if slices.Contains(u.GroupIDs, groupID) {
+		if slices.Contains(u.GroupIDs, groupID) || slices.Contains(u.PendingGroupIDs, groupID) {
 			members = append(members, u)
 		}
 	}
 	return members, nil
 }
 
-// membershipRequest builds the update that adds or removes groupID, or nil
+// membershipRequest builds the update that applies op for groupID, or nil
 // when the record already has the wanted membership or is terminal.
-func membershipRequest(id uint64, base []byte, groupID string, member bool) (*UpdateUserRequest, error) {
+func membershipRequest(id uint64, base []byte, groupID string, op membershipOp) (*UpdateUserRequest, error) {
 	u := &User{}
 	if err := json.Unmarshal(base, u); err != nil {
 		return nil, &StoreError{Op: "group membership", Detail: "unmarshal", Err: err}
@@ -227,17 +261,85 @@ func membershipRequest(id uint64, base []byte, groupID string, member bool) (*Up
 		return nil, nil
 	}
 	has := slices.Contains(u.GroupIDs, groupID)
-	switch {
-	case member && !has:
-		next := append(slices.Clone(u.GroupIDs), groupID)
-		slices.Sort(next)
-		return &UpdateUserRequest{ID: id, GroupIDs: next}, nil
-	case !member && has:
-		next := slices.DeleteFunc(slices.Clone(u.GroupIDs), func(g string) bool { return g == groupID })
-		if next == nil {
-			next = []string{}
+	pending := slices.Contains(u.PendingGroupIDs, groupID)
+	req := &UpdateUserRequest{ID: id}
+	switch op {
+	case opAdd:
+		if has {
+			return nil, nil
 		}
-		return &UpdateUserRequest{ID: id, GroupIDs: next}, nil
+		req.GroupIDs = withGroup(u.GroupIDs, groupID)
+	case opRemove:
+		if !has {
+			return nil, nil
+		}
+		req.GroupIDs = withoutGroup(u.GroupIDs, groupID)
+	case opAddPending:
+		if has || pending {
+			return nil, nil
+		}
+		req.pendingGroupIDs = withGroup(u.PendingGroupIDs, groupID)
+	case opPromote:
+		if !pending {
+			return nil, nil
+		}
+		req.pendingGroupIDs = withoutGroup(u.PendingGroupIDs, groupID)
+		if !has {
+			req.GroupIDs = withGroup(u.GroupIDs, groupID)
+		}
+	case opDropPending:
+		if !pending {
+			return nil, nil
+		}
+		req.pendingGroupIDs = withoutGroup(u.PendingGroupIDs, groupID)
+	case opRevoke:
+		if !has && !pending {
+			return nil, nil
+		}
+		if has {
+			req.GroupIDs = withoutGroup(u.GroupIDs, groupID)
+		}
+		if pending {
+			req.pendingGroupIDs = withoutGroup(u.PendingGroupIDs, groupID)
+		}
+	default:
+		return nil, &ValidationError{Field: "op", Reason: "unknown group membership change"}
 	}
-	return nil, nil
+	return req, nil
+}
+
+// membershipOp names a change membershipRequest makes to a user's groups.
+type membershipOp int
+
+const (
+	opAdd membershipOp = iota + 1
+	opRemove
+	opAddPending
+	opPromote
+	opDropPending
+	opRevoke
+)
+
+// memberOp is opAdd when member is true and opRemove otherwise.
+func memberOp(member bool) membershipOp {
+	if member {
+		return opAdd
+	}
+	return opRemove
+}
+
+// withGroup returns a sorted copy of ids with groupID added.
+func withGroup(ids []string, groupID string) []string {
+	next := append(slices.Clone(ids), groupID)
+	slices.Sort(next)
+	return next
+}
+
+// withoutGroup returns a copy of ids without groupID, non-nil so it clears.
+func withoutGroup(ids []string, groupID string) []string {
+	next := slices.DeleteFunc(slices.Clone(ids), func(g string) bool { return g == groupID })
+	if next == nil {
+		next = []string{}
+	}
+	return next
 }

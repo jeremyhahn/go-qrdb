@@ -169,7 +169,9 @@ func (s *Service) List(ctx context.Context, req *group.ListGroupsRequest) (*grou
 // runs inside a member claim on the group record, held until the membership
 // commits: the group's role set cannot change between the check and the
 // join (a concurrent update fails with *group.GroupConflictError).
-// A join whose claim lapsed before it committed is undone and reported as a conflict.
+// The join is written as pending, which authentication ignores, and promoted
+// to a membership only once the claim is released; a join whose claim lapsed
+// is dropped and reported as a conflict.
 func (s *Service) AddMember(ctx context.Context, userID uint64, groupID string) error {
 	g, token, err := s.Groups.ClaimGroup(ctx, groupID, group.ClaimMember, func(c *group.Group) error {
 		if err := s.Auth.AuthorizeGroupMembership(ctx, s.Users, s.Roles, userID, c); err != nil {
@@ -180,11 +182,29 @@ func (s *Service) AddMember(ctx context.Context, userID uint64, groupID string) 
 	if err != nil {
 		return err
 	}
-	changed, err := s.Members.AddMember(ctx, userID, g.ID)
-	return s.finishMember(ctx, g.ID, token, changed, err, func(ctx context.Context) error {
-		_, err := s.Members.RemoveMember(ctx, userID, g.ID)
+	changed, err := s.Members.AddPendingMember(ctx, userID, g.ID)
+	ctx = context.WithoutCancel(ctx)
+	rerr := s.Groups.ReleaseClaim(ctx, g.ID, token)
+	var lapsed *group.ClaimLapsedError
+	isLapse := errors.As(rerr, &lapsed)
+	if err != nil {
+		if rerr != nil && !isLapse {
+			return errors.Join(err, rerr)
+		}
 		return err
-	})
+	}
+	if rerr != nil {
+		dropped, derr := s.Members.DropPendingMember(ctx, userID, g.ID)
+		if !isLapse {
+			return errors.Join(rerr, derr)
+		}
+		if !changed && !dropped && derr == nil {
+			return nil
+		}
+		return errors.Join(&group.GroupConflictError{ID: g.ID}, derr)
+	}
+	_, err = s.Members.PromoteMember(ctx, userID, g.ID)
+	return err
 }
 
 // RemoveMember removes a user from a group. Like AddMember, the removal
@@ -208,11 +228,11 @@ func (s *Service) RemoveMember(ctx context.Context, userID uint64, groupID strin
 	})
 }
 
-// finishMember releases a member claim once the membership change it guarded
-// has committed (or failed), even when ctx is already cancelled. When the
-// claim lapsed before a change committed, undo reverts the change and the
-// result is *group.GroupConflictError; an unreleased claim lapses after its
-// lease.
+// finishMember releases the member claim of a removal once the change it
+// guarded has committed (or failed), even when ctx is already cancelled. When
+// the claim lapsed before the removal committed, undo restores the membership
+// and the result is *group.GroupConflictError; an unreleased claim lapses
+// after its lease.
 func (s *Service) finishMember(ctx context.Context, id, token string, changed bool, err error, undo func(context.Context) error) error {
 	ctx = context.WithoutCancel(ctx)
 	rerr := s.Groups.ReleaseClaim(ctx, id, token)

@@ -213,6 +213,17 @@ type racingGroups struct {
 	race       func()
 	claimRace  func()
 	claimAfter func()
+	// releaseBefore runs before a ReleaseClaim reaches the store.
+	releaseBefore func()
+}
+
+func (r *racingGroups) ReleaseClaim(ctx context.Context, id, token string) error {
+	if r.releaseBefore != nil {
+		before := r.releaseBefore
+		r.releaseBefore = nil
+		before()
+	}
+	return r.GroupServicer.ReleaseClaim(ctx, id, token)
 }
 
 func (r *racingGroups) UpdateGroup(ctx context.Context, req *group.UpdateGroupRequest) (*group.Group, error) {
@@ -435,10 +446,13 @@ func TestGroupService_JoinRacingARoleAddIsNotASelfGrant(t *testing.T) {
 	}
 }
 
+// TestGroupService_JoinAfterALapsedClaimIsUndone pins that a join stays
+// pending, invisible to authentication, until its claim is released: an SO
+// role added after the claim lapsed never reaches the joining Admin, and the
+// lapsed join is dropped as a conflict.
 func TestGroupService_JoinAfterALapsedClaimIsUndone(t *testing.T) {
 	f := newStrictFixture(t)
 	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
-	userRole := role.SystemRoleID("acme", role.RoleNameUser)
 	keeper := authtest.CustomRole(t, f.roles, "acme", "group-keeper", permission.GroupsRead, permission.GroupsUpdate)
 	asSO := acmeCaller(0, admin, so)
 	g, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "crypto"})
@@ -451,11 +465,18 @@ func TestGroupService_JoinAfterALapsedClaimIsUndone(t *testing.T) {
 	}
 	asAdmin := acmeCaller(self.ID, admin, keeper)
 	raced := false
-	f.racing.claimAfter = func() {
+	f.racing.releaseBefore = func() {
 		raced = true
+		u, err := f.users.GetUser(asSO, self.ID)
+		if err != nil || slices.Contains(u.GroupIDs, g.ID) || !slices.Contains(u.PendingGroupIDs, g.ID) {
+			t.Errorf("admin before the release = %+v, %v; want the join pending only", u, err)
+		}
 		f.clock.Advance(31 * time.Second)
-		if _, err := f.svc.Update(asAdmin, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{userRole}}); err != nil {
-			t.Errorf("role add over the lapsed claim: %v", err)
+		if _, err := f.svc.Update(asSO, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{so}}); err != nil {
+			t.Errorf("SO role add over the lapsed claim: %v", err)
+		}
+		if u, err := f.users.GetUser(asSO, self.ID); err != nil || slices.Contains(u.GroupIDs, g.ID) {
+			t.Errorf("admin after the SO role add = %+v, %v; want no membership", u, err)
 		}
 	}
 	var conflict *group.GroupConflictError
@@ -463,10 +484,10 @@ func TestGroupService_JoinAfterALapsedClaimIsUndone(t *testing.T) {
 		t.Fatalf("join after its claim lapsed: %v, want *GroupConflictError", err)
 	}
 	if !raced {
-		t.Fatal("the role add never ran after the claim")
+		t.Fatal("the role add never ran before the release")
 	}
-	if u, err := f.users.GetUser(asSO, self.ID); err != nil || slices.Contains(u.GroupIDs, g.ID) {
-		t.Fatalf("admin after the undone join = %+v, %v; want no membership", u, err)
+	if u, err := f.users.GetUser(asSO, self.ID); err != nil || slices.Contains(u.GroupIDs, g.ID) || len(u.PendingGroupIDs) != 0 {
+		t.Fatalf("admin after the dropped join = %+v, %v; want no membership and nothing pending", u, err)
 	}
 	_, token, err := f.groups.ClaimGroup(asSO, g.ID, group.ClaimMember, nil)
 	if err != nil {
