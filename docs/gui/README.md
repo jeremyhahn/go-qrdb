@@ -99,7 +99,7 @@ The desktop build embeds the compiled frontend assets:
 var assets embed.FS
 ```
 
-The Wails application registers 31 Go binding objects, each wrapping a
+The Wails application registers 33 Go binding objects, each wrapping a
 domain of the Go SDK (the authoritative list is `guiBindings.bindList()`
 in `cmd/qrdb/gui_desktop_bindings.go`, pinned by
 `TestGUIBindings_AllBindingsPresent`):
@@ -129,6 +129,7 @@ in `cmd/qrdb/gui_desktop_bindings.go`, pinned by
 | `SealBinding`              | Seal/unseal             |
 | `ConfigBinding`            | App config state        |
 | `TenantBinding`            | Tenant management       |
+| `VolumePoolBinding`        | Volume pools            |
 | `BackupBinding`            | Backup/restore          |
 | `OfficerBinding`           | Share holders           |
 | `CeremonyBinding`          | Initialization ceremony |
@@ -136,6 +137,7 @@ in `cmd/qrdb/gui_desktop_bindings.go`, pinned by
 | `LockBinding`              | Row locks               |
 | `CredentialBinding`        | Named credentials       |
 | `AuditBinding`             | Audit log               |
+| `VlogBinding`              | Verifiable logs         |
 | `DaemonBinding`            | Local qrdbd lifecycle   |
 
 `OfficerBinding` exposes share-holder operations to the desktop GUI for
@@ -252,6 +254,7 @@ database exposes every engine, so the tabs are not gated by engine:
 | Locks        | Row locks                                |
 | Time Series  | Write, query, aggregate time-series data |
 | Vectors      | Namespace CRUD, search, index management |
+| Verifiable Logs | Create logs, append and read entries, inclusion and consistency proofs, sign heads, rotate the head-signing key, expire bodies (`VlogView.svelte`) |
 | SQL Browser  | Shown only when MySQL or PostgreSQL is enabled for the database |
 | Settings     | Per-database settings, always last       |
 
