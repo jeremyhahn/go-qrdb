@@ -273,7 +273,7 @@ test.describe("Collection Advanced", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const b = (window as any).go.main.CollectionBinding;
       await b.InsertDocument({
-        database: "default",
+        database: "coll-adv",
         collection: "race-a",
         document: { name: "FromA" },
       });
