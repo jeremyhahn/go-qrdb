@@ -159,6 +159,13 @@ func bootFormationClusterWith(t *testing.T, ca *qrdbdharness.CA, replicas []form
 // t.Fatal; it records what it saw for the test goroutine to judge.
 func bootFormationClusterObserved(t *testing.T, ca *qrdbdharness.CA, replicas []formationReplica, identitiesFor func(uint64) string, configure func(*qrdbconfig.Config), onReturn func(i int, n *Node), serverOpts ...server.ServerOption) ([]*Node, error) {
 	t.Helper()
+	return bootFormationClusterNodeOpts(t, ca, replicas, identitiesFor, configure, onReturn, nil, serverOpts...)
+}
+
+// bootFormationClusterNodeOpts is bootFormationClusterObserved with nodeOpts
+// passed to every node beside its Raft mTLS.
+func bootFormationClusterNodeOpts(t *testing.T, ca *qrdbdharness.CA, replicas []formationReplica, identitiesFor func(uint64) string, configure func(*qrdbconfig.Config), onReturn func(i int, n *Node), nodeOpts []NodeOption, serverOpts ...server.ServerOption) ([]*Node, error) {
+	t.Helper()
 	caPEM := mustReadCAPEM(t, ca)
 	members := make(map[uint64]string, len(replicas))
 	for _, r := range replicas {
@@ -178,7 +185,8 @@ func bootFormationClusterObserved(t *testing.T, ca *qrdbdharness.CA, replicas []
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			nodes[i], errs[i] = NewClusteredNode(context.Background(), cfg, members, serverOpts, WithRaftMTLS(mtls))
+			opts := append([]NodeOption{WithRaftMTLS(mtls)}, nodeOpts...)
+			nodes[i], errs[i] = NewClusteredNode(context.Background(), cfg, members, serverOpts, opts...)
 			if errs[i] == nil && onReturn != nil {
 				onReturn(i, nodes[i])
 			}
