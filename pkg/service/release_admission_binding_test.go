@@ -47,6 +47,8 @@ type bindingHost struct {
 	members        map[uint64]string
 	configChangeID uint64
 	indexes        []uint64
+	// requestedAddrs holds the address of each add request indexes records.
+	requestedAddrs []string
 
 	// pauseAddr's first admission blocks after the gate admits it until
 	// resume is closed; admitted is closed when it reaches the pause.
@@ -217,7 +219,13 @@ func (h *bindingHost) RequestAddNodeWithIdentity(_ context.Context, shardID, rep
 		h.inFlightRefusals++
 		return nil, quicraft.ErrRejected
 	}
+	if existing, ok := h.members[replicaID]; ok && existing == addr &&
+		(configChangeIndex == 0 || configChangeIndex == h.configChangeID) {
+		// Re-adding a member at its own address commits no configuration change.
+		return newCompletedRequestState(quicraft.RequestResult{}), nil
+	}
 	h.indexes = append(h.indexes, configChangeIndex)
+	h.requestedAddrs = append(h.requestedAddrs, addr)
 	if configChangeIndex != 0 && configChangeIndex != h.configChangeID {
 		return nil, quicraft.ErrStaleConfigChange
 	}
@@ -780,7 +788,7 @@ func ambiguousBoundAdds(t *testing.T, h *bindingHost, old, next cluster.Member,
 // assertAmbiguousBoundAdds checks that the ambiguous add surfaced its timeout,
 // the second add was refused with the release gap once the first committed,
 // and only the first candidate became a member.
-func assertAmbiguousBoundAdds(t *testing.T, h *bindingHost, first, second error) {
+func assertAmbiguousBoundAdds(t *testing.T, h *bindingHost, old, next cluster.Member, first, second error) {
 	t.Helper()
 	if first == nil {
 		t.Fatal("ambiguous add = nil, want its timeout error")
@@ -791,13 +799,16 @@ func assertAmbiguousBoundAdds(t *testing.T, h *bindingHost, first, second error)
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, n4 := h.members[4]
-	_, n5 := h.members[5]
-	if n4 || !n5 {
-		t.Fatalf("members = %v, want n5 added and n4 refused", h.members)
+	_, nextAdded := h.members[next.NodeID]
+	_, oldAdded := h.members[old.NodeID]
+	if nextAdded || !oldAdded {
+		t.Fatalf("members = %v, want %s added and %s refused", h.members, old.Address, next.Address)
 	}
-	if len(h.indexes) != 1 {
-		t.Fatalf("configChangeIndex per request = %v, want only the ambiguous add's", h.indexes)
+	if slices.Contains(h.requestedAddrs, next.Address) {
+		t.Fatalf("add requests = %v, want none for the refused %s", h.requestedAddrs, next.Address)
+	}
+	if !slices.Equal(h.requestedAddrs, []string{old.Address}) {
+		t.Fatalf("add requests = %v, want the ambiguous add of %s once", h.requestedAddrs, old.Address)
 	}
 }
 
@@ -811,7 +822,7 @@ func TestAdminService_AddMemberAmbiguousTimeoutStaysFenced(t *testing.T) {
 	h := newBindingHostAt(t, 0, old, next)
 
 	first, second := ambiguousBoundAdds(t, h, old, next, (*AdminService).AddMember)
-	assertAmbiguousBoundAdds(t, h, first, second)
+	assertAmbiguousBoundAdds(t, h, old, next, first, second)
 }
 
 // AddObserverMember keeps an ambiguous add fenced exactly as AddMember does.
@@ -821,7 +832,7 @@ func TestAdminService_AddObserverMemberAmbiguousTimeoutStaysFenced(t *testing.T)
 	h := newBindingHostAt(t, 0, old, next)
 
 	first, second := ambiguousBoundAdds(t, h, old, next, (*AdminService).AddObserverMember)
-	assertAmbiguousBoundAdds(t, h, first, second)
+	assertAmbiguousBoundAdds(t, h, old, next, first, second)
 }
 
 // resultStub is a membershipResult with a fixed Result error and ResultC.
