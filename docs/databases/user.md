@@ -360,9 +360,18 @@ log in a non-`raft` database created with `--barrier-enabled` and a
 `--data-dir` of its own.
 
 **A log is still there, or cannot be read, after a database was dropped and
-created again.** Dropping a database leaves a `--data-dir` you chose in place,
-with the dropped database's encrypted log in it. Create the replacement
-database with a new `--data-dir`.
+created again.** A barrier database's logs live in its parent group, not in
+its `--data-dir`. The drop reclaims every log of the name in that group before
+the name is released, so a database created again under the name starts with
+none. A drop that cannot reclaim them is refused (`LogFeatureNotActiveError`,
+`UNAVAILABLE`) and leaves the database in place: retry the drop once the
+cluster feature is active on every replica.
+
+**`qrdb database create --barrier-enabled` says the name already holds
+verifiable logs.** Logs were created under the name before the database
+existed (`DatabaseLogsExistError`, `FAILED_PRECONDITION`). They are stored
+without the barrier, and a barrier-enabled database cannot adopt them. Create
+the barrier database under another name.
 
 **`qrdb vlog` is an unknown command.** The client was built without verifiable
 logs (`WITH_QRDB_VLOG=0`); a server built without them answers every vlog call
