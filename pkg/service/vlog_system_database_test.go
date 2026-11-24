@@ -19,8 +19,10 @@ package service
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
@@ -89,5 +91,76 @@ func TestLogService_BarrierTenantsSystemDatabaseLogsStayBehindItsBarrier(t *test
 	}
 	if head, err := svc.Head(f.ctx, &HeadRequest{LogRef: releases}); err != nil || head.Head.Size != 1 {
 		t.Fatalf("Head(system/releases) after unseal = %+v, %v; want 1 entry", head, err)
+	}
+}
+
+// TestLogService_BarrierSystemDatabaseSignsAndRotates pins that a barrier
+// database whose writes need no drop fence (the default database name, or
+// the system tenant) still signs and rotates the keys of its logs.
+func TestLogService_BarrierSystemDatabaseSignsAndRotates(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		tenantID string
+		ctx      context.Context
+	}{
+		{name: "system tenant", tenantID: "", ctx: context.Background()},
+		{name: "tenant", tenantID: "acme", ctx: acmeCtx()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			g := newFenceGroup(t)
+			mgr := newBarrierDatabaseManager(t, dir, database.WithKeyspaceReclaimer(markerReclaimer{mu: &g.mu, store: g.store}))
+			svc, _ := newParentGroupLogService(t, g, mgr, nil)
+			bg := context.Background()
+			db, err := mgr.CreateWithCredentials(bg, database.DatabaseConfig{
+				TenantID: tc.tenantID, Name: tenant.DefaultDatabase, Backend: database.BackendPebble,
+				DataDir: filepath.Join(dir, "default"),
+				Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
+			}, seal.MustCredentials(bg, []byte(barrierDatabasePass)))
+			if err != nil {
+				t.Fatalf("create the barrier %s database: %v", tenant.DefaultDatabase, err)
+			}
+			if !db.BarrierEnabled() || db.Incarnation() == "" {
+				t.Fatalf("barrier enabled %v, incarnation %q; want a barrier database with an incarnation", db.BarrierEnabled(), db.Incarnation())
+			}
+			ref := LogRef{Database: tenant.DefaultDatabase, Log: "releases"}
+			const origin = "example.test/system/releases"
+			created, err := svc.CreateLog(tc.ctx, &CreateLogRequest{LogRef: ref, Origin: origin, SigningKeyType: vlog.SignatureEd25519})
+			if err != nil {
+				t.Fatalf("CreateLog: %v", err)
+			}
+			if _, err := svc.Append(tc.ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("system-entry-0001")}}); err != nil {
+				t.Fatalf("Append: %v", err)
+			}
+			signed, err := svc.SignHead(tc.ctx, &SignHeadRequest{LogRef: ref})
+			if err != nil {
+				t.Fatalf("SignHead: %v", err)
+			}
+			pub, err := created.Key.Public()
+			if err != nil {
+				t.Fatalf("created key: %v", err)
+			}
+			if err := vlog.VerifyHead(pub, origin, signed.Head); err != nil {
+				t.Fatalf("VerifyHead under the first key = %v", err)
+			}
+			rotated, err := svc.RotateKey(tc.ctx, &RotateKeyRequest{LogRef: ref, SigningKeyType: vlog.SignatureEd25519})
+			if err != nil {
+				t.Fatalf("RotateKey: %v", err)
+			}
+			if _, err := svc.Append(tc.ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("system-entry-0002")}}); err != nil {
+				t.Fatalf("Append after RotateKey: %v", err)
+			}
+			signed, err = svc.SignHead(tc.ctx, &SignHeadRequest{LogRef: ref})
+			if err != nil {
+				t.Fatalf("SignHead after RotateKey: %v", err)
+			}
+			pub, err = rotated.Key.Public()
+			if err != nil {
+				t.Fatalf("rotated key: %v", err)
+			}
+			if err := vlog.VerifyHead(pub, origin, signed.Head); err != nil || signed.Head.Size != 2 {
+				t.Fatalf("VerifyHead(size %d) under the rotated key = %v; want a verified head of size 2", signed.Head.Size, err)
+			}
+		})
 	}
 }

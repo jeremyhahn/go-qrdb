@@ -408,6 +408,10 @@ func (s *logService) admit(ctx context.Context, id vlog.LogID, features []featur
 		return logGroup{}, err
 	}
 	g := logGroup{target: target}
+	held := db != nil
+	if held {
+		g.incarnation = db.Incarnation()
+	}
 	if !s.route.fenced(id) {
 		return g, nil
 	}
@@ -418,9 +422,7 @@ func (s *logService) admit(ctx context.Context, id vlog.LogID, features []featur
 	// that: its marker absent (a drop's tombstone outlives the drop) and no
 	// database holding the name, so a write admitted as a drop finished is
 	// refused rather than outliving the drop that reclaimed the name's logs.
-	held := db != nil
 	if held {
-		g.incarnation = db.Incarnation()
 		if err := s.route.initFence(ctx, tenantID, id.Database, g.incarnation); err != nil {
 			return logGroup{}, err
 		}
@@ -607,11 +609,6 @@ func (s *logService) CreateLog(ctx context.Context, req *CreateLogRequest) (*Cre
 	// and persist other bytes than its peers, so the log records none and is
 	// a legacy log of the database holding its name.
 	desc.Incarnation = g.incarnation
-	if !s.route.fenced(id) {
-		if db, err := s.route.databases.GetOwned(id.Database, id.TenantID); err == nil {
-			desc.Incarnation = db.Incarnation()
-		}
-	}
 	if !g.target.featureEnabled(featuregate.VerifiableLogDrop) {
 		desc.Incarnation = ""
 	}
