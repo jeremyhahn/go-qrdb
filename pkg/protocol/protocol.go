@@ -727,7 +727,17 @@ type IndexCreateOptions struct {
 	// the proposer, because two nodes proposing creates for the same shard
 	// each see the count before the other's create applies (go-qrdb#1088).
 	MaxIndexes uint32
+
+	// Rescope makes a same-owner re-create whose composed key scope differs
+	// rebuild the index at the new scope. Without it the existing index is
+	// kept, as every command written before the flag meant. The proposer
+	// sets it once featuregate.IndexRescope is enabled for the group.
+	Rescope bool
 }
+
+// IndexCreateFlagRescope is the bit of the OpIndexCreate flags trailer that
+// carries IndexCreateOptions.Rescope.
+const IndexCreateFlagRescope byte = 0x01
 
 // IndexDropOptions carries the properties an OpIndexDrop command encodes.
 // The zero value is an UNCONDITIONAL drop, which is what every drop command
@@ -838,9 +848,14 @@ func EncodeIndexCreateOpts(name, fieldName string, opts IndexCreateOptions) ([]b
 	copy(buf[off:], ownerBytes)
 
 	// The index cap trails the owner when there is one; an uncapped create
-	// ends at the owner, as it did before the cap existed.
-	if opts.MaxIndexes > 0 {
+	// ends at the owner, as it did before the cap existed. A rescope create
+	// always carries the cap (zero when uncapped) followed by one flags
+	// byte; without Rescope the payload is the one written before the flag.
+	if opts.MaxIndexes > 0 || opts.Rescope {
 		buf = binary.LittleEndian.AppendUint32(buf, opts.MaxIndexes)
+	}
+	if opts.Rescope {
+		buf = append(buf, IndexCreateFlagRescope)
 	}
 
 	return buf, nil
@@ -1653,10 +1668,18 @@ func DecodeIndexCreateOpts(payload []byte) (name, fieldName string, opts IndexCr
 	if off == len(payload) {
 		return name, fieldName, opts, nil
 	}
-	if len(payload)-off != 4 {
+	rest := len(payload) - off
+	if rest != 4 && rest != 5 {
 		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: malformed index cap"}
 	}
 	opts.MaxIndexes = binary.LittleEndian.Uint32(payload[off:])
+	if rest == 5 {
+		flags := payload[off+4]
+		if flags&^IndexCreateFlagRescope != 0 {
+			return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: unknown flags"}
+		}
+		opts.Rescope = flags&IndexCreateFlagRescope != 0
+	}
 	return name, fieldName, opts, nil
 }
 

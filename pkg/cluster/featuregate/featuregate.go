@@ -272,9 +272,18 @@ const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 // engineering.md, docs/transactions/engineering.md).
 const OrderedUniqueCheck feature.Feature = "ordered-unique-check"
 
+// IndexRescope is the key-scope rebuild of OpIndexCreate: a command carrying
+// the protocol.IndexCreateOptions.Rescope flag rebuilds a same-owner index
+// whose composed key scope differs at the new scope. An older binary treats
+// such a re-create as idempotent success and keeps the existing index, so
+// until every replica of the group advertises this feature the create is
+// proposed without the flag and keeps that meaning
+// (docs/secondary-indexes/engineering.md).
+const IndexRescope feature.Feature = "index-rescope"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL, OrderedUniqueCheck}
+var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL, OrderedUniqueCheck, IndexRescope}
 
 // Supported returns the features this binary implements.
 func Supported() []feature.Feature {
