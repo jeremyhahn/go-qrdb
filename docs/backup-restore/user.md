@@ -190,14 +190,13 @@ backup:
 ```
 
 ```yaml
-# Azure Blob Storage: settings are the go-objstore azure provider's keys
-# (storage account and container); the account key is the one credential.
+# Azure Blob Storage: settings are the go-objstore azure provider's keys (accountName, containerName, optional endpoint for an Azure-compatible service); the account key is the one credential.
 backup:
   destination:
     provider: azure
     settings:
-      # the go-objstore azure provider's storage-account and container
-      # keys, written exactly as that provider names them
+      accountName: qrdbbackups
+      containerName: qrdb-backups
     credentials:
       secret_file: /etc/qrdb/backup-azure.account-key
 ```
@@ -213,6 +212,9 @@ backup:
 
 - `settings` keys pass to the provider exactly as written: go-objstore's
   `forcePathStyle` stays camelCase.
+- An Azure-compatible endpoint (for example Azurite) is set with
+  `settings.endpoint`; GCS reaches an emulator through the
+  `STORAGE_EMULATOR_HOST` environment variable of the `qrdbd` process.
 - A credential is only ever referenced by file (`credentials.key_file`,
   `credentials.secret_file`, readable only by the `qrdbd` user). A credential
   pasted under `settings` is refused at startup with an error naming the key,
