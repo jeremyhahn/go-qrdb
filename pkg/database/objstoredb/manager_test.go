@@ -568,6 +568,71 @@ func TestManager_FailedCreateClaimUndoOnExistingDataKeepsData(t *testing.T) {
 	}
 }
 
+// TestManager_FailedCreateReleaseClaimFailureIsRetried: an open that
+// succeeded, a later create step that failed, and a claim give-back that
+// failed too leave a release entry; the retry releases a fresh namespace
+// whole and, on existing data, removes only the owner marker.
+func TestManager_FailedCreateReleaseClaimFailureIsRetried(t *testing.T) {
+	run := func(t *testing.T, root string, want func(t *testing.T, after []string)) {
+		t.Helper()
+		dataDir := t.TempDir()
+		mgr := newManager(t, dataDir)
+		t.Cleanup(func() { releaseFaultArmed.Store(false) })
+		mgr.SetKeyspaceReclaimer(failUnfenceReclaimer{})
+		releaseFaultArmed.Store(true)
+		if _, err := mgr.Create(releaseFaultObjstore(t, "blobs", root)); !errors.Is(err, errUnfenceFault) {
+			t.Fatalf("Create = %v, want the unfence fault", err)
+		}
+		if releaseFaultArmed.Load() {
+			t.Fatal("the claim give-back did not fail; the test fault did not hold")
+		}
+		if !hasOwnerMarker(t, root) {
+			t.Fatal("the failed give-back left no owner marker")
+		}
+		if len(releaseLedgerFiles(t, dataDir)) == 0 {
+			t.Fatal("the failed create recorded no release entry for its claim")
+		}
+		mgr.SetKeyspaceReclaimer(nil)
+		if _, err := mgr.Create(localObjstore("other", filepath.Join(t.TempDir(), "other"))); err != nil {
+			t.Fatalf("Create other: %v", err)
+		}
+		if left := releaseLedgerFiles(t, dataDir); len(left) != 0 {
+			t.Fatalf("the retried release kept %v", left)
+		}
+		if hasOwnerMarker(t, root) {
+			t.Fatal("the retried release kept the owner marker")
+		}
+		want(t, objects(t, root))
+	}
+	t.Run("fresh namespace is released whole", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "objects")
+		run(t, root, func(t *testing.T, after []string) {
+			if len(after) != 0 {
+				t.Fatalf("the retried release left %v", after)
+			}
+		})
+	})
+	t.Run("pre-existing data is kept", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "objects")
+		unowned, err := objstore.New("local", map[string]string{"path": root})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if err := unowned.Set([]byte("k"), []byte("v")); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		if err := unowned.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		before := objects(t, root)
+		run(t, root, func(t *testing.T, after []string) {
+			if !slices.Equal(after, before) {
+				t.Fatalf("the retried release left %v, want the pre-existing %v", after, before)
+			}
+		})
+	})
+}
+
 // afterDeleteCatalog runs after once, the first time a catalog delete
 // succeeds: a drop paused between its catalog delete and its namespace
 // release.
