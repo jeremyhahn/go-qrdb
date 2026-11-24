@@ -17,6 +17,7 @@ package vlog
 import (
 	"bytes"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -314,4 +315,104 @@ func TestChain_Restore_RequestIteratorFaults(t *testing.T) {
 			}
 		})
 	}
+}
+
+// matchBody accepts exactly the event body want.
+func matchBody(want string) func([]byte) bool {
+	return func(body []byte) bool { return string(body) == want }
+}
+
+func TestChain_RecordOnceIfPresent_FindsEarlierEventAndRecordsIdentity(t *testing.T) {
+	store := memory.NewStorage()
+	c := NewChain()
+	if _, err := c.Append(store, "acme", fixedRecord(0)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := c.Append(store, "acme", fixedRecord(1)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	seq, found, err := c.RecordOnceIfPresent(store, "acme", "onboard", matchBody("record-0"))
+	if err != nil || !found || seq != 2 {
+		t.Fatalf("RecordOnceIfPresent = %d, %v, %v; want 2, true, nil", seq, found, err)
+	}
+	if v, err := store.Get(requestKey("acme", "onboard")); err != nil || len(v) == 0 {
+		t.Fatalf("request record = %q, %v; want it written", v, err)
+	}
+	if _, ok := c.HasOnce("acme", "onboard"); !ok {
+		t.Fatal("HasOnce after RecordOnceIfPresent = false, want true")
+	}
+	if seq, appended, err := c.AppendOnce(store, "acme", "onboard", fixedRecord(0), false); err != nil || appended || seq != 2 {
+		t.Fatalf("AppendOnce after the recorded identity = %d, %v, %v; want 2, false, nil", seq, appended, err)
+	}
+	if n := countEvents(t, store, "acme"); n != 2 {
+		t.Fatalf("events = %d, want 2", n)
+	}
+}
+
+func TestChain_RecordOnceIfPresent_NoMatchWritesNothing(t *testing.T) {
+	store := memory.NewStorage()
+	c := NewChain()
+	if _, err := c.Append(store, "acme", fixedRecord(0)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	before := rawTable(t, store)
+	seq, found, err := c.RecordOnceIfPresent(store, "acme", "onboard", matchBody("record-9"))
+	if err != nil || found || seq != 0 {
+		t.Fatalf("RecordOnceIfPresent = %d, %v, %v; want 0, false, nil", seq, found, err)
+	}
+	if after := rawTable(t, store); !reflect.DeepEqual(before, after) {
+		t.Fatalf("raw table changed on no match:\nbefore %v\nafter  %v", before, after)
+	}
+	if _, ok := c.HasOnce("acme", "onboard"); ok {
+		t.Fatal("HasOnce after a miss = true, want false")
+	}
+	// A tenant with no chain at all is a miss too.
+	if _, found, err := c.RecordOnceIfPresent(store, "other", "onboard", matchBody("record-0")); err != nil || found {
+		t.Fatalf("RecordOnceIfPresent on an empty chain = %v, %v; want false, nil", found, err)
+	}
+	if _, _, err := c.RecordOnceIfPresent(store, "a/b", "onboard", matchBody("record-0")); err == nil {
+		t.Fatal("RecordOnceIfPresent accepted a tenant id containing '/'")
+	}
+}
+
+func TestChain_RecordOnceIfPresent_AfterRestore(t *testing.T) {
+	store := memory.NewStorage()
+	first := NewChain()
+	if _, err := first.Append(store, "acme", fixedRecord(0)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	restored := NewChain()
+	if err := restored.Restore(store); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	seq, found, err := restored.RecordOnceIfPresent(store, "acme", "onboard", matchBody("record-0"))
+	if err != nil || !found || seq != 1 {
+		t.Fatalf("RecordOnceIfPresent after Restore = %d, %v, %v; want 1, true, nil", seq, found, err)
+	}
+	if _, appended, err := restored.AppendOnce(store, "acme", "onboard", fixedRecord(0), false); err != nil || appended {
+		t.Fatalf("AppendOnce after Restore = %v, %v; want false, nil", appended, err)
+	}
+	if n := countEvents(t, store, "acme"); n != 1 {
+		t.Fatalf("events = %d, want 1", n)
+	}
+	// The once-record it wrote survives a second Restore.
+	again := NewChain()
+	if err := again.Restore(store); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if _, ok := again.HasOnce("acme", "onboard"); !ok {
+		t.Fatal("HasOnce after a second Restore = false, want true")
+	}
+}
+
+// rawTable returns every key/value pair in r.
+func rawTable(t *testing.T, r storage.Reader) map[string]string {
+	t.Helper()
+	it := r.NewIterator(&storage.IteratorOptions{})
+	defer func() { _ = it.Close() }()
+	out := make(map[string]string)
+	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+		out[string(it.Key())] = string(it.Value())
+	}
+	return out
 }

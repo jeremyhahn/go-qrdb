@@ -19,6 +19,7 @@
 package vlog
 
 import (
+	"errors"
 	"strings"
 	"sync"
 
@@ -38,6 +39,19 @@ type Writer interface {
 
 	// Delete stages the removal of key.
 	Delete(key []byte) error
+}
+
+// ReadWriter is the apply batch that reads through its own staged writes:
+// Get returns a value Set earlier in the same batch, then the committed
+// store. A missing key answers storage.ErrKeyNotFound or a nil value.
+// RecordOnceIfPresent reads the tenant's event records through it, so an
+// event staged earlier in the same Update call is found exactly as one
+// committed by an earlier call.
+type ReadWriter interface {
+	Writer
+
+	// Get returns the value of key, staged or committed.
+	Get(key []byte) ([]byte, error)
 }
 
 // headState is the in-memory half of one tenant's head record: seq is the
@@ -247,6 +261,56 @@ func (c *Chain) HasOnce(tenantID, token string) (seq uint64, ok bool) {
 		return 0, false
 	}
 	return c.heads[tenantID].seq, true
+}
+
+// RecordOnceIfPresent recognizes an event of identity token that tenantID's
+// chain already holds without a once-record: an unmarked append (Append,
+// before activation) of the same event that applied before its marked retry.
+// If token is already recorded it returns the head's sequence and found true.
+// Otherwise it walks tenantID's surviving event records, newest first, reading
+// each through rw, and on the first body match accepts it records token's
+// once-record into rw and returns the head's sequence and found true; the
+// caller then appends nothing. No match writes nothing and returns found
+// false.
+//
+// It is called only for a marked event (post-activation), so an unmarked
+// command's raw state is unchanged and pre-activation replay stays
+// byte-equal. Every replica, live or restored from a snapshot, holds the same
+// event records at the same apply index, so the outcome is deterministic.
+func (c *Chain) RecordOnceIfPresent(rw ReadWriter, tenantID, token string, match func(body []byte) bool) (seq uint64, found bool, err error) {
+	if err := ValidateTenantID(tenantID); err != nil {
+		return 0, false, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	key := requestKey(tenantID, token)
+	head := c.heads[tenantID]
+	if _, ok := c.requests[string(key)]; ok {
+		return head.seq, true, nil
+	}
+	for s := head.seq; s >= head.lo && s > 0; s-- {
+		body, getErr := rw.Get(EventKey(tenantID, s))
+		if getErr != nil {
+			if errors.Is(getErr, storage.ErrKeyNotFound) {
+				continue
+			}
+			return 0, false, &TableReadError{Err: getErr}
+		}
+		if body == nil || !match(body) {
+			continue
+		}
+		if setErr := rw.Set(key, []byte{1}); setErr != nil {
+			return 0, false, &TableWriteError{Err: setErr}
+		}
+		if c.requests == nil {
+			c.requests = make(map[string]struct{})
+		}
+		c.requests[string(key)] = struct{}{}
+		return head.seq, true, nil
+	}
+	return 0, false, nil
 }
 
 // restoreRequests reads every event identity recorded by AppendOnce.
