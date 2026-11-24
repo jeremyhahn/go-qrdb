@@ -720,11 +720,28 @@ func RemoveIndexesBatch(batch storage.Batch, indexes map[string]index.Index, ind
 // belonging to other databases and other tenants (go-qrdb#410). A nil scope
 // backfills everything, which is the unscoped index.
 func BackfillIndex(scanner func() ([]*service.KeyValue, error), idx index.Index, fieldName string, scope []byte) {
+	backfillEach(scanner, fieldName, scope, idx.Put)
+}
+
+// BackfillIndexInBatch is BackfillIndex with every entry queued into the
+// apply batch through PutBatch instead of written straight to storage, so a
+// rebuild cleared through the same batch commits atomically with the entries
+// applied before it.
+func BackfillIndexInBatch(batch storage.Batch, scanner func() ([]*service.KeyValue, error), idx interface {
+	PutBatch(storage.Batch, []byte, []byte) error
+}, fieldName string, scope []byte) {
+	backfillEach(scanner, fieldName, scope, func(key, val []byte) error {
+		return idx.PutBatch(batch, key, val)
+	})
+}
+
+// backfillEach runs the scan and hands every in-scope key whose JSON value
+// carries fieldName to put, logging (never returning) scan and entry
+// failures: an index-create apply must not fail, which would stall
+// consensus, but a silently-incomplete backfill is an operability hazard.
+func backfillEach(scanner func() ([]*service.KeyValue, error), fieldName string, scope []byte, put func(key, val []byte) error) {
 	kvs, err := scanner()
 	if err != nil {
-		// The scan must not fail an index-create apply (returning an error
-		// there would stall consensus), but a silently-incomplete backfill is
-		// an operability hazard — log it so it is observable.
 		slog.Warn("engine: index backfill scan failed; index created without backfill",
 			"field", fieldName, "error", err)
 		return
@@ -746,11 +763,10 @@ func BackfillIndex(scanner func() ([]*service.KeyValue, error), idx index.Index,
 		}
 
 		val := UnquoteJSON(raw)
-		if err := idx.Put(kv.Key, val); err != nil {
+		if err := put(kv.Key, val); err != nil {
 			// A single entry's insert must not abort the backfill (that would
 			// leave the index even more incomplete), but the resulting gap is
-			// an operability hazard — log it so it is observable, mirroring
-			// the scan-failure Warn above.
+			// an operability hazard — log it so it is observable.
 			slog.Warn("engine: index backfill entry failed; index built without this entry",
 				"field", fieldName, "key", string(kv.Key), "error", err)
 		}

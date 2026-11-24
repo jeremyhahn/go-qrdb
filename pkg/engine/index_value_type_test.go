@@ -16,6 +16,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sort"
 	"testing"
@@ -272,6 +273,49 @@ func TestHandleIndexCreate_KeyPrefixChangeRebuilds(t *testing.T) {
 			}
 			if got := emailLookup(t, c.eng, "a@x"); !slices.Equal(got, []string{"member/1"}) {
 				t.Fatalf("unscoped re-create: a@x matched %v, want [member/1]", got)
+			}
+		})
+	}
+}
+
+// A scoped re-create that follows a write in the same apply batch must leave
+// the index as two separate applies would: the entry the write staged in the
+// batch is outside the new scope, so the rebuild must drop it too.
+func TestHandleIndexCreate_KeyPrefixChangeInOneBatchMatchesSeparateApplies(t *testing.T) {
+	scoped := protocol.IndexCreateOptions{KeyPrefix: "member/", Unique: true}
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", scoped))
+
+	for _, grouped := range []bool{true, false} {
+		t.Run(fmt.Sprintf("grouped=%v", grouped), func(t *testing.T) {
+			c := valueTypeEngines(t)["MVCCEngine"]
+			applyEmailIndexCreate(t, c.eng, 1, protocol.IndexCreateOptions{})
+
+			put := c.put(2, "txmember/1", `{"email":"b@x"}`)
+			create := sm.Entry{Index: 3, Cmd: createCmd}
+			batches := [][]sm.Entry{{put}, {create}}
+			if grouped {
+				batches = [][]sm.Entry{{put, create}}
+			}
+			for _, entries := range batches {
+				if err := c.eng.Update(context.Background(), entries, make([]sm.Result, len(entries))); err != nil {
+					t.Fatalf("update: %v", err)
+				}
+			}
+
+			if got := emailLookup(t, c.eng, "b@x"); len(got) != 0 {
+				t.Fatalf("b@x matched %v, want none (txmember/ is outside the scope)", got)
+			}
+			results := make([]sm.Result, 1)
+			if err := c.eng.Update(context.Background(), []sm.Entry{
+				c.put(4, "member/2", `{"email":"b@x"}`),
+			}, results); err != nil {
+				t.Fatalf("put member/2: %v", err)
+			}
+			if msg, ok := protocol.DecodeAppError(results[0].Data); ok {
+				t.Fatalf("put member/2 refused: %s (txmember/1 must not hold b@x)", msg)
+			}
+			if got := emailLookup(t, c.eng, "b@x"); !slices.Equal(got, []string{"member/2"}) {
+				t.Fatalf("after put: b@x matched %v, want [member/2]", got)
 			}
 		})
 	}

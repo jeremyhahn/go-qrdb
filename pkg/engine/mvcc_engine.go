@@ -2562,11 +2562,18 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	// older encoding, which would sort among the new ones out of numeric
 	// order. Clearing and backfilling is the rebuild a stale definition
 	// gets.
-	if err := idx.Clear(); err != nil {
+	//
+	// Both go through the apply batch: the clear is a range delete in the
+	// batch, so it also drops index entries that earlier entries of the same
+	// batch staged there (a clear committed straight to storage would leave
+	// them to commit afterwards under the new definition), and the backfill
+	// is queued into the batch with them. The result therefore does not
+	// depend on how the apply loop grouped the log.
+	if err := idx.ClearBatch(batch); err != nil {
 		return sm.Result{}, nil, err
 	}
 	start, end := backfillRange(scope)
-	BackfillIndex(func() ([]*service.KeyValue, error) {
+	BackfillIndexInBatch(batch, func() ([]*service.KeyValue, error) {
 		kvs, _, _, err := store.RangeInBatch(batch, start, end)
 		return kvs, err
 	}, idx, fieldName, scope)
