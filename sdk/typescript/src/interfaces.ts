@@ -1208,7 +1208,8 @@ export interface InvitationClient {
 // ---------------------------------------------------------------------------
 
 /**
- * GroupClient provides IAM group management over REST. A group carries
+ * GroupClient provides IAM group management on every transport: RestClient
+ * and WailsClient (the desktop GroupBinding) both implement it. A group carries
  * roles every member inherits. Removing the Security Officer role from a
  * group, or deleting a group that carries it, is refused unless the caller
  * is the tenant's Security Officer.
@@ -2721,6 +2722,9 @@ export interface Client {
 
     /** Role management. */
     readonly roles: RoleClient;
+
+    /** IAM group management. */
+    readonly groups: GroupClient;
 
     /** Certificate management. */
     readonly certs: CertClient;
