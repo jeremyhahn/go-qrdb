@@ -1800,6 +1800,13 @@ func runStart(f *startFlags) (err error) {
 			// has built it, and the factory fails closed until then.
 			var bindingTenants tenant.TenantServicer
 			var bindingBarriers *seal.BarrierRegistry
+			// bindingVolumeHosts is late-bound like bindingBarriers: the
+			// legacy probe of a volume tenant's database reads its shared
+			// volume shard through the seal subsystem's tenant host holder.
+			var bindingVolumeHosts *server.TenantHostRegistryHolder
+			bindingVolumeProbe := func(tenantID, db string) (bool, error) {
+				return bindingVolumeHosts.HasLegacyKeyspace(tenantID, db)
+			}
 			standalone := f.mode == capabilities.ModeStandalone
 			var host *quicraft.Host
 			var svcHost service.AdminHost
@@ -1839,7 +1846,7 @@ func runStart(f *startFlags) (err error) {
 				if _, err := installBindingFactory(dbManager, f.dataDir, dbDefaults, enc, f.storageConfig,
 					func() tenant.TenantServicer { return bindingTenants },
 					func() *seal.BarrierRegistry { return bindingBarriers }, false,
-					lifecycle.SharedStoreKeyspaceProbe(eng), watchHubOpts...); err != nil {
+					lifecycle.SharedStoreKeyspaceProbe(eng), bindingVolumeProbe, watchHubOpts...); err != nil {
 					_ = local.Close()
 					_ = stg.Close()
 					return err
@@ -1870,7 +1877,7 @@ func runStart(f *startFlags) (err error) {
 					func() *seal.BarrierRegistry { return bindingBarriers }, true,
 					lifecycle.LookupKeyspaceProbe(func(ctx context.Context, query interface{}) (interface{}, error) {
 						return host.StaleRead(ctx, shard.ShardKV, query)
-					}), watchHubOpts...); err != nil {
+					}), bindingVolumeProbe, watchHubOpts...); err != nil {
 					_ = shutdownNode(host)
 					return err
 				}
@@ -1919,6 +1926,7 @@ func runStart(f *startFlags) (err error) {
 				barrierRegistry = sealSub.BarrierRegistry
 				// The binding factory's tenant-barrier lookup is late-bound like bindingTenants.
 				bindingBarriers = barrierRegistry
+				bindingVolumeHosts = sealSub.TenantHostsHolder
 				pinBackend = sealSub.PINBackend
 			}
 			// nodeSeal is the node barrier as the background proposers see it

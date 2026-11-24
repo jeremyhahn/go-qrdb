@@ -323,6 +323,81 @@ func TestRESTServiceRegistry_MaterializedHandleResolvedBeforeDropIsFenced(t *tes
 	assertDroppingError(t, reclaim.err, name)
 }
 
+// TestRESTServiceRegistry_VolumeTenantMaterializedDatabaseServedFromItsOwnHost
+// checks a volume tenant's materialized database is served from its own host,
+// with no tenant host registry wired and nothing written to the shared store.
+func TestRESTServiceRegistry_VolumeTenantMaterializedDatabaseServedFromItsOwnHost(t *testing.T) {
+	const tenantID, name = "acme", "orders"
+	ctx := context.Background()
+	factory := &fakeMaterializingFactory{}
+	dbMgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(factory))
+	t.Cleanup(func() { _ = dbMgr.Close() })
+	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendPebble}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fake := factory.last(t)
+	shared := newFilledRegistry()
+	r := NewRESTServiceRegistry(shared, nil, tenantid.System, withDatabaseManager(dbMgr),
+		WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationVolume})).(*restServiceRegistry)
+
+	svcs, err := r.resolve(tenantID, name)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if svcs.Placement != service.StorePlacementNode {
+		t.Fatalf("Placement = %q, want %q", svcs.Placement, service.StorePlacementNode)
+	}
+	value := []byte("volume-materialized-value")
+	if err := svcs.KV.Put(ctx, "k", value); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	got, err := service.NewKVService(fake.Host(), fake.ShardID()).Get(ctx, "k")
+	if err != nil || !bytes.Equal(got, value) {
+		t.Fatalf("own host Get = %q, %v; want %q", got, err, value)
+	}
+	for _, key := range []string{"k", tenantID + "/" + name + "/k"} {
+		if got, err := shared.Default().KV.Get(ctx, key); err == nil && got != nil {
+			t.Fatalf("shared store holds %q = %q", key, got)
+		}
+	}
+
+	// A volume tenant's database that is not materialized still needs the
+	// tenant host registry and fails closed without it.
+	if _, err := r.resolve(tenantID, "absent"); err == nil {
+		t.Fatal("resolve of a non-materialized volume database succeeded with no tenant host registry")
+	}
+}
+
+// TestRESTServiceRegistry_VolumeTenantMaterializedDropIsFenced checks a
+// handle to a volume tenant's materialized database resolved before the
+// drop is fenced in that database's own store.
+func TestRESTServiceRegistry_VolumeTenantMaterializedDropIsFenced(t *testing.T) {
+	const tenantID, name = "acme", "orders"
+	ctx := context.Background()
+	dbMgr, _, reclaim := newFencedMaterializedManager(t)
+	volume := &isolationTenantServicer{isolation: tenant.IsolationVolume}
+	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// The drop resolves the fence target of a volume tenant with no tenant
+	// host wired: only the materialized store can take the fence.
+	reclaim.SetStoreResolver(&storeResolver{databases: dbMgr, systemTenant: tenantid.System, tenantSvc: volume})
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, withDatabaseManager(dbMgr),
+		WithTenantServicer(volume)).(*restServiceRegistry)
+	svcs, err := r.resolve(tenantID, name)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if err := svcs.KV.Put(ctx, "before", []byte("v")); err != nil {
+		t.Fatalf("Put before the drop: %v", err)
+	}
+	reclaim.write = func() error { return svcs.KV.Put(ctx, "after", []byte("v")) }
+	if err := dbMgr.DropForTenant(tenant.WithTenantID(ctx, tenantID), name); err != nil {
+		t.Fatalf("DropForTenant: %v", err)
+	}
+	assertDroppingError(t, reclaim.err, name)
+}
+
 // faultyOwnedSource fails the resolver's catalog lookup while fail is set,
 // as a catalog read that does not answer during a DROP does.
 type faultyOwnedSource struct {

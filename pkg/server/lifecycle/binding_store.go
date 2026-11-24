@@ -68,7 +68,9 @@ import (
 // that opens a qualifying database's own store under its binding root (an
 // explicit data_dir when one is set), encrypted by the binding's encryptor
 // scope: the node encryptor for a prefix tenant and the system tenant, the
-// tenant's barrier for a barrier tenant.
+// tenant's barrier for a barrier tenant, the tenant's encryptor for a volume
+// tenant, whose memory and pebble databases live under the tenant's data
+// root.
 type LocalBindingFactory struct {
 	node       database.BindingNode
 	enc        *atrest.Encryptor
@@ -85,6 +87,9 @@ type LocalBindingFactory struct {
 	// database's namespace; nil means it is not probed (see
 	// WithSharedKeyspaceProbe).
 	sharedData SharedKeyspaceProbe
+	// volumeData is sharedData for a volume tenant's shared volume shard
+	// (see WithVolumeKeyspaceProbe).
+	volumeData SharedKeyspaceProbe
 }
 
 // SharedKeyspaceProbe reports whether the shared store holds any key under
@@ -118,8 +123,10 @@ func (e *LegacySharedKeyspaceError) Unwrap() error { return e.Err }
 // tenants treats every tenant as prefix-isolated. The system tenant is never
 // looked up: its databases (except the system database) and a database at
 // an explicit data_dir without a per-database barrier are materialized; a
-// per-database barrier, raft mode, and volume and raft tenants stay
-// delegated to the embedded factory. hubOpts configure the watch
+// per-database barrier, raft mode, and raft tenants stay delegated to the
+// embedded factory. A volume tenant's database is materialized under the
+// tenant's data root once WithTenantEncryptors is set; its name-visible
+// backends are refused. hubOpts configure the watch
 // hub of each materialized database.
 func NewLocalBindingFactory(node database.BindingNode, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig, tenants func(string) (database.BindingTenant, error), hubOpts ...watch.HubOption) *LocalBindingFactory {
 	return &LocalBindingFactory{
@@ -160,6 +167,17 @@ func (f *LocalBindingFactory) WithIsolationPolicy(r tenant.ClusterIsolationPolic
 // Moving it is a relocation (slice 3b.8), not done here.
 func (f *LocalBindingFactory) WithSharedKeyspaceProbe(p SharedKeyspaceProbe) *LocalBindingFactory {
 	f.sharedData = p
+	return f
+}
+
+// WithVolumeKeyspaceProbe sets the probe that reports whether a volume
+// tenant's shared volume shard holds a database's legacy keys. A volume
+// tenant's memory or pebble database with legacy data there keeps that
+// route (relocation is 3b.8) and no binding is recorded; a failing probe is
+// a *LegacySharedKeyspaceError. A nil probe leaves every volume tenant's
+// database materialized.
+func (f *LocalBindingFactory) WithVolumeKeyspaceProbe(p SharedKeyspaceProbe) *LocalBindingFactory {
+	f.volumeData = p
 	return f
 }
 
@@ -264,7 +282,7 @@ func (f *LocalBindingFactory) materializes(isolation tenant.IsolationType) bool 
 	switch isolation {
 	case "", tenant.IsolationPrefix:
 		return true
-	case tenant.IsolationBarrier:
+	case tenant.IsolationBarrier, tenant.IsolationVolume:
 		return f.tenantEnc != nil
 	default:
 		return false
@@ -369,10 +387,21 @@ func (f *LocalBindingFactory) resolveLocal(cfg *database.DatabaseConfig) (*datab
 	if b.Kind != database.BindingLocal || b.DatabaseBarrier {
 		return nil, nil
 	}
-	if b.Backend == database.BackendMemory && f.sharedData != nil {
+	probe := f.sharedData
+	if t.Isolation == tenant.IsolationVolume {
+		// A volume tenant's memory and pebble databases both lived in its
+		// shared volume shard before they had their own store.
+		probe = nil
+		if b.Backend == database.BackendMemory || b.Backend == database.BackendPebble {
+			probe = f.volumeData
+		}
+	} else if b.Backend != database.BackendMemory {
+		probe = nil
+	}
+	if probe != nil {
 		// A probe that fails is an error, never "no data": opening an
 		// empty store would hide the database's shared data.
-		legacy, err := f.sharedData(b.TenantID, b.Database)
+		legacy, err := probe(b.TenantID, b.Database)
 		if err != nil {
 			return nil, &LegacySharedKeyspaceError{TenantID: b.TenantID, Database: b.Database, Err: err}
 		}
@@ -477,9 +506,12 @@ func (f *LocalBindingFactory) tenant(tenantID string) (database.BindingTenant, e
 // exists, and the lookup fails closed with a *BindingTenantUnavailableError
 // while get returns nil, never treating an unknown tenant as prefix. A
 // GetTenant error is returned as is (the factory wraps it in a
-// BindingOpenError). DataRoot stays empty: a volume or raft tenant is
-// delegated to the fallback factory before it would be read.
-func TenantServiceBindingLookup(get func() tenant.TenantServicer) func(string) (database.BindingTenant, error) {
+// BindingOpenError). A volume tenant's DataRoot is its local data root from
+// the first resolver roots returns; a missing resolver or an unresolvable
+// root fails closed with a *BindingTenantUnavailableError, so a volume
+// tenant's database never opens under the node's root. DataRoot stays empty
+// for every other isolation.
+func TenantServiceBindingLookup(get func() tenant.TenantServicer, roots ...func() TenantDataRootResolver) func(string) (database.BindingTenant, error) {
 	return func(tenantID string) (database.BindingTenant, error) {
 		var svc tenant.TenantServicer
 		if get != nil {
@@ -495,8 +527,58 @@ func TenantServiceBindingLookup(get func() tenant.TenantServicer) func(string) (
 		if info == nil {
 			return database.BindingTenant{}, &BindingTenantUnavailableError{TenantID: tenantID}
 		}
-		return database.BindingTenant{ID: tenantID, Isolation: info.EffectiveIsolationType()}, nil
+		bt := database.BindingTenant{ID: tenantID, Isolation: info.EffectiveIsolationType()}
+		if bt.Isolation == tenant.IsolationVolume {
+			// A volume tenant's databases get their own stores under the
+			// tenant's data root on this node. A root that cannot be
+			// resolved fails closed: the database is never bound as if its
+			// tenant were prefix-isolated.
+			root, err := volumeDataRoot(tenantID, roots)
+			if err != nil {
+				return database.BindingTenant{}, err
+			}
+			bt.DataRoot = root
+		}
+		return bt, nil
 	}
+}
+
+// registryDataRoots adapts the late-bound barrier registry to the data root
+// resolver TenantServiceBindingLookup takes; a nil registry is no resolver.
+func registryDataRoots(get func() *seal.BarrierRegistry) func() TenantDataRootResolver {
+	return func() TenantDataRootResolver {
+		if get == nil {
+			return nil
+		}
+		if reg := get(); reg != nil {
+			return reg
+		}
+		return nil
+	}
+}
+
+// TenantDataRootResolver resolves a volume-isolated tenant's data root on
+// this node (*seal.BarrierRegistry.LocalTenantDataRoot).
+type TenantDataRootResolver interface {
+	LocalTenantDataRoot(ctx context.Context, tenantID string) (string, error)
+}
+
+// volumeDataRoot resolves tenantID's data root through the first resolver
+// roots yields. No resolver, a resolver error or an empty root is a
+// *BindingTenantUnavailableError.
+func volumeDataRoot(tenantID string, roots []func() TenantDataRootResolver) (string, error) {
+	var r TenantDataRootResolver
+	if len(roots) > 0 && roots[0] != nil {
+		r = roots[0]()
+	}
+	if r == nil {
+		return "", &BindingTenantUnavailableError{TenantID: tenantID}
+	}
+	root, err := r.LocalTenantDataRoot(context.Background(), tenantID)
+	if err != nil || root == "" {
+		return "", &BindingTenantUnavailableError{TenantID: tenantID}
+	}
+	return root, nil
 }
 
 // TenantBarrierEncryptorLookup returns the tenant encryptor lookup
@@ -535,7 +617,7 @@ func TenantBarrierEncryptorLookup(get func() *seal.BarrierRegistry) func(string)
 // once the services are built, after the manager.
 func NewNodeBindingFactory(dataDir string, defaults database.Defaults, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig, tenants func() tenant.TenantServicer, barriers func() *seal.BarrierRegistry, hubOpts ...watch.HubOption) *LocalBindingFactory {
 	return NewLocalBindingFactory(database.BindingNode{DataDir: dataDir, Defaults: defaults}, enc, storageCfg,
-		TenantServiceBindingLookup(tenants), hubOpts...).
+		TenantServiceBindingLookup(tenants, registryDataRoots(barriers)), hubOpts...).
 		WithTenantEncryptors(TenantBarrierEncryptorLookup(barriers)).
 		WithIsolationPolicy(lateIsolationPolicy{tenants: tenants})
 }

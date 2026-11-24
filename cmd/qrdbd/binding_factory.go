@@ -21,10 +21,11 @@ import (
 // keeps the shared route it lives in.
 func installBindingFactory(dbManager *database.Manager, dataDir string, defaults database.Defaults,
 	enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig, tenants func() tenant.TenantServicer,
-	barriers func() *seal.BarrierRegistry, raftMode bool, probe lifecycle.SharedKeyspaceProbe,
+	barriers func() *seal.BarrierRegistry, raftMode bool, probe, volumeProbe lifecycle.SharedKeyspaceProbe,
 	hubOpts ...watch.HubOption) (*lifecycle.LocalBindingFactory, error) {
 	bf := lifecycle.NewNodeBindingFactory(dataDir, defaults, enc, storageCfg, tenants, barriers, hubOpts...).
-		WithSharedKeyspaceProbe(probe)
+		WithSharedKeyspaceProbe(probe).
+		WithVolumeKeyspaceProbe(volumeProbe)
 	if raftMode {
 		bf = bf.WithRaftMode()
 	}

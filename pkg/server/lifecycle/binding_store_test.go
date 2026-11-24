@@ -733,6 +733,38 @@ func (s *isolationTenantService) GetTenant(_ context.Context, id string) (*tenan
 	return &tenant.TenantInfo{ID: id, IsolationType: s.isolation}, nil
 }
 
+// staticDataRoot is a TenantDataRootResolver giving every tenant one root;
+// an empty root is the unresolvable case.
+type staticDataRoot string
+
+func (r staticDataRoot) LocalTenantDataRoot(context.Context, string) (string, error) {
+	if r == "" {
+		return "", errors.New("tenant data root not on this node")
+	}
+	return string(r), nil
+}
+
+// newVolumeTenantManager returns a manager whose binding factory resolves
+// every tenant as volume-isolated through TenantServiceBindingLookup, with
+// root as the tenant's data root and tenantEnc as its encryptor.
+func newVolumeTenantManager(t *testing.T, dir string, nodeEnc *atrest.Encryptor, tenantEnc func(string) (*atrest.Encryptor, error), root string) *database.Manager {
+	t.Helper()
+	svc := &isolationTenantService{isolation: tenant.IsolationVolume}
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nodeEnc, qrdbconfig.StorageConfig{},
+		lifecycle.TenantServiceBindingLookup(
+			func() tenant.TenantServicer { return svc },
+			func() lifecycle.TenantDataRootResolver { return staticDataRoot(root) },
+		)).WithTenantEncryptors(tenantEnc)
+	mgr := database.NewManager(slog.Default(), dir, database.WithBackendFactory(f))
+	cat, err := database.NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
+	if err != nil {
+		t.Fatalf("NewKVCatalog: %v", err)
+	}
+	mgr.SetCatalog(cat)
+	t.Cleanup(func() { _ = mgr.Close() })
+	return mgr
+}
+
 func newLookupManager(t *testing.T, get func() tenant.TenantServicer) *database.Manager {
 	t.Helper()
 	dir := t.TempDir()
@@ -789,6 +821,159 @@ func TestTenantServiceBindingLookup_BarrierTenantDelegates(t *testing.T) {
 		t.Fatalf("prefix Create: %v", err)
 	}
 	materialized(t, db)
+}
+
+// TestTenantServiceBindingLookup_VolumeTenantDataRoot proves a volume
+// tenant's binding carries the tenant's data root, so its databases get their
+// own stores under it, and that a volume tenant whose data root cannot be
+// resolved fails closed instead of falling back to a prefix binding.
+func TestTenantServiceBindingLookup_VolumeTenantDataRoot(t *testing.T) {
+	tenantEnc := atrest.New(newUnsealedBarrier(t))
+	encs := func(string) (*atrest.Encryptor, error) { return tenantEnc, nil }
+	root := t.TempDir()
+	vol := newVolumeTenantManager(t, t.TempDir(), nil, encs, root)
+	db, err := vol.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble})
+	if err != nil {
+		t.Fatalf("volume Create: %v", err)
+	}
+	mb := materialized(t, db)
+	if want := filepath.Join(root, "databases", "d"); mb.DataRoot() != want {
+		t.Fatalf("DataRoot() = %q, want %q", mb.DataRoot(), want)
+	}
+
+	unresolved := newVolumeTenantManager(t, t.TempDir(), nil, encs, "")
+	_, err = unresolved.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble})
+	var unavailable *lifecycle.BindingTenantUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("Create with no volume data root = %v, want *BindingTenantUnavailableError", err)
+	}
+}
+
+// TestLocalBindingFactory_VolumeTenantDatabaseOwnStore checks a volume
+// tenant's memory and pebble databases open their own store under the
+// tenant's data root, encrypted under the tenant's encryptor, and that the
+// name-visible backends are refused.
+func TestLocalBindingFactory_VolumeTenantDatabaseOwnStore(t *testing.T) {
+	ctx := context.Background()
+	nodeEnc := atrest.New(newUnsealedBarrier(t))
+	tenantEnc := atrest.New(newUnsealedBarrier(t))
+	for _, b := range []database.BackendType{database.BackendMemory, database.BackendPebble} {
+		t.Run(string(b), func(t *testing.T) {
+			root := t.TempDir()
+			var asked []string
+			mgr := newVolumeTenantManager(t, t.TempDir(), nodeEnc, func(id string) (*atrest.Encryptor, error) {
+				asked = append(asked, id)
+				return tenantEnc, nil
+			}, root)
+			db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "vol", Backend: b})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			mb := materialized(t, db)
+			dataRoot := mb.DataRoot()
+			want := filepath.Join(root, "databases", "vol")
+			if b == database.BackendMemory {
+				want = "" // a memory store has no on-disk root
+			}
+			if dataRoot != want {
+				t.Fatalf("DataRoot = %q, want %q", dataRoot, want)
+			}
+			if len(asked) != 1 || asked[0] != bindingTenant {
+				t.Fatalf("tenant encryptor lookups = %v, want [%q]", asked, bindingTenant)
+			}
+			kv := service.NewKVService(mb.Host(), mb.ShardID())
+			value := []byte("volume-tenant-plaintext-value")
+			if err := kv.Put(ctx, "k", value); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			got, err := kv.Get(ctx, "k")
+			if err != nil || !bytes.Equal(got, value) {
+				t.Fatalf("Get(k) = %q, %v; want %q", got, err, value)
+			}
+			if b != database.BackendPebble {
+				return
+			}
+			if err := mgr.Close(); err != nil {
+				t.Fatalf("Manager.Close: %v", err)
+			}
+			if got, err := readBack(t, b, dataRoot, nodeEnc, "k"); err == nil && bytes.Equal(got, value) {
+				t.Fatal("the node encryptor read a volume tenant's value back")
+			}
+			got, err = readBack(t, b, dataRoot, tenantEnc, "k")
+			if err != nil || !bytes.Equal(got, value) {
+				t.Fatalf("read under the tenant encryptor = %q, %v; want %q", got, err, value)
+			}
+		})
+	}
+	for _, b := range []database.BackendType{database.BackendFile, database.BackendObjstore} {
+		t.Run("refused/"+string(b), func(t *testing.T) {
+			mgr := newVolumeTenantManager(t, t.TempDir(), nodeEnc,
+				func(string) (*atrest.Encryptor, error) { return tenantEnc, nil }, t.TempDir())
+			_, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "vol", Backend: b})
+			var conflict *database.BackendIsolationConflictError
+			if !errors.As(err, &conflict) {
+				t.Fatalf("Create %s = %v, want *BackendIsolationConflictError", b, err)
+			}
+		})
+	}
+}
+
+// TestLocalBindingFactory_VolumeTenantLegacyDatabaseKeepsSharedRoute checks a
+// volume tenant's database whose data already sits in the tenant's shared
+// volume store keeps that route instead of opening a new store.
+func TestLocalBindingFactory_VolumeTenantLegacyDatabaseKeepsSharedRoute(t *testing.T) {
+	dir := t.TempDir()
+	tenantEnc := atrest.New(newUnsealedBarrier(t))
+	svc := &isolationTenantService{isolation: tenant.IsolationVolume}
+	legacy := database.DatabaseConfig{TenantID: bindingTenant, Name: "legacy", Backend: database.BackendMemory}
+	var probed []string
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{},
+		lifecycle.TenantServiceBindingLookup(
+			func() tenant.TenantServicer { return svc },
+			func() lifecycle.TenantDataRootResolver { return staticDataRoot(t.TempDir()) },
+		)).
+		WithTenantEncryptors(func(string) (*atrest.Encryptor, error) { return tenantEnc, nil }).
+		WithSharedKeyspaceProbe(func(string, string) (bool, error) {
+			t.Fatal("a volume tenant's database was probed on the node's shared store")
+			return false, nil
+		}).
+		WithVolumeKeyspaceProbe(func(tenantID, db string) (bool, error) {
+			probed = append(probed, tenantID+"/"+db)
+			return db == "legacy", nil
+		})
+	for _, b := range []database.BackendType{database.BackendMemory, database.BackendPebble} {
+		cfg := legacy
+		cfg.Backend = b
+		be, err := f.Create(cfg, filepath.Join(dir, "legacy-data-"+string(b)))
+		if err != nil {
+			t.Fatalf("Create legacy %s: %v", b, err)
+		}
+		if _, ok := be.(*lifecycle.MaterializedBinding); ok {
+			t.Fatalf("a volume tenant's %s database with shared data was opened as a new materialized store", b)
+		}
+		_ = be.Close()
+		if rb, err := f.RecordBinding(cfg); err != nil || rb != nil {
+			t.Fatalf("RecordBinding(legacy %s) = %v, %v; want no binding", b, rb, err)
+		}
+	}
+	// Create and RecordBinding each probe once per backend.
+	if want := slices.Repeat([]string{bindingTenant + "/legacy"}, 4); !slices.Equal(probed, want) {
+		t.Fatalf("probed %q, want %q", probed, want)
+	}
+
+	boom := errors.New("volume shard unreadable")
+	failing := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{},
+		lifecycle.TenantServiceBindingLookup(
+			func() tenant.TenantServicer { return svc },
+			func() lifecycle.TenantDataRootResolver { return staticDataRoot(t.TempDir()) },
+		)).
+		WithTenantEncryptors(func(string) (*atrest.Encryptor, error) { return tenantEnc, nil }).
+		WithVolumeKeyspaceProbe(func(string, string) (bool, error) { return false, boom })
+	got, err := failing.Create(legacy, filepath.Join(dir, "legacy-data"))
+	var probeErr *lifecycle.LegacySharedKeyspaceError
+	if !errors.As(err, &probeErr) || !errors.Is(err, boom) {
+		t.Fatalf("Create over an unreadable volume shard = %T, %v; want *LegacySharedKeyspaceError", got, err)
+	}
 }
 
 // newBarrierTenantManager builds a Manager whose factory reads every tenant

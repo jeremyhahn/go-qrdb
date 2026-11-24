@@ -34,7 +34,7 @@ func TestInstallBindingFactory_RaftModeAndStandalone(t *testing.T) {
 		dir := t.TempDir()
 		m := database.NewManager(slog.Default(), dir)
 		bf, err := installBindingFactory(m, dir, database.Defaults{}, nil, qrdbconfig.StorageConfig{},
-			tenants, barriers, raftMode, noLegacy)
+			tenants, barriers, raftMode, noLegacy, noLegacy)
 		if err != nil || bf == nil {
 			t.Fatalf("installBindingFactory(raftMode=%v) = %v, %v; want a factory", raftMode, bf, err)
 		}
@@ -54,7 +54,7 @@ func TestInstallBindingFactory_RaftModeAndStandalone(t *testing.T) {
 		// A second install on the same manager replaces the factory
 		// while no database is open.
 		if _, err := installBindingFactory(m, dir, database.Defaults{}, nil, qrdbconfig.StorageConfig{},
-			tenants, barriers, raftMode, noLegacy); err != nil {
+			tenants, barriers, raftMode, noLegacy, noLegacy); err != nil {
 			t.Fatalf("second installBindingFactory(raftMode=%v): %v", raftMode, err)
 		}
 		_ = m.Close()

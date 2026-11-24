@@ -423,6 +423,12 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// the composite (tenant, db) namespace prefix below keeps each database's
 	// keyspace disjoint, exactly as on the shared system shard.
 	if isolation == tenant.IsolationVolume {
+		// A volume tenant's memory or pebble database materialized under
+		// the tenant's data root (lifecycle.LocalBindingFactory) is served
+		// from its own host, never from a namespace of the volume shard.
+		if ms, ok := materializedStoreOf(managed.db); ok {
+			return r.resolveMaterialized(tenantID, db, info, managed.db, ms)
+		}
 		// Fail closed: a volume-isolated tenant MUST be served from its dedicated
 		// per-tenant Host. When the Host registry is not wired into this server,
 		// falling through to the shared-store path below would silently downgrade
