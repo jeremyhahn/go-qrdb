@@ -58,7 +58,6 @@ The cluster engine and database system for every project in the stack: embedded,
 - **trust-bootstrap** — the client-side CA trust command shape — [docs/trust-bootstrap/](docs/trust-bootstrap/) — done
 - **certificate-authority** — client certificate issuance, export, revocation — [docs/certificate-authority/](docs/certificate-authority/) — done
 - **trust-anchors** — per-tenant registered CAs — [docs/trust-anchors/](docs/trust-anchors/) — done
-- **credentials** — named credentials, versioned rotation — [docs/credentials/](docs/credentials/) — done
 - **key-wrapping** — the KEK provider seam, backup envelopes — [docs/key-wrapping/](docs/key-wrapping/) — done
 - **tenant-dek** — the per-tenant DEK keyring — [docs/tenant-dek/](docs/tenant-dek/) — done
 - **hardware-crypto-seams** — every key, signing and encryption need is a composer-supplied seam with a software default — [#912](../../issues/912), [docs/barrier-seal/](docs/barrier-seal/), [docs/key-wrapping/](docs/key-wrapping/), [docs/tenant-dek/](docs/tenant-dek/), [docs/certificate-authority/](docs/certificate-authority/), [docs/clustering/](docs/clustering/), [docs/volume-pools/](docs/volume-pools/), [docs/auth-factors/](docs/auth-factors/), [docs/release/extension-seams.md](docs/release/extension-seams.md) — done
@@ -120,11 +119,13 @@ The cluster engine and database system for every project in the stack: embedded,
 - **separation-of-duties** — SO separation of duties is enforced in compliance mode only; the optional SO holds in both postures — [#1128](../../issues/1128), [#1042](../../issues/1042), [docs/identity-rbac/](docs/identity-rbac/) — in progress
 - **desktop-gui** — the Wails desktop application — [docs/desktop-gui/](docs/desktop-gui/) — in progress
 - **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — [#1613](../../issues/1613), PR [#729](../../pulls/729), [docs/databases/](docs/databases/), [docs/plans/1613-verifiable-log.md](docs/plans/1613-verifiable-log.md) — in progress: serving barrier-isolated tenants and barrier-enabled databases awaits the owner's decision on where their logs live
+- **credentials** — named credentials, versioned rotation; scheduled rotation policies, their transport and CLI verbs, whole-store moves; consumer go-quicbaas — [#1201](../../issues/1201), [#1185](../../issues/1185), [docs/credentials/](docs/credentials/) — in progress
 
 ## Next
 
 ## Later
 
+- **webtransport-upstream** — drop the patched in-tree webtransport-go copy once an upstream release on go-qrdb's quic-go carries its six fixes — [#1688](../../issues/1688), [#1244](../../issues/1244), [docs/api-server/](docs/api-server/) — open
 - **release-readiness** — release readiness for the public release — [#565](../../issues/565), [docs/release/](docs/release/) — open
 - **object-storage-credential-handle** — the object-storage credential crosses the seam as the go-enclave protected-memory credential handle; adopts go-objstore#16 — [#1143](../../issues/1143), [docs/storage-engines/](docs/storage-engines/) — open
 - **rolling-upgrades** — mixed-version rolling upgrades between adjacent releases: wire-version negotiation, typed refusal of version gaps, a cross-release compatibility matrix (N to N+1 both ways, mid-upgrade cluster) — [#1628](../../issues/1628), PR [#1638](../../pulls/1638), [docs/rolling-upgrades/](docs/rolling-upgrades/) — in review

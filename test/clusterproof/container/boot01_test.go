@@ -16,9 +16,19 @@ const (
 	bootTimeout = 5 * time.Minute
 	// callTimeout bounds each SDK call.
 	callTimeout = 10 * time.Second
-	// logTail is how much of each container's log a failed run reports.
-	logTail = 200
+	// logTail is how much of each container's log a failed run reads: the
+	// status poll writes an audit line a second per transport, so it is
+	// large enough that logKeep other lines remain after the filter.
+	logTail = 20000
+	// logKeep is how many lines that are not admin:status audit lines a
+	// failed run reports per container.
+	logKeep = 200
 )
+
+// EnvKeep names the variable that, set to 1, leaves the booted cluster's
+// containers after BOOT-01: running for the soak after a pass, and for the
+// full-log capture after a failure. Whoever sets it removes them.
+const EnvKeep = "PROOF_KEEP"
 
 // TestBOOT01 is BOOT-01 against real containers: a static bootstrap of the
 // inventory's founders from the release image, first boot on each, then
@@ -28,6 +38,7 @@ const (
 // failure, not a skip.
 func TestBOOT01(t *testing.T) {
 	path := os.Getenv("PROOF_INVENTORY")
+	keep := os.Getenv(EnvKeep) == "1"
 	if path == "" {
 		t.Fatal("PROOF_INVENTORY must name a container inventory (docs/cluster-verification/user.md)")
 	}
@@ -64,8 +75,17 @@ func TestBOOT01(t *testing.T) {
 		if t.Failed() {
 			for _, n := range inv.Nodes {
 				logs, err := c.Logs(ctx, n, logTail)
-				t.Logf("--- %s log (last %d lines, err %v) ---\n%s", n.Name, logTail, err, logs)
+				logs, dropped := withoutStatusAudit(logs, logKeep)
+				t.Logf("--- %s log (last %d of %d lines, %d admin:status audit lines left out, err %v) ---\n%s",
+					n.Name, logKeep, logTail, dropped, err, logs)
 			}
+		}
+		if keep {
+			// A failed boot keeps its containers too, so the caller
+			// (scripts/cluster-proof-ci.sh) can save each node's full log;
+			// its down removes them.
+			t.Logf("%s=1: leaving the cluster for the soak or the log capture", EnvKeep)
+			return
 		}
 		if err := c.Remove(ctx); err != nil {
 			t.Errorf("remove containers: %v", err)
