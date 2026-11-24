@@ -130,6 +130,122 @@ func TestManager_InfoCarriesTheDescribedBinding(t *testing.T) {
 	}
 }
 
+// TestManager_RaftBindingNamesReplicaNodes pins that a raft binding with no
+// fixed nodes takes them from the installed replica reader, both when it
+// is described and when Info is served, and that removing the reader
+// leaves the block without nodes.
+func TestManager_RaftBindingNamesReplicaNodes(t *testing.T) {
+	f := &describingFactory{binding: &Binding{Kind: BindingRaft, Encryptor: EncryptorTenant, Raft: &RaftBinding{}}}
+	m := newDescribingManager(t, f)
+	a, err := m.Create(DatabaseConfig{Name: "a", Backend: BackendMemory})
+	if err != nil {
+		t.Fatalf("Create a: %v", err)
+	}
+	if got := a.Info().Binding; got == nil || len(got.Nodes) != 0 {
+		t.Fatalf("Info().Binding without a reader = %+v, want a block without nodes", got)
+	}
+
+	want := []string{"n1", "n2"}
+	var asked []string
+	m.SetRaftReplicaNodes(func(tenantID, db string) []string {
+		asked = append(asked, db)
+		return want
+	})
+	if got := a.Info().Binding; got == nil || !reflect.DeepEqual(got.Nodes, want) {
+		t.Fatalf("Info().Binding with a reader = %+v, want nodes %v", got, want)
+	}
+	if len(asked) == 0 || asked[0] != "a" {
+		t.Fatalf("reader asked for %v, want a", asked)
+	}
+
+	b, err := m.Create(DatabaseConfig{Name: "b", Backend: BackendMemory})
+	if err != nil {
+		t.Fatalf("Create b: %v", err)
+	}
+	if got := b.Info().Binding; got == nil || !reflect.DeepEqual(got.Nodes, want) {
+		t.Fatalf("b Info().Binding = %+v, want nodes %v", got, want)
+	}
+
+	m.SetRaftReplicaNodes(nil)
+	if got := a.Info().Binding; got == nil || len(got.Nodes) != 0 {
+		t.Fatalf("Info().Binding after the reader is removed = %+v, want no nodes", got)
+	}
+	if fn := m.bindingNodesFor(DatabaseMeta{Name: "a"}, &DatabaseBinding{Kind: BindingLocal}); fn != nil {
+		t.Fatal("a local binding has a replica node reader")
+	}
+	if fn := m.bindingNodesFor(DatabaseMeta{Name: "a"}, nil); fn != nil {
+		t.Fatal("a missing binding has a replica node reader")
+	}
+}
+
+// recordBindingFactory resolves each record's binding by name: a name in
+// errs fails, a name missing from bindings resolves to no binding.
+type recordBindingFactory struct {
+	EmbeddedBackendFactory
+	bindings map[string]*Binding
+	errs     map[string]error
+}
+
+func (f *recordBindingFactory) RecordBinding(cfg DatabaseConfig) (*Binding, error) {
+	if err := f.errs[cfg.Name]; err != nil {
+		return nil, err
+	}
+	return f.bindings[cfg.Name], nil
+}
+
+// TestManager_RecordBindings pins RecordBindings: no resolver means no
+// bindings, a record resolving to nil is skipped, and a resolver failure
+// names the record.
+func TestManager_RecordBindings(t *testing.T) {
+	ctx := context.Background()
+	t.Run("factory without a resolver", func(t *testing.T) {
+		m := newDescribingManager(t, &EmbeddedBackendFactory{})
+		if _, err := m.Create(DatabaseConfig{Name: "a", Backend: BackendMemory}); err != nil {
+			t.Fatalf("Create a: %v", err)
+		}
+		got, err := m.RecordBindings(ctx)
+		if err != nil || got != nil {
+			t.Fatalf("RecordBindings = %v, %v; want nil, nil", got, err)
+		}
+	})
+	t.Run("nil bindings are skipped", func(t *testing.T) {
+		want := &Binding{Kind: BindingLocal, Encryptor: EncryptorTenant}
+		f := &recordBindingFactory{bindings: map[string]*Binding{"a": want}}
+		m := newDescribingManager(t, f)
+		for _, name := range []string{"a", "b"} {
+			if _, err := m.Create(DatabaseConfig{TenantID: "acme", Name: name, Backend: BackendMemory}); err != nil {
+				t.Fatalf("Create %s: %v", name, err)
+			}
+		}
+		got, err := m.RecordBindings(ctx)
+		if err != nil {
+			t.Fatalf("RecordBindings: %v", err)
+		}
+		if len(got) != 1 || got[0] != want {
+			t.Fatalf("RecordBindings = %v, want exactly a's binding", got)
+		}
+	})
+	t.Run("resolver error names the record", func(t *testing.T) {
+		cause := errors.New("tenant unknown")
+		f := &recordBindingFactory{errs: map[string]error{"a": cause}}
+		m := newDescribingManager(t, f)
+		if _, err := m.Create(DatabaseConfig{TenantID: "acme", Name: "a", Backend: BackendMemory}); err != nil {
+			t.Fatalf("Create a: %v", err)
+		}
+		got, err := m.RecordBindings(ctx)
+		var unresolved *RecordRootUnresolvedError
+		if !errors.As(err, &unresolved) || unresolved.Name != "a" || unresolved.TenantID != "acme" {
+			t.Fatalf("RecordBindings = %v, %v; want *RecordRootUnresolvedError for acme/a", got, err)
+		}
+		if got != nil {
+			t.Fatalf("RecordBindings returned %v with the error", got)
+		}
+		if errors.Unwrap(unresolved) != cause {
+			t.Fatalf("Unwrap = %v, want %v", errors.Unwrap(unresolved), cause)
+		}
+	})
+}
+
 func TestManager_RecreateGivesHigherGeneration(t *testing.T) {
 	ctx := context.Background()
 	f := &describingFactory{binding: &Binding{Kind: BindingLocal, Encryptor: EncryptorNode}}
