@@ -1408,7 +1408,7 @@ the upgrade moves no data.
   (§3, "Isolation"). Serving them needs the registry and its sealed signing
   keys moved into the tenant's (or database's) barrier-sealed store, with
   apply, snapshot and restore following it; that is the open gap of the SPEC
-  row ([../plans/1613-verifiable-log.md](../plans/1613-verifiable-log.md)).
+  row.
 - **The signing key.** The software signer's `k/<version>` record is one of
   the log's records, so the system barrier seals it at rest; there is no
   second key layer. A caller that wants entries
