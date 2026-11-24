@@ -218,11 +218,17 @@ type logRoute struct {
 	barriers map[string]*barrierLogStore
 
 	// fences writes a database's log marker where it was never written
-	// (SetLogFenceInitializer); nil writes none. inited holds every
-	// incarnation it has answered for, so it is asked once per incarnation.
-	fences atomic.Pointer[logFenceInitializerRef]
-	inited sync.Map // dbStoreKey -> struct{}
+	// (SetLogFenceInitializer); nil writes none. inited holds, per database
+	// name, the incarnation it last answered for, so it is asked once per
+	// incarnation and a name's successor replaces its predecessor's entry.
+	fences   atomic.Pointer[logFenceInitializerRef]
+	initedMu sync.Mutex
+	inited   map[dbStoreKey]string
 }
+
+// maxInitedFences bounds logRoute.inited; reaching it empties the map, and a
+// name asked again writes nothing over its present marker.
+const maxInitedFences = 4096
 
 // logFenceInitializerRef boxes a LogFenceInitializer for an atomic pointer.
 type logFenceInitializerRef struct{ f LogFenceInitializer }
@@ -252,19 +258,30 @@ func (r *logRoute) initFence(ctx context.Context, tenantID, name, incarnation st
 	if ref == nil || incarnation == "" {
 		return nil
 	}
-	key := dbStoreKey{tenant: tenantID, name: name, incarnation: incarnation}
-	if _, done := r.inited.Load(key); done {
+	key := dbStoreKey{tenant: tenantID, name: name}
+	r.initedMu.Lock()
+	done := r.inited[key] == incarnation
+	r.initedMu.Unlock()
+	if done {
 		return nil
 	}
 	if err := ref.f.InitDatabaseLogFence(ctx, tenantID, name, incarnation); err != nil {
 		return err
 	}
-	r.inited.Store(key, struct{}{})
+	r.initedMu.Lock()
+	defer r.initedMu.Unlock()
+	if _, ok := r.inited[key]; !ok && len(r.inited) >= maxInitedFences {
+		clear(r.inited)
+	}
+	if r.inited == nil {
+		r.inited = make(map[dbStoreKey]string)
+	}
+	r.inited[key] = incarnation
 	return nil
 }
 
 // dbStoreKey names one incarnation of a tenant's database.
-type dbStoreKey struct{ tenant, name, incarnation string }
+type dbStoreKey struct{ tenant, name string }
 
 // logTarget is where a log's commands are applied and its reads answered.
 type logTarget interface {
@@ -426,6 +443,9 @@ func (s *logService) admit(ctx context.Context, id vlog.LogID, features []featur
 		if err := s.route.initFence(ctx, tenantID, id.Database, g.incarnation); err != nil {
 			return logGroup{}, err
 		}
+	} else {
+		// A name dropped through another node leaves no entry behind here.
+		s.route.forgetFences(tenantID, id.Database)
 	}
 	if g.fence, err = s.route.fence(tenantID, id.Database, g.incarnation, held); err != nil {
 		return logGroup{}, err
@@ -927,12 +947,9 @@ func (s *logService) DropDatabaseLogs(ctx context.Context, tenantID, name, incar
 // One that a later write still needs is asked again, which writes nothing
 // over a present marker.
 func (r *logRoute) forgetFences(tenantID, name string) {
-	r.inited.Range(func(k, _ any) bool {
-		if key, ok := k.(dbStoreKey); ok && key.tenant == tenantID && key.name == name {
-			r.inited.Delete(k)
-		}
-		return true
-	})
+	r.initedMu.Lock()
+	delete(r.inited, dbStoreKey{tenant: tenantID, name: name})
+	r.initedMu.Unlock()
 }
 
 // ForgetTenantLogs releases what the log service holds for tenantID: the
@@ -945,12 +962,13 @@ func (s *logService) ForgetTenantLogs(tenantID string) {
 	s.route.mu.Lock()
 	delete(s.route.barriers, tenantID)
 	s.route.mu.Unlock()
-	s.route.inited.Range(func(k, _ any) bool {
-		if key, ok := k.(dbStoreKey); ok && key.tenant == tenantID {
-			s.route.inited.Delete(k)
+	s.route.initedMu.Lock()
+	defer s.route.initedMu.Unlock()
+	for key := range s.route.inited {
+		if key.tenant == tenantID {
+			delete(s.route.inited, key)
 		}
-		return true
-	})
+	}
 }
 
 // dropDatabaseLogs proposes the bounded drop of DropDatabaseLogs until a

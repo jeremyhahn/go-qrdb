@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -2652,16 +2653,7 @@ func TestLogService_DropForgetsTheLogFenceIncarnation(t *testing.T) {
 	if _, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: testLogRef, Origin: "example.test/acme/events"}); err != nil {
 		t.Fatalf("CreateLog: %v", err)
 	}
-	held := func() int {
-		n := 0
-		ls.route.inited.Range(func(k, _ any) bool {
-			if key := k.(dbStoreKey); key.tenant == "acme" && key.name == "ledger" {
-				n++
-			}
-			return true
-		})
-		return n
-	}
+	held := func() int { return len(routeFences(ls, "acme")) }
 	if n := held(); n != 1 {
 		t.Fatalf("route holds %d fence entries after the first log write, want 1", n)
 	}
@@ -2670,6 +2662,85 @@ func TestLogService_DropForgetsTheLogFenceIncarnation(t *testing.T) {
 	}
 	if n := held(); n != 0 {
 		t.Fatalf("route holds %d fence entries after the drop, want none", n)
+	}
+}
+
+// routeFences returns the route's fence entries of tenantID, by name.
+func routeFences(ls *logService, tenantID string) map[string]string {
+	ls.route.initedMu.Lock()
+	defer ls.route.initedMu.Unlock()
+	out := map[string]string{}
+	for key, incarnation := range ls.route.inited {
+		if key.tenant == tenantID {
+			out[key.name] = incarnation
+		}
+	}
+	return out
+}
+
+// A database dropped and created again without this log service hearing of
+// it (a drop through another node) leaves one fence entry per name: the
+// successor's write replaces the predecessor's entry, and a write admitted
+// while no database holds the name removes it.
+func TestLogService_DropElsewhereKeepsOneFenceEntryPerName(t *testing.T) {
+	home := newFenceGroup(t)
+	mgr := databasetest.NewManager(nil, t.TempDir(), database.WithKeyspaceReclaimer(markerReclaimer{mu: &home.mu, store: home.store}))
+	t.Cleanup(func() { _ = mgr.Close() })
+	svc, err := NewLogService(LogServiceConfig{
+		Resolver:  &fixedShardResolver{host: &gatedHost{mockHost: home.host(t), enabled: map[uint64]bool{1: true}}, shardID: 1},
+		Databases: mgr,
+		Signers:   newPausingSigners(),
+	})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	ls := svc.(*logService)
+	ls.SetLogFenceInitializer(&storeLogFenceInit{mu: &home.mu, store: home.store})
+	ctx := acmeCtx()
+	for i := 0; i < 3; i++ {
+		live := createAcmeLedger(t, mgr)
+		ref := LogRef{Database: "ledger", Log: fmt.Sprintf("events-%d", i)}
+		if _, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: "example.test/acme/" + ref.Log}); err != nil {
+			t.Fatalf("CreateLog in incarnation %d: %v", i, err)
+		}
+		if got := routeFences(ls, "acme"); len(got) != 1 || got["ledger"] != live {
+			t.Fatalf("route fence entries after incarnation %d's write = %v, want only ledger at %q", i, got, live)
+		}
+		if err := mgr.DropForTenant(ctx, "ledger"); err != nil {
+			t.Fatalf("DropForTenant in incarnation %d: %v", i, err)
+		}
+	}
+	_, _ = svc.CreateLog(ctx, &CreateLogRequest{LogRef: LogRef{Database: "ledger", Log: "after"}, Origin: "example.test/acme/after"})
+	if got := routeFences(ls, "acme"); len(got) != 0 {
+		t.Fatalf("route fence entries after a write to a dropped name = %v, want none", got)
+	}
+}
+
+// The route's fence entries are bounded: a new name at the bound empties
+// them before it is recorded.
+func TestLogService_FenceEntriesAreBounded(t *testing.T) {
+	home := newFenceGroup(t)
+	mgr := databasetest.NewManager(nil, t.TempDir(), database.WithKeyspaceReclaimer(markerReclaimer{mu: &home.mu, store: home.store}))
+	t.Cleanup(func() { _ = mgr.Close() })
+	svc, err := NewLogService(LogServiceConfig{
+		Resolver:  &fixedShardResolver{host: &gatedHost{mockHost: home.host(t), enabled: map[uint64]bool{1: true}}, shardID: 1},
+		Databases: mgr,
+	})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	ls := svc.(*logService)
+	ls.SetLogFenceInitializer(&storeLogFenceInit{mu: &home.mu, store: home.store})
+	ls.route.inited = make(map[dbStoreKey]string, maxInitedFences)
+	for i := 0; i < maxInitedFences; i++ {
+		ls.route.inited[dbStoreKey{tenant: "other", name: fmt.Sprintf("db-%d", i)}] = "inc"
+	}
+	live := createAcmeLedger(t, mgr)
+	if _, err := svc.CreateLog(acmeCtx(), &CreateLogRequest{LogRef: testLogRef, Origin: "example.test/acme/events"}); err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	if n := len(ls.route.inited); n != 1 || ls.route.inited[dbStoreKey{tenant: "acme", name: "ledger"}] != live {
+		t.Fatalf("route holds %d fence entries after a new name at the bound, want only acme/ledger", n)
 	}
 }
 
