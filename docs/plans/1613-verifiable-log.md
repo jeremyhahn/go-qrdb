@@ -737,6 +737,36 @@ Docs only, the row's closing lane.
   `TestWireTenantLogsCloser_RunsThePriorCloserThenForgetsTheLogs`,
   `TestWireTenantRuntimeCloser_KeepsTheCloserWiredBefore`.
 
+## rw1613x1 (Codex round 3 at a7b2dc9a5072)
+
+CI run 45405678395 on a7b2dc9a5072 was cancelled before any job ran (the
+CI Gate failed closed on the skipped legs); no test failed.
+
+- Done, P1 create-time refusal, `fix(vlog): refuse a barrier database over a
+  name that already holds logs`: a barrier-enabled create (untenanted and
+  tenant-scoped) lists the name's logs through the drop's list
+  (`logService.databaseLogs`) and refuses with `DatabaseLogsExistError`
+  (FailedPrecondition) when any exist. Tests:
+  `TestLogService_BarrierDatabaseCreateOverExistingLogsIsRefused`,
+  `TestLogService_BarrierDatabaseCreateForTenantOverExistingLogsIsRefused`,
+  `TestLogService_PlainDatabaseCreateOverExistingLogsAdoptsThem`,
+  `TestLogService_BarrierDatabaseCreateWithNoLogsSucceeds`,
+  `TestDatabaseService_OnlyABarrierCreateChecksForExistingLogs`.
+- Done, P1 backstop, `fix(vlog): a barrier database never reads a log
+  without its incarnation`: `IncarnationRequest.Strict` refuses a log with no
+  incarnation; `logRead` and `groupRead` set it for a barrier database, and
+  Append pre-reads a barrier database's descriptor so a plaintext log created
+  before the database answers `LogNotFoundError` and takes no sealed entry.
+  Tests: `TestIncarnationRequest_StrictRefusesALegacyLog`,
+  `TestLogService_BarrierDatabaseHidesAPlaintextLogCreatedBeforeIt`.
+- Done, P2 user guide, `docs(databases): describe log reclaim on drop and the
+  barrier create refusal`: docs/databases/user.md states the drop reclaims the
+  name's logs in the parent group, and adds the `DatabaseLogsExistError`
+  entry.
+- Residual: a non-barrier database still adopts legacy logs (no incarnation)
+  by design; a barrier database whose manager marks no incarnation (no
+  keyspace reclaimer) cannot tell them apart and relies on the create check.
+
 ## Out of scope
 
 The go-xkms provider and transparency log (the seam rows on the other side);
