@@ -364,7 +364,7 @@ The no-login client verbs (Health and invitation redemption) are one table,
 `pkg/api/publicverbs.Table`, with each verb's name on every transport and its
 pre-authentication rate-limit dimension. REST, gRPC, Unix, QUIC and MCP read
 their public set from it, so a verb's login requirement is the same on every
-transport (rulings 158 and 264(b)).
+transport.
 
 | Route | Marker |
 |---|---|
@@ -386,7 +386,7 @@ Everything else carries a permission.
 `Connect` confirms the connection with a Health call. Health is public, so a
 client with no certificate and no token connects, and the server's refusal
 comes at its first call that needs an identity, as the typed
-`Unauthenticated` error (ruling 264(b)). A certificate the node cannot verify
+`Unauthenticated` error. A certificate the node cannot verify
 still fails the TLS handshake, so `Connect` fails. The MCP SDK reads the auth
 chain's `401`/`403` on `initialize` and on every `tools/call` through one
 refusal capture (`sdk/go/transport/mcp/refusal_capture.go`), so a refused tool
