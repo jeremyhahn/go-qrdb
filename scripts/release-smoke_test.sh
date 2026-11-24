@@ -23,8 +23,10 @@
 #
 # GO is a stub answering `env GOHOSTOS` / `env GOHOSTARCH` with $STUB_HOSTOS /
 # $STUB_HOSTARCH. The artifacts are small shell scripts that log their name
-# and GODEBUG, print "QuicRaft DB v<version>" and honour per-artifact knobs:
-# <file>.exit (exit status) and <file>.ver (version printed). Nothing is built.
+# and GODEBUG, print "boot line one" then the version line ("QuicRaft DB
+# v<version>" for qrdbd, "QRDB CLI v<version>" plus commit and built lines for
+# qrdb) and honour per-artifact knobs: <file>.exit (exit status), <file>.ver
+# (version printed) and <file>.line (whole version line). Nothing is built.
 #
 # Usage: release-smoke_test.sh    (no network, no go toolchain needed)
 
@@ -57,6 +59,10 @@ setup() {
 	mkdir -p "$dist"
 	: >"$LOG"
 	for b in qrdbd qrdb; do
+		case $b in
+		qrdbd) title='QuicRaft DB' extra='' ;;
+		*) title='QRDB CLI' extra='echo "  commit: stub"; echo "  built:  stub"' ;;
+		esac
 		for v in '' -fips; do
 			f="$dist/$b-$ver-linux-amd64$v"
 			cat >"$f" <<EOF
@@ -65,7 +71,8 @@ printf '%s|%s\n' "\$(basename "\$0")" "\${GODEBUG-<unset>}" >>"\$LOG"
 want=v$ver
 [ ! -f "\$0.ver" ] || want=\$(cat "\$0.ver")
 echo "boot line one"
-echo "QuicRaft DB \$want"
+if [ -f "\$0.line" ]; then cat "\$0.line"; else echo "$title \$want"; fi
+$extra
 [ ! -f "\$0.exit" ] || { echo "panic: stub failure" >&2; exit "\$(cat "\$0.exit")"; }
 exit 0
 EOF
@@ -150,7 +157,42 @@ setup
 echo v9.9.9 >"$dist/$c.ver"
 run linux/amd64
 expect "a wrong version is a finding" 1 \
-	"release-smoke: $c: version printed 'QuicRaft DB v9.9.9', want v$ver" \
+	"release-smoke: $c: version printed 'QRDB CLI v9.9.9', want v$ver" \
+	"release-smoke: FAILED linux/amd64: 1 findings"
+
+setup
+echo "v${ver}0" >"$dist/$a.ver"
+run linux/amd64
+expect "a version with a longer suffix is a finding" 1 \
+	"release-smoke: $a: version printed 'QuicRaft DB v${ver}0', want v$ver" \
+	"release-smoke: FAILED linux/amd64: 1 findings"
+
+setup
+echo "v${ver}.1" >"$dist/$c-fips.ver"
+run linux/amd64
+expect "a version extending the prerelease is a finding" 1 \
+	"release-smoke: $c-fips: version printed 'QRDB CLI v${ver}.1', want v$ver" \
+	"release-smoke: FAILED linux/amd64: 1 findings"
+
+setup
+echo v1.2.3 >"$dist/$a-fips.ver"
+run linux/amd64
+expect "a prefix of the version is a finding" 1 \
+	"release-smoke: $a-fips: version printed 'QuicRaft DB v1.2.3', want v$ver" \
+	"release-smoke: FAILED linux/amd64: 1 findings"
+
+setup
+echo "QuicRaft DB v9.9.9 (from v$ver)" >"$dist/$a.line"
+run linux/amd64
+expect "the version outside the version field is a finding" 1 \
+	"release-smoke: $a: no version line; last output: boot line one|QuicRaft DB v9.9.9 (from v$ver)|" \
+	"release-smoke: FAILED linux/amd64: 1 findings"
+
+setup
+echo "QuicRaft DB" >"$dist/$c.line"
+run linux/amd64
+expect "no version line is a finding" 1 \
+	"release-smoke: $c: no version line; last output: boot line one|QuicRaft DB|  commit: stub|  built:  stub|" \
 	"release-smoke: FAILED linux/amd64: 1 findings"
 
 setup
@@ -162,7 +204,7 @@ if [ "$(wc -l <"$LOG")" -ne 3 ]; then
 	bad "$label" "$(wc -l <"$LOG") artifacts ran, want 3"
 else
 	expect "$label" 1 "release-smoke: $a: missing" \
-		"release-smoke: $c-fips: version exited 3; last output: boot line one|QuicRaft DB v$ver|panic: stub failure|" \
+		"release-smoke: $c-fips: version exited 3; last output: boot line one|QRDB CLI v$ver|  commit: stub|  built:  stub|panic: stub failure|" \
 		"release-smoke: FAILED linux/amd64: 2 findings"
 fi
 

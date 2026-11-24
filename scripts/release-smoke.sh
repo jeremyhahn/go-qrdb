@@ -20,8 +20,9 @@
 #
 #   <binary>-<version>-<goos>-<goarch>[-fips]
 #
-# must exist and be executable, and `<file> version` must exit 0 and print
-# v<version> on stdout. The plain variant runs with GODEBUG unset; the -fips
+# must exist and be executable, and `<file> version` must exit 0 and print a
+# "<name> v<version>" line on stdout: the first stdout line of that form, and
+# its last field must equal v<version> exactly. The plain variant runs with GODEBUG unset; the -fips
 # variant runs with GODEBUG=fips140=only, so the Go FIPS 140-3 module's
 # integrity self-test runs at init on the platform that ships it.
 #
@@ -68,8 +69,9 @@ if [ "$platform" != "$host" ]; then
 	exit 2
 fi
 
-# Both binaries print "<name> v<version>" (cmd/qrdbd/main.go, cmd/qrdb/version.go).
+# Both binaries print a "<name> v<version>" line whose v<version> field must equal $want exactly.
 want="v$ver"
+verline='^[A-Za-z][A-Za-z ]* v[^[:space:]]+$'
 findings=0
 count=0
 out=$(mktemp)
@@ -105,10 +107,18 @@ for b in $binaries; do
 			finding "$name" "version exited $rc; last output: $(cat "$out" "$err" | tail -n 5 | tr '\n' '|')"
 			continue
 		fi
-		case "$(cat "$out")" in
-		*"$want"*) ;;
-		*) finding "$name" "version printed '$(tail -n 1 "$out")', want $want" ;;
-		esac
+		line=''
+		while IFS= read -r l || [ -n "$l" ]; do
+			if [[ $l =~ $verline ]]; then
+				line=$l
+				break
+			fi
+		done <"$out"
+		if [ -z "$line" ]; then
+			finding "$name" "no version line; last output: $(tail -n 5 "$out" | tr '\n' '|')"
+		elif [ "${line##* }" != "$want" ]; then
+			finding "$name" "version printed '$line', want $want"
+		fi
 	done
 done
 

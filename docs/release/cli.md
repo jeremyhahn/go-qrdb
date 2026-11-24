@@ -90,7 +90,8 @@ the check against real fixture builds.
 `make release-smoke PLATFORM=<goos>/<goarch>` (`scripts/release-smoke.sh`)
 runs the artifacts of one platform natively from `dist/`: for each binary
 and variant the file must exist and be executable, and `<file> version` must
-exit 0 and print `v<VERSION>`. The plain variant runs with `GODEBUG` unset,
+exit 0 and print a `<name> v<VERSION>` version line whose last field is
+exactly `v<VERSION>`. The plain variant runs with `GODEBUG` unset,
 the `-fips` one under `GODEBUG=fips140=only`, so the FIPS module's
 self-test runs. `PLATFORM` must be the host's (exit 2 otherwise); neither
 `release-cross` nor `release-artifacts` calls it, since they cross-build.
