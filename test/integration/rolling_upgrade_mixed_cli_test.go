@@ -3,10 +3,25 @@
 package integration_test
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +30,8 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // upgradeProbeALPN is the identifier the upgrade-probe (N+1) build prefers
@@ -347,4 +364,223 @@ func TestRollingUpgrade_KeyDeliveryAcrossVersions_CLI(t *testing.T) {
 		}
 		assertPerNodeTenantKeys(t, client, c.adminPorts, dir.tenant, 2*time.Minute)
 	}
+}
+
+// keyDeliveryPeerPackage is the test peer that runs one half of a real
+// clusterkeys HPKE key delivery: a Receiver behind TLS, or a Sender that
+// ships an owner-sealed tenant barrier to it.
+const keyDeliveryPeerPackage = "./test/integration/internal/keydeliverypeer"
+
+// keyDeliveryPeerResult is the JSON line a keydeliverypeer process prints
+// when it is done (or, for a receiver, the {"url":...} line it prints once
+// it listens).
+type keyDeliveryPeerResult struct {
+	URL         string `json:"url"`
+	Mode        string `json:"mode"`
+	Release     string `json:"release"`
+	Strategy    string `json:"strategy"`
+	Fingerprint string `json:"fingerprint"`
+	Status      int    `json:"status"`
+	Body        string `json:"body"`
+	Imported    bool   `json:"imported"`
+	Error       string `json:"error"`
+}
+
+// TestRollingUpgrade_KeyEnvelopeAcrossVersions_CLI is T7's key-delivery
+// half: T7's auto-unseal tenants never ship a key (every node initializes
+// its own), so this test exchanges a real HPKE envelope between two
+// processes built at different release stamps. Each direction -- N sends
+// to N+1, N+1 sends to N -- must deliver an owner-sealed tenant barrier
+// the receiver imports byte for byte (equal sealed-blob fingerprints). A
+// sender two releases behind its receiver (the VersionGapRefused pair) is
+// refused with the release-gap answer, and nothing is imported.
+func TestRollingUpgrade_KeyEnvelopeAcrossVersions_CLI(t *testing.T) {
+	const gapFrom, gapTo = "0.58.0-alpha", "0.60.0-alpha"
+	bins := map[string]string{}
+	for _, v := range []string{upgradeReleaseN, upgradeReleaseNext, gapFrom, gapTo} {
+		bin, err := qrdbdharness.BuildBinary(keyDeliveryPeerPackage, qrdbdharness.WithReleaseVersion(v))
+		if err != nil {
+			t.Fatalf("build keydeliverypeer %s: %v", v, err)
+		}
+		bins[v] = bin
+	}
+	tlsDir := writeKeyDeliveryTLS(t)
+
+	for _, dir := range []struct{ from, to string }{
+		{from: upgradeReleaseN, to: upgradeReleaseNext},
+		{from: upgradeReleaseNext, to: upgradeReleaseN},
+	} {
+		t.Run(dir.from+"_to_"+dir.to, func(t *testing.T) {
+			sent, recv := runKeyDelivery(t, bins[dir.from], bins[dir.to], tlsDir)
+			if sent.Release != dir.from || recv.Release != dir.to {
+				t.Fatalf("peer releases = %q -> %q, want %q -> %q", sent.Release, recv.Release, dir.from, dir.to)
+			}
+			switch seal.StrategyID(sent.Strategy) {
+			case seal.StrategyNone, seal.StrategyPassphrase, seal.StrategyShamir, "":
+				t.Fatalf("sender barrier strategy %q is one DistributeTenantKey never ships", sent.Strategy)
+			}
+			if sent.Error != "" || !sent.Imported {
+				t.Fatalf("send %s -> %s failed: %+v", dir.from, dir.to, sent)
+			}
+			if recv.Status != http.StatusOK || !recv.Imported || recv.Error != "" {
+				t.Fatalf("receiver %s did not import: %+v", dir.to, recv)
+			}
+			if sent.Fingerprint == "" || recv.Fingerprint != sent.Fingerprint {
+				t.Fatalf("imported fingerprint %q, want the sender's %q", recv.Fingerprint, sent.Fingerprint)
+			}
+		})
+	}
+
+	t.Run(gapFrom+"_to_"+gapTo+"_refused", func(t *testing.T) {
+		sent, recv := runKeyDelivery(t, bins[gapFrom], bins[gapTo], tlsDir)
+		if sent.Imported || sent.Error == "" {
+			t.Fatalf("send across a release gap succeeded: %+v", sent)
+		}
+		if !strings.Contains(sent.Error, gapFrom) || !strings.Contains(sent.Error, gapTo) {
+			t.Fatalf("sender error %q does not name both releases", sent.Error)
+		}
+		if recv.Status != http.StatusConflict || recv.Imported {
+			t.Fatalf("receiver answer across a release gap: %+v, want 409 and nothing imported", recv)
+		}
+		var refusal struct {
+			Error          string `json:"error"`
+			ReleaseVersion string `json:"release_version"`
+		}
+		if err := json.Unmarshal([]byte(recv.Body), &refusal); err != nil {
+			t.Fatalf("release refusal body %q: %v", recv.Body, err)
+		}
+		if refusal.ReleaseVersion != gapTo || !strings.Contains(refusal.Error, gapFrom) {
+			t.Fatalf("release refusal = %+v, want release_version %q naming peer %q", refusal, gapTo, gapFrom)
+		}
+	})
+}
+
+// runKeyDelivery starts a receiver from recvBin, sends to it from sendBin
+// and returns both processes' result lines.
+func runKeyDelivery(t *testing.T, sendBin, recvBin, tlsDir string) (sent, recv keyDeliveryPeerResult) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	recvCmd := exec.CommandContext(ctx, recvBin, "receive", "--listen", "127.0.0.1:0", "--tls-dir", tlsDir)
+	recvErr := &logCapture{}
+	recvCmd.Stderr = recvErr
+	out, err := recvCmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("receiver stdout: %v", err)
+	}
+	if err := recvCmd.Start(); err != nil {
+		t.Fatalf("start receiver: %v", err)
+	}
+	t.Cleanup(func() { _ = recvCmd.Process.Kill(); _ = recvCmd.Wait() })
+	lines := make(chan keyDeliveryPeerResult, 2)
+	go func() {
+		sc := bufio.NewScanner(out)
+		for sc.Scan() {
+			var r keyDeliveryPeerResult
+			if json.Unmarshal(sc.Bytes(), &r) == nil {
+				lines <- r
+			}
+		}
+		close(lines)
+	}()
+	next := func(what string) keyDeliveryPeerResult {
+		select {
+		case r, ok := <-lines:
+			if !ok {
+				t.Fatalf("receiver exited before its %s line; stderr:\n%s", what, capturedLog(recvErr))
+			}
+			return r
+		case <-ctx.Done():
+			t.Fatalf("no receiver %s line; stderr:\n%s", what, capturedLog(recvErr))
+		}
+		return keyDeliveryPeerResult{}
+	}
+	listening := next("url")
+	if listening.URL == "" {
+		t.Fatalf("receiver did not listen: %+v", listening)
+	}
+
+	sendOut, err := exec.CommandContext(ctx, sendBin, "send", "--to", listening.URL, "--tls-dir", tlsDir).Output()
+	if err != nil {
+		t.Fatalf("sender: %v; stdout %q", err, sendOut)
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(sendOut), &sent); err != nil {
+		t.Fatalf("sender output %q: %v", sendOut, err)
+	}
+	recv = next("result")
+	return sent, recv
+}
+
+// writeKeyDeliveryTLS issues a test CA and the two peers' node
+// certificates (SPIFFE node SAN plus 127.0.0.1) into a fresh directory.
+func writeKeyDeliveryTLS(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("CA key: %v", err)
+	}
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Key Delivery Test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("CA certificate: %v", err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("parse CA certificate: %v", err)
+	}
+	writePEM(t, filepath.Join(dir, "ca.pem"), "CERTIFICATE", caDER)
+	for i, node := range []string{"leader-node-1", "follower-node-1"} {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("%s key: %v", node, err)
+		}
+		spiffeID, err := url.Parse("spiffe://cluster.local/node/" + node)
+		if err != nil {
+			t.Fatalf("SPIFFE ID: %v", err)
+		}
+		der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+			SerialNumber: big.NewInt(int64(i) + 2),
+			Subject:      pkix.Name{CommonName: node},
+			NotBefore:    time.Now().Add(-time.Hour),
+			NotAfter:     time.Now().Add(24 * time.Hour),
+			KeyUsage:     x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+			URIs:         []*url.URL{spiffeID},
+			IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		}, caCert, &key.PublicKey, caKey)
+		if err != nil {
+			t.Fatalf("%s certificate: %v", node, err)
+		}
+		keyDER, err := x509.MarshalECPrivateKey(key)
+		if err != nil {
+			t.Fatalf("%s key encode: %v", node, err)
+		}
+		writePEM(t, filepath.Join(dir, node+".pem"), "CERTIFICATE", der)
+		writePEM(t, filepath.Join(dir, node+"-key.pem"), "EC PRIVATE KEY", keyDER)
+	}
+	return dir
+}
+
+func writePEM(t *testing.T, path, blockType string, der []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: blockType, Bytes: der}), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// capturedLog returns what c has captured so far.
+func capturedLog(c *logCapture) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
 }
