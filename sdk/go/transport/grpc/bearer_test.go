@@ -11,8 +11,10 @@ import (
 	"time"
 
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -197,4 +199,71 @@ func TestBearer_GRPCRefusesPlaintext(t *testing.T) {
 	if got, n := rec.last(); n != 0 && got != "[]" {
 		t.Fatalf("plaintext server received authorization %s", got)
 	}
+}
+
+// grpcFailingSource is a TokenSource that always fails with err.
+type grpcFailingSource struct{ err error }
+
+func (s grpcFailingSource) Token(context.Context) (string, error) { return "", s.err }
+
+// grpcSwitchableSource returns "tok" until an error is stored, then that error.
+type grpcSwitchableSource struct{ err atomic.Pointer[error] }
+
+func (s *grpcSwitchableSource) Token(context.Context) (string, error) {
+	if p := s.err.Load(); p != nil {
+		return "", *p
+	}
+	return "tok", nil
+}
+
+func (s *grpcSwitchableSource) fail(err error) { s.err.Store(&err) }
+
+func TestBearer_GRPCTokenSourceStatusErrorIsNotAServerAnswer(t *testing.T) {
+	cases := map[string]error{
+		"permission denied": status.Error(codes.PermissionDenied, "denied"),
+		"unauthenticated":   status.Error(codes.Unauthenticated, "no"),
+		"sealed":            sealedStatusErr(t),
+	}
+	for name, srcErr := range cases {
+		t.Run("connect/"+name, func(t *testing.T) {
+			rec, addr := bearerGRPCServer(t, true)
+			tr, err := New(transport.WithAddress(addr), sharedGRPCClientTLSOption(),
+				transport.WithTokenSource(grpcFailingSource{err: srcErr}))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			t.Cleanup(func() { _ = tr.Close() })
+			err = tr.Connect(context.Background())
+			var tsErr *transport.TokenSourceError
+			if !errors.As(err, &tsErr) {
+				t.Fatalf("Connect err = %v, want *transport.TokenSourceError", err)
+			}
+			if _, n := rec.last(); n != 0 {
+				t.Fatalf("server recorded %d RPCs, want 0", n)
+			}
+		})
+	}
+
+	t.Run("healthy and kv after connect", func(t *testing.T) {
+		_, addr := bearerGRPCServer(t, true)
+		src := &grpcSwitchableSource{}
+		tr := connectBearerGRPC(t, addr, sharedGRPCClientTLSOption(), transport.WithTokenSource(src))
+		ctx := context.Background()
+
+		src.fail(status.Error(codes.PermissionDenied, "denied"))
+		if tr.Healthy(ctx) {
+			t.Fatal("Healthy = true with a failing token source")
+		}
+
+		src.fail(status.Error(codes.NotFound, "k"))
+		_, err := tr.Get(ctx, "k")
+		var tsErr *transport.TokenSourceError
+		if !errors.As(err, &tsErr) {
+			t.Fatalf("Get err = %v, want *transport.TokenSourceError", err)
+		}
+		var nf *transport.KeyNotFoundError
+		if errors.As(err, &nf) {
+			t.Fatalf("Get err = %v reads as a server KeyNotFoundError", err)
+		}
+	})
 }

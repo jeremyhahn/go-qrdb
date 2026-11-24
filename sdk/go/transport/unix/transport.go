@@ -310,16 +310,16 @@ func (t *Transport) probeHealth(ctx context.Context) error {
 	switch {
 	case err == nil && resp.GetStatus() != "":
 		return nil
+	case isBearerRefusal(err):
+		// The client refused to send its bearer token (connection not
+		// TLS, failing token source): that refusal is the result.
+		return err
 	case err != nil && (reachableButUnauthorized(err) || reachableButSealed(err)):
 		return nil
 	case status.Code(err) == codes.Unauthenticated || status.Code(err) == codes.ResourceExhausted:
 		// The server answered with a typed refusal of the caller -- its
 		// credential, or its address under the client-address rate limit.
 		return mapGRPCError("Health", err)
-	case isBearerRefusal(err):
-		// The client refused to send its bearer token (connection not
-		// TLS, failing token source): that refusal is the result.
-		return err
 	}
 	return &transport.ConnectionError{
 		Address: t.config.Address,
@@ -918,6 +918,9 @@ var _ transport.JoinRequestReviewer = (*Transport)(nil)
 func mapGRPCError(method string, err error) error {
 	if err == nil {
 		return nil
+	}
+	if isBearerRefusal(err) {
+		return &transport.RequestError{Method: method, Err: err}
 	}
 	st, ok := status.FromError(err)
 	if !ok {
