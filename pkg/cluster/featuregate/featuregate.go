@@ -306,7 +306,10 @@ const (
 
 	// ReleaseIntentPrefix is where a leader claims a bound system-shard
 	// add before proposing it: "{ReleaseIntentPrefix}{candidate address,
-	// path-escaped}/{release}", value the candidate address. It is not
+	// path-escaped}/{release}/{claimant replica ID}", value the candidate
+	// address. The claimant is the replica ID of the claiming leader, so a
+	// later pass can tell an intent whose claimant is gone (retireIntents).
+	// It is not
 	// under ReleasePrefix, so parseReleases never reads an intent as a
 	// record. See ProposeBound.
 	ReleaseIntentPrefix = "__sys:cluster/features/release-intents/"
@@ -822,14 +825,23 @@ func (g *Gate) claimRelease(b ConfigBinding) (withdraw func(), err error) {
 		withdraw()
 		return noop, err
 	}
+	// The claimant is this node's own replica ID, never 0: a gate that is
+	// not a system member cannot claim, so every intent names a replica
+	// whose advertisement retireIntents can look for.
+	self, err := g.AdvertisedSelf()
+	if err != nil {
+		return refuse(err)
+	}
 	prefix := ReleaseIntentPrefix + url.PathEscape(b.Candidate) + "/"
+	claimant := "/" + strconv.FormatUint(self.ReplicaID, 10)
 	for _, rel := range b.CandidateReleases {
-		ok, err := kv.PutIfAbsent(ctx, prefix+rel, []byte(b.Candidate))
+		key := prefix + rel + claimant
+		ok, err := kv.PutIfAbsent(ctx, key, []byte(b.Candidate))
 		if err != nil {
 			return refuse(&StoreError{Op: "record release intent", Err: err})
 		}
 		if ok {
-			created = append(created, prefix+rel)
+			created = append(created, key)
 		}
 	}
 	intents, err := listIntents(ctx, kv)
@@ -879,6 +891,8 @@ func (g *Gate) claimRelease(b ConfigBinding) (withdraw func(), err error) {
 // releaseIntent is one parsed intent key.
 type releaseIntent struct {
 	key, addr, rel string
+	// claimant is the replica ID of the leader that claimed the intent.
+	claimant uint64
 }
 
 // listIntents lists every live release intent linearizably.
@@ -891,17 +905,27 @@ func listIntents(ctx context.Context, kv ActivationKV) ([]releaseIntent, error) 
 }
 
 // parseIntents parses intent keys "{ReleaseIntentPrefix}{address,
-// path-escaped}/{release}", skipping any it cannot.
+// path-escaped}/{release}/{claimant replica ID}", skipping any it cannot,
+// including a key without a valid (non-zero) claimant.
 func parseIntents(keys []string) []releaseIntent {
 	out := make([]releaseIntent, 0, len(keys))
 	for _, k := range keys {
 		rest, found := strings.CutPrefix(k, ReleaseIntentPrefix)
-		escaped, rel, ok := strings.Cut(rest, "/")
+		escaped, tail, ok := strings.Cut(rest, "/")
 		addr, err := url.PathUnescape(escaped)
-		if !found || !ok || err != nil || addr == "" || rel == "" {
+		if !found || !ok || err != nil || addr == "" {
 			continue
 		}
-		out = append(out, releaseIntent{key: k, addr: addr, rel: rel})
+		i := strings.LastIndex(tail, "/")
+		if i <= 0 {
+			continue
+		}
+		rel := tail[:i]
+		claimant, err := strconv.ParseUint(tail[i+1:], 10, 64)
+		if err != nil || claimant == 0 {
+			continue
+		}
+		out = append(out, releaseIntent{key: k, addr: addr, rel: rel, claimant: claimant})
 	}
 	return out
 }
@@ -1287,26 +1311,72 @@ func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
 	return nil
 }
 
-// retireIntents deletes every release intent whose candidate is now a
-// committed member with a release record of its own (this node's, just
-// written, included): the record carries the claim from here on. It is
-// best effort; an intent left behind only keeps refusing non-adjacent adds,
-// and the next record pass retries.
+// retireIntents deletes a release intent by one of three rules. It is best
+// effort; an intent left behind only keeps refusing non-adjacent adds and
+// restarts, and the next record pass retries.
+//
+//   - Recorded: its candidate is now a committed member with a release
+//     record of its own (this node's, just written, included). The record
+//     carries the claim from here on.
+//   - Lapsed claimant: its candidate is not a committed member and no
+//     advertisement lists its claimant (another node). The claimant's fence (the goroutine
+//     ProposeBound leaves waiting on the add's outcome) lives in the
+//     claimant's process, whose lease keeps its advertisement; with the
+//     lease gone the fence is gone too, so nothing will ever withdraw or
+//     record the intent. If the advertisements cannot be listed, or the
+//     gate is not started (no advertisement stores), this rule retires
+//     nothing.
+//   - Own and idle: its candidate is not a committed member, the claimant is
+//     this node, and proposeMu is free. ProposeBound holds proposeMu from
+//     before the claim until the add's outcome, so a free proposeMu means
+//     this node has no add between claim and outcome and the intent is left
+//     over from a crashed process or a failed withdraw. proposeMu is held
+//     across the listing and the deletes so no claim can start in between.
+//
+// An add's candidate becomes a committed member when its add commits, so an
+// intent whose add committed is only ever retired by the Recorded rule.
 func (g *Gate) retireIntents(ctx context.Context, kv ActivationKV, self Self, releases map[uint64][]string) {
+	idle := g.proposeMu.TryLock()
+	if idle {
+		defer g.proposeMu.Unlock()
+	}
 	intents, err := listIntents(ctx, kv)
 	if err != nil || len(intents) == 0 {
 		return
 	}
 	recordedAddrs := map[string]bool{self.Address: true}
+	var memberAddrs map[string]bool
 	if system, err := g.members.GroupMembership(g.systemShard); err == nil {
+		memberAddrs = make(map[string]bool)
 		for _, m := range committedMembers(system) {
+			memberAddrs[m.addr] = true
 			if len(releases[m.id]) > 0 {
 				recordedAddrs[m.addr] = true
 			}
 		}
 	}
+	// An unstarted gate (EnforceRelease at boot) has no advertisement
+	// stores, only a cached view that may be empty: it cannot tell a lapsed
+	// claimant from a live one, so the lapsed rule waits for the run loop.
+	var advertised map[uint64]bool
+	if memberAddrs != nil && g.stores.Load() != nil {
+		if view, err := g.admissionView(ctx); err == nil {
+			advertised = make(map[uint64]bool, len(view))
+			for k := range view {
+				advertised[k.nodeID] = true
+			}
+		}
+	}
 	for _, in := range intents {
-		if !recordedAddrs[in.addr] {
+		retire := recordedAddrs[in.addr]
+		if !retire && memberAddrs != nil && !memberAddrs[in.addr] {
+			own := in.claimant == self.ReplicaID
+			// This node is alive whatever the store lists, so its own
+			// intents go by proposeMu alone.
+			lapsed := !own && advertised != nil && !advertised[in.claimant]
+			retire = lapsed || (own && idle)
+		}
+		if !retire {
 			continue
 		}
 		if err := kv.Delete(ctx, in.key); err != nil {
