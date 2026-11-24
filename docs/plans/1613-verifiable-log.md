@@ -719,6 +719,24 @@ Docs only, the row's closing lane.
 - P1 (review coverage of the 68-file diff, no defect named): left to the
   coordinator for the next Codex round.
 
+## rw1613wb (Codex round 2 at 757f140a28e9)
+
+- Done, P1 sealed-before-mint: `logService.admit` refuses a barrier
+  database's key-minting write (CreateLog, RotateKey) for
+  `VerifiableLogSealed` before `createKey` runs, so no provider key is minted
+  for a refused write; `barrierDatabaseTarget.seal` keeps its check as the
+  apply-side backstop. Test:
+  `TestLogService_BarrierDatabaseKeyWritesMintNoKeyWithoutTheSealedFeature`.
+- Done, P1 standalone store eviction: `logService.ForgetTenantLogs` drops the
+  tenant's barrier log store and fence incarnations; `logRoute.barrierStore`
+  drops the store when the tenant's store lookup fails. lifecycle
+  `wireTenantLogsCloser` chains the eviction onto DELETE TENANT's runtime
+  closer, and `server.WireTenantRuntimeCloser` (wired later) keeps it as its
+  `next`. Tests: `TestLogService_ForgetTenantLogsReleasesTheStandaloneStore`,
+  `TestLogService_FailedTenantLogStoreLookupEvicts`,
+  `TestWireTenantLogsCloser_RunsThePriorCloserThenForgetsTheLogs`,
+  `TestWireTenantRuntimeCloser_KeepsTheCloserWiredBefore`.
+
 ## Out of scope
 
 The go-xkms provider and transparency log (the seam rows on the other side);
