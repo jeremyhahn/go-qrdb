@@ -560,13 +560,10 @@ admission and the proposal makes the add retry its admission once and be
 refused. Concurrent additions through the leader are serialized from that
 recheck to the change's commit, so of two additions from opposite sides of the
 cluster's release (for example a 0.58 and a 0.60 node into an all-0.59
-cluster) the later one is refused with the release gap (HTTP 409). Two
-narrow residuals remain until go-quicraft 1192 (a configuration check on the
-Raft worker at the proposal boundary): a leadership change while an addition
-is in flight, and a member restarted onto another release after its restart
-check but before the addition commits. To stay clear of them, add one node at
-a time and wait for each `qrdb admin member add` to return before starting the
-next.
+cluster) the later one is refused with the release gap (HTTP 409).
+Concurrent additions from either side of the release, through any leader, and
+a restart onto a non-adjacent release during an addition are refused with the
+release gap (HTTP 409).
 
 While the upgrade is under way the cluster is **mixed**: some nodes run the
 old release (N) and some the new one (N+1). A mixed cluster serves every

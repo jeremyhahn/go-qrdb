@@ -81,13 +81,24 @@ withdraws its member record and feature advertisement, closes its Raft host (it
 neither votes nor replicates) and refuses every data-plane call with the
 refusal, which `Node.Refusal` returns (`sdk/go/node/feature_gate.go`).
 
-**Admission residuals.** Release admission is rechecked immediately before a
-membership change is proposed, and concurrent adds through the leader are
-serialised from that recheck to the commit. Two residuals stay open until
-go-quicraft issue 1192 adds a configuration check on the Raft worker at the
-proposal boundary: a leadership change while an add is in flight, and a member
-restarted onto another release after its restart check but before an admitted
-add commits ([plans/1628.md](../plans/1628.md) "Blocked on go-quicraft").
+**Admission across leaders and restarts.** Release admission is rechecked
+immediately before a membership change is proposed. The per-node `proposeMu`
+serialises adds through one leader from that recheck to the add's outcome. A
+release intent, `{ReleaseIntentPrefix}{candidate, path-escaped}/{release}/{claimant
+replica ID}`, is claimed (`PutIfAbsent`) before the proposal and every live
+intent and release record is then listed linearizably: of two non-adjacent
+adds, through the same or different leaders, at least one sees the other's
+intent and is refused with the release gap. `EnforceRelease` records the
+restarting member's release before it lists the intents, so a restart and an
+add across each other cannot both pass. An intent is retired once its
+candidate is a committed member with its own release record, or, while the
+candidate is not a member, once no advertisement lists its claimant (the
+claimant's fence died with its lease) or the claimant is this node and its
+`proposeMu` is free (no add of this node is between claim and outcome), so a
+leader that crashed mid-add never blocks later upgrades. go-quicraft #1192
+(a configuration check on the Raft worker at the proposal boundary) is no
+longer needed for the release rule; it stays a hardening item
+([plans/1628.md](../plans/1628.md) "rw1628wa").
 
 Documents that said version equality was required and change with this row:
 [clustering/user.md](../clustering/user.md) "Upgrading a cluster",
@@ -203,7 +214,9 @@ PR #1638 delivers, on the row branch:
 2. Release announcement and gap refusal on enrolment, Raft membership
    admission (including the restart check and the unannounced-candidate
    refusal), key delivery and replica forwarding, with the REST, gRPC, QUIC
-   and MCP codes above; ALPN lists on the QUIC channels, typed in the Go SDK.
+   and MCP codes above; ALPN lists on the QUIC channels, typed in the Go SDK;
+   release intents that serialise admission across leaders and against
+   restarts, retired when their candidate records or their claimant is gone.
 3. The cluster-wide feature gate with permanent activation and the Go SDK
    node quarantine.
 4. The synthetic N+1 build and tests T1-T7 and T9.
@@ -214,9 +227,5 @@ What remains open:
 
 - **Clause (7), Q3 and the Raft leg of T5**: the Raft transport's version
   window waits on the go-quicraft seam.
-- **go-quicraft issue 1192**: the two admission residuals (a leadership change
-  mid-add; a member restarted onto another release before an admitted add
-  commits) wait on a proposal-time configuration check in go-quicraft; the
-  owner ask (option A) is to ship with the gap stated.
 - **Released-pair runs**: they start once a release carrying this row is
   tagged; T8 against the released v0.58.5-alpha binary runs with them.

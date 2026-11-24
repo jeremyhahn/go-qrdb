@@ -530,11 +530,14 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   re-proposing the add under the same binding meanwhile to force an outcome,
   so no later add is rechecked against a membership it may yet change. An add
   nothing fences (no gate, a binding that is not `Required`) gets the closed
-  `featuregate.Unfenced` stop and is not resolved. Residuals, closed
-  by go-quicraft 1192 (see [../plans/1628.md](../plans/1628.md)): a
-  leadership change while an add is in flight, and a member restarted onto
-  another release whose `Gate.Start` restart check ran before the add
-  committed.
+  `featuregate.Unfenced` stop and is not resolved. Across leaders and
+  against restarts, a release intent claimed before the proposal and
+  listed linearizably after it serialises admission: of two non-adjacent
+  adds through different leaders at least one is refused, and
+  `EnforceRelease` records a restart's release before it lists the
+  intents. An intent of a crashed claimant is retired; see
+  [../rolling-upgrades/engineering.md](../rolling-upgrades/engineering.md)
+  "Admission across leaders and restarts".
 - **Withdrawal.** `qrdbd` closes the advertiser and the gate explicitly in its
   signal and migration branches, before it stops the servers and the host, so
   the lease is revoked while the host can still propose. After a crash the
