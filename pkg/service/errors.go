@@ -205,6 +205,42 @@ type WriteGuardRefusedError struct {
 	Key string
 }
 
+// The reasons of the write refusals a server puts on the wire, so a remote
+// client rebuilds the typed error rather than a bare Aborted or
+// AlreadyExists status (REST sends 409 for both).
+const (
+	// ReasonWriteGuardRefused is the reason of a *WriteGuardRefusedError.
+	ReasonWriteGuardRefused = "WRITE_GUARD_REFUSED"
+	// ReasonCommandConflict is the reason of a *CommandConflictError.
+	ReasonCommandConflict = "COMMAND_CONFLICT"
+)
+
+// The metadata names of the write refusals.
+const (
+	metadataKey     = "key"
+	metadataMessage = "message"
+)
+
+// Metadata encodes the refusal for the wire.
+func (e *WriteGuardRefusedError) Metadata() map[string]string {
+	return map[string]string{metadataKey: e.Key}
+}
+
+// WriteGuardRefusedFromMetadata rebuilds the error Metadata encoded.
+func WriteGuardRefusedFromMetadata(md map[string]string) *WriteGuardRefusedError {
+	return &WriteGuardRefusedError{Key: md[metadataKey]}
+}
+
+// Metadata encodes the refusal for the wire.
+func (e *CommandConflictError) Metadata() map[string]string {
+	return map[string]string{metadataMessage: e.Message}
+}
+
+// CommandConflictFromMetadata rebuilds the error Metadata encoded.
+func CommandConflictFromMetadata(md map[string]string) *CommandConflictError {
+	return &CommandConflictError{Message: md[metadataMessage]}
+}
+
 // Error returns a human-readable description.
 func (e *WriteGuardRefusedError) Error() string {
 	return "service: write guard refused on key " + strconv.Quote(e.Key)

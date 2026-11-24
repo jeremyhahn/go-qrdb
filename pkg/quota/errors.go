@@ -100,3 +100,72 @@ type UnregisteredCounterError struct {
 func (e *UnregisteredCounterError) Error() string {
 	return "quota: no counter registered for resource: " + e.Resource.String()
 }
+
+// The reasons of the quota refusals a server puts on the wire, so a remote
+// client rebuilds the typed error rather than a bare status.
+const (
+	// ReasonQuotaExceeded is the reason of an *ExceededError.
+	ReasonQuotaExceeded = "QUOTA_EXCEEDED"
+	// ReasonEntitlementDenied is the reason of an *EntitlementError.
+	ReasonEntitlementDenied = "ENTITLEMENT_DENIED"
+)
+
+// The metadata names of the quota refusals.
+const (
+	metadataTenantID = "tenant_id"
+	metadataResource = "resource"
+	metadataCurrent  = "current"
+	metadataLimit    = "limit"
+	metadataMode     = "mode"
+	metadataFeature  = "feature"
+)
+
+// Metadata encodes the refusal for the wire: the resource as its decimal
+// number, the usage and the limit as decimals.
+func (e *ExceededError) Metadata() map[string]string {
+	return map[string]string{
+		metadataTenantID: e.TenantID,
+		metadataResource: strconv.Itoa(int(e.Resource)),
+		metadataCurrent:  strconv.FormatInt(e.Current, 10),
+		metadataLimit:    strconv.FormatInt(e.Limit, 10),
+	}
+}
+
+// ExceededFromMetadata rebuilds the error Metadata encoded. A missing or
+// malformed number decodes as zero.
+func ExceededFromMetadata(md map[string]string) *ExceededError {
+	return &ExceededError{
+		TenantID: md[metadataTenantID],
+		Resource: Resource(intFromMetadata(md, metadataResource)),
+		Current:  intFromMetadata(md, metadataCurrent),
+		Limit:    intFromMetadata(md, metadataLimit),
+	}
+}
+
+// Metadata encodes the refusal for the wire.
+func (e *EntitlementError) Metadata() map[string]string {
+	return map[string]string{
+		metadataTenantID: e.TenantID,
+		metadataMode:     e.Mode,
+		metadataFeature:  e.Feature,
+	}
+}
+
+// EntitlementFromMetadata rebuilds the error Metadata encoded.
+func EntitlementFromMetadata(md map[string]string) *EntitlementError {
+	return &EntitlementError{
+		TenantID: md[metadataTenantID],
+		Mode:     md[metadataMode],
+		Feature:  md[metadataFeature],
+	}
+}
+
+// intFromMetadata decodes the decimal under name, or zero when it is missing
+// or malformed.
+func intFromMetadata(md map[string]string, name string) int64 {
+	n, err := strconv.ParseInt(md[name], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}

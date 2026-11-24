@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -163,6 +164,67 @@ func TestRefusal_lockOutcomes(t *testing.T) {
 // outcome: the client would rebuild the lock error and lose the real class.
 func TestRefusal_lockOutcomeUnderAnotherClassCarriesNone(t *testing.T) {
 	err := &user.IndexCompensationError{Op: "update", Cause: &lock.LockNotFoundError{Key: "k"}}
+	if got := Classify(err); got != DataLoss {
+		t.Fatalf("Classify() = %v, want DataLoss", got)
+	}
+	if reason, md, ok := Refusal(err); ok || reason != "" || md != nil {
+		t.Fatalf("Refusal() = %q, %v, %v; want none", reason, md, ok)
+	}
+}
+
+// TestRefusal_serverWriteRefusals proves the four refusals a SQLite page
+// store write reads as outcomes cross the wire with a reason and metadata
+// that rebuild the typed error (go-qrdb#926).
+func TestRefusal_serverWriteRefusals(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		reason string
+		decode func(map[string]string) error
+	}{
+		{
+			name:   "write guard refused",
+			err:    &service.WriteGuardRefusedError{Key: "sqlite/db/writer"},
+			reason: service.ReasonWriteGuardRefused,
+			decode: func(md map[string]string) error { return service.WriteGuardRefusedFromMetadata(md) },
+		},
+		{
+			name:   "command conflict",
+			err:    &service.CommandConflictError{Message: "prefix moved"},
+			reason: service.ReasonCommandConflict,
+			decode: func(md map[string]string) error { return service.CommandConflictFromMetadata(md) },
+		},
+		{
+			name:   "quota exceeded",
+			err:    &quota.ExceededError{TenantID: "t1", Resource: quota.ResourceSQLiteDatabases, Current: 3, Limit: 3},
+			reason: quota.ReasonQuotaExceeded,
+			decode: func(md map[string]string) error { return quota.ExceededFromMetadata(md) },
+		},
+		{
+			name:   "entitlement denied",
+			err:    &quota.EntitlementError{TenantID: "t1", Feature: "sqlite_vfs"},
+			reason: quota.ReasonEntitlementDenied,
+			decode: func(md map[string]string) error { return quota.EntitlementFromMetadata(md) },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, md, ok := Refusal(&wrappedError{tt.err})
+			if !ok || reason != tt.reason {
+				t.Fatalf("Refusal() = %q, %v; want %q, true", reason, ok, tt.reason)
+			}
+			if got := tt.decode(md); !reflect.DeepEqual(got, tt.err) {
+				t.Fatalf("metadata decodes to %+v, want %+v", got, tt.err)
+			}
+		})
+	}
+}
+
+// TestRefusal_serverWriteRefusalUnderAnotherClassCarriesNone proves a write
+// refusal wrapped by an error of another class does not reach the client as
+// the refusal.
+func TestRefusal_serverWriteRefusalUnderAnotherClassCarriesNone(t *testing.T) {
+	err := &user.IndexCompensationError{Op: "update", Cause: &quota.ExceededError{TenantID: "t1"}}
 	if got := Classify(err); got != DataLoss {
 		t.Fatalf("Classify() = %v, want DataLoss", got)
 	}

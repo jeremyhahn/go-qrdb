@@ -20,6 +20,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -38,6 +39,7 @@ var refusals = []refusalEncoder{
 	factorConditionRefusal,
 	userConcurrentUpdateRefusal,
 	lockRefusal,
+	serverWriteRefusal,
 	barrierRefusal,
 	adminCredentialRequiresCARefusal,
 	vlogRefusal,
@@ -127,6 +129,29 @@ func lockRefusal(err error) (string, map[string]string, bool) {
 	}
 	if e, ok := errors.AsType[*lock.LockNotFoundError](err); ok && class == NotFound {
 		return lock.ReasonLockNotFound, e.Metadata(), true
+	}
+	return "", nil, false
+}
+
+// serverWriteRefusal encodes the refusals a write of the SQLite page store
+// reads as an outcome -- a guard that did not hold, a command conflict, an
+// exceeded quota, a denied entitlement -- so a remote client rebuilds the
+// typed error instead of guessing from a status (REST sends 409 for both
+// Aborted and AlreadyExists). As with lockRefusal, only an error that
+// classifies as its outcome is one.
+func serverWriteRefusal(err error) (string, map[string]string, bool) {
+	class := Classify(err)
+	if e, ok := errors.AsType[*service.WriteGuardRefusedError](err); ok && class == Aborted {
+		return service.ReasonWriteGuardRefused, e.Metadata(), true
+	}
+	if e, ok := errors.AsType[*service.CommandConflictError](err); ok && class == AlreadyExists {
+		return service.ReasonCommandConflict, e.Metadata(), true
+	}
+	if e, ok := errors.AsType[*quota.ExceededError](err); ok && class == ResourceExhausted {
+		return quota.ReasonQuotaExceeded, e.Metadata(), true
+	}
+	if e, ok := errors.AsType[*quota.EntitlementError](err); ok && class == PermissionDenied {
+		return quota.ReasonEntitlementDenied, e.Metadata(), true
 	}
 	return "", nil, false
 }
