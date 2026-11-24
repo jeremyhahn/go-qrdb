@@ -309,16 +309,9 @@ func TestStandaloneNode_CompactionScheduleSurvivesRestart(t *testing.T) {
 		"the restarted node compacted to %d, not to the first node's newest sample %d", floor, sampledByFirst)
 }
 
-// TestClusteredNodes_CompactionContinuesAfterLeaderFailover: a policy set
-// through node A -- the shared shard's leader -- is not A's: after A goes
-// down, the new leader runs it, from the samples A's term recorded, so the
-// first compaction it makes is to the newest of them once that is a period
-// old. The nodes share one compaction clock the test moves, so neither how
-// long the leader change takes nor how long the new leader's first reads
-// stall decides the outcome.
-// raftDatabaseEntitlements lets a volume-isolated tenant own a raft
-// database: volume storage on the default pool, plus the raft isolation
-// mode its database's own group takes.
+// raftDatabaseEntitlements lets a raft-isolated tenant own a raft database:
+// the raft isolation mode and a dedicated-raft home, on top of the volume
+// entitlements.
 func raftDatabaseEntitlements() *quota.Entitlements {
 	ent := volumeEntitlements()
 	ent.AllowedIsolationModes = append(ent.AllowedIsolationModes, quota.IsolationModeRaft)
@@ -326,6 +319,13 @@ func raftDatabaseEntitlements() *quota.Entitlements {
 	return ent
 }
 
+// TestClusteredNodes_CompactionContinuesAfterLeaderFailover: a policy set
+// through node A -- the shared shard's leader -- is not A's: after A goes
+// down, the new leader runs it, from the samples A's term recorded, so the
+// first compaction it makes is to the newest of them once that is a period
+// old. The nodes share one compaction clock the test moves, so neither how
+// long the leader change takes nor how long the new leader's first reads
+// stall decides the outcome.
 func TestClusteredNodes_CompactionContinuesAfterLeaderFailover(t *testing.T) {
 	ca, replicas := newFormationReplicas(t, 3)
 	// The seal on (strategy none), as a deployed node runs: a node booted
@@ -334,7 +334,8 @@ func TestClusteredNodes_CompactionContinuesAfterLeaderFailover(t *testing.T) {
 	//
 	// Tenant isolation on, over a volume pool: a node serves a raft
 	// database's own group only through its raft backend, which isolation
-	// builds.
+	// builds. The pool is needed: a raft-isolated tenant also reserves its
+	// volume on it.
 	sealed := func(cfg *qrdbconfig.Config) {
 		cfg.Seal.Enabled = true
 		cfg.Seal.Strategy = "none"
@@ -356,13 +357,13 @@ func TestClusteredNodes_CompactionContinuesAfterLeaderFailover(t *testing.T) {
 	awaitFeatureActive(t, nodes, featuregate.ClusterShardIDs)
 	awaitFeatureActive(t, nodes, featuregate.PerNodeBarrierKeys)
 	// A raft database's group runs under its tenant's own barrier, so it
-	// belongs to a volume-isolated tenant, not to the system tenant.
+	// belongs to a raft-isolated tenant, whose dedicated-raft home holds its
+	// catalog, not to the system tenant.
 	creator := nodes[awaitAgreedLeader(t, nodes)-1]
+	// A raft tenant still reserves its volume on the default pool.
 	createDefaultPool(t, creator)
 	const owner = "tenant-events"
-	_, err = creator.Services().Tenant.CreateTenant(ctx, owner, owner,
-		tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true))
-	require.NoError(t, err)
+	createRaftTenant(t, creator, owner, owner)
 	_, err = creator.Services().Database.CreateForTenant(tenant.WithTenantID(ctx, owner),
 		database.DatabaseConfig{
 			Name:     "events",
