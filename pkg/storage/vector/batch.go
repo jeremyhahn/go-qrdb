@@ -35,7 +35,9 @@ type vectorBatch struct {
 // the store's batches come from PebbleVectorStorage.newBatch.
 func newVectorBatch(db *pebble.DB, metrics *vectorMetrics) *vectorBatch {
 	return &vectorBatch{
-		batch:   db.NewBatch(),
+		// Indexed, so a later op of the batch reads the earlier ones: an ID
+		// written twice in one batch replaces its own staged index entries.
+		batch:   db.NewIndexedBatch(),
 		db:      db,
 		metrics: metrics,
 		durably: noSync,
@@ -59,17 +61,20 @@ func (b *vectorBatch) UpsertVector(namespace string, vec *VectorValue) error {
 		return err
 	}
 
-	// Write primary vector key
+	// Delete the index entries of the stored record this write replaces
+	// before the new ones are set, as PebbleVectorStorage.UpsertVector does.
+	// The batch is the reader: it merges the DB with this batch's earlier
+	// ops, so a record staged under the same key is replaced too.
+	deleteStoredIndexEntries(b.batch, b.batch, namespace, vec.ID, vec.Version)
+	if vec.Version > 1 {
+		deleteStoredIndexEntries(b.batch, b.batch, namespace, vec.ID, vec.Version-1)
+	}
+
+	// Write primary vector key, after the read above of the record it
+	// replaces.
 	vectorKey := schema.EncodeVectorKey(namespace, vec.ID, vec.Version)
 	if err := b.batch.Set(vectorKey, value, pebble.NoSync); err != nil {
 		return err
-	}
-
-	// Delete the index entries of the stored record this write replaces
-	// before the new ones are set, as PebbleVectorStorage.UpsertVector does.
-	deleteStoredIndexEntries(b.db, b.batch, namespace, vec.ID, vec.Version)
-	if vec.Version > 1 {
-		deleteStoredIndexEntries(b.db, b.batch, namespace, vec.ID, vec.Version-1)
 	}
 
 	// Create metadata indexes
@@ -99,7 +104,9 @@ func (b *vectorBatch) DeleteVector(namespace string, id uint64) error {
 
 	// Get the current version to delete all metadata indexes
 	vectorKeyPrefix := schema.EncodeVectorKeyPrefix(namespace, id)
-	iter, err := b.db.NewIter(&pebble.IterOptions{
+	// The batch's iterators merge the DB with this batch's staged ops, so a
+	// version written earlier in the batch is deleted too.
+	iter, err := b.batch.NewIter(&pebble.IterOptions{
 		LowerBound: vectorKeyPrefix,
 		UpperBound: schema.PrefixSuccessor(vectorKeyPrefix),
 	})
@@ -124,7 +131,7 @@ func (b *vectorBatch) DeleteVector(namespace string, id uint64) error {
 
 		// Delete metadata indexes using reverse index
 		reversePrefix := schema.EncodeReverseKeyPrefix(namespace, id)
-		reverseIter, reverseErr := b.db.NewIter(&pebble.IterOptions{
+		reverseIter, reverseErr := b.batch.NewIter(&pebble.IterOptions{
 			LowerBound: reversePrefix,
 			UpperBound: schema.PrefixSuccessor(reversePrefix),
 		})

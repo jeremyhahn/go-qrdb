@@ -371,8 +371,8 @@ func (s *PebbleVectorStorage) UpsertVector(ctx context.Context, namespace string
 // key and reverse index key of the vector stored in db under namespace, id
 // and version. Nothing is deleted when no such vector is stored or it does
 // not decode.
-func deleteStoredIndexEntries(db *pebble.DB, batch *pebble.Batch, namespace string, id, version uint64) {
-	value, closer, err := db.Get(schema.EncodeVectorKey(namespace, id, version))
+func deleteStoredIndexEntries(r pebble.Reader, batch *pebble.Batch, namespace string, id, version uint64) {
+	value, closer, err := r.Get(schema.EncodeVectorKey(namespace, id, version))
 	if err != nil {
 		return
 	}
