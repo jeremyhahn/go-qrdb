@@ -24,11 +24,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
-
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
@@ -92,64 +90,20 @@ func Compactor(store *pebblestore.PebbleStorage) func() error {
 	}
 }
 
-// fs is the vfs.FS the seal store's Pebble runs on. It turns WAL recycling
-// off: Pebble keeps obsolete logs in its LogRecycler and reuses one by
-// renaming it to the new log's name and writing over it WITHOUT truncation,
-// so plaintext written before an enable-encryption migration would survive
-// in the reused file's tail. ReuseForWrite here removes the old log and
-// creates the new one fresh, which vfs.FS permits. Remove also wakes every
-// waiter on removal(), so the plaintext retirement can wait for Pebble's
-// asynchronous deletion of obsolete files without polling.
-type fs struct {
-	vfs.FS
-	mu      sync.Mutex
-	removed chan struct{}
-}
-
-func newFS(base vfs.FS) *fs {
-	return &fs{FS: base, removed: make(chan struct{})}
-}
-
-// ReuseForWrite removes oldname and creates newname fresh.
-func (f *fs) ReuseForWrite(oldname, newname string, category vfs.DiskWriteCategory) (vfs.File, error) {
-	if err := f.Remove(oldname); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	return f.FS.Create(newname, category)
-}
-
-// Remove removes name and wakes every removal() waiter.
-func (f *fs) Remove(name string) error {
-	err := f.FS.Remove(name)
-	f.mu.Lock()
-	close(f.removed)
-	f.removed = make(chan struct{})
-	f.mu.Unlock()
-	return err
-}
-
-// removal returns a channel closed at the next Remove.
-func (f *fs) removal() <-chan struct{} {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.removed
-}
-
-// Open opens the seal store's Pebble in dir on base (vfs.Default when nil)
-// wrapped so its WAL is never recycled. SyncWrites is on: a seal-store write
+// Open opens the seal store's Pebble in dir on base (the host file system
+// when nil) through a pebblestore.NoRecycleFS, so its WAL is never recycled
+// and plaintext written before an enable-encryption migration cannot survive
+// in a reused log's tail. SyncWrites is on: a seal-store write
 // is durable when it returns.
-func Open(dir string, base vfs.FS) (*pebblestore.PebbleStorage, *Retirer, error) {
+func Open(dir string, base filesys.FS) (*pebblestore.PebbleStorage, *Retirer, error) {
 	return OpenConfig(&pebblestore.Config{DataDir: dir}, base)
 }
 
 // OpenConfig is Open with the rest of the Pebble configuration taken from
 // cfg; it forces SyncWrites on and sets cfg.FS to the retirement wrapper over
-// base (vfs.Default when nil).
-func OpenConfig(cfg *pebblestore.Config, base vfs.FS) (*pebblestore.PebbleStorage, *Retirer, error) {
-	if base == nil {
-		base = vfs.Default
-	}
-	f := newFS(base)
+// base (the host file system when nil).
+func OpenConfig(cfg *pebblestore.Config, base filesys.FS) (*pebblestore.PebbleStorage, *Retirer, error) {
+	f := pebblestore.NewNoRecycleFS(base)
 	c := *cfg
 	c.SyncWrites = true
 	c.FS = f
@@ -184,7 +138,7 @@ var marker = []byte("qrdbd/seal-store/retire-plaintext")
 // seal store's files once its records are replaced.
 type Retirer struct {
 	store *pebblestore.PebbleStorage
-	fs    *fs
+	fs    *pebblestore.NoRecycleFS
 	dir   string
 	fault func() error
 }
@@ -315,7 +269,7 @@ func (r *Retirer) retireFiles(ctx context.Context) error {
 	waitCtx, cancel := context.WithTimeout(ctx, retireTimeout)
 	defer cancel()
 	for {
-		removed := r.fs.removal()
+		removed := r.fs.Removal()
 		left := 0
 		for _, path := range targets {
 			if _, serr := r.fs.Stat(path); serr == nil {

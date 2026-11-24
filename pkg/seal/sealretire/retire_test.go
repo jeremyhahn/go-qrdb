@@ -113,6 +113,11 @@ func TestFS_ReuseForWriteCreatesFresh(t *testing.T) {
 
 var errFSRemove = errors.New("injected remove failure")
 
+// newFS returns the seal store's no-recycle file system over base.
+func newFS(base vfs.FS) *pebblestore.NoRecycleFS {
+	return pebblestore.NewNoRecycleFS(pebblestore.FromVFS(base))
+}
+
 // failingRemoveFS is a vfs.FS whose Remove fails with errFSRemove.
 type failingRemoveFS struct {
 	vfs.FS
@@ -147,7 +152,7 @@ func TestFS_RemoveWakesWaiters(t *testing.T) {
 	}
 	fs := newFS(mem)
 
-	ch := fs.removal()
+	ch := fs.Removal()
 	if err := fs.Remove("victim"); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
@@ -157,7 +162,7 @@ func TestFS_RemoveWakesWaiters(t *testing.T) {
 		t.Fatal("removal channel still open after Remove")
 	}
 	select {
-	case <-fs.removal():
+	case <-fs.Removal():
 		t.Fatal("a later removal() channel is already closed")
 	default:
 	}
@@ -292,7 +297,7 @@ func TestRetirer_InMemoryStoreRetiresPlaintext(t *testing.T) {
 	if err := mem.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	store, r, err := Open(dir, mem)
+	store, r, err := Open(dir, pebblestore.FromVFS(mem))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

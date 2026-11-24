@@ -3567,9 +3567,9 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	// never recycles a WAL, and its retirer deletes the plaintext history an
 	// enable-encryption leaves in the seal store's files once the secrets
 	// are re-encrypted (sealretire.OpenConfig keeps SyncWrites on).
-	var sealFS vfs.FS
+	var sealFS filesys.FS
 	if dataDir == "" {
-		sealFS = vfs.NewMem()
+		sealFS = pebbleStorage.FromVFS(vfs.NewMem())
 	}
 	sealStore, sealRetirer, err := sealretire.OpenConfig(sealCfg, sealFS)
 	if err != nil {
