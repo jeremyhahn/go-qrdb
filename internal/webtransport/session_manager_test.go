@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -582,4 +583,50 @@ func TestSessionManagerSessionClose(t *testing.T) {
 		require.ErrorIs(t, err, &quic.StreamError{Remote: false, StreamID: clientUniStr.StreamID(), ErrorCode: WTBufferedStreamRejectedErrorCode})
 		require.Equal(t, rtt/2, time.Since(start))
 	})
+}
+
+// TestSessionManagerReservationIsExclusive checks that without flow control
+// only one CONNECT can hold the connection's session slot before its 200 is
+// sent, and that an established session keeps the slot until it closes.
+func TestSessionManagerReservationIsExclusive(t *testing.T) {
+	sessMgr := newSessionManager(time.Hour)
+
+	const n = 8
+	start := make(chan struct{})
+	results := make(chan bool, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- sessMgr.tryReserve()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	won := 0
+	for ok := range results {
+		if ok {
+			won++
+		}
+	}
+	require.Equal(t, 1, won, "exactly one concurrent CONNECT may reserve the slot")
+	require.False(t, sessMgr.tryReserve(), "the slot is still reserved")
+
+	sessMgr.releaseReservation()
+	require.True(t, sessMgr.tryReserve(), "a released slot can be reserved again")
+
+	// AddSession turns the reservation into the established session, which
+	// holds the slot until its context ends.
+	ctx, cancel := context.WithCancel(context.Background())
+	sessMgr.AddSession(42, &Session{ctx: ctx})
+	require.False(t, sessMgr.tryReserve(), "an established session holds the slot")
+	sessMgr.releaseReservation()
+	require.False(t, sessMgr.tryReserve(), "releasing a reservation does not free an established session's slot")
+
+	cancel()
+	require.Eventually(t, func() bool { return sessMgr.NumSessions() == 0 }, scaleDuration(time.Second), time.Millisecond)
+	require.True(t, sessMgr.tryReserve(), "the slot is free once the session is gone")
 }

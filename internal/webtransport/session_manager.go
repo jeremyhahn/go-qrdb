@@ -48,6 +48,10 @@ type sessionManager struct {
 	mx                     sync.Mutex
 	sessions               map[sessionID]sessionEntry
 	recentlyClosedSessions []sessionID
+	// reserved is set while an Extended CONNECT holds the connection's only
+	// session slot (no WebTransport flow control) between admission and
+	// AddSession, so a second CONNECT cannot be answered 200 meanwhile.
+	reserved bool
 }
 
 func newSessionManager(timeout time.Duration) *sessionManager {
@@ -142,16 +146,33 @@ func (m *sessionManager) releaseBuffered(sess *unestablishedSession) {
 }
 
 // hasSession reports whether an established session exists.
-func (m *sessionManager) hasSession() bool {
+// tryReserve claims the connection's only session slot for a CONNECT that is
+// about to be answered without WebTransport flow control. It reports false if
+// a session exists or another CONNECT holds the reservation. A successful
+// reservation ends with AddSession or releaseReservation.
+func (m *sessionManager) tryReserve() bool {
 	m.mx.Lock()
 	defer m.mx.Unlock()
 
+	if m.reserved {
+		return false
+	}
 	for _, entry := range m.sessions {
 		if entry.Session != nil {
-			return true
+			return false
 		}
 	}
-	return false
+	m.reserved = true
+	return true
+}
+
+// releaseReservation gives up a reservation taken by tryReserve whose session
+// was never added.
+func (m *sessionManager) releaseReservation() {
+	m.mx.Lock()
+	defer m.mx.Unlock()
+
+	m.reserved = false
 }
 
 func (m *sessionManager) onTimer(id sessionID) {
@@ -197,6 +218,7 @@ func (m *sessionManager) AddSession(id sessionID, s *Session) {
 		entry.Unestablished = nil
 	}
 	m.sessions[id] = sessionEntry{Session: s}
+	m.reserved = false
 
 	context.AfterFunc(s.Context(), func() {
 		m.deleteSession(id)

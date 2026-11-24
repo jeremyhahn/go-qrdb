@@ -469,8 +469,15 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, erro
 	if !ok {
 		return nil, errors.New("webtransport: connection session manager not found")
 	}
-	// Multiple sessions on one HTTP/3 connection require WebTransport flow control.
-	if !fc.Enabled && sessMgr.hasSession() {
+	// Multiple sessions on one HTTP/3 connection require WebTransport flow
+	// control. Without it, reserve the only session slot before the 200 is
+	// sent, so a concurrent CONNECT is refused rather than answered 200 and
+	// reset (draft-16 3.2, 5.1).
+	reserved := false
+	if !fc.Enabled {
+		reserved = sessMgr.tryReserve()
+	}
+	if !fc.Enabled && !reserved {
 		// Without WriteHeader, HTTPStream sends no response header.
 		if streamer, ok := w.(http3.HTTPStreamer); ok {
 			if str, err := streamer.HTTPStream(); err == nil {
@@ -487,25 +494,23 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, erro
 	// WriteHeader came first, and WriteHeader after HTTPStream panics.
 	streamer, ok := w.(http3.HTTPStreamer)
 	if !ok {
+		if reserved {
+			sessMgr.releaseReservation()
+		}
 		return nil, errors.New("webtransport: response writer does not expose the HTTP/3 stream")
 	}
 	w.WriteHeader(http.StatusOK)
 	str, err := streamer.HTTPStream()
 	if err != nil {
+		if reserved {
+			sessMgr.releaseReservation()
+		}
 		// The 200 response was not sent, so no session exists: refuse it.
 		// WriteHeader already ran, so the caller must not write again.
 		return nil, &streamTakenOverError{err: fmt.Errorf("webtransport: taking over the request stream: %w", err)}
 	}
 	sessID := sessionID(str.StreamID())
 
-	// Check again: another session may have been added while the header was sent.
-	s.connsMx.Lock()
-	if !fc.Enabled && sessMgr.hasSession() {
-		s.connsMx.Unlock()
-		str.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
-		str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
-		return nil, &streamTakenOverError{err: errMultipleSessionsWithoutFlowControl}
-	}
 	sess := newSession(
 		context.WithoutCancel(r.Context()),
 		sessID,
@@ -514,8 +519,8 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, erro
 		selectedProtocol,
 		fc,
 	)
+	// AddSession turns the reservation into the established session.
 	sessMgr.AddSession(sessID, sess)
-	s.connsMx.Unlock()
 	return sess, nil
 }
 
