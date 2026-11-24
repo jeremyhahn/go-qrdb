@@ -171,3 +171,26 @@ func TestNewBackendFactory_WiresTheValidator(t *testing.T) {
 		t.Fatalf("ValidateObjectStorage = %v", err)
 	}
 }
+
+// TestNamespace_KeysTheProviderNamespace checks that Namespace keys a
+// database's provider namespace as objstore.NamespaceKey does and refuses a
+// config with no object-storage block.
+func TestNamespace_KeysTheProviderNamespace(t *testing.T) {
+	settings := map[string]string{"bucket": "b"}
+	cfg := database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore,
+		Objstore: &database.DatabaseObjstoreConfig{Provider: "memory", Settings: settings}}
+	got, err := objstoredb.Namespace(cfg)
+	if err != nil {
+		t.Fatalf("Namespace = %v", err)
+	}
+	want, err := objstore.NamespaceKey("memory", settings)
+	if err != nil {
+		t.Fatalf("NamespaceKey = %v", err)
+	}
+	if got != want {
+		t.Fatalf("Namespace = %q, want %q", got, want)
+	}
+	if _, err := objstoredb.Namespace(database.DatabaseConfig{Name: "blobs"}); err == nil {
+		t.Fatal("Namespace with no objstore config = nil, want an error")
+	}
+}

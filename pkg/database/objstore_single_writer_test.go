@@ -1,4 +1,4 @@
-package objstoredb_test
+package database_test
 
 import (
 	"context"
