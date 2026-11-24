@@ -213,6 +213,13 @@ func run() int {
 
 	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
+		// An error that names its own exit status (the SQLite result
+		// codes of `qrdb sqlite`) exits with it, so a script tells a busy
+		// database from a full one.
+		var ec interface{ ExitCode() int }
+		if errors.As(err, &ec) {
+			return ec.ExitCode()
+		}
 		return 1
 	}
 	return 0

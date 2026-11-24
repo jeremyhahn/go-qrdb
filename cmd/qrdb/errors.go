@@ -321,6 +321,41 @@ type RestoreConflictsError struct {
 	Conflicted int
 }
 
+// SQLiteBusyError reports a `qrdb sqlite` statement refused with
+// SQLITE_BUSY: another writer holds the database's writer lock, or (in
+// optimistic mode) another commit changed what the statement read. The
+// command exits with SQLite's result code 5.
+type SQLiteBusyError struct {
+	DB  string
+	Err error
+}
+
+func (e *SQLiteBusyError) Error() string {
+	return "sqlite database " + strconv.Quote(e.DB) + " is busy: " + e.Err.Error()
+}
+
+func (e *SQLiteBusyError) Unwrap() error { return e.Err }
+
+// ExitCode is SQLITE_BUSY.
+func (e *SQLiteBusyError) ExitCode() int { return 5 }
+
+// SQLiteFullError reports a `qrdb sqlite` statement refused with
+// SQLITE_FULL: the tenant's storage quota refused the commit. The command
+// exits with SQLite's result code 13.
+type SQLiteFullError struct {
+	DB  string
+	Err error
+}
+
+func (e *SQLiteFullError) Error() string {
+	return "sqlite database " + strconv.Quote(e.DB) + " is full: " + e.Err.Error()
+}
+
+func (e *SQLiteFullError) Unwrap() error { return e.Err }
+
+// ExitCode is SQLITE_FULL.
+func (e *SQLiteFullError) ExitCode() int { return 13 }
+
 // Error returns a human-readable description.
 func (e *RestoreConflictsError) Error() string {
 	return "qrdb: restore to revision " + strconv.FormatInt(e.Revision, 10) + " left " +

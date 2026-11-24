@@ -221,6 +221,7 @@ Supported transports:
 	rootCmd.AddCommand(newWatchCmd())
 	rootCmd.AddCommand(newLeaseCmd())
 	rootCmd.AddCommand(newLockCmd())
+	rootCmd.AddCommand(newSQLiteCmd())
 	if cmd := newTSCmd(); cmd != nil {
 		rootCmd.AddCommand(cmd)
 	}
