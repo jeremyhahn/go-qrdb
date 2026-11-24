@@ -708,7 +708,7 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 func advertiseJoiner(ctx context.Context, t *testing.T, leader *Node, replicaID uint64, addr string) {
 	t.Helper()
 	svc := leader.svcNode.Load()
-	advertiser := joinadvertise.New(svc.Lease, svc.MVCC)
+	advertiser := joinadvertise.New(svc.Lease, svc.MVCC, nil)
 	if advertiser == nil {
 		t.Fatal("the leader has no lease or MVCC service to advertise through")
 	}
