@@ -786,6 +786,17 @@ release-smoke:
 		RS_BINARIES='$(SERVER_BINARY) $(CLIENT_BINARY)' GO='$(GO)' \
 		./scripts/release-smoke.sh
 
+# test-release-smoke is release-smoke's regression test (in LINT_GATES): a
+# stub GO reports the host platform and the artifacts are shell-script stubs,
+# so it pins that the -fips variants run under GODEBUG=fips140=only and the
+# plain ones without GODEBUG, that a missing, non-executable, failing or
+# wrongly versioned artifact is named (all before it fails), and that a
+# malformed or non-host PLATFORM is refused before anything runs. It builds
+# and runs no real binary.
+.PHONY: test-release-smoke
+test-release-smoke:
+	@GO='$(GO)' ./scripts/release-smoke_test.sh
+
 # test-check-release-artifacts is check-release-artifacts' regression test
 # (in LINT_GATES): it builds a stdlib-only fixture with the release flags for
 # linux/amd64 and linux/arm64, plain and FIPS, and checks the script passes
@@ -2692,7 +2703,7 @@ LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	test-touched-features test-touched-packages \
 	check-iface-sweep-findings test-iface-sweep-findings check-artifact-paths \
 	test-artifact-paths check-generated check-mod-tidy test-mod-tidy test-vet-modules \
-	test-release-alpha test-test-cross test-check-release-artifacts fmt vet test-secure-analyzer vet-sdk lint-sdk
+	test-release-alpha test-test-cross test-check-release-artifacts test-release-smoke fmt vet test-secure-analyzer vet-sdk lint-sdk
 LINT_SWEEPS := vet-tags secure-analyzer
 
 .PHONY: lint-gates
