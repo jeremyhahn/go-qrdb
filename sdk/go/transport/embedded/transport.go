@@ -243,8 +243,9 @@ func (l *lifecycle) enter() (release func(), err error) {
 // before it has released.
 func (l *lifecycle) shut() {
 	l.closed.Store(true)
+	// The write lock only waits out every admitted call.
 	l.mu.Lock()
-	l.mu.Unlock() //nolint:staticcheck // the lock only waits out admitted calls
+	defer l.mu.Unlock()
 }
 
 // Option configures an embedded transport.
