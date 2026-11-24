@@ -113,8 +113,13 @@ const (
 	// DS-10437 (Tenant 03:31Z 11-24, ruling 617): ci.yml's ci-gate and the
 	// review's scope and gate run on the bigdisk pool for a push to main and a
 	// same-repository head, and on ubuntu-latest for a fork's head.
-	gateRunsOn   = `${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
-	reviewRunsOn = `${{ github.event.pull_request.head.repo.full_name == github.repository && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
+	gateRunsOn = `${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
+	// ruling862RunsOn (DS-10476, ruling 862): the legs that load no toolchain
+	// image on the pool (ruling862Jobs: native make there, the artifact
+	// download hosted-only) take preflight's balanced selection for a push to
+	// main and a same-repository head, and ubuntu-latest otherwise.
+	ruling862RunsOn = `${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.preflight.outputs.runner_docker) || 'ubuntu-latest' }}`
+	reviewRunsOn    = `${{ github.event.pull_request.head.repo.full_name == github.repository && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
 	// runnerSelectStep is preflight's step that writes runner and
 	// runner_docker; its env names github.server_url.
 	runnerSelectStep = "- name: Balanced runner pool (ruling 1137)\n"
@@ -133,6 +138,10 @@ var waiverCategories = []string{"hardware", "oversize"}
 // code-review.yml job that may run on it (Tenant Agent ruling 1007): codex
 // carries the Codex reviewer, qwen the opencode reviewer's model.
 var reviewRunnerLabels = map[string]string{"codex": reviewJob, "qwen": "review-opencode"}
+
+// ruling862Jobs are ci.yml's ruling 862 legs that load no toolchain image on
+// the pool, the only jobs ruling862RunsOn may route (DS-10476).
+var ruling862Jobs = []string{"coverage-merge", "test-clusterproof", "coverage-fts"}
 
 // releaseLabel is the release pool's runner label, which no job may name.
 const releaseLabel = "release"
@@ -247,6 +256,9 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		case file == ciFile && (runsOn == preflightRunsOn || runsOn == runnerDockerRunsOn || runsOn == runnerRunsOn):
 			// ci-template v1.53 (ruling 1087): preflight's v1.52 expression
 			// and the runner selection (ruling 1024; balanced, ruling 1137).
+		case file == ciFile && slices.Contains(ruling862Jobs, name) && runsOn == ruling862RunsOn:
+			// DS-10476 (ruling 862): the no-image legs on the pool for main
+			// and same-repository heads, hosted otherwise.
 		case file == ciFile && name == "ci-gate" && runsOn == gateRunsOn,
 			file == reviewWorkflow && (name == "scope" || name == "gate") && runsOn == reviewRunsOn:
 			// DS-10437 (ruling 617): bigdisk for main and same-repository heads,
@@ -566,7 +578,7 @@ func TestCIRunners(t *testing.T) {
 		// The literal hosted runner, or preflight's balanced selection
 		// (ruling 1137), hosted whenever it cannot count.
 		switch job.RunsOn.Value {
-		case hostedRunner, runnerDockerRunsOn, runnerRunsOn:
+		case hostedRunner, runnerDockerRunsOn, runnerRunsOn, ruling862RunsOn:
 			hosted++
 		}
 	}
@@ -829,7 +841,7 @@ func jobAtLine(t *testing.T, body string, line int) string {
 		}
 	}
 	switch runsOn {
-	case preflightRunsOn, runnerDockerRunsOn, runnerRunsOn:
+	case preflightRunsOn, runnerDockerRunsOn, runnerRunsOn, ruling862RunsOn:
 	default:
 		t.Fatalf("line %d of %s is in job %q, which runs on %q, not a runner-selection expression", line, ciFile, name, runsOn)
 	}
@@ -867,10 +879,18 @@ func TestRunnerProblems_Exemptions(t *testing.T) {
 		// and so is the gate's route on any other job.
 		{ciFile, "ci-gate", "${{ (github.event_name != 'pull_request' && github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"bigdisk\"]') || 'ubuntu-latest' }}"},
 		{ciFile, "build", gateRunsOn},
+		// DS-10476: the ruling 862 route holds only on the no-image legs.
+		{ciFile, "build", ruling862RunsOn},
+		{ciFile, "coverage", ruling862RunsOn},
 		{reviewWorkflow, "build", reviewRunsOn},
 	} {
 		if p, _ := runnerProblems(c.file, []byte(label(c.job, c.runsOn))); len(p) == 0 {
 			t.Errorf("%s job %s on %q passed", c.file, c.job, c.runsOn)
+		}
+	}
+	for _, job := range ruling862Jobs {
+		if p, _ := runnerProblems(ciFile, []byte(label(job, ruling862RunsOn))); len(p) != 0 {
+			t.Errorf("ci.yml's %s keeps its DS-10476 route, got %v", job, p)
 		}
 	}
 	if p, _ := runnerProblems(ciFile, []byte(label("ci-gate", gateRunsOn))); len(p) != 0 {

@@ -2232,7 +2232,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.preflight.outputs.runner_docker) || 'ubuntu-latest' }}   # ruling 862 (DS-10476): no toolchain image on the pool (native make, artifact download hosted-only), so the balanced selection for a push to main or a same-repository head; hosted otherwise
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build, coverage]
     timeout-minutes: 30
@@ -2319,7 +2319,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.preflight.outputs.runner_docker) || 'ubuntu-latest' }}   # ruling 862 (DS-10476): no toolchain image on the pool (native make, artifact download hosted-only), so the balanced selection for a push to main or a same-repository head; hosted otherwise
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 20
@@ -2399,7 +2399,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.preflight.outputs.runner_docker) || 'ubuntu-latest' }}   # ruling 862 (DS-10476): no toolchain image on the pool (native make, artifact download hosted-only), so the balanced selection for a push to main or a same-repository head; hosted otherwise
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 20
