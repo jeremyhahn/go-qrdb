@@ -176,7 +176,7 @@ jobs:
 const depsBumpPRStep = "- name: Open the PR and label it"
 
 // depsBumpRecoveryProblems lists where deps-bump.yml can strand
-// ci/deps-bump: a failed PR create leaves a branch with no open PR, which
+// row/1708-maintenance: a failed PR create leaves a branch with no open PR, which
 // the base step refuses on every later run. The commit step records a branch
 // it created in GITHUB_ENV; the PR step catches a failed create, looks up an
 // open PR for the branch, and only when there is none and this run created
@@ -272,7 +272,7 @@ func TestDepsBumpRecoveryProblems_CanFail(t *testing.T) {
 const depsBumpBaseStep = "- name: Find the base commit"
 
 // depsBumpBranchDeleteProblems lists where deps-bump.yml's base step can
-// delete ci/deps-bump with unmerged commits on it: the delete must follow a
+// delete row/1708-maintenance with unmerged commits on it: the delete must follow a
 // read of the branch tip, the last merged PR's head and the compare status,
 // and a guard that refuses (exit 1) unless the head is the tip or the tip
 // is in main (behind or identical).
@@ -353,7 +353,7 @@ func TestDepsBumpBranchDeleteProblems_CanFail(t *testing.T) {
 }
 
 // depsBumpCommitStep is the commit step's name in deps-bump.yml.
-const depsBumpCommitStep = "      - name: Commit to ci/deps-bump\n"
+const depsBumpCommitStep = "      - name: Commit to the maintenance row branch\n"
 
 // depsBumpStepScript returns the dedented `run: |` script of the step that
 // starts with header.
@@ -400,7 +400,7 @@ exit 2
 // TestDepsBumpCommitStepDeletesCreatedBranchOnFailure runs the commit step
 // with a mocked gh: when the signed-commit check fails, by an API error or
 // an unverified commit, the step exits non-zero and deletes the branch it
-// created, so ci/deps-bump is not left to strand the next daily run.
+// created, so row/1708-maintenance is not left to strand the next daily run.
 func TestDepsBumpCommitStepDeletesCreatedBranchOnFailure(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", depsBumpWorkflowName))
 	if err != nil {
@@ -411,7 +411,7 @@ func TestDepsBumpCommitStepDeletesCreatedBranchOnFailure(t *testing.T) {
 	if err != nil {
 		t.Skip("no bash")
 	}
-	const del = "api -X DELETE repos/o/r/git/refs/heads/ci/deps-bump"
+	const del = "api -X DELETE repos/o/r/git/refs/heads/row/1708-maintenance"
 	for name, tc := range map[string]struct {
 		verified, exists string
 		wantOK, wantDel  bool
@@ -447,7 +447,7 @@ func TestDepsBumpCommitStepDeletesCreatedBranchOnFailure(t *testing.T) {
 			cmd.Dir = dir
 			cmd.Env = []string{
 				"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
-				"REPO=o/r", "BRANCH=ci/deps-bump", "BASE_SHA=abc123", "CHANGED=go.mod",
+				"REPO=o/r", "BRANCH=row/1708-maintenance", "BASE_SHA=abc123", "CHANGED=go.mod",
 				"RUNNER_TEMP=" + dir, "GITHUB_ENV=" + filepath.Join(dir, "github.env"),
 				"GH_LOG=" + log, "GH_VERIFIED=" + tc.verified, "GH_BRANCH_EXISTS=" + tc.exists,
 			}

@@ -71,7 +71,8 @@
 # v1.40 scoped deps-check and deps-bump, v1.41 PR/main parity and v1.35.2/
 # v1.35.3's signatures.yml move are the full catch-up, still to come.
 # Ruling 640 (ci-template v1.39 deltas, adopted 2026-11-15): a
-# workflow_dispatch on ci/deps-bump is not refused: deps-bump.yml dispatches
+# workflow_dispatch on the maintenance row branch row/1708-maintenance (owner
+# ruling 1234; the bump's branch) is not refused: deps-bump.yml dispatches
 # this workflow there, because the PR it opens starts no pull_request run.
 # go-qrdb deviations from v1.35.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
@@ -121,14 +122,16 @@
 #     restores main's newest entry, and only the nightly schedule on main
 #     saves one (CI_CACHE_SAVE), so a pull
 #     request never writes main's cache. On a
-#     self-hosted pool host, whose temp dir is on the root filesystem and
-#     outlives the job, they are a generation directory in the CI_CACHE_ROOT directory (runner host env file) that
-#     every job shares: past CI_CACHE_MAX_GB (40 GB) a new generation becomes
-#     current, and an old one is deleted only once no job has used it for
-#     CI_CACHE_RECLAIM_HOURS (7, longer than any job), so no running stage
-#     loses its bind mount; or they are the stage's named Docker volumes when
-#     the CI_CACHE_ROOT directory (runner host env file) is not writable. actions/cache is skipped there, and every
-#     job removes $RUNNER_TEMP/ci-cache at its end through
+#     self-hosted pool host, whose runners are containers sharing only the
+#     Docker daemon (so a runner's $RUNNER_TEMP is never a cache root): with
+#     CI_CACHE_ROOT (runner host env file) set they are a generation directory
+#     under it that every job shares: past CI_CACHE_MAX_GB (40 GB) a new
+#     generation becomes current, and an old one is deleted only once no job
+#     has used it for CI_CACHE_RECLAIM_HOURS (7, longer than any job), so no
+#     running stage loses its bind mount; with CI_CACHE_ROOT unset, or not
+#     writable, they are the stage's named Docker volumes on the daemon.
+#     actions/cache is skipped there, and every job removes the legacy
+#     $RUNNER_TEMP/ci-cache at its end through
 #     scripts/ci-cache-clean.sh, which deletes the stages' uid-10001 files as
 #     root in the toolchain image and only warns when it cannot;
 #   - every job that loads an image first frees a hosted runner's disk (the
@@ -3244,7 +3247,7 @@ jobs:
   deps-bump-dispatch:
     name: Dispatch deps-bump
     # Never on workflow_dispatch: deps-bump.yml dispatches ci.yml on
-    # ci/deps-bump, so the two would dispatch each other. Outside ci-gate
+    # the maintenance row branch, so the two would dispatch each other. Outside ci-gate
     # for the same reason (test/buildgates/ci_tiers_test.go outsideGate).
     if: ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' && !github.event.pull_request.draft }}
     runs-on: ubuntu-latest

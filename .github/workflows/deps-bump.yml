@@ -15,8 +15,15 @@
 # build-cli-headless` (the native targets CI's build job runs in the image;
 # the plain build target needs docker compose through build-client),
 # and lands the go.mod and go.sum changes as ONE commit on the fixed branch
-# ci/deps-bump, with ONE pull request into main labelled `code-review` and
-# `task:ready`, so the normal review and auto-merge land it.
+# row/1708-maintenance, with ONE pull request into main.
+#
+# CUSTOMIZE (go-qrdb, owner ruling 1234, #1708): dependency changes land from
+# the standing maintenance row branch row/1708-maintenance (docs/SPEC.md row
+# "maintenance"), and no ci/* branch lives outside it. The PR this workflow
+# opens is titled 'Maintenance row: dependency and CI upkeep (#1708)', its
+# body carries "Refs #1708." (never a closing keyword: the row is standing),
+# and only a PR this run opened is labelled `code-review` and `task:ready`;
+# an already open row PR's draft state and labels belong to the coordinator.
 #
 #   - The commit is made by the GraphQL createCommitOnBranch mutation with
 #     GITHUB_TOKEN, on the expected head (expectedHeadOid), so GitHub signs
@@ -37,7 +44,7 @@
 #     indirect-only module is reported, not failed, by deps-check, so it does
 #     not stop the verify: the portfolio-wide toolchain pass carries stdlib.
 #   - A PR or push made with GITHUB_TOKEN starts no pull_request run, so the
-#     job dispatches ci.yml on ci/deps-bump; ci-template v1.39 runs that
+#     job dispatches ci.yml on the row branch; ci-template v1.39 runs that
 #     dispatch as the PR tier and its CI Gate check attaches to the head.
 #   - OPEN OWNER QUESTION: code-review.yml runs on pull_request_target, which
 #     a GITHUB_TOKEN PR or label change does not start either, so the review
@@ -66,8 +73,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BRANCH: ci/deps-bump
-  PR_TITLE: 'deps: bump dependencies to latest (ruling 640)'
+  BRANCH: row/1708-maintenance
+  PR_TITLE: 'Maintenance row: dependency and CI upkeep (#1708)'
 
 jobs:
   bump:
@@ -222,7 +229,7 @@ jobs:
       # commit. A missing branch is first created at that commit, and
       # deleted again if the mutation or the verification check fails (an
       # EXIT trap covers every command), so no PR-less branch is left.
-      - name: Commit to ci/deps-bump
+      - name: Commit to the maintenance row branch
         if: ${{ env.CHANGED != '' }}
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
@@ -243,7 +250,7 @@ jobs:
           done
           created=
           # Any failure from here on (set -e included) deletes a branch this
-          # run created, so no PR-less ci/deps-bump strands the next daily run.
+          # run created, so no PR-less row branch strands the next daily run.
           trap 'rc=$?; if [ "$rc" -ne 0 ] && [ -n "$created" ]; then gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null || true; fi' EXIT
           if ! gh api "repos/$REPO/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
             gh api "repos/$REPO/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$BASE_SHA" >/dev/null
@@ -257,7 +264,7 @@ jobs:
           query='mutation($in: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $in) { commit { oid } } }'
           if ! commit=$(jq -n --arg q "$query" --arg r "$REPO" --arg b "$BRANCH" --arg h "$BASE_SHA" \
                 --arg s "$stat" --slurpfile add "$add" --slurpfile del "$del" \
-                '{query: $q, variables: {in: {branch: {repositoryNameWithOwner: $r, branchName: $b}, expectedHeadOid: $h, message: {headline: "deps: bump dependencies to latest (ruling 640)", body: $s}, fileChanges: {additions: $add, deletions: $del}}}}' \
+                '{query: $q, variables: {in: {branch: {repositoryNameWithOwner: $r, branchName: $b}, expectedHeadOid: $h, message: {headline: "deps: bump dependencies to latest (#1708)", body: $s}, fileChanges: {additions: $add, deletions: $del}}}}' \
               | gh api graphql --input - --jq '.data.createCommitOnBranch.commit.oid // empty') || [ -z "$commit" ]; then
             echo "::error::createCommitOnBranch on $BRANCH (expected head $BASE_SHA) made no commit"
             exit 1
@@ -286,11 +293,15 @@ jobs:
           set -euo pipefail
           if [ -z "$PR" ]; then
             # shellcheck disable=SC2016 # backquotes are markdown, not a command
-            body=$(printf '%s\n\n%s\n' \
+            body=$(printf '%s\n\n%s\n\n%s\n' \
               'The daily dependency bump (deps-bump.yml, ruling 640): every go.mod requirement behind its latest release, with no reason comment and past the 7-day window, moved to latest unless the move would raise a documented hold, then `make deps-check DEPS_CHECK_BASE=HEAD` (against the pre-bump commit) and `make build-server build-cli-headless` passed.' \
-              "Changed: $CHANGED")
+              "Changed: $CHANGED" \
+              'Refs #1708.')
             if PR=$(jq -n --arg t "$PR_TITLE" --arg h "$BRANCH" --arg b "$body" '{title: $t, head: $h, base: "main", body: $b}' | gh api "repos/$REPO/pulls" --input - --jq .number); then
               echo "opened #$PR"
+              # Label only a PR this run opened: an already open row PR's
+              # draft state and labels belong to the coordinator.
+              gh api "repos/$REPO/issues/$PR/labels" -f 'labels[]=code-review' -f 'labels[]=task:ready' >/dev/null
             else
               # A failed PR create would leave a branch with no open PR, which
               # the base step refuses on every later run. Take a PR that does
@@ -309,11 +320,10 @@ jobs:
               echo "found #$PR"
             fi
           fi
-          gh api "repos/$REPO/issues/$PR/labels" -f 'labels[]=code-review' -f 'labels[]=task:ready' >/dev/null
           echo "number=$PR" >> "$GITHUB_OUTPUT"
 
       # A GITHUB_TOKEN push or PR starts no pull_request run.
-      - name: Dispatch CI on ci/deps-bump
+      - name: Dispatch CI on the maintenance row branch
         if: ${{ steps.pr.outputs.number != '' }}
         run: gh api "repos/$REPO/actions/workflows/ci.yml/dispatches" -f ref="$BRANCH"
 

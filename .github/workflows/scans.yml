@@ -18,7 +18,7 @@
 #     integration image is scanned by `make trivy-image`, which certifies the
 #     database's age and skips /gomodcache (ci.yml's former CUSTOMIZE step).
 #   - No bump half yet: the Makefile has no `make deps-bump` (depscheck
-#     v1.1.0), so the template's deps-bump, the commit to ci/deps-bump, the
+#     v1.1.0), so the template's deps-bump, the commit to the row branch, the
 #     fix PR and the CI dispatch on it are not taken. They come with the full
 #     ci-template catch-up (v1.39 to v1.42). Until then `make deps-check`
 #     runs as ci.yml v1.35.1 ran it.

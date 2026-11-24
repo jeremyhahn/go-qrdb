@@ -159,7 +159,7 @@ const (
 // the exact `if:` that confines it. deps-bump-dispatch (ruling 640) checks
 // nothing: it dispatches deps-bump.yml from the nightly schedule run on
 // main. It cannot be a nightly-tier job: that tier also runs on
-// workflow_dispatch, and deps-bump.yml dispatches ci.yml on ci/deps-bump,
+// workflow_dispatch, and deps-bump.yml dispatches ci.yml on row/1708-maintenance,
 // so the two would dispatch each other.
 var outsideGate = map[string]string{
 	"deps-bump-dispatch": depsBumpDispatchIf,

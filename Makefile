@@ -4105,7 +4105,8 @@ security: gosec gosec-sdk vuln mod-verify trivy
 # the PR base or the push's before) a lag fails only on a go.mod line the
 # change adds or bumps; -vuln fails a vulnerable version of a go.mod
 # requirement. deps-bump moves every failing requirement to latest; the
-# daily deps-bump.yml PR carries it.
+# daily deps-bump.yml commits it to the maintenance row branch
+# row/1708-maintenance (owner ruling 1234) and its PR carries it.
 DEPS_CHECK_MODULES ?= . sdk/go sdk/go/gorm/conformance test/clusterproof test/performance/cmd/kvcompare test/performance/etcd-benchmark test/performance/qrdb test/performance/tikv test/vanguardprobe
 DEPS_CHECK_VULN_TAGS ?= gormconformance,clusterproof,benchmark
 
