@@ -140,16 +140,8 @@ type Retirer struct {
 	store *pebblestore.PebbleStorage
 	fs    *pebblestore.NoRecycleFS
 	dir   string
+	// fault, set only by tests, fails Retire right after the marker is written.
 	fault func() error
-}
-
-// SetFault installs a hook (tests only) that fails Retire right after the
-// marker is written: a crash or failure before the files are retired. nil
-// removes it.
-func (r *Retirer) SetFault(fault func() error) {
-	if r != nil {
-		r.fault = fault
-	}
 }
 
 // plaintextFiles lists the WAL and table files in dir through the

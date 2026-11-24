@@ -266,7 +266,9 @@ func TestRetirer_NilIsNoop(t *testing.T) {
 	ctx := context.Background()
 	for name, r := range map[string]*Retirer{"nil": nil, "no store": {}} {
 		t.Run(name, func(t *testing.T) {
-			r.SetFault(func() error { return errors.New("never run") })
+			if r != nil {
+				r.fault = func() error { return errors.New("never run") }
+			}
 			if err := r.Retire(ctx); err != nil {
 				t.Fatalf("Retire: %v", err)
 			}
@@ -312,14 +314,14 @@ func TestRetirer_RetirePendingRunsAndClearsMarker(t *testing.T) {
 func TestRetirer_FaultKeepsMarker(t *testing.T) {
 	_, r := openTestSealStore(t)
 	errFault := errors.New("injected retirement failure")
-	r.SetFault(func() error { return errFault })
+	r.fault = func() error { return errFault }
 	if err := r.Retire(context.Background()); !errors.Is(err, errFault) {
 		t.Fatalf("Retire with a fault = %v, want %v", err, errFault)
 	}
 	if owed, err := r.Marked(); !owed || err != nil {
 		t.Fatalf("Marked after the failed Retire = %v, %v, want the marker kept", owed, err)
 	}
-	r.SetFault(nil)
+	r.fault = nil
 	if err := r.RetirePending(context.Background()); err != nil {
 		t.Fatalf("RetirePending: %v", err)
 	}
@@ -431,7 +433,7 @@ func TestRetirer_CompactFailureKeepsMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	r.SetFault(func() error { return store.Close() })
+	r.fault = func() error { return store.Close() }
 	if err := r.Retire(context.Background()); err == nil || !strings.Contains(err.Error(), "compact:") {
 		t.Fatalf("Retire on a closed store err = %v, want a compact error", err)
 	}
@@ -497,7 +499,7 @@ func TestRetirer_WaitStatFailureErrors(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	writeOverwritten(t, store)
-	r.SetFault(func() error {
+	r.fault = func() error {
 		names, lerr := mem.List(dir)
 		if lerr != nil {
 			return lerr
@@ -515,7 +517,7 @@ func TestRetirer_WaitStatFailureErrors(t *testing.T) {
 		}
 		armed.Store(true)
 		return nil
-	})
+	}
 	if err := r.Retire(context.Background()); !errors.Is(err, errStat) {
 		t.Fatalf("Retire err = %v, want %v", err, errStat)
 	}

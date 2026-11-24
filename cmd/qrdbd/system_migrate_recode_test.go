@@ -27,9 +27,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/vfs"
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb"
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
@@ -38,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealretire"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -530,6 +533,19 @@ func TestRecodeSystemBarrier_SealStoreFailureKeepsSource(t *testing.T) {
 // errRecodeSealStoreCrash stands in for a crash past the commit point.
 var errRecodeSealStoreCrash = errors.New("injected crash after the root key adoption")
 
+// recodeListFaultFS fails List with errRecodeSealStoreCrash once armed.
+type recodeListFaultFS struct {
+	vfs.FS
+	armed atomic.Bool
+}
+
+func (f *recodeListFaultFS) List(dir string) ([]string, error) {
+	if f.armed.Load() {
+		return nil, errRecodeSealStoreCrash
+	}
+	return f.FS.List(dir)
+}
+
 // assertRecodeSealStoreKeyed checks that every seal-store record on backend is
 // keyed: no raw record holds its plaintext, no staged record is left, the
 // migration journal is cleared, and the keyed barrier reads every secret.
@@ -871,19 +887,21 @@ func TestRecoverInterruptedSystemMigration_RetiresUnderDurableMarker(t *testing.
 	// as a real boot does.
 	_ = source.Close()
 	_ = store.Close()
-	reboot := func() {
+	reboot := func(base filesys.FS) {
 		t.Helper()
 		_ = store.Close()
-		store, retirer, err = sealretire.Open(sealDir, nil)
+		store, retirer, err = sealretire.Open(sealDir, base)
 		if err != nil {
 			t.Fatalf("reopen the seal store: %v", err)
 		}
 		backend = seal.NewStorageAdapter(store)
 	}
 
-	// Boot 1: recovery clears the journal, then the retirement aborts.
-	reboot()
-	retirer.SetFault(func() error { return errRecodeSealStoreCrash })
+	// Boot 1: recovery clears the journal, then the retirement aborts: the
+	// file system fails the listing of the store's files after the marker.
+	listFault := &recodeListFaultFS{FS: vfs.Default}
+	reboot(pebblestore.FromVFS(listFault))
+	listFault.armed.Store(true)
 	if err := recoverSystemMigration(ctx, backend, retirer, "system/root-key", nil); !errors.Is(err, errRecodeSealStoreCrash) {
 		t.Fatalf("boot with a failing retirement: err = %v, want %v", err, errRecodeSealStoreCrash)
 	}
@@ -895,8 +913,8 @@ func TestRecoverInterruptedSystemMigration_RetiresUnderDurableMarker(t *testing.
 	}
 
 	// Boot 2: the marker alone drives the retirement, then goes.
-	// The reboot opens a fresh retirer, without the fault.
-	reboot()
+	// The reboot opens a fresh retirer on the default file system.
+	reboot(nil)
 	if err := recoverSystemMigration(ctx, backend, retirer, "system/root-key", nil); err != nil {
 		t.Fatalf("boot after the failed retirement: %v", err)
 	}
@@ -910,7 +928,7 @@ func TestRecoverInterruptedSystemMigration_RetiresUnderDurableMarker(t *testing.
 	if hits := recodeDirPlaintext(t, sealDir, check); len(hits) != 0 {
 		t.Fatalf("plaintext seal-store history survives in %v", hits)
 	}
-	reboot()
+	reboot(nil)
 	assertRecodeSealStoreKeyed(t, backend, secrets)
 }
 
