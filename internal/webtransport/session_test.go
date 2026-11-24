@@ -32,6 +32,7 @@ func (s mockHTTP3Stream) ReceiveDatagram(context.Context) ([]byte, error) { retu
 func (s mockHTTP3Stream) SendDatagram([]byte) error                       { return nil }
 func (s mockHTTP3Stream) CancelRead(quic.StreamErrorCode)                 {}
 func (s mockHTTP3Stream) CancelWrite(quic.StreamErrorCode)                {}
+func (s mockHTTP3Stream) SetReadDeadline(time.Time) error                 { return nil }
 func (s mockHTTP3Stream) SetWriteDeadline(time.Time) error                { return nil }
 func (s mockHTTP3Stream) TryWriteAll([]byte) error                        { return nil }
 
@@ -454,6 +455,52 @@ func TestMalformedCloseSessionMessageClosesSessionWithMessageError(t *testing.T)
 			require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCodeMessageError})
 		})
 	}
+}
+
+// TestDataAfterCloseSessionCapsuleIsAMessageError checks that any data after
+// WT_CLOSE_SESSION resets the session with H3_MESSAGE_ERROR, while a capsule
+// followed by the FIN keeps the peer's close (draft-ietf-webtrans-http3-16,
+// section 6).
+func TestDataAfterCloseSessionCapsuleIsAMessageError(t *testing.T) {
+	closeErrFor := func(t *testing.T, trailing []byte) error {
+		t.Helper()
+		payload := binary.BigEndian.AppendUint32(nil, 1337)
+		payload = append(payload, "bye"...)
+		var b bytes.Buffer
+		require.NoError(t, http3.WriteCapsule(quicvarint.NewWriter(&b), closeSessionCapsuleType, payload))
+		b.Write(trailing)
+
+		sess := newSession(
+			context.Background(),
+			42,
+			nil,
+			mockHTTP3Stream{bytes.NewReader(b.Bytes())},
+			"",
+			sessionFlowControl{},
+		)
+		select {
+		case <-sess.Context().Done():
+		case <-time.After(scaleDuration(time.Second)):
+			t.Fatal("timeout")
+		}
+		sess.closeMx.Lock()
+		defer sess.closeMx.Unlock()
+		return sess.closeErr
+	}
+
+	t.Run("data after the capsule", func(t *testing.T) {
+		err := closeErrFor(t, []byte{0x00})
+		require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCodeMessageError})
+	})
+
+	t.Run("FIN after the capsule", func(t *testing.T) {
+		err := closeErrFor(t, nil)
+		var sessErr *SessionError
+		require.ErrorAs(t, err, &sessErr)
+		require.True(t, sessErr.Remote)
+		require.Equal(t, SessionErrorCode(1337), sessErr.ErrorCode)
+		require.Equal(t, "bye", sessErr.Message)
+	})
 }
 
 func TestForbiddenStreamDataFlowControlCapsulesCloseSession(t *testing.T) {

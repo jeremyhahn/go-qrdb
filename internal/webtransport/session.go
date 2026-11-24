@@ -22,6 +22,7 @@ type http3Stream interface {
 	SendDatagram([]byte) error
 	CancelRead(quic.StreamErrorCode)
 	CancelWrite(quic.StreamErrorCode)
+	SetReadDeadline(time.Time) error
 	SetWriteDeadline(time.Time) error
 	TryWriteAll([]byte) error
 }
@@ -167,7 +168,18 @@ func (s *Session) readFromConnectStream() {
 		}
 		switch c := c.(type) {
 		case closeSessionCapsule:
-			s.closeWithError(c.ToSessionError(), nil)
+			// Any data after WT_CLOSE_SESSION is a message error: the
+			// CONNECT stream is reset with H3_MESSAGE_ERROR
+			// (draft-ietf-webtrans-http3-16, section 6). Wait briefly for
+			// the FIN; a timeout keeps the peer's close.
+			_ = s.str.SetReadDeadline(time.Now().Add(closeSessionTimeout))
+			_, _, err := parser.Next()
+			var ne net.Error
+			if errors.Is(err, io.EOF) || (errors.As(err, &ne) && ne.Timeout()) {
+				s.closeWithError(c.ToSessionError(), nil)
+				return
+			}
+			s.closeWithError(&http3.Error{ErrorCode: http3.ErrCodeMessageError, ErrorMessage: "webtransport: data after WT_CLOSE_SESSION"}, nil)
 			return
 		case maxDataCapsule:
 			if s.outgoingDataFC == nil {
