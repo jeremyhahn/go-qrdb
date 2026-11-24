@@ -1,6 +1,6 @@
 # A bounded startup wait during leader churn exits the node and its peers
 
-> **Status: RULED — option A (owner ruling 249), built** · Scope: go-qrdb
+> **Status: RULED — option A, built** · Scope: go-qrdb
 > Last verified: 2026-10-28
 > The Problem describes the behaviour before the ruling. The owner chose
 > option A for the system-shard settling waits; the Ruling section says what
@@ -53,7 +53,7 @@ by restarting.
 
 ## Ruling
 
-Owner ruling 249 chose **option A** for the system-shard settling waits: the
+**Option A** was chosen for the system-shard settling waits: the
 feature-gate start (its activation check and its self-advertisement),
 database provisioning, the dynamic-membership start, the database-catalog
 open and the volume-tenant restore, every wait that runs through

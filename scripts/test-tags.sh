@@ -14,48 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# test-tags.sh — run `go test` over the command surface, under every
-# reduced-protocol build-tag combination. Called by `make test-tags`.
-#
-#   test-tags.sh <TAG_SETS> <PACKAGES>
-#
-# WHY THIS EXISTS AND WHY IT IS NARROWER THAN vet-modules.sh
-#
-# `make vet-tags` proves the tree TYPECHECKS under every declared
-# combination (scripts/vet-modules.sh). It does not, and cannot, prove a
-# test that compiles under a reduced build also PASSES there: a test can
-# reference a subcommand or flag that a tag removed, assert on an error
-# type a capability gate changed, or hard-code a count that varies by tag,
-# and `go vet` has no opinion about any of that -- only `go test` running
-# the test body does. go-qrdb's own history has three real examples of this
-# exact gap: a hard-coded subcommand count, and two tests that asserted
-# success on a subcommand a reduced build does not register.
-#
-# TAG_SETS is passed in from the Makefile's SUPPORTED_TAG_SETS (via
-# TEST_TAGS_SETS, a filtered subset), not authored here, for the same reason
-# scripts/vet-modules.sh takes TAG_SETS as data rather than declaring its
-# own: one declaration (go-qrdb#263).
-#
-# SCOPE: the command surface (./cmd/qrdbd/..., ./cmd/qrdb/...) plus
-# pkg/service (PACKAGES), not a repository-wide sweep. Running the full
-# suite under every combination multiplies an already-long test run by the
-# combination count; the command surface is where a build tag changes
-# observable BEHAVIOR a test can get wrong (a flag or subcommand appearing
-# or vanishing), so that is what this gate exists to catch. pkg/service is
-# included non-recursively because it carries the service-layer capability
-# refusals (e.g. database_etcd_capability_test.go, tagged !qrdb_etcd) that
-# every transport shares -- a property the command surface alone cannot
-# exercise. pkg/sql, pkg/api/etcd and the other tag-gated packages
-# themselves are already covered for THEIR OWN reduced builds by
-# `make vet-tags` (they typecheck or vanish entirely) and by
-# `test/buildgates` (their dependency graph is absent, and -- since
-# sql_etcd_tag_coverage_test.go -- every file in them carries the matching
-# constraint) -- this script does not re-check that.
-#
-# The +integration rungs are deliberately excluded by the caller (Make):
-# running them here would need the real infrastructure integration tests
-# assume, which is what `make integration-test` (test/integration/) is for,
-# not this gate.
+# test-tags.sh: run go test over the command surface under every reduced-protocol tag set.
 set -eu
 
 ROOT="${TEST_TAGS_ROOT:-.}"

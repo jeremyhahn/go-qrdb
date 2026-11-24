@@ -14,31 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# touched-features.sh — print the features whose
-# `make integration-test-<feature>` a diff must run.
-#
-# Usage:
-#   scripts/touched-features.sh <base> <tip>   paths from git diff --name-only
-#   scripts/touched-features.sh --files        paths on stdin, one per line
-#
-# The ONE feature table is test/integration/features.mk; this script reads it
-# only through `make -s print-integration-feature-map`, never a copy, so with
-# <base> <tip> it refuses (exit 2) unless HEAD is <tip>: the table it reads is
-# the work tree's.
-#
-# Per changed path:
-#   - a docs-only path (ci.yml's DOCS_ONLY_PATTERN, read from ci.yml) is ignored;
-#   - test/integration/<file> named by one or more features in the map counts
-#     for those features, and for the features of every other mapped file
-#     that names one of its top-level identifiers (a helper it declares); an
-#     unmapped file naming one prints ALL;
-#   - anything else (Makefile, test/integration/features.mk, any other
-#     test/integration file, .github, scripts, go.mod/go.sum, any Go package,
-#     sdk) prints the single line ALL. A package change means ALL because the
-#     table maps features to test files only, and ruling 1171 forbids a second
-#     list mapping packages to features.
-# Otherwise the features print sorted, one per line; a docs-only or empty diff
-# prints nothing. Wrong arguments print the usage on stderr and exit 2.
+# touched-features.sh: print the features whose integration tests a diff must run.
 
 set -euo pipefail
 

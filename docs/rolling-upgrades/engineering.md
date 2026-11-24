@@ -20,7 +20,7 @@ limitations under the License.
 -->
 
 This document goes with the SPEC row `rolling-upgrades` ([SPEC.md](../SPEC.md),
-issue #1628, owner decision 224). It records the current state, reviews the row
+issue #1628). It records the current state, reviews the row
 against the standards it cites, lists the questions the review must answer, and
 states the test plan. It designs nothing beyond the SPEC row. Wire formats,
 message layouts and package changes come with the implementation lanes, after
@@ -72,10 +72,10 @@ skew", and [multi-tenancy/architecture.md](../multi-tenancy/architecture.md)
 ## Questions for review
 
 Each question has a recommendation. The owner ruled on Q4 (decision 231 (a))
-and approved the SPEC row text as written (ruling 913). The others are settled
-by convention (ruling 109) unless the review objects; Q5 stays open. The SPEC row
+and approved the SPEC row text as written. The others are settled
+by convention unless the review objects; Q5 stays open. The SPEC row
 merges on that recorded approval of its text, as the rules of
-[SPEC.md](../SPEC.md) require. Owner decision 224 ordered the row.
+[SPEC.md](../SPEC.md) require.
 
 1. **What "adjacent" means before 1.0.** Recommendation: consecutive minor
    releases, 0.y.z and 0.(y+1).z, with any patch levels. From 1.0 on: consecutive
@@ -91,7 +91,7 @@ merges on that recorded approval of its text, as the rules of
 4. **SPEC Boundaries ban on compatibility shims** ([SPEC.md](../SPEC.md)
    Boundaries; [multi-tenancy/architecture.md](../multi-tenancy/architecture.md)
    "No backward-compatibility code"). Speaking release N's wire from N+1 is
-   compatibility code. Ruled (owner decision 231 (a), ruling 913): the ban is scoped. Code that
+   compatibility code. Ruled: the ban is scoped. Code that
    speaks exactly one previous release's wire, behind the version negotiation and
    deleted in the release after, is allowed. Any other shim stays banned.
 5. **How a client learns what a server supports** (the #1601 TTL case). Left
