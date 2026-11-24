@@ -459,17 +459,20 @@ type failStagedDeleteBackend struct {
 	prefix string
 	fail   bool
 	// failJournalGet makes every read of the migration journal fail once a
-	// staged delete has been injected.
+	// staged delete or a root-key write has been injected.
 	failJournalGet bool
 	// failRootKeyPut names the canonical root-key path whose write fails.
-	failRootKeyPut string
-	deleteFailed   atomic.Bool
+	failRootKeyPut    string
+	deleteFailed      atomic.Bool
+	rootKeyPutFailed  atomic.Bool
+	journalReadFailed atomic.Bool
 }
 
 var errRootKeyPut = errors.New("injected canonical root-key write failure")
 
 func (b *failStagedDeleteBackend) Put(ctx context.Context, key string, value []byte) error {
 	if b.failRootKeyPut != "" && key == b.failRootKeyPut {
+		b.rootKeyPutFailed.Store(true)
 		return errRootKeyPut
 	}
 	return b.StorageBackend.Put(ctx, key, value)
@@ -479,7 +482,8 @@ func (b *failStagedDeleteBackend) Put(ctx context.Context, key string, value []b
 var errJournalRead = errors.New("injected migration journal read fault")
 
 func (b *failStagedDeleteBackend) Get(ctx context.Context, key string) ([]byte, error) {
-	if b.failJournalGet && b.deleteFailed.Load() && strings.HasSuffix(key, ".migration") {
+	if b.failJournalGet && (b.deleteFailed.Load() || b.rootKeyPutFailed.Load()) && strings.HasSuffix(key, ".migration") {
+		b.journalReadFailed.Store(true)
 		return nil, errJournalRead
 	}
 	return b.StorageBackend.Get(ctx, key)
@@ -559,6 +563,35 @@ func TestNode_EnableEncryption_RootKeyAdoptFault_StaysDownUntilRecovery(t *testi
 	n2 := f.reopen(t, "after the adoption fault")
 	f.requireRecovered(t, n2)
 	updated := []byte("rotated-after-adoption-recovery")
+	require.NoError(t, n2.Client().SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: "db-primary", Secret: updated}))
+	require.NoError(t, n2.Close())
+
+	n3 := f.reopen(t, "a second time")
+	resp, err := n3.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "db-primary"})
+	require.NoError(t, err)
+	require.Equal(t, updated, resp.Secret, "the post-recovery update must survive a second restart")
+}
+
+// TestNode_EnableEncryption_RootKeyAdoptAndJournalReadFault_StaysDown pins
+// that Reopen fails closed when the canonical root key was not adopted and
+// the migration journal cannot be read: nothing proves the migration did not
+// commit, so the data plane stays down and a restart recovers every secret.
+func TestNode_EnableEncryption_RootKeyAdoptAndJournalReadFault_StaysDown(t *testing.T) {
+	ctx := context.Background()
+	f := newFaultNode(t, faultOptions{failRootKeyPut: true, failJournalGet: true})
+	migErr := f.migrate(t)
+	require.ErrorIs(t, migErr, errRootKeyPut)
+	require.True(t, f.fb.journalReadFailed.Load(), "the reopen guard must have read the journal through the fault")
+	strategy, err := canonicalRootKeyStrategy(ctx, f.n)
+	require.NoError(t, err)
+	require.Equal(t, seal.StrategyNone, strategy, "the canonical root key must still name the source strategy")
+	require.Nil(t, f.n.svcNode.Load(), "the data plane must stay down while the journal is unreadable")
+	require.Nil(t, f.n.Client(), "no client serves while the migration's commit state is unknown")
+	require.NoError(t, f.n.Close())
+
+	n2 := f.reopen(t, "after the faults")
+	f.requireRecovered(t, n2)
+	updated := []byte("rotated-after-journal-fault-recovery")
 	require.NoError(t, n2.Client().SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: "db-primary", Secret: updated}))
 	require.NoError(t, n2.Close())
 
