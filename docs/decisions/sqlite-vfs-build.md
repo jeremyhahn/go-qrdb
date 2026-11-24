@@ -1,6 +1,6 @@
 # SQLite VFS backend: answers to the open questions that block a build decision
 
-> **Status: PROPOSED — awaiting owner ruling** · Scope: go-qrdb
+> **Status: PROPOSED** · Scope: go-qrdb
 > Last verified: 2026-11-12
 > SPEC row: `sqlite-vfs` (future). This record answers the five open questions
 > of [../sqlite-vfs/architecture.md](../sqlite-vfs/architecture.md)

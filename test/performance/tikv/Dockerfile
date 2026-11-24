@@ -1,11 +1,4 @@
 # Build stage: compile the TiKV benchmark binary
-#
-# Build context: go-qrdb root directory.
-#
-# NOTE: this Dockerfile requires go-quicraft source for the perfresult module
-# dependency (github.com/jeremyhahn/go-quicraft/test/performance). Supply it
-# via a named BuildKit context:
-#   docker build --build-context go-quicraft=/path/to/go-quicraft ...
 FROM golang:1.27.4-bookworm AS builder
 
 WORKDIR /src

@@ -1,27 +1,4 @@
-# scans-template: v1.0.0 (customized) — the scans on main.
-# ci-template v1.42 makes the CI Gate hermetic (owner ruling 742 (1)), so
-# every check that fails on the state of the world rather than on a change
-# runs here, and only here: `make deps-check`, `make security` (gosec,
-# govulncheck, go mod verify, trivy fs) and `make trivy-image` of the
-# integration image. It never runs on a pull_request or a push, and it is
-# not the workflow named CI, so a finding never reads as a red main and never
-# blocks a PR. A finding opens or updates ONE issue, found by its fixed title
-# (SCAN_ISSUE_TITLE), with the run link, and fails this job, so the Actions
-# run is red; a run with no finding closes that issue.
-#
-# CUSTOMIZE (go-qrdb), against the template:
-#   - workflow_dispatch on main only, no `schedule:`: test/buildgates allows
-#     only ci.yml's in-template nightly to schedule (rulings 135, 216(1) and
-#     633). A schedule comes with that test's allow list, in a code PR.
-#   - The images are built as ci.yml's docker-build job builds them (`make
-#     apk-index-sum`, `make docker-build`, `make -s it-image`), and the
-#     integration image is scanned by `make trivy-image`, which certifies the
-#     database's age and skips /gomodcache (ci.yml's former CUSTOMIZE step).
-#   - No bump half yet: the Makefile has no `make deps-bump` (depscheck
-#     v1.1.0), so the template's deps-bump, the commit to the row branch, the
-#     fix PR and the CI dispatch on it are not taken. They come with the full
-#     ci-template catch-up (v1.39 to v1.42). Until then `make deps-check`
-#     runs as ci.yml v1.35.1 ran it.
+# scans-template: v1.0.0 (customized). The scans on main: deps-check, make security and trivy image.
 
 name: Scans
 
@@ -84,9 +61,7 @@ jobs:
             echo "TOOLCHAIN_IMAGE=$(make -s toolchain-image)"
           } >> "$GITHUB_ENV"
 
-      # The checks that left ci.yml (ruling 742 (1)). Each runs to the end;
-      # FIRED lists the ones that fail, and the step's own log keeps their
-      # output.
+      # The checks that run only on schedule.
       - name: Scans (deps-check, make security, trivy image)
         id: scans
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
@@ -107,10 +82,7 @@ jobs:
           echo "scans: ${fired:-none fired}"
           echo "fired=$fired" >> "$GITHUB_OUTPUT"
 
-      # ONE issue for the findings, found by its exact title among the open
-      # issues (pull requests excluded): created when none is open, its body
-      # replaced when one is, and closed with a comment by the first run with
-      # no finding.
+      # One issue for the findings: created, updated, or closed when a run finds nothing.
       - name: Open, update or close the scan issue
         if: ${{ !cancelled() && steps.scans.outcome == 'success' }}
         env:
@@ -140,8 +112,7 @@ jobs:
             echo "updated #$issue"
           fi
 
-      # A finding fails the run, after the issue is open, so it is seen and
-      # fixed. This is not CI: no PR and no main commit status reads it.
+      # A finding fails the run after the issue is updated.
       - name: Fail on a finding
         if: ${{ !cancelled() && steps.scans.outputs.fired != '' }}
         env:
