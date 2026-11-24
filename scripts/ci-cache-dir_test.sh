@@ -72,16 +72,27 @@ run RUNNER_ENVIRONMENT=github-hosted -- bash "$SH"
 check "hosted: no RUNNER_TEMP exits 2" '[ $rc = 2 ]'
 
 # --- self-hosted runner, no CI_CACHE_ROOT --------------------------------------
+# A pool runner is a container that shares only the Docker daemon: its
+# $RUNNER_TEMP is private to it, while scripts/in-toolchain-image.sh would
+# bind-mount the same path on the daemon's host. So with CI_CACHE_ROOT unset
+# or empty the caches are the stage's named volumes, whatever RUNNER_TEMP is,
+# and nothing is created under $RUNNER_TEMP.
+mkdir -p "$tmp/rt0"
 run GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted RUNNER_TEMP="$tmp/rt0" -- bash "$SH"
-check "self-hosted, no CI_CACHE_ROOT: under \$RUNNER_TEMP/ci-cache" \
-  '[ $rc = 0 ] && case $out in "CI_CACHE_DIR=$tmp/rt0/ci-cache/"?*) true ;; *) false ;; esac'
-# The stages bind-mount <dir>/gobuild and <dir>/golangci at /cache and point
-# GOCACHE and GOLANGCI_LINT_CACHE there: the fallback root's generation has
-# both, as writable directories, before any stage runs.
-check "self-hosted, no CI_CACHE_ROOT: the generation has writable gobuild and golangci" \
-  'd=${out#CI_CACHE_DIR=}; [ -d "$d/gobuild" ] && [ -w "$d/gobuild" ] && [ -d "$d/golangci" ] && [ -w "$d/golangci" ]'
+check "self-hosted, RUNNER_TEMP set, CI_CACHE_ROOT unset: named volumes" \
+  '[ $rc = 0 ] && [ "$out" = "CI_CACHE_DIR=" ]'
+check "self-hosted, CI_CACHE_ROOT unset: nothing created under \$RUNNER_TEMP" \
+  '[ ! -e "$tmp/rt0/ci-cache" ] && [ -z "$(ls -A "$tmp/rt0")" ]'
+check "self-hosted, CI_CACHE_ROOT unset: the notice names the cause" \
+  'case $err in *"no CI_CACHE_ROOT"*) true ;; *) false ;; esac'
+run GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted RUNNER_TEMP="$tmp/rt0" CI_CACHE_ROOT= -- bash "$SH"
+check "self-hosted, RUNNER_TEMP set, CI_CACHE_ROOT empty: named volumes" \
+  '[ $rc = 0 ] && [ "$out" = "CI_CACHE_DIR=" ]'
+check "self-hosted, CI_CACHE_ROOT empty: nothing created under \$RUNNER_TEMP" \
+  '[ ! -e "$tmp/rt0/ci-cache" ] && [ -z "$(ls -A "$tmp/rt0")" ]'
 run GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted -- bash "$SH"
-check "self-hosted, no CI_CACHE_ROOT nor RUNNER_TEMP exits 2" '[ $rc = 2 ]'
+check "self-hosted, neither CI_CACHE_ROOT nor RUNNER_TEMP: named volumes" \
+  '[ $rc = 0 ] && [ "$out" = "CI_CACHE_DIR=" ]'
 
 # --- argument checks ---------------------------------------------------------
 run CI_CACHE_ROOT="$tmp" CI_CACHE_MAX_GB=x -- bash "$SH"
