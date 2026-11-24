@@ -19,11 +19,13 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -244,6 +246,7 @@ func (r *racingGroups) ClaimGroup(ctx context.Context, id, op string, guard func
 // strictFixture is a groupauthz Service over acme's built-in roles with
 // strict separation of duties, whose group store races through racing.
 type strictFixture struct {
+	clock   *clocktest.Fake
 	svc     *Service
 	groups  group.GroupServicer
 	racing  *racingGroups
@@ -267,13 +270,14 @@ func newStrictFixture(t *testing.T) *strictFixture {
 	if err != nil {
 		t.Fatalf("membership: %v", err)
 	}
-	groups, err := group.NewStore(kvstore.NewMemoryKVStore(), group.WithRoleLookup(roles), group.WithMemberRevoker(members))
+	fake := clocktest.New()
+	groups, err := group.NewStore(kvstore.NewMemoryKVStore(), group.WithRoleLookup(roles), group.WithMemberRevoker(members), group.WithClock(fake))
 	if err != nil {
 		t.Fatalf("group store: %v", err)
 	}
 	mw := middleware.New(rbac.New(roles), middleware.WithRoleResolver(roles), middleware.WithStrictSeparation(true))
 	racing := &racingGroups{GroupServicer: groups}
-	return &strictFixture{svc: New(racing, users, roles, mw), groups: groups, racing: racing, users: users, members: members, roles: roles}
+	return &strictFixture{svc: New(racing, users, roles, mw), groups: groups, racing: racing, users: users, members: members, roles: roles, clock: fake}
 }
 
 // acmeCaller returns an acme request context for an identity with the
@@ -370,6 +374,85 @@ func TestGroupService_JoinRacingARoleAddIsNotASelfGrant(t *testing.T) {
 	}
 	if u, err := f.users.GetUser(asSO, self.ID); err != nil || !slices.Contains(u.GroupIDs, g.ID) {
 		t.Fatalf("admin after the join = %+v, %v; want the membership", u, err)
+	}
+}
+
+func TestGroupService_JoinAfterALapsedClaimIsUndone(t *testing.T) {
+	f := newStrictFixture(t)
+	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
+	userRole := role.SystemRoleID("acme", role.RoleNameUser)
+	keeper := authtest.CustomRole(t, f.roles, "acme", "group-keeper", permission.GroupsRead, permission.GroupsUpdate)
+	asSO := acmeCaller(0, admin, so)
+	g, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "crypto"})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	self, err := f.users.CreateUser(asSO, &user.CreateUserRequest{WithoutEmailLoginKey: true, Username: "acme-admin", TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("create admin user: %v", err)
+	}
+	asAdmin := acmeCaller(self.ID, admin, keeper)
+	raced := false
+	f.racing.claimAfter = func() {
+		raced = true
+		f.clock.Advance(31 * time.Second)
+		if _, err := f.svc.Update(asAdmin, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{userRole}}); err != nil {
+			t.Errorf("role add over the lapsed claim: %v", err)
+		}
+	}
+	var conflict *group.GroupConflictError
+	if err := f.svc.AddMember(asAdmin, self.ID, g.ID); !errors.As(err, &conflict) {
+		t.Fatalf("join after its claim lapsed: %v, want *GroupConflictError", err)
+	}
+	if !raced {
+		t.Fatal("the role add never ran after the claim")
+	}
+	if u, err := f.users.GetUser(asSO, self.ID); err != nil || slices.Contains(u.GroupIDs, g.ID) {
+		t.Fatalf("admin after the undone join = %+v, %v; want no membership", u, err)
+	}
+	_, token, err := f.groups.ClaimGroup(asSO, g.ID, group.ClaimMember, nil)
+	if err != nil {
+		t.Fatalf("claim after the undone join: %v, want no claim left", err)
+	}
+	if err := f.groups.ReleaseClaim(asSO, g.ID, token); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+}
+
+func TestGroupService_RemovalAfterALapsedClaimIsUndone(t *testing.T) {
+	f := newStrictFixture(t)
+	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
+	keeper := authtest.CustomRole(t, f.roles, "acme", "group-keeper", permission.GroupsRead, permission.GroupsUpdate)
+	asSO := acmeCaller(0, admin, so)
+	g, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "crypto"})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	alice, err := f.users.CreateUser(asSO, &user.CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	if _, err := f.members.AddMember(asSO, alice.ID, g.ID); err != nil {
+		t.Fatalf("seed membership: %v", err)
+	}
+	asAdmin := acmeCaller(0, admin, keeper)
+	raced := false
+	f.racing.claimAfter = func() {
+		raced = true
+		f.clock.Advance(31 * time.Second)
+		if _, err := f.svc.Update(asSO, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{so}}); err != nil {
+			t.Errorf("SO add over the lapsed claim: %v", err)
+		}
+	}
+	var conflict *group.GroupConflictError
+	if err := f.svc.RemoveMember(asAdmin, alice.ID, g.ID); !errors.As(err, &conflict) {
+		t.Fatalf("removal after its claim lapsed: %v, want *GroupConflictError", err)
+	}
+	if !raced {
+		t.Fatal("the SO add never ran after the claim")
+	}
+	if u, err := f.users.GetUser(asSO, alice.ID); err != nil || !slices.Contains(u.GroupIDs, g.ID) {
+		t.Fatalf("alice after the undone removal = %+v, %v; want the membership", u, err)
 	}
 }
 

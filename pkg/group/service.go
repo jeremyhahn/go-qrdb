@@ -53,7 +53,8 @@ type GroupServicer interface {
 	ClaimGroup(ctx context.Context, id, op string, guard func(*Group) error) (*Group, string, error)
 
 	// ReleaseClaim clears the claim token holds on group id; a no-op when
-	// the claim is no longer on the record or the group is gone.
+	// the group is gone, and *ClaimLapsedError when the claim is no longer
+	// on the record.
 	ReleaseClaim(ctx context.Context, id, token string) error
 
 	// ListGroups returns a page of the tenant's groups ordered by ID.

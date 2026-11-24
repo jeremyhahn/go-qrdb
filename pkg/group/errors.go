@@ -51,6 +51,18 @@ func (e *GroupConflictError) Error() string {
 	return fmt.Sprintf("group: %s changed concurrently; retry", e.ID)
 }
 
+// ClaimLapsedError is returned by ReleaseClaim when the group's record no
+// longer carries the claim: its lease lapsed before the change it guarded
+// committed, so the change was not serialized with the group's role set.
+type ClaimLapsedError struct {
+	ID string
+}
+
+// Error returns a human-readable description of the error.
+func (e *ClaimLapsedError) Error() string {
+	return fmt.Sprintf("group: %s: the member claim lapsed before the change it guarded committed; retry", e.ID)
+}
+
 // GroupNameTakenError is returned when a group name is already in use within
 // the tenant.
 type GroupNameTakenError struct {

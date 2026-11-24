@@ -21,7 +21,9 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -319,8 +321,9 @@ func TestGroupStore_ClaimBoundToReadVersion(t *testing.T) {
 	if err := f.groups.DeleteGroup(ctx, g.ID); !errors.As(err, &conflict) {
 		t.Fatalf("delete of a member-claimed group: %v, want *GroupConflictError", err)
 	}
-	if err := f.groups.ReleaseClaim(ctx, g.ID, "not-the-token"); err != nil {
-		t.Fatalf("release with a foreign token: %v", err)
+	var lapsed *ClaimLapsedError
+	if err := f.groups.ReleaseClaim(ctx, g.ID, "not-the-token"); !errors.As(err, &lapsed) {
+		t.Fatalf("release with a foreign token: %v, want *ClaimLapsedError", err)
 	}
 	if err := f.groups.ReleaseClaim(ctx, g.ID, token); err != nil {
 		t.Fatalf("release: %v", err)
@@ -328,6 +331,38 @@ func TestGroupStore_ClaimBoundToReadVersion(t *testing.T) {
 	got, err := f.groups.UpdateGroup(ctx, &UpdateGroupRequest{ID: g.ID, RoleIDs: []string{}})
 	if err != nil || !slices.Equal(got.RoleIDs, []string{}) {
 		t.Fatalf("update after release = %+v, %v", got, err)
+	}
+}
+
+func TestGroupStore_MemberClaimLapses(t *testing.T) {
+	ctx := context.Background()
+	fake := clocktest.New()
+	s, err := NewStore(kvstore.NewMemoryKVStore(), WithClock(fake))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	g, err := s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, held, err := s.ClaimGroup(ctx, g.ID, ClaimMember, nil)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := s.ReleaseClaim(ctx, g.ID, held); err != nil {
+		t.Fatalf("release of a live claim: %v", err)
+	}
+	_, token, err := s.ClaimGroup(ctx, g.ID, ClaimMember, nil)
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	fake.Advance(claimLease + time.Second)
+	if _, err := s.UpdateGroup(ctx, &UpdateGroupRequest{ID: g.ID, RoleIDs: []string{}}); err != nil {
+		t.Fatalf("update over a lapsed claim: %v", err)
+	}
+	var lapsed *ClaimLapsedError
+	if err := s.ReleaseClaim(ctx, g.ID, token); !errors.As(err, &lapsed) || lapsed.ID != g.ID {
+		t.Fatalf("release of a lapsed claim: %v, want *ClaimLapsedError", err)
 	}
 }
 

@@ -26,6 +26,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -65,6 +66,16 @@ func WithRoleLookup(roles RoleLookup) Option {
 // naming a group that no longer exists.
 func WithMemberRevoker(rv MemberRevoker) Option {
 	return func(s *kvGroupStore) { s.revoker = rv }
+}
+
+// WithClock sets the clock the store reads a member claim's lease against;
+// nil keeps the real clock.
+func WithClock(c clock.Clock) Option {
+	return func(s *kvGroupStore) {
+		if c != nil {
+			s.clock = c
+		}
+	}
 }
 
 // WithIdentityIndex makes the store claim every group id it creates in index
@@ -129,6 +140,7 @@ type kvGroupStore struct {
 	roles    RoleLookup
 	revoker  MemberRevoker
 	identity tenant.IdentityIndex
+	clock    clock.Clock
 }
 
 // NewStore returns a GroupServicer over store. The store must implement
@@ -140,7 +152,7 @@ func NewStore(store kvstore.KVStore, opts ...Option) (GroupServicer, error) {
 	if _, ok := store.(kvstore.AtomicKVStore); !ok {
 		return nil, ErrStoreNotAtomic
 	}
-	s := &kvGroupStore{store: store}
+	s := &kvGroupStore{store: store, clock: clock.Real()}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -268,7 +280,7 @@ func (s *kvGroupStore) ClaimGroup(ctx context.Context, id, op string, guard func
 	if err != nil {
 		return nil, "", err
 	}
-	now := time.Now().UTC()
+	now := s.clock.Now().UTC()
 	if liveClaim(g, now) {
 		return nil, "", &GroupConflictError{ID: g.ID}
 	}
@@ -304,7 +316,8 @@ func (s *kvGroupStore) ClaimGroup(ctx context.Context, id, op string, guard func
 }
 
 // ReleaseClaim clears the claim token holds on group id. It is a no-op when
-// the group is gone or carries another claim (or none); a record rewritten
+// the group is gone; when the record carries another claim (or none) the
+// claim lapsed and *ClaimLapsedError is returned. A record rewritten
 // concurrently (a role revocation) is retried.
 func (s *kvGroupStore) ReleaseClaim(ctx context.Context, id, token string) error {
 	if token == "" {
@@ -324,7 +337,7 @@ func (s *kvGroupStore) ReleaseClaim(ctx context.Context, id, token string) error
 			return err
 		}
 		if g.Claim == nil || g.Claim.Token != token {
-			return nil
+			return &ClaimLapsedError{ID: id}
 		}
 		g.Claim = nil
 		data, err := json.Marshal(g)
@@ -403,7 +416,7 @@ func (s *kvGroupStore) UpdateGroup(ctx context.Context, req *UpdateGroupRequest)
 	}
 	// A live claim freezes the record for the delete or membership change
 	// that holds it; an expired member claim is dropped by this write.
-	if liveClaim(prior, time.Now().UTC()) {
+	if liveClaim(prior, s.clock.Now().UTC()) {
 		return nil, &GroupConflictError{ID: prior.ID}
 	}
 	prior.Claim = nil
