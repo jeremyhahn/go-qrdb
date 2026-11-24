@@ -986,6 +986,41 @@ func (s *DatabaseService) checkAdoptsNoLogs(ctx context.Context, tenantID string
 	return s.logReclaimer.CheckCreateDatabaseLogs(ctx, tenantID, cfg.Name)
 }
 
+// checkCreatedAdoptsNoLogs checks again, once the manager has created db and
+// marked its incarnation live in the drop-fence marker that guards the name's
+// log writes, that the name holds no log: a log write admitted while the name
+// was unheld is refused by its guard from then on, so a log this check does
+// not see can no longer land. A log that landed before is left in place and
+// db is rolled back, its rollback drop reclaiming no log of the name.
+func (s *DatabaseService) checkCreatedAdoptsNoLogs(ctx context.Context, tenantID string, cfg database.DatabaseConfig, db *database.Database) error {
+	err := s.checkAdoptsNoLogs(ctx, tenantID, cfg)
+	if err == nil {
+		return nil
+	}
+	rbCtx, cancel := database.DropRollbackContext(withRetainedDatabaseLogs(ctx))
+	defer cancel()
+	s.rollBackCreate(rbCtx, db, err)
+	return err
+}
+
+// retainDatabaseLogsKey marks a drop context whose reclamation leaves the
+// name's logs in place.
+type retainDatabaseLogsKey struct{}
+
+// withRetainedDatabaseLogs returns ctx marked so a database drop under it
+// reclaims none of the name's logs: the rollback of a create that found logs
+// it must not adopt, which a drop of the new incarnation would otherwise take
+// with it when they recorded no incarnation.
+func withRetainedDatabaseLogs(ctx context.Context) context.Context {
+	return context.WithValue(ctx, retainDatabaseLogsKey{}, true)
+}
+
+// retainsDatabaseLogs reports whether ctx was marked by withRetainedDatabaseLogs.
+func retainsDatabaseLogs(ctx context.Context) bool {
+	retain, _ := ctx.Value(retainDatabaseLogsKey{}).(bool)
+	return retain
+}
+
 // Create creates a new database with the given configuration and returns
 // its runtime information. Equivalent to CreateWithCredentials with an empty
 // seal.Credentials -- barrier initialization with an empty secret only
@@ -1055,6 +1090,9 @@ func (s *DatabaseService) createWithCredentials(ctx context.Context, cfg databas
 	}
 	db, err := s.manager.CreateWithCredentials(ctx, cfg, creds)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.checkCreatedAdoptsNoLogs(ctx, "", cfg, db); err != nil {
 		return nil, err
 	}
 	if err := s.clearPredecessorSeal(ctx, db); err != nil {
@@ -1891,6 +1929,10 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 
 	db, err := s.manager.CreateForTenantWithCredentials(ctx, cfg, creds)
 	if err != nil {
+		releaseReservations()
+		return nil, err
+	}
+	if err := s.checkCreatedAdoptsNoLogs(ctx, tenantID, cfg, db); err != nil {
 		releaseReservations()
 		return nil, err
 	}

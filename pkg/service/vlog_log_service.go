@@ -907,8 +907,10 @@ func (s *logService) ExpireBodies(ctx context.Context, req *ExpireBodiesRequest)
 // without the sub-type would halt on it.
 func (s *logService) DropDatabaseLogs(ctx context.Context, tenantID, name, incarnation string) error {
 	tenantID = routingTenant(tenantID)
-	if err := s.dropDatabaseLogs(ctx, tenantID, name, incarnation); err != nil {
-		return err
+	if !retainsDatabaseLogs(ctx) {
+		if err := s.dropDatabaseLogs(ctx, tenantID, name, incarnation); err != nil {
+			return err
+		}
 	}
 	// The dropped incarnation's log-fence entry leaves the route with it.
 	s.route.forgetFences(tenantID, name)
