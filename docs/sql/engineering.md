@@ -666,6 +666,19 @@ failures can only arrive as a 1105 message.
 The REST and gRPC `database/sql` transports report the server's response
 through `*driver.QueryExecError`.
 
+A `rest://` or `grpc://` connection authenticates with a bearer token through
+`DSNConfig.TokenSource` (a `transport.TokenSource`). Set it on the config
+`driver.ParseDSN` returns, then open with
+`sql.OpenDB(driver.NewNetworkConnector(cfg))`. The token never goes in the
+DSN text, and `ParseDSN` never sets the field. The source is consulted on
+every request. TLS is required (`ca=` and/or `cert=`/`key=` in the DSN): the
+transport refuses a bearer on a plaintext connection, and over gRPC `Connect`
+returns `*transport.BearerRequiresTLSError` as itself. `embedded://` and node
+connections take no bearer. See
+[Client bearer tokens](../identity-rbac/api.md#client-bearer-tokens-transportwithbearertoken--transportwithtokensource).
+A `rest://` host is dialled as `https://host:port` with TLS and
+`http://host:port` without.
+
 ### What is *not* transactional
 
 - **The `kv`, entity, and collection tables are autocommit-only.** They have no write-set to buffer into, so a write to one of them while a transaction is open fails loudly with `NonTransactionalTableError` rather than silently escaping the transaction's atomicity boundary and surviving a later `ROLLBACK`. Outside a transaction they write at once — but **one statement cannot write both a relational table and one of these**: the statement is atomic, and their write could not be undone with its rows. Such a statement (a multi-table `UPDATE`/`DELETE` joining the two, say) is refused before it writes either, with `MixedTransactionalWriteError`; write the two in separate statements. Each table editor notes which kind it writes on the session's write-set as the statement opens it, and the note belongs to that statement alone: it is cleared at every command boundary and every commit -- including a commit that fails and keeps its write-set for a retry -- and a new transaction starts without one, so a later statement is never refused for an earlier one's writes, whether or not its caller brackets statements as commands.

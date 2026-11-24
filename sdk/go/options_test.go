@@ -15,9 +15,12 @@
 package sdk
 
 import (
+	"context"
 	"crypto/tls"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 func TestWithTLSConfig_SetsTransportOption(t *testing.T) {
@@ -25,6 +28,25 @@ func TestWithTLSConfig_SetsTransportOption(t *testing.T) {
 	WithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS13})(opts)
 	if len(opts.transportOpts) != 1 {
 		t.Errorf("expected 1 transport option, got %d", len(opts.transportOpts))
+	}
+}
+
+func TestWithBearerToken_SetsTransportTokenSource(t *testing.T) {
+	cfg := transport.ApplyOptions(TransportOptions(WithBearerToken("host-issued-token"))...)
+	if cfg.TokenSource == nil {
+		t.Fatal("WithBearerToken left transport.Config.TokenSource nil")
+	}
+	tok, err := cfg.TokenSource.Token(context.Background())
+	if err != nil || tok != "host-issued-token" {
+		t.Fatalf("Token() = %q, %v; want host-issued-token", tok, err)
+	}
+}
+
+func TestWithTokenSource_SetsTransportTokenSource(t *testing.T) {
+	src := transport.StaticTokenSource("from-source")
+	cfg := transport.ApplyOptions(TransportOptions(WithTokenSource(src))...)
+	if cfg.TokenSource != src {
+		t.Fatalf("TokenSource = %v, want the source passed in", cfg.TokenSource)
 	}
 }
 

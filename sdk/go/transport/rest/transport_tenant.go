@@ -473,7 +473,7 @@ func (t *Transport) initProofClient() (*http.Client, func()) {
 	pinned := t.httpTransport.Clone()
 	pinned.MaxConnsPerHost = 1
 	return &http.Client{
-		Transport: transport.SOPINRoundTripper(pinned, "rest", transport.ConfiguredHost(t.baseURL)),
+		Transport: transport.SOPINRoundTripper(t.bearerRoundTripper(pinned), "rest", transport.ConfiguredHost(t.baseURL)),
 		Timeout:   t.client.Timeout,
 	}, pinned.CloseIdleConnections
 }

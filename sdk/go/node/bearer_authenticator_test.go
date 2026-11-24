@@ -18,9 +18,12 @@ package node
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,7 +41,12 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	sdkgrpc "github.com/jeremyhahn/go-qrdb/sdk/go/transport/grpc"
+	sdkmcp "github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
+	sdkrest "github.com/jeremyhahn/go-qrdb/sdk/go/transport/rest"
+	sdkunix "github.com/jeremyhahn/go-qrdb/sdk/go/transport/unix"
 )
 
 // The token the host's bearer authenticator accepts, and the account it
@@ -72,32 +80,72 @@ func bearer(authorization string) callerCredential {
 	return callerCredential{authorization: authorization}
 }
 
-// bearerTransport is one transport's way of making an admin:status call with
-// a caller credential. It returns nil when the call was admitted, and the
-// transport's refusal otherwise.
+// bearerTransport is one transport's way of making an admin:status call. dial
+// builds the SDK client of that transport, which sends the bearer from
+// transport.WithBearerToken / WithTokenSource; call makes it with a
+// hand-set Authorization value, for the value the SDK option never sends (a
+// scheme other than Bearer). Both return nil when the call was admitted, and
+// the transport's refusal otherwise.
 type bearerTransport struct {
 	name      string
 	configure func(t *testing.T, cfg *qrdbconfig.Config)
+	dial      func(n *Node, opts ...transport.Option) (transport.Transport, error)
 	call      func(ctx context.Context, n *Node, ca *qrdbdharness.CA, cred callerCredential) error
 	// unauthenticated reports whether err is the transport's
 	// "unauthenticated" answer, as opposed to any other failure.
 	unauthenticated func(err error) bool
 }
 
+// sdkStatus dials bt's SDK client with the node's CA trusted and no client
+// certificate, plus opts, connects, and calls admin Status calls times.
+func sdkStatus(ctx context.Context, bt bearerTransport, n *Node, ca *qrdbdharness.CA, calls int, opts ...transport.Option) error {
+	tr, err := bt.dial(n, append([]transport.Option{transport.WithTLSConfig(bearer("").clientTLS(ca))}, opts...)...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tr.Close() }()
+	if err := tr.Connect(ctx); err != nil {
+		return err
+	}
+	admin, ok := tr.(transport.AdminClient)
+	if !ok {
+		return fmt.Errorf("%T is not a transport.AdminClient", tr)
+	}
+	for i := 0; i < calls; i++ {
+		if _, err := admin.Status(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// countingTokenSource hands out hostBearerToken's token and counts how often
+// it was asked.
+type countingTokenSource struct{ n atomic.Int64 }
+
+func (s *countingTokenSource) Token(context.Context) (string, error) {
+	s.n.Add(1)
+	return strings.TrimPrefix(hostBearerToken, "Bearer "), nil
+}
+
 // TestWithAuthenticators_BearerAuthenticatesOnEveryNetworkTransport: an
 // SDK-only authenticator registered with WithAuthenticators reads the caller's
-// Authorization value on REST, gRPC, Unix and MCP alike, so a bearer-only
-// caller (no client certificate) is admitted on each, and a missing or wrong
-// token is refused as unauthenticated on each. The account's method policy
-// excludes the bearer, so admission also proves the authenticator's
-// unobservable declaration is honoured on every transport.
+// Authorization value on REST, gRPC, Unix and MCP alike, and the SDK client of
+// each transport sends it from transport.WithBearerToken / WithTokenSource. A
+// bearer-only caller (no client certificate) is admitted on each, a token
+// source is consulted on every call, and a missing or wrong token is refused
+// as unauthenticated on each. The account's method policy excludes the
+// bearer, so admission also proves the authenticator's unobservable
+// declaration is honoured on every transport.
 //
 // QUIC is not in the table: its request frame carries no credential field, so
-// a bearer has nowhere to travel on that transport.
+// a bearer has nowhere to travel on that transport, and quic.New refuses the
+// bearer option.
 //
 // It holds in every chain position: a bearer-only caller presents nothing mTLS
 // could accept, so the bearer decides wherever it sits.
 func TestWithAuthenticators_BearerAuthenticatesOnEveryNetworkTransport(t *testing.T) {
+	token := strings.TrimPrefix(hostBearerToken, "Bearer ")
 	for _, pos := range []sdk.ChainPosition{sdk.ChainBeforeMTLS, sdk.ChainAfterMTLS, sdk.ChainReplaceMTLS} {
 		for _, bt := range bearerTransports() {
 			t.Run(pos.String()+"/"+bt.name, func(t *testing.T) {
@@ -105,24 +153,46 @@ func TestWithAuthenticators_BearerAuthenticatesOnEveryNetworkTransport(t *testin
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 				defer cancel()
 
-				require.NoError(t, bt.call(ctx, n, ca, bearer(hostBearerToken)), "a valid bearer was refused")
+				require.NoError(t, sdkStatus(ctx, bt, n, ca, 1, transport.WithBearerToken(token)), "a valid bearer was refused")
 
-				for _, refused := range []struct{ name, authorization string }{
-					{"no credential", ""},
-					{"wrong token", "Bearer forged"},
-					{"right token, wrong scheme", strings.Replace(hostBearerToken, "Bearer", "Basic", 1)},
+				src := &countingTokenSource{}
+				require.NoError(t, sdkStatus(ctx, bt, n, ca, 2, transport.WithTokenSource(src)), "a token source's bearer was refused")
+				require.GreaterOrEqual(t, src.n.Load(), int64(2), "the token source was not consulted on every call")
+
+				for _, refused := range []struct {
+					name string
+					opts []transport.Option
+				}{
+					{"no credential", nil},
+					{"wrong token", []transport.Option{transport.WithBearerToken("forged")}},
 				} {
-					err := bt.call(ctx, n, ca, bearer(refused.authorization))
+					err := sdkStatus(ctx, bt, n, ca, 1, refused.opts...)
 					require.Error(t, err, "%s was admitted", refused.name)
 					require.True(t, bt.unauthenticated(err), "%s: refusal is not unauthenticated: %v", refused.name, err)
 				}
+
+				err := bt.call(ctx, n, ca, bearer(strings.Replace(hostBearerToken, "Bearer", "Basic", 1)))
+				require.Error(t, err, "right token, wrong scheme was admitted")
+				require.True(t, bt.unauthenticated(err), "right token, wrong scheme: refusal is not unauthenticated: %v", err)
 			})
 		}
 	}
 }
 
+// grpcUnauthenticated reads codes.Unauthenticated from a raw gRPC status or
+// from the SDK's *transport.RequestError carrying it.
+func grpcUnauthenticated(err error) bool {
+	if status.Code(err) == codes.Unauthenticated {
+		return true
+	}
+	var re *transport.RequestError
+	if errors.As(err, &re) && re.StatusCode == int(codes.Unauthenticated) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "unauthenticated")
+}
+
 func bearerTransports() []bearerTransport {
-	grpcUnauthenticated := func(err error) bool { return status.Code(err) == codes.Unauthenticated }
 	grpcStatus := func(target string) func(context.Context, *Node, *qrdbdharness.CA, callerCredential) error {
 		return func(ctx context.Context, n *Node, ca *qrdbdharness.CA, cred callerCredential) error {
 			addr := n.Server().GRPCAddr()
@@ -149,6 +219,9 @@ func bearerTransports() []bearerTransport {
 				cfg.Protocols.REST = true
 				cfg.Server.AdminPort = freeTCPPort(t)
 			},
+			dial: func(n *Node, opts ...transport.Option) (transport.Transport, error) {
+				return sdkrest.New(append([]transport.Option{transport.WithAddress("https://" + n.Server().RESTAddr())}, opts...)...)
+			},
 			call: func(ctx context.Context, n *Node, ca *qrdbdharness.CA, cred callerCredential) error {
 				req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+n.Server().RESTAddr()+"/status", nil)
 				if err != nil {
@@ -167,9 +240,14 @@ func bearerTransports() []bearerTransport {
 				}
 				return nil
 			},
+			// The raw path answers with the HTTP status; the SDK client
+			// reads a 401 as an "unauthenticated: " server error.
 			unauthenticated: func(err error) bool {
-				se, ok := err.(*restStatusError)
-				return ok && se.code == http.StatusUnauthorized
+				var se *restStatusError
+				if errors.As(err, &se) {
+					return se.code == http.StatusUnauthorized
+				}
+				return strings.Contains(err.Error(), "unauthenticated: ")
 			},
 		},
 		{
@@ -177,6 +255,9 @@ func bearerTransports() []bearerTransport {
 			configure: func(t *testing.T, cfg *qrdbconfig.Config) {
 				cfg.Protocols.GRPC = true
 				cfg.Server.GRPCPort = freeTCPPort(t)
+			},
+			dial: func(n *Node, opts ...transport.Option) (transport.Transport, error) {
+				return sdkgrpc.New(append([]transport.Option{transport.WithAddress(n.Server().GRPCAddr())}, opts...)...)
 			},
 			call:            grpcStatus("grpc"),
 			unauthenticated: grpcUnauthenticated,
@@ -187,6 +268,9 @@ func bearerTransports() []bearerTransport {
 				cfg.Protocols.Unix = true
 				cfg.Unix.SocketPath = shortSocketPath(t)
 			},
+			dial: func(n *Node, opts ...transport.Option) (transport.Transport, error) {
+				return sdkunix.New(append([]transport.Option{transport.WithAddress(n.Server().UnixAddr())}, opts...)...)
+			},
 			call:            grpcStatus("unix"),
 			unauthenticated: grpcUnauthenticated,
 		},
@@ -195,6 +279,9 @@ func bearerTransports() []bearerTransport {
 			configure: func(t *testing.T, cfg *qrdbconfig.Config) {
 				cfg.Protocols.MCP = true
 				cfg.MCP.Port = freeTCPPort(t)
+			},
+			dial: func(n *Node, opts ...transport.Option) (transport.Transport, error) {
+				return sdkmcp.New(append([]transport.Option{transport.WithAddress("https://" + n.Server().MCPAddr() + "/mcp")}, opts...)...)
 			},
 			call: func(ctx context.Context, n *Node, ca *qrdbdharness.CA, cred callerCredential) error {
 				hc := bearerHTTPClient(ca, cred)

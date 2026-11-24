@@ -338,7 +338,7 @@ func TestRunAuthLogin_FIDO2_ValidHex_NoClient(t *testing.T) {
 // ===========================================================================
 
 func TestBuildClient_EmbeddedTransport(t *testing.T) {
-	_, err := buildClient(context.Background(), transportEmbedded, "", "", "", "", defaultConnectTimeout)
+	_, err := buildClient(context.Background(), transportEmbedded, "", "", "", "", "", defaultConnectTimeout)
 	if err == nil {
 		t.Fatal("expected EmbeddedTransportUnavailableError")
 	}
@@ -351,7 +351,7 @@ func TestBuildClient_EmbeddedTransport(t *testing.T) {
 func TestBuildClient_GRPCWithTLS(t *testing.T) {
 	// TLS CA file path that doesn't exist should fail during transport setup.
 	_, err := buildClient(context.Background(), transportGRPC, "localhost:9999",
-		"/nonexistent/ca.pem", "", "", defaultConnectTimeout)
+		"/nonexistent/ca.pem", "", "", "", defaultConnectTimeout)
 	// This may succeed or fail depending on how TLS opts are lazily applied;
 	// we just need the branch exercised.
 	_ = err

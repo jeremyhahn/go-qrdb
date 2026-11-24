@@ -17,6 +17,7 @@ Every verb below accepts the root persistent flags:
 | `--transport` | string | `unix` | `rest \| grpc \| quic \| mcp \| unix \| embedded` |
 | `--database` | string | server default | Database to scope data-plane commands to |
 | `--ca-file` / `--cert-file` / `--key-file` | string | — | Client mTLS material |
+| `--bearer-token-file` | string | — | File holding a bearer token, sent as `Authorization: Bearer` on every request. The file is re-read per request (a rotated token is picked up without a restart) and the token is never taken from argv. TLS is required (rest, grpc, mcp, unix over TLS); `quic` refuses it; `qrdb enroll` ignores it. |
 | `--output` | string | `table` | `table \| json \| yaml` |
 | `--timeout` | duration | `10s` | Request timeout |
 | `--log-level` | string | `info` | `trace \| debug \| info \| warn \| error` |

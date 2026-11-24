@@ -102,6 +102,12 @@ func (t *Transport) dialOptions() ([]grpc.DialOption, error) {
 		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor("unix", t.config.TLSEnabled)),
 		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor("unix", t.config.TLSEnabled)),
 	)
+	// A configured bearer token rides every RPC as metadata "authorization",
+	// fetched from the token source per call, and only over TLS.
+	opts = append(opts,
+		grpc.WithChainUnaryInterceptor(transport.BearerUnaryClientInterceptor("unix", t.config.TLSEnabled, t.config.TokenSource)),
+		grpc.WithChainStreamInterceptor(transport.BearerStreamClientInterceptor("unix", t.config.TLSEnabled, t.config.TokenSource)),
+	)
 
 	if t.activeDatabase != "" {
 		opts = append(opts,
@@ -176,6 +182,15 @@ func (t *Transport) withDatabase(database string) *Transport {
 // and the server resolves it.
 func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
 	return t.withDatabase(database), nil
+}
+
+// isBearerRefusal reports whether err is the client's own refusal to send a
+// configured bearer token: *transport.BearerRequiresTLSError or
+// *transport.TokenSourceError.
+func isBearerRefusal(err error) bool {
+	var tlsErr *transport.BearerRequiresTLSError
+	var srcErr *transport.TokenSourceError
+	return errors.As(err, &tlsErr) || errors.As(err, &srcErr)
 }
 
 // New creates a new Unix socket transport with the given options. The
@@ -295,6 +310,10 @@ func (t *Transport) probeHealth(ctx context.Context) error {
 	switch {
 	case err == nil && resp.GetStatus() != "":
 		return nil
+	case isBearerRefusal(err):
+		// The client refused to send its bearer token (connection not
+		// TLS, failing token source): that refusal is the result.
+		return err
 	case err != nil && (reachableButUnauthorized(err) || reachableButSealed(err)):
 		return nil
 	case status.Code(err) == codes.Unauthenticated || status.Code(err) == codes.ResourceExhausted:
@@ -899,6 +918,9 @@ var _ transport.JoinRequestReviewer = (*Transport)(nil)
 func mapGRPCError(method string, err error) error {
 	if err == nil {
 		return nil
+	}
+	if isBearerRefusal(err) {
+		return &transport.RequestError{Method: method, Err: err}
 	}
 	st, ok := status.FromError(err)
 	if !ok {

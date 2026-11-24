@@ -69,7 +69,12 @@ type NetworkConnector struct {
 }
 
 // NewNetworkConnector creates a new NetworkConnector from the given DSN
-// configuration. The transport is established on the first Connect.
+// configuration. The transport is established on the first Connect. A
+// non-nil cfg.TokenSource is passed to the transport with
+// transport.WithTokenSource, so its token is sent as a bearer on every
+// request; the transport's own TLS and token-source refusals
+// (*transport.BearerRequiresTLSError, *transport.TokenSourceError) are
+// returned from Connect unchanged.
 func NewNetworkConnector(cfg *DSNConfig) *NetworkConnector {
 	return &NetworkConnector{cfg: cfg}
 }
@@ -129,9 +134,13 @@ func (c *NetworkConnector) getOrCreateTransport(ctx context.Context) (sqlTranspo
 		return nil, &UnsupportedSchemeError{Scheme: c.cfg.Scheme}
 	}
 
-	opts := []transport.Option{transport.WithAddress(c.cfg.Host)}
-	if c.cfg.CAFile != "" || c.cfg.CertFile != "" || c.cfg.KeyFile != "" {
+	tlsOn := c.cfg.CAFile != "" || c.cfg.CertFile != "" || c.cfg.KeyFile != ""
+	opts := []transport.Option{transport.WithAddress(networkAddress(c.cfg.Scheme, c.cfg.Host, tlsOn))}
+	if tlsOn {
 		opts = append(opts, transport.WithTLS(c.cfg.CertFile, c.cfg.KeyFile, c.cfg.CAFile))
+	}
+	if c.cfg.TokenSource != nil {
+		opts = append(opts, transport.WithTokenSource(c.cfg.TokenSource))
 	}
 
 	tr, err := factory(opts...)
@@ -145,4 +154,18 @@ func (c *NetworkConnector) getOrCreateTransport(ctx context.Context) (sqlTranspo
 
 	c.transport = tr
 	return tr, nil
+}
+
+// networkAddress is the address the scheme's transport dials. The REST
+// client joins request paths onto its address as a base URL, so a rest://
+// DSN's host:port becomes https://host:port when TLS is configured and
+// http://host:port otherwise; gRPC dials host:port as it is.
+func networkAddress(scheme, host string, tlsOn bool) string {
+	if scheme != SchemeREST {
+		return host
+	}
+	if tlsOn {
+		return "https://" + host
+	}
+	return "http://" + host
 }

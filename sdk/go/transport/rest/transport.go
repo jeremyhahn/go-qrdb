@@ -126,6 +126,13 @@ func New(opts ...transport.Option) (*Transport, error) {
 // connection first. 90 s is net/http's DefaultTransport value.
 const idleConnTimeout = 90 * time.Second
 
+// bearerRoundTripper wraps base so every request carries the configured
+// bearer token, over https to the configured host only; with no token source
+// it returns base.
+func (t *Transport) bearerRoundTripper(base http.RoundTripper) http.RoundTripper {
+	return transport.BearerRoundTripper(base, "rest", transport.ConfiguredHost(t.baseURL), t.config.TokenSource)
+}
+
 func (t *Transport) ensureClient() error {
 	if t.client != nil {
 		return nil
@@ -156,7 +163,7 @@ func (t *Transport) ensureClient() error {
 	// closed the idle connection it was written onto, is sent once more.
 	t.httpTransport = httpTransport
 	t.baseRT = transport.RetryServerClosedIdle(
-		transport.SOPINRoundTripper(httpTransport, "rest", transport.ConfiguredHost(t.baseURL)))
+		transport.SOPINRoundTripper(t.bearerRoundTripper(httpTransport), "rest", transport.ConfiguredHost(t.baseURL)))
 	t.client = &http.Client{
 		Transport: t.scopedRoundTripper(),
 		Timeout:   timeout,
@@ -206,6 +213,13 @@ func (t *Transport) probe(ctx context.Context) error {
 	}
 	resp, err := t.client.Do(req)
 	if err != nil {
+		// The bearer round tripper's refusal (a token source on a
+		// connection without TLS, or a token source error) is the
+		// caller's configuration, not a connectivity failure: it is
+		// returned as itself, as the gRPC and Unix transports do.
+		if refusal := bearerRefusal(err); refusal != nil {
+			return refusal
+		}
 		return unreachable
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -221,6 +235,20 @@ func (t *Transport) probe(ctx context.Context) error {
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return unreachable
+}
+
+// bearerRefusal returns the *transport.BearerRequiresTLSError or
+// *transport.TokenSourceError in err's chain, or nil.
+func bearerRefusal(err error) error {
+	var tlsErr *transport.BearerRequiresTLSError
+	if errors.As(err, &tlsErr) {
+		return tlsErr
+	}
+	var srcErr *transport.TokenSourceError
+	if errors.As(err, &srcErr) {
+		return srcErr
+	}
+	return nil
 }
 
 // Close shuts down the REST transport and releases idle connections.

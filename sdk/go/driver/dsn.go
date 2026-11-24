@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // DSN schemes built into this package. Additional schemes are contributed by
@@ -76,6 +77,14 @@ type DSNConfig struct {
 	// session starts with: "optimistic" or "pessimistic" (see
 	// docs/row-locking/). Empty leaves the database's own setting in force.
 	Concurrency string
+
+	// TokenSource, when set, supplies the bearer token sent in the
+	// Authorization header of every request on a network (rest:// or
+	// grpc://) connection. It is set in code on a parsed config, never parsed
+	// from the DSN text (a DSN is logged and passed around as a string). The
+	// transport requires TLS for a bearer. Nil sends no Authorization.
+	// Embedded and node connections ignore it.
+	TokenSource transport.TokenSource
 }
 
 // ParseDSN parses a DSN string into a DSNConfig, dispatching to the parser

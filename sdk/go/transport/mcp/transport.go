@@ -267,7 +267,11 @@ func (t *Transport) dialMCP(ctx context.Context, address string, capture *connCa
 		// SO PIN in the X-QRDB-SO-PIN header of its HTTP request -- over
 		// https to the configured host only, on every hop including
 		// redirects.
-		rt := transport.SOPINRoundTripper(base, "mcp", transport.ConfiguredHost(address))
+		// A configured bearer token rides every HTTP request as
+		// "Authorization: Bearer <token>", same https/configured-host rule.
+		rt := transport.SOPINRoundTripper(
+			transport.BearerRoundTripper(base, "mcp", transport.ConfiguredHost(address), t.config.TokenSource),
+			"mcp", transport.ConfiguredHost(address))
 		if capture != nil {
 			base.MaxConnsPerHost = 1
 			capture.next = rt
@@ -351,6 +355,12 @@ func (t *Transport) Healthy(ctx context.Context) bool {
 
 	result, err := t.callTool(ctx, "qrdb_health", nil)
 	if err != nil {
+		// A client-side bearer refusal sent nothing, so no error in its chain is a server answer.
+		var srcErr *transport.TokenSourceError
+		var tlsErr *transport.BearerRequiresTLSError
+		if errors.As(err, &srcErr) || errors.As(err, &tlsErr) {
+			return false
+		}
 		return transport.IsBarrierSealed(err)
 	}
 

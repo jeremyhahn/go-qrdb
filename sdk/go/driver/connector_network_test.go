@@ -66,6 +66,26 @@ func withStubTransport(t *testing.T, scheme string, stub *stubTransport) {
 	})
 }
 
+// withCapturingStubTransport is withStubTransport that also records the
+// options the factory receives, so a test can assert what the connector
+// configured on the transport.
+func withCapturingStubTransport(t *testing.T, scheme string, stub *stubTransport, captured *[]transport.Option) {
+	t.Helper()
+
+	original, existed := transportFactories[scheme]
+	transportFactories[scheme] = func(opts ...transport.Option) (sqlTransport, error) {
+		*captured = append([]transport.Option(nil), opts...)
+		return stub, nil
+	}
+	t.Cleanup(func() {
+		if existed {
+			transportFactories[scheme] = original
+			return
+		}
+		delete(transportFactories, scheme)
+	})
+}
+
 // TestNetworkConnector_InterfaceCompliance verifies the connector satisfies
 // the interfaces database/sql expects.
 func TestNetworkConnector_InterfaceCompliance(t *testing.T) {
@@ -115,6 +135,104 @@ func TestNetworkConnector_Connect(t *testing.T) {
 	}
 	if nc.sqlClient != stub.client {
 		t.Error("connection is not backed by the transport's SQL client")
+	}
+}
+
+func TestNetworkConnector_TokenSourcePassedToTransport(t *testing.T) {
+	for _, scheme := range []string{SchemeREST, SchemeGRPC} {
+		t.Run(scheme, func(t *testing.T) {
+			var captured []transport.Option
+			stub := &stubTransport{client: &fakeSQLClient{}}
+			withCapturingStubTransport(t, scheme, stub, &captured)
+
+			cfg, err := ParseDSN(scheme + "://localhost:63001/mydb")
+			if err != nil {
+				t.Fatalf("ParseDSN: %v", err)
+			}
+			source := transport.StaticTokenSource("host-issued")
+			cfg.TokenSource = source
+
+			connector := NewNetworkConnector(cfg)
+			defer func() { _ = connector.Close() }()
+
+			conn, err := connector.Connect(context.Background())
+			if err != nil {
+				t.Fatalf("Connect: %v", err)
+			}
+			_ = conn.Close()
+
+			got := transport.ApplyOptions(captured...)
+			if got.TokenSource == nil {
+				t.Fatal("transport config has no TokenSource")
+			}
+			if got.TokenSource != source {
+				t.Errorf("TokenSource = %v, want the configured source", got.TokenSource)
+			}
+		})
+	}
+}
+
+func TestNetworkConnector_NoTokenSourceSendsNoBearer(t *testing.T) {
+	for _, scheme := range []string{SchemeREST, SchemeGRPC} {
+		t.Run(scheme, func(t *testing.T) {
+			var captured []transport.Option
+			stub := &stubTransport{client: &fakeSQLClient{}}
+			withCapturingStubTransport(t, scheme, stub, &captured)
+
+			cfg, err := ParseDSN(scheme + "://localhost:63001/mydb")
+			if err != nil {
+				t.Fatalf("ParseDSN: %v", err)
+			}
+
+			connector := NewNetworkConnector(cfg)
+			defer func() { _ = connector.Close() }()
+
+			conn, err := connector.Connect(context.Background())
+			if err != nil {
+				t.Fatalf("Connect: %v", err)
+			}
+			_ = conn.Close()
+
+			if got := transport.ApplyOptions(captured...).TokenSource; got != nil {
+				t.Errorf("TokenSource = %v, want nil", got)
+			}
+		})
+	}
+}
+
+// TestNetworkConnector_TransportAddress: the REST client joins request paths
+// onto its address as a base URL, so a rest:// host:port is dialled as
+// https:// with TLS and http:// without; grpc:// dials host:port as it is.
+func TestNetworkConnector_TransportAddress(t *testing.T) {
+	for _, tc := range []struct {
+		dsn  string
+		want string
+	}{
+		{"rest://localhost:63001/mydb?ca=ca.pem", "https://localhost:63001"},
+		{"rest://localhost:63001/mydb", "http://localhost:63001"},
+		{"grpc://localhost:63002/mydb?ca=ca.pem", "localhost:63002"},
+		{"grpc://localhost:63002/mydb", "localhost:63002"},
+	} {
+		t.Run(tc.dsn, func(t *testing.T) {
+			cfg, err := ParseDSN(tc.dsn)
+			if err != nil {
+				t.Fatalf("ParseDSN: %v", err)
+			}
+			var captured []transport.Option
+			withCapturingStubTransport(t, cfg.Scheme, &stubTransport{client: &fakeSQLClient{}}, &captured)
+
+			connector := NewNetworkConnector(cfg)
+			defer func() { _ = connector.Close() }()
+			conn, err := connector.Connect(context.Background())
+			if err != nil {
+				t.Fatalf("Connect: %v", err)
+			}
+			_ = conn.Close()
+
+			if got := transport.ApplyOptions(captured...).Address; got != tc.want {
+				t.Errorf("Address = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

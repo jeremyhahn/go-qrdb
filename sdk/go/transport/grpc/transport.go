@@ -145,6 +145,15 @@ func (t *Transport) Connect(ctx context.Context) error {
 // for the actual RPC.
 const connectWaitBudget = 15 * time.Second
 
+// isBearerRefusal reports whether err is the client's own refusal to send a
+// configured bearer token: *transport.BearerRequiresTLSError or
+// *transport.TokenSourceError.
+func isBearerRefusal(err error) bool {
+	var tlsErr *transport.BearerRequiresTLSError
+	var srcErr *transport.TokenSourceError
+	return errors.As(err, &tlsErr) || errors.As(err, &srcErr)
+}
+
 // connectHealthy waits for the gRPC connection to become usable, then
 // confirms the server answers a Health RPC. It uses grpc.WaitForReady(true)
 // so the call BLOCKS until the ClientConn reaches READY (the TLS/HTTP2
@@ -157,7 +166,10 @@ const connectWaitBudget = 15 * time.Second
 //
 // A server that refuses the caller's credential (codes.Unauthenticated) has
 // answered: its typed refusal is the result, as on every other transport, not
-// a connectivity failure. Any other failure is a *transport.ConnectionError.
+// a connectivity failure. A client-side bearer refusal is returned before any
+// status in its chain is read as a server answer. Any other failure is a
+// *transport.ConnectionError.
+
 func (t *Transport) connectHealthy(ctx context.Context) error {
 	cctx, cancel := context.WithTimeout(ctx, connectWaitBudget)
 	defer cancel()
@@ -165,6 +177,10 @@ func (t *Transport) connectHealthy(ctx context.Context) error {
 	switch {
 	case err == nil && resp.GetStatus() != "":
 		return nil
+	case isBearerRefusal(err):
+		// The client refused to send its bearer token (plaintext
+		// connection, failing token source): that refusal is the result.
+		return err
 	case err != nil && (reachableButUnauthorized(err) || reachableButSealed(err)):
 		return nil
 	case status.Code(err) == codes.Unauthenticated || status.Code(err) == codes.ResourceExhausted:
@@ -245,6 +261,9 @@ func (t *Transport) Healthy(ctx context.Context) bool {
 	resp, err := t.client.Health(ctx, &emptypb.Empty{})
 	if err == nil {
 		return resp.GetStatus() != ""
+	}
+	if isBearerRefusal(err) {
+		return false
 	}
 	return reachableButUnauthorized(err) || reachableButSealed(err)
 }
@@ -895,6 +914,12 @@ func (t *Transport) buildDialOptions() ([]grpc.DialOption, error) {
 		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor("grpc", t.secretTLS())),
 		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor("grpc", t.secretTLS())),
 	)
+	// A configured bearer token rides every RPC as metadata "authorization",
+	// fetched from the token source per call, and only over TLS credentials.
+	opts = append(opts,
+		grpc.WithChainUnaryInterceptor(transport.BearerUnaryClientInterceptor("grpc", t.secretTLS(), t.config.TokenSource)),
+		grpc.WithChainStreamInterceptor(transport.BearerStreamClientInterceptor("grpc", t.secretTLS(), t.config.TokenSource)),
+	)
 
 	if t.activeDatabase != "" {
 		opts = append(opts,
@@ -989,6 +1014,9 @@ func (t *Transport) buildTLSConfig() (*tls.Config, error) {
 // transport error type. NotFound maps to KeyNotFoundError; other codes
 // map to RequestError.
 func mapGRPCError(method string, err error) error {
+	if isBearerRefusal(err) {
+		return &transport.RequestError{Method: method, Err: err}
+	}
 	st, ok := status.FromError(err)
 	if !ok {
 		return &transport.RequestError{Method: method, Err: err}

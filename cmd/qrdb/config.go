@@ -159,8 +159,14 @@ func scopeClientToDatabase(c *sdk.Client, database, transportType string) (*sdk.
 
 // buildClient constructs an SDK client using the resolved transport type
 // and address. TLS options are applied when the corresponding flags are
-// provided.
-func buildClient(ctx context.Context, transportType, address, caFile, certFile, keyFile string, timeout time.Duration) (*sdk.Client, error) {
+// provided. A non-empty tokenFile (the root flag --bearer-token-file) must
+// be readable, or buildClient refuses with *InvalidArgError before any
+// transport is built; the file is then re-read on every request and its
+// content sent as a bearer token. The transport's own refusals (QUIC: a
+// *transport.ConfigError on TokenSource; a plaintext server:
+// *transport.BearerRequiresTLSError) reach the caller unchanged inside
+// *TransportError / *ConnectError.
+func buildClient(ctx context.Context, transportType, address, caFile, certFile, keyFile, tokenFile string, timeout time.Duration) (*sdk.Client, error) {
 	if transportType == transportEmbedded {
 		return nil, &EmbeddedTransportUnavailableError{}
 	}
@@ -175,6 +181,13 @@ func buildClient(ctx context.Context, transportType, address, caFile, certFile, 
 
 	if caFile != "" || certFile != "" || keyFile != "" {
 		opts = append(opts, transport.WithTLS(certFile, keyFile, caFile))
+	}
+
+	if tokenFile != "" {
+		if err := checkTokenFileReadable(tokenFile); err != nil {
+			return nil, err
+		}
+		opts = append(opts, transport.WithTokenSource(tokenFileSource{path: tokenFile}))
 	}
 
 	t, err := newTransport(transportType, opts...)

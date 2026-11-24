@@ -45,7 +45,7 @@ func TestBuildClient_QUICConnectBoundedByTimeout(t *testing.T) {
 	addr := silentUDPAddr(t)
 
 	start := time.Now()
-	client, err := buildClient(context.Background(), transportQUIC, addr, "", "", "", timeout)
+	client, err := buildClient(context.Background(), transportQUIC, addr, "", "", "", "", timeout)
 	elapsed := time.Since(start)
 	if client != nil {
 		_ = client.Close()
@@ -71,7 +71,7 @@ func TestBuildClient_QUICConnectHonoursCallerDeadline(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	client, err := buildClient(ctx, transportQUIC, addr, "", "", "", time.Hour)
+	client, err := buildClient(ctx, transportQUIC, addr, "", "", "", "", time.Hour)
 	elapsed := time.Since(start)
 	if client != nil {
 		_ = client.Close()

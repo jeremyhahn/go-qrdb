@@ -75,6 +75,13 @@ type Config struct {
 	// Timeout is the default timeout for individual requests. When
 	// zero, a default of 30 seconds is used.
 	Timeout time.Duration
+
+	// TokenSource, when set, supplies the bearer token the REST, gRPC,
+	// Unix and MCP transports send as "Authorization: Bearer <token>" on
+	// every request, over TLS to the configured host only. It is consulted
+	// once per request or RPC. The QUIC transport refuses it (its request
+	// frame has no credential field); the embedded transport takes none.
+	TokenSource TokenSource
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -147,6 +154,22 @@ func WithTLSConfig(cfg *tls.Config) Option {
 func WithTimeout(d time.Duration) Option {
 	return func(c *Config) {
 		c.Timeout = d
+	}
+}
+
+// WithBearerToken sends "Authorization: Bearer <token>" on every request. It
+// is WithTokenSource(StaticTokenSource(token)).
+func WithBearerToken(token string) Option {
+	return WithTokenSource(StaticTokenSource(token))
+}
+
+// WithTokenSource sends "Authorization: Bearer <token>" on every request,
+// asking src for the token once per request or RPC, so a refreshing source
+// is honoured. The token is sent only over TLS, and on REST and MCP only to
+// the configured host.
+func WithTokenSource(src TokenSource) Option {
+	return func(c *Config) {
+		c.TokenSource = src
 	}
 }
 

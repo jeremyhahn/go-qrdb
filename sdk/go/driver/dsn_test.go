@@ -256,3 +256,21 @@ func TestParseDSN_Defaults(t *testing.T) {
 		t.Errorf("default Backend = %q, want %q", cfg.Backend, "memory")
 	}
 }
+
+// TestParseDSN_NeverSetsTokenSource proves a bearer never comes from DSN text:
+// a DSN is logged and passed around as a string, so a token= query parameter
+// is not read into DSNConfig.TokenSource.
+func TestParseDSN_NeverSetsTokenSource(t *testing.T) {
+	for _, dsn := range []string{
+		"rest://localhost:63001/mydb?token=x",
+		"grpc://localhost:63002/mydb?token=x",
+	} {
+		cfg, err := ParseDSN(dsn)
+		if err != nil {
+			t.Fatalf("ParseDSN(%q): %v", dsn, err)
+		}
+		if cfg.TokenSource != nil {
+			t.Errorf("ParseDSN(%q).TokenSource = %v, want nil", dsn, cfg.TokenSource)
+		}
+	}
+}
