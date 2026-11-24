@@ -490,9 +490,18 @@ ifeq ($(WITH_AZURE_ARCHIVE),1)
   BUILD_TAGS += azurearchive
 endif
 # GO_BUILD_TAGS is CI's one copy of the tag set (ci-template v1.21,
-# devcontainer.md §6); when it is set it replaces the composed set.
+# devcontainer.md §6); when it is set it replaces the composed set, except
+# for the tags of the print-optional-test-tags WITH_ flags re-added below.
 ifneq ($(strip $(GO_BUILD_TAGS)),)
   BUILD_TAGS := $(strip $(GO_BUILD_TAGS))
+endif
+# GO_BUILD_TAGS replaces the composed set, but a WITH_ flag that
+# print-optional-test-tags names is an explicit request for that tag and is
+# added on top (once), so the `make test-pkg PKG=<dir> WITH_<FLAG>=1` lines
+# scripts/touched-packages.sh prints compile the tag under CI's override too.
+# Nothing in CI sets these flags, so no CI tag set changes.
+ifeq ($(WITH_QRDB_FTS),1)
+  BUILD_TAGS := $(strip $(filter-out qrdb_fts,$(BUILD_TAGS)) qrdb_fts)
 endif
 DESKTOP_TAGS := desktop production webkit2_41 $(BUILD_TAGS)
 
@@ -1002,12 +1011,44 @@ cluster-proof-check: cluster-proof-bin
 # BOOT-01 in container mode: start the inventory's nodes from the release
 # image, take them through first boot and check the admin surface on every
 # transport (docs/cluster-verification/user.md). PROOF_INVENTORY names the
-# inventory; the test fails without one rather than skipping.
+# inventory; the test fails without one rather than skipping. PROOF_KEEP=1
+# leaves the cluster running after a pass, for a soak against it.
 export PROOF_INVENTORY
+export PROOF_KEEP
 
 .PHONY: cluster-proof-boot
 cluster-proof-boot:
 	cd test/clusterproof && $(GOTEST) -tags "$(MIN_TAGS),clusterproof,clusterproof_container" -run '^TestBOOT01$$' ./container/
+
+# The cluster proof on one machine, as the nightly clusterproof-soak job runs
+# it (#1619): boot the three containers `scripts/cluster-proof-ci.sh render`
+# wrote into CLUSTERPROOF_CI_DIR, soak them under PROOF_SEAL=none and check
+# the bundle. The default nemesis is every fault but clock-rate (the nodes
+# share the harness's kernel) and slow-disk (no known block device on a
+# hosted runner). `scripts/cluster-proof-ci.sh down` removes the cluster.
+CLUSTERPROOF_CI_DIR ?= $(CURDIR)/build/clusterproof-ci
+CLUSTERPROOF_CI_NODES := node-1=192.0.2.11:63004,node-2=192.0.2.12:63004,node-3=192.0.2.13:63004
+CLUSTERPROOF_CI_NEMESIS := disk-full,kill,partition-bridge,partition-isolate-leader,partition-majority-minority,pause
+CLUSTERPROOF_CI_PROOF = PROOF_NODES=$(CLUSTERPROOF_CI_NODES) \
+	PROOF_TARGETS=$(CLUSTERPROOF_CI_DIR)/targets.json \
+	PROOF_WORKLOAD=$(CLUSTERPROOF_CI_DIR)/workload.json \
+	PROOF_SEAL=none \
+	PROOF_BUNDLE=$(CLUSTERPROOF_CI_DIR)/bundle \
+	PROOF_DURATION=$(or $(PROOF_DURATION),30m) \
+	PROOF_NEMESIS=$(or $(PROOF_NEMESIS),$(CLUSTERPROOF_CI_NEMESIS))
+
+# The image the CI cluster's faults run in (`scripts/cluster-proof-ci.sh render
+# DIR IMAGE FAULT_IMAGE`): debian with the tools the default partition and
+# disk-full commands run, which the release image does not carry.
+.PHONY: cluster-proof-fault-image
+cluster-proof-fault-image:
+	docker build -f test/clusterproof/fault.Dockerfile -t clusterproof-fault:$(BUILD_VERSION) test/clusterproof
+
+.PHONY: cluster-proof-ci
+cluster-proof-ci:
+	scripts/cluster-proof-ci.sh up $(CLUSTERPROOF_CI_DIR)
+	$(MAKE) cluster-proof $(CLUSTERPROOF_CI_PROOF)
+	$(MAKE) cluster-proof-check $(CLUSTERPROOF_CI_PROOF)
 
 # Run one package's unit tests under the same build tags `make test` uses --
 # the uniform escape hatch for a package that has no named test-<pkg> target
@@ -1294,6 +1335,19 @@ FTS_TAGS := $(strip $(BUILD_TAGS)) qrdb_fts
 .PHONY: test-fts
 test-fts:
 	$(GOTEST) -tags "$(FTS_TAGS)" $(PKG_FTS)
+
+# print-optional-test-tags prints one line per supported default-off build tag:
+# `<tag> <WITH_flag>=1`, where the WITH_ flag adds the tag to BUILD_TAGS (so
+# `make test-pkg PKG=<dir> WITH_QRDB_FTS=1` compiles under the same tags as
+# test-fts). scripts/touched-packages.sh reads the importer graph under each
+# tag and prints `./<dir> <WITH_flag>=1` for packages with files behind it.
+# Every entry must be a rung in SUPPORTED_TAG_SETS (print-tag-sets); gpu and
+# qrdbd_webui are not rungs and stay out. Every entry's WITH_ flag must also
+# be re-added after the GO_BUILD_TAGS block (the "tag over GO_BUILD_TAGS"
+# case of scripts/touched-packages_test.sh checks it).
+.PHONY: print-optional-test-tags
+print-optional-test-tags:
+	@echo "qrdb_fts WITH_QRDB_FTS=1"
 
 .PHONY: test-sql
 test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql test-sql-query test-sql-catalog test-sql-privilege test-sql-pgcatalog
@@ -1760,6 +1814,13 @@ INT_FEATURES = $(sort $(subst _,-,$(patsubst INTTEST_%,%,$(foreach v,$(filter IN
 .PHONY: print-integration-features
 print-integration-features:
 	@printf '%s\n' $(INT_FEATURES)
+
+# one line per feature in INT_FEATURES: the feature, then the test/integration
+# files its integration-test-<feature> selects (int_files);
+# scripts/touched-features.sh reads the table through it, never a copy
+.PHONY: print-integration-feature-map
+print-integration-feature-map:
+	@$(foreach f,$(INT_FEATURES),printf '%s %s\n' '$(f)' '$(notdir $(call int_files,$(f)))';)
 
 # integration-test-feature is the one recipe behind every per-feature target:
 # `make integration-test-feature FEATURE=<docs folder name>`. The
@@ -2605,6 +2666,7 @@ LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-lean-standalone \
 	test-nightly-signal test-coverratchet test-coverage-merge-subprocess \
 	check-publication-bound test-publication-bound test-public-releasable \
+	test-touched-features test-touched-packages \
 	check-iface-sweep-findings test-iface-sweep-findings check-artifact-paths \
 	test-artifact-paths check-generated check-mod-tidy test-mod-tidy test-vet-modules \
 	test-release-alpha test-test-cross fmt vet test-secure-analyzer vet-sdk lint-sdk
@@ -2729,6 +2791,20 @@ check-publication-bound:
 .PHONY: test-publication-bound
 test-publication-bound:
 	@./scripts/check-publication-bound_test.sh
+
+# scripts/touched-features.sh and scripts/touched-packages.sh print what a diff
+# must re-run: the integration-test-<feature> targets (from the features.mk
+# table, via print-integration-feature-map) and the changed packages plus their
+# direct importers, read under BUILD_TAGS and under each print-optional-test-tags
+# tag; a package with files behind such a tag also prints a tagged line
+# `./<dir> WITH_<FLAG>=1` for `make test-pkg PKG=`. Their suites feed paths
+# through --files.
+.PHONY: test-touched-features test-touched-packages
+test-touched-features:
+	@./scripts/touched-features_test.sh
+
+test-touched-packages:
+	@GO="$(GO)" ./scripts/touched-packages_test.sh
 
 # The WHOLE tracked tree names no fleet value: no lab address, no lab host, no
 # path under the owner's home, and no tracked per-machine agent state (#565).
