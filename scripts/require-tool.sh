@@ -14,57 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# require-tool.sh — make a Go analysis tool available at an EXACT pinned
-# version, or fail the job. Called from .github/workflows/ci.yml.
-#
-#   require-tool.sh <binary> <pin> <module-path> [extra go-install args...]
-#
-# WHY THIS EXISTS
-#
-# (#179) CI used to `go install tool@version` at job time, wrapped in a
-# hand-rolled 3-attempt retry loop. The retry loop is the tell. Every host in
-# this fleet resolves an AAAA record for sum.golang.org and none has a default
-# IPv6 route, and runner job containers use host networking, so they inherit
-# that stack exactly. Go usually falls back v6 -> v4, which is why the failure
-# was intermittent rather than constant — it surfaces when the fallback does
-# not complete, and a loaded runner makes that likelier. Measured fleet-wide as
-# 47 network installs across 18 of 19 repos. The tools are now baked into the
-# self-hosted runner image at pinned versions, so on that host this script
-# performs no network access at all.
-#
-# (#195) An install step is ALSO a version substitution. `actions/setup-go`
-# prepends GOPATH/bin to PATH, so a freshly installed binary SHADOWS the baked
-# one in /usr/local/bin. This repository's ci.yml installed golangci-lint
-# unconditionally over an image that baked a different one — believing itself
-# pinned by the image while running something else entirely.
-#
-# (#195, gosec) Pinning alone was never sufficient for gosec: it takes its
-# version string from ldflags rather than from the module path, so
-# `go install ...@v2.29.0` still self-reports `dev`. A job log therefore could
-# not attribute a scan to a scanner version at all, and two runs of one commit
-# could disagree with nothing to distinguish them. The ASSERTION below is the
-# deliverable, not the pin: whatever the binary is and wherever it came from,
-# this refuses to continue unless it SAYS it is the pinned version.
-#
-# FAIL-CLOSED, in both directions:
-#   - A tool missing on a self-hosted runner is an IMAGE defect. It is not
-#     quietly papered over with a network install, because doing so would
-#     restore precisely the flake this removes while reporting success. A
-#     failed tool install leaves a red check carrying NO verdict on the code;
-#     failing closed on a missing binary is what makes the two distinguishable.
-#   - A tool whose self-report does not match the pin fails, rather than
-#     scanning with an unknown version and calling the result a gate.
-#   - A version that cannot be READ AT ALL fails. An unreadable self-report is
-#     not evidence of a matching version.
-#
-# The github.com fallback is deliberate and narrow: this workflow is dual-plane
-# (see the github.server_url guards on the SARIF steps in ci.yml), and on
-# GitHub-hosted runners no image of ours exists and there is nothing to bake
-# into. It is the only path here that touches the network, and it still has to
-# satisfy the same assertion afterwards.
-#
-# Adopted from go-luks2's implementation of the same contract; its regression
-# suite came with it as scripts/require-tool_test.sh.
+# require-tool.sh: make a Go analysis tool available at its exact pinned version, or fail.
 
 set -eu
 

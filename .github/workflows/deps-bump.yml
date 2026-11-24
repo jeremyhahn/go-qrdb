@@ -1,53 +1,4 @@
-# deps-bump-template: v1.0.0 — the dependency bump PR (ruling 640).
-# v1.0.0 (2026-11-14, ruling 640, owner decision 222 (a)): ci-template v1.39's
-# deps-check fails a library behind its latest release only when a change
-# adds or bumps it, so a lag nobody touches no longer reddens a PR. This
-# workflow carries those lags instead. On workflow_dispatch (go-qrdb allows
-# no scheduler but ci.yml's nightly, rulings 135, 216(1) and 633: ci.yml's
-# deps-bump-dispatch job dispatches it from the nightly schedule run on
-# main, and a person may dispatch it by hand), it runs the shared depscheck's `make deps-bump` in the
-# toolchain image,
-# verifies with `make deps-check DEPS_CHECK_BASE=HEAD` (every vulnerability
-# check, and the lag rule on the requirements the bump moved: HEAD is the
-# pre-bump commit, so a requirement the bump skipped, because upgrading it
-# would raise a documented hold, stays behind without failing the run and
-# discarding the independent upgrades) and `make build-server
-# build-cli-headless` (the native targets CI's build job runs in the image;
-# the plain build target needs docker compose through build-client),
-# and lands the go.mod and go.sum changes as ONE commit on the fixed branch
-# ci/deps-bump, with ONE pull request into main labelled `code-review` and
-# `task:ready`, so the normal review and auto-merge land it.
-#
-#   - The commit is made by the GraphQL createCommitOnBranch mutation with
-#     GITHUB_TOKEN, on the expected head (expectedHeadOid), so GitHub signs
-#     it as a verified `web-flow` commit for the Signatures check; the job
-#     checks verification.verified before it opens the PR. (A commit POSTed
-#     to the git data API is unsigned and the Signatures check rejects it.)
-#   - With an open PR on the branch, the job first calls
-#     PUT pulls/N/update-branch and builds on the PR's new tip; only a 422
-#     "already up to date" counts as current, any other failure or a head
-#     that never moves fails the job, and the tip must contain main
-#     (git merge-base --is-ancestor) before anything is built. It never
-#     force-updates a ref: a ref update is a fast-forward, and a branch left
-#     behind by an unmerged closed PR fails the job, for a person to close.
-#     A branch whose tip is the head of the last merged PR, or already in
-#     main, is deleted and re-created from main, which loses nothing; any
-#     other tip is kept and fails the job.
-#   - A govulncheck finding on the standard library, the toolchain or an
-#     indirect-only module is reported, not failed, by deps-check, so it does
-#     not stop the verify: the portfolio-wide toolchain pass carries stdlib.
-#   - A PR or push made with GITHUB_TOKEN starts no pull_request run, so the
-#     job dispatches ci.yml on ci/deps-bump; ci-template v1.39 runs that
-#     dispatch as the PR tier and its CI Gate check attaches to the head.
-#   - OPEN OWNER QUESTION: code-review.yml runs on pull_request_target, which
-#     a GITHUB_TOKEN PR or label change does not start either, so the review
-#     does not begin on its own. code-review.yml is unchanged here; until the
-#     owner rules, a person or agent with its own token re-applies the
-#     `code-review` label to start it.
-#
-# GitHub only (the REST and GraphQL calls are GitHub's). Copy to
-# .github/workflows/deps-bump.yml. The Makefile needs `deps-bump`, `deps-check`
-# and `build` (handbook templates/deps/depscheck/README.md).
+# deps-bump-template: v1.0.0. Opens or updates the dependency bump PR.
 
 name: Deps Bump
 
@@ -59,8 +10,7 @@ permissions:
   pull-requests: write
   actions: write
 
-# One bump at a time per repository; a newer run waits, never cancels one
-# halfway through its ref update.
+# One bump at a time per repository; a newer run waits.
 concurrency:
   group: deps-bump-${{ github.repository }}
   cancel-in-progress: false
@@ -82,23 +32,18 @@ jobs:
       CI_CACHE_CLASS: pr
       CI_IMAGE_NAMESPACE: ${{ vars.CI_IMAGE_NAMESPACE }}
     steps:
-      # The commit to build on: the open PR's tip after update-branch, or
-      # main's tip when there is no open PR.
+      # The commit to build on: the open PR's tip after update-branch, or main's tip when there is no open PR.
       - name: Find the base commit
         id: base
         run: |
           set -euo pipefail
           owner=${REPO%%/*}
           pr=$(gh api "repos/$REPO/pulls?state=open&head=$owner:$BRANCH&base=main" --jq '.[0].number // empty')
-          # main as the branch is brought up to it: the next step proves
-          # the commit it builds on contains it.
+          # The next step proves the commit it builds on contains main.
           main=$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)
           if [ -n "$pr" ]; then
             head=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
-            # 202 starts the merge of main into the branch: wait for the
-            # head to move. A 422 saying the branch is already up to date
-            # leaves it as it is. Anything else, or a head that never
-            # moves, stops the job rather than bump a stale branch.
+            # 202 starts the merge of main into the branch: wait for the head to move.
             if out=$(gh api -X PUT "repos/$REPO/pulls/$pr/update-branch" -f expected_head_sha="$head" 2>&1); then
               moved=
               for _ in $(seq 1 24); do
@@ -127,11 +72,7 @@ jobs:
           else
             sha=$main
             if tip=$(gh api "repos/$REPO/git/ref/heads/$BRANCH" --jq .object.sha 2>/dev/null); then
-              # Delete the branch only when its CURRENT tip is proven merged:
-              # the most recently merged bump PR's head is the tip, or the
-              # tip is already in main (compare status behind or identical).
-              # A merged_at on some older PR proves nothing about commits
-              # pushed to the branch after that PR landed.
+              # Delete the branch only when its current tip is proven merged.
               merged_head=$(gh api "repos/$REPO/pulls?state=closed&head=$owner:$BRANCH&base=main&sort=updated&direction=desc&per_page=100" --jq '[.[] | select(.merged_at != null)][0].head.sha // empty')
               status=$(gh api "repos/$REPO/compare/main...$tip" --jq .status 2>/dev/null || true)
               if [ "$merged_head" != "$tip" ] && [ "$status" != behind ] && [ "$status" != identical ]; then
@@ -155,8 +96,7 @@ jobs:
           ref: ${{ steps.base.outputs.sha }}
           fetch-depth: 0
 
-      # The bump must build on main: an update-branch that silently left
-      # the branch behind would land stale requirements over newer ones.
+      # The bump must build on main.
       - name: Verify the base contains main
         env:
           MAIN_SHA: ${{ steps.base.outputs.main }}
@@ -187,15 +127,7 @@ jobs:
           rm -f "$RUNNER_TEMP/gomodauth.env"
           echo "TOOLCHAIN_IMAGE=$(make -s toolchain-image)" >> "$GITHUB_ENV"
 
-      # in-toolchain-image.sh runs on a copy of the checkout, so the bump,
-      # the full deps-check and the build run in one container, their output
-      # on stderr, and the go.mod and go.sum diff comes back on stdout. The
-      # container's sh has no pipefail, so the diff goes to a file and its
-      # own status fails the step: a failed diff piped to base64 would come
-      # back empty and pass as "nothing moved". deps-check runs against
-      # HEAD, the commit before the bump: the bump edits only the work tree,
-      # so a requirement it skipped for a hold is untouched and does not
-      # fail the run, while every vulnerability check still does.
+      # The bump, deps-check and build run in one toolchain container; the go.mod and go.sum diff comes back on stdout.
       - name: make deps-bump, then make deps-check and make build-server build-cli-headless
         env:
           IN_IMAGE_NETWORK: bridge
@@ -215,21 +147,14 @@ jobs:
           git diff --cached --stat
           echo "CHANGED=$(git diff --cached --name-only | tr '\n' ' ')" >> "$GITHUB_ENV"
 
-      # One commit made by GraphQL createCommitOnBranch: GitHub signs it as a
-      # verified web-flow commit (CI's Signatures job rejects the unsigned
-      # commit POST /git/commits makes). expectedHeadOid is the commit the
-      # bump was built on, so a branch that moved meanwhile refuses the
-      # commit. A missing branch is first created at that commit, and
-      # deleted again if the mutation or the verification check fails (an
-      # EXIT trap covers every command), so no PR-less branch is left.
+      # One commit through GraphQL createCommitOnBranch, which GitHub signs; expectedHeadOid refuses a branch that moved.
       - name: Commit to ci/deps-bump
         if: ${{ env.CHANGED != '' }}
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
         run: |
           set -euo pipefail
-          # One JSON object per line, read back with --slurpfile: a go.sum in
-          # base64 can pass the 128 KiB limit on a single argv string.
+          # One JSON object per line, read back with --slurpfile, to stay under the argument size limit.
           add="$RUNNER_TEMP/bump-add.jsonl"
           del="$RUNNER_TEMP/bump-del.jsonl"
           : > "$add"
@@ -242,14 +167,12 @@ jobs:
             fi
           done
           created=
-          # Any failure from here on (set -e included) deletes a branch this
-          # run created, so no PR-less ci/deps-bump strands the next daily run.
+          # Any later failure deletes a branch this run created.
           trap 'rc=$?; if [ "$rc" -ne 0 ] && [ -n "$created" ]; then gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null || true; fi' EXIT
           if ! gh api "repos/$REPO/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
             gh api "repos/$REPO/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$BASE_SHA" >/dev/null
             created=1
-            # The PR step deletes a branch only this run created, should its
-            # PR create fail.
+            # The PR step deletes a branch only this run created, should its PR create fail.
             echo "BUMP_BRANCH_CREATED=1" >> "$GITHUB_ENV"
           fi
           stat=$(git diff --cached --stat)
@@ -262,8 +185,7 @@ jobs:
             echo "::error::createCommitOnBranch on $BRANCH (expected head $BASE_SHA) made no commit"
             exit 1
           fi
-          # Verification can lag the commit: look it up to 3 times, and treat
-          # a failed lookup like an unverified commit (the EXIT trap cleans up).
+          # Verification can lag the commit: look it up up to 3 times.
           verified=
           for attempt in 1 2 3; do
             if verified=$(gh api "repos/$REPO/commits/$commit" --jq .commit.verification.verified) && [ "$verified" = true ]; then
@@ -292,11 +214,7 @@ jobs:
             if PR=$(jq -n --arg t "$PR_TITLE" --arg h "$BRANCH" --arg b "$body" '{title: $t, head: $h, base: "main", body: $b}' | gh api "repos/$REPO/pulls" --input - --jq .number); then
               echo "opened #$PR"
             else
-              # A failed PR create would leave a branch with no open PR, which
-              # the base step refuses on every later run. Take a PR that does
-              # exist for the branch; else delete the branch only if this run
-              # created it, so the next daily run starts from main. Never
-              # delete a branch this run did not create, never force a ref.
+              # A failed PR create would leave a branch with no open PR.
               owner=${REPO%%/*}
               PR=$(gh api "repos/$REPO/pulls?state=open&head=$owner:$BRANCH&base=main" --jq '.[0].number // empty' || true)
               if [ -z "$PR" ]; then

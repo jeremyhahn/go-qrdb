@@ -14,47 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# check-version-reconciled.sh — release-versioning.md §2: VERSION, the newest
-# CHANGELOG release heading and the git tag are three statements of one fact,
-# and nothing reconciled them.
-#
-# The drift this prevents is not hypothetical; it happened twice in a row
-# (go-qrdb#25). VERSION read 0.5.7-alpha through BOTH the v0.5.8-alpha and
-# v0.5.9-alpha tags, and neither tag got a CHANGELOG section, so their content
-# was still sitting under [Unreleased] when v0.6.0-alpha was cut. v0.5.9-alpha
-# in particular shipped the breaking removal of statemachine.CachedDiskBackend
-# as a PATCH, which is what sent consumers back to v0.5.8-alpha (go-qrdb#6).
-#
-# Two invariants, checked wherever each is meaningful:
-#
-#   1. VERSION equals the newest RELEASED CHANGELOG heading. Checkable on every
-#      push to main, and the one that catches a release whose notes were never
-#      written: content left under [Unreleased] after a bump means the newest
-#      heading is the PREVIOUS release, and this fails.
-#
-#   2. At a version tag, the tag names that same version. Only meaningful on a
-#      tag push, so it runs when a tag is supplied and is skipped otherwise —
-#      skipped LOUDLY, with a line saying so, because a check that quietly does
-#      nothing is indistinguishable from one that passed.
-#
-# It reports every failure rather than the first: a release cut with all three
-# out of step should be fixed in one pass, not discovered one message at a time.
-#
-# This runs beside check-tag-lockstep.sh in the Release Lockstep workflow rather
-# than in a release.yml, because this repository deliberately has no release
-# workflow — a tag push here is safe precisely because nothing publishes on it,
-# and lifting go-quicraft's release.yml over to gain the check would import the
-# GitHub-publishing pipeline with it (go-qrdb#25 says so explicitly).
-#
-# Usage: check-version-reconciled.sh [repo-dir] [tag]
-#
-#   repo-dir  defaults to the current directory
-#   tag       the version tag being published, e.g. v0.10.0-alpha,
-#             sdk/go/v0.10.0-alpha or sdk/go/gorm/conformance/v0.10.0-alpha.
-#             Any lockstep namespace is accepted: the version is the last path
-#             component. When absent invariant 2 is skipped.
-#
-# Exit status: 0 when everything reconciles, 1 otherwise.
+# check-version-reconciled.sh: VERSION, the newest CHANGELOG release heading and the git tag must agree.
 
 set -eu
 
