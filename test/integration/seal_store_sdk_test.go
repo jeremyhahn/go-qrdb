@@ -48,6 +48,38 @@ import (
 
 // sealNodeAdminClient returns an SDK client for proto on node, authenticated
 // with the admin credential `qrdb init` issued.
+// embeddedOnlySealPassphrase initialises every node these tests start.
+const embeddedOnlySealPassphrase = "correct-horse-battery-staple-1647"
+
+// startEmbeddedOnlySealNode starts a passphrase-barrier qrdbd serving every
+// transport, initialises it over proto and waits for the full server. It
+// returns the node and the CLI binary.
+func startEmbeddedOnlySealNode(t *testing.T, proto multiProtocol) (*sealNodeAllTransports, string) {
+	t.Helper()
+	binary := buildBinary(t)
+	cli := buildCLIBinary(t)
+
+	configPath := writeSealConfig(t, "passphrase", 0, 0)
+	dataDir := t.TempDir()
+	sockDir, err := os.MkdirTemp("", "qrdb-ss-")
+	if err != nil {
+		t.Fatalf("startEmbeddedOnlySealNode: socket dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	unixSocket := filepath.Join(sockDir, "qrdbd.sock")
+
+	raftPorts := allocatePorts(t, 1)
+	quicPorts := allocatePorts(t, 1)
+	tcpPorts := allocateTCPPorts(t, 3)
+
+	node := startSealNodeAllTransports(t, binary, dataDir, configPath,
+		raftPorts[0], tcpPorts[0], tcpPorts[1], quicPorts[0], tcpPorts[2], unixSocket)
+	waitForBarrierReachable(t, cli, node.noAuthFlagsFor(proto), 60*time.Second)
+	node.initSystem(t, cli, proto, "--barrier-strategy", "passphrase", "--passphrase", embeddedOnlySealPassphrase)
+	node.waitForFullBoot(t)
+	return node, cli
+}
+
 func sealNodeAdminClient(t *testing.T, node *sealNodeAllTransports, proto multiProtocol) *sdk.Client {
 	t.Helper()
 	opts := []transport.Option{transport.WithMTLS(node.adminCert, node.adminKey, node.caFile)}
