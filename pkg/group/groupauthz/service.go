@@ -97,30 +97,38 @@ func (s *Service) GetByName(ctx context.Context, tenantID, name string) (*group.
 
 // Update changes a group. Roles the update adds pass the escalation guard.
 func (s *Service) Update(ctx context.Context, req *group.UpdateGroupRequest) (*group.Group, error) {
-	g, err := s.read(ctx, req.ID, permission.GroupsUpdate)
-	if err != nil {
+	if _, err := s.read(ctx, req.ID, permission.GroupsUpdate); err != nil {
 		return nil, err
 	}
-	if req.RoleIDs != nil {
+	// The role guards are judged against the record the store commits over
+	// (compare-and-swap), not against this read: a concurrent role change
+	// between the two fails the update with *group.GroupConflictError
+	// instead of being overwritten unchecked.
+	next := *req
+	callerGuard := req.Guard
+	next.Guard = func(prior, upd *group.Group) error {
+		if callerGuard != nil {
+			if err := callerGuard(prior, upd); err != nil {
+				return err
+			}
+		}
 		var added, removed []string
-		for _, rid := range req.RoleIDs {
-			if !slices.Contains(g.RoleIDs, rid) {
+		for _, rid := range upd.RoleIDs {
+			if !slices.Contains(prior.RoleIDs, rid) {
 				added = append(added, rid)
 			}
 		}
-		for _, rid := range g.RoleIDs {
-			if !slices.Contains(req.RoleIDs, rid) {
+		for _, rid := range prior.RoleIDs {
+			if !slices.Contains(upd.RoleIDs, rid) {
 				removed = append(removed, rid)
 			}
 		}
-		if err := s.Auth.AuthorizeGroupRoleRemoval(ctx, g, removed); err != nil {
-			return nil, err
+		if err := s.Auth.AuthorizeGroupRoleRemoval(ctx, prior, removed); err != nil {
+			return err
 		}
-		if err := s.Auth.AuthorizeGroupRoles(ctx, s.Roles, g.TenantID, g.ID, added); err != nil {
-			return nil, err
-		}
+		return s.Auth.AuthorizeGroupRoles(ctx, s.Roles, prior.TenantID, prior.ID, added)
 	}
-	return s.Groups.UpdateGroup(ctx, req)
+	return s.Groups.UpdateGroup(ctx, &next)
 }
 
 // Delete removes a group from every member, then the group.

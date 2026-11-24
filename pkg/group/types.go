@@ -75,6 +75,14 @@ type UpdateGroupRequest struct {
 	// RoleIDs replaces the current role set when non-nil. An empty, non-nil
 	// slice clears it.
 	RoleIDs []string
+
+	// Guard, when set, is judged against the record this write commits
+	// over (prior) and the record it would write (next); an error aborts
+	// the update with nothing written. The store commits by
+	// CompareAndSwap on prior, so a record changed after the guard ran
+	// fails with *GroupConflictError instead of being overwritten. Guard
+	// must not modify either record.
+	Guard func(prior, next *Group) error
 }
 
 // ListGroupsRequest holds the parameters for listing groups.

@@ -973,6 +973,7 @@ var identityRules = []rule{
 	as(&group.GroupNameTakenError{}, AlreadyExists),
 	as(&group.RoleNotInTenantError{}, InvalidArgument),
 	as(&group.ValidationError{}, InvalidArgument),
+	as(&group.GroupConflictError{}, Aborted),
 	as(&user.GroupMembershipUnsupportedError{}, Unimplemented),
 	as(&role.InvalidPermissionError{}, InvalidArgument),
 	as(&cert.CertNotFoundError{}, NotFound),

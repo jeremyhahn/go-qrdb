@@ -202,3 +202,72 @@ func TestGroupService_RoleRemovalSOGate(t *testing.T) {
 		t.Fatalf("admin deletes a group with no so: %v", err)
 	}
 }
+
+// racingGroups commits race once, right before the first UpdateGroup it
+// forwards: a writer that lands between Service.Update's permission read
+// and the store's commit.
+type racingGroups struct {
+	group.GroupServicer
+	race func()
+}
+
+func (r *racingGroups) UpdateGroup(ctx context.Context, req *group.UpdateGroupRequest) (*group.Group, error) {
+	if r.race != nil {
+		race := r.race
+		r.race = nil
+		race()
+	}
+	return r.GroupServicer.UpdateGroup(ctx, req)
+}
+
+// TestGroupService_UpdateJudgedAgainstCommittedRecord pins that the role
+// guards judge the record the update commits over: an Admin's update that
+// clears the role set, racing an SO adding the SO role, is refused (the
+// removal now includes SO) and never strips SO unchecked.
+func TestGroupService_UpdateJudgedAgainstCommittedRecord(t *testing.T) {
+	roles := authtest.BuiltInRoles(t, "acme")
+	gen, err := dao.NewSnowflakeGenerator(1)
+	if err != nil {
+		t.Fatalf("id gen: %v", err)
+	}
+	users, err := user.NewStore(kvstore.NewMemoryKVStore(), gen)
+	if err != nil {
+		t.Fatalf("user store: %v", err)
+	}
+	members, err := user.NewGroupMembership(users)
+	if err != nil {
+		t.Fatalf("membership: %v", err)
+	}
+	groups, err := group.NewStore(kvstore.NewMemoryKVStore(), group.WithRoleLookup(roles), group.WithMemberRevoker(members))
+	if err != nil {
+		t.Fatalf("group store: %v", err)
+	}
+	mw := middleware.New(rbac.New(roles), middleware.WithRoleResolver(roles), middleware.WithStrictSeparation(true))
+	racing := &racingGroups{GroupServicer: groups}
+	svc := New(racing, users, roles, mw)
+	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
+	caller := func(roleIDs ...string) context.Context {
+		ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "acme-caller", TenantID: "acme", Roles: roleIDs})
+		return tenant.WithTenantID(ctx, "acme")
+	}
+	keeper := authtest.CustomRole(t, roles, "acme", "group-keeper", permission.GroupsRead, permission.GroupsUpdate)
+	asAdmin, asSO := caller(admin, keeper), caller(admin, so)
+	g, err := groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "signers"})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	racing.race = func() {
+		if _, err := groups.UpdateGroup(asSO, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{so}}); err != nil {
+			t.Fatalf("racing SO add: %v", err)
+		}
+	}
+	var refused *middleware.SORoleRequiredError
+	var conflict *group.GroupConflictError
+	_, err = svc.Update(asAdmin, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{}})
+	if !errors.As(err, &refused) && !errors.As(err, &conflict) {
+		t.Fatalf("admin clear racing an SO add: %v, want *SORoleRequiredError or *GroupConflictError", err)
+	}
+	if got, err := groups.GetGroup(asSO, g.ID); err != nil || !slices.Equal(got.RoleIDs, []string{so}) {
+		t.Fatalf("group after the race = %+v, %v; want SO kept", got, err)
+	}
+}

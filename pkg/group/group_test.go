@@ -16,6 +16,7 @@ package group
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -142,6 +143,99 @@ func TestGroupStore_DuplicateNameRefused(t *testing.T) {
 		t.Fatalf("empty name: %v", err)
 	}
 }
+
+// racingKV rewrites the record under key once, right before the first
+// CompareAndSwap on it, standing in for a writer that commits between an
+// update's read and its commit.
+type racingKV struct {
+	*kvstore.MemoryKVStore
+	raced bool
+}
+
+func (r *racingKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if !r.raced {
+		r.raced = true
+		data, err := r.Get(ctx, key)
+		if err != nil {
+			return false, err
+		}
+		var g Group
+		if err := json.Unmarshal(data, &g); err != nil {
+			return false, err
+		}
+		g.Description = "raced"
+		data, _ = json.Marshal(&g)
+		if err := r.Put(ctx, key, data); err != nil {
+			return false, err
+		}
+	}
+	return r.MemoryKVStore.CompareAndSwap(ctx, key, expected, next)
+}
+
+// TestGroupStore_UpdateBoundToCommittedVersion pins that an update's Guard
+// sees the record the write commits over, that a Guard error writes
+// nothing, and that a record changed between read and commit fails with
+// *GroupConflictError instead of being overwritten.
+func TestGroupStore_UpdateBoundToCommittedVersion(t *testing.T) {
+	ctx := context.Background()
+	t.Run("guard error writes nothing", func(t *testing.T) {
+		f := newFixture(t)
+		g, err := f.groups.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng"})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		refused := errors.New("refused")
+		var seen [2][]string
+		_, err = f.groups.UpdateGroup(ctx, &UpdateGroupRequest{
+			ID: g.ID, Name: "ops", RoleIDs: []string{f.acmeRole},
+			Guard: func(prior, next *Group) error {
+				seen = [2][]string{prior.RoleIDs, next.RoleIDs}
+				return refused
+			},
+		})
+		if !errors.Is(err, refused) {
+			t.Fatalf("err = %v, want the guard's error", err)
+		}
+		if len(seen[0]) != 0 || len(seen[1]) != 1 || seen[1][0] != f.acmeRole {
+			t.Fatalf("guard saw prior=%v next=%v", seen[0], seen[1])
+		}
+		got, err := f.groups.GetGroup(ctx, g.ID)
+		if err != nil || got.Name != "eng" || len(got.RoleIDs) != 0 {
+			t.Fatalf("after refused update: %+v, %v", got, err)
+		}
+		if _, err := f.groups.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "ops"}); err != nil {
+			t.Fatalf("refused rename kept the name claimed: %v", err)
+		}
+	})
+	t.Run("lost race conflicts", func(t *testing.T) {
+		kv := &racingKV{MemoryKVStore: kvstore.NewMemoryKVStore()}
+		s, err := NewStore(kv)
+		if err != nil {
+			t.Fatalf("group store: %v", err)
+		}
+		g, err := s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng"})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		var conflict *GroupConflictError
+		if _, err := s.UpdateGroup(ctx, &UpdateGroupRequest{ID: g.ID, Name: "ops"}); !errors.As(err, &conflict) {
+			t.Fatalf("err = %v, want *GroupConflictError", err)
+		}
+		got, err := s.GetGroup(ctx, g.ID)
+		if err != nil || got.Name != "eng" || got.Description != "raced" {
+			t.Fatalf("racing write overwritten: %+v, %v", got, err)
+		}
+		if _, err := s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "ops"}); err != nil {
+			t.Fatalf("conflicted rename kept the name claimed: %v", err)
+		}
+		// A retry over the committed version succeeds.
+		if _, err := s.UpdateGroup(ctx, &UpdateGroupRequest{ID: g.ID, Description: ptr("again")}); err != nil {
+			t.Fatalf("retry: %v", err)
+		}
+	})
+}
+
+func ptr[T any](v T) *T { return &v }
 
 func TestGroupStore_CrossTenantRoleRefused(t *testing.T) {
 	f := newFixture(t)

@@ -39,6 +39,18 @@ func (e *GroupNotFoundError) Error() string {
 	return fmt.Sprintf("group %q not found", e.ID)
 }
 
+// GroupConflictError reports that a group record changed between the read
+// an update was judged against and its commit; the update wrote nothing and
+// may be retried.
+type GroupConflictError struct {
+	ID string
+}
+
+// Error returns a human-readable description of the error.
+func (e *GroupConflictError) Error() string {
+	return fmt.Sprintf("group: %s changed concurrently; retry", e.ID)
+}
+
 // GroupNameTakenError is returned when a group name is already in use within
 // the tenant.
 type GroupNameTakenError struct {

@@ -223,24 +223,31 @@ func (s *kvGroupStore) CreateGroup(ctx context.Context, req *CreateGroupRequest)
 // GetGroup returns the group with the given ID. A non-system caller reads
 // only groups of its own tenant, as pkg/role's GetRole.
 func (s *kvGroupStore) GetGroup(ctx context.Context, id string) (*Group, error) {
+	g, _, err := s.readGroup(ctx, id)
+	return g, err
+}
+
+// readGroup is GetGroup that also returns the record's stored bytes, the
+// expected value of a CompareAndSwap that commits over exactly this version.
+func (s *kvGroupStore) readGroup(ctx context.Context, id string) (*Group, []byte, error) {
 	if id == "" {
-		return nil, &ValidationError{Field: "id", Reason: "must not be empty"}
+		return nil, nil, &ValidationError{Field: "id", Reason: "must not be empty"}
 	}
 	data, err := s.store.Get(ctx, primaryKey(id))
 	if err != nil {
-		return nil, &StoreError{Op: "get", Detail: "primary lookup", Err: err}
+		return nil, nil, &StoreError{Op: "get", Detail: "primary lookup", Err: err}
 	}
 	if data == nil {
-		return nil, &GroupNotFoundError{ID: id}
+		return nil, nil, &GroupNotFoundError{ID: id}
 	}
 	var g Group
 	if err := json.Unmarshal(data, &g); err != nil {
-		return nil, &StoreError{Op: "get", Detail: "unmarshal", Err: err}
+		return nil, nil, &StoreError{Op: "get", Detail: "unmarshal", Err: err}
 	}
 	if ctxTenant := tenant.FromContext(ctx); !tenantid.IsSystem(ctxTenant) && g.TenantID != ctxTenant {
-		return nil, &GroupNotFoundError{ID: id}
+		return nil, nil, &GroupNotFoundError{ID: id}
 	}
-	return &g, nil
+	return &g, data, nil
 }
 
 // GetGroupByName returns the group of tenantID with the given name.
@@ -271,10 +278,16 @@ func (s *kvGroupStore) UpdateGroup(ctx context.Context, req *UpdateGroupRequest)
 	if req == nil {
 		return nil, &ValidationError{Field: "request", Reason: "must not be nil"}
 	}
-	g, err := s.GetGroup(ctx, req.ID)
+	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return nil, ErrStoreNotAtomic
+	}
+	prior, base, err := s.readGroup(ctx, req.ID)
 	if err != nil {
 		return nil, err
 	}
+	g := *prior
+	g.RoleIDs = slices.Clone(prior.RoleIDs)
 	if req.RoleIDs != nil {
 		roleIDs, err := s.checkRoles(ctx, g.TenantID, req.RoleIDs)
 		if err != nil {
@@ -285,43 +298,56 @@ func (s *kvGroupStore) UpdateGroup(ctx context.Context, req *UpdateGroupRequest)
 	if req.Description != nil {
 		g.Description = *req.Description
 	}
-	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
-	if !ok {
-		return nil, ErrStoreNotAtomic
-	}
-	idBytes := []byte(g.ID)
-	oldName := g.Name
-	renamed := req.Name != "" && req.Name != oldName
+	renamed := req.Name != "" && req.Name != prior.Name
 	if renamed {
 		if err := validateName(req.Name); err != nil {
 			return nil, err
 		}
-		stored, err := atomicStore.PutIfAbsent(ctx, nameIndexKey(g.TenantID, req.Name), idBytes)
+		g.Name = req.Name
+	}
+	if req.Guard != nil {
+		// The guard judges the write against the very record it commits
+		// over: the CompareAndSwap below refuses the write if that record
+		// changed after this read.
+		if err := req.Guard(prior, &g); err != nil {
+			return nil, err
+		}
+	}
+	idBytes := []byte(g.ID)
+	if renamed {
+		stored, err := atomicStore.PutIfAbsent(ctx, nameIndexKey(g.TenantID, g.Name), idBytes)
 		if err != nil {
 			return nil, &StoreError{Op: "update", Detail: "claim name index", Err: err}
 		}
 		if !stored {
-			return nil, &GroupNameTakenError{Name: req.Name, TenantID: g.TenantID}
+			return nil, &GroupNameTakenError{Name: g.Name, TenantID: g.TenantID}
 		}
-		g.Name = req.Name
 	}
-	g.UpdatedAt = time.Now().UTC()
-	data, err := json.Marshal(g)
-	if err == nil {
-		err = s.store.Put(ctx, primaryKey(g.ID), data)
-	}
-	if err != nil {
+	releaseNew := func() {
 		if renamed {
 			_, _ = atomicStore.CompareAndDelete(context.WithoutCancel(ctx), nameIndexKey(g.TenantID, g.Name), idBytes)
 		}
+	}
+	g.UpdatedAt = time.Now().UTC()
+	data, err := json.Marshal(&g)
+	swapped := false
+	if err == nil {
+		swapped, err = atomicStore.CompareAndSwap(ctx, primaryKey(g.ID), base, data)
+	}
+	if err != nil {
+		releaseNew()
 		return nil, &StoreError{Op: "update", Detail: "put primary", Err: err}
 	}
+	if !swapped {
+		releaseNew()
+		return nil, &GroupConflictError{ID: g.ID}
+	}
 	if renamed {
-		if _, err := atomicStore.CompareAndDelete(ctx, nameIndexKey(g.TenantID, oldName), idBytes); err != nil {
+		if _, err := atomicStore.CompareAndDelete(ctx, nameIndexKey(g.TenantID, prior.Name), idBytes); err != nil {
 			return nil, &StoreError{Op: "update", Detail: "release old name", Err: err}
 		}
 	}
-	return g, nil
+	return &g, nil
 }
 
 // DeleteGroup strips the group from every member, then removes its indexes
