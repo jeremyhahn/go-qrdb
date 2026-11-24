@@ -89,7 +89,7 @@ test("a bulk delete held on A sends nothing to B after a profile switch", async 
   // A serves two keys and holds its first DELETE until the gate opens.
   const held = gate();
   await page.route(
-    (url) => url.origin === pageOrigin && url.pathname.startsWith("/v1/kv"),
+    (url) => url.origin === pageOrigin && (url.pathname === "/kv" || url.pathname.startsWith("/kv/")),
     async (route) => {
       const request = route.request();
       const path = new URL(request.url()).pathname;
@@ -99,8 +99,12 @@ test("a bulk delete held on A sends nothing to B after a profile switch", async 
         await route.fulfill({ status: 204, headers: CORS });
         return;
       }
-      if (path === "/v1/kv/scan") {
+      if (path === "/kv/scan") {
         await json(route, { pairs: { "bulk/a": "MQ==", "bulk/b": "Mg==" } });
+        return;
+      }
+      if (path === "/kv/revision") {
+        await json(route, { revision: 7 });
         return;
       }
       await route.fallback();
