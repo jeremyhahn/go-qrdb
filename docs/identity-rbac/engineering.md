@@ -553,17 +553,21 @@ embedder's store calls `auth.WithResourceOwner(ctx, ownerID)`
 it as `resource.owner`. No caller-written request field feeds it, and no wire
 field carries it: go-qrdb has no owner-bearing object on its transports, so
 the over-the-wire surface is the stored policy that names the condition. The
-condition fails closed: it is true only for a non-empty string owner equal to
-a non-empty subject id (`Identity.Subject`, the account's immutable user id),
-and false for an absent, empty or non-string owner or an empty subject id. A
+condition fails closed and needs a bound account: it is true only when the
+subject carries a user id (`Subject.UserID != 0`) and the owner is a
+non-empty string equal to `auth.UserSubject(UserID)`, the account's immutable
+user id. It is false for an absent, empty or non-string owner and for a
+subject with no bound account: a holder-certificate or service identity never
+owns an object, even when its subject string equals an account id. A
 hand-written `resource.owner == subject.id` is not equivalent, because the
 `==` comparison renders both sides with `%v` and so matches nil with nil and
 empty with empty. A deny written as `unless: subject.owns_resource` therefore
 denies when the owner is unknown. The Go rule `auth.OwnObject(ctx, owner,
 op)` is the object twin of `tenant.OwnTenant`: it refuses with
 `*auth.ObjectOwnerDeniedError`, which unwraps to `auth.ErrUnauthorized`
-(PermissionDenied, 403), for no identity, an empty subject, an empty owner or
-a different owner. It lives in `pkg/auth` because it needs the identity,
+(PermissionDenied, 403), for no identity, an identity with no bound account
+(`UserID == 0`), an empty owner or an owner other than
+`auth.UserSubject(UserID)`. It lives in `pkg/auth` because it needs the identity,
 which `pkg/tenant` cannot import. `sdk/go/types_object_owner.go` re-exports
 `OwnObject`, `WithResourceOwner`, `ResourceOwnerFromContext`,
 `ObjectOwnerDeniedError` and `ABACResourceOwnerContextKey`.

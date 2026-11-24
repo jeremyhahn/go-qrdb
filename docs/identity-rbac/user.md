@@ -382,6 +382,11 @@ give a group, or add someone to a group, only roles you could assign to them
 directly; putting the `so` role on a group, or taking it away through one, is
 the Security Officer's alone under strict separation. A tenant Admin manages
 groups; deleting one is the Security Officer's, as deleting a role is.
+
+In the desktop app the same work is under Admin > Groups: pick the tenant,
+create a group, tick the roles its members inherit, add or remove members by
+user id, and delete the group. The view enforces the same rules: a refusal
+shows the server's error.
 `qrdb roles own-permissions`, run by the member, shows what they hold through
 their groups. Every verb: [cli.md](cli.md#groups).
 

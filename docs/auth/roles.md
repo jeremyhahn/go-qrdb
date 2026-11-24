@@ -458,6 +458,10 @@ under strict separation only the Security Officer can drop `so` from a group's
 roles or delete a group that carries `so`. A group is stored in its tenant's
 own store, like a role: inside a dedicated-isolation tenant's barrier, and
 unreadable while that tenant is sealed.
+Groups are managed from the `qrdb groups` CLI, from the Go SDK's group client
+on every transport (embedded, gRPC, REST, QUIC, MCP, Unix socket), from the
+TypeScript SDK's `Client.groups` over REST and over Wails (the desktop
+`GroupBinding`), and from the desktop app's Admin > Groups view.
 See [identity-rbac/api.md](../identity-rbac/api.md#capability-matrix--iam-groups).
 
 ## Compliance Mapping

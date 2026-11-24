@@ -468,6 +468,9 @@ holds the group's roles in addition to its own, from its next request on.
 Group names are unique within a tenant. A group carries only roles of its own
 tenant, and only users of that tenant can be members.
 
+The desktop app manages the same groups under Admin > Groups: list, create,
+edit the description and roles, add and remove members, and delete.
+
 ### `qrdb groups create`
 
 | Flag | Type | Meaning |
@@ -543,8 +546,10 @@ Each verb prints a table (`NAME`, `TENANT`, `ENABLED`, `PRIORITY`, `RULES`,
 A rule's `when:` and `unless:` conditions may use the subject fields
 `subject.id`, `subject.authenticated`, `subject.mfa_verified` and the
 object-owner condition `subject.owns_resource`, true only when the
-embedder's store has recorded the object's owner and it is the caller
-(false when the owner is unknown); `resource.owner` reads that owner. The
+embedder's store has recorded the object's owner and it is the caller's
+bound account (false when the owner is unknown, and always false for a
+holder-certificate or service identity, which has no bound account even when
+its subject equals an account id); `resource.owner` reads that owner. The
 store keeps the expressions exactly as written.
 
 ### `qrdb abac policy create`
