@@ -474,9 +474,8 @@ func TestHandleCreateDatabase_ServiceError(t *testing.T) {
 }
 
 // TestDatabaseRoutes_NoConnectionVerb asserts remote mode's update-connection
-// verb is gone (OD-9 A): PATCH and POST on the old connection sub-path fall
-// through to the by-name router, which answers 405 for an unknown sub-path,
-// and the service is never asked.
+// verb is gone (OD-9 A): the old connection sub-path is no longer routed, so
+// PATCH and POST on it answer 404, and the service is never asked.
 func TestDatabaseRoutes_NoConnectionVerb(t *testing.T) {
 	dbSvc := newMockDatabaseService()
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
@@ -488,7 +487,7 @@ func TestDatabaseRoutes_NoConnectionVerb(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		srv.dispatch(rec, req)
-		assertStatus(t, rec, http.StatusMethodNotAllowed)
+		assertStatus(t, rec, http.StatusNotFound)
 	}
 }
 
@@ -1356,7 +1355,7 @@ func TestRaftConfigRequest_JSON(t *testing.T) {
 // TestHandleDatabaseByName_UpdateBadBody proves every PATCH sub-route of
 // /v1/databases/{name} refuses an undecodable body with 400.
 func TestHandleDatabaseByName_UpdateBadBody(t *testing.T) {
-	for _, sub := range []string{"etcd", "raft", "barrier", "connection"} {
+	for _, sub := range []string{"etcd", "raft", "barrier"} {
 		t.Run(sub, func(t *testing.T) {
 			s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
 				WithDatabaseService(newMockDatabaseService()))

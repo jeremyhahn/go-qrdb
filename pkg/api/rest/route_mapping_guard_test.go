@@ -424,7 +424,6 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"GET", "/v1/databases/mydb", permission.DatabasesRead},
 		{"DELETE", "/v1/databases/mydb", permission.DatabasesDelete},
 		{"PATCH", "/v1/databases/mydb/barrier", permission.DatabasesUpdate},
-		{"PATCH", "/v1/databases/mydb/connection", permission.DatabasesUpdate},
 		{"PATCH", "/v1/databases/mydb/etcd", permission.DatabasesUpdate},
 		{"PATCH", "/v1/databases/mydb/protocol", permission.DatabasesUpdate},
 		{"PATCH", "/v1/databases/mydb/raft", permission.DatabasesUpdate},
