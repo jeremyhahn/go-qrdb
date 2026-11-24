@@ -70,7 +70,7 @@ func (s *Service) Create(ctx context.Context, req *group.CreateGroupRequest) (*g
 	if err := s.authorizeTenant(ctx, target, permission.GroupsCreate); err != nil {
 		return nil, err
 	}
-	if err := s.Auth.AuthorizeGroupRoles(ctx, s.Roles, target, "", req.RoleIDs); err != nil {
+	if err := s.Auth.AuthorizeGroupRoles(ctx, s.Users, s.Roles, target, "", req.RoleIDs); err != nil {
 		return nil, err
 	}
 	next := *req
@@ -126,7 +126,7 @@ func (s *Service) Update(ctx context.Context, req *group.UpdateGroupRequest) (*g
 		if err := s.Auth.AuthorizeGroupRoleRemoval(ctx, prior, removed); err != nil {
 			return err
 		}
-		return s.Auth.AuthorizeGroupRoles(ctx, s.Roles, prior.TenantID, prior.ID, added)
+		return s.Auth.AuthorizeGroupRoles(ctx, s.Users, s.Roles, prior.TenantID, prior.ID, added)
 	}
 	return s.Groups.UpdateGroup(ctx, &next)
 }
@@ -164,36 +164,51 @@ func (s *Service) List(ctx context.Context, req *group.ListGroupsRequest) (*grou
 }
 
 // AddMember adds a user to a group of the user's own tenant. The caller must
-// be able to assign every role the group carries to that user.
-func (s *Service) AddMember(ctx context.Context, userID uint64, groupID string) error {
-	g, err := s.Groups.GetGroup(ctx, groupID)
+// be able to assign every role the group carries to that user. The check
+// runs inside a member claim on the group record, held until the membership
+// commits: the group's role set cannot change between the check and the
+// join (a concurrent update fails with *group.GroupConflictError).
+func (s *Service) AddMember(ctx context.Context, userID uint64, groupID string) (err error) {
+	g, token, err := s.Groups.ClaimGroup(ctx, groupID, group.ClaimMember, func(c *group.Group) error {
+		if err := s.Auth.AuthorizeGroupMembership(ctx, s.Users, s.Roles, userID, c); err != nil {
+			return err
+		}
+		return s.sameTenant(ctx, userID, c)
+	})
 	if err != nil {
 		return err
 	}
-	if err := s.Auth.AuthorizeGroupMembership(ctx, s.Users, s.Roles, userID, g); err != nil {
-		return err
-	}
-	if err := s.sameTenant(ctx, userID, g); err != nil {
-		return err
-	}
+	defer s.releaseClaim(ctx, g.ID, token, &err)
 	_, err = s.Members.AddMember(ctx, userID, g.ID)
 	return err
 }
 
-// RemoveMember removes a user from a group.
-func (s *Service) RemoveMember(ctx context.Context, userID uint64, groupID string) error {
-	g, err := s.Groups.GetGroup(ctx, groupID)
+// RemoveMember removes a user from a group. Like AddMember, the removal
+// check is judged on a member-claimed record, so a role added concurrently
+// (an SO adding SO) cannot be stripped from the member unchecked.
+func (s *Service) RemoveMember(ctx context.Context, userID uint64, groupID string) (err error) {
+	g, token, err := s.Groups.ClaimGroup(ctx, groupID, group.ClaimMember, func(c *group.Group) error {
+		if err := s.Auth.AuthorizeGroupMemberRemoval(ctx, s.Users, userID, c); err != nil {
+			return err
+		}
+		return s.sameTenant(ctx, userID, c)
+	})
 	if err != nil {
 		return err
 	}
-	if err := s.Auth.AuthorizeGroupMemberRemoval(ctx, s.Users, userID, g); err != nil {
-		return err
-	}
-	if err := s.sameTenant(ctx, userID, g); err != nil {
-		return err
-	}
+	defer s.releaseClaim(ctx, g.ID, token, &err)
 	_, err = s.Members.RemoveMember(ctx, userID, g.ID)
 	return err
+}
+
+// releaseClaim releases a member claim once the membership change it
+// guarded has committed (or failed), even when ctx is already cancelled. A
+// release failure is reported only when the change itself succeeded; an
+// unreleased member claim lapses after its lease.
+func (s *Service) releaseClaim(ctx context.Context, id, token string, errp *error) {
+	if rerr := s.Groups.ReleaseClaim(context.WithoutCancel(ctx), id, token); rerr != nil && *errp == nil {
+		*errp = rerr
+	}
 }
 
 // ListMembers returns the members of a group ordered by user ID.

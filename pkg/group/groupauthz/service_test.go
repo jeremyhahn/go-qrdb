@@ -325,6 +325,101 @@ func TestGroupService_DeleteJudgedAgainstClaimedRecord(t *testing.T) {
 	}
 }
 
+// TestGroupService_JoinRacingARoleAddIsNotASelfGrant pins the join/role-add
+// race: an Admin joining an empty group while adding the built-in User role
+// (keys:sign, beyond the Admin) to it must not end holding User. The role
+// add racing the join conflicts on the join's member claim, and a role add
+// after the join is judged as a self-grant from the caller's current user
+// record, though its identity snapshot does not list the group.
+func TestGroupService_JoinRacingARoleAddIsNotASelfGrant(t *testing.T) {
+	f := newStrictFixture(t)
+	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
+	userRole := role.SystemRoleID("acme", role.RoleNameUser)
+	keeper := authtest.CustomRole(t, f.roles, "acme", "group-keeper", permission.GroupsRead, permission.GroupsUpdate)
+	asSO := acmeCaller(0, admin, so)
+	g, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "crypto"})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	self, err := f.users.CreateUser(asSO, &user.CreateUserRequest{WithoutEmailLoginKey: true, Username: "acme-admin", TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("create admin user: %v", err)
+	}
+	asAdmin := acmeCaller(self.ID, admin, keeper)
+	var conflict *group.GroupConflictError
+	raced := false
+	f.racing.claimAfter = func() {
+		raced = true
+		if _, err := f.svc.Update(asAdmin, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{userRole}}); !errors.As(err, &conflict) {
+			t.Errorf("role add racing the join: %v, want *GroupConflictError", err)
+		}
+	}
+	if err := f.svc.AddMember(asAdmin, self.ID, g.ID); err != nil {
+		t.Fatalf("self-join of the empty group: %v", err)
+	}
+	if !raced {
+		t.Fatal("the role add never raced the join")
+	}
+	var exceeds *role.GrantExceedsHolderError
+	if _, err := f.svc.Update(asAdmin, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{userRole}}); !errors.As(err, &exceeds) {
+		t.Fatalf("role add after the join: %v, want *role.GrantExceedsHolderError (a self-grant)", err)
+	}
+	got, err := f.groups.GetGroup(asSO, g.ID)
+	if err != nil || len(got.RoleIDs) != 0 {
+		t.Fatalf("group after the race = %+v, %v; want no roles", got, err)
+	}
+	if u, err := f.users.GetUser(asSO, self.ID); err != nil || !slices.Contains(u.GroupIDs, g.ID) {
+		t.Fatalf("admin after the join = %+v, %v; want the membership", u, err)
+	}
+}
+
+// TestGroupService_ClaimReleasedAfterMembershipChange pins that a membership
+// change, committed or refused, leaves no claim on the group behind.
+func TestGroupService_ClaimReleasedAfterMembershipChange(t *testing.T) {
+	f := newStrictFixture(t)
+	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
+	keeper := authtest.CustomRole(t, f.roles, "acme", "group-keeper", permission.GroupsRead, permission.GroupsUpdate)
+	asAdmin, asSO := acmeCaller(0, admin, keeper), acmeCaller(0, admin, so)
+	g, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "eng"})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	signers, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "signers", RoleIDs: []string{so}})
+	if err != nil {
+		t.Fatalf("create SO group: %v", err)
+	}
+	alice, err := f.users.CreateUser(asSO, &user.CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	update := func(step string, id string) {
+		t.Helper()
+		desc := step
+		if _, err := f.svc.Update(asSO, &group.UpdateGroupRequest{ID: id, Description: &desc}); err != nil {
+			t.Fatalf("update after %s: %v (claim left behind)", step, err)
+		}
+	}
+	if err := f.svc.AddMember(asAdmin, alice.ID, g.ID); err != nil {
+		t.Fatalf("add alice: %v", err)
+	}
+	update("add", g.ID)
+	if err := f.svc.RemoveMember(asAdmin, alice.ID, g.ID); err != nil {
+		t.Fatalf("remove alice: %v", err)
+	}
+	update("remove", g.ID)
+	if err := f.svc.AddMember(asAdmin, alice.ID, signers.ID); err == nil {
+		t.Fatal("admin adding a member to the SO group: want refused")
+	}
+	update("refused add", signers.ID)
+	if _, err := f.members.AddMember(asSO, alice.ID, signers.ID); err != nil {
+		t.Fatalf("seed alice into the SO group: %v", err)
+	}
+	if err := f.svc.RemoveMember(asAdmin, alice.ID, signers.ID); err == nil {
+		t.Fatal("admin removing a member of the SO group: want refused")
+	}
+	update("refused remove", signers.ID)
+}
+
 // TestGroupService_UpdateJudgedAgainstCommittedRecord pins that the role
 // guards judge the record the update commits over: an Admin's update that
 // clears the role set, racing an SO adding the SO role, is refused (the

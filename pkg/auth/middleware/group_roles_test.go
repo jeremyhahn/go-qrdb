@@ -158,13 +158,13 @@ func TestAuthorizeGroupRoles_Guard(t *testing.T) {
 	mw := mwWithPerms(permission.GroupsUpdate, permission.KeysSign)
 	var exceeds *role.GrantExceedsHolderError
 	mwNarrow := mwWithPerms(permission.GroupsUpdate)
-	if err := mwNarrow.AuthorizeGroupRoles(selfCtx(), roles, "acme", "", []string{custom}); !errors.As(err, &exceeds) {
+	if err := mwNarrow.AuthorizeGroupRoles(selfCtx(), nil, roles, "acme", "", []string{custom}); !errors.As(err, &exceeds) {
 		t.Fatalf("role beyond holdings on a group: err = %v, want *role.GrantExceedsHolderError", err)
 	}
-	if err := mw.AuthorizeGroupRoles(selfCtx(), roles, "acme", "", []string{builtIn}); err != nil {
+	if err := mw.AuthorizeGroupRoles(selfCtx(), nil, roles, "acme", "", []string{builtIn}); err != nil {
 		t.Fatalf("built-in role on a group: err = %v, want nil", err)
 	}
-	if err := mw.AuthorizeGroupRoles(selfCtx(), roles, "acme", "", []string{"r-missing"}); err == nil {
+	if err := mw.AuthorizeGroupRoles(selfCtx(), nil, roles, "acme", "", []string{"r-missing"}); err == nil {
 		t.Fatal("unknown role on a group allowed")
 	}
 }
@@ -224,11 +224,65 @@ func TestAuthorizeGroupRoles_SelfGrantThroughGroup(t *testing.T) {
 	if !errors.As(direct, &exceeds) {
 		t.Fatalf("direct self-assignment: err = %v, want *role.GrantExceedsHolderError", direct)
 	}
-	err := mw.AuthorizeGroupRoles(ctx, roles, "acme", "g-mine", []string{builtIn})
+	err := mw.AuthorizeGroupRoles(ctx, nil, roles, "acme", "g-mine", []string{builtIn})
 	if !errors.As(err, &exceeds) || err.Error() != direct.Error() {
 		t.Fatalf("built-in role on the caller's own group: err = %v, want %v", err, direct)
 	}
-	if err := mw.AuthorizeGroupRoles(ctx, roles, "acme", "g-other", []string{builtIn}); err != nil {
+	if err := mw.AuthorizeGroupRoles(ctx, nil, roles, "acme", "g-other", []string{builtIn}); err != nil {
 		t.Fatalf("built-in role on a group the caller is not in: err = %v, want nil", err)
+	}
+}
+
+// recordUsers is a user service whose GetUser returns fixed records; every
+// other method is unused by AuthorizeGroupRoles.
+type recordUsers struct {
+	user.UserServicer
+	records map[uint64]*user.User
+	err     error
+}
+
+func (r *recordUsers) GetUser(_ context.Context, id uint64) (*user.User, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	u, ok := r.records[id]
+	if !ok {
+		return nil, &user.UserNotFoundError{ID: id}
+	}
+	return u, nil
+}
+
+// TestAuthorizeGroupRoles_SelfGrantJudgedFromTheCurrentRecord pins that a
+// membership committed after authentication counts: the identity snapshot
+// does not list the group, but the caller's current user record does, so a
+// role put on the group is judged as a self-assignment and refused exactly
+// as for a snapshot member. A lookup failure other than not-found fails
+// closed.
+func TestAuthorizeGroupRoles_SelfGrantJudgedFromTheCurrentRecord(t *testing.T) {
+	builtIn, _, roles := grantRuleFixture()
+	mw := mwWithPerms(permission.GroupsUpdate)
+	id := &auth.Identity{Subject: auth.UserSubject(1), UserID: 1, TenantID: "acme", Roles: []string{"admin"}}
+	ctx := tenant.WithTenantID(auth.WithIdentity(context.Background(), id), "acme")
+	users := &recordUsers{records: map[uint64]*user.User{1: {ID: 1, TenantID: "acme", GroupIDs: []string{"g-mine"}}}}
+
+	direct := role.ValidateSelfAssignable(ctx, roles, mw.Authorizer(), builtIn, "acme")
+	var exceeds *role.GrantExceedsHolderError
+	if !errors.As(direct, &exceeds) {
+		t.Fatalf("direct self-assignment: err = %v, want *role.GrantExceedsHolderError", direct)
+	}
+	err := mw.AuthorizeGroupRoles(ctx, users, roles, "acme", "g-mine", []string{builtIn})
+	if !errors.As(err, &exceeds) || err.Error() != direct.Error() {
+		t.Fatalf("built-in role on a group the current record lists: err = %v, want %v", err, direct)
+	}
+	if err := mw.AuthorizeGroupRoles(ctx, users, roles, "acme", "g-other", []string{builtIn}); err != nil {
+		t.Fatalf("built-in role on a group the caller is not in: err = %v, want nil", err)
+	}
+	gone := &recordUsers{records: map[uint64]*user.User{}}
+	if err := mw.AuthorizeGroupRoles(ctx, gone, roles, "acme", "g-mine", []string{builtIn}); err != nil {
+		t.Fatalf("caller without a user record: err = %v, want nil", err)
+	}
+	broken := errors.New("store down")
+	if err := mw.AuthorizeGroupRoles(ctx, &recordUsers{err: broken}, roles, "acme", "g-mine", []string{builtIn}); !errors.Is(err, broken) {
+		t.Fatalf("user lookup failure: err = %v, want it returned", err)
 	}
 }

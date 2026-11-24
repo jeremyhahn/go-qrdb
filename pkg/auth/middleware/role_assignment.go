@@ -16,6 +16,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"slices"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -179,10 +180,14 @@ func (m *AuthMiddleware) AuthorizeRoleUnassignment(ctx context.Context, userSvc 
 // requires (role.ValidateAssignable, and strict separation's SO rule: only an
 // SO may put the SO role on a group). A group carries only roles of its own
 // tenant; the group store refuses any other. groupID names the group being
-// updated ("" on create, which has no members yet): when the caller's own
-// identity lists it, the roles reach the caller, so they are judged with
-// role.ValidateSelfAssignable, the rule direct self-assignment uses.
-func (m *AuthMiddleware) AuthorizeGroupRoles(ctx context.Context, roleSvc role.RoleServicer, tenantID, groupID string, roleIDs []string) error {
+// updated ("" on create, which has no members yet): when the caller is a
+// member of it, the roles reach the caller, so they are judged with
+// role.ValidateSelfAssignable, the rule direct self-assignment uses. The
+// caller is a member when its identity lists the group, or when its current
+// user record (userSvc, when non-nil) does: the identity is a snapshot taken
+// at authentication and misses a join committed since. A user lookup error
+// other than not-found fails the check closed.
+func (m *AuthMiddleware) AuthorizeGroupRoles(ctx context.Context, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantID, groupID string, roleIDs []string) error {
 	if m == nil || len(roleIDs) == 0 {
 		return nil
 	}
@@ -191,14 +196,42 @@ func (m *AuthMiddleware) AuthorizeGroupRoles(ctx context.Context, roleSvc role.R
 		return err
 	}
 	validate := assignValidator(role.ValidateAssignable)
-	if id := auth.IdentityFromContext(ctx); id != nil && groupID != "" &&
-		slices.Contains(id.Groups, groupID) && tenantid.Normalize(id.TenantID) == target {
+	member, err := callerInGroup(ctx, userSvc, target, groupID)
+	if err != nil {
+		return err
+	}
+	if member {
 		// The caller is a member of the group: a role it puts on the group
 		// reaches its own identity, so it is judged as a self-assignment,
 		// exactly as AuthorizeGroupMembership judges a self-join.
 		validate = role.ValidateSelfAssignable
 	}
 	return validateRoleAssignment(ctx, roleSvc, m.Authorizer(), validate, target, roleIDs, nil)
+}
+
+// callerInGroup reports whether the caller is a member of group groupID of
+// tenant target: its identity snapshot lists the group, or its current user
+// record (looked up through userSvc when non-nil) does.
+func callerInGroup(ctx context.Context, userSvc user.UserServicer, target, groupID string) (bool, error) {
+	id := auth.IdentityFromContext(ctx)
+	if id == nil || groupID == "" || tenantid.Normalize(id.TenantID) != target {
+		return false, nil
+	}
+	if slices.Contains(id.Groups, groupID) {
+		return true, nil
+	}
+	if userSvc == nil || id.UserID == 0 {
+		return false, nil
+	}
+	u, err := userSvc.GetUser(ctx, id.UserID)
+	var notFound *user.UserNotFoundError
+	if errors.As(err, &notFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return u != nil && tenantid.Normalize(u.TenantID) == target && slices.Contains(u.GroupIDs, groupID), nil
 }
 
 // AuthorizeGroupMembership is the escalation guard for AddGroupMember: the
