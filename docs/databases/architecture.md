@@ -1371,7 +1371,11 @@ it.
 > **Shipped.** `ReplicatedLogger.Emit` switches per group once both
 > `featuregate.VerifiableLog` and `featuregate.VerifiableLogAudit`
 > (`"verifiable-log-audit"`) are enabled, and proposes `OpAuditAppend` until
-> then; both state-machine families apply the append through
+> then. A standalone node's system shard gates nothing (it is one binary, every
+> replica this process), so in a `qrdb_vlog` build its trail is the same
+> instance from the first event the binary writes, continuous with the
+> `OpAuditAppend` records an earlier binary left; a build without `qrdb_vlog`
+> keeps `OpAuditAppend`. Both state-machine families apply the append through
 > `statemachine.ApplyVerifiableLog` into `audit.Chain.AppendToInstance`
 > (`pkg/audit/chain.go`), which creates the instance at its first append.
 
