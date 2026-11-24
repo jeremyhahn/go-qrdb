@@ -43,6 +43,9 @@ type sqliteRestoreMVCC struct {
 	service.MVCCKVServicer
 	kv  sqlitevfs.ServiceKV
 	txn sqlitevfs.ServiceTxn
+	// gate, when set, admits the database a MovePrefix creates (o1, see
+	// withSQLiteAdmission).
+	gate *sqliteAdmitGate
 }
 
 var (
@@ -174,7 +177,18 @@ func (s *sqliteRestoreMVCC) MovePrefix(ctx context.Context, req *service.MovePre
 	if !ok {
 		return 0, &service.PrefixMoveUnsupportedError{}
 	}
-	return mover.MovePrefix(ctx, req)
+	if s.gate == nil || req == nil {
+		return mover.MovePrefix(ctx, req)
+	}
+	live, err := s.gate.admit(ctx, req.Ops)
+	if err != nil {
+		return 0, err
+	}
+	rev, err := mover.MovePrefix(ctx, req)
+	if err == nil {
+		s.gate.record(ctx, live, req.Ops)
+	}
+	return rev, err
 }
 
 // KeepsRevisionHistory forwards to the wrapped service.
