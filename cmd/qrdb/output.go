@@ -21,7 +21,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
@@ -42,7 +42,7 @@ func printJSON(v any) error {
 
 // printYAML marshals v to YAML and writes it to outputWriter.
 func printYAML(v any) error {
-	data, err := yaml.Marshal(v)
+	data, err := gocodecyaml.New[any]().Marshal(v)
 	if err != nil {
 		return err
 	}

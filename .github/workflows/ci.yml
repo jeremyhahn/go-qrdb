@@ -187,7 +187,7 @@ env:
   # CUSTOMIZE (go-qrdb): exactly `make -s print-build-tags`, the default feature
   # set the coverage baseline was measured under (its `# build-tags:` line), in
   # the same order; the Makefile adopts it as BUILD_TAGS when it is set.
-  GO_BUILD_TAGS: "codec_json raft qrdb_ts qrdb_vector qrdb_vlog qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf"
+  GO_BUILD_TAGS: "codec_json raft qrdb_ts qrdb_vector qrdb_vlog qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded"
   # DS-8233 (bigdisk): Go for the jobs that run natively on the self-hosted
   # pool (coverage-merge, test-clusterproof, coverage-fts). The toolchain
   # image's Go: scripts/tool-pins.sh GO_IMAGE=golang:1.27.4-alpine3.24, which
@@ -212,6 +212,8 @@ env:
   # embeds or generates from docs/ or markdown. The gates that read docs/ are
   # lint-class and run in `make lint-gates`, which a docs-only PR still runs.
   DOCS_ONLY_PATTERN: '(\.md$|^docs/)'
+  # #1619: a PR changing any file that matches this runs clusterproof-soak.
+  CLUSTERPROOF_PATTERN: '^(scripts/cluster-proof-ci\.sh|test/clusterproof/)'
   # v1.54 (ruling 1137): HOSTED_JOBS_PER_REPO and HOSTED_QUEUE_GRACE_SECONDS
   # (v1.48) are removed; the limits of `Balanced runner pool (ruling 1137)`
   # are the repository variables CI_HOSTED_SHARE, CI_SELF_HOSTED_BIGDISK and
@@ -264,6 +266,7 @@ jobs:
       contents: read
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
+      clusterproof: ${{ steps.diff.outputs.clusterproof }}
       # v1.48 (ruling 1024): runs-on JSON for the two hosted-capable classes,
       # read as fromJSON(needs.preflight.outputs.runner_docker) by every job
       # that builds or runs images and fromJSON(needs.preflight.outputs.runner)
@@ -874,6 +877,7 @@ jobs:
           # fallback `"ubuntu-latest"`, where it must give a standard image on
           # every event. Another job that reads the variable reads an unknown.
           PRE_JOB = "preflight"
+          GATE_JOB = "ci-gate"  # DS-10437
           PRE_VAR = "vars.ci_preflight_runs_on"
           PRE_READ = re.compile(r"(?<![\w.])vars\.CI_PREFLIGHT_RUNS_ON(?![\w-])", re.I)
           HOSTED_CTX = [  # (event, ref, head repo) on github.com; o/r is this repository
@@ -1088,6 +1092,13 @@ jobs:
                                       if (sel is None and got == OVERFLOW[0] and ev in PR and head == "o/r"
                                               and path.replace("\\", "/").rsplit("/", 1)[-1] in REVIEW_FILES):
                                           continue  # v1.53: a same-repository head's review guard
+                                      # DS-10437 (Tenant 03:31Z 11-24, ruling 617): the CI Gate reads the jobs'
+                                      # results only; it runs on bigdisk for a push to main and a same-repository
+                                      # head. A fork's head stays checked.
+                                      if (job == GATE_JOB and got == OVERFLOW[0] and not fork_target
+                                              and ((ev == "push" and ref == "refs/heads/main") or (ev in PR and head == "o/r"))
+                                              and path.replace("\\", "/").rsplit("/", 1)[-1] in SEL_FILES):
+                                          continue
                                       if got is None or len(got) != 1 or not STANDARD.fullmatch(got[0]):
                                           what = "an unknown label" if got is None else ", ".join(got)
                                           note = ", runner selection overflow" if sel == "overflow" else ""
@@ -1164,6 +1175,23 @@ jobs:
           fi
           echo "docs only: $docs_only"
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          # #1619: a PR that changes the cluster proof's script or harness
+          # also runs the clusterproof-soak job; always false off pull_request.
+          # A diff that fails selects the soak (fail closed): an unknown file
+          # set may change the proof, so the soak runs rather than skips.
+          clusterproof=false
+          if [ "$EVENT" = pull_request ]; then
+            if cp_files=$(git diff --name-only --no-renames "$BASE...$HEAD"); then
+              if printf '%s\n' "$cp_files" | grep -qE "$CLUSTERPROOF_PATTERN"; then
+                clusterproof=true
+              fi
+            else
+              echo "::warning::git diff --name-only --no-renames $BASE...$HEAD failed; clusterproof-soak runs (fail closed)"
+              clusterproof=true
+            fi
+          fi
+          echo "clusterproof: $clusterproof"
+          echo "clusterproof=$clusterproof" >> "$GITHUB_OUTPUT"
 
       - name: No direct go-objstore import outside the storage seam
         if: steps.diff.outputs.docs_only != 'true'
@@ -3209,6 +3237,112 @@ jobs:
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: scripts/ci-image.sh prune 24
 
+  # #1619 (rulings 819, 841): the cluster proof itself, nightly. The per-PR
+  # test-clusterproof job tests only the harness; this job builds the release
+  # image, boots three nodes from it on the runner's docker network proof
+  # (scripts/cluster-proof-ci.sh), soaks them under the nemesis for 30 min
+  # and checks the evidence bundle, which it keeps as an artifact.
+  clusterproof-soak:
+    name: Soak [clusterproof nemesis]
+    # A PR that changes scripts/cluster-proof-ci.sh or test/clusterproof/
+    # (preflight's clusterproof output) runs it too, so the soak is proven on
+    # its own PR before it reaches main.
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && needs.preflight.outputs.clusterproof == 'true')) && !github.event.pull_request.draft }}   # ruling 214
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    # Image builds ~15 min, boot ~5, the 30 min soak, the check ~5: the
+    # boot/soak/check step's own 60 min cap leaves the logs, upload and
+    # tear-down steps their time inside the job's 100.
+    timeout-minutes: 100
+    env:
+      CLUSTERPROOF_CI_DIR: ${{ github.workspace }}/build/clusterproof-ci
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      - name: Free the runner's disk
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune -af >/dev/null
+          df -h /
+
+      # The soak runner and BOOT-01 run on the runner beside the containers
+      # (make cluster-proof-bin, cluster-proof-boot): the toolchain's Go.
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          cache: ${{ runner.environment != 'self-hosted' }}
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build the release image
+        run: |
+          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
+            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
+            done )
+          rc=0
+          make docker-build-release MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" || rc=$?
+          rm -f "$RUNNER_TEMP/gomodauth.env"
+          exit "$rc"
+
+      - name: Build the fault image
+        run: make cluster-proof-fault-image
+
+      - name: Render the cluster's configuration
+        run: scripts/cluster-proof-ci.sh render "$CLUSTERPROOF_CI_DIR" "qrdbd:$(cat VERSION)" "clusterproof-fault:$(cat VERSION)"
+
+      # The node containers are capped (render's inventory: 3 GB, 1 CPU
+      # each) so the hosted runner keeps headroom (#1637), and the step has
+      # its own timeout so a hang still leaves the logs step to run.
+      - name: Boot, soak and check (make cluster-proof-ci)
+        timeout-minutes: 60
+        run: make cluster-proof-ci CLUSTERPROOF_CI_DIR="$CLUSTERPROOF_CI_DIR" PROOF_DURATION=30m
+
+      # A failure past boot (the soak, the check) leaves the containers to
+      # Tear down: save each node's full log first, to
+      # build/clusterproof-ci/logs, beside the bundle and never inside it
+      # (the bundle's manifest checksums every file under bundle/). Its own
+      # artifact, clusterproof-node-logs, carries them.
+      - name: Keep every node's full log
+        if: failure()
+        run: scripts/cluster-proof-ci.sh logs "$CLUSTERPROOF_CI_DIR"
+
+      - name: Upload the evidence bundle
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: clusterproof-bundle
+          # The bundle and the configuration a replay needs; no key or PIN.
+          path: |
+            build/clusterproof-ci/bundle
+            build/clusterproof-ci/inventory.json
+            build/clusterproof-ci/targets.json
+            build/clusterproof-ci/workload.json
+          if-no-files-found: warn
+
+      - name: Upload every node's full log
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: clusterproof-node-logs
+          # Written by the logs step or a failing up; none on a green run.
+          path: build/clusterproof-ci/logs
+          if-no-files-found: ignore
+
+      - name: Tear down
+        if: always()
+        run: |
+          scripts/cluster-proof-ci.sh down "$CLUSTERPROOF_CI_DIR"
+          rm -f "$RUNNER_TEMP/gomodauth.env"
+
   # Ruling 640: the daily dependency bump. deps-bump.yml has only
   # workflow_dispatch (ci.yml's nightly is the one scheduler, rulings 135,
   # 216(1) and 633), so the nightly schedule run on main dispatches it. A
@@ -3337,7 +3471,10 @@ jobs:
     # Go, no Docker. On the self-hosted bigdisk pool for a push to main and a
     # same-repository PR, so it never waits in the hosted queue; hosted
     # otherwise.
-    runs-on: ${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}   # v1.48 (ruling 1024)
+    # DS-10437 (Tenant 03:31Z 11-24, ruling 617): the bigdisk pool for a push
+    # to main and a same-repository PR, whatever the runner selection says; a
+    # fork's PR and every other event on ubuntu-latest.
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}   # DS-10437
     timeout-minutes: 5
     # v1.53 (Tenant Agent on trusted-firmware #821): with main-{event} a newer
     # push cancels the older main run, and an always() gate then read the
@@ -3357,7 +3494,7 @@ jobs:
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier: pr,
     # code (every event but a docs-only PR, DS-3160), full or nightly. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [preflight, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak, signatures]
+    needs: [preflight, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak, clusterproof-soak, signatures]
     steps:
       - name: Fail closed on any non-success
         env:
@@ -3379,6 +3516,7 @@ jobs:
           RESULT_INTEGRATION_FEATURES: ${{ needs.integration-features.result }}
           RESULT_FIPS: ${{ needs.fips.result }}
           RESULT_SOAK: ${{ needs.soak.result }}
+          RESULT_CLUSTERPROOF_SOAK: ${{ needs.clusterproof-soak.result }}
           RESULT_SIGNATURES: ${{ needs.signatures.result }}
           # The full tier is CI_FULL_TIER (v1.23): every event but a PR, and a
           # PR labelled ci:full. A job marked `full` may be skipped below only
@@ -3390,16 +3528,22 @@ jobs:
           # a docs-only PR (the preflight job's docs_only, false off
           # pull_request and on ci:full).
           DOCS_ONLY: ${{ needs.preflight.outputs.docs_only }}
+          # #1619: preflight's clusterproof output, true on a PR changing the
+          # cluster proof's script or harness, false off pull_request. A
+          # `clusterproof` job's skip is excused only when neither it nor
+          # NIGHTLY selects the job.
+          CLUSTERPROOF: ${{ needs.preflight.outputs.clusterproof }}
         run: |
           if [ "$DRAFT" = "true" ]; then
             echo "FAIL draft pull request: no CI runs on a draft. Mark it ready, then push an empty commit to start its run."
             exit 1
           fi
           BAD=0
-          echo "full tier selected: ${FULL_TIER}; nightly selected: ${NIGHTLY}; docs-only pull request: ${DOCS_ONLY}"
-          # CUSTOMIZE (go-qrdb): an unreadable FULL_TIER, NIGHTLY or DOCS_ONLY
-          # cannot say which skips to excuse, so it fails closed. DOCS_ONLY is
-          # empty only when preflight did not succeed, which fails the gate too.
+          echo "full tier selected: ${FULL_TIER}; nightly selected: ${NIGHTLY}; docs-only pull request: ${DOCS_ONLY}; cluster proof selected: ${CLUSTERPROOF}"
+          # CUSTOMIZE (go-qrdb): an unreadable FULL_TIER, NIGHTLY, DOCS_ONLY or
+          # CLUSTERPROOF cannot say which skips to excuse, so it fails closed.
+          # DOCS_ONLY and CLUSTERPROOF are empty only when preflight did not
+          # succeed, which fails the gate too.
           case "${DOCS_ONLY}" in
             true|false) ;;
             *) echo "FAIL: DOCS_ONLY is unreadable ('${DOCS_ONLY}')"; BAD=1;;
@@ -3412,7 +3556,11 @@ jobs:
             true|false) ;;
             *) echo "FAIL: NIGHTLY is unreadable ('${NIGHTLY}')"; BAD=1;;
           esac
-          check() { # <job> <result> <pr|code|full|nightly>
+          case "${CLUSTERPROOF}" in
+            true|false) ;;
+            *) echo "FAIL: CLUSTERPROOF is unreadable ('${CLUSTERPROOF}')"; BAD=1;;
+          esac
+          check() { # <job> <result> <pr|code|full|nightly|clusterproof>
             case "$2" in
               success) echo "OK   $1";;
               skipped)
@@ -3420,6 +3568,8 @@ jobs:
                   echo "SKIP $1 (full tier not selected)"
                 elif [ "$3" = nightly ] && [ "${NIGHTLY}" != true ]; then
                   echo "SKIP $1 (nightly and dispatch only)"
+                elif [ "$3" = clusterproof ] && [ "${NIGHTLY}" != true ] && [ "${CLUSTERPROOF}" != true ]; then
+                  echo "SKIP $1 (nightly, dispatch or a PR changing the cluster proof only)"
                 elif [ "$3" = code ] && [ "${DOCS_ONLY}" = true ]; then
                   echo "SKIP $1 (docs-only pull request)"
                 else
@@ -3430,8 +3580,10 @@ jobs:
           }
           # CUSTOMIZE: one line per job in needs above. A job gated to the
           # full tier by its `if:` is marked full, one gated to schedule and
-          # workflow_dispatch is nightly, one skipped on a docs-only PR
-          # (go-qrdb, DS-3160) is code; every other job is pr.
+          # workflow_dispatch is nightly, one gated to schedule, dispatch or
+          # preflight's clusterproof selection (#1619) is clusterproof, one
+          # skipped on a docs-only PR (go-qrdb, DS-3160) is code; every other
+          # job is pr.
           check preflight "$RESULT_PREFLIGHT" pr
           check docker-build "$RESULT_DOCKER_BUILD" pr
           check lint "$RESULT_LINT" pr
@@ -3449,5 +3601,6 @@ jobs:
           check integration-features "$RESULT_INTEGRATION_FEATURES" full
           check fips "$RESULT_FIPS" full
           check soak "$RESULT_SOAK" nightly
+          check clusterproof-soak "$RESULT_CLUSTERPROOF_SOAK" clusterproof
           check signatures "$RESULT_SIGNATURES" pr
           exit $BAD

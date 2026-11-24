@@ -17,6 +17,7 @@
 package workload
 
 import (
+	"context"
 	"errors"
 
 	"google.golang.org/grpc/codes"
@@ -124,4 +125,23 @@ func connectionLost(err error) bool {
 	}
 	st, ok := grpcStatus(err)
 	return ok && st.Code() == codes.Unavailable
+}
+
+// unanswered reports whether err says the operation timed out unanswered:
+// context.DeadlineExceeded, a gRPC DeadlineExceeded status, or a transport
+// error -- QUIC's RequestError among them -- wrapping a timeout. The
+// classifier may still call such a read failed, since a read has no effect,
+// but the session that left it unanswered may be half-open and is not kept.
+func unanswered(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if st, ok := grpcStatus(err); ok && st.Code() == codes.DeadlineExceeded {
+		return true
+	}
+	var timeout interface{ Timeout() bool }
+	return errors.As(err, &timeout) && timeout.Timeout()
 }

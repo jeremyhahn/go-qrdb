@@ -55,6 +55,25 @@ func TestDatabaseConfig_Validate_InvalidStorageCodec(t *testing.T) {
 	}
 }
 
+// TestDatabaseConfig_Validate_TOMLStorageCodec verifies that TOML, which
+// cannot encode null, is refused as a document storage codec.
+func TestDatabaseConfig_Validate_TOMLStorageCodec(t *testing.T) {
+	cfg := DatabaseConfig{
+		Name:         "codec-db",
+		Backend:      BackendMemory,
+		Mode:         ModeEmbedded,
+		StorageCodec: "toml",
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() expected error for toml codec, got nil")
+	}
+	var codecErr *InvalidStorageCodecError
+	if !errors.As(err, &codecErr) {
+		t.Errorf("Validate() error type = %T, want *InvalidStorageCodecError", err)
+	}
+}
+
 // TestDatabaseConfig_Validate_EmptyStorageCodec verifies that an empty
 // storage codec is accepted (it means "use the global default").
 func TestDatabaseConfig_Validate_EmptyStorageCodec(t *testing.T) {

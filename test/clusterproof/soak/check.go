@@ -19,6 +19,8 @@ package soak
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -75,13 +77,18 @@ func Check(dir string, opts CheckOptions) (CheckResult, error) {
 		return CheckResult{}, err
 	}
 
-	var recorded [3][]byte
-	for i, rel := range []string{fileHistory, fileNemesis, fileRun} {
+	var recorded [2][]byte
+	for i, rel := range []string{fileNemesis, fileRun} {
 		if recorded[i], err = readMember(dir, rel); err != nil {
 			return CheckResult{}, err
 		}
 	}
-	ev, err := decodeEvidence(dir, recorded[0], recorded[1], recorded[2])
+	hf, err := openMember(dir, fileHistory)
+	if err != nil {
+		return CheckResult{}, err
+	}
+	ev, err := decodeEvidence(dir, hf, recorded[0], recorded[1])
+	_ = hf.Close()
 	if err != nil {
 		return CheckResult{}, err
 	}
@@ -99,11 +106,22 @@ func Check(dir string, opts CheckOptions) (CheckResult, error) {
 	if err != nil {
 		return CheckResult{}, &BundleError{Path: dir, Reason: "cannot derive the verdict", Err: err}
 	}
+	timeline := sha256.New()
+	if err := encodeTimeline(timeline, d.timeline); err != nil {
+		return CheckResult{}, &BundleError{Path: dir, Reason: "cannot derive the verdict", Err: err}
+	}
+	got, err := memberDigest(dir, fileTimeline)
+	if err != nil {
+		return CheckResult{}, err
+	}
+	if got != hex.EncodeToString(timeline.Sum(nil)) {
+		return CheckResult{}, &BundleError{Path: dir, Reason: fileTimeline + " does not follow from the evidence: " +
+			"the bundle was altered and its manifest rewritten, or the check runs other checkers than the run did"}
+	}
 	for _, f := range []struct {
 		name string
 		want []byte
 	}{
-		{fileTimeline, d.timeline},
 		{fileTimings, d.timings},
 		{fileVerdict, d.verdict},
 	} {
@@ -152,11 +170,11 @@ func verifyFiles(dir string, files map[string]string) error {
 		if !ok {
 			return &BundleError{Path: dir, Reason: rel + " is not in the manifest"}
 		}
-		data, err := os.ReadFile(p)
+		got, err := fileDigest(p)
 		if err != nil {
 			return &BundleError{Path: dir, Reason: "cannot read " + rel, Err: err}
 		}
-		if digest(data) != want {
+		if got != want {
 			return &BundleError{Path: dir, Reason: rel + " does not match its manifest checksum"}
 		}
 		seen[rel] = true
@@ -203,6 +221,20 @@ func expectMembers(dir string, files map[string]string, nodes []Node) error {
 
 // readMember reads one regular file of the bundle.
 func readMember(dir, rel string) ([]byte, error) {
+	f, err := openMember(dir, rel)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, &BundleError{Path: dir, Reason: "cannot read " + rel, Err: err}
+	}
+	return data, nil
+}
+
+// openMember opens the regular file rel of the bundle at dir for reading.
+func openMember(dir, rel string) (*os.File, error) {
 	p := filepath.Join(dir, filepath.FromSlash(rel))
 	st, err := os.Lstat(p)
 	if err != nil {
@@ -211,11 +243,40 @@ func readMember(dir, rel string) ([]byte, error) {
 	if !st.Mode().IsRegular() {
 		return nil, &BundleError{Path: dir, Reason: rel + " is not a regular file"}
 	}
-	data, err := os.ReadFile(p)
+	f, err := os.Open(p)
 	if err != nil {
 		return nil, &BundleError{Path: dir, Reason: "cannot read " + rel, Err: err}
 	}
-	return data, nil
+	return f, nil
+}
+
+// memberDigest is the hex SHA-256 of the regular file rel of the bundle at
+// dir, hashed as it is read.
+func memberDigest(dir, rel string) (string, error) {
+	f, err := openMember(dir, rel)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	sum := sha256.New()
+	if _, err := io.Copy(sum, f); err != nil {
+		return "", &BundleError{Path: dir, Reason: "cannot read " + rel, Err: err}
+	}
+	return hex.EncodeToString(sum.Sum(nil)), nil
+}
+
+// fileDigest is the hex SHA-256 of the file at p, hashed as it is read.
+func fileDigest(p string) (string, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	sum := sha256.New()
+	if _, err := io.Copy(sum, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(sum.Sum(nil)), nil
 }
 
 // decodeMember strictly decodes one JSON file of the bundle.
