@@ -540,7 +540,7 @@ func (s *KeyspaceReclaimService) UnfenceDatabaseKeyspace(ctx context.Context, te
 		}
 		// A marker that already held this incarnation was not this call's
 		// claim: a later failure leaves it as it was.
-		logClaimed = incarnation != "" && !(logPresent && bytes.Equal(logPrior, []byte(incarnation)))
+		logClaimed = incarnation != "" && (!logPresent || !bytes.Equal(logPrior, []byte(incarnation)))
 	}
 	err = s.unfenceDataMarker(ctx, store, tenantID, db, key, incarnation, claim)
 	if err != nil && logClaimed {
