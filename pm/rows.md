@@ -18,6 +18,7 @@ The row's PR closes its row issue and marks the row shipped in
 | object-storage-provider-seam | none | planned | 0 | none |
 | arm64-release | #916 | in progress | 0 | none |
 | verifiable-log | #1613 | in progress | 0 | none |
+| credential-rotation-schedule | #1201 | in progress | 3 | #1548 |
 | release-readiness | #566 | planned | 1 | none |
 | rolling-upgrades | #1628 | planned | 1 | #1638 |
 | multi-model-databases | #923 | future | 0 | none |
@@ -30,7 +31,6 @@ The row's PR closes its row issue and marks the row shipped in
 | Seam | Row issue | Open PRs |
 |---|---|---|
 | WebTransport on the HTTP/3 listener | #1244 | #1527, #1542 |
-| credential rotation policy | #1201 | #1548, #1552, #1556, #1410 |
 | tenant delegation for embedder work | #1187 | none (shipped by #1578) |
 | QUIC public operations without a client certificate | #1174 | none (shipped by #1475) |
 
