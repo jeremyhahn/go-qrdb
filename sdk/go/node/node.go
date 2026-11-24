@@ -1709,6 +1709,9 @@ func (n *Node) Unseal(ctx context.Context, creds seal.Credentials) error {
 // open the barrier, with seal.ErrPassphraseChangeConflict when a concurrent
 // change won the race, and with ErrSealNotEnabled on a node built without a
 // seal barrier. A Shamir barrier has no passphrase and refuses the call too.
+// An unseal the strategy could not run (an enclave or hardware fault) is
+// refused with an error matching seal.ErrUnsealFailed, never
+// seal.ErrCredentialMismatch.
 //
 // This is the in-process counterpart of the barrier change-passphrase
 // operation the transports carry; it bypasses their Security Officer gate, as

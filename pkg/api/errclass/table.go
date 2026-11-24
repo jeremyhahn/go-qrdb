@@ -135,6 +135,8 @@ var dominantRules = []rule{
 	// The same seal met one step later: the barrier sealed AFTER Resolve
 	// returned a store and BEFORE that store's own Get/Put ran, which reports
 	// the barrier's sentinel unwrapped (go-qrdb#464 round 6).
+	// An unseal the strategy could not run is a server fault whatever cause it wraps.
+	is(seal.ErrUnsealFailed, Internal),
 	is(seal.ErrSealed, Unavailable),
 	// go-quicraft's own sentinel for the same condition: a node barrier
 	// re-sealed at runtime refuses every store read and write with it, and
