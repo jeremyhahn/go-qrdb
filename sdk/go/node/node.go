@@ -4596,7 +4596,8 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 	}
 	// The seal store (named secrets sealed under the node barrier) is
 	// embedded-only (ruling 1234): no network transport serves its data, so
-	// this is the one place it is wired. Without it every SealStoreClient
+	// it is wired only on the embedded transport: here for node.Client() and
+	// in the desktop build's embedded binding. Without it every SealStoreClient
 	// verb on node.Client() answered "SealStore must not be nil".
 	if barrier := n.barrier.Load(); barrier != nil {
 		sealStore, err := seal.NewSealStore(barrier, seal.SealStoreDefaultPrefix, slog.Default())
