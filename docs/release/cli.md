@@ -87,10 +87,21 @@ Every finding prints one line naming the file; the target fails after
 reporting them all. `make test-check-release-artifacts` (a lint gate) pins
 the check against real fixture builds.
 
+`make release-smoke PLATFORM=<goos>/<goarch>` (`scripts/release-smoke.sh`)
+runs the artifacts of one platform natively from `dist/`: for each binary
+and variant the file must exist and be executable, and `<file> version` must
+exit 0 and print `v<VERSION>`. The plain variant runs with `GODEBUG` unset,
+the `-fips` one under `GODEBUG=fips140=only`, so the FIPS module's
+self-test runs. `PLATFORM` must be the host's (exit 2 otherwise); neither
+`release-cross` nor `release-artifacts` calls it, since they cross-build.
+Every finding prints one line naming the file; the target fails after
+reporting them all. `make test-release-smoke` (a lint gate) pins it with a
+stub `GO` and shell-script artifacts, and builds nothing.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `RELEASE_PLATFORMS` | `linux/amd64 linux/arm64` | the platforms `release-artifacts` builds |
-| `PLATFORM` | *(required by `release-cross`)* | the one platform `release-cross` builds |
+| `PLATFORM` | *(required by `release-cross` and `release-smoke`)* | the one platform `release-cross` builds and `release-smoke` runs (the host's) |
 | `PLATFORMS` | `$(RELEASE_PLATFORMS)` | the platforms `check-release-artifacts` checks |
 | `CRA_SUMS` | `1` | `check-release-artifacts` also checks `SHA256SUMS` (`0` skips it) |
 
