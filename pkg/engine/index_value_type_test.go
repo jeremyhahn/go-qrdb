@@ -264,15 +264,71 @@ func TestHandleIndexCreate_KeyPrefixChangeRebuilds(t *testing.T) {
 				t.Fatalf("scoped index: c@x matched %v, want none", got)
 			}
 
-			// Back to database-wide: txmember keys are indexed again. (b@x
-			// is held by member/2 and txmember/1 alike, so the unique
-			// backfill keeps one of them; c@x has a single holder.)
-			applyEmailIndexCreate(t, c.eng, 8, protocol.IndexCreateOptions{Rescope: true})
+			// Back to database-wide: txmember keys are indexed again once
+			// the wider scope holds no duplicate value.
+			if err := c.eng.Update(context.Background(), []sm.Entry{
+				c.put(8, "txmember/1", `{"email":"d@x"}`),
+			}, make([]sm.Result, 1)); err != nil {
+				t.Fatalf("put txmember/1: %v", err)
+			}
+			applyEmailIndexCreate(t, c.eng, 9, protocol.IndexCreateOptions{Rescope: true})
+			if got := emailLookup(t, c.eng, "d@x"); !slices.Equal(got, []string{"txmember/1"}) {
+				t.Fatalf("unscoped re-create: d@x matched %v, want [txmember/1]", got)
+			}
 			if got := emailLookup(t, c.eng, "c@x"); !slices.Equal(got, []string{"txmember/2"}) {
 				t.Fatalf("unscoped re-create: c@x matched %v, want [txmember/2]", got)
 			}
 			if got := emailLookup(t, c.eng, "a@x"); !slices.Equal(got, []string{"member/1"}) {
 				t.Fatalf("unscoped re-create: a@x matched %v, want [member/1]", got)
+			}
+		})
+	}
+}
+
+func TestHandleIndexCreate_RescopeOverDuplicatesIsRefused(t *testing.T) {
+	for name, c := range valueTypeEngines(t) {
+		t.Run(name, func(t *testing.T) {
+			applyEmailIndexCreate(t, c.eng, 1, protocol.IndexCreateOptions{KeyPrefix: "member/"})
+			if err := c.eng.Update(context.Background(), []sm.Entry{
+				c.put(2, "member/1", `{"email":"a@x"}`),
+				c.put(3, "txmember/1", `{"email":"a@x"}`),
+			}, make([]sm.Result, 2)); err != nil {
+				t.Fatalf("put: %v", err)
+			}
+
+			res := applyEmailIndexCreate(t, c.eng, 4, protocol.IndexCreateOptions{Rescope: true})
+			if _, kind, ok := protocol.DecodeAppErrorKind(res.Data); !ok || kind != protocol.AppErrorConflict {
+				t.Fatalf("rescope over duplicates: result %q, want an AppErrorConflict", res.Data)
+			}
+			if got := emailLookup(t, c.eng, "a@x"); !slices.Equal(got, []string{"member/1"}) {
+				t.Fatalf("after refused rescope: a@x matched %v, want [member/1]", got)
+			}
+
+			results := make([]sm.Result, 1)
+			if err := c.eng.Update(context.Background(), []sm.Entry{
+				c.put(5, "member/2", `{"email":"a@x"}`),
+			}, results); err != nil {
+				t.Fatalf("put member/2: %v", err)
+			}
+			if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+				t.Fatalf("put member/2 accepted; want a unique conflict against member/1")
+			}
+
+			// A wider scope without a duplicate value rescopes and indexes both keys.
+			if err := c.eng.Update(context.Background(), []sm.Entry{
+				c.put(6, "txmember/1", `{"email":"b@x"}`),
+			}, make([]sm.Result, 1)); err != nil {
+				t.Fatalf("put txmember/1: %v", err)
+			}
+			res = applyEmailIndexCreate(t, c.eng, 7, protocol.IndexCreateOptions{Rescope: true})
+			if msg, ok := protocol.DecodeAppError(res.Data); ok {
+				t.Fatalf("rescope without duplicates refused: %s", msg)
+			}
+			if got := emailLookup(t, c.eng, "a@x"); !slices.Equal(got, []string{"member/1"}) {
+				t.Fatalf("after rescope: a@x matched %v, want [member/1]", got)
+			}
+			if got := emailLookup(t, c.eng, "b@x"); !slices.Equal(got, []string{"txmember/1"}) {
+				t.Fatalf("after rescope: b@x matched %v, want [txmember/1]", got)
 			}
 		})
 	}

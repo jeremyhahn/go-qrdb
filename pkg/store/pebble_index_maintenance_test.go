@@ -292,10 +292,63 @@ func TestPebbleStateMachine_IndexCreate_KeyPrefixChangeRebuilds(t *testing.T) {
 	put(7, "txmember/2", `{"email":"c@x"}`)
 	want("scoped index", "c@x")
 
-	// Back to database-wide: txmember keys are indexed again.
-	create(8, protocol.IndexCreateOptions{Rescope: true})
+	// Back to database-wide: txmember keys are indexed again once the wider
+	// scope holds no duplicate value.
+	put(8, "txmember/1", `{"email":"d@x"}`)
+	create(9, protocol.IndexCreateOptions{Rescope: true})
+	want("unscoped re-create", "d@x", "txmember/1")
 	want("unscoped re-create", "c@x", "txmember/2")
 	want("unscoped re-create", "a@x", "member/1")
+}
+
+func TestPebbleStateMachine_IndexCreate_RescopeOverDuplicatesIsRefused(t *testing.T) {
+	s := openExtendedStore(t)
+	create := func(entry uint64, opts protocol.IndexCreateOptions) []sm.Result {
+		t.Helper()
+		opts.Unique = true
+		cmd := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", opts))
+		return applyExtEntries(t, s, []sm.Entry{{Index: entry, Cmd: cmd}})
+	}
+	put := func(entry uint64, key, value string) []sm.Result {
+		t.Helper()
+		return applyExtEntries(t, s, []sm.Entry{{Index: entry, Cmd: mustEncode(kv.EncodePut([]byte(key), []byte(value)))}})
+	}
+	want := func(step, value string, keys ...string) {
+		t.Helper()
+		got := indexQueryKeys(t, s, "by_email", value)
+		if len(got) != len(keys) {
+			t.Fatalf("%s: %s matched %v, want %v", step, value, got, keys)
+		}
+		for _, k := range keys {
+			if !containsKey(got, k) {
+				t.Fatalf("%s: %s matched %v, want %v", step, value, got, keys)
+			}
+		}
+	}
+
+	create(1, protocol.IndexCreateOptions{KeyPrefix: "member/"})
+	put(2, "member/1", `{"email":"a@x"}`)
+	put(3, "txmember/1", `{"email":"a@x"}`)
+
+	res := create(4, protocol.IndexCreateOptions{Rescope: true})
+	if _, kind, ok := protocol.DecodeAppErrorKind(res[0].Data); !ok || kind != protocol.AppErrorConflict {
+		t.Fatalf("rescope over duplicates: result %q, want an AppErrorConflict", res[0].Data)
+	}
+	want("after refused rescope", "a@x", "member/1")
+
+	res = put(5, "member/2", `{"email":"a@x"}`)
+	if _, ok := protocol.DecodeAppError(res[0].Data); !ok {
+		t.Fatalf("put member/2 accepted; want a unique conflict against member/1")
+	}
+
+	// A wider scope without a duplicate value rescopes and indexes both keys.
+	put(6, "txmember/1", `{"email":"b@x"}`)
+	res = create(7, protocol.IndexCreateOptions{Rescope: true})
+	if msg, ok := protocol.DecodeAppError(res[0].Data); ok {
+		t.Fatalf("rescope without duplicates refused: %s", msg)
+	}
+	want("after rescope", "a@x", "member/1")
+	want("after rescope", "b@x", "txmember/1")
 }
 
 // A scoped re-create without the rescope flag keeps the existing index and

@@ -1050,6 +1050,16 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		if e.indexValueTypes[name] == valueType && (!opts.Rescope || bytes.Equal(e.indexScopes[name], scope)) {
 			return sm.Result{}, nil
 		}
+		if opts.Rescope && opts.Unique && !bytes.Equal(e.indexScopes[name], scope) {
+			check := NewUniqueScopeCheck(fieldName, scope, index.IndexConfig{ValueType: valueType, CaseSensitive: !opts.CaseInsensitive})
+			conflict, err := check.ScanConflict(e.scanAllKVs)
+			if err != nil {
+				return sm.Result{Value: 1}, err
+			}
+			if conflict {
+				return RescopeConflictResult(name), nil
+			}
+		}
 		if err := existing.Close(); err != nil {
 			return sm.Result{Value: 1}, err
 		}

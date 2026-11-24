@@ -2494,6 +2494,22 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 		// rebuilds the index at the requested one: the old terms are cleared
 		// and only the new scope is backfilled. The stale index is unpublished first, so a
 		// concurrent Lookup finds no index rather than one being cleared.
+		if opts.Rescope && opts.Unique && !bytes.Equal(e.indexScopes[name], scope) {
+			check := NewUniqueScopeCheck(fieldName, scope, index.IndexConfig{ValueType: valueType, CaseSensitive: !opts.CaseInsensitive})
+			start, end := backfillRange(scope)
+			conflict, err := check.ScanConflict(func() ([]*service.KeyValue, error) {
+				kvs, _, _, err := store.RangeInBatch(batch, start, end)
+				return kvs, err
+			})
+			if err != nil {
+				e.indexMu.Unlock()
+				return sm.Result{}, nil, err
+			}
+			if conflict {
+				e.indexMu.Unlock()
+				return RescopeConflictResult(name), nil, nil
+			}
+		}
 		delete(e.indexes, name)
 		delete(e.indexFields, name)
 		delete(e.indexScopes, name)

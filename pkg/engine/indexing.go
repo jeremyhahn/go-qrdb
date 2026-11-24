@@ -23,8 +23,11 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	qkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
@@ -772,6 +775,63 @@ func backfillEach(scanner func() ([]*service.KeyValue, error), fieldName string,
 				"field", fieldName, "key", string(kv.Key), "error", err)
 		}
 	}
+}
+
+// UniqueScopeCheck reports whether two keys of a scope hold the same normalized value of a field, under the backfill's skip rules.
+type UniqueScopeCheck struct {
+	fieldName string
+	scope     []byte
+	cfg       index.IndexConfig
+	seen      map[string]string
+}
+
+// NewUniqueScopeCheck returns a check for fieldName over the keys in scope, normalizing values as cfg does.
+func NewUniqueScopeCheck(fieldName string, scope []byte, cfg index.IndexConfig) *UniqueScopeCheck {
+	return &UniqueScopeCheck{fieldName: fieldName, scope: scope, cfg: cfg, seen: make(map[string]string)}
+}
+
+// Conflict records key's term and reports whether a different key already holds the same term.
+func (c *UniqueScopeCheck) Conflict(key, value []byte) bool {
+	if len(value) == 0 || !KeyInScope(c.scope, key) {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(value, &fields) != nil {
+		return false
+	}
+	raw, exists := fields[c.fieldName]
+	if !exists {
+		return false
+	}
+	term, ok := index.NormalizeFieldValue(UnquoteJSON(raw), c.cfg)
+	if !ok {
+		return false
+	}
+	prev, seen := c.seen[string(term)]
+	if seen {
+		return prev != string(key)
+	}
+	c.seen[string(term)] = string(key)
+	return false
+}
+
+// ScanConflict runs the check over every key the scanner returns.
+func (c *UniqueScopeCheck) ScanConflict(scanner func() ([]*service.KeyValue, error)) (bool, error) {
+	kvs, err := scanner()
+	if err != nil {
+		return false, err
+	}
+	for _, kv := range kvs {
+		if c.Conflict(kv.Key, kv.Value) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// RescopeConflictResult is the refusal a unique-index rescope gets when its new scope holds duplicate values.
+func RescopeConflictResult(name string) sm.Result {
+	return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorConflict, "unique index "+name+": new key scope holds duplicate values")}
 }
 
 // BackfillIndexWithPrefix scans key-value pairs matching the given prefix
