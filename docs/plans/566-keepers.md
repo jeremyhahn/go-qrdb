@@ -267,3 +267,11 @@ editor line), the Verdict says so; the line here is the tip line.
 | pkg/watch/errors_test.go:TestHubClosedError_ImplementsErrorInterface | suite-audit other | pkg/watch/errors_test.go:25 TestHubClosedError_Error_ReturnsExpectedMessage | :28 `if got := err.Error(); got != want` | kept |
 | pkg/watch/errors_test.go:TestHubClosedError_ErrorsAs | suite-audit other | pkg/watch/errors_test.go:25 TestHubClosedError_Error_ReturnsExpectedMessage | :28 `if got := err.Error(); got != want` | kept |
 | pkg/watch/errors_test.go:TestHubClosedError_NotNil | suite-audit other | pkg/watch/errors_test.go:25 TestHubClosedError_Error_ReturnsExpectedMessage | :28 `if got := err.Error(); got != want` | kept |
+
+## Remaining (rw566w3 stopped at its context budget)
+
+- The "Trimmed tests" table of 566-suite-audit.md (32 rows, each "itself"
+  or "its callers") has no rows here yet; each needs its tip file:line and
+  the quoted wait or assertion.
+- 566-review.md per-file split (Slice 3) and the "Codex round 4 (rw566w3)"
+  section of 566.md (Slice 4) are not written.
