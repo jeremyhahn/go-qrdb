@@ -213,6 +213,15 @@ func startStrictSeparationNode(t *testing.T) *multiProtoNode {
 	return startMultiProtocolNodeWithConfig(t, "mvcc", strictSeparationYAML)
 }
 
+// startStrictSeparationNodeWithoutSO starts a strict separation node whose
+// ceremony names no system SO: the SO is optional in both postures, and
+// such a node boots and serves but refuses its system Admin the
+// SO-exclusive operations (#1129).
+func startStrictSeparationNodeWithoutSO(t *testing.T) *multiProtoNode {
+	t.Helper()
+	return startMultiProtocolNodeWithSO(t, "mvcc", strictSeparationYAML, false)
+}
+
 // strictSeparationYAML is the daemon config fragment for strict separation of
 // duties; startMultiProtocolNodeWithConfig marks a node booted with it.
 const strictSeparationYAML = "auth:\n  separation_of_duties: true\n"
@@ -256,6 +265,16 @@ func startMultiProtocolNodeWithArgs(t *testing.T, smType string, extraArgs ...st
 // extraYAML appended to the daemon's config file, for a setting that has no
 // daemon flag (see writeMultiProtocolSealConfig).
 func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, extraArgs ...string) *multiProtoNode {
+	t.Helper()
+	return startMultiProtocolNodeWithSO(t, smType, extraYAML, strings.Contains(extraYAML, strictSeparationYAML), extraArgs...)
+}
+
+// startMultiProtocolNodeWithSO is startMultiProtocolNodeWithConfig with the
+// system SO's enrolment chosen by the caller: a strict separation node's
+// ceremony names one only when enrollSO is set, since the SO is optional in
+// both postures (startStrictSeparationNodeWithoutSO). A node outside strict
+// separation never names one here, whatever enrollSO says.
+func startMultiProtocolNodeWithSO(t *testing.T, smType, extraYAML string, enrollSO bool, extraArgs ...string) *multiProtoNode {
 	t.Helper()
 
 	bin := buildBinary(t)
@@ -341,13 +360,14 @@ func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, ex
 	quicPort := mustFlagPort(t, args, "--quic-port")
 	mcpPort := mustFlagPort(t, args, "--mcp-port")
 	// Strict separation keeps the SO-exclusive operations to a system SO
-	// (#1128), which is optional: the ceremony of a strict node names one by
+	// (#1128), which is optional: the ceremony of a strict node names one,
+	// unless the caller asked for none (enrollSO false), by
 	// a presented certificate, which the harness keeps whether or not the
 	// ceremony's reply arrives.
 	strict := strings.Contains(extraYAML, strictSeparationYAML)
 	var soCeremony map[string]any
 	var systemSO *qrdbdharness.KeyPair
-	if strict {
+	if strict && enrollSO {
 		systemSO = ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(systemSOUser, "system"))
 		soCeremony = map[string]any{"so_username": systemSOUser, "so_cert_pem": mustReadFile(t, systemSO.CertPath)}
 	}

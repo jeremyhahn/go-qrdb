@@ -101,6 +101,37 @@ func createPostureTenant(t *testing.T, n *multiProtoNode, proto multiProtocol, p
 	return pt
 }
 
+// createPostureTenantWithoutSO creates a tenant over proto as the system
+// admin with createPostureTenant's flags but no --so-* flags: the SO is
+// optional in both postures. The tenant has no SO, so soConn is the admin's
+// login and soUser is empty.
+func createPostureTenantWithoutSO(t *testing.T, n *multiProtoNode, proto multiProtocol, prefix string) *postureTenant {
+	t.Helper()
+	id := fmt.Sprintf("%s-%s-%d", prefix, proto.name, time.Now().UnixNano())
+	adminCSR := tenantSOCSR(t, n, proto, id+"-admin")
+	outDir := t.TempDir()
+	if out, err := runCLIProto(t, n, proto, "tenant", "create",
+		"--id", id, "--name", id, "--isolation-type", "prefix",
+		"--admin-username", id+"-admin", "--admin-csr", filepath.Join(adminCSR, "csr.pem"),
+		"--out", outDir,
+	); err != nil {
+		t.Fatalf("[%s] tenant create without an SO: %v\noutput: %s", proto.name, err, out)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "so-cert.pem")); err == nil {
+		t.Fatalf("[%s] tenant create without an SO wrote an SO certificate", proto.name)
+	}
+	pt := &postureTenant{
+		id:        id,
+		adminConn: tenantCLIArgsForProto(n, proto, filepath.Join(outDir, "admin-cert.pem"), filepath.Join(adminCSR, "key.pem")),
+		soRole:    role.SystemRoleID(id, role.RoleNameSO),
+		cli:       n.cli,
+		proto:     proto,
+	}
+	pt.soConn = pt.adminConn
+	pt.adminUser = pt.userID(t, id+"-admin")
+	return pt
+}
+
 // userID answers the id of the tenant account named username, listed by the
 // tenant's Admin.
 func (pt *postureTenant) userID(t *testing.T, username string) string {
@@ -258,6 +289,37 @@ func TestSeparationPosture_CLI_SystemSO_PerProtocol(t *testing.T) {
 			if out, err := runQRDB(t, n.cli, soConn, allTenants...); err != nil {
 				t.Fatalf("[%s] roles reconcile --all-tenants as the system SO: %v\noutput: %s", proto.name, err, out)
 			}
+		})
+	}
+}
+
+// TestSeparationPosture_CLI_StrictWithoutSO_PerProtocol drives, over every
+// transport, a strict daemon whose ceremony named no SO, and a tenant
+// created on it with no SO (#1129): the SO is optional in both postures, so
+// both boot and serve, and strict separation keeps the SO-exclusive
+// operations to an SO, so the system Admin and the tenant Admin are each
+// refused them with the typed SO refusal.
+func TestSeparationPosture_CLI_StrictWithoutSO_PerProtocol(t *testing.T) {
+	t.Parallel()
+	n := startStrictSeparationNodeWithoutSO(t)
+	if n.systemSOCert != "" {
+		t.Fatal("the strict node without an SO enrolled a system SO")
+	}
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			ops := map[string][]string{
+				"roles create": {"roles", "create", "--name", fmt.Sprintf("nso-%s-%d-sysauditor", proto.name, time.Now().UnixNano()),
+					"--permissions", "audit:read", "--tenant-id", "system"},
+				"roles reconcile --tenant":      {"roles", "reconcile", "--tenant", "system"},
+				"roles reconcile --all-tenants": {"roles", "reconcile", "--all-tenants"},
+			}
+			for name, args := range ops {
+				out, err := runCLIProto(t, n, proto, args...)
+				requireSORefusal(t, proto.name, name+" as the system Admin of a node without an SO", out, err)
+			}
+
+			pt := createPostureTenantWithoutSO(t, n, proto, "nso")
+			pt.soExclusiveOps(t, "admin", pt.adminConn, true)
 		})
 	}
 }
