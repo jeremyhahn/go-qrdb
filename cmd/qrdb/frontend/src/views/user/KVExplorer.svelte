@@ -852,7 +852,8 @@
     void client;
     void revisionScope;
     void revisionFingerprint;
-    loadEntries();
+    // Only the dependencies above reload; state loadEntries reads is not tracked.
+    untrack(() => void loadEntries());
   });
 </script>
 
