@@ -172,13 +172,13 @@ func CheckUniqueViolationsBatch(batch storage.Batch, indexes map[string]index.In
 	// the set retracts: those the written key's value carried before that
 	// write, the only entries apply removes. A stale entry the value does not
 	// carry (one a legacy non-JSON overwrite kept) stays held.
-	released := make(map[string]struct{})
+	released := make(map[uniqueHolder]struct{})
 	cur := make(map[string][]byte)
 	// pending records the key each (index, value) is claimed by within this
 	// set, so an intra-set duplicate is caught too; claims indexes it by key so
 	// a later write of the same key can drop the key's earlier claims.
-	pending := make(map[string]string)
-	claims := make(map[string][]string)
+	pending := make(map[uniqueClaim]string)
+	claims := make(map[string][]uniqueClaim)
 	for _, w := range writes {
 		key := string(w.Key)
 		for _, mapKey := range claims[key] {
@@ -226,7 +226,7 @@ func CheckUniqueViolationsBatch(batch storage.Batch, indexes map[string]index.In
 			if !indexable {
 				continue // the index stores no entry for this value
 			}
-			mapKey := idxName + "\x00" + string(term)
+			mapKey := uniqueClaim{idxName, string(term)}
 			existing, err := getIndexValues(batch, idx, fieldVal)
 			if err != nil {
 				return err
@@ -235,7 +235,7 @@ func CheckUniqueViolationsBatch(batch storage.Batch, indexes map[string]index.In
 				if string(k) == key {
 					continue // the key's own entry
 				}
-				if _, isReleased := released[mapKey+"\x00"+string(k)]; isReleased {
+				if _, isReleased := released[uniqueHolder{mapKey, string(k)}]; isReleased {
 					continue // an entry an earlier write of the set retracted
 				}
 				return &UniqueConstraintError{Index: idxName, Field: fieldName}
@@ -266,6 +266,17 @@ func valueBeforeWrite(cur map[string][]byte, prev func(key []byte) ([]byte, erro
 // uniqueIndexTerm returns the term idx stores for fieldVal (normalized under
 // the index's Config(), raw when it has none) and false when the index
 // stores no entry for it.
+// uniqueClaim names one index's stored term (or compound tuple). It is a
+// struct, not a separator-joined string, because keys and JSON strings may
+// hold NUL: a joined key could make two distinct (index, term) pairs collide.
+type uniqueClaim struct{ index, term string }
+
+// uniqueHolder names a uniqueClaim held by one key.
+type uniqueHolder struct {
+	uniqueClaim
+	key string
+}
+
 func uniqueIndexTerm(idx index.Index, fieldVal []byte) ([]byte, bool) {
 	if c, hasCfg := idx.(interface{ Config() index.IndexConfig }); hasCfg {
 		return index.NormalizeFieldValue(fieldVal, c.Config())
@@ -277,7 +288,7 @@ func uniqueIndexTerm(idx index.Index, fieldVal []byte) ([]byte, bool) {
 // unique single-field index in scope that value carries: the entries apply
 // removes when key is overwritten or deleted. A value that is not a JSON
 // object carries none.
-func releaseUniqueEntries(released map[string]struct{}, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, key, value []byte) {
+func releaseUniqueEntries(released map[uniqueHolder]struct{}, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, key, value []byte) {
 	fields := parseIndexFields(value)
 	if fields == nil {
 		return
@@ -302,7 +313,7 @@ func releaseUniqueEntries(released map[string]struct{}, indexes map[string]index
 		if !indexable {
 			continue
 		}
-		released[idxName+"\x00"+string(term)+"\x00"+string(key)] = struct{}{}
+		released[uniqueHolder{uniqueClaim{idxName, string(term)}, string(key)}] = struct{}{}
 	}
 }
 
@@ -334,7 +345,7 @@ func checkUniqueViolationsBatchUnordered(batch storage.Batch, indexes map[string
 	}
 	// pending records the key each (index, value) is claimed by within this
 	// batch, so an intra-batch duplicate is caught too.
-	pending := make(map[string][]byte)
+	pending := make(map[uniqueClaim][]byte)
 	for _, p := range puts {
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(p.Value, &fields) != nil {
@@ -370,7 +381,7 @@ func checkUniqueViolationsBatchUnordered(batch storage.Batch, indexes map[string
 				}
 				return &UniqueConstraintError{Index: idxName, Field: fieldName}
 			}
-			mapKey := idxName + "\x00" + string(fieldVal)
+			mapKey := uniqueClaim{idxName, string(fieldVal)}
 			if prev, seen := pending[mapKey]; seen && !bytes.Equal(prev, p.Key) {
 				return &UniqueConstraintError{Index: idxName, Field: fieldName}
 			}
@@ -401,10 +412,10 @@ func checkCompoundUniqueBatch(batch storage.Batch, compoundIndexes map[string]*i
 	// write. pending records the key each (index, tuple) is claimed by within
 	// the set, and claims indexes those by key so a later write of the same
 	// key drops the key's earlier claims.
-	released := make(map[string]struct{})
+	released := make(map[uniqueHolder]struct{})
 	cur := make(map[string][]byte)
-	pending := make(map[string]string)
-	claims := make(map[string][]string)
+	pending := make(map[uniqueClaim]string)
+	claims := make(map[string][]uniqueClaim)
 	for _, w := range writes {
 		key := string(w.Key)
 		for _, mapKey := range claims[key] {
@@ -441,7 +452,7 @@ func checkCompoundUniqueBatch(batch storage.Batch, compoundIndexes map[string]*i
 				continue // sparse: a missing field indexes nothing
 			}
 			conflict := &UniqueConstraintError{Index: idxName, Field: strings.Join(fieldNames, ",")}
-			mapKey := idxName + "\x00" + string(idx.CompoundTuple(values))
+			mapKey := uniqueClaim{idxName, string(idx.CompoundTuple(values))}
 			existing, err := idx.GetCompoundInBatch(batch, values)
 			if err != nil {
 				return err
@@ -450,7 +461,7 @@ func checkCompoundUniqueBatch(batch storage.Batch, compoundIndexes map[string]*i
 				if string(k) == key {
 					continue // the key's own entry
 				}
-				if _, isReleased := released[mapKey+"\x00"+string(k)]; !isReleased {
+				if _, isReleased := released[uniqueHolder{mapKey, string(k)}]; !isReleased {
 					return conflict
 				}
 			}
@@ -467,7 +478,7 @@ func checkCompoundUniqueBatch(batch storage.Batch, compoundIndexes map[string]*i
 // releaseCompoundUniqueEntries adds to released the (index, tuple, key)
 // entry of every unique compound index in scope that value carries: the
 // entries apply removes when key is overwritten or deleted.
-func releaseCompoundUniqueEntries(released map[string]struct{}, compoundIndexes map[string]*index.CompoundIndex, compoundIndexFields map[string][]string, compoundIndexScopes map[string][]byte, key, value []byte) {
+func releaseCompoundUniqueEntries(released map[uniqueHolder]struct{}, compoundIndexes map[string]*index.CompoundIndex, compoundIndexFields map[string][]string, compoundIndexScopes map[string][]byte, key, value []byte) {
 	fields := parseIndexFields(value)
 	if fields == nil {
 		return
@@ -484,7 +495,7 @@ func releaseCompoundUniqueEntries(released map[string]struct{}, compoundIndexes 
 		if values == nil {
 			continue
 		}
-		released[idxName+"\x00"+string(idx.CompoundTuple(values))+"\x00"+string(key)] = struct{}{}
+		released[uniqueHolder{uniqueClaim{idxName, string(idx.CompoundTuple(values))}, string(key)}] = struct{}{}
 	}
 }
 

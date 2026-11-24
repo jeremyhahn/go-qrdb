@@ -731,6 +731,48 @@ func TestCheckUniqueViolationsBatch_StaleEntryNotReleased(t *testing.T) {
 	}
 }
 
+// TestCheckUniqueViolationsBatch_NULKeyReleaseUnambiguous: key "a\x00b" with
+// term "x" and key "b" with term "x\x00a" joined to one NUL-separated release
+// marker; deleting "a\x00b" must release only its own entry, so a third key
+// claiming "x\x00a" still conflicts with "b".
+func TestCheckUniqueViolationsBatch_NULKeyReleaseUnambiguous(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	idx, err := index.NewStoragePebbleIndex(stg, index.IndexConfig{
+		Name: "users.Email", Type: index.IndexTypeUnique, Unique: true,
+	}, indexTestLogger(t))
+	if err != nil {
+		t.Fatalf("NewStoragePebbleIndex: %v", err)
+	}
+	indexes := map[string]index.Index{"users.Email": idx}
+	fields := map[string]string{"users.Email": "email"}
+
+	seed := stg.Batch()
+	for _, kv := range [][2]string{{"a\x00b", `{"email":"x"}`}, {"b", `{"email":"x\u0000a"}`}} {
+		if err := UpdateIndexesBatch(seed, indexes, fields, nil, []byte(kv[0]), []byte(kv[1]), nil); err != nil {
+			t.Fatalf("seed UpdateIndexesBatch %q: %v", kv[0], err)
+		}
+		if err := seed.Set([]byte(kv[0]), []byte(kv[1])); err != nil {
+			t.Fatalf("seed Set %q: %v", kv[0], err)
+		}
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed Commit: %v", err)
+	}
+
+	writes := []indexedWrite{
+		{Key: []byte("a\x00b"), Delete: true},
+		{Key: []byte("c"), Value: []byte(`{"email":"x\u0000a"}`)},
+	}
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+	err = CheckUniqueViolationsBatch(batch, indexes, fields, nil, writes, func(k []byte) ([]byte, error) { return batch.Get(k) })
+	var uce *UniqueConstraintError
+	if !errors.As(err, &uce) {
+		t.Fatalf("CheckUniqueViolationsBatch = %v, want *UniqueConstraintError (b still holds x\\x00a)", err)
+	}
+}
+
 func TestUpdateIndexesBatch_WithPreviousValue(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
@@ -1957,6 +1999,49 @@ func TestCheckCompoundUniqueBatch(t *testing.T) {
 				t.Fatalf("err = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// TestCheckCompoundUniqueBatch_NULKeyReleaseUnambiguous: compound string
+// fields are escaped and terminated, so tuple+"\x00"+key markers could not
+// collide; the test pins that a delete of a NUL-bearing key releases only its
+// own holder, and that the release set keeps two holders of NUL-bearing
+// tuples and keys distinct.
+func TestCheckCompoundUniqueBatch_NULKeyReleaseUnambiguous(t *testing.T) {
+	stg, indexes, fields, scopes := uniqueCompoundFixture(t)
+	seed := stg.Batch()
+	for _, kv := range [][2]string{
+		{"sessions/a\x00b", `{"user_id":"u","device_id":"x"}`},
+		{"sessions/b", `{"user_id":"u","device_id":"x\u0000a"}`},
+	} {
+		if err := UpdateCompoundIndexesBatch(seed, indexes, fields, scopes, []byte(kv[0]), []byte(kv[1]), nil); err != nil {
+			t.Fatalf("seed index entry %q: %v", kv[0], err)
+		}
+		if err := seed.Set([]byte(kv[0]), []byte(kv[1])); err != nil {
+			t.Fatalf("seed key %q: %v", kv[0], err)
+		}
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+
+	released := make(map[uniqueHolder]struct{})
+	releaseCompoundUniqueEntries(released, indexes, fields, scopes, []byte("sessions/a\x00b"), []byte(`{"user_id":"u","device_id":"x"}`))
+	releaseCompoundUniqueEntries(released, indexes, fields, scopes, []byte("sessions/b"), []byte(`{"user_id":"u","device_id":"x\u0000a"}`))
+	if len(released) != 2 {
+		t.Fatalf("released holds %d holders, want 2 distinct", len(released))
+	}
+
+	writes := []indexedWrite{
+		{Key: []byte("sessions/a\x00b"), Delete: true},
+		{Key: []byte("sessions/c"), Value: []byte(`{"user_id":"u","device_id":"x\u0000a"}`)},
+	}
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+	err := checkCompoundUniqueBatch(batch, indexes, fields, scopes, writes, func(k []byte) ([]byte, error) { return batch.Get(k) })
+	var uce *UniqueConstraintError
+	if !errors.As(err, &uce) {
+		t.Fatalf("err = %v, want *UniqueConstraintError (sessions/b still holds the tuple)", err)
 	}
 }
 

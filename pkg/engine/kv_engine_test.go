@@ -2829,6 +2829,36 @@ func TestKVEngine_OrderedTransactionCaseInsensitiveReleaseThenDuplicate(t *testi
 	mustLookupAbsent(t, eng, "user:C")
 }
 
+// TestKVEngine_OrderedTransactionNULKeyReleaseIsConflict: deleting key
+// "a\x00b" (term x) releases only that holder; it must not also release key
+// "b"'s term "x\x00a", whose old NUL-joined release marker was the same
+// string. A put of "x\x00a" for a third key is then a conflict result, not a
+// fatal apply error from the staged batch.
+func TestKVEngine_OrderedTransactionNULKeyReleaseIsConflict(t *testing.T) {
+	stg := memory.NewStorage()
+	t.Cleanup(func() { _ = stg.Close() })
+	eng := NewKVEngine(stg)
+	create := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name",
+		protocol.IndexCreateOptions{Unique: true}))
+	applyKVEntries(t, eng, []sm.Entry{
+		{Index: 1, Cmd: create},
+		kvPutEntry(2, "a\x00b", `{"name":"x"}`),
+		kvPutEntry(3, "b", `{"name":"x\u0000a"}`),
+	})
+
+	txn := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("a\x00b"), nil, nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("c"), []byte(`{"name":"x\u0000a"}`), nil, 0)),
+	}, nil, protocol.CmdFlagOrderedUnique))
+	res := applyKVEntries(t, eng, []sm.Entry{{Index: 4, Cmd: txn}})[0]
+	_, kind, ok := protocol.DecodeAppErrorKind(res.Data)
+	if !ok || kind != protocol.AppErrorConflict {
+		t.Fatalf("result data = %q, want a conflict application error", res.Data)
+	}
+	mustLookupValue(t, eng, "a\x00b", `{"name":"x"}`)
+	mustLookupAbsent(t, eng, "c")
+}
+
 // A flagged transaction checks a unique compound index across all its
 // writes in op order: two keys cannot claim one tuple, and a tuple an
 // earlier overwrite released may be taken by a later write.
