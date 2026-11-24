@@ -257,9 +257,10 @@ type fencedKVStoreAdapter struct {
 
 // Compile-time proofs of the capabilities the fenced adapter offers.
 var (
-	_ kvstore.AtomicKVStore = (*fencedKVStoreAdapter)(nil)
-	_ kvstore.FencedCreator = (*fencedKVStoreAdapter)(nil)
-	_ kvstore.FencedCreator = kvSealBackend{}
+	_ kvstore.AtomicKVStore            = (*fencedKVStoreAdapter)(nil)
+	_ kvstore.FencedCreator            = (*fencedKVStoreAdapter)(nil)
+	_ kvstore.MultiGuardedBatchKVStore = (*fencedKVStoreAdapter)(nil)
+	_ kvstore.FencedCreator            = kvSealBackend{}
 )
 
 // PutIfAllAbsent stores value under key only while key and every fence key
@@ -644,6 +645,11 @@ func (b kvSealBackend) PutAllIfAllUnchanged(ctx context.Context, guards []kvstor
 // policy write as kvSealBackend.PutAllIfAllUnchanged.
 func (a *fencedKVStoreAdapter) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
 	return ExecuteGuardedBatch(ctx, a.tx, guards, writes)
+}
+
+// PutAllIfUnchanged is PutAllIfAllUnchanged with a single guard.
+func (a *fencedKVStoreAdapter) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+	return ExecuteGuardedBatch(ctx, a.tx, []kvstore.Guard{{Key: guardKey, Value: guardValue}}, writes)
 }
 
 // guardCompares translates each kvstore.Guard into the service.Compare the
