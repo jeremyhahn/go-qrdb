@@ -256,10 +256,6 @@ func retryableConnect(err error) bool {
 	return !errors.As(err, &alpn)
 }
 
-// boundSpent reports whether ctx's bound has ended: ctx is done, or its
-// deadline has passed though its timer has not fired yet. call sets the same
-// deadline on the stream, and that timer can fire first, so an attempt the
-// bound cut short can return while ctx.Err is still nil.
 // lastConnectFailure returns the failure Connect reports as its last
 // attempt's, given the one held so far (nil before the first), the newest
 // attempt's error, and whether the caller's bound is spent. An attempt the
@@ -277,6 +273,10 @@ func lastConnectFailure(last, err error, spent bool) error {
 	return err
 }
 
+// boundSpent reports whether ctx's bound has ended: ctx is done, or its
+// deadline has passed though its timer has not fired yet. call sets the same
+// deadline on the stream, and that timer can fire first, so an attempt the
+// bound cut short can return while ctx.Err is still nil.
 func boundSpent(ctx context.Context) bool {
 	if ctx.Err() != nil {
 		return true
