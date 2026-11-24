@@ -425,13 +425,19 @@ sleeps: every wait is on an observable state):
   the CLI since, for a single-replica tenant and for a three-replica tenant,
   then every write the CLI acknowledged is readable after `cancel-move`
   returns and the move is gone. A single-replica move cuts over in the
-  worker pass that releases its settled step, so "written after resume,
-  then cancelled" exists only while that step settles: the single-replica
-  case is a cancel recorded against the settling step after the destination
-  acknowledged the write, and the test proves the copy-back path (the
-  write acknowledged before `cancel-move` returns, `nodesCopied` non-empty
-  in the answer); an attempt that cut over first or recorded no copied
-  node is retried on a fresh tenant (decided by convention, ruling 109); with a destination pool that is
+  worker pass that releases its settled step: the window between the
+  destination reopen and that release is inside one worker pass and no CLI
+  ordering reaches it, so the single-replica case writes through the CLI
+  after the copy is recorded, waits for the write to be acknowledged,
+  cancels, and requires every acknowledged write readable after
+  `cancel-move` returns and the move is gone, whichever way the cancel
+  lands (copy-back abort, uncopied abort or after cut over; a cancel
+  answering with a copied node must be the copy-back). The copy-back of a
+  destination-acknowledged write is proven in process by
+  `TestCatalog_SettlingCopyStepCancelAbortsAtRelease`,
+  `TestMoveReconciler_SingleReplicaCancelWhileSettlingCopiesBack` and
+  `TestMoveStepRunner_SingleReplicaAbortKeepsEveryWrite` (decided by
+  convention, ruling 109); with a destination pool that is
   unready on one node (admit refused), and without the permission
   (`PERMISSION_DENIED`).
 
