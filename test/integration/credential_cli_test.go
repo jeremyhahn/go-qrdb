@@ -44,6 +44,7 @@ import (
 	"time"
 
 	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
