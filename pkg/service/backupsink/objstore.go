@@ -182,7 +182,12 @@ func (s *Sink) List(ctx context.Context) ([]service.BackupInfo, error) {
 // Delete removes a persisted backup's metadata, payloads, and envelope (if
 // any -- deleting an absent envelope key is a no-op for every
 // storage.Storage implementation this sink is used with).
-func (s *Sink) Delete(_ context.Context, id string) error {
+func (s *Sink) Delete(ctx context.Context, id string) error {
+	// An unknown ID is BackupNotFoundError, as on the in-memory service: a
+	// delete must not report success for a backup that was never there.
+	if _, err := s.ReadInfo(ctx, id); err != nil {
+		return err
+	}
 	// Delete metadata first so a partially-deleted backup is not listed.
 	if err := s.store.Delete([]byte(metaPrefix + id)); err != nil {
 		return err

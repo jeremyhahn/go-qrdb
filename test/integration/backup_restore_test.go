@@ -92,7 +92,47 @@ type restoreDRNode struct {
 // backup artifact restore needs to read). It waits for full serving and
 // returns a handle with the REST connection flags a `qrdb` subprocess needs
 // to reach it as the bootstrapped system admin identity.
+// restoreDRSource names how a disaster-recovery node is told where its
+// backup repository lives.
+// appendBackupDestination appends a backup.destination block, provider
+// local rooted at dir, to the config file at cfgPath.
+func appendBackupDestination(t *testing.T, cfgPath, dir string) {
+	t.Helper()
+	f, err := os.OpenFile(cfgPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("appendBackupDestination: %v", err)
+	}
+	if _, err := f.WriteString(backupDestinationYAML(dir)); err != nil {
+		t.Fatalf("appendBackupDestination: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("appendBackupDestination: %v", err)
+	}
+}
+
+// backupDestinationYAML is a backup.destination block for the go-objstore
+// local provider rooted at dir.
+func backupDestinationYAML(dir string) string {
+	return "backup:\n  destination:\n    provider: local\n    settings:\n      path: " + dir + "\n"
+}
+
+type restoreDRSource int
+
+const (
+	// restoreDRFromBackupDir passes the repository as --backup-dir (the
+	// file engine).
+	restoreDRFromBackupDir restoreDRSource = iota
+	// restoreDRFromDestination names it in the config file's
+	// backup.destination block, provider local, and passes no --backup-dir.
+	restoreDRFromDestination
+)
+
 func startRestoreDRNode(t *testing.T, bin string, prefix string) *restoreDRNode {
+	t.Helper()
+	return startRestoreDRNodeFrom(t, bin, prefix, restoreDRFromBackupDir)
+}
+
+func startRestoreDRNodeFrom(t *testing.T, bin string, prefix string, source restoreDRSource) *restoreDRNode {
 	t.Helper()
 
 	ca := generateTestCA(t)
@@ -113,6 +153,11 @@ func startRestoreDRNode(t *testing.T, bin string, prefix string) *restoreDRNode 
 	// the credential the test CLI needs to reach the node afterward.
 	certDir := t.TempDir()
 	cfgPath := writeNoneSealConfig(t)
+	backupArgs := []string{"--backup-dir", backupDir}
+	if source == restoreDRFromDestination {
+		appendBackupDestination(t, cfgPath, backupDir)
+		backupArgs = nil
+	}
 
 	args := []string{
 		"start",
@@ -120,7 +165,9 @@ func startRestoreDRNode(t *testing.T, bin string, prefix string) *restoreDRNode 
 		"--listen", fmt.Sprintf("0.0.0.0:%d", raftPort),
 		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPort),
 		"--data-dir", dataDir,
-		"--backup-dir", backupDir,
+	}
+	args = append(args, backupArgs...)
+	args = append(args,
 		"--backup-key-dir", backupKeyDir,
 		"--sm", "mvcc",
 		"--discovery", "static",
@@ -132,7 +179,7 @@ func startRestoreDRNode(t *testing.T, bin string, prefix string) *restoreDRNode 
 		"--tls-ca-file", ca.CertPath,
 		"--tls-cert-file", nodeCertPath,
 		"--tls-key-file", nodeKeyPath,
-	}
+	)
 
 	n := &restoreDRNode{
 		ca:           ca,

@@ -378,10 +378,11 @@ func TestSink_List_ReadInfoError(t *testing.T) {
 func TestSink_Delete_MetaFails(t *testing.T) {
 	ctx := context.Background()
 	_, fail := newFailStore(t)
+	sink := backupsink.New(fail)
+	// The backup must exist: Delete refuses an unknown ID before any delete.
+	require.NoError(t, sink.Write(ctx, service.BackupInfo{ID: "someid"}, map[uint64][]byte{1: []byte("x")}, nil))
 	fail.deleteErr = errors.New("delete meta failure")
 	fail.deleteFailAt = 1 // fail on the first Delete (meta key)
-
-	sink := backupsink.New(fail)
 	err := sink.Delete(ctx, "someid")
 	require.ErrorIs(t, err, fail.deleteErr, "Delete must propagate a meta-key deletion error")
 }
@@ -389,10 +390,11 @@ func TestSink_Delete_MetaFails(t *testing.T) {
 func TestSink_Delete_EnvelopeFails(t *testing.T) {
 	ctx := context.Background()
 	_, fail := newFailStore(t)
+	sink := backupsink.New(fail)
+	// The backup must exist: Delete refuses an unknown ID before any delete.
+	require.NoError(t, sink.Write(ctx, service.BackupInfo{ID: "someid"}, map[uint64][]byte{1: []byte("x")}, nil))
 	fail.deleteErr = errors.New("delete envelope failure")
 	fail.deleteFailAt = 2 // fail on the second Delete (envelope key)
-
-	sink := backupsink.New(fail)
 	err := sink.Delete(ctx, "someid")
 	require.ErrorIs(t, err, fail.deleteErr, "Delete must propagate an envelope-key deletion error")
 }
@@ -400,10 +402,21 @@ func TestSink_Delete_EnvelopeFails(t *testing.T) {
 func TestSink_Delete_DataFails(t *testing.T) {
 	ctx := context.Background()
 	_, fail := newFailStore(t)
+	sink := backupsink.New(fail)
+	// The backup must exist: Delete refuses an unknown ID before any delete.
+	require.NoError(t, sink.Write(ctx, service.BackupInfo{ID: "someid"}, map[uint64][]byte{1: []byte("x")}, nil))
 	fail.deleteErr = errors.New("delete data failure")
 	fail.deleteFailAt = 3 // fail on the third Delete (data key)
-
-	sink := backupsink.New(fail)
 	err := sink.Delete(ctx, "someid")
 	require.ErrorIs(t, err, fail.deleteErr, "Delete must propagate a data-key deletion error")
+}
+
+func TestSink_Delete_UnknownIDIsNotFound(t *testing.T) {
+	ctx := context.Background()
+	_, fail := newFailStore(t)
+	sink := backupsink.New(fail)
+	err := sink.Delete(ctx, "never-written")
+	var nf *service.BackupNotFoundError
+	require.ErrorAs(t, err, &nf, "Delete of an unknown ID must report BackupNotFoundError")
+	require.Equal(t, "never-written", nf.ID)
 }
