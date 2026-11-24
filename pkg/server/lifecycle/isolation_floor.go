@@ -29,14 +29,19 @@ import (
 // this file, so no node serves under a floor weaker than its configuration
 // asks for, and no FIPS-140 node serves under a floor that is not strict.
 
-var (
-	// isolationFloorWait bounds how long a start waits for the configured
-	// isolation-policy floor before serving; past it the floor is applied in
-	// the background.
-	isolationFloorWait = 30 * time.Second
-	// isolationFloorRetry is the pause between attempts to apply it.
-	isolationFloorRetry = 250 * time.Millisecond
-)
+// floorRetryPolicy is how ApplyIsolationFloor paces its attempts. It is a
+// value handed to each run, never shared mutable state, so the background
+// retry of one run reads only what that run started with.
+type floorRetryPolicy struct {
+	// wait bounds how long a start waits for the configured isolation-policy
+	// floor before serving; past it the floor is applied in the background.
+	wait time.Duration
+	// retry is the pause between attempts to apply it.
+	retry time.Duration
+}
+
+// defaultFloorRetry is the policy a node start uses.
+var defaultFloorRetry = floorRetryPolicy{wait: 30 * time.Second, retry: 250 * time.Millisecond}
 
 // ErrFIPSFloorNotStrict refuses a FIPS-140 start whose cluster-wide
 // isolation-policy floor is not confirmed strict.
@@ -71,33 +76,46 @@ type clusterIsolationFloor interface {
 // failure -- activation is permanent -- and a floor that already holds want
 // needs no write. A standalone node is active from the start.
 func ApplyIsolationFloor(ctx context.Context, svc tenant.TenantServicer, want string) {
+	applyIsolationFloor(ctx, svc, want, defaultFloorRetry)
+}
+
+// applyIsolationFloor is ApplyIsolationFloor under policy. The returned
+// channel closes once no attempt of this run is left: at return when the
+// floor was settled (or never applied) within the wait, else when the
+// background retry ends.
+func applyIsolationFloor(ctx context.Context, svc tenant.TenantServicer, want string, policy floorRetryPolicy) <-chan struct{} {
+	done := make(chan struct{})
 	if want == "" {
-		return
+		close(done)
+		return done
 	}
 	setter, ok := svc.(clusterIsolationFloor)
 	if !ok {
 		slog.Warn("tenant.isolation_policy not applied: the tenant service holds no cluster isolation floor",
 			slog.String("isolation_policy", want))
-		return
+		close(done)
+		return done
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, isolationFloorWait)
+	waitCtx, cancel := context.WithTimeout(ctx, policy.wait)
 	defer cancel()
-	if setIsolationFloor(waitCtx, setter, tenant.ClusterIsolationPolicy(want)) {
-		return
-	}
-	if ctx.Err() != nil {
-		return
+	if setIsolationFloor(waitCtx, setter, tenant.ClusterIsolationPolicy(want), policy.retry) || ctx.Err() != nil {
+		close(done)
+		return done
 	}
 	slog.Warn("tenant.isolation_policy not applied yet; still trying in the background",
 		slog.String("isolation_policy", want))
-	go setIsolationFloor(ctx, setter, tenant.ClusterIsolationPolicy(want))
+	go func() {
+		defer close(done)
+		setIsolationFloor(ctx, setter, tenant.ClusterIsolationPolicy(want), policy.retry)
+	}()
+	return done
 }
 
 // setIsolationFloor tries to set want until it is set or refused, reporting
 // true, or until ctx ends, reporting false. Each write attempt waits for the
 // strict-isolation activation check; a floor that already holds want is
 // done without one.
-func setIsolationFloor(ctx context.Context, setter clusterIsolationFloor, want tenant.ClusterIsolationPolicy) bool {
+func setIsolationFloor(ctx context.Context, setter clusterIsolationFloor, want tenant.ClusterIsolationPolicy, retry time.Duration) bool {
 	loggedInactive := false
 	for {
 		var current tenant.ClusterIsolationPolicy
@@ -113,7 +131,7 @@ func setIsolationFloor(ctx context.Context, setter clusterIsolationFloor, want t
 			select {
 			case <-ctx.Done():
 				return false
-			case <-time.After(isolationFloorRetry):
+			case <-time.After(retry):
 			}
 			continue
 		}
@@ -140,7 +158,7 @@ func setIsolationFloor(ctx context.Context, setter clusterIsolationFloor, want t
 		select {
 		case <-ctx.Done():
 			return false
-		case <-time.After(isolationFloorRetry):
+		case <-time.After(retry):
 		}
 	}
 }

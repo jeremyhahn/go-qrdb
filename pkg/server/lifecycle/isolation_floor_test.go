@@ -107,18 +107,31 @@ func (f *fakeFloorService) state() (tenant.ClusterIsolationPolicy, int) {
 }
 
 // fastFloorRetries shortens the floor's wait and retry for one test.
-func fastFloorRetries(t *testing.T, wait time.Duration) {
+func fastFloorRetries(t *testing.T, wait time.Duration) floorRetryPolicy {
 	t.Helper()
-	oldWait, oldRetry := isolationFloorWait, isolationFloorRetry
-	isolationFloorWait, isolationFloorRetry = wait, time.Millisecond
-	t.Cleanup(func() { isolationFloorWait, isolationFloorRetry = oldWait, oldRetry })
+	return floorRetryPolicy{wait: wait, retry: time.Millisecond}
+}
+
+// applyFloorForTest runs applyIsolationFloor under policy and, at cleanup
+// (after the test's deferred cancel), waits for its background retry to end,
+// so no attempt outlives the test.
+func applyFloorForTest(t *testing.T, policy floorRetryPolicy, ctx context.Context, svc tenant.TenantServicer, want string) {
+	t.Helper()
+	done := applyIsolationFloor(ctx, svc, want, policy)
+	t.Cleanup(func() {
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("the background isolation-floor retry did not end with its context")
+		}
+	})
 }
 
 func TestApplyIsolationFloor_SetsConfiguredFloor(t *testing.T) {
-	fastFloorRetries(t, time.Second)
+	policy := fastFloorRetries(t, time.Second)
 	svc := &fakeFloorService{setErrs: []error{errors.New("not leader")}, check: activeCheck}
 
-	ApplyIsolationFloor(context.Background(), svc, "strict")
+	applyFloorForTest(t, policy, context.Background(), svc, "strict")
 
 	floor, sets := svc.state()
 	if floor != tenant.ClusterIsolationPolicyStrict {
@@ -131,33 +144,33 @@ func TestApplyIsolationFloor_SetsConfiguredFloor(t *testing.T) {
 
 func TestApplyIsolationFloor_EmptyIsNoOp(t *testing.T) {
 	svc := &fakeFloorService{floor: tenant.ClusterIsolationPolicyOperatorAccess}
-	ApplyIsolationFloor(context.Background(), svc, "")
+	applyFloorForTest(t, defaultFloorRetry, context.Background(), svc, "")
 	if floor, sets := svc.state(); sets != 0 || floor != tenant.ClusterIsolationPolicyOperatorAccess {
 		t.Fatalf("an unset configuration touched the floor: floor=%q sets=%d", floor, sets)
 	}
 }
 
 func TestApplyIsolationFloor_RaceWonByAnotherNodeSucceeds(t *testing.T) {
-	fastFloorRetries(t, time.Second)
+	policy := fastFloorRetries(t, time.Second)
 	svc := &fakeFloorService{
 		setErrs: []error{&tenant.IsolationPolicyChangeError{From: "strict", To: "strict"}},
 		raceTo:  tenant.ClusterIsolationPolicyStrict,
 		check:   activeCheck,
 	}
-	ApplyIsolationFloor(context.Background(), svc, "strict")
+	applyFloorForTest(t, policy, context.Background(), svc, "strict")
 	if _, sets := svc.state(); sets != 1 {
 		t.Fatalf("set attempts = %d, want 1 (the floor already holds the value)", sets)
 	}
 }
 
 func TestApplyIsolationFloor_RefusalIsFinal(t *testing.T) {
-	fastFloorRetries(t, time.Second)
+	policy := fastFloorRetries(t, time.Second)
 	svc := &fakeFloorService{
 		floor:   tenant.ClusterIsolationPolicyOperatorAccess,
 		setErrs: []error{&tenant.InvalidIsolationPolicyError{Value: "strict"}},
 		check:   activeCheck,
 	}
-	ApplyIsolationFloor(context.Background(), svc, "strict")
+	applyFloorForTest(t, policy, context.Background(), svc, "strict")
 	floor, sets := svc.state()
 	if sets != 1 {
 		t.Fatalf("set attempts = %d, want 1 (a refusal is not retried)", sets)
@@ -168,7 +181,7 @@ func TestApplyIsolationFloor_RefusalIsFinal(t *testing.T) {
 }
 
 func TestApplyIsolationFloor_ContinuesInBackground(t *testing.T) {
-	fastFloorRetries(t, 20*time.Millisecond)
+	policy := fastFloorRetries(t, 20*time.Millisecond)
 	errs := make([]error, 200)
 	for i := range errs {
 		errs[i] = errors.New("no quorum")
@@ -178,7 +191,7 @@ func TestApplyIsolationFloor_ContinuesInBackground(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ApplyIsolationFloor(ctx, svc, "strict")
+	applyFloorForTest(t, policy, ctx, svc, "strict")
 
 	select {
 	case <-applied:
@@ -196,7 +209,7 @@ func TestApplyIsolationFloor_ContinuesInBackground(t *testing.T) {
 // write guard is dropped. It is applied in the background once the
 // activation check passes, like a transient failure.
 func TestApplyIsolationFloor_WaitsForStrictIsolationActivation(t *testing.T) {
-	fastFloorRetries(t, 20*time.Millisecond)
+	policy := fastFloorRetries(t, 20*time.Millisecond)
 	gate := &toggledCheck{}
 	applied := make(chan struct{})
 	svc := &fakeFloorService{
@@ -207,7 +220,7 @@ func TestApplyIsolationFloor_WaitsForStrictIsolationActivation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ApplyIsolationFloor(ctx, svc, "strict")
+	applyFloorForTest(t, policy, ctx, svc, "strict")
 
 	floor, sets := svc.state()
 	if sets != 0 {
@@ -232,13 +245,13 @@ func TestApplyIsolationFloor_WaitsForStrictIsolationActivation(t *testing.T) {
 // already holds the configured value needs no write, so an inactive check
 // does not hold the start.
 func TestApplyIsolationFloor_NotActiveButAlreadyAppliedIsNoOp(t *testing.T) {
-	fastFloorRetries(t, time.Second)
+	policy := fastFloorRetries(t, time.Second)
 	gate := &toggledCheck{}
 	svc := &fakeFloorService{floor: tenant.ClusterIsolationPolicyStrict, check: gate.check}
 
 	done := make(chan struct{})
 	go func() {
-		ApplyIsolationFloor(context.Background(), svc, "strict")
+		applyFloorForTest(t, policy, context.Background(), svc, "strict")
 		close(done)
 	}()
 	select {
@@ -255,13 +268,13 @@ func TestApplyIsolationFloor_NotActiveButAlreadyAppliedIsNoOp(t *testing.T) {
 // becomes active keeps the floor unwritten, and the retry ends with its
 // context without a write.
 func TestApplyIsolationFloor_NotActiveStopsWithContext(t *testing.T) {
-	fastFloorRetries(t, 20*time.Millisecond)
+	policy := fastFloorRetries(t, 20*time.Millisecond)
 	gate := &toggledCheck{calls: make(chan struct{}, 1)}
 	svc := &fakeFloorService{floor: tenant.ClusterIsolationPolicyOperatorAccess, check: gate.check}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ApplyIsolationFloor(ctx, svc, "strict")
+	applyFloorForTest(t, policy, ctx, svc, "strict")
 	if _, sets := svc.state(); sets != 0 {
 		t.Fatalf("set attempts = %d after the wait, want 0", sets)
 	}
@@ -269,7 +282,7 @@ func TestApplyIsolationFloor_NotActiveStopsWithContext(t *testing.T) {
 	// The background retry is the same loop; run it here so its end is
 	// observable, and cancel once it has consulted the check.
 	result := make(chan bool, 1)
-	go func() { result <- setIsolationFloor(ctx, svc, tenant.ClusterIsolationPolicyStrict) }()
+	go func() { result <- setIsolationFloor(ctx, svc, tenant.ClusterIsolationPolicyStrict, policy.retry) }()
 	select {
 	case <-gate.calls:
 	case <-time.After(5 * time.Second):
