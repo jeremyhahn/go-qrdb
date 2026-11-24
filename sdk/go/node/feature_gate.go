@@ -63,9 +63,9 @@ func (n *Node) startFeatureGate(host leaderReporter, activations featuregate.Act
 	go func() {
 		defer n.featureWG.Done()
 		// leaseless is set once the state machine is found to have no
-		// leases: the advertisement, and so Gate.Start, cannot run, but the
-		// release history needs no lease, so the restart release check and
-		// record still run on their own (as the daemon does).
+		// leases: the advertisement, and so Gate.Start, cannot run, but
+		// release admission runs from the release history and the joiners'
+		// unleased records, which need no lease (as the daemon does).
 		leaseless := false
 		for ctx.Err() == nil {
 			if _, ok, err := host.LeaderID(shard.ShardKV); err == nil && ok {
@@ -83,7 +83,7 @@ func (n *Node) startFeatureGate(host leaderReporter, activations featuregate.Act
 					}
 				}
 				if leaseless {
-					err = gate.EnforceRelease(actx, activations)
+					err = gate.StartAdmission(actx, activations, client.NewMembershipStoreAt(featuregate.AdvertisementPrefix))
 				}
 				cancel()
 				if err == nil {

@@ -16,6 +16,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/release"
@@ -233,8 +235,21 @@ func TestNode_UnsupportedFeatureQuarantinesTheNode(t *testing.T) {
 // machine has no leases (the embedded transport is built without one).
 type releaseHistoryKV struct {
 	service.KVServicer
-	mu   sync.Mutex
-	keys map[string]bool
+	mu      sync.Mutex
+	keys    map[string]bool
+	records map[string][]byte
+}
+
+func (k *releaseHistoryKV) Scan(_ context.Context, prefix string) (map[string][]byte, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	out := make(map[string][]byte)
+	for key, v := range k.records {
+		if strings.HasPrefix(key, prefix) {
+			out[key] = v
+		}
+	}
+	return out, nil
 }
 
 func (k *releaseHistoryKV) list(prefix string) []string {
@@ -326,6 +341,35 @@ func TestNode_StartFeatureGateWithoutLeasesEnforcesTheRelease(t *testing.T) {
 			require.NoError(t, n.stopFeatureGate())
 		})
 	}
+}
+
+// A node without leases admits a same-release joiner from its unleased record.
+func TestNode_StartFeatureGateWithoutLeasesAdmitsASameReleaseCandidate(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	joiner, err := json.Marshal(cluster.Member{
+		NodeID: 4, Address: "n4:7000", Features: featuregate.SupportedNames(), ReleaseVersion: "0.60.0-alpha",
+	})
+	require.NoError(t, err)
+	kv := &releaseHistoryKV{
+		keys:    map[string]bool{featuregate.ReleasePrefix + "1/0.59.0-alpha": true},
+		records: map[string][]byte{featuregate.AdvertisementPrefix + "4": joiner},
+	}
+	n := gatedNode(t, kv, embedded.WithLeaseService(noLeases{}))
+	l := &leader{}
+	l.known.Store(true)
+
+	n.startFeatureGate(l, kv)
+	n.featureWG.Wait()
+	require.NoError(t, n.featureGate.Refusal())
+	binding, err := n.featureGate.AdmitReplicaAt(1, "n4:7000")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"0.60.0-alpha"}, binding.CandidateReleases)
+	var unannounced *featuregate.UnannouncedCandidateError
+	_, err = n.featureGate.AdmitReplicaAt(1, "n9:7000")
+	require.ErrorAs(t, err, &unannounced, "a candidate with no record must be refused")
+
+	n.bgCancel()
+	require.NoError(t, n.stopFeatureGate())
 }
 
 // Each start attempt reads under a deadline: a ReadIndex the leader drops is
