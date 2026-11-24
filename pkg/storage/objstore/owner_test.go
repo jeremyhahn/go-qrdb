@@ -247,3 +247,160 @@ func TestNew_ClaimUndoFailureIsReported(t *testing.T) {
 	assert.ErrorIs(t, undo.Undo, errProvider)
 	assert.Contains(t, bucketNames(t, raw("stuck")), ownerMarkerName)
 }
+
+// ownerMarkerFaultStore fails a Get or a Delete of the owner marker with
+// errProvider, as a provider fault does; every other call reaches the
+// wrapped store.
+type ownerMarkerFaultStore struct {
+	objcommon.Storage
+	getFails, deleteFails bool
+}
+
+func (s ownerMarkerFaultStore) Get(name string) (io.ReadCloser, error) {
+	if s.getFails && name == ownerMarkerName {
+		return nil, errProvider
+	}
+	return s.Storage.Get(name)
+}
+
+func (s ownerMarkerFaultStore) Delete(name string) error {
+	if s.deleteFails && name == ownerMarkerName {
+		return errProvider
+	}
+	return s.Storage.Delete(name)
+}
+
+// ownerMarkerEngine is an engine owned by owner on a memory store wrapped
+// in faults, with the given owner marker written ("" writes none).
+func ownerMarkerEngine(t *testing.T, owner, marker string, faults ownerMarkerFaultStore) *Engine {
+	t.Helper()
+	inner := newReclaimStore(t)
+	if marker != "" {
+		require.NoError(t, inner.Put(ownerMarkerName, strings.NewReader(marker)))
+	}
+	faults.Storage = inner
+	return &Engine{store: faults, journal: newReclaimStore(t), provider: "memory", owner: owner}
+}
+
+func TestEngine_ReleaseOwnerMarker(t *testing.T) {
+	open := func(t *testing.T, path string) *Engine {
+		t.Helper()
+		e, err := New("local", map[string]string{"path": path}, WithOwner("db-a"))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = e.Close() })
+		return e
+	}
+	t.Run("own marker", func(t *testing.T) {
+		e := open(t, t.TempDir())
+		require.NoError(t, e.Set([]byte("k"), []byte("v")))
+		before := bucketNames(t, e.store)
+		require.Contains(t, before, ownerMarkerName)
+		require.NoError(t, e.ReleaseOwnerMarker())
+		after := bucketNames(t, e.store)
+		assert.NotContains(t, after, ownerMarkerName)
+		assert.Contains(t, after, formatMarkerName)
+		assert.Len(t, after, len(before)-1, "only the owner marker is removed")
+		got, err := e.Get([]byte("k"))
+		require.NoError(t, err)
+		assert.Equal(t, []byte("v"), got)
+	})
+	t.Run("marker naming another owner", func(t *testing.T) {
+		e := open(t, t.TempDir())
+		require.NoError(t, e.store.Put(ownerMarkerName, strings.NewReader("db-b")))
+		require.NoError(t, e.ReleaseOwnerMarker())
+		rc, err := e.store.Get(ownerMarkerName)
+		require.NoError(t, err)
+		found, err := io.ReadAll(rc)
+		require.NoError(t, rc.Close())
+		require.NoError(t, err)
+		assert.Equal(t, "db-b", string(found))
+	})
+	t.Run("marker already gone", func(t *testing.T) {
+		e := open(t, t.TempDir())
+		require.NoError(t, e.ReleaseOwnerMarker())
+		require.NoError(t, e.ReleaseOwnerMarker())
+	})
+	t.Run("closed engine", func(t *testing.T) {
+		e := open(t, t.TempDir())
+		require.NoError(t, e.Close())
+		assert.Error(t, e.ReleaseOwnerMarker())
+	})
+	t.Run("get fault", func(t *testing.T) {
+		e := ownerMarkerEngine(t, "db-a", "db-a", ownerMarkerFaultStore{getFails: true})
+		assert.ErrorIs(t, e.ReleaseOwnerMarker(), errProvider)
+	})
+	t.Run("delete fault", func(t *testing.T) {
+		e := ownerMarkerEngine(t, "db-a", "db-a", ownerMarkerFaultStore{deleteFails: true})
+		assert.ErrorIs(t, e.ReleaseOwnerMarker(), errProvider)
+	})
+}
+
+func TestEngine_FreshlyClaimed(t *testing.T) {
+	fresh, err := New("local", map[string]string{"path": t.TempDir()}, WithOwner("db-a"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = fresh.Close() })
+	assert.True(t, fresh.FreshlyClaimed(), "an empty namespace is claimed fresh")
+
+	path := t.TempDir()
+	unowned, err := New("local", map[string]string{"path": path})
+	require.NoError(t, err)
+	require.NoError(t, unowned.Set([]byte("k"), []byte("v")))
+	require.NoError(t, unowned.Close())
+	held, err := New("local", map[string]string{"path": path}, WithOwner("db-a"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = held.Close() })
+	assert.False(t, held.FreshlyClaimed(), "a namespace holding data is not claimed fresh")
+}
+
+func TestAcceptReclaimedRemains_Rules(t *testing.T) {
+	t.Run("unowned, only the owner marker", func(t *testing.T) {
+		e := ownerMarkerEngine(t, "", "", ownerMarkerFaultStore{})
+		assert.NoError(t, e.acceptReclaimedRemains([]string{ownerMarkerName}, ""))
+	})
+	t.Run("unowned, other objects", func(t *testing.T) {
+		e := ownerMarkerEngine(t, "", "", ownerMarkerFaultStore{})
+		var missing *FormatMarkerMissingError
+		assert.ErrorAs(t, e.acceptReclaimedRemains([]string{ownerMarkerName, "x"}, ""), &missing)
+	})
+	t.Run("owned, no owner marker", func(t *testing.T) {
+		e := ownerMarkerEngine(t, "db-a", "", ownerMarkerFaultStore{})
+		var missing *FormatMarkerMissingError
+		assert.ErrorAs(t, e.acceptReclaimedRemains([]string{"x"}, "db-a"), &missing)
+	})
+	t.Run("owner marker get fault", func(t *testing.T) {
+		e := ownerMarkerEngine(t, "db-a", "db-a", ownerMarkerFaultStore{getFails: true})
+		assert.ErrorIs(t, e.acceptReclaimedRemains([]string{ownerMarkerName}, "db-a"), errProvider)
+	})
+	t.Run("another owner's marker", func(t *testing.T) {
+		e := ownerMarkerEngine(t, "db-a", "db-b", ownerMarkerFaultStore{})
+		var owned *NamespaceOwnedError
+		require.ErrorAs(t, e.acceptReclaimedRemains([]string{ownerMarkerName}, "db-a"), &owned)
+		assert.Equal(t, "db-b", owned.Owner)
+		assert.Equal(t, "db-a", owned.Want)
+	})
+	t.Run("own marker", func(t *testing.T) {
+		e := ownerMarkerEngine(t, "db-a", "db-a", ownerMarkerFaultStore{})
+		assert.NoError(t, e.acceptReclaimedRemains([]string{ownerMarkerName}, "db-a"))
+	})
+}
+
+func TestOwnerErrors_Markers(t *testing.T) {
+	assert.False(t, (&NamespaceInUseError{Provider: "memory", Held: "db-a", Want: "db-a"}).NamespaceOwnedByAnother())
+	assert.True(t, (&NamespaceInUseError{Provider: "memory", Held: "db-a", Want: "db-b"}).NamespaceOwnedByAnother())
+
+	owned := &NamespaceOwnedError{Provider: "memory", Owner: "db-b", Want: "db-a"}
+	assert.Equal(t, `objstore: "memory" namespace is owned by "db-b", not "db-a"`, owned.Error())
+	assert.True(t, owned.NamespaceOwnedByAnother())
+
+	cause, undoCause := errors.New("open cause"), errors.New("undo cause")
+	undo := &ClaimUndoError{Provider: "memory", Err: cause, Undo: undoCause, Fresh: true}
+	msg := undo.Error()
+	assert.Contains(t, msg, `"memory"`)
+	assert.Contains(t, msg, "open cause")
+	assert.Contains(t, msg, "undo cause")
+	assert.ErrorIs(t, undo, cause)
+	assert.ErrorIs(t, undo, undoCause)
+	assert.True(t, undo.NamespaceClaimUndoFailed())
+	assert.True(t, undo.NamespaceClaimFresh())
+	assert.False(t, (&ClaimUndoError{Provider: "memory", Err: cause, Undo: undoCause}).NamespaceClaimFresh())
+}
