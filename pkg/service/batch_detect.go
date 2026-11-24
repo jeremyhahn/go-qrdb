@@ -95,8 +95,9 @@ func detectArchiveMagic(data []byte) (string, bool) {
 var importFormats = []string{"auto", "csv", "json", "ndjson", "yaml", "archive"}
 
 // ImportFormats returns the batch import file formats, "auto" first. The
-// REST route GET /batch/import/formats and the desktop binding's
-// AvailableImportFormats both report this list. The caller owns the
+// desktop binding's AvailableImportFormats reports this list, and the
+// TypeScript SDK's REST client holds a copy (IMPORT_FORMATS, kept equal by
+// cmd/qrdb's TestImportFormatsParity_TypeScriptSDK). The caller owns the
 // returned slice.
 func ImportFormats() []string {
 	out := make([]string, len(importFormats))

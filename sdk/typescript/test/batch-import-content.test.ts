@@ -3,8 +3,8 @@
 
 /**
  * batch.importContent runs the server's chunked import session (begin,
- * append?seq=N in 1 MiB chunks, commit; abort on failure), and the format
- * and codec listings come from GET /batch/import/formats.
+ * append?seq=N in 1 MiB chunks, commit; abort on failure); the format list
+ * is the SDK's own, with no request, and the codec list is desktop-only.
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';

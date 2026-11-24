@@ -32,7 +32,7 @@ func AvailableCodecs() []string {
 }
 
 // ImportFormats returns the batch import file formats, "auto" first: the
-// same list the server reports on GET /batch/import/formats.
+// same list the desktop binding's AvailableImportFormats reports.
 var ImportFormats = service.ImportFormats
 
 // ---------------------------------------------------------------------------
