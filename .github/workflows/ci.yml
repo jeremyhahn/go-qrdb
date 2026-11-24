@@ -877,6 +877,7 @@ jobs:
           # fallback `"ubuntu-latest"`, where it must give a standard image on
           # every event. Another job that reads the variable reads an unknown.
           PRE_JOB = "preflight"
+          GATE_JOB = "ci-gate"  # DS-10437
           PRE_VAR = "vars.ci_preflight_runs_on"
           PRE_READ = re.compile(r"(?<![\w.])vars\.CI_PREFLIGHT_RUNS_ON(?![\w-])", re.I)
           HOSTED_CTX = [  # (event, ref, head repo) on github.com; o/r is this repository
@@ -1091,6 +1092,13 @@ jobs:
                                       if (sel is None and got == OVERFLOW[0] and ev in PR and head == "o/r"
                                               and path.replace("\\", "/").rsplit("/", 1)[-1] in REVIEW_FILES):
                                           continue  # v1.53: a same-repository head's review guard
+                                      # DS-10437 (Tenant 03:31Z 11-24, ruling 617): the CI Gate reads the jobs'
+                                      # results only; it runs on bigdisk for a push to main and a same-repository
+                                      # head. A fork's head stays checked.
+                                      if (job == GATE_JOB and got == OVERFLOW[0] and not fork_target
+                                              and ((ev == "push" and ref == "refs/heads/main") or (ev in PR and head == "o/r"))
+                                              and path.replace("\\", "/").rsplit("/", 1)[-1] in SEL_FILES):
+                                          continue
                                       if got is None or len(got) != 1 or not STANDARD.fullmatch(got[0]):
                                           what = "an unknown label" if got is None else ", ".join(got)
                                           note = ", runner selection overflow" if sel == "overflow" else ""
@@ -3463,7 +3471,10 @@ jobs:
     # Go, no Docker. On the self-hosted bigdisk pool for a push to main and a
     # same-repository PR, so it never waits in the hosted queue; hosted
     # otherwise.
-    runs-on: ${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}   # v1.48 (ruling 1024)
+    # DS-10437 (Tenant 03:31Z 11-24, ruling 617): the bigdisk pool for a push
+    # to main and a same-repository PR, whatever the runner selection says; a
+    # fork's PR and every other event on ubuntu-latest.
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}   # DS-10437
     timeout-minutes: 5
     # v1.53 (Tenant Agent on trusted-firmware #821): with main-{event} a newer
     # push cancels the older main run, and an always() gate then read the
