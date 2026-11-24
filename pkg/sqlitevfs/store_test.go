@@ -1160,32 +1160,47 @@ func metaRecordAt(t *testing.T, b Backend, db string, rev int64) ([]byte, Meta) 
 
 // restoreMeta writes db's meta record of revision rev back as the live one,
 // the meta half of a restore to rev, and returns the revision before it.
-func restoreMeta(t *testing.T, b Backend, db string, rev int64) int64 {
+// seedFresh seeds db through a Store of its own, so the restoring Store's
+// generation pin is not the writer's.
+func seedFresh(t *testing.T, b Backend, db string, fills ...byte) int64 {
 	t.Helper()
-	before := revOf(t, b)
-	value, _ := metaRecordAt(t, b, db, rev)
-	key, _ := MetaKey(db)
-	if _, err := b.Commit(t.Context(), nil, map[string][]byte{string(key): value}, nil); err != nil {
-		t.Fatal(err)
-	}
-	return before
+	return seed(t, newTestStore(t, b, db), fills...)
 }
 
-func TestStoreRestoreBumpsPastEveryEarlierGeneration(t *testing.T) {
+// imageAt returns db's file bytes at revision rev, read through a fresh
+// Store pinned there.
+func imageAt(t *testing.T, b Backend, db string, rev int64) []byte {
+	t.Helper()
+	txn, err := newTestStore(t, b, db).BeginAt(t.Context(), rev)
+	if err != nil {
+		t.Fatalf("BeginAt(%d): %v", rev, err)
+	}
+	defer func() { _ = txn.Rollback(t.Context()) }()
+	buf := make([]byte, txn.Size())
+	if _, err := txn.ReadAt(buf, 0); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("ReadAt at %d: %v", rev, err)
+	}
+	return buf
+}
+
+func TestStoreRestoreToRevision_OneRevision(t *testing.T) {
 	b := newTestBackend(t)
-	s := newTestStore(t, b, "app.db")
-	r := seed(t, s, 0x01)
-	seed(t, s, 0x02)
+	restorer := newTestStore(t, b, "app.db")
+	r := seedFresh(t, b, "app.db", 0x01, 0x02)
+	seedFresh(t, b, "app.db", 0x03, 0x04, 0x05)
 
 	seen := []uint64{0}
 	for round := range 3 {
-		before := restoreMeta(t, b, "app.db", r)
-		rev, err := s.BumpGenerationAfterRestore(t.Context(), before)
+		before := revOf(t, b)
+		rev, err := restorer.RestoreToRevision(t.Context(), r)
 		if err != nil {
-			t.Fatalf("round %d: BumpGenerationAfterRestore: %v", round, err)
+			t.Fatalf("round %d: RestoreToRevision: %v", round, err)
 		}
-		if rev != revOf(t, b) || rev <= before+1 {
-			t.Fatalf("round %d: bump revision %d, backend at %d, restore before %d", round, rev, revOf(t, b), before)
+		if rev != before+1 || revOf(t, b) != rev {
+			t.Fatalf("round %d: restore revision %d, backend at %d, want %d", round, rev, revOf(t, b), before+1)
+		}
+		if got, want := imageAt(t, b, "app.db", rev), imageAt(t, b, "app.db", r); !bytes.Equal(got, want) {
+			t.Fatalf("round %d: image at %d is %d bytes, not the %d bytes at %d", round, rev, len(got), len(want), r)
 		}
 		_, m := metaRecordAt(t, b, "app.db", rev)
 		for _, g := range seen {
@@ -1194,41 +1209,125 @@ func TestStoreRestoreBumpsPastEveryEarlierGeneration(t *testing.T) {
 			}
 		}
 		seen = append(seen, m.Generation)
-		if _, rm := metaRecordAt(t, b, "app.db", r); m.ChangeCounter != rm.ChangeCounter || m.PageCount != rm.PageCount {
-			t.Fatalf("round %d: bumped meta %+v does not keep R's %+v", round, m, rm)
+		if _, prev := metaRecordAt(t, b, "app.db", before); m.ChangeCounter != prev.ChangeCounter+1 {
+			t.Fatalf("round %d: change counter %d, want %d", round, m.ChangeCounter, prev.ChangeCounter+1)
 		}
+		// The next round restores over a write made after this one.
+		txn := beginReserved(t, newTestStore(t, b, "app.db"))
+		writePages(t, txn, 0x07)
+		commit(t, txn)
 	}
 }
 
-func TestStoreRestoreNoMetaWritesNothing(t *testing.T) {
+func TestStoreRestoreToRevision_StagedAboveThreshold(t *testing.T) {
+	sb := newStagingBackend(t)
+	r := seedFresh(t, sb, "app.db", 0x01, 0x02, 0x03)
+	seedFresh(t, sb, "app.db", 0x04, 0x05, 0x06)
+	s, err := NewStore(sb, "app.db", WithStageThreshold(testPageSize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishes := sb.publishes
+	rev, err := s.RestoreToRevision(t.Context(), r)
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if sb.publishes != publishes+1 {
+		t.Fatalf("publishes = %d, want %d", sb.publishes, publishes+1)
+	}
+	if rev != revOf(t, sb) {
+		t.Fatalf("restore revision %d, backend at %d", rev, revOf(t, sb))
+	}
+	assertNoStageKeyLive(t, sb)
+	if got, want := imageAt(t, sb, "app.db", rev), imageAt(t, sb, "app.db", r); !bytes.Equal(got, want) {
+		t.Fatalf("image at %d is not the image at %d", rev, r)
+	}
+	if _, m := metaRecordAt(t, sb, "app.db", rev); m.Generation != 1 {
+		t.Fatalf("generation %d, want 1", m.Generation)
+	}
+}
+
+func TestStoreRestoreToRevision_OpenTxnIsSnapshotChanged(t *testing.T) {
 	b := newTestBackend(t)
-	s := newTestStore(t, b, "app.db")
+	r := seedFresh(t, b, "app.db", 0x01)
+	seedFresh(t, b, "app.db", 0x02)
+	open := beginReserved(t, newTestStore(t, b, "app.db"))
+	writePages(t, open, 0x03, 0x04)
+	if _, err := newTestStore(t, b, "app.db").RestoreToRevision(t.Context(), r); err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if _, err := open.Commit(t.Context()); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("Commit of a transaction begun before the restore = %v, want ErrSnapshotChanged", err)
+	}
+}
+
+func TestStoreRestoreToRevision_RemovesDatabaseAbsentAtRev(t *testing.T) {
+	b := newTestBackend(t)
 	if _, err := b.Commit(t.Context(), nil, map[string][]byte{"other/1": []byte("x")}, nil); err != nil {
 		t.Fatal(err)
 	}
+	r := revOf(t, b)
+	seedFresh(t, b, "app.db", 0x01, 0x02)
+	open := beginReserved(t, newTestStore(t, b, "app.db"))
+	writePages(t, open, 0x03)
 	before := revOf(t, b)
-	rev, err := s.BumpGenerationAfterRestore(t.Context(), before-1)
+	rev, err := newTestStore(t, b, "app.db").RestoreToRevision(t.Context(), r)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("RestoreToRevision: %v", err)
 	}
-	if rev != before || revOf(t, b) != before {
-		t.Fatalf("BumpGenerationAfterRestore with no meta = %d, backend at %d, want %d", rev, revOf(t, b), before)
+	if rev != before+1 || revOf(t, b) != rev {
+		t.Fatalf("restore revision %d, backend at %d, want %d", rev, revOf(t, b), before+1)
 	}
+	keys, err := b.Keys(t.Context(), []byte(keyRoot+"app.db/"), rev)
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("keys of app.db after its removal = %q, %v", keys, err)
+	}
+	if _, err := open.Commit(t.Context()); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("Commit into a removed database = %v, want ErrSnapshotChanged", err)
+	}
+}
 
-	// A database restored to before it existed: meta at before, none now.
-	seeded := seed(t, s, 0x01)
-	key, _ := MetaKey("app.db")
-	pageKey, _ := PageKey("app.db", 1)
-	gone, err := b.Commit(t.Context(), nil, nil, [][]byte{key, pageKey})
-	if err != nil {
+func TestStoreRestoreToRevision_RecreatesDatabase(t *testing.T) {
+	b := newTestBackend(t)
+	r := seedFresh(t, b, "app.db", 0x01, 0x02)
+	metaKey, _ := MetaKey("app.db")
+	page1, _ := PageKey("app.db", 1)
+	page2, _ := PageKey("app.db", 2)
+	if _, err := b.Commit(t.Context(), nil, nil, [][]byte{metaKey, page1, page2}); err != nil {
 		t.Fatal(err)
 	}
-	rev, err = s.BumpGenerationAfterRestore(t.Context(), seeded)
+	before := revOf(t, b)
+	rev, err := newTestStore(t, b, "app.db").RestoreToRevision(t.Context(), r)
 	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if rev != before+1 {
+		t.Fatalf("restore revision %d, want %d", rev, before+1)
+	}
+	if got, want := imageAt(t, b, "app.db", rev), imageAt(t, b, "app.db", r); !bytes.Equal(got, want) || len(got) != 2*testPageSize {
+		t.Fatalf("recreated image is %d bytes, want the %d bytes at %d", len(got), len(want), r)
+	}
+	if _, m := metaRecordAt(t, b, "app.db", rev); m.Generation != 1 {
+		t.Fatalf("generation %d, want 1", m.Generation)
+	}
+}
+
+func TestStoreRestoreToRevision_NoChangeWritesNothing(t *testing.T) {
+	b := newTestBackend(t)
+	if _, err := b.Commit(t.Context(), nil, map[string][]byte{"other/1": []byte("x")}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if rev != gone || revOf(t, b) != gone {
-		t.Fatalf("BumpGenerationAfterRestore of a removed database = %d, backend at %d, want %d", rev, revOf(t, b), gone)
+	empty := revOf(t, b)
+	s := newTestStore(t, b, "app.db")
+	// Absent at the revision and now.
+	rev, err := s.RestoreToRevision(t.Context(), empty)
+	if err != nil || rev != empty || revOf(t, b) != empty {
+		t.Fatalf("RestoreToRevision of an absent database = %d, %v; backend at %d, want %d", rev, err, revOf(t, b), empty)
+	}
+	r := seedFresh(t, b, "app.db", 0x01, 0x02)
+	rev, err = s.RestoreToRevision(t.Context(), r)
+	if err != nil || rev != r || revOf(t, b) != r {
+		t.Fatalf("RestoreToRevision to the current image = %d, %v; backend at %d, want %d", rev, err, revOf(t, b), r)
 	}
 }
 

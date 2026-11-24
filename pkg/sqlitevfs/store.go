@@ -243,7 +243,7 @@ func (s *Store) BeginAt(ctx context.Context, rev int64) (*Txn, error) {
 	if rev < 0 {
 		return nil, fmt.Errorf("sqlitevfs: begin %q at negative revision %d", s.db, rev)
 	}
-	meta, _, err := s.readMeta(ctx, rev)
+	meta, found, err := s.readMeta(ctx, rev)
 	if err != nil {
 		return nil, err
 	}
@@ -263,6 +263,8 @@ func (s *Store) BeginAt(ctx context.Context, rev int64) (*Txn, error) {
 		meta:  meta,
 		floor: meta.PageCount,
 		dirty: make(map[uint32][]byte),
+
+		baseFound: found,
 	}, nil
 }
 
@@ -295,59 +297,161 @@ func (s *Store) BumpGeneration(ctx context.Context) (int64, error) {
 	return newRev, nil
 }
 
-// restoreBumpAttempts bounds how often BumpGenerationAfterRestore re-reads
-// the meta record when a commit moved it between the read and the bump.
+// restoreBumpAttempts bounds how often RestoreToRevision begins its
+// transaction again when a commit moved the database between the snapshot
+// it read and its restore commit.
 const restoreBumpAttempts = 8
 
-// BumpGenerationAfterRestore is the restore hook of Q4 A for a restore that
-// has been applied: before is the revision the restore started from. A
-// restore writes the restored revision's meta record back, with that
-// revision's generation, so a plain Generation+1 can repeat a generation an
-// open connection already saw. This commits the current meta record with
-// Generation = max(generation at before, current generation) + 1 in one
-// Backend.Commit, guarded by a read check on the meta key so a commit that
-// lands between the read and the bump is never overwritten (the read is
-// retried). Generations only grow along the live history, so the result is
-// past every generation any connection has seen. A database with no meta
-// record at the current revision writes nothing and returns the current
-// revision. ctx bounds the reads and the commit.
-func (s *Store) BumpGenerationAfterRestore(ctx context.Context, before int64) (int64, error) {
-	var floor uint64
-	prior, found, err := s.readMeta(ctx, before)
-	if err != nil {
-		return 0, err
-	}
-	if found {
-		floor = prior.Generation
+// RestoreToRevision is the restore of Q4 A as one page-store commit: it
+// restores the database file to its image at revision rev and bumps its
+// generation in the same revision, so no transaction ever reads a
+// half-restored file or a restored file under an unbumped generation.
+//
+// It begins a transaction at the current revision and, on a Store with a
+// writer lock, reserves it (a lock another writer holds is ErrBusy). It reads
+// the meta record at rev and its pages, truncates the transaction to the
+// size at rev and writes only the pages whose bytes differ from the current
+// ones, then commits once through the normal commit path (above the stage
+// threshold: staging and one publish) with Generation = max(generation now,
+// generation at rev) + 1 and the change counter advanced. Generations only
+// grow along the live history, so the result is past every generation any
+// connection has seen, and every transaction begun before is
+// ErrSnapshotChanged at its next Begin or Commit.
+//
+// A database with no meta record at rev and one now is removed: its meta
+// record, every page and every stage key are deleted in one Backend.Commit.
+// One with none now but one at rev is created. When the image at rev is the
+// current one, nothing is written and the current revision is returned. A
+// commit that moved the database between the snapshot and the restore
+// commit (ErrSnapshotChanged) begins again, at most restoreBumpAttempts
+// times. It returns the revision of the restore commit; ctx bounds every
+// read, lock call and commit.
+func (s *Store) RestoreToRevision(ctx context.Context, rev int64) (int64, error) {
+	if rev < 0 {
+		return 0, fmt.Errorf("sqlitevfs: restore %q to negative revision %d", s.db, rev)
 	}
 	for range restoreBumpAttempts {
-		rev, err := s.backend.Revision(ctx)
-		if err != nil {
-			return 0, fmt.Errorf("sqlitevfs: bump generation of %q after a restore: %w", s.db, err)
-		}
-		meta, found, err := s.readMeta(ctx, rev)
-		if err != nil {
-			return 0, err
-		}
-		if !found {
-			return rev, nil
-		}
-		meta.Generation = max(floor, meta.Generation) + 1
-		value, err := meta.MarshalBinary()
-		if err != nil {
-			return 0, err
-		}
-		check := []ReadCheck{{Key: s.metaKey, Rev: rev, Found: true}}
-		newRev, err := s.backend.Commit(ctx, check, map[string][]byte{string(s.metaKey): value}, nil)
+		newRev, err := s.restoreOnce(ctx, rev)
 		if errors.Is(err, ErrSnapshotChanged) {
 			continue
 		}
 		if err != nil {
-			return 0, fmt.Errorf("sqlitevfs: bump generation of %q after a restore: %w", s.db, err)
+			return 0, fmt.Errorf("sqlitevfs: restore %q to revision %d: %w", s.db, rev, err)
 		}
 		return newRev, nil
 	}
-	return 0, fmt.Errorf("%w: %q: meta moved on each of %d bump attempts after a restore", ErrSnapshotChanged, s.db, restoreBumpAttempts)
+	return 0, fmt.Errorf("%w: %q moved on each of %d restore attempts", ErrSnapshotChanged, s.db, restoreBumpAttempts)
+}
+
+// restoreOnce is one attempt of RestoreToRevision.
+func (s *Store) restoreOnce(ctx context.Context, rev int64) (int64, error) {
+	target, targetFound, err := s.readMeta(ctx, rev)
+	if err != nil {
+		return 0, err
+	}
+	t, err := s.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if err := t.Reserve(ctx); err != nil {
+		_ = t.Rollback(ctx)
+		return 0, err
+	}
+	if !targetFound {
+		if !t.baseFound {
+			_ = t.Rollback(ctx)
+			return t.rev, nil
+		}
+		t.remove = true
+		t.wrote = true
+		return t.Commit(ctx)
+	}
+	if err := t.restoreImage(rev, target); err != nil {
+		_ = t.Rollback(ctx)
+		return 0, err
+	}
+	t.restoreGen = max(t.base.Generation, target.Generation) + 1
+	return t.Commit(ctx)
+}
+
+// restoreImage buffers the writes that turn the transaction's file into the
+// image target describes at revision rev: a different page size starts the
+// file over, the size is set to the size at rev, and every page whose bytes
+// differ from the transaction's copy is written (an absent page at rev reads
+// as zeros).
+func (t *Txn) restoreImage(rev int64, target Meta) error {
+	if target.PageSize == 0 {
+		return t.Truncate(0)
+	}
+	if t.meta.PageSize != 0 && t.meta.PageSize != target.PageSize {
+		if err := t.Truncate(0); err != nil {
+			return err
+		}
+		t.meta.PageSize = 0
+	}
+	if t.meta.PageSize == 0 {
+		t.meta.PageSize = target.PageSize
+		t.wrote = true
+	}
+	if err := t.Truncate(int64(target.PageCount) * int64(target.PageSize)); err != nil {
+		return err
+	}
+	for pgno := uint32(1); pgno <= target.PageCount && pgno != 0; pgno++ {
+		key, err := PageKey(t.store.db, pgno)
+		if err != nil {
+			return err
+		}
+		want, found, err := t.store.backend.GetAt(t.ctx, key, rev)
+		if err != nil {
+			return fmt.Errorf("read page %d at revision %d: %w", pgno, rev, err)
+		}
+		if !found {
+			want = make([]byte, target.PageSize)
+		}
+		if len(want) != int(target.PageSize) {
+			return fmt.Errorf("page %d at revision %d is %d bytes, want %d", pgno, rev, len(want), target.PageSize)
+		}
+		have, err := t.page(pgno)
+		if err != nil {
+			return err
+		}
+		if bytes.Equal(have, want) {
+			continue
+		}
+		if _, err := t.WriteAt(want, int64(pgno-1)*int64(target.PageSize)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// commitRemoval deletes the database in one Backend.Commit: its meta record
+// and every page and stage key live at revision now, carrying reads.
+func (t *Txn) commitRemoval(ctx context.Context, now int64, reads []ReadCheck) (int64, error) {
+	s := t.store
+	seen := map[string]bool{string(s.metaKey): true}
+	deletes := [][]byte{s.metaKey}
+	for _, root := range []func(string) ([]byte, error){PagePrefix, StageRoot} {
+		prefix, err := root(s.db)
+		if err != nil {
+			return 0, err
+		}
+		keys, err := s.backend.Keys(ctx, prefix, now)
+		if err != nil {
+			return 0, fmt.Errorf("sqlitevfs: remove %q: %w", s.db, err)
+		}
+		for _, key := range keys {
+			if !seen[string(key)] {
+				seen[string(key)] = true
+				deletes = append(deletes, key)
+			}
+		}
+	}
+	rev, err := s.backend.Commit(ctx, reads, nil, deletes)
+	if err != nil {
+		return 0, fmt.Errorf("sqlitevfs: remove %q: %w", s.db, err)
+	}
+	return rev, nil
 }
 
 // sweepStages deletes, in one Backend.Commit, every staged page key of the
@@ -405,6 +509,13 @@ type Txn struct {
 	// reads is the read set of an optimistic transaction: every page key
 	// read from the snapshot at rev, and whether it had a live value.
 	reads map[string]bool
+	// baseFound is whether the meta record existed at rev.
+	baseFound bool
+	// restoreGen, when non-zero, is the generation a RestoreToRevision
+	// commit writes instead of base's; remove makes that commit delete
+	// the database instead (its image at the restored revision is none).
+	restoreGen uint64
+	remove     bool
 }
 
 // ChangeCounter is the meta change counter of the transaction's
@@ -688,8 +799,9 @@ func (t *Txn) Truncate(size int64) error {
 // moved change counter means another writer committed since the snapshot;
 // either way Commit returns ErrSnapshotChanged and writes nothing. With the
 // writer lock held from Reserve to Commit, no other page store writer
-// commits between the check and the write. BumpGeneration (restore) does not
-// take the lock: a restore racing a commit is caught at the next Begin.
+// commits between the check and the write. RestoreToRevision takes the lock
+// too; BumpGeneration does not: a bump racing a commit is caught at the next
+// Begin.
 //
 // Without a writer lock the meta record Commit re-read is a read check of
 // the write itself, so a commit landing between that read and the write is
@@ -722,7 +834,7 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 			return 0, err
 		}
 	}
-	if len(t.dirty) == 0 && t.floor >= t.base.PageCount && t.meta.PageCount == t.base.PageCount && t.meta.PageSize == t.base.PageSize {
+	if !t.remove && len(t.dirty) == 0 && t.floor >= t.base.PageCount && t.meta.PageCount == t.base.PageCount && t.meta.PageSize == t.base.PageSize {
 		// Every write was undone (a journal played back over its own
 		// writes): nothing to commit, no revision.
 		return t.rev, nil
@@ -743,6 +855,10 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 	if current.Generation != t.base.Generation {
 		return 0, fmt.Errorf("%w: %q moved from generation %d to %d", ErrSnapshotChanged, t.store.db, t.base.Generation, current.Generation)
 	}
+	if t.baseFound && !metaFound {
+		// A restore removed the database the snapshot saw.
+		return 0, fmt.Errorf("%w: %q was removed", ErrSnapshotChanged, t.store.db)
+	}
 	if t.store.writer != nil && current.ChangeCounter != t.base.ChangeCounter {
 		return 0, fmt.Errorf("%w: %q moved from change counter %d to %d", ErrSnapshotChanged, t.store.db, t.base.ChangeCounter, current.ChangeCounter)
 	}
@@ -758,7 +874,13 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 		counter = current.ChangeCounter
 	}
 	reads := t.readSet(now, metaFound)
+	if t.remove {
+		return t.commitRemoval(ctx, now, reads)
+	}
 	t.meta.Generation = t.base.Generation
+	if t.restoreGen != 0 {
+		t.meta.Generation = t.restoreGen
+	}
 	t.meta.ChangeCounter = counter + 1
 	metaValue, err := t.meta.MarshalBinary()
 	if err != nil {
