@@ -359,18 +359,7 @@ release-artifacts:
 	cd $(RELEASE_DIR) && sha256sum $(SERVER_BINARY)-* $(CLIENT_BINARY)-* > SHA256SUMS
 	@$(MAKE) --no-print-directory check-release-artifacts PLATFORMS='$(RELEASE_PLATFORMS)' CRA_SUMS=1
 
-# check-release-artifacts proves every artifact in $(RELEASE_DIR) is what its
-# name says (scripts/check-release-artifacts.sh, #916): for each binary x
-# PLATFORMS entry x {plain, -fips} the file exists, its ELF e_machine and the
-# GOOS/GOARCH `go version -m` reads out of it match the name, it was built
-# with CGO_ENABLED=0, -trimpath and every RELEASE_TAGS tag, the -fips variant
-# records GOFIPS140=$(RELEASE_FIPS_MODULE) and the plain one no FIPS module.
-# CRA_SUMS=1 also requires SHA256SUMS to list exactly those artifacts and
-# every checksum to verify. Every finding is reported before it fails.
-#   make check-release-artifacts                       (all platforms + SUMS)
-#   make check-release-artifacts PLATFORMS=linux/arm64 CRA_SUMS=0
-# release-artifacts runs it last; release-cross runs it for $(PLATFORM) with
-# CRA_SUMS=0 (it writes no SHA256SUMS).
+# check-release-artifacts checks each artifact's ELF machine, GOOS/GOARCH, release flags, tags, FIPS variant and, with CRA_SUMS=1, SHA256SUMS.
 PLATFORMS ?= $(RELEASE_PLATFORMS)
 CRA_SUMS  ?= 1
 .PHONY: check-release-artifacts
@@ -380,41 +369,19 @@ check-release-artifacts:
 		CRA_FIPS_MODULE='$(RELEASE_FIPS_MODULE)' CRA_TAGS='$(RELEASE_TAGS)' GO='$(GO)' \
 		./scripts/check-release-artifacts.sh
 
-# release-smoke runs every artifact of ONE platform natively
-# (scripts/release-smoke.sh, #916): for each binary x {plain, -fips} the file
-# in $(RELEASE_DIR) exists, is executable, and `<file> version` exits 0 and
-# prints v$(BUILD_VERSION). The plain variant runs with GODEBUG unset, the
-# -fips one with GODEBUG=fips140=only, so the FIPS 140-3 module's integrity
-# self-test runs at init. check-release-artifacts reads headers and build
-# info and runs nothing; integration-test runs binaries the harness builds
-# from source with cgo; neither executes what ships. PLATFORM must be the
-# host's (a foreign binary cannot run natively) and is refused otherwise:
-#   make release-cross PLATFORM=linux/arm64 && make release-smoke PLATFORM=linux/arm64
-# on an arm64 host. release-cross and release-artifacts cross-build, so they
-# do not call it.
+# release-smoke runs every artifact of the host PLATFORM and checks its version, the -fips variant under GODEBUG=fips140=only.
 .PHONY: release-smoke
 release-smoke:
 	@RS_DIR='$(RELEASE_DIR)' RS_VERSION='$(BUILD_VERSION)' RS_PLATFORM='$(PLATFORM)' \
 		RS_BINARIES='$(SERVER_BINARY) $(CLIENT_BINARY)' GO='$(GO)' \
 		./scripts/release-smoke.sh
 
-# test-release-smoke is release-smoke's regression test (in LINT_GATES): a
-# stub GO reports the host platform and the artifacts are shell-script stubs,
-# so it pins that the -fips variants run under GODEBUG=fips140=only and the
-# plain ones without GODEBUG, that a missing, non-executable, failing or
-# wrongly versioned artifact is named (all before it fails), and that a
-# malformed or non-host PLATFORM is refused before anything runs. It builds
-# and runs no real binary.
+# test-release-smoke tests release-smoke with stub artifacts and a stub GO.
 .PHONY: test-release-smoke
 test-release-smoke:
 	@GO='$(GO)' ./scripts/release-smoke_test.sh
 
-# test-check-release-artifacts is check-release-artifacts' regression test
-# (in LINT_GATES): it builds a stdlib-only fixture with the release flags for
-# linux/amd64 and linux/arm64, plain and FIPS, and checks the script passes
-# that set and names each broken copy of it -- wrong GOARCH/ELF machine, plain
-# and FIPS swapped, no -trimpath, a missing tag or artifact, a SHA256SUMS
-# line extra, missing or wrong -- and refuses an unknown goarch.
+# test-check-release-artifacts tests check-release-artifacts against built fixtures and broken copies of them.
 .PHONY: test-check-release-artifacts
 test-check-release-artifacts:
 	@GO='$(GO)' ./scripts/check-release-artifacts_test.sh

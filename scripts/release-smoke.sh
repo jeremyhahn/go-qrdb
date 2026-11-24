@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 # release-smoke.sh runs every release artifact of ONE platform natively
-# (#916, docs/release/engineering.md "linux/arm64 before the RC"). For every
+# (docs/release/engineering.md "linux/arm64 before the RC"). For every
 # binary x {plain, -fips} the file
 #
 #   <binary>-<version>-<goos>-<goarch>[-fips]

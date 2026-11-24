@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Regression tests for scripts/check-release-artifacts.sh (#916): it passes a
+# Regression tests for scripts/check-release-artifacts.sh: it passes a
 # correct release set, with and without SHA256SUMS, and names every file that
 # is not what its name says -- the wrong GOARCH and ELF machine, a plain
 # binary as the -fips one and the reverse, a build without -trimpath or with a

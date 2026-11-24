@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 # check-release-artifacts.sh proves every release artifact is what its name
-# says (#916, docs/release/architecture.md "Release artifacts"). For every
+# says (docs/release/architecture.md "Release artifacts"). For every
 # binary x platform x {plain, -fips} the file
 #
 #   <binary>-<version>-<goos>-<goarch>[-fips]
