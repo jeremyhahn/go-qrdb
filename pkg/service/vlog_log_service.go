@@ -600,14 +600,20 @@ func (s *logService) CreateLog(ctx context.Context, req *CreateLogRequest) (*Cre
 	if err != nil {
 		return nil, err
 	}
+	// A barrier database's reads are strict incarnation reads, so its log
+	// is created only once the group can record the incarnation.
+	if bt, ok := g.target.(*barrierDatabaseTarget); ok && !bt.featureEnabled(featuregate.VerifiableLogDrop) {
+		return nil, bt.featureNotActive(featuregate.VerifiableLogDrop)
+	}
 	// The log records the incarnation of the database it is created in, so
 	// a stale drop of an earlier incarnation leaves it alone (vlog.Chain.
 	// DropDatabase) and a successor's reads refuse it. It is the one the
 	// write was admitted under and is fenced to. A name no database holds
 	// records none. Until featuregate.VerifiableLogDrop is active on the
 	// group, a replica there would decode the descriptor without the field
-	// and persist other bytes than its peers, so the log records none and is
-	// a legacy log of the database holding its name.
+	// and persist other bytes than its peers, so a log of a non-barrier
+	// database records none and is a legacy log of the database holding its
+	// name.
 	desc.Incarnation = g.incarnation
 	if !g.target.featureEnabled(featuregate.VerifiableLogDrop) {
 		desc.Incarnation = ""

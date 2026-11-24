@@ -700,6 +700,45 @@ func TestLogService_BarrierDatabaseAppendNeedsTheSealedFeature(t *testing.T) {
 	}
 }
 
+func TestLogService_BarrierDatabaseCreateLogNeedsTheLogDropFeature(t *testing.T) {
+	dir := t.TempDir()
+	g := newFenceGroup(t)
+	mgr := newBarrierDatabaseManager(t, dir, database.WithKeyspaceReclaimer(markerReclaimer{mu: &g.mu, store: g.store}))
+	upgraded, cmds := newParentGroupLogService(t, g, mgr, nil)
+	active := map[feature.Feature]bool{}
+	for _, f := range featuregate.Supported() {
+		active[f] = f != featuregate.VerifiableLogDrop
+	}
+	mixed, err := NewLogService(LogServiceConfig{
+		Resolver:  &fixedShardResolver{host: &featureHost{mockHost: g.host(t), active: active}, shardID: 1},
+		Databases: mgr,
+	})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	ctx := acmeCtx()
+	req := &CreateLogRequest{LogRef: LogRef{Database: "secure", Log: "events"}, Origin: "example.test/secure/events"}
+	proposed := len(*cmds)
+	_, err = mixed.CreateLog(ctx, req)
+	var inactive *LogFeatureNotActiveError
+	if !errors.As(err, &inactive) || inactive.Feature != featuregate.VerifiableLogDrop || inactive.TenantID != "acme" || inactive.ShardID != 1 {
+		t.Fatalf("CreateLog on a mixed group = %v, want *LogFeatureNotActiveError for %s on shard 1", err, featuregate.VerifiableLogDrop)
+	}
+	if len(*cmds) != proposed {
+		t.Fatalf("the refused create proposed %d commands", len(*cmds)-proposed)
+	}
+	if _, err := upgraded.CreateLog(ctx, req); err != nil {
+		t.Fatalf("CreateLog on an upgraded group: %v", err)
+	}
+	if len(*cmds) != proposed+1 {
+		t.Fatalf("CreateLog on an upgraded group proposed %d commands, want 1", len(*cmds)-proposed)
+	}
+	_, tenantID, body := decodeLogCommand(t, (*cmds)[proposed])
+	if _, desc, _, err := protocol.DecodeVerifiableLogCreate(tenantID, body); err != nil || desc.Incarnation == "" {
+		t.Fatalf("decoded create = %+v, %v; want the database's incarnation", desc, err)
+	}
+}
+
 // TestLogService_BarrierDatabaseKeyWritesMintNoKeyWithoutTheSealedFeature
 // proves a barrier database's create and key rotation are refused for the
 // sealed feature before the signer provider mints a key: a provider key no
