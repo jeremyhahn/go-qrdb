@@ -558,14 +558,6 @@ function jsonBody(data: unknown): RequestInit {
 }
 
 /**
- * Converts a decimal user ID to the uint64 JSON number the REST handlers
- * decode; anything else is sent as given so the server reports it.
- */
-function userIdToWire(userId: string): number | string {
-    return /^\d+$/.test(userId) ? Number(userId) : userId;
-}
-
-/**
  * Builds a JSON request body from an object already in wire form, without
  * re-casing any key (see holderEnrolmentWire).
  */
@@ -1815,14 +1807,14 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 await this.fetchVoid('/groups/members/add', {
                     method: 'POST',
-                    ...wireBody({ userID: userIdToWire(userId), groupID: groupId }),
+                    ...wireBody({ userID: userId, groupID: groupId }),
                 });
             },
             removeMember: async (groupId: string, userId: string): Promise<void> => {
                 this.ensureConnected();
                 await this.fetchVoid('/groups/members/remove', {
                     method: 'POST',
-                    ...wireBody({ userID: userIdToWire(userId), groupID: groupId }),
+                    ...wireBody({ userID: userId, groupID: groupId }),
                 });
             },
             members: async (groupId: string): Promise<readonly GroupMember[]> => {

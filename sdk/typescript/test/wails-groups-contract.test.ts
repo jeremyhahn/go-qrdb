@@ -142,23 +142,24 @@ describe('WailsClient groups', () => {
         installGroupBinding({ AddMember: add, RemoveMember: remove });
         const groups = new WailsClient().groups;
 
-        await groups.addMember('g1', '7');
-        await groups.removeMember('g1', '7');
+        // 2^53+1: the first integer a JavaScript number cannot hold.
+        await groups.addMember('g1', '9007199254740993');
+        await groups.removeMember('g1', '9007199254740993');
 
-        expect(add).toHaveBeenCalledWith('7', 'g1');
-        expect(remove).toHaveBeenCalledWith('7', 'g1');
+        expect(add).toHaveBeenCalledWith('9007199254740993', 'g1');
+        expect(remove).toHaveBeenCalledWith('9007199254740993', 'g1');
     });
 
-    it('members() maps the numeric user id to a decimal string', async () => {
+    it('members() keeps the decimal-string user id exact above 2^53-1', async () => {
         const members = vi.fn<BindingFn>().mockResolvedValue({
-            members: [{ userID: 7, username: 'alice', tenantID: 'acme' }],
+            members: [{ userID: '9007199254740993', username: 'alice', tenantID: 'acme' }],
         });
         installGroupBinding({ Members: members });
 
         const got = await new WailsClient().groups.members('g1');
 
         expect(members).toHaveBeenCalledWith('g1');
-        expect(got).toEqual([{ userId: '7', username: 'alice', tenantId: 'acme' }]);
+        expect(got).toEqual([{ userId: '9007199254740993', username: 'alice', tenantId: 'acme' }]);
     });
 
     it('a binding rejection propagates', async () => {

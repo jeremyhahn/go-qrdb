@@ -17,7 +17,7 @@
  *
  * For every route the tests pin the HTTP verb, the path and query, the exact
  * JSON body (the REST groups handlers use Go-style ID keys: tenantID,
- * roleIDs, groupID, and userID as a uint64 JSON number), and the mapping of
+ * roleIDs, groupID, and userID as the uint64 in a decimal string), and the mapping of
  * the response onto the SDK's camelCase types.
  */
 
@@ -201,33 +201,37 @@ describe('groups REST contract', () => {
         expect(got).toEqual({ groups: [], total: 0, hasMore: false });
     });
 
-    it('addMember posts userID as a number and groupID', async () => {
+    // 18446744073709551557 (the largest uint64 prime) is far above 2^53-1:
+    // Number() would round it to another user, so it must stay a string.
+    const bigUserId = '18446744073709551557';
+
+    it('addMember posts userID as a decimal string and groupID', async () => {
         const client = await connectedClient();
         const { calls } = installRouter({ 'POST /groups/members/add': { status: 204 } });
-        await client.groups.addMember('g-1', '42');
+        await client.groups.addMember('g-1', bigUserId);
         expect(calls[0].method).toBe('POST');
         expect(calls[0].path).toBe('/groups/members/add');
-        expect(calls[0].body).toEqual({ userID: 42, groupID: 'g-1' });
+        expect(calls[0].body).toEqual({ userID: bigUserId, groupID: 'g-1' });
     });
 
-    it('removeMember posts userID as a number and groupID', async () => {
+    it('removeMember posts userID as a decimal string and groupID', async () => {
         const client = await connectedClient();
         const { calls } = installRouter({ 'POST /groups/members/remove': { status: 204 } });
-        await client.groups.removeMember('g-1', '42');
+        await client.groups.removeMember('g-1', bigUserId);
         expect(calls[0].path).toBe('/groups/members/remove');
-        expect(calls[0].body).toEqual({ userID: 42, groupID: 'g-1' });
+        expect(calls[0].body).toEqual({ userID: bigUserId, groupID: 'g-1' });
     });
 
-    it('members queries groupID and maps userID to a string', async () => {
+    it('members queries groupID and keeps the decimal-string userID exact', async () => {
         const client = await connectedClient();
         const { calls } = installRouter({
             'GET /groups/members': {
-                body: { members: [{ userID: 42, username: 'alice', tenantID: 'acme' }] },
+                body: { members: [{ userID: bigUserId, username: 'alice', tenantID: 'acme' }] },
             },
         });
         const got = await client.groups.members('g-1');
         expect(calls[0].path).toBe('/groups/members');
         expect(query(calls[0])).toEqual({ groupID: 'g-1' });
-        expect(got).toEqual([{ userId: '42', username: 'alice', tenantId: 'acme' }]);
+        expect(got).toEqual([{ userId: bigUserId, username: 'alice', tenantId: 'acme' }]);
     });
 });

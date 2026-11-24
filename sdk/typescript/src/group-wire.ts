@@ -40,9 +40,12 @@ export interface GroupWire {
     readonly updatedAt?: string;
 }
 
-/** Group member wire shape (userID is a uint64 JSON number). */
+/**
+ * Group member wire shape: userID is the uint64 user ID as a decimal string,
+ * never a JSON number (a number above 2^53-1 would round to another user).
+ */
 export interface GroupMemberWire {
-    readonly userID?: number | string;
+    readonly userID?: string;
     readonly username?: string;
     readonly tenantID?: string;
 }
@@ -70,7 +73,7 @@ export function groupFromWire(w: GroupWire): Group {
 /** Maps a wire group member onto the SDK's GroupMember. */
 export function groupMemberFromWire(w: GroupMemberWire): GroupMember {
     return {
-        userId: w.userID === undefined ? '' : String(w.userID),
+        userId: w.userID ?? '',
         username: w.username ?? '',
         tenantId: w.tenantID ?? '',
     };
