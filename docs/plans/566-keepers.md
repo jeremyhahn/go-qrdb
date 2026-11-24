@@ -11,6 +11,25 @@ quoted call inside that function, a compile-time guard by its `var _` (or
 Where an audit record cited a line that is one off (it took a 0-based
 editor line), the Verdict says so; the line here is the tip line.
 
+Re-checked at 5fc1c4797 (rw566w6), after the 11-24 main merge
+(22d15ca325). One inline loop over all 283 rows ran 497 checks:
+`git grep -n -F "func <Keeper>(" HEAD -- <file>` for each keeper (the
+removed test's own name for `itself` rows), and
+`git grep -n -F "<quoted call>" HEAD -- <file>` for each quoted guard or
+assertion. A quote is matched up to its `...`, and a short file name
+resolves against the keeper's directory. On the first pass, 268 rows matched.
+Ten checks in nine rows needed a second look and matched there. Seven were the guards in
+column-aligned `var (` blocks (rows :50-:52, :60, :76, :78), matched with
+`git grep -n -E` that allows any run of spaces around `=`. Three were a
+`test :<n>` or `...`-cut citation (rows :49, :70, :80) checked against the
+test file. Six rows were wrong and are fixed, with the cause in the Verdict:
+:114 and :122 (TestStartInstallsTheAuthMiddlewareAndAuditService and its
+assertions, +48 from the options_wiring restore 747e782fd), :115 and :116
+(`srv.Start()` at :275, was :273), :148 (:119, was :120) and :203
+(:110, was :111). None of them moved in the 11-24 main merge: each line is
+the same at 22d15ca325^1. Every quoted check still exists, so none was
+restored.
+
 | Removed test (file:func) | Record | Keeper at tip (file:line func) | Assertion or guard at tip (file:line, quoted call) | Verdict |
 |---|---|---|---|---|
 | cmd/qrdb/bindings_test.go:TestNotConnectedError_Interface | audit-3 | cmd/qrdb/bindings_test.go:1336 TestNotConnectedError_Message | :1339 `if err.Error() != expected` (exact message) | kept |
@@ -92,15 +111,15 @@ editor line), the Verdict says so; the line here is the tip line.
 | pkg/api/unix/options_test.go:TestWithEncryptionMigrator_Applied | suite-audit pkg/api | pkg/api/unix/options_test.go:39 TestWithEncryptionMigrator_NonNil | :43 `if srv.encMigrator == nil` | kept |
 | pkg/api/unix/options_test.go:TestWithAuthFactorService_Applied | suite-audit pkg/api | pkg/api/unix/options_register_test.go:47 TestStart_RegistersEveryOptionalService | :60 `srv.authFactorSvc != af` | kept by a different keeper: the audit's TestStartRegistersEveryWiredService does not pass WithAuthFactorService |
 | pkg/api/unix/options_test.go:TestWithTenantBarrierService_Applied | suite-audit pkg/api | pkg/api/unix/options_test.go:69 TestWithTenantBarrierService_NonNil | :74 `if srv.tenantBarrierSvc == nil` | kept |
-| pkg/api/unix/options_test.go:TestWithAuditLogger_Applied | suite-audit pkg/api | pkg/api/unix/options_wiring_test.go:294 TestStartInstallsTheAuthMiddlewareAndAuditService | :306 `if srv.auditLogger == nil` | kept |
-| pkg/api/unix/options_test.go:TestWithAllNewOptions_StartStop | suite-audit pkg/api | pkg/api/unix/options_wiring_test.go:200 TestStartRegistersEveryWiredService | :273 `if err := srv.Start(); err != nil` | kept |
-| pkg/api/unix/options_test.go:TestStart_WithTenantBarrierService_Registered | suite-audit pkg/api | pkg/api/unix/options_wiring_test.go:200 TestStartRegistersEveryWiredService | :225 `WithTenantBarrierService(&stubTenantBarrierSvc{})`, :273 `if err := srv.Start(); err != nil` | kept |
+| pkg/api/unix/options_test.go:TestWithAuditLogger_Applied | suite-audit pkg/api | pkg/api/unix/options_wiring_test.go:342 TestStartInstallsTheAuthMiddlewareAndAuditService | :354 `if srv.auditLogger == nil` | kept (was cited :294, :306; line moved by 747e782fd, the options_wiring restore, +48) |
+| pkg/api/unix/options_test.go:TestWithAllNewOptions_StartStop | suite-audit pkg/api | pkg/api/unix/options_wiring_test.go:200 TestStartRegistersEveryWiredService | :275 `if err := srv.Start(); err != nil` | kept (was cited :273) |
+| pkg/api/unix/options_test.go:TestStart_WithTenantBarrierService_Registered | suite-audit pkg/api | pkg/api/unix/options_wiring_test.go:200 TestStartRegistersEveryWiredService | :225 `WithTenantBarrierService(&stubTenantBarrierSvc{})`, :275 `if err := srv.Start(); err != nil` | kept (was cited :273) |
 | pkg/api/unix/server_pin_test.go:TestWithPINBackend_Nil | suite-audit pkg/api | pkg/api/unix/server_pin_test.go:50 TestWithPINBackend_Applied | :55 `if srv.pinBackend == nil \|\| srv.pinBackend == pin.PINBackend(backend)` | kept |
 | pkg/api/unix/server_test.go:TestWithUserService_Applied | suite-audit pkg/api | pkg/api/unix/options_wiring_test.go:200 TestStartRegistersEveryWiredService | :265 `{"userSvc", srv.userSvc, userSvc}`, :270 | restored in "test(unix): restore the check a 566 removal lost (#566)" (the audit's TestStart_WithAllOptionalServices asserts only Start and Addr) |
 | pkg/api/unix/server_test.go:TestWithRoleService_Applied | suite-audit pkg/api | pkg/api/unix/options_wiring_test.go:200 TestStartRegistersEveryWiredService | :266 `{"roleSvc", srv.roleSvc, roleSvc}`, :270 | restored (same commit) |
 | pkg/api/unix/server_test.go:TestWithCertProvider_Applied | suite-audit pkg/api | pkg/api/unix/options_wiring_test.go:200 TestStartRegistersEveryWiredService | :267 `{"certProv", srv.certProv, certProv}`, :270 | restored (same commit) |
 | pkg/api/unix/server_test.go:TestWithCertEnrollment_NilIsNil | suite-audit pkg/api | pkg/api/unix/server_test.go:769 TestWithCertEnrollment_Applied | :774 `if srv.certEnroll != ce` | kept |
-| pkg/api/unix/server_test.go:TestWithAuthMiddleware_Applied | suite-audit pkg/api | pkg/api/unix/options_wiring_test.go:294 TestStartInstallsTheAuthMiddlewareAndAuditService | :303 `if srv.authMW == nil` | kept |
+| pkg/api/unix/server_test.go:TestWithAuthMiddleware_Applied | suite-audit pkg/api | pkg/api/unix/options_wiring_test.go:342 TestStartInstallsTheAuthMiddlewareAndAuditService | :351 `if srv.authMW == nil` | kept (was cited :294, :303; line moved by 747e782fd, the options_wiring restore, +48) |
 | pkg/api/unix/server_test.go:TestWithBarrierService_Applied | suite-audit pkg/api | pkg/api/unix/options_wiring_test.go:200 TestStartRegistersEveryWiredService | :252 `{"barrierSvc", srv.barrierSvc, barrierSvc}`, :270 | restored (same commit; TestStart_WithNonNilOptionalServices asserts only Start and Addr) |
 | pkg/api/unix/server_test.go:TestWithCeremonyService_Applied | suite-audit pkg/api | same | :253 `{"ceremonySvc", ...}`, :270 | restored (same commit) |
 | pkg/api/unix/server_test.go:TestWithCredentialService_Applied | suite-audit pkg/api | same | :254 `{"credentialSvc", ...}`, :270 | restored (same commit) |
@@ -126,7 +145,7 @@ editor line), the Verdict says so; the line here is the tip line.
 | pkg/index/storage_pebble_index_test.go:TestStoragePebbleIndex_ImplementsIndex | suite-audit pkg/index | pkg/index/storage_pebble_index.go:934 guard | `_ Index            = (*StoragePebbleIndex)(nil)` | kept (audit cited :933) |
 | pkg/index/storage_pebble_index_test.go:TestStoragePebbleIndex_ImplementsIndexWithContext | suite-audit pkg/index | pkg/index/storage_pebble_index.go:935 guard | `_ IndexWithContext = (*StoragePebbleIndex)(nil)` | kept (audit cited :934) |
 | pkg/server/server_test.go:TestWithCertEnrollment_NonNil | suite-audit pkg/server | pkg/server/embedded_mint_delegation_test.go:32 TestMintDelegation_ServerHandsTheRequestToTheService | :33 `serverWith(WithCertEnrollment(mintingCertEnrollment{})).MintDelegation(...)`, :34 `if err != nil \|\| got.TenantID != "acme" \|\| got.Principal != "billing"` | kept |
-| pkg/server/server_test.go:TestWithDatabaseManager_NonNil | suite-audit pkg/server | pkg/server/server_sealed_database_sql_test.go:44 TestSealedDatabase_RefusedOverSQLWire | :56 `WithDatabaseManager(mgr),`, :120 `if err := exec(q); !isSealedRefusal(err)` (the refusal needs the manager's sealed database) | kept |
+| pkg/server/server_test.go:TestWithDatabaseManager_NonNil | suite-audit pkg/server | pkg/server/server_sealed_database_sql_test.go:44 TestSealedDatabase_RefusedOverSQLWire | :56 `WithDatabaseManager(mgr),`, :119 `if err := exec(q); !isSealedRefusal(err)` (the refusal needs the manager's sealed database) | kept (was cited :120, one off) |
 | pkg/server/server_with_options_test.go:TestWithStrategyRegistry_Applied | suite-audit pkg/server | pkg/server/server_with_options_test.go:292 TestWithAllInjections_Compose | :304 `case srv.opts.strategyRegistry != reg:` | kept |
 | pkg/server/server_with_options_test.go:TestWithFactorRegistry_Applied | suite-audit pkg/server | pkg/server/server_with_options_test.go:292 TestWithAllInjections_Compose | :308 `case srv.opts.factorRegistry != factors:` | kept |
 | pkg/server/server_with_options_test.go:TestWithTrustAnchors_Applied | suite-audit pkg/server | pkg/server/server_with_options_test.go:206 TestResolveCryptoOptions_SurfacesTrustAnchors | :210 `if crypto.TrustAnchors != reg` | kept |
@@ -181,7 +200,7 @@ editor line), the Verdict says so; the line here is the tip line.
 | pkg/tenant/quota_barrier_test.go:TestQuotaExceededError_ImplementsError | suite-audit pkg/tenant | pkg/tenant/quota_barrier_test.go:32 TestQuotaExceededError_Error | :42 `if !strings.Contains(got, want)` | kept |
 | pkg/tenant/reserved_test.go:TestValidateReservedTenantID_System | suite-audit pkg/tenant | pkg/tenant/service_test.go:1405 TestTenantService_CreateRejectsSystemID | :1409 `if !errors.As(err, &rerr)` | kept |
 | pkg/tenant/reserved_test.go:TestValidateReservedTenantID_LegacyDefault | suite-audit pkg/tenant | pkg/tenant/service_test.go:1414 TestTenantService_CreateRejectsLegacyDefaultID | :1418 `if !errors.As(err, &rerr)` | kept |
-| pkg/tenant/update_tenant_test.go:TestIncrementQuotaUsage_Success | suite-audit pkg/tenant | pkg/tenant/quota_barrier_test.go:94 TestTenantService_IncrementQuotaUsage_Success | :111 `if info.Quotas.CurrentKeys != 5` | kept |
+| pkg/tenant/update_tenant_test.go:TestIncrementQuotaUsage_Success | suite-audit pkg/tenant | pkg/tenant/quota_barrier_test.go:94 TestTenantService_IncrementQuotaUsage_Success | :110 `if info.Quotas.CurrentKeys != 5` | kept (was cited :111, one off) |
 | pkg/tenant/update_tenant_test.go:TestIncrementQuotaUsage_ExceedsLimit | suite-audit pkg/tenant | pkg/tenant/quota_barrier_test.go:213 TestTenantService_IncrementQuotaUsage_AtLimit; pkg/tenant/quota_barrier_test.go:186 TestTenantService_IncrementQuotaUsage_QuotaExceeded | :234 and :199 `if !errors.As(err, &qe)` | kept |
 | pkg/tenant/update_tenant_test.go:TestIncrementQuotaUsage_UnlimitedLimit | suite-audit pkg/tenant | pkg/tenant/quota_barrier_test.go:238 TestTenantService_IncrementQuotaUsage_UnlimitedLimit | :250 `if _, err := svc.IncrementQuotaUsage(ctx, "inc-unlimit", quota.ResourceKeys, 1_000_000); err != nil` | kept |
 | pkg/tenant/update_tenant_test.go:TestIncrementQuotaUsage_ZeroDelta | suite-audit pkg/tenant | pkg/tenant/quota_barrier_test.go:156 TestTenantService_IncrementQuotaUsage_ZeroDelta | :166 `if !errors.As(err, &se)` | kept |
