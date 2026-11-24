@@ -274,7 +274,10 @@ in mg1655a.
   `--data-dir` and a file in it survive the drop. Re-creating a barrier
   database therefore takes a new `--data-dir` (the user guide and the CLI
   E2E do so).
-- The SPEC, `pm/rows.md` and ROADMAP.md moves above.
+- The SPEC, `pm/rows.md` and ROADMAP.md moves above: rw1613w7 had them
+  authorised (owner ruling 1234), but the lane's policy guard refused
+  `docs/SPEC.md` and `ROADMAP.md` (not in its `LANE_POLICY_ALLOW`), so all
+  three are left for the coordinator with the exact text in "## rw1613w7".
 - CLOSED by rw1613g: an untenanted (platform) database's verifiable logs
   survived its drop (rw1613f): `Manager.reclaimLogs` (`pkg/database/manager.go`) and
   `DatabaseService.checkLogs` skip a database whose tenant ID is empty, while
@@ -620,6 +623,58 @@ the Raft group its tenant resolves to (`r.raft(ctx, tenantID)`).
   (`-tags=codec_json,raft,integration,qrdb_vlog`): the audit-instance (Raft
   and standalone), audit verify and query, and vlog barrier-database,
   barrier-tenant, drop and per-protocol CLI tests, every transport.
+
+## rw1613w7
+
+Docs only, the row's closing lane.
+
+- `docs/audit/architecture.md`, "The audit instance": the clause "a host
+  that gates nothing keeps `OpAuditAppend`" is replaced by the tip's rule
+  (`docs/databases/architecture.md` §7): a standalone node's system shard
+  gates nothing, so in a `qrdb_vlog` build its trail is the audit instance
+  from the first event the binary writes, continuous with the
+  `OpAuditAppend` records an earlier binary left; a build without
+  `qrdb_vlog` keeps `OpAuditAppend`.
+- Sweep: `git grep -n -i -E 'gates nothing|keeps .?OpAuditAppend|own sealed
+  store|awaits the owner|owner.s decision|pending the owner|not yet
+  served|in progress' -- docs ':!docs/plans' ':!docs/reference'`, plus a
+  grep for verifiable-log next to in progress/pending/not yet. Verdicts:
+  `docs/audit/architecture.md:432` stale, fixed; `docs/databases/architecture.md`
+  1374/1378 and `docs/databases/engineering.md:449` are the tip's rule,
+  correct; `docs/databases/api.md:493` (the `verifiable-log-keys` gate not yet
+  active on every replica) is a mixed-version error, correct;
+  `docs/SPEC.md:158` is the row itself (below); every other hit (README
+  volume-pools and multi-tenancy, other SPEC rows, attested-caller,
+  barrier-seal, clustering, distributed-locks, multi-tenancy, secondary
+  indexes, time-series, storage-engines, sqlite-vfs, decisions, and the
+  "in progress" operations of other features) is another feature, not
+  this row. No stale hit outside this lane's files.
+- Row text, authorised by owner ruling 1234 option A, NOT applied: the
+  lane's policy guard refused `docs/SPEC.md` and `ROADMAP.md` as protected
+  paths (they were not in the lane's `LANE_POLICY_ALLOW`); the `pm/rows.md`
+  removal was undone so the three edits land together. For the coordinator:
+  - `docs/SPEC.md:158`: `| verifiable-log | in progress |` becomes
+    `| verifiable-log | shipped |`, and "with the tenant's isolation, DEK,
+    barrier and replication;" becomes "with the tenant's isolation, DEK,
+    barrier and replication (a barrier-enabled database's logs live in its
+    tenant's Raft group, or the node's local store when standalone, each
+    entry body and software signing key sealed under the database's barrier
+    key; a barrier-isolated tenant's logs live in its home group);"; nothing
+    else in the row changes.
+  - `ROADMAP.md:122`: the line leaves "## Now" and is the last line of
+    "## Complete" (after kv-versions), in that section's form: its text
+    unchanged up to the issue link, the PR link changed from #729 to #1655,
+    the docs and plan links kept, and the tail "in progress: serving ...
+    where their logs live" replaced by "done". "## Now" keeps four lines.
+  - `pm/rows.md:20`: the line `| verifiable-log | #1613 | in progress | 0 |
+    none |` is removed.
+- Serena's language server rewrote `go.sum` (171 added lines) during the
+  lane; it was restored, never committed.
+- Commands: `make check-publication-bound`; the Acceptance greps
+  (`gates nothing keeps` in `docs/audit` prints nothing; the SPEC, ROADMAP
+  and `pm/rows.md` greps still show the unapplied row text above).
+- Nothing left for the row's lanes; after the coordinator applies the three
+  row edits, next is the row PR's one final Codex review.
 
 ## Out of scope
 
