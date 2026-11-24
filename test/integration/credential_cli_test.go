@@ -860,7 +860,7 @@ func testCredentialOneStoreOverProtocol(t *testing.T, nodes [3]*multiProtoNode, 
 
 // requireCredentialNotFoundCLI fails the test unless a CLI call failed with
 // a not-found refusal. Every transport names it "not found" (their error
-// types differ; see docs/plans/1201.md "Open"), so the refusal reads the
+// types differ), so the refusal reads the
 // same as for a name no tenant holds and leaks no other failure.
 func requireCredentialNotFoundCLI(t *testing.T, proto multiProtocol, what, out string, err error) {
 	t.Helper()

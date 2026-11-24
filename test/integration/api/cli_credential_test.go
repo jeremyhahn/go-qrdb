@@ -467,8 +467,8 @@ func TestCLIMultiProtocolCredentialRotateWithGracePeriod(t *testing.T) {
 }
 
 // TestCLIMultiProtocolCredentialScheduledRotationNoValueSource drives a
-// scheduled rotation on a qrdbd that ships no rotation value source
-// (docs/plans/1201.md "Out of scope"): an enabled policy falls due, the
+// scheduled rotation on a qrdbd that ships no rotation value source: an
+// enabled policy falls due, the
 // scheduler's passes over it rotate nothing, and the value, the version list
 // and the next rotation read back over every protocol stay as they were.
 //
@@ -628,7 +628,7 @@ func TestCLIMultiProtocolCredentialNegativeCases(t *testing.T) {
 
 // requireCLINotFound fails the test unless a CLI call exited non-zero with
 // a not-found refusal. Every transport names it "not found"; their SDK
-// error types differ (docs/plans/1201.md "Open").
+// error types differ.
 func requireCLINotFound(t *testing.T, proto ProtocolType, what, stdout, stderr string, err error) {
 	t.Helper()
 	if err == nil {

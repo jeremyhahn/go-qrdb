@@ -30,6 +30,7 @@ The row's PR closes its row issue and marks the row shipped in
 | Seam | Row issue | Open PRs |
 |---|---|---|
 | WebTransport on the HTTP/3 listener | #1244 | #1527, #1542 |
+| credential rotation policy | #1201 | #1548, #1552, #1556, #1410 |
 | tenant delegation for embedder work | #1187 | none (shipped by #1578) |
 | QUIC public operations without a client certificate | #1174 | none (shipped by #1475) |
 
