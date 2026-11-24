@@ -38,8 +38,23 @@ type GroupServicer interface {
 	// UpdateGroup changes the name, description or role set of a group.
 	UpdateGroup(ctx context.Context, req *UpdateGroupRequest) (*Group, error)
 
-	// DeleteGroup removes the group from every member, then the record.
+	// DeleteGroup removes the group from every member, then the record. It
+	// deletes the record a prior ClaimGroup(ClaimDelete) froze, or claims it
+	// itself; a live member claim fails it with *GroupConflictError.
 	DeleteGroup(ctx context.Context, id string) error
+
+	// ClaimGroup runs guard on exactly the stored record of group id and,
+	// when it passes, marks that record claimed for op (ClaimDelete or
+	// ClaimMember) by compare-and-swap, so the record cannot change until
+	// the claim is released (or the group deleted). A live claim already on
+	// the record, or a record changed after the read, fails with
+	// *GroupConflictError; a guard error is returned with nothing written.
+	// It returns the judged group and the claim's token.
+	ClaimGroup(ctx context.Context, id, op string, guard func(*Group) error) (*Group, string, error)
+
+	// ReleaseClaim clears the claim token holds on group id; a no-op when
+	// the claim is no longer on the record or the group is gone.
+	ReleaseClaim(ctx context.Context, id, token string) error
 
 	// ListGroups returns a page of the tenant's groups ordered by ID.
 	ListGroups(ctx context.Context, req *ListGroupsRequest) (*ListGroupsResponse, error)

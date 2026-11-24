@@ -148,6 +148,32 @@ func (r *routingGroupService) UpdateGroup(ctx context.Context, req *UpdateGroupR
 	return svc.UpdateGroup(ctx, req)
 }
 
+// ClaimGroup claims the group in its owning tenant's store.
+func (r *routingGroupService) ClaimGroup(ctx context.Context, id, op string, guard func(*Group) error) (*Group, string, error) {
+	target, err := r.targetTenant(ctx, id, "claim group")
+	if err != nil {
+		return nil, "", err
+	}
+	svc, err := r.storeFor(ctx, target)
+	if err != nil {
+		return nil, "", err
+	}
+	return svc.ClaimGroup(ctx, id, op, guard)
+}
+
+// ReleaseClaim releases a claim on the group in its owning tenant's store.
+func (r *routingGroupService) ReleaseClaim(ctx context.Context, id, token string) error {
+	target, err := r.targetTenant(ctx, id, "release group claim")
+	if err != nil {
+		return err
+	}
+	svc, err := r.storeFor(ctx, target)
+	if err != nil {
+		return err
+	}
+	return svc.ReleaseClaim(ctx, id, token)
+}
+
 // DeleteGroup deletes the group from its owning tenant's store. When the
 // store no longer holds the group but the index still points at the tenant
 // (a delete that failed after removing the record, or a deleted tenant), the

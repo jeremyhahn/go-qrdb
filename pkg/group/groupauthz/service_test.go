@@ -208,7 +208,9 @@ func TestGroupService_RoleRemovalSOGate(t *testing.T) {
 // and the store's commit.
 type racingGroups struct {
 	group.GroupServicer
-	race func()
+	race       func()
+	claimRace  func()
+	claimAfter func()
 }
 
 func (r *racingGroups) UpdateGroup(ctx context.Context, req *group.UpdateGroupRequest) (*group.Group, error) {
@@ -218,6 +220,109 @@ func (r *racingGroups) UpdateGroup(ctx context.Context, req *group.UpdateGroupRe
 		race()
 	}
 	return r.GroupServicer.UpdateGroup(ctx, req)
+}
+
+// ClaimGroup commits claimRace once right before the first ClaimGroup it
+// forwards (a writer landing between the permission read and the claim),
+// and claimAfter once right after a claim is taken (a writer landing
+// between the claim and the operation it guards).
+func (r *racingGroups) ClaimGroup(ctx context.Context, id, op string, guard func(*group.Group) error) (*group.Group, string, error) {
+	if r.claimRace != nil {
+		race := r.claimRace
+		r.claimRace = nil
+		race()
+	}
+	g, token, err := r.GroupServicer.ClaimGroup(ctx, id, op, guard)
+	if err == nil && r.claimAfter != nil {
+		after := r.claimAfter
+		r.claimAfter = nil
+		after()
+	}
+	return g, token, err
+}
+
+// strictFixture is a groupauthz Service over acme's built-in roles with
+// strict separation of duties, whose group store races through racing.
+type strictFixture struct {
+	svc     *Service
+	groups  group.GroupServicer
+	racing  *racingGroups
+	users   user.UserServicer
+	members *user.GroupMembership
+	roles   role.RoleServicer
+}
+
+func newStrictFixture(t *testing.T) *strictFixture {
+	t.Helper()
+	roles := authtest.BuiltInRoles(t, "acme")
+	gen, err := dao.NewSnowflakeGenerator(1)
+	if err != nil {
+		t.Fatalf("id gen: %v", err)
+	}
+	users, err := user.NewStore(kvstore.NewMemoryKVStore(), gen)
+	if err != nil {
+		t.Fatalf("user store: %v", err)
+	}
+	members, err := user.NewGroupMembership(users)
+	if err != nil {
+		t.Fatalf("membership: %v", err)
+	}
+	groups, err := group.NewStore(kvstore.NewMemoryKVStore(), group.WithRoleLookup(roles), group.WithMemberRevoker(members))
+	if err != nil {
+		t.Fatalf("group store: %v", err)
+	}
+	mw := middleware.New(rbac.New(roles), middleware.WithRoleResolver(roles), middleware.WithStrictSeparation(true))
+	racing := &racingGroups{GroupServicer: groups}
+	return &strictFixture{svc: New(racing, users, roles, mw), groups: groups, racing: racing, users: users, members: members, roles: roles}
+}
+
+// acmeCaller returns an acme request context for an identity with the
+// given user ID and roles (no group snapshot).
+func acmeCaller(userID uint64, roleIDs ...string) context.Context {
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "acme-caller", TenantID: "acme", UserID: userID, Roles: roleIDs})
+	return tenant.WithTenantID(ctx, "acme")
+}
+
+// TestGroupService_DeleteJudgedAgainstClaimedRecord pins that a delete is
+// judged on the record it removes: an Admin with groups:delete deleting a
+// role-less group while an SO adds the SO role is refused (or conflicts),
+// and the group, its SO role and its member's membership survive.
+func TestGroupService_DeleteJudgedAgainstClaimedRecord(t *testing.T) {
+	f := newStrictFixture(t)
+	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
+	deleter := authtest.CustomRole(t, f.roles, "acme", "group-deleter", permission.GroupsRead, permission.GroupsDelete)
+	asAdmin, asSO := acmeCaller(0, admin, deleter), acmeCaller(0, admin, so)
+	g, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "signers"})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	signer, err := f.users.CreateUser(asSO, &user.CreateUserRequest{WithoutEmailLoginKey: true, Username: "signer", TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("create signer: %v", err)
+	}
+	if _, err := f.members.AddMember(asSO, signer.ID, g.ID); err != nil {
+		t.Fatalf("add signer: %v", err)
+	}
+	f.racing.claimRace = func() {
+		if _, err := f.groups.UpdateGroup(asSO, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{so}}); err != nil {
+			t.Fatalf("racing SO add: %v", err)
+		}
+	}
+	var refused *middleware.SORoleRequiredError
+	var conflict *group.GroupConflictError
+	if err := f.svc.Delete(asAdmin, g.ID); !errors.As(err, &refused) && !errors.As(err, &conflict) {
+		t.Fatalf("admin delete racing an SO add: %v, want *SORoleRequiredError or *GroupConflictError", err)
+	}
+	if got, err := f.groups.GetGroup(asSO, g.ID); err != nil || !slices.Equal(got.RoleIDs, []string{so}) {
+		t.Fatalf("group after the race = %+v, %v; want it kept with SO", got, err)
+	}
+	if u, err := f.users.GetUser(asSO, signer.ID); err != nil || !slices.Contains(u.GroupIDs, g.ID) {
+		t.Fatalf("signer after the race = %+v, %v; want the membership kept", u, err)
+	}
+	// The refused delete left no claim behind: the SO can still update.
+	if _, err := f.groups.UpdateGroup(asSO, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{so}}); err != nil {
+		t.Fatalf("update after the refused delete: %v", err)
+	}
 }
 
 // TestGroupService_UpdateJudgedAgainstCommittedRecord pins that the role

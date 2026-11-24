@@ -44,6 +44,38 @@ type Group struct {
 
 	// UpdatedAt records the last modification time (UTC).
 	UpdatedAt time.Time `json:"updatedAt"`
+
+	// Claim is the store-internal lock a delete or a membership change takes
+	// on the record it authorized against. It is nil on every group the
+	// store returns and never travels on a wire.
+	Claim *Claim `json:"claim,omitempty"`
+}
+
+// Claim operations a group record can carry.
+const (
+	// ClaimDelete freezes a group for its deletion. A delete claim never
+	// expires: an interrupted delete is completed by retrying it.
+	ClaimDelete = "delete"
+
+	// ClaimMember freezes a group's role set while a membership change
+	// authorized against it commits. A member claim lapses after a short
+	// lease, so a crashed caller cannot freeze the group for good.
+	ClaimMember = "member"
+)
+
+// Claim binds a delete or a membership change to the exact group record it
+// was authorized against: while a live claim is on the record, no update
+// and no other claim can commit over it, so the role set the caller was
+// judged on cannot change before the operation commits.
+type Claim struct {
+	// Op is ClaimDelete or ClaimMember.
+	Op string `json:"op"`
+
+	// Token identifies the claim's holder; only that holder releases it.
+	Token string `json:"token"`
+
+	// Expires is when a member claim lapses (UTC); zero for a delete claim.
+	Expires time.Time `json:"expires,omitzero"`
 }
 
 // CreateGroupRequest holds the parameters for creating a group.

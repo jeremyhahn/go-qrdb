@@ -16,6 +16,8 @@ package group
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -224,7 +226,120 @@ func (s *kvGroupStore) CreateGroup(ctx context.Context, req *CreateGroupRequest)
 // only groups of its own tenant, as pkg/role's GetRole.
 func (s *kvGroupStore) GetGroup(ctx context.Context, id string) (*Group, error) {
 	g, _, err := s.readGroup(ctx, id)
+	if g != nil {
+		g.Claim = nil
+	}
 	return g, err
+}
+
+// claimLease is how long a member claim freezes a group record.
+const claimLease = 30 * time.Second
+
+// liveClaim reports whether g carries a claim that still holds at now: a
+// delete claim always does, a member claim until its lease expires.
+func liveClaim(g *Group, now time.Time) bool {
+	return g.Claim != nil && (g.Claim.Op == ClaimDelete || g.Claim.Expires.After(now))
+}
+
+// newClaimToken returns a random claim token.
+func newClaimToken() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// ClaimGroup judges guard on exactly the stored record of group id and, when
+// it passes, marks that record claimed for op by compare-and-swap. A record
+// that already carries a live claim, or that changes between the read and
+// the swap, fails with *GroupConflictError; a guard error aborts with
+// nothing written. It returns the judged group (Claim nil) and the claim's
+// token.
+func (s *kvGroupStore) ClaimGroup(ctx context.Context, id, op string, guard func(*Group) error) (*Group, string, error) {
+	if op != ClaimDelete && op != ClaimMember {
+		return nil, "", &ValidationError{Field: "op", Reason: "must be delete or member"}
+	}
+	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return nil, "", ErrStoreNotAtomic
+	}
+	g, base, err := s.readGroup(ctx, id)
+	if err != nil {
+		return nil, "", err
+	}
+	now := time.Now().UTC()
+	if liveClaim(g, now) {
+		return nil, "", &GroupConflictError{ID: g.ID}
+	}
+	judged := *g
+	judged.Claim = nil
+	judged.RoleIDs = slices.Clone(g.RoleIDs)
+	if guard != nil {
+		if err := guard(&judged); err != nil {
+			return nil, "", err
+		}
+	}
+	token, err := newClaimToken()
+	if err != nil {
+		return nil, "", &StoreError{Op: "claim", Detail: "token", Err: err}
+	}
+	claimed := *g
+	claimed.Claim = &Claim{Op: op, Token: token}
+	if op == ClaimMember {
+		claimed.Claim.Expires = now.Add(claimLease)
+	}
+	data, err := json.Marshal(&claimed)
+	swapped := false
+	if err == nil {
+		swapped, err = atomicStore.CompareAndSwap(ctx, primaryKey(g.ID), base, data)
+	}
+	if err != nil {
+		return nil, "", &StoreError{Op: "claim", Detail: "put primary", Err: err}
+	}
+	if !swapped {
+		return nil, "", &GroupConflictError{ID: g.ID}
+	}
+	return &judged, token, nil
+}
+
+// ReleaseClaim clears the claim token holds on group id. It is a no-op when
+// the group is gone or carries another claim (or none); a record rewritten
+// concurrently (a role revocation) is retried.
+func (s *kvGroupStore) ReleaseClaim(ctx context.Context, id, token string) error {
+	if token == "" {
+		return nil
+	}
+	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return ErrStoreNotAtomic
+	}
+	for range maxRevokeAttempts {
+		g, base, err := s.readGroup(ctx, id)
+		var notFound *GroupNotFoundError
+		if errors.As(err, &notFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if g.Claim == nil || g.Claim.Token != token {
+			return nil
+		}
+		g.Claim = nil
+		data, err := json.Marshal(g)
+		if err != nil {
+			return &StoreError{Op: "release claim", Detail: "marshal", Err: err}
+		}
+		swapped, err := atomicStore.CompareAndSwap(ctx, primaryKey(id), base, data)
+		if err != nil {
+			return &StoreError{Op: "release claim", Detail: "put primary", Err: err}
+		}
+		if swapped {
+			return nil
+		}
+	}
+	return &GroupConflictError{ID: id}
 }
 
 // readGroup is GetGroup that also returns the record's stored bytes, the
@@ -286,6 +401,12 @@ func (s *kvGroupStore) UpdateGroup(ctx context.Context, req *UpdateGroupRequest)
 	if err != nil {
 		return nil, err
 	}
+	// A live claim freezes the record for the delete or membership change
+	// that holds it; an expired member claim is dropped by this write.
+	if liveClaim(prior, time.Now().UTC()) {
+		return nil, &GroupConflictError{ID: prior.ID}
+	}
+	prior.Claim = nil
 	g := *prior
 	g.RoleIDs = slices.Clone(prior.RoleIDs)
 	if req.RoleIDs != nil {
@@ -355,7 +476,7 @@ func (s *kvGroupStore) UpdateGroup(ctx context.Context, req *UpdateGroupRequest)
 // group whose record is gone for longer than an interrupted delete, which a
 // retry finishes.
 func (s *kvGroupStore) DeleteGroup(ctx context.Context, id string) error {
-	g, err := s.GetGroup(ctx, id)
+	g, _, err := s.readGroup(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -367,6 +488,14 @@ func (s *kvGroupStore) DeleteGroup(ctx context.Context, id string) error {
 	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
 	if !ok {
 		return ErrStoreNotAtomic
+	}
+	// The delete operates on a delete-claimed record, frozen against any
+	// update: one claimed by an authorized caller (ClaimGroup), a retry of
+	// an interrupted delete, or one claimed here for a direct store caller.
+	if g.Claim == nil || g.Claim.Op != ClaimDelete {
+		if g, _, err = s.ClaimGroup(ctx, id, ClaimDelete, nil); err != nil {
+			return err
+		}
 	}
 	if _, err := s.revoker.RevokeGroup(ctx, g.TenantID, g.ID); err != nil {
 		return &StoreError{Op: "delete", Detail: "revoke members", Err: err}

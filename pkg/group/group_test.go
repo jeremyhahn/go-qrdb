@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -233,6 +234,101 @@ func TestGroupStore_UpdateBoundToCommittedVersion(t *testing.T) {
 			t.Fatalf("retry: %v", err)
 		}
 	})
+}
+
+// TestGroupStore_DeleteClaimFreezesTheRecord pins that a delete claim
+// freezes the group: no update and no member claim commits over it, the
+// claim never shows on a read, and DeleteGroup completes the claimed delete.
+func TestGroupStore_DeleteClaimFreezesTheRecord(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	g, err := f.groups.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng", RoleIDs: []string{f.acmeRole}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var judged []string
+	claimed, token, err := f.groups.ClaimGroup(ctx, g.ID, ClaimDelete, func(c *Group) error {
+		judged = c.RoleIDs
+		return nil
+	})
+	if err != nil || token == "" || claimed.Claim != nil {
+		t.Fatalf("claim = %+v, %q, %v", claimed, token, err)
+	}
+	if !slices.Equal(judged, []string{f.acmeRole}) {
+		t.Fatalf("guard judged roles %v", judged)
+	}
+	var conflict *GroupConflictError
+	if _, err := f.groups.UpdateGroup(ctx, &UpdateGroupRequest{ID: g.ID, RoleIDs: []string{}}); !errors.As(err, &conflict) {
+		t.Fatalf("update of a delete-claimed group: %v, want *GroupConflictError", err)
+	}
+	if _, _, err := f.groups.ClaimGroup(ctx, g.ID, ClaimMember, nil); !errors.As(err, &conflict) {
+		t.Fatalf("member claim of a delete-claimed group: %v, want *GroupConflictError", err)
+	}
+	got, err := f.groups.GetGroup(ctx, g.ID)
+	if err != nil || got.Claim != nil || !slices.Equal(got.RoleIDs, []string{f.acmeRole}) {
+		t.Fatalf("get of a claimed group = %+v, %v", got, err)
+	}
+	if got, err := f.groups.GetGroupByName(ctx, "acme", "eng"); err != nil || got.Claim != nil {
+		t.Fatalf("get by name of a claimed group = %+v, %v", got, err)
+	}
+	list, err := f.groups.ListGroups(ctx, &ListGroupsRequest{TenantID: "acme"})
+	if err != nil || len(list.Groups) != 1 || list.Groups[0].Claim != nil {
+		t.Fatalf("list of a claimed group = %+v, %v", list, err)
+	}
+	if err := f.groups.DeleteGroup(ctx, g.ID); err != nil {
+		t.Fatalf("delete of the claimed group: %v", err)
+	}
+	var notFound *GroupNotFoundError
+	if _, err := f.groups.GetGroup(ctx, g.ID); !errors.As(err, &notFound) {
+		t.Fatalf("get after delete: %v, want *GroupNotFoundError", err)
+	}
+	if err := f.groups.ReleaseClaim(ctx, g.ID, token); err != nil {
+		t.Fatalf("release after delete: %v, want a no-op", err)
+	}
+}
+
+// TestGroupStore_ClaimBoundToReadVersion pins that a claim commits only over
+// the record its guard judged: a write landing while the guard runs fails
+// the claim with *GroupConflictError and leaves the group unclaimed.
+func TestGroupStore_ClaimBoundToReadVersion(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	g, err := f.groups.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var conflict *GroupConflictError
+	_, _, err = f.groups.ClaimGroup(ctx, g.ID, ClaimMember, func(*Group) error {
+		_, uerr := f.groups.UpdateGroup(ctx, &UpdateGroupRequest{ID: g.ID, RoleIDs: []string{f.acmeRole}})
+		return uerr
+	})
+	if !errors.As(err, &conflict) {
+		t.Fatalf("claim over a record changed under its guard: %v, want *GroupConflictError", err)
+	}
+	refused := errors.New("refused")
+	if _, _, err := f.groups.ClaimGroup(ctx, g.ID, ClaimMember, func(*Group) error { return refused }); !errors.Is(err, refused) {
+		t.Fatalf("claim with a refusing guard: %v, want the guard's error", err)
+	}
+	_, token, err := f.groups.ClaimGroup(ctx, g.ID, ClaimMember, nil)
+	if err != nil {
+		t.Fatalf("claim of the unclaimed group: %v", err)
+	}
+	if _, err := f.groups.UpdateGroup(ctx, &UpdateGroupRequest{ID: g.ID, RoleIDs: []string{}}); !errors.As(err, &conflict) {
+		t.Fatalf("update of a member-claimed group: %v, want *GroupConflictError", err)
+	}
+	if err := f.groups.DeleteGroup(ctx, g.ID); !errors.As(err, &conflict) {
+		t.Fatalf("delete of a member-claimed group: %v, want *GroupConflictError", err)
+	}
+	if err := f.groups.ReleaseClaim(ctx, g.ID, "not-the-token"); err != nil {
+		t.Fatalf("release with a foreign token: %v", err)
+	}
+	if err := f.groups.ReleaseClaim(ctx, g.ID, token); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	got, err := f.groups.UpdateGroup(ctx, &UpdateGroupRequest{ID: g.ID, RoleIDs: []string{}})
+	if err != nil || !slices.Equal(got.RoleIDs, []string{}) {
+		t.Fatalf("update after release = %+v, %v", got, err)
+	}
 }
 
 // TestGroupStore_RevokeRoleStripsGroups pins the role-delete cascade into

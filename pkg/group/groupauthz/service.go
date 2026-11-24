@@ -131,13 +131,19 @@ func (s *Service) Update(ctx context.Context, req *group.UpdateGroupRequest) (*g
 	return s.Groups.UpdateGroup(ctx, &next)
 }
 
-// Delete removes a group from every member, then the group.
+// Delete removes a group from every member, then the group. The caller is
+// judged on exactly the record the delete removes: the role-removal check
+// runs inside ClaimGroup, whose delete claim freezes that record, so a role
+// added after the check (an SO adding SO) fails the claim instead of being
+// revoked from every member unchecked.
 func (s *Service) Delete(ctx context.Context, id string) error {
-	g, err := s.read(ctx, id, permission.GroupsDelete)
-	if err != nil {
+	if _, err := s.read(ctx, id, permission.GroupsDelete); err != nil {
 		return err
 	}
-	if err := s.Auth.AuthorizeGroupRoleRemoval(ctx, g, g.RoleIDs); err != nil {
+	g, _, err := s.Groups.ClaimGroup(ctx, id, group.ClaimDelete, func(c *group.Group) error {
+		return s.Auth.AuthorizeGroupRoleRemoval(ctx, c, c.RoleIDs)
+	})
+	if err != nil {
 		return err
 	}
 	return s.Groups.DeleteGroup(ctx, g.ID)
