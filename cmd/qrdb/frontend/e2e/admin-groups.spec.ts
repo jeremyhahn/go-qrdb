@@ -162,6 +162,69 @@ test.describe("Admin - Group Management", () => {
     expect(group!.description).toBe("read-only analysts");
   });
 
+  test.describe("with a second tenant", () => {
+    test.use({
+      mockState: {
+        ...secondLaunchEmbeddedState,
+        tenants: [
+          ...secondLaunchEmbeddedState.tenants,
+          { ...secondLaunchEmbeddedState.tenants[0], id: "acme", name: "Acme Tenant" },
+        ],
+      },
+    });
+
+    test("switching the tenant reloads roles and clears the selection", async ({ page }) => {
+      await waitForShell(page);
+      const seed = (name: string, tenantId: string): Promise<string> =>
+        page.evaluate(
+          ([n, t]: [string, string]) => {
+            const w = window as unknown as Record<string, unknown>;
+            const go = w.go as {
+              main: {
+                RoleBinding: {
+                  Create: (req: { name: string; tenantId: string; permissions?: string[] }) => Promise<{ id: string }>;
+                };
+              };
+            };
+            return go.main.RoleBinding.Create({ name: n, tenantId: t, permissions: ["kv:read"] }).then((r) => r.id);
+          },
+          [name, tenantId] as [string, string],
+        );
+      await seed("reader", "default");
+      const auditorID = await seed("auditor", "acme");
+      await openGroupsView(page);
+
+      await page.getByRole("button", { name: "Create Group" }).click();
+      await expect(page.getByText("Create Group").last()).toBeVisible();
+      await page.getByTestId("group-name").fill("compliance");
+      await page.getByText("reader", { exact: true }).click();
+      await expect(page.locator("label", { hasText: "reader" }).locator("input[type=checkbox]")).toBeChecked();
+
+      await page.locator("#group-detail-tenant").selectOption("acme");
+
+      await expect(page.getByText("reader", { exact: true })).toHaveCount(0);
+      await expect(page.getByText("auditor", { exact: true })).toBeVisible();
+      await expect(page.locator("label", { hasText: "auditor" }).locator("input[type=checkbox]")).not.toBeChecked();
+      await page.getByText("auditor", { exact: true }).click();
+      await page.getByRole("button", { name: "Create", exact: true }).click();
+
+      const stored = (): Promise<GroupWire | null> =>
+        page.evaluate((n: string) => {
+          const w = window as unknown as Record<string, unknown>;
+          const go = w.go as {
+            main: {
+              GroupBinding: {
+                GetByName: (req: { name: string; tenantID?: string }) => Promise<GroupWire>;
+              };
+            };
+          };
+          return go.main.GroupBinding.GetByName({ name: n, tenantID: "acme" }).catch(() => null);
+        }, "compliance");
+      await expect.poll(async () => (await stored())?.roleIDs ?? null).toEqual([auditorID]);
+      expect((await stored())!.tenantID).toBe("acme");
+    });
+  });
+
   test("edits the roles of a group", async ({ page }) => {
     await waitForShell(page);
     const readerID = await seedRole(page, "reader");

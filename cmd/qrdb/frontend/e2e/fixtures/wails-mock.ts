@@ -502,6 +502,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
       id: string;
       name: string;
       tenant: string;
+      tenantId: string;
       permissions: string[];
       createdAt: string;
       updatedAt: string;
@@ -1715,14 +1716,25 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         RoleBinding: {
-          Create: async (req: { name: string; tenant?: string; permissions?: string[] }) => {
+          // The tenant arrives as tenant_id from the SDK (toSnake) or as
+          // tenantId / tenant from a spec seeding roles directly; absent
+          // means the default tenant.
+          Create: async (req: {
+            name: string;
+            tenant?: string;
+            tenantId?: string;
+            tenant_id?: string;
+            permissions?: string[];
+          }) => {
             maybeReject("RoleBinding.Create");
             const id = fakeUUID();
             const now = new Date().toISOString();
+            const tenantId = req.tenant_id || req.tenantId || req.tenant || "default";
             const role = {
               id,
               name: req.name,
-              tenant: req.tenant ?? "default",
+              tenant: tenantId,
+              tenantId,
               permissions: req.permissions ?? [],
               createdAt: now,
               updatedAt: now,
@@ -1741,7 +1753,10 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             const role = roleStore.get(req.id);
             if (!role) throw new Error(`role "${req.id}" not found`);
             if (req.name !== undefined) role.name = req.name;
-            if (req.tenant !== undefined) role.tenant = req.tenant;
+            if (req.tenant !== undefined) {
+              role.tenant = req.tenant;
+              role.tenantId = req.tenant;
+            }
             if (req.permissions !== undefined) role.permissions = req.permissions;
             role.updatedAt = new Date().toISOString();
             return { ...role };
@@ -1750,9 +1765,14 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             maybeReject("RoleBinding.Delete");
             roleStore.delete(id);
           },
-          List: async () => {
+          // Filters by the request's tenant (absent or empty = every tenant),
+          // as GroupBinding.List does.
+          List: async (req?: { tenant_id?: string; tenantId?: string }) => {
             maybeReject("RoleBinding.List");
-            const roles = Array.from(roleStore.values());
+            const tenantId = req?.tenant_id || req?.tenantId || "";
+            const roles = Array.from(roleStore.values()).filter(
+              (r) => tenantId === "" || r.tenant === tenantId,
+            );
             return { roles, total: roles.length };
           },
           Assign: async (userId: string, roleId: string) => {

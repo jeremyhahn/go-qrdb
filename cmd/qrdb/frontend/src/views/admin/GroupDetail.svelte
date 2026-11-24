@@ -76,14 +76,46 @@
       } else if (defaultTenantId) {
         tenantId = defaultTenantId;
       }
-      const page = await client.roles.list({ tenantId });
-      roles = [...(page.roles ?? [])];
+      await loadRoles(tenantId);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to load group data";
       showToast("error", msg);
     } finally {
       loading = false;
     }
+  }
+
+  /** Sequence number of the latest roles request; older replies are dropped. */
+  let rolesRequest = 0;
+
+  /**
+   * Loads the roles of tenant tid. A reply is applied only while it answers
+   * the latest request and tid is still the selected tenant, so a slow reply
+   * for a tenant switched away from never replaces the current tenant's roles.
+   */
+  async function loadRoles(tid: string): Promise<void> {
+    const request = ++rolesRequest;
+    try {
+      const page = await client.roles.list({ tenantId: tid });
+      if (request === rolesRequest && tenantId === tid) {
+        roles = [...(page.roles ?? [])];
+      }
+    } catch (err: unknown) {
+      if (request === rolesRequest) {
+        const msg = err instanceof Error ? err.message : "Failed to load roles";
+        showToast("error", msg);
+      }
+    }
+  }
+
+  /**
+   * A group carries only roles of its own tenant: switching the tenant drops
+   * the selection and the previous tenant's roles, then loads the new ones.
+   */
+  function handleTenantChange(): void {
+    selectedRoleIds = [];
+    roles = [];
+    void loadRoles(tenantId);
   }
 
   // ---------------------------------------------------------------------------
@@ -238,6 +270,7 @@
               allowEmpty={false}
               size="sm"
               disabled={!isCreate}
+              onchange={handleTenantChange}
             />
           </label>
         </div>
