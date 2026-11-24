@@ -106,12 +106,19 @@ test("a saved external profile's reads go to its own address", async ({ page, ba
   await allowPreflight(page);
 
   await page.goto("/");
-  await page.getByRole("button", { name: /add (external|remote) server|connect to server/i }).first().click();
-  await page.getByLabel(/name/i).first().fill("Second");
-  await page.getByLabel(/address/i).first().fill(SECOND);
+  await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: 10_000 });
+  await page.locator("aside").getByTitle("Add server").first().click();
+  const modal = page.locator(".modal-box");
+  await expect(modal).toBeVisible({ timeout: 10_000 });
+  await modal.getByRole("button", { name: "Server", exact: true }).click();
+  const form = modal.locator(".card", { has: page.getByRole("heading", { name: "Connect to Server" }) });
+  await expect(form).toBeVisible({ timeout: 10_000 });
+  await modal.locator("#ext-name").fill("Second");
+  await modal.locator("#ext-transport").selectOption("rest");
+  await modal.locator("#ext-address").fill(SECOND);
 
   const before = firstHits.length;
-  await page.getByRole("button", { name: /^(add|connect|save)/i }).last().click();
+  await form.getByRole("button", { name: "Connect", exact: true }).click();
 
   // The probe (seal status) and the follow-up reads reach the second server.
   await expect.poll(() => reads(secondHits).length, { timeout: 10_000 }).toBeGreaterThan(0);
@@ -148,9 +155,15 @@ test("activating another profile retargets the REST client and back", async ({ p
   await expect.poll(() => reads(secondHits).length, { timeout: 10_000 }).toBeGreaterThan(0);
 
   // B -> A: activating the built-in profile moves reads to the page origin.
-  const secondBefore = secondHits.length;
   await page.locator("aside").getByText("This Server", { exact: true }).first().click();
+  await expect(page.locator(".breadcrumbs").getByText("This Server")).toBeVisible({ timeout: 10_000 });
   await expect.poll(() => reads(firstHits).length, { timeout: 10_000 }).toBeGreaterThan(0);
+  // Requests B received before the switch completed are not counted.
+  const secondBefore = secondHits.length;
+  await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: 10_000 });
+  await page.evaluate(
+    () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+  );
   expect(reads(secondHits.slice(secondBefore))).toEqual([]);
 
   // A -> B: activating the external profile moves them back.
