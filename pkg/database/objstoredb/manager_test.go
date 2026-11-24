@@ -633,6 +633,56 @@ func TestManager_FailedCreateReleaseClaimFailureIsRetried(t *testing.T) {
 	})
 }
 
+// TestManager_ReleaseRetryKeepsEntryOfOwnIncarnation: a failed create whose
+// claim give-back and catalog delete both fail leaves its own record live,
+// of the entry's incarnation and not dropping. That record is not a
+// re-created name: the retry keeps the entry and reclaims nothing, and the
+// record's drop releases the namespace and forgets the entry.
+func TestManager_ReleaseRetryKeepsEntryOfOwnIncarnation(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	root := filepath.Join(base, "objects")
+	dataDir := t.TempDir()
+	mgr := newManager(t, dataDir)
+	cat := &failDeleteOnceCatalog{Catalog: databasetest.Catalog(dataDir)}
+	mgr.SetCatalog(cat)
+	mgr.SetKeyspaceReclaimer(failUnfenceReclaimer{})
+	t.Cleanup(func() { releaseFaultArmed.Store(false) })
+	releaseFaultArmed.Store(true)
+	var orphan *database.CatalogOrphanError
+	if _, err := mgr.Create(releaseFaultObjstore(t, "blobs", root)); !errors.As(err, &orphan) {
+		t.Fatalf("Create = %v, want *database.CatalogOrphanError", err)
+	}
+	if releaseFaultArmed.Load() {
+		t.Fatal("the claim give-back did not fail; the test fault did not hold")
+	}
+	entries := releaseLedgerFiles(t, dataDir)
+	if len(entries) == 0 {
+		t.Fatal("the failed create recorded no release entry for its claim")
+	}
+	before := objects(t, root)
+	mgr.SetKeyspaceReclaimer(nil)
+	// The next object-storage create retries the recorded release.
+	if _, err := mgr.Create(localObjstore("other", filepath.Join(base, "other"))); err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+	if left := releaseLedgerFiles(t, dataDir); !slices.Equal(left, entries) {
+		t.Fatalf("the retry left the entries %v, want %v kept", left, entries)
+	}
+	if after := objects(t, root); !slices.Equal(after, before) {
+		t.Fatalf("the retry left %v, want %v untouched", after, before)
+	}
+	if err := mgr.DropForTenant(ctx, "blobs"); err != nil {
+		t.Fatalf("drop of the failed create's record: %v", err)
+	}
+	if left := releaseLedgerFiles(t, dataDir); len(left) != 0 {
+		t.Fatalf("the drop kept %v", left)
+	}
+	if hasOwnerMarker(t, root) {
+		t.Fatal("the drop kept the owner marker")
+	}
+}
+
 // afterDeleteCatalog runs after once, the first time a catalog delete
 // succeeds: a drop paused between its catalog delete and its namespace
 // release.
