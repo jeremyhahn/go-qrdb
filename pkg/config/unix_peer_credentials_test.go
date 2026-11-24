@@ -18,7 +18,7 @@ import (
 	"errors"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 func peerCredU32(v uint32) *uint32 { return &v }
@@ -34,7 +34,7 @@ peer_credentials:
     user: root-ops
 `
 	var u UnixConfig
-	if err := yaml.Unmarshal([]byte(doc), &u); err != nil {
+	if err := gocodecyaml.New[UnixConfig]().Unmarshal([]byte(doc), &u); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if len(u.PeerCredentials) != 2 {
@@ -48,24 +48,24 @@ peer_credentials:
 		t.Fatalf("second mapping = %+v, want gid 0 (set, not absent) -> root-ops", b)
 	}
 
-	out, err := yaml.Marshal(u)
+	out, err := gocodecyaml.New[UnixConfig]().Marshal(u)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
 	var again UnixConfig
-	if err := yaml.Unmarshal(out, &again); err != nil {
+	if err := gocodecyaml.New[UnixConfig]().Unmarshal(out, &again); err != nil {
 		t.Fatalf("Unmarshal of marshalled form: %v", err)
 	}
 	if len(again.PeerCredentials) != 2 || again.PeerCredentials[1].GID == nil || *again.PeerCredentials[1].GID != 0 || again.PeerCredentials[1].UID != nil {
 		t.Fatalf("round trip lost a mapping: %s", out)
 	}
 
-	empty, err := yaml.Marshal(UnixConfig{SocketPath: "/run/qrdb/qrdb.sock"})
+	empty, err := gocodecyaml.New[UnixConfig]().Marshal(UnixConfig{SocketPath: "/run/qrdb/qrdb.sock"})
 	if err != nil {
 		t.Fatalf("Marshal empty: %v", err)
 	}
 	var back map[string]any
-	if err := yaml.Unmarshal(empty, &back); err != nil {
+	if err := gocodecyaml.New[map[string]any]().Unmarshal(empty, &back); err != nil {
 		t.Fatalf("Unmarshal empty: %v", err)
 	}
 	if _, ok := back["peer_credentials"]; ok {
