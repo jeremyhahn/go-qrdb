@@ -1,12 +1,15 @@
 # The object-storage LSM segment layout: the open owner decisions
 
-> **Status: PROPOSED — pending the owner's ruling** · Scope: go-qrdb
-> Last verified: 2026-11-12
-> SPEC row: `object-storage-lsm` (future). Design:
+> **Status: RULED — OS-0 option A (owner ruling 1243, 2026-11-24); OS-1, OS-3 and OS-7 open** · Scope: go-qrdb
+> Last verified: 2026-11-24
+> SPEC row: `object-storage-lsm` (in progress). Design:
 > [../storage-engines/architecture.md](../storage-engines/architecture.md),
 > "Target design: object-storage LSM segment layout". Each question below has
 > its options, a recommendation and the reason, and the lower-project API each
-> option needs. Nothing here is built.
+> option needs. On main and not yet wired: the go-objstore adapter, the
+> encrypting wrapper, `remotelsm.WithRemote`, the composition and the cache
+> (slices 1 to 4a3 of [../plans/924.md](../plans/924.md)). Not built: the
+> engine switch (the flat engine deleted, the per-database refusal lifted).
 
 ## Problem
 
@@ -25,7 +28,8 @@ adapter (plus an encrypting wrapper) over go-objstore `common.Storage`; the
 flat engine and its batch journal are deleted. Object names are Pebble's own
 (`<hash>-<creator-id>-<file-num>.sst`), never derived from qrdb keys.
 
-Adopting the design is decision OS-0; OS-1 to OS-7 follow from adopting it.
+Adopting the design is decision OS-0, decided by owner ruling 1243; OS-1 to
+OS-7 are the questions adopting it raises.
 
 ### Dependencies
 
@@ -56,9 +60,9 @@ what qrdb already uses.
 - **C: write an in-house LSM.** Needs: go-objstore v0.9.1-alpha `common.Storage`;
   a new compaction, manifest and WAL implementation in qrdb.
 
-**Recommendation: A.** It removes every listed cost of the shipped engine by
-construction, reuses an engine qrdb already runs and tests, and keeps
-go-objstore the only backend source. B leaves the problem as it is; C is the
+**Decided (owner ruling 1243, 2026-11-24): A.** It removes every listed cost
+of the shipped engine by construction, reuses an engine qrdb already runs and
+tests, and keeps go-objstore the only backend source. B leaves the problem as it is; C is the
 last resort and nothing forces it.
 
 ### OS-1 — Build on Pebble's `Experimental` remote-storage surface?
@@ -197,13 +201,13 @@ like every Raft-visible change.
 
 ## Summary of recommendations
 
-| Question | Recommendation | Lower-project dependency |
-|---|---|---|
-| OS-0 adopt | A: adopt, delete the flat engine | go-objstore v0.9.1-alpha `common.Storage` |
-| OS-1 Experimental surface | A: proceed, exact pin | none (Pebble v2 pinned) |
-| OS-2 WAL placement | A: local, durable, both modes | none |
-| OS-3 ownership | A: own prefix + `CreatorID` per instance | go-objstore v0.9.1-alpha `ListWithContext`/`DeleteWithContext` |
-| OS-4 encryption | C: barrier-AEAD `remote.Storage` wrapper, chunked | go-objstore v0.9.1-alpha `common.Storage` |
-| OS-5 old layout | A: refuse at open, no migration | none |
-| OS-6 ranged read | A: request on go-objstore, cache meanwhile | ranged read missing from go-objstore v0.9.1-alpha |
-| OS-7 hot apply path | A: per-database now, Raft in a gated phase 3 | none |
+| Question | Recommendation | Decision | Lower-project dependency |
+|---|---|---|---|
+| OS-0 adopt | A: adopt, delete the flat engine | A (owner ruling 1243) | go-objstore v0.9.1-alpha `common.Storage` |
+| OS-1 Experimental surface | A: proceed, exact pin | open | none (Pebble v2 pinned) |
+| OS-2 WAL placement | A: local, durable, both modes | A (convention, ruling 109) | none |
+| OS-3 ownership | A: own prefix + `CreatorID` per instance | open | go-objstore v0.9.1-alpha `ListWithContext`/`DeleteWithContext` |
+| OS-4 encryption | C: barrier-AEAD `remote.Storage` wrapper, chunked | C (convention, ruling 109) | go-objstore v0.9.1-alpha `common.Storage` |
+| OS-5 old layout | A: refuse at open, no migration | A (convention, ruling 109) | none |
+| OS-6 ranged read | A: request on go-objstore, cache meanwhile | A (convention, ruling 109) | ranged read missing from go-objstore v0.9.1-alpha |
+| OS-7 hot apply path | A: per-database now, Raft in a gated phase 3 | open | none |
