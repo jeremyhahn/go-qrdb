@@ -1025,9 +1025,12 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 	// Do not recreate an existing index, and do not let a different owner
 	// adopt it either: a create naming an index another owner holds is
 	// refused as an application error (go-qrdb#426). A same-owner create
-	// asking for a different value type rebuilds the index at that type
-	// instead (see IndexCreateValueType).
+	// asking for a different value type (see IndexCreateValueType) or a
+	// different key scope rebuilds the index at the requested one instead:
+	// the old terms are cleared and only the new scope is backfilled. A
+	// same-owner create diverging in field or uniqueness alone is a no-op.
 	valueType := IndexCreateValueType(opts)
+	scope := ComposeIndexScope(name, opts.KeyPrefix)
 	existing, exists := e.indexes[name]
 	// The shard's index cap is checked against the index set the create
 	// applies over, so every replica reaches the same verdict.
@@ -1039,7 +1042,7 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
 			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil
 		}
-		if e.indexValueTypes[name] == valueType {
+		if e.indexValueTypes[name] == valueType && bytes.Equal(e.indexScopes[name], scope) {
 			return sm.Result{}, nil
 		}
 		if err := existing.Close(); err != nil {
@@ -1092,7 +1095,6 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		return sm.Result{Value: 1}, err
 	}
 
-	scope := ComposeIndexScope(name, opts.KeyPrefix)
 	e.indexes[name] = idx
 	e.indexFields[name] = fieldName
 	e.indexScopes[name] = scope

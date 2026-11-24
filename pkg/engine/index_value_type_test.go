@@ -168,3 +168,136 @@ func TestHandleIndexCreate_ValueTypeChangeKeepsOwnership(t *testing.T) {
 		})
 	}
 }
+
+// applyEmailIndexCreate applies a unique create of the by_email index over
+// the email field with the given options.
+func applyEmailIndexCreate(t *testing.T, eng valueTypeEngine, entry uint64, opts protocol.IndexCreateOptions) sm.Result {
+	t.Helper()
+	opts.Unique = true
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", opts))
+	results := make([]sm.Result, 1)
+	if err := eng.Update(context.Background(), []sm.Entry{{Index: entry, Cmd: cmd}}, results); err != nil {
+		t.Fatalf("index create: %v", err)
+	}
+	return results[0]
+}
+
+// emailLookup returns the keys the by_email index holds for value.
+func emailLookup(t *testing.T, eng valueTypeEngine, value string) []string {
+	t.Helper()
+	got, err := eng.Lookup(context.Background(), index.IndexQueryRequest{IndexName: "by_email", Value: []byte(value)})
+	if err != nil {
+		t.Fatalf("index lookup %q: %v", value, err)
+	}
+	keys := make([]string, 0)
+	if got != nil {
+		for _, k := range got.([][]byte) {
+			keys = append(keys, string(k))
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// TestHandleIndexCreate_KeyPrefixChangeRebuilds pins that a same-owner
+// re-create declaring a different key scope rebuilds the index over the new
+// scope instead of keeping the old one: an index an earlier client created
+// database-wide stops holding other entities' keys once it is re-created
+// scoped to member/ (Codex round 2 P1 2 on #1706).
+func TestHandleIndexCreate_KeyPrefixChangeRebuilds(t *testing.T) {
+	for name, c := range valueTypeEngines(t) {
+		t.Run(name, func(t *testing.T) {
+			applyEmailIndexCreate(t, c.eng, 1, protocol.IndexCreateOptions{})
+			if err := c.eng.Update(context.Background(), []sm.Entry{
+				c.put(2, "member/1", `{"email":"a@x"}`),
+				c.put(3, "txmember/1", `{"email":"b@x"}`),
+			}, make([]sm.Result, 2)); err != nil {
+				t.Fatalf("put: %v", err)
+			}
+			if got := emailLookup(t, c.eng, "b@x"); !slices.Equal(got, []string{"txmember/1"}) {
+				t.Fatalf("unscoped index: b@x matched %v, want [txmember/1]", got)
+			}
+
+			assertScoped := func(step string) {
+				t.Helper()
+				if got := emailLookup(t, c.eng, "b@x"); len(got) != 0 {
+					t.Fatalf("%s: b@x matched %v, want none (txmember/ is outside the scope)", step, got)
+				}
+				if got := emailLookup(t, c.eng, "a@x"); !slices.Equal(got, []string{"member/1"}) {
+					t.Fatalf("%s: a@x matched %v, want [member/1]", step, got)
+				}
+			}
+
+			applyEmailIndexCreate(t, c.eng, 4, protocol.IndexCreateOptions{KeyPrefix: "member/"})
+			assertScoped("scoped re-create")
+
+			results := make([]sm.Result, 1)
+			if err := c.eng.Update(context.Background(), []sm.Entry{
+				c.put(5, "member/2", `{"email":"b@x"}`),
+			}, results); err != nil {
+				t.Fatalf("put member/2: %v", err)
+			}
+			if msg, ok := protocol.DecodeAppError(results[0].Data); ok {
+				t.Fatalf("put member/2 refused: %s (txmember/1 must not hold b@x)", msg)
+			}
+			if got := emailLookup(t, c.eng, "b@x"); !slices.Equal(got, []string{"member/2"}) {
+				t.Fatalf("after put: b@x matched %v, want [member/2]", got)
+			}
+
+			// The same scoped create again is a no-op.
+			applyEmailIndexCreate(t, c.eng, 6, protocol.IndexCreateOptions{KeyPrefix: "member/"})
+			if got := emailLookup(t, c.eng, "b@x"); !slices.Equal(got, []string{"member/2"}) {
+				t.Fatalf("repeated create: b@x matched %v, want [member/2]", got)
+			}
+			if got := emailLookup(t, c.eng, "a@x"); !slices.Equal(got, []string{"member/1"}) {
+				t.Fatalf("repeated create: a@x matched %v, want [member/1]", got)
+			}
+
+			// A txmember write under the scoped index is not indexed.
+			if err := c.eng.Update(context.Background(), []sm.Entry{
+				c.put(7, "txmember/2", `{"email":"c@x"}`),
+			}, make([]sm.Result, 1)); err != nil {
+				t.Fatalf("put txmember/2: %v", err)
+			}
+			if got := emailLookup(t, c.eng, "c@x"); len(got) != 0 {
+				t.Fatalf("scoped index: c@x matched %v, want none", got)
+			}
+
+			// Back to database-wide: txmember keys are indexed again. (b@x
+			// is held by member/2 and txmember/1 alike, so the unique
+			// backfill keeps one of them; c@x has a single holder.)
+			applyEmailIndexCreate(t, c.eng, 8, protocol.IndexCreateOptions{})
+			if got := emailLookup(t, c.eng, "c@x"); !slices.Equal(got, []string{"txmember/2"}) {
+				t.Fatalf("unscoped re-create: c@x matched %v, want [txmember/2]", got)
+			}
+			if got := emailLookup(t, c.eng, "a@x"); !slices.Equal(got, []string{"member/1"}) {
+				t.Fatalf("unscoped re-create: a@x matched %v, want [member/1]", got)
+			}
+		})
+	}
+}
+
+// TestHandleIndexCreate_KeyPrefixChangeKeepsOwnership pins that a create by
+// a different owner declaring a new key scope is refused and leaves the
+// index's scope unchanged.
+func TestHandleIndexCreate_KeyPrefixChangeKeepsOwnership(t *testing.T) {
+	for name, c := range valueTypeEngines(t) {
+		t.Run(name, func(t *testing.T) {
+			applyEmailIndexCreate(t, c.eng, 1, protocol.IndexCreateOptions{Owner: "collection:a"})
+			if err := c.eng.Update(context.Background(), []sm.Entry{
+				c.put(2, "member/1", `{"email":"a@x"}`),
+				c.put(3, "txmember/1", `{"email":"b@x"}`),
+			}, make([]sm.Result, 2)); err != nil {
+				t.Fatalf("put: %v", err)
+			}
+
+			res := applyEmailIndexCreate(t, c.eng, 4, protocol.IndexCreateOptions{Owner: "collection:b", KeyPrefix: "member/"})
+			if _, _, ok := protocol.DecodeIndexOwnershipError(res.Data); !ok {
+				t.Fatalf("a create by another owner was not refused: result %+v", res)
+			}
+			if got := emailLookup(t, c.eng, "b@x"); !slices.Equal(got, []string{"txmember/1"}) {
+				t.Fatalf("a refused create changed the index: b@x matched %v, want [txmember/1]", got)
+			}
+		})
+	}
+}

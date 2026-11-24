@@ -2451,6 +2451,11 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	}
 
 	valueType := IndexCreateValueType(opts)
+	// The key prefix every key this index may hold must carry: the namespace
+	// read back off the name plus the prefix the creator declared. It bounds
+	// both the backfill below and every subsequent maintenance call
+	// (go-qrdb#410).
+	scope := ComposeIndexScope(name, opts.KeyPrefix)
 
 	e.indexMu.Lock()
 	existing, exists := e.indexes[name]
@@ -2471,17 +2476,18 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 			e.indexMu.Unlock()
 			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
 		}
-		// Index already present under the same owner and value type —
-		// idempotent success so Raft Apply does not stall on duplicate create
-		// proposals. Existence is otherwise keyed by name only: a same-owner
-		// re-create diverging in field or uniqueness is a no-op and the
-		// original definition wins.
-		if e.indexValueTypes[name] == valueType {
+		// Index already present under the same owner, value type and key
+		// scope — idempotent success so Raft Apply does not stall on
+		// duplicate create proposals. Existence is otherwise keyed by name
+		// only: a same-owner re-create diverging in field or uniqueness is a
+		// no-op and the original definition wins.
+		if e.indexValueTypes[name] == valueType && bytes.Equal(e.indexScopes[name], scope) {
 			e.indexMu.Unlock()
 			return sm.Result{Value: 1}, nil, nil
 		}
-		// A different value type rebuilds the index at the requested one (see
-		// IndexCreateValueType). The stale index is unpublished first, so a
+		// A different value type (see IndexCreateValueType) or key scope
+		// rebuilds the index at the requested one: the old terms are cleared
+		// and only the new scope is backfilled. The stale index is unpublished first, so a
 		// concurrent Lookup finds no index rather than one being cleared.
 		delete(e.indexes, name)
 		delete(e.indexFields, name)
@@ -2533,12 +2539,6 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	}
 
 	e.indexMu.Unlock()
-
-	// The key prefix every key this index may hold must carry: the namespace
-	// read back off the name plus the prefix the creator declared. It bounds
-	// both the backfill below and every subsequent maintenance call
-	// (go-qrdb#410).
-	scope := ComposeIndexScope(name, opts.KeyPrefix)
 
 	// Backfill BEFORE publishing the index into e.indexes/e.indexFields, so a
 	// concurrent Lookup (which only takes indexMu.RLock() to fetch the *index.Index
