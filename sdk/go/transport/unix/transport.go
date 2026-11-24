@@ -184,11 +184,6 @@ func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
 	return t.withDatabase(database), nil
 }
 
-// New creates a new Unix socket transport with the given options. The
-// Address option must be set to the socket file path. TLS is optional
-// (transport.WithTLS / transport.WithMTLS / transport.WithTLSConfig); when
-// enabled its cert/key/CA options are validated the same way as the gRPC
-// transport. The transport is not connected until Connect is called.
 // isBearerRefusal reports whether err is the client's own refusal to send a
 // configured bearer token: *transport.BearerRequiresTLSError or
 // *transport.TokenSourceError.
@@ -198,6 +193,11 @@ func isBearerRefusal(err error) bool {
 	return errors.As(err, &tlsErr) || errors.As(err, &srcErr)
 }
 
+// New creates a new Unix socket transport with the given options. The
+// Address option must be set to the socket file path. TLS is optional
+// (transport.WithTLS / transport.WithMTLS / transport.WithTLSConfig); when
+// enabled its cert/key/CA options are validated the same way as the gRPC
+// transport. The transport is not connected until Connect is called.
 func New(opts ...transport.Option) (*Transport, error) {
 	cfg := transport.ApplyOptions(opts...)
 

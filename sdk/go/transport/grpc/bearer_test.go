@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -20,8 +21,19 @@ import (
 
 // authRecorder records the "authorization" metadata of every unary RPC.
 type authRecorder struct {
-	mu   sync.Mutex
-	seen []string
+	mu      sync.Mutex
+	seen    []string
+	streams chan string
+}
+
+// streamIntercept records the authorization metadata of each streaming RPC before its handler runs.
+func (r *authRecorder) streamIntercept(srv any, ss googlegrpc.ServerStream, _ *googlegrpc.StreamServerInfo, handler googlegrpc.StreamHandler) error {
+	md, _ := metadata.FromIncomingContext(ss.Context())
+	select {
+	case r.streams <- fmt.Sprint(md.Get(transport.AuthorizationMetadataKey)):
+	default:
+	}
+	return handler(srv, ss)
 }
 
 func (r *authRecorder) intercept(ctx context.Context, req any, _ *googlegrpc.UnaryServerInfo, handler googlegrpc.UnaryHandler) (any, error) {
@@ -59,8 +71,11 @@ func (s *grpcCountingSource) Token(context.Context) (string, error) {
 
 func bearerGRPCServer(t *testing.T, secure bool) (*authRecorder, string) {
 	t.Helper()
-	rec := &authRecorder{}
-	opts := []googlegrpc.ServerOption{googlegrpc.UnaryInterceptor(rec.intercept)}
+	rec := &authRecorder{streams: make(chan string, 8)}
+	opts := []googlegrpc.ServerOption{
+		googlegrpc.UnaryInterceptor(rec.intercept),
+		googlegrpc.StreamInterceptor(rec.streamIntercept),
+	}
 	if secure {
 		opts = append(opts, googlegrpc.Creds(credentials.NewTLS(sharedGRPCServerTLS)))
 	}
@@ -111,6 +126,44 @@ func TestBearer_GRPCSendsAuthorizationMetadata(t *testing.T) {
 	if got, n := rec.last(); n == before || got != "[Bearer host-issued-token]" {
 		t.Fatalf("WithDatabase clone: authorization = %s, want [Bearer host-issued-token]", got)
 	}
+}
+
+// requireGRPCWatchBearer opens a Watch stream on w and requires the server to see the bearer token.
+func requireGRPCWatchBearer(t *testing.T, rec *authRecorder, w transport.WatchClient, label string) {
+	t.Helper()
+	for len(rec.streams) > 0 {
+		<-rec.streams
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, _ = w.Watch(ctx, "k", transport.WatchOptions{})
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	select {
+	case got := <-rec.streams:
+		if got != "[Bearer host-issued-token]" {
+			t.Fatalf("%s: watch stream authorization = %s, want [Bearer host-issued-token]", label, got)
+		}
+	case <-timer.C:
+		t.Fatalf("%s: server saw no watch stream", label)
+	}
+}
+
+func TestBearer_GRPCWatchStreamSendsAuthorizationMetadata(t *testing.T) {
+	rec, addr := bearerGRPCServer(t, true)
+	tr := connectBearerGRPC(t, addr, sharedGRPCClientTLSOption(), transport.WithBearerToken("host-issued-token"))
+	requireGRPCWatchBearer(t, rec, tr, "transport")
+
+	clone, err := tr.WithDatabase("other")
+	if err != nil {
+		t.Fatalf("WithDatabase: %v", err)
+	}
+	t.Cleanup(func() { _ = clone.Close() })
+	w, ok := clone.(transport.WatchClient)
+	if !ok {
+		t.Fatalf("WithDatabase clone %T is not a WatchClient", clone)
+	}
+	requireGRPCWatchBearer(t, rec, w, "WithDatabase clone")
 }
 
 func TestBearer_GRPCRefreshesTokenPerRPC(t *testing.T) {
