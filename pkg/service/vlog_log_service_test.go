@@ -483,6 +483,56 @@ func TestLogService_BarrierDatabaseAppendNeedsTheSealedFeature(t *testing.T) {
 	}
 }
 
+// TestLogService_BarrierDatabaseKeyWritesMintNoKeyWithoutTheSealedFeature
+// proves a barrier database's create and key rotation are refused for the
+// sealed feature before the signer provider mints a key: a provider key no
+// descriptor names would outlive the refusal (the provider has no delete).
+func TestLogService_BarrierDatabaseKeyWritesMintNoKeyWithoutTheSealedFeature(t *testing.T) {
+	dir := t.TempDir()
+	g := newFenceGroup(t)
+	upgraded, mgr, cmds := newParentGroupBarrierService(t, dir, g, nil)
+	active := map[feature.Feature]bool{}
+	for _, f := range featuregate.Supported() {
+		active[f] = f != featuregate.VerifiableLogSealed
+	}
+	keys := &countingKeyProvider{staticSignerProvider: staticSignerProvider{created: vlog.CreatedKey{Ref: "hsm:1", Public: newHSMProviderKey(t)}}}
+	mixed, err := NewLogService(LogServiceConfig{
+		Resolver:  &fixedShardResolver{host: &featureHost{mockHost: g.host(t), active: active}, shardID: 1},
+		Databases: mgr,
+		Signers:   keys,
+	})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	ctx := acmeCtx()
+	ref := LogRef{Database: "secure", Log: "events"}
+	wantRefused := func(op string, err error) {
+		t.Helper()
+		var inactive *LogFeatureNotActiveError
+		if !errors.As(err, &inactive) || inactive.Feature != featuregate.VerifiableLogSealed || inactive.TenantID != "acme" || inactive.ShardID != 1 {
+			t.Fatalf("%s on a mixed group = %v, want *LogFeatureNotActiveError for %s on shard 1", op, err, featuregate.VerifiableLogSealed)
+		}
+		if keys.creates != 0 {
+			t.Fatalf("the refused %s minted %d provider keys", op, keys.creates)
+		}
+	}
+	proposed := len(*cmds)
+	_, err = mixed.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: "example.test/secure/events", SigningKeyType: vlog.SignatureEd25519})
+	wantRefused("CreateLog", err)
+	if len(*cmds) != proposed {
+		t.Fatalf("the refused create proposed %d commands", len(*cmds)-proposed)
+	}
+	if _, err := upgraded.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: "example.test/secure/events", SigningKeyType: vlog.SignatureEd25519}); err != nil {
+		t.Fatalf("CreateLog on an upgraded group: %v", err)
+	}
+	proposed = len(*cmds)
+	_, err = mixed.RotateKey(ctx, &RotateKeyRequest{LogRef: ref, SigningKeyType: vlog.SignatureEd25519})
+	wantRefused("RotateKey", err)
+	if len(*cmds) != proposed {
+		t.Fatalf("the refused rotation proposed %d commands", len(*cmds)-proposed)
+	}
+}
+
 // TestLogService_BarrierDatabaseDropReclaimsItsLogsInTheParentGroup pins
 // that dropping a barrier database reclaims its logs from the parent group:
 // the descriptor is gone from the group's store and a database re-created

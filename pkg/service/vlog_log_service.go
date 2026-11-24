@@ -367,7 +367,11 @@ type fencedLogTarget interface {
 
 // admit resolves the tenant's target and refuses the write while any of
 // features is not active there. A write that mints a key admits first, so a
-// refused tenant never has a key created for it.
+// refused tenant never has a key created for it. A barrier database's
+// key-minting write (one gated on featuregate.VerifiableLogKeys) also needs
+// featuregate.VerifiableLogSealed: its descriptor is sealed at apply, and a
+// refusal there would come after the provider had minted a key no
+// descriptor names.
 func (s *logService) admit(ctx context.Context, id vlog.LogID, features []feature.Feature) (logGroup, error) {
 	tenantID := id.TenantID
 	target, db, err := s.route.resolve(ctx, id)
@@ -382,6 +386,10 @@ func (s *logService) admit(ctx context.Context, id vlog.LogID, features []featur
 			}
 			return logGroup{}, &LogFeatureNotActiveError{TenantID: tenantID, ShardID: shardID, Feature: f}
 		}
+	}
+	if bt, ok := target.(*barrierDatabaseTarget); ok && slices.Contains(features, featuregate.VerifiableLogKeys) &&
+		!bt.featureEnabled(featuregate.VerifiableLogSealed) {
+		return logGroup{}, bt.featureNotActive(featuregate.VerifiableLogSealed)
 	}
 	if err := target.serving(); err != nil {
 		return logGroup{}, err
