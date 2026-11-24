@@ -58,3 +58,9 @@ replicated caller) still removes the old entries. Tests:
 `TestKVEngine_LegacyNonJSONOverwriteReplay`,
 `TestMVCCEngine_LegacyNonJSONOverwriteReplay`, and legacy plus
 ordered/flagged twins of the NonJSONReplacement and NonJSONOverwrite tests.
+
+## mg1664a: fold into the row PR
+
+- #1703 (lane fx1664s) is folded into the row PR #1664 by merge (DS-10130); #1703 closes with a pointer to #1664.
+- The Open item above is fixed on the row branch by fx1664t (`CheckUniqueViolationsBatch` replays the set in op order; see `docs/plans/1649.md`).
+- The apply-path coverage fx1664t left to this fix (a non-JSON overwrite releases the old index entries at apply) now runs against it: the fx1664s tests in `pkg/engine/indexing_test.go` and `pkg/engine/kv_engine_test.go` sit on the same tree as the ordered unique check.
