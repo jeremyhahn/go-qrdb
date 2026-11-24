@@ -157,9 +157,16 @@ func TestApplyIsolationFloor_FIPSRefusesNonStrictFloor(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	n := &Node{}
 
-	require.NoError(t, n.applyIsolationFloor(context.Background(),
-		&lifecycle.Node{Tenant: weakFloorTenant{}}, cfg),
-		"outside FIPS a weaker stored floor is not a boot refusal")
+	// The process's own mode decides the first expectation: a leg run with
+	// GODEBUG=fips140=on/only is in FIPS mode before withFIPS forces it.
+	err := n.applyIsolationFloor(context.Background(),
+		&lifecycle.Node{Tenant: weakFloorTenant{}}, cfg)
+	if fipsEnabled() {
+		require.ErrorIs(t, err, lifecycle.ErrFIPSFloorNotStrict,
+			"in FIPS mode a weaker stored floor is a boot refusal")
+	} else {
+		require.NoError(t, err, "outside FIPS a weaker stored floor is not a boot refusal")
+	}
 
 	withFIPS(t)
 	for name, svc := range map[string]*lifecycle.Node{
