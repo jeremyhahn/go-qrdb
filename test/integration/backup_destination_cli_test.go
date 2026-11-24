@@ -29,14 +29,16 @@ func TestBackupDestination_CLI_PerProtocol(t *testing.T) {
 	}
 
 	// Each protocol's tree leaves its compressed+encrypted backup behind:
-	// the destination holds the format marker plus that backup's meta and
-	// data objects.
+	// the destination holds the format marker plus that backup's meta,
+	// envelope and data objects. The local provider stores a
+	// ".metadata.json" sidecar beside every object; sidecars are the
+	// provider's bookkeeping, not repository objects, so they are not counted.
 	var objects []string
 	err := filepath.WalkDir(destination, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.Type().IsRegular() {
+		if d.Type().IsRegular() && !strings.HasSuffix(path, ".metadata.json") {
 			rel, _ := filepath.Rel(destination, path)
 			objects = append(objects, rel)
 		}
@@ -45,8 +47,8 @@ func TestBackupDestination_CLI_PerProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk backup destination: %v", err)
 	}
-	if want := 1 + 2*len(multiProtocols); len(objects) < want {
-		t.Fatalf("backup destination holds %d objects %v, want at least %d (marker + meta and data per protocol)", len(objects), objects, want)
+	if want := 1 + 3*len(multiProtocols); len(objects) != want {
+		t.Fatalf("backup destination holds %d objects %v, want exactly %d (marker + meta, envelope and data per protocol)", len(objects), objects, want)
 	}
 }
 
