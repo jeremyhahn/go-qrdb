@@ -2734,31 +2734,37 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             (getState() as { restoredProfile?: Record<string, unknown> }).restoredProfile;
           const restoredConnected = (): boolean =>
             (getState() as { restoredConnected?: boolean }).restoredConnected === true;
+          const listProfiles = (): Array<Record<string, unknown>> => {
+            const s = getState();
+            const list: Array<Record<string, unknown>> = [];
+            if (s.configInitialized) {
+              const profileType = s.profileType ?? "embedded";
+              list.push({
+                id: "mock-profile-1",
+                name: "Local Database",
+                type: profileType,
+                ...(profileType === "embedded"
+                  ? { embedded: { dataDir: "/mock/data" } }
+                  : {
+                      external: {
+                        transport: "unix",
+                        address: "/mock/run/qrdbd.sock",
+                      },
+                    }),
+                serverMode: s.serverMode,
+                createdAt: "2026-01-01T00:00:00Z",
+              });
+            }
+            const r = restored();
+            if (r) list.push(r);
+            return list;
+          };
+          // A saved profile, else the listed one: the binding reads the type of every profile.
+          const profileById = (id: string): Record<string, unknown> | undefined =>
+            savedProfiles[id] ?? listProfiles().find((p) => p.id === id);
           return {
             ListProfiles: async () => {
-              const s = getState();
-              const list: Array<Record<string, unknown>> = [];
-              if (s.configInitialized) {
-                const profileType = s.profileType ?? "embedded";
-                list.push({
-                  id: "mock-profile-1",
-                  name: "Local Database",
-                  type: profileType,
-                  ...(profileType === "embedded"
-                    ? { embedded: { dataDir: "/mock/data" } }
-                    : {
-                        external: {
-                          transport: "unix",
-                          address: "/mock/run/qrdbd.sock",
-                        },
-                      }),
-                  serverMode: s.serverMode,
-                  createdAt: "2026-01-01T00:00:00Z",
-                });
-              }
-              const r = restored();
-              if (r) list.push(r);
-              return list;
+              return listProfiles();
             },
             SaveProfile: async (profile: Record<string, unknown>) => {
               if (profile.id) savedProfiles[profile.id as string] = profile;
@@ -2767,12 +2773,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               delete savedProfiles[id];
             },
             Connect: async (profileId: string) => {
+              maybeReject("ConnectionManagerBinding.Connect");
               if (profileId === restored()?.id) {
                 (getState() as { restoredConnected?: boolean }).restoredConnected = true;
                 return { profileId, status: "connected", isEmbedded: true };
               }
               const s = getState();
-              const profile = savedProfiles[profileId];
+              const profile = profileById(profileId);
               const isEmbedded = profile?.type === "embedded";
               (window as unknown as Record<string, unknown>).__lastConnectProfileId = profileId;
               // Connecting an embedded profile starts its server, and the Go
@@ -2822,6 +2829,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               return { profileId, status, isEmbedded };
             },
             Disconnect: async (profileId: string) => {
+              maybeReject("ConnectionManagerBinding.Disconnect");
               // Only the restored profile tracks its connection in the mock.
               if (profileId === restored()?.id) {
                 (getState() as { restoredConnected?: boolean }).restoredConnected = false;
@@ -2836,7 +2844,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                   isEmbedded: true,
                 };
               }
-              const profile = savedProfiles[profileId];
+              const profile = profileById(profileId);
               const isEmbedded = profile?.type === "embedded";
               if (!s.configInitialized) {
                 return { profileId, status: "disconnected", isEmbedded };
@@ -3232,6 +3240,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
         RebalanceBinding: {
           GetShardStats: async (shardId: number) => {
             maybeReject("RebalanceBinding.GetShardStats");
+            await maybeHold("RebalanceBinding.GetShardStats");
             return {
               shardId,
               keyCount: 1000,
