@@ -819,6 +819,13 @@ FTS_TAGS := $(strip $(BUILD_TAGS)) qrdb_fts
 test-fts:
 	$(GOTEST) -tags "$(FTS_TAGS)" $(PKG_FTS)
 
+OBJSTORE_CLOUD_TAGS := $(strip $(BUILD_TAGS)) azureblob gcpstorage
+
+# The go-objstore cloud providers are default-off; this compiles both tags and runs the backup.destination stub e2e.
+.PHONY: test-objstore-cloud
+test-objstore-cloud:
+	cd $(SDK_DIR) && $(GOTEST) -tags "$(OBJSTORE_CLOUD_TAGS)" -run '^TestBackupDestination_' ./node/
+
 # print-optional-test-tags prints `<tag> <WITH_flag>=1` for each supported default-off build tag.
 .PHONY: print-optional-test-tags
 print-optional-test-tags:

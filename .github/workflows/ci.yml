@@ -2663,6 +2663,11 @@ jobs:
         env:
           SDK_LEG: ${{ matrix.leg }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-sdk-leg SDK_LEG='$SDK_LEG' GOTEST_TIMEOUT=145m GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+      - name: make test-objstore-cloud
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && matrix.leg == 'sdk' }}
+        env:
+          SDK_LEG: ${{ matrix.leg }}
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-objstore-cloud GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
         if: ${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
