@@ -107,7 +107,7 @@ const (
 	// the bigdisk runner for this repository on github.com and ubuntu-latest
 	// otherwise (v1.52); the other two read preflight's selection (v1.48,
 	// ruling 1024; balanced since v1.54, ruling 1137).
-	preflightRunsOn    = `${{ github.server_url == 'https://github.com' && (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_PREFLIGHT_RUNS_ON || '["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
+	preflightRunsOn    = `${{ github.server_url == 'https://github.com' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.CI_PREFLIGHT_RUNS_ON || '["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
 	runnerDockerRunsOn = `${{ fromJSON(needs.preflight.outputs.runner_docker) }}`
 	runnerRunsOn       = `${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}`
 	// DS-10437 (Tenant 03:31Z 11-24, ruling 617): ci.yml's ci-gate and the
