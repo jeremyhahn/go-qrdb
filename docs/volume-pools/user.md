@@ -95,6 +95,10 @@ nothing is created. Raise the pool's capacity or choose another pool.
   move, as after a restart, until its admin unseals it. A `raft` tenant's move
   across a three-node cluster is covered end to end, with a replica restart
   during the move and a cancel after a replica acknowledged a new write.
+  While a tenant moves, the cluster adds no replica of it: a scale-up or
+  rebalance that would place one is refused ("failed precondition", the
+  tenant is moving) until the move ends or is cancelled, even when it
+  started just before the move was admitted. Run it again afterwards.
 - **Retire a pool:** move or delete its tenants, then
   `qrdb volume-pool delete fast`. Remove the mapping from each node's
   configuration afterwards.

@@ -322,7 +322,17 @@ on both pools while it moves. While a journal exists, tenant delete, a quota
 change, a second move and deleting either pool are refused. So is a new
 replica of the tenant: the volume-pool placement filter refuses the replica
 with `*volume.TenantMovingReplicaError`, and the rebalancer refuses a MOVE
-or scale-up of a moving tenant, until the journal is gone. The journal's node
+or scale-up of a moving tenant, until the journal is gone. Those reads are
+early refusals; the durable fence is the placement write itself. The node's
+placement store is built with `placement.WithReplicaAddFence(volume.MoveKey,
+...)`, so every placement write that adds a replica or creates a placement
+(`Put`, `CompareAndSwapPlacement`, `ClaimPlacement`) carries the guard "the
+tenant's move journal key is absent" in the same guarded transaction as the
+placement compare. Both keys live on the system shard, so a journal admitted
+after the rebalancer's read refuses the write with the same
+`*volume.TenantMovingReplicaError`, and a store whose KV has no guarded batch
+fails closed. Writes that add no replica (a promotion, a removal, the
+dropping flag) are not fenced, so an abort and a cut over still proceed. The journal's node
 set still follows the tenant's replicas: before it grants a copy step and
 before it cuts over, the reconciler re-reads them (`Catalog.SyncMoveNodes`),
 adds a replica that joined since admission as pending (a `copied` move goes

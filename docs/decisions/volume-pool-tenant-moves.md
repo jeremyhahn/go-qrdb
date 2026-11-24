@@ -85,6 +85,15 @@ alternatives at each choice.
 
 A node added to the tenant's replica set while a move runs is placed on a
 node whose health shows **both** pools ready and is added to `NodesPending`.
+As built, a replica the cluster would add while the journal exists is
+refused instead (the placement filter and the rebalancer refuse it early,
+and the placement write itself is fenced: every placement write that adds a
+replica or creates a placement compares the move journal key absent in the
+same guarded transaction, on the system shard that holds both). The resync
+before each copy grant and before cut over adds a replica that joined
+before admission to `NodesPending`, so cut over needs no placement compare:
+no replica can join the set it cuts over while the journal exists (decided
+by convention, ruling 109).
 
 **Key re-derivation for the destination pool.** Nothing new is derived for
 the tenant. A destination pool provided by a `Lockable` volume was unlocked
@@ -415,7 +424,14 @@ sleeps: every wait is on an observable state):
   replica has resumed on the destination and the test has written through
   the CLI since, for a single-replica tenant and for a three-replica tenant,
   then every write the CLI acknowledged is readable after `cancel-move`
-  returns and the move is gone; with a destination pool that is
+  returns and the move is gone. A single-replica move cuts over in the
+  worker pass that releases its settled step, so "written after resume,
+  then cancelled" exists only while that step settles: the single-replica
+  case is a cancel recorded against the settling step after the destination
+  acknowledged the write, and the test proves the copy-back path (the
+  write acknowledged before `cancel-move` returns, `nodesCopied` non-empty
+  in the answer); an attempt that cut over first or recorded no copied
+  node is retried on a fresh tenant (decided by convention, ruling 109); with a destination pool that is
   unready on one node (admit refused), and without the permission
   (`PERMISSION_DENIED`).
 

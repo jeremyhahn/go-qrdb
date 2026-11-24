@@ -369,8 +369,24 @@ as pending (a `copied` move goes back to `copying`) and drops a pending
 replica that left and holds no step. A pass that changed the set does not
 cut over; one whose lookup failed grants and cuts over nothing. The
 rebalancer refuses a MOVE or scale-up of a moving tenant
-(`*volume.TenantMovingReplicaError`), so a resync covers only replica changes
-made outside it.
+(`*volume.TenantMovingReplicaError`) at its read, and the placement write
+fences the rest. `placement.NewStore(kv, placement.WithReplicaAddFence(
+volume.MoveKey, refusal))` makes `Put`, `CompareAndSwapPlacement` and
+`ClaimPlacement` that add a replica (a `(ReplicaID, NodeID, RaftAddr)` not in
+the current entry) or create a placement write through
+`PutAllIfAllUnchanged` with two guards: the placement key equals the value
+read, and `__sys:volumepool/moves/<tenant>` is absent. The journal and the
+placement are raw keys on the same system shard, so the compare and the write
+are one transaction: a journal admitted between the rebalancer's fence read
+and its write refuses the write, and the refusal is the journal's
+`*volume.TenantMovingReplicaError` (from, to and state decoded from the
+journal; an undecodable journal still refuses). A KV without the guarded
+batch fails closed with `AtomicWriteUnsupportedError`. Promotions, removals
+and `SetDropping` add no replica and are not fenced. `CutOverMove` needs no
+placement compare: it writes only the journal and the assignment, and the
+fence guarantees that no replica was added outside the journal's node set
+while the journal existed, so the set it cut over is the tenant's set. A
+resync therefore covers only replicas added before admission.
 
 ### Composition options
 
