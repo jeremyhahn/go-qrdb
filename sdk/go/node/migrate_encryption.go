@@ -456,17 +456,19 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 		// point leaves the seal store's secrets half-moved: a live record
 		// not yet replaced is unreadable under the adopted key, and a staged
 		// copy not yet deleted would overwrite a newer write at the next
-		// roll-forward. Finish that commit first; if it fails again, leave
-		// the data plane down (the journal stays) so nothing is served
-		// until the boot's recovery completes it.
+		// roll-forward. Finish that commit first. Any failure that does not
+		// prove the records committed (a failed commit, an unreadable
+		// journal, anything not ErrMigrationRetirePending) leaves the data
+		// plane down (the journal stays) so nothing is served until the
+		// boot's recovery completes it.
 		var retire func(context.Context) error
 		if n.sealRetirer != nil {
 			retire = n.sealRetirer.Retire
 		}
 		if ferr := database.FinishCommittedMigration(ctx, n.barrier.Load(), retire); ferr != nil {
-			if errors.Is(ferr, database.ErrMigrationRecordsPending) {
+			if !errors.Is(ferr, database.ErrMigrationRetirePending) {
 				p.creds = seal.Credentials{}
-				return &MigrationReopenError{Reason: "the migration's re-encrypted seal-store records are not committed; the node stays down until a restart recovers them", Err: ferr}
+				return &MigrationReopenError{Reason: "the migration's re-encrypted seal-store records are not proven committed; the node stays down until a restart recovers them", Err: ferr}
 			}
 			// The records are committed; only the plaintext retirement
 			// failed, and its marker makes the next boot retry it.
