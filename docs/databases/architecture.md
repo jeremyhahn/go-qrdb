@@ -1461,8 +1461,10 @@ the upgrade moves no data.
   so apply hashes the entry as appended. A prefix tenant's logs are under the
   system barrier; a barrier-isolated tenant's are in its home group, under the
   tenant's own barrier. A sealed barrier refuses every log call with the error
-  it returns for the store's other reads (§3, "Isolation"). Where the node has
-  no such group (standalone) the call fails closed with
+  it returns for the store's other reads (§3, "Isolation"). On a standalone
+  node they are applied to and read from the tenant's own standalone barrier
+  store (`AttachLocalTenantHomes`); where the node has neither a home group nor
+  an attached standalone store the call fails closed with
   `BarrierStoreUnavailableError`. A log in a barrier-enabled database lives in
   its tenant's group, each entry body and software key sealed under the
   database's key before the propose, while the leaf hash commits to the
