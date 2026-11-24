@@ -110,6 +110,11 @@ const (
 	preflightRunsOn    = `${{ github.server_url == 'https://github.com' && (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_PREFLIGHT_RUNS_ON || '["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
 	runnerDockerRunsOn = `${{ fromJSON(needs.preflight.outputs.runner_docker) }}`
 	runnerRunsOn       = `${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}`
+	// DS-10437 (Tenant 03:31Z 11-24, ruling 617): ci.yml's ci-gate and the
+	// review's scope and gate run on the bigdisk pool for a push to main and a
+	// same-repository head, and on ubuntu-latest for a fork's head.
+	gateRunsOn   = `${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
+	reviewRunsOn = `${{ github.event.pull_request.head.repo.full_name == github.repository && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
 	// runnerSelectStep is preflight's step that writes runner and
 	// runner_docker; its env names github.server_url.
 	runnerSelectStep = "- name: Balanced runner pool (ruling 1137)\n"
@@ -242,6 +247,10 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		case file == ciFile && (runsOn == preflightRunsOn || runsOn == runnerDockerRunsOn || runsOn == runnerRunsOn):
 			// ci-template v1.53 (ruling 1087): preflight's v1.52 expression
 			// and the runner selection (ruling 1024; balanced, ruling 1137).
+		case file == ciFile && name == "ci-gate" && runsOn == gateRunsOn,
+			file == reviewWorkflow && (name == "scope" || name == "gate") && runsOn == reviewRunsOn:
+			// DS-10437 (ruling 617): bigdisk for main and same-repository heads,
+			// ubuntu-latest for a fork's.
 		case runsOn == "" || strings.Contains(runsOn, "${{"):
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+" nor one self-hosted label (owner ruling 999)")
 		default:
