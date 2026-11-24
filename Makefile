@@ -2650,7 +2650,7 @@ vet-sdk:
 # default tag set, the secure analyzer's self-test and the sdk/go linters. Run
 # with `make -k lint-gates` it reports every failing gate in one pass.
 # check-public-releasable is not here: it reads an untracked pattern file,
-# which CI writes on the runner.
+# which CI writes on the runner; release-alpha requires it.
 #
 # lint-sweeps is the two whole-tree sweeps over every SUPPORTED_TAG_SETS
 # combination, vet-tags and the secure analyzer. Together they took over an
@@ -5132,7 +5132,12 @@ release-alpha: override export REL_ORIGIN_SUBMOD  := $(origin SUBMODULE_TAGS)
 # time after both new tags exist and before the push, which is the only moment
 # at which a skewed release can still be prevented rather than reported
 # (go-qrdb#13).
-release-alpha: check-tag-lockstep
+#
+# check-public-releasable runs first, before check-tag-lockstep, so a tag is
+# cut only from a tree the public-releasability scan passed. There is no skip:
+# a missing pattern file stops the cut just as a hit does (docs/release/user.md
+# says where the scan looks for it). It reads no remote and takes seconds.
+release-alpha: check-public-releasable check-tag-lockstep
 	@for o in "VERSION=$$REL_ORIGIN_VERSION" "RELEASE_REMOTE=$$REL_ORIGIN_REMOTE" "REPO_NAME=$$REL_ORIGIN_REPO" "AGENT_GIT=$$REL_ORIGIN_AGENT" "SUBMODULE_TAGS=$$REL_ORIGIN_SUBMOD"; do \
 	  case "$${o#*=}" in \
 	    environment|"environment override") echo "ERROR: $${o%%=*} is coming from the ENVIRONMENT, not from this Makefile or the command line. That happens under make -e, including an inherited MAKEFLAGS=-e that nobody typed, and it lets an exported value choose the version or the push destination for a release that cannot be retracted. Pass release inputs on the command line: make release-alpha VERSION=vX.Y.Z-alpha"; exit 1 ;; \
