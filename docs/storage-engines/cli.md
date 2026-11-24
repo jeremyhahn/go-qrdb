@@ -1,7 +1,7 @@
 # Storage Engines — CLI
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
-> note below.** · Scope: go-qrdb · Last verified: 2026-10-27
+> **Status: NORMATIVE for shipped behaviour; ADOPTED (owner ruling 1243), not yet
+> built, for the "Target design" note below.** · Scope: go-qrdb · Last verified: 2026-10-27
 
 **No dedicated CLI verb group.** Storage engines are a server configuration
 concern.
@@ -132,8 +132,8 @@ no `qrdb` verb. The volume pool verbs are covered in
 ## Target design: no CLI change
 
 See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout).
-**Not implemented** — future work under the SPEC row `object-storage-lsm`.
-The proposed object-storage LSM segment layout adds no `qrdb` verb and no
+**Not implemented** — work in progress under the SPEC row `object-storage-lsm`.
+The object-storage LSM segment layout adds no `qrdb` verb and no
 flag. `qrdb database create ... --backend objstore` is unchanged as a
 command; what changes is what the node does when such a database opens. The
 proposed configuration is in [engineering.md](engineering.md)'s target

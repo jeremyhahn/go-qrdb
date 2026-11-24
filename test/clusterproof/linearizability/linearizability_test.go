@@ -20,6 +20,8 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -550,6 +552,67 @@ func TestCheck_Timeout(t *testing.T) {
 			t.Fatalf("search timeouts = %v, want [%v]", got, tc.want)
 		}
 	}
+}
+
+// indetPuts returns n overlapping indeterminate puts on key k with distinct
+// values v0..v(n-1), ids from first.
+func indetPuts(k string, first uint64, n int) history.History {
+	h := make(history.History, 0, n)
+	for i := range n {
+		h = append(h, on(k, put(first+uint64(i), "v"+strconv.Itoa(i), int64(i)*10, int64(i)*10+5, indet)))
+	}
+	return h
+}
+
+// noSearch makes any porcupine search fail the test until cleanup.
+func noSearch(t *testing.T) {
+	t.Helper()
+	search = func(porcupine.Model, []porcupine.Operation, time.Duration) (porcupine.CheckResult, porcupine.LinearizationInfo) {
+		t.Fatal("search called for a history over the indeterminate bound")
+		return porcupine.Unknown, porcupine.LinearizationInfo{}
+	}
+	t.Cleanup(func() { search = porcupine.CheckOperationsVerbose })
+}
+
+func wantUndecidable(t *testing.T, c Checker, h history.History, key string, ops, indeterminate, limit int) {
+	t.Helper()
+	_, err := c.Check(h)
+	var ue *UndecidableError
+	if !errors.As(err, &ue) {
+		t.Fatalf("Check error = %v, want *UndecidableError", err)
+	}
+	want := UndecidableError{Key: key, Ops: ops, Indeterminate: indeterminate, Limit: limit}
+	if *ue != want {
+		t.Fatalf("UndecidableError = %+v, want %+v", *ue, want)
+	}
+	if !strings.Contains(ue.Error(), "exceed the search bound of "+strconv.Itoa(limit)) {
+		t.Fatalf("Error() = %q, want the search bound named", ue.Error())
+	}
+}
+
+func TestCheck_RefusesTooManyIndeterminateWrites(t *testing.T) {
+	t.Run("over the default bound", func(t *testing.T) {
+		noSearch(t)
+		n := DefaultMaxIndeterminate + 1
+		wantUndecidable(t, Checker{}, indetPuts("k", 1, n), "k", n, 17, 16)
+	})
+	t.Run("at the default bound is decided", func(t *testing.T) {
+		n := DefaultMaxIndeterminate
+		h := append(indetPuts("k", 1, n), get(uint64(n)+1, "v3", 1000, 1010))
+		wantValid(t, h)
+	})
+	t.Run("custom bound", func(t *testing.T) {
+		noSearch(t)
+		wantUndecidable(t, Checker{MaxIndeterminate: 2}, indetPuts("k", 1, 3), "k", 3, 3, 2)
+	})
+}
+
+func TestCheck_UndecidableKeyIsReportedBeforeAnySearch(t *testing.T) {
+	noSearch(t)
+	n := DefaultMaxIndeterminate + 1
+	h := history.History{on("a", put(1, "x", 0, 10, ok)), on("a", get(2, "x", 20, 30))}
+	h = append(h, indetPuts("b", 3, n)...)
+	wantUndecidable(t, Checker{}, h, "b", n, n, DefaultMaxIndeterminate)
 }
 
 func TestStep(t *testing.T) {

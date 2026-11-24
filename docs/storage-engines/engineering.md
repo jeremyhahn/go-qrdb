@@ -1,7 +1,7 @@
 # Storage Engines — Engineering Contract
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED — pending owner
-> decision — for the object-storage LSM target design (see "Target design" at
+> **Status: NORMATIVE for shipped behaviour; ADOPTED (owner ruling
+> 1243), not yet built, for the object-storage LSM target design (see "Target design" at
 > the end).** · Scope: go-qrdb · Last verified: 2026-10-27
 
 ## Exported surface
@@ -471,7 +471,7 @@ the same status.
 ## Target design: `objstore` as Pebble remote storage
 
 > See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
-> for the shape, the direction it proposes, and the decisions (OS-1..OS-7)
+> for the shape, the direction it sets, and the decisions (OS-1..OS-7)
 > this contract assumes. It is work in progress under the SPEC row
 > `object-storage-lsm`. Only the unwired Pebble `remote.Storage` adapter
 > over go-objstore (`pkg/storage/objstore/remote.go`) and its barrier-AEAD
