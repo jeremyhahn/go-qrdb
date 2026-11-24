@@ -211,3 +211,45 @@ func TestGroupStore_DeleteKeepsRecordWhenRevokeFails(t *testing.T) {
 		t.Fatalf("record gone after a failed revoke: %v", err)
 	}
 }
+
+// nonAtomicKV hides the AtomicKVStore methods of the store it wraps, so a
+// kvGroupStore built over it directly (NewStore refuses one) reaches the
+// write paths with a store that cannot claim a name.
+type nonAtomicKV struct {
+	kvstore.KVStore
+}
+
+func TestGroupStore_WritesRefuseNonAtomicStore(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	existing, err := f.groups.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	base, ok := f.groups.(*kvGroupStore)
+	if !ok {
+		t.Fatalf("fixture store is %T, want *kvGroupStore", f.groups)
+	}
+	s := &kvGroupStore{store: nonAtomicKV{KVStore: base.store}, roles: base.roles, revoker: base.revoker, identity: base.identity}
+	if _, ok := s.store.(kvstore.AtomicKVStore); ok {
+		t.Fatal("double still satisfies AtomicKVStore")
+	}
+	t.Run("CreateGroup", func(t *testing.T) {
+		if _, err := s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "ops"}); !errors.Is(err, ErrStoreNotAtomic) {
+			t.Fatalf("create = %v, want ErrStoreNotAtomic", err)
+		}
+	})
+	t.Run("UpdateGroup", func(t *testing.T) {
+		if _, err := s.UpdateGroup(ctx, &UpdateGroupRequest{ID: existing.ID, Name: "platform"}); !errors.Is(err, ErrStoreNotAtomic) {
+			t.Fatalf("update = %v, want ErrStoreNotAtomic", err)
+		}
+	})
+	t.Run("DeleteGroup", func(t *testing.T) {
+		if err := s.DeleteGroup(ctx, existing.ID); !errors.Is(err, ErrStoreNotAtomic) {
+			t.Fatalf("delete = %v, want ErrStoreNotAtomic", err)
+		}
+		if len(f.revoker.calls) != 0 {
+			t.Fatalf("members revoked before the refusal: %v", f.revoker.calls)
+		}
+	})
+}

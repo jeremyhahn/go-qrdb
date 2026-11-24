@@ -172,7 +172,10 @@ func (s *kvGroupStore) CreateGroup(ctx context.Context, req *CreateGroupRequest)
 	if err != nil {
 		return nil, &StoreError{Op: "create", Detail: "marshal", Err: err}
 	}
-	atomicStore := s.store.(kvstore.AtomicKVStore)
+	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return nil, ErrStoreNotAtomic
+	}
 	nameKey := nameIndexKey(tenantID, g.Name)
 	idBytes := []byte(g.ID)
 	stored, err := atomicStore.PutIfAbsent(ctx, nameKey, idBytes)
@@ -282,7 +285,10 @@ func (s *kvGroupStore) UpdateGroup(ctx context.Context, req *UpdateGroupRequest)
 	if req.Description != nil {
 		g.Description = *req.Description
 	}
-	atomicStore := s.store.(kvstore.AtomicKVStore)
+	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return nil, ErrStoreNotAtomic
+	}
 	idBytes := []byte(g.ID)
 	oldName := g.Name
 	renamed := req.Name != "" && req.Name != oldName
@@ -330,10 +336,15 @@ func (s *kvGroupStore) DeleteGroup(ctx context.Context, id string) error {
 	if s.revoker == nil {
 		return &StoreError{Op: "delete", Detail: "no member revoker configured"}
 	}
+	// Checked before members are revoked: a store that cannot release the
+	// name claim must not leave a group whose members are already gone.
+	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return ErrStoreNotAtomic
+	}
 	if _, err := s.revoker.RevokeGroup(ctx, g.TenantID, g.ID); err != nil {
 		return &StoreError{Op: "delete", Detail: "revoke members", Err: err}
 	}
-	atomicStore := s.store.(kvstore.AtomicKVStore)
 	if _, err := atomicStore.CompareAndDelete(ctx, nameIndexKey(g.TenantID, g.Name), []byte(g.ID)); err != nil {
 		return &StoreError{Op: "delete", Detail: "name index", Err: err}
 	}
