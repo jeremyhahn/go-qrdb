@@ -138,8 +138,8 @@ test.describe("Admin - Group Management", () => {
     await seedGroup(page, "auditors");
     await openGroupsView(page);
 
-    await expect(page.getByRole("cell", { name: "engineering" })).toBeVisible();
-    await expect(page.getByRole("cell", { name: "auditors" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "engineering", exact: true })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "auditors", exact: true })).toBeVisible();
     await expect(page.getByText("No groups found.")).not.toBeVisible();
   });
 
@@ -155,7 +155,7 @@ test.describe("Admin - Group Management", () => {
     await page.getByText("reader", { exact: true }).click();
     await page.getByRole("button", { name: "Create", exact: true }).click();
 
-    await expect(page.getByRole("cell", { name: "analysts" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "analysts", exact: true })).toBeVisible();
     const group = await getGroupByName(page, "analysts");
     expect(group).not.toBeNull();
     expect(group!.roleIDs).toEqual([roleID]);
@@ -175,7 +175,7 @@ test.describe("Admin - Group Management", () => {
     await page.getByText("writer", { exact: true }).click();
     await page.getByRole("button", { name: "Save", exact: true }).click();
 
-    await expect(page.getByRole("cell", { name: "ops" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "ops", exact: true })).toBeVisible();
     const group = await getGroupByName(page, "ops");
     expect(group!.roleIDs).toEqual([writerID]);
   });
@@ -193,7 +193,11 @@ test.describe("Admin - Group Management", () => {
     await expect(members).toContainText("42");
 
     await members.getByRole("button", { name: "Remove" }).click();
-    await expect(members.getByRole("listitem")).toHaveCount(0);
+    // The empty state is itself a list item, so count the member rows by
+    // their Remove buttons and assert the empty state is shown.
+    await expect(members.getByRole("button", { name: "Remove" })).toHaveCount(0);
+    await expect(members).toContainText("No members.");
+    await expect(members).not.toContainText("42");
   });
 
   test("deletes a group after confirmation", async ({ page }) => {
