@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
@@ -83,6 +84,10 @@ type PebbleStorage struct {
 	// has no Config.DisableWAL to read, so Sync learns the mode from the
 	// database itself on first use.
 	walOff atomic.Bool
+	// hook binds extra behaviour around the open (WithOpenHook), such as
+	// remotelsm.WithRemote's remote SSTable storage; nil for a plain local
+	// store. New reads it before it opens the database.
+	hook OpenHook
 }
 
 // errWALDisabled is the message Pebble's commit path returns, before it
@@ -149,6 +154,31 @@ func (s *PebbleStorage) durably(synced bool, write func(*pebble.WriteOptions) er
 
 // New creates a new PebbleDB storage instance. The config is validated,
 // defaults applied, and the database opened at config.DataDir.
+// OpenHook binds extra behaviour around New's open of the database. It
+// lets a package outside pkg/storage/pebble (remotelsm, for remote SSTable
+// storage) extend the open without pkg/storage/pebble importing what that
+// package needs, so a lean standalone embedder does not compile it.
+type OpenHook interface {
+	// Validate refuses a configuration the hook cannot open. New calls it
+	// before it creates any file and returns its error as is.
+	Validate(config *Config) error
+	// Apply edits the options New passes to Open.
+	Apply(o *pebble.Options)
+	// AfterOpen runs after Open on a store that is not ReadOnly. fs is the
+	// options' FS (vfs.Default when unset) and dir is Config.DataDir. On an
+	// error New closes the seal watch and the database and returns a
+	// *storage.OpError.
+	AfterOpen(db *pebble.DB, fs vfs.FS, dir string) error
+}
+
+// WithOpenHook binds h around New's open of the database. WithOpenHook has
+// no effect on NewFromDB.
+func WithOpenHook(h OpenHook) Option {
+	return func(s *PebbleStorage) {
+		s.hook = h
+	}
+}
+
 func New(config *Config, opts ...Option) (*PebbleStorage, error) {
 	if config == nil {
 		return nil, &ConfigError{Field: "config", Message: "is required"}
@@ -159,29 +189,53 @@ func New(config *Config, opts ...Option) (*PebbleStorage, error) {
 	}
 	config = config.WithDefaults()
 
-	pebbleOpts := config.ToPebbleOptions()
-
-	db, seals, err := Open(config.DataDir, pebbleOpts, nil)
-	if err != nil {
-		return nil, &storage.OpError{Op: "open", Err: err}
-	}
-
 	s := &PebbleStorage{
-		db:       db,
-		seals:    seals,
 		config:   config,
 		readSem:  make(chan struct{}, config.MaxConcurrentReads),
 		writeSem: make(chan struct{}, config.MaxConcurrentWrites),
 		syncs:    syncwatch.ForStorage(syncwatch.BackendPebble, syncwatch.WithAttrs(slog.String("dir", config.DataDir))),
 	}
-	return s.apply(opts), nil
+	s.apply(opts)
+
+	pebbleOpts := config.ToPebbleOptions()
+	if s.hook != nil {
+		if err := s.hook.Validate(config); err != nil {
+			return nil, err
+		}
+		s.hook.Apply(pebbleOpts)
+	}
+
+	db, seals, err := Open(config.DataDir, pebbleOpts, nil)
+	if err != nil {
+		return nil, &storage.OpError{Op: "open", Err: err}
+	}
+	if s.hook != nil && !config.ReadOnly {
+		fs := pebbleOpts.FS
+		if fs == nil {
+			fs = vfs.Default
+		}
+		if err := s.hook.AfterOpen(db, fs, config.DataDir); err != nil {
+			// Close the seal watch first: it unregisters the quiesce lease
+			// Open registered, which the failed open would otherwise leak.
+			seals.Close()
+			_ = db.Close()
+			return nil, &storage.OpError{Op: "open", Err: err}
+		}
+	}
+	s.db = db
+	// A WithSealWatch option still overrides the watch Open made.
+	if s.seals == nil {
+		s.seals = seals
+	}
+	return s, nil
 }
 
 // NewFromDB wraps an existing PebbleDB instance as a storage.Storage.
 // The caller retains ownership of the DB lifecycle. Calling Close() on the
 // returned PebbleStorage will close the underlying DB, so coordinate
 // accordingly. SyncWrites controls whether batch commits use pebble.Sync
-// or pebble.NoSync.
+// or pebble.NoSync. WithOpenHook has no effect here: the database is already
+// open.
 func NewFromDB(db *pebble.DB, syncWrites bool, opts ...Option) *PebbleStorage {
 	s := &PebbleStorage{
 		db: db,

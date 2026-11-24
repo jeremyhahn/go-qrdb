@@ -240,6 +240,71 @@ func TestKVEngine_WithIndexesPreviousValueReadFault(t *testing.T) {
 	}
 }
 
+// TestKVEngine_UniqueConflictPutIsAnAppError pins the kvHandlePut unique-index
+// pre-check: a plain Put whose JSON value duplicates a unique by_email value
+// is refused as an AppErrorConflict result (not a fatal apply error), writes
+// neither the value nor an index entry, and the next write still applies.
+func TestKVEngine_UniqueConflictPutIsAnAppError(t *testing.T) {
+	assertConflict := func(t *testing.T, results []sm.Result) {
+		t.Helper()
+		msg, kind, ok := protocol.DecodeAppErrorKind(results[0].Data)
+		if !ok || kind != protocol.AppErrorConflict {
+			t.Fatalf("result = ok:%v kind:%d %q; want an AppErrorConflict refusal", ok, kind, msg)
+		}
+	}
+	lookup := func(t *testing.T, eng *KVEngine, key string) string {
+		t.Helper()
+		got, _ := eng.Lookup(context.Background(), key)
+		return string(asBytes(got))
+	}
+	assertIndex := func(t *testing.T, eng *KVEngine, want map[string][]string) {
+		t.Helper()
+		for email, keys := range want {
+			if got := emailIndexed(t, eng, email); !slices.Equal(got, keys) {
+				t.Errorf("by_email[%s] = %v, want %v", email, got, keys)
+			}
+		}
+	}
+
+	t.Run("new key", func(t *testing.T) {
+		eng := newIndexedFaultKVEngine(t, newMemoryBacked(t), true)
+
+		assertConflict(t, applyKVEntries(t, eng, []sm.Entry{kvPutEntry(10, "user:3", faultDocA)}))
+		if got := lookup(t, eng, "user:3"); got != "" {
+			t.Fatalf("user:3 = %q after a refused put, want absent", got)
+		}
+		assertIndex(t, eng, map[string][]string{
+			"a@example.com": {"user:1"},
+			"b@example.com": {"user:2"},
+		})
+
+		results := applyKVEntries(t, eng, []sm.Entry{kvPutEntry(11, "user:3", faultDocC)})
+		if msg, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); ok {
+			t.Fatalf("put after the refusal was refused: kind:%d %q", kind, msg)
+		}
+		if got := lookup(t, eng, "user:3"); got != faultDocC {
+			t.Fatalf("user:3 = %q, want %q", got, faultDocC)
+		}
+		assertIndex(t, eng, map[string][]string{
+			"a@example.com": {"user:1"},
+			"c@example.com": {"user:3"},
+		})
+	})
+
+	t.Run("replace existing key", func(t *testing.T) {
+		eng := newIndexedFaultKVEngine(t, newMemoryBacked(t), true)
+
+		assertConflict(t, applyKVEntries(t, eng, []sm.Entry{kvPutEntry(10, "user:2", faultDocA)}))
+		if got := lookup(t, eng, "user:2"); got != faultDocB {
+			t.Fatalf("user:2 = %q after a refused put, want %q", got, faultDocB)
+		}
+		assertIndex(t, eng, map[string][]string{
+			"a@example.com": {"user:1"},
+			"b@example.com": {"user:2"},
+		})
+	})
+}
+
 // emailIndexed returns the keys the by_email index holds for email.
 func emailIndexed(t *testing.T, eng *KVEngine, email string) []string {
 	t.Helper()

@@ -240,3 +240,20 @@ func TestWrap_WithBarrierEncryptsContents(t *testing.T) {
 		t.Errorf("read back %q, want %q", got, secret)
 	}
 }
+
+// TestBarrier pins the accessor an object store's encrypting wrapper uses: a
+// disabled Encryptor (nil receiver or nil barrier) has no barrier, and an
+// enabled one hands back the barrier it was built with.
+func TestBarrier(t *testing.T) {
+	var nilEnc *atrest.Encryptor
+	if got := nilEnc.Barrier(); got != nil {
+		t.Errorf("nil Encryptor Barrier() = %p, want nil", got)
+	}
+	if got := atrest.New(nil).Barrier(); got != nil {
+		t.Errorf("nil-barrier Encryptor Barrier() = %p, want nil", got)
+	}
+	barrier := newTestBarrier(t)
+	if got := atrest.New(barrier).Barrier(); got != barrier {
+		t.Errorf("Barrier() = %p, want the barrier New was given (%p)", got, barrier)
+	}
+}

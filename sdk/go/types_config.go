@@ -15,13 +15,20 @@
 package sdk
 
 import (
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 )
 
-// AvailableCodecs returns the sorted names of the wire and storage codecs
-// compiled into this build. The set depends on the codec build tags.
-var AvailableCodecs = codec.AvailableCodecs
+// AvailableCodecs returns the sorted names of the storage codecs a
+// collection or database accepts (dao.DocumentCodecs).
+func AvailableCodecs() []string {
+	codecs := dao.DocumentCodecs()
+	names := make([]string, len(codecs))
+	for i, ct := range codecs {
+		names[i] = string(ct)
+	}
+	return names
+}
 
 // ---------------------------------------------------------------------------
 // Daemon configuration

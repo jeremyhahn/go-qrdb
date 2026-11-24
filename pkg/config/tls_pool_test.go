@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 // TestTLSConfig_AdditionalCAs_YAMLRoundTrip ensures the AdditionalCAs
@@ -31,7 +31,7 @@ func TestTLSConfig_AdditionalCAs_YAMLRoundTrip(t *testing.T) {
 		AdditionalCAs: []string{"/etc/ca/one.pem", "/etc/ca/two.pem"},
 	}
 
-	data, err := yaml.Marshal(&tc)
+	data, err := gocodecyaml.New[*TLSConfig]().Marshal(&tc)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestTLSConfig_AdditionalCAs_YAMLRoundTrip(t *testing.T) {
 	}
 
 	var got TLSConfig
-	if err := yaml.Unmarshal(data, &got); err != nil {
+	if err := gocodecyaml.New[TLSConfig]().Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if len(got.AdditionalCAs) != 2 {
@@ -61,7 +61,7 @@ func TestMTLSConfig_ClientCAFiles_YAMLRoundTrip(t *testing.T) {
 		},
 	}
 
-	data, err := yaml.Marshal(&cfg)
+	data, err := gocodecyaml.New[*Config]().Marshal(&cfg)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestMTLSConfig_ClientCAFiles_YAMLRoundTrip(t *testing.T) {
 	}
 
 	var got Config
-	if err := yaml.Unmarshal(data, &got); err != nil {
+	if err := gocodecyaml.New[Config]().Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if len(got.MTLS.ClientCAFiles) != 1 {
