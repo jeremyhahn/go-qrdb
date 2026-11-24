@@ -1,7 +1,7 @@
 # Storage Engines — API
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
-> note below.** · Scope: go-qrdb · Last verified: 2026-10-27
+> **Status: NORMATIVE for shipped behaviour; ADOPTED (owner ruling 1243), not yet
+> built, for the "Target design" note below.** · Scope: go-qrdb · Last verified: 2026-10-27
 
 ## Storage engines
 
@@ -161,7 +161,7 @@ Not applicable — there are no versioned routes in this feature.
 ## Target design: what a caller would see
 
 See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
-for the full design, future work under the SPEC row `object-storage-lsm`.
+for the full design, work in progress under the SPEC row `object-storage-lsm`.
 **Not implemented.** The wire surface does not change shape:
 
 - The backend enum stays `objstore` — `DatabaseInfo.Backend` does not gain or

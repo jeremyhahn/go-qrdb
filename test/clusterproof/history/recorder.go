@@ -84,6 +84,21 @@ func (r *Recorder) History() History {
 	return h
 }
 
+// Take is History that hands the operations over: it returns the merged,
+// sorted history and releases every Log's ops, so the Recorder no longer
+// holds a second copy of a long run. A later History or Take returns only
+// what was recorded after it. Call it only once every client has stopped
+// recording.
+func (r *Recorder) Take() History {
+	h := r.History()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, l := range r.logs {
+		l.ops = nil
+	}
+	return h
+}
+
 // Log is one client's sequence of operations.
 type Log struct {
 	rec    *Recorder
