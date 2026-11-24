@@ -347,6 +347,16 @@ type backendReleaser interface {
 	ReleaseOwner() error
 	ReleaseClaim() error
 	ReleaseOwnerMarker() error
+	// FreshlyClaimed reports that the open claimed a namespace that held no
+	// object: a failed give-back's recorded release may reclaim it whole.
+	FreshlyClaimed() bool
+}
+
+// FreshlyClaimed forwards backendReleaser.FreshlyClaimed; a store with no
+// namespace of its own claimed none.
+func (b *StandaloneBackend) FreshlyClaimed() bool {
+	r, ok := b.store.(backendReleaser)
+	return ok && r.FreshlyClaimed()
 }
 
 // ReleaseOwner forwards backendReleaser.ReleaseOwner; a store with no

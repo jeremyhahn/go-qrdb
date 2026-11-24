@@ -431,7 +431,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// barrier manager, so a failure at any later step removes exactly that
 	// and nothing else: a directory that existed before the call belongs to
 	// someone else.
-	undo := &createUndo{m: m, tenantID: cfg.TenantID, name: cfg.Name}
+	undo := &createUndo{m: m, key: key, tenantID: cfg.TenantID, name: cfg.Name}
 	if err := undo.mkdirAll(dbDir); err != nil {
 		return nil, &OpenError{Name: cfg.Name, Err: err}
 	}
@@ -492,6 +492,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		return nil, undo.run(ctx, err)
 	}
 	undo.backends = append(undo.backends, backend)
+	undo.cfg = cfg
 
 	// Register a dedicated per-database barrier when enabled, and wrap the
 	// data-plane backend so every value it stores is encrypted under the

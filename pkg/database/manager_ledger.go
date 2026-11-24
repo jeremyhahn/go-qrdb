@@ -405,8 +405,14 @@ func (m *Manager) sameObjectStorageNamespace(dropped, live DatabaseConfig) (bool
 // createUndo removes what a failed Create made, and nothing it did not.
 type createUndo struct {
 	m        *Manager
+	key      dbKey
 	tenantID string
 	name     string
+
+	// cfg is the configuration the data backend opened under, as the new
+	// incarnation: a claim give-back that fails records its release for
+	// it (recordRelease).
+	cfg DatabaseConfig
 
 	// dirs are the directories this Create asked for and made itself, in the
 	// order it made them (see mkdirAll).
@@ -460,6 +466,17 @@ func (u *createUndo) mkdirAll(path string) error {
 // directories are kept for the drop that removes the record, as
 // settleCatalog keeps them, and run returns *CatalogOrphanError wrapping
 // cause.
+// recordClaimRelease records the release a failed claim give-back (undoErr)
+// could not make, for the incarnation this create opened as; claimOnly when
+// the namespace held data before the claim (releaseEntry.ClaimOnly). A
+// release that cannot be recorded is logged.
+func (u *createUndo) recordClaimRelease(claimOnly bool, undoErr error) {
+	if _, err := u.m.recordRelease(u.key, u.cfg, u.cfg.Incarnation, claimOnly); err != nil {
+		u.m.logger.Warn("failed to record the namespace release of a failed create",
+			slog.String("name", u.name), slog.Any("undo_error", undoErr), slog.Any("error", err))
+	}
+}
+
 func (u *createUndo) run(ctx context.Context, cause error) error {
 	for i := len(u.backends) - 1; i >= 0; i-- {
 		// A backend whose open claimed its provider namespace (an
@@ -467,9 +484,14 @@ func (u *createUndo) run(ctx context.Context, cause error) error {
 		// create reserves nothing: a namespace claimed new is reclaimed
 		// and released; on a namespace that held data before, only the
 		// owner marker this open wrote is removed and the data stays. A
-		// namespace that was already this owner's is left as it was.
+		// namespace that was already this owner's is left as it was. A
+		// give-back that fails leaves the namespace reserved by an
+		// incarnation with no record, so its release is recorded for
+		// retryNamespaceReleases, claim-only unless the claim was fresh.
 		if r, ok := u.backends[i].(backendReleaser); ok {
-			_ = r.ReleaseClaim()
+			if err := r.ReleaseClaim(); err != nil {
+				u.recordClaimRelease(!r.FreshlyClaimed(), err)
+			}
 		}
 		_ = u.backends[i].Close()
 	}

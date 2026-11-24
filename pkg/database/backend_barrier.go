@@ -380,3 +380,10 @@ func (b *BarrierBackend) ReleaseOwnerMarker() error {
 	}
 	return r.ReleaseOwnerMarker()
 }
+
+// FreshlyClaimed forwards backendReleaser.FreshlyClaimed to the wrapped
+// backend.
+func (b *BarrierBackend) FreshlyClaimed() bool {
+	r, ok := b.inner.(backendReleaser)
+	return ok && r.FreshlyClaimed()
+}
