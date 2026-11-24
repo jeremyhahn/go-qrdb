@@ -17,8 +17,11 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -125,6 +128,62 @@ func TestTenantShardReconciler_RegistersShellInsideTheServingSet(t *testing.T) {
 		if id != "acme" {
 			t.Fatalf("shells registered = %v, want only acme", got)
 		}
+	}
+	if factory.attachCount() != 0 {
+		t.Fatalf("Attach called %d times, want 0", factory.attachCount())
+	}
+}
+
+// getFailingKV fails Get on a tenant home placement key while fail is set.
+type getFailingKV struct {
+	*memKV
+	fail atomic.Bool
+}
+
+func (k *getFailingKV) Get(ctx context.Context, key string) ([]byte, error) {
+	if k.fail.Load() && strings.HasSuffix(key, "/"+database.TenantHomeID) {
+		return nil, errors.New("placement store unavailable")
+	}
+	return k.memKV.Get(ctx, key)
+}
+
+func TestTenantShardReconciler_NoShellWhenServingSetUnreadable(t *testing.T) {
+	kv := &getFailingKV{memKV: newMemKV()}
+	store, err := placement.NewStore(kv)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(context.Background(), placement1("acme", "orders", 1001)); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	factory := newFakeShardLifecycle()
+	factory.shardIDOf = shardIDFromStore(store, "local:1")
+	barriers := newFakeBarrierReadiness()
+	barriers.markMissing("acme")
+	r := NewTenantShardReconciler(store, factory, "local:1", nil,
+		WithReconcilerPollInterval(10*time.Millisecond),
+		WithBarrierReadiness(barriers))
+	shells := &recordingShellRegistrar{}
+	r.SetShellRegistrar(shells)
+
+	kv.fail.Store(true)
+	r.ReconcileOnce(context.Background())
+
+	if got := shells.registered(); len(got) != 0 {
+		t.Fatalf("shells registered = %v with the serving set unreadable, want none", got)
+	}
+	if factory.attachCount() != 0 {
+		t.Fatalf("Attach called %d times, want 0", factory.attachCount())
+	}
+
+	kv.fail.Store(false)
+	if err := store.Put(context.Background(), homePlacement("acme", "local:1", 1002)); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	r.ReconcileOnce(context.Background())
+
+	if got := shells.registered(); len(got) != 2 || got[0] != "acme" || got[1] != "acme" {
+		t.Fatalf("shells registered = %v, want acme for the home and orders placements", got)
 	}
 	if factory.attachCount() != 0 {
 		t.Fatalf("Attach called %d times, want 0", factory.attachCount())
