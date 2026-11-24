@@ -32,7 +32,10 @@ boot after a crash past the commit point, and compacts the plaintext history
 out of the seal store's files.
 
 Seal-store data is **embedded-only** (ruling 1234): only the embedded transport
-(`--transport embedded`, the desktop/GUI build) serves the seal-store verbs.
+serves the seal-store verbs, through two in-process consumers: the client of an
+`sdk/go/node` node (`node.Client().SealStore()`) and the desktop/GUI build's
+embedded binding. There is no `qrdb seal-store` CLI group: the shipped `qrdb`
+binary links no in-process node, so no CLI build can serve the data.
 The node serves no seal-store route on any network transport: no REST
 `/v1/seal-store` route, no gRPC or Unix `SealStore*` RPC, no QUIC `sealstore.*`
 method and no MCP `qrdb_seal_store_*` tool. Every remote SDK transport (gRPC
@@ -52,9 +55,6 @@ refusal carried over the wire uses the `EMBEDDED_ONLY` reason
 | Delete | `SealStoreDelete` | `seal:store_manage` |
 | Reseal | `SealStoreReseal` | `seal:store_manage` |
 | Status | `SealStoreStatus` | `seal:store_manage` |
-
-The CLI verbs for these operations are `qrdb seal-store put|get|list|delete|reseal|status`,
-documented in [cli.md](cli.md#qrdb-seal-store).
 
 A secret name is one opaque segment: it may not be empty, `.` or `..`, or
 contain `/`, `\` or a control character. The store refuses such a name with
