@@ -38,7 +38,9 @@ import (
 // SO (bootstrap.TenantProvisionConfig.SO) and first boot's system SO
 // (Dependencies.SO) are the same inputs, judged by the same Validate.
 type SOConfig struct {
-	// Username is the SO's login name. It must differ from the admin's.
+	// Username is the SO's login name. Under strict separation it differs
+	// from the admin's in any case; in the standard posture an SO naming
+	// the admin is the admin itself.
 	Username string
 
 	// CSRPEM is the SO's certificate signing request, signed through the

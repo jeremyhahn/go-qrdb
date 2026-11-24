@@ -161,9 +161,10 @@ type CreateTenantRequest struct {
 	AdminChainPEM string `json:"admin_chain_pem,omitempty"`
 	// TrustAnchorsPEM registers the tenant's trust anchors with it.
 	TrustAnchorsPEM string `json:"trust_anchors_pem,omitempty"`
-	// SOUsername is the tenant's security officer, optional: a second
-	// principal, distinct from the admin by name and by key, holding the
-	// tenant's so role alone. SOUsername, exactly one of SOCSRPEM and
+	// SOUsername is the tenant's security officer, optional: under strict
+	// separation of duties a second principal, distinct from the admin by
+	// name and by key; in the standard posture it may be the admin itself,
+	// by name and key together; holding the tenant's so role alone. SOUsername, exactly one of SOCSRPEM and
 	// SOCertPEM, and SOPin are given together or not at all.
 	SOUsername string `json:"so_username,omitempty"`
 	// SOCSRPEM is the SO's certificate signing request, signed as

@@ -100,7 +100,8 @@ type CeremonyInitializeOptions struct {
 	// (signed under the system tenant) and SOCertPEM (adopted, verified
 	// against AdminCertPoolPEM through SOChainPEM). The SO's PIN is SOPin.
 	// It is optional in both separation-of-duties postures: without an SO
-	// the SO-exclusive operations are refused.
+	// a strict node refuses only the SO-exclusive operations, and a
+	// standard node lets its admin perform them.
 	SOUsername string
 	SOCSRPEM   string
 	SOCertPEM  string

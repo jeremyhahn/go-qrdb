@@ -22534,8 +22534,9 @@ type CeremonyInitializeRequest struct {
 	// enrols (go-qrdb#1128), with exactly one of so_csr_pem (signed under
 	// the system tenant) and so_cert_pem (adopted; verified against
 	// admin_cert_pool_pem through so_chain_pem). Its PIN is so_pin. It is
-	// optional in both separation-of-duties postures: without an SO the
-	// SO-exclusive operations are refused.
+	// optional in both separation-of-duties postures: without an SO a strict
+	// node refuses only the SO-exclusive operations, and a standard node lets
+	// its admin perform them.
 	SoUsername    string `protobuf:"bytes,14,opt,name=so_username,json=soUsername,proto3" json:"so_username,omitempty"`
 	SoCsrPem      string `protobuf:"bytes,15,opt,name=so_csr_pem,json=soCsrPem,proto3" json:"so_csr_pem,omitempty"`
 	SoCertPem     string `protobuf:"bytes,16,opt,name=so_cert_pem,json=soCertPem,proto3" json:"so_cert_pem,omitempty"`
@@ -23492,9 +23493,10 @@ type TenantCreateRequest struct {
 	AdminChainPem string `protobuf:"bytes,10,opt,name=admin_chain_pem,json=adminChainPem,proto3" json:"admin_chain_pem,omitempty"`
 	// trust_anchors_pem registers the tenant's trust anchors with it.
 	TrustAnchorsPem string `protobuf:"bytes,11,opt,name=trust_anchors_pem,json=trustAnchorsPem,proto3" json:"trust_anchors_pem,omitempty"`
-	// so_username is the tenant's security officer, optional: a second
-	// principal, distinct from the admin by name and by key, holding the
-	// tenant's so role alone. so_username, exactly one of so_csr_pem and
+	// so_username is the tenant's security officer, optional: under strict
+	// separation of duties a second principal, distinct from the admin by
+	// name and by key; in the standard posture it may be the admin itself,
+	// by name and key together; holding the tenant's so role alone. so_username, exactly one of so_csr_pem and
 	// so_cert_pem, and so_pin are given together or not at all.
 	SoUsername string `protobuf:"bytes,12,opt,name=so_username,json=soUsername,proto3" json:"so_username,omitempty"`
 	// so_csr_pem is the SO's CSR, signed as admin_csr_pem is.

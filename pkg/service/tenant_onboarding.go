@@ -85,7 +85,9 @@ type OnboardTenantRequest struct {
 
 	// SOUsername, one of SOCSRPEM and SOCertPEM, and SOPIN name the tenant's
 	// optional security officer, enrolled with the so role alone: all of
-	// them or none. The SO differs from the admin by name and by key.
+	// them or none. Under strict separation of duties the SO differs from
+	// the admin by name and by key; otherwise the admin may be named the
+	// SO, by name and key together.
 	SOUsername string
 	SOCSRPEM   []byte
 	SOCertPEM  []byte
