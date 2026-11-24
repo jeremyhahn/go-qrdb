@@ -40,7 +40,7 @@ func seedDatabaseCreateIdentity(t *testing.T, n *node.Node) (roleID string) {
 	r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
 		Name:        "conformance-db-create",
 		TenantID:    tenantid.System,
-		Permissions: []permission.Permission{permission.DatabasesCreate, permission.AdminHealth, permission.AdminStatus},
+		Permissions: []permission.Permission{permission.DatabasesCreate, permission.DatabasesCreateRaft, permission.AdminHealth, permission.AdminStatus},
 	})
 	if err != nil {
 		t.Fatalf("create role: %v", err)
@@ -79,7 +79,7 @@ func TestDatabaseCreate_WithEtcd_EveryTransport(t *testing.T) {
 	for _, tk := range transportKinds {
 		t.Run(string(tk), func(t *testing.T) {
 			var roleID string
-			client := bootAuthorizedCell(t, tk, func(n *node.Node) { roleID = seedDatabaseCreateIdentity(t, n) })
+			client := bootRaftAuthorizedCell(t, tk, func(n *node.Node) { roleID = seedDatabaseCreateIdentity(t, n) })
 			ctx := boundedCtx(t)
 			if tk == embeddedTransport {
 				// The embedded transport authenticates nothing on its own;
@@ -96,7 +96,7 @@ func TestDatabaseCreate_WithEtcd_EveryTransport(t *testing.T) {
 
 			info, err := client.Database().CreateDatabase(ctx, transport.CreateDatabaseRequest{
 				Name:    "etcd-" + string(tk),
-				Backend: "memory",
+				Backend: "raft",
 				Protocol: transport.ProtocolConfig{
 					Etcd: &transport.EtcdProtocolConfig{
 						Enabled:    true,
