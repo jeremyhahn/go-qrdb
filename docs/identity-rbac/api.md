@@ -191,7 +191,11 @@ roles of the group's tenant, and only users of that tenant, take part.
 The JSON body of a group on REST, QUIC and MCP is
 `{"id", "tenantID", "name", "description", "roleIDs", "createdAt",
 "updatedAt"}`; a member is `{"userID", "username", "tenantID"}`; a membership
-write is `{"userID", "groupID"}`. An update sets only the fields it carries:
+write is `{"userID", "groupID"}`. `userID` is the uint64 user ID as a decimal
+JSON string (`"userID":"18446744073709551557"`) on REST, QUIC, MCP and the
+desktop bindings, so a JavaScript client never rounds an ID above 2^53-1; a
+JSON number is refused as a malformed request (REST 400). gRPC `user_id` is
+a uint64 field, which protojson also renders as a string. An update sets only the fields it carries:
 REST and QUIC `roleIDs` replaces the role set when present (`[]` clears it),
 gRPC sets `role_ids` when `set_role_ids` is true, and the MCP `role_ids`
 argument is comma-separated (empty clears).
