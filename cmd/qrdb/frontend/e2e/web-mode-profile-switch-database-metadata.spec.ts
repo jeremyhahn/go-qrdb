@@ -49,11 +49,21 @@ interface ServerMock {
  */
 async function mockServer(page: Page, origin: string, tag: string, mock: ServerMock, log: string[]): Promise<void> {
   await page.route(
-    (url) => url.origin === origin && (url.pathname.startsWith("/v1/") || UNPREFIXED.test(url.pathname)),
+    (url) =>
+      url.origin === origin &&
+      (url.pathname.startsWith("/v1/") || url.pathname.startsWith("/kv/") || UNPREFIXED.test(url.pathname)),
     async (route) => {
       const request = route.request();
       const path = new URL(request.url()).pathname;
       log.push(`${tag} ${request.method()} ${path}`);
+      if (path === "/kv/scan") {
+        await json(route, { pairs: {} });
+        return;
+      }
+      if (path === "/kv/revision") {
+        await json(route, { revision: 1 });
+        return;
+      }
       if (path === LIST) {
         if (mock.holdList !== undefined) await mock.holdList;
         await json(route, { databases: [mock.database] });
