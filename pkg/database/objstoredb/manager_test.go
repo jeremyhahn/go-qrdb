@@ -515,6 +515,59 @@ func TestManager_FailedCreateClaimUndoIsRetried(t *testing.T) {
 	}
 }
 
+// TestManager_FailedCreateClaimUndoOnExistingDataKeepsData: a create onto a
+// namespace holding data no database owns, whose open and claim undo both
+// fail, records a release that, retried, removes only the owner marker: the
+// pre-existing records and format marker survive.
+func TestManager_FailedCreateClaimUndoOnExistingDataKeepsData(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "objects")
+	otherRoot := filepath.Join(base, "other")
+	unowned, err := objstore.New("local", map[string]string{"path": root})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := unowned.Set([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := unowned.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	before := objects(t, root)
+	dataDir := t.TempDir()
+	mgr := newManager(t, dataDir)
+	t.Cleanup(func() {
+		journalReadFails.Store(false)
+		releaseFaultArmed.Store(false)
+	})
+	journalReadFails.Store(true)
+	releaseFaultArmed.Store(true)
+	var undo *objstore.ClaimUndoError
+	if _, err := mgr.Create(releaseFaultObjstore(t, "blobs", root)); !errors.As(err, &undo) {
+		t.Fatalf("Create = %v, want *objstore.ClaimUndoError", err)
+	}
+	journalReadFails.Store(false)
+	if !hasOwnerMarker(t, root) {
+		t.Fatal("the failed undo left no owner marker; the test fault did not hold")
+	}
+	if len(releaseLedgerFiles(t, dataDir)) == 0 {
+		t.Fatal("the failed create recorded no release entry for its claim")
+	}
+	// The next object-storage create retries the recorded release.
+	if _, err := mgr.Create(localObjstore("other", otherRoot)); err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+	if left := releaseLedgerFiles(t, dataDir); len(left) != 0 {
+		t.Fatalf("the retried release kept %v", left)
+	}
+	if hasOwnerMarker(t, root) {
+		t.Fatal("the retried release kept the owner marker")
+	}
+	if after := objects(t, root); !slices.Equal(after, before) {
+		t.Fatalf("the retried release left %v, want the pre-existing %v", after, before)
+	}
+}
+
 // afterDeleteCatalog runs after once, the first time a catalog delete
 // succeeds: a drop paused between its catalog delete and its namespace
 // release.
