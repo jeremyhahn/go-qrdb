@@ -457,7 +457,9 @@ A client of a node that runs a bearer authenticator (above) sends its token
 with an SDK option, not a hand-set header. The REST, gRPC, Unix and MCP
 transports send `Authorization: Bearer <token>` (gRPC and Unix as the
 `authorization` metadata key) on every request, data and admin alike. The root
-sdk mirrors both options as `sdk.WithBearerToken` and `sdk.WithTokenSource`.
+sdk mirrors both options as `sdk.WithBearerToken` and `sdk.WithTokenSource`,
+and `sdk.TransportOptions` turns root options into transport options for
+`rest.New`, `grpc.New`, `unix.New` and `mcp.New`.
 
 The `qrdb` CLI sends a bearer from the root flag `--bearer-token-file <path>`
 on rest, grpc, mcp and unix over TLS. The flag names a file, never the token,

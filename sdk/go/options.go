@@ -75,3 +75,18 @@ func WithTokenSource(src transport.TokenSource) ClientOption {
 		o.transportOpts = append(o.transportOpts, transport.WithTokenSource(src))
 	}
 }
+
+// TransportOptions turns root client options into transport options. The
+// result is passed to a transport constructor such as rest.New, grpc.New,
+// unix.New or mcp.New; nil options are skipped.
+func TransportOptions(opts ...ClientOption) []transport.Option {
+	o := &clientOptions{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(o)
+		}
+	}
+	out := make([]transport.Option, len(o.transportOpts))
+	copy(out, o.transportOpts)
+	return out
+}

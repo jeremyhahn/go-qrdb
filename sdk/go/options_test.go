@@ -32,9 +32,7 @@ func TestWithTLSConfig_SetsTransportOption(t *testing.T) {
 }
 
 func TestWithBearerToken_SetsTransportTokenSource(t *testing.T) {
-	opts := &clientOptions{}
-	WithBearerToken("host-issued-token")(opts)
-	cfg := transport.ApplyOptions(opts.transportOpts...)
+	cfg := transport.ApplyOptions(TransportOptions(WithBearerToken("host-issued-token"))...)
 	if cfg.TokenSource == nil {
 		t.Fatal("WithBearerToken left transport.Config.TokenSource nil")
 	}
@@ -46,9 +44,7 @@ func TestWithBearerToken_SetsTransportTokenSource(t *testing.T) {
 
 func TestWithTokenSource_SetsTransportTokenSource(t *testing.T) {
 	src := transport.StaticTokenSource("from-source")
-	opts := &clientOptions{}
-	WithTokenSource(src)(opts)
-	cfg := transport.ApplyOptions(opts.transportOpts...)
+	cfg := transport.ApplyOptions(TransportOptions(WithTokenSource(src))...)
 	if cfg.TokenSource != src {
 		t.Fatalf("TokenSource = %v, want the source passed in", cfg.TokenSource)
 	}
