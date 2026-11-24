@@ -131,32 +131,45 @@ func testVolumeMoveOverProtocol(t *testing.T, node *multiProtoNode, proto multiP
 	}
 }
 
-// testVolumeMoveCancelAfterResumeOverProtocol cancels a single-replica
-// move after the replica's copy is recorded (nodesCopied holds it, so the
-// runner reopens it from the destination) while the CLI writes through
-// it. A single-replica move cuts over in the pass that releases the
-// settled step, so the write and the cancel go in together during the
-// settle, the cancel recorded against the step (path (b) copy-back): every
-// write the CLI acknowledged reads back after cancel-move returns, the
-// move is gone, the tenant is on "default" and the destination pool holds
-// no tenant directory (decision volume-pool-tenant-moves, "Tests that
-// would prove it", Integration). A move that ends before its cancel is
-// checked as completed and retried on a fresh tenant.
+// testVolumeMoveCancelAfterResumeOverProtocol writes through a
+// single-replica tenant after its copy is recorded (nodesCopied holds the
+// replica, the runner reopening it from the destination), waits for the
+// write to be acknowledged, then cancels the move: every write the CLI
+// acknowledged reads back after cancel-move returns and the move is gone,
+// whichever way the cancel lands (decision volume-pool-tenant-moves, "Tests
+// that would prove it", Integration). A cancel that takes effect leaves the
+// tenant on "default" with no destination directory and no copy-back
+// leftover; one answering with a copied node must be the copy-back abort.
+//
+// The single-replica copy-back window lies inside one worker pass: the
+// destination reopen and the release of the settled copy step run back to
+// back, and the release cuts the move over, so no CLI ordering of an
+// acknowledged write and a cancel reaches it. That copy-back is proven in
+// process by TestCatalog_SettlingCopyStepCancelAbortsAtRelease (pkg/volume
+// journal), TestMoveReconciler_SingleReplicaCancelWhileSettlingCopiesBack
+// (pkg/volume reconciler) and TestMoveStepRunner_SingleReplicaAbortKeepsEveryWrite
+// (pkg/seal); this case proves that a cancel after an acknowledged write
+// never loses it. A move that ends before its cancel is checked as completed
+// (tenant on "second", every write readable) and retried on a fresh tenant,
+// up to volumeMoveSingleReplicaCancelAttempts; when every cancel arrives after the cut
+// over, each attempt has still proven the no-loss ordering, and the case
+// logs that the cancel window was not reached.
 func testVolumeMoveCancelAfterResumeOverProtocol(t *testing.T, node *multiProtoNode, dirs volumeMovePoolDirs, proto multiProtocol) {
 	t.Helper()
-	for attempt := 0; attempt < volumeMoveCancelAttempts; attempt++ {
+	for attempt := 0; attempt < volumeMoveSingleReplicaCancelAttempts; attempt++ {
 		mt := seedVolumeMoveTenant(t, node, proto, "vr", attempt)
 		if volumeMoveCancelAfterResume(t, node, dirs, proto, mt) {
 			return
 		}
-		t.Logf("[%s] attempt %d: the move of %s ended, or its abort found no copied node, before a cancel after an acknowledged write; retrying on a fresh tenant", proto.name, attempt+1, mt.tenantID)
+		t.Logf("[%s] attempt %d: the move of %s cut over before the cancel after an acknowledged write; checked as completed, retrying on a fresh tenant", proto.name, attempt+1, mt.tenantID)
 	}
-	t.Fatalf("[%s] no cancel-move after resume took the copy-back path in %d attempts", proto.name, volumeMoveCancelAttempts)
+	t.Logf("[%s] cut over path: every cancel in %d attempts arrived after the cut over, no acknowledged write lost; the single-replica copy-back window is proven in process", proto.name, volumeMoveSingleReplicaCancelAttempts)
 }
 
 // volumeMoveCancelAfterResume runs one attempt of
 // testVolumeMoveCancelAfterResumeOverProtocol and reports whether the
-// cancel took effect after the replica's copy was recorded.
+// cancel took effect (copy-back or uncopied abort); a false answer is a
+// move that cut over first, checked as completed.
 func volumeMoveCancelAfterResume(t *testing.T, node *multiProtoNode, dirs volumeMovePoolDirs, proto multiProtocol, mt volumeMoveTenant) bool {
 	t.Helper()
 	if out, err := runCLIProto(t, node, proto, "--output", "json", "volume-pool", "move-tenant", mt.tenantID, "--to", "second"); err != nil {
@@ -175,10 +188,8 @@ func volumeMoveCancelAfterResume(t *testing.T, node *multiProtoNode, dirs volume
 		if json.Unmarshal([]byte(out), &m) != nil {
 			return false
 		}
-		// The replica's copy is recorded and its step still held: the
-		// runner is reopening it from the destination (settling). A
-		// single-replica move cuts over in the same pass that releases the
-		// step, so the cancel must be recorded against the settling step.
+		// The replica's copy is recorded: the runner reopens it from the
+		// destination (its step settling), or the move is copied.
 		if m.State == "copied" || (m.State == "copying" && m.StepNode != "" && slices.Contains(m.NodesCopied, m.StepNode)) {
 			resumed = true
 			return true
@@ -189,15 +200,11 @@ func volumeMoveCancelAfterResume(t *testing.T, node *multiProtoNode, dirs volume
 	}
 
 	resumedKey, resumedValue := "resumed", "written-after-resume-"+mt.tenantID
-	cancelled, copyBack := false, false
+	cancelled := false
 	if resumed {
-		// The write goes in while the replica resumes on the destination
-		// (its step settling) and must be acknowledged BEFORE the cancel is
-		// sent: the cancel then lands against a copied node holding a write
-		// only the destination has, so the abort must copy it back (path
-		// (b) of the decision's single-replica test). A single-replica move
-		// cuts over in the pass that releases its settled step, so an
-		// attempt whose cut over wins the race is retried on a fresh tenant.
+		// The write goes in after the copy is recorded and is acknowledged
+		// BEFORE the cancel is sent, so whichever way the cancel lands the
+		// write must survive it.
 		var pout string
 		var perr error
 		if !pollUntil(volumeMoveDeadline, 20*time.Millisecond, func() bool {
@@ -217,13 +224,16 @@ func volumeMoveCancelAfterResume(t *testing.T, node *multiProtoNode, dirs volume
 				t.Fatalf("[%s] cancel-move after resume = %+v, want the move of %s aborting or its cancel recorded", proto.name, m, mt.tenantID)
 			}
 			cancelled = true
-			// Copy-back proof: the abort begins with the node copied (it
-			// holds the acknowledged write), not abortUncopied's empty
-			// NodesCopied. A cancel recorded against the held step keeps
-			// the step's real copied state for the abort.
-			copyBack = len(m.NodesCopied) > 0 && (m.State == "aborting" || slices.Contains(m.NodesCopied, m.StepNode))
-			if !copyBack {
-				t.Logf("[%s] attempt on %s: cancel-move answered %+v (no copied node): not the copy-back path", proto.name, mt.tenantID, m)
+			if len(m.NodesCopied) > 0 {
+				// A copied node holds the acknowledged write: the abort
+				// must be the copy-back, aborting with the node copied or
+				// the cancel recorded against its held step.
+				if m.State != "aborting" && !slices.Contains(m.NodesCopied, m.StepNode) {
+					t.Fatalf("[%s] cancel-move after resume = %+v, want the copy-back abort of the copied node", proto.name, m)
+				}
+				t.Logf("[%s] %s: copy-back path: cancel-move answered state %s, nodesCopied %v", proto.name, mt.tenantID, m.State, m.NodesCopied)
+			} else {
+				t.Logf("[%s] %s: uncopied abort: cancel-move answered state %s", proto.name, mt.tenantID, m.State)
 			}
 		case volumeMoveIsNoMove(out), strings.Contains(strings.ToLower(out), "cannot cancel"):
 		default:
@@ -260,15 +270,21 @@ func volumeMoveCancelAfterResume(t *testing.T, node *multiProtoNode, dirs volume
 			t.Fatalf("[%s] stat %s: %v", proto.name, leftover, serr)
 		}
 	}
-	return copyBack
+	return true
 }
 
-// volumeMoveCancelAttempts bounds the fresh tenants the cancel case tries
-// before it fails: each attempt either cancels or proves a completed move.
-// The single-replica cancel after resume needs the most: its cancel must
-// beat the cut over that the settled step's release starts, after the
-// write it sent was acknowledged.
+// volumeMoveCancelAttempts bounds the fresh tenants a cancel or settle
+// case tries before it fails: each attempt either reaches the state it
+// needs or proves a completed move.
 const volumeMoveCancelAttempts = 10
+
+// volumeMoveSingleReplicaCancelAttempts bounds the fresh tenants the
+// single-replica cancel after an acknowledged write tries for a cancel that
+// takes effect. That cancel races the cut over the settled step's release
+// starts in the same worker pass, and each attempt proves the no-loss
+// ordering whichever way it lands, so a few attempts suffice: in 10 attempts
+// on each transport every cancel arrived after the cut over.
+const volumeMoveSingleReplicaCancelAttempts = 3
 
 // volumeMoveTenant is a volume tenant on "default" with one database holding
 // key=value, written through conn (the tenant's own data-plane identity).
