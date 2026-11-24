@@ -381,6 +381,110 @@ func TestLogService_BarrierDatabaseLogsLiveInTheParentGroup(t *testing.T) {
 	}
 }
 
+// newCreateOverLogsService wires a DatabaseService and a parent-group
+// LogService over one barrier-capable manager, with the log service as the
+// database service's reclaimer when wired is true.
+func newCreateOverLogsService(t *testing.T, wired bool) (LogService, *DatabaseService) {
+	t.Helper()
+	svc, mgr, _ := newParentGroupBarrierService(t, t.TempDir(), newFenceGroup(t), nil)
+	dbs := NewDatabaseService(mgr).(*DatabaseService)
+	if wired {
+		dbs.SetLogReclaimer(svc.(*logService))
+	} else {
+		dbs.SetLogReclaimer(nil)
+	}
+	return svc, dbs
+}
+
+// createLegacyLog creates ref's log while its database name has no catalog
+// record, so the log lands in the tenant group as plaintext with no
+// incarnation, and appends two entries to it.
+func createLegacyLog(t *testing.T, svc LogService, ctx context.Context, ref LogRef) [][]byte {
+	t.Helper()
+	if _, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: "example.test/legacy/events", SigningKeyType: vlog.SignatureEd25519}); err != nil {
+		t.Fatalf("CreateLog under the uncatalogued name: %v", err)
+	}
+	entries := [][]byte{[]byte("legacy-entry-alpha-0001"), []byte("legacy-entry-bravo-0002")}
+	if _, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: entries}); err != nil {
+		t.Fatalf("Append under the uncatalogued name: %v", err)
+	}
+	return entries
+}
+
+// assertLogReads checks that ref's log still reads entries.
+func assertLogReads(t *testing.T, svc LogService, ctx context.Context, ref LogRef, entries [][]byte) {
+	t.Helper()
+	got, err := svc.GetEntries(ctx, &GetEntriesRequest{LogRef: ref})
+	if err != nil || len(got.Entries) != len(entries) {
+		t.Fatalf("GetEntries = %+v, %v; want %d entries", got, err, len(entries))
+	}
+	for i, e := range got.Entries {
+		if !bytes.Equal(e.Body, entries[i]) {
+			t.Fatalf("entry %d = %q, want %q", i, e.Body, entries[i])
+		}
+	}
+}
+
+func legacyBarrierConfig(name, dataDir string) database.DatabaseConfig {
+	return database.DatabaseConfig{
+		Name: name, Backend: database.BackendPebble, DataDir: dataDir,
+		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
+	}
+}
+
+func TestLogService_BarrierDatabaseCreateOverExistingLogsIsRefused(t *testing.T) {
+	svc, dbs := newCreateOverLogsService(t, true)
+	ctx := context.Background()
+	ref := LogRef{Database: "legacy", Log: "events"}
+	entries := createLegacyLog(t, svc, ctx, ref)
+	_, err := dbs.CreateWithCredentials(ctx, legacyBarrierConfig("legacy", filepath.Join(t.TempDir(), "legacy")), seal.MustCredentials(ctx, []byte(barrierDatabasePass)))
+	exists, ok := errors.AsType[*DatabaseLogsExistError](err)
+	if !ok || exists.Logs != 1 || exists.Database != "legacy" {
+		t.Fatalf("barrier create over a name holding a log = %v; want DatabaseLogsExistError for 1 log", err)
+	}
+	if _, err := dbs.Get("legacy"); err == nil {
+		t.Fatal("a refused barrier create left a catalog record")
+	}
+	assertLogReads(t, svc, ctx, ref, entries)
+}
+
+func TestLogService_BarrierDatabaseCreateForTenantOverExistingLogsIsRefused(t *testing.T) {
+	svc, dbs := newCreateOverLogsService(t, true)
+	ctx := acmeCtx()
+	ref := LogRef{Database: "legacy", Log: "events"}
+	entries := createLegacyLog(t, svc, ctx, ref)
+	_, err := dbs.CreateForTenantWithCredentials(ctx, legacyBarrierConfig("legacy", ""), seal.MustCredentials(ctx, []byte(barrierDatabasePass)))
+	exists, ok := errors.AsType[*DatabaseLogsExistError](err)
+	if !ok || exists.Logs != 1 || exists.TenantID != "acme" {
+		t.Fatalf("tenant barrier create over a name holding a log = %v; want DatabaseLogsExistError for acme's 1 log", err)
+	}
+	if _, err := dbs.GetForTenant(ctx, "legacy"); err == nil {
+		t.Fatal("a refused tenant barrier create left a catalog record")
+	}
+	assertLogReads(t, svc, ctx, ref, entries)
+}
+
+func TestLogService_PlainDatabaseCreateOverExistingLogsAdoptsThem(t *testing.T) {
+	svc, dbs := newCreateOverLogsService(t, true)
+	ctx := context.Background()
+	ref := LogRef{Database: "legacy", Log: "events"}
+	entries := createLegacyLog(t, svc, ctx, ref)
+	cfg := legacyBarrierConfig("legacy", filepath.Join(t.TempDir(), "legacy"))
+	cfg.Barrier = nil
+	if _, err := dbs.CreateWithCredentials(ctx, cfg, seal.Credentials{}); err != nil {
+		t.Fatalf("plain create over a name holding a log: %v", err)
+	}
+	assertLogReads(t, svc, ctx, ref, entries)
+}
+
+func TestLogService_BarrierDatabaseCreateWithNoLogsSucceeds(t *testing.T) {
+	_, dbs := newCreateOverLogsService(t, true)
+	ctx := context.Background()
+	if _, err := dbs.CreateWithCredentials(ctx, legacyBarrierConfig("fresh", filepath.Join(t.TempDir(), "fresh")), seal.MustCredentials(ctx, []byte(barrierDatabasePass))); err != nil {
+		t.Fatalf("barrier create over a name with no logs: %v", err)
+	}
+}
+
 // TestLogService_BarrierDatabaseReadOfAMissingKeyIsNil pins the barrier
 // database store's read of a key version that does not exist: the read
 // answers no key and the parent group's KeyNotFoundError, never a type
@@ -1785,6 +1889,10 @@ type stubLogReclaimer struct {
 	err      error
 	checkErr error
 	svc      *DatabaseService
+	// createChecks records each CheckCreateDatabaseLogs (tenant, name);
+	// createErr is what it returns.
+	createChecks [][2]string
+	createErr    error
 }
 
 func (r *stubLogReclaimer) DropDatabaseLogs(_ context.Context, tenantID, name, _ string) error {
@@ -1802,6 +1910,35 @@ func (r *stubLogReclaimer) DropDatabaseLogs(_ context.Context, tenantID, name, _
 func (r *stubLogReclaimer) CheckDropDatabaseLogs(context.Context, string, string) error {
 	r.checks++
 	return r.checkErr
+}
+
+func (r *stubLogReclaimer) CheckCreateDatabaseLogs(_ context.Context, tenantID, name string) error {
+	r.createChecks = append(r.createChecks, [2]string{tenantID, name})
+	return r.createErr
+}
+
+func TestDatabaseService_OnlyABarrierCreateChecksForExistingLogs(t *testing.T) {
+	svc := newTestDatabaseService(t).(*DatabaseService)
+	r := &stubLogReclaimer{createErr: &DatabaseLogsExistError{TenantID: tenantid.System, Database: "sealed", Logs: 2}}
+	svc.SetLogReclaimer(r)
+	if _, err := svc.Create(testDBConfig("plain")); err != nil {
+		t.Fatalf("Create of a database without a barrier: %v", err)
+	}
+	if len(r.createChecks) != 0 {
+		t.Fatalf("a create without a barrier checked for logs: %v", r.createChecks)
+	}
+	cfg := testDBConfig("sealed")
+	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
+	_, err := svc.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials(context.Background(), []byte(barrierDatabasePass)))
+	if exists, ok := errors.AsType[*DatabaseLogsExistError](err); !ok || exists.Logs != 2 {
+		t.Fatalf("barrier create over a refusing check = %v; want the DatabaseLogsExistError", err)
+	}
+	if len(r.createChecks) != 1 || r.createChecks[0] != [2]string{"", "sealed"} {
+		t.Fatalf("create checks = %v; want one for the untenanted name", r.createChecks)
+	}
+	if _, err := svc.Get("sealed"); err == nil {
+		t.Fatal("a refused barrier create left a catalog record")
+	}
 }
 
 // TestDatabaseService_DropOfAnUntenantedDatabaseReclaimsItsLogs proves an

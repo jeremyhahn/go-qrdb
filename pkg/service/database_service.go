@@ -941,6 +941,9 @@ type LogReclaimer interface {
 	// CheckDropDatabaseLogs refuses, before anything is fenced, a drop
 	// whose logs DropDatabaseLogs could not reclaim.
 	CheckDropDatabaseLogs(ctx context.Context, tenantID, database string) error
+	// CheckCreateDatabaseLogs refuses a barrier-enabled create over a name
+	// that already holds logs created before the database existed.
+	CheckCreateDatabaseLogs(ctx context.Context, tenantID, database string) error
 }
 
 // SetLogReclaimer wires the verifiable-log service that reclaims a dropped
@@ -970,6 +973,17 @@ func (s *DatabaseService) checkLogs(ctx context.Context, tenantID, name string) 
 		return fmt.Errorf("reclaim the verifiable logs of database %q: %w", name, err)
 	}
 	return nil
+}
+
+// checkAdoptsNoLogs refuses a barrier-enabled create over a name whose
+// tenant group already holds verifiable logs: they are plaintext with no
+// incarnation, and the barrier database would wrap them in its sealed store.
+// A database without a barrier adopts them as before.
+func (s *DatabaseService) checkAdoptsNoLogs(ctx context.Context, tenantID string, cfg database.DatabaseConfig) error {
+	if cfg.Barrier == nil || !cfg.Barrier.Enabled || s.logReclaimer == nil {
+		return nil
+	}
+	return s.logReclaimer.CheckCreateDatabaseLogs(ctx, tenantID, cfg.Name)
 }
 
 // Create creates a new database with the given configuration and returns
@@ -1034,6 +1048,9 @@ func (s *DatabaseService) createWithCredentials(ctx context.Context, cfg databas
 	requested := cfg
 	cfg = s.manager.ResolveDefaults(cfg)
 	if err := s.validateRaftTopology(cfg.Name, &requested, &cfg); err != nil {
+		return nil, err
+	}
+	if err := s.checkAdoptsNoLogs(ctx, "", cfg); err != nil {
 		return nil, err
 	}
 	db, err := s.manager.CreateWithCredentials(ctx, cfg, creds)
@@ -1793,6 +1810,12 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 				}
 			}
 		}
+	}
+
+	// A barrier-enabled create over a name that already holds logs is
+	// refused before any quota reservation (DatabaseLogsExistError).
+	if err := s.checkAdoptsNoLogs(ctx, tenantID, cfg); err != nil {
+		return nil, err
 	}
 
 	// Numeric quota plane: database count, plus raft-group count, per-group

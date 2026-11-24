@@ -50,6 +50,22 @@ func (e *LogFeatureNotActiveError) Error() string {
 		string(e.Feature) + " on every replica of this shard"
 }
 
+// DatabaseLogsExistError is returned by a barrier-enabled database create
+// when the name already holds verifiable logs created before the database
+// existed: they are plaintext with no incarnation, and a barrier-enabled
+// database cannot adopt them. Create the database under another name.
+type DatabaseLogsExistError struct {
+	TenantID string
+	Database string
+	Logs     int
+}
+
+func (e *DatabaseLogsExistError) Error() string {
+	return "service: database " + strconv.Quote(e.Database) + " of tenant " + strconv.Quote(e.TenantID) +
+		" already holds " + strconv.Itoa(e.Logs) + " verifiable log(s) created before the database, " +
+		"and a barrier-enabled database cannot adopt them"
+}
+
 // ReservedKeyError refuses a kv operation on the verifiable log's reserved
 // keyspace (vlog.TablePrefix, vlog.LogTablePrefix). A barrier database keeps
 // its logs and their signing-key records in its own backend; only the log

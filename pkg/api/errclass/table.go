@@ -433,6 +433,8 @@ var vlogRules = []rule{
 	as(&vlog.CorruptTableError{}, DataLoss),
 	as(&vlog.NotCompiledError{}, Unimplemented),
 	as(&service.LogFeatureNotActiveError{}, Unavailable),
+	// A barrier-enabled database create over a name that already holds logs.
+	as(&service.DatabaseLogsExistError{}, FailedPrecondition),
 	// A barrier tenant's log lives in its home group, which this node cannot
 	// reach yet.
 	as(&service.BarrierStoreUnavailableError{}, Unavailable),

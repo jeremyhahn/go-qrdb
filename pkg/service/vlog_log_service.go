@@ -971,31 +971,9 @@ func (s *logService) CheckDropDatabaseLogs(ctx context.Context, tenantID, name s
 // not active, a volume- or raft-isolated tenant (whose audit trail cannot be
 // placed, so no log of it was ever created), or a database with no logs.
 func (s *logService) dropGroup(ctx context.Context, tenantID, name string) (logGroup, bool, error) {
-	target, err := s.route.raft(ctx, tenantID)
-	if err != nil {
-		if _, dedicated := errors.AsType[*DedicatedTenantAuditNotSupportedError](err); dedicated {
-			return logGroup{}, false, nil
-		}
+	target, logs, err := s.databaseLogs(ctx, tenantID, name)
+	if err != nil || len(logs) == 0 {
 		return logGroup{}, false, err
-	}
-	if !target.featureEnabled(featuregate.VerifiableLog) {
-		return logGroup{}, false, nil
-	}
-	if err := target.serving(); err != nil {
-		return logGroup{}, false, err
-	}
-	logs, err := targetRead[[]vlog.LogID](ctx, target, vlog.ListRequest{TenantID: tenantID, Database: name})
-	if err != nil {
-		// A state machine with no verifiable-log case at all (the opt-in
-		// "kv" engine) refuses every log request as an unsupported query
-		// type: it holds no log, so its database has none to reclaim.
-		if uqe, ok := errors.AsType[unsupportedQueryTypeErr](err); ok && uqe.UnsupportedQueryType() {
-			return logGroup{}, false, nil
-		}
-		return logGroup{}, false, err
-	}
-	if len(logs) == 0 {
-		return logGroup{}, false, nil
 	}
 	if !target.featureEnabled(featuregate.VerifiableLogDrop) {
 		var shardID uint64
@@ -1005,4 +983,50 @@ func (s *logService) dropGroup(ctx context.Context, tenantID, name string) (logG
 		return logGroup{}, false, &LogFeatureNotActiveError{TenantID: tenantID, ShardID: shardID, Feature: featuregate.VerifiableLogDrop}
 	}
 	return logGroup{target: target}, true, nil
+}
+
+// CheckCreateDatabaseLogs refuses a barrier-enabled database create over a
+// name whose tenant group already holds verifiable logs: they were created
+// before the database existed, as plaintext with no incarnation, and a
+// barrier database cannot adopt them (DatabaseLogsExistError).
+func (s *logService) CheckCreateDatabaseLogs(ctx context.Context, tenantID, name string) error {
+	routed := routingTenant(tenantID)
+	_, logs, err := s.databaseLogs(ctx, routed, name)
+	if err != nil {
+		return err
+	}
+	if len(logs) > 0 {
+		return &DatabaseLogsExistError{TenantID: routed, Database: name, Logs: len(logs)}
+	}
+	return nil
+}
+
+// databaseLogs lists the logs the tenant group holds under database name.
+// A dedicated tenant, a group whose verifiable-log feature is off, and a
+// state machine with no verifiable-log case answer no logs.
+func (s *logService) databaseLogs(ctx context.Context, tenantID, name string) (logTarget, []vlog.LogID, error) {
+	target, err := s.route.raft(ctx, tenantID)
+	if err != nil {
+		if _, dedicated := errors.AsType[*DedicatedTenantAuditNotSupportedError](err); dedicated {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	if !target.featureEnabled(featuregate.VerifiableLog) {
+		return nil, nil, nil
+	}
+	if err := target.serving(); err != nil {
+		return nil, nil, err
+	}
+	logs, err := targetRead[[]vlog.LogID](ctx, target, vlog.ListRequest{TenantID: tenantID, Database: name})
+	if err != nil {
+		// A state machine with no verifiable-log case at all (the opt-in
+		// "kv" engine) refuses every log request as an unsupported query
+		// type: it holds no log, so its database has none.
+		if uqe, ok := errors.AsType[unsupportedQueryTypeErr](err); ok && uqe.UnsupportedQueryType() {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	return target, logs, nil
 }
