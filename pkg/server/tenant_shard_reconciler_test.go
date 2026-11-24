@@ -40,10 +40,13 @@ type fakeShardLifecycle struct {
 	mu        sync.Mutex
 	started   map[raftShardKey]bool
 	observers map[raftShardKey]bool
-	attached  []raftShardKey
-	closed    []raftShardKey
-	purged    []raftShardKey
-	attachFn  func(tenantID, db string) error
+	// placed marks the started shards the lifecycle started from a
+	// placement entry (StartedShard.Placed), as opposed to catalog-managed.
+	placed   map[raftShardKey]bool
+	attached []raftShardKey
+	closed   []raftShardKey
+	purged   []raftShardKey
+	attachFn func(tenantID, db string) error
 	// passes counts ListStarted calls: ReconcileOnce makes exactly one per
 	// pass, so this counts reconcile passes.
 	passes int
@@ -53,6 +56,7 @@ func newFakeShardLifecycle() *fakeShardLifecycle {
 	return &fakeShardLifecycle{
 		started:   make(map[raftShardKey]bool),
 		observers: make(map[raftShardKey]bool),
+		placed:    make(map[raftShardKey]bool),
 	}
 }
 
@@ -98,7 +102,7 @@ func (f *fakeShardLifecycle) ListStarted() []StartedShard {
 	f.passes++
 	out := make([]StartedShard, 0, len(f.started))
 	for k := range f.started {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, Placed: f.placed[k]})
 	}
 	return out
 }
@@ -1251,6 +1255,68 @@ func TestTenantShardReconciler_EventDelete_PurgesByDefault(t *testing.T) {
 
 	if factory.purgeCount() != 1 {
 		t.Errorf("purgeCount() = %d, want 1 (EventDelete purges by default)", factory.purgeCount())
+	}
+}
+
+// TestTenantShardReconciler_PlacementDeletePurgesAPrefixTenantGroup proves
+// that the delete of a prefix tenant's dedicated database placement -- the
+// group a backend: raft database of a non-raft tenant runs (OD-1 A) -- closes
+// and purges that group's shard once.
+func TestTenantShardReconciler_PlacementDeletePurgesAPrefixTenantGroup(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	key := raftShardKey{tenantID: "prefix-t", database: "orders"}
+	factory.mu.Lock()
+	factory.started[key] = true
+	factory.placed[key] = true
+	factory.mu.Unlock()
+
+	r, _ := newTestReconciler(t, factory, nil)
+	r.handleEvent(context.Background(), placement.Event{
+		Type:     placement.EventDelete,
+		TenantID: "prefix-t",
+		Database: "orders",
+	})
+
+	if factory.purgeCount() != 1 {
+		t.Fatalf("purgeCount() = %d, want 1", factory.purgeCount())
+	}
+	if !factory.isPurged("prefix-t", "orders") {
+		t.Fatal("prefix-t/orders was not purged")
+	}
+}
+
+// TestTenantShardReconciler_ReconcileOncePurgesAStartedShardWithoutPlacement
+// proves the catch-up for a missed delete event: a shard the lifecycle started
+// from a placement whose placement is gone is closed and purged, a placed
+// shard that still has its placement is kept, and a catalog-managed shard
+// (never placed) survives.
+func TestTenantShardReconciler_ReconcileOncePurgesAStartedShardWithoutPlacement(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	gone := raftShardKey{tenantID: "prefix-t", database: "dropped"}
+	kept := raftShardKey{tenantID: "acme", database: "orders"}
+	meta := raftShardKey{tenantID: "sys", database: "meta"}
+	factory.mu.Lock()
+	factory.started[gone] = true
+	factory.placed[gone] = true
+	factory.started[kept] = true
+	factory.placed[kept] = true
+	factory.started[meta] = true
+	factory.mu.Unlock()
+
+	r, _ := newTestReconciler(t, factory, nil, placement1("acme", "orders", 1))
+	r.ReconcileOnce(context.Background())
+
+	if !factory.isPurged("prefix-t", "dropped") {
+		t.Fatal("a placed shard whose placement is gone must be purged")
+	}
+	if factory.isPurged("acme", "orders") || !factory.isStarted("acme", "orders") {
+		t.Fatal("a shard that still has its placement must keep running")
+	}
+	if factory.isPurged("sys", "meta") || !factory.isStarted("sys", "meta") {
+		t.Fatal("a catalog-managed shard (never placed) must survive")
+	}
+	if factory.purgeCount() != 1 {
+		t.Fatalf("purgeCount() = %d, want 1", factory.purgeCount())
 	}
 }
 

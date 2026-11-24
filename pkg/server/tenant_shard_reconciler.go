@@ -336,9 +336,25 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 		key := raftShardKey{tenantID: s.TenantID, database: s.Database}
 		p, hasPlacement := allPlacements[key]
 		if !hasPlacement {
-			// No placement entry — this shard is catalog-managed (opened from
-			// the database catalog at boot or single-node Phase-4b). Do not
-			// tear it down.
+			if s.Placed {
+				// The shard was started from a placement entry that is now
+				// gone: the database was dropped and this node missed the
+				// delete event (or it arrived before the shard was cached).
+				// Close and purge it, as the delete event would have.
+				r.logger.Info("placement reconciler: purging a shard whose placement is gone",
+					slog.String("tenant", s.TenantID),
+					slog.String("database", s.Database))
+				if err := r.closeDemoted(s.TenantID, s.Database); err != nil {
+					r.logger.Warn("placement reconciler: purge of a shard without placement failed",
+						slog.String("tenant", s.TenantID),
+						slog.String("database", s.Database),
+						slog.Any("error", err))
+				}
+				continue
+			}
+			// No placement entry and never placed — this shard is
+			// catalog-managed (opened from the database catalog at boot or
+			// single-node Phase-4b). Do not tear it down.
 			continue
 		}
 		if _, ok := p.ReplicaForNode(r.selfNodeID); ok {
@@ -740,6 +756,9 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 				slog.Any("error", err))
 		}
 	case placement.EventDelete:
+		r.logger.Info("placement reconciler: placement deleted, closing the database's shard",
+			slog.String("tenant", ev.TenantID),
+			slog.String("database", ev.Database))
 		if err := r.closeDemoted(ev.TenantID, ev.Database); err != nil {
 			r.logger.Warn("placement reconciler: shard close on delete failed",
 				slog.String("tenant", ev.TenantID),

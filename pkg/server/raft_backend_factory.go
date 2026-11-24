@@ -1463,6 +1463,11 @@ type StartedShard struct {
 	TenantID string
 	// Database is the database name.
 	Database string
+	// Placed reports that the shard was started from a placement table
+	// entry (a dedicated group, OD-1 A) rather than opened from the
+	// database catalog. Only a placed shard whose entry is gone is purged
+	// by the reconciler's catch-up for a missed delete event.
+	Placed bool
 }
 
 // ListStarted returns a snapshot of every (TenantID, Database) pair whose
@@ -1476,8 +1481,8 @@ func (f *RaftBackendFactory) ListStarted() []StartedShard {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]StartedShard, 0, len(f.shards))
-	for k := range f.shards {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+	for k, rs := range f.shards {
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, Placed: rs.hadPlacement})
 	}
 	return out
 }
@@ -1493,8 +1498,8 @@ func (f *RaftBackendFactory) ListOnHost() []StartedShard {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]StartedShard, 0, len(f.shards)+len(f.starting))
-	for k := range f.shards {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+	for k, rs := range f.shards {
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, Placed: rs.hadPlacement})
 	}
 	for k := range f.starting {
 		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
