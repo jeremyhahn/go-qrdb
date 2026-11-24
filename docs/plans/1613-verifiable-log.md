@@ -17,14 +17,14 @@ the row shipped only when every line HOLDS.
 | 7 | DEK | HOLDS (by design) | `docs/databases/architecture.md` §8: no second key layer; a caller encrypts entries with `DEKService` before appending, the leaf commits to the ciphertext |
 | 8 | Barrier | HOLDS | Barrier tenant HOLDS in Raft mode: its logs, entries and sealed signing keys are applied in its home group, under its own key; a sealed barrier refuses with `tenant.ErrTenantSealed` (`pkg/service/audit_shard_resolver_test.go:TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup`; `pkg/server/lifecycle/log_groups_test.go:TestLogGroups_TenantHomeGroup`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierTenant_PerProtocol`, every transport: sealed refused, unsealed create/append/get/prove-inclusion/prove-consistency/head, log unchanged after the unseal). Barrier database HOLDS on every backend (owner ruling 1234, option A): its logs live in the group its tenant resolves to (on a standalone node, the node's local store), proposed through `barrierDatabaseTarget` (`pkg/service/vlog_database_store.go`) with each entry body and software key sealed under the database's barrier key (sub-types 8, 9 and 10, `featuregate.VerifiableLogSealed`); a sealed database refuses with `*service.BarrierSealedError`, a legacy raft barrier record with `*database.BarrierOffDataPathError` (`pkg/service/vlog_log_service_test.go:TestLogService_ServesABarrierDatabase`, `TestLogService_BarrierDatabaseLogsLiveInTheParentGroup`, `TestLogService_SealedBarrierDatabaseRefusesWhileItsGroupApplies`, `TestLogService_BarrierDatabaseAppendNeedsTheSealedFeature`, `TestLogService_BarrierDatabaseDropReclaimsItsLogsInTheParentGroup`, `TestLogService_BarrierDatabaseLifecycle`, `TestLogService_RefusesALegacyRaftBarrierRecord`; `pkg/statemachine/vlog_apply_test.go:TestApplyVerifiableLog_SealedKeyRecordsAreStoredUnopened`; `pkg/server/lifecycle/seams_vlog_test.go:TestBuildServices_LogServiceSealsWithTheBarrierDatabase`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierDatabase_PerProtocol` (clustered) and `TestVlog_CLI_BarrierDatabase_Standalone_PerProtocol` (standalone), every transport: unsealed every verb and its proofs, no entry in plaintext under the node's data root or the database's data directory, sealed refused, wrong secret stays refused, unsealed log unchanged and grows, gone after drop). Barrier tenant HOLDS on a standalone node: its logs are applied to and read from its own standalone barrier store (`pkg/service/vlog_barrier_store.go`, attached by `AttachLocalTenantHomes`) (`pkg/service/vlog_barrier_store_test.go:TestLogService_ServesABarrierTenantOnItsStandaloneBarrier`, `TestLogService_SealedStandaloneBarrierTenantRefuses`; `test/integration/vlog_barrier_tenant_cli_test.go:TestVlog_CLI_BarrierTenant_Standalone_PerProtocol`). A barrier tenant's audit trail stays on the system shard, where its audit logger writes and the log service reads it (review fixes F2, F3 and the audit P1 below). The kv surface refuses a barrier database's reserved log keyspace (F1), and a dropped database's logs are reclaimed (F4). |
 | 9 | Replication | HOLDS | `sdk/go/node/clustered_vlog_test.go:TestClusteredCreateFunc_AppliesVerifiableLog`, `TestClusteredCreateFunc_LogRegistryPerReplica`; `pkg/store/vlog_apply_test.go:TestStoreVerifiableLog_SnapshotMidLogMatchesAPeer` |
-| 10 | Standalone and Raft modes | HOLDS | standalone: `pkg/engine/mvcc_vlog_test.go:TestMVCCEngine_VerifiableLog_DispatchesAndAnswersReads`; Raft: `pkg/store/vlog_apply_test.go:TestStoreVerifiableLog_DispatchesAndAnswersReads` |
+| 10 | Standalone and Raft modes | HOLDS | standalone: `pkg/engine/mvcc_vlog_test.go:TestMVCCEngine_VerifiableLog_DispatchesAndAnswersReads`; Raft: `pkg/store/vlog_apply_test.go:TestStoreVerifiableLog_DispatchesAndAnswersReads`; the audit instance on a standalone node (rw1613w6): `test/integration/audit_cli_test.go:TestAudit_CLI_AuditInstance_Standalone_PerProtocol` |
 | 11 | One apply-time opcode behind a feature gate | HOLDS | `protocol.OpVerifiableLog` (`pkg/protocol/vlog.go`), `featuregate.VerifiableLog`/`VerifiableLogKeys`; `pkg/service/vlog_log_service_test.go:TestLogService_Writes_RefusedBeforeGateActive`, `TestLogService_KeyWrites_RefusedBeforeKeyFeatureActive`; `pkg/store/vlog_apply_test.go:TestStoreAuditInstance_MixedVersionReplay` |
 | 12 | Dispatched by both state-machine families | HOLDS | `statemachine.ApplyVerifiableLog` from `pkg/engine/mvcc_engine.go` and `pkg/store/pebble.go`; `TestMVCCEngine_VerifiableLog_RefusalVersusHalt`, `TestStoreVerifiableLog_RefusalVersusHalt`, `TestStoreAuditInstance_FamiliesAgree` |
 | 13 | Sequence assigned at apply | HOLDS | `pkg/vlog/audit_instance_test.go:TestAuditInstance_DeterministicAcrossBatchPacking`; `pkg/store/vlog_apply_test.go:TestStoreVerifiableLog_ReopenMatchesAPeer` |
 | 14 | Head signature produced outside apply, appended as a record | HOLDS | `LogService.SignHead` signs, then proposes the `Checkpoint` sub-type; `TestLogService_SignHead_RecordsTheCheckpoint`; `pkg/vlog/checkpoint_test.go` |
 | 15 | `vlog.HeadSignerProvider` via `WithHeadSignerProvider` on the server and `sdk/go/node` | HOLDS | `pkg/server/seam_options_test.go:TestResolveCryptoOptions_SurfacesTheHeadSignerProvider`; `sdk/go/node/seams_test.go:TestMergeSeamOptions_FoldsNodeOptionsIntoTheServerOptions`; `sdk/go/server/headsigner_test.go:TestWithHeadSignerProvider_ReachesCryptoOptions`; `pkg/server/lifecycle/seams_vlog_test.go:TestBuildServices_HeadSignerProviderCreatesTheLogsKeys` |
 | 16 | Software provider (key as the log's sealed record) is the default | HOLDS | `pkg/vlog/signing_software_test.go:TestSoftwareHeadSignerProvider_CreateKeyIsTheSealedRecord`; `TestNewLogService_DefaultsToTheSoftwareProvider`; `TestBuildServices_HeadSignerProviderAbsentKeepsTheSoftwareProvider`; `sdk/go/node/seams_test.go:TestWithHeadSignerProvider_AbsentKeepsTheSoftwareProvider` |
-| 17 | The audit trail is one log instance | HOLDS | `pkg/vlog/audit_instance_test.go:TestAuditInstance_SwitchStartsTheTreeAtS0`; `pkg/store/vlog_apply_test.go:TestStoreAuditInstance_FamiliesAgree`; `pkg/service/vlog_log_service_audit_test.go:TestLogService_ReadsTheAuditInstance` |
+| 17 | The audit trail is one log instance | HOLDS | `pkg/vlog/audit_instance_test.go:TestAuditInstance_SwitchStartsTheTreeAtS0`; `pkg/store/vlog_apply_test.go:TestStoreAuditInstance_FamiliesAgree`; `pkg/service/vlog_log_service_audit_test.go:TestLogService_ReadsTheAuditInstance`. Raft mode: `test/integration/audit_cli_test.go:TestAudit_CLI_AuditInstance_PerProtocol`. Standalone (rw1613w6): `pkg/service/audit_replicated_logger_test.go:TestReplicatedLogger_Emit_UngatedHostProposesToTheAuditInstance`; `pkg/server/lifecycle/seams_vlog_test.go:TestBuildServices_StandaloneBarrierTenantsAuditIsWrittenToTheSystemShard`, `TestBuildServices_StandaloneAuditSwitchKeepsTheChainContinuous`; `test/integration/audit_cli_test.go:TestAudit_CLI_AuditInstance_Standalone_PerProtocol` |
 
 ## Slices (step 2)
 
@@ -252,14 +252,15 @@ in mg1655a.
 
 ## Remains
 
-- Open, Tenant item (F3 proof half): a standalone node composes an ungated
-  host (`cmd/qrdbd/start.go`), so its replicated audit logger keeps
-  `OpAuditAppend` for every tenant (`docs/databases/engineering.md`, "The
-  switch"): its events are written to the system shard
-  (`TestBuildServices_StandaloneBarrierTenantsAuditIsWrittenToTheSystemShard`
-  covers that half), but there is no verifiable audit instance to prove. The
-  same holds for every tenant and on main, not a barrier gap; gating the
-  standalone host is a change to `cmd/qrdbd`, outside this row's paths.
+- CLOSED by rw1613w6, Tenant item (F3 proof half): a standalone node
+  composes an ungated host, whose replicated audit logger kept
+  `OpAuditAppend`, so there was no audit instance to prove. In the
+  `qrdb_vlog` build `ReplicatedLogger.Emit` now writes an ungated host's
+  trail as the tenant's audit instance; no `cmd/qrdbd` change was needed.
+  Tests: `TestReplicatedLogger_Emit_UngatedHostProposesToTheAuditInstance`,
+  `TestBuildServices_StandaloneBarrierTenantsAuditIsWrittenToTheSystemShard`,
+  `TestBuildServices_StandaloneAuditSwitchKeepsTheChainContinuous`,
+  `TestAudit_CLI_AuditInstance_Standalone_PerProtocol`.
 - Drop of a database, decided by convention (ruling 109): dropping a database
   never deletes a directory the caller chose; it reclaims only what qrdb
   created under its own data root (the logs in the store, the manager's
@@ -540,6 +541,85 @@ the Raft group its tenant resolves to (`r.raft(ctx, tenantID)`).
   out (`vlog_log_service*.go` are `//go:build qrdb_vlog`). Integration
   (`-tags=codec_json,raft,integration,qrdb_vlog`): the four barrier-database,
   barrier-tenant and drop CLI tests, every transport.
+
+## rw1613w6 (row finish)
+
+- Slice 1, lint: gocritic `nilValReturn` at
+  `pkg/service/vlog_database_store.go` (`barrierDatabaseTarget.read`, the
+  `*vlog.SigningKey` case returned `got` inside `if got == nil`). The typed
+  nil is kept, now written `(*vlog.SigningKey)(nil)`: a bare `nil` would turn
+  into an untyped nil in the `any` result and change what
+  `logRead[*vlog.SigningKey]`'s assertion sees. Test
+  `TestLogService_BarrierDatabaseReadOfAMissingKeyIsNil` (no key and a
+  `vlog.KeyNotFoundError` for a missing version) passes before and after,
+  showing the behavior did not change.
+- Slice 2, the audit trail on a standalone node: the daemon wiring
+  (`cmd/qrdbd`) was not the gap. `ReplicatedLogger.Emit` wrote the audit
+  instance only on a `FeatureGatedHost` with `VerifiableLogAudit` on, and a
+  standalone node's `LocalBackend` gates nothing, so it kept `OpAuditAppend`.
+  Now an ungated host writes the instance when the binary carries
+  `qrdb_vlog` (`ungatedHostAppliesAuditInstance`, set by the tagged
+  `vlog_database_store.go`); a build without `qrdb_vlog` keeps
+  `OpAuditAppend`. A gated host still follows its gate. Tests and
+  fail-before results:
+  - `TestReplicatedLogger_Emit_UngatedHostProposesToTheAuditInstance`:
+    "op = 79, want OpVerifiableLog (82)" before, passes after;
+    `TestReplicatedLogger_Emit_AuditInstanceNeedsItsOwnGate` case "ungated
+    host" now wants op 82 in a `qrdb_vlog` build and 79 without it.
+  - `TestBuildServices_StandaloneBarrierTenantsAuditIsWrittenToTheSystemShard`
+    now also reads the instance's head: "log vault/system/audit not found"
+    before, passes after.
+  - `TestBuildServices_StandaloneAuditSwitchKeepsTheChainContinuous`: an
+    existing standalone trail (two `OpAuditAppend` records, no instance),
+    then two events through the logger. The instance holds the two new
+    events, the query sees all four, and the tenant chain verifies from
+    genesis. Passes. It is a new proof, so it has no fail-before; the switch
+    starts the tree at S0 over the existing trail, and the chain stays
+    whole.
+  - `TestAudit_CLI_AuditInstance_Standalone_PerProtocol` (and
+    `TestAudit_CLI_AuditInstance_PerProtocol` through the same helper, now
+    with `audit query --replicated` and `audit verify --replicated`):
+    "vlog head on auditlog-solo/system/audit = size 0" on rest, grpc, quic
+    and mcp before, passes after.
+- Slice 3, every Codex finding from the twelve CHANGES_REQUESTED reviews,
+  checked against the tip: all CLOSED; no code change was needed.
+
+  | Head | Finding | CLOSED by | Proving test |
+  | --- | --- | --- | --- |
+  | d5b15794bc | #1 logs sealed under the database's key | rw1613w3 | `TestLogService_BarrierDatabaseLogsLiveInTheParentGroup`, `TestBuildServices_LogServiceSealsWithTheBarrierDatabase` |
+  | d5b15794bc | #2 no supported barrier database | rw1613w3, rw1613w4 | `TestLogService_ServesABarrierDatabase`, `TestVlog_CLI_BarrierDatabase_PerProtocol`, `TestVlog_CLI_BarrierDatabase_Standalone_PerProtocol` |
+  | d5b15794bc | #3 sealed signing key in the e2e | rw1613w3 | `TestVlog_CLI_BarrierTenant_PerProtocol` (sign-head before seal and after unseal), `TestApplyVerifiableLog_SealedKeyRecordsAreStoredUnopened` |
+  | 9ce21b4ba2 | owner approval of the SPEC change | owner ruling 1234 option A (record only) | none; SPEC row 158 is the coordinator's |
+  | ba20bd3d7e | complete barrier-database support | rw1613w3, rw1613w4 | as d5b15794bc #2 |
+  | ba20bd3d7e | audit writer and log reader in one group | audit row 8 (audit P1), rw1613w6 | `TestSystemShardLogResolver_RoutesBarrierTenantsToTheirHomeGroup`, `TestBuildServices_StandaloneBarrierTenantsAuditIsWrittenToTheSystemShard` |
+  | 28ecaf0d9b | F1 restrict the routing exception | Codex verify at 28ecaf0d9b | `TestLogService_BarrierTenantsSystemDatabaseLogsStayBehindItsBarrier` |
+  | 28ecaf0d9b | F3 gate the drop sub-type | Codex verify at 28ecaf0d9b | `TestLogService_DropDatabaseLogs_GateOff`, `TestGate_VerifiableLogDropActivation` |
+  | 28ecaf0d9b | reclamation sees writes staged in the batch | Codex verify at 28ecaf0d9b | `TestChain_DropDatabase_PackedBatchMatchesSeparateUpdates`, `TestApplyVerifiableLog_AppendAndDropInOneBatch` |
+  | 28ecaf0d9b | F4 name fenced until reclamation | Codex verify at 28ecaf0d9b | `TestManager_Drop_FencesTheStoreBeforeReclaiming`, `TestManager_Drop_ReclaimFailureRemovesTheStoreFence`, `TestDropFence_FailedReclamationRollsTheFenceBack`, `TestDatabaseService_DropReclaimsTheDatabasesLogs` |
+  | 3ad7bfadef | staged writes (named.go) | Codex verify at 28ecaf0d9b | as the batch tests above |
+  | 3ad7bfadef | fence admitted writes | mg1655a | `TestLogService_CreatePausedAcrossDropAndRecreateIsRefused`, `TestLogService_ReadRefusesAnEarlierIncarnationsLog`, `TestLogService_StandaloneBarrierStoreFencesAPausedCreate` |
+  | 9a8dd39821 | writes wait for the drop feature; legacy log; home-group fence | mg1655a, fx1655c | `TestLogService_IncarnationWritesWaitForDropFeature`, `TestIncarnationRequest_LegacyLogIsVisible`, `TestStoreResolver_LogFenceTargetBarrierTenantUsesItsHomeGroup`, `TestLogService_BarrierTenantNamedDatabaseIsFencedInItsHomeGroup` |
+  | 928f3d8a41 | barrier-tenant fence target; paused sign-head; bounded empty drop | rw1613d | `TestStoreResolver_FenceTargetBarrierTenantUsesTheSystemStore`, `TestKeyspaceReclaim_BarrierTenantFencesDataAndLogMarkers`, `TestLogService_SignHeadPausedAcrossDropAndRecreateIsRefused`, `TestChain_DropDatabase_EmptyLogsAreBounded` |
+  | 9428bf8de4 | pre-upgrade markers; one database lookup | rw1613w2 | `TestKeyspaceReclaim_PreUpgradeBarrierTenantLogMarker`, `TestLogService_PreUpgradeDatabaseLogFenceIsInitializedAtFirstLogWrite`, `TestLogService_AdmitFencesToItsOneDatabaseLookup` |
+  | b50e2f2b95 | create across a barrier migration | rw1613p, rw1613w1 | `TestLogService_StandaloneBarrierCreateAcrossMigrationRefusesTheReplacedBarrier` |
+  | fdeca8a053, 06a8907fc0 #1 | failed create strands the log marker | rw1613w5 | `TestUnfence_FailedDataClaimReleasesTheLogMarker` |
+  | d2b8ad1d61, 06a8907fc0 #2 | store cache outlives a drop | rw1613w3, rw1613w5 | `TestLogService_DropForgetsTheLogFenceIncarnation` |
+
+- Left for the coordinator: the SPEC row 158 status, `pm/rows.md` and the
+  ROADMAP line 122 "awaits the owner's decision" text (row text this lane
+  may not edit); `docs/audit/architecture.md` (outside this lane's file map)
+  still says a host that gates nothing keeps `OpAuditAppend`, and now needs
+  the same standalone sentence as `docs/databases/architecture.md` §7.
+- Commands, each passing: `gofmt -l pkg/service pkg/server/lifecycle
+  test/integration` (empty); `go test -count=1 -tags=codec_json,raft,qrdb_vlog
+  -run '^(TestReplicatedLogger_|TestLogService_|TestUnfence_|TestKeyspaceReclaim_|TestSystemShardLogResolver_)'
+  ./pkg/service/`; `TestReplicatedLogger_` without `qrdb_vlog`;
+  `-run '^(TestBuildServices_|TestLogGroups_)' ./pkg/server/lifecycle/`; the
+  Slice 3 proving tests by package (service, server, database, vlog,
+  statemachine, lifecycle). Integration
+  (`-tags=codec_json,raft,integration,qrdb_vlog`): the audit-instance (Raft
+  and standalone), audit verify and query, and vlog barrier-database,
+  barrier-tenant, drop and per-protocol CLI tests, every transport.
 
 ## Out of scope
 
