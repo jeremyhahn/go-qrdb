@@ -676,6 +676,33 @@ Docs only, the row's closing lane.
 - Nothing left for the row's lanes; after the coordinator applies the three
   row edits, next is the row PR's one final Codex review.
 
+## rw1613w9 (CI red at 248188ee77)
+
+- Slice 1, `fix(deps): restore main's go.sum on the row`: Lint Gates
+  `make check-mod-tidy` (job 138310161266). Commit 99d10dc10 had added 171
+  go.sum lines that tidy removes; go.mod is byte-identical to main's, so
+  main's go.sum is restored. `go mod tidy -diff` cannot run offline in the
+  lane (GOPROXY=off), so main's file is kept as is. The lane environment
+  sets `GOFLAGS=-mod=mod`, so a plain `go test` (or the language server)
+  writes the lines back: lanes run tests with `GOFLAGS=-mod=readonly`.
+- Slice 2, `test(vlog): cover the sealed-key create and rotate paths`:
+  Unit `make coverage-merge` (job 138344464753, pkg/vlog 93.67% vs
+  baseline 97.89%). Adds `TestChain_CreateWithSealedKey_RecordsTheSealedRecord`,
+  `TestChain_CreateWithSealedKey_Refusals`,
+  `TestChain_RotateSealedKey_AppendsTheSealedRecord` and
+  `TestChain_RotateSealedKey_Refusals` (pkg/vlog/headkey_test.go).
+- Slice 3, `test(vlog): cover the drop-incarnation and incarnation-read
+  paths`: the same coverage job. Adds
+  `TestChain_DropDatabase_KeepsAnotherIncarnationsLogs` (committed and
+  staged in one Update), `TestChain_DropDatabase_Faults`,
+  `TestChain_DropDatabase_SkipsTheAuditInstance` (a log created at
+  `AuditLogID` before the instance exists) and
+  `TestIncarnationRequest_HidesAnotherIncarnationOnEveryRead`
+  (pkg/vlog/named_test.go).
+- Left to the coordinator: the "Review scope (InfoSec guard)" and "Code
+  Review (codex)" job refusals (event pull_request_target is not on the
+  runner hook allow-list) and the Codex round-5 limit.
+
 ## Out of scope
 
 The go-xkms provider and transparency log (the seam rows on the other side);
