@@ -1,47 +1,6 @@
-# Nightly — the known-red and long-horizon jobs, off the push path.
-#
-# Adopted from the company ci-template v1.9 (software/templates/github-actions/
-# nightly.yml), owner ruling 2026-08-20: a job that is known-red with a tracked
-# issue, or that verifies a slow-moving property, does NOT run per push. It
-# produces information we already have, and it does it while holding a runner.
-#
-# `trivy` gates nothing: it is in no required check's `needs`, per go-qrdb#48.
-#
-# WHEN ITS REASON FOR BEING HERE ENDS, moving it to ci.yml is a deliberate act,
-# not an automatic one: add it to ci.yml, add it to ci-gate's `needs`, and add
-# a `check` call to the gate loop. A job that can pass and is not required is
-# a fail-open gate, and `trivy` is in exactly that state — a cost carried
-# deliberately, with a stated condition for ending it, rather than an
-# oversight. `signal` waits on nothing because it is not that kind of job: it
-# reports this workflow's verdict and is never a candidate for ci.yml.
-#
-#   * trivy — go-qrdb#48, and the reason is the PHASE, not a known-red job.
-#     This line read "go-qrdb#42" until #451; #42 is the golangci-lint panic
-#     that reddened Lint, closed long ago, and it never had anything to do with
-#     trivy. The governing rule is devops.md §8a: while a repo is alpha and
-#     nothing is published to the github.com mirror, `trivy fs` runs here and
-#     does not block a merge; from the first published release it moves into
-#     ci.yml and into ci-gate's `needs`. The cost is stated there and is real —
-#     a CVE published today surfaces at the next nightly rather than at the
-#     push that introduces it, which is how #451's grpc advisory sat in three
-#     go.mod files while every pull request stayed green.
-#
-# `integration-cluster` (the full `make integration-test-cluster` suite) ran
-# here from 2026-09-22 and moved to ci.yml on 2026-10-05, into ci-gate's
-# `needs`: nine of its tests had gone red on main with nobody reading the
-# verdict, all of them tests left behind by bootstrap changes that a push gate
-# would have stopped at the push that made them. Since 2026-10-14 ci.yml runs
-# those suites as integration-features, one job per feature; none of them is
-# a job here, so the watch list below has nothing to add.
+# Nightly: the long-horizon jobs, off the push path.
 
-# SCHEDULED (go-qrdb#1683). Owner order, 2026-11-22: "the nightlys shouldnt
-# require any manual executiion, it should be getting run automatically!" It
-# supersedes the 2026-10-11 no-schedule rule (go-qrdb#674) for this Nightly
-# workflow only. The slot is `45 4 * * *` (04:45 UTC): the project slots run 20
-# minutes apart after worker-image at 03:00, in the order go-quicbaas, go-xkms,
-# go-qrdb, go-quicraft, go-enclave, go-luks2, go-trusted-platform.
-# `workflow_dispatch` stays for a run by hand. Every job runs on ubuntu-latest
-# on github.com, so no self-hosted pool runs at night.
+# Scheduled and manual runs only.
 
 name: Nightly
 
@@ -55,15 +14,9 @@ permissions:
   security-events: write
 
 env:
-  # Kept in lockstep with ci.yml, including the reason: Go 1.27.4 is the latest
-  # release (never pin below latest), and the 1.27 floor is forced by
-  # go-enclave's `go` directive through go-quicraft (#540). setup-go 'stable' is
-  # prohibited as a spec.
+  # Kept equal to ci.yml's Go version.
   GO_VERSION: "1.27.4"
-  # Builds never resolve through a workspace: first-party modules come from
-  # Gitea tags (conventions/dependency-resolution.md §2). The runner injects
-  # GOPRIVATE and the tokenised git rewrite for github.com/jeremyhahn/* itself —
-  # no credentials belong in this file.
+  # Builds never resolve through a workspace.
   GOWORK: "off"
   GOFLAGS: "-buildvcs=false"
 
@@ -76,28 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      # A fresh source-scoped scan is uploaded to code scanning on every run
-      # so the dashboard never reflects a stale analysis. The gate and the
-      # report are the two `make` steps further down.
-      # test/ holds benchmark harnesses that ship in no release.
-      #
-      # trivy-action was `@master` here until #367 -- not a mutable TAG but a
-      # moving BRANCH, re-resolved on every nightly, so this job ran whatever
-      # aquasecurity had merged that day. Pinning a branch has to choose a
-      # version, and the choice is the latest RELEASE (v0.36.0) rather than
-      # master's head: a release tag is a reviewed artifact and it gives the
-      # trailing comment something a human can bump against. Master's head at
-      # the time of pinning was d2a0b607, ahead of v0.36.0; that difference is
-      # the deliberate part of this change and not a transcription error.
-      #
-      # The SARIF scan and its upload feed GitHub code scanning
-      # (`security-events: write`, above). They used to be gated on
-      # `github.server_url == 'https://github.com'` because the Gitea forge has
-      # no code scanning; the repository runs on GitHub-hosted runners now
-      # (DS-7377), so every step of this job runs unconditionally. The CLI gate
-      # (`make trivy`) and the report (`make trivy-report`) below carry no host
-      # guard either; test/buildgates/trivy_severity_test.go fails if either
-      # acquires one.
+      # A fresh source-scoped scan is uploaded to code scanning on every run.
       - name: Trivy scan (SARIF for code scanning)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -116,21 +48,7 @@ jobs:
           sarif_file: trivy-results.sarif
           category: trivy-fs
 
-      # The CLI is installed directly rather than through trivy-action's
-      # setup step, so the gate below runs the Makefile's pinned version. NO
-      # `if:`: the gate is one step, not one per host.
-      #
-      # The binary is copied out of the official image pinned by its
-      # multi-arch index digest (TRIVY_IMAGE in scripts/tool-pins.sh), the
-      # same pin the CI toolchain image uses. The GitHub release download and
-      # contrib/install.sh it replaced return 504 for every trivy asset.
-      # PINNED to the Makefile's TRIVY_VERSION, matching ci.yml's blocking trivy
-      # job (#479): the version check below fails the step if the digest and
-      # the version disagree. This used to fetch install.sh from trivy's `main`
-      # branch with no version argument, so it ran whatever trivy was newest
-      # that night: a moving ref in a repository that SHA-pins every action
-      # because refs move (#367), and a nightly verdict that could change with
-      # no change to this tree.
+      # The CLI is installed directly so the gate below runs the Makefile's pinned version.
       - name: Install Trivy CLI (pinned)
         run: |
           . scripts/tool-pins.sh
@@ -140,105 +58,19 @@ jobs:
           docker rm "${id}"
           ./scripts/check-trivy-version.sh /usr/local/bin/trivy "${v}"
 
-      # ONE gate, through the Makefile (devops.md §4, #451).
-      #
-      # This was two steps guarded on `github.server_url` — a trivy-action leg
-      # and a shell leg — each carrying its own copy of the scanner flags, and
-      # a third copy lived in the Makefile as `make trivy`. The Makefile's own
-      # comment claimed the skip-dirs list was "kept identical to the list in
-      # .github/workflows/ci.yml", which had not been true since #48 moved the
-      # job into this file: three command lines, one of them describing a
-      # fourth that no longer existed.
-      #
-      # `make trivy` is the contract, so the gate calls it. What that buys
-      # beyond removing the copies is the database-age guard it now carries: it
-      # refreshes (through the runner's cache, then upstream when the cache is
-      # stale), refuses to certify anything with a database older than
-      # TRIVY_DB_MAX_AGE_HOURS, and only then scans, with --skip-db-update so
-      # the database checked is the database used. Before this, a green Trivy
-      # job said a scan ran and nothing about what it knew.
-      #
-      # The SARIF step above deliberately stays on trivy-action: it uploads to
-      # GitHub code scanning, is explicitly non-gating (exit-code: 0), and is
-      # not the thing that decides this job.
+      # The gate runs through the Makefile.
       - name: Trivy gate (fail on CRITICAL/HIGH)
         run: make trivy
 
-      # The sub-threshold report (#522). Everything below the gate's floor was
-      # reported by NOTHING until this step existed, so a green Trivy job could
-      # not distinguish "there are no MEDIUMs" from "nothing looked" — and two
-      # real advisories sat under it for the whole of this repository's history,
-      # surfacing only because someone widened the severity list by hand for an
-      # unrelated demonstration.
-      #
-      # It is SECOND, and that ordering is the disambiguation. A step's
-      # conclusion is what a reader of a red nightly sees first, and these two
-      # mean very different things: the gate red is a CRITICAL/HIGH and blocks a
-      # release; this red is a MEDIUM to disposition. Because the gate runs
-      # first, a failure there skips this one entirely — so "gate green, report
-      # red" is unambiguous from the step list, with no second job and no second
-      # copy of the install-with-retry block above.
-      #
-      # It fails the step rather than printing at exit 0, and that is not a
-      # gate: this job is not in `ci-gate`'s `needs` while the repo is alpha
-      # (devops.md §8a), so nothing here blocks a merge. An exit-0 step in a
-      # nightly is indistinguishable from no step at all, which is the state
-      # #522 is about; a signal that can transition to red is the only kind
-      # anyone reads (#478). What is dispositioned how is written on the target
-      # in the Makefile.
+      # The sub-threshold report.
       - name: Trivy sub-threshold report (MEDIUM/LOW; blocks no merge)
         run: make trivy-report
 
-  # ==========================================================================
-  # THE VERDICT HAS TO REACH SOMEBODY (#478).
-  #
-  # Measured 2026-09-12: the API retained 22 runs of this workflow, back to
-  # 2026-08-22, and EVERY ONE WAS RED. Run 16597 had correctly caught
-  # CVE-2026-84445 against google.golang.org/grpc in all three go.mod files, on
-  # a database downloaded that morning, and nobody saw it -- the advisory
-  # reached this repository a day later only because an agent happened to run
-  # `make security` on a workstation (#451). devops.md §8a accepts a window in
-  # alpha, where a CVE surfaces at the next nightly rather than at the push that
-  # introduces it; that bargain assumes the nightly's verdict is READ.
-  #
-  # A PLAIN NOTIFIER WOULD HAVE REPRODUCED THE DEFECT. One that fired on each of
-  # twenty-two consecutive failures trains its reader to ignore it inside a
-  # week, and then the mechanism is intact while the property is gone. So this
-  # job signals a STATE: it opens ONE tracking issue on the transition to red,
-  # REWRITES that issue in place (no comment, no bell) while the job stays red,
-  # and CLOSES it on the first green run. A new issue in the queue means
-  # something broke; an old open one means it is still broken.
-  #
-  # An issue rather than a channel because AGENTS.md already names this
-  # repository's open issues as the inbound work queue -- it is read at session
-  # start -- so nothing has to subscribe to anything, and there is no external
-  # service and no second credential. The full rationale, including why a job
-  # that has NEVER been green is treated as louder than one that just broke,
-  # is in test/tools/nightlysignal/main.go.
-  #
-  # IT GATES NOTHING. It is absent from ci-gate's `needs` because it is not in
-  # ci.yml at all, it does not make this workflow a required check, and it does
-  # not move `trivy fs` onto the push path -- both are separate decisions
-  # (devops.md §8a).
-  #
-  # ITS OWN RED MEANS ITS OWN FAILURE, never the nightly's. The tool exits 0
-  # when every job was decided and every decision applied, INCLUDING when the
-  # answer was "every watched job is on fire". It exits non-zero only when it could not
-  # do its job -- which is the only way a silent notifier can be told apart from
-  # a quiet night.
+  # Reports the nightly verdict as a tracking issue.
   signal:
     name: Signal
     needs: [trivy]
-    # `always()` IS LOAD-BEARING. Without it this job is skipped on exactly the
-    # runs it exists for, and the workflow would look complete while signalling
-    # nothing.
-    #
-    # The github.com guard: the issue queue this writes to is the Gitea one,
-    # and AGENT_TOKEN is a Gitea credential. On github.com the job does not
-    # run rather than failing on a secret that host does not have (devops.md
-    # §6). The orchestration workflows this guard was copied from (automerge,
-    # the review workflows) are gone -- QuicBaaS owns orchestration and a
-    # project's workflows run CI only -- so this is now the guard's one home.
+    # Runs whether or not the watched jobs passed.
     if: always() && github.server_url != 'https://github.com'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -249,32 +81,16 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      # EVERY WATCHED JOB IS LISTED EXPLICITLY, and the tool refuses to run
-      # unless this list matches nightly.yml's own `jobs:` block minus `-self`.
-      #
-      # devops.md §1: `join(needs.*.result)` is a GitHub extension that
-      # evaluates to the EMPTY STRING on Gitea, so a gate built on it passes
-      # while jobs fail -- list every job explicitly and fail closed when the
-      # results cannot be read. This is that list; the coverage assertion in
-      # test/tools/nightlysignal/workflow.go is the "fail closed". Adding a job
-      # above without adding a `-job` line here turns this job red, which is the
-      # cost that keeps a new job from being unwatched.
+      # Every watched job is listed explicitly and must match this file's jobs.
       - name: Open, update or close the tracking issue
         env:
-          # The PROJECT AGENT's token. The issues this opens are the project
-          # agent's own, filed on its own repository, which is what §0/§1 of
-          # conventions/sdlc.md describe.
+          # The project's agent token.
           NIGHTLY_SIGNAL_TOKEN: ${{ secrets.AGENT_TOKEN }}
           RESULT_TRIVY: ${{ needs.trivy.result }}
         run: |
           set -euo pipefail
 
-          # Fail closed, naming the secret. A blank token would send
-          # `Authorization: token ` and Gitea would answer as an anonymous
-          # caller -- on a private repository that is a 404, which reads as "no
-          # tracking issue exists" and opens a duplicate every night. The tool
-          # refuses an empty token for the same reason; this says so earlier and
-          # in the workflow's own words.
+          # Fail closed, naming the secret.
           [ -n "${NIGHTLY_SIGNAL_TOKEN:-}" ] || {
             echo "::error::AGENT_TOKEN is not set on this repository."
             echo "::error::Without it the nightly's verdict reaches nobody, which is #478."

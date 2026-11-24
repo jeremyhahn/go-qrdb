@@ -1,6 +1,5 @@
 #!/bin/sh
 # Generate self-signed ECDSA P-256 certificates for etcd TLS.
-# This script runs in the cert-gen init container.
 
 set -e
 

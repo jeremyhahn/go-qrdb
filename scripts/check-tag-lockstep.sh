@@ -14,50 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# check-tag-lockstep.sh — release-versioning.md P2: the nested sdk/go module is
-# tagged in lockstep with the root module.
-#
-# When a root vX.Y.Z tag ships without sdk/go/vX.Y.Z, `go get` at latest
-# resolves the root to X.Y.Z and sdk/go to the previous release. Any symbol the
-# release removed from a package sdk/go re-exports then breaks the consumer's
-# build — go-qrdb#6: sdk/go v0.5.8-alpha still aliased
-# statemachine.CachedDiskBackend, deleted in v0.5.9-alpha.
-#
-# Every root tag must have an sdk/go counterpart at the same commit, and no
-# sdk/go tag may exist without its root. Publish a release by pushing both tags
-# in ONE atomic push:
-#
-#     git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z
-#
-# --atomic is what makes it one transaction: the server applies both ref updates
-# or neither. Listing two refs on a plain push is not enough — the server may
-# accept one and reject the other, which publishes the skew.
-#
-# Running this script before that push is the only preventive step available
-# today. Once a tag is pushed it is visible to `go get` immediately, so the
-# Release Lockstep workflow reports a skewed release rather than stopping it;
-# preventing one needs a server-side pre-receive policy or workflow-only
-# tagging, which is release policy this repository does not set — go-qrdb#13.
-#
-# Usage: check-tag-lockstep.sh [repo-dir] [module ...]
-#
-#   repo-dir  defaults to the current directory
-#   module    the nested module paths that must be tagged in lockstep with the
-#             root. Defaults to `sdk/go`, which is what the Release Lockstep
-#             workflow gets when it calls this with no arguments -- its
-#             behaviour is unchanged by the argument existing.
-#
-# The list is a PARAMETER because release-alpha now DISCOVERS the lockstep set
-# from the module tree rather than declaring it (go-qrdb#160), and an audit that
-# knows about fewer namespaces than the tagger cuts is an audit that passes
-# while one of them is broken. go-qrdb#50 added a third module,
-# sdk/go/gorm/conformance; the release recipe passes its discovered set here so
-# the two cannot disagree. Making the WORKFLOW audit that set as well is the
-# remaining half of #50 and is not done here.
-#
-# Reads the tags present in the clone, so a shallow or tagless checkout must
-# fetch them first; that case fails rather than reporting a vacuous green.
-# Exit status: 0 when every pair is in lockstep, 1 otherwise.
+# check-tag-lockstep.sh: the nested modules are tagged in lockstep with the root module.
 
 set -eu
 
