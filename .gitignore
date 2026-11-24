@@ -83,8 +83,13 @@ go.work.sum
 # kill mid-run, so a stray probe never reaches a commit.
 /.secure-analyzer-probe/
 
-# devcontainer secrets (Gitea module-fetch token)
+# devcontainer secrets (Gitea module-fetch token); the old .devcontainer/.env
+# path too, since a checkout from before the move still holds that file
+build/docker/devcontainer/.env
 .devcontainer/.env
+
+# generated VS Code pin overlay (scripts/devcontainer-pins.sh)
+build/docker/devcontainer/compose.pins.yaml
 
 # CI security-scan reports (devops.md §8)
 gosec.sarif

@@ -108,33 +108,12 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	for _, opt := range opts {
 		opt(&o)
 	}
-	// A registered creator need not delegate to a go-objstore Configure, so
-	// an inline credential is refused here, before any provider sees it.
-	if err := RejectCredentialSettings(settings); err != nil {
-		return nil, err
-	}
-	// The provider is resolved once, and an unknown one refused before any
-	// credential file is read: the declaration checked below and the creator
-	// that opens the store are one registration, whatever RegisterProvider
-	// does meanwhile.
-	resolved, known := resolveProvider(provider)
-	providerResolved(provider)
-	if !known {
-		return nil, &UnsupportedProviderError{Provider: provider}
-	}
-	if err := checkCredentialUse(provider, resolved.reads, o.credentials); err != nil {
-		return nil, err
-	}
-	creds, release, err := openCredentials(o.credentials)
+	store, creator, creds, release, err := openStore(provider, settings, o)
 	defer release()
 	if err != nil {
 		return nil, err
 	}
-	store, err := resolved.creator(settings, creds)
-	if err != nil {
-		return nil, credentialOpenError(o.credentials, err)
-	}
-	store, journal, err := openStores(provider, resolved.creator, settings, store, creds)
+	store, journal, err := openStores(provider, creator, settings, store, creds)
 	if err != nil {
 		return nil, credentialOpenError(o.credentials, err)
 	}

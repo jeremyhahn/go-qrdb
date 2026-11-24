@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // indexQueryKeys runs an IndexQueryRequest and returns the matching entity
@@ -438,6 +439,83 @@ func TestPebbleStateMachine_Batch_UniqueConflictLeavesIndexUntouched(t *testing.
 	if _, err := s.Lookup(context.Background(), []byte("user/2")); err == nil {
 		t.Fatal("user/2 was readable after its batch was refused")
 	}
+}
+
+// openDocumentIndexedStore opens a store with a unique email index scoped to
+// the db.users collection documents ("__col:db:users/").
+func openDocumentIndexedStore(t *testing.T) *PebbleStateMachine {
+	t.Helper()
+	s := openExtendedStore(t)
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("db.users.email", "email",
+		protocol.IndexCreateOptions{Unique: true, KeyPrefix: "__col:db:users/"}))
+	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
+	return s
+}
+
+// assertNonJSONDocumentApplied checks an op set holding a non-JSON value
+// under a document-scoped index applied as committed: no application error,
+// both documents readable, the JSON one indexed, and the shard still applies
+// the next write.
+func assertNonJSONDocumentApplied(t *testing.T, s *PebbleStateMachine, res sm.Result, next uint64) {
+	t.Helper()
+	if _, _, ok := protocol.DecodeAppErrorKind(res.Data); ok {
+		t.Fatalf("committed op set was declined on apply: %q", res.Data)
+	}
+	for _, k := range []string{"__col:db:users/1", "__col:db:users/2"} {
+		if _, err := s.Lookup(context.Background(), []byte(k)); err != nil {
+			t.Fatalf("%s not readable after its committed op set applied: %v", k, err)
+		}
+	}
+	if got := indexQueryKeys(t, s, "db.users.email", "a@example.com"); len(got) != 1 || !containsKey(got, "__col:db:users/1") {
+		t.Fatalf("IndexQuery(db.users.email, a@example.com) = %v, want [__col:db:users/1]", got)
+	}
+	applyExtEntries(t, s, []sm.Entry{{Index: next, Cmd: mustEncode(kv.EncodePut([]byte("__col:db:users/3"), []byte(`{"email":"c@example.com"}`)))}})
+	if got := indexQueryKeys(t, s, "db.users.email", "c@example.com"); len(got) != 1 || !containsKey(got, "__col:db:users/3") {
+		t.Fatalf("IndexQuery(db.users.email, c@example.com) after the follow-up put = %v, want [__col:db:users/3]", got)
+	}
+}
+
+// TestPebbleStateMachine_Batch_ReplayIndexedNonJSONDocumentApplies is a
+// replay regression: a committed batch holding a non-JSON collection
+// document under a document-scoped index applies exactly as it did when it
+// was committed (value stored, not indexed). Apply semantics of an existing
+// command never change; the refusal lives before propose.
+func TestPebbleStateMachine_Batch_ReplayIndexedNonJSONDocumentApplies(t *testing.T) {
+	s := openDocumentIndexedStore(t)
+	batch := mustEncode(protocol.EncodeBatch([][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("__col:db:users/1"), []byte(`{"email":"a@example.com"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("__col:db:users/2"), []byte("not json"), nil, 0)),
+	}))
+	results := make([]sm.Result, 1)
+	if err := s.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: batch}}, results); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	assertNonJSONDocumentApplied(t, s, results[0], 3)
+}
+
+// TestPebbleStateMachine_Transaction_ReplayIndexedNonJSONDocumentApplies
+// pins the same replay semantics for the op set a transaction selects (here
+// the failure branch: txn-key is absent, so the value compare fails).
+func TestPebbleStateMachine_Transaction_ReplayIndexedNonJSONDocumentApplies(t *testing.T) {
+	s := openDocumentIndexedStore(t)
+	cmp := mustEncode(protocol.EncodeCompare(
+		[]byte("txn-key"),
+		byte(service.CompareValue),
+		byte(service.CompareEqual),
+		[]byte("expected"),
+		0, 0, 0,
+	))
+	successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("__col:db:users/9"), []byte(`{"email":"b@example.com"}`), nil, 0))
+	failureOps := [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("__col:db:users/1"), []byte(`{"email":"a@example.com"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("__col:db:users/2"), []byte("not json"), nil, 0)),
+	}
+	txnCmd := mustEncode(protocol.EncodeTransaction([][]byte{cmp}, [][]byte{successOp}, failureOps))
+	results := make([]sm.Result, 1)
+	if err := s.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: txnCmd}}, results); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	assertNonJSONDocumentApplied(t, s, results[0], 3)
 }
 
 // TestPebbleStateMachine_ScopedIndex_IgnoresKeysOutsideScope pins that an

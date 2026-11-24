@@ -60,7 +60,7 @@ func TestTrivyImage_PinnedByDigest(t *testing.T) {
 func TestTrivyImage_NoReleaseDownload(t *testing.T) {
 	root := repoRoot(t)
 	var scanned []string
-	for _, dir := range []string{".github", "build", ".devcontainer"} {
+	for _, dir := range []string{".github", "build"} {
 		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return err
@@ -72,7 +72,7 @@ func TestTrivyImage_NoReleaseDownload(t *testing.T) {
 			t.Fatalf("walk %s: %v", dir, err)
 		}
 	}
-	scanned = append(scanned, filepath.Join(root, "Makefile"))
+	scanned = append(scanned, filepath.Join(root, "Makefile"), filepath.Join(root, ".devcontainer.json"))
 	for _, path := range scanned {
 		raw, err := os.ReadFile(path)
 		if err != nil {

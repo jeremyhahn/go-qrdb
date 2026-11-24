@@ -47,19 +47,21 @@ func TestParseConfig(t *testing.T) {
 		t.Fatalf("ParseConfig: %v", err)
 	}
 	want := Config{
-		Endpoints:     []string{"db-1.example.com:7000", "db-2.example.com:7000"},
-		Protocol:      "quic",
-		Credentials:   Credentials{CAFile: "ca.pem", CertFile: "client.pem", KeyFile: "client-key.pem"},
-		Clients:       3,
-		Keys:          5,
-		KeyPrefix:     "run-1",
-		Mix:           Mix{Put: 1, Get: 2, CAS: 3},
-		Seed:          42,
-		OpTimeout:     Duration(750 * time.Millisecond),
-		Duration:      Duration(2 * time.Minute),
-		OpsPerClient:  10,
-		RedialBackoff: Duration(time.Second),
-		MaxBackoff:    Duration(8 * time.Second),
+		Endpoints:           []string{"db-1.example.com:7000", "db-2.example.com:7000"},
+		Protocol:            "quic",
+		Credentials:         Credentials{CAFile: "ca.pem", CertFile: "client.pem", KeyFile: "client-key.pem"},
+		Clients:             3,
+		Keys:                5,
+		KeyMaxOps:           DefaultKeyMaxOps,
+		KeyMaxIndeterminate: DefaultKeyMaxIndeterminate,
+		KeyPrefix:           "run-1",
+		Mix:                 Mix{Put: 1, Get: 2, CAS: 3},
+		Seed:                42,
+		OpTimeout:           Duration(750 * time.Millisecond),
+		Duration:            Duration(2 * time.Minute),
+		OpsPerClient:        10,
+		RedialBackoff:       Duration(time.Second),
+		MaxBackoff:          Duration(8 * time.Second),
 	}
 	if !equalConfig(cfg, want) {
 		t.Fatalf("cfg = %+v\nwant  %+v", cfg, want)

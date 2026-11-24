@@ -9,8 +9,8 @@ import (
 	"errors"
 	"testing"
 
+	gocodecmsgpack "github.com/jeremyhahn/go-codec/pkg/msgpack"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-	"github.com/vmihailenco/msgpack/v5"
 
 	vectorStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
@@ -142,7 +142,7 @@ func TestRecoverFromSnapshot_KeepsTheNamespaceMetric(t *testing.T) {
 func TestRecoverFromSnapshot_SnapshotWithoutMetricReadsStorage(t *testing.T) {
 	// A snapshot written before the metric was tracked carries name and
 	// dimension only.
-	data, err := msgpack.Marshal(map[string]map[string]any{"ns": {"name": "ns", "dim": 2}})
+	data, err := gocodecmsgpack.New[map[string]map[string]any]().Marshal(map[string]map[string]any{"ns": {"name": "ns", "dim": 2}})
 	if err != nil {
 		t.Fatalf("marshal snapshot: %v", err)
 	}

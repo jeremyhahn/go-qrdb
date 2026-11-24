@@ -28,8 +28,8 @@ import (
 	"time"
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 	"github.com/spf13/viper"
-	"gopkg.in/yaml.v3"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
@@ -2196,12 +2196,12 @@ func newConfigViper(path string) (*viper.Viper, error) {
 // configToMap renders a Config to a generic map keyed by its yaml tags, used
 // to seed Viper's defaults so every key is known for env-var resolution.
 func configToMap(cfg *Config) (map[string]any, error) {
-	data, err := yaml.Marshal(cfg)
+	data, err := gocodecyaml.New[*Config]().Marshal(cfg)
 	if err != nil {
 		return nil, err
 	}
 	var m map[string]any
-	if err := yaml.Unmarshal(data, &m); err != nil {
+	if err := gocodecyaml.New[map[string]any]().Unmarshal(data, &m); err != nil {
 		return nil, err
 	}
 	return m, nil

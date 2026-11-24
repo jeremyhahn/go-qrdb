@@ -26,11 +26,10 @@ import (
 	"io"
 	"strconv"
 
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-	"gopkg.in/yaml.v3"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -670,7 +669,7 @@ func (s *BatchService) parseAndImport(ctx context.Context, data []byte, opts Imp
 		if sampleLen > 8192 {
 			sampleLen = 8192
 		}
-		detected, detectErr := codec.DetectFormat(opts.Filename, data[:sampleLen])
+		detected, detectErr := detectImportFormat(opts.Filename, data[:sampleLen])
 		if detectErr != nil {
 			return nil, &ImportParseError{Err: detectErr}
 		}
@@ -848,13 +847,13 @@ func parseYAML(data []byte) ([]map[string]string, error) {
 
 	// Try sequence of maps first.
 	var seq []map[string]interface{}
-	if err := yaml.Unmarshal(data, &seq); err == nil && seq != nil {
+	if err := gocodecyaml.New[[]map[string]interface{}]().Unmarshal(data, &seq); err == nil && seq != nil {
 		return convertJSONRecords(seq), nil
 	}
 
 	// Try single map.
 	var obj map[string]interface{}
-	if err := yaml.Unmarshal(data, &obj); err != nil {
+	if err := gocodecyaml.New[map[string]interface{}]().Unmarshal(data, &obj); err != nil {
 		return nil, &ImportParseError{Err: err}
 	}
 	if obj == nil {

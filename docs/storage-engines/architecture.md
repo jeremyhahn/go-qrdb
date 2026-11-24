@@ -1,20 +1,21 @@
 # Storage Engines — Architecture
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED — pending owner
-> decision — for the object-storage LSM target design.** · Scope: go-qrdb ·
+> **Status: NORMATIVE for shipped behaviour; ADOPTED (owner ruling
+> 1243), not yet built, for the object-storage LSM target design.** · Scope: go-qrdb ·
 > Last verified: 2026-10-27
 >
 > This document has two layers.
 >
 > - **Current state** sections (everything through "What this feature
->   deliberately does not do") describe the code as shipped. The proposal
->   below does not change them.
-> - **Target design: object-storage LSM segment layout** is the proposed
->   design for rebuilding `pkg/storage/objstore` as an LSM segment layout,
->   future work under the SPEC row `object-storage-lsm`. The questions it
->   needs decided are listed, each with a recommendation, in "Decisions
->   needing the owner" inside that section. **Nothing in that section is
->   implemented.**
+>   deliberately does not do") describe the code as shipped. The target
+>   design below does not change them.
+> - **Target design: object-storage LSM segment layout** is the design for
+>   rebuilding `pkg/storage/objstore` as an LSM segment layout, adopted by
+>   owner ruling 1243 (OS-0 A) and in progress under the SPEC row
+>   `object-storage-lsm`. Its questions are listed, each with a
+>   recommendation, in "Decisions needing the owner" inside that section.
+>   **The adapter, encrypting wrapper, composition and cache are on main but
+>   not wired; the engine switch is not implemented.**
 >
 > Volume pools are documented in [../volume-pools/](../volume-pools/).
 
@@ -505,9 +506,11 @@ encoded-name layout and the stores written in it.
 
 **The new `pkg/storage/objstore` package stops being a KV engine and becomes a
 `remote.Storage` adapter over go-objstore**, consumed by `pkg/storage/pebble`
-through a new construction option, e.g. `pebble.WithRemote(objstore.NewRemote(provider,
-settings), locator, strategy)`. There is no second, parallel engine
-implementation:
+through a construction option, `remotelsm.WithRemote(objstore.NewRemote(provider,
+settings), locator, strategy)` in package `pkg/storage/pebble/remotelsm`, which
+binds through `pebble.WithOpenHook` so `pkg/storage/pebble` itself keeps no
+`objstorage/remote` import (lean standalone gate). There is no second, parallel
+engine implementation:
 
 ```
 pkg/storage/pebble        — unchanged: *pebble.DB, storage.Storage, Batch, Iterator, Snapshot
@@ -552,12 +555,13 @@ Composition, conceptually:
 ### Decisions needing the owner
 
 Each question implementing this design requires deciding is answered below
-with a recommendation. Whether to adopt the design at all is the first
-decision; these are the ones that follow from adopting it. The decision
-record [../decisions/object-storage-lsm.md](../decisions/object-storage-lsm.md)
-lays out each one (OS-0, adopting the design, and OS-1 to OS-7) with its
-options, the recommendation, and the go-objstore v0.9.1-alpha API each option
-relies on, for the owner's ruling.
+with a recommendation. Adopting the design at all (OS-0) was decided by owner
+ruling 1243 (option A); these are the questions adopting it raises. The
+decision record
+[../decisions/object-storage-lsm.md](../decisions/object-storage-lsm.md) lays
+out each one (OS-0 and OS-1 to OS-7) with its options, the recommendation, the
+go-objstore v0.9.1-alpha API each option relies on, and which are decided and
+which are still open for the owner's ruling.
 
 **OS-1 — Is Pebble v2's remote storage a stable, supported surface?**
 No — it is real, functional and already used in production by CockroachDB, but
@@ -777,7 +781,9 @@ what they already are — backup/archive destinations reached through
 **Phase 1 — the adapter and the engine option.**
 Rewrite `pkg/storage/objstore` as the `remote.Storage` adapter (OS-6's interim
 whole-object cache) plus the encrypting wrapper (OS-4). Add
-`pebble.WithRemote(...)` to `pkg/storage/pebble`, wiring
+`remotelsm.WithRemote(...)` in package `pkg/storage/pebble/remotelsm` (bound
+through `pebble.WithOpenHook`; `pkg/storage/pebble` keeps no
+`objstorage/remote` import, lean standalone gate), wiring
 `Options.Experimental.{RemoteStorage,CreateOnShared,CreateOnSharedLocator}`
 and a `CreatorID` persisted beside the local directory. Delete the flat
 `Engine`/`Batch`/`Iterator`/`Snapshot` and the batch commit journal in
@@ -795,7 +801,7 @@ encoded-name layout is refused at open (OS-5).
 
 **Phase 2 — wire a database's `backend: objstore` as a non-replicated binding.**
 Remove the `database.InvalidBackendError` refusal at `openStorage` for
-`backend: objstore`; route it through `pebble.WithRemote` like any other
+`backend: objstore`; route it through `remotelsm.WithRemote` like any other
 non-replicated binding. The surrounding binding resolution is the databases
 feature's ([../databases/architecture.md](../databases/architecture.md));
 this phase owns only the storage side.

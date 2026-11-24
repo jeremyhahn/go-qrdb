@@ -112,6 +112,49 @@ func testCollectionLifecycleOverProtocol(t *testing.T, node *multiProtoNode, pro
 		t.Fatalf("[%s] collection create --id-strategy not-a-strategy succeeded, want error (output: %s)", proto.name, out)
 	}
 
+	// --- indexes require the json storage codec --------------------------
+	// index definitions under a non-json codec must fail closed, storing nothing.
+	colIdxMsgpack := "col-idx-msgpack-" + proto.name
+	out, err = runCLIProto(t, node, proto, "collection", "create", colIdxMsgpack,
+		"--storage-codec", "msgpack", "--index", "email,unique")
+	if err == nil {
+		t.Fatalf("[%s] collection create %s --storage-codec msgpack --index email,unique succeeded, want error (output: %s)",
+			proto.name, colIdxMsgpack, out)
+	}
+	out, err = runCLIProto(t, node, proto, "collection", "info", colIdxMsgpack)
+	if err == nil {
+		t.Fatalf("[%s] collection info %s (refused create) succeeded, want error: nothing stored (output: %s)",
+			proto.name, colIdxMsgpack, out)
+	}
+
+	// the same index under the default json codec is accepted and enforced.
+	colIdxJSON := "col-idx-json-" + proto.name
+	out, err = runCLIProto(t, node, proto, "--output", "json", "collection", "create", colIdxJSON, "--index", "email,unique")
+	if err != nil {
+		t.Fatalf("[%s] collection create %s --index email,unique: %v\noutput: %s", proto.name, colIdxJSON, err, out)
+	}
+	var idxCreated transport.CollectionInfo
+	if jerr := json.Unmarshal([]byte(out), &idxCreated); jerr != nil {
+		t.Fatalf("[%s] decode `collection create --index` JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if len(idxCreated.Indexes) != 1 || idxCreated.Indexes[0].FieldName != "email" {
+		t.Fatalf("[%s] collection create %s --index email,unique: Indexes = %+v, want one index on email",
+			proto.name, colIdxJSON, idxCreated.Indexes)
+	}
+	out, err = runCLIProto(t, node, proto, "collection", "doc", "insert", colIdxJSON, "--data", `{"email":"a@example.com"}`)
+	if err != nil {
+		t.Fatalf("[%s] collection doc insert %s: %v\noutput: %s", proto.name, colIdxJSON, err, out)
+	}
+	out, err = runCLIProto(t, node, proto, "collection", "doc", "insert", colIdxJSON, "--data", `{"email":"a@example.com"}`)
+	if err == nil {
+		t.Fatalf("[%s] collection doc insert %s (duplicate unique email) succeeded, want error (output: %s)",
+			proto.name, colIdxJSON, out)
+	}
+	out, err = runCLIProto(t, node, proto, "collection", "drop", colIdxJSON)
+	if err != nil {
+		t.Fatalf("[%s] collection drop %s: %v\noutput: %s", proto.name, colIdxJSON, err, out)
+	}
+
 	// --- info --------------------------------------------------------
 	out, err = runCLIProto(t, node, proto, "--output", "json", "collection", "info", colFieldHash)
 	if err != nil {
