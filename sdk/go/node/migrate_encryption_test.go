@@ -393,6 +393,65 @@ func TestNode_EnableEncryption_SealStoreSecretsSurvive(t *testing.T) {
 	require.NotZero(t, files, "the seal store has files under %s", sealDir)
 }
 
+// TestNode_EnableEncryption_RetainedScopedClientIsRefused pins that a
+// database-scoped client retained from before EnableEncryption is refused
+// after the migration tears the data plane down: it must not write the seal
+// store through the old none barrier (overwriting the migrated ciphertext with
+// plaintext the keyed barrier cannot read) nor read through it.
+func TestNode_EnableEncryption_RetainedScopedClientIsRefused(t *testing.T) {
+	ctx := context.Background()
+
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
+	cfg.Raft.DataDir = t.TempDir()
+	cfg.Databases = []qrdbconfig.DatabaseConfig{
+		{Name: "default", Backend: string(database.BackendPebble)},
+		{Name: "example", Backend: string(database.BackendPebble)},
+	}
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = "none"
+	cfg.Protocols.REST = false
+	cfg.Protocols.GRPC = false
+	cfg.Protocols.QUIC = false
+	cfg.Protocols.Unix = false
+	cfg.Protocols.MCP = false
+
+	n, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+
+	scoped, err := n.Client().DatabaseScoped("example")
+	require.NoError(t, err)
+	require.NotSame(t, n.Client(), scoped, "a named database must yield a scoped client, not the primary one")
+
+	before := []byte("seal-store-secret-before-migration")
+	require.NoError(t, scoped.SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: "retained", Secret: before}))
+
+	opts := seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.MustCredentials(context.Background(), []byte("enable-enc-pass")),
+	}
+	require.NoError(t, n.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, opts))
+
+	var closed *transport.ClosedError
+	perr := scoped.SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: "retained", Secret: []byte("plaintext-after-migration")})
+	require.ErrorAsf(t, perr, &closed, "SealStorePut through the retained scoped client: %v", perr)
+	_, gerr := scoped.SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "retained"})
+	require.ErrorAsf(t, gerr, &closed, "SealStoreGet through the retained scoped client: %v", gerr)
+
+	resp, err := n.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "retained"})
+	require.NoError(t, err)
+	require.Equal(t, before, resp.Secret, "the retained client wrote nothing")
+
+	fresh, err := n.Client().DatabaseScoped("example")
+	require.NoError(t, err)
+	resp, err = fresh.SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "retained"})
+	require.NoError(t, err)
+	require.Equal(t, before, resp.Secret)
+}
+
 // failStagedDeleteBackend is a seal.StorageBackend whose Delete of a key in
 // the seal store's staging keyspace fails while fail is set.
 type failStagedDeleteBackend struct {
