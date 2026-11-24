@@ -214,6 +214,39 @@ func TestCheckUniqueViolationsBatchUnordered_DeletedKeyFreesValue(t *testing.T) 
 	requireUniqueConflict(t, checkUniqueViolationsBatchUnordered(nil, indexes, fields, nil, dup, nil))
 }
 
+// TestCheckUniqueViolationsBatchUnordered_JoinedClaimKeyCollides: the unordered
+// check joins index name and value with a NUL, so these two claims collide
+// there, while the ordered check keeps them apart.
+func TestCheckUniqueViolationsBatchUnordered_JoinedClaimKeyCollides(t *testing.T) {
+	indexes := map[string]index.Index{
+		"a":     index.NewMemoryIndex("a", true),
+		"a\x00": index.NewMemoryIndex("a\x00", true),
+	}
+	fields := map[string]string{"a": "f1", "a\x00": "f2"}
+	doc := func(field, val string) []byte {
+		b, err := json.Marshal(map[string]string{field: val})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	k1 := doc("f1", "\x00b")
+	k2 := doc("f2", "b")
+	puts := []indexedPut{
+		{Key: []byte("K1"), Value: k1},
+		{Key: []byte("K2"), Value: k2},
+	}
+	requireUniqueConflict(t, checkUniqueViolationsBatchUnordered(nil, indexes, fields, nil, puts, nil))
+	writes := []indexedWrite{
+		{Key: []byte("K1"), Value: k1},
+		{Key: []byte("K2"), Value: k2},
+	}
+	none := func([]byte) ([]byte, error) { return nil, nil }
+	if err := CheckUniqueViolationsBatch(nil, indexes, fields, nil, writes, none); err != nil {
+		t.Fatalf("distinct indexes and values; expected nil, got: %v", err)
+	}
+}
+
 func TestCheckUniqueViolationsBatch_NonJSONOverwriteFreesValue(t *testing.T) {
 	indexes, fields := uniqueNameIndex(t, map[string]string{"A": "alice"})
 	writes := []indexedWrite{

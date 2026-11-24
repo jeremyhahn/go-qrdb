@@ -345,7 +345,7 @@ func checkUniqueViolationsBatchUnordered(batch storage.Batch, indexes map[string
 	}
 	// pending records the key each (index, value) is claimed by within this
 	// batch, so an intra-batch duplicate is caught too.
-	pending := make(map[uniqueClaim][]byte)
+	pending := make(map[string][]byte)
 	for _, p := range puts {
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(p.Value, &fields) != nil {
@@ -381,7 +381,8 @@ func checkUniqueViolationsBatchUnordered(batch storage.Batch, indexes map[string
 				}
 				return &UniqueConstraintError{Index: idxName, Field: fieldName}
 			}
-			mapKey := uniqueClaim{idxName, string(fieldVal)}
+			// This unordered legacy check keeps the NUL-joined key so unflagged logs replay as committed.
+			mapKey := idxName + "\x00" + string(fieldVal)
 			if prev, seen := pending[mapKey]; seen && !bytes.Equal(prev, p.Key) {
 				return &UniqueConstraintError{Index: idxName, Field: fieldName}
 			}
