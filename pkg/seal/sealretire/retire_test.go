@@ -23,6 +23,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cockroachdb/pebble/v2/vfs"
@@ -398,6 +400,127 @@ func TestRetirer_InMemoryStoreRetiresPlaintext(t *testing.T) {
 			t.Fatalf("%s still holds the retired plaintext", name)
 		}
 	}
+}
+
+// writeOverwritten writes k, flushes it and overwrites it, so the seal
+// store holds files written before a retirement.
+func writeOverwritten(t *testing.T, store *pebblestore.PebbleStorage) {
+	t.Helper()
+	if err := store.Set([]byte("k"), []byte("secret")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := store.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if err := store.Set([]byte("k"), []byte("replacement")); err != nil {
+		t.Fatalf("Set replacement: %v", err)
+	}
+}
+
+func assertMarked(t *testing.T, r *Retirer) {
+	t.Helper()
+	owed, err := r.Marked()
+	if err != nil || !owed {
+		t.Fatalf("Marked = %v, %v; want true, nil", owed, err)
+	}
+}
+
+func TestRetirer_CompactFailureKeepsMarker(t *testing.T) {
+	dir := t.TempDir()
+	store, r, err := Open(dir, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	r.SetFault(func() error { return store.Close() })
+	if err := r.Retire(context.Background()); err == nil || !strings.Contains(err.Error(), "compact:") {
+		t.Fatalf("Retire on a closed store err = %v, want a compact error", err)
+	}
+	store2, r2, err := Open(dir, nil)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = store2.Close() })
+	assertMarked(t, r2)
+}
+
+func TestRetirer_FilesNotDeletedHonoursContext(t *testing.T) {
+	mem := vfs.NewMem()
+	const dir = "seal"
+	if err := mem.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	store, r, err := Open(dir, pebblestore.FromVFS(keepFilesFS{FS: mem}))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	writeOverwritten(t, store)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = r.Retire(ctx)
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "not deleted") {
+		t.Fatalf("Retire err = %v, want a not-deleted %v", err, context.Canceled)
+	}
+	assertMarked(t, r)
+}
+
+func TestRetirer_WaitStatFailureErrors(t *testing.T) {
+	mem := vfs.NewMem()
+	const dir = "seal"
+	if err := mem.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	var (
+		armed   atomic.Bool
+		mu      sync.Mutex
+		targets = map[string]bool{}
+		stats   = map[string]int{}
+	)
+	fs := statFaultFS{FS: mem, stat: func(name string) error {
+		if !armed.Load() {
+			return nil
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if !targets[name] {
+			return nil
+		}
+		stats[name]++
+		if stats[name] >= 2 {
+			return errStat
+		}
+		return nil
+	}}
+	store, r, err := Open(dir, pebblestore.FromVFS(fs))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	writeOverwritten(t, store)
+	r.SetFault(func() error {
+		names, lerr := mem.List(dir)
+		if lerr != nil {
+			return lerr
+		}
+		mu.Lock()
+		for _, name := range names {
+			if strings.HasSuffix(name, ".log") {
+				targets[mem.PathJoin(dir, name)] = true
+			}
+		}
+		n := len(targets)
+		mu.Unlock()
+		if n == 0 {
+			return errors.New("no pre-retirement write-ahead log")
+		}
+		armed.Store(true)
+		return nil
+	})
+	if err := r.Retire(context.Background()); !errors.Is(err, errStat) {
+		t.Fatalf("Retire err = %v, want %v", err, errStat)
+	}
+	armed.Store(false)
+	assertMarked(t, r)
 }
 
 func TestStagedRecords(t *testing.T) {
