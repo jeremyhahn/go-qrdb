@@ -239,13 +239,12 @@ func (l *lifecycle) enter() (release func(), err error) {
 	return l.mu.RUnlock, nil
 }
 
-// shut closes the lifecycle and returns only after every call enter admitted
-// before it has released.
+// shut takes the write lock, which waits out every admitted call, then marks
+// the lifecycle closed.
 func (l *lifecycle) shut() {
-	l.closed.Store(true)
-	// The write lock only waits out every admitted call.
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.closed.Store(true)
+	l.mu.Unlock()
 }
 
 // Option configures an embedded transport.
