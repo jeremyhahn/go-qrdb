@@ -66,6 +66,10 @@ type fwdNode struct {
 	mcp      int
 	unix     string
 	stopped  bool
+
+	// dataDir is the node's --data-dir: the root its per-tenant raft
+	// groups live under ({dataDir}/tenants/<tenant>/databases/<db>).
+	dataDir string
 }
 
 // fwdCluster is a running cluster with one raft tenant.
@@ -170,7 +174,7 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 		}
 		t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
 		node := &fwdNode{raftAddr: fmt.Sprintf("127.0.0.1:%d", raftPorts[i]), admin: adminPorts[i], grpc: grpcPorts[i], quic: quicPorts[i], mcp: mcpPorts[i],
-			unix: filepath.Join(sockDir, "qrdbd.sock")}
+			unix: filepath.Join(sockDir, "qrdbd.sock"), dataDir: dataDirs[i]}
 		if extra, ok := embedded[i]; ok {
 			c.nodes = append(c.nodes, node)
 			cfg := fwdEmbeddedConfig(t, node, i, dataDirs[i], quicPorts[i], peerAdmin, embeddedPeerIdentities(t, i, nodeCerts))
