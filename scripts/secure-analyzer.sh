@@ -14,47 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# secure-analyzer.sh — build pkg/secure/analyzer's singlechecker and sweep it
-# over every Go module in the tree. Called by `make secure-analyzer`.
-#
-#   secure-analyzer.sh --build <out>            build the tool at <out>
-#   secure-analyzer.sh --sweep <TAG_SETS> <GORM_TAGS>
-#
-# WHY THIS EXISTS AT ALL (go-qrdb#429)
-#
-# pkg/secure/analyzer is a complete, unit-tested go vet plugin that ran
-# NOWHERE: no Makefile target, no CI job, no .golangci.yml entry. Its rules
-# were therefore enforced by its own tests -- which proved the analyzer works
-# and said nothing whatever about this tree. A raw memguard import sat in
-# pkg/ceremony's share-store test, breaching the containment boundary the whole
-# pkg/secure design rests on, for as long as that was true.
-#
-# The package doc claimed the ban was "enforced by a custom go vet analyzer",
-# which is the worse half of the defect: an agent reading it concludes the
-# invariant holds.
-#
-# THE SWEEP IS NOT ITS OWN LOOP. It delegates to vet-modules.sh, the same
-# script `make vet-tags` drives, by overriding that script's GOVET. Everything
-# vet-modules.sh already learned the hard way then applies here unchanged:
-#
-#   - module discovery that FAILS instead of reporting a partial list;
-#   - a per-rung PACKAGE COUNT with a hard failure on zero, so a run that
-#     looked at nothing cannot be mistaken for a clean one;
-#   - an exhaustive-or-fail module-to-tag-set mapping, so a new module forces a
-#     decision rather than becoming a silent blind spot;
-#   - the declared combinations echoed before the sweep, so a verdict is never
-#     recorded without its question.
-#
-# That reuse is the point. A second sweeper here would be the seventh version
-# of a loop that was wrong six times, and the two most expensive mistakes made
-# while measuring this issue are both errors vet-modules.sh already prevents:
-# `./...` stops at a module boundary, and sdk/go held 14 findings of its own
-# that two separate root-module runs never saw; and one root-module finding was
-# visible only under the full tag set.
-#
-# THE TOOL IS BUILT, NOT `go run`. go vet's -vettool takes a path to an
-# executable and runs it once per package -- hundreds of times across this
-# sweep. `go run` would relink it every time.
+# secure-analyzer.sh: build pkg/secure/analyzer and run it over every Go module in the tree.
 set -eu
 
 ROOT="${SECURE_ANALYZER_ROOT:-.}"

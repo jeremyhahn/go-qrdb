@@ -1,56 +1,4 @@
 # GPU overlay for the go-qrdb integration test suite.
-#
-# Use together with the base compose file to enable NVIDIA GPU access in both
-# the server and test runner containers:
-#
-#   make integration-test-gpu
-#
-# which runs `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up`
-# with the per-run project and image names the two files require.
-#
-# The overlay switches both services to the GPU-capable devcontainer image
-# (the gpu stage of build/docker/devcontainer/Dockerfile), reserves one NVIDIA GPU via the Docker device plugin, and
-# injects the environment variables required by the CUDA/NVIDIA runtime.
-# Build tags gain the "gpu" constraint so that GPU-gated code paths are
-# compiled and exercised during the test run.
-#
-# CREDENTIALS: this overlay declares no `secrets:` of its own, and must not
-# gain one. Both services below carry the names of services in the base file,
-# so compose merges the base's `build.secrets: [gomodauth]` and its top-level
-# `secrets:` block onto them; overriding `dockerfile:` does not drop either.
-# The same merge would keep the base's `target: dev-integration`, which is
-# why both services below name `target: gpu` explicitly. Stacked as
-# documented, `config` shows:
-#
-#   $ docker compose -f docker-compose.yml -f docker-compose.gpu.yml config
-#     dockerfile: build/docker/devcontainer/Dockerfile
-#     target: gpu
-#     secrets:
-#       - source: gomodauth        <- inherited, not declared here
-#
-# Declaring it again here is not an error -- buildx accepts the duplicate the
-# merge then produces -- but it is a second copy of one fact, and the copy is
-# what goes stale. The credential path the gpu stage needs is #305's: the
-# `go mod download` in it now fails loudly rather than swallowing its own
-# error, so a service that ever DID lose this inheritance would say so at the
-# download instead of at the first import.
-#
-# SCANNER PINS: the same merge brings the base's `build.args` (#322) onto both
-# services, and that set carries TRIVY_VERSION because the base builds the
-# dev-integration stage, which bakes trivy. The gpu stage declares no TRIVY_VERSION ARG,
-# because nothing runs `make security` in the GPU image, so buildx prints
-# "one or more build-args were not consumed" for this stack. That warning is
-# correct and is the cheapest of the available answers: compose merges `args`
-# as a UNION, so an overlay cannot subtract a key, and the alternatives are to
-# declare an ARG in the gpu stage that nothing installs -- a pin that pins
-# nothing, which is worse than a warning -- or to stop sharing the base's args
-# and restate three of them here, which is the second copy this file's own
-# credential note argues against. Recorded so the warning is not read as a
-# defect and 'fixed' by one of those.
-#
-# IMAGE: per-run, for the reason the base file gives. QRDB_INT_GPU_IMAGE
-# (`go-qrdb-int-gpu:<INT_PROJECT>`) is named and removed by the Makefile, and
-# is required with no default: a default is a shared tag again.
 x-int-gpu-image: &int-gpu-image "${QRDB_INT_GPU_IMAGE:?QRDB_INT_GPU_IMAGE is unset, run this stack through make}"
 
 services:
@@ -87,13 +35,7 @@ services:
         echo "Starting qrdbd server..."
         exec /app/build/bin/qrdbd start --config /etc/qrdb/qrdbd.yaml
 
-  # NOTE: Ollama is not part of this overlay. It lives in the opt-in
-  # docker-compose.embedding.yml overlay (no integration test uses embeddings).
-  # For GPU-accelerated embedding e2e tests, stack the overlays (with
-  # QRDB_INT_IMAGE and QRDB_INT_GPU_IMAGE set as the Makefile sets them):
-  #   docker compose -f docker-compose.yml -f docker-compose.embedding.yml \
-  #                  -f docker-compose.gpu.yml up
-  # and add the NVIDIA device reservation to ollama in the embedding overlay.
+  # Ollama is not part of this overlay.
 
   integration-tests:
     build:

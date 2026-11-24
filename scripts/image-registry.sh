@@ -1,38 +1,5 @@
 # shellcheck shell=bash
-# image-registry.sh is sourced, never run: the pull-or-build path for the CI
-# images through the CI image registry (#1609, docs/release/engineering.md,
-# "The CI image"). scripts/ci-image.sh (registry-pull, registry-push) and
-# scripts/in-toolchain-image.sh call it; make docker-build-toolchain and
-# docker-build-it reach it through ci-image.sh.
-#
-# CI_IMAGE_REGISTRY is the runner's environment, host[:port], plain HTTP and
-# no credential: nothing here logs in. Unset, both functions make no docker
-# call and print nothing, so the caller does exactly what it did without
-# them. A value that is not host[:port] is treated as an unreachable
-# registry. The registry's image is the local content-hash tag under the
-# registry: <registry>/<name>:<tag>.
-#
-# A plain-HTTP registry is not trusted by tag. The push records the pushed
-# image's repo digest in CI_IMAGE_DIGEST_DIR, one file per content-hash tag
-# (<name>_<tag>, holding sha256:<hex>); CI keeps that directory in a GitHub
-# cache entry keyed by the tag, never in the repository. The pull asks for
-# <registry>/<name>@<digest> only when that record exists, then checks the
-# pulled image carries that repo digest. No record, a malformed one or a
-# mismatch is a miss, so the caller builds.
-#
-# Neither function fails its caller's job: a pull or a push that fails is a
-# miss, and each is bounded by `timeout` (CI_IMAGE_REGISTRY_TIMEOUT seconds,
-# default 300), so a hung registry falls back to the build. One outage budget
-# serves the whole job: the first transfer that times out or cannot connect
-# leaves a marker under ${RUNNER_TEMP:-${TMPDIR:-/tmp}} (named by a hash of
-# the registry value, never the value), and every later pull or push in the
-# job that finds it skips at once, logging only `registry unavailable,
-# skipped <ref>`, with the status a failed transfer has. A registry that
-# answers, even "not found", leaves no marker. Otherwise each image logs
-# exactly one line on stderr: `pulled <repo>@<digest>` from ci_registry_pull,
-# else `miss, built and pushed <repo>@<digest>` or `miss, built, push failed`
-# from ci_registry_push; a mismatch logs `miss, <repo>@<digest> does not match
-# its record`.
+# image-registry.sh is sourced: the pull-or-build path for the CI images through the CI image registry.
 
 # ci_registry_ref prints <registry>/<image>, or fails when CI_IMAGE_REGISTRY
 # is unset or not host[:port].
