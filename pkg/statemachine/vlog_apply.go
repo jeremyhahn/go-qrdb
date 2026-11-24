@@ -50,7 +50,7 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 		// AuditAppend sub-type reaches it.
 		return logs.AppendEntries(w, id, entries)
 	},
-	protocol.VerifiableLogSubtypeAuditAppend: func(logs *vlog.Chain, _ storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
+	protocol.VerifiableLogSubtypeAuditAppend: func(logs *vlog.Chain, r storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
 		id, entries, err := protocol.DecodeVerifiableLogAuditAppend(tenantID, body)
 		if err != nil {
 			return 0, err
@@ -62,7 +62,13 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 		// entry is an audit event, validated and linked into the linear
 		// chain by pkg/audit, and its record is the leaf. The result is
 		// the last event's sequence, as OpAuditAppend's is.
-		return audit.ChainOn(logs).AppendToInstance(w, id.TenantID, entries)
+		//
+		// A marked onboarding event looks up an earlier unmarked event of
+		// its identity, which may be staged earlier in this same apply
+		// batch, so the lookup reads through the batch: w itself when it
+		// reads its own staged writes (both state machines' apply batches
+		// do), else r.
+		return audit.ChainOn(logs).AppendToInstance(applyReadWriter(r, w), id.TenantID, entries)
 	},
 	protocol.VerifiableLogSubtypeCheckpoint: func(logs *vlog.Chain, r storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
 		id, size, root, signed, err := protocol.DecodeVerifiableLogCheckpoint(tenantID, body)
@@ -136,6 +142,27 @@ var vlogRefusals = []func(err error) (reason protocol.LogRefusalReason, size uin
 //     vlogRefusals under its protocol.EncodeLogRefusal reason, so the log
 //     service answers it with its typed vlog error, and any other with
 //     RefusalResult.
+//
+// applyReadWriter returns w as a vlog.ReadWriter: w itself when it already
+// reads its own staged writes, else a pair that Sets to w and Gets from r.
+func applyReadWriter(r storage.Reader, w vlog.Writer) vlog.ReadWriter {
+	if rw, ok := w.(vlog.ReadWriter); ok {
+		return rw
+	}
+	return splitReadWriter{Writer: w, r: r}
+}
+
+// splitReadWriter stages writes into Writer and reads from r.
+type splitReadWriter struct {
+	vlog.Writer
+	r storage.Reader
+}
+
+// Get reads key from r.
+func (s splitReadWriter) Get(key []byte) ([]byte, error) {
+	return s.r.Get(key)
+}
+
 func ApplyVerifiableLog(logs *vlog.Chain, r storage.Reader, w vlog.Writer, payload []byte) (sm.Result, error) {
 	subtype, tenantID, body, err := protocol.DecodeVerifiableLogCommand(payload)
 	if err != nil {
