@@ -533,11 +533,25 @@ func TestSealStore_LegacySlashName_Upgrade(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Errorf("Get(%q) after Reseal = %q, want %q", name, got, want)
 		}
+		replaced := []byte("replaced-" + name)
+		if err := ss.Put(ctx, name, replaced); err != nil {
+			t.Fatalf("Put(%q) over legacy record: %v", name, err)
+		}
+		got, err = ss.Get(ctx, name)
+		if err != nil {
+			t.Fatalf("Get(%q) after Put: %v", name, err)
+		}
+		if !bytes.Equal(got, replaced) {
+			t.Errorf("Get(%q) after Put = %q, want %q", name, got, replaced)
+		}
 		if err := ss.Delete(ctx, name); err != nil {
 			t.Fatalf("Delete(%q): %v", name, err)
 		}
 		if _, err := ss.Get(ctx, name); !errors.Is(err, ErrInvalidSecretName) {
 			t.Errorf("Get(%q) after Delete = %v, want ErrInvalidSecretName", name, err)
+		}
+		if err := ss.Put(ctx, name, replaced); !errors.Is(err, ErrInvalidSecretName) {
+			t.Errorf("Put(%q) after Delete = %v, want ErrInvalidSecretName", name, err)
 		}
 	}
 
@@ -568,6 +582,9 @@ func TestSealStore_LegacySlashName_Upgrade(t *testing.T) {
 	}
 	if err := ss.Reseal(ctx, "tls/key"); !errors.Is(err, ErrSealStoreBarrierSealed) {
 		t.Errorf("sealed Reseal(tls/key) = %v, want ErrSealStoreBarrierSealed", err)
+	}
+	if err := ss.Put(ctx, "tls/key", []byte("v")); !errors.Is(err, ErrSealStoreBarrierSealed) {
+		t.Errorf("sealed Put(tls/key) = %v, want ErrSealStoreBarrierSealed", err)
 	}
 }
 

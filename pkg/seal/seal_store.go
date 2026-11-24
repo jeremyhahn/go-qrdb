@@ -42,9 +42,9 @@ const SealStoreDefaultPrefix = "sealstore/"
 // validSecretName reports whether name may name a seal-store secret. A name
 // is one opaque path segment: it may not be empty, "." or "..", and may not
 // contain '/', '\\' or a control character, so it can never select another
-// key or another route on any transport. Put holds every new name to this
-// rule; Get, Delete and Reseal also accept a failing nonempty name whose
-// record already exists (a legacy record stored before the rule), see
+// key or another route on any transport. Every new name is held to this
+// rule; Put, Get, Delete and Reseal accept a failing nonempty name only for
+// an existing record (a legacy record stored before the rule), see
 // checkExistingName.
 func validSecretName(name string) error {
 	if name == "" || name == "." || name == ".." {
@@ -75,16 +75,21 @@ func NewSealStore(barrier *StorageBarrier, prefix string, logger *slog.Logger) (
 	}, nil
 }
 
-// Put encrypts and stores a named secret in the barrier. The name
-// must not be empty. The barrier encrypts the secret transparently.
+// Put encrypts and stores a named secret in the barrier. The barrier
+// encrypts the secret transparently. A name that fails validSecretName is
+// accepted only to replace an existing legacy record (see
+// checkExistingName); otherwise it returns ErrInvalidSecretName.
 func (s *SealStore) Put(ctx context.Context, name string, secret []byte) error {
-	if err := validSecretName(name); err != nil {
-		return err
+	if name == "" {
+		return ErrInvalidSecretName
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.barrier.IsSealed() {
 		return &SealStoreError{Op: "put", Key: name, Err: ErrSealStoreBarrierSealed}
+	}
+	if err := s.checkExistingName(ctx, "put", name); err != nil {
+		return err
 	}
 	key := s.prefix + name
 	if err := s.barrier.Put(ctx, key, secret); err != nil {
@@ -121,7 +126,7 @@ func (s *SealStore) Get(ctx context.Context, name string) ([]byte, error) {
 }
 
 // checkExistingName applies the secret-name rule to an operation on an
-// existing record (Get, Delete, Reseal). A name that passes validSecretName
+// existing record (Put, Get, Delete, Reseal). A name that passes validSecretName
 // is accepted. A nonempty name that fails it is accepted only when the
 // record s.prefix+name already exists in the barrier: a legacy record stored
 // before the one-segment rule (for example "tls/key"), which stays
