@@ -381,6 +381,27 @@ func TestLogService_BarrierDatabaseLogsLiveInTheParentGroup(t *testing.T) {
 	}
 }
 
+// TestLogService_BarrierDatabaseReadOfAMissingKeyIsNil pins the barrier
+// database store's read of a key version that does not exist: the read
+// answers no key and the parent group's KeyNotFoundError, never a type
+// mismatch, whichever nil the store's key case passes through.
+func TestLogService_BarrierDatabaseReadOfAMissingKeyIsNil(t *testing.T) {
+	dir := t.TempDir()
+	g := newFenceGroup(t)
+	svc, _, _ := newParentGroupBarrierService(t, dir, g, nil)
+	ctx := acmeCtx()
+	ref := LogRef{Database: "secure", Log: "events"}
+	created, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: ref, Origin: "example.test/secure/events", SigningKeyType: vlog.SignatureEd25519})
+	if err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	key, err := (&logKeyReader{route: svc.(*logService).route}).ReadSigningKey(ctx, created.ID, created.Key.Version+41)
+	var notFound *vlog.KeyNotFoundError
+	if key != nil || !errors.As(err, &notFound) {
+		t.Fatalf("ReadSigningKey(missing version) = %v, %v; want no key and a KeyNotFoundError", key, err)
+	}
+}
+
 // TestLogService_SealedBarrierDatabaseRefusesWhileItsGroupApplies pins that
 // a sealed barrier database's log calls are refused with BarrierSealedError
 // and propose nothing, while the parent group goes on serving the logs of

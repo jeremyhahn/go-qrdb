@@ -237,7 +237,9 @@ func (t *barrierDatabaseTarget) read(ctx context.Context, req vlog.Request) (int
 		return out, nil
 	case *vlog.SigningKey:
 		if got == nil {
-			return got, nil
+			// The typed nil, as the parent store returns it: a
+			// caller's assertion to *vlog.SigningKey sees no key.
+			return (*vlog.SigningKey)(nil), nil
 		}
 		key := *got
 		if key.PKCS8, err = s.OpenValue(got.PKCS8); err != nil {
