@@ -538,6 +538,9 @@ jobs:
       # Drafts are not reviewed, by job condition and by the live PR (code-review v5.12.13).
       - name: Code review draft tests
         run: python3 -I .github/workflows/testdata/code-review-v51213-tests.py .github/workflows/code-review.yml
+      # Only code is code reviewed, and only on a SPEC row PR (code-review v5.12.14).
+      - name: Code review code-only tests
+        run: python3 -I .github/workflows/testdata/code-review-v51214-tests.py .github/workflows/code-review.yml
       - name: Runner labels (ruling 633)
         run: |
           python3 -I - <<'PY'
