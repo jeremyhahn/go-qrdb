@@ -262,11 +262,15 @@ func assertLeaseExpiryDeletesKeys(t *testing.T, ctx context.Context, c *sdk.Clie
 	poll := time.NewTicker(100 * time.Millisecond)
 	defer poll.Stop()
 	for {
-		if _, err := c.KV().Get(ctx, "cp/expiry/key"); err != nil {
+		// Absence is a *transport.KeyNotFoundError, not any error: a
+		// transient refusal must not pass for the sweep having run.
+		_, err := c.KV().Get(ctx, "cp/expiry/key")
+		var knf *transport.KeyNotFoundError
+		if errors.As(err, &knf) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the key outlived its %ds lease by %s: nothing swept the expired lease", ttl, lease.DefaultExpiryInterval+expiryRevokeAllowance)
+			t.Fatalf("the key outlived its %ds lease by %s: nothing swept the expired lease (last Get error: %v)", ttl, lease.DefaultExpiryInterval+expiryRevokeAllowance, err)
 		}
 		<-poll.C
 	}
