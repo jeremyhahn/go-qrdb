@@ -125,6 +125,32 @@ type failingRemoveFS struct {
 
 func (failingRemoveFS) Remove(string) error { return errFSRemove }
 
+// errStat is the failure statFaultFS injects.
+var errStat = errors.New("injected stat failure")
+
+// statFaultFS fails Stat with the hook's error when the hook returns one.
+type statFaultFS struct {
+	vfs.FS
+	stat func(name string) error
+}
+
+func (f statFaultFS) Stat(name string) (vfs.FileInfo, error) {
+	if f.stat != nil {
+		if err := f.stat(name); err != nil {
+			return nil, err
+		}
+	}
+	return f.FS.Stat(name)
+}
+
+// keepFilesFS reports every Remove as done without removing the file, so
+// the files written before a retirement stay on disk.
+type keepFilesFS struct {
+	vfs.FS
+}
+
+func (keepFilesFS) Remove(string) error { return nil }
+
 func TestFS_ReuseForWriteRemoveError(t *testing.T) {
 	mem := vfs.NewMem()
 	fs := newFS(failingRemoveFS{FS: mem})
@@ -192,6 +218,45 @@ func TestRetirer_PlaintextFiles(t *testing.T) {
 	missing := &Retirer{fs: newFS(vfs.Default), dir: filepath.Join(dir, "missing")}
 	if _, err := missing.plaintextFiles(); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing dir err = %v, want %v", err, os.ErrNotExist)
+	}
+
+	faulty := func(file string, fault error) *Retirer {
+		target := filepath.Join(dir, file)
+		return &Retirer{fs: newFS(statFaultFS{FS: vfs.Default, stat: func(name string) error {
+			if name == target {
+				return fault
+			}
+			return nil
+		}}), dir: dir}
+	}
+
+	// A file removed between List and Stat is skipped.
+	got, err = faulty("000001.log", os.ErrNotExist).plaintextFiles()
+	if err != nil {
+		t.Fatalf("plaintextFiles with a vanished file: %v", err)
+	}
+	if want := []string{"000002.sst"}; !slices.Equal(got, want) {
+		t.Fatalf("files with a vanished file = %v, want %v", got, want)
+	}
+
+	// Any other Stat failure is returned.
+	if _, err := faulty("000002.sst", errStat).plaintextFiles(); !errors.Is(err, errStat) {
+		t.Fatalf("stat failure err = %v, want %v", err, errStat)
+	}
+}
+
+func TestOpen_DataDirIsAFileErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "seal")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	store, r, err := Open(path, nil)
+	if err == nil {
+		_ = store.Close()
+		t.Fatal("Open on a regular file: want an error")
+	}
+	if store != nil || r != nil {
+		t.Fatalf("Open on a regular file returned store %v, retirer %v; want nil", store, r)
 	}
 }
 
