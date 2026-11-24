@@ -253,28 +253,25 @@ func TestRecordRelease_KeepsAnUnresolvedAddsIntentAfterItsClaimantLapses(t *test
 	assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.60.0-alpha", Peer: "0.58.0-alpha"}, *gap)
 }
 
-// TestRecordRelease_RetiresAnIntentOnceItsConfigurationMoved covers an intent
-// bound to an older configuration: its add can no longer commit, so one
-// record pass retires it whoever claimed it.
-func TestRecordRelease_RetiresAnIntentOnceItsConfigurationMoved(t *testing.T) {
+// TestRecordRelease_KeepsAnotherClaimantsIntentAfterItsConfigurationMoved
+// covers an intent another node claimed whose bound configuration is past.
+func TestRecordRelease_KeepsAnotherClaimantsIntentAfterItsConfigurationMoved(t *testing.T) {
 	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
 	kv := newMemKV()
 	allOnRelease(t, kv, "0.59.0-alpha")
 	orphan := ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/9/2"
 	_, err := kv.PutIfAbsent(context.Background(), orphan, []byte("n4:7000"))
 	require.NoError(t, err)
-
-	restore := release.SetForTesting("0.60.0-alpha")
-	var gap *release.GapError
-	require.ErrorAs(t, newGate(t, threeNodes()).EnforceRelease(context.Background(), kv), &gap)
-	restore()
+	system, err := threeNodes().GroupMembership(systemShard)
+	require.NoError(t, err)
+	require.Greater(t, system.ConfigChangeID, uint64(2))
 
 	require.NoError(t, newGate(t, threeNodes()).recordRelease(context.Background(), kv))
-	assert.False(t, kv.has(orphan), "the intent of an add bound to an older configuration was kept")
+	assert.True(t, kv.has(orphan), "another claimant's intent was retired because the configuration moved")
 
 	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
-	require.NoError(t, newGate(t, threeNodes()).EnforceRelease(context.Background(), kv),
-		"a 0.60 restart in an all-0.59 cluster is refused after the stale intent is gone")
+	var gap *release.GapError
+	require.ErrorAs(t, newGate(t, threeNodes()).EnforceRelease(context.Background(), kv), &gap)
 }
 
 // TestRecordRelease_KeepsAZeroBoundIntentOfAnotherClaimant covers an intent

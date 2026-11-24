@@ -310,8 +310,8 @@ const (
 	// change ID}", value the candidate address. The release is one the
 	// candidate announced, the claimant is the replica ID of the claiming
 	// leader, and the bound ID is the ConfigBinding.ConfigChangeID the add
-	// is proposed under, so a later pass can tell an intent whose add can no
-	// longer commit (retireIntents). It is not under ReleasePrefix, so
+	// is proposed under; retireIntents does not read it, since an advanced
+	// configuration does not prove the add cannot commit. It is not under ReleasePrefix, so
 	// parseReleases never reads an intent as a record. See ProposeBound.
 	ReleaseIntentPrefix = "__sys:cluster/features/release-intents/"
 
@@ -1354,26 +1354,24 @@ func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
 	return nil
 }
 
-// retireIntents deletes a release intent by one of three rules. It is best
+// retireIntents deletes a release intent by one of two rules. It is best
 // effort; an intent left behind only keeps refusing non-adjacent adds and
 // restarts, and the next record pass retries.
 //
 //   - Recorded: its candidate is now a committed member with a release
 //     record of its own (this node's, just written, included). The record
 //     carries the claim from here on.
-//   - Stale binding: its candidate is not a committed member, its bound
-//     configuration change ID is not 0, and the committed system-shard
-//     configuration change ID is past it, whoever the claimant is. Raft
-//     refuses an add bound to a configuration that is no longer current,
-//     so the claimed add can no longer commit and a re-proposal of it gets
-//     ErrStaleConfigChange. An intent bound to 0 is never retired by this
-//     rule: Raft does not compare configuration change 0.
 //   - Own and idle: its candidate is not a committed member, the claimant is
 //     this node, and proposeMu is free. ProposeBound holds proposeMu from
 //     before the claim until the add's outcome, so a free proposeMu means
 //     this node has no add between claim and outcome and the intent is left
 //     over from a crashed process or a failed withdraw. proposeMu is held
 //     across the listing and the deletes so no claim can start in between.
+//
+// A system-shard configuration change ID past an intent's bound ID is not
+// proof that the claimed add cannot commit: the ID is checked before the add
+// is enqueued, not when it is applied, so another claimant's intent is kept
+// until its candidate records a release or the claimant retires it.
 //
 // An add's candidate becomes a committed member when its add commits, so an
 // intent whose add committed is only ever retired by the Recorded rule.
@@ -1388,9 +1386,7 @@ func (g *Gate) retireIntents(ctx context.Context, kv ActivationKV, self Self, re
 	}
 	recordedAddrs := map[string]bool{self.Address: true}
 	var memberAddrs map[string]bool
-	var current uint64
 	if system, err := g.members.GroupMembership(g.systemShard); err == nil {
-		current = system.ConfigChangeID
 		memberAddrs = make(map[string]bool)
 		for _, m := range committedMembers(system) {
 			memberAddrs[m.addr] = true
@@ -1402,9 +1398,7 @@ func (g *Gate) retireIntents(ctx context.Context, kv ActivationKV, self Self, re
 	for _, in := range intents {
 		retire := recordedAddrs[in.addr]
 		if !retire && memberAddrs != nil && !memberAddrs[in.addr] {
-			stale := in.bound != 0 && current > in.bound
-			own := in.claimant == self.ReplicaID
-			retire = stale || (own && idle)
+			retire = in.claimant == self.ReplicaID && idle
 		}
 		if !retire {
 			continue

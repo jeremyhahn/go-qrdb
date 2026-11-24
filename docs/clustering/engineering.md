@@ -535,9 +535,9 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   listed linearizably after it serialises admission: of two non-adjacent
   adds through different leaders at least one is refused, and
   `EnforceRelease` records a restart's release before it lists the
-  intents. An intent whose candidate is not a member is retired once the
-  committed system-shard configuration change ID is past its bound one, so
-  the claimed add can no longer commit; see
+  intents. An intent is retired once its candidate records a release, or by
+  its own claimant when no add of that claimant is in flight; a configuration
+  change ID past its bound one does not retire it; see
   [../rolling-upgrades/engineering.md](../rolling-upgrades/engineering.md)
   "Admission across leaders and restarts".
 - **Withdrawal.** `qrdbd` closes the advertiser and the gate explicitly in its

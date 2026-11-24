@@ -91,17 +91,15 @@ intent and release record is then listed linearizably: of two non-adjacent
 adds, through the same or different leaders, at least one sees the other's
 intent and is refused with the release gap. `EnforceRelease` records the
 restarting member's release before it lists the intents, so a restart and an
-add across each other cannot both pass. An intent is retired by one of three
+add across each other cannot both pass. An intent is retired by one of two
 rules. Recorded: its candidate is a committed member with a release record of
-its own. Stale binding: its candidate is not a committed member, its bound
-configuration change ID is not 0, and the committed system-shard configuration
-change ID is past it, whoever the claimant is; Raft refuses an add bound to a
-configuration that is no longer current, so the claimed add can no longer
-commit. Own and idle: its candidate is not a committed member, the claimant is
+its own. Own and idle: its candidate is not a committed member, the claimant is
 this node, and its `proposeMu` is free (no add of this node is between claim
-and outcome). An intent of a claimant that lost its lease is kept until its
-bound add can no longer commit, so a leader that crashed mid-add never blocks
-later upgrades and an add still in flight is never forgotten. go-quicraft #1192
+and outcome). A system-shard configuration change ID past an intent's bound one
+does not retire it: go-quicraft checks the ID before it enqueues the add, not
+when the add is applied, so an add paused after that check can still commit.
+An intent of another claimant is kept until its candidate records a release
+or the claimant retires it, so an add still in flight is never forgotten. go-quicraft #1192
 (a configuration check on the Raft worker at the proposal boundary) is no
 longer needed for the release rule; it stays a hardening item
 ([plans/1628.md](../plans/1628.md) "rw1628wa").
@@ -221,9 +219,8 @@ PR #1638 delivers, on the row branch:
    refusal), key delivery and replica forwarding, with the REST, gRPC, QUIC
    and MCP codes above; ALPN lists on the QUIC channels, typed in the Go SDK;
    release intents that serialise admission across leaders and against
-   restarts, retired once their candidate records, once their bound
-   configuration change ID is past (the claimed add can no longer commit), or
-   when they are this node's own and no add of it is in flight; and release
+   restarts, retired once their candidate records or when they are this
+   node's own and no add of it is in flight; and release
    admission on a state machine without leases (`Gate.StartAdmission`).
 3. The cluster-wide feature gate with permanent activation and the Go SDK
    node quarantine.
