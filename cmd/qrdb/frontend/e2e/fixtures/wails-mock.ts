@@ -3420,7 +3420,10 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               const l = (logs.get(r.log) ?? []).slice(from, r.limit ? from + r.limit : undefined);
               return { entries: l.map((body, i) => ({ index: from + i, body })) };
             },
-            ProveInclusion: async (r: { index: number; size: number }) => ({ index: r.index, size: r.size, hashes: [] }),
+            ProveInclusion: async (r: { index: number; size: number }) => {
+              maybeReject("VlogBinding.ProveInclusion");
+              return { index: r.index, size: r.size, hashes: [] };
+            },
             ProveConsistency: async (r: { size1: number; size2: number }) => ({ size1: r.size1, size2: r.size2, hashes: [] }),
             Head: async (r: { log: string }) => ({
               size: (logs.get(r.log) ?? []).length,
