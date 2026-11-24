@@ -208,6 +208,62 @@ func TestEncrypted_ReopenAfterUnsealRoundTrip(t *testing.T) {
 	}
 }
 
+// TestEncrypted_CorruptFinalBlockFailsGet: a committed record whose final
+// encrypted block fails authentication must make Get fail. The record
+// format carries no value length or checksum, so a read that dropped the
+// bad block would return a silently shortened value.
+func TestEncrypted_CorruptFinalBlockFailsGet(t *testing.T) {
+	barrier, _ := newUnsealedBarrier(t)
+	dir := memdir.TempDir(t)
+	e := openEncrypted(t, dir, barrier)
+	key := []byte("customer/big")
+	value := bytes.Repeat([]byte("v"), 3*4096+100)
+	if err := e.Set(key, value); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var biggest string
+	var biggestSize int
+	readEveryFile(t, dir, func(path string, raw []byte) {
+		if len(raw) > biggestSize {
+			biggest, biggestSize = path, len(raw)
+		}
+	})
+	if biggestSize <= len(value) {
+		t.Fatalf("no record file larger than the %d-byte value (largest %q, %d bytes)", len(value), biggest, biggestSize)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = root.Close() }()
+	f, err := root.OpenFile(biggest, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open record file: %v", err)
+	}
+	last := make([]byte, 1)
+	if _, err := f.ReadAt(last, int64(biggestSize-1)); err != nil {
+		t.Fatalf("ReadAt last byte: %v", err)
+	}
+	last[0] ^= 0xFF
+	if _, err := f.WriteAt(last, int64(biggestSize-1)); err != nil {
+		t.Fatalf("WriteAt last byte: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close record file: %v", err)
+	}
+
+	e = openEncrypted(t, dir, barrier)
+	defer e.Close()
+	got, err := e.Get(key)
+	if err == nil {
+		t.Fatalf("Get of a record with a corrupt final block = %d bytes, nil error; want an error (value is %d bytes)", len(got), len(value))
+	}
+}
+
 // TestEncrypted_SealedBarrierFailsClosed seals the barrier under an open
 // engine: reads and writes fail with an error that is seal.ErrSealed, before
 // and after the directory is reopened.

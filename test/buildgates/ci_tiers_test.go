@@ -88,6 +88,13 @@ const (
 	// NIGHTLY, spelled as ci.yml spells both.
 	nightlyIf = "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}"
 
+	// nightlyOrPathIf is the `if:` of a clusterproof-tier job: one the
+	// nightly events run and a pull request changing its own files also runs
+	// (#1619: clusterproof-soak, selected by preflight's clusterproof
+	// output). Its skip is excused only when neither the nightly events nor
+	// preflight select it, and a run on the PR must succeed like any other.
+	nightlyOrPathIf = "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && needs.preflight.outputs.clusterproof == 'true')"
+
 	// codeTierIf is the `if:` of every code-tier job (DS-3160), spelled
 	// exactly so: every event but a docs-only pull request. docs_only is
 	// false off pull_request and on ci:full, so a code job runs on main,
@@ -105,14 +112,19 @@ const (
 	// codeTierGateEnv is ci-gate's DOCS_ONLY: the preflight job's output.
 	codeTierGateEnv = "${{ needs.preflight.outputs.docs_only }}"
 
+	// clusterproofGateEnv is ci-gate's CLUSTERPROOF (#1619): the preflight
+	// job's clusterproof output, true on a PR that selects the cluster proof.
+	clusterproofGateEnv = "${{ needs.preflight.outputs.clusterproof }}"
+
 	// changesJob decides whether a pull request is docs-only; every code
 	// job needs it, or its `if:` reads nothing.
 	changesJob = "preflight"
 
-	tierPR      = "pr"
-	tierCode    = "code"
-	tierFull    = "full"
-	tierNightly = "nightly"
+	tierPR           = "pr"
+	tierCode         = "code"
+	tierFull         = "full"
+	tierNightly      = "nightly"
+	tierClusterproof = "clusterproof"
 	// tierPull (ci-template v1.55) is a job that runs on a ready pull
 	// request only, the Row job: CI Gate excuses its skip off pull_request.
 	tierPull = "pull"
@@ -187,12 +199,15 @@ var scheduleAllowed = map[string]bool{
 // because make lint-gates and make check-public-releasable read docs too; image (#1046),
 // the unit-suite jobs (coverage, test-clusterproof, coverage-fts, test-tags
 // and test-sdk, ruling 211) and test-typescript build and test nothing a
-// docs-only pull request changes (DS-3160).
+// docs-only pull request changes (DS-3160). clusterproof-soak (#1619) is its
+// own clusterproof tier: the nightly events run it, and so does a pull request
+// preflight selects, whose skip the gate must not excuse.
 var (
-	prTierJobs      = []string{changesJob, "lint", "lint-gates"}
-	codeTierJobs    = []string{"test-typescript", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk"}
-	fullTierJobs    = []string{"integration-standalone", featureJob, fipsJob}
-	nightlyTierJobs = []string{"soak"}
+	prTierJobs           = []string{changesJob, "lint", "lint-gates"}
+	codeTierJobs         = []string{"test-typescript", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk"}
+	fullTierJobs         = []string{"integration-standalone", featureJob, fipsJob}
+	nightlyTierJobs      = []string{"soak"}
+	clusterproofTierJobs = []string{"clusterproof-soak"}
 )
 
 // fipsJob runs the unit suites under GODEBUG=fips140=only (#20,
@@ -387,6 +402,10 @@ func ciTierProblems(wf ciWorkflow) []string {
 		problems = append(problems, ciGateJob+"'s NIGHTLY is "+strconv.Quote(got)+
 			", not the nightly condition: the gate would excuse skips the nightly jobs' `if:` does not produce")
 	}
+	if got := env["CLUSTERPROOF"]; got != clusterproofGateEnv {
+		problems = append(problems, ciGateJob+"'s CLUSTERPROOF is "+strconv.Quote(got)+", not "+clusterproofGateEnv+
+			": the gate would excuse a skipped clusterproof soak preflight selected")
+	}
 	if got := env["DOCS_ONLY"]; got != codeTierGateEnv {
 		problems = append(problems, ciGateJob+"'s DOCS_ONLY is "+strconv.Quote(got)+", not "+codeTierGateEnv+
 			": the gate would excuse skips the code jobs' `if:` does not produce")
@@ -491,9 +510,22 @@ func ciTierProblems(wf ciWorkflow) []string {
 				problems = append(problems, "job "+name+" is a PR-, code- or full-tier job tagged pull: it would "+
 					"stop gating main")
 			}
+		case tierClusterproof:
+			if tierCondition(job.If) != nightlyOrPathIf {
+				problems = append(problems, "job "+name+" is tagged clusterproof in "+ciGateJob+
+					" but its `if:` is "+strconv.Quote(tierCondition(job.If))+", not the nightly-or-preflight condition")
+			}
+			if !slices.Contains(needsList(job.Needs), changesJob) {
+				problems = append(problems, "clusterproof-tier job "+name+" does not need "+changesJob+
+					": its `if:` would read no clusterproof output")
+			}
+			if slices.Contains(prTierJobs, name) || fullTierJob(name) {
+				problems = append(problems, "job "+name+" is a PR-tier or full-tier job tagged clusterproof: it would "+
+					"stop gating pull requests or main")
+			}
 		default:
 			problems = append(problems, "job "+name+"'s check line in "+ciGateJob+" has tier "+
-				strconv.Quote(c.tier)+"; want pr, code, full, pull or nightly")
+				strconv.Quote(c.tier)+"; want pr, code, full, pull, nightly or clusterproof")
 		}
 	}
 
@@ -509,8 +541,8 @@ func ciTierProblems(wf ciWorkflow) []string {
 	// request, so a PR-tier job needs no code, full or nightly job and a
 	// code-tier job no full or nightly one.
 	narrower := map[string][]string{
-		tierPR:   {tierCode, tierFull, tierPull, tierNightly},
-		tierCode: {tierFull, tierPull, tierNightly},
+		tierPR:   {tierCode, tierFull, tierPull, tierNightly, tierClusterproof},
+		tierCode: {tierFull, tierPull, tierNightly, tierClusterproof},
 	}
 	for _, name := range names {
 		for _, dep := range needsList(wf.Jobs[name].Needs) {
@@ -549,13 +581,15 @@ func TestCIGateTiersMatchTheJobs(t *testing.T) {
 		tiers[c.tier]++
 	}
 	if tiers[tierPR] < len(prTierJobs) || tiers[tierCode] < len(codeTierJobs) ||
-		tiers[tierFull] < len(fullTierJobs) || tiers[tierNightly] < len(nightlyTierJobs) {
-		t.Fatalf("%s tags %d jobs pr, %d code, %d full and %d nightly; want at least %d, %d, %d and %d: either "+
+		tiers[tierFull] < len(fullTierJobs) || tiers[tierNightly] < len(nightlyTierJobs) ||
+		tiers[tierClusterproof] < len(clusterproofTierJobs) {
+		t.Fatalf("%s tags %d jobs pr, %d code, %d full, %d nightly and %d clusterproof; want at least %d, %d, %d, %d and %d: either "+
 			"the parse found too little to check or a pinned job left its tier", ciGateJob, tiers[tierPR],
-			tiers[tierCode], tiers[tierFull], tiers[tierNightly], len(prTierJobs), len(codeTierJobs),
-			len(fullTierJobs), len(nightlyTierJobs))
+			tiers[tierCode], tiers[tierFull], tiers[tierNightly], tiers[tierClusterproof], len(prTierJobs), len(codeTierJobs),
+			len(fullTierJobs), len(nightlyTierJobs), len(clusterproofTierJobs))
 	}
-	for tier, names := range map[string][]string{tierPR: prTierJobs, tierCode: codeTierJobs, tierFull: fullTierJobs, tierNightly: nightlyTierJobs} {
+	for tier, names := range map[string][]string{tierPR: prTierJobs, tierCode: codeTierJobs, tierFull: fullTierJobs,
+		tierNightly: nightlyTierJobs, tierClusterproof: clusterproofTierJobs} {
 		for _, name := range names {
 			if _, found := wf.Jobs[name]; !found {
 				t.Errorf("%s-tier job %s is not in ci.yml", tier, name)
@@ -606,9 +640,14 @@ jobs:
     needs: [build]
     steps:
       - run: make soak-x
+  cp-x:
+    if: ` + nightlyOrPathIf + `
+    needs: [preflight]
+    steps:
+      - run: make cp-x
   ci-gate:
     if: always()
-    needs: [build, fips, preflight, test-typescript, integration-x, soak-x]
+    needs: [cp-x, build, fips, preflight, test-typescript, integration-x, soak-x]
     steps:
       - env:
           RESULT_BUILD: ${{ needs.build.result }}
@@ -617,9 +656,11 @@ jobs:
           RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
           RESULT_INTEGRATION_X: ${{ needs.integration-x.result }}
           RESULT_SOAK_X: ${{ needs.soak-x.result }}
+          RESULT_CP_X: ${{ needs.cp-x.result }}
           FULL_TIER: ` + fullTierGateEnv + `
           NIGHTLY: ` + nightlyIf + `
           DOCS_ONLY: ` + codeTierGateEnv + `
+          CLUSTERPROOF: ` + clusterproofGateEnv + `
         run: |
           check() { :; }
           check build "$RESULT_BUILD" pr
@@ -628,6 +669,7 @@ jobs:
           check integration-x "$RESULT_INTEGRATION_X" full
           check fips "$RESULT_FIPS" full
           check soak-x "$RESULT_SOAK_X" nightly
+          check cp-x "$RESULT_CP_X" clusterproof
 `
 
 // TestCITierProblems_CanFail proves each check in ciTierProblems reddens on
@@ -709,6 +751,24 @@ func TestCITierProblems_CanFail(t *testing.T) {
 			"code-tier job test-typescript needs full-tier job integration-x"},
 		"code job needs a nightly job": {replace("    needs: [preflight, docker-build]\n", "    needs: [preflight, docker-build, soak-x]\n"),
 			"code-tier job test-typescript needs nightly-tier job soak-x"},
+		// The clusterproof tier (#1619).
+		"CLUSTERPROOF differs": {replace("CLUSTERPROOF: "+clusterproofGateEnv, "CLUSTERPROOF: ${{ github.event_name == 'pull_request' }}"),
+			"'s CLUSTERPROOF is "},
+		"CLUSTERPROOF missing": {replace("          CLUSTERPROOF: "+clusterproofGateEnv+"\n", ""),
+			"'s CLUSTERPROOF is \"\""},
+		"clusterproof job tagged nightly": {replace(`"$RESULT_CP_X" clusterproof`, `"$RESULT_CP_X" nightly`),
+			"job cp-x is tagged nightly in " + ciGateJob + " but its `if:`"},
+		"nightly job with the path if": {replace("    if: "+nightlyIf+"\n    needs: [build]",
+			"    if: "+nightlyOrPathIf+"\n    needs: [build, preflight]"),
+			"job soak-x is tagged nightly in " + ciGateJob + " but its `if:`"},
+		"clusterproof job with the nightly if": {replace("    if: "+nightlyOrPathIf+"\n    needs: [preflight]",
+			"    if: "+nightlyIf+"\n    needs: [preflight]"),
+			"job cp-x is tagged clusterproof in " + ciGateJob + " but its `if:`"},
+		"clusterproof job not needing preflight": {replace("    if: "+nightlyOrPathIf+"\n    needs: [preflight]",
+			"    if: "+nightlyOrPathIf+"\n    needs: [build]"),
+			"clusterproof-tier job cp-x does not need preflight"},
+		"pr job needs a clusterproof job": {replace("  build:\n    steps:", "  build:\n    needs: [cp-x]\n    steps:"),
+			"pr-tier job build needs clusterproof-tier job cp-x"},
 		"code job tagged pr": {replace(`"$RESULT_TEST_TYPESCRIPT" code`, `"$RESULT_TEST_TYPESCRIPT" pr`),
 			"is a code-tier job tagged pr"},
 		"pr job tagged code": {replace(`"$RESULT_PREFLIGHT" pr`, `"$RESULT_PREFLIGHT" code`),
@@ -755,7 +815,7 @@ func TestCITierProblems_CanFail(t *testing.T) {
 // runGate executes ci-gate's script under bash the way a runner does, with
 // every RESULT_ variable set from results (default success), FULL_TIER,
 // NIGHTLY and DOCS_ONLY.
-func runGate(t *testing.T, run string, env map[string]string, results map[string]string, fullTier, nightly, docsOnly string, extra ...string) int {
+func runGate(t *testing.T, run string, env map[string]string, results map[string]string, fullTier, nightly, docsOnly, clusterproof string, extra ...string) int {
 	t.Helper()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -763,7 +823,8 @@ func runGate(t *testing.T, run string, env map[string]string, results map[string
 	}
 	// PULL (v1.55) defaults to a pull request run; an extra PULL=... after it
 	// wins, as exec keeps the last value of a duplicate key.
-	vars := []string{"PATH=" + os.Getenv("PATH"), "FULL_TIER=" + fullTier, "NIGHTLY=" + nightly, "DOCS_ONLY=" + docsOnly, "PULL=true"}
+	vars := []string{"PATH=" + os.Getenv("PATH"), "FULL_TIER=" + fullTier, "NIGHTLY=" + nightly, "DOCS_ONLY=" + docsOnly,
+		"CLUSTERPROOF=" + clusterproof, "PULL=true"}
 	vars = append(vars, extra...)
 	for k, v := range env {
 		m := needsResult.FindStringSubmatch(v)
@@ -801,7 +862,7 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 		t.Fatalf("ci.yml has no %s step defining check()", ciGateJob)
 	}
 	checks := gateChecks(run)
-	var full, pr, code, nightly []string
+	var full, pr, code, nightly, selected []string
 	for name, c := range checks {
 		switch c.tier {
 		case tierFull:
@@ -812,16 +873,19 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 			code = append(code, name)
 		case tierNightly:
 			nightly = append(nightly, name)
+		case tierClusterproof:
+			selected = append(selected, name)
 		}
 	}
-	if len(full) == 0 || len(pr) == 0 || len(code) == 0 || len(nightly) == 0 {
-		t.Fatalf("%s has %d full, %d pr, %d code and %d nightly check lines; this test needs all four",
-			ciGateJob, len(full), len(pr), len(code), len(nightly))
+	if len(full) == 0 || len(pr) == 0 || len(code) == 0 || len(nightly) == 0 || len(selected) == 0 {
+		t.Fatalf("%s has %d full, %d pr, %d code, %d nightly and %d clusterproof check lines; this test needs all five",
+			ciGateJob, len(full), len(pr), len(code), len(nightly), len(selected))
 	}
 	sort.Strings(full)
 	sort.Strings(pr)
 	sort.Strings(code)
 	sort.Strings(nightly)
+	sort.Strings(selected)
 	// The per-feature matrix reaches the gate as one result: the runner
 	// aggregates its legs into needs.<job>.result, which is failure when any
 	// leg fails and cancelled when a leg is cancelled. The cases below that
@@ -848,6 +912,9 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 	offTier := func(result string) map[string]string {
 		m := allFull(result)
 		for j, r := range allNightly(result) {
+			m[j] = r
+		}
+		for j, r := range all(selected, result) {
 			m[j] = r
 		}
 		return m
@@ -895,7 +962,46 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			exit := runGate(t, run, env, tc.results, tc.fullTier, tc.nightly, "false")
+			exit := runGate(t, run, env, tc.results, tc.fullTier, tc.nightly, "false", "false")
+			if tc.wantExit && exit == 0 {
+				t.Fatalf("%s passed; want it to fail", ciGateJob)
+			}
+			if !tc.wantExit && exit != 0 {
+				t.Fatalf("%s failed with exit %d; want it to pass", ciGateJob, exit)
+			}
+		})
+	}
+
+	// The clusterproof tier (#1619): the nightly events run it, and so does
+	// a pull request preflight selects (CLUSTERPROOF true). A skip is
+	// excused only when neither selects it, and a selection excuses nothing
+	// else.
+	allSelected := func(result string) map[string]string { return all(selected, result) }
+	cpCases := []struct {
+		name         string
+		results      map[string]string
+		fullTier     string
+		nightly      string
+		clusterproof string
+		wantExit     bool
+	}{
+		{"clusterproof soak skipped on a plain PR", allSelected("skipped"), "false", "false", "false", false},
+		// The finding (Codex P1): a PR preflight selects must not pass on a skipped soak.
+		{"clusterproof soak skipped on a PR that selects it", allSelected("skipped"), "false", "false", "true", true},
+		{"clusterproof soak succeeded on a PR that selects it", nil, "false", "false", "true", false},
+		{"clusterproof soak failed on a PR that selects it", allSelected("failure"), "false", "false", "true", true},
+		{"clusterproof soak cancelled on a PR that selects it", allSelected("cancelled"), "false", "false", "true", true},
+		{"clusterproof soak failed on a plain PR", allSelected("failure"), "false", "false", "false", true},
+		{"clusterproof soak skipped on a main push", allSelected("skipped"), "true", "false", "false", false},
+		{"clusterproof soak skipped on a dispatch", allSelected("skipped"), "true", "true", "false", true},
+		{"CLUSTERPROOF unreadable", nil, "false", "false", "", true},
+		{"CLUSTERPROOF not a boolean", allSelected("skipped"), "false", "false", "maybe", true},
+		{"a clusterproof selection leaves the plain nightly skip excused", allNightly("skipped"), "false", "false", "true", false},
+		{"a clusterproof selection excuses no full-tier skip", allFull("skipped"), "true", "false", "true", true},
+	}
+	for _, tc := range cpCases {
+		t.Run(tc.name, func(t *testing.T) {
+			exit := runGate(t, run, env, tc.results, tc.fullTier, tc.nightly, "false", tc.clusterproof)
 			if tc.wantExit && exit == 0 {
 				t.Fatalf("%s passed; want it to fail", ciGateJob)
 			}
@@ -939,7 +1045,7 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 	}
 	for _, tc := range codeCases {
 		t.Run(tc.name, func(t *testing.T) {
-			exit := runGate(t, run, env, tc.results, tc.fullTier, "false", tc.docsOnly)
+			exit := runGate(t, run, env, tc.results, tc.fullTier, "false", tc.docsOnly, "false")
 			if tc.wantExit && exit == 0 {
 				t.Fatalf("%s passed; want it to fail", ciGateJob)
 			}
@@ -981,7 +1087,7 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 	}
 	for _, tc := range pullCases {
 		t.Run(tc.name, func(t *testing.T) {
-			exit := runGate(t, run, env, tc.results, tc.fullTier, "false", "false", "PULL="+tc.pull)
+			exit := runGate(t, run, env, tc.results, tc.fullTier, "false", "false", "false", "PULL="+tc.pull)
 			if tc.wantExit && exit == 0 {
 				t.Fatalf("%s passed; want it to fail", ciGateJob)
 			}
