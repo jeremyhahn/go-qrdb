@@ -355,6 +355,12 @@ func (t *Transport) Healthy(ctx context.Context) bool {
 
 	result, err := t.callTool(ctx, "qrdb_health", nil)
 	if err != nil {
+		// A client-side bearer refusal sent nothing, so no error in its chain is a server answer.
+		var srcErr *transport.TokenSourceError
+		var tlsErr *transport.BearerRequiresTLSError
+		if errors.As(err, &srcErr) || errors.As(err, &tlsErr) {
+			return false
+		}
 		return transport.IsBarrierSealed(err)
 	}
 

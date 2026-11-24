@@ -169,3 +169,27 @@ func TestBearer_MCPRefusesPlaintext(t *testing.T) {
 		t.Fatalf("plaintext server received %d requests", len(headers))
 	}
 }
+
+// mcpSwitchableSource returns "tok" until an error is stored, then that error.
+type mcpSwitchableSource struct{ err atomic.Pointer[error] }
+
+func (s *mcpSwitchableSource) Token(context.Context) (string, error) {
+	if p := s.err.Load(); p != nil {
+		return "", *p
+	}
+	return "tok", nil
+}
+
+func (s *mcpSwitchableSource) fail(err error) { s.err.Store(&err) }
+
+func TestBearer_MCPHealthyFalseWhenTokenSourceFails(t *testing.T) {
+	probe := &bearerProbe{}
+	srv := httptest.NewTLSServer(probe.handler())
+	defer srv.Close()
+	src := &mcpSwitchableSource{}
+	tr := connectBearerMCP(t, srv, transport.WithTokenSource(src))
+	src.fail(&transport.BarrierSealedError{Message: "sealed"})
+	if tr.Healthy(context.Background()) {
+		t.Fatal("Healthy = true with a token source that fails with a sealed error")
+	}
+}
