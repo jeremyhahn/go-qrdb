@@ -170,12 +170,20 @@ func (s *Session) readFromConnectStream() {
 		case closeSessionCapsule:
 			// Any data after WT_CLOSE_SESSION is a message error: the
 			// CONNECT stream is reset with H3_MESSAGE_ERROR
-			// (draft-ietf-webtrans-http3-16, section 6). Wait briefly for
-			// the FIN; a timeout keeps the peer's close.
+			// (draft-ietf-webtrans-http3-16, section 6), an incomplete
+			// capsule included. The capsule parser buffers nothing, so
+			// s.str sits right after the capsule body: the first trailing
+			// byte decides. A FIN or the deadline with no byte keeps the
+			// peer's close.
 			_ = s.str.SetReadDeadline(time.Now().Add(closeSessionTimeout))
-			_, _, err := parser.Next()
+			var probe [1]byte
+			var n int
+			var err error
+			for n == 0 && err == nil {
+				n, err = s.str.Read(probe[:])
+			}
 			var ne net.Error
-			if errors.Is(err, io.EOF) || (errors.As(err, &ne) && ne.Timeout()) {
+			if n == 0 && (errors.Is(err, io.EOF) || (errors.As(err, &ne) && ne.Timeout())) {
 				s.closeWithError(c.ToSessionError(), nil)
 				return
 			}

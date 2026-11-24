@@ -503,6 +503,99 @@ func TestDataAfterCloseSessionCapsuleIsAMessageError(t *testing.T) {
 	})
 }
 
+// openTailStream serves its bytes and then, like a QUIC stream whose peer
+// keeps its send side open, blocks in Read until the read deadline elapses.
+type openTailStream struct {
+	mockHTTP3Stream
+
+	mx      sync.Mutex
+	timer   *time.Timer
+	expired chan struct{}
+	once    sync.Once
+}
+
+func newOpenTailStream(b []byte) *openTailStream {
+	return &openTailStream{
+		mockHTTP3Stream: mockHTTP3Stream{bytes.NewReader(b)},
+		expired:         make(chan struct{}),
+	}
+}
+
+func (s *openTailStream) Read(p []byte) (int, error) {
+	if s.Len() > 0 {
+		return s.Reader.Read(p)
+	}
+	<-s.expired
+	return 0, os.ErrDeadlineExceeded
+}
+
+// ReadByte shadows the embedded bytes.Reader's, which would return io.EOF
+// instead of blocking: quicvarint.NewReader prefers an io.ByteReader.
+func (s *openTailStream) ReadByte() (byte, error) {
+	var b [1]byte
+	if _, err := s.Read(b[:]); err != nil {
+		return 0, err
+	}
+	return b[0], nil
+}
+
+func (s *openTailStream) SetReadDeadline(t time.Time) error {
+	s.mx.Lock()
+	defer s.mx.Unlock()
+	if s.timer != nil {
+		s.timer.Stop()
+	}
+	s.timer = time.AfterFunc(time.Until(t), func() { s.once.Do(func() { close(s.expired) }) })
+	return nil
+}
+
+func TestPartialDataAfterCloseSessionWithoutFINIsAMessageError(t *testing.T) {
+	closeErrFor := func(t *testing.T, trailing []byte) error {
+		t.Helper()
+		payload := binary.BigEndian.AppendUint32(nil, 1337)
+		payload = append(payload, "bye"...)
+		var b bytes.Buffer
+		require.NoError(t, http3.WriteCapsule(quicvarint.NewWriter(&b), closeSessionCapsuleType, payload))
+		b.Write(trailing)
+
+		sess := newSession(
+			context.Background(),
+			42,
+			nil,
+			newOpenTailStream(b.Bytes()),
+			"",
+			sessionFlowControl{},
+		)
+		select {
+		case <-sess.Context().Done():
+		case <-time.After(scaleDuration(time.Second)):
+			t.Fatal("timeout")
+		}
+		sess.closeMx.Lock()
+		defer sess.closeMx.Unlock()
+		return sess.closeErr
+	}
+
+	t.Run("one trailing byte without FIN", func(t *testing.T) {
+		err := closeErrFor(t, []byte{0x00})
+		require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCodeMessageError})
+	})
+
+	t.Run("first byte of a two-byte varint without FIN", func(t *testing.T) {
+		err := closeErrFor(t, []byte{0x40})
+		require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCodeMessageError})
+	})
+
+	t.Run("no trailing data and no FIN", func(t *testing.T) {
+		err := closeErrFor(t, nil)
+		var sessErr *SessionError
+		require.ErrorAs(t, err, &sessErr)
+		require.True(t, sessErr.Remote)
+		require.Equal(t, SessionErrorCode(1337), sessErr.ErrorCode)
+		require.Equal(t, "bye", sessErr.Message)
+	})
+}
+
 func TestForbiddenStreamDataFlowControlCapsulesCloseSession(t *testing.T) {
 	for _, tc := range []struct {
 		name string
