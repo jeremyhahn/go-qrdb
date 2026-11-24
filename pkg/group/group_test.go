@@ -235,6 +235,69 @@ func TestGroupStore_UpdateBoundToCommittedVersion(t *testing.T) {
 	})
 }
 
+// TestGroupStore_RevokeRoleStripsGroups pins the role-delete cascade into
+// groups: the role leaves every group of its tenant, other roles and other
+// tenants' groups are left alone, and a second call changes nothing.
+func TestGroupStore_RevokeRoleStripsGroups(t *testing.T) {
+	ctx := context.Background()
+	kv := kvstore.NewMemoryKVStore()
+	roles, err := role.NewStore(kvstore.NewMemoryKVStore())
+	if err != nil {
+		t.Fatalf("role store: %v", err)
+	}
+	mk := func(tenantID, name string) string {
+		r, err := roles.CreateRole(ctx, &role.CreateRoleRequest{
+			Name: name, TenantID: tenantID, Permissions: []permission.Permission{permission.RolesRead},
+		})
+		if err != nil {
+			t.Fatalf("create role: %v", err)
+		}
+		return r.ID
+	}
+	doomed, kept, foreign := mk("acme", "doomed"), mk("acme", "kept"), mk("other", "doomed")
+	s, err := NewStore(kv, WithRoleLookup(roles))
+	if err != nil {
+		t.Fatalf("group store: %v", err)
+	}
+	g1, err := s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "a", RoleIDs: []string{doomed, kept}})
+	if err != nil {
+		t.Fatalf("create a: %v", err)
+	}
+	g2, err := s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "b", RoleIDs: []string{doomed}})
+	if err != nil {
+		t.Fatalf("create b: %v", err)
+	}
+	g3, err := s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "other", Name: "c", RoleIDs: []string{foreign}})
+	if err != nil {
+		t.Fatalf("create c: %v", err)
+	}
+	rv, err := NewRoleRevoker(kv)
+	if err != nil {
+		t.Fatalf("NewRoleRevoker: %v", err)
+	}
+	if n, err := rv.RevokeRole(ctx, "acme", doomed); err != nil || n != 2 {
+		t.Fatalf("RevokeRole = %d, %v; want 2, nil", n, err)
+	}
+	if n, err := rv.RevokeRole(ctx, "acme", doomed); err != nil || n != 0 {
+		t.Fatalf("second RevokeRole = %d, %v; want 0, nil", n, err)
+	}
+	// The other tenant's group holds its own role; revoking acme's doomed
+	// role in "other" (a role id it does not carry) changes nothing.
+	if n, err := rv.RevokeRole(ctx, "other", doomed); err != nil || n != 0 {
+		t.Fatalf("RevokeRole in other = %d, %v; want 0, nil", n, err)
+	}
+	want := map[string][]string{g1.ID: {kept}, g2.ID: {}, g3.ID: {foreign}}
+	for id, roleIDs := range want {
+		got, err := s.GetGroup(ctx, id)
+		if err != nil {
+			t.Fatalf("GetGroup(%s): %v", id, err)
+		}
+		if fmt.Sprint(got.RoleIDs) != fmt.Sprint(roleIDs) {
+			t.Fatalf("group %s RoleIDs = %v, want %v", got.Name, got.RoleIDs, roleIDs)
+		}
+	}
+}
+
 func ptr[T any](v T) *T { return &v }
 
 func TestGroupStore_CrossTenantRoleRefused(t *testing.T) {

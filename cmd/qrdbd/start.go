@@ -4381,9 +4381,13 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot role holder revoker", Err: err}
 	}
+	bootGroupHolders, err := group.NewRoleRevoker(bootStore)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "boot group role holder revoker", Err: err}
+	}
 	bootRoleSvc, err := role.NewStore(bootStore,
 		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(bootIdentityIndex), role.WithAtomicIdentity(),
-		role.WithHolderRevoker(bootHolders))
+		role.WithHolderRevoker(role.HolderRevokers(bootHolders, bootGroupHolders)))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot role store", Err: err}
 	}
@@ -4476,9 +4480,13 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "role holder revoker", Err: err}
 	}
+	groupHolders, err := group.NewRoleRevoker(systemStore)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "group role holder revoker", Err: err}
+	}
 	roleSvc, err := role.NewStore(systemStore,
 		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(systemIdentityIndex), role.WithAtomicIdentity(),
-		role.WithHolderRevoker(holders))
+		role.WithHolderRevoker(role.HolderRevokers(holders, groupHolders)))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "role store", Err: err}
 	}
@@ -4521,7 +4529,12 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		if rhErr != nil {
 			return nil, &AuthBootstrapError{Step: "routed role holder revoker", Err: rhErr}
 		}
-		routedRoles, rrErr := role.NewRoutingService(resolver, role.WithAuditLogger(auditLogger), role.WithHolderRevoker(routedHolders))
+		routedGroupHolders, rgErr := group.NewRoutingRoleRevoker(resolver)
+		if rgErr != nil {
+			return nil, &AuthBootstrapError{Step: "routed group role holder revoker", Err: rgErr}
+		}
+		routedRoles, rrErr := role.NewRoutingService(resolver, role.WithAuditLogger(auditLogger),
+			role.WithHolderRevoker(role.HolderRevokers(routedHolders, routedGroupHolders)))
 		if rrErr != nil {
 			return nil, &AuthBootstrapError{Step: "routed role store", Err: rrErr}
 		}

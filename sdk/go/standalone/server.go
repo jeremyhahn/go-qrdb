@@ -601,8 +601,10 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	}
 	if userSvc, err := user.NewStore(authStore, userIDGen); err == nil {
 		opts = append(opts, embedded.WithUserService(userSvc))
-		if holders, err := user.NewRoleRevoker(userSvc); err == nil {
-			if roleSvc, err := role.NewStore(authStore, role.WithHolderRevoker(holders)); err == nil {
+		holders, herr := user.NewRoleRevoker(userSvc)
+		groupHolders, gherr := group.NewRoleRevoker(authStore)
+		if herr == nil && gherr == nil {
+			if roleSvc, err := role.NewStore(authStore, role.WithHolderRevoker(role.HolderRevokers(holders, groupHolders))); err == nil {
 				opts = append(opts, embedded.WithRoleService(roleSvc))
 				if members, err := user.NewGroupMembership(userSvc); err == nil {
 					if groupSvc, err := group.NewStore(authStore, group.WithRoleLookup(roleSvc), group.WithMemberRevoker(members)); err == nil {

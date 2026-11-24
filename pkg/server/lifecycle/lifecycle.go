@@ -975,7 +975,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	if err != nil {
 		return nil, &RoleServiceError{Err: err}
 	}
-	roleSvc, err := role.NewStore(authStore, role.WithHolderRevoker(holders))
+	groupHolders, err := group.NewRoleRevoker(authStore)
+	if err != nil {
+		return nil, &RoleServiceError{Err: err}
+	}
+	roleSvc, err := role.NewStore(authStore, role.WithHolderRevoker(role.HolderRevokers(holders, groupHolders)))
 	if err != nil {
 		return nil, &RoleServiceError{Err: err}
 	}
@@ -1285,7 +1289,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			if err != nil {
 				return nil, &RoleServiceError{Err: err}
 			}
-			routedRoles, err := role.NewRoutingService(resolver, role.WithHolderRevoker(routedHolders))
+			routedGroupHolders, err := group.NewRoutingRoleRevoker(resolver)
+			if err != nil {
+				return nil, &RoleServiceError{Err: err}
+			}
+			routedRoles, err := role.NewRoutingService(resolver, role.WithHolderRevoker(role.HolderRevokers(routedHolders, routedGroupHolders)))
 			if err != nil {
 				return nil, &RoleServiceError{Err: err}
 			}
@@ -1359,7 +1367,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		if rherr != nil {
 			return nil, &RoleServiceError{Err: rherr}
 		}
-		routedRoles, roerr := role.NewRoutingService(resolver, role.WithHolderRevoker(routedHolders))
+		routedGroupHolders, rgerr := group.NewRoutingRoleRevoker(resolver)
+		if rgerr != nil {
+			return nil, &RoleServiceError{Err: rgerr}
+		}
+		routedRoles, roerr := role.NewRoutingService(resolver, role.WithHolderRevoker(role.HolderRevokers(routedHolders, routedGroupHolders)))
 		if roerr != nil {
 			return nil, &RoleServiceError{Err: roerr}
 		}

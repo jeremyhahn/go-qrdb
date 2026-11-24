@@ -14,14 +14,19 @@
 
 package role
 
-import "context"
+import (
+	"context"
+	"slices"
+)
 
 // HolderRevoker strips a role from every account that holds it. DeleteRole
 // calls it after marking the role Deleting and before removing the record, so
 // a deleted role never survives as a dead identifier on an account.
 //
-// The user store implements it (user.NewRoleRevoker); this package names only
-// the seam, because accounts reference roles and not the other way round.
+// The user store implements it (user.NewRoleRevoker), and so does the group
+// store (group.NewRoleRevoker); HolderRevokers combines them. This package
+// names only the seam, because accounts and groups reference roles and not
+// the other way round.
 type HolderRevoker interface {
 	// RevokeRole removes roleID from the RoleIDs and RoleBindings of every
 	// account in tenantID that holds it, and reports how many accounts this
@@ -29,6 +34,30 @@ type HolderRevoker interface {
 	// strips what the first attempt did not reach and leaves alone what it
 	// already did.
 	RevokeRole(ctx context.Context, tenantID, roleID string) (int, error)
+}
+
+// HolderRevokers combines revokers into one: RevokeRole calls each in order,
+// sums the counts, and stops at the first error. A role is held by more
+// than one kind of record (user accounts, groups); DeleteRole strips it from
+// every kind through one combined revoker, and a retry re-runs every member,
+// each idempotent.
+func HolderRevokers(hs ...HolderRevoker) HolderRevoker {
+	return holderRevokers(slices.Clone(hs))
+}
+
+type holderRevokers []HolderRevoker
+
+// RevokeRole implements HolderRevoker.
+func (hs holderRevokers) RevokeRole(ctx context.Context, tenantID, roleID string) (int, error) {
+	total := 0
+	for _, h := range hs {
+		n, err := h.RevokeRole(ctx, tenantID, roleID)
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }
 
 // WithHolderRevoker gives the store the revoker DeleteRole strips holders
