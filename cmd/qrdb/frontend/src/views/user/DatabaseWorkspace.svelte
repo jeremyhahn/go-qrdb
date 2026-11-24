@@ -36,6 +36,7 @@
   import BatchView from "./BatchView.svelte";
   import TimeSeriesView from "./TimeSeriesView.svelte";
   import VectorView from "./VectorView.svelte";
+  import VlogView from "./VlogView.svelte";
   import SQLBrowserScoped from "./SQLBrowserScoped.svelte";
   import CollectionView from "./CollectionView.svelte";
   import LeaseManager from "./LeaseManager.svelte";
@@ -91,6 +92,7 @@
     { id: 'locks',        label: 'Locks' },
     { id: 'timeseries',   label: 'Time Series' },
     { id: 'vector',       label: 'Vectors' },
+    { id: 'vlog',         label: 'Verifiable Logs' },
   ];
 
   /** SQL Browser tab — injected when SQL protocols are enabled. */
@@ -170,6 +172,8 @@
       <TimeSeriesView client={dbClient} />
     {:else if activeTool === 'vector'}
       <VectorView client={dbClient} />
+    {:else if activeTool === 'vlog'}
+      <VlogView client={dbClient} />
     {:else if activeTool === 'sql'}
       <SQLBrowserScoped {client} {database} />
     {:else if activeTool === 'db-settings'}

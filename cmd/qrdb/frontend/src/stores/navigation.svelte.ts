@@ -65,6 +65,7 @@ export type DbTool =
     | 'locks'
     | 'timeseries'
     | 'vector'
+    | 'vlog'
     | 'sql'
     | 'db-settings';
 
@@ -116,6 +117,7 @@ export const DB_TOOL_LABELS: Readonly<Record<DbTool, string>> = {
     'locks': 'Locks',
     'timeseries': 'Time Series',
     'vector': 'Vectors',
+    'vlog': 'Verifiable Logs',
     'sql': 'SQL Browser',
     'db-settings': 'Settings',
 } as const;
