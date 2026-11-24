@@ -88,7 +88,10 @@ and `Binding.Describe(owner)` turns the result into the block. A factory that
 does not implement the interface, or a resolve error (logged at debug), leaves
 the block absent. Raft-mode nodes install the same factory, so the block is
 present in raft mode too: `local` for a memory, file, pebble or objstore
-database, and `raft` for a `backend: raft` database. The block reaches `database info` and `database list` on every
+database, and `raft` for a `backend: raft` database. For a `raft` binding,
+`nodes` lists the replica nodes of the database's own group, read from the
+replicated placement table when info is served (`PlacementReplicaNodes`);
+for a `local` binding it is the owner node. The block reaches `database info` and `database list` on every
 transport: gRPC `DatabaseBindingInfo` (field 19 of `DatabaseInfoResponse`),
 REST, MCP, QUIC, the Unix socket, both SDKs and the CLI table output.
 
@@ -96,7 +99,7 @@ REST, MCP, QUIC, the Unix socket, both SDKs and the CLI table output.
 // DatabaseBinding is the resolved placement of the database's storage.
 type DatabaseBinding struct {
 	Kind       BindingKind `json:"kind"`            // local | raft
-	Nodes      []string    `json:"nodes,omitempty"` // the owning node, when one is recorded
+	Nodes      []string    `json:"nodes,omitempty"` // local: the owning node; raft: the group's replica nodes
 	Encryption string      `json:"encryption"`      // node | tenant | node+database | tenant+database
 	Generation uint64      `json:"generation"`      // this create of the name; higher than any earlier one
 }
@@ -125,6 +128,24 @@ field and remote mode are removed (shipped: the server and the clients on every
 transport have none of them; gRPC `DatabaseInfoResponse` field 11 is reserved).
 
 ### Server-side binding
+
+A `backend: raft` database runs its own Raft group whatever its tenant's
+isolation (OD-1 A). `RaftBackendFactory` takes the tenant's isolation
+(`WithTenantIsolation`): a prefix tenant's group runs under the node barrier
+with no dedicated WAL, a barrier tenant's under the tenant barrier, and
+`IsolationRootResolver` places both under
+`{DataDir}/tenants/<tenant>/databases/<db>`; a volume tenant's group sits
+under its tenant root. `restServiceRegistry.resolve` and the store
+resolver's drop fence (`storeResolver.FenceTarget`) route by one rule,
+`RaftBackendFactory.ServesOwnGroup`: a raft tenant's database always, any
+other tenant's raft database unless its keys already sit under its prefix
+in the shared store (`LegacySharedProbe`), in which case it keeps the shared
+route until 3b.8. A drop deletes the placement entry; each replica's
+`TenantShardReconciler` handles the delete with `CloseAndPurge`, which
+removes the shard directory inside the node's volume pool or its node group
+root (`WithNodeGroupRoot`), and `ReconcileOnce` purges a started shard that
+was placed (`StartedShard.Placed`) once its entry is gone, the catch-up for
+a missed event. A catalog-managed shard, never placed, is not purged.
 
 `pkg/database/binding.go`:
 

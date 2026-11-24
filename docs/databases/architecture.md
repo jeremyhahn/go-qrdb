@@ -65,6 +65,7 @@ node-level settings decide instead.
 | Prefix or barrier tenant, or the system tenant (other than its `system` database), on a **standalone** node, database with no per-database barrier, not raft | the database's own store under its binding root `<data-dir>/tenants/<tenant>/databases/<name>`, or the explicit data directory when one is set (system tenant only), served from its own host (`lifecycle.LocalBindingFactory`); a prefix tenant's and the system tenant's store is written through the node encryptor, a barrier tenant's through its own tenant barrier (sealing that barrier fails the data closed on every engine; vector is not yet in the binding) | all except vector | **yes** — memory, file, pebble and objstore (objstore on the local provider only, at `<root>/objstore`) |
 | Prefix or barrier tenant, no per-database barrier (every other case above and below) | the shared system shard, under a `<tenant>/<db>/` key prefix | all except vector (vector goes to the node-local store below) | **no** — the node's `--sm` / `raft.sm_type` in raft mode, or the node's single local store in standalone mode |
 | Prefix or barrier tenant, database with its own barrier and an explicit data directory | the database's own store, opened by `database.Manager` | **KV and collections only**; MVCC, batch, transactions, leases, watches, indexes, time series and vector are absent, so the SQL surface and sequences are too | partly — memory, file and pebble are opened; nothing else is |
+| `backend: raft` database of a prefix, barrier or volume tenant (OD-1 A) | its own Raft group: a prefix tenant's under the node barrier, a barrier tenant's under the tenant barrier, both at `{data-dir}/tenants/<tenant>/databases/<name>/shard-N`; a volume tenant's under its tenant root; keys at the root of the group's store | all except vector | **yes** |
 | Volume tenant | one Raft shard on a per-tenant host, shared by all of the tenant's databases under the `<tenant>/<db>/` prefix | all except vector | **no** |
 | Raft tenant | a dedicated Raft group per database on the system host | all except vector | forced to `raft` |
 
@@ -81,16 +82,22 @@ Supporting facts:
   opened.
 - `backend: objstore` is accepted by validation and **refused by
   `openStorage`** with `database.InvalidBackendError`.
-- `backend: raft` on a **prefix or barrier** tenant is metered as a Raft group
-  and gets a replicated placement record, yet `resolve` routes on the tenant's
-  isolation mode, so the database's data is served from the shared system shard.
-  A per-database barrier on such a database would therefore not be on its
-  data path, so creation refuses one with `database.BarrierOffDataPathError`
+- `backend: raft` on a **prefix, barrier or volume** tenant runs its own Raft
+  group (OD-1 A): it gets a replicated placement record, `resolve` and the
+  store resolver's drop fence route it to that group by one rule
+  (`ServesOwnGroup`), and `database info` names the group's replica nodes.
+  A drop deletes the placement; every replica's `TenantShardReconciler`
+  closes the group and purges its shard directory, and its catch-up pass
+  purges a placed shard whose entry is gone (a missed delete event). A raft
+  database whose keys already sit under its prefix in the shared store (a
+  legacy shared-shard database) keeps the shared route until relocation
+  (3b.8). Per-database barriers are not yet layered on the group (3b.5), so
+  creation refuses one with `database.BarrierOffDataPathError`
   (as it does for every database of a volume- or raft-isolated tenant). An
   existing barrier-enabled record of such a database opens sealed, and the
   service registry refuses every engine of a sealed database with
-  `service.BarrierSealedError`, so it fails closed rather than serving the
-  shared shard.
+  `service.BarrierSealedError`, so it fails closed rather than serving its
+  data.
 - On a **standalone or raft-mode** node a database of a prefix or barrier
   tenant, or of the system tenant other than its `system` database (not a
   tenant home, not raft, no per-database barrier), is materialized at open by
