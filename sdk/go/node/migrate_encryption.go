@@ -441,6 +441,19 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 		return &MigrationReopenError{Reason: "retained boot params lost during migration"}
 	}
 
+	// A committed journal whose root key was not adopted leaves staged records a restart rolls forward over any write served now.
+	if committedStrategy != seal.StrategyPassphrase && committedStrategy != seal.StrategyShamir {
+		j, jerr := n.barrier.Load().LoadMigrationJournal(ctx)
+		if jerr != nil {
+			p.creds = seal.Credentials{}
+			return &MigrationReopenError{Reason: "the migration journal cannot be read; the node stays down until a restart recovers it", Err: jerr}
+		}
+		if j != nil && j.Committed() {
+			p.creds = seal.Credentials{}
+			return &MigrationReopenError{Reason: "the migration committed but its root key was not adopted; the node stays down until a restart rolls it forward"}
+		}
+	}
+
 	switch committedStrategy {
 	case seal.StrategyPassphrase, seal.StrategyShamir:
 		// Committed: replace the live none barrier with the keyed one.
@@ -509,7 +522,7 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 			return nil
 		}
 	default:
-		// Not committed: the original barrier is still valid and unsealed.
+		// An uncommitted or absent journal keeps the original barrier valid and unsealed.
 	}
 
 	// Rebuild the data plane (storage, engine, services, server) under the

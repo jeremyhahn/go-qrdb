@@ -461,7 +461,18 @@ type failStagedDeleteBackend struct {
 	// failJournalGet makes every read of the migration journal fail once a
 	// staged delete has been injected.
 	failJournalGet bool
+	// failRootKeyPut names the canonical root-key path whose write fails.
+	failRootKeyPut string
 	deleteFailed   atomic.Bool
+}
+
+var errRootKeyPut = errors.New("injected canonical root-key write failure")
+
+func (b *failStagedDeleteBackend) Put(ctx context.Context, key string, value []byte) error {
+	if b.failRootKeyPut != "" && key == b.failRootKeyPut {
+		return errRootKeyPut
+	}
+	return b.StorageBackend.Put(ctx, key, value)
 }
 
 // errJournalRead is the injected migration-journal read fault.
@@ -528,6 +539,35 @@ func TestNode_EnableEncryption_StagedDeleteAndJournalReadFault_StaysDown(t *test
 	f.requireRecovered(t, f.reopen(t, "after the faults"))
 }
 
+// TestNode_EnableEncryption_RootKeyAdoptFault_StaysDownUntilRecovery injects
+// a failure on the canonical root-key write after the migration journal is
+// committed: the node stays down rather than serving writes a restart's
+// roll-forward would overwrite, and an update made after recovery survives a
+// second restart.
+func TestNode_EnableEncryption_RootKeyAdoptFault_StaysDownUntilRecovery(t *testing.T) {
+	ctx := context.Background()
+	f := newRootKeyFaultNode(t)
+	migErr := f.migrate(t)
+	require.ErrorIs(t, migErr, errRootKeyPut)
+	strategy, err := canonicalRootKeyStrategy(ctx, f.n)
+	require.NoError(t, err)
+	require.Equal(t, seal.StrategyNone, strategy, "the canonical root key must still name the source strategy")
+	require.Nil(t, f.n.svcNode.Load(), "the data plane must stay down while the committed migration is unadopted")
+	require.Nil(t, f.n.Client(), "no client serves writes a restart's roll-forward would overwrite")
+	require.NoError(t, f.n.Close())
+
+	n2 := f.reopen(t, "after the adoption fault")
+	f.requireRecovered(t, n2)
+	updated := []byte("rotated-after-adoption-recovery")
+	require.NoError(t, n2.Client().SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: "db-primary", Secret: updated}))
+	require.NoError(t, n2.Close())
+
+	n3 := f.reopen(t, "a second time")
+	resp, err := n3.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "db-primary"})
+	require.NoError(t, err)
+	require.Equal(t, updated, resp.Secret, "the post-recovery update must survive a second restart")
+}
+
 // stagedFaultNode is a standalone node whose system barrier runs over a
 // failStagedDeleteBackend, holding seal-store secrets to migrate.
 type stagedFaultNode struct {
@@ -556,6 +596,24 @@ func stagedFaultConfig(dataDir string) *qrdbconfig.Config {
 
 func newStagedFaultNode(t *testing.T, failJournalGet bool) *stagedFaultNode {
 	t.Helper()
+	return newFaultNode(t, faultOptions{failStagedDelete: true, failJournalGet: failJournalGet})
+}
+
+// newRootKeyFaultNode builds a node whose canonical root-key write fails.
+func newRootKeyFaultNode(t *testing.T) *stagedFaultNode {
+	t.Helper()
+	return newFaultNode(t, faultOptions{failRootKeyPut: true})
+}
+
+// faultOptions selects the faults newFaultNode injects.
+type faultOptions struct {
+	failStagedDelete bool
+	failJournalGet   bool
+	failRootKeyPut   bool
+}
+
+func newFaultNode(t *testing.T, opts faultOptions) *stagedFaultNode {
+	t.Helper()
 	ctx := context.Background()
 	dataDir := t.TempDir()
 	n, err := NewStandaloneNode(ctx, stagedFaultConfig(dataDir), nil)
@@ -575,8 +633,11 @@ func newStagedFaultNode(t *testing.T, failJournalGet bool) *stagedFaultNode {
 	fb := &failStagedDeleteBackend{
 		StorageBackend: seal.NewStorageAdapter(n.sealStore),
 		prefix:         sealretire.StagedRecords().StagingPrefix,
-		fail:           true,
-		failJournalGet: failJournalGet,
+		fail:           opts.failStagedDelete,
+		failJournalGet: opts.failJournalGet,
+	}
+	if opts.failRootKeyPut {
+		fb.failRootKeyPut = n.barrier.Load().Config().RootKeyPath
 	}
 	faulty, err := seal.NewStorageBarrier(n.logger, fb, n.barrier.Load().Config(), seal.NewNoneStrategy())
 	require.NoError(t, err)
