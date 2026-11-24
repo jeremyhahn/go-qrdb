@@ -70,7 +70,8 @@ func (e *BearerForeignHostError) Error() string {
 
 // TokenSourceError is returned when the configured TokenSource fails, or
 // yields an empty token or one containing control bytes (CR, LF, ...). The
-// call is refused before it is sent.
+// call is refused before it is sent. The source's error is reachable only
+// through Unwrap, errors.Is and errors.As; Error never includes its text.
 type TokenSourceError struct {
 	// Transport names the SDK transport that refused.
 	Transport string
@@ -80,10 +81,11 @@ type TokenSourceError struct {
 	Err error
 }
 
-// Error returns a description that never contains the token.
+// Error returns a fixed description that never contains the token or the
+// token source's error text.
 func (e *TokenSourceError) Error() string {
 	if e.Err != nil {
-		return "transport: " + e.Transport + ": token source: " + e.Err.Error()
+		return "transport: " + e.Transport + ": token source failed"
 	}
 	return "transport: " + e.Transport + ": token source: " + e.Reason
 }

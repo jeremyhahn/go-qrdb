@@ -213,6 +213,23 @@ func TestTokenSource_ErrorNeverLeaksToken(t *testing.T) {
 	}
 }
 
+func TestTokenSource_ErrorOmitsSourceErrorText(t *testing.T) {
+	cause := errors.New("refresh failed: access_token=s3cret-token")
+	src := failingSource{err: cause}
+	rt := BearerRoundTripper(&recordingRoundTripper{}, "rest", "db.test", src)
+	_, restErr := rt.RoundTrip(mustRequest(t, "https://db.test/v1/status"))
+	_, _, grpcErr := invokeUnary(context.Background(), BearerUnaryClientInterceptor("grpc", true, src))
+	for name, err := range map[string]error{"rest": restErr, "grpc": grpcErr} {
+		var srcErr *TokenSourceError
+		if !errors.As(err, &srcErr) || !errors.Is(err, cause) {
+			t.Fatalf("%s: err = %v, want *TokenSourceError wrapping the cause", name, err)
+		}
+		if msg := err.Error(); strings.Contains(msg, "s3cret-token") || strings.Contains(msg, "refresh failed") {
+			t.Fatalf("%s: error carries the source's text: %q", name, msg)
+		}
+	}
+}
+
 func TestWithBearerToken_RefusesControlBytes(t *testing.T) {
 	for _, tok := range []string{"", "a\rb", "a\nb", "a\tb", "a\x7fb"} {
 		cfg := ApplyOptions(WithBearerToken(tok))
