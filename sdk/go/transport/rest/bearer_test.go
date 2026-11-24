@@ -15,8 +15,17 @@ import (
 
 // bearerRecorder records the Authorization header of every request, by path.
 type bearerRecorder struct {
-	mu   sync.Mutex
-	seen map[string][]string
+	mu       sync.Mutex
+	seen     map[string][]string
+	lastAuth string
+	lastDB   string
+}
+
+// latest returns the Authorization and database headers of the most recent request.
+func (r *bearerRecorder) latest() (auth, database string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastAuth, r.lastDB
 }
 
 func (r *bearerRecorder) handler() http.Handler {
@@ -26,6 +35,8 @@ func (r *bearerRecorder) handler() http.Handler {
 			r.seen = map[string][]string{}
 		}
 		r.seen[req.URL.Path] = append(r.seen[req.URL.Path], req.Header.Get(transport.AuthorizationHeader))
+		r.lastAuth = req.Header.Get(transport.AuthorizationHeader)
+		r.lastDB = req.Header.Get(transport.DatabaseHeader)
 		r.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{}`))
@@ -79,6 +90,49 @@ func TestBearer_RESTSendsAuthorizationOnDataAndAdminRequests(t *testing.T) {
 		if h != "Bearer host-issued-token" {
 			t.Fatalf("Authorization = %q, want Bearer host-issued-token (all: %q)", h, got)
 		}
+	}
+}
+
+func TestBearer_RESTWithDatabaseCloneSendsAuthorization(t *testing.T) {
+	rec := &bearerRecorder{}
+	srv := httptest.NewTLSServer(rec.handler())
+	defer srv.Close()
+	tr := connectBearerREST(t, srv, transport.WithBearerToken("host-issued-token"))
+
+	scoped, err := tr.WithDatabase("other")
+	if err != nil {
+		t.Fatalf("WithDatabase: %v", err)
+	}
+	t.Cleanup(func() { _ = scoped.Close() })
+	clone, ok := scoped.(*Transport)
+	if !ok {
+		t.Fatalf("WithDatabase clone %T is not a *Transport", scoped)
+	}
+	_, _ = clone.Get(context.Background(), "k")
+	auth, database := rec.latest()
+	if auth != "Bearer host-issued-token" {
+		t.Fatalf("WithDatabase clone: Authorization = %q, want Bearer host-issued-token", auth)
+	}
+	if database != "other" {
+		t.Fatalf("WithDatabase clone: %s = %q, want other", transport.DatabaseHeader, database)
+	}
+}
+
+func TestBearer_RESTInitProofClientSendsAuthorization(t *testing.T) {
+	rec := &bearerRecorder{}
+	srv := httptest.NewTLSServer(rec.handler())
+	defer srv.Close()
+	tr := connectBearerREST(t, srv, transport.WithBearerToken("host-issued-token"))
+
+	client, release := tr.initProofClient()
+	defer release()
+	resp, err := client.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	_ = resp.Body.Close()
+	if auth, _ := rec.latest(); auth != "Bearer host-issued-token" {
+		t.Fatalf("init proof client: Authorization = %q, want Bearer host-issued-token", auth)
 	}
 }
 

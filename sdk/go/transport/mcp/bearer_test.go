@@ -105,6 +105,35 @@ func TestBearer_MCPSendsAuthorizationOnInitializeAndToolCall(t *testing.T) {
 	}
 }
 
+func TestBearer_MCPWithDatabaseCloneSendsAuthorization(t *testing.T) {
+	probe := &bearerProbe{}
+	srv := httptest.NewTLSServer(probe.handler())
+	defer srv.Close()
+	tr := connectBearerMCP(t, srv, transport.WithBearerToken("host-issued-token"))
+
+	scoped, err := tr.WithDatabase("other")
+	if err != nil {
+		t.Fatalf("WithDatabase: %v", err)
+	}
+	clone, ok := scoped.(*Transport)
+	if !ok {
+		t.Fatalf("WithDatabase clone %T is not a *Transport", scoped)
+	}
+	before, _ := probe.snapshot()
+	if err := rekeyStart(clone); err != nil {
+		t.Fatalf("tool call on clone: %v", err)
+	}
+	headers, tool := probe.snapshot()
+	if len(headers) == len(before) || len(tool) != 1 {
+		t.Fatalf("server saw %d new requests and %d tool calls from the clone", len(headers)-len(before), len(tool))
+	}
+	for _, h := range append(headers, tool...) {
+		if h != "Bearer host-issued-token" {
+			t.Fatalf("Authorization = %q, want Bearer host-issued-token (requests %q, tool %q)", h, headers, tool)
+		}
+	}
+}
+
 func TestBearer_MCPRefreshesTokenPerRequest(t *testing.T) {
 	probe := &bearerProbe{}
 	srv := httptest.NewTLSServer(probe.handler())
