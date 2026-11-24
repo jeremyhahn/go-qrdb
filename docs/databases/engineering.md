@@ -224,7 +224,14 @@ func ResolveBinding(cfg *DatabaseConfig, t BindingTenant, node BindingNode) (*Bi
 `service.Host` (`backend.LocalBackend` for `BindingLocal`, the Raft shard for
 `BindingRaft`), a watch hub and a lease driver, then calls the **one** bundle
 builder, `buildDataPlaneServices` extended with the vector service, over that
-host. The bundle is cached per `(tenant, database, generation)`.
+host. The bundle is cached per `(tenant, database, generation)`; the drop's
+fence (`storeResolver.FenceTarget`) evicts the database from every transport's
+bundle caches and closes the evicted bundle's vector service. The legacy
+shared-store probe (`lifecycle.LookupKeyspaceProbe`) reports a database as
+holding legacy data when any MVCC key under its namespace or any raw `ts:`,
+`idx:metric:` or `retention:` key of its namespace exists, and a read fault is
+its error, never "empty"; a barrier tenant's memory binding refuses every read
+and write once the tenant barrier seals.
 `buildDedicatedStoreServices`, `service.NewNamedBackendKVService`'s data-plane
 use, the in-memory placeholder in `openStorage` and the node-local vector store
 in `pkg/server/lifecycle` are deleted, not kept beside the new path.

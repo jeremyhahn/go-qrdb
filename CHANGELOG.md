@@ -15,6 +15,9 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- A barrier tenant's memory database refuses every read and write, and a cached vector search, once the tenant barrier seals, as the encrypted backends do (#923).
+- The legacy shared-store probe also finds a database whose only data is time series (raw `ts:`, `idx:metric:` and `retention:` keys), and a read fault under a prefix query is returned instead of reading as absence (#923).
+- Dropping a database evicts its cached service bundles on every transport and closes their vector services, so a dropped database's closed store and vector indexes are no longer reachable (#923).
 - The reserved SQL engine table names and reserved database names are refused with MySQL 1103 / 1102 (SQLSTATE 42000) and PostgreSQL SQLSTATE 42939 instead of the generic 1105 / XXUUU (#923).
 - `SHOW TABLES` over the PostgreSQL wire lists the database's tables instead of answering no rows (#923).
 - A materialized database's vector writes (upsert, batch upsert, delete, metadata update, namespace create, update and delete) now carry the database's drop-fence write guard in their Raft proposal, so a write that passed the drop check and proposed after `DROP DATABASE` fenced the database is refused at apply time; the shared node vector store keeps the check-before-write (#923).
