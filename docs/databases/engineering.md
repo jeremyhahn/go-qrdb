@@ -691,6 +691,23 @@ Invariants:
     when that undo fails as well (`objstore.ClaimUndoError`) no backend is
     left to release it, so `Manager.create` records a ledger entry for the
     new incarnation and `retryNamespaceReleases` releases the namespace.
+    A `ReleaseClaim` that fails in `createUndo` (the open succeeded, a later
+    create step failed) records the same entry (`createUndo.recordClaimRelease`;
+    a failure to record it is logged).
+  - **A claim on existing data is released claim-only.** The entry of a
+    claim that was not fresh (`ClaimUndoError.Fresh` unset, or the
+    backend's `FreshlyClaimed` false) carries `claim_only`
+    (`releaseEntry.ClaimOnly`): its retry reopens the namespace as that
+    incarnation and calls `ReleaseOwnerMarker`, which removes only the owner
+    marker while it names that incarnation; the records, journal and format
+    marker that no database owned stay. Every other entry reclaims the
+    namespace whole (`ReleaseOwner`).
+  - **A live record of the entry's own incarnation keeps the entry.** A
+    failed create whose own catalog delete failed too
+    (`CatalogOrphanError`) leaves a live record of the entry's incarnation;
+    the retry treats it like a drop still under way, not a re-created name,
+    and keeps the entry. The record's drop releases the namespace and
+    forgets the entry.
   - **The namespace owner names the incarnation.** Every object-storage
     database gets an incarnation, with or without a keyspace reclaimer, and
     the manager opens its namespace as that incarnation

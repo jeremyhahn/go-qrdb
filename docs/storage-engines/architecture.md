@@ -331,7 +331,9 @@ its owner's through a drop until the database's catalog record is gone; the
 drop then gives it up with `ReleaseOwner`, which deletes the marker only when
 it names that owner and nothing else remains, and a failed create gives its
 claim back with `ReleaseClaim` (a fresh namespace whole; on pre-existing data
-only the marker it wrote).
+only the marker it wrote, through `ReleaseOwnerMarker`). A give-back that
+fails is retried later with the same rule: a claim on pre-existing data is
+released claim-only, removing the marker and keeping every record.
 
 ### Alternatives rejected
 
