@@ -1,7 +1,7 @@
 # Storage Engines — User Guide
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
-> note below.** · Scope: go-qrdb · Last verified: 2026-10-27
+> **Status: NORMATIVE for shipped behaviour; ADOPTED, not yet
+> built, for the "Target design" note below.** · Scope: go-qrdb · Last verified: 2026-10-27
 
 Test reference: `make integration-test-storage-engines`; coverage row: `test/integration/COVERAGE.md` `[storage-engines](../../docs/storage-engines/)`.
 
@@ -180,7 +180,7 @@ nothing here is a setting you can use today.
 
 Today a standalone node's `storage.backend: objstore` stores one object per
 key, and a database created with `backend: objstore` is refused when it opens
-(see [../databases/user.md](../databases/user.md)). The proposal moves
+(see [../databases/user.md](../databases/user.md)). The target design moves
 `objstore` to the same sorted-segment layout the `pebble` engine uses, with
 the segments living in an object-storage bucket rather than on local disk.
 If it ships:

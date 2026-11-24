@@ -75,6 +75,14 @@ const (
 // DefaultTimeout bounds the search on one key when Checker.Timeout is zero.
 const DefaultTimeout = 10 * time.Minute
 
+// DefaultMaxIndeterminate bounds the indeterminate writes one key may hold
+// when Checker.MaxIndeterminate is zero. An indeterminate write never
+// returns, so it overlaps every later operation on its key and the search
+// must try it both applied and not at every step: its states grow as 2^n in
+// the count. The timeout bounds time, not memory; this bound refuses such a
+// key before the search starts.
+const DefaultMaxIndeterminate = 16
+
 // absent is how an anomaly's Value shows a register that holds no value.
 const absent = "absent"
 
@@ -82,6 +90,10 @@ const absent = "absent"
 type Checker struct {
 	// Timeout bounds the search on each key; zero is DefaultTimeout.
 	Timeout time.Duration
+	// MaxIndeterminate is the most indeterminate writes one key may hold
+	// before the search is refused as undecidable; zero is
+	// DefaultMaxIndeterminate.
+	MaxIndeterminate int
 }
 
 var _ history.Checker = Checker{}
@@ -152,14 +164,18 @@ var search = porcupine.CheckOperationsVerbose
 
 // keyOps is one key's share of the history, in the form porcupine checks.
 type keyOps struct {
-	key   string
-	ops   []history.Op
-	acked int
+	key           string
+	ops           []history.Op
+	acked         int
+	indeterminate int
 }
 
 // Check judges h. It returns an error for a history that fails
 // history.Validate, for a CAS without an expected value (*AmbiguousCASError)
-// and for a key the search cannot decide within the timeout (*TimeoutError).
+// for a key holding more indeterminate writes than MaxIndeterminate
+// (*UndecidableError, returned for the first such key before any search
+// starts) and for a key the search cannot decide within the timeout
+// (*TimeoutError).
 func (c Checker) Check(h history.History) (history.Result, error) {
 	if err := h.Validate(); err != nil {
 		return history.Result{}, err
@@ -167,6 +183,14 @@ func (c Checker) Check(h history.History) (history.Result, error) {
 	keys, err := partition(h)
 	if err != nil {
 		return history.Result{}, err
+	}
+	limit := cmp.Or(c.MaxIndeterminate, DefaultMaxIndeterminate)
+	for _, k := range keys {
+		if k.indeterminate > limit {
+			return history.Result{}, &UndecidableError{
+				Key: k.key, Ops: len(k.ops), Indeterminate: k.indeterminate, Limit: limit,
+			}
+		}
 	}
 
 	timeout := cmp.Or(c.Timeout, DefaultTimeout)
@@ -221,8 +245,11 @@ func partition(h history.History) ([]*keyOps, error) {
 			byKey[op.Key] = k
 		}
 		k.ops = append(k.ops, op)
-		if op.Outcome == history.OutcomeOK {
+		switch op.Outcome {
+		case history.OutcomeOK:
 			k.acked++
+		case history.OutcomeIndeterminate:
+			k.indeterminate++
 		}
 	}
 	out := make([]*keyOps, 0, len(byKey))

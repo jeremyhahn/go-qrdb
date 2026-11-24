@@ -12,21 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Build stage: compile the QRDB binary (with etcd) and the benchmark test binary.
-#
-# Build context: go-qrdb root directory.
-#
-# NOTE: this Dockerfile requires go-quicraft source for the perfresult module
-# dependency. Supply it via a named BuildKit context:
-#   docker build --build-context go-quicraft=/path/to/go-quicraft ...
+# Build stage: the QRDB binary with etcd and the benchmark test binary.
 FROM golang:1.27.4-bookworm AS builder
 
 WORKDIR /src
 COPY . .
 
 # Build the QRDB server binary with etcd support.
-# The go.mod replace directive for go-quicraft must be rewritten to the Docker
-# path where go-quicraft source is available (supplied via --build-context).
 WORKDIR /src
 RUN sed -i 's|=> ../go-quicraft|=> /go-quicraft|' go.mod && \
     go mod tidy && \

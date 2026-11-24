@@ -13,10 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Increase UDP receive/send buffer limits for QUIC transport.
-# quic-go requires at least 7168 KiB (~7.3 MB); we set 7500000 bytes
-# to provide headroom. See:
-# https://github.com/quic-go/quic-go/wiki/UDP-Buffer-Sizes
+# quic-go needs UDP buffers of at least 7168 KiB.
 sysctl -w net.core.rmem_max=7500000 >/dev/null 2>&1 || true
 sysctl -w net.core.wmem_max=7500000 >/dev/null 2>&1 || true
 

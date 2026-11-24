@@ -32,7 +32,7 @@ module that requires porcupine.
 |---|---|
 | `test/clusterproof/workload` | `Config` (`LoadConfig`, `Normalize`, `Validate`), `Workload` (`New`, `Run`, `FinalRead`, `Stats`), `Dialer` / `NewTransportDialer` for the workload's connections and `Connector` / `NewTransportConnector` for the soak's admin reads, and the `Classifier` that maps a transport error to an outcome |
 | `test/clusterproof/ledger` | `Checker`, the acknowledged-write ledger as a `history.Checker` |
-| `test/clusterproof/linearizability` | `Checker`, the porcupine linearizability check (E2) as a `history.Checker`, with its per-key `Timeout` (`DefaultTimeout` when zero); `Name`; the anomaly kinds `KindNonLinearizable` and `KindVacuous`; and the errors for a history it cannot judge, `TimeoutError` and `AmbiguousCASError` |
+| `test/clusterproof/linearizability` | `Checker`, the porcupine linearizability check (E2) as a `history.Checker`, with its per-key `Timeout` (`DefaultTimeout` when zero) and per-key `MaxIndeterminate` (`DefaultMaxIndeterminate`, 16, when zero: a key with more indeterminate writes is refused before any search starts, since each one overlaps every later op and the search's memory grows as 2^n); `Name`; the anomaly kinds `KindNonLinearizable` and `KindVacuous`; and the errors for a history it cannot judge, `TimeoutError`, `UndecidableError` and `AmbiguousCASError` |
 | `test/clusterproof/history` | `Op`, `History`, `Recorder`, `Encode` / `Decode`, and the `Checker` interface every check implements |
 | `test/clusterproof/nemesis` | `Nemesis`, `Target`, `Restarter` and `Unsealer` (`RemoteTarget`, `LocalProcess`), the faults (`Kill`, and `KillSealed` for a sealed type), `Schedule` (`FixedSchedule`, `RandomSchedule`) and the `Player` that plays a schedule and records an `Event` per step |
 | `test/clusterproof/soak` | `LoadOptions`, `Run`, `Check`, the entry points `Main` and `CheckMain`, and the seams `Cluster`, `Inspector` and `ReplicaStates` |
@@ -84,6 +84,9 @@ runs only under `make cluster-proof-boot`.
 - **Final read.** After the load phase and the recovery check the workload
   reads every key once more. Those reads are in the history under client
   number `clients`, one past the last load client, and are outside E7.
+  The post-run deadline bounds every final read, and any operation that
+  times out unanswered, a read included, fails its client over to the next
+  node.
 - **Read mode.** The history does not record a read's consistency level;
   the operator declares the cluster's read mode in the targets file and the
   bundle records it. `raft.lease_read` stays at its default, `true`, and the
@@ -225,7 +228,7 @@ how it is reached is configuration, not code.
 | `partition-majority-minority` | all (≥ 3 nodes) | split the nodes into a minority and a majority | remove the filter |
 | `partition-bridge` | all (≥ 3 nodes) | two halves joined by a middle node that sees both | remove the filter |
 | `clock-rate` | one node | after `clusterproof clock-rate -check` passes on it, set the kernel's tick and frequency through `adjtimex(2)` so the node's clocks run `ppm` parts per million fast or slow | `clusterproof clock-rate -ppm 0`: the nominal tick and frequency |
-| `disk-full` | one node | fill the filesystem holding the data directory | remove the fill files |
+| `disk-full` | one node | fill the filesystem holding the data directory, through `disk_exec` when the targets file sets it, else `exec` | remove the fill files the same way, then `restart` the node (a no-op if it is running) and unseal it when `unseal` is set: a server that exits on `ENOSPC` is a legitimate fail-stop, so the heal brings it back and the recovery, E3 and E4 checks run against it as after `kill` |
 | `slow-disk` | one node | cap the server's block I/O through cgroup v2 `io.max` | lift the cap |
 
 Under `PROOF_SEAL=passphrase` or `shamir` a restarted node comes back
@@ -256,7 +259,8 @@ Unknown fields are refused.
 
 | Field | Meaning |
 |---|---|
-| `exec`, `signal`, `restart`, `unseal` | the `RemoteTarget` templates (`unseal` optional, required for `kill` under a sealed type), one argv element per word, rendered with `{{.Node}}`, `{{.Vars.<name>}}`, `{{shquote .Argv}}` (the fault's command, for `exec`) and `{{.Signal}}` (`KILL`, `STOP`, `CONT`, for `signal`) |
+| `exec`, `signal`, `restart`, `unseal` | the `RemoteTarget` templates (`unseal` optional, required for `kill` and `disk-full` under a sealed type), one argv element per word, rendered with `{{.Node}}`, `{{.Vars.<name>}}`, `{{shquote .Argv}}` (the fault's command, for `exec`) and `{{.Signal}}` (`KILL`, `STOP`, `CONT`, for `signal`) |
+| `disk_exec` | optional `RemoteTarget` template the `disk-full` fill and free steps use instead of `exec`, rendered like `exec`; it reaches the node's data directory without joining the node's network namespace, so the free step still runs when the server has exited on a full disk |
 | `nodes.<name>.vars` | the node's template variables: its host, container name and so on; every `PROOF_NODES` name needs an entry and no other name may have one |
 | `nodes.<name>.addresses` | the IPs or prefixes its peers reach it on; required by the partitions |
 | `inspect.version`, `inspect.config` | commands run through `exec` that print the node's version and its configuration; the bundle keeps the version and the configuration's SHA-256, never the configuration |

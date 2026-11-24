@@ -68,6 +68,14 @@ type Inventory struct {
 	// HostNetwork. On any other network each node's Address is the IP the
 	// container is given on it.
 	Network string `json:"network,omitempty"`
+	// Memory caps each node container's memory, swap included, in docker's
+	// --memory form ("3g", "512m"). Empty leaves it uncapped. A soak beside
+	// its own runner (CI's hosted runner) caps it so the runner keeps
+	// headroom.
+	Memory string `json:"memory,omitempty"`
+	// CPUs caps each node container's CPUs, in docker's --cpus form ("1",
+	// "0.5"). Empty leaves it uncapped.
+	CPUs string `json:"cpus,omitempty"`
 	// Credentials are the harness's TLS files: the CA every node's
 	// certificate chains to, and the bootstrap admin certificate first boot
 	// binds and every admin call presents. The key file is only handed to
@@ -125,6 +133,16 @@ func (inv Inventory) ImageOf(n Node) string {
 // nodeName is a node name: it becomes part of a container name.
 var nodeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 
+// memoryLimit is docker's --memory form: a positive integer and an optional
+// b, k, m or g unit.
+var memoryLimit = regexp.MustCompile(`^[1-9][0-9]*[bkmgBKMG]?$`)
+
+// validCPUs reports whether s is a positive number, docker's --cpus form.
+func validCPUs(s string) bool {
+	f, err := strconv.ParseFloat(s, 64)
+	return err == nil && f > 0 && f <= 1024
+}
+
 // LoadInventory reads an inventory file and validates it.
 func LoadInventory(path string) (Inventory, error) {
 	f, err := os.Open(path)
@@ -164,6 +182,10 @@ func (inv Inventory) Validate() error {
 		return &ConfigError{Field: "first_boot", Reason: "so_pin_file and user_pin_file are required"}
 	case len(inv.Nodes) < 3:
 		return &ConfigError{Field: "nodes", Reason: "a cluster under proof has at least three founders"}
+	case inv.Memory != "" && !memoryLimit.MatchString(inv.Memory):
+		return &ConfigError{Field: "memory", Reason: "a positive size in docker's --memory form, e.g. 3g or 512m"}
+	case inv.CPUs != "" && !validCPUs(inv.CPUs):
+		return &ConfigError{Field: "cpus", Reason: "a positive number in docker's --cpus form, e.g. 1 or 0.5"}
 	}
 	names := make(map[string]bool, len(inv.Nodes))
 	ids := make(map[uint64]bool, len(inv.Nodes))

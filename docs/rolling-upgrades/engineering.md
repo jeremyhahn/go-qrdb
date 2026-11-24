@@ -20,7 +20,7 @@ limitations under the License.
 -->
 
 This document goes with the SPEC row `rolling-upgrades` ([SPEC.md](../SPEC.md),
-issue #1628, owner decision 224). It states the release negotiation as built:
+issue #1628). It states the release negotiation as built:
 the set of adjacent releases a node accepts (SPEC clause (1)), what each
 node-to-node channel announces and where it refuses a gap (clauses (2) and
 (3)), the feature gate (clause (4)), the review of the row against the
@@ -67,7 +67,7 @@ release "0.60.0-alpha"`. The error class table maps it to
 | QUIC frame protocol (clients and replica forwarding) | TLS ALPN (RFC 7301) from `wire.Protocols`: the current identifier first and at most one previous; today `qrdb-quic/3` only | the TLS 1.3 handshake | alert 120 `no_application_protocol` (QUIC error `0x178`), never a decode failure; the Go SDK reports it as a typed, non-retryable refusal | `pkg/api/quic/wire`, `sdk/go/transport/quic` |
 | Raft transport | unchanged: ALPN `quicraft`, go-quicraft `WireVersion` / `WireWindow`, internal to go-quicraft | go-quicraft | go-quicraft `ErrUnsupportedVersion` | go-quicraft (seam Q3, clause (7), open) |
 | Raft command encoding | `[op:1][payload]`, no version; a new command is used only after its feature activates (clause (4)) | the feature gate, before proposing | `UnsupportedFeatureError` / the documented pre-activation fallback | `pkg/protocol`, `pkg/cluster/featuregate` |
-| SDK request fields | a request-feature bit per field in the capabilities response; today `pendingUserTTL` (proto `pending_user_ttl`, field 21), absent on v0.58.5-alpha and earlier, so it reads as false | every Go SDK transport (REST, gRPC, QUIC, Unix, MCP), before the TTL-bearing `CreateUser` is sent (`transport.RequirePendingUserTTL`); the embedded transport needs none. `EnforcePendingTTL` stays as the post-create guard for a stale or mixed-cluster answer | `*transport.CapabilityUnsupportedError`; nothing reaches the server | `pkg/capabilities`, `sdk/go/transport` (clause (5), Q5 ruled (b), ruling 1243) |
+| SDK request fields | a request-feature bit per field in the capabilities response; today `pendingUserTTL` (proto `pending_user_ttl`, field 21), absent on v0.58.5-alpha and earlier, so it reads as false | every Go SDK transport (REST, gRPC, QUIC, Unix, MCP), before the TTL-bearing `CreateUser` is sent (`transport.RequirePendingUserTTL`); the embedded transport needs none. `EnforcePendingTTL` stays as the post-create guard for a stale or mixed-cluster answer | `*transport.CapabilityUnsupportedError`; nothing reaches the server | `pkg/capabilities`, `sdk/go/transport` (clause (5), Q5 ruled (b)) |
 
 **Feature gate (clause (4)).** Each node advertises its features.
 `Gate.Enabled` is true only once a feature is activated cluster-wide (every
@@ -131,13 +131,12 @@ compatibility statement" (module tags; cluster adjacency is this document),
 
 ## Questions for review
 
-The owner ruled on Q4 (decision 231 (a)) and approved the SPEC row text as
-written (ruling 913), and ruled Q5 (b) (ruling 1243). Q1 and Q2 are settled by
-convention (ruling 109). Q3 stays open. Owner decision 224 ordered the row.
+The owner ruled on Q4 (a) and approved the SPEC row text as written, and ruled
+Q5 (b). Q1 and Q2 are settled by convention. Q3 stays open.
 
 1. **What "adjacent" means before 1.0.** Adopted; see
    [Adjacent releases](#adjacent-releases).
-2. **Rollback.** Adopted (ruling 109): N+1 back to N is supported only while no
+2. **Rollback.** Adopted: N+1 back to N is supported only while no
    feature that N+1 introduced has been activated. After activation, the N
    binary refuses to start (`UnsupportedFeatureError`). Tested by T3 and T4.
 3. **The go-quicraft seam.** Open; go-quicraft decides, with the owner. The
@@ -149,13 +148,13 @@ convention (ruling 109). Q3 stays open. Owner decision 224 ordered the row.
 4. **SPEC Boundaries ban on compatibility shims** ([SPEC.md](../SPEC.md)
    Boundaries; [multi-tenancy/architecture.md](../multi-tenancy/architecture.md)
    "No backward-compatibility code"). Speaking release N's wire from N+1 is
-   compatibility code. Ruled (owner decision 231 (a), ruling 913): the ban is
+   compatibility code. Ruled: the ban is
    scoped. Code that speaks exactly one previous release's wire, behind the
    version negotiation and deleted in the release after, is allowed
    (`wire.Protocols` keeps at most one previous identifier). Any other shim
    stays banned.
 5. **How a client learns what a server supports** (the #1601 TTL case).
-   Ruled (b), owner ruling 1243: a per-feature capability bit. The server
+   Ruled (b): a per-feature capability bit. The server
    advertises a request-feature bit in the capabilities response for each
    request field an older server would drop; today `pendingUserTTL`. A bit an
    older server does not send reads as false. Every Go SDK transport reads the
