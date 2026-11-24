@@ -265,6 +265,11 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// Primary check (owner ruling 1243): send a TTL only to a server that
+	// advertises the pendingUserTTL capability bit.
+	if err := transport.RequirePendingUserTTL(ctx, req, t.Capabilities); err != nil {
+		return nil, err
+	}
 
 	args := map[string]any{
 		"username": req.Username,

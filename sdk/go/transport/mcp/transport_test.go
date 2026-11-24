@@ -226,6 +226,9 @@ func (m *mockKVService) ExistsWithConsistency(ctx context.Context, key string, _
 }
 
 type mockAdminService struct {
+	// olderServer drops the pendingUserTTL capability bit, as a server
+	// released before the bit existed does.
+	olderServer bool
 	// addIdentity records the member identity the last AddMember received.
 	addIdentity     atomic.Value
 	healthResult    *service.HealthStatus
@@ -317,6 +320,8 @@ func (m *mockAdminService) Capabilities(_ context.Context) (*capabilities.Capabi
 		Watch:       true,
 		Lease:       true,
 		Index:       true,
+		// An older server (olderServer) does not advertise the bit.
+		PendingUserTTL: !m.olderServer,
 	}, nil
 }
 

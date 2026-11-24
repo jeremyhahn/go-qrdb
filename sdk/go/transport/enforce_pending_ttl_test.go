@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,6 +28,62 @@ func TestEnforcePendingTTL_InvalidTTLUndoesTheCreate(t *testing.T) {
 		if len(deleted) != 1 || deleted[0] != 7 {
 			t.Fatalf("EnforcePendingTTL(%q) deleted %v; want [7]", ttl, deleted)
 		}
+	}
+}
+
+// TestRequirePendingUserTTL checks the pre-send check of owner ruling 1243:
+// a TTL-bearing create reaches only a server that advertises the
+// pendingUserTTL capability bit, and a create without a TTL never reads the
+// capabilities at all.
+func TestRequirePendingUserTTL(t *testing.T) {
+	capsErr := errors.New("capabilities unavailable")
+	for _, tc := range []struct {
+		name      string
+		req       *CreateUserRequest
+		caps      *CapabilitiesResponse
+		capsErr   error
+		wantReads int
+		check     func(error) bool
+	}{
+		{name: "nil request", req: nil, check: func(err error) bool { return err == nil }},
+		{name: "no TTL", req: &CreateUserRequest{Pending: true}, check: func(err error) bool { return err == nil }},
+		{name: "zero TTL", req: &CreateUserRequest{Pending: true, PendingTTL: "0s"}, check: func(err error) bool { return err == nil }},
+		{
+			name: "bit true", req: &CreateUserRequest{Pending: true, PendingTTL: "24h"},
+			caps: &CapabilitiesResponse{PendingUserTTL: true}, wantReads: 1,
+			check: func(err error) bool { return err == nil },
+		},
+		{
+			name: "bit false", req: &CreateUserRequest{Pending: true, PendingTTL: "24h"},
+			caps: &CapabilitiesResponse{KV: true}, wantReads: 1,
+			check: func(err error) bool {
+				var cu *CapabilityUnsupportedError
+				return errors.As(err, &cu) && strings.Contains(cu.Message, "pendingUserTTL")
+			},
+		},
+		{
+			name: "caps error", req: &CreateUserRequest{Pending: true, PendingTTL: "24h"},
+			capsErr: capsErr, wantReads: 1,
+			check: func(err error) bool {
+				var re *RequestError
+				return errors.As(err, &re) && re.Method == "CreateUser" && errors.Is(err, capsErr)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reads := 0
+			caps := func(context.Context) (*CapabilitiesResponse, error) {
+				reads++
+				return tc.caps, tc.capsErr
+			}
+			err := RequirePendingUserTTL(context.Background(), tc.req, caps)
+			if !tc.check(err) {
+				t.Fatalf("RequirePendingUserTTL = %v", err)
+			}
+			if reads != tc.wantReads {
+				t.Fatalf("capabilities read %d times; want %d", reads, tc.wantReads)
+			}
+		})
 	}
 }
 

@@ -84,6 +84,8 @@ type olderUserServicer struct {
 	mu     sync.Mutex
 	nextID uint64
 	live   map[uint64]*user.User
+	// deletes counts the DeleteUser requests that reached the server.
+	deletes int
 }
 
 func (o *olderUserServicer) CreateUser(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -106,6 +108,7 @@ func (o *olderUserServicer) CreateUser(_ context.Context, req *user.CreateUserRe
 func (o *olderUserServicer) DeleteUser(_ context.Context, id uint64) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.deletes++
 	delete(o.live, id)
 	return nil
 }
@@ -116,6 +119,14 @@ func (o *olderUserServicer) survivors() int {
 	return len(o.live)
 }
 
+// requests returns the CreateUser and DeleteUser requests that reached the
+// server.
+func (o *olderUserServicer) requests() (creates uint64, deletes int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.nextID, o.deletes
+}
+
 // TestGRPCUser_CreateUser_OlderServerRefusesPendingTTL is the rolling-upgrade
 // case: a TTL-bearing create sent to a server that cannot honour the TTL must
 // fail with *CapabilityUnsupportedError and leave no immortal pending account,
@@ -123,7 +134,8 @@ func (o *olderUserServicer) survivors() int {
 func TestGRPCUser_CreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
 	older := &olderUserServicer{}
 	srv := googlegrpc.NewServer()
-	grpcpkg.RegisterService(srv, nil, nil, grpcpkg.WithRegisterUserService(older))
+	// The older server's capabilities carry no pendingUserTTL bit.
+	grpcpkg.RegisterService(srv, nil, &mockAdminService{olderServer: true}, grpcpkg.WithRegisterUserService(older))
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -143,6 +155,9 @@ func TestGRPCUser_CreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
 	}
 	if n := older.survivors(); n != 0 {
 		t.Fatalf("%d pending account(s) survive with no expiry; want 0", n)
+	}
+	if c, d := older.requests(); c != 0 || d != 0 {
+		t.Fatalf("older server saw %d CreateUser and %d DeleteUser request(s); want 0 and 0 (refused before sending)", c, d)
 	}
 
 	if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{

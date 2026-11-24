@@ -17,7 +17,6 @@ package unix
 import (
 	"context"
 	"errors"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -99,29 +98,25 @@ func TestUnixRT_CreateUser_RefusesFractionalPendingTTL(t *testing.T) {
 // *CapabilityUnsupportedError and leave no immortal pending account; a create
 // without a TTL still succeeds.
 func TestUnixRT_CreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
-	var mu sync.Mutex
-	live := map[uint64]bool{}
-	var nextID uint64
+	var creates, deletes atomic.Int32
 	usvc := &mockUserSvc{
 		createFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
-			mu.Lock()
-			defer mu.Unlock()
-			nextID++
-			live[nextID] = true
+			id := uint64(creates.Add(1))
 			lc := user.LifecycleActive
 			if req.Pending {
 				lc = user.LifecyclePending
 			}
-			return &user.User{ID: nextID, Username: req.Username, Lifecycle: lc}, nil
+			return &user.User{ID: id, Username: req.Username, Lifecycle: lc}, nil
 		},
-		deleteFn: func(_ context.Context, id uint64) error {
-			mu.Lock()
-			defer mu.Unlock()
-			delete(live, id)
+		deleteFn: func(_ context.Context, _ uint64) error {
+			deletes.Add(1)
 			return nil
 		},
 	}
-	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
+	// The older server's capabilities carry no pendingUserTTL bit.
+	older := newMockAdminService()
+	older.olderServer = true
+	tr, cleanup := startAuthServerWithAdmin(t, older, unixserver.WithUserService(usvc))
 	defer cleanup()
 
 	u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
@@ -131,11 +126,8 @@ func TestUnixRT_CreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("CreateUser(pending_ttl=24h) on an older server = %+v, %v; want CapabilityUnsupportedError", u, err)
 	}
-	mu.Lock()
-	n := len(live)
-	mu.Unlock()
-	if n != 0 {
-		t.Fatalf("%d pending account(s) survive with no expiry; want 0", n)
+	if c, d := creates.Load(), deletes.Load(); c != 0 || d != 0 {
+		t.Fatalf("older server saw %d CreateUser and %d DeleteUser request(s); want 0 and 0 (refused before sending)", c, d)
 	}
 
 	if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{

@@ -80,6 +80,11 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CreateUser", Err: err}
 	}
+	// Primary check (owner ruling 1243): send a TTL only to a server that
+	// advertises the pendingUserTTL capability bit.
+	if err := transport.RequirePendingUserTTL(ctx, req, t.Capabilities); err != nil {
+		return nil, err
+	}
 
 	resp, err := t.client.CreateUser(ctx, &pb.CreateUserRequest{
 		TenantId:             req.TenantID,

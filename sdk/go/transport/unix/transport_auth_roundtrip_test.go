@@ -330,9 +330,16 @@ var _ service.CertEnrollmentServicer = (*mockCertEnrollmentSvc)(nil)
 
 func startAuthServer(t *testing.T, opts ...unixserver.ServerOption) (*Transport, func()) {
 	t.Helper()
+	return startAuthServerWithAdmin(t, newMockAdminService(), opts...)
+}
+
+// startAuthServerWithAdmin is startAuthServer with the admin service given,
+// so a test can serve the capabilities of an older server.
+func startAuthServerWithAdmin(t *testing.T, admin *mockAdminService, opts ...unixserver.ServerOption) (*Transport, func()) {
+	t.Helper()
 	socketPath := tempSocketPath(t)
 	opts = append(opts, unixserver.WithTLS(testUnixServerTLS))
-	srv := unixserver.NewServer(newMockKVService(), newMockAdminService(), socketPath, opts...)
+	srv := unixserver.NewServer(newMockKVService(), admin, socketPath, opts...)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
