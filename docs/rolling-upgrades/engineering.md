@@ -67,7 +67,7 @@ release "0.60.0-alpha"`. The error class table maps it to
 | QUIC frame protocol (clients and replica forwarding) | TLS ALPN (RFC 7301) from `wire.Protocols`: the current identifier first and at most one previous; today `qrdb-quic/3` only | the TLS 1.3 handshake | alert 120 `no_application_protocol` (QUIC error `0x178`), never a decode failure; the Go SDK reports it as a typed, non-retryable refusal | `pkg/api/quic/wire`, `sdk/go/transport/quic` |
 | Raft transport | unchanged: ALPN `quicraft`, go-quicraft `WireVersion` / `WireWindow`, internal to go-quicraft | go-quicraft | go-quicraft `ErrUnsupportedVersion` | go-quicraft (seam Q3, clause (7), open) |
 | Raft command encoding | `[op:1][payload]`, no version; a new command is used only after its feature activates (clause (4)) | the feature gate, before proposing | `UnsupportedFeatureError` / the documented pre-activation fallback | `pkg/protocol`, `pkg/cluster/featuregate` |
-| SDK request fields | not negotiated yet (#1601: an older server drops `pending_ttl_seconds`, and the SDK deletes the account after the fact) | — | — | clause (5), open under Q5 |
+| SDK request fields | a request-feature bit per field in the capabilities response; today `pendingUserTTL` (proto `pending_user_ttl`, field 21), absent on v0.58.5-alpha and earlier, so it reads as false | every Go SDK transport (REST, gRPC, QUIC, Unix, MCP), before the TTL-bearing `CreateUser` is sent (`transport.RequirePendingUserTTL`); the embedded transport needs none. `EnforcePendingTTL` stays as the post-create guard for a stale or mixed-cluster answer | `*transport.CapabilityUnsupportedError`; nothing reaches the server | `pkg/capabilities`, `sdk/go/transport` (clause (5), Q5 ruled (b), ruling 1243) |
 
 **Feature gate (clause (4)).** Each node advertises its features.
 `Gate.Enabled` is true only once a feature is activated cluster-wide (every
@@ -121,8 +121,8 @@ compatibility statement" (module tags; cluster adjacency is this document),
 ## Questions for review
 
 The owner ruled on Q4 (decision 231 (a)) and approved the SPEC row text as
-written (ruling 913). Q1 and Q2 are settled by convention (ruling 109). Q3 and
-Q5 stay open. Owner decision 224 ordered the row.
+written (ruling 913), and ruled Q5 (b) (ruling 1243). Q1 and Q2 are settled by
+convention (ruling 109). Q3 stays open. Owner decision 224 ordered the row.
 
 1. **What "adjacent" means before 1.0.** Adopted; see
    [Adjacent releases](#adjacent-releases).
@@ -143,12 +143,16 @@ Q5 stay open. Owner decision 224 ordered the row.
    version negotiation and deleted in the release after, is allowed
    (`wire.Protocols` keeps at most one previous identifier). Any other shim
    stays banned.
-5. **How a client learns what a server supports** (the #1601 TTL case). Open;
-   the owner decides. The options are a server release version in the
-   capabilities response, a per-feature capability bit, or a typed refusal from
-   the server; the coordinator recommends the release version in the
-   capabilities response. The SPEC row requires only that the field is never
-   silently dropped. Clause (5) and T8 wait on it.
+5. **How a client learns what a server supports** (the #1601 TTL case).
+   Ruled (b), owner ruling 1243: a per-feature capability bit. The server
+   advertises a request-feature bit in the capabilities response for each
+   request field an older server would drop; today `pendingUserTTL`. A bit an
+   older server does not send reads as false. Every Go SDK transport reads the
+   bit before a TTL-bearing `CreateUser` and refuses with
+   `*transport.CapabilityUnsupportedError` without sending it. There is no
+   release-version comparison in the SDK and no server-side refusal path.
+   The bit is separate from the `pending-user-ttl` feature gate: it says the
+   binary honours the field, not that the feature is activated cluster-wide.
 
 ## Test plan
 
@@ -187,7 +191,7 @@ row. Each test states which pair of builds it runs on:
 | T5 | Version-gap refusal (N and N+2): enrolment returns the typed refusal naming both releases and the founders keep exactly their members on every transport; a QUIC client offering no protocol the node speaks ends in alert 120; a candidate with no announced release is refused. The Raft `WireWindow` leg waits on Q3. | `TestRollingUpgrade_VersionGapRefused_CLI`, `TestRollingUpgrade_UnannouncedCandidateRefused_CLI` |
 | T6 | Enrolment across versions: an N+1 node joins an N cluster, and an N node joins an N+1 cluster before activation. | `TestRollingUpgrade_EnrolmentAcrossVersions_CLI` |
 | T7 | Key delivery across versions, in both directions. | `TestRollingUpgrade_KeyDeliveryAcrossVersions_CLI` |
-| T8 | An SDK with the TTL field → the fixed pre-TTL v0.58.5-alpha server: TTL user create is refused before any user exists, with a typed error (today it is created and then deleted, #1601). | not implemented: Q5 |
+| T8 | An SDK with the TTL field → a server without the `pendingUserTTL` bit: TTL user create is refused before any request reaches the server, with `*transport.CapabilityUnsupportedError`, on every SDK transport, and a create without a TTL still succeeds; on the current server every protocol's `qrdb admin capabilities` reports the bit. The run against the released v0.58.5-alpha binary joins the released-pair runs. | `TestRESTCreateUser_OlderServerRefusesPendingTTL`, `TestGRPCUser_CreateUser_OlderServerRefusesPendingTTL`, `TestE2E_CreateUser_OlderServerRefusesPendingTTL` (QUIC), `TestUnixRT_CreateUser_OlderServerRefusesPendingTTL`, `TestTransport_CreateUser_OlderServerRefusesPendingTTL` (MCP), `TestUsers_CLI_PendingTTL_PerProtocol` |
 | T9 | Pre-activation gating. In both mixed configurations, the test-only gated operation invoked on an N+1 member is refused with the typed not-yet-active error (or takes the N path) on every transport, no member's Raft log carries the new command, and the N members keep applying. After every member runs N+1 and the feature activates, the same operation succeeds and replicates to every member. | `TestT9_PreActivationGating` |
 
 ## Delivery
@@ -203,11 +207,11 @@ PR #1638 delivers, on the row branch:
 3. The cluster-wide feature gate with permanent activation and the Go SDK
    node quarantine.
 4. The synthetic N+1 build and tests T1-T7 and T9.
+5. Clause (5) under Q5 (b): the `pendingUserTTL` request-feature bit on every
+   transport, the Go SDK's pre-send refusal, and T8 per transport.
 
 What remains open:
 
-- **Clause (5), Q5 and T8**: SDK request-field negotiation and the #1601 TTL
-  create wait on the owner's answer to Q5.
 - **Clause (7), Q3 and the Raft leg of T5**: the Raft transport's version
   window waits on the go-quicraft seam.
 - **go-quicraft issue 1192**: the two admission residuals (a leadership change
@@ -215,4 +219,4 @@ What remains open:
   commits) wait on a proposal-time configuration check in go-quicraft; the
   owner ask (option A) is to ship with the gap stated.
 - **Released-pair runs**: they start once a release carrying this row is
-  tagged.
+  tagged; T8 against the released v0.58.5-alpha binary runs with them.

@@ -286,8 +286,12 @@ misclassification. An older client
 loses status precision and nothing else. A cluster that mixes `qrdbd` releases
 is bounded by the adjacency rule of
 [rolling upgrades](../rolling-upgrades/engineering.md#adjacent-releases); a
-new SDK request field that an older server would drop is clause (5) of that
-row, still open under its Q5.
+new SDK request field that an older server would drop carries a request-feature
+bit in the capabilities response (clause (5), Q5 ruled (b), owner ruling 1243).
+Today the only one is `pendingUserTTL`. The Go SDK reads it before a
+TTL-bearing `CreateUser` and refuses with `*transport.CapabilityUnsupportedError`
+without sending the request. An older server sends no bit, and that reads as
+false.
 
 ### QUIC protocol version and response acknowledgement
 
