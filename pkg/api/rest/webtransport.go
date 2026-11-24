@@ -10,9 +10,9 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/jeremyhahn/go-qrdb/internal/publicpath"
 	"github.com/jeremyhahn/go-qrdb/internal/webtransport"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
 // WebTransportSession is a WebTransport session as
@@ -57,7 +57,7 @@ func WithWebTransportHandler(path string, h WebTransportHandler) ServerOption {
 		// authentication for every method, CONNECT included, so the
 		// session handler would never see a caller and every upgrade
 		// would be refused with 401 while Start advertised WebTransport.
-		public := middleware.IsPublicPath(path)
+		public := publicpath.Is(path)
 		if h == nil || !strings.HasPrefix(path, "/") || public {
 			s.webTransportErr = &InvalidWebTransportHandlerError{Path: path, NilHandler: h == nil, PublicPath: public}
 			return

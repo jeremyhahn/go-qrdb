@@ -608,7 +608,7 @@ Invariants:
   request's host. The REST authentication chain is the access control.
 - **Invalid options fail Start.** A nil handler, a path not starting with
   `/`, or a path the authentication middleware exempts as public for every
-  method (`middleware.IsPublicPath`: `/v1/ca/bootstrap`, `/v1/config/initialized`
+  method (the internal pre-authentication allowlist in `internal/publicpath`: `/v1/ca/bootstrap`, `/v1/config/initialized`
   and the two `/v1/cluster/` key-transport routes), makes `Start` return
   `*rest.InvalidWebTransportHandlerError`. A CONNECT on a public path would
   reach the handler with no caller, so every session would be refused.

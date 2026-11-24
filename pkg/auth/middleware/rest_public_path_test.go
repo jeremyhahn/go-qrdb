@@ -20,24 +20,8 @@ import (
 	"testing"
 )
 
-func TestIsPublicPath_BuiltInAllowlist(t *testing.T) {
-	for _, path := range []string{"/v1/ca/bootstrap", "/v1/config/initialized", "/v1/cluster/keydelivery", "/v1/cluster/nodekey"} {
-		if !IsPublicPath(path) {
-			t.Errorf("IsPublicPath(%q) = false, want true", path)
-		}
-	}
-}
-
-func TestIsPublicPath_ExactMatchOnly(t *testing.T) {
-	for _, path := range []string{"", "/", "/health", "/health/", "/health/wt", "/healthz", "/v1/cluster/", "/v1/cluster/other", "/v1/kv"} {
-		if IsPublicPath(path) {
-			t.Errorf("IsPublicPath(%q) = true, want false", path)
-		}
-	}
-}
-
 // TestRESTMiddleware_PublicPathSkipsAuthenticationForEveryMethod pins that
-// the exemption IsPublicPath reports is the one RESTMiddleware applies, and
+// every path on the built-in pre-authentication allowlist is exempt, and
 // that it does not depend on the method: a CONNECT is exempt too.
 func TestRESTMiddleware_PublicPathSkipsAuthenticationForEveryMethod(t *testing.T) {
 	authn := &credentialAuthenticator{}
