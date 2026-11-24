@@ -285,7 +285,8 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	// crash) returns with the committed journal still in place, so the next
 	// boot's RecoverInterruptedMigration rolls the records forward. A record
 	// commit failure is ErrMigrationRecordsPending: the caller must complete
-	// it (FinishCommittedMigration) before it serves on the adopted root.
+	// it (FinishCommittedMigration) before it serves on the adopted root. A
+	// retirement failure after the records commit is ErrMigrationRetirePending.
 	if len(j.StagedRecords) > 0 {
 		if cerr := m.Source.CommitStagedRecords(ctx, j.StagedRecords); cerr != nil {
 			return fmt.Errorf("%w: commit re-encrypted records: %w", ErrMigrationRecordsPending, cerr)
@@ -293,7 +294,7 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	}
 	if m.RetireRecords != nil {
 		if rerr := m.RetireRecords(ctx); rerr != nil {
-			return fmt.Errorf("retire the replaced records' plaintext history: %w", rerr)
+			return fmt.Errorf("%w: retire the replaced records' plaintext history: %w", ErrMigrationRetirePending, rerr)
 		}
 	}
 
@@ -386,18 +387,31 @@ var ErrMigrationStagingRootUnreadable = errors.New("qrdb/database: migration sta
 // or the boot's RecoverInterruptedMigration completes the commit.
 var ErrMigrationRecordsPending = errors.New("qrdb/database: committed migration's re-encrypted records not yet committed; the node must not serve until recovery completes them")
 
+// ErrMigrationRetirePending reports a migration whose staged records are
+// proven committed (copied over their live keys and the staged copies
+// deleted) but whose plaintext retirement or journal completion failed. The
+// data plane may serve on the adopted root; the kept journal makes the next
+// boot retry the retirement. It is the only Run or FinishCommittedMigration
+// failure after the commit point that permits serving.
+var ErrMigrationRetirePending = errors.New("qrdb/database: committed migration's records are committed; plaintext retirement or journal completion is not finished and the next boot retries it")
+
 // FinishCommittedMigration completes, over b's own backend, a migration that
 // passed its commit point but returned before its journal was finished (Run's
 // staged-record commit or plaintext retirement failed). It copies every
 // staged record over its live key and deletes the staged copy, runs retire
 // (when set), and only then marks the journal complete and removes it. A
-// failure of the record commit is ErrMigrationRecordsPending, with the journal
-// kept for the next attempt or the boot's RecoverInterruptedMigration. No
+// failure to read the journal or to commit the records is
+// ErrMigrationRecordsPending (the commit is not proven, so the caller must
+// not serve), with the journal kept for the next attempt or the boot's
+// RecoverInterruptedMigration. A failure after the records are committed
+// (retire, or the journal's completion) is ErrMigrationRetirePending. No
 // journal, or one before the commit point, is left untouched.
 func FinishCommittedMigration(ctx context.Context, b *seal.StorageBarrier, retire func(context.Context) error) error {
 	j, err := b.LoadMigrationJournal(ctx)
 	if err != nil {
-		return err
+		// The journal cannot be read, so nothing proves the staged records
+		// were committed: fail closed.
+		return fmt.Errorf("%w: load the migration journal: %w", ErrMigrationRecordsPending, err)
 	}
 	if j == nil || !j.Committed() {
 		return nil
@@ -409,7 +423,7 @@ func FinishCommittedMigration(ctx context.Context, b *seal.StorageBarrier, retir
 	}
 	if retire != nil {
 		if rerr := retire(ctx); rerr != nil {
-			return fmt.Errorf("retire the replaced records' plaintext history: %w", rerr)
+			return fmt.Errorf("%w: retire the replaced records' plaintext history: %w", ErrMigrationRetirePending, rerr)
 		}
 	}
 	for _, dir := range j.StoreDirs {
@@ -417,9 +431,12 @@ func FinishCommittedMigration(ctx context.Context, b *seal.StorageBarrier, retir
 	}
 	j.Phase = seal.PhaseComplete
 	if err := b.CheckpointMigration(ctx, j); err != nil {
-		return err
+		return fmt.Errorf("%w: checkpoint the completed journal: %w", ErrMigrationRetirePending, err)
 	}
-	return b.FinishMigration(ctx)
+	if err := b.FinishMigration(ctx); err != nil {
+		return fmt.Errorf("%w: finish the migration journal: %w", ErrMigrationRetirePending, err)
+	}
+	return nil
 }
 
 // RecoverInterruptedMigration reconciles a migration that was interrupted by a

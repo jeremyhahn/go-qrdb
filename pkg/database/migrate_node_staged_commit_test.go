@@ -29,8 +29,17 @@ import (
 // reaches the wrapped backend unchanged.
 type failStagedDeleteBackend struct {
 	seal.StorageBackend
-	prefix string
-	fail   atomic.Bool
+	prefix  string
+	fail    atomic.Bool
+	getKey  string
+	failGet atomic.Bool
+}
+
+func (b *failStagedDeleteBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	if b.failGet.Load() && key == b.getKey {
+		return nil, errInjected
+	}
+	return b.StorageBackend.Get(ctx, key)
 }
 
 func (b *failStagedDeleteBackend) Delete(ctx context.Context, key string) error {
@@ -173,5 +182,61 @@ func TestFinishCommittedMigration_CompletesInProcess(t *testing.T) {
 	// No journal (or one before the commit point) is a no-op.
 	if err := FinishCommittedMigration(ctx, b, func(context.Context) error { return errInjected }); err != nil {
 		t.Fatalf("FinishCommittedMigration with no journal = %v, want nil", err)
+	}
+}
+
+// TestFinishCommittedMigration_JournalReadFault_FailsClosed pins that a
+// journal that cannot be read is ErrMigrationRecordsPending: nothing proves
+// the staged records committed, so the caller must not serve.
+func TestFinishCommittedMigration_JournalReadFault_FailsClosed(t *testing.T) {
+	ctx := context.Background()
+	raw, fb, _, runErr := runStagedDeleteFaultMigration(t)
+	if !errors.Is(runErr, ErrMigrationRecordsPending) {
+		t.Fatalf("Run = %v, want ErrMigrationRecordsPending", runErr)
+	}
+	keyedFaulty, err := seal.NewStorageBarrier(reencTestLogger(), fb,
+		seal.BarrierConfig{RootKeyPath: "root-key", DeploymentID: 1}, seal.NewDeferredSoftwareStrategy())
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	fb.getKey = "root-key.migration"
+	fb.failGet.Store(true)
+	ferr := FinishCommittedMigration(ctx, keyedFaulty, nil)
+	if !errors.Is(ferr, ErrMigrationRecordsPending) || !errors.Is(ferr, errInjected) {
+		t.Fatalf("FinishCommittedMigration with an unreadable journal = %v, want ErrMigrationRecordsPending wrapping the fault", ferr)
+	}
+	if errors.Is(ferr, ErrMigrationRetirePending) {
+		t.Fatalf("FinishCommittedMigration with an unreadable journal = %v, must not be ErrMigrationRetirePending", ferr)
+	}
+	fb.failGet.Store(false)
+	if j, err := seal.LoadMigrationJournalFrom(ctx, raw, "root-key"); err != nil || j == nil || !j.Committed() {
+		t.Fatalf("journal after the read fault = %+v, %v; want the committed journal kept", j, err)
+	}
+}
+
+// TestFinishCommittedMigration_RetireFault_IsRetirePending pins that a
+// retirement failure after the records commit is ErrMigrationRetirePending,
+// never ErrMigrationRecordsPending, with the staging keyspace empty.
+func TestFinishCommittedMigration_RetireFault_IsRetirePending(t *testing.T) {
+	ctx := context.Background()
+	raw, fb, rec, runErr := runStagedDeleteFaultMigration(t)
+	if !errors.Is(runErr, ErrMigrationRecordsPending) {
+		t.Fatalf("Run = %v, want ErrMigrationRecordsPending", runErr)
+	}
+	fb.fail.Store(false)
+	b, err := seal.NewStorageBarrier(reencTestLogger(), fb,
+		seal.BarrierConfig{RootKeyPath: "root-key", DeploymentID: 1}, seal.NewDeferredSoftwareStrategy())
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	ferr := FinishCommittedMigration(ctx, b, func(context.Context) error { return errInjected })
+	if !errors.Is(ferr, ErrMigrationRetirePending) || !errors.Is(ferr, errInjected) {
+		t.Fatalf("FinishCommittedMigration with a failing retire = %v, want ErrMigrationRetirePending wrapping the fault", ferr)
+	}
+	if errors.Is(ferr, ErrMigrationRecordsPending) {
+		t.Fatalf("FinishCommittedMigration with a failing retire = %v, must not be ErrMigrationRecordsPending", ferr)
+	}
+	if staged, _ := raw.List(ctx, rec.StagingPrefix); len(staged) != 0 {
+		t.Fatalf("staging keyspace holds %d records after the commit, want 0", len(staged))
 	}
 }
