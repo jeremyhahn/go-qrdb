@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -28,7 +29,10 @@ import (
 	objmemory "github.com/jeremyhahn/go-objstore/pkg/memory"
 )
 
-// plainMissingStore reports a missing object on Get with a plain error, as cloud providers do.
+// errPlainMissing is the not-found error plainMissingStore returns in place of the sentinel.
+var errPlainMissing = errors.New("provider: the specified object does not exist")
+
+// plainMissingStore reports a missing object on Get, GetWithContext and Delete with a plain error, as cloud providers do.
 type plainMissingStore struct {
 	objcommon.Storage
 }
@@ -36,24 +40,52 @@ type plainMissingStore struct {
 func (s plainMissingStore) Get(key string) (io.ReadCloser, error) {
 	rc, err := s.Storage.Get(key)
 	if errors.Is(err, objcommon.ErrKeyNotFound) {
-		return nil, errors.New("provider: the specified object does not exist")
+		return nil, errPlainMissing
 	}
 	return rc, err
 }
 
-func TestEngine_MissingWithoutSentinel(t *testing.T) {
-	require.NoError(t, RegisterProvider("missing-test-plain-error", ProviderCredentials{},
-		func(settings map[string]string, creds objcommon.Credentials) (objcommon.Storage, error) {
-			store := objmemory.New()
-			if err := store.Configure(settings, creds); err != nil {
-				return nil, err
-			}
-			return plainMissingStore{Storage: store}, nil
-		}))
+func (s plainMissingStore) GetWithContext(ctx context.Context, key string) (io.ReadCloser, error) {
+	rc, err := s.Storage.GetWithContext(ctx, key)
+	if errors.Is(err, objcommon.ErrKeyNotFound) {
+		return nil, errPlainMissing
+	}
+	return rc, err
+}
 
-	e, err := New("missing-test-plain-error", map[string]string{})
+func (s plainMissingStore) Delete(key string) error {
+	ok, err := s.Storage.Exists(context.Background(), key)
+	if err == nil && !ok {
+		return errPlainMissing
+	}
+	return s.Storage.Delete(key)
+}
+
+const plainMissingProvider = "missing-test-plain-error"
+
+var registerPlainMissing sync.Once
+
+// openPlainMissing opens an engine over a fresh plainMissingStore through the provider registry.
+func openPlainMissing(t *testing.T) *Engine {
+	t.Helper()
+	registerPlainMissing.Do(func() {
+		require.NoError(t, RegisterProvider(plainMissingProvider, ProviderCredentials{},
+			func(settings map[string]string, creds objcommon.Credentials) (objcommon.Storage, error) {
+				store := objmemory.New()
+				if err := store.Configure(settings, creds); err != nil {
+					return nil, err
+				}
+				return plainMissingStore{Storage: store}, nil
+			}))
+	})
+	e, err := New(plainMissingProvider, map[string]string{})
 	require.NoError(t, err, "an empty store without the not-found sentinel opens")
-	defer func() { _ = e.Close() }()
+	t.Cleanup(func() { _ = e.Close() })
+	return e
+}
+
+func TestEngine_MissingWithoutSentinel(t *testing.T) {
+	e := openPlainMissing(t)
 
 	got, err := e.Get([]byte("absent"))
 	require.NoError(t, err)
@@ -91,4 +123,101 @@ func TestMissingIn(t *testing.T) {
 			require.Equal(t, tc.want, missingIn(context.Background(), fs, tc.name, tc.err))
 		})
 	}
+}
+
+func TestMissingIn_CallSites(t *testing.T) {
+	plainEngine := func() (*Engine, plainMissingStore) {
+		pm := plainMissingStore{Storage: objmemory.New()}
+		return &Engine{store: pm, journal: pm, provider: "memory"}, pm
+	}
+
+	t.Run("clearJournal tolerates a missing journal", func(t *testing.T) {
+		e, _ := plainEngine()
+		require.NoError(t, e.clearJournal())
+	})
+	t.Run("clearJournal delete fault on a missing journal", func(t *testing.T) {
+		e, fs := newFaultEngine(t)
+		fs.deleteFails = true
+		require.NoError(t, e.clearJournal())
+	})
+	t.Run("clearJournal delete fault with exists fault", func(t *testing.T) {
+		e, fs := newFaultEngine(t)
+		fs.deleteFails = true
+		fs.existsFails = true
+		err := e.clearJournal()
+		var jwe *JournalWriteError
+		require.ErrorAs(t, err, &jwe)
+		require.ErrorIs(t, err, errProvider)
+	})
+	t.Run("clearJournal delete fault on a present journal", func(t *testing.T) {
+		e, fs := newFaultEngine(t)
+		require.NoError(t, fs.Storage.Put(journalName, strings.NewReader("x")))
+		fs.deleteFails = true
+		err := e.clearJournal()
+		var jwe *JournalWriteError
+		require.ErrorAs(t, err, &jwe)
+		require.ErrorIs(t, err, errProvider)
+	})
+	t.Run("recoverJournal with no journal", func(t *testing.T) {
+		e, _ := plainEngine()
+		require.NoError(t, e.recoverJournal())
+	})
+	t.Run("refuseInTreeJournal with no journal", func(t *testing.T) {
+		_, pm := plainEngine()
+		require.NoError(t, refuseInTreeJournal("memory", pm))
+	})
+	t.Run("EnsureLSMFormat marks an empty store", func(t *testing.T) {
+		_, pm := plainEngine()
+		require.NoError(t, EnsureLSMFormat(context.Background(), pm))
+		rc, err := pm.Get(formatMarkerName)
+		require.NoError(t, err)
+		defer func() { _ = rc.Close() }()
+		found, err := io.ReadAll(rc)
+		require.NoError(t, err)
+		require.Equal(t, lsmFormatVersion, string(found))
+	})
+	t.Run("hashed key absent", func(t *testing.T) {
+		e := openPlainMissing(t)
+		key := patterned(directThreshold()+1, 21)
+		_, hashed := objectName(key)
+		require.True(t, hashed)
+		got, err := e.Get(key)
+		require.NoError(t, err)
+		require.Nil(t, got)
+	})
+	t.Run("scan skips a vanished hashed record", func(t *testing.T) {
+		e, fs := newFaultEngine(t)
+		require.NoError(t, e.Set([]byte("kept"), []byte("v")))
+		ghost, _ := objectName(patterned(directThreshold()+1, 22))
+		e.store = &ghostListingStore{faultStore: fs, ghost: ghost}
+
+		entries, err := e.scan(nil, true)
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		require.Equal(t, []byte("kept"), entries[0].key)
+	})
+}
+
+// ghostListingStore lists one never-stored object and reports it missing on Get with a plain error.
+type ghostListingStore struct {
+	*faultStore
+	ghost string
+}
+
+func (g *ghostListingStore) List(prefix string) ([]string, error) {
+	names, err := g.faultStore.List(prefix)
+	if err != nil {
+		return nil, err
+	}
+	if strings.HasPrefix(g.ghost, prefix) {
+		names = append(names, g.ghost)
+	}
+	return names, nil
+}
+
+func (g *ghostListingStore) Get(name string) (io.ReadCloser, error) {
+	if name == g.ghost {
+		return nil, errPlainMissing
+	}
+	return g.faultStore.Get(name)
 }
