@@ -424,13 +424,23 @@ async function loadWebProfiles(client: Client): Promise<void> {
  */
 async function detectWebServerMode(
     client: Client,
-): Promise<{ serverMode: 'standalone' | 'raft'; nodeCount: number; refusedViews: string[] }> {
+): Promise<{ serverMode: 'standalone' | 'raft'; nodeCount: number; topologyRefused: boolean; refusedViews: Promise<string[]> }> {
     let serverMode: 'standalone' | 'raft' = 'standalone';
     let nodeCount = 0;
-    const refusedViews: string[] = [];
-    // Every probe runs at once: the connect waits for the slowest, not the sum.
+    let topologyRefused = false;
+    // Every probe runs at once; the connect does not wait for them.
     const probes = adminViewProbes(client);
     const settled = Promise.allSettled(probes.map(([, probe]) => probe()));
+    // Each admin view is offered only when the server allows the caller the
+    // view's own read route: a refusal (403) hides that view; any other
+    // error keeps it, so the view shows its own error.
+    const refusedViews = settled.then((results) => {
+        const refused: string[] = [];
+        results.forEach((r, i) => {
+            if (r.status === 'rejected' && isRefused(r.reason)) refused.push(probes[i]![0]);
+        });
+        return refused;
+    });
     try {
         const topology = await client.admin.getTopology();
         const replicaIds = new Set<string>();
@@ -444,16 +454,9 @@ async function detectWebServerMode(
     } catch (err) {
         // No topology endpoint (minimal embeddable server), forbidden, or
         // unreachable → treat as standalone; cluster surfaces stay hidden.
-        if (isRefused(err)) refusedViews.push('topology');
+        if (isRefused(err)) topologyRefused = true;
     }
-    // Each admin view is offered only when the server allows the caller the
-    // view's own read route: a refusal (403) hides that view; any other
-    // error keeps it, so the view shows its own error.
-    const results = await settled;
-    results.forEach((r, i) => {
-        if (r.status === 'rejected' && isRefused(r.reason)) refusedViews.push(probes[i]![0]);
-    });
-    return { serverMode, nodeCount, refusedViews };
+    return { serverMode, nodeCount, topologyRefused, refusedViews };
 }
 
 /**
@@ -553,19 +556,38 @@ export function isMultiNodeServer(): boolean {
  * reloads without re-probing being strictly required.
  */
 async function applyWebServerMode(client: Client, profileId: string): Promise<void> {
-    const { serverMode, nodeCount, refusedViews } = await detectWebServerMode(client);
+    const { serverMode, nodeCount, topologyRefused, refusedViews } = await detectWebServerMode(client);
+    const generation = (viewProbeGeneration.get(profileId) ?? 0) + 1;
+    viewProbeGeneration.set(profileId, generation);
+    const topologyViews = topologyRefused ? ['topology'] : [];
     connManagerStore.profiles = connManagerStore.profiles.map((p) =>
         p.id === profileId ? { ...p, serverMode, clusterNodeCount: nodeCount } : p,
     );
-    connManagerStore.refusedAdminViews = { ...connManagerStore.refusedAdminViews, [profileId]: refusedViews };
+    // Views refused by an earlier probe stay hidden until this probe settles.
+    const earlierViews = (connManagerStore.refusedAdminViews[profileId] ?? []).filter((v) => v !== 'topology');
+    connManagerStore.refusedAdminViews = {
+        ...connManagerStore.refusedAdminViews,
+        [profileId]: [...topologyViews, ...earlierViews],
+    };
     if (connManagerStore.activeProfileId === profileId) {
         connManagerStore.activeServerMode = serverMode;
         connManagerStore.activeClusterNodeCount = nodeCount;
     }
+    // The view probes settle later; only the newest probe of a profile applies.
+    void refusedViews.then((views) => {
+        if (viewProbeGeneration.get(profileId) !== generation) return;
+        connManagerStore.refusedAdminViews = {
+            ...connManagerStore.refusedAdminViews,
+            [profileId]: [...topologyViews, ...views],
+        };
+    });
     await persistence.save(client, connManagerStore.profiles).catch(() => {
         // Persistence is best-effort; the in-memory mode is what the UI reads.
     });
 }
+
+/** The newest admin-view probe started per profile. */
+const viewProbeGeneration = new Map<string, number>();
 
 /**
  * Resolves the connection state for a web-mode profile by querying the REST
