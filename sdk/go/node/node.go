@@ -137,6 +137,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/service/backupsink"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -244,7 +245,9 @@ func WithClock(c clock.Clock) NodeOption {
 
 // WithBackupSink sets the durable sink the node persists backup artifacts to.
 // Without one an embedded node's backups live only in process memory.
-// Equivalent to server.WithBackupSink; forwarded in both boot paths.
+// Equivalent to server.WithBackupSink; forwarded in both boot paths. The
+// configuration route is backup.destination (any go-objstore provider,
+// opened by the node); setting both is BackupDestinationConflictError.
 func WithBackupSink(sink service.BackupSink) NodeOption {
 	return func(o *nodeOptions) { o.backupSink = sink }
 }
@@ -356,6 +359,28 @@ func mergeSeamOptions(n nodeOptions, serverOpts []server.ServerOption) []server.
 		merged = append(merged, server.WithCertProvider(n.certProvider))
 	}
 	return append(merged, serverOpts...)
+}
+
+// openNodeBackupDestination opens the configuration's backup.destination,
+// when set, as the node's backup sink: the go-objstore provider is opened
+// through lifecycle.OpenBackupDestination, so an embedder chooses S3, Azure,
+// GCS or a local directory from configuration without importing go-objstore.
+// It returns the opened store for the node to close, or nil when the
+// configuration names no destination. A destination and WithBackupSink both
+// set is BackupDestinationConflictError.
+func openNodeBackupDestination(cfg *qrdbconfig.Config, nOpts *nodeOptions) (io.Closer, error) {
+	if cfg.Backup.Destination == nil {
+		return nil, nil
+	}
+	if nOpts.backupSink != nil {
+		return nil, &BackupDestinationConflictError{}
+	}
+	engine, err := lifecycle.OpenBackupDestination(*cfg.Backup.Destination)
+	if err != nil {
+		return nil, err
+	}
+	nOpts.backupSink = backupsink.New(engine)
+	return engine, nil
 }
 
 // WithCertKeyProviderFactory routes every tenant's login CA (Key B) signature
@@ -1204,6 +1229,11 @@ type Node struct {
 	// field actually holds, so canonicalRootKeyStrategy's nil check (see its
 	// doc comment) means what it says.
 	sealStore seal.LegacyStorage
+
+	// backupStore is the go-objstore store the configuration's
+	// backup.destination opened as the backup sink (openNodeBackupDestination),
+	// nil without one. Close closes it once the service graph is stopped.
+	backupStore io.Closer
 	// sealPINBackend is the software PIN backend over the node-local seal
 	// store, set when the seal subsystem is adopted. It stays the interface
 	// type so a node without one holds a true nil.
@@ -2913,6 +2943,11 @@ func (n *Node) Close() error {
 	if svcNode := n.svcNode.Swap(nil); svcNode != nil {
 		record(svcNode.Stop(context.Background()))
 	}
+	// The backup.destination store backs the Backup service just stopped.
+	if n.backupStore != nil {
+		record(n.backupStore.Close())
+		n.backupStore = nil
+	}
 	// The scoped encryption router is retracted only here, never in
 	// teardownDataPlane: see retractDataPlaneServices for why the migration
 	// recycle keeps it.
@@ -3054,6 +3089,17 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	for _, o := range nodeOpts {
 		o(nOpts)
 	}
+	// backup.destination becomes the backup sink seam; a failed constructor
+	// closes the store it opened, a built node closes it in Close.
+	backupStore, err := openNodeBackupDestination(cfg, nOpts)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil && backupStore != nil {
+			_ = backupStore.Close()
+		}
+	}()
 	// The composition seams (backup sink, clock, storage factory, DEK
 	// provider, limiters) ride the server options from here on: that is the
 	// one funnel both boot paths read them through.
@@ -3064,6 +3110,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	}
 
 	n := &Node{
+		backupStore:               backupStore,
 		logger:                    log,
 		preboundSockets:           server.PreboundSockets(serverOpts...),
 		sessionIssuer:             nOpts.sessionIssuer,
@@ -3280,6 +3327,17 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	for _, o := range nodeOpts {
 		o(nOpts)
 	}
+	// backup.destination becomes the backup sink seam; a failed constructor
+	// closes the store it opened, a built node closes it in Close.
+	backupStore, err := openNodeBackupDestination(cfg, nOpts)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil && backupStore != nil {
+			_ = backupStore.Close()
+		}
+	}()
 	// The composition seams (backup sink, clock, storage factory, DEK
 	// provider, limiters) ride the server options from here on: that is the
 	// one funnel both boot paths read them through.
@@ -3290,6 +3348,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	}
 
 	n := &Node{
+		backupStore:               backupStore,
 		logger:                    log,
 		preboundSockets:           server.PreboundSockets(serverOpts...),
 		sessionIssuer:             nOpts.sessionIssuer,
