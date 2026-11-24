@@ -85,23 +85,24 @@ test.describe("Settings view on an unsealed server (seal none)", () => {
     await expect(page.getByTestId("settings-server-error")).toHaveCount(0);
   });
 
-  test("Disconnect shows the disconnected state; Connect reconnects", async ({ page, request }) => {
+  test("Disconnect unmounts the workspace; reconnecting restores Settings", async ({ page, request }) => {
     await openSettings(page);
     const statusBadge = page.getByTestId("settings-connection-status");
     await expect(statusBadge).toHaveText("Connected", { timeout: LOAD_TIMEOUT });
 
     await page.getByTestId("settings-disconnect").click();
-    await expect(page.getByTestId("settings-disconnect-error")).toHaveCount(0);
-    await expect(statusBadge).toHaveText("Disconnected", { timeout: LOAD_TIMEOUT });
-    await expect(page.getByTestId("settings-disconnect")).toBeDisabled();
+    // A disconnected active profile replaces every workspace view, Settings included.
+    await expect(page.getByTestId("workspace-not-connected")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.getByTestId("settings-connection-status")).toHaveCount(0);
 
     // Disconnect is client-side only: the server keeps answering.
     const health = await request.get(`${daemon!.adminUrl}/health`, { ignoreHTTPSErrors: true });
     expect(health.status()).toBe(200);
 
-    await page.getByRole("button", { name: "Connect", exact: true }).click();
-    await expect(statusBadge).toHaveText("Connected", { timeout: LOAD_TIMEOUT });
-    await expect(page.getByTestId("settings-disconnect")).toBeEnabled();
+    // The sidebar server row connects a disconnected profile.
+    await page.locator("aside").getByRole("button", { name: /This Server/ }).first().click();
+    await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.getByTestId("workspace-not-connected")).toHaveCount(0);
 
     // A fresh page load connects again too.
     await openSettings(page);
