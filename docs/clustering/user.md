@@ -601,7 +601,8 @@ then sees a live advertisement and admits it, the same as any other node. If
 run the join again to get a fresh one. An add attempted after the
 advertisement lapsed is refused with `featuregate.UnannouncedCandidateError`
 (REST 409, gRPC and QUIC `FAILED_PRECONDITION`) rather than admitted without a
-release check. From the Go SDK, a node can instead be
+release check. On a state machine without leases the joiner's record does
+not expire, and the member removes it once it runs. From the Go SDK, a node can instead be
 registered through dynamic membership over a client of the running cluster,
 with its features in the registration published before the add.
 

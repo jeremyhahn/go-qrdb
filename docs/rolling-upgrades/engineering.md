@@ -61,7 +61,7 @@ release "0.60.0-alpha"`. The error class table maps it to
 | Channel | Announced / negotiated | Where the check runs | Refusal | Package |
 |---|---|---|---|---|
 | Cluster enrolment | `JoinRequest.ReleaseVersion` (the joiner's release); `JoinResponse.ReleaseVersion` carries the member's release on a refusal. The first frame keeps its version ‖ suite byte (`0x01`) | the signing member, before the join token is consumed, so the same token works once the joiner runs an adjacent release; a pending join keeps the checked release | `*release.GapError`, channel `enrollment`; REST 409; the joiner rebuilds the typed gap from the response and exits | `pkg/clusterenroll` (`join_csr.go`, `join_http.go`, `pending_join.go`) |
-| Raft membership | `Member.ReleaseVersion` in each node's member record | `featuregate.Gate.AdmitReplica` / `admitRelease` on every add, reading the member stores afresh and rechecking immediately before the proposal; `Gate.Start` refuses a restart onto a release no longer adjacent to the committed members | `*release.GapError`, channel `raft-membership`; a candidate with no announced release is `*featuregate.UnannouncedCandidateError`; gRPC and QUIC `FAILED_PRECONDITION`, REST 409 | `pkg/cluster` (`membership.go`), `pkg/cluster/featuregate` |
+| Raft membership | `Member.ReleaseVersion` in each node's member record | `featuregate.Gate.AdmitReplica` / `admitRelease` on every add, reading the member stores afresh and rechecking immediately before the proposal; `Gate.Start` refuses a restart onto a release no longer adjacent to the committed members; a node whose state machine has no leases starts the gate for release admission alone (`Gate.StartAdmission`: the restart release check, the release record and admission reads of the stored records, no activation) | `*release.GapError`, channel `raft-membership`; a candidate with no announced release is `*featuregate.UnannouncedCandidateError`; gRPC and QUIC `FAILED_PRECONDITION`, REST 409 | `pkg/cluster` (`membership.go`), `pkg/cluster/featuregate` |
 | Key delivery | `Envelope.ReleaseVersion` (the sender's release), bound into the HPKE info string (`sealInfo`), so it cannot be altered without failing `Open` | the receiver, before the placement gate and before `Open` | `*release.GapError`, channel `key-delivery`; REST 409 with the receiver's release; the sender returns `ErrDelivery` joined with the typed gap | `pkg/keydelivery` (`hpke.go`, `keydelivery.go`), `pkg/clusterkeys` (`receiver.go`, `sender.go`) |
 | Replica forwarding (REST, gRPC, QUIC, MCP) | `CallerAssertion.ReleaseVersion` (JSON `release_version`), the forwarding node's release inside the signed on-behalf assertion | the receiving node, after the assertion's signature verifies | `*release.GapError`, channel `replica-forwarding`; REST and MCP 409 (never the opaque 401, never admitted anonymously), gRPC and QUIC `FAILED_PRECONDITION` | `pkg/auth/forward` (`assertion.go`), `pkg/auth/middleware` (`onbehalf.go`), `pkg/api/mcp` |
 | QUIC frame protocol (clients and replica forwarding) | TLS ALPN (RFC 7301) from `wire.Protocols`: the current identifier first and at most one previous; today `qrdb-quic/3` only | the TLS 1.3 handshake | alert 120 `no_application_protocol` (QUIC error `0x178`), never a decode failure; the Go SDK reports it as a typed, non-retryable refusal | `pkg/api/quic/wire`, `sdk/go/transport/quic` |
@@ -85,17 +85,23 @@ refusal, which `Node.Refusal` returns (`sdk/go/node/feature_gate.go`).
 immediately before a membership change is proposed. The per-node `proposeMu`
 serialises adds through one leader from that recheck to the add's outcome. A
 release intent, `{ReleaseIntentPrefix}{candidate, path-escaped}/{release}/{claimant
-replica ID}`, is claimed (`PutIfAbsent`) before the proposal and every live
+replica ID}/{bound configuration change ID}`, is claimed (`PutIfAbsent`) before
+the proposal and every live
 intent and release record is then listed linearizably: of two non-adjacent
 adds, through the same or different leaders, at least one sees the other's
 intent and is refused with the release gap. `EnforceRelease` records the
 restarting member's release before it lists the intents, so a restart and an
-add across each other cannot both pass. An intent is retired once its
-candidate is a committed member with its own release record, or, while the
-candidate is not a member, once no advertisement lists its claimant (the
-claimant's fence died with its lease) or the claimant is this node and its
-`proposeMu` is free (no add of this node is between claim and outcome), so a
-leader that crashed mid-add never blocks later upgrades. go-quicraft #1192
+add across each other cannot both pass. An intent is retired by one of three
+rules. Recorded: its candidate is a committed member with a release record of
+its own. Stale binding: its candidate is not a committed member, its bound
+configuration change ID is not 0, and the committed system-shard configuration
+change ID is past it, whoever the claimant is; Raft refuses an add bound to a
+configuration that is no longer current, so the claimed add can no longer
+commit. Own and idle: its candidate is not a committed member, the claimant is
+this node, and its `proposeMu` is free (no add of this node is between claim
+and outcome). An intent of a claimant that lost its lease is kept until its
+bound add can no longer commit, so a leader that crashed mid-add never blocks
+later upgrades and an add still in flight is never forgotten. go-quicraft #1192
 (a configuration check on the Raft worker at the proposal boundary) is no
 longer needed for the release rule; it stays a hardening item
 ([plans/1628.md](../plans/1628.md) "rw1628wa").
@@ -215,7 +221,10 @@ PR #1638 delivers, on the row branch:
    refusal), key delivery and replica forwarding, with the REST, gRPC, QUIC
    and MCP codes above; ALPN lists on the QUIC channels, typed in the Go SDK;
    release intents that serialise admission across leaders and against
-   restarts, retired when their candidate records or their claimant is gone.
+   restarts, retired once their candidate records, once their bound
+   configuration change ID is past (the claimed add can no longer commit), or
+   when they are this node's own and no add of it is in flight; and release
+   admission on a state machine without leases (`Gate.StartAdmission`).
 3. The cluster-wide feature gate with permanent activation and the Go SDK
    node quarantine.
 4. The synthetic N+1 build and tests T1-T7 and T9.

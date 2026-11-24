@@ -535,7 +535,9 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   listed linearizably after it serialises admission: of two non-adjacent
   adds through different leaders at least one is refused, and
   `EnforceRelease` records a restart's release before it lists the
-  intents. An intent of a crashed claimant is retired; see
+  intents. An intent whose candidate is not a member is retired once the
+  committed system-shard configuration change ID is past its bound one, so
+  the claimed add can no longer commit; see
   [../rolling-upgrades/engineering.md](../rolling-upgrades/engineering.md)
   "Admission across leaders and restarts".
 - **Withdrawal.** `qrdbd` closes the advertiser and the gate explicitly in its
@@ -598,12 +600,15 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   the operator's `member add` sees a live advertisement and admits the node
   exactly as it would a long-running one. The record is a stopgap, not a
   substitute for the node's own advertisement: it lapses with its lease, and
-  once the node is a member and running, its own gate replaces it. A
+  once the node is a member and running, its own gate replaces it. When the
+state machine has no lease support, `joinadvertise.New` writes the joiner
+record with a plain Put instead; such a record does not lapse, and the member
+deletes it once its own release is recorded (`Gate.StartAdmission`, which a
+node without leases starts in place of `Gate.Start`). A
   `FeatureAdvertiser` failure is logged, not fatal -- the certificate
   `HandleJoinRequest` already issued is still returned, and `member add`
   simply surfaces the same refusal it always would with no advertiser
-  configured at all (a state machine type with no lease support, see
-  `joinadvertise.New`'s own doc comment). A node that registers through
+  configured at all. A node that registers through
   **dynamic membership** from a client of the running cluster, with its
   features in the registration, does not need this: its registration
   record is exactly the live advertisement `Supports` reads, published
