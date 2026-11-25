@@ -15,8 +15,13 @@
 package lifecycle
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"sort"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,11 +29,14 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -634,4 +642,225 @@ func TestAttachHomeSource_RefusesWithoutARoutingResolver(t *testing.T) {
 			t.Fatalf("refused attach bound served=%v credentials=%d calls", served.src, creds.calls)
 		}
 	}
+}
+
+// quietLogger returns a logger that discards every record.
+func quietLogger(t *testing.T) interfaces.Logger {
+	t.Helper()
+	l, err := logger.NewWithHandler(slog.DiscardHandler, logger.LogConfig{})
+	if err != nil {
+		t.Fatalf("NewWithHandler: %v", err)
+	}
+	return logger.NewAdapter(l)
+}
+
+// isolatedVectorNode returns a node whose StoreResolver keeps acme in a home of the given isolation and beta prefix-scoped.
+// isolatingTenants reports id with the given isolation, as a seal-enabled tenant service records it.
+type isolatingTenants struct {
+	tenant.TenantServicer
+	id        string
+	isolation tenant.IsolationType
+}
+
+func (s isolatingTenants) GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error) {
+	info, err := s.TenantServicer.GetTenant(ctx, tenantID)
+	if err != nil || tenantID != s.id {
+		return info, err
+	}
+	cp := *info
+	cp.IsolationType = s.isolation
+	return &cp, nil
+}
+
+func isolatedVectorNode(t *testing.T, isolation tenant.IsolationType) (*Node, *seal.BarrierRegistry, *vector.MemoryVectorStorage) {
+	t.Helper()
+	ctx := context.Background()
+	reg := newHomeRegistry(t)
+	strategy, err := seal.NewSoftwareStrategy(ctx, []byte("acme-passphrase"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	tb, err := reg.RegisterTenant(ctx, "acme", seal.NewMemoryBackend(), seal.BarrierConfig{}, strategy)
+	if err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
+	}
+	if err := tb.Barrier().Initialize(ctx, seal.MustCredentials(ctx, []byte("acme-passphrase"))); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	shared := kvstore.NewMemoryKVStore()
+	tenants, err := tenant.NewKVTenantService(shared, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("NewKVTenantService: %v", err)
+	}
+	for _, id := range []string{"acme", "beta"} {
+		if _, err := tenants.CreateTenant(ctx, id, id, tenant.IsolationPrefix); err != nil {
+			t.Fatalf("CreateTenant(%s): %v", id, err)
+		}
+	}
+	resolver, err := tenant.NewStoreResolver(shared, reg, isolatingTenants{TenantServicer: tenants, id: "acme", isolation: isolation})
+	if err != nil {
+		t.Fatalf("NewStoreResolver: %v", err)
+	}
+	nodeWide := vector.NewMemoryVectorStorage()
+	vec, err := service.NewVectorService(nodeWide, quietLogger(t))
+	if err != nil {
+		t.Fatalf("NewVectorService: %v", err)
+	}
+	return &Node{StoreResolver: resolver, Vector: vec, Database: &provisioningDatabase{}}, reg, nodeWide
+}
+
+// requireVectorsInHome checks acme's vectors land in home's vector keyspace and beta's in nodeWide.
+func requireVectorsInHome(t *testing.T, n *Node, home kvstore.KVStore, nodeWide *vector.MemoryVectorStorage) {
+	t.Helper()
+	for _, id := range []string{"acme", "beta"} {
+		ctx := tenant.WithTenantID(context.Background(), id)
+		if _, err := n.Vector.CreateNamespace(ctx, &service.CreateNamespaceRequest{Namespace: "docs", Dimension: 2, DistanceMetric: "cosine"}); err != nil {
+			t.Fatalf("CreateNamespace(%s): %v", id, err)
+		}
+		if _, err := n.Vector.UpsertVector(ctx, &service.UpsertVectorRequest{Namespace: "docs", ID: 1, Vector: []float32{1, 0}}); err != nil {
+			t.Fatalf("UpsertVector(%s): %v", id, err)
+		}
+		got, err := n.Vector.GetVector(ctx, &service.GetVectorRequest{Namespace: "docs", ID: 1})
+		if err != nil || !got.Found {
+			t.Fatalf("GetVector(%s) = %+v, %v; want found", id, got, err)
+		}
+	}
+	keys, err := home.List(context.Background(), "__vector/")
+	if err != nil {
+		t.Fatalf("List(home): %v", err)
+	}
+	if len(keys) == 0 {
+		t.Fatal("acme's home store holds no vector key")
+	}
+	spaces, err := nodeWide.ListNamespaces(context.Background())
+	if err != nil {
+		t.Fatalf("ListNamespaces(node-wide): %v", err)
+	}
+	if len(spaces) != 1 || !strings.HasPrefix(spaces[0].Name, "beta") {
+		t.Fatalf("node-wide namespaces = %+v, want beta's only", spaces)
+	}
+}
+
+func TestAttachLocalTenantHomes_VectorsInTenantBarrier(t *testing.T) {
+	n, reg, nodeWide := isolatedVectorNode(t, tenant.IsolationBarrier)
+	if !AttachLocalTenantHomes(n, reg, nil) {
+		t.Fatal("AttachLocalTenantHomes = false, want true")
+	}
+	if err := attachVectorTenantHomes(n); err != nil {
+		t.Fatalf("attachVectorTenantHomes: %v", err)
+	}
+	home, err := n.StoreResolver.Resolve(context.Background(), "acme")
+	if err != nil {
+		t.Fatalf("Resolve(acme): %v", err)
+	}
+	requireVectorsInHome(t, n, home, nodeWide)
+
+	if err := reg.SealTenant("acme"); err != nil {
+		t.Fatalf("SealTenant(acme): %v", err)
+	}
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	_, err = n.Vector.GetVector(ctx, &service.GetVectorRequest{Namespace: "docs", ID: 1})
+	if !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("GetVector on a sealed home = %v, want ErrTenantSealed", err)
+	}
+}
+
+func TestAttachTenantHomes_VectorsInHomeGroup(t *testing.T) {
+	n, _, nodeWide := isolatedVectorNode(t, tenant.IsolationRaft)
+	group := newMapKVServicer()
+	if !AttachTenantHomes(n, &fakeHomeServices{svcs: &server.DatabaseServices{KV: group, Transaction: newEvaluatingTxService()}}) {
+		t.Fatal("AttachTenantHomes = false, want true")
+	}
+	if err := attachVectorTenantHomes(n); err != nil {
+		t.Fatalf("attachVectorTenantHomes: %v", err)
+	}
+	home, err := n.StoreResolver.Resolve(context.Background(), "acme")
+	if err != nil {
+		t.Fatalf("Resolve(acme): %v", err)
+	}
+	requireVectorsInHome(t, n, home, nodeWide)
+	if keys := group.keysWithPrefix("__vector/"); len(keys) == 0 {
+		t.Fatal("the home group's store holds no vector key")
+	}
+}
+
+func TestAttachVectorTenantHomes_RefusesAResolverWithoutHomes(t *testing.T) {
+	vec, err := service.NewVectorService(vector.NewMemoryVectorStorage(), quietLogger(t))
+	if err != nil {
+		t.Fatalf("NewVectorService: %v", err)
+	}
+	err = attachVectorTenantHomes(&Node{StoreResolver: plainResolver{}, Vector: vec})
+	if !errors.Is(err, ErrStoreResolverLocatesNoHomes) {
+		t.Fatalf("attachVectorTenantHomes = %v, want ErrStoreResolverLocatesNoHomes", err)
+	}
+}
+
+// mapKVServicer is a map-backed KV servicer standing in for a home group's store.
+type mapKVServicer struct {
+	mockKVServicer
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func newMapKVServicer() *mapKVServicer {
+	m := &mapKVServicer{data: map[string][]byte{}}
+	m.putFn = func(_ context.Context, key string, value []byte) error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.data[key] = append([]byte(nil), value...)
+		return nil
+	}
+	m.getFn = func(_ context.Context, key string) ([]byte, error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		v, ok := m.data[key]
+		if !ok {
+			return nil, &service.KeyNotFoundError{Key: key}
+		}
+		return append([]byte(nil), v...), nil
+	}
+	m.deleteFn = func(_ context.Context, key string) error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		delete(m.data, key)
+		return nil
+	}
+	m.scanFn = func(_ context.Context, prefix string) (map[string][]byte, error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		out := map[string][]byte{}
+		for k, v := range m.data {
+			if strings.HasPrefix(k, prefix) {
+				out[k] = append([]byte(nil), v...)
+			}
+		}
+		return out, nil
+	}
+	m.listFn = func(_ context.Context, prefix string) ([]string, error) {
+		return m.keysWithPrefix(prefix), nil
+	}
+	m.compareAndSwapFn = func(_ context.Context, key string, expected, next []byte) (bool, error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		cur, ok := m.data[key]
+		if !ok || !bytes.Equal(cur, expected) {
+			return false, nil
+		}
+		m.data[key] = append([]byte(nil), next...)
+		return true, nil
+	}
+	return m
+}
+
+func (m *mapKVServicer) keysWithPrefix(prefix string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var keys []string
+	for k := range m.data {
+		if strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }

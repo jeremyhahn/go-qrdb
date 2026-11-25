@@ -63,11 +63,11 @@ func (g dbGuard) scope(ctx context.Context) context.Context {
 
 // dropFence is the check-then-write fence the vector view still uses.
 //
-// Vector writes are the one namespaced write that is not a Raft proposal:
-// the vector service stores embeddings in a node-local store, so there is no
-// replicated command for a guard to ride on, and the check here runs before
-// the write rather than inside it. See docs/databases/engineering.md for
-// what that leaves open.
+// Vector writes carry no write guard: a prefix tenant's go to the node-local
+// vector store and an isolated tenant's to its home store through the vector
+// storage interface, so the check here runs before the write rather than
+// inside it. See docs/databases/engineering.md for what that
+// leaves open.
 type dropFence struct {
 	// check reports whether the database the view is scoped to is being
 	// dropped. nil for a view with nothing to check.
