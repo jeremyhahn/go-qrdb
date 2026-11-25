@@ -184,9 +184,17 @@ func (c *materializedServiceCache) evict(tenantID, name string) {
 	e, ok := c.entries[key]
 	delete(c.entries, key)
 	c.mu.Unlock()
-	if ok {
-		closeServiceBundle(e.svcs)
+	if !ok {
+		return
 	}
+	// The binding's own vector service is closed by the binding when the
+	// database closes, so a drop that fails after its fence leaves it open.
+	if ms, isMS := e.db.Backend().(materializedStore); isMS && e.svcs != nil {
+		if own := ms.Vector(); own != nil && e.svcs.Vector == own {
+			return
+		}
+	}
+	closeServiceBundle(e.svcs)
 }
 
 // evict drops name's cached bundle when it was built for tenantID's
