@@ -765,6 +765,8 @@ func seedGuardedIdentity(t *testing.T, n *node.Node) string {
 			permission.KVList, permission.KVRange, permission.KVExists,
 			permission.TransactionExecute,
 			permission.LeaseGrant, permission.LeaseRevoke,
+			permission.IndexCreate, permission.IndexDrop, permission.IndexQuery,
+			permission.IndexScan, permission.IndexList,
 			permission.AdminHealth, permission.AdminStatus,
 		},
 	})

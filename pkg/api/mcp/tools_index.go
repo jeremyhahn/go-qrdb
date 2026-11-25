@@ -81,6 +81,9 @@ func toolIndexCreate() mcp.Tool {
 		mcp.WithBoolean("case_insensitive",
 			mcp.Description("Fold string field values on write, backfill and lookup, so \"Alpha\" and \"alpha\" are the same term. Defaults to false, i.e. case-sensitive."),
 		),
+		mcp.WithString("key_prefix",
+			mcp.Description("Index only keys under this prefix, relative to the index name's namespace; a unique index is unique only among them. Omit to index every key."),
+		),
 	)
 }
 
@@ -109,6 +112,7 @@ func handleIndexCreate(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc
 			// the engine derives the index's case behaviour from the config
 			// instead of hardcoding CaseSensitive:true (go-qrdb#34).
 			CaseSensitive: !mcp.ParseBoolean(req, "case_insensitive", false),
+			KeyPrefix:     mcp.ParseString(req, "key_prefix", ""),
 		}
 		if mcp.ParseBoolean(req, "numeric", false) {
 			config.ValueType = index.IndexValueTypeNumeric

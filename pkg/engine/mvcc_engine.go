@@ -1243,8 +1243,24 @@ func asAppErrResult(err error) (sm.Result, bool, error) {
 	return sm.Result{}, false, err
 }
 
+// writesFromOps extracts the puts and deletes of a decoded operation set, in
+// op order, for batch unique-constraint pre-validation: the check replays them
+// in that order so it admits exactly what ordered apply admits.
+func writesFromOps(ops []protocol.DecodedOp) []indexedWrite {
+	var writes []indexedWrite
+	for _, op := range ops {
+		switch op.Type {
+		case protocol.OpMVCCPut:
+			writes = append(writes, indexedWrite{Key: op.Key, Value: op.Value})
+		case protocol.OpMVCCDelete:
+			writes = append(writes, indexedWrite{Key: op.Key, Delete: true})
+		}
+	}
+	return writes
+}
+
 // putsFromOps extracts the indexable puts from a decoded operation set for
-// batch unique-constraint pre-validation.
+// the legacy (unordered) unique pre-check.
 func putsFromOps(ops []protocol.DecodedOp) []indexedPut {
 	var puts []indexedPut
 	for _, op := range ops {
@@ -1255,8 +1271,8 @@ func putsFromOps(ops []protocol.DecodedOp) []indexedPut {
 	return puts
 }
 
-// deleteKeysFromOps extracts the keys an operation set deletes, so batch
-// pre-validation can treat the unique values they hold as freed.
+// deleteKeysFromOps extracts the keys an operation set deletes, so the legacy
+// unique pre-check can treat the unique values they hold as freed.
 func deleteKeysFromOps(ops []protocol.DecodedOp) [][]byte {
 	var keys [][]byte
 	for _, op := range ops {
@@ -1265,6 +1281,30 @@ func deleteKeysFromOps(ops []protocol.DecodedOp) [][]byte {
 		}
 	}
 	return keys
+}
+
+// checkUniqueForOps runs the unique pre-check a command's flags select: the
+// ordered check (CheckUniqueViolationsBatch) when they carry
+// protocol.CmdFlagOrderedUnique, else the legacy unordered check every command
+// proposed before the cluster feature ordered-unique-check keeps, so an
+// existing log replays unchanged.
+func checkUniqueForOps(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, ops []protocol.DecodedOp, flags byte, prev func(key []byte) ([]byte, error)) error {
+	if flags&protocol.CmdFlagOrderedUnique != 0 {
+		return CheckUniqueViolationsBatch(batch, indexes, indexFields, indexScopes, writesFromOps(ops), prev)
+	}
+	return checkUniqueViolationsBatchUnordered(batch, indexes, indexFields, indexScopes, putsFromOps(ops), deleteKeysFromOps(ops))
+}
+
+// mvccPriorValueReader reads the value a key holds before an ordered set
+// through batch (nil when absent), for the ordered unique pre-check.
+func mvccPriorValueReader(s *mvcc.Store, batch storage.Batch) func(key []byte) ([]byte, error) {
+	return func(key []byte) ([]byte, error) {
+		kv, err := getInBatchAllowingAbsence(s, batch, key)
+		if err != nil || kv == nil {
+			return nil, err
+		}
+		return kv.Value, nil
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1944,7 +1984,7 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 	// (read-only, delete-aware) so a violation rejects the transaction
 	// atomically via a non-fatal application error — no partial writes, no
 	// consensus stall.
-	if verr := CheckUniqueViolationsBatch(batch, e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+	if verr := checkUniqueForOps(batch, e.indexes, e.indexFields, e.indexScopes, ops, txn.Flags, mvccPriorValueReader(s, batch)); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -1973,7 +2013,7 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 			reads[i] = read
 			continue
 		}
-		opNotifs, opErr := e.executeDecodedOpWithNotify(s, lr, batch, op, rev)
+		opNotifs, opErr := e.executeDecodedOpWithNotify(s, lr, batch, op, rev, txn.Flags)
 		if opErr != nil {
 			return sm.Result{}, nil, opErr
 		}
@@ -2151,11 +2191,11 @@ func txnRead(s *mvcc.Store, batch storage.Batch, rev int64, op protocol.DecodedO
 // handleBatch processes a batch of operations. All operations are executed
 // atomically at a single revision.
 func (e *MVCCEngine) handleBatch(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
-	ops, err := protocol.DecodeBatch(payload)
+	ops, flags, err := protocol.DecodeBatchFlags(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
-	return e.applyDecodedBatch(s, lr, batch, ops)
+	return e.applyDecodedBatch(s, lr, batch, ops, flags)
 }
 
 // handleDeleteRange applies protocol.OpDeleteRange: it deletes every live key
@@ -2190,14 +2230,14 @@ func (e *MVCCEngine) handleDeleteRange(s *mvcc.Store, lr *lease.Lessor, batch st
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
-	return e.applyDecodedBatch(s, lr, batch, deleteRangeOps(protocol.OpMVCCDelete, keys))
+	return e.applyDecodedBatch(s, lr, batch, deleteRangeOps(protocol.OpMVCCDelete, keys), 0)
 }
 
 // applyDecodedBatch applies a decoded operation set atomically at one new
 // revision. Every refusal is asked before anything is staged, so a refused
 // set leaves the batch untouched. It is the single body behind OpBatch and
 // OpDeleteRange.
-func (e *MVCCEngine) applyDecodedBatch(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, ops []protocol.DecodedOp) (sm.Result, []Notification, error) {
+func (e *MVCCEngine) applyDecodedBatch(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, ops []protocol.DecodedOp, flags byte) (sm.Result, []Notification, error) {
 	if res, refused := statemachine.ReservedKeyRefusal(statemachine.OpKeys(ops)...); refused {
 		return res, nil, nil
 	}
@@ -2220,7 +2260,7 @@ func (e *MVCCEngine) applyDecodedBatch(s *mvcc.Store, lr *lease.Lessor, batch st
 	// Pre-validate unique-index constraints for the whole batch (read-only,
 	// delete-aware) so a violation rejects the batch atomically via a non-fatal
 	// application error rather than stalling consensus mid-apply.
-	if verr := CheckUniqueViolationsBatch(batch, e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+	if verr := checkUniqueForOps(batch, e.indexes, e.indexFields, e.indexScopes, ops, flags, mvccPriorValueReader(s, batch)); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -2230,7 +2270,7 @@ func (e *MVCCEngine) applyDecodedBatch(s *mvcc.Store, lr *lease.Lessor, batch st
 	rev := s.CurrentRevision() + 1
 	var notifs []Notification
 	for _, op := range ops {
-		opNotifs, opErr := e.executeDecodedOpWithNotify(s, lr, batch, op, rev)
+		opNotifs, opErr := e.executeDecodedOpWithNotify(s, lr, batch, op, rev, flags)
 		if opErr != nil {
 			return sm.Result{}, nil, opErr
 		}
@@ -2260,8 +2300,9 @@ func decodedCompareToService(dc protocol.DecodedCompare) service.Compare {
 // executeDecodedOpWithNotify executes a single decoded operation (Put or
 // Delete) within a batch at the given revision and returns watch
 // notifications. Used by both transaction and batch handlers. Secondary
-// indexes are updated for put and delete operations.
-func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, op protocol.DecodedOp, rev int64) ([]Notification, error) {
+// indexes are updated for put and delete operations; flags are the command's
+// protocol.CmdFlag* bits (see updateIndexesBatch for CmdFlagOrderedUnique).
+func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, op protocol.DecodedOp, rev int64, flags byte) ([]Notification, error) {
 	switch op.Type {
 	case protocol.OpMVCCPut:
 		prevKv, err := getInBatchAllowingAbsence(s, batch, op.Key)
@@ -2270,7 +2311,11 @@ func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor,
 		}
 		// Validate index constraints before writing to the batch so that a
 		// unique violation aborts the operation without leaving partial state.
-		if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, prevKv); err != nil {
+		// Only a command proposed with ordered-unique-check releases the
+		// previous value's entries on a non-JSON overwrite; an unflagged one
+		// replays as the binary that committed it applied it.
+		ordered := flags&protocol.CmdFlagOrderedUnique != 0
+		if err := updateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, prevKv, ordered); err != nil {
 			return nil, err
 		}
 		kvResult, err := s.PutInBatch(batch, op.Key, op.Value, op.LeaseID, rev)
@@ -2596,6 +2641,11 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	}
 
 	valueType := IndexCreateValueType(opts)
+	// The key prefix every key this index may hold must carry: the namespace
+	// read back off the name plus the prefix the creator declared. It bounds
+	// both the backfill below and every subsequent maintenance call
+	// (go-qrdb#410).
+	scope := ComposeIndexScope(name, opts.KeyPrefix)
 
 	e.indexMu.Lock()
 	existing, exists := e.indexes[name]
@@ -2616,19 +2666,44 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 			e.indexMu.Unlock()
 			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
 		}
-		// Index already present under the same owner and value type —
-		// idempotent success so Raft Apply does not stall on duplicate create
-		// proposals. Existence is otherwise keyed by name only: a same-owner
-		// re-create diverging in field or uniqueness is a no-op and the
-		// original definition wins.
-		if e.indexValueTypes[name] == valueType {
+		// Index already present under the same owner, value type and key
+		// scope — idempotent success so Raft Apply does not stall on
+		// duplicate create proposals. Existence is otherwise keyed by name
+		// only: a same-owner re-create diverging in field or uniqueness is a
+		// no-op and the original definition wins. A key-scope difference
+		// rebuilds the index only for a command carrying
+		// protocol.IndexCreateOptions.Rescope, proposed once
+		// featuregate.IndexRescope is enabled: one without it (an older
+		// proposer, a historical log) keeps the existing index and its
+		// original scope, as every replica of the merge base does.
+		if e.indexValueTypes[name] == valueType && (!opts.Rescope || bytes.Equal(e.indexScopes[name], scope)) {
 			e.indexMu.Unlock()
 			return sm.Result{Value: 1}, nil, nil
 		}
-		// A different value type rebuilds the index at the requested one (see
-		// IndexCreateValueType). The stale index leaves the apply view
-		// now; readers keep it, over its committed terms, until the batch
-		// carrying the rebuild commits, and it is closed then.
+		// A different value type (see IndexCreateValueType) or, for a
+		// command carrying Rescope, key scope rebuilds the index at the
+		// requested one: the old terms are cleared and only the new scope is
+		// backfilled. A unique rescope whose new scope already holds a
+		// duplicate is refused before anything changes.
+		if opts.Rescope && opts.Unique && !bytes.Equal(e.indexScopes[name], scope) {
+			check := NewUniqueScopeCheck(fieldName, scope, index.IndexConfig{ValueType: valueType, CaseSensitive: !opts.CaseInsensitive})
+			start, end := backfillRange(scope)
+			conflict, err := check.ScanConflict(func() ([]*service.KeyValue, error) {
+				kvs, _, _, err := store.RangeInBatch(batch, start, end)
+				return kvs, err
+			})
+			if err != nil {
+				e.indexMu.Unlock()
+				return sm.Result{}, nil, err
+			}
+			if conflict {
+				e.indexMu.Unlock()
+				return RescopeConflictResult(name), nil, nil
+			}
+		}
+		// The stale index leaves the apply view now; readers keep it, over
+		// its committed terms, until the batch carrying the rebuild commits,
+		// and it is closed then.
 		e.unpublishIndex(name, existing)
 	}
 
@@ -2677,7 +2752,11 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	// clears the committed entries and writes the backfill outside it, and a
 	// put earlier in the same batch would leave the two with different
 	// entries. Without the feature, every member does what the old one does.
-	if bIdx, ok := idx.(batchClearableIndex); ok && opts.Catalog {
+	//
+	// A command carrying Rescope (featuregate.IndexRescope) clears and
+	// backfills in the batch too, so a rebuild drops the index entries
+	// earlier entries of the batch staged.
+	if bIdx, ok := idx.(batchClearableIndex); ok && (opts.Catalog || opts.Rescope) {
 		if err := bIdx.ClearBatch(batch); err != nil {
 			_ = idx.Close()
 			return sm.Result{}, nil, err

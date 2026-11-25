@@ -55,11 +55,15 @@ func TestIndexCreate_EveryConfigFieldReachesTheWire(t *testing.T) {
 		Sparse:          true,
 		Numeric:         true,
 		CaseInsensitive: true,
+		KeyPrefix:       "member/",
 	})
 	if err != nil {
 		t.Fatalf("IndexCreate: %v", err)
 	}
 
+	if gotBody["key_prefix"] != "member/" {
+		t.Errorf("key_prefix = %v; want member/ — the scope never reached the wire", gotBody["key_prefix"])
+	}
 	for _, field := range []string{"unique", "sparse", "numeric", "case_insensitive"} {
 		v, ok := gotBody[field]
 		if !ok {

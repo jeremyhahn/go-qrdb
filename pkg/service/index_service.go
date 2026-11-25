@@ -96,6 +96,9 @@ func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, 
 		// The definition goes into the replicated index catalog only once
 		// every member of the group writes it (featuregate.IndexCatalog).
 		Catalog: s.catalogEnabled(),
+		// A re-create with a different key scope rebuilds the index only
+		// once every replica can apply it the same way.
+		Rescope: indexRescope(s.host, s.shardID),
 	})
 	if err != nil {
 		return &EncodeRequestError{Err: err}
@@ -110,6 +113,17 @@ func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, 
 // catalog record another replica would not.
 func (s *IndexService) catalogEnabled() bool {
 	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.IndexCatalog) {
+		return false
+	}
+	return true
+}
+
+// indexRescope reports whether an index create is proposed with the rescope
+// flag: on a gated host only once featuregate.IndexRescope is enabled for the
+// shard, since an older replica keeps the existing index for a scope-changing
+// re-create; a standalone or embedded host gets it at once.
+func indexRescope(host Host, shardID uint64) bool {
+	if gated, ok := host.(FeatureGatedHost); ok && !gated.FeatureEnabled(shardID, featuregate.IndexRescope) {
 		return false
 	}
 	return true

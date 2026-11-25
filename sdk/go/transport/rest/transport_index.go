@@ -39,6 +39,7 @@ type indexCreateWireRequest struct {
 	Sparse          bool   `json:"sparse"`
 	Numeric         bool   `json:"numeric"`
 	CaseInsensitive bool   `json:"case_insensitive"`
+	KeyPrefix       string `json:"key_prefix,omitempty"`
 }
 
 // indexDropWireRequest matches the JSON payload for POST /index/drop.
@@ -80,6 +81,7 @@ func (t *Transport) IndexCreate(ctx context.Context, name, fieldName string, con
 		Sparse:          config.Sparse,
 		Numeric:         config.Numeric,
 		CaseInsensitive: config.CaseInsensitive,
+		KeyPrefix:       config.KeyPrefix,
 	}
 
 	return t.postJSON(ctx, "IndexCreate", "/index/create", payload)
