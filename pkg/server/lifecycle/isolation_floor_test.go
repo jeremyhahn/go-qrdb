@@ -333,6 +333,10 @@ type floorDouble struct {
 	sets    int
 }
 
+// StrictIsolationCheck reports both features active, as on a standalone
+// node, so the floor tests reach the write at once.
+func (d *floorDouble) StrictIsolationCheck() func() error { return func() error { return nil } }
+
 func (d *floorDouble) SetClusterIsolationPolicy(_ context.Context, next tenant.ClusterIsolationPolicy) error {
 	d.sets++
 	if d.setErr != nil {
@@ -380,6 +384,86 @@ func TestApplyFIPSIsolationFloor(t *testing.T) {
 				t.Fatalf("floor writes = %d, want %d", d.sets, tc.sets)
 			}
 		})
+	}
+}
+
+// TestApplyFIPSIsolationFloor_WaitsForFeatureActivation: on a new raft
+// cluster the features activate late; the FIPS floor writes nothing until
+// both are active, then writes strict.
+func TestApplyFIPSIsolationFloor_WaitsForFeatureActivation(t *testing.T) {
+	var active atomic.Bool
+	activated := make(chan struct{})
+	var writesBefore atomic.Int64
+	writesBefore.Store(-1)
+	svc := &fakeFloorService{floor: tenant.ClusterIsolationPolicyUnset}
+	svc.check = func() error {
+		if active.Load() {
+			return nil
+		}
+		return &feature.NotActiveError{Feature: featuregate.GuardedWrites}
+	}
+	done := make(chan error, 1)
+	go func() { done <- ApplyFIPSIsolationFloor(context.Background(), true, svc) }()
+	go func() {
+		// Activate once the floor has been polled at least once.
+		time.Sleep(2 * defaultFloorRetry.retry)
+		_, sets := svc.state()
+		writesBefore.Store(int64(sets))
+		active.Store(true)
+		close(activated)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ApplyFIPSIsolationFloor = %v, want nil", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("ApplyFIPSIsolationFloor did not return after activation")
+	}
+	<-activated
+	if n := writesBefore.Load(); n != 0 {
+		t.Fatalf("floor writes before activation = %d, want 0", n)
+	}
+	floor, sets := svc.state()
+	if floor != tenant.ClusterIsolationPolicyStrict || sets != 1 {
+		t.Fatalf("floor = %q after %d writes, want strict after 1", floor, sets)
+	}
+}
+
+// TestApplyFIPSIsolationFloor_StandaloneActiveAtOnce: a standalone node (no
+// Raft) has every feature active at once, so a new FIPS node boots strict
+// without waiting.
+func TestApplyFIPSIsolationFloor_StandaloneActiveAtOnce(t *testing.T) {
+	svc := &fakeFloorService{check: func() error { return nil }}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := ApplyFIPSIsolationFloor(ctx, true, svc); err != nil {
+		t.Fatalf("ApplyFIPSIsolationFloor = %v, want nil", err)
+	}
+	if floor, sets := svc.state(); floor != tenant.ClusterIsolationPolicyStrict || sets != 1 {
+		t.Fatalf("floor = %q after %d writes, want strict after 1", floor, sets)
+	}
+}
+
+// TestApplyFIPSIsolationFloor_CancelBeforeActivationRefuses: a ctx that ends
+// before the features activate refuses the start with ErrFIPSFloorNotStrict
+// naming the missing feature, and writes nothing.
+func TestApplyFIPSIsolationFloor_CancelBeforeActivationRefuses(t *testing.T) {
+	svc := &fakeFloorService{check: func() error {
+		return &feature.NotActiveError{Feature: featuregate.GuardedWrites}
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*defaultFloorRetry.retry)
+	defer cancel()
+	err := ApplyFIPSIsolationFloor(ctx, true, svc)
+	if !errors.Is(err, ErrFIPSFloorNotStrict) {
+		t.Fatalf("ApplyFIPSIsolationFloor = %v, want ErrFIPSFloorNotStrict", err)
+	}
+	var inactive *feature.NotActiveError
+	if !errors.As(err, &inactive) || inactive.Feature != featuregate.GuardedWrites {
+		t.Fatalf("ApplyFIPSIsolationFloor = %v, want it to name %s", err, featuregate.GuardedWrites)
+	}
+	if _, sets := svc.state(); sets != 0 {
+		t.Fatalf("floor writes = %d, want 0", sets)
 	}
 }
 

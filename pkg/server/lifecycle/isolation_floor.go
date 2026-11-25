@@ -187,6 +187,13 @@ func isolationFloorRefused(err error, current tenant.ClusterIsolationPolicy) boo
 // floor cannot be read, or the tenant service holds no floor -- refuses
 // the start (ErrFIPSFloorNotStrict), naming the cause. With FIPS off it
 // does nothing.
+//
+// Before the write it waits, bounded by ctx, until the strict-isolation and
+// guarded-writes cluster features are active (tenant.RequireStrictIsolation),
+// as the normal floor path does: on a new raft cluster they activate once
+// every member advertises; a standalone node has them active at once. A
+// floor that is already strict needs no wait. A ctx that ends first refuses
+// the start (ErrFIPSFloorNotStrict) naming the feature that is not active.
 func ApplyFIPSIsolationFloor(ctx context.Context, fipsOn bool, svc any) error {
 	if !fipsOn {
 		return nil
@@ -194,6 +201,9 @@ func ApplyFIPSIsolationFloor(ctx context.Context, fipsOn bool, svc any) error {
 	floor, ok := svc.(clusterIsolationFloor)
 	if !ok {
 		return fmt.Errorf("%w: the tenant service (%T) holds no cluster isolation floor", ErrFIPSFloorNotStrict, svc)
+	}
+	if err := awaitStrictIsolationFeatures(ctx, floor); err != nil {
+		return err
 	}
 	setErr := floor.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicyStrict)
 	got, err := floor.ClusterIsolationPolicy(ctx)
@@ -213,6 +223,32 @@ func ApplyFIPSIsolationFloor(ctx context.Context, fipsOn bool, svc any) error {
 		slog.Info("tenant isolation: the cluster floor was already strict under FIPS-140", slog.Any("write_error", setErr))
 	}
 	return nil
+}
+
+// awaitStrictIsolationFeatures returns nil once the strict-isolation and
+// guarded-writes features are active, or at once when the floor is already
+// strict. When ctx ends first it returns ErrFIPSFloorNotStrict wrapping the
+// feature.NotActiveError that names the missing feature.
+func awaitStrictIsolationFeatures(ctx context.Context, floor clusterIsolationFloor) error {
+	logged := false
+	for {
+		inactive := tenant.RequireStrictIsolation(floor)
+		if inactive == nil {
+			return nil
+		}
+		if got, err := floor.ClusterIsolationPolicy(ctx); err == nil && got == tenant.ClusterIsolationPolicyStrict {
+			return nil
+		}
+		if !logged {
+			slog.Info("tenant isolation: waiting for the cluster features before the FIPS-140 strict floor", slog.Any("reason", inactive))
+			logged = true
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w: the strict-isolation and guarded-writes features are not active: %w", ErrFIPSFloorNotStrict, inactive)
+		case <-time.After(defaultFloorRetry.retry):
+		}
+	}
 }
 
 // AttachTenantHomesThenApplyFIPSFloor attaches the isolated tenants' home
