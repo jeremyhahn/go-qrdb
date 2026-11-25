@@ -15,10 +15,13 @@ package dao
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync/atomic"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // DAOTransaction provides entity-aware transaction operations.
@@ -207,6 +210,10 @@ type txnOp[E Entity] struct {
 	opType    txnOpType
 	entity    E
 	condition *Condition
+	// deterministic is non-nil for a save whose ID came from a
+	// DeterministicIDGenerator at queue time; Commit guards that write
+	// exactly as UnitOfWork does (see deterministicSaveInfo).
+	deterministic *deterministicSaveInfo
 }
 
 // daoTransaction provides entity-aware transaction implementation.
@@ -256,10 +263,8 @@ func (tx *daoTransaction[E]) Save(entity E) error {
 		return InvalidEntityError{Reason: "entity cannot be nil"}
 	}
 
-	// Auto-generate ID if not set
-	if entity.EntityID() == 0 {
-		entity.SetEntityID(uint64(time.Now().UnixNano())) //nolint:gosec // G115: UnixNano always positive after 1970
-	}
+	// Assign the ID from the DAO's own generator, as genericDAO.Save does.
+	det := assignSaveID(tx.dao.genericDAO, entity)
 
 	// Add to write cache
 	tx.cache[entity.EntityID()] = cachedEntity[E]{
@@ -269,8 +274,9 @@ func (tx *daoTransaction[E]) Save(entity E) error {
 
 	// Queue the operation
 	tx.ops = append(tx.ops, txnOp[E]{
-		opType: txnOpSave,
-		entity: entity,
+		opType:        txnOpSave,
+		entity:        entity,
+		deterministic: det,
 	})
 
 	return nil
@@ -347,10 +353,8 @@ func (tx *daoTransaction[E]) SaveWithCondition(entity E, cond Condition) error {
 		return err
 	}
 
-	// Auto-generate ID if not set
-	if entity.EntityID() == 0 {
-		entity.SetEntityID(uint64(time.Now().UnixNano())) //nolint:gosec // G115: UnixNano always positive after 1970
-	}
+	// Assign the ID from the DAO's own generator, as genericDAO.Save does.
+	det := assignSaveID(tx.dao.genericDAO, entity)
 
 	// Add to write cache (optimistically)
 	tx.cache[entity.EntityID()] = cachedEntity[E]{
@@ -360,15 +364,31 @@ func (tx *daoTransaction[E]) SaveWithCondition(entity E, cond Condition) error {
 
 	// Queue the operation with condition
 	tx.ops = append(tx.ops, txnOp[E]{
-		opType:    txnOpSaveWithCondition,
-		entity:    entity,
-		condition: &cond,
+		opType:        txnOpSaveWithCondition,
+		entity:        entity,
+		condition:     &cond,
+		deterministic: det,
 	})
 
 	return nil
 }
 
-// Commit atomically applies all queued operations.
+// Commit applies all queued operations as ONE guarded batch
+// (kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged): every write
+// lands, or none does.
+//
+// A save is a put; a save whose ID came from a DeterministicIDGenerator
+// carries the create/update/collision guard UnitOfWork uses. A delete is a
+// delete. A SaveWithCondition is evaluated against the record stored at
+// commit time, before anything is written, and its put is guarded on the
+// exact bytes (or absence) it was evaluated against, so a concurrent change
+// between evaluation and the batch refuses the whole batch.
+//
+// Refusals, none of which write anything: ConditionFailedError (a condition
+// did not hold), *AtomicBatchUnsupportedError (the store has no atomic
+// multi-guard batch; there is no sequential fallback), and
+// TransactionCommitError wrapping kvstore.ErrNotApplied (a guard lost to a
+// concurrent writer), *IDCollisionError, or the store's error.
 func (tx *daoTransaction[E]) Commit(ctx context.Context) error {
 	if tx.closed.Load() {
 		return TransactionClosedError{Op: "Commit"}
@@ -382,55 +402,61 @@ func (tx *daoTransaction[E]) Commit(ctx context.Context) error {
 		return nil
 	}
 
-	// Execute all operations
-	for _, op := range tx.ops {
-		switch op.opType {
-		case txnOpSave:
-			if err := tx.dao.Save(ctx, op.entity); err != nil {
-				return TransactionCommitError{Cause: err}
-			}
-
-		case txnOpDelete:
-			if err := tx.dao.Delete(ctx, op.entity); err != nil {
-				return TransactionCommitError{Cause: err}
-			}
-
-		case txnOpSaveWithCondition:
-			// Evaluate condition before saving
-			if err := tx.evaluateCondition(ctx, op.entity, op.condition); err != nil {
-				return err
-			}
-			if err := tx.dao.Save(ctx, op.entity); err != nil {
-				return TransactionCommitError{Cause: err}
-			}
-		}
+	multi, ok := tx.dao.store.(kvstore.MultiGuardedBatchKVStore)
+	if !ok {
+		return &AtomicBatchUnsupportedError{}
 	}
 
+	ctx, cancel := tx.dao.ensureTimeout(ctx)
+	defer cancel()
+
+	ops := make([]unitOp, 0, len(tx.ops))
+	var guards []kvstore.Guard
+	for _, op := range tx.ops {
+		key := tx.dao.makeKey(op.entity.EntityID())
+		if op.opType == txnOpDelete {
+			ops = append(ops, unitOp{key: key, isDelete: true})
+			continue
+		}
+
+		if op.opType == txnOpSaveWithCondition {
+			existing, getErr := multi.Get(ctx, key)
+			if getErr != nil && !isNotFoundError(getErr) {
+				return TransactionCommitError{Cause: getErr}
+			}
+			if condErr := tx.evaluateCondition(existing, op.condition); condErr != nil {
+				return condErr
+			}
+			guards = append(guards, kvstore.Guard{Key: key, Value: existing})
+		}
+
+		data, marshalErr := tx.dao.codec.Marshal(op.entity)
+		if marshalErr != nil {
+			return TransactionCommitError{Cause: SerializationFailedError{EntityType: tx.dao.entityType, Cause: marshalErr}}
+		}
+		ops = append(ops, unitOp{key: key, value: data, deterministic: op.deterministic})
+	}
+
+	if err := commitGuardedOps(ctx, multi, ops, guards); err != nil {
+		var unsupported *AtomicBatchUnsupportedError
+		if errors.As(err, &unsupported) {
+			return err
+		}
+		return TransactionCommitError{Cause: err}
+	}
 	return nil
 }
 
-// evaluateCondition checks if the condition is satisfied.
-func (tx *daoTransaction[E]) evaluateCondition(ctx context.Context, entity E, cond *Condition) error {
-	id := entity.EntityID()
-
-	// Try to get existing entity
-	existing, err := tx.dao.Get(ctx, id)
-	existsInStorage := err == nil
-	defer tx.dao.discard(existing)
-
-	// For version checks on new entities
-	if !existsInStorage && cond.Target == ConditionVersion {
-		// New entity should have version 0
-		return tx.evaluateNumericCondition(0, cond)
-	}
-
-	if !existsInStorage {
-		// Entity doesn't exist - condition may still be valid for create checks
-		if cond.Target == ConditionCreate || cond.Target == ConditionMod {
+// evaluateCondition checks cond against existingData, the record's stored
+// bytes (nil when absent).
+func (tx *daoTransaction[E]) evaluateCondition(existingData []byte, cond *Condition) error {
+	if existingData == nil {
+		// Entity doesn't exist - a new entity has version and timestamps 0
+		// and an empty value.
+		switch cond.Target {
+		case ConditionVersion, ConditionCreate, ConditionMod:
 			return tx.evaluateNumericCondition(0, cond)
-		}
-		if cond.Target == ConditionValue {
-			// Check against nil/empty value
+		case ConditionValue:
 			return tx.evaluateValueCondition(nil, cond)
 		}
 		return ConditionFailedError{
@@ -438,6 +464,12 @@ func (tx *daoTransaction[E]) evaluateCondition(ctx context.Context, entity E, co
 			Reason:    "entity does not exist",
 		}
 	}
+
+	existing := tx.dao.newEntity()
+	if err := tx.dao.codec.Unmarshal(existingData, &existing); err != nil {
+		return DeserializationFailedError{EntityType: tx.dao.entityType, Cause: err}
+	}
+	defer tx.dao.discard(existing)
 
 	// Entity exists - evaluate condition based on target
 	switch cond.Target {
