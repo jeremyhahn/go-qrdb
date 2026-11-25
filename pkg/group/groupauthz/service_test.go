@@ -571,6 +571,226 @@ func TestRemoveMember_LapsedClaimUndoIsReauthorized(t *testing.T) {
 	}
 }
 
+var errRelease = errors.New("injected release fault")
+
+// releaseFault forwards every call and then fails each ReleaseClaim with err.
+type releaseFault struct {
+	group.GroupServicer
+	err error
+}
+
+func (r *releaseFault) ReleaseClaim(ctx context.Context, id, token string) error {
+	_ = r.GroupServicer.ReleaseClaim(ctx, id, token)
+	return r.err
+}
+
+// opaqueUsers hides the concrete user store behind the interface.
+type opaqueUsers struct {
+	user.UserServicer
+}
+
+func TestGroupService_NewWithoutMembershipStore(t *testing.T) {
+	f := newFixture(t)
+	if svc := New(f.svc.Groups, opaqueUsers{f.users}, nil, nil); svc != nil {
+		t.Fatalf("New over a user store without membership = %+v, want nil", svc)
+	}
+}
+
+func TestGroupService_CrossTenantAndUnauthorized(t *testing.T) {
+	f := newStrictFixture(t)
+	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
+	asSO := acmeCaller(0, admin, so)
+	g, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "crypto"})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	nobody := acmeCaller(0)
+	if _, err := f.svc.Create(nobody, &group.CreateGroupRequest{TenantID: "acme", Name: "x"}); err == nil {
+		t.Fatal("Create without roles succeeded")
+	}
+	if _, err := f.svc.GetByName(nobody, "acme", "crypto"); err == nil {
+		t.Fatal("GetByName without roles succeeded")
+	}
+	if _, err := f.svc.List(nobody, &group.ListGroupsRequest{TenantID: "acme"}); err == nil {
+		t.Fatal("List without roles succeeded")
+	}
+	if _, err := f.svc.Get(nobody, g.ID); err == nil {
+		t.Fatal("Get without roles succeeded")
+	}
+	var cross *tenant.CrossTenantDeniedError
+	if _, err := f.svc.Create(asSO, &group.CreateGroupRequest{TenantID: "other", Name: "x"}); !errors.As(err, &cross) {
+		t.Fatalf("cross-tenant Create = %v", err)
+	}
+	if _, err := f.svc.GetByName(asSO, "other", "crypto"); !errors.As(err, &cross) {
+		t.Fatalf("cross-tenant GetByName = %v", err)
+	}
+	if _, err := f.svc.List(asSO, &group.ListGroupsRequest{TenantID: "other"}); !errors.As(err, &cross) {
+		t.Fatalf("cross-tenant List = %v", err)
+	}
+	if _, err := f.svc.Create(acmeCaller(0, admin), &group.CreateGroupRequest{TenantID: "acme", Name: "so-group", RoleIDs: []string{so}}); err == nil {
+		t.Fatal("an Admin created a group carrying the SO role")
+	}
+	if _, err := f.groups.GetGroupByName(asSO, "acme", "so-group"); err == nil {
+		t.Fatal("the refused group was stored")
+	}
+}
+
+func TestGroupService_UnknownGroup(t *testing.T) {
+	f := newFixture(t)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	var nf *group.GroupNotFoundError
+	if _, err := f.svc.Update(ctx, &group.UpdateGroupRequest{ID: "no-such-group"}); !errors.As(err, &nf) {
+		t.Fatalf("Update unknown = %v", err)
+	}
+	if err := f.svc.Delete(ctx, "no-such-group"); !errors.As(err, &nf) {
+		t.Fatalf("Delete unknown = %v", err)
+	}
+	if err := f.svc.RemoveMember(ctx, 1, "no-such-group"); !errors.As(err, &nf) {
+		t.Fatalf("RemoveMember unknown = %v", err)
+	}
+	if _, err := f.svc.ListMembers(ctx, "no-such-group"); !errors.As(err, &nf) {
+		t.Fatalf("ListMembers unknown = %v", err)
+	}
+	g, err := f.svc.Create(ctx, &group.CreateGroupRequest{TenantID: "acme", Name: "eng"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := f.svc.AddMember(ctx, 424242, g.ID); err == nil {
+		t.Fatal("AddMember of an unknown user succeeded")
+	}
+}
+
+func TestGroupService_UpdateCallerGuard(t *testing.T) {
+	f := newFixture(t)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	g, err := f.svc.Create(ctx, &group.CreateGroupRequest{TenantID: "acme", Name: "eng", Description: "before"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	refused := errors.New("caller guard refused")
+	desc := "after"
+	_, err = f.svc.Update(ctx, &group.UpdateGroupRequest{ID: g.ID, Description: &desc, Guard: func(_, _ *group.Group) error { return refused }})
+	if !errors.Is(err, refused) {
+		t.Fatalf("Update with a refusing guard = %v", err)
+	}
+	if got, err := f.svc.Get(ctx, g.ID); err != nil || got.Description != "before" {
+		t.Fatalf("group after the refused update = %+v, %v", got, err)
+	}
+}
+
+// memberFixture returns a strict fixture with an acme group, a user and an
+// SO caller context.
+func memberFixture(t *testing.T) (*strictFixture, context.Context, uint64, string) {
+	t.Helper()
+	f := newStrictFixture(t)
+	asSO := acmeCaller(0, role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO))
+	g, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "crypto"})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	alice, err := f.users.CreateUser(asSO, &user.CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	return f, asSO, alice.ID, g.ID
+}
+
+func TestGroupService_MemberStoreFailures(t *testing.T) {
+	deleteAfterClaim := func(f *strictFixture, ctx context.Context, id uint64) {
+		f.racing.claimAfter = func() {
+			if err := f.users.DeleteUser(ctx, id); err != nil {
+				t.Errorf("delete user: %v", err)
+			}
+		}
+	}
+	t.Run("add member error", func(t *testing.T) {
+		f, asSO, alice, gid := memberFixture(t)
+		deleteAfterClaim(f, asSO, alice)
+		if err := f.svc.AddMember(asSO, alice, gid); err == nil {
+			t.Fatal("AddMember of a user deleted under the claim succeeded")
+		}
+	})
+	t.Run("remove member error", func(t *testing.T) {
+		f, asSO, alice, gid := memberFixture(t)
+		if _, err := f.members.AddMember(asSO, alice, gid); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		deleteAfterClaim(f, asSO, alice)
+		if err := f.svc.RemoveMember(asSO, alice, gid); err == nil {
+			t.Fatal("RemoveMember of a user deleted under the claim succeeded")
+		}
+	})
+	t.Run("add release error", func(t *testing.T) {
+		f, asSO, alice, gid := memberFixture(t)
+		f.svc.Groups = &releaseFault{GroupServicer: f.svc.Groups, err: errRelease}
+		if err := f.svc.AddMember(asSO, alice, gid); !errors.Is(err, errRelease) {
+			t.Fatalf("AddMember with a release fault = %v", err)
+		}
+		if u, err := f.users.GetUser(asSO, alice); err != nil || slices.Contains(u.GroupIDs, gid) || slices.Contains(u.PendingGroupIDs, gid) {
+			t.Fatalf("alice after the failed join = %+v, %v; want no membership", u, err)
+		}
+	})
+	t.Run("add member and release errors", func(t *testing.T) {
+		f, asSO, alice, gid := memberFixture(t)
+		f.svc.Groups = &releaseFault{GroupServicer: f.svc.Groups, err: errRelease}
+		deleteAfterClaim(f, asSO, alice)
+		err := f.svc.AddMember(asSO, alice, gid)
+		if !errors.Is(err, errRelease) || err.Error() == errRelease.Error() {
+			t.Fatalf("AddMember with member and release faults = %v, want both", err)
+		}
+	})
+	t.Run("remove release error", func(t *testing.T) {
+		f, asSO, alice, gid := memberFixture(t)
+		if _, err := f.members.AddMember(asSO, alice, gid); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		f.svc.Groups = &releaseFault{GroupServicer: f.svc.Groups, err: errRelease}
+		if err := f.svc.RemoveMember(asSO, alice, gid); !errors.Is(err, errRelease) {
+			t.Fatalf("RemoveMember with a release fault = %v", err)
+		}
+	})
+	t.Run("remove member and release errors", func(t *testing.T) {
+		f, asSO, alice, gid := memberFixture(t)
+		if _, err := f.members.AddMember(asSO, alice, gid); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		f.svc.Groups = &releaseFault{GroupServicer: f.svc.Groups, err: errRelease}
+		deleteAfterClaim(f, asSO, alice)
+		err := f.svc.RemoveMember(asSO, alice, gid)
+		if !errors.Is(err, errRelease) || err.Error() == errRelease.Error() {
+			t.Fatalf("RemoveMember with member and release faults = %v, want both", err)
+		}
+	})
+}
+
+func TestGroupService_LapsedClaimWithoutChange(t *testing.T) {
+	touch := func(f *strictFixture, asSO context.Context, groupID string) {
+		desc := "touched while the claim lapsed"
+		if _, err := f.svc.Update(asSO, &group.UpdateGroupRequest{ID: groupID, Description: &desc}); err != nil {
+			t.Errorf("SO update over the lapsed claim: %v", err)
+		}
+	}
+	t.Run("join of an existing member", func(t *testing.T) {
+		f, asAdmin, alice, gid := lapsedRemovalFixture(t, touch)
+		if err := f.svc.AddMember(asAdmin, alice, gid); err != nil {
+			t.Fatalf("re-join of a member after a lapsed claim = %v, want nil", err)
+		}
+	})
+	t.Run("removal of a non-member", func(t *testing.T) {
+		f, asAdmin, alice, gid := lapsedRemovalFixture(t, touch)
+		bob, err := f.users.CreateUser(asAdmin, &user.CreateUserRequest{WithoutEmailLoginKey: true, Username: "bob", TenantID: "acme"})
+		if err != nil {
+			t.Fatalf("create bob: %v", err)
+		}
+		if err := f.svc.RemoveMember(asAdmin, bob.ID, gid); err != nil {
+			t.Fatalf("removal of a non-member after a lapsed claim = %v, want nil", err)
+		}
+		if u, err := f.users.GetUser(asAdmin, alice); err != nil || !slices.Contains(u.GroupIDs, gid) {
+			t.Fatalf("alice = %+v, %v; want her membership kept", u, err)
+		}
+	})
+}
+
 // TestGroupService_ClaimReleasedAfterMembershipChange pins that a membership
 // change, committed or refused, leaves no claim on the group behind.
 func TestGroupService_ClaimReleasedAfterMembershipChange(t *testing.T) {
