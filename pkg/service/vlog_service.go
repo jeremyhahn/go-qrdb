@@ -48,6 +48,14 @@ type LogServiceConfig struct {
 	// service shares the audit resolver.
 	Resolver AuditShardResolver
 
+	// AuditResolver routes a tenant to the group its replicated audit
+	// logger writes: every read and write of the reserved system database,
+	// the audit instance's home, goes there, so the audit reader and writer
+	// use one group. A barrier tenant's audit trail stays on the system
+	// shard while its own logs live in its home group. Nil routes the
+	// system database through Resolver.
+	AuditResolver AuditShardResolver
+
 	// Databases resolves the database each request names, so a database
 	// with a barrier of its own is refused before any key or log is touched.
 	Databases LogDatabaseLookup
@@ -67,6 +75,21 @@ type LogDatabaseLookup interface {
 }
 
 var _ LogDatabaseLookup = (*database.Manager)(nil)
+
+// LogFenceInitializer writes the log-only drop-fence marker of a database
+// that has none (StoreResolver.LogFenceTarget): a barrier tenant's database
+// created before its logs were fenced in the tenant's home group. The log
+// service calls it with the incarnation it admits a write under, before the
+// write's guard is evaluated against that marker.
+type LogFenceInitializer interface {
+	// InitDatabaseLogFence writes incarnation as the (tenantID, db)
+	// database's log marker only if the marker is absent. A marker that is
+	// present -- live, of any incarnation, or a drop's tombstone -- is left
+	// as it is, for the write's guard to decide.
+	InitDatabaseLogFence(ctx context.Context, tenantID, db, incarnation string) error
+}
+
+var _ LogFenceInitializer = (*KeyspaceReclaimService)(nil)
 
 // LogRef names one log. An empty TenantID is the caller's own tenant; any
 // other tenant is refused before the group is reached (tenant.Confine).

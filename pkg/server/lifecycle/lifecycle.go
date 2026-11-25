@@ -768,6 +768,10 @@ type Node struct {
 	// writer.
 	homeLeader atomic.Pointer[databaseLeadership]
 
+	// logGroups is the verifiable-log service's barrier group source; its
+	// groups are attached by AttachTenantHomes.
+	logGroups *logGroups
+
 	// work is what the node runs on its own behalf; Stop cancels it and
 	// waits for it before any closer runs.
 	work nodeWork
@@ -829,6 +833,15 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// BuildServices has returned, by which point n.Tenant -- if this
 	// composition has one at all -- is already set, so the lookups pick it
 	// up automatically with no restart.
+	//
+	// The replicated audit logger and the verifiable-log service share one
+	// resolver, so a barrier tenant's audit instance (system/audit) is
+	// written and read in its home group, under its barrier (n.logGroups,
+	// attached with the home groups): a sealed tenant barrier refuses its
+	// audit appends and reads as it refuses its other writes. Prefix,
+	// system and unregistered tenants keep the system shard.
+	n.logGroups = &logGroups{host: infra.Host}
+	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n}, n.logGroups)
 	auditResolver := service.NewSystemShardAuditResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
 	n.ReplicatedAudit = service.NewOptInAuditLogger(
 		service.NewReplicatedLogger(auditResolver),
@@ -1018,13 +1031,13 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		bm.SetUnsealGate(databaseUnsealGate(infra.ClusterSealer))
 	}
 
-	// The verifiable-log service routes as the audit chain does, but also
-	// refuses a barrier tenant and a barrier database: its log registry and
-	// sealed signing keys sit under the system barrier, not the tenant's or
-	// the database's. A build without the qrdb_vlog tag has no log service,
-	// which is not a boot failure.
-	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
-	logSvc, err := buildLogService(logResolver, dbManager, infra.HeadSignerProvider)
+	// The verifiable-log service routes over the audit logger's resolver
+	// (logResolver above): a barrier tenant's logs, entries and sealed
+	// signing keys are applied in its home group, under its barrier, and a
+	// barrier-enabled database's in that database's own barrier-protected
+	// store. A build without the qrdb_vlog tag has no log service, which is
+	// not a boot failure.
+	logSvc, err := buildLogService(logResolver, auditResolver, dbManager, infra.HeadSignerProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -1116,6 +1129,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	}
 
 	n.Database = service.NewDatabaseService(dbManager, placementOpts...)
+	wireLogReclaimer(n)
 
 	// Vector storage uses the directory when one is available, exactly as
 	// before go-qrdb#578; what #578 adds is infra.Backend deciding what
@@ -1212,6 +1226,13 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		Compaction: systemCompaction,
 	})
 	dbManager.SetKeyspaceReclaimer(n.KeyspaceReclaim)
+	// A barrier tenant's database created before its logs had a marker of
+	// their own in the home group gets one at its first log write.
+	if fenced, ok := n.Log.(interface {
+		SetLogFenceInitializer(service.LogFenceInitializer)
+	}); ok {
+		fenced.SetLogFenceInitializer(n.KeyspaceReclaim)
+	}
 
 	// go-qrdb#547's reclaim-job sweeper, over the un-namespaced system store
 	// where every pending job's index entry lives. Each job's own store is
@@ -1435,6 +1456,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			// options so neither set is dropped when the tenant service exists.
 			dbOpts = append(dbOpts, placementOpts...)
 			n.Database = service.NewDatabaseService(dbManager, dbOpts...)
+			wireLogReclaimer(n)
 		}
 		// dbManager.Open warned for the barrier records it can classify
 		// alone; a volume- or raft-isolated tenant's needs the tenant
@@ -1450,6 +1472,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			w.SetHomeRetirer(r)
 		}
 	}
+
+	// DELETE TENANT releases the log service's standalone barrier store for
+	// the tenant, so tenant churn does not grow it until shutdown.
+	wireTenantLogsCloser(n.Tenant, n.Log)
 
 	// The vector namespace create guard (validateTenantCreate) reads the
 	// cluster-wide isolation floor; n.Tenant is the reader, and it exists
@@ -1537,13 +1563,77 @@ func infraClock(infra Infra) clock.Clock {
 // and the node's databases with the composer's head-signer provider; a nil
 // provider is the software default. It returns a nil service and no error when
 // the build does not carry the qrdb_vlog tag.
-func buildLogService(resolver service.AuditShardResolver, databases service.LogDatabaseLookup, signers vlog.HeadSignerProvider) (service.LogService, error) {
-	svc, err := service.NewLogService(service.LogServiceConfig{Resolver: resolver, Databases: databases, Signers: signers})
+func buildLogService(resolver, audit service.AuditShardResolver, databases service.LogDatabaseLookup, signers vlog.HeadSignerProvider) (service.LogService, error) {
+	svc, err := service.NewLogService(service.LogServiceConfig{Resolver: resolver, AuditResolver: audit, Databases: databases, Signers: signers})
 	var notCompiled *vlog.NotCompiledError
 	if errors.As(err, &notCompiled) {
 		return nil, nil
 	}
 	return svc, err
+}
+
+// wireLogReclaimer hands n.Database the verifiable-log service, so a dropped
+// database's logs are deleted and a database later created under the same
+// name starts with none. A build without the verifiable log has nothing to
+// reclaim.
+func wireLogReclaimer(n *Node) {
+	db, ok := n.Database.(interface{ SetLogReclaimer(service.LogReclaimer) })
+	if !ok {
+		return
+	}
+	if r, ok := n.Log.(service.LogReclaimer); ok {
+		db.SetLogReclaimer(r)
+	}
+}
+
+// tenantLogsForgetter is the log service's tenant eviction
+// (service.logService.ForgetTenantLogs).
+type tenantLogsForgetter interface {
+	ForgetTenantLogs(tenantID string)
+}
+
+// tenantLogsCloser is the tenant runtime closer that runs the closer wired
+// before it (nil runs none) and then evicts the tenant's log state. The
+// eviction cannot fail.
+type tenantLogsCloser struct {
+	prior tenant.TenantRuntimeCloser
+	logs  tenantLogsForgetter
+}
+
+var _ tenant.TenantRuntimeCloser = (*tenantLogsCloser)(nil)
+
+// CloseTenantRuntime implements tenant.TenantRuntimeCloser.
+func (c *tenantLogsCloser) CloseTenantRuntime(ctx context.Context, tenantID string) error {
+	if c.prior != nil {
+		if err := c.prior.CloseTenantRuntime(ctx, tenantID); err != nil {
+			return err
+		}
+	}
+	c.logs.ForgetTenantLogs(tenantID)
+	return nil
+}
+
+// wireTenantLogsCloser chains the log service's tenant eviction onto the
+// tenant service's runtime closer, keeping any closer already wired. A
+// tenant service without the wiring surface, or a log service without the
+// eviction, is left alone. server.WireTenantRuntimeCloser, run later, keeps
+// this closer as its next.
+func wireTenantLogsCloser(svc tenant.TenantServicer, logs service.LogService) {
+	forgetter, ok := logs.(tenantLogsForgetter)
+	if !ok {
+		return
+	}
+	w, ok := svc.(tenant.ResidueWiring)
+	if !ok {
+		return
+	}
+	g, ok := svc.(interface {
+		TenantRuntimeCloser() tenant.TenantRuntimeCloser
+	})
+	if !ok {
+		return
+	}
+	w.SetTenantRuntimeCloser(&tenantLogsCloser{prior: g.TenantRuntimeCloser(), logs: forgetter})
 }
 
 func buildDEKService(provider dek.Provider, resolver tenant.StoreResolver, keyWrapRegistry keywrap.Registry, keyWrapProvider keywrap.Provider, keyDir string) (service.DEKServicer, error) {
