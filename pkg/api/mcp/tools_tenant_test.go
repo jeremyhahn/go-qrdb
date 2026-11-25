@@ -512,6 +512,37 @@ func TestHandleTenantList_Success(t *testing.T) {
 	}
 }
 
+func TestHandleTenantList_StatusFilter(t *testing.T) {
+	svc := newMockTenantService()
+	svc.listFn = func(_ context.Context) ([]tenant.TenantInfo, error) {
+		return []tenant.TenantInfo{
+			{ID: "t-active", Status: tenant.StatusActive},
+			{ID: "t-suspended", Status: tenant.StatusSuspended},
+		}, nil
+	}
+	handler := handleTenantList(svc, nil)
+
+	result, err := handler(context.Background(),
+		buildCallToolRequest(t, "qrdb_tenant_list", map[string]any{"status": "suspended"}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var tenants []tenant.TenantInfo
+	if jsonErr := json.Unmarshal([]byte(resultText(t, result)), &tenants); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if len(tenants) != 1 || tenants[0].ID != "t-suspended" {
+		t.Fatalf("tenants = %v, want only t-suspended", tenants)
+	}
+
+	_, err = handler(context.Background(),
+		buildCallToolRequest(t, "qrdb_tenant_list", map[string]any{"status": "deleted"}))
+	var ie *tenant.InvalidStatusError
+	if !errors.As(err, &ie) || ie.Value != "deleted" {
+		t.Fatalf("err = %T(%v), want *tenant.InvalidStatusError", err, err)
+	}
+}
+
 func TestHandleTenantList_ServiceError(t *testing.T) {
 	svc := newMockTenantService()
 	svc.listFn = func(_ context.Context) ([]tenant.TenantInfo, error) {

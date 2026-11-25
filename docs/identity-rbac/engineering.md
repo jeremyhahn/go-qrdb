@@ -543,6 +543,37 @@ Invariants:
   `metadata.updated` on create and update; an update keeps `created`.
 - **List is sorted by name** and returns the whole set, unpaginated.
 
+**The object-owner condition.** A policy limits an action to the object's
+owner with the built-in boolean `subject.owns_resource`
+(`pkg/auth/abac/parser.go` `ownsResource`), named beside
+`subject.authenticated` and `subject.mfa_verified`. The owner reaches the PDP
+the way the target tenant does: server-side, through the context. The
+embedder's store calls `auth.WithResourceOwner(ctx, ownerID)`
+(`pkg/auth/object_owner.go`) after loading the object, and
+`abac.Decorator.Authorize` copies it into the check request under
+`abac.ResourceOwnerContextKey` (`resource_owner`), where conditions also read
+it as `resource.owner`. No caller-written request field feeds it, and no wire
+field carries it: go-qrdb has no owner-bearing object on its transports, so
+the over-the-wire surface is the stored policy that names the condition. The
+condition fails closed and needs a bound account: it is true only when the
+subject carries a user id (`Subject.UserID != 0`) and the owner is a
+non-empty string equal to `auth.UserSubject(UserID)`, the account's immutable
+user id. It is false for an absent, empty or non-string owner and for a
+subject with no bound account: a holder-certificate or service identity never
+owns an object, even when its subject string equals an account id. A
+hand-written `resource.owner == subject.id` is not equivalent, because the
+`==` comparison renders both sides with `%v` and so matches nil with nil and
+empty with empty. A deny written as `unless: subject.owns_resource` therefore
+denies when the owner is unknown. The Go rule `auth.OwnObject(ctx, owner,
+op)` is the object twin of `tenant.OwnTenant`: it refuses with
+`*auth.ObjectOwnerDeniedError`, which unwraps to `auth.ErrUnauthorized`
+(PermissionDenied, 403), for no identity, an identity with no bound account
+(`UserID == 0`), an empty owner or an owner other than
+`auth.UserSubject(UserID)`. It lives in `pkg/auth` because it needs the identity,
+which `pkg/tenant` cannot import. `sdk/go/types_object_owner.go` re-exports
+`OwnObject`, `WithResourceOwner`, `ResourceOwnerFromContext`,
+`ObjectOwnerDeniedError` and `ABACResourceOwnerContextKey`.
+
 ## Invitation self-enrolment
 
 `pkg/service.InvitationServicer` is the one surface every transport's invite
@@ -1209,6 +1240,16 @@ matrix through both the embedded transport and a REST server sharing one
 `AuthMiddleware` and one `*authtest.Tenants` service, and fails if the two
 ever disagree.
 
+**Test fixture: a fixed caller pairs with its user record.** The chain
+discards every role an authenticator returns (SPEC `authz-claim-roles`), so
+`authtest.FixedAuthenticator` alone authenticates a role-less caller. A test
+that needs the fixed identity's roles also wires the authenticator's own
+read-only store, `authmw.WithUserService(fa.Users())`: it resolves the
+CURRENT identity (so `Set` keeps working) to an active record whose `RoleIDs`,
+`RoleBindings` and `Attributes` are the identity's, and answers every other
+account `*user.UserNotFoundError`. A resolved identity's `Subject` is the
+record's user id (`auth.UserSubject`); assert on `AccountName()` or `UserID`.
+
 **The embedded transport's ENTIRE operation surface is authorized, not only
 tenant administration.** One pluggable auth chain serves every transport, so
 an embedded KV `Put`, a `GetUser`, a
@@ -1387,6 +1428,11 @@ authenticated value — whether or not the authenticator set one.
 | A role a user still holds was deleted (one of the two windows `DeleteRole`'s holder strip leaves, see Invariants), on ANY tenant including the system tenant | `*rbac.ResolveError` wrapping `*role.RoleNotFoundError` (**not** retried against the fallback — a stale replica could still grant the deleted role's permissions — and **not** reclassified as retryable) | **yes** |
 | Stored role carries a permission this build does not define | reported on read via `RetiredPermissions`; **no read fails** | — |
 | Duplicate username within a tenant | refused | yes |
+| Unix peer whose `SO_PEERCRED` uid and gid match no `unix.peer_credentials` mapping (`auth.PeerCredentialAuthenticator`, last in the chain) | `auth.ErrPeerCredentialUnmapped`: `peer_credential_unmapped`, `UNAUTHENTICATED` | **yes** |
+| Request with no peer credential in its context (every transport but Unix, and Unix off Linux) | the peer-credential authenticator declines with `ErrUnauthenticated`; a decline (`ErrUnauthenticated` or `ErrNoPeerCertificate`) never replaces an earlier method's error, so an mTLS `*auth.RevocationCheckError` stays 503 / `UNAVAILABLE`; when every method declines the answer is `ErrUnauthenticated` | **yes** |
+| Mapped account absent (never created, deleted, or no user store to resolve it) | `auth.ErrPeerCredentialAccountMissing`: `peer_credential_account_missing`, `UNAUTHENTICATED`; refused before any policy, ABAC `subject.authenticated` included | **yes** |
+| Mapped account's tenant IAM sealed (the lookup returns `tenant.ErrTenantSealed`) | `*middleware.StoreUnavailableError` wrapping `tenant.ErrTenantSealed` (503 / `UNAVAILABLE`, retryable); never admitted unenriched, so the sealed-window barrier status/unseal fallback cannot admit it | **yes** |
+| Mapped account's `auth_methods` set without `peercred` | refused as for any other method; never a grant from the mapping | **yes** |
 | Stored ABAC policy document or name invalid, does not decode, or does not compile | `*service.PolicyInvalidError` (400 / `INVALID_ARGUMENT`), nothing written | **yes** |
 | Policy create of a name the tenant already holds | `*service.PolicyExistsError` (409 / `ALREADY_EXISTS`) | **yes** |
 | Policy get, update or delete of a name the tenant does not hold | `*service.PolicyNotFoundError` (404 / `NOT_FOUND`) | — |
@@ -1548,6 +1594,12 @@ unchecked call panics rather than failing cleanly.
 - The email login key is a tenant-scoped secondary index at
   `__sys:user_idx/email/{tenantID}/{normalized-email}`, maintained by the same
   functions that write the record so the two cannot drift.
+- IAM groups (`pkg/group`) are at `__sys:groups/id/<id>`, with a per-tenant
+  index under `__sys:groups/tenant/` and the tenant-scoped name claim under
+  `__sys:group_idx/name/`, in the system auth store (no per-tenant barrier
+  routing yet). Membership is not a group record: it is the member's own
+  `User.GroupIDs`, written with compare-and-swap by `user.GroupMembership`.
+  A group delete strips every member first, then removes the record.
 - Stored ABAC policies are tenant-scoped: each is one JSON record at
   `__sys:abac_policy/<name>` in the tenant's own store, resolved through
   `tenant.StoreResolver`, so no tenant's policies share a keyspace with
@@ -1589,6 +1641,14 @@ part of the on-disk contract. Changing it invalidates every existing binding.
 
 **Integration target:** `make integration-test-identity-rbac` (no Docker; selection in `test/integration/features.mk`). It runs the role, user and invitation CLI suites per protocol. Per-transport accounting is the `identity-rbac` row of `test/integration/COVERAGE.md`.
 
+- **IAM groups**: `pkg/group` (store, name claim, same-tenant roles,
+  revoke-before-delete), `pkg/user` group membership, the middleware role
+  union and the three group guards, `pkg/group/groupauthz`, and each
+  transport's handlers (`*_groups_test.go` in `pkg/api/{rest,grpc,quic,mcp}`
+  and `sdk/go/transport/embedded`). The CLI E2E is
+  `test/integration/api/cli_groups_test.go`: the lifecycle on every protocol,
+  and a member without roles of its own gaining, then losing, the group
+  role's permission per its own `roles own-permissions`.
 - **Unit**: `MatchesCert` for each `CertBindingKind`, thumbprint stability
   across certificate renewal for the same key, effective-permission resolution
   over `RoleIDs` ∪ `RoleBindings`, `Parse` rejecting unregistered strings, and

@@ -34,6 +34,35 @@ Because the binding is over the **public key**, renewing your certificate with
 the same key keeps you the same user. Rotate the key and you need a new
 binding.
 
+### A local process without a certificate: Unix peer credentials
+
+On Linux, a process that connects to the Unix socket can be identified by the
+uid or gid the kernel reports for it, with no client certificate. The operator
+maps each uid or gid to an account:
+
+```yaml
+unix:
+  peer_credentials:
+    - uid: 1000        # the deploy service's uid
+      tenant: acme
+      user: deploy
+```
+
+The mapping names an account, never a role. Create the account and give it
+the roles it needs; the built-in `operator` role, for example, lets it read
+and write keys but not create users:
+
+```sh
+qrdb users create --without-email-login-key --username deploy --roles <operator role id>
+```
+
+Then, as uid 1000, `qrdb --server unix:///var/run/qrdbd/qrdbd.sock --ca-file ca.pem kv get mykey`
+works with no certificate, and `qrdb users create` is still refused. Until the
+account exists the caller holds no roles and every command is denied. A uid
+or gid with no mapping is refused as `unauthenticated`. A client certificate
+presented on the socket still wins over the peer credential. Field rules are
+in [../12-configuration.md](../12-configuration.md#unix).
+
 ## What needs no identity
 
 Two verbs need no certificate, token or role at all, on every transport:
@@ -342,6 +371,35 @@ a certificate or token attribute: setting `--attribute organization=acme`
 cannot satisfy a policy that trusts the organization in the caller's
 certificate. See [../auth/abac.md](../auth/abac.md).
 
+## Giving a set of people the same roles: groups
+
+A group is a named set of roles inside one tenant. Everyone you add to the
+group holds its roles on top of their own, from their next request; remove
+them and the roles go with it. Change the group's roles and every member's
+access changes with it.
+
+```bash
+ROLE=$(qrdb roles get-by-name operator --output json | jq -r .id)
+GROUP=$(qrdb groups create --name on-call --roles "$ROLE" --output json | jq -r .id)
+qrdb groups add-member --user "$ALICE_ID" --group "$GROUP"
+qrdb groups members "$GROUP"
+qrdb groups update "$GROUP" --roles "$ROLE,$READER_ROLE"   # replaces the set
+qrdb groups remove-member --user "$ALICE_ID" --group "$GROUP"
+```
+
+The group, its roles and its members are all of the same tenant. You can
+give a group, or add someone to a group, only roles you could assign to them
+directly; putting the `so` role on a group, or taking it away through one, is
+the Security Officer's alone under strict separation. A tenant Admin manages
+groups; deleting one is the Security Officer's, as deleting a role is.
+
+In the desktop app the same work is under Admin > Groups: pick the tenant,
+create a group, tick the roles its members inherit, add or remove members by
+user id, and delete the group. The view enforces the same rules: a refusal
+shows the server's error.
+`qrdb roles own-permissions`, run by the member, shows what they hold through
+their groups. Every verb: [cli.md](cli.md#groups).
+
 ## Letting an application act inside your tenant
 
 Some applications embed qrdb and run their own **service principal** — for
@@ -451,6 +509,50 @@ that reads the request's identity sees a withdrawn or granted Admin role on
 the caller's very next request. If the node cannot read the role store, the
 request is refused as temporarily unavailable, which a client may retry. It is
 never answered as "not owner".
+
+## Limiting an action to the object's owner
+
+An application that keeps its own objects (a key, a certificate, a shared
+password) often lets only the object's owner act on it. go-qrdb decides that
+for you, the same way it decides the tenant. Your store loads the object,
+puts its recorded owner on the request context, and asks the authorizer. A
+policy then names the built-in condition `subject.owns_resource`:
+
+```yaml
+apiVersion: abac.qrdb.io/v1
+kind: Policy
+metadata:
+  name: owner-only-delete
+spec:
+  subjects:
+    any: true
+  rules:
+    - name: deny-non-owner-delete
+      effect: deny
+      actions: [delete]
+      resources: ["/objects/**"]
+      unless:
+        - expression: 'subject.owns_resource'
+```
+
+```go
+ctx = sdk.WithResourceOwner(ctx, obj.OwnerID) // the owner's user id, from your store
+if err := authorizer.Authorize(ctx, identity, "/objects/"+obj.ID, "delete"); err != nil {
+	return err
+}
+```
+
+`subject.owns_resource` is true only when the context carries a non-empty
+owner equal to the caller's user id (`Identity.Subject`). It is false when
+your store set no owner, so the deny above refuses everyone, the owner too,
+when the owner is unknown. The owner always comes from your store, never
+from a field the caller sends.
+
+Without a policy, call the rule directly: `sdk.OwnObject(ctx, obj.OwnerID,
+"delete")` returns `nil` for the owner and a `*sdk.ObjectOwnerDeniedError`
+(a permission denial, HTTP 403) for anyone else, for a caller with no
+identity, and for an object with no recorded owner. It is the object twin of
+`sdk.OwnTenant`.
 
 ## Seeing whether someone has a second factor
 
@@ -564,6 +666,15 @@ router of your own, build the middleware from the SDK (`sdk` is
   `RESTMiddleware(routes, router)` method. A request whose method has no
   registered entry on a registered path is refused. A path you did not register
   needs an authenticated caller but no permission, so register every route.
+- `sdk.HoldsSystemRole(ctx, resolver, tenantID, roleIDs, roleName)` reports
+  whether `roleIDs` holds the built-in role `roleName` in the tenant, matching
+  the persisted role ID through an `sdk.RoleNameResolver`, never the name. A
+  nil resolver is an `sdk.RoleResolverRequiredError` (use `errors.As`).
+- `sdk.Permission*` names the keys, certs, passwords (including
+  `sdk.PermissionPasswordsOverrideOwnership`), ssh, pin and piv permissions,
+  `sdk.PermissionDevicesOnboard` and `sdk.PermissionDevicePair`, `DeviceRevoke`,
+  `DeviceShare` and `DeviceSync`, so a consumer checks them without importing
+  `pkg/permission`.
 
 ## Troubleshooting
 

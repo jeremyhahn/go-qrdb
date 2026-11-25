@@ -35,7 +35,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -89,7 +88,7 @@ func newFixture(t *testing.T, start StartFunc, opts ...authmw.Option) *fixture {
 	tenants := authtest.NewTenants(t, tenantid.System, "acme", "globex")
 	caller := authtest.NewFixedAuthenticator(authtest.AdminIdentity("acme", "acme-admin"))
 	roles := authtest.BuiltInRoles(t, tenantid.System, "acme", "globex")
-	mw := authmw.New(rbac.New(roles), append([]authmw.Option{authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller)}, opts...)...)
+	mw := authmw.New(rbac.New(roles), append([]authmw.Option{authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller), authmw.WithUserService(caller.Users())}, opts...)...)
 	conn := start(t, mw, tenants, &fakeOnboarding{tenants: tenants})
 	return &fixture{
 		tenants: tenants,
@@ -264,7 +263,7 @@ func TenantIsolation(t *testing.T, start StartFunc) {
 
 	t.Run("ListShowsATenantAdminOnlyItsOwnTenant", func(t *testing.T) {
 		f := newFixture(t, start)
-		resp, err := f.client.TenantList(callCtx(t), &emptypb.Empty{})
+		resp, err := f.client.TenantList(callCtx(t), &pb.TenantListRequest{})
 		if err != nil {
 			t.Fatalf("acme admin list = %v", err)
 		}
@@ -272,7 +271,7 @@ func TenantIsolation(t *testing.T, start StartFunc) {
 			t.Fatalf("acme admin listed %v, want [acme]", got)
 		}
 		f.operator()
-		resp, err = f.client.TenantList(callCtx(t), &emptypb.Empty{})
+		resp, err = f.client.TenantList(callCtx(t), &pb.TenantListRequest{})
 		if err != nil {
 			t.Fatalf("operator list = %v", err)
 		}

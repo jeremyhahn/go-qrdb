@@ -847,6 +847,39 @@ type RoleClient interface {
 	ReconcileBuiltInRolesAllTenants(ctx context.Context) (*ReconcileAllTenantsRolesResponse, error)
 }
 
+// GroupClient provides IAM group management. A group is a named set of roles
+// of one tenant; its members hold those roles. Membership is recorded on the
+// user record, and a role reaching a user through a group passes the same
+// escalation guard as AssignRole.
+type GroupClient interface {
+	// CreateGroup creates a group; the name must be unique within the tenant.
+	CreateGroup(ctx context.Context, req *CreateGroupRequest) (*Group, error)
+
+	// GetGroup retrieves a group by its ID.
+	GetGroup(ctx context.Context, id string) (*Group, error)
+
+	// GetGroupByName retrieves a group by its tenant-scoped name.
+	GetGroupByName(ctx context.Context, req *GetGroupByNameRequest) (*Group, error)
+
+	// UpdateGroup changes a group's name, description or role set.
+	UpdateGroup(ctx context.Context, req *UpdateGroupRequest) (*Group, error)
+
+	// DeleteGroup removes the group from every member, then the group.
+	DeleteGroup(ctx context.Context, id string) error
+
+	// ListGroups returns a page of the tenant's groups.
+	ListGroups(ctx context.Context, req *ListGroupsRequest) (*ListGroupsResponse, error)
+
+	// AddGroupMember adds a user to a group of the user's own tenant.
+	AddGroupMember(ctx context.Context, userID uint64, groupID string) error
+
+	// RemoveGroupMember removes a user from a group.
+	RemoveGroupMember(ctx context.Context, userID uint64, groupID string) error
+
+	// ListGroupMembers returns the members of a group ordered by user ID.
+	ListGroupMembers(ctx context.Context, groupID string) (*ListGroupMembersResponse, error)
+}
+
 // ---------------------------------------------------------------------------
 // Certificate management operations
 // ---------------------------------------------------------------------------
@@ -1191,8 +1224,12 @@ type TenantClient interface {
 	// GetTenant retrieves a tenant by ID.
 	GetTenant(ctx context.Context, tenantID string) (*GetTenantResponse, error)
 
-	// ListTenants lists all tenants.
-	ListTenants(ctx context.Context) (*ListTenantsResponse, error)
+	// ListTenants lists the tenants the caller may list, narrowed to
+	// req.Status when it is set. A nil req is no filter. Against a server
+	// older than the filter, which drops it, a filtered request is refused
+	// with *CapabilityUnsupportedError (EnforceStatusFilter); the network
+	// transports check it, embedded is the same build.
+	ListTenants(ctx context.Context, req *ListTenantsRequest) (*ListTenantsResponse, error)
 
 	// ListDeletedTenants returns one page of retired tenant ids with their
 	// deletion records, in ascending id order.
@@ -1310,6 +1347,7 @@ type Client interface {
 	VlogClient
 	UserClient
 	RoleClient
+	GroupClient
 	CertClient
 	DEKClient
 	BarrierClient

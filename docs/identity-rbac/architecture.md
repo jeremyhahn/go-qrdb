@@ -78,6 +78,60 @@ chain stays first-success-wins; a composer that wants its checks applied to
 certificate-bearing requests places its authenticator ahead of mTLS or in its
 place, rather than qrdb running a second, conjunctive chain beside the first.
 
+**An authenticator says who, never what** (SPEC `authz-claim-roles`). An
+authenticator — qrdb's mTLS, a consumer's bearer, a capability module's REST
+fallback (the JWT plane go-xkms's FIDO2/PIV logins mint) — establishes the
+caller's `Subject`, `TenantID` and metadata. The `Roles`, `RoleBindings`,
+`Attributes` and `TenantOwner` it returns are discarded by `finalizeIdentity`
+before anything else; a role list read from a token's claims is never an
+authorization source, and there is no claim-to-role mapping. The roles an
+identity is authorized on are the `RoleIDs` and `RoleBindings` of the go-qrdb
+user record it binds to. A subject with no record, a tenant whose IAM is
+sealed and a node with no user store configured all carry no roles: RBAC
+default-denies them and only the `IdentityGated` surface stays reachable.
+
+### The Unix peer-credential authenticator
+
+A local process on the Unix socket can be identified by the kernel rather than
+by a certificate. When `unix.peer_credentials` lists any mapping, the node
+installs a second qrdb authenticator, `peercred`, **last** in the chain: after
+mTLS and after every consumer placement, so a certificate or a consumer
+credential presented on the socket still decides the request first.
+
+- **Where the credential comes from.** On Linux the Unix listener reads
+  `SO_PEERCRED` (uid, gid, pid) from each accepted connection before the TLS
+  handshake and carries it with the connection; the gRPC interceptors put it
+  in the request context (`auth.WithPeerCredential`). Only the Unix transport
+  sets it, so on every other transport the authenticator declines. A decline
+  never masks an earlier method's error in the chain: an mTLS
+  revocation-lookup failure stays 503 / `UNAVAILABLE`. Other platforms carry
+  no peer credential.
+- **A mapping names an account, never a role.** A mapping takes a uid, or a
+  primary gid, to a tenant and username. A uid match wins over a gid match.
+  The bound identity is filled from the stored account like every other
+  identity, so the account's roles decide through the one PDP. A mapped
+  account that does not exist, or was deleted, is refused
+  (`peer_credential_account_missing`, `UNAUTHENTICATED`), so no policy, an
+  ABAC `subject.authenticated` allow included, can admit it. While the
+  tenant's IAM is sealed the account cannot be checked, so the peer is
+  refused with the retryable sealed answer (`*middleware.StoreUnavailableError`
+  wrapping `tenant.ErrTenantSealed`), not admitted unenriched to the
+  sealed-window barrier status/unseal fallback as other methods are. An
+  account whose `auth_methods` are set must list `peercred`.
+- **An unmapped peer is refused.** A peer whose uid and gid match no mapping
+  is refused with `peer_credential_unmapped` (`UNAUTHENTICATED`). With no
+  mappings the authenticator is not installed at all.
+
+**Why last.** The peer credential is ambient: every request on the
+connection carries it whether the caller meant to use it or not. Placed ahead
+of mTLS, it would decide a request that also presents a certificate for a
+different, perhaps more privileged, identity. Last, it only decides requests
+nothing else claimed.
+
+**What was rejected.** Mapping a uid or gid straight to roles. That would be
+a second source of grants outside the account store, invisible to role reads
+and to the role-assignment audit trail.
+
 ### Identity mapping
 
 | Certificate field | User field | Role |
@@ -448,9 +502,9 @@ and roles — the routed services resolve a system-tenant caller into the
 tenant it names, and the system-tenant scope rule admits it there.
 
 All three fields influence an authorization decision. `finalizeIdentity`
-carries `RoleBindings` and `Attributes` onto the authenticated identity
-alongside `RoleIDs`. The user store is their only source: whatever the
-authenticator carried in is always cleared, and the store's current state
+carries `RoleIDs` (as the identity's `Roles`), `RoleBindings` and
+`Attributes` onto the authenticated identity. The user store is the only
+source of all three: whatever the authenticator carried in is always cleared, and the store's current state
 replaces it, so a withdrawn binding or a cleared attribute stops applying on
 the next request — including when the record is not found, the tenant is
 sealed, or no user store is configured at all (then the identity carries
@@ -503,6 +557,52 @@ tenant becomes `system`), because the read side matches it against the
 normalized target tenant. And every user — the system tenant's included — may
 hold a binding only in its own tenant; any other is refused with
 `user.RoleBindingTenantError`.
+
+### IAM groups resolve to roles
+
+A user record also carries `GroupIDs`: the IAM groups (`pkg/group`) it is a
+member of. A group is a named set of role IDs of one tenant, and it is not a
+fourth authorization input: when `finalizeIdentity` binds the record, it
+unions the roles of every group in `GroupIDs` that resolves in the user's own
+tenant into the identity's `Roles` (`AuthMiddleware.effectiveRoles`,
+installed by `WithGroupResolver`), and carries the group IDs as
+`Identity.Groups` (ABAC `subject.groups`). From there the identity is
+authorized exactly as one holding those roles directly, the SO deny-list and
+the Owner strip included. The union fails closed: a group that is gone, of
+another tenant, or cannot be read adds nothing, and the request goes on with
+the user's own roles. Because the union is made on every request, a
+membership or group change applies from the next request, like a withdrawn
+binding.
+
+Two stores split the state. The group store holds the group records in the
+store of the tenant that owns them, routed per tenant exactly like roles:
+`group.NewRoutingService` resolves every operation through the tenant
+`StoreResolver`, so a dedicated-isolation tenant's groups live inside its own
+barrier and a sealed tenant's groups fail closed with `tenant.ErrTenantSealed`.
+By-id operations find the owning tenant in the identity index (kind
+`tenant.IdentityGroup`), which each per-tenant store claims at create and
+releases at delete; a delete whose record is already gone reconciles the stale
+claim. A node without a resolver serves `group.NewStore` over the auth store.
+The store claims each name within its tenant
+atomically, and refuses a role of another tenant
+(`group.RoleNotInTenantError`, `WithRoleLookup`). Membership is the user
+record's own field, written by `user.GroupMembership` with compare-and-swap,
+so a member's groups are read with its record and nothing else. Deleting a
+group first strips it from every member (`WithMemberRevoker`), then deletes
+the record.
+
+Every transport reaches the stores through one path, `groupauthz.Service`
+(`pkg/group/groupauthz`): the permission check in the target tenant, then the
+escalation guards in `pkg/auth/middleware/role_assignment.go`.
+`AuthorizeGroupRoles` holds a group's role set to the `AssignRole` rules for
+each role it adds; `AuthorizeGroupMembership` holds adding a member to them
+for every role the group carries and requires the user to be of the group's
+tenant; `AuthorizeGroupMemberRemoval` keeps taking the `so` role away
+through a group the Security Officer's alone under strict separation, and
+`AuthorizeGroupRoleRemoval` does the same for the group itself: an update that
+drops `so` from a group's roles, or the delete of a group that carries `so`, is
+refused (`SORoleRequiredError`) unless the caller is the tenant's Security
+Officer.
 
 ### Alternatives rejected
 
@@ -619,8 +719,17 @@ ships updates gates on these exact strings through the same PDP:
 | `devices:onboard` | Admit a device into the caller's own tenant and bind its identity there. |
 | `ota:activate` | Activate a staged update image on the tenant's own devices. |
 | `ota:confirm` | Confirm an activated image, so the device no longer rolls back. |
+| `device:pair` | Pair a device to a user or account in the caller's own tenant. |
+| `device:revoke` | Revoke a paired device in the caller's own tenant. |
+| `device:share` | Share a device's access with another identity in the tenant. |
+| `device:sync` | Sync state across a user's paired devices in the tenant. |
 
-All three are `ScopeSelf`: each tenant onboards and updates its own devices,
+The four `device:*` permissions (the singular resource is the SPEC's name)
+stand beside `devices:onboard` in the "Device Sharing" category; like it they
+are granted to the tenant **`admin`** and reach **`owner`**, which holds every
+registered permission, and no other built-in role.
+
+All of them are `ScopeSelf`: each tenant onboards and updates its own devices,
 and a grant held in one tenant reaches no other — the system tenant's included,
 since `ScopeSelf` carries no system-tenant lift. The confinement is checked
 against the target tenant the handler names (`AuthorizeTenant`), never against
@@ -721,6 +830,16 @@ transport, and gets the same answer on each: allowed in the holder's tenant,
 denied with a reason in any other. Asking about an identity other than the
 caller needs `permissions:resolve` in that identity's tenant, and is never
 answered across tenants.
+
+### Shared-password ownership override
+
+`passwords:override_ownership` lets its holder act on a shared password it does
+not own: read, update, delete or re-share it whatever its owner. It is
+`ScopeSelf` like the rest of `passwords:*`, declared a governance duty, and
+held by the **`so`** and the **`admin`** (and so by **`owner`**). qrdb stores no
+passwords: the consumer's password store (go-xkms) enforces the override by
+asking the PDP for this permission before it lets a non-owner act on a shared
+record.
 
 ## The canonical login key
 

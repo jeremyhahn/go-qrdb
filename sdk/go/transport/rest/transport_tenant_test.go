@@ -735,3 +735,30 @@ func TestRestTenant_ToTenantInfo_NoRefusalStaysNil(t *testing.T) {
 		t.Fatalf("Refusal = %+v, want nil", info.Refusal)
 	}
 }
+
+// TestListTenants_SendsStatusQuery proves the status filter is sent as the
+// status query parameter, and that no parameter is sent without one.
+func TestListTenants_SendsStatusQuery(t *testing.T) {
+	var gotPath, gotQuery string
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tenants":[],"total":0}`))
+	}))
+	t.Cleanup(httpSrv.Close)
+	rt := newWiredTransport(httpSrv)
+
+	if _, err := rt.ListTenants(context.Background(), &transport.ListTenantsRequest{Status: transport.TenantStatusSuspended}); err != nil {
+		t.Fatalf("ListTenants: %v", err)
+	}
+	if gotPath != "/v1/tenants/list" || gotQuery != "status=suspended" {
+		t.Fatalf("request = %s?%s, want /v1/tenants/list?status=suspended", gotPath, gotQuery)
+	}
+
+	if _, err := rt.ListTenants(context.Background(), nil); err != nil {
+		t.Fatalf("ListTenants(nil): %v", err)
+	}
+	if gotQuery != "" {
+		t.Fatalf("query = %q, want none without a filter", gotQuery)
+	}
+}

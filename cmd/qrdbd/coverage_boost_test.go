@@ -747,7 +747,7 @@ func TestBootstrapAuth_UserStoreCreationError(t *testing.T) {
 	// succeed if they don't require initial List; just verify it completes.
 	// If no error, also try auth enforcement (audit logger won't fail on valid dir).
 	if err == nil && mgmt != nil {
-		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, nil, nil, nil, "", "", "enrolled", firstboot.NewAwaitingAdminCredentialProbe(), nil)
+		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, nil, nil, nil, "", "", "enrolled", firstboot.NewAwaitingAdminCredentialProbe(), nil, nil)
 	}
 }
 

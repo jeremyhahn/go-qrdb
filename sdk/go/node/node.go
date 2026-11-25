@@ -4350,6 +4350,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		Authorizer:          n.authorizer,
 		RoleService:         svcNode.Role,
 		UserService:         svcNode.User,
+		GroupResolver:       svcNode.Group,
 		StrictSeparation:    strictSoD,
 		ClusterTrustDomain:  cfg.Auth.EffectiveClusterTrustDomain(),
 		Tenants:             svcNode.Tenant,
@@ -4381,6 +4382,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		RateLimiter:         n.rateLimiter,
 		// A principal of a suspended or disabled tenant is refused.
 		TenantStatusReader: svcNode.Tenant,
+		// unix.peer_credentials: a Unix-socket caller's SO_PEERCRED uid/gid
+		// bound to a store account, whose roles decide (go-qrdb#1651).
+		PeerCredentials: cfg.Unix.PeerCredentialMappings(),
 	})
 	if err != nil {
 		return &AuthMiddlewareWiringError{Err: err}
@@ -4725,6 +4729,9 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 	if svcNode.User != nil {
 		opts = append(opts, embedded.WithUserService(svcNode.User))
 	}
+	if svcNode.Group != nil {
+		opts = append(opts, embedded.WithGroupService(svcNode.Group))
+	}
 	if svcNode.Role != nil {
 		// Construct the qrdb RBAC authorizer the SAME way the standalone
 		// daemon does (cmd/qrdbd/start.go bootstrapAuthEnforcement):
@@ -5053,6 +5060,9 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	}
 	if svcNode.Role != nil {
 		opts = append(opts, server.WithRoleService(svcNode.Role))
+	}
+	if svcNode.Group != nil {
+		opts = append(opts, server.WithGroupService(svcNode.Group))
 	}
 	if svcNode.Barrier != nil {
 		opts = append(opts, server.WithBarrierService(svcNode.Barrier))

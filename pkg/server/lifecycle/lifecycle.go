@@ -54,6 +54,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/invite"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -601,6 +602,10 @@ type Node struct {
 	User user.UserServicer
 	Role role.RoleServicer
 
+	// Group is the IAM group store (go-qrdb#1651): a group carries roles of
+	// its tenant, and its members (recorded on the user record) hold them.
+	Group group.GroupServicer
+
 	// Security services. All are nil when no SealBarrier was provided.
 	Barrier    service.BarrierServicer
 	Ceremony   service.CeremonyServicer
@@ -983,7 +988,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	if err != nil {
 		return nil, &RoleServiceError{Err: err}
 	}
-	roleSvc, err := role.NewStore(authStore, role.WithHolderRevoker(holders))
+	groupHolders, err := group.NewRoleRevoker(authStore)
+	if err != nil {
+		return nil, &RoleServiceError{Err: err}
+	}
+	roleSvc, err := role.NewStore(authStore, role.WithHolderRevoker(role.HolderRevokers(holders, groupHolders)))
 	if err != nil {
 		return nil, &RoleServiceError{Err: err}
 	}
@@ -1257,6 +1266,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	n.Embedding = embSvc
 	n.RAG = ragSvc
 
+	// iamResolver is the tenant store resolver user and role routing use;
+	// the group store routes through the same one (nil: no routing).
+	var iamResolver tenant.StoreResolver
+
 	// Seal-gated services: only constructed when a barrier is provided.
 	if infra.SealBarrier != nil {
 		if err := n.buildSealServices(ctx, infra, log, authStore); err != nil {
@@ -1297,11 +1310,16 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			if err != nil {
 				return nil, &RoleServiceError{Err: err}
 			}
-			routedRoles, err := role.NewRoutingService(resolver, role.WithHolderRevoker(routedHolders))
+			routedGroupHolders, err := group.NewRoutingRoleRevoker(resolver)
+			if err != nil {
+				return nil, &RoleServiceError{Err: err}
+			}
+			routedRoles, err := role.NewRoutingService(resolver, role.WithHolderRevoker(role.HolderRevokers(routedHolders, routedGroupHolders)))
 			if err != nil {
 				return nil, &RoleServiceError{Err: err}
 			}
 			n.Role = routedRoles
+			iamResolver = resolver
 
 			if err := n.buildUserAuthFactorService(ctx, resolver, authStore, infra.AuditLogger, log); err != nil {
 				return nil, err
@@ -1370,11 +1388,16 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		if rherr != nil {
 			return nil, &RoleServiceError{Err: rherr}
 		}
-		routedRoles, roerr := role.NewRoutingService(resolver, role.WithHolderRevoker(routedHolders))
+		routedGroupHolders, rgerr := group.NewRoutingRoleRevoker(resolver)
+		if rgerr != nil {
+			return nil, &RoleServiceError{Err: rgerr}
+		}
+		routedRoles, roerr := role.NewRoutingService(resolver, role.WithHolderRevoker(role.HolderRevokers(routedHolders, routedGroupHolders)))
 		if roerr != nil {
 			return nil, &RoleServiceError{Err: roerr}
 		}
 		n.Role = routedRoles
+		iamResolver = resolver
 
 		if uafErr := n.buildUserAuthFactorService(ctx, resolver, authStore, infra.AuditLogger, log); uafErr != nil {
 			return nil, uafErr
@@ -1529,6 +1552,28 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// provisioned with seal.enabled: true, with data moved into it through
 	// backup/restore or an application-level re-seed (see
 	// docs/barrier-seal/user.md).
+	// IAM groups (go-qrdb#1651): routed per tenant through the resolver
+	// user and role routing use, so a dedicated-isolation tenant's groups
+	// live inside its barrier and a sealed tenant's fail closed; without
+	// routing, one store over the auth store, its records keyed by tenant.
+	// Membership lives on the (final, possibly routed) user record and the
+	// group's roles are checked against the role service.
+	groupMembers, err := user.NewGroupMembership(n.User)
+	if err != nil {
+		return nil, &GroupServiceError{Err: err}
+	}
+	groupOpts := []group.Option{group.WithRoleLookup(n.Role), group.WithMemberRevoker(groupMembers)}
+	var groupSvc group.GroupServicer
+	if iamResolver != nil {
+		groupSvc, err = group.NewRoutingService(iamResolver, groupOpts...)
+	} else {
+		groupSvc, err = group.NewStore(authStore, groupOpts...)
+	}
+	if err != nil {
+		return nil, &GroupServiceError{Err: err}
+	}
+	n.Group = groupSvc
+
 	if !infra.SealEnabled && infra.SealBarrier == nil {
 		log.Warn("qrdb/seal: seal disabled; at-rest data is stored in plaintext",
 			"hint", "encryption cannot be added in place; provision a new node/tenant with seal.enabled: true and migrate data via backup/restore")

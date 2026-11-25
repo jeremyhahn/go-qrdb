@@ -224,7 +224,7 @@ func TestAuthorizeTenantBarrierSealedOp_StatusReadFailureNeverOpensTheWindow(t *
 func TestTenantStatus_SystemAdminSessionAdministersSuspendedTenant(t *testing.T) {
 	tenants := statusTenants(t)
 	m := builtInMiddleware(t,
-		WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: authtest.AdminIdentity(tenantid.System, "root")}),
+		withFixedIdentity(authtest.AdminIdentity(tenantid.System, "root")),
 		WithTenantStatusReader(tenants))
 	ctx, id, err := m.Authenticate(context.Background())
 	if err != nil {

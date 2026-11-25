@@ -174,6 +174,7 @@ func (t *Transport) cloneShared() *Transport {
 		vectorSvc:                    t.vectorSvc,
 		userSvc:                      t.userSvc,
 		roleSvc:                      t.roleSvc,
+		groupSvc:                     t.groupSvc,
 		certProv:                     t.certProv,
 		certEnroll:                   t.certEnroll,
 		invitations:                  t.invitations,

@@ -46,6 +46,7 @@ func TestClient_CapabilityAccessors_ReturnTheTransport(t *testing.T) {
 		"Vlog":            func() any { return c.Vlog() },
 		"Users":           func() any { return c.Users() },
 		"Roles":           func() any { return c.Roles() },
+		"Groups":          func() any { return c.Groups() },
 		"Certs":           func() any { return c.Certs() },
 		"Invitations":     func() any { return c.Invitations() },
 		"Database":        func() any { return c.Database() },

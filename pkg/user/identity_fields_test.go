@@ -689,15 +689,17 @@ func TestLastAuthOnly_AnyOtherFieldDisqualifies(t *testing.T) {
 	}
 
 	disqualifying := map[string]func(*UpdateUserRequest){
-		"Username":     func(r *UpdateUserRequest) { r.Username = "x" },
-		"Email":        func(r *UpdateUserRequest) { r.Email = "x@example.com" },
-		"Name":         func(r *UpdateUserRequest) { r.Name = "x" },
-		"Lifecycle":    func(r *UpdateUserRequest) { r.Lifecycle = LifecycleActive },
-		"RoleIDs":      func(r *UpdateUserRequest) { r.RoleIDs = []string{} },
-		"RoleBindings": func(r *UpdateUserRequest) { r.RoleBindings = []RoleBinding{} },
-		"Attributes":   func(r *UpdateUserRequest) { r.Attributes = map[string]string{} },
-		"CertBindings": func(r *UpdateUserRequest) { r.CertBindings = []CertBinding{} },
-		"AuthMethods":  func(r *UpdateUserRequest) { r.AuthMethods = []string{} },
+		"Username":        func(r *UpdateUserRequest) { r.Username = "x" },
+		"Email":           func(r *UpdateUserRequest) { r.Email = "x@example.com" },
+		"Name":            func(r *UpdateUserRequest) { r.Name = "x" },
+		"Lifecycle":       func(r *UpdateUserRequest) { r.Lifecycle = LifecycleActive },
+		"RoleIDs":         func(r *UpdateUserRequest) { r.RoleIDs = []string{} },
+		"RoleBindings":    func(r *UpdateUserRequest) { r.RoleBindings = []RoleBinding{} },
+		"Attributes":      func(r *UpdateUserRequest) { r.Attributes = map[string]string{} },
+		"CertBindings":    func(r *UpdateUserRequest) { r.CertBindings = []CertBinding{} },
+		"AuthMethods":     func(r *UpdateUserRequest) { r.AuthMethods = []string{} },
+		"GroupIDs":        func(r *UpdateUserRequest) { r.GroupIDs = []string{} },
+		"pendingGroupIDs": func(r *UpdateUserRequest) { r.pendingGroupIDs = []string{} },
 	}
 	for name, set := range disqualifying {
 		req := base()
@@ -882,15 +884,17 @@ func TestOnlyReassertsLifecycle_AnyOtherFieldDisqualifies(t *testing.T) {
 	}
 
 	disqualifying := map[string]func(*UpdateUserRequest){
-		"Username":     func(r *UpdateUserRequest) { r.Username = "x" },
-		"Email":        func(r *UpdateUserRequest) { r.Email = "x@example.com" },
-		"Name":         func(r *UpdateUserRequest) { r.Name = "x" },
-		"LastAuth":     func(r *UpdateUserRequest) { r.LastAuth = &at },
-		"RoleIDs":      func(r *UpdateUserRequest) { r.RoleIDs = []string{} },
-		"RoleBindings": func(r *UpdateUserRequest) { r.RoleBindings = []RoleBinding{} },
-		"Attributes":   func(r *UpdateUserRequest) { r.Attributes = map[string]string{} },
-		"CertBindings": func(r *UpdateUserRequest) { r.CertBindings = []CertBinding{} },
-		"AuthMethods":  func(r *UpdateUserRequest) { r.AuthMethods = []string{} },
+		"Username":        func(r *UpdateUserRequest) { r.Username = "x" },
+		"Email":           func(r *UpdateUserRequest) { r.Email = "x@example.com" },
+		"Name":            func(r *UpdateUserRequest) { r.Name = "x" },
+		"LastAuth":        func(r *UpdateUserRequest) { r.LastAuth = &at },
+		"RoleIDs":         func(r *UpdateUserRequest) { r.RoleIDs = []string{} },
+		"RoleBindings":    func(r *UpdateUserRequest) { r.RoleBindings = []RoleBinding{} },
+		"Attributes":      func(r *UpdateUserRequest) { r.Attributes = map[string]string{} },
+		"CertBindings":    func(r *UpdateUserRequest) { r.CertBindings = []CertBinding{} },
+		"AuthMethods":     func(r *UpdateUserRequest) { r.AuthMethods = []string{} },
+		"GroupIDs":        func(r *UpdateUserRequest) { r.GroupIDs = []string{} },
+		"pendingGroupIDs": func(r *UpdateUserRequest) { r.pendingGroupIDs = []string{} },
 	}
 	for name, set := range disqualifying {
 		req := base()

@@ -81,6 +81,10 @@ func registerSOGrants() {
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
+		// IAM groups: granted exactly as their roles:* counterparts.
+		GroupsCreate, GroupsRead, GroupsUpdate,
+		GroupsDelete, GroupsList, GroupsAddMember,
+		GroupsRemoveMember,
 		// roles:reconcile_all is NOT here: it is the system Admin's
 		// (registerAdminGrants). Only under strict separation does the
 		// authorizer extend it to the SO (StrictSOGrants).
@@ -104,6 +108,9 @@ func registerSOGrants() {
 		// PKCS#11 PIN management and PIV slot administration (governance, no crypto use)
 		PINRead, PINWrite,
 		PIVRead, PIVWrite, PIVDelete,
+		// Shared-password ownership override: the SO and the Admin may act
+		// on a shared password whatever its owner.
+		PasswordsOverrideOwnership,
 		// Audit (operational oversight, and retention administration)
 		AuditRead, AuditQuery, AuditDelete, AuditVerify, AuditVerifyReplicated,
 		// Admin
@@ -163,15 +170,18 @@ func registerAdminGrants() {
 		// Password vault administration
 		PasswordsRead, PasswordsWrite, PasswordsDelete,
 		PasswordsGenerate, PasswordsLock, PasswordsUnlock,
+		PasswordsOverrideOwnership,
 		// SSH key vault administration. Parallels the password vault: an Admin
 		// owns the full lifecycle of the SSH keys, known hosts, and authorized
 		// keys the deployment manages.
 		SSHRead, SSHWrite, SSHDelete,
-		// Device onboarding and OTA update activation and confirmation, in
-		// the Admin's own tenant only (ScopeSelf). A tenant Admin does
-		// everything in its tenant except key custody, and onboarding a
-		// device or rolling out an update is neither.
-		DevicesOnboard, OTAActivate, OTAConfirm,
+		// Device onboarding, pairing, revocation, sharing and sync, and OTA
+		// update activation and confirmation, in the Admin's own tenant
+		// only (ScopeSelf). A tenant Admin does everything in its tenant
+		// except key custody, and managing a device or rolling out an
+		// update is neither.
+		DevicesOnboard, DevicePair, DeviceRevoke, DeviceShare, DeviceSync,
+		OTAActivate, OTAConfirm,
 		// ABAC policy management, in the Admin's own tenant only
 		// (ScopeSelf, and the policy service refuses another tenant).
 		ABACPoliciesCreate, ABACPoliciesRead, ABACPoliciesList,
@@ -229,6 +239,9 @@ func registerAdminGrants() {
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
+		// IAM groups: granted exactly as their roles:* counterparts.
+		GroupsCreate, GroupsRead, GroupsUpdate,
+		GroupsList, GroupsAddMember, GroupsRemoveMember,
 		// Verifiable logs. Creating a log and expiring entry bodies on the
 		// logs that allow it are configuration of the tenant's data, which is
 		// Admin's. Never vlog:sign_head: signing a head is a use of the
@@ -612,6 +625,7 @@ func registerAuditorGrants() {
 		// User, role, cert, tenant listing (metadata only — no writes)
 		UsersList, UsersRead,
 		RolesList, RolesRead, PermissionsList,
+		GroupsList, GroupsRead,
 		CertsList, CertsRead,
 		// Hardware crypto backend inventory (read-only visibility)
 		BackendsList, BackendsRead,

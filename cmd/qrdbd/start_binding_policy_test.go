@@ -109,7 +109,7 @@ func runAuthBootstrapWithPolicy(t *testing.T, mgmt *mgmtBootstrapResult, policy 
 		context.Background(), mgmt, t.TempDir(), &mockRaftNode{},
 		audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{},
 		nil, nil, nil, nil, nil, "", "", policy,
-		firstboot.NewAwaitingAdminCredentialProbe(), nil,
+		firstboot.NewAwaitingAdminCredentialProbe(), nil, nil,
 	)
 }
 

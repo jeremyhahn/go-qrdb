@@ -141,7 +141,7 @@ func TestBootstrapAuthEnforcement_WithClusterTrustDomain(t *testing.T) {
 		"",         // revocation cache TTL: default
 		"",         // audit failure policy: default (fail-closed)
 		"enrolled", // mtls binding policy: this test is not about binding
-		firstboot.NewAwaitingAdminCredentialProbe(), nil,
+		firstboot.NewAwaitingAdminCredentialProbe(), nil, nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
@@ -185,7 +185,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 		"",         // revocation cache TTL: default
 		"",         // audit failure policy: default (fail-closed)
 		"enrolled", // mtls binding policy: this test is not about binding
-		firstboot.NewAwaitingAdminCredentialProbe(), nil,
+		firstboot.NewAwaitingAdminCredentialProbe(), nil, nil,
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError

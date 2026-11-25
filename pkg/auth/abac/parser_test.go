@@ -737,6 +737,85 @@ func TestConditionParser_FieldResolution(t *testing.T) {
 	}
 }
 
+func TestConditionParser_OwnsResource(t *testing.T) {
+	parser := NewConditionParser(nil)
+	owner := func(v interface{}) map[string]interface{} {
+		return map[string]interface{}{ResourceOwnerContextKey: v}
+	}
+
+	tests := []struct {
+		name     string
+		expr     string
+		ctx      *EvalContext
+		wantTrue bool
+	}{
+		{
+			name:     "owner equals the bound account",
+			expr:     "subject.owns_resource",
+			ctx:      &EvalContext{Subject: &Subject{ID: "1", UserID: 1}, Request: owner("1")},
+			wantTrue: true,
+		},
+		{
+			name: "other owner",
+			expr: "subject.owns_resource",
+			ctx:  &EvalContext{Subject: &Subject{ID: "1", UserID: 1}, Request: owner("2")},
+		},
+		{
+			name: "owner absent",
+			expr: "subject.owns_resource",
+			ctx:  &EvalContext{Subject: &Subject{ID: "1", UserID: 1}, Request: map[string]interface{}{}},
+		},
+		{
+			// A certificate holder named "7" has no bound account: its ID
+			// matching the owner string does not make it the owner.
+			name: "unbound numeric subject",
+			expr: "subject.owns_resource",
+			ctx:  &EvalContext{Subject: &Subject{ID: "7"}, Request: owner("7")},
+		},
+		{
+			// Ownership reads UserID, never ID.
+			name: "subject id differs from the bound account",
+			expr: "subject.owns_resource",
+			ctx:  &EvalContext{Subject: &Subject{ID: "7", UserID: 8}, Request: owner("7")},
+		},
+		{
+			name: "empty owner and empty subject id",
+			expr: "subject.owns_resource",
+			ctx:  &EvalContext{Subject: &Subject{ID: ""}, Request: owner("")},
+		},
+		{
+			name: "non-string owner",
+			expr: "subject.owns_resource",
+			ctx:  &EvalContext{Subject: &Subject{ID: "1", UserID: 1}, Request: owner(1)},
+		},
+		{
+			name: "no subject",
+			expr: "subject.owns_resource",
+			ctx:  &EvalContext{Request: owner("user-1")},
+		},
+		{
+			// A deny written as unless: subject.owns_resource denies when
+			// the owner is unknown: the negation is true.
+			name:     "negated with owner absent",
+			expr:     "not subject.owns_resource",
+			ctx:      &EvalContext{Subject: &Subject{ID: "user-1"}, Request: map[string]interface{}{}},
+			wantTrue: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cond, err := parser.Parse(tt.expr)
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			if got := cond.Evaluate(tt.ctx); got != tt.wantTrue {
+				t.Errorf("Evaluate() = %v, want %v", got, tt.wantTrue)
+			}
+		})
+	}
+}
+
 func TestConditionParser_IPCIDRMatching(t *testing.T) {
 	parser := NewConditionParser(nil)
 

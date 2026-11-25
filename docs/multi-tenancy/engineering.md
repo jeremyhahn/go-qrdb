@@ -958,6 +958,7 @@ it:
 | quotas / entitlements | route permission `tenants:set_quotas` / `tenants:set_entitlements` (cross-scope), re-checked against `id` |
 | create | route permission `tenants:create` (cross-scope) |
 | list | `FilterTenantList` — every tenant with `tenants:list:cross` against `system`, else the caller's own; any refusal other than an RBAC denial is returned, not narrowed |
+| list `status` filter | `tenant.FilterByStatus`, applied after `FilterTenantList` on REST, gRPC/Unix, QUIC, MCP and embedded; `TenantServicer.ListTenants` stays unfiltered for internal callers |
 
 The five plan permissions (`tenants:create`, `tenants:set_quotas`,
 `tenants:set_entitlements`, `tenants:set_isolation`, `tenants:set_status`) are
