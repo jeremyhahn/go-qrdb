@@ -92,9 +92,6 @@ func (t *Transport) AddAuthFactor(ctx context.Context, req *transport.AuthFactor
 	if err := t.authorize(ctx, "AddAuthFactor"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.userAuthFactorSvc == nil {
 		return nil, &MissingUserAuthFactorServiceError{}
 	}
@@ -117,9 +114,6 @@ func (t *Transport) ListAuthFactors(ctx context.Context, req *transport.AuthFact
 	}
 	if err := t.authorize(ctx, "ListAuthFactors"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.userAuthFactorSvc == nil {
 		return nil, &MissingUserAuthFactorServiceError{}
@@ -151,9 +145,6 @@ func (t *Transport) GetAuthFactor(ctx context.Context, req *transport.AuthFactor
 	if err := t.authorize(ctx, "GetAuthFactor"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.userAuthFactorSvc == nil {
 		return nil, &MissingUserAuthFactorServiceError{}
 	}
@@ -175,9 +166,6 @@ func (t *Transport) RemoveAuthFactor(ctx context.Context, req *transport.AuthFac
 	}
 	if err := t.authorize(ctx, "RemoveAuthFactor"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.userAuthFactorSvc == nil {
 		return nil, &MissingUserAuthFactorServiceError{}
@@ -202,9 +190,6 @@ func (t *Transport) DeleteAuthFactor(ctx context.Context, req *transport.AuthFac
 	if err := t.authorize(ctx, "DeleteAuthFactor"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.userAuthFactorSvc == nil {
 		return nil, &MissingUserAuthFactorServiceError{}
 	}
@@ -225,9 +210,6 @@ func (t *Transport) RotateAuthFactor(ctx context.Context, req *transport.AuthFac
 	}
 	if err := t.authorize(ctx, "RotateAuthFactor"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.userAuthFactorSvc == nil {
 		return nil, &MissingUserAuthFactorServiceError{}
@@ -253,9 +235,6 @@ func (t *Transport) RelabelAuthFactor(ctx context.Context, req *transport.AuthFa
 	}
 	if err := t.authorize(ctx, "RelabelAuthFactor"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.userAuthFactorSvc == nil {
 		return nil, &MissingUserAuthFactorServiceError{}
@@ -284,9 +263,6 @@ func (t *Transport) LoginAuthFactor(ctx context.Context, req *transport.AuthFact
 	}
 	if err := t.authorize(ctx, "LoginAuthFactor"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.loginResolver == nil {
 		return nil, &transport.NotImplementedError{Method: "LoginAuthFactor"}
