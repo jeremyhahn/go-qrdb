@@ -112,6 +112,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **seal-quiesce** — sealing an at-rest barrier quiesces the encrypted stores under it, then refuses new work with `ErrBarrierSealed` — PR [#1403](../../pulls/1403), [docs/barrier-seal/](docs/barrier-seal/) — done
 - **kv-versions** — a caller reads a key's version, the number a transaction's `version` compare reads; transaction branches answer gets and ranges inside the transaction — [#1212](../../issues/1212), [docs/key-value/](docs/key-value/) — done
 - **iam-exposure** — the IAM surface go-xkms needs: device-share permissions, roles only from the bound user record, sdk re-exports of devices:onboard, HoldsSystemRole and the keys/certs/passwords/ssh/pin/piv permissions, the object-owner rule, Unix-socket peer-credential identity, a shared-password override permission, a tenant status filter; consumer go-xkms — [#1651](../../issues/1651), [docs/identity-rbac/](docs/identity-rbac/) — done
+- **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — [#1613](../../issues/1613), PR [#1655](../../pulls/1655), [docs/databases/](docs/databases/), [docs/plans/1613-verifiable-log.md](docs/plans/1613-verifiable-log.md) — done
 
 ## Now
 
@@ -120,7 +121,6 @@ The cluster engine and database system for every project in the stack: embedded,
 - **separation-of-duties** — SO separation of duties is enforced in compliance mode only; the optional SO holds in both postures — [#1128](../../issues/1128), [#1042](../../issues/1042), [docs/identity-rbac/](docs/identity-rbac/) — in progress
 - **desktop-gui** — the Wails desktop application — [docs/desktop-gui/](docs/desktop-gui/) — in progress
 - **webtransport-session** — WebTransport sessions (draft-ietf-webtrans-http3-16) on the REST HTTP/3 listener behind an authenticated, tenant-bound CONNECT route — [#1244](../../issues/1244), [docs/api-server/](docs/api-server/) — in progress
-- **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — [#1613](../../issues/1613), PR [#729](../../pulls/729), [docs/databases/](docs/databases/), [docs/plans/1613-verifiable-log.md](docs/plans/1613-verifiable-log.md) — in progress: serving barrier-isolated tenants and barrier-enabled databases awaits the owner's decision on where their logs live
 - **credentials** — named credentials, versioned rotation; scheduled rotation policies, their transport and CLI verbs, whole-store moves; consumer go-quicbaas — [#1201](../../issues/1201), [#1185](../../issues/1185), [docs/credentials/](docs/credentials/) — in progress
 
 ## Next

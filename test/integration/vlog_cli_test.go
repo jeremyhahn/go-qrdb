@@ -201,3 +201,100 @@ func containsAll(have []string, want ...string) bool {
 	}
 	return true
 }
+
+// TestVlog_CLI_DatabaseDrop_PerProtocol proves on every transport that a
+// named database's verifiable logs go with the database: a drop reclaims
+// them, and a re-created database of the same name starts with none, both
+// for a shared-store database and for one on its own dedicated raft group.
+func TestVlog_CLI_DatabaseDrop_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "shared"},
+		{name: "raft", args: []string{"--backend", "raft", "--cluster-mode", "local", "--replicas", "1"}},
+	}
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			for _, tc := range cases {
+				testVlogDatabaseDropOverProtocol(t, node, proto, tc.name, tc.args)
+			}
+		})
+	}
+}
+
+// testVlogDatabaseDropOverProtocol creates two logs in a fresh database,
+// grows, signs and rotates them, drops and re-creates the database, and
+// checks the re-created database holds neither log and serves the same
+// log name afresh under a new version-1 key.
+func testVlogDatabaseDropOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol, kind string, createArgs []string) {
+	t.Helper()
+	dbName := fmt.Sprintf("vlogdrop-%s-%s-%d", kind, proto.name, time.Now().UnixNano())
+	createDB := func() {
+		t.Helper()
+		args := append([]string{"database", "create", dbName}, createArgs...)
+		if out, err := runCLIProto(t, node, proto, args...); err != nil {
+			t.Fatalf("[%s/%s] database create %s: %v\noutput: %s", proto.name, kind, dbName, err, out)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = runCLIProto(t, node, proto, "database", "drop", dbName)
+	})
+	createDB()
+
+	first, second := "drop-a-"+kind, "drop-b-"+kind
+	created := vlogCLIJSON[vlogwire.CreateResult](t, node, proto, "create", "--database", dbName, "--log", first,
+		"--origin", vlogCLIOrigin, "--signing-key-type", "ed25519")
+	if created.Key == nil || created.Key.Version != 1 {
+		t.Fatalf("[%s/%s] vlog create = %+v, want a version-1 key", proto.name, kind, created)
+	}
+	vlogCLIJSON[vlogwire.CreateResult](t, node, proto, "create", "--database", dbName, "--log", second,
+		"--origin", vlogCLIOrigin, "--signing-key-type", "ed25519")
+	vlogCLIJSON[vlogwire.AppendResult](t, node, proto, "append", "--database", dbName, "--log", first,
+		"--entry", "d0", "--entry", "d1", "--entry", "d2")
+	signed := vlogCLIJSON[vlogwire.SignHeadResult](t, node, proto, "sign-head", "--database", dbName, "--log", first)
+	if !strings.HasPrefix(string(signed.Checkpoint), vlogCLIOrigin+"\n3\n") {
+		t.Fatalf("[%s/%s] vlog sign-head = %q, want size 3", proto.name, kind, signed.Checkpoint)
+	}
+	rotated := vlogCLIJSON[vlogwire.RotateKeyResult](t, node, proto, "rotate-key", "--database", dbName, "--log", first,
+		"--signing-key-type", "ed25519")
+	if rotated.Key.Version != 2 {
+		t.Fatalf("[%s/%s] vlog rotate-key = %+v, want version 2", proto.name, kind, rotated.Key)
+	}
+	vlogCLIJSON[vlogwire.AppendResult](t, node, proto, "append", "--database", dbName, "--log", second, "--entry", "s0")
+
+	// Drop and re-create the same name: the logs went with the old database.
+	if out, err := runCLIProto(t, node, proto, "database", "drop", dbName); err != nil {
+		t.Fatalf("[%s/%s] database drop %s: %v\noutput: %s", proto.name, kind, dbName, err, out)
+	}
+	createDB()
+	listed := vlogCLIJSON[vlogwire.ListResult](t, node, proto, "list", "--database", dbName)
+	for _, l := range listed.Logs {
+		if l == first || l == second {
+			t.Fatalf("[%s/%s] vlog list after drop and re-create = %v, want neither %s nor %s", proto.name, kind, listed.Logs, first, second)
+		}
+	}
+	vlogCLIRefused(t, node, proto, "not found", "head", "--database", dbName, "--log", first)
+	vlogCLIRefused(t, node, proto, "not found", "head", "--database", dbName, "--log", second)
+
+	// The same log name starts afresh under a new version-1 key.
+	fresh := vlogCLIJSON[vlogwire.CreateResult](t, node, proto, "create", "--database", dbName, "--log", first,
+		"--origin", vlogCLIOrigin, "--signing-key-type", "ed25519")
+	if fresh.Key == nil || fresh.Key.Version != 1 || string(fresh.Key.PublicKey) == string(created.Key.PublicKey) {
+		t.Fatalf("[%s/%s] vlog create after re-create = %+v, want a new version-1 key", proto.name, kind, fresh)
+	}
+	appended := vlogCLIJSON[vlogwire.AppendResult](t, node, proto, "append", "--database", dbName, "--log", first, "--entry", "n0")
+	if appended.FirstIndex != 0 || appended.Count != 1 {
+		t.Fatalf("[%s/%s] first append after re-create = %+v, want first index 0, count 1", proto.name, kind, appended)
+	}
+	head := vlogCLIJSON[vlogwire.Head](t, node, proto, "head", "--database", dbName, "--log", first)
+	if head.Size != 1 || head.CheckpointSize != 0 {
+		t.Fatalf("[%s/%s] head after re-create = size %d checkpoint %d, want size 1 and no checkpoint", proto.name, kind, head.Size, head.CheckpointSize)
+	}
+	resigned := vlogCLIJSON[vlogwire.SignHeadResult](t, node, proto, "sign-head", "--database", dbName, "--log", first)
+	verifyBarrierCheckpoint(t, proto, fresh, *fresh.Key, resigned.Checkpoint, 1, head.Root)
+}

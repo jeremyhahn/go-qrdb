@@ -1695,7 +1695,9 @@ func (s *Server) wireTenantHostShards() {
 //     so both the reclamation (go-qrdb#412) and the drop fence go there;
 //   - a raft-isolated tenant's database has a shard of its own, so its drop
 //     fence goes into that shard -- the Raft group its writes are guarded
-//     in.
+//     in;
+//   - a barrier-isolated tenant's logs are proposed to its home group, so
+//     the drop fence of each of its databases goes there.
 //
 // It is a no-op without the reclaim service, because then there is nothing to
 // attach it to, and without either registry, because then every database's
@@ -1713,6 +1715,7 @@ func (s *Server) wireStoreResolver() {
 	}
 	if s.opts.raftBackend != nil {
 		resolver.raft = s.opts.raftBackend
+		resolver.barrier = s.opts.raftBackend
 	}
 	s.opts.keyspaceReclaim.SetStoreResolver(resolver)
 }
