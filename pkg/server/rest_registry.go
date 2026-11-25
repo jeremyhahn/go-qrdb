@@ -1123,8 +1123,9 @@ func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bo
 	// wrapLease is false only for a dedicated-raft database's empty-prefix
 	// call (applyComposite's IsolationRaft branch): the shard IS the
 	// database's keyspace, so Watch and Lease are left exactly as
-	// RaftBackendFactory built them, and the namespaced MVCC view gets no
-	// ownership check over them.
+	// RaftBackendFactory built them, and the namespaced MVCC view attaches
+	// any of the shard's leases (shardLeaseOwnership): the shard's engine
+	// refuses a lease it does not hold.
 	var leases *namespacedLeaseService
 	if wrapLease && svcs.Lease != nil {
 		leases = newNamespacedLeaseService(svcs.Lease, svcs.MVCC, prefix)
@@ -1132,8 +1133,13 @@ func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bo
 	}
 	if svcs.MVCC != nil {
 		var owned leaseOwnership
-		if leases != nil {
+		switch {
+		case leases != nil:
 			owned = leases
+		case !wrapLease && svcs.Lease != nil:
+			// A dedicated shard's leases are all the database's own: the
+			// view attaches any of them and the shard refuses an unknown one.
+			owned = shardLeaseOwnership{}
 		}
 		mvcc := newNamespacedMVCCService(svcs.MVCC, prefix, owned)
 		mvcc.dbGuard = g

@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // memKV is an in-memory placement.KV for factory placement-source tests.
@@ -793,6 +794,41 @@ func TestDatabaseFenceApply_PassThroughViewCarriesTheGuard(t *testing.T) {
 	}
 	if wrapped.guard.IsZero() {
 		t.Fatal("the pass-through view carries no guard: its writes would not be refused once the shard is fenced")
+	}
+}
+
+// TestDatabaseFenceApply_PassThroughViewAttachesTheShardsLeases proves a
+// dedicated-raft database's pass-through MVCC view attaches its own shard's
+// leases: the shard is the database's keyspace, so the view carries
+// shardLeaseOwnership (the shard's engine refuses a lease it does not hold),
+// and the Lease service is left exactly as svcs carried it. Without it every
+// PutWithLease on an etcd raft database was refused "lease not found".
+func TestDatabaseFenceApply_PassThroughViewAttachesTheShardsLeases(t *testing.T) {
+	fence, err := newDatabaseFence("rt", "orders", "", nil)
+	if err != nil {
+		t.Fatalf("newDatabaseFence: %v", err)
+	}
+	lease := &stubLeaseService{}
+	svcs := &DatabaseServices{MVCC: &stubMVCCService{}, Lease: lease}
+
+	fenced := fence.apply(svcs, "", false)
+
+	if fenced.Lease != service.LeaseServicer(lease) {
+		t.Fatalf("fenced.Lease = %T, want the shard's own lease service", fenced.Lease)
+	}
+	mvcc, ok := fenced.MVCC.(*namespacedMVCCService)
+	if !ok {
+		t.Fatalf("fenced.MVCC = %T, want *namespacedMVCCService", fenced.MVCC)
+	}
+	if err := mvcc.requireOwnedLease(context.Background(), 7); err != nil {
+		t.Fatalf("requireOwnedLease(7) on a dedicated shard = %v, want nil", err)
+	}
+
+	// Without a lease service there is still nothing to attach.
+	bare := fence.apply(&DatabaseServices{MVCC: &stubMVCCService{}}, "", false)
+	var notFound *service.LeaseNotFoundError
+	if err := bare.MVCC.(*namespacedMVCCService).requireOwnedLease(context.Background(), 7); !errors.As(err, &notFound) {
+		t.Fatalf("requireOwnedLease(7) with no lease service = %v, want *service.LeaseNotFoundError", err)
 	}
 }
 
