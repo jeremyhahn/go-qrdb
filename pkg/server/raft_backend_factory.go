@@ -1867,6 +1867,12 @@ func newRaftShardVector(host service.Host, shardID uint64) (service.VectorServic
 // that service on the first call. A build that fails leaves the bundle
 // without one and is retried on the next call.
 func (f *RaftBackendFactory) withVector(rs *raftShard) *DatabaseServices {
+	// No host wired (a test double factory, as IsShardJoining treats it):
+	// the shard serves its own services. A nil *HostAdapter must never be
+	// wrapped in a non-nil service.Host, whose first read would dereference it.
+	if f.adapter == nil {
+		return rs.services
+	}
 	rs.vectorMu.Lock()
 	defer rs.vectorMu.Unlock()
 	if rs.vector == nil && !rs.vectorStopped {

@@ -876,6 +876,23 @@ func TestRaftBackendError_Error(t *testing.T) {
 	}
 }
 
+// TestRaftBackendFactory_WithVector_NoAdapterServesTheShardsServices proves a
+// factory with no raft host wired (a test double, as IsShardJoining treats it)
+// serves the shard's own services: a nil *HostAdapter never reaches the
+// vector service's service.Host, where its first read panicked.
+func TestRaftBackendFactory_WithVector_NoAdapterServesTheShardsServices(t *testing.T) {
+	svcs := &DatabaseServices{Name: "orders"}
+	rs := &raftShard{tenantID: "acme", database: "orders", shardID: 7, services: svcs}
+	f := &RaftBackendFactory{}
+
+	if got := f.withVector(rs); got != svcs {
+		t.Fatalf("withVector() = %p, want the shard's own services %p", got, svcs)
+	}
+	if rs.vector != nil || rs.vectorBundle != nil {
+		t.Fatalf("withVector() with no adapter left a vector service: vector=%v bundle=%v", rs.vector, rs.vectorBundle)
+	}
+}
+
 // TestManagerRaftInfoSource_Ownership exercises the database.Manager-backed
 // info source: ownership enforcement, non-raft rejection, and unknown databases.
 func TestManagerRaftInfoSource_Ownership(t *testing.T) {
