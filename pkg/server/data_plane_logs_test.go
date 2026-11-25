@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -46,7 +47,7 @@ func TestNewDataPlaneCreateFunc_EveryStateMachineHasItsOwnLogs(t *testing.T) {
 	_, tb := registerVolumeTenant(t, newVolumePooledRegistry(t), "acme")
 	hub := watch.NewHub()
 	t.Cleanup(hub.Close)
-	storetest.RequireOwnLogsPerStateMachine(t, newDataPlaneCreateFunc(tb, lease.NewLessor(), hub), database.DefaultRaftStateStorage)
+	storetest.RequireOwnLogsPerStateMachine(t, newDataPlaneCreateFunc(tb, lease.NewLessor(), hub, database.DefaultRaftStateStorage))
 }
 
 // TestNewDataPlaneCreateFunc_LogKeysSurviveSnapshotRestore pins that a barrier
