@@ -449,16 +449,20 @@ func (v *VectorConsensusFSM) applyUpsertVector(ctx context.Context, cmd *VectorC
 		_, getErr := v.storage.GetVector(ctx, cmd.Namespace, cmd.ID)
 		created = errors.Is(getErr, vectorStorage.ErrVectorNotFound)
 
+		// Convert metadata from map[string]interface{} to map[string]string
+		metadata := make(map[string]string)
+		for k, val := range cmd.Metadata {
+			metadata[k] = fmt.Sprintf("%v", val)
+		}
+
 		now := time.Now().UnixNano()
 		vec := &vectorStorage.VectorValue{
 			ID:        cmd.ID,
 			Embedding: cmd.Vector,
-			Metadata:  CommandMetadata(cmd.MetadataFormat, cmd.Metadata),
+			Metadata:  metadata,
 			CreatedAt: now,
 			UpdatedAt: now,
 			Version:   1,
-
-			MetadataFormat: cmd.MetadataFormat,
 		}
 
 		if err := v.storage.UpsertVector(ctx, cmd.Namespace, vec); err != nil {
@@ -609,14 +613,6 @@ func (v *VectorConsensusFSM) applyBatchUpsert(ctx context.Context, cmd *VectorCo
 				UpdatedAt: now,
 				Version:   1,
 			}
-			// Each vector keeps the metadata the batch carried for it, in
-			// the command's format, as the single-vector upsert does. A
-			// legacy-format batch stores none, as a replica that predates
-			// vector-metadata-json does, so mixed-version replicas agree.
-			if cmd.MetadataFormat != vectorStorage.MetadataFormatLegacy && i < len(cmd.BatchMeta) {
-				vecs[i].Metadata = CommandMetadata(cmd.MetadataFormat, cmd.BatchMeta[i])
-				vecs[i].MetadataFormat = cmd.MetadataFormat
-			}
 		}
 
 		if err := v.storage.BatchUpsertVectors(ctx, cmd.Namespace, vecs); err != nil {
@@ -694,8 +690,16 @@ func (v *VectorConsensusFSM) applyUpdateMetadata(ctx context.Context, cmd *Vecto
 	}
 
 	// Update metadata
-	vec.Metadata, vec.MetadataFormat = mergeCommandMetadata(vec.Metadata, vec.MetadataFormat,
-		cmd.MetadataFormat, cmd.Metadata, cmd.Merge)
+	if cmd.Merge {
+		for k, val := range cmd.Metadata {
+			vec.Metadata[k] = fmt.Sprintf("%v", val)
+		}
+	} else {
+		vec.Metadata = make(map[string]string)
+		for k, val := range cmd.Metadata {
+			vec.Metadata[k] = fmt.Sprintf("%v", val)
+		}
+	}
 
 	vec.UpdatedAt = time.Now().UnixNano()
 	vec.Version++

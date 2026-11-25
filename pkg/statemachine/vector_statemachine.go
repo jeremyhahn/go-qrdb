@@ -780,14 +780,10 @@ func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorComm
 	vecValue := &vector.VectorValue{
 		ID:        cmd.ID,
 		Embedding: cmd.Vector,
+		Metadata:  convertToStringMap(cmd.Metadata),
 		CreatedAt: cmd.Timestamp,
 		UpdatedAt: cmd.Timestamp,
 		Version:   cmd.Version,
-
-		MetadataFormat: cmd.MetadataFormat,
-	}
-	if cmd.Metadata != nil {
-		vecValue.Metadata = CommandMetadata(cmd.MetadataFormat, cmd.Metadata)
 	}
 
 	// Commands apply one at a time, so this existence read and the write
@@ -999,8 +995,9 @@ func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *Vecto
 
 		// Add metadata if provided
 		if cmd.BatchMeta != nil && i < len(cmd.BatchMeta) {
-			vecs[i].Metadata = CommandMetadata(cmd.MetadataFormat, cmd.BatchMeta[i])
-			vecs[i].MetadataFormat = cmd.MetadataFormat
+			for k, v := range cmd.BatchMeta[i] {
+				vecs[i].Metadata[k] = fmt.Sprintf("%v", v)
+			}
 		}
 
 		// Add to namespace-specific HNSW index
@@ -1238,8 +1235,21 @@ func (vsm *VectorStateMachine) handleUpdateMetadata(ctx context.Context, cmd *Ve
 	}
 
 	// Update metadata based on merge flag
-	newMetadata, newFormat := mergeCommandMetadata(existingVec.Metadata, existingVec.MetadataFormat,
-		cmd.MetadataFormat, cmd.Metadata, cmd.Merge)
+	newMetadata := make(map[string]string)
+	if cmd.Merge {
+		// Merge: keep existing metadata and add/update new keys
+		for k, v := range existingVec.Metadata {
+			newMetadata[k] = v
+		}
+		for k, v := range cmd.Metadata {
+			newMetadata[k] = fmt.Sprintf("%v", v)
+		}
+	} else {
+		// Replace: use only new metadata
+		for k, v := range cmd.Metadata {
+			newMetadata[k] = fmt.Sprintf("%v", v)
+		}
+	}
 
 	// Increment version
 	newVersion := existingVec.Version + 1
@@ -1252,8 +1262,6 @@ func (vsm *VectorStateMachine) handleUpdateMetadata(ctx context.Context, cmd *Ve
 		CreatedAt: existingVec.CreatedAt,
 		UpdatedAt: cmd.Timestamp,
 		Version:   newVersion,
-
-		MetadataFormat: newFormat,
 	}
 
 	// Upsert the updated vector
@@ -1388,7 +1396,7 @@ func (vsm *VectorStateMachine) handleGetVector(ctx context.Context, cmd *VectorC
 		Success:   true,
 		VectorID:  vec.ID,
 		Vector:    vec.Embedding,
-		Metadata:  convertFromStringMap(vec),
+		Metadata:  convertFromStringMap(vec.Metadata),
 		Version:   vec.Version,
 		Timestamp: time.Now().UnixNano(),
 	}
@@ -1449,7 +1457,7 @@ func (vsm *VectorStateMachine) handleSearch(ctx context.Context, cmd *VectorComm
 		// Optionally fetch full vector and metadata from storage
 		if vec, err := vectorStorage.VectorStorage().GetVector(ctx, cmd.Namespace, res.ID); err == nil {
 			searchResults[i].Vector = vec.Embedding
-			searchResults[i].Metadata = convertFromStringMap(vec)
+			searchResults[i].Metadata = convertFromStringMap(vec.Metadata)
 		}
 	}
 
@@ -1532,7 +1540,7 @@ func (vsm *VectorStateMachine) handleListVectors(ctx context.Context, cmd *Vecto
 		vectors = append(vectors, VectorData{
 			ID:        vec.ID,
 			Vector:    vec.Embedding,
-			Metadata:  convertFromStringMap(vec),
+			Metadata:  convertFromStringMap(vec.Metadata),
 			Version:   vec.Version,
 			CreatedAt: vec.CreatedAt,
 			UpdatedAt: vec.UpdatedAt,
@@ -1731,10 +1739,28 @@ func (vsm *VectorStateMachine) GetMetrics() *VectorMetrics {
 	}
 }
 
-// convertFromStringMap returns the metadata values of a stored vector,
-// read in the record's metadata format.
-func convertFromStringMap(vec *vector.VectorValue) map[string]interface{} {
-	return vector.DecodeMetadata(vec.MetadataFormat, vec.Metadata)
+// convertToStringMap converts map[string]interface{} to map[string]string.
+func convertToStringMap(m map[string]interface{}) map[string]string {
+	if m == nil {
+		return nil
+	}
+	result := make(map[string]string, len(m))
+	for k, v := range m {
+		result[k] = fmt.Sprintf("%v", v)
+	}
+	return result
+}
+
+// convertFromStringMap converts map[string]string to map[string]interface{}.
+func convertFromStringMap(m map[string]string) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	result := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		result[k] = v
+	}
+	return result
 }
 
 // PrepareSnapshot implements sm.DiskStateMachine.PrepareSnapshot.

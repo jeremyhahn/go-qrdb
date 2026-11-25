@@ -19,8 +19,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	vectorStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
 
 func TestVectorResult_EncodeDecode(t *testing.T) {
@@ -100,7 +98,7 @@ func TestNewUpdateMetadataCommand(t *testing.T) {
 		"field2": 123,
 	}
 
-	cmd := NewUpdateMetadataCommand("test_ns", 100, metadata, true, vectorStorage.MetadataFormatJSON, "test-node")
+	cmd := NewUpdateMetadataCommand("test_ns", 100, metadata, true, "test-node")
 	require.NotNil(t, cmd)
 
 	assert.Equal(t, OpUpdateMetadata, cmd.Op)
@@ -414,7 +412,7 @@ func TestVectorCommand_EncodeDecodeAllCommands(t *testing.T) {
 	}{
 		{
 			name: "UpdateMetadata",
-			cmd:  NewUpdateMetadataCommand("test", 1, map[string]interface{}{"key": "val"}, false, vectorStorage.MetadataFormatJSON, "node"),
+			cmd:  NewUpdateMetadataCommand("test", 1, map[string]interface{}{"key": "val"}, false, "node"),
 		},
 		{
 			name: "BatchDelete",

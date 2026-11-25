@@ -29,8 +29,6 @@ func toSchemaVectorValue(v *VectorValue) *schema.VectorValue {
 		CreatedAt: v.CreatedAt,
 		UpdatedAt: v.UpdatedAt,
 		Version:   v.Version,
-
-		MetadataFormat: v.MetadataFormat,
 	}
 }
 
@@ -46,8 +44,6 @@ func fromSchemaVectorValue(v *schema.VectorValue) *VectorValue {
 		CreatedAt: v.CreatedAt,
 		UpdatedAt: v.UpdatedAt,
 		Version:   v.Version,
-
-		MetadataFormat: v.MetadataFormat,
 	}
 }
 

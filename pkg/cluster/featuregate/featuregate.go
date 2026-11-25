@@ -279,17 +279,9 @@ const CommandCaps feature.Feature = "command-caps"
 // engineering.md).
 const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 
-// VectorMetadataJSON is vector metadata stored as canonical JSON values
-// (metadata format version 1) rather than the verbatim %v strings of a
-// record without a format version. A binary from before it ignores the
-// command's format and stores and filters the JSON text as plain strings,
-// so until every replica of the group advertises it vector upserts are
-// proposed and stored in the legacy format.
-const VectorMetadataJSON feature.Feature = "vector-metadata-json"
-
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, VectorMetadataJSON, TransactionReads, VerifiableLogAudit, PendingUserTTL, VerifiableLogDrop, VerifiableLogSealed}
+var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL, VerifiableLogDrop, VerifiableLogSealed}
 
 // Supported returns the features this binary implements.
 func Supported() []feature.Feature {

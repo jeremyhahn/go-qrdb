@@ -450,78 +450,54 @@ func TestVectorStateMachine_GetMetrics(t *testing.T) {
 // =============================================================================
 
 func TestConvertToStringMap(t *testing.T) {
-	input := map[string]interface{}{
-		"string": "hello",
-		"int":    42,
-		"bool":   true,
-		"ctl":    "\x01true",
-	}
-
-	t.Run("JSON-format command stores canonical JSON", func(t *testing.T) {
-		result := CommandMetadata(vector.MetadataFormatJSON, input)
-		require.Len(t, result, len(input))
-		assert.Equal(t, `"hello"`, result["string"])
-		decoded := vector.DecodeMetadata(vector.MetadataFormatJSON, result)
-		assert.Equal(t, "hello", decoded["string"])
-		assert.Equal(t, float64(42), decoded["int"])
-		assert.Equal(t, true, decoded["bool"])
-		assert.Equal(t, "\x01true", decoded["ctl"])
-	})
-
-	t.Run("command without a format version stores the base's verbatim strings", func(t *testing.T) {
-		result := CommandMetadata(vector.MetadataFormatLegacy, input)
-		assert.Equal(t, map[string]string{"string": "hello", "int": "42", "bool": "true", "ctl": "\x01true"}, result)
-		assert.Equal(t, "\x01true", vector.DecodeMetadata(vector.MetadataFormatLegacy, result)["ctl"])
+	t.Run("nil map returns nil", func(t *testing.T) {
+		result := convertToStringMap(nil)
+		assert.Nil(t, result)
 	})
 
 	t.Run("empty map returns empty map", func(t *testing.T) {
-		result := CommandMetadata(vector.MetadataFormatJSON, map[string]interface{}{})
+		result := convertToStringMap(map[string]interface{}{})
 		assert.NotNil(t, result)
 		assert.Len(t, result, 0)
+	})
+
+	t.Run("converts various types to strings", func(t *testing.T) {
+		input := map[string]interface{}{
+			"string": "hello",
+			"int":    42,
+			"float":  3.14,
+			"bool":   true,
+			"nil":    nil,
+		}
+		result := convertToStringMap(input)
+		assert.Equal(t, "hello", result["string"])
+		assert.Equal(t, "42", result["int"])
+		assert.Equal(t, "3.14", result["float"])
+		assert.Equal(t, "true", result["bool"])
+		assert.Equal(t, "<nil>", result["nil"])
 	})
 }
 
 func TestConvertFromStringMap(t *testing.T) {
 	t.Run("nil map returns nil", func(t *testing.T) {
-		assert.Nil(t, convertFromStringMap(&vector.VectorValue{}))
+		result := convertFromStringMap(nil)
+		assert.Nil(t, result)
 	})
 
-	t.Run("legacy record reads verbatim", func(t *testing.T) {
-		result := convertFromStringMap(&vector.VectorValue{Metadata: map[string]string{"key1": "value1", "key2": "\x01true"}})
+	t.Run("converts strings to interface", func(t *testing.T) {
+		input := map[string]string{
+			"key1": "value1",
+			"key2": "value2",
+		}
+		result := convertFromStringMap(input)
 		assert.Equal(t, "value1", result["key1"])
-		assert.Equal(t, "\x01true", result["key2"])
-	})
-
-	t.Run("merge into a legacy record upgrades it whole", func(t *testing.T) {
-		existing := map[string]string{"old": "\x01true", "n": "5"}
-		merged, format := mergeCommandMetadata(existing, vector.MetadataFormatLegacy, vector.MetadataFormatJSON,
-			map[string]interface{}{"new": float64(1)}, true)
-		assert.Equal(t, vector.MetadataFormatJSON, format)
-		decoded := vector.DecodeMetadata(format, merged)
-		assert.Equal(t, map[string]interface{}{"old": "\x01true", "n": "5", "new": float64(1)}, decoded)
-	})
-
-	t.Run("legacy merge into a legacy record applies as on the base", func(t *testing.T) {
-		existing := map[string]string{"old": "\x01true"}
-		merged, format := mergeCommandMetadata(existing, vector.MetadataFormatLegacy, vector.MetadataFormatLegacy,
-			map[string]interface{}{"new": 1}, true)
-		assert.Equal(t, vector.MetadataFormatLegacy, format)
-		assert.Equal(t, map[string]string{"old": "\x01true", "new": "1"}, merged)
-	})
-
-	t.Run("replace takes the command's format", func(t *testing.T) {
-		merged, format := mergeCommandMetadata(map[string]string{"old": "x"}, vector.MetadataFormatJSON, vector.MetadataFormatLegacy,
-			map[string]interface{}{"new": 1}, false)
-		assert.Equal(t, vector.MetadataFormatLegacy, format)
-		assert.Equal(t, map[string]string{"new": "1"}, merged)
+		assert.Equal(t, "value2", result["key2"])
 	})
 }
 
-// TestVectorStateMachine_UpsertMetadataFormatAndCreated: a command without a
-// metadata format version applies exactly as on the base (verbatim %v
-// strings, a legacy record), a JSON-format command stores a JSON record, and
-// the apply result says whether the upsert created the vector.
-func TestVectorStateMachine_UpsertMetadataFormatAndCreated(t *testing.T) {
+// TestVectorStateMachine_UpsertReportsCreated: the apply result says whether
+// the upsert created the vector or replaced a stored one.
+func TestVectorStateMachine_UpsertReportsCreated(t *testing.T) {
 	adapter := NewMockStorageAdapter()
 	adapter.vecStor = NewMockVectorStorageWrapper()
 	mockHNSW := NewMockHNSWIndex()
@@ -537,23 +513,15 @@ func TestVectorStateMachine_UpsertMetadataFormatAndCreated(t *testing.T) {
 		require.NoError(t, vsm.Update(context.Background(), []sm.Entry{{Index: index, Cmd: data}}, results))
 		return results[0]
 	}
-	meta := map[string]interface{}{"n": 5, "ctl": "\x01true"}
 
-	legacy := &VectorCommand{Op: OpUpsertVector, Namespace: "test_ns", ID: 1, Vector: []float32{1, 0, 0, 0},
-		Metadata: meta, Version: 1, Timestamp: time.Now().UnixNano()}
-	assert.True(t, UpsertCreated(apply(1, legacy).Data), "first upsert of a missing ID must report created")
-	stored, err := adapter.VectorStorage().GetVector(context.Background(), "test_ns", 1)
+	first := &VectorCommand{Op: OpUpsertVector, Namespace: "test_ns", ID: 1, Vector: []float32{1, 0, 0, 0},
+		Version: 1, Timestamp: time.Now().UnixNano()}
+	assert.True(t, UpsertCreated(apply(1, first).Data), "first upsert of a missing ID must report created")
+	_, err = adapter.VectorStorage().GetVector(context.Background(), "test_ns", 1)
 	require.NoError(t, err)
-	assert.Equal(t, vector.MetadataFormatLegacy, stored.MetadataFormat)
-	assert.Equal(t, map[string]string{"n": "5", "ctl": "\x01true"}, stored.Metadata)
-	assert.Equal(t, map[string]interface{}{"n": "5", "ctl": "\x01true"}, convertFromStringMap(stored))
 
-	typed := NewUpsertCommand("test_ns", 1, []float32{0, 1, 0, 0}, meta, vector.MetadataFormatJSON, "n1")
-	assert.False(t, UpsertCreated(apply(2, typed).Data), "upsert of an existing ID must not report created")
-	stored, err = adapter.VectorStorage().GetVector(context.Background(), "test_ns", 1)
-	require.NoError(t, err)
-	assert.Equal(t, vector.MetadataFormatJSON, stored.MetadataFormat)
-	assert.Equal(t, map[string]interface{}{"n": float64(5), "ctl": "\x01true"}, convertFromStringMap(stored))
+	second := NewUpsertCommand("test_ns", 1, []float32{0, 1, 0, 0}, nil, "n1")
+	assert.False(t, UpsertCreated(apply(2, second).Data), "upsert of an existing ID must not report created")
 }
 
 // =============================================================================
@@ -1324,7 +1292,7 @@ func TestVectorStateMachine_HandleUpdateMetadata(t *testing.T) {
 		// Verify vector was updated in storage
 		updatedVec, err := adapter.VectorStorage().GetVector(context.Background(), "test_ns", 1)
 		require.NoError(t, err)
-		assert.Equal(t, "new_value", vector.DecodeMetadataValue(updatedVec.MetadataFormat, updatedVec.Metadata["new_key"]))
+		assert.Equal(t, "new_value", updatedVec.Metadata["new_key"])
 		// old_key should NOT be present since Merge=false
 		_, hasOldKey := updatedVec.Metadata["old_key"]
 		assert.False(t, hasOldKey)
@@ -1371,10 +1339,9 @@ func TestVectorStateMachine_HandleUpdateMetadata(t *testing.T) {
 		// Verify merged metadata
 		updatedVec, err := adapter.VectorStorage().GetVector(context.Background(), "test_ns", 1)
 		require.NoError(t, err)
-		decoded := convertFromStringMap(updatedVec)
-		assert.Equal(t, "new_value", decoded["new_key"])
-		assert.Equal(t, "old_value", decoded["old_key"]) // Preserved (legacy string, verbatim)
-		assert.Equal(t, "updated", decoded["keep"])      // Updated
+		assert.Equal(t, "new_value", updatedVec.Metadata["new_key"])
+		assert.Equal(t, "old_value", updatedVec.Metadata["old_key"]) // Preserved
+		assert.Equal(t, "updated", updatedVec.Metadata["keep"])      // Updated
 	})
 
 	t.Run("update metadata on nonexistent vector returns error", func(t *testing.T) {

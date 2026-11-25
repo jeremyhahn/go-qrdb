@@ -151,28 +151,6 @@ func raftAppliedVectorService(t *testing.T, proposeErr error) (VectorService, *c
 	return svc, store, &applied
 }
 
-// TestVectorService_RaftBatchUpsertKeepsMetadata checks that a batch upsert
-// on a Raft-configured service stores each vector's metadata: the proposed
-// command carries it and the applied record returns it on read.
-func TestVectorService_RaftBatchUpsertKeepsMetadata(t *testing.T) {
-	svc, _, applied := raftAppliedVectorService(t, nil)
-	ctx := context.Background()
-
-	_, err := svc.BatchUpsert(ctx, &BatchUpsertRequest{Namespace: "docs", Vectors: []*VectorData{
-		{ID: 1, Vector: []float32{1, 0}, Metadata: map[string]interface{}{"color": "red"}},
-		{ID: 2, Vector: []float32{0, 1}, Metadata: map[string]interface{}{"color": "blue"}},
-	}})
-	require.NoError(t, err)
-	require.Len(t, *applied, 1)
-	require.Len(t, (*applied)[0].BatchMeta, 2)
-
-	for id, want := range map[uint64]string{1: "red", 2: "blue"} {
-		got, err := svc.GetVector(ctx, &GetVectorRequest{Namespace: "docs", ID: id, IncludeMetadata: true})
-		require.NoError(t, err)
-		require.Equal(t, want, got.Metadata["color"], "vector %d", id)
-	}
-}
-
 // TestVectorService_RaftBatchDeleteGoesThroughConsensus checks that a batch
 // delete on a Raft-configured service is one proposed delete command
 // carrying every ID, that applying it removes the vectors, and that the
